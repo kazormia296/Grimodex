@@ -2197,9 +2197,15 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         Nir1GraphIndexBuildDecision::Build { .. }
     ));
 
-    // DR-BSEAM-1 (b): the uncontrolled durable planner cannot judge the
-    // sealed binding and fails as context-unavailable; the B-ROUTE turns
-    // exactly that into a wake.
+    // DR-BSEAM-1 (b) before GDV/1: the uncontrolled durable planner could not
+    // judge a sealed binding and failed as context-unavailable, which the
+    // B-ROUTE turned into a wake. GDV/1 (GDV-R3, DR-PUBG-5-16): this binding is
+    // coherent but not current (recognized `rebuildable-not-query-usable`), so
+    // the planner no longer reads the whole-project eligibility. It answers
+    // instead of failing and main receives the durable `Verify` work; the Graph
+    // producer's judgement then runs inside the cycle in front of that Verify
+    // (case C-2). The premise "a sealed binding is context-unavailable" still
+    // holds for a current binding (asserted below after the rebuild).
     let coordinates =
         crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(Some(
             &graph_seam(),
@@ -2210,12 +2216,9 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
             PROJECT,
             "workspace-opened",
             Some(&coordinates),
-        )
-        .expect_err("the uncontrolled planner cannot judge the sealed binding");
-    assert!(
-        error_text(&uncontrolled).contains("context-unavailable"),
-        "{uncontrolled:#}"
-    );
+        )?
+        .expect("the planner answers for a recognized not-current binding");
+    assert_eq!(uncontrolled.run_kind, AutomaticRunKind::Verify);
 
     let recorder = Recorder::default();
     let (discovered, result) = main_wake_cycle_with_discovery(
@@ -2224,9 +2227,13 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         "workspace-opened",
         &recorder,
     )?;
-    assert_eq!(
-        discovered,
-        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
+    assert!(
+        matches!(
+            &discovered,
+            crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::Work(work)
+                if work.run_kind == AutomaticRunKind::Verify
+        ),
+        "{discovered:?}"
     );
     assert_eq!(
         result.map(|result| result.status),
@@ -2238,6 +2245,19 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
     assert_eq!(
         fixture.judge()?,
         skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    // The DR-BSEAM-1 (b) premise is unchanged for a current sealed binding.
+    let current_uncontrolled =
+        crate::narrative_extraction::maintenance_runtime::discover_durable_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            "workspace-opened",
+            Some(&coordinates),
+        )
+        .expect_err("the uncontrolled planner cannot judge a current sealed binding");
+    assert!(
+        error_text(&current_uncontrolled).contains("context-unavailable"),
+        "{current_uncontrolled:#}"
     );
     Ok(())
 }
@@ -2557,6 +2577,26 @@ fn run_ledger(db: &Database) -> Result<Vec<(String, String)>> {
     })
 }
 
+/// The `report` of the project's latest completed Verify Run, as JSON.
+fn last_completed_verify_report(db: &Database) -> Result<Option<serde_json::Value>> {
+    Ok(db
+        .with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT outcome_summary_json FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND run_kind = 'dependency-verify'
+                        AND status = 'completed' ORDER BY rowid DESC LIMIT 1",
+                    [PROJECT],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })?
+        .map(|summary| -> Result<serde_json::Value> {
+            Ok(serde_json::from_str::<serde_json::Value>(&summary)?["report"].clone())
+        })
+        .transpose()?)
+}
+
 /// Keys of the project's maintenance Findings.
 fn finding_keys(db: &Database) -> Result<Vec<String>> {
     db.with_conn(|conn| {
@@ -2738,23 +2778,50 @@ fn product_gate_wake_builds_a_missing_graph_when_the_durable_chain_is_idle() -> 
     Ok(())
 }
 
-/// V4. A sealed binding that is not current makes the uncontrolled discovery
-/// fail as `context-unavailable`. Under the product gate that becomes a wake
-/// and the cycle rebuilds; with the gate closed the error propagates unchanged.
+/// V4. A sealed binding that is current makes the uncontrolled discovery fail
+/// as `context-unavailable`; with the gate closed the error propagates
+/// unchanged. GDV/1 (GDV-R3, DR-PUBG-5-16): a sealed binding that is coherent
+/// but not current (dirty) no longer does. Discovery answers with the durable
+/// `Verify` work, the closed gate keeps the Graph unbuilt, and the product gate
+/// turns the remaining idle chain into the wake whose cycle rebuilds it.
 #[test]
 fn product_gate_turns_context_unavailable_into_a_wake_that_rebuilds() -> Result<()> {
     let _serial = serial();
+    // A current sealed binding: the premise of DR-BSEAM-1 (b) is unchanged.
+    let current = Fixture::published()?;
+    let closed = wake_step(&current, Launch::Closed)?;
+    let error = closed.discovery.expect_err("uncontrolled discovery");
+    assert!(
+        is_context_unavailable_termination(&error),
+        "closed gate, current binding: {error:#}"
+    );
+    assert!(closed.cycle.is_none());
+    assert_eq!(generation(current.db())?, Some(1));
+
+    // A dirty (recognized not-current) sealed binding.
     let fixture = Fixture::published()?;
     fixture.mark_dirty()?;
 
     let closed = wake_step(&fixture, Launch::Closed)?;
-    let error = closed.discovery.expect_err("uncontrolled discovery");
     assert!(
-        is_context_unavailable_termination(&error),
-        "closed gate: {error:#}"
+        matches!(
+            &closed.discovery,
+            Ok(MaintenanceProjectDiscovery::Work(work)) if work.run_kind == AutomaticRunKind::Verify
+        ),
+        "closed gate, dirty binding: {:?}",
+        closed.discovery
     );
-    assert!(closed.cycle.is_none());
-    assert_eq!(generation(fixture.db())?, Some(1));
+    assert_eq!(
+        closed.cycle.expect("the Verify work starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
+    // The closed gate never builds: the binding is still the dirty generation 1.
+    assert_eq!(
+        sealed(fixture.db())?.map(|(generation, dirty, ..)| (generation, dirty)),
+        Some((1, 1))
+    );
+    // Only the setup's publication is recorded; the closed gate judged nothing.
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
 
     let step = wake_step(&fixture, Launch::Product)?;
     assert_eq!(
@@ -3086,13 +3153,16 @@ fn v0_stored_edge_overflow_stops_verify_for_a_bound_project() -> Result<()> {
     Ok(())
 }
 
-/// V0 (b): the candidates exceed the bound instead. With the gate closed,
-/// main's (uncontrolled) discovery fails as `context-unavailable` on every
-/// wake and creates nothing. Under the seam and the product token that failure
-/// is a wake, the cycle's Verify then fails by `capacity-exceeded` exactly as
-/// in (a), and the project stops the same way.
+/// V0 (b): the candidates exceed the bound instead, B refuses the rebuild and
+/// the binding stays dirty. Before GDV/1 main's (uncontrolled) discovery failed
+/// as `context-unavailable` on every wake with the gate closed, and under the
+/// seam and the product token the cycle's Verify failed by `capacity-exceeded`
+/// and the project stopped with a Finding. GDV/1 (consumer contract: a
+/// recognized dirty index is "rebuildable but not query usable"): Verify
+/// excludes the coherent but not-current Graph and the durable chain completes
+/// and reaches idle, for every launch.
 #[test]
-fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
+fn v0_candidate_overflow_does_not_stop_verify_for_a_bound_project() -> Result<()> {
     let _serial = serial();
     for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
         let fixture = Fixture::published()?;
@@ -3107,44 +3177,72 @@ fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
         for _ in 0..6 {
             steps.push(wake_step(&fixture, launch)?);
         }
-        if launch == Launch::Closed {
-            for step in &steps {
-                let error = step.discovery.as_ref().expect_err("uncontrolled discovery");
-                assert!(is_context_unavailable_termination(error), "{error:#}");
-                assert!(step.cycle.is_none());
-            }
-            assert_eq!(run_ledger(fixture.db())?.len(), runs_before);
-            assert!(finding_keys(fixture.db())?.is_empty());
-        } else {
-            assert_eq!(
-                steps[0].discovery.as_ref().ok(),
-                Some(&MaintenanceProjectDiscovery::GraphIndexBuildWake),
-                "{launch:?}"
-            );
-            let failures = steps.iter().filter_map(failure_text).collect::<Vec<_>>();
+        // No wake fails, whichever launch.
+        for (index, step) in steps.iter().enumerate() {
             assert!(
-                failures
-                    .iter()
-                    .any(|text| text.contains("capacity-exceeded")
-                        && text.contains("candidate-rows exceeds 2064")),
-                "{launch:?}: {failures:?}"
+                step.discovery.is_ok(),
+                "{launch:?} wake#{index}: {:?}",
+                step.discovery
             );
-            let ledger = run_ledger(fixture.db())?;
-            assert_eq!(ledger.len(), runs_before + 1, "{launch:?}: {ledger:?}");
-            assert_eq!(
-                ledger.last(),
-                Some(&("dependency-verify".to_string(), "failed".to_string()))
-            );
-            let findings = finding_keys(fixture.db())?;
-            assert_eq!(findings.len(), 1, "{launch:?}: {findings:?}");
-            assert!(findings[0].starts_with(VERIFY_FINDING_PREFIX));
-            for step in &steps[1..] {
+            if let Some(cycle) = &step.cycle {
                 assert!(
-                    matches!(&step.cycle, Some(Ok(result)) if result.status == MaintenanceCycleStatus::Accepted),
+                    matches!(cycle, Ok(result) if result.status == MaintenanceCycleStatus::Accepted),
+                    "{launch:?} wake#{index}"
+                );
+            }
+        }
+        assert!(
+            steps.iter().all(|step| failure_text(step).is_none()),
+            "{launch:?}: no Verify failure"
+        );
+        // The first wake hands the durable Verify to a cycle.
+        assert!(
+            matches!(
+                &steps[0].discovery,
+                Ok(MaintenanceProjectDiscovery::Work(work)) if work.run_kind == AutomaticRunKind::Verify
+            ),
+            "{launch:?}: {:?}",
+            steps[0].discovery
+        );
+        // Exactly one new Run, the completed Verify; no Finding.
+        let ledger = run_ledger(fixture.db())?;
+        assert_eq!(ledger.len(), runs_before + 1, "{launch:?}: {ledger:?}");
+        assert_eq!(
+            ledger.last(),
+            Some(&("dependency-verify".to_string(), "completed".to_string())),
+            "{launch:?}"
+        );
+        assert!(finding_keys(fixture.db())?.is_empty(), "{launch:?}");
+        // The report excludes the Graph and keeps nothing else unresolved.
+        let report = last_completed_verify_report(fixture.db())?.expect("completed Verify");
+        assert_eq!(
+            report["consumersExcludedNotCurrent"][0]["consumerKey"],
+            INDEX_KEY,
+            "{launch:?}"
+        );
+        assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
+        assert_eq!(report["edgeIdsWithMissingSource"], json!([]));
+        // The chain is idle afterwards: no wake adds a Run. The closed gate
+        // discovers nothing; the seam and the product token only wake B, which
+        // stays refused for the unchanged inputs.
+        for step in &steps[1..] {
+            if launch == Launch::Closed {
+                assert!(
+                    matches!(step.discovery, Ok(MaintenanceProjectDiscovery::Idle)),
+                    "{launch:?}"
+                );
+                assert!(step.cycle.is_none());
+            } else {
+                assert!(
+                    matches!(
+                        step.discovery,
+                        Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake)
+                    ),
                     "{launch:?}"
                 );
             }
         }
+        // B stays refused for the unchanged inputs, and the dirty binding stays.
         assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
         assert_eq!(sealed(fixture.db())?, stale, "{launch:?}");
     }

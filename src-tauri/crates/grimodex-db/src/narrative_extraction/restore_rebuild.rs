@@ -1762,6 +1762,22 @@ pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
     };
     for (consumer_kind, consumer_key) in head_keys {
         control.check(GraphWorkStage::Coverage)?;
+        // GDV/1 S-5: a recognized not-current Graph head is skipped. Its entries'
+        // Sources (including the whole-project eligibility) are not resolved.
+        // The decision is taken again in this transaction (K-4).
+        if is_reserved_semantic_index_consumer_kind(&consumer_kind)
+            && consumer_key == super::nir1_entity_relation_index::INDEX_KEY
+            && super::nir1_entity_relation_index::classify_graph_binding_with_control(
+                conn,
+                project_id,
+                control,
+            )? == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent
+        {
+            verification.diagnostics.push(format!(
+                "NEX_V2_SHADOW_REBUILD_RECOGNIZED_UNAVAILABLE:{consumer_kind}:{consumer_key}"
+            ));
+            continue;
+        }
         let active_set = match read_active_dependency_declaration_set_in_tx(
             conn,
             project_id,
@@ -2446,6 +2462,24 @@ pub struct DependencyGraphVerifyReport {
     /// Explicit Verify decision: the current derived state is missing or
     /// stale and a same-epoch Rebuild must run before confirmation Verify.
     pub rebuild_required: bool,
+    /// GDV/1: declared Graph bindings that are coherent but not current
+    /// (dirty, or Freshness/epoch not current). Their Edges are outside the
+    /// unresolvable-scope and missing-Source checks. This is the one field of
+    /// the report that is `#[serde(default)]`: an older stored report omits it
+    /// (it excluded nothing), and a report that excludes nothing serializes
+    /// byte-identically to the previous shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumers_excluded_not_current: Vec<VerifyExcludedConsumer>,
+}
+
+/// GDV/1: one consumer that Verify excluded from the Source checks because it
+/// is a recognized, rebuildable-not-query-usable Graph binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyExcludedConsumer {
+    pub consumer_kind: String,
+    pub consumer_key: String,
+    pub edge_count: usize,
 }
 
 impl DependencyGraphVerifyReport {
@@ -2671,8 +2705,31 @@ fn durable_graph_state_digest_with_control_within_capacity(
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
         let mut resolved = Vec::with_capacity(edge_rows.len());
+        // GDV/1 S-4: classify the Graph binding at most once per digest, and
+        // only when a Graph Edge exists. A recognized not-current binding's
+        // Edges do not resolve their Source (so the whole-project eligibility
+        // is never read); only `resolvedSource` is replaced by a fixed mark.
+        let mut graph_class: Option<super::nir1_entity_relation_index::GraphBindingClass> = None;
         for (edge_id, consumer_kind, consumer_key, source_identity, owning_run_id) in edge_rows {
             control.check(GraphWorkStage::Edge)?;
+            let mut recognized_unavailable = false;
+            if is_reserved_semantic_index_consumer_kind(&consumer_kind)
+                && consumer_key == super::nir1_entity_relation_index::INDEX_KEY
+            {
+                let class = match graph_class {
+                    Some(class) => class,
+                    None => {
+                        let class =
+                            super::nir1_entity_relation_index::classify_graph_binding_with_control(
+                                conn, project_id, control,
+                            )?;
+                        graph_class = Some(class);
+                        class
+                    }
+                };
+                recognized_unavailable = class
+                    == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent;
+            }
             resolved.push(durable_edge_resolution_input_with_control(
                 conn,
                 project_id,
@@ -2681,6 +2738,7 @@ fn durable_graph_state_digest_with_control_within_capacity(
                 &consumer_key,
                 &source_identity,
                 owning_run_id.as_deref(),
+                recognized_unavailable,
                 control,
             )?);
         }
@@ -4897,9 +4955,12 @@ fn run_dependency_verify_for_project_with_coordinates_controlled_within_capacity
 /// A stored report under an older version is refused by `repair.rs`'s
 /// `NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH` gate, which runs before the
 /// report is deserialized at all. Older reports omit required fields (none is
-/// `#[serde(default)]`) and may assert a clean bill of health over less
-/// evidence. The operational consequence is that an in-flight Verify result
-/// does not survive this upgrade: re-run Verify before sealing a Repair.
+/// `#[serde(default)]`, except `consumers_excluded_not_current`: GDV/1 added it
+/// without raising this version, because an older report excluded nothing and a
+/// report that excludes nothing serializes byte-identically to the old shape)
+/// and may assert a clean bill of health over less evidence. The operational
+/// consequence is that an in-flight Verify result does not survive this
+/// upgrade: re-run Verify before sealing a Repair.
 pub(crate) const VERIFY_CONTRACT_VERSION: &str = "9";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
@@ -5339,6 +5400,15 @@ fn durable_resolved_source_value(
     }
 }
 
+/// The fixed `resolvedSource.status` that the completed-Verify digest records
+/// for an Edge of a recognized not-current Graph binding instead of resolving
+/// its Source (GDV/1 S-4). It must stay a value `durable_resolved_source_value`
+/// and `durable_edge_resolution_input_with_control` can never produce: the
+/// resulting digest mismatch is what keeps a report sealed while the Graph was
+/// current (or absent) from sealing a Repair plan or passing C2Z readiness once
+/// the Graph is not current (GDV-R9 (x), section 3.2 invariant).
+pub(crate) const RECOGNIZED_UNAVAILABLE_SOURCE_STATUS: &str = "recognized-unavailable";
+
 /// Capture the exact live scope/source inputs used while Verify resolves one
 /// Edge.  The raw Edge row is not enough: its owning Run and the resolver's
 /// row can be deleted or re-pointed while preserving the Edge itself.  Each
@@ -5354,6 +5424,7 @@ fn durable_edge_resolution_input_with_control(
     consumer_key: &str,
     source_identity: &str,
     owning_run_id: Option<&str>,
+    recognized_unavailable: bool,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     control.check(GraphWorkStage::Source)?;
@@ -5368,6 +5439,10 @@ fn durable_edge_resolution_input_with_control(
         .or(owning_run_id)
         .unwrap_or_default();
     let resolved_source = match source_kind {
+        // GDV/1: a mark `durable_resolved_source_value` cannot produce.
+        Some(_) if recognized_unavailable => {
+            json!({"status": RECOGNIZED_UNAVAILABLE_SOURCE_STATUS})
+        }
         Some(kind) => durable_resolved_source_value(resolve_current_source_state_with_control(
             conn,
             project_id,
@@ -5471,7 +5546,19 @@ fn verify_narrative_dependency_graph_for_project_with_control_within_capacity(
         // Consumer-kind support is resolved once per Consumer. Snapshot Run
         // scope is resolved per Edge below because SCHEMA 30 records the
         // declaring Run on each Edge independently.
-        let kind_is_declared = is_declared_consumer_kind(consumer_kind)
+        // GDV/1 S-1: a coherent but not-current Graph binding is recognized
+        // unavailable (`rebuildable-not-query-usable`). Decided from the
+        // reader's structural read plus Freshness/epoch/dirty, never from the
+        // whole-project eligibility. Its Edges are outside S-1..S-3.
+        let graph_not_current = is_reserved_semantic_index_consumer_kind(consumer_kind)
+            && consumer_key == super::nir1_entity_relation_index::INDEX_KEY
+            && super::nir1_entity_relation_index::classify_graph_binding_with_control(
+                conn,
+                project_id,
+                control,
+            )? == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent;
+        let kind_is_declared = graph_not_current
+            || is_declared_consumer_kind(consumer_kind)
             || (is_reserved_semantic_index_consumer_kind(consumer_kind)
                 && super::nir1_chronicle_index::is_complete_registered_chronicle_index(
                     conn,
@@ -5485,7 +5572,15 @@ fn verify_narrative_dependency_graph_for_project_with_control_within_capacity(
                     consumer_key,
                     control,
                 )?);
-        if !kind_is_declared {
+        if graph_not_current {
+            report
+                .consumers_excluded_not_current
+                .push(VerifyExcludedConsumer {
+                    consumer_kind: consumer_kind.clone(),
+                    consumer_key: consumer_key.clone(),
+                    edge_count: edges.len(),
+                });
+        } else if !kind_is_declared {
             report
                 .edge_ids_with_unresolvable_consumer_scope
                 .extend(edges.iter().map(|edge| edge.id.clone()));
@@ -5503,7 +5598,7 @@ fn verify_narrative_dependency_graph_for_project_with_control_within_capacity(
             // or a Proposal Revision whose declaring Run is absent can be
             // certified through a Run-independent Source. The Consumer is
             // reported under its own heading instead.
-            if !kind_is_declared {
+            if !kind_is_declared || graph_not_current {
                 continue;
             }
             let owning_run_id = match resolve_edge_consumer_scope(
@@ -12323,5 +12418,44 @@ mod tests {
         );
         assert_eq!(status, "running", "a held Rebuild Run stays running");
         assert!(calls.is_empty(), "a held Run must keep its exact owner");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod recognized_unavailable_mark_tests {
+    use super::*;
+
+    /// GDV/1 section 3.2 invariant (revision 6, review 4 R-1): the S-4 mark
+    /// `recognized-unavailable` must never be a value the current computation
+    /// can produce. Repair and C2Z rely on the digest mismatch it causes.
+    #[test]
+    fn s4_mark_is_disjoint_from_every_resolved_source_status() {
+        let state = |exists, usable| CurrentSourceState {
+            exists,
+            usable,
+            revision_token: Some("t".into()),
+            content_digest: Some("d".into()),
+            version: Some(1),
+            normalizer_version: Some("n".into()),
+        };
+        let mut statuses = std::collections::BTreeSet::new();
+        for resolved in [
+            Ok(state(true, true)),
+            Ok(state(true, false)),
+            Ok(state(false, false)),
+            Err(anyhow::anyhow!("NEX_SOURCE_MISSING: deleted source")),
+        ] {
+            let value = durable_resolved_source_value(resolved).expect("value");
+            statuses.insert(value["status"].as_str().expect("status").to_string());
+        }
+        // `unsupported` is produced by `durable_edge_resolution_input_with_control`
+        // for a Source kind it cannot resolve.
+        statuses.insert("unsupported".to_string());
+        assert_eq!(
+            statuses.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["error", "missing", "stale", "unsupported", "usable"]
+        );
+        assert!(!statuses.contains(RECOGNIZED_UNAVAILABLE_SOURCE_STATUS));
     }
 }

@@ -2603,6 +2603,88 @@ pub(crate) fn is_registered_with_control(
     ))
 }
 
+/// GDV/1: how Verify, the completed-Verify digest and the Rebuild V2 shadow
+/// classify the Graph binding without reading the whole-project eligibility.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GraphBindingClass {
+    /// No binding (or a schema older than the Graph surfaces).
+    Absent,
+    /// The reader's structural read says `Reserved`: incoherent or unknown.
+    /// Stays manual-terminal.
+    Incoherent,
+    /// Structurally coherent and current: the existing full validation decides.
+    Current,
+    /// GDV/1 revision 5 (M-1): structurally coherent but there is no current
+    /// Semantic Epoch, whether or not the binding is dirty. Left as is: callers
+    /// treat it like `Current` and hand it to the existing full validation
+    /// (`is_complete_registered` returns false before it reads the eligibility).
+    NoCurrentEpoch,
+    /// Structurally coherent but dirty, or Freshness/epoch is not current.
+    /// `rebuildable-not-query-usable`; B is the producer that repairs it.
+    RecognizedNotCurrent,
+}
+
+/// Two-stage classification (GDV/1 section 3.1). Stage one is exactly the
+/// reader's structural read; stage two is the subset of `is_complete_registered`
+/// that B repairs and that does not read the eligibility Source. The full
+/// eligibility is never read, under any control.
+pub(crate) fn classify_graph_binding_with_control(
+    conn: &mut Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<GraphBindingClass> {
+    control.check(GraphWorkStage::Coverage)?;
+    if conn.is_autocommit() {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        return classify_graph_binding_with_control(&mut tx, project, control);
+    }
+    if conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 35 {
+        return Ok(GraphBindingClass::Absent);
+    }
+    let binding = match read_internal(conn, project, true, true, Some(&mut *control))? {
+        BindingRead::Missing => return Ok(GraphBindingClass::Absent),
+        BindingRead::Reserved => return Ok(GraphBindingClass::Incoherent),
+        BindingRead::Registered(binding) => binding,
+    };
+    control.check(GraphWorkStage::Coverage)?;
+    // Revision 5 order (M-1): the current Semantic Epoch first. Without one the
+    // binding is left as is, dirty or not; only then dirty, then Freshness.
+    let Some(epoch) = get_current_epoch(conn, project)? else {
+        return Ok(GraphBindingClass::NoCurrentEpoch);
+    };
+    if binding.dirty {
+        return Ok(GraphBindingClass::RecognizedNotCurrent);
+    }
+    let freshness = conn
+        .query_row(
+            "SELECT evidence_freshness,build_action,semantic_epoch_id
+               FROM narrative_consumer_freshness
+              WHERE project_id=?1 AND consumer_kind=?2 AND consumer_key=?3",
+            params![project, CONSUMER_KIND, INDEX_KEY],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    control.check(GraphWorkStage::Coverage)?;
+    let current = matches!(
+        &freshness,
+        Some((freshness, action, semantic_epoch))
+            if matches!(EvidenceFreshness::try_from(freshness.as_str()), Ok(EvidenceFreshness::Fresh))
+                && matches!(BuildAction::try_from(action.as_str()), Ok(BuildAction::None))
+                && semantic_epoch == &epoch.id
+    );
+    Ok(if current {
+        GraphBindingClass::Current
+    } else {
+        GraphBindingClass::RecognizedNotCurrent
+    })
+}
+
 /// Check whether the exact Graph binding is completely registered and live
 /// across the whole project.
 pub fn is_complete_registered(conn: &mut Connection, project: &str, key: &str) -> Result<bool> {

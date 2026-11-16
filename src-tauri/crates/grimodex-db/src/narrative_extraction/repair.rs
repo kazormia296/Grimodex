@@ -790,6 +790,18 @@ fn load_sealable_verify_result(
             "NEX_REPAIR_VERIFY_COVERAGE_INVALID: Verify Run '{verify_run_id}' has an invalid reserved Semantic Index footprint: {error}"
         )
     })?;
+    // GDV/1 revision 5 (M-2, GDV-R9 (x)): a Verify that left a recognized
+    // not-current Graph binding out of its checks did not examine that Graph,
+    // so it cannot seal a destructive plan. A current Graph binding is closed
+    // here already (its uncontrolled digest is context-unavailable); keep the
+    // not-current one closed the same way.
+    anyhow::ensure!(
+        report.consumers_excluded_not_current.is_empty(),
+        "NEX_REPAIR_VERIFY_GRAPH_RECOGNIZED_UNAVAILABLE: Verify Run '{verify_run_id}' excluded {} \
+         recognized not-current Graph binding(s) from its checks; a Repair plan cannot be sealed \
+         until a Verify examines them",
+        report.consumers_excluded_not_current.len()
+    );
     validate_report_rebuild_required(conn, project_id, &report).map_err(|error| {
         anyhow::anyhow!(
             "NEX_REPAIR_VERIFY_REBUILD_REQUIRED_MISMATCH: Verify Run '{verify_run_id}' stored a rebuildRequired value that does not match live repairability: {error}"

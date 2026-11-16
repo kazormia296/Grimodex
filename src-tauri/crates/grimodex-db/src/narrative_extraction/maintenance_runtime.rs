@@ -2333,9 +2333,17 @@ pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool 
 ///   uncontrolled read refuses as `context-unavailable` (only a cycle owns a
 ///   full-eligibility validation context).
 ///
-/// In both cases the B-ROUTE asks main to wake the project instead. Without
-/// the seam the result is exactly the durable planner's answer, and its errors
-/// propagate unchanged.
+/// In both cases the B-ROUTE asks main to wake the project instead.
+///
+/// GDV/1 narrows the second state: a Graph binding that is coherent but not
+/// current (dirty, or Freshness/epoch not current) no longer makes the
+/// uncontrolled planner fail, so main then receives `Work(Verify)` (or the same
+/// wake when the durable chain has no work) and the Graph producer's judgement
+/// moves into the cycle (DR-PUBG-5-16). A current Graph binding and a
+/// Chronicle binding still end in `context-unavailable` and the wake.
+///
+/// Without the seam the result is exactly the durable planner's answer, and its
+/// errors propagate unchanged.
 pub fn discover_maintenance_project_for_main(
     db: &Database,
     project_id: &str,
@@ -2387,7 +2395,8 @@ pub fn discover_maintenance_project_for_main_with_product(
 /// product default) leaves this function exactly as before. With the gate
 /// open, a stale existing Graph binding is repaired by its own producer before
 /// the durable Backfill -> Verify -> conditional Rebuild -> Verify chain runs
-/// (Verify treats a non-validated declared binding as a manual defect); a
+/// (GDV/1: Verify excludes a coherent but not-current binding instead of
+/// treating it as a manual defect; an incoherent one is still manual); a
 /// missing binding is built only after the durable chain has nothing to do.
 fn discover_cycle_work(
     db: &Database,
