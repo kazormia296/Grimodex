@@ -367,9 +367,47 @@ describe("元に戻すの前提（画面の幅・操作の後の変更）", () =
     expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
   });
 
-  it("利用者が変えてから元の状態に戻した場合は、操作の直後と同じなので戻せる", async () => {
+  it("overlay を開く操作は、ボタンの pointerdown で overlay が閉じていても戻せる（操作前と同じ向きの変化）", async () => {
     const result = await runAppCommandTool({ command: "toggleLeftOverlay" });
+    expect(useLayoutStore.getState().openOverlay).toBe("left");
+    // useOverlayDismiss が、overlay の外の pointerdown で closeOverlay() を呼ぶ。
     useLayoutStore.setState({ openOverlay: null });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("restored");
+    expect(useLayoutStore.getState().openOverlay).toBeNull();
+    expect(useUiUndoStore.getState().entries[result.undoId!]?.status).toBe(
+      "undone",
+    );
+  });
+
+  it("最大化が操作前の状態に戻っていても戻せる。別のパネルへ変わっていれば戻さない", () => {
+    useLayoutStore.setState({ maximizedPanelId: "editor" });
+    const before = captureUiSnapshot();
+    useLayoutStore.setState({ maximizedPanelId: null, openOverlay: "left" });
+    const id = useUiUndoStore.getState().register(before, captureUiSnapshot());
+    useLayoutStore.setState({ maximizedPanelId: "editor", openOverlay: null });
+    expect(useUiUndoStore.getState().undo(id)).toBe("restored");
+    expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
+
+    const id2 = useUiUndoStore.getState().register(before, captureUiSnapshot());
+    useLayoutStore.setState({ maximizedPanelId: "scenes" });
+    expect(useUiUndoStore.getState().undo(id2)).toBe("failed");
+    expect(useLayoutStore.getState().maximizedPanelId).toBe("scenes");
+  });
+
+  it("phone 幅で、パネルの command の後に「元に戻す」のある ai の画面へ戻っていても戻せる", async () => {
+    useHost({ phoneWorkspace: true });
+    useCompactNavigationStore.getState().openSurface("ai");
+    const result = await runAppCommandTool({ command: "focusCodex" });
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("codex");
+    // ボタンは ai の画面にしか出ないので、押す前に利用者が ai へ戻る。
+    useCompactNavigationStore.getState().openSurface("ai");
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("restored");
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("ai");
+  });
+
+  it("利用者が別の overlay へ変えた間は戻さず、操作の直後の状態に戻せば戻せる", async () => {
+    const result = await runAppCommandTool({ command: "toggleLeftOverlay" });
+    useLayoutStore.setState({ openOverlay: "right" });
     expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
     useLayoutStore.setState({ openOverlay: "left" });
     expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("restored");

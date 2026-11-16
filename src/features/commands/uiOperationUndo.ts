@@ -87,20 +87,26 @@ function layoutsEqual(a: UiOperationSnapshot, b: UiOperationSnapshot) {
 }
 
 /**
- * `after`（操作の直後の写し）から、今の状態が変わっているか。比較の範囲は退避と同じ
- * （配置・プリセット・非表示の Stripe・最大化・オーバーレイ・phone の画面）。
+ * 今の状態が、操作の後に変わっているか（後の手作業を巻き戻さないための判定）。
+ * 配置・プリセット・非表示の Stripe は `after` と厳密に比べる。
+ * 最大化・overlay・phone の画面は transient で、押す前に自然に変わる（overlay は ボタンの pointerdown で
+ * 閉じ、phone ではボタンのある画面へ戻っている）ので、今の値が `after` と同じ、または操作前（`snapshot`）と
+ * 同じなら変更とみなさない（戻す向きへの変化は後の手作業ではない）。
  */
 export function uiStateChangedSince(
   after: UiOperationSnapshot,
+  snapshot: UiOperationSnapshot,
   current: UiOperationSnapshot = captureUiSnapshot(),
 ): boolean {
+  const transientChanged = <K extends keyof UiOperationSnapshot>(key: K) =>
+    current[key] !== after[key] && current[key] !== snapshot[key];
   return (
     !layoutsEqual(after, current) ||
     after.activePresetId !== current.activePresetId ||
     !setsEqual(after.hiddenStripePanels, current.hiddenStripePanels) ||
-    after.maximizedPanelId !== current.maximizedPanelId ||
-    after.openOverlay !== current.openOverlay ||
-    after.phoneSurface !== current.phoneSurface
+    transientChanged("maximizedPanelId") ||
+    transientChanged("openOverlay") ||
+    transientChanged("phoneSurface")
   );
 }
 
@@ -235,7 +241,8 @@ export const useUiUndoStore = create<UiUndoState>((set, get) => ({
       return fail("viewport");
     }
     // 操作の後に配置が変わっているなら、後の変更（利用者の手作業を含む）を巻き戻さない。
-    if (uiStateChangedSince(entry.after)) return fail("changed");
+    if (uiStateChangedSince(entry.after, entry.snapshot))
+      return fail("changed");
     const restored = restoreUiSnapshot(entry.snapshot);
     if (restored === "failed") return fail("layout");
     if (restored !== "restored") return restored;
