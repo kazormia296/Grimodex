@@ -300,6 +300,15 @@ export const K67_CONFIRMATION_RECORDS = Object.freeze({
       sha256:
         "f70e443a8aac4c660bd334dfddb5bd33f7e152d981125b79707ec9a3c4424d98",
     }),
+    // 9 回目の S4 の ⑧ の前: the R5 closure grew to 14 files (setup's quiesce,
+    // 39b89bc3) and the user chose "14 file で前回の記録を使う", contracts 448a5956.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-r5-14files.md",
+      commit: "448a595691ad0773013877d00521d16d5790d56d",
+      sha256:
+        "5becc8cda99f92c2c7036d1951d4cfb38b43a19ef30965302cddaa3f32b186c7",
+    }),
   ]),
 });
 /**
@@ -4905,6 +4914,12 @@ export const K67_LIMIT_WORDS = Object.freeze([
   "3-way",
   "74e4d8df",
   "完全な盲検でない",
+  // The R5 closure's 14 files and the user's answer (contracts 448a5956), and the
+  // second merge of master (cea3988b, #919・#920).
+  "14 file",
+  "448a5956",
+  "cea3988b",
+  "b391981b",
 ]);
 /** S2 追補 #18: what k67Readings.rule binds. */
 export const K67_RULE_WORDS = Object.freeze([
@@ -5729,7 +5744,7 @@ export function observationPrepErrors(prep, ctx) {
     !nonBlank(k67Confirmation?.additionalNote)
   )
     errors.push(
-      "contracts.k67.confirmation.additional must be the seven answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query, setup's quiesce and PUB-G's (A) items, the detection-power gaps' closing by added tests), each with its file, commit, SHA-256, topic and date (S2 追補 #18、9 回目の S4 の ⑥)",
+      "contracts.k67.confirmation.additional must be the eight answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query, setup's quiesce and PUB-G's (A) items, the detection-power gaps' closing by added tests, the R5 closure's 14 files), each with its file, commit, SHA-256, topic and date (S2 追補 #18、9 回目の S4 の ⑥)",
     );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
