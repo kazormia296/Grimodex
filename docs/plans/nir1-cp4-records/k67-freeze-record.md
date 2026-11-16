@@ -44,3 +44,11 @@ K6/2 の「事前登録の凍結」の 1 と 7(a)、K6/7 の「確認までの�
 - 次のものは、/7 の判定に使いません。
   - この凍結の前に取った受領書（s6r1、s7r1、s7r2 を含む）
   - 確認の前の dev の試作（`claude/dev-k67-iib`）
+
+## 追記：(α) PushEvent の取り直し（2026-11-16T06:03Z）
+
+- `gh api "repos/kazormia296/Grimodex/events?per_page=100&page=1..3"` で、`claude/nir1-contracts` の PushEvent を探した。
+- 2026-11-15 の 11:06Z〜16:01Z の push（`8a5bddce`、`c1eced67`、`d4ad9dc9`、`f7ea87a6`、`a8c3cf92`、`fcd94031`、`160f5fa5`）は見つかった。
+- `head=b9559a22…` の PushEvent は、取得できた 300 件の中に無かった。
+- events の API は、取得できる件数と期間が限られる。そのため「なし」とは書かない。
+- (ii) の時刻は、(β) の 2026-11-15T14:08:45Z のままとする。
