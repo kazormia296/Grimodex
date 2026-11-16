@@ -1765,6 +1765,12 @@ export function completeSetupExtension({
           run(
             "UPDATE narrative_extraction_runs SET status = 'completed' WHERE surface_path_id = 'dependency-verify' AND status = 'running'",
           );
+        // DR-CP4-L-27: a quiesce reopening that moves an Index's metadata (the
+        // setup must stop: it would move what the measurement point probed).
+        if (verify?.movesIndexOnReopen && session.label.startsWith("quiesce"))
+          run(
+            "UPDATE narrative_semantic_index_metadata SET generation = generation + 1",
+          );
         // DR-CP4-T-5: a Verify the session's opening leaves running.
         if (verifyPending && projectId) {
           verifyPending = false;

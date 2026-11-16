@@ -1383,6 +1383,39 @@ test("DR-CP4-L-27（setup の静止）: 静止の待ちが尽きたら開き直�
   assert.equal(assertCompleteSetupReceipt(sealed), sealed);
 });
 
+test("DR-CP4-L-27（setup の静止）: 開き直しが Index の metadata を動かしたら、静止していても setup で止まり、cold DB を作らない（動かなければ封印される）", async () => {
+  const moved = await completeSetup(
+    "G-02/base",
+    {
+      verify: {
+        sessions: ["seal"],
+        settles: false,
+        recoversOnReopen: true,
+        movesIndexOnReopen: true,
+      },
+    },
+    SHARED,
+    { freshnessSettleMs: 30 },
+  );
+  assert.notEqual(moved.receipt.status, "setup-complete");
+  assert.match(
+    [moved.receipt.precheck?.message, ...moved.receipt.errors].join("\n"),
+    /\[precheck\] S1i maintenance-quiesce: .*the quiesce reopening changed the Index metadata the measurement point probed/u,
+  );
+  // The reopening cleared the Verify (it was quiet); only the metadata stopped it.
+  assert.equal(moved.receipt.quiesce.reopens.length, 1);
+  assert.equal(moved.receipt.quiesce.final.activity.running, 0);
+  assert.equal(moved.receipt.coldDatabase, undefined);
+  assert.equal(moved.receipt.readBack, undefined);
+  const same = await completeSetup(
+    "G-02/base",
+    { verify: { sessions: ["seal"], settles: false, recoversOnReopen: true } },
+    SHARED,
+    { freshnessSettleMs: 30 },
+  );
+  assert.equal(same.receipt.status, "setup-complete");
+});
+
 test("DR-CP4-L-27（setup の静止）: 最初から静止していれば開き直さない。signal で終わった最後の session は静止と読まず、開き直して app.close() で終わらせる（最後まで signal なら cold DB を作らない）", async () => {
   const quiet = await completeSetup("G-02/base");
   assert.equal(quiet.receipt.status, "setup-complete");
