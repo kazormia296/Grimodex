@@ -4777,6 +4777,12 @@ export const K67_LIMIT_WORDS = Object.freeze([
   "K67_FREEZE",
   "新しい S4 の結果だけ",
   "S6 の許可リストは新しい S4b だけ",
+  // S4 の段取り ②③④: the merges and the product changes they brought.
+  "f4fe9f25",
+  "d73e2986",
+  "92ca2e24",
+  "#912〜#918",
+  "82 file",
 ]);
 /** S2 追補 #18: what k67Readings.rule binds. */
 export const K67_RULE_WORDS = Object.freeze([

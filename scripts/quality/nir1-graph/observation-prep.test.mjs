@@ -8289,8 +8289,9 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // S4a（9 回目）adds two rows dated 2026-11-16 after these, S2 追補 #19
   // (S3 10th's reflection) a third and S2 追補 #20 (the S3 recheck and setup's
   // quiesce) a fourth and S2 追補 #21 (the S3 third recheck) a fifth and
-  // S2 追補 #22 (the S3 fourth recheck) a sixth.
-  assert.equal(declaration.revisions.at(-7), rows1108[3]);
+  // S2 追補 #22 (the S3 fourth recheck) a sixth and the merges' row (②③④) a
+  // seventh.
+  assert.equal(declaration.revisions.at(-8), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8553,7 +8554,7 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
       /k67Readings\.rule must bind/u,
     );
   }
-  assert.equal(K67_LIMIT_WORDS.length, 86);
+  assert.equal(K67_LIMIT_WORDS.length, 91);
   for (const word of K67_LIMIT_WORDS) {
     assert.ok(prep.k67Readings.limits.includes(word), word);
     detects(
@@ -8958,8 +8959,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 6);
-  assert.equal(declaration.revisions.at(-1), rows1116[5]);
+  assert.equal(rows1116.length, 7);
+  assert.equal(declaration.revisions.at(-1), rows1116[6]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -9092,6 +9093,28 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
     "生きた行",
   ])
     assert.ok(rows1116[5].reason.includes(word), word);
+  // The merges' row (②③④): what was merged, what was checked unchanged, the
+  // product changes disclosed and what stays unread.
+  for (const word of [
+    "f4fe9f25",
+    "d73e2986",
+    "92ca2e24",
+    "1d372660",
+    "git merge-base --is-ancestor",
+    "82 file",
+    "#912〜#918",
+    "1dd6fb35",
+    "開き直しの経路の dev での取り直しは行っていない",
+    "読んでいないもの",
+    "S3 が見ていない",
+    "追補の作者の申告ではない",
+  ])
+    assert.ok(rows1116[6].reason.includes(word), word);
+  assert.ok(
+    declaration.revisions[37].reason.includes(
+      "(13) master と contracts の取り込み（②③。実施済み。",
+    ),
+  );
   // One policy for the rows: only revisions[37] (S4a's limits row) is a live
   // row that mirrors the limits' latest state; every other earlier row stays
   // as written (the new rows add, never edit). S2 追補 #21 had edited
@@ -9121,7 +9144,7 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   );
   assert.equal(
     declaration.revisions.length,
-    42,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each",
+    43,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each and the merges' one",
   );
 });
