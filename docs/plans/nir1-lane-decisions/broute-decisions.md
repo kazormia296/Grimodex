@@ -630,9 +630,9 @@
 
 - 位置づけ：上の「実装の段取り」の PR-1 に入る前の判断と信頼境界の記録。この判断を残す commit ではコード・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
 - 委任と停止点：NIR-1 の C-product（worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。枝 `claude/pubg-5-pr1`（基点は PR #922 の head `87937140`）に push するが、PR は作らず merge しない。merge は次の S4（9 回目）の PR の merge の後（DR-PUBG-5-11 の 1）。
-- ユーザーの回答（DR-PUBG-5-11 の 4 の更新）：contracts `ed90f78b`（`docs/plans/nir1-pubg-records/user-confirmation-2026-11-17-pubg-5-q1.md`）。Q1 は「(iii) を起案する」。(iii)（拒否のときに binding を退かせる）は新しい契約の起案で、確認の後に実装する。PR-1 には入れない。それまで PR-1 は (i)（今の挙動のまま開示）の前提で進める。`discover_all` の Err の封じ込めは、委任の範囲の技術判断として別に扱う（同じ回答）。
+- ユーザーの回答（DR-PUBG-5-11 の 4 の更新）：contracts `ed90f78b`（`docs/plans/nir1-pubg-records/user-confirmation-2026-11-17-pubg-5-q1.md`）。Q1 は「(iii) を起案する」。(iii)（拒否のときに binding を退かせる）は新しい契約の起案で、確認の後に実装する。PR-1 には入れない。それまで PR-1 は (i)（今の挙動のまま開示）の前提で進める。`discover_all` の Err の封じ込めは、委任の範囲の技術判断として別に扱う（同じ回答）。統合者は、封じ込めをこの PR から外して別の PR・DR に切り出した（判断 7）。
 - 材料：V0 の調査 `/home/grimodex/fusion-eval-data/pubg-a/05-v0.md`（contracts の外）。dev 枝 `claude/pubg-5-v0-dev` の `9b510f50`（push しない）の probe を、assert のある試験に直して使う。
-- 範囲：DR-PUBG-5-8（product gate の結び方）、-4（W1）、-6（解除条件）、-7（V0・V4）の実装と、V0 の試験、`discover_all` の封じ込め。W2（需要からの wake）と main の TS は PR-2。registry の production 表、policy の行の実体、定数の切替、文言は入れない（PUB-G の PR）。画面での知らせは無い（process-local の記録と code だけの log のまま）。
+- 範囲：DR-PUBG-5-8（product gate の結び方）、-4（W1）、-6（解除条件）、-7（V0・V4）の実装と、V0 の試験（`discover_all` の封じ込めは入れない。判断 7）。W2（需要からの wake）と main の TS は PR-2。registry の production 表、policy の行の実体、定数の切替、文言は入れない（PUB-G の PR）。画面での知らせは無い（process-local の記録と code だけの log のまま）。
 
 **判断 1：product gate の型は const generic の token にする**
 - `grimodex-db` に `Nir1GraphProductPublication`（`pub`、field は private、zero-sized）を置く。生成は `from_const::<const PUBLISHED: bool>() -> Option<Self>` だけで、`PUBLISHED` が true のときだけ `Some`。const generic の引数は compile 時の定数でなければならないので、runtime の値・DB の内容・IPC の値・環境変数からは作れない。
@@ -676,34 +676,29 @@
 - gate の開き方は seam と product（token）の両方で走らせ、同じ結果になることを確かめる（V0 が未確認とした点）。
 - (iii) を実装するときに、この試験は意図して変わる。変更はその契約の確認の後に行う。
 
-**判断 7：`discover_all` の project ごとの Err を封じ込める（gate の外の変更。要レビュー）**
-- 問題：`discover_all` は project ごとの discovery の Err を `?` で返すので、1 つの project の失敗で workspace 全体の discovery が Err になり、他の project の work が返らない（V0 の読み）。
-- 採る規則：
-  - 対象は、BeforeCutover でない wake（open・restore・epoch）の project ごとの discovery だけ。BeforeCutover は fail-closed のまま `?` で返す（cutover の安全の経路で、失敗した project を「work なし」にすると cutover が進みうる）。
-  - 封じ込めるのは、allowlist の 2 種類の typed な失敗だけ。`ValidationTerminated` の `ContextUnavailable` と `CapacityExceeded`（どちらも project の状態で決まり、再試行しても変わらない）。判定は `grimodex-db` に `pub` で置き、単体試験を付ける。
-  - 観測の程度（実装の後の訂正）：main の（制御なしの）discovery の段で実際に観測した Err は `ContextUnavailable` だけ（V0 の (b)、gate が閉じているとき。DR-BSEAM-5 の Chronicle も同じ型）。`CapacityExceeded` は cycle の Verify の Err として観測したもので、discovery の段では観測していない。`05-v0.md` が (a) で「1 回目の discovery が Err」とした記述は、probe（`9b510f50` の `v0_wakes`）が discovery と cycle の Err を同じ「ERR」で出していたための読み違いと見る（呼び出し列に出た `verify_dependency_graph_snapshot` も Verify の Run の経路）。`CapacityExceeded` の腕は、discovery が状態の digest を計算する経路で出うる typed な失敗として残すが、discovery の段では未観測なので、fail-closed を観測より広く緩める。要レビュー。外すなら allowlist の 1 行と試験（db 1、Native 2）を直す。
-  - 他は全て今までどおり伝播する。preempt、cancel、timeout、closed、workspace-generation-changed、busy・locked などの retryable、未知の SQL 失敗は、project の失敗ではなく workspace や時の失敗として main が再試行・警告する経路を保つ。「retryable でも control でもないもの」で絞らないのは、`ValidationTerminated` の非 capacity が control に数えられて `ContextUnavailable` が外れること、未分類の SQL 失敗が隠れることのため。
-  - 封じ込めた project は「work なし」として返す。1 つも成功した project がなければ（全て封じ込め）、最初の Err を返す。単一 project の workspace の挙動と、全 project が壊れる systemic な失敗の見え方は、今のまま。
-  - log は code だけ（`tracing`、本文・project ID・path は出さない）。
-- gate の外であること（要レビュー）：この封じ込めは gate と無関係に、今の製品に効く。DR-BSEAM-5（Chronicle の sealed binding で、製品の Main の discovery が `context-unavailable` で失敗する）がある project を含む複数 project の workspace では、今までは全体が Err（main が warn と最大 3 回の再 discovery）だったのが、他の project の work が返る。DR-BSEAM-5 そのものは直さない（その project は work なしのまま）。
-- main の側の見え方（読んで確かめた。`narrativeMaintenanceTriggers.ts`）：成功した discovery の応答は検証・登録された後に wake outbox を ACK する。封じ込めた project の分も、その discovery が成功した扱いで ACK される。以前は Err なので ACK されず、rows が pending のまま残り次の drain で再生された。封じ込めた失敗は project の状態で決まる（再生しても同じ）ので害は小さいと判断するが、「失敗した project の epoch の wake が消費される」差は要レビュー。main の TS は PR-2 の範囲で、wire に field を足すと main が応答を拒否する（`allowedKeys`）ので、PR-1 では可視化を足さない。
-- 採らない：wire への `failedProjectIds` 的な field（main の変更と契約が要る）、全ての Err の封じ込め（fail-closed の過剰な緩和）。
+**判断 7：`discover_all` の project ごとの Err の封じ込めは、別の PR・DR に切り出した（統合者の判断、2026-11-17）**
+- 経緯：実装者の最初の案（`d5785dc8`）は、`discover_all` の project ごとの Err を allowlist（`ContextUnavailable` と `CapacityExceeded`）で封じ込めていた。read-only の点検（`05-impl-check.md` の M1）が、これは gate の外で今の製品の既定の挙動を変えると指摘した。
+- 理由：定数が false の間、PR-1 と PR-2 は「既定の挙動と等価」でなければならない。封じ込めはエラーの扱いと wake outbox の ACK という今の製品の挙動を変える。
+  - (a) 複数 project の workspace で 1 つが `ContextUnavailable`（DR-BSEAM-5）で失敗するとき、以前は discovery 全体が Err（main は warn、最大 3 回の再 discovery、wake outbox は ACK されない）。封じ込めると成功扱いで他の project の work が返り、wake outbox が ACK されて、失敗した project の wake が消費される。
+  - (b) 「成功した project が 0 のときだけ Err」の規則は Idle の project を成功に数える。`default-project` を残す・足す形で実質 2 project 以上の workspace は普通にあり、そのとき失敗する project が 1 つでも Err が消える。「単一 project の挙動は今のまま」は project が本当に 1 つのときだけ成り立つ。
+  - (c) 失敗は `tracing::warn`（code のみ）にしか残らず、main には見えない。
+- 切り出し先：枝 `claude/pubg-5-containment`（PR-2 の上の 1 commit。push せず、PR も作らない）。記録は同枝の DR-PUBG-5-15。そこで、点検の R1（discovery の段で観測していない `CapacityExceeded` の腕を外す）と R6（実際の multi-project DB で、sealed binding による `ContextUnavailable` が allowlist に当たることを固定する試験）も直す。
+- PR-1 から外したもの：Native の `discover_projects`（project ごとの discovery を差し替える分割）と `contained_failure_code`、db の `is_project_local_discovery_failure` とその公開、それらの試験。`discover_all_with_product` は、product が `None` なら従来の `discover_all` と同じ挙動で、project ごとの Err は今までどおり `?` で伝播する。
+- V0 の観測の程度（実装の後の訂正。この記録は残す）：main の（制御なしの）discovery の段で実際に観測した Err は `ContextUnavailable` だけ（V0 の (b)、gate が閉じているとき。DR-BSEAM-5 の Chronicle も同じ型）。`CapacityExceeded` は cycle の Verify の Err として観測したもので、discovery の段では観測していない。`05-v0.md` が (a) で「1 回目の discovery が Err」とした記述は、probe（`9b510f50` の `v0_wakes`）が discovery と cycle の Err を同じ「ERR」で出していたための読み違いと見る（呼び出し列に出た `verify_dependency_graph_snapshot` も Verify の Run の経路）。
+- 封じ込めを入れるかどうかは、その枝を PR にするときに統合者が決める。PR-1・PR-2 の merge の条件ではない。
 
 **信頼境界と threat model の差分（PR-1）**
 - 変わらない：actor、防御、受信先、保存、受入れ。renderer は B を名指しできず、新しい IPC・`#[napi]` の入口は無い。token は const false から `None` なので、製品の既定では wake 0、B の判定の SQL 0、Graph の surface への書込み 0。
 - 新しい攻撃：無い。product gate は const だけから作られ、renderer・DB の内容・環境からは開かない。renderer が seed 付きの begin で B の build を誘発する経路（DR-PUBG-5-10）は PR-2（W2）で足す。
-- 封じ込めは、失敗する project が他の project の discovery を妨げる経路を狭める（資源の消費は増えない）。残る fail-closed：BeforeCutover と、allowlist の外の全ての Err。
+- 封じ込めは入れない（判断 7）ので、discovery の fail-closed の範囲は今のまま。
 
 **要レビュー（レビューで見てほしい点）**
-1. 判断 7 が gate の外で今の製品の挙動を変えること（DR-BSEAM-5 のある複数 project の workspace）と、ACK の差。
-2. 判断 7 の「全 project が封じ込めなら Err」の規則（project 数による非単調さ）。
-3. 判断 1 の検査が src の走査であること（型で const に縛れない代わり）。
-4. 判断 5 で記録の上限を置かない根拠。
-5. 判断 7 の `CapacityExceeded` の腕が discovery の段では未観測であること。封じ込めが実際に効く観測済みの経路は、今の製品では DR-BSEAM-5（Chronicle の `context-unavailable`）だけで、gate が開けば V4 が先に wake に変える。
+1. 判断 1 の検査が src の走査であること（型で const に縛れない代わり）。
+2. 判断 5 で記録の上限を置かない根拠。
 
 **実装の結果（PR-1、2026-11-17。枝 `claude/pubg-5-pr1`。PR は作らず、merge は次の S4（9 回目）の後）**
-- commit：`6376de4d`（この DR）、`8d8dd908`（db：token・gate・wake・V0 と解除条件の試験）、`d5785dc8`（Native：token・封じ込め・試験）。
-- 公開した名前：db に `Nir1GraphProductPublication`、`nir1_graph_index_build_wakes_main_discovery_with_product`、`discover_maintenance_project_for_main_with_product`、`run_system_work_cycle_with_nir1_graph_runtime_and_product`、`is_project_local_discovery_failure`。Native に `maintenance_product_publication()`（`nir1_graph_product.rs`）と `discover_all_with_product`。既存の関数は無変更。
+- commit：`6376de4d`（この DR）、`8d8dd908`（db：token・gate・wake・V0 と解除条件の試験）、`d5785dc8`（Native：token・封じ込め・試験。封じ込めは、点検の後の commit『封じ込めを外す』で外した）。
+- 公開した名前：db に `Nir1GraphProductPublication`、`nir1_graph_index_build_wakes_main_discovery_with_product`、`discover_maintenance_project_for_main_with_product`、`run_system_work_cycle_with_nir1_graph_runtime_and_product`。Native に `maintenance_product_publication()`（`nir1_graph_product.rs`）と `discover_all_with_product`。既存の関数は無変更。
 - 判断との差：
   - 判断 1 の検査 (c) は、`--features nir1-graph-eval` で Native の試験を走らせて確かめた（token は `None` のまま）。
   - 判断 5 の試験は、同じ入力の拒否が試験 hook の `BeforePrepare`・`BeforeValidation` に届かず、SQL の使用量が拒否した試行の 1/10 以下であることで固定した（測った値：拒否した試行は約 26 万 step、同じ入力の判定は約 280 step。拒否した試行が 1 万 step 以上であることも assert して、比較が空振りしないようにした）。seam と token の両方の gate で走らせた。
@@ -713,10 +708,13 @@
   - Native `--lib` 全件（816 件成功、7 件 ignore）。`--features nir1-graph-eval` で `narrative_maintenance::tests` と token の 2 試験（16 件成功）。
   - `cargo clippy --all-targets -- -D warnings`：`grimodex-db`（既定 feature）と Native は成功。`--features nir1-material-diagnostics` は、PR-1 が触れない file（`nir1_graph.rs`、`nir1_graph/input.rs`、`nir1_graph_memory_diagnostics.rs`）の指摘 11 件（lib。lib test は 7 件）で失敗する。base（`87937140`）で同じ command を回して同じ件数・同じ file であることを確かめた（PR-1 の変更の指摘は無い）。
   - pin 済みの `native-architecture.mjs` を変えず、`runArchitectureChecks` を作業 tree に対して実行して違反 0。
+  - 検証の追補（点検の後。封じ込めを外した head。node は 22、`CARGO_BUILD_JOBS=4`）：上の件数は封じ込めを外す前の値で、外した後は次の値に替わる。`grimodex-db --lib` の `nir1_graph_index_maintenance` は 40 件成功（allowlist の単体試験 1 件を外した）。Native `--lib` 全件は 812 件成功・7 件 ignore（封じ込めの試験 4 件を外した）。`--features nir1-graph-eval` の `narrative_maintenance`・token の 2 試験は 72 件成功。clippy（`--all-targets -- -D warnings`）は Native と db で成功。db の試験 file の未使用 import は clippy が見つけたので直した。
 - PR-2 と PUB-G への引き継ぎ：
   - 定数を切り替えると discovery の応答に `wakeProjectIds` が載る。main は `acceptGraphIndexBuildWakes` が無いとその応答を拒否する（`normalizeDiscoveryResponse` の `allowedKeys`）。PR-1 だけで定数を切り替えてはならない。main が product の gate でも `wakeProjectIds` を受ける変更は PR-2（W2 と同じ範囲）で行う。
   - (iii)（拒否のときに binding を退かせる）の契約の起案は、この PR とは別。実装されると V0 の試験の期待が意図して変わる。
-  - 封じ込めた project の失敗は、main からは見えない（wire は変わらない）。見せるなら main の変更と契約が要るので、PR-2 以降で扱う。
+- 点検（read-only、`05-impl-check.md`）の反映：
+  - M1：判断 7 の封じ込めを、この PR から外して別の枝に切り出した（判断 7）。外した後の Native `--lib` と db の試験は、下の「検証」の追補に記す。
+  - R7（既知のずれ）：凍結した S2（`observation-prep.v1.json`）の prose にある `nir1_graph_product.rs:78` の行番号の参照（`docs/plans/nir1-final-request-eval-proposal-4-draft.md` の 79 行にも同じ参照がある）と、`scripts/quality/nir1-graph-eval/constants.mjs:53` のコメントの `nir1_graph_product.rs:94` は、この PR の `nir1_graph_product.rs` の追加（挿入 12 行、削除 1 行で、純増 11 行。64 行目付近）で実際の位置から 11 行ずれる（`:78` は `:89`、`:94` は `:105` になる）。S2 は凍結されていて変えられないので直さない。これらの行番号を検査する script は見つからなかった。ずれても pin の検査には影響しない。
 - 未確認：
   - 1 回目の wake の cycle が `capacity-exceeded` の Err を返す（V0 の (a)、(b) の open gate）。複数 project の work を載せた 1 つの request が、1 つの project の Verify の失敗で一緒に落ちるかは見ていない。`discover_all` の範囲の外。
   - Native の試験が mac／Win の CI で走るかは確かめていない。token の構築箇所の走査は、root と path と改行を正規化してあるが、Linux 以外では走らせていない。

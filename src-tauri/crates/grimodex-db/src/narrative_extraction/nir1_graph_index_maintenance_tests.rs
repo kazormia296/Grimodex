@@ -2439,13 +2439,19 @@ fn b_route_discovery_propagates_errors_other_than_context_unavailable() -> Resul
 
 use crate::narrative_extraction::maintenance_runtime::{
     discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
-    is_context_unavailable_termination, is_project_local_discovery_failure,
+    is_context_unavailable_termination,
     nir1_graph_index_build_wakes_main_discovery_with_product,
     run_system_work_cycle_with_nir1_graph_runtime_and_product, MaintenanceProjectDiscovery,
 };
-use crate::narrative_extraction::source_revision::{
-    validation_terminated, ValidationTerminationReason,
-};
+use crate::narrative_extraction::source_revision::ValidationTerminated;
+
+/// Whether the error carries the typed validation-termination marker (the
+/// failure kind that V0 observed for a project over a bound).
+fn is_typed_validation_termination(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<ValidationTerminated>().is_some())
+}
 
 /// A token for tests. Product code builds it only from Native's constant.
 fn product_token() -> Option<Nir1GraphProductPublication> {
@@ -2785,52 +2791,7 @@ fn product_gate_discovery_propagates_errors_other_than_context_unavailable() -> 
     )
     .expect_err("a SQL failure is not a Graph Index wake");
     assert!(!is_context_unavailable_termination(&error), "{error:#}");
-    assert!(!is_project_local_discovery_failure(&error), "{error:#}");
     Ok(())
-}
-
-/// DR-PUBG-5-13 judgement 7: the allowlist of failures that a project's own
-/// state determines. Everything else (timing, lifecycle, retryable, unknown)
-/// is not project-local and stays an error.
-#[test]
-fn project_local_discovery_failure_is_an_allowlist_of_two_typed_terminations() {
-    for reason in [
-        ValidationTerminationReason::ContextUnavailable,
-        ValidationTerminationReason::CapacityExceeded,
-    ] {
-        let error = validation_terminated(reason, "test");
-        assert!(is_project_local_discovery_failure(&error), "{reason:?}");
-        // Added context does not hide the marker.
-        assert!(
-            is_project_local_discovery_failure(&error.context("discovery")),
-            "{reason:?} with context"
-        );
-    }
-    for reason in [
-        ValidationTerminationReason::Cancelled,
-        ValidationTerminationReason::TimedOut,
-        ValidationTerminationReason::Closed,
-        ValidationTerminationReason::WorkspaceGenerationChanged,
-        ValidationTerminationReason::ForegroundPreempted,
-        ValidationTerminationReason::CleanupFailed,
-    ] {
-        assert!(
-            !is_project_local_discovery_failure(&validation_terminated(reason, "test")),
-            "{reason:?}"
-        );
-    }
-    for text in [
-        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: discovery could not acquire the connection",
-        "NEX_MAINTENANCE_SQLITE_LOCKED: database is locked",
-        "no such table: narrative_extraction_runs",
-        "NEX_VALIDATION_TERMINATED:capacity-exceeded in plain text is not the typed marker",
-        "context-unavailable in plain text is not the typed marker",
-    ] {
-        assert!(
-            !is_project_local_discovery_failure(&anyhow!("{text}")),
-            "{text}"
-        );
-    }
 }
 
 /// The release conditions of a refusal (DR-PUBG-5-6). A refusal recorded for
@@ -3082,7 +3043,7 @@ fn v0_stored_edge_overflow_stops_verify_for_a_bound_project() -> Result<()> {
         );
         for step in &steps {
             if let Err(error) = &step.discovery {
-                assert!(is_project_local_discovery_failure(error), "{launch:?}");
+                assert!(is_typed_validation_termination(error), "{launch:?}");
             }
         }
         let ledger = run_ledger(fixture.db())?;
@@ -3144,7 +3105,6 @@ fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
             for step in &steps {
                 let error = step.discovery.as_ref().expect_err("uncontrolled discovery");
                 assert!(is_context_unavailable_termination(error), "{error:#}");
-                assert!(is_project_local_discovery_failure(error));
                 assert!(step.cycle.is_none());
             }
             assert_eq!(run_ledger(fixture.db())?.len(), runs_before);

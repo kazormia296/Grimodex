@@ -2321,30 +2321,6 @@ pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool 
     })
 }
 
-/// Whether a project's own discovery failure is determined by that project's
-/// state alone, so that retrying cannot change it and it must not stop the
-/// discovery of the workspace's other projects (DR-PUBG-5-13, judgement 7).
-///
-/// An allowlist of exactly the two typed terminations V0 observed:
-/// `context-unavailable` (an uncontrolled read of a sealed Graph or Chronicle
-/// binding) and `capacity-exceeded` (a B-close bound). Cancellation, timeout,
-/// close, workspace-generation change, foreground preemption, cleanup
-/// failure, retryable busy or lock failures and every unknown failure stay
-/// errors: they are workspace or timing failures that main retries or reports.
-pub fn is_project_local_discovery_failure(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<super::source_revision::ValidationTerminated>()
-            .is_some_and(|terminated| {
-                matches!(
-                    terminated.reason,
-                    super::source_revision::ValidationTerminationReason::ContextUnavailable
-                        | super::source_revision::ValidationTerminationReason::CapacityExceeded
-                )
-            })
-    })
-}
-
 /// Main's (uncontrolled) discovery for one project.
 ///
 /// The gated Graph Index build (B) is judged only inside a controlled cycle,
