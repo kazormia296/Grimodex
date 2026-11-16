@@ -1036,3 +1036,18 @@ S3 の再確認（Opus の agent、read-only。head `140bdda2`。記録は `fusi
 - **pin**：`frozen-setup-driver.mjs`・`workspace-db.mjs`・`setup-receipt.mjs`（いずれも `HARNESS_FILES` の pin 対象）が変わった。いずれも `140bdda2` では pin の bytes と一致していたが、今は一致しない（S4b の前の pin の取り直しに入る）。
 - **試験**：running の行が残った DB は setup で止まる（開き直し 2 回の後）、静止の待ちが尽きたら開き直して復旧すれば封印される、signal で終わった最後の session は静止と読まず開き直す（最後まで signal なら cold DB を作らない）、retry の予定がある状態は静止として読まない（実 schema の列で作った SQLite と `waitFreshnessSettled` の `requireQuiet`）、測定の入口が running／retryPending／読み返しの無い受領書を弾く。従来の「Verify が上限までに終わらなければ先へ進む」試験は、止まる試験に置き換えた。
 - **dev の確認 1 回**（`fusion-eval-data/db-stage1-pr3-2026-11-15/setup-quiesce-dev.md`。dev-shape の g03、setup→k64、非判定）：setup は 2 variant で約 1 分 45 秒、quiesce の開き直しは 0 回、静止の待ち（session-end）の最長は 1.1 s、cold と測定 DB に `running` の行は無い。**開き直しの経路は実機では通っていない**（running の行が残る状況が起きなかった。fake の試験でだけ確かめた）。retry の予定の読みが製品の起動時の復旧の行の実物と合うかは見ていない（推測）。
+
+### S3 10 回目の 3 回目の確認と setup の読みの整合（2026-11-16。DR-CP4-P-11／S4-11 の追記 3）
+
+S3 の 3 回目の確認（記録は `fusion-eval-data/db-stage1-pr3-2026-11-15/s3-review-10-recheck2.md`。agent の報告でユーザーの確認ではない）は **changes-required**（必須 1・推奨 5）を返した。前回の必須 1（edge 単位）は閉じた。
+
+- **独立のコードレビューの位置づけ**：**この確認が、`1dd6fb35` の差分を読んだ独立のレビューにあたる**（v3 §10 の 3）。**ただし依頼文に builder の結論が入っていたので完全な盲検ではない**（v3 §10 の 3 の「起案者の結論は渡さない」との差）。次の確認は結論を渡さない形にする。
+- **必須 1（setup の静止の読みの整合）**：S2 の `setupReadings`（`reopen`、`freshnessSettle.setup`、`receiptFields`）・validator の定数・DR-CP4-L-24・T-5 の行が、`39b89bc3` の後の挙動と食い違っていた（限界 (n) は新しい挙動、`setupReadings` は古い読み）。向きは止まる側で、ユーザーの回答 `337ff239` の範囲内。静止の枠は L-24 の閉じた集合の外の別枠（`reopen.quiesce`。blocked の名前にも契機にも足さない）として写し、`maintenanceStillWhen` に retry の予定を足し、cold の running／retryPending を「止める」に、`readBack.maintenance` に `retryPending`、`receiptFields.quiesce` を足した。
+- **推奨 2（前回の推奨 6 の記録の訂正）**：上の「S3 10 回目の再確認と edge 単位への直し」の「S2 の限界 (h) に 1 行足した」は、実物には無かった。今回 (h) に書いた（表示側の hash が食い違う、または edge の Evidence の行が 2 本でない edge は `resolveEdge` で解決せず `revision-of-path-unresolved` の `hold`。edge の束縛では `unresolved-edges` で `fail`）。
+- **推奨 5（fail→hold の数え方）**：今の `fail`→`hold` は 2 点：(1) `db7c1234` の読めない行の `hold`、(2) `edge-revision-unresolved`（`1dd6fb35`。凍結の fixture に整合した受領書では到達しない）。上の「path 単位の hold」（`11d5e430`）は `1dd6fb35` で無くなった。上の「観測の後に変えた読みは上の 1 点だけ」の段落の「S3 由来 1 点」は、今は (2) を指す。
+- **開き直しの経路の実機での確認（推奨 1。dev 専用・非判定）**：枝 `claude/dev-s4-9-quiesce`（`67cf9453` から、commit `11c12fb9`、push しない）の dev-shape の g03 で setup だけを 2 回。最後の session（seal）の session-end の待ちを飛ばし、`running` の run が現れた時点で harness の `stopElectron` に SIGKILL だけを渡して止める仕組み（dev 専用の env）を足した。
+  - `qzo1`（frontier-exceeded）：running の dependency-verify が 1 行残った。quiesce の開き直し 1 回（`quiesce-1`、`app.close()` で閉じた）、静止の待ち 1.9 s（8 poll）、setup 全体 28 s。製品の起動時の復旧がその run を `failed／NEX_MAINTENANCE_INTERRUPTED` に閉じ、Attempt は `retryable`・`next_attempt_at` が失敗の 1.000 s 後で、同じ `work_key` の run が完走した（retry の予定の読みが合う行の実物）。cold の `running` は 0、`retryPending` は 0。
+  - `qzo2`（base）：running の行は現れず（30 s 見た）、signal だけで開き直し 1 回、待ち 0.3 s で静止。cold の running は 0。
+  - Index metadata は 2 回とも開き直しの前後で同じ（b・chronicle とも generation 1、dirty なし、digest も同じ）で、`maintenance-quiesce` では止まらなかった。
+  - **限界**：running の行が残った例は 1 回で、dev-shape の preview の fixture。凍結の G-03/frontier-exceeded では走らせていない。開き直しの session の中で Verify が完走しない場合に使い切って止まる経路と、will-quit の障壁を通る終わり方で running が残るかは実機で見ていない。記録は `setup-quiesce-dev.md`（dev の受領書は `assertCompleteSetupReceipt` を通らない、という前回の記述の誤りも訂正した）。上の「dev の確認 1 回」の「開き直しの経路は実機では通っていない」は、この確認の前の記述。
+- **試験**：開き直しが Index の metadata を動かしたとき `[precheck] S1i maintenance-quiesce` で止まり cold DB を作らない試験（推奨 3）と、S2 の新しい読みの変異の試験を足した。
