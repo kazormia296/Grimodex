@@ -34,6 +34,31 @@ export function narrativeMaintenanceExhaustedRestartCooldownMs(
   );
 }
 
+/**
+ * DR-PUBG-5-14: Native's Graph owner asks for a project's Graph Index build wake
+ * when a Graph demand met a refused registration. Main spaces those wakes per
+ * (workspace binding, project): the k-th wake of a run is followed by at least
+ * `min(BASE * 2^(k-1), MAX)` ms, and a quiet period of MAX ms starts a new run.
+ * At most KEYS pairs are tracked; a full table drops a new pair's request (an
+ * eviction would let a renderer that names projects at will skip the spacing).
+ */
+export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_BASE_INTERVAL_MS = 2_000;
+export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS = 60_000;
+export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_KEYS = 8;
+export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_PROJECT_ID_LENGTH = 512;
+const GRAPH_INDEX_DEMAND_CHANNEL = "narrative-maintenance:graph-index-demand";
+
+/** The minimum spacing after the `firedInRun`-th wake of a run (k >= 1). */
+export function narrativeMaintenanceGraphDemandIntervalMs(
+  firedInRun: number,
+): number {
+  const exponent = Math.max(0, Math.min(firedInRun - 1, 16));
+  return Math.min(
+    NARRATIVE_MAINTENANCE_GRAPH_DEMAND_BASE_INTERVAL_MS * 2 ** exponent,
+    NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS,
+  );
+}
+
 interface NarrativeMaintenanceDiscoveryBackend {
   getNarrativeMaintenanceWorkspaceBinding?():
     | string
@@ -187,6 +212,29 @@ function epochEventBinding(
     authorityId: payload.authorityId,
     generation: payload.generation,
   });
+}
+
+/** The one field of Native's Graph index demand event; anything else is dropped. */
+function graphIndexDemandProjectId(payload: unknown): string {
+  if (!isRecord(payload) || Object.keys(payload).length !== 1) {
+    throw new Error(
+      "narrative maintenance Graph Index demand is not exactly a project",
+    );
+  }
+  const projectId = payload.projectId;
+  if (
+    typeof projectId !== "string" ||
+    projectId.length === 0 ||
+    projectId.length >
+      NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_PROJECT_ID_LENGTH ||
+    projectId !== projectId.trim() ||
+    projectId.includes("\u0000")
+  ) {
+    throw new Error(
+      "narrative maintenance Graph Index demand has an invalid project",
+    );
+  }
+  return projectId;
 }
 
 function normalizeWork(raw: unknown): NarrativeMaintenanceRequest[] {
@@ -411,6 +459,18 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     generation: number;
     binding: NarrativeMaintenanceWorkspaceBinding;
   } | null = null;
+  // DR-PUBG-5-14: Graph Index build wakes asked for by Native's Graph owner.
+  // This state is independent of the discovery chain above: it shares none of
+  // its timer, generation, wake reason or outbox ACK, and it ends in a direct
+  // `scheduler.requestGraphIndexBuildWakesWithBinding` call.
+  interface GraphDemandEntry {
+    readonly binding: NarrativeMaintenanceWorkspaceBinding;
+    readonly projectId: string;
+    timer: ReturnType<typeof setTimeout> | null;
+    lastFiredAtMs: number | null;
+    firedInRun: number;
+  }
+  const graphDemands = new Map<string, GraphDemandEntry>();
 
   const setWakeOutboxState = (next: {
     inFlight: boolean;
@@ -767,7 +827,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
                 completedResponse?.work.length === 0 &&
                 completedResponse.graphIndexBuildWakeProjectIds.length === 0,
               discoveryInFlight: false,
-              timerScheduled: timer !== null,
+              timerScheduled: timer !== null || graphDemandTimerScheduled(),
               pendingRetry: pendingRetryDelayMs !== null,
               pendingEvent: pendingEvent !== null,
               wakeAckPending: pendingWakeOutboxAck !== null,
@@ -806,6 +866,148 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     });
     discoveryPromise = trackedDiscovery;
     void trackedDiscovery;
+  };
+
+  const graphDemandTimerScheduled = (): boolean => {
+    for (const entry of graphDemands.values()) {
+      if (entry.timer !== null) return true;
+    }
+    return false;
+  };
+
+  const clearGraphDemands = (): void => {
+    if (graphDemands.size === 0) return;
+    noteMutation();
+    for (const entry of graphDemands.values()) {
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+      }
+    }
+    graphDemands.clear();
+  };
+
+  const fireGraphDemand = (key: string, entry: GraphDemandEntry): void => {
+    if (disposed || graphDemands.get(key) !== entry) return;
+    // The binding was bound when the demand arrived; a replacement workspace
+    // must not receive a wake for the old authority's project.
+    let liveBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+    try {
+      const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+      liveBinding =
+        typeof getBinding === "function"
+          ? normalizeOptionalBinding(getBinding.call(backend))
+          : null;
+    } catch (error) {
+      warn(
+        "[narrative-maintenance] Graph Index demand binding recheck failed:",
+        error,
+      );
+    }
+    if (!sameBinding(entry.binding, liveBinding)) {
+      graphDemands.delete(key);
+      return;
+    }
+    const requestWakes = scheduler.requestGraphIndexBuildWakesWithBinding;
+    if (typeof requestWakes !== "function") {
+      graphDemands.delete(key);
+      return;
+    }
+    entry.lastFiredAtMs = Date.now();
+    entry.firedInRun += 1;
+    try {
+      requestWakes.call(scheduler, [entry.projectId], entry.binding);
+    } catch (error) {
+      // No retry: the next demand asks again after the spacing.
+      warn("[narrative-maintenance] Graph Index demand wake failed:", error);
+    }
+  };
+
+  const armGraphDemandTimer = (
+    key: string,
+    entry: GraphDemandEntry,
+    delayMs: number,
+  ): void => {
+    noteMutation();
+    entry.timer = setTimeout(() => {
+      noteMutation();
+      entry.timer = null;
+      fireGraphDemand(key, entry);
+    }, delayMs);
+  };
+
+  const handleGraphIndexDemand = (payload: unknown): void => {
+    if (
+      disposed ||
+      !acceptGraphIndexBuildWakes ||
+      typeof scheduler.requestGraphIndexBuildWakesWithBinding !== "function"
+    ) {
+      return;
+    }
+    let projectId: string;
+    let binding: NarrativeMaintenanceWorkspaceBinding | null;
+    try {
+      projectId = graphIndexDemandProjectId(payload);
+      const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+      binding =
+        typeof getBinding === "function"
+          ? normalizeOptionalBinding(getBinding.call(backend))
+          : null;
+    } catch (error) {
+      warn("[narrative-maintenance] ignored Graph Index demand:", error);
+      return;
+    }
+    if (binding === null) return;
+
+    const nowMs = Date.now();
+    // Forget a pair that is not waiting and has been quiet for the longest
+    // spacing, so the table frees itself without a timer of its own.
+    for (const [existingKey, existing] of graphDemands) {
+      if (existing.timer !== null || existing.lastFiredAtMs === null) continue;
+      if (
+        nowMs - existing.lastFiredAtMs >=
+        NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS
+      ) {
+        graphDemands.delete(existingKey);
+      }
+    }
+    const key = `${binding.authorityId}\u0000${binding.generation}\u0000${projectId}`;
+    let entry = graphDemands.get(key);
+    if (entry === undefined) {
+      if (graphDemands.size >= NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_KEYS) {
+        return;
+      }
+      entry = {
+        binding,
+        projectId,
+        timer: null,
+        lastFiredAtMs: null,
+        firedInRun: 0,
+      };
+      graphDemands.set(key, entry);
+    }
+    // A pending timer is the one wake of this pair: a demand inside the
+    // spacing joins it instead of being dropped or arming a second timer.
+    if (entry.timer !== null) return;
+    let delayMs = 0;
+    if (entry.lastFiredAtMs !== null) {
+      let elapsedMs = nowMs - entry.lastFiredAtMs;
+      if (elapsedMs < 0) {
+        // The wall clock moved backwards: re-anchor (DR-MPS-2).
+        entry.lastFiredAtMs = nowMs;
+        elapsedMs = 0;
+      }
+      if (elapsedMs >= NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS) {
+        entry.firedInRun = 0;
+      } else {
+        delayMs = Math.max(
+          0,
+          narrativeMaintenanceGraphDemandIntervalMs(entry.firedInRun) -
+            elapsedMs,
+        );
+      }
+    }
+    armGraphDemandTimer(key, entry, delayMs);
   };
 
   const markExhausted = (): void => {
@@ -931,7 +1133,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         workspaceBinding,
         discoveryEmpty,
         discoveryInFlight,
-        timerScheduled: timer !== null,
+        timerScheduled: timer !== null || graphDemandTimerScheduled(),
         pendingRetry: pendingRetryDelayMs !== null,
         pendingEvent: pendingEvent !== null,
         wakeAckPending: pendingWakeOutboxAck !== null,
@@ -1179,6 +1381,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       armTimer(reason, 0, generation);
     },
     handleBackendEvent(channel, payload): void {
+      if (channel === GRAPH_INDEX_DEMAND_CHANNEL) {
+        handleGraphIndexDemand(payload);
+        return;
+      }
       if (
         disposed ||
         (channel !== "workspace:opened" &&
@@ -1186,6 +1392,8 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       ) {
         return;
       }
+      // A new workspace (or a restore) ends every demand of the old one.
+      if (channel === "workspace:opened") clearGraphDemands();
       if (channel === "narrative-maintenance:epoch-rotated") {
         try {
           const eventBinding = epochEventBinding(payload);
@@ -1254,7 +1462,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         mutationRevision,
         workspaceBinding,
         discoveryInFlight,
-        timerScheduled: timer !== null,
+        timerScheduled: timer !== null || graphDemandTimerScheduled(),
         pendingRetry: pendingRetryDelayMs !== null,
         pendingEvent: pendingEvent !== null,
         wakeAckPending: pendingWakeOutboxAck !== null,
@@ -1275,6 +1483,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       disposed = true;
       noteMutation();
       clearTimer();
+      clearGraphDemands();
       pendingEvent = null;
       pendingRetryDelayMs = null;
       pendingWakeOutboxAck = null;

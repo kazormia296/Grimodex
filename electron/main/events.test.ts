@@ -5,7 +5,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { IPC } from "../shared/ipcContract.js";
+import {
+  IPC,
+  isAllowedBackendEventChannel,
+  isAllowedRendererEventChannel,
+} from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 
 // ── electron モック ──────────────────────────────────────────────────────────
@@ -304,6 +308,33 @@ describe("registerEventBus: napi TSFn 配線", () => {
       { projectId: "project-1" },
     );
     expect(win.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("DR-PUBG-5-14: Graph Index demand is observer-only, never reaches a BrowserWindow and is not a renderer channel", () => {
+    const backend = makeBackend();
+    const observer = vi.fn();
+    const win = makeWindow(1);
+    allWindows.push(win);
+    registerEventBus(backend, observer);
+
+    backend.capturedCallback?.(
+      "narrative-maintenance:graph-index-demand",
+      '{"projectId":"project-1"}',
+    );
+
+    expect(observer).toHaveBeenCalledWith(
+      "narrative-maintenance:graph-index-demand",
+      { projectId: "project-1" },
+    );
+    expect(win.webContents.send).not.toHaveBeenCalled();
+    // The renderer cannot raise it either: the renderer bus allowlist has no such channel.
+    for (const channel of [
+      "narrative-maintenance:graph-index-demand",
+      "narrative-maintenance:epoch-rotated",
+    ]) {
+      expect(isAllowedRendererEventChannel(channel)).toBe(false);
+      expect(isAllowedBackendEventChannel(channel)).toBe(false);
+    }
   });
 
   it("napi 発でも allowlist 外チャネルは warn して破棄する（Phase 3 の更新漏れ検出）", () => {

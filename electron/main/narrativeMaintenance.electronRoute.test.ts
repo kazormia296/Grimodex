@@ -158,3 +158,114 @@ describe("Electron main narrative maintenance route", () => {
     },
   );
 });
+
+/**
+ * DR-PUBG-5-14: the production launch (no CI seam) accepts Native's Graph Index
+ * build wakes. Native raises them only behind its const gate
+ * (`PRODUCT_GRAPH_PUBLISHED`, false until PUB-G), so a launch of today's product
+ * never sees one; these tests fix what main does when Native does.
+ */
+describe("Electron main Graph Index build wakes in a production launch", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function createWakeBackend(discovery: unknown) {
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(discovery));
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(
+        JSON.stringify({ status: "accepted", hasMore: false }),
+      );
+    let onEvent: ((channel: unknown, payload: unknown) => void) | null = null;
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: vi.fn(() =>
+        JSON.stringify(binding),
+      ),
+      discoverNarrativeMaintenanceWork,
+      runNarrativeMaintenanceCycle,
+      onEvent(callback: (channel: unknown, payload: unknown) => void) {
+        onEvent = callback;
+      },
+    } as unknown as NarrativeMaintenanceBackendLike &
+      NapiBackendLike & { emit(channel: unknown, payload: unknown): void };
+    Object.defineProperty(backend, "emit", {
+      value: (channel: unknown, payload: unknown) =>
+        onEvent?.(channel, payload),
+    });
+    return {
+      backend,
+      discoverNarrativeMaintenanceWork,
+      runNarrativeMaintenanceCycle,
+    };
+  }
+
+  it("turns the Graph owner's demand into a wake cycle of that project, with no discovery", async () => {
+    const fixture = createWakeBackend({
+      workspaceBinding: binding,
+      pages: [],
+    });
+    const runtime = bootstrapNarrativeMaintenance(
+      fixture.backend,
+      productionSeam(),
+    );
+    registerEventBus(fixture.backend, (channel, eventPayload) => {
+      runtime.coordinator?.handleBackendEvent(channel, eventPayload);
+    });
+    // Native's EventQueue delivers the payload as JSON text.
+    fixture.backend.emit(
+      "narrative-maintenance:graph-index-demand",
+      '{"projectId":"project-electron-route"}',
+    );
+    await vi.runAllTimersAsync();
+
+    expect(
+      fixture.runNarrativeMaintenanceCycle,
+    ).toHaveBeenCalledExactlyOnceWith({
+      work: [],
+      wakeProjectIds: ["project-electron-route"],
+      workspaceBinding: binding,
+    });
+    expect(fixture.discoverNarrativeMaintenanceWork).not.toHaveBeenCalled();
+
+    runtime.coordinator?.dispose();
+    runtime.scheduler?.dispose();
+  });
+
+  it("accepts a discovery that names a project for the Graph Index build and runs its wake cycle", async () => {
+    const fixture = createWakeBackend({
+      workspaceBinding: binding,
+      pages: [],
+      wakeProjectIds: ["project-electron-route"],
+    });
+    const runtime = bootstrapNarrativeMaintenance(
+      fixture.backend,
+      productionSeam(),
+    );
+    registerEventBus(fixture.backend, (channel, eventPayload) => {
+      runtime.coordinator?.handleBackendEvent(channel, eventPayload);
+    });
+    fixture.backend.emit("workspace:opened", {});
+    await vi.runAllTimersAsync();
+
+    expect(fixture.discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+    expect(
+      fixture.runNarrativeMaintenanceCycle,
+    ).toHaveBeenCalledExactlyOnceWith({
+      work: [],
+      wakeProjectIds: ["project-electron-route"],
+      workspaceBinding: binding,
+    });
+
+    runtime.coordinator?.dispose();
+    runtime.scheduler?.dispose();
+  });
+});
