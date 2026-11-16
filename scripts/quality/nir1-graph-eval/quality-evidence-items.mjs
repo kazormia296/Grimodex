@@ -216,25 +216,28 @@ function utf16RangeSample({ side, ctx }) {
       problems.push(hold("revision-of-path-unresolved", { path: path.kind }));
       continue;
     }
-    const revisions = [
-      ...new Set(entry.pairs.map((pair) => String(pair).split("|")[0])),
-    ];
-    const rows = new Map();
+    // v3 §2.1 (v2 C2): the typed Revision that corresponds to a displayed edge
+    // is the edge's own. The receipt's `pairs` are the path's sorted
+    // `revision|relation` strings, and the fixture's relations name each
+    // relation's `from` and `to` Entities, so an edge's Revision is the pair
+    // whose relation runs from the edge's `from` to its `to`. The product's
+    // Evidence ID is per Entity (`nir1:evidence:codex:{entity}`), so an ID can
+    // appear in more than one Revision (the middle Entity of a two-hop path):
+    // an edge's displayed row is looked up in its own Revision's rows only.
+    const revisionOfRelation = new Map(
+      entry.pairs.map((pair) => {
+        const text = String(pair);
+        const at = text.indexOf("|");
+        return [text.slice(at + 1), text.slice(0, at)];
+      }),
+    );
     // A Revision that could not be read leaves a hold (v3 §2.1: the
-    // corresponding typed Revision's row is unreadable), but only the rows
-    // whose own Revision is the unread one stay undecided: a displayed row
-    // whose `evidenceId` is in a readable Revision is judged on that
-    // Revision's row, and an (i) violation there is a fail (v3:96).
-    let unreadRevisions = 0;
-    for (const revision of revisions) {
+    // corresponding typed Revision's row is unreadable); only the edges whose
+    // own Revision is the unread one stay undecided.
+    for (const revision of new Set(revisionOfRelation.values())) {
       const read = ctx.observation.index.get(revision);
-      if (!read || read.unavailable) {
-        unreadRevisions += 1;
+      if (!read || read.unavailable)
         problems.push(hold("typed-revision-not-read", { revision }));
-        continue;
-      }
-      for (const [id, value] of read.rows)
-        if (!rows.has(id)) rows.set(id, value);
     }
     for (const edge of path.edges) {
       if (!isId(edge?.from) || !isId(edge?.to)) {
@@ -252,6 +255,31 @@ function utf16RangeSample({ side, ctx }) {
           throw precheck(
             `${ctx.variantKey}: the fixture has no current text for entity ${logical}`,
           );
+      // Directed like `resolveEdge` (material-revision.mjs), which is what
+      // made the path's `pairs` resolvable at all.
+      const fromLogical = ctx.maps.logicalEntity(edge.from);
+      const toLogical = ctx.maps.logicalEntity(edge.to);
+      const carriers = [...revisionOfRelation].filter(([relation]) => {
+        const ends = ctx.expectation.relationEndpoints?.[relation];
+        return (
+          Array.isArray(ends) &&
+          ends[0] === fromLogical &&
+          ends[1] === toLogical
+        );
+      });
+      if (carriers.length !== 1) {
+        // No relation of the path runs between the edge's Entities, or
+        // several do: the edge's Revision cannot be named, so it is not
+        // judged.
+        problems.push(
+          hold("edge-revision-unresolved", { candidates: carriers.length }),
+        );
+        continue;
+      }
+      const revisionRead = ctx.observation.index.get(carriers[0][1]);
+      // Its Revision was not read (the hold stands): not judged.
+      if (!revisionRead || revisionRead.unavailable) continue;
+      const rows = revisionRead.rows;
       const satisfied = new Set();
       // A row that could not be read (a null hash, a malformed range) leaves
       // its edge's endpoints undecided: the hold stands and (iii) is not
@@ -269,17 +297,6 @@ function utf16RangeSample({ side, ctx }) {
           continue;
         }
         const read = rows.get(shown.evidenceId);
-        if (!read && unreadRevisions > 0) {
-          // Its Revision may be one that was not read: (ii) cannot be
-          // decided, and (iii) is not judged on this edge.
-          problems.push(
-            hold("evidence-id-in-no-read-revision", {
-              evidenceId: shown.evidenceId,
-            }),
-          );
-          undecided = true;
-          continue;
-        }
         if (!read) {
           // (ii) the displayed `evidenceId` is not in the read Revision.
           problems.push(

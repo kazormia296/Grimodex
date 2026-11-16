@@ -182,6 +182,23 @@ function assertPinned(fixture, sceneId, entryId, key) {
 }
 
 /**
+ * Prereg v3 §2.1 (v2 C2): each fixture relation's two Entities (logical IDs),
+ * so an observed edge's typed Revision is the one of the path's
+ * `revision|relation` pair whose relation joins the edge's Entities. The
+ * G-01 fixture's single `relation` is read as the one-element list.
+ */
+function relationEndpointsOf(fixture) {
+  return Object.fromEntries(
+    [
+      ...(Array.isArray(fixture.relations) ? fixture.relations : []),
+      ...(fixture.relation ? [fixture.relation] : []),
+    ]
+      .filter((row) => typeof row?.id === "string")
+      .map((row) => [row.id, [row.fromEntityId, row.toEntityId]]),
+  );
+}
+
+/**
  * Prereg v3 §2.1〜§2.4 expectations of one variant, from the fixture and its
  * README rules only (never a receipt's own values).
  */
@@ -208,6 +225,7 @@ function evidencePlanOf({ fixture, variant, expected }) {
           [row.label, row.summary],
         ]),
       ),
+      relationEndpoints: relationEndpointsOf(fixture),
       graphOnly: {
         sceneId: graphPath.sceneId,
         pinEntityId: graphPath.targetEntityId,
@@ -264,6 +282,7 @@ function evidencePlanOf({ fixture, variant, expected }) {
   return {
     applies,
     entityTexts: texts,
+    relationEndpoints: relationEndpointsOf(fixture),
     graphOnly,
     attachments,
     sceneExcerpt: excerpt
