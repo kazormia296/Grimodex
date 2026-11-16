@@ -626,6 +626,79 @@
 - 開示の文案の候補：容量の拒否（U1）、Q1 の答え、Q2b の答え（製品の wake の下の B の挙動は測っていないこと）、DR-BSEAM-5。
 - 一覧の新しい項目の候補：DR-BSEAM-5（Chronicle の sealed binding で、製品の Main の discovery が失敗しうる）。
 
+### DR-PUBG-5-13：PR-1（Rust と Native、閉じた gate）の実装判断（2026-11-17）
+
+- 位置づけ：上の「実装の段取り」の PR-1 に入る前の判断と信頼境界の記録。この判断を残す commit ではコード・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：NIR-1 の C-product（worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。枝 `claude/pubg-5-pr1`（基点は PR #922 の head `87937140`）に push するが、PR は作らず merge しない。merge は次の S4（9 回目）の PR の merge の後（DR-PUBG-5-11 の 1）。
+- ユーザーの回答（DR-PUBG-5-11 の 4 の更新）：contracts `ed90f78b`（`docs/plans/nir1-pubg-records/user-confirmation-2026-11-17-pubg-5-q1.md`）。Q1 は「(iii) を起案する」。(iii)（拒否のときに binding を退かせる）は新しい契約の起案で、確認の後に実装する。PR-1 には入れない。それまで PR-1 は (i)（今の挙動のまま開示）の前提で進める。`discover_all` の Err の封じ込めは、委任の範囲の技術判断として別に扱う（同じ回答）。
+- 材料：V0 の調査 `/home/grimodex/fusion-eval-data/pubg-a/05-v0.md`（contracts の外）。dev 枝 `claude/pubg-5-v0-dev` の `9b510f50`（push しない）の probe を、assert のある試験に直して使う。
+- 範囲：DR-PUBG-5-8（product gate の結び方）、-4（W1）、-6（解除条件）、-7（V0・V4）の実装と、V0 の試験、`discover_all` の封じ込め。W2（需要からの wake）と main の TS は PR-2。registry の production 表、policy の行の実体、定数の切替、文言は入れない（PUB-G の PR）。画面での知らせは無い（process-local の記録と code だけの log のまま）。
+
+**判断 1：product gate の型は const generic の token にする**
+- `grimodex-db` に `Nir1GraphProductPublication`（`pub`、field は private、zero-sized）を置く。生成は `from_const::<const PUBLISHED: bool>() -> Option<Self>` だけで、`PUBLISHED` が true のときだけ `Some`。const generic の引数は compile 時の定数でなければならないので、runtime の値・DB の内容・IPC の値・環境変数からは作れない。
+- gate（`Nir1GraphIndexBuildGate`）の生成経路は DR-PUBG-5-8 の 4 つのまま（`closed`、`from_journey_seam`、`from_product_publication(token)`、`open_for_test`）。cycle と discovery に渡す値は、seam と product の少なくとも一方が開いているときに開く合成 `for_launch(config, product)` で作る。これは新しい生成経路ではなく、2 経路の OR である。invalid な seam は今までどおり gate の前の `effective_maintenance_coordinates` で拒否される。
+- Native の `nir1_graph_product.rs` に `maintenance_product_publication()` を 1 つだけ置く（本体は `from_const::<{ PRODUCT_GRAPH_PUBLISHED }>()`）。`publication_open()` にも eval feature の cfg にも結ばない。`cfg(feature)` の impl の外の自由関数にし、pin 済みの `FIXED_BODIES` と `PRODUCT_GRAPH_PUBLISHED` の検査に触れない。
+- 型は「const からしか作れない」を crate をまたいで強制できない（`from_const::<true>()` と書けば作れる）。そのため、検査を pin されていない場所に置く（DR-PUBG-5-8 の 3）。Native の Rust 試験で次を確かめる。
+  - 構築箇所が `nir1_graph_product.rs` の `maintenance_product_publication` の 1 か所で、引数が `{ PRODUCT_GRAPH_PUBLISHED }` であること（src の走査）。
+  - `publication_open_for_test` を開いても token が `None` のままであること。
+  - eval feature の build でも `None` であること（`cargo check --features nir1-graph-eval`）。
+- 変えない：`native-architecture.mjs`、`scripts/quality/nir1-graph-eval/`、`scripts/quality/nir1-graph/`。
+
+**判断 2：公開 API は足すだけにする**
+- 既存の `nir1_graph_index_build_wakes_main_discovery`、`discover_maintenance_project_for_main`、`run_system_work_cycle_with_nir1_graph_runtime` は無変更で残し、`_with_product(.., Option<Nir1GraphProductPublication>)` の変種を足す。旧関数は product なし（`None`）の変種に委譲する。Native の `discover_all` も同じ形（4 引数形は `cfg(test)` の wrapper）。
+- 理由：既存の B-ROUTE／BSEAM の試験を無変更で通す（DR-PUBG-5-1 の検証条件）。
+- 増やさない：skip reason、`MaintenanceProjectDiscovery` の variant、wire の field、理由の code。閉じた集合への追加は委任の外（DR-PUBG-5-10）。
+
+**判断 3：discovery の wake（W1・V4）**
+- product gate が開いているとき、seam と同じ規則で `GraphIndexBuildWake` を返す。
+  - durable な連鎖が idle なら wake（W1）。
+  - 制御なしの discovery が typed な `context-unavailable` で失敗したら wake（V4）。
+  - BeforeCutover と follow-up は wake しない。
+- product の token が `None`（今の製品）のとき、挙動は今のまま（判定の SQL 0、wake 0）。
+
+**判断 4：cycle の gate**
+- `Nir1GraphCycleContext` の gate を `for_launch(ci_config, product)` で作る。gated route の dispatch の再検査（`dispatch_enabled_work`）は変えない。gate が閉じていれば、接続を取る前に拒否する。
+
+**判断 5：解除条件は変えず、試験で固定する。記録の上限は置かない**
+- 解除条件（成功、tuple の変化〔A2 の watermark を含む〕、runtime epoch の変化、process の再起動）は変えない。
+- 試験で固定するもの：同じ入力の拒否は、判定の SQL（PK・EXISTS・MAX の読み）だけで `RefusedUnchanged` を返し、prepare に入らない（test hook の `BeforePrepare` が発火しない。SQL の予算を最小にしても判定が通る）。product gate でも同じ。
+- process-local の記録の上限（DR-PUBG-5-6 が実装時に決めるとしたもの）：新しい数値は置かない。
+  - 根拠：key は (owner, project) で、新しい owner の store は古い owner の記録を全て捨てる（既存）。よって記録は live な authority の project 数で有界で、project は利用者データ（SQLite の行）として既に有界。
+  - 上限を置いて古い記録を捨てると、拒否の記憶を失って最悪 180 s の build を繰り返す側に倒れる。そのほうが悪い。
+  - renderer が誘発できる頻度の上限は、W2 の最短間隔で置く（PR-2）。
+
+**判断 6：V0 を試験に固定する（(i) の前提）**
+- 形：binding を 1 つ publish した project に、(a) 保存 edge 8,194 行か、(b) 候補 2,065 件を足して binding を dirty にし、B を 1 回 dispatch して Refused にする。対照は binding なしで候補 2,065 件。行は SQL で直接足した合成データ。
+- 固定する現状：
+  - (a) Verify 自身が容量で落ち（`capacity-exceeded`）、再試行不可（Contract）で、durable な Finding（`narrative-maintenance-failure:dependency-verify:…`）が 1 件出る。以後の wake では新しい Run が作られない。
+  - (b) 制御なしの discovery は `context-unavailable` の Err を返し続ける（gate が閉じているとき）。Run も Finding も増えない。
+  - 対照：binding がなければ Idle で、Err も Finding も無い。
+- gate の開き方は seam と product（token）の両方で走らせ、同じ結果になることを確かめる（V0 が未確認とした点）。
+- (iii) を実装するときに、この試験は意図して変わる。変更はその契約の確認の後に行う。
+
+**判断 7：`discover_all` の project ごとの Err を封じ込める（gate の外の変更。要レビュー）**
+- 問題：`discover_all` は project ごとの discovery の Err を `?` で返すので、1 つの project の失敗で workspace 全体の discovery が Err になり、他の project の work が返らない（V0 の読み）。
+- 採る規則：
+  - 対象は、BeforeCutover でない wake（open・restore・epoch）の project ごとの discovery だけ。BeforeCutover は fail-closed のまま `?` で返す（cutover の安全の経路で、失敗した project を「work なし」にすると cutover が進みうる）。
+  - 封じ込めるのは、allowlist の 2 種類の typed な失敗だけ。`ValidationTerminated` の `ContextUnavailable` と `CapacityExceeded`（V0 で観測された 2 つ。どちらも project の状態で決まり、再試行しても変わらない）。判定は `grimodex-db` に `pub` で置き、単体試験を付ける。
+  - 他は全て今までどおり伝播する。preempt、cancel、timeout、closed、workspace-generation-changed、busy・locked などの retryable、未知の SQL 失敗は、project の失敗ではなく workspace や時の失敗として main が再試行・警告する経路を保つ。「retryable でも control でもないもの」で絞らないのは、`ValidationTerminated` の非 capacity が control に数えられて `ContextUnavailable` が外れること、未分類の SQL 失敗が隠れることのため。
+  - 封じ込めた project は「work なし」として返す。1 つも成功した project がなければ（全て封じ込め）、最初の Err を返す。単一 project の workspace の挙動と、全 project が壊れる systemic な失敗の見え方は、今のまま。
+  - log は code だけ（`tracing`、本文・project ID・path は出さない）。
+- gate の外であること（要レビュー）：この封じ込めは gate と無関係に、今の製品に効く。DR-BSEAM-5（Chronicle の sealed binding で、製品の Main の discovery が `context-unavailable` で失敗する）がある project を含む複数 project の workspace では、今までは全体が Err（main が warn と最大 3 回の再 discovery）だったのが、他の project の work が返る。DR-BSEAM-5 そのものは直さない（その project は work なしのまま）。
+- main の側の見え方（読んで確かめた。`narrativeMaintenanceTriggers.ts`）：成功した discovery の応答は検証・登録された後に wake outbox を ACK する。封じ込めた project の分も、その discovery が成功した扱いで ACK される。以前は Err なので ACK されず、rows が pending のまま残り次の drain で再生された。封じ込めた失敗は project の状態で決まる（再生しても同じ）ので害は小さいと判断するが、「失敗した project の epoch の wake が消費される」差は要レビュー。main の TS は PR-2 の範囲で、wire に field を足すと main が応答を拒否する（`allowedKeys`）ので、PR-1 では可視化を足さない。
+- 採らない：wire への `failedProjectIds` 的な field（main の変更と契約が要る）、全ての Err の封じ込め（fail-closed の過剰な緩和）。
+
+**信頼境界と threat model の差分（PR-1）**
+- 変わらない：actor、防御、受信先、保存、受入れ。renderer は B を名指しできず、新しい IPC・`#[napi]` の入口は無い。token は const false から `None` なので、製品の既定では wake 0、B の判定の SQL 0、Graph の surface への書込み 0。
+- 新しい攻撃：無い。product gate は const だけから作られ、renderer・DB の内容・環境からは開かない。renderer が seed 付きの begin で B の build を誘発する経路（DR-PUBG-5-10）は PR-2（W2）で足す。
+- 封じ込めは、失敗する project が他の project の discovery を妨げる経路を狭める（資源の消費は増えない）。残る fail-closed：BeforeCutover と、allowlist の外の全ての Err。
+
+**要レビュー（レビューで見てほしい点）**
+1. 判断 7 が gate の外で今の製品の挙動を変えること（DR-BSEAM-5 のある複数 project の workspace）と、ACK の差。
+2. 判断 7 の「全 project が封じ込めなら Err」の規則（project 数による非単調さ）。
+3. 判断 1 の検査が src の走査であること（型で const に縛れない代わり）。
+4. 判断 5 で記録の上限を置かない根拠。
+
 ### 実装の段取り（閉じた gate の内側まで。merge は S4（9 回目）の PR の merge の後）
 
 | PR | 中身 | 検証 |
