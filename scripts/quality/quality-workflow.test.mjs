@@ -6094,11 +6094,16 @@ test("the proposal/7 graph limits are recorded beside the proposal/6 history and
   );
 
   // The proposal/7 ledger row is the second `graph-limited-binding` row; the
-  // first stays the proposal/6 row.
+  // first stays the proposal/6 row. GDV/1 (confirmed 2026-11-17) adds the
+  // third row; /6 and /7 are kept, not replaced.
   const ledgerRows = executionPlan
     .split("\n")
     .filter((line) => line.startsWith("| `graph-limited-binding` |"));
-  assert.equal(ledgerRows.length, 2, "proposal/6 and proposal/7 rows");
+  assert.equal(ledgerRows.length, 3, "proposal/6, proposal/7 and GDV/1 rows");
+  assert.match(
+    ledgerRows[2],
+    /^\| `graph-limited-binding` \| `nir1-graph-dirty-binding-verify-proposal\/1` \| `nir1-graph-dirty-binding-verify-proposal\/1#graph-limited-binding` \|/,
+  );
   assert.match(
     ledgerRows[0],
     /^\| `graph-limited-binding` \| `nir1-l6-l9-contract-proposal\/6` \|/,
