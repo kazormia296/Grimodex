@@ -589,3 +589,16 @@ API の差分は `chat_messages_delete` の `messageIds` の件数の上限だ�
 
 - **Full での feature 付きの試験**（DR-DA2-57）：`native-current-human-capture` の grimodex-db の試験（今回の 3 binary と既存の lib の試験）は Quick（impact の light suite）でだけ走り、Full の `rust` stage では走らない。Full に足すかは registry と配分の変更を伴うので integrator の判断。
 - **sticky と pin の RETURNING 外し**（DR-DA2-55）：O-2 の開放への依存を受け入れること（integrator が受け入れ済み。ユーザーへの開示は最終報告）。
+
+## PUB-G #32 の追補（左下の表示の置き場所。2026-11-16）
+
+### DR-PUBG-32-1（pill を editor の status bar の上、phone の nav の上へ置く）
+
+DR-DA2-63 の未解決（実 `EditorPaneStatusBar` の scene の状態の button を restricted の pill が覆う、phone 幅の nav との交わりが未測定）を、定数を false のまま、表示の置き場所だけで閉じた。技術判断は AGENTS.md の範囲内（新しい送信先・保存・契約・閾値・文言は無い）。
+
+- **測り直し**（#849・#867 の layout 変更の後、実 Chromium、1200x800、全 panel を畳んだ layout）：status bar は y 710〜739（高さ 29 px）、scene の状態の button は y 715〜735、pill は y 712.5〜739。pill は bar の左端をそのまま覆っていた（`it.fails` が示した重なりは今も実在）。
+- **直し**：(1) wide／compact（720 以上）は、実 bar があるとき **CSS anchor positioning** で bar の上（bar の上端から 10 px 上）、かつ scene の状態の menu の右（bar の左端から 140 px＝padding 12＋menu の min-w 120＋8）へ置く。`EditorPaneStatusBar` の root に `[anchor-name:--editor-status-bar]` を足しただけで、pill 側は `left/bottom: calc(anchor(--editor-status-bar left|top, 退避値) + offset)`。script も observer も無く、side panel・bottom region・splitter の drag で bar が動いても追従する。bar が無いとき（zen mode、scene なし、stub の editor）は `anchor()` の退避値で従来の位置（左 62 px、下 61 px。stripe と gap の外）になる。(2) phone（720 未満、stripe も editor の status bar も無い）は左 12 px、下 76 px＋safe area（nav 68 px＋8 px）。切替は Tailwind の `max-[719.98px]:`（Tailwind 4 の `max-[..]` は排他的なので、719 px の窓も phone になるよう 719.98）。class は literal（Tailwind が走査するため）で `profileEgressStatusPlacement.ts` に置き、`profileEgressStatusPlacement.test.ts` が数値との一致、bar が anchor 名を持つこと、phone の下が `phoneWorkspace.css` の nav の高さより大きいことを守る。
+- **レビュー指摘への対応**：最初の案（下を 100 px へ上げただけ）は、scene の状態の menu（button の真上に開く）を pill が覆った。menu を開いた状態で測る試験に改め（全 layout で、pill が bar と menu の 5 項目の矩形のどれとも交わらない）、固定の座標では左 panel の幅（既定 260 px。利用者が変える）しだいで splitter を覆うことも分かったため、bar への anchor に替えた。
+- **試験**：`layoutInvariants.browser.test.tsx` の `it.fails` を外し、実 `EditorPaneStatusBar` を置き、menu を開いて、全状態（restricted、activating、unavailable の 8 理由）× 3 layout × 2 viewport（1200x800、768x600）で bar と menu の矩形との非交差を測る。phone は実 `PhoneWorkspaceChrome` を `data-profile="phone"` の shell に置き、nav の上端より pill の下端が上にあること、画面内に収まること、左が 12 px であることを 360x640 と 719x700 で測る。bar の anchor を外す・phone の下を元の 61 px に戻す変異で落ちることを確認した。
+- **未検証・残り**：(1) phone の AI の surface の composer（`PhoneChatSurface` の `sticky bottom-0` の form。nav の直上）は、pill の左 130 px が composer の textarea の下端を覆いうる（実 composer を置いた測定はしていない。幾何からの推定）。C-1／PUB-G で phone の置き場所（例：上端）を決める。(2) 実機の safe area（browser 試験では `env(safe-area-inset-bottom)` が 0）と software keyboard（pill は layout viewport の下端基準、nav は visual viewport 基準）。(3) editor が複数の pane を持つとき `anchor-name` は同名で、tree order の最後の bar に付く。(4) bar の左 group が menu より右へ伸びる幅は測っていない（pill は bar の上にあり、bar 自身とは交わらない）。(5) bar の高さ 29 px は badge を mock した値。
+- **変えないもの**：表示の中身・文言・状態の規則・IPC・閉鎖・定数（`PROFILE_ACTIVATION_UI_ENABLED` は false のまま）。bundle：class 文字列と anchor 名だけで、新しい import は無い（CI の `perf:budget` の値で確認する）。
