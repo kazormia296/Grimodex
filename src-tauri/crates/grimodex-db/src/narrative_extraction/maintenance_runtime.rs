@@ -3114,6 +3114,54 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime_and_product(
         nir1_graph_runtime,
     );
     let mut work = preflight_maintenance_cycle_request(request)?;
+    // GDV/1 case C-2 (DR-PUBG-5-16): main-supplied durable work reaches the
+    // cycle without `discover_cycle_work`, so the Graph producer's judgement
+    // (B preempts the durable chain for a stale binding) would not run first.
+    // It is judged here, once per project, and only in front of a Verify item:
+    // Verify is the step that validates the repaired Graph in full. In front of
+    // a RebuildDerived item the judgement is not taken, because it left one
+    // extra Graph publish behind (measured; DR-PUBG-5-16). A closed gate
+    // returns before any SQL, so the product default is unchanged.
+    if !work.is_empty() {
+        // Revision 5 (section 7, binding): the gated route never judges the
+        // C2-ZC BeforeCutover flow. A project is skipped when ANY of its items
+        // carries `before-cutover` or the follow-up reason, not only the first.
+        let before_cutover_projects: BTreeSet<String> = work
+            .iter()
+            .filter(|item| {
+                item.reasons.iter().any(|reason| {
+                    reason == "before-cutover" || reason == BEFORE_CUTOVER_FOLLOW_UP_REASON
+                })
+            })
+            .map(|item| item.project_id.clone())
+            .collect();
+        let mut judged = BTreeSet::new();
+        let mut preempting: Vec<(usize, DesiredWork)> = Vec::new();
+        for (index, item) in work.iter().enumerate() {
+            if item.run_kind != AutomaticRunKind::Verify
+                || before_cutover_projects.contains(&item.project_id)
+                || !judged.insert(item.project_id.clone())
+            {
+                continue;
+            }
+            let plan = super::nir1_graph_index_maintenance::plan_graph_index_build(
+                db,
+                &item.project_id,
+                "durable-wake",
+                control,
+                &graph,
+            )?;
+            if plan.preempts_durable_chain() {
+                if let Some(graph_work) = plan.into_work() {
+                    preempting.push((index, graph_work));
+                }
+            }
+        }
+        // Insert from the back so the earlier indices stay valid.
+        for (index, graph_work) in preempting.into_iter().rev() {
+            work.insert(index, graph_work);
+        }
+    }
     if work.is_empty() {
         for project_id in &request.wake_project_ids {
             if let Some(next) = discover_cycle_work(

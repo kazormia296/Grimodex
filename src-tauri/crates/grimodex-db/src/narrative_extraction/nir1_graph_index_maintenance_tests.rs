@@ -50,6 +50,10 @@ use super::test_hooks::{install as install_hook, TestStage};
 const PROJECT: &str = "default-project";
 const CAPACITY_CODE: &str = "NIR1_GRAPH_CAPACITY_EXCEEDED";
 
+// GDV/1 acceptance (nir1-graph-dirty-binding-verify-proposal/1, section 8).
+#[path = "nir1_graph_index_maintenance_tests/gdv1_graph_binding_tests.rs"]
+mod gdv1_graph_binding_tests;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -89,6 +93,15 @@ fn qualified_scope(
 impl Fixture {
     /// One approved, qualified Entity/Relation Revision and no Graph binding.
     fn new() -> Result<Self> {
+        Self::new_with_marker(true)
+    }
+
+    /// `seed_run_and_catalog` (the shared A3 fixture) records the C2-ZC cutover
+    /// marker, so `new()` is a cutover-done workspace. `marker = false` deletes
+    /// that marker row at the end of construction, before any Graph publish: a
+    /// pre-cutover form made after the fact (the Revision and Freshness rows
+    /// were written after the marker).
+    fn new_with_marker(marker: bool) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-b-route-{}", uuid::Uuid::new_v4())),
         );
@@ -102,6 +115,16 @@ impl Fixture {
         qualified_scope(&db, &mut typed);
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
+        if !marker {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                    [Database::C2_ZC_CUTOVER_MIGRATION_ID],
+                )?;
+                Ok(())
+            })?;
+            assert_eq!(db.with_conn(Database::read_c2zc_cutover_marker)?, None);
+        }
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
         Ok(Self {
             authority,
@@ -112,7 +135,11 @@ impl Fixture {
 
     /// A fixture whose first gate-open cycle has published generation 1.
     fn published() -> Result<Self> {
-        let fixture = Self::new()?;
+        Self::published_with_marker(true)
+    }
+
+    fn published_with_marker(marker: bool) -> Result<Self> {
+        let fixture = Self::new_with_marker(marker)?;
         let recorder = Recorder::default();
         let result = run_cycle(&fixture, Some(&graph_seam()), &recorder)?;
         assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
@@ -122,6 +149,10 @@ impl Fixture {
 
     fn db(&self) -> &Database {
         self.authority.db()
+    }
+
+    fn marker(&self) -> Result<Option<i64>> {
+        self.db().with_conn(Database::read_c2zc_cutover_marker)
     }
 
     fn runtime(&self) -> &NirChronicleIndexRuntime {
