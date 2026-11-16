@@ -203,21 +203,230 @@ function rootWithPrep(prep) {
   return root;
 }
 
-// S2 追補 #12 の独立レビューの P3-2: the names follow the current state (the
-// body is unchanged): S4b''' 60bf9dc4 revoked (0d456ee2), the draft awaits
-// the fifth re-freeze's S4b''''.
-test("the committed observation-prep files validate (draft: S4b''' 60bf9dc4 revoked, awaiting the fifth re-freeze's S4b'''')", async () => {
-  // DR-CP4-S4-7: the revocation commit deletes S4b'''s freeze record and puts
-  // S2 back to its draft (the bytes before S4b'', 6cb7e05c); S4b''' fills it
-  // again (DR-CP4-S4-5 and S4-6 did the same for the old S4b and S4b').
+// DR-CP4-S4-11: the names follow the current state: the ninth re-freeze's S4b
+// filled S2 again (the revocation commit 2a28e1a2 had put it back to its
+// draft, as 1e0200b7 did for the sixth).
+test("the committed observation-prep files validate (frozen again by the ninth re-freeze's S4b)", async () => {
+  // DR-CP4-S4-11: the revocation commit (2a28e1a2) deleted the seventh S4b's
+  // freeze record and put S2 back to its draft; the ninth re-freeze's S4b
+  // fills it again (DR-CP4-S4-5 to S4-10 did the same for the earlier S4b's).
   const result = await validateNir1ObservationPrep({ repoRoot });
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
-  assert.equal(result.formalReady, false);
-  assert.equal(result.placeholders.length, 23);
+  assert.equal(result.formalReady, true);
+  assert.deepEqual(result.placeholders, []);
   const prep = await json(OBSERVATION_PREP_FILES.prep);
-  assert.equal(prep.review, null);
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.equal(prep.contracts.k65.confirmation.additional.length, 2);
+  assert.equal(prep.contracts.k66.confirmation.additional.length, 1);
+  assert.equal(prep.contracts.k67.confirmation.additional.length, 8);
+  // The review keeps the facts of the earlier re-freezes and states the ninth:
+  // S3's 10th review (changes-required) and its four re-checks (the 3rd not
+  // fully blind), what S3 did not see, and the S4b that no reviewer saw.
+  for (const word of [
+    "DR-CP4-S4-5",
+    "DR-CP4-S4-9",
+    "DR-CP4-S4-10",
+    "この S4b（7 回目）の bytes を S3 は見ていない",
+    "9 回目の S4（S3 の 10 回目）の段",
+    "bb2be61e",
+    "f4e60831",
+    "29f63636",
+    "b391981b",
+    "33abaad1",
+    "cea3988b",
+    "S3 が見ていない領域",
+    "14 file の外は変わっていない",
+    "448a5956",
+    "S3 でも別の reviewer でもない builder の作業",
+    "この S4b（9 回目）の bytes を S3 は見ていない",
+    "s7r1・s7r2",
+  ])
+    assert.ok(prep.review.conditions.includes(word), word);
+  assert.ok(prep.review.verdict.startsWith("changes-required"));
+  assert.ok(prep.review.verdict.includes("ok-with-notes"));
+  assert.equal(prep.review.rounds.at(-1).round, 10);
+  assert.deepEqual(
+    prep.review.rounds.map((row) => row.round),
+    [1, 2, 3, 4, 6, 7, 8, 9, 10],
+  );
+  const v2 = await json(
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+  );
+  // S2's review.record is the 10th S3 record (K6/7) and its four re-checks;
+  // the procedure file v2 keeps the 6th S3 record's review ("変えない").
+  assert.notEqual(prep.review.record, v2.review.record);
+  assert.deepEqual(prep.k64Procedure.formal.review, v2.review);
+  assert.ok(
+    prep.review.record.startsWith(
+      `${K67_S3_REVIEW.path}（commit ${K67_S3_REVIEW.commit}`,
+    ),
+  );
+  assert.equal(prep.review.recordSha256, K67_S3_REVIEW.sha256);
+  for (const row of K67_S3_REVIEW.rechecks) {
+    assert.ok(prep.review.record.includes(row.path), row.path);
+    assert.ok(prep.review.record.includes(row.sha256), row.path);
+  }
+  assert.ok(prep.review.record.includes("完全な盲検でない"));
+  assert.deepEqual(
+    prep.review.userConfirmations.map((row) => row.contract.slice(0, 4)),
+    [
+      "K6/4",
+      "SP/1",
+      "K6/5",
+      "K6/5",
+      "K6/5",
+      "K6/6",
+      "K6/6",
+      "K6/7",
+      ...Array(8).fill("K6/7"),
+    ],
+  );
+  for (const word of [
+    "665abc0f",
+    "ac2e93d6",
+    "0600ec04",
+    "6b47c177",
+    "07fc80ec",
+    "R-1〜R-5",
+    "K6/6",
+    "R-6",
+    "R-7",
+    "82119012",
+    "56fb4fad",
+    "K6/7",
+    "R-8",
+    "R-13",
+    "FR-8",
+    "516bb3fe",
+    "448a5956",
+    "14 file で前回の記録を使う",
+  ])
+    assert.ok(prep.review.userConfirmationsScope.includes(word), word);
+  assert.equal(
+    prep.k64Procedure.formal.commit,
+    "dc1b12998bd508d54839ea6b7982e25a6a2aa008",
+  );
+  // The four located records and the R5 record: R5 kept (the user's three
+  // confirmations 7a03eaf9, 7361041f and 448a5956 re-approved the reuse); SP-N,
+  // the K6/4・K6/5・C7, K6/6 and K6/7 records retaken at c3209e1d (0659dd92).
+  for (const [field, words] of [
+    [
+      prep.r5Gate.r5CheckRecord,
+      [
+        "56d4ec54ae576665ce5561698fca59881926d2e8",
+        "r5-check-r5-1102",
+        "fa04baa444163b89d76beae467120366c5da55ca8e77a827eb597b06ad601f90",
+        "8fb525ed-be32-4df4-8f92-1bffba4ca24d",
+        "179139b4926a6ef249da78b56e581c2fd7c083de",
+        "7a03eaf9",
+        "7361041f",
+        "448a5956",
+        "13/13",
+        "14 file の外は変わっていない",
+        "44 file",
+        "nir1GraphSeed.ts",
+        "K6/5 の変える点 7",
+        "frozen-setup-driver.mjs、setup-receipt.mjs、workspace-db.mjs",
+      ],
+    ],
+    [
+      prep.r5Gate.syntheticDetection.record,
+      [
+        "0659dd924714f98b2e67b41d92a6afb80960c324",
+        "c3209e1d0881fdee1acead14e20645d9b7e87494",
+        "99def299b86e8d346f0e5197f62a6e8c227e5433",
+        "exact 23",
+        "799 件",
+      ],
+    ],
+    [
+      prep.r5Gate.k65DetectionRecord,
+      [
+        "0659dd924714f98b2e67b41d92a6afb80960c324",
+        "c3209e1d",
+        "exact 23",
+        "K6/6-P1",
+      ],
+    ],
+    [
+      prep.r5Gate.k66DetectionRecord,
+      [
+        "0659dd924714f98b2e67b41d92a6afb80960c324",
+        "c3209e1d",
+        "exact",
+        "51 件",
+        "28 件",
+        "48 件",
+      ],
+    ],
+    [
+      prep.r5Gate.k67DetectionRecord,
+      [
+        "0659dd924714f98b2e67b41d92a6afb80960c324",
+        "c3209e1d",
+        "83 件",
+        "516bb3fe",
+        "検出力の欠け",
+        "欠けは 0",
+      ],
+    ],
+  ])
+    for (const word of words) assert.ok(field.includes(word), word);
+  assert.ok(!prep.r5Gate.r5CheckRecord.includes("事前に確認していない"));
+  assert.ok(!prep.r5Gate.r5CheckRecord.includes("ユーザーの確認待ち"));
+  assert.equal(
+    parseRecordReference(prep.r5Gate.r5CheckRecord).path,
+    "docs/plans/nir1-cp4-records/r5-check-r5-1102/r5-check-record.json",
+  );
+  for (const [field, name] of [
+    [prep.r5Gate.syntheticDetection.record, "sp-synthetic-detection-record.md"],
+    [prep.r5Gate.k65DetectionRecord, "k64-k65-synthetic-detection-record.md"],
+    [prep.r5Gate.k66DetectionRecord, "k66-synthetic-detection-record.md"],
+    [prep.r5Gate.k67DetectionRecord, "k67-synthetic-detection-record.md"],
+  ]) {
+    const located = parseRecordReference(field);
+    assert.equal(
+      located.path,
+      `docs/plans/nir1-cp4-records/k67-detection-2026-11-16/${name}`,
+    );
+    assert.equal(located.commit, "0659dd924714f98b2e67b41d92a6afb80960c324");
+    assert.equal(
+      located.sha256,
+      sha256(readFileSync(path.join(repoRoot, located.path))),
+    );
+  }
+  // The freeze record binds the eight files at the bytes S4b committed.
+  const freeze = await json("evals/nir1-graph/observation-prep-freeze.v1.json");
+  assert.deepEqual(
+    Object.keys(freeze.boundFiles).sort(),
+    [
+      "evals/nir1-g01/setup-addendum.v3.json",
+      "evals/nir1-graph/declaration-addendum.v2.json",
+      "evals/nir1-graph/observation-prep-author-declaration.v1.json",
+      "evals/nir1-graph/observation-prep.v1.json",
+      "evals/nir1-graph/seed-pin-addendum.v2.json",
+      "evals/nir1-graph/trace-browsing.v1.json",
+      "evals/nir1-graph/trace-editing.v1.json",
+      "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+    ].sort(),
+  );
+  for (const [file, digest] of Object.entries(freeze.boundFiles))
+    assert.equal(digest, sha256(readFileSync(path.join(repoRoot, file))), file);
+  // The author's declaration: S4b binds its last bytes (the S4b commit never
+  // touches it) at the commit that last changed it.
+  const decl = prep.boundFiles.find((row) =>
+    row.path.endsWith("observation-prep-author-declaration.v1.json"),
+  );
+  assert.equal(decl.commit, "6bb625f6cdaf913bce0973bfdec7764e0fe9f5ad");
+  assert.equal(
+    decl.sha256,
+    freeze.boundFiles[
+      "evals/nir1-graph/observation-prep-author-declaration.v1.json"
+    ],
+  );
+  // The disclosures no longer wait for the user's answer on the R5 closure.
+  assert.ok(!prep.k67Readings.limits.includes("ユーザーの確認待ち"));
 });
 
 test("the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)", async () => {
@@ -248,11 +457,33 @@ test("a draft with placeholders is never usable for a formal run", async () => {
   }
 });
 
-test("DR-CP4-S4-7／S4-8: the committed draft (S4b''' revoked, awaiting S4b'''') is refused by the formal gate at HEAD", async () => {
-  await assert.rejects(
-    assertObservationPrepFormal({ repoRoot }),
-    /\[precheck\].*(placeholder|draft)/u,
+test("DR-CP4-S4-11 S4b: the committed frozen record passes the formal gate at HEAD (git)", async () => {
+  const ctx = await context();
+  // S3 10th's B2-7 (the run's entry never calls the references' bytes and
+  // ancestry check, k67FormalRows, so this test is its only guarantee): a
+  // frozen S2 allows no skip. A checkout without the history (or without the
+  // contracts commits) fails here instead of skipping.
+  assert.ok(
+    ctx.sourcePinGit,
+    "S2 is frozen: a shallow clone must fetch the history (the formal gate's references are commits of contracts)",
   );
+  // At the S4b commit itself every referenced commit is a strict ancestor
+  // (the working tree before S4b is committed names its own parent).
+  assert.deepEqual(await assertObservationPrepFormal({ repoRoot }), {
+    proceed: true,
+  });
+});
+
+test("DR-CP4-S4-11: a draft copy of the committed S2 is refused by the formal gate", async () => {
+  const root = rootWithPrep(await draftPrep());
+  try {
+    await assert.rejects(
+      assertObservationPrepFormal({ repoRoot: root }),
+      /\[precheck\].*(placeholder|draft)/u,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("setup addendum: the K2/4 table row for G-01 and the fixture digests", async () => {
@@ -6337,10 +6568,11 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
   assert.ok(
     !prep.runnerHandoff[20].includes("v1 と同じ afterMutationReadings"),
   );
-  const fill = prep.placeholders.find(
-    (row) => row.token === "S4:setup-addendum-commit",
-  ).fill;
-  assert.ok(fill.includes("setup-addendum.v3.json"), fill);
+  // The S4b filled boundFiles[0] with v3's file (not v2's path).
+  assert.equal(
+    prep.boundFiles[0].path,
+    "evals/nir1-g01/setup-addendum.v3.json",
+  );
   for (const row of prep.placeholders)
     assert.ok(!/setup-addendum\.v2\.json/u.test(row.fill), row.token);
   // v2 のまま残す葉は追補 #11 の束縛の記録（g04RevisionReadings.rule）だけで、
@@ -6400,11 +6632,17 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
     assert.ok(prep.setupReadings.source.pinRule.includes(word), word);
   assert.ok(prep.setupReadings.source.decisions.includes("DR-CP4-P-8"));
   assert.ok(prep.setupReadings.status.includes("追補 #12"));
-  // S2 はまだ draft（S4b'''' が placeholder を埋める）。
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.equal(prep.placeholders.length, 23);
-  assert.equal(prep.boundFiles[0].commit, "S4:setup-addendum-commit");
-  assert.equal(prep.boundFiles[0].sha256, "S4:setup-addendum-sha256");
+  // 9 回目の S4b が placeholder を埋めた（v3 の bytes。v2 の fd6b0c3c… ではない）。
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.deepEqual(prep.placeholders, []);
+  assert.equal(
+    prep.boundFiles[0].commit,
+    "bfc5a6099b7c21dc42f8a8506bb140add037a685",
+  );
+  assert.equal(
+    prep.boundFiles[0].sha256,
+    "dd1fb8721e5cf084025e22e4912912c5da7685074380cc14d9d824ff57a8082c",
+  );
   // 変異: setup の葉を v2 に戻す（d1、診断の run、boundFiles）。
   detects(prep, check, (p) => (p.d1.addenda[0] = V2), /d1\.addenda must be/u);
   detects(
@@ -6816,20 +7054,26 @@ test("S2 追補 #14（DR-CP4-P-9）: S2 binds K6/5 (contracts.k65 and its confir
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
   assert.deepEqual(check(prep), []);
-  // S4a の後も S2 は draft で、旧 S4b'''' の freeze record は失効している。
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.deepEqual(prep.placeholders.length, 23);
-  assert.equal(prep.review, null);
-  assert.equal(
-    prep.placeholders.some((row) => row.token.includes("k64-procedure-v1")),
-    false,
+  // 9 回目の S4b が S2 を frozen にした（失効 2a28e1a2 の後）。
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.deepEqual(prep.placeholders, []);
+  assert.notEqual(prep.review, null);
+  const v2File = await json(
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
   );
   assert.deepEqual(prep.k64Procedure.formal, {
     version: "v2",
     path: "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
-    commit: "S4:k64-procedure-v2-commit",
-    sha256: "S4:k64-procedure-v2-sha256",
-    review: null,
+    commit: "dc1b12998bd508d54839ea6b7982e25a6a2aa008",
+    sha256: sha256(
+      readFileSync(
+        path.join(
+          repoRoot,
+          "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+        ),
+      ),
+    ),
+    review: v2File.review,
   });
   // The confirmation record: K6/5's own file at the freeze commit.
   const confirmation = prep.contracts.k65.confirmation;
@@ -7145,10 +7389,13 @@ test("S2 追補 #15（S3 の B1、M1、M2、minor）: the C7／G-01／R5 confirm
     );
   // M2: the K6/4・K6/5 detection record is a placeholder in a draft, bound
   // like the R5 record.
-  assert.equal(prep.r5Gate.k65DetectionRecord, "S4:k65-detection-record");
+  const draftS2 = await draftPrep();
+  assert.equal(draftS2.r5Gate.k65DetectionRecord, "S4:k65-detection-record");
   assert.ok(
-    prep.placeholders.some((row) => row.token === "S4:k65-detection-record"),
+    draftS2.placeholders.some((row) => row.token === "S4:k65-detection-record"),
   );
+  // The committed (frozen) S2 holds the located record.
+  assert.ok(parseRecordReference(prep.r5Gate.k65DetectionRecord) !== null);
   for (const mutate of [
     (p) => (p.r5Gate.k65DetectionRecord = ""),
     (p) => (p.r5Gate.k65DetectionRecord = "S4:other-record"),
@@ -7156,7 +7403,7 @@ test("S2 追補 #15（S3 の B1、M1、M2、minor）: the C7／G-01／R5 confirm
     (p) => delete p.r5Gate.k65DetectionRecordRule,
   ])
     detects(
-      prep,
+      draftS2,
       check,
       mutate,
       /r5Gate\.k65DetectionRecord must locate the K6\/4・K6\/5 detection-power record/u,
@@ -7257,7 +7504,8 @@ test("S2 追補 #15（S3 の B1、M1、M2、minor）: the C7／G-01／R5 confirm
     ],
   );
   assert.equal(rows.length, 7);
-  assert.equal(k65FormalRows(prep).length, 4);
+  assert.equal(k65FormalRows(prep).length, 7);
+  assert.equal(k65FormalRows(draftS2).length, 4);
   assert.ok(
     formalReferenceRows(fixed, {}).some(
       (row) => row.commit === "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
@@ -7932,9 +8180,9 @@ test("S2 追補 #16（DR-CP4-P-10）: S2 binds K6/6 (contracts.k66 and its confi
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
   assert.deepEqual(check(prep), []);
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.equal(prep.review, null);
-  assert.equal(prep.placeholders.length, 23);
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.notEqual(prep.review, null);
+  assert.deepEqual(prep.placeholders, []);
   // The /6 row: the committed bytes, the commit that last changed them, the
   // freeze; the same values as the pinned harness's K66_FREEZE (a test holds
   // the validator's CONTRACTS.k66 and the harness constants together).
@@ -8095,30 +8343,23 @@ test("S2 追補 #16（DR-CP4-P-10）: S2 binds K6/6 (contracts.k66 and its confi
   assert.equal(prep.k64Procedure.values.dMs, 40);
   assert.equal(prep.k64Procedure.values.bMs, 54.2);
   assert.equal(prep.k64Procedure.values.hybridP95LimitMs, 94.2);
-  // The placeholders keep the 22 S4 tokens; the fills for the records say the
-  // seventh S4 retakes (the sixth's records no longer hold).
-  const fill = (token) =>
-    prep.placeholders.find((row) => row.token === token).fill;
-  assert.ok(fill("S4:sp-synthetic-detection-record").includes("7 回目"));
-  assert.ok(fill("S4:k65-detection-record").includes("7 回目"));
-  assert.ok(fill("S4:r5-check-record").includes("再承認"));
-  // S2 追補 #17 (S3's B1-1, B1-2): the fill names the 7 files, the
-  // confirmation and the product changes after the sixth S4b.
+  // The fills are consumed: the ninth S4b put the ninth S4's records in the
+  // fields (the seventh's records no longer hold).
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("9 回目"));
+  assert.ok(prep.r5Gate.k65DetectionRecord.includes("9 回目"));
+  assert.ok(prep.r5Gate.k66DetectionRecord.includes("9 回目"));
+  // S2 追補 #17 (S3's B1-1, B1-2): the R5 record names the confirmations
+  // (82119012 for K6/6, then 7a03eaf9, 7361041f and 448a5956 for K6/7) and the files.
   for (const word of [
-    "7 file",
     "82119012",
     "availability.mjs",
     "join.mjs",
-    "#828",
-    "#831",
+    "7a03eaf9",
+    "7361041f",
+    "448a5956",
   ])
-    assert.ok(fill("S4:r5-check-record").includes(word), word);
-  assert.ok(!fill("S4:r5-check-record").includes("5 file"));
-  assert.ok(
-    fill("S4:k66-detection-record").includes("7 回目") ||
-      fill("S4:k66-detection-record").includes("取り直す"),
-  );
-  assert.ok(fill("S4:author-declaration-sha256").includes("7 回目"));
+    assert.ok(prep.r5Gate.r5CheckRecord.includes(word), word);
+  assert.ok(!prep.r5Gate.r5CheckRecord.includes("5 file"));
 });
 
 test("S2 追補 #16: a frozen record carries the K6/6 row and scope and compares contracts.k66 with the pinned K66_FREEZE; the formal rows hold K6/6's records", async () => {
@@ -8208,9 +8449,10 @@ test("S2 追補 #16: a frozen record carries the K6/6 row and scope and compares
     }).some((e) => /constants\.mjs must be the bytes/u.test(e)),
   );
   assert.deepEqual(
-    observationPrepErrors(prep, { ...ctx, harnessK66Freeze: null }).filter(
-      (e) => /K66_FREEZE/u.test(e),
-    ),
+    observationPrepErrors(await draftPrep(), {
+      ...ctx,
+      harnessK66Freeze: null,
+    }).filter((e) => /K66_FREEZE/u.test(e)),
     [],
   );
   // The formal gate's rows: the K6/6 draft at the freeze commit, the
@@ -8302,10 +8544,13 @@ test("S2 追補 #17（S3 の 9 回目 B1-1・B1-3・B2-1・B3-2）: the R5 reuse
       /contracts\.k66\.confirmation\.additional must be the R5 reuse confirmation/u,
     );
   // B1-3: the detection record is a placeholder in a draft and bound.
-  assert.equal(prep.r5Gate.k66DetectionRecord, "S4:k66-detection-record");
+  const draftS2 = await draftPrep();
+  assert.equal(draftS2.r5Gate.k66DetectionRecord, "S4:k66-detection-record");
   assert.ok(
-    prep.placeholders.some((row) => row.token === "S4:k66-detection-record"),
+    draftS2.placeholders.some((row) => row.token === "S4:k66-detection-record"),
   );
+  // The committed (frozen) S2 holds the located record.
+  assert.ok(parseRecordReference(prep.r5Gate.k66DetectionRecord) !== null);
   for (const mutate of [
     (p) => (p.r5Gate.k66DetectionRecord = ""),
     (p) => (p.r5Gate.k66DetectionRecord = "S4:other-record"),
@@ -8313,7 +8558,7 @@ test("S2 追補 #17（S3 の 9 回目 B1-1・B1-3・B2-1・B3-2）: the R5 reuse
     (p) => delete p.r5Gate.k66DetectionRecordRule,
   ])
     detects(
-      prep,
+      draftS2,
       check,
       mutate,
       /r5Gate\.k66DetectionRecord must locate the K6\/6 detection-power record/u,
@@ -8426,7 +8671,8 @@ test("S2 追補 #17（S3 の 9 回目 B1-1・B1-3・B2-1・B3-2）: the R5 reuse
   );
   // k66FormalRows: 82119012 and the S3 record are rows; a located detection
   // record joins them once S4b fills it, a placeholder does not.
-  assert.equal(k66FormalRows(prep).length, 13);
+  assert.equal(k66FormalRows(prep).length, 14);
+  assert.equal(k66FormalRows(draftS2).length, 13);
   const withRecord = k66FormalRows(fixed);
   assert.equal(withRecord.length, 14);
   assert.deepEqual(
@@ -8814,9 +9060,9 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
   assert.deepEqual(check(prep), []);
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.equal(prep.review, null);
-  assert.equal(prep.placeholders.length, 23);
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.notEqual(prep.review, null);
+  assert.deepEqual(prep.placeholders, []);
   // The /7 row: the committed bytes, the commit that last changed them, the
   // freeze; the same values as the harness's K67_FREEZE (a test holds the
   // validator's CONTRACTS.k67 and the harness constants together).
@@ -9024,23 +9270,22 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
   assert.equal(prep.k64Procedure.values.dMs, 40);
   assert.equal(prep.k64Procedure.values.bMs, 54.2);
   assert.equal(prep.k64Procedure.values.hybridP95LimitMs, 94.2);
-  // The placeholders: the new K6/7 detection record token, and the fills for
-  // the records say the ninth S4 retakes (the seventh's records no longer hold).
-  const fill = (token) =>
-    prep.placeholders.find((row) => row.token === token).fill;
-  assert.ok(fill("S4:k67-detection-record").includes("9 回目"));
-  assert.ok(fill("S4:sp-synthetic-detection-record").includes("9 回目"));
-  assert.ok(fill("S4:k65-detection-record").includes("9 回目"));
-  assert.ok(fill("S4:k66-detection-record").includes("9 回目"));
-  assert.ok(fill("S4:r5-check-record").includes("7a03eaf9"));
-  assert.ok(fill("S4:r5-check-record").includes("11 file"));
-  // S3 10th's B1-1: the 11 files are confirmed (7361041f), not "to be asked".
-  assert.ok(fill("S4:r5-check-record").includes("7361041f"));
-  assert.ok(fill("S4:r5-check-record").includes("11 file で前回の記録を使う"));
-  assert.ok(!fill("S4:r5-check-record").includes("再確認が要る"));
-  assert.ok(fill("S4:author-declaration-sha256").includes("9 回目"));
+  // The fills are consumed: the ninth S4b put the ninth S4's records in the
+  // fields (the seventh's records no longer hold).
+  assert.ok(prep.r5Gate.k67DetectionRecord.includes("9 回目"));
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("9 回目"));
+  assert.ok(prep.r5Gate.k65DetectionRecord.includes("9 回目"));
+  assert.ok(prep.r5Gate.k66DetectionRecord.includes("9 回目"));
+  assert.ok(prep.r5Gate.r5CheckRecord.includes("7a03eaf9"));
+  assert.ok(prep.r5Gate.r5CheckRecord.includes("11 file"));
+  // S3 10th's B1-1: the 11 files are confirmed (7361041f), not "to be asked";
+  // the 14 files are confirmed too (448a5956).
+  assert.ok(prep.r5Gate.r5CheckRecord.includes("7361041f"));
+  assert.ok(prep.r5Gate.r5CheckRecord.includes("14 file で前回の記録を使う"));
+  assert.ok(!prep.r5Gate.r5CheckRecord.includes("再確認が要る"));
   // The K6/7 detection record is a placeholder in a draft and bound.
-  assert.equal(prep.r5Gate.k67DetectionRecord, "S4:k67-detection-record");
+  const draftS2 = await draftPrep();
+  assert.equal(draftS2.r5Gate.k67DetectionRecord, "S4:k67-detection-record");
   for (const mutate of [
     (p) => (p.r5Gate.k67DetectionRecord = ""),
     (p) => (p.r5Gate.k67DetectionRecord = "S4:other-record"),
@@ -9048,7 +9293,7 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
     (p) => delete p.r5Gate.k67DetectionRecordRule,
   ])
     detects(
-      prep,
+      draftS2,
       check,
       mutate,
       /r5Gate\.k67DetectionRecord must locate the K6\/7 detection-power record/u,
@@ -9177,9 +9422,10 @@ test("S2 追補 #18: a frozen record carries the K6/7 row and scope and compares
     }).some((e) => /constants\.mjs must be the bytes/u.test(e)),
   );
   assert.deepEqual(
-    observationPrepErrors(prep, { ...ctx, harnessK67Freeze: null }).filter(
-      (e) => /K67_FREEZE/u.test(e),
-    ),
+    observationPrepErrors(await draftPrep(), {
+      ...ctx,
+      harnessK67Freeze: null,
+    }).filter((e) => /K67_FREEZE/u.test(e)),
     [],
   );
   // The K6/7 detection record is located when frozen.
@@ -9232,8 +9478,9 @@ test("S2 追補 #18: a frozen record carries the K6/7 row and scope and compares
     "fba38a31130057959eee7dd6447619a7ffbd8604712130a802284702baa28d28",
   );
   assert.equal(rows[0].sha256, CONTRACTS.k67.sha256);
+  assert.equal(k67FormalRows(prep).length, 5 + 8 + 1 + 4 + 1);
   assert.equal(
-    k67FormalRows(prep).length,
+    k67FormalRows(await draftPrep()).length,
     5 + 8 + 1 + 4,
     "a draft has no located record",
   );
