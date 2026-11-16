@@ -10,14 +10,10 @@ use serde::Serialize;
 use grimodex_db::narrative_extraction::{
     discover_before_cutover_maintenance_work_with_coordinates,
     discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
-    is_project_local_discovery_failure, DesiredWork, MaintenanceContractCoordinates,
-    MaintenanceProjectDiscovery, MaintenanceWorkRequest, MaintenanceWorkspaceBinding,
-    NarrativeMaintenanceCiConfig, Nir1GraphProductPublication, ValidationTerminated,
-    ValidationTerminationReason, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    DesiredWork, MaintenanceProjectDiscovery, MaintenanceWorkRequest, MaintenanceWorkspaceBinding,
+    NarrativeMaintenanceCiConfig, Nir1GraphProductPublication, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 use grimodex_db::Database;
-
-const TRACE_TARGET: &str = "narrative.maintenance_discovery";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WakeReason {
@@ -78,18 +74,6 @@ fn work_request(work: DesiredWork) -> MaintenanceWorkRequest {
     }
 }
 
-/// The wire code of a contained failure for the log (never project content).
-fn contained_failure_code(error: &anyhow::Error) -> &'static str {
-    error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<ValidationTerminated>())
-        .map_or("project-local", |terminated| match terminated.reason {
-            ValidationTerminationReason::ContextUnavailable => "context-unavailable",
-            ValidationTerminationReason::CapacityExceeded => "capacity-exceeded",
-            _ => "project-local",
-        })
-}
-
 /// [`discover_all_with_product`] without the product publication token (the
 /// seam-only form that the existing B-ROUTE and BSEAM tests use).
 #[cfg(test)]
@@ -118,49 +102,14 @@ pub(crate) fn discover_all(
 /// judges the gated Graph Index build. Without either the list is always empty
 /// and is omitted from the wire.
 ///
-/// A project whose own discovery fails for a reason that its state alone
-/// determines (`is_project_local_discovery_failure`) does not stop the
-/// others: it is returned as "no work" and logged by code only. If no project
-/// succeeded, the first such error is returned, so a workspace with one
-/// project, or one whose every project fails, keeps the error. The
-/// BeforeCutover flow never contains a failure (a dropped project would let a
-/// cutover proceed), and every other error propagates unchanged.
-///
-/// Production passes `nir1_graph_product::maintenance_product_publication()`.
+/// Production passes `nir1_graph_product::maintenance_product_publication()`
+/// (`None` while `PRODUCT_GRAPH_PUBLISHED` is `false`).
 pub(crate) fn discover_all_with_product(
     db: &Database,
     binding: MaintenanceWorkspaceBinding,
     reason: WakeReason,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
     product: Option<Nir1GraphProductPublication>,
-) -> anyhow::Result<DiscoveryResult> {
-    discover_projects(
-        db,
-        binding,
-        reason,
-        ci_config,
-        &mut |project_id, coordinates| {
-            discover_maintenance_project_for_main_with_product(
-                db,
-                project_id,
-                reason.durable_reason(),
-                Some(coordinates),
-                ci_config,
-                product,
-            )
-        },
-    )
-}
-
-fn discover_projects(
-    db: &Database,
-    binding: MaintenanceWorkspaceBinding,
-    reason: WakeReason,
-    ci_config: Option<&NarrativeMaintenanceCiConfig>,
-    discover_project: &mut dyn FnMut(
-        &str,
-        &MaintenanceContractCoordinates,
-    ) -> anyhow::Result<MaintenanceProjectDiscovery>,
 ) -> anyhow::Result<DiscoveryResult> {
     let project_ids = db.with_conn(|conn| {
         let mut statement = conn.prepare(
@@ -185,43 +134,28 @@ fn discover_projects(
     let mut pages = Vec::new();
     let mut page_work = Vec::new();
     let mut wake_project_ids = Vec::new();
-    let mut succeeded = 0usize;
-    let mut first_contained: Option<anyhow::Error> = None;
     let effective_coordinates = effective_maintenance_coordinates(ci_config)?;
     for project_id in project_ids {
         let planned = match reason {
-            WakeReason::BeforeCutover => {
-                succeeded += 1;
-                discover_before_cutover_maintenance_work_with_coordinates(
-                    db,
-                    &project_id,
-                    Some(&effective_coordinates),
-                )?
-            }
-            _ => match discover_project(&project_id, &effective_coordinates) {
-                Ok(MaintenanceProjectDiscovery::Work(work)) => {
-                    succeeded += 1;
-                    Some(work)
-                }
-                Ok(MaintenanceProjectDiscovery::Idle) => {
-                    succeeded += 1;
-                    None
-                }
-                Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake) => {
-                    succeeded += 1;
+            WakeReason::BeforeCutover => discover_before_cutover_maintenance_work_with_coordinates(
+                db,
+                &project_id,
+                Some(&effective_coordinates),
+            )?,
+            _ => match discover_maintenance_project_for_main_with_product(
+                db,
+                &project_id,
+                reason.durable_reason(),
+                Some(&effective_coordinates),
+                ci_config,
+                product,
+            )? {
+                MaintenanceProjectDiscovery::Work(work) => Some(work),
+                MaintenanceProjectDiscovery::Idle => None,
+                MaintenanceProjectDiscovery::GraphIndexBuildWake => {
                     wake_project_ids.push(project_id.clone());
                     None
                 }
-                Err(error) if is_project_local_discovery_failure(&error) => {
-                    tracing::warn!(
-                        target: TRACE_TARGET,
-                        code = contained_failure_code(&error),
-                        "NARRATIVE_MAINTENANCE_PROJECT_DISCOVERY_CONTAINED"
-                    );
-                    first_contained.get_or_insert(error);
-                    None
-                }
-                Err(error) => return Err(error),
             },
         }
         .into_iter()
@@ -239,11 +173,6 @@ fn discover_projects(
         }
         page_work.extend(planned);
     }
-    if succeeded == 0 {
-        if let Some(error) = first_contained {
-            return Err(error);
-        }
-    }
 
     if !page_work.is_empty() {
         pages.push(DiscoveryWorkPage { work: page_work });
@@ -259,7 +188,6 @@ fn discover_projects(
 mod tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
-    use grimodex_db::narrative_extraction::validation_terminated;
     use grimodex_db::narrative_extraction::{
         discover_durable_maintenance_work_with_coordinates, run_dependency_verify_for_project,
         run_incremental_freshness_cycle, run_system_work_cycle, AutomaticRunKind,
@@ -822,187 +750,7 @@ mod tests {
         assert_eq!(work[0].semantic_epoch_id.as_deref(), Some("epoch-1"));
     }
 
-    // -----------------------------------------------------------------------
-    // DR-PUBG-5-13 (PR-1): the product gate and the containment of one
-    // project's failure.
-    // -----------------------------------------------------------------------
-
-    fn projects_database(ids: &[&str]) -> Database {
-        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
-        db.with_conn(|conn| {
-            for id in ids {
-                conn.execute("INSERT INTO projects(id, title) VALUES (?1, 'p')", [id])?;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .expect("seed projects");
-        db
-    }
-
-    fn verify_work(project_id: &str) -> DesiredWork {
-        DesiredWork {
-            project_id: project_id.to_string(),
-            run_kind: AutomaticRunKind::Verify,
-            work_key: "dependency-verify:epoch-1".to_string(),
-            semantic_epoch_id: Some("epoch-1".to_string()),
-            reasons: vec!["workspace-opened".to_string()],
-        }
-    }
-
-    fn work_projects(discovered: &DiscoveryResult) -> Vec<&str> {
-        discovered
-            .pages
-            .iter()
-            .flat_map(|page| page.work.iter())
-            .map(|work| work.project_id.as_str())
-            .collect()
-    }
-
-    /// Discover with a per-project answer injected in place of the planner.
-    fn discover_with(
-        db: &Database,
-        reason: WakeReason,
-        answer: &mut dyn FnMut(&str) -> anyhow::Result<MaintenanceProjectDiscovery>,
-    ) -> anyhow::Result<DiscoveryResult> {
-        discover_projects(db, test_binding(), reason, None, &mut |project, _| {
-            answer(project)
-        })
-    }
-
-    /// A project whose own state fails its discovery (a bound its project
-    /// exceeded, or an uncontrolled read of its sealed binding) is "no work"
-    /// for that project; the others are still discovered.
-    #[test]
-    fn a_project_local_failure_does_not_stop_the_other_projects_discovery() {
-        let db = projects_database(&["a-project", "b-project", "c-project", "d-project"]);
-        for reason in [
-            WakeReason::WorkspaceOpened,
-            WakeReason::RestoreCompleted,
-            WakeReason::SemanticEpochRotated,
-        ] {
-            let discovered = discover_with(&db, reason, &mut |project| match project {
-                "b-project" => Err(validation_terminated(
-                    ValidationTerminationReason::CapacityExceeded,
-                    "NIR1_GRAPH_CAPACITY_EXCEEDED: stored-edge-rows exceeds 8193",
-                )),
-                "c-project" => Err(validation_terminated(
-                    ValidationTerminationReason::ContextUnavailable,
-                    "Entity/Relation eligibility requires a caller-owned validation context",
-                )
-                .context("discovery")),
-                // A migrated database already has its default project.
-                "default-project" => Ok(MaintenanceProjectDiscovery::Idle),
-                other => Ok(MaintenanceProjectDiscovery::Work(verify_work(other))),
-            })
-            .unwrap_or_else(|error| panic!("{reason:?}: {error:#}"));
-            assert_eq!(
-                work_projects(&discovered),
-                ["a-project", "d-project"],
-                "{reason:?}"
-            );
-            // The wire gains nothing: no key for a contained project.
-            assert_eq!(
-                serde_json::to_string(&discovered).expect("serialize"),
-                serde_json::to_string(&DiscoveryResult {
-                    workspace_binding: test_binding(),
-                    pages: vec![DiscoveryWorkPage {
-                        work: vec![
-                            work_request(verify_work("a-project")),
-                            work_request(verify_work("d-project")),
-                        ],
-                    }],
-                    wake_project_ids: Vec::new(),
-                })
-                .expect("serialize"),
-                "{reason:?}"
-            );
-        }
-    }
-
-    /// With no project succeeding, the error is kept (a workspace with one
-    /// project, or a systemic failure, is not turned into "nothing to do").
-    #[test]
-    fn the_error_is_kept_when_no_project_succeeded() {
-        for ids in [&["only-project"][..], &["a-project", "b-project"][..]] {
-            let db = projects_database(ids);
-            let error = discover_with(&db, WakeReason::WorkspaceOpened, &mut |_| {
-                Err(validation_terminated(
-                    ValidationTerminationReason::CapacityExceeded,
-                    "NIR1_GRAPH_CAPACITY_EXCEEDED: candidate-rows exceeds 2064",
-                ))
-            })
-            .expect_err("no project succeeded");
-            assert!(is_project_local_discovery_failure(&error), "{error:#}");
-        }
-        // An idle project counts as a success.
-        let db = projects_database(&["a-project", "b-project"]);
-        let discovered = discover_with(&db, WakeReason::WorkspaceOpened, &mut |project| {
-            if project == "a-project" {
-                Ok(MaintenanceProjectDiscovery::Idle)
-            } else {
-                Err(validation_terminated(
-                    ValidationTerminationReason::ContextUnavailable,
-                    "test",
-                ))
-            }
-        })
-        .expect("a successful idle project keeps the others");
-        assert!(discovered.pages.is_empty());
-    }
-
-    /// Only the two typed project-local failures are contained. Timing,
-    /// lifecycle, retryable and unknown failures still fail the discovery, so
-    /// main retries and reports them.
-    #[test]
-    fn every_other_failure_still_fails_the_whole_discovery() {
-        let db = projects_database(&["a-project", "b-project"]);
-        let others: Vec<anyhow::Error> = vec![
-            validation_terminated(ValidationTerminationReason::Cancelled, "test"),
-            validation_terminated(ValidationTerminationReason::TimedOut, "test"),
-            validation_terminated(ValidationTerminationReason::Closed, "test"),
-            validation_terminated(
-                ValidationTerminationReason::WorkspaceGenerationChanged,
-                "test",
-            ),
-            validation_terminated(ValidationTerminationReason::ForegroundPreempted, "test"),
-            validation_terminated(ValidationTerminationReason::CleanupFailed, "test"),
-            anyhow::anyhow!(
-                "NEX_MAINTENANCE_CONNECTION_PREEMPTED: discovery could not acquire the connection"
-            ),
-            anyhow::anyhow!("NEX_MAINTENANCE_SQLITE_LOCKED: database is locked"),
-            anyhow::anyhow!("no such table: narrative_extraction_runs"),
-        ];
-        for other in others {
-            let text = format!("{other:#}");
-            let mut failing = Some(other);
-            let result = discover_with(&db, WakeReason::WorkspaceOpened, &mut |project| {
-                if project == "b-project" {
-                    Err(failing.take().expect("b-project is asked once"))
-                } else {
-                    Ok(MaintenanceProjectDiscovery::Work(verify_work(project)))
-                }
-            });
-            let error = result.expect_err(&text);
-            assert_eq!(format!("{error:#}"), text);
-        }
-    }
-
-    /// The BeforeCutover flow never asks the injected per-project planner and
-    /// so never contains a failure: a dropped project would let a cutover go
-    /// ahead without that project's maintenance.
-    #[test]
-    fn before_cutover_discovery_does_not_use_the_contained_path() {
-        let db = before_cutover_test_database(true);
-        let mut asked = 0usize;
-        let discovered = discover_with(&db, WakeReason::BeforeCutover, &mut |_| {
-            asked += 1;
-            Ok(MaintenanceProjectDiscovery::Idle)
-        })
-        .expect("before-cutover discovery");
-        assert_eq!(asked, 0);
-        assert!(discovered.wake_project_ids.is_empty());
-    }
+    // DR-PUBG-5-13 (PR-1): the product gate's discovery wake.
 
     /// Under the product token an idle project is woken for the Graph build
     /// (W1), except in the BeforeCutover flow; with no token nothing changes.
