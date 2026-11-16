@@ -8364,7 +8364,6 @@ test("S2 追補 #16（DR-CP4-P-10）: S2 binds K6/6 (contracts.k66 and its confi
 
 test("S2 追補 #16: a frozen record carries the K6/6 row and scope and compares contracts.k66 with the pinned K66_FREEZE; the formal rows hold K6/6's records", async () => {
   const ctx = await context();
-  const prep = await json(OBSERVATION_PREP_FILES.prep);
   const { fixed, frozenCtx } = await frozenRecord(ctx);
   const frozenCheck = (copy) => observationPrepErrors(copy, frozenCtx);
   assert.deepEqual(frozenCheck(fixed), []);
