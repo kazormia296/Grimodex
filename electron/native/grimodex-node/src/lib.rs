@@ -8669,11 +8669,12 @@ impl Backend {
                 })
                 .to_string());
             }
-            let discovery = narrative_maintenance::discover_all(
+            let discovery = narrative_maintenance::discover_all_with_product(
                 snapshot.authority.db(),
                 binding,
                 wake_reason,
                 ci_config.as_ref(),
+                nir1_graph_product::maintenance_product_publication(),
             )
             .map_err(AppError::Anyhow)?;
             serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
@@ -9742,8 +9743,10 @@ impl Backend {
                     let cycle_result = {
                         // The pinned authority's runtime lets the shared cycle own
                         // the gated NIR-1 Graph Index build. Its gate opens only for
-                        // the validated journey seam; product launches pass no seam.
-                        narrative_extraction::maintenance_runtime::run_system_work_cycle_with_nir1_graph_runtime(
+                        // the validated journey seam or the product publication token
+                        // (`PRODUCT_GRAPH_PUBLISHED`, false until PUB-G); product
+                        // launches pass no seam.
+                        narrative_extraction::maintenance_runtime::run_system_work_cycle_with_nir1_graph_runtime_and_product(
                     authority.db(),
                     &request,
                     |item| {
@@ -9755,6 +9758,7 @@ impl Backend {
                     foreground_owner.as_ref(),
                     Some(&attempt_control),
                     Some(authority.nir_chronicle_index_runtime()),
+                    nir1_graph_product::maintenance_product_publication(),
                 )
                     };
                     let result = match cycle_result {

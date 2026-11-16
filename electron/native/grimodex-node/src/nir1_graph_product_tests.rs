@@ -2649,6 +2649,92 @@ fn a_lifecycle_edge_moves_the_ready_signal_and_the_edge_epoch() {
     assert_ne!(owner.edge_epoch(), epoch);
 }
 
+/// DR-PUBG-5-8, DR-PUBG-5-13: the Graph Index build's maintenance gate token
+/// follows `PRODUCT_GRAPH_PUBLISHED` alone. The owner's test gate
+/// (`publication_open()`, which the evaluation arm opens the same way) does
+/// not open it, so a measurement build keeps B's wake closed.
+#[test]
+fn the_maintenance_product_token_ignores_the_owners_publication_gate() {
+    const _: () = assert!(!PRODUCT_GRAPH_PUBLISHED);
+    let fixture = ProductFixture::with(true, true, false);
+    assert!(
+        fixture.state.nir1_graph.shared.publication_open(),
+        "precondition: the test gate is open"
+    );
+    assert!(maintenance_product_publication().is_none());
+    // The closed token leaves discovery's gate closed.
+    assert!(
+        !grimodex_db::narrative_extraction::nir1_graph_index_build_wakes_main_discovery_with_product(
+            None,
+            maintenance_product_publication(),
+            "workspace-opened"
+        )
+    );
+}
+
+/// The type cannot confine the token's constructor to one constant across
+/// crates, so this scan does (the architecture check of the pinned evaluation
+/// gate stays untouched). Production code builds the token at exactly one
+/// site, in this file, from `PRODUCT_GRAPH_PUBLISHED`. Test modules (a
+/// `*_tests.rs` file, a `tests` directory or an inline `mod tests`) may build
+/// an open token.
+#[test]
+fn the_product_token_has_one_production_construction_site() {
+    fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("source directory") {
+            let path = entry.expect("directory entry").path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if path.is_dir() {
+                if !matches!(name, "target" | "node_modules" | ".git" | "tests") {
+                    collect(&path, files);
+                }
+            } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+                files.push(path);
+            }
+        }
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = manifest
+        .join("../../..")
+        .canonicalize()
+        .expect("repository root");
+    let mut files = Vec::new();
+    collect(&manifest.join("src"), &mut files);
+    collect(&repository.join("src-tauri"), &mut files);
+    assert!(files.len() > 50, "the scan found {} files", files.len());
+    let mut sites = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).expect("read source");
+        // Everything from an inline test module on is test code.
+        let production = text
+            .split("#[cfg(test)]\nmod ")
+            .next()
+            .expect("split yields one part");
+        for line in production.lines() {
+            let line = line.trim();
+            if !line.starts_with("//") && line.contains("from_const::<") {
+                sites.push((
+                    file.strip_prefix(&repository)
+                        .expect("under the repository")
+                        .to_string_lossy()
+                        .into_owned(),
+                    line.to_string(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        sites,
+        [(
+            "electron/native/grimodex-node/src/nir1_graph_product.rs".to_string(),
+            "Nir1GraphProductPublication::from_const::<{ PRODUCT_GRAPH_PUBLISHED }>()".to_string()
+        )]
+    );
+}
+
 /// CQ-DEFER: the held Related Scenes query (`begin_deferred`).
 #[path = "nir1_graph_deferred_tests.rs"]
 mod deferred;

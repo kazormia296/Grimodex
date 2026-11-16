@@ -40,7 +40,7 @@ use grimodex_db::{
             worker_frame::{UnavailableCategory, UnavailableReason},
             worker_projection::Nir1GraphProjection,
         },
-        Nir1GraphRequest,
+        Nir1GraphProductPublication, Nir1GraphRequest,
     },
     state::{active_database, active_workspace_snapshot, ActiveWorkspaceSnapshot},
     workspace_lifecycle::{
@@ -63,6 +63,17 @@ pub(crate) const NIR1_GRAPH_RESTART_REQUIRED_REASON_CODE: &str = "nir1-graph-res
 /// the owner, start a worker, or return Graph data (A-1).
 const PRODUCT_GRAPH_PUBLISHED: bool = false;
 const _: () = assert!(!PRODUCT_GRAPH_PUBLISHED);
+
+/// The gate token of the Graph Index build's maintenance route (B; DR-PUBG-5-8,
+/// DR-PUBG-5-13). It is built from `PRODUCT_GRAPH_PUBLISHED` alone, so it is
+/// `None` until PUB-G flips that constant, and it is deliberately not tied to
+/// `publication_open()`: the evaluation arm and unit tests open that gate
+/// without publishing the product, and the CP-4 measurement's seam must keep
+/// B's wake closed. This is the only production construction site of the
+/// token (Native's tests pin it).
+pub(crate) fn maintenance_product_publication() -> Option<Nir1GraphProductPublication> {
+    Nir1GraphProductPublication::from_const::<{ PRODUCT_GRAPH_PUBLISHED }>()
+}
 
 const OWNER_THREAD_NAME: &str = "nir1-graph-owner";
 const COMMAND_CAPACITY: usize = 8;
