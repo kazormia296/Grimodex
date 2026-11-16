@@ -259,3 +259,11 @@ s7r1（S4b `f2f99b13`・候補 `3f333a83`・K6/6）の結果（`docs/plans/nir1-
 - **製品の PR**（#5、GDV/1 の実装など）：凍結と正式 run を待たない。
 
 この追記では、表の 48 行の状態を付け直していない。次に付け直すとき（C-1 の前）に、この読み替えを表に入れる。
+
+## 2026-11-17 追記 5（#30 を今の基点の CI の値で照合。統合者）
+
+- 記録：`/home/grimodex/fusion-eval-data/pubg-a/30-ci-recheck-2026-11-17.md`（contracts の外）。
+- 使った run：ci.yml の push run `43924836995`（commit `f806138e`、job Electron の step「Renderer performance budget」）。`79077a3d` との差は Rust と docs だけで、renderer の JS は同じとみなした（`79077a3d` の run 自体の値ではない）。
+- 定数 false の実測：raw 3,843,099、gzip 1,209,186。上限：raw 3,901,804、gzip 1,232,000。
+- 3 定数 true の差分（raw +1,581、gzip +566）を足した余裕：**raw 57,124、gzip 22,248**。2026-11-16 の推定（raw 94,909、gzip 34,319）から raw −37,785、gzip −12,071（その後に起動 graph が増えたため）。差分の約 36〜39 倍の余裕は残る。
+- #30 の状態は「測定済み（CI の照合待ち）」のまま。確定は PUB-G の PR の CI で行う、という条件は変えない。余裕が 1 日で約 4 割減ったので、PUB-G の PR の直前に再確認する。
