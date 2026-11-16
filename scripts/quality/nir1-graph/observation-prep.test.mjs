@@ -7444,7 +7444,7 @@ test("S2 追補 #15: K6/5's freeze commit, the confirmation records and the S3 r
   );
 });
 
-test("S2 追補 #15（DR-CP4-S4-9）と 7 回目の S4（DR-CP4-S4-10 (4)）: the 14 files K6/5, C7 and the G-01 diagnostic changed are each held by one pin (12 by the K6/6 pins, trace-record.mjs and procedure-file.mjs by the K6/5 pins) at the commit that last changed it, the earlier pins no longer hold them, and putting one back fails", async (t) => {
+test("S2 追補 #15（DR-CP4-S4-9）と 7 回目の S4（DR-CP4-S4-10 (4)）: the 14 files K6/5, C7 and the G-01 diagnostic changed are each held by one pin (13 by the K6/6 or K6/7 pins as of 9 回目の S4's ⑥, procedure-file.mjs by the K6/5 pin) at the commit that last changed it, the earlier pins no longer hold them, and putting one back fails", async (t) => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
@@ -7600,7 +7600,7 @@ test("S2 追補 #15（DR-CP4-S4-9）と 7 回目の S4（DR-CP4-S4-10 (4)）: th
   );
 });
 
-test("7 回目の S4（DR-CP4-S4-10 (4)）: the 17 files K6/6 changed are each held by one of the four K6/6 pins at the commit that last changed it, the earlier pins no longer hold them, and putting one back, dropping one or changing a sha256 fails", async (t) => {
+test("7 回目の S4（DR-CP4-S4-10 (4)）: the 17 files K6/6 changed are each held by one pin (the K6/6 pin for outcome.mjs, a K6/7 pin for the 16 that moved at 9 回目の S4's ⑥) at the commit that last changed it, the earlier pins no longer hold them, and putting one back, dropping one or changing a sha256 fails", async (t) => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
@@ -8809,7 +8809,7 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   );
 });
 
-test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confirmation, the freeze record, the six answers after it), k67Readings disclose (a)〜(n), s4StagesRule carries (k), the values stay K6/5's, and S2 is still a draft", async () => {
+test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confirmation, the freeze record, the seven answers after it), k67Readings disclose (a)〜(n), s4StagesRule carries (k), the values stay K6/5's, and S2 is still a draft", async () => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
@@ -8936,7 +8936,7 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
     confirmation.additional[5].sha256,
     "ad89ebfb4d04d324d2b022526f4c7aaa83bb8c12c4f0e8a88de6ecc4083803d1",
   );
-  assert.ok(confirmation.additionalNote.includes("additional の"));
+  assert.ok(confirmation.additionalNote.includes("additional の 7 行"));
   assert.ok(confirmation.intoReview.includes("7361041f"));
   for (const mutate of [
     (p) => p.contracts.k67.confirmation.additional.pop(),
