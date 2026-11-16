@@ -848,9 +848,15 @@
     - 切替で E2 が emit されるのは Native の open の中（`lib.rs` の `state.events.emit("workspace:opened", …)`）で、lifecycle が ready に戻る（`publish_workspace_lifecycle_from_workspace_off_runtime`）より前。binding の getter は、遷移の間は `None` か `WORKSPACE_SWITCHING` で捨てる。E1 と E2 が両方 queue に溜まっていれば、TSFN は 1 回の drain で順に処理し、E1 が作る `setTimeout(0)` は、同じ drain の中の E2（`clearGraphDemands`）より先には走れない。
     - 残る窓は、owner thread が `edge_or_closed` の確認から emit までの数命令の間で、切替の全期間（数百 ms 以上）止まる場合だけ。実用上は無いと見るが、止まらないことを保証する仕組みは無い。
     - 確かめていない：切替の経路が上のとおりであること（`open` と restore の 2 経路と、`discover` の経路までは追っていない）、TSFN の drain の挙動（Node の実装の読みであり、実測していない）、存在しない project の wake が cycle の FK で落ちた後に、retry と `persistDeliveryFailure` がどう終わるか。害の上限は、同名の project が新 workspace にあれば B の判定 1 回（`RefusedUnchanged` なら SQL だけ）という DR の記述のまま。存在しない project のときの終わり方は未確認。
-  - R-C：この反映の head で検証した（下の検証の追補 2）。
+  - R-C：PR-1 の新しい head（`f4dff667`）を取り込んだ、この反映の head で走らせた（検証の追補 2）。
   - m-1（直さない）：需要の event ごとに、合流の判定の前に同期の binding の getter（lifecycle の snapshot と workspace operation の lease を取り、失敗すると throw）を呼ぶ費用は、DR の「O(8) の lazy な掃除と map の参照」より重い。直さない理由：pending の timer がある key の判定を binding の読みより前にすると、binding が変わった後の需要（key が別になる）を落とす。頻度は Suspended の slot への begin（renderer の query の頻度）で、lease は短く、warn は固定文言で ID を出さない。測っていない（上の未確認のとおり）。
   - m-3：PR-1 の DR-PUBG-5-13 で、launch の gate で判定する helper にした（試験は PR-1 の側）。
+- 検証の追補 2（レビューの反映の後。PR-1 の head `f4dff667` を取り込んだ head。node は 22、`CARGO_BUILD_JOBS=4`）：
+  - Native `--lib` 全件：821 件成功、7 件 ignore（exit 0。820 に R-A の新しい 1 件）。`--features nir1-graph-eval` の `narrative_maintenance::tests`・`index_demand`・token：26 件成功。
+  - R-A の試験の効き：`demand` の Suspended の枝を需要した側の project に戻すと、`a_suspended_begin_of_another_project_names_the_refused_project` が落ちる（戻した）。
+  - db `--lib` の `nir1_graph_index_maintenance`：41 件成功。clippy（`--all-targets -- -D warnings`）：Native と db で成功。
+  - electron の vitest（`electron/main`・`electron/shared`）：103 files・2,434 件成功。`tsc -p electron/tsconfig.json --noEmit`：成功。
+  - `verify:quality`（node 22）：下の commit の後の head で走らせた結果を、最終の報告に記す。
 - 未確認：
   - 全 process の journey（実際の Electron で、registration が拒否された Graph の demand → event → B の wake → publish → Suspended が解ける、が一続きで起きること）。この PR は部品ごとに確かめた（owner の event、coordinator の wake、cycle の `work_completed`、owner の hook）。PUB-G の前の dev の journey で確かめる（DR-PUBG-5-11 の 2）。
   - worker の registration が `Ok(false)` になる全原因。「binding が current でない」の代理が外れるのは、B が skip しても registration が拒否される場合で、そのときの wake の費用は B の判定の SQL だけ（間隔で有界）。
