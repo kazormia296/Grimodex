@@ -251,6 +251,31 @@ pub(super) fn observe_unchanged_forms() -> Result<Vec<String>> {
     lines.push(format!(
         "current digest: uncontrolled={current_uncontrolled} foreground_ok={current_foreground}"
     ));
+    // S-5: the Rebuild V2 shadow of a current Graph (it needs the foreground
+    // control to resolve the eligibility): the summary values.
+    let shadow = current.db().with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        let mut control = ForegroundValidationControl;
+        let summary = rr::verify_v2_shadow_for_rebuild_in_tx_with_control(
+            &mut tx,
+            PROJECT,
+            "gdv1-unchanged",
+            &mut control,
+        );
+        tx.rollback()?;
+        summary
+    })?;
+    lines.push(format!(
+        "v2 shadow current: active_heads={} declarations={} evaluated={} diagnostic_codes={:?}",
+        shadow.active_head_count,
+        shadow.declaration_count,
+        shadow.evaluated_declaration_count,
+        shadow
+            .diagnostics
+            .iter()
+            .map(|line| line.split(':').next().unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+    ));
     Ok(lines)
 }
 
@@ -278,6 +303,7 @@ const EXPECTED: &[&str] = &[
     "readers incoherent 15: seal=ERR NEX_VALIDATION_TERMINATED:context-unavailable: Entity/Relation eligibi gate[verify=Blocked/verify-graph-state-invalid: NEX_VALIDATION_TERMINATED:context-unavaila/clean=false ready=false] foreground=run ERR NEX_VALIDATION_TERMINATED:context-unavailable: Entity/Relation eligibi",
     "readers no binding: seal=Ok(changes=0) gate[verify=Passed//clean=true ready=false] foreground=released",
     "current digest: uncontrolled=ERR NEX_VALIDATION_TERMINATED:context-unavailable: Entity/Relation eli foreground_ok=true",
+    "v2 shadow current: active_heads=2 declarations=11 evaluated=10 diagnostic_codes=[\"NEX_V2_SHADOW_REBUILD_SELECTOR_UNKNOWN\"]",
 ];
 
 /// GDV/1 changes nothing for incoherent bindings, for bindings that are current

@@ -742,3 +742,46 @@
 - PR-1 と PR-2 は分ける。PR-2 は PR-1 の product gate に依存する。W3 は PR-2 に入れない。
 - 役割：integrator が判断の記録と統合、実装者は Sonnet、途中のレビューは Opus、候補に触れない独立の受入れは Fable high。難しい判断（DR-PUBG-5-5 の再封印の省略、W3 の採否）は read-only の advisor に諮ってから決める。
 - 未確認：s7r2 の trace での B の build の回数、main が begin の応答から Graph の理由を読めるか、9 回目の S4 の pin の一覧、閉じた理由の集合を変えたときの K6 の分類器への影響、`existingRunKindColumnValue: null` の意味。
+
+### DR-PUBG-5-16：GDV/1 の実装判断と案 C（2026-11-17。契約 `nir1-graph-dirty-binding-verify-proposal/1#graph-limited-binding`、改訂 6）
+
+契約の本文（`fusion-eval-data/pubg-a/05-iii-contract-draft.md`、SHA-256 `b1fa766b…660a`）は確認済みで、この DR は編集しない。この DR は、契約が実装の細部として委任に残した判断（案 C の形、判定 helper の置き場所と名前、試験の形）と、実装で測った数を残す。契約の文（§3・§5・§6）と食い違う結果は出なかった。
+
+#### 1. 実装した形と信頼境界
+
+- **K-2 (b)**：`VERIFY_CONTRACT_VERSION`（`"9"`）、`REBUILD_CONTRACT_VERSION`（`"1"`）、3 つの契約の digest（graph・rule・producer generation set）は変えない。report の新しい欄 `consumers_excluded_not_current`（JSON は `consumersExcludedNotCurrent`）は `#[serde(default, skip_serializing_if = "Vec::is_empty")]`。座標と、binding なし・current・Chronicle だけの project の report の形が前と同じことは、基点と本枝の両方で通る独立の試験で確かめた（`gdv1_unchanged_behaviour_tests`、`gdv1_chronicle_unchanged_tests`）。
+- **判定 helper**：`nir1_entity_relation_index::classify_graph_binding_with_control`（`pub(crate)`）。値は `Absent`／`Incoherent`／`Current`／`NoCurrentEpoch`／`RecognizedNotCurrent`。1 段目は reader と同じ `read_internal(conn, project, true, true, …)`、2 段目は今の epoch → Freshness の行・dirty の順。full eligibility はどの制御の下でも読まない。呼出しは S-1〜S-5 の関数の内側（K-4）。結果は、その関数の connection・transaction の中で取り直し、持ち越さない。
+- **信頼境界**：判定は canonical な値（metadata、D1 の set・head、V1 の edge、canonical Freshness、Semantic Epoch）だけを使い、process-local の B の記録や reader の登録の状態は使わない（K-3）。新しい書込み・保存先・送信先・owner・timer・永続状態は無い。(x) の 2 か所（Repair の seal、C2Z の Verify gate）は sealed な report の対象外の欄を読むだけで、Graph を読み直さない。
+- **S-4 の印**：`RECOGNIZED_UNAVAILABLE_SOURCE_STATUS`（`"recognized-unavailable"`）を定数にした。印は今の計算が作る 5 つの status（`error`・`missing`・`stale`・`usable`・`unsupported`）と重ならず、そのことを単体試験で固定した。この印が (x) の片側（digest の不一致）を支えるので、外す変更は (x) を壊す（契約 §3.2 の不変条件）。current で封じた後に dirty になった report と、binding なしで封じた report は、`NEX_VERIFY_GRAPH_STATE_CHANGED`（Repair の seal、C2Z の Verify gate の reason）で拒まれることを試験した。
+- **名前**：Repair の拒否 code `NEX_REPAIR_VERIFY_GRAPH_RECOGNIZED_UNAVAILABLE`、C2Z の reason `verify-graph-recognized-unavailable`、shadow の diagnostics の code `NEX_V2_SHADOW_REBUILD_RECOGNIZED_UNAVAILABLE`（契約 §0 の「足す名前」のとおり）。
+
+#### 2. 案 C：C-2 を採る（C-1 でも C-3 でもない）
+
+- **判断**：main が cycle に渡した work のうち、**Verify の item がある project を 1 回だけ**、その item の直前で `plan_graph_index_build` を判定する（preempt なら Graph の build をその直前に足す）。RebuildDerived の前では判定しない。reasons のどれかが `before-cutover`／`before-cutover-follow-up` の project は判定しない（契約 §7 の拘束）。gate が閉じていれば SQL を読まずに返る（製品の既定は変わらない）。
+- **測った数**（同じ試験、案 C の block だけを差し替えた 3 つの build。全部の wake は 6 回、1 つの fixture）：
+
+| 形 | 案 | 最初の cycle の起動順 | 最初の cycle の後の generation | 全部の wake の後の generation | graph-build の起動の総数 |
+|---|---|---|---|---|---|
+| (a) main が Verify を渡す | C-1 | `[graph-build, verify, verify]` | 2 | 2 | 1 |
+| (a) | **C-2（採用）** | `[graph-build, verify, verify]` | 2 | 2 | 1 |
+| (a) | C-3（案 C なし） | `[verify, graph-build, verify]` | 2 | 2 | 1 |
+| (b) main が RebuildDerived を渡す | C-1 | `[graph-build, rebuild, verify, graph-build, graph-build, verify]` | 3 | 3 | 3 |
+| (b) | **C-2（採用）** | `[rebuild, graph-build, verify]` | 2 | 2 | 1 |
+| (b) | C-3 | `[rebuild, graph-build, verify]` | 2 | 2 | 1 |
+
+  試作 r5 の記録（C-1 の (b) が 3／3／3、C-3 が 2／2／1）を、製品の枝で再現した。C-2 で (b) の余分な publish が消えたので C-3（やめる）にはしない。(a) では B が Verify より先に立つ順が保たれる。C-2 の数は製品の試験（`case_c2_*`）が assert する。
+- **代替案**：C-1（試作の形。(b) で publish が 1 回、graph-build の起動が 2 回多く残る）、C-3（やめる。B-ROUTE の「stale な binding は durable な連鎖より先に producer が直す」が main 由来の work に当たらないまま残る。今も当たっていない）。main の discovery を変える案は、`maintenance_runtime.rs` の discovery の契約と DR-BSEAM-1〜6 を広く変えるので採らない。
+- **判定の Err の範囲**（契約 §7 が DR に残した論点）：`plan_graph_index_build` の Err は `?` で cycle 全体の Err になる。request に複数の project の work があるとき、ある project の判定の Err はほかの project の work も止める。これは既存の `discover_cycle_work`（wake 側の判定）の `?` と同じ扱いで、判定が返す Err は typed な validation の終了（cancel・timeout・closed など）に限られ、attempt を終わらせるのが今の規則（l6-l9:495）なので、この範囲を変えない。判定の Err を返す形は試験していない（未確認）。
+- **reasons が混ざった item の最後の rediscovery**：RebuildDerived の item の `[workspace-opened, before-cutover]` では、C-2 は先頭で判定せず、cycle の最後の rediscovery が先頭の reason（`workspace-opened`）で B を判定して graph-build が起動する（`[rebuild, graph-build, verify]`）。これは案 C の無い build でも起きる既存の挙動で、GDV/1 も案 C も変えない（試験は記録として assert）。reasons が混ざった item で先頭が before-cutover でないときに B を判定することが、「gated route は BeforeCutover の流れを判定しない」（`maintenance_runtime.rs:2291-2297`）に当たるかは、この DR では扱わない（残す）。
+
+#### 3. 契約 §8 に対して基点が動いた分（本文との食い違いではない）
+
+- 契約 §8 の「書き換える既存の試験 3 件」に加えて、基点 `79077a3d`（#926 まで）が足した 2 件が、dirty な Graph の旧い扱い（制御なしの discovery が `context-unavailable`、動機の形で Verify が `capacity-exceeded` で止まる）を assert していて落ちた。契約の GDV-R3・動機そのものが予告する変化で、§3・§5 と食い違わないので、同じ種類の書き換えとして直した：`product_gate_turns_context_unavailable_into_a_wake_that_rebuilds`（current の binding の `context-unavailable` の assert は残し、dirty の形は `Work(Verify)` と closed gate の保持を assert）、`v0_candidate_overflow_stops_verify_for_a_bound_project`（改名 `v0_candidate_overflow_does_not_stop_verify_for_a_bound_project`。動機の形が止まらないことを 3 つの launch で assert）。ほかの assert は弱めていない。
+- 全件の run は基点の変更の後で 2,776 passed、5 failed（上の 3＋2）、63 ignored だった（直した後は 5 件とも通る）。契約が書いた「2,783 passed、3 failed」は試作 r5 の head の値で、基点が違う。
+
+#### 4. 試験の置き場と「変更の前の build との比較」
+
+- 製品の試験：`nir1_graph_index_maintenance_tests/gdv1_graph_binding_tests.rs`（契約 §8 の Positive／Negative／(x)／案 C）。拒否の試験は code か reason まで assert し、対の対照は **binding なしの同じ workspace**（seal が `Ok`、gate が `Passed`、cutover が成功）にした。欄だけを空にした同じ report は digest が封じられているので作れない（契約の「または検査を外した対照」は、(y) の build を別に作らず、この対照で代えた）。
+- 基点と本枝の両方で通る試験：`gdv1_unchanged_behaviour_tests.rs`、`nir1_chronicle_index/gdv1_chronicle_unchanged_tests.rs`。既存の API だけで書き、`EXPECTED`（件数・variant・error code の prefix。id と digest は run ごとに変わるので比べない）は基点で取った値。契約の座標、incoherent・current で full validation が false の形・current・binding なし・Chronicle だけの形の report・discovery・cycle・Finding・Repair の seal・C2Z gate・foreground の完了・V2 shadow の要約が、基点と同じであることをこれで確かめる。
+- 試験の実行は、基点と本枝で **cargo の target を分ける**（`/home/grimodex/cargo-targets/gdv1-base` と `gdv1-impl`）。同じ target を 2 つの worktree で使うと、cargo の fingerprint が古い worktree の依存情報を見て再 compile せず、古い binary を走らせる。
+- **前の build が封じた DB の写しとの比較**（commit しない一時の試験。基点で `VACUUM INTO` した binding なし・current の 2 つの DB の写しを本枝で開いた）：Verify の report（JSON）、制御なし・制御つきの digest、main の discovery、制御なし・制御つきの skip 判定、Repair の seal、C2Z の Verify gate の結果が、前後で等しかった（binding なし：discovery `Idle`・skip 2 つとも `Skip`・seal `Ok(0)`・gate `Passed`。current：制御なしの 4 つは `context-unavailable`、制御つきの skip は `Skip`、gate は `Blocked`）。digest は run ごとの fixture では変わるので、写しを開いて比べた。契約 §8 の「変更の前の build で sealed した outcome を 5 つの読み手に通す」はこれで満たした。Chronicle だけの project の clean な outcome の写しは作らなかった（下の未実施）。
