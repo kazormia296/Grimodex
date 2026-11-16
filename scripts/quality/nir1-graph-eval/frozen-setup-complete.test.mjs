@@ -1326,6 +1326,10 @@ test("DR-CP4-T-5: seal の session に実行中の Verify があれば測定点�
   assert.equal(receipt.readBack.maintenance.running, 0);
 });
 
+test("DR-CP4-L-27（S2 追補 #22）: retry の予定の猶予は RETRY_DISPATCH_GRACE_MS＝5000 ms（S2 の freshnessSettle.setup.plannedRetryGraceMs がこの名で写す）", () => {
+  assert.equal(RETRY_DISPATCH_GRACE_MS, 5_000);
+});
+
 test("DR-CP4-L-27（setup の静止）: running の行が残った DB は、開き直しの上限（MAINTENANCE_QUIESCE_REOPENS 回）でも静止しなければ setup で止まり、cold DB を作らない", async () => {
   assert.equal(MAINTENANCE_QUIESCE_REOPENS, 2);
   assert.equal(MAINTENANCE_QUIESCE_WAIT_MS, 60_000);

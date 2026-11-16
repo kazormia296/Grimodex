@@ -1529,9 +1529,12 @@ const FRESHNESS_SETTLE = Object.freeze({
     r5CheckWaits: false,
     beforeExecutors: Object.freeze(["chronicle-index", "measurement-point"]),
     sessionEnd: true,
+    // The quiesce session (DR-CP4-L-27) also waits for stillness
+    // (requireQuiet) at its own point; the frame is REOPEN_QUIESCE.
     maintenanceStillAt: Object.freeze([
       "before:measurement-point",
       "session-end",
+      "quiesce",
     ]),
     maintenanceStillWhen: Object.freeze([
       "no-running-run",
@@ -1542,6 +1545,10 @@ const FRESHNESS_SETTLE = Object.freeze({
     plannedRetryWhen:
       "failed-retryable-attempt-with-next-attempt-at-later-than-now-minus-grace-and-no-later-run-of-its-work-key",
     plannedRetryGraceMs: 5000,
+    // The harness constant the grace is (workspace-db.mjs). It is named, not
+    // bound to the pinned bytes, until the pin is retaken (S4b の前の ⑥); a
+    // test holds the value against the harness.
+    plannedRetryGraceConstant: "RETRY_DISPATCH_GRACE_MS",
     onExhausted: "[precheck] S1i freshness-settle",
     maintenanceOnExhausted: "disclosed",
     // DR-CP4-L-27: the last session's closed workspace is reopened to be
@@ -2244,6 +2251,10 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k67-readings-after-s7r2",
   "k67-quality-verdict-v3-design",
   "k67-harness-and-dev-ab-choices",
+  // S2 追補 #22: setup の静止（DR-CP4-L-27。ユーザーの回答 contracts 337ff239）。
+  // 定数と止め方は hd-g03h2 の drift_at_query を見た後に置き、dev の 3 回の後に
+  // 変えていない。向きは止まる側。
+  "setup-quiesce-after-dev",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

@@ -20,6 +20,11 @@ import test from "node:test";
 import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 import { K66_FREEZE, K67_FREEZE } from "../nir1-graph-eval/constants.mjs";
 import {
+  MAINTENANCE_QUIESCE_REOPENS,
+  MAINTENANCE_QUIESCE_WAIT_MS,
+} from "../nir1-graph-eval/frozen-setup-driver.mjs";
+import { RETRY_DISPATCH_GRACE_MS } from "../nir1-graph-eval/workspace-db.mjs";
+import {
   SEED_PIN_ADDENDUM_PATH,
   SEED_PIN_ADDENDUM_V1,
   SP1,
@@ -3613,6 +3618,9 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
     "k67-readings-after-s7r2",
     "k67-quality-verdict-v3-design",
     "k67-harness-and-dev-ab-choices",
+    // S2 追補 #22: the setup quiesce (DR-CP4-L-27) chosen after hd-g03h2's
+    // drift was seen.
+    "setup-quiesce-after-dev",
   ]) {
     const without = clone(declaration);
     without.readingsChosenAfterDevObservation =
@@ -6374,6 +6382,14 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
         1,
       ),
     (p) => (p.setupReadings.freshnessSettle.setup.plannedRetryGraceMs = 1000),
+    // S2 追補 #22: the grace is named (RETRY_DISPATCH_GRACE_MS) and the quiesce
+    // session's point is among the stillness points.
+    (p) =>
+      (p.setupReadings.freshnessSettle.setup.plannedRetryGraceConstant =
+        "RETRY_GRACE_MS"),
+    (p) =>
+      delete p.setupReadings.freshnessSettle.setup.plannedRetryGraceConstant,
+    (p) => p.setupReadings.freshnessSettle.setup.maintenanceStillAt.pop(),
     (p) =>
       (p.setupReadings.freshnessSettle.setup.coldDbRunningRuns = "disclosed"),
     (p) =>
@@ -6391,6 +6407,26 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
   assert.equal(
     settle.setup.coldDbRunningRuns,
     "[precheck] S1i maintenance-quiesce",
+  );
+  assert.deepEqual(settle.setup.maintenanceStillAt, [
+    "before:measurement-point",
+    "session-end",
+    "quiesce",
+  ]);
+  // S2 追補 #22: the values S2 writes are the harness's constants (the
+  // validator holds them as literals until the pin is retaken, ⑥).
+  assert.equal(
+    settle.setup.plannedRetryGraceConstant,
+    "RETRY_DISPATCH_GRACE_MS",
+  );
+  assert.equal(settle.setup.plannedRetryGraceMs, RETRY_DISPATCH_GRACE_MS);
+  assert.equal(
+    prep.setupReadings.reopen.quiesce.reopens,
+    MAINTENANCE_QUIESCE_REOPENS,
+  );
+  assert.equal(
+    prep.setupReadings.reopen.quiesce.waitMs,
+    MAINTENANCE_QUIESCE_WAIT_MS,
   );
   // 定数は pin の bytes から読む（読めなければ照合できず落ちる）。
   const unread = { ...ctx, harnessConstants: { ...ctx.harnessConstants } };
@@ -8252,8 +8288,9 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   assert.equal(rows1108.length, 4);
   // S4a（9 回目）adds two rows dated 2026-11-16 after these, S2 追補 #19
   // (S3 10th's reflection) a third and S2 追補 #20 (the S3 recheck and setup's
-  // quiesce) a fourth and S2 追補 #21 (the S3 third recheck) a fifth.
-  assert.equal(declaration.revisions.at(-6), rows1108[3]);
+  // quiesce) a fourth and S2 追補 #21 (the S3 third recheck) a fifth and
+  // S2 追補 #22 (the S3 fourth recheck) a sixth.
+  assert.equal(declaration.revisions.at(-7), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8888,6 +8925,16 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
       "数値の線を置かず",
       "K6/7-N9′",
     ],
+    // S2 追補 #22: the setup quiesce.
+    "setup-quiesce-after-dev": [
+      "337ff239",
+      "L-27",
+      "hd-g03h2",
+      "RETRY_DISPATCH_GRACE_MS",
+      "ユーザーの選択を経ていない",
+      "止まる側",
+      "freshness-settle",
+    ],
   };
   for (const [id, words] of Object.entries(expected)) {
     const text = `${rows[id].reading} ${rows[id].chosenBy} ${rows[id].basis}`;
@@ -8911,8 +8958,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 5);
-  assert.equal(declaration.revisions.at(-1), rows1116[4]);
+  assert.equal(rows1116.length, 6);
+  assert.equal(declaration.revisions.at(-1), rows1116[5]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -9026,15 +9073,55 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
     "bytes を変えていないもの",
   ])
     assert.ok(rows1116[4].reason.includes(word), word);
-  // Earlier rows stay as written (the new rows add, never edit).
+  // S2 追補 #22's row: the S3 fourth recheck's reflection and the one policy
+  // for the rows.
+  for (const word of [
+    "S2 追補 #22",
+    "s3-review-10-recheck3.md",
+    "ok-with-notes",
+    "plannedRetryGraceConstant",
+    "RETRY_DISPATCH_GRACE_MS",
+    "HARNESS_CONSTANTS",
+    "quiesce の地点",
+    "setup-quiesce-after-dev",
+    "SIGKILL",
+    "11c12fb9",
+    "追補の作者の申告ではない",
+    "読んでいないもの",
+    "bytes を変えていないもの",
+    "生きた行",
+  ])
+    assert.ok(rows1116[5].reason.includes(word), word);
+  // One policy for the rows: only revisions[37] (S4a's limits row) is a live
+  // row that mirrors the limits' latest state; every other earlier row stays
+  // as written (the new rows add, never edit). S2 追補 #21 had edited
+  // revisions[39] (S2 追補 #20's row); that parenthetical is back as it was.
+  assert.ok(
+    declaration.revisions[37].reason.includes("S4a（9 回目）で開示する限界"),
+  );
+  assert.ok(
+    declaration.revisions[37].reason.includes(
+      "frozen の受領書で running／retry の予定のある cold を弾く。dev の受領書はこの検査の対象外",
+    ),
+  );
+  assert.ok(declaration.revisions[39].reason.startsWith("S2 追補 #20"));
+  assert.ok(
+    declaration.revisions[39].reason.includes(
+      "(a)〜(n) のコメント、引けない edge の hold の開示、DR に再確認が",
+    ),
+  );
+  assert.ok(
+    !declaration.revisions[39].reason.includes("実物に書かれていなかった"),
+  );
+  assert.ok(declaration.revisions[40].reason.startsWith("S2 追補 #21"));
   assert.ok(
     declaration.revisions
-      .slice(0, -5)
+      .slice(0, -6)
       .some((row) => row.reason.includes("S4a（7 回目）で開示する限界")),
   );
   assert.equal(
     declaration.revisions.length,
-    41,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's and #21's one each",
+    42,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each",
   );
 });
