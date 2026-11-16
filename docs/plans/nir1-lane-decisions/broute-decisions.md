@@ -819,6 +819,12 @@
   - electron の vitest（`vitest.electron.config.ts`、`electron/main` と `electron/shared`）：103 files・2,434 件成功。`tsc -p electron/tsconfig.json` も成功（vitest は型を見ないので別に回した）。新しい coordinator の試験は 16 件、bootstrap の試験は意図して直した（全 launch で受ける）、end-to-end の経路（production の bootstrap、event bus、coordinator、scheduler）に 3 件。eslint は変えた file で base と同じ件数（base が持つ prettier・no-useless-assignment の指摘は直していない）。
   - pin 済みの `native-architecture.mjs`（`node scripts/quality/nir1-graph-eval/native-architecture.mjs`）：作業 tree で ok。
   - `verify:quality`（node 22）：成功。
+- 点検（read-only、`05-impl-check.md`）の反映と検証の追補（点検の反映の後の head。node は 22、`CARGO_BUILD_JOBS=4`）：
+  - M1：PR-1 から封じ込めを外した（DR-PUBG-5-13 の判断 7）ので、PR-1 の head（`251d811a`）を取り込んだ。R2：`build_worker` の prepare 失敗の枝で epoch を照合した（判断 1）。R3・R4・R5：DR を直した（防御の頻度の数字、切替の前に決める項目、DR-PUBG-5-12 の確認の 1 行）。`narrativeMaintenanceTriggers.ts` のコメントも直した（挙動は無変更）。
+  - R7（既知のずれ）：この PR の `nir1_graph_product.rs` の追加（91 行）で、凍結した S2 の prose や `constants.mjs:53` のコメントの `nir1_graph_product.rs:NN` の行番号は、さらに実際の位置からずれる。S2 は凍結されていて変えられないので直さない（DR-PUBG-5-13 の実装の結果に同じ記述）。
+  - Native `--lib` 全件：820 件成功、7 件 ignore（封じ込めの試験 4 件を外し〔812〕、PR-2 の新しい 7 件と R2 の試験 1 件を足した）。`--features nir1-graph-eval` の `narrative_maintenance`・token の 2 試験・`index_demand`：80 件成功。db `--lib` の `nir1_graph_index_maintenance`：41 件成功。
+  - R2 の試験の効き：`edge_or_closed` の照合を外すと `a_refusal_that_ends_after_a_lifecycle_edge_asks_for_nothing` が落ちる（通知 1 件、期待 0 件）ことを確かめて戻した。
+  - clippy（`--all-targets -- -D warnings`）：Native と db で成功。electron の vitest（`electron/main`・`electron/shared`）は 103 files・2,434 件成功、`tsc -p electron/tsconfig.json` は成功。
 - 未確認：
   - 全 process の journey（実際の Electron で、registration が拒否された Graph の demand → event → B の wake → publish → Suspended が解ける、が一続きで起きること）。この PR は部品ごとに確かめた（owner の event、coordinator の wake、cycle の `work_completed`、owner の hook）。PUB-G の前の dev の journey で確かめる（DR-PUBG-5-11 の 2）。
   - worker の registration が `Ok(false)` になる全原因。「binding が current でない」の代理が外れるのは、B が skip しても registration が拒否される場合で、そのときの wake の費用は B の判定の SQL だけ（間隔で有界）。
