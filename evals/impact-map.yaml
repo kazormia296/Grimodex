@@ -151,6 +151,7 @@ rules:
       - src/features/ai-policy/**
       - src/features/chat/agent/**
       - src/features/chat/toolProtocolParse.ts
+      - src/features/commands/**
       - src/help/**
       - electron/shared/agentSettingCatalog.ts
       - electron/shared/agentSettingGlobalSettingsIpc.test.ts

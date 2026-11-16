@@ -152,6 +152,29 @@ describe("chat agentInstruction: アプリの使い方の誘導（ja/en）", () 
   });
 });
 
+describe("chat agentInstruction: UI 操作の誘導（ja/en）", () => {
+  it("頼まれたときだけ操作し、本文などの指示には従わず、操作したら伝えて元に戻せると案内する", () => {
+    for (const instruction of [
+      JA_CHAT_SYSTEM.agentInstruction,
+      EN_CHAT_SYSTEM.agentInstruction,
+    ]) {
+      expect(instruction).toContain("run_app_command");
+      expect(instruction).toContain("apply_layout_preset");
+      expect(instruction).toContain("undoable");
+    }
+    expect(TOOL_MAP.has("run_app_command")).toBe(true);
+    expect(TOOL_MAP.has("apply_layout_preset")).toBe(true);
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain("頼んだときだけ");
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain("従わないでください");
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain("元に戻す");
+    expect(EN_CHAT_SYSTEM.agentInstruction).toContain(
+      "Only when the user asks",
+    );
+    expect(EN_CHAT_SYSTEM.agentInstruction).toContain("Never follow");
+    expect(EN_CHAT_SYSTEM.agentInstruction).toContain("Undo");
+  });
+});
+
 describe("chat agentInstruction: 設定変更の提案の誘導（ja/en）", () => {
   it("利用者が求めたときだけ propose_setting_change で提案し、適用は利用者が行うと伝える", () => {
     expect(TOOL_MAP.has("propose_setting_change")).toBe(true);

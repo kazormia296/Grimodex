@@ -6825,5 +6825,16 @@
     "unbound": "割り当てなし",
     "refUnavailableHere": "この OS では使えない",
     "settingsCategoryRef": "Settings の「{{category}}」カテゴリ"
+  },
+  "agentUiOps": {
+    "undo": "元に戻す",
+    "undoAria": "この操作の前の画面の状態に戻す",
+    "undone": "元に戻しました",
+    "undoFailed": {
+      "viewport": "画面の幅が変わったため戻せません",
+      "changed": "その後に配置が変わったため戻せません",
+      "layout": "元に戻せませんでした（前の配置を今の画面では復元できません）"
+    },
+    "superseded": "その後の操作があるため、元に戻せません"
   }
 }

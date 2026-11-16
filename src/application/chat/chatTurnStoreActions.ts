@@ -31,6 +31,7 @@ import { maybeRunSummarization } from "./chatSummarization";
 import {
   alreadyInjectedCodexEntryResult,
   createAskUserToolHandler,
+  withUiOperationLimit,
   createChatResearchSubagentHandler,
 } from "./chatAgentToolHandlers";
 import {
@@ -1180,12 +1181,8 @@ function createChatTurnStoreActions(
             assertTurnAuthority();
             const askUserResult = handleAskUserTool(name, toolCallId, params);
             if (askUserResult) return askUserResult;
-            const researchResult = runResearchSubagent(
-              name,
-              toolCallId,
-              params,
-            );
-            if (researchResult) return researchResult;
+            const research = runResearchSubagent(name, toolCallId, params);
+            if (research) return research;
             const injectedEntryResult = alreadyInjectedCodexEntryResult(
               name,
               toolCallId,
@@ -1329,7 +1326,7 @@ function createChatTurnStoreActions(
                 );
                 return response;
               },
-              executeTool: guardedExecuteTool,
+              executeTool: withUiOperationLimit(guardedExecuteTool),
               onProgress: (progress) => {
                 if (isCurrentTurn() && !sendControl.aborted) {
                   set({ agentProgress: progress });

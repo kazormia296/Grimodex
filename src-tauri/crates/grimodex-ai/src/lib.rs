@@ -7240,6 +7240,8 @@ mod tests {
             "update_codex_entry",
             "update_event",
             "update_foreshadow",
+            "run_app_command",
+            "apply_layout_preset",
         ];
         want.sort_unstable();
         assert_eq!(got, want);

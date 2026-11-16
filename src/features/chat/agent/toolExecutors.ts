@@ -2119,6 +2119,11 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   set_event_participants: setEventParticipantsTool,
   add_event_relation: addEventRelationTool,
   remove_event_relation: removeEventRelationTool,
+  // アプリの UI 操作（view のみ）。実装（layout／tab の store）は初回の呼び出しで読む。
+  run_app_command: async (params) =>
+    (await import("./appUiTools")).runAppCommandTool(params),
+  apply_layout_preset: async (params) =>
+    (await import("./appUiTools")).applyLayoutPresetTool(params),
   // 設定変更の提案。設定は変えず、検証済みの提案を返す（適用は利用者のカードのクリック）。
   // 実装は初回の呼び出しまで読み込まない。DURABLE_MUTATION_TOOLS には入れない（DB を書かない）。
   propose_setting_change: async (params) =>
