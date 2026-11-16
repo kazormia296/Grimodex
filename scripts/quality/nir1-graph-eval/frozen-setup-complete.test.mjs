@@ -14,6 +14,8 @@ import {
   INDEX_BUILD_INTERVAL_MS,
   INDEX_BUILD_WAIT_MS,
   indexBuildUnmet,
+  MAINTENANCE_QUIESCE_REOPENS,
+  MAINTENANCE_QUIESCE_WAIT_MS,
   MAINTENANCE_REOPENS,
   MAINTENANCE_WAIT_MS,
   RELATION_ID_REUSE_REFUSAL,
@@ -42,7 +44,14 @@ import {
   assertCompleteSetupReceipt,
   loadSetupReceipt,
 } from "./setup-receipt.mjs";
-import { readChronicleSetupRows } from "./workspace-db.mjs";
+import {
+  RETRY_DISPATCH_GRACE_MS,
+  maintenanceQuiet,
+  readChronicleSetupRows,
+  readMaintenanceActivity,
+  waitFreshnessSettled,
+} from "./workspace-db.mjs";
+import { DatabaseSync } from "node:sqlite";
 import {
   REPO_ROOT,
   completeSetupExtension,
@@ -114,8 +123,9 @@ function completeProduct(plan, options = {}) {
 }
 
 /** Sessions over one fake product; records each label, seam and Main. */
-function fakeSessions(product, onStop = null) {
+function fakeSessions(product, onStop = null, stopEvidence = null) {
   const started = [];
+  const stops = new Map();
   return {
     started,
     startSession: async ({ label, extraEnv, setupMain }) => {
@@ -129,7 +139,11 @@ function fakeSessions(product, onStop = null) {
         stop: async () => {
           onStop?.(label, product);
           product.close();
-          return { label, problems: [] };
+          // DR-CP4-L-27: the stop evidence of the launcher (`stop.closed`,
+          // `stop.signalled`); the n-th stop of the label.
+          const n = (stops.get(label) ?? 0) + 1;
+          stops.set(label, n);
+          return { label, problems: [], ...(stopEvidence?.(label, n) ?? {}) };
         },
       };
     },
@@ -141,7 +155,7 @@ const noSleep = async () => {};
 async function completeSetup(key, options = {}, shared = SHARED, extra = {}) {
   const plan = planOf(COMPLETE, key);
   const product = completeProduct(plan, options);
-  const sessions = fakeSessions(product, extra.onStop);
+  const sessions = fakeSessions(product, extra.onStop, extra.stopEvidence);
   const setupDir = path.join(scratch("cp4-s1j2-"), plan.caseId, plan.variantId);
   const result = await setupFrozenVariant({
     plan,
@@ -1312,21 +1326,226 @@ test("DR-CP4-T-5: seal の session に実行中の Verify があれば測定点�
   assert.equal(receipt.readBack.maintenance.running, 0);
 });
 
-test("DR-CP4-T-5: Verify が上限までに終わらなければ待ちを使い切って先へ進み（止めない）、静止しなかったことと cold DB の実行中の run を開示する", async () => {
-  const { receipt } = await completeSetup(
+test("DR-CP4-L-27（setup の静止）: running の行が残った DB は、開き直しの上限（MAINTENANCE_QUIESCE_REOPENS 回）でも静止しなければ setup で止まり、cold DB を作らない", async () => {
+  assert.equal(MAINTENANCE_QUIESCE_REOPENS, 2);
+  assert.equal(MAINTENANCE_QUIESCE_WAIT_MS, 60_000);
+  const { receipt, sessions } = await completeSetup(
     "G-02/base",
     { verify: { sessions: ["seal"], settles: false } },
     SHARED,
     { freshnessSettleMs: 30 },
   );
+  assert.notEqual(receipt.status, "setup-complete");
+  assert.match(
+    [receipt.precheck?.message, ...receipt.errors].join("\n"),
+    /\[precheck\] S1i maintenance-quiesce: .*not quiet after 2 reopen\(s\) \(running 1/u,
+  );
+  // The session's own wait did not stop it (it is a disclosure there); the
+  // closed DB did, after the setup's sessions and the two quiesce reopenings.
+  assert.deepEqual(sessions.started.map((row) => row.label).slice(-2), [
+    "quiesce-1",
+    "quiesce-2",
+  ]);
+  assert.equal(receipt.quiesce.reopens.length, 2);
+  assert.equal(receipt.quiesce.final.activity.running, 1);
+  assert.equal(receipt.coldDatabase, undefined);
+  assert.equal(receipt.readBack, undefined);
+});
+
+test("DR-CP4-L-27（setup の静止）: 静止の待ちが尽きたら開き直し、製品の起動時の復旧が running の行を閉じれば、cold DB は running 0・retry の予定 0 で封印される", async () => {
+  const { receipt, receiptPath, sessions } = await completeSetup(
+    "G-02/base",
+    { verify: { sessions: ["seal"], settles: false, recoversOnReopen: true } },
+    SHARED,
+    { freshnessSettleMs: 30 },
+  );
   assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
-  const point = receipt.freshnessSettles.find(
-    (row) => row.session === "seal" && row.point === "before:measurement-point",
-  ).settle;
-  assert.equal(point.settled, true);
-  assert.equal(point.maintenance.quiet, false);
-  assert.equal(point.maintenance.final.running, 1);
-  assert.equal(receipt.readBack.maintenance.running, 1);
+  // The seal session's end left the Verify running: one reopening cleared it.
+  assert.equal(receipt.quiesce.reopens.length, 1);
+  assert.equal(receipt.quiesce.reopens[0].before.running, 1);
+  assert.equal(receipt.quiesce.reopens[0].dirLabel, "quiesce-1");
+  assert.equal(receipt.quiesce.final.activity.running, 0);
+  assert.equal(receipt.quiesce.final.endedByClose, true);
+  assert.equal(sessions.started.at(-1).label, "quiesce-1");
+  assert.equal(sessions.started.at(-1).seam, false);
+  assert.equal(sessions.started.at(-1).setupMain, null);
+  const wait = receipt.quiesce.reopens[0].settle;
+  assert.equal(wait.settled, true);
+  assert.equal(wait.maintenance.quiet, true);
+  assert.deepEqual(receipt.freshnessSettles.at(-1), {
+    session: "quiesce",
+    point: "quiesce",
+    settle: receipt.freshnessSettles.at(-1).settle,
+  });
+  assert.equal(receipt.readBack.maintenance.running, 0);
+  assert.equal(receipt.readBack.maintenance.retryPending, 0);
+  const sealed = loadSetupReceipt({ root: REPO_ROOT, file: receiptPath });
+  assert.equal(assertCompleteSetupReceipt(sealed), sealed);
+});
+
+test("DR-CP4-L-27（setup の静止）: 最初から静止していれば開き直さない。signal で終わった最後の session は静止と読まず、開き直して app.close() で終わらせる（最後まで signal なら cold DB を作らない）", async () => {
+  const quiet = await completeSetup("G-02/base");
+  assert.equal(quiet.receipt.status, "setup-complete");
+  assert.deepEqual(quiet.receipt.quiesce.reopens, []);
+  assert.equal(quiet.receipt.quiesce.final.endedByClose, true);
+  assert.ok(
+    quiet.sessions.started.every((row) => !row.label.startsWith("quiesce")),
+  );
+  const killed = (label, n) =>
+    label === "seal" && n === 1
+      ? { stop: { closed: false, signalled: [{ pid: 1, signal: "SIGKILL" }] } }
+      : {};
+  const once = await completeSetup("G-02/base", {}, SHARED, {
+    stopEvidence: killed,
+  });
+  assert.equal(
+    once.receipt.status,
+    "setup-complete",
+    once.receipt.errors.join("\n"),
+  );
+  assert.equal(once.receipt.quiesce.reopens.length, 1);
+  assert.equal(once.receipt.quiesce.reopens[0].beforeEndedByClose, false);
+  const always = await completeSetup("G-02/base", {}, SHARED, {
+    stopEvidence: () => ({ stop: { closed: false, signalled: [{ pid: 1 }] } }),
+  });
+  assert.notEqual(always.receipt.status, "setup-complete");
+  assert.match(
+    [always.receipt.precheck?.message, ...always.receipt.errors].join("\n"),
+    /maintenance-quiesce: .*ended by a signal/u,
+  );
+  assert.equal(always.receipt.coldDatabase, undefined);
+});
+
+test("DR-CP4-L-27（setup の静止）: retry の予定がある状態（失敗した retryable の Attempt の next_attempt_at が先にあり、同じ work_key の後の run が無い）は running が 0 でも静止として読まない", async () => {
+  const file = path.join(scratch("cp4-l27-"), "grimodex.db");
+  const db = new DatabaseSync(file);
+  db.exec(`
+    CREATE TABLE narrative_extraction_runs (id TEXT PRIMARY KEY, project_id TEXT, surface_path_id TEXT,
+      status TEXT, created_at TEXT, work_key TEXT);
+    CREATE TABLE narrative_extraction_tasks (id TEXT PRIMARY KEY, run_id TEXT);
+    CREATE TABLE narrative_extraction_attempts (id TEXT PRIMARY KEY, task_id TEXT, status TEXT,
+      retry_disposition TEXT, next_attempt_at TEXT);
+  `);
+  const nowIso = "2026-11-16T10:00:10.000Z";
+  const iso = (offsetMs) =>
+    new Date(Date.parse(nowIso) + offsetMs).toISOString();
+  let n = 0;
+  const failedRun = ({
+    workKey = "k",
+    createdAtMs = -2000,
+    nextMs,
+    disposition = "retryable",
+    status = "failed",
+  }) => {
+    n += 1;
+    db.prepare(
+      "INSERT INTO narrative_extraction_runs VALUES (?, 'p', 'dependency-verify', ?, ?, ?)",
+    ).run(
+      `r${n}`,
+      status === "running" ? "running" : "failed",
+      iso(createdAtMs),
+      workKey,
+    );
+    db.prepare("INSERT INTO narrative_extraction_tasks VALUES (?, ?)").run(
+      `t${n}`,
+      `r${n}`,
+    );
+    db.prepare(
+      "INSERT INTO narrative_extraction_attempts VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      `a${n}`,
+      `t${n}`,
+      status === "running" ? "running" : "failed",
+      disposition,
+      nextMs === null ? null : iso(nextMs),
+    );
+  };
+  const read = () => readMaintenanceActivity(file, "p", { nowIso });
+  assert.equal(read().retryPending, 0);
+  // Interrupted at 12.871, retry not before 13.871 (1 s later): planned.
+  failedRun({ nextMs: 1000 });
+  assert.equal(read().running, 0);
+  assert.equal(read().retryPending, 1);
+  // Its not-before has passed within the dispatch grace: still planned; after
+  // the grace with no later run it is no longer a plan.
+  failedRun({ workKey: "g", nextMs: -(RETRY_DISPATCH_GRACE_MS - 1000) });
+  assert.equal(read().retryPending, 2);
+  failedRun({ workKey: "h", nextMs: -(RETRY_DISPATCH_GRACE_MS + 1000) });
+  assert.equal(read().retryPending, 2);
+  // A terminal failure, a preempted attempt with no not-before, and a work key
+  // whose retry run was created are not plans.
+  failedRun({ workKey: "t", nextMs: 1000, disposition: "terminal" });
+  failedRun({ workKey: "u", nextMs: null });
+  failedRun({
+    workKey: "k",
+    createdAtMs: -1000,
+    nextMs: null,
+    disposition: null,
+  });
+  assert.equal(read().retryPending, 1);
+  assert.equal(read().running, 0);
+  failedRun({
+    workKey: "v",
+    createdAtMs: -500,
+    nextMs: null,
+    status: "running",
+  });
+  assert.equal(read().running, 1);
+  db.close();
+  // Two reads with no run in progress but a retry planned are not quiet.
+  const still = { runs: 3, lastCreatedAt: "x", running: 0 };
+  assert.equal(maintenanceQuiet(still, still), true);
+  assert.equal(
+    maintenanceQuiet(
+      { ...still, retryPending: 0 },
+      { ...still, retryPending: 0 },
+    ),
+    true,
+  );
+  assert.equal(
+    maintenanceQuiet(
+      { ...still, retryPending: 1 },
+      { ...still, retryPending: 1 },
+    ),
+    false,
+  );
+  assert.equal(
+    maintenanceQuiet(
+      { ...still, retryPending: 0 },
+      { ...still, retryPending: 1 },
+    ),
+    false,
+  );
+  // A wait that requires stillness is not settled while a retry is planned.
+  const feed = {
+    head: 1,
+    acknowledged: 1,
+    pendingEvents: 0,
+    activeRun: false,
+    reserved: false,
+  };
+  let clock = 0;
+  const wait = (requireQuiet, retryPending) =>
+    waitFreshnessSettled({
+      read: () => feed,
+      readActivity: () => ({ ...still, retryPending }),
+      requireQuiet,
+      limitMs: 100,
+      intervalMs: 25,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+  clock = 0;
+  const planned = await wait(true, 1);
+  assert.equal(planned.settled, false);
+  assert.equal(planned.maintenance.quiet, false);
+  clock = 0;
+  assert.equal((await wait(true, 0)).settled, true);
+  // Without `requireQuiet` the Freshness alone decides (the session's own wait).
+  clock = 0;
+  assert.equal((await wait(false, 1)).settled, true);
 });
 
 test("DR-CP4-T-5: session の終わりでも maintenance を待つ（ir の session の Verify はその session を閉じる前に終わる）", async () => {

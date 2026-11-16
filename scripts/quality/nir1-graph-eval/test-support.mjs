@@ -1010,6 +1010,10 @@ export const COMPLETE_SETUP_FIELDS = Object.freeze({
   sealAttempts: [{ session: "seal", attempt: 0, outcome: "sealed" }],
   maintenanceAttempts: [{ attempt: 0, outcome: "reached" }],
   setupMain: { sha256: "e".repeat(64) },
+  // DR-CP4-L-27: the cold DB keeps no run `running` and no planned retry.
+  readBack: {
+    maintenance: { runs: 0, lastCreatedAt: null, running: 0, retryPending: 0 },
+  },
 });
 
 export function seedPinWorkspace(spec) {
@@ -1529,7 +1533,8 @@ export function completeSetupExtension({
   freshness = null,
   // DR-CP4-T-5: a maintenance Verify that is `running` when a session in
   // `verify.sessions` begins; the tests' sleep completes it unless
-  // `verify.settles` is false.
+  // `verify.settles` is false. DR-CP4-L-27: with `verify.recoversOnReopen` the
+  // quiesce session's opening completes the run a session left running.
   verify = null,
 }) {
   return ({ db, at }) => {
@@ -1753,6 +1758,13 @@ export function completeSetupExtension({
           maybeCutover();
         // A seam session's workspace-opened wake publishes B.
         const projectId = projectOf();
+        // DR-CP4-L-27: the product's startup recovery closes a run a killed
+        // session left `running` (and its retry completes) when the quiesce
+        // session reopens the workspace.
+        if (verify?.recoversOnReopen && session.label.startsWith("quiesce"))
+          run(
+            "UPDATE narrative_extraction_runs SET status = 'completed' WHERE surface_path_id = 'dependency-verify' AND status = 'running'",
+          );
         // DR-CP4-T-5: a Verify the session's opening leaves running.
         if (verifyPending && projectId) {
           verifyPending = false;
