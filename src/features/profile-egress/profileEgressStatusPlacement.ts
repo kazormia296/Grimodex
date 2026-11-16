@@ -1,22 +1,33 @@
 /**
  * Placement of the profile egress status display (DR-DA2-63, DR-PUBG-32-1, R3-8):
- * it floats over the editor's bottom-left corner, clear of the LayoutShell's own
- * controls and of the editor's status bar. The left stripe column, the bottom
- * stripe row (with the bottom corner toggle) and the gap that follows them are
- * off limits, so the display never covers a stripe icon or a corner toggle.
- * Above that the editor's status bar (`EditorPaneStatusBar`, the scene status
- * button and the badges) sits on the center's bottom edge, so the display is
- * lifted over it too: `EDITOR_STATUS_BAR_CLEARANCE_PX` is the bar's measured
- * height (29 px) plus a 10 px gap. The unavailable card is wider than some open
- * side panels and has nothing to click, so it is `pointer-events-none`: a
- * splitter handle under it keeps its hit area. `layoutInvariants.browser.test.tsx`
- * measures all of it against the real status bar.
+ * it floats over the editor's bottom-left area, clear of the LayoutShell's own
+ * controls and of the editor's status bar. Two placements, both `fixed`:
+ *
+ * - Fallback (no editor status bar: zen mode, no scene open, a stubbed editor):
+ *   the left stripe column, the bottom stripe row (with the bottom corner
+ *   toggle) and the gap that follows them are off limits, so the display never
+ *   covers a stripe icon or a corner toggle (62 px, 61 px).
+ * - Anchored (the real `EditorPaneStatusBar` carries `anchor-name:
+ *   --editor-status-bar`): CSS anchor positioning puts the display above the
+ *   bar (`STATUS_BAR_GAP_PX` 10 px over its top edge) and right of the scene
+ *   status menu, which opens upward from the button at the bar's left padding
+ *   (12 px) and is at least 120 px wide (`min-w-[120px]`):
+ *   `STATUS_MENU_CLEARANCE_PX` is 12 + 120 + 8 px from the bar's left edge. The
+ *   anchor follows the bar through every layout (side panels, bottom region,
+ *   splitter drags) with no script. A browser without anchor positioning uses
+ *   the fallback values of `anchor()`.
+ *
+ * The unavailable card is wider than some open side panels and has nothing to
+ * click, so it is `pointer-events-none`: a splitter handle under it keeps its
+ * hit area. `layoutInvariants.browser.test.tsx` measures all of it against the
+ * real status bar with the menu open.
  *
  * Below 720 px the app shows the phone workspace: there are no stripes and no
  * editor status bar, and the bottom nav (`phone-workspace-chrome__nav`, 68 px
  * plus the bottom safe area, `phoneWorkspace.css`) spans the full width. The
- * display then sits 8 px above the nav, from the left margin. The media query
- * is the same 720 px as `VIEWPORT_BREAKPOINTS.phoneMaxExclusive`.
+ * display then sits 8 px above the nav, from the left margin. The variant is
+ * `width < 719.98px` (Tailwind 4 `max-[..]` is exclusive), so a 719 px window is
+ * phone as in `VIEWPORT_BREAKPOINTS.phoneMaxExclusive` (720).
  *
  * The numbers repeat `OUTER_PAD_PX + STRIPE_SIZE + STRIPE_GAP_PX` and
  * `OUTER_PAD_PX + HORIZONTAL_STRIPE_SIZE + STRIPE_GAP_PX` of
@@ -26,21 +37,20 @@
  * the class names below and the phone nav height.
  */
 export const PROFILE_EGRESS_STATUS_LEFT_PX = 62;
-const STRIPE_CLEAR_BOTTOM_PX = 61;
-export const EDITOR_STATUS_BAR_CLEARANCE_PX = 39;
-export const PROFILE_EGRESS_STATUS_BOTTOM_PX =
-  STRIPE_CLEAR_BOTTOM_PX + EDITOR_STATUS_BAR_CLEARANCE_PX;
+export const PROFILE_EGRESS_STATUS_BOTTOM_PX = 61;
+export const STATUS_MENU_CLEARANCE_PX = 140;
+export const STATUS_BAR_GAP_PX = 10;
 export const PROFILE_EGRESS_STATUS_PHONE_LEFT_PX = 12;
 export const PROFILE_EGRESS_STATUS_PHONE_BOTTOM_PX = 76;
-const RIGHT_MARGIN_PX = 12;
+export const PROFILE_EGRESS_STATUS_RIGHT_MARGIN_PX = 12;
+/** The `anchor-name` that `EditorPaneStatusBar` sets on its root. */
+export const EDITOR_STATUS_BAR_ANCHOR = "--editor-status-bar";
 
 /**
  * Tailwind scans source for whole class names, so these are literals, not
- * built from the numbers above (the unit test pins that they agree).
+ * built from the numbers above (the unit test pins that they agree). In an
+ * `anchor()` the second argument is the fallback, so it is the fallback
+ * placement minus the offset added after it.
  */
 export const PROFILE_EGRESS_STATUS_PLACEMENT_CLASS =
-  "left-[62px] bottom-[100px] max-[719px]:left-[12px] max-[719px]:bottom-[calc(76px+env(safe-area-inset-bottom))]";
-
-export const PROFILE_EGRESS_STATUS_POSITION = {
-  maxWidth: `calc(100vw - ${PROFILE_EGRESS_STATUS_LEFT_PX + RIGHT_MARGIN_PX}px)`,
-} as const;
+  "left-[calc(anchor(--editor-status-bar_left,-78px)+140px)] bottom-[calc(anchor(--editor-status-bar_top,51px)+10px)] max-w-[calc(100vw-74px)] max-[719.98px]:left-[12px] max-[719.98px]:bottom-[calc(76px+env(safe-area-inset-bottom))] max-[719.98px]:max-w-[calc(100vw-24px)]";

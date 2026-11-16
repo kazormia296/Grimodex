@@ -6,10 +6,7 @@ import { useProfileEgressStatus } from "./useProfileEgressStatus";
 import { useWritesRetryAfterActivation } from "./profileActivationWriteRetry";
 import { closeProfileEgressEntrances } from "@/features/chat/closeProfileEgressEntrances";
 import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "@/features/chat/nir1/nir1LocalGenerationAvailability";
-import {
-  PROFILE_EGRESS_STATUS_PLACEMENT_CLASS,
-  PROFILE_EGRESS_STATUS_POSITION,
-} from "./profileEgressStatusPlacement";
+import { PROFILE_EGRESS_STATUS_PLACEMENT_CLASS } from "./profileEgressStatusPlacement";
 import { ProfileEgressStatusBoundary } from "./ProfileEgressStatusBoundary";
 import type { ProfileEgressStatusSnapshot } from "./useProfileEgressStatus";
 
@@ -82,7 +79,6 @@ function ProfileEgressStatusView({
         data-testid="profile-egress-status"
         data-profile-egress-state="unavailable"
         data-profile-egress-reason={view.reason}
-        style={PROFILE_EGRESS_STATUS_POSITION}
         className={`pointer-events-none fixed z-[90] w-80 rounded-md border border-destructive/40 bg-popover px-3 py-2 text-xs text-popover-foreground shadow-lg ${PROFILE_EGRESS_STATUS_PLACEMENT_CLASS}`}
       >
         <p className="flex items-center gap-1.5 font-medium text-destructive">
@@ -107,7 +103,6 @@ function ProfileEgressStatusView({
       title={
         restricted ? t("profileEgress.status.restrictedDetail") : undefined
       }
-      style={PROFILE_EGRESS_STATUS_POSITION}
       className={`pointer-events-auto fixed z-[90] flex items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow ${PROFILE_EGRESS_STATUS_PLACEMENT_CLASS}`}
     >
       {restricted ? (

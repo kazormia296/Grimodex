@@ -1272,20 +1272,40 @@ describe("profile egress status display vs LayoutShell controls (real Chromium)"
           expect(statusButton).not.toBeNull();
           const barRect = bar!.getBoundingClientRect();
           expect(barRect.width).toBeGreaterThan(0);
+          // Open the scene status menu: it grows upward from the button, so a
+          // display lifted above the bar can still cover it.
+          await act(async () => {
+            statusButton!.click();
+          });
+          const menuButtons = [
+            ...bar!.querySelectorAll<HTMLElement>(
+              "[class*='bottom-full'] button",
+            ),
+          ];
+          expect(menuButtons.length).toBe(5);
+          const rects = [
+            { name: "the editor status bar", rect: barRect },
+            ...menuButtons.map((button, index) => ({
+              name: `status menu item ${index}`,
+              rect: button.getBoundingClientRect(),
+            })),
+          ];
           for (const next of VIEWS) {
             egressView.current = next;
             const { unmount } = render(<ProfileEgressStatusIndicator />);
             await act(async () => {});
             const display = await screen.findByTestId("profile-egress-status");
             const d = display.getBoundingClientRect();
-            const overlapX =
-              Math.min(d.right, barRect.right) - Math.max(d.left, barRect.left);
-            const overlapY =
-              Math.min(d.bottom, barRect.bottom) - Math.max(d.top, barRect.top);
-            expect(
-              overlapX <= 0.5 || overlapY <= 0.5,
-              `${JSON.stringify(next)}: the status display overlaps the editor status bar`,
-            ).toBe(true);
+            for (const { name, rect } of rects) {
+              const overlapX =
+                Math.min(d.right, rect.right) - Math.max(d.left, rect.left);
+              const overlapY =
+                Math.min(d.bottom, rect.bottom) - Math.max(d.top, rect.top);
+              expect(
+                overlapX <= 0.5 || overlapY <= 0.5,
+                `${JSON.stringify(next)}: the status display overlaps ${name}`,
+              ).toBe(true);
+            }
             unmount();
           }
         } finally {
@@ -1346,7 +1366,8 @@ describe("profile egress status display vs the phone workspace nav (real Chromiu
         const display = await screen.findByTestId("profile-egress-status");
         const d = display.getBoundingClientRect();
         expect(d.width).toBeGreaterThan(0);
-        expect(d.left).toBeGreaterThanOrEqual(0);
+        // The phone variant (left 12 px) is in force, not the wide one.
+        expect(d.left).toBeCloseTo(12, 0);
         expect(d.right).toBeLessThanOrEqual(viewport.width);
         expect(
           d.bottom <= navRect.top,

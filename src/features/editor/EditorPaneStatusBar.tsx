@@ -86,7 +86,7 @@ export function EditorPaneStatusBar({
   return (
     <div
       data-editor-tool-surface
-      className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground"
+      className="glass-editor-chrome [anchor-name:--editor-status-bar] flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground"
     >
       <div className="relative flex min-w-0 items-center gap-2">
         {activeStatus ? (
