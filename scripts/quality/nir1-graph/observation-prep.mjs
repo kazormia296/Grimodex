@@ -321,7 +321,7 @@ export const K67_QUALITY_VERDICT_V3 = Object.freeze({
     "scripts/quality/nir1-graph-eval/quality-evidence-items.mjs",
     "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
   ]),
-  implementationCommit: "db7c12349ba8dd6085218fad7b8fe39c7a4197a0",
+  implementationCommit: "11d5e4304885603f92e45c2216eb692b2658637b",
 });
 export const K66_DEV_REHEARSALS = Object.freeze({
   commit: "8eb23fa67fea1cec8c9bf9930f473abcfe238e89",
