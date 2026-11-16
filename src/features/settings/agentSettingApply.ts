@@ -152,7 +152,14 @@ export function revertAgentSettingChange(
   if (!agentSettingValuesEqual(key, readRuntimeSetting(key), applied)) {
     return { ok: false, reason: "changed" };
   }
-  if (!previousExplicit) return clearThroughMirrors(key);
+  // 明示値が目録の検証（main の save_global_settings と同じ規則）を通らないとき（手で壊した値など）は、
+  // 書き戻すと main が保存を拒否して pending が残り続けるので、書かずに消して既定に戻す。
+  if (
+    !previousExplicit ||
+    !validateAgentSettingValue(key, previous, { fontFamilies: "shape-only" }).ok
+  ) {
+    return clearThroughMirrors(key);
+  }
   return writeVerified(key, previous)
     ? { ok: true }
     : { ok: false, reason: "failed" };

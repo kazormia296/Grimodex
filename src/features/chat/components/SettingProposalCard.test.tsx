@@ -24,21 +24,50 @@ vi.mock("@/features/settings/api", () => ({
   setProjectSetting: vi.fn(async () => {}),
   setSetting: vi.fn(async () => {}),
 }));
+// main の save_global_settings と同じ再検証（findInvalidAgentSettingChanges）を通す保存先の代役。
 const repo = vi.hoisted(() => ({
+  stored: { userPreferences: {} } as Record<string, unknown>,
+  validate: undefined as
+    | undefined
+    | ((incoming: unknown, current: unknown) => { message: string }[]),
   patch: vi.fn(
-    async (_updater: (current: Record<string, unknown>) => unknown) => ({}),
+    async (updater: (current: Record<string, unknown>) => unknown) => {
+      const current = repo.stored;
+      const next = updater(current) as Record<string, unknown>;
+      if (next === current) return current;
+      const invalid = repo.validate?.(
+        next.userPreferences,
+        current.userPreferences,
+      );
+      if (invalid && invalid.length > 0) {
+        throw new Error(`invalid settings: ${invalid[0]!.message}`);
+      }
+      repo.stored = next;
+      return next;
+    },
   ),
 }));
 vi.mock("@/lib/globalSettings/repository", () => ({
   globalSettingsRepository: {
     read: vi.fn(async () => ({ userPreferences: {} })),
     write: vi.fn(async () => {}),
-    updateUserPreference: vi.fn(async () => {}),
+    updateUserPreference: vi.fn(async (key: string, value: string) => {
+      await repo.patch((current) => ({
+        ...current,
+        userPreferences: {
+          ...((current.userPreferences as Record<string, string>) ?? {}),
+          [key]: value,
+        },
+      }));
+    }),
     patch: repo.patch,
   },
 }));
 
-import { AGENT_SETTING_CATALOG } from "@/../electron/shared/agentSettingCatalog";
+import {
+  AGENT_SETTING_CATALOG,
+  findInvalidAgentSettingChanges,
+} from "@/../electron/shared/agentSettingCatalog";
 import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -70,6 +99,8 @@ beforeEach(() => {
     projectLanguage: "ja",
   });
   repo.patch.mockClear();
+  repo.stored = { userPreferences: {} };
+  repo.validate = findInvalidAgentSettingChanges;
   useSettingsStore.getState()._pending.clear();
   useSettingProposalStore.setState({ outcomes: {} });
   useCursorSettingsStore.setState({ focusMode: false, typewriterMode: false });
@@ -194,6 +225,83 @@ describe("SettingProposalCard", () => {
       "1.4",
     );
     expect(repo.patch).not.toHaveBeenCalled();
+  });
+
+  it("明示値の previous が目録の検証を通らなければ、書き戻さず明示値を消し、保存が通る（不正値が global に残らない）", async () => {
+    // 手で壊した範囲外の値が保存済み・読込済み。
+    repo.stored = { userPreferences: { "editor.lineHeight": "99" } };
+    act(() => {
+      useSettingsStore.getState().applyHydration({
+        projectId: "p",
+        layers: {
+          legacy: {},
+          project: {},
+          global: { "editor.lineHeight": "99" },
+        },
+      });
+    });
+    render(
+      <SettingProposalCard proposal={proposalOf("editor.lineHeight", "1.8")} />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByText("chat.settingProposal.apply"));
+    });
+    await act(async () => {
+      await useSettingsStore.getState().flushPending();
+    });
+    expect(
+      (repo.stored.userPreferences as Record<string, string>)[
+        "editor.lineHeight"
+      ],
+    ).toBe("1.8");
+
+    fireEvent.click(screen.getByText("chat.settingProposal.undo"));
+    expect(
+      Object.hasOwn(
+        useSettingsStore.getState().layers.global,
+        "editor.lineHeight",
+      ),
+    ).toBe(false);
+    expect(setting("editor.lineHeight")).toBe(
+      DEFAULT_SETTINGS["editor.lineHeight"],
+    );
+    // main の再検証を通って保存でき（flush が拒否されない）、保存先にも不正値が残らない。
+    await act(async () => {
+      await expect(
+        useSettingsStore.getState().flushPending(),
+      ).resolves.toBeUndefined();
+    });
+    expect(useSettingsStore.getState()._pending.size).toBe(0);
+    expect(repo.stored.userPreferences).toEqual({});
+  });
+
+  it("legacy の層にだけ値が有った設定の「元に戻す」は、その値を global に固定せず legacy の値が再び効く", async () => {
+    act(() => {
+      useSettingsStore.getState().applyHydration({
+        projectId: "p",
+        layers: {
+          legacy: { "editor.lineHeight": "1.4" },
+          project: {},
+          global: {},
+        },
+      });
+    });
+    expect(setting("editor.lineHeight")).toBe("1.4");
+    render(
+      <SettingProposalCard proposal={proposalOf("editor.lineHeight", "1.8")} />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByText("chat.settingProposal.apply"));
+    });
+    expect(setting("editor.lineHeight")).toBe("1.8");
+    fireEvent.click(screen.getByText("chat.settingProposal.undo"));
+    expect(setting("editor.lineHeight")).toBe("1.4");
+    expect(
+      Object.hasOwn(
+        useSettingsStore.getState().layers.global,
+        "editor.lineHeight",
+      ),
+    ).toBe(false);
   });
 
   it("「却下」では設定を変えず、適用のボタンも消える", () => {
