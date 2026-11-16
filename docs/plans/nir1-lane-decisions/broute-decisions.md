@@ -708,12 +708,13 @@
   - Native `--lib` 全件（816 件成功、7 件 ignore）。`--features nir1-graph-eval` で `narrative_maintenance::tests` と token の 2 試験（16 件成功）。
   - `cargo clippy --all-targets -- -D warnings`：`grimodex-db`（既定 feature）と Native は成功。`--features nir1-material-diagnostics` は、PR-1 が触れない file（`nir1_graph.rs`、`nir1_graph/input.rs`、`nir1_graph_memory_diagnostics.rs`）の指摘 11 件（lib。lib test は 7 件）で失敗する。base（`87937140`）で同じ command を回して同じ件数・同じ file であることを確かめた（PR-1 の変更の指摘は無い）。
   - pin 済みの `native-architecture.mjs` を変えず、`runArchitectureChecks` を作業 tree に対して実行して違反 0。
+  - 検証の追補（点検の後。封じ込めを外した head。node は 22、`CARGO_BUILD_JOBS=4`）：上の件数は封じ込めを外す前の値で、外した後は次の値に替わる。`grimodex-db --lib` の `nir1_graph_index_maintenance` は 40 件成功（allowlist の単体試験 1 件を外した）。Native `--lib` 全件は 812 件成功・7 件 ignore（封じ込めの試験 4 件を外した）。`--features nir1-graph-eval` の `narrative_maintenance`・token の 2 試験は 72 件成功。clippy（`--all-targets -- -D warnings`）は Native と db で成功。db の試験 file の未使用 import は clippy が見つけたので直した。
 - PR-2 と PUB-G への引き継ぎ：
   - 定数を切り替えると discovery の応答に `wakeProjectIds` が載る。main は `acceptGraphIndexBuildWakes` が無いとその応答を拒否する（`normalizeDiscoveryResponse` の `allowedKeys`）。PR-1 だけで定数を切り替えてはならない。main が product の gate でも `wakeProjectIds` を受ける変更は PR-2（W2 と同じ範囲）で行う。
   - (iii)（拒否のときに binding を退かせる）の契約の起案は、この PR とは別。実装されると V0 の試験の期待が意図して変わる。
 - 点検（read-only、`05-impl-check.md`）の反映：
   - M1：判断 7 の封じ込めを、この PR から外して別の枝に切り出した（判断 7）。外した後の Native `--lib` と db の試験は、下の「検証」の追補に記す。
-  - R7（既知のずれ）：凍結した S2（`observation-prep.v1.json`）の prose にある `nir1_graph_product.rs:78` の行番号の参照（`docs/plans/nir1-final-request-eval-proposal-4-draft.md` の 79 行にも同じ参照がある）と、`scripts/quality/nir1-graph-eval/constants.mjs:53` のコメントの `nir1_graph_product.rs:94` は、この PR の `nir1_graph_product.rs` の追加（+13 行。64 行目付近）で実際の位置から 13 行ずれる。S2 は凍結されていて変えられないので直さない。これらの行番号を検査する script は見つからなかった。ずれても pin の検査には影響しない。
+  - R7（既知のずれ）：凍結した S2（`observation-prep.v1.json`）の prose にある `nir1_graph_product.rs:78` の行番号の参照（`docs/plans/nir1-final-request-eval-proposal-4-draft.md` の 79 行にも同じ参照がある）と、`scripts/quality/nir1-graph-eval/constants.mjs:53` のコメントの `nir1_graph_product.rs:94` は、この PR の `nir1_graph_product.rs` の追加（挿入 12 行、削除 1 行で、純増 11 行。64 行目付近）で実際の位置から 11 行ずれる（`:78` は `:89`、`:94` は `:105` になる）。S2 は凍結されていて変えられないので直さない。これらの行番号を検査する script は見つからなかった。ずれても pin の検査には影響しない。
 - 未確認：
   - 1 回目の wake の cycle が `capacity-exceeded` の Err を返す（V0 の (a)、(b) の open gate）。複数 project の work を載せた 1 つの request が、1 つの project の Verify の失敗で一緒に落ちるかは見ていない。`discover_all` の範囲の外。
   - Native の試験が mac／Win の CI で走るかは確かめていない。token の構築箇所の走査は、root と path と改行を正規化してあるが、Linux 以外では走らせていない。
