@@ -607,13 +607,17 @@ test("harness-setup-uses-product-writers: a connection outside the workspace mod
     ),
   );
   // DR-DBC-4（rusqlite 0.41）: workspace.rs installs the audit hook through
-  // `with_conn_mut`, which the pinned checker does not count (fixing it needs
-  // the next S4 re-freeze), so two added `with_conn` calls exercise the rule.
+  // exactly one `with_conn_mut`; one more connection use (either spelling)
+  // must trip the single-use rule.
+  assert.equal(
+    checkHarness(real).filter((v) => /more than once/.test(v.message)).length,
+    0,
+  );
   const twice = checkHarness(
     mutated(
       HARNESS("workspace.rs"),
       (text) =>
-        `${text}\nfn _x(d: &D) { d.with_conn(|c| Ok(())); }\nfn _y(d: &D) { d.with_conn(|c| Ok(())); }\n`,
+        `${text}\nfn _x(d: &D) { d.with_conn_mut(|c| Ok(())); }\n`,
     ),
   );
   assert.ok(

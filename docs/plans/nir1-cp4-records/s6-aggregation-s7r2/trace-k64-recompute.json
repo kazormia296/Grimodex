@@ -1,0 +1,262 @@
+{
+ "evidence": {
+  "kind": "ratification5",
+  "candidateHead": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a",
+  "dPrime": {
+   "commit": "4d38d0d164e02a76a0e172214b259a11e0b2c5ff",
+   "ancestor": true
+  },
+  "rsJoinHook": {
+   "evidence": "candidate-test",
+   "testFile": "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+   "head": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a",
+   "testFileSha256": "2a6422166d79d616c6bfb7516bedb6d10058820da26bd3c8b8aabd4bd6222ed3",
+   "passed": true,
+   "tests": 8,
+   "runDigest": "7adf240fd68198babe9728ed3daf5ef649d207f0db53586fafbba75014f45b4c",
+   "dependencies": {
+    "lockfileSha256": "628e164415d3fab9dfa5b32fc2e0c47584b0a188e40076556829eef0dea49d15",
+    "installedLockSha256": "628e164415d3fab9dfa5b32fc2e0c47584b0a188e40076556829eef0dea49d15",
+    "vitestVersion": "4.1.12",
+    "lockedVitestVersion": "4.1.12"
+   }
+  },
+  "wfWindow": {
+   "commit": "c4333bbd081fb297cf2dddc598155791b9678be8",
+   "ancestor": true
+  },
+  "dForty": {
+   "commit": "a7e969466a1d9a22a97142b06b1a9301f972f96e",
+   "ancestor": true,
+   "config": {
+    "path": "src/features/related-scenes/relatedScenesConfig.ts",
+    "constant": "RELATED_SCENES_IR_EXTRA_WAIT_MS",
+    "waitMs": 40
+   }
+  }
+ },
+ "summaries": {
+  "editing": {
+   "kind": "editing",
+   "status": "valid",
+   "invalid": [],
+   "precheck": [],
+   "violations": [],
+   "followUpLapse": {},
+   "regime": "k64",
+   "candidate": {
+    "regime": "k64",
+    "notApplied": []
+   },
+   "Q": 201,
+   "U": 201,
+   "displayed": 201,
+   "firstRenderInWindow": 185,
+   "followUpDisplayed": 16,
+   "outOfWindow": 0,
+   "outOfWindowU": 0,
+   "outOfWindowRate": 0,
+   "outOfWindowExceeds": false,
+   "lapse": {
+    "total": 0,
+    "i-b-seal": 0,
+    "i-chronicle-stop": 0,
+    "ii-a3-ineligible-at-start": 0,
+    "iii-invalidated": 0,
+    "iv-empty-contribution": 0
+   },
+   "lapseRate": 0,
+   "lapseExceeds": false,
+   "categories": {
+    "lapse": 0,
+    "other": 0,
+    "freshness": 0
+   },
+   "reasons": {},
+   "x": {
+    "F1": 0,
+    "F6": 0,
+    "X1": 0,
+    "X2": 0,
+    "X3": 0,
+    "X4": 0,
+    "X5": 0,
+    "X6": 0,
+    "X7": 0,
+    "X8": 0,
+    "X9": 0,
+    "X10": 0,
+    "X11": 0,
+    "X12": 0,
+    "X13": 0
+   },
+   "q": {
+    "q1": {
+     "n": 16,
+     "p50": 45.79999998211861,
+     "p90": 47.30000001192093,
+     "p99": 48.5,
+     "min": 43.30000001192093,
+     "max": 48.5
+    },
+    "q2": {
+     "n": 16,
+     "p50": 12.100000023841858,
+     "p90": 14.400000005960464,
+     "p99": 15,
+     "min": 5.300000011920929,
+     "max": 15
+    },
+    "q3": {
+     "n": 16,
+     "p50": 81.30000001192093,
+     "p90": 86.7000000178814,
+     "p99": 87.30000001192093,
+     "min": 70.90000000596046,
+     "max": 87.30000001192093
+    }
+   },
+   "boundaryDisagreement": {
+    "not-joined-in-time": 1,
+    "joined-late-within-tolerance": 0
+   },
+   "stampWithoutComparison": {
+    "unavailable": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    },
+    "stamp0-missing": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    }
+   },
+   "busy": {
+    "causes": {}
+   },
+   "sources": {
+    "worker": 185
+   },
+   "outcomes": {
+    "graph-ready": 185,
+    "graph-late": 16
+   },
+   "a3IneligibleAtStart": 0,
+   "emptyContribution": 0,
+   "mainReason": null,
+   "requeryCount": 0
+  },
+  "browsing": {
+   "kind": "browsing",
+   "status": "valid",
+   "invalid": [],
+   "precheck": [],
+   "violations": [],
+   "followUpLapse": {},
+   "regime": "k64",
+   "candidate": {
+    "regime": "k64",
+    "notApplied": []
+   },
+   "Q": 201,
+   "U": 201,
+   "displayed": 201,
+   "firstRenderInWindow": 49,
+   "followUpDisplayed": 152,
+   "outOfWindow": 0,
+   "outOfWindowU": 0,
+   "outOfWindowRate": 0,
+   "outOfWindowExceeds": false,
+   "lapse": {
+    "total": 0,
+    "i-b-seal": 0,
+    "i-chronicle-stop": 0,
+    "ii-a3-ineligible-at-start": 0,
+    "iii-invalidated": 0,
+    "iv-empty-contribution": 0
+   },
+   "lapseRate": 0,
+   "lapseExceeds": false,
+   "categories": {
+    "lapse": 0,
+    "other": 0,
+    "freshness": 0
+   },
+   "reasons": {},
+   "x": {
+    "F1": 0,
+    "F6": 0,
+    "X1": 0,
+    "X2": 0,
+    "X3": 0,
+    "X4": 0,
+    "X5": 0,
+    "X6": 0,
+    "X7": 0,
+    "X8": 0,
+    "X9": 0,
+    "X10": 0,
+    "X11": 0,
+    "X12": 0,
+    "X13": 0
+   },
+   "q": {
+    "q1": {
+     "n": 152,
+     "p50": 62.30000001192093,
+     "p90": 75.40000000596046,
+     "p99": 82.80000001192093,
+     "min": 43.19999998807907,
+     "max": 88.40000000596046
+    },
+    "q2": {
+     "n": 152,
+     "p50": 12.400000005960464,
+     "p90": 14.299999982118607,
+     "p99": 16.599999994039536,
+     "min": 7,
+     "max": 18.5
+    },
+    "q3": {
+     "n": 152,
+     "p50": 97.69999998807907,
+     "p90": 108.7000000178814,
+     "p99": 123.59999999403954,
+     "min": 74.40000000596046,
+     "max": 126.2000000178814
+    }
+   },
+   "boundaryDisagreement": {
+    "not-joined-in-time": 1,
+    "joined-late-within-tolerance": 0
+   },
+   "stampWithoutComparison": {
+    "unavailable": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    },
+    "stamp0-missing": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    }
+   },
+   "busy": {
+    "causes": {}
+   },
+   "sources": {
+    "worker": 49
+   },
+   "outcomes": {
+    "graph-ready": 49,
+    "graph-late": 152
+   },
+   "a3IneligibleAtStart": 0,
+   "emptyContribution": 0,
+   "mainReason": null,
+   "requeryCount": 0
+  }
+ }
+}

@@ -202,6 +202,7 @@ export function admitK64Run(input) {
       k64Commit: input.k64Commit,
       k65Commit: input.k65Commit,
       k66Commit: input.k66Commit,
+      k67Commit: input.k67Commit,
       // P2-4: the keep test ran before (async) and its evidence is sealed.
       ...(input.ratification5 !== undefined
         ? { ratification5: input.ratification5 }
@@ -238,6 +239,9 @@ export function assembleK64Receipt({
   settings,
   declaration = null,
   measurementWorkspace = null,
+  // Prereg v3: the Evidence ranges read once after the samples (hashes,
+  // ranges and IDs; evidence-fields.mjs). Absent when none was read.
+  evidenceObservation = null,
   samples,
   checks,
 }) {
@@ -279,6 +283,7 @@ export function assembleK64Receipt({
     },
     declaration,
     measurementWorkspace,
+    ...(evidenceObservation ? { evidenceObservation } : {}),
     samples,
     requeries: [],
     checks,

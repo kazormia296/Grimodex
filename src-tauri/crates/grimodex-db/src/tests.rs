@@ -4056,3 +4056,29 @@ fn test_rebuild_fts_if_stale_is_noop_when_populated() {
         .expect("q");
     assert_eq!(after[0]["n"], Value::from(1), "populated 索引は維持される");
 }
+
+/// DR-DBC-7: the wait-0 probe that D-final's tests use in place of the
+/// parent's freshness stamp read. Free only when the connection can be taken
+/// without waiting and is in autocommit.
+#[test]
+fn main_connection_probe_is_free_only_without_a_holder_or_a_transaction() {
+    let db = test_db();
+    assert!(db.main_connection_is_free_for_test());
+    {
+        let guard = db.lock_conn().expect("lock");
+        assert!(!db.main_connection_is_free_for_test());
+        drop(guard);
+    }
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN")?;
+        Ok(())
+    })
+    .expect("begin");
+    assert!(!db.main_connection_is_free_for_test());
+    db.with_conn(|conn| {
+        conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    })
+    .expect("rollback");
+    assert!(db.main_connection_is_free_for_test());
+}

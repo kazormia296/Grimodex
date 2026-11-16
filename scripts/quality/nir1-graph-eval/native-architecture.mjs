@@ -82,6 +82,7 @@ export const PATHS = Object.freeze({
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_eval.rs",
   nodeLib: "electron/native/grimodex-node/src/lib.rs",
   nodeProduct: "electron/native/grimodex-node/src/nir1_graph_product.rs",
+  nodeRelatedGraph: "electron/native/grimodex-node/src/related_scenes/graph.rs",
   nodeEvalDir: "electron/native/grimodex-node/src/nir1_graph_eval/",
   nodeEvalMod: "electron/native/grimodex-node/src/nir1_graph_eval/mod.rs",
   verifyRelease: "electron/scripts/verify-release-native.mjs",
@@ -249,7 +250,8 @@ export const SNIPPETS = Object.freeze({
     `${CFG} let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self);`,
     `${CFG} eval_probe.finish(&result);`,
     `#[cfg(any(test, feature = "${EVAL_FEATURE}"))] fn slot_kind(&self) -> GraphSlotKind {`,
-    // The per-ticket notes (stamp attempt and Busy cause), CP-4 S1a review.
+    // The per-ticket notes (Busy cause, worker drift check, requalification),
+    // CP-4 S1a review; DR-DBC-7 removed the stamp attempt.
     `${CFG} eval_notes: crate::nir1_graph_eval::TicketNotes,`,
     `${CFG} eval_notes: crate::nir1_graph_eval::TicketNotes::default(),`,
     // The Busy answers of `begin` and `begin_deferred`, each with the
@@ -257,13 +259,20 @@ export const SNIPPETS = Object.freeze({
     ...BUSY_HOOKS,
     `${CFG} ticket.eval_notes.busy("rebuild-window"); ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));`,
     `let failure = classify_c_query_failure(&error); ${CFG} if matches!(failure, CQueryFailure::CapacityBusy) { ticket.eval_notes.busy("worker-capacity"); }`,
-    `${CFG} let eval_stamp_attempted_at = Instant::now(); let stamp1 = read_stamp_for_query(context, &guard.binding); ${CFG} ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());`,
+    // K6/7 (ii-b) (2-1): the worker's drift check of the query.
+    `${CFG} ticket.eval_notes.worker_check(result.as_ref().err().map(classify_c_query_failure));`,
     // The read-only accessor of the path Main configured (CP-2b): the trait's
     // default and the process factory's answer (DR-CP4-M-1).
     `${CFG} fn worker_path_for_eval(&self) -> Option<&Path> { None }`,
     `${CFG} fn worker_path_for_eval(&self) -> Option<&Path> { Some(&self.worker) }`,
   ],
   [PATHS.dbNarrativeMod]: [`${CFG} pub mod nir1_graph_eval;`],
+  // K6/7 (ii-b) (2-2): the requalification where the response leaves.
+  [PATHS.nodeRelatedGraph]: [
+    `${CFG} let eval_waiter = eval_waiter_of(&plan);`,
+    `${CFG} eval_note_requalification(eval_waiter.as_ref(), &assembled);`,
+    `${CFG} eval_note_requalification_returned(eval_waiter.as_ref());`,
+  ],
 });
 
 /** Blocks whose whole body belongs to the evaluation build. */
@@ -271,6 +280,11 @@ export const BLOCKS = Object.freeze({
   [PATHS.nodeProduct]: [
     `${CFG} impl Nir1GraphProductOwner {`,
     `${CFG} impl GraphTicketWaiter {`,
+  ],
+  [PATHS.nodeRelatedGraph]: [
+    `${CFG} fn eval_waiter_of(plan: &AwaitPlan) -> Option<GraphTicketWaiter> {`,
+    `${CFG} fn eval_note_requalification( waiter: Option<&GraphTicketWaiter>, assembled: &std::result::Result<Result<graph_response::Assembled>, tokio::task::JoinError>, ) {`,
+    `${CFG} fn eval_note_requalification_returned(waiter: Option<&GraphTicketWaiter>) {`,
   ],
 });
 

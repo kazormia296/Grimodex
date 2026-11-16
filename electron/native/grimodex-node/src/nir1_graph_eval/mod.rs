@@ -40,7 +40,8 @@ use napi::bindgen_prelude::Error;
 use napi_derive::napi;
 use serde_json::{json, Value};
 
-use grimodex_db::narrative_extraction::nir1_graph::c_query_freshness::CQueryFreshnessStamp;
+use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::CQueryFailure;
+use grimodex_db::narrative_extraction::nir1_graph::worker_frame::UnavailableReason;
 
 use crate::nir1_graph_product::{
     GraphBegin, GraphSlotKind, GraphTicketUse, GraphTicketWaiter, GraphUnavailable,
@@ -281,20 +282,49 @@ pub(crate) fn mapping_path_for(maps: &str, address: usize) -> Option<PathBuf> {
 
 // ---- per-ticket notes (written by the owner's hooks under the feature) -----
 
-/// The freshness stamp attempt of one query (`serve_query`): when the owner
-/// thread tried to read the second stamp, and how it compared with the stamp
-/// of the READY. `matched` is `None` when either stamp was unreadable.
+/// K6/7 (ii-b) (2-1): the worker's registration-drift check of one query
+/// (`serve_query`). `clear` is a query the worker answered (the check ran and
+/// found no drift); `drift` is the worker's `RegistrationDrift`; any other
+/// failure of the query is `not-evaluated` (the check did not decide), named
+/// by `cause`. A ticket whose query never reached the worker has no note.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct StampNote {
-    pub(crate) attempted_at: Instant,
+pub(crate) struct WorkerDriftNote {
     pub(crate) result: &'static str,
-    pub(crate) matched: Option<bool>,
+    pub(crate) cause: Option<&'static str>,
+}
+
+/// K6/7 (ii-b) (2-2): the requalification the Native makes where the response
+/// leaves (`related_scenes/graph.rs`, `await_request`). `result` is `passed`,
+/// `unavailable` (the assembly answered with a reason) or `error`; `reason` is
+/// the closed `GraphUnavailable` the response carried. `returned` is set by the
+/// last hook, just before the payload leaves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RequalificationNote {
+    pub(crate) result: &'static str,
+    pub(crate) reason: Option<&'static str>,
+    pub(crate) returned: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TicketNoteSnapshot {
-    pub(crate) stamp: Option<StampNote>,
     pub(crate) busy_cause: Option<&'static str>,
+    pub(crate) worker_drift: Option<WorkerDriftNote>,
+    pub(crate) requalification: Option<RequalificationNote>,
+}
+
+fn failure_cause(failure: CQueryFailure) -> &'static str {
+    match failure {
+        CQueryFailure::Unavailable(UnavailableReason::RegistrationDrift) => "registration-drift",
+        CQueryFailure::Unavailable(_) => "worker-unavailable",
+        CQueryFailure::Deadline => "deadline",
+        CQueryFailure::Cancelled => "cancelled",
+        CQueryFailure::BindingLost => "binding-lost",
+        CQueryFailure::CapacityBusy => "capacity-busy",
+        CQueryFailure::CleanupUnproved => "cleanup-unproved",
+        CQueryFailure::StartupRegistrationRefused => "startup-registration-refused",
+        CQueryFailure::WorkerStartup => "worker-startup",
+        CQueryFailure::Other => "other",
+    }
 }
 
 /// Held by a `TicketShared` of the evaluation build only. A leaf lock.
@@ -302,27 +332,44 @@ pub(crate) struct TicketNoteSnapshot {
 pub(crate) struct TicketNotes(Mutex<TicketNoteSnapshot>);
 
 impl TicketNotes {
-    pub(crate) fn stamp(
-        &self,
-        attempted_at: Instant,
-        before: Option<&CQueryFreshnessStamp>,
-        after: Option<&CQueryFreshnessStamp>,
-    ) {
-        let (result, matched) = match (before, after) {
-            (Some(before), Some(after)) if before == after => ("fresh", Some(true)),
-            (Some(_), Some(_)) => ("stale", Some(false)),
-            (None, _) => ("stamp0-missing", None),
-            (Some(_), None) => ("unavailable", None),
+    pub(crate) fn busy(&self, cause: &'static str) {
+        lock(&self.0).busy_cause = Some(cause);
+    }
+
+    /// The worker's drift check of the query: `None` is a query the worker
+    /// answered, `Some` the failure it ended with.
+    pub(crate) fn worker_check(&self, failure: Option<CQueryFailure>) {
+        let note = match failure {
+            None => WorkerDriftNote {
+                result: "clear",
+                cause: None,
+            },
+            Some(CQueryFailure::Unavailable(UnavailableReason::RegistrationDrift)) => {
+                WorkerDriftNote {
+                    result: "drift",
+                    cause: Some("registration-drift"),
+                }
+            }
+            Some(other) => WorkerDriftNote {
+                result: "not-evaluated",
+                cause: Some(failure_cause(other)),
+            },
         };
-        lock(&self.0).stamp = Some(StampNote {
-            attempted_at,
+        lock(&self.0).worker_drift = Some(note);
+    }
+
+    pub(crate) fn requalification(&self, result: &'static str, reason: Option<&'static str>) {
+        lock(&self.0).requalification = Some(RequalificationNote {
             result,
-            matched,
+            reason,
+            returned: false,
         });
     }
 
-    pub(crate) fn busy(&self, cause: &'static str) {
-        lock(&self.0).busy_cause = Some(cause);
+    pub(crate) fn requalification_returned(&self) {
+        if let Some(note) = lock(&self.0).requalification.as_mut() {
+            note.returned = true;
+        }
     }
 
     pub(crate) fn snapshot(&self) -> TicketNoteSnapshot {
@@ -523,14 +570,24 @@ fn disposition_name(use_: GraphTicketUse) -> &'static str {
     }
 }
 
-fn stamp_json(note: Option<StampNote>) -> Value {
-    note.map_or(Value::Null, |note| {
-        json!({
-            "attemptedAtNs": clock_ns(note.attempted_at),
+/// An explicit value for a ticket that never reached the step, so an absent
+/// key (an older `.node`) is told apart from a step that did not run.
+fn worker_drift_json(note: Option<WorkerDriftNote>) -> Value {
+    match note {
+        Some(note) => json!({"result": note.result, "cause": note.cause}),
+        None => json!({"result": "not-reached", "cause": null}),
+    }
+}
+
+fn requalification_json(note: Option<RequalificationNote>) -> Value {
+    match note {
+        Some(note) => json!({
             "result": note.result,
-            "matched": note.matched,
-        })
-    })
+            "reason": note.reason,
+            "returned": note.returned,
+        }),
+        None => json!({"result": "not-reached", "reason": null, "returned": false}),
+    }
 }
 
 fn ticket_fields(
@@ -553,7 +610,8 @@ fn ticket_fields(
             Some(GraphUnavailable::Busy) => Some(notes.busy_cause.unwrap_or("unrecorded")),
             _ => None,
         },
-        "freshnessStamp": stamp_json(notes.stamp),
+        "workerDrift": worker_drift_json(notes.worker_drift),
+        "requalification": requalification_json(notes.requalification),
     })
 }
 
@@ -695,10 +753,6 @@ pub(crate) fn diagnostics_json(state: &AppState) -> Value {
         "preparesStarted": d.prepares_started,
         "preparesReady": d.prepares_ready,
         "prepareFailures": d.prepare_failures,
-        "stamp0Missing": d.stamp0_missing,
-        "stampFresh": d.stamp_fresh,
-        "stampStale": d.stamp_stale,
-        "stampUnavailable": d.stamp_unavailable,
         "driftAtQuery": d.drift_at_query,
         "retiredIdle": d.retired_idle,
         "retiredEdge": d.retired_edge,

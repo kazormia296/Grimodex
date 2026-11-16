@@ -1,0 +1,807 @@
+[
+  {
+    "id": "K67V3-U-id-not-in-revision",
+    "spn": "v3 §2.1 (ii)",
+    "file": "quality-evidence-items.mjs",
+    "find": "fail(\"evidence-id-not-in-revision\", {",
+    "replace": "hold(\"evidence-id-not-in-revision\", {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3658,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)"
+      }
+    ],
+    "note": "(ii) の fail を hold に落とす",
+    "gapTest": true
+  },
+  {
+    "id": "K67V3-U-no-endpoint-text",
+    "spn": "v3 §2.1 (i)",
+    "file": "quality-evidence-items.mjs",
+    "find": "fail(\"evidence-row-matches-no-endpoint-text\", {",
+    "replace": "hold(\"evidence-row-matches-no-endpoint-text\", {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3658,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)"
+      }
+    ],
+    "gapTest": true
+  },
+  {
+    "id": "K67V3-U-first-null",
+    "spn": "v3 §2.1 (i)",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (first === null)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2632,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の has"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2803,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2904,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Ent"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3658,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-U-hash-both",
+    "spn": "v3 §2.1 (i)",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (digest === shown.quoteSha256 && digest === read.quoteSha256) {",
+    "replace": "if (digest === shown.quoteSha256) {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3658,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)"
+      }
+    ],
+    "note": "read 側の hash の一致を外す。落ちる試験は推測（U1 が read 側の食い違いを回すか run で確認）",
+    "gapTest": true
+  },
+  {
+    "id": "K67V3-U-range",
+    "spn": "v3 §2.1 (i)",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (!(read.startUtf16 < read.endUtf16 && read.endUtf16 <= length))",
+    "replace": "if (!(read.startUtf16 < read.endUtf16))",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2632,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の has"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2803,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2904,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Ent"
+      }
+    ],
+    "note": "範囲の上限（length）を外す",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-U-endpoint-without",
+    "spn": "v3 §2.1 (iii)",
+    "file": "quality-evidence-items.mjs",
+    "find": "fail(\"endpoint-without-valid-evidence\", { entity: logical }),",
+    "replace": "hold(\"endpoint-without-valid-evidence\", { entity: logical }),",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2632,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の has"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2751,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいな"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-U-undecided-guard",
+    "spn": "v3 §2.1 (iii)",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (!undecided)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2632,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の has"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2751,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいな"
+      }
+    ],
+    "note": "読めない行があっても (iii) を判定してしまう",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-U-edge-unresolved",
+    "spn": "v3 §2.1 hold (再確認 必須 1)",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (carriers.length !== 1) {",
+    "replace": "if (carriers.length === 0) {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3715,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 同じ端点をつなぐ relation が path に"
+      }
+    ],
+    "note": "複数の relation が edge の端点をつなぐ（Revision を名指せない）edge を hold にせず先頭の carrier で判定する。旧 K67V3-U-hold-branch（evidence-id-in-no-read-revision の分岐）の後継。落ちる試験は推測",
+    "gapTest": true
+  },
+  {
+    "id": "K67V3-U-unread-edge-skip",
+    "spn": "v3 §2.1 hold (再確認 必須 1)",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (!revisionRead || revisionRead.unavailable) continue;\n      const rows = revisionRead.rows;",
+    "replace": "if (!revisionRead) continue;\n      const rows = revisionRead.rows ?? new Map();",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2751,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいな"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2803,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2904,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Ent"
+      }
+    ],
+    "note": "読めない Revision の edge を判定しない skip を外す（空の rows で fail になる）。旧 K67V3-U-unread-counter／hold-undecided の後継。落ちる試験は推測",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-U-directed",
+    "spn": "v3 §2.1 (再確認 必須 1)",
+    "file": "quality-evidence-items.mjs",
+    "find": "ends[0] === fromLogical &&\n          ends[1] === toLogical",
+    "replace": "((ends[0] === fromLogical && ends[1] === toLogical) ||\n            (ends[0] === toLogical && ends[1] === fromLogical))",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2904,
+        "titlePrefix": "品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Ent"
+      }
+    ],
+    "note": "relation の向きを見ない（resolveEdge は向きつき）。落ちる試験は推測。向きが逆の relation の fixture が無ければ等価"
+  },
+  {
+    "id": "K67V3-P-graph-only-pin",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "graphOnly.pinEntityId !== ctx.maps.runtimeEntity(want.pinEntityId)",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3041,
+        "titlePrefix": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-0"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-P-graph-only-hop",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "graphOnly.hop !== want.hop",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3041,
+        "titlePrefix": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-0"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-P-graph-only-scene",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (!want || want.sceneId !== scene)",
+    "replace": "if (!want)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3041,
+        "titlePrefix": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-0"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-P-attachment-outside",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "fail(\"attachment-outside-expectation\", { scene })",
+    "replace": "hold(\"attachment-outside-expectation\", { scene })",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3041,
+        "titlePrefix": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-0"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-P-terminal",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "fail(\"attachment-terminal-differs\", { scene })",
+    "replace": "hold(\"attachment-terminal-differs\", { scene })",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3041,
+        "titlePrefix": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-0"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3800,
+        "titlePrefix": "品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-P-attachment-hop",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "row.hop !== want.hop",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3041,
+        "titlePrefix": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-0"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-P-seed-hold",
+    "spn": "v3 §2.2",
+    "file": "quality-evidence-items.mjs",
+    "find": "if (!isId(ctx.seedRuntime)) {",
+    "replace": "if (false) {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3835,
+        "titlePrefix": "品質 v3 §2.2（レビュー推奨 7）: settings.seed.runtime が受領書に無いときは fail "
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-R-compare",
+    "spn": "v3 §2.3",
+    "file": "quality-evidence-items.mjs",
+    "find": "same ? [] : [fail(\"r-plus-ir-rows-changed\")]",
+    "replace": "[]",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3183,
+        "titlePrefix": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（me"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-R-values",
+    "spn": "v3 §2.3",
+    "file": "quality-evidence-items.mjs",
+    "find": "ROW_KEYS.every((key) => row[key] === right[at][key])",
+    "replace": "true",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3183,
+        "titlePrefix": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（me"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-R-length",
+    "spn": "v3 §2.3",
+    "file": "quality-evidence-items.mjs",
+    "find": "left.length === right.length &&",
+    "replace": "true &&",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3183,
+        "titlePrefix": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（me"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-R-generation",
+    "spn": "v3 §2.3",
+    "file": "quality-evidence-items.mjs",
+    "find": "child.queryGeneration <= parent.queryGeneration",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3183,
+        "titlePrefix": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（me"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-R-ir-ready",
+    "spn": "v3 §2.3",
+    "file": "quality-evidence-items.mjs",
+    "find": "sample.irOutcome !== \"ir-ready\" ||",
+    "replace": "false ||",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3183,
+        "titlePrefix": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（me"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-R-graph-only-row",
+    "spn": "v3 §2.3",
+    "file": "quality-evidence-items.mjs",
+    "find": "rows.filter((row) => row.kind !== \"graph-only\")",
+    "replace": "rows",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2571,
+        "titlePrefix": "品質 v3: 4 項目の fields を持つ受領書は、fixture の期待と一致すれば 4 項目とも pass（適用"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3183,
+        "titlePrefix": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（me"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3539,
+        "titlePrefix": "品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample は検査せず件数を開示"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-A-scene",
+    "spn": "v3 §2.4",
+    "file": "quality-evidence-items.mjs",
+    "find": "graphOnly.sceneId !== ctx.maps.runtimeScene(want.sceneId)",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3305,
+        "titlePrefix": "品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・e"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-A-range",
+    "spn": "v3 §2.4",
+    "file": "quality-evidence-items.mjs",
+    "find": "range.start !== want.range.start || range.end !== want.range.end",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3305,
+        "titlePrefix": "品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・e"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3404,
+        "titlePrefix": "品質 v3 §2.0: 適用する variant がすべて blocked の項目は n/a でなく not-evalu"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-A-hash",
+    "spn": "v3 §2.4",
+    "file": "quality-evidence-items.mjs",
+    "find": "graphOnly.excerptSha256 !== textSha256(want.body)",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3305,
+        "titlePrefix": "品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・e"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-A-length",
+    "spn": "v3 §2.4",
+    "file": "quality-evidence-items.mjs",
+    "find": "graphOnly.excerptUtf16Length !== utf16Length(want.body)",
+    "replace": "false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3305,
+        "titlePrefix": "品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・e"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-A-hold-no-row",
+    "spn": "v3 §2.4",
+    "file": "quality-evidence-items.mjs",
+    "find": "return { problems: [hold(\"no-graph-only-row-displayed\")] };",
+    "replace": "return { problems: [] };",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3305,
+        "titlePrefix": "品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・e"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-G-not-evaluable",
+    "spn": "v3 §2.0",
+    "file": "quality-evidence-items.mjs",
+    "find": "? \"not-evaluable\"",
+    "replace": "? \"n/a\"",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3404,
+        "titlePrefix": "品質 v3 §2.0: 適用する variant がすべて blocked の項目は n/a でなく not-evalu"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-G-order",
+    "spn": "v3 §2.0",
+    "file": "quality-evidence-items.mjs",
+    "find": "const ORDER = [\"fail\", \"hold\", \"pass\"];",
+    "replace": "const ORDER = [\"pass\", \"hold\", \"fail\"];",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2632,
+        "titlePrefix": "品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の has"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 3539,
+        "titlePrefix": "品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample は検査せず件数を開示"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-X-needle-value",
+    "spn": "v3 §4 (ii)",
+    "file": "evidence-fields.mjs",
+    "find": "if (node.includes(needle)) {",
+    "replace": "if (false) {",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 304,
+        "titlePrefix": "v3 §4 (ii)(iii): fixture の Scene の本文・sceneExcerpt.body・Entit"
+      },
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 545,
+        "titlePrefix": "v3 §4 (ii)（検出力の取り直し）: 走査する本文は Entity の summary を含む（Scene の本文"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-X-needle-key",
+    "spn": "v3 §4 (ii)",
+    "file": "evidence-fields.mjs",
+    "find": "needles.some((needle) => key.includes(needle))",
+    "replace": "false",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 304,
+        "titlePrefix": "v3 §4 (ii)(iii): fixture の Scene の本文・sceneExcerpt.body・Entit"
+      },
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 383,
+        "titlePrefix": "v3 §4: 拒否のエラー文は拒否した平文を運ばない（key が本文でも [key#n] に置き換える）。run-rep"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-X-evidence-json",
+    "spn": "v3 §4 (iii)",
+    "file": "evidence-fields.mjs",
+    "find": "Object.hasOwn(node, \"quote\")",
+    "replace": "false",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 304,
+        "titlePrefix": "v3 §4 (ii)(iii): fixture の Scene の本文・sceneExcerpt.body・Entit"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-X-pageonly-plaintext",
+    "spn": "v3 §4",
+    "file": "evidence-fields.mjs",
+    "find": "      if (PAGE_ONLY_KEYS.includes(key))\n        errors.push(`${where} is a page-only plain field (never hashed)`);\n      // A key can carry text too",
+    "replace": "      if (false)\n        errors.push(`${where} is a page-only plain field (never hashed)`);\n      // A key can carry text too",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 511,
+        "titlePrefix": "レビュー推奨 10: evidenceRaw・rowTexts の key は受領書のどこにあっても拒否する（値が空でも"
+      }
+    ],
+    "note": "plaintextErrors 側",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-X-pageonly-fields",
+    "spn": "v3 §4",
+    "file": "evidence-fields.mjs",
+    "find": "      if (PAGE_ONLY_KEYS.includes(key))\n        errors.push(`${where} is a page-only plain field (never hashed)`);\n      stack.push",
+    "replace": "      if (false)\n        errors.push(`${where} is a page-only plain field (never hashed)`);\n      stack.push",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 528,
+        "titlePrefix": "v3 §4（検出力の取り直し）: evidenceFieldErrors は evidenceRaw・rowTexts "
+      }
+    ],
+    "note": "pageOnlyFieldErrors 側（needle 無しの validator が見る）",
+    "gapTest": true
+  },
+  {
+    "id": "K67V3-X-no-needle-precheck",
+    "spn": "v3 §4",
+    "file": "evidence-fields.mjs",
+    "find": "if (!hasNeedles)\n    errors.push(",
+    "replace": "if (false)\n    errors.push(",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 304,
+        "titlePrefix": "v3 §4 (ii)(iii): fixture の Scene の本文・sceneExcerpt.body・Entit"
+      },
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 511,
+        "titlePrefix": "レビュー推奨 10: evidenceRaw・rowTexts の key は受領書のどこにあっても拒否する（値が空でも"
+      }
+    ],
+    "note": "needle 無しの [precheck]。落ちる試験は推測",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-X-key-message",
+    "spn": "v3 §4",
+    "file": "evidence-fields.mjs",
+    "find": "return /^[A-Za-z0-9_-]{1,64}$/u.test(key) ? key : `[key#${index}]`;",
+    "replace": "return key;",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 383,
+        "titlePrefix": "v3 §4: 拒否のエラー文は拒否した平文を運ばない（key が本文でも [key#n] に置き換える）。run-rep"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-X-observation-check",
+    "spn": "v3 §4 (i)",
+    "file": "evidence-fields.mjs",
+    "find": "if (receipt?.evidenceObservation != null)",
+    "replace": "if (false)",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 418,
+        "titlePrefix": "レビュー必須 1: evidenceObservation の null／undefined は「観測していない」で形の"
+      },
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 250,
+        "titlePrefix": "v3 §4 (i): 禁止の key（quote・excerpt・body・text・summary）、規定外の key"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-X-rowexcerpts-check",
+    "spn": "v3 §4 (i)",
+    "file": "evidence-fields.mjs",
+    "find": "if (record.rowExcerpts !== undefined && record.rowExcerpts !== null)",
+    "replace": "if (false)",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 250,
+        "titlePrefix": "v3 §4 (i): 禁止の key（quote・excerpt・body・text・summary）、規定外の key"
+      },
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 383,
+        "titlePrefix": "v3 §4: 拒否のエラー文は拒否した平文を運ばない（key が本文でも [key#n] に置き換える）。run-rep"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67V3-X-receipt-fields",
+    "spn": "v3 §4",
+    "file": "receipt.mjs",
+    "find": "errors.push(...evidenceFieldErrors(receipt));",
+    "replace": "void 0;",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 1676,
+        "titlePrefix": "品質 v3 §4（Q6）: 受領書の 4 項目の field は範囲・hash・長さ・ID だけ。形の外の key や平"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-X-receipt-needles",
+    "spn": "v3 §4",
+    "file": "receipt.mjs",
+    "find": "if (bound.plaintextNeedles !== undefined)",
+    "replace": "if (false)",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 1676,
+        "titlePrefix": "品質 v3 §4（Q6）: 受領書の 4 項目の field は範囲・hash・長さ・ID だけ。形の外の key や平"
+      }
+    ]
+  },
+  {
+    "id": "K67V3-X-opt-hex",
+    "spn": "v3 §4 (i)",
+    "file": "evidence-fields.mjs",
+    "find": "const hex = (value) => typeof value === \"string\" && HEX64.test(value);",
+    "replace": "const hex = (value) => typeof value === \"string\";",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 250,
+        "titlePrefix": "v3 §4 (i): 禁止の key（quote・excerpt・body・text・summary）、規定外の key"
+      }
+    ],
+    "note": "任意追加"
+  },
+  {
+    "id": "K67V3-X-opt-id",
+    "spn": "v3 §4 (i)",
+    "file": "evidence-fields.mjs",
+    "find": "const id = (value) => typeof value === \"string\" && ID_SHAPE.test(value);",
+    "replace": "const id = (value) => typeof value === \"string\";",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 250,
+        "titlePrefix": "v3 §4 (i): 禁止の key（quote・excerpt・body・text・summary）、規定外の key"
+      }
+    ],
+    "note": "任意追加"
+  },
+  {
+    "id": "K67V3-X-opt-needle-scenes",
+    "spn": "v3 §4 (ii)",
+    "file": "evidence-fields.mjs",
+    "find": "for (const row of fixture?.scenes ?? []) add(row?.body);",
+    "replace": "void 0;",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 344,
+        "titlePrefix": "v3 §4 (ii): 凍結の fixture（G-01〜G-08 の 13 variant の 9 file）から走査"
+      }
+    ],
+    "note": "任意追加（needle の採取）"
+  },
+  {
+    "id": "K67V3-X-opt-needle-entities",
+    "spn": "v3 §4 (ii)",
+    "file": "evidence-fields.mjs",
+    "find": "for (const row of fixture?.entities ?? []) add(row?.summary);",
+    "replace": "void 0;",
+    "testFile": "evidence-fields.test.mjs",
+    "expected": [
+      {
+        "file": "evidence-fields.test.mjs",
+        "line": 545,
+        "titlePrefix": "v3 §4 (ii)（検出力の取り直し）: 走査する本文は Entity の summary を含む（Scene の本文"
+      }
+    ],
+    "note": "任意追加（needle の採取）",
+    "gapTest": true
+  }
+]

@@ -1099,11 +1099,6 @@ function k64Trace(kind, n, mutate = () => [{}, {}]) {
         {
           queryId: `q${at}`,
           recordRead: { startedAtNs: at * 1e6 + 1, finishedAtNs: at * 1e6 + 2 },
-          freshnessStamp: {
-            result: "stale",
-            matched: false,
-            attemptedAtNs: at * 1e6 + 5,
-          },
           ...overrides,
         },
         followUp,
@@ -1262,7 +1257,140 @@ test("K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（
     }),
   );
   assert.deepEqual(mixed.categories, { lapse: 0, other: 8, freshness: 12 });
-  assert.equal(mixed.mainReason, "freshness");
+  // K6/7 変える点 7 (b): the majority is freshness; rule 6 reads it as other.
+  assert.equal(mixed.mainReasonBeforeReading, "freshness");
+  assert.equal(mixed.mainReason, "other");
+});
+
+test("K6/7 N-h3・N-g: K6/4 の regime で表示されなかった query の失敗した段の X1（親の ticket が stale・warming）は区分「鮮度」。stamp の key があっても区分も理由も変わらない", () => {
+  const trace = (ticket, withStamp = null) =>
+    traceK64(
+      k64Trace("browsing", 200, (at) =>
+        at < 4
+          ? [
+              withStamp ? { freshnessStamp: withStamp } : {},
+              { parent: { ticket }, notices: [], child: null },
+            ]
+          : [{}, {}],
+      ),
+    );
+  for (const reason of ["stale", "warming"]) {
+    const plain = trace({ ...staleTicket, reason });
+    assert.deepEqual(plain.categories, { lapse: 0, other: 0, freshness: 4 });
+    assert.equal(plain.mainReasonBeforeReading, "freshness");
+    assert.equal(plain.mainReason, "other");
+    for (const withStamp of [
+      { result: "fresh", matched: true, attemptedAtNs: 5 },
+      { result: "stamp0-missing", matched: null, attemptedAtNs: 5 },
+      { result: "unavailable", matched: null, attemptedAtNs: 5 },
+      { result: "stale", matched: false, attemptedAtNs: 5 },
+    ]) {
+      const keyed = trace({ ...staleTicket, reason }, withStamp);
+      assert.deepEqual(keyed.categories, plain.categories);
+      assert.deepEqual(keyed.reasons, plain.reasons);
+      assert.equal(Object.hasOwn(keyed, "stampWithoutComparison"), false);
+    }
+  }
+  // 親の失効（B の seal）・境界の不一致・親の ticket の setup-defect が先に当たる。
+  const lapse = traceK64(
+    k64Trace("browsing", 200, (at) =>
+      at === 0
+        ? [
+            { snapshot: { usable: false } },
+            { parent: { ticket: staleTicket }, notices: [], child: null },
+          ]
+        : [{}, {}],
+    ),
+  );
+  assert.deepEqual(lapse.categories, { lapse: 1, other: 0, freshness: 0 });
+});
+
+test("K6/7 N-h4: 失敗した段の「失効」（registration-unavailable・invalidated）は区分「失効」で数え（失効率にも数える）、失敗した段の setup-defect は run を無効にする", () => {
+  for (const reason of ["registration-unavailable", "invalidated"]) {
+    const trace = traceK64(
+      k64Trace("browsing", 200, (at) =>
+        at < 3
+          ? [
+              {},
+              {
+                parent: { ticket: { ...staleTicket, reason } },
+                notices: [],
+                child: null,
+              },
+            ]
+          : [{}, {}],
+      ),
+    );
+    assert.deepEqual(trace.categories, { lapse: 3, other: 0, freshness: 0 });
+    assert.equal(trace.lapse.total, 3, reason);
+    assert.equal(trace.mainReason, "lapse");
+  }
+  for (const reason of [
+    "not-requested",
+    "not-activated",
+    "profile-not-restricted",
+  ]) {
+    const trace = traceK64(
+      k64Trace("browsing", 200, (at) =>
+        at === 0
+          ? [
+              {},
+              {
+                parent: { ticket: { ...staleTicket, reason } },
+                notices: [],
+                child: null,
+              },
+            ]
+          : [{}, {}],
+      ),
+    );
+    assert.equal(trace.status, "invalid", reason);
+    assert.match(trace.invalid.join(" "), /setup defect/u, reason);
+  }
+});
+
+test("K6/7 N-h6: 親の失効 8 と失敗した段の失効 3（合わせて失効 11）とその他 9 は「失効」が過半数で、失敗した段の失効を「その他」に畳まない。失効が主な理由なので [precheck]", () => {
+  // 1,200 queries so that the 11 lapses stay within the 1% yardstick and the
+  // diagnostic reaches the main reasons (rule 6) instead of the lapse rate.
+  const result = traceK64(
+    k64Trace("editing", 1200, (at) => {
+      if (at < 8) return [{ snapshot: { usable: false } }, {}];
+      if (at < 11)
+        return [
+          {},
+          {
+            parent: {
+              ticket: { ...staleTicket, reason: "registration-unavailable" },
+            },
+            notices: [],
+            child: null,
+          },
+        ];
+      if (at < 20)
+        return [
+          {},
+          {
+            parent: { ticket: { ...staleTicket, reason: "timeout" } },
+            notices: [],
+            child: null,
+          },
+        ];
+      return [{}, {}];
+    }),
+  );
+  assert.equal(result.outOfWindow, 20);
+  assert.deepEqual(result.categories, { lapse: 11, other: 9, freshness: 0 });
+  assert.equal(result.lapse.total, 11);
+  assert.equal(result.mainReasonBeforeReading, "lapse");
+  assert.equal(result.mainReason, "lapse");
+  const decision = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState: summarizeK64(k64Run()),
+    traces: [result, traceK64(k64Trace("browsing", 200))],
+  });
+  assert.equal(decision.result, "precheck");
+  assert.equal(decision.reason, "main-reason-lapse-or-none");
+  assert.deepEqual(decision.mains, ["lapse"]);
 });
 
 test("DR-CP4-K64-5 (A): (b) の follow-up が失効の段で落ちたものは親の query の失効として失効率に数える", () => {
@@ -1504,7 +1632,6 @@ function cancelledParentSample(at) {
       source: "start-seal",
     },
     startSlot: null,
-    freshnessStamp: null,
     recordRead: null,
     graph: {
       outcome: "cancelled",

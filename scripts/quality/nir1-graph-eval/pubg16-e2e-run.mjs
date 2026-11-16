@@ -35,7 +35,7 @@
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
 //     scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs --run <name> \
 //     --mode g01-frozen --setups <setups.json> --ja-model <pinned> --en-model <pinned> \
-//     --s4-commit <sha> --k62-commit <sha> --k64-commit <sha> --k65-commit <sha> --k66-commit <sha>
+//     --s4-commit <sha> --k62-commit <sha> --k64-commit <sha> --k65-commit <sha> --k66-commit <sha> --k67-commit <sha>
 //   結果の `head` は他の受領書と同じ形（freeze の head、`observationPrep.commit` と
 //   その記録の SHA-256、`runStartedAtUtc`）で、測定の前に書く（`head.json` にも一度だけ）。
 //
@@ -57,6 +57,7 @@ import {
   readK64FreezeHead,
   readK65FreezeHead,
   readK66FreezeHead,
+  readK67FreezeHead,
 } from "./admission.mjs";
 import {
   buildIndex,
@@ -110,6 +111,7 @@ export const G01_HEAD_OPTIONS = Object.freeze([
   "k64-commit",
   "k65-commit",
   "k66-commit",
+  "k67-commit",
 ]);
 
 /**
@@ -136,6 +138,7 @@ export function readG01DiagnosticHead({ root, options }, deps = {}) {
       k64: readK64FreezeHead({ root, commit: options["k64-commit"] }),
       k65: readK65FreezeHead({ root, commit: options["k65-commit"] }),
       k66: readK66FreezeHead({ root, commit: options["k66-commit"] }),
+      k67: readK67FreezeHead({ root, commit: options["k67-commit"] }),
       observationPrep: {
         commit: prep.commit,
         freezeRecordSha256: prep.recordSha256AtCommit,

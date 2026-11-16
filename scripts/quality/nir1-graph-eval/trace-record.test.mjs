@@ -66,6 +66,26 @@ function plan(kind, cycles = 2) {
   });
 }
 
+test("K6/7 N-g（検出力の取り直し）: 旧形の poll の counters の stamp0Missing は counter の run の key にも counters にも入らない（TRACE_COUNTER_KEYS の外）", () => {
+  const base = Object.fromEntries(TRACE_COUNTER_KEYS.map((k) => [k, 0]));
+  const runs = [];
+  appendCounterRun(runs, {
+    beforeNs: 1,
+    counters: { ...base, stamp0Missing: 1 },
+    afterNs: 2,
+  });
+  // The stamp key alone moved: it is not read, so the poll joins the same run.
+  appendCounterRun(runs, {
+    beforeNs: 3,
+    counters: { ...base, stamp0Missing: 2 },
+    afterNs: 4,
+  });
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].polls, 2);
+  assert.deepEqual(Object.keys(runs[0].counters), [...TRACE_COUNTER_KEYS]);
+  assert.equal(Object.hasOwn(runs[0].counters, "stamp0Missing"), false);
+});
+
 /**
  * Polls every `stepMs` (read 0.01 ms after the clock, clock again 0.01 ms
  * after) of the counter state the synthetic begin and store events make.
@@ -140,11 +160,6 @@ function queryParts(index, { child = true, extraBegin = false } = {}) {
         ...k64NativeRecord().ticket,
         tTicketNs: ns(B + 15.5),
         tSettledNs: ns(B + 64),
-        freshnessStamp: {
-          attemptedAtNs: ns(B + 15.2),
-          result: "fresh",
-          matched: true,
-        },
       },
     }),
   ];
@@ -436,7 +451,7 @@ module.exports = {
   nir1GraphEvalClockNs() { t += 10; return String(t); },
   nir1GraphEvalDiagnostics() {
     calls += 1; if (calls === 3) late += 1; t += 5;
-    return JSON.stringify({ begins: 2, cacheHits: 0, lateCached: late, quarantines: 0, deferredReleased: 0, deferredExpired: 0, deferredDropped: 0, staleReadyRetired: 0, prepareFailures: 0, driftAtQuery: 0, stamp0Missing: 0, clockNs: t });
+    return JSON.stringify({ begins: 2, cacheHits: 0, lateCached: late, quarantines: 0, deferredReleased: 0, deferredExpired: 0, deferredDropped: 0, staleReadyRetired: 0, prepareFailures: 0, driftAtQuery: 0, clockNs: t });
   },
 };`,
   );

@@ -205,12 +205,27 @@ export function readFreshnessFeed(file, projectId, options = {}) {
 }
 
 /**
+ * DR-CP4-L-27 (setup quiesce): how long after its not-before instant a
+ * scheduled retry is still read as pending while no later run of its work key
+ * exists (the dispatch is the product's scheduler's, a moment after the
+ * instant). A retry that is not dispatched within it is no longer a plan.
+ */
+export const RETRY_DISPATCH_GRACE_MS = 5_000;
+
+/**
  * DR-CP4-T-5: the project's maintenance activity — how many extraction runs
  * are `running` (an `interpretation` that is `pending` waits for an AI
  * provider and is no maintenance progress), and the run count and newest
- * `created_at` (a stillness check compares two reads). SELECT only.
+ * `created_at` (a stillness check compares two reads). DR-CP4-L-27: and how
+ * many retries are planned — a retryable failed Attempt whose
+ * `next_attempt_at` is not older than `RETRY_DISPATCH_GRACE_MS` before
+ * `nowIso` and whose work key has no later run (the product schedules the next
+ * attempt of an interrupted or failed run 1 s later, a gap in which no run is
+ * `running`). SELECT only. A database without the Attempt tables or the
+ * `work_key` column has no retry to plan (a test double's).
  */
 export function readMaintenanceActivity(file, projectId, options = {}) {
+  const { nowIso = new Date().toISOString(), ...open } = options;
   return withReadOnly(
     file,
     (db) => {
@@ -221,18 +236,63 @@ export function readMaintenanceActivity(file, projectId, options = {}) {
              FROM narrative_extraction_runs WHERE project_id = ?`,
         )
         .get(projectId);
+      const tables = new Set(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all()
+          .map((entry) => entry.name),
+      );
+      const hasWorkKey =
+        tables.has("narrative_extraction_runs") &&
+        db
+          .prepare("PRAGMA table_info(narrative_extraction_runs)")
+          .all()
+          .some((column) => column.name === "work_key");
+      const retryable =
+        hasWorkKey &&
+        tables.has("narrative_extraction_tasks") &&
+        tables.has("narrative_extraction_attempts");
+      const nowMs = Number.isFinite(Date.parse(nowIso))
+        ? Date.parse(nowIso)
+        : Date.now();
+      const notBefore = new Date(nowMs - RETRY_DISPATCH_GRACE_MS).toISOString();
+      const retryPending = retryable
+        ? Number(
+            db
+              .prepare(
+                `SELECT count(*) AS n
+                   FROM narrative_extraction_attempts a
+                   JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                   JOIN narrative_extraction_runs r ON r.id = t.run_id
+                  WHERE r.project_id = ?
+                    AND a.status = 'failed'
+                    AND a.retry_disposition = 'retryable'
+                    AND a.next_attempt_at IS NOT NULL
+                    AND a.next_attempt_at > ?
+                    AND r.work_key IS NOT NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM narrative_extraction_runs later
+                       WHERE later.project_id = r.project_id
+                         AND later.work_key = r.work_key
+                         AND later.created_at > r.created_at)`,
+              )
+              .get(projectId, notBefore).n,
+          )
+        : 0;
       return {
         runs: Number(row.runs),
         lastCreatedAt: row.lastCreatedAt ?? null,
         running: Number(row.running),
+        retryPending,
       };
     },
-    options,
+    open,
   );
 }
 
 /**
- * DR-CP4-T-5 (pure): maintenance is still — no run is in progress, and no run
+ * DR-CP4-T-5 (pure): maintenance is still — no run is in progress, no retry
+ * is planned (DR-CP4-L-27: a retry's gap is not stillness), and no run
  * started or ended between two consecutive reads.
  */
 export function maintenanceQuiet(previous, current) {
@@ -241,6 +301,8 @@ export function maintenanceQuiet(previous, current) {
     current &&
     previous.running === 0 &&
     current.running === 0 &&
+    (previous.retryPending ?? 0) === 0 &&
+    (current.retryPending ?? 0) === 0 &&
     previous.runs === current.runs &&
     previous.lastCreatedAt === current.lastCreatedAt,
   );
@@ -257,6 +319,9 @@ export function maintenanceQuiet(previous, current) {
 export async function waitFreshnessSettled({
   read,
   readActivity = null,
+  // DR-CP4-L-27: a setup quiesce wait is `settled` only when maintenance is
+  // still too (the default leaves `settled` to the Freshness).
+  requireQuiet = false,
   limitMs,
   intervalMs,
   now = () => performance.now(),
@@ -284,7 +349,9 @@ export async function waitFreshnessSettled({
   // The Freshness decides `settled`; the maintenance's stillness is
   // reported beside it (DR-CP4-T-5: its exhaustion is a disclosure).
   return {
-    settled: freshnessSettled(state),
+    settled:
+      freshnessSettled(state) &&
+      (!requireQuiet || maintenanceQuiet(previousActivity, activity)),
     waitedMs: now() - started,
     polls,
     limitMs,
