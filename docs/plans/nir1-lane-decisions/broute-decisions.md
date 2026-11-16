@@ -715,6 +715,19 @@
 - 点検（read-only、`05-impl-check.md`）の反映：
   - M1：判断 7 の封じ込めを、この PR から外して別の枝に切り出した（判断 7）。外した後の Native `--lib` と db の試験は、下の「検証」の追補に記す。
   - R7（既知のずれ）：凍結した S2（`observation-prep.v1.json`）の prose にある `nir1_graph_product.rs:78` の行番号の参照（`docs/plans/nir1-final-request-eval-proposal-4-draft.md` の 79 行にも同じ参照がある）と、`scripts/quality/nir1-graph-eval/constants.mjs:53` のコメントの `nir1_graph_product.rs:94` は、この PR の `nir1_graph_product.rs` の追加（挿入 12 行、削除 1 行で、純増 11 行。64 行目付近）で実際の位置から 11 行ずれる（`:78` は `:89`、`:94` は `:105` になる）。S2 は凍結されていて変えられないので直さない。これらの行番号を検査する script は見つからなかった。ずれても pin の検査には影響しない。
+- レビュー（Opus、read-only、`05-impl-review-opus.md`）の反映（2026-11-17）：
+  - M-1（必須）：token の構築箇所の走査が、最初の `#[cfg(test)]\nmod ` で file を切るため、Native の `lib.rs` は 17 行目より後ろ（token を gate へ渡す 2 か所を含む）を見ていなかった。走査を、行頭の `#[cfg(test)]`（後ろに他の attribute が続いてもよい）の次が `mod <名前> {` の module だけを、同じ indent の `}` まで除く形に直した。`mod <名前>;` の宣言は何も除かない。`lib.rs` のように試験 module の後ろに production code が続く file も走査できる。その他の `#[cfg(test)]` の item は走査に残す（過剰に報告する側）。
+  - 走査の本体を helper（`without_inline_test_modules`、`token_construction_lines`）にして、`lib.rs` の形を模した文字列を同じ関数に通す試験（`the_token_scan_sees_production_code_after_test_modules`）を足した。外部 file の試験 module の宣言、inline の試験 module とその後ろの production、入れ子の試験 module、コメント行、定義行（`pub struct`・`impl`）を含む。
+  - 注入の確認：`lib.rs` の `discover_all_with_product` の呼出し（旧 8677 行）の引数を一時的に `from_const::<true>()` に書き換えて走査の試験が落ちる（その行が左辺に出る）ことを確かめ、戻した。直す前の走査は、同じ注入を検出しない（レビューの replica）。
+  - m-2：走査の対象に、`{ _private: () }` の 1 行の struct literal、型名と同じ行の `zeroed`／`transmute`／`assume_init`／`MaybeUninit`／`Default` を足した。型の定義行（`pub struct`・`struct`・`impl`）は除く。許す構築箇所は、Native の `nir1_graph_product.rs` の 1 か所に、型自身の constructor（`grimodex-db` の `from_const` の中の `Some(Self { _private: () })`）を足した 2 か所になった。複数行の struct literal と、型名を別の行に置く `zeroed` は字句の走査では見えない（`syn` による parse が要る。field が private なので、書けるのは `grimodex-db` の同じ module の中だけ）。
+  - m-3：解除条件の試験の確認（`judge`）が `open_for_test` の gate で回っていたので、launch ごとの gate（seam と product token）で回す helper（`judge_with_gate`）に替えた。結論は変わらない（gate は開いているかどうかの bool だけ）。
+  - R-C（取り込み後の compile・試験・clippy の記録）：master を取り込んだ後の、この反映の head で走らせた（検証の追補 2）。
+- 検証の追補 2（レビューの反映の後の head。node は 22、`CARGO_BUILD_JOBS=4`）：
+  - Native `--lib` 全件：812 件成功、7 件 ignore（exit 0）。token の走査の 2 試験（新しい `the_token_scan_sees_production_code_after_test_modules` を含む）はこの中で成功。
+  - 走査の効き：`lib.rs` の `discover_all_with_product` の呼出しの引数を一時的に `from_const::<true>()` にすると、`the_product_token_has_one_production_construction_site` が落ち、`lib.rs` のその行が左辺に出る（戻した）。
+  - db `--lib` の `nir1_graph_index_maintenance`：40 件成功（exit 0）。
+  - clippy（`--all-targets -- -D warnings`）：db（既定 feature）と Native で成功（exit 0）。
+  - `verify:quality`（node 22）：成功（exit 0）。
 - 未確認：
   - 1 回目の wake の cycle が `capacity-exceeded` の Err を返す（V0 の (a)、(b) の open gate）。複数 project の work を載せた 1 つの request が、1 つの project の Verify の失敗で一緒に落ちるかは見ていない。`discover_all` の範囲の外。
   - Native の試験が mac／Win の CI で走るかは確かめていない。token の構築箇所の走査は、root と path と改行を正規化してあるが、Linux 以外では走らせていない。
