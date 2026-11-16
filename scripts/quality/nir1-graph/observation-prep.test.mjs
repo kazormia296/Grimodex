@@ -974,7 +974,11 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   // formal.review) stays the 6th's — the two are not held equal.
   filled.review = {
     ...review,
-    record: K67_S3_REVIEW.path,
+    // 9 回目の S4 の ⑥: and the 2nd〜5th checks' records (K67_S3_REVIEW.rechecks).
+    record: [
+      K67_S3_REVIEW.path,
+      ...K67_S3_REVIEW.rechecks.map((row) => row.path),
+    ].join("、"),
     recordSha256: "c".repeat(64),
     userConfirmations: [
       {
@@ -1018,7 +1022,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
       })),
     ],
     userConfirmationsScope:
-      "K6/5 の確認の範囲（R-1〜R-5 を含む）。0600ec04 と 6b47c177 の確認。K6/6 の確認の範囲（R-6、R-7 を含む）。82119012 の確認（R5 の記録の再利用の 1 点）。K6/7 の確認の範囲（R-8、R-9、R-10、R-12、R-13 の 5 つと FR-8 の検査の削除を含む）。fd1f69ce、f7ea87a6、235e0c67、7a03eaf9、7361041f、337ff239 の回答",
+      "K6/5 の確認の範囲（R-1〜R-5 を含む）。0600ec04 と 6b47c177 の確認。K6/6 の確認の範囲（R-6、R-7 を含む）。82119012 の確認（R5 の記録の再利用の 1 点）。K6/7 の確認の範囲（R-8、R-9、R-10、R-12、R-13 の 5 つと FR-8 の検査の削除を含む）。fd1f69ce、f7ea87a6、235e0c67、7a03eaf9、7361041f、337ff239、516bb3fe の回答",
   };
   // S2 追補: S3 decides each reviewer question before S4b.
   for (const question of filled.reviewerQuestions ?? [])
@@ -8357,7 +8361,7 @@ test("S2 追補 #17（S3 の 9 回目 B1-1・B1-3・B2-1・B3-2）: the R5 reuse
   // is and S2's review.record need not match it. A frozen S2 stands under
   // K6/7 (S2 追補 #19), so review.record is the 10th S3 record, never the 9th.
   assert.notEqual(fixed.review.record, fixed.k64Procedure.formal.review.record);
-  assert.equal(fixed.review.record, K67_S3_REVIEW.path);
+  assert.ok(fixed.review.record.includes(K67_S3_REVIEW.path));
   detects(
     fixed,
     frozenCheck,
@@ -8370,6 +8374,49 @@ test("S2 追補 #17（S3 の 9 回目 B1-1・B1-3・B2-1・B3-2）: the R5 reuse
     (p) => (p.review.record = K66_S3_REVIEW.path),
     /review\.record must cite the S3 \(10th, K6\/7\) review record/u,
   );
+  // 9 回目の S4 の ⑥（S3 の 5 回目の確認の推奨 6）: the S3 2nd〜5th checks' records
+  // (agents' reports, contracts 74e4d8df) are bound by K67_S3_REVIEW.rechecks and
+  // a frozen review.record cites each; the 3rd is not fully blind.
+  assert.deepEqual(
+    K67_S3_REVIEW.rechecks.map((row) => [
+      row.round,
+      row.range,
+      row.commit.slice(0, 8),
+      row.sha256.slice(0, 8),
+      row.requestCarriedConclusion,
+    ]),
+    [
+      [2, "55885c62..140bdda2", "74e4d8df", "ef32aa0e", null],
+      [3, "140bdda2..67cf9453", "74e4d8df", "891b9a77", true],
+      [4, "67cf9453..068cf3a6", "74e4d8df", "8aadebe8", false],
+      [5, "068cf3a6..dee4d00e", "74e4d8df", "306a31f0", false],
+    ],
+  );
+  for (const row of K67_S3_REVIEW.rechecks) {
+    assert.ok(fixed.review.record.includes(row.path), row.path);
+    detects(
+      fixed,
+      frozenCheck,
+      (p) => (p.review.record = p.review.record.replaceAll(row.path, "")),
+      new RegExp(
+        `review\\.record must cite the S3 \\(10th, K6/7\\) check ${row.round}'s record`,
+        "u",
+      ),
+    );
+  }
+  {
+    // The draft's limits (l)(4) name each record, its range and SHA-256 prefix,
+    // and say the 3rd request carried the builder's conclusion.
+    const prepForRechecks = await json(OBSERVATION_PREP_FILES.prep);
+    const limits = prepForRechecks.k67Readings.limits;
+    for (const row of K67_S3_REVIEW.rechecks) {
+      assert.ok(limits.includes(path.basename(row.path)), row.path);
+      assert.ok(limits.includes(row.range), row.range);
+      assert.ok(limits.includes(`${row.sha256.slice(0, 8)}…`), row.path);
+    }
+    assert.ok(limits.includes("完全な盲検でない"));
+    assert.ok(limits.includes("builder の結論"));
+  }
   // formal.review must still be the v2 file's review.
   detects(
     fixed,
@@ -8651,7 +8698,7 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // S2 追補 #22 (the S3 fourth recheck) a sixth and the merges' row (②③④) a
   // seventh and a correction row (after the push) an eighth and the ⑤-before
   // correction row a ninth.
-  assert.equal(declaration.revisions.at(-10), rows1108[3]);
+  assert.equal(declaration.revisions.at(-11), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8857,14 +8904,30 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
     (p) => (p.contracts.k67.confirmation.intoReview = ""),
   ])
     detects(prep, check, mutate, /contracts\.k67\.confirmation must name/u);
-  // The six answers after K6/7: file, commit, SHA-256, topic and date (the
+  // The seven answers after K6/7: file, commit, SHA-256, topic and date (the
   // fifth, 7361041f, is S3 10th's B1-1: the R5 closure's 11 files and the dev
   // gate's drift_at_query 1; the sixth, 337ff239, is S2 追補 #20: setup's
-  // quiesce goes into the ninth S4 and PUB-G's (A) items are begun).
-  assert.equal(confirmation.additional.length, 6);
+  // quiesce goes into the ninth S4 and PUB-G's (A) items are begun; the
+  // seventh, 516bb3fe, is the 9 回目の S4 の ⑥: the eleven detection-power gaps
+  // are closed by adding tests).
+  assert.equal(confirmation.additional.length, 7);
   assert.deepEqual(
     confirmation.additional.map((row) => row.commit.slice(0, 8)),
-    ["fd1f69ce", "f7ea87a6", "235e0c67", "7a03eaf9", "7361041f", "337ff239"],
+    [
+      "fd1f69ce",
+      "f7ea87a6",
+      "235e0c67",
+      "7a03eaf9",
+      "7361041f",
+      "337ff239",
+      "516bb3fe",
+    ],
+  );
+  assert.ok(confirmation.additional[6].topic.includes("欠け 11 件"));
+  assert.ok(confirmation.additional[6].topic.includes("試験を足して"));
+  assert.equal(
+    confirmation.additional[6].sha256,
+    "f70e443a8aac4c660bd334dfddb5bd33f7e152d981125b79707ec9a3c4424d98",
   );
   assert.ok(confirmation.additional[4].topic.includes("11 file"));
   assert.ok(confirmation.additional[4].topic.includes("drift_at_query"));
@@ -8873,7 +8936,7 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
     confirmation.additional[5].sha256,
     "ad89ebfb4d04d324d2b022526f4c7aaa83bb8c12c4f0e8a88de6ecc4083803d1",
   );
-  assert.ok(confirmation.additionalNote.includes("additional の 6 行"));
+  assert.ok(confirmation.additionalNote.includes("additional の"));
   assert.ok(confirmation.intoReview.includes("7361041f"));
   for (const mutate of [
     (p) => p.contracts.k67.confirmation.additional.pop(),
@@ -8888,6 +8951,10 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
     (p) => (p.contracts.k67.confirmation.additional[5].sha256 = "0".repeat(64)),
     (p) => (p.contracts.k67.confirmation.additional[5].commit = "0".repeat(40)),
     (p) => delete p.contracts.k67.confirmation.additional[5].topic,
+    // 9 回目の S4 の ⑥: the seventh answer (contracts 516bb3fe, the detection gaps).
+    (p) => (p.contracts.k67.confirmation.additional[6].sha256 = "0".repeat(64)),
+    (p) => (p.contracts.k67.confirmation.additional[6].commit = "0".repeat(40)),
+    (p) => delete p.contracts.k67.confirmation.additional[6].topic,
     (p) => delete p.contracts.k67.confirmation.additional[0].confirmedAt,
     (p) => delete p.contracts.k67.confirmation.additionalNote,
   ])
@@ -8895,7 +8962,7 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
       prep,
       check,
       mutate,
-      /contracts\.k67\.confirmation\.additional must be the six answers/u,
+      /contracts\.k67\.confirmation\.additional must be the seven answers/u,
     );
   // k67Readings: the rule and the limits (a)〜(n).
   detects(prep, check, (p) => delete p.k67Readings, /k67Readings is required/u);
@@ -8914,7 +8981,7 @@ test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confi
       /k67Readings\.rule must bind/u,
     );
   }
-  assert.equal(K67_LIMIT_WORDS.length, 91);
+  assert.equal(K67_LIMIT_WORDS.length, 96);
   for (const word of K67_LIMIT_WORDS) {
     assert.ok(prep.k67Readings.limits.includes(word), word);
     detects(
@@ -9133,11 +9200,16 @@ test("S2 追補 #18: a frozen record carries the K6/7 row and scope and compares
       [K67_QUALITY_VERDICT_V3.confirmationRecord.path, "160f5fa5"],
     ],
   );
-  // The sixth answer after K6/7 (337ff239, S2 追補 #20) is one more row.
-  assert.equal(rows.length, 5 + 6 + 1 + 1);
+  // The sixth answer after K6/7 (337ff239, S2 追補 #20) is one more row, and
+  // so is the seventh (516bb3fe, ⑥) and the S3 2nd〜5th checks (74e4d8df, ⑥).
+  assert.equal(rows.length, 5 + 7 + 1 + 4 + 1);
   assert.deepEqual(
-    [rows[11].path, rows[11].commit, rows[11].sha256],
+    [rows[12].path, rows[12].commit, rows[12].sha256],
     [K67_S3_REVIEW.path, K67_S3_REVIEW.commit, K67_S3_REVIEW.sha256],
+  );
+  assert.deepEqual(
+    rows.slice(13, 17).map((row) => [row.path, row.commit, row.sha256]),
+    K67_S3_REVIEW.rechecks.map((row) => [row.path, row.commit, row.sha256]),
   );
   assert.equal(K67_S3_REVIEW.commit.slice(0, 8), "4aa34626");
   assert.equal(
@@ -9147,7 +9219,7 @@ test("S2 追補 #18: a frozen record carries the K6/7 row and scope and compares
   assert.equal(rows[0].sha256, CONTRACTS.k67.sha256);
   assert.equal(
     k67FormalRows(prep).length,
-    5 + 6 + 1,
+    5 + 7 + 1 + 4,
     "a draft has no located record",
   );
   const all = formalReferenceRows(fixed, {});
@@ -9206,6 +9278,78 @@ test("S2 追補 #18: parseK67Freeze reads the three fields once each from the K6
   });
 });
 
+test("9 回目の S4 の ⑥（S3 の 5 回目の確認の推奨 1〜3）: the 97 files master's merge (②) brought are 5 docs, 82 product and 10 quality-gate assets (92 outside docs), and the pins (74), closureExclusions (5) and boundFiles (6) — 85 paths — meet none of them", async (t) => {
+  let names;
+  try {
+    names = gitText([
+      "-c",
+      "core.quotepath=off",
+      "diff",
+      "--name-only",
+      "3948eeb2",
+      "f4fe9f25",
+    ])
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    t.skip("shallow clone: the master commits are not fetched");
+    return;
+  }
+  assert.equal(names.length, 97);
+  const outsideDocs = names.filter((file) => !file.startsWith("docs/"));
+  assert.equal(names.length - outsideDocs.length, 5);
+  const product = outsideDocs.filter((file) =>
+    /^(?:src|electron|src-tauri)\//u.test(file),
+  );
+  assert.equal(product.length, 82);
+  assert.deepEqual(
+    outsideDocs.filter((file) => !product.includes(file)).sort(),
+    [
+      "agent-tool-manifest.json",
+      "evals/fixtures/grounding-artifact.yaml",
+      "evals/fixtures/routing.yaml",
+      "evals/fixtures/tool-safety.yaml",
+      "evals/impact-map.yaml",
+      "evals/quality-manifest.yaml",
+      "policies/architecture/large-module-debt.json",
+      "scripts/quality/eval-fixtures.mjs",
+      "scripts/quality/eval-fixtures.test.mjs",
+      "scripts/quality/impact-map.mjs",
+    ],
+  );
+  assert.equal(outsideDocs.length, 92);
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const pinned = prep.setupReadings.source.pins.flatMap((pin) =>
+    pin.files.map((file) => file.path),
+  );
+  const excluded = prep.setupReadings.source.closureExclusions.map(
+    (row) => row.path,
+  );
+  const bound = prep.boundFiles.map((row) => row.path);
+  assert.equal(pinned.length, 74);
+  assert.equal(excluded.length, 5);
+  assert.equal(bound.length, 6);
+  const all = [...pinned, ...excluded, ...bound];
+  assert.equal(new Set(all).size, 85);
+  assert.deepEqual(
+    all.filter((file) => names.includes(file)),
+    [],
+  );
+  // The pins' count before ⑥ (④'s time) was 73 and 73 + 5 + 6 = 84; the
+  // disclosures say so (the limits name 85 after ⑥).
+  assert.ok(prep.k67Readings.limits.includes("84 path"));
+  assert.ok(prep.k67Readings.limits.includes("85 path"));
+  assert.ok(prep.k67Readings.limits.includes("92 file"));
+  assert.ok(!prep.k67Readings.limits.includes("計 82 file"));
+  // The three files both sides changed (3-way merge) are disclosed.
+  for (const file of [
+    "graph_tests.rs",
+    "evals/quality-manifest.yaml",
+    "docs/plans/nir1-continuation-2026-10.md",
+  ])
+    assert.ok(prep.k67Readings.limits.includes(file), file);
+});
+
 test("S2 追補 #18: the K6/7 records hold the committed bytes at their commits (contracts); a checkout without the contracts commits skips, and the commits become strict ancestors of the head only at the contracts merge (③)", async (t) => {
   const git = (...args) =>
     execFileSync("git", args, {
@@ -9219,6 +9363,7 @@ test("S2 追補 #18: the K6/7 records hold the committed bytes at their commits 
       K67_CONFIRMATION_RECORDS.additional.at(-1).commit,
       K67_CONFIRMATION_RECORDS.freezeRecord.commit,
       K67_S3_REVIEW.commit,
+      ...K67_S3_REVIEW.rechecks.map((row) => row.commit),
     ])
       git("cat-file", "-e", `${commit}^{commit}`);
   } catch {
@@ -9319,8 +9464,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 9);
-  assert.equal(declaration.revisions.at(-1), rows1116[8]);
+  assert.equal(rows1116.length, 10);
+  assert.equal(declaration.revisions.at(-1), rows1116[9]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -9506,6 +9651,40 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
     "読んでいないもの",
   ])
     assert.ok(rows1116[8].reason.includes(word), word);
+  // The 9 回目の S4 の ⑥ row (S3's 5th check, DR-CP4-P-11／S4-11 の追記 8):
+  // the corrections of revisions[42] and [43] stay in a new row (the earlier
+  // rows are not edited), the S3 2nd〜5th records are bound, the 3rd is not
+  // fully blind, and the R5 closure's recomputation is disclosed.
+  for (const word of [
+    "9 回目の S4 の ⑥",
+    "068cf3a6..dee4d00e",
+    "ok-with-notes",
+    "docs を除くと 92 file",
+    "82 は製品の分",
+    "品質ゲートの資産",
+    "84 は pin 73・closureExclusions 5・boundFiles 6 の合計",
+    "pin の path が 73",
+    "graph_tests.rs",
+    "3-way",
+    "74e4d8df",
+    "K67_S3_REVIEW.rechecks",
+    "完全な盲検でない",
+    "516bb3fe",
+    "45 から 54",
+    "14 file",
+    "11 file の外",
+    "frozen-setup-driver.mjs・setup-receipt.mjs・workspace-db.mjs",
+    "ユーザーの確認待ち",
+    "過去の行は書き換えず",
+    "追補の作者の申告ではない",
+    "読んでいないもの",
+    "bytes を変えていないもの",
+  ])
+    assert.ok(rows1116[9].reason.includes(word), word);
+  // The rows it corrects are as they were (never edited): 82 file and 84 path
+  // stay in revisions[42] and [43].
+  assert.ok(rows1116[6].reason.includes("82 file"));
+  assert.ok(rows1116[7].reason.includes("84 path"));
   const chosen = declaration.readingsChosenAfterDevObservation.find(
     (row) => row.id === "setup-quiesce-after-dev",
   );
@@ -9542,7 +9721,7 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   );
   assert.equal(
     declaration.revisions.length,
-    45,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one and the two correction rows",
+    46,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one, the two correction rows and the ⑥ row",
   );
 });

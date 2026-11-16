@@ -290,6 +290,16 @@ export const K67_CONFIRMATION_RECORDS = Object.freeze({
       sha256:
         "ad89ebfb4d04d324d2b022526f4c7aaa83bb8c12c4f0e8a88de6ecc4083803d1",
     }),
+    // 9 回目の S4 の ⑥（⑤ の検出力の欠け 11 件）: asked after 337ff239 — the
+    // eleven K6/7 mutations that no test caught are closed by adding tests
+    // (「試験を足して、検出力を取り直す」), contracts 516bb3fe.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-detection-gaps.md",
+      commit: "516bb3fe2a517ecdea54aa4acf32ba448e4a6c5c",
+      sha256:
+        "f70e443a8aac4c660bd334dfddb5bd33f7e152d981125b79707ec9a3c4424d98",
+    }),
   ]),
 });
 /**
@@ -302,6 +312,56 @@ export const K67_S3_REVIEW = Object.freeze({
   path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16.md",
   commit: "4aa34626d42d67d692e591188c6ad95d0a280178",
   sha256: "fba38a31130057959eee7dd6447619a7ffbd8604712130a802284702baa28d28",
+  /**
+   * 9 回目の S4 の ⑥（S3 の 5 回目の確認の推奨 6）: the 2nd〜5th checks of the
+   * same S3 review (agents' reports, not user confirmations), placed in
+   * contracts 74e4d8df byte-identically (the sha256 is that of the
+   * fusion-eval-data file of the same bytes). `requestCarriedConclusion`: the
+   * 3rd check's request carried the builder's conclusion (案 (A)、edge 単位), so
+   * it is not fully blind (its record says so); the 4th and 5th records say the
+   * request carried none (the subject files S2・宣言・DR still state conclusions);
+   * the 2nd record says nothing about it (null).
+   * A frozen review.record cites each; the formal gate holds each to its
+   * commit's bytes and to the head's ancestry (k67FormalRows).
+   */
+  rechecks: Object.freeze([
+    Object.freeze({
+      round: 2,
+      range: "55885c62..140bdda2",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check2.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "ef32aa0ec62fe48036c7d9ced6f02fcf7d2fe370b8991a486606c8d220b0406e",
+      requestCarriedConclusion: null,
+    }),
+    Object.freeze({
+      round: 3,
+      range: "140bdda2..67cf9453",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check3.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "891b9a77216c40fa525c8b3bb7f22f930acef047e169e9d9269baebeb8000f3b",
+      requestCarriedConclusion: true,
+    }),
+    Object.freeze({
+      round: 4,
+      range: "67cf9453..068cf3a6",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check4.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "8aadebe8780fe70f7198957e0ca4119b479653fb3b212d4d931f1322b431c9e4",
+      requestCarriedConclusion: false,
+    }),
+    Object.freeze({
+      round: 5,
+      range: "068cf3a6..dee4d00e",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check5.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "306a31f0eadf8c72183b7629642c85c223cde24d598e1151dda507f877657334",
+      requestCarriedConclusion: false,
+    }),
+  ]),
 });
 /**
  * Prereg v3 (the four evidence items of condition 4; contracts 160f5fa5): the
@@ -4835,7 +4895,16 @@ export const K67_LIMIT_WORDS = Object.freeze([
   "d73e2986",
   "92ca2e24",
   "#912〜#918",
-  "82 file",
+  // 9 回目の S4 の ⑥（S3 の 5 回目の確認の推奨 1〜3・6）: the count is 92 files
+  // (製品 82 and 品質ゲートの資産 10), the pins' 73 paths are 73 + 5 + 6 = 84 paths with
+  // the closure exclusions and the bound files (85 after ⑥), the three files both
+  // sides changed, and the S3 2nd〜5th checks' records (the 3rd not fully blind).
+  "92 file",
+  "品質ゲートの資産 10",
+  "85 path",
+  "3-way",
+  "74e4d8df",
+  "完全な盲検でない",
 ]);
 /** S2 追補 #18: what k67Readings.rule binds. */
 export const K67_RULE_WORDS = Object.freeze([
@@ -5660,7 +5729,7 @@ export function observationPrepErrors(prep, ctx) {
     !nonBlank(k67Confirmation?.additionalNote)
   )
     errors.push(
-      "contracts.k67.confirmation.additional must be the six answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query, setup's quiesce and PUB-G's (A) items), each with its file, commit, SHA-256, topic and date (S2 追補 #18)",
+      "contracts.k67.confirmation.additional must be the seven answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query, setup's quiesce and PUB-G's (A) items, the detection-power gaps' closing by added tests), each with its file, commit, SHA-256, topic and date (S2 追補 #18、9 回目の S4 の ⑥)",
     );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
@@ -5981,6 +6050,12 @@ export function observationPrepErrors(prep, ctx) {
       errors.push(
         `review.record must cite the S3 (10th, K6/7) review record ${K67_S3_REVIEW.path} (S2 追補 #19)`,
       );
+    // 9 回目の S4 の ⑥: and the 2nd〜5th checks' records (K67_S3_REVIEW.rechecks).
+    for (const row of K67_S3_REVIEW.rechecks)
+      if (!String(review?.record ?? "").includes(row.path))
+        errors.push(
+          `review.record must cite the S3 (10th, K6/7) check ${row.round}'s record ${row.path} (9 回目の S4 の ⑥、S3 の 5 回目の確認の推奨 6)`,
+        );
   } else if (prep.review !== null)
     errors.push("review must be null until S3 reviews");
   return errors;
@@ -6908,6 +6983,8 @@ export function k67FormalRows(prep) {
       sha256: row.sha256,
     })),
     K67_S3_REVIEW,
+    // 9 回目の S4 の ⑥: the 2nd〜5th checks of the S3 review.
+    ...K67_S3_REVIEW.rechecks,
     ...located,
   ].map(({ path: file, commit, sha256: digest }) => ({
     path: file,
