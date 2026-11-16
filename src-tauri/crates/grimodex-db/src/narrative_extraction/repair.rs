@@ -547,6 +547,31 @@ fn revalidate_plan_in_tx(
     Ok(())
 }
 
+/// Test-only: drive the apply path's re-seal (`revalidate_plan_in_tx`, which
+/// re-seals through [`seal_repair_plan`]) for a Verify Run without a sealed
+/// plan. The plan is a placeholder: every refusal that can come from the
+/// re-seal of `verify_run_id` is reached before its digest is compared. A plan
+/// cannot be obtained from a Verify Run that `seal_repair_plan` refuses, so this
+/// is the only way to exercise the re-seal's refusal itself.
+#[cfg(test)]
+pub(crate) fn reseal_for_verify_run_for_test(
+    conn: &mut Connection,
+    project_id: &str,
+    verify_run_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<()> {
+    let plan = RepairPlan {
+        verify_run_id: verify_run_id.to_string(),
+        semantic_epoch_id: semantic_epoch_id.to_string(),
+        verify_report_digest: String::new(),
+        graph_state_digest: String::new(),
+        edge_ids_to_deactivate: Vec::new(),
+        edge_row_fingerprints: Vec::new(),
+        digest: String::new(),
+    };
+    revalidate_plan_in_tx(conn, project_id, &plan)
+}
+
 /// Seals a Repair plan for one project, **from a stored, completed
 /// `dependency-verify` Run**. Today only the `deactivate-duplicate-edge`
 /// category (`restore_rebuild::duplicate_edge_ids_to_deactivate`, surfaced

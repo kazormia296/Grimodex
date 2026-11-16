@@ -400,7 +400,7 @@ fn binding_shapes() -> Vec<(&'static str, String)> {
         ("08 dirty=0, Freshness digest mismatch", format!("UPDATE narrative_consumer_freshness SET dependency_set_digest='{}' WHERE {g}", digest_of('0'))),
         ("09 metadata generation differs from the D1 head", format!("UPDATE narrative_semantic_index_metadata SET generation=generation+1 WHERE {meta}")),
         ("10 producer_id mismatch", format!("UPDATE narrative_semantic_index_metadata SET producer_id='someone-else' WHERE {meta}")),
-        ("11 D1 entries removed", format!("PRAGMA foreign_keys=OFF; DELETE FROM narrative_dependency_declaration_entries WHERE declaration_set_id IN (SELECT declaration_set_id FROM narrative_dependency_declaration_heads WHERE {g})")),
+        ("11 D1 entries removed", format!("PRAGMA foreign_keys=OFF; DELETE FROM narrative_dependency_declaration_entries WHERE declaration_set_id IN (SELECT active_declaration_set_id FROM narrative_dependency_declaration_heads WHERE {g})")),
         ("12 metadata only", format!("PRAGMA foreign_keys=OFF; DELETE FROM narrative_dependency_declaration_heads WHERE {g}; DELETE FROM narrative_dependency_edges WHERE {g}; DELETE FROM narrative_consumer_freshness WHERE {g}")),
         ("13 edges only", format!("PRAGMA foreign_keys=OFF; DELETE FROM narrative_semantic_index_metadata WHERE {meta}")),
         ("14 one V1 Edge removed", format!("DELETE FROM narrative_dependency_edges WHERE id={first_codex_edge}")),
@@ -643,5 +643,985 @@ fn closed_gate_database_keeps_the_exclusion_and_the_reader_unavailable() -> Resu
         reader_query(&fixture)?.is_none(),
         "the reader does not register a dirty Graph: it is unavailable"
     );
+    Ok(())
+}
+
+/// Section 3.1 "no current Semantic Epoch": the binding is left as is (dirty or
+/// not), no Verify or Rebuild is dispatched while there is no epoch, and once
+/// the epoch exists the binding is recognized not-current and B's hint is a
+/// build. Here the epoch is created by the real Backfill Run (a wake with no
+/// current epoch), not by a direct `create_epoch_in_tx`; the metadata's
+/// `dirty_cache_flag` after the epoch is created is recorded.
+#[test]
+fn no_current_epoch_is_left_as_is_until_a_backfill_run_creates_one() -> Result<()> {
+    let _serial = serial();
+    for dirty in [false, true] {
+        let fixture = Fixture::published()?;
+        let meta = format!("project_id='{PROJECT}' AND index_key='{INDEX_KEY}'");
+        execute(&fixture, "PRAGMA foreign_keys=OFF; DELETE FROM narrative_semantic_epochs")?;
+        if dirty {
+            execute(
+                &fixture,
+                &format!("UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1 WHERE {meta}"),
+            )?;
+        }
+        assert_eq!(classify(&fixture)?, C::NoCurrentEpoch, "dirty={dirty}");
+        assert!(!complete_registered(fixture.db())?);
+        assert_eq!(fixture.judge()?, skip(Nir1GraphIndexSkipReason::NoEpoch));
+        // While there is no epoch the durable chain offers only Backfill.
+        let recorder = Recorder::default();
+        let (discovered, _) =
+            main_wake_cycle_with_discovery(&fixture, None, "workspace-opened", &recorder)?;
+        assert!(
+            matches!(&discovered, D::Work(work) if work.run_kind == AutomaticRunKind::Backfill),
+            "dirty={dirty}: {discovered:?}"
+        );
+        // The Backfill Run created the epoch.
+        assert!(
+            run_ledger(fixture.db())?
+                .iter()
+                .any(|(kind, status)| kind == "backfill" && status == "completed"),
+            "{:?}",
+            run_ledger(fixture.db())?
+        );
+        let dirty_after = sealed(fixture.db())?.map(|identity| identity.1);
+        // Creating the epoch dirties the binding (observed, both starting values).
+        assert_eq!(dirty_after, Some(1), "dirty={dirty}");
+        assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent, "dirty={dirty}");
+        assert!(matches!(fixture.judge()?, Nir1GraphIndexBuildDecision::Build { .. }));
+        assert!(!complete_registered(fixture.db())?);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// S-4: the completed-Verify digest (T-2)
+// ---------------------------------------------------------------------------
+
+/// The digest never reads the whole-project eligibility for a recognized
+/// not-current Graph, even uncontrolled; it changes with the binding's identity
+/// surfaces but not with the Source the Graph edges would have resolved
+/// (GDV-R5). For a current binding the uncontrolled digest is still
+/// `context-unavailable` (unchanged before GDV/1).
+#[test]
+fn digest_reads_no_eligibility_for_a_not_current_graph() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    let current = digest(&fixture).expect_err("a current binding's uncontrolled digest is unchanged");
+    assert!(is_context_unavailable_termination(&current), "{current:#}");
+
+    fixture.mark_dirty()?;
+    let first = digest(&fixture)?;
+    // Adding candidates changes the eligibility Source: not read, so no change.
+    overflow_candidates(&fixture)?;
+    let after_candidates = digest(&fixture)?;
+    assert_eq!(first, after_candidates);
+    // The identity surfaces are still in the digest: metadata, then Freshness.
+    execute(
+        &fixture,
+        &format!(
+            "UPDATE narrative_semantic_index_metadata SET built_at='2026-09-23T00:00:00.000Z'
+              WHERE project_id='{PROJECT}'"
+        ),
+    )?;
+    let after_metadata = digest(&fixture)?;
+    assert_ne!(after_candidates, after_metadata);
+    execute(
+        &fixture,
+        &format!(
+            "UPDATE narrative_consumer_freshness SET updated_at='2026-09-23T00:00:00.000Z'
+              WHERE project_id='{PROJECT}' AND {GRAPH_ROW}"
+        ),
+    )?;
+    assert_ne!(after_metadata, digest(&fixture)?);
+    // The structure is untouched by these edits: still recognized not-current.
+    assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent);
+    Ok(())
+}
+
+/// The S-4 mark is what makes a digest sealed while the Graph was current
+/// differ from the digest once it is not current (section 3.2 invariant): the
+/// foreground (full-eligibility) digest of the same binding differs between the
+/// two states even though nothing else changed. A recognized not-current Graph
+/// edge therefore always hashes the mark, never the resolved Source.
+#[test]
+fn digest_of_a_binding_differs_once_it_is_not_current_even_with_no_other_change() -> Result<()> {
+    let _serial = serial();
+    use crate::narrative_extraction::source_revision::ForegroundValidationControl;
+    let foreground_digest = |fixture: &Fixture| -> Result<String> {
+        fixture.db().with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let mut control = ForegroundValidationControl;
+            rr::durable_graph_state_digest_with_control(&mut tx, PROJECT, &mut control)
+        })
+    };
+    let fixture = Fixture::published()?;
+    let current = foreground_digest(&fixture)?;
+    assert_eq!(current, foreground_digest(&fixture)?, "the digest is deterministic");
+    // Only Freshness changes (the dependency digest and every Edge row stay).
+    execute(
+        &fixture,
+        &format!(
+            "UPDATE narrative_consumer_freshness SET evidence_freshness='stale'
+              WHERE project_id='{PROJECT}' AND {GRAPH_ROW}"
+        ),
+    )?;
+    assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent);
+    assert_ne!(current, foreground_digest(&fixture)?);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// re-publish: the next Verify validates the Graph in full
+// ---------------------------------------------------------------------------
+
+/// Once B re-publishes, the next Verify checks the Graph's Edges again: nothing
+/// is excluded, and the same damage that is invisible while the binding is
+/// not-current (a Graph Edge's Edge State missing) puts the Graph's Edges into
+/// the unresolvable-scope check.
+#[test]
+fn after_a_republish_verify_checks_the_graph_edges_in_full() -> Result<()> {
+    let _serial = serial();
+    let damage = format!(
+        "DELETE FROM narrative_dependency_edge_states WHERE edge_id = (SELECT id FROM narrative_dependency_edges
+          WHERE project_id='{PROJECT}' AND {GRAPH_ROW} AND source_object_identity LIKE 'codex:%' ORDER BY id LIMIT 1)"
+    );
+    // While not-current: the Graph's Edges are outside every check.
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    execute(&fixture, &damage)?;
+    let recorder = Recorder::default();
+    run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &work_request(&fixture, AutomaticRunKind::Verify, &["workspace-opened"])?,
+        None,
+        &recorder,
+    )?;
+    let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    let report = &outcome["report"];
+    assert!(excluded_graph_edge_count(report).is_some());
+    assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
+    assert_eq!(report["edgeIdsWithoutCurrentEpochState"], json!([]));
+
+    // B re-publishes (the seam wake), then Verify runs again.
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    let seam = graph_seam();
+    let mut idle = false;
+    for _ in 0..6 {
+        let recorder = Recorder::default();
+        main_wake_cycle_with_discovery(&fixture, Some(&seam), "workspace-opened", &recorder)?;
+        idle |= generation(fixture.db())? == Some(2);
+    }
+    assert!(idle, "B re-published");
+    assert_eq!(classify(&fixture)?, C::Current);
+    // The republished binding is valid. A current binding's Verify needs the
+    // caller-owned full-eligibility context, so the report comes from the
+    // foreground Verify (the same function the existing dirty-Graph tests use).
+    let verify_report = |fixture: &Fixture| -> Result<serde_json::Value> {
+        let report = fixture.db().with_read_transaction(|conn| {
+            rr::verify_narrative_dependency_graph_for_project(conn, PROJECT)
+        })?;
+        Ok(serde_json::to_value(report)?)
+    };
+    let report = verify_report(&fixture)?;
+    assert!(report.get("consumersExcludedNotCurrent").is_none(), "{report}");
+    assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
+    assert_eq!(report["edgeIdsWithoutCurrentEpochState"], json!([]));
+    // With one Graph Edge's Edge State gone (a damage the classification keeps
+    // as current), the Graph's Edges are inside the checks: it is reported.
+    execute(&fixture, &damage)?;
+    let report = verify_report(&fixture)?;
+    assert!(report.get("consumersExcludedNotCurrent").is_none(), "{report}");
+    assert!(
+        report["edgeIdsWithUnresolvableConsumerScope"]
+            .as_array()
+            .is_some_and(|edges| edges.len() == 4),
+        "the Graph's 4 Edges are inside the checks after the republish: {report}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// GDV-R9 (x): the downstream gates stay closed (T-7, section 3.2 invariant)
+// ---------------------------------------------------------------------------
+
+fn seal_message(fixture: &Fixture, run_id: &str, epoch: &str) -> Result<std::result::Result<usize, String>> {
+    Ok(fixture
+        .db()
+        .with_conn_mut(|conn| {
+            crate::narrative_extraction::repair::seal_repair_plan(conn, PROJECT, run_id, epoch)
+        })
+        .map(|plan| plan.change_count())
+        .map_err(|error| format!("{error:#}")))
+}
+
+fn project_readiness(
+    fixture: &Fixture,
+) -> Result<crate::narrative_extraction::ProjectCutoverReadiness> {
+    fixture.db().with_conn_mut(|conn| {
+        crate::narrative_extraction::inspect_project_cutover_readiness(conn, PROJECT)
+    })
+}
+
+/// The motive form after three product wakes: a completed Verify that excluded
+/// the Graph.
+fn motive_with_excluding_verify() -> Result<(Fixture, String, String, serde_json::Value)> {
+    let fixture = motive(true)?;
+    product_wakes(&fixture, None, 3)?;
+    let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    assert!(excluded_graph_edge_count(&outcome["report"]).is_some(), "{outcome}");
+    Ok((fixture, run_id, epoch, outcome))
+}
+
+/// A report that excluded a recognized not-current Graph passes the four
+/// Verify outcome validators, but cannot seal a Repair plan and does not pass
+/// the C2Z readiness Verify gate: each refusal asserts its own code/reason, so
+/// another gate cannot satisfy the test. The control is the binding-less form of
+/// the same workspace (an empty field; a report with the field emptied cannot be
+/// made, its digest is sealed).
+#[test]
+fn an_excluding_report_cannot_seal_a_repair_or_pass_the_c2z_verify_gate() -> Result<()> {
+    let _serial = serial();
+    let (fixture, run_id, epoch, outcome) = motive_with_excluding_verify()?;
+
+    // The four outcome validators accept the new field.
+    let report: rr::DependencyGraphVerifyReport = serde_json::from_value(outcome["report"].clone())?;
+    rr::validate_canonical_verify_outcome_digest(&outcome)?;
+    rr::validate_verify_check_coverage(&outcome)?;
+    fixture.db().with_conn(|conn| {
+        let mut control = NeverStopGraphWorkControl;
+        rr::validate_report_rebuild_required_with_control(conn, PROJECT, &report, &mut control)
+    })?;
+    crate::narrative_extraction::maintenance_runtime::validate_phase_success_outcome(
+        "dependency-verify",
+        PROJECT,
+        &format!("dependency-verify:{epoch}"),
+        Some(&epoch),
+        &outcome,
+    )?;
+
+    // Repair's seal refuses with its own code.
+    let seal = seal_message(&fixture, &run_id, &epoch)?;
+    assert!(
+        matches!(&seal, Err(message) if message.contains("NEX_REPAIR_VERIFY_GRAPH_RECOGNIZED_UNAVAILABLE")),
+        "{seal:?}"
+    );
+    // So does the apply path's re-seal.
+    let reseal = fixture.db().with_conn_mut(|conn| {
+        crate::narrative_extraction::repair::reseal_for_verify_run_for_test(
+            conn, PROJECT, &run_id, &epoch,
+        )
+    });
+    assert!(
+        matches!(&reseal, Err(error) if error_text(error).contains("NEX_REPAIR_VERIFY_GRAPH_RECOGNIZED_UNAVAILABLE")),
+        "{reseal:?}"
+    );
+
+    // C2Z readiness: the Verify gate is Blocked with exactly the reason.
+    use crate::narrative_extraction::ReadinessState;
+    let readiness = project_readiness(&fixture)?;
+    assert_eq!(readiness.verify.state, ReadinessState::Blocked);
+    assert_eq!(readiness.verify.reasons, vec!["verify-graph-recognized-unavailable".to_string()]);
+    assert!(readiness.verify.report_clean);
+    assert!(!readiness.ready);
+    let workspace = fixture
+        .db()
+        .with_conn_mut(crate::narrative_extraction::inspect_workspace_cutover_readiness)?;
+    assert!(!workspace.ready);
+    // A Graph Edge cannot be duplicated: the UNIQUE constraint refuses it.
+    let duplicate = fixture.db().with_conn(|conn| {
+        Ok(conn
+            .execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at)
+                 SELECT 'gdv1-duplicate-edge', project_id, consumer_kind, consumer_key,
+                        source_object_identity, read_set_json, created_at
+                   FROM narrative_dependency_edges
+                  WHERE project_id=?1 AND consumer_kind='semantic-index' LIMIT 1",
+                [PROJECT],
+            )
+            .map_err(|error| error.to_string()))
+    })?;
+    assert!(duplicate.is_err(), "duplicate Graph Edges are refused by the database");
+
+    // Control: no binding, the field is empty and not serialized; the seal and
+    // the gate behave as before GDV/1.
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
+    assert!(matches!(seal_message(&fixture, &run_id, &epoch)?, Ok(_)));
+    assert_eq!(project_readiness(&fixture)?.verify.state, ReadinessState::Passed);
+    Ok(())
+}
+
+/// Section 3.2 invariant (review 4 R-1): a report sealed while the Graph was
+/// current (or absent) has an empty field, so the field check passes it; what
+/// stops it once the Graph is not current is the S-4 mark's digest mismatch.
+#[test]
+fn a_report_sealed_before_the_graph_became_not_current_is_stopped_by_the_digest() -> Result<()> {
+    let _serial = serial();
+    use crate::narrative_extraction::ReadinessState;
+    // (i) sealed while the Graph was current.
+    let fixture = Fixture::published()?;
+    let recorder = Recorder::default();
+    run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &work_request(&fixture, AutomaticRunKind::Verify, &["workspace-opened"])?,
+        None,
+        &recorder,
+    )?;
+    let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
+    fixture.mark_dirty()?;
+    assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent);
+    let seal = seal_message(&fixture, &run_id, &epoch)?;
+    assert!(
+        matches!(&seal, Err(message) if message.contains("NEX_VERIFY_GRAPH_STATE_CHANGED")),
+        "{seal:?}"
+    );
+    let readiness = project_readiness(&fixture)?;
+    assert_eq!(readiness.verify.state, ReadinessState::Blocked);
+    assert!(
+        readiness
+            .verify
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("verify-graph-state-invalid")
+                && reason.contains("NEX_VERIFY_GRAPH_STATE_CHANGED")),
+        "{:?}",
+        readiness.verify.reasons
+    );
+    assert!(!readiness.ready);
+
+    // (ii) sealed while there was no binding (the report the setup chain made).
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
+    assert!(matches!(seal_message(&fixture, &run_id, &epoch)?, Ok(_)), "before the Graph exists");
+    let recorder = Recorder::default();
+    run_cycle(&fixture, Some(&graph_seam()), &recorder)?;
+    assert_eq!(generation(fixture.db())?, Some(1));
+    fixture.mark_dirty()?;
+    assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent);
+    let seal = seal_message(&fixture, &run_id, &epoch)?;
+    assert!(
+        matches!(&seal, Err(message) if message.contains("NEX_VERIFY_GRAPH_STATE_CHANGED")),
+        "{seal:?}"
+    );
+    let readiness = project_readiness(&fixture)?;
+    assert!(
+        readiness
+            .verify
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("NEX_VERIFY_GRAPH_STATE_CHANGED")),
+        "{:?}",
+        readiness.verify.reasons
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// the cutover loop (T-1 marker-less form, GDV-R9)
+// ---------------------------------------------------------------------------
+
+static CUTOVER_GENERATION: AtomicUsize = AtomicUsize::new(5_000);
+
+/// One turn of the product freshness scheduler: incremental cycle, heartbeat,
+/// cutover attempt. `Ok` is a written marker; `Err` carries the message.
+fn cutover_attempt(fixture: &Fixture) -> Result<std::result::Result<(), String>> {
+    use crate::narrative_extraction as ne;
+    let (_outcome, cycle) = ne::run_incremental_freshness_cycle_with_liveness_capability(fixture.db())?;
+    let generation = CUTOVER_GENERATION.fetch_add(1, Ordering::SeqCst) as u64;
+    let evidence = ne::record_live_scheduler_heartbeat(fixture.db(), "gdv1-acceptance", generation, cycle)?;
+    Ok(fixture
+        .db()
+        .with_conn_mut(|conn| ne::cut_over_workspace_freshness(conn, &evidence))
+        .map(|_| ())
+        .map_err(|error| format!("{error:#}")))
+}
+
+/// The native `WakeReason::BeforeCutover` wake: the before-cutover discovery
+/// decides the work, then one cycle runs it. `None` when there is no work.
+fn before_cutover_wake(
+    fixture: &Fixture,
+    recorder: &Recorder,
+) -> Result<(Option<DesiredWork>, Option<MaintenanceCycleResult>)> {
+    let coordinates =
+        crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(None)?;
+    let planned = crate::narrative_extraction::discover_before_cutover_maintenance_work_with_coordinates(
+        fixture.db(),
+        PROJECT,
+        Some(&coordinates),
+    )?;
+    let Some(work) = planned.clone() else {
+        return Ok((None, None));
+    };
+    let request = MaintenanceCycleRequest {
+        work: vec![MaintenanceWorkRequest {
+            project_id: work.project_id,
+            run_kind: work.run_kind,
+            work_key: work.work_key,
+            semantic_epoch_id: work.semantic_epoch_id,
+            reasons: work.reasons,
+        }],
+        wake_project_ids: Vec::new(),
+        delivery_sequence: None,
+        delivery_fingerprint: None,
+        workspace_binding: None,
+    };
+    let result = run_cycle_on(fixture.db(), Some(fixture.runtime()), &request, None, recorder)?;
+    Ok((planned, Some(result)))
+}
+
+/// Per round: the Run count change, whether the before-cutover discovery found
+/// work, and the cutover attempt's result.
+#[derive(Debug)]
+struct CutoverRound {
+    runs_added: usize,
+    before_cutover_found_work: bool,
+    attempt: std::result::Result<(), String>,
+}
+
+fn cutover_rounds(fixture: &Fixture, rounds: usize) -> Result<Vec<CutoverRound>> {
+    let mut observed = Vec::new();
+    for _ in 0..rounds {
+        let before = run_ledger(fixture.db())?.len();
+        let attempt = cutover_attempt(fixture)?;
+        let mut found = false;
+        if matches!(&attempt, Err(message) if message.contains("NEX_C2ZC_CUTOVER_NOT_READY")) {
+            let recorder = Recorder::default();
+            found = before_cutover_wake(fixture, &recorder)?.0.is_some();
+        }
+        let ok = attempt.is_ok();
+        observed.push(CutoverRound {
+            runs_added: run_ledger(fixture.db())?.len() - before,
+            before_cutover_found_work: found,
+            attempt,
+        });
+        if ok {
+            break;
+        }
+    }
+    Ok(observed)
+}
+
+/// A cutover-less workspace whose Graph is recognized not-current (the motive
+/// form without the marker; a gate-open start can publish a Graph before the
+/// cutover): the automatic maintenance reaches idle and does not add Runs
+/// forever, and only the cutover does not proceed: the readiness Verify gate is
+/// the one blocked gate. The control is the same marker-less workspace without a
+/// binding, which cuts over.
+#[test]
+fn a_marker_less_workspace_with_a_not_current_graph_idles_and_does_not_cut_over() -> Result<()> {
+    let _serial = serial();
+    use crate::narrative_extraction::ReadinessState;
+    let fixture = motive(false)?;
+    let rounds = cutover_rounds(&fixture, 8)?;
+    assert_eq!(rounds.len(), 8, "the cutover never succeeds: {rounds:?}");
+    // The first attempt is before any Verify ran in this workspace's chain: the
+    // Verify gate sees a report sealed without the Graph (the digest differs,
+    // section 3.2 invariant) and the missing rebuild and phase evidence. The
+    // before-cutover wake then runs [verify, rebuild, verify]. From the second
+    // attempt on, the Verify gate is the only reason, with the (x) reason.
+    assert!(
+        matches!(&rounds[0].attempt, Err(message)
+            if message.contains("NEX_C2ZC_CUTOVER_NOT_READY")
+                && message.contains("NEX_VERIFY_GRAPH_STATE_CHANGED")),
+        "{rounds:?}"
+    );
+    assert!(rounds[0].runs_added == 3 && rounds[0].before_cutover_found_work, "{rounds:?}");
+    for round in &rounds[1..] {
+        assert!(
+            matches!(&round.attempt, Err(message)
+                if message == "NEX_C2ZC_CUTOVER_NOT_READY: verify:verify-graph-recognized-unavailable"),
+            "{rounds:?}"
+        );
+        // The discovery finds nothing and no Run is added: the Run count does
+        // not grow round after round.
+        assert_eq!(round.runs_added, 0, "{rounds:?}");
+        assert!(!round.before_cutover_found_work, "{rounds:?}");
+    }
+    assert_eq!(fixture.marker()?, None, "no marker is written");
+    assert!(finding_keys(fixture.db())?.is_empty());
+    // The Verify gate is the only blocked gate.
+    let readiness = project_readiness(&fixture)?;
+    assert_eq!(readiness.verify.state, ReadinessState::Blocked);
+    assert_eq!(readiness.verify.reasons, vec!["verify-graph-recognized-unavailable".to_string()]);
+    assert_eq!(readiness.derived_state_rebuild.state, ReadinessState::Passed);
+    assert_eq!(readiness.parity.state, ReadinessState::Passed);
+    assert_eq!(readiness.no_active_backfill_or_repair.state, ReadinessState::Passed);
+    assert_eq!(readiness.phase_lifecycle.state, ReadinessState::Passed);
+    // The skip evidence, discovery and cycle are open: an uncontrolled skip
+    // evaluation of the same Verify is a Skip, so the readiness (x) is the
+    // single gate that keeps the cutover closed.
+    let (_, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    assert!(excluded_graph_edge_count(&outcome["report"]).is_some());
+    use crate::narrative_extraction::maintenance_skip_evidence::{
+        evaluate_completed_run_skip, CompletedRunSkipExpectation,
+    };
+    let coordinates = crate::narrative_extraction::maintenance_contracts::current_maintenance_coordinates()?;
+    let expectation = CompletedRunSkipExpectation {
+        project_id: PROJECT.into(),
+        run_kind: "dependency-verify".into(),
+        work_key: format!("dependency-verify:{epoch}"),
+        semantic_epoch_id: epoch.clone(),
+        graph_contract_digest: coordinates.graph_contract_digest.clone(),
+        rule_registry_digest: coordinates.rule_registry_digest.clone(),
+        producer_generation_set_digest: coordinates.producer_generation_set_digest.clone(),
+        rebuild_contract_version: rr::REBUILD_CONTRACT_VERSION.into(),
+        run_kind_contract_version: rr::VERIFY_CONTRACT_VERSION.into(),
+        report_digest: None,
+    };
+    let decision = fixture
+        .db()
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation))?;
+    assert!(format!("{decision:?}").starts_with("Skip"), "{decision:?}");
+
+    // The same workspace with the cutover marker: cutover is already done and
+    // returns early without reading readiness.
+    let done = motive(true)?;
+    let rounds = cutover_rounds(&done, 3)?;
+    assert!(matches!(rounds.first().map(|round| &round.attempt), Some(Ok(()))), "{rounds:?}");
+
+    // Control: no binding, no marker: the cutover is written.
+    let control = Fixture::new_with_marker(false)?;
+    drain_durable_chain(&control)?;
+    let rounds = cutover_rounds(&control, 8)?;
+    assert!(rounds.last().is_some_and(|round| round.attempt.is_ok()), "{rounds:?}");
+    assert!(control.marker()?.is_some());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// GDV-R9: the foreground Verify completion (`complete_foreground_system_work_run`)
+// ---------------------------------------------------------------------------
+
+/// Run a foreground Verify under the system-work marker and release it. The
+/// release re-checks the outcome against the uncontrolled digest and, for a
+/// clean report, seals the skip evidence.
+fn foreground_verify_completion(
+    fixture: &Fixture,
+) -> Result<std::result::Result<serde_json::Value, String>> {
+    use crate::narrative_extraction::maintenance_runtime as mr;
+    let epoch = fixture.current_epoch()?;
+    let marker = mr::NarrativeSystemWorkMarker {
+        trigger: "workspace-opened".to_string(),
+        canonical_work_key: mr::canonical_work_key_for_epoch(
+            PROJECT,
+            AutomaticRunKind::Verify,
+            &format!("dependency-verify:{epoch}"),
+            Some(&epoch),
+        )?,
+        authority_id: "authority:gdv1-acceptance".to_string(),
+        generation: 1,
+        product_journey_barrier_id: "barrier-gdv1".to_string(),
+        correlation: "correlation-gdv1".to_string(),
+    };
+    let outcome = match mr::with_system_work_marker(Some(marker.clone()), || {
+        rr::run_dependency_verify_for_project(fixture.db(), PROJECT)
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => return Ok(Err(format!("run: {error:#}"))),
+    };
+    let barrier = mr::ForegroundSystemWorkRun {
+        run_id: outcome.run_id.clone(),
+        project_id: PROJECT.to_string(),
+        marker,
+    };
+    if let Err(error) = mr::complete_foreground_system_work_run(fixture.db(), &barrier) {
+        return Ok(Err(format!("release: {error:#}")));
+    }
+    let stored: String = fixture.db().with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
+            [&outcome.run_id],
+            |row| row.get(0),
+        )?)
+    })?;
+    Ok(Ok(serde_json::from_str(&stored)?))
+}
+
+/// For a not-current Graph the foreground Verify completes and seals its skip
+/// evidence (GDV-R9: the skip-evidence seal is the third place that opens). For
+/// a current Graph the release is refused by the uncontrolled digest, as it is
+/// before GDV/1 (see the unchanged-behaviour tests).
+#[test]
+fn foreground_verify_completion_seals_for_a_not_current_graph_only() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    let stored = foreground_verify_completion(&fixture)?;
+    let stored = stored.map_err(|message| anyhow!("not-current: {message}"))?;
+    assert!(excluded_graph_edge_count(&stored["report"]).is_some(), "{stored}");
+    assert!(
+        stored.get("skipEvidence").is_some(),
+        "the clean excluding outcome sealed its skip evidence: {stored}"
+    );
+
+    // A current Graph keeps refusing: the foreground Verify cannot complete
+    // under the uncontrolled digest, which is unchanged by GDV/1.
+    let fixture = Fixture::published()?;
+    let refused = foreground_verify_completion(&fixture)?;
+    assert!(
+        matches!(&refused, Err(message) if message.contains("context-unavailable")),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// S-5: Rebuild-Derived and its V2 shadow (T-11)
+// ---------------------------------------------------------------------------
+
+fn rebuild_completed(fixture: &Fixture) -> Result<bool> {
+    Ok(run_ledger(fixture.db())?
+        .iter()
+        .any(|(kind, status)| kind == "semantic-index-rebuild" && status == "completed"))
+}
+
+/// Rebuild-Derived completes in the motive form when another Consumer needs a
+/// Rebuild (a missing Edge State), and the chain reaches idle without a failing
+/// wake or a Finding: the V2 shadow no longer resolves the Graph's eligibility.
+#[test]
+fn rebuild_derived_completes_when_another_consumer_needs_a_rebuild() -> Result<()> {
+    let _serial = serial();
+    let fixture = motive(true)?;
+    require_rebuild(&fixture)?;
+    let discoveries = product_wakes(&fixture, None, 10)?;
+    assert!(discoveries.iter().any(|d| matches!(d, D::Idle)), "{discoveries:?}");
+    assert!(rebuild_completed(&fixture)?);
+    assert!(finding_keys(fixture.db())?.is_empty());
+    Ok(())
+}
+
+/// The Semantic Epoch rotated (a restore's new epoch), for the published and the
+/// motive form, through the product path and the seam: no failing wake, a clean
+/// completed Verify, no Finding and a bounded Run count. With the seam the
+/// project keeps waking B and never fails.
+#[test]
+fn epoch_rotation_does_not_stall_for_a_not_current_graph() -> Result<()> {
+    let _serial = serial();
+    for overflow in [false, true] {
+        for with_seam in [false, true] {
+            let fixture = Fixture::published()?;
+            if overflow {
+                overflow_candidates(&fixture)?;
+                let recorder = Recorder::default();
+                fixture.dispatch(&recorder)?;
+            } else {
+                fixture.mark_dirty()?;
+            }
+            ensure_restore_epochs_for_workspace(
+                fixture.db(),
+                "restore-image-sha256:b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+            )?;
+            let tag = format!("overflow={overflow} seam={with_seam}");
+            let seam = graph_seam();
+            let mut idle = false;
+            for index in 0..8 {
+                let recorder = Recorder::default();
+                let (discovery, _) = main_wake_cycle_with_discovery(
+                    &fixture,
+                    with_seam.then_some(&seam),
+                    "workspace-opened",
+                    &recorder,
+                )
+                .map_err(|error| anyhow!("{tag} wake#{index}: {error:#}"))?;
+                idle |= matches!(discovery, D::Idle);
+            }
+            // With the seam an idle chain is a wake for B, so only the product
+            // path reaches `Idle`.
+            assert!(with_seam || idle, "{tag}");
+            let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
+            let parsed: rr::DependencyGraphVerifyReport =
+                serde_json::from_value(outcome["report"].clone())?;
+            assert!(parsed.is_clean(), "{tag}: {}", outcome["report"]);
+            assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
+            assert!(run_ledger(fixture.db())?.len() <= 12, "{tag}: {:?}", run_ledger(fixture.db())?);
+        }
+    }
+    Ok(())
+}
+
+/// The before-cutover forms of Rebuild (a Rebuild not completed yet, and a
+/// completed Rebuild whose outcome is no longer current), with and without the
+/// marker, through the product's before-cutover discovery: no failing wake, no
+/// Finding, and the Run count stops growing.
+#[test]
+fn before_cutover_rebuild_forms_complete_for_a_not_current_graph() -> Result<()> {
+    let _serial = serial();
+    for marker in [true, false] {
+        let fixture = motive(marker)?;
+        let tag = format!("marker={marker}");
+        // Form 1: no completed Rebuild: [verify, rebuild, verify] once.
+        let mut first_cycle = None;
+        for index in 0..5 {
+            let recorder = Recorder::default();
+            let (work, _) = before_cutover_wake(&fixture, &recorder)
+                .map_err(|error| anyhow!("{tag} form 1 wake#{index}: {error:#}"))?;
+            if index == 0 {
+                assert!(
+                    matches!(&work, Some(work) if work.run_kind == AutomaticRunKind::Verify
+                        && work.reasons == ["before-cutover"]),
+                    "{tag}: {work:?}"
+                );
+                first_cycle = Some(started_kinds(&recorder));
+            } else {
+                assert!(work.is_none(), "{tag} wake#{index}");
+            }
+        }
+        assert_eq!(
+            first_cycle,
+            Some(vec!["verify".to_string(), "rebuild".to_string(), "verify".to_string()]),
+            "{tag}"
+        );
+        assert!(rebuild_completed(&fixture)?, "{tag}");
+        assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
+        // Form 2: the completed Rebuild's outcome is no longer current.
+        let changed = fixture.db().with_conn(|conn| {
+            Ok(conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json = json_set(outcome_summary_json, '$.failure', json('{\"code\":\"gdv1-acceptance\"}'))
+                  WHERE project_id=?1 AND run_kind='semantic-index-rebuild' AND status='completed'",
+                [PROJECT],
+            )?)
+        })?;
+        assert_eq!(changed, 1, "{tag}");
+        let runs_before = run_ledger(fixture.db())?.len();
+        let mut work_kinds = Vec::new();
+        for index in 0..4 {
+            let recorder = Recorder::default();
+            let (work, _) = before_cutover_wake(&fixture, &recorder)
+                .map_err(|error| anyhow!("{tag} form 2 wake#{index}: {error:#}"))?;
+            work_kinds.push(work.map(|work| work.run_kind));
+        }
+        assert_eq!(work_kinds[0], Some(AutomaticRunKind::RebuildDerived), "{tag}: {work_kinds:?}");
+        assert!(work_kinds[1..].iter().all(Option::is_none), "{tag}: {work_kinds:?}");
+        assert_eq!(run_ledger(fixture.db())?.len(), runs_before + 2, "{tag}");
+        assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
+    }
+    Ok(())
+}
+
+/// A RebuildDerived handed over by main while a Rebuild was not completed, with
+/// the seam open (case C-2 does not judge in front of it): the chain completes
+/// the Rebuild and the Verify, and the Graph is republished once.
+#[test]
+fn main_rebuild_with_the_seam_completes_and_republishes_the_graph_once() -> Result<()> {
+    let _serial = serial();
+    let observation = observe_main_rebuild()?;
+    assert_eq!(observation.graph_builds, 1);
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    require_rebuild(&fixture)?;
+    let seam = graph_seam();
+    let recorder = Recorder::default();
+    run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &work_request(&fixture, AutomaticRunKind::RebuildDerived, &["workspace-opened"])?,
+        Some(&seam),
+        &recorder,
+    )?;
+    assert!(rebuild_completed(&fixture)?);
+    assert_eq!(generation(fixture.db())?, Some(2));
+    assert_eq!(classify(&fixture)?, C::Current);
+    Ok(())
+}
+
+/// Section 8 S-5: the V2 shadow summary of a not-current Graph equals that of a
+/// database without the Graph head, except for one diagnostics line. For a
+/// current Graph the head is not skipped.
+#[test]
+fn v2_shadow_summary_skips_only_the_not_current_graph_head() -> Result<()> {
+    let _serial = serial();
+    use crate::narrative_extraction::source_revision::ForegroundValidationControl;
+    let summarize = |fixture: &Fixture,
+                     drop_graph_head: bool,
+                     foreground: bool|
+     -> Result<rr::RebuildShadowVerificationSummary> {
+        fixture.db().with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            if drop_graph_head {
+                tx.execute("PRAGMA foreign_keys=OFF", [])?;
+                tx.execute(
+                    "DELETE FROM narrative_dependency_declaration_heads
+                      WHERE project_id=?1 AND consumer_kind='semantic-index'",
+                    [PROJECT],
+                )?;
+            }
+            let mut never = NeverStopGraphWorkControl;
+            let mut foreground_control = ForegroundValidationControl;
+            let control: &mut dyn GraphWorkControl =
+                if foreground { &mut foreground_control } else { &mut never };
+            let summary =
+                rr::verify_v2_shadow_for_rebuild_in_tx_with_control(&mut tx, PROJECT, "gdv1-acceptance", control);
+            tx.rollback()?;
+            summary
+        })
+    };
+    const SKIP_CODE: &str = "NEX_V2_SHADOW_REBUILD_RECOGNIZED_UNAVAILABLE:";
+    // Not-current (an uncontrolled shadow must not read the eligibility).
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    let skipped = summarize(&fixture, false, false)?;
+    let without_head = summarize(&fixture, true, false)?;
+    let mut stripped = skipped.clone();
+    stripped.diagnostics.retain(|line| !line.starts_with(SKIP_CODE));
+    assert_eq!(
+        skipped.diagnostics.len(),
+        stripped.diagnostics.len() + 1,
+        "the skip is recorded as exactly one diagnostics line: {:?}",
+        skipped.diagnostics
+    );
+    assert!(skipped
+        .diagnostics
+        .iter()
+        .any(|line| line == &format!("{SKIP_CODE}semantic-index:{INDEX_KEY}")));
+    assert_eq!(stripped, without_head);
+    // Current: the head is evaluated (it needs the foreground control).
+    let fixture = Fixture::published()?;
+    let current = summarize(&fixture, false, true)?;
+    let current_without_head = summarize(&fixture, true, true)?;
+    assert!(!current.diagnostics.iter().any(|line| line.starts_with(SKIP_CODE)));
+    assert_eq!(current.active_head_count, current_without_head.active_head_count + 1);
+    assert!(current.evaluated_declaration_count > current_without_head.evaluated_declaration_count);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// incremental Freshness (T-12) and the Finding resolution
+// ---------------------------------------------------------------------------
+
+/// A real Scene edit's change feed, run through incremental Freshness in the
+/// motive form: it must neither fail nor resolve the Graph's eligibility (with
+/// 2,065 candidates, resolving it would be a capacity error).
+#[test]
+fn incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility() -> Result<()> {
+    let _serial = serial();
+    use crate::narrative_extraction::scope_storage_authority_tests::patch;
+    let fixture = motive(true)?;
+    patch(
+        fixture.db(),
+        "a3-source",
+        "gdv1-edit",
+        "povCharacterId",
+        json!("nir1-alice"),
+        true,
+        "2026-10-27T00:00:00.000Z",
+    )?;
+    let mut processed = 0;
+    while matches!(
+        run_incremental_freshness_cycle(fixture.db())?,
+        IncrementalFreshnessCycleOutcome::Processed(_)
+    ) {
+        processed += 1;
+        assert!(processed < 64, "the change feed drains");
+    }
+    assert!(processed > 0, "the edit produced incremental work");
+    // The edit retires a Revision, which is an ordinary Freshness Finding; no
+    // maintenance-failure Finding (a stalled Verify or Rebuild) appears.
+    assert!(
+        finding_keys(fixture.db())?
+            .iter()
+            .all(|key| !key.starts_with("narrative-maintenance-failure:")),
+        "{:?}",
+        finding_keys(fixture.db())?
+    );
+    Ok(())
+}
+
+/// A `semantic-graph-requires-repair` Finding that the durable discovery
+/// projects for a defect Rebuild cannot fix (here an unsupported Consumer with
+/// current derived rows, next to a not-current Graph) is resolved by the next
+/// clean Verify, which still excludes the not-current Graph. The Finding comes
+/// from the product discovery for a non-Graph defect: no Graph-caused Finding is
+/// reachable for a sealed binding (the contract's section 2.3).
+#[test]
+fn a_semantic_graph_requires_repair_finding_is_resolved_by_the_next_clean_verify() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    let epoch = fixture.current_epoch()?;
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, created_at)
+             VALUES ('gdv1-unsupported-edge', ?1, 'unsupported-consumer', 'consumer-1',
+                     'project:scene:a3-source', '[]', '2026-01-01T00:00:00.000Z')",
+            [PROJECT],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edge_states
+                (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                 evaluated_at_epoch_id, evaluated_at)
+             VALUES ('gdv1-unsupported-edge', ?1, 'unknown', NULL, 'manual', ?2,
+                     '2026-01-01T00:00:00.000Z')",
+            params![PROJECT, epoch],
+        )?;
+        let dependency_set_digest =
+            crate::narrative_extraction::dependency_edges::consumer_dependency_set_digest(
+                conn,
+                PROJECT,
+                "unsupported-consumer",
+                "consumer-1",
+            )?;
+        conn.execute(
+            "INSERT INTO narrative_consumer_freshness
+                (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
+                 semantic_epoch_id, dependency_set_digest, updated_at)
+             VALUES (?1, 'unsupported-consumer', 'consumer-1', 'unknown', 'manual', ?2, ?3,
+                     '2026-01-01T00:00:00.000Z')",
+            params![PROJECT, epoch, dependency_set_digest],
+        )?;
+        Ok(())
+    })?;
+    product_wakes(&fixture, None, 4)?;
+    let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    assert!(excluded_graph_edge_count(&outcome["report"]).is_some(), "{outcome}");
+    let defective: rr::DependencyGraphVerifyReport =
+        serde_json::from_value(outcome["report"].clone())?;
+    assert!(!defective.is_clean(), "the unrelated defect keeps the report non-clean");
+    assert!(!defective.requires_rebuild(), "and it is not one a Rebuild can fix");
+    let states = |fixture: &Fixture| -> Result<Vec<String>> {
+        fixture.db().with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT lifecycle_state FROM narrative_maintenance_finding_lifecycle
+                  WHERE project_id = ?1 AND finding_key LIKE 'narrative-maintenance-failure:%'
+                  ORDER BY rowid",
+            )?;
+            let rows = statement
+                .query_map([PROJECT], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok(rows)
+        })
+    };
+    let open = states(&fixture)?;
+    assert_eq!(open.len(), 1, "the discovery projects the Finding: {open:?}");
+    assert_eq!(open[0], "new", "{open:?}");
+
+    // The defect is fixed: the next Verify is clean (the Graph stays excluded)
+    // and resolves the Finding.
+    execute(
+        &fixture,
+        "DELETE FROM narrative_consumer_freshness WHERE consumer_kind='unsupported-consumer';
+         DELETE FROM narrative_dependency_edge_states WHERE edge_id='gdv1-unsupported-edge';
+         DELETE FROM narrative_dependency_edges WHERE id='gdv1-unsupported-edge'",
+    )?;
+    product_wakes(&fixture, None, 4)?;
+    let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
+    let parsed: rr::DependencyGraphVerifyReport = serde_json::from_value(outcome["report"].clone())?;
+    assert!(parsed.is_clean(), "{}", outcome["report"]);
+    assert!(excluded_graph_edge_count(&outcome["report"]).is_some());
+    // The lifecycle is an append-only log: the Finding went new -> resolved.
+    assert_eq!(states(&fixture)?, vec!["new".to_string(), "resolved".to_string()]);
     Ok(())
 }
