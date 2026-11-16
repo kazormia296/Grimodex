@@ -866,6 +866,25 @@
   - Native の試験と eval feature の試験が mac／Win の CI で走るか。
 - PUB-G への引き継ぎ：定数を切り替えると、Native は discovery の応答に `wakeProjectIds` を載せ（PR-1）、registration が拒否された需要の event を出し（PR-2）、main は受ける（PR-2）。#5 の閉じた実装は、PR-1 と PR-2 で完了した。残るのは registry の production 表、policy の行の実体、定数の切替、文言、(iii)（Q1 の回答で起案）、W3（測ってから）で、すべて PUB-G の PR か別の lane。切替の前に、dev の journey で上の全 process の流れと、wake の頻度（B の build の回数、DB の取り合い、registration の窓）を測って記録する。
 
+### DR-PUBG-5-15：`discover_all` の project ごとの Err の封じ込め（DR-PUBG-5-13 の判断 7 から切り出し。2026-11-17）
+
+- 位置づけ：PR-1 の点検（`05-impl-check.md` の M1）で、封じ込めは gate の外で今の製品の既定の挙動を変えると指摘された。定数が false の間、PR-1 と PR-2 は既定の挙動と等価でなければならないので、統合者が封じ込めを PR-1 から外してこの枝に切り出した。枝 `claude/pubg-5-containment`（PR-2 の head の上の 1 commit。push せず、PR も作らない）。これは「既定を変える変更」なので、PR にして merge するには、統合者が差を明示して受け入れ、PR 本文と S4 の候補の開示に載せる必要がある（PR-1・PR-2 の merge の条件ではない）。
+- 委任と停止点：DR-PUBG-5-13 と同じ（C-product の技術判断）。コード・policy・定数の変更は、封じ込めと、その試験だけ。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 規則（DR-PUBG-5-13 の判断 7 の元の案から、R1 で allowlist を狭めたもの）：
+  - 対象は、BeforeCutover でない wake（open・restore・epoch）の project ごとの discovery だけ。BeforeCutover は fail-closed のまま `?` で返す（失敗した project を「work なし」にすると cutover が進みうる）。
+  - 封じ込めるのは、typed な `ValidationTerminated` の `ContextUnavailable` だけ（project の状態で決まり、再試行しても変わらない。V0 の (b)、DR-BSEAM-5）。判定は `grimodex-db` の `is_project_local_discovery_failure`（`is_context_unavailable_termination` に委譲）。
+  - 他は全て今までどおり伝播する。preempt、cancel、timeout、closed、workspace-generation-changed、busy・locked などの retryable、未知の SQL 失敗、`CapacityExceeded`。
+  - 封じ込めた project は「work なし」として返す。1 つも成功した project がなければ（全て封じ込め）、最初の Err を返す。log は code だけ（`context-unavailable`。本文・project ID・path は出さない）。
+- R1（点検の反映）：`CapacityExceeded` の腕を外した。main の discovery で `CapacityExceeded` が Err になる経路は、読んだ範囲で無い（`validate_discovered_verify_outcome` の capacity は `is_maintenance_control_or_cleanup_error` から外れていて `Err(_) => verify_work` になる。candidate の超過はその前に ContextUnavailable で止まる）。観測より広く fail-closed を緩めていた腕を外した。追いきれていない `?`（`evaluate_completed_run_skip_with_control` など）が `CapacityExceeded` を Err で返す経路は、全部は追っていない。見つかったら、その段で観測してから allowlist に足す。
+- R6（点検の反映）：db の試験を 1 本足した（`a_real_sealed_binding_failure_is_project_local_and_the_other_project_still_discovers`）。project が 2 つの実際の DB で、V0 (b) の状態（binding を publish した project に候補 2,065 件を足して dirty にした）の project の discovery が、実際の sealed binding による `context-unavailable` で失敗し、それが allowlist に当たることと、もう 1 つの project の discovery が成功する（その project の work が返る）ことを固定する。Native の `discover_all` を通した試験ではない（Native の試験は、project ごとの discovery を差し替えて規則を固定している）。
+- R7 の 1 点目：log の code は、allowlist が 1 種になったので固定の `context-unavailable`（chain の最初の `ValidationTerminated` を見る `contained_failure_code` は外した）。
+- 今の製品に効く差（要レビュー。DR-PUBG-5-13 の判断 7 の理由と同じ）：
+  - (a) 複数 project の workspace で 1 つが `ContextUnavailable`（DR-BSEAM-5）で失敗するとき、以前は discovery 全体が Err（main は warn、最大 3 回の再 discovery、wake outbox は ACK されない）。封じ込めると成功扱いで他の project の work が返り、wake outbox が ACK されて、失敗した project の wake が消費される。
+  - (b) 「成功した project が 0 のときだけ Err」の規則は Idle の project を成功に数える。`default-project` を残す・足す形で実質 2 project 以上の workspace は普通にあり、失敗する project が 1 つでも Err が消える。「単一 project の workspace の挙動は今のまま」は、project が本当に 1 つのときだけ成り立つ。project 数で挙動が非単調になる。
+  - (c) 失敗は `tracing::warn`（code のみ）にしか残らず、main には見えない。見せるなら wire の field と main の変更、契約が要る（採らない）。
+- 採らない：wire への `failedProjectIds` 的な field、全ての Err の封じ込め（fail-closed の過剰な緩和）。
+- 検証（node は 22、`CARGO_BUILD_JOBS=4`。PR-2 の head `185ef194` の上）：`grimodex-db --lib` の `nir1_graph_index_maintenance` は 43 件成功（PR-2 の 41 件に、allowlist の単体試験と R6 の試験の 2 件）。Native `--lib` 全件は 824 件成功・7 件 ignore（PR-2 の 820 件に、封じ込めの試験 4 件）。clippy（`--all-targets -- -D warnings`）は Native と db で成功。`verify:quality` は commit 後の head で走らせた。
+
 ### 実装の段取り（閉じた gate の内側まで。merge は S4（9 回目）の PR の merge の後）
 
 | PR | 中身 | 検証 |
