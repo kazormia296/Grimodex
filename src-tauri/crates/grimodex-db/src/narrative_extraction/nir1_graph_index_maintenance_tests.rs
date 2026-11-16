@@ -170,11 +170,17 @@ impl Fixture {
 
     /// Judge the project exactly as the gate-open cycle would.
     fn judge(&self) -> Result<Nir1GraphIndexBuildDecision> {
+        self.judge_with_gate(Nir1GraphIndexBuildGate::open_for_test())
+    }
+
+    /// Judge the project behind a launch's own gate (the seam's or the
+    /// product token's).
+    fn judge_with_gate(
+        &self,
+        gate: Nir1GraphIndexBuildGate,
+    ) -> Result<Nir1GraphIndexBuildDecision> {
         let recorder = Recorder::default();
-        let context = Nir1GraphCycleContext::new(
-            Nir1GraphIndexBuildGate::open_for_test(),
-            Some(self.runtime()),
-        );
+        let context = Nir1GraphCycleContext::new(gate, Some(self.runtime()));
         with_control(&recorder, |control| {
             judge_graph_index_build(self.db(), PROJECT, "durable-wake", Some(control), &context)
                 .map(|(decision, _)| decision)
@@ -2876,7 +2882,7 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
             "{launch:?}: a refusal for unchanged inputs reached prepare or validation"
         );
         assert_eq!(
-            fixture.judge()?,
+            fixture.judge_with_gate(gate)?,
             skip(Nir1GraphIndexSkipReason::RefusedUnchanged)
         );
         assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
@@ -2886,7 +2892,7 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
         // An A2 input change releases it: the build is attempted again.
         add_second_reviewed_revision(fixture.db(), "nir1:review:2")?;
         assert_eq!(
-            fixture.judge()?,
+            fixture.judge_with_gate(gate)?,
             build(
                 Nir1GraphIndexBuildMode::Rebuild,
                 Nir1GraphIndexBuildReason::BindingDirty
@@ -2897,7 +2903,7 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
         assert_eq!(outcome, no_finalization(false));
         assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
         assert_eq!(
-            fixture.judge()?,
+            fixture.judge_with_gate(gate)?,
             skip(Nir1GraphIndexSkipReason::RefusedUnchanged)
         );
 
@@ -2907,7 +2913,7 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
             .bind_embedding_generation(1)
             .map_err(|error| anyhow!("{error:#}"))?;
         assert_eq!(
-            fixture.judge()?,
+            fixture.judge_with_gate(gate)?,
             build(
                 Nir1GraphIndexBuildMode::Rebuild,
                 Nir1GraphIndexBuildReason::BindingDirty
@@ -2922,7 +2928,7 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
         fixture.reopen()?;
         assert_eq!(fixture.record(), None, "{launch:?}: restart");
         assert_eq!(
-            fixture.judge()?,
+            fixture.judge_with_gate(gate)?,
             build(
                 Nir1GraphIndexBuildMode::Rebuild,
                 Nir1GraphIndexBuildReason::BindingDirty
