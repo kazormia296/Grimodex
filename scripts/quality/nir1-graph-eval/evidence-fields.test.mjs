@@ -524,3 +524,32 @@ test("レビュー推奨 10: evidenceRaw・rowTexts の key は受領書のど�
   assert.equal(noNeedles.length, 2);
   assert.match(noNeedles[0], /\[precheck\]/u);
 });
+
+test("v3 §4（検出力の取り直し）: evidenceFieldErrors は evidenceRaw・rowTexts の key を（needle を渡さない検証でも）拒否する", () => {
+  for (const key of ["evidenceRaw", "rowTexts"]) {
+    const errors = evidenceFieldErrors({
+      samples: [{ fetches: [{ [key]: [] }] }],
+    });
+    assert.ok(
+      errors.some((message) => /page-only plain field/u.test(message)),
+      key,
+    );
+  }
+  assert.ok(
+    !evidenceFieldErrors({ samples: [{ fetches: [{ other: [] }] }] }).some(
+      (message) => /page-only plain field/u.test(message),
+    ),
+  );
+});
+
+test("v3 §4 (ii)（検出力の取り直し）: 走査する本文は Entity の summary を含む（Scene の本文だけでは足りない）。label は含めない", () => {
+  const summary = "Hollis keeps the ledger of the harbor tolls at night.";
+  const needles = plaintextNeedlesOf({
+    entities: [{ label: "Hollis", summary }],
+  });
+  assert.deepEqual(needles, [summary]);
+  assert.match(
+    plaintextErrors({ leaked: `x ${summary} y` }, needles).join(),
+    /contains a fixture text in clear/u,
+  );
+});

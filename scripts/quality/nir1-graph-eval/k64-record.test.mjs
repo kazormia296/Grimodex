@@ -751,6 +751,35 @@ test("K6/6 FR-7: 親の fetch が Graph を持たない sample（graph-late）�
   );
 });
 
+test("K6/7 N-g（検出力の取り直し）: 旧形の counters の stamp0Missing は dPrimeCounters に出さず、読まない（K6/7 で key の一覧から外した）", () => {
+  const row = k64GraphSampleRow(
+    input({
+      r1: null,
+      counters: {
+        before: {
+          begins: 10,
+          cacheHits: 3,
+          lateCached: 3,
+          deferredReleased: 0,
+          stamp0Missing: 0,
+        },
+        atEnd: {
+          begins: 12,
+          cacheHits: 4,
+          lateCached: 4,
+          deferredReleased: 1,
+          stamp0Missing: 3,
+        },
+      },
+    }),
+  );
+  assert.equal(
+    Object.hasOwn(row.followUp.dPrimeCounters, "stamp0Missing"),
+    false,
+  );
+  assert.equal(row.followUp.dPrimeCounters.deferredReleased, 1);
+});
+
 test("K6/6 FR-7（dev の予行）: dev の preview は parentMaterialContribution だけを渡し、子は Scene の単位のまま、親の寄与だけを Revision の単位で記録する", () => {
   const row = k64GraphSampleRow(
     firstRenderInput({

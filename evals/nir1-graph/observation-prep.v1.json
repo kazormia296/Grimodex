@@ -2312,7 +2312,7 @@
         "blocked": false,
         "indexMetadataMoved": "[precheck] S1i maintenance-quiesce",
         "receiptField": "quiesce",
-        "harnessConstants": "MAINTENANCE_QUIESCE_REOPENS＝2、MAINTENANCE_QUIESCE_WAIT_MS＝60000（frozen-setup-driver.mjs。harness の試験が固定する。validator は pin の bytes から読まず、この値を literal で持つ）"
+        "harnessConstants": "MAINTENANCE_QUIESCE_REOPENS＝2、MAINTENANCE_QUIESCE_WAIT_MS＝60000（frozen-setup-driver.mjs。validator は pin の bytes から読み、S2 の reopens・waitMs と照合する。harness の試験も固定する）"
       }
     },
     "indexBuild": {

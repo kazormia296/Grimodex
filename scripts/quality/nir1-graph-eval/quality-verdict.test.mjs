@@ -3655,6 +3655,148 @@ test("品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample �
   assert.equal(firstRender["raw-excerpt-unchanged"].status, "hold");
 });
 
+test("品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)(ii) に違反し、他の行が有効なら、違反は fail の problem のまま status は fail（hold に落とさない）。表示の hash が合っても読み取った行の hash が違えば fail", () => {
+  const key = "G-03/base";
+  const item = (mutate) =>
+    variantItems(run(v3({ [key]: mutate })), key)["utf16-range"];
+  const wrongHash = textSha256("a hash that is no endpoint's text");
+  const firstEdge = (data) =>
+    data.child.evidence.pathAttachments.flatMap((path) => path.edges)[0];
+  const kindOf = (result, code) => [
+    ...new Set(
+      result.problems
+        .filter((entry) => entry.code === code)
+        .map((entry) => entry.kind),
+    ),
+  ];
+  // (ii) one displayed row is in no Revision, the edge's other row is valid.
+  const inNoRevision = item((data) => {
+    const edge = firstEdge(data);
+    edge.evidence.push({
+      ...edge.evidence[0],
+      evidenceId: "ev-in-no-revision",
+    });
+    return data;
+  });
+  assert.equal(inNoRevision.status, "fail");
+  assert.deepEqual(kindOf(inNoRevision, "evidence-id-not-in-revision"), [
+    "fail",
+  ]);
+  assert.deepEqual(kindOf(inNoRevision, "endpoint-without-valid-evidence"), []);
+  // (i) one displayed row's hash is no endpoint's text, the other row is valid.
+  const matchesNone = item((data) => {
+    const edge = firstEdge(data);
+    edge.evidence.push({ ...edge.evidence[0], quoteSha256: wrongHash });
+    return data;
+  });
+  assert.equal(matchesNone.status, "fail");
+  assert.deepEqual(
+    kindOf(matchesNone, "evidence-row-matches-no-endpoint-text"),
+    ["fail"],
+  );
+  assert.deepEqual(kindOf(matchesNone, "endpoint-without-valid-evidence"), []);
+  // (i) the displayed hash is the text's, the read row's hash differs: the
+  // hash must hold on both sides.
+  const readSide = item((data) => {
+    for (const revision of data.observation.typedRevisions)
+      for (const row of revision.evidence) row.quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(readSide.status, "fail");
+  assert.ok(
+    readSide.problems.some(
+      (entry) =>
+        entry.code === "evidence-row-matches-no-endpoint-text" &&
+        entry.kind === "fail",
+    ),
+  );
+});
+
+test("品質 v3 §2.1 utf16-range（検出力の取り直し）: 同じ端点をつなぐ relation が path に 2 つ以上ある edge は Revision を名指せず hold（先頭の候補で判定して pass にしない）", () => {
+  const { expectations } = loadExpectations({
+    root: DEFAULT_ROOT,
+    graphManifest: readJson(GRAPH_MANIFEST),
+  });
+  const variant = GRAPH_EVAL_VARIANTS.find((row) => row.key === "G-02/base");
+  const base = v3Base(variant, expectations[variant.key]);
+  const receipt = {
+    runId: "unit",
+    settings: {
+      seed: base.seed,
+      setupReceipt: {
+        logicalToRuntime: { entities: base.entities, scenes: {} },
+      },
+    },
+    evidenceObservation: base.observation,
+  };
+  const sceneIds = new Set([
+    ...base.child.rowExcerpts.map((row) => row.sceneId),
+    ...base.child.evidence.pathAttachments.map((row) => row.sceneId),
+  ]);
+  receipt.settings.setupReceipt.logicalToRuntime.scenes = Object.fromEntries(
+    [...sceneIds].map((id) => [id.replace(/^u-/u, ""), id]),
+  );
+  const observed = () =>
+    expectations[variant.key].expectedContributions.map((row) => ({
+      kind: row.kind,
+      sceneId: row.sceneId,
+      pairs: row.edgeIds.map((edge) => `rev-of-${edge}|${edge}`),
+      unresolved: 0,
+    }));
+  const followed = (material) => ({
+    repeat: 0,
+    irOutcome: "ir-ready",
+    graph: { outcome: "graph-late" },
+    followUp: {
+      parent: { ...clone(base.parent), sceneId: "scene-q", seed: "seed-q" },
+      child: {
+        origin: "graph-ready",
+        sceneId: "scene-q",
+        seed: "seed-q",
+        outcome: "graph-ready",
+        materialRevision: material,
+        ...clone(base.child),
+      },
+    },
+  });
+  const follow = {
+    displayed: true,
+    firstRender: false,
+    parentContributed: false,
+  };
+  const evaluate = (expectation, material) =>
+    evaluateEvidenceItems({
+      variantKey: variant.key,
+      expectation,
+      receipt,
+      inputs: [{ sample: followed(material), result: follow }],
+    })["utf16-range"];
+  const one = evaluate(expectations[variant.key], { observed: observed() });
+  assert.equal(one.status, "pass");
+  // A second relation of the path that joins the same two Entities as the
+  // first one: the edge's own Revision cannot be named.
+  const [relation] = Object.keys(
+    expectations[variant.key].evidence.relationEndpoints,
+  );
+  assert.ok(relation, "the fixture names a relation's endpoints");
+  const twin = clone(expectations[variant.key]);
+  twin.evidence.relationEndpoints[`${relation}-twin`] = [
+    ...twin.evidence.relationEndpoints[relation],
+  ];
+  const material = { observed: observed() };
+  material.observed[0].pairs.push(`rev-of-${relation}-twin|${relation}-twin`);
+  const two = evaluate(twin, material);
+  assert.equal(two.status, "hold");
+  assert.ok(
+    two.problems.some(
+      (entry) =>
+        entry.code === "edge-revision-unresolved" && entry.candidates === 2,
+    ),
+    JSON.stringify(two.problems),
+  );
+  assert.ok(!two.problems.some((entry) => entry.kind === "fail"));
+});
+
 test("品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge の組・複数の終端は fail のまま", () => {
   const key = "G-06/base";
   const pinOf = (output) =>

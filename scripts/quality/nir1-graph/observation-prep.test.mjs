@@ -38,6 +38,7 @@ import {
   EVAL_CLOSURE_EXCLUSIONS,
   FORMAL_HARNESS_ENTRIES,
   HARNESS_CONSTANTS,
+  pinnedAgrees,
   HARNESS_MODULE_CONSTANTS,
   K24_SCOPE_EXTENSION,
   K24_TABLE,
@@ -4352,6 +4353,9 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     [
       // S2 追補 #9: T-5（b0df31f0）の pin。
       ["frozen-setup-driver.mjs", "b0df31f0"],
+      // ⑤ の前（DR-CP4-L-27）: workspace-db.mjs is in HARNESS_CONSTANTS for
+      // RETRY_DISPATCH_GRACE_MS (the same pin until ⑥ retakes it).
+      ["workspace-db.mjs", "b0df31f0"],
       // S2 追補 #12（DR-CP4-P-8）: the s4-5-g01-reseal-current pin (f31d99e0);
       // the four values are 950751d0's (checked below).
       ["g01-negatives.mjs", "f31d99e0"],
@@ -6414,7 +6418,8 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
     "quiesce",
   ]);
   // S2 追補 #22: the values S2 writes are the harness's constants (the
-  // validator holds them as literals until the pin is retaken, ⑥).
+  // validator reads them from the pinned bytes once a pin carries them (⑥)
+  // and holds the literal until then).
   assert.equal(
     settle.setup.plannedRetryGraceConstant,
     "RETRY_DISPATCH_GRACE_MS",
@@ -6427,6 +6432,45 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
   assert.equal(
     prep.setupReadings.reopen.quiesce.waitMs,
     MAINTENANCE_QUIESCE_WAIT_MS,
+  );
+  // ⑤ の前（DR-CP4-L-27）: a pin that carries the quiesce constants and the
+  // retry grace must equal S2's values; a pin that does not yet carry them
+  // (until ⑥) leaves the validator's literal alone.
+  assert.equal(pinnedAgrees(undefined, 5000), true);
+  assert.equal(pinnedAgrees(5000, 5000), true);
+  assert.equal(pinnedAgrees(4000, 5000), false);
+  const carry = (patch) => ({
+    ...ctx,
+    harnessConstants: {
+      ...ctx.harnessConstants,
+      MAINTENANCE_QUIESCE_REOPENS: 2,
+      MAINTENANCE_QUIESCE_WAIT_MS: 60000,
+      RETRY_DISPATCH_GRACE_MS: 5000,
+      ...patch,
+    },
+  });
+  assert.deepEqual(
+    observationPrepErrors(prep, carry({})).filter((e) =>
+      /reopen|freshnessSettle/u.test(e),
+    ),
+    observationPrepErrors(prep, ctx).filter((e) =>
+      /reopen|freshnessSettle/u.test(e),
+    ),
+  );
+  for (const patch of [
+    { MAINTENANCE_QUIESCE_REOPENS: 3 },
+    { MAINTENANCE_QUIESCE_WAIT_MS: 30000 },
+  ])
+    assert.ok(
+      observationPrepErrors(prep, carry(patch)).some((e) =>
+        /setupReadings\.reopen must be/u.test(e),
+      ),
+      JSON.stringify(patch),
+    );
+  assert.ok(
+    observationPrepErrors(prep, carry({ RETRY_DISPATCH_GRACE_MS: 4000 })).some(
+      (e) => /setupReadings\.freshnessSettle must wait/u.test(e),
+    ),
   );
   // 定数は pin の bytes から読む（読めなければ照合できず落ちる）。
   const unread = { ...ctx, harnessConstants: { ...ctx.harnessConstants } };

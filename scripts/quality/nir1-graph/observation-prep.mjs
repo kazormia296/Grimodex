@@ -1326,6 +1326,14 @@ export const HARNESS_CONSTANTS = Object.freeze({
     "B_SEAL_WAIT_MS",
     "FRESHNESS_SETTLE_WAIT_MS",
     "FRESHNESS_SETTLE_INTERVAL_MS",
+    // DR-CP4-L-27 (⑤ の前): the quiesce reopening's limits, read from the
+    // pinned bytes like the other setup constants.
+    "MAINTENANCE_QUIESCE_REOPENS",
+    "MAINTENANCE_QUIESCE_WAIT_MS",
+  ]),
+  // DR-CP4-L-27 (⑤ の前): a retry's grace (the planned-retry reading).
+  [`${HARNESS_DIR}workspace-db.mjs`]: Object.freeze([
+    "RETRY_DISPATCH_GRACE_MS",
   ]),
   [`${HARNESS_DIR}g01-negatives.mjs`]: Object.freeze([
     "G01_CONTROL_ATTEMPTS",
@@ -1452,8 +1460,10 @@ const REOPEN_TOTAL = 9;
 /**
  * DR-CP4-L-27 (S2 追補 #21): the quiesce reopening after the last session —
  * a frame outside L-24's closed set (no trigger, no blocked name). The
- * harness constants (MAINTENANCE_QUIESCE_REOPENS / _WAIT_MS) are held here as
- * literals: the pinned bytes this validator reads do not carry them.
+ * harness constants (MAINTENANCE_QUIESCE_REOPENS / _WAIT_MS) are in
+ * HARNESS_CONSTANTS and read from the pinned bytes; `reopens` / `waitMs` here
+ * are the values S2 must state, and `reopenErrors` requires them to equal the
+ * pinned constants.
  */
 const REOPEN_QUIESCE = Object.freeze({
   sessions: Object.freeze(["quiesce"]),
@@ -1467,6 +1477,9 @@ const REOPEN_QUIESCE = Object.freeze({
   receiptField: "quiesce",
 });
 const REOPEN_TOTAL_WITH_QUIESCE = REOPEN_TOTAL + REOPEN_QUIESCE.reopens;
+/** What S2's `reopen.quiesce.harnessConstants` says (the constants the pinned bytes carry). */
+const REOPEN_QUIESCE_CONSTANTS_TEXT =
+  "MAINTENANCE_QUIESCE_REOPENS＝2、MAINTENANCE_QUIESCE_WAIT_MS＝60000（frozen-setup-driver.mjs。validator は pin の bytes から読み、S2 の reopens・waitMs と照合する。harness の試験も固定する）";
 /** DR-CP4-L-27 (P-6). */
 const INDEX_BUILD = Object.freeze({
   intervalMs: 500,
@@ -1545,9 +1558,9 @@ const FRESHNESS_SETTLE = Object.freeze({
     plannedRetryWhen:
       "failed-retryable-attempt-with-next-attempt-at-later-than-now-minus-grace-and-no-later-run-of-its-work-key",
     plannedRetryGraceMs: 5000,
-    // The harness constant the grace is (workspace-db.mjs). It is named, not
-    // bound to the pinned bytes, until the pin is retaken (S4b の前の ⑥); a
-    // test holds the value against the harness.
+    // The harness constant the grace is (workspace-db.mjs). It is in
+    // HARNESS_CONSTANTS: `freshnessSettleErrors` requires
+    // `plannedRetryGraceMs` to equal it in the pinned bytes.
     plannedRetryGraceConstant: "RETRY_DISPATCH_GRACE_MS",
     onExhausted: "[precheck] S1i freshness-settle",
     maintenanceOnExhausted: "disclosed",
@@ -3767,7 +3780,7 @@ function setupReadingErrors(errors, readings, ctx) {
     errors.push(
       "setupReadings.measurementSpecs must be steady-state, graph-held-unusable and one-shot (fresh cold copy, one query, no warm-up, no seam) per measurementPoint (DR-CP4-L-4)",
     );
-  reopenErrors(errors, readings);
+  reopenErrors(errors, readings, ctx);
   freshnessSettleErrors(errors, readings, ctx);
   readyProbeErrors(errors, readings, ctx);
   const pins = readings.source?.pins ?? [];
@@ -4004,6 +4017,7 @@ function freshnessSettleErrors(errors, readings, ctx) {
     !Number.isInteger(c.FRESHNESS_SETTLE_INTERVAL_MS) ||
     setup.waitMs !== c.FRESHNESS_SETTLE_WAIT_MS ||
     setup.intervalMs !== c.FRESHNESS_SETTLE_INTERVAL_MS ||
+    !pinnedAgrees(c.RETRY_DISPATCH_GRACE_MS, setup.plannedRetryGraceMs) ||
     !same(setup.harnessConstants, [
       "FRESHNESS_SETTLE_WAIT_MS",
       "FRESHNESS_SETTLE_INTERVAL_MS",
@@ -4073,8 +4087,9 @@ function readyProbeErrors(errors, readings, ctx) {
 }
 
 /** S2 追補 #2（DR-CP4-L-24）: the closed set of reopen triggers and the limits. */
-function reopenErrors(errors, readings) {
+function reopenErrors(errors, readings, ctx) {
   const reopen = readings.reopen ?? {};
+  const c = ctx?.harnessConstants ?? {};
   const triggers = (reopen.triggers ?? []).map((row) => [
     row?.id,
     row?.sessions,
@@ -4092,6 +4107,9 @@ function reopenErrors(errors, readings) {
     !Object.entries(REOPEN_QUIESCE).every(([key, value]) =>
       same(reopen.quiesce?.[key], value),
     ) ||
+    !pinnedAgrees(c.MAINTENANCE_QUIESCE_REOPENS, reopen.quiesce?.reopens) ||
+    !pinnedAgrees(c.MAINTENANCE_QUIESCE_WAIT_MS, reopen.quiesce?.waitMs) ||
+    !same(reopen.quiesce?.harnessConstants, REOPEN_QUIESCE_CONSTANTS_TEXT) ||
     !nonBlank(reopen.quiesce?.decision) ||
     !nonBlank(reopen.quiesce?.step) ||
     !nonBlank(reopen.quiesce?.condition) ||
@@ -6404,6 +6422,23 @@ async function readHarnessReadyProbe({ repoRoot, read }) {
 }
 
 /**
+ * The three DR-CP4-L-27 constants (MAINTENANCE_QUIESCE_REOPENS／_WAIT_MS,
+ * RETRY_DISPATCH_GRACE_MS) are in HARNESS_CONSTANTS but may be absent from the
+ * pinned bytes until the pins are retaken (S4b の前の ⑥): an absent one does
+ * not null the whole read, and S2's value is then held by the validator's
+ * literal only. Once a pin carries the constant, S2's value must equal it.
+ */
+const HARNESS_CONSTANTS_UNTIL_REPINNED = Object.freeze(
+  new Set([
+    "MAINTENANCE_QUIESCE_REOPENS",
+    "MAINTENANCE_QUIESCE_WAIT_MS",
+    "RETRY_DISPATCH_GRACE_MS",
+  ]),
+);
+/** S2's value agrees with the pinned constant (an absent pinned one is not yet held). */
+export const pinnedAgrees = (pinned, s2Value) =>
+  pinned === undefined || s2Value === pinned;
+/**
  * S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss.
  * S2 追補 #9: and HARNESS_MODULE_CONSTANTS under their `as` names.
  */
@@ -6426,6 +6461,8 @@ async function readHarnessConstants({ repoRoot, read }) {
     const text = pinned.bytes.toString("utf8");
     for (const { name, as, parse } of names) {
       const value = parse(text, name);
+      if (value === undefined && HARNESS_CONSTANTS_UNTIL_REPINNED.has(name))
+        continue;
       if (value === undefined || Object.hasOwn(values, as)) return null;
       values[as] = value;
     }

@@ -566,6 +566,27 @@ test("K6/7 N-h1・N-g: a graph-late is read by the start slot alone (readyFresh 
     assert.deepEqual(withKey.reasons, stale.reasons);
     assert.equal(Object.hasOwn(withKey, "stampWithoutComparison"), false);
   }
+  // 検出力の取り直し（K6/7 N-g）: a fresh start (readyFresh true) is `other`
+  // whatever the old-form stamp says, including a stale one (matched false).
+  for (const freshnessStamp of [
+    { result: "stale", matched: false, attemptedAtNs: 1 },
+    { result: "unavailable", matched: null, attemptedAtNs: 1 },
+    { result: "stamp0-missing", matched: null, attemptedAtNs: 1 },
+  ]) {
+    const withKey = traceOf(
+      trace("browsing", 200, (at) =>
+        at === 7
+          ? {
+              ...late("graph-late"),
+              startSlot: { readyFresh: true },
+              freshnessStamp,
+            }
+          : {},
+      ),
+    );
+    assert.deepEqual(withKey.categories, fresh.categories);
+    assert.deepEqual(withKey.reasons, fresh.reasons);
+  }
 });
 
 test("K6/7 N-h2: a majority of freshness is read as other, and rule 6 does not use the last branch", () => {

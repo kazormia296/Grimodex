@@ -286,6 +286,15 @@ test("K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:
   );
 });
 
+test("K6/7 N-e1（検出力の取り直し）: 親の ticket が無い（null。Cached の origin）記録も FR3:ticket-not-available を理由に持ち、数えない", () => {
+  const result = run(k66Sample({}, { parent: { ticket: null } }));
+  assert.equal(result.firstRender, false);
+  assert.ok(
+    result.firstRenderFails.includes("FR3:ticket-not-available"),
+    JSON.stringify(result.firstRenderFails),
+  );
+});
+
 test("K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact]（製品は drift で合流させない）", () => {
   assert.throws(
     () =>
@@ -312,6 +321,24 @@ test("K6/7 N-e3: 窓内に合流した親の再検証が unavailable・error・n
           }),
         ),
       /\[artifact\].*requalification/u,
+      result,
+    );
+});
+
+test("K6/7 N-e3（検出力の取り直し）: returned が true でも、窓内に合流した親の再検証が passed でなければ [artifact]（result の検査は returned の検査と別）", () => {
+  for (const result of ["unavailable", "error", "not-reached"])
+    assert.throws(
+      () =>
+        run(
+          withTicket({
+            requalification: {
+              result,
+              reason: result === "unavailable" ? "invalidated" : null,
+              returned: true,
+            },
+          }),
+        ),
+      new RegExp(`has the requalification \`${result}\``, "u"),
       result,
     );
 });
