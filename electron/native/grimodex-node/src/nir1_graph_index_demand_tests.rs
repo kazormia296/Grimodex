@@ -133,6 +133,45 @@ fn a_refused_registration_and_a_suspended_begin_each_ask_for_the_index_build() {
         .all(|payload| *payload == expected));
 }
 
+/// A Suspended slot holds no project of its own, so a demand from another
+/// project of the same workspace names the project whose refusal suspended the
+/// slot (the only one whose B can fix it), in both begin entries. Naming the
+/// demanding project would wake a B that has nothing to do with the refusal.
+#[test]
+fn a_suspended_begin_of_another_project_names_the_refused_project() {
+    const OTHER: &str = "other-project";
+    let fixture = ProductFixture::new();
+    inject_open_token(&fixture);
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Fail(REFUSED);
+    suspend(&fixture);
+    let before = demand_count(&fixture);
+    let other = || GraphQuery {
+        project_id: OTHER.into(),
+        query_scene_id: SCENE.into(),
+        seed_entity_id: "entity".into(),
+    };
+    assert!(matches!(
+        fixture.state.nir1_graph.begin(&fixture.state, other()),
+        GraphBegin::Unavailable(GraphUnavailable::RegistrationUnavailable)
+    ));
+    assert!(matches!(
+        fixture
+            .state
+            .nir1_graph
+            .begin_deferred(&fixture.state, other()),
+        GraphBegin::Unavailable(GraphUnavailable::RegistrationUnavailable)
+    ));
+    let payloads = demand_payloads(&fixture);
+    assert_eq!(payloads.len(), before + 2);
+    let refused = format!(r#"{{"projectId":"{PROJECT}"}}"#);
+    assert!(
+        payloads[before..].iter().all(|payload| *payload == refused),
+        "{:?}",
+        &payloads[before..]
+    );
+    assert!(payloads.iter().all(|payload| !payload.contains(OTHER)));
+}
+
 /// The deferred entry's own failures (Related Scenes) ask too: the released
 /// held query prepares, is refused, and the project is named.
 #[test]

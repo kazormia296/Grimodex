@@ -740,6 +740,7 @@
   3. `demand_deferred` の Suspended の枝。
 - epoch の照合（点検 R2 の反映）：event に binding は載せない（payload は project ID だけ）ので、workspace の切替の後に終わった旧 workspace の refusal が、新しい workspace の同名の project（`default-project` など）の wake にならないよう、Native の側で通知の前に epoch を照合する。`build_worker` の prepare 失敗の枝は、`edge_or_closed(&shared, epoch)` が真なら通知しない（試験：lifecycle edge の後に終わる refusal は通知 0、edge なしの対照は 1 回）。`demand`・`demand_deferred` の Suspended の枝は、lock の下で `ready_generation` の一致を見てから通知するので、この問題の外。残る隙は、照合と emit の間に edge が入る場合で、main が受信時の live binding に束縛するため、害は B の判定 1 回（`RefusedUnchanged` なら SQL だけ）に有界。
 - 2 と 3 を落とすと、5 回失敗して Suspended になった slot は、B の publish が唯一の出口なのに B を起こす源が無くなる（(j)・(k) の「W2 が Suspended を解く」が成り立たない）。
+- 名指す project（レビュー R-A の反映）：Suspended の slot は project を持たない。そこで、slot が Suspended になったときの refused project（`build_worker` の key の project）を `Phase::Suspended` に記録し、2 と 3 は「需要した側」ではなく、その refused project を名指す。同じ workspace の別の project の begin が Suspended の slot に当たっても、B が直せるのは refusal を起こした project なので、そちらを起こす。需要した側の project は名指さない（その project の B は、この refusal と関係が無い）。記録が無い（test が組んだ phase）ときだけ、需要した側へ戻す。単一 project の挙動は変わらない。
 - 広げない：`Stale`・`Warming`・`Busy`・`Timeout`・`Failed`・`WorkerUnavailable` は出さない。頻度が桁で変わる（`Warming`・`Busy` は編集と query のたびに出る）。要レビュー。
 - 読みの注記（要確認）：`StartupRegistrationRefused`（worker の registration が `Ok(false)`）を「B の binding が current でない」の代理として扱う。`Ok(false)` になる全原因は追跡していない。B が skip した（current だった）場合、wake の費用は B の判定の SQL（PK・EXISTS・MAX の読み）だけで、最短間隔（判断 5）で有界。
 - owner の `unserved` 集合は重複抑止に使わない。`unserved` は READY まで再通知されないので、「次の需要が再試行を起こす」が壊れる。抑止の正本は main の 1 か所（判断 5）。
@@ -795,6 +796,8 @@
 **切替の前に決める項目（PUB-G の PR の前。挙動は PR-2 では変えない）**
 - 需要の wake の cycle が before-cutover の chain の rediscovery の budget を消費する結合（判断 5 の訂正）。PR-1 は BeforeCutover を fail-closed に保ったのに対し、需要の wake が chain の budget を減らせるのは不釣り合い。決め方の例：需要の wake の cycle では `requestRediscovery` を呼ばない（bootstrap の `onCycleAccepted` の配線の変更になり、cutover の準備の chain の既存の挙動に触れるので、別の判断）。
 - wake の頻度の数値（間隔 2 s から 60 s、key の上限 8、reset の 60 s）は、dev の journey の実測で決める（R3）。
+- Suspended の出口（R-A の残り。設計の変更が要る）：refused project の B が skip する（current）か `RefusedUnchanged` で publish が無いと、slot は Suspended のままで、出口は lifecycle の edge と再起動だけになる。これは単一 project でも同じ（DR の「`Ok(false)` の代理が外れる」場合）。直すなら、Suspended を project ごとにする、または需要の key が違えば Suspended を見ずに rebuild へ回す（owner の契約の変更）。別の project の B の publish が Suspended を解く挙動（逆向き）は、1 回の再試行（CP2a-D49）が空振りして Suspended に戻るので自己修復し、害は小さい。PR-2 では変えない。
+- 旧 workspace の需要の event が新 workspace の binding で束縛される隙（R-B）：窓は、読みによる限り実質無い。理由と、確かめていない部分は下の「レビューの反映」に記す。残る極小の窓（owner thread が epoch の確認と emit の間で切替の全期間止まる場合）を閉じるなら、payload に owner の世代を載せて main で照合する（判断 3 の payload の変更）。PR-2 では変えない。
 
 **要レビュー（レビューで見てほしい点）**
 1. 判断 1：対象を `RegistrationUnavailable` だけにしたこと（`Stale` などへ広げない）と、その読み（`Ok(false)` を「binding が current でない」の代理にしたこと）。
@@ -825,6 +828,16 @@
   - Native `--lib` 全件：820 件成功、7 件 ignore（封じ込めの試験 4 件を外し〔812〕、PR-2 の新しい 7 件と R2 の試験 1 件を足した）。`--features nir1-graph-eval` の `narrative_maintenance`・token の 2 試験・`index_demand`：80 件成功。db `--lib` の `nir1_graph_index_maintenance`：41 件成功。
   - R2 の試験の効き：`edge_or_closed` の照合を外すと `a_refusal_that_ends_after_a_lifecycle_edge_asks_for_nothing` が落ちる（通知 1 件、期待 0 件）ことを確かめて戻した。
   - clippy（`--all-targets -- -D warnings`）：Native と db で成功。electron の vitest（`electron/main`・`electron/shared`）は 103 files・2,434 件成功、`tsc -p electron/tsconfig.json` は成功。
+- レビュー（Opus、read-only、`05-impl-review-opus.md`）の反映（2026-11-17）：
+  - R-A（推奨）：局所的に直した。上の判断 1 の「名指す project」のとおり、`Phase::Suspended` に `refused_project` を足し、Suspended の枝の 2 か所（`demand`・`demand_deferred`）が、需要した側ではなくその project を名指す。試験：`a_suspended_begin_of_another_project_names_the_refused_project`（project A の refusal で Suspended にした後、project B の `begin` と `begin_deferred` の event が A を名指し、B を含まない）。refused project の B が publish しない場合の出口は設計の変更なので、「切替の前に決める項目」に書いた。
+  - R-B（推奨）：窓は、読んだ範囲では実質無いと見た。コードは変えず、試験も足していない（既存の `workspace:opened` で需要が消える試験が、同じ drain の順序を固定している）。根拠（読みによる。実行して確かめたものではない）：
+    - 需要の event（E1）と `workspace:opened`（E2）は、同じ `EventQueue`（TSFN は 1 本、`max_queue_size = 0`）を通るので、E1 が先に emit されていれば main は E1 を先に処理する。E1 を emit する側は、`build_worker` では `edge_or_closed` の確認の直後、`demand`・`demand_deferred` では workspace operation の下にあり、切替が新しい authority を公開してから E2 を emit するまでの間に E1 を emit する経路は見つからなかった。
+    - 切替で E2 が emit されるのは Native の open の中（`lib.rs` の `state.events.emit("workspace:opened", …)`）で、lifecycle が ready に戻る（`publish_workspace_lifecycle_from_workspace_off_runtime`）より前。binding の getter は、遷移の間は `None` か `WORKSPACE_SWITCHING` で捨てる。E1 と E2 が両方 queue に溜まっていれば、TSFN は 1 回の drain で順に処理し、E1 が作る `setTimeout(0)` は、同じ drain の中の E2（`clearGraphDemands`）より先には走れない。
+    - 残る窓は、owner thread が `edge_or_closed` の確認から emit までの数命令の間で、切替の全期間（数百 ms 以上）止まる場合だけ。実用上は無いと見るが、止まらないことを保証する仕組みは無い。
+    - 確かめていない：切替の経路が上のとおりであること（`open` と restore の 2 経路と、`discover` の経路までは追っていない）、TSFN の drain の挙動（Node の実装の読みであり、実測していない）、存在しない project の wake が cycle の FK で落ちた後に、retry と `persistDeliveryFailure` がどう終わるか。害の上限は、同名の project が新 workspace にあれば B の判定 1 回（`RefusedUnchanged` なら SQL だけ）という DR の記述のまま。存在しない project のときの終わり方は未確認。
+  - R-C：この反映の head で検証した（下の検証の追補 2）。
+  - m-1（直さない）：需要の event ごとに、合流の判定の前に同期の binding の getter（lifecycle の snapshot と workspace operation の lease を取り、失敗すると throw）を呼ぶ費用は、DR の「O(8) の lazy な掃除と map の参照」より重い。直さない理由：pending の timer がある key の判定を binding の読みより前にすると、binding が変わった後の需要（key が別になる）を落とす。頻度は Suspended の slot への begin（renderer の query の頻度）で、lease は短く、warn は固定文言で ID を出さない。測っていない（上の未確認のとおり）。
+  - m-3：PR-1 の DR-PUBG-5-13 で、launch の gate で判定する helper にした（試験は PR-1 の側）。
 - 未確認：
   - 全 process の journey（実際の Electron で、registration が拒否された Graph の demand → event → B の wake → publish → Suspended が解ける、が一続きで起きること）。この PR は部品ごとに確かめた（owner の event、coordinator の wake、cycle の `work_completed`、owner の hook）。PUB-G の前の dev の journey で確かめる（DR-PUBG-5-11 の 2）。
   - worker の registration が `Ok(false)` になる全原因。「binding が current でない」の代理が外れるのは、B が skip しても registration が拒否される場合で、そのときの wake の費用は B の判定の SQL だけ（間隔で有界）。

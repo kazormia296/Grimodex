@@ -1096,6 +1096,7 @@ fn configure_and_resume_are_explicit_and_bounded() {
         slot.phase = Phase::Suspended {
             ready_generation: 0,
             reason: GraphUnavailable::WorkerUnavailable,
+            refused_project: None,
         };
         slot.rebuild.consecutive_failures = 5;
         slot.rebuild.last_failure = Some(GraphUnavailable::WorkerUnavailable);

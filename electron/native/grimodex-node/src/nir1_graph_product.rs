@@ -887,6 +887,10 @@ enum Phase {
     Suspended {
         ready_generation: u64,
         reason: GraphUnavailable,
+        /// The project whose refused registration suspended the slot (DR-PUBG-5-14
+        /// の R-A)。A later demand from another project asks for this project's
+        /// Graph Index build, not its own. `None` only in a test-built phase.
+        refused_project: Option<String>,
     },
     Quarantined {
         binding: LiveBinding,
@@ -1797,7 +1801,7 @@ impl Shared {
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let project_id = demand.key.project_id.clone();
-        let mut index_demand = false;
+        let mut index_demand: Option<String> = None;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1807,11 +1811,17 @@ impl Shared {
             Phase::Suspended {
                 ready_generation,
                 reason,
+                refused_project,
             } => {
                 if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
                     // DR-PUBG-5-14: a Suspended slot's only exit is B's
-                    // publish, so this demand asks for B (after the lock).
-                    index_demand = reason == GraphUnavailable::RegistrationUnavailable;
+                    // publish, so this demand asks for B (after the lock). The
+                    // slot holds no project of its own: it is the refused
+                    // project's B that can fix it, not the demanding one's.
+                    if reason == GraphUnavailable::RegistrationUnavailable {
+                        index_demand =
+                            Some(refused_project.unwrap_or_else(|| project_id.clone()));
+                    }
                     self.unserved(reason, &demand.key.project_id)
                 } else {
                     slot.phase = Phase::Empty;
@@ -1852,8 +1862,8 @@ impl Shared {
         };
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
-        if index_demand {
-            self.request_index_build(&project_id);
+        if let Some(project) = index_demand {
+            self.request_index_build(&project);
         }
         (result, finished)
     }
@@ -1970,7 +1980,7 @@ impl Shared {
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let limit = *lock(&self.deferred_limit);
         let project_id = demand.key.project_id.clone();
-        let mut index_demand = false;
+        let mut index_demand: Option<String> = None;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1980,10 +1990,14 @@ impl Shared {
             Phase::Suspended {
                 ready_generation,
                 reason,
+                refused_project,
             } => {
                 if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
                     // DR-PUBG-5-14: as in `demand`.
-                    index_demand = reason == GraphUnavailable::RegistrationUnavailable;
+                    if reason == GraphUnavailable::RegistrationUnavailable {
+                        index_demand =
+                            Some(refused_project.unwrap_or_else(|| project_id.clone()));
+                    }
                     self.unserved(reason, &demand.key.project_id)
                 } else {
                     slot.phase = Phase::Empty;
@@ -2028,8 +2042,8 @@ impl Shared {
         };
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
-        if index_demand {
-            self.request_index_build(&project_id);
+        if let Some(project) = index_demand {
+            self.request_index_build(&project);
         }
         (result, finished)
     }
@@ -2503,6 +2517,7 @@ fn build_worker(
                     Phase::Suspended {
                         ready_generation: shared.ready_generation.load(Ordering::SeqCst),
                         reason,
+                        refused_project: Some(key.project_id.clone()),
                     }
                 } else {
                     Phase::Empty
