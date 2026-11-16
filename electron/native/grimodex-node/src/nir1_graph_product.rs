@@ -2498,8 +2498,14 @@ fn build_worker(
                     Phase::Empty
                 });
                 // DR-PUBG-5-14: the registration was refused, which B may be
-                // able to fix. No lock of this owner is held here.
-                if reason == GraphUnavailable::RegistrationUnavailable {
+                // able to fix. No lock of this owner is held here. A refusal
+                // that ends after a lifecycle edge (a workspace switch) or a
+                // close belongs to the old workspace, so it asks for nothing:
+                // the demand event carries no binding, and a project of the
+                // same name in the new workspace must not be woken by it.
+                if reason == GraphUnavailable::RegistrationUnavailable
+                    && !edge_or_closed(&shared, epoch)
+                {
                     shared.request_index_build(&key.project_id);
                 }
             }

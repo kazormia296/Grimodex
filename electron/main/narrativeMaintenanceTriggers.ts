@@ -460,9 +460,14 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     binding: NarrativeMaintenanceWorkspaceBinding;
   } | null = null;
   // DR-PUBG-5-14: Graph Index build wakes asked for by Native's Graph owner.
-  // This state is independent of the discovery chain above: it shares none of
-  // its timer, generation, wake reason or outbox ACK, and it ends in a direct
-  // `scheduler.requestGraphIndexBuildWakesWithBinding` call.
+  // This state shares none of the discovery chain's timer, generation, wake
+  // reason or outbox ACK, and it ends in a direct
+  // `scheduler.requestGraphIndexBuildWakesWithBinding` call. It is not
+  // independent of the chain's rediscovery budget, though: an accepted wake
+  // cycle goes through bootstrap's `onCycleAccepted`, which calls
+  // `requestRediscovery()`, so while a before-cutover chain is alive the cycle
+  // consumes one of its rediscoveries. To be decided before PUB-G
+  // (DR-PUBG-5-14, "切替の前に決める項目").
   interface GraphDemandEntry {
     readonly binding: NarrativeMaintenanceWorkspaceBinding;
     readonly projectId: string;

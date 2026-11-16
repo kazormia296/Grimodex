@@ -160,6 +160,47 @@ fn a_refusal_after_the_release_asks_for_the_index_build() {
     wait_until("the demand", || demand_count(&fixture) == 1);
 }
 
+/// DR-PUBG-5-14 (R2): a refusal that ends after a lifecycle edge (a workspace
+/// switch) asks for nothing, because the event carries no binding and the old
+/// workspace's refusal must not wake a project of the same name in the new one.
+/// The control (no edge) asks once.
+#[test]
+fn a_refusal_that_ends_after_a_lifecycle_edge_asks_for_nothing() {
+    for edge_during_prepare in [false, true] {
+        let fixture = ProductFixture::new();
+        inject_open_token(&fixture);
+        *lock(&fixture.plan.prepare_mode) = PrepareMode::HoldThenFail(REFUSED);
+        assert!(matches!(
+            fixture.begin("entity"),
+            GraphBegin::Unavailable(GraphUnavailable::Warming)
+        ));
+        wait_until("prepare is held", || {
+            fixture.plan.prepares.load(Ordering::SeqCst) == 1
+        });
+        if edge_during_prepare {
+            fixture
+                .state
+                .nir1_graph
+                .edge_observer_for_test()
+                .on_lifecycle_edge(&LifecycleEdge::Unavailable { revision: 1 });
+        }
+        fixture.plan.release.store(true, Ordering::SeqCst);
+        wait_until("the failed prepare ended", || {
+            lock(&fixture.state.nir1_graph.shared.slot)
+                .rebuild
+                .consecutive_failures
+                == 1
+        });
+        // Give a (wrongly) late request time to arrive.
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            demand_count(&fixture),
+            usize::from(!edge_during_prepare),
+            "edge during prepare: {edge_during_prepare}"
+        );
+    }
+}
+
 /// Only a refused registration asks: every other reason (a worker that exits,
 /// a busy or warming slot) leaves B alone, or the rate would follow every edit
 /// and query.
