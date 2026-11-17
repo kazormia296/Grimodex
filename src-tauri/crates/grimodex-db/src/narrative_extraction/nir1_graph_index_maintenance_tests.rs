@@ -2445,19 +2445,13 @@ fn b_route_discovery_propagates_errors_other_than_context_unavailable() -> Resul
 
 use crate::narrative_extraction::maintenance_runtime::{
     discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
-    is_context_unavailable_termination,
+    is_context_unavailable_termination, is_project_local_discovery_failure,
     nir1_graph_index_build_wakes_main_discovery_with_product,
     run_system_work_cycle_with_nir1_graph_runtime_and_product, MaintenanceProjectDiscovery,
 };
-use crate::narrative_extraction::source_revision::ValidationTerminated;
-
-/// Whether the error carries the typed validation-termination marker (the
-/// failure kind that V0 observed for a project over a bound).
-fn is_typed_validation_termination(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| cause.downcast_ref::<ValidationTerminated>().is_some())
-}
+use crate::narrative_extraction::source_revision::{
+    validation_terminated, ValidationTerminationReason,
+};
 
 /// A token for tests. Product code builds it only from Native's constant.
 fn product_token() -> Option<Nir1GraphProductPublication> {
@@ -2797,7 +2791,46 @@ fn product_gate_discovery_propagates_errors_other_than_context_unavailable() -> 
     )
     .expect_err("a SQL failure is not a Graph Index wake");
     assert!(!is_context_unavailable_termination(&error), "{error:#}");
+    assert!(!is_project_local_discovery_failure(&error), "{error:#}");
     Ok(())
+}
+
+/// DR-PUBG-5-15: the allowlist of failures that a project's own state
+/// determines is the one typed termination main's discovery was observed to
+/// fail with. Everything else (a bound's `capacity-exceeded`, timing,
+/// lifecycle, retryable, unknown) is not project-local and stays an error.
+#[test]
+fn project_local_discovery_failure_is_an_allowlist_of_one_typed_termination() {
+    let error = validation_terminated(ValidationTerminationReason::ContextUnavailable, "test");
+    assert!(is_project_local_discovery_failure(&error));
+    // Added context does not hide the marker.
+    assert!(is_project_local_discovery_failure(&error.context("discovery")));
+    for reason in [
+        ValidationTerminationReason::CapacityExceeded,
+        ValidationTerminationReason::Cancelled,
+        ValidationTerminationReason::TimedOut,
+        ValidationTerminationReason::Closed,
+        ValidationTerminationReason::WorkspaceGenerationChanged,
+        ValidationTerminationReason::ForegroundPreempted,
+        ValidationTerminationReason::CleanupFailed,
+    ] {
+        assert!(
+            !is_project_local_discovery_failure(&validation_terminated(reason, "test")),
+            "{reason:?}"
+        );
+    }
+    for text in [
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: discovery could not acquire the connection",
+        "NEX_MAINTENANCE_SQLITE_LOCKED: database is locked",
+        "no such table: narrative_extraction_runs",
+        "NEX_VALIDATION_TERMINATED:capacity-exceeded in plain text is not the typed marker",
+        "context-unavailable in plain text is not the typed marker",
+    ] {
+        assert!(
+            !is_project_local_discovery_failure(&anyhow!("{text}")),
+            "{text}"
+        );
+    }
 }
 
 /// The release conditions of a refusal (DR-PUBG-5-6). A refusal recorded for
@@ -3049,7 +3082,7 @@ fn v0_stored_edge_overflow_stops_verify_for_a_bound_project() -> Result<()> {
         );
         for step in &steps {
             if let Err(error) = &step.discovery {
-                assert!(is_typed_validation_termination(error), "{launch:?}");
+                assert!(is_project_local_discovery_failure(error), "{launch:?}");
             }
         }
         let ledger = run_ledger(fixture.db())?;
@@ -3111,6 +3144,7 @@ fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
             for step in &steps {
                 let error = step.discovery.as_ref().expect_err("uncontrolled discovery");
                 assert!(is_context_unavailable_termination(error), "{error:#}");
+                assert!(is_project_local_discovery_failure(error));
                 assert!(step.cycle.is_none());
             }
             assert_eq!(run_ledger(fixture.db())?.len(), runs_before);
@@ -3148,6 +3182,54 @@ fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
         assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
         assert_eq!(sealed(fixture.db())?, stale, "{launch:?}");
     }
+    Ok(())
+}
+
+/// DR-PUBG-5-15 (R6): a workspace of two real projects. The one that V0 (b)
+/// leaves with a dirty sealed binding over the candidate bound fails main's
+/// uncontrolled discovery with the real `context-unavailable` error (not an
+/// injected one), and that error is exactly what the containment allowlist
+/// admits. The other project's discovery still succeeds.
+#[test]
+fn a_real_sealed_binding_failure_is_project_local_and_the_other_project_still_discovers(
+) -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects(id, title) VALUES ('other-project', 'other')",
+            [],
+        )?;
+        Ok(())
+    })?;
+    overflow_candidates(&fixture)?;
+    let recorder = Recorder::default();
+    assert_eq!(fixture.dispatch(&recorder)?, no_finalization(false));
+    assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+
+    let coordinates = effective_maintenance_coordinates(None)?;
+    let discover = |project: &str| {
+        discover_maintenance_project_for_main_with_product(
+            fixture.db(),
+            project,
+            "workspace-opened",
+            Some(&coordinates),
+            None,
+            None,
+        )
+    };
+    let failed = discover(PROJECT).expect_err("the bound project's discovery fails");
+    assert!(is_context_unavailable_termination(&failed), "{failed:#}");
+    assert!(is_project_local_discovery_failure(&failed), "{failed:#}");
+    // A new project has its legacy backfill to do: its discovery succeeds and
+    // returns that work.
+    assert!(
+        matches!(
+            discover("other-project")?,
+            MaintenanceProjectDiscovery::Work(work) if work.project_id == "other-project"
+        ),
+        "the other project is discovered"
+    );
     Ok(())
 }
 
