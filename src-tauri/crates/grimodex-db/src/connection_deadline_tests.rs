@@ -31,7 +31,9 @@ fn budget(deadline: Instant) -> ParticipantSqlOperationBudget {
     )
 }
 
-fn termination_reason(error: anyhow::Error) -> crate::narrative_extraction::ValidationTerminationReason {
+fn termination_reason(
+    error: anyhow::Error,
+) -> crate::narrative_extraction::ValidationTerminationReason {
     assert!(is_validation_terminated(&error), "{error}");
     error
         .downcast_ref::<ValidationTerminated>()
@@ -329,14 +331,22 @@ fn audit_append_until_writes_what_the_existing_append_writes() {
         .append_ai_audit_events_for_scope(None, &events)
         .expect("existing append");
     let right = bounded
-        .try_append_ai_audit_events_for_scope_until(None, &events, Instant::now() + Duration::from_secs(5))
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            Instant::now() + Duration::from_secs(5),
+        )
         .expect("bounded append")
         .expect("connection available");
     assert_eq!(left.inserted_count, right.inserted_count);
     assert_eq!(left.tail_sequence, right.tail_sequence);
     assert_eq!(audit_rows(&existing), audit_rows(&bounded));
     let again = bounded
-        .try_append_ai_audit_events_for_scope_until(None, &events, Instant::now() + Duration::from_secs(5))
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            Instant::now() + Duration::from_secs(5),
+        )
         .expect("idempotent re-append")
         .expect("connection available");
     assert_eq!(again.inserted_count, 0);
@@ -352,7 +362,10 @@ fn audit_append_until_writes_what_the_existing_append_writes() {
             Instant::now() + Duration::from_secs(5),
         )
         .expect_err("the generic append refuses the reserved namespace");
-    assert!(error.to_string().contains("AI_AUDIT_RESERVED_NAMESPACE"), "{error}");
+    assert!(
+        error.to_string().contains("AI_AUDIT_RESERVED_NAMESPACE"),
+        "{error}"
+    );
     assert_eq!(audit_rows(&bounded).len(), 1);
 }
 
@@ -401,11 +414,18 @@ fn audit_append_until_is_bounded_by_the_deadline() {
         outcome.is_err(),
         "a write lock held elsewhere is an error, not a silent skip"
     );
-    assert!(elapsed < Duration::from_secs(3), "busy wait not clipped: {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "busy wait not clipped: {elapsed:?}"
+    );
     other.execute_batch("ROLLBACK").expect("release");
     assert!(file_db.connection_reusable());
     let written = file_db
-        .try_append_ai_audit_events_for_scope_until(None, &events, Instant::now() + Duration::from_secs(5))
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            Instant::now() + Duration::from_secs(5),
+        )
         .expect("not an error");
     assert!(written.is_some());
     std::fs::remove_dir_all(&directory).ok();

@@ -1345,7 +1345,7 @@ impl Database {
             None,
             operation,
         )?
-            .ok_or_else(|| anyhow!("participant read was skipped without a try acquisition"))
+        .ok_or_else(|| anyhow!("participant read was skipped without a try acquisition"))
     }
 
     fn participant_read_transaction_control_mode<T, F>(

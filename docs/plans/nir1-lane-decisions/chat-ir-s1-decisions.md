@@ -115,11 +115,14 @@ S1-A0（共有 crate の新しい取得の API と等価性・性質の試験）
 
 止められない区間は、推論 1 回分（`embed_query`）と、接続を取った後の append の書き込み 1 回分（短い 1 transaction）。終了の上限は「期限＋推論 1 回分＋append の書き込み 1 回分」。
 
+**統合者の受入れが要る差分**：設計の §16 の G3-U1 と DR-CHATIR-S1-1 の終了の上限は「期限＋推論 1 回分」。実装では audit の append の書き込み 1 回分が加わる。audit の append は DR-11 の (B) で期限の内の記録になり、書き込みそのもの（BEGIN IMMEDIATE の後の短い 1 transaction）に progress hook を掛けていないため。採らなかった代案：append の transaction に progress handler を掛けて期限で中断する（hook の登録は `hook_registration` に集約する規則に触れ、S1-A0 の範囲が広がるため。中断しても append は原子的に何も書かれず、pre-inference は `ConnectionBusy`、terminal は defer に倒れるので、T12 を強める向きの追加の実装として S1-A で選べる）。DR-CHATIR-S1-1 の U の決定は変えていない。
+
 ### 終端の書き足し（B）の決定
 
 - 推論の前の記録は 1 batch（start／prepared／dispatched）で原子的。期限の内に書けなければ何も書かれず、推論せず `ConnectionBusy`。
 - 推論の後の終端（`response.completed`＋`execution.succeeded`、`execution.failed`、`execution.cancelled`）が期限の内に書けなければ、結果は使わず（`Query` を作らない）、event を元の id・時刻のまま `PendingTerminalAudit` に入れて返す。順序を保つため、一度 defer したら後の append も後ろに積む。
 - 持ち主は呼び手（S1-A の Native）。`flush_with_budget`（waiter を名乗らない try の繰り返し、初期値 30 s。同じ event は既存の append が冪等に扱う）。失敗（busy のまま・エラー）なら pending は手元に残り、再試行できる。捨てられるときは `tracing::error`（execution_id つき）。
+- 終端が期限の内に書けず defer した場合だけでなく、書けたが**期限を過ぎてから**だった場合も IR は返さない（`Timeout`、pending なし。終端は既に durable）。「期限の内に書けなければ結果は使わない」を、書き込みの成否ではなく、書き終えた時刻で判定する。
 - 終端の無い execution が残っても、その結果は IR として使われない。
 - どの task で flush を動かすか（応答の後の第 2 の task なら新しい background lifecycle）は S1-A の owner／lifecycle matrix に渡す。
 

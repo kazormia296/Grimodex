@@ -314,12 +314,27 @@ impl SemanticAuditAppender for ChatIrAuditAppender {
     }
 }
 
-// Test seam: a pause between the pre-inference records and the deadline check
-// before inference (there is no other way to make that instant deterministic).
+// Test seams: wait until the deadline has passed at two instants that are
+// otherwise a race against the clock (right after the pre-inference records,
+// and right after the inference and its terminal records).
 #[cfg(test)]
 thread_local! {
-    pub(super) static AFTER_START_PAUSE: std::cell::Cell<Option<Duration>> =
-        const { std::cell::Cell::new(None) };
+    pub(super) static AFTER_START_WAIT_FOR_DEADLINE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    pub(super) static AFTER_RUN_WAIT_FOR_DEADLINE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn wait_for_deadline_if(
+    flag: &'static std::thread::LocalKey<std::cell::Cell<bool>>,
+    deadline: Instant,
+) {
+    if flag.with(std::cell::Cell::get) {
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 }
 
 /// Outcome of [`with_resident_until`].
@@ -418,9 +433,7 @@ pub(super) fn prepare_chat_ir_query_with(
         Err(error) => return Err(error),
     };
     #[cfg(test)]
-    if let Some(pause) = AFTER_START_PAUSE.with(std::cell::Cell::get) {
-        std::thread::sleep(pause);
-    }
+    wait_for_deadline_if(&AFTER_START_WAIT_FOR_DEADLINE, deadline);
     // The records are durable; do not start the model after the deadline. The
     // session is dropped here, which records `execution.cancelled` through the
     // same appender (deferred if it cannot be written in time).
@@ -458,6 +471,19 @@ pub(super) fn prepare_chat_ir_query_with(
         }
         Err(error) => return Err(error),
     };
+    #[cfg(test)]
+    wait_for_deadline_if(&AFTER_RUN_WAIT_FOR_DEADLINE, deadline);
+    // The terminal records are durable, but a terminal that became durable only
+    // after the deadline is late too: the answer is "no IR" whether the records
+    // missed the deadline (deferred above) or the whole call did (B: not written
+    // inside the deadline means the result is not used). Nothing is pending.
+    if Instant::now() >= deadline {
+        drop(vector);
+        return Ok(ChatIrPrepareOutcome::Unavailable {
+            reason: ChatIrUnavailable::Timeout,
+            pending_terminal_audit: None,
+        });
+    }
     let query = ChatIrQuery {
         request: request.clone(),
         project_id: project_id.to_string(),

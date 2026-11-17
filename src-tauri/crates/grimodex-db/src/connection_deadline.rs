@@ -203,7 +203,10 @@ mod tests {
         let elapsed = started.elapsed();
         assert_eq!(skipped, None);
         assert!(!body_ran.load(Ordering::Acquire));
-        assert!(elapsed >= budget, "gave up before the deadline: {elapsed:?}");
+        assert!(
+            elapsed >= budget,
+            "gave up before the deadline: {elapsed:?}"
+        );
         assert!(
             elapsed < budget + Duration::from_millis(1500),
             "did not stop at the deadline: {elapsed:?}"

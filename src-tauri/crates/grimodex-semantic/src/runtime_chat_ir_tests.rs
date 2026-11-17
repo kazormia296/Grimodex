@@ -4,7 +4,8 @@
 
 use super::audited_query::prepare_query_with;
 use super::chat_ir::{
-    prepare_chat_ir_query_with, with_resident_until, ResidentOutcome, AFTER_START_PAUSE,
+    prepare_chat_ir_query_with, with_resident_until, ResidentOutcome, AFTER_RUN_WAIT_FOR_DEADLINE,
+    AFTER_START_WAIT_FOR_DEADLINE,
 };
 use super::embedder_admission::EmbedderAdmission;
 use super::*;
@@ -430,18 +431,18 @@ fn a_passed_deadline_means_no_inference_and_no_audit() {
 #[test]
 fn the_deadline_is_checked_again_before_inference() {
     let (runtime, request) = fixture();
-    AFTER_START_PAUSE.with(|pause| pause.set(Some(Duration::from_millis(80))));
+    AFTER_START_WAIT_FOR_DEADLINE.with(|wait| wait.set(true));
     let calls = AtomicUsize::new(0);
     let outcome = chat_ir(
         &runtime,
         &request,
-        Instant::now() + Duration::from_millis(40),
+        Instant::now() + Duration::from_millis(1500),
         || {
             calls.fetch_add(1, Ordering::Relaxed);
             Ok(unit_vector())
         },
     );
-    AFTER_START_PAUSE.with(|pause| pause.set(None));
+    AFTER_START_WAIT_FOR_DEADLINE.with(|wait| wait.set(false));
     let (reason, pending) = unavailable(outcome);
     assert_eq!(reason, ChatIrUnavailable::Timeout);
     assert_eq!(calls.load(Ordering::Relaxed), 0, "the model never started");
@@ -464,6 +465,33 @@ fn the_deadline_is_checked_again_before_inference() {
     );
 }
 
+/// B again, the other side: the terminal records **were** written, but only
+/// after the deadline. That is late too: no IR (the inference result is
+/// dropped), and nothing is pending because the records are durable. The audit
+/// shows the complete execution.
+#[test]
+fn a_terminal_that_became_durable_after_the_deadline_is_not_used_either() {
+    let (runtime, request) = fixture();
+    AFTER_RUN_WAIT_FOR_DEADLINE.with(|wait| wait.set(true));
+    let outcome = chat_ir(
+        &runtime,
+        &request,
+        Instant::now() + Duration::from_millis(1500),
+        || Ok(unit_vector()),
+    );
+    AFTER_RUN_WAIT_FOR_DEADLINE.with(|wait| wait.set(false));
+    let (reason, pending) = unavailable(outcome);
+    assert_eq!(reason, ChatIrUnavailable::Timeout);
+    assert!(
+        pending.is_none(),
+        "the terminal records are already durable"
+    );
+    assert_eq!(
+        event_types(&request).last().map(String::as_str),
+        Some("execution.succeeded")
+    );
+}
+
 /// B (user confirmation 2026-11-17): the inference completed but its terminal
 /// records cannot be made durable inside the deadline. The result is **not
 /// used**: no query exists (the outcome has no query variant with pending
@@ -474,7 +502,7 @@ fn the_deadline_is_checked_again_before_inference() {
 fn a_terminal_that_misses_the_deadline_is_not_used_and_is_written_later() {
     let (runtime, request) = fixture();
     let holder_slot: std::cell::RefCell<Option<ConnectionHolder>> = std::cell::RefCell::new(None);
-    let deadline = Instant::now() + Duration::from_millis(250);
+    let deadline = Instant::now() + Duration::from_millis(1500);
     let outcome = chat_ir(&runtime, &request, deadline, || {
         // The records before inference are durable. Now the connection becomes
         // busy and stays busy past the deadline, as a long maintenance run would.
@@ -535,7 +563,7 @@ fn a_terminal_that_misses_the_deadline_is_not_used_and_is_written_later() {
 fn a_failed_inference_whose_terminal_misses_the_deadline_is_deferred() {
     let (runtime, request) = fixture();
     let holder_slot: std::cell::RefCell<Option<ConnectionHolder>> = std::cell::RefCell::new(None);
-    let deadline = Instant::now() + Duration::from_millis(200);
+    let deadline = Instant::now() + Duration::from_millis(1500);
     let outcome = chat_ir(&runtime, &request, deadline, || {
         *holder_slot.borrow_mut() = Some(ConnectionHolder::new(&request));
         while Instant::now() < deadline {
@@ -751,17 +779,13 @@ fn the_scoring_loop_checks_the_stop_between_candidates() {
     let pool: Vec<&[u8]> = vec![&one, &one, &bad];
     let query = unit_vector();
     let asked = AtomicUsize::new(0);
-    let stopped =
-        super::chat_ir::score_vectors_until(&query, SPEC_JA.embedding_dim, &pool, || {
-            asked.fetch_add(1, Ordering::Relaxed) >= 2
-        })
-        .expect("stopped before the invalid candidate");
+    let stopped = super::chat_ir::score_vectors_until(&query, SPEC_JA.embedding_dim, &pool, || {
+        asked.fetch_add(1, Ordering::Relaxed) >= 2
+    })
+    .expect("stopped before the invalid candidate");
     assert!(stopped.is_none());
     assert_eq!(asked.load(Ordering::Relaxed), 3);
-    let live =
-        super::chat_ir::score_vectors_until(&query, SPEC_JA.embedding_dim, &pool, || {
-            false
-        });
+    let live = super::chat_ir::score_vectors_until(&query, SPEC_JA.embedding_dim, &pool, || false);
     assert!(live.is_err());
 }
 
