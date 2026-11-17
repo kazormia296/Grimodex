@@ -835,6 +835,13 @@ export interface NapiBackendLike {
     callerIdentity?: string,
   ): Promise<string>;
   /**
+   * chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR of the Scenes
+   * before `currentSceneId` for a query the chat agent wrote, one-shot. Closed:
+   * Main refuses it before this is called, and Native's gate refuses it before
+   * the payload is read. Answers `{ status, success, items }`.
+   */
+  chatAgentIrSelect?(request: unknown): Promise<string>;
+  /**
    * One command for both the wait for the Graph and the renderer's settle
    * declaration (CP-3a D5): `{ operationTicket, rawSceneIds }` or
    * `{ operationTicket, settle }`, mutually exclusive.  `nir1-publication`.
@@ -6803,6 +6810,41 @@ export interface NapiCommandSpec {
   ): Promise<unknown>;
 }
 
+/**
+ * The query bound of `chat_agent_ir_select` in UTF-16 code units, the unit of
+ * the contract (§3.2), Related Scenes and `string.length`. Native checks it
+ * again and is the authority (DR-CHATIR-S1-14).
+ */
+export const CHAT_AGENT_IR_QUERY_UTF16_MAX = 500;
+
+function requireChatAgentIrSelectRequest(args: CommandArgs) {
+  const command = "chat_agent_ir_select";
+  requireExactKeys(
+    args,
+    ["query", "projectId", "expectedWorkspacePath", "currentSceneId"],
+    command,
+  );
+  const query = requireNonEmptyString(args, "query", command);
+  if (
+    query.trim().length === 0 ||
+    query.length > CHAT_AGENT_IR_QUERY_UTF16_MAX
+  ) {
+    throw new Error(
+      `IPC_INVALID_REQUEST: ${command} query is empty or exceeds ${CHAT_AGENT_IR_QUERY_UTF16_MAX} UTF-16 code units`,
+    );
+  }
+  return {
+    query,
+    projectId: requireNonEmptyString(args, "projectId", command),
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
+  };
+}
+
 function requireRelatedScenesBeginRequest(args: CommandArgs) {
   const command = "related_scenes_begin";
   const query = requireNonEmptyString(args, "query", command);
@@ -9888,6 +9930,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireRelatedScenesBeginRequest(a),
           callerIdentityWire(a),
         ),
+      ),
+  },
+  chat_agent_ir_select: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatAgentIrSelect,
+          "chatAgentIrSelect",
+        )(requireChatAgentIrSelectRequest(a)),
       ),
   },
   related_scenes_continue: {

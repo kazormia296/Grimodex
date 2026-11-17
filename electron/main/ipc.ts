@@ -68,6 +68,7 @@ import {
   startNir1LocalGenerationCiSeam,
   type Nir1LocalGenerationLaunch,
 } from "./nir1LocalGeneration.js";
+import { chatAgentIrGateRefusal } from "./chatAgentIr.js";
 import { defaultUserDataDirectoriesForApp } from "./userData.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
@@ -2201,6 +2202,9 @@ export function registerIpcRouter(
         // reached (K5/3 必須防御 16).
         const nir1LocalGateRefusal = nir1LocalGeneration.gateRefusal(cmd);
         if (nir1LocalGateRefusal) return nir1LocalGateRefusal;
+        // chat IR (DR-CHATIR-S1-27): closed in every launch, with no seam.
+        const chatAgentIrRefusal = chatAgentIrGateRefusal(cmd);
+        if (chatAgentIrRefusal) return chatAgentIrRefusal;
         if (
           cmd === "capture_current_chat_input" &&
           event.sender.isDestroyed()

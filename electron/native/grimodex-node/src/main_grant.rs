@@ -177,13 +177,19 @@ pub(crate) enum PrePublicationEntry {
     /// only Main's journey seam (DD-1b) through
     /// `main_open_pre_publication_gate`.
     LocalGeneration,
+    /// chat IR S1-A (DR-CHATIR-S1-27): `chat_agent_ir_select`, the one-shot that
+    /// hands the chat agent approved Chronicle IR. Nothing in the product
+    /// opens it; there is no caller of `main_open_pre_publication_gate` with
+    /// this kind (S3 decides how it is opened, under the same approval).
+    ChatAgentIr,
 }
 
 impl PrePublicationEntry {
-    const ALL: [Self; 3] = [
+    const ALL: [Self; 4] = [
         Self::SceneBodyDeclaration,
         Self::ProfileActivation,
         Self::LocalGeneration,
+        Self::ChatAgentIr,
     ];
 
     const fn index(self) -> usize {
@@ -191,6 +197,7 @@ impl PrePublicationEntry {
             Self::SceneBodyDeclaration => 0,
             Self::ProfileActivation => 1,
             Self::LocalGeneration => 2,
+            Self::ChatAgentIr => 3,
         }
     }
 
@@ -203,6 +210,7 @@ impl PrePublicationEntry {
             Self::SceneBodyDeclaration => "scene-body-declaration",
             Self::ProfileActivation => "profile-activation",
             Self::LocalGeneration => "nir1-local-generation",
+            Self::ChatAgentIr => "chat-agent-ir",
         }
     }
 }

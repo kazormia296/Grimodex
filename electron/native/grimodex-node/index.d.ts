@@ -692,6 +692,16 @@ export declare class Backend {
    * operation it created are discarded on failure).
    */
   relatedScenesBegin(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR (summary and
+   * quote) of Scenes before `currentSceneId`, for a query the chat agent
+   * wrote. Closed: while the Native gate is closed this is an error
+   * (`CHAT_IR_GATE_CLOSED`) before the payload is parsed, and nothing in the
+   * product opens it. A call that ends is always `{status, success, items}`
+   * with a status of the closed set; only a gate or a request-shape refusal
+   * is an error.
+   */
+  chatAgentIrSelect(payload: any): Promise<string>
   relatedScenesContinue(ownerKey: string, operationTicket: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * `nir1-publication` (K3/2). One command carries both the wait for the

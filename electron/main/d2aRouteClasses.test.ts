@@ -246,17 +246,29 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     }
   });
 
-  it("leaves plaintext-publication with exactly the commands K3/2 keeps closed", () => {
-    // claim_task and nir1_pack_context only: the six NIR commands moved to
+  it("leaves plaintext-publication with exactly the commands K3/2 keeps closed, plus the chat IR one-shot", () => {
+    // claim_task and nir1_pack_context (K3/2): the six NIR commands moved to
     // nir1-publication with their Native re-authorization (ST4).
+    // chat_agent_ir_select (chat IR S1-A, DR-CHATIR-S1-27): the confirmed
+    // threat model (§3.7) places it in this existing class, not in
+    // own-data-read or nir1-publication (which would need a new draftRef).
     const plaintext = d2aRouteLedgersForTest()
       .denied.filter(
         (command) => route(command, {}, true) === "plaintext-publication",
       )
       .sort();
     expect(plaintext).toEqual(
-      ["narrative_extraction_claim_task", "nir1_pack_context"].sort(),
+      [
+        "chat_agent_ir_select",
+        "narrative_extraction_claim_task",
+        "nir1_pack_context",
+      ].sort(),
     );
+    // It is in no other class (S1A-3).
+    const ledgers = d2aRouteLedgersForTest();
+    expect(ledgers.ownDataRead).not.toContain("chat_agent_ir_select");
+    expect(ledgers.nir1Publication).not.toContain("chat_agent_ir_select");
+    expect(ledgers.internal).not.toContain("chat_agent_ir_select");
   });
 
   it("moves the three derived-index updates to internal", () => {
@@ -632,6 +644,7 @@ describe("gate: own-data-read with the shipped opening (the default)", () => {
     for (const command of [
       "narrative_extraction_claim_task",
       "nir1_pack_context",
+      "chat_agent_ir_select",
     ]) {
       expect(() => gate.assertInvoke(command, { callerIdentity })).toThrow(
         DENIED("plaintext-publication"),
@@ -708,6 +721,7 @@ describe("gate: own-data-read with the opening on", () => {
     for (const command of [
       "narrative_extraction_claim_task",
       "nir1_pack_context",
+      "chat_agent_ir_select",
     ]) {
       expect(() => gate.assertInvoke(command, { callerIdentity })).toThrow(
         DENIED("plaintext-publication"),
