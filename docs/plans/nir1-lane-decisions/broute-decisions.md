@@ -969,3 +969,15 @@
 - **保存の超過（V0 (a)）**：既存の `v0_stored_edge_overflow_stops_verify_for_a_bound_project` が無変更で通ることを根拠にした（この PR で書き換えていない）。
 
 - **incremental Freshness の feed と Graph の consumer**：Scene の編集（tree node の patch の feed）は、Graph の edge（`codex:`、`codex-relation:`、project の eligibility）の source には当たらず、Graph の consumer に届かない（届くのは、その Scene を読む consumer。試験の fixture では Proposal Revision）。Graph の edge を選ぶのは、全 Graph の評価を要る event（epoch reset、component schema change）だけで、編集の feed ではなく、公開の API では作れなかったので試験していない。試験（`incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility`）は、候補 2,065 件では eligibility の読みが容量の Err になることを前提として示し、編集の feed の後の cycle が成功すること、Graph の surface（metadata・Freshness・Edge State）が変わらないこと、feed が届いた consumer に Graph が含まれないことを assert する。**実測**：incremental の reserved consumer の guard（`incremental_freshness.rs` の `continue`）を外しても、この試験は通った（変異を 1 回回した）。Scene の編集の feed が Graph の edge を選ばないことの実測であり、この試験には外すと落ちる guard が無い。guard が効くのは、全 Graph の評価の event（epoch reset、component schema change）が edge を全部選ぶときだけで、そこは試験していない。外すと落ちることを確かめたのは、S-5 の skip（`restore_rebuild.rs` の Graph head の飛ばし）と、案 C-2 の判定の Err の許可（外すと `a_failed_graph_judgement_does_not_end_the_cycle` が落ちる）である。
+
+#### 6. 最終 head の検証（2026-11-17）
+
+- **最後の code commit の head：`60adc950`**。その後の commit（`ab89d5ff`、この行を足す commit）は `docs/plans/nir1-lane-decisions/broute-decisions.md` だけで、code・試験・fixture を変えない。検証は `60adc950` の code に対して実施し、`verify:quality` と C2-ZC の receipt は `ab89d5ff`（clean な tree）で取った（master `2b792178`〔#930 まで〕を取り込み済みの枝）。
+- Node の版：22.23.3（`fnm exec --using=22`）。cargo の target：`/home/grimodex/cargo-targets/gdv1-impl`。
+- `cargo test -p grimodex-db --lib`（全件）：**2,822 passed、0 failed、63 ignored**（取り込み前の 2,776 passed から、取り込みと再レビューの試験で増えた）。
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib --features licensing,legacy-keyring-migration`：**838 passed、0 failed、7 ignored**。
+- `cargo clippy -p grimodex-db --all-targets -- -D warnings`：成功。Native の clippy（同 features、`--all-targets -- -D warnings`）：成功。
+- rustfmt（`--edition 2021 --check`）：本枝が所有する `gdv1_graph_binding_tests.rs`（今回、全体を整形）と `gdv1_k2_byte_compat_tests.rs` は差分なし。`maintenance_runtime.rs` には 18 か所の既存の差分が残る（`2b792178` の時点でも同じ 18 か所で、本枝が足した部分は整形済み）。`nir1_graph_index_maintenance_tests.rs` は差分なし。
+- `validate-semantic-core-boundary.mjs`：PASS（132 operations、schema 46）。`validate-native-writer-ownership.mjs`：ok（active=79、scanned=435）。
+- `fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
+- C2-ZC の receipt（`--base 2b79217879f90ebe098d7e68312a82da9ef7e893`、clean tree、`resolvedHeadSha` は `ab89d5ff`）：`sha256:7ed253623a09288c448d94dd9e4692854f4527130775a8f988253b526624dfd6`。
