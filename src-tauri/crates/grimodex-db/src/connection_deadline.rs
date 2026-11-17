@@ -391,7 +391,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let acquisitions = Arc::new(AtomicUsize::new(0));
         let (ready_tx, ready_rx) = mpsc::channel();
-        let maintenance = {
+        let mut maintenance = Some({
             let (db, stop, acquisitions) = (
                 Arc::clone(&db),
                 Arc::clone(&stop),
@@ -411,14 +411,30 @@ mod tests {
                 }
                 Ok::<(), anyhow::Error>(())
             })
-        };
+        });
         ready_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("maintenance guard is alive");
+        // A role that ended before the run did was preempted (a preempted role
+        // never reaches 50 acquisitions): surface its error at once, not at the
+        // watchdog, and before any assertion on the call's outcome (the call
+        // that took a seam returns `Some` while the role is already dead).
+        let fail_if_role_ended = |maintenance: &mut Option<thread::JoinHandle<Result<()>>>| {
+            if maintenance.as_ref().is_some_and(|role| role.is_finished()) {
+                maintenance
+                    .take()
+                    .expect("the role handle")
+                    .join()
+                    .expect("maintenance role joined")
+                    .expect("the maintenance role ended early (preempted?)");
+                panic!("the maintenance role ended before the run did");
+            }
+        };
         let taken = AtomicUsize::new(0);
         let watchdog = Instant::now() + Duration::from_secs(60);
         let mut attempts = 0_usize;
         while acquisitions.load(Ordering::SeqCst) < 50 {
+            fail_if_role_ended(&mut maintenance);
             assert!(
                 Instant::now() < watchdog,
                 "the maintenance role stopped cycling"
@@ -431,10 +447,13 @@ mod tests {
                     Ok(())
                 })
                 .expect("a live maintenance cycle is busy, not an error");
+            fail_if_role_ended(&mut maintenance);
             assert_eq!(outcome, None);
         }
         stop.store(true, Ordering::Release);
         maintenance
+            .take()
+            .expect("the role handle")
             .join()
             .expect("maintenance role joined")
             .expect("the maintenance run was never preempted");

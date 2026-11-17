@@ -547,6 +547,31 @@ fn revalidate_plan_in_tx(
     Ok(())
 }
 
+/// Test-only: drive the apply path's re-seal (`revalidate_plan_in_tx`, which
+/// re-seals through [`seal_repair_plan`]) for a Verify Run without a sealed
+/// plan. The plan is a placeholder: every refusal that can come from the
+/// re-seal of `verify_run_id` is reached before its digest is compared. A plan
+/// cannot be obtained from a Verify Run that `seal_repair_plan` refuses, so this
+/// is the only way to exercise the re-seal's refusal itself.
+#[cfg(test)]
+pub(crate) fn reseal_for_verify_run_for_test(
+    conn: &mut Connection,
+    project_id: &str,
+    verify_run_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<()> {
+    let plan = RepairPlan {
+        verify_run_id: verify_run_id.to_string(),
+        semantic_epoch_id: semantic_epoch_id.to_string(),
+        verify_report_digest: String::new(),
+        graph_state_digest: String::new(),
+        edge_ids_to_deactivate: Vec::new(),
+        edge_row_fingerprints: Vec::new(),
+        digest: String::new(),
+    };
+    revalidate_plan_in_tx(conn, project_id, &plan)
+}
+
 /// Seals a Repair plan for one project, **from a stored, completed
 /// `dependency-verify` Run**. Today only the `deactivate-duplicate-edge`
 /// category (`restore_rebuild::duplicate_edge_ids_to_deactivate`, surfaced
@@ -790,6 +815,18 @@ fn load_sealable_verify_result(
             "NEX_REPAIR_VERIFY_COVERAGE_INVALID: Verify Run '{verify_run_id}' has an invalid reserved Semantic Index footprint: {error}"
         )
     })?;
+    // GDV/1 revision 5 (M-2, GDV-R9 (x)): a Verify that left a recognized
+    // not-current Graph binding out of its checks did not examine that Graph,
+    // so it cannot seal a destructive plan. A current Graph binding is closed
+    // here already (its uncontrolled digest is context-unavailable); keep the
+    // not-current one closed the same way.
+    anyhow::ensure!(
+        report.consumers_excluded_not_current.is_empty(),
+        "NEX_REPAIR_VERIFY_GRAPH_RECOGNIZED_UNAVAILABLE: Verify Run '{verify_run_id}' excluded {} \
+         recognized not-current Graph binding(s) from its checks; a Repair plan cannot be sealed \
+         until a Verify examines them",
+        report.consumers_excluded_not_current.len()
+    );
     validate_report_rebuild_required(conn, project_id, &report).map_err(|error| {
         anyhow::anyhow!(
             "NEX_REPAIR_VERIFY_REBUILD_REQUIRED_MISMATCH: Verify Run '{verify_run_id}' stored a rebuildRequired value that does not match live repairability: {error}"

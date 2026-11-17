@@ -424,9 +424,12 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
 /// `consumer_key`; metadata `generation` must equal the active sealed D1
 /// head's `producer_generation`; and metadata `dependency_set_digest` must
 /// equal the active sealed D1 declaration set's digest. Only a complete,
-/// whole-project Graph registration is removed from reserved counts; a dirty
-/// or otherwise stale binding remains visible as incomplete evidence. Live
-/// usability remains a separate producer check.
+/// whole-project Graph registration is removed from reserved counts. GDV/1: a
+/// coherent but not-current binding (dirty, or Freshness/epoch not current) is
+/// a recognized `rebuildable-not-query-usable` binding and is removed from the
+/// reserved counts too (it is listed in the report's
+/// `consumers_excluded_not_current`); an incoherent binding remains visible as
+/// incomplete evidence. Live usability remains a separate producer check.
 ///
 /// Test-only entry point: production Verify owns cancellation through the
 /// `_with_control` variant.
@@ -511,12 +514,22 @@ pub(crate) fn verify_semantic_index_checks_with_control(
         }
     }
     check_control(control, GraphWorkStage::Coverage)?;
-    if super::nir1_entity_relation_index::is_complete_registered_with_control(
-        conn,
-        project_id,
-        super::nir1_entity_relation_index::INDEX_KEY,
-        control,
-    )? {
+    // GDV/1 S-3: a recognized not-current Graph binding is a declared one; the
+    // classification comes first so the eligibility is never read for it.
+    let graph_declared =
+        if super::nir1_entity_relation_index::is_graph_binding_recognized_not_current_with_control(
+            conn, project_id, control,
+        )? {
+            true
+        } else {
+            super::nir1_entity_relation_index::is_complete_registered_with_control(
+                conn,
+                project_id,
+                super::nir1_entity_relation_index::INDEX_KEY,
+                control,
+            )?
+        };
+    if graph_declared {
         let known_edge_count: i64 = conn.query_row("SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
             params![project_id,super::nir1_entity_relation_index::INDEX_KEY],|row|row.get(0))?;
         for (surface, known) in [

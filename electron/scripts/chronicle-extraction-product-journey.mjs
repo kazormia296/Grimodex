@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import { URL } from "node:url";
+import { promisify } from "node:util";
+const execFile = promisify(execFileCallback);
 const fixture = JSON.parse(
   readFileSync(
     new URL("../shared/productJourneyChronicleFixture.json", import.meta.url),
@@ -20,6 +24,45 @@ const artifactKinds = {
   plan: "chronicle.proposal-plan@1",
   terminal: "chronicle.stage-synthesis-outputs@1",
 };
+// Renderer generic SQL cannot read `narrative_proposal_revisions.payload_json`
+// or `.reconciliation_envelope_json` (DR-GSQLENV-1). The journeys still assert
+// the envelope's content while the app is running, so they read the workspace
+// database from a separate read-only process. It must be a separate process:
+// opening the same SQLite file from a second library inside this process
+// (next to Native's connection) can drop Native's POSIX locks.
+const READ_ONLY_ROWS_SCRIPT = `
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[1], { readOnly: true });
+try {
+  db.exec("PRAGMA busy_timeout = 5000");
+  const params = JSON.parse(process.argv[3]);
+  const rows = db.prepare(process.argv[2]).all(...params);
+  // An INTEGER beyond 2^53 makes node:sqlite throw, so a lossy value never
+  // reaches an assertion silently.
+  process.stdout.write(JSON.stringify(rows));
+} finally {
+  db.close();
+}
+`;
+export async function readWorkspaceRowsReadOnly(workspace, sql, params = []) {
+  assert.equal(typeof workspace, "string", "workspace path");
+  assert.ok(Array.isArray(params), "SQL parameters");
+  const { stdout } = await execFile(
+    process.execPath,
+    [
+      "--no-warnings",
+      "-e",
+      READ_ONLY_ROWS_SCRIPT,
+      path.join(workspace, "grimodex.db"),
+      sql,
+      JSON.stringify(params),
+    ],
+    { maxBuffer: 16 * 1024 * 1024, timeout: 30_000 },
+  );
+  const parsed = JSON.parse(String(stdout).trim() || "[]");
+  assert.ok(Array.isArray(parsed), "read-only rows must be an array");
+  return parsed;
+}
 export async function showChronicleFixturePanel(page) {
   await page
     .locator('[data-layout-shell][data-layout-initialized="true"]')
@@ -564,11 +607,10 @@ export function observeChronicleBeforeReview(
   );
   return { original, merged, clusters, hypotheses, plan, outputs };
 }
-async function inspectNative(harness, page, bundle, sceneId) {
+async function inspectNative(harness, page, bundle, sceneId, workspace) {
   const proposalIds = bundle.proposals.map((row) => row.proposalId);
-  const revisionRows = await rows(
-    harness,
-    page,
+  const revisionRows = await readWorkspaceRowsReadOnly(
+    workspace,
     "SELECT id, proposal_id AS proposalId, reconciliation_envelope_json AS envelopeJson, reconciliation_envelope_digest AS envelopeDigest FROM narrative_proposal_revisions WHERE proposal_id IN (?, ?) ORDER BY proposal_id, id",
     proposalIds,
   );
@@ -813,6 +855,7 @@ export function createChronicleExtractionJourney({
           review.page,
           initial,
           sceneId,
+          workspace,
         );
         assert.equal(before.events.length, 0);
         assert.equal(before.applications.length, 0);
@@ -871,6 +914,7 @@ export function createChronicleExtractionJourney({
           review.page,
           approved,
           sceneId,
+          workspace,
         );
         assert.equal(approvedNative.events.length, 0);
         assert.equal(approvedNative.applications.length, 0);
@@ -921,6 +965,7 @@ export function createChronicleExtractionJourney({
           review.page,
           applied,
           sceneId,
+          workspace,
         );
         assertChronicleApplied(appliedSnapshot, applied, sceneId);
         const appliedSynthesisCompanion = await readChronicleSynthesisCompanion(
@@ -979,6 +1024,7 @@ export function createChronicleExtractionJourney({
           reopened.page,
           bundle,
           sceneId,
+          workspace,
         );
         assertChronicleApplied(restored, bundle, sceneId);
         assert.deepEqual(restored.events, appliedSnapshot.events);

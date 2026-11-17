@@ -24,6 +24,7 @@ import {
   readChronicleFixtureApplyPolicy,
   readChronicleReviewBundle,
   readChronicleSynthesisCompanion,
+  readWorkspaceRowsReadOnly,
   saveChronicleEvidence,
   setupChronicleFixtureApplyPolicy,
   showChronicleFixturePanel,
@@ -376,11 +377,18 @@ export async function clickEnabledApplyButton({ harness, dialog }) {
   await button.click();
 }
 
-export async function inspectEditedNative(harness, page, bundle, sceneId) {
+export async function inspectEditedNative(
+  harness,
+  page,
+  bundle,
+  sceneId,
+  workspace,
+) {
   const proposalIds = bundle.proposals.map((row) => row.proposalId);
-  const revisionRows = await queryChronicleFixtureRows(
-    harness,
-    page,
+  // The envelope is Native-only for renderer SQL (DR-GSQLENV-1): read the
+  // revisions from the workspace database in a separate read-only process.
+  const revisionRows = await readWorkspaceRowsReadOnly(
+    workspace,
     `SELECT id AS revisionId, proposal_id AS proposalId, revision_number AS revisionNumber,
             reconciliation_envelope_json AS envelopeJson,
             reconciliation_envelope_digest AS envelopeDigest
@@ -555,6 +563,7 @@ export function createChronicleEditedApplyJourney({
           review.page,
           initial,
           sceneId,
+          workspace,
         );
         assert.equal(before.events.length, 0);
         assert.equal(before.applications.length, 0);
@@ -628,6 +637,7 @@ export function createChronicleEditedApplyJourney({
           review.page,
           afterBulk,
           sceneId,
+          workspace,
         );
         assert.equal(afterBulkNative.revisions.length, 3);
         assert.equal(afterBulkNative.events.length, 0);
@@ -720,6 +730,7 @@ export function createChronicleEditedApplyJourney({
           review.page,
           afterEdit,
           sceneId,
+          workspace,
         );
         assert.equal(afterEditNative.revisions.length, 4);
         assert.equal(afterEditNative.events.length, 0);
@@ -797,6 +808,7 @@ export function createChronicleEditedApplyJourney({
           review.page,
           approved,
           sceneId,
+          workspace,
         );
         assert.equal(approvedNative.events.length, 0);
         assert.equal(approvedNative.applications.length, 0);
@@ -893,6 +905,7 @@ export function createChronicleEditedApplyJourney({
           review.page,
           applied,
           sceneId,
+          workspace,
         );
         assertEditedChronicleApplied(appliedSnapshot, applied, {
           sceneId,
@@ -963,6 +976,7 @@ export function createChronicleEditedApplyJourney({
           reopened.page,
           bundle,
           sceneId,
+          workspace,
         );
         assertEditedChronicleApplied(restored, bundle, {
           sceneId,
