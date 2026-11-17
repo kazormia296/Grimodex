@@ -387,16 +387,26 @@ fn what_the_task_holds_is_released_pending_then_backend_then_permit() {
     assert_eq!(Arc::strong_count(&database), 1);
 }
 
-#[test]
-fn a_task_that_ended_without_answering_is_internal() {
-    // The caller side: a dropped sender is the closed `internal`.
+/// The caller side of `select` (the function `select` itself awaits): a sender that
+/// was dropped without an answer is the closed `internal`, and an answer that
+/// was sent passes through unchanged.
+#[tokio::test]
+async fn a_task_that_ended_without_answering_is_internal() {
     let (sender, receiver) = tokio::sync::oneshot::channel::<ChatIrResult>();
     drop(sender);
-    let status = match receiver.blocking_recv() {
-        Ok(result) => result.status,
-        Err(_) => crate::chat_ir::answer_of_dropped_sender(),
-    };
-    assert_eq!(status, ChatIrStatus::Internal);
+    let wire: serde_json::Value =
+        serde_json::from_str(&crate::chat_ir::wire_of_answer(receiver).await).expect("json");
+    assert_eq!(wire["status"], "internal");
+    assert_eq!(wire["success"], false);
+
+    let (sender, receiver) = tokio::sync::oneshot::channel::<ChatIrResult>();
+    sender
+        .send(ChatIrResult::status_only(ChatIrStatus::Busy))
+        .ok()
+        .expect("send");
+    let wire: serde_json::Value =
+        serde_json::from_str(&crate::chat_ir::wire_of_answer(receiver).await).expect("json");
+    assert_eq!(wire["status"], "busy");
 }
 
 #[test]

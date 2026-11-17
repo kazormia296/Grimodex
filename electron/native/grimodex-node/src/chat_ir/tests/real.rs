@@ -348,6 +348,53 @@ fn a_call_queued_behind_a_saturated_blocking_pool_times_out_and_touches_nothing(
     assert_eq!(rig.audit_rows(), 0);
 }
 
+/// S1A-4 / DR-CHATIR-S1-19: the permit is taken on the async side, before the task
+/// is queued, so the limit of 2 holds while the blocking pool is saturated. Two
+/// calls wait in the queue holding their places and the third is `busy` at once
+/// (a permit taken inside the task would let all three queue and answer only
+/// once the pool is free).
+#[test]
+fn the_limit_holds_while_the_blocking_pool_is_saturated() {
+    let rig = Arc::new(rig("pool-limit", "ja"));
+    rig.open_gate();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let occupied =
+            tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(1500)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Two calls queue behind the occupied thread, one after the other.
+        let mut queued = Vec::new();
+        for _ in 0..2 {
+            let rig = Arc::clone(&rig);
+            queued.push(tokio::spawn(async move {
+                status_of(&rig, rig.payload("scene")).await
+            }));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(rig.state.chat_ir.permits.in_flight(), 2, "not both queued");
+        let started = Instant::now();
+        let third = status_of(&rig, rig.payload("scene")).await;
+        assert_eq!(third["status"], "busy");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the third call waited for the pool: {:?}",
+            started.elapsed()
+        );
+        occupied.await.expect("blocking task");
+        for call in queued {
+            // The pool is free: they run and stop at the first read (no index).
+            assert_eq!(call.await.expect("call")["status"], "index-unavailable");
+        }
+        wait_until_idle(&rig).await;
+        assert_eq!(rig.state.chat_ir.permits.in_flight(), 0);
+    });
+}
+
 #[tokio::test]
 async fn a_workspace_that_is_closing_is_workspace_unavailable() {
     let rig = rig("closing", "ja");
@@ -362,6 +409,9 @@ async fn a_workspace_that_is_closing_is_workspace_unavailable() {
 async fn a_whole_call_on_a_real_workspace_ends_with_a_status_and_returns_everything() {
     let rig = rig("whole", "ja");
     rig.open_gate();
+    // The holders of the workspace authority before the call: the rig and the
+    // active workspace. A shutdown or a restore waits for exactly this count.
+    let holders = Arc::strong_count(&rig.authority);
     let answer = status_of(&rig, rig.payload("scene")).await;
     // There is no published Chronicle index, so the first read stops here.
     assert_eq!(answer["status"], "index-unavailable");
@@ -395,6 +445,14 @@ async fn a_whole_call_on_a_real_workspace_ends_with_a_status_and_returns_everyth
         rig.audit_rows(),
         0,
         "a call that stopped before the embedding audited"
+    );
+    // S1A-12 (c): what the call pinned (the request, the participant) is gone, so
+    // the authority is back to the holders it had; `wait_for_sole_owner` of a
+    // shutdown or a restore would otherwise fail after its wait.
+    assert_eq!(
+        Arc::strong_count(&rig.authority),
+        holders,
+        "the call kept the workspace authority"
     );
 }
 

@@ -144,16 +144,18 @@ pub(crate) async fn select(state: Arc<AppState>, payload: Value) -> Result<Strin
         );
         drop(state);
     }));
-    Ok(match receiver.await {
-        Ok(result) => result.to_wire().to_string(),
-        Err(_) => answer(answer_of_dropped_sender()),
-    })
+    Ok(wire_of_answer(receiver).await)
 }
 
-/// The task ended without answering (it panicked; what it held was released as
-/// it unwound): the closed `internal`.
-fn answer_of_dropped_sender() -> ChatIrStatus {
-    ChatIrStatus::Internal
+/// What the call answers once its task is running: the task's result, or, when
+/// the task ended without answering (it panicked; what it held was released as
+/// it unwound, and the sender was dropped), the closed `internal`. `select`
+/// and the tests both go through this one function.
+async fn wire_of_answer(receiver: tokio::sync::oneshot::Receiver<ChatIrResult>) -> String {
+    match receiver.await {
+        Ok(result) => result.to_wire().to_string(),
+        Err(_) => answer(ChatIrStatus::Internal),
+    }
 }
 
 fn answer(status: ChatIrStatus) -> String {
