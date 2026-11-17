@@ -185,6 +185,8 @@ S1-A（Native 層。gate は閉じたまま）の実装結果。判断は DR-CHA
 | `electron/main/chatAgentIr.ts`・`ipc.ts` | Main の closed gate（常に閉。invoke の最初）。`profileEgress.ts`：`plaintext-publication` |
 | `electron/shared/ipcContract.ts` | `NapiBackendLike.chatAgentIrSelect`、`NAPI_COMMANDS.chat_agent_ir_select`（厳密な 4 key、query は UTF-16 500 unit） |
 | `src/lib/tauri.ts` | `READ_ONLY_COMMAND_TIMEOUTS` に caller timeout 20 s の専用定数で登録 |
+| `src/features/profile-egress/profileEgressClosure.ts` | renderer の拒否台帳（`RENDERER_DENIED_COMMANDS`）に `chat_agent_ir_select`（`plaintext-publication`）。Main の `DENIED_COMMANDS` と一致させる（`profileEgressClosure.test.ts`・`tauri.egressClosure.test.ts` が見る）。gate は常に閉で、renderer の閉鎖は防御に数えない |
+| 試験（実 addon・Main） | `electron/native/grimodex-node/test/chat-ir.test.mjs`（実 addon で gate が parse の前に閉じる）、`electron/main/chatAgentIr.test.ts`（Main の closed gate）、`electron/main/d2aRouteClasses.test.ts`・`electron/shared/ipcContract.test.ts`・`src/lib/tauri.electron.test.ts` の追加 |
 | `index.d.ts` | `chatAgentIrSelect`（`napi build` は `--dts` なしで d.ts を出さなかったので、生成の形に合わせて手で足した） |
 
 ### 原典で照合して、設計の草案と違った点（DR-CHATIR-S1-25 の補足を含む）
@@ -200,19 +202,22 @@ S1-A（Native 層。gate は閉じたまま）の実装結果。判断は DR-CHA
 ### 試験が実物でない範囲（成功扱いにしない）
 
 - 公開済みの Chronicle index と resident の model は Native の試験では作れない。T2・T3 と scoring の実経路（S1A-10 の T2・T3 での `project-changed` の実発火、S1A-23・24 の可視性・現在の Scene の束縛、S1A-8・21 の embedding audit の consumer）は、Backend の seam の試験（flow）と純関数の試験（`derive`・`select_items`）、および S1-A0 の試験（`runtime_chat_ir_tests.rs`：`chat_ir_audit_equals_the_related_scenes_audit_except_the_consumer`）と grimodex-db の qualify の試験（`query_tests.rs`：earlier Scene の query が空であること等）を引く。S1A-23・24 の Native での end-to-end は未実施。
+- S1A-12 (c) の「終了後に authority の Arc が基準へ戻る」は、実 rig の呼び出し（index-unavailable で終わる経路）の前後の `Arc::strong_count` の一致で固定した（`a_whole_call_on_a_real_workspace_...`）。`wait_for_sole_owner` 自体は grimodex-db の `pub(crate)` なので Native の試験からは呼ばない（shutdown・restore がその count で待つので、count の一致が同じ性質の確認）。Fake の `Arc<()>` の試験（flow）は残す。model が要る後段の経路で Arc が残らないことは未実施。
 - 選択は写し（DR-CHATIR-S1-17）。`scoring::run` との直接の等価性の試験は作れない（lease と Chronicle の proof が要る）。弱い等価性。S1A-15（S1-A0c の側）は対象外。
 - `tracing::error`（捨てた pending の execution_id）は `PendingTerminalAudit` の `Drop`（S1-A0）が出す。Native の試験からは実物を作れないので、log の衛生（query が出ない）だけを Native で固定した。
 - dev の測定は未実施：実 model の上限いっぱいの query の推論時間、cycle 中の Related Scenes の埋め込みの追加 latency（S1A-14）、tail の polling の CPU、append の書き込み 1 回の長さ。値はいずれも初期値のまま。
 
 ### 変異による確認（head の commit から。`git checkout` で戻し、毎回 `git diff --quiet` で確認）
 
-設計 §5 の「落とすべき変異」を、実装に合わせて 26 件（Rust 21＋M15 の取り直し）と TS 5 件。設計 §5 の「落とすべき変異」のうち、下の表に挙げた変異はすべて試験が落ちた（回していない変異：S1A-8・14〔実 admission〕・21・23・24 と、S1A-10 の T2・T3 の実経路。実物の model・公開済みの Chronicle index が Native の試験で作れないため。生き残りの 1 件〔M15：log に query を出す〕は、log の試験が thread-local の subscriber で blocking thread の log を見ていなかったため。process 全体の subscriber に直し、取り直して落ちることを確認した）。
+設計 §5 の「落とすべき変異」を、実装に合わせて表の Rust 26 件（行内の「／」で区切った数。数え直した）と TS 5 件。レビューの後に Rust 2 件を足して 28 件（下の (a)・(c)）。実装担当は 26 件を head `3826c116` で再実施して全件落ちたと報告した（この 26 件の再実施は、レビュー後の修正では取り直していない。修正で変えたのは `select` の関数の切り出し〔`chat_ir.rs`〕と試験・拒否台帳だけ）。レビューの指摘（2026-11-17）の後、コードの head `0a372e82` で次の 3 件を実走し、(a)・(b)・(c) のいずれもその試験だけが落ちた（(b) は表の 1 件の取り直し）：(a) permit の取得を `spawn_blocking` の closure の中へ移す（S1A-4、DR-CHATIR-S1-19）→ `the_limit_holds_while_the_blocking_pool_is_saturated`、(b) `select` の送信側 drop の写像（`wire_of_answer` の `Err` 分岐）を `internal` から `timeout` へ → `a_task_that_ended_without_answering_is_internal`、(c) 呼び出しの中で authority の `Arc` を 1 つ残す（S1A-12 (c)）→ `a_whole_call_on_a_real_workspace_...`。表の「送信側の drop を `internal` にしない」は、以前は小関数 `answer_of_dropped_sender` を変異していて `select` の分岐を通らなかったので、(b) の形に直した（`select` の分岐を関数 `wire_of_answer` に切り出し、`select` と試験が同じ関数を通る）。回していない変異：S1A-8・14〔実 admission〕・21・23・24 と、S1A-10 の T2・T3 の実経路。実物の model・公開済みの Chronicle index が Native の試験で作れないため。生き残りだった 1 件〔M15：log に query を出す〕は、log の試験が thread-local の subscriber で blocking thread の log を見ていなかったため。process 全体の subscriber に直し、取り直して落ちることを確認した。
 
 | 変異 | 落ちた試験（抜粋） |
 | ---- | ---------------- |
 | gate を parse の後ろへ（S1A-2） | `a_closed_gate_refuses_before_the_payload_is_read_and_uses_nothing` |
 | permit を応答で離す／上限 3（S1A-4） | `tails_count_against_the_in_flight_limit`、`the_third_call_is_busy_...` ほか |
-| 送信側の drop を `internal` にしない（S1A-5） | `a_task_that_ended_without_answering_is_internal` |
+| `select` の送信側 drop の写像を `internal` にしない（S1A-5） | `a_task_that_ended_without_answering_is_internal`（`wire_of_answer` を通る） |
+| permit を blocking task の中で取る（S1A-4、DR-19） | `the_limit_holds_while_the_blocking_pool_is_saturated` |
+| call の中で authority の Arc を残す（S1A-12 (c)） | `a_whole_call_on_a_real_workspace_ends_with_a_status_and_returns_everything` |
 | T1 の接続待ちの上限を外す／`accepted_at` を task の中で取る（S1A-6） | `a_busy_connection_ends_the_first_read_at_the_probe_...`、`a_call_queued_behind_a_saturated_blocking_pool_...` |
 | 期限の確認（発行の前）を外す（S1A-6） | `an_answer_that_is_ready_only_after_the_deadline_is_not_issued` ほか |
 | qualify を prepare の前へ（S1A-7） | `steps_run_in_order_and_prepare_is_a_step_of_its_own` |
@@ -227,6 +232,22 @@ S1-A（Native 層。gate は閉じたまま）の実装結果。判断は DR-CHA
 | TS：登録を外す／caller timeout 10 s／Main の gate を呼ばない／restricted の拒否を外す／query の上限 5000 | `tauri.electron.test.ts`、`chatAgentIr.test.ts`、`d2aRouteClasses.test.ts`、`ipcContract.test.ts` |
 
 tail の close の遅れの観測値（S1A-13。参考）：試験の値（slice 100 ms・close flush 200 ms）で、shutdown の要求から participant の解放まで 2 s 未満。製品の値（250 ms・1 s）での測定は dev で。
+
+### 検証の記録（レビュー後の最終 head。コードの head `0a372e82`、この節を足した docs の commit はコードを変えない）
+
+| command | exit | 件数 |
+| ------- | ---- | ---- |
+| `cargo test --lib`（grimodex-node） | 0 | 894 passed、7 ignored |
+| `cargo test -p grimodex-db --lib`（src-tauri 無変更の回帰確認） | 0 | 2805 passed、63 ignored |
+| `cargo clippy --all-targets -- -D warnings`（grimodex-node） | 0 | 警告 0 |
+| `cargo fmt --check` | 1 | chat_ir の file に差分なし。差分は base にもある他 file（`lib.rs` の mod の順、`nir1_generation.rs` ほか）の既存のずれで、この lane では整形しない |
+| `napi build`＋`node --test test/chat-ir.test.mjs`（実 addon） | 0 | 3 passed |
+| `vitest run --config vitest.electron.config.ts` | 0 | 105 files・2473 passed |
+| `vitest run`（renderer の全件。Quick の範囲） | 0 | 1668 files passed・11 skipped、17008 passed・38 skipped |
+| `tsc --noEmit` | 0 | 型エラー 0 |
+| `fnm exec --using=22 pnpm -s verify:quality` | 下記 | 下記 |
+
+renderer の台帳の回帰（`profileEgressClosure.test.ts`・`tauri.egressClosure.test.ts` の 2 件）は `9bd90691` で直した。実装時の検証は renderer の試験を含んでいなかったので、以後の検証は renderer の全件を含める。
 
 ### owner／lifecycle matrix（GDX-PRECHECK-001 の記録。tail を含む形。確認済みの §3.8 の追補は repo の外の下書き）
 
