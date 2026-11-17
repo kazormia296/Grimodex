@@ -245,7 +245,7 @@ tail の close の遅れの観測値（S1A-13。参考）：試験の値（slice
 | `vitest run --config vitest.electron.config.ts` | 0 | 105 files・2473 passed |
 | `vitest run`（renderer の全件。Quick の範囲） | 0 | 1668 files passed・11 skipped、17008 passed・38 skipped |
 | `tsc --noEmit` | 0 | 型エラー 0 |
-| `fnm exec --using=22 pnpm -s verify:quality` | 下記 | 下記 |
+| `fnm exec --using=22 pnpm -s verify:quality`（docs の commit `03101580` で実行） | 0 | test:quality 714 tests・713 pass・0 fail（1 skip）、eval・retrieval fixtures・narrative writers ok |
 
 renderer の台帳の回帰（`profileEgressClosure.test.ts`・`tauri.egressClosure.test.ts` の 2 件）は `9bd90691` で直した。実装時の検証は renderer の試験を含んでいなかったので、以後の検証は renderer の全件を含める。
 
