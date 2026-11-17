@@ -383,6 +383,34 @@ test("DR-CP4-S6-7: 製品が閉じた後に -shm を残していれば（DELETE�
   }
 });
 
+test("DR-CP4-S6-7: 製品が閉じた後に非空の -wal を残していれば、今までどおり WAL の検査で止まる（SHM の検査より前。観測は session の行に残る）", async () => {
+  const plan = planOf(COMPLETE, "G-02/base");
+  const setupDir = path.join(scratch("cp4-sp-p4-wal-left-"), "pre");
+  const result = await run(
+    plan,
+    setupDir,
+    { stage: SP_P4_BRANCH.preStep },
+    {
+      wal: true,
+      onStop: () =>
+        writeFileSync(
+          path.join(setupDir, "workspace", "grimodex.db-wal"),
+          "wal-bytes",
+        ),
+    },
+  );
+  assert.equal(result.receipt.status, "failed");
+  assert.match(result.receipt.errors.join("\n"), /non-empty WAL/u);
+  assert.equal(result.branch, undefined);
+  const closed = result.receipt.sessions.at(-1).closedFiles;
+  assert.deepEqual(closed.wal, { exists: true, bytes: 9 });
+  assert.equal(closed.shm.exists, false);
+  // The WAL check stops before the SHM check: no cold copy was made and the
+  // pre-step's own disclosure of the check's input is not written.
+  assert.equal(result.receipt.coldDatabase, undefined);
+  assert.equal(result.receipt.seedPinBranch.closedFiles, undefined);
+});
+
 test("DR-CP4-S6-7: 最後の close の観測が効く（signal で終えた session の -shm は、開き直しが正常に閉じれば消え、開き直しの close が残せば止まる）", async () => {
   const plan = planOf(COMPLETE, "G-02/base");
   const limits = { freshnessSettleMs: 30 };
@@ -482,6 +510,38 @@ test("DR-CP4-S6-7: 観測は pre-step の session だけが受領書に残す（
     assert.ok(result.receipt.sessions.every((row) => !("closedFiles" in row)));
     assert.ok(!("closedFiles" in result.receipt.seedPinBranch));
   }
+});
+
+test("DR-CP4-S6-7: R5 の部分実行（①）の受領書も変わらない（session の行に closedFiles が無く、WAL mode で -shm が残っても止まらない）", async () => {
+  const plan = planOf(PARTIAL, "G-02/base");
+  const setupDir = path.join(scratch("cp4-sp-p4-r5-"), "partial");
+  const fake = frozenSetupFakeProduct({ wal: true });
+  const { receipt } = await setupFrozenVariant({
+    plan,
+    setupDir,
+    shared: { ...SHARED, r5CheckRunId: "r5-test-run" },
+    deps: {
+      startSession: async () => ({
+        page: fake.page,
+        userData: "/nonexistent",
+        evidence: { label: "author", problems: [] },
+        stop: async () => {
+          fake.close();
+          writeShm(setupDir);
+          return { label: "author", problems: [] };
+        },
+      }),
+      uuid,
+    },
+  });
+  assert.equal(
+    receipt.status,
+    "setup-through-seed-pin",
+    receipt.errors.join("\n"),
+  );
+  assert.equal(receipt.sessions.length, 1);
+  assert.ok(receipt.sessions.every((row) => !("closedFiles" in row)));
+  assert.equal(receipt.seedPinBranch, undefined);
 });
 
 test("DR-CP4-S6-7: observeClosedWorkspaceFiles は stat と header の 20 byte だけを読み、何も作らない（SQLite の接続を開かない）", () => {
