@@ -379,7 +379,7 @@ pub use maintenance_runtime::{
     discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, discover_maintenance_project_for_main,
     discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
-    is_transient_maintenance_preemption,
+    is_project_local_discovery_failure, is_transient_maintenance_preemption,
     nir1_graph_index_build_wakes_main_discovery,
     nir1_graph_index_build_wakes_main_discovery_with_product, plan_maintenance_trigger,
     preflight_maintenance_cycle_request, read_run_ledger, read_run_ledger_for_epoch,
