@@ -222,11 +222,27 @@ impl Fixture {
     }
 
     /// Warms the worker until the next query is accepted.
+    ///
+    /// A begin made while an earlier query still holds the slot (InUse, e.g. a
+    /// CQ-DEFER query, which retires its worker and leaves the slot Empty with no
+    /// rebuild) is answered Busy and starts nothing. So the begin is made again
+    /// whenever the slot is Empty, never when it is Ready (that would take it).
     fn warm(&self) {
-        let _ = self.state.nir1_graph.begin(&self.state, Self::query());
-        wait_until("READY", || {
-            self.state.nir1_graph.slot_kind_for_test() == GraphSlotKind::Ready
-        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let kind = self.state.nir1_graph.slot_kind_for_test();
+            if kind == GraphSlotKind::Ready {
+                break;
+            }
+            if kind == GraphSlotKind::Empty {
+                let _ = self.state.nir1_graph.begin(&self.state, Self::query());
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for READY (slot {kind:?})"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         wait_until("the READY notice", || !self.all_graph_events().is_empty());
         self.warm_notices
             .store(self.all_graph_events().len(), Ordering::SeqCst);
