@@ -14,3 +14,8 @@
 - 事実：約 87%（222 GiB）は、run ごとに `user-data/models/` へ複製された埋め込み model（ruri-v3-30m、bge-small-en-v15）。正本は `~/.cache/gdx-nir1/grimodex-product-6x99bC/user-data/models/`。2026-11-12 に「残すか判断してください」と伝えて未決だった。
 - 回答：**「model の複製だけ消す (Recommended)」**。記録・DB・build は残す。
 - 実行の条件（資料 §5 案 A）：(0) 正本の `models/` を `fusion-eval-data/` の下へ写して `sha256sum` で照合する、(1) 各 dir から抜き取った複製の onnx を再ハッシュして正本と照合する、(2) 消すのは `.../user-data/models` の path だけで、Node の `fs.rmSync` を使う（シェルの `rm` は使わない）、(3) 1 つの dir で試して `du` と run-report が無傷なことを確かめてから全体を消す、(4) 参照している process が無いことを確かめる。結果は記録に残す。
+
+## 9 回目の正式 run（s9r1）の開始（上の 2 問とは別に伺った）
+
+- 事実：候補は master の先頭 `01dd6821`（#932 GDV/1、#933 envelope、#935 S1-A〔gate は閉じたまま〕を含む）。この候補で、凍結の照合（74 path・閉包 44・3 dir・freeze の 10 file）と admission・`assertObservationPrepFormal` を取り直し、すべて通った（`fusion-eval-data/.../run9-prep.md` の末尾の追記）。run の前の残り：K6/7 用の集計 script の改作、`v10-check.mjs` の再構成、`remote-time-record.json`、手順の再構成。窓の約 3 時間はほかの作業を止める案で、これは `ee391d50` の例外になる。
+- 回答：**「準備だけして、開始は再度伺う」**（推奨は「整い次第すぐ」だった）。残りの準備を済ませ、整ったところで開始の時期をもう一度伺う。窓の間にほかの作業を止めるかどうか（`ee391d50` の例外）も、そのときに伺う。
