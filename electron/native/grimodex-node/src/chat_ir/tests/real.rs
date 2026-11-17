@@ -647,13 +647,16 @@ fn shutdown_is_not_held_up_by_a_call_in_its_tail() {
 // ---- S1A-19: nothing the model wrote is logged ---------------------------------------
 
 mod log_capture {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
     use tracing::field::{Field, Visit};
     use tracing::span::{Attributes, Id, Record};
     use tracing::{Event, Metadata, Subscriber};
 
-    /// Records every event and span of a test, whatever its level.
-    pub(super) struct Capture(pub(super) Arc<Mutex<Vec<String>>>);
+    /// Records every event and span of the process, whatever its level and
+    /// thread. It is the global default: a call runs on a blocking thread, which
+    /// a thread-local subscriber does not see (and a callsite first reached from
+    /// such a thread would be disabled for the test thread as well).
+    struct Capture(Arc<Mutex<Vec<String>>>);
 
     struct Text(String);
     impl Visit for Text {
@@ -682,13 +685,32 @@ mod log_capture {
         fn enter(&self, _: &Id) {}
         fn exit(&self, _: &Id) {}
     }
+
+    pub(super) fn lines() -> Arc<Mutex<Vec<String>>> {
+        static LINES: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+        Arc::clone(LINES.get_or_init(|| {
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            // No other test installs a subscriber; if one ever does, the
+            // sanity check in the test (an event of its own is seen) fails.
+            let _ = tracing::subscriber::set_global_default(Capture(Arc::clone(&lines)));
+            lines
+        }))
+    }
 }
 
 #[tokio::test]
 async fn no_path_logs_the_query() {
     let secret = "SECRET-QUERY-TOKEN-7f3a";
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let _guard = tracing::subscriber::set_default(log_capture::Capture(Arc::clone(&lines)));
+    let lines = log_capture::lines();
+    tracing::info!("log capture is installed");
+    assert!(
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("log capture is installed")),
+        "the capture sees no event: this test would prove nothing"
+    );
     let rig = rig("log", "ja");
     rig.open_gate();
     let mut payload = rig.payload("scene");
@@ -706,7 +728,7 @@ async fn no_path_logs_the_query() {
         .collect();
     status_of(&rig, payload).await;
     drop(held);
-    // The tail path and a panic, with the query as the request's own.
+    // The tail path, with the query as the request's own.
     let mut fake = Fake::new();
     fake.prepare = PrepareMode::Pending(PendingSpec::on_call(Duration::ZERO, 1));
     let pool = crate::chat_ir::permit::PermitPool::new(1);
@@ -724,7 +746,16 @@ async fn no_path_logs_the_query() {
         Instant::now(),
         sender,
     );
+    // The blocking tasks of the calls above end (tail included) before looking.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.state.chat_ir.permits.in_flight() != 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let captured = lines.lock().unwrap().join("\n");
+    assert!(
+        captured.contains("terminal audit tail ended"),
+        "the call paths logged nothing at all: the capture is not seeing the calls"
+    );
     assert!(
         !captured.contains(secret),
         "the query reached a log line:\n{captured}"
