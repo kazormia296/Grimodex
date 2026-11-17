@@ -32,7 +32,7 @@ mod begin;
 mod build;
 mod graph;
 mod graph_response;
-mod ranking_policy;
+pub(crate) mod ranking_policy;
 mod scoring;
 
 const CAPACITY: usize = 128;

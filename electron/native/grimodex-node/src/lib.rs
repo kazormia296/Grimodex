@@ -15,6 +15,7 @@
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
 mod body_declaration_entry;
+mod chat_ir;
 #[cfg(test)]
 mod body_declaration_entry_tests;
 mod convert;
@@ -13377,6 +13378,20 @@ impl Backend {
             .await
             .map_err(related_scenes_err_to_napi)?;
         Ok(result.to_string())
+    }
+
+    /// chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR (summary and
+    /// quote) of Scenes before `currentSceneId`, for a query the chat agent
+    /// wrote. Closed: while the Native gate is closed this is an error
+    /// (`CHAT_IR_GATE_CLOSED`) before the payload is parsed, and nothing in the
+    /// product opens it. A call that ends is always `{status, success, items}`
+    /// with a status of the closed set; only a gate or a request-shape refusal
+    /// is an error.
+    #[napi]
+    pub async fn chat_agent_ir_select(&self, payload: serde_json::Value) -> Result<String> {
+        chat_ir::select(Arc::clone(&self.state), payload)
+            .await
+            .map_err(|error| Error::from_reason(error.to_string()))
     }
 
     #[napi]

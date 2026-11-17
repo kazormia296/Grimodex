@@ -2629,6 +2629,9 @@ pub struct AppState {
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
     pub(crate) related_scenes: crate::related_scenes::RelatedScenesService,
+    /// chat IR S1-A: the in-flight limit and the record of issued items.
+    /// Process-local; nothing here is persisted.
+    pub(crate) chat_ir: crate::chat_ir::ChatIrState,
     /// Process-local C-query product owner (CP-2a). Never activated before PUB-G (A-1).
     pub(crate) nir1_graph: crate::nir1_graph_product::Nir1GraphProductOwner,
     /// MG-1 (CB-2): Main's one-time confirmation slot and the closed-by-default
@@ -2855,6 +2858,7 @@ impl AppState {
             )),
             semantic,
             related_scenes: crate::related_scenes::RelatedScenesService::default(),
+            chat_ir: crate::chat_ir::ChatIrState::default(),
             nir1_graph,
             main_grant,
             semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(

@@ -50,7 +50,7 @@ fn policy() -> Result<&'static Policy> {
     Ok(policy)
 }
 
-pub(super) fn for_language(language: &str) -> Result<(f64, usize)> {
+pub(crate) fn for_language(language: &str) -> Result<(f64, usize)> {
     let policy = policy()?;
     let floor = match language {
         "ja" => policy.ir_cosine_floors.ja,
