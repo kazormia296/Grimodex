@@ -19,3 +19,9 @@
 
 - 事実：候補は master の先頭 `01dd6821`（#932 GDV/1、#933 envelope、#935 S1-A〔gate は閉じたまま〕を含む）。この候補で、凍結の照合（74 path・閉包 44・3 dir・freeze の 10 file）と admission・`assertObservationPrepFormal` を取り直し、すべて通った（`fusion-eval-data/.../run9-prep.md` の末尾の追記）。run の前の残り：K6/7 用の集計 script の改作、`v10-check.mjs` の再構成、`remote-time-record.json`、手順の再構成。窓の約 3 時間はほかの作業を止める案で、これは `ee391d50` の例外になる。
 - 回答：**「準備だけして、開始は再度伺う」**（推奨は「整い次第すぐ」だった）。残りの準備を済ませ、整ったところで開始の時期をもう一度伺う。窓の間にほかの作業を止めるかどうか（`ee391d50` の例外）も、そのときに伺う。
+
+## 開始（準備が整った後に、もう一度伺った）
+
+- 事実：準備は `fusion-eval-data/cp4-dev-latency-ratio-2026-11-15/formal-run-prep/run9/`（V-10 の判定 script は s7r2 の実物で 13/13 ok、K6/7 用の集計 script は試験 48 件が通過、手順は偽の runner で最後まで通した）。候補は `01dd6821`。
+- 回答 1：**「今から始める (Recommended)」**。窓の間は、ほかの作業（cargo・build・Electron・Xvfb・fetch・vitest）を止める（`ee391d50` の例外として了承）。止まったら取り直さずに伺う。
+- 回答 2：**「NG として伺う (Recommended)」**。setup の quiesce が待ち切れた後に harness が開き直して回復した場合、待ち切れた settle（settled:false）の記録が受領書に残る。V-10 の確認ではこれを NG として扱い、測定に入らずに伺う（判定 script の既定。全 entry を見る）。
