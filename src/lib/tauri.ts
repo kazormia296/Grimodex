@@ -53,6 +53,14 @@ export function isD2aEgressDenied(error: unknown): boolean {
 
 /** AI inference can take several minutes on local hardware (Ollama etc.) */
 const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
+/**
+ * Caller timeout of `chat_agent_ir_select` (chat IR, DR-CHATIR-S1-3). Longer
+ * than the longest end of a Native call: its 10 s deadline plus one inference
+ * and one audit write, neither of which can be interrupted. The existing 10 s
+ * would equal the deadline and give up on calls that are still legitimately
+ * running. A caller timeout does not stop Native (it returns its own permit).
+ */
+const CHAT_AGENT_IR_TIMEOUT_MS = 20_000;
 
 export type IpcInvokeErrorCode =
   | "WORKSPACE_SWITCHING"
@@ -230,6 +238,10 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_restore", IPC_TIMEOUT_MS],
+  // chat IR (DR-CHATIR-S1-3): a read lane with a caller timeout. Left out, the
+  // command would be a mutation: no timeout, and a hold on the workspace
+  // switch and close quiescence. The route itself is closed (S1-A).
+  ["chat_agent_ir_select", CHAT_AGENT_IR_TIMEOUT_MS],
   // CB-3: the author's screen reads a Scene's declaration state. It must not
   // wait behind a declare (a confirmation dialog of up to 60 s) in the
   // mutation queue.

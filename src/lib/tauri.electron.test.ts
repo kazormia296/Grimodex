@@ -262,6 +262,43 @@ describe("caller timeout policy（electron 分岐）", () => {
     });
   });
 
+  it("chat_agent_ir_select (chat IR) は read lane で、caller timeout は 20s（終了の上限より長い）", async () => {
+    vi.useFakeTimers();
+    // A mutation that never settles must not hold the chat IR call back: it is
+    // a read, not a mutation.
+    const bridge = installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+    void invoke("narrative_scene_body_declaration_declare").catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const caught = invoke("chat_agent_ir_select", {
+      query: "q",
+      projectId: "p",
+      expectedWorkspacePath: "/w",
+      currentSceneId: "s",
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.invoke).toHaveBeenCalledWith(
+      "chat_agent_ir_select",
+      expect.anything(),
+    );
+    // Not the ordinary 10 s: still running at 11 s.
+    let settled = false;
+    void caught.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(caught).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_TIMEOUT",
+      command: "chat_agent_ir_select",
+      details: { timeoutMs: 20_000 },
+    });
+  });
+
   it.each(["foreshadow_load_anchors_for_scene", "list_annotations_for_scene"])(
     "%s は Editor sidecar read lane の10s枠を使う",
     async (command) => {

@@ -308,6 +308,11 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
   ["nir1_pack_context", "plaintext-publication"],
+  // chat IR (DR-CHATIR-S1-27): the approved IR of a chat turn is plaintext a
+  // restricted profile does not publish. The route is closed in every launch
+  // regardless (Main's gate comes first); this is the restricted profile's own
+  // refusal, for the day the gate is opened.
+  ["chat_agent_ir_select", "plaintext-publication"],
 ]);
 
 const ALLOWED_STOP_COMMANDS = new Set([

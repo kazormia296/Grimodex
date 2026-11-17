@@ -6559,6 +6559,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "authorship_replace_lane",
       "cancel_current_chat_input",
       "capture_current_chat_input",
+      "chat_agent_ir_select",
       "chat_index_message",
       "chat_index_status",
       "chat_message_metadata_record",
