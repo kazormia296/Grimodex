@@ -1,6 +1,6 @@
 # モデル能力の動的取得（設計草稿）
 
-- 状態：草稿（2026-11-18）。Mastra への移行の調査と並行しているので、置き場所（§5）は調査の結論を見てから確定する。
+- 状態：草稿（2026-11-18）。Mastra への移行と並行している。置き場所（§5）は Mastra の spike の後で確定する。
 - 基点：origin/master `01dd6821`
 - 枝：`claude/model-caps-dynamic`
 
@@ -28,6 +28,9 @@
   - **既定は Grimodex の GitHub 上の写し**。CI が models.dev から定期的に生成・検証する。
   - 設定で **models.dev の直接取得**にも切り替えられる。
 - **既定で有効**、設定で止められる。止めると、同梱の写しだけを使う。
+- 段 1（観測）は Anthropic の実応答を待たず、**公式文書の例で進める**。実値との差分は、実応答が手に入った後に取る。
+
+**Mastra の判断（同日）**：agent loop と tool の実行は Electron main へ移す。送信は Rust（`grimodex-ai`）を使い続け、AI SDK の LanguageModel adapter で包む。Mastra の telemetry は止める。会話履歴は Mastra の memory を使う（別設計）。
 
 ## 3. 解決の順序
 
@@ -70,6 +73,8 @@
 
 - **案 R**：registry を Rust（`grimodex-ai`）に置き、renderer へは IPC で能力の解決結果を渡す。MCP と抽出の経路にも届く。`AiModel` の拡張は Rust → N-API → `ipcContract` → renderer にまたがる。
 - **案 M**：Mastra を Electron main に入れる場合は、main に置く。Mastra の provider registry（models.dev 由来の同梱と override）を使えるか、調査の結論を待つ。
+
+Mastra の判断の後の見通し：送信が Rust に残るので、cache の可否と reasoning の判定を一本化するには、能力の解決結果が Rust に届く必要がある。案 R が有力。Mastra の registry の能力は attachment／temperature／structuredOutput／reasoning だけなので、この lane の正本にはしない。確定は spike の後。
 
 ## 6. 実行時の registry の取得（§2 の決定の具体化）
 
