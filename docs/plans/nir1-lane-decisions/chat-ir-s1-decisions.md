@@ -169,3 +169,61 @@ chat IR は NIR-1 の残レーンの事前委任の**外**。下の判断は、�
 | DR-CHATIR-S1-27 | **Native の gate と Main の gate（二重の閉じ方の実装）**：`PrePublicationEntry::ChatAgentIr`（wire は `chat-agent-ir`）を足す。Native は、gate が閉じていれば **DTO の parse の前に**拒否する（`related_scenes_begin` の parse が先の順は写さない）。開ける呼び手は作らない（CI seam なし。`main_open_pre_publication_gate` に `chat-agent-ir` を渡す呼び手が製品に無いことを grep の試験で固定する）。Main は `chat_agent_ir_select` を常に closed gate で拒否する（`CHAT_IR_GATE_CLOSED`。`nir1LocalGeneration.ts` の `gateRefusal` と同じ位置・同じ型。`profileEgress`・sender の検査より前）。restricted の profile では `plaintext-publication`（`DENIED_COMMANDS`）。renderer の `CHAT_AGENT_IR_ENABLED` は S1-B。`READ_ONLY_COMMAND_TIMEOUTS` には caller timeout 20 s の専用定数で登録する（既存の 10 s では終了の上限〔期限＋推論＋append〕より短い） | 設計 §4.3。gate を開ける経路は S3 で、同じ承認の下で決める（開ける呼び手を作るのは確認の対象） |
 
 **範囲外として止める点**（実装中に必要になったら、mutation の前に止めて返す）：新しい送信先・保存範囲の拡大・閾値の緩和・gate を開く呼び手・製品認可の削除・新しい契約や authority、設計の Q-a〜g の「採る場合だけ伺う」側（独立の queue／worker、in-flight の上限を 2 より上げる、model の load の許可、発行の記録の disk 保存や押し出し、policy の値の変更、audit の新しい event・metadata、S1-A の間に IR を送る・開ける経路）。S1-A0b（grimodex-semantic の hold の上限・stop の hook・append の polling の間隔）と S1-A0c（`score_accepted_documents` の包み）は別 PR。
+
+## S1-A の実装の記録（2026-11-17）
+
+S1-A（Native 層。gate は閉じたまま）の実装結果。判断は DR-CHATIR-S1-13〜27。実装は枝 `claude/chat-ir-s1-a`（push・PR は統合者）。renderer の wrapper・executor、IPC の開放、S2 の測定、S1-A0b・S1-A0c は含めない。製品の既定の挙動は変えていない（renderer の `CHAT_AGENT_IR_ENABLED` は S1-B、Main の closed gate と Native の `PrePublicationEntry::ChatAgentIr` が閉じる）。
+
+### 足したもの
+
+| 場所 | 中身 |
+| ---- | ---- |
+| `electron/native/grimodex-node/src/chat_ir.rs` と `chat_ir/` | `select`（gate → 形 → query → permit → participant → pin → blocking task）、`ChatIrConfig`（既定値。10 s・1 s・2・4,096・30 s・250 ms・1 s）、`ChatIrState`（permit と発行の記録）。`status`（閉じた status と対応表）、`request`（DTO と query の検査）、`basis`（language から spec・floor・cap）、`item`（選択の写し・要約の射影・canonical・digest）、`ledger`、`permit`、`tail`、`flow`（`Backend` の trait と 1 回の呼び出しの手順、応答→tail→解放の順）、`native`（実 `Backend`：T1〜T3 と prepare・score） |
+| `main_grant.rs` | `PrePublicationEntry::ChatAgentIr`（wire `chat-agent-ir`。既定で閉。開ける呼び手は無い） |
+| `lib.rs`・`state.rs` | napi `chat_agent_ir_select`、`AppState.chat_ir` |
+| `related_scenes.rs`・`ranking_policy.rs` | 可視性だけ（`pub(crate)`）。値・挙動は変えない |
+| `electron/main/chatAgentIr.ts`・`ipc.ts` | Main の closed gate（常に閉。invoke の最初）。`profileEgress.ts`：`plaintext-publication` |
+| `electron/shared/ipcContract.ts` | `NapiBackendLike.chatAgentIrSelect`、`NAPI_COMMANDS.chat_agent_ir_select`（厳密な 4 key、query は UTF-16 500 unit） |
+| `src/lib/tauri.ts` | `READ_ONLY_COMMAND_TIMEOUTS` に caller timeout 20 s の専用定数で登録 |
+| `index.d.ts` | `chatAgentIrSelect`（`napi build` は `--dts` なしで d.ts を出さなかったので、生成の形に合わせて手で足した） |
+
+### 原典で照合して、設計の草案と違った点（DR-CHATIR-S1-25 の補足を含む）
+
+- `prepare_chat_ir_query` の最初の行（`ensure_background_request_current`）は、epoch が回った後なら `IPC_DERIVED_CANCELLED: semantic background indexing was cancelled` の `Err` を返す。設計の対応表に無かったので、`SEMANTIC_QUERY_STALE` と同じ `workspace-changed` に対応づけた（実 runtime の文字列を試験で固定）。
+- 草案の `catch_unwind` は採らない。panic では sender・permit・participant・pending が unwind で落ち、sender が落ちれば呼び手側は `internal` になる（試験で固定）。
+- 草案が「sender id と expectedWorkspacePath の組を Main で検査」（G3-U9）としたものは、Main に sender ごとの workspace path の正本が無く、Main の gate が常に閉じていて到達しないので実装していない（Native の `expectedWorkspacePath` の pin が正本。他の typed command と同じ）。開ける S1-B・S3 で要否を決める。
+- `current_request` の写し（`is_current`）は Related Scenes と同じく `bind_embedding_generation` を呼ぶ（generation が 0 だと失敗。同じ generation の再 bind は無害）。chat IR の read も同じ現行性の検査を使う。
+- 非終端の execution は `reportCoverage.ts` で `ambiguousExecutionCount` に数えられる（読みで確認。DR-CHATIR-S1-15 の audit export への影響の「非終端のまま報告に載る」はこの数）。
+- 現在の Scene の検査は T1 の軽い SQL（`node_type='scene'`・同 project・archived でない）。`read_chronicle_query_status_with_control` の `Unavailable` はその後なので `index-unavailable`。
+- project が workspace に無い projectId は `project-unavailable`（DB に触れてから判定する。「DB に触れない」は workspace path の不一致だけ）。
+
+### 試験が実物でない範囲（成功扱いにしない）
+
+- 公開済みの Chronicle index と resident の model は Native の試験では作れない。T2・T3 と scoring の実経路（S1A-10 の T2・T3 での `project-changed` の実発火、S1A-23・24 の可視性・現在の Scene の束縛、S1A-8・21 の embedding audit の consumer）は、Backend の seam の試験（flow）と純関数の試験（`derive`・`select_items`）、および S1-A0 の試験（`runtime_chat_ir_tests.rs`：`chat_ir_audit_equals_the_related_scenes_audit_except_the_consumer`）と grimodex-db の qualify の試験（`query_tests.rs`：earlier Scene の query が空であること等）を引く。S1A-23・24 の Native での end-to-end は未実施。
+- 選択は写し（DR-CHATIR-S1-17）。`scoring::run` との直接の等価性の試験は作れない（lease と Chronicle の proof が要る）。弱い等価性。S1A-15（S1-A0c の側）は対象外。
+- `tracing::error`（捨てた pending の execution_id）は `PendingTerminalAudit` の `Drop`（S1-A0）が出す。Native の試験からは実物を作れないので、log の衛生（query が出ない）だけを Native で固定した。
+- dev の測定は未実施：実 model の上限いっぱいの query の推論時間、cycle 中の Related Scenes の埋め込みの追加 latency（S1A-14）、tail の polling の CPU、append の書き込み 1 回の長さ。値はいずれも初期値のまま。
+
+### 変異による確認（head の commit から。`git checkout` で戻し、毎回 `git diff --quiet` で確認）
+
+設計 §5 の「落とすべき変異」を、実装に合わせて 26 件（Rust 21＋M15 の取り直し）と TS 5 件。すべて試験が落ちた（生き残りの 1 件〔M15：log に query を出す〕は、log の試験が thread-local の subscriber で blocking thread の log を見ていなかったため。process 全体の subscriber に直し、取り直して落ちることを確認した）。
+
+| 変異 | 落ちた試験（抜粋） |
+| ---- | ---------------- |
+| gate を parse の後ろへ（S1A-2） | `a_closed_gate_refuses_before_the_payload_is_read_and_uses_nothing` |
+| permit を応答で離す／上限 3（S1A-4） | `tails_count_against_the_in_flight_limit`、`the_third_call_is_busy_...` ほか |
+| 送信側の drop を `internal` にしない（S1A-5） | `a_task_that_ended_without_answering_is_internal` |
+| T1 の接続待ちの上限を外す／`accepted_at` を task の中で取る（S1A-6） | `a_busy_connection_ends_the_first_read_at_the_probe_...`、`a_call_queued_behind_a_saturated_blocking_pool_...` |
+| 期限の確認（発行の前）を外す（S1A-6） | `an_answer_that_is_ready_only_after_the_deadline_is_not_issued` ほか |
+| qualify を prepare の前へ（S1A-7） | `steps_run_in_order_and_prepare_is_a_step_of_its_own` |
+| query を `chars()` で数える／Native の query 検査を外す（S1A-9） | `query_bound_counts_utf16_code_units`、`a_refused_query_uses_no_permit_...` |
+| T1 との language の一致を外す／support を `spec_for_language` に（S1A-10） | `later_reads_refuse_a_changed_project`、`only_ja_and_en_exactly_are_supported` ほか |
+| STALE を `internal`／Closed を `internal`（S1A-11） | `errors_map_by_type_then_by_code`、`typed_terminations_do_not_become_internal` |
+| 応答を tail の後ろへ／tail が stop を見ない／pending の leak（S1A-12・13） | `the_answer_comes_before_the_tail_...`、`a_stop_request_ends_the_tail_...`、`shutdown_is_not_held_up_by_a_call_in_its_tail`、`what_the_task_holds_is_released_...` |
+| 発行の記録：押し出す／identity を見ない／issue を飛ばす（S1A-18） | `ledger_refuses_a_whole_call_...`、`ledger_is_dropped_when_the_database_identity_changes`、`a_full_ledger_refuses_the_call_...` |
+| 性質を item に入れる／score を丸めない（S1A-16・17） | `the_projection_is_an_allowlist_...`、`score_is_rounded_...` |
+| log に query を出す（S1A-19） | `no_path_logs_the_query` |
+| floor の drift（S1A-22）／現在の Scene の検査を外す（S1A-25）／pin の失敗の status（S1A-20） | `basis_floor_and_cap_are_the_ranking_policys`、`the_first_read_refuses_by_project_language_and_scene_...`、`another_workspace_path_is_workspace_changed_...` |
+| TS：登録を外す／caller timeout 10 s／Main の gate を呼ばない／restricted の拒否を外す／query の上限 5000 | `tauri.electron.test.ts`、`chatAgentIr.test.ts`、`d2aRouteClasses.test.ts`、`ipcContract.test.ts` |
+
+tail の close の遅れの観測値（S1A-13。参考）：試験の値（slice 100 ms・close flush 200 ms）で、shutdown の要求から participant の解放まで 2 s 未満。製品の値（250 ms・1 s）での測定は dev で。
