@@ -2339,13 +2339,16 @@ pub fn is_project_local_discovery_failure(error: &anyhow::Error) -> bool {
 
 /// Whether a failure of the Graph build judgement belongs to that one read
 /// alone, so that the cycle can go on without B for the project (GDV/1 case
-/// C-2, DR-PUBG-5-16). An allowlist of two: a SQL failure of the judgement's own
-/// reads (not a raw SQLite interruption, which is the progress hook stopping the
-/// work), and the no-wait maintenance connection being refused
+/// C-2, DR-PUBG-5-16). Local are: a SQL failure of the judgement's own reads
+/// (any `rusqlite::Error` except SQLITE_BUSY, SQLITE_LOCKED and a raw SQLite
+/// interruption), and the no-wait maintenance connection being refused
 /// (`NEX_MAINTENANCE_CONNECTION_PREEMPTED`, which the judgement raises as a
-/// plain error). A typed validation termination of any reason, the attempt's
-/// own cancellation, a lifecycle stop and a connection cleanup failure are never
-/// local: they end the cycle and propagate.
+/// plain, untyped error). A retryable busy or lock stays an `Err`, as in
+/// DR-PUBG-5-15 (it is a contention the cycle's caller retries, not a fact of
+/// this read). A typed validation termination of any reason (a typed
+/// foreground-preempted included), the attempt's own cancellation, a lifecycle
+/// stop and a connection cleanup failure are never local: they end the cycle
+/// and propagate.
 pub(crate) fn is_graph_judgement_local_failure(error: &anyhow::Error) -> bool {
     if is_validation_terminated(error)
         || is_maintenance_connection_cleanup_failure(error)
@@ -2357,23 +2360,44 @@ pub(crate) fn is_graph_judgement_local_failure(error: &anyhow::Error) -> bool {
     }
     // A raw SQLite interruption is the progress hook stopping the work (the
     // connection scope turns it into a typed termination only when its latch
-    // names a reason): it is a stop, not a failure of this read.
-    let interrupted = error.chain().any(|cause| {
-        cause.downcast_ref::<rusqlite::Error>().is_some_and(|sqlite| {
-            matches!(
-                sqlite,
-                rusqlite::Error::SqliteFailure(code, _)
-                    if code.code == rusqlite::ErrorCode::OperationInterrupted
-            )
-        })
+    // names a reason): it is a stop, not a failure of this read. BUSY and
+    // LOCKED are retryable contention and propagate like in DR-PUBG-5-15.
+    let propagates = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|sqlite| {
+                matches!(
+                    sqlite,
+                    rusqlite::Error::SqliteFailure(code, _)
+                        if matches!(
+                            code.code,
+                            rusqlite::ErrorCode::OperationInterrupted
+                                | rusqlite::ErrorCode::DatabaseBusy
+                                | rusqlite::ErrorCode::DatabaseLocked
+                        )
+                )
+            })
     });
-    if interrupted {
+    if propagates {
         return false;
     }
     error_chain_contains(error, MAINTENANCE_CONNECTION_PREEMPTED_CODE)
         || error
             .chain()
             .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some())
+}
+
+/// The SQLite error code of a judgement failure that is a SQL failure (the
+/// first `rusqlite::Error` in the chain), for the warn log. Code only: the
+/// message may carry a path or a statement.
+fn graph_judgement_sql_failure_code(error: &anyhow::Error) -> Option<rusqlite::ErrorCode> {
+    error
+        .chain()
+        .find_map(|cause| match cause.downcast_ref::<rusqlite::Error>() {
+            Some(rusqlite::Error::SqliteFailure(code, _)) => Some(code.code),
+            Some(_) => Some(rusqlite::ErrorCode::Unknown),
+            None => None,
+        })
 }
 
 /// Main's (uncontrolled) discovery for one project.
@@ -3209,12 +3233,18 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime_and_product(
                 Ok(plan) => plan,
                 // The judgement is an optimisation in front of the durable
                 // chain, not a step the chain needs: when it fails for a reason
-                // that belongs to this read alone (a SQL failure, or the
-                // no-wait connection being refused), the project keeps its
-                // Verify, no Graph build is added, and the Graph (not usable
-                // until B rebuilds it) stays as it was. Anything that ends the
-                // cycle itself (cancel, timeout, close, lifecycle stop,
-                // foreground preemption, cleanup failure) propagates unchanged.
+                // that belongs to this read alone (a SQL failure other than
+                // busy/locked/interrupted, or the no-wait connection being
+                // refused), the project keeps its Verify and no Graph build is
+                // put in front of it. The later rediscovery after the Verify
+                // (`discover_cycle_work`, unchanged) judges again: if that
+                // succeeds, B stands up behind the Verify in the same cycle; if
+                // it fails, that Err propagates as it always did. What ends the
+                // cycle itself propagates unchanged: cancel, timeout, close,
+                // lifecycle stop, a typed foreground-preempted termination and a
+                // cleanup failure. The plain NEX_MAINTENANCE_CONNECTION_PREEMPTED
+                // (the connection could not be taken) is swallowed here and the
+                // dispatch side yields.
                 Err(error) if is_graph_judgement_local_failure(&error) => {
                     if let Some(control) = control {
                         // A stop that arrived meanwhile still wins.
@@ -3227,11 +3257,18 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime_and_product(
                             return Err(error);
                         }
                     }
-                    tracing::debug!(
-                        target: "narrative.nir1_graph_index_build",
-                        project_id = %item.project_id,
-                        "NIR1_GRAPH_INDEX_BUILD_JUDGEMENT_FAILED_LOCAL"
-                    );
+                    if let Some(code) = graph_judgement_sql_failure_code(&error) {
+                        tracing::warn!(
+                            target: "narrative.nir1_graph_index_build",
+                            sqlite_code = ?code,
+                            "NIR1_GRAPH_INDEX_BUILD_JUDGEMENT_FAILED_LOCAL"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "narrative.nir1_graph_index_build",
+                            "NIR1_GRAPH_INDEX_BUILD_JUDGEMENT_FAILED_LOCAL"
+                        );
+                    }
                     continue;
                 }
                 Err(error) => return Err(error),

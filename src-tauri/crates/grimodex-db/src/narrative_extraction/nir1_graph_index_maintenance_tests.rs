@@ -272,6 +272,9 @@ impl GraphWorkControl for RegistrationOwner {
 #[derive(Default)]
 struct Recorder {
     stop: Arc<AtomicBool>,
+    /// The cycle's `should_stop` ignores `stop` (only the `stop_signal` the
+    /// control carries is raised), to reach the branch that reads the signal.
+    should_stop_ignores_stop: AtomicBool,
     granted: Arc<AtomicBool>,
     lifecycle_stop: Arc<AtomicBool>,
     cancel_graph_before_grant: AtomicBool,
@@ -315,7 +318,9 @@ fn with_control<T>(
                 "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution"
             );
         }
-        if recorder.stop.load(Ordering::SeqCst) {
+        if recorder.stop.load(Ordering::SeqCst)
+            && !recorder.should_stop_ignores_stop.load(Ordering::SeqCst)
+        {
             bail!(
                 "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary"
             );

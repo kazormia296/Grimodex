@@ -320,13 +320,21 @@ fn case_c2_never_judges_the_before_cutover_flow() -> Result<()> {
         )?;
         Ok(started_kinds(&recorder))
     };
-    let strs = |kinds: &[&str]| kinds.iter().map(|kind| kind.to_string()).collect::<Vec<_>>();
+    let strs = |kinds: &[&str]| {
+        kinds
+            .iter()
+            .map(|kind| kind.to_string())
+            .collect::<Vec<_>>()
+    };
 
     // Positive control: a plain Verify is judged first.
     let positive = observe(AutomaticRunKind::Verify, &["workspace-opened"])?;
     assert_eq!(positive.first().map(String::as_str), Some("graph-build"));
     // before-cutover anywhere in the reasons: not judged in front of the work.
-    for reasons in [&["workspace-opened", "before-cutover"][..], &["before-cutover"][..]] {
+    for reasons in [
+        &["workspace-opened", "before-cutover"][..],
+        &["before-cutover"][..],
+    ] {
         assert_eq!(
             observe(AutomaticRunKind::Verify, reasons)?,
             strs(&["verify", "rebuild", "verify"]),
@@ -454,19 +462,50 @@ fn classification_table_matches_reader_and_b_hint() -> Result<()> {
     let _serial = serial();
     const BUILD_DIRTY: &str = "Build { mode: Rebuild, reason: BindingDirty }";
     const BUILD_NOT_CURRENT: &str = "Build { mode: Rebuild, reason: NotCurrent }";
-    const BUILD_VALIDATE: &str = "Build { mode: ValidateThenRebuild, reason: ColdReopenValidation }";
+    const BUILD_VALIDATE: &str =
+        "Build { mode: ValidateThenRebuild, reason: ColdReopenValidation }";
     const SKIP_CURRENT: &str = "Skip { reason: BindingCurrent }";
     const SKIP_INCOHERENT: &str = "Skip { reason: BindingIncoherent }";
     const SKIP_NO_EPOCH: &str = "Skip { reason: NoEpoch }";
     // (name prefix, reader, class, is_complete_registered, B's hint)
     let expected: [(&str, &str, &str, bool, &str); 21] = [
         ("00", "Registered", "Current", true, SKIP_CURRENT),
-        ("01", "Registered{dirty}", "RecognizedNotCurrent", false, BUILD_DIRTY),
-        ("02", "Registered", "RecognizedNotCurrent", false, BUILD_NOT_CURRENT),
-        ("03", "Registered", "RecognizedNotCurrent", false, BUILD_NOT_CURRENT),
-        ("04", "Registered", "RecognizedNotCurrent", false, BUILD_NOT_CURRENT),
+        (
+            "01",
+            "Registered{dirty}",
+            "RecognizedNotCurrent",
+            false,
+            BUILD_DIRTY,
+        ),
+        (
+            "02",
+            "Registered",
+            "RecognizedNotCurrent",
+            false,
+            BUILD_NOT_CURRENT,
+        ),
+        (
+            "03",
+            "Registered",
+            "RecognizedNotCurrent",
+            false,
+            BUILD_NOT_CURRENT,
+        ),
+        (
+            "04",
+            "Registered",
+            "RecognizedNotCurrent",
+            false,
+            BUILD_NOT_CURRENT,
+        ),
         ("05 ", "Registered", "NoCurrentEpoch", false, SKIP_NO_EPOCH),
-        ("05b", "Registered{dirty}", "NoCurrentEpoch", false, SKIP_NO_EPOCH),
+        (
+            "05b",
+            "Registered{dirty}",
+            "NoCurrentEpoch",
+            false,
+            SKIP_NO_EPOCH,
+        ),
         ("06", "Reserved", "Incoherent", false, SKIP_INCOHERENT),
         ("07", "Reserved", "Incoherent", false, BUILD_DIRTY),
         ("08", "Reserved", "Incoherent", false, BUILD_VALIDATE),
@@ -496,7 +535,11 @@ fn classification_table_matches_reader_and_b_hint() -> Result<()> {
         assert_eq!(row.complete, Some(*complete), "{name}");
         assert_eq!(row.hint, *hint, "{name}");
         // The invariants the table encodes.
-        assert_eq!(row.class == "Incoherent", row.reader == "Reserved", "{name}");
+        assert_eq!(
+            row.class == "Incoherent",
+            row.reader == "Reserved",
+            "{name}"
+        );
         if row.class == "RecognizedNotCurrent" {
             assert_eq!(row.complete, Some(false), "{name}");
             assert!(row.hint.starts_with("Build"), "{name}: {}", row.hint);
@@ -539,7 +582,10 @@ fn motive_form_does_not_stall_with_and_without_the_cutover_marker() -> Result<()
         // (2) the new Verify is completed and clean; the Graph is excluded.
         let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
         let report = &outcome["report"];
-        assert!(excluded_graph_edge_count(report).is_some_and(|count| count > 0), "{tag}: {report}");
+        assert!(
+            excluded_graph_edge_count(report).is_some_and(|count| count > 0),
+            "{tag}: {report}"
+        );
         assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
         assert_eq!(report["edgeIdsWithMissingSource"], json!([]));
         let parsed: rr::DependencyGraphVerifyReport = serde_json::from_value(report.clone())?;
@@ -553,13 +599,20 @@ fn motive_form_does_not_stall_with_and_without_the_cutover_marker() -> Result<()
         // unchanged inputs and no wake adds a Run, a Finding or fails.
         let seam = graph_seam();
         for discovery in product_wakes(&fixture, Some(&seam), 6)? {
-            assert!(matches!(discovery, D::GraphIndexBuildWake), "{tag}: {discovery:?}");
+            assert!(
+                matches!(discovery, D::GraphIndexBuildWake),
+                "{tag}: {discovery:?}"
+            );
         }
         assert_eq!(run_ledger(fixture.db())?, runs_idle, "{tag}");
         assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
         // The binding is not removed: it stays dirty and unavailable to the reader.
         assert!(is_dirty_registered(&fixture)?, "{tag}");
-        assert_eq!(fixture.record(), refused_capacity("candidate-rows"), "{tag}");
+        assert_eq!(
+            fixture.record(),
+            refused_capacity("candidate-rows"),
+            "{tag}"
+        );
     }
     Ok(())
 }
@@ -607,10 +660,16 @@ fn deadline_refusal_with_a_dirty_binding_does_not_stall() -> Result<()> {
             require_rebuild(&fixture)?;
         }
         let discoveries = product_wakes(&fixture, None, 8)?;
-        assert!(discoveries.iter().any(|d| matches!(d, D::Idle)), "{discoveries:?}");
+        assert!(
+            discoveries.iter().any(|d| matches!(d, D::Idle)),
+            "{discoveries:?}"
+        );
         let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
         assert!(excluded_graph_edge_count(&outcome["report"]).is_some());
-        assert!(finding_keys(fixture.db())?.is_empty(), "no semantic-graph-requires-repair");
+        assert!(
+            finding_keys(fixture.db())?.is_empty(),
+            "no semantic-graph-requires-repair"
+        );
         let runs = run_ledger(fixture.db())?;
         assert_eq!(
             runs.iter()
@@ -634,11 +693,21 @@ fn closed_gate_database_keeps_the_exclusion_and_the_reader_unavailable() -> Resu
     fixture.mark_dirty()?;
     let record_before = fixture.record();
     let discoveries = product_wakes(&fixture, None, 6)?;
-    assert!(discoveries.iter().any(|d| matches!(d, D::Idle)), "{discoveries:?}");
+    assert!(
+        discoveries.iter().any(|d| matches!(d, D::Idle)),
+        "{discoveries:?}"
+    );
     let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
     assert!(excluded_graph_edge_count(&outcome["report"]).is_some_and(|count| count > 0));
-    assert_eq!(fixture.record(), record_before, "the closed gate never runs B");
-    assert!(is_dirty_registered(&fixture)?, "the exclusion lasts while B does not run");
+    assert_eq!(
+        fixture.record(),
+        record_before,
+        "the closed gate never runs B"
+    );
+    assert!(
+        is_dirty_registered(&fixture)?,
+        "the exclusion lasts while B does not run"
+    );
     assert!(
         reader_query(&fixture)?.is_none(),
         "the reader does not register a dirty Graph: it is unavailable"
@@ -658,11 +727,16 @@ fn no_current_epoch_is_left_as_is_until_a_backfill_run_creates_one() -> Result<(
     for dirty in [false, true] {
         let fixture = Fixture::published()?;
         let meta = format!("project_id='{PROJECT}' AND index_key='{INDEX_KEY}'");
-        execute(&fixture, "PRAGMA foreign_keys=OFF; DELETE FROM narrative_semantic_epochs")?;
+        execute(
+            &fixture,
+            "PRAGMA foreign_keys=OFF; DELETE FROM narrative_semantic_epochs",
+        )?;
         if dirty {
             execute(
                 &fixture,
-                &format!("UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1 WHERE {meta}"),
+                &format!(
+                    "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1 WHERE {meta}"
+                ),
             )?;
         }
         assert_eq!(classify(&fixture)?, C::NoCurrentEpoch, "dirty={dirty}");
@@ -687,8 +761,15 @@ fn no_current_epoch_is_left_as_is_until_a_backfill_run_creates_one() -> Result<(
         let dirty_after = sealed(fixture.db())?.map(|identity| identity.1);
         // Creating the epoch dirties the binding (observed, both starting values).
         assert_eq!(dirty_after, Some(1), "dirty={dirty}");
-        assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent, "dirty={dirty}");
-        assert!(matches!(fixture.judge()?, Nir1GraphIndexBuildDecision::Build { .. }));
+        assert_eq!(
+            classify(&fixture)?,
+            C::RecognizedNotCurrent,
+            "dirty={dirty}"
+        );
+        assert!(matches!(
+            fixture.judge()?,
+            Nir1GraphIndexBuildDecision::Build { .. }
+        ));
         assert!(!complete_registered(fixture.db())?);
     }
     Ok(())
@@ -707,7 +788,8 @@ fn no_current_epoch_is_left_as_is_until_a_backfill_run_creates_one() -> Result<(
 fn digest_reads_no_eligibility_for_a_not_current_graph() -> Result<()> {
     let _serial = serial();
     let fixture = Fixture::published()?;
-    let current = digest(&fixture).expect_err("a current binding's uncontrolled digest is unchanged");
+    let current =
+        digest(&fixture).expect_err("a current binding's uncontrolled digest is unchanged");
     assert!(is_context_unavailable_termination(&current), "{current:#}");
 
     fixture.mark_dirty()?;
@@ -760,7 +842,11 @@ fn digest_of_a_binding_differs_once_it_is_not_current() -> Result<()> {
     };
     let fixture = Fixture::published()?;
     let current = foreground_digest(&fixture)?;
-    assert_eq!(current, foreground_digest(&fixture)?, "the digest is deterministic");
+    assert_eq!(
+        current,
+        foreground_digest(&fixture)?,
+        "the digest is deterministic"
+    );
     // Only Freshness changes (the dependency digest and every Edge row stay).
     execute(
         &fixture,
@@ -829,14 +915,20 @@ fn after_a_republish_verify_checks_the_graph_edges_in_full() -> Result<()> {
         Ok(serde_json::to_value(report)?)
     };
     let report = verify_report(&fixture)?;
-    assert!(report.get("consumersExcludedNotCurrent").is_none(), "{report}");
+    assert!(
+        report.get("consumersExcludedNotCurrent").is_none(),
+        "{report}"
+    );
     assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
     assert_eq!(report["edgeIdsWithoutCurrentEpochState"], json!([]));
     // With one Graph Edge's Edge State gone (a damage the classification keeps
     // as current), the Graph's Edges are inside the checks: it is reported.
     execute(&fixture, &damage)?;
     let report = verify_report(&fixture)?;
-    assert!(report.get("consumersExcludedNotCurrent").is_none(), "{report}");
+    assert!(
+        report.get("consumersExcludedNotCurrent").is_none(),
+        "{report}"
+    );
     assert!(
         report["edgeIdsWithUnresolvableConsumerScope"]
             .as_array()
@@ -850,7 +942,11 @@ fn after_a_republish_verify_checks_the_graph_edges_in_full() -> Result<()> {
 // GDV-R9 (x): the downstream gates stay closed (T-7, section 3.2 invariant)
 // ---------------------------------------------------------------------------
 
-fn seal_message(fixture: &Fixture, run_id: &str, epoch: &str) -> Result<std::result::Result<usize, String>> {
+fn seal_message(
+    fixture: &Fixture,
+    run_id: &str,
+    epoch: &str,
+) -> Result<std::result::Result<usize, String>> {
     Ok(fixture
         .db()
         .with_conn_mut(|conn| {
@@ -874,7 +970,10 @@ fn motive_with_excluding_verify() -> Result<(Fixture, String, String, serde_json
     let fixture = motive(true)?;
     product_wakes(&fixture, None, 3)?;
     let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
-    assert!(excluded_graph_edge_count(&outcome["report"]).is_some(), "{outcome}");
+    assert!(
+        excluded_graph_edge_count(&outcome["report"]).is_some(),
+        "{outcome}"
+    );
     Ok((fixture, run_id, epoch, outcome))
 }
 
@@ -890,7 +989,8 @@ fn an_excluding_report_cannot_seal_a_repair_or_pass_the_c2z_verify_gate() -> Res
     let (fixture, run_id, epoch, outcome) = motive_with_excluding_verify()?;
 
     // The four outcome validators accept the new field.
-    let report: rr::DependencyGraphVerifyReport = serde_json::from_value(outcome["report"].clone())?;
+    let report: rr::DependencyGraphVerifyReport =
+        serde_json::from_value(outcome["report"].clone())?;
     rr::validate_canonical_verify_outcome_digest(&outcome)?;
     rr::validate_verify_check_coverage(&outcome)?;
     fixture.db().with_conn(|conn| {
@@ -926,7 +1026,10 @@ fn an_excluding_report_cannot_seal_a_repair_or_pass_the_c2z_verify_gate() -> Res
     use crate::narrative_extraction::ReadinessState;
     let readiness = project_readiness(&fixture)?;
     assert_eq!(readiness.verify.state, ReadinessState::Blocked);
-    assert_eq!(readiness.verify.reasons, vec!["verify-graph-recognized-unavailable".to_string()]);
+    assert_eq!(
+        readiness.verify.reasons,
+        vec!["verify-graph-recognized-unavailable".to_string()]
+    );
     assert!(readiness.verify.report_clean);
     assert!(!readiness.ready);
     let workspace = fixture
@@ -948,16 +1051,24 @@ fn an_excluding_report_cannot_seal_a_repair_or_pass_the_c2z_verify_gate() -> Res
             )
             .map_err(|error| error.to_string()))
     })?;
-    assert!(duplicate.is_err(), "duplicate Graph Edges are refused by the database");
+    assert!(
+        duplicate.is_err(),
+        "duplicate Graph Edges are refused by the database"
+    );
 
     // Control: no binding, the field is empty and not serialized; the seal and
     // the gate behave as before GDV/1.
     let fixture = Fixture::new()?;
     drain_durable_chain(&fixture)?;
     let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
-    assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
+    assert!(outcome["report"]
+        .get("consumersExcludedNotCurrent")
+        .is_none());
     assert!(seal_message(&fixture, &run_id, &epoch)?.is_ok());
-    assert_eq!(project_readiness(&fixture)?.verify.state, ReadinessState::Passed);
+    assert_eq!(
+        project_readiness(&fixture)?.verify.state,
+        ReadinessState::Passed
+    );
     Ok(())
 }
 
@@ -979,7 +1090,9 @@ fn a_report_sealed_before_the_graph_became_not_current_is_stopped_by_the_digest(
         &recorder,
     )?;
     let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
-    assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
+    assert!(outcome["report"]
+        .get("consumersExcludedNotCurrent")
+        .is_none());
     fixture.mark_dirty()?;
     assert_eq!(classify(&fixture)?, C::RecognizedNotCurrent);
     let seal = seal_message(&fixture, &run_id, &epoch)?;
@@ -1005,8 +1118,13 @@ fn a_report_sealed_before_the_graph_became_not_current_is_stopped_by_the_digest(
     let fixture = Fixture::new()?;
     drain_durable_chain(&fixture)?;
     let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
-    assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
-    assert!(seal_message(&fixture, &run_id, &epoch)?.is_ok(), "before the Graph exists");
+    assert!(outcome["report"]
+        .get("consumersExcludedNotCurrent")
+        .is_none());
+    assert!(
+        seal_message(&fixture, &run_id, &epoch)?.is_ok(),
+        "before the Graph exists"
+    );
     let recorder = Recorder::default();
     run_cycle(&fixture, Some(&graph_seam()), &recorder)?;
     assert_eq!(generation(fixture.db())?, Some(1));
@@ -1040,9 +1158,11 @@ static CUTOVER_GENERATION: AtomicUsize = AtomicUsize::new(5_000);
 /// cutover attempt. `Ok` is a written marker; `Err` carries the message.
 fn cutover_attempt(fixture: &Fixture) -> Result<std::result::Result<(), String>> {
     use crate::narrative_extraction as ne;
-    let (_outcome, cycle) = ne::run_incremental_freshness_cycle_with_liveness_capability(fixture.db())?;
+    let (_outcome, cycle) =
+        ne::run_incremental_freshness_cycle_with_liveness_capability(fixture.db())?;
     let generation = CUTOVER_GENERATION.fetch_add(1, Ordering::SeqCst) as u64;
-    let evidence = ne::record_live_scheduler_heartbeat(fixture.db(), "gdv1-acceptance", generation, cycle)?;
+    let evidence =
+        ne::record_live_scheduler_heartbeat(fixture.db(), "gdv1-acceptance", generation, cycle)?;
     Ok(fixture
         .db()
         .with_conn_mut(|conn| ne::cut_over_workspace_freshness(conn, &evidence))
@@ -1066,11 +1186,12 @@ fn before_cutover_wake_with(
 ) -> Result<(Option<DesiredWork>, Option<MaintenanceCycleResult>)> {
     let coordinates =
         crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(seam)?;
-    let planned = crate::narrative_extraction::discover_before_cutover_maintenance_work_with_coordinates(
-        fixture.db(),
-        PROJECT,
-        Some(&coordinates),
-    )?;
+    let planned =
+        crate::narrative_extraction::discover_before_cutover_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            Some(&coordinates),
+        )?;
     let Some(work) = planned.clone() else {
         return Ok((None, None));
     };
@@ -1087,7 +1208,13 @@ fn before_cutover_wake_with(
         delivery_fingerprint: None,
         workspace_binding: None,
     };
-    let result = run_cycle_on(fixture.db(), Some(fixture.runtime()), &request, seam, recorder)?;
+    let result = run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &request,
+        seam,
+        recorder,
+    )?;
     Ok((planned, Some(result)))
 }
 
@@ -1147,7 +1274,10 @@ fn a_marker_less_workspace_with_a_not_current_graph_idles_and_does_not_cut_over(
                 && message.contains("NEX_VERIFY_GRAPH_STATE_CHANGED")),
         "{rounds:?}"
     );
-    assert!(rounds[0].runs_added == 3 && rounds[0].before_cutover_found_work, "{rounds:?}");
+    assert!(
+        rounds[0].runs_added == 3 && rounds[0].before_cutover_found_work,
+        "{rounds:?}"
+    );
     for round in &rounds[1..] {
         assert!(
             matches!(&round.attempt, Err(message)
@@ -1164,10 +1294,19 @@ fn a_marker_less_workspace_with_a_not_current_graph_idles_and_does_not_cut_over(
     // The Verify gate is the only blocked gate.
     let readiness = project_readiness(&fixture)?;
     assert_eq!(readiness.verify.state, ReadinessState::Blocked);
-    assert_eq!(readiness.verify.reasons, vec!["verify-graph-recognized-unavailable".to_string()]);
-    assert_eq!(readiness.derived_state_rebuild.state, ReadinessState::Passed);
+    assert_eq!(
+        readiness.verify.reasons,
+        vec!["verify-graph-recognized-unavailable".to_string()]
+    );
+    assert_eq!(
+        readiness.derived_state_rebuild.state,
+        ReadinessState::Passed
+    );
     assert_eq!(readiness.parity.state, ReadinessState::Passed);
-    assert_eq!(readiness.no_active_backfill_or_repair.state, ReadinessState::Passed);
+    assert_eq!(
+        readiness.no_active_backfill_or_repair.state,
+        ReadinessState::Passed
+    );
     assert_eq!(readiness.phase_lifecycle.state, ReadinessState::Passed);
     // The skip evidence, discovery and cycle are open: an uncontrolled skip
     // evaluation of the same Verify is a Skip, so the readiness (x) is the
@@ -1177,7 +1316,8 @@ fn a_marker_less_workspace_with_a_not_current_graph_idles_and_does_not_cut_over(
     use crate::narrative_extraction::maintenance_skip_evidence::{
         evaluate_completed_run_skip, CompletedRunSkipExpectation,
     };
-    let coordinates = crate::narrative_extraction::maintenance_contracts::current_maintenance_coordinates()?;
+    let coordinates =
+        crate::narrative_extraction::maintenance_contracts::current_maintenance_coordinates()?;
     let expectation = CompletedRunSkipExpectation {
         project_id: PROJECT.into(),
         run_kind: "dependency-verify".into(),
@@ -1199,13 +1339,19 @@ fn a_marker_less_workspace_with_a_not_current_graph_idles_and_does_not_cut_over(
     // returns early without reading readiness.
     let done = motive(true)?;
     let rounds = cutover_rounds(&done, 3)?;
-    assert!(matches!(rounds.first().map(|round| &round.attempt), Some(Ok(()))), "{rounds:?}");
+    assert!(
+        matches!(rounds.first().map(|round| &round.attempt), Some(Ok(()))),
+        "{rounds:?}"
+    );
 
     // Control: no binding, no marker: the cutover is written.
     let control = Fixture::new_with_marker(false)?;
     drain_durable_chain(&control)?;
     let rounds = cutover_rounds(&control, 8)?;
-    assert!(rounds.last().is_some_and(|round| round.attempt.is_ok()), "{rounds:?}");
+    assert!(
+        rounds.last().is_some_and(|round| round.attempt.is_ok()),
+        "{rounds:?}"
+    );
     assert!(control.marker()?.is_some());
     Ok(())
 }
@@ -1270,7 +1416,10 @@ fn foreground_verify_completion_seals_for_a_not_current_graph_only() -> Result<(
     fixture.mark_dirty()?;
     let stored = foreground_verify_completion(&fixture)?;
     let stored = stored.map_err(|message| anyhow!("not-current: {message}"))?;
-    assert!(excluded_graph_edge_count(&stored["report"]).is_some(), "{stored}");
+    assert!(
+        excluded_graph_edge_count(&stored["report"]).is_some(),
+        "{stored}"
+    );
     assert!(
         stored.get("skipEvidence").is_some(),
         "the clean excluding outcome sealed its skip evidence: {stored}"
@@ -1306,7 +1455,10 @@ fn rebuild_derived_completes_when_another_consumer_needs_a_rebuild() -> Result<(
     let fixture = motive(true)?;
     require_rebuild(&fixture)?;
     let discoveries = product_wakes(&fixture, None, 10)?;
-    assert!(discoveries.iter().any(|d| matches!(d, D::Idle)), "{discoveries:?}");
+    assert!(
+        discoveries.iter().any(|d| matches!(d, D::Idle)),
+        "{discoveries:?}"
+    );
     assert!(rebuild_completed(&fixture)?);
     assert!(finding_keys(fixture.db())?.is_empty());
     Ok(())
@@ -1355,7 +1507,11 @@ fn epoch_rotation_does_not_stall_for_a_not_current_graph() -> Result<()> {
                 serde_json::from_value(outcome["report"].clone())?;
             assert!(parsed.is_clean(), "{tag}: {}", outcome["report"]);
             assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
-            assert!(run_ledger(fixture.db())?.len() <= 12, "{tag}: {:?}", run_ledger(fixture.db())?);
+            assert!(
+                run_ledger(fixture.db())?.len() <= 12,
+                "{tag}: {:?}",
+                run_ledger(fixture.db())?
+            );
         }
     }
     Ok(())
@@ -1390,7 +1546,11 @@ fn before_cutover_rebuild_forms_complete_for_a_not_current_graph() -> Result<()>
         }
         assert_eq!(
             first_cycle,
-            Some(vec!["verify".to_string(), "rebuild".to_string(), "verify".to_string()]),
+            Some(vec![
+                "verify".to_string(),
+                "rebuild".to_string(),
+                "verify".to_string()
+            ]),
             "{tag}"
         );
         assert!(rebuild_completed(&fixture)?, "{tag}");
@@ -1413,8 +1573,15 @@ fn before_cutover_rebuild_forms_complete_for_a_not_current_graph() -> Result<()>
                 .map_err(|error| anyhow!("{tag} form 2 wake#{index}: {error:#}"))?;
             work_kinds.push(work.map(|work| work.run_kind));
         }
-        assert_eq!(work_kinds[0], Some(AutomaticRunKind::RebuildDerived), "{tag}: {work_kinds:?}");
-        assert!(work_kinds[1..].iter().all(Option::is_none), "{tag}: {work_kinds:?}");
+        assert_eq!(
+            work_kinds[0],
+            Some(AutomaticRunKind::RebuildDerived),
+            "{tag}: {work_kinds:?}"
+        );
+        assert!(
+            work_kinds[1..].iter().all(Option::is_none),
+            "{tag}: {work_kinds:?}"
+        );
         assert_eq!(run_ledger(fixture.db())?.len(), runs_before + 2, "{tag}");
         assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
     }
@@ -1437,7 +1604,11 @@ fn main_rebuild_with_the_seam_completes_and_republishes_the_graph_once() -> Resu
     run_cycle_on(
         fixture.db(),
         Some(fixture.runtime()),
-        &work_request(&fixture, AutomaticRunKind::RebuildDerived, &["workspace-opened"])?,
+        &work_request(
+            &fixture,
+            AutomaticRunKind::RebuildDerived,
+            &["workspace-opened"],
+        )?,
         Some(&seam),
         &recorder,
     )?;
@@ -1470,10 +1641,17 @@ fn v2_shadow_summary_skips_only_the_not_current_graph_head() -> Result<()> {
             }
             let mut never = NeverStopGraphWorkControl;
             let mut foreground_control = ForegroundValidationControl;
-            let control: &mut dyn GraphWorkControl =
-                if foreground { &mut foreground_control } else { &mut never };
-            let summary =
-                rr::verify_v2_shadow_for_rebuild_in_tx_with_control(&mut tx, PROJECT, "gdv1-acceptance", control);
+            let control: &mut dyn GraphWorkControl = if foreground {
+                &mut foreground_control
+            } else {
+                &mut never
+            };
+            let summary = rr::verify_v2_shadow_for_rebuild_in_tx_with_control(
+                &mut tx,
+                PROJECT,
+                "gdv1-acceptance",
+                control,
+            );
             tx.rollback()?;
             summary
         })
@@ -1485,7 +1663,9 @@ fn v2_shadow_summary_skips_only_the_not_current_graph_head() -> Result<()> {
     let skipped = summarize(&fixture, false, false)?;
     let without_head = summarize(&fixture, true, false)?;
     let mut stripped = skipped.clone();
-    stripped.diagnostics.retain(|line| !line.starts_with(SKIP_CODE));
+    stripped
+        .diagnostics
+        .retain(|line| !line.starts_with(SKIP_CODE));
     assert_eq!(
         skipped.diagnostics.len(),
         stripped.diagnostics.len() + 1,
@@ -1501,8 +1681,14 @@ fn v2_shadow_summary_skips_only_the_not_current_graph_head() -> Result<()> {
     let fixture = Fixture::published()?;
     let current = summarize(&fixture, false, true)?;
     let current_without_head = summarize(&fixture, true, true)?;
-    assert!(!current.diagnostics.iter().any(|line| line.starts_with(SKIP_CODE)));
-    assert_eq!(current.active_head_count, current_without_head.active_head_count + 1);
+    assert!(!current
+        .diagnostics
+        .iter()
+        .any(|line| line.starts_with(SKIP_CODE)));
+    assert_eq!(
+        current.active_head_count,
+        current_without_head.active_head_count + 1
+    );
     assert!(current.evaluated_declaration_count > current_without_head.evaluated_declaration_count);
     Ok(())
 }
@@ -1674,7 +1860,10 @@ fn incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility() -
     );
     assert!(!affected.contains(&"semantic-index"), "{affected:?}");
     assert_eq!(graph_surfaces(&fixture)?, graph_before);
-    assert!(is_dirty_registered(&fixture)?, "the binding is still the dirty one");
+    assert!(
+        is_dirty_registered(&fixture)?,
+        "the binding is still the dirty one"
+    );
     // No maintenance-failure Finding (a stalled Verify or Rebuild).
     assert!(
         finding_keys(fixture.db())?
@@ -1734,11 +1923,20 @@ fn a_semantic_graph_requires_repair_finding_is_resolved_by_the_next_clean_verify
     })?;
     product_wakes(&fixture, None, 4)?;
     let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
-    assert!(excluded_graph_edge_count(&outcome["report"]).is_some(), "{outcome}");
+    assert!(
+        excluded_graph_edge_count(&outcome["report"]).is_some(),
+        "{outcome}"
+    );
     let defective: rr::DependencyGraphVerifyReport =
         serde_json::from_value(outcome["report"].clone())?;
-    assert!(!defective.is_clean(), "the unrelated defect keeps the report non-clean");
-    assert!(!defective.requires_rebuild(), "and it is not one a Rebuild can fix");
+    assert!(
+        !defective.is_clean(),
+        "the unrelated defect keeps the report non-clean"
+    );
+    assert!(
+        !defective.requires_rebuild(),
+        "and it is not one a Rebuild can fix"
+    );
     let states = |fixture: &Fixture| -> Result<Vec<String>> {
         fixture.db().with_conn(|conn| {
             let mut statement = conn.prepare(
@@ -1753,7 +1951,11 @@ fn a_semantic_graph_requires_repair_finding_is_resolved_by_the_next_clean_verify
         })
     };
     let open = states(&fixture)?;
-    assert_eq!(open.len(), 1, "the discovery projects the Finding: {open:?}");
+    assert_eq!(
+        open.len(),
+        1,
+        "the discovery projects the Finding: {open:?}"
+    );
     assert_eq!(open[0], "new", "{open:?}");
 
     // The defect is fixed: the next Verify is clean (the Graph stays excluded)
@@ -1766,11 +1968,15 @@ fn a_semantic_graph_requires_repair_finding_is_resolved_by_the_next_clean_verify
     )?;
     product_wakes(&fixture, None, 4)?;
     let (_, _, outcome) = last_verify(&fixture)?.expect("completed Verify");
-    let parsed: rr::DependencyGraphVerifyReport = serde_json::from_value(outcome["report"].clone())?;
+    let parsed: rr::DependencyGraphVerifyReport =
+        serde_json::from_value(outcome["report"].clone())?;
     assert!(parsed.is_clean(), "{}", outcome["report"]);
     assert!(excluded_graph_edge_count(&outcome["report"]).is_some());
     // The lifecycle is an append-only log: the Finding went new -> resolved.
-    assert_eq!(states(&fixture)?, vec!["new".to_string(), "resolved".to_string()]);
+    assert_eq!(
+        states(&fixture)?,
+        vec!["new".to_string(), "resolved".to_string()]
+    );
     Ok(())
 }
 
@@ -1792,7 +1998,11 @@ fn before_cutover_rebuild_forms_are_unchanged_with_the_seam_open() -> Result<()>
         );
         assert_eq!(
             started_kinds(&recorder),
-            vec!["verify".to_string(), "rebuild".to_string(), "verify".to_string()],
+            vec![
+                "verify".to_string(),
+                "rebuild".to_string(),
+                "verify".to_string()
+            ],
             "{tag}"
         );
         for index in 0..3 {
@@ -1898,11 +2108,15 @@ fn current_but_false_forms_stay_manual() -> Result<()> {
         }
         // Verify keeps the Graph's Edges unresolvable and excludes nothing:
         // a manual defect, as before GDV/1.
-        let report = fixture
-            .db()
-            .with_conn_mut(|conn| rr::verify_narrative_dependency_graph_for_project(conn, PROJECT))?;
+        let report = fixture.db().with_conn_mut(|conn| {
+            rr::verify_narrative_dependency_graph_for_project(conn, PROJECT)
+        })?;
         assert!(report.consumers_excluded_not_current.is_empty(), "{name}");
-        assert_eq!(report.edge_ids_with_unresolvable_consumer_scope.len(), 4, "{name}");
+        assert_eq!(
+            report.edge_ids_with_unresolvable_consumer_scope.len(),
+            4,
+            "{name}"
+        );
         assert!(!report.is_clean(), "{name}");
         assert!(!report.requires_rebuild(), "{name}: not rebuildable");
         assert!(!report.is_incomplete_only(), "{name}: not transient");
@@ -1952,30 +2166,77 @@ use crate::narrative_extraction::source_revision::{
     validation_terminated, ValidationTerminationReason,
 };
 use rusqlite::Connection;
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
-/// A Verify item in front of a dirty Graph binding, with the B-ROUTE seam open,
-/// and `failure` raised inside the judgement's read transaction (once). Returns
-/// the cycle's result, what started, and how many times the judgement ran.
-fn cycle_with_a_failing_judgement(
-    failure: impl Fn(&Connection) -> anyhow::Error + 'static,
-) -> Result<(Result<MaintenanceCycleResult>, Vec<String>, usize)> {
+/// What a cycle with injected judgement failures did.
+struct JudgementRun {
+    result: Result<MaintenanceCycleResult>,
+    recorder: Arc<Recorder>,
+    /// For each judgement that ran, how many works had started by then (0 means
+    /// it ran in the cycle's front, before the first item).
+    started_at_judgement: Vec<usize>,
+}
+
+impl JudgementRun {
+    fn started(&self) -> Vec<String> {
+        started_kinds(&self.recorder)
+    }
+
+    fn completed(&self) -> usize {
+        self.recorder
+            .completed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
+    fn error_text(&self) -> String {
+        match &self.result {
+            Ok(result) => panic!("expected an Err, got {result:?}"),
+            Err(error) => format!("{error:#}"),
+        }
+    }
+}
+
+/// A cycle over `request(fixture)` in front of a dirty Graph binding, with the
+/// B-ROUTE seam open. `failure(n, conn, stop)` is asked at every judgement's
+/// read transaction (n is 1-based; `stop` is the recorder's stop flag) and may
+/// return the error to raise there.
+fn cycle_with_failing_judgements(
+    stop_signal_only: bool,
+    request: impl FnOnce(&Fixture) -> Result<MaintenanceCycleRequest>,
+    failure: impl Fn(usize, &Connection, &AtomicBool) -> Option<anyhow::Error> + 'static,
+) -> Result<JudgementRun> {
     let fixture = Fixture::published()?;
     fixture.mark_dirty()?;
-    let judged = Rc::new(Cell::new(0usize));
-    let counter = Rc::clone(&judged);
+    let recorder = Arc::new(Recorder::default());
+    recorder
+        .should_stop_ignores_stop
+        .store(stop_signal_only, Ordering::SeqCst);
+    let started_at = Rc::new(RefCell::new(Vec::<usize>::new()));
+    let hook_recorder = Arc::clone(&recorder);
+    let hook_started_at = Rc::clone(&started_at);
     let _hook = install_hook(move |stage, conn| {
         if stage == TestStage::BeforeJudgement {
-            counter.set(counter.get() + 1);
-            if counter.get() == 1 {
-                return Err(failure(conn.expect("inside the judgement's transaction")));
+            let started = hook_recorder
+                .started
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len();
+            hook_started_at.borrow_mut().push(started);
+            let n = hook_started_at.borrow().len();
+            if let Some(error) = failure(
+                n,
+                conn.expect("inside the judgement's transaction"),
+                &hook_recorder.stop,
+            ) {
+                return Err(error);
             }
         }
         Ok(())
     });
-    let recorder = Recorder::default();
-    let request = work_request(&fixture, AutomaticRunKind::Verify, &["workspace-opened"])?;
+    let request = request(&fixture)?;
     let result = run_cycle_on(
         fixture.db(),
         Some(fixture.runtime()),
@@ -1983,30 +2244,67 @@ fn cycle_with_a_failing_judgement(
         Some(&graph_seam()),
         &recorder,
     );
-    Ok((result, started_kinds(&recorder), judged.get()))
+    let started_at_judgement = started_at.borrow().clone();
+    Ok(JudgementRun {
+        result,
+        recorder,
+        started_at_judgement,
+    })
 }
 
-/// A judgement that fails for a reason of its own (a SQL failure, the no-wait
-/// connection refused) does not take the cycle with it: the project's Verify
-/// still runs (it excludes the not-current Graph), no Graph build is put in
-/// front of it, and the cycle is accepted. (The Graph is left as it was by this
-/// judgement; whether the cycle's last rediscovery builds it is not asserted.)
+fn verify_request(fixture: &Fixture) -> Result<MaintenanceCycleRequest> {
+    work_request(fixture, AutomaticRunKind::Verify, &["workspace-opened"])
+}
+
+fn sql_failure() -> anyhow::Error {
+    anyhow::Error::from(
+        Connection::open_in_memory()
+            .expect("an in-memory database")
+            .execute_batch("SELECT * FROM gdv1_no_such_table")
+            .expect_err("the table does not exist"),
+    )
+}
+
+fn sqlite_failure(code: i32, message: &str) -> anyhow::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), Some(message.to_string()))
+        .into()
+}
+
+/// A judgement that fails once for a reason of its own (a SQL failure, the
+/// no-wait connection refused) does not take the cycle with it: the project's
+/// Verify still runs (it excludes the not-current Graph), no Graph build is put
+/// in front of it, and the cycle is accepted. The Verify's own rediscovery then
+/// judges again (that one succeeds) and B is built behind the Verify in the same
+/// cycle, so the order is deterministic: `[verify, graph-build, verify]`.
 #[test]
 fn a_failed_graph_judgement_does_not_end_the_cycle() -> Result<()> {
     let _serial = serial();
-    type Failure = Box<dyn Fn(&Connection) -> anyhow::Error>;
+    type Failure = Box<dyn Fn() -> anyhow::Error>;
     let failures: Vec<(&str, Failure)> = vec![
         (
             "a SQL failure of the judgement's own read",
-            Box::new(|conn| {
-                conn.execute_batch("SELECT * FROM gdv1_no_such_table")
-                    .map_err(anyhow::Error::from)
-                    .expect_err("the table does not exist")
+            Box::new(sql_failure),
+        ),
+        (
+            "SQLITE_CORRUPT",
+            Box::new(|| {
+                sqlite_failure(
+                    rusqlite::ffi::SQLITE_CORRUPT,
+                    "database disk image is malformed",
+                )
             }),
         ),
         (
+            "SQLITE_IOERR",
+            Box::new(|| sqlite_failure(rusqlite::ffi::SQLITE_IOERR, "disk I/O error")),
+        ),
+        (
+            "SQLITE_FULL",
+            Box::new(|| sqlite_failure(rusqlite::ffi::SQLITE_FULL, "database or disk is full")),
+        ),
+        (
             "the no-wait maintenance connection refused",
-            Box::new(|_| {
+            Box::new(|| {
                 anyhow!(
                     "{}: Graph build judgement could not acquire the maintenance connection without waiting",
                     rr::MAINTENANCE_CONNECTION_PREEMPTED_CODE
@@ -2015,63 +2313,244 @@ fn a_failed_graph_judgement_does_not_end_the_cycle() -> Result<()> {
         ),
     ];
     for (name, failure) in failures {
-        let (result, started, judged) = cycle_with_a_failing_judgement(failure)?;
-        let result = result.unwrap_or_else(|error| panic!("{name}: the cycle failed: {error:#}"));
+        let run = cycle_with_failing_judgements(false, verify_request, move |n, _, _| {
+            (n == 1).then(&failure)
+        })?;
+        let result = run
+            .result
+            .as_ref()
+            .unwrap_or_else(|error| panic!("{name}: the cycle failed: {error:#}"));
         assert_eq!(result.status, MaintenanceCycleStatus::Accepted, "{name}");
-        // The failing C-2 judgement ran; the Verify ran first, so B was not put
-        // in front of it. (What runs after the Verify is not asserted here.)
-        assert!(judged >= 1, "{name}");
-        assert_eq!(started.first().map(String::as_str), Some("verify"), "{name}: {started:?}");
-        eprintln!("GDV1 C-2 failed judgement {name}: started {started:?}");
+        // The failing C-2 judgement ran before anything started; the later
+        // judgement (after the Verify) succeeded and stood B up behind it.
+        assert_eq!(run.started_at_judgement.first(), Some(&0), "{name}");
+        assert_eq!(
+            run.started(),
+            ["verify", "graph-build", "verify"],
+            "{name}: B is not put in front of the Verify, and follows it"
+        );
+        eprintln!(
+            "GDV1 C-2 failed judgement {name}: started {:?}",
+            run.started()
+        );
+    }
+    Ok(())
+}
+
+/// The judgement that keeps failing: C-2 swallows only the one in front of the
+/// Verify. The rediscovery after the Verify (`discover_cycle_work`) is the
+/// existing code and still propagates the same Err, so the cycle ends with that
+/// Err after the Verify ran once, and nothing after it runs. (The base build has
+/// the same `?` after a completed Verify; it differs only in that its main-
+/// supplied Verify never had a front judgement.)
+#[test]
+fn a_judgement_that_keeps_failing_ends_the_cycle_after_the_verify() -> Result<()> {
+    let _serial = serial();
+    let run = cycle_with_failing_judgements(false, verify_request, |_, _, _| Some(sql_failure()))?;
+    assert!(
+        run.result.is_err(),
+        "the rediscovery's Err propagates: {:?}",
+        run.result
+    );
+    let text = run.error_text();
+    assert!(
+        text.contains("gdv1_no_such_table"),
+        "the injected SQL error is in the chain: {text}"
+    );
+    // The front judgement (swallowed) and the rediscovery's (propagated).
+    assert_eq!(run.started_at_judgement, [0, 1]);
+    assert_eq!(
+        run.started(),
+        ["verify"],
+        "the Verify ran once, then the cycle ended"
+    );
+    assert_eq!(
+        run.completed(),
+        1,
+        "the Verify's completion is still recorded"
+    );
+    Ok(())
+}
+
+/// Two projects in one request, one project's judgement failing (once): the
+/// other is judged and processed, and the failing project's own Verify still
+/// runs. Both judgements ran in the cycle's front, before the first item.
+#[test]
+fn a_failed_judgement_of_one_project_does_not_stop_the_other_project() -> Result<()> {
+    let _serial = serial();
+    let other = "other-project";
+    let run = cycle_with_failing_judgements(
+        false,
+        |fixture| {
+            fixture.db().with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects(id, title) VALUES (?1, 'other')",
+                    [other],
+                )?;
+                Ok(())
+            })?;
+            let mut request = verify_request(fixture)?;
+            let mut second = request.work[0].clone();
+            second.project_id = other.to_string();
+            // The other project has no epoch of its own; the request only needs
+            // a well-formed one, and its Verify is normalised by the cycle.
+            request.work.push(second);
+            Ok(request)
+        },
+        |n, _, _| (n == 1).then(sql_failure),
+    )?;
+    let result = run
+        .result
+        .as_ref()
+        .unwrap_or_else(|error| panic!("the cycle failed: {error:#}"));
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(
+        &run.started_at_judgement[..2],
+        [0, 0],
+        "the failing project and the other one were both judged in the front"
+    );
+    let started = run
+        .recorder
+        .started
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    assert!(
+        started.iter().any(|key| key.contains(other)),
+        "the other project's work was processed: {started:?}"
+    );
+    assert!(
+        started
+            .iter()
+            .any(|key| key.contains(PROJECT) && key.contains("dependency-verify")),
+        "the failing project's Verify still ran: {started:?}"
+    );
+    Ok(())
+}
+
+/// A stop that arrived while the failure was being swallowed wins: the cycle
+/// ends with an Err and nothing starts. Once through `should_stop`, once
+/// through the stop signal alone (the branch after it).
+#[test]
+fn a_stop_that_arrives_with_a_local_judgement_failure_ends_the_cycle() -> Result<()> {
+    let _serial = serial();
+    for stop_signal_only in [false, true] {
+        let run = cycle_with_failing_judgements(stop_signal_only, verify_request, |n, _, stop| {
+            (n == 1).then(|| {
+                stop.store(true, Ordering::SeqCst);
+                sql_failure()
+            })
+        })?;
+        assert!(
+            run.result.is_err(),
+            "stop_signal_only={stop_signal_only}: {:?}",
+            run.result
+        );
+        let text = run.error_text();
+        if stop_signal_only {
+            // Only the stop signal is raised: the judgement's own Err returns.
+            assert!(text.contains("gdv1_no_such_table"), "{text}");
+        } else {
+            assert!(text.contains("NEX_MAINTENANCE_ATTEMPT_CANCELLED"), "{text}");
+        }
+        assert!(
+            run.started().is_empty(),
+            "nothing may start: {:?}",
+            run.started()
+        );
+        assert_eq!(run.started_at_judgement, [0]);
     }
     Ok(())
 }
 
 /// What ends the cycle itself is not swallowed: a typed termination of any
 /// reason, the attempt's cancellation, a lifecycle stop and a connection cleanup
-/// failure all propagate, and nothing (no Verify) started.
+/// failure all propagate (carrying the injected code or reason), and nothing (no
+/// Verify) started.
 #[test]
 fn a_graph_judgement_failure_that_ends_the_cycle_still_ends_it() -> Result<()> {
     let _serial = serial();
     type Failure = Box<dyn Fn() -> anyhow::Error>;
-    let failures: Vec<(&str, Failure)> = vec![
-        ("typed cancelled", Box::new(|| validation_terminated(ValidationTerminationReason::Cancelled, "stop"))),
-        ("typed timeout", Box::new(|| validation_terminated(ValidationTerminationReason::TimedOut, "stop"))),
-        ("typed closed", Box::new(|| validation_terminated(ValidationTerminationReason::Closed, "stop"))),
+    let failures: Vec<(&str, Failure, &str)> = vec![
+        (
+            "typed cancelled",
+            Box::new(|| validation_terminated(ValidationTerminationReason::Cancelled, "stop")),
+            "NEX_VALIDATION_TERMINATED:cancelled",
+        ),
+        (
+            "typed timeout",
+            Box::new(|| validation_terminated(ValidationTerminationReason::TimedOut, "stop")),
+            "NEX_VALIDATION_TERMINATED:timeout",
+        ),
+        (
+            "typed closed",
+            Box::new(|| validation_terminated(ValidationTerminationReason::Closed, "stop")),
+            "NEX_VALIDATION_TERMINATED:closed",
+        ),
         (
             "typed foreground preempted",
-            Box::new(|| validation_terminated(ValidationTerminationReason::ForegroundPreempted, "stop")),
+            Box::new(|| {
+                validation_terminated(ValidationTerminationReason::ForegroundPreempted, "stop")
+            }),
+            "NEX_VALIDATION_TERMINATED:foreground-preempted",
         ),
         (
             "attempt cancelled (plain)",
-            Box::new(|| anyhow!("NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary")),
+            Box::new(|| {
+                anyhow!("NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary")
+            }),
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED",
         ),
         (
             "lifecycle stop (plain)",
-            Box::new(|| anyhow!("NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution")),
+            Box::new(|| {
+                anyhow!("NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution")
+            }),
+            "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED",
         ),
         (
             "connection cleanup failed",
-            Box::new(|| anyhow!("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: the connection could not be restored")),
+            Box::new(|| {
+                anyhow!("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: the connection could not be restored")
+            }),
+            "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED",
         ),
     ];
-    for (name, failure) in failures {
-        let (result, started, _) = cycle_with_a_failing_judgement(move |_| failure())?;
-        assert!(result.is_err(), "{name}: the cycle must end, got {result:?}");
-        assert!(started.is_empty(), "{name}: nothing may start: {started:?}");
+    for (name, failure, expected) in failures {
+        let run =
+            cycle_with_failing_judgements(false, verify_request, move |_, _, _| Some(failure()))?;
+        assert!(
+            run.result.is_err(),
+            "{name}: the cycle must end, got {:?}",
+            run.result
+        );
+        let text = run.error_text();
+        assert!(
+            text.contains(expected),
+            "{name}: the injected code is in the chain: {text}"
+        );
+        assert!(
+            run.started().is_empty(),
+            "{name}: nothing may start: {:?}",
+            run.started()
+        );
     }
     Ok(())
 }
 
-/// The allowlist in one table (the shape of DR-PUBG-5-15's allowlist test).
+/// The classification in one table (the shape of DR-PUBG-5-15's allowlist
+/// test): local are a SQL failure that is not busy, locked or an interruption,
+/// and the refused no-wait connection.
 #[test]
-fn graph_judgement_local_failure_is_an_allowlist_of_two() {
+fn graph_judgement_local_failure_classification_table() {
     let preempted = anyhow!(
         "{}: could not acquire the maintenance connection without waiting",
         rr::MAINTENANCE_CONNECTION_PREEMPTED_CODE
     );
     assert!(is_graph_judgement_local_failure(&preempted));
-    assert!(is_graph_judgement_local_failure(&preempted.context("judgement")));
+    assert!(is_graph_judgement_local_failure(
+        &preempted.context("judgement")
+    ));
     let sql: anyhow::Error = rusqlite::Error::QueryReturnedNoRows.into();
     assert!(is_graph_judgement_local_failure(&sql));
     assert!(is_graph_judgement_local_failure(&sql.context("read hint")));
@@ -2082,14 +2561,43 @@ fn graph_judgement_local_failure_is_an_allowlist_of_two() {
     )
     .into();
     assert!(!is_graph_judgement_local_failure(&interrupted));
-    assert!(!is_graph_judgement_local_failure(&interrupted.context("read hint")));
-    // Another SQLite failure (a missing table) is local.
-    let missing_table: anyhow::Error = rusqlite::Error::SqliteFailure(
-        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
-        Some("no such table: x".to_string()),
-    )
-    .into();
-    assert!(is_graph_judgement_local_failure(&missing_table));
+    assert!(!is_graph_judgement_local_failure(
+        &interrupted.context("read hint")
+    ));
+    // SQLITE_BUSY and SQLITE_LOCKED (and their extended codes) are retryable
+    // contention: they stay an Err, like DR-PUBG-5-15's "retryable busy/lock".
+    for (name, code) in [
+        ("BUSY", rusqlite::ffi::SQLITE_BUSY),
+        ("BUSY_SNAPSHOT", rusqlite::ffi::SQLITE_BUSY_SNAPSHOT),
+        ("LOCKED", rusqlite::ffi::SQLITE_LOCKED),
+        (
+            "LOCKED_SHAREDCACHE",
+            rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE,
+        ),
+    ] {
+        let error = sqlite_failure(code, "contention");
+        assert!(!is_graph_judgement_local_failure(&error), "{name}");
+        assert!(
+            !is_graph_judgement_local_failure(&error.context("read hint")),
+            "{name}"
+        );
+    }
+    // Other SQLite failures are local (a missing table, CORRUPT, IOERR, FULL, a
+    // constraint).
+    for (name, code) in [
+        ("ERROR", rusqlite::ffi::SQLITE_ERROR),
+        ("CORRUPT", rusqlite::ffi::SQLITE_CORRUPT),
+        ("IOERR", rusqlite::ffi::SQLITE_IOERR),
+        ("FULL", rusqlite::ffi::SQLITE_FULL),
+        ("CANTOPEN", rusqlite::ffi::SQLITE_CANTOPEN),
+    ] {
+        let error = sqlite_failure(code, "failed");
+        assert!(is_graph_judgement_local_failure(&error), "{name}");
+        assert!(
+            is_graph_judgement_local_failure(&error.context("read hint")),
+            "{name}"
+        );
+    }
     for reason in [
         ValidationTerminationReason::ContextUnavailable,
         ValidationTerminationReason::Cancelled,
@@ -2119,7 +2627,10 @@ fn graph_judgement_local_failure_is_an_allowlist_of_two() {
         "NIR1_GRAPH_CAPACITY_EXCEEDED: x",
         "something else entirely",
     ] {
-        assert!(!is_graph_judgement_local_failure(&anyhow!("{text}")), "{text}");
+        assert!(
+            !is_graph_judgement_local_failure(&anyhow!("{text}")),
+            "{text}"
+        );
     }
     // The preempted code together with a cleanup failure is a cleanup failure.
     let both = anyhow!(

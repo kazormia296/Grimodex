@@ -227,9 +227,11 @@ fn read_c2z_readiness(db: &Database, project: &str) -> Result<String> {
     Ok(text(&result))
 }
 
-/// A cycle that is handed the Verify item of the sealed Verify: the runtime's
-/// skip decision under the cycle's own control. Run count and Findings before
-/// and after show whether the sealed outcome was reused.
+/// A cycle that is handed the Verify item of the sealed Verify. The explicitly
+/// handed work is run again on the base build as well (the sealed outcome does
+/// not skip it), so the Run count goes up there too. This only fixes that the
+/// counts (Runs and Findings, before and after) are the same as on the base
+/// build; it does not assert that the sealed outcome was reused.
 fn read_cycle_with_the_verify_item(db: &Database, project: &str) -> Result<String> {
     let (_, epoch, _) = latest_completed_verify(db, project)?;
     let runs_before = run_count(db, project)?;
@@ -279,23 +281,28 @@ pub(super) fn observe_snapshot(snapshot: &Snapshot) -> Result<Vec<String>> {
 #[test]
 fn a_pre_gdv1_sealed_outcome_reads_the_same_before_and_after() -> Result<()> {
     let _serial = serial();
+    let dump = std::env::var_os("GDV1_K2_DUMP").is_some();
     for (snapshot, expected) in
         SNAPSHOTS
             .iter()
             .zip([EXPECTED_NONE, EXPECTED_CURRENT, EXPECTED_CHRONICLE])
     {
         let lines = observe_snapshot(snapshot)?;
-        if std::env::var_os("GDV1_K2_DUMP").is_some() {
+        if dump {
             for line in &lines {
                 eprintln!("GDV1_K2_LINE {} {line:?}", snapshot.name);
             }
-            // Capture mode (only used to fill in `EXPECTED_*` on the pre-GDV/1 build).
+            // Capture mode (only used to fill in `EXPECTED_*` on the pre-GDV/1
+            // build): nothing is compared, so the test must not end green.
             continue;
         }
         assert_eq!(lines.len(), expected.len(), "{}", snapshot.name);
         for (line, expected) in lines.iter().zip(expected) {
             assert_eq!(line, expected, "{}", snapshot.name);
         }
+    }
+    if dump {
+        panic!("capture mode");
     }
     Ok(())
 }
