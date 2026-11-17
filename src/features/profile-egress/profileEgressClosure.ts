@@ -58,6 +58,8 @@ const RENDERER_DENIED_COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
   ["nir1_pack_context", "plaintext-publication"],
+  // chat IR (DR-CHATIR-S1-27): Main の台帳と同じ。gate は常に閉で、これは閉鎖の写し。
+  ["chat_agent_ir_select", "plaintext-publication"],
 ];
 
 let deniedRoutes: Map<string, string> | null = null;
