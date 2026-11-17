@@ -332,6 +332,19 @@ pub(crate) enum ParticipantSqlFence {
     Pinned,
 }
 
+/// How the one connection-mutex acquisition of a participant SQL scope waits.
+/// `Blocking` is the ordinary foreground acquisition (announces a waiter),
+/// `TryOnce` is DR-MPS-15's single waiter-free attempt, and `TryUntil` is
+/// DR-CHATIR-S1-11's waiter-free attempt repeated until the instant (chat IR:
+/// no waiter, so a maintenance run is never asked to hand the connection over;
+/// bounded, so a busy connection ends as `Ok(None)` at the deadline).
+#[derive(Clone, Copy, Debug)]
+enum ConnectionAcquisition {
+    Blocking,
+    TryOnce,
+    TryUntil(Instant),
+}
+
 impl ParticipantSqlOperationBudget {
     pub fn new(stop: Arc<AtomicBool>, deadline: Instant, busy_timeout: Duration) -> Self {
         Self {
@@ -1272,7 +1285,43 @@ impl Database {
         self.participant_read_transaction_control_mode(
             participant,
             ParticipantSqlControl::default(),
-            true,
+            ConnectionAcquisition::TryOnce,
+            None,
+            operation,
+        )
+    }
+
+    /// DR-CHATIR-S1-11 (chat IR S1-A0). `try_with_participant_read_transaction`
+    /// with the waiter-free attempt repeated until `budget`'s deadline (and its
+    /// connection-lock bound, when set), and with the SQL under the same
+    /// deadline: the SQLite progress hook and the busy wait (`budget`'s busy
+    /// timeout, clipped to the time left once the connection is held) both end
+    /// at the deadline.
+    ///
+    /// `Ok(None)` means the connection could not be taken in time (connection
+    /// busy): nothing ran, no foreground waiter was ever announced, so a
+    /// maintenance run holding the connection is never asked to hand it over.
+    /// A deadline that elapses after the connection is held is a typed
+    /// `TimedOut` termination, like the bounded reads. A stopped participant, a
+    /// quarantined or poisoned connection are errors, as in the blocking read.
+    pub fn try_with_participant_read_transaction_until<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        budget: ParticipantSqlOperationBudget,
+        operation: F,
+    ) -> Result<Option<T>>
+    where
+        F: FnOnce(&mut Connection) -> Result<T>,
+    {
+        let acquire_until = budget
+            .connection_lock_timeout
+            .map(|timeout| budget.deadline.min(Instant::now() + timeout))
+            .unwrap_or(budget.deadline);
+        self.participant_read_transaction_control_mode(
+            participant,
+            budget.control(),
+            ConnectionAcquisition::TryUntil(acquire_until),
+            Some(budget.busy_timeout),
             operation,
         )
     }
@@ -1289,7 +1338,13 @@ impl Database {
     where
         F: FnOnce(&mut Connection) -> Result<T>,
     {
-        self.participant_read_transaction_control_mode(participant, control, false, operation)?
+        self.participant_read_transaction_control_mode(
+            participant,
+            control,
+            ConnectionAcquisition::Blocking,
+            None,
+            operation,
+        )?
             .ok_or_else(|| anyhow!("participant read was skipped without a try acquisition"))
     }
 
@@ -1297,7 +1352,8 @@ impl Database {
         &self,
         participant: &WorkspaceParticipant,
         control: ParticipantSqlControl,
-        try_only: bool,
+        acquisition: ConnectionAcquisition,
+        requested_busy_timeout: Option<Duration>,
         operation: F,
     ) -> Result<Option<T>>
     where
@@ -1315,9 +1371,9 @@ impl Database {
             &ParticipantSqlFence::Admission { probe: None },
             config,
             stop,
+            requested_busy_timeout,
             None,
-            None,
-            try_only,
+            acquisition,
             move |conn| {
                 check_participant_sql_control(participant, &operation_stop, deadline)?;
                 let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
@@ -1549,18 +1605,20 @@ impl Database {
             stop,
             requested_busy_timeout,
             lock_deadline,
-            false,
+            ConnectionAcquisition::Blocking,
             operation,
         )?
         .ok_or_else(|| anyhow!("participant SQL scope was skipped without a try acquisition"))
     }
 
-    /// `try_only` makes the one connection-mutex acquisition a single
-    /// waiter-free attempt (`Database::try_lock_conn_with_check`): a busy
-    /// connection is `Ok(None)` and nothing ran. Every other error (a stopped
-    /// participant, a quarantined or poisoned connection, an expired lock
-    /// deadline) is returned exactly as the blocking acquisition returns it.
-    /// `Ok(None)` is impossible when `try_only` is false.
+    /// `acquisition` selects how the one connection-mutex acquisition waits.
+    /// `TryOnce` is a single waiter-free attempt
+    /// (`Database::try_lock_conn_with_check`) and `TryUntil` repeats it until
+    /// its instant: a busy connection is `Ok(None)` and nothing ran. Every
+    /// other error (a stopped participant, a quarantined or poisoned
+    /// connection, an expired lock deadline) is returned exactly as the
+    /// blocking acquisition returns it. `Ok(None)` is impossible when
+    /// `acquisition` is `Blocking`.
     #[allow(clippy::too_many_arguments)]
     fn with_participant_sql_scope_fenced_mode<T, F>(
         &self,
@@ -1570,7 +1628,7 @@ impl Database {
         stop: Arc<AtomicBool>,
         requested_busy_timeout: Option<Duration>,
         lock_deadline: Option<Instant>,
-        try_only: bool,
+        acquisition: ConnectionAcquisition,
         operation: F,
     ) -> Result<Option<T>>
     where
@@ -1605,13 +1663,33 @@ impl Database {
             }
             Ok(())
         };
-        let mut conn = if try_only {
-            match self.try_lock_conn_with_check(Some(&mut check_acquisition))? {
-                Some(conn) => conn,
-                None => return Ok(None),
+        let mut conn = match acquisition {
+            ConnectionAcquisition::Blocking => {
+                self.lock_conn_with_check(Some(&mut check_acquisition))?
             }
-        } else {
-            self.lock_conn_with_check(Some(&mut check_acquisition))?
+            ConnectionAcquisition::TryOnce => {
+                match self.try_lock_conn_with_check(Some(&mut check_acquisition))? {
+                    Some(conn) => conn,
+                    None => return Ok(None),
+                }
+            }
+            ConnectionAcquisition::TryUntil(acquire_until) => {
+                // The stop flag, participant and fence are observed on every
+                // attempt, but the SQL deadline is not: a deadline that passes
+                // while the connection is still busy is "connection busy"
+                // (`Ok(None)`), not a termination.
+                let acquisition_checks = ParticipantSqlChecks {
+                    participant,
+                    fence,
+                    stop: &stop,
+                    deadline: None,
+                };
+                let mut check_until = || acquisition_checks.check();
+                match self.try_lock_conn_until_with_check(acquire_until, Some(&mut check_until))? {
+                    Some(conn) => conn,
+                    None => return Ok(None),
+                }
+            }
         };
         let busy_timeout = requested_busy_timeout.map(|requested| {
             requested.min(
