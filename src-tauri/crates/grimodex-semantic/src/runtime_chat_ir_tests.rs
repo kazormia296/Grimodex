@@ -633,6 +633,13 @@ fn a_writer_that_outlasts_the_clipped_busy_wait_is_busy_before_and_deferred_afte
     assert_eq!(reason, ChatIrUnavailable::Timeout);
     let mut pending = pending.expect("the terminal records are pending");
     assert_eq!(pending.event_count(), 2);
+    // Flush while the writer still holds the lock: the busy writer is retried
+    // until the (short) deadline, then `Ok(false)` with both records still
+    // pending, not an error after the 1 s clip.
+    assert!(!pending
+        .flush_until(Instant::now() + Duration::from_millis(1300))
+        .expect("a busy writer is not an error"));
+    assert_eq!(pending.event_count(), 2);
     other.execute_batch("ROLLBACK").expect("release");
     assert!(pending.flush_with_budget().expect("flush"));
     assert_eq!(

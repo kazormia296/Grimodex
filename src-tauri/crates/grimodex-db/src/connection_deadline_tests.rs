@@ -450,29 +450,108 @@ fn audit_append_until_is_bounded_by_the_deadline() {
 
 /// DR-CHATIR-S1-12 (a): inside the operation of the deadline-bound participant
 /// read, SQLite's busy wait is the budget's value clipped to the time left (here
-/// 400 ms of 5 s). It cannot exceed what is left at the moment the scope is
-/// set, so the bound `<= deadline - started` holds without any timing.
+/// 20 s of 60 s). It cannot exceed what is left when the scope is set, so
+/// `seen <= deadline - started` holds whatever the machine's speed, and the
+/// 20 s leaves room for a slow acquisition.
 #[test]
 fn participant_read_until_clips_the_busy_timeout_to_the_remaining_deadline() {
     let db = test_db();
     let (_core, participant) = test_participant();
     let before = connection_busy_timeout_ms(&db);
     let started = Instant::now();
-    let deadline = started + Duration::from_millis(400);
+    let deadline = started + Duration::from_secs(20);
+    let wide_budget = ParticipantSqlOperationBudget::new(
+        Arc::new(AtomicBool::new(false)),
+        deadline,
+        Duration::from_secs(60),
+    );
     let seen = db
-        .try_with_participant_read_transaction_until(&participant, budget(deadline), |conn| {
+        .try_with_participant_read_transaction_until(&participant, wide_budget, |conn| {
             Ok(conn.pragma_query_value::<i64, _>(None, "busy_timeout", |row| row.get(0))?)
         })
         .expect("not an error")
         .expect("connection available");
     let left_at_start = deadline.saturating_duration_since(started).as_millis() as i64;
     assert!(
-        seen <= left_at_start,
-        "busy_timeout {seen} ms > {left_at_start} ms left"
+        seen > 0 && seen <= left_at_start,
+        "busy_timeout {seen} ms outside (0, {left_at_start}] ms"
     );
-    assert!(seen < 5_000, "the budget's 5 s was not clipped: {seen} ms");
+    assert!(
+        seen < 60_000,
+        "the budget's 60 s was not clipped: {seen} ms"
+    );
     // The scope gives the connection back with its default.
     assert_eq!(connection_busy_timeout_ms(&db), before);
+}
+
+/// DR-CHATIR-S1-12: while a maintenance cycle is live (a no-wait guard alive on
+/// another thread) and the connection is completely free, the participant read
+/// and the audit append are both "busy": `None`, the body did not run, no row
+/// was written, no waiter was announced. Once the guard is gone they run.
+#[test]
+fn a_live_maintenance_cycle_makes_the_participant_read_and_the_audit_append_busy() {
+    let db = Arc::new(test_db());
+    let (_core, participant) = test_participant();
+    let (alive_tx, alive_rx) = mpsc::channel();
+    let (end_tx, end_rx) = mpsc::channel::<()>();
+    let cycle = {
+        let db = Arc::clone(&db);
+        thread::spawn(move || {
+            let _no_wait = db.enter_maintenance_connection_no_wait();
+            alive_tx.send(()).expect("announce the guard");
+            let _ = end_rx.recv();
+        })
+    };
+    alive_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the guard is alive");
+    assert!(db.maintenance_no_wait_guard_alive());
+    assert!(
+        db.main_connection_is_free_for_test(),
+        "the connection itself is free"
+    );
+    let ran = AtomicBool::new(false);
+    let read = db
+        .try_with_participant_read_transaction_until(
+            &participant,
+            budget(Instant::now() + Duration::from_millis(150)),
+            |_| {
+                ran.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .expect("busy is not an error");
+    assert_eq!(read, None);
+    assert!(!ran.load(Ordering::Acquire));
+    let events = [started_event("execution-5", "event-5")];
+    let appended = db
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            Instant::now() + Duration::from_millis(150),
+        )
+        .expect("busy is not an error");
+    assert_eq!(appended, None);
+    assert!(audit_rows(&db).is_empty(), "nothing was written");
+    assert_eq!(db.foreground_connection_waiter_count(), 0);
+    end_tx.send(()).expect("end the cycle");
+    cycle.join().expect("cycle joined");
+    assert!(db
+        .try_with_participant_read_transaction_until(
+            &participant,
+            budget(Instant::now() + Duration::from_secs(5)),
+            |_| Ok(()),
+        )
+        .expect("not an error")
+        .is_some());
+    assert!(db
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("not an error")
+        .is_some());
 }
 
 /// The busy wait of the deadline-bound append is the time left, at most 1 s.

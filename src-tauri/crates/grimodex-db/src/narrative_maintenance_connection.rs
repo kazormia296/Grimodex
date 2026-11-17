@@ -1301,6 +1301,10 @@ impl Database {
     /// `Ok(None)` means the connection could not be taken in time (connection
     /// busy): nothing ran, no foreground waiter was ever announced, so a
     /// maintenance run holding the connection is never asked to hand it over.
+    /// While a maintenance cycle is live (its no-wait guard is alive) the
+    /// connection is never taken, even when it is free, so the call is "busy"
+    /// until the deadline (DR-CHATIR-S1-12; it would otherwise preempt the cycle
+    /// at a seam between two of its acquisitions).
     /// A deadline that elapses after the connection is held is a typed
     /// `TimedOut` termination, like the bounded reads. A stopped participant, a
     /// quarantined or poisoned connection are errors, as in the blocking read.

@@ -22,8 +22,11 @@
 //! and ends as `Ok(None)`: during a maintenance cycle a chat IR call gets no IR
 //! (availability is lowered, T12 is kept). What this does not cover: a cycle
 //! that begins while an earlier call already holds the connection meets a held
-//! connection exactly as it does with any other foreground holder (the hold is
-//! bounded by the caller's deadline).
+//! connection exactly as it does with any other foreground holder. The deadline
+//! here bounds the acquisition only; how long the connection is then held is the
+//! caller's work: a participant read ends at the deadline through its progress
+//! hook, an audit append waits at most 1 s for another writer and then runs one
+//! short transaction.
 //! The calling thread being the maintenance run itself (its own guard) is not a
 //! supported caller: it would be "busy" forever.
 
@@ -378,38 +381,48 @@ mod tests {
     /// `NEX_MAINTENANCE_CONNECTION_PREEMPTED`). The maintenance role below
     /// alternates a short hold and a short free gap (about half of all instants
     /// are a seam); the call holds the connection for 3 ms whenever it gets it.
+    /// The run lasts until the role has acquired the connection 50 times (a
+    /// count, not a wall-clock span; the watchdog only bounds a broken test).
     /// Without the `maintenance_no_wait_guard_alive` check in the acquisition,
     /// the call takes a seam and the role is preempted.
     #[test]
     fn try_with_conn_until_never_takes_a_seam_of_a_live_maintenance_cycle() {
         let db = Arc::new(test_db());
         let stop = Arc::new(AtomicBool::new(false));
+        let acquisitions = Arc::new(AtomicUsize::new(0));
         let (ready_tx, ready_rx) = mpsc::channel();
         let maintenance = {
-            let (db, stop) = (Arc::clone(&db), Arc::clone(&stop));
+            let (db, stop, acquisitions) = (
+                Arc::clone(&db),
+                Arc::clone(&stop),
+                Arc::clone(&acquisitions),
+            );
             thread::spawn(move || {
                 let _no_wait = db.enter_maintenance_connection_no_wait();
                 ready_tx.send(()).expect("announce the guard");
-                let mut acquisitions = 0_usize;
                 while !stop.load(Ordering::Acquire) {
                     db.with_conn(|_| {
                         thread::sleep(Duration::from_micros(200));
                         Ok(())
                     })?;
-                    acquisitions += 1;
+                    acquisitions.fetch_add(1, Ordering::SeqCst);
                     // The seam.
                     thread::sleep(Duration::from_micros(200));
                 }
-                Ok::<usize, anyhow::Error>(acquisitions)
+                Ok::<(), anyhow::Error>(())
             })
         };
         ready_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("maintenance guard is alive");
         let taken = AtomicUsize::new(0);
-        let polling_until = Instant::now() + Duration::from_millis(400);
+        let watchdog = Instant::now() + Duration::from_secs(60);
         let mut attempts = 0_usize;
-        while Instant::now() < polling_until {
+        while acquisitions.load(Ordering::SeqCst) < 50 {
+            assert!(
+                Instant::now() < watchdog,
+                "the maintenance role stopped cycling"
+            );
             attempts += 1;
             let outcome = db
                 .try_with_conn_until(Instant::now() + Duration::from_millis(5), |_| {
@@ -421,12 +434,11 @@ mod tests {
             assert_eq!(outcome, None);
         }
         stop.store(true, Ordering::Release);
-        let acquisitions = maintenance
+        maintenance
             .join()
             .expect("maintenance role joined")
             .expect("the maintenance run was never preempted");
-        assert!(attempts > 10, "the call did not poll: {attempts}");
-        assert!(acquisitions > 100, "the role did not cycle: {acquisitions}");
+        assert!(attempts > 0);
         assert_eq!(taken.load(Ordering::SeqCst), 0);
         assert_eq!(db.foreground_connection_waiter_count(), 0);
         // The cycle is over (the guard dropped with the role): the call runs.

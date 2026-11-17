@@ -15,7 +15,11 @@
 //!   times, each acquisition announcing a foreground waiter without a
 //!   deadline). The same checks run against the given spec every time;
 //! * the audit appends use the waiter-free, deadline-bound acquisition
-//!   (`Database::try_append_ai_audit_events_for_scope_until`). The records made
+//!   (`Database::try_append_ai_audit_events_for_scope_until`), which never takes
+//!   the connection while a maintenance cycle is live (DR-CHATIR-S1-12: during a
+//!   cycle the pre-inference records are not durable in time, so `ConnectionBusy`,
+//!   and the terminal records are deferred) and waits at most 1 s for another
+//!   SQLite writer. The records made
 //!   before inference (start, prepared, dispatched) are one batch: not durable
 //!   in time means no inference and no IR. The terminal records (after
 //!   inference) that cannot be made durable in time are **never used**: the
@@ -83,11 +87,12 @@ pub enum ChatIrUnavailable {
     /// connection was busy for the whole deadline). No inference ran.
     ConnectionBusy,
     /// The deadline elapsed (waiting for the embedder, before inference, or
-    /// after the terminal records became durable late), **or the terminal audit
-    /// records could not be written** (the deadline ran out, the writer was busy
-    /// past the clipped wait, or the append failed transiently): the two are
-    /// not told apart on purpose (DR-CHATIR-S1-12). Either way the vector was
-    /// dropped and the records travel as `pending_terminal_audit`.
+    /// after the terminal records became durable late; no records are pending),
+    /// **or the terminal audit records could not be written** (the deadline ran
+    /// out, or the append failed even after its one retry: the second attempt
+    /// finds the first one's deferral): the two are not told apart on purpose
+    /// (DR-CHATIR-S1-12). The vector was dropped in both; in the second the
+    /// records travel as `pending_terminal_audit`.
     Timeout,
     /// The inference itself failed. Its terminal record was written or
     /// deferred like any other.
@@ -156,23 +161,39 @@ impl PendingTerminalAudit {
     }
 
     /// Write the records, waiter-free, giving up at `deadline`. `Ok(true)`:
-    /// written (nothing is pending any more). `Ok(false)`: the connection was
-    /// busy until the deadline; the records stay pending. `Err`: the append
-    /// failed; the records stay pending too, and the caller may try again.
+    /// written (nothing is pending any more). `Ok(false)`: not written by the
+    /// deadline because the connection was busy, a maintenance cycle was live
+    /// (its no-wait guard is alive: the acquisition never takes the connection
+    /// then, DR-CHATIR-S1-12) or another writer kept the SQLite write lock; the
+    /// records stay pending. A busy/locked writer is retried until `deadline`
+    /// (each attempt waits at most 1 s for it), so the whole budget is used, not
+    /// 1 s of it. `Err`: the append failed for another reason; the records stay
+    /// pending too, and the caller may try again.
     pub fn flush_until(&mut self, deadline: Instant) -> Result<bool> {
         if self.events.is_empty() {
             return Ok(true);
         }
-        match self.db.db().try_append_ai_audit_events_for_scope_until(
-            self.project_id.as_deref(),
-            &self.events,
-            deadline,
-        )? {
-            Some(_) => {
-                self.events.clear();
-                Ok(true)
+        loop {
+            match self.db.db().try_append_ai_audit_events_for_scope_until(
+                self.project_id.as_deref(),
+                &self.events,
+                deadline,
+            ) {
+                Ok(Some(_)) => {
+                    self.events.clear();
+                    return Ok(true);
+                }
+                Ok(None) => return Ok(false),
+                Err(error) if is_sqlite_busy(&error) => {
+                    if Instant::now() >= deadline {
+                        return Ok(false);
+                    }
+                    std::thread::sleep(
+                        RETRY_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                }
+                Err(error) => return Err(error),
             }
-            None => Ok(false),
         }
     }
 
