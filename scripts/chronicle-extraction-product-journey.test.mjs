@@ -993,3 +993,47 @@ test("the live workspace read fails loudly when the database is missing", async 
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+// reopened の phase：app が閉じた後は -wal／-shm が消えた（checkpoint 済みの）DB を読む。
+test("the live workspace read works after the writer closed and the WAL files are gone", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "grimodex-live-read-"));
+  const dbPath = path.join(workspace, "grimodex.db");
+  try {
+    const writer = new DatabaseSync(dbPath);
+    writer.exec("PRAGMA journal_mode = WAL");
+    writer.exec(
+      "CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT, reconciliation_envelope_json TEXT)",
+    );
+    writer
+      .prepare("INSERT INTO narrative_proposal_revisions VALUES (?, ?, ?)")
+      .run("revision-1", "proposal-1", '{"schemaVersion":2}');
+    // 最後の接続を閉じると SQLite は checkpoint して -wal／-shm を消す。
+    writer.close();
+    await assert.rejects(readFile(`${dbPath}-wal`), { code: "ENOENT" });
+    await assert.rejects(readFile(`${dbPath}-shm`), { code: "ENOENT" });
+
+    const rows = await readWorkspaceRowsReadOnly(
+      workspace,
+      "SELECT id, reconciliation_envelope_json AS e FROM narrative_proposal_revisions WHERE proposal_id = ?",
+      ["proposal-1"],
+    );
+    assert.deepEqual(rows, [{ id: "revision-1", e: '{"schemaVersion":2}' }]);
+    // 読取り後も DB は書込み可能で、読取りが DB を壊していない。
+    const reopened = new DatabaseSync(dbPath);
+    try {
+      reopened
+        .prepare("INSERT INTO narrative_proposal_revisions VALUES (?, ?, ?)")
+        .run("revision-2", "proposal-2", null);
+      assert.equal(
+        reopened
+          .prepare("SELECT count(*) AS n FROM narrative_proposal_revisions")
+          .get().n,
+        2,
+      );
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

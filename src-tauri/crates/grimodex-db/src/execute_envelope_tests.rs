@@ -119,6 +119,11 @@ const ENVELOPE_READ_SHAPES: &[&str] = &[
     "SELECT p.id FROM narrative_proposals AS p JOIN narrative_proposal_revisions AS r ON r.id = p.current_revision_id WHERE p.id = ?1 AND r.reconciliation_envelope_json IS NOT NULL",
     "SELECT e FROM renderer_envelope_view WHERE id = ?1",
     "SELECT id FROM renderer_envelope_view WHERE id = ?1 AND e IS NOT NULL",
+    "SELECT group_concat(reconciliation_envelope_json) AS g FROM narrative_proposal_revisions WHERE id = ?1",
+    "SELECT first_value(reconciliation_envelope_json) OVER (ORDER BY revision_number) AS w FROM narrative_proposal_revisions WHERE id = ?1",
+    "SELECT cast(reconciliation_envelope_json AS BLOB) AS b FROM narrative_proposal_revisions WHERE id = ?1",
+    "SELECT hex(reconciliation_envelope_json) AS h FROM narrative_proposal_revisions WHERE id = ?1",
+    "SELECT printf('%s', reconciliation_envelope_json) AS p FROM narrative_proposal_revisions WHERE id = ?1",
 ];
 
 #[test]
@@ -364,4 +369,48 @@ fn restricted_profile_keeps_the_d2a_rejection_before_the_typed_payload_guard() {
             "{sql}: expected {RENDERER_PROFILE_EGRESS_ERROR} for the batch, got {batch_error}"
         );
     }
+}
+
+#[test]
+fn renderer_dml_that_reads_the_envelope_is_rejected() {
+    // guard は authorizer の列 Read 単位なので、SELECT 以外の文（INSERT … SELECT、
+    // UPDATE の subquery、RETURNING）の中の envelope の読みも拒否される。拒否のコードは
+    // typed payload か protected writer のどちらでもよい（どちらも拒否）が、本文を返さない。
+    let (db, seeded) = seeded_db();
+    for sql in [
+        "INSERT INTO app_settings (key, value) SELECT id, reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+        "UPDATE app_settings SET value = (SELECT reconciliation_envelope_json FROM narrative_proposal_revisions LIMIT 1)",
+        "UPDATE narrative_proposal_revisions SET created_by = created_by WHERE id = ?1 RETURNING reconciliation_envelope_json",
+        "DELETE FROM narrative_proposal_revisions WHERE id = ?1 RETURNING reconciliation_envelope_json",
+    ] {
+        let params: Vec<Value> = if sql.contains("?1") {
+            vec![json!(seeded.revision_id)]
+        } else {
+            Vec::new()
+        };
+        for method in ["run", "all"] {
+            let error = db
+                .execute_renderer(sql, &params, method)
+                .expect_err(&format!("renderer DML must not read the envelope: {sql}"));
+            let message = error.to_string();
+            assert!(
+                message.contains(RENDERER_TYPED_PAYLOAD_ERROR)
+                    || message.contains(PROTECTED_WRITER_SQL_ERROR),
+                "{sql}: expected a typed-payload or protected-writer rejection, got {message}"
+            );
+            assert!(
+                !message.contains(ENVELOPE_MARKER),
+                "{sql}: the rejection must not echo the envelope: {message}"
+            );
+        }
+    }
+    // 拒否された文は何も書いていない。
+    let rows = db
+        .execute(
+            "SELECT count(*) AS n FROM app_settings WHERE value LIKE '%MARKER%'",
+            &[],
+            "all",
+        )
+        .expect("count");
+    assert_eq!(rows[0]["n"], json!(0));
 }
