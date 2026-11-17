@@ -327,3 +327,41 @@ fn renderer_dml_on_the_proposal_tables_keeps_the_protected_writer_rejection() {
     })
     .expect("trusted connection");
 }
+
+#[test]
+fn restricted_profile_keeps_the_d2a_rejection_before_the_typed_payload_guard() {
+    // restricted（D2a の authorizer が上に載る）では、closed の表の列は
+    // `D2A_EGRESS_DENIED` で先に拒否される。envelope の guard はこの順序を変えない
+    // （unrestricted でだけ `RENDERER_SQL_TYPED_PAYLOAD` が返る）。
+    let (db, seeded) = seeded_db();
+    for sql in [
+        "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+        "SELECT json_extract(reconciliation_envelope_json, '$.schemaVersion') AS v FROM narrative_proposal_revisions WHERE id = ?1",
+        "SELECT e FROM renderer_envelope_view WHERE id = ?1",
+        "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+    ] {
+        let error = db
+            .execute_renderer_profile_egress(sql, &[json!(seeded.revision_id)], "all")
+            .expect_err("restricted generic SQL must not read the revision");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "{sql}: expected {RENDERER_PROFILE_EGRESS_ERROR}, got {error}"
+        );
+        assert!(
+            !error.to_string().contains(RENDERER_TYPED_PAYLOAD_ERROR),
+            "{sql}: the D2a code must come first, got {error}"
+        );
+
+        let batch_error = db
+            .execute_batch_tx_renderer_profile_egress(&[BatchStatement {
+                sql: sql.to_string(),
+                params: vec![json!(seeded.revision_id)],
+                method: "all".into(),
+            }])
+            .expect_err("restricted generic batch SQL must not read the revision");
+        assert!(
+            batch_error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "{sql}: expected {RENDERER_PROFILE_EGRESS_ERROR} for the batch, got {batch_error}"
+        );
+    }
+}
