@@ -2260,6 +2260,11 @@ function relativeToRoot(root, file) {
  * and reads 20 header bytes of the main file by plain `fs`: no SQLite
  * connection, so nothing is created and nothing is locked. `walMode` is
  * `null` when the header cannot be read (a disclosure only; no check uses it).
+ * A stat that fails for a reason other than "no such file" (EACCES, ELOOP,
+ * ...) throws: a file that cannot be observed is never "nothing left". The
+ * session's stop records the throw as `closedFilesError` instead of letting it
+ * replace the session's own failure (`observeAfterStop`), and the check stops
+ * on it.
  */
 export function observeClosedWorkspaceFiles(dbFile) {
   const sidecar = (file) => {
@@ -2290,15 +2295,35 @@ export function observeClosedWorkspaceFiles(dbFile) {
 }
 
 /**
+ * The DR-CP4-S6-7 observation of a session's stop, as the session's row keeps
+ * it: `{ closedFiles }`, or `{ closedFilesError }` when the observation itself
+ * failed (so the failure neither replaces the session's own failure nor loses
+ * the stop's evidence; the check stops on it).
+ */
+function observeAfterStop(dbFile) {
+  try {
+    return { closedFiles: observeClosedWorkspaceFiles(dbFile) };
+  } catch (error) {
+    return { closedFilesError: String(error?.message ?? error) };
+  }
+}
+
+/**
  * DR-CP4-O-1 (3) as DR-CP4-S6-7 reads it: the SP-P4 pre-step's closed DB left
  * no SHM file behind. `closedFiles` is the observation of the last session's
  * stop (`observeClosedWorkspaceFiles`); no observation stops it too (it is
- * never "nothing left").
+ * never "nothing left"), and `closedFilesError` (the observation failed) is
+ * named in that stop, apart from "kept a SHM file".
  */
-export function assertPreStepClosedWithoutShm(closedFiles) {
+export function assertPreStepClosedWithoutShm(
+  closedFiles,
+  closedFilesError = null,
+) {
   if (closedFiles === null || closedFiles === undefined)
     throw new Error(
-      "[artifact] the SP-P4 pre-step has no observation of the files its last session left after close",
+      `[artifact] the SP-P4 pre-step has no observation of the files its last session left after close${
+        closedFilesError ? ` (the observation failed: ${closedFilesError})` : ""
+      }`,
     );
   if (closedFiles.shm?.exists !== false)
     throw new Error(
@@ -2554,14 +2579,14 @@ export async function setupFrozenVariant({
       // DR-CP4-S6-7: the SP-P4 pre-step reads what this stop left beside the
       // DB right now, before any read of the harness's own (the check after
       // the quiesce block looks at the last session's). Other setups' receipts
-      // keep the evidence as it is.
+      // keep the evidence as it is. A failed observation is recorded in the
+      // row (`closedFilesError`), never thrown from this `finally`, so it
+      // cannot replace the session's own failure or lose the stop's evidence.
       receipt.sessions.push(
         preStep
           ? {
               ...stopped,
-              closedFiles: observeClosedWorkspaceFiles(
-                path.join(workspacePath, "grimodex.db"),
-              ),
+              ...observeAfterStop(path.join(workspacePath, "grimodex.db")),
             }
           : stopped,
       );
@@ -2850,10 +2875,14 @@ export async function setupFrozenVariant({
       // wins: a quiesce reopening that closes cleanly removes what a signalled
       // session left), not the files now: the quiesce reads above are
       // read-only connections to a WAL DB, which create a `-shm` and an empty
-      // `-wal`. No observation is a stop too.
-      const closedFiles = receipt.sessions.at(-1)?.closedFiles ?? null;
+      // `-wal`. No observation (or a failed one) is a stop too.
+      const lastSession = receipt.sessions.at(-1);
+      const closedFiles = lastSession?.closedFiles ?? null;
       receipt.seedPinBranch.closedFiles = closedFiles;
-      assertPreStepClosedWithoutShm(closedFiles);
+      assertPreStepClosedWithoutShm(
+        closedFiles,
+        lastSession?.closedFilesError ?? null,
+      );
       const problems = receipt.sessions.flatMap((row) => row?.problems ?? []);
       receipt.errors.push(...problems);
       receipt.status =

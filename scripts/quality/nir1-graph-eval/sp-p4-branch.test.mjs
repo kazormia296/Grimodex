@@ -7,6 +7,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -14,6 +15,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,8 +99,12 @@ function product(plan, opts = {}) {
 }
 
 // `onStop(label, n)` runs after the fake product closed its DB (the n-th stop
-// of the label); `stopEvidence(label, n)` is the launcher's `stop` evidence.
-function sessions(fake, { onStop = null, stopEvidence = null } = {}) {
+// of the label); `stopEvidence(label, n)` is the launcher's `stop` evidence;
+// `startProblems(label)` are the launcher's start problems (the session fails).
+function sessions(
+  fake,
+  { onStop = null, stopEvidence = null, startProblems = null } = {},
+) {
   const started = [];
   const stops = new Map();
   return {
@@ -110,7 +116,7 @@ function sessions(fake, { onStop = null, stopEvidence = null } = {}) {
       return {
         page: fake.page,
         userData: "/nonexistent",
-        evidence: { label, problems: [] },
+        evidence: { label, problems: startProblems?.(label) ?? [] },
         stop: async () => {
           fake.close();
           const n = (stops.get(label) ?? 0) + 1;
@@ -325,6 +331,14 @@ function journalBytes(file) {
 }
 const writeShm = (setupDir) =>
   writeFileSync(path.join(setupDir, "workspace", "grimodex.db-shm"), "shm");
+/** A `-shm` that cannot be stat-ed (a symlink to itself: ELOOP, root or not). */
+const loopShm = (setupDir) => {
+  mkdirSync(path.join(setupDir, "workspace"), { recursive: true });
+  symlinkSync(
+    "grimodex.db-shm",
+    path.join(setupDir, "workspace", "grimodex.db-shm"),
+  );
+};
 const noFile = { exists: false, bytes: 0 };
 const SIGNALLED = {
   stop: { closed: false, signalled: [{ pid: 1, signal: "SIGKILL" }] },
@@ -617,4 +631,145 @@ test("DR-CP4-S6-7: pre-step の SHM の検査は、観測が無ければ（想�
   assert.doesNotThrow(() =>
     assertPreStepClosedWithoutShm({ walMode: true, wal: noFile, shm: noFile }),
   );
+  // The observation itself failed: the stop names it, apart from "kept a SHM".
+  assert.throws(
+    () => assertPreStepClosedWithoutShm(null, "ELOOP: too many links"),
+    /\[artifact\] .*no observation .*the observation failed: ELOOP/u,
+  );
+  assert.throws(
+    () => assertPreStepClosedWithoutShm(undefined, "EACCES"),
+    (error) =>
+      /the observation failed: EACCES/u.test(error.message) &&
+      !/kept a SHM file/u.test(error.message),
+  );
 });
+
+const stat3 = { skip: process.platform === "win32" };
+
+test(
+  "DR-CP4-S6-7: observeClosedWorkspaceFiles は、見つからない以外の stat の失敗を throw する（観測できないものを「無い」にしない）",
+  stat3,
+  () => {
+    const dir = scratch("cp4-sp-p4-observe-enotdir-");
+    const plain = path.join(dir, "plain-file");
+    writeFileSync(plain, "not a directory");
+    // `plain/grimodex.db-wal` is ENOTDIR, not ENOENT.
+    assert.throws(
+      () => observeClosedWorkspaceFiles(path.join(plain, "grimodex.db")),
+      /ENOTDIR/u,
+    );
+    // A missing file in a real directory is still "nothing there".
+    assert.deepEqual(
+      observeClosedWorkspaceFiles(path.join(dir, "grimodex.db")).shm,
+      noFile,
+    );
+  },
+);
+
+test(
+  "DR-CP4-S6-7: 観測そのものが失敗したとき（-shm の stat が ELOOP）は、SHM を残したのとは別の文面で止まり、session の行に失敗だけを残す（closedFiles は置かない）",
+  stat3,
+  async () => {
+    const plan = planOf(COMPLETE, "G-02/base");
+    const setupDir = path.join(scratch("cp4-sp-p4-unobs-"), "pre");
+    const result = await run(
+      plan,
+      setupDir,
+      { stage: SP_P4_BRANCH.preStep },
+      { onStop: () => loopShm(setupDir) },
+    );
+    assert.equal(result.receipt.status, "failed");
+    const errors = result.receipt.errors.join("\n");
+    assert.match(errors, /no observation .*the observation failed: .*ELOOP/u);
+    assert.doesNotMatch(errors, /kept a SHM file/u);
+    assert.equal(result.branch, undefined);
+    const row = result.receipt.sessions.at(-1);
+    assert.ok(!("closedFiles" in row), "no clean default is made up");
+    assert.match(row.closedFilesError, /ELOOP/u);
+    assert.equal(result.receipt.seedPinBranch.closedFiles, null);
+    // The stop's own evidence is kept in the row.
+    assert.equal(row.label, "author");
+    assert.deepEqual(row.problems, []);
+  },
+);
+
+test(
+  "DR-CP4-S6-7: 観測の失敗は session 自身の失敗を隠さず、stop の証跡と受領書の保存も失わない（finally で throw しない）",
+  stat3,
+  async () => {
+    const plan = planOf(COMPLETE, "G-02/base");
+    const setupDir = path.join(scratch("cp4-sp-p4-unobs-fail-"), "pre");
+    const result = await run(
+      plan,
+      setupDir,
+      { stage: SP_P4_BRANCH.preStep },
+      {
+        onStop: () => loopShm(setupDir),
+        startProblems: () => ["session-own-failure"],
+      },
+    );
+    assert.equal(result.receipt.status, "failed");
+    const errors = result.receipt.errors.join("\n");
+    assert.match(errors, /session-own-failure/u);
+    assert.doesNotMatch(errors, /ELOOP/u);
+    assert.equal(result.receipt.sessions.length, 1);
+    assert.match(result.receipt.sessions[0].closedFilesError, /ELOOP/u);
+    // The receipt on disk (saved after the stop) holds the row too.
+    const saved = JSON.parse(
+      readFileSync(path.join(setupDir, "setup-receipt.json"), "utf8"),
+    );
+    assert.match(saved.sessions[0].closedFilesError, /ELOOP/u);
+  },
+);
+
+test(
+  "DR-CP4-S6-7: 途中の session の観測の失敗は止めず、最後の session の観測が勝つ（開き直しが正常に閉じれば通る。最後の観測が失敗なら止まる）",
+  stat3,
+  async () => {
+    const plan = planOf(COMPLETE, "G-02/base");
+    const limits = { freshnessSettleMs: 30 };
+    // The author's stop cannot be observed (and ends by a signal); the
+    // quiesce reopening closes cleanly and is the last close.
+    const earlier = path.join(scratch("cp4-sp-p4-unobs-last-"), "pre");
+    const passed = await run(
+      plan,
+      earlier,
+      { stage: SP_P4_BRANCH.preStep },
+      {
+        limits,
+        onStop: (label, n) => {
+          if (label === "author" && n === 1) loopShm(earlier);
+          // The reopening replaces what the first stop left.
+          if (label.startsWith("quiesce"))
+            rmSync(path.join(earlier, "workspace", "grimodex.db-shm"));
+        },
+        stopEvidence: (label, n) =>
+          label === "author" && n === 1 ? SIGNALLED : {},
+      },
+    );
+    assert.equal(
+      passed.receipt.status,
+      SP_P4_BRANCH.status["pre-step"],
+      passed.receipt.errors.join("\n"),
+    );
+    assert.match(passed.receipt.sessions[0].closedFilesError, /ELOOP/u);
+    assert.equal(passed.receipt.sessions.at(-1).closedFiles.shm.exists, false);
+    // The reverse: the last stop is the one that cannot be observed.
+    const later = path.join(scratch("cp4-sp-p4-unobs-last-"), "pre");
+    const stopped = await run(
+      plan,
+      later,
+      { stage: SP_P4_BRANCH.preStep },
+      {
+        limits,
+        onStop: (label) => {
+          if (label.startsWith("quiesce")) loopShm(later);
+        },
+        stopEvidence: (label, n) =>
+          label === "author" && n === 1 ? SIGNALLED : {},
+      },
+    );
+    assert.equal(stopped.receipt.status, "failed");
+    assert.match(stopped.receipt.errors.join("\n"), /the observation failed/u);
+  },
+);
