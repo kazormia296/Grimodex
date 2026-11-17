@@ -739,13 +739,16 @@ fn digest_reads_no_eligibility_for_a_not_current_graph() -> Result<()> {
     Ok(())
 }
 
-/// The S-4 mark is what makes a digest sealed while the Graph was current
-/// differ from the digest once it is not current (section 3.2 invariant): the
-/// foreground (full-eligibility) digest of the same binding differs between the
-/// two states even though nothing else changed. A recognized not-current Graph
-/// edge therefore always hashes the mark, never the resolved Source.
+/// The digest of a binding differs once it is not current. This test alone is
+/// NOT evidence for the S-4 mark: the Freshness row itself is part of the digest,
+/// so the digest differs even without the mark. The mark's invariant rests on
+/// three things: the digest does not change when candidates are added while
+/// not-current (`digest_reads_no_eligibility_for_a_not_current_graph`), the unit
+/// test that the mark is disjoint from every resolved-Source status, and the
+/// `NEX_VERIFY_GRAPH_STATE_CHANGED` refusals of a report sealed before the Graph
+/// became not-current (`a_report_sealed_before_the_graph_became_not_current_...`).
 #[test]
-fn digest_of_a_binding_differs_once_it_is_not_current_even_with_no_other_change() -> Result<()> {
+fn digest_of_a_binding_differs_once_it_is_not_current() -> Result<()> {
     let _serial = serial();
     use crate::narrative_extraction::source_revision::ForegroundValidationControl;
     let foreground_digest = |fixture: &Fixture| -> Result<String> {

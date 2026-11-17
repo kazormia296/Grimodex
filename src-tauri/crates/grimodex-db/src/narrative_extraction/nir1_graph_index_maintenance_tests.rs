@@ -2292,6 +2292,18 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         error_text(&current_uncontrolled).contains("context-unavailable"),
         "{current_uncontrolled:#}"
     );
+    // And the B-ROUTE still turns exactly that into the wake for the seam.
+    let recorder = Recorder::default();
+    let (discovered, _) = main_wake_cycle_with_discovery(
+        &fixture,
+        Some(&graph_seam()),
+        "workspace-opened",
+        &recorder,
+    )?;
+    assert_eq!(
+        discovered,
+        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
     Ok(())
 }
 
@@ -2828,6 +2840,19 @@ fn product_gate_turns_context_unavailable_into_a_wake_that_rebuilds() -> Result<
         "closed gate, current binding: {error:#}"
     );
     assert!(closed.cycle.is_none());
+    assert_eq!(generation(current.db())?, Some(1));
+    // Under the product gate that same `context-unavailable` is turned into the
+    // wake (DR-BSEAM-2), whose cycle judges the current binding and builds
+    // nothing.
+    let product = wake_step(&current, Launch::Product)?;
+    assert_eq!(
+        product.discovery?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    assert_eq!(
+        product.cycle.expect("the wake starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
     assert_eq!(generation(current.db())?, Some(1));
 
     // A dirty (recognized not-current) sealed binding.
