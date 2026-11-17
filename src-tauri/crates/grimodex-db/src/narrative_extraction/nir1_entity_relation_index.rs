@@ -2655,6 +2655,71 @@ pub(crate) fn classify_graph_binding_with_control(
     if binding.dirty {
         return Ok(GraphBindingClass::RecognizedNotCurrent);
     }
+    let current = graph_freshness_is_current(conn, project, &epoch.id)?;
+    control.check(GraphWorkStage::Coverage)?;
+    Ok(if current {
+        GraphBindingClass::Current
+    } else {
+        GraphBindingClass::RecognizedNotCurrent
+    })
+}
+
+/// `classify_graph_binding_with_control(..) == RecognizedNotCurrent`, without
+/// the structural read when the single-row evidence already rules it out.
+///
+/// GDV/1 callers (S-1 to S-5) act on exactly one class: recognized not-current.
+/// `Absent`, `Incoherent`, `Current` and `NoCurrentEpoch` all keep today's
+/// behaviour. The structural read of stage one materializes every Graph Edge
+/// and the whole active declaration set, so it runs only when the cheap rows
+/// leave recognized not-current possible: a current Semantic Epoch exists, and
+/// the binding is dirty or its Freshness is not current. A fresh, clean binding
+/// (the common case, and the one Rebuild sees) never reads its Edges here, so
+/// the decision cannot read the stored Graph past the capacity admission of the
+/// phase that called it (DR-PUBG-5-16, "capacity boundary"). When the structural
+/// read does run it admits the stored Graph first (`read_internal_bounded`), and
+/// a capacity or control Err is returned as is.
+pub(crate) fn is_graph_binding_recognized_not_current_with_control(
+    conn: &mut Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    control.check(GraphWorkStage::Coverage)?;
+    if conn.is_autocommit() {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        return is_graph_binding_recognized_not_current_with_control(&mut tx, project, control);
+    }
+    if conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 35 {
+        return Ok(false);
+    }
+    let Some(epoch) = get_current_epoch(conn, project)? else {
+        return Ok(false);
+    };
+    let dirty: Option<i64> = conn
+        .query_row(
+            "SELECT dirty_cache_flag FROM narrative_semantic_index_metadata
+              WHERE project_id=?1 AND index_key=?2",
+            params![project, INDEX_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // No metadata row: `Absent` or `Incoherent`, never recognized not-current.
+    let Some(dirty) = dirty else {
+        return Ok(false);
+    };
+    control.check(GraphWorkStage::Coverage)?;
+    if dirty == 0 && graph_freshness_is_current(conn, project, &epoch.id)? {
+        // Clean and current: `Current` or `Incoherent`, never recognized
+        // not-current. The structural read is not needed to decide that.
+        return Ok(false);
+    }
+    Ok(classify_graph_binding_with_control(conn, project, control)?
+        == GraphBindingClass::RecognizedNotCurrent)
+}
+
+/// The Freshness row is `fresh` / `none` at the current Semantic Epoch.
+/// Shared by the classification and its single-row pre-screen so the two can
+/// never disagree.
+fn graph_freshness_is_current(conn: &Connection, project: &str, epoch_id: &str) -> Result<bool> {
     let freshness = conn
         .query_row(
             "SELECT evidence_freshness,build_action,semantic_epoch_id
@@ -2670,19 +2735,13 @@ pub(crate) fn classify_graph_binding_with_control(
             },
         )
         .optional()?;
-    control.check(GraphWorkStage::Coverage)?;
-    let current = matches!(
+    Ok(matches!(
         &freshness,
         Some((freshness, action, semantic_epoch))
             if matches!(EvidenceFreshness::try_from(freshness.as_str()), Ok(EvidenceFreshness::Fresh))
                 && matches!(BuildAction::try_from(action.as_str()), Ok(BuildAction::None))
-                && semantic_epoch == &epoch.id
-    );
-    Ok(if current {
-        GraphBindingClass::Current
-    } else {
-        GraphBindingClass::RecognizedNotCurrent
-    })
+                && semantic_epoch == epoch_id
+    ))
 }
 
 /// Check whether the exact Graph binding is completely registered and live

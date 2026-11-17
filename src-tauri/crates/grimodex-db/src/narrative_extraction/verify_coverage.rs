@@ -516,21 +516,19 @@ pub(crate) fn verify_semantic_index_checks_with_control(
     check_control(control, GraphWorkStage::Coverage)?;
     // GDV/1 S-3: a recognized not-current Graph binding is a declared one; the
     // classification comes first so the eligibility is never read for it.
-    let graph_declared = if super::nir1_entity_relation_index::classify_graph_binding_with_control(
-        conn,
-        project_id,
-        control,
-    )? == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent
-    {
-        true
-    } else {
-        super::nir1_entity_relation_index::is_complete_registered_with_control(
-            conn,
-            project_id,
-            super::nir1_entity_relation_index::INDEX_KEY,
-            control,
-        )?
-    };
+    let graph_declared =
+        if super::nir1_entity_relation_index::is_graph_binding_recognized_not_current_with_control(
+            conn, project_id, control,
+        )? {
+            true
+        } else {
+            super::nir1_entity_relation_index::is_complete_registered_with_control(
+                conn,
+                project_id,
+                super::nir1_entity_relation_index::INDEX_KEY,
+                control,
+            )?
+        };
     if graph_declared {
         let known_edge_count: i64 = conn.query_row("SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
             params![project_id,super::nir1_entity_relation_index::INDEX_KEY],|row|row.get(0))?;

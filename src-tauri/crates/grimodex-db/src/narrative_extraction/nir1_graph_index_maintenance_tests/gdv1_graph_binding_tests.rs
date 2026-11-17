@@ -2639,3 +2639,105 @@ fn graph_judgement_local_failure_classification_table() {
     );
     assert!(!is_graph_judgement_local_failure(&both));
 }
+
+// ---------------------------------------------------------------------------
+// DR-PUBG-5-16, "capacity boundary": the decision never reads the Graph Edges
+// past the capacity admission of the phase that asks for it.
+// ---------------------------------------------------------------------------
+
+/// Count the Graph Edge materializations (`find_edges_by_consumer` on the Graph
+/// consumer) that `operation` makes.
+fn graph_edge_materializations<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    use crate::narrative_extraction::nir1_capacity::materialization_probe::READS;
+    READS.with(|reads| reads.replace(Some(Vec::new())));
+    let result = operation();
+    let reads = READS.with(|reads| reads.take().unwrap_or_default());
+    (result, reads.iter().filter(|(d1, _)| !*d1).count())
+}
+
+fn recognized_not_current(fixture: &Fixture) -> Result<bool> {
+    fixture.db().with_conn_mut(|conn| {
+        let mut control = NeverStopGraphWorkControl;
+        crate::narrative_extraction::nir1_entity_relation_index::is_graph_binding_recognized_not_current_with_control(
+            conn, PROJECT, &mut control,
+        )
+    })
+}
+
+fn oversize_graph_edges(fixture: &Fixture) -> Result<()> {
+    let padding =
+        serde_json::json!(
+            ["x".repeat(crate::narrative_extraction::nir1_capacity::INPUT_BYTES + 1)]
+        )
+        .to_string();
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_dependency_edges SET read_set_json=?1
+              WHERE project_id=?2 AND consumer_kind='semantic-index' AND consumer_key=?3",
+            rusqlite::params![padding, PROJECT, INDEX_KEY],
+        )?;
+        Ok(())
+    })
+}
+
+#[test]
+fn the_decision_does_not_read_graph_edges_past_the_capacity_admission() -> Result<()> {
+    use crate::narrative_extraction::source_revision::is_validation_capacity_exceeded;
+    let _serial = serial();
+
+    // A clean, current binding: the single-row evidence decides. The Edges are
+    // not read, so a Rebuild's later capacity recheck is never preempted.
+    let fixture = Fixture::published()?;
+    assert_eq!(classify(&fixture)?, C::Current);
+    let (decided, reads) = graph_edge_materializations(|| recognized_not_current(&fixture));
+    assert!(!decided?);
+    assert_eq!(reads, 0, "a current binding is decided without its Edges");
+
+    // The same, once the stored Graph has grown past the byte bound (the form
+    // the Rebuild recheck test meets): the decision is false and reads no Edge.
+    // The phase that asked enforces the bound, as it did before GDV/1.
+    oversize_graph_edges(&fixture)?;
+    let (decided, reads) = graph_edge_materializations(|| recognized_not_current(&fixture));
+    assert!(!decided?, "clean and current: not recognized not-current");
+    assert_eq!(reads, 0, "an oversize clean Graph is not read to decide");
+
+    // Dirty, with Edges over the byte bound: the structural read admits the
+    // stored Graph first, so the capacity Err comes back before any Edge row is
+    // materialized. Neither entry point treats it as recognized not-current.
+    execute(
+        &fixture,
+        &format!("UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1 WHERE project_id='{PROJECT}'"),
+    )?;
+    let (full, reads) = graph_edge_materializations(|| classify(&fixture));
+    let error = full.expect_err("classify admits the stored Graph before reading it");
+    assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+    assert!(error.to_string().contains("stored-edge-bytes"), "{error:#}");
+    assert_eq!(reads, 0, "classify materializes no Edge over the bound");
+    let (decided, reads) = graph_edge_materializations(|| recognized_not_current(&fixture));
+    let error = decided.expect_err("the decision returns the same capacity Err");
+    assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+    assert_eq!(reads, 0, "the decision materializes no Edge over the bound");
+    Ok(())
+}
+
+/// The pre-screen is only an optimization: for every one of the 21 binding
+/// shapes it answers exactly `classify(..) == RecognizedNotCurrent`.
+#[test]
+fn the_decision_equals_the_classification_for_every_binding_shape() -> Result<()> {
+    let _serial = serial();
+    let mut recognized = 0;
+    for (name, sql) in binding_shapes() {
+        let fixture = Fixture::published()?;
+        if !sql.is_empty() {
+            execute(&fixture, &sql)?;
+        }
+        let expected = classify(&fixture)? == C::RecognizedNotCurrent;
+        assert_eq!(recognized_not_current(&fixture)?, expected, "{name}");
+        recognized += usize::from(expected);
+    }
+    assert!(
+        recognized > 0,
+        "the shapes include recognized not-current ones"
+    );
+    Ok(())
+}

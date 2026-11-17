@@ -1767,11 +1767,11 @@ pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
         // The decision is taken again in this transaction (K-4).
         if is_reserved_semantic_index_consumer_kind(&consumer_kind)
             && consumer_key == super::nir1_entity_relation_index::INDEX_KEY
-            && super::nir1_entity_relation_index::classify_graph_binding_with_control(
+            && super::nir1_entity_relation_index::is_graph_binding_recognized_not_current_with_control(
                 conn,
                 project_id,
                 control,
-            )? == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent
+            )?
         {
             verification.diagnostics.push(format!(
                 "NEX_V2_SHADOW_REBUILD_RECOGNIZED_UNAVAILABLE:{consumer_kind}:{consumer_key}"
@@ -2709,26 +2709,24 @@ fn durable_graph_state_digest_with_control_within_capacity(
         // only when a Graph Edge exists. A recognized not-current binding's
         // Edges do not resolve their Source (so the whole-project eligibility
         // is never read); only `resolvedSource` is replaced by a fixed mark.
-        let mut graph_class: Option<super::nir1_entity_relation_index::GraphBindingClass> = None;
+        let mut graph_not_current: Option<bool> = None;
         for (edge_id, consumer_kind, consumer_key, source_identity, owning_run_id) in edge_rows {
             control.check(GraphWorkStage::Edge)?;
             let mut recognized_unavailable = false;
             if is_reserved_semantic_index_consumer_kind(&consumer_kind)
                 && consumer_key == super::nir1_entity_relation_index::INDEX_KEY
             {
-                let class = match graph_class {
-                    Some(class) => class,
+                recognized_unavailable = match graph_not_current {
+                    Some(decided) => decided,
                     None => {
-                        let class =
-                            super::nir1_entity_relation_index::classify_graph_binding_with_control(
+                        let decided =
+                            super::nir1_entity_relation_index::is_graph_binding_recognized_not_current_with_control(
                                 conn, project_id, control,
                             )?;
-                        graph_class = Some(class);
-                        class
+                        graph_not_current = Some(decided);
+                        decided
                     }
                 };
-                recognized_unavailable = class
-                    == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent;
             }
             resolved.push(durable_edge_resolution_input_with_control(
                 conn,
@@ -5552,11 +5550,11 @@ fn verify_narrative_dependency_graph_for_project_with_control_within_capacity(
         // whole-project eligibility. Its Edges are outside S-1..S-3.
         let graph_not_current = is_reserved_semantic_index_consumer_kind(consumer_kind)
             && consumer_key == super::nir1_entity_relation_index::INDEX_KEY
-            && super::nir1_entity_relation_index::classify_graph_binding_with_control(
+            && super::nir1_entity_relation_index::is_graph_binding_recognized_not_current_with_control(
                 conn,
                 project_id,
                 control,
-            )? == super::nir1_entity_relation_index::GraphBindingClass::RecognizedNotCurrent;
+            )?;
         let kind_is_declared = graph_not_current
             || is_declared_consumer_kind(consumer_kind)
             || (is_reserved_semantic_index_consumer_kind(consumer_kind)
