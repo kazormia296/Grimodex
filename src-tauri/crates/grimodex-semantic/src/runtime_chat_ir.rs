@@ -83,8 +83,11 @@ pub enum ChatIrUnavailable {
     /// connection was busy for the whole deadline). No inference ran.
     ConnectionBusy,
     /// The deadline elapsed (waiting for the embedder, before inference, or
-    /// while the terminal records could not be written). The vector, if any,
-    /// was dropped.
+    /// after the terminal records became durable late), **or the terminal audit
+    /// records could not be written** (the deadline ran out, the writer was busy
+    /// past the clipped wait, or the append failed transiently): the two are
+    /// not told apart on purpose (DR-CHATIR-S1-12). Either way the vector was
+    /// dropped and the records travel as `pending_terminal_audit`.
     Timeout,
     /// The inference itself failed. Its terminal record was written or
     /// deferred like any other.
@@ -304,6 +307,16 @@ impl SemanticAuditAppender for ChatIrAuditAppender {
                 }
                 Err(anyhow::Error::new(ChatIrAuditDeferred))
             }
+            // The SQLite busy wait is clipped (at most 1 s, DR-CHATIR-S1-12), so
+            // another writer that outlasts it ends the attempt as busy/locked.
+            // Nothing was written; it is the same "not durable in time" as a
+            // connection that stayed busy.
+            Err(error) if is_sqlite_busy(&error) => {
+                if started {
+                    self.defer(project_id, events);
+                }
+                Err(anyhow::Error::new(ChatIrAuditDeferred))
+            }
             Err(error) => {
                 if started {
                     self.defer(project_id, events);
@@ -312,6 +325,20 @@ impl SemanticAuditAppender for ChatIrAuditAppender {
             }
         }
     }
+}
+
+fn is_sqlite_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .and_then(rusqlite::Error::sqlite_error_code)
+            .is_some_and(|code| {
+                matches!(
+                    code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+            })
+    })
 }
 
 // Test seams: wait until the deadline has passed at two instants that are

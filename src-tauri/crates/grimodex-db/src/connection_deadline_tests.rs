@@ -285,6 +285,25 @@ fn participant_read_until_does_not_preempt_a_maintenance_run() {
         .expect("the maintenance run was not preempted");
 }
 
+fn is_sqlite_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .and_then(rusqlite::Error::sqlite_error_code)
+            .is_some_and(|code| {
+                matches!(
+                    code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+            })
+    })
+}
+
+fn connection_busy_timeout_ms(db: &Database) -> i64 {
+    db.with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
+        .expect("read busy_timeout")
+}
+
 fn started_event(execution_id: &str, event_id: &str) -> AppendAiAuditEvent {
     AppendAiAuditEvent {
         event_id: event_id.to_string(),
@@ -410,10 +429,8 @@ fn audit_append_until_is_bounded_by_the_deadline() {
         started + Duration::from_millis(300),
     );
     let elapsed = started.elapsed();
-    assert!(
-        outcome.is_err(),
-        "a write lock held elsewhere is an error, not a silent skip"
-    );
+    let error = outcome.expect_err("a write lock held elsewhere is an error, not a silent skip");
+    assert!(is_sqlite_busy(&error), "{error:#}");
     assert!(
         elapsed < Duration::from_secs(3),
         "busy wait not clipped: {elapsed:?}"
@@ -428,5 +445,95 @@ fn audit_append_until_is_bounded_by_the_deadline() {
         )
         .expect("not an error");
     assert!(written.is_some());
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+/// DR-CHATIR-S1-12 (a): inside the operation of the deadline-bound participant
+/// read, SQLite's busy wait is the budget's value clipped to the time left (here
+/// 400 ms of 5 s). It cannot exceed what is left at the moment the scope is
+/// set, so the bound `<= deadline - started` holds without any timing.
+#[test]
+fn participant_read_until_clips_the_busy_timeout_to_the_remaining_deadline() {
+    let db = test_db();
+    let (_core, participant) = test_participant();
+    let before = connection_busy_timeout_ms(&db);
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(400);
+    let seen = db
+        .try_with_participant_read_transaction_until(&participant, budget(deadline), |conn| {
+            Ok(conn.pragma_query_value::<i64, _>(None, "busy_timeout", |row| row.get(0))?)
+        })
+        .expect("not an error")
+        .expect("connection available");
+    let left_at_start = deadline.saturating_duration_since(started).as_millis() as i64;
+    assert!(
+        seen <= left_at_start,
+        "busy_timeout {seen} ms > {left_at_start} ms left"
+    );
+    assert!(seen < 5_000, "the budget's 5 s was not clipped: {seen} ms");
+    // The scope gives the connection back with its default.
+    assert_eq!(connection_busy_timeout_ms(&db), before);
+}
+
+/// The busy wait of the deadline-bound append is the time left, at most 1 s.
+#[test]
+fn bounded_append_busy_wait_is_the_time_left_at_most_one_second() {
+    use crate::ai_audit::{bounded_append_busy_wait, BOUNDED_APPEND_MAX_BUSY_WAIT};
+    assert_eq!(BOUNDED_APPEND_MAX_BUSY_WAIT, Duration::from_secs(1));
+    assert_eq!(
+        bounded_append_busy_wait(Duration::from_secs(30)),
+        Duration::from_secs(1)
+    );
+    assert_eq!(
+        bounded_append_busy_wait(Duration::from_millis(200)),
+        Duration::from_millis(200)
+    );
+    assert_eq!(bounded_append_busy_wait(Duration::ZERO), Duration::ZERO);
+}
+
+/// DR-CHATIR-S1-12 (1) and (b): with 30 s left and another writer holding the
+/// write lock, the append ends at the 1 s clip (a busy/locked error, nothing
+/// written), and the connection has its default `busy_timeout` back after the
+/// failure and after a success. Without the clip the wait would be the 30 s left.
+#[test]
+fn audit_append_until_clips_the_busy_wait_to_one_second_and_restores_the_default() {
+    let directory = std::env::temp_dir().join(format!("chat-ir-audit-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).expect("directory");
+    let path = directory.join("workspace.db");
+    let db = Database::new(&path).expect("file database");
+    db.migrate().expect("migrate");
+    let default_timeout = connection_busy_timeout_ms(&db);
+    let events = [started_event("execution-4", "event-4")];
+    let other = rusqlite::Connection::open(&path).expect("second connection");
+    other
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("another writer holds the write lock");
+    let started = Instant::now();
+    let error = db
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            started + Duration::from_secs(30),
+        )
+        .expect_err("a writer that outlasts the clipped wait is an error");
+    let elapsed = started.elapsed();
+    assert!(is_sqlite_busy(&error), "{error:#}");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "busy wait not clipped to 1 s: {elapsed:?}"
+    );
+    assert_eq!(connection_busy_timeout_ms(&db), default_timeout);
+    assert!(db.connection_reusable());
+    other.execute_batch("ROLLBACK").expect("release");
+    assert!(audit_rows(&db).is_empty());
+    let written = db
+        .try_append_ai_audit_events_for_scope_until(
+            None,
+            &events,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("not an error");
+    assert!(written.is_some());
+    assert_eq!(connection_busy_timeout_ms(&db), default_timeout);
     std::fs::remove_dir_all(&directory).ok();
 }

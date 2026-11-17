@@ -23,7 +23,11 @@ impl EventSink for QuietEvents {
 }
 
 fn fixture() -> (SemanticRuntime, SemanticRequest) {
-    let database = Database::new(Path::new(":memory:")).expect("create test DB");
+    fixture_at(Path::new(":memory:"))
+}
+
+fn fixture_at(database_path: &Path) -> (SemanticRuntime, SemanticRequest) {
+    let database = Database::new(database_path).expect("create test DB");
     database.migrate().expect("migrate test DB");
     database
         .with_conn(|connection| {
@@ -581,6 +585,61 @@ fn a_failed_inference_whose_terminal_misses_the_deadline_is_deferred() {
         event_types(&request).last().map(String::as_str),
         Some("execution.failed")
     );
+}
+
+/// DR-CHATIR-S1-12: another writer (a second connection to the file) that holds
+/// the write lock past the clipped (1 s) busy wait is the same "not durable in
+/// time" as a held connection, in both phases. Before inference: `ConnectionBusy`,
+/// no inference, nothing written, nothing pending. After inference: the result is
+/// dropped, the reason is `Timeout` (which also says "the terminal audit could
+/// not be written"), the terminal records are pending and a later flush writes
+/// them. The deadline (30 s) is far, so only the clip ends the wait.
+#[test]
+fn a_writer_that_outlasts_the_clipped_busy_wait_is_busy_before_and_deferred_after_inference() {
+    let directory = std::env::temp_dir().join(format!("chat-ir-busy-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).expect("directory");
+    let path = directory.join("workspace.db");
+    let (runtime, request) = fixture_at(&path);
+    let other = rusqlite::Connection::open(&path).expect("second connection");
+    other
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("another writer holds the write lock");
+
+    let calls = AtomicUsize::new(0);
+    let started = Instant::now();
+    let outcome = chat_ir(&runtime, &request, far(), || {
+        calls.fetch_add(1, Ordering::Relaxed);
+        Ok(unit_vector())
+    });
+    let (reason, pending) = unavailable(outcome);
+    assert_eq!(reason, ChatIrUnavailable::ConnectionBusy);
+    assert!(pending.is_none());
+    assert_eq!(calls.load(Ordering::Relaxed), 0, "no inference");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the busy wait was not clipped: {:?}",
+        started.elapsed()
+    );
+    other.execute_batch("ROLLBACK").expect("release");
+    assert!(event_types(&request).is_empty(), "nothing was written");
+
+    let outcome = chat_ir(&runtime, &request, far(), || {
+        other
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("another writer takes the lock after the start records");
+        Ok(unit_vector())
+    });
+    let (reason, pending) = unavailable(outcome);
+    assert_eq!(reason, ChatIrUnavailable::Timeout);
+    let mut pending = pending.expect("the terminal records are pending");
+    assert_eq!(pending.event_count(), 2);
+    other.execute_batch("ROLLBACK").expect("release");
+    assert!(pending.flush_with_budget().expect("flush"));
+    assert_eq!(
+        event_types(&request).last().map(String::as_str),
+        Some("execution.succeeded")
+    );
+    std::fs::remove_dir_all(&directory).ok();
 }
 
 /// A failure that has nothing to do with the deadline stays an error (an

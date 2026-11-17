@@ -1497,6 +1497,18 @@ fn append_ai_audit_events_with_durability(
     )
 }
 
+/// The longest SQLite busy wait of the deadline-bound append, whatever time is
+/// left. A connection already taken here is held while it waits for another
+/// writer, so the wait is short (DR-CHATIR-S1-12). When it is not enough, a
+/// pre-inference append is a connection-busy and a terminal one is deferred.
+pub(crate) const BOUNDED_APPEND_MAX_BUSY_WAIT: Duration = Duration::from_secs(1);
+
+/// The busy wait of the deadline-bound append: the time left, at most
+/// [`BOUNDED_APPEND_MAX_BUSY_WAIT`].
+pub(crate) fn bounded_append_busy_wait(remaining: Duration) -> Duration {
+    remaining.min(BOUNDED_APPEND_MAX_BUSY_WAIT)
+}
+
 /// [`append_ai_audit_events_with_durability`] with the SQLite busy wait chosen
 /// by the caller (the deadline-bound chat IR append clips it to the time left).
 fn append_ai_audit_events_with_durability_and_busy(
@@ -2454,7 +2466,7 @@ impl Database {
 
     /// DR-CHATIR-S1-11（chat IR の S1-A0）。`append_ai_audit_events_for_scope` と同じ
     /// 検証・行・順序で、接続を **foreground waiter を名乗らずに期限まで** 取り、
-    /// SQLite の busy の待ちも残り期限に切る。`Ok(None)` は、期限までに接続を取れず
+    /// SQLite の busy の待ちも min(残り期限, 1 s) に切る（DR-CHATIR-S1-12）。`Ok(None)` は、期限までに接続を取れず
     /// 何も書かなかったこと。取れた後の書き込み（BEGIN IMMEDIATE の後の 1 回の短い
     /// transaction）は途中で止められないので、完了は期限を少し超えうる。その場合も
     /// 結果は `Some`（commit 済みの事実は消せない）。呼び手が期限を過ぎたかを見る。
@@ -2465,14 +2477,16 @@ impl Database {
         deadline: std::time::Instant,
     ) -> anyhow::Result<Option<AiAuditAppendResult>> {
         self.try_with_conn_until(deadline, |conn| {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            self.with_busy_timeout_on(conn, remaining, |conn| {
+            let busy_wait = bounded_append_busy_wait(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            );
+            self.with_busy_timeout_on(conn, busy_wait, |conn| {
                 append_ai_audit_events_with_durability_and_busy(
                     conn,
                     project_id,
                     events,
                     AiAuditCommitDurability::ConnectionDefault,
-                    remaining,
+                    busy_wait,
                 )
             })
         })
