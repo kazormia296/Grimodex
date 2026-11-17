@@ -9545,29 +9545,12 @@ pub(super) mod tests {
                 nir1_entity_relation_index::INDEX_KEY,
             )
         })?);
-        let (digest_check, generation_check) = db.with_read_transaction(|conn| {
-            super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
-        })?;
-        assert!(
-            !digest_check.is_consistent(),
-            "a post-Decision dirty Graph must remain visible to Verify"
-        );
-        assert!(
-            !generation_check.is_consistent(),
-            "a post-Decision dirty Graph must remain visible to Verify"
-        );
-        assert!(!digest_check.incomplete.is_empty());
-        assert!(!generation_check.incomplete.is_empty());
-        let report = db.with_read_transaction(|conn| {
-            super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
-                conn,
-                "default-project",
-            )
-        })?;
-        assert!(
-            !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
-            "a dirty Graph must remain unresolved during dependency Verify"
-        );
+        // GDV/1 (GDV-R7, GDV-R1): a coherent but not-current Graph binding is a
+        // recognized `rebuildable-not-query-usable` binding. Verify counts its
+        // footprint as declared and leaves its Edges out of the unresolvable and
+        // missing-Source checks; it stays visible in the report's
+        // `consumers_excluded_not_current` field.
+        assert_graph_verify_excludes_not_current_graph(&db)?;
 
         let rebuilt = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
@@ -9672,7 +9655,7 @@ pub(super) mod tests {
             .map_err(Into::into)
         })?;
         assert_eq!(source_metadata, (1, 1));
-        assert_graph_verify_reports_dirty(&db)?;
+        assert_graph_verify_excludes_not_current_graph(&db)?;
         let source_error = db.with_conn_mut(|conn| {
             let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -9758,7 +9741,7 @@ pub(super) mod tests {
             .map_err(Into::into)
         })?;
         assert_eq!(scope_metadata, (1, 1));
-        assert_graph_verify_reports_dirty(&db)?;
+        assert_graph_verify_excludes_not_current_graph(&db)?;
         let scope_error = db.with_conn_mut(|conn| {
             let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -11190,20 +11173,22 @@ pub(super) mod tests {
         Ok(())
     }
 
-    fn assert_graph_verify_reports_dirty(db: &crate::Database) -> anyhow::Result<()> {
+    /// GDV/1: what Verify reports for a coherent Graph binding that is dirty (or
+    /// whose Freshness is not current). Before GDV/1 it counted such a binding as
+    /// incomplete reserved footprint and put its Edges in
+    /// `edge_ids_with_unresolvable_consumer_scope`.
+    fn assert_graph_verify_excludes_not_current_graph(
+        db: &crate::Database,
+    ) -> anyhow::Result<()> {
         let (digest_check, generation_check) = db.with_read_transaction(|conn| {
             super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
         })?;
         assert!(
-            !digest_check.is_consistent(),
-            "a dirty Graph must remain visible to Verify coverage"
+            digest_check.is_consistent() && generation_check.is_consistent(),
+            "a recognized not-current Graph is a declared footprint (GDV-R7)"
         );
-        assert!(
-            !generation_check.is_consistent(),
-            "a dirty Graph must remain visible to Verify coverage"
-        );
-        assert!(!digest_check.incomplete.is_empty());
-        assert!(!generation_check.incomplete.is_empty());
+        assert!(digest_check.incomplete.is_empty());
+        assert!(generation_check.incomplete.is_empty());
         let report = db.with_read_transaction(|conn| {
             super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
                 conn,
@@ -11211,8 +11196,30 @@ pub(super) mod tests {
             )
         })?;
         assert!(
-            !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
-            "a dirty Graph must remain unresolved during dependency Verify"
+            report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+            "a recognized not-current Graph's Edges are outside the unresolvable-scope check"
+        );
+        assert!(report.edge_ids_with_missing_source.is_empty());
+        // "Visible to Verify" is kept by the excluded-consumer field.
+        let graph_edge_count: i64 = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE project_id='default-project' AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert!(graph_edge_count > 0);
+        assert_eq!(
+            report.consumers_excluded_not_current,
+            vec![super::super::restore_rebuild::VerifyExcludedConsumer {
+                consumer_kind: "semantic-index".to_string(),
+                consumer_key: nir1_entity_relation_index::INDEX_KEY.to_string(),
+                edge_count: usize::try_from(graph_edge_count)?,
+            }],
+            "the excluded Graph stays visible to Verify"
         );
         Ok(())
     }

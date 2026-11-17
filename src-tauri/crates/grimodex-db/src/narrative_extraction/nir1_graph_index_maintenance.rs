@@ -594,6 +594,8 @@ pub(crate) fn judge_graph_index_build(
         |conn, inner| {
             let mut chained = MaintenanceCycleGraphControl::new(inner, Some(control));
             let tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            #[cfg(test)]
+            test_hooks::fire(test_hooks::TestStage::BeforeJudgement, Some(&tx))?;
             let judged = match read_build_hint(&tx, project_id, runtime, &mut chained)? {
                 HintRead::Skip(reason) => skipped(reason),
                 HintRead::Ready { scope, hint } => {
@@ -626,9 +628,11 @@ pub(crate) struct GraphBuildPlan {
 impl GraphBuildPlan {
     /// A stale sealed binding (dirty, not current, or not yet validated by
     /// this process) is rebuilt or validated by its own producer before the
-    /// durable chain re-verifies the graph. Verify classifies every edge of a
-    /// non-validated declared binding as a manual defect, so re-verifying
-    /// first would halt the cycle instead of repairing a rebuildable binding.
+    /// durable chain re-verifies the graph. GDV/1: Verify no longer treats a
+    /// coherent but not-current binding as a manual defect (it is excluded and
+    /// reported); the preemption stays so the producer repairs it first, and
+    /// Verify then validates the repaired binding in full. An incoherent
+    /// binding is still a manual defect.
     /// A missing binding has no footprint and waits for the durable chain.
     pub(crate) fn preempts_durable_chain(&self) -> bool {
         self.work.is_some()
@@ -1048,6 +1052,8 @@ pub(crate) mod test_hooks {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(crate) enum TestStage {
+        /// Inside the judgement's read transaction (GDV/1 case C-2 tests).
+        BeforeJudgement,
         BeforeValidation,
         BeforePrepare,
         BetweenPhases,

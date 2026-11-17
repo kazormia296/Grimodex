@@ -66,6 +66,8 @@ pub fn write_reviewed_child_cold_database_for_test(
 #[cfg(test)]
 mod freshness_share_tests;
 #[cfg(test)]
+mod gdv1_chronicle_unchanged_tests;
+#[cfg(test)]
 mod invalidate_tests;
 #[cfg(test)]
 mod multi_window_control_tests;
