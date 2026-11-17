@@ -23,7 +23,8 @@ pub(crate) const SUMMARY_MAX_CHARS: usize = 400;
 /// The mark that tells the audit replacement (S1-C) that an object is an IR
 /// item of this path.
 pub(crate) const IR_MARK: &str = "$grimodexIr";
-pub(crate) const ORIGIN: &str = "chronicle-ir";
+/// The contract (§3.3) names the origin of an IR item `manuscript`.
+pub(crate) const ORIGIN: &str = "manuscript";
 
 /// One admitted evidence of one admitted revision with its score.
 #[derive(Clone, Debug)]
@@ -128,9 +129,10 @@ fn build_item(candidate: &Candidate<'_>, title: String, generation: i64) -> Resu
         "sceneId": candidate.scene_id,
         "sceneTitle": title,
         "summary": summary,
-        "quote": candidate.quote,
+        // The summary is the AI's extraction that the author approved (§3.3).
+        "review": "human-approved",
+        "quotes": [candidate.quote],
         "score": score,
-        "generation": generation,
     });
     let canonical = canonical_json(&value);
     Ok(IrItem {

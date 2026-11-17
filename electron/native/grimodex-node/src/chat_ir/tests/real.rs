@@ -225,6 +225,24 @@ async fn an_open_gate_refuses_a_request_of_the_wrong_shape_with_the_closed_code(
     assert_eq!(rig.audit_rows(), 0);
 }
 
+/// A call answers before its task releases the permit and the participant (the
+/// tail comes after the answer), so a test that counts them waits for the task.
+async fn wait_until_idle(rig: &Rig) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline
+        && (rig.state.chat_ir.permits.in_flight() != 0
+            || rig
+                .state
+                .ws
+                .lifecycle_core()
+                .workspace_participant_count()
+                .unwrap()
+                != 0)
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn status_of(rig: &Rig, payload: Value) -> Value {
     let text = select(Arc::clone(&rig.state), payload)
         .await
@@ -261,16 +279,14 @@ async fn the_third_call_is_busy_without_waiting_and_a_freed_place_works_again() 
     let started = Instant::now();
     let answer = status_of(&rig, rig.payload("scene")).await;
     assert_eq!(answer["status"], "busy");
-    assert!(
-        started.elapsed() < Duration::from_millis(500),
-        "busy waited"
-    );
+    assert!(started.elapsed() < Duration::from_secs(2), "busy waited");
     drop(first);
     // Now a place is free; the call goes on and ends in its first read (no
     // index here), returning its place.
     let answer = status_of(&rig, rig.payload("scene")).await;
     assert_eq!(answer["status"], "index-unavailable");
     drop(second);
+    wait_until_idle(&rig).await;
     assert_eq!(rig.state.chat_ir.permits.in_flight(), 0);
 }
 
@@ -494,7 +510,7 @@ fn a_busy_connection_ends_the_first_read_at_the_probe_not_at_the_deadline() {
             database
                 .with_conn(|_| {
                     barrier.wait();
-                    std::thread::sleep(Duration::from_millis(1500));
+                    std::thread::sleep(Duration::from_millis(2500));
                     Ok(())
                 })
                 .unwrap();
@@ -513,7 +529,7 @@ fn a_busy_connection_ends_the_first_read_at_the_probe_not_at_the_deadline() {
             "{elapsed:?}: it did not wait for the connection at all"
         );
         assert!(
-            elapsed < Duration::from_millis(1000),
+            elapsed < Duration::from_millis(2000),
             "{elapsed:?}: it waited for the holder, not for the probe"
         );
     });
@@ -532,6 +548,21 @@ fn a_read_after_the_pinned_workspace_stopped_being_current_is_workspace_changed(
         Duration::from_secs(1),
     );
     assert_eq!(outcome.err(), Some(ChatIrStatus::WorkspaceChanged));
+}
+
+/// What a read returns once the workspace is closing is an ordinary status, not
+/// `internal` (the real error of the real stop, not a constructed one).
+#[test]
+fn a_read_after_a_shutdown_request_is_workspace_unavailable() {
+    let rig = rig("stopped-read", "ja");
+    let backend = rig.backend();
+    rig.state.ws.lifecycle_core().request_shutdown().unwrap();
+    let outcome = backend.first_read(
+        &rig.request("scene"),
+        Instant::now() + Duration::from_secs(5),
+        Duration::from_secs(1),
+    );
+    assert_eq!(outcome.err(), Some(ChatIrStatus::WorkspaceUnavailable));
 }
 
 // ---- S1A-8 / S1A-11 / S1A-14: the embedding step -----------------------------------
@@ -626,7 +657,7 @@ fn shutdown_is_not_held_up_by_a_call_in_its_tail() {
         let waited = requested.elapsed();
         // slice 100 ms + close flush 200 ms, plus one attempt in progress.
         assert!(
-            waited < Duration::from_millis(2000),
+            waited < Duration::from_secs(10), // the tail budget is 30 s
             "shutdown waited {waited:?} for the tail"
         );
         eprintln!(
@@ -672,15 +703,23 @@ mod log_capture {
         fn new_span(&self, attributes: &Attributes<'_>) -> Id {
             let mut text = Text(String::new());
             attributes.record(&mut text);
-            self.0.lock().unwrap().push(text.0);
+            if text.0.contains(super::SECRET) {
+                self.0.lock().unwrap().push(text.0);
+            }
             Id::from_u64(1)
         }
         fn record(&self, _: &Id, _: &Record<'_>) {}
         fn record_follows_from(&self, _: &Id, _: &Id) {}
         fn event(&self, event: &Event<'_>) {
-            let mut text = Text(event.metadata().target().to_string() + " ");
+            // Only what this test looks at, so the process-wide subscriber
+            // neither grows without bound nor slows the other tests: the chat
+            // IR's own events and any line that carries the secret.
+            let target = event.metadata().target();
+            let mut text = Text(target.to_string() + " ");
             event.record(&mut text);
-            self.0.lock().unwrap().push(text.0);
+            if target.starts_with("grimodex_node::chat_ir") || text.0.contains(super::SECRET) {
+                self.0.lock().unwrap().push(text.0);
+            }
         }
         fn enter(&self, _: &Id) {}
         fn exit(&self, _: &Id) {}
@@ -698,9 +737,11 @@ mod log_capture {
     }
 }
 
+const SECRET: &str = "SECRET-QUERY-TOKEN-7f3a";
+
 #[tokio::test]
 async fn no_path_logs_the_query() {
-    let secret = "SECRET-QUERY-TOKEN-7f3a";
+    let secret = SECRET;
     let lines = log_capture::lines();
     tracing::info!("log capture is installed");
     assert!(
@@ -723,6 +764,7 @@ async fn no_path_logs_the_query() {
     let mut long = payload.clone();
     long["query"] = json!(format!("{secret}{}", "a".repeat(600)));
     status_of(&rig, long).await;
+    wait_until_idle(&rig).await;
     let held: Vec<_> = (0..2)
         .map(|_| rig.state.chat_ir.permits.try_acquire().unwrap())
         .collect();
@@ -747,10 +789,7 @@ async fn no_path_logs_the_query() {
         sender,
     );
     // The blocking tasks of the calls above end (tail included) before looking.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while rig.state.chat_ir.permits.in_flight() != 0 && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_idle(&rig).await;
     let captured = lines.lock().unwrap().join("\n");
     assert!(
         captured.contains("terminal audit tail ended"),

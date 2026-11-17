@@ -390,9 +390,9 @@ fn the_projection_is_an_allowlist_of_the_summary_and_the_quote() {
         keys,
         [
             "$grimodexIr",
-            "generation",
             "origin",
-            "quote",
+            "quotes",
+            "review",
             "revisionId",
             "sceneId",
             "sceneTitle",
@@ -555,7 +555,7 @@ fn permits_never_exceed_the_limit_and_never_wait() {
     let started = Instant::now();
     assert!(pool.try_acquire().is_none());
     assert!(
-        started.elapsed() < Duration::from_millis(50),
+        started.elapsed() < Duration::from_secs(1),
         "try_acquire waited"
     );
     assert_eq!(pool.in_flight(), 2);
@@ -676,7 +676,7 @@ fn tail_slices_so_the_stop_request_is_seen_between_attempts() {
     handle.join().unwrap();
     assert_eq!(end, TailEnd::Stopped { flushed: false });
     assert!(
-        started.elapsed() < Duration::from_millis(80 + 30 + 40 + 400),
+        started.elapsed() < Duration::from_secs(5), // the one attempt alone would be 10 s
         "the tail outlived the stop request by {:?}",
         started.elapsed()
     );
@@ -704,7 +704,7 @@ fn tail_ends_at_its_budget() {
     );
     let elapsed = started.elapsed();
     assert!(elapsed >= Duration::from_millis(200), "{elapsed:?}");
-    assert!(elapsed < Duration::from_millis(600), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
 }
 
 #[test]

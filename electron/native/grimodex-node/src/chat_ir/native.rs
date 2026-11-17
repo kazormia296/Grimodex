@@ -71,6 +71,17 @@ impl NativeBackend {
         }
     }
 
+    /// Why the pinned request is no longer current: a workspace that is closing
+    /// or in transition is `workspace-unavailable`; another database or another
+    /// epoch is `workspace-changed`.
+    fn not_current(&self) -> ChatIrStatus {
+        if self.participant.stop_requested().unwrap_or(true) {
+            ChatIrStatus::WorkspaceUnavailable
+        } else {
+            ChatIrStatus::WorkspaceChanged
+        }
+    }
+
     /// The pinned request is still the active workspace's and the semantic
     /// epoch it was pinned in (the check Related Scenes makes at each of its
     /// steps).
@@ -181,7 +192,7 @@ impl Backend for NativeBackend {
         probe: Duration,
     ) -> Result<FirstRead<NirQuerySnapshot>, ChatIrStatus> {
         if !self.is_current() {
-            return Err(ChatIrStatus::WorkspaceChanged);
+            return Err(self.not_current());
         }
         let db = self.request.database();
         let mut control = self.control(deadline);
@@ -375,7 +386,7 @@ impl Backend for NativeBackend {
             .validate_chat_ir_query_current(query, basis.spec)
             .map_err(|error| from_error(&error))?;
         if !self.is_current() {
-            return Err(ChatIrStatus::WorkspaceChanged);
+            return Err(self.not_current());
         }
         Ok(items)
     }
