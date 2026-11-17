@@ -992,3 +992,15 @@
 - **他の呼出し元の確認（手順 4）**：`classify` の呼出しは S-1（`verify_narrative_dependency_graph_for_project_with_control_within_capacity`）、S-3（`verify_semantic_index_checks_with_control`）、S-4（`durable_graph_state_digest_with_control_within_capacity`）、S-5 の 4 つだけで、全部この helper に替えた。S-1・S-3・S-4 は、判定の後にその関数自身が Graph の edge を全件読む（容量の admission の中）ので、判定が先に読んでも境界は越えていなかったが、current な Graph では 2 回読んでいた分が無くなった。`maintenance_runtime.rs` の C-2（`plan_graph_index_build` の判定）、discovery、`nir1_graph_index_maintenance.rs`、`repair.rs`、`c2z_preparation.rs` の基点との差分に、`find_edges_by_consumer`・`read`・`is_registered`・`is_complete_registered`・`read_eligibility_source` を新しく呼ぶ行は無い（差分の追加行を grep した）。C-2 の判定は GDV/1 の前から B の planner が持つ読みで、本 DR の helper は呼ばない。
 - **試験**（`gdv1_graph_binding_tests.rs`）：`the_decision_does_not_read_graph_edges_past_the_capacity_admission`（clean で current な binding は edge を 0 回 materialize して `false`。同じ binding の edge が byte の上限を超えても `false` で 0 回。dirty にして上限を超えると `classify` も helper も `stored-edge-bytes` の容量の Err を返し、edge は 0 回。`if false` で前段を無効にする変異で、1 回になって落ちることを確かめた）と `the_decision_equals_the_classification_for_every_binding_shape`（21 形で `classify == RecognizedNotCurrent` と一致）。落ちた試験 `rebuild_rechecks_graph_growth_after_the_d1_snapshot` は変えずに通る。
 - **動かさないもの**：閾値（`INPUT_BYTES`、`STORED_COLLECTION_LIMIT` など）、契約の本文、5 値の分類、report と digest の形、K-2 (b) の byte 互換、(x) の gate。新しい書込み・保存先・送信先・owner・永続状態は無い。
+
+#### 8. 最終 head の検証（2026-11-17。§7 の直しの後）
+
+- **最後の code commit：`996efe59`**。その後の docs だけの commit（この節を足す。`broute-decisions.md` だけで、code・試験・fixture を変えない）以後は、検証を `996efe59` の code に対して実施した値とする。基点は `1dcc7b88`。Node は 22（`fnm exec --using=22`）、cargo の target は `/home/grimodex/cargo-targets/gdv1-impl`。
+- `cargo test -p grimodex-db --features nir1-material-diagnostics --lib`（CI の impact の形、全件）：**2,889 passed、0 failed、63 ignored**。Quick で落ちた `rebuild_rechecks_graph_growth_after_the_d1_snapshot` を含め、変えずに通る。
+- `cargo test -p grimodex-db --lib`（全件）：**2,846 passed、0 failed、63 ignored**（§6 の 2,822 に、基点 `1dcc7b88` の取り込みと §7 の 2 本で増えた）。
+- `cargo test --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --test nir1_capacity_boundaries`：成功（0 件。この test target は feature が要る試験を持たず、本体の試験は上の lib に入っている）。
+- Native `cargo test --lib --features licensing,legacy-keyring-migration`：**838 passed、0 failed、7 ignored**。
+- clippy：`-p grimodex-db --all-targets -- -D warnings` は成功。`--features nir1-material-diagnostics` は 11 件（lib）・7 件（lib test）の既存の指摘（`nir1_graph.rs`、`nir1_graph/input.rs`、`nir1_graph_memory_diagnostics.rs`。`too many arguments`、`never used` など）で失敗し、本枝が触った file には 1 件も無い（この 3 file は基点との差分が無い）。Native の clippy（同 features、`--all-targets -- -D warnings`）：成功。
+- `fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
+- C2-ZC の receipt（`--base 1dcc7b88437b4720350d7e537811d595a716c055`、clean tree、`resolvedHeadSha` は `996efe597faaf42585fc14150b4173df64495294`）：`sha256:2acfeb15653e531dad6bd1ea22bf4acca5d32dc82ceb7dc53265e6dbb0fb26db`。
+- **省いたもの**：CI の `ci:local:quick --part 2` の impact の選択の手元の再現は、重いので実施していない。落ちた試験は、その選択が使う形（`--features nir1-material-diagnostics --lib`）の全件で通った。
