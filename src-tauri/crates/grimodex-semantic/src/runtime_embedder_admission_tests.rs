@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Timeouts only bound a broken test's lifetime. Ordering is established by
 // operation-entry messages and the admission helper's actual waiter count.
@@ -338,4 +338,141 @@ fn foreground_error_and_panic_release_the_next_waiter_before_background() {
             Err(mpsc::TryRecvError::Empty)
         ));
     }
+}
+
+/// Hold the admission on a thread until released: the holder is an admitted
+/// foreground inference.
+fn hold_admission(admission: &Arc<EmbedderAdmission>) -> (Sender<()>, Worker<Result<()>>) {
+    let (held_tx, held_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let admission = Arc::clone(admission);
+    let holder = worker(move || {
+        admission.foreground(|| {
+            held_tx.send(()).expect("announce held");
+            receive(&release_rx)
+        })
+    });
+    receive(&held_rx).expect("holder owns the admission");
+    (release_tx, holder)
+}
+
+/// DR-CHATIR-S1-12 (c), released in time: a `foreground_until` that waits for a
+/// holder runs its operation once the holder lets go inside the deadline; while
+/// it waits it is one queued foreground waiter, so a background batch does not
+/// enter (not while the waiter waits, and not between the holder and the
+/// waiter's operation); the batch runs only after the operation ended.
+#[test]
+fn foreground_until_runs_when_the_holder_releases_in_time_and_queues_ahead_of_background() {
+    let admission = Arc::new(EmbedderAdmission::default());
+    let (release_holder, holder) = hold_admission(&admission);
+    let (order_tx, order_rx) = mpsc::channel::<&'static str>();
+    let (finish_op_tx, finish_op_rx) = mpsc::channel::<()>();
+
+    let waiter = {
+        let (admission, order) = (Arc::clone(&admission), order_tx.clone());
+        worker(move || {
+            admission.foreground_until(Instant::now() + Duration::from_secs(30), || {
+                order.send("foreground-operation").expect("report");
+                receive(&finish_op_rx)
+            })
+        })
+    };
+    assert!(admission.wait_for_foreground_waiters(1));
+    assert_eq!(admission.foreground_waiters_for_test(), 1);
+
+    let batch = {
+        let (admission, order) = (Arc::clone(&admission), order_tx);
+        worker(move || {
+            admission.background(
+                || Ok(()),
+                || {
+                    order.send("background").expect("report");
+                    Ok(())
+                },
+            )
+        })
+    };
+    // Nothing runs while the holder holds the admission.
+    assert!(matches!(
+        order_rx.recv_timeout(Duration::from_millis(150)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert_eq!(admission.foreground_waiters_for_test(), 1);
+
+    release_holder.send(()).expect("release the holder");
+    finish(holder)
+        .expect("holder did not panic")
+        .expect("holder ok");
+    assert_eq!(
+        receive(&order_rx).expect("the waiter's operation entered"),
+        "foreground-operation"
+    );
+    // The background batch still waits while the operation runs.
+    assert!(matches!(
+        order_rx.recv_timeout(Duration::from_millis(150)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    finish_op_tx.send(()).expect("finish the operation");
+    let result = finish(waiter).expect("waiter did not panic");
+    assert!(matches!(result, Ok(Some(()))));
+    assert_eq!(
+        receive(&order_rx).expect("background ran after"),
+        "background"
+    );
+    finish(batch)
+        .expect("batch did not panic")
+        .expect("batch ok");
+    assert_eq!(admission.foreground_waiters_for_test(), 0);
+}
+
+/// DR-CHATIR-S1-12 (c), withdrawn at the deadline: while the holder keeps the
+/// admission, a `foreground_until` gives up at its deadline without running its
+/// operation, its waiter count is gone (0), and a background batch that queued
+/// meanwhile enters as soon as the holder lets go. A waiter that stayed counted
+/// would keep the batch out forever.
+#[test]
+fn foreground_until_withdraws_its_waiter_at_the_deadline_and_background_then_enters() {
+    let admission = Arc::new(EmbedderAdmission::default());
+    let (release_holder, holder) = hold_admission(&admission);
+    let ran = Arc::new(AtomicUsize::new(0));
+    let waiter = {
+        let (admission, ran) = (Arc::clone(&admission), Arc::clone(&ran));
+        worker(move || {
+            admission.foreground_until(Instant::now() + Duration::from_millis(200), || {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        })
+    };
+    assert!(admission.wait_for_foreground_waiters(1));
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let batch = {
+        let admission = Arc::clone(&admission);
+        worker(move || {
+            admission.background(
+                || Ok(()),
+                || {
+                    entered_tx.send(()).expect("report");
+                    Ok(())
+                },
+            )
+        })
+    };
+    let result = finish(waiter).expect("waiter did not panic");
+    assert!(matches!(result, Ok(None)), "the wait ended at the deadline");
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.foreground_waiters_for_test(), 0);
+    // Still held: the batch is queued, not running.
+    assert!(matches!(
+        entered_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    release_holder.send(()).expect("release the holder");
+    finish(holder)
+        .expect("holder did not panic")
+        .expect("holder ok");
+    receive(&entered_rx).expect("background entered with no waiter counted");
+    finish(batch)
+        .expect("batch did not panic")
+        .expect("batch ok");
 }
