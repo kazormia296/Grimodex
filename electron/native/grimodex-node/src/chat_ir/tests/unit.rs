@@ -695,6 +695,44 @@ fn tail_makes_one_last_attempt_after_the_stop_request() {
 }
 
 #[test]
+fn tail_last_attempt_never_outlives_the_budget() {
+    // DR-CHATIR-S1-28: the stop is requested just before the budget runs out and
+    // the close flush (2 s) is much longer than what is left; the last attempt is
+    // cut at the tail's deadline (200 ms), not at stop + close_flush.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let setter = Arc::clone(&stop);
+    let started = Instant::now();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(170));
+        setter.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mut pending = Pending::new(Duration::from_secs(10), None);
+    let end = run_tail(&mut pending, &timing(200, 30, 2_000), || {
+        stop.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    handle.join().unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(end, TailEnd::Stopped { flushed: false } | TailEnd::Expired),
+        "{end:?}"
+    );
+    // stop + close_flush would be about 2.2 s.
+    assert!(elapsed < Duration::from_millis(1_000), "{elapsed:?}");
+}
+
+#[test]
+fn tail_makes_no_last_attempt_once_the_budget_is_spent() {
+    // A zero budget: the deadline has passed when the stop is read, so the close
+    // flush does not start at all.
+    let mut pending = Pending::new(Duration::ZERO, Some(1));
+    assert_eq!(
+        run_tail(&mut pending, &timing(0, 30, 2_000), || true),
+        TailEnd::Stopped { flushed: false }
+    );
+    assert_eq!(pending.calls, 0);
+}
+
+#[test]
 fn tail_ends_at_its_budget() {
     let started = Instant::now();
     let mut pending = Pending::new(Duration::from_millis(20), None);
