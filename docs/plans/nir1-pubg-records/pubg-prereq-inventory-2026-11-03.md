@@ -267,3 +267,11 @@ s7r1（S4b `f2f99b13`・候補 `3f333a83`・K6/6）の結果（`docs/plans/nir1-
 - 定数 false の実測：raw 3,843,099、gzip 1,209,186。上限：raw 3,901,804、gzip 1,232,000。
 - 3 定数 true の差分（raw +1,581、gzip +566）を足した余裕：**raw 57,124、gzip 22,248**。2026-11-16 の推定（raw 94,909、gzip 34,319）から raw −37,785、gzip −12,071（その後に起動 graph が増えたため）。差分の約 36〜39 倍の余裕は残る。
 - #30 の状態は「測定済み（CI の照合待ち）」のまま。確定は PUB-G の PR の CI で行う、という条件は変えない。余裕が 1 日で約 4 割減ったので、PUB-G の PR の直前に再確認する。
+
+## 2026-11-17 追記 6（新しい項目の候補：generic SQL で IR の本文が読める非対称。統合者）
+
+- 発見：chat IR の S1 の gate G1（`/home/grimodex/fusion-eval-data/design-notes/chat-ir-2026-11-08/s1-gate-g1.md`）。調査：`/home/grimodex/fusion-eval-data/design-notes/generic-sql-envelope-asymmetry-2026-11-17.md`（基点 `27d71179`、コードの読みだけ）。
+- 事実：unrestricted の renderer の generic SQL は、`narrative_proposal_revisions.payload_json` だけを拒否する（`RENDERER_SQL_TYPED_PAYLOAD`、`execute.rs:299-316` 付近）。同じ表の `reconciliation_envelope_json`（IR の statement と evidenceSet の quote）と、`narrative_extraction_artifacts.payload_json`（IR の summary と quote）は読める。envelope を通す意図を書いた記録は見つからず、漏れと読める（推測、確度は高め）。restricted では closed の 26 表が全列拒否、closed に入らない `narrative_` 表が 28 表ある。
+- 確認済みの chat IR の脅威モデル（contracts `357a87b7`、SHA-256 `08f26f78…`）の「IR 本文の正本は generic SQL で読めない」は、`payload_json` 列には当たるが、chronicle の正本（envelope）には当たらない。
+- 影響：envelope の列だけ閉じても、artifacts の列から読めるので到達は減らない。閉じると journey と harness の 3 file が壊れ、そのうち `chronicle-extraction-product-journey.mjs` は setup の受領書が sha を記録する（凍結の pin に当たる可能性。未確認）。製品の renderer のコードで読む箇所は 0。
+- 扱い（統合者の判断）：2026-11-17 の方針「pin された道具の直しはためておく」に従い、今は直さない。公開の直前の凍結の前に、閉じる範囲（envelope、artifacts、review bundle、restricted の unlisted 28 表）をユーザーに伺い、journey を別 process の読取に移す直しとまとめて入れる。PUB-G の最終候補の前提の候補として扱う。
