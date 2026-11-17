@@ -1,5 +1,6 @@
-//! DR-CHATIR-S1-11 (chat IR S1-A0): a waiter-free connection acquisition with a
-//! deadline.
+//! DR-CHATIR-S1-11／-12 (chat IR S1-A0): a waiter-free connection acquisition
+//! with a deadline that never takes the connection while a maintenance cycle is
+//! live.
 //!
 //! The ordinary acquisition (`Database::with_conn` → `lock_conn`) has no
 //! deadline and announces a foreground waiter, which makes a running maintenance
@@ -9,6 +10,22 @@
 //! never overtakes a queued foreground caller or a reserved finalization) until
 //! the instant, and answers `Ok(None)` (connection busy) when it could not take
 //! the connection in time. Existing acquisitions are untouched.
+//!
+//! Not announcing a waiter is not enough to leave maintenance alone: a
+//! maintenance cycle covers its whole run with a no-wait guard and releases the
+//! connection between two acquisitions (a seam). A connection taken at a seam
+//! makes the cycle's next acquisition fail with
+//! `NEX_MAINTENANCE_CONNECTION_PREEMPTED` and the Run is cancelled (observed).
+//! So every attempt is "busy", whether or not the connection is free, while a
+//! no-wait guard is alive (checked before the attempt and again after the mutex
+//! is taken, as the background prepay does). The wait then runs to the deadline
+//! and ends as `Ok(None)`: during a maintenance cycle a chat IR call gets no IR
+//! (availability is lowered, T12 is kept). What this does not cover: a cycle
+//! that begins while an earlier call already holds the connection meets a held
+//! connection exactly as it does with any other foreground holder (the hold is
+//! bounded by the caller's deadline).
+//! The calling thread being the maintenance run itself (its own guard) is not a
+//! supported caller: it would be "busy" forever.
 
 use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
@@ -36,10 +53,25 @@ impl std::fmt::Display for AcquisitionDeadline {
 
 impl std::error::Error for AcquisitionDeadline {}
 
+/// Internal marker: a maintenance no-wait guard is alive, so this attempt is
+/// treated as "busy" (DR-CHATIR-S1-12). Mapped to a retry; never leaves this
+/// module.
+#[derive(Debug)]
+struct MaintenanceCycleActive;
+
+impl std::fmt::Display for MaintenanceCycleActive {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a maintenance cycle is live")
+    }
+}
+
+impl std::error::Error for MaintenanceCycleActive {}
+
 impl ConnectionCore {
     /// Repeat the waiter-free attempt until `deadline`. `Ok(None)`: the
-    /// connection was busy (held, a finalization reserved, or a foreground
-    /// caller queued) for the whole time. A quarantined or poisoned connection
+    /// connection was busy (held, a finalization reserved, a foreground
+    /// caller queued, or a maintenance cycle live: its no-wait guard is alive,
+    /// DR-CHATIR-S1-12) for the whole time. A quarantined or poisoned connection
     /// is an error, never a quiet `None`. An instant that has already passed
     /// is `None` without any attempt.
     pub(crate) fn try_lock_conn_until(
@@ -61,6 +93,12 @@ impl ConnectionCore {
             if let Some(extra) = extra.as_deref_mut() {
                 extra()?;
             }
+            // Before the attempt and (the check runs again once the mutex is
+            // taken) after it: a connection taken while a maintenance cycle is
+            // live would preempt the cycle at its next acquisition.
+            if self.maintenance_no_wait_guard_alive() {
+                return Err(anyhow::Error::new(MaintenanceCycleActive));
+            }
             if Instant::now() >= deadline {
                 return Err(anyhow::Error::new(AcquisitionDeadline));
             }
@@ -75,6 +113,11 @@ impl ConnectionCore {
                 Ok(None) => std::thread::sleep(
                     RETRY_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
                 ),
+                Err(error) if error.downcast_ref::<MaintenanceCycleActive>().is_some() => {
+                    std::thread::sleep(
+                        RETRY_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                }
                 Err(error) if error.downcast_ref::<AcquisitionDeadline>().is_some() => {
                     return Ok(None);
                 }
@@ -326,6 +369,72 @@ mod tests {
             .join()
             .expect("maintenance thread joined")
             .expect("the maintenance run was not preempted");
+    }
+
+    /// DR-CHATIR-S1-12: a maintenance cycle covers its run with a no-wait guard
+    /// and releases the connection between two acquisitions (a seam). A call
+    /// that polls until its deadline must never take the connection at a seam
+    /// (the cycle's next acquisition would be
+    /// `NEX_MAINTENANCE_CONNECTION_PREEMPTED`). The maintenance role below
+    /// alternates a short hold and a short free gap (about half of all instants
+    /// are a seam); the call holds the connection for 3 ms whenever it gets it.
+    /// Without the `maintenance_no_wait_guard_alive` check in the acquisition,
+    /// the call takes a seam and the role is preempted.
+    #[test]
+    fn try_with_conn_until_never_takes_a_seam_of_a_live_maintenance_cycle() {
+        let db = Arc::new(test_db());
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let maintenance = {
+            let (db, stop) = (Arc::clone(&db), Arc::clone(&stop));
+            thread::spawn(move || {
+                let _no_wait = db.enter_maintenance_connection_no_wait();
+                ready_tx.send(()).expect("announce the guard");
+                let mut acquisitions = 0_usize;
+                while !stop.load(Ordering::Acquire) {
+                    db.with_conn(|_| {
+                        thread::sleep(Duration::from_micros(200));
+                        Ok(())
+                    })?;
+                    acquisitions += 1;
+                    // The seam.
+                    thread::sleep(Duration::from_micros(200));
+                }
+                Ok::<usize, anyhow::Error>(acquisitions)
+            })
+        };
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("maintenance guard is alive");
+        let taken = AtomicUsize::new(0);
+        let polling_until = Instant::now() + Duration::from_millis(400);
+        let mut attempts = 0_usize;
+        while Instant::now() < polling_until {
+            attempts += 1;
+            let outcome = db
+                .try_with_conn_until(Instant::now() + Duration::from_millis(5), |_| {
+                    taken.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(3));
+                    Ok(())
+                })
+                .expect("a live maintenance cycle is busy, not an error");
+            assert_eq!(outcome, None);
+        }
+        stop.store(true, Ordering::Release);
+        let acquisitions = maintenance
+            .join()
+            .expect("maintenance role joined")
+            .expect("the maintenance run was never preempted");
+        assert!(attempts > 10, "the call did not poll: {attempts}");
+        assert!(acquisitions > 100, "the role did not cycle: {acquisitions}");
+        assert_eq!(taken.load(Ordering::SeqCst), 0);
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+        // The cycle is over (the guard dropped with the role): the call runs.
+        assert_eq!(
+            db.try_with_conn_until(Instant::now() + Duration::from_secs(1), |_| Ok(5))
+                .expect("not an error"),
+            Some(5)
+        );
     }
 
     /// A worker in background-priority mode falls back to the blocking
