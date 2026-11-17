@@ -40,6 +40,10 @@ impl Drop for Rig {
 /// `archived`, `other-scene` (of the second project) and a node that is not a
 /// Scene.
 fn rig(label: &str, language: &str) -> Rig {
+    rig_with(label, language, crate::chat_ir::ChatIrConfig::default())
+}
+
+fn rig_with(label: &str, language: &str, config: crate::chat_ir::ChatIrConfig) -> Rig {
     let root = std::env::temp_dir().join(format!(
         "grimodex-node-chat-ir-{label}-{}-{}",
         std::process::id(),
@@ -80,8 +84,9 @@ fn rig(label: &str, language: &str) -> Rig {
         .expect("seed");
     let authority =
         WorkspaceAuthority::from_database_for_test(database, path.clone()).expect("authority");
-    let state =
+    let mut state =
         AppState::new(&root.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
+    state.chat_ir = crate::chat_ir::ChatIrState::new(config);
     state
         .narrative_maintenance_recovery_gate
         .mark_workspace_swapped();
@@ -287,6 +292,44 @@ async fn another_workspace_path_is_workspace_changed_and_no_row_is_touched() {
             .unwrap(),
         0
     );
+}
+
+/// The wait for the blocking pool is part of the deadline: the deadline is
+/// counted from the acceptance on the async side, not from the task's first
+/// line (a call that only got a thread after its deadline touches nothing).
+#[test]
+fn a_call_queued_behind_a_saturated_blocking_pool_times_out_and_touches_nothing() {
+    let config = crate::chat_ir::ChatIrConfig {
+        deadline: Duration::from_millis(300),
+        ..Default::default()
+    };
+    let rig = rig_with("pool", "ja", config);
+    rig.open_gate();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let answer = runtime.block_on(async {
+        // Occupy the only blocking thread for longer than the deadline.
+        let occupied =
+            tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(900)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started = Instant::now();
+        let answer = status_of(&rig, rig.payload("scene")).await;
+        assert!(
+            started.elapsed() >= Duration::from_millis(600),
+            "the call did not queue"
+        );
+        occupied.await.expect("blocking task");
+        answer
+    });
+    assert_eq!(
+        answer["status"], "timeout",
+        "the queueing was not counted in the deadline"
+    );
+    assert_eq!(rig.audit_rows(), 0);
 }
 
 #[tokio::test]

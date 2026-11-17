@@ -371,10 +371,9 @@ fn what_the_task_holds_is_released_pending_then_backend_then_permit() {
     });
     let entries = log.lock().unwrap().clone();
     let position = |needle: &str| entries.iter().position(|entry| entry.starts_with(needle));
-    assert!(
-        position("pending dropped") < position("backend dropped"),
-        "{entries:?}"
-    );
+    let pending_at = position("pending dropped").expect("the pending records were dropped");
+    let backend_at = position("backend dropped").expect("the backend was dropped");
+    assert!(pending_at < backend_at, "{entries:?}");
     // The permit was still held when the backend was dropped.
     assert!(
         entries
