@@ -400,10 +400,9 @@ async fn a_task_that_ended_without_answering_is_internal() {
     assert_eq!(wire["success"], false);
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<ChatIrResult>();
-    sender
+    assert!(sender
         .send(ChatIrResult::status_only(ChatIrStatus::Busy))
-        .ok()
-        .expect("send");
+        .is_ok());
     let wire: serde_json::Value =
         serde_json::from_str(&crate::chat_ir::wire_of_answer(receiver).await).expect("json");
     assert_eq!(wire["status"], "busy");
