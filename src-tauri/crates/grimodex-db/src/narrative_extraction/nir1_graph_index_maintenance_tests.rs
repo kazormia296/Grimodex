@@ -50,6 +50,16 @@ use super::test_hooks::{install as install_hook, TestStage};
 const PROJECT: &str = "default-project";
 const CAPACITY_CODE: &str = "NIR1_GRAPH_CAPACITY_EXCEEDED";
 
+// GDV/1 acceptance (nir1-graph-dirty-binding-verify-proposal/1, section 8).
+#[path = "nir1_graph_index_maintenance_tests/gdv1_graph_binding_tests.rs"]
+mod gdv1_graph_binding_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_k2_byte_compat_tests.rs"]
+mod gdv1_k2_byte_compat_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_k2_stored_shape_tests.rs"]
+mod gdv1_k2_stored_shape_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_unchanged_behaviour_tests.rs"]
+mod gdv1_unchanged_behaviour_tests;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -89,6 +99,15 @@ fn qualified_scope(
 impl Fixture {
     /// One approved, qualified Entity/Relation Revision and no Graph binding.
     fn new() -> Result<Self> {
+        Self::new_with_marker(true)
+    }
+
+    /// `seed_run_and_catalog` (the shared A3 fixture) records the C2-ZC cutover
+    /// marker, so `new()` is a cutover-done workspace. `marker = false` deletes
+    /// that marker row at the end of construction, before any Graph publish: a
+    /// pre-cutover form made after the fact (the Revision and Freshness rows
+    /// were written after the marker).
+    fn new_with_marker(marker: bool) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-b-route-{}", uuid::Uuid::new_v4())),
         );
@@ -102,6 +121,16 @@ impl Fixture {
         qualified_scope(&db, &mut typed);
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
+        if !marker {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                    [Database::C2_ZC_CUTOVER_MIGRATION_ID],
+                )?;
+                Ok(())
+            })?;
+            assert_eq!(db.with_conn(Database::read_c2zc_cutover_marker)?, None);
+        }
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
         Ok(Self {
             authority,
@@ -112,7 +141,11 @@ impl Fixture {
 
     /// A fixture whose first gate-open cycle has published generation 1.
     fn published() -> Result<Self> {
-        let fixture = Self::new()?;
+        Self::published_with_marker(true)
+    }
+
+    fn published_with_marker(marker: bool) -> Result<Self> {
+        let fixture = Self::new_with_marker(marker)?;
         let recorder = Recorder::default();
         let result = run_cycle(&fixture, Some(&graph_seam()), &recorder)?;
         assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
@@ -122,6 +155,10 @@ impl Fixture {
 
     fn db(&self) -> &Database {
         self.authority.db()
+    }
+
+    fn marker(&self) -> Result<Option<i64>> {
+        self.db().with_conn(Database::read_c2zc_cutover_marker)
     }
 
     fn runtime(&self) -> &NirChronicleIndexRuntime {
@@ -235,6 +272,9 @@ impl GraphWorkControl for RegistrationOwner {
 #[derive(Default)]
 struct Recorder {
     stop: Arc<AtomicBool>,
+    /// The cycle's `should_stop` ignores `stop` (only the `stop_signal` the
+    /// control carries is raised), to reach the branch that reads the signal.
+    should_stop_ignores_stop: AtomicBool,
     granted: Arc<AtomicBool>,
     lifecycle_stop: Arc<AtomicBool>,
     cancel_graph_before_grant: AtomicBool,
@@ -278,7 +318,9 @@ fn with_control<T>(
                 "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution"
             );
         }
-        if recorder.stop.load(Ordering::SeqCst) {
+        if recorder.stop.load(Ordering::SeqCst)
+            && !recorder.should_stop_ignores_stop.load(Ordering::SeqCst)
+        {
             bail!(
                 "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary"
             );
@@ -2197,9 +2239,15 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         Nir1GraphIndexBuildDecision::Build { .. }
     ));
 
-    // DR-BSEAM-1 (b): the uncontrolled durable planner cannot judge the
-    // sealed binding and fails as context-unavailable; the B-ROUTE turns
-    // exactly that into a wake.
+    // DR-BSEAM-1 (b) before GDV/1: the uncontrolled durable planner could not
+    // judge a sealed binding and failed as context-unavailable, which the
+    // B-ROUTE turned into a wake. GDV/1 (GDV-R3, DR-PUBG-5-16): this binding is
+    // coherent but not current (recognized `rebuildable-not-query-usable`), so
+    // the planner no longer reads the whole-project eligibility. It answers
+    // instead of failing and main receives the durable `Verify` work; the Graph
+    // producer's judgement then runs inside the cycle in front of that Verify
+    // (case C-2). The premise "a sealed binding is context-unavailable" still
+    // holds for a current binding (asserted below after the rebuild).
     let coordinates =
         crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(Some(
             &graph_seam(),
@@ -2210,12 +2258,9 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
             PROJECT,
             "workspace-opened",
             Some(&coordinates),
-        )
-        .expect_err("the uncontrolled planner cannot judge the sealed binding");
-    assert!(
-        error_text(&uncontrolled).contains("context-unavailable"),
-        "{uncontrolled:#}"
-    );
+        )?
+        .expect("the planner answers for a recognized not-current binding");
+    assert_eq!(uncontrolled.run_kind, AutomaticRunKind::Verify);
 
     let recorder = Recorder::default();
     let (discovered, result) = main_wake_cycle_with_discovery(
@@ -2224,9 +2269,13 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         "workspace-opened",
         &recorder,
     )?;
-    assert_eq!(
-        discovered,
-        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
+    assert!(
+        matches!(
+            &discovered,
+            crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::Work(work)
+                if work.run_kind == AutomaticRunKind::Verify
+        ),
+        "{discovered:?}"
     );
     assert_eq!(
         result.map(|result| result.status),
@@ -2238,6 +2287,31 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
     assert_eq!(
         fixture.judge()?,
         skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    // The DR-BSEAM-1 (b) premise is unchanged for a current sealed binding.
+    let current_uncontrolled =
+        crate::narrative_extraction::maintenance_runtime::discover_durable_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            "workspace-opened",
+            Some(&coordinates),
+        )
+        .expect_err("the uncontrolled planner cannot judge a current sealed binding");
+    assert!(
+        error_text(&current_uncontrolled).contains("context-unavailable"),
+        "{current_uncontrolled:#}"
+    );
+    // And the B-ROUTE still turns exactly that into the wake for the seam.
+    let recorder = Recorder::default();
+    let (discovered, _) = main_wake_cycle_with_discovery(
+        &fixture,
+        Some(&graph_seam()),
+        "workspace-opened",
+        &recorder,
+    )?;
+    assert_eq!(
+        discovered,
+        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
     );
     Ok(())
 }
@@ -2551,6 +2625,25 @@ fn run_ledger(db: &Database) -> Result<Vec<(String, String)>> {
     })
 }
 
+/// The `report` of the project's latest completed Verify Run, as JSON.
+fn last_completed_verify_report(db: &Database) -> Result<Option<serde_json::Value>> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT outcome_summary_json FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'dependency-verify'
+                    AND status = 'completed' ORDER BY rowid DESC LIMIT 1",
+                [PROJECT],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    })?
+    .map(|summary| -> Result<serde_json::Value> {
+        Ok(serde_json::from_str::<serde_json::Value>(&summary)?["report"].clone())
+    })
+    .transpose()
+}
+
 /// Keys of the project's maintenance Findings.
 fn finding_keys(db: &Database) -> Result<Vec<String>> {
     db.with_conn(|conn| {
@@ -2732,23 +2825,63 @@ fn product_gate_wake_builds_a_missing_graph_when_the_durable_chain_is_idle() -> 
     Ok(())
 }
 
-/// V4. A sealed binding that is not current makes the uncontrolled discovery
-/// fail as `context-unavailable`. Under the product gate that becomes a wake
-/// and the cycle rebuilds; with the gate closed the error propagates unchanged.
+/// V4. A sealed binding that is current makes the uncontrolled discovery fail
+/// as `context-unavailable`; with the gate closed the error propagates
+/// unchanged. GDV/1 (GDV-R3, DR-PUBG-5-16): a sealed binding that is coherent
+/// but not current (dirty) no longer does. Discovery answers with the durable
+/// `Verify` work, the closed gate keeps the Graph unbuilt, and the product gate
+/// turns the remaining idle chain into the wake whose cycle rebuilds it.
 #[test]
 fn product_gate_turns_context_unavailable_into_a_wake_that_rebuilds() -> Result<()> {
     let _serial = serial();
+    // A current sealed binding: the premise of DR-BSEAM-1 (b) is unchanged.
+    let current = Fixture::published()?;
+    let closed = wake_step(&current, Launch::Closed)?;
+    let error = closed.discovery.expect_err("uncontrolled discovery");
+    assert!(
+        is_context_unavailable_termination(&error),
+        "closed gate, current binding: {error:#}"
+    );
+    assert!(closed.cycle.is_none());
+    assert_eq!(generation(current.db())?, Some(1));
+    // Under the product gate that same `context-unavailable` is turned into the
+    // wake (DR-BSEAM-2), whose cycle judges the current binding and builds
+    // nothing.
+    let product = wake_step(&current, Launch::Product)?;
+    assert_eq!(
+        product.discovery?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    assert_eq!(
+        product.cycle.expect("the wake starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
+    assert_eq!(generation(current.db())?, Some(1));
+
+    // A dirty (recognized not-current) sealed binding.
     let fixture = Fixture::published()?;
     fixture.mark_dirty()?;
 
     let closed = wake_step(&fixture, Launch::Closed)?;
-    let error = closed.discovery.expect_err("uncontrolled discovery");
     assert!(
-        is_context_unavailable_termination(&error),
-        "closed gate: {error:#}"
+        matches!(
+            &closed.discovery,
+            Ok(MaintenanceProjectDiscovery::Work(work)) if work.run_kind == AutomaticRunKind::Verify
+        ),
+        "closed gate, dirty binding: {:?}",
+        closed.discovery
     );
-    assert!(closed.cycle.is_none());
-    assert_eq!(generation(fixture.db())?, Some(1));
+    assert_eq!(
+        closed.cycle.expect("the Verify work starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
+    // The closed gate never builds: the binding is still the dirty generation 1.
+    assert_eq!(
+        sealed(fixture.db())?.map(|(generation, dirty, ..)| (generation, dirty)),
+        Some((1, 1))
+    );
+    // Only the setup's publication is recorded; the closed gate judged nothing.
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
 
     let step = wake_step(&fixture, Launch::Product)?;
     assert_eq!(
@@ -3119,13 +3252,16 @@ fn v0_stored_edge_overflow_stops_verify_for_a_bound_project() -> Result<()> {
     Ok(())
 }
 
-/// V0 (b): the candidates exceed the bound instead. With the gate closed,
-/// main's (uncontrolled) discovery fails as `context-unavailable` on every
-/// wake and creates nothing. Under the seam and the product token that failure
-/// is a wake, the cycle's Verify then fails by `capacity-exceeded` exactly as
-/// in (a), and the project stops the same way.
+/// V0 (b): the candidates exceed the bound instead, B refuses the rebuild and
+/// the binding stays dirty. Before GDV/1 main's (uncontrolled) discovery failed
+/// as `context-unavailable` on every wake with the gate closed, and under the
+/// seam and the product token the cycle's Verify failed by `capacity-exceeded`
+/// and the project stopped with a Finding. GDV/1 (consumer contract: a
+/// recognized dirty index is "rebuildable but not query usable"): Verify
+/// excludes the coherent but not-current Graph and the durable chain completes
+/// and reaches idle, for every launch.
 #[test]
-fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
+fn v0_candidate_overflow_does_not_stop_verify_for_a_bound_project() -> Result<()> {
     let _serial = serial();
     for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
         let fixture = Fixture::published()?;
@@ -3140,56 +3276,89 @@ fn v0_candidate_overflow_stops_verify_for_a_bound_project() -> Result<()> {
         for _ in 0..6 {
             steps.push(wake_step(&fixture, launch)?);
         }
-        if launch == Launch::Closed {
-            for step in &steps {
-                let error = step.discovery.as_ref().expect_err("uncontrolled discovery");
-                assert!(is_context_unavailable_termination(error), "{error:#}");
-                assert!(is_project_local_discovery_failure(error));
-                assert!(step.cycle.is_none());
-            }
-            assert_eq!(run_ledger(fixture.db())?.len(), runs_before);
-            assert!(finding_keys(fixture.db())?.is_empty());
-        } else {
-            assert_eq!(
-                steps[0].discovery.as_ref().ok(),
-                Some(&MaintenanceProjectDiscovery::GraphIndexBuildWake),
-                "{launch:?}"
-            );
-            let failures = steps.iter().filter_map(failure_text).collect::<Vec<_>>();
+        // No wake fails, whichever launch.
+        for (index, step) in steps.iter().enumerate() {
             assert!(
-                failures
-                    .iter()
-                    .any(|text| text.contains("capacity-exceeded")
-                        && text.contains("candidate-rows exceeds 2064")),
-                "{launch:?}: {failures:?}"
+                step.discovery.is_ok(),
+                "{launch:?} wake#{index}: {:?}",
+                step.discovery
             );
-            let ledger = run_ledger(fixture.db())?;
-            assert_eq!(ledger.len(), runs_before + 1, "{launch:?}: {ledger:?}");
-            assert_eq!(
-                ledger.last(),
-                Some(&("dependency-verify".to_string(), "failed".to_string()))
-            );
-            let findings = finding_keys(fixture.db())?;
-            assert_eq!(findings.len(), 1, "{launch:?}: {findings:?}");
-            assert!(findings[0].starts_with(VERIFY_FINDING_PREFIX));
-            for step in &steps[1..] {
+            if let Some(cycle) = &step.cycle {
                 assert!(
-                    matches!(&step.cycle, Some(Ok(result)) if result.status == MaintenanceCycleStatus::Accepted),
+                    matches!(cycle, Ok(result) if result.status == MaintenanceCycleStatus::Accepted),
+                    "{launch:?} wake#{index}"
+                );
+            }
+        }
+        assert!(
+            steps.iter().all(|step| failure_text(step).is_none()),
+            "{launch:?}: no Verify failure"
+        );
+        // The first wake hands the durable Verify to a cycle.
+        assert!(
+            matches!(
+                &steps[0].discovery,
+                Ok(MaintenanceProjectDiscovery::Work(work)) if work.run_kind == AutomaticRunKind::Verify
+            ),
+            "{launch:?}: {:?}",
+            steps[0].discovery
+        );
+        // Exactly one new Run, the completed Verify; no Finding.
+        let ledger = run_ledger(fixture.db())?;
+        assert_eq!(ledger.len(), runs_before + 1, "{launch:?}: {ledger:?}");
+        assert_eq!(
+            ledger.last(),
+            Some(&("dependency-verify".to_string(), "completed".to_string())),
+            "{launch:?}"
+        );
+        assert!(finding_keys(fixture.db())?.is_empty(), "{launch:?}");
+        // The report excludes the Graph and keeps nothing else unresolved.
+        let report = last_completed_verify_report(fixture.db())?.expect("completed Verify");
+        assert_eq!(
+            report["consumersExcludedNotCurrent"][0]["consumerKey"],
+            INDEX_KEY,
+            "{launch:?}"
+        );
+        assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
+        assert_eq!(report["edgeIdsWithMissingSource"], json!([]));
+        // The chain is idle afterwards: no wake adds a Run. The closed gate
+        // discovers nothing; the seam and the product token only wake B, which
+        // stays refused for the unchanged inputs.
+        for step in &steps[1..] {
+            if launch == Launch::Closed {
+                assert!(
+                    matches!(step.discovery, Ok(MaintenanceProjectDiscovery::Idle)),
+                    "{launch:?}"
+                );
+                assert!(step.cycle.is_none());
+            } else {
+                assert!(
+                    matches!(
+                        step.discovery,
+                        Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake)
+                    ),
                     "{launch:?}"
                 );
             }
         }
+        // B stays refused for the unchanged inputs, and the dirty binding stays.
         assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
         assert_eq!(sealed(fixture.db())?, stale, "{launch:?}");
     }
     Ok(())
 }
 
-/// DR-PUBG-5-15 (R6): a workspace of two real projects. The one that V0 (b)
-/// leaves with a dirty sealed binding over the candidate bound fails main's
-/// uncontrolled discovery with the real `context-unavailable` error (not an
-/// injected one), and that error is exactly what the containment allowlist
-/// admits. The other project's discovery still succeeds.
+/// DR-PUBG-5-15 (R6): a workspace of two real projects. The one with a current
+/// sealed Graph binding fails main's uncontrolled discovery with the real
+/// `context-unavailable` error (not an injected one), and that error is exactly
+/// what the containment allowlist admits. The other project's discovery still
+/// succeeds.
+///
+/// GDV/1 (DR-PUBG-5-16): the motive form of this test (a dirty sealed binding
+/// over the candidate bound, V0 (b)) no longer fails discovery, because a
+/// coherent but not-current binding is excluded from the full-eligibility read.
+/// A current sealed binding is the form that still ends in `context-unavailable`
+/// (it needs a cycle's validation context), so that is the form used here.
 #[test]
 fn a_real_sealed_binding_failure_is_project_local_and_the_other_project_still_discovers(
 ) -> Result<()> {
@@ -3202,11 +3371,6 @@ fn a_real_sealed_binding_failure_is_project_local_and_the_other_project_still_di
         )?;
         Ok(())
     })?;
-    overflow_candidates(&fixture)?;
-    let recorder = Recorder::default();
-    assert_eq!(fixture.dispatch(&recorder)?, no_finalization(false));
-    assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
-
     let coordinates = effective_maintenance_coordinates(None)?;
     let discover = |project: &str| {
         discover_maintenance_project_for_main_with_product(
