@@ -1645,11 +1645,12 @@ fn incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility() -
         .map(|consumer| consumer.consumer_kind.as_str())
         .collect::<Vec<_>>();
     assert!(affected.contains(&"proposal-revision"), "{affected:?}");
-    // ... and not the Graph binding: the Scene's identity is not one of the
-    // Graph Edges' sources (they are `codex:`, `codex-relation:` and the
-    // project eligibility), so the feed never selects them, and no Graph surface
-    // changed. Only a full-Graph event (an epoch reset or a component schema
-    // change, not an edit) selects every Edge of the project.
+    // ... and not the Graph binding: the Graph Edges' sources are `codex:`,
+    // `codex-relation:` and the project eligibility, none of which this edit's
+    // events name, so no Graph surface changed. (Measured: with the reserved
+    // consumer guard in `incremental_freshness.rs` removed this test still
+    // passes, so the edit's feed does not select the Graph Edges at all; only a
+    // full-Graph event, an epoch reset or a component schema change, does.)
     let graph_sources: Vec<String> = fixture.db().with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT source_object_identity FROM narrative_dependency_edges
@@ -1660,8 +1661,17 @@ fn incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility() -
             .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(rows)
     })?;
-    assert_eq!(graph_sources.len(), 4, "{graph_sources:?}");
-    assert!(graph_sources.iter().all(|source| !source.starts_with("project:scene:")));
+    let mut graph_sources = graph_sources;
+    graph_sources.sort();
+    assert_eq!(
+        graph_sources,
+        [
+            "codex-relation:nir1-edge",
+            "codex:nir1-alice",
+            "codex:nir1-bob",
+            "project:nir1-entity-relation-eligibility:default-project",
+        ]
+    );
     assert!(!affected.contains(&"semantic-index"), "{affected:?}");
     assert_eq!(graph_surfaces(&fixture)?, graph_before);
     assert!(is_dirty_registered(&fixture)?, "the binding is still the dirty one");
@@ -1868,11 +1878,10 @@ fn current_but_false_forms_stay_manual() -> Result<()> {
         // Not a dirty form: nothing marked the binding.
         assert!(!is_dirty_registered(&fixture)?, "{name}");
         assert_eq!(classify(&fixture)?, C::Current, "{name}");
-        assert_eq!(
-            fixture
+        assert!(
+            !fixture
                 .db()
                 .with_conn_mut(|conn| is_complete_registered(conn, PROJECT, INDEX_KEY))?,
-            false,
             "{name}: full validation is false and does not fail"
         );
         assert_eq!(
@@ -1980,8 +1989,8 @@ fn cycle_with_a_failing_judgement(
 /// A judgement that fails for a reason of its own (a SQL failure, the no-wait
 /// connection refused) does not take the cycle with it: the project's Verify
 /// still runs (it excludes the not-current Graph), no Graph build is put in
-/// front of it, and the cycle is accepted. The Graph is built later, by the
-/// cycle's last rediscovery, whose judgement succeeds.
+/// front of it, and the cycle is accepted. (The Graph is left as it was by this
+/// judgement; whether the cycle's last rediscovery builds it is not asserted.)
 #[test]
 fn a_failed_graph_judgement_does_not_end_the_cycle() -> Result<()> {
     let _serial = serial();
@@ -2009,10 +2018,11 @@ fn a_failed_graph_judgement_does_not_end_the_cycle() -> Result<()> {
         let (result, started, judged) = cycle_with_a_failing_judgement(failure)?;
         let result = result.unwrap_or_else(|error| panic!("{name}: the cycle failed: {error:#}"));
         assert_eq!(result.status, MaintenanceCycleStatus::Accepted, "{name}");
-        // The failing C-2 judgement ran once; the Verify ran first; B was not
-        // put in front of it (the same order as the form without case C).
+        // The failing C-2 judgement ran; the Verify ran first, so B was not put
+        // in front of it. (What runs after the Verify is not asserted here.)
         assert!(judged >= 1, "{name}");
         assert_eq!(started.first().map(String::as_str), Some("verify"), "{name}: {started:?}");
+        eprintln!("GDV1 C-2 failed judgement {name}: started {started:?}");
     }
     Ok(())
 }
@@ -2065,6 +2075,21 @@ fn graph_judgement_local_failure_is_an_allowlist_of_two() {
     let sql: anyhow::Error = rusqlite::Error::QueryReturnedNoRows.into();
     assert!(is_graph_judgement_local_failure(&sql));
     assert!(is_graph_judgement_local_failure(&sql.context("read hint")));
+    // A raw SQLite interruption is the progress hook stopping the work.
+    let interrupted: anyhow::Error = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+        None,
+    )
+    .into();
+    assert!(!is_graph_judgement_local_failure(&interrupted));
+    assert!(!is_graph_judgement_local_failure(&interrupted.context("read hint")));
+    // Another SQLite failure (a missing table) is local.
+    let missing_table: anyhow::Error = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+        Some("no such table: x".to_string()),
+    )
+    .into();
+    assert!(is_graph_judgement_local_failure(&missing_table));
     for reason in [
         ValidationTerminationReason::ContextUnavailable,
         ValidationTerminationReason::Cancelled,

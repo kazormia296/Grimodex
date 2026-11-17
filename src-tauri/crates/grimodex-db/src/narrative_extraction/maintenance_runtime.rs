@@ -2340,7 +2340,8 @@ pub fn is_project_local_discovery_failure(error: &anyhow::Error) -> bool {
 /// Whether a failure of the Graph build judgement belongs to that one read
 /// alone, so that the cycle can go on without B for the project (GDV/1 case
 /// C-2, DR-PUBG-5-16). An allowlist of two: a SQL failure of the judgement's own
-/// reads, and the no-wait maintenance connection being refused
+/// reads (not a raw SQLite interruption, which is the progress hook stopping the
+/// work), and the no-wait maintenance connection being refused
 /// (`NEX_MAINTENANCE_CONNECTION_PREEMPTED`, which the judgement raises as a
 /// plain error). A typed validation termination of any reason, the attempt's
 /// own cancellation, a lifecycle stop and a connection cleanup failure are never
@@ -2352,6 +2353,21 @@ pub(crate) fn is_graph_judgement_local_failure(error: &anyhow::Error) -> bool {
         || error_chain_contains(error, "NEX_MAINTENANCE_LIFECYCLE_STOP")
         || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:")
     {
+        return false;
+    }
+    // A raw SQLite interruption is the progress hook stopping the work (the
+    // connection scope turns it into a typed termination only when its latch
+    // names a reason): it is a stop, not a failure of this read.
+    let interrupted = error.chain().any(|cause| {
+        cause.downcast_ref::<rusqlite::Error>().is_some_and(|sqlite| {
+            matches!(
+                sqlite,
+                rusqlite::Error::SqliteFailure(code, _)
+                    if code.code == rusqlite::ErrorCode::OperationInterrupted
+            )
+        })
+    });
+    if interrupted {
         return false;
     }
     error_chain_contains(error, MAINTENANCE_CONNECTION_PREEMPTED_CODE)
