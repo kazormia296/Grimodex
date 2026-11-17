@@ -15,9 +15,9 @@
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
 mod body_declaration_entry;
-mod chat_ir;
 #[cfg(test)]
 mod body_declaration_entry_tests;
+mod chat_ir;
 mod convert;
 mod lifecycle_failure_diagnostics;
 #[cfg(feature = "legacy-keyring-migration")]
