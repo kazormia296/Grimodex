@@ -1106,6 +1106,11 @@ export function seedPinWorkspace(spec) {
  * the probes) is recorded in `forbidden` and refused. `opts.mutate(name,
  * input)` may rewrite a writer's input (to test the read-back checks);
  * `opts.maintenanceEnabled` leaves the runtime policy's maintenance on.
+ * DR-CP4-S6-7: `opts.wal` opens the DB in WAL mode as the product's workspace
+ * DB is (the default stays the rollback journal): the last connection's
+ * clean close removes `-wal` and `-shm`, and a read-only connection (the
+ * harness's quiesce reads) creates a `-shm` and an empty `-wal` it cannot
+ * remove, which the DELETE-mode fake never showed.
  */
 export function frozenSetupFakeProduct(opts = {}) {
   let db = null;
@@ -1129,6 +1134,7 @@ export function frozenSetupFakeProduct(opts = {}) {
     // S1j-2: a later session reopens the same workspace (the schema stays).
     const reopened = existsSync(file);
     db = new DatabaseSync(file);
+    if (opts.wal) db.exec("PRAGMA journal_mode=WAL");
     if (reopened) {
       extension?.onOpen?.();
       return;

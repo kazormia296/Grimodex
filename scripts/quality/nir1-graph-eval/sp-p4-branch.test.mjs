@@ -3,8 +3,19 @@
 // seed の pin の段の直前の写しから 2 つの側を作ることを確かめる。凍結した材料で
 // 実 Electron を起動せず、setup も実行しない（fixture は fs で読むだけ）。
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -13,6 +24,8 @@ import { test } from "node:test";
 import {
   SP_P4_BRANCH,
   branchCarryOf,
+  assertPreStepClosedWithoutShm,
+  observeClosedWorkspaceFiles,
   seedPinStepIndex,
   setupFrozenVariant,
   setupIrRowsOfPlans,
@@ -69,8 +82,9 @@ const SHARED = Object.freeze({
   }),
 });
 
-function product(plan) {
+function product(plan, opts = {}) {
   return frozenSetupFakeProduct({
+    ...opts,
     extend: completeSetupExtension({
       irSeeds: new Map(
         setupIrRowsOfPlans([plan]).map((row) => [
@@ -82,8 +96,11 @@ function product(plan) {
   });
 }
 
-function sessions(fake) {
+// `onStop(label, n)` runs after the fake product closed its DB (the n-th stop
+// of the label); `stopEvidence(label, n)` is the launcher's `stop` evidence.
+function sessions(fake, { onStop = null, stopEvidence = null } = {}) {
   const started = [];
+  const stops = new Map();
   return {
     started,
     startSession: async ({ label, extraEnv, setupMain }) => {
@@ -96,16 +113,24 @@ function sessions(fake) {
         evidence: { label, problems: [] },
         stop: async () => {
           fake.close();
-          return { label, problems: [] };
+          const n = (stops.get(label) ?? 0) + 1;
+          stops.set(label, n);
+          onStop?.(label, n);
+          return { label, problems: [], ...(stopEvidence?.(label, n) ?? {}) };
         },
       };
     },
   };
 }
 
-async function run(plan, setupDir, branch) {
-  const fake = product(plan);
-  const started = sessions(fake);
+async function run(
+  plan,
+  setupDir,
+  branch,
+  { wal = false, limits = {}, ...hooks } = {},
+) {
+  const fake = product(plan, { wal });
+  const started = sessions(fake, hooks);
   const result = await setupFrozenVariant({
     plan,
     setupDir,
@@ -115,7 +140,7 @@ async function run(plan, setupDir, branch) {
       startSession: started.startSession,
       uuid,
       sleep: async () => {},
-      limits: { bSealMs: 50, maintenanceMs: 50 },
+      limits: { bSealMs: 50, maintenanceMs: 50, ...limits },
     },
   });
   return { ...result, started: started.started, fake };
@@ -281,38 +306,255 @@ test("O-1 (3): 分岐の入力の検査（① は分岐しない、側の欠け�
   });
 });
 
-test("レビュー P3 (c): pre-step の閉じた DB が SHM を残していれば写さない", async () => {
+// DR-CP4-S6-7: the closed workspace DB's files beside it.
+const dbOf = (setupDir) => path.join(setupDir, "workspace", "grimodex.db");
+const filesOf = (setupDir) =>
+  readdirSync(path.join(setupDir, "workspace"))
+    .filter((name) => name.startsWith("grimodex.db"))
+    .sort();
+/** The header's journal mode bytes (18, 19): 02 02 is WAL (read without SQLite). */
+function journalBytes(file) {
+  const fd = openSync(file, "r");
+  try {
+    const header = Buffer.alloc(2);
+    readSync(fd, header, 0, 2, 18);
+    return header.toString("hex");
+  } finally {
+    closeSync(fd);
+  }
+}
+const writeShm = (setupDir) =>
+  writeFileSync(path.join(setupDir, "workspace", "grimodex.db-shm"), "shm");
+const noFile = { exists: false, bytes: 0 };
+const SIGNALLED = {
+  stop: { closed: false, signalled: [{ pid: 1, signal: "SIGKILL" }] },
+};
+
+test("DR-CP4-S6-7（s9r1 の停止の回帰）: WAL mode の DB の pre-step は、harness の read-only の読みが -shm と空の -wal を残しても通り、stop 直後の観測と写しの sha256 を残す", async () => {
   const plan = planOf(COMPLETE, "G-02/base");
-  const dir = scratch("cp4-sp-p4-shm-");
-  const setupDir = path.join(dir, "pre");
-  const fake = product(plan);
-  const started = sessions(fake);
-  const result = await setupFrozenVariant({
+  const setupDir = path.join(scratch("cp4-sp-p4-wal-"), "pre");
+  const { receipt, branch } = await run(
     plan,
     setupDir,
-    shared: SHARED,
-    branch: { stage: SP_P4_BRANCH.preStep },
-    deps: {
-      startSession: async (args) => {
-        const handle = await started.startSession(args);
-        return {
-          ...handle,
-          stop: async () => {
-            const stopped = await handle.stop();
-            writeFileSync(
-              path.join(setupDir, "workspace", "grimodex.db-shm"),
-              "shm",
-            );
-            return stopped;
-          },
-        };
+    { stage: SP_P4_BRANCH.preStep },
+    { wal: true },
+  );
+  assert.equal(
+    receipt.status,
+    SP_P4_BRANCH.status["pre-step"],
+    receipt.errors.join("\n"),
+  );
+  // The test made s9r1's condition (not an empty pass): the DB is WAL mode,
+  // and the harness's own read-only reads left a -shm and an empty -wal.
+  const live = dbOf(setupDir);
+  assert.equal(journalBytes(live), "0202");
+  assert.deepEqual(filesOf(setupDir), [
+    "grimodex.db",
+    "grimodex.db-shm",
+    "grimodex.db-wal",
+  ]);
+  assert.equal(statSync(`${live}-wal`).size, 0);
+  // What the stop left, observed before those reads: nothing.
+  const closed = { walMode: true, wal: noFile, shm: noFile };
+  assert.deepEqual(receipt.sessions.at(-1).closedFiles, closed);
+  assert.deepEqual(receipt.seedPinBranch.closedFiles, closed);
+  // The cold copy is the closed DB's main file (the reads wrote nothing).
+  assert.equal(branch.preStepDb.sha256, sha(live));
+  assert.equal(receipt.coldDatabase.sha256, sha(live));
+});
+
+test("DR-CP4-S6-7: 製品が閉じた後に -shm を残していれば（DELETE／WAL どちらの mode でも）、harness の読みの後でも止まり、観測を受領書に残す", async () => {
+  for (const wal of [false, true]) {
+    const plan = planOf(COMPLETE, "G-02/base");
+    const setupDir = path.join(scratch("cp4-sp-p4-shm-"), "pre");
+    const result = await run(
+      plan,
+      setupDir,
+      { stage: SP_P4_BRANCH.preStep },
+      { wal, onStop: () => writeShm(setupDir) },
+    );
+    assert.equal(result.receipt.status, "failed", `wal ${wal}`);
+    assert.match(result.receipt.errors.join("\n"), /kept a SHM file/u);
+    assert.equal(result.branch, undefined);
+    const closed = result.receipt.seedPinBranch.closedFiles;
+    assert.equal(closed.shm.exists, true);
+    assert.equal(closed.shm.bytes, 3);
+    assert.equal(closed.walMode, wal);
+  }
+});
+
+test("DR-CP4-S6-7: 最後の close の観測が効く（signal で終えた session の -shm は、開き直しが正常に閉じれば消え、開き直しの close が残せば止まる）", async () => {
+  const plan = planOf(COMPLETE, "G-02/base");
+  const limits = { freshnessSettleMs: 30 };
+  // The author session ends by SIGKILL and leaves a -shm; the quiesce
+  // reopening closes cleanly (a clean close of the last connection removes it).
+  const cleared = path.join(scratch("cp4-sp-p4-last-"), "pre");
+  const first = await run(
+    plan,
+    cleared,
+    { stage: SP_P4_BRANCH.preStep },
+    {
+      wal: true,
+      limits,
+      onStop: (label, n) => {
+        if (label === "author" && n === 1) writeShm(cleared);
       },
-      uuid,
-      sleep: async () => {},
-      limits: { bSealMs: 50, maintenanceMs: 50 },
+      stopEvidence: (label, n) =>
+        label === "author" && n === 1 ? SIGNALLED : {},
     },
+  );
+  assert.equal(
+    first.receipt.status,
+    SP_P4_BRANCH.status["pre-step"],
+    first.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(first.started, ["author", "quiesce-1"]);
+  assert.equal(first.receipt.quiesce.reopens.length, 1);
+  assert.equal(first.receipt.quiesce.reopens[0].beforeEndedByClose, false);
+  const rows = first.receipt.sessions;
+  assert.equal(rows[0].closedFiles.shm.exists, true, "the first stop's");
+  assert.equal(rows.at(-1).closedFiles.shm.exists, false, "the last stop's");
+  assert.equal(first.receipt.seedPinBranch.closedFiles.shm.exists, false);
+  // The reverse: the reopening's close leaves it.
+  const left = path.join(scratch("cp4-sp-p4-last-"), "pre");
+  const second = await run(
+    plan,
+    left,
+    { stage: SP_P4_BRANCH.preStep },
+    {
+      wal: true,
+      limits,
+      onStop: (label) => {
+        if (label.startsWith("quiesce")) writeShm(left);
+      },
+      stopEvidence: (label, n) =>
+        label === "author" && n === 1 ? SIGNALLED : {},
+    },
+  );
+  assert.equal(second.receipt.status, "failed");
+  assert.match(second.receipt.errors.join("\n"), /kept a SHM file/u);
+  assert.equal(second.receipt.seedPinBranch.closedFiles.shm.exists, true);
+});
+
+test("DR-CP4-S6-7: 観測は pre-step の session だけが受領書に残す（完全な setup と 2 つの側の受領書の形は変わらず、-shm が残っても止まらない）", async () => {
+  const plan = planOf(COMPLETE, "G-02/base");
+  const dir = scratch("cp4-sp-p4-only-");
+  const leave = (setupDir) => () => writeShm(setupDir);
+  const complete = path.join(dir, "complete");
+  const whole = await run(plan, complete, null, {
+    wal: true,
+    onStop: leave(complete),
   });
-  assert.equal(result.receipt.status, "failed");
-  assert.match(result.receipt.errors.join("\n"), /kept a SHM file/u);
-  assert.equal(result.branch, undefined);
+  assert.equal(
+    whole.receipt.status,
+    "setup-complete",
+    whole.receipt.errors.join("\n"),
+  );
+  assert.ok(whole.receipt.sessions.length > 0);
+  assert.ok(whole.receipt.sessions.every((row) => !("closedFiles" in row)));
+  assert.equal(whole.receipt.seedPinBranch, undefined);
+  const pre = path.join(dir, "pre");
+  const preStep = await run(
+    plan,
+    pre,
+    { stage: SP_P4_BRANCH.preStep },
+    { wal: true },
+  );
+  assert.ok(preStep.receipt.sessions.every((row) => "closedFiles" in row));
+  for (const side of SP_P4_BRANCH.sides) {
+    const sideDir = path.join(dir, side);
+    const result = await run(
+      plan,
+      sideDir,
+      {
+        stage: SP_P4_BRANCH.side,
+        side,
+        carry: preStep.branch.carry,
+        preStepDb: preStep.branch.preStepDb,
+      },
+      { wal: true, onStop: leave(sideDir) },
+    );
+    assert.equal(
+      result.receipt.status,
+      "sp-p4-branch-complete",
+      result.receipt.errors.join("\n"),
+    );
+    assert.ok(result.receipt.sessions.every((row) => !("closedFiles" in row)));
+    assert.ok(!("closedFiles" in result.receipt.seedPinBranch));
+  }
+});
+
+test("DR-CP4-S6-7: observeClosedWorkspaceFiles は stat と header の 20 byte だけを読み、何も作らない（SQLite の接続を開かない）", () => {
+  const dir = scratch("cp4-sp-p4-observe-");
+  const file = path.join(dir, "grimodex.db");
+  // No DB at all: nothing exists, the header is unreadable (null).
+  assert.deepEqual(observeClosedWorkspaceFiles(file), {
+    walMode: null,
+    wal: noFile,
+    shm: noFile,
+  });
+  // A rollback-journal DB, then a WAL one, closed cleanly: no sidecars.
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE t (a)");
+  db.close();
+  assert.deepEqual(observeClosedWorkspaceFiles(file), {
+    walMode: false,
+    wal: noFile,
+    shm: noFile,
+  });
+  const wal = new DatabaseSync(file);
+  wal.exec("PRAGMA journal_mode=WAL");
+  wal.exec("INSERT INTO t VALUES (1)");
+  wal.close();
+  assert.equal(journalBytes(file), "0202");
+  const before = readdirSync(dir).sort();
+  assert.deepEqual(observeClosedWorkspaceFiles(file), {
+    walMode: true,
+    wal: noFile,
+    shm: noFile,
+  });
+  assert.deepEqual(readdirSync(dir).sort(), before);
+  // What is there is reported with its size (the reads below make them).
+  writeFileSync(`${file}-shm`, "shm");
+  writeFileSync(`${file}-wal`, "");
+  assert.deepEqual(observeClosedWorkspaceFiles(file), {
+    walMode: true,
+    wal: { exists: true, bytes: 0 },
+    shm: { exists: true, bytes: 3 },
+  });
+  // A read-only connection to a closed WAL DB leaves a -shm: the effect the
+  // observation is taken before.
+  rmSync(`${file}-shm`);
+  rmSync(`${file}-wal`);
+  const reader = new DatabaseSync(file, { readOnly: true });
+  reader.prepare("SELECT count(*) AS n FROM t").get();
+  reader.close();
+  assert.equal(observeClosedWorkspaceFiles(file).shm.exists, true);
+});
+
+test("DR-CP4-S6-7: pre-step の SHM の検査は、観測が無ければ（想定外）止まり、-shm があれば止まり、無ければ通る（fail closed）", () => {
+  assert.throws(
+    () => assertPreStepClosedWithoutShm(null),
+    /\[artifact\] .*no observation/u,
+  );
+  assert.throws(
+    () => assertPreStepClosedWithoutShm(undefined),
+    /\[artifact\] .*no observation/u,
+  );
+  assert.throws(
+    () => assertPreStepClosedWithoutShm({ walMode: true }),
+    /kept a SHM file/u,
+  );
+  assert.throws(
+    () =>
+      assertPreStepClosedWithoutShm({
+        walMode: true,
+        wal: noFile,
+        shm: { exists: true, bytes: 32768 },
+      }),
+    /kept a SHM file/u,
+  );
+  assert.doesNotThrow(() =>
+    assertPreStepClosedWithoutShm({ walMode: true, wal: noFile, shm: noFile }),
+  );
 });

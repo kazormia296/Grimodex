@@ -29,7 +29,14 @@
 import { execFileSync } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -2243,6 +2250,63 @@ function relativeToRoot(root, file) {
 }
 
 /**
+ * DR-CP4-S6-7: the `-wal` and `-shm` a session's stop left beside the closed
+ * workspace DB, and whether the DB's header says WAL mode (bytes 18 and 19
+ * are 2). The SP-P4 pre-step takes it right after each session stops, before
+ * the harness's own reads of the DB (DR-CP4-L-27's `readIndexMetadata` and
+ * `readMaintenanceActivity`): a read-only connection to a WAL DB creates a
+ * `-shm` and an empty `-wal` it cannot remove, so after those reads the
+ * files no longer say how the app closed the DB. It stats the two sidecars
+ * and reads 20 header bytes of the main file by plain `fs`: no SQLite
+ * connection, so nothing is created and nothing is locked. `walMode` is
+ * `null` when the header cannot be read (a disclosure only; no check uses it).
+ */
+export function observeClosedWorkspaceFiles(dbFile) {
+  const sidecar = (file) => {
+    try {
+      return { exists: true, bytes: statSync(file).size };
+    } catch (error) {
+      if (error?.code === "ENOENT") return { exists: false, bytes: 0 };
+      throw error;
+    }
+  };
+  let walMode = null;
+  let fd = null;
+  try {
+    fd = openSync(dbFile, "r");
+    const header = Buffer.alloc(20);
+    if (readSync(fd, header, 0, 20, 0) === 20)
+      walMode = header[18] === 2 && header[19] === 2;
+  } catch {
+    walMode = null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+  return {
+    walMode,
+    wal: sidecar(`${dbFile}-wal`),
+    shm: sidecar(`${dbFile}-shm`),
+  };
+}
+
+/**
+ * DR-CP4-O-1 (3) as DR-CP4-S6-7 reads it: the SP-P4 pre-step's closed DB left
+ * no SHM file behind. `closedFiles` is the observation of the last session's
+ * stop (`observeClosedWorkspaceFiles`); no observation stops it too (it is
+ * never "nothing left").
+ */
+export function assertPreStepClosedWithoutShm(closedFiles) {
+  if (closedFiles === null || closedFiles === undefined)
+    throw new Error(
+      "[artifact] the SP-P4 pre-step has no observation of the files its last session left after close",
+    );
+  if (closedFiles.shm?.exists !== false)
+    throw new Error(
+      "[artifact] the SP-P4 pre-step workspace kept a SHM file after close (observed right after the last session stopped, before the harness's own reads)",
+    );
+}
+
+/**
  * DR-CP4-O-1 (3): SP-P4's branch of one complete setup at the seed pin step
  * (S2 `diagnosticRuns` SP-P4 `branch: single-pre-step-copy`). `pre-step`
  * runs the author session up to the step before the seed pin step and
@@ -2486,7 +2550,21 @@ export async function setupFrozenVariant({
         now,
       });
     } finally {
-      receipt.sessions.push(await handle.stop());
+      const stopped = await handle.stop();
+      // DR-CP4-S6-7: the SP-P4 pre-step reads what this stop left beside the
+      // DB right now, before any read of the harness's own (the check after
+      // the quiesce block looks at the last session's). Other setups' receipts
+      // keep the evidence as it is.
+      receipt.sessions.push(
+        preStep
+          ? {
+              ...stopped,
+              closedFiles: observeClosedWorkspaceFiles(
+                path.join(workspacePath, "grimodex.db"),
+              ),
+            }
+          : stopped,
+      );
       await save();
     }
   };
@@ -2767,11 +2845,15 @@ export async function setupFrozenVariant({
     // SP-P4 pre-step: the copy and the state a side resumes from; no read
     // back (the setup stops before the seed pin step by design).
     if (preStep) {
-      // DR-CP4-O-1 (3): the closed DB left neither WAL nor SHM behind.
-      if (existsSync(`${live}-shm`))
-        throw new Error(
-          "[artifact] the SP-P4 pre-step workspace kept a SHM file after close",
-        );
+      // DR-CP4-O-1 (3): the closed DB left neither WAL nor SHM behind. The
+      // DR-CP4-S6-7 observation of the last session's stop (the last close
+      // wins: a quiesce reopening that closes cleanly removes what a signalled
+      // session left), not the files now: the quiesce reads above are
+      // read-only connections to a WAL DB, which create a `-shm` and an empty
+      // `-wal`. No observation is a stop too.
+      const closedFiles = receipt.sessions.at(-1)?.closedFiles ?? null;
+      receipt.seedPinBranch.closedFiles = closedFiles;
+      assertPreStepClosedWithoutShm(closedFiles);
       const problems = receipt.sessions.flatMap((row) => row?.problems ?? []);
       receipt.errors.push(...problems);
       receipt.status =
