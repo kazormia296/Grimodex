@@ -2612,22 +2612,21 @@ fn run_ledger(db: &Database) -> Result<Vec<(String, String)>> {
 
 /// The `report` of the project's latest completed Verify Run, as JSON.
 fn last_completed_verify_report(db: &Database) -> Result<Option<serde_json::Value>> {
-    Ok(db
-        .with_conn(|conn| {
-            Ok(conn
-                .query_row(
-                    "SELECT outcome_summary_json FROM narrative_extraction_runs
-                      WHERE project_id = ?1 AND run_kind = 'dependency-verify'
-                        AND status = 'completed' ORDER BY rowid DESC LIMIT 1",
-                    [PROJECT],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?)
-        })?
-        .map(|summary| -> Result<serde_json::Value> {
-            Ok(serde_json::from_str::<serde_json::Value>(&summary)?["report"].clone())
-        })
-        .transpose()?)
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT outcome_summary_json FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'dependency-verify'
+                    AND status = 'completed' ORDER BY rowid DESC LIMIT 1",
+                [PROJECT],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    })?
+    .map(|summary| -> Result<serde_json::Value> {
+        Ok(serde_json::from_str::<serde_json::Value>(&summary)?["report"].clone())
+    })
+    .transpose()
 }
 
 /// Keys of the project's maintenance Findings.

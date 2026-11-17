@@ -953,7 +953,7 @@ fn an_excluding_report_cannot_seal_a_repair_or_pass_the_c2z_verify_gate() -> Res
     drain_durable_chain(&fixture)?;
     let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
     assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
-    assert!(matches!(seal_message(&fixture, &run_id, &epoch)?, Ok(_)));
+    assert!(seal_message(&fixture, &run_id, &epoch)?.is_ok());
     assert_eq!(project_readiness(&fixture)?.verify.state, ReadinessState::Passed);
     Ok(())
 }
@@ -1003,7 +1003,7 @@ fn a_report_sealed_before_the_graph_became_not_current_is_stopped_by_the_digest(
     drain_durable_chain(&fixture)?;
     let (run_id, epoch, outcome) = last_verify(&fixture)?.expect("completed Verify");
     assert!(outcome["report"].get("consumersExcludedNotCurrent").is_none());
-    assert!(matches!(seal_message(&fixture, &run_id, &epoch)?, Ok(_)), "before the Graph exists");
+    assert!(seal_message(&fixture, &run_id, &epoch)?.is_ok(), "before the Graph exists");
     let recorder = Recorder::default();
     run_cycle(&fixture, Some(&graph_seam()), &recorder)?;
     assert_eq!(generation(fixture.db())?, Some(1));
@@ -1053,8 +1053,16 @@ fn before_cutover_wake(
     fixture: &Fixture,
     recorder: &Recorder,
 ) -> Result<(Option<DesiredWork>, Option<MaintenanceCycleResult>)> {
+    before_cutover_wake_with(fixture, None, recorder)
+}
+
+fn before_cutover_wake_with(
+    fixture: &Fixture,
+    seam: Option<&NarrativeMaintenanceCiConfig>,
+    recorder: &Recorder,
+) -> Result<(Option<DesiredWork>, Option<MaintenanceCycleResult>)> {
     let coordinates =
-        crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(None)?;
+        crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(seam)?;
     let planned = crate::narrative_extraction::discover_before_cutover_maintenance_work_with_coordinates(
         fixture.db(),
         PROJECT,
@@ -1076,7 +1084,7 @@ fn before_cutover_wake(
         delivery_fingerprint: None,
         workspace_binding: None,
     };
-    let result = run_cycle_on(fixture.db(), Some(fixture.runtime()), &request, None, recorder)?;
+    let result = run_cycle_on(fixture.db(), Some(fixture.runtime()), &request, seam, recorder)?;
     Ok((planned, Some(result)))
 }
 
@@ -1623,5 +1631,38 @@ fn a_semantic_graph_requires_repair_finding_is_resolved_by_the_next_clean_verify
     assert!(excluded_graph_edge_count(&outcome["report"]).is_some());
     // The lifecycle is an append-only log: the Finding went new -> resolved.
     assert_eq!(states(&fixture)?, vec!["new".to_string(), "resolved".to_string()]);
+    Ok(())
+}
+
+/// The same before-cutover Rebuild forms with the B-ROUTE seam open: the cycle
+/// never judges the BeforeCutover flow (the binding), so the chain is the same
+/// `[verify, rebuild, verify]`, no Graph build starts, and nothing fails.
+#[test]
+fn before_cutover_rebuild_forms_are_unchanged_with_the_seam_open() -> Result<()> {
+    let _serial = serial();
+    let seam = graph_seam();
+    for marker in [true, false] {
+        let fixture = motive(marker)?;
+        let tag = format!("marker={marker}");
+        let recorder = Recorder::default();
+        let (work, _) = before_cutover_wake_with(&fixture, Some(&seam), &recorder)?;
+        assert!(
+            matches!(&work, Some(work) if work.run_kind == AutomaticRunKind::Verify),
+            "{tag}: {work:?}"
+        );
+        assert_eq!(
+            started_kinds(&recorder),
+            vec!["verify".to_string(), "rebuild".to_string(), "verify".to_string()],
+            "{tag}"
+        );
+        for index in 0..3 {
+            let recorder = Recorder::default();
+            let (work, _) = before_cutover_wake_with(&fixture, Some(&seam), &recorder)
+                .map_err(|error| anyhow!("{tag} wake#{index}: {error:#}"))?;
+            assert!(work.is_none(), "{tag} wake#{index}");
+            assert!(started_kinds(&recorder).is_empty(), "{tag} wake#{index}");
+        }
+        assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
+    }
     Ok(())
 }

@@ -198,12 +198,15 @@ pub(super) fn observe_unchanged_forms() -> Result<Vec<String>> {
         // Current by the structure, false by full validation: manual, as before.
         ("current-false 17 Edge State stale", format!("UPDATE narrative_dependency_edge_states SET evidence_freshness='stale' WHERE edge_id={first_edge}")),
         ("current-false 18 Edge State of another epoch", format!("PRAGMA foreign_keys=OFF; UPDATE narrative_dependency_edge_states SET evaluated_at_epoch_id='other-epoch' WHERE edge_id={first_edge}")),
-        ("current 21 a raw proposal row added, binding not dirty (the eligibility is unchanged in effect)", format!(
+        (
+            "current 21 a raw proposal row added, binding not dirty (the eligibility is unchanged in effect)",
             "INSERT INTO narrative_proposals
                 (id, proposal_set_id, proposal_key, kind, status, payload_json, current_revision_id, created_at, updated_at)
-             SELECT 'gdv1-drift-candidate', proposal_set_id, 'gdv1-drift-candidate', kind, 'unreviewed', '{{}}', current_revision_id,
+             SELECT 'gdv1-drift-candidate', proposal_set_id, 'gdv1-drift-candidate', kind, 'unreviewed', '{}', current_revision_id,
                     '2026-09-22T00:00:00.000Z', '2026-09-22T00:00:00.000Z'
-               FROM narrative_proposals LIMIT 1")),
+               FROM narrative_proposals LIMIT 1"
+                .to_string(),
+        ),
     ];
     let coordinates =
         crate::narrative_extraction::maintenance_contracts::current_maintenance_coordinates()?;
