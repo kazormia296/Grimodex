@@ -38,11 +38,12 @@
 | s7r2 browsing | 201 | 49 | 152 | 75.6% | 0 | stale-start 146、stamp0-missing 6 |
 
 - 失効は両方とも 0 で、s7r2 と同じ。
-- 窓外は editing で 16→8、browsing で 152→126 に減った。
-  - s7r2 にあった `freshness-stamp-stamp0-missing`（計 18 件）が s9d1 では 0。K6/7 で stamp の読みが外れたこと、またはその後の製品の変更の影響と読める。どちらかは切り分けていない。
-  - 残るのは `graph-late:stale-start` だけ。
-- `outOfWindowExceeds` は両方とも true のまま。窓外率の基準には、まだ届いていない。
-- 判定の規則（S6）の当てはめは、受領書 28 件と台帳 8 件がそろわないので行っていない。
+- **窓外の増減は言えない。**
+  - s7r2 は K6/6 の harness、s9d1 は K6/7 の harness で、候補も違う。どちらも 1 回だけの測定。
+  - s7r2 にあった `freshness-stamp-stamp0-missing`（計 18 件）は、K6/7 では stamp の読みが外れたので出ない。
+  - 同じ理由（`graph-late:stale-start`）どうしで比べると、editing は 4→8 に増え、browsing は 146→126 に減っている。読みが違うので、どちらの向きの比較も根拠にしない。
+- 生の欄の `outOfWindowExceeds` は、両方とも true（s7r2 も true だったが、S6 の規則は HOLD を指さなかった）。
+- 判定の規則（S6）は当てはめていない。受領書 28 件と台帳 8 件がそろわないため。
 
 ### 2.3 後段の dev の予行（dev の fixture。ユーザー回答「dev の fixture で後段を予行」）
 
@@ -57,7 +58,13 @@
 | N2・N3・N4 | G-01 | 測定済み。70 sample（Graph 35）。problems 0 |
 
 - 7 本とも runner の problems は 0。検証の誤りは、dev では必ず出る `candidate.productReceiptSha256`（dev の経路は製品の receipt を受け取らない）の 1 件だけ。verdict は `preview-only`。
-- **K6/7 の後段のコード（parity・Gold・negative の runner と受領書）は、9 回目の S4 の harness で初めて最後まで走った。** SHM のような、走らせて初めて分かる欠陥は出なかった。
+- **K6/7 の後段のコード（parity・Gold・negative の runner と受領書）のうち、dev の経路は、9 回目の S4 の harness で初めて最後まで走った。** その範囲では、SHM のような「走らせて初めて分かる」欠陥は出なかった。
+- **dev の経路が通らないもの**（正式 run が初回になる）：
+  - S5 admission。封印つきの setup 受領書の読み。13 の cold DB の seed pin の gate。
+  - SP-P4 の受領書の gate、台帳。
+  - one-shot の variant、blocked の variant。
+  - G-01 の e2e の診断。
+- **Gold の値は未評価。** 両方の形で `notReadyAtStart` 30/30、`outOfWindowRate` 1、`qualityHold` true だった。G-08 形は初回描画が 29 なのに、窓内が 0。dev の形でのこの値の基準（以前の dev preview の記録）と照合していないので、良し悪しは言わない。
 - 13 の G-case の実データでの後段は、測れていない。
 
 ## 3 言えること／言えないこと
@@ -65,7 +72,7 @@
 - **言えること**
   - SP-P4 の SHM の欠陥は直り、SP-P4 は実 G-case で passed になる。
   - 前半（setup・V-10・SP-P4・trace）と、後段の runner の経路は、この harness で動く。
-  - trace の失効は 0 のままで、窓外は s7r2 より減った。
+  - trace の失効は 0（s7r2 と同じ）。
 - **言えないこと**
   - 正式の判定（HOLD かどうか、Lane unlocked かどうか）。
   - 実 G-case での Gold・negative・parity の値。
@@ -75,7 +82,10 @@
 ## 4 最後の凍結に持ち越すこと
 
 1. driver の新しい pin（impl.md §6。pin 54→55、S2 の sha256 の取り直し）。これを入れないと、正式の parity 以降は S5 admission で止まる。今回の停止で確かめられた。
-2. 正式 run では、parity・Gold・N2〜N4・G-01 が実 G-case で初めて走る。今回の dev の予行で runner の経路は通ったが、実データでの値は未知。
+2. 正式 run では、parity・Gold・N2〜N4・G-01 が実 G-case で初めて走る。今回の dev の予行で runner の経路は通ったが、上の「dev の経路が通らないもの」と実データでの値は未知。
+3. 実 G-case の SP-P4 が通ったのは `2100722a` の driver だけ。枝の head の `7272ad50` の driver（観測の失敗時の記録）は、workflow の dev の予行（8 形）でしか通っていない。最後の凍結で pin に載せる commit は、impl.md §6 の `a21d4f1f` ではなく、driver を最後に変えた `7272ad50` になる見込み（凍結のときに確かめる）。
+4. 実 G-case で後段を通す道（dev 専用枝で S5 admission に名指しの例外を入れ、s9d2 として build からやり直す）は残っている。ユーザーの判断があれば始める。
+5. S6 の道具（`recompute-trace-*.mjs`）は、s9d1 の trace の受領書ではまだ回していない。
 
 ## 5 記録の置き場
 
