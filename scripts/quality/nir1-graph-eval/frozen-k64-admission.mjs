@@ -169,6 +169,24 @@ function isAncestor(root, ancestor, descendant) {
  * pin's files have the pinned sha256 at the candidate commit and in the
  * worktree; an `ancestor` pin's commit is an ancestor of the candidate.
  */
+/**
+ * DEV ONLY（s9d2、2026-11-18。枝 claude/cp4-s9d2-dev は merge しない）。
+ * SHM の直し（DR-CP4-S6-7）で frozen-setup-driver.mjs の bytes が pin と違うので、
+ * 実 G-case で parity・Gold・N2〜N4 を dev として通すために、2 つの path だけを名指しで受ける。
+ * - driver：sha256 が直した版（7272ad50）と一致するときだけ。
+ * - この file 自身：例外を書き込むので自分の sha256 は名指せない。候補の commit と作業木の bytes が同じことだけを求める。
+ * 受けた行は `devException` と `pinnedSha256` を持ち、受領書に残る。台帳・判定に数えない（ユーザー回答 2026-11-18「後段やってください」）。
+ */
+export const DEV_S9D2_PIN_EXCEPTIONS = Object.freeze({
+  "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs": Object.freeze({
+    kind: "sha256",
+    sha256: "f844b18bae75dc4fe3ccfa1dc53823507e99379a6e8aaa3669aece1aa3713ab0",
+  }),
+  "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs": Object.freeze({
+    kind: "path",
+  }),
+});
+
 export function assertSourcePins({ root, candidate, pins }) {
   if (!Array.isArray(pins) || pins.length === 0)
     throw new Error(
@@ -206,6 +224,21 @@ export function assertSourcePins({ root, candidate, pins }) {
       } catch {
         inTree = null;
       }
+      const devException = DEV_S9D2_PIN_EXCEPTIONS[row.path];
+      if (
+        devException &&
+        atCandidate !== null &&
+        inTree !== null &&
+        sha256(atCandidate) === sha256(inTree) &&
+        (devException.kind === "path" ||
+          sha256(inTree) === devException.sha256)
+      )
+        return {
+          path: row.path,
+          sha256: sha256(inTree),
+          pinnedSha256: row.sha256,
+          devException: devException.kind,
+        };
       if (
         atCandidate === null ||
         inTree === null ||
