@@ -168,6 +168,40 @@ fn participant_read_until_reports_a_stopped_participant_as_an_error() {
     );
 }
 
+/// The stop is also observed **while** the call waits for the connection: a
+/// shutdown requested mid-wait ends the call at once as a typed stop (long
+/// before its deadline), not as "connection busy" at the deadline. Without the
+/// stop check in the acquisition loop this call waits for its 30 s deadline.
+#[test]
+fn participant_read_until_observes_a_stop_requested_while_it_waits() {
+    let db = Arc::new(test_db());
+    let (core, participant) = test_participant();
+    let _holder = Holder::new(&db);
+    let started = Instant::now();
+    let stopper = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(80));
+        core.request_shutdown().expect("shutdown requested");
+        core
+    });
+    let error = db
+        .try_with_participant_read_transaction_until(
+            &participant,
+            budget(started + Duration::from_secs(30)),
+            |_| Ok(()),
+        )
+        .expect_err("a stop requested mid-wait is an error, not connection-busy");
+    let _core = stopper.join().expect("stopper joined");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the stop was not observed while waiting: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        termination_reason(error),
+        crate::narrative_extraction::ValidationTerminationReason::Cancelled
+    );
+}
+
 /// Segment 1 of the deadline (SQL): the SQL runs under the same deadline. An
 /// endless statement is interrupted at the deadline as a typed `TimedOut`, the
 /// transaction is rolled back and the connection stays usable.
