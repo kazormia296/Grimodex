@@ -53,6 +53,10 @@ const CAPACITY_CODE: &str = "NIR1_GRAPH_CAPACITY_EXCEEDED";
 // GDV/1 acceptance (nir1-graph-dirty-binding-verify-proposal/1, section 8).
 #[path = "nir1_graph_index_maintenance_tests/gdv1_graph_binding_tests.rs"]
 mod gdv1_graph_binding_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_k2_byte_compat_tests.rs"]
+mod gdv1_k2_byte_compat_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_k2_stored_shape_tests.rs"]
+mod gdv1_k2_stored_shape_tests;
 #[path = "nir1_graph_index_maintenance_tests/gdv1_unchanged_behaviour_tests.rs"]
 mod gdv1_unchanged_behaviour_tests;
 

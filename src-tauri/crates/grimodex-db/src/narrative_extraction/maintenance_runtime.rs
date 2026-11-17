@@ -2337,6 +2337,29 @@ pub fn is_project_local_discovery_failure(error: &anyhow::Error) -> bool {
     is_context_unavailable_termination(error)
 }
 
+/// Whether a failure of the Graph build judgement belongs to that one read
+/// alone, so that the cycle can go on without B for the project (GDV/1 case
+/// C-2, DR-PUBG-5-16). An allowlist of two: a SQL failure of the judgement's own
+/// reads, and the no-wait maintenance connection being refused
+/// (`NEX_MAINTENANCE_CONNECTION_PREEMPTED`, which the judgement raises as a
+/// plain error). A typed validation termination of any reason, the attempt's
+/// own cancellation, a lifecycle stop and a connection cleanup failure are never
+/// local: they end the cycle and propagate.
+pub(crate) fn is_graph_judgement_local_failure(error: &anyhow::Error) -> bool {
+    if is_validation_terminated(error)
+        || is_maintenance_connection_cleanup_failure(error)
+        || error_chain_contains(error, "NEX_MAINTENANCE_ATTEMPT_CANCELLED")
+        || error_chain_contains(error, "NEX_MAINTENANCE_LIFECYCLE_STOP")
+        || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:")
+    {
+        return false;
+    }
+    error_chain_contains(error, MAINTENANCE_CONNECTION_PREEMPTED_CODE)
+        || error
+            .chain()
+            .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some())
+}
+
 /// Main's (uncontrolled) discovery for one project.
 ///
 /// The gated Graph Index build (B) is judged only inside a controlled cycle,
@@ -3160,13 +3183,43 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime_and_product(
             {
                 continue;
             }
-            let plan = super::nir1_graph_index_maintenance::plan_graph_index_build(
+            let plan = match super::nir1_graph_index_maintenance::plan_graph_index_build(
                 db,
                 &item.project_id,
                 "durable-wake",
                 control,
                 &graph,
-            )?;
+            ) {
+                Ok(plan) => plan,
+                // The judgement is an optimisation in front of the durable
+                // chain, not a step the chain needs: when it fails for a reason
+                // that belongs to this read alone (a SQL failure, or the
+                // no-wait connection being refused), the project keeps its
+                // Verify, no Graph build is added, and the Graph (not usable
+                // until B rebuilds it) stays as it was. Anything that ends the
+                // cycle itself (cancel, timeout, close, lifecycle stop,
+                // foreground preemption, cleanup failure) propagates unchanged.
+                Err(error) if is_graph_judgement_local_failure(&error) => {
+                    if let Some(control) = control {
+                        // A stop that arrived meanwhile still wins.
+                        (control.should_stop)()?;
+                        if control
+                            .stop_signal
+                            .as_ref()
+                            .is_some_and(|stop| stop.load(Ordering::Acquire))
+                        {
+                            return Err(error);
+                        }
+                    }
+                    tracing::debug!(
+                        target: "narrative.nir1_graph_index_build",
+                        project_id = %item.project_id,
+                        "NIR1_GRAPH_INDEX_BUILD_JUDGEMENT_FAILED_LOCAL"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if plan.preempts_durable_chain() {
                 if let Some(graph_work) = plan.into_work() {
                     preempting.push((index, graph_work));

@@ -594,6 +594,8 @@ pub(crate) fn judge_graph_index_build(
         |conn, inner| {
             let mut chained = MaintenanceCycleGraphControl::new(inner, Some(control));
             let tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            #[cfg(test)]
+            test_hooks::fire(test_hooks::TestStage::BeforeJudgement, Some(&tx))?;
             let judged = match read_build_hint(&tx, project_id, runtime, &mut chained)? {
                 HintRead::Skip(reason) => skipped(reason),
                 HintRead::Ready { scope, hint } => {
@@ -1050,6 +1052,8 @@ pub(crate) mod test_hooks {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(crate) enum TestStage {
+        /// Inside the judgement's read transaction (GDV/1 case C-2 tests).
+        BeforeJudgement,
         BeforeValidation,
         BeforePrepare,
         BetweenPhases,

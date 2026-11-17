@@ -1511,14 +1511,122 @@ fn v2_shadow_summary_skips_only_the_not_current_graph_head() -> Result<()> {
 // incremental Freshness (T-12) and the Finding resolution
 // ---------------------------------------------------------------------------
 
-/// A real Scene edit's change feed, run through incremental Freshness in the
-/// motive form: it must neither fail nor resolve the Graph's eligibility (with
-/// 2,065 candidates, resolving it would be a capacity error).
+/// Every Graph surface that Freshness could write: the metadata, the consumer
+/// Freshness row and the Edge States of the Graph binding.
+fn graph_surfaces(fixture: &Fixture) -> Result<Vec<String>> {
+    fixture.db().with_conn(|conn| {
+        let mut rows = Vec::new();
+        rows.push(format!(
+            "metadata {:?}",
+            conn.query_row(
+                "SELECT generation, source_digest, dependency_set_digest, dirty_cache_flag, built_at
+                   FROM narrative_semantic_index_metadata WHERE project_id=?1 AND index_key=?2",
+                params![PROJECT, INDEX_KEY],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                )),
+            )?
+        ));
+        rows.push(format!(
+            "freshness {:?}",
+            conn.query_row(
+                "SELECT evidence_freshness, build_action, semantic_epoch_id, dependency_set_digest, updated_at
+                   FROM narrative_consumer_freshness
+                  WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
+                params![PROJECT, INDEX_KEY],
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                )),
+            )?
+        ));
+        let mut statement = conn.prepare(
+            "SELECT s.edge_id, s.evidence_freshness, s.build_action, s.evaluated_at_epoch_id, s.evaluated_at
+               FROM narrative_dependency_edge_states s
+               JOIN narrative_dependency_edges e ON e.id = s.edge_id
+              WHERE e.project_id=?1 AND e.consumer_kind='semantic-index' AND e.consumer_key=?2
+              ORDER BY s.edge_id",
+        )?;
+        let states = statement
+            .query_map(params![PROJECT, INDEX_KEY], |row| {
+                Ok(format!(
+                    "edge-state {} {} {} {} {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.extend(states);
+        Ok(rows)
+    })
+}
+
+/// The premise of the two tests below: in the motive form (2,065 candidates, one
+/// above the B-close bound) a read of the whole-project eligibility Source is a
+/// capacity failure. Anything in the incremental cycle that resolved it would
+/// make the cycle fail the same way.
+fn assert_resolving_the_eligibility_would_fail_for_capacity(fixture: &Fixture) -> Result<()> {
+    let error = fixture
+        .db()
+        .with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result =
+                crate::narrative_extraction::nir1_entity_relation_index::read_eligibility_source(
+                    &mut tx, PROJECT,
+                )
+                .map(|source| source.digest);
+            tx.rollback()?;
+            Ok(result)
+        })?
+        .expect_err("the eligibility Source of the motive form is over the candidate bound");
+    assert!(
+        format!("{error:#}").contains("candidate-rows"),
+        "capacity failure of the candidate rows: {error:#}"
+    );
+    Ok(())
+}
+
+/// Drain the project's incremental Freshness cycles; every cycle must succeed.
+fn drain_incremental_freshness(
+    fixture: &Fixture,
+) -> Result<Vec<crate::narrative_extraction::incremental_freshness::IncrementalFreshnessBatchSummary>>
+{
+    let mut batches = Vec::new();
+    loop {
+        match run_incremental_freshness_cycle(fixture.db())? {
+            IncrementalFreshnessCycleOutcome::Processed(batch) => {
+                batches.push(batch);
+                assert!(batches.len() < 64, "the change feed drains");
+            }
+            _ => return Ok(batches),
+        }
+    }
+}
+
+/// A real Scene edit (a tree-node patch with a change-feed event) in the motive
+/// form: the incremental Freshness cycle succeeds. The edit's feed reaches the
+/// consumers that read that Scene (here a Proposal Revision) and not the Graph
+/// binding (a Scene edit does not select the Graph's Edges at all), so no Graph
+/// surface is touched; resolving the eligibility would have been a capacity
+/// failure (the premise is asserted), so the cycle not failing is the proof that
+/// it did not.
 #[test]
 fn incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility() -> Result<()> {
     let _serial = serial();
     use crate::narrative_extraction::scope_storage_authority_tests::patch;
     let fixture = motive(true)?;
+    assert_resolving_the_eligibility_would_fail_for_capacity(&fixture)?;
+    let graph_before = graph_surfaces(&fixture)?;
     patch(
         fixture.db(),
         "a3-source",
@@ -1528,17 +1636,36 @@ fn incremental_freshness_after_a_scene_edit_does_not_resolve_the_eligibility() -
         true,
         "2026-10-27T00:00:00.000Z",
     )?;
-    let mut processed = 0;
-    while matches!(
-        run_incremental_freshness_cycle(fixture.db())?,
-        IncrementalFreshnessCycleOutcome::Processed(_)
-    ) {
-        processed += 1;
-        assert!(processed < 64, "the change feed drains");
-    }
-    assert!(processed > 0, "the edit produced incremental work");
-    // The edit retires a Revision, which is an ordinary Freshness Finding; no
-    // maintenance-failure Finding (a stalled Verify or Rebuild) appears.
+    let batches = drain_incremental_freshness(&fixture)?;
+    assert!(!batches.is_empty(), "the edit produced incremental work");
+    // The feed reached a consumer (the Revision that reads the Scene) ...
+    let affected = batches
+        .iter()
+        .flat_map(|batch| batch.v2_shadow.consumers.iter())
+        .map(|consumer| consumer.consumer_kind.as_str())
+        .collect::<Vec<_>>();
+    assert!(affected.contains(&"proposal-revision"), "{affected:?}");
+    // ... and not the Graph binding: the Scene's identity is not one of the
+    // Graph Edges' sources (they are `codex:`, `codex-relation:` and the
+    // project eligibility), so the feed never selects them, and no Graph surface
+    // changed. Only a full-Graph event (an epoch reset or a component schema
+    // change, not an edit) selects every Edge of the project.
+    let graph_sources: Vec<String> = fixture.db().with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT source_object_identity FROM narrative_dependency_edges
+              WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
+        )?;
+        let rows = statement
+            .query_map(params![PROJECT, INDEX_KEY], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
+    })?;
+    assert_eq!(graph_sources.len(), 4, "{graph_sources:?}");
+    assert!(graph_sources.iter().all(|source| !source.starts_with("project:scene:")));
+    assert!(!affected.contains(&"semantic-index"), "{affected:?}");
+    assert_eq!(graph_surfaces(&fixture)?, graph_before);
+    assert!(is_dirty_registered(&fixture)?, "the binding is still the dirty one");
+    // No maintenance-failure Finding (a stalled Verify or Rebuild).
     assert!(
         finding_keys(fixture.db())?
             .iter()
@@ -1668,4 +1795,311 @@ fn before_cutover_rebuild_forms_are_unchanged_with_the_seam_open() -> Result<()>
         assert!(finding_keys(fixture.db())?.is_empty(), "{tag}");
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// "残る止まり" (section 5): current by the structure, false by full validation
+// ---------------------------------------------------------------------------
+
+/// The stored `source_digest` of the binding and the eligibility digest that a
+/// foreground read of the live Source gives now.
+fn stored_and_live_source_digest(fixture: &Fixture) -> Result<(String, String)> {
+    let stored = match read_binding(fixture)? {
+        BindingRead::Registered(binding) => binding.source_digest.clone(),
+        other => bail!("not a registered binding: {other:?}"),
+    };
+    let live = fixture.db().with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        let digest =
+            crate::narrative_extraction::nir1_entity_relation_index::read_eligibility_source(
+                &mut tx, PROJECT,
+            )?
+            .digest;
+        tx.rollback()?;
+        Ok(digest)
+    })?;
+    Ok((stored, live))
+}
+
+/// The two forms that the contract's section 5 lists and the prototype did not
+/// make (the eligibility's Source digest differing from the stored one, and an
+/// Edge differing from the Source), with the two it did make (an Edge State that
+/// is stale, and one of another epoch): each is `Current` by the structure, is
+/// false by full validation (an `Ok(false)`, not a capacity error), is not
+/// repaired by B (the hint is `Skip{BindingCurrent}`), is not excluded by
+/// Verify (its Graph Edges stay unresolvable: manual), and the cycle and
+/// discovery results are the same as the build before GDV/1 (the shapes 22 and
+/// 23 in `gdv1_unchanged_behaviour_tests.rs`, and 17 and 18, are compared with
+/// values taken on that build).
+#[test]
+fn current_but_false_forms_stay_manual() -> Result<()> {
+    let _serial = serial();
+    let (k, p) = (INDEX_KEY, PROJECT);
+    let g = format!("project_id='{p}' AND consumer_kind='semantic-index' AND consumer_key='{k}'");
+    let shapes = binding_shapes();
+    let shape = |prefix: &str| -> String {
+        shapes
+            .iter()
+            .find(|(name, _)| name.starts_with(prefix))
+            .map(|(_, sql)| sql.clone())
+            .unwrap_or_else(|| panic!("no shape {prefix}"))
+    };
+    let forms: Vec<(&str, String)> = vec![
+        ("17 Edge State stale", shape("17")),
+        ("18 Edge State of another epoch", shape("18")),
+        (
+            "22 Source digest drift",
+            "UPDATE narrative_proposal_revisions
+                SET payload_json = replace(payload_json, 'nir1-alice', 'nir1-alicx')"
+                .to_string(),
+        ),
+        (
+            "23 Edge differs from the Source",
+            format!(
+                "UPDATE narrative_dependency_edges
+                    SET read_set_json='[\"codex:nir1-alice@2099-01-01T00:00:00Z\"]'
+                  WHERE {g} AND source_object_identity='codex:nir1-alice'"
+            ),
+        ),
+    ];
+    for (name, sql) in forms {
+        let fixture = Fixture::published()?;
+        execute(&fixture, &sql)?;
+        // Not a dirty form: nothing marked the binding.
+        assert!(!is_dirty_registered(&fixture)?, "{name}");
+        assert_eq!(classify(&fixture)?, C::Current, "{name}");
+        assert_eq!(
+            fixture
+                .db()
+                .with_conn_mut(|conn| is_complete_registered(conn, PROJECT, INDEX_KEY))?,
+            false,
+            "{name}: full validation is false and does not fail"
+        );
+        assert_eq!(
+            format!("{:?}", fixture.judge()?),
+            "Skip { reason: BindingCurrent }",
+            "{name}: B does not repair it"
+        );
+        // Which check is false: the Source digest (22) or the Edge (23).
+        let (stored, live) = stored_and_live_source_digest(&fixture)?;
+        match name {
+            "22 Source digest drift" => assert_ne!(stored, live, "{name}"),
+            "23 Edge differs from the Source" => assert_eq!(stored, live, "{name}"),
+            _ => {}
+        }
+        // Verify keeps the Graph's Edges unresolvable and excludes nothing:
+        // a manual defect, as before GDV/1.
+        let report = fixture
+            .db()
+            .with_conn_mut(|conn| rr::verify_narrative_dependency_graph_for_project(conn, PROJECT))?;
+        assert!(report.consumers_excluded_not_current.is_empty(), "{name}");
+        assert_eq!(report.edge_ids_with_unresolvable_consumer_scope.len(), 4, "{name}");
+        assert!(!report.is_clean(), "{name}");
+        assert!(!report.requires_rebuild(), "{name}: not rebuildable");
+        assert!(!report.is_incomplete_only(), "{name}: not transient");
+    }
+    Ok(())
+}
+
+/// The shape 21 of the prototype (a raw proposal row that is not a Graph
+/// candidate, no dirty mark) is NOT a current-but-false form: it leaves the
+/// eligibility's Source alone, so the binding is `Current`, full validation is
+/// true, Verify is clean, and nothing is manual. Section 5's list of forms that
+/// stay manual does not include it; it was an attempt at the Source digest
+/// drift that did not change the Source (the real drift is shape 22).
+#[test]
+fn a_proposal_row_that_is_not_a_candidate_does_not_change_the_source() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    let before = stored_and_live_source_digest(&fixture)?;
+    execute(
+        &fixture,
+        "INSERT INTO narrative_proposals
+            (id, proposal_set_id, proposal_key, kind, status, payload_json, current_revision_id, created_at, updated_at)
+         SELECT 'gdv1-drift-candidate', proposal_set_id, 'gdv1-drift-candidate', kind, 'unreviewed', '{}',
+                current_revision_id, '2026-09-22T00:00:00.000Z', '2026-09-22T00:00:00.000Z'
+           FROM narrative_proposals LIMIT 1",
+    )?;
+    assert!(!is_dirty_registered(&fixture)?);
+    assert_eq!(classify(&fixture)?, C::Current);
+    let after = stored_and_live_source_digest(&fixture)?;
+    assert_eq!(before.0, after.0);
+    assert_eq!(after.0, after.1, "the live Source digest is the stored one");
+    assert!(complete_registered(fixture.db())?);
+    let report = fixture
+        .db()
+        .with_conn_mut(|conn| rr::verify_narrative_dependency_graph_for_project(conn, PROJECT))?;
+    assert!(report.is_clean());
+    assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// case C-2: a failed judgement does not end the cycle (DR-PUBG-5-16)
+// ---------------------------------------------------------------------------
+
+use crate::narrative_extraction::maintenance_runtime::is_graph_judgement_local_failure;
+use crate::narrative_extraction::source_revision::{
+    validation_terminated, ValidationTerminationReason,
+};
+use rusqlite::Connection;
+use std::cell::Cell;
+use std::rc::Rc;
+
+/// A Verify item in front of a dirty Graph binding, with the B-ROUTE seam open,
+/// and `failure` raised inside the judgement's read transaction (once). Returns
+/// the cycle's result, what started, and how many times the judgement ran.
+fn cycle_with_a_failing_judgement(
+    failure: impl Fn(&Connection) -> anyhow::Error + 'static,
+) -> Result<(Result<MaintenanceCycleResult>, Vec<String>, usize)> {
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+    let judged = Rc::new(Cell::new(0usize));
+    let counter = Rc::clone(&judged);
+    let _hook = install_hook(move |stage, conn| {
+        if stage == TestStage::BeforeJudgement {
+            counter.set(counter.get() + 1);
+            if counter.get() == 1 {
+                return Err(failure(conn.expect("inside the judgement's transaction")));
+            }
+        }
+        Ok(())
+    });
+    let recorder = Recorder::default();
+    let request = work_request(&fixture, AutomaticRunKind::Verify, &["workspace-opened"])?;
+    let result = run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &request,
+        Some(&graph_seam()),
+        &recorder,
+    );
+    Ok((result, started_kinds(&recorder), judged.get()))
+}
+
+/// A judgement that fails for a reason of its own (a SQL failure, the no-wait
+/// connection refused) does not take the cycle with it: the project's Verify
+/// still runs (it excludes the not-current Graph), no Graph build is put in
+/// front of it, and the cycle is accepted. The Graph is built later, by the
+/// cycle's last rediscovery, whose judgement succeeds.
+#[test]
+fn a_failed_graph_judgement_does_not_end_the_cycle() -> Result<()> {
+    let _serial = serial();
+    type Failure = Box<dyn Fn(&Connection) -> anyhow::Error>;
+    let failures: Vec<(&str, Failure)> = vec![
+        (
+            "a SQL failure of the judgement's own read",
+            Box::new(|conn| {
+                conn.execute_batch("SELECT * FROM gdv1_no_such_table")
+                    .map_err(anyhow::Error::from)
+                    .expect_err("the table does not exist")
+            }),
+        ),
+        (
+            "the no-wait maintenance connection refused",
+            Box::new(|_| {
+                anyhow!(
+                    "{}: Graph build judgement could not acquire the maintenance connection without waiting",
+                    rr::MAINTENANCE_CONNECTION_PREEMPTED_CODE
+                )
+            }),
+        ),
+    ];
+    for (name, failure) in failures {
+        let (result, started, judged) = cycle_with_a_failing_judgement(failure)?;
+        let result = result.unwrap_or_else(|error| panic!("{name}: the cycle failed: {error:#}"));
+        assert_eq!(result.status, MaintenanceCycleStatus::Accepted, "{name}");
+        // The failing C-2 judgement ran once; the Verify ran first; B was not
+        // put in front of it (the same order as the form without case C).
+        assert!(judged >= 1, "{name}");
+        assert_eq!(started.first().map(String::as_str), Some("verify"), "{name}: {started:?}");
+    }
+    Ok(())
+}
+
+/// What ends the cycle itself is not swallowed: a typed termination of any
+/// reason, the attempt's cancellation, a lifecycle stop and a connection cleanup
+/// failure all propagate, and nothing (no Verify) started.
+#[test]
+fn a_graph_judgement_failure_that_ends_the_cycle_still_ends_it() -> Result<()> {
+    let _serial = serial();
+    type Failure = Box<dyn Fn() -> anyhow::Error>;
+    let failures: Vec<(&str, Failure)> = vec![
+        ("typed cancelled", Box::new(|| validation_terminated(ValidationTerminationReason::Cancelled, "stop"))),
+        ("typed timeout", Box::new(|| validation_terminated(ValidationTerminationReason::TimedOut, "stop"))),
+        ("typed closed", Box::new(|| validation_terminated(ValidationTerminationReason::Closed, "stop"))),
+        (
+            "typed foreground preempted",
+            Box::new(|| validation_terminated(ValidationTerminationReason::ForegroundPreempted, "stop")),
+        ),
+        (
+            "attempt cancelled (plain)",
+            Box::new(|| anyhow!("NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary")),
+        ),
+        (
+            "lifecycle stop (plain)",
+            Box::new(|| anyhow!("NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution")),
+        ),
+        (
+            "connection cleanup failed",
+            Box::new(|| anyhow!("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: the connection could not be restored")),
+        ),
+    ];
+    for (name, failure) in failures {
+        let (result, started, _) = cycle_with_a_failing_judgement(move |_| failure())?;
+        assert!(result.is_err(), "{name}: the cycle must end, got {result:?}");
+        assert!(started.is_empty(), "{name}: nothing may start: {started:?}");
+    }
+    Ok(())
+}
+
+/// The allowlist in one table (the shape of DR-PUBG-5-15's allowlist test).
+#[test]
+fn graph_judgement_local_failure_is_an_allowlist_of_two() {
+    let preempted = anyhow!(
+        "{}: could not acquire the maintenance connection without waiting",
+        rr::MAINTENANCE_CONNECTION_PREEMPTED_CODE
+    );
+    assert!(is_graph_judgement_local_failure(&preempted));
+    assert!(is_graph_judgement_local_failure(&preempted.context("judgement")));
+    let sql: anyhow::Error = rusqlite::Error::QueryReturnedNoRows.into();
+    assert!(is_graph_judgement_local_failure(&sql));
+    assert!(is_graph_judgement_local_failure(&sql.context("read hint")));
+    for reason in [
+        ValidationTerminationReason::ContextUnavailable,
+        ValidationTerminationReason::Cancelled,
+        ValidationTerminationReason::TimedOut,
+        ValidationTerminationReason::Closed,
+        ValidationTerminationReason::WorkspaceGenerationChanged,
+        ValidationTerminationReason::ForegroundPreempted,
+        ValidationTerminationReason::CleanupFailed,
+        ValidationTerminationReason::CapacityExceeded,
+    ] {
+        let error = validation_terminated(reason, "test");
+        assert!(!is_graph_judgement_local_failure(&error), "{reason:?}");
+        // A SQL failure underneath a typed termination is still a termination.
+        let wrapped = anyhow::Error::from(rusqlite::Error::QueryReturnedNoRows)
+            .context(validation_terminated(reason, "wrapped").to_string());
+        assert!(
+            !is_graph_judgement_local_failure(&wrapped),
+            "{reason:?}: the typed text in the chain keeps it a termination"
+        );
+    }
+    for text in [
+        "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested",
+        "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: draining",
+        "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: x",
+        "NIR1_MAINTENANCE_CONNECTION_UNUSABLE: x",
+        "NEX_MAINTENANCE_CONNECTION_UNUSABLE: x",
+        "NIR1_GRAPH_CAPACITY_EXCEEDED: x",
+        "something else entirely",
+    ] {
+        assert!(!is_graph_judgement_local_failure(&anyhow!("{text}")), "{text}");
+    }
+    // The preempted code together with a cleanup failure is a cleanup failure.
+    let both = anyhow!(
+        "{}: x; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: y",
+        rr::MAINTENANCE_CONNECTION_PREEMPTED_CODE
+    );
+    assert!(!is_graph_judgement_local_failure(&both));
 }
