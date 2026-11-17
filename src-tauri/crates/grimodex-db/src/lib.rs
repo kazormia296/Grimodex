@@ -19,6 +19,7 @@ use std::time::Duration;
 
 pub(crate) mod background_checkpoint;
 mod connection_core;
+mod connection_deadline;
 pub(crate) use connection_core::ConnectionCore;
 pub(crate) mod hook_registration;
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const BACKGROUND_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -22,6 +22,24 @@ impl EmbedderAdmission {
     pub(super) fn foreground<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
         let _permit = self.acquire_foreground();
         operation()
+    }
+
+    /// DR-CHATIR-S1-11 (chat IR S1-A0). `foreground` that stops waiting at
+    /// `deadline`: `Ok(None)` means the admission was not obtained and
+    /// `operation` did not run. The queued foreground waiter is announced while
+    /// waiting (background document batches yield between documents, as for
+    /// `foreground`) and withdrawn when the wait ends, whichever way; the
+    /// background builder is woken so it does not sleep on a stale count.
+    /// A passed `deadline` still takes a free admission (nothing to wait for).
+    pub(super) fn foreground_until<T>(
+        &self,
+        deadline: Instant,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(_permit) = self.acquire_foreground_until(deadline) else {
+            return Ok(None);
+        };
+        operation().map(Some)
     }
 
     pub(super) fn background<T>(
@@ -84,6 +102,46 @@ impl EmbedderAdmission {
         state.foreground_waiters -= 1;
         state.active = true;
         AdmissionPermit { admission: self }
+    }
+
+    fn acquire_foreground_until(&self, deadline: Instant) -> Option<AdmissionPermit<'_>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !state.active {
+            state.active = true;
+            return Some(AdmissionPermit { admission: self });
+        }
+        state.foreground_waiters += 1;
+        #[cfg(test)]
+        self.ready.notify_all();
+        while state.active {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                state.foreground_waiters -= 1;
+                // A background builder sleeps at most 50 ms on the old count;
+                // wake it now that this waiter is gone.
+                self.ready.notify_all();
+                return None;
+            }
+            state = self
+                .ready
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poison| poison.into_inner())
+                .0;
+        }
+        state.foreground_waiters -= 1;
+        state.active = true;
+        Some(AdmissionPermit { admission: self })
+    }
+
+    #[cfg(test)]
+    pub(super) fn foreground_waiters_for_test(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .foreground_waiters
     }
 
     #[cfg(test)]
