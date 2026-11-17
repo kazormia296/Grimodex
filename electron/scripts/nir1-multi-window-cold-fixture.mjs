@@ -55,6 +55,7 @@ import {
   queryChronicleFixtureRows,
   readChronicleReviewBundle,
   readChronicleSynthesisCompanion,
+  readWorkspaceRowsReadOnly,
   showChronicleFixturePanel,
   waitForChronicleFixtureWorkspace,
 } from "./chronicle-extraction-product-journey.mjs";
@@ -496,8 +497,10 @@ try {
         ? proposals.find((p) => p.title === shape.goldenTitle)
         : proposals[0];
       assert.ok(goldenProposal, "golden proposal");
-      const [{ envelope }] = await rows(
-        reviewed.page,
+      // The envelope is Native-only for renderer SQL (DR-GSQLENV-1): read it
+      // from the live workspace database in a separate read-only process.
+      const [{ envelope }] = await readWorkspaceRowsReadOnly(
+        workspace,
         "SELECT reconciliation_envelope_json AS envelope FROM narrative_proposal_revisions WHERE id = ?",
         [goldenProposal.rootRevisionId],
       );

@@ -554,6 +554,7 @@ export function createChronicleCurrentSceneJourney({
           review.page,
           initial,
           sceneId,
+          workspace,
         );
         assert.equal(before.events.length, 0);
         assert.equal(before.applications.length, 0);
@@ -628,6 +629,7 @@ export function createChronicleCurrentSceneJourney({
           review.page,
           afterEdit,
           sceneId,
+          workspace,
         );
         assert.equal(afterEditNative.revisions.length, 3);
         assert.equal(afterEditNative.events.length, 0);
@@ -664,6 +666,7 @@ export function createChronicleCurrentSceneJourney({
           review.page,
           approved,
           sceneId,
+          workspace,
         );
         assert.equal(approvedNative.events.length, 0);
         assert.equal(approvedNative.applications.length, 0);
@@ -733,6 +736,7 @@ export function createChronicleCurrentSceneJourney({
           review.page,
           applied,
           sceneId,
+          workspace,
         );
         assertEditedChronicleApplied(appliedSnapshot, applied, {
           sceneId,
@@ -821,6 +825,7 @@ export function createChronicleCurrentSceneJourney({
           reopened.page,
           bundle,
           sceneId,
+          workspace,
         );
         assertEditedChronicleApplied(restored, bundle, {
           sceneId,
