@@ -263,3 +263,19 @@ renderer の台帳の回帰（`profileEgressClosure.test.ts`・`tauri.egressClos
 | X：transition・shutdown | participant の `stop_requested()`（transition の admit と shutdown の両方で立つ）。chat IR 専用の registry は無い | participant は Transition／Closed で新規が拒否される | participant | stop → SQL の取得 loop・tail が止まる | participant の数が 0 になるまで待たれる（上限なし）ので N2 の期限と N3 の stop が必須 | participant の数 0、Arc が sole owner | — |
 
 GDX-PRECHECK-001 の区分：**background は当たる**（tail。応答の後に最大 30 s の task が続く）。async lifecycle は当たる（上の表）。subprocess は当たらない（新しい process なし）。外部送信・保存範囲・閾値は変わらない（audit は既存の `ai_audit_events` に同じ event_id・payload で書き足すだけ。要約・quote・Scene の識別を渡す先は S1-B 以降で、S1-A は gate が閉じていて何も送らない）。
+
+## DR-CHATIR-S1-28：tail の最後の試みも 30 s の締切で切る（2026-11-18）
+
+- **きっかけ**：脅威モデルの追補（contracts `3d86610c`、`threat-model-addendum-2026-11-17-s1a-tail.md` の 0.2 の細部 (a)）の点検で見つかった。
+  - `run_tail` は、停止の判定を予算切れの判定より先に行う。
+  - 停止を見た後の最後の試み（`close_flush`）は、`now + close_flush` まで続き、`tail_deadline` で切られていなかった。
+  - そのため、停止が予算の切れ際に立つと、tail は応答の後 30 s を最大約 `CLOSE_FLUSH`（1 s）と書き込み 1 回分だけ越ええた。
+  - ユーザーの承認（contracts `a56a808b`）の文言は「応答の後、最長 30 s」である。
+- **判断**：最後の試みの期限を `min(tail_deadline, now + close_flush)` にする。締切を過ぎていれば試みを始めない（`Stopped { flushed: false }`）。
+  - これで承認の文言どおりになり、承認の範囲を狭める向きの変更だけである。
+  - 新しい宛先・保存範囲・閾値・契約の変更は無い。
+  - ユーザーには、この直しを別 PR で入れることを 2026-11-18 に説明し、「その PR も進めてください」の回答を得た。
+- **残る性質（変わらない）**：始まった append の 1 回は、期限で中断できない（`flush_until` の各試みの busy 待ちは min(残り, 1 s)）。この性質は slice の経路と同じで、追補に記述がある。
+- **試験**：`chat_ir/tests/unit.rs` に 2 本足した。
+  - `tail_last_attempt_never_outlives_the_budget`：予算 200 ms、`close_flush` 2 s で、170 ms の時点で停止を立て、1 s 未満で終わることを見る。直す前は約 2.2 s かかる。
+  - `tail_makes_no_last_attempt_once_the_budget_is_spent`：予算 0 では、最後の試みが始まらないことを見る。
