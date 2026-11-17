@@ -49,3 +49,10 @@
 - `narrative_extraction_artifacts.payload_json` の拒否、review bundle の変更、restricted の unlisted 28 表の closed 化。
 - 新しい typed reader・command。
 - 閾値・送信先・保存範囲の変更。
+
+## 実装時の追記（上の表の本文は直さない）
+
+| ID | 判断 | 理由 |
+| ---- | ---- | ---- |
+| DR-GSQLENV-7 | **DR-GSQLENV-4 の実装の形を 2 点変えた。** (1) helper（`readWorkspaceRowsReadOnly`）は `nir1-reviewed-child-db.mjs` ではなく `electron/scripts/chronicle-extraction-product-journey.mjs` に置いた。(2) 子 process は `sqlite3` CLI ではなく `process.execPath -e` の `node:sqlite`（`DatabaseSync(..., { readOnly: true })`）で、SQL の引数は JSON で渡して bind する。別 process・read-only・`<workspace>/grimodex.db`・assert の中身を変えない点は DR-GSQLENV-4 のまま。`readClosedRevisionSnapshot` は流用していない | (1) 4 つの呼び出し元（3 journey と fixture）は既に `chronicle-extraction-product-journey.mjs` から import しており、journey の本体を直す以上この file は変わる。`nir1-reviewed-child-db.mjs` は `setup-nir1-recovery.mjs`／`setup-nir1-retrieval.mjs` の `ownPaths`（受領書が sha を記録する対象）にあり、触る file を増やさない。(2) `sqlite3` CLI は bind できず、`IN (?, ?)` の id を文字列に埋め込む必要がある。`node:sqlite` の bind なら既存の SQL をそのまま移せ、DR-DA1-22 の先例（`d2aOwnDataRead.pipeline.spec.ts`）と同じ道具。journey を走らせる Node は 22.13 以上（`node:sqlite` が無フラグ）。INTEGER が 2^53 を超えると `node:sqlite` が throw するので、黙って丸めた値が assert に届かない |
+| DR-GSQLENV-8 | **試験の置き場**：guard の試験は `grimodex-db` の lib 試験として `src/execute_envelope_tests.rs`（`execute.rs` の `#[path]` の子 module）に置き、typed Entity/Relation の既存試験（`nir1_entity_relation.rs` の `renderer_sql_cannot_read_typed_revision_payloads_from_either_table`）に envelope の拒否を足した。helper の試験は `scripts/chronicle-extraction-product-journey.test.mjs`（WAL の DB を別 process が読めること、後から commit した行が見えること、書込みは通らないこと、DB が無ければ reject） | `--lib` の全件に入る。guard の行を戻す変異（envelope の対を除く）で `renderer_sql_rejects_every_envelope_read_shape` と `renderer_sql_rejects_get_and_run_methods_for_the_envelope` が落ちることを確かめた |

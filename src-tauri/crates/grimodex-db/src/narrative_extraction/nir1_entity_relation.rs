@@ -8250,6 +8250,32 @@ pub(super) mod tests {
                 "unexpected batch error for {table}: {error}"
             );
         }
+
+        // 同じ内容（Evidence の識別子と quote）を繰り返す envelope も、typed の run では
+        // review bundle が無い（NIR1_ENTITY_RELATION_REVIEW_BUNDLE_UNAVAILABLE）ので
+        // generic SQL でも読めてはならない（DR-GSQLENV-1）。
+        let envelope_sql =
+            "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1";
+        let error = db
+            .execute_renderer(envelope_sql, &[json!(revision_id)], "get")
+            .expect_err("renderer db_execute must not expose the typed envelope");
+        assert!(
+            error.to_string().contains("RENDERER_SQL_TYPED_PAYLOAD")
+                && error.to_string().contains("reconciliation_envelope_json"),
+            "unexpected single-statement envelope error: {error}"
+        );
+        let error = db
+            .execute_batch_tx_renderer(&[crate::BatchStatement {
+                sql: envelope_sql.to_string(),
+                params: vec![json!(revision_id)],
+                method: "get".into(),
+            }])
+            .expect_err("renderer db_execute_batch must not expose the typed envelope");
+        assert!(
+            error.to_string().contains("RENDERER_SQL_TYPED_PAYLOAD")
+                && error.to_string().contains("reconciliation_envelope_json"),
+            "unexpected batch envelope error: {error}"
+        );
         Ok(())
     }
 

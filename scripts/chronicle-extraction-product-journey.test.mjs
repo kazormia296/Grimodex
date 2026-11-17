@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { URL } from "node:url";
 import {
@@ -20,6 +21,7 @@ import {
   assertChronicleApplied,
   analyzeChronicleAndWaitForProposals,
   readChronicleSynthesisCompanion,
+  readWorkspaceRowsReadOnly,
   setupChronicleFixtureApplyPolicy,
   waitForChronicleFixtureWorkspace,
 } from "../electron/scripts/chronicle-extraction-product-journey.mjs";
@@ -913,5 +915,81 @@ test("Chronicle journey waits for layout hydration before reading or toggling a 
           ],
     );
     assert.equal(state, "true");
+  }
+});
+
+// DR-GSQLENV-4: renderer SQL cannot read the revision envelope, so the journeys
+// read it from the live workspace database in a separate read-only process.
+test("the journey reads the live WAL workspace database from a separate read-only process", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "grimodex-live-read-"));
+  const writer = new DatabaseSync(path.join(workspace, "grimodex.db"));
+  try {
+    // The writer stays open with committed-but-uncheckpointed WAL frames, like
+    // Native does while a journey runs.
+    writer.exec("PRAGMA journal_mode = WAL");
+    writer.exec("PRAGMA wal_autocheckpoint = 0");
+    writer.exec(
+      "CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT, reconciliation_envelope_json TEXT, big INTEGER)",
+    );
+    const insert = writer.prepare(
+      "INSERT INTO narrative_proposal_revisions VALUES (?, ?, ?, ?)",
+    );
+    insert.run("revision-1", "proposal-1", '{"schemaVersion":2}', 1);
+    insert.run("revision-2", "proposal-2", '{"schemaVersion":2,"n":2}', 2);
+    insert.run("revision-3", "proposal-3", null, 3);
+
+    const rows = await readWorkspaceRowsReadOnly(
+      workspace,
+      "SELECT id, reconciliation_envelope_json AS envelopeJson FROM narrative_proposal_revisions WHERE proposal_id IN (?, ?) ORDER BY proposal_id",
+      ["proposal-1", "proposal-2"],
+    );
+    assert.deepEqual(rows, [
+      { id: "revision-1", envelopeJson: '{"schemaVersion":2}' },
+      { id: "revision-2", envelopeJson: '{"schemaVersion":2,"n":2}' },
+    ]);
+
+    // A row the writer commits afterwards is visible to the next read, and a
+    // NULL envelope is returned as null (the caller decides whether it fails).
+    insert.run("revision-4", "proposal-4", null, 4);
+    const later = await readWorkspaceRowsReadOnly(
+      workspace,
+      "SELECT id, reconciliation_envelope_json AS e, big FROM narrative_proposal_revisions WHERE id IN ('revision-3', 'revision-4') ORDER BY id",
+    );
+    assert.deepEqual(later, [
+      { id: "revision-3", e: null, big: 3 },
+      { id: "revision-4", e: null, big: 4 },
+    ]);
+
+    // Read-only: the helper cannot change the database.
+    await assert.rejects(
+      readWorkspaceRowsReadOnly(
+        workspace,
+        "DELETE FROM narrative_proposal_revisions RETURNING id",
+      ),
+    );
+    assert.equal(
+      writer
+        .prepare("SELECT count(*) AS n FROM narrative_proposal_revisions")
+        .get().n,
+      4,
+    );
+  } finally {
+    writer.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("the live workspace read fails loudly when the database is missing", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "grimodex-live-read-"));
+  try {
+    await mkdir(path.join(workspace, "empty"));
+    await assert.rejects(
+      readWorkspaceRowsReadOnly(
+        path.join(workspace, "empty"),
+        "SELECT 1 AS one",
+      ),
+    );
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
 });
