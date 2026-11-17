@@ -2510,19 +2510,13 @@ fn b_route_discovery_propagates_errors_other_than_context_unavailable() -> Resul
 
 use crate::narrative_extraction::maintenance_runtime::{
     discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
-    is_context_unavailable_termination,
+    is_context_unavailable_termination, is_project_local_discovery_failure,
     nir1_graph_index_build_wakes_main_discovery_with_product,
     run_system_work_cycle_with_nir1_graph_runtime_and_product, MaintenanceProjectDiscovery,
 };
-use crate::narrative_extraction::source_revision::ValidationTerminated;
-
-/// Whether the error carries the typed validation-termination marker (the
-/// failure kind that V0 observed for a project over a bound).
-fn is_typed_validation_termination(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| cause.downcast_ref::<ValidationTerminated>().is_some())
-}
+use crate::narrative_extraction::source_revision::{
+    validation_terminated, ValidationTerminationReason,
+};
 
 /// A token for tests. Product code builds it only from Native's constant.
 fn product_token() -> Option<Nir1GraphProductPublication> {
@@ -2921,7 +2915,46 @@ fn product_gate_discovery_propagates_errors_other_than_context_unavailable() -> 
     )
     .expect_err("a SQL failure is not a Graph Index wake");
     assert!(!is_context_unavailable_termination(&error), "{error:#}");
+    assert!(!is_project_local_discovery_failure(&error), "{error:#}");
     Ok(())
+}
+
+/// DR-PUBG-5-15: the allowlist of failures that a project's own state
+/// determines is the one typed termination main's discovery was observed to
+/// fail with. Everything else (a bound's `capacity-exceeded`, timing,
+/// lifecycle, retryable, unknown) is not project-local and stays an error.
+#[test]
+fn project_local_discovery_failure_is_an_allowlist_of_one_typed_termination() {
+    let error = validation_terminated(ValidationTerminationReason::ContextUnavailable, "test");
+    assert!(is_project_local_discovery_failure(&error));
+    // Added context does not hide the marker.
+    assert!(is_project_local_discovery_failure(&error.context("discovery")));
+    for reason in [
+        ValidationTerminationReason::CapacityExceeded,
+        ValidationTerminationReason::Cancelled,
+        ValidationTerminationReason::TimedOut,
+        ValidationTerminationReason::Closed,
+        ValidationTerminationReason::WorkspaceGenerationChanged,
+        ValidationTerminationReason::ForegroundPreempted,
+        ValidationTerminationReason::CleanupFailed,
+    ] {
+        assert!(
+            !is_project_local_discovery_failure(&validation_terminated(reason, "test")),
+            "{reason:?}"
+        );
+    }
+    for text in [
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: discovery could not acquire the connection",
+        "NEX_MAINTENANCE_SQLITE_LOCKED: database is locked",
+        "no such table: narrative_extraction_runs",
+        "NEX_VALIDATION_TERMINATED:capacity-exceeded in plain text is not the typed marker",
+        "context-unavailable in plain text is not the typed marker",
+    ] {
+        assert!(
+            !is_project_local_discovery_failure(&anyhow!("{text}")),
+            "{text}"
+        );
+    }
 }
 
 /// The release conditions of a refusal (DR-PUBG-5-6). A refusal recorded for
@@ -3173,7 +3206,7 @@ fn v0_stored_edge_overflow_stops_verify_for_a_bound_project() -> Result<()> {
         );
         for step in &steps {
             if let Err(error) = &step.discovery {
-                assert!(is_typed_validation_termination(error), "{launch:?}");
+                assert!(is_project_local_discovery_failure(error), "{launch:?}");
             }
         }
         let ledger = run_ledger(fixture.db())?;
@@ -3306,6 +3339,55 @@ fn v0_candidate_overflow_does_not_stop_verify_for_a_bound_project() -> Result<()
     Ok(())
 }
 
+/// DR-PUBG-5-15 (R6): a workspace of two real projects. The one with a current
+/// sealed Graph binding fails main's uncontrolled discovery with the real
+/// `context-unavailable` error (not an injected one), and that error is exactly
+/// what the containment allowlist admits. The other project's discovery still
+/// succeeds.
+///
+/// GDV/1 (DR-PUBG-5-16): the motive form of this test (a dirty sealed binding
+/// over the candidate bound, V0 (b)) no longer fails discovery, because a
+/// coherent but not-current binding is excluded from the full-eligibility read.
+/// A current sealed binding is the form that still ends in `context-unavailable`
+/// (it needs a cycle's validation context), so that is the form used here.
+#[test]
+fn a_real_sealed_binding_failure_is_project_local_and_the_other_project_still_discovers(
+) -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects(id, title) VALUES ('other-project', 'other')",
+            [],
+        )?;
+        Ok(())
+    })?;
+    let coordinates = effective_maintenance_coordinates(None)?;
+    let discover = |project: &str| {
+        discover_maintenance_project_for_main_with_product(
+            fixture.db(),
+            project,
+            "workspace-opened",
+            Some(&coordinates),
+            None,
+            None,
+        )
+    };
+    let failed = discover(PROJECT).expect_err("the bound project's discovery fails");
+    assert!(is_context_unavailable_termination(&failed), "{failed:#}");
+    assert!(is_project_local_discovery_failure(&failed), "{failed:#}");
+    // A new project has its legacy backfill to do: its discovery succeeds and
+    // returns that work.
+    assert!(
+        matches!(
+            discover("other-project")?,
+            MaintenanceProjectDiscovery::Work(work) if work.project_id == "other-project"
+        ),
+        "the other project is discovered"
+    );
+    Ok(())
+}
+
 /// V0 control: without a Graph binding the same excess starts nothing. The
 /// stop above is triggered by the binding's existence, and a project over the
 /// bound that was never built is not affected (today's product, and PUB-G's
@@ -3344,5 +3426,101 @@ fn v0_candidate_overflow_without_a_binding_stops_nothing() -> Result<()> {
             assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
         }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// J. CP2a-D47 (DR-PUBG-5-14 (j)): the completion callback under the product gate
+// ---------------------------------------------------------------------------
+
+/// One wake cycle under a launch's gate with its own recorder. The recorder's
+/// `completed` list is what Native's hook sees: Native calls
+/// `note_maintenance_work_completed` (the Suspended Graph owner's only exit)
+/// from the cycle's `work_completed` callback alone.
+fn product_wake_cycle(
+    fixture: &Fixture,
+    product: Option<Nir1GraphProductPublication>,
+    recorder: &Recorder,
+) -> Result<MaintenanceCycleResult> {
+    with_control(recorder, |control| {
+        run_system_work_cycle_with_nir1_graph_runtime_and_product(
+            fixture.db(),
+            &wake_request(),
+            |_| RecoveryMode::SameProcessLive,
+            None,
+            None,
+            Some(control),
+            Some(fixture.runtime()),
+            product,
+        )
+    })
+}
+
+/// Under the product token the cycle calls `work_completed` for B's publish,
+/// once, with B's own item (so the hook leaves a Suspended Graph owner). A
+/// validation, a typed refusal, a current binding and a closed gate never reach
+/// it: they settle as a no-op (or are not planned), and a hook that fired for
+/// them would let a refused build wake the owner for nothing.
+#[test]
+fn product_gate_calls_the_completion_hook_for_a_publish_and_for_nothing_else() -> Result<()> {
+    let _serial = serial();
+
+    // A publish: one B work, finalized through its grant, completed once.
+    let fixture = Fixture::new()?;
+    let recorder = Recorder::default();
+    let result = product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(result, MaintenanceCycleResult::accepted(false));
+    let epoch = fixture.current_epoch()?;
+    let key = format!(
+        "narrative-maintenance:v1/nir1-graph-index-build/{PROJECT}/nir1-graph-index-build/epoch/{epoch}"
+    );
+    assert_eq!(Recorder::graph(&recorder.completed), vec![key.clone()]);
+    assert_eq!(Recorder::graph(&recorder.grants), vec![key.clone()]);
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+    assert_eq!(generation(fixture.db())?, Some(1));
+
+    // A current binding: nothing is planned, so no callback.
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert!(Recorder::graph(&recorder.registered).is_empty());
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+
+    // A cold-reopen validation publishes nothing: a no-op, not a completion.
+    let mut fixture = Fixture::published()?;
+    fixture.reopen()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(Recorder::graph(&recorder.noop).len(), 1);
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Validated));
+
+    // A typed refusal (an approved Revision over the limit): a no-op as well.
+    let fixture = Fixture::published()?;
+    let created =
+        add_revision_with_oversized_payload(fixture.db(), "nir1:review:oversized-approved")?;
+    approve_typed_revision(fixture.db(), "nir1-run", &created)?;
+    fixture.mark_dirty()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(Recorder::graph(&recorder.noop).len(), 1);
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert_eq!(
+        fixture.record(),
+        refused_capacity("persisted-revision-component-bytes")
+    );
+
+    // A closed gate (no seam, no token): B is never planned.
+    let fixture = Fixture::new()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, None, &recorder)?;
+    assert!(Recorder::graph(&recorder.registered).is_empty());
+    assert!(Recorder::graph(&recorder.started).is_empty());
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+    assert_eq!(generation(fixture.db())?, None);
     Ok(())
 }

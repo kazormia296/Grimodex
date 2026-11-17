@@ -137,7 +137,7 @@ describe("C2-5B production maintenance bootstrap", () => {
     }
   });
 
-  it("DR-BSEAM-1: only the validated B-ROUTE launch lets the coordinator accept Graph Index wakes", () => {
+  it("DR-PUBG-5-14: every launch that runs maintenance lets the coordinator accept Graph Index wakes (DR-BSEAM-1 accepted them for the B-ROUTE launch only)", () => {
     const bRouteEnv = {
       CI: "true",
       [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]:
@@ -148,17 +148,14 @@ describe("C2-5B production maintenance bootstrap", () => {
     const cases: Array<{
       name: string;
       seam: NarrativeMaintenanceCiSeam;
-      accepts: boolean;
     }> = [
       {
         name: "b-route",
         seam: parseNarrativeMaintenanceCiSeam(bRouteEnv, { isPackaged: false }),
-        accepts: true,
       },
       {
         name: "packaged",
         seam: parseNarrativeMaintenanceCiSeam(bRouteEnv, { isPackaged: true }),
-        accepts: false,
       },
       {
         name: "not-ci",
@@ -166,7 +163,6 @@ describe("C2-5B production maintenance bootstrap", () => {
           { ...bRouteEnv, CI: "false" },
           { isPackaged: false },
         ),
-        accepts: false,
       },
       {
         name: "wrong-owner",
@@ -174,16 +170,19 @@ describe("C2-5B production maintenance bootstrap", () => {
           { ...bRouteEnv, [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "other" },
           { isPackaged: false },
         ),
-        accepts: false,
       },
-      { name: "no-trigger", seam: activeSeam(), accepts: false },
+      { name: "no-trigger", seam: activeSeam() },
       {
         name: "other-trigger",
         seam: activeSeam({ trigger: "graphContractDigest-changed" }),
-        accepts: false,
+      },
+      // The product launch: no CI seam at all.
+      {
+        name: "product",
+        seam: parseNarrativeMaintenanceCiSeam({}, { isPackaged: true }),
       },
     ];
-    for (const { name, seam, accepts } of cases) {
+    for (const { name, seam } of cases) {
       const createScheduler = vi.fn(() => fakeScheduler());
       const createCoordinator = vi.fn(
         (_backend: unknown, _scheduler: unknown, _options?: unknown) =>
@@ -194,14 +193,11 @@ describe("C2-5B production maintenance bootstrap", () => {
         createCoordinator: createCoordinator as never,
       });
       expect(createCoordinator, name).toHaveBeenCalledOnce();
-      if (accepts) {
-        expect(createCoordinator.mock.calls[0]?.[2], name).toEqual({
-          acceptGraphIndexBuildWakes: true,
-        });
-      } else {
-        // The exact previous construction: no third argument at all.
-        expect(createCoordinator.mock.calls[0], name).toHaveLength(2);
-      }
+      // Native opens its gate (the const or the seam); main holds no second
+      // switch. Nothing else is passed to the coordinator.
+      expect(createCoordinator.mock.calls[0]?.[2], name).toEqual({
+        acceptGraphIndexBuildWakes: true,
+      });
     }
 
     // A B-ROUTE launch without a valid nonce never becomes an active seam.
@@ -243,7 +239,8 @@ describe("C2-5B production maintenance bootstrap", () => {
       | undefined;
     expect(schedulerOptions).not.toHaveProperty("onCycleSettled");
     expect(schedulerOptions).not.toHaveProperty("runtimeStateReader");
-    expect(coordinatorOptions).toBeUndefined();
+    // Only the acceptance of Native's wakes: no observer or evidence callback.
+    expect(coordinatorOptions).toEqual({ acceptGraphIndexBuildWakes: true });
   });
 });
 

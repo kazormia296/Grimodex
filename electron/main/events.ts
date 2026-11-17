@@ -43,6 +43,14 @@ import {
 export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
   "narrative-maintenance:epoch-rotated";
 
+/**
+ * Native's Graph owner asks main for a project's Graph Index build wake when a
+ * Graph demand met a refused registration (DR-PUBG-5-14). Main consumes it
+ * only: it is never broadcast to a window and is not a renderer channel.
+ */
+export const NARRATIVE_MAINTENANCE_GRAPH_INDEX_DEMAND_EVENT =
+  "narrative-maintenance:graph-index-demand";
+
 let profileEgressGate: ProfileEgressGate | null = null;
 let latestWorkspaceLifecycleView: WorkspaceLifecycleView | null = null;
 
@@ -322,7 +330,9 @@ function handleBackendEvent(
   payloadJson: unknown,
   observer?: (channel: string, payload: unknown) => void,
 ): void {
-  const observerOnly = channel === NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT;
+  const observerOnly =
+    channel === NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT ||
+    channel === NARRATIVE_MAINTENANCE_GRAPH_INDEX_DEMAND_EVENT;
   if (
     typeof channel !== "string" ||
     (!observerOnly && !isAllowedBackendEventChannel(channel))

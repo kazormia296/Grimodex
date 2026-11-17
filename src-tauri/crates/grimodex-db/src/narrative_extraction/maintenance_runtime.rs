@@ -2321,6 +2321,22 @@ pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool 
     })
 }
 
+/// Whether a project's own discovery failure is determined by that project's
+/// state alone, so that retrying cannot change it and it must not stop the
+/// discovery of the workspace's other projects (DR-PUBG-5-15).
+///
+/// An allowlist of exactly the one typed termination that main's discovery was
+/// observed to fail with: `context-unavailable` (an uncontrolled read of a
+/// sealed Graph or Chronicle binding; V0 (b), DR-BSEAM-5). `capacity-exceeded`
+/// is not admitted: it was observed only as a cycle's Verify failure, never as
+/// main's discovery failing. Cancellation, timeout, close, workspace-generation
+/// change, foreground preemption, cleanup failure, retryable busy or lock
+/// failures and every unknown failure stay errors: they are workspace or timing
+/// failures that main retries or reports.
+pub fn is_project_local_discovery_failure(error: &anyhow::Error) -> bool {
+    is_context_unavailable_termination(error)
+}
+
 /// Main's (uncontrolled) discovery for one project.
 ///
 /// The gated Graph Index build (B) is judged only inside a controlled cycle,
