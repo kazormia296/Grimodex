@@ -120,10 +120,10 @@ export const SNAPSHOT_POLICY: SnapshotPolicy = Object.freeze({
   maxSnapshotBytes: 1_048_576,
   /** 写しの JSON の入れ子の上限（root → models → 1 件 = 3）。1 段の余裕。暫定（2026-11-19）、実測後にユーザー確認。 */
   maxSnapshotDepth: 4,
-  /** 写しの model 件数の上限。現在は対応 4 provider で約 460 件。約 10 倍。暫定（2026-11-19）、実測後にユーザー確認。 */
+  /** 写しの model 件数の上限（対応 provider の entry だけに当てる。全体の規模は byte 数で守る）。現在は対応 4 provider で約 440 件。約 10 倍。暫定（2026-11-19）、実測後にユーザー確認。 */
   maxModels: 5_000,
-  /** key（`<provider>/<id>`）の長さの上限。実測の id の最大は 65 文字。暫定（2026-11-19）、実測後にユーザー確認。 */
-  maxKeyLength: 160,
+  /** key（`<provider>/<id>`）の長さの上限。実測の最大は 67 文字（id は 56）。暫定（2026-11-19）、実測後にユーザー確認。 */
+  maxKeyLength: 96,
   /** contextWindow の下限。対応 provider の chat 系の最小は 4,095。暫定（2026-11-19）、実測後にユーザー確認。 */
   minContextWindow: 1_024,
   /** contextWindow の上限。対応 provider の最大は 2,000,000（全体では 10,000,000 の実在の model と 99,999,999 の未設定値の記号がある）。暫定（2026-11-19）、実測後にユーザー確認。 */
@@ -175,6 +175,7 @@ export const SNAPSHOT_FAILURE_CODES = [
   "empty",
   "future-generated-at",
   "stale",
+  "generated-at-conflict",
   "shrunk",
 ] as const;
 export type SnapshotFailureCode = (typeof SNAPSHOT_FAILURE_CODES)[number];
@@ -201,6 +202,7 @@ export const SNAPSHOT_FAILURE_CATEGORY: Readonly<
   empty: "range",
   "future-generated-at": "freshness",
   stale: "freshness",
+  "generated-at-conflict": "freshness",
   shrunk: "shrink",
 });
 
@@ -216,8 +218,12 @@ export type SnapshotFindingCode =
   | "models-removed"
   | "model-count-dropped"
   | "provider-count-dropped"
+  | "model-retention-dropped"
+  | "provider-retention-dropped"
+  | "provider-removed"
   | "context-changed"
   | "capability-changed"
+  | "field-removed"
   | "findings-truncated";
 
 /** 件数・数値・検証済みの key だけを持つ。応答の本文は入れない。 */
@@ -225,7 +231,7 @@ export interface SnapshotFinding {
   readonly code: SnapshotFindingCode;
   readonly count?: number;
   readonly key?: string;
-  readonly field?: "toolCall" | "reasoning";
+  readonly field?: keyof ModelEntry;
   readonly from?: number | boolean;
   readonly to?: number | boolean;
 }
@@ -248,7 +254,13 @@ export type ParseSnapshotResult =
   | {
       readonly ok: true;
       readonly snapshot: Snapshot;
-      /** `canonicalize(snapshot)` の SHA-256（小文字の hex）。 */
+      /**
+       * `canonicalize(snapshot)` の SHA-256（小文字の hex）。
+       * 「捨てた後の正規形」の digest で、入力の本文の digest ではない。未知の field・無視した
+       * provider・不正で捨てた model・空白や key の順序の違いは digest に影響しないため、本文の
+       * 改ざんの検出には使えない（同じ内容かどうかの照合にだけ使う）。T9 が本文の bytes の改ざん
+       * 検出を要るなら、取得層（PR-C2）で raw の bytes の digest を別に取る。
+       */
       readonly digest: string;
       readonly findings: readonly SnapshotFinding[];
     }
@@ -272,8 +284,14 @@ const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
   "prototype",
 ]);
 const PROVIDER_SET: ReadonlySet<string> = new Set(SNAPSHOT_PROVIDERS);
-/** id の文字種。先頭だけ `~`（OpenRouter の `~anthropic/claude-opus-latest` などの別名）を許す。 */
-const ID_PATTERN = /^[A-Za-z0-9~][A-Za-z0-9._:@+/-]*$/;
+/**
+ * id の形。2026-11-19 の実測（対応 4 provider の chat 系 437 件）の全てが通る最小限の形に絞る。
+ * 小文字・数字・`.`・`-` の token が最大 1 つの `/` で 2 つまで、末尾に最大 1 つの `:tag`、先頭だけ
+ * `~`（OpenRouter の別名）。`//`・`@`・`_`・大文字・空白は通さない（URL や文の形になる id を弾く）。
+ * 暫定（2026-11-19）、実測後にユーザー確認。
+ */
+const ID_PATTERN =
+  /^~?[a-z0-9][a-z0-9.-]*(?:\/[a-z0-9][a-z0-9.-]*)?(?::[a-z0-9.-]+)?$/;
 const GENERATED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const ENTRY_FIELDS: ReadonlySet<string> = new Set([
   "contextWindow",
@@ -338,22 +356,24 @@ const FOREIGN_PROVIDER_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 type KeyClass = "ok" | "foreign-provider" | "invalid";
 
 /**
- * key（`<provider>/<id>`）の分類。provider は閉じた集合で照合し、id は文字種で限る。
+ * key（`<provider>/<id>`）の分類。provider は閉じた集合で照合し、id は形で限る。
  * 形は正しいが provider が集合に無い key は `foreign-provider`（不正ではなく「無視」）。
  * 配信する写しは全ての版の app で共通なので、後から provider が増えても、古い版の app が
- * 「不正の割合」で写し全体を捨てないようにする。
+ * 「不正の割合」で写し全体を捨てないようにする。無視する key は保存も表示もしないので、
+ * id の形は問わない（新しい provider の id の形は古い版が知らない）。
  */
 function classifyKey(key: string, policy: SnapshotPolicy): KeyClass {
   if (key.length === 0 || key.length > policy.maxKeyLength) return "invalid";
   const slash = key.indexOf("/");
-  if (slash <= 0) return "invalid";
-  const id = key.slice(slash + 1);
-  if (!ID_PATTERN.test(id) || FORBIDDEN_KEYS.has(id)) return "invalid";
+  if (slash <= 0 || slash === key.length - 1) return "invalid";
   const provider = key.slice(0, slash);
-  if (PROVIDER_SET.has(provider)) return "ok";
-  return FOREIGN_PROVIDER_PATTERN.test(provider)
-    ? "foreign-provider"
-    : "invalid";
+  if (!PROVIDER_SET.has(provider)) {
+    return FOREIGN_PROVIDER_PATTERN.test(provider)
+      ? "foreign-provider"
+      : "invalid";
+  }
+  const id = key.slice(slash + 1);
+  return ID_PATTERN.test(id) && !FORBIDDEN_KEYS.has(id) ? "ok" : "invalid";
 }
 
 type EntryOutcome =
@@ -531,6 +551,11 @@ function utf8Length(text: string): number {
  * 順序：byte 数 → 走査（深さ・重複 key・特殊 key）→ JSON.parse → schema → model ごとの検証。
  * 1 件の不正はその model だけ捨て、捨てた割合が上限を超えたらファイル全体を捨てる。
  * 未知の field（model 内）は捨てて件数を findings に残す。root の未知の key は schema の違反。
+ *
+ * 返す `digest` は「捨てた後の正規形」（`canonicalize(snapshot)`）の SHA-256 で、入力の本文の
+ * digest ではない。捨てた model・未知の field・無視した provider・空白・key の順序は反映されない
+ * ため、本文の改ざんの検出（T9）には使えない。T9 に本文の bytes の検出が要るなら、取得層
+ * （PR-C2）で raw の bytes の digest を別に取る。
  */
 export function parseSnapshot(
   text: string,
@@ -582,18 +607,21 @@ export function parseSnapshot(
   const rawModels = getOwn(value, "models");
   if (!isPlainObject(rawModels)) return fail("schema");
   const keys = Object.keys(rawModels);
-  if (keys.length > policy.maxModels) return fail("too-many-models");
 
   const models = newModelsObject();
   let invalid = 0;
   let ignoredProviderModels = 0;
   let unknownFields = 0;
+  let considered = 0;
   for (const key of keys) {
     const keyClass = classifyKey(key, policy);
     if (keyClass === "foreign-provider") {
       ignoredProviderModels += 1;
       continue;
     }
+    // 件数の上限は対応 provider の entry にだけ当てる（無視する entry は全体の byte 数で守る）。
+    considered += 1;
+    if (considered > policy.maxModels) return fail("too-many-models");
     const entry = rawModels[key];
     if (keyClass === "invalid" || !isPlainObject(entry)) {
       invalid += 1;
@@ -713,6 +741,11 @@ export function normalizeModelsDev(
         continue;
       }
       const type = getOwn(model, "type");
+      // 文字列でない type は型違いの不正（分母に入れる）。chat 以外の文字列だけを無視する。
+      if (type !== undefined && typeof type !== "string") {
+        invalid += 1;
+        continue;
+      }
       if (type !== undefined && type !== "chat") {
         ignoredNonChat += 1;
         continue;
@@ -932,14 +965,25 @@ function countByProvider(snapshot: Snapshot): Map<string, number> {
   return counts;
 }
 
+const COMPARED_FIELDS = [
+  "contextWindow",
+  "maxOutputTokens",
+  "toolCall",
+  "reasoning",
+] as const;
+
 /**
- * 採用済みの写し（previous）と新しい写し（next）を比べる。どちらも検証済みの写し。
- *   - 古さ：next が previous より古ければ棄却（`stale`。再生への備え）。同時刻は通す
- *     （自分の cache や同梱の写しを読み直しても落ちないため）。
- *   - 急減：件数が previous の `minCountRatio` 未満、または件数の多い provider が同じ割合で
- *     減ったら棄却（`shrunk`）。
- *   - findings（捨てはしない）：追加・削除の件数、contextWindow の `contextChangeFactor` 倍以上の
- *     増減、toolCall／reasoning の反転。件数は `maxFindings` で切る。
+ * 採用済みの写し（previous）と新しい写し（next）を比べる。どちらも検証済みの写し（key は念のため
+ * 再検証し、違反があれば `schema` で拒否する。findings に出る key は検証を通ったものだけ）。
+ *   - 古さ：next が previous より古ければ棄却（`stale`。再生への備え）。同時刻は、内容（正規形の
+ *     digest）が同じなら通し（自分の cache や同梱の写しを読み直しても落ちない）、違えば
+ *     `generated-at-conflict` で棄却する（同じ日時のまま中身を差し替える写しを通さない）。
+ *   - 急減（`shrunk`）：件数が previous の `minCountRatio` 未満、または件数の多い provider が同じ
+ *     割合で減ったとき。件数が同じでも、previous の key のうち next にも残った割合（保持率）が
+ *     `minCountRatio` 未満なら（id の総入れ替え）、全体と provider 単位の両方で棄却する。
+ *   - findings（捨てはしない）：追加・削除の件数、previous にあった provider の全消失、
+ *     contextWindow の `contextChangeFactor` 倍以上の増減、toolCall／reasoning の反転、
+ *     値から field なしへの変化。件数は `maxFindings` で切る。
  * 実行時は「直前に採用した cache」と「同梱の写し」の両方を previous として呼ぶ（§4.4）。
  */
 export function compareSnapshots(
@@ -947,11 +991,21 @@ export function compareSnapshots(
   next: Snapshot,
   policy: SnapshotPolicy,
 ): CompareResult {
-  if (Date.parse(next.generatedAt) < Date.parse(previous.generatedAt)) {
-    return fail("stale");
-  }
   const previousKeys = Object.keys(previous.models).sort();
   const nextKeys = Object.keys(next.models).sort();
+  for (const key of [...previousKeys, ...nextKeys]) {
+    if (classifyKey(key, policy) !== "ok") return fail("schema");
+  }
+  const previousMs = Date.parse(previous.generatedAt);
+  const nextMs = Date.parse(next.generatedAt);
+  if (nextMs < previousMs) return fail("stale");
+  if (
+    nextMs === previousMs &&
+    sha256Hex(canonicalize(previous)) !== sha256Hex(canonicalize(next))
+  ) {
+    return fail("generated-at-conflict");
+  }
+
   const failureFindings: SnapshotFinding[] = [];
   let shrunk = false;
   if (
@@ -967,18 +1021,50 @@ export function compareSnapshots(
   }
   const previousByProvider = countByProvider(previous);
   const nextByProvider = countByProvider(next);
+  const retainedByProvider = new Map<string, number>();
+  let retained = 0;
+  for (const key of previousKeys) {
+    if (next.models[key] === undefined) continue;
+    retained += 1;
+    const provider = providerOf(key);
+    retainedByProvider.set(
+      provider,
+      (retainedByProvider.get(provider) ?? 0) + 1,
+    );
+  }
+  if (
+    previousKeys.length > 0 &&
+    retained < previousKeys.length * policy.minCountRatio
+  ) {
+    failureFindings.push({
+      code: "model-retention-dropped",
+      from: previousKeys.length,
+      to: retained,
+    });
+    shrunk = true;
+  }
+  const removedProviders: string[] = [];
   for (const provider of [...previousByProvider.keys()].sort()) {
     const before = previousByProvider.get(provider) as number;
     const after = nextByProvider.get(provider) ?? 0;
-    if (
-      before >= policy.minProviderBaseline &&
-      after < before * policy.minCountRatio
-    ) {
+    const kept = retainedByProvider.get(provider) ?? 0;
+    if (after === 0) removedProviders.push(provider);
+    if (before < policy.minProviderBaseline) continue;
+    if (after < before * policy.minCountRatio) {
       failureFindings.push({
         code: "provider-count-dropped",
         key: provider,
         from: before,
         to: after,
+      });
+      shrunk = true;
+    }
+    if (kept < before * policy.minCountRatio) {
+      failureFindings.push({
+        code: "provider-retention-dropped",
+        key: provider,
+        from: before,
+        to: kept,
       });
       shrunk = true;
     }
@@ -992,7 +1078,6 @@ export function compareSnapshots(
     if (findings.length < policy.maxFindings) findings.push(finding);
   };
   let added = 0;
-  let removed = 0;
   for (const key of nextKeys) {
     const before = previous.models[key];
     const after = next.models[key] as ModelEntry;
@@ -1017,9 +1102,20 @@ export function compareSnapshots(
         add({ code: "capability-changed", key, field, from: was, to: now });
       }
     }
+    // 値から「返さない」への変化（下の層へ落ちる）も見えるようにする。
+    for (const field of COMPARED_FIELDS) {
+      const was = before[field];
+      if (was !== undefined && after[field] === undefined) {
+        add({ code: "field-removed", key, field, from: was });
+      }
+    }
   }
-  for (const key of previousKeys) {
-    if (next.models[key] === undefined) removed += 1;
+  for (const provider of removedProviders) {
+    add({
+      code: "provider-removed",
+      key: provider,
+      from: previousByProvider.get(provider) as number,
+    });
   }
   if (total > findings.length) {
     findings.push({
@@ -1028,6 +1124,6 @@ export function compareSnapshots(
     });
   }
   pushCount(findings, "models-added", added);
-  pushCount(findings, "models-removed", removed);
+  pushCount(findings, "models-removed", previousKeys.length - retained);
   return { ok: true, findings };
 }

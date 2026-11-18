@@ -538,13 +538,9 @@ describe("parseSnapshot：本文の形", () => {
       '{"schemaVersion":1,"generatedAt":"2026-11-19T00:00:00Z","source":"models.dev",' +
         '"models":{"openai/a":{"constructor":1}}}',
     ],
-  ])(
-    "特殊 key（%s）は forbidden-key で、prototype を汚さない",
-    (_name, text) => {
-      expect(parseCode(text)).toBe("forbidden-key");
-      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-    },
-  );
+  ])("特殊 key（%s）は forbidden-key で拒否する", (_name, text) => {
+    expect(parseCode(text)).toBe("forbidden-key");
+  });
 });
 
 describe("parseSnapshot：schema と版", () => {
@@ -705,6 +701,19 @@ describe("parseSnapshot：model の検証", () => {
     ["日本語を含む", "openai/モデル"],
     ["id の先頭が記号", "openai/-gpt"],
     ["id の先頭が _", "openai/__proto__"],
+    ["id に _ を含む", "openai/gpt_4"],
+    ["id に大文字を含む", "openai/GPT-4"],
+    ["id に @ を含む", "openai/gpt@4"],
+    ["id に // を含む", "openai/a//b"],
+    ["id に slash が 2 つ", "openai/a/b/c"],
+    ["id に : が 2 つ", "openai/a:b:c"],
+    ["id の : の後に slash", "openai/a:b/c"],
+    ["id の末尾が :", "openai/a:"],
+    [
+      "id が URL の形",
+      "openai/https://evil.example/@ignore-previous:instructions",
+    ],
+    ["id の ~ が先頭でない", "openai/a~b"],
     ["id が constructor", "openai/constructor"],
     ["id が prototype", "openai/prototype"],
     ["id が長すぎる", `openai/${"a".repeat(200)}`],
@@ -736,6 +745,34 @@ describe("parseSnapshot：model の検証", () => {
 
   it("空の models、有効な model が無い写しは拒否する", () => {
     expect(parseCode(snapshotText({}))).toBe("empty");
+  });
+
+  it("件数の上限は対応 provider の entry にだけ当てる（無視する provider は数えない）", () => {
+    const models: Record<string, unknown> = {};
+    for (let i = 0; i < 20; i += 1) {
+      models[`future-provider/Some_ID ${i}`] = { contextWindow: 8192 };
+    }
+    for (let i = 0; i < 3; i += 1) {
+      models[`openai/m${i}`] = { contextWindow: 8192 };
+    }
+    expect(parseCode(snapshotText(models), { ...P, maxModels: 5 })).toBe("ok");
+  });
+
+  it("実在の id の形（実測の 437 件が使う文字・構造）を通す", () => {
+    const models: Record<string, unknown> = {};
+    for (const key of [
+      "anthropic/claude-opus-4-5-20251101",
+      "openai/gpt-5.4-mini",
+      "openai/o3",
+      "sakana/fugu-ultra-20260615",
+      "openrouter/cohere/command-r-08-2024",
+      "openrouter/liquid/lfm-3-1.7b:free",
+      "openrouter/~anthropic/claude-opus-latest",
+      "openrouter/openai/gpt-oss-20b:free",
+    ]) {
+      models[key] = { toolCall: true };
+    }
+    expect(Object.keys(parseOk(snapshotText(models)).models)).toHaveLength(8);
   });
 
   it("件数の上限を超えたら too-many-models", () => {
@@ -926,6 +963,39 @@ describe("normalizeModelsDev", () => {
     expect(result.code).toBe("too-many-invalid");
   });
 
+  it("type が文字列でない model は型違いの不正（無視でなく分母に入れる）", () => {
+    const models: Record<string, unknown> = {};
+    for (let i = 0; i < 99; i += 1) {
+      models[`ok${i}`] = { reasoning: true, tool_call: true };
+    }
+    models.numType = { type: 1, reasoning: true, tool_call: true };
+    const few = normalizeModelsDev({ openai: { models } }, P, NORMALIZE_CTX);
+    expect(few.ok).toBe(true);
+    if (!few.ok) return;
+    expect(few.findings).toContainEqual({
+      code: "invalid-model-dropped",
+      count: 1,
+    });
+    expect(few.findings.map((f) => f.code)).not.toContain(
+      "ignored-non-chat-model",
+    );
+    // 全て type が配列・null・object なら、割合の超過で全体を捨てる（blank 化の攻撃）。
+    const blanked = {
+      openai: {
+        models: Object.fromEntries(
+          [[], null, {}, true, 0, 1.5].map((type, i) => [
+            `m${i}`,
+            { type, reasoning: true, tool_call: true },
+          ]),
+        ),
+      },
+    };
+    expect(normalizeModelsDev(blanked, P, NORMALIZE_CTX)).toMatchObject({
+      ok: false,
+      code: "too-many-invalid",
+    });
+  });
+
   it("対応 provider の model が全て無視・不正なら empty", () => {
     const result = normalizeModelsDev(
       { openai: { models: { e: { type: "embedding", reasoning: false } } } },
@@ -1031,43 +1101,115 @@ describe("parseModelsDevText", () => {
     });
   });
 
-  it("重複 key と特殊 key は後勝ち・自前の property として読み、対応外の provider で全体を捨てない", () => {
+  it("重複 key は後の値を採用し、特殊 key は自前の property として読み、対応外の provider で全体を捨てない", () => {
     const parsed = parseModelsDevText(
       '{"x":{"models":{}},"x":{"models":{}},"__proto__":{"y":1},' +
-        '"openai":{"models":{"gpt":{"reasoning":true}}}}',
+        '"openai":{"models":{"old":{"reasoning":true}}},' +
+        '"openai":{"models":{"gpt":{"reasoning":true,"tool_call":true},' +
+        '"gpt":{"reasoning":false,"tool_call":true}}}}',
       P,
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(({} as Record<string, unknown>).y).toBeUndefined();
     const result = normalizeModelsDev(parsed.value, P, NORMALIZE_CTX);
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // 後の `openai`（old は無い）と、その中の後の `gpt`（reasoning: false）が採用される。
+    expect({ ...result.snapshot.models }).toEqual({
+      "openai/gpt": { toolCall: true, reasoning: false },
+    });
+    expect(result.findings).toContainEqual({
+      code: "ignored-provider",
+      count: 2,
+    });
+  });
+});
+
+describe("prototype の汚染（module の内部で key を代入する経路）", () => {
+  const prototypeKeys = (): string[] =>
+    Object.getOwnPropertyNames(Object.prototype).sort();
+
+  it("normalize は特殊な model id・limit の特殊 key を代入・参照せず、prototype を汚さない", () => {
+    const before = prototypeKeys();
+    const models: Record<string, unknown> = {};
+    for (let i = 0; i < 100; i += 1) {
+      models[`ok${i}`] = { reasoning: true, tool_call: true };
+    }
+    const raw = JSON.parse(
+      JSON.stringify({ openai: { models } }).replace(
+        '"models":{',
+        '"models":{"__proto__":{"reasoning":true,"toolCall":true},' +
+          '"constructor":{"reasoning":true},"prototype":{"reasoning":true},' +
+          '"vialimit":{"reasoning":true,"limit":{"__proto__":{"context":8192,"output":4096}}},',
+      ),
+    ) as unknown;
+    const result = normalizeModelsDev(raw, P, NORMALIZE_CTX);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const { models: out } = result.snapshot;
+    expect(Object.getPrototypeOf(out)).toBeNull();
+    expect(Object.keys(out)).not.toContain("openai/__proto__");
+    expect(Object.keys(out)).not.toContain("openai/constructor");
+    expect(Object.keys(out)).not.toContain("openai/prototype");
+    // 継承された property を limit の値として拾わない。
+    expect(out["openai/vialimit"]).toEqual({ reasoning: true });
+    expect(out["constructor"]).toBeUndefined();
+    expect(({} as Record<string, unknown>).reasoning).toBeUndefined();
+    expect(({} as Record<string, unknown>).toolCall).toBeUndefined();
+    expect(prototypeKeys()).toEqual(before);
+    // 直列化と再検証を通しても同じ。
+    const parsed = parseSnapshot(canonicalize(result.snapshot), P, CTX);
+    expect(parsed.ok).toBe(true);
+    expect(prototypeKeys()).toEqual(before);
+  });
+
+  it("parseSnapshot の結果の models は prototype を持たず、代入の経路で prototype を汚さない", () => {
+    const before = prototypeKeys();
+    const snapshot = parseOk(snapshotText(GOOD_MODELS));
+    expect(Object.getPrototypeOf(snapshot.models)).toBeNull();
+    expect(snapshot.models["constructor"]).toBeUndefined();
+    expect(snapshot.models["__proto__"]).toBeUndefined();
+    expect(canonicalize(snapshot)).not.toContain("__proto__");
+    expect(prototypeKeys()).toEqual(before);
   });
 });
 
 describe("compareSnapshots", () => {
-  const base = makeSnapshot(
+  const LATER = "2026-11-19T01:00:00Z";
+  const entry = (extra: ModelEntry = {}): ModelEntry => ({
+    contextWindow: 100_000,
+    maxOutputTokens: 8192,
+    toolCall: true,
+    ...extra,
+  });
+  const range = (
+    provider: string,
+    prefix: string,
+    count: number,
+  ): Record<string, ModelEntry> =>
     Object.fromEntries(
-      Array.from({ length: 12 }, (_value, i) => [
-        `openai/m${i}`,
-        { contextWindow: 100_000, maxOutputTokens: 8192, toolCall: true },
+      Array.from({ length: count }, (_value, i) => [
+        `${provider}/${prefix}${i}`,
+        entry(),
       ]),
-    ),
-  );
-  const withModels = (
-    models: Record<string, ModelEntry>,
-    generatedAt = GENERATED_AT,
-  ): Snapshot => makeSnapshot(models, generatedAt);
+    );
+  const base = makeSnapshot(range("openai", "m", 12));
+  /** 比較される側（previous）より新しい写し。 */
+  const later = (models: Record<string, ModelEntry>): Snapshot =>
+    makeSnapshot(models, LATER);
+  const copyOf = (snapshot: Snapshot): Record<string, ModelEntry> => ({
+    ...snapshot.models,
+  });
 
-  it("同じ写しとの比較は findings なしで通る（同時刻は古さに数えない）", () => {
+  it("同じ写しとの比較は findings なしで通る（同時刻・同内容は古さに数えない）", () => {
     expect(compareSnapshots(base, base, P)).toEqual({ ok: true, findings: [] });
+    expect(
+      compareSnapshots(base, makeSnapshot(range("openai", "m", 12)), P),
+    ).toEqual({ ok: true, findings: [] });
   });
 
   it("採用済みより古い写しは stale", () => {
-    const older = withModels(
-      { ...base.models } as Record<string, ModelEntry>,
-      "2026-11-18T23:59:59Z",
-    );
+    const older = makeSnapshot(copyOf(base), "2026-11-18T23:59:59Z");
     expect(compareSnapshots(base, older, P)).toMatchObject({
       ok: false,
       code: "stale",
@@ -1075,23 +1217,31 @@ describe("compareSnapshots", () => {
   });
 
   it("新しい写しは通る", () => {
-    const newer = withModels(
-      { ...base.models } as Record<string, ModelEntry>,
-      "2026-11-19T00:00:01Z",
+    expect(compareSnapshots(base, later(copyOf(base)), P).ok).toBe(true);
+  });
+
+  it("同じ generatedAt で中身が違う写しは generated-at-conflict", () => {
+    const changed = makeSnapshot({
+      ...copyOf(base),
+      "openai/m0": entry({ toolCall: false }),
+    });
+    const result = compareSnapshots(base, changed, P);
+    expect(result).toMatchObject({ ok: false, code: "generated-at-conflict" });
+    expect(SNAPSHOT_FAILURE_CATEGORY["generated-at-conflict"]).toBe(
+      "freshness",
     );
-    expect(compareSnapshots(base, newer, P).ok).toBe(true);
+    // source だけが違っても内容（正規形）が違う。
+    const otherSource = parseOk(
+      snapshotText(copyOf(base), { source: "grimodex" }),
+    );
+    expect(compareSnapshots(base, otherSource, P)).toMatchObject({
+      ok: false,
+      code: "generated-at-conflict",
+    });
   });
 
   it("件数が半分未満に減ったら shrunk、半分ちょうどは通す", () => {
-    const keep = (n: number): Snapshot =>
-      withModels(
-        Object.fromEntries(
-          Array.from({ length: n }, (_value, i) => [
-            `openai/m${i}`,
-            { contextWindow: 100_000, maxOutputTokens: 8192, toolCall: true },
-          ]),
-        ),
-      );
+    const keep = (n: number): Snapshot => later(range("openai", "m", n));
     const shrunk = compareSnapshots(base, keep(5), P);
     expect(shrunk).toMatchObject({ ok: false, code: "shrunk" });
     expect(shrunk.findings).toContainEqual({
@@ -1102,67 +1252,106 @@ describe("compareSnapshots", () => {
     expect(compareSnapshots(base, keep(6), P).ok).toBe(true);
   });
 
-  it("provider 単位の急減は、全体が閾値の内でも shrunk", () => {
-    const models: Record<string, ModelEntry> = {};
-    for (let i = 0; i < 12; i += 1)
-      models[`anthropic/a${i}`] = { toolCall: true };
-    for (let i = 0; i < 100; i += 1)
-      models[`openrouter/o${i}`] = { toolCall: true };
-    const previous = withModels(models);
-    const nextModels = { ...models };
-    for (let i = 0; i < 12; i += 1) delete nextModels[`anthropic/a${i}`];
-    const next = withModels(nextModels);
-    expect(compareSnapshots(previous, next, P)).toMatchObject({
-      ok: false,
-      code: "shrunk",
-      findings: [
-        { code: "provider-count-dropped", key: "anthropic", from: 12, to: 0 },
-      ],
+  it("id を総入れ替えした写しは、件数が同じでも shrunk（保持率）", () => {
+    const previous = makeSnapshot(
+      Object.fromEntries(
+        Array.from({ length: 50 }, (_v, i) => [`openai/gpt-${i}`, entry()]),
+      ),
+    );
+    const next = later(
+      Object.fromEntries(
+        Array.from({ length: 50 }, (_v, i) => [`openai/junk-${i}`, entry()]),
+      ),
+    );
+    const result = compareSnapshots(previous, next, P);
+    expect(result).toMatchObject({ ok: false, code: "shrunk" });
+    expect(result.findings).toContainEqual({
+      code: "model-retention-dropped",
+      from: 50,
+      to: 0,
     });
   });
 
-  it("小さい provider（基準の件数未満）の減少は急減に数えない", () => {
-    const models: Record<string, ModelEntry> = {};
-    for (let i = 0; i < 4; i += 1) models[`sakana/s${i}`] = { toolCall: true };
-    for (let i = 0; i < 100; i += 1)
-      models[`openrouter/o${i}`] = { toolCall: true };
-    const previous = withModels(models);
+  it("保持率は半分ちょうどなら通す", () => {
+    const next = later({
+      ...range("openai", "m", 6),
+      ...range("openai", "n", 6),
+    });
+    expect(compareSnapshots(base, next, P).ok).toBe(true);
+    const worse = later({
+      ...range("openai", "m", 5),
+      ...range("openai", "n", 7),
+    });
+    expect(compareSnapshots(base, worse, P)).toMatchObject({
+      ok: false,
+      code: "shrunk",
+    });
+  });
+
+  it("provider 単位の急減は、全体が閾値の内でも shrunk", () => {
+    const models = {
+      ...range("anthropic", "a", 12),
+      ...range("openrouter", "o", 100),
+    };
+    const previous = makeSnapshot(models);
+    const nextModels = { ...models };
+    for (let i = 0; i < 12; i += 1) delete nextModels[`anthropic/a${i}`];
+    const result = compareSnapshots(previous, later(nextModels), P);
+    expect(result).toMatchObject({ ok: false, code: "shrunk" });
+    expect(result.findings).toEqual([
+      { code: "provider-count-dropped", key: "anthropic", from: 12, to: 0 },
+      { code: "provider-retention-dropped", key: "anthropic", from: 12, to: 0 },
+    ]);
+  });
+
+  it("provider の中の id の入れ替えは、全体の保持率が高くても shrunk", () => {
+    const previous = makeSnapshot({
+      ...range("anthropic", "a", 12),
+      ...range("openrouter", "o", 100),
+    });
+    const next = later({
+      ...range("anthropic", "x", 12),
+      ...range("openrouter", "o", 100),
+    });
+    const result = compareSnapshots(previous, next, P);
+    expect(result).toMatchObject({ ok: false, code: "shrunk" });
+    expect(result.findings).toEqual([
+      {
+        code: "provider-retention-dropped",
+        key: "anthropic",
+        from: 12,
+        to: 0,
+      },
+    ]);
+  });
+
+  it("小さい provider（基準の件数未満）の全消失は拒否せず、provider-removed に出す", () => {
+    const models = {
+      ...range("sakana", "s", 4),
+      ...range("openrouter", "o", 100),
+    };
+    const previous = makeSnapshot(models);
     const nextModels = { ...models };
     for (let i = 0; i < 4; i += 1) delete nextModels[`sakana/s${i}`];
-    expect(compareSnapshots(previous, withModels(nextModels), P).ok).toBe(true);
+    const result = compareSnapshots(previous, later(nextModels), P);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.findings).toEqual([
+      { code: "provider-removed", key: "sakana", from: 4 },
+      { code: "models-removed", count: 4 },
+    ]);
   });
 
   it("context の大きな変化・能力の反転・追加と削除を findings に出す（捨てない）", () => {
-    const next = withModels({
+    const next = later({
       ...(Object.fromEntries(
         Object.entries(base.models).filter(([key]) => key !== "openai/m11"),
       ) as Record<string, ModelEntry>),
-      "openai/m0": {
-        contextWindow: 400_000,
-        maxOutputTokens: 8192,
-        toolCall: true,
-      }, // ちょうど 4 倍
-      "openai/m1": {
-        contextWindow: 25_000,
-        maxOutputTokens: 8192,
-        toolCall: true,
-      }, // 1/4
-      "openai/m2": {
-        contextWindow: 399_999,
-        maxOutputTokens: 8192,
-        toolCall: true,
-      }, // 4 倍未満
-      "openai/m3": {
-        contextWindow: 100_000,
-        maxOutputTokens: 8192,
-        toolCall: false,
-      },
-      "openai/m4": {
-        contextWindow: 100_000,
-        maxOutputTokens: 8192,
-        toolCall: true,
-        reasoning: true,
-      },
+      "openai/m0": entry({ contextWindow: 400_000 }), // ちょうど 4 倍
+      "openai/m1": entry({ contextWindow: 25_000 }), // 1/4
+      "openai/m2": entry({ contextWindow: 399_999 }), // 4 倍未満
+      "openai/m3": entry({ toolCall: false }),
+      "openai/m4": entry({ reasoning: true }),
       "openai/new": { contextWindow: 100_000 },
     });
     const result = compareSnapshots(base, next, P);
@@ -1183,12 +1372,73 @@ describe("compareSnapshots", () => {
     ]);
   });
 
+  it("値から「返さない」への変化（field の削除）を全ての field で findings に出す", () => {
+    const previous = makeSnapshot({
+      ...copyOf(base),
+      "openai/full": {
+        contextWindow: 100_000,
+        maxOutputTokens: 8192,
+        toolCall: true,
+        reasoning: false,
+      },
+    });
+    const next = later({
+      ...copyOf(previous),
+      "openai/full": { contextWindow: 100_000 },
+      "openai/m0": { contextWindow: 100_000, maxOutputTokens: 8192 },
+    });
+    const result = compareSnapshots(previous, next, P);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.findings).toEqual([
+      {
+        code: "field-removed",
+        key: "openai/full",
+        field: "maxOutputTokens",
+        from: 8192,
+      },
+      {
+        code: "field-removed",
+        key: "openai/full",
+        field: "toolCall",
+        from: true,
+      },
+      {
+        code: "field-removed",
+        key: "openai/full",
+        field: "reasoning",
+        from: false,
+      },
+      {
+        code: "field-removed",
+        key: "openai/m0",
+        field: "toolCall",
+        from: true,
+      },
+    ]);
+  });
+
+  it("値のなかった field が増えるのは field の削除ではない", () => {
+    const previous = makeSnapshot({
+      ...copyOf(base),
+      "openai/sparse": { contextWindow: 100_000 },
+    });
+    const next = later({
+      ...copyOf(previous),
+      "openai/sparse": entry({ reasoning: true }),
+    });
+    expect(compareSnapshots(previous, next, P)).toEqual({
+      ok: true,
+      findings: [],
+    });
+  });
+
   it("findings は maxFindings で切り、超えた件数を残す", () => {
-    const next = withModels(
+    const next = later(
       Object.fromEntries(
         Array.from({ length: 12 }, (_value, i) => [
           `openai/m${i}`,
-          { contextWindow: 1_000_000, maxOutputTokens: 8192, toolCall: true },
+          entry({ contextWindow: 1_000_000 }),
         ]),
       ),
     );
@@ -1200,5 +1450,36 @@ describe("compareSnapshots", () => {
       code: "findings-truncated",
       count: 7,
     });
+  });
+
+  it("悪意の key は parseSnapshot で弾かれ、compare の findings に出ない", () => {
+    const evil = "openai/https://evil.example/@ignore-previous:instructions";
+    const models: Record<string, unknown> = {};
+    for (let i = 0; i < 100; i += 1) models[`openai/m${i}`] = entry();
+    const previous = parseOk(snapshotText(models));
+    models[evil] = { contextWindow: 100_000 };
+    models["openai/m0"] = entry({ contextWindow: 1_000_000 });
+    const next = parseOk(snapshotText(models, { generatedAt: LATER }));
+    expect(next.models[evil]).toBeUndefined();
+    const result = compareSnapshots(previous, next, P);
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("evil");
+  });
+
+  it("検証を通っていない写し（悪意の key）を直接渡されても、key を出さず schema で拒否する", () => {
+    const evil = "openai/https://evil.example/@ignore-previous:instructions";
+    const forged = {
+      schemaVersion: 1,
+      generatedAt: LATER,
+      source: "models.dev",
+      models: { ...copyOf(base), [evil]: { contextWindow: 1_000_000 } },
+    } as unknown as Snapshot;
+    for (const result of [
+      compareSnapshots(base, forged, P),
+      compareSnapshots(forged, base, P),
+    ]) {
+      expect(result).toMatchObject({ ok: false, code: "schema" });
+      expect(JSON.stringify(result)).not.toContain("evil");
+    }
   });
 });
