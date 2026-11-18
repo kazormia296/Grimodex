@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "purpose": "Reading-order parity fixture of the chat IR (S1-B DR-CHATIR-S1-30, G6 (c)). The renderer's buildReadingOrder (src/features/codex/context/sceneTimeIndex.ts) and Native's derive_live_scene_projection (src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs, the target the design names) are two implementations of one order. UNCONFIRMED: whether the IR admission's query_reading_rank is derived by that function; check before S1-A2 uses this file.",
-  "status": "PR-B1 holds the `ts` half in src/features/codex/context/readingOrderParity.test.ts. The `rust` half is NOT run by any test yet (S1-A2 reads this file with include_str! in a cargo test). It was written from reading project_scope_authority.rs, not from running it. Until then the two implementations are not held equal.",
+  "purpose": "Reading-order parity fixture of the chat IR (S1-B DR-CHATIR-S1-30, G6 (c)). The renderer's buildReadingOrder (src/features/codex/context/sceneTimeIndex.ts) and Native's derive_live_scene_projection (src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs, the target the design names) are two implementations of one order. The IR admission's query_reading_rank (and each candidate mapping's reading_rank) is the index of this function's order: check_query (retrieval_admission/disclosure.rs) <- query_context.rs (target.reading_rank) <- load_live_project_scope_authority <- derive_live_scene_projection (confirmed by reading, S1-A2).",
+  "status": "Both halves run from this one file. The `ts` half: src/features/codex/context/readingOrderParity.test.ts. The `rust` half: src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority/reading_order_tests.rs (include_str!, S1-A2 DR-CHATIR-S1-39). Each side runs alone against the same JSON; the two are not run together, and the time the tree is read (DB snapshot vs the renderer's tree store) is not held here.",
   "nodeFields": "id, parentId (null = project root), nodeType (folder|scene|note|other), sortOrder (TS compares it with cmpKeys, a UTF-16 code-unit order, the same order as Rust; only the id tie-break of two equal sortOrders is localeCompare in TS, and the ids in these cases are lower-case ASCII, where it agrees with a UTF-16 compare), archived (false = live).",
   "expectation": "ts.readingOrder: Scene ids in index order (index 0 first). rust.kind 'order': sceneIds in the order derive_live_scene_projection returns. rust.kind 'error': the call returns Err whose text starts with rust.code.",
   "cases": [
@@ -316,6 +316,116 @@
       "rust": {
         "kind": "order",
         "sceneIds": ["s1"]
+      }
+    },
+    {
+      "id": "mixed-case-sort-order",
+      "description": "Root Scenes whose sortOrder mixes upper and lower case (fractional indexes are base62, upper case sorts first). Both implementations compare UTF-16 code units, so 'Zz' (Z = 90) comes before 'a0' (a = 97).",
+      "nodes": [
+        {
+          "id": "s-a1",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "s-z",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "Zz",
+          "archived": false
+        },
+        {
+          "id": "s-a0",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s-z", "s-a0", "s-a1"]
+      },
+      "rust": {
+        "kind": "order",
+        "sceneIds": ["s-z", "s-a0", "s-a1"]
+      }
+    },
+    {
+      "id": "archived-duplicate-sort-order",
+      "description": "A live Scene and an archived Scene share a parent and a sortOrder. Both implementations drop the archived row before comparing siblings, so the duplicate is not an error.",
+      "nodes": [
+        {
+          "id": "f",
+          "parentId": null,
+          "nodeType": "folder",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s-next",
+          "parentId": "f",
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "s-arch",
+          "parentId": "f",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": true
+        },
+        {
+          "id": "s-live",
+          "parentId": "f",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s-live", "s-next"]
+      },
+      "rust": {
+        "kind": "order",
+        "sceneIds": ["s-live", "s-next"]
+      }
+    },
+    {
+      "id": "parent-cycle",
+      "description": "Two live folders name each other as parent, so neither is reachable from the project root. TS never reaches them and returns only the root Scene; Rust rejects the tree.",
+      "nodes": [
+        {
+          "id": "s1",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "x",
+          "parentId": "y",
+          "nodeType": "folder",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "y",
+          "parentId": "x",
+          "nodeType": "folder",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s1"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "active tree contains a parent cycle"
       }
     }
   ]
