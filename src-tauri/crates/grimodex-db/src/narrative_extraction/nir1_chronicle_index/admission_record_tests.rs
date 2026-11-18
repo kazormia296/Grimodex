@@ -383,6 +383,34 @@ fn the_lookup_classifies_by_proposal_when_the_current_revision_moves() {
     assert!(excluded(&f, &batch, &ids(&[&e_long])).is_empty());
 }
 
+/// R4 (current revision). Only the proposal's current revision names its
+/// event: once a not-admitted proposal's current revision names another event,
+/// the event its older revision named is no longer excluded.
+#[test]
+fn only_the_current_revision_names_the_event_of_a_proposal() {
+    let f = Fixture::multi_window();
+    publish_with_skip(&f, None);
+    let long_a = proposal_of(&f, &revision(&f, "long", "Harbour bell at dusk"));
+    let three_a = proposal_of(&f, &revision(&f, "three", "Writ delivered to the quay"));
+    let (e_long, e_a) = (event_of(&f, &long_a), event_of(&f, &three_a));
+    let inside = f.manifest["scenes"]["three"][0].as_str().expect("inside");
+    let batch = qualified(&f, inside);
+    assert_eq!(
+        batch.proposal_admission(&three_a),
+        NirProposalAdmission::NotAdmitted
+    );
+    assert_eq!(excluded(&f, &batch, &ids(&[&e_a, &e_long])), ids(&[&e_a]));
+
+    // The not-admitted proposal's current revision now names the other event.
+    // Its older revision still names `e_a`, which must not count.
+    repoint_current_revision(&f, &three_a, &e_long);
+    assert!(
+        excluded(&f, &batch, &ids(&[&e_a])).is_empty(),
+        "an older revision does not name the proposal's event"
+    );
+    assert_eq!(excluded(&f, &batch, &ids(&[&e_long])), ids(&[&e_long]));
+}
+
 /// R4 (project). The lookup reads the batch's project only: an event id that
 /// a proposal of another project names matches nothing, even if that proposal
 /// is in the proof.

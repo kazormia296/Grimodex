@@ -48,13 +48,16 @@ pub(super) fn revision_events_sql(count: usize) -> String {
 }
 
 /// The A2 statement for `count` candidate event ids (`?1` is the project).
+/// The WHERE repeats the expression instead of naming a result alias: SQLite
+/// binds a bare name to a real column of the FROM tables first, so an alias
+/// would silently change meaning if one of them ever gets an `event_id` column.
 pub(super) fn event_proposals_sql(count: usize) -> String {
     format!(
-        "SELECT {PAYLOAD_EVENT_ID} AS event_id, p.id
+        "SELECT {PAYLOAD_EVENT_ID}, p.id
            FROM narrative_proposals p
            JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
            JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
-          WHERE s.project_id = ?1 AND event_id IN ({})",
+          WHERE s.project_id = ?1 AND {PAYLOAD_EVENT_ID} IN ({})",
         placeholders(2, count)
     )
 }

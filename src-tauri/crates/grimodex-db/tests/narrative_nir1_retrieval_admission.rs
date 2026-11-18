@@ -5415,6 +5415,34 @@ fn chronicle_event_ids_follow_the_applied_events() {
     assert_eq!(apply_counts(&db).0, 2);
     assert_eq!(read(fixture.project(), &revisions), payload_ids);
 
+    // 別の project の events の行は当たらない（events の id は表全体で一意なので、
+    // revision の project と event の project の両方で絞ることを見る）。
+    let moved_event = payload_ids[&revisions[1]].clone();
+    let move_event = |project: &str| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO projects (id) VALUES ('another-project')",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE events SET project_id = ?1 WHERE id = ?2",
+                rusqlite::params![project, moved_event],
+            )?;
+            Ok(())
+        })
+        .expect("move the event row");
+    };
+    move_event("another-project");
+    assert_eq!(
+        read(fixture.project(), &revisions)
+            .into_keys()
+            .collect::<Vec<_>>(),
+        vec![revisions[0].clone()],
+        "an events row of another project is not this project's"
+    );
+    move_event(fixture.project());
+    assert_eq!(read(fixture.project(), &revisions), payload_ids);
+
     // 作者が年表で手で消した event：payload も application も残るが、行が無い。
     db.with_conn(|conn| {
         conn.execute(
