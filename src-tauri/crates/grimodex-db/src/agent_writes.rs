@@ -13266,6 +13266,136 @@ mod tests {
         assert_eq!(table_count(&db, "narrative_change_transactions"), 0);
     }
 
+    /// agent chat の turn 途中の tool 実行は assistant message の id を出典（source）に
+    /// 渡す。`chat_messages` に行が無い id は拒否され、assistant の行だけを先に保存して
+    /// あれば通る（renderer は書き込み tool の直前にその行を作る）。
+    #[test]
+    fn agent_create_with_unsaved_source_chat_message_is_rejected() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let snippet = AgentSnippetCreatePayload {
+            request_id: Some("snippet-unsaved-source".to_string()),
+            snippet_id: None,
+            project_id: project_id.clone(),
+            session_id: "sess".to_string(),
+            title: "Excerpt".to_string(),
+            content: None,
+            scene_id: None,
+            source_chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+            model: None,
+            chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+            trace_id: None,
+            authorship_spans: vec![],
+        };
+        let error = agent_snippet_create_impl(&db, snippet)
+            .expect_err("unsaved source message must be rejected for snippets");
+        assert!(error
+            .to_string()
+            .contains("snippet source chat message is not in project"));
+        assert_eq!(table_count(&db, "snippets"), 0);
+
+        let codex = AgentCodexCreatePayload {
+            request_id: Some("codex-unsaved-source".to_string()),
+            entry_id: None,
+            project_id,
+            session_id: "sess".to_string(),
+            surface: None,
+            type_slug: "character".to_string(),
+            name: "Alice".to_string(),
+            summary: Some("summary".to_string()),
+            content: None,
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            source_chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+            model: None,
+            chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+            trace_id: None,
+            authorship_spans: vec![],
+        };
+        let error = agent_codex_create_impl(&db, codex)
+            .expect_err("unsaved source message must be rejected for codex entries");
+        assert!(
+            error.to_string().contains("FOREIGN KEY"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+
+        // renderer が turn 途中で（user の行は作らずに）assistant の行だけを先に保存すると、
+        // 同じ id を出典にした snippet／codex の作成は通る。
+        db.with_conn(|conn| {
+            let project_id: String =
+                conn.query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+            conn.execute(
+                "INSERT INTO chat_sessions (id, project_id) VALUES ('reserved-session', ?1)",
+                [&project_id],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content)
+                 VALUES ('assistant-not-persisted-yet', 'reserved-session', 'assistant', '')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("reserve assistant row");
+        let project_id = db
+            .with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT id FROM projects LIMIT 1", [], |row| {
+                        row.get::<_, String>(0)
+                    })?,
+                )
+            })
+            .expect("project id");
+        agent_snippet_create_impl(
+            &db,
+            AgentSnippetCreatePayload {
+                request_id: Some("snippet-reserved-source".to_string()),
+                snippet_id: None,
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                title: "Excerpt".to_string(),
+                content: None,
+                scene_id: None,
+                source_chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+                model: None,
+                chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+                trace_id: None,
+                authorship_spans: vec![],
+            },
+        )
+        .expect("snippet with a reserved assistant row as source");
+        agent_codex_create_impl(
+            &db,
+            AgentCodexCreatePayload {
+                request_id: Some("codex-reserved-source".to_string()),
+                entry_id: None,
+                project_id,
+                session_id: "sess".to_string(),
+                surface: None,
+                type_slug: "character".to_string(),
+                name: "Alice".to_string(),
+                summary: Some("summary".to_string()),
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                source_chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+                model: None,
+                chat_message_id: Some("assistant-not-persisted-yet".to_string()),
+                trace_id: None,
+                authorship_spans: vec![],
+            },
+        )
+        .expect("codex with a reserved assistant row as source");
+        assert_eq!(table_count(&db, "snippets"), 1);
+        assert_eq!(table_count(&db, "codex_entries"), 1);
+    }
+
     #[test]
     fn prose_propose_matches_parity_fixture_in_app() {
         let fixture: serde_json::Value = serde_json::from_str(PROSE_FIXTURE).unwrap();
