@@ -7,7 +7,7 @@
 //! handle exists. The participant is waited for by shutdown and by a
 //! transition without a limit, so this loop looks at the participant's stop
 //! request between short slices and ends: when it is requested it makes one
-//! last attempt of `close_flush` and gives up. A record that is not written is
+//! last attempt of `close_flush`, cut at the tail's deadline, and gives up. A record that is not written is
 //! dropped by `PendingTerminalAudit`'s `Drop`, which logs the execution IDs
 //! only.
 
@@ -71,10 +71,14 @@ pub(crate) fn run_tail<P: TailFlush>(
             return TailEnd::Flushed;
         }
         if stop_requested() {
-            let flushed = matches!(
-                pending.flush_until(Instant::now() + timing.close_flush),
-                Ok(true)
-            );
+            // DR-CHATIR-S1-28: the last attempt is cut at the tail's deadline too, so a
+            // stop seen just before the budget runs out does not carry the tail past it
+            // (the approved bound is 30 s after the response). Once the deadline has
+            // passed no attempt starts.
+            let now = Instant::now();
+            let close_deadline = tail_deadline.min(now + timing.close_flush);
+            let flushed =
+                now < close_deadline && matches!(pending.flush_until(close_deadline), Ok(true));
             return TailEnd::Stopped { flushed };
         }
         let now = Instant::now();

@@ -263,3 +263,57 @@ renderer の台帳の回帰（`profileEgressClosure.test.ts`・`tauri.egressClos
 | X：transition・shutdown | participant の `stop_requested()`（transition の admit と shutdown の両方で立つ）。chat IR 専用の registry は無い | participant は Transition／Closed で新規が拒否される | participant | stop → SQL の取得 loop・tail が止まる | participant の数が 0 になるまで待たれる（上限なし）ので N2 の期限と N3 の stop が必須 | participant の数 0、Arc が sole owner | — |
 
 GDX-PRECHECK-001 の区分：**background は当たる**（tail。応答の後に最大 30 s の task が続く）。async lifecycle は当たる（上の表）。subprocess は当たらない（新しい process なし）。外部送信・保存範囲・閾値は変わらない（audit は既存の `ai_audit_events` に同じ event_id・payload で書き足すだけ。要約・quote・Scene の識別を渡す先は S1-B 以降で、S1-A は gate が閉じていて何も送らない）。
+
+## DR-CHATIR-S1-28：tail の最後の試みも 30 s の締切で切る（2026-11-18）
+
+- **きっかけ**：脅威モデルの追補（contracts `3d86610c`、`threat-model-addendum-2026-11-17-s1a-tail.md` の 0.2 の細部 (a)）の点検で見つかった。
+  - `run_tail` は、停止の判定を予算切れの判定より先に行う。
+  - 停止を見た後の最後の試み（`close_flush`）は、`now + close_flush` まで続き、`tail_deadline` で切られていなかった。
+  - そのため、停止が予算の切れ際に立つと、tail は応答の後 30 s を最大約 `CLOSE_FLUSH`（1 s）と書き込み 1 回分だけ越ええた。
+  - ユーザーの承認（contracts `a56a808b`）の文言は「応答の後、最長 30 s」である。
+- **判断**：最後の試みの期限を `min(tail_deadline, now + close_flush)` にする。締切を過ぎていれば試みを始めない（`Stopped { flushed: false }`）。
+  - これで承認の文言どおりになり、承認の範囲を狭める向きの変更だけである。
+  - 新しい宛先・保存範囲・閾値・契約の変更は無い。
+  - ユーザーには、この直しを別 PR で入れることを 2026-11-18 に説明し、「その PR も進めてください」の回答を得た。
+- **残る性質（変わらない）**：始まった append の 1 回は、期限で中断できない（`flush_until` の各試みの busy 待ちは min(残り, 1 s)）。この性質は slice の経路と同じで、追補に記述がある。
+- **試験**：`chat_ir/tests/unit.rs` に 2 本足した。
+  - `tail_last_attempt_never_outlives_the_budget`：予算 200 ms、`close_flush` 2 s で、170 ms の時点で停止を立て、1 s 未満で終わることを見る。直す前は約 2.2 s かかる。
+  - `tail_makes_no_last_attempt_once_the_budget_is_spent`：予算 0 では、最後の試みが始まらないことを見る。
+
+## S1-B の判断（PR-B1。挙動不変の部品だけを閉じたまま置く）
+
+設計の正本は repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/` の `s1b-design-draft-r3.md`（改訂 3）と `s1b-design-draft-r4-delta.md`（改訂 4 の差分。食い違えば差分を優先）。
+基点は `origin/master` `5d09b3c4`。PR-B1 は定数 `false`・型・wire の検証・wrapper・純関数・fixture・試験だけを入れる。status → model 向けの文言、cap・累積、`chatTurnStoreActions.ts`・`toolExecutors.ts`・`searchEvents`・Main・Native・`ipcContract.ts` は変えない。製品の挙動は変わらない。
+
+## DR-CHATIR-S1-29：上限いっぱいの 1 件は最小の cap に入らない（2026-11-18）
+
+- **きっかけ**：S1-B の gate のメモの実測（製品の cap は o200k_base の BPE で数える。`agentLoop.ts`・`contextBuilder.ts`）。
+- **事実**：item 1 件は中央 175 tokens、最大 279 tokens。上限いっぱいの 1 件は 589〜610 tokens で、包み込むと 605〜626 tokens になる（題 4 字のときの値で、上界ではない）。静的な表で最小の窓は 8,000／8,192 で、cap は 600。式の最小 500 は窓が 6,667 未満のとき。
+- **帰結**：設計の前提「1 件は必ず入る」と食い違う。小さい窓では `cap-exceeded` が普通になる。窓が 8,000 で年表が 10 件あれば、実データでも IR は 0 件。窓 32,768 なら 3〜8 件、64,000 以上なら 7〜8 件、128,000 以上は 8 件入る（年表 10 件まで）。
+- **扱い**：executor と agentLoop は同じ関数・同じ mode・同じ文字列で数えるので、余裕は置かない。provider の tokenizer の値は数えない（count_tokens は送らない）。どう扱うかは PR-B2（B-T7・B-T14）で決める。PR-B1 は cap を持たない。
+
+## DR-CHATIR-S1-30：G6 (c)（読み順の 2 つの実装）は試験で固定する（2026-11-18）
+
+- **事実**：IR の admission は Native が DB から読む読み順（`query_reading_rank`）、年表の filter は renderer の `buildReadingOrder`（`src/features/codex/context/sceneTimeIndex.ts`）。実装が 2 つあり、同じ結果になるかの試験は無かった。Rust の半分の対象は、差分 §3 の指定どおり `derive_live_scene_projection`（`project_scope_authority.rs`）とした。**IR の admission の `query_reading_rank` がこの関数から来るかは PR-B1 では確かめていない（未確認）**。S1-A2 の前に確かめ、別の実装なら cargo の試験の対象を直す。
+- **決定（行き先）**：条件 1〜3 の TS の半分は PR-B1 の共有 fixture と `buildReadingOrder` の試験で固定する。Rust の半分（同じ fixture を `include_str!` で読み、順か error を固定）は S1-A2 に置く。**PR-B1 が固定するのは TS の半分だけで、両実装の一致はまだ固定されない。** 条件 4（出所の時点）・5（今の Scene の出所）は PR-B2。
+- **決定（条件 6：軸）**：年表の位置の filter は、project の `phase_resolution_mode`（軸）に関わらず読み順で掛ける。既存の秘匿の filter（`isEventHiddenFromAi`）も軸に関わらず読み順で判定する。story 軸の project では、IR は Native が返さず、年表だけが位置の filter つきで返る。filter を掛ける側なので、秘匿を緩めない。
+- **決定（条件 7：境界）**：境界は「以前」（含む）。結ばれた Scene のうち最も前のものの位置が今の Scene の位置以下なら返す。今の Scene に結ばれた event は返す。既存の秘匿の filter（`readingPos(current) < readingPos(reveal)` のときだけ隠す）の境界と揃う。IR の規則（Native は今の Scene と同じか後を除く）とは向きが違うが、これは設計どおりの非対称である。結ばれた Scene がすべて読み順の外なら返さない（fail-closed）。
+- **注意（既存の規則との違い）**：今の Scene が読み順に無いとき、秘匿の filter は隠す（fail-closed）が、位置の filter は掛けない（確認済みの案 X。IR は 0 件と組）。年表は秘匿の filter だけが掛かった状態で返る。
+- **範囲**：確認済みの規則（△7 の案 B・案 X）の範囲内の技術判断。filter は共有の `searchEvents` に置く（PR-B2）。PR-B1 は純関数 `isEventBeforeOrAtScene` と試験だけ。
+
+## DR-CHATIR-S1-31：G6 (b) と PR-B1 の wire の形（2026-11-18）
+
+- **決定**：request は 4 key（`query`・`projectId`・`expectedWorkspacePath`・`currentSceneId`）のまま。wrapper の引数は object のままにする。応答の top-level の未知の key は拒否する（`invalid-response`。item の key と同じ厳しさで、drift を黙って通さない）。item の `eventId`・`generation`・`quote` は現れたら落とす。
+- **帰結**：S1-A2 が応答に欄（例：除外の eventId）を足すときは、Native・parser（`parseChatAgentIrResponse`）・B-T1 の drift 試験を同じ PR で変える。parser の注と試験に書いてある。
+- **確認が要る点**：候補の eventId を request に足す案は、確認済みの契約 §3.2 の入力の表を増やす変更なので、技術判断では閉じない。S1-A2 を起こす前に ず-1 と束ねて伺う。PR-B1 はこの案もほかの案も塞がない。
+- **PR-B2 への影響**：この案を採るなら、呼び出しの順は「年表の取得 → IR の呼び出し」に固定される（今は並列にできる）。latency の論点として PR-B2 に残す。
+
+## DR-CHATIR-S1-32：PR-B1 の wire の置き場・query の上限の二重の持ち方・error の写像の暫定（2026-11-18）
+
+- **wire の置き場**：`electron/shared/chatAgentIrWire.ts`（import を持たない。renderer と `electron/tsconfig.json` の両方で compile される）。前例は `relatedScenesSearchWire.ts`。`ipcContract.ts` は応答の型を持たず（`Promise<string>`）、12,447 行あるので renderer から import しない。
+- **query の上限の二重の持ち方**：`CHAT_AGENT_IR_QUERY_UTF16_MAX = 500` を wire file にも持ち、Rust の `QUERY_MAX_UTF16`（`request.rs`）と `ipcContract.ts` の 500 の 3 か所の一致を B-T1 の drift 試験で固定する。Native が権威（DR-CHATIR-S1-14）。
+- **件数の上限**：`CHAT_AGENT_IR_MAX_ITEMS = 8` は policy JSON の `irMaxScenes` と対応する。Rust は `ranking_policy.rs` で 8 を要るので、policy の値を変えるには Rust の変更も要る。TS だけが 8 のままでも全 IR が `invalid-response` で捨てられるだけ（fail-safe）。B-T1 が policy を読んで一致を固定する。
+- **error の写像の暫定**：wrapper の `message.includes("CHAT_IR_GATE_CLOSED")` は暫定。Native 由来の前置きが未確認なので prefix にしない。`legacy-ipc-error-text-check` の 5 マーカーの外で、現状は抵触しない。規約の趣旨（feature code は `code` を読む）どおりにするなら `tauri.ts` の `classifyLegacyIpcError` に新しい `code` を足すことになる。gate が閉じている間だけの status で、`tauri.ts` の code の集合を増やす影響のほうが大きいので、移動は統合者の判断（B-18）に残す。
+- **renderer の事前判定の優先順（仮）**：`currentSceneId` が空 → `no-current-scene`、query が空・空白のみ・UTF-16 500 超 → `query-invalid`、`expectedWorkspacePath` または `projectId` が空 → `no-workspace`。改訂 3 の表は `projectId` が空のときの status を挙げていないので、`no-workspace` に仮置きした（新しい status を作らない）。
+- **共有 fixture の置き場**：`src/features/codex/context/fixtures/reading-order-parity.json`。前例の `policies/narrative/fixtures/` は `policies/narrative/**` が `GDX-NARR-SEMANTIC-CONTRACT-001` の対象で、挙動不変の PR に重い評価を持ち込むので避けた。Rust の試験は `include_str!` で読める（S1-A2）。置き場を前例に揃える判断は統合者に残す。
+- **試験の限界**：Rust 側の期待（error か順か）は `project_scope_authority.rs` を読んだ推定で、cargo では実行していない。

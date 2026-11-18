@@ -137,3 +137,10 @@ export {
   ChatTurnPersistenceError,
   createRetryableCompletedTurnPersistence,
 } from "./chatTurnPersistence";
+
+// 出典用の assistant 行の予約（書き込み tool の直前に作り、完了時に更新する）。
+export {
+  createAssistantRowReservation,
+  sendableHistory,
+  parseMetadataRecord,
+} from "./chatAssistantRowReservation";
