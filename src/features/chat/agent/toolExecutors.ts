@@ -46,7 +46,17 @@ import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
 import type {
   ChatReadOnlyToolRunContext,
   ChatToolRunContext,
+  ChatTurnToolScope,
 } from "./chatTurnToolScope";
+import { CHAT_AGENT_IR_ENABLED } from "./chatAgentIrAvailability";
+import {
+  CHAT_IR_MAX_CALLS_PER_TURN,
+  CHAT_IR_MAX_CHARS_PER_TURN,
+  fitChatIrContent,
+  precheckChatIrContent,
+  type ChatIrOutcomeShape,
+  type ChatIrToolContentResult,
+} from "./chatIrToolResult";
 import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
@@ -87,6 +97,7 @@ import {
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
+import { isEventBeforeOrAtScene } from "@/features/chronicle/chronicleReadingPosition";
 import {
   getSharedEvents,
   getSharedSceneEvents,
@@ -330,6 +341,7 @@ async function searchCodex(
  */
 async function searchEvents(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const query = String(params["query"] ?? "").trim();
   if (!query)
@@ -340,7 +352,9 @@ async function searchEvents(
       tokensUsed: 0,
     };
 
-  const projectId = useTreeStore.getState().projectId;
+  // 基準の project・Scene は、秘匿の filter も位置の filter も同じ値を使う。
+  // turn の文脈（scope）があればその値、無ければ今の tree store。
+  const { projectId, currentSceneId } = chronicleBasis(scope);
   if (!projectId)
     return {
       name: "search_events",
@@ -349,11 +363,7 @@ async function searchEvents(
       tokensUsed: 0,
     };
 
-  const rawLimit = Number(params["limit"]);
-  const limit =
-    Number.isFinite(rawLimit) && rawLimit > 0
-      ? Math.min(Math.floor(rawLimit), 30)
-      : 10;
+  const limit = eventSearchLimit(params);
 
   // AI 秘匿: hidden な secret イベントは hit から除外するため over-fetch（≤30=backendMax）→
   // visible filter → slice(limit)。索引自体は全件のまま（title 漏洩を返却段で防ぐ）。
@@ -371,11 +381,10 @@ async function searchEvents(
     return [] as EventSearchHit[];
   });
 
-  // 現在シーン（activeSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
+  // 現在シーン（currentSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
   const allEvents = await getSharedEvents(projectId);
   const sceneEvents = await getSharedSceneEvents(projectId);
   const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
-  const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
   const hidden = new Set(
     allEvents
       .filter((e) =>
@@ -386,6 +395,16 @@ async function searchEvents(
 
   const content = hits
     .filter((h) => !hidden.has(h.eventId))
+    // 位置の filter（chat IR S1-B）。秘匿の filter の後、slice(limit) の前。
+    // 定数が false の間は掛けない（今の挙動のまま）。
+    .filter(
+      (h) =>
+        !CHAT_AGENT_IR_ENABLED ||
+        isEventBeforeOrAtScene({ id: h.eventId }, currentSceneId, {
+          readingOrder,
+          sceneEvents,
+        }),
+    )
     .slice(0, limit)
     .map((h) => ({
       eventId: h.eventId,
@@ -398,6 +417,122 @@ async function searchEvents(
     name: "search_events",
     content,
     summary: `${content.length} events found`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+/** search_events の基準の project と Scene。scope があればそれ、無ければ今の tree store。 */
+function chronicleBasis(scope?: ChatTurnToolScope): {
+  projectId: string | null;
+  currentSceneId: string;
+} {
+  if (scope) {
+    return {
+      projectId: scope.projectId || null,
+      currentSceneId: scope.currentSceneId ?? "",
+    };
+  }
+  const state = useTreeStore.getState();
+  return {
+    projectId: state.projectId,
+    currentSceneId: state.activeSceneId ?? "",
+  };
+}
+
+function eventSearchLimit(params: Record<string, unknown>): number {
+  const rawLimit = Number(params["limit"]);
+  return Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(Math.floor(rawLimit), 30)
+    : 10;
+}
+
+/** The renderer's own refusals before the IPC: not a call of Native, not counted. */
+const CHAT_IR_PREFLIGHT_STATUSES: ReadonlySet<string> = new Set([
+  "no-current-scene",
+  "query-invalid",
+  "no-workspace",
+]);
+
+/**
+ * search_events に承認済みの IR を合流する版（main agent の `EXECUTORS` だけ。
+ * chat IR S1-B、定数が true で IR の capability がある呼び手のときだけ）。
+ *
+ * 順は直列：年表 → 事前判定 → turn の累積上限 → Native を 1 回 → assertCurrent →
+ * 切り・cap → noteUsedIds → content（B-T13）。年表は共有の `searchEvents`
+ * （秘匿 → 位置 → limit）。IR の失敗は tool の失敗にせず、status を content に載せる。
+ * IR の capability が無い呼び手（sub-agent など）は今の配列のまま。
+ */
+async function searchEventsWithIr(
+  params: Record<string, unknown>,
+  _requestId?: string,
+  _authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const ir = context?.ir;
+  const base = await searchEvents(params, context?.scope);
+  if (!CHAT_AGENT_IR_ENABLED || !ir) return base;
+  const query = String(params["query"] ?? "").trim();
+  const { projectId, currentSceneId } = chronicleBasis(context.scope);
+  // 空の query・project 無しは、年表の側の応答（空の配列）のまま返す。
+  if (!query || !projectId || !Array.isArray(base.content)) return base;
+
+  const events: readonly unknown[] = base.content;
+  const limit = eventSearchLimit(params);
+  const input = { events, tokenCap: ir.tokenCap, countTokens };
+
+  let fitted: ChatIrToolContentResult<unknown> | null =
+    precheckChatIrContent(input);
+  if (!fitted) {
+    let outcome: ChatIrOutcomeShape;
+    if (
+      ir.counter.calls >= CHAT_IR_MAX_CALLS_PER_TURN ||
+      ir.counter.chars >= CHAT_IR_MAX_CHARS_PER_TURN
+    ) {
+      outcome = { status: "turn-limit" };
+    } else {
+      // 定数の枝の中でだけ wrapper を読む（false の間は bundle に入らない）。
+      const { selectChatAgentIr } = await import("@/lib/chatIr");
+      const answer = await selectChatAgentIr({
+        query,
+        projectId,
+        expectedWorkspacePath: ir.workspacePath ?? "",
+        currentSceneId,
+      });
+      if (
+        !(
+          answer.kind === "not-answered" &&
+          CHAT_IR_PREFLIGHT_STATUSES.has(answer.status)
+        )
+      ) {
+        ir.counter.calls += 1;
+      }
+      // project／workspace が turn のものでなくなっていれば、item を返さず tool を失敗にする。
+      ir.assertCurrent();
+      outcome =
+        answer.kind === "answered"
+          ? { status: answer.status, items: answer.items }
+          : { status: answer.status };
+    }
+    fitted = fitChatIrContent({ outcome, limit, ...input });
+  }
+
+  const { items } = fitted;
+  if (items.length > 0) {
+    ir.counter.chars += items.reduce(
+      (sum, item) => sum + JSON.stringify(item).length,
+      0,
+    );
+    ir.noteUsedIds(
+      params,
+      items.map((item) => item.revisionId),
+    );
+  }
+  const json = JSON.stringify(fitted.content);
+  return {
+    name: "search_events",
+    content: fitted.content,
+    // 件数だけ。status・本文・題は入れない（契約 §3.5）。
+    summary: `manuscript ${items.length}, chronicle ${events.length}`,
     tokensUsed: countTokens(json),
   };
 }
@@ -1770,7 +1905,8 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_event_detail: getEventDetailTool,
   get_character_timeline: getCharacterTimelineTool,
   get_chronicle_state: getChronicleStateTool,
-  search_events: searchEvents,
+  search_events: (params, _requestId, _authorization, context) =>
+    searchEvents(params, context?.scope),
   // アプリの使い方ヘルプ。実装（ヘルプ文書・locale の展開）は初回の呼び出しで読む。
   get_app_help_index: async (params) =>
     (await import("./appHelpTools")).getAppHelpIndexTool(params),
@@ -2139,6 +2275,9 @@ Object.freeze(MUTATING_EXECUTORS);
 export const EXECUTORS: Record<string, Executor> = {
   ...READ_ONLY_EXECUTORS,
   ...MUTATING_EXECUTORS,
+  // main agent の search_events だけ、承認済みの IR を合流する版で上書きする。
+  // sub-agent の `executeReadOnlyTool` は READ_ONLY_EXECUTORS だけを見るので、IR は出ない。
+  search_events: searchEventsWithIr,
 };
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);

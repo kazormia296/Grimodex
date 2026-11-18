@@ -38,6 +38,18 @@ export function chatIrTokenCap(tokenBudget: number): number {
   return Math.max(1, Math.floor(tokenBudget * TOOL_RESULT_TOKEN_CAP_RATIO));
 }
 
+/**
+ * The cumulative limits of one turn (△11, DR-CHATIR-S1-38). Provisional values:
+ * lowering them is a technical decision, raising them is a threshold change that
+ * needs the owner's confirmation (decided with the S2 measurement).
+ * - calls: how many times one turn may ask Native for IR;
+ * - chars: the UTF-16 `length` of the IR items kept in the turn's tool results.
+ *   Native counts scalars, so `length` counts an astral character more than
+ *   Native does, which reaches the limit earlier (the safe side).
+ */
+export const CHAT_IR_MAX_CALLS_PER_TURN = 6;
+export const CHAT_IR_MAX_CHARS_PER_TURN = 20_000;
+
 export type CountTokens = (text: string) => number;
 
 export interface ChatIrToolContent<TEvent> {

@@ -26,6 +26,8 @@ export interface ChatTurnToolScope {
 export interface ChatIrTurnCounter {
   /** UTF-16 `length` of the IR text added to the turn so far. */
   chars: number;
+  /** How many times the turn asked Native (a call that was refused before the IPC is not counted). */
+  calls: number;
 }
 
 /**

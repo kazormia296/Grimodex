@@ -476,7 +476,7 @@ export function createChatTurnToolContext(input: {
       1,
       Math.floor(input.tokenBudget * AGENT_LOOP_TOOL_RESULT_TOKEN_CAP_RATIO),
     ),
-    counter: { chars: 0 },
+    counter: { chars: 0, calls: 0 },
     assertCurrent: input.assertTurnAuthority,
     noteUsedIds: (key, revisionIds) => {
       used.set(key, {
