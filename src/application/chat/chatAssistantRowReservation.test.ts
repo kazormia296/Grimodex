@@ -1,4 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const gates = vi.hoisted(() => ({ licenseRestricted: false, quiescent: true }));
+vi.mock("@/features/license/gate", () => ({
+  isWriteRestrictedByLicense: () => gates.licenseRestricted,
+}));
+vi.mock("@/application/lifecycle/quiescenceLease", () => ({
+  canScheduleQuiescenceMutation: () => gates.quiescent,
+}));
 import {
   createAssistantRowReservation,
   sendableHistory,
@@ -97,11 +105,16 @@ describe("sendableHistory", () => {
 });
 
 describe("createAssistantRowReservation", () => {
+  beforeEach(() => {
+    gates.licenseRestricted = false;
+    gates.quiescent = true;
+  });
   const setup = (opts: {
     addMessage: ReturnType<typeof vi.fn>;
     listMessages?: ReturnType<typeof vi.fn>;
     guards?: (() => boolean)[];
     content?: string;
+    metadata?: string;
   }) => {
     const warn = vi.fn();
     const reservation = createAssistantRowReservation({
@@ -113,7 +126,9 @@ describe("createAssistantRowReservation", () => {
       getSessionId: () => "s1",
       message: { id: "a1", createdAt: "2026-11-18T00:00:00.000Z" },
       getMessages: () =>
-        opts.content === undefined ? [] : [{ id: "a1", content: opts.content }],
+        opts.content === undefined
+          ? []
+          : [{ id: "a1", content: opts.content, metadata: opts.metadata }],
       assertCurrent: () => {},
       writeGuards: opts.guards ?? [() => true],
       debugLog: { warn },
@@ -143,7 +158,7 @@ describe("createAssistantRowReservation", () => {
     );
   });
 
-  it("stays unreserved when the failed write left no row", async () => {
+  it("stays unreserved but still finalizes by UPSERT when the failed write left no row", async () => {
     const addMessage = vi
       .fn()
       .mockRejectedValueOnce(new Error("insert failed"))
@@ -152,10 +167,11 @@ describe("createAssistantRowReservation", () => {
 
     await reservation.before("create_snippet", "t1", true);
     expect(reservation.reserved).toBe(false);
+    // 判定が外れて行が実在しても衝突しないよう、試みた後は UPSERT（無ければ INSERT）。
     await reservation.persist("s1", "done", {});
-    expect(addMessage.mock.lastCall?.[3]).not.toHaveProperty(
-      "replaceReservedAssistant",
-    );
+    expect(addMessage.mock.lastCall?.[3]).toMatchObject({
+      replaceReservedAssistant: true,
+    });
   });
 
   it("assumes the row may exist when its presence cannot be read", async () => {
@@ -188,6 +204,44 @@ describe("createAssistantRowReservation", () => {
         replaceReservedAssistant: true,
       }),
     );
+  });
+
+  it("keeps the store metadata (tool_calls) under the stopped marker", async () => {
+    const addMessage = vi.fn().mockResolvedValue({});
+    const { reservation } = setup({
+      addMessage,
+      content: "本文",
+      metadata: JSON.stringify({ tool_calls: [{ name: "create_snippet" }] }),
+    });
+    await reservation.before("create_snippet", "t1", true);
+
+    await reservation.settleAbandoned("model-x");
+
+    expect(addMessage).toHaveBeenLastCalledWith(
+      "s1",
+      "assistant",
+      "本文",
+      expect.objectContaining({
+        metadata: JSON.stringify({
+          tool_calls: [{ name: "create_snippet" }],
+          stopped: true,
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    ["license restricts writes", () => (gates.licenseRestricted = true)],
+    ["a quiescence lease is held", () => (gates.quiescent = false)],
+  ])("does not settle an abandoned row while %s", async (_label, arrange) => {
+    const addMessage = vi.fn().mockResolvedValue({});
+    const { reservation } = setup({ addMessage });
+    await reservation.before("create_snippet", "t1", true);
+    arrange();
+
+    await reservation.settleAbandoned("model-x");
+
+    expect(addMessage).toHaveBeenCalledTimes(1);
   });
 
   it("does not settle an abandoned row once the captured project is gone", async () => {

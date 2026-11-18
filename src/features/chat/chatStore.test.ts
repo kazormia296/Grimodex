@@ -6807,17 +6807,20 @@ describe("useChatStore", () => {
         expect(mockAgentCreateSnippet).toHaveBeenCalledOnce();
         // user の行は保存されず、予約した行は空・metadata なしのまま残らない。
         expect(events).toEqual(["add:assistant", "replace:assistant"]);
-        expect(rows.get(sent.id ?? "")?.role).toBe("assistant");
-        expect(chatApi.addMessage).toHaveBeenLastCalledWith(
-          session1.id,
-          "assistant",
-          expect.any(String),
-          expect.objectContaining({
-            id: sent.id,
-            replaceReservedAssistant: true,
-            metadata: JSON.stringify({ stopped: true }),
-          }),
-        );
+        expect(rows.get(sent.id ?? "")).toEqual({
+          role: "assistant",
+          content: "late",
+        });
+        const settled = vi.mocked(chatApi.addMessage).mock.lastCall;
+        expect(settled?.[3]).toMatchObject({
+          id: sent.id,
+          replaceReservedAssistant: true,
+        });
+        // tool の記録を残したまま stopped を重ねる。
+        expect(JSON.parse(settled?.[3]?.metadata ?? "{}")).toMatchObject({
+          stopped: true,
+          tool_calls: [expect.objectContaining({ name: "create_snippet" })],
+        });
       });
 
       it("settles the reserved row as stopped when the transport fails after the turn lost its session", async () => {

@@ -2,6 +2,8 @@ import type * as chatApi from "@/features/chat/chatApi";
 import type { ChatMessage } from "@/features/chat/chatTypes";
 import type { ToolResult } from "@/features/chat/agent/agentTypes";
 import { SOURCE_CHAT_MESSAGE_TOOLS } from "@/features/chat/agent/toolExecutors";
+import { isWriteRestrictedByLicense } from "@/features/license/gate";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { ChatTurnPersistenceError } from "./chatTurnPersistence";
 
 /**
@@ -97,12 +99,16 @@ export function createAssistantRowReservation(deps: {
   getSessionId: () => string | null;
   message: Pick<ChatMessage, "id" | "createdAt">;
   /** 失敗時の確定に、その時点の assistant の本文を読む。 */
-  getMessages: () => readonly Pick<ChatMessage, "id" | "content">[];
+  getMessages: () => readonly Pick<
+    ChatMessage,
+    "id" | "content" | "metadata"
+  >[];
   /** 行を作った後に turn がまだ有効かを確かめる（無効なら投げる）。 */
   assertCurrent: () => void;
   /**
    * turn を抜けた後に、捕まえた workspace／project の DB へまだ書いてよいか（すべて true）。
-   * 切り替わった後は書かない（空の行は sendableHistory が送信から外す）。
+   * 切り替わった後、license の書込み制限中、quiescence の lease 中は書かない
+   * （空の行は sendableHistory が送信から外す）。
    */
   writeGuards: readonly (() => boolean)[];
   debugLog: { warn: (scope: string, what: string, detail: string) => void };
@@ -110,6 +116,9 @@ export function createAssistantRowReservation(deps: {
 }): AssistantRowReservation {
   let pending: Promise<void> | null = null;
   let reserved = false;
+  // 予約の書込みを一度でも試みたか。試みた後は、行の有無の判定が外れても衝突しない
+  // よう、確定は常に UPSERT（未確定の行だけ更新、無ければ INSERT）で書く。
+  let attempted = false;
   let finalized = false;
   let observedText = "";
   const { message } = deps;
@@ -131,7 +140,7 @@ export function createAssistantRowReservation(deps: {
     content,
     extra,
   ) => {
-    await write(sessionId, content, extra, reserved);
+    await write(sessionId, content, extra, reserved || attempted);
     finalized = true;
   };
   /** 失敗・停止の残り（その時点の内容）で行を確定する。保存の失敗は返さず記録する。 */
@@ -145,7 +154,11 @@ export function createAssistantRowReservation(deps: {
     try {
       await persist(sessionId, current?.content ?? observedText, {
         ...(model ? { model } : {}),
-        metadata: JSON.stringify(marker),
+        // 正規の停止と同じく、tool_calls など store の metadata に印を重ねる。
+        metadata: JSON.stringify({
+          ...parseMetadataRecord(current?.metadata),
+          ...marker,
+        }),
       });
     } catch (persistError) {
       deps.debugLog.warn(
@@ -165,6 +178,7 @@ export function createAssistantRowReservation(deps: {
       if (!authorized || !sessionId || !SOURCE_CHAT_MESSAGE_TOOLS.has(name)) {
         return null;
       }
+      attempted = true;
       pending ??= write(sessionId, "", {}, false).then(
         () => {
           reserved = true;
@@ -205,7 +219,11 @@ export function createAssistantRowReservation(deps: {
       await settle(model, { runtime_error: failure });
     },
     async settleAbandoned(model) {
-      if (!deps.writeGuards.every((guard) => guard())) return;
+      const writable =
+        deps.writeGuards.every((guard) => guard()) &&
+        canScheduleQuiescenceMutation() &&
+        !isWriteRestrictedByLicense();
+      if (!writable) return;
       await settle(model, { stopped: true });
     },
   };
