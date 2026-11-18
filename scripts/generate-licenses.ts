@@ -677,6 +677,28 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
 
+const MODELS_DEV_MIT_LICENSE_TEXT = `MIT License
+
+Copyright (c) 2025 models.dev
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`;
+
 const TOARU_EKI_SIGN_LICENSE_TEXT = `「とある駅の案内板っぽい？フォント」 (修正版)
 作者: 栃木那須・ユズノカ
 
@@ -828,6 +850,21 @@ function gatherAssetLicenses(): LicenseEntry[] {
       license: "Apache-2.0",
       repository: "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L4-v2",
       licenseText: APACHE_2_0_LICENSE_TEXT,
+    },
+    {
+      // モデル能力の registry の写し (electron/resources/model-capabilities.json)。models.dev の
+      // 公開 data（文脈長・出力上限・tool_call・reasoning の値と model id）から
+      // scripts/generate-model-capability-snapshot.mjs が生成し、electron-builder の extraResources
+      // で packaged に同梱し、master の raw 配信でも再配布する。repo ルートの LICENSE (MIT、
+      // "Copyright (c) 2025 models.dev") が repo 全体（providers/ の data を含む）に掛かり、
+      // data だけ別の license とする記載は無い（2026-11-19 に GitHub の公開ページで確認。
+      // sst/models.dev の URL は anomalyco/models.dev へ移っている）。MIT は「実質的な部分」の
+      // 再配布に著作権表示と許諾文の収録を求めるため掲載する。
+      name: "models.dev (open-source AI model database, source of the bundled model-capability snapshot)",
+      version: "dev branch, data retrieved 2026-11-18",
+      license: "MIT",
+      repository: "https://github.com/anomalyco/models.dev",
+      licenseText: MODELS_DEV_MIT_LICENSE_TEXT,
     },
   ];
 }
