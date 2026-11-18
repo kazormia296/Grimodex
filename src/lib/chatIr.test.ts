@@ -215,6 +215,9 @@ describe("selectChatAgentIr: preflight (B-T3)", () => {
     ["31 IDs", Array.from({ length: 31 }, (_, index) => `event-${index}`)],
     ["an empty ID", [""]],
     ["a white-space ID", ["  "]],
+    ["a next-line (U+0085) only ID", ["\u0085"]],
+    // eslint-disable-next-line no-sparse-arrays
+    ["a sparse array (a hole)", [, "a"]],
     ["201 units", ["a".repeat(201)]],
     ["a repeated ID", ["e", "e"]],
     ["a non-string", [1]],
@@ -286,6 +289,26 @@ describe("selectChatAgentIr: the exclusions are a subset of the candidates", () 
     expect(
       await selectChatAgentIr({ ...REQUEST, chronicleEventIds: [] }),
     ).toEqual(notAnswered("invalid-response"));
+  });
+});
+
+describe("selectChatAgentIr: one copy of the candidates", () => {
+  it("checks the subset against what it sent, not the caller's array after the await", async () => {
+    const ids = ["event-1", "event-2"];
+    invokeMock.mockImplementationOnce(async () => {
+      // The caller changes its array while the call is in flight.
+      ids.push("event-9");
+      return native({ excludedEventIds: ["event-9"] });
+    });
+    expect(
+      await selectChatAgentIr({ ...REQUEST, chronicleEventIds: ids }),
+    ).toEqual(notAnswered("invalid-response"));
+    // What was sent is the copy taken before the call.
+    const sent = (
+      invokeMock.mock.calls[0]![1] as { chronicleEventIds: string[] }
+    ).chronicleEventIds;
+    expect(sent).toEqual(["event-1", "event-2"]);
+    expect(sent).not.toBe(ids);
   });
 });
 

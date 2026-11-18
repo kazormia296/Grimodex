@@ -13384,9 +13384,9 @@ impl Backend {
     /// quote) of Scenes before `currentSceneId`, for a query the chat agent
     /// wrote. Closed: while the Native gate is closed this is an error
     /// (`CHAT_IR_GATE_CLOSED`) before the payload is parsed, and nothing in the
-    /// product opens it. A call that ends is always `{status, success, items}`
-    /// with a status of the closed set; only a gate or a request-shape refusal
-    /// is an error.
+    /// product opens it. A call that ends is always the five keys
+    /// `{status, success, items, eventIds, excludedEventIds}` with a status of
+    /// the closed set; only a gate or a request-shape refusal is an error.
     #[napi]
     pub async fn chat_agent_ir_select(&self, payload: serde_json::Value) -> Result<String> {
         chat_ir::select(Arc::clone(&self.state), payload)

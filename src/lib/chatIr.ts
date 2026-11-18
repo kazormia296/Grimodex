@@ -160,6 +160,9 @@ export async function selectChatAgentIr(
   const refused = preflight(args);
   if (refused !== null) return notAnswered(refused);
 
+  // One copy, taken before the call: the send and the subset check below both
+  // use it, so the caller's array is not read again after the `await`.
+  const chronicleEventIds = [...args.chronicleEventIds];
   let raw: unknown;
   try {
     // Exactly the five keys of the request; Native has no `limit`.
@@ -168,7 +171,7 @@ export async function selectChatAgentIr(
       projectId: args.projectId,
       expectedWorkspacePath: args.expectedWorkspacePath,
       currentSceneId: args.currentSceneId,
-      chronicleEventIds: [...args.chronicleEventIds],
+      chronicleEventIds: chronicleEventIds,
     });
   } catch (error) {
     try {
@@ -185,7 +188,7 @@ export async function selectChatAgentIr(
   // not a candidate is a drift (or a hostile answer): the caller must not drop
   // an event it never asked about.
   if (answer.excludedEventIds !== null) {
-    const sent = new Set(args.chronicleEventIds);
+    const sent = new Set(chronicleEventIds);
     if (!answer.excludedEventIds.every((id) => sent.has(id))) {
       return notAnswered("invalid-response");
     }

@@ -250,6 +250,10 @@ describe("the argument adapter holds Native's bounds", () => {
       ["a white-space ID", ["   "]],
       ["201 units", ["a".repeat(201)]],
       ["101 surrogate pairs (202 units)", ["\u{1F600}".repeat(101)]],
+      ["a next-line (U+0085) only ID", ["\u0085"]],
+      ["a mixed white-space and U+0085 ID", [" \u0085\u00a0\ufeff"]],
+      // eslint-disable-next-line no-sparse-arrays
+      ["a sparse array (a hole)", [, "a"]],
       ["a repeated ID", ["e", "e"]],
       ["a repeat inside 30", [...ids(29), "event-0"]],
       ["a number", [1]],

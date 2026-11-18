@@ -200,6 +200,21 @@ function answer(overrides: Record<string, unknown> = {}) {
   return { excludedEventIds: judged ? [] : null, ...base };
 }
 
+describe("isChronicleEventIdList", () => {
+  it("accepts the bounds and refuses a hole and a U+0085-only ID", () => {
+    expect(isChronicleEventIdList([])).toBe(true);
+    expect(isChronicleEventIdList(["e-1", "e-2"])).toBe(true);
+    expect(isChronicleEventIdList(["\u0085a"])).toBe(true);
+    // eslint-disable-next-line no-sparse-arrays
+    expect(isChronicleEventIdList([, "a"])).toBe(false);
+    // JS `trim` keeps U+0085, Rust `trim` does not: the stricter side wins.
+    expect(isChronicleEventIdList(["\u0085"])).toBe(false);
+    expect(isChronicleEventIdList([" \u0085\u00a0\ufeff "])).toBe(false);
+    expect(isChronicleEventIdList([""])).toBe(false);
+    expect(isChronicleEventIdList(["e", "e"])).toBe(false);
+  });
+});
+
 describe("parseChatAgentIrResponse (B-T2)", () => {
   it("returns the very same object for a good answer", () => {
     const good = answer();

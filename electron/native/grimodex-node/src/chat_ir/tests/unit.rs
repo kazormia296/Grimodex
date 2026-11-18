@@ -322,6 +322,73 @@ fn string_codes_are_in_the_shared_crates_source() {
     }
 }
 
+/// S1-A2 (T3): the wiring of `select` in `native.rs`. The real Backend needs a
+/// real model, so the order of A1 (the events of the returned items), A2 (the
+/// request's excluded candidates) and the validation inside the one read
+/// transaction is held on the source text, like the wire's drift test (B-T1).
+/// Comments and white space are removed first, so a call that was only commented
+/// out is not found.
+#[test]
+fn select_reads_a1_and_a2_inside_the_transaction_before_the_validation() {
+    let source = include_str!("../native.rs");
+    let from = source.find("fn select(").expect("fn select( not found");
+    let body: String = source[from..]
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // The end of the T3 closure: the `))?;` that closes the settle call.
+    let selection_at = body.find("Selection {").expect("Selection { not found");
+    let closure_end = selection_at
+        + body[selection_at..]
+            .find("))?;")
+            .expect("end of the T3 closure not found");
+    let region = &body[..closure_end];
+    let compact: String = region.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // The calls, in this order; each one is searched after the previous one.
+    let steps = [
+        "try_with_participant_read_transaction_until(",
+        "|conn|{",
+        "select_items(",
+        "index::read_chronicle_event_ids_of_revisions(conn,&request.project_id,&revision_ids,)",
+        "index::read_chronicle_excluded_event_ids(conn,batch,&request.chronicle_event_ids,)",
+        "index::validate_chronicle_query_snapshot_with_control(",
+        "Selection{",
+    ];
+    let mut at = 0;
+    for step in steps {
+        let found = compact[at..]
+            .find(step)
+            .unwrap_or_else(|| panic!("`{step}` is not in the T3 closure in this order"));
+        at += found + step.len();
+    }
+    // A1 is fed by the returned items; the excluded list comes from A2 and the
+    // selection carries both results, not an empty list.
+    assert!(
+        compact.contains(
+            "letrevision_ids:Vec<String>=items.iter().map(|item|item.revision_id.clone()).collect();"
+        ),
+        "A1 does not read the returned items' revisions"
+    );
+    assert!(
+        compact.contains(
+            "letexcluded=index::read_chronicle_excluded_event_ids(conn,batch,&request.chronicle_event_ids,)?;"
+        ),
+        "`excluded` does not come from A2"
+    );
+    assert!(
+        compact.contains(
+            "letevent_ids=index::read_chronicle_event_ids_of_revisions(conn,&request.project_id,&revision_ids,)?;"
+        ),
+        "`event_ids` does not come from A1"
+    );
+    assert!(
+        compact.ends_with("Selection{items,event_ids,excluded,},basis,)))},"),
+        "the selection does not carry items, event_ids and excluded as they were read"
+    );
+}
+
 // ---- S1A-17: canonical form and digest --------------------------------------
 
 #[test]

@@ -85,11 +85,15 @@ export interface ChatAgentIrRequest {
 export function isChronicleEventIdList(ids: unknown): ids is readonly string[] {
   return (
     Array.isArray(ids) &&
+    // A hole (`[, "a"]`) is refused: `every` skips it, `Object.keys` does not.
+    ids.length === Object.keys(ids).length &&
     ids.length <= CHAT_AGENT_IR_CHRONICLE_IDS_MAX &&
     ids.every(
       (id) =>
         typeof id === "string" &&
-        id.trim().length > 0 &&
+        // U+0085 is white space for Native's Rust `trim`, not for JS `trim`:
+        // refused here too (the stricter side).
+        !/^[\s\u0085]*$/u.test(id) &&
         id.length <= CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX,
     ) &&
     new Set(ids).size === ids.length
