@@ -269,6 +269,7 @@ for (const id of [
   "./ipc.js",
   "./keyStore.js",
   "./licenseValidation.js",
+  "./modelCapabilityRuntime.js",
   "./narrativeFreshness.js",
   "./narrativeMaintenanceBootstrap.js",
   "./narrativeMaintenanceShutdown.js",

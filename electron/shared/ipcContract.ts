@@ -27,6 +27,7 @@ import {
   containsAgentSettingKey,
   findInvalidAgentSettingChanges,
 } from "./agentSettingCatalog.js";
+import { MODEL_CAPABILITY_SNAPSHOT_COMMAND } from "./modelCapabilitySnapshotWire.js";
 import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
@@ -12421,6 +12422,9 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // PUB-G #36 (DR-PUBG-36-1): the renderer's "has unsaved edits" flag for
   // the fatal-exit confirmation. Main-local; never reaches Native.
   REPORT_UNSAVED_EDITS_COMMAND,
+  // モデル能力の registry の写し（PR-C2、Q17）: 採用済みの写し（cache、無ければ同梱）を返す読み取り
+  // 専用の 1 本。main の常駐 manager が持ち、Native へは行かない。取得を始める command は無い。
+  MODEL_CAPABILITY_SNAPSHOT_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

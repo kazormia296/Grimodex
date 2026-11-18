@@ -4359,3 +4359,132 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
     await expect(activation).resolves.toEqual({ state: "restricted" });
   });
 });
+
+describe("get_model_capability_snapshot（PR-C2、読み取り専用の typed IPC）を実際の router で通す", () => {
+  beforeEach(() => {
+    mocks.handlers.clear();
+  });
+
+  async function setup(options: { restrict: boolean }) {
+    const { createModelCapabilityRuntime } =
+      await import("./modelCapabilityRuntime.js");
+    const support = await import("./modelCapability.testSupport.js");
+    const temp = support.makeTempDir();
+    const initialStatus = {
+      profileId: "profile-1",
+      callerEpoch: 4,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: nativeSqlPolicyV2(),
+    };
+    let releaseCommit!: (value: string) => void;
+    const backend = {
+      initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      profileActivationCommit: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            releaseCommit = resolve;
+          }),
+      ),
+    };
+    const profileEgress = await createProfileEgressGate(
+      backend as unknown as NapiBackendLike,
+    );
+    const runtime = createModelCapabilityRuntime({
+      isPackaged: false,
+      userDataDir: temp.dir,
+      bundledPath: support.writeBundled(
+        temp.dir,
+        support.snapshotText(
+          support.makeModels(3),
+          support.BUNDLED_GENERATED_AT,
+        ),
+      ),
+      backend: null,
+      profile: profileEgress,
+      fetchImpl: vi.fn(async () => {
+        throw new Error("no network in this test");
+      }),
+      now: () => support.TEST_NOW,
+      log: () => undefined,
+    });
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      runtime.handlers as never,
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    if (options.restrict) {
+      const activation = activateGateForTest(profileEgress);
+      await vi.waitFor(() =>
+        expect(backend.profileActivationCommit).toHaveBeenCalledOnce(),
+      );
+      releaseCommit(
+        JSON.stringify({
+          ...initialStatus,
+          callerEpoch: 5,
+          restricted: true,
+          handlesInvalidated: true,
+        }),
+      );
+      await expect(activation).resolves.toEqual({ state: "restricted" });
+    }
+    return { temp, profileEgress };
+  }
+
+  it("renderer が引数なしで呼んでも成功し、採用済みの写しを返す（Main は列挙できる field を足さない）", async () => {
+    const { temp } = await setup({ restrict: false });
+    try {
+      for (const args of [undefined, {}]) {
+        const envelope = await invokeHandler()(
+          { sender: { id: 7 } },
+          "get_model_capability_snapshot",
+          args,
+        );
+        expect(envelope.ok).toBe(true);
+        if (envelope.ok) {
+          expect(envelope.value).toMatchObject({
+            origin: "bundled",
+            source: "grimodex",
+          });
+        }
+      }
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("restricted の profile でも読める（Q2。internal の route）", async () => {
+    const { temp, profileEgress } = await setup({ restrict: true });
+    try {
+      expect(profileEgress.restricted).toBe(true);
+      const envelope = await invokeHandler()(
+        { sender: { id: 7 } },
+        "get_model_capability_snapshot",
+        {},
+      );
+      expect(envelope.ok).toBe(true);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("renderer が値を載せたら拒否する（取得先・path は renderer から変えられない）", async () => {
+    const { temp } = await setup({ restrict: false });
+    try {
+      const envelope = await invokeHandler()(
+        { sender: { id: 7 } },
+        "get_model_capability_snapshot",
+        { url: "https://evil.example/x.json" },
+      );
+      expect(envelope.ok).toBe(false);
+    } finally {
+      temp.cleanup();
+    }
+  });
+});
