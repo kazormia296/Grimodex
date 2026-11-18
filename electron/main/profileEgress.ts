@@ -432,6 +432,10 @@ const INTERNAL_COMMANDS = new Set([
   "get_ai_settings",
   "get_global_settings",
   "get_license_state",
+  // Read-only: the adopted model-capability snapshot (the cache, else the
+  // bundled copy). Public metadata only, no plaintext and no egress, so it
+  // stays available while restricted (Q2).
+  "get_model_capability_snapshot",
   "get_narrative_backfill_status",
   // DA-2 (DR-DA2-9): Main answers the closed state itself, before the invoke
   // check, so it also answers while unavailable or after a failed caller

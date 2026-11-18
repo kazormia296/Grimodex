@@ -59,6 +59,10 @@ import {
   createLicenseValidationScheduler,
   shouldStartLicenseValidation,
 } from "./licenseValidation.js";
+import {
+  createModelCapabilityRuntime,
+  resolveBundledSnapshotPath,
+} from "./modelCapabilityRuntime.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
 import {
@@ -317,10 +321,22 @@ if (!gotSingleInstanceLock) {
     setWindowTitleLock(
       () => profileEgress.restricted || profileEgress.unavailable,
     );
-    const backend = wrapBackendForProductJourneyAi(
-      initializedBackend,
-      shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
-    );
+    // モデル能力の registry の写し（PR-C2）。「モデル情報の自動更新」を AiSettings の往復に載せるため、
+    // backend をここで包む（以降の `backend` はこの包んだもの）。取得 scheduler と読み取り専用の IPC もここ。
+    const modelCapability = createModelCapabilityRuntime({
+      userDataDir: configuredUserDataDir,
+      bundledPath: resolveBundledSnapshotPath({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        mainDir: __dirname,
+      }),
+      backend: wrapBackendForProductJourneyAi(
+        initializedBackend,
+        shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
+      ),
+      profile: profileEgress,
+    });
+    const backend = modelCapability.backend;
     // Phase 4: final Tauri releaseのOS keyringかsafeStorageへ、1回だけ
     // copyする。旧keyringはrollback用に残し、plaintextはmainから出さない。
     // 全キーの暗号化・復号検証が成功するまでmarker/暗号文を確定しない。
@@ -631,6 +647,8 @@ if (!gotSingleInstanceLock) {
       bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
     narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
+    // 初回の取得は 30 秒後の背景（起動・描画を待たせない）。設定が無効なら cache を削除する。
+    modelCapability.start();
     if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
       narrativeFreshness.start();
     }
@@ -742,6 +760,8 @@ if (!gotSingleInstanceLock) {
           () => vivliostyle.disposeAll(),
           () => updater.dispose(),
           () => licenseValidation.dispose(),
+          // 待ちは短い上限つきで、reject しない（失敗は fatal exit の判断に混ぜない）。
+          () => modelCapability.dispose(),
           () => narrativeFreshness.dispose(),
           () => narrativeMaintenanceTriggers?.dispose(),
           () => narrativeMaintenanceCiHeldFreshnessWriter?.dispose(),
@@ -777,6 +797,7 @@ if (!gotSingleInstanceLock) {
       ...updater.handlers,
       ...mozkeyInstaller.handlers,
       ...mcpConfigHandlers,
+      ...modelCapability.handlers,
     };
     // MG-1: Main's one-time confirmation. The pre-publication gate is closed
     // in every launch except an unpackaged `CI=true` evaluation launch that
