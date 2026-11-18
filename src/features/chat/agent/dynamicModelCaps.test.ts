@@ -572,7 +572,7 @@ describe("provider-scoped persistence", () => {
 describe("storage version 4", () => {
   const row = { ctx: 1_000_000, out: 128_000 };
 
-  it("v2 の cache は復元せず、key ごと捨てる", () => {
+  it("v2 の cache は Anthropic 以外だけを引き継ぎ、v2 の key は消す", () => {
     store["grimodex.modelCaps.v2"] = JSON.stringify({
       version: 2,
       providers: {
@@ -582,9 +582,15 @@ describe("storage version 4", () => {
     });
     __resetDynamicModelCapsForTests();
     expect(getDynamicModelMeta("anthropic", "claude-x-5")).toBeNull();
-    expect(getDynamicModelMeta("openrouter", "a/b")).toBeNull();
+    expect(getDynamicModelMeta("openrouter", "a/b")).toMatchObject(row);
     expect(isDynamicCapsStale("anthropic")).toBe(true);
+    expect(isDynamicCapsStale("openrouter")).toBe(false);
     expect(store["grimodex.modelCaps.v2"]).toBeUndefined();
+    // 引き継いだ分は今の版で書き直され、再読込でも残る（Anthropic の行は書かない）。
+    const rewritten = JSON.parse(store[STORAGE_KEY] ?? "{}");
+    expect(Object.keys(rewritten.providers ?? {})).toEqual(["openrouter"]);
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("openrouter", "a/b")).toMatchObject(row);
   });
 
   it("v4 の key に古い version の payload があっても復元しない", () => {

@@ -650,9 +650,9 @@ function mergeDynamicCaps(
  * - 表に載っている id は表のまま返す（製品の判断を live に上書きさせない）。
  * - 表に無い id だけ、context と最大出力を live で置き換える。
  * - 表に無い id の thinking は live の方式で決める：adaptive を含めば adaptive、含まなければ
- *   送らない（budget_tokens は送らない）。ただし adaptive は effort を伴うので、live が effort
- *   不可と明示するなら adaptive も送らない。effort は live の段階を使うが、xhigh は製品に
- *   無いので無視する。adaptive の request は effort の段階（max の有無）を見ない（元から同じ）。
+ *   送らない（budget_tokens も effort 単独も送らない）。ただし adaptive は effort を伴うので、
+ *   live が effort 不可と明示するなら adaptive も送らない。effort は adaptive のときだけ
+ *   live の段階を使い、xhigh は製品に無いので無視する。adaptive の request は effort の段階（max の有無）を見ない（元から同じ）。
  *   方式が分からない（capabilities が無い）ときは今の推定のまま。
  *   canDisable・image・pdf・lifecycle は使わない。
  */
@@ -687,17 +687,19 @@ function mergeAnthropicLive(
       // 表に無い id には budget_tokens を送らない（近似で enabled になる id も、live の
       // 判定があれば送らない）。
       supportsThinking: false,
-      ...(live.effortSteps
-        ? {
-            supportsEffort: live.effortSteps.length > 0,
-            supportsMaxEffort: live.effortSteps.includes("max"),
-          }
-        : {
-            // effort の可否が不明で、live が adaptive を使えないと判定したなら、effort 単独も
-            // 推定では送らない。
-            supportsEffort: merged.supportsEffort && adaptive,
-            supportsMaxEffort: merged.supportsMaxEffort && adaptive,
-          }),
+      // effort は adaptive に伴うときだけ使う。adaptive を送らないモデルに effort 単独
+      // （`output_config.effort`）を新しく送らない（近い id で表の「effort 不可」を live が
+      // 上書きしない）。
+      supportsEffort:
+        adaptive &&
+        (live.effortSteps
+          ? live.effortSteps.length > 0
+          : merged.supportsEffort),
+      supportsMaxEffort:
+        adaptive &&
+        (live.effortSteps
+          ? live.effortSteps.includes("max")
+          : merged.supportsMaxEffort),
     };
   }
   return merged;

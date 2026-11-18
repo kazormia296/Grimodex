@@ -4,11 +4,14 @@ import { parseAnthropicLiveCaps } from "./anthropicLiveCaps";
 /**
  * 保存形式の版。v3 は Anthropic の一覧（context／最大出力）を provider 名つきで保存する。
  * v4 は Anthropic の thinking の方式と effort の段階（anthropicThinking）を足す。
- * 古い cache は復元せず捨てる（cache なので、次の一覧取得で作り直される）。
+ * v2（公開済みの版）は Anthropic 以外の provider だけを引き継ぐ。形式は field を足しただけで、
+ * v2 には Anthropic の行が無いはず。あっても読まない（旧版は provider 名に依らず復元するので、
+ * Anthropic の行は v2 の key に書かない）。v3 は未公開の開発中の版なので捨てる。
  */
 const STORAGE_KEY = "grimodex.modelCaps.v4";
+const V2_STORAGE_KEY = "grimodex.modelCaps.v2";
 const PREVIOUS_STORAGE_KEYS = [
-  "grimodex.modelCaps.v2",
+  V2_STORAGE_KEY,
   "grimodex.modelCaps.v3",
 ] as const;
 const LEGACY_OPENROUTER_STORAGE_KEY = "grimodex.openrouterModelCaps.v1";
@@ -206,46 +209,64 @@ function loadProvider(provider: AiProvider, stored: StoredProvider): void {
   }
 }
 
+/**
+ * 保存された provider ごとの一覧を registry に読む。読めた（版が合った）かを返す。
+ * `includeAnthropic` が false なら Anthropic の行は読まない。
+ */
+function readStoredProviders(
+  key: string,
+  version: number,
+  includeAnthropic: boolean,
+): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as {
+      version?: unknown;
+      providers?: unknown;
+    };
+    if (parsed.version !== version || !isRecord(parsed.providers)) return false;
+    for (const [provider, value] of Object.entries(parsed.providers)) {
+      if (
+        !KNOWN_PROVIDERS.has(provider) ||
+        (!includeAnthropic && provider === "anthropic") ||
+        !isRecord(value) ||
+        !Number.isFinite(value.fetchedAt) ||
+        !isRecord(value.models)
+      ) {
+        continue;
+      }
+      loadProvider(provider as AiProvider, {
+        fetchedAt: value.fetchedAt as number,
+        scope: typeof value.scope === "string" ? value.scope : undefined,
+        models: value.models as Record<string, StoredMeta>,
+      });
+    }
+    return true;
+  } catch {
+    // Corrupt JSON — try the next source before falling back empty.
+    return false;
+  }
+}
+
 function hydrate(): void {
   if (hydrated) return;
   hydrated = true;
   if (typeof localStorage === "undefined") return;
 
-  // 古い版は復元せずに捨てる（読まない・残さない）。
+  let loadedCurrent = readStoredProviders(STORAGE_KEY, CURRENT_VERSION, true);
+  if (!loadedCurrent && readStoredProviders(V2_STORAGE_KEY, 2, false)) {
+    // v2 から引き継いだ分を今の版で書き直す（Anthropic の行は読んでいない）。
+    loadedCurrent = true;
+    persist();
+  }
+  // 古い版の key は残さない（v2 は上で引き継いだ後）。
   for (const key of PREVIOUS_STORAGE_KEYS) {
     try {
       localStorage.removeItem(key);
     } catch {
-      // storage が使えなくても registry は空のまま動く。
+      // storage が使えなくても registry はそのまま動く。
     }
-  }
-
-  let loadedCurrent = false;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<StorageFormatV2>;
-      if (parsed.version === CURRENT_VERSION && isRecord(parsed.providers)) {
-        for (const [provider, value] of Object.entries(parsed.providers)) {
-          if (
-            !KNOWN_PROVIDERS.has(provider) ||
-            !isRecord(value) ||
-            !Number.isFinite(value.fetchedAt) ||
-            !isRecord(value.models)
-          ) {
-            continue;
-          }
-          loadProvider(provider as AiProvider, {
-            fetchedAt: value.fetchedAt as number,
-            scope: typeof value.scope === "string" ? value.scope : undefined,
-            models: value.models as Record<string, StoredMeta>,
-          });
-        }
-        loadedCurrent = true;
-      }
-    }
-  } catch {
-    // Corrupt v2 JSON — try the legacy OpenRouter cache before falling back empty.
   }
 
   if (loadedCurrent && registry.has("openrouter")) return;

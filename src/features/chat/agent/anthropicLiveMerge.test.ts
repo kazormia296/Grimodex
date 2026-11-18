@@ -438,7 +438,7 @@ describe("Anthropic の capabilities（段 2 の B 案）", () => {
     ).toEqual({});
   });
 
-  it("enabled ＋ effort（opus-4-5 型）の表に無い id は budget_tokens を送らず、effort だけを送る", () => {
+  it("enabled ＋ effort（opus-4-5 型）の表に無い id は budget_tokens も effort 単独も送らない", () => {
     registerAnthropicModelCaps([
       synthetic("claude-opus-4-9", {
         thinking: {
@@ -461,7 +461,46 @@ describe("Anthropic の capabilities（段 2 の B 案）", () => {
         true,
         ANTHROPIC,
       ),
-    ).toEqual({ effort: "high" });
+    ).toEqual({});
+    expect(
+      resolveModelCapabilities("claude-opus-4-9", ANTHROPIC),
+    ).toMatchObject({ supportsEffort: false, supportsMaxEffort: false });
+  });
+
+  it("近い id で live が実機の opus-4-5 と同じ形（enabled ＋ effort 可）でも、effort を新しく送らない", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-opus-4-5-1", {
+        thinking: {
+          supported: true,
+          types: { enabled: { supported: true } },
+        },
+        effort: {
+          supported: true,
+          low: { supported: true },
+          medium: { supported: true },
+          high: { supported: true },
+        },
+      }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-opus-4-5-1",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+    // 表の opus-4-5 そのものは不変（budget thinking、effort なし）。
+    expect(
+      buildThinkingParams(
+        "claude-opus-4-5",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).not.toHaveProperty("effort");
   });
 
   it("方式を live が判定し effort の情報が無ければ、effort 単独も送らない", () => {
