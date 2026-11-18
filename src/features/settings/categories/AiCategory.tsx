@@ -1,4 +1,5 @@
 import { d2aFailureText, d2aMessageText } from "@/lib/d2aFailureText";
+import { isElectron } from "@/lib/shell";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
@@ -1471,6 +1472,27 @@ export function AiCategory() {
               </select>
             </SettingRow>
           )}
+
+        {/* モデル情報の自動更新（Electron のみ）。取得先と、止めたときの挙動を説明文で開示する。 */}
+        {isElectron() && (
+          <SettingRow
+            label={t("settings.ai.modelInfoAutoUpdate")}
+            description={t("settings.ai.modelInfoAutoUpdateDesc")}
+          >
+            <Switch
+              checked={localSettings.modelInfoAutoUpdate !== false}
+              onCheckedChange={async (checked) => {
+                const updated = {
+                  ...localSettings!,
+                  modelInfoAutoUpdate: checked,
+                };
+                setLocalSettings(updated);
+                await saveSettings(updated);
+              }}
+              aria-label={t("settings.ai.modelInfoAutoUpdate")}
+            />
+          </SettingRow>
+        )}
 
         {/* Test connection (CLI は専用ボタンが上にあるためここでは非表示) */}
         {localSettings.provider !== "cli" && (

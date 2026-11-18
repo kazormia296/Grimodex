@@ -1161,6 +1161,8 @@
       "fusionCostWarning": "Billed for each panel member plus the judge (roughly 4–5× a single completion with the default setup).",
       "toolProtocolDesc": "Tool-call format for the agent. \"auto\" treats it as Hermes format (in-body <tool_call>) only when the model name contains \"hermes\". Select \"hermes\" explicitly for Qwen, etc.",
       "toolProtocolAuto": "auto (recommended)",
+      "modelInfoAutoUpdate": "Auto-update model information",
+      "modelInfoAutoUpdateDesc": "Fetches public model information (context length, capabilities) from raw.githubusercontent.com (GitHub) about once a day. No manuscript text, settings, or API keys are sent. Turn this off to delete the fetched copy and use only the information bundled with the app.",
       "providerPinDirect": "direct"
     },
     "project": {

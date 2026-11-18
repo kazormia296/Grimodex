@@ -299,25 +299,27 @@ describe("caller timeout policy（electron 分岐）", () => {
     });
   });
 
-  it.each(["foreshadow_load_anchors_for_scene", "list_annotations_for_scene"])(
-    "%s は Editor sidecar read lane の10s枠を使う",
-    async (command) => {
-      vi.useFakeTimers();
-      installBridge({
-        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
-      });
-      const { invoke } = await import("./tauri");
-      const caught = invoke(command).catch((error: unknown) => error);
+  it.each([
+    "foreshadow_load_anchors_for_scene",
+    "list_annotations_for_scene",
+    // モデル能力の registry の写し（PR-C2）：読み取り専用の 1 本も同じ 10 秒枠。
+    "get_model_capability_snapshot",
+  ])("%s は Editor sidecar read lane の10s枠を使う", async (command) => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+    const caught = invoke(command).catch((error: unknown) => error);
 
-      await vi.advanceTimersByTimeAsync(11_000);
-      await expect(caught).resolves.toMatchObject({
-        name: "IpcInvokeError",
-        code: "IPC_TIMEOUT",
-        command,
-        details: { timeoutMs: 10_000 },
-      });
-    },
-  );
+    await vi.advanceTimersByTimeAsync(11_000);
+    await expect(caught).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_TIMEOUT",
+      command,
+      details: { timeoutMs: 10_000 },
+    });
+  });
 
   it("narrative_scene_body_declaration_state (CB-3) は read lane の10s枠を使い、declare/revoke は使わない", async () => {
     vi.useFakeTimers();
@@ -495,6 +497,7 @@ describe("caller timeout policy（electron 分岐）", () => {
     "nir1_entity_relation_revision_read_current",
     "nir1_entity_relation_revision_restore",
     "narrative_scene_body_declaration_state",
+    "get_model_capability_snapshot",
   ])(
     "%s は lifecycle quiescence を保持せず read caller を cancel する",
     async (command) => {

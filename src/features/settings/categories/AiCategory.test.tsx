@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { RuntimeCapabilitiesProvider } from "@/runtime/runtimeCapabilitiesContext";
 import { AiCategory } from "./AiCategory";
@@ -353,5 +353,62 @@ describe("AiCategory — Ollama context diagnostics", () => {
         },
       }),
     );
+  });
+});
+
+describe("AiCategory — モデル情報の自動更新（Electron のみ）", () => {
+  const label = "settings.ai.modelInfoAutoUpdate";
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).grimodex;
+  });
+
+  function asElectron() {
+    (window as unknown as Record<string, unknown>).grimodex = {
+      shell: "electron",
+    };
+  }
+
+  it("既定は有効（項目が無い設定）で、説明文の key が描画される", () => {
+    asElectron();
+    renderDesktopAiCategory();
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByText(`${label}Desc`)).toBeTruthy();
+    expect(
+      screen.getByRole("switch", { name: label }).getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("オフにすると modelInfoAutoUpdate: false を保存する（他の項目は保つ）", () => {
+    asElectron();
+    renderDesktopAiCategory();
+    fireEvent.click(screen.getByRole("switch", { name: label }));
+    expect(aiStoreFixture.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        modelInfoAutoUpdate: false,
+      }),
+    );
+  });
+
+  it("保存済みの false は無効として表示し、オンにすると true を保存する", () => {
+    asElectron();
+    aiStoreFixture.settings = {
+      ...aiStoreFixture.settings,
+      modelInfoAutoUpdate: false,
+    } as typeof aiStoreFixture.settings;
+    renderDesktopAiCategory();
+    const toggle = screen.getByRole("switch", { name: label });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(aiStoreFixture.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ modelInfoAutoUpdate: true }),
+    );
+  });
+
+  it("Electron 以外では項目を出さない（取得する main が無い）", () => {
+    renderDesktopAiCategory();
+    expect(screen.queryByText(label)).toBeNull();
   });
 });

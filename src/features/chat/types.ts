@@ -215,6 +215,14 @@ export interface AiSettings {
    * undefined / enabled=false なら OpenRouter 既定パネル (= 素の openrouter/fusion)。
    */
   fusion?: FusionSettings;
+  /**
+   * 「モデル情報の自動更新」。未設定 / true ⇒ 有効（既定）。false ⇒ 取得せず、同梱の写しだけを使う。
+   *
+   * Rust の `AiSettings` は未知の key を保存の往復で捨てるため、この項目は main が別 file に保存し、
+   * `get_ai_settings` の結果に戻す（`electron/main/modelInfoSetting.ts`）。項目を含まない save は現在の
+   * 値を変えない（`DEFAULT_AI_SETTINGS` から作った設定で再有効化されない）ので、既定値には入れない。
+   */
+  modelInfoAutoUpdate?: boolean;
 }
 
 /** OpenRouter Fusion のカスタム構成 (パネル + judge)。 */
