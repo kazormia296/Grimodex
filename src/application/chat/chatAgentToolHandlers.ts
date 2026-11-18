@@ -392,6 +392,15 @@ export function createGuardedExecuteTool(input: {
   assertTurnAuthority: () => void;
   handleAskUserTool: ReturnType<typeof createAskUserToolHandler>;
   runResearchSubagent: ReturnType<typeof createChatResearchSubagentHandler>;
+  /**
+   * 実行の直前の段（出典に使う書き込み tool の assistant 行を確保する。#940）。
+   * 結果を返したら、その結果で tool を終える（実行しない）。
+   */
+  beforeExecute: (
+    name: string,
+    toolCallId: string,
+    authorized: boolean,
+  ) => Promise<ToolResult | null>;
   fullyInjectedIds: ReadonlySet<string>;
   chatMessageId: string;
 }): ExecuteTool {
@@ -400,6 +409,7 @@ export function createGuardedExecuteTool(input: {
     assertTurnAuthority,
     handleAskUserTool,
     runResearchSubagent,
+    beforeExecute,
     fullyInjectedIds,
     chatMessageId,
   } = input;
@@ -416,6 +426,8 @@ export function createGuardedExecuteTool(input: {
       fullyInjectedIds,
     );
     if (injectedEntryResult) return injectedEntryResult;
+    const failed = await beforeExecute(name, toolCallId, !!authorization);
+    if (failed) return failed;
     return authorization
       ? executeTool(name, toolCallId, params, {
           ...authorization,

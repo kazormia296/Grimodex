@@ -683,6 +683,7 @@ describe("the real agent loop (B-T7, B-T15)", () => {
       assertTurnAuthority,
       handleAskUserTool: (() => null) as never,
       runResearchSubagent: (() => null) as never,
+      beforeExecute: async () => null,
       fullyInjectedIds: new Set(),
       chatMessageId: "m1",
     });

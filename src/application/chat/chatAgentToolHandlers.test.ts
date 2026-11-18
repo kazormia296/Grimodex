@@ -27,7 +27,9 @@ function result(name: string, toolCallId: string): ToolResult {
 }
 
 describe("createGuardedExecuteTool", () => {
-  function setup(overrides: { authorityThrows?: boolean } = {}) {
+  function setup(
+    overrides: { authorityThrows?: boolean; beforeFails?: boolean } = {},
+  ) {
     const calls: string[] = [];
     const executeTool = vi.fn<ExecuteTool>(async (name, id) => {
       calls.push("executeTool");
@@ -45,11 +47,20 @@ describe("createGuardedExecuteTool", () => {
       calls.push("research");
       return name === "run_research" ? Promise.resolve(result(name, id)) : null;
     });
+    const beforeExecute = vi.fn(
+      async (name: string, id: string, authorized: boolean) => {
+        calls.push(`before:${authorized}`);
+        return overrides.beforeFails
+          ? { ...result(name, id), summary: "reservation failed" }
+          : null;
+      },
+    );
     const guarded = createGuardedExecuteTool({
       executeTool,
       assertTurnAuthority,
       handleAskUserTool,
       runResearchSubagent,
+      beforeExecute,
       fullyInjectedIds: new Set(["injected-1"]),
       chatMessageId: "assistant-1",
     });
@@ -59,6 +70,7 @@ describe("createGuardedExecuteTool", () => {
       assertTurnAuthority,
       handleAskUserTool,
       runResearchSubagent,
+      beforeExecute,
       guarded,
     };
   }
@@ -90,6 +102,40 @@ describe("createGuardedExecuteTool", () => {
     const s = setup();
     const out = await s.guarded("get_codex_entry", "t1", { id: "injected-1" });
     expect(out.summary).toBe("Already injected (short-circuited)");
+    expect(s.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("runs beforeExecute only for a call that reaches executeTool, right before it (#940)", async () => {
+    const s = setup();
+    await s.guarded("ask_user", "t1", {});
+    await s.guarded("run_research", "t2", { task: "x" });
+    await s.guarded("get_codex_entry", "t3", { id: "injected-1" });
+    expect(s.beforeExecute).not.toHaveBeenCalled();
+    s.calls.length = 0;
+    await s.guarded("search_events", "t4", {}, { projectId: "p1" } as never);
+    expect(s.calls).toEqual([
+      "authority",
+      "askUser",
+      "research",
+      "before:true",
+      "executeTool",
+    ]);
+    expect(s.beforeExecute).toHaveBeenLastCalledWith(
+      "search_events",
+      "t4",
+      true,
+    );
+  });
+
+  it("returns the beforeExecute failure without running the tool (#940)", async () => {
+    const s = setup({ beforeFails: true });
+    const out = await s.guarded("search_events", "t1", {});
+    expect(out.summary).toBe("reservation failed");
+    expect(s.beforeExecute).toHaveBeenLastCalledWith(
+      "search_events",
+      "t1",
+      false,
+    );
     expect(s.executeTool).not.toHaveBeenCalled();
   });
 

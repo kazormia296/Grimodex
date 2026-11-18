@@ -2301,6 +2301,15 @@ const DURABLE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
   "propose_scene_body",
 ]);
 
+/**
+ * 出典の会話（`source_chat_message_id`、`chat_messages` への検証／FK）に実行中の
+ * assistant message を使う書き込み tool。実行の前にその行が保存されている必要がある。
+ */
+export const SOURCE_CHAT_MESSAGE_TOOLS: ReadonlySet<string> = new Set([
+  "create_codex_entry",
+  "create_snippet",
+]);
+
 async function toolMutationRequestId(
   toolName: string,
   toolCallId: string,

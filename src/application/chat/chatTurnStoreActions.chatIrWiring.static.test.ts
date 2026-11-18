@@ -51,4 +51,16 @@ describe("chat IR の配線（chatTurnStoreActions）", () => {
     expect(earlyReturn).toBeGreaterThan(handler);
     expect(attach).toBeLessThan(earlyReturn);
   });
+
+  it("guarded の実行の前に assistant 行の確保（#940）を渡す", () => {
+    const start = source.indexOf("createGuardedExecuteTool({");
+    expect(start).toBeGreaterThan(-1);
+    const block = source.slice(start, source.indexOf("});", start));
+    expect(block).toMatch(
+      /beforeExecute: \(name, toolCallId, authorized\) =>/u,
+    );
+    expect(block).toMatch(
+      /assistantRow\.before\(name, toolCallId, authorized\)/u,
+    );
+  });
 });
