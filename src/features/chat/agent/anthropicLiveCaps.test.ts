@@ -471,10 +471,27 @@ describe("parseAnthropicLiveCaps の合成入力（今の挙動の固定）", ()
     });
   });
 
-  it("effort.supported:true でも段階が 1 つも true でない（key が無い／全部 false）→ 空配列で、『非対応』の空配列と区別できない", () => {
-    expect(thinkingOf({ effort: { supported: true } })?.effortLevels).toEqual(
+  it("effort.supported:true で段階の key が 1 つも読めない（形が違う）→ undefined（不明）で、『非対応』の空配列と区別できる", () => {
+    expect(thinkingOf({ effort: { supported: true } })?.effortLevels).toBe(
+      undefined,
+    );
+    // 製品が知らない key だけ（読めない形）も不明
+    expect(
+      thinkingOf({
+        effort: { supported: true, ultra: { supported: true } },
+      })?.effortLevels,
+    ).toBe(undefined);
+    expect(
+      thinkingOf({ effort: { supported: true, low: true, high: "yes" } })
+        ?.effortLevels,
+    ).toBe(undefined);
+    // 非対応は空配列のまま
+    expect(thinkingOf({ effort: { supported: false } })?.effortLevels).toEqual(
       [],
     );
+  });
+
+  it("effort.supported:true で段階の key は読めるが、どれも supported でない → 空配列（使える段階が無い）", () => {
     expect(
       thinkingOf({
         effort: {
@@ -484,10 +501,6 @@ describe("parseAnthropicLiveCaps の合成入力（今の挙動の固定）", ()
         },
       })?.effortLevels,
     ).toEqual([]);
-    // 『非対応』と同じ形（effortLevels の空配列）になる
-    expect(thinkingOf({ effort: { supported: false } })?.effortLevels).toEqual(
-      [],
-    );
   });
 
   it("thinking の object が無く effort だけ返る → thinking.supported は undefined、types／canDisable も undefined", () => {

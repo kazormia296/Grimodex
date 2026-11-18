@@ -8,6 +8,8 @@ import { parseAnthropicLiveCaps } from "./anthropicLiveCaps";
 import { buildThinkingParams, resolveModelCapabilities } from "./modelLimits";
 import type { AiModel } from "../types";
 import liveModels from "./__fixtures__/anthropic-models-2023-06-01.json";
+import wireModels from "./__fixtures__/anthropic-ai-model-wire.json";
+import { debugLog } from "@/lib/debugLog";
 
 /**
  * 段 2：Anthropic の live（`max_input_tokens`／`max_tokens`）は、能力表に無い id にだけ使う。
@@ -627,5 +629,227 @@ describe("Anthropic の capabilities（段 2 の B 案）", () => {
   it("他の provider の meta には anthropicThinking が付かない", () => {
     registerAnthropicModelCaps(FIXTURE_AI_MODELS_WITH_CAPS);
     expect(getDynamicModelMeta("openrouter", "claude-opus-5-5")).toBeNull();
+  });
+});
+
+describe("Anthropic の effort の段階の三つの状態と丸め（表に無い id だけ）", () => {
+  const ADAPTIVE = {
+    supported: true,
+    types: { adaptive: { supported: true } },
+  };
+
+  function synthetic(id: string, effort?: Record<string, unknown>): AiModel {
+    return {
+      id,
+      name: id,
+      contextLength: 400_000,
+      maxCompletionTokens: 60_000,
+      anthropicCapabilities: {
+        thinking: ADAPTIVE,
+        ...(effort ? { effort } : {}),
+      },
+    };
+  }
+
+  function adaptiveEffort(
+    id: string,
+    requested: "low" | "medium" | "high" | "max",
+  ) {
+    const params = buildThinkingParams(
+      id,
+      requested,
+      "summarized",
+      true,
+      ANTHROPIC,
+    );
+    return "thinking" in params && params.thinking?.type === "adaptive"
+      ? params.thinking.effort
+      : params;
+  }
+
+  it("(a) effort 非対応と明示 → adaptive を送らない", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-6-1", { supported: false }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-fable-6-1",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+  });
+
+  it("(b) 対応だが段階の key の形が読めない → 今の推定に戻す（adaptive＋effort のまま、丸めない）", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-6-1", {
+        supported: true,
+        ultra: { supported: true },
+      }),
+    ]);
+    expect(getDynamicModelMeta("anthropic", "claude-fable-6-1")).toMatchObject({
+      anthropicThinking: { adaptive: true, effortSteps: undefined },
+    });
+    expect(
+      resolveModelCapabilities("claude-fable-6-1", ANTHROPIC),
+    ).toMatchObject({
+      supportsAdaptiveThinking: true,
+      supportsEffort: true,
+    });
+    expect(adaptiveEffort("claude-fable-6-1", "max")).toBe("max");
+  });
+
+  it("(c) 対応だが製品の段階が無い（xhigh だけ）→ thinking を送らず、一度だけ記録する", () => {
+    const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
+    try {
+      const models = [
+        synthetic("claude-fable-6-1", {
+          supported: true,
+          xhigh: { supported: true },
+        }),
+      ];
+      registerAnthropicModelCaps(models);
+      expect(
+        buildThinkingParams(
+          "claude-fable-6-1",
+          "high",
+          "summarized",
+          true,
+          ANTHROPIC,
+        ),
+      ).toEqual({});
+      expect(
+        getDynamicModelMeta("anthropic", "claude-fable-6-1"),
+      ).toMatchObject({
+        anthropicThinking: { adaptive: false, effortSteps: [] },
+      });
+      // 取り直しても、読み直しても記録は一度だけ。
+      registerAnthropicModelCaps(models);
+      registerAnthropicModelCaps([{ ...models[0], contextLength: 410_000 }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][1]).toContain("effort");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("一部の段階だけ許すモデルでは、要求以下で最も高い許された段階へ丸める", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-6-1", {
+        supported: true,
+        low: { supported: true },
+        high: { supported: true },
+      }),
+    ]);
+    expect(adaptiveEffort("claude-fable-6-1", "low")).toBe("low");
+    expect(adaptiveEffort("claude-fable-6-1", "medium")).toBe("low");
+    expect(adaptiveEffort("claude-fable-6-1", "high")).toBe("high");
+    // max を許さないモデルへ max を送らない
+    expect(adaptiveEffort("claude-fable-6-1", "max")).toBe("high");
+  });
+
+  it("要求以下が無ければ、許された最も低い段階へ丸める", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-6-1", {
+        supported: true,
+        high: { supported: true },
+        max: { supported: true },
+      }),
+    ]);
+    expect(adaptiveEffort("claude-fable-6-1", "low")).toBe("high");
+    expect(adaptiveEffort("claude-fable-6-1", "medium")).toBe("high");
+    expect(adaptiveEffort("claude-fable-6-1", "max")).toBe("max");
+  });
+
+  it("丸めの情報は保存・復元の後も使われる", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-6-1", {
+        supported: true,
+        medium: { supported: true },
+      }),
+    ]);
+    __resetDynamicModelCapsForTests();
+    expect(adaptiveEffort("claude-fable-6-1", "max")).toBe("medium");
+    expect(adaptiveEffort("claude-fable-6-1", "low")).toBe("medium");
+  });
+
+  it("既知の 14 件は、live が一部の段階だけでも request を変えない（丸めは表に無い id だけ）", () => {
+    const requests = (): unknown[] =>
+      TABLE_IDS.flatMap((id) =>
+        (["low", "medium", "high", "max"] as const).map((effort) =>
+          buildThinkingParams(id, effort, "summarized", true, ANTHROPIC),
+        ),
+      );
+    const before = requests();
+    registerAnthropicModelCaps(
+      FIXTURE_AI_MODELS_WITH_CAPS.map((model) => ({
+        ...model,
+        anthropicCapabilities: {
+          thinking: ADAPTIVE,
+          effort: { supported: true, medium: { supported: true } },
+        },
+      })),
+    );
+    expect(requests()).toEqual(before);
+  });
+});
+
+describe("Rust と TS の field 名の境界（AiModel の wire JSON）", () => {
+  // Rust 側の `anthropic_models_wire_json_matches_the_fixture_the_renderer_reads`
+  // （grimodex-ai の lib.rs）が、同じ 2 つの fixture を `parse_anthropic_model` と
+  // serde で写して一致を固定する。どちらかの名前が変わると、どちらかの試験が落ちる。
+  const WIRE = wireModels as unknown as Array<Record<string, unknown>>;
+
+  it("型の field 名（コンパイル時）と wire の key 名が一致する", () => {
+    const key: keyof AiModel = "anthropicCapabilities";
+    const contextKey: keyof AiModel = "contextLength";
+    const outKey: keyof AiModel = "maxCompletionTokens";
+    expect(WIRE.length).toBe((liveModels as unknown[]).length);
+    for (const entry of WIRE) {
+      expect(Object.keys(entry).sort()).toEqual(
+        [
+          "anthropicCapabilities",
+          "contextLength",
+          "id",
+          "maxCompletionTokens",
+          "name",
+        ]
+          .filter((k) => k in entry)
+          .sort(),
+      );
+      expect(entry).toHaveProperty(key);
+      expect(entry).toHaveProperty(contextKey);
+      expect(entry).toHaveProperty(outKey);
+    }
+  });
+
+  it("wire の anthropicCapabilities を parseAnthropicLiveCaps が、生の応答と同じに読む", () => {
+    const raw = liveModels as unknown[];
+    WIRE.forEach((entry, index) => {
+      const fromWire = parseAnthropicLiveCaps({
+        id: entry.id,
+        max_input_tokens: entry.contextLength,
+        max_tokens: entry.maxCompletionTokens,
+        capabilities: entry.anthropicCapabilities,
+      });
+      const fromRaw = parseAnthropicLiveCaps(raw[index]);
+      expect(fromWire?.thinking).toEqual(fromRaw?.thinking);
+      expect(fromWire?.contextWindow).toBe(fromRaw?.contextWindow);
+      expect(fromWire?.maxOutput).toBe(fromRaw?.maxOutput);
+      expect(fromWire?.thinking).toBeDefined();
+    });
+  });
+
+  it("wire のまま渡すと、registerAnthropicModelCaps が context／最大出力／thinking を登録する", () => {
+    expect(registerAnthropicModelCaps(wireModels as unknown as AiModel[])).toBe(
+      true,
+    );
+    expect(getDynamicModelMeta("anthropic", "claude-fable-5-2")).toMatchObject({
+      ctx: 1_000_000,
+      out: 128_000,
+      anthropicThinking: { adaptive: true },
+    });
   });
 });

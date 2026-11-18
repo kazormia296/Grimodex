@@ -1,4 +1,5 @@
 import { AI_PROVIDERS, type AiModel, type AiProvider } from "../types";
+import { debugLog } from "@/lib/debugLog";
 import { parseAnthropicLiveCaps } from "./anthropicLiveCaps";
 
 /**
@@ -28,8 +29,10 @@ export interface AnthropicThinkingMeta {
   /** thinking の方式 enabled（budget_tokens）が使えるか。 */
   enabled: boolean;
   /**
-   * effort の段階（xhigh は製品の EffortLevel に無いので含めない）。
-   * 応答に effort が無ければ undefined（今の推定のまま）。
+   * effort の段階（xhigh は製品の EffortLevel に無いので含めない）。三つの状態を区別する：
+   * - undefined：不明（応答に effort が無い、または段階の形が読めない）。今の推定のまま。
+   * - 空配列：effort 非対応、または対応でも製品の段階が 1 つも無い（xhigh だけ等）。adaptive を送らない。
+   * - 非空：許された段階。adaptive で送る effort は、この中へ丸める。
    */
   effortSteps?: AnthropicEffortStep[];
 }
@@ -135,6 +138,24 @@ const EFFORT_STEPS: readonly AnthropicEffortStep[] = [
   "max",
 ];
 
+const warnedNoUsableEffort = new Set<string>();
+
+function warnNoUsableEffortOnce(
+  modelId: string,
+  levels: readonly string[],
+): void {
+  if (warnedNoUsableEffort.has(modelId)) return;
+  warnedNoUsableEffort.add(modelId);
+  debugLog.warn(
+    "ModelCaps",
+    "製品が使える effort の段階が無いため thinking を送りません",
+    {
+      sensitivity: "safe",
+      fields: { modelId, liveEffortLevels: [...levels] },
+    },
+  );
+}
+
 /**
  * Anthropic の model の `capabilities` から thinking の方式と effort の段階を取り出す。
  * 方式が分からない（`types` が無い）ときは undefined にして、今の推定に任せる。
@@ -152,6 +173,21 @@ function deriveAnthropicThinking(
   const effortSteps = live.effortLevels
     ? EFFORT_STEPS.filter((step) => live.effortLevels?.includes(step))
     : undefined;
+  if (
+    live.effortLevels &&
+    live.effortLevels.length > 0 &&
+    effortSteps?.length === 0
+  ) {
+    // 対応だが製品の段階（low／medium／high／max）が 1 つも無い（例：xhigh だけ）。
+    // 製品は xhigh を持たないので、送れる effort が無い。adaptive は effort を伴うので
+    // thinking を送らない。黙って止めず、モデルごとに一度だけ記録する。
+    warnNoUsableEffortOnce(model.id, live.effortLevels);
+    return {
+      adaptive: false,
+      enabled: live.types?.includes("enabled") ?? false,
+      effortSteps: [],
+    };
+  }
   if (live.supported === false) {
     return { adaptive: false, enabled: false, effortSteps };
   }
@@ -183,6 +219,16 @@ function sanitizeStoredThinking(
   return { adaptive: value.adaptive, enabled: value.enabled, effortSteps };
 }
 
+/**
+ * 保存された ctx／out は localStorage 由来で信頼できない。正の安全な整数でなければ捨てる
+ * （そのままだと outputBudget の requirePositiveSafeInteger が RangeError を出す）。
+ */
+function positiveSafeIntegerOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
 function durableStoredMeta(meta: StoredMeta): StoredMeta {
   const {
     effectiveCtx: _effectiveCtx,
@@ -200,7 +246,12 @@ function loadProvider(provider: AiProvider, stored: StoredProvider): void {
     if (!isRecord(meta)) continue;
     // A runner allocation is process state, not durable model metadata. Older
     // v2 caches did persist it, so explicitly discard it while hydrating.
-    models.set(id, durableStoredMeta(meta as StoredMeta));
+    const durable = durableStoredMeta(meta as StoredMeta);
+    models.set(id, {
+      ...durable,
+      ctx: positiveSafeIntegerOrUndefined(durable.ctx),
+      out: positiveSafeIntegerOrUndefined(durable.out),
+    });
   }
   registry.set(provider, models);
   fetchedAtByProvider.set(provider, stored.fetchedAt);
@@ -778,11 +829,13 @@ export function getDynamicModelMeta(
     raw = providerRegistry.get(modelId.slice("openrouter/".length));
   }
   if (!raw) return null;
+  const ctx = positiveSafeIntegerOrUndefined(raw.ctx);
+  const out = positiveSafeIntegerOrUndefined(raw.out);
   if (
     (raw.metadataGeneration !== undefined ||
       raw.observationGeneration !== undefined) &&
-    raw.ctx === undefined &&
-    raw.out === undefined &&
+    ctx === undefined &&
+    out === undefined &&
     raw.effectiveCtx === undefined &&
     raw.effectiveSource === undefined &&
     raw.tools === undefined &&
@@ -795,8 +848,8 @@ export function getDynamicModelMeta(
   }
 
   return {
-    ctx: raw.ctx,
-    out: raw.out,
+    ctx,
+    out,
     effectiveCtx: raw.effectiveCtx,
     effectiveSource: raw.effectiveSource,
     tools: raw.tools === undefined ? undefined : raw.tools === 1,
@@ -834,5 +887,6 @@ export function __resetDynamicModelCapsForTests(): void {
   scopeByProvider = new Map();
   fullSuccessGenerationByProvider = new Map();
   fullEffectiveGenerationByProvider = new Map();
+  warnedNoUsableEffort.clear();
   hydrated = false;
 }
