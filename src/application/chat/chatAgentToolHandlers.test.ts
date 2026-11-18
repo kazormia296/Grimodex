@@ -254,7 +254,7 @@ describe("createChatTurnToolContext", () => {
     const params = { query: "q" };
     await context.executeTool("search_events", "t1", params);
     const ir = executeTool.mock.calls[0]![4]!.ir!;
-    ir.noteUsedIds(params, ["rev-1", "rev-2"]);
+    ir.noteUsedIds(params, ["rev-1", "rev-2"], ["ev-1"]);
 
     const other = { params: { query: "q" } } as {
       params: Record<string, unknown>;
@@ -270,7 +270,7 @@ describe("createChatTurnToolContext", () => {
     context.attachUsedIds(record);
     expect(record.usedIds).toEqual({
       revisionIds: ["rev-1", "rev-2"],
-      eventIds: [],
+      eventIds: ["ev-1"],
       generation: null,
     });
   });

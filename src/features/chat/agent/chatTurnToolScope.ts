@@ -44,16 +44,23 @@ export interface ChatIrCapability {
   /** Throws when the project or the workspace is no longer the turn's. */
   readonly assertCurrent: () => void;
   /**
-   * Records the revision IDs of the items given to the model (`usedIds`).
+   * Records the revision IDs of the items given to the model (`usedIds`), and
+   * the event IDs of the items merged with the year table (S1-A2b: exactly the
+   * ones the model saw in `chronicleIr.eventIds`).
    * `key` is the `params` object of the tool call (design PR-B2 3.2, case P):
    * the turn copies the note onto the tool call's record by that object.
    */
-  readonly noteUsedIds: (key: object, revisionIds: readonly string[]) => void;
+  readonly noteUsedIds: (
+    key: object,
+    revisionIds: readonly string[],
+    eventIds: readonly string[],
+  ) => void;
 }
 
 /**
- * Where the items given to the model came from. `eventIds` stays empty until
- * the approved IR carries one, and `generation` is `null` (the item has none).
+ * Where the items given to the model came from. `eventIds` are the events of
+ * the items that were merged with the year table (what the model was shown);
+ * `generation` is `null` (the item has none).
  */
 export interface ChatIrUsedIds {
   revisionIds: string[];

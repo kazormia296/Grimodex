@@ -6,6 +6,7 @@ import {
 } from "./chatIrStatusText";
 import {
   buildChatIrContent,
+  capExceededResult,
   fitChatIrContent,
   precheckChatIrContent,
 } from "./chatIrToolResult";
@@ -253,5 +254,104 @@ describe("precheckChatIrContent", () => {
     precheckChatIrContent({ events, tokenCap: 1_000_000, countTokens: spy });
     expect(spy).toHaveBeenCalled();
     expect(typeof spy.mock.calls[0]![0]).toBe("string");
+  });
+});
+
+describe("the merge (S1-A2b, DR-CHATIR-S1-44)", () => {
+  const e3 = { eventId: "e3", title: "Event 3", kind: "event", score: 0.8 };
+  const all = [...events, e3];
+  const merge = (map: Record<string, string>) => ({
+    eventIdOfItem: (i: ChatAgentIrItem) => map[i.revisionId],
+    eventIdOfEvent: (e: { eventId: string }) => e.eventId,
+  });
+
+  it("puts eventIds between items and note, and only when something is merged", () => {
+    const plain = buildChatIrContent("busy", [], events, "n");
+    expect(Object.keys(plain.chronicleIr)).toEqual(["status", "items", "note"]);
+    const none = buildChatIrContent("busy", [], events, "n", {});
+    expect(Object.keys(none.chronicleIr)).toEqual(["status", "items", "note"]);
+    const some = buildChatIrContent("busy", [], events, "n", { "rev-1": "e1" });
+    expect(Object.keys(some.chronicleIr)).toEqual([
+      "status",
+      "items",
+      "eventIds",
+      "note",
+    ]);
+  });
+
+  it("is today's result without `merge`", () => {
+    const outcome = { status: "available" as const, items: [item(1)] };
+    const input = {
+      outcome,
+      events: all,
+      limit: 8,
+      tokenCap: 10_000,
+      countTokens,
+    };
+    const without = fitChatIrContent(input);
+    expect(without.eventIds).toEqual({});
+    expect(without.content).toEqual(
+      buildChatIrContent("available", [item(1)], all, undefined),
+    );
+  });
+
+  it("drops the year table's entry of a merged item's event and records its eventId", () => {
+    const fit = fitChatIrContent({
+      outcome: { status: "available", items: [item(1), item(2)] },
+      events: all,
+      limit: 8,
+      tokenCap: 10_000,
+      countTokens,
+      merge: merge({ "rev-1": "e1", "rev-2": "nope" }),
+    });
+    expect(fit.content.events.map((e) => e.eventId)).toEqual(["e2", "e3"]);
+    expect(fit.content.chronicleIr.eventIds).toEqual({ "rev-1": "e1" });
+    expect(fit.eventIds).toEqual({ "rev-1": "e1" });
+  });
+
+  it("decides the merge for the item count that is kept: a dropped item's entry stays", () => {
+    const items = [item(1, 10), item(2, 400)];
+    const one = countTokens(
+      JSON.stringify(
+        buildChatIrContent("available", [items[0]!], [events[1]!, e3], null, {
+          "rev-1": "e1",
+        }),
+      ),
+    );
+    const fit = fitChatIrContent({
+      outcome: { status: "available", items },
+      events: all,
+      limit: 8,
+      tokenCap: one,
+      countTokens,
+      merge: merge({ "rev-1": "e1", "rev-2": "e2" }),
+    });
+    expect(fit.items.map((i) => i.revisionId)).toEqual(["rev-1"]);
+    expect(fit.content.events.map((e) => e.eventId)).toEqual(["e2", "e3"]);
+    expect(fit.eventIds).toEqual({ "rev-1": "e1" });
+  });
+
+  it("merges nothing, and adds no key, when no item fits (cap-exceeded keeps every entry)", () => {
+    const fit = fitChatIrContent({
+      outcome: { status: "available", items: [item(1, 400)] },
+      events: all,
+      limit: 8,
+      tokenCap: 300,
+      countTokens,
+      merge: merge({ "rev-1": "e1" }),
+    });
+    expect(fit.status).toBe("cap-exceeded");
+    expect(fit.content.events).toHaveLength(3);
+    expect(fit.eventIds).toEqual({});
+    expect(fit.content.chronicleIr).not.toHaveProperty("eventIds");
+  });
+
+  it("capExceededResult builds the cap-exceeded content for the events it is given", () => {
+    const result = capExceededResult([events[0]!], 10_000, countTokens, false);
+    expect(result.status).toBe("cap-exceeded");
+    expect(result.called).toBe(false);
+    expect(result.items).toEqual([]);
+    expect(result.eventIds).toEqual({});
+    expect(result.content.events).toEqual([events[0]]);
   });
 });

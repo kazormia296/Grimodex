@@ -48,10 +48,15 @@ import type {
   ChatToolRunContext,
   ChatTurnToolScope,
 } from "./chatTurnToolScope";
+import {
+  CHAT_AGENT_IR_CHRONICLE_IDS_MAX,
+  isChronicleEventIdList,
+} from "@/../electron/shared/chatAgentIrWire";
 import { CHAT_AGENT_IR_ENABLED } from "./chatAgentIrAvailability";
 import {
   CHAT_IR_MAX_CALLS_PER_TURN,
   CHAT_IR_MAX_CHARS_PER_TURN,
+  capExceededResult,
   fitChatIrContent,
   precheckChatIrContent,
   type ChatIrOutcomeShape,
@@ -97,7 +102,10 @@ import {
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
-import { isEventBeforeOrAtScene } from "@/features/chronicle/chronicleReadingPosition";
+import {
+  isEventBeforeOrAtScene,
+  passesIrExclusionApproximation,
+} from "@/features/chronicle/chronicleReadingPosition";
 import {
   getSharedEvents,
   getSharedSceneEvents,
@@ -335,21 +343,39 @@ async function searchCodex(
 }
 
 /**
- * 作中年表 (Chronicle) 出来事の dense セマンティック検索 (Phase 3)。
- * `events_semantic_search` を叩く dense-only ツール (codex のような FTS 融合なし)。
- * feature 無効ビルド / 未 index / モデル不在では reject → 空配列にグレースフルに退避。
+ * search_events の年表の候補（秘匿の filter と位置の filter の後で、`slice(limit)` の前）。
+ * 空の query・project 無しは、そのまま返す応答（`empty`）。呼ぶ位置が挙動の一部なので、
+ * await の順は変えない（定数 false の間は今と byte 同一）。
  */
-async function searchEvents(
+type ChronicleCandidates =
+  | { readonly kind: "empty"; readonly result: Omit<ToolResult, "toolCallId"> }
+  | {
+      readonly kind: "ready";
+      readonly query: string;
+      readonly projectId: string;
+      readonly currentSceneId: string;
+      /** model の `limit`（年表の側の値。IR の枠の下限 1 は呼び手が決める）。 */
+      readonly limit: number;
+      /** 秘匿・位置の filter の後、`slice` の前（30 件以下）。 */
+      readonly visible: readonly EventSearchHit[];
+      /** △7 (4) の近似の規則（secret の event だけに掛かる）。 */
+      readonly passesApproximation: (hit: EventSearchHit) => boolean;
+    };
+
+async function chronicleCandidates(
   params: Record<string, unknown>,
   scope?: ChatTurnToolScope,
-): Promise<Omit<ToolResult, "toolCallId">> {
+): Promise<ChronicleCandidates> {
   const query = String(params["query"] ?? "").trim();
   if (!query)
     return {
-      name: "search_events",
-      content: [],
-      summary: "0 events found",
-      tokensUsed: 0,
+      kind: "empty",
+      result: {
+        name: "search_events",
+        content: [],
+        summary: "0 events found",
+        tokensUsed: 0,
+      },
     };
 
   // 基準の project・Scene は、秘匿の filter も位置の filter も同じ値を使う。
@@ -357,10 +383,13 @@ async function searchEvents(
   const projectId = chronicleProjectId(scope);
   if (!projectId)
     return {
-      name: "search_events",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
+      kind: "empty",
+      result: {
+        name: "search_events",
+        content: [],
+        summary: "No active project",
+        tokensUsed: 0,
+      },
     };
 
   const limit = eventSearchLimit(params);
@@ -395,7 +424,7 @@ async function searchEvents(
       .map((e) => e.id),
   );
 
-  const content = hits
+  const visible = hits
     .filter((h) => !hidden.has(h.eventId))
     // 位置の filter（chat IR S1-B）。秘匿の filter の後、slice(limit) の前。
     // 定数が false の間は掛けない（今の挙動のまま）。
@@ -406,14 +435,85 @@ async function searchEvents(
           readingOrder,
           sceneEvents,
         }),
-    )
-    .slice(0, limit)
-    .map((h) => ({
-      eventId: h.eventId,
-      title: h.title,
-      kind: h.kind,
-      score: h.score,
-    }));
+    );
+  const eventById = new Map(allEvents.map((e) => [e.id, e]));
+  return {
+    kind: "ready",
+    query,
+    projectId,
+    currentSceneId,
+    limit,
+    visible,
+    // 行が見つからない hit は、秘匿の filter と同じく secret でないものとして扱う。
+    passesApproximation: (h) =>
+      passesIrExclusionApproximation(
+        eventById.get(h.eventId) ?? { id: h.eventId, secret: false },
+        currentSceneId,
+        { readingOrder, sceneEvents },
+      ),
+  };
+}
+
+/** search_events が model に返す年表の 1 件（今の形のまま）。 */
+interface ChronicleEntry {
+  eventId: string;
+  title: string;
+  kind: string;
+  score: number;
+}
+
+/**
+ * Native へ渡す候補（DR-CHATIR-S1-41）：重複を除き、wire の 1 件の条件（空白だけでない・200 UTF-16
+ * 以下）に合わない ID と、30 件を超える分は送らない。送らなかった event は年表にそのまま残る。
+ * 条件に合わない ID が 1 つでも混じると wrapper が IPC の前に拒むので、ここで外す。
+ */
+function chronicleCandidateIds(hits: readonly EventSearchHit[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    if (seen.has(hit.eventId)) continue;
+    seen.add(hit.eventId);
+    if (!isChronicleEventIdList([hit.eventId])) continue;
+    ids.push(hit.eventId);
+    if (ids.length >= CHAT_AGENT_IR_CHRONICLE_IDS_MAX) break;
+  }
+  return ids;
+}
+
+function chronicleEntries(
+  hits: readonly EventSearchHit[],
+  limit: number,
+): ChronicleEntry[] {
+  return hits.slice(0, limit).map((h) => ({
+    eventId: h.eventId,
+    title: h.title,
+    kind: h.kind,
+    score: h.score,
+  }));
+}
+
+/**
+ * 作中年表 (Chronicle) 出来事の dense セマンティック検索 (Phase 3)。
+ * `events_semantic_search` を叩く dense-only ツール (codex のような FTS 融合なし)。
+ * feature 無効ビルド / 未 index / モデル不在では reject → 空配列にグレースフルに退避。
+ *
+ * IR を呼ばない呼び手（research sub-agent など）の経路でもある。定数が true で turn の
+ * scope があるときは、IR の除外の結果が得られないので、secret の event に近似の規則
+ * （結ばれた Scene がすべて今の Scene より前）を掛ける（chat IR S1-A2b、DR-CHATIR-S1-45）。
+ * 掛ける位置は (4) と同じで、`slice(limit)` の前（落とした分は後ろの候補で補う）。
+ * 定数が false の間は何も掛けない（今と byte 同一）。
+ */
+async function searchEvents(
+  params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const candidates = await chronicleCandidates(params, scope);
+  if (candidates.kind === "empty") return candidates.result;
+  const pool =
+    CHAT_AGENT_IR_ENABLED && scope
+      ? candidates.visible.filter(candidates.passesApproximation)
+      : candidates.visible;
+  const content = chronicleEntries(pool, candidates.limit);
   const json = JSON.stringify(content);
   return {
     name: "search_events",
@@ -475,12 +575,18 @@ const CHAT_IR_PREFLIGHT_STATUSES: ReadonlySet<string> = new Set([
 
 /**
  * search_events に承認済みの IR を合流する版（main agent の `EXECUTORS` だけ。
- * chat IR S1-B、定数が true で IR の capability がある呼び手のときだけ）。
+ * chat IR S1-B・S1-A2b、定数が true で IR の capability がある呼び手のときだけ）。
  *
- * 順は直列：年表 → 事前判定 → turn の累積上限 → Native を 1 回 → assertCurrent →
- * 切り・cap → noteUsedIds → content（B-T13）。年表は共有の `searchEvents`
- * （秘匿 → 位置 → limit）。IR の失敗は tool の失敗にせず、status を content に載せる。
- * IR の capability が無い呼び手（sub-agent など）は今の配列のまま。
+ * 順は直列：年表の候補（秘匿 → 位置、`slice` の前）→ 事前判定 → turn の累積上限 →
+ * Native を 1 回（候補の eventId を渡す）→ assertCurrent → 除外 → 切り → cap と統合 →
+ * noteUsedIds → content（B-T13）。IR の失敗は tool の失敗にせず、status を content に載せる。
+ * IR の capability が無い呼び手（sub-agent など）は共有の `searchEvents`（今の配列）。
+ *
+ * 年表から除くもの（DR-CHATIR-S1-44・45）：
+ * - Native が除外の配列を返したとき：本来の (4)。配列の event を `slice` の前に除き、後ろの候補で補う。
+ * - 配列が無く、model が起こせる不明（事前判定の `cap-exceeded`・呼ぶ前の `turn-limit`・
+ *   `query-invalid`）のとき：Native の答えの代わりに、secret の event に近似の規則を同じ位置で掛ける。
+ * - それ以外の失敗（一時的・構造的）：何も除かない（今の年表のまま。U-a）。
  */
 async function searchEventsWithIr(
   params: Record<string, unknown>,
@@ -489,28 +595,36 @@ async function searchEventsWithIr(
   context?: ChatToolRunContext,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const ir = context?.ir;
-  const base = await searchEvents(params, context?.scope);
-  if (!CHAT_AGENT_IR_ENABLED || !ir) return base;
-  const query = String(params["query"] ?? "").trim();
-  const projectId = chronicleProjectId(context.scope);
-  const currentSceneId = chronicleSceneId(context.scope);
+  if (!CHAT_AGENT_IR_ENABLED || !ir) {
+    return searchEvents(params, context?.scope);
+  }
+  const candidates = await chronicleCandidates(params, context.scope);
   // 空の query・project 無しは、年表の側の応答（空の配列）のまま返す。
-  if (!query || !projectId || !Array.isArray(base.content)) return base;
-
-  const events: readonly unknown[] = base.content;
+  if (candidates.kind === "empty") return candidates.result;
+  const { query, projectId, currentSceneId, visible } = candidates;
   // 0 < limit < 1 の小数は年表では 0 件になるが、IR には 1 件分の枠を残す（空の available を避ける）。
-  const limit = Math.max(1, eventSearchLimit(params));
-  const input = { events, tokenCap: ir.tokenCap, countTokens };
+  const yearLimit = candidates.limit;
+  const limit = Math.max(1, yearLimit);
+  const withoutApproximation = chronicleEntries(visible, yearLimit);
+  const approximated = () =>
+    chronicleEntries(visible.filter(candidates.passesApproximation), yearLimit);
+  const rest = { tokenCap: ir.tokenCap, countTokens };
 
-  let fitted: ChatIrToolContentResult<unknown> | null =
-    precheckChatIrContent(input);
-  if (!fitted) {
+  let fitted: ChatIrToolContentResult<ChronicleEntry>;
+  // 暫定の年表（除去の前）で測る。除去で小さくなる向きなので、cap については安全側。
+  if (precheckChatIrContent({ events: withoutApproximation, ...rest })) {
+    // 呼ばなければ (4) は掛からないので、model が起こせる不明として近似の規則に進む。
+    fitted = capExceededResult(approximated(), ir.tokenCap, countTokens, false);
+  } else {
     let outcome: ChatIrOutcomeShape;
+    let events: readonly ChronicleEntry[];
+    let eventIds: Readonly<Record<string, string>> = {};
     if (
       ir.counter.calls >= CHAT_IR_MAX_CALLS_PER_TURN ||
       ir.counter.chars >= CHAT_IR_MAX_CHARS_PER_TURN
     ) {
       outcome = { status: "turn-limit" };
+      events = approximated();
     } else {
       // 定数の枝の中でだけ wrapper を読む（false の間は bundle に入らない）。
       const { selectChatAgentIr } = await import("@/lib/chatIr");
@@ -519,8 +633,8 @@ async function searchEventsWithIr(
         projectId,
         expectedWorkspacePath: ir.workspacePath ?? "",
         currentSceneId,
-        // c2 は wire だけを閉じる。候補の組み立てと除外の適用は executor の c3（P15〜P18）で入れる。
-        chronicleEventIds: [],
+        // 秘匿と位置の filter の後の年表の候補だけ（隠れた event の ID は送らない）。
+        chronicleEventIds: chronicleCandidateIds(visible),
       });
       if (
         !(
@@ -532,12 +646,44 @@ async function searchEventsWithIr(
       }
       // project／workspace が turn のものでなくなっていれば、item を返さず tool を失敗にする。
       ir.assertCurrent();
-      outcome =
-        answer.kind === "answered"
-          ? withinTurnChars(answer.status, answer.items, ir.counter.chars)
-          : { status: answer.status };
+      const excluded =
+        answer.kind === "answered" ? answer.excludedEventIds : null;
+      if (answer.kind === "answered") {
+        eventIds = answer.eventIds;
+        outcome = withinTurnChars(
+          answer.status,
+          answer.items,
+          ir.counter.chars,
+        );
+      } else {
+        outcome = { status: answer.status };
+      }
+      if (excluded !== null) {
+        // 本来の (4)。Native が答えたので、turn の文字数の枠で 0 件になったときも配列は手元にある。
+        const gone = new Set(excluded);
+        events = chronicleEntries(
+          visible.filter((hit) => !gone.has(hit.eventId)),
+          yearLimit,
+        );
+      } else if (answer.status === "query-invalid") {
+        // renderer の検査も Native も、除外を返さずに query を拒んだ（model が起こせる）。
+        events = approximated();
+      } else {
+        // 一時的・構造的な失敗：(4) も近似の規則も掛けない。
+        events = withoutApproximation;
+      }
     }
-    fitted = fitChatIrContent({ outcome, limit, ...input });
+    const byRevision = new Map(Object.entries(eventIds));
+    fitted = fitChatIrContent({
+      outcome,
+      limit,
+      events,
+      ...rest,
+      merge: {
+        eventIdOfItem: (item) => byRevision.get(item.revisionId),
+        eventIdOfEvent: (event) => event.eventId,
+      },
+    });
   }
 
   const { items } = fitted;
@@ -549,6 +695,8 @@ async function searchEventsWithIr(
     ir.noteUsedIds(
       params,
       items.map((item) => item.revisionId),
+      // model が見たものだけ：統合した item の event（重複は 1 つ）。
+      [...new Set(Object.values(fitted.eventIds))],
     );
   }
   const json = JSON.stringify(fitted.content);
@@ -556,7 +704,7 @@ async function searchEventsWithIr(
     name: "search_events",
     content: fitted.content,
     // 件数だけ。status・本文・題は入れない（契約 §3.5）。
-    summary: `manuscript ${items.length}, chronicle ${events.length}`,
+    summary: `manuscript ${items.length}, chronicle ${fitted.content.events.length}`,
     tokensUsed: countTokens(json),
   };
 }
