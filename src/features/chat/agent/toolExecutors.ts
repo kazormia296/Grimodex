@@ -445,6 +445,27 @@ function eventSearchLimit(params: Record<string, unknown>): number {
     : 10;
 }
 
+/**
+ * turn の累積の文字数上限（DR-CHATIR-S1-38）は合計で守る：先頭から、残りの枠に収まる item
+ * だけを残す。item はあったのに 1 件も収まらなければ `turn-limit`。
+ */
+function withinTurnChars(
+  status: ChatIrOutcomeShape["status"],
+  items: ChatIrOutcomeShape["items"],
+  usedChars: number,
+): ChatIrOutcomeShape {
+  if (!items || items.length === 0) return { status, items };
+  let left = CHAT_IR_MAX_CHARS_PER_TURN - usedChars;
+  const kept: NonNullable<ChatIrOutcomeShape["items"]>[number][] = [];
+  for (const item of items) {
+    const chars = JSON.stringify(item).length;
+    if (chars > left) break;
+    kept.push(item);
+    left -= chars;
+  }
+  return kept.length > 0 ? { status, items: kept } : { status: "turn-limit" };
+}
+
 /** The renderer's own refusals before the IPC: not a call of Native, not counted. */
 const CHAT_IR_PREFLIGHT_STATUSES: ReadonlySet<string> = new Set([
   "no-current-scene",
@@ -511,7 +532,7 @@ async function searchEventsWithIr(
       ir.assertCurrent();
       outcome =
         answer.kind === "answered"
-          ? { status: answer.status, items: answer.items }
+          ? withinTurnChars(answer.status, answer.items, ir.counter.chars)
           : { status: answer.status };
     }
     fitted = fitChatIrContent({ outcome, limit, ...input });

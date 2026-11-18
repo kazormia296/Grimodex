@@ -593,6 +593,44 @@ describe("B-T14: the cumulative limit of a turn", () => {
     expect([...JSON.stringify(astral)].length).toBeLessThan(expected);
   });
 
+  it("counts the sum of every item that is left, not of the dropped ones", async () => {
+    const items = [item(1, "a".repeat(30)), item(2, "b".repeat(40)), item(3)];
+    h.invoke.mockResolvedValue(answer(items));
+    const { ir } = makeIr();
+    const out = contentOf(await runSearch(ir, { query: "q", limit: 2 }));
+    expect(out.chronicleIr.items.map((i) => i.revisionId)).toEqual([
+      "rev-1",
+      "rev-2",
+    ]);
+    expect(ir.counter.chars).toBe(
+      JSON.stringify(items[0]).length + JSON.stringify(items[1]).length,
+    );
+  });
+
+  it("keeps the turn's char total within the limit: only the items that fit are left", async () => {
+    const items = [item(1), item(2), item(3)];
+    const one = JSON.stringify(items[0]).length;
+    h.invoke.mockResolvedValue(answer(items));
+    const used = CHAT_IR_MAX_CHARS_PER_TURN - one * 2 + 1;
+    const { ir } = makeIr({ counter: { chars: used, calls: 0 } });
+    const out = contentOf(await runSearch(ir));
+    expect(out.chronicleIr.status).toBe("available");
+    expect(out.chronicleIr.items).toHaveLength(1);
+    expect(ir.counter.chars).toBe(used + one);
+    expect(ir.counter.chars).toBeLessThanOrEqual(CHAT_IR_MAX_CHARS_PER_TURN);
+  });
+
+  it("answers turn-limit when Native's items do not fit what is left of the turn", async () => {
+    h.invoke.mockResolvedValue(answer([item(1)]));
+    const used = CHAT_IR_MAX_CHARS_PER_TURN - 1;
+    const { ir, noted } = makeIr({ counter: { chars: used, calls: 0 } });
+    const out = contentOf(await runSearch(ir));
+    expect(out.chronicleIr.status).toBe("turn-limit");
+    expect(out.chronicleIr.items).toEqual([]);
+    expect(ir.counter.chars).toBe(used);
+    expect(noted).toEqual([]);
+  });
+
   it("does not spend the limit on a precheck that never called Native", async () => {
     h.hits = [hit("e1", "x".repeat(400))];
     const { ir } = makeIr({ tokenCap: 100 });
