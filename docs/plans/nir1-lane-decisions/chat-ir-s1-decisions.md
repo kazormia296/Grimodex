@@ -383,6 +383,16 @@ PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数�
   - それ以外の失敗（一時的・構造的）では (4) を掛けない（秘匿と位置の filter だけ）。
   - 上の直列の順（年表 → 事前判定 → `turn-limit` → Native）は、S1-A2b の前提として保つ。
 
+## S1-A2 の判断（PR-A2a。読み順の Rust の半分の試験）
+
+## DR-CHATIR-S1-39：読み順の cargo 試験の対象・置き場・fixture の追加（2026-11-18）
+
+- **対象**：`derive_live_scene_projection`（`grimodex-db/src/narrative_extraction/project_scope_authority.rs`）。IR の admission の `query_reading_rank` と候補の mapping の `reading_rank` は、どちらもこの関数の順の index から来る（`check_query`〔`retrieval_admission/disclosure.rs`〕← `query_context.rs` の `target.reading_rank` ← `load_live_project_scope_authority` ← この関数。読みで確認）。Rust にある他の読み順の実装は IR の経路を通らないので対象にしない。
+- **置き場**：関数と入力の型が private なので、module 内の unit test（`project_scope_authority/reading_order_tests.rs`）。fixture は `include_str!` で TS と同じ file を読む。DB を通さないので、実 DB では作れない形（未知の型・孤児）も回せる。
+- **固定するもの**：各 case の結果（順、または error の前置きと理由）が fixture の `rust` 欄と一致すること。行の並び（fixture 順・逆順・id 昇順）に依らないこと。order の case で rank が順の index と一致すること。
+- **fixture の追加**：mixed-case の sortOrder、archived の行との sortOrder の重複、親の cycle の 3 case（計 11 case、rejected 7）。
+- **固定しないもの**：TS と Rust の同時の実行、tree を読む時点の差（DB の snapshot 対 renderer の tree store）。これで G6 (c) の条件 1〜3 は両側とも試験で固定された。
+
 ## S1-A2b の判断（A1・A2。年表の event の重複の統合と、IR の規則で除かれた event の除外。定数 `false` のまま）
 
 **この lane は NIR-1 の事前委任の外**。確認の根拠は、ユーザーの回答（2026-11-18 夜）：ず-1（規則どおり実装する。△7 (4) と重複の統合の両方）・A2（候補の eventId を request に渡す。契約 §3.2 の入力の追加は承認済み）・D1（§3.3 どおり送る。item の 9 key は変えない）・Q1（d-i）・Q2（折衷）・Q3（脅威モデルの差分 T17〜T20 を受け入れる）。記録は contracts の `ir-chat-pilot-2026-11/user-confirmation-2026-11-18-eventid-d1-fidelity.md`（commit `001bbcc9`・`ec05294c`）。設計の正本は repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/s1a2-design-2026-11-18.md`（冒頭の「§0.2 の Q1〜Q3 への回答」と末尾の「統合者の判断」が本文より優先）。

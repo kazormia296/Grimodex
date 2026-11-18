@@ -4,7 +4,11 @@ import {
   AINOVERIST_V1_MODEL_CAPS,
   isAinoveristV1Model,
 } from "../aiNovelist";
-import { getDynamicModelMeta, type DynamicModelMeta } from "./dynamicModelCaps";
+import {
+  getDynamicModelMeta,
+  warnNoUsableEffortOnce,
+  type DynamicModelMeta,
+} from "./dynamicModelCaps";
 import { ollamaContextLengthSettingKeys, type AiProvider } from "../types";
 
 /** モデルの能力情報 */
@@ -43,6 +47,11 @@ export interface ModelCapabilities {
   supportsAdaptiveThinking: boolean; // adaptive 方式 (4.6 系)
   supportsEffort: boolean;
   supportsMaxEffort: boolean; // Opus 4.6 限定
+  /**
+   * adaptive で送る effort を許された段階だけに丸めるための一覧。表に無い Anthropic の id が
+   * live の段階を持つときだけ入る（表の id は undefined で、request は変わらない）。
+   */
+  adaptiveEffortSteps?: readonly EffortLevel[];
   supportsReasoning: boolean; // Ollama/OpenRouter 推論モデル用
   /**
    * reasoning を OFF にできるか。absent ⇒ 無効化可（既存 qwen3/deepseek-r1 互換）。
@@ -652,7 +661,9 @@ function mergeDynamicCaps(
  * - 表に無い id の thinking は live の方式で決める：adaptive を含めば adaptive、含まなければ
  *   送らない（budget_tokens も effort 単独も送らない）。ただし adaptive は effort を伴うので、
  *   live が effort 不可と明示するなら adaptive も送らない。effort は adaptive のときだけ
- *   live の段階を使い、xhigh は製品に無いので無視する。adaptive の request は effort の段階（max の有無）を見ない（元から同じ）。
+ *   live の段階を使い、xhigh は製品に無いので無視する。live が一部の段階だけ許すときは、
+ *   adaptive で送る effort をその中へ丸める（buildThinkingParams）。段階の形が読めないときは今の推定。
+ *   対応でも製品の段階が 1 つも無い（xhigh だけ）なら adaptive を送らない。adaptive の request は effort の段階（max の有無）を見ない（元から同じ）。
  *   方式が分からない（capabilities が無い）ときは今の推定のまま。
  *   canDisable・image・pdf・lifecycle は使わない。
  */
@@ -676,6 +687,11 @@ function mergeAnthropicLive(
     };
   }
   const live = dyn.anthropicThinking;
+  if (live?.effortUnusable) {
+    // 対応だが製品の段階が無い（xhigh だけ）。この表に無い id では thinking を送らなくなるので、
+    // 黙って止めず一度だけ記録する（表の id はここへ来ない）。
+    warnNoUsableEffortOnce(model);
+  }
   if (live) {
     // adaptive の request は effort を必ず伴う（Rust の ThinkingConfig::Adaptive）ので、
     // live が effort 不可と明示するモデルでは adaptive を送らない。effort の情報が無いときは
@@ -700,6 +716,13 @@ function mergeAnthropicLive(
         (live.effortSteps
           ? live.effortSteps.includes("max")
           : merged.supportsMaxEffort),
+      // 全段階を許すなら丸めは恒等なので持たない（既存の値を増やさない）。
+      ...(adaptive &&
+      live.effortSteps &&
+      live.effortSteps.length > 0 &&
+      live.effortSteps.length < 4
+        ? { adaptiveEffortSteps: live.effortSteps }
+        : {}),
     };
   }
   return merged;
@@ -1088,6 +1111,22 @@ export function clampReasoningEffort(
   return normalized;
 }
 
+const EFFORT_ORDER: readonly EffortLevel[] = ["low", "medium", "high", "max"];
+
+/** 許された段階のうち「要求以下で最も高いもの」。要求以下が無ければ許された最も低い段階。 */
+function roundEffortToAllowed(
+  requested: EffortLevel,
+  allowed: readonly EffortLevel[],
+): EffortLevel {
+  const rank = (level: EffortLevel) => EFFORT_ORDER.indexOf(level);
+  const sorted = [...allowed].sort((a, b) => rank(a) - rank(b));
+  let best: EffortLevel | undefined;
+  for (const level of sorted) {
+    if (rank(level) <= rank(requested)) best = level;
+  }
+  return best ?? sorted[0] ?? requested;
+}
+
 /** モデルとタスクに応じた thinking/effort パラメータを構築する（設計書 L627-647 準拠） */
 export function buildThinkingParams(
   model: string,
@@ -1122,8 +1161,12 @@ export function buildThinkingParams(
 
   if (caps.supportsAdaptiveThinking) {
     // Opus 4.6, Sonnet 4.6: adaptive thinking + effort
+    // 表に無い id が live で一部の段階だけ許すときは、許された段階へ丸める（表の id は無変更）。
+    const adaptiveEffort = caps.adaptiveEffortSteps
+      ? roundEffortToAllowed(taskEffort, caps.adaptiveEffortSteps)
+      : taskEffort;
     return enabled
-      ? { thinking: { type: "adaptive", effort: taskEffort, display } }
+      ? { thinking: { type: "adaptive", effort: adaptiveEffort, display } }
       : {};
   }
 

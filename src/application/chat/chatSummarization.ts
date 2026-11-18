@@ -1,3 +1,4 @@
+import { sendableHistory } from "./chatAssistantRowReservation";
 import { finalizeChatTurnPayload } from "./chatTurnPayload";
 import { getChatApiVariant } from "./chatTurnRouting";
 import type { ChatState } from "./chatStoreTypes";
@@ -39,8 +40,11 @@ export async function maybeRunSummarization(
   }
   if (!isAuthorized()) return messages;
 
+  // 要約の入力は送信と同じ絞り（失敗・停止した turn が残した行を除く）を通す。
+  // 戻り値は絞る前の列のまま返し、呼び出し側が送信の前に同じ絞りを掛ける。
+  const eligibleMessages = sendableHistory(messages);
   const summaryTexts = summaries.map((s) => s.summary);
-  const l5Used = computeL5UsedTokens(messages, summaryTexts, l5Budget);
+  const l5Used = computeL5UsedTokens(eligibleMessages, summaryTexts, l5Budget);
   const maxGen =
     summaries.length > 0 ? Math.max(...summaries.map((s) => s.generation)) : 0;
 
@@ -51,11 +55,11 @@ export async function maybeRunSummarization(
     });
   }
 
-  if (!shouldSummarize(messages, l5Budget, l5Used)) {
+  if (!shouldSummarize(eligibleMessages, l5Budget, l5Used)) {
     return messages;
   }
 
-  const candidates = selectSummarizationCandidates(messages, l5Budget);
+  const candidates = selectSummarizationCandidates(eligibleMessages, l5Budget);
   if (candidates.length === 0) return messages;
 
   try {

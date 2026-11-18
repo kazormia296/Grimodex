@@ -66,6 +66,9 @@ describe("reading-order parity fixture (TS half)", () => {
       "note-with-live-child",
       "unknown-node-type",
       "archived-subtree",
+      "mixed-case-sort-order",
+      "archived-duplicate-sort-order",
+      "parent-cycle",
     ]);
     for (const c of cases) {
       expect(["order", "error"]).toContain(c.rust.kind);
@@ -85,7 +88,7 @@ describe("reading-order parity fixture (TS half)", () => {
 
   it("returns a value, not an error, where Rust rejects the tree (the split the fixture records)", () => {
     const rejected = cases.filter((c) => c.rust.kind === "error");
-    expect(rejected.length).toBe(6);
+    expect(rejected.length).toBe(7);
     for (const c of rejected) {
       expect(() => buildReadingOrder(c.nodes.map(toTreeNode))).not.toThrow();
     }

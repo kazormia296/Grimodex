@@ -45,6 +45,14 @@ describe("ChatMessageContextMenu", () => {
       expect(screen.getByTestId("ctx-delete")).toBeInTheDocument();
     });
 
+    it("canRegenerate=false（直前に user の無い行）では再生成を出さない", () => {
+      render(
+        <ChatMessageContextMenu {...defaultProps} canRegenerate={false} />,
+      );
+      expect(screen.queryByTestId("ctx-regenerate")).not.toBeInTheDocument();
+      expect(screen.getByTestId("ctx-delete")).toBeInTheDocument();
+    });
+
     it("「編集」は表示されない", () => {
       render(<ChatMessageContextMenu {...defaultProps} />);
       expect(screen.queryByTestId("ctx-edit")).not.toBeInTheDocument();

@@ -8,6 +8,8 @@ import {
   registerDynamicModelCaps,
 } from "./dynamicModelCaps";
 import type { AiModel } from "../types";
+import { resolveModelCapabilities } from "./modelLimits";
+import { resolveOutputBudgetPlan } from "@/features/ai-context/outputBudget";
 
 const store: Record<string, string> = {};
 const localStorageMock = {
@@ -673,4 +675,72 @@ describe("isDynamicCapsStale", () => {
 
     expect(isDynamicCapsStale("ollama", 24 * 60 * 60 * 1_000)).toBe(true);
   });
+});
+
+describe("保存された cache の ctx／out の型検証", () => {
+  // 正の安全な整数でない値（負・0・小数・文字列・null・巨大・NaN 由来の null）
+  const BROKEN: unknown[] = [-5, 0, 1.5, "200000", null, 1e20, true, {}, []];
+
+  function seed(provider: string, id: string, meta: Record<string, unknown>) {
+    store[STORAGE_KEY] = JSON.stringify({
+      version: 4,
+      providers: {
+        [provider]: {
+          fetchedAt: Date.now() - 1_000,
+          models: { [id]: meta },
+        },
+      },
+    });
+    __resetDynamicModelCapsForTests();
+  }
+
+  it.each(BROKEN.map((value) => [JSON.stringify(value), value] as const))(
+    "壊れた値 %s は捨てて（undefined）、正しい field は残す",
+    (_label, value) => {
+      seed("openrouter", "vendor/model", { ctx: value, out: value, tools: 1 });
+      expect(getDynamicModelMeta("openrouter", "vendor/model")).toMatchObject({
+        ctx: undefined,
+        out: undefined,
+        tools: true,
+      });
+    },
+  );
+
+  it("壊れた ctx だけ捨て、正しい out は残す（その field だけを捨てる）", () => {
+    seed("anthropic", "claude-fable-9-9", { ctx: -1, out: 64_000 });
+    expect(getDynamicModelMeta("anthropic", "claude-fable-9-9")).toMatchObject({
+      ctx: undefined,
+      out: 64_000,
+    });
+  });
+
+  it("正しい整数はそのまま通す", () => {
+    seed("openrouter", "vendor/model", { ctx: 128_000, out: 8_192 });
+    expect(getDynamicModelMeta("openrouter", "vendor/model")).toMatchObject({
+      ctx: 128_000,
+      out: 8_192,
+    });
+  });
+
+  it.each([
+    ["openrouter", "vendor/model"],
+    ["anthropic", "claude-fable-9-9"],
+  ] as const)(
+    "%s の壊れた cache でも、能力の解決と出力予約が RangeError を出さない",
+    (provider, id) => {
+      seed(provider, id, { ctx: -5, out: 1.5 });
+      const caps = resolveModelCapabilities(id, { provider });
+      expect(() =>
+        resolveOutputBudgetPlan({
+          provider,
+          model: id,
+          contextWindow: caps.contextWindow,
+          modelMaxOutputTokens: caps.maxOutputTokens,
+          defaultVisibleOutputTokens: caps.defaultVisibleOutputTokens,
+          defaultReasoningReservationTokens:
+            caps.defaultReasoningReservationTokens,
+        }),
+      ).not.toThrow();
+    },
+  );
 });
