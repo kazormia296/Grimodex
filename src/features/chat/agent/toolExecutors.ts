@@ -43,6 +43,10 @@ import {
 } from "@/features/concurrency/mutationAuthority";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
 import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
+import type {
+  ChatReadOnlyToolRunContext,
+  ChatToolRunContext,
+} from "./chatTurnToolScope";
 import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
@@ -1725,6 +1729,7 @@ type Executor = (
   params: Record<string, unknown>,
   requestId?: string,
   authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 /**
@@ -2177,6 +2182,7 @@ export async function executeTool(
   toolCallId: string,
   params: Record<string, unknown>,
   authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
 ): Promise<ToolResult> {
   const executor = EXECUTORS[name];
   if (!executor) {
@@ -2210,6 +2216,7 @@ export async function executeTool(
       params,
       requestId,
       authorization ? { ...authorization, toolCallId } : undefined,
+      context,
     );
     return { toolCallId, ...result };
   } catch (e) {
@@ -2237,6 +2244,7 @@ export async function executeReadOnlyTool(
   name: string,
   toolCallId: string,
   params: Record<string, unknown>,
+  context?: ChatReadOnlyToolRunContext,
 ): Promise<ToolResult> {
   const executor = READ_ONLY_EXECUTORS[name];
   if (!executor) {
@@ -2251,7 +2259,7 @@ export async function executeReadOnlyTool(
     };
   }
   try {
-    const result = await executor(params);
+    const result = await executor(params, undefined, undefined, context);
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
