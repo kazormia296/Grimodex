@@ -238,22 +238,10 @@ const EXPECTED_DIFFS: Record<string, Diff[]> = {
     },
   ],
   "claude-sonnet-4-6": [
-    {
-      field: "maxOutput",
-      live: 128_000,
-      product: 64_000,
-      category: "table-stale",
-    },
     { field: "maxEffort", live: true, product: false, category: "table-stale" },
   ],
   "claude-opus-4-6": [],
   "claude-opus-4-5-20251101": [
-    {
-      field: "maxOutput",
-      live: 64_000,
-      product: undefined,
-      category: "table-stale",
-    },
     { field: "effort", live: true, product: false, category: "table-stale" },
   ],
   "claude-haiku-4-5-20251001": [
@@ -264,14 +252,7 @@ const EXPECTED_DIFFS: Record<string, Diff[]> = {
       category: "product-decision",
     },
   ],
-  "claude-sonnet-4-5-20250929": [
-    {
-      field: "maxOutput",
-      live: 64_000,
-      product: undefined,
-      category: "table-stale",
-    },
-  ],
+  "claude-sonnet-4-5-20250929": [],
 };
 
 describe("parseAnthropicLiveCaps", () => {
@@ -529,24 +510,25 @@ describe("live と今の表の差（段 1 の観測。製品の挙動は変え�
     },
   );
 
-  it("分類ごとの件数: product-decision 11、table-stale 5、not-modeled 5", () => {
+  it("分類ごとの件数: product-decision 11、table-stale 2、not-modeled 5", () => {
     const all = LIVE.flatMap((m) => compare(m));
     const count = (c: DiffCategory) =>
       all.filter((d) => d.category === c).length;
     expect(count("product-decision")).toBe(11);
-    expect(count("table-stale")).toBe(5);
+    expect(count("table-stale")).toBe(2);
     expect(count("not-modeled")).toBe(5);
   });
 
-  it("live と一致している field：context は 15 件中 15 件（表と同値）", () => {
-    // sonnet-4-6 の context も 1M で一致する。差が出るのは出力上限（128K 対 64K）。
+  it("live と一致している field：context と最大出力は 15 件中 15 件（表と同値）", () => {
+    // 最大出力は、段 2 の別 commit で表を live に揃えた（sonnet-4-6 128K、opus-4-5／sonnet-4-5 64K）。
     for (const live of LIVE) {
       const caps = resolveModelCapabilities(live.id, { provider: "anthropic" });
       expect(caps.contextWindow).toBe(live.contextWindow);
+      expect(caps.maxOutputTokens).toBe(live.maxOutput);
     }
   });
 
-  it("claude-fable-5-2 は表に無く、同 family の最新（fable-5-1）の近似で解決される", () => {
+  it("claude-fable-5-2 は表に無く、前方一致（claude-fable-5）の近似で解決され、fable-5-1 と同じ値になる", () => {
     // 近似が live と一致する（段 2 の『表に無いモデルだけ挙動が変わる』の前提）
     const caps = resolveModelCapabilities("claude-fable-5-2", {
       provider: "anthropic",

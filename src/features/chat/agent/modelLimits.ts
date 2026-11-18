@@ -155,7 +155,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context, effort low〜max)
   "claude-sonnet-4-6": {
     contextWindow: 1_000_000,
-    maxOutputTokens: 64_000,
+    maxOutputTokens: 128_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
@@ -170,6 +170,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Opus 4.5 (budget_tokens thinking, effort 非対応)
   "claude-opus-4-5": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
@@ -180,6 +181,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.5 (budget_tokens thinking, effort 非対応)
   "claude-sonnet-4-5-20250929": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
