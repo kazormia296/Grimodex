@@ -41,6 +41,11 @@ extraResources:
     filter:
       - phase0b/ja_xsmall/**
       - phase0b/en_minilm_l4/**
+  # モデル能力の registry の写し（PR-C2）。master の raw 配信と同じ file を同梱し、取得できないときの基準にする。
+  - from: electron/resources
+    to: resources/model-capabilities
+    filter:
+      - model-capabilities.json
 
 win:
   target:
