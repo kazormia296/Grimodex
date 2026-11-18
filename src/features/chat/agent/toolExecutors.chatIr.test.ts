@@ -1163,6 +1163,50 @@ describe("E3〜E7: the merge", () => {
     ]);
   });
 
+  it("E6: shows no eventId for an event the exclusion took out of the year table", async () => {
+    setChronicle([
+      { id: "e1", ties: ["s1"] },
+      { id: "e2", ties: ["s1"] },
+    ]);
+    // Native binds rev-1 to e1 and also excludes e1: e1 is not in the table
+    // the model sees, so it is neither merged nor shown nor noted.
+    h.invoke.mockResolvedValue(
+      answer([item(1)], "available", {
+        eventIds: { "rev-1": "e1" },
+        excludedEventIds: ["e1"],
+      }),
+    );
+    const { ir, noted } = makeIr();
+    const out = await runSearch(ir);
+    const content = contentOf(out);
+    expect(eventIdsOf(out)).toEqual(["e2"]);
+    expect(content.chronicleIr.items).toHaveLength(1);
+    expect(content.chronicleIr.eventIds).toBeUndefined();
+    expect(Object.keys(content.chronicleIr)).toEqual(["status", "items"]);
+    expect(noted).toHaveLength(1);
+    expect(noted[0]!.eventIds).toEqual([]);
+  });
+
+  it("E6: shows no eventId for an event beyond slice(limit), and merges nothing for it", async () => {
+    setChronicle(["e1", "e2", "e3"].map((id) => ({ id, ties: ["s1"] })));
+    // The year table keeps e1 and e2 (limit 2). rev-1 is bound to e3, which is
+    // a visible candidate but outside the slice: it stays unmerged and hidden.
+    // rev-2 is bound to e1, inside the slice (the control: merged and shown).
+    h.invoke.mockResolvedValue(
+      answer([item(1), item(2)], "available", {
+        eventIds: { "rev-1": "e3", "rev-2": "e1" },
+      }),
+    );
+    const { ir, noted } = makeIr();
+    const out = await runSearch(ir, { query: "q", limit: 2 });
+    const content = contentOf(out);
+    expect(sentCandidates()).toEqual(["e1", "e2", "e3"]);
+    expect(content.chronicleIr.eventIds).toEqual({ "rev-2": "e1" });
+    expect(eventIdsOf(out)).toEqual(["e2"]);
+    expect(JSON.stringify(content)).not.toContain("e3");
+    expect(noted[0]!.eventIds).toEqual(["e1"]);
+  });
+
   it("E6: without a merge the content is B2's (no eventIds key)", async () => {
     h.invoke.mockResolvedValue(answer([item(1)]));
     const out = contentOf(await runSearch(makeIr().ir));
@@ -1264,7 +1308,7 @@ describe("E8: when the exclusion is not at hand", () => {
     expect(eventIdsOf(out)).toEqual(["old", "pub"]);
   });
 
-  it("measures the precheck on the year table before the approximation (the safe side for the cap)", async () => {
+  it("measures the precheck on the year table before the approximation (it only costs a call, never leaks)", async () => {
     setChronicle([
       { id: "old", secret: true, reveal: "s1", ties: ["s1"], title: "o" },
       {
@@ -1309,6 +1353,21 @@ describe("E8: when the exclusion is not at hand", () => {
     const out = await runSearch(makeIr().ir);
     expect(contentOf(out).chronicleIr.status).toBe("query-invalid");
     expect(eventIdsOf(out)).toEqual(APPROXIMATED);
+  });
+
+  it("a ledger-full that Native returns, with no exclusion, approximates (T20: the model can fill the ledger)", async () => {
+    h.invoke.mockResolvedValue(answer([], "ledger-full"));
+    const { ir } = makeIr();
+    const out = await runSearch(ir);
+    expect(contentOf(out).chronicleIr.status).toBe("ledger-full");
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(eventIdsOf(out)).toEqual(APPROXIMATED);
+  });
+
+  it("a ledger-full backfills after the approximation (before slice(limit))", async () => {
+    h.invoke.mockResolvedValue(answer([], "ledger-full"));
+    const out = await runSearch(makeIr().ir, { query: "q", limit: 2 });
+    expect(eventIdsOf(out)).toEqual(["old", "pub"]);
   });
 
   it("backfills after the approximation (it is applied before slice(limit))", async () => {
@@ -1359,9 +1418,12 @@ describe("E8: when the exclusion is not at hand", () => {
   it.each(
     CHAT_AGENT_IR_STATUSES.filter(
       (status) =>
-        !["available", "none-above-threshold", "query-invalid"].includes(
-          status,
-        ),
+        ![
+          "available",
+          "none-above-threshold",
+          "query-invalid",
+          "ledger-full",
+        ].includes(status),
     ),
   )(
     "a failure (%s) applies neither (4) nor the approximation",
@@ -1473,6 +1535,25 @@ describe("E9: the sub-agent's search_events", () => {
   });
 
   it("does not approximate without a turn scope", async () => {
+    // The store's Scene is s2 too, so the secrecy and position filters keep
+    // "span" (tied to s1 and s2): only the approximation could drop it, and it
+    // must not run without a scope.
+    h.tree.activeSceneId = "s2";
+    const out = (
+      await executeReadOnlyTool("search_events", "t1", {
+        query: "q",
+      })
+    ).content as Array<{ eventId: string }>;
+    expect(out.map((e) => e.eventId)).toEqual([
+      "old",
+      "span",
+      "unknown",
+      "pub",
+      "plain",
+    ]);
+  });
+
+  it("without a turn scope the store's Scene decides (s0 hides the secret ones)", async () => {
     const out = (
       await executeReadOnlyTool("search_events", "t1", {
         query: "q",

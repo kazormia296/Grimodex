@@ -436,12 +436,13 @@ DR-CHATIR-S1-39（読み順の cargo 試験）は PR-A2a のもの。この PR �
 
 ## DR-CHATIR-S1-45：除外が得られないときの年表（Q2＝折衷）と近似の規則（2026-11-19）
 
-- **近似の規則**：secret の event について、「結ばれた Scene がすべて今の Scene より前」のときだけ残す（契約 §3.4 (3) の案 A）。`passesIrExclusionApproximation`（`chronicleReadingPosition.ts`。`isEventBeforeOrAtScene` の隣）。secret でない event には掛けない。結ばれた Scene が読み順に無いもの、今の Scene が空・読み順に無いものは残さない（fail-closed）。結ばれた Scene が 1 つも無い secret の event は残す（IR 由来の event は常に結びを持つので、これで (4) を広げない）。
+- **近似の規則**：secret の event について、「結ばれた Scene がすべて今の Scene より前」のときだけ残す（契約 §3.4 (3) の案 A）。`passesIrExclusionApproximation`（`chronicleReadingPosition.ts`。`isEventBeforeOrAtScene` の隣）。secret でない event には掛けない。結ばれた Scene が読み順に無いもの、今の Scene が空・読み順に無いものは残さない（fail-closed）。結ばれた Scene が 1 つも無い secret の event は残す（IR 由来の event は作成の時点では常に結びを持つので、これで (4) を広げない）。**残余**：この「常に結びを持つ」は作成の時点でしか成り立たない。作者の編集や `unstamp_scene_event` で結びが外れうるので、結びの無い secret の event が近似を通る穴は残る（(4) が使えるときは Native の除外が正本）。
 - **掛ける位置**：(4) と同じ（秘匿 → 位置の filter の後、`slice(limit)` の前。落とした分は後ろの候補で補う）。cap は年表の後で測るので測り直しは要らない。
-- **Native を呼ばず、近似の規則を掛ける（model が起こせる不明）**：事前判定の `cap-exceeded`（呼ばなければ (4) は掛からないので、cap と逆向きになる。事前判定は暫定の年表＝近似の前で測る）、呼ぶ前の `turn-limit`（回数・文字数の上限）、renderer の `query-invalid`。Native が返す `query-invalid`（除外が無い）も同じ。
+- **Native を呼ばず、近似の規則を掛ける（model が起こせる不明）**：事前判定の `cap-exceeded`（呼ばなければ (4) は掛からないので、cap と逆向きになる。事前判定は暫定の年表＝近似の前で測る）、呼ぶ前の `turn-limit`（回数・文字数の上限）、renderer の `query-invalid`。Native が返す `query-invalid`（除外が無い）と `ledger-full` も同じ（次項）。
+- **`ledger-full` は近似の側**（統合者の判断、2026-11-19。Q2 の確定「model が起こせる経路には近似の規則」の適用で、新しい契約ではない）：Native の ledger は 4096 件で追い出しが無く（`chat_ir/ledger.rs`）、item の digest は query に依る score を含む。そのため model は query を変え続けて ledger を満たせる。満ちると `ledger-full` が process の終わりまで続く。これを U-a に置くと、満杯にした後は (4) も近似も掛からず T20 の経路そのものになる。Native が答えて除外が `null` の `ledger-full` は、`query-invalid` と同じく近似の規則を掛ける（応答に除外の配列があれば (4)。`ledger-full` は DR-43 のとおり常に `null`）。
 - **research sub-agent**（統合者の技術判断。Q2 の趣旨の内）：sub-agent の `search_events` は IR を呼ばないので除外は常に不明で、結果（`findings`）は main の model に返る。共有の `searchEvents` の中で、**定数が true で turn の scope があるときだけ**近似の規則を掛ける。scope が無い呼び手と、定数 `false` には掛けない。
 - **Native が答えた後は本来の (4)**：Native が答えた後に turn の文字数の枠で 0 件になった（`turn-limit`）場合や、item が cap に入らず `cap-exceeded` になった場合は、除外の配列が手元にあるので近似ではなく (4) を掛ける。近似の規則は (4) の代わりで、得た結果は使う。
-- **(4) も近似も掛けない（U-a）**：一時的・構造的な失敗（`timeout`・`connection-busy`・`embedder-cold`・`busy`・`ledger-full`・`index-unavailable`・`unsupported`・`no-current-scene`・`project-*`・`workspace-*`・`inference-failed`・`internal`、renderer の `ipc-*`・`caller-timeout`・`invalid-response`・`no-workspace`・`no-current-scene`・`gate-closed`・`egress-denied`）。今の年表のまま返す（G3-U11：IR が失敗しても年表を失わない）。成功のときに除かれた event が、これらの失敗のときには出る穴は残る（実データの g-ja-1 では applications が 0 件で、IR 由来の event が無い）。
+- **(4) も近似も掛けない（U-a）**：一時的・構造的な失敗（`timeout`・`connection-busy`・`embedder-cold`・`busy`・`index-unavailable`・`unsupported`・`no-current-scene`・`project-*`・`workspace-*`・`inference-failed`・`internal`、renderer の `ipc-*`・`caller-timeout`・`invalid-response`・`no-workspace`・`no-current-scene`・`gate-closed`・`egress-denied`）。今の年表のまま返す（G3-U11：IR が失敗しても年表を失わない）。成功のときに除かれた event が、これらの失敗のときには出る穴は残る（実データの g-ja-1 では applications が 0 件で、IR 由来の event が無い）。
 - **範囲**：(4) と近似の規則が掛かるのは `search_events` だけ（契約 §3.4 (5)・§6.2）。`get_chronicle_state` などの別の tool には掛けない（試験 E8 が、近似の関数を import する source が 2 つだけであることを固定する）。
 - **未測定**：近似の規則が通常の運用で掛かる頻度。小さい窓や大きい `limit` では通常の呼び出しでも事前判定の `cap-exceeded` に当たりうる。そのとき、作者が今の Scene に結んだ secret の event が AI から見えなくなる。dev で測り、S3 の確認の材料にする。
 
@@ -454,7 +455,7 @@ DR-CHATIR-S1-39（読み順の cargo 試験）は PR-A2a のもの。この PR �
 - **T17：候補の ID による問い合わせ（oracle）**：任意の eventId を送り、その event の現行の版が Scene S の時点で IR に落とされるかを知る。乗っ取られた renderer は範囲外（generic SQL で直接読める）。model は候補を選べない（候補は executor が DB の検索結果から作る）。1 回 30 件。restricted では command ごと拒否。
 - **T18：候補の水増しによる遅延**：30 件と ID の長さで縛る。SQL は `IN` の 1 文で、期限と busy timeout の内に入る。
 - **T19：応答の drift による誤った除去**：`excludedEventIds` が送った候補の部分集合でない場合、または `eventIds` の key が items に無い場合は `invalid-response`。
-- **T20：model が除外の不明を起こし、(4) を回避する**：prompt injection された model（範囲内の actor）が、`limit` を大きくする（事前判定の `cap-exceeded`）・1 turn に 6 回を超えて呼ぶ（`turn-limit`）・空や 500 超の query・research の sub-agent を呼ぶ、で Native を呼ばない経路に入る。防御は DR-45（secret の event に近似の規則）。一時的・構造的な失敗は U-a（(4) も近似も掛けない）。秘匿と位置の filter はどの経路でも掛かる。
+- **T20：model が除外の不明を起こし、(4) を回避する**：prompt injection された model（範囲内の actor）が、`limit` を大きくする（事前判定の `cap-exceeded`）・1 turn に 6 回を超えて呼ぶ（`turn-limit`）・空や 500 超の query・research の sub-agent を呼ぶ、・query を変え続けて Native の ledger を満たす（`ledger-full`。満ちた後は process の終わりまで続く）、で除外が得られない経路に入る。防御は DR-45（secret の event に近似の規則）。一時的・構造的な失敗は U-a（(4) も近似も掛けない）。秘匿と位置の filter はどの経路でも掛かる。
 - **T4・T14**：変わらない（統合は item を書き換えない）。(4) と近似が `search_events` だけに掛かること、model に対する機密の境界ではないことは、契約 §3.4 (5) のまま。
 - **受入れへの影響**：(4) の positive／negative、Q1（d-i。`NotIndexed` は除かない）、除外が不明のときの扱い、wire の部分集合の検査を、試験（R・N・W・E）で固定する。
 

@@ -585,7 +585,9 @@ const CHAT_IR_PREFLIGHT_STATUSES: ReadonlySet<string> = new Set([
  * 年表から除くもの（DR-CHATIR-S1-44・45）：
  * - Native が除外の配列を返したとき：本来の (4)。配列の event を `slice` の前に除き、後ろの候補で補う。
  * - 配列が無く、model が起こせる不明（事前判定の `cap-exceeded`・呼ぶ前の `turn-limit`・
- *   `query-invalid`）のとき：Native の答えの代わりに、secret の event に近似の規則を同じ位置で掛ける。
+ *   `query-invalid`・Native の `ledger-full`）のとき：Native の答えの代わりに、secret の event に
+ *   近似の規則を同じ位置で掛ける。`ledger-full` は、Native の ledger（4096 件、追い出し無し）を
+ *   model が query を変え続けて満たせるので、満ちた後は process の終わりまで続く（T20）。
  * - それ以外の失敗（一時的・構造的）：何も除かない（今の年表のまま。U-a）。
  */
 async function searchEventsWithIr(
@@ -611,7 +613,9 @@ async function searchEventsWithIr(
   const rest = { tokenCap: ir.tokenCap, countTokens };
 
   let fitted: ChatIrToolContentResult<ChronicleEntry>;
-  // 暫定の年表（除去の前）で測る。除去で小さくなる向きなので、cap については安全側。
+  // 暫定の年表（除去の前）で測る。除去で小さくなるとは限らない（後ろの候補で補充するので、
+  // 除去の後の年表が大きいこともある）。そのときも秘匿の漏れにはならず、失うのは Native の
+  // 1 回（回数と ledger の枠）だけ。
   if (precheckChatIrContent({ events: withoutApproximation, ...rest })) {
     // 呼ばなければ (4) は掛からないので、model が起こせる不明として近似の規則に進む。
     fitted = capExceededResult(approximated(), ir.tokenCap, countTokens, false);
@@ -665,8 +669,13 @@ async function searchEventsWithIr(
           visible.filter((hit) => !gone.has(hit.eventId)),
           yearLimit,
         );
-      } else if (answer.status === "query-invalid") {
-        // renderer の検査も Native も、除外を返さずに query を拒んだ（model が起こせる）。
+      } else if (
+        answer.status === "query-invalid" ||
+        answer.status === "ledger-full"
+      ) {
+        // 除外を返さなかった、model が起こせる不明（DR-CHATIR-S1-45）：renderer の検査か Native が
+        // query を拒んだ（query-invalid）、または model が query を変え続けて Native の ledger を
+        // 満たした（ledger-full。item の digest は query に依る score を含む。T20）。
         events = approximated();
       } else {
         // 一時的・構造的な失敗：(4) も近似の規則も掛けない。
