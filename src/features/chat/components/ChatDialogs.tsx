@@ -4,6 +4,8 @@ import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDi
 import { SessionsPanel } from "./SessionsPanel";
 import { ChatMessageContextMenu } from "./ChatMessageContextMenu";
 import { PromptPreviewModal } from "./PromptPreviewModal";
+import { useChatStore } from "../chatStore";
+import { regenerationSourceUser } from "../chatMessageRows";
 import { resolveModelCapabilities } from "../agent/modelLimits";
 import { useAiSettingsStore } from "../store";
 import type { AiProvider } from "../types";
@@ -77,6 +79,12 @@ export function ChatDialogs({
 }: ChatDialogsProps) {
   const aiSettings = useAiSettingsStore((state) => state.settings);
   useAiSettingsStore((state) => state.modelCapsRevision);
+  const canRegenerateContextMessage = useChatStore(
+    (state) =>
+      !contextMenu ||
+      contextMenu.messageRole !== "assistant" ||
+      regenerationSourceUser(state.messages, contextMenu.messageId) !== null,
+  );
   const resolvedPromptProvider = promptViewSnapshot?.provider ?? promptProvider;
   const promptContextWindow = promptViewSnapshot?.model
     ? (promptViewSnapshot.contextWindow ??
@@ -122,6 +130,7 @@ export function ChatDialogs({
         <ChatMessageContextMenu
           {...contextMenu}
           mutationsDisabled={contextMutationsDisabled}
+          canRegenerate={canRegenerateContextMessage}
           onClose={onCloseContextMenu}
           {...contextActions}
         />

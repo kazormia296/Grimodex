@@ -6723,7 +6723,8 @@ describe("useChatStore", () => {
         ).toEqual([]);
       });
 
-      it("does not send the left rows but keeps the summary marker after summarization (normal path)", async () => {
+      /** 要約が走る通常経路の準備（l5 を 1 にして、過去の行をすべて要約の対象にする）。 */
+      const setupSummarizationTurn = () => {
         const history = Array.from({ length: 5 }, (_, index) => [
           makeMessage("user", `past-user-${index}`, `past-user-${index}`),
           makeMessage(
@@ -6735,7 +6736,12 @@ describe("useChatStore", () => {
         useChatStore.setState({
           sessions: [session1],
           activeSessionId: session1.id,
-          messages: [...history, ...leftoverRows()],
+          // 残り行は古い側（要約の対象になる範囲）に置く。
+          messages: [
+            ...history.slice(0, 4),
+            ...leftoverRows(),
+            ...history.slice(4),
+          ],
           agentMode: false,
           ragEnabled: false,
         });
@@ -6765,6 +6771,10 @@ describe("useChatStore", () => {
             }) as ChatMessage,
         );
         mockStreamResponse("新しい回答");
+      };
+
+      it("does not send the left rows but keeps the summary marker after summarization (normal path)", async () => {
+        setupSummarizationTurn();
 
         await useChatStore.getState().sendMessage("新しい質問");
 
@@ -6785,6 +6795,98 @@ describe("useChatStore", () => {
           ),
         ).toEqual([]);
         expect(contents.at(-1)).toBe("新しい質問");
+      });
+
+      it("keeps the rows a failed or stopped turn left behind out of the summarization input", async () => {
+        setupSummarizationTurn();
+
+        await useChatStore.getState().sendMessage("新しい質問");
+
+        const summarizationInput = JSON.stringify(
+          vi.mocked(chatApi.sendChatMessageWithThinking).mock.calls[0]?.[0],
+        );
+        expect(summarizationInput).toContain("past-assistant-0");
+        expect(summarizationInput).not.toContain("途中の本文");
+        // 要約済みの印は、要約に入れた行にだけ付く（残り行は対象外のまま）。
+        const markedIds = vi.mocked(chatApi.markMessagesSummarized).mock
+          .calls[0]?.[0];
+        expect(markedIds).toContain("past-assistant-0");
+        expect(markedIds).not.toContain("left-failed");
+        expect(markedIds).not.toContain("left-empty");
+      });
+
+      it("inserts the summary marker right after the last summarized candidate, before the left rows", async () => {
+        setupSummarizationTurn();
+
+        await useChatStore.getState().sendMessage("新しい質問");
+
+        const ids = useChatStore.getState().messages.map((m) => m.id);
+        const markerIndex = useChatStore
+          .getState()
+          .messages.findIndex((m) => m.metadata?.includes("summary_id"));
+        const summarized = vi.mocked(chatApi.markMessagesSummarized).mock
+          .calls[0]?.[0] as string[];
+        const lastCandidateIndex = Math.max(
+          ...summarized.map((id) => ids.indexOf(id)),
+        );
+        expect(markerIndex).toBe(lastCandidateIndex + 1);
+        // 残り行は要約の対象外のまま、マーカーの後ろに並ぶ。
+        expect(markerIndex).toBeLessThan(ids.indexOf("left-failed"));
+        expect(markerIndex).toBeLessThan(ids.indexOf("left-empty"));
+      });
+
+      it("does not regenerate from an earlier turn's user when the assistant row has no user before it", async () => {
+        setupAgentTurn();
+        const sendMessage = vi.fn(async () => {});
+        const originalSendMessage = useChatStore.getState().sendMessage;
+        // 再読込の後の形（user の行は完了時にしか保存されないので、残り行の前は前の turn）。
+        useChatStore.setState({ messages: leftoverRows(), sendMessage });
+        try {
+          await useChatStore.getState().regenerate("left-failed");
+          await useChatStore.getState().regenerate("left-empty");
+          expect(sendMessage).not.toHaveBeenCalled();
+
+          // 通常の assistant（直前が user）は従来どおり、その user を再送する。
+          await useChatStore.getState().regenerate("prev-assistant");
+          expect(sendMessage).toHaveBeenCalledOnce();
+          expect(sendMessage).toHaveBeenCalledWith(
+            "前の質問",
+            undefined,
+            expect.objectContaining({
+              _replaceAssistantMessageId: "prev-assistant",
+            }),
+          );
+        } finally {
+          useChatStore.setState({ sendMessage: originalSendMessage });
+        }
+      });
+
+      it("still regenerates a failed row whose user row is in the store (same session)", async () => {
+        setupAgentTurn();
+        const sendMessage = vi.fn(async () => {});
+        const originalSendMessage = useChatStore.getState().sendMessage;
+        useChatStore.setState({
+          messages: [
+            makeMessage("user", "失敗した質問", "failed-user"),
+            {
+              ...makeMessage("assistant", "途中の本文", "failed-assistant"),
+              metadata: JSON.stringify({ runtime_error: "provider down" }),
+            },
+          ],
+          sendMessage,
+        });
+        try {
+          await useChatStore.getState().regenerate("failed-assistant");
+          expect(sendMessage).toHaveBeenCalledWith(
+            "失敗した質問",
+            undefined,
+            expect.objectContaining({
+              _replaceAssistantMessageId: "failed-assistant",
+            }),
+          );
+        } finally {
+          useChatStore.setState({ sendMessage: originalSendMessage });
+        }
       });
 
       it("settles the reserved row as stopped when the completion loses turn authority", async () => {
