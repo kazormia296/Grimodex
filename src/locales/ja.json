@@ -1161,7 +1161,8 @@
       "toolProtocolDesc": "Agent のツール呼び出し形式。auto は model 名に hermes を含む場合のみ Hermes 形式（本文 <tool_call>）として解釈。Qwen 等は hermes を明示選択。",
       "toolProtocolAuto": "auto（推奨）",
       "modelInfoAutoUpdate": "モデル情報の自動更新",
-      "modelInfoAutoUpdateDesc": "新しいモデルの文脈長や機能の情報を、raw.githubusercontent.com（GitHub）から 1 日に 1 回ほど取得します。取得するのは公開のモデル情報だけで、原稿・設定・API キーは送りません。オフにすると、取得した情報を削除し、アプリに同梱の情報だけを使います。",
+      "modelInfoAutoUpdateDesc": "新しいモデルの文脈長や機能の情報を、raw.githubusercontent.com（GitHub）から、起動のしばらく後と、起動中は 24 時間ごとに取得します。取得するのは公開のモデル情報だけで、原稿・設定・API キーは送りません。オフにすると、取得した情報を削除し、アプリに同梱の情報だけを使います。",
+      "modelInfoAutoUpdateSaveFailed": "モデル情報の自動更新の設定を保存できませんでした: {{message}}",
       "providerPinDirect": "直接"
     },
     "project": {

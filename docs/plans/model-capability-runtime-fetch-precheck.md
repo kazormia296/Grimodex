@@ -315,10 +315,10 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 
 #### 設定「モデル情報の自動更新」（Q4）
 
-- AI 設定（`AiSettings`、renderer の型）の項目 `modelInfoAutoUpdate?: boolean` として置きました（未設定・true が有効、false が無効）。設定画面（`AiCategory`、Electron のみ）に Switch を足し、説明文に取得先の host（`raw.githubusercontent.com`）と、止めると取得した情報を削除して同梱の情報だけを使うことを書きました（Q5。初回の告知は出しません）。
-- 保存は main の別 file（`<userData>/model-info-settings.json`）です。**共有 Rust の `grimodex_ai::AiSettings` は型付きの struct で、struct に無い key は `save_ai_settings` の往復で捨てられます**（`reasoning_effort_override` の注記と同じ事情）。TS の型だけに足すと、無効にしても再起動で有効に戻り、承認と逆の通信が起きます。そこで main が backend の `saveAiSettings`／`getAiSettings` を包み、この項目だけを別 file に保存して `get_ai_settings` の結果へ戻します。
-  - 項目を含まない save（`DEFAULT_AI_SETTINGS` から作った設定など）は現在の値を変えません。boolean でない値は無視します。Native が save を拒否したときは、この項目も変えません。
-  - file が無ければ有効（既定）、読めない・壊れているときは無効（fail-closed）、書けないときは save を失敗させます。
+- AI 設定（`AiSettings`、renderer の型）の項目 `modelInfoAutoUpdate?: boolean` として置きました（未設定・true が有効、false が無効）。設定画面（`AiCategory`、Electron のみ）に Switch を足し、説明文に取得先の host（`raw.githubusercontent.com`）と、取得の頻度（起動のしばらく後と、起動中は 24 時間ごと）と、止めると取得した情報を削除して同梱の情報だけを使うことを書きました（Q5。初回の告知は出しません）。
+- 保存は main の別 file（`<userData>/model-info-settings.json`）です。**共有 Rust の `grimodex_ai::AiSettings` は型付きの struct で、struct に無い key は `save_ai_settings` の往復で捨てられます**（`reasoning_effort_override` の注記と同じ事情。`from_wire` は `serde_json::from_value` で、`grimodex-ai` に `deny_unknown_fields` は無いことを確認しました）。TS の型だけに足すと、無効にしても再起動で有効に戻り、承認と逆の通信が起きます。そこで main が backend の `saveAiSettings`／`getAiSettings` を包み、この項目だけを別 file に保存して `get_ai_settings` の結果へ戻します（chat 送信の `settings` にも、この項目が 1 つ余分に載りますが、Rust は無視します）。
+  - **変えられるのは、この項目だけを持つ `save_ai_settings`（明示の切替。renderer の `setModelInfoAutoUpdate`、Native は呼ばない）だけです。** 完全な設定の save に載った値は、有効・無効のどちらでも無視して捨てます。窓ごとに読んだ古い設定を丸ごと save する経路（別窓のモデル切替など。AI 設定を窓の間で同期する仕組みはありません）が、無効にした自動更新を有効へ書き戻さないためです。明示の切替に boolean でない値を与えたら拒否します。
+  - file が無ければ有効（既定）、読めない・壊れているときは無効（fail-closed）、書けないときは save を失敗させ、メモリの値も変えません。設定画面は、保存に失敗したら表示を変えません。設定画面を開くたびに `get_ai_settings` で読み直すので、別の窓で切り替えた値が表示されます。
   - 変更は `modelInfoSetting.onChange` から scheduler の `onSettingChanged()` に届きます。renderer の引数ではなく、main が保存した値で判断します。無効なら取得を止め、cache と tmp の残骸を削除します。起動時に無効で cache が残っていれば、`start()` で削除します。
   - 有効に戻したときは、初回と同じ 30 秒の遅延から始めます（A4）。
 
@@ -344,8 +344,17 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 
 #### 仕様との差と未解決
 
-- 設定の保存を、共有 Rust の `AiSettings` に field を足す形にしませんでした（上記）。Rust の struct に足す案は、保存の正本を 1 つにできますが、`AiSettings` を組み立てる struct literal が約 40 か所（凍結した `src-tauri` の legacy を含む）にあり、初回の Rust の build は ONNX Runtime などの取得（ネットワーク）が要るため、この環境では検証できません。必要なら別 PR で移します（移すときは、この main の別 file の値を読み出して移行します）。
-- D2a の egress participant に登録していません（上記）。走行中の取得は abort の要求で閉じますが、activation がその終了を drain して待つことはしません。
+仕様（§1〜§3、§7）との差：
+
+- 設定の保存を、共有 Rust の `AiSettings` に field を足す形にしませんでした（上記）。Rust の struct に足す案は、保存の正本を 1 つにできますが、`AiSettings` を組み立てる struct literal が約 40 か所（凍結した `src-tauri` の legacy を含む）にあり、Rust の build を**試していません（未確認）**。`grimodex-ai` 単体の依存は reqwest・tokio などで軽いので build できる可能性はありますが、napi の crate と legacy の `src-tauri` を含めた検証はしていません。必要なら別 PR で移します（移すときは、この main の別 file の値を読み出して移行します）。
+- 完全な設定の save に載った `modelInfoAutoUpdate` を、main が無視します（明示の切替だけが変える）。承認した「AI 設定の 1 項目」を、読み出しは AiSettings、変更は専用の経路に分けた形です。新しい IPC command は足していません（`save_ai_settings` の、この項目だけを持つ形）。
+- 表 2 の「終了の証拠」（fetch の settle と response の body の close の両方）のうち、body の `cancel` は、要求を出すだけで完了を待ちません（`cancel` が返らない stream で scheduler が止まるのを避けるため）。取得そのものの終了は、fetch の promise の settle と abort で確かめます。
+- D2a の egress participant に登録していません（A8 のとおり `onStatusChange` の閉鎖にとどめました）。走行中の取得は abort の要求で閉じますが、activation がその終了を drain して待つことはしません。送るのは公開の GET だけで本文を含みません。
+
+未解決（親の判断が要る）：
+
+- **起動時の取得は無条件です。** unpackaged の開発起動、CI の runner、journey の起動も、30 秒を超えて動けば raw.githubusercontent.com へ GET します（master に写しが入るまでは 404 で、再試行せず次の周期まで待ちます）。updater の availability や `shouldDisableNarrativeFreshnessForLaunch` のような止める入口は、独断で足していません。journey の harness（`electron/scripts/product-journey-harness.mjs`）には、通信・console・userData の内容を検査する箇所は見つかりませんでした。`electron/scripts/packaged-smoke/run.mjs` の DNS の観測（`--dns-log`、Linux、参考）には、起動 30 秒後の main の名前解決が混ざり得ます。`package-check.mjs` は worker・asar などを個別に確かめ、resources の一覧を固定する検査は見つかりませんでした。
+- **ライセンスの扱い。** 同梱の写しは models.dev（README の記載では MIT）の data の一部（文脈長・出力上限・真偽値）の派生で、`NOTICE`・`THIRD_PARTY_LICENSES.md`・`scripts/license-policy.test.mjs` に models.dev の記載はありません。帰属表示の要否は未確認で、直していません。
 - 失敗した周期の後も、次の取得は完了から 24 時間後です（offline で起動して数分後に回復しても、次の起動か翌日まで取得しません）。再試行は 1 周期に 3 回までです。
 - 壊れた cache は、読んだ時点で削除します（restricted でも、cache の読出しの副作用として）。
 - 開示は README（英・日）と `docs/user-guide/ja/Privacy-and-data.md` の「AI以外の通信」に載せました。更新していないもの：`public/PRIVACY_en.md`・`public/PRIVACY_ja.md`（版と同意に結びつく文書のため、別の判断が要る）、`docs/user-guide/ja/` の `About.md`・`Home.md`・`Install-and-update.md`・`Quickstart-10-minutes.md` の通信の要約、`docs/lp/` の LP の文面。

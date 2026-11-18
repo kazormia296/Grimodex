@@ -88,6 +88,11 @@ export interface AiSettingsState {
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AiSettings) => Promise<void>;
+  /**
+   * 「モデル情報の自動更新」の明示の切替。完全な設定の save では変わらず、この経路だけが変える。
+   * 保存に成功したら、store の settings の項目も合わせる。
+   */
+  setModelInfoAutoUpdate: (enabled: boolean) => Promise<void>;
   saveApiKey: (key: string) => Promise<void>;
   deleteApiKey: () => Promise<void>;
   testConnection: () => Promise<void>;
@@ -827,6 +832,15 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
           settings.provider === "ollama" ? settings.ollamaEndpoint : null,
       });
     }
+  },
+
+  setModelInfoAutoUpdate: async (enabled: boolean) => {
+    await api.setModelInfoAutoUpdate(enabled);
+    set((state) =>
+      state.settings
+        ? { settings: { ...state.settings, modelInfoAutoUpdate: enabled } }
+        : {},
+    );
   },
 
   saveSettings: async (settings: AiSettings) => {

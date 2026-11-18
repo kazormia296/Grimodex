@@ -113,7 +113,7 @@ function fakeNativeBackend(initial: Record<string, unknown>) {
 }
 
 describe("AiSettings の往復（Rust の struct は未知の key を捨てる）", () => {
-  it("無効にした値が save → get の往復と再起動で落ちない。Native には項目を渡さない", async () => {
+  it("明示の切替（この項目だけの save）は Native を呼ばず、get の往復と再起動で落ちない", async () => {
     const native = fakeNativeBackend({ provider: "openai", model: "m" });
     const setting = createModelInfoSetting(temp.dir);
     const backend = wrapBackendForModelInfoSetting(native.backend, setting)!;
@@ -127,16 +127,10 @@ describe("AiSettings の往復（Rust の struct は未知の key を捨てる�
     expect(JSON.parse(await native.backend.getAiSettings())).not.toHaveProperty(
       MODEL_INFO_AUTO_UPDATE_KEY,
     );
+    native.saveAiSettings.mockClear();
 
-    await backend.saveAiSettings!({
-      provider: "openai",
-      model: "m",
-      [MODEL_INFO_AUTO_UPDATE_KEY]: false,
-    });
-    expect(native.saveAiSettings).toHaveBeenLastCalledWith({
-      provider: "openai",
-      model: "m",
-    });
+    await backend.saveAiSettings!({ [MODEL_INFO_AUTO_UPDATE_KEY]: false });
+    expect(native.saveAiSettings).not.toHaveBeenCalled();
     const read = JSON.parse(await backend.getAiSettings()) as Record<
       string,
       unknown
@@ -158,6 +152,50 @@ describe("AiSettings の往復（Rust の struct は未知の key を捨てる�
     ).toBe(false);
   });
 
+  it("古い設定を丸ごと save しても、無効にした項目は有効へ戻らない（別窓のモデル切替など）", async () => {
+    const native = fakeNativeBackend({ provider: "openai", model: "m" });
+    const setting = createModelInfoSetting(temp.dir);
+    const backend = wrapBackendForModelInfoSetting(native.backend, setting)!;
+    // 窓 B が、有効だった時点の設定を読んでおく。
+    const stale = JSON.parse(await backend.getAiSettings()) as Record<
+      string,
+      unknown
+    >;
+    expect(stale[MODEL_INFO_AUTO_UPDATE_KEY]).toBe(true);
+    // 窓 A で無効にする。
+    await backend.saveAiSettings!({ [MODEL_INFO_AUTO_UPDATE_KEY]: false });
+    expect(setting.get()).toBe(false);
+    // 窓 B が、古い設定（項目は true）のままモデルを切り替えて丸ごと save する。
+    await backend.saveAiSettings!({ ...stale, model: "other" });
+    expect(setting.get()).toBe(false);
+    expect(createModelInfoSetting(temp.dir).get()).toBe(false);
+    // Native へは項目を渡さず、他の項目は保存される。
+    expect(native.saveAiSettings).toHaveBeenLastCalledWith({
+      provider: "openai",
+      model: "other",
+    });
+    expect(native.getStored()).toEqual({ provider: "openai", model: "other" });
+  });
+
+  it("完全な設定に載った項目は、有効にも無効にも変えず、Native へ渡さない", async () => {
+    const native = fakeNativeBackend({ provider: "openai" });
+    const setting = createModelInfoSetting(temp.dir);
+    const backend = wrapBackendForModelInfoSetting(native.backend, setting)!;
+    await backend.saveAiSettings!({
+      provider: "x",
+      [MODEL_INFO_AUTO_UPDATE_KEY]: false,
+    });
+    expect(setting.get()).toBe(true);
+    expect(native.saveAiSettings).toHaveBeenLastCalledWith({ provider: "x" });
+    setting.set(false);
+    await backend.saveAiSettings!({
+      provider: "y",
+      [MODEL_INFO_AUTO_UPDATE_KEY]: true,
+    });
+    expect(setting.get()).toBe(false);
+    expect(native.saveAiSettings).toHaveBeenLastCalledWith({ provider: "y" });
+  });
+
   it("項目が無い save は現在の値を変えない（既定値から作った設定で再有効化されない）", async () => {
     const native = fakeNativeBackend({ provider: "openai" });
     const setting = createModelInfoSetting(temp.dir);
@@ -172,21 +210,23 @@ describe("AiSettings の往復（Rust の struct は未知の key を捨てる�
     expect(read[MODEL_INFO_AUTO_UPDATE_KEY]).toBe(false);
   });
 
-  it("boolean でない値は無視する（現在の値を変えない）が、Native へは渡さない", async () => {
+  it("明示の切替に boolean でない値を与えたら拒否し、値を変えない（Native も呼ばない）", async () => {
     const native = fakeNativeBackend({ provider: "openai" });
     const setting = createModelInfoSetting(temp.dir);
     const backend = wrapBackendForModelInfoSetting(native.backend, setting)!;
     for (const bad of ["false", 0, null, undefined, {}, []]) {
-      await backend.saveAiSettings!({
-        provider: "x",
-        [MODEL_INFO_AUTO_UPDATE_KEY]: bad,
-      });
+      await expect(
+        backend.saveAiSettings!({ [MODEL_INFO_AUTO_UPDATE_KEY]: bad }),
+      ).rejects.toThrow("must be a boolean");
       expect(setting.get()).toBe(true);
-      expect(native.saveAiSettings).toHaveBeenLastCalledWith({ provider: "x" });
     }
+    expect(native.saveAiSettings).not.toHaveBeenCalled();
+    expect(existsSync(path.join(temp.dir, MODEL_INFO_SETTING_FILE))).toBe(
+      false,
+    );
   });
 
-  it("Native が save を拒否したら、この項目も変えない", async () => {
+  it("Native が完全な設定の save を拒否しても、この項目は変わらない", async () => {
     const native = fakeNativeBackend({ provider: "openai" });
     const setting = createModelInfoSetting(temp.dir);
     const backend = wrapBackendForModelInfoSetting(native.backend, setting)!;
@@ -202,7 +242,7 @@ describe("AiSettings の往復（Rust の struct は未知の key を捨てる�
     );
   });
 
-  it("この項目を書けなければ save を失敗させる", async () => {
+  it("この項目を書けなければ明示の切替を失敗させる", async () => {
     const blocker = path.join(temp.dir, "blocker");
     const native = fakeNativeBackend({ provider: "openai" });
     const setting = createModelInfoSetting(blocker);

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RuntimeCapabilitiesProvider } from "@/runtime/runtimeCapabilitiesContext";
 import { AiCategory } from "./AiCategory";
 
@@ -24,6 +24,7 @@ const aiStoreFixture = vi.hoisted(() => ({
   },
   models: [] as Array<Record<string, unknown>>,
   saveSettings: vi.fn(),
+  setModelInfoAutoUpdate: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -42,6 +43,7 @@ vi.mock("@/features/chat/store", () => ({
     isLoadingModels: false,
     loadSettings: vi.fn(),
     saveSettings: aiStoreFixture.saveSettings,
+    setModelInfoAutoUpdate: aiStoreFixture.setModelInfoAutoUpdate,
     saveApiKey: vi.fn(),
     deleteApiKey: vi.fn(),
     testConnection: vi.fn(),
@@ -379,21 +381,27 @@ describe("AiCategory — モデル情報の自動更新（Electron のみ）", (
     ).toBe("true");
   });
 
-  it("オフにすると modelInfoAutoUpdate: false を保存する（他の項目は保つ）", () => {
+  it("オフにすると、明示の切替の経路だけで false を保存する（完全な設定は save しない）", async () => {
     asElectron();
+    aiStoreFixture.setModelInfoAutoUpdate.mockResolvedValue(undefined);
     renderDesktopAiCategory();
     fireEvent.click(screen.getByRole("switch", { name: label }));
-    expect(aiStoreFixture.saveSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "anthropic",
-        model: "claude-sonnet-4-6",
-        modelInfoAutoUpdate: false,
-      }),
+    await waitFor(() =>
+      expect(aiStoreFixture.setModelInfoAutoUpdate).toHaveBeenCalledWith(false),
+    );
+    expect(aiStoreFixture.saveSettings).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("switch", { name: label })
+          .getAttribute("aria-checked"),
+      ).toBe("false"),
     );
   });
 
-  it("保存済みの false は無効として表示し、オンにすると true を保存する", () => {
+  it("保存済みの false は無効として表示し、オンにすると true で切り替える", async () => {
     asElectron();
+    aiStoreFixture.setModelInfoAutoUpdate.mockResolvedValue(undefined);
     aiStoreFixture.settings = {
       ...aiStoreFixture.settings,
       modelInfoAutoUpdate: false,
@@ -402,9 +410,24 @@ describe("AiCategory — モデル情報の自動更新（Electron のみ）", (
     const toggle = screen.getByRole("switch", { name: label });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(toggle);
-    expect(aiStoreFixture.saveSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ modelInfoAutoUpdate: true }),
+    await waitFor(() =>
+      expect(aiStoreFixture.setModelInfoAutoUpdate).toHaveBeenCalledWith(true),
     );
+  });
+
+  it("保存に失敗したら、表示を変えない（実際の設定と食い違わせない）", async () => {
+    asElectron();
+    aiStoreFixture.setModelInfoAutoUpdate.mockRejectedValue(
+      new Error("write failed"),
+    );
+    renderDesktopAiCategory();
+    fireEvent.click(screen.getByRole("switch", { name: label }));
+    await waitFor(() =>
+      expect(aiStoreFixture.setModelInfoAutoUpdate).toHaveBeenCalledWith(false),
+    );
+    expect(
+      screen.getByRole("switch", { name: label }).getAttribute("aria-checked"),
+    ).toBe("true");
   });
 
   it("Electron 以外では項目を出さない（取得する main が無い）", () => {

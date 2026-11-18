@@ -9,7 +9,9 @@
  * ときに AiSettings の JSON へ戻す。renderer から見ると、他の項目と同じ AiSettings の往復になる。
  *
  * 規則：
- *   - 項目が無い save（既定値から作った設定など）は、現在の値を変えない。boolean のときだけ更新する。
+ *   - 変えられるのは、この項目だけを持つ `saveAiSettings`（renderer の明示の切替。Native は呼ばない）だけ。
+ *     完全な設定に載った項目は無視して捨てる。窓ごとに読んだ古い設定を丸ごと save する経路（別窓のモデル
+ *     切替など）が、無効にした自動更新を有効へ書き戻さないため。boolean でない値の切替は拒否する。
  *   - file が無ければ有効。読めない・壊れているときは無効（fail-closed。本人の意思が分からないまま通信しない）。
  *   - 書けなければ save を失敗させ、メモリの値も変えない。
  */
@@ -159,15 +161,20 @@ export function wrapBackendForModelInfoSetting(
   if (typeof backend.saveAiSettings === "function") {
     overrides.saveAiSettings = async (settings: unknown): Promise<void> => {
       let forNative = settings;
-      let requested: boolean | undefined;
       if (isPlainRecord(settings) && MODEL_INFO_AUTO_UPDATE_KEY in settings) {
         const { [MODEL_INFO_AUTO_UPDATE_KEY]: value, ...rest } = settings;
-        if (typeof value === "boolean") requested = value;
+        if (Object.keys(rest).length === 0) {
+          // 明示の切替（この項目だけの save）。Native の設定は変えないので呼ばない。
+          if (typeof value !== "boolean") {
+            throw new Error(`${MODEL_INFO_AUTO_UPDATE_KEY} must be a boolean`);
+          }
+          setting.set(value);
+          return;
+        }
+        // 完全な設定に載った値は、古い設定の書き戻しかもしれないので使わない（Native へも渡さない）。
         forNative = rest;
       }
-      // Native の保存が成功してから、この項目を保存する（Native が拒否した保存では何も変えない）。
       await backend.saveAiSettings?.(forNative);
-      if (requested !== undefined) setting.set(requested);
     };
   }
   return new Proxy(backend, {

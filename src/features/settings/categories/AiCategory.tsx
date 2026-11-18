@@ -238,6 +238,7 @@ export function AiCategory() {
     isLoadingModels,
     loadSettings,
     saveSettings,
+    setModelInfoAutoUpdate,
     saveApiKey,
     deleteApiKey,
     testConnection,
@@ -1482,12 +1483,19 @@ export function AiCategory() {
             <Switch
               checked={localSettings.modelInfoAutoUpdate !== false}
               onCheckedChange={async (checked) => {
-                const updated = {
-                  ...localSettings!,
-                  modelInfoAutoUpdate: checked,
-                };
-                setLocalSettings(updated);
-                await saveSettings(updated);
+                // 明示の切替の経路だけが変える（完全な設定の save には載せない）。
+                try {
+                  await setModelInfoAutoUpdate(checked);
+                  setLocalSettings((s) =>
+                    s ? { ...s, modelInfoAutoUpdate: checked } : s,
+                  );
+                } catch (error) {
+                  toast.error(
+                    t("settings.ai.modelInfoAutoUpdateSaveFailed", {
+                      message: String(error),
+                    }),
+                  );
+                }
               }}
               aria-label={t("settings.ai.modelInfoAutoUpdate")}
             />

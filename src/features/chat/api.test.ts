@@ -35,6 +35,7 @@ const mockMarkAiAuditDispatched = vi.mocked(markAiAuditDispatched);
 import {
   getAiSettings,
   saveAiSettings,
+  setModelInfoAutoUpdate,
   saveApiKey,
   hasApiKey,
   deleteApiKey,
@@ -79,6 +80,28 @@ describe("chat/api", () => {
       expect(mockInvoke).toHaveBeenCalledWith("save_ai_settings", {
         settings,
       });
+    });
+  });
+
+  describe("setModelInfoAutoUpdate", () => {
+    it("この項目だけを持つ save_ai_settings で明示的に切り替える（完全な設定は載せない）", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+
+      await setModelInfoAutoUpdate(false);
+      expect(mockInvoke).toHaveBeenLastCalledWith("save_ai_settings", {
+        settings: { modelInfoAutoUpdate: false },
+      });
+      await setModelInfoAutoUpdate(true);
+      expect(mockInvoke).toHaveBeenLastCalledWith("save_ai_settings", {
+        settings: { modelInfoAutoUpdate: true },
+      });
+    });
+
+    it("保存に失敗したら reject する", async () => {
+      mockInvoke.mockRejectedValueOnce(new Error("write failed"));
+      await expect(setModelInfoAutoUpdate(false)).rejects.toThrow(
+        "write failed",
+      );
     });
   });
 

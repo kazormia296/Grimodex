@@ -17,6 +17,7 @@ import {
 vi.mock("./api", () => ({
   getAiSettings: vi.fn(),
   saveAiSettings: vi.fn(),
+  setModelInfoAutoUpdate: vi.fn(),
   saveApiKey: vi.fn(),
   hasApiKey: vi.fn(),
   deleteApiKey: vi.fn(),
@@ -39,6 +40,7 @@ import * as codexAppApi from "./codexAppApi";
 
 const mockGetAiSettings = vi.mocked(api.getAiSettings);
 const mockSaveAiSettings = vi.mocked(api.saveAiSettings);
+const mockSetModelInfoAutoUpdate = vi.mocked(api.setModelInfoAutoUpdate);
 const mockSaveApiKey = vi.mocked(api.saveApiKey);
 const mockHasApiKey = vi.mocked(api.hasApiKey);
 const mockDeleteApiKey = vi.mocked(api.deleteApiKey);
@@ -203,6 +205,33 @@ describe("useAiSettingsStore", () => {
 
       expect(mockGetAiSettings).toHaveBeenCalledOnce();
       expect(useAiSettingsStore.getState().settings).toEqual(savedSettings);
+    });
+  });
+
+  describe("setModelInfoAutoUpdate", () => {
+    it("calls the explicit toggle only (never a full settings save) and updates just that field in the store", async () => {
+      useAiSettingsStore.setState({ settings: { ...defaultSettings } });
+      mockSetModelInfoAutoUpdate.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().setModelInfoAutoUpdate(false);
+
+      expect(mockSetModelInfoAutoUpdate).toHaveBeenCalledWith(false);
+      expect(mockSaveAiSettings).not.toHaveBeenCalled();
+      expect(useAiSettingsStore.getState().settings).toEqual({
+        ...defaultSettings,
+        modelInfoAutoUpdate: false,
+      });
+    });
+
+    it("leaves the store untouched and rejects when the save fails", async () => {
+      useAiSettingsStore.setState({ settings: { ...defaultSettings } });
+      mockSetModelInfoAutoUpdate.mockRejectedValueOnce(new Error("failed"));
+
+      await expect(
+        useAiSettingsStore.getState().setModelInfoAutoUpdate(false),
+      ).rejects.toThrow("failed");
+
+      expect(useAiSettingsStore.getState().settings).toEqual(defaultSettings);
     });
   });
 
