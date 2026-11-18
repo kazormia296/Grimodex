@@ -4,7 +4,11 @@ import {
   AINOVERIST_V1_MODEL_CAPS,
   isAinoveristV1Model,
 } from "../aiNovelist";
-import { getDynamicModelMeta, type DynamicModelMeta } from "./dynamicModelCaps";
+import {
+  getDynamicModelMeta,
+  warnNoUsableEffortOnce,
+  type DynamicModelMeta,
+} from "./dynamicModelCaps";
 import { ollamaContextLengthSettingKeys, type AiProvider } from "../types";
 
 /** モデルの能力情報 */
@@ -683,6 +687,11 @@ function mergeAnthropicLive(
     };
   }
   const live = dyn.anthropicThinking;
+  if (live?.effortUnusable) {
+    // 対応だが製品の段階が無い（xhigh だけ）。この表に無い id では thinking を送らなくなるので、
+    // 黙って止めず一度だけ記録する（表の id はここへ来ない）。
+    warnNoUsableEffortOnce(model);
+  }
   if (live) {
     // adaptive の request は effort を必ず伴う（Rust の ThinkingConfig::Adaptive）ので、
     // live が effort 不可と明示するモデルでは adaptive を送らない。effort の情報が無いときは

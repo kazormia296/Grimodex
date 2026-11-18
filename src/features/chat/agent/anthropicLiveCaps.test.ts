@@ -411,15 +411,37 @@ describe("parseAnthropicLiveCaps の合成入力（今の挙動の固定）", ()
     });
   });
 
-  it("disabled が形違い（supported が boolean でない／object でない）でも canDisable は false", () => {
+  it("disabled が形違い（supported が boolean でない／object でない）でも、他の方式が読めれば canDisable は false", () => {
     expect(
       thinkingOf({
-        thinking: { types: { disabled: { supported: "yes" } } },
+        thinking: {
+          types: {
+            adaptive: { supported: true },
+            disabled: { supported: "yes" },
+          },
+        },
       })?.canDisable,
     ).toBe(false);
     expect(
-      thinkingOf({ thinking: { types: { disabled: true } } })?.canDisable,
+      thinkingOf({
+        thinking: { types: { adaptive: { supported: true }, disabled: true } },
+      })?.canDisable,
     ).toBe(false);
+  });
+
+  it("types が object でも各値の形が 1 つも読めない → types／canDisable は undefined（不明）。『どれも非対応』の空配列と区別する", () => {
+    for (const types of [
+      { disabled: { supported: "yes" } },
+      { disabled: true, adaptive: "yes" },
+      { unknown_type: { supported: true } },
+    ]) {
+      expect(thinkingOf({ thinking: { supported: true, types } })).toEqual({
+        supported: true,
+        types: undefined,
+        effortLevels: undefined,
+        canDisable: undefined,
+      });
+    }
   });
 
   it("types が object でない（配列・文字列）なら『返さない』として types も canDisable も undefined", () => {
@@ -433,8 +455,27 @@ describe("parseAnthropicLiveCaps の合成入力（今の挙動の固定）", ()
     }
   });
 
-  it("types が空 object → types は空配列、canDisable は false", () => {
+  it("types が空 object → 読める形が 1 つも無いので types／canDisable は undefined（不明）", () => {
     expect(thinkingOf({ thinking: { supported: true, types: {} } })).toEqual({
+      supported: true,
+      types: undefined,
+      effortLevels: undefined,
+      canDisable: undefined,
+    });
+  });
+
+  it("types の各値が読めて、どれも supported でない → 空配列、canDisable は false", () => {
+    expect(
+      thinkingOf({
+        thinking: {
+          supported: true,
+          types: {
+            enabled: { supported: false },
+            adaptive: { supported: false },
+          },
+        },
+      }),
+    ).toEqual({
       supported: true,
       types: [],
       effortLevels: undefined,

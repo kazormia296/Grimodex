@@ -35,6 +35,12 @@ export interface AnthropicThinkingMeta {
    * - 非空：許された段階。adaptive で送る effort は、この中へ丸める。
    */
   effortSteps?: AnthropicEffortStep[];
+  /**
+   * effort に対応するが、製品の段階が 1 つも無い（xhigh だけ等）ので adaptive を送れない。
+   * `effortSteps: []` のうち「非対応」と区別するための印。warn は表に無い id にだけ出すので、
+   * 判定の材料として持つ（modelLimits.ts の mergeAnthropicLive が使う）。
+   */
+  effortUnusable?: boolean;
 }
 
 interface StoredMeta {
@@ -140,10 +146,8 @@ const EFFORT_STEPS: readonly AnthropicEffortStep[] = [
 
 const warnedNoUsableEffort = new Set<string>();
 
-function warnNoUsableEffortOnce(
-  modelId: string,
-  levels: readonly string[],
-): void {
+/** 表に無い id で製品の effort の段階が無く thinking を送らないとき、モデルごとに一度だけ記録する。 */
+export function warnNoUsableEffortOnce(modelId: string): void {
   if (warnedNoUsableEffort.has(modelId)) return;
   warnedNoUsableEffort.add(modelId);
   debugLog.warn(
@@ -151,7 +155,7 @@ function warnNoUsableEffortOnce(
     "製品が使える effort の段階が無いため thinking を送りません",
     {
       sensitivity: "safe",
-      fields: { modelId, liveEffortLevels: [...levels] },
+      fields: { modelId },
     },
   );
 }
@@ -173,6 +177,13 @@ function deriveAnthropicThinking(
   const effortSteps = live.effortLevels
     ? EFFORT_STEPS.filter((step) => live.effortLevels?.includes(step))
     : undefined;
+  if (live.supported === false) {
+    return { adaptive: false, enabled: false, effortSteps };
+  }
+  if (live.types === undefined) {
+    // 方式が分からない。effort だけは分かっていても、方式と一緒にしか使わない。
+    return undefined;
+  }
   if (
     live.effortLevels &&
     live.effortLevels.length > 0 &&
@@ -180,20 +191,14 @@ function deriveAnthropicThinking(
   ) {
     // 対応だが製品の段階（low／medium／high／max）が 1 つも無い（例：xhigh だけ）。
     // 製品は xhigh を持たないので、送れる effort が無い。adaptive は effort を伴うので
-    // thinking を送らない。黙って止めず、モデルごとに一度だけ記録する。
-    warnNoUsableEffortOnce(model.id, live.effortLevels);
+    // thinking を送らない。記録（warn）は、実際に thinking を送らなくなる表に無い id にだけ
+    // mergeAnthropicLive が出す（ここは表の判定を知らず、modelLimits との循環も避ける）。
     return {
       adaptive: false,
-      enabled: live.types?.includes("enabled") ?? false,
+      enabled: live.types.includes("enabled"),
       effortSteps: [],
+      effortUnusable: true,
     };
-  }
-  if (live.supported === false) {
-    return { adaptive: false, enabled: false, effortSteps };
-  }
-  if (live.types === undefined) {
-    // 方式が分からない。effort だけは分かっていても、方式と一緒にしか使わない。
-    return undefined;
   }
   return {
     adaptive: live.types.includes("adaptive"),
@@ -216,7 +221,12 @@ function sanitizeStoredThinking(
   const effortSteps = Array.isArray(stored)
     ? EFFORT_STEPS.filter((step) => stored.includes(step))
     : undefined;
-  return { adaptive: value.adaptive, enabled: value.enabled, effortSteps };
+  return {
+    adaptive: value.adaptive,
+    enabled: value.enabled,
+    effortSteps,
+    ...(value.effortUnusable === true ? { effortUnusable: true } : {}),
+  };
 }
 
 /**

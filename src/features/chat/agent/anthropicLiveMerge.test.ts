@@ -735,6 +735,134 @@ describe("Anthropic の effort の段階の三つの状態と丸め（表に無�
     }
   });
 
+  it("判定の順序：supported:false × xhigh だけ → thinking を送らず、warn も出さない（xhigh の判定が先に勝たない）", () => {
+    const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
+    try {
+      registerAnthropicModelCaps([
+        {
+          ...synthetic("claude-fable-6-1", {
+            supported: true,
+            xhigh: { supported: true },
+          }),
+          anthropicCapabilities: {
+            thinking: {
+              supported: false,
+              types: { adaptive: { supported: true } },
+            },
+            effort: { supported: true, xhigh: { supported: true } },
+          },
+        },
+      ]);
+      expect(
+        getDynamicModelMeta("anthropic", "claude-fable-6-1"),
+      ).toMatchObject({
+        anthropicThinking: { adaptive: false, enabled: false },
+      });
+      expect(
+        buildThinkingParams(
+          "claude-fable-6-1",
+          "high",
+          "summarized",
+          true,
+          ANTHROPIC,
+        ),
+      ).toEqual({});
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    ["xhigh だけ", { supported: true, xhigh: { supported: true } }],
+    ["一部の段階だけ", { supported: true, low: { supported: true } }],
+    [
+      "全部の段階",
+      {
+        supported: true,
+        low: { supported: true },
+        medium: { supported: true },
+        high: { supported: true },
+        max: { supported: true },
+      },
+    ],
+  ])(
+    "判定の順序：thinking の types が不明（形が読めない）× effort %s → meta は undefined（今の推定のまま）、warn も出さない",
+    (_label, effort) => {
+      const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
+      try {
+        const base = resolveModelCapabilities("claude-fable-6-1", ANTHROPIC);
+        registerAnthropicModelCaps([
+          {
+            id: "claude-fable-6-1",
+            name: "x",
+            contextLength: 400_000,
+            maxCompletionTokens: 60_000,
+            anthropicCapabilities: {
+              thinking: {
+                supported: true,
+                types: { disabled: { supported: "yes" } },
+              },
+              effort,
+            },
+          },
+        ]);
+        expect(
+          getDynamicModelMeta("anthropic", "claude-fable-6-1")
+            ?.anthropicThinking,
+        ).toBeUndefined();
+        expect(
+          resolveModelCapabilities("claude-fable-6-1", ANTHROPIC),
+        ).toMatchObject({
+          supportsAdaptiveThinking: base.supportsAdaptiveThinking,
+          supportsThinking: base.supportsThinking,
+          supportsEffort: base.supportsEffort,
+          supportsMaxEffort: base.supportsMaxEffort,
+        });
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("warn の範囲：xhigh だけでも、能力表にある id では warn せず、request も変えない", () => {
+    const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
+    try {
+      const before = TABLE_IDS.map((id) =>
+        buildThinkingParams(id, "high", "summarized", true, ANTHROPIC),
+      );
+      registerAnthropicModelCaps(
+        FIXTURE_AI_MODELS_WITH_CAPS.map((model) => ({
+          ...model,
+          anthropicCapabilities: {
+            thinking: ADAPTIVE,
+            effort: { supported: true, xhigh: { supported: true } },
+          },
+        })),
+      );
+      const after = TABLE_IDS.map((id) =>
+        buildThinkingParams(id, "high", "summarized", true, ANTHROPIC),
+      );
+      expect(after).toEqual(before);
+      // 表に無い id は thinking を送らなくなる（ここで初めて解決され、warn が出る）。
+      expect(
+        buildThinkingParams(
+          "claude-fable-5-2",
+          "high",
+          "summarized",
+          true,
+          ANTHROPIC,
+        ),
+      ).toEqual({});
+      // 表に無い fixture の id（claude-fable-5-2）だけが warn の対象。
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls[0])).toContain("claude-fable-5-2");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("一部の段階だけ許すモデルでは、要求以下で最も高い許された段階へ丸める", () => {
     registerAnthropicModelCaps([
       synthetic("claude-fable-6-1", {
@@ -815,9 +943,7 @@ describe("Rust と TS の field 名の境界（AiModel の wire JSON）", () => 
           "id",
           "maxCompletionTokens",
           "name",
-        ]
-          .filter((k) => k in entry)
-          .sort(),
+        ].sort(),
       );
       expect(entry).toHaveProperty(key);
       expect(entry).toHaveProperty(contextKey);
