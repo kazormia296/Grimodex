@@ -269,3 +269,84 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 - 残ること：
   - packaged（asar、fuses）は試していません。閉じ込めの適用の条件は同じ（`shouldRegisterAppProtocol()`）なので、差は出ない見込みです。
   - 利用者の proxy の環境で Node の fetch がどう振る舞うか（env の proxy を読むか）は、未確認のままです（T5）。
+
+### 7.3 PR-C2 の実装で決めた技術事項（2026-11-19）
+
+§7 の回答の範囲内で決めた実装の事項です。承認済みの仕様（§1〜§3、§7）から外れた点は「仕様との差」に分けて書きました。閾値はすべて暫定で、Q10 の実測後の確認まで確定ではありません。
+
+#### 同梱の写し（B1）と生成の script
+
+- 置き場所：`electron/resources/model-capabilities.json`（`source` は `"grimodex"`）。master の raw と同じ file です。
+  - URL：`https://raw.githubusercontent.com/kazormia296/Grimodex/master/electron/resources/model-capabilities.json`。`electron/main/modelCapabilityFetch.ts` の定数で、設定・env・IPC から変える入口はありません。
+  - 初回の写し：2026-11-19 に取得して保存した models.dev の応答（時刻は UTC の `2026-11-18T15:28:51Z`）から生成しました。437 件（anthropic 18、openai 45、openrouter 370、sakana 4）、54,386 byte（上限 1 MiB の約 1/19）、正規形の digest は `9a3bbdf0ae94…5e32d`。
+- 書式：1 model を 1 行にします（更新 PR の diff を読めるようにするため）。`parseSnapshot` は空白を問わないので、この書式のまま検証を通ります。prettier は 1 行が長く折り返すため、`.prettierignore` に入れ、書式は script が保ちます。
+- script：`scripts/generate-model-capability-snapshot.mjs`。通信しません。
+  - `generate <models.dev の応答> --generated-at <ISO8601 の UTC> [--out <file>]`：`parseModelsDevText` → `normalizeModelsDev` → `canonicalize` → `parseSnapshot` の順に通し、変換の結果が検証の後に 1 件も落ちていないこと（正規形が一致）まで自己検証してから書きます。1 つでも失敗したら出力 file には触れず、非 0 で終わります。出力は決定的です（同じ入力・同じ時刻なら同じ bytes）。
+  - `check [<file>]`：`parseSnapshot` を通り、`source` が `grimodex` で、捨てられる項目が無く、書式が `generate` の出力と 1 byte も違わないことを確かめます。試験が commit 済みの写しに対して実行します。
+  - Node 22 で install なしに動きます（`.ts` を直接 import）。
+- 読み方（`resolveBundledSnapshotPath`）：
+  - packaged：electron-builder の `extraResources`（`electron/resources` → `resources/model-capabilities`、`model-capabilities.json` だけ）で `<resourcesPath>/resources/model-capabilities/model-capabilities.json`。`resolveSemanticResourceRoot` と同じ形です。
+  - dev：`<repo>/electron/resources/model-capabilities.json`（main の bundle は `<repo>/dist-electron` なので 1 つ上）。
+  - 起動時には読みません（初回の IPC か取得の採用の判断のときに 1 回だけ読んで text を保持）。読めない・検証に落ちる（利用者の時計が大きく古くて `future-generated-at` になる場合を含む）ときも main は落ちません。そのときは取得を採用せず（比べる基準が無い）、IPC は固定の error で reject します。
+- CI の検証：`electron/main/modelCapabilityBundled.test.ts` が、同梱の写しが `parseSnapshot` を通ること（findings が 0 件）、`check` が通ること、script の path と app の配信 URL の path が一致すること、dev の path の解決が file を指すことを確かめます。
+
+#### 取得 scheduler（`electron/main/modelCapabilityScheduler.ts`）
+
+- 構造：license の scheduler（`licenseValidation.ts`）の形を、終端と再開できる停止に分けて作り直しました。
+  - 起動は `start()`（ready の後）から 30 秒後に初回、以後は前の取得の完了から 24 時間ごと（Q3。失敗でも完了から 24 時間）。timer は同時に 1 つ。
+  - single-flight：走行中の `runCycle()` は同じ promise を返します。
+  - 取得するのは「設定が有効」かつ「profile が `unrestricted`」のときだけ（Q2・Q4）。どちらかが崩れると、走行中の取得を `abort` し、timer と再試行の待ちを解除し、世代番号を進めます。取消し後に届いた結果は棄却します。`cache` は rename の直前（同期）に世代・設定・profile を確かめ、通らなければ書きません（tmp も残しません）。
+  - 再試行：一時的な失敗（network、timeout、429、5xx）だけ、1 周期に最大 3 回、間隔 30 秒・120 秒。内容・場所の誤り（404、redirect、host の不一致、上限超過、decode、検証の失敗）は再試行しません。
+  - 採用：`parseSnapshot` → `source` が `grimodex` → 同梱の写しに `compareSnapshots` → 有効な cache があれば cache にも `compareSnapshots`。どれかが拒否なら採用しません。内容が cache と同じ（または cache が無く同梱と同じ）なら書きません。
+  - log：固定の語、code、件数だけです（応答の本文、key、URL、error の message は出しません）。
+- 通信（`electron/main/modelCapabilityFetch.ts`。electron を import しません）：Node の `globalThis.fetch`、GET、https の定数の URL だけ、`redirect: "manual"`、200 以外は失敗、応答の最終 URL を定数と完全一致で再照合、`content-length` と読込み中の byte 数の両方で `maxSnapshotBytes` を当て、本文は fatal な UTF-8 で decode。送る header は `User-Agent: Grimodex-Model-Registry`（版なし）と `Accept` だけです。接続（header が届くまで）と総時間の timeout は `AbortController` と timer で当て、abort が効かない fetch でも結果を返します。失敗の閉鎖は body の `cancel` を要求しますが、完了は待ちません（`cancel` が返らない stream で scheduler を止めないため）。
+- 配線：`electron/main/modelCapabilityRuntime.ts` に集約し、`index.ts` には `create`・`start`・`dispose` と backend の差し替え、shell handler の追加だけを足しました（`large-module-debt` の上限は変えていません）。
+  - `profileEgress.onStatusChange` の listener：`view.state` を持ち、`scheduler.onProfileChanged()` を呼びます。同期で、throw せず、file 操作を含みません（stage 2 の listener の throw は activation を fail closed にするため）。`activating`・`restricted`・`unavailable` のすべてで止まります。
+  - quit：`quitFinalizer` の `complete` の independent cleanup に置きました（Native の terminal receipt の `AggregateError` に混ぜないため）。`dispose` は reject せず、走行中の取得の終了を `quitWaitMs`（2 秒）まで待ち、超えても終了を止めません。
+  - D2a の main egress participant には登録していません（§1 の A8 のとおり、`onStatusChange` の閉鎖にとどめました）。閉鎖は abort の要求までで、走行中の取得の終了を activation が drain して待つことはしません。送るのは公開の GET だけで本文を含まないためですが、これは未解決として残します。
+
+#### cache（Q14）
+
+- `app.getPath("userData")` の 1 file（`model-capabilities-cache.json`）に tmp＋rename で書きます。envelope は `{ schemaVersion, fetchedAt, fetchedFrom, bodySha256, body }` で、`fetchedFrom` に取得元の host を刻みます。
+- 読むときの順序：size の上限（本文の上限の 4 倍）→ envelope の形 → `fetchedFrom` の一致 → 本文の SHA-256 → `parseSnapshot` → `source` → 同梱の写しとの `compareSnapshots`。毎回すべてを通し、失敗した cache は削除します（同梱が読めないときだけ、基準が無いので採用せず削除もしません）。
+- digest の判断：**入れました**。T9 が「digest の不一致なら破棄」を手当てとして挙げているためです。PR-C1 の `digest` は「捨てた後の正規形」の digest で、本文の改ざんの検出には使えないので、取得層で受け取った本文（bytes）の SHA-256 を別に刻みます。検出できるのは、書込みの途中の破損、disk の bit rot、手編集です。同じ OS ユーザーが digest ごと書き換える改ざんは範囲外です（Q11、DR-DA1-5 と同じ）。
+- 同梱より古い cache：採用せず削除します（app の更新で同梱が進んだとき。`compareSnapshots` の `stale`）。同梱と同じ日時で中身が違う cache、同梱に対して急減した cache も同様です。
+- 取得先の切替で破棄する（Q14）仕組みは `fetchedFrom` の一致の確認として入れましたが、取得先の選択そのもの（models.dev の直接取得）は作っていません（Q16）。`source` が `models.dev` の写しは、取得した本文でも cache でも拒否します。
+
+#### 設定「モデル情報の自動更新」（Q4）
+
+- AI 設定（`AiSettings`、renderer の型）の項目 `modelInfoAutoUpdate?: boolean` として置きました（未設定・true が有効、false が無効）。設定画面（`AiCategory`、Electron のみ）に Switch を足し、説明文に取得先の host（`raw.githubusercontent.com`）と、止めると取得した情報を削除して同梱の情報だけを使うことを書きました（Q5。初回の告知は出しません）。
+- 保存は main の別 file（`<userData>/model-info-settings.json`）です。**共有 Rust の `grimodex_ai::AiSettings` は型付きの struct で、struct に無い key は `save_ai_settings` の往復で捨てられます**（`reasoning_effort_override` の注記と同じ事情）。TS の型だけに足すと、無効にしても再起動で有効に戻り、承認と逆の通信が起きます。そこで main が backend の `saveAiSettings`／`getAiSettings` を包み、この項目だけを別 file に保存して `get_ai_settings` の結果へ戻します。
+  - 項目を含まない save（`DEFAULT_AI_SETTINGS` から作った設定など）は現在の値を変えません。boolean でない値は無視します。Native が save を拒否したときは、この項目も変えません。
+  - file が無ければ有効（既定）、読めない・壊れているときは無効（fail-closed）、書けないときは save を失敗させます。
+  - 変更は `modelInfoSetting.onChange` から scheduler の `onSettingChanged()` に届きます。renderer の引数ではなく、main が保存した値で判断します。無効なら取得を止め、cache と tmp の残骸を削除します。起動時に無効で cache が残っていれば、`start()` で削除します。
+  - 有効に戻したときは、初回と同じ 30 秒の遅延から始めます（A4）。
+
+#### 読み取り専用の typed IPC（Q17）
+
+- 名前：`get_model_capability_snapshot`（引数なし。引数を与えると拒否）。返す値：`{ origin: "cache" | "bundled", source, generatedAt, models }`。採用済みの cache（設定が有効で、検証を通るもの）、なければ同梱の写し。使える写しが無ければ `MODEL_CAPABILITY_SNAPSHOT_UNAVAILABLE` で reject します。
+- 登録：`SHELL_COMMAND_NAMES`、main の shell handler、`profileEgress.ts` の `INTERNAL_COMMANDS`（restricted でも読める）、renderer の read lane（`READ_ONLY_COMMAND_TIMEOUTS`、10 秒）。取得を始める・強制する・設定する command はありません。
+- renderer の wrapper：`src/lib/modelCapabilitySnapshot.ts`（`getModelCapabilitySnapshot()`。Electron 以外は null、契約の形でない値は null、IPC の失敗は reject）。能力表への統合は次の PR です。
+
+#### 暫定値の一覧（Q10 の実測後に確認）
+
+| 値 | 暫定値 | 置き場所 |
+|---|---|---|
+| 起動から初回の取得 | 30 秒 | `MODEL_CAPABILITY_SCHEDULE.initialDelayMs` |
+| 取得の周期（完了から） | 24 時間（Q3 の決定。値は暫定ではない） | `intervalMs` |
+| 接続（header が届くまで）の timeout | 10 秒 | `connectTimeoutMs` |
+| 総時間の timeout | 30 秒 | `totalTimeoutMs` |
+| 1 周期の最大の試行回数 | 3 回 | `maxAttempts` |
+| 試行の間の待ち | 30 秒、120 秒 | `retryDelaysMs` |
+| quit での待ちの上限 | 2 秒 | `quitWaitMs` |
+| 本文の上限（content-length と実 byte 数） | 1 MiB（PR-C1 の `maxSnapshotBytes`） | `SNAPSHOT_POLICY` |
+| cache の envelope の上限 | 本文の上限の 4 倍 | `modelCapabilityStore.ts` |
+
+#### 仕様との差と未解決
+
+- 設定の保存を、共有 Rust の `AiSettings` に field を足す形にしませんでした（上記）。Rust の struct に足す案は、保存の正本を 1 つにできますが、`AiSettings` を組み立てる struct literal が約 40 か所（凍結した `src-tauri` の legacy を含む）にあり、初回の Rust の build は ONNX Runtime などの取得（ネットワーク）が要るため、この環境では検証できません。必要なら別 PR で移します（移すときは、この main の別 file の値を読み出して移行します）。
+- D2a の egress participant に登録していません（上記）。走行中の取得は abort の要求で閉じますが、activation がその終了を drain して待つことはしません。
+- 失敗した周期の後も、次の取得は完了から 24 時間後です（offline で起動して数分後に回復しても、次の起動か翌日まで取得しません）。再試行は 1 周期に 3 回までです。
+- 壊れた cache は、読んだ時点で削除します（restricted でも、cache の読出しの副作用として）。
+- 開示は README（英・日）と `docs/user-guide/ja/Privacy-and-data.md` の「AI以外の通信」に載せました。更新していないもの：`public/PRIVACY_en.md`・`public/PRIVACY_ja.md`（版と同意に結びつく文書のため、別の判断が要る）、`docs/user-guide/ja/` の `About.md`・`Home.md`・`Install-and-update.md`・`Quickstart-10-minutes.md` の通信の要約、`docs/lp/` の LP の文面。
+- 確認していないこと：packaged の build（asar、`extraResources` の配置）と実機の起動。利用者の proxy の環境での Node の fetch の挙動（T5）。実際のネットワークには出ていません（試験はすべて注入）。
