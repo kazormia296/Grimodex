@@ -6640,6 +6640,50 @@ describe("useChatStore", () => {
         );
       });
 
+      it("finalizes the reserved row with stopped metadata when the turn is stopped after the tool", async () => {
+        const { rows, events } = setupAgentTurn();
+        mockAgentCreateSnippet.mockResolvedValue({ id: "s", title: "t" });
+        const sent: { id?: string } = {};
+        let rejectSecondCall!: (error: Error) => void;
+        mockSendAgentMessage
+          .mockImplementationOnce(toolUseResponse("create_snippet", sent))
+          .mockImplementationOnce(
+            () =>
+              new Promise((_, reject) => {
+                rejectSecondCall = reject;
+              }),
+          );
+
+        const sendPromise = useChatStore
+          .getState()
+          .sendMessage("スニペットを作って");
+        await vi.waitFor(() => {
+          expect(mockAgentCreateSnippet).toHaveBeenCalledOnce();
+          expect(mockSendAgentMessage).toHaveBeenCalledTimes(2);
+        });
+        useChatStore.getState().stopGeneration();
+        rejectSecondCall(new Error("aborted by stop"));
+        await sendPromise;
+
+        // user の行は完了（停止）後の保存の時点。assistant の行は同じ id を更新する。
+        expect(events).toEqual([
+          "add:assistant",
+          "add:user",
+          "replace:assistant",
+        ]);
+        expect(rows.get(sent.id ?? "")?.role).toBe("assistant");
+        expect(chatApi.addMessage).toHaveBeenLastCalledWith(
+          session1.id,
+          "assistant",
+          expect.any(String),
+          expect.objectContaining({
+            id: sent.id,
+            replaceReservedAssistant: true,
+            metadata: expect.stringContaining('"stopped":true'),
+          }),
+        );
+      });
+
       it("does not reserve a row for a turn without a source-bearing write tool", async () => {
         const { events } = setupAgentTurn();
         mockSendAgentMessage.mockResolvedValueOnce({

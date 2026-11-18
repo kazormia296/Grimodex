@@ -47,8 +47,8 @@ import {
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
-  isSendableHistoryMessage,
   parseMetadataRecord,
+  sendableHistory,
   turnErrorText,
 } from "./chatStoreSupport";
 import {
@@ -943,7 +943,9 @@ function createChatTurnStoreActions(
           if (cancelBeforeTransport()) return;
 
           const projectCtxLang = projectCtx?.language ?? "ja";
-          let agentMessages = publicWebSearchPath ? [] : prevMessages;
+          let agentMessages = publicWebSearchPath
+            ? []
+            : sendableHistory(prevMessages);
           if (sessionIdForPersist && !publicWebSearchPath) {
             const agentApiVariant = turnRoute
               ? turnRoute.apiVariant
@@ -981,8 +983,7 @@ function createChatTurnStoreActions(
             (message) =>
               message.id !== userMsg.id &&
               message.id !== assistantMsg.id &&
-              !message.isSummarized &&
-              isSendableHistoryMessage(message),
+              !message.isSummarized,
           );
 
           const agentMsgs: AgentMessagePayload[] = [];
@@ -1731,7 +1732,7 @@ function createChatTurnStoreActions(
             turnRoute?.outputBudget.responseReservationTokens,
         });
 
-        let currentMessages = prevMessages;
+        let currentMessages = sendableHistory(prevMessages);
         if (sessionIdForPersist) {
           currentMessages = await maybeRunSummarization(
             sessionIdForPersist,
@@ -1756,9 +1757,7 @@ function createChatTurnStoreActions(
 
         // APIペイロードを構築（要約済みメッセージを除外）
         const messagesForApi: ChatMessage[] = [
-          ...priorHistoryMessages.filter(
-            (m) => !m.isSummarized && isSendableHistoryMessage(m),
-          ),
+          ...priorHistoryMessages.filter((message) => !message.isSummarized),
           userMsg,
         ];
 

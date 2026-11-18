@@ -4,21 +4,32 @@ import type { ToolResult } from "@/features/chat/agent/agentTypes";
 import { SOURCE_CHAT_MESSAGE_TOOLS } from "@/features/chat/agent/toolExecutors";
 import { ChatTurnPersistenceError } from "./chatTurnPersistence";
 
-/** 出典用に作った空の assistant 行（失敗・停止した turn の残り）は会話履歴として送らない。 */
-export function isSendableHistoryMessage(
-  message: Pick<ChatMessage, "role" | "content">,
-): boolean {
-  return message.role !== "assistant" || message.content.trim().length > 0;
+/**
+ * 会話履歴として送る列。失敗・停止した turn の残り（出典用に作った assistant の行）は、
+ * 本文が空のもの、直前に user が無いもの（user の行は完了時にしか保存しないため、
+ * 失敗した turn では assistant の行だけが残る）を除く。system の行は交互に数えない。
+ */
+export function sendableHistory<
+  T extends Pick<ChatMessage, "role" | "content">,
+>(messages: readonly T[]): T[] {
+  const sendable: T[] = [];
+  let previousRole: ChatMessage["role"] | null = null;
+  for (const message of messages) {
+    if (message.role === "system") {
+      sendable.push(message);
+      continue;
+    }
+    const orphan =
+      message.role === "assistant" &&
+      (!message.content.trim() || previousRole !== "user");
+    if (!orphan) {
+      sendable.push(message);
+      previousRole = message.role;
+    }
+  }
+  return sendable;
 }
 
-/**
- * 出典に実行中の assistant message を使う書き込み tool（create_snippet／
- * create_codex_entry）は、`chat_messages` に行が無いと拒否される（検証／FK）。
- * agent の turn は完了後にまとめて保存するため、該当 tool の最初の実行の直前にだけ
- * assistant の空の行を作り、完了・停止・失敗時は同じ id の行を最終の内容へ更新する。
- * 該当 tool が無い turn は従来どおり完了時に INSERT する。user の行は作らない
- * （NIR-1 の role='user' INSERT trigger の時点を変えない）。
- */
 /** 保存済みの metadata（JSON のオブジェクト）を読む。読めなければ空。 */
 export function parseMetadataRecord(
   raw: string | null | undefined,

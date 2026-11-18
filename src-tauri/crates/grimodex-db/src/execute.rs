@@ -2130,6 +2130,113 @@ mod tests {
         assert_eq!(restricted_row, 0);
     }
 
+    /// agent の書き込み tool が出典にする assistant の行は、turn の完了前に空の行として
+    /// 作り、完了時に同じ id へ UPSERT（drizzle の `on conflict … do update … where … returning`）
+    /// で最終の内容にする。この SQL が renderer の generic SQL を通ること、user 行を上書き
+    /// しないこと、NIR-1 の user INSERT trigger（capture の superseded）に触れないことを固定する。
+    #[test]
+    fn renderer_reserved_assistant_row_upsert_passes_generic_sql_without_the_user_trigger() {
+        let db = test_db();
+        db.migrate().expect("migrate schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects(id,title) VALUES ('reserved-project','Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('reserved-session','reserved-project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('reserved-user','reserved-session','user','u','2026-11-18T10:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed chat scope");
+        let upsert = "insert into \"chat_messages\" (\"id\", \"session_id\", \"role\", \"content\", \"model\", \"tokens_in\", \"tokens_out\", \"duration_ms\", \"metadata\", \"is_starred\", \"is_summarized\", \"created_at\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"chat_messages\".\"id\") do update set \"content\" = ?, \"model\" = ?, \"tokens_in\" = ?, \"tokens_out\" = ?, \"metadata\" = ? where (\"chat_messages\".\"session_id\" = ? and \"chat_messages\".\"role\" = ?) returning \"id\", \"session_id\", \"role\", \"content\"";
+        let params = |id: &str, role: &str, content: &str| {
+            vec![
+                Value::from(id),
+                Value::from("reserved-session"),
+                Value::from(role),
+                Value::from(content),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::from(0),
+                Value::from(0),
+                Value::from("2026-11-18T10:00:00.001Z"),
+                Value::from(content),
+                Value::from("model"),
+                Value::from(1),
+                Value::from(2),
+                Value::from("{\"stopped\":true}"),
+                Value::from("reserved-session"),
+                Value::from("assistant"),
+            ]
+        };
+
+        // 予約（空の行）→ 完了時の UPSERT。
+        db.execute_renderer(
+            upsert,
+            &params("reserved-assistant", "assistant", ""),
+            "all",
+        )
+        .expect("reserve the assistant row");
+        let finalized = db
+            .execute_renderer(
+                upsert,
+                &params("reserved-assistant", "assistant", "final"),
+                "all",
+            )
+            .expect("finalize the reserved assistant row");
+        assert!(
+            format!("{finalized:?}").contains("final"),
+            "UPSERT must return the updated row: {finalized:?}"
+        );
+        // user 行には効かない（WHERE の role で弾かれ、行は変わらない）。
+        db.execute_renderer(upsert, &params("reserved-user", "assistant", "x"), "all")
+            .expect("conflicting user id is not updated");
+        let (assistant, user): (String, String) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT content || '/' || model || '/' || tokens_out FROM chat_messages WHERE id='reserved-assistant'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT content FROM chat_messages WHERE id='reserved-user'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read rows");
+        assert_eq!(assistant, "final/model/2");
+        assert_eq!(user, "u");
+
+        // NIR-1 の capture を更新する trigger は「AFTER INSERT かつ role='user'」だけ。
+        // assistant の INSERT／UPSERT（UPDATE を含む）はこの trigger の対象外。
+        let trigger_sql: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT sql FROM sqlite_master
+                      WHERE type='trigger' AND tbl_name='chat_messages'
+                        AND name='nir1_chat_input_capture_new_human_invalidate'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read the NIR-1 new-human trigger");
+        let trigger_sql = trigger_sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(trigger_sql.contains("AFTER INSERT ON chat_messages WHEN NEW.role = 'user'"));
+    }
+
     #[test]
     fn renderer_sql_cannot_control_the_runner_transaction_or_leave_one_open() {
         let db = test_db();
