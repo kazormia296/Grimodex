@@ -1,8 +1,10 @@
 # s9 の dev 走行（s9d1）の評価（2026-11-18）
 
-> 正本は `fusion-eval-data/design-notes/cp4-s9-dev-2026-11-18/evaluation.md`（受領書の写しは同 dir の evidence/）。**dev の参考記録で、台帳外**。
+> 正本は `fusion-eval-data/design-notes/cp4-s9-dev-2026-11-18/`（受領書・集計・判定の写しは同 dir の records/ と evidence*/）。**dev の参考記録で、台帳外**。
 
 **dev の参考記録です。台帳・S6 の判定・品質判定・PUB-G の判断には数えません**（ユーザー決定「dev として全体を走らせる」）。正式の判定は、最後の凍結の後の正式 run で行います。
+
+> **続き（2026-11-18）**：後段を実 G-case で通した s9d2 の評価は `evaluation-s9d2.md`（contracts の `s9d2-dev-evaluation-2026-11-18.md`）。下の §4 の「SP-P4 は 2100722a の driver だけ」「recompute は未実行」は、s9d2 で解消した。
 
 ## 1 何を走らせたか
 
