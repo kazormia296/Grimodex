@@ -505,8 +505,10 @@ fn repair_on_a_japanese_only_database_changes_no_data() {
 }
 
 /// 実際の typed writer（`native-current-human-capture` で有効になる）でも同じ性質が
-/// 成り立つ。CI の既定の workspace 試験は feature を付けないので、上の SQL 版が
-/// 常に走る本体で、これは feature を付けた実行（impact map の chat 書込みの組）で走る。
+/// 成り立つ。CI の既定の workspace 試験は feature を付けないので、上の SQL 版が常に走る
+/// 本体になる。この module は feature を明示した実行
+/// （`cargo test -p grimodex-db --features native-current-human-capture --test en_fts_delete_sync`）
+/// でだけ走る。impact map の chat 書込みの組には入っていない。
 #[cfg(feature = "native-current-human-capture")]
 mod typed_writers {
     use super::*;
