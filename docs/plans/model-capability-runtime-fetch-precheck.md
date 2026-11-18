@@ -249,3 +249,23 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 - 形が正しく、対応表に無い provider の key は「不正」でなく「無視」とし、捨てた割合の分母から外す（provider を足した新しい写しを古い app が丸ごと捨てないため）。
 - `reasoning` は写しの上では真偽値だが、親文書の「thinking を真偽値にしない」に従い、消費側（PR-C2 以降）は `reasoning` だけで thinking の送り方を決めない。
 - `source` は、CI が作る写しは `"grimodex"`、app の直接取得は `"models.dev"` とする想定（PR-C2 で確定）。
+
+### 7.2 Q15 の probe の結果（2026-11-19）
+
+- 方法：前例の `electron/scripts/update-route-name-probe*.mjs` と同じ形です。
+  - 製品の `createRendererContainment()` で、(0) resolver の switch、(1) policy、(2)〜(4) `start()` をそのまま通しました。
+  - Electron 43.8.3（main の Node は 24.22.0）を、非 packaged のまま Xvfb で 1 回起動しました。env の proxy と Wayland・D-Bus の変数は除きました。
+  - probe のコードは scratchpad に置き、repo と配布物には入れていません。
+- 結果：
+
+| case | 結果 |
+|---|---|
+| Chromium の名前解決、sentinel | `127.0.0.1`（規則が当たっている） |
+| Chromium の名前解決、`raw.githubusercontent.com` | `ERR_NAME_NOT_RESOLVED` |
+| **main の `globalThis.fetch`** で GET（README.md、redirect は manual、UA は `Grimodex-Model-Registry`） | **200、13,343 byte、334 ms、最終 URL は同じ** |
+| main の Electron の `net.fetch` で、同じ GET | `ERR_SOCKS_CONNECTION_FAILED`（blackhole の proxy） |
+
+- 結論：main の Node の fetch は、Chromium の resolver の規則と session の proxy の外にあります。§2 の案 B の前提は成り立ちます。`net.fetch` は使えません。
+- 残ること：
+  - packaged（asar、fuses）は試していません。閉じ込めの適用の条件は同じ（`shouldRegisterAppProtocol()`）なので、差は出ない見込みです。
+  - 利用者の proxy の環境で Node の fetch がどう振る舞うか（env の proxy を読むか）は、未確認のままです（T5）。
