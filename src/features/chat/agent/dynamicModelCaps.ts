@@ -1,8 +1,14 @@
-import type { AiModel, AiProvider } from "../types";
+import { AI_PROVIDERS, type AiModel, type AiProvider } from "../types";
 
-const STORAGE_KEY = "grimodex.modelCaps.v2";
+/**
+ * 保存形式の版。v3 は Anthropic の一覧（context／最大出力）を provider 名つきで保存する。
+ * v2 以前の cache は復元せず捨てる（cache なので、次の一覧取得で作り直される）。
+ */
+const STORAGE_KEY = "grimodex.modelCaps.v3";
+const PREVIOUS_STORAGE_KEYS = ["grimodex.modelCaps.v2"] as const;
 const LEGACY_OPENROUTER_STORAGE_KEY = "grimodex.openrouterModelCaps.v1";
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
+const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(AI_PROVIDERS);
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1_000; // 24h
 
 interface StoredMeta {
@@ -126,7 +132,16 @@ function hydrate(): void {
   hydrated = true;
   if (typeof localStorage === "undefined") return;
 
-  let loadedV2 = false;
+  // 古い版は復元せずに捨てる（読まない・残さない）。
+  for (const key of PREVIOUS_STORAGE_KEYS) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // storage が使えなくても registry は空のまま動く。
+    }
+  }
+
+  let loadedCurrent = false;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -134,6 +149,7 @@ function hydrate(): void {
       if (parsed.version === CURRENT_VERSION && isRecord(parsed.providers)) {
         for (const [provider, value] of Object.entries(parsed.providers)) {
           if (
+            !KNOWN_PROVIDERS.has(provider) ||
             !isRecord(value) ||
             !Number.isFinite(value.fetchedAt) ||
             !isRecord(value.models)
@@ -146,14 +162,14 @@ function hydrate(): void {
             models: value.models as Record<string, StoredMeta>,
           });
         }
-        loadedV2 = true;
+        loadedCurrent = true;
       }
     }
   } catch {
     // Corrupt v2 JSON — try the legacy OpenRouter cache before falling back empty.
   }
 
-  if (loadedV2 && registry.has("openrouter")) return;
+  if (loadedCurrent && registry.has("openrouter")) return;
 
   try {
     const raw = localStorage.getItem(LEGACY_OPENROUTER_STORAGE_KEY);
@@ -523,6 +539,21 @@ export function registerDynamicModelCaps(
       );
   if (!selectedModelId || selectedDurableChanged) persist();
   return true;
+}
+
+/**
+ * Anthropic `GET /v1/models` の一覧を、provider 名つきで登録する（context と最大出力だけ）。
+ * キー未登録・取得失敗のときの固定の予備は limit を持たないので、その一覧では登録せず、
+ * 前に取得した live を残す。登録したら true。
+ */
+export function registerAnthropicModelCaps(models: AiModel[]): boolean {
+  const hasLimits = models.some(
+    (model) =>
+      positiveSafeInteger(model.contextLength) !== undefined ||
+      positiveSafeInteger(model.maxCompletionTokens) !== undefined,
+  );
+  if (!hasLimits) return false;
+  return registerDynamicModelCaps("anthropic", models);
 }
 
 /**

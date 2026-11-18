@@ -465,6 +465,35 @@ function resolveHardcoded(model: string): ModelCapabilityDefinition {
   );
 }
 
+/** 表の key の後ろに付いてよいもの（日付サフィックスと `:variant`）。 */
+const TABLE_KEY_SUFFIX = /^(?:-\d{8})?(?::[a-z]+)?$/u;
+
+/**
+ * 能力表（MODEL_CAPABILITIES／OPENROUTER_PREFIXED）に載っている id か。
+ * `resolveHardcoded` の表を引く段のうち、完全一致・別名・正規化・「日付サフィックス付き」の
+ * 前方一致だけを見る。`claude-fable-5-2` が `claude-fable-5` に前方一致するような、
+ * 別のバージョンへの前方一致は載っているとみなさない（resolveHardcoded は能力の近似として
+ * 使うが、live の値は載っていない id のために取っておく）。将来世代の近似
+ * （resolveFutureAnthropicGeneration）や 200K の推定にも落とさない。
+ */
+function isListedInCapabilityTable(model: string): boolean {
+  if (MODEL_CAPABILITIES[model]) return true;
+  const resolved = OPENROUTER_PREFIXED[model];
+  if (resolved && MODEL_CAPABILITIES[resolved]) return true;
+  const normalized = normalizeModelVersion(model);
+  if (normalized !== model && isListedInCapabilityTable(normalized)) {
+    return true;
+  }
+  const hasDatedKey = (key: string) =>
+    model.startsWith(key) && TABLE_KEY_SUFFIX.test(model.slice(key.length));
+  return (
+    Object.entries(OPENROUTER_PREFIXED).some(
+      ([prefixed, canonical]) =>
+        MODEL_CAPABILITIES[canonical] !== undefined && hasDatedKey(prefixed),
+    ) || Object.keys(MODEL_CAPABILITIES).some(hasDatedKey)
+  );
+}
+
 /**
  * 能力表に無い他の Claude（旧世代・限定提供など。GET /v1/models は契約で使える
  * 全モデルを返し、Anthropic は動的メタを使わないので能力表だけが頼り）。
@@ -609,6 +638,34 @@ function mergeDynamicCaps(
     // 構造化 JSON 適性はモデル固有プロパティ（プロバイダ非依存）。動的メタは
     // これを報告しないため、curated 値をそのまま継承する。
     supportsStructuredJson: hardcoded.supportsStructuredJson,
+  };
+}
+
+/**
+ * Anthropic の live（`GET /v1/models` の `max_input_tokens`／`max_tokens`）を能力に足す。
+ * `mergeDynamicCaps` は通さない（あれは thinking／effort を false に固定する）。
+ *
+ * - 表に載っている id は表のまま返す（製品の判断を live に上書きさせない）。
+ * - 表に無い id だけ context と最大出力を live で置き換える。
+ * - thinking／effort／tool は今の解決（resolveFutureAnthropicGeneration など）のまま。
+ *   live の thinking の方式は段 2 では使わない（renderer まで届いていない）。
+ */
+function mergeAnthropicLive(
+  model: string,
+  dyn: DynamicModelMeta,
+  hardcoded: ModelCapabilities,
+): ModelCapabilities {
+  if (isListedInCapabilityTable(model)) return hardcoded;
+  if (dyn.ctx === undefined && dyn.out === undefined) return hardcoded;
+  return {
+    ...hardcoded,
+    contextWindow: dyn.ctx ?? hardcoded.contextWindow,
+    modelContextWindow: dyn.ctx ?? hardcoded.modelContextWindow,
+    contextWindowIsEffective:
+      dyn.ctx !== undefined || hardcoded.contextWindowIsEffective,
+    contextWindowSource:
+      dyn.ctx !== undefined ? "dynamic" : hardcoded.contextWindowSource,
+    maxOutputTokens: dyn.out ?? hardcoded.maxOutputTokens,
   };
 }
 
@@ -766,7 +823,9 @@ export function resolveModelCapabilities(
     : null;
   const base =
     provider && dynamic
-      ? mergeDynamicCaps(dynamic, hardcoded, provider)
+      ? provider === "anthropic"
+        ? mergeAnthropicLive(model, dynamic, hardcoded)
+        : mergeDynamicCaps(dynamic, hardcoded, provider)
       : hardcoded;
   if (!settings) return base;
 

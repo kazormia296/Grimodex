@@ -64,7 +64,7 @@ afterEach(() => {
   useCodexStore.setState({ entries: [] });
   chatStoreMocks.buildPreviewPrompt.mockReset();
   vi.mocked(runContextCreator).mockReset().mockResolvedValue([]);
-  globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+  globalThis.localStorage?.removeItem("grimodex.modelCaps.v3");
   globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
   __resetDynamicModelCapsForTests();
   useAiSettingsStore.setState({

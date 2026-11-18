@@ -14,7 +14,10 @@ import {
 } from "./chatModelCatalog";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "./browserProviderPolicy";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
-import { isDynamicCapsStale } from "./agent/dynamicModelCaps";
+import {
+  isDynamicCapsStale,
+  registerAnthropicModelCaps,
+} from "./agent/dynamicModelCaps";
 
 /**
  * チャット入力欄のモデルピッカー(複数プロバイダ横断)用カタログ取得フック。
@@ -127,6 +130,16 @@ export function useChatModelCatalog(open: boolean): {
           models = refreshed ?? cached ?? null;
         } else {
           models = cached ?? (await listAiModels(p));
+          if (
+            p === "anthropic" &&
+            cached === undefined &&
+            registerAnthropicModelCaps(models)
+          ) {
+            // 非 active でも、選択直後の解決が新しい live を参照できるよう通知する。
+            useAiSettingsStore.setState((state) => ({
+              modelCapsRevision: state.modelCapsRevision + 1,
+            }));
+          }
         }
         if (!models) return null;
         moduleCache.set(key, models);
