@@ -172,6 +172,46 @@ describe("assistant row reserved before a source-bearing write tool", () => {
     expect(messages.find((m) => m.id === ASSISTANT_ID)?.content).toBe("");
   });
 
+  it("does not overwrite a finalized row: the same retry passes and a different write collides", async () => {
+    await reserve();
+    const stopped = {
+      content: "",
+      metadata: JSON.stringify({ stopped: true }),
+    };
+    await completeAssistantMessage(SESSION_ID, ASSISTANT_ID, stopped);
+    // 本文が空でも metadata のある行は確定済み。同じ内容の retry は照合で通る。
+    await completeAssistantMessage(SESSION_ID, ASSISTANT_ID, stopped);
+    await expect(
+      completeAssistantMessage(SESSION_ID, ASSISTANT_ID, {
+        content: "後から",
+        metadata: JSON.stringify({ tool_calls: [] }),
+      }),
+    ).rejects.toThrow(/collision/);
+    const finalized = { content: "最終", metadata: JSON.stringify({ a: 1 }) };
+    await addMessage(SESSION_ID, "assistant", "", {
+      id: "reserved-row-assistant-2",
+      createdAt: ASSISTANT_AT,
+      recordTimelapse: false,
+    });
+    await completeAssistantMessage(
+      SESSION_ID,
+      "reserved-row-assistant-2",
+      finalized,
+    );
+    await expect(
+      completeAssistantMessage(SESSION_ID, "reserved-row-assistant-2", {
+        content: "上書き",
+        metadata: JSON.stringify({ a: 1 }),
+      }),
+    ).rejects.toThrow(/collision/);
+
+    const messages = await listMessages(SESSION_ID);
+    expect(messages.map((m) => [m.content, m.metadata])).toEqual([
+      ["", JSON.stringify({ stopped: true })],
+      ["最終", JSON.stringify({ a: 1 })],
+    ]);
+  });
+
   it("inserts the row when none was reserved", async () => {
     await completeAssistantMessage(SESSION_ID, ASSISTANT_ID, {
       content: "新規",

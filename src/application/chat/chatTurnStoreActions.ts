@@ -813,13 +813,13 @@ function createChatTurnStoreActions(
         let sentAgentContextLayers: LayerBreakdown[] = [];
         let sentAgentContextTokenCount: number | null = null;
         let currentAgentModel = "";
-        // 出典に assistant message を使う書き込み tool の直前に行を作る（詳細は module）。
         const assistantRow = createAssistantRowReservation({
           chatApi,
           getSessionId: () => sessionIdForPersist,
           message: assistantMsg,
           getMessages: () => get().messages,
           assertCurrent: assertTurnAuthority,
+          writeGuards: [capturedWorkspaceIsCurrent, capturedProjectIsCurrent],
           debugLog,
           errorDetail,
         });
@@ -943,9 +943,7 @@ function createChatTurnStoreActions(
           if (cancelBeforeTransport()) return;
 
           const projectCtxLang = projectCtx?.language ?? "ja";
-          let agentMessages = publicWebSearchPath
-            ? []
-            : sendableHistory(prevMessages);
+          let agentMessages = publicWebSearchPath ? [] : prevMessages;
           if (sessionIdForPersist && !publicWebSearchPath) {
             const agentApiVariant = turnRoute
               ? turnRoute.apiVariant
@@ -979,7 +977,7 @@ function createChatTurnStoreActions(
             );
             if (cancelBeforeTransport()) return;
           }
-          const summarizedAgentHistory = agentMessages.filter(
+          const summarizedAgentHistory = sendableHistory(agentMessages).filter(
             (message) =>
               message.id !== userMsg.id &&
               message.id !== assistantMsg.id &&
@@ -1353,6 +1351,7 @@ function createChatTurnStoreActions(
                 });
               },
               onTextChunk: (text) => {
+                assistantRow.observeText(text);
                 if (!isCurrentTurn() || sendControl.aborted) return;
                 agentTextBatcher.push(text);
               },
@@ -1377,7 +1376,7 @@ function createChatTurnStoreActions(
               "ChatStore",
               `Agent completion lost turn authority: aborted=${sendControl.aborted} current=${isCurrentTurn()} transport=${transportStarted} workspace=${capturedWorkspaceIsCurrent()} project=${capturedProjectIsCurrent()} chat=${capturedChatAuthorityIsCurrent()}`,
             );
-            return;
+            return await assistantRow.settleAbandoned(currentAgentModel);
           }
 
           // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
@@ -1620,6 +1619,7 @@ function createChatTurnStoreActions(
               }
             }
             if (!(e instanceof ChatTurnPersistenceError)) {
+              await assistantRow.settleAbandoned(currentAgentModel);
               cancelBeforeTransport();
               return;
             }
@@ -1732,7 +1732,7 @@ function createChatTurnStoreActions(
             turnRoute?.outputBudget.responseReservationTokens,
         });
 
-        let currentMessages = sendableHistory(prevMessages);
+        let currentMessages = prevMessages;
         if (sessionIdForPersist) {
           currentMessages = await maybeRunSummarization(
             sessionIdForPersist,
@@ -1750,7 +1750,7 @@ function createChatTurnStoreActions(
         // contains this turn's optimistic user/assistant pair. Keep a single
         // explicit pre-turn projection for App Server bootstrap and revision
         // hashing so the current user message is never imported and sent twice.
-        const priorHistoryMessages = currentMessages.filter(
+        const priorHistoryMessages = sendableHistory(currentMessages).filter(
           (message) =>
             message.id !== userMsg.id && message.id !== assistantMsg.id,
         );

@@ -2155,7 +2155,7 @@ mod tests {
             Ok(())
         })
         .expect("seed chat scope");
-        let upsert = "insert into \"chat_messages\" (\"id\", \"session_id\", \"role\", \"content\", \"model\", \"tokens_in\", \"tokens_out\", \"duration_ms\", \"metadata\", \"is_starred\", \"is_summarized\", \"created_at\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"chat_messages\".\"id\") do update set \"content\" = ?, \"model\" = ?, \"tokens_in\" = ?, \"tokens_out\" = ?, \"metadata\" = ? where (\"chat_messages\".\"session_id\" = ? and \"chat_messages\".\"role\" = ?) returning \"id\", \"session_id\", \"role\", \"content\"";
+        let upsert = "insert into \"chat_messages\" (\"id\", \"session_id\", \"role\", \"content\", \"model\", \"tokens_in\", \"tokens_out\", \"duration_ms\", \"metadata\", \"is_starred\", \"is_summarized\", \"created_at\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"chat_messages\".\"id\") do update set \"content\" = ?, \"model\" = ?, \"tokens_in\" = ?, \"tokens_out\" = ?, \"metadata\" = ? where (\"chat_messages\".\"session_id\" = ? and \"chat_messages\".\"role\" = ? and \"chat_messages\".\"content\" = ? and \"chat_messages\".\"metadata\" is null) returning \"id\", \"session_id\", \"role\", \"content\"";
         let params = |id: &str, role: &str, content: &str| {
             vec![
                 Value::from(id),
@@ -2177,6 +2177,7 @@ mod tests {
                 Value::from("{\"stopped\":true}"),
                 Value::from("reserved-session"),
                 Value::from("assistant"),
+                Value::from(""),
             ]
         };
 
@@ -2219,6 +2220,28 @@ mod tests {
             .expect("read rows");
         assert_eq!(assistant, "final/model/2");
         assert_eq!(user, "u");
+        // 確定済み（本文あり、metadata あり）の行は WHERE に外れ、更新も返却もされない。
+        let refused = db
+            .execute_renderer(
+                upsert,
+                &params("reserved-assistant", "assistant", "overwrite"),
+                "all",
+            )
+            .expect("a finalized row is left as is");
+        assert!(
+            !format!("{refused:?}").contains("overwrite"),
+            "a finalized row must not be updated: {refused:?}"
+        );
+        let content: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT content FROM chat_messages WHERE id='reserved-assistant'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read the finalized row");
+        assert_eq!(content, "final");
 
         // NIR-1 の capture を更新する trigger は「AFTER INSERT かつ role='user'」だけ。
         // assistant の INSERT／UPSERT（UPDATE を含む）はこの trigger の対象外。

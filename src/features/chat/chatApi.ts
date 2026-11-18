@@ -528,8 +528,7 @@ export async function addMessage(
      */
     recordTimelapse?: boolean;
     /**
-     * 書き込み tool の出典用に先に作った同じ session の assistant の空の行を、
-     * この内容で更新する（無ければ INSERT）。user の行には使わない。
+     * 出典用に先に作った同じ session の未確定の assistant 行（空の本文、metadata なし）だけ更新する（無ければ INSERT。確定済みは下の照合へ）。
      */
     replaceReservedAssistant?: boolean;
   },
@@ -564,6 +563,8 @@ export async function addMessage(
           setWhere: and(
             eq(chatMessages.sessionId, sessionId),
             eq(chatMessages.role, "assistant"),
+            eq(chatMessages.content, ""),
+            isNull(chatMessages.metadata),
           ),
         })
       : insert.onConflictDoNothing({ target: chatMessages.id })

@@ -6684,6 +6684,181 @@ describe("useChatStore", () => {
         );
       });
 
+      // 失敗・停止した turn が残した行（出典用の assistant 行。user の行は無い）。
+      const leftoverRows = (): ChatMessage[] => [
+        makeMessage("user", "前の質問", "prev-user"),
+        makeMessage("assistant", "前の回答", "prev-assistant"),
+        { ...makeMessage("assistant", "", "left-empty"), metadata: null },
+        {
+          ...makeMessage("assistant", "途中の本文", "left-failed"),
+          metadata: JSON.stringify({ runtime_error: "provider down" }),
+        },
+      ];
+
+      it("does not send the rows a failed or stopped turn left behind (agent path)", async () => {
+        setupAgentTurn();
+        useChatStore.setState({ messages: leftoverRows() });
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "plain" }],
+          stopReason: "end_turn",
+        });
+
+        await useChatStore.getState().sendMessage("次の質問");
+
+        const sent = (mockSendAgentMessage.mock.calls[0]?.[0] ?? []) as {
+          role: string;
+          content: unknown;
+        }[];
+        const texts = sent.map((message) => JSON.stringify(message.content));
+        expect(texts.some((text) => text.includes("前の回答"))).toBe(true);
+        expect(texts.some((text) => text.includes("途中の本文"))).toBe(false);
+        expect(
+          sent.filter(
+            (message) =>
+              message.role === "assistant" &&
+              (message.content === "" ||
+                (Array.isArray(message.content) &&
+                  message.content.length === 0)),
+          ),
+        ).toEqual([]);
+      });
+
+      it("does not send the left rows but keeps the summary marker after summarization (normal path)", async () => {
+        const history = Array.from({ length: 5 }, (_, index) => [
+          makeMessage("user", `past-user-${index}`, `past-user-${index}`),
+          makeMessage(
+            "assistant",
+            `past-assistant-${index}`,
+            `past-assistant-${index}`,
+          ),
+        ]).flat();
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [...history, ...leftoverRows()],
+          agentMode: false,
+          ragEnabled: false,
+        });
+        vi.mocked(contextBuilder.allocateLayerBudgets).mockReturnValueOnce({
+          responseReservation: 1,
+          l1: 1,
+          l2: 1,
+          l3: 1,
+          l4: 1,
+          l5: 1,
+          degraded: false,
+        });
+        vi.mocked(chatApi.sendChatMessageWithThinking).mockResolvedValueOnce({
+          text: "SUMMARY-MARKER-TEXT",
+          thinkingBlocks: [],
+          inputTokens: 1,
+          outputTokens: 1,
+        });
+        mockAddMessage.mockImplementation(
+          async (sessionId, role, content, extra) =>
+            ({
+              id: extra?.id ?? crypto.randomUUID(),
+              sessionId,
+              role,
+              content,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            }) as ChatMessage,
+        );
+        mockStreamResponse("新しい回答");
+
+        await useChatStore.getState().sendMessage("新しい質問");
+
+        expect(chatApi.addSummary).toHaveBeenCalledOnce();
+        const passed = mockSendChatMessageStream.mock.calls[0]?.[0] ?? [];
+        const contents = passed.map((message) =>
+          typeof message.content === "string"
+            ? message.content
+            : JSON.stringify(message.content),
+        );
+        expect(
+          contents.some((text) => text.includes("SUMMARY-MARKER-TEXT")),
+        ).toBe(true);
+        expect(contents).not.toContain("途中の本文");
+        expect(
+          passed.filter(
+            (message) => message.role === "assistant" && message.content === "",
+          ),
+        ).toEqual([]);
+        expect(contents.at(-1)).toBe("新しい質問");
+      });
+
+      it("settles the reserved row as stopped when the completion loses turn authority", async () => {
+        const { rows, events } = setupAgentTurn();
+        mockAgentCreateSnippet.mockResolvedValue({ id: "s", title: "t" });
+        const sent: { id?: string } = {};
+        mockSendAgentMessage
+          .mockImplementationOnce(toolUseResponse("create_snippet", sent))
+          .mockImplementationOnce(async () => {
+            // 2 回目の応答の前に別の session へ移る（turn は current のまま、停止もしない）。
+            useChatStore.setState({ activeSessionId: "another-session" });
+            return {
+              blocks: [{ type: "text", content: "late" }],
+              stopReason: "end_turn",
+            } as never;
+          });
+
+        await useChatStore.getState().sendMessage("スニペットを作って");
+
+        expect(mockAgentCreateSnippet).toHaveBeenCalledOnce();
+        // user の行は保存されず、予約した行は空・metadata なしのまま残らない。
+        expect(events).toEqual(["add:assistant", "replace:assistant"]);
+        expect(rows.get(sent.id ?? "")?.role).toBe("assistant");
+        expect(chatApi.addMessage).toHaveBeenLastCalledWith(
+          session1.id,
+          "assistant",
+          expect.any(String),
+          expect.objectContaining({
+            id: sent.id,
+            replaceReservedAssistant: true,
+            metadata: JSON.stringify({ stopped: true }),
+          }),
+        );
+      });
+
+      it("settles the reserved row as stopped when the transport fails after the turn lost its session", async () => {
+        const { events } = setupAgentTurn();
+        mockAgentCreateSnippet.mockResolvedValue({ id: "s", title: "t" });
+        const sent: { id?: string } = {};
+        let rejectSecondCall!: (error: Error) => void;
+        mockSendAgentMessage
+          .mockImplementationOnce(toolUseResponse("create_snippet", sent))
+          .mockImplementationOnce(
+            () =>
+              new Promise((_, reject) => {
+                rejectSecondCall = reject;
+              }),
+          );
+
+        const sendPromise = useChatStore
+          .getState()
+          .sendMessage("スニペットを作って");
+        await vi.waitFor(() => {
+          expect(mockSendAgentMessage).toHaveBeenCalledTimes(2);
+        });
+        // 停止ではなく別の session へ移った後に transport が失敗する（停止の確定の
+        // 経路に入らず、catch の「turn の権限を失った」枝で抜ける）。
+        useChatStore.setState({ activeSessionId: "another-session" });
+        rejectSecondCall(new Error("transport closed"));
+        await sendPromise;
+
+        expect(events).toEqual(["add:assistant", "replace:assistant"]);
+        expect(chatApi.addMessage).toHaveBeenLastCalledWith(
+          session1.id,
+          "assistant",
+          expect.any(String),
+          expect.objectContaining({
+            id: sent.id,
+            replaceReservedAssistant: true,
+            metadata: expect.stringContaining('"stopped":true'),
+          }),
+        );
+      });
+
       it("does not reserve a row for a turn without a source-bearing write tool", async () => {
         const { events } = setupAgentTurn();
         mockSendAgentMessage.mockResolvedValueOnce({
