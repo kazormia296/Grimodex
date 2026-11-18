@@ -29,8 +29,9 @@ import {
 } from "./chatTurnPayload";
 import { maybeRunSummarization } from "./chatSummarization";
 import {
-  alreadyInjectedCodexEntryResult,
   createAskUserToolHandler,
+  createChatTurnToolContext,
+  createGuardedExecuteTool,
   withUiOperationLimit,
   createChatResearchSubagentHandler,
 } from "./chatAgentToolHandlers";
@@ -43,9 +44,12 @@ import {
   MAX_RATE_LIMIT_RETRIES,
   aiFailureToastText,
   classifyError,
+  createAssistantRowReservation,
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
+  parseMetadataRecord,
+  sendableHistory,
   turnErrorText,
 } from "./chatStoreSupport";
 import {
@@ -810,6 +814,16 @@ function createChatTurnStoreActions(
         let sentAgentContextLayers: LayerBreakdown[] = [];
         let sentAgentContextTokenCount: number | null = null;
         let currentAgentModel = "";
+        const assistantRow = createAssistantRowReservation({
+          chatApi,
+          getSessionId: () => sessionIdForPersist,
+          message: assistantMsg,
+          getMessages: () => get().messages,
+          assertCurrent: assertTurnAuthority,
+          writeGuards: [capturedWorkspaceIsCurrent, capturedProjectIsCurrent],
+          debugLog,
+          errorDetail,
+        });
         const canFinalizeStoppedAgentTurn = (): boolean =>
           sendControl.aborted && isCurrentTurn() && transportStarted;
         const finalizeStoppedAgentTurnAfterTransport =
@@ -819,21 +833,7 @@ function createChatTurnStoreActions(
             const assistant = get().messages.find(
               (message) => message.id === assistantMsg.id,
             );
-            let metadata: Record<string, unknown> = {};
-            if (assistant?.metadata) {
-              try {
-                const parsed = JSON.parse(assistant.metadata);
-                if (
-                  parsed &&
-                  typeof parsed === "object" &&
-                  !Array.isArray(parsed)
-                ) {
-                  metadata = parsed as Record<string, unknown>;
-                }
-              } catch {
-                metadata = {};
-              }
-            }
+            const metadata = parseMetadataRecord(assistant?.metadata);
             const stoppedMetadata = JSON.stringify({
               ...metadata,
               stopped: true,
@@ -904,20 +904,15 @@ function createChatTurnStoreActions(
                   }
                 },
                 ...(sessionIdForPersist &&
-                latestAssistant?.role === "assistant" &&
-                latestAssistant.content
+                (latestAssistant?.content || assistantRow.reserved)
                   ? {
                       persistAssistant: async () => {
-                        await chatApi.addMessage(
+                        await assistantRow.persist(
                           sessionIdForPersist,
-                          "assistant",
-                          latestAssistant.content,
+                          latestAssistant?.content ?? "",
                           {
-                            id: assistantMsg.id,
                             model: currentAgentModel || undefined,
                             metadata: stoppedMetadata,
-                            createdAt: assistantMsg.createdAt,
-                            recordTimelapse: false,
                           },
                         );
                         await commitAssistantReplacement();
@@ -983,7 +978,7 @@ function createChatTurnStoreActions(
             );
             if (cancelBeforeTransport()) return;
           }
-          const summarizedAgentHistory = agentMessages.filter(
+          const summarizedAgentHistory = sendableHistory(agentMessages).filter(
             (message) =>
               message.id !== userMsg.id &&
               message.id !== assistantMsg.id &&
@@ -1123,10 +1118,20 @@ function createChatTurnStoreActions(
           const agentControl = getPromptCatalog(
             projectCtx?.language ?? "ja",
           ).agentControl;
+          const toolContext = createChatTurnToolContext({
+            executeTool,
+            executeReadOnlyTool,
+            enabled: agentModeForThisSend,
+            projectId: turnProjectId,
+            workspacePath: turnWorkspaceIdentity?.path ?? null,
+            currentSceneId: activeSceneId,
+            tokenBudget,
+            assertTurnAuthority,
+          });
           const runResearchSubagent = createChatResearchSubagentHandler({
             set,
             sendAgentMessage: chatApi.sendAgentMessage,
-            executeReadOnlyTool,
+            executeReadOnlyTool: toolContext.executeReadOnlyTool,
             recordAiUsage,
             assertTurnAuthority,
             isCurrentTurn,
@@ -1172,31 +1177,16 @@ function createChatTurnStoreActions(
             getSessionId: () => sessionIdForPersist ?? activeSessionId,
             dismissNote: agentControl.userDismissMessage,
           });
-          const guardedExecuteTool: typeof executeTool = async (
-            name,
-            toolCallId,
-            params,
-            authorization,
-          ) => {
-            assertTurnAuthority();
-            const askUserResult = handleAskUserTool(name, toolCallId, params);
-            if (askUserResult) return askUserResult;
-            const research = runResearchSubagent(name, toolCallId, params);
-            if (research) return research;
-            const injectedEntryResult = alreadyInjectedCodexEntryResult(
-              name,
-              toolCallId,
-              params,
-              fullyInjectedIds,
-            );
-            if (injectedEntryResult) return injectedEntryResult;
-            return authorization
-              ? executeTool(name, toolCallId, params, {
-                  ...authorization,
-                  chatMessageId: assistantMsg.id,
-                })
-              : executeTool(name, toolCallId, params);
-          };
+          const guardedExecuteTool = createGuardedExecuteTool({
+            executeTool: toolContext.executeTool,
+            assertTurnAuthority,
+            handleAskUserTool,
+            runResearchSubagent,
+            beforeExecute: (name, toolCallId, authorized) =>
+              assistantRow.before(name, toolCallId, authorized),
+            fullyInjectedIds,
+            chatMessageId: assistantMsg.id,
+          });
           // クライアントツールは private Agent のときだけ渡す。Public RAG は
           // tools=[] とし、Web検索だけを使う分離済み経路にする。
           const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
@@ -1333,6 +1323,7 @@ function createChatTurnStoreActions(
                 }
               },
               onToolComplete: (record) => {
+                toolContext.attachUsedIds(record);
                 if (!isCurrentTurn() || sendControl.aborted) return;
                 accToolCalls.push(record);
                 set((s) => {
@@ -1351,6 +1342,7 @@ function createChatTurnStoreActions(
                 });
               },
               onTextChunk: (text) => {
+                assistantRow.observeText(text);
                 if (!isCurrentTurn() || sendControl.aborted) return;
                 agentTextBatcher.push(text);
               },
@@ -1375,7 +1367,7 @@ function createChatTurnStoreActions(
               "ChatStore",
               `Agent completion lost turn authority: aborted=${sendControl.aborted} current=${isCurrentTurn()} transport=${transportStarted} workspace=${capturedWorkspaceIsCurrent()} project=${capturedProjectIsCurrent()} chat=${capturedChatAuthorityIsCurrent()}`,
             );
-            return;
+            return await assistantRow.settleAbandoned(currentAgentModel);
           }
 
           // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
@@ -1484,22 +1476,17 @@ function createChatTurnStoreActions(
               }
             },
             ...(sessionIdForPersist &&
-            lastMsg?.role === "assistant" &&
-            lastMsg.content
+            (lastMsg?.content || assistantRow.reserved)
               ? {
                   persistAssistant: async () => {
-                    await chatApi.addMessage(
+                    await assistantRow.persist(
                       sessionIdForPersist,
-                      "assistant",
-                      lastMsg.content,
+                      lastMsg?.content ?? "",
                       {
-                        id: assistantMsg.id,
                         model: agentModel,
                         tokensIn: agentTokensIn ?? undefined,
                         tokensOut: agentTokensOut ?? undefined,
                         metadata: finalAgentMetadata,
-                        createdAt: assistantMsg.createdAt,
-                        recordTimelapse: false,
                       },
                     );
                     await commitAssistantReplacement();
@@ -1623,6 +1610,7 @@ function createChatTurnStoreActions(
               }
             }
             if (!(e instanceof ChatTurnPersistenceError)) {
+              await assistantRow.settleAbandoned(currentAgentModel);
               cancelBeforeTransport();
               return;
             }
@@ -1630,6 +1618,7 @@ function createChatTurnStoreActions(
           const kind = classifyError(e);
           const msg = e instanceof Error ? e.message : String(e);
           if (!transportStarted) removeOwnedTurnMessages();
+          await assistantRow.finalizeAfterFailure(e, msg, currentAgentModel);
           if (kind === "auth") {
             toast.error(i18next.t("chat.invalidApiKey"));
           } else if (kind === "network") {
@@ -1752,7 +1741,7 @@ function createChatTurnStoreActions(
         // contains this turn's optimistic user/assistant pair. Keep a single
         // explicit pre-turn projection for App Server bootstrap and revision
         // hashing so the current user message is never imported and sent twice.
-        const priorHistoryMessages = currentMessages.filter(
+        const priorHistoryMessages = sendableHistory(currentMessages).filter(
           (message) =>
             message.id !== userMsg.id && message.id !== assistantMsg.id,
         );

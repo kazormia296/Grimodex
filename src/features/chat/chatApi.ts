@@ -40,6 +40,7 @@ import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload";
 import type { AiProvider } from "./types";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
+import { isRetryCompatibleMetadata } from "./chatMessageRetryCompat";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 import type { AiAuditTransportContext } from "@/features/ai-audit/transportContext";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
@@ -508,49 +509,6 @@ export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   return rows.map(toMessage);
 }
 
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isJsonSubset(expected: unknown, actual: unknown): boolean {
-  if (Object.is(expected, actual)) {
-    return true;
-  }
-  if (Array.isArray(expected)) {
-    return (
-      Array.isArray(actual) &&
-      expected.length === actual.length &&
-      expected.every((value, index) => isJsonSubset(value, actual[index]))
-    );
-  }
-  if (!isJsonRecord(expected) || !isJsonRecord(actual)) {
-    return false;
-  }
-  return Object.entries(expected).every(
-    ([key, value]) =>
-      Object.hasOwn(actual, key) && isJsonSubset(value, actual[key]),
-  );
-}
-
-function isRetryCompatibleMetadata(
-  expected: string | null,
-  actual: string | null,
-): boolean {
-  if (expected === actual) {
-    return true;
-  }
-  try {
-    const actualValue = actual === null ? null : JSON.parse(actual);
-    if (expected === null) {
-      return isJsonRecord(actualValue);
-    }
-    return isJsonSubset(JSON.parse(expected), actualValue);
-  } catch {
-    // Legacy non-JSON metadata remains byte-for-byte only.
-    return false;
-  }
-}
-
 export async function addMessage(
   sessionId: string,
   role: MessageRole,
@@ -569,6 +527,10 @@ export async function addMessage(
      * durable write. Their retries disable the legacy insert-time capture.
      */
     recordTimelapse?: boolean;
+    /**
+     * 出典用に先に作った同じ session の未確定の assistant 行（空の本文、metadata なし）だけ更新する（無ければ INSERT。確定済みは下の照合へ）。
+     */
+    replaceReservedAssistant?: boolean;
   },
 ): Promise<ChatMessage> {
   const id = extra?.id ?? crypto.randomUUID();
@@ -586,11 +548,27 @@ export async function addMessage(
     metadata: extra?.metadata ?? null,
     createdAt,
   };
-  const rows = await db
-    .insert(chatMessages)
-    .values(values)
-    .onConflictDoNothing({ target: chatMessages.id })
-    .returning();
+  const insert = db.insert(chatMessages).values(values);
+  const rows = await (
+    extra?.replaceReservedAssistant && role === "assistant"
+      ? insert.onConflictDoUpdate({
+          target: chatMessages.id,
+          set: {
+            content: values.content,
+            model: values.model,
+            tokensIn: values.tokensIn,
+            tokensOut: values.tokensOut,
+            metadata: values.metadata,
+          },
+          setWhere: and(
+            eq(chatMessages.sessionId, sessionId),
+            eq(chatMessages.role, "assistant"),
+            eq(chatMessages.content, ""),
+            isNull(chatMessages.metadata),
+          ),
+        })
+      : insert.onConflictDoNothing({ target: chatMessages.id })
+  ).returning();
   const inserted = rows[0] !== undefined;
   let stored = rows[0];
   if (!stored) {

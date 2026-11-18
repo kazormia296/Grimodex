@@ -17,6 +17,7 @@ import {
   registerDynamicModelCaps,
 } from "./dynamicModelCaps";
 import { ollamaContextLengthSettingKey, type AiModel } from "../types";
+import { resolveOutputBudgetPlan } from "../../ai-context/outputBudget";
 
 const OLLAMA_ENDPOINT = "http://localhost:11434";
 
@@ -88,6 +89,38 @@ describe("getModelCapabilities", () => {
       expect(caps.supportsAdaptiveThinking).toBe(false);
       expect(caps.supportsThinking).toBe(false);
       expect(caps.supportsEffort).toBe(false);
+    },
+  );
+
+  it.each([
+    ["claude-sonnet-4-6", 128_000],
+    ["claude-opus-4-5", 64_000],
+    ["claude-sonnet-4-5-20250929", 64_000],
+  ])(
+    "%s: 最大出力は live と同じ %i。今の request の最大出力と応答予約は、この値の有無で変わらない",
+    (id, maxOutput) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.maxOutputTokens).toBe(maxOutput);
+      const settings = { provider: "anthropic" };
+      const thinking = buildThinkingParams(
+        id,
+        "high",
+        "summarized",
+        true,
+        settings,
+      );
+      const plan = (modelMaxOutputTokens: number | undefined) =>
+        resolveOutputBudgetPlan({
+          provider: "anthropic",
+          model: id,
+          contextWindow: caps.contextWindow,
+          modelMaxOutputTokens,
+          defaultVisibleOutputTokens: caps.defaultVisibleOutputTokens,
+          defaultReasoningReservationTokens:
+            caps.defaultReasoningReservationTokens,
+          thinking,
+        });
+      expect(plan(maxOutput)).toEqual(plan(undefined));
     },
   );
 

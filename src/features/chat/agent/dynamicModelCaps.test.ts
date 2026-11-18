@@ -25,7 +25,7 @@ const localStorageMock = {
 
 vi.stubGlobal("localStorage", localStorageMock);
 
-const STORAGE_KEY = "grimodex.modelCaps.v2";
+const STORAGE_KEY = "grimodex.modelCaps.v4";
 const LEGACY_STORAGE_KEY = "grimodex.openrouterModelCaps.v1";
 
 type RuntimeAiModel = AiModel & {
@@ -467,7 +467,7 @@ describe("provider-scoped persistence", () => {
         }
       >;
     };
-    expect(parsed.version).toBe(2);
+    expect(parsed.version).toBe(4);
     expect(parsed.providers.ollama.models["gemma4:latest"]?.ctx).toBe(131_072);
     expect(parsed.providers.ollama.scope).toBe("http://localhost:11434");
     expect(
@@ -484,9 +484,9 @@ describe("provider-scoped persistence", () => {
     ).toBeUndefined();
   });
 
-  it("hydrates provider namespaces from v2 storage", () => {
+  it("hydrates provider namespaces from v4 storage", () => {
     store[STORAGE_KEY] = JSON.stringify({
-      version: 2,
+      version: 4,
       providers: {
         ollama: {
           fetchedAt: Date.now(),
@@ -531,12 +531,12 @@ describe("provider-scoped persistence", () => {
       128_000,
     );
     expect(getDynamicModelMeta("ollama", "openai/gpt-4o")).toBeNull();
-    expect(JSON.parse(store[STORAGE_KEY]!).version).toBe(2);
+    expect(JSON.parse(store[STORAGE_KEY]!).version).toBe(4);
   });
 
-  it("merges legacy OpenRouter metadata into a v2 cache that only has Ollama", () => {
+  it("merges legacy OpenRouter metadata into a v4 cache that only has Ollama", () => {
     store[STORAGE_KEY] = JSON.stringify({
-      version: 2,
+      version: 4,
       providers: {
         ollama: {
           fetchedAt: Date.now(),
@@ -569,10 +569,83 @@ describe("provider-scoped persistence", () => {
   });
 });
 
+describe("storage version 4", () => {
+  const row = { ctx: 1_000_000, out: 128_000 };
+
+  it("v2 の cache は Anthropic 以外だけを引き継ぎ、v2 の key は消す", () => {
+    store["grimodex.modelCaps.v2"] = JSON.stringify({
+      version: 2,
+      providers: {
+        anthropic: { fetchedAt: Date.now(), models: { "claude-x-5": row } },
+        openrouter: { fetchedAt: Date.now(), models: { "a/b": row } },
+      },
+    });
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("anthropic", "claude-x-5")).toBeNull();
+    expect(getDynamicModelMeta("openrouter", "a/b")).toMatchObject(row);
+    expect(isDynamicCapsStale("anthropic")).toBe(true);
+    expect(isDynamicCapsStale("openrouter")).toBe(false);
+    expect(store["grimodex.modelCaps.v2"]).toBeUndefined();
+    // 引き継いだ分は今の版で書き直され、再読込でも残る（Anthropic の行は書かない）。
+    const rewritten = JSON.parse(store[STORAGE_KEY] ?? "{}");
+    expect(Object.keys(rewritten.providers ?? {})).toEqual(["openrouter"]);
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("openrouter", "a/b")).toMatchObject(row);
+  });
+
+  it("v4 の key に古い version の payload があっても復元しない", () => {
+    store[STORAGE_KEY] = JSON.stringify({
+      version: 2,
+      providers: {
+        anthropic: { fetchedAt: Date.now(), models: { "claude-x-5": row } },
+      },
+    });
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("anthropic", "claude-x-5")).toBeNull();
+  });
+
+  it("知らない provider 名の namespace は復元しない（provider の取り違えを防ぐ）", () => {
+    store[STORAGE_KEY] = JSON.stringify({
+      version: 4,
+      providers: {
+        "not-a-provider": {
+          fetchedAt: Date.now(),
+          models: { "claude-x-5": row },
+        },
+        anthropic: { fetchedAt: Date.now(), models: { "claude-y-5": row } },
+      },
+    });
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("anthropic", "claude-y-5")?.ctx).toBe(1_000_000);
+    expect(
+      getDynamicModelMeta("not-a-provider" as never, "claude-x-5"),
+    ).toBeNull();
+    // 登録した anthropic の行は別の provider に漏れない。
+    expect(getDynamicModelMeta("openrouter", "claude-y-5")).toBeNull();
+  });
+
+  it("anthropic の登録は v4 に provider 名つきで保存され、再読込で復元される", () => {
+    registerDynamicModelCaps("anthropic", [
+      {
+        id: "claude-x-5",
+        name: "x",
+        contextLength: 1_000_000,
+        maxCompletionTokens: 128_000,
+      },
+    ]);
+    expect(JSON.parse(store[STORAGE_KEY]!).providers.anthropic.models).toEqual({
+      "claude-x-5": row,
+    });
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("anthropic", "claude-x-5")).toMatchObject(row);
+    expect(getDynamicModelMeta("ollama", "claude-x-5")).toBeNull();
+  });
+});
+
 describe("isDynamicCapsStale", () => {
   it("tracks freshness independently per provider", () => {
     store[STORAGE_KEY] = JSON.stringify({
-      version: 2,
+      version: 4,
       providers: {
         openrouter: {
           fetchedAt: Date.now() - 1_000,
@@ -588,7 +661,7 @@ describe("isDynamicCapsStale", () => {
 
   it("marks one provider stale after its TTL", () => {
     store[STORAGE_KEY] = JSON.stringify({
-      version: 2,
+      version: 4,
       providers: {
         ollama: {
           fetchedAt: Date.now() - 25 * 60 * 60 * 1_000,

@@ -8,7 +8,8 @@
  * tool (T2・T3). This file imports nothing of the wrapper, so that the closure
  * test (B-T6) can hold that no product source imports the wrapper statically.
  *
- * The shape of `ChatIrCapability` is provisional until PR-B2 uses it.
+ * PR-B2 builds them in `createChatTurnToolContext`
+ * (`src/application/chat/chatAgentToolHandlers.ts`).
  */
 
 /**
@@ -25,6 +26,8 @@ export interface ChatTurnToolScope {
 export interface ChatIrTurnCounter {
   /** UTF-16 `length` of the IR text added to the turn so far. */
   chars: number;
+  /** How many times the turn asked Native (a call that was refused before the IPC is not counted). */
+  calls: number;
 }
 
 /**
@@ -40,6 +43,34 @@ export interface ChatIrCapability {
   readonly counter: ChatIrTurnCounter;
   /** Throws when the project or the workspace is no longer the turn's. */
   readonly assertCurrent: () => void;
-  /** Records the revision IDs of the items given to the model (`usedIds`). */
-  readonly noteUsedIds: (revisionIds: readonly string[]) => void;
+  /**
+   * Records the revision IDs of the items given to the model (`usedIds`).
+   * `key` is the `params` object of the tool call (design PR-B2 3.2, case P):
+   * the turn copies the note onto the tool call's record by that object.
+   */
+  readonly noteUsedIds: (key: object, revisionIds: readonly string[]) => void;
+}
+
+/**
+ * Where the items given to the model came from. `eventIds` stays empty until
+ * the approved IR carries one, and `generation` is `null` (the item has none).
+ */
+export interface ChatIrUsedIds {
+  revisionIds: string[];
+  eventIds: string[];
+  generation: number | null;
+}
+
+/**
+ * What one tool run gets beyond its parameters. The main agent's `executeTool`
+ * takes the whole of it; the sub-agent's `executeReadOnlyTool` takes
+ * `ChatReadOnlyToolRunContext`, which has no `ir`, so IR cannot reach it.
+ */
+export interface ChatToolRunContext {
+  readonly scope?: ChatTurnToolScope;
+  readonly ir?: ChatIrCapability;
+}
+
+export interface ChatReadOnlyToolRunContext {
+  readonly scope?: ChatTurnToolScope;
 }

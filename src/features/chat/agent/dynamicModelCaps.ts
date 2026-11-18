@@ -1,9 +1,38 @@
-import type { AiModel, AiProvider } from "../types";
+import { AI_PROVIDERS, type AiModel, type AiProvider } from "../types";
+import { parseAnthropicLiveCaps } from "./anthropicLiveCaps";
 
-const STORAGE_KEY = "grimodex.modelCaps.v2";
+/**
+ * 保存形式の版。v3 は Anthropic の一覧（context／最大出力）を provider 名つきで保存する。
+ * v4 は Anthropic の thinking の方式と effort の段階（anthropicThinking）を足す。
+ * v2（公開済みの版）は Anthropic 以外の provider だけを引き継ぐ。形式は field を足しただけで、
+ * v2 には Anthropic の行が無いはず。あっても読まない（旧版は provider 名に依らず復元するので、
+ * Anthropic の行は v2 の key に書かない）。v3 は未公開の開発中の版なので捨てる。
+ */
+const STORAGE_KEY = "grimodex.modelCaps.v4";
+const V2_STORAGE_KEY = "grimodex.modelCaps.v2";
+const PREVIOUS_STORAGE_KEYS = [
+  V2_STORAGE_KEY,
+  "grimodex.modelCaps.v3",
+] as const;
 const LEGACY_OPENROUTER_STORAGE_KEY = "grimodex.openrouterModelCaps.v1";
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 4;
+const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(AI_PROVIDERS);
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1_000; // 24h
+
+/** Anthropic の `capabilities` から取り出した、thinking の方式と effort の段階（製品が使う分だけ）。 */
+export type AnthropicEffortStep = "low" | "medium" | "high" | "max";
+
+export interface AnthropicThinkingMeta {
+  /** thinking の方式 adaptive が使えるか。 */
+  adaptive: boolean;
+  /** thinking の方式 enabled（budget_tokens）が使えるか。 */
+  enabled: boolean;
+  /**
+   * effort の段階（xhigh は製品の EffortLevel に無いので含めない）。
+   * 応答に effort が無ければ undefined（今の推定のまま）。
+   */
+  effortSteps?: AnthropicEffortStep[];
+}
 
 interface StoredMeta {
   /** Provider-advertised model maximum. */
@@ -17,6 +46,8 @@ interface StoredMeta {
   reasoning?: 0 | 1;
   inPerM?: number;
   outPerM?: number;
+  /** Anthropic の一覧の thinking／effort。Anthropic の namespace だけが持つ。 */
+  anthropicThinking?: AnthropicThinkingMeta;
   /**
    * Last successful provider metadata observation. Kept separate from the
    * effective generation because a transient runner probe failure must not
@@ -65,6 +96,8 @@ export interface DynamicModelMeta {
   reasoning?: boolean;
   inPerM?: number;
   outPerM?: number;
+  /** Anthropic の一覧の thinking／effort（無ければ「分からない」＝今の推定のまま）。 */
+  anthropicThinking?: AnthropicThinkingMeta;
 }
 
 export interface RegisterDynamicModelCapsOptions {
@@ -95,6 +128,61 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const EFFORT_STEPS: readonly AnthropicEffortStep[] = [
+  "low",
+  "medium",
+  "high",
+  "max",
+];
+
+/**
+ * Anthropic の model の `capabilities` から thinking の方式と effort の段階を取り出す。
+ * 方式が分からない（`types` が無い）ときは undefined にして、今の推定に任せる。
+ * `thinking.supported: false` は「thinking を送らない」（adaptive・enabled とも false）。
+ */
+function deriveAnthropicThinking(
+  model: AiModel,
+): AnthropicThinkingMeta | undefined {
+  if (!isRecord(model.anthropicCapabilities)) return undefined;
+  const live = parseAnthropicLiveCaps({
+    id: model.id,
+    capabilities: model.anthropicCapabilities,
+  })?.thinking;
+  if (!live) return undefined;
+  const effortSteps = live.effortLevels
+    ? EFFORT_STEPS.filter((step) => live.effortLevels?.includes(step))
+    : undefined;
+  if (live.supported === false) {
+    return { adaptive: false, enabled: false, effortSteps };
+  }
+  if (live.types === undefined) {
+    // 方式が分からない。effort だけは分かっていても、方式と一緒にしか使わない。
+    return undefined;
+  }
+  return {
+    adaptive: live.types.includes("adaptive"),
+    enabled: live.types.includes("enabled"),
+    effortSteps,
+  };
+}
+
+function sanitizeStoredThinking(
+  value: unknown,
+): AnthropicThinkingMeta | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.adaptive !== "boolean" ||
+    typeof value.enabled !== "boolean"
+  ) {
+    return undefined;
+  }
+  const stored: unknown = value.effortSteps;
+  const effortSteps = Array.isArray(stored)
+    ? EFFORT_STEPS.filter((step) => stored.includes(step))
+    : undefined;
+  return { adaptive: value.adaptive, enabled: value.enabled, effortSteps };
+}
+
 function durableStoredMeta(meta: StoredMeta): StoredMeta {
   const {
     effectiveCtx: _effectiveCtx,
@@ -121,39 +209,67 @@ function loadProvider(provider: AiProvider, stored: StoredProvider): void {
   }
 }
 
+/**
+ * 保存された provider ごとの一覧を registry に読む。読めた（版が合った）かを返す。
+ * `includeAnthropic` が false なら Anthropic の行は読まない。
+ */
+function readStoredProviders(
+  key: string,
+  version: number,
+  includeAnthropic: boolean,
+): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as {
+      version?: unknown;
+      providers?: unknown;
+    };
+    if (parsed.version !== version || !isRecord(parsed.providers)) return false;
+    for (const [provider, value] of Object.entries(parsed.providers)) {
+      if (
+        !KNOWN_PROVIDERS.has(provider) ||
+        (!includeAnthropic && provider === "anthropic") ||
+        !isRecord(value) ||
+        !Number.isFinite(value.fetchedAt) ||
+        !isRecord(value.models)
+      ) {
+        continue;
+      }
+      loadProvider(provider as AiProvider, {
+        fetchedAt: value.fetchedAt as number,
+        scope: typeof value.scope === "string" ? value.scope : undefined,
+        models: value.models as Record<string, StoredMeta>,
+      });
+    }
+    return true;
+  } catch {
+    // Corrupt JSON — try the next source before falling back empty.
+    return false;
+  }
+}
+
 function hydrate(): void {
   if (hydrated) return;
   hydrated = true;
   if (typeof localStorage === "undefined") return;
 
-  let loadedV2 = false;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<StorageFormatV2>;
-      if (parsed.version === CURRENT_VERSION && isRecord(parsed.providers)) {
-        for (const [provider, value] of Object.entries(parsed.providers)) {
-          if (
-            !isRecord(value) ||
-            !Number.isFinite(value.fetchedAt) ||
-            !isRecord(value.models)
-          ) {
-            continue;
-          }
-          loadProvider(provider as AiProvider, {
-            fetchedAt: value.fetchedAt as number,
-            scope: typeof value.scope === "string" ? value.scope : undefined,
-            models: value.models as Record<string, StoredMeta>,
-          });
-        }
-        loadedV2 = true;
-      }
+  let loadedCurrent = readStoredProviders(STORAGE_KEY, CURRENT_VERSION, true);
+  if (!loadedCurrent && readStoredProviders(V2_STORAGE_KEY, 2, false)) {
+    // v2 から引き継いだ分を今の版で書き直す（Anthropic の行は読んでいない）。
+    loadedCurrent = true;
+    persist();
+  }
+  // 古い版の key は残さない（v2 は上で引き継いだ後）。
+  for (const key of PREVIOUS_STORAGE_KEYS) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // storage が使えなくても registry はそのまま動く。
     }
-  } catch {
-    // Corrupt v2 JSON — try the legacy OpenRouter cache before falling back empty.
   }
 
-  if (loadedV2 && registry.has("openrouter")) return;
+  if (loadedCurrent && registry.has("openrouter")) return;
 
   try {
     const raw = localStorage.getItem(LEGACY_OPENROUTER_STORAGE_KEY);
@@ -438,6 +554,8 @@ export function registerDynamicModelCaps(
       model.effectiveContextLength,
     );
     const flags = normalizedCapabilityFlags(model);
+    const anthropicThinking =
+      provider === "anthropic" ? deriveAnthropicThinking(model) : undefined;
     const inPerM = parsePricingPerMillion(model.pricingPrompt);
     const outPerM = parsePricingPerMillion(model.pricingCompletion);
     const hasDurableMetadata =
@@ -445,6 +563,7 @@ export function registerDynamicModelCaps(
       maxCompletionTokens !== undefined ||
       flags.tools !== undefined ||
       flags.reasoning !== undefined ||
+      anthropicThinking !== undefined ||
       inPerM !== undefined ||
       outPerM !== undefined;
     const hasMetadata =
@@ -457,6 +576,9 @@ export function registerDynamicModelCaps(
     const meta: StoredMeta = { ...flags };
     if (contextLength !== undefined) meta.ctx = contextLength;
     if (maxCompletionTokens !== undefined) meta.out = maxCompletionTokens;
+    if (anthropicThinking !== undefined) {
+      meta.anthropicThinking = anthropicThinking;
+    }
     if (effectiveContextLength !== undefined) {
       meta.effectiveCtx = effectiveContextLength;
       if (model.effectiveContextSource) {
@@ -523,6 +645,24 @@ export function registerDynamicModelCaps(
       );
   if (!selectedModelId || selectedDurableChanged) persist();
   return true;
+}
+
+/**
+ * Anthropic `GET /v1/models` の一覧を、provider 名つきで登録する（context・最大出力と、
+ * `capabilities` から取った thinking の方式・effort の段階）。使うのは能力表に無い id だけ
+ * （modelLimits.ts の mergeAnthropicLive）。
+ * キー未登録・取得失敗のときの固定の予備は limit も capabilities も持たないので、その一覧では
+ * 登録せず、前に取得した live を残す。登録したら true。
+ */
+export function registerAnthropicModelCaps(models: AiModel[]): boolean {
+  const hasLimits = models.some(
+    (model) =>
+      positiveSafeInteger(model.contextLength) !== undefined ||
+      positiveSafeInteger(model.maxCompletionTokens) !== undefined ||
+      deriveAnthropicThinking(model) !== undefined,
+  );
+  if (!hasLimits) return false;
+  return registerDynamicModelCaps("anthropic", models);
 }
 
 /**
@@ -648,7 +788,8 @@ export function getDynamicModelMeta(
     raw.tools === undefined &&
     raw.reasoning === undefined &&
     raw.inPerM === undefined &&
-    raw.outPerM === undefined
+    raw.outPerM === undefined &&
+    raw.anthropicThinking === undefined
   ) {
     return null;
   }
@@ -662,6 +803,7 @@ export function getDynamicModelMeta(
     reasoning: raw.reasoning === undefined ? undefined : raw.reasoning === 1,
     inPerM: raw.inPerM,
     outPerM: raw.outPerM,
+    anthropicThinking: sanitizeStoredThinking(raw.anthropicThinking),
   };
 }
 

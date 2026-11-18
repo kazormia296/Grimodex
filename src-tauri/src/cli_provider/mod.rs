@@ -901,6 +901,7 @@ fn known_claude_models() -> Vec<crate::ai::AiModel> {
         supported_parameters: None,
         pricing_prompt: None,
         pricing_completion: None,
+        anthropic_capabilities: None,
     })
     .collect()
 }
@@ -933,6 +934,7 @@ fn parse_codex_models_json(raw: &str) -> anyhow::Result<Vec<crate::ai::AiModel>>
             supported_parameters: None,
             pricing_prompt: None,
             pricing_completion: None,
+            anthropic_capabilities: None,
         })
         .collect())
 }
@@ -954,6 +956,7 @@ fn parse_opencode_models_stdout(raw: &str) -> Vec<crate::ai::AiModel> {
                 supported_parameters: None,
                 pricing_prompt: None,
                 pricing_completion: None,
+                anthropic_capabilities: None,
             }
         })
         .collect()

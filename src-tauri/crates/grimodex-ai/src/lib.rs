@@ -542,6 +542,15 @@ pub struct AiModel {
         skip_serializing_if = "Option::is_none"
     )]
     pub pricing_completion: Option<String>,
+    /// Anthropic `/v1/models` の `capabilities` object を、そのまま運ぶ（thinking の方式、
+    /// effort の段階など）。Anthropic 以外の provider では出さない。`capabilities` は
+    /// Ollama などの別の意味と衝突しないよう `anthropicCapabilities` と名付ける。
+    #[serde(
+        default,
+        rename = "anthropicCapabilities",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub anthropic_capabilities: Option<serde_json::Value>,
 }
 
 /// Parse a single OpenRouter model entry from the /api/v1/models response.
@@ -568,6 +577,7 @@ fn parse_openrouter_model(m: &serde_json::Value) -> Option<AiModel> {
         effective_context_source: None,
         pricing_prompt,
         pricing_completion,
+        anthropic_capabilities: None,
     })
 }
 
@@ -581,8 +591,9 @@ const ANTHROPIC_MODELS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Anthropic `/v1/models` の 1 件を `AiModel` に写す。
 /// `supported_parameters` は意図して `None` のまま: renderer の動的能力
-/// （`mergeDynamicCaps` が thinking／effort を落とす）に流さず、Anthropic の能力は
-/// renderer の能力表で持つ。
+/// （`mergeDynamicCaps` が thinking／effort を落とす）に流さない。Anthropic の能力は
+/// renderer の能力表が正本で、`capabilities` の object は `anthropic_capabilities` として
+/// そのまま運ぶ（表に無い id の thinking の方式を決める材料。解釈は renderer）。
 fn parse_anthropic_model(m: &serde_json::Value) -> Option<AiModel> {
     let id = m["id"].as_str().filter(|id| !id.is_empty())?;
     let name = m["display_name"]
@@ -600,6 +611,9 @@ fn parse_anthropic_model(m: &serde_json::Value) -> Option<AiModel> {
         effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
+        anthropic_capabilities: m["capabilities"]
+            .is_object()
+            .then(|| m["capabilities"].clone()),
     })
 }
 
@@ -723,6 +737,7 @@ fn anthropic_fallback_models() -> Vec<AiModel> {
         effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
+        anthropic_capabilities: None,
     })
     .collect()
 }
@@ -915,6 +930,7 @@ fn build_ollama_model(
         effective_context_source,
         pricing_prompt: None,
         pricing_completion: None,
+        anthropic_capabilities: None,
     })
 }
 
@@ -1095,6 +1111,7 @@ fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
         effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
+        anthropic_capabilities: None,
     }
 }
 
@@ -1110,6 +1127,7 @@ fn v1_ainoverist_model(id: &str, name: &str) -> AiModel {
         effective_context_source: None,
         pricing_prompt: None,
         pricing_completion: None,
+        anthropic_capabilities: None,
     }
 }
 
@@ -1586,6 +1604,7 @@ pub async fn fetch_models_for(
                         effective_context_source: None,
                         pricing_prompt: None,
                         pricing_completion: None,
+                        anthropic_capabilities: None,
                     })
                 })
                 .collect()
@@ -8249,7 +8268,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_anthropic_model_maps_limits_and_leaves_capabilities_to_the_renderer() {
+    fn parse_anthropic_model_maps_limits_and_carries_capabilities_verbatim() {
+        let capabilities = serde_json::json!({
+            "thinking": {
+                "supported": true,
+                "types": {
+                    "adaptive": { "supported": true },
+                    "enabled": { "supported": false }
+                }
+            },
+            "effort": { "supported": true, "high": { "supported": true } }
+        });
         let m = serde_json::json!({
             "type": "model",
             "id": "claude-opus-5-5",
@@ -8257,16 +8286,51 @@ mod tests {
             "created_at": "2026-10-01T00:00:00Z",
             "max_input_tokens": 1000000,
             "max_tokens": 128000,
-            "capabilities": { "thinking": { "supported": true } }
+            "capabilities": capabilities
         });
         let model = super::parse_anthropic_model(&m).unwrap();
         assert_eq!(model.id, "claude-opus-5-5");
         assert_eq!(model.name, "Claude Opus 5.5");
         assert_eq!(model.context_length, Some(1_000_000));
         assert_eq!(model.max_completion_tokens, Some(128_000));
-        // renderer の動的能力経路（thinking／effort を落とす）に流さない。
+        // renderer の動的能力経路（thinking／effort を落とす）には流さない。
         assert!(model.supported_parameters.is_none());
         assert!(model.pricing_prompt.is_none());
+        // capabilities は解釈せず、そのまま運ぶ（解釈は renderer）。
+        assert_eq!(model.anthropic_capabilities.as_ref(), Some(&capabilities));
+        let wire = serde_json::to_value(&model).unwrap();
+        assert_eq!(wire["anthropicCapabilities"], capabilities);
+        // Ollama 等の別の意味の `capabilities` とは別名にする。
+        assert!(wire.get("capabilities").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_model_omits_capabilities_when_absent_or_not_an_object() {
+        for m in [
+            serde_json::json!({ "id": "claude-x-1" }),
+            serde_json::json!({ "id": "claude-x-1", "capabilities": null }),
+            serde_json::json!({ "id": "claude-x-1", "capabilities": "none" }),
+        ] {
+            let model = super::parse_anthropic_model(&m).unwrap();
+            assert!(model.anthropic_capabilities.is_none());
+            let wire = serde_json::to_value(&model).unwrap();
+            assert!(wire.get("anthropicCapabilities").is_none());
+        }
+    }
+
+    #[test]
+    fn non_anthropic_models_do_not_emit_anthropic_capabilities_on_the_wire() {
+        let openrouter = super::parse_openrouter_model(&serde_json::json!({
+            "id": "anthropic/claude-sonnet-4.5",
+            "name": "Claude Sonnet 4.5",
+            "context_length": 200000,
+            "capabilities": { "thinking": { "supported": true } }
+        }))
+        .unwrap();
+        assert!(openrouter.anthropic_capabilities.is_none());
+        let wire = serde_json::to_value(&openrouter).unwrap();
+        assert!(wire.get("anthropicCapabilities").is_none());
+        assert!(wire.get("capabilities").is_none());
     }
 
     #[test]
@@ -9779,6 +9843,7 @@ mod tests {
             effective_context_source: None,
             pricing_prompt: None,
             pricing_completion: None,
+            anthropic_capabilities: None,
         };
         let json = serde_json::to_value(&model).unwrap();
         // camelCase rename

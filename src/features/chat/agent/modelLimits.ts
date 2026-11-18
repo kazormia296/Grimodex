@@ -155,7 +155,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context, effort low〜max)
   "claude-sonnet-4-6": {
     contextWindow: 1_000_000,
-    maxOutputTokens: 64_000,
+    maxOutputTokens: 128_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
@@ -170,6 +170,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Opus 4.5 (budget_tokens thinking, effort 非対応)
   "claude-opus-4-5": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
@@ -180,6 +181,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.5 (budget_tokens thinking, effort 非対応)
   "claude-sonnet-4-5-20250929": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
@@ -465,6 +467,35 @@ function resolveHardcoded(model: string): ModelCapabilityDefinition {
   );
 }
 
+/** 表の key の後ろに付いてよいもの（日付サフィックスと `:variant`）。 */
+const TABLE_KEY_SUFFIX = /^(?:-\d{8})?(?::[a-z]+)?$/u;
+
+/**
+ * 能力表（MODEL_CAPABILITIES／OPENROUTER_PREFIXED）に載っている id か。
+ * `resolveHardcoded` の表を引く段のうち、完全一致・別名・正規化・「日付サフィックス付き」の
+ * 前方一致だけを見る。`claude-fable-5-2` が `claude-fable-5` に前方一致するような、
+ * 別のバージョンへの前方一致は載っているとみなさない（resolveHardcoded は能力の近似として
+ * 使うが、live の値は載っていない id のために取っておく）。将来世代の近似
+ * （resolveFutureAnthropicGeneration）や 200K の推定にも落とさない。
+ */
+function isListedInCapabilityTable(model: string): boolean {
+  if (MODEL_CAPABILITIES[model]) return true;
+  const resolved = OPENROUTER_PREFIXED[model];
+  if (resolved && MODEL_CAPABILITIES[resolved]) return true;
+  const normalized = normalizeModelVersion(model);
+  if (normalized !== model && isListedInCapabilityTable(normalized)) {
+    return true;
+  }
+  const hasDatedKey = (key: string) =>
+    model.startsWith(key) && TABLE_KEY_SUFFIX.test(model.slice(key.length));
+  return (
+    Object.entries(OPENROUTER_PREFIXED).some(
+      ([prefixed, canonical]) =>
+        MODEL_CAPABILITIES[canonical] !== undefined && hasDatedKey(prefixed),
+    ) || Object.keys(MODEL_CAPABILITIES).some(hasDatedKey)
+  );
+}
+
 /**
  * 能力表に無い他の Claude（旧世代・限定提供など。GET /v1/models は契約で使える
  * 全モデルを返し、Anthropic は動的メタを使わないので能力表だけが頼り）。
@@ -610,6 +641,68 @@ function mergeDynamicCaps(
     // これを報告しないため、curated 値をそのまま継承する。
     supportsStructuredJson: hardcoded.supportsStructuredJson,
   };
+}
+
+/**
+ * Anthropic の live（`GET /v1/models` の `max_input_tokens`／`max_tokens`／`capabilities`）を
+ * 能力に足す。`mergeDynamicCaps` は通さない（あれは thinking／effort を false に固定する）。
+ *
+ * - 表に載っている id は表のまま返す（製品の判断を live に上書きさせない）。
+ * - 表に無い id だけ、context と最大出力を live で置き換える。
+ * - 表に無い id の thinking は live の方式で決める：adaptive を含めば adaptive、含まなければ
+ *   送らない（budget_tokens も effort 単独も送らない）。ただし adaptive は effort を伴うので、
+ *   live が effort 不可と明示するなら adaptive も送らない。effort は adaptive のときだけ
+ *   live の段階を使い、xhigh は製品に無いので無視する。adaptive の request は effort の段階（max の有無）を見ない（元から同じ）。
+ *   方式が分からない（capabilities が無い）ときは今の推定のまま。
+ *   canDisable・image・pdf・lifecycle は使わない。
+ */
+function mergeAnthropicLive(
+  model: string,
+  dyn: DynamicModelMeta,
+  hardcoded: ModelCapabilities,
+): ModelCapabilities {
+  if (isListedInCapabilityTable(model)) return hardcoded;
+  let merged = hardcoded;
+  if (dyn.ctx !== undefined || dyn.out !== undefined) {
+    merged = {
+      ...merged,
+      contextWindow: dyn.ctx ?? merged.contextWindow,
+      modelContextWindow: dyn.ctx ?? merged.modelContextWindow,
+      contextWindowIsEffective:
+        dyn.ctx !== undefined || merged.contextWindowIsEffective,
+      contextWindowSource:
+        dyn.ctx !== undefined ? "dynamic" : merged.contextWindowSource,
+      maxOutputTokens: dyn.out ?? merged.maxOutputTokens,
+    };
+  }
+  const live = dyn.anthropicThinking;
+  if (live) {
+    // adaptive の request は effort を必ず伴う（Rust の ThinkingConfig::Adaptive）ので、
+    // live が effort 不可と明示するモデルでは adaptive を送らない。effort の情報が無いときは
+    // 今の推定を使う。
+    const adaptive = live.adaptive && live.effortSteps?.length !== 0;
+    merged = {
+      ...merged,
+      supportsAdaptiveThinking: adaptive,
+      // 表に無い id には budget_tokens を送らない（近似で enabled になる id も、live の
+      // 判定があれば送らない）。
+      supportsThinking: false,
+      // effort は adaptive に伴うときだけ使う。adaptive を送らないモデルに effort 単独
+      // （`output_config.effort`）を新しく送らない（近い id で表の「effort 不可」を live が
+      // 上書きしない）。
+      supportsEffort:
+        adaptive &&
+        (live.effortSteps
+          ? live.effortSteps.length > 0
+          : merged.supportsEffort),
+      supportsMaxEffort:
+        adaptive &&
+        (live.effortSteps
+          ? live.effortSteps.includes("max")
+          : merged.supportsMaxEffort),
+    };
+  }
+  return merged;
 }
 
 /**
@@ -766,7 +859,9 @@ export function resolveModelCapabilities(
     : null;
   const base =
     provider && dynamic
-      ? mergeDynamicCaps(dynamic, hardcoded, provider)
+      ? provider === "anthropic"
+        ? mergeAnthropicLive(model, dynamic, hardcoded)
+        : mergeDynamicCaps(dynamic, hardcoded, provider)
       : hardcoded;
   if (!settings) return base;
 

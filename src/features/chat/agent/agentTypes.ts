@@ -188,6 +188,16 @@ export interface ToolCallRecord {
   undoId?: string;
   /** propose_setting_change の検証済みの提案。無い呼び出し（失敗・保存前の履歴）にはカードを出さない。 */
   settingProposal?: SettingProposal;
+  /**
+   * chat IR を返した search_events だけに付く、モデルに渡した承認済み要約の出所。
+   * revision ID だけで、本文・題・quote は持たない。cap と limit で落とした item は含めない。
+   * eventIds は承認済み IR が event の ID を持つまで空、generation は null。
+   */
+  usedIds?: {
+    revisionIds: string[];
+    eventIds: string[];
+    generation: number | null;
+  };
 }
 
 // エージェントループ進捗（UIコールバック用）
