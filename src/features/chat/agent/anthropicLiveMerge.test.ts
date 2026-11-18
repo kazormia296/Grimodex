@@ -417,6 +417,102 @@ describe("Anthropic の capabilities（段 2 の B 案）", () => {
     ).toEqual({});
   });
 
+  it("live が adaptive を許しても effort 不可と明示するなら、adaptive は送らない（adaptive は effort を伴う）", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-5-9", {
+        thinking: {
+          supported: true,
+          types: { adaptive: { supported: true } },
+        },
+        effort: { supported: false },
+      }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-fable-5-9",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+  });
+
+  it("enabled ＋ effort（opus-4-5 型）の表に無い id は budget_tokens を送らず、effort だけを送る", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-opus-4-9", {
+        thinking: {
+          supported: true,
+          types: { enabled: { supported: true } },
+        },
+        effort: {
+          supported: true,
+          low: { supported: true },
+          medium: { supported: true },
+          high: { supported: true },
+        },
+      }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-opus-4-9",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({ effort: "high" });
+  });
+
+  it("方式を live が判定し effort の情報が無ければ、effort 単独も送らない", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-5-9", {
+        thinking: {
+          supported: true,
+          types: { enabled: { supported: true } },
+        },
+      }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-fable-5-9",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+  });
+
+  it("表のモデルに前方一致で近似される表に無い id も、live が enabled だけなら budget_tokens を送らない", () => {
+    const before = buildThinkingParams(
+      "claude-opus-4-5-1",
+      "high",
+      "summarized",
+      true,
+      ANTHROPIC,
+    );
+    expect(before.thinking?.type).toBe("enabled");
+    registerAnthropicModelCaps([
+      synthetic("claude-opus-4-5-1", {
+        thinking: {
+          supported: true,
+          types: { enabled: { supported: true } },
+        },
+        effort: { supported: false },
+      }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-opus-4-5-1",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+  });
+
   it("capabilities が無ければ A 案と同じ（今の推定のまま）", () => {
     registerAnthropicModelCaps([
       synthetic("claude-fable-5-9"),

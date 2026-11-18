@@ -1,7 +1,7 @@
 /**
  * Anthropic `GET /v1/models` の model object から「live の能力」を取り出す純粋関数。
  *
- * 段 1（観測）専用：まだ製品の能力解決（modelLimits.ts）からは呼ばない。
+ * 段 1 で作った。段 2 では dynamicModelCaps.ts が、表に無い id の thinking／effort を決める材料として呼ぶ。
  * 設計は docs/plans/model-capability-discovery.md の §3、§4、§7。
  *
  * 守ること：
