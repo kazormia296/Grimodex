@@ -1,15 +1,35 @@
 import { AI_PROVIDERS, type AiModel, type AiProvider } from "../types";
+import { parseAnthropicLiveCaps } from "./anthropicLiveCaps";
 
 /**
  * 保存形式の版。v3 は Anthropic の一覧（context／最大出力）を provider 名つきで保存する。
- * v2 以前の cache は復元せず捨てる（cache なので、次の一覧取得で作り直される）。
+ * v4 は Anthropic の thinking の方式と effort の段階（anthropicThinking）を足す。
+ * 古い cache は復元せず捨てる（cache なので、次の一覧取得で作り直される）。
  */
-const STORAGE_KEY = "grimodex.modelCaps.v3";
-const PREVIOUS_STORAGE_KEYS = ["grimodex.modelCaps.v2"] as const;
+const STORAGE_KEY = "grimodex.modelCaps.v4";
+const PREVIOUS_STORAGE_KEYS = [
+  "grimodex.modelCaps.v2",
+  "grimodex.modelCaps.v3",
+] as const;
 const LEGACY_OPENROUTER_STORAGE_KEY = "grimodex.openrouterModelCaps.v1";
-const CURRENT_VERSION = 3;
+const CURRENT_VERSION = 4;
 const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(AI_PROVIDERS);
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1_000; // 24h
+
+/** Anthropic の `capabilities` から取り出した、thinking の方式と effort の段階（製品が使う分だけ）。 */
+export type AnthropicEffortStep = "low" | "medium" | "high" | "max";
+
+export interface AnthropicThinkingMeta {
+  /** thinking の方式 adaptive が使えるか。 */
+  adaptive: boolean;
+  /** thinking の方式 enabled（budget_tokens）が使えるか。 */
+  enabled: boolean;
+  /**
+   * effort の段階（xhigh は製品の EffortLevel に無いので含めない）。
+   * 応答に effort が無ければ undefined（今の推定のまま）。
+   */
+  effortSteps?: AnthropicEffortStep[];
+}
 
 interface StoredMeta {
   /** Provider-advertised model maximum. */
@@ -23,6 +43,8 @@ interface StoredMeta {
   reasoning?: 0 | 1;
   inPerM?: number;
   outPerM?: number;
+  /** Anthropic の一覧の thinking／effort。Anthropic の namespace だけが持つ。 */
+  anthropicThinking?: AnthropicThinkingMeta;
   /**
    * Last successful provider metadata observation. Kept separate from the
    * effective generation because a transient runner probe failure must not
@@ -71,6 +93,8 @@ export interface DynamicModelMeta {
   reasoning?: boolean;
   inPerM?: number;
   outPerM?: number;
+  /** Anthropic の一覧の thinking／effort（無ければ「分からない」＝今の推定のまま）。 */
+  anthropicThinking?: AnthropicThinkingMeta;
 }
 
 export interface RegisterDynamicModelCapsOptions {
@@ -99,6 +123,61 @@ let hydrated = false;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const EFFORT_STEPS: readonly AnthropicEffortStep[] = [
+  "low",
+  "medium",
+  "high",
+  "max",
+];
+
+/**
+ * Anthropic の model の `capabilities` から thinking の方式と effort の段階を取り出す。
+ * 方式が分からない（`types` が無い）ときは undefined にして、今の推定に任せる。
+ * `thinking.supported: false` は「thinking を送らない」（adaptive・enabled とも false）。
+ */
+function deriveAnthropicThinking(
+  model: AiModel,
+): AnthropicThinkingMeta | undefined {
+  if (!isRecord(model.anthropicCapabilities)) return undefined;
+  const live = parseAnthropicLiveCaps({
+    id: model.id,
+    capabilities: model.anthropicCapabilities,
+  })?.thinking;
+  if (!live) return undefined;
+  const effortSteps = live.effortLevels
+    ? EFFORT_STEPS.filter((step) => live.effortLevels?.includes(step))
+    : undefined;
+  if (live.supported === false) {
+    return { adaptive: false, enabled: false, effortSteps };
+  }
+  if (live.types === undefined) {
+    // 方式が分からない。effort だけは分かっていても、方式と一緒にしか使わない。
+    return undefined;
+  }
+  return {
+    adaptive: live.types.includes("adaptive"),
+    enabled: live.types.includes("enabled"),
+    effortSteps,
+  };
+}
+
+function sanitizeStoredThinking(
+  value: unknown,
+): AnthropicThinkingMeta | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.adaptive !== "boolean" ||
+    typeof value.enabled !== "boolean"
+  ) {
+    return undefined;
+  }
+  const stored: unknown = value.effortSteps;
+  const effortSteps = Array.isArray(stored)
+    ? EFFORT_STEPS.filter((step) => stored.includes(step))
+    : undefined;
+  return { adaptive: value.adaptive, enabled: value.enabled, effortSteps };
 }
 
 function durableStoredMeta(meta: StoredMeta): StoredMeta {
@@ -454,6 +533,8 @@ export function registerDynamicModelCaps(
       model.effectiveContextLength,
     );
     const flags = normalizedCapabilityFlags(model);
+    const anthropicThinking =
+      provider === "anthropic" ? deriveAnthropicThinking(model) : undefined;
     const inPerM = parsePricingPerMillion(model.pricingPrompt);
     const outPerM = parsePricingPerMillion(model.pricingCompletion);
     const hasDurableMetadata =
@@ -461,6 +542,7 @@ export function registerDynamicModelCaps(
       maxCompletionTokens !== undefined ||
       flags.tools !== undefined ||
       flags.reasoning !== undefined ||
+      anthropicThinking !== undefined ||
       inPerM !== undefined ||
       outPerM !== undefined;
     const hasMetadata =
@@ -473,6 +555,9 @@ export function registerDynamicModelCaps(
     const meta: StoredMeta = { ...flags };
     if (contextLength !== undefined) meta.ctx = contextLength;
     if (maxCompletionTokens !== undefined) meta.out = maxCompletionTokens;
+    if (anthropicThinking !== undefined) {
+      meta.anthropicThinking = anthropicThinking;
+    }
     if (effectiveContextLength !== undefined) {
       meta.effectiveCtx = effectiveContextLength;
       if (model.effectiveContextSource) {
@@ -542,15 +627,18 @@ export function registerDynamicModelCaps(
 }
 
 /**
- * Anthropic `GET /v1/models` の一覧を、provider 名つきで登録する（context と最大出力だけ）。
- * キー未登録・取得失敗のときの固定の予備は limit を持たないので、その一覧では登録せず、
- * 前に取得した live を残す。登録したら true。
+ * Anthropic `GET /v1/models` の一覧を、provider 名つきで登録する（context・最大出力と、
+ * `capabilities` から取った thinking の方式・effort の段階）。使うのは能力表に無い id だけ
+ * （modelLimits.ts の mergeAnthropicLive）。
+ * キー未登録・取得失敗のときの固定の予備は limit も capabilities も持たないので、その一覧では
+ * 登録せず、前に取得した live を残す。登録したら true。
  */
 export function registerAnthropicModelCaps(models: AiModel[]): boolean {
   const hasLimits = models.some(
     (model) =>
       positiveSafeInteger(model.contextLength) !== undefined ||
-      positiveSafeInteger(model.maxCompletionTokens) !== undefined,
+      positiveSafeInteger(model.maxCompletionTokens) !== undefined ||
+      deriveAnthropicThinking(model) !== undefined,
   );
   if (!hasLimits) return false;
   return registerDynamicModelCaps("anthropic", models);
@@ -679,7 +767,8 @@ export function getDynamicModelMeta(
     raw.tools === undefined &&
     raw.reasoning === undefined &&
     raw.inPerM === undefined &&
-    raw.outPerM === undefined
+    raw.outPerM === undefined &&
+    raw.anthropicThinking === undefined
   ) {
     return null;
   }
@@ -693,6 +782,7 @@ export function getDynamicModelMeta(
     reasoning: raw.reasoning === undefined ? undefined : raw.reasoning === 1,
     inPerM: raw.inPerM,
     outPerM: raw.outPerM,
+    anthropicThinking: sanitizeStoredThinking(raw.anthropicThinking),
   };
 }
 

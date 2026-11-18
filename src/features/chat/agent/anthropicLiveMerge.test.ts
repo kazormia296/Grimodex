@@ -39,6 +39,16 @@ const FIXTURE_AI_MODELS: AiModel[] = (liveModels as unknown[]).map((raw) => {
   };
 });
 
+/** capabilities も含む形（段 2 の B 案：Rust が `anthropicCapabilities` として運ぶ）。 */
+const FIXTURE_AI_MODELS_WITH_CAPS: AiModel[] = FIXTURE_AI_MODELS.map(
+  (model, index) => ({
+    ...model,
+    anthropicCapabilities: (
+      liveModels as Array<{ capabilities: Record<string, unknown> }>
+    )[index].capabilities,
+  }),
+);
+
 /** 表に載っている 14 件（claude-fable-5-2 は表に無い）。 */
 const TABLE_IDS = FIXTURE_AI_MODELS.map((m) => m.id).filter(
   (id) => id !== "claude-fable-5-2",
@@ -252,5 +262,235 @@ describe("Anthropic の live の登録（段 2）", () => {
     expect(
       resolveModelCapabilities("claude-fable-5-9", ANTHROPIC).contextWindow,
     ).toBe(2_000_000);
+  });
+});
+
+describe("Anthropic の capabilities（段 2 の B 案）", () => {
+  it("capabilities つきの一覧でも、既知の 14 件は今の値と完全に一致する", () => {
+    const before = new Map(
+      TABLE_IDS.map((id) => [id, resolveModelCapabilities(id, ANTHROPIC)]),
+    );
+    expect(registerAnthropicModelCaps(FIXTURE_AI_MODELS_WITH_CAPS)).toBe(true);
+    for (const id of TABLE_IDS) {
+      expect(resolveModelCapabilities(id, ANTHROPIC), id).toEqual(
+        before.get(id),
+      );
+    }
+  });
+
+  it("gen5 は adaptive＋effort のまま（xhigh は出さない）、haiku-4-5 は thinking なしのまま", () => {
+    registerAnthropicModelCaps(FIXTURE_AI_MODELS_WITH_CAPS);
+    for (const id of [
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
+      "claude-fable-5-1",
+      "claude-fable-5-2",
+    ]) {
+      expect(
+        buildThinkingParams(id, "high", "summarized", true, ANTHROPIC),
+        id,
+      ).toEqual({
+        thinking: { type: "adaptive", effort: "high", display: "summarized" },
+      });
+      expect(resolveModelCapabilities(id, ANTHROPIC)).toMatchObject({
+        supportsAdaptiveThinking: true,
+        supportsThinking: false,
+        supportsEffort: true,
+      });
+    }
+    for (const id of ["claude-haiku-4-5-20251001", "claude-haiku-4-5"]) {
+      expect(
+        buildThinkingParams(id, "high", "summarized", true, ANTHROPIC),
+      ).toEqual({});
+    }
+  });
+
+  it("表に無い fable-5-2 は、live（adaptive＋effort）でも今の値と同じで、由来だけ dynamic", () => {
+    const before = resolveModelCapabilities("claude-fable-5-2", ANTHROPIC);
+    registerAnthropicModelCaps(FIXTURE_AI_MODELS_WITH_CAPS);
+    expect(resolveModelCapabilities("claude-fable-5-2", ANTHROPIC)).toEqual({
+      ...before,
+      contextWindowSource: "dynamic",
+    });
+  });
+
+  function synthetic(
+    id: string,
+    capabilities?: Record<string, unknown>,
+  ): AiModel {
+    return {
+      id,
+      name: id,
+      contextLength: 400_000,
+      maxCompletionTokens: 60_000,
+      ...(capabilities ? { anthropicCapabilities: capabilities } : {}),
+    };
+  }
+
+  it("表に無い id で live が adaptive を含めば adaptive、effort は live の段階（xhigh は無視）", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-opus-4-9", {
+        thinking: {
+          supported: true,
+          types: {
+            adaptive: { supported: true },
+            enabled: { supported: false },
+          },
+        },
+        effort: {
+          supported: true,
+          low: { supported: true },
+          high: { supported: true },
+          xhigh: { supported: true },
+        },
+      }),
+    ]);
+    expect(
+      resolveModelCapabilities("claude-opus-4-9", ANTHROPIC),
+    ).toMatchObject({
+      contextWindow: 400_000,
+      contextWindowSource: "dynamic",
+      supportsAdaptiveThinking: true,
+      supportsThinking: false,
+      supportsEffort: true,
+      // max は live が持たない（xhigh は製品が持たない）
+      supportsMaxEffort: false,
+    });
+    expect(
+      buildThinkingParams(
+        "claude-opus-4-9",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({
+      thinking: { type: "adaptive", effort: "high", display: "summarized" },
+    });
+  });
+
+  it("表に無い id で live が enabled だけなら、thinking も effort も送らない（budget_tokens を新しく送らない）", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-5-9", {
+        thinking: {
+          supported: true,
+          types: { enabled: { supported: true } },
+        },
+        effort: { supported: false },
+      }),
+    ]);
+    // 今の推定（gen5 の近似）は adaptive だが、live が enabled だけなら送らない。
+    expect(
+      resolveModelCapabilities("claude-fable-5-9", ANTHROPIC),
+    ).toMatchObject({
+      supportsAdaptiveThinking: false,
+      supportsThinking: false,
+      supportsEffort: false,
+    });
+    expect(
+      buildThinkingParams(
+        "claude-fable-5-9",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+  });
+
+  it("thinking.supported が false なら送らない", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-5-9", {
+        thinking: { supported: false },
+        effort: { supported: false },
+      }),
+    ]);
+    expect(
+      buildThinkingParams(
+        "claude-fable-5-9",
+        "high",
+        "summarized",
+        true,
+        ANTHROPIC,
+      ),
+    ).toEqual({});
+  });
+
+  it("capabilities が無ければ A 案と同じ（今の推定のまま）", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-5-9"),
+      synthetic("claude-opus-4-9"),
+    ]);
+    expect(
+      resolveModelCapabilities("claude-fable-5-9", ANTHROPIC),
+    ).toMatchObject({ supportsAdaptiveThinking: true, supportsEffort: true });
+    expect(
+      resolveModelCapabilities("claude-opus-4-9", ANTHROPIC),
+    ).toMatchObject({
+      supportsAdaptiveThinking: false,
+      supportsThinking: false,
+      supportsEffort: false,
+    });
+  });
+
+  it("thinking の方式が分からない capabilities（types なし）も、今の推定のまま", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-fable-5-9", { thinking: { supported: true } }),
+    ]);
+    expect(
+      resolveModelCapabilities("claude-fable-5-9", ANTHROPIC),
+    ).toMatchObject({ supportsAdaptiveThinking: true, supportsEffort: true });
+  });
+
+  it("thinking の値は保存され、復元後も使われる（v4）", () => {
+    registerAnthropicModelCaps([
+      synthetic("claude-opus-4-9", {
+        thinking: {
+          supported: true,
+          types: { adaptive: { supported: true } },
+        },
+        effort: {
+          supported: true,
+          low: { supported: true },
+          max: { supported: true },
+        },
+      }),
+    ]);
+    expect(Object.keys(store)).toEqual(["grimodex.modelCaps.v4"]);
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("anthropic", "claude-opus-4-9")).toMatchObject({
+      anthropicThinking: {
+        adaptive: true,
+        enabled: false,
+        effortSteps: ["low", "max"],
+      },
+    });
+    expect(
+      resolveModelCapabilities("claude-opus-4-9", ANTHROPIC),
+    ).toMatchObject({
+      supportsAdaptiveThinking: true,
+      supportsMaxEffort: true,
+    });
+  });
+
+  it("v3 の保存は復元せず捨てる", () => {
+    store["grimodex.modelCaps.v3"] = JSON.stringify({
+      version: 3,
+      providers: {
+        anthropic: {
+          fetchedAt: Date.now(),
+          models: { "claude-fable-5-9": { ctx: 1 } },
+        },
+      },
+    });
+    __resetDynamicModelCapsForTests();
+    expect(getDynamicModelMeta("anthropic", "claude-fable-5-9")).toBeNull();
+    expect(store["grimodex.modelCaps.v3"]).toBeUndefined();
+  });
+
+  it("他の provider の meta には anthropicThinking が付かない", () => {
+    registerAnthropicModelCaps(FIXTURE_AI_MODELS_WITH_CAPS);
+    expect(getDynamicModelMeta("openrouter", "claude-opus-5-5")).toBeNull();
   });
 });
