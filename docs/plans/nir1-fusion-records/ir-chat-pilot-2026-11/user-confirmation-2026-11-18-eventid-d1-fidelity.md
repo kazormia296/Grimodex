@@ -50,3 +50,11 @@ S1-A2 に着手する前に、4 問を 1 回にまとめて AskUserQuestion で�
   - 応答に `eventIds` と `excludedEventIds` を足す。
   - 年表と統合した item に限り、model に `chronicleIr.eventIds` を見せる。
   - 新しい送信先は無い。候補と除外は log・audit・ledger に入れない。
+
+### Q2 の補足（訂正。同じ夜）
+- 先の Q2 の選択肢の説明に、代償を 1 つ書き漏らしていた。それを伝えて、改めて伺った。
+  - 書き漏らした代償：事前判定で cap を使い切ったときにも、除外のためだけに Native を呼ぶ。その分、応答が最長約 20 秒遅れうる。台帳・同時実行の枠・turn の累積の上限も使う。それでも IR の要約は載らない。
+- **回答：「近似の規則で塞ぐ」**（推奨案）。
+  - 事前判定の `cap-exceeded` では Native を呼ばない。`turn-limit`・`query-invalid` と同じく、secret の event に近似の規則（結ばれた Scene がすべて今の Scene より前）を掛ける。
+  - 一時的・構造的な失敗では、今のまま返す（変更なし）。
+  - **Q2 の確定**：model が起こせる 3 つ（事前判定の `cap-exceeded`、`turn-limit`、`query-invalid`）には近似の規則を掛ける。それ以外の失敗には (4) を掛けない。
