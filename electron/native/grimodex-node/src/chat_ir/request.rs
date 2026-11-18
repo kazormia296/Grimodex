@@ -12,6 +12,14 @@ use serde::Deserialize;
 /// derived bound can never be reached and is not checked.
 pub(crate) const QUERY_MAX_UTF16: usize = 500;
 
+/// The most candidate Chronicle event IDs one request carries. It is the
+/// year table's own over-fetch bound (`min(limit * 3, 30)`, S1-A2 DR-CHATIR-S1-41).
+pub(crate) const CHRONICLE_EVENT_IDS_MAX: usize = 30;
+
+/// The longest candidate event ID in UTF-16 code units, the unit of
+/// `string.length` (the bound Related Scenes puts on its own IDs).
+pub(crate) const CHRONICLE_EVENT_ID_MAX_UTF16: usize = 200;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Request {
@@ -19,6 +27,12 @@ pub(crate) struct Request {
     pub(crate) project_id: String,
     pub(crate) expected_workspace_path: String,
     pub(crate) current_scene_id: String,
+    /// The Chronicle events the caller (the year table) already holds as
+    /// candidates, for the IR admission rule to judge (S1-A2 A2). Required: an
+    /// empty list means "no candidate", a missing key is a request error. The
+    /// IDs are never logged, audited or kept in the ledger; the request is
+    /// dropped when the call's task ends.
+    pub(crate) chronicle_event_ids: Vec<String>,
 }
 
 /// Not empty, not only whitespace, at most [`QUERY_MAX_UTF16`] code units. A
@@ -26,4 +40,16 @@ pub(crate) struct Request {
 /// model wrote, what is embedded and what the audit records.
 pub(crate) fn query_is_valid(query: &str) -> bool {
     !query.trim().is_empty() && query.encode_utf16().count() <= QUERY_MAX_UTF16
+}
+
+/// At most [`CHRONICLE_EVENT_IDS_MAX`] IDs, each neither empty nor only white
+/// space and at most [`CHRONICLE_EVENT_ID_MAX_UTF16`] code units, none twice.
+/// An empty list is valid. Main checks the same; a violation is an
+/// `INVALID_REQUEST` before the permit.
+pub(crate) fn chronicle_event_ids_are_valid(ids: &[String]) -> bool {
+    ids.len() <= CHRONICLE_EVENT_IDS_MAX
+        && ids.iter().all(|id| {
+            !id.trim().is_empty() && id.encode_utf16().count() <= CHRONICLE_EVENT_ID_MAX_UTF16
+        })
+        && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len()
 }

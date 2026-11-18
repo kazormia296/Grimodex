@@ -519,6 +519,8 @@ async function searchEventsWithIr(
         projectId,
         expectedWorkspacePath: ir.workspacePath ?? "",
         currentSceneId,
+        // c2 は wire だけを閉じる。候補の組み立てと除外の適用は executor の c3（P15〜P18）で入れる。
+        chronicleEventIds: [],
       });
       if (
         !(

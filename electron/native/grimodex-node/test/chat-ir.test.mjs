@@ -18,6 +18,7 @@ const REQUEST = {
   projectId: "project-1",
   expectedWorkspacePath: "/nonexistent-workspace",
   currentSceneId: "scene-1",
+  chronicleEventIds: [],
 };
 
 const STATUSES = new Set([
@@ -54,7 +55,10 @@ function rig() {
 
 test("the command is declared and exported", () => {
   const declarations = readFileSync(join(here, "..", "index.d.ts"), "utf8");
-  assert.match(declarations, /chatAgentIrSelect\(payload: any\): Promise<string>/);
+  assert.match(
+    declarations,
+    /chatAgentIrSelect\(payload: any\): Promise<string>/,
+  );
   assert.equal(typeof Backend.prototype.chatAgentIrSelect, "function");
 });
 
@@ -81,6 +85,25 @@ test("an open gate still refuses a request of the wrong shape, and every answer 
       r.backend.chatAgentIrSelect({ ...REQUEST, extra: true }),
       /CHAT_IR_INVALID_REQUEST/,
     );
+    // The candidate list is part of the shape (S1-A2): a missing key and a list
+    // that breaks a bound are request errors, not statuses.
+    const { chronicleEventIds: _omitted, ...withoutCandidates } = REQUEST;
+    for (const payload of [
+      withoutCandidates,
+      { ...REQUEST, chronicleEventIds: "event-1" },
+      { ...REQUEST, chronicleEventIds: ["e", "e"] },
+      { ...REQUEST, chronicleEventIds: [""] },
+      { ...REQUEST, chronicleEventIds: ["x".repeat(201)] },
+      {
+        ...REQUEST,
+        chronicleEventIds: Array.from({ length: 31 }, (_, i) => `event-${i}`),
+      },
+    ]) {
+      await assert.rejects(
+        r.backend.chatAgentIrSelect(payload),
+        /CHAT_IR_INVALID_REQUEST/,
+      );
+    }
     const refused = JSON.parse(
       await r.backend.chatAgentIrSelect({ ...REQUEST, query: "x".repeat(501) }),
     );
@@ -91,6 +114,17 @@ test("an open gate still refuses a request of the wrong shape, and every answer 
     assert.ok(STATUSES.has(answer.status), answer.status);
     assert.equal(answer.success, false);
     assert.deepEqual(answer.items, []);
+    // Five keys on every answer; the exclusions are "not judged" (null) here.
+    assert.deepEqual(Object.keys(answer).sort(), [
+      "eventIds",
+      "excludedEventIds",
+      "items",
+      "status",
+      "success",
+    ]);
+    assert.deepEqual(answer.eventIds, {});
+    assert.equal(answer.excludedEventIds, null);
+    assert.equal(refused.excludedEventIds, null);
   } finally {
     await r.close();
   }

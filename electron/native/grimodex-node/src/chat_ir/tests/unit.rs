@@ -11,7 +11,7 @@ use crate::chat_ir::item::{
 };
 use crate::chat_ir::ledger::{Ledger, LedgerFull};
 use crate::chat_ir::permit::PermitPool;
-use crate::chat_ir::request::{query_is_valid, Request};
+use crate::chat_ir::request::{chronicle_event_ids_are_valid, query_is_valid, Request};
 use crate::chat_ir::status::{
     from_error, from_termination, from_unavailable, ChatIrStatus, STRING_CODES,
 };
@@ -47,17 +47,87 @@ fn empty_and_blank_queries_are_refused() {
 
 #[test]
 fn request_rejects_unknown_and_missing_keys() {
-    let ok = json!({"query":"q","projectId":"p","expectedWorkspacePath":"/w","currentSceneId":"s"});
+    let ok = json!({
+        "query":"q","projectId":"p","expectedWorkspacePath":"/w","currentSceneId":"s",
+        "chronicleEventIds":["e-1","e-2"],
+    });
     assert!(serde_json::from_value::<Request>(ok.clone()).is_ok());
     let mut extra = ok.clone();
     extra["extra"] = json!(1);
     assert!(serde_json::from_value::<Request>(extra).is_err());
-    let mut missing = ok.clone();
-    missing.as_object_mut().unwrap().remove("currentSceneId");
-    assert!(serde_json::from_value::<Request>(missing).is_err());
-    let mut wrong = ok;
+    // Every key is required, the candidate list included: "not sent" and "no
+    // candidate" must not look alike (DR-CHATIR-S1-41).
+    for key in [
+        "query",
+        "projectId",
+        "expectedWorkspacePath",
+        "currentSceneId",
+        "chronicleEventIds",
+    ] {
+        let mut missing = ok.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        assert!(serde_json::from_value::<Request>(missing).is_err(), "{key}");
+    }
+    let mut wrong = ok.clone();
     wrong["query"] = json!(1);
     assert!(serde_json::from_value::<Request>(wrong).is_err());
+    // A candidate list that is not an array of strings is a shape error.
+    for bad in [
+        json!("e-1"),
+        json!(null),
+        json!({}),
+        json!([1]),
+        json!([null]),
+    ] {
+        let mut wrong = ok.clone();
+        wrong["chronicleEventIds"] = bad.clone();
+        assert!(serde_json::from_value::<Request>(wrong).is_err(), "{bad}");
+    }
+    let mut empty = ok;
+    empty["chronicleEventIds"] = json!([]);
+    assert!(serde_json::from_value::<Request>(empty).is_ok());
+}
+
+// ---- S1-A2 N1: the candidate list ------------------------------------------------
+
+fn ids(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("event-{index}")).collect()
+}
+
+#[test]
+fn the_candidate_list_holds_30_distinct_ids_of_1_to_200_units() {
+    assert!(chronicle_event_ids_are_valid(&[]));
+    assert!(chronicle_event_ids_are_valid(&ids(1)));
+    assert!(chronicle_event_ids_are_valid(&ids(30)));
+    assert!(!chronicle_event_ids_are_valid(&ids(31)));
+    // 200 units is the bound; an empty or white-space ID is not an ID.
+    assert!(chronicle_event_ids_are_valid(&["a".repeat(200)]));
+    assert!(!chronicle_event_ids_are_valid(&["a".repeat(201)]));
+    for blank in ["", " ", "\n\t", "\u{3000}"] {
+        assert!(
+            !chronicle_event_ids_are_valid(&[blank.to_string()]),
+            "{blank:?}"
+        );
+    }
+    // Counted in UTF-16 units like `string.length`: 100 surrogate pairs are
+    // 200 units, 101 are 202, and 134 three-byte characters are 134 units.
+    assert!(chronicle_event_ids_are_valid(&["\u{1F600}".repeat(100)]));
+    assert!(!chronicle_event_ids_are_valid(&["\u{1F600}".repeat(101)]));
+    assert!(chronicle_event_ids_are_valid(&["あ".repeat(200)]));
+    // The same ID twice is refused, a different case or a padded one is another ID.
+    assert!(!chronicle_event_ids_are_valid(&[
+        "e-1".to_string(),
+        "e-1".to_string()
+    ]));
+    assert!(chronicle_event_ids_are_valid(&[
+        "e-1".to_string(),
+        "E-1".to_string(),
+        " e-1".to_string()
+    ]));
+    // A duplicate inside 30 is refused even though the count is within the bound.
+    let mut repeated = ids(29);
+    repeated.push(repeated[0].clone());
+    assert!(!chronicle_event_ids_are_valid(&repeated));
 }
 
 // ---- S1A-10 / S1A-22: the basis ---------------------------------------------

@@ -121,10 +121,14 @@ function item(index: number, summary = "approved summary"): ChatAgentIrItem {
 }
 
 function answer(items: ChatAgentIrItem[], status = "available") {
+  const success = status === "available" || status === "none-above-threshold";
   return {
     status,
-    success: status === "available" || status === "none-above-threshold",
+    success,
     items,
+    // S1-A2 の wire（c2）。executor はまだ使わない（c3）ので、空・未判定のまま。
+    eventIds: {},
+    excludedEventIds: success ? [] : null,
   };
 }
 
@@ -392,6 +396,8 @@ describe("B-T9: the Scene and the project of the bound scope", () => {
         projectId: "p-turn",
         expectedWorkspacePath: "/w",
         currentSceneId: "s2",
+        // c2：executor はまだ候補を組み立てない（c3）。
+        chronicleEventIds: [],
       });
     }
     expect(h.semantic).toHaveBeenCalledWith(

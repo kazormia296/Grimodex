@@ -9,6 +9,7 @@ use crate::chat_ir::ledger::Ledger;
 use crate::chat_ir::permit::PermitPool;
 use crate::chat_ir::status::ChatIrStatus;
 use crate::chat_ir::{ChatIrConfig, ChatIrState};
+use serde_json::json;
 
 fn config() -> ChatIrConfig {
     ChatIrConfig {
@@ -129,8 +130,118 @@ fn none_above_threshold_is_a_success_and_a_failure_never_is() {
         assert_eq!(wire["status"], status.as_str());
         assert_eq!(wire["success"], status.is_success());
         assert_eq!(wire["items"], serde_json::json!([]));
-        assert_eq!(wire.as_object().unwrap().len(), 3);
+        assert_eq!(wire.as_object().unwrap().len(), 5);
     }
+}
+
+// ---- S1-A2 N2: the wire of the event IDs ------------------------------------------
+
+#[test]
+fn every_status_answers_five_keys_and_only_a_success_judges_the_exclusions() {
+    let mut keys: Vec<String> = Vec::new();
+    for status in ChatIrStatus::ALL {
+        // Even a result that (wrongly) holds exclusions on a failure is `null`:
+        // "not judged" must never read as "nothing excluded".
+        let result = ChatIrResult {
+            excluded: vec!["event-1".to_string()],
+            ..ChatIrResult::status_only(status)
+        };
+        let wire = result.to_wire();
+        let object = wire.as_object().unwrap();
+        keys = object.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["eventIds", "excludedEventIds", "items", "status", "success"],
+            "{status:?}"
+        );
+        assert_eq!(wire["eventIds"], json!({}), "{status:?}");
+        if status.is_success() {
+            assert_eq!(wire["excludedEventIds"], json!(["event-1"]), "{status:?}");
+        } else {
+            assert!(wire["excludedEventIds"].is_null(), "{status:?}");
+        }
+        let plain = ChatIrResult::status_only(status).to_wire();
+        if status.is_success() {
+            assert_eq!(plain["excludedEventIds"], json!([]), "{status:?}");
+        } else {
+            assert!(plain["excludedEventIds"].is_null(), "{status:?}");
+        }
+    }
+    assert_eq!(keys.len(), 5);
+    assert_eq!(
+        ChatIrStatus::ALL
+            .iter()
+            .filter(|status| status.is_success())
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn the_event_ids_of_an_available_answer_are_an_object_of_revision_to_event() {
+    let mut fake = Fake::new();
+    fake.select = Ok(some_items(1));
+    fake.event_ids = [("r".to_string(), "event-r".to_string())].into();
+    fake.excluded = vec!["event-x".into(), "event-y".into()];
+    let result = call(&fake, &ledger(10));
+    assert_eq!(result.status, ChatIrStatus::Available);
+    let wire = result.to_wire();
+    assert_eq!(wire["eventIds"], json!({"r": "event-r"}));
+    assert_eq!(wire["excludedEventIds"], json!(["event-x", "event-y"]));
+    // The item is what it was: no event ID is added to it.
+    assert_eq!(wire["items"][0], fake.select.clone().unwrap()[0].value);
+    assert!(wire["items"][0].get("eventId").is_none());
+}
+
+// ---- S1-A2 N4: the flow carries the exclusions ------------------------------------
+
+#[test]
+fn none_above_threshold_carries_the_exclusions() {
+    let mut fake = Fake::new();
+    fake.excluded = vec!["event-x".into()];
+    let ledger = ledger(10);
+    let result = call(&fake, &ledger);
+    assert_eq!(result.status, ChatIrStatus::NoneAboveThreshold);
+    let wire = result.to_wire();
+    assert_eq!(wire["success"], true);
+    assert_eq!(wire["excludedEventIds"], json!(["event-x"]));
+    assert_eq!(wire["eventIds"], json!({}));
+    assert_eq!(ledger.lock().unwrap().len(), 0);
+}
+
+#[test]
+fn a_failure_after_the_third_read_does_not_judge_the_exclusions() {
+    // The deadline passes during T3: the answer is `timeout`, and the
+    // exclusions it read are not returned.
+    let mut fake = Fake::new();
+    fake.select = Ok(some_items(1));
+    fake.excluded = vec!["event-x".into()];
+    fake.select_sleep = Duration::from_millis(600);
+    let result = call(&fake, &ledger(10));
+    assert_eq!(result.status, ChatIrStatus::Timeout);
+    let wire = result.to_wire();
+    assert!(wire["excludedEventIds"].is_null());
+    assert_eq!(wire["eventIds"], json!({}));
+    assert_eq!(wire["items"], json!([]));
+
+    // The ledger is full: `ledger-full` is not a success, so `null` as well.
+    let mut fake = Fake::new();
+    fake.select = Ok(some_items(2));
+    fake.excluded = vec!["event-x".into()];
+    let result = call(&fake, &ledger(1));
+    assert_eq!(result.status, ChatIrStatus::LedgerFull);
+    let wire = result.to_wire();
+    assert!(wire["excludedEventIds"].is_null());
+    assert_eq!(wire["eventIds"], json!({}));
+
+    // A failure of T3 itself.
+    let mut fake = Fake::new();
+    fake.select = Err(ChatIrStatus::IndexUnavailable);
+    fake.excluded = vec!["event-x".into()];
+    let result = call(&fake, &ledger(10));
+    assert_eq!(result.status, ChatIrStatus::IndexUnavailable);
+    assert!(result.to_wire()["excludedEventIds"].is_null());
 }
 
 #[test]
@@ -398,6 +509,11 @@ async fn a_task_that_ended_without_answering_is_internal() {
         serde_json::from_str(&crate::chat_ir::wire_of_answer(receiver).await).expect("json");
     assert_eq!(wire["status"], "internal");
     assert_eq!(wire["success"], false);
+    // N3: the closed `internal` has the same five keys as every other answer.
+    assert_eq!(wire.as_object().unwrap().len(), 5);
+    assert_eq!(wire["items"], serde_json::json!([]));
+    assert_eq!(wire["eventIds"], serde_json::json!({}));
+    assert!(wire["excludedEventIds"].is_null());
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<ChatIrResult>();
     assert!(sender
@@ -406,6 +522,8 @@ async fn a_task_that_ended_without_answering_is_internal() {
     let wire: serde_json::Value =
         serde_json::from_str(&crate::chat_ir::wire_of_answer(receiver).await).expect("json");
     assert_eq!(wire["status"], "busy");
+    assert_eq!(wire.as_object().unwrap().len(), 5);
+    assert!(wire["excludedEventIds"].is_null());
 }
 
 #[test]

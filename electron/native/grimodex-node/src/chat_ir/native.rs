@@ -24,8 +24,8 @@ use grimodex_semantic::runtime::{
 };
 
 use super::basis::{derive, Basis};
-use super::flow::{Backend, FirstRead, Prepared};
-use super::item::{select_items, Candidate, IrItem};
+use super::flow::{Backend, FirstRead, Prepared, Selection};
+use super::item::{select_items, Candidate};
 use super::request::Request;
 use super::status::{from_error, from_unavailable, ChatIrStatus};
 use crate::state::AppState;
@@ -335,10 +335,10 @@ impl Backend for NativeBackend {
         batch: &NirQualifiedBatch,
         scores: Vec<f32>,
         deadline: Instant,
-    ) -> Result<Vec<IrItem>, ChatIrStatus> {
+    ) -> Result<Selection, ChatIrStatus> {
         let db = self.request.database();
         let mut control = self.control(deadline);
-        let (items, basis) = settle(db.try_with_participant_read_transaction_until(
+        let (selection, basis) = settle(db.try_with_participant_read_transaction_until(
             &self.participant,
             self.budget(deadline),
             |conn| {
@@ -370,6 +370,23 @@ impl Backend for NativeBackend {
                         )?)
                     },
                 )?;
+                // S1-A2: the event of each returned item (A1) and the request's
+                // candidates that the admission rule excludes (A2), read before
+                // the validation so that one `validate` covers all three. A
+                // failure of either is the transaction's error (`internal`):
+                // no item is returned without its event IDs.
+                let revision_ids: Vec<String> =
+                    items.iter().map(|item| item.revision_id.clone()).collect();
+                let event_ids = index::read_chronicle_event_ids_of_revisions(
+                    conn,
+                    &request.project_id,
+                    &revision_ids,
+                )?;
+                let excluded = index::read_chronicle_excluded_event_ids(
+                    conn,
+                    batch,
+                    &request.chronicle_event_ids,
+                )?;
                 if !index::validate_chronicle_query_snapshot_with_control(
                     conn,
                     db.nir_chronicle_index_runtime(),
@@ -378,7 +395,14 @@ impl Backend for NativeBackend {
                 )? {
                     return Ok(Err(ChatIrStatus::IndexUnavailable));
                 }
-                Ok(Ok((items, basis)))
+                Ok(Ok((
+                    Selection {
+                        items,
+                        event_ids,
+                        excluded,
+                    },
+                    basis,
+                )))
             },
         ))?;
         self.state
@@ -388,7 +412,7 @@ impl Backend for NativeBackend {
         if !self.is_current() {
             return Err(self.not_current());
         }
-        Ok(items)
+        Ok(selection)
     }
 
     fn stop_requested(&self) -> bool {
