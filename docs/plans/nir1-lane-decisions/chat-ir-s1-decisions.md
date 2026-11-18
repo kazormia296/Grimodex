@@ -317,3 +317,68 @@ GDX-PRECHECK-001 の区分：**background は当たる**（tail。応答の後�
 - **renderer の事前判定の優先順（仮）**：`currentSceneId` が空 → `no-current-scene`、query が空・空白のみ・UTF-16 500 超 → `query-invalid`、`expectedWorkspacePath` または `projectId` が空 → `no-workspace`。改訂 3 の表は `projectId` が空のときの status を挙げていないので、`no-workspace` に仮置きした（新しい status を作らない）。
 - **共有 fixture の置き場**：`src/features/codex/context/fixtures/reading-order-parity.json`。前例の `policies/narrative/fixtures/` は `policies/narrative/**` が `GDX-NARR-SEMANTIC-CONTRACT-001` の対象で、挙動不変の PR に重い評価を持ち込むので避けた。Rust の試験は `include_str!` で読める（S1-A2）。置き場を前例に揃える判断は統合者に残す。
 - **試験の限界**：Rust 側の期待（error か順か）は `project_scope_authority.rs` を読んだ推定で、cargo では実行していない。
+
+## S1-B の判断（PR-B2。定数 `false` のまま、executor への合流・cap・status の文言を閉じたまま置く）
+
+設計の正本は PR-B1 と同じ `s1b-design-draft-r3.md`・`s1b-design-draft-r4-delta.md` に、PR-B2 の詳細設計 `s1b-prb2-design-2026-11-18.md`（repo の外の同じ folder）を足したもの。
+PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数が `false` の間の製品の挙動は変わらない（`createChatTurnToolContext` は入力の関数を同一のまま返し、`searchEvents` の位置の filter は掛からず、`snapshotAgentTools()` は今と一致する）。
+5 つの commit に分けた：(1) 新しい関数を chat file の外に足す、(2) `chatTurnStoreActions.ts` の切り替え（この file に触れる唯一の commit）、(3a) status の分類と cap の収め、(3b) executor への配線、(3c) 説明文・記録。
+
+## DR-CHATIR-S1-33：`guardedExecuteTool` の抽出と `chatTurnStoreActions.ts` の ratchet（2026-11-18）
+
+- **事実**：`chatTurnStoreActions.ts` は `policies/architecture/large-module-debt.json` の上限（行数 2746、runtime import 36）に張り付いている。試作では、抽出なしで IR・scope の配線を足すと 2758 行（+12）になり、上限を超える。
+- **決定**：PR-B2 の中で、この file に触れる commit を 1 つ（commit 2）にして挙動不変の抽出を行う。`guardedExecuteTool` の本体を `chatAgentToolHandlers.ts` の `createGuardedExecuteTool` へ移し、IR・scope の配線を `createChatTurnToolContext` に集める。別の PR（PR-B0）にはしない：抽出で上限を先に下げると、後の配線の commit が増加になり `--write-baseline` でも通らない（ratchet は増加を拒む）。1 つの commit で抽出と配線を同時に済ませれば、増減は commit 内で相殺し、上限の更新も 1 回で済む。commit 1 は chat file に触れず新しい関数と単体試験だけ、commit 3 以降も chat file に触れない。
+- **ratchet**：同じ commit で上限を 2746 → **2741** に下げる（減少も ratchet が要求する）。runtime import は 36 のまま。上限は上げない。
+- **範囲**：構造の変更だけで、新しい宛先・保存・閾値・契約は無い。定数が `false` のとき `createChatTurnToolContext` は入力の `executeTool`／`executeReadOnlyTool` を同一の関数のまま返す。
+- **試験**：`chatAgentToolHandlers.test.ts`（同一性・`createGuardedExecuteTool` の単体）、`chatTurnStoreActions.uiOperationLimit.static.test.ts`（維持）。
+
+## DR-CHATIR-S1-34：sub-agent の基準の Scene は案 T（turn 開始時の束縛）（2026-11-18）
+
+- **事実**：chat store の `activeSceneId` と project store の写しは React effect で連動するが、遅れと見送りがある。tool が実行時に store を読み直すと、同じ turn の中で基準の Scene が動きうる。
+- **決定**：turn の開始時に `currentSceneId` と `projectId` を `ChatTurnToolScope` へ捕まえ（不変）、main の `executeTool` と sub-agent の `executeReadOnlyTool` の両方に同じ scope を束ねる。束縛は `createChatTurnToolContext` が作る関数の包みで行い、`chatTurnStoreActions.ts` の行は増えない（DR-33 の収支に含む）。tool の中では store を読み直さない。
+- **範囲**：確認済みの規則（△8 の基準の Scene。J4・J7 の turn 開始時の束縛）の内。位置の filter は共有の `searchEvents` にあるので、sub-agent の年表にも掛かる（filter を広げる向きで、秘匿を緩めない）。案 R（sub-agent は実行時の値）は採らない。
+- **定数 `false` の間**：scope は束ねない。既存の秘匿の filter の基準は今のまま（実行時の `activeSceneId`、J7）。scope が無い呼び手は、基準の Scene を従来どおり `getSharedReadingOrder` の直後（await の後）に読む（`chronicleSceneId`）。先頭で読む形にすると await の間に Scene が替わったとき挙動が変わるため。
+
+## DR-CHATIR-S1-35：`usedIds` の受け渡しは案 P（WeakMap、鍵は `params`）と `noteUsedIds` の型（2026-11-18）
+
+- **決定**：`ChatIrCapability.noteUsedIds` を `(key: object, revisionIds: readonly string[]) => void` に直す（PR-B1 の `noteUsedIds(revisionIds)` は鍵を持てない）。turn の文脈が `WeakMap<params, ChatIrUsedIds>` を持ち、`onToolComplete` の先頭（authority の早期 return の前）で `attachUsedIds(record)` が record の `usedIds` に写す。形は `{ revisionIds, eventIds, generation }`。`agentLoop.ts` は変えない（案 Q は採らない）。
+- **中身**：`revisionIds` は cap の収めの後に残った item のものだけ。`eventIds` は空（item が eventId を運ばない。r4-delta §2 の 4）、`generation` は `null`（item に無い。B-17）。item が 0 件なら `usedIds` を書かない。
+- **理由**：案 Q（`agentLoop.ts` に汎用の写し）は `usedIds` を「IR の知識」として agentLoop に入れることになり、△6（ユーザー確認済みの文言）の読みを広げる。案 P は鍵が `params` object なので並列の tool でも壊れない見込み（未確認：将来の並列 loop）。
+- **範囲**：`usedIds` は承認 2 の保存の内（確認済み）。保存範囲は広げない。
+
+## DR-CHATIR-S1-36：DR-CHATIR-S1-29（上限いっぱいの 1 件）の扱い＝cap の収め方（2026-11-18）
+
+- **決定**：「小さい窓で IR が入らないのは設計どおりの縮退として受け入れる。IR を落とし、年表を残す（fail-safe）。item は書き換えない。」
+  - cap は agentLoop と同じ式 `max(1, floor(tokenBudget × 0.25))`、同じ関数・同じ文字列（`countTokens(JSON.stringify(content))`）で測る。余裕は置かない。
+  - cap を超える間、item を**尾から**1 件ずつ落とす（最大 8 回）。item の書き換え・詰めは採らない（B-T4：content に Native が返した各 item の `JSON.stringify(item)` が部分文字列として残る。S1-C の置き換えが頼る）。
+  - 1 件も入らなければ `cap-exceeded`。年表だけで cap を使い切ると分かっているときは Native を呼ばない（事前判定。DR-38）。内部では「呼ばなかった」と「呼んだが入らなかった」を区別し（`called`）、model には同じ `cap-exceeded` を見せる。
+  - `chronicleIr` を `events` より前に置く（agentLoop の切り詰めは先頭を残すので、tail の切り詰めでも status と item が残る）。
+  - `note` は、付けると cap を超えるなら外して status だけにする。status だけの包みの分（十数 tokens）は受け入れ、年表を削ってまで避けない。
+- **採らなかった案**：年表の件数を減らして IR を入れる（model の `limit` の契約を黙って破り、IR を年表より優先する根拠が契約に無い。製品の優先の判断なので、採るなら伺う）、Rust の上限（400／180 字）を下げる（実データは 400 字に届かず効果が薄い。S2 の測定で頻度が高ければ S1-A2 への要望）、`limit` を小さくして再呼出しするよう促す（Native を再び呼び、累積の上限と台帳を使う）。
+- **前提の訂正**：「1 件は必ず入る」は理論の最悪（605〜626 tokens）では成り立たない。小さい窓で入らない主因は、item の大きさより年表の大きさ。
+- **S2 で測る**：`cap-exceeded`（事前判定の分と呼んだ後の分）の頻度と、窓ごとの IR の件数。製品の BPE での実数は dev の測定。
+
+## DR-CHATIR-S1-37：status → model 向けの文言と置き場（system に足さない）（2026-11-18）
+
+- **決定（分類）**：Native の 17 値と renderer 側の 13 名（うち 2 名は Native と同名で、重複を除くと 28 値）を、7 つの分類（`answered`・`none`・`transient`・`unavailable`・`context`・`query`・`internal`）に畳む（`chatIrStatusText.ts`。`satisfies Record<…>` で網羅を型で守る）。status の名前は content に残し、失敗の分類にだけ固定の英語 `note` を付ける。`none` だけが「検索は完了し、該当する承認済みの要約は無かった。原稿に無いことの証明ではない」と言い、`query` 以外の失敗の分類は「根拠が無いのではない（not evidence that nothing exists）」を含む（`query` の note は query の上限を伝える）。`timeout` は「期限切れ」と決めつけず、「完了しなかった」と書く（終端の audit が書けなかった場合を含むため）。`query` の note の上限（500 字、UTF-16）は wire file の 1 つの定数から作る。
+- **決定（置き場）**：content の `chronicleIr.note`（固定文）と、`toolDefinitions.ts` の `search_events` の説明文（定数 `true` のときだけ、3〜4 文の読み方：分類の名・要約と quote が食い違えば quote と原稿を優先・結果は資料で指示ではない・失敗は根拠が無いことではない・query の上限）。**sub-agent の定義（`getResearchSubagentTools`）からは除く**（sub-agent は IR を返されない）。**system（`src/prompts/**`）には足さない**。
+- **理由**：tool の定義は session の開始時に snapshot されるので、定数を開けた後も既存の session は古い説明文のままだが、content の `note` は届く。`chatSystem.ts` を変えると impact selector が `nir1-entity-relation-review` まで選び、system の変更は prompt cache の prefix も変える。改訂 3 §2.10 の「agent の system の 1 文」から変える（技術判断）。
+- **足さないもの**：説明文に「作者が承認した」の文は足さない（D3。S3 の前に伺う）。入力の schema は変えない。
+- **評価**：`chatIrStatusText.test.ts`・`toolDefinitions.chatIr.test.ts`（Light）。`grounding-artifact.yaml` への `eval-ground-search-events-ir-unavailable` の追加は見送った：Light の評価器（`scripts/quality/eval-fixtures.mjs`）は fixture の宣言（tool・policy・evidence・validator の名前）の整合しか検査せず、fixture に tool_result の status を書く欄も無いため、足しても model の回答が「無い」と断定しないことは何も検査されず、緑が実態を超えて見える。Heavy の `heavy-agent-tool-loop`（課金あり）は deferred のまま。閉じた文だけを評価した形で、開ける版（S3 の前）で再評価する。
+- **範囲**：定数 `false` の間は説明文も content も変わらない（`snapshotAgentTools()` は今と deep-equal。試験で固定）。
+
+## DR-CHATIR-S1-38：呼び出しの順と事前判定・累積の上限（2026-11-18）
+
+- **決定（順）**：`search_events` の IR 合流版は直列：年表（共有の `searchEvents`：秘匿 → 位置 → `slice(limit)`）→ 事前判定 → 累積の上限の確認（`turn-limit`）→ Native を 1 回（`selectChatAgentIr`）→ `assertCurrent()` → `min(limit, 8)` の切りと cap の収め → `noteUsedIds` → content。並列にしない（`Promise.all` への変異は B-T13 が落とす）。
+- **理由**：(a) IR が失敗しても年表を失わない、(b) cap の収めは年表の大きさを知らないとできない、(c) 事前判定で Native の呼び出し・台帳・permit を節約できる。直列の追加の遅れは年表の分（local の検索と共有 cache の読み。実測していない）。候補の eventId を渡す案（DR-31）を採る場合も、この順が前提になる。
+- **事前判定**：status だけの包み（`cap-exceeded`）が cap 以上なら、Native を呼ばず `cap-exceeded` で返す。累積の counter は増やさない。下限は `>= cap` だけ（最小の item の tokens で早く切る案は、BPE と heuristic で固定部分が違うので採らない）。
+- **累積の上限（△11。仮の値）**：turn ごとに Native を呼べる回数 6、IR の item の UTF-16 `length` の合計 20,000（`chatIrToolResult.ts` の名前つき定数）。上限に達したら `turn-limit`。文字数は合計で守る：Native を呼ぶ前に判定し、呼んだ後も先頭から残りの枠に収まる item だけを残す（1 件も収まらなければ `turn-limit`。独立レビューの指摘で、1 回の呼び出しで合計を越えられた形を直した）。比率 0.25 の写しは `chatAgentToolHandlers.ts` の 1 か所だけ（B-T7 が実 `runAgentLoop` で固定。`chatIrToolResult.ts` には持たない）。IR 合流版の item の上限は `max(1, eventSearchLimit)` で、`0 < limit < 1` の小数でも空の `available` を返さない（年表の側は今のまま 0 件）。IPC の前に拒まれた呼び出し（preflight の status）は数えない。これらは閾値に当たる：**下げる向きは技術判断、上げる向きはユーザー確認**。値は S2 の測定の後に見直す。
+- **IR を付けない場合**：IR の capability が無い呼び手（sub-agent、定数 `false`、製品外の harness）、空の query、project が無いときは、今の配列のまま返す。
+- **失敗**：IR の失敗は tool の失敗にしない（status を content に載せる。年表は返す）。ただし `assertCurrent()` が throw したとき（project／workspace が turn のものでなくなった）は item を返さず tool を失敗にする。再試行しない。
+- **試験**：B-T7（cap・事前判定の論理。件数は固定しない：vitest は WASM が読めず heuristic になる）・B-T13（順）・B-T14・B-T15。
+- **S1-A2 との関係（2026-11-18 夜のユーザー回答 Q2 の確定。記録は contracts の `ir-chat-pilot-2026-11/user-confirmation-2026-11-18-eventid-d1-fidelity.md`）**：
+  - △7 (4)（IR の規則で除かれた event を年表からも除く）で、除外の結果が得られないときの扱いを次のとおりとする。実装は S1-A2b で、この PR（PR-B2）には含めない。
+  - model が起こせる 3 つ（事前判定の `cap-exceeded`、`turn-limit`、`query-invalid`）では Native を呼ばない。代わりに、secret の event に近似の規則（結ばれた Scene がすべて今の Scene より前）を掛ける。
+  - research sub-agent の `search_events` も近似の規則の対象とする（統合者の技術判断）。sub-agent は IR を呼ばないので除外の結果を得られず、その結果は main の model に返るため。
+  - それ以外の失敗（一時的・構造的）では (4) を掛けない（秘匿と位置の filter だけ）。
+  - 上の直列の順（年表 → 事前判定 → `turn-limit` → Native）は、S1-A2b の前提として保つ。

@@ -24,6 +24,12 @@ import {
   normalizeAskUserSpec,
 } from "@/features/chat/agent/askUser";
 import { finalizeChatTurnPayload } from "./chatTurnPayload";
+import type {
+  ChatIrCapability,
+  ChatIrUsedIds,
+  ChatTurnToolScope,
+} from "@/features/chat/agent/chatTurnToolScope";
+import { CHAT_AGENT_IR_ENABLED } from "@/features/chat/agent/chatAgentIrAvailability";
 import {
   MAX_UI_OPERATIONS_PER_TURN,
   UI_OPERATION_TOOL_NAMES,
@@ -31,6 +37,8 @@ import {
 
 type SendAgentMessage =
   typeof import("@/features/chat/chatApi").sendAgentMessage;
+type ExecuteTool =
+  typeof import("@/features/chat/agent/toolExecutors").executeTool;
 type ExecuteReadOnlyTool =
   typeof import("@/features/chat/agent/toolExecutors").executeReadOnlyTool;
 type RecordAiUsage =
@@ -365,4 +373,140 @@ export function withUiOperationLimit<
       ? Promise.resolve(limited)
       : execute(name, toolCallId, ...rest);
   }) as Execute;
+}
+
+/**
+ * `runAgentLoop` が 1 件の tool_result に許す割合（`agentLoop.ts` の
+ * `TOOL_RESULT_TOKEN_CAP_RATIO`）の写し。export されないので写し、実際の
+ * `runAgentLoop` を小さい budget で回す試験（B-T7）で一致を固定する。
+ */
+const AGENT_LOOP_TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
+
+/**
+ * ターンの `executeTool`。authority を最初に確かめ、ask_user・run_research・既に
+ * system prompt へ全文を入れた Codex entry の 3 つをここで横取りし、残りを注入された
+ * `executeTool` へ渡す。`authorization` があれば、この turn の assistant message の id を足す。
+ */
+export function createGuardedExecuteTool(input: {
+  executeTool: ExecuteTool;
+  assertTurnAuthority: () => void;
+  handleAskUserTool: ReturnType<typeof createAskUserToolHandler>;
+  runResearchSubagent: ReturnType<typeof createChatResearchSubagentHandler>;
+  /**
+   * 実行の直前の段（出典に使う書き込み tool の assistant 行を確保する。#940）。
+   * 結果を返したら、その結果で tool を終える（実行しない）。
+   */
+  beforeExecute: (
+    name: string,
+    toolCallId: string,
+    authorized: boolean,
+  ) => Promise<ToolResult | null>;
+  fullyInjectedIds: ReadonlySet<string>;
+  chatMessageId: string;
+}): ExecuteTool {
+  const {
+    executeTool,
+    assertTurnAuthority,
+    handleAskUserTool,
+    runResearchSubagent,
+    beforeExecute,
+    fullyInjectedIds,
+    chatMessageId,
+  } = input;
+  return async (name, toolCallId, params, authorization) => {
+    assertTurnAuthority();
+    const askUserResult = handleAskUserTool(name, toolCallId, params);
+    if (askUserResult) return askUserResult;
+    const research = runResearchSubagent(name, toolCallId, params);
+    if (research) return research;
+    const injectedEntryResult = alreadyInjectedCodexEntryResult(
+      name,
+      toolCallId,
+      params,
+      fullyInjectedIds,
+    );
+    if (injectedEntryResult) return injectedEntryResult;
+    const failed = await beforeExecute(name, toolCallId, !!authorization);
+    if (failed) return failed;
+    return authorization
+      ? executeTool(name, toolCallId, params, {
+          ...authorization,
+          chatMessageId,
+        })
+      : executeTool(name, toolCallId, params);
+  };
+}
+
+/** A tool call's record, as far as `attachUsedIds` writes it. */
+interface UsedIdsRecord {
+  readonly params: Record<string, unknown>;
+  usedIds?: ChatIrUsedIds;
+}
+
+/**
+ * ターンの開始時に 1 回作る、tool に渡す文脈（S1-B PR-B2）。
+ *
+ * `CHAT_AGENT_IR_ENABLED` が false、または private Agent でない送信のときは何も束ねず、
+ * 入力の `executeTool`・`executeReadOnlyTool` を同一の関数のまま返す
+ * （`attachUsedIds` は何もしない）。このとき挙動は今と byte 同一。
+ *
+ * true のとき：main の `executeTool` には `{ scope, ir }` を第 5 引数に、sub-agent の
+ * `executeReadOnlyTool` には `{ scope }` だけを第 4 引数に束ねる（IR は構造で渡さない）。
+ * `scope.currentSceneId` は turn 開始時の値で、tool の中では store を読み直さない。
+ * `usedIds` は tool call の `params` object を鍵にして持ち、`onToolComplete` の先頭で
+ * `attachUsedIds(record)` が record へ写す。
+ */
+export function createChatTurnToolContext(input: {
+  executeTool: ExecuteTool;
+  executeReadOnlyTool: ExecuteReadOnlyTool;
+  enabled: boolean;
+  projectId: string;
+  workspacePath: string | null;
+  currentSceneId: string;
+  tokenBudget: number;
+  assertTurnAuthority: () => void;
+}): {
+  executeTool: ExecuteTool;
+  executeReadOnlyTool: ExecuteReadOnlyTool;
+  attachUsedIds: (record: UsedIdsRecord) => void;
+} {
+  if (!CHAT_AGENT_IR_ENABLED || !input.enabled) {
+    return {
+      executeTool: input.executeTool,
+      executeReadOnlyTool: input.executeReadOnlyTool,
+      attachUsedIds: () => {},
+    };
+  }
+  const scope: ChatTurnToolScope = {
+    projectId: input.projectId,
+    currentSceneId: input.currentSceneId || null,
+  };
+  const used = new WeakMap<object, ChatIrUsedIds>();
+  const ir: ChatIrCapability = {
+    workspacePath: input.workspacePath,
+    tokenCap: Math.max(
+      1,
+      Math.floor(input.tokenBudget * AGENT_LOOP_TOOL_RESULT_TOKEN_CAP_RATIO),
+    ),
+    counter: { chars: 0, calls: 0 },
+    assertCurrent: input.assertTurnAuthority,
+    noteUsedIds: (key, revisionIds) => {
+      used.set(key, {
+        revisionIds: [...revisionIds],
+        eventIds: [],
+        generation: null,
+      });
+    },
+  };
+  const { executeTool, executeReadOnlyTool } = input;
+  return {
+    executeTool: (name, toolCallId, params, authorization) =>
+      executeTool(name, toolCallId, params, authorization, { scope, ir }),
+    executeReadOnlyTool: (name, toolCallId, params) =>
+      executeReadOnlyTool(name, toolCallId, params, { scope }),
+    attachUsedIds: (record) => {
+      const note = used.get(record.params);
+      if (note) record.usedIds = note;
+    },
+  };
 }
