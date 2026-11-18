@@ -376,3 +376,9 @@ PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数�
 - **IR を付けない場合**：IR の capability が無い呼び手（sub-agent、定数 `false`、製品外の harness）、空の query、project が無いときは、今の配列のまま返す。
 - **失敗**：IR の失敗は tool の失敗にしない（status を content に載せる。年表は返す）。ただし `assertCurrent()` が throw したとき（project／workspace が turn のものでなくなった）は item を返さず tool を失敗にする。再試行しない。
 - **試験**：B-T7（cap・事前判定の論理。件数は固定しない：vitest は WASM が読めず heuristic になる）・B-T13（順）・B-T14・B-T15。
+- **S1-A2 との関係（2026-11-18 夜のユーザー回答 Q2 の確定。記録は contracts の `ir-chat-pilot-2026-11/user-confirmation-2026-11-18-eventid-d1-fidelity.md`）**：
+  - △7 (4)（IR の規則で除かれた event を年表からも除く）で、除外の結果が得られないときの扱いを次のとおりとする。実装は S1-A2b で、この PR（PR-B2）には含めない。
+  - model が起こせる 3 つ（事前判定の `cap-exceeded`、`turn-limit`、`query-invalid`）では Native を呼ばない。代わりに、secret の event に近似の規則（結ばれた Scene がすべて今の Scene より前）を掛ける。
+  - research sub-agent の `search_events` も近似の規則の対象とする（統合者の技術判断）。sub-agent は IR を呼ばないので除外の結果を得られず、その結果は main の model に返るため。
+  - それ以外の失敗（一時的・構造的）では (4) を掛けない（秘匿と位置の filter だけ）。
+  - 上の直列の順（年表 → 事前判定 → `turn-limit` → Native）は、S1-A2b の前提として保つ。
