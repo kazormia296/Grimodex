@@ -121,6 +121,7 @@ impl Rig {
             project_id: "default-project".into(),
             expected_workspace_path: self.path.to_string_lossy().into_owned(),
             current_scene_id: scene.into(),
+            chronicle_event_ids: Vec::new(),
         }
     }
 
@@ -130,6 +131,7 @@ impl Rig {
             "projectId": "default-project",
             "expectedWorkspacePath": self.path.to_string_lossy(),
             "currentSceneId": scene,
+            "chronicleEventIds": [],
         })
     }
 
@@ -223,6 +225,48 @@ async fn an_open_gate_refuses_a_request_of_the_wrong_shape_with_the_closed_code(
         assert_eq!(error.to_string(), INVALID_REQUEST);
     }
     assert_eq!(rig.audit_rows(), 0);
+}
+
+/// S1-A2 N1: a candidate list that is not valid is a request error, before the
+/// permit: with both places taken it is still the error, not `busy`.
+#[tokio::test]
+async fn an_invalid_candidate_list_is_a_request_error_before_the_permit() {
+    let rig = rig("candidates", "ja");
+    rig.open_gate();
+    let held: Vec<_> = (0..2)
+        .map(|_| rig.state.chat_ir.permits.try_acquire().unwrap())
+        .collect();
+    let too_many: Vec<String> = (0..31).map(|index| format!("event-{index}")).collect();
+    for bad in [
+        json!(too_many),
+        json!(["event-1", "event-1"]),
+        json!([""]),
+        json!(["   "]),
+        json!(["a".repeat(201)]),
+        json!("event-1"),
+        json!([1]),
+    ] {
+        let mut payload = rig.payload("scene");
+        payload["chronicleEventIds"] = bad.clone();
+        let error = select(Arc::clone(&rig.state), payload)
+            .await
+            .expect_err("a request error");
+        assert_eq!(error.to_string(), INVALID_REQUEST, "{bad}");
+    }
+    // The key is required.
+    let mut missing = rig.payload("scene");
+    missing.as_object_mut().unwrap().remove("chronicleEventIds");
+    let error = select(Arc::clone(&rig.state), missing)
+        .await
+        .expect_err("a request error");
+    assert_eq!(error.to_string(), INVALID_REQUEST);
+    // A valid list passes the shape: the next refusal is the saturated pool.
+    let mut ok = rig.payload("scene");
+    ok["chronicleEventIds"] = json!(["a".repeat(200)]);
+    assert_eq!(status_of(&rig, ok).await["status"], "busy");
+    drop(held);
+    assert_eq!(rig.audit_rows(), 0);
+    assert_eq!(rig.state.chat_ir.permits.in_flight(), 0);
 }
 
 /// A call answers before its task releases the permit and the participant (the
@@ -796,6 +840,9 @@ mod log_capture {
 }
 
 const SECRET: &str = "SECRET-QUERY-TOKEN-7f3a";
+/// A candidate event ID that carries the secret's text, so the capture sees it
+/// wherever it is written (S1-A2: candidate IDs are never logged either).
+const SECRET_EVENT_ID: &str = "SECRET-QUERY-TOKEN-7f3a-event-id";
 
 #[tokio::test]
 async fn no_path_logs_the_query() {
@@ -814,6 +861,7 @@ async fn no_path_logs_the_query() {
     rig.open_gate();
     let mut payload = rig.payload("scene");
     payload["query"] = json!(secret);
+    payload["chronicleEventIds"] = json!([SECRET_EVENT_ID]);
     // Refusals, a normal end, a refused query and a busy call.
     status_of(&rig, payload.clone()).await;
     let mut other_path = payload.clone();
@@ -837,6 +885,7 @@ async fn no_path_logs_the_query() {
     let (sender, _receiver) = tokio::sync::oneshot::channel();
     let mut secret_request = request();
     secret_request.query = secret.into();
+    secret_request.chronicle_event_ids = vec![SECRET_EVENT_ID.to_string()];
     execute(
         fake,
         permit,
@@ -856,5 +905,9 @@ async fn no_path_logs_the_query() {
     assert!(
         !captured.contains(secret),
         "the query reached a log line:\n{captured}"
+    );
+    assert!(
+        !captured.contains(SECRET_EVENT_ID),
+        "a candidate event ID reached a log line:\n{captured}"
     );
 }

@@ -1,5 +1,6 @@
 //! The Backend of the flow tests: no database, no model.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -7,7 +8,7 @@ use std::time::{Duration, Instant};
 use grimodex_db::workspace_lifecycle::WorkspaceParticipant;
 
 use crate::chat_ir::basis::{basis_for, Basis};
-use crate::chat_ir::flow::{Backend, FirstRead, Prepared};
+use crate::chat_ir::flow::{Backend, FirstRead, Prepared, Selection};
 use crate::chat_ir::item::IrItem;
 use crate::chat_ir::permit::PermitPool;
 use crate::chat_ir::request::Request;
@@ -22,6 +23,7 @@ pub(crate) fn request() -> Request {
         project_id: "p".into(),
         expected_workspace_path: "/w".into(),
         current_scene_id: "s".into(),
+        chronicle_event_ids: Vec::new(),
     }
 }
 
@@ -100,6 +102,9 @@ pub(crate) struct Fake {
     pub(crate) prepare: PrepareMode,
     pub(crate) prepare_sleep: Duration,
     pub(crate) select: Result<Vec<IrItem>, ChatIrStatus>,
+    /// What the fake T3 also returns when `select` is `Ok` (S1-A2).
+    pub(crate) event_ids: BTreeMap<String, String>,
+    pub(crate) excluded: Vec<String>,
     pub(crate) select_sleep: Duration,
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) identity: u64,
@@ -119,6 +124,8 @@ impl Fake {
             prepare: PrepareMode::Query,
             prepare_sleep: Duration::ZERO,
             select: Ok(Vec::new()),
+            event_ids: BTreeMap::new(),
+            excluded: Vec::new(),
             select_sleep: Duration::ZERO,
             stop: Arc::new(AtomicBool::new(false)),
             identity: 1,
@@ -223,10 +230,14 @@ impl Backend for Fake {
         _batch: &(),
         _scores: Vec<f32>,
         _deadline: Instant,
-    ) -> Result<Vec<IrItem>, ChatIrStatus> {
+    ) -> Result<Selection, ChatIrStatus> {
         self.note("select");
         std::thread::sleep(self.select_sleep);
-        self.select.clone()
+        self.select.clone().map(|items| Selection {
+            items,
+            event_ids: self.event_ids.clone(),
+            excluded: self.excluded.clone(),
+        })
     }
 
     fn stop_requested(&self) -> bool {

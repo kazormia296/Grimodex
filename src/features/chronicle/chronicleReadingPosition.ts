@@ -44,3 +44,38 @@ export function isEventBeforeOrAtScene(
   if (earliest === Number.POSITIVE_INFINITY) return false;
   return earliest <= readingPos(ctx.readingOrder, currentSceneId);
 }
+
+/**
+ * The approximation of rule (4) (chat IR S1-A2b, DR-CHATIR-S1-45): what stands
+ * in for "drop the event the IR's own rule would drop" when Native's exclusion
+ * is not at hand. Only a secret event is judged (the events an import makes are
+ * always secret); an event that is not secret passes.
+ *
+ * A secret event passes only when **every** Scene it is tied to is placed
+ * strictly before the current Scene (plan A of the contract's 3.4 (3)). So the
+ * current Scene's own events, and those that span past it, do not pass.
+ *
+ *  - a tied Scene outside the reading order: position unknown, does not pass;
+ *  - the current Scene empty or outside the reading order: does not pass
+ *    (the secrecy filter has hidden every secret event then);
+ *  - a secret event no Scene is tied to: nothing places it at or after the
+ *    current Scene, so it passes (an event the IR made always has a tie).
+ *
+ * It is applied after the secrecy and the position filter and before
+ * `slice(limit)`, as (4) is. Returns `true` when the event may be given.
+ */
+export function passesIrExclusionApproximation(
+  event: Pick<EventRow, "id" | "secret">,
+  currentSceneId: string,
+  ctx: { readingOrder: ReadingOrder; sceneEvents: SceneEventRow[] },
+): boolean {
+  if (!event.secret) return true;
+  if (!currentSceneId || !ctx.readingOrder.has(currentSceneId)) return false;
+  const current = readingPos(ctx.readingOrder, currentSceneId);
+  for (const link of ctx.sceneEvents) {
+    if (link.eventId !== event.id) continue;
+    if (!ctx.readingOrder.has(link.sceneId)) return false;
+    if (readingPos(ctx.readingOrder, link.sceneId) >= current) return false;
+  }
+  return true;
+}

@@ -55,11 +55,18 @@ const ARGS = {
   projectId: "project-1",
   expectedWorkspacePath: "/workspace",
   currentSceneId: "scene-1",
+  chronicleEventIds: ["event-1", "event-2"],
 };
 
 function fakeBackend(restricted: boolean) {
   const select = vi.fn(async () =>
-    JSON.stringify({ status: "available", success: true, items: [] }),
+    JSON.stringify({
+      status: "available",
+      success: true,
+      items: [],
+      eventIds: {},
+      excludedEventIds: [],
+    }),
   );
   const calls: string[] = [];
   const backend = {
@@ -194,7 +201,13 @@ describe("no product source opens the chat IR gate (S1-7)", () => {
 
 describe("the argument adapter holds Native's bounds", () => {
   const answer = async () =>
-    JSON.stringify({ status: "available", success: true, items: [] });
+    JSON.stringify({
+      status: "available",
+      success: true,
+      items: [],
+      eventIds: {},
+      excludedEventIds: [],
+    });
   const run = (args: Record<string, unknown>, select = vi.fn(answer)) =>
     NAPI_COMMANDS.chat_agent_ir_select.run(
       { chatAgentIrSelect: select } as unknown as NapiBackendLike,
@@ -202,12 +215,72 @@ describe("the argument adapter holds Native's bounds", () => {
       {} as never,
     );
 
-  it("passes exactly the four keys, in the typed shape", async () => {
-    const select = vi.fn(async () =>
-      JSON.stringify({ status: "available", success: true, items: [] }),
-    );
+  it("passes exactly the five keys, in the typed shape", async () => {
+    const select = vi.fn(answer);
     await run(ARGS, select);
     expect(select).toHaveBeenCalledWith(ARGS);
+    // A copy: Native gets an array of its own, not the caller's.
+    const passed = (select.mock.calls[0] as unknown[])[0] as {
+      chronicleEventIds: string[];
+    };
+    expect(passed.chronicleEventIds).not.toBe(ARGS.chronicleEventIds);
+  });
+
+  // M1 (S1-A2, DR-CHATIR-S1-41): the candidate list is required, at most 30
+  // distinct IDs of 1 to 200 UTF-16 units. Native checks the same.
+  describe("chronicleEventIds", () => {
+    const ids = (count: number) =>
+      Array.from({ length: count }, (_, index) => `event-${index}`);
+
+    it.each([
+      ["no candidate", []],
+      ["one", ["e"]],
+      ["30 IDs", ids(30)],
+      ["200 units", ["a".repeat(200)]],
+      ["100 surrogate pairs (200 units)", ["\u{1F600}".repeat(100)]],
+    ])("accepts %s", async (_name, chronicleEventIds) => {
+      const select = vi.fn(answer);
+      await run({ ...ARGS, chronicleEventIds }, select);
+      expect(select).toHaveBeenCalledWith({ ...ARGS, chronicleEventIds });
+    });
+
+    it.each([
+      ["31 IDs", ids(31)],
+      ["an empty ID", [""]],
+      ["a white-space ID", ["   "]],
+      ["201 units", ["a".repeat(201)]],
+      ["101 surrogate pairs (202 units)", ["\u{1F600}".repeat(101)]],
+      ["a next-line (U+0085) only ID", ["\u0085"]],
+      ["a mixed white-space and U+0085 ID", [" \u0085\u00a0\ufeff"]],
+      // eslint-disable-next-line no-sparse-arrays
+      ["a sparse array (a hole)", [, "a"]],
+      ["a repeated ID", ["e", "e"]],
+      ["a repeat inside 30", [...ids(29), "event-0"]],
+      ["a number", [1]],
+      ["null", [null]],
+      ["a string", "event-1"],
+      ["null itself", null],
+      ["an object", { 0: "e" }],
+    ])(
+      "refuses %s before Native is reached",
+      async (_name, chronicleEventIds) => {
+        const select = vi.fn(answer);
+        await expect(
+          run({ ...ARGS, chronicleEventIds }, select),
+          _name,
+        ).rejects.toThrow(/IPC_INVALID_REQUEST/u);
+        expect(select).not.toHaveBeenCalled();
+      },
+    );
+
+    it("refuses a missing key (not read as no candidate)", async () => {
+      const { chronicleEventIds: _omitted, ...missing } = ARGS;
+      const select = vi.fn(answer);
+      await expect(run(missing, select)).rejects.toThrow(
+        /IPC_INVALID_REQUEST/u,
+      );
+      expect(select).not.toHaveBeenCalled();
+    });
   });
 
   it("counts the query in UTF-16 code units", async () => {

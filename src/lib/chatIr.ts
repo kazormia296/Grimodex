@@ -11,11 +11,12 @@
  * source imports this module statically. The executor, in PR-B2, loads it with
  * `await import("@/lib/chatIr")` inside the constant's branch.
  *
- * The query, the summaries and the quotes are never logged, and the message of
+ * The query, the summaries, the quotes and the candidate event IDs are never logged, and the message of
  * an error is never returned: the caller gets a status name only.
  */
 import {
   CHAT_AGENT_IR_QUERY_UTF16_MAX,
+  isChronicleEventIdList,
   parseChatAgentIrResponse,
   type ChatAgentIrItem,
   type ChatAgentIrRequest,
@@ -63,6 +64,13 @@ export type ChatIrOutcome =
       readonly status: ChatAgentIrStatus;
       readonly success: boolean;
       readonly items: readonly ChatAgentIrItem[];
+      /** revisionId -> eventId, for the revisions of `items` (a subset). */
+      readonly eventIds: Readonly<Record<string, string>>;
+      /**
+       * A subset of the candidates sent (checked here), on a success; `null`
+       * when Native did not judge (any other status).
+       */
+      readonly excludedEventIds: readonly string[] | null;
     }
   | {
       readonly kind: "not-answered";
@@ -102,6 +110,9 @@ function preflight(request: ChatAgentIrRequest): ChatIrRendererStatus | null {
   ) {
     return "no-workspace";
   }
+  // The bounds Main and Native check too. A bad list is a programming error of
+  // the caller: it ends here as an `ipc-error`, without an IPC call.
+  if (!isChronicleEventIdList(request.chronicleEventIds)) return "ipc-error";
   return null;
 }
 
@@ -149,14 +160,18 @@ export async function selectChatAgentIr(
   const refused = preflight(args);
   if (refused !== null) return notAnswered(refused);
 
+  // One copy, taken before the call: the send and the subset check below both
+  // use it, so the caller's array is not read again after the `await`.
+  const chronicleEventIds = [...args.chronicleEventIds];
   let raw: unknown;
   try {
-    // Exactly the four keys of the request; Native has no `limit`.
+    // Exactly the five keys of the request; Native has no `limit`.
     raw = await invoke<unknown>(COMMAND, {
       query: args.query,
       projectId: args.projectId,
       expectedWorkspacePath: args.expectedWorkspacePath,
       currentSceneId: args.currentSceneId,
+      chronicleEventIds: chronicleEventIds,
     });
   } catch (error) {
     try {
@@ -169,11 +184,22 @@ export async function selectChatAgentIr(
 
   const answer = parseChatAgentIrResponse(raw);
   if (answer === null) return notAnswered("invalid-response");
+  // What Native excludes can only be a part of what was sent. An ID that was
+  // not a candidate is a drift (or a hostile answer): the caller must not drop
+  // an event it never asked about.
+  if (answer.excludedEventIds !== null) {
+    const sent = new Set(chronicleEventIds);
+    if (!answer.excludedEventIds.every((id) => sent.has(id))) {
+      return notAnswered("invalid-response");
+    }
+  }
   return {
     kind: "answered",
     origin: "native",
     status: answer.status,
     success: answer.success,
     items: answer.items,
+    eventIds: answer.eventIds,
+    excludedEventIds: answer.excludedEventIds,
   };
 }

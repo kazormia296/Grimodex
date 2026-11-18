@@ -490,10 +490,10 @@ export function createChatTurnToolContext(input: {
     ),
     counter: { chars: 0, calls: 0 },
     assertCurrent: input.assertTurnAuthority,
-    noteUsedIds: (key, revisionIds) => {
+    noteUsedIds: (key, revisionIds, eventIds) => {
       used.set(key, {
         revisionIds: [...revisionIds],
-        eventIds: [],
+        eventIds: [...eventIds],
         generation: null,
       });
     },

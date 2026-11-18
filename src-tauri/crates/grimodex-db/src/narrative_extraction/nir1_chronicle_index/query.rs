@@ -64,6 +64,25 @@ pub struct NirQualifiedBatch {
     proof: Arc<IndexProof>,
     query: Arc<RetrievalQueryContext>,
     documents: Vec<NirQualifiedDocument>,
+    /// Indices into `proof.candidates` (ascending) whose admission for `query`
+    /// failed. Recorded for every candidate, including one without an
+    /// embedding, so `documents` is a subset of the admitted ones and the
+    /// rest is recoverable per proposal (`proposal_admission`).
+    not_admitted: Vec<usize>,
+}
+
+/// How the IR admission rule treated one proposal for one qualified query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NirProposalAdmission {
+    /// The proposal is in the index proof and passed admission.
+    Admitted,
+    /// The proposal is in the index proof and failed admission for this query
+    /// (source not before the query Scene, scope, material or secret rule).
+    NotAdmitted,
+    /// The proposal is not in the index proof (not approved, not current,
+    /// stale, secret by disclosure, not indexed). Nothing is known about it
+    /// here; it is neither admitted nor excluded by the IR rule.
+    NotIndexed,
 }
 
 pub struct NirQualifiedDocument {
@@ -99,6 +118,28 @@ impl NirQualifiedBatch {
     }
     pub fn query_context(&self) -> &RetrievalQueryContext {
         &self.query
+    }
+    /// The admission verdict of `proposal_id` for this query, keyed by the
+    /// proposal rather than a revision: the proof's own revision decides, so a
+    /// current revision that moved after the proof was built cannot turn a
+    /// proof verdict into `NotIndexed`. Several candidates of one proposal
+    /// (not produced today) resolve to the stricter verdict.
+    pub fn proposal_admission(&self, proposal_id: &str) -> NirProposalAdmission {
+        let mut found = false;
+        for (index, candidate) in self.proof.candidates.iter().enumerate() {
+            if candidate.verified.proposal_id != proposal_id {
+                continue;
+            }
+            found = true;
+            if self.not_admitted.binary_search(&index).is_ok() {
+                return NirProposalAdmission::NotAdmitted;
+            }
+        }
+        if found {
+            NirProposalAdmission::Admitted
+        } else {
+            NirProposalAdmission::NotIndexed
+        }
     }
 }
 
@@ -354,16 +395,22 @@ fn qualify_proof(
 ) -> Result<NirQualifiedRead> {
     let binding = Arc::new(QueryBinding::from(&*query));
     let mut documents = Vec::new();
+    let mut not_admitted = Vec::new();
     // One query, one authority: the pass shares its `projection_revision` answers.
     let mut revision_memo = super::super::scene_scope::ProjectionRevisionMemo::default();
     for (index, candidate) in proof.candidates.iter().enumerate() {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
         // This gate executes before vectors enter any scorer, ranker or limit.
-        if candidate.embedding.is_none()
-            || !candidate
-                .verified
-                .admits_with_memo(&query, &mut revision_memo)
-        {
+        // Admission is judged for every candidate, with or without an
+        // embedding, and only its failures are recorded; `documents` is the
+        // same set in the same order as before.
+        let admitted = candidate
+            .verified
+            .admits_with_memo(&query, &mut revision_memo);
+        if !admitted {
+            not_admitted.push(index);
+        }
+        if candidate.embedding.is_none() || !admitted {
             continue;
         }
         let evidence = candidate
@@ -401,6 +448,7 @@ fn qualify_proof(
         proof,
         query,
         documents,
+        not_admitted,
     }))
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { SceneEventRow } from "./api";
-import { isEventBeforeOrAtScene } from "./chronicleReadingPosition";
+import {
+  isEventBeforeOrAtScene,
+  passesIrExclusionApproximation,
+} from "./chronicleReadingPosition";
 import { isEventHiddenFromAi, type ReadingOrder } from "./chronicleSecrecy";
 
 // Reading order: s0 < s1 < s2 < s3. "gone" and "other" are not in it.
@@ -82,5 +85,55 @@ describe("isEventBeforeOrAtScene (B-T10, DR-CHATIR-S1-30)", () => {
     const frozen = JSON.stringify(sceneEvents);
     passes("e", "s2", sceneEvents);
     expect(JSON.stringify(sceneEvents)).toBe(frozen);
+  });
+});
+
+describe("passesIrExclusionApproximation (S1-A2b, DR-CHATIR-S1-45)", () => {
+  function approx(
+    secret: boolean,
+    currentSceneId: string,
+    sceneEvents: SceneEventRow[],
+    order: ReadingOrder = readingOrder,
+  ): boolean {
+    return passesIrExclusionApproximation({ id: "e", secret }, currentSceneId, {
+      readingOrder: order,
+      sceneEvents,
+    });
+  }
+
+  it("passes an event that is not secret whatever it is tied to", () => {
+    expect(approx(false, "s2", links(["s2", "e"], ["s3", "e"]))).toBe(true);
+    expect(approx(false, "s2", links(["gone", "e"]))).toBe(true);
+    expect(approx(false, "", links(["s3", "e"]))).toBe(true);
+  });
+
+  it("passes a secret event only when every tied Scene is strictly before the current one", () => {
+    expect(approx(true, "s2", links(["s1", "e"]))).toBe(true);
+    expect(approx(true, "s2", links(["s0", "e"], ["s1", "e"]))).toBe(true);
+    // The same Scene is not before (the IR drops a source at the current Scene).
+    expect(approx(true, "s2", links(["s2", "e"]))).toBe(false);
+    expect(approx(true, "s2", links(["s3", "e"]))).toBe(false);
+  });
+
+  it("judges by every tie, not the earliest one (the opposite of the position filter)", () => {
+    const ties = links(["s1", "e"], ["s2", "e"]);
+    expect(passes("e", "s2", ties)).toBe(true);
+    expect(approx(true, "s2", ties)).toBe(false);
+    expect(approx(true, "s2", links(["s1", "e"], ["s3", "e"]))).toBe(false);
+  });
+
+  it("does not pass a secret event tied to a Scene outside the reading order", () => {
+    expect(approx(true, "s2", links(["s1", "e"], ["gone", "e"]))).toBe(false);
+    expect(approx(true, "s2", links(["gone", "e"]))).toBe(false);
+  });
+
+  it("does not pass a secret event when the current Scene is empty or outside the order", () => {
+    expect(approx(true, "", links(["s1", "e"]))).toBe(false);
+    expect(approx(true, "gone", links(["s1", "e"]))).toBe(false);
+  });
+
+  it("passes a secret event no Scene is tied to, and ignores another event's links", () => {
+    expect(approx(true, "s2", [])).toBe(true);
+    expect(approx(true, "s2", links(["s3", "other"]))).toBe(true);
   });
 });

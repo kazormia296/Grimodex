@@ -5,6 +5,7 @@ mod binding;
 mod build;
 mod cache;
 mod canonical;
+mod event_lookup;
 mod evidence;
 mod input_guard;
 pub(crate) mod invalidate;
@@ -23,6 +24,7 @@ pub use build::{
     prepare_chronicle_index_build_with_control, NirIndexBuildPlan, NirIndexBuildRead,
 };
 pub use cache::read_reusable_chronicle_embeddings;
+pub use event_lookup::{read_chronicle_event_ids_of_revisions, read_chronicle_excluded_event_ids};
 pub use publish::{
     publish_chronicle_index_build, publish_chronicle_index_build_with_control,
     publish_chronicle_index_build_with_participant,
@@ -63,6 +65,8 @@ pub fn write_reviewed_child_cold_database_for_test(
         .to_owned())
 }
 
+#[cfg(test)]
+mod admission_record_tests;
 #[cfg(test)]
 mod freshness_share_tests;
 #[cfg(test)]
