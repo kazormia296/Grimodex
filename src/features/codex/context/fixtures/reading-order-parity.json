@@ -1,0 +1,322 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Reading-order parity fixture of the chat IR (S1-B DR-CHATIR-S1-30, G6 (c)). The renderer's buildReadingOrder (src/features/codex/context/sceneTimeIndex.ts) and Native's derive_live_scene_projection (src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs) are two implementations of one order.",
+  "status": "PR-B1 holds the `ts` half in src/features/codex/context/readingOrderParity.test.ts. The `rust` half is NOT run by any test yet (S1-A2 reads this file with include_str! in a cargo test). It was written from reading project_scope_authority.rs, not from running it. Until then the two implementations are not held equal.",
+  "nodeFields": "id, parentId (null = project root), nodeType (folder|scene|note|other), sortOrder (compared as UTF-16 code units; ids in these cases are lower-case ASCII so TS localeCompare and a UTF-16 compare agree), archived (false = live).",
+  "expectation": "ts.readingOrder: Scene ids in index order (index 0 first). rust.kind 'order': sceneIds in the order derive_live_scene_projection returns. rust.kind 'error': the call returns Err whose text starts with rust.code.",
+  "cases": [
+    {
+      "id": "baseline-nested",
+      "description": "A plain tree. Both implementations return the same order.",
+      "nodes": [
+        {
+          "id": "s4",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "f1",
+          "parentId": null,
+          "nodeType": "folder",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "n1",
+          "parentId": null,
+          "nodeType": "note",
+          "sortOrder": "a2",
+          "archived": false
+        },
+        {
+          "id": "s3",
+          "parentId": "f1",
+          "nodeType": "scene",
+          "sortOrder": "a2",
+          "archived": false
+        },
+        {
+          "id": "f2",
+          "parentId": "f1",
+          "nodeType": "folder",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "s2",
+          "parentId": "f2",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s1",
+          "parentId": "f1",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s1", "s2", "s3", "s4"]
+      },
+      "rust": {
+        "kind": "order",
+        "sceneIds": ["s1", "s2", "s3", "s4"]
+      }
+    },
+    {
+      "id": "duplicate-sort-order-same-parent",
+      "description": "Two Scenes under one folder share a sortOrder. The TS order breaks the tie by id and returns a value; Rust rejects the tree.",
+      "nodes": [
+        {
+          "id": "f",
+          "parentId": null,
+          "nodeType": "folder",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s-b",
+          "parentId": "f",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s-c",
+          "parentId": "f",
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "s-a",
+          "parentId": "f",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s-a", "s-b", "s-c"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "duplicate persisted sortOrder under parent 'f'"
+      }
+    },
+    {
+      "id": "duplicate-sort-order-at-root",
+      "description": "Two root Scenes share a sortOrder. Same split as under a folder.",
+      "nodes": [
+        {
+          "id": "r-b",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "r-a",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["r-a", "r-b"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "duplicate persisted sortOrder under the project root"
+      }
+    },
+    {
+      "id": "orphan-scene",
+      "description": "A live Scene whose parent is not in the tree. TS never reaches it and drops it silently; Rust rejects the tree.",
+      "nodes": [
+        {
+          "id": "s1",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "lost",
+          "parentId": "missing",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s1"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "node 'lost' has a missing or cross-project parent 'missing'"
+      }
+    },
+    {
+      "id": "scene-with-live-child",
+      "description": "A Scene that owns a live child. TS only descends into folders and drops the child; Rust rejects the tree.",
+      "nodes": [
+        {
+          "id": "parent-scene",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "kid",
+          "parentId": "parent-scene",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s2",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["parent-scene", "s2"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "non-folder node 'parent-scene' owns live children"
+      }
+    },
+    {
+      "id": "note-with-live-child",
+      "description": "A note that owns a live Scene. TS drops the Scene; Rust rejects the tree.",
+      "nodes": [
+        {
+          "id": "note",
+          "parentId": null,
+          "nodeType": "note",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "kid",
+          "parentId": "note",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s2",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s2"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "non-folder node 'note' owns live children"
+      }
+    },
+    {
+      "id": "unknown-node-type",
+      "description": "A live node of an unknown nodeType. TS ignores it (and what it would own); Rust rejects the tree.",
+      "nodes": [
+        {
+          "id": "odd",
+          "parentId": null,
+          "nodeType": "chapter",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s1",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s1"]
+      },
+      "rust": {
+        "kind": "error",
+        "code": "NEX_PROJECT_SCOPE_AUTHORITY_TREE_INVALID",
+        "reason": "live node 'odd' has unsupported nodeType 'chapter'"
+      }
+    },
+    {
+      "id": "archived-subtree",
+      "description": "An archived folder, a live Scene and a live folder below it, and an archived Scene. Both implementations drop all of them.",
+      "nodes": [
+        {
+          "id": "s1",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "gone",
+          "parentId": null,
+          "nodeType": "folder",
+          "sortOrder": "a0",
+          "archived": true
+        },
+        {
+          "id": "s-in",
+          "parentId": "gone",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "f2",
+          "parentId": "gone",
+          "nodeType": "folder",
+          "sortOrder": "a1",
+          "archived": false
+        },
+        {
+          "id": "s-deep",
+          "parentId": "f2",
+          "nodeType": "scene",
+          "sortOrder": "a0",
+          "archived": false
+        },
+        {
+          "id": "s-arch",
+          "parentId": null,
+          "nodeType": "scene",
+          "sortOrder": "a2",
+          "archived": true
+        }
+      ],
+      "ts": {
+        "readingOrder": ["s1"]
+      },
+      "rust": {
+        "kind": "order",
+        "sceneIds": ["s1"]
+      }
+    }
+  ]
+}
