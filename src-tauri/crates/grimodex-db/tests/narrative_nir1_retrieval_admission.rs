@@ -5295,3 +5295,137 @@ fn editing_an_unrelated_scene_does_not_stop_the_import() {
         }
     }
 }
+
+/// 版の payload の eventId と、その版を適用した記録（application）の
+/// 作成物の id。取り込みの鎖（payload の id ＝ `events.id` ＝ `applied_entity_id`）を固定する。
+fn applied_entity_ids_by_revision(db: &Database) -> std::collections::BTreeMap<String, String> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT revision_id, applied_entity_id FROM narrative_proposal_applications
+              WHERE applied_entity_kind = 'event' AND application_kind = 'normal'",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    })
+    .expect("applications")
+}
+
+fn payload_event_ids(
+    db: &Database,
+    revisions: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    revisions
+        .iter()
+        .map(|revision| {
+            let payload: String = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+                        [revision],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("revision payload");
+            let payload: Value = serde_json::from_str(&payload).expect("payload json");
+            (
+                revision.clone(),
+                payload["eventId"].as_str().expect("eventId").to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// S1-A2 A1（G6 (a)）。revision → eventId は、`events` の行が実在する間だけ返る。
+/// payload の eventId は適用の前後も undo の後も残るので、それだけでは「年表に実在する」の
+/// 印にならない。undo は applications を動かさない（行は残り、event だけが消える）。
+#[test]
+fn chronicle_event_ids_follow_the_applied_events() {
+    use grimodex_db::narrative_extraction::nir1_chronicle_index::read_chronicle_event_ids_of_revisions;
+
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    assert_eq!(revisions.len(), 2);
+    let read = |project: &str, ids: &[String]| {
+        db.with_read_transaction(|conn| read_chronicle_event_ids_of_revisions(conn, project, ids))
+            .expect("A1 read")
+    };
+    let payload_ids = payload_event_ids(&db, &revisions);
+    assert_eq!(payload_ids.len(), 2);
+
+    // 適用の前：payload には eventId があるが、events の行が無いので空。
+    assert!(read(fixture.project(), &revisions).is_empty());
+
+    // 適用の後：2 件。payload の id ＝ applications の作成物の id ＝ events の行。
+    let prepare = chronicle_prepare_payload(&db, &fixture, "a2-a1-request", &revisions);
+    let applied = prepare_and_apply(&db, &prepare);
+    assert_eq!(apply_counts(&db), (2, 1, 2));
+    assert_eq!(read(fixture.project(), &revisions), payload_ids);
+    assert_eq!(applied_entity_ids_by_revision(&db), payload_ids);
+    for revision in &revisions {
+        event_row_of(&db, revision);
+    }
+    // 別の project の指定、知らない revision、空の入力は当たらない（空は SQL も呼ばない）。
+    assert!(read("another-project", &revisions).is_empty());
+    assert_eq!(
+        read(
+            fixture.project(),
+            &["unknown-revision".to_owned(), revisions[0].clone()]
+        ),
+        payload_ids
+            .iter()
+            .filter(|(revision, _)| **revision == revisions[0])
+            .map(|(revision, event)| (revision.clone(), event.clone()))
+            .collect()
+    );
+    assert!(read(fixture.project(), &[]).is_empty());
+
+    // undo：events は 0 になり、applications の行は残る。年表に無いので空に戻る。
+    let commit_id = applied["commitId"].as_str().expect("commit id").to_owned();
+    narrative_extraction_undo_commit(
+        &db,
+        undo_replay(
+            &commit_id,
+            fixture.project(),
+            &prepare.session_id,
+            "a1-undo",
+        ),
+    )
+    .expect("undo");
+    assert_eq!(apply_counts(&db), (0, 1, 2), "applications stay after undo");
+    assert!(
+        read(fixture.project(), &revisions).is_empty(),
+        "an undone apply is not in the Chronicle"
+    );
+
+    // redo：同じ id の event に戻る。
+    narrative_extraction_redo_commit(
+        &db,
+        undo_replay(
+            &commit_id,
+            fixture.project(),
+            &prepare.session_id,
+            "a1-redo",
+        ),
+    )
+    .expect("redo");
+    assert_eq!(apply_counts(&db).0, 2);
+    assert_eq!(read(fixture.project(), &revisions), payload_ids);
+
+    // 作者が年表で手で消した event：payload も application も残るが、行が無い。
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM events WHERE id = ?1",
+            [&payload_ids[&revisions[0]]],
+        )?;
+        Ok(())
+    })
+    .expect("delete one event by hand");
+    let remaining = read(fixture.project(), &revisions);
+    assert_eq!(remaining.len(), 1);
+    assert!(!remaining.contains_key(&revisions[0]));
+    assert_eq!(remaining[&revisions[1]], payload_ids[&revisions[1]]);
+}

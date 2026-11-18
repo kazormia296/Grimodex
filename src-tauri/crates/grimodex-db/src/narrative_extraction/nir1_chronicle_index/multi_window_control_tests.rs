@@ -22,7 +22,7 @@ use crate::narrative_extraction::{
 /// statement and every evidence handle's Scene, id and excerpt, in order.
 type Row = (String, Vec<u8>, String, Vec<(String, String, String)>);
 
-fn revision(f: &Fixture, shape: &str, title: &str) -> String {
+pub(super) fn revision(f: &Fixture, shape: &str, title: &str) -> String {
     f.manifest["runs"][shape]["proposals"]
         .as_array()
         .expect("proposals")
@@ -34,7 +34,7 @@ fn revision(f: &Fixture, shape: &str, title: &str) -> String {
         .to_owned()
 }
 
-fn child(f: &Fixture, parent: &str, edit: impl FnOnce(&mut Value)) -> String {
+pub(super) fn child(f: &Fixture, parent: &str, edit: impl FnOnce(&mut Value)) -> String {
     let (proposal, digest, payload): (String, String, String) =
         f.db.with_conn(|conn| {
             Ok(conn.query_row(
