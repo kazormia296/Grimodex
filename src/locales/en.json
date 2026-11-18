@@ -1162,7 +1162,7 @@
       "toolProtocolDesc": "Tool-call format for the agent. \"auto\" treats it as Hermes format (in-body <tool_call>) only when the model name contains \"hermes\". Select \"hermes\" explicitly for Qwen, etc.",
       "toolProtocolAuto": "auto (recommended)",
       "modelInfoAutoUpdate": "Auto-update model information",
-      "modelInfoAutoUpdateDesc": "In the packaged app, fetches public model information (context length, capabilities) from raw.githubusercontent.com (GitHub) shortly after each launch and then every 24 hours while the app is running (development builds do not fetch). No manuscript text, settings, or API keys are sent. Turn this off to delete the fetched copy and use only the information bundled with the app.",
+      "modelInfoAutoUpdateDesc": "In the packaged app, fetches public model information (context length, capabilities) from raw.githubusercontent.com (GitHub) shortly after each launch and then every 24 hours while the app is running (if a request fails, it is tried up to 3 times in the same cycle; development builds do not fetch). No manuscript text, settings, or API keys are sent. Turn this off to delete the fetched copy and use only the information bundled with the app.",
       "modelInfoAutoUpdateSaveFailed": "Could not save the model information auto-update setting: {{message}}",
       "providerPinDirect": "direct"
     },

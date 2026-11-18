@@ -7,6 +7,7 @@ import {
   MODEL_INFO_AUTO_UPDATE_KEY,
   MODEL_INFO_SETTING_FILE,
   createModelInfoSetting,
+  removeStaleModelInfoSettingTemporaryFiles,
   wrapBackendForModelInfoSetting,
 } from "./modelInfoSetting.js";
 import { makeTempDir } from "./modelCapability.testSupport.js";
@@ -286,5 +287,41 @@ describe("AiSettings の往復（Rust の struct は未知の key を捨てる�
         readFileSync(path.join(temp.dir, MODEL_INFO_SETTING_FILE), "utf8"),
       ),
     ).toEqual({ schemaVersion: 1, [MODEL_INFO_AUTO_UPDATE_KEY]: false });
+  });
+});
+
+describe("crash で残った tmp の片付け（起動時）", () => {
+  const UUID = "0b9f6a3e-6d1c-4f0e-9a37-2c5b8d4e1f70";
+
+  it("設定 file の tmp だけを消し、設定本体・cache の tmp・他の file には触れない", () => {
+    const setting = createModelInfoSetting(temp.dir);
+    setting.set(false);
+    const settingFile = path.join(temp.dir, MODEL_INFO_SETTING_FILE);
+    const before = readFileSync(settingFile, "utf8");
+    const orphan = `${MODEL_INFO_SETTING_FILE}.4242.${UUID}.tmp`;
+    const keep = [
+      `model-capabilities-cache.json.4242.${UUID}.tmp`,
+      `ai-keys.json.4242.${UUID}.tmp`,
+      `${MODEL_INFO_SETTING_FILE}.tmp`,
+      `${MODEL_INFO_SETTING_FILE}.4242.not-a-uuid.tmp`,
+      `x${MODEL_INFO_SETTING_FILE}.4242.${UUID}.tmp`,
+      "license.json",
+    ];
+    for (const name of [orphan, ...keep]) {
+      writeFileSync(path.join(temp.dir, name), "x", "utf8");
+    }
+    expect(removeStaleModelInfoSettingTemporaryFiles(temp.dir)).toBe(1);
+    expect(existsSync(path.join(temp.dir, orphan))).toBe(false);
+    for (const name of keep) {
+      expect(existsSync(path.join(temp.dir, name))).toBe(true);
+    }
+    expect(readFileSync(settingFile, "utf8")).toBe(before);
+    expect(createModelInfoSetting(temp.dir).get()).toBe(false);
+  });
+
+  it("directory が無くても投げない", () => {
+    expect(
+      removeStaleModelInfoSettingTemporaryFiles(path.join(temp.dir, "nothing")),
+    ).toBe(0);
   });
 });

@@ -14,7 +14,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -34,6 +33,7 @@ import {
   MODEL_CAPABILITY_FETCH_HOST,
   MODEL_CAPABILITY_SNAPSHOT_REPO_PATH,
 } from "./modelCapabilityFetch.js";
+import { removeOwnTemporaryFiles } from "./ownTemporaryFiles.js";
 
 /** cache の file 名（userData の直下）。 */
 export const MODEL_CAPABILITY_CACHE_FILE = "model-capabilities-cache.json";
@@ -117,6 +117,11 @@ export interface ModelCapabilityStore {
   writeCache(body: string, fetchedAtMs: number, guard: () => boolean): boolean;
   /** cache と tmp の残骸を削除する（設定の無効化。Q4）。失敗は投げない。 */
   purgeCache(): void;
+  /**
+   * crash・kill で残った自分の tmp（`<cache file>.<pid>.<uuid>.tmp` に完全一致するもの）だけを消す。
+   * 起動時（書込みの前）に呼ぶ。cache 本体と他の file には触れない。消した件数を返す。
+   */
+  removeStaleTemporaryFiles(): number;
 }
 
 export function sha256OfText(text: string): string {
@@ -277,19 +282,23 @@ export function createModelCapabilityStore(
 
   function purgeCache(): void {
     removeCacheFile();
-    try {
-      const prefix = `${MODEL_CAPABILITY_CACHE_FILE}.`;
-      for (const name of readdirSync(options.cacheDir)) {
-        if (name.startsWith(prefix) && name.endsWith(".tmp")) {
-          rmSync(path.join(options.cacheDir, name), { force: true });
-        }
-      }
-    } catch {
-      // directory が無い・読めないときは、残骸も無い。
-    }
+    removeOwnTemporaryFiles(options.cacheDir, MODEL_CAPABILITY_CACHE_FILE);
   }
 
-  return { loadBundled, readCache, writeCache, purgeCache };
+  function removeStaleTemporaryFiles(): number {
+    return removeOwnTemporaryFiles(
+      options.cacheDir,
+      MODEL_CAPABILITY_CACHE_FILE,
+    );
+  }
+
+  return {
+    loadBundled,
+    readCache,
+    writeCache,
+    purgeCache,
+    removeStaleTemporaryFiles,
+  };
 }
 
 function parseEnvelope(text: string): ModelCapabilityCacheEnvelope | null {

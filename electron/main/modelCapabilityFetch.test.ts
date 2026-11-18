@@ -1,3 +1,5 @@
+import { createGunzip, gzipSync } from "node:zlib";
+import { Readable, Transform } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -237,6 +239,57 @@ describe("応答の検査", () => {
     // 400 byte ずつ。3 chunk 目（1200 byte）で超える。無限に読み続けない。
     expect(pulled.mock.calls.length).toBeLessThanOrEqual(4);
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it("gzip で転送された応答は、伸長後の byte 数で上限を当てる（content-length は圧縮後の小さい値）", async () => {
+    // Node の fetch は伸長した stream を Response に渡し、content-length は圧縮後の値のまま残る。
+    const compressed = gzipSync(Buffer.alloc(4_000_000, 0x20));
+    expect(compressed.byteLength).toBeLessThan(10_000);
+    let produced = 0;
+    const counter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        produced += chunk.length;
+        callback(null, chunk);
+      },
+    });
+    const decompressed = Readable.toWeb(
+      Readable.from([compressed]).pipe(createGunzip()).pipe(counter),
+    ) as ReadableStream<Uint8Array>;
+    const result = await fetchModelCapabilityText(
+      options(
+        async () =>
+          makeResponse(decompressed, {
+            headers: {
+              "content-length": String(compressed.byteLength),
+              "content-encoding": "gzip",
+            },
+          }),
+        { maxBytes: 1024 },
+      ),
+    );
+    expect(result).toEqual({ ok: false, code: "too-large" });
+    // 伸長後の全体（4 MB）を読み切らずに打ち切り、stream を閉じる。
+    expect(produced).toBeLessThan(1_000_000);
+    await vi.waitFor(() => expect(counter.destroyed).toBe(true));
+  });
+
+  it("gzip で転送され、伸長後も上限内の応答は受ける", async () => {
+    const text = '{"a":"あ"}';
+    const compressed = gzipSync(Buffer.from(text, "utf8"));
+    const decompressed = Readable.toWeb(
+      Readable.from([compressed]).pipe(createGunzip()),
+    ) as ReadableStream<Uint8Array>;
+    const result = await fetchModelCapabilityText(
+      options(async () =>
+        makeResponse(decompressed, {
+          headers: {
+            "content-length": String(compressed.byteLength),
+            "content-encoding": "gzip",
+          },
+        }),
+      ),
+    );
+    expect(result).toEqual({ ok: true, text, bytes: 11 });
   });
 
   it("上限ちょうどは受ける", async () => {

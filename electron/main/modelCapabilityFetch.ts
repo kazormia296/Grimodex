@@ -9,8 +9,10 @@
  *     proxy で落ちる（Q15 の probe の結果）。この module は electron を import しない。
  *   - redirect は辿らない（`manual`）。200 以外は失敗。応答の後に最終 URL を定数の URL と完全一致で再照合する。
  *   - content-length と、読み込み中の実際の byte 数の両方で上限を当てる（圧縮された応答は伸長後の byte 数で数える）。
- *   - 送るのは GET と固定の User-Agent（版なし）と Accept だけ。cookie・key・本文・設定・workspace の情報は
- *     載せない（T6）。届くのは IP と UA だけ。
+ *   - こちらが指定するのは GET と固定の User-Agent（版なし）と Accept だけ。cookie・key・本文・設定・workspace
+ *     の情報は載せない（T6）。Node の fetch は標準の汎用 header（`accept-language: *`、`sec-fetch-mode: cors`、
+ *     `accept-encoding: gzip, deflate`）を自動で足すので、接続先へ届くのは IP、固定の識別名、これらの汎用 header
+ *     になる（開示もこの事実に合わせる。header を減らす変更はしていない）。
  *   - 失敗は固定の code で返す。応答の本文、URL、error の message は error・log に含めない。
  */
 

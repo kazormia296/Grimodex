@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -29,6 +30,7 @@ import {
 let temp: ReturnType<typeof makeTempDir>;
 let store: ModelCapabilityStore;
 let cachePath: string;
+const TMP_UUID = "0b9f6a3e-6d1c-4f0e-9a37-2c5b8d4e1f70";
 const bundledModels = makeModels(12);
 const bundledText = snapshotText(bundledModels, BUNDLED_GENERATED_AT);
 
@@ -177,7 +179,7 @@ describe("cache の書込み", () => {
   it("書込みの途中で kill されて残った tmp は、読むときに無視され、purge で消える", () => {
     const orphan = path.join(
       temp.dir,
-      `${MODEL_CAPABILITY_CACHE_FILE}.4242.aaaaaaaa.tmp`,
+      `${MODEL_CAPABILITY_CACHE_FILE}.4242.${TMP_UUID}.tmp`,
     );
     writeFileSync(orphan, '{"half', "utf8");
     expect(store.readCache(TEST_NOW)).toEqual({ ok: false, reason: "absent" });
@@ -321,7 +323,7 @@ describe("purge", () => {
   it("cache と tmp の残骸を消し、再度呼んでも投げない", () => {
     expect(store.writeCache(newerText, TEST_NOW, () => true)).toBe(true);
     writeFileSync(
-      path.join(temp.dir, `${MODEL_CAPABILITY_CACHE_FILE}.1.x.tmp`),
+      path.join(temp.dir, `${MODEL_CAPABILITY_CACHE_FILE}.1.${TMP_UUID}.tmp`),
       "x",
       "utf8",
     );
@@ -334,5 +336,71 @@ describe("purge", () => {
     ).toEqual([]);
     // 同梱の写し（別の file）は消さない。
     expect(store.loadBundled(TEST_NOW).ok).toBe(true);
+  });
+});
+
+describe("crash で残った tmp の片付け（起動時）", () => {
+  const DECOYS = [
+    // 他の module の tmp（keyStore）。
+    `ai-keys.json.4242.${TMP_UUID}.tmp`,
+    // 基準の名前が違う。
+    `other-cache.json.4242.${TMP_UUID}.tmp`,
+    `prefix-${MODEL_CAPABILITY_CACHE_FILE}.4242.${TMP_UUID}.tmp`,
+    // 形が違う（pid が数でない、UUID でない、拡張子が違う、pid 抜け）。
+    `${MODEL_CAPABILITY_CACHE_FILE}.abc.${TMP_UUID}.tmp`,
+    `${MODEL_CAPABILITY_CACHE_FILE}.4242.not-a-uuid.tmp`,
+    `${MODEL_CAPABILITY_CACHE_FILE}.4242.${TMP_UUID}.bak`,
+    `${MODEL_CAPABILITY_CACHE_FILE}.${TMP_UUID}.tmp`,
+    `${MODEL_CAPABILITY_CACHE_FILE}.tmp`,
+    `${MODEL_CAPABILITY_CACHE_FILE}.4242.${TMP_UUID}.tmp.keep`,
+    // 設定 file の tmp は、cache の片付けの対象ではない。
+    `model-info-settings.json.4242.${TMP_UUID}.tmp`,
+    "license.json",
+  ];
+
+  it("自分の命名規則に完全一致する tmp だけを消し、他の file・cache 本体には触れない", () => {
+    expect(store.writeCache(newerText, TEST_NOW, () => true)).toBe(true);
+    const orphans = [
+      `${MODEL_CAPABILITY_CACHE_FILE}.4242.${TMP_UUID}.tmp`,
+      `${MODEL_CAPABILITY_CACHE_FILE}.99999.${TMP_UUID.toUpperCase()}.tmp`,
+    ];
+    for (const name of [...orphans, ...DECOYS]) {
+      writeFileSync(path.join(temp.dir, name), "x", "utf8");
+    }
+    // directory は、名前が一致しても消さない。
+    const dirName = `${MODEL_CAPABILITY_CACHE_FILE}.7.${TMP_UUID}.tmp`;
+    mkdirSync(path.join(temp.dir, dirName));
+    const before = readFileSync(cachePath, "utf8");
+
+    expect(store.removeStaleTemporaryFiles()).toBe(orphans.length);
+
+    for (const name of orphans) {
+      expect(existsSync(path.join(temp.dir, name))).toBe(false);
+    }
+    for (const name of DECOYS) {
+      expect(existsSync(path.join(temp.dir, name))).toBe(true);
+    }
+    expect(existsSync(path.join(temp.dir, dirName))).toBe(true);
+    expect(readFileSync(cachePath, "utf8")).toBe(before);
+    // 同梱の写し（別の file）も残る。
+    expect(store.loadBundled(TEST_NOW).ok).toBe(true);
+  });
+
+  it("purgeCache も同じ規則で、他の file の tmp を消さない", () => {
+    for (const name of DECOYS) {
+      writeFileSync(path.join(temp.dir, name), "x", "utf8");
+    }
+    store.purgeCache();
+    for (const name of DECOYS) {
+      expect(existsSync(path.join(temp.dir, name))).toBe(true);
+    }
+  });
+
+  it("directory が無くても投げない", () => {
+    const missing = createModelCapabilityStore({
+      cacheDir: path.join(temp.dir, "nothing"),
+      bundledPath: path.join(temp.dir, "nothing.json"),
+    });
+    expect(missing.removeStaleTemporaryFiles()).toBe(0);
   });
 });

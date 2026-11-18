@@ -60,7 +60,7 @@ _Chat — AIチャットと会話履歴を並べたビュー_
 - **Codex** — Characters, worldbuilding, items, whatever. Extract from chat and reference in-editor.
 - **Snippets** — Reusable fragments pulled from chat.
 - **Source attribution** — Every inserted range is tagged human / ai / unknown.
-- **Local storage** — SQLite (WAL mode) + FTS5 on disk. No account required. Manuscripts leave the device only when you explicitly send context to a configured AI; Electron may also contact services for license validation, update checks, semantic-model downloads, and (in the packaged app only) a fetch of public model information (context lengths and capabilities) from `raw.githubusercontent.com` shortly after each launch and every 24 hours while the app is running; the last one sends no manuscript, settings, or keys and can be turned off under AI settings ("Auto-update model information"), after which only the information bundled with the app is used.
+- **Local storage** — SQLite (WAL mode) + FTS5 on disk. No account required. Manuscripts leave the device only when you explicitly send context to a configured AI; Electron may also contact services for license validation, update checks, semantic-model downloads, and (in the packaged app only) a fetch of public model information (context lengths and capabilities) from `raw.githubusercontent.com` shortly after each launch and every 24 hours while the app is running (up to 3 attempts per cycle if a request fails); the last one sends no manuscript, settings, or keys and can be turned off under AI settings ("Auto-update model information"), after which only the information bundled with the app is used.
 
 - **チャプター / シーンエディタ** — シーンごとに独立したTipTapインスタンス、帰属追跡つきリッチテキスト。
 - **日本語小説向け組版** — ルビ（ふりがな）、傍点、縦書きプレビュー。
@@ -71,7 +71,7 @@ _Chat — AIチャットと会話履歴を並べたビュー_
 - **Codex** — 登場人物・世界観・アイテムなど。チャットから抽出してエディタ内で参照。
 - **スニペット** — チャットから拾った再利用可能な断片。
 - **出所追跡** — 挿入されたテキストは human / ai / unknown でタグづけ。
-- **ローカル保存** — SQLite（WALモード）+ FTS5。アカウントは必須ではありません。原稿本文が端末外へ出るのは、設定したAIへユーザーが明示的にコンテキストを送る場合です。Electron版では、これとは別にライセンス検証、更新確認、意味検索モデル取得、および（配布版だけ）公開のモデル情報（文脈長や機能）を `raw.githubusercontent.com` から、起動のしばらく後と、起動中は24時間ごとに取得する通信が発生する場合があります。最後の通信は原稿・設定・キーを送らず、AI設定の「モデル情報の自動更新」で止められます（止めると、アプリに同梱の情報だけを使います）。
+- **ローカル保存** — SQLite（WALモード）+ FTS5。アカウントは必須ではありません。原稿本文が端末外へ出るのは、設定したAIへユーザーが明示的にコンテキストを送る場合です。Electron版では、これとは別にライセンス検証、更新確認、意味検索モデル取得、および（配布版だけ）公開のモデル情報（文脈長や機能）を `raw.githubusercontent.com` から、起動のしばらく後と、起動中は24時間ごと（失敗したときは同じ周期の中で最大3回まで）に取得する通信が発生する場合があります。最後の通信は原稿・設定・キーを送らず、AI設定の「モデル情報の自動更新」で止められます（止めると、アプリに同梱の情報だけを使います）。
 
 ---
 

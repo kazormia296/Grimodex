@@ -36,6 +36,7 @@ import {
 } from "./modelCapabilityStore.js";
 import {
   createModelInfoSetting,
+  removeStaleModelInfoSettingTemporaryFiles,
   wrapBackendForModelInfoSetting,
 } from "./modelInfoSetting.js";
 
@@ -131,11 +132,14 @@ export function createModelCapabilityRuntime(
   options: ModelCapabilityRuntimeOptions,
 ): ModelCapabilityRuntime {
   const now = options.now ?? (() => Date.now());
+  // 前回の crash・kill で残った自分の tmp を、書込みの前に片付ける（命名規則に完全一致するものだけ）。
+  removeStaleModelInfoSettingTemporaryFiles(options.userDataDir);
   const setting = createModelInfoSetting(options.userDataDir, options.log);
   const store = createModelCapabilityStore({
     cacheDir: options.userDataDir,
     bundledPath: options.bundledPath,
   });
+  store.removeStaleTemporaryFiles();
 
   // profile の状態は、通知された値を持つ（listener は stage 2 の `activating` でも呼ばれる）。
   let profileState = options.profile.statusView().state;

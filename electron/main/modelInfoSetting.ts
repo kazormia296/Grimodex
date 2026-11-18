@@ -29,12 +29,23 @@ import {
 import path from "node:path";
 
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import { removeOwnTemporaryFiles } from "./ownTemporaryFiles.js";
 
 /** AiSettings の JSON に載せる項目名。 */
 export const MODEL_INFO_AUTO_UPDATE_KEY = "modelInfoAutoUpdate";
 export const MODEL_INFO_SETTING_FILE = "model-info-settings.json";
 
 const SETTING_SCHEMA_VERSION = 1;
+
+/**
+ * crash・kill で残った、この設定 file の tmp（`model-info-settings.json.<pid>.<uuid>.tmp` に完全一致する
+ * ものだけ）を消す。起動時（書込みの前）に呼ぶ。設定 file 本体と他の file には触れない。
+ */
+export function removeStaleModelInfoSettingTemporaryFiles(
+  userDataDir: string,
+): number {
+  return removeOwnTemporaryFiles(userDataDir, MODEL_INFO_SETTING_FILE);
+}
 
 export interface ModelInfoSetting {
   get(): boolean;

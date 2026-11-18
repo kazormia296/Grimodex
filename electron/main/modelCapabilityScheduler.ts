@@ -44,7 +44,11 @@ export const MODEL_CAPABILITY_SCHEDULE = Object.freeze({
   connectTimeoutMs: 10_000,
   /** 総時間（本文を読み切るまで）の timeout。暫定。 */
   totalTimeoutMs: 30_000,
-  /** 1 回の周期の最大の試行回数（最初の 1 回を含む）。暫定。 */
+  /**
+   * 1 回の周期の最大の試行回数（最初の 1 回を含む）。暫定。
+   * 開示（設定画面の説明文・README・user-guide の Privacy-and-data）に「失敗したときは同じ周期の中で最大 3 回」と
+   * 書いている。変えるときは開示も直す。
+   */
   maxAttempts: 3,
   /** 試行の間の待ち（最後の値を使い回す）。暫定。 */
   retryDelaysMs: [30_000, 120_000] as readonly number[],

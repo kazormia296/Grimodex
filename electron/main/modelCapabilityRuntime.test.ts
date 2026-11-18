@@ -330,6 +330,27 @@ describe("profile の通知（onStatusChange）", () => {
   });
 });
 
+describe("起動時の tmp の片付け", () => {
+  it("runtime の create が、前回の crash で残った自分の tmp（設定 file・cache）だけを消す", () => {
+    const uuid = "0b9f6a3e-6d1c-4f0e-9a37-2c5b8d4e1f70";
+    const mine = [
+      `${MODEL_INFO_SETTING_FILE}.4242.${uuid}.tmp`,
+      `${MODEL_CAPABILITY_CACHE_FILE}.4242.${uuid}.tmp`,
+    ];
+    const others = [`ai-keys.json.4242.${uuid}.tmp`, "license.json"];
+    for (const name of [...mine, ...others]) {
+      writeFileSync(path.join(temp.dir, name), "x", "utf8");
+    }
+    build();
+    for (const name of mine) {
+      expect(existsSync(path.join(temp.dir, name))).toBe(false);
+    }
+    for (const name of others) {
+      expect(existsSync(path.join(temp.dir, name))).toBe(true);
+    }
+  });
+});
+
 describe("終了", () => {
   it("dispose は reject せず、timer を残さない（fatal exit の判断に混ぜない）", async () => {
     const { runtime } = build();

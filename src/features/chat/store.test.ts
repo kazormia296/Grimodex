@@ -223,6 +223,125 @@ describe("useAiSettingsStore", () => {
       });
     });
 
+    it("keeps the toggle when a full save built from stale settings finishes after it (the Switch must not disagree with main)", async () => {
+      const stale: AiSettings = {
+        ...defaultSettings,
+        modelInfoAutoUpdate: true,
+      };
+      useAiSettingsStore.setState({ settings: { ...stale } });
+      let resolveFullSave!: () => void;
+      mockSaveAiSettings.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFullSave = resolve;
+          }),
+      );
+      mockSetModelInfoAutoUpdate.mockResolvedValueOnce(undefined);
+
+      // 古い設定（項目は true）の完全な save が先に走り、その後に切替が入る。
+      const fullSave = useAiSettingsStore
+        .getState()
+        .saveSettings({ ...stale, model: "other" });
+      const toggle = useAiSettingsStore
+        .getState()
+        .setModelInfoAutoUpdate(false);
+      await Promise.resolve();
+      // 切替は同じ直列化の中で、完全な save の後に走る。
+      expect(mockSetModelInfoAutoUpdate).not.toHaveBeenCalled();
+      resolveFullSave();
+      await Promise.all([fullSave, toggle]);
+
+      expect(mockSetModelInfoAutoUpdate).toHaveBeenCalledWith(false);
+      expect(useAiSettingsStore.getState().settings).toEqual({
+        ...stale,
+        model: "other",
+        modelInfoAutoUpdate: false,
+      });
+    });
+
+    it("keeps the toggle when a stale full save is queued behind it", async () => {
+      const stale: AiSettings = {
+        ...defaultSettings,
+        modelInfoAutoUpdate: true,
+      };
+      useAiSettingsStore.setState({ settings: { ...stale } });
+      let resolveToggle!: () => void;
+      mockSetModelInfoAutoUpdate.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveToggle = resolve;
+          }),
+      );
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      const toggle = useAiSettingsStore
+        .getState()
+        .setModelInfoAutoUpdate(false);
+      const fullSave = useAiSettingsStore
+        .getState()
+        .saveSettings({ ...stale, model: "other" });
+      await Promise.resolve();
+      expect(mockSaveAiSettings).not.toHaveBeenCalled();
+      resolveToggle();
+      await Promise.all([toggle, fullSave]);
+
+      expect(useAiSettingsStore.getState().settings).toEqual({
+        ...stale,
+        model: "other",
+        modelInfoAutoUpdate: false,
+      });
+    });
+
+    it("a full save finishing after the toggle does not overwrite it with its stale value", async () => {
+      const stale: AiSettings = {
+        ...defaultSettings,
+        modelInfoAutoUpdate: true,
+      };
+      useAiSettingsStore.setState({ settings: { ...stale } });
+      mockSetModelInfoAutoUpdate.mockResolvedValueOnce(undefined);
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().setModelInfoAutoUpdate(false);
+      await useAiSettingsStore
+        .getState()
+        .saveSettings({ ...stale, model: "x" });
+
+      expect(useAiSettingsStore.getState().settings?.modelInfoAutoUpdate).toBe(
+        false,
+      );
+    });
+
+    it("a settings reload waits for a pending toggle and reads the post-toggle snapshot", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, modelInfoAutoUpdate: true },
+      });
+      let resolveToggle!: () => void;
+      mockSetModelInfoAutoUpdate.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveToggle = resolve;
+          }),
+      );
+      mockGetAiSettings.mockResolvedValueOnce({
+        ...defaultSettings,
+        modelInfoAutoUpdate: false,
+      });
+      mockHasApiKey.mockResolvedValueOnce(false);
+
+      const toggle = useAiSettingsStore
+        .getState()
+        .setModelInfoAutoUpdate(false);
+      const load = useAiSettingsStore.getState().loadSettings();
+      await Promise.resolve();
+      expect(mockGetAiSettings).not.toHaveBeenCalled();
+      resolveToggle();
+      await Promise.all([toggle, load]);
+
+      expect(useAiSettingsStore.getState().settings?.modelInfoAutoUpdate).toBe(
+        false,
+      );
+    });
+
     it("leaves the store untouched and rejects when the save fails", async () => {
       useAiSettingsStore.setState({ settings: { ...defaultSettings } });
       mockSetModelInfoAutoUpdate.mockRejectedValueOnce(new Error("failed"));

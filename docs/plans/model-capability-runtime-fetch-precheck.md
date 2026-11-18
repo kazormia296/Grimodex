@@ -300,7 +300,7 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
   - 再試行：一時的な失敗（network、timeout、429、5xx）だけ、1 周期に最大 3 回、間隔 30 秒・120 秒。内容・場所の誤り（404、redirect、host の不一致、上限超過、decode、検証の失敗）は再試行しません。
   - 採用：`parseSnapshot` → `source` が `grimodex` → 同梱の写しに `compareSnapshots` → 有効な cache があれば cache にも `compareSnapshots`。どれかが拒否なら採用しません。内容が cache と同じ（または cache が無く同梱と同じ）なら書きません。
   - log：固定の語、code、件数だけです（応答の本文、key、URL、error の message は出しません）。
-- 通信（`electron/main/modelCapabilityFetch.ts`。electron を import しません）：Node の `globalThis.fetch`、GET、https の定数の URL だけ、`redirect: "manual"`、200 以外は失敗、応答の最終 URL を定数と完全一致で再照合、`content-length` と読込み中の byte 数の両方で `maxSnapshotBytes` を当て、本文は fatal な UTF-8 で decode。送る header は `User-Agent: Grimodex-Model-Registry`（版なし）と `Accept` だけです。接続（header が届くまで）と総時間の timeout は `AbortController` と timer で当て、abort が効かない fetch でも結果を返します。失敗の閉鎖は body の `cancel` を要求しますが、完了は待ちません（`cancel` が返らない stream で scheduler を止めないため）。
+- 通信（`electron/main/modelCapabilityFetch.ts`。electron を import しません）：Node の `globalThis.fetch`、GET、https の定数の URL だけ、`redirect: "manual"`、200 以外は失敗、応答の最終 URL を定数と完全一致で再照合、`content-length` と読込み中の byte 数の両方で `maxSnapshotBytes` を当て、本文は fatal な UTF-8 で decode。こちらが指定する header は `User-Agent: Grimodex-Model-Registry`（版なし）と `Accept` だけです。Node の fetch が標準の汎用 header（`accept-language: *`、`sec-fetch-mode: cors`、`accept-encoding: gzip, deflate`）を自動で足すので、接続先へ届くのは IP、固定の識別名、これらの汎用 header です（開示はこの事実に合わせました。header を減らす変更はしていません）。圧縮された応答は伸長後の byte 数で上限を当てます（content-length が小さく本文が大きい gzip 応答の試験があります）。接続（header が届くまで）と総時間の timeout は `AbortController` と timer で当て、abort が効かない fetch でも結果を返します。失敗の閉鎖は body の `cancel` を要求しますが、完了は待ちません（`cancel` が返らない stream で scheduler を止めないため）。
 - 配線：`electron/main/modelCapabilityRuntime.ts` に集約し、`index.ts` には `create`・`start`・`dispose` と backend の差し替え、shell handler の追加だけを足しました（`large-module-debt` の上限は変えていません）。
   - `profileEgress.onStatusChange` の listener：`view.state` を持ち、`scheduler.onProfileChanged()` を呼びます。同期で、throw せず、file 操作を含みません（stage 2 の listener の throw は activation を fail closed にするため）。`activating`・`restricted`・`unavailable` のすべてで止まります。
   - quit：`quitFinalizer` の `complete` の independent cleanup に置きました（Native の terminal receipt の `AggregateError` に混ぜないため）。`dispose` は reject せず、走行中の取得の終了を `quitWaitMs`（2 秒）まで待ち、超えても終了を止めません。
@@ -319,8 +319,8 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 - AI 設定（`AiSettings`、renderer の型）の項目 `modelInfoAutoUpdate?: boolean` として置きました（未設定・true が有効、false が無効）。設定画面（`AiCategory`、Electron のみ）に Switch を足し、説明文に取得先の host（`raw.githubusercontent.com`）と、取得の頻度（起動のしばらく後と、起動中は 24 時間ごと）と、止めると取得した情報を削除して同梱の情報だけを使うことを書きました（Q5。初回の告知は出しません）。
 - 保存は main の別 file（`<userData>/model-info-settings.json`）です。**共有 Rust の `grimodex_ai::AiSettings` は型付きの struct で、struct に無い key は `save_ai_settings` の往復で捨てられます**（`reasoning_effort_override` の注記と同じ事情。`from_wire` は `serde_json::from_value` で、`grimodex-ai` に `deny_unknown_fields` は無いことを確認しました）。TS の型だけに足すと、無効にしても再起動で有効に戻り、承認と逆の通信が起きます。そこで main が backend の `saveAiSettings`／`getAiSettings` を包み、この項目だけを別 file に保存して `get_ai_settings` の結果へ戻します（chat 送信の `settings` にも、この項目が 1 つ余分に載りますが、Rust は無視します）。
   - **変えられるのは、この項目だけを持つ `save_ai_settings`（明示の切替。renderer の `setModelInfoAutoUpdate`、Native は呼ばない）だけです。** 完全な設定の save に載った値は、有効・無効のどちらでも無視して捨てます。窓ごとに読んだ古い設定を丸ごと save する経路（別窓のモデル切替など。AI 設定を窓の間で同期する仕組みはありません）が、無効にした自動更新を有効へ書き戻さないためです。明示の切替に boolean でない値を与えたら拒否します。
-  - file が無ければ有効（既定）、読めない・壊れているときは無効（fail-closed）、書けないときは save を失敗させ、メモリの値も変えません。設定画面は、保存に失敗したら表示を変えません。設定画面を開くたびに `get_ai_settings` で読み直すので、別の窓で切り替えた値が表示されます。
-  - 変更は `modelInfoSetting.onChange` から scheduler の `onSettingChanged()` に届きます。renderer の引数ではなく、main が保存した値で判断します。無効なら取得を止め、cache と tmp の残骸を削除します。起動時に無効で cache が残っていれば、`start()` で削除します。
+  - file が無ければ有効（既定）、読めない・壊れているときは無効（fail-closed）、書けないときは save を失敗させ、メモリの値も変えません。設定画面は、保存に失敗したら表示を変えません。切替は、完全な設定の save・読み直しと同じ直列化（store の `settingsSaveTail`）の中で行い、完全な save の結果を store に反映するときも、store が持つ切替後の値を保ちます（古い設定から作った完全な save が後から終わっても、Switch の表示が main の実際の値と食い違いません。この競合の試験があります）。設定画面を開くたびに `get_ai_settings` で読み直すので、別の窓で切り替えた値が表示されます。
+  - 変更は `modelInfoSetting.onChange` から scheduler の `onSettingChanged()` に届きます。renderer の引数ではなく、main が保存した値で判断します。無効なら取得を止め、cache と tmp の残骸を削除します。起動時に無効で cache が残っていれば、`start()` で削除します。crash・kill で残った tmp は、runtime の create（書込みの前）に、`<file>.<pid>.<uuid>.tmp` の命名規則に完全一致する通常の file だけを消します（設定 file と cache の両方。keyStore など他の module の tmp、本体、directory には触れません。試験で確かめています）。
   - 有効に戻したときは、初回と同じ 30 秒の遅延から始めます（A4）。
 
 #### 読み取り専用の typed IPC（Q17）
@@ -352,6 +352,10 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 - 表 2 の「終了の証拠」（fetch の settle と response の body の close の両方）のうち、body の `cancel` は、要求を出すだけで完了を待ちません（`cancel` が返らない stream で scheduler が止まるのを避けるため）。取得そのものの終了は、fetch の promise の settle と abort で確かめます。
 - 取得の起動は `app.isPackaged` のときだけです（親の判断。承認した仕様には無かった条件で、通信を減らす方向の限定です）。
 - D2a の egress participant に登録していません（A8 のとおり `onStatusChange` の閉鎖にとどめました）。走行中の取得は abort の要求で閉じますが、activation がその終了を drain して待つことはしません。送るのは公開の GET だけで本文を含みません。
+
+既知の差（直していません）：
+
+- quit が取り消された（`will-quit` の finalizer が `stay` を選んだ）ときも、`dispose()` は終端のままで、scheduler は再開しません。取得が止まる側に倒れるだけで、通信は増えません。再開が要るときは、`dispose` を再開できる停止と終端に分けます。
 
 未解決（親の判断が要る）：
 
