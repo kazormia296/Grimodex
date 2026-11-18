@@ -27,12 +27,15 @@ export interface LiveThinkingCaps {
   supported: boolean | undefined;
   /**
    * `supported: true` の方式だけ（応答の順）。`types` が応答に無ければ undefined。
-   * `types` があって方式が 1 つも supported でなければ空配列。
+   * `types` があって方式が 1 つも supported でなければ空配列。`types` が object でも各値の形が
+   * 1 つも読めなければ undefined（不明）。
    */
   types: AnthropicThinkingType[] | undefined;
   /**
    * `capabilities.effort` の `supported: true` の段階（low→max の順）。
    * `effort` が応答に無ければ undefined、`effort.supported: false` なら空配列。
+   * `supported: true` なのに段階の key が 1 つも読めない（形が違う）ときは undefined（不明）。
+   * 段階の key が読めて、どれも supported でないときだけ空配列。
    */
   effortLevels: AnthropicEffortLevel[] | undefined;
   /**
@@ -109,9 +112,15 @@ function parseThinking(
 
   const typesRaw =
     thinking && isRecord(thinking.types) ? thinking.types : undefined;
-  const types = typesRaw
-    ? THINKING_TYPE_ORDER.filter((t) => supportedOf(typesRaw[t]) === true)
-    : undefined;
+  // effort の段階と同じ区別：`types` が object でも、各値が `{supported: boolean}` として
+  // 1 つも読めなければ不明（undefined）。空配列は「読めて、どれも supported でない」だけ。
+  const typesReadable =
+    typesRaw !== undefined &&
+    THINKING_TYPE_ORDER.some((t) => supportedOf(typesRaw[t]) !== undefined);
+  const types =
+    typesRaw && typesReadable
+      ? THINKING_TYPE_ORDER.filter((t) => supportedOf(typesRaw[t]) === true)
+      : undefined;
 
   let effortLevels: AnthropicEffortLevel[] | undefined;
   if (effort) {
@@ -119,9 +128,15 @@ function parseThinking(
     if (effortSupported === false) {
       effortLevels = [];
     } else if (effortSupported === true) {
-      effortLevels = EFFORT_LEVEL_ORDER.filter(
-        (level) => supportedOf(effort[level]) === true,
+      // 段階の形が読めない応答を「非対応」の空配列と混ぜない（不明は undefined）。
+      const readable = EFFORT_LEVEL_ORDER.some(
+        (level) => supportedOf(effort[level]) !== undefined,
       );
+      effortLevels = readable
+        ? EFFORT_LEVEL_ORDER.filter(
+            (level) => supportedOf(effort[level]) === true,
+          )
+        : undefined;
     }
   }
 
@@ -129,7 +144,10 @@ function parseThinking(
     supported: supportedOf(thinking),
     types,
     effortLevels,
-    canDisable: typesRaw ? supportedOf(typesRaw.disabled) === true : undefined,
+    canDisable:
+      typesRaw && typesReadable
+        ? supportedOf(typesRaw.disabled) === true
+        : undefined,
   };
 }
 

@@ -56,6 +56,11 @@ const DYNAMIC_CAPS_PROVIDERS = new Set<AiProvider>(["openrouter", "ollama"]);
  */
 const moduleCache = new Map<string, AiModel[]>();
 
+/** Test-only reset of the cross-open model list cache. */
+export function __resetChatModelCatalogCacheForTests(): void {
+  moduleCache.clear();
+}
+
 const cacheKeyFor = (provider: AiProvider, endpointId?: string): string => {
   if (provider === "openai-compatible") return `oc:${endpointId ?? ""}`;
   if (provider === "ollama") {

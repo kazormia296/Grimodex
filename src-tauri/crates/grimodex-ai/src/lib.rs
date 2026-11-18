@@ -8318,6 +8318,49 @@ mod tests {
         }
     }
 
+    /// Rust↔TS の field 名の境界。`/v1/models` の実機 fixture を `parse_anthropic_model` で写して
+    /// serialize した JSON が、TS 側（`anthropicLiveMerge.test.ts` の wire 試験）が読む fixture と
+    /// 一致することを固定する。Rust の serde の field 名（`contextLength`／`maxCompletionTokens`／
+    /// `anthropicCapabilities`）を変えるとここが落ち、TS 側の読み取りを直す必要が出る。
+    /// TS 側が読む名前を変えるときは、この fixture を直してこの試験を通す（両側が同じ file を見る）。
+    #[test]
+    fn anthropic_models_wire_json_matches_the_fixture_the_renderer_reads() {
+        let raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../src/features/chat/agent/__fixtures__/anthropic-models-2023-06-01.json"
+        ))
+        .unwrap();
+        let wire: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../src/features/chat/agent/__fixtures__/anthropic-ai-model-wire.json"
+        ))
+        .unwrap();
+        let raw = raw.as_array().unwrap();
+        let wire = wire.as_array().unwrap();
+        assert_eq!(raw.len(), wire.len());
+        for (m, expected) in raw.iter().zip(wire) {
+            let model = super::parse_anthropic_model(m).unwrap();
+            assert_eq!(&serde_json::to_value(&model).unwrap(), expected);
+        }
+        // field 名そのものも固定する（fixture 側が空でも気づけるように）。
+        let first = serde_json::to_value(super::parse_anthropic_model(&raw[0]).unwrap()).unwrap();
+        let mut keys: Vec<&str> = first
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "anthropicCapabilities",
+                "contextLength",
+                "id",
+                "maxCompletionTokens",
+                "name"
+            ]
+        );
+    }
+
     #[test]
     fn non_anthropic_models_do_not_emit_anthropic_capabilities_on_the_wire() {
         let openrouter = super::parse_openrouter_model(&serde_json::json!({

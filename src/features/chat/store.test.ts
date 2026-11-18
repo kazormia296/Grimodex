@@ -1624,6 +1624,84 @@ describe("useAiSettingsStore", () => {
       });
     });
 
+    describe("Anthropic の一覧の能力の登録", () => {
+      const anthropicSettings: AiSettings = {
+        ...defaultSettings,
+        provider: "anthropic",
+        model: "claude-fable-5-9",
+      };
+      const liveModels: AiModel[] = [
+        {
+          id: "claude-fable-5-9",
+          name: "Claude Fable 5.9",
+          contextLength: 400_000,
+          maxCompletionTokens: 60_000,
+        },
+      ];
+
+      it("live の limit を持つ一覧は登録し、modelCapsRevision を加算する", async () => {
+        useAiSettingsStore.setState({ settings: anthropicSettings });
+        mockListAiModels.mockResolvedValueOnce(liveModels);
+
+        await useAiSettingsStore.getState().loadModels();
+
+        expect(useAiSettingsStore.getState()).toMatchObject({
+          models: liveModels,
+          modelCapsRevision: 1,
+        });
+        expect(
+          getDynamicModelMeta("anthropic", "claude-fable-5-9"),
+        ).toMatchObject({ ctx: 400_000, out: 60_000 });
+      });
+
+      it("limit も capabilities も無い固定の予備の一覧は登録せず、前の live を残し、revision も動かさない", async () => {
+        useAiSettingsStore.setState({ settings: anthropicSettings });
+        mockListAiModels.mockResolvedValueOnce(liveModels);
+        await useAiSettingsStore.getState().loadModels();
+        expect(useAiSettingsStore.getState().modelCapsRevision).toBe(1);
+
+        const fallback: AiModel[] = [
+          { id: "claude-fable-5-9", name: "Claude Fable 5.9" },
+          { id: "claude-opus-4-1", name: "Claude Opus 4.1" },
+        ];
+        mockListAiModels.mockResolvedValueOnce(fallback);
+        await useAiSettingsStore.getState().loadModels();
+
+        expect(useAiSettingsStore.getState()).toMatchObject({
+          models: fallback,
+          modelCapsRevision: 1,
+        });
+        expect(
+          getDynamicModelMeta("anthropic", "claude-fable-5-9"),
+        ).toMatchObject({ ctx: 400_000, out: 60_000 });
+        expect(getDynamicModelMeta("anthropic", "claude-opus-4-1")).toBeNull();
+      });
+
+      it("isCurrentRequest が偽になった応答は登録しない（provider を切り替えた後の古い応答）", async () => {
+        let resolveOld!: (models: AiModel[]) => void;
+        mockListAiModels.mockImplementationOnce(
+          () => new Promise((resolve) => (resolveOld = resolve)),
+        );
+        useAiSettingsStore.setState({
+          settings: anthropicSettings,
+          models: [{ id: "current", name: "Current" }],
+        });
+
+        const pending = useAiSettingsStore.getState().loadModels();
+        useAiSettingsStore.setState({
+          settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        });
+        resolveOld(liveModels);
+        await pending;
+
+        expect(getDynamicModelMeta("anthropic", "claude-fable-5-9")).toBeNull();
+        expect(useAiSettingsStore.getState()).toMatchObject({
+          models: [{ id: "current", name: "Current" }],
+          modelCapsRevision: 0,
+        });
+      });
+    });
+
     it("fetches CLI models when provider is cli", async () => {
       useAiSettingsStore.setState({
         settings: {
