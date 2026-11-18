@@ -698,8 +698,22 @@ describe("release workflow boundary", () => {
     assert.match(wrapper, /pnpm@11\.13\.0/);
     assert.match(wrapper, /--pm-on-fail=ignore/);
     assert.match(wrapper, /--audit-level/);
-    // http-cache-semantics 4.3.0 resolved GHSA-ch52-4w7c-c8xp, so the audit ignores no advisory.
-    assert.doesNotMatch(wrapper, /ignoreGhsas|--ignore\b|exception/);
+    // http-cache-semantics 4.3.0 resolved GHSA-ch52-4w7c-c8xp. The only ignored advisory is the
+    // temporary GHSA-fc5q-39xc-vjpf (picomatch, no published fix; user decision 2026-11-18), which must
+    // expire no later than 2026-12-18 00:00 JST and is never passed as `--ignore`.
+    assert.doesNotMatch(wrapper, /--ignore\b/);
+    assert.doesNotMatch(wrapper, /GHSA-ch52-4w7c-c8xp"/);
+    const ignored = [...wrapper.matchAll(/\{ id: "(GHSA-[a-z0-9-]+)", expiresAt: "([^"]+)" \}/g)];
+    assert.deepEqual(
+      ignored.map((match) => match[1]),
+      ["GHSA-fc5q-39xc-vjpf"],
+    );
+    for (const match of ignored) {
+      assert.ok(
+        Date.parse(match[2]) <= Date.parse("2026-12-18T00:00:00+09:00"),
+        `${match[1]} expires too late: ${match[2]}`,
+      );
+    }
     const lockfile = await readFile(
       path.join(repoRoot, "pnpm-lock.yaml"),
       "utf8",
