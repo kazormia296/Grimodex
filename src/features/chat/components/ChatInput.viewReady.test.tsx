@@ -65,7 +65,7 @@ vi.mock("../useChatModelCatalog", () => ({
 describe("ChatInput editor view readiness", () => {
   beforeEach(() => {
     h.setSuccessfulViewReads(0);
-    globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+    globalThis.localStorage?.removeItem("grimodex.modelCaps.v4");
     globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
     __resetDynamicModelCapsForTests();
     useChatStore.setState({ agentMode: false });

@@ -30,6 +30,7 @@ import {
   activateDynamicProviderScope,
   invalidateDynamicEffectiveContext,
   registerDynamicModelCaps,
+  registerAnthropicModelCaps,
   isDynamicCapsStale,
 } from "./agent/dynamicModelCaps";
 
@@ -1021,7 +1022,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       // それ以外は Rust 側 fetch_models に委譲する。OpenRouter / Ollama は
       // capability 登録と送信前 refresh と同じ provider-scoped fetch を共有する。
       // (Anthropic は GET /v1/models（キー未登録・失敗時は固定の予備）、AiNovelist は静的リスト、
-      // OpenAI 互換は active endpoint を叩く。Anthropic は動的 caps に登録しない）
+      // OpenAI 互換は active endpoint を叩く。Anthropic は refreshDynamicCapsForProvider を通さず、
+      // 取得後に専用の登録 registerAnthropicModelCaps で context／最大出力だけを登録する）
       const models = isDynamicCapsProvider(requestedProvider)
         ? await refreshDynamicCapsForProvider(requestedProvider, {
             force: true,
@@ -1039,10 +1041,20 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         });
         return;
       }
+      // Anthropic は mergeDynamicCaps を通さない専用の登録（表に無い id の context／最大出力だけ）。
+      const anthropicCapsChanged =
+        requestedProvider === "anthropic" && registerAnthropicModelCaps(models);
       set(
         isDynamicCapsProvider(requestedProvider)
           ? { isLoadingModels: false, modelLoadError: null }
-          : { models, isLoadingModels: false, modelLoadError: null },
+          : {
+              models,
+              isLoadingModels: false,
+              modelLoadError: null,
+              ...(anthropicCapsChanged
+                ? { modelCapsRevision: get().modelCapsRevision + 1 }
+                : {}),
+            },
       );
     } catch (error) {
       if (!isCurrentRequest()) return;

@@ -54,7 +54,7 @@ function renderRow(onCommit: () => void) {
 describe("RoleModelRow — settings 購読の絞り込み", () => {
   beforeEach(() => {
     useSettingsStore.setState({ cache: {} });
-    globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+    globalThis.localStorage?.removeItem("grimodex.modelCaps.v4");
     globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
     __resetDynamicModelCapsForTests();
   });
@@ -194,7 +194,7 @@ describe("RoleModelRow — stale モデル値の可視化（プロバイダ切�
 describe("RoleModelRow — provider-scoped capability", () => {
   beforeEach(() => {
     useSettingsStore.setState({ cache: {} });
-    globalThis.localStorage?.removeItem("grimodex.modelCaps.v2");
+    globalThis.localStorage?.removeItem("grimodex.modelCaps.v4");
     globalThis.localStorage?.removeItem("grimodex.openrouterModelCaps.v1");
     __resetDynamicModelCapsForTests();
   });

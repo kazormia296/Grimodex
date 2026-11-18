@@ -327,6 +327,11 @@ export interface AiModel {
   supportedParameters?: string[];
   pricingPrompt?: string;
   pricingCompletion?: string;
+  /**
+   * Anthropic `GET /v1/models` の `capabilities` object（生のまま）。Anthropic の一覧にだけ付く。
+   * Ollama の `capabilities`（string[]）とは別物。解釈は agent/anthropicLiveCaps.ts。
+   */
+  anthropicCapabilities?: Record<string, unknown>;
 }
 
 /**
