@@ -29,8 +29,9 @@ import {
 } from "./chatTurnPayload";
 import { maybeRunSummarization } from "./chatSummarization";
 import {
-  alreadyInjectedCodexEntryResult,
   createAskUserToolHandler,
+  createChatTurnToolContext,
+  createGuardedExecuteTool,
   withUiOperationLimit,
   createChatResearchSubagentHandler,
 } from "./chatAgentToolHandlers";
@@ -1123,10 +1124,20 @@ function createChatTurnStoreActions(
           const agentControl = getPromptCatalog(
             projectCtx?.language ?? "ja",
           ).agentControl;
+          const toolContext = createChatTurnToolContext({
+            executeTool,
+            executeReadOnlyTool,
+            enabled: agentModeForThisSend,
+            projectId: turnProjectId,
+            workspacePath: turnWorkspaceIdentity?.path ?? null,
+            currentSceneId: activeSceneId,
+            tokenBudget,
+            assertTurnAuthority,
+          });
           const runResearchSubagent = createChatResearchSubagentHandler({
             set,
             sendAgentMessage: chatApi.sendAgentMessage,
-            executeReadOnlyTool,
+            executeReadOnlyTool: toolContext.executeReadOnlyTool,
             recordAiUsage,
             assertTurnAuthority,
             isCurrentTurn,
@@ -1172,31 +1183,14 @@ function createChatTurnStoreActions(
             getSessionId: () => sessionIdForPersist ?? activeSessionId,
             dismissNote: agentControl.userDismissMessage,
           });
-          const guardedExecuteTool: typeof executeTool = async (
-            name,
-            toolCallId,
-            params,
-            authorization,
-          ) => {
-            assertTurnAuthority();
-            const askUserResult = handleAskUserTool(name, toolCallId, params);
-            if (askUserResult) return askUserResult;
-            const research = runResearchSubagent(name, toolCallId, params);
-            if (research) return research;
-            const injectedEntryResult = alreadyInjectedCodexEntryResult(
-              name,
-              toolCallId,
-              params,
-              fullyInjectedIds,
-            );
-            if (injectedEntryResult) return injectedEntryResult;
-            return authorization
-              ? executeTool(name, toolCallId, params, {
-                  ...authorization,
-                  chatMessageId: assistantMsg.id,
-                })
-              : executeTool(name, toolCallId, params);
-          };
+          const guardedExecuteTool = createGuardedExecuteTool({
+            executeTool: toolContext.executeTool,
+            assertTurnAuthority,
+            handleAskUserTool,
+            runResearchSubagent,
+            fullyInjectedIds,
+            chatMessageId: assistantMsg.id,
+          });
           // クライアントツールは private Agent のときだけ渡す。Public RAG は
           // tools=[] とし、Web検索だけを使う分離済み経路にする。
           const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
@@ -1333,6 +1327,7 @@ function createChatTurnStoreActions(
                 }
               },
               onToolComplete: (record) => {
+                toolContext.attachUsedIds(record);
                 if (!isCurrentTurn() || sendControl.aborted) return;
                 accToolCalls.push(record);
                 set((s) => {
