@@ -33,12 +33,30 @@ vi.mock("@/lib/perfLog", () => ({ recordMark: vi.fn() }));
 // Surface onInsert as a clickable button so we can assert the inserted text is
 // stripped of pseudo tool markup (editor-insert leak matters for a writing tool).
 vi.mock("./ChatMessageActions", () => ({
-  ChatMessageActions: ({ onInsert }: { onInsert?: () => void }) =>
-    onInsert ? (
-      <button type="button" data-testid="insert-btn" onClick={onInsert}>
-        insert
-      </button>
-    ) : null,
+  ChatMessageActions: ({
+    onInsert,
+    onRegenerate,
+  }: {
+    onInsert?: () => void;
+    onRegenerate?: (messageId: string) => void;
+  }) => (
+    <>
+      {onInsert ? (
+        <button type="button" data-testid="insert-btn" onClick={onInsert}>
+          insert
+        </button>
+      ) : null}
+      {onRegenerate ? (
+        <button
+          type="button"
+          data-testid="regenerate-btn"
+          onClick={() => onRegenerate("m1")}
+        >
+          regenerate
+        </button>
+      ) : null}
+    </>
+  ),
 }));
 vi.mock("./MessageBadge", () => ({ MessageBadge: () => null }));
 vi.mock("./ToolCallBlock", () => ({ ToolCallBlock: () => null }));
@@ -74,9 +92,12 @@ vi.mock("@/features/editor/editorStore", () => ({
   useEditorStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({ showGhostPreview: vi.fn(), clearGhostPreview: vi.fn() }),
 }));
+const chatState = vi.hoisted(() => ({
+  messages: [] as Array<Record<string, unknown>>,
+}));
 vi.mock("../chatStore", () => ({
   useChatStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ agentMode: false }),
+    selector({ agentMode: false, messages: chatState.messages }),
 }));
 vi.mock("../store", () => ({
   useAiSettingsStore: (selector: (s: Record<string, unknown>) => unknown) =>
@@ -276,5 +297,44 @@ describe("ChatMessage — 設定変更の提案カード", () => {
       }),
     });
     expect(screen.queryByTestId(/^proposal-card-/)).toBeNull();
+  });
+});
+
+describe("ChatMessage regenerate action", () => {
+  const row = (id: string, role: "user" | "assistant", metadata?: string) => ({
+    id,
+    sessionId: "s1",
+    role,
+    content: `${id}-text`,
+    metadata: metadata ?? null,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+  const renderWithRegenerate = () =>
+    render(
+      <ChatMessage
+        msg={fakeMsg({ id: "m1" })}
+        isStreaming={false}
+        onInsert={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+  beforeEach(() => {
+    chatState.messages = [];
+  });
+
+  it("offers regeneration when the user message directly precedes", () => {
+    chatState.messages = [row("u0", "user"), row("m1", "assistant")];
+    renderWithRegenerate();
+    expect(screen.getByTestId("regenerate-btn")).toBeTruthy();
+  });
+
+  it("does not offer regeneration for a row a failed turn left without a user", () => {
+    chatState.messages = [
+      row("u0", "user"),
+      row("a0", "assistant"),
+      row("m1", "assistant", JSON.stringify({ runtime_error: "down" })),
+    ];
+    renderWithRegenerate();
+    expect(screen.queryByTestId("regenerate-btn")).toBeNull();
   });
 });

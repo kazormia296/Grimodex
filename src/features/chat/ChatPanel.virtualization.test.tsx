@@ -208,6 +208,47 @@ describe("ChatPanel virtualization contract", () => {
     expect(opts!.getItemKey?.(1)).toBe("a1");
   });
 
+  it("表示するものが無い空の assistant 行は一覧に出さず（行は残す）、要約のマーカーと生成中の末尾は出す", () => {
+    const blankMeta = JSON.stringify({ stopped: true });
+    const messages = [
+      msg("u1", "user"),
+      { ...msg("blank", "assistant", ""), metadata: blankMeta },
+      {
+        ...msg("tools", "assistant", ""),
+        metadata: JSON.stringify({
+          tool_calls: [{ name: "x", params: {}, summary: "done" }],
+        }),
+      },
+      {
+        ...msg("summary", "assistant", "要約本文"),
+        metadata: JSON.stringify({ summary_id: "1" }),
+      },
+      msg("u2", "user"),
+      msg("pending", "assistant", ""),
+    ];
+    useChatStore.setState({ messages, isStreaming: false });
+    const view = render(<ChatPanel />);
+
+    const opts = virtualizerCapture.opts;
+    expect(opts!.count).toBe(4);
+    expect([0, 1, 2, 3].map((i) => opts!.getItemKey?.(i))).toEqual([
+      "u1",
+      "tools",
+      "summary",
+      "u2",
+    ]);
+    // store の行は消さない（出典の参照先）。
+    expect(useChatStore.getState().messages).toHaveLength(6);
+
+    // 生成中は、末尾の（これから埋まる）空の行を隠さない。
+    act(() => {
+      useChatStore.setState({ isStreaming: true });
+    });
+    expect(virtualizerCapture.opts!.count).toBe(5);
+    expect(virtualizerCapture.opts!.getItemKey?.(4)).toBe("pending");
+    view.unmount();
+  });
+
   it("非Chat最大化中だけ virtualizer の scroll element を切り離す", () => {
     useChatStore.setState({ messages: [msg("u1", "user")] });
     render(<ChatPanel />);
