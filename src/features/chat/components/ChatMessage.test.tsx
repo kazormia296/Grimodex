@@ -337,4 +337,39 @@ describe("ChatMessage regenerate action", () => {
     renderWithRegenerate();
     expect(screen.queryByTestId("regenerate-btn")).toBeNull();
   });
+
+  describe("「agent で再試行」", () => {
+    const missing = "その情報が見当たりません。";
+    const renderRetry = () =>
+      render(
+        <ChatMessage
+          msg={fakeMsg({ id: "m1", content: missing })}
+          isStreaming={false}
+          onInsert={vi.fn()}
+          onRetryWithAgent={vi.fn()}
+        />,
+      );
+
+    it("直前が user なら出す", () => {
+      chatState.messages = [
+        row("u0", "user"),
+        { ...row("m1", "assistant"), content: missing },
+      ];
+      renderRetry();
+      expect(screen.getByTestId("agent-retry-m1")).toBeTruthy();
+    });
+
+    it("直前に user の無い行（失敗・停止の残り）では出さない", () => {
+      chatState.messages = [
+        row("u0", "user"),
+        row("a0", "assistant"),
+        {
+          ...row("m1", "assistant", JSON.stringify({ stopped: true })),
+          content: missing,
+        },
+      ];
+      renderRetry();
+      expect(screen.queryByTestId("agent-retry-m1")).toBeNull();
+    });
+  });
 });

@@ -51,18 +51,26 @@ const DISPLAYED_METADATA_LISTS = [
 ] as const;
 
 /**
- * 表示するものが何も無い assistant の行（本文が空で、tool_calls・thinking_blocks・
- * 引用・Codex の項目なども無い。出典用に予約した行が、失敗・停止・workspace の切替の後に
- * 空のまま残る）。要約のマーカーは含めない。生成中かどうかは呼び出し側で判断する。
+ * 表示するものが何も無く、かつ「残り行」の印のある assistant の行。本文が空で、tool_calls・
+ * thinking_blocks・引用・Codex の項目も無く、metadata が無い（出典用に予約したまま
+ * 確定されなかった行）か、`stopped`／`runtime_error` の印がある（停止・失敗の残り）。
+ * 正常に完了した空の回答（reasoning が上限で本文なしに終わった等。model・token の
+ * meta 行を出す）や要約のマーカーは含めない。生成中かどうかは呼び出し側で判断する。
  */
 export function isBlankAssistantRow(message: RowLike): boolean {
   if (message.role !== "assistant" || message.content.trim()) return false;
   const metadata = parseRecord(message.metadata);
   if ("summary_id" in metadata) return false;
-  return !DISPLAYED_METADATA_LISTS.some((key) => {
+  const hasDisplayed = DISPLAYED_METADATA_LISTS.some((key) => {
     const value = metadata[key];
     return Array.isArray(value) && value.length > 0;
   });
+  if (hasDisplayed) return false;
+  return (
+    Object.keys(metadata).length === 0 ||
+    metadata.stopped === true ||
+    "runtime_error" in metadata
+  );
 }
 
 /**

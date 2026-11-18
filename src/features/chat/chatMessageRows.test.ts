@@ -57,15 +57,33 @@ describe("regenerationSourceUser", () => {
 });
 
 describe("isBlankAssistantRow / visibleChatRows", () => {
-  it("treats an empty assistant row with nothing to display as blank", () => {
+  it("treats an empty assistant row left by a reservation, stop or failure as blank", () => {
     expect(isBlankAssistantRow(row("a", "assistant", ""))).toBe(true);
     expect(isBlankAssistantRow(row("a", "assistant", "  \n"))).toBe(true);
+    expect(isBlankAssistantRow(row("a", "assistant", "", {}))).toBe(true);
     expect(
       isBlankAssistantRow(row("a", "assistant", "", { stopped: true })),
     ).toBe(true);
     expect(
-      isBlankAssistantRow(row("a", "assistant", "", { tool_calls: [] })),
+      isBlankAssistantRow(row("a", "assistant", "", { runtime_error: "down" })),
     ).toBe(true);
+    expect(
+      isBlankAssistantRow(
+        row("a", "assistant", "", { stopped: true, tool_calls: [] }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps a normally completed empty answer (its meta row is shown)", () => {
+    expect(
+      isBlankAssistantRow(row("a", "assistant", "", { tool_calls: [] })),
+    ).toBe(false);
+    expect(
+      isBlankAssistantRow(row("a", "assistant", "", { codex_items: [] })),
+    ).toBe(false);
+    expect(
+      isBlankAssistantRow(row("a", "assistant", "", { stopped: false })),
+    ).toBe(false);
   });
 
   it("does not treat a row with text, tool calls, thinking, or a summary marker as blank", () => {
@@ -82,6 +100,15 @@ describe("isBlankAssistantRow / visibleChatRows", () => {
     expect(
       isBlankAssistantRow(row("a", "assistant", "", { summary_id: "1" })),
     ).toBe(false);
+  });
+
+  it("hides a blank trailing row again once streaming has ended", () => {
+    const rows = [row("u1", "user", "q"), row("last", "assistant", "")];
+    expect(visibleChatRows(rows, true).map((r) => r.id)).toEqual([
+      "u1",
+      "last",
+    ]);
+    expect(visibleChatRows(rows, false).map((r) => r.id)).toEqual(["u1"]);
   });
 
   it("hides blank rows and system rows from the list but keeps a trailing one while streaming", () => {

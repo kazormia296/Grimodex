@@ -6815,6 +6815,26 @@ describe("useChatStore", () => {
         expect(markedIds).not.toContain("left-empty");
       });
 
+      it("inserts the summary marker right after the last summarized candidate, before the left rows", async () => {
+        setupSummarizationTurn();
+
+        await useChatStore.getState().sendMessage("新しい質問");
+
+        const ids = useChatStore.getState().messages.map((m) => m.id);
+        const markerIndex = useChatStore
+          .getState()
+          .messages.findIndex((m) => m.metadata?.includes("summary_id"));
+        const summarized = vi.mocked(chatApi.markMessagesSummarized).mock
+          .calls[0]?.[0] as string[];
+        const lastCandidateIndex = Math.max(
+          ...summarized.map((id) => ids.indexOf(id)),
+        );
+        expect(markerIndex).toBe(lastCandidateIndex + 1);
+        // 残り行は要約の対象外のまま、マーカーの後ろに並ぶ。
+        expect(markerIndex).toBeLessThan(ids.indexOf("left-failed"));
+        expect(markerIndex).toBeLessThan(ids.indexOf("left-empty"));
+      });
+
       it("does not regenerate from an earlier turn's user when the assistant row has no user before it", async () => {
         setupAgentTurn();
         const sendMessage = vi.fn(async () => {});
