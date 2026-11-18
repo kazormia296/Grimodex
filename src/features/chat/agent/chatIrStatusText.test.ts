@@ -46,7 +46,44 @@ const FAILURE_CLASSES = [
   "internal",
 ] as const satisfies readonly ChatIrStatusClass[];
 
+// B2 設計 §5.2 の表を、そのまま期待値として写す（28 件。失敗同士の取り違えを固定する）。
+const EXPECTED_CLASS: Record<string, ChatIrStatusClass> = {
+  available: "answered",
+  "none-above-threshold": "none",
+  timeout: "transient",
+  "connection-busy": "transient",
+  "embedder-cold": "transient",
+  busy: "transient",
+  "ledger-full": "unavailable",
+  "index-unavailable": "unavailable",
+  unsupported: "unavailable",
+  "no-current-scene": "context",
+  "project-unavailable": "context",
+  "project-changed": "context",
+  "workspace-unavailable": "context",
+  "workspace-changed": "context",
+  "query-invalid": "query",
+  "inference-failed": "transient",
+  internal: "internal",
+  disabled: "unavailable",
+  "sub-agent": "unavailable",
+  "no-workspace": "context",
+  "turn-limit": "unavailable",
+  "cap-exceeded": "unavailable",
+  "gate-closed": "unavailable",
+  "egress-denied": "unavailable",
+  "ipc-cancelled": "context",
+  "caller-timeout": "transient",
+  "ipc-error": "internal",
+  "invalid-response": "internal",
+};
+
 describe("chat IR status text", () => {
+  it("fixes every status's class to the design table (§5.2)", () => {
+    expect(Object.keys(EXPECTED_CLASS)).toHaveLength(28);
+    expect({ ...CHAT_IR_STATUS_CLASS }).toEqual(EXPECTED_CLASS);
+  });
+
   it("keeps the wrapper's renderer statuses and the local names equal", () => {
     expect(rendererNamesMatchWrapper).toBe(true);
   });
@@ -85,6 +122,7 @@ describe("chat IR status text", () => {
   });
 
   it("says a failure is not evidence that nothing exists", () => {
+    // `query` is left out on purpose: its note states the query bound instead.
     for (const status of [...CHAT_AGENT_IR_STATUSES, ...RENDERER_STATUSES]) {
       const klass = chatIrStatusClass(status);
       if (!(FAILURE_CLASSES as readonly string[]).includes(klass)) continue;

@@ -2,7 +2,8 @@
  * What the model is told about a failed or empty approved-summary lookup
  * (S1-B design PR-B2 5.2〜5.3, DR-CHATIR-S1-37).
  *
- * The 30 statuses (17 from Native, 13 that only the renderer makes) fold into
+ * The 28 statuses (17 from Native and 13 names on the renderer's side, two of
+ * which also exist on Native's; 28 without the overlap) fold into
  * seven classes. The status name itself stays in the tool result (it is exact
  * and useful in logs); a fixed English `note` is added only on the failure side.
  * The wording is fixed text, not a per-locale asset, because the tool

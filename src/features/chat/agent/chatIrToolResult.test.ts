@@ -6,7 +6,6 @@ import {
 } from "./chatIrStatusText";
 import {
   buildChatIrContent,
-  chatIrTokenCap,
   fitChatIrContent,
   precheckChatIrContent,
 } from "./chatIrToolResult";
@@ -42,15 +41,6 @@ function size(
     JSON.stringify(buildChatIrContent(status, items, events, note)),
   );
 }
-
-describe("chatIrTokenCap", () => {
-  it("is the agent loop's formula", () => {
-    expect(chatIrTokenCap(2400)).toBe(600);
-    expect(chatIrTokenCap(2000)).toBe(500);
-    expect(chatIrTokenCap(1)).toBe(1);
-    expect(chatIrTokenCap(0)).toBe(1);
-  });
-});
 
 describe("buildChatIrContent", () => {
   it("puts chronicleIr before events and omits an absent note", () => {
@@ -91,7 +81,8 @@ describe("fitChatIrContent", () => {
   });
 
   it("cuts to min(limit, 8) items", () => {
-    const items = Array.from({ length: 8 }, (_, i) => item(i + 1, 5));
+    // 10 items: the cap of 8 is what stops run(30) and run(NaN).
+    const items = Array.from({ length: 10 }, (_, i) => item(i + 1, 5));
     const run = (limit: number) =>
       fitChatIrContent({
         outcome: { status: "available", items },

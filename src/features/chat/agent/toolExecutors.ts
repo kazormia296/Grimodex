@@ -354,7 +354,7 @@ async function searchEvents(
 
   // 基準の project・Scene は、秘匿の filter も位置の filter も同じ値を使う。
   // turn の文脈（scope）があればその値、無ければ今の tree store。
-  const { projectId, currentSceneId } = chronicleBasis(scope);
+  const projectId = chronicleProjectId(scope);
   if (!projectId)
     return {
       name: "search_events",
@@ -385,6 +385,8 @@ async function searchEvents(
   const allEvents = await getSharedEvents(projectId);
   const sceneEvents = await getSharedSceneEvents(projectId);
   const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
+  // scope が無い呼び手は、従来どおり await の後で今の Scene を読む（定数 false の間は今と同一）。
+  const currentSceneId = chronicleSceneId(scope);
   const hidden = new Set(
     allEvents
       .filter((e) =>
@@ -421,22 +423,19 @@ async function searchEvents(
   };
 }
 
-/** search_events の基準の project と Scene。scope があればそれ、無ければ今の tree store。 */
-function chronicleBasis(scope?: ChatTurnToolScope): {
-  projectId: string | null;
-  currentSceneId: string;
-} {
-  if (scope) {
-    return {
-      projectId: scope.projectId || null,
-      currentSceneId: scope.currentSceneId ?? "",
-    };
-  }
-  const state = useTreeStore.getState();
-  return {
-    projectId: state.projectId,
-    currentSceneId: state.activeSceneId ?? "",
-  };
+/** search_events の基準の project。scope があればそれ、無ければ今の tree store。 */
+function chronicleProjectId(scope?: ChatTurnToolScope): string | null {
+  return scope ? scope.projectId || null : useTreeStore.getState().projectId;
+}
+
+/**
+ * search_events の基準の Scene。scope があればそれ、無ければ読んだ時点の tree store。
+ * 呼ぶ位置が挙動の一部なので、scope が無い呼び手では await の後で呼ぶ（DR-CHATIR-S1-34）。
+ */
+function chronicleSceneId(scope?: ChatTurnToolScope): string {
+  return scope
+    ? (scope.currentSceneId ?? "")
+    : (useTreeStore.getState().activeSceneId ?? "");
 }
 
 function eventSearchLimit(params: Record<string, unknown>): number {
@@ -472,12 +471,14 @@ async function searchEventsWithIr(
   const base = await searchEvents(params, context?.scope);
   if (!CHAT_AGENT_IR_ENABLED || !ir) return base;
   const query = String(params["query"] ?? "").trim();
-  const { projectId, currentSceneId } = chronicleBasis(context.scope);
+  const projectId = chronicleProjectId(context.scope);
+  const currentSceneId = chronicleSceneId(context.scope);
   // 空の query・project 無しは、年表の側の応答（空の配列）のまま返す。
   if (!query || !projectId || !Array.isArray(base.content)) return base;
 
   const events: readonly unknown[] = base.content;
-  const limit = eventSearchLimit(params);
+  // 0 < limit < 1 の小数は年表では 0 件になるが、IR には 1 件分の枠を残す（空の available を避ける）。
+  const limit = Math.max(1, eventSearchLimit(params));
   const input = { events, tokenCap: ir.tokenCap, countTokens };
 
   let fitted: ChatIrToolContentResult<unknown> | null =

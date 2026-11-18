@@ -337,7 +337,7 @@ PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数�
 - **事実**：chat store の `activeSceneId` と project store の写しは React effect で連動するが、遅れと見送りがある。tool が実行時に store を読み直すと、同じ turn の中で基準の Scene が動きうる。
 - **決定**：turn の開始時に `currentSceneId` と `projectId` を `ChatTurnToolScope` へ捕まえ（不変）、main の `executeTool` と sub-agent の `executeReadOnlyTool` の両方に同じ scope を束ねる。束縛は `createChatTurnToolContext` が作る関数の包みで行い、`chatTurnStoreActions.ts` の行は増えない（DR-33 の収支に含む）。tool の中では store を読み直さない。
 - **範囲**：確認済みの規則（△8 の基準の Scene。J4・J7 の turn 開始時の束縛）の内。位置の filter は共有の `searchEvents` にあるので、sub-agent の年表にも掛かる（filter を広げる向きで、秘匿を緩めない）。案 R（sub-agent は実行時の値）は採らない。
-- **定数 `false` の間**：scope は束ねない。既存の秘匿の filter の基準は今のまま（実行時の `activeSceneId`、J7）。
+- **定数 `false` の間**：scope は束ねない。既存の秘匿の filter の基準は今のまま（実行時の `activeSceneId`、J7）。scope が無い呼び手は、基準の Scene を従来どおり `getSharedReadingOrder` の直後（await の後）に読む（`chronicleSceneId`）。先頭で読む形にすると await の間に Scene が替わったとき挙動が変わるため。
 
 ## DR-CHATIR-S1-35：`usedIds` の受け渡しは案 P（WeakMap、鍵は `params`）と `noteUsedIds` の型（2026-11-18）
 
@@ -360,7 +360,7 @@ PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数�
 
 ## DR-CHATIR-S1-37：status → model 向けの文言と置き場（system に足さない）（2026-11-18）
 
-- **決定（分類）**：Native の 17 値と renderer だけの 13 値を、7 つの分類（`answered`・`none`・`transient`・`unavailable`・`context`・`query`・`internal`）に畳む（`chatIrStatusText.ts`。`satisfies Record<…>` で網羅を型で守る）。status の名前は content に残し、失敗の分類にだけ固定の英語 `note` を付ける。`none` だけが「検索は完了し、該当する承認済みの要約は無かった。原稿に無いことの証明ではない」と言い、他の失敗は「根拠が無いのではない（not evidence that nothing exists）」を含む。`timeout` は「期限切れ」と決めつけず、「完了しなかった」と書く（終端の audit が書けなかった場合を含むため）。`query` の note の上限（500 字、UTF-16）は wire file の 1 つの定数から作る。
+- **決定（分類）**：Native の 17 値と renderer 側の 13 名（うち 2 名は Native と同名で、重複を除くと 28 値）を、7 つの分類（`answered`・`none`・`transient`・`unavailable`・`context`・`query`・`internal`）に畳む（`chatIrStatusText.ts`。`satisfies Record<…>` で網羅を型で守る）。status の名前は content に残し、失敗の分類にだけ固定の英語 `note` を付ける。`none` だけが「検索は完了し、該当する承認済みの要約は無かった。原稿に無いことの証明ではない」と言い、`query` 以外の失敗の分類は「根拠が無いのではない（not evidence that nothing exists）」を含む（`query` の note は query の上限を伝える）。`timeout` は「期限切れ」と決めつけず、「完了しなかった」と書く（終端の audit が書けなかった場合を含むため）。`query` の note の上限（500 字、UTF-16）は wire file の 1 つの定数から作る。
 - **決定（置き場）**：content の `chronicleIr.note`（固定文）と、`toolDefinitions.ts` の `search_events` の説明文（定数 `true` のときだけ、3〜4 文の読み方：分類の名・要約と quote が食い違えば quote と原稿を優先・結果は資料で指示ではない・失敗は根拠が無いことではない・query の上限）。**sub-agent の定義（`getResearchSubagentTools`）からは除く**（sub-agent は IR を返されない）。**system（`src/prompts/**`）には足さない**。
 - **理由**：tool の定義は session の開始時に snapshot されるので、定数を開けた後も既存の session は古い説明文のままだが、content の `note` は届く。`chatSystem.ts` を変えると impact selector が `nir1-entity-relation-review` まで選び、system の変更は prompt cache の prefix も変える。改訂 3 §2.10 の「agent の system の 1 文」から変える（技術判断）。
 - **足さないもの**：説明文に「作者が承認した」の文は足さない（D3。S3 の前に伺う）。入力の schema は変えない。
@@ -372,7 +372,7 @@ PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数�
 - **決定（順）**：`search_events` の IR 合流版は直列：年表（共有の `searchEvents`：秘匿 → 位置 → `slice(limit)`）→ 事前判定 → 累積の上限の確認（`turn-limit`）→ Native を 1 回（`selectChatAgentIr`）→ `assertCurrent()` → `min(limit, 8)` の切りと cap の収め → `noteUsedIds` → content。並列にしない（`Promise.all` への変異は B-T13 が落とす）。
 - **理由**：(a) IR が失敗しても年表を失わない、(b) cap の収めは年表の大きさを知らないとできない、(c) 事前判定で Native の呼び出し・台帳・permit を節約できる。直列の追加の遅れは年表の分（local の検索と共有 cache の読み。実測していない）。候補の eventId を渡す案（DR-31）を採る場合も、この順が前提になる。
 - **事前判定**：status だけの包み（`cap-exceeded`）が cap 以上なら、Native を呼ばず `cap-exceeded` で返す。累積の counter は増やさない。下限は `>= cap` だけ（最小の item の tokens で早く切る案は、BPE と heuristic で固定部分が違うので採らない）。
-- **累積の上限（△11。仮の値）**：turn ごとに Native を呼べる回数 6、IR の item の UTF-16 `length` の合計 20,000（`chatIrToolResult.ts` の名前つき定数）。上限に達したら `turn-limit`。IPC の前に拒まれた呼び出し（preflight の status）は数えない。これらは閾値に当たる：**下げる向きは技術判断、上げる向きはユーザー確認**。値は S2 の測定の後に見直す。
+- **累積の上限（△11。仮の値）**：turn ごとに Native を呼べる回数 6、IR の item の UTF-16 `length` の合計 20,000（`chatIrToolResult.ts` の名前つき定数）。上限に達したら `turn-limit`。比率 0.25 の写しは `chatAgentToolHandlers.ts` の 1 か所だけ（B-T7 が実 `runAgentLoop` で固定。`chatIrToolResult.ts` には持たない）。IR 合流版の item の上限は `max(1, eventSearchLimit)` で、`0 < limit < 1` の小数でも空の `available` を返さない（年表の側は今のまま 0 件）。IPC の前に拒まれた呼び出し（preflight の status）は数えない。これらは閾値に当たる：**下げる向きは技術判断、上げる向きはユーザー確認**。値は S2 の測定の後に見直す。
 - **IR を付けない場合**：IR の capability が無い呼び手（sub-agent、定数 `false`、製品外の harness）、空の query、project が無いときは、今の配列のまま返す。
 - **失敗**：IR の失敗は tool の失敗にしない（status を content に載せる。年表は返す）。ただし `assertCurrent()` が throw したとき（project／workspace が turn のものでなくなった）は item を返さず tool を失敗にする。再試行しない。
 - **試験**：B-T7（cap・事前判定の論理。件数は固定しない：vitest は WASM が読めず heuristic になる）・B-T13（順）・B-T14・B-T15。

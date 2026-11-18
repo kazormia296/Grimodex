@@ -30,14 +30,6 @@ import {
   type ChatIrStatusForModel,
 } from "./chatIrStatusText";
 
-/** The share of the token budget one tool result may use (the agent loop's). */
-const TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
-
-/** The cap, with the same formula as the agent loop's tool result cap. */
-export function chatIrTokenCap(tokenBudget: number): number {
-  return Math.max(1, Math.floor(tokenBudget * TOOL_RESULT_TOKEN_CAP_RATIO));
-}
-
 /**
  * The cumulative limits of one turn (△11, DR-CHATIR-S1-38). Provisional values:
  * lowering them is a technical decision, raising them is a threshold change that

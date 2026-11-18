@@ -233,6 +233,16 @@ describe("B-T8: the sub-agent's path", () => {
     expect(Array.isArray(result.content)).toBe(true);
   });
 
+  it("does not call Native while the constant is false, even with an IR capability (summary is today's)", async () => {
+    h.gate.enabled = false;
+    const { ir } = makeIr();
+    const result = await runSearch(ir);
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(ir.counter).toEqual({ chars: 0, calls: 0 });
+    expect(Array.isArray(result.content)).toBe(true);
+    expect(result.summary).toBe("4 events found");
+  });
+
   it("keeps today's content while the constant is false (no position filter)", async () => {
     h.gate.enabled = false;
     const result = await executeReadOnlyTool(
@@ -281,17 +291,71 @@ describe("B-T10: the position filter lives in the shared searchEvents", () => {
     ).toEqual(["before", "after"]);
   });
 
-  it("applies the secrecy filter first, with the same Scene", async () => {
+  it("cuts the position filter before slice(limit), in both paths", async () => {
+    // The first hit is a later event: a filter after the slice would return [].
+    h.hits = [hit("after"), hit("before")];
+    const { ir } = makeIr();
+    const main = contentOf(await runSearch(ir, { query: "q", limit: 1 }));
+    expect(main.events.map((e) => e.eventId)).toEqual(["before"]);
+    const sub = await executeReadOnlyTool(
+      "search_events",
+      "t1",
+      { query: "q", limit: 1 },
+      { scope: SCOPE },
+    );
+    expect(
+      (sub.content as Array<{ eventId: string }>).map((e) => e.eventId),
+    ).toEqual(["before"]);
+  });
+
+  it("hides a secret event that reveals later than the bound Scene", async () => {
     h.events = [
-      { id: "before", secret: true, revealSceneId: null },
+      { id: "before", secret: true, revealSceneId: "s3" as never },
       { id: "after", secret: false, revealSceneId: null },
     ];
-    // `before` is secret and revealed by its own stamp (s1 <= s2): visible.
-    // A secret event that reveals at s3 stays hidden at s2.
-    h.events[0] = { id: "before", secret: true, revealSceneId: "s3" as never };
     const { ir } = makeIr();
     const out = contentOf(await runSearch(ir));
     expect(out.events).toEqual([]);
+  });
+
+  it("decides the secrecy by the bound Scene, not the store's (main and sub-agent)", async () => {
+    // Revealed at s1: visible at the bound s2, hidden at the store's s0.
+    h.events = [
+      { id: "before", secret: true, revealSceneId: "s1" as never },
+      { id: "after", secret: false, revealSceneId: null },
+    ];
+    h.tree.activeSceneId = "s0";
+    const { ir } = makeIr();
+    const main = contentOf(await runSearch(ir));
+    expect(main.events.map((e) => e.eventId)).toEqual(["before"]);
+    const sub = await executeReadOnlyTool(
+      "search_events",
+      "t1",
+      { query: "q" },
+      { scope: SCOPE },
+    );
+    expect(
+      (sub.content as Array<{ eventId: string }>).map((e) => e.eventId),
+    ).toEqual(["before"]);
+  });
+
+  it("reads the store's Scene after the awaits for a caller without a scope (constant false)", async () => {
+    h.gate.enabled = false;
+    h.events = [
+      { id: "before", secret: true, revealSceneId: "s1" as never },
+      { id: "after", secret: false, revealSceneId: null },
+    ];
+    h.tree.activeSceneId = "s0";
+    // The Scene changes while the semantic search is awaited: today's code
+    // judges the secrecy by the Scene read after the awaits (s2: visible).
+    h.semantic.mockImplementation(async () => {
+      h.tree.activeSceneId = "s2";
+      return h.hits;
+    });
+    const result = await executeTool("search_events", "t1", { query: "q" });
+    expect(
+      (result.content as Array<{ eventId: string }>).map((e) => e.eventId),
+    ).toEqual(["before", "after"]);
   });
 
   it("falls back to the store's Scene for a caller without a turn scope", async () => {
@@ -352,11 +416,28 @@ describe("B-T9: the Scene and the project of the bound scope", () => {
     expect(noScene.events.length).toBe(2);
   });
 
-  it("does not count a refusal before the IPC as a call of Native", async () => {
-    const { ir } = makeIr({ workspacePath: null });
-    await runSearch(ir);
-    expect(ir.counter.calls).toBe(0);
-  });
+  it.each([
+    ["no workspace", { workspacePath: null }, undefined, undefined],
+    [
+      "no current Scene",
+      {},
+      { projectId: "p-turn", currentSceneId: null },
+      undefined,
+    ],
+    ["a query over the bound", {}, undefined, "あ".repeat(501)],
+  ] as const)(
+    "does not count a refusal before the IPC as a call of Native (%s)",
+    async (_name, over, scope, query) => {
+      const { ir } = makeIr(over as Partial<ChatIrCapability>);
+      await runSearch(
+        ir,
+        query === undefined ? undefined : { query },
+        scope as ChatTurnToolScope | undefined,
+      );
+      expect(h.invoke).not.toHaveBeenCalled();
+      expect(ir.counter).toEqual({ chars: 0, calls: 0 });
+    },
+  );
 });
 
 describe("B-T11: a failure is separated from the year table", () => {
@@ -556,6 +637,15 @@ describe("usedIds and the result's shape", () => {
     expect(result.summary).toBe("2 events found");
   });
 
+  it("keeps a slot for IR when 0 < limit < 1 (no empty `available`)", async () => {
+    h.invoke.mockResolvedValue(answer([item(1), item(2)]));
+    const out = contentOf(
+      await runSearch(makeIr().ir, { query: "q", limit: 0.5 }),
+    );
+    expect(out.chronicleIr.status).toBe("available");
+    expect(out.chronicleIr.items).toHaveLength(1);
+  });
+
   it("leaves an empty query to the year table's own answer", async () => {
     const result = await runSearch(makeIr().ir, { query: "  " });
     expect(result.content).toEqual([]);
@@ -576,7 +666,6 @@ describe("the real agent loop (B-T7, B-T15)", () => {
   async function runLoop(input: {
     tokenBudget: number;
     params?: Record<string, unknown>;
-    aborted?: () => boolean;
   }) {
     const assertTurnAuthority = vi.fn();
     const context = createChatTurnToolContext({
@@ -626,10 +715,11 @@ describe("the real agent loop (B-T7, B-T15)", () => {
       onTextChunk: () => {},
       onToolComplete: (record) => {
         // The turn writes usedIds first, before anything can return early.
+        // The store's own wiring (this position, the bound executors) is held by
+        // chatTurnStoreActions.chatIrWiring.static.test.ts.
         context.attachUsedIds(record);
         accToolCalls.push(record);
       },
-      shouldAbort: input.aborted,
       callLimitMessage: "CALL_LIMIT",
       tokenBudgetMessage: "TOKEN_LIMIT",
     });
