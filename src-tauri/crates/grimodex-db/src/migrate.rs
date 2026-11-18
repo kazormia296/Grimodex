@@ -8926,17 +8926,20 @@ impl Database {
              END;",
         )?;
 
-        Self::repair_en_fts_delete_triggers(conn)?;
+        let rebuilt = Self::repair_en_fts_delete_triggers(conn)?;
 
         // One-time backfill of pre-existing English content (flagged so it runs
-        // exactly once, independent of content shape).
+        // exactly once, independent of content shape). A repair above already
+        // rebuilt every `_en` table, so the backfill does not rebuild twice.
         let done: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM fts_meta WHERE key = 'en_backfilled')",
             [],
             |r| r.get(0),
         )?;
         if !done {
-            super::fts::rebuild_en_fts_sql(conn)?;
+            if !rebuilt {
+                super::fts::rebuild_en_fts_sql(conn)?;
+            }
             conn.execute(
                 "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('en_backfilled', '1')",
                 [],
@@ -8945,8 +8948,9 @@ impl Database {
         Ok(())
     }
 
-    /// `_en` FTS の AFTER DELETE trigger 5 本を guard なしの現行の形にそろえ、guard 付きの
-    /// 旧形が残した孤児の `_en` 行を掃除する（SCHEMA 46 のままの in-version repair）。
+    /// `_en` FTS の AFTER DELETE trigger 5 本を guard なしの現行の形にそろえ、`_en` の 5 表を
+    /// 英語 project の行から作り直す（SCHEMA 46 のままの in-version repair）。作り直したら
+    /// `true`、収束済みで何もしなかったら `false` を返す。
     ///
     /// 旧形の trigger は `projects.language` を引く WHEN を持っていた。FK の ON DELETE
     /// CASCADE は親行（projects／chat_sessions）を先に消すので、副照会が NULL になって
@@ -8958,25 +8962,32 @@ impl Database {
     ///
     /// 収束済みの DB（5 本とも現行の形）では何もしない。checkpoint
     /// （[`grimodex_core::workspace_schema::has_en_fts_delete_triggers`]）と同じ判定を
-    /// 使うので、旧 build が guard 付きの形を入れ直した DB も次の open で自己修復する。
-    /// trigger の差し替えと掃除は 1 つの savepoint に入れる。差し替えだけが済んで
-    /// checkpoint が真になり、掃除が二度と走らない状態を作らないため。
+    /// 使い、`en_ad_unguarded` の旗には頼らない。旧 build が guard 付きの形を入れ直した
+    /// DB も、次の open で自己修復する。
     ///
-    /// 掃除は「本体の行が英語 project の行ではない `_en` 行」を消す。`rowid NOT IN
-    /// (本体の rowid)` だけでは足りない：末尾の英語の行を cascade で消した後に日本語の
-    /// 行が同じ rowid を再利用すると、本体に rowid があるので孤児が残る
-    /// （`_ai` は日本語の行では発火しない）。基準は `rebuild_en_fts_sql` と同じ
-    /// 「英語 project（`projects.language LIKE 'en%'`）の行」にそろえる。
-    /// 英語の project が無い DB では 5 表とも空にする掃除になり、安全に動く。
-    fn repair_en_fts_delete_triggers(conn: &Connection) -> anyhow::Result<()> {
+    /// 掃除は `rebuild_en_fts_sql`（英語 project の行から作り直す）にする。孤児だけを
+    /// `NOT IN` で消す形では、英語の孤児の rowid を日本語 project の行が再利用し、その
+    /// project を英語に変えた後の `_en` の作り直しが失敗・中断した状態で、孤児（別の本文）
+    /// が生きた行の rowid に居座る。作り直しなら、そうした古い行も、まだ索引されていない
+    /// 英語の行も揃う。英語の project が無い DB では 5 表を空にするだけで、安全に動く。
+    ///
+    /// trigger の差し替えと作り直しと旗の書き込みは 1 つの savepoint に入れる。差し替えだけが
+    /// 済んで checkpoint が真になり、掃除が二度と走らない状態を作らないため。
+    ///
+    /// 旧 build（`en_ad_unguarded` を読み、無ければ full DDL のたびに `_ad` を DROP して
+    /// guard 付きで作り直す）が同じ DB を full DDL で開いても guard 付きに戻らないよう、
+    /// ここで旗を `INSERT OR IGNORE` で書く。新 build はこの旗を読まない。
+    ///
+    /// 作り直しが既存の行を消した表には、FTS5 の `optimize` をかける。`DELETE` は segment の
+    /// 索引に削除済みの本文の語を残すので、merge して取り除く。VACUUM はしない。
+    fn repair_en_fts_delete_triggers(conn: &Connection) -> anyhow::Result<bool> {
         use grimodex_core::workspace_schema::{
             en_fts_delete_trigger_sql, has_en_fts_delete_triggers, EN_FTS_DELETE_TRIGGERS,
         };
         if has_en_fts_delete_triggers(conn)? {
-            return Ok(());
+            return Ok(false);
         }
         const SAVEPOINT: &str = "en_fts_delete_trigger_repair";
-        const ENGLISH_PROJECTS: &str = "SELECT id FROM projects WHERE language LIKE 'en%'";
         conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
         let repair = (|| -> anyhow::Result<()> {
             for (trigger, base_table, fts_table) in EN_FTS_DELETE_TRIGGERS {
@@ -8984,22 +8995,30 @@ impl Database {
                     "DROP TRIGGER IF EXISTS {trigger}; {};",
                     en_fts_delete_trigger_sql(trigger, base_table, fts_table)
                 ))?;
-                // chat_messages だけ project_id を chat_sessions 経由で引く。
-                let english_rowids = if base_table == "chat_messages" {
-                    format!(
-                        "SELECT rowid FROM chat_messages WHERE session_id IN \
-                         (SELECT id FROM chat_sessions WHERE project_id IN ({ENGLISH_PROJECTS}))"
-                    )
-                } else {
-                    format!(
-                        "SELECT rowid FROM {base_table} WHERE project_id IN ({ENGLISH_PROJECTS})"
-                    )
-                };
+            }
+            // 作り直しの前に、既存の行がある表を控える（optimize の対象）。
+            let mut populated = Vec::new();
+            for (_, _, fts_table) in EN_FTS_DELETE_TRIGGERS {
+                let has_rows: bool = conn.query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM {fts_table})"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_rows {
+                    populated.push(fts_table);
+                }
+            }
+            super::fts::rebuild_en_fts_sql(conn)?;
+            for fts_table in populated {
                 conn.execute(
-                    &format!("DELETE FROM {fts_table} WHERE rowid NOT IN ({english_rowids})"),
+                    &format!("INSERT INTO {fts_table}({fts_table}) VALUES('optimize')"),
                     [],
                 )?;
             }
+            conn.execute(
+                "INSERT OR IGNORE INTO fts_meta(key, value) VALUES ('en_ad_unguarded', '1')",
+                [],
+            )?;
             Ok(())
         })();
         let release = repair.and_then(|()| {
@@ -9017,7 +9036,7 @@ impl Database {
                 );
             }
         }
-        release
+        release.map(|()| true)
     }
 
     /// One-shot migration: drop legacy `color` enum column from map_stickies

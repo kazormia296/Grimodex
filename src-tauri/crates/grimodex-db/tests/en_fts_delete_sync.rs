@@ -40,14 +40,16 @@ const SYNCED: [(&str, &str); 5] = [
     ("post_effect_annotations", "post_effect_annotations_fts_en"),
 ];
 
-/// 旧形（guard 付き）の `_ad` trigger。#233 が外し漏れた 3 本を verbatim で持つ。
+/// 旧形（guard 付き）の `_ad` trigger。#233 が外し漏れた 3 本を verbatim で持つ。旧 build は
+/// `en_ad_unguarded` の旗を書かないので、旗も消す。
 const LEGACY_GUARDED_DELETE_TRIGGERS: &str = "\
 DROP TRIGGER chat_messages_fts_en_ad;
 CREATE TRIGGER chat_messages_fts_en_ad AFTER DELETE ON chat_messages WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = old.session_id)) LIKE 'en%' BEGIN DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid; END;
 DROP TRIGGER codex_fts_en_ad;
 CREATE TRIGGER codex_fts_en_ad AFTER DELETE ON codex_entries WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM codex_fts_en WHERE rowid = old.rowid; END;
 DROP TRIGGER snippets_fts_en_ad;
-CREATE TRIGGER snippets_fts_en_ad AFTER DELETE ON snippets WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END;";
+CREATE TRIGGER snippets_fts_en_ad AFTER DELETE ON snippets WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END;
+DELETE FROM fts_meta WHERE key = 'en_ad_unguarded';";
 
 /// 英語 project `pe`（session se1／se2／se3）と日本語 project `pj`（sj1）。
 ///
@@ -156,6 +158,57 @@ fn assert_en_matches_live_english_rows(db: &Database, label: &str) {
             "{label}: {fts} の行数が本体の英語の行数と違う"
         );
     }
+}
+
+/// FTS5 の segment（`*_data` の blob）に、削除済みの語が生のまま残っている block の数。
+/// `DELETE` は語を segment に残し、`optimize` の merge で初めて取り除かれる。
+fn data_blocks_with(db: &Database, fts: &str, term: &str) -> i64 {
+    count(
+        db,
+        &format!("SELECT count(*) FROM {fts}_data WHERE instr(block, CAST('{term}' AS BLOB)) > 0"),
+    )
+}
+
+fn en_ad_unguarded_flag(db: &Database) -> i64 {
+    count(
+        db,
+        "SELECT count(*) FROM fts_meta WHERE key = 'en_ad_unguarded' AND value = '1'",
+    )
+}
+
+/// 旧 build（master の `ensure_en_fts`）が full DDL で行う `_ad` trigger の処理を模す。
+/// `en_ad_unguarded` の旗が無ければ 5 本を DROP し、`CREATE TRIGGER IF NOT EXISTS` で旧形
+/// （chat／codex／snippets は guard 付き、tree_nodes／post_effect_annotations は guard なし）
+/// を入れる。旗があれば DROP せず、既存の trigger があるので CREATE は何もしない。
+fn replay_old_build_delete_trigger_ddl(db: &Database) {
+    if en_ad_unguarded_flag(db) == 0 {
+        exec(
+            db,
+            "DROP TRIGGER IF EXISTS codex_fts_en_ad;
+             DROP TRIGGER IF EXISTS snippets_fts_en_ad;
+             DROP TRIGGER IF EXISTS chat_messages_fts_en_ad;
+             DROP TRIGGER IF EXISTS tree_nodes_fts_en_ad;
+             DROP TRIGGER IF EXISTS post_effect_annotations_fts_en_ad;",
+        )
+        .expect("old build drops the delete triggers");
+    }
+    exec(
+        db,
+        "CREATE TRIGGER IF NOT EXISTS codex_fts_en_ad AFTER DELETE ON codex_entries
+           WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+         BEGIN DELETE FROM codex_fts_en WHERE rowid = old.rowid; END;
+         CREATE TRIGGER IF NOT EXISTS snippets_fts_en_ad AFTER DELETE ON snippets
+           WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+         BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END;
+         CREATE TRIGGER IF NOT EXISTS chat_messages_fts_en_ad AFTER DELETE ON chat_messages
+           WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = old.session_id)) LIKE 'en%'
+         BEGIN DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid; END;
+         CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_ad AFTER DELETE ON tree_nodes
+         BEGIN DELETE FROM tree_nodes_fts_en WHERE rowid = old.rowid; END;
+         CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_ad AFTER DELETE ON post_effect_annotations
+         BEGIN DELETE FROM post_effect_annotations_fts_en WHERE rowid = old.rowid; END;",
+    )
+    .expect("old build recreates the delete triggers");
 }
 
 fn en_hits(db: &Database, fts: &str, word: &str) -> i64 {
@@ -502,6 +555,150 @@ fn repair_on_a_japanese_only_database_changes_no_data() {
         trigram_before,
         "trigram の索引は変わらない"
     );
+}
+
+#[test]
+fn repair_rebuilds_the_en_index_when_a_reused_rowid_changed_language() {
+    // 英語の孤児 X の rowid を日本語 project J の行が再利用し、J を英語に変えた後の
+    // `_en` の作り直し（アプリ側の best-effort）が失敗・中断した状態。J の行は英語の行だが、
+    // `_en` にはその rowid に X の古い本文が居座り、J の本文は索引されていない。
+    // 孤児だけを `NOT IN` で消す掃除では、この古い行は「英語の行に対応する」ので残る。
+    let db = seeded();
+    exec(&db, LEGACY_GUARDED_DELETE_TRIGGERS).expect("install legacy guarded triggers");
+    exec(&db, "DELETE FROM chat_sessions WHERE id = 'se3'").expect("orphan the tail row");
+    exec(
+        &db,
+        "INSERT INTO chat_messages (id, session_id, role, content)
+           VALUES ('j2','sj1','assistant','japanese reuse marker');",
+    )
+    .expect("japanese row reuses the orphaned rowid");
+    exec(&db, "UPDATE projects SET language = 'en' WHERE id = 'pj'")
+        .expect("language change; the rebuild after it never ran");
+
+    assert_eq!(
+        en_hits(&db, "chat_messages_fts_en", "cipher"),
+        1,
+        "事前条件：古い本文"
+    );
+    assert_eq!(
+        en_hits(&db, "chat_messages_fts_en", "marker"),
+        0,
+        "事前条件：未索引"
+    );
+    assert_eq!(
+        stray_en_rows(&db, "chat_messages", "chat_messages_fts_en"),
+        0,
+        "事前条件：古い行は本体の英語の行に対応して見える（NOT IN の掃除では残る）"
+    );
+
+    db.migrate().expect("repair");
+
+    assert_eq!(
+        en_hits(&db, "chat_messages_fts_en", "cipher"),
+        0,
+        "古い本文は消える"
+    );
+    // 作り直しで、日本語から英語に変わった project の未索引の行も入る。
+    assert_eq!(en_hits(&db, "chat_messages_fts_en", "marker"), 2);
+    assert_eq!(en_hits(&db, "codex_fts_en", "Japanese"), 1);
+    assert_eq!(en_hits(&db, "snippets_fts_en", "Japanese"), 1);
+    assert_no_stray_en_rows(&db, "repair の後");
+    assert_en_matches_live_english_rows(&db, "repair の後");
+}
+
+#[test]
+fn repair_scrubs_deleted_text_from_the_fts_segments() {
+    let db = seeded();
+    // segment の語は前の語との共通接頭辞が省略されるので、探す語は他の語と接頭辞を共有しない
+    // 綴りにする。
+    exec(
+        &db,
+        "INSERT INTO chat_messages (id, session_id, role, content)
+           VALUES ('zc','se3','assistant','zzorphanchat');
+         INSERT INTO codex_entries (id, project_id, name, content)
+           VALUES ('zx','pe','Mmmname','zzorphancodex');
+         INSERT INTO snippets (id, project_id, title, content)
+           VALUES ('zs','pe','Nnntitle','zzorphansnip');",
+    )
+    .expect("rows carrying distinctive words");
+    exec(&db, LEGACY_GUARDED_DELETE_TRIGGERS).expect("install legacy guarded triggers");
+    // 旧形の trigger は、消した行の語を `_en` の segment に残す（行ごと孤児になる）。
+    exec(&db, "DELETE FROM chat_sessions WHERE id = 'se3'").expect("orphan a chat row");
+    exec(&db, "DELETE FROM projects WHERE id = 'pe'").expect("orphan codex and snippets");
+    for (fts, term) in [
+        ("chat_messages_fts_en", "zzorphanchat"),
+        ("codex_fts_en", "zzorphancodex"),
+        ("snippets_fts_en", "zzorphansnip"),
+    ] {
+        assert!(
+            data_blocks_with(&db, fts, term) > 0,
+            "事前条件：{fts} の segment に削除済みの語 {term} が残っている"
+        );
+    }
+
+    db.migrate().expect("repair");
+
+    // `optimize` が merge して、削除済みの語を segment から取り除く（VACUUM はしない）。
+    for (fts, term) in [
+        ("chat_messages_fts_en", "zzorphanchat"),
+        ("codex_fts_en", "zzorphancodex"),
+        ("snippets_fts_en", "zzorphansnip"),
+    ] {
+        assert_eq!(
+            data_blocks_with(&db, fts, term),
+            0,
+            "{fts} の segment に削除済みの語 {term} が残っている"
+        );
+    }
+    assert_no_stray_en_rows(&db, "repair の後");
+}
+
+#[test]
+fn repair_records_the_flag_that_keeps_old_builds_from_reguarding_the_triggers() {
+    // 新しく作る DB も、修復した DB も、旗を持つ。
+    let fresh = test_support::current_schema_memory().expect("fixture");
+    assert_eq!(en_ad_unguarded_flag(&fresh), 1, "新しい DB は旗を持つ");
+
+    let db = legacy_database_with_orphans();
+    assert_eq!(en_ad_unguarded_flag(&db), 0, "旧 build は旗を書かない");
+    db.migrate().expect("repair");
+    assert_eq!(en_ad_unguarded_flag(&db), 1, "repair が旗を書く");
+
+    // 旧 build の full DDL（旗があれば DROP しない、CREATE IF NOT EXISTS は何もしない）で
+    // 開いても、guard なしの形が保たれる。
+    replay_old_build_delete_trigger_ddl(&db);
+    assert!(
+        db.with_conn(has_en_fts_delete_triggers).expect("probe"),
+        "旧 build の full DDL が guard 付きに戻した"
+    );
+    assert!(db
+        .with_conn(has_current_schema_checkpoint_invariants)
+        .expect("checkpoint"));
+    // その後の cascade 削除でも孤児は出ない。
+    exec(&db, "DELETE FROM projects WHERE id = 'pe2'").expect("cascade delete");
+    assert_no_stray_en_rows(&db, "旧 build の full DDL の後");
+}
+
+#[test]
+fn old_build_full_ddl_without_the_flag_reguards_and_the_new_build_repairs_again() {
+    // 対照：旗が無ければ、旧 build の full DDL は guard 付きに戻す（旗が効いている証拠）。
+    // 新 build は旗に頼らず trigger の形で判定するので、往復しても修復される。
+    let db = legacy_database_with_orphans();
+    db.migrate().expect("repair");
+    exec(&db, "DELETE FROM fts_meta WHERE key = 'en_ad_unguarded'").expect("drop the flag");
+    replay_old_build_delete_trigger_ddl(&db);
+    assert!(
+        !db.with_conn(has_en_fts_delete_triggers).expect("probe"),
+        "旗が無いと旧 build は guard 付きに戻す"
+    );
+    assert!(!db
+        .with_conn(has_current_schema_checkpoint_invariants)
+        .expect("checkpoint"));
+
+    db.migrate().expect("the new build repairs again");
+    assert!(db.with_conn(has_en_fts_delete_triggers).expect("probe"));
+    assert_eq!(en_ad_unguarded_flag(&db), 1);
+    assert_no_stray_en_rows(&db, "往復の後");
 }
 
 /// 実際の typed writer（`native-current-human-capture` で有効になる）でも同じ性質が
