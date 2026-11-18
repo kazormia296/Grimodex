@@ -35,14 +35,15 @@ use flow::{execute, ChatIrResult};
 use ledger::Ledger;
 use native::NativeBackend;
 use permit::PermitPool;
-use request::{query_is_valid, Request};
+use request::{chronicle_event_ids_are_valid, query_is_valid, Request};
 use status::ChatIrStatus;
 
 /// The closed code of a call while the Native gate is closed. Not a status: it
 /// is an error, and nothing was audited, embedded or counted.
 pub(crate) const GATE_CLOSED: &str = "CHAT_IR_GATE_CLOSED";
 /// A request that is not the exact shape (an unknown or missing key, a wrong
-/// type).
+/// type, a candidate list that is too long, has an ID that is empty or too
+/// long, or repeats one).
 pub(crate) const INVALID_REQUEST: &str = "CHAT_IR_INVALID_REQUEST";
 
 /// The initial values (DR-CHATIR-S1-13 to 15, 23). Lowering one is a technical
@@ -112,6 +113,11 @@ pub(crate) async fn select(state: Arc<AppState>, payload: Value) -> Result<Strin
         return Err(anyhow!(GATE_CLOSED));
     }
     let request: Request = serde_json::from_value(payload).map_err(|_| anyhow!(INVALID_REQUEST))?;
+    // The candidate list is part of the request's shape: a violation is an
+    // error here, before the permit, never a status (S1-A2 DR-CHATIR-S1-41).
+    if !chronicle_event_ids_are_valid(&request.chronicle_event_ids) {
+        return Err(anyhow!(INVALID_REQUEST));
+    }
     let accepted_at = Instant::now();
     if !query_is_valid(&request.query) {
         return Ok(answer(ChatIrStatus::QueryInvalid));

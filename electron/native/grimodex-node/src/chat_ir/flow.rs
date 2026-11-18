@@ -6,6 +6,7 @@
 //! without a model and without a published Chronicle index (the shared crate's
 //! `ChatIrQuery` and `PendingTerminalAudit` cannot be made without one).
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -20,11 +21,28 @@ use super::status::ChatIrStatus;
 use super::tail::{run_tail, TailFlush, TailTiming};
 use super::ChatIrConfig;
 
-/// The answer. `items` is empty unless the status is `available`.
+/// What the third read (T3) yields besides the items, from the same snapshot
+/// (S1-A2).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Selection {
+    pub(crate) items: Vec<IrItem>,
+    /// revision ID -> the Chronicle event its payload names, only for the
+    /// revisions of `items` and only while that event exists (A1).
+    pub(crate) event_ids: BTreeMap<String, String>,
+    /// The candidates of the request that the IR admission rule excludes for
+    /// this query (A2), in the request's order. A subset of the request's
+    /// candidates.
+    pub(crate) excluded: Vec<String>,
+}
+
+/// The answer. `items` and `event_ids` are empty unless the status is
+/// `available`; `excluded` is read only when the status is a success.
 #[derive(Debug)]
 pub(crate) struct ChatIrResult {
     pub(crate) status: ChatIrStatus,
     pub(crate) items: Vec<IrItem>,
+    pub(crate) event_ids: BTreeMap<String, String>,
+    pub(crate) excluded: Vec<String>,
 }
 
 impl ChatIrResult {
@@ -32,16 +50,31 @@ impl ChatIrResult {
         Self {
             status,
             items: Vec::new(),
+            event_ids: BTreeMap::new(),
+            excluded: Vec::new(),
         }
     }
 
     /// `success` is true only for `available` and `none-above-threshold`, so an
     /// IR that could not be answered is never read as "no relevant scene".
+    ///
+    /// `excludedEventIds` is an array only on a success and `null` otherwise
+    /// ("not judged"): a failure never reads as "nothing was excluded"
+    /// (DR-CHATIR-S1-43). Whatever `excluded` holds on a failure is dropped
+    /// here, so the rule is in one place.
     pub(crate) fn to_wire(&self) -> Value {
+        let excluded = if self.status.is_success() {
+            json!(self.excluded)
+        } else {
+            Value::Null
+        };
+        let event_ids = json!(self.event_ids);
         json!({
             "status": self.status.as_str(),
             "success": self.status.is_success(),
             "items": items_wire(&self.items),
+            "eventIds": event_ids,
+            "excludedEventIds": excluded,
         })
     }
 }
@@ -107,6 +140,8 @@ pub(crate) trait Backend {
 
     /// T3: select, project and validate. Derives the language, the floor and
     /// the cap again and refuses when the language is not `first.language`.
+    /// The event IDs of the items and the excluded candidates are read in the
+    /// same transaction, before the validation, so they share the snapshot.
     #[allow(clippy::too_many_arguments)]
     fn select(
         &self,
@@ -116,7 +151,7 @@ pub(crate) trait Backend {
         batch: &Self::Batch,
         scores: Vec<f32>,
         deadline: Instant,
-    ) -> Result<Vec<IrItem>, ChatIrStatus>;
+    ) -> Result<Selection, ChatIrStatus>;
 
     /// The participant's stop request (a transition or a shutdown). An error
     /// reading it counts as a request.
@@ -174,13 +209,22 @@ fn run_steps<B: Backend>(
     };
     let batch = backend.qualify(request, &first.basis, &first.snapshot, deadline)?;
     let scores = backend.score(&query, &first.basis, &batch, deadline)?;
-    let items = backend.select(request, &first.basis, &query, &batch, scores, deadline)?;
+    let Selection {
+        items,
+        event_ids,
+        excluded,
+    } = backend.select(request, &first.basis, &query, &batch, scores, deadline)?;
     // An answer after the deadline is not returned, and nothing is issued.
     if Instant::now() >= deadline {
         return Err(ChatIrStatus::Timeout.into());
     }
     if items.is_empty() {
-        return Ok(ChatIrResult::status_only(ChatIrStatus::NoneAboveThreshold));
+        // A success that carries the exclusions: the year table needs them
+        // even when no IR item came back.
+        return Ok(ChatIrResult {
+            excluded,
+            ..ChatIrResult::status_only(ChatIrStatus::NoneAboveThreshold)
+        });
     }
     ledger
         .lock()
@@ -190,6 +234,8 @@ fn run_steps<B: Backend>(
     Ok(ChatIrResult {
         status: ChatIrStatus::Available,
         items,
+        event_ids,
+        excluded,
     })
 }
 

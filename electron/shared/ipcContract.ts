@@ -839,7 +839,8 @@ export interface NapiBackendLike {
    * chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR of the Scenes
    * before `currentSceneId` for a query the chat agent wrote, one-shot. Closed:
    * Main refuses it before this is called, and Native's gate refuses it before
-   * the payload is read. Answers `{ status, success, items }`.
+   * the payload is read. Answers the five keys `{ status, success, items, eventIds,
+   * excludedEventIds }` (S1-A2).
    */
   chatAgentIrSelect?(request: unknown): Promise<string>;
   /**
@@ -6818,11 +6819,26 @@ export interface NapiCommandSpec {
  */
 export const CHAT_AGENT_IR_QUERY_UTF16_MAX = 500;
 
+/**
+ * The Chronicle event IDs one `chat_agent_ir_select` request carries as
+ * candidates (S1-A2): at most 30 (the year table's own over-fetch bound), each
+ * 1 to 200 UTF-16 code units, none twice. Native checks the same and is the
+ * authority; `chatAgentIrWire.ts` holds the same values for the renderer.
+ */
+export const CHAT_AGENT_IR_CHRONICLE_IDS_MAX = 30;
+export const CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX = 200;
+
 function requireChatAgentIrSelectRequest(args: CommandArgs) {
   const command = "chat_agent_ir_select";
   requireExactKeys(
     args,
-    ["query", "projectId", "expectedWorkspacePath", "currentSceneId"],
+    [
+      "query",
+      "projectId",
+      "expectedWorkspacePath",
+      "currentSceneId",
+      "chronicleEventIds",
+    ],
     command,
   );
   const query = requireNonEmptyString(args, "query", command);
@@ -6834,6 +6850,27 @@ function requireChatAgentIrSelectRequest(args: CommandArgs) {
       `IPC_INVALID_REQUEST: ${command} query is empty or exceeds ${CHAT_AGENT_IR_QUERY_UTF16_MAX} UTF-16 code units`,
     );
   }
+  // The key is required: a missing key is not "no candidate" (an empty array is).
+  const chronicleEventIds = args.chronicleEventIds;
+  // A hole (`[, "a"]`) is refused: `every` skips it, `Object.keys` does not.
+  // An ID of only white space is refused with U+0085 included: Native's Rust
+  // `trim` counts it as white space, JS `trim` does not (the stricter side).
+  if (
+    !Array.isArray(chronicleEventIds) ||
+    chronicleEventIds.length !== Object.keys(chronicleEventIds).length ||
+    chronicleEventIds.length > CHAT_AGENT_IR_CHRONICLE_IDS_MAX ||
+    !chronicleEventIds.every(
+      (id) =>
+        typeof id === "string" &&
+        !/^[\s\u0085]*$/u.test(id) &&
+        id.length <= CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX,
+    ) ||
+    new Set(chronicleEventIds).size !== chronicleEventIds.length
+  ) {
+    throw new Error(
+      `IPC_INVALID_REQUEST: ${command} chronicleEventIds is not up to ${CHAT_AGENT_IR_CHRONICLE_IDS_MAX} distinct IDs of 1 to ${CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX} UTF-16 code units`,
+    );
+  }
   return {
     query,
     projectId: requireNonEmptyString(args, "projectId", command),
@@ -6843,6 +6880,7 @@ function requireChatAgentIrSelectRequest(args: CommandArgs) {
       command,
     ),
     currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
+    chronicleEventIds: [...(chronicleEventIds as readonly string[])],
   };
 }
 

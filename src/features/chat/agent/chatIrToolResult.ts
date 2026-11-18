@@ -17,6 +17,12 @@
  *   that cannot fit is dropped (`cap-exceeded`), never squeezed.
  * - A `note` that would push the content over the cap is left out; the status
  *   alone stays.
+ * - Merge (S1-A2b, DR-CHATIR-S1-44): an item whose event is also in the year
+ *   table is kept and the year table's entry is dropped. The merge is decided
+ *   for every trial of the item count, so an item the cap drops leaves its
+ *   year-table entry in place. Only a merged item gets its `eventId`, in
+ *   `chronicleIr.eventIds` (outside the item, so B-T4 holds). Without `merge`
+ *   the content is the same as before.
  *
  * Types only come from the wire file and `chatIrStatusText.ts`. This module
  * never imports the renderer's wrapper, not even as a type (closure test B-T6).
@@ -48,6 +54,8 @@ export interface ChatIrToolContent<TEvent> {
   readonly chronicleIr: {
     readonly status: ChatIrStatusForModel;
     readonly items: readonly ChatAgentIrItem[];
+    /** revisionId -> eventId, only for the items merged with a year-table event. */
+    readonly eventIds?: Readonly<Record<string, string>>;
     readonly note?: string;
   };
   readonly events: readonly TEvent[];
@@ -64,6 +72,21 @@ export interface ChatIrToolContentResult<TEvent> {
   readonly called: boolean;
   /** The items that are in the content (what `noteUsedIds` is given). */
   readonly items: readonly ChatAgentIrItem[];
+  /**
+   * revisionId -> eventId of the merged items: what the model was shown in
+   * `chronicleIr.eventIds` (`{}` when nothing was merged).
+   */
+  readonly eventIds: Readonly<Record<string, string>>;
+}
+
+/**
+ * How an item and a year-table entry are seen to be the same event. Absent:
+ * nothing is merged and no `eventIds` is added.
+ */
+export interface ChatIrMerge<TEvent> {
+  /** The event of an item's revision (Native's `eventIds`), if it has one. */
+  readonly eventIdOfItem: (item: ChatAgentIrItem) => string | undefined;
+  readonly eventIdOfEvent: (event: TEvent) => string;
 }
 
 /** What the fit needs from the wrapper's outcome (a structural subset). */
@@ -78,11 +101,13 @@ export function buildChatIrContent<TEvent>(
   items: readonly ChatAgentIrItem[],
   events: readonly TEvent[],
   note?: string | null,
+  eventIds?: Readonly<Record<string, string>>,
 ): ChatIrToolContent<TEvent> {
   return {
     chronicleIr: {
       status,
       items,
+      ...(eventIds && Object.keys(eventIds).length > 0 ? { eventIds } : {}),
       ...(note ? { note } : {}),
     },
     events,
@@ -93,7 +118,12 @@ function measure(content: unknown, countTokens: CountTokens): number {
   return countTokens(JSON.stringify(content));
 }
 
-function capExceeded<TEvent>(
+/**
+ * The `cap-exceeded` result for the given year table. `called` says whether
+ * Native was asked. Exported for the executor, which builds it from the
+ * year table it settled on (S1-A2b), not from the one the precheck measured.
+ */
+export function capExceededResult<TEvent>(
   events: readonly TEvent[],
   tokenCap: number,
   countTokens: CountTokens,
@@ -111,7 +141,7 @@ function capExceeded<TEvent>(
     measure(withNote, countTokens) <= tokenCap
       ? withNote
       : buildChatIrContent(status, [], events);
-  return { content, status, called, items: [] };
+  return { content, status, called, items: [], eventIds: {} };
 }
 
 /**
@@ -128,7 +158,7 @@ export function precheckChatIrContent<TEvent>(input: {
   const { events, tokenCap, countTokens } = input;
   const bare = buildChatIrContent("cap-exceeded", [], events);
   if (measure(bare, countTokens) < tokenCap) return null;
-  return capExceeded(events, tokenCap, countTokens, false);
+  return capExceededResult(events, tokenCap, countTokens, false);
 }
 
 /**
@@ -136,6 +166,11 @@ export function precheckChatIrContent<TEvent>(input: {
  * is over the cap, drop one item from the tail. When items were dropped and
  * none is left, the answer is `cap-exceeded` (called). A failure or an empty
  * answer carries its class note unless the note would exceed the cap.
+ *
+ * With `merge`, every trial of the item count builds its own year table: the
+ * entries of the events the first k items stand for are left out and those
+ * items get `chronicleIr.eventIds`. An item whose event is not in the year
+ * table is not merged and shows no eventId.
  */
 export function fitChatIrContent<TEvent>(input: {
   readonly outcome: ChatIrOutcomeShape;
@@ -144,47 +179,90 @@ export function fitChatIrContent<TEvent>(input: {
   readonly limit: number;
   readonly tokenCap: number;
   readonly countTokens: CountTokens;
+  readonly merge?: ChatIrMerge<TEvent>;
 }): ChatIrToolContentResult<TEvent> {
-  const { outcome, events, limit, tokenCap, countTokens } = input;
+  const { outcome, events, limit, tokenCap, countTokens, merge } = input;
   const itemLimit = Number.isFinite(limit)
     ? Math.min(Math.max(0, Math.floor(limit)), CHAT_AGENT_IR_MAX_ITEMS)
     : CHAT_AGENT_IR_MAX_ITEMS;
   const candidates = (outcome.items ?? []).slice(0, itemLimit);
   const note = chatIrStatusNote(outcome.status);
+  const tableIds = merge
+    ? new Set(events.map((event) => merge.eventIdOfEvent(event)))
+    : null;
+
+  // The year table and the eventIds of one item count (the merge).
+  const mergedFor = (items: readonly ChatAgentIrItem[]) => {
+    if (!merge || !tableIds) return { events, eventIds: {} };
+    const eventIds: Record<string, string> = {};
+    const gone = new Set<string>();
+    for (const item of items) {
+      const eventId = merge.eventIdOfItem(item);
+      if (eventId === undefined || !tableIds.has(eventId)) continue;
+      eventIds[item.revisionId] = eventId;
+      gone.add(eventId);
+    }
+    if (gone.size === 0) return { events, eventIds };
+    return {
+      events: events.filter((event) => !gone.has(merge.eventIdOfEvent(event))),
+      eventIds,
+    };
+  };
 
   // Tries the content of one item count: with the note, then without it.
   const attempt = (items: readonly ChatAgentIrItem[]) => {
-    const withNote = buildChatIrContent(outcome.status, items, events, note);
-    if (measure(withNote, countTokens) <= tokenCap) return withNote;
+    const merged = mergedFor(items);
+    const withNote = buildChatIrContent(
+      outcome.status,
+      items,
+      merged.events,
+      note,
+      merged.eventIds,
+    );
+    if (measure(withNote, countTokens) <= tokenCap) {
+      return { content: withNote, eventIds: merged.eventIds };
+    }
     if (!note) return null;
-    const bare = buildChatIrContent(outcome.status, items, events);
-    return measure(bare, countTokens) <= tokenCap ? bare : null;
+    const bare = buildChatIrContent(
+      outcome.status,
+      items,
+      merged.events,
+      null,
+      merged.eventIds,
+    );
+    return measure(bare, countTokens) <= tokenCap
+      ? { content: bare, eventIds: merged.eventIds }
+      : null;
   };
   const result = (
     content: ChatIrToolContent<TEvent>,
     items: readonly ChatAgentIrItem[],
+    eventIds: Readonly<Record<string, string>>,
   ): ChatIrToolContentResult<TEvent> => ({
     content,
     status: outcome.status,
     called: true,
     items,
+    eventIds,
   });
 
   if (candidates.length === 0) {
     // Nothing to drop. If even the status does not fit, the agent loop's own
     // truncation takes over (the events are what use the cap).
-    const content =
-      attempt(candidates) ??
-      buildChatIrContent(outcome.status, candidates, events);
-    return result(content, candidates);
+    const fitted = attempt(candidates);
+    return result(
+      fitted?.content ?? buildChatIrContent(outcome.status, candidates, events),
+      candidates,
+      {},
+    );
   }
   // The tail goes one at a time (at most 8 attempts). While at least one item
   // is left the status stays Native's.
   for (let count = candidates.length; count >= 1; count -= 1) {
     const items = candidates.slice(0, count);
-    const content = attempt(items);
-    if (content) return result(content, items);
+    const fitted = attempt(items);
+    if (fitted) return result(fitted.content, items, fitted.eventIds);
   }
   // Items were dropped and none is left: the IR did not fit.
-  return capExceeded(events, tokenCap, countTokens, true);
+  return capExceededResult(events, tokenCap, countTokens, true);
 }

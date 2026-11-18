@@ -392,3 +392,85 @@ PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数�
 - **固定するもの**：各 case の結果（順、または error の前置きと理由）が fixture の `rust` 欄と一致すること。行の並び（fixture 順・逆順・id 昇順）に依らないこと。order の case で rank が順の index と一致すること。
 - **fixture の追加**：mixed-case の sortOrder、archived の行との sortOrder の重複、親の cycle の 3 case（計 11 case、rejected 7）。
 - **固定しないもの**：TS と Rust の同時の実行、tree を読む時点の差（DB の snapshot 対 renderer の tree store）。これで G6 (c) の条件 1〜3 は両側とも試験で固定された。
+
+## S1-A2b の判断（A1・A2。年表の event の重複の統合と、IR の規則で除かれた event の除外。定数 `false` のまま）
+
+**この lane は NIR-1 の事前委任の外**。確認の根拠は、ユーザーの回答（2026-11-18 夜）：ず-1（規則どおり実装する。△7 (4) と重複の統合の両方）・A2（候補の eventId を request に渡す。契約 §3.2 の入力の追加は承認済み）・D1（§3.3 どおり送る。item の 9 key は変えない）・Q1（d-i）・Q2（折衷）・Q3（脅威モデルの差分 T17〜T20 を受け入れる）。記録は contracts の `ir-chat-pilot-2026-11/user-confirmation-2026-11-18-eventid-d1-fidelity.md`（commit `001bbcc9`・`ec05294c`）。設計の正本は repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/s1a2-design-2026-11-18.md`（冒頭の「§0.2 の Q1〜Q3 への回答」と末尾の「統合者の判断」が本文より優先）。
+`CHAT_AGENT_IR_ENABLED = false` のまま。定数が `false` の間の製品の挙動は変わらない（`search_events` は今と byte 同一。試験 E10 の golden で固定）。
+3 つの commit に分けた：c1 共有 crate（P1〜P3、R1〜R4、測定 MS-1・MS-2）、c2 N-API・Main・wire・wrapper（P4〜P14）、c3 renderer の executor（P15〜P18）と試験 E。
+DR-CHATIR-S1-39（読み順の cargo 試験）は PR-A2a のもの。この PR には含まない。
+
+## DR-CHATIR-S1-40：A1 の出所（案 α）と応答の `eventIds`（2026-11-19）
+
+- **決定**：revision の payload の `eventId` と、`events` の行の実在（project 一致）を突き合わせる。共有 crate に小さな read を置き、Native の T3（`select`）の read transaction の中、`validate` の前に呼ぶ（item と `eventIds` が同じ snapshot に入る）。対象は返す item の revision だけ（8 件以下）。関数は `read_chronicle_event_ids_of_revisions`（payload が不正な JSON の行は eventId なしとして扱う）。応答の top-level に `eventIds`（revisionId → eventId の object）を足す。**常にある**（status だけの応答でも `{}`）。
+- **変えないもの**：item の 9 key・canonical・digest・ledger（B-T4）。SQL の失敗は T3 のエラー（`internal`）で、item も返さない（fail-closed）。
+- **採らなかった案**：applications 表から引く（改訂 3 の B-20。undo で applications が動かないため、適用が戻った event を拾う）。
+
+## DR-CHATIR-S1-41：request の `chronicleEventIds`（2026-11-19）
+
+- **決定**：5 つ目の key `chronicleEventIds: string[]` を**必須**で足す（空の配列は可。optional にすると「送らなかった」と「候補 0 件」が区別できない）。件数 30 以下（年表の over-fetch の上限と同じ）、1 件は 1〜200 UTF-16（空白だけは不可）、重複なし。Main と Native の両方で検査し、違反は `INVALID_REQUEST`（permit の前なので audit も推論もしない）。status は増やさない（17 値のまま）。renderer の wrapper は同じ検査を IPC の前に繰り返し、違反は `ipc-error`（programming error の扱い）。
+- **候補の扱い**：log・audit・ledger に入れない。別の project の ID は SQL が project で JOIN するので「当たらない」だけ。
+- **renderer の送る中身（c3）**：秘匿の filter と位置の filter の後で `slice(limit)` の前の年表の候補（30 件以下、重複を除く）だけ。wire の 1 件の条件（空白だけでない・200 UTF-16 以下）に合わない ID と 30 件を超える分は送らない（1 つ混じると wrapper が IPC の前に `ipc-error` で拒み、Native を呼ばずに (4) を失うため。送らなかった event は年表に残る。DB 由来の ID では起きない見込み）。秘匿で隠れた event と、位置の filter で落ちた event の ID は送らない（承認の文言）。
+
+## DR-CHATIR-S1-42：「除かれた」の範囲（d-i）・T2 の admission の記録・T3 の逆引き・c1 の測定（2026-11-19）
+
+- **範囲（Q1 の回答＝d-i）**：△7 (4) の「IR の規則で除かれた」は、**索引に入っていて、問い合わせの時点の開示の判定（admission）で落ちたもの**に限る。索引に入っていない revision（未承認・stale・版の secret など）は含めない（`NotIndexed` は除かない）。embedding が無いだけの candidate は、admission を別に評価し、通れば「除かれていない」。
+- **T2**：`qualify_proof` が全 candidate の admission の結果を **proposal の単位**で記録し、`NirQualifiedBatch::proposal_admission`（`Admitted`・`NotAdmitted`・`NotIndexed`）で返す（鍵は revision ではなく proposal。build の後に現行の版が変わっても、proof の版の判定で分類できる）。`documents` の中身と順は変えない（Related Scenes は不変）。
+- **T3**：`read_chronicle_excluded_event_ids` が、候補の eventId から現行の版の payload で提案を引き、proof の記録と突き合わせる。1 つの eventId に複数の提案が当たる場合は、1 つでも `NotAdmitted` なら除く（厳しいほう）。
+- **c1 の測定の結果（2026-11-19、判定の線は決めない）**
+  - commit `c77e5153`（＋レビューの修正 `615d3f4b`）。DB は dev 用の `ir-admission-perf/base-g-ja-1/ir/grimodex.db` の写し（sha256 `41a26bbe…7958`、提案 884、scene 117、events 0）。凍結の manifest に名は無い。元は sqlite で開かず、`-wal` が 0 byte のことを確かめて cp。
+  - **MS-1（`qualify_proof` の時間、release、300 回、3 周の p50 の比）**
+    - embedding が全件ある形：scene の doc 数 0〜873 で 1.02〜1.13 倍（絶対値の増は最大でおよそ 0.2 ms。min 同士では +1〜4％）。周ごとのばらつきは約 10％。
+    - 半分が embedding なし：1.39〜1.53 倍（#116 で 0.86–0.90 → 1.31–1.34 ms）。
+    - 全件が embedding なし：前は約 0.002 ms（評価せず skip）、後は最大 1.2〜1.4 ms（全件評価の費用）。
+    - 実運用で embedding なし（token 上限の skip）がどれだけあるかは未測定。Electron 経由の端から端までも未測定。
+  - **MS-2（逆引き SQL、候補 30 件、debug の test build、300 回）**
+    - A2：p50 は約 1.5〜2.0 ms、max は 3.8 ms。`EXPLAIN QUERY PLAN` は `narrative_proposals` の全行の SCAN（行ごとに `json_extract`）→ PK の SEARCH。件数に線形の見込みで、884 より大きい DB は未測定。
+    - A1（8 revision）：p50 は 0.03 ms。PK の検索だけ。events 0 件の DB なので、当たる場合は未測定。
+    - 並べる値：呼び出し全体の deadline 10 s、`SQL_BUSY_TIMEOUT` 1 s。
+  - harness は commit していない。
+
+## DR-CHATIR-S1-43：応答の `excludedEventIds` の意味（2026-11-19）
+
+- **決定**：top-level の `excludedEventIds` は、成功（`available`・`none-above-threshold`）のときだけ配列、それ以外は `null`（**判定していない**）。`ledger-full`・T3 の後の `timeout` も `null`（規則を「成功のときだけ」の 1 つに保つ）。配列は送った候補の部分集合で、検査は wrapper が行い、違反は `invalid-response`（T19）。`eventIds` の key は items の revisionId の部分集合（parser が検査）。
+
+## DR-CHATIR-S1-44：renderer の手順（P15〜P18。c3）（2026-11-19）
+
+- **候補**：共有の `searchEvents` を `chronicleCandidates`（秘匿 → 位置の filter の後、`slice(limit)` の前の列。30 件以下）と、`slice(limit)` の写しに分ける。await の順は変えない（scope が無い呼び手は、基準の Scene を await の後で読む。DR-34）。
+- **順**（直列。B-T13）：候補 → 事前判定（暫定の年表で測る）→ 累積の上限 → Native を 1 回（候補を渡す）→ `assertCurrent()` → 除外 → `slice(limit)`（落とした分は後ろの候補で補う）→ cap と統合 → `noteUsedIds` → content。
+- **統合**：年表と IR に同じ eventId があれば、**IR の item を残し、年表の 1 件を落とす**（quote・要約は IR にしか無く、item は ledger に発行済み）。失うのは作者が直した年表の題と kind で、必要なら model が `get_event_detail` で引ける。統合は **cap の試行（item の件数 k）ごと**に決める（`fitChatIrContent` に `merge` を渡す）。cap で落ちた item の対の年表の event は残る。統合で浮いた tokens は同じ試行の中で使える。統合で除いた分は補充しない。統合するのは、model に見せる年表（`slice` の後）に実際にある event の item だけ。
+- **model に見せる eventId**：統合した item に限り、content の `chronicleIr.eventIds`（revisionId → eventId）に載せる（item の外なので B-T4 に反しない。cap の測定に含める。key の順は `status`・`items`・`eventIds`・`note`）。統合しなかった item の eventId は見せない（年表の秘匿・位置で隠れた event の ID を IR の側から model に渡さない）。統合がなければ content は B2 と同一。
+- **`usedIds.eventIds`**：統合した item の eventId と同じ集合（model が見たものだけ。重複は 1 つ）。`ChatIrCapability.noteUsedIds` の第 3 引数 `eventIds` として渡す。`chatTurnStoreActions.ts` は変えない。
+- **`summary`**：`manuscript ${items}, chronicle ${content の年表の件数}`。統合の後の件数（B2 は暫定の年表の件数。統合がなければ同じ）。
+- **ツールの説明文**：変えない。`chronicleIr.eventIds` の説明は足していない（key が revisionId → eventId で自明。足す場合は AI の挙動資産の変更として別に評価する。S3 の前の再評価の材料）。
+
+## DR-CHATIR-S1-45：除外が得られないときの年表（Q2＝折衷）と近似の規則（2026-11-19）
+
+- **近似の規則**：secret の event について、「結ばれた Scene がすべて今の Scene より前」のときだけ残す（契約 §3.4 (3) の案 A）。`passesIrExclusionApproximation`（`chronicleReadingPosition.ts`。`isEventBeforeOrAtScene` の隣）。secret でない event には掛けない。結ばれた Scene が読み順に無いもの、今の Scene が空・読み順に無いものは残さない（fail-closed）。結ばれた Scene が 1 つも無い secret の event は残す（IR 由来の event は作成の時点では常に結びを持つので、これで (4) を広げない）。**残余**：この「常に結びを持つ」は作成の時点でしか成り立たない。作者の編集や `unstamp_scene_event` で結びが外れうるので、結びの無い secret の event が近似を通る穴は残る（(4) が使えるときは Native の除外が正本）。
+- **掛ける位置**：(4) と同じ（秘匿 → 位置の filter の後、`slice(limit)` の前。落とした分は後ろの候補で補う）。cap は年表の後で測るので測り直しは要らない。
+- **Native を呼ばず、近似の規則を掛ける（model が起こせる不明）**：事前判定の `cap-exceeded`（呼ばなければ (4) は掛からないので、cap と逆向きになる。事前判定は暫定の年表＝近似の前で測る）、呼ぶ前の `turn-limit`（回数・文字数の上限）、renderer の `query-invalid`。Native が返す `query-invalid`（除外が無い）と `ledger-full` も同じ（次項）。
+- **`ledger-full` は近似の側**（統合者の判断、2026-11-19。Q2 の確定「model が起こせる経路には近似の規則」の適用で、新しい契約ではない）：Native の ledger は 4096 件で追い出しが無く（`chat_ir/ledger.rs`）、item の digest は query に依る score を含む。そのため model は query を変え続けて ledger を満たせる。満ちると `ledger-full` が process の終わりまで続く。これを U-a に置くと、満杯にした後は (4) も近似も掛からず T20 の経路そのものになる。Native が答えて除外が `null` の `ledger-full` は、`query-invalid` と同じく近似の規則を掛ける（応答に除外の配列があれば (4)。`ledger-full` は DR-43 のとおり常に `null`）。
+- **research sub-agent**（統合者の技術判断。Q2 の趣旨の内）：sub-agent の `search_events` は IR を呼ばないので除外は常に不明で、結果（`findings`）は main の model に返る。共有の `searchEvents` の中で、**定数が true で turn の scope があるときだけ**近似の規則を掛ける。scope が無い呼び手と、定数 `false` には掛けない。
+- **Native が答えた後は本来の (4)**：Native が答えた後に turn の文字数の枠で 0 件になった（`turn-limit`）場合や、item が cap に入らず `cap-exceeded` になった場合は、除外の配列が手元にあるので近似ではなく (4) を掛ける。近似の規則は (4) の代わりで、得た結果は使う。
+- **(4) も近似も掛けない（U-a）**：一時的・構造的な失敗（`timeout`・`connection-busy`・`embedder-cold`・`busy`・`index-unavailable`・`unsupported`・`no-current-scene`・`project-*`・`workspace-*`・`inference-failed`・`internal`、renderer の `ipc-*`・`caller-timeout`・`invalid-response`・`no-workspace`・`no-current-scene`・`gate-closed`・`egress-denied`）。今の年表のまま返す（G3-U11：IR が失敗しても年表を失わない）。成功のときに除かれた event が、これらの失敗のときには出る穴は残る（実データの g-ja-1 では applications が 0 件で、IR 由来の event が無い）。
+- **範囲**：(4) と近似の規則が掛かるのは `search_events` だけ（契約 §3.4 (5)・§6.2）。`get_chronicle_state` などの別の tool には掛けない（試験 E8 が、近似の関数を import する source が 2 つだけであることを固定する）。
+- **未測定**：近似の規則が通常の運用で掛かる頻度。小さい窓や大きい `limit` では通常の呼び出しでも事前判定の `cap-exceeded` に当たりうる。そのとき、作者が今の Scene に結んだ secret の event が AI から見えなくなる。dev で測り、S3 の確認の材料にする。
+
+## DR-CHATIR-S1-46：脅威モデルの差分（T17〜T20。Q3 で受入れ済み）（2026-11-19）
+
+記録先：確認の記録は contracts の `user-confirmation-2026-11-18-eventid-d1-fidelity.md`（commit `001bbcc9`・`ec05294c`）。差分の本文は repo の外の設計の正本 §6.2。repo 内に脅威モデルの記録は無いので、要点をここに書く。確認済みの脅威モデルの文（`357a87b7`）は書き換えない。
+
+- **データの流れ**：候補の eventId（30 以下）は renderer → Main → Native の中の受け渡しで、どこにも残さず外へ出ない。`excludedEventIds` も同じ（model は「出なかった」ことしか見ない）。`eventIds` は、統合した分だけ `usedIds.eventIds`（承認 2 の ID の範囲）と content の `chronicleIr.eventIds`（既存の provider へ。D1「あれば eventId」）に載る。**新しい送信先・保存範囲の拡大は無い**。年表の結果で eventId は今も送っている。
+- **B1・B2（信頼境界）**：新しい引数を Main と Native の両方で検査する（DR-41）。actor・範囲の区分は変えない。
+- **T17：候補の ID による問い合わせ（oracle）**：任意の eventId を送り、その event の現行の版が Scene S の時点で IR に落とされるかを知る。乗っ取られた renderer は範囲外（generic SQL で直接読める）。model は候補を選べない（候補は executor が DB の検索結果から作る）。1 回 30 件。restricted では command ごと拒否。
+- **T18：候補の水増しによる遅延**：30 件と ID の長さで縛る。SQL は `IN` の 1 文で、期限と busy timeout の内に入る。
+- **T19：応答の drift による誤った除去**：`excludedEventIds` が送った候補の部分集合でない場合、または `eventIds` の key が items に無い場合は `invalid-response`。
+- **T20：model が除外の不明を起こし、(4) を回避する**：prompt injection された model（範囲内の actor）が、`limit` を大きくする（事前判定の `cap-exceeded`）・1 turn に 6 回を超えて呼ぶ（`turn-limit`）・空や 500 超の query・research の sub-agent を呼ぶ、・query を変え続けて Native の ledger を満たす（`ledger-full`。満ちた後は process の終わりまで続く）、で除外が得られない経路に入る。防御は DR-45（secret の event に近似の規則）。一時的・構造的な失敗は U-a（(4) も近似も掛けない）。秘匿と位置の filter はどの経路でも掛かる。
+- **T4・T14**：変わらない（統合は item を書き換えない）。(4) と近似が `search_events` だけに掛かること、model に対する機密の境界ではないことは、契約 §3.4 (5) のまま。
+- **受入れへの影響**：(4) の positive／negative、Q1（d-i。`NotIndexed` は除かない）、除外が不明のときの扱い、wire の部分集合の検査を、試験（R・N・W・E）で固定する。
+
+## DR-CHATIR-S1-47：PR の切り方と、build の時に eventId を持たせる案を採らない理由（2026-11-19）
+
+- **切り方**：PR-B2 → PR-A2a → PR-A2b の順（A2a は読み順の cargo 試験で、A2b と互いに依らない）。A2b は 3 commit（c1 共有 crate、c2 wire、c3 executor）。wire は request の key・`to_wire`・parser・B-T1 のどれか 1 つだけを変えるともう片側が拒否するので、c2 で同時に変える。`toolExecutors.ts` に足す量が大きいが `large-module-debt.json` の対象外。`chatTurnStoreActions.ts` には触れない。
+- **採らなかった案**：build の時に candidate に eventId を持たせる（`IndexedCandidate`）。T3 の SQL は要らなくなるが、build の入力と proof の形を変える（digest と CP-4 の pin への波及の確認が大きい）。proof に無い revision を扱えず、d-ii も実装できない。
+- **検証（c3）**：`pnpm exec tsc --noEmit`、renderer の vitest（`toolExecutors.chatIr.test.ts`・`chatIrToolResult.test.ts`・`chronicleReadingPosition.test.ts`・`chatAgentToolHandlers.test.ts`）、`pnpm validate:architecture`、`verify:quality`、`eval:impact`（Light）。Heavy は課金があるので走らせない（deferred）。
