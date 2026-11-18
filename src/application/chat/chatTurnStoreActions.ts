@@ -43,9 +43,12 @@ import {
   MAX_RATE_LIMIT_RETRIES,
   aiFailureToastText,
   classifyError,
+  createAssistantRowReservation,
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
+  isSendableHistoryMessage,
+  parseMetadataRecord,
   turnErrorText,
 } from "./chatStoreSupport";
 import {
@@ -810,6 +813,16 @@ function createChatTurnStoreActions(
         let sentAgentContextLayers: LayerBreakdown[] = [];
         let sentAgentContextTokenCount: number | null = null;
         let currentAgentModel = "";
+        // 出典に assistant message を使う書き込み tool の直前に行を作る（詳細は module）。
+        const assistantRow = createAssistantRowReservation({
+          chatApi,
+          getSessionId: () => sessionIdForPersist,
+          message: assistantMsg,
+          getMessages: () => get().messages,
+          assertCurrent: assertTurnAuthority,
+          debugLog,
+          errorDetail,
+        });
         const canFinalizeStoppedAgentTurn = (): boolean =>
           sendControl.aborted && isCurrentTurn() && transportStarted;
         const finalizeStoppedAgentTurnAfterTransport =
@@ -819,21 +832,7 @@ function createChatTurnStoreActions(
             const assistant = get().messages.find(
               (message) => message.id === assistantMsg.id,
             );
-            let metadata: Record<string, unknown> = {};
-            if (assistant?.metadata) {
-              try {
-                const parsed = JSON.parse(assistant.metadata);
-                if (
-                  parsed &&
-                  typeof parsed === "object" &&
-                  !Array.isArray(parsed)
-                ) {
-                  metadata = parsed as Record<string, unknown>;
-                }
-              } catch {
-                metadata = {};
-              }
-            }
+            const metadata = parseMetadataRecord(assistant?.metadata);
             const stoppedMetadata = JSON.stringify({
               ...metadata,
               stopped: true,
@@ -904,20 +903,15 @@ function createChatTurnStoreActions(
                   }
                 },
                 ...(sessionIdForPersist &&
-                latestAssistant?.role === "assistant" &&
-                latestAssistant.content
+                (latestAssistant?.content || assistantRow.reserved)
                   ? {
                       persistAssistant: async () => {
-                        await chatApi.addMessage(
+                        await assistantRow.persist(
                           sessionIdForPersist,
-                          "assistant",
-                          latestAssistant.content,
+                          latestAssistant?.content ?? "",
                           {
-                            id: assistantMsg.id,
                             model: currentAgentModel || undefined,
                             metadata: stoppedMetadata,
-                            createdAt: assistantMsg.createdAt,
-                            recordTimelapse: false,
                           },
                         );
                         await commitAssistantReplacement();
@@ -987,7 +981,8 @@ function createChatTurnStoreActions(
             (message) =>
               message.id !== userMsg.id &&
               message.id !== assistantMsg.id &&
-              !message.isSummarized,
+              !message.isSummarized &&
+              isSendableHistoryMessage(message),
           );
 
           const agentMsgs: AgentMessagePayload[] = [];
@@ -1190,6 +1185,12 @@ function createChatTurnStoreActions(
               fullyInjectedIds,
             );
             if (injectedEntryResult) return injectedEntryResult;
+            const failed = await assistantRow.before(
+              name,
+              toolCallId,
+              !!authorization,
+            );
+            if (failed) return failed;
             return authorization
               ? executeTool(name, toolCallId, params, {
                   ...authorization,
@@ -1484,22 +1485,17 @@ function createChatTurnStoreActions(
               }
             },
             ...(sessionIdForPersist &&
-            lastMsg?.role === "assistant" &&
-            lastMsg.content
+            (lastMsg?.content || assistantRow.reserved)
               ? {
                   persistAssistant: async () => {
-                    await chatApi.addMessage(
+                    await assistantRow.persist(
                       sessionIdForPersist,
-                      "assistant",
-                      lastMsg.content,
+                      lastMsg?.content ?? "",
                       {
-                        id: assistantMsg.id,
                         model: agentModel,
                         tokensIn: agentTokensIn ?? undefined,
                         tokensOut: agentTokensOut ?? undefined,
                         metadata: finalAgentMetadata,
-                        createdAt: assistantMsg.createdAt,
-                        recordTimelapse: false,
                       },
                     );
                     await commitAssistantReplacement();
@@ -1630,6 +1626,7 @@ function createChatTurnStoreActions(
           const kind = classifyError(e);
           const msg = e instanceof Error ? e.message : String(e);
           if (!transportStarted) removeOwnedTurnMessages();
+          await assistantRow.finalizeAfterFailure(e, msg, currentAgentModel);
           if (kind === "auth") {
             toast.error(i18next.t("chat.invalidApiKey"));
           } else if (kind === "network") {
@@ -1759,7 +1756,9 @@ function createChatTurnStoreActions(
 
         // APIペイロードを構築（要約済みメッセージを除外）
         const messagesForApi: ChatMessage[] = [
-          ...priorHistoryMessages.filter((message) => !message.isSummarized),
+          ...priorHistoryMessages.filter(
+            (m) => !m.isSummarized && isSendableHistoryMessage(m),
+          ),
           userMsg,
         ];
 

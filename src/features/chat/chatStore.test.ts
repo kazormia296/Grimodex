@@ -275,6 +275,14 @@ vi.mock("@/features/snippets/api", () => ({
   getSnippet: vi.fn(() => Promise.resolve(undefined)),
 }));
 
+const { mockAgentCreateSnippet } = vi.hoisted(() => ({
+  mockAgentCreateSnippet: vi.fn(),
+}));
+vi.mock("@/features/agent-writes/snippet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/agent-writes/snippet")>()),
+  agentCreateSnippet: mockAgentCreateSnippet,
+}));
+
 vi.mock("@/features/map/mapApi", () => ({
   getMapBoard: vi.fn(() => Promise.resolve(null)),
   listStickies: vi.fn(() => Promise.resolve([])),
@@ -6485,6 +6493,169 @@ describe("useChatStore", () => {
         expect(mockSendAgentMessage).not.toHaveBeenCalled();
         expect(useChatStore.getState().error).toContain("gemma4:latest");
         expect(useChatStore.getState().error).toContain("/api/show");
+      });
+    });
+
+    describe("assistant row reserved for a source-bearing write tool", () => {
+      const setupAgentTurn = () => {
+        useAiSettingsStore.setState({
+          settings: {
+            ...DEFAULT_AI_SETTINGS,
+            provider: "openrouter",
+            model: "openrouter/anthropic/claude-sonnet-4.6",
+          },
+        });
+        useChatStore.setState({
+          sessions: [session1],
+          activeSessionId: session1.id,
+          messages: [],
+          agentMode: true,
+          sessionAgentToolsSnapshot: null,
+        });
+        // 実 DB の `chat_messages` と同じく、保存された行だけが「保存済み」。Rust の
+        // source 検証（snippet／agent_writes）と codex_entries／snippets の FK は、
+        // この集合に無い id を拒否する。
+        const rows = new Map<string, { role: string; content: string }>();
+        const events: string[] = [];
+        vi.mocked(chatApi.addMessage).mockImplementation(
+          async (sessionId, role, content, extra) => {
+            const id = extra?.id ?? crypto.randomUUID();
+            const replace = extra?.replaceReservedAssistant === true;
+            events.push(`${replace ? "replace" : "add"}:${role}`);
+            if (replace && rows.get(id)?.role !== "assistant") {
+              throw new Error("reserved row not found");
+            }
+            rows.set(id, { role, content });
+            return {
+              id,
+              sessionId,
+              role,
+              content,
+              createdAt: extra?.createdAt ?? "2026-01-01T00:00:00.000Z",
+            } as ChatMessage;
+          },
+        );
+        return { rows, events };
+      };
+      const toolUseResponse =
+        (name: string, capture: { id?: string }) =>
+        async (...args: unknown[]) => {
+          capture.id = (args[2] as { chatMessageId?: string }).chatMessageId;
+          return {
+            blocks: [
+              { type: "tool_use", id: "tool-1", name, input: { title: "t" } },
+            ],
+            stopReason: "tool_use",
+            // Main は sendAgentMessage に渡された chatMessageId をそのまま
+            // capability の chatMessageId にする（ipc.ts）。
+            agentAuthorityCapabilities: {
+              "tool-1": {
+                capability: "cap-1",
+                executionId: "exec-1",
+                chatMessageId: capture.id ?? "",
+                mainOwnedProvenanceId: "prov-1",
+              },
+            },
+          } as never;
+        };
+      afterEach(() => {
+        vi.mocked(chatApi.addMessage).mockReset();
+        mockAgentCreateSnippet.mockReset();
+      });
+
+      it("reserves the assistant row before create_snippet and finalizes it by UPDATE", async () => {
+        const { rows, events } = setupAgentTurn();
+        let toolSourceId: string | null | undefined;
+        let sourceSavedAtToolTime: boolean | null = null;
+        let eventsAtToolTime: string[] = [];
+        mockAgentCreateSnippet.mockImplementation(
+          async (_input: unknown, chatMessageId?: string | null) => {
+            toolSourceId = chatMessageId;
+            sourceSavedAtToolTime = rows.has(chatMessageId ?? "");
+            eventsAtToolTime = [...events];
+            return { id: "snippet-1", title: "t" };
+          },
+        );
+        const sent: { id?: string } = {};
+        mockSendAgentMessage
+          .mockImplementationOnce(toolUseResponse("create_snippet", sent))
+          .mockResolvedValueOnce({
+            blocks: [{ type: "text", content: "done" }],
+            stopReason: "end_turn",
+          });
+
+        await useChatStore.getState().sendMessage("スニペットを作って");
+
+        expect(mockAgentCreateSnippet).toHaveBeenCalledOnce();
+        expect(sent.id).toBeTruthy();
+        expect(toolSourceId).toBe(sent.id);
+        // tool の実行時点で、出典の assistant 行は保存済み。
+        expect(sourceSavedAtToolTime).toBe(true);
+        // user の行は tool の時点では作らない（NIR-1 の user INSERT の時点を保つ）。
+        expect(eventsAtToolTime).toEqual(["add:assistant"]);
+        // 完了時の保存は、同じ id の assistant 行を最終の内容へ UPDATE する。
+        expect(events).toEqual([
+          "add:assistant",
+          "add:user",
+          "replace:assistant",
+        ]);
+        expect(rows.get(sent.id ?? "")).toEqual({
+          role: "assistant",
+          content: "done",
+        });
+        expect(chatApi.addMessage).toHaveBeenLastCalledWith(
+          session1.id,
+          "assistant",
+          "done",
+          expect.objectContaining({
+            id: sent.id,
+            replaceReservedAssistant: true,
+          }),
+        );
+      });
+
+      it("keeps the reserved row with the partial content when the turn fails after the tool", async () => {
+        const { rows, events } = setupAgentTurn();
+        mockAgentCreateSnippet.mockResolvedValue({ id: "s", title: "t" });
+        const sent: { id?: string } = {};
+        mockSendAgentMessage
+          .mockImplementationOnce(toolUseResponse("create_snippet", sent))
+          .mockRejectedValueOnce(new Error("provider down"));
+
+        await useChatStore.getState().sendMessage("スニペットを作って");
+
+        expect(mockAgentCreateSnippet).toHaveBeenCalledOnce();
+        // user の行は作られず、出典の assistant 行だけが残る。
+        expect(events).toEqual(["add:assistant", "replace:assistant"]);
+        expect(rows.get(sent.id ?? "")?.role).toBe("assistant");
+        expect(chatApi.addMessage).toHaveBeenLastCalledWith(
+          session1.id,
+          "assistant",
+          expect.any(String),
+          expect.objectContaining({
+            id: sent.id,
+            replaceReservedAssistant: true,
+            metadata: expect.stringContaining("provider down"),
+          }),
+        );
+      });
+
+      it("does not reserve a row for a turn without a source-bearing write tool", async () => {
+        const { events } = setupAgentTurn();
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "plain" }],
+          stopReason: "end_turn",
+        });
+
+        await useChatStore.getState().sendMessage("調べて");
+
+        expect(events).toEqual(["add:user", "add:assistant"]);
+        expect(chatApi.addMessage).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.objectContaining({ replaceReservedAssistant: true }),
+        );
       });
     });
 
