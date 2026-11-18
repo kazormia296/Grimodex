@@ -1,9 +1,9 @@
-# chat IR の S2 予備測定・段 0（埋め込みの依存の install と受入れ）の記録（2026-11-18）
+# chat IR の S2 予備測定・段 0（埋め込みの依存の install と受入れ）と段 1（count_tokens の prefix）の記録（2026-11-18）
 
 - 根拠：`user-confirmation-2026-11-17-s2-gold-and-embed-deps.md`（Q10：npm の registry に接続し、版を固定し、`--ignore-scripts` で、repo の外の固定の場所〔/tmp 以外〕に入れる。統合者が直接実行する）。
 - 手順の正本：`fusion-eval-data/ir-chat-pilot-2026-11/s2-preflight-2026-11-18/plan.md` の §2・§9 の 1〜7。
 - 実行者：統合者（Claude Code の統合者セッション）。日時：2026-11-18 03:10〜03:14Z。
-- **API の呼び出しはしていない。** 段 1（count_tokens）・段 2 は未実施（順序の条件は plan §3.2・§4）。
+- 段 0 では API の呼び出しはしていない。段 1（count_tokens、課金なし）は §6。段 2 は未実施（順序の条件は plan §4）。
 - 送信先・閾値・保存範囲・総額は変えていない。本文は記録に入れていない。
 
 ## 1 GDX-PRECHECK-001：external-egress の行
@@ -45,3 +45,20 @@
 - 段 1（count_tokens の prefix だけ）の順序の条件の (a)「9 回目の S4 の PR の merge」は満たされている（S4b `70a07561` は origin/master の祖先。PR #923 で merge）。(b)「CP-4 の run が無いとき」は、実行の直前に guard が確かめる。
 - origin/master は `5d09b3c4`（#936・#937 の後）に進んだ。段 1 の前に、plan §3.2 の製品 file の検査（snapshot の基点との差）を取り直す。
 - 段 1 は実送信（場面 p の本文と Gold の質問）を伴う。plan §10 の 1（6 問の選び方の食い違い）は未決。
+
+## 6 段 1（count_tokens の prefix だけ。2026-11-18 03:17Z。課金 $0）
+
+- 6 問はユーザー決定（`user-confirmation-2026-11-18-s2-preflight-question-selection.md`）の `per-point-EMN`。model は `claude-sonnet-5-5`、送信先は `api.anthropic.com` の `messages/count_tokens` だけ。key は製品の keyring（safeStorage）から取り、値は記録していない。
+- 送ったもの：製品の tools の定義（T813 の arm）、system の cacheSegments（場面 p の本文を含む）、Gold の 6 問の質問文。volatile tail は dry-run の stub（97 字）で、測っていない。
+- 材料：dry-run の snapshot（head `97f89fb1`）。製品 file（toolDefinitions／toolManifest／agentSettingCatalog／uiOperationTools／agent-tool-manifest.json／contextBuilder／src/prompts）は origin/master `5d09b3c4` まで差分なし。
+- CP-4 の run の guard（`pgrep -f "[c]p4-"`）は、1 回目に統合者の bash の command line（electron の path の文字列）に自己一致して止まった。実際の run は無かった。path を symlink 経由にして回した。guard は弱めていない。
+
+| 質問 | P＝noTail−bare | tools | cacheSegments |
+|---|---|---|---|
+| p050-E1・M1・N1 | 15,483 | 11,931 | 3,552 |
+| p100-E1・M1・N1 | 15,966 | 11,931 | 4,035 |
+
+- **P の中央値は 15,724.5 token。** q1 §3.1 の見積り（12K、幅 9〜20K）の幅の中で、中央より高い側。tools が約 76％を占める。
+- 質問の型による差は、user の message の長さ（73〜99 token）だけ。P は point で決まる。
+- 記録：`s2-preflight-2026-11-18/records/20261118T031754Z-count/count.json`（sha256 `ce959f19…1922ba7a`、本文なし）。
+- 段 2（Haiku の反復・volatile tail・往復数 N）は、抽出・段 E・段 F の後。今は材料が無い。
