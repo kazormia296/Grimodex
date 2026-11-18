@@ -226,6 +226,9 @@ function normalizeIpcFailure(command: string, error: unknown): unknown {
  */
 const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["get_global_settings", IPC_TIMEOUT_MS],
+  // モデル能力の registry の写し（PR-C2）：main が file を読んで返すだけの読み取り専用。
+  // 載せないと mutation 扱いになり、timeout が無く、workspace 切替・終了の静止を待たせる。
+  ["get_model_capability_snapshot", IPC_TIMEOUT_MS],
   ["narrative_extraction_capture_workspace_binding", IPC_TIMEOUT_MS],
   ["validate_workspace_path", IPC_TIMEOUT_MS],
   ["list_backups", IPC_TIMEOUT_MS],

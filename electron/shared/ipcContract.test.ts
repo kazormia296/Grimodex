@@ -12291,6 +12291,41 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
   });
 });
 
+describe("model-capability snapshot contract (PR-C2, Q17)", () => {
+  it("is one read-only Main command, never a Native one, and starts no fetch", () => {
+    expect(SHELL_COMMAND_NAMES).toContain("get_model_capability_snapshot");
+    expect(Object.keys(NAPI_COMMANDS)).not.toContain(
+      "get_model_capability_snapshot",
+    );
+    // The renderer can read the adopted snapshot only: there is no command
+    // that starts, forces, or configures a fetch.
+    expect(
+      [...SHELL_COMMAND_NAMES, ...Object.keys(NAPI_COMMANDS)].filter((name) =>
+        /model_(capab|info|registry)/u.test(name),
+      ),
+    ).toEqual(["get_model_capability_snapshot"]);
+  });
+
+  it("dispatches to the Main handler and wraps the value in an Envelope", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const result = await dispatchInvoke(
+      "get_model_capability_snapshot",
+      {},
+      {
+        backend: null,
+        shell: {
+          get_model_capability_snapshot: async (args) => {
+            calls.push(args);
+            return { origin: "bundled" };
+          },
+        },
+      },
+    );
+    expect(result).toEqual({ ok: true, value: { origin: "bundled" } });
+    expect(calls).toEqual([{}]);
+  });
+});
+
 describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
   it("report_unsaved_edits is a Main-processed command, never a Native one", () => {
     expect(SHELL_COMMAND_NAMES).toContain("report_unsaved_edits");

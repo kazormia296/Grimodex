@@ -11,6 +11,18 @@ export async function saveAiSettings(settings: AiSettings): Promise<void> {
 }
 
 /**
+ * 「モデル情報の自動更新」だけを明示的に切り替える（Electron のみ）。この項目だけを持つ
+ * `save_ai_settings` として送り、main がこの項目だけを保存する（Native の設定は変えない）。
+ * 完全な設定の save（`saveAiSettings`）に載った同じ項目は main が無視するので、別窓の古い設定を
+ * 書き戻しても、無効にした自動更新は有効へ戻らない（`electron/main/modelInfoSetting.ts`）。
+ */
+export async function setModelInfoAutoUpdate(enabled: boolean): Promise<void> {
+  await invoke("save_ai_settings", {
+    settings: { modelInfoAutoUpdate: enabled },
+  });
+}
+
+/**
  * API キーを保存する。`endpointId` は OpenAI 互換プロバイダの per-endpoint キーで
  * のみ意味を持つ（その他のプロバイダでは無視され単一キーに保存される）。
  */
