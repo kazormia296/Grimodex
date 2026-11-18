@@ -294,7 +294,7 @@ GDX-PRECHECK-001 の区分：**background は当たる**（tail。応答の後�
 
 ## DR-CHATIR-S1-30：G6 (c)（読み順の 2 つの実装）は試験で固定する（2026-11-18）
 
-- **事実**：IR の admission は Native の読み順（DB から。`derive_live_scene_projection`）、年表の filter は renderer の `buildReadingOrder`（`src/features/codex/context/sceneTimeIndex.ts`）。実装が 2 つあり、同じ結果になるかの試験は無かった。
+- **事実**：IR の admission は Native が DB から読む読み順（`query_reading_rank`）、年表の filter は renderer の `buildReadingOrder`（`src/features/codex/context/sceneTimeIndex.ts`）。実装が 2 つあり、同じ結果になるかの試験は無かった。Rust の半分の対象は、差分 §3 の指定どおり `derive_live_scene_projection`（`project_scope_authority.rs`）とした。**IR の admission の `query_reading_rank` がこの関数から来るかは PR-B1 では確かめていない（未確認）**。S1-A2 の前に確かめ、別の実装なら cargo の試験の対象を直す。
 - **決定（行き先）**：条件 1〜3 の TS の半分は PR-B1 の共有 fixture と `buildReadingOrder` の試験で固定する。Rust の半分（同じ fixture を `include_str!` で読み、順か error を固定）は S1-A2 に置く。**PR-B1 が固定するのは TS の半分だけで、両実装の一致はまだ固定されない。** 条件 4（出所の時点）・5（今の Scene の出所）は PR-B2。
 - **決定（条件 6：軸）**：年表の位置の filter は、project の `phase_resolution_mode`（軸）に関わらず読み順で掛ける。既存の秘匿の filter（`isEventHiddenFromAi`）も軸に関わらず読み順で判定する。story 軸の project では、IR は Native が返さず、年表だけが位置の filter つきで返る。filter を掛ける側なので、秘匿を緩めない。
 - **決定（条件 7：境界）**：境界は「以前」（含む）。結ばれた Scene のうち最も前のものの位置が今の Scene の位置以下なら返す。今の Scene に結ばれた event は返す。既存の秘匿の filter（`readingPos(current) < readingPos(reveal)` のときだけ隠す）の境界と揃う。IR の規則（Native は今の Scene と同じか後を除く）とは向きが違うが、これは設計どおりの非対称である。結ばれた Scene がすべて読み順の外なら返さない（fail-closed）。

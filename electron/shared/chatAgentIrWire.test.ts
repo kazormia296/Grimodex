@@ -19,6 +19,10 @@ function read(...parts: string[]): string {
   return readFileSync(path.join(repoRoot, ...parts), "utf8");
 }
 
+// When S1-A2 adds a field to the answer (for example the event IDs to leave
+// out) or an item key (`eventId`), Native, `parseChatAgentIrResponse` and this
+// drift test change in the same PR (design r4 delta 2-3; DR-CHATIR-S1-31).
+// This test goes red on purpose when only Native changes.
 describe("wire drift (B-T1): the TS side equals what Native sends", () => {
   it("holds the 17 statuses against `ChatIrStatus::as_str` of status.rs", () => {
     const source = readFileSync(path.join(nativeDir, "status.rs"), "utf8");
