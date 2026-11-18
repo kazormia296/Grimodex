@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "purpose": "Reading-order parity fixture of the chat IR (S1-B DR-CHATIR-S1-30, G6 (c)). The renderer's buildReadingOrder (src/features/codex/context/sceneTimeIndex.ts) and Native's derive_live_scene_projection (src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs, the target the design names) are two implementations of one order. UNCONFIRMED: whether the IR admission's query_reading_rank is derived by that function; check before S1-A2 uses this file.",
   "status": "PR-B1 holds the `ts` half in src/features/codex/context/readingOrderParity.test.ts. The `rust` half is NOT run by any test yet (S1-A2 reads this file with include_str! in a cargo test). It was written from reading project_scope_authority.rs, not from running it. Until then the two implementations are not held equal.",
-  "nodeFields": "id, parentId (null = project root), nodeType (folder|scene|note|other), sortOrder (compared as UTF-16 code units; ids in these cases are lower-case ASCII so TS localeCompare and a UTF-16 compare agree), archived (false = live).",
+  "nodeFields": "id, parentId (null = project root), nodeType (folder|scene|note|other), sortOrder (TS compares it with cmpKeys, a UTF-16 code-unit order, the same order as Rust; only the id tie-break of two equal sortOrders is localeCompare in TS, and the ids in these cases are lower-case ASCII, where it agrees with a UTF-16 compare), archived (false = live).",
   "expectation": "ts.readingOrder: Scene ids in index order (index 0 first). rust.kind 'order': sceneIds in the order derive_live_scene_projection returns. rust.kind 'error': the call returns Err whose text starts with rust.code.",
   "cases": [
     {
