@@ -8817,40 +8817,15 @@ impl Database {
     }
 
     /// Create the non-external `_en` FTS tables (porter unicode61) and their
-    /// language-guarded sync triggers, then backfill English content exactly
-    /// once. Existing trigram tables/triggers are left untouched (English rows
-    /// are also indexed there but never queried for English projects).
+    /// sync triggers, then backfill English content exactly once. The INSERT and
+    /// UPDATE triggers are language-guarded; the DELETE triggers are not (see
+    /// [`Self::repair_en_fts_delete_triggers`]). Existing trigram tables/triggers
+    /// are left untouched (English rows are also indexed there but never queried
+    /// for English projects).
     pub(super) fn ensure_en_fts(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS fts_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
-
-        // Fix (DB health audit 2026-07): the `_en` AFTER DELETE triggers below
-        // used to be language-guarded (`WHEN (SELECT language FROM projects ...)
-        // LIKE 'en%'`). On an FK ON DELETE CASCADE the parent row (projects /
-        // chat_sessions) is deleted *first*, so the guard subquery returns NULL,
-        // the guard fails, and the `_en` index row is never removed → orphan.
-        // When the base table later reuses that rowid, INSERT into the
-        // standalone (non-external-content) FTS5 table fails with a duplicate
-        // rowid constraint, blocking all subsequent writes on that table.
-        // Deleting a non-existent rowid is a harmless no-op, so the guard is
-        // unnecessary on delete: drop the legacy guarded triggers once and let
-        // the unguarded definitions below recreate them. Idempotent via the
-        // `en_ad_unguarded` flag so this runs at most once per DB.
-        let ad_unguarded: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM fts_meta WHERE key = 'en_ad_unguarded')",
-            [],
-            |r| r.get(0),
-        )?;
-        if !ad_unguarded {
-            conn.execute_batch(
-                "DROP TRIGGER IF EXISTS codex_fts_en_ad;
-                 DROP TRIGGER IF EXISTS snippets_fts_en_ad;
-                 DROP TRIGGER IF EXISTS chat_messages_fts_en_ad;
-                 DROP TRIGGER IF EXISTS tree_nodes_fts_en_ad;
-                 DROP TRIGGER IF EXISTS post_effect_annotations_fts_en_ad;",
-            )?;
-        }
 
         conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts_en USING fts5(
@@ -8881,11 +8856,6 @@ impl Database {
                  INSERT INTO codex_fts_en(rowid, name, aliases, summary, tags_cache, content)
                  VALUES (new.rowid, COALESCE(new.name,''), COALESCE(new.aliases,''), COALESCE(new.summary,''), COALESCE(new.tags_cache,''), COALESCE(new.content,''));
              END;
-             CREATE TRIGGER IF NOT EXISTS codex_fts_en_ad AFTER DELETE ON codex_entries
-               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
-             BEGIN
-                 DELETE FROM codex_fts_en WHERE rowid = old.rowid;
-             END;
              CREATE TRIGGER IF NOT EXISTS codex_fts_en_au AFTER UPDATE ON codex_entries
                WHEN (old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache OR old.content IS NOT new.content)
                 AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
@@ -8902,11 +8872,6 @@ impl Database {
                  INSERT INTO snippets_fts_en(rowid, title, content, tags_cache)
                  VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
              END;
-             CREATE TRIGGER IF NOT EXISTS snippets_fts_en_ad AFTER DELETE ON snippets
-               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
-             BEGIN
-                 DELETE FROM snippets_fts_en WHERE rowid = old.rowid;
-             END;
              CREATE TRIGGER IF NOT EXISTS snippets_fts_en_au AFTER UPDATE ON snippets
                WHEN (old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache)
                 AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
@@ -8921,11 +8886,6 @@ impl Database {
                WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = new.session_id)) LIKE 'en%'
              BEGIN
                  INSERT INTO chat_messages_fts_en(rowid, content) VALUES (new.rowid, new.content);
-             END;
-             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_en_ad AFTER DELETE ON chat_messages
-               WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = old.session_id)) LIKE 'en%'
-             BEGIN
-                 DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid;
              END;
              CREATE TRIGGER IF NOT EXISTS chat_messages_fts_en_au AFTER UPDATE ON chat_messages
                WHEN (old.content IS NOT new.content)
@@ -8942,10 +8902,6 @@ impl Database {
                  INSERT INTO tree_nodes_fts_en(rowid, title, content)
                  VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
              END;
-             CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_ad AFTER DELETE ON tree_nodes
-             BEGIN
-                 DELETE FROM tree_nodes_fts_en WHERE rowid = old.rowid;
-             END;
              CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_au AFTER UPDATE ON tree_nodes
                WHEN (old.title IS NOT new.title OR old.content IS NOT new.content)
                 AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
@@ -8961,10 +8917,6 @@ impl Database {
              BEGIN
                  INSERT INTO post_effect_annotations_fts_en(rowid, content) VALUES (new.rowid, new.content);
              END;
-             CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_ad AFTER DELETE ON post_effect_annotations
-             BEGIN
-                 DELETE FROM post_effect_annotations_fts_en WHERE rowid = old.rowid;
-             END;
              CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_au AFTER UPDATE ON post_effect_annotations
                WHEN (old.content IS NOT new.content)
                 AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
@@ -8973,6 +8925,8 @@ impl Database {
                  INSERT INTO post_effect_annotations_fts_en(rowid, content) VALUES (new.rowid, new.content);
              END;",
         )?;
+
+        Self::repair_en_fts_delete_triggers(conn)?;
 
         // One-time backfill of pre-existing English content (flagged so it runs
         // exactly once, independent of content shape).
@@ -8989,6 +8943,81 @@ impl Database {
             )?;
         }
         Ok(())
+    }
+
+    /// `_en` FTS の AFTER DELETE trigger 5 本を guard なしの現行の形にそろえ、guard 付きの
+    /// 旧形が残した孤児の `_en` 行を掃除する（SCHEMA 46 のままの in-version repair）。
+    ///
+    /// 旧形の trigger は `projects.language` を引く WHEN を持っていた。FK の ON DELETE
+    /// CASCADE は親行（projects／chat_sessions）を先に消すので、副照会が NULL になって
+    /// trigger が発火せず、`_en` に孤児の行が残った。本体の rowid が再利用されると、
+    /// 次の INSERT が standalone FTS5 の rowid 重複（constraint failed 1555）で決まって
+    /// 失敗し、削除済みの本文も `_en` の shadow（`*_content`）に平文で残る。
+    /// PR #233 は tree_nodes と post_effect_annotations だけ guard を外し、
+    /// chat_messages／codex_entries／snippets を外し漏れた。
+    ///
+    /// 収束済みの DB（5 本とも現行の形）では何もしない。checkpoint
+    /// （[`grimodex_core::workspace_schema::has_en_fts_delete_triggers`]）と同じ判定を
+    /// 使うので、旧 build が guard 付きの形を入れ直した DB も次の open で自己修復する。
+    /// trigger の差し替えと掃除は 1 つの savepoint に入れる。差し替えだけが済んで
+    /// checkpoint が真になり、掃除が二度と走らない状態を作らないため。
+    ///
+    /// 掃除は「本体の行が英語 project の行ではない `_en` 行」を消す。`rowid NOT IN
+    /// (本体の rowid)` だけでは足りない：末尾の英語の行を cascade で消した後に日本語の
+    /// 行が同じ rowid を再利用すると、本体に rowid があるので孤児が残る
+    /// （`_ai` は日本語の行では発火しない）。基準は `rebuild_en_fts_sql` と同じ
+    /// 「英語 project（`projects.language LIKE 'en%'`）の行」にそろえる。
+    /// 英語の project が無い DB では 5 表とも空にする掃除になり、安全に動く。
+    fn repair_en_fts_delete_triggers(conn: &Connection) -> anyhow::Result<()> {
+        use grimodex_core::workspace_schema::{
+            en_fts_delete_trigger_sql, has_en_fts_delete_triggers, EN_FTS_DELETE_TRIGGERS,
+        };
+        if has_en_fts_delete_triggers(conn)? {
+            return Ok(());
+        }
+        const SAVEPOINT: &str = "en_fts_delete_trigger_repair";
+        const ENGLISH_PROJECTS: &str = "SELECT id FROM projects WHERE language LIKE 'en%'";
+        conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
+        let repair = (|| -> anyhow::Result<()> {
+            for (trigger, base_table, fts_table) in EN_FTS_DELETE_TRIGGERS {
+                conn.execute_batch(&format!(
+                    "DROP TRIGGER IF EXISTS {trigger}; {};",
+                    en_fts_delete_trigger_sql(trigger, base_table, fts_table)
+                ))?;
+                // chat_messages だけ project_id を chat_sessions 経由で引く。
+                let english_rowids = if base_table == "chat_messages" {
+                    format!(
+                        "SELECT rowid FROM chat_messages WHERE session_id IN \
+                         (SELECT id FROM chat_sessions WHERE project_id IN ({ENGLISH_PROJECTS}))"
+                    )
+                } else {
+                    format!(
+                        "SELECT rowid FROM {base_table} WHERE project_id IN ({ENGLISH_PROJECTS})"
+                    )
+                };
+                conn.execute(
+                    &format!("DELETE FROM {fts_table} WHERE rowid NOT IN ({english_rowids})"),
+                    [],
+                )?;
+            }
+            Ok(())
+        })();
+        let release = repair.and_then(|()| {
+            conn.execute_batch(&format!("RELEASE {SAVEPOINT}"))
+                .map_err(anyhow::Error::from)
+        });
+        if release.is_err() {
+            if let Err(unwind) =
+                conn.execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"))
+            {
+                tracing::error!(
+                    target: "fts.migrate",
+                    %unwind,
+                    "failed to unwind the _en FTS delete trigger repair"
+                );
+            }
+        }
+        release
     }
 
     /// One-shot migration: drop legacy `color` enum column from map_stickies
