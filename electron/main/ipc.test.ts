@@ -4394,6 +4394,7 @@ describe("get_model_capability_snapshot（PR-C2、読み取り専用の typed IP
       backend as unknown as NapiBackendLike,
     );
     const runtime = createModelCapabilityRuntime({
+      isPackaged: false,
       userDataDir: temp.dir,
       bundledPath: support.writeBundled(
         temp.dir,

@@ -77,6 +77,12 @@ export function resolveBundledSnapshotPath(
 }
 
 export interface ModelCapabilityRuntimeOptions {
+  /**
+   * 取得の scheduler を start してよいか。呼び出し側は `app.isPackaged` を渡す（env や設定で上書きする
+   * 入口は無い）。false（unpackaged の開発・CI・journey・評価の harness）では scheduler を作るだけで
+   * start せず、通信は一度も起きない。IPC は同梱の写し（と、あれば cache）を読んで返す。
+   */
+  readonly isPackaged: boolean;
   readonly userDataDir: string;
   readonly bundledPath: string;
   readonly backend: NapiBackendLike | null;
@@ -183,7 +189,11 @@ export function createModelCapabilityRuntime(
   return {
     backend: wrapBackendForModelInfoSetting(options.backend, setting),
     handlers,
-    start: () => scheduler.start(),
+    start: () => {
+      // unpackaged では start しない。scheduler は started でなければ admission を開かないので、
+      // 設定の変更や profile の通知が来ても取得は始まらない。
+      if (options.isPackaged) scheduler.start();
+    },
     dispose: () => scheduler.dispose(),
     readAdoptedSnapshot,
   };

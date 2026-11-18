@@ -324,6 +324,8 @@ if (!gotSingleInstanceLock) {
     // モデル能力の registry の写し（PR-C2）。「モデル情報の自動更新」を AiSettings の往復に載せるため、
     // backend をここで包む（以降の `backend` はこの包んだもの）。取得 scheduler と読み取り専用の IPC もここ。
     const modelCapability = createModelCapabilityRuntime({
+      // 取得は packaged のときだけ（updater と同じ app.isPackaged の gating）。
+      isPackaged: app.isPackaged,
       userDataDir: configuredUserDataDir,
       bundledPath: resolveBundledSnapshotPath({
         isPackaged: app.isPackaged,
@@ -647,7 +649,7 @@ if (!gotSingleInstanceLock) {
       bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
     narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
-    // 初回の取得は 30 秒後の背景（起動・描画を待たせない）。設定が無効なら cache を削除する。
+    // packaged のときだけ、初回の取得は 30 秒後の背景（起動・描画を待たせない）。設定が無効なら cache を削除する。
     modelCapability.start();
     if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
       narrativeFreshness.start();

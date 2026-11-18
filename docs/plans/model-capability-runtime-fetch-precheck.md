@@ -293,7 +293,8 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 #### 取得 scheduler（`electron/main/modelCapabilityScheduler.ts`）
 
 - 構造：license の scheduler（`licenseValidation.ts`）の形を、終端と再開できる停止に分けて作り直しました。
-  - 起動は `start()`（ready の後）から 30 秒後に初回、以後は前の取得の完了から 24 時間ごと（Q3。失敗でも完了から 24 時間）。timer は同時に 1 つ。
+  - **起動は `app.isPackaged` のときだけです**（updater と同じ gating。`modelCapabilityRuntime` の必須の option `isPackaged` に `app.isPackaged` を渡し、env・設定・IPC で上書きする入口はありません）。unpackaged の起動（開発、CI、journey、評価の harness）では scheduler を作るだけで `start()` せず、通信は一度も起きません（設定の切替や profile の通知が来ても、`started` でない scheduler は admission を開きません）。IPC の `get_model_capability_snapshot` は unpackaged でも同梱の写しを返し、cache があればその読みは可です。
+  - packaged では `start()`（ready の後）から 30 秒後に初回、以後は前の取得の完了から 24 時間ごと（Q3。失敗でも完了から 24 時間）。timer は同時に 1 つ。
   - single-flight：走行中の `runCycle()` は同じ promise を返します。
   - 取得するのは「設定が有効」かつ「profile が `unrestricted`」のときだけ（Q2・Q4）。どちらかが崩れると、走行中の取得を `abort` し、timer と再試行の待ちを解除し、世代番号を進めます。取消し後に届いた結果は棄却します。`cache` は rename の直前（同期）に世代・設定・profile を確かめ、通らなければ書きません（tmp も残しません）。
   - 再試行：一時的な失敗（network、timeout、429、5xx）だけ、1 周期に最大 3 回、間隔 30 秒・120 秒。内容・場所の誤り（404、redirect、host の不一致、上限超過、decode、検証の失敗）は再試行しません。
@@ -349,12 +350,16 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 - 設定の保存を、共有 Rust の `AiSettings` に field を足す形にしませんでした（上記）。Rust の struct に足す案は、保存の正本を 1 つにできますが、`AiSettings` を組み立てる struct literal が約 40 か所（凍結した `src-tauri` の legacy を含む）にあり、Rust の build を**試していません（未確認）**。`grimodex-ai` 単体の依存は reqwest・tokio などで軽いので build できる可能性はありますが、napi の crate と legacy の `src-tauri` を含めた検証はしていません。必要なら別 PR で移します（移すときは、この main の別 file の値を読み出して移行します）。
 - 完全な設定の save に載った `modelInfoAutoUpdate` を、main が無視します（明示の切替だけが変える）。承認した「AI 設定の 1 項目」を、読み出しは AiSettings、変更は専用の経路に分けた形です。新しい IPC command は足していません（`save_ai_settings` の、この項目だけを持つ形）。
 - 表 2 の「終了の証拠」（fetch の settle と response の body の close の両方）のうち、body の `cancel` は、要求を出すだけで完了を待ちません（`cancel` が返らない stream で scheduler が止まるのを避けるため）。取得そのものの終了は、fetch の promise の settle と abort で確かめます。
+- 取得の起動は `app.isPackaged` のときだけです（親の判断。承認した仕様には無かった条件で、通信を減らす方向の限定です）。
 - D2a の egress participant に登録していません（A8 のとおり `onStatusChange` の閉鎖にとどめました）。走行中の取得は abort の要求で閉じますが、activation がその終了を drain して待つことはしません。送るのは公開の GET だけで本文を含みません。
 
 未解決（親の判断が要る）：
 
-- **起動時の取得は無条件です。** unpackaged の開発起動、CI の runner、journey の起動も、30 秒を超えて動けば raw.githubusercontent.com へ GET します（master に写しが入るまでは 404 で、再試行せず次の周期まで待ちます）。updater の availability や `shouldDisableNarrativeFreshnessForLaunch` のような止める入口は、独断で足していません。journey の harness（`electron/scripts/product-journey-harness.mjs`）には、通信・console・userData の内容を検査する箇所は見つかりませんでした。`electron/scripts/packaged-smoke/run.mjs` の DNS の観測（`--dns-log`、Linux、参考）には、起動 30 秒後の main の名前解決が混ざり得ます。`package-check.mjs` は worker・asar などを個別に確かめ、resources の一覧を固定する検査は見つかりませんでした。
-- **ライセンスの扱い。** 同梱の写しは models.dev（README の記載では MIT）の data の一部（文脈長・出力上限・真偽値）の派生で、`NOTICE`・`THIRD_PARTY_LICENSES.md`・`scripts/license-policy.test.mjs` に models.dev の記載はありません。帰属表示の要否は未確認で、直していません。
+- **packaged の起動では、30 秒を超えて動けば raw.githubusercontent.com へ GET します**（master に写しが入るまでは 404 で、再試行せず次の周期まで待ちます）。unpackaged は上記のとおり取得しません。`electron/scripts/packaged-smoke/run.mjs` の DNS の観測（`--dns-log`、Linux、参考）は packaged の build を対象にするため、起動 30 秒後の main の名前解決が混ざり得ます（合否の判定には使っていない参考の観測です）。journey の harness（`electron/scripts/product-journey-harness.mjs`）には、通信・console・userData の内容を検査する箇所は見つかりませんでした。`package-check.mjs` は worker・asar などを個別に確かめ、resources の一覧を固定する検査は見つかりませんでした。
+- **ライセンスの扱い（解決済み）。** models.dev の repo は GitHub の公開ページで確認しました（2026-11-19。`sst/models.dev` の URL は `anomalyco/models.dev` に移っています。既定の branch は `dev`）。ルートの `LICENSE` は **MIT、`Copyright (c) 2025 models.dev`** で、repo 全体に掛かり、`providers/` の data だけを別の license とする記載は見つかりませんでした。同梱の写しは、その data（文脈長・出力上限・tool_call・reasoning の値と model id）の派生なので、MIT の「著作権表示と許諾文の収録」に従い、許諾文を verbatim で収録しました。
+  - 収録の仕組み：`THIRD_PARTY_LICENSES.md` の生成元 `scripts/generate-licenses.ts` の `gatherAssetLicenses()`（npm 以外の同梱アセットの手追加欄）に、許諾文の定数 `MODELS_DEV_MIT_LICENSE_TEXT` と項目 `models.dev` を足しました。生成物は `pnpm generate:licenses` で再生成しています（手で書き換えていません）。root と `public/` は byte 一致です。
+  - 表示の場所：root の `THIRD_PARTY_LICENSES.md`、`public/THIRD_PARTY_LICENSES.md`（vite が `dist/` へ複製し、packaged の app に入ります）。app 内では、設定 → About の `LicensesSection`（`/THIRD_PARTY_LICENSES.md` を読む）に出ます。
+  - 再生成で、無関係な 1 件も更新されました：`quinn-udp` が 0.5.14／0.5.15 から 0.5.16 になっています（`Cargo.lock` は #883 で 0.5.16 に上がっていたが、生成物が追随していなかった。`src-tauri/Cargo.lock` と `electron/native/grimodex-node/Cargo.lock` の両方で 0.5.16 を確認）。
 - 失敗した周期の後も、次の取得は完了から 24 時間後です（offline で起動して数分後に回復しても、次の起動か翌日まで取得しません）。再試行は 1 周期に 3 回までです。
 - 壊れた cache は、読んだ時点で削除します（restricted でも、cache の読出しの副作用として）。
 - 開示は README（英・日）と `docs/user-guide/ja/Privacy-and-data.md` の「AI以外の通信」に載せました。更新していないもの：`public/PRIVACY_en.md`・`public/PRIVACY_ja.md`（版と同意に結びつく文書のため、別の判断が要る）、`docs/user-guide/ja/` の `About.md`・`Home.md`・`Install-and-update.md`・`Quickstart-10-minutes.md` の通信の要約、`docs/lp/` の LP の文面。

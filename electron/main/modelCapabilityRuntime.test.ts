@@ -1,4 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,6 +63,8 @@ function build(
     profile?: FakeProfile;
     backend?: NapiBackendLike | null;
     fetchImpl?: FetchLike;
+    isPackaged?: boolean;
+    userDataDir?: string;
   } = {},
 ) {
   const profile = options.profile ?? new FakeProfile();
@@ -72,7 +75,8 @@ function build(
   const fetchImpl =
     options.fetchImpl ?? vi.fn<FetchLike>(async () => makeResponse(newerText));
   const runtime = createModelCapabilityRuntime({
-    userDataDir: temp.dir,
+    isPackaged: options.isPackaged ?? true,
+    userDataDir: options.userDataDir ?? temp.dir,
     bundledPath,
     backend: options.backend ?? null,
     profile,
@@ -212,6 +216,77 @@ describe("読み取り専用の typed IPC", () => {
     expect(vi.getTimerCount()).toBe(0);
     // 無効の設定は file に残る。
     expect(existsSync(path.join(temp.dir, MODEL_INFO_SETTING_FILE))).toBe(true);
+  });
+});
+
+describe("unpackaged（開発・CI・journey・評価の harness）では取得しない", () => {
+  const DAY = 86_400_000;
+
+  it("start しても fetch は 1 回も呼ばれず、timer も張らない", async () => {
+    const { runtime, fetchImpl } = build({ isPackaged: false });
+    runtime.start();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10 * DAY);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(runtime.dispose()).resolves.toBeUndefined();
+  });
+
+  it("設定の切替・profile の通知が来ても、取得は始まらない", async () => {
+    const profile = new FakeProfile();
+    const { runtime, fetchImpl } = build({
+      isPackaged: false,
+      profile,
+      backend: {
+        getAiSettings: async () => "{}",
+        saveAiSettings: async () => undefined,
+      } as unknown as NapiBackendLike,
+    });
+    runtime.start();
+    await runtime.backend!.saveAiSettings!({
+      [MODEL_INFO_AUTO_UPDATE_KEY]: false,
+    });
+    await runtime.backend!.saveAiSettings!({
+      [MODEL_INFO_AUTO_UPDATE_KEY]: true,
+    });
+    profile.emit("activating");
+    profile.emit("unrestricted");
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10 * DAY);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("IPC は同梱の写しを返し、cache があればその読みは可", async () => {
+    // packaged の runtime が取得して採用した cache を、unpackaged の runtime が読む。
+    const packaged = build();
+    packaged.runtime.start();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await packaged.runtime.dispose();
+    expect(existsSync(path.join(temp.dir, MODEL_CAPABILITY_CACHE_FILE))).toBe(
+      true,
+    );
+    const { runtime, fetchImpl } = build({ isPackaged: false });
+    runtime.start();
+    expect(runtime.readAdoptedSnapshot().origin).toBe("cache");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("cache が無ければ同梱を返す", () => {
+    const { runtime } = build({ isPackaged: false });
+    runtime.start();
+    expect(runtime.readAdoptedSnapshot().origin).toBe("bundled");
+  });
+
+  it("packaged の判定を上書きする入口は無い（env・設定・IPC のどれにも読ませない）", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("./modelCapabilityRuntime.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).not.toMatch(/process\.env|getBoolean|isPackaged\s*\?\?/u);
+    const index = readFileSync(
+      fileURLToPath(new URL("./index.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(index).toMatch(/isPackaged:\s*app\.isPackaged,\s*\n\s*userDataDir/u);
   });
 });
 
