@@ -46,7 +46,7 @@ export const MODEL_CAPABILITY_BUNDLED_FILE = path.posix.basename(
 export const MODEL_CAPABILITY_ACCEPTED_SOURCE = "grimodex";
 
 const CACHE_SCHEMA_VERSION = 1;
-/** cache の envelope（本文を JSON の文字列として持つ）の上限。本文の上限の 4 倍（引用符の escape の余裕）。暫定。 */
+/** cache の envelope（本文を JSON の文字列として持つ）の上限。本文の上限の 4 倍（引用符の escape の余裕）。2026-11-19 に確定。 */
 const CACHE_FILE_MAX_FACTOR = 4;
 
 export interface ModelCapabilityCacheEnvelope {

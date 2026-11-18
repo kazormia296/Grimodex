@@ -14,7 +14,7 @@
  *     file 操作を含めない（listener の throw は activation を fail closed にするため）。
  *   - log は固定の語と code と件数だけ。応答の本文・key・URL・error の message は出さない。
  *
- * 数値は全て暫定（2026-11-19）。実測後にユーザー確認する（Q10）。
+ * 数値は全て 2026-11-19 にユーザー確認で確定した（Q10）。
  */
 import {
   compareSnapshots,
@@ -34,25 +34,25 @@ import {
   type ModelCapabilityStore,
 } from "./modelCapabilityStore.js";
 
-/** 暫定値の 1 か所（試験は `schedule` で上書きする）。 */
+/** 値の 1 か所（試験は `schedule` で上書きする）。 */
 export const MODEL_CAPABILITY_SCHEDULE = Object.freeze({
-  /** 起動（`start()`）から初回の取得までの遅延。親の指定の暫定値。 */
+  /** 起動（`start()`）から初回の取得までの遅延。2026-11-19 に確定。 */
   initialDelayMs: 30_000,
   /** 前の取得の完了から次の取得まで（Q3）。 */
   intervalMs: 24 * 60 * 60 * 1_000,
-  /** 接続（応答の header が届くまで）の timeout。暫定。 */
+  /** 接続（応答の header が届くまで）の timeout。2026-11-19 に確定。 */
   connectTimeoutMs: 10_000,
-  /** 総時間（本文を読み切るまで）の timeout。暫定。 */
+  /** 総時間（本文を読み切るまで）の timeout。2026-11-19 に確定。 */
   totalTimeoutMs: 30_000,
   /**
-   * 1 回の周期の最大の試行回数（最初の 1 回を含む）。暫定。
+   * 1 回の周期の最大の試行回数（最初の 1 回を含む）。2026-11-19 に確定。
    * 開示（設定画面の説明文・README・user-guide の Privacy-and-data）に「失敗したときは同じ周期の中で最大 3 回」と
    * 書いている。変えるときは開示も直す。
    */
   maxAttempts: 3,
-  /** 試行の間の待ち（最後の値を使い回す）。暫定。 */
+  /** 試行の間の待ち（最後の値を使い回す）。2026-11-19 に確定。 */
   retryDelaysMs: [30_000, 120_000] as readonly number[],
-  /** 終了（dispose）が、走行中の取得の終了を待つ上限。超えても終了を止めない。暫定。 */
+  /** 終了（dispose）が、走行中の取得の終了を待つ上限。超えても終了を止めない。2026-11-19 に確定。 */
   quitWaitMs: 2_000,
 });
 export type ModelCapabilitySchedule = {

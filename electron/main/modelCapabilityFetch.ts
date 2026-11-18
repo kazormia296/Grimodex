@@ -81,9 +81,9 @@ export interface ModelCapabilityFetchOptions {
   readonly timers: ModelCapabilityFetchTimers;
   /** 応答の本文の上限 byte 数（policy の `maxSnapshotBytes`）。 */
   readonly maxBytes: number;
-  /** 接続（応答の header が届くまで）の timeout。暫定。 */
+  /** 接続（応答の header が届くまで）の timeout。2026-11-19 に確定。 */
   readonly connectTimeoutMs: number;
-  /** 総時間（本文を読み切るまで）の timeout。暫定。 */
+  /** 総時間（本文を読み切るまで）の timeout。2026-11-19 に確定。 */
   readonly totalTimeoutMs: number;
   /** 呼び出し側の取消し（世代の交代・設定の無効化・profile の閉鎖・終了）。 */
   readonly signal: AbortSignal;

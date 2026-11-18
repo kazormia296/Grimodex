@@ -368,3 +368,7 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 - 壊れた cache は、読んだ時点で削除します（restricted でも、cache の読出しの副作用として）。
 - 開示は README（英・日）と `docs/user-guide/ja/Privacy-and-data.md` の「AI以外の通信」に載せました。更新していないもの：`public/PRIVACY_en.md`・`public/PRIVACY_ja.md`（版と同意に結びつく文書のため、別の判断が要る）、`docs/user-guide/ja/` の `About.md`・`Home.md`・`Install-and-update.md`・`Quickstart-10-minutes.md` の通信の要約、`docs/lp/` の LP の文面。
 - 確認していないこと：packaged の build（asar、`extraResources` の配置）と実機の起動。利用者の proxy の環境での Node の fetch の挙動（T5）。実際のネットワークには出ていません（試験はすべて注入）。
+
+### 7.4 閾値の確定（2026-11-19、Q10）
+
+ユーザーは、§7.1 と §7.3 の暫定値を「この値で確定し merge」と回答した。`SNAPSHOT_POLICY`（`electron/shared/modelCapabilityRegistry.ts`）と、scheduler・fetch・store の値（`electron/main/modelCapability*.ts`）は確定値とする。上の節の「暫定」は、この時点で確定に読み替える。運用で問題が出たら、別の PR で直す。
