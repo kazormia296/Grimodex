@@ -214,3 +214,58 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 16. **models.dev への依存**：全利用者の app が（直接取得の設定のとき）第三者の無料の service に接続する。利用条件・負荷の許諾を確認する必要があるか。
 17. **新しい typed IPC command**：結果を renderer へ渡す契約の追加（`add-electron-command`）。契約の追加は別の確認が要るか。
 18. **PR-C1 の先行**：外部通信を持たない検証 module を、この確認の前に進めてよいか。
+
+## 7. ユーザーの回答（2026-11-19）
+
+§6 の 18 件はすべて回答済み。§1〜§4 の「未決」「要決定」のうち、下で決まったものはこの節を正とする。
+
+| # | 回答 |
+|---|---|
+| Q1 | (a) registry は能力表に無い id にだけ使う。表の id には registry は触れない |
+| Q2 | restricted／unavailable の profile では取得しない（fail-closed）。保存済みの cache の読出しは可。新しい egress 区分は作らない |
+| Q3 | 起動時＋前の取得の完了から 24 時間ごと。「今すぐ更新」のボタンは置かない |
+| Q4 | AI 設定に「モデル情報の自動更新」（既定は有効）。初回の告知は出さない。無効にしたら cache を削除する |
+| Q5 | 設定の説明文と、README の通信先の一覧の両方に載せる |
+| Q6 | User-Agent は版を含まない固定の汎用名（例：`Grimodex-Model-Registry`） |
+| Q7 | 同梱用と配信用は同じ file。master の `raw.githubusercontent.com` から配信する |
+| Q8 | 更新 PR は GitHub App の token で作る（PR の CI が起動する）。App の作成と secret の登録はユーザーが行う |
+| Q9 | auto-merge は使わない。急減・大量の変更がある PR は draft で作り、人の確認を必須にする |
+| Q10 | 閾値は CI で実測してから数値を提案し、改めて確認する。それまでの値は暫定 |
+| Q11 | §3 を承認。T1〜T10 が範囲内。範囲外は、有効な証明書を持つ MITM、OS・proxy の乗っ取り、同じ OS ユーザーによる cache の改ざん（DR-DA1-5 と同じ）、GitHub・CDN の内部の不正。写しに署名は付けず、値の検証で守る。models.dev の直接取得は利用者が選んだときだけ |
+| Q12 | kill switch は作らない。悪い写しは次の更新 PR で戻す |
+| Q13 | Grimodex の provider と models.dev の provider id の対応表を明示し、表に無い provider には使わない（Anthropic は live API が優先） |
+| Q14 | cache は 1 つ。取得元を刻み、取得先の切替で破棄する |
+| Q15 | §2 の案 B（main の Node の fetch）に同意。実装の前に packaged の probe（送信先は GitHub raw だけ）を行う。Mastra とは独立に進める |
+| Q16 | models.dev の利用条件を読んでから、直接取得の選択肢を出す |
+| Q17 | 結果を renderer に渡す読み取り専用の typed IPC を 1 本足すことを承認 |
+| Q18 | PR-C1 は残りの回答の後に進める（回答済みのため着手） |
+
+### 7.1 PR-C1 の実装で決めた技術事項（2026-11-19）
+
+- 置き場所は `electron/shared/modelCapabilityRegistry.ts`（import なしの 1 file）。CI は Node 22 で `.ts` を直接 import する（install 不要）。
+- models.dev の実測（2026-11-19、1 回）：6.7 MB、324 provider、9,981 model。読む field は `limit.context`、`limit.output`、`tool_call`、`reasoning`、`type`。対応表は anthropic、openai、openrouter、sakana の 4 つ（対応 4 provider の chat 系は 437 件）。
+- 閾値はすべて `SNAPSHOT_POLICY` に暫定値で置いた（Q10 の確認まで暫定）。
+- §4.5 の `validatorVersion` は入れない。root の未知の key は拒否し、互換は `schemaVersion` だけで扱う。
+- 形が正しく、対応表に無い provider の key は「不正」でなく「無視」とし、捨てた割合の分母から外す（provider を足した新しい写しを古い app が丸ごと捨てないため）。
+- `reasoning` は写しの上では真偽値だが、親文書の「thinking を真偽値にしない」に従い、消費側（PR-C2 以降）は `reasoning` だけで thinking の送り方を決めない。
+- `source` は、CI が作る写しは `"grimodex"`、app の直接取得は `"models.dev"` とする想定（PR-C2 で確定）。
+
+### 7.2 Q15 の probe の結果（2026-11-19）
+
+- 方法：前例の `electron/scripts/update-route-name-probe*.mjs` と同じ形です。
+  - 製品の `createRendererContainment()` で、(0) resolver の switch、(1) policy、(2)〜(4) `start()` をそのまま通しました。
+  - Electron 43.8.3（main の Node は 24.22.0）を、非 packaged のまま Xvfb で 1 回起動しました。env の proxy と Wayland・D-Bus の変数は除きました。
+  - probe のコードは scratchpad に置き、repo と配布物には入れていません。
+- 結果：
+
+| case | 結果 |
+|---|---|
+| Chromium の名前解決、sentinel | `127.0.0.1`（規則が当たっている） |
+| Chromium の名前解決、`raw.githubusercontent.com` | `ERR_NAME_NOT_RESOLVED` |
+| **main の `globalThis.fetch`** で GET（README.md、redirect は manual、UA は `Grimodex-Model-Registry`） | **200、13,343 byte、334 ms、最終 URL は同じ** |
+| main の Electron の `net.fetch` で、同じ GET | `ERR_SOCKS_CONNECTION_FAILED`（blackhole の proxy） |
+
+- 結論：main の Node の fetch は、Chromium の resolver の規則と session の proxy の外にあります。§2 の案 B の前提は成り立ちます。`net.fetch` は使えません。
+- 残ること：
+  - packaged（asar、fuses）は試していません。閉じ込めの適用の条件は同じ（`shouldRegisterAppProtocol()`）なので、差は出ない見込みです。
+  - 利用者の proxy の環境で Node の fetch がどう振る舞うか（env の proxy を読むか）は、未確認のままです（T5）。
