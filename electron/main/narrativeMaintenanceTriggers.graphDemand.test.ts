@@ -35,6 +35,8 @@ function setup(
 ) {
   const state = {
     binding: options.binding === undefined ? FIRST : options.binding,
+    // A transition answers WORKSPACE_SWITCHING (the getter throws).
+    switching: false,
   };
   const requestGraphIndexBuildWakesWithBinding = vi.fn();
   const requestManyWithBinding = vi.fn();
@@ -48,7 +50,12 @@ function setup(
   const warn = vi.fn();
   const coordinator = createNarrativeMaintenanceTriggerCoordinator(
     {
-      getNarrativeMaintenanceWorkspaceBinding: () => state.binding,
+      getNarrativeMaintenanceWorkspaceBinding: () => {
+        if (state.switching) {
+          throw new Error("WORKSPACE_SWITCHING: workspace is switching");
+        }
+        return state.binding;
+      },
       discoverNarrativeMaintenanceWork,
     },
     scheduler,
@@ -208,11 +215,7 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     h.demand("project-new");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenLastCalledWith(
-      ["project-new"],
-      FIRST,
-      "demand",
-    );
+    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST, "demand");
   });
 
   it("drops the demand when the binding changed before the wake fires, and never wakes the replacement workspace for the old project", async () => {
@@ -258,6 +261,193 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
     expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
+  });
+
+  // DR-PUBG-5-18 (R-B). Native emits a demand (E1) before `workspace:opened`
+  // (E2) of a switch, because the callers of the Suspended branches hold a
+  // workspace participant that the switch has to wait for. The event carries no
+  // binding, so main binds it to the live binding when it handles it.
+  const REPLACEMENT: NarrativeMaintenanceWorkspaceBinding = {
+    authorityId: "authority-replacement",
+    generation: 1,
+  };
+
+  it("DR-PUBG-5-18: a demand handled once the replacement is Ready, in the same drain as workspace:opened, wakes nothing", async () => {
+    const h = harness();
+    // The queue holds E1 then E2 when main gets to them: the getter already
+    // answers the replacement's binding, and both events run before any timer.
+    h.state.binding = REPLACEMENT;
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    h.coordinator.handleBackendEvent("workspace:opened", {
+      path: "/replacement",
+      restoreOnly: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.wakes).not.toHaveBeenCalled();
+  });
+
+  it("DR-PUBG-5-18: a demand that meets a switching workspace is dropped without a timer, and the next demand after the switch is its own", async () => {
+    const h = harness();
+    h.state.switching = true;
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.warn).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.wakes).not.toHaveBeenCalled();
+    h.state.switching = false;
+    h.state.binding = REPLACEMENT;
+    h.demand("project-a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      REPLACEMENT,
+      "demand",
+    );
+  });
+
+  it("DR-PUBG-5-18: the residual the DR accepts: a demand that reaches main after workspace:opened (the event cannot tell its workspace) is bound to the replacement and wakes it once", async () => {
+    const h = harness();
+    h.state.binding = REPLACEMENT;
+    h.coordinator.handleBackendEvent("workspace:opened", {
+      path: "/replacement",
+      restoreOnly: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const afterOpen = h.wakes.mock.calls.length;
+    // Native does not emit this order for a Suspended slot (the E1 of a
+    // participant holder is queued first, and a slot a switch outlived is
+    // stale, DR-PUBG-5-18 追補 4). Only the `build_worker` branch's owner thread,
+    // stalled between its edge check and its emit across the whole switch,
+    // could. The event cannot tell, so it is the replacement's demand.
+    h.demand("project-a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
+    expect(h.wakes).toHaveBeenLastCalledWith(
+      ["project-a"],
+      REPLACEMENT,
+      "demand",
+    );
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
+  });
+
+  // DR-PUBG-5-18 追補 4 (window 2). A failure branch of `restore_backup` (or an
+  // open that fails after its swap and is reconciled later) publishes a Ready
+  // for a replacement binding without `workspace:opened`. Native emits the
+  // `workspace:lifecycle-state` of that Ready after it, on the same queue and
+  // after any demand the old workspace raised, so a change of (status,
+  // bindingToken) ends the old workspace's demands the way E2 does.
+  const LIFECYCLE = "workspace:lifecycle-state";
+  const lifecycle = (
+    status: string,
+    bindingToken: string | null,
+    revision = 1,
+  ) => ({
+    schemaVersion: 1,
+    revision,
+    status,
+    bindingToken,
+    activation: status === "ready" ? "ready" : "none",
+  });
+
+  it("DR-PUBG-5-18: a demand bound to the replacement is ended by the Ready's lifecycle view when no workspace:opened came", async () => {
+    const h = harness();
+    h.coordinator.handleBackendEvent(
+      LIFECYCLE,
+      lifecycle("ready", "token-old"),
+    );
+    // E1 is handled once the getter already answers the replacement.
+    h.state.binding = REPLACEMENT;
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    h.coordinator.handleBackendEvent(
+      LIFECYCLE,
+      lifecycle("ready", "token-replacement", 3),
+    );
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.coordinator.getQuiescenceState?.().timerScheduled).toBe(false);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.wakes).not.toHaveBeenCalled();
+    // The replacement's own demand after the view is its own.
+    h.demand("project-a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      REPLACEMENT,
+      "demand",
+    );
+  });
+
+  it("DR-PUBG-5-18: a change of status alone (a recovery that leaves and re-enters Ready under one token) ends the demands too", async () => {
+    const h = harness();
+    h.coordinator.handleBackendEvent(LIFECYCLE, lifecycle("ready", "token-a"));
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    h.coordinator.handleBackendEvent(
+      LIFECYCLE,
+      lifecycle("recovery-required", "token-a", 2),
+    );
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.wakes).not.toHaveBeenCalled();
+  });
+
+  it("DR-PUBG-5-18: a lifecycle view that changes neither status nor token keeps a pending demand, and starts no discovery", async () => {
+    const h = harness();
+    h.coordinator.handleBackendEvent(LIFECYCLE, lifecycle("ready", "token-a"));
+    h.demand("project-a");
+    h.coordinator.handleBackendEvent(
+      LIFECYCLE,
+      lifecycle("ready", "token-a", 2),
+    );
+    h.coordinator.handleBackendEvent(
+      LIFECYCLE,
+      lifecycle("ready", "token-a", 9),
+    );
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      FIRST,
+      "demand",
+    );
+    // The view is not a discovery trigger: no chain timer, no discovery.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.discoverNarrativeMaintenanceWork).not.toHaveBeenCalled();
+    expect(h.requestManyWithBinding).not.toHaveBeenCalled();
+  });
+
+  it("DR-PUBG-5-18: a malformed lifecycle payload is ignored without throwing and clears nothing", async () => {
+    const h = harness();
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBe(1);
+    for (const payload of [
+      null,
+      undefined,
+      "ready",
+      42,
+      [],
+      {},
+      { status: 3, bindingToken: "t" },
+      { status: "ready", bindingToken: 7 },
+    ]) {
+      expect(() =>
+        h.coordinator.handleBackendEvent(LIFECYCLE, payload),
+      ).not.toThrow();
+    }
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledOnce();
+  });
+
+  it("DR-PUBG-5-18: a lifecycle view reaching a disposed coordinator does nothing", async () => {
+    const h = harness();
+    await h.coordinator.dispose();
+    expect(() =>
+      h.coordinator.handleBackendEvent(LIFECYCLE, lifecycle("ready", "t")),
+    ).not.toThrow();
   });
 
   it("dispose clears the timer and a disposed coordinator accepts nothing", async () => {
@@ -366,11 +556,7 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     h.demand("project-new");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenLastCalledWith(
-      ["project-new"],
-      FIRST,
-      "demand",
-    );
+    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST, "demand");
   });
 
   it("shows a waiting demand to the quiescence writer and settles when it fires", async () => {

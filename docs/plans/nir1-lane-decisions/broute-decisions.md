@@ -1165,3 +1165,145 @@
 - **全件**：grimodex-db `--lib` 2,872 passed・0 failed・63 ignored。Native `--lib --features licensing,legacy-keyring-migration` 917 passed・7 ignored。clippy `-D warnings`（grimodex-db `--all-targets`、Native は同 features）成功。vitest（`vitest.electron.config.ts`、electron 全体）2,863 passed（cargo の build と同時に走らせた 1 回目は 3 件落ち、同じ commit の再実行 2 回で全件成功。負荷のときの揺れと見ているが、原因は特定していない）。tsc（`electron/tsconfig.json`・root）成功。`validate:architecture` 成功。
 - **残る既知の挙動**：receipt は、JSONL の追記の後に project の存在を確かめて拒否する既存の順序のまま。終端になったので追記は 1 回。
 - **追補（独立レビューの指摘、すべて低。2026-11-19）**：(1) 終端でない reject（busy、INVALID、先頭一致でない message、typed non-ACK）の保持の試験を、work と wake の両方で回す。wake の枝を `persisted !== "accepted"` で捨てる変異と、work の枝の同じ変異のそれぞれで赤になることを確かめた。(2) work と hasMore の試験の backend に `getNarrativeMaintenanceWorkspaceBinding` を足し、receipt の引数（scope、projectId、null でない workspaceBinding）を `toHaveBeenCalledWith` で固定した。(3) 上限は wake と work が 4 回（初回＋retry 3）、hasMore が 5 回（accepted の 1 回＋4）と正確にした。Rust の `missing_project_wake_problems` は、Closed の launch では main の discovery が `Idle` だけを許す。(4) project-missing の 2 つの枝の warn に、code と project id を出す（matrix の error の行と一致）。(5) 判断 2 の renderer の作成経路の「未確認」は、上の 4 つの根拠で閉じた。(6) 名指しの work が project の無い DB でどう終わるかを、Native（db の cycle）の試験で固定した（`a_named_work_item_for_a_project_the_workspace_does_not_have_ends_or_fails_on_the_foreign_key`）：Verify と Rebuild は Accepted・`has_more` なしで終わる（stale な item）、Backfill は `FOREIGN KEY constraint failed` で失敗する。この Backfill の失敗が、main 側の (b)（retry の後の PROJECT_MISSING の receipt を終端にする）が要る理由の 1 つ。
+### DR-PUBG-5-18：旧 workspace の需要 event の隙（R-B）の読みの確認（2026-11-19。計画 `q5-graph-index-pre-switch-plan.md` §6 の (4)）
+
+- 位置づけ：DR-PUBG-5-14 の R-B（旧 workspace の需要 event が新 workspace の binding で束縛される隙）が「読みによる限り実質無い」とした判断を、DR が「確かめていない」とした 3 点まで読み直した記録。この DR を残す commit ではコード・試験・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：DR-PUBG-5-13・5-14 と同じ（C-product の worker／owner／lifecycle の技術判断）。枝 `claude/pubg5-old-workspace-event-gap`（基点 origin/master `65deca68`）。push・PR・merge は統合者が後で行う。新しい送信先・保存範囲の拡大・閾値の緩和・新しい契約・authority は無い。
+- 判定の基準（計画 §6.2）：hook で止める試験は判定に使わない。「E1（需要）を切替の途中で emit する経路が見つかる」または「hook なしの通常の経路で stale な通知が届く」なら binding を載せる。どちらも無ければコードは変えず、窓が無いことを固定する試験だけを足す。Electron を起動する観測（S-G）は行わない。
+
+**読んで確かめたこと（`65deca68`。実行して確かめたものと、読みだけのものを分ける）**
+
+1. 切替の経路（読み）。production で Core が別の workspace の `Ready(binding)` に入る経路は 2 つで、どちらも E2（`workspace:opened`）の emit が lifecycle の Ready 公開より前にある。
+   - `open_workspace`：`finish_workspace_open_success`（`lib.rs`）が blocking の closure の中で E2 を emit し、closure が join した後に `publish_workspace_lifecycle_from_workspace_off_runtime` が Ready を公開する。
+   - `restore_backup`：blocking の closure の末尾で E2（`reason: "restore"`）を emit し、join の後に同じ publisher が Ready を公開する。
+   - E2 を出さない経路：`restore_recovery_candidate` は authority が公開されている間は拒否し（`restore_safe_mode_candidate`）、復元の後も authority を持たない（renderer が `open_workspace` を再実行する）ので、Ready に着かない。maintenance の recovery の reconcile（同じ authority が Ready に戻る）と `ensure_authority_ready`（互換・試験の installed authority）は、別の workspace への切替ではない。
+   - 計画が 3 つ目に挙げる `discover`：`lib.rs` の discovery は event を出さず、binding と snapshot を取り直して、食い違えば `workspace-unavailable` で閉じる（fail-closed）。
+2. main の binding getter（読み）。`getNarrativeMaintenanceWorkspaceBinding` は、Core が `Ready(binding)` のときだけ binding を返す（`resolve_workspace_snapshot`。`compatibility_switching` か `Transition` は `WorkspaceSwitching`、`RecoveryRequired`／`Closed` は fail-closed の Err）。したがって新しい binding が見えるのは Ready 公開の後で、E2 の emit はそれより前。E1 を main が受けた時点で getter が新 binding を返すなら、E2 は既に queue にある。
+3. Suspended の 2 つの枝の emit（読み）。lock の外で emit するが、呼出し元はどちらも workspace participant を持つ。
+   - Related Scenes（`begin_deferred`）：`begin_admitted` が participant を取り、`begin_blocking` の間持つ。
+   - D-final（`begin`）：`request_graph` に渡す `ActiveWorkspaceSnapshot` が `_participant` を持つ。
+   - `acquire_physical_exclusive` は `workspace_participants == 0` を要求する（`workspace_lifecycle.rs`）。DB の入れ替えと E2 の emit は physical exclusive の後なので、2 つの枝の E1 は E2 より前に queue へ入る（emit は `EventQueue` の mutex の下で `tsfn.call` するので、queue の順＝emit の順）。
+   - 訂正：DR-PUBG-5-14 は「`demand`・`demand_deferred` は workspace operation の下」と書いたが、`begin_workspace_operation` は shutdown の計数で切替を止めない。切替を止めるのは participant。
+   - 切替の後、Suspended の slot は Ready 公開で `ready_generation` が進むので、Suspended から答えず、新しい session を始める。
+4. `build_worker` の枝（読み）。prepare の失敗の後、`retire_current`（worker の participant を放す）→ `edge_or_closed` の確認 → emit の順。`TransitionAdmitted` の edge は admission で epoch を進める（participants の drain の前）ので、確認を通れば切替はまだ admission の前。E2 より後に E1 が届く形は、owner thread が確認から emit までの間（participant を持たない）で切替の全期間止まる場合だけ。これが唯一残る窓。
+5. TSFN の drain（一部だけ確認）。確認済み：emit の直列化（上の 3）。未確認：Node の TSFN が 1 回の callback で処理する件数の上限（手元の source で確かめられない）。ただし判定はこれに依らない。E1 が新 binding で処理される（＝ Ready 公開の後）とき E2 は既に queue にあるので、E1 の `setTimeout(0)` が E2 の `clearGraphDemands` より先に走るのは、queue が drain の上限を越えて分割される場合だけ。
+
+**判断：窓なし。コードは変えない。**
+
+- 根拠：2 と 3 で、E1 を切替の途中で（E2 の後に）emit する経路は、4 の「確認と emit の間の停止」を除いて見つからない。hook なしの通常の経路で stale な通知が届く形は無い。
+- 残る極小の窓：4 の `build_worker` の枝だけ。閉じる案（記録のみ。この枝では入れない。`nir1_graph_product.rs` の行が動き S2 の行番号の注記がずれるため）：emit を `retire_current` の前へ移せば、worker が participant を持つ間に emit するので、E2 の前になる順序が因果で決まる（payload に binding を載せずに済む）。
+- 載せる binding（計画 §6.3）は採らない。採る場合の設計（owner の binding の変換の置き場所、main の受信時と発火時の照合）は計画 §6.3 のとおりで、新しい `#[napi]` は足さない。
+
+**害の上限（T-RB3。測った）— 別件 F-1：存在しない project の wake は終わらない**
+
+- Native（`grimodex-db`、実行）：存在しない project の `wakeProjectIds` を持つ cycle（`run_system_work_cycle_with_nir1_graph_runtime_and_product`）は、launch が閉・seam・product のどれでも `Err(FOREIGN KEY constraint failed, code 787)` で終わる。
+- main（vitest、scheduler。**最小の mock**〔attempt・ACK・terminal receipt の method を持たない〕。cycle は上の Err、`recordNarrativeMaintenanceDeliveryFailure` は `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING` で reject する mock。後者は `record_maintenance_delivery_failure_wake` の `ensure!`〔`restore_rebuild.rs`〕の読みで、Native の実呼出しは未実行）：cycle は 10 秒で 10 回、60 秒で 70 回、600 秒で 670 回、3600 秒で 4270 回。約 1 回／秒で止まらず、`queueIdle` は false のまま。`retryCount` が上限（3）を越えると `persistDeliveryFailure` が false を返し、wake が再 queue される（`narrativeMaintenance.ts` の wake の retry）。
+- 到達：stale な event に限らない。需要の timer は最大 60 秒待つので、その間に同じ workspace で project が消えても同じ形になる。需要 event の経路は、const が false の間は Native が event を出さないので不活性。他の wake 源（hasMore の継続など、`durableWakeProjects` を作る経路）で今の製品に到達しうるかは未確認（Rust の probe は gate が閉でも FK で落ちた）。
+- 扱い：この枝では直さない（(4) の範囲外で、retry の終端の意味を変える）。切替の前に直す候補として統合者へ報告する。直し方の候補：Native の wake が存在しない project を no-work の accepted で受ける、または main が `PROJECT_MISSING` の receipt の失敗を終端として扱う。試験は「望ましい形」を expected-fail で置き（vitest の `it.fails`、Rust の `should_panic`）、直ると赤になって印を外す形にする。
+- 同名の project が新 workspace にある場合の害は、DR-PUBG-5-14 のとおり B の判定 1 回（`RefusedUnchanged` なら SQL だけ）で、需要の最短間隔（2 秒から 60 秒）で有界。
+
+**委任の内外と GDX-PRECHECK-001**
+
+- 内。Native→main の observer-only の内部 event の読みの確認と、試験だけの追加。新しい IPC・権限・保存先・送信先・閾値の緩和を含まない。
+- owner／lifecycle matrix の差分：無し（コードを変えない）。threat model の差分：無し。F-1 は新しい攻撃面ではなく、既存の retry の終端の欠け（可用性）で、需要 event の経路では const が false の間は不活性（他の wake 源は未確認）。
+- 試験（既存 file に足す。新しい file は作らない）：main の vitest（E1 と E2 を同じ tick で渡す／getter が throw の間／E2 の後の E1 は新 binding の 1 回）、Native の実 `open_workspace` による順序（旧 workspace の demand はすべて `workspace:opened` より前、切替の後の Suspended の slot は答えない）、D-final と同じ形で保持した participant の下では `workspace:opened` が queue に入らず open も終わらないこと（判定の 3 の要）、F-1 の expected-fail 2 本。hook で止める試験（T-RB1）は、窓が見つかって binding を載せた後の回帰試験なので、この枝には入れない。
+
+**未確認**
+- Node の TSFN の drain の件数上限、E1 と E2 が別 callback になる条件（実測していない。S-G は行わない）。
+- F-1 の Native 側の receipt の失敗（`PROJECT_MISSING`）の実呼出し。
+- 全 process の journey での stale な通知の件数（S-G。計画の測定は別）。
+
+**実装の結果と検証（追補。2026-11-19。head は試験の commit `823176aa`。node は 22、`/home/grimodex/worktrees/Grimodex/pubg5-rb-gap` の cargo の target）**
+- 製品のコード・policy・定数の変更：無し。`nir1_graph_product.rs`・`native-architecture.mjs` の `FIXED_BODIES`／`SOURCE_PINS` の対象 file には触れていない。`#[napi]` の doc コメントも変えていない（`pnpm napi:build` と `index.d.ts` の更新は不要）。
+- 試験の効き（変異。戻した）：`workspace:opened` の `clearGraphDemands` を外すと、新しい vitest 1 本（E1 と E2 を同じ tick で渡す形）と既存の「a new workspace … clears」が落ちる。`ReadyPublished` の `ready_generation` の更新を外すと、実 switch の Native 試験が「stale な Suspended の slot が `registration-unavailable` を答えた」で落ちる。
+- `vitest run --config vitest.electron.config.ts electron/main/narrativeMaintenance*`：17 file、348 件成功、1 件 expected fail（F-1）。
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：904 passed、0 failed、7 ignored。
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：82 passed、0 failed（F-1 の `should_panic` を含む）。grimodex-db の全件は実行していない（変えたのは試験 file だけ）。
+- `tsc --noEmit`：成功。`pnpm -s validate:architecture`：成功。`fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
+- 実行していないもの：Electron を起動する観測（S-G）、Node の TSFN の drain の実測、F-1 の Native 側の receipt の実呼出し、clippy・`--features licensing,legacy-keyring-migration` の cargo test・hosted CI（Quick／Full）。
+
+**レビューの反映（追補 2。2026-11-19）**
+- 経路の列挙の根拠（上の 1）：Core が `Ready` を代入するのは `set_ready`・`activate`・`complete_unchanged`・`abandon_background_recovery` の 4 関数で、test 以外の呼出しは Native の adapter（`workspace_lifecycle_view.rs` の `ensure_authority_ready`・`complete_transition_from_workspace`・`abandon_background_recovery`）経由だけ。adapter の production の呼出し元（`lib.rs`、head なしで全件）：maintenance recovery の reconcile（`:3995`）、background recovery の失敗で同じ binding へ戻す枝（`:4118`）、`ensure_authority_ready`（`:4270`・`:9183`。互換）、`open_workspace`（`:11802`）、`restore_backup`（`:12285`）、`restore_recovery_candidate`（`:12437`）。別の workspace の authority が `Ready` に入るのは `open_workspace` と `restore_backup` だけで、どちらも E2 は Ready 公開の前。ほかは同じ authority（または authority を持たない）で、別の workspace への切替ではない。
+- 判定の 3 の要（participant が E2 を止める）：`open_workspace_supervised`（`lib.rs:11664`）、`restore_backup`（`:12141`）、`restore_recovery_candidate`（`:12433`）は、blocking の closure の先頭で `acquire_transition_physical_exclusive` を取り、その後に入れ替えと E2 の emit が来る。試験 `a_held_workspace_participant_keeps_workspace_opened_out_of_the_queue` で、D-final と同じ形の participant を保持している間は、open が admit されても終わらず `workspace:opened` も queue に無く、drop の後に完了して E2 が入ることを固定した（保持しない変異で落ちる。戻した）。この試験は participant を保持する側の事実を固定するだけで、呼出し元（`begin_admitted`、D-final の `ActiveWorkspaceSnapshot`）が emit の間 participant を持ち続けることは読みのまま。
+- 訂正（上の 2）：getter が binding を返すのは「Core が `Ready(binding)` のときだけ」ではない。`resolve_workspace_snapshot` には、Core が NoWorkspace で authority が入っている互換の枝（Tauri shell と legacy の startup 用）があり、Ok を返す。Electron の切替は Transition を通るので、切替の経路の判定は変わらない。
+- 訂正（上の 4）：「emit を `retire_current` の前へ移す」案は、拒否された worker がその時点で participant を持つかを読んでいない。未確認の案として残す。
+- F-1 の確認の範囲：N-API の実呼出し（`backend_with_workspace`、uncommitted の probe で実行し破棄）で、存在しない project の delivery-failure receipt は `Err(NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING)`、attempt 付きの cycle は `Err(FOREIGN KEY constraint failed)`（`reconcile_narrative_maintenance_recovery` の後の 2 回目も同じ）で reject されることを確かめた。これは上の mock の応答と同じ形。scheduler の loop 自体は最小 mock で測ったもので、実 backend 全体（attempt の begin／cancel、terminal receipt を含む）での loop は未実行。
+- 判定と F-1 の関係：「窓なし」の受入れは、F-1 が切替の前に直ることを前提にする。F-1 が開いている間、受け入れた残余（`build_worker` の枝の停止）の最悪は、同名の project が無い workspace で「B の判定 1 回」ではなく終わらない retry になる。
+- F-1 の expected-fail 2 本（vitest の `it.fails`、Rust の `should_panic`）は (4) の範囲外の追加で、R-B の試験と独立に外せる（試験の commit `823176aa` の該当 2 hunk）。
+- commit の trailer：task の指定（`Claude Opus 5.5`）に従った。この session に渡された attribution の指示は `Claude Sonnet 5.5` で食い違う。統合者が決める。
+
+**最終の検証（追補 3。2026-11-19。head は追補 2 の commit `7cc33cff`。その後の commit はこの節だけを足す docs の commit。node は 22）**
+- `fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0。`7cc33cff` で実行）。`tsc --noEmit`・`pnpm -s validate:architecture`：成功。
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：905 passed、0 failed、7 ignored（participant の試験を足した後）。新しい Native の試験 2 本（実 switch の順序、participant の保持）を、`--test-threads=2` で 20 回続けて実行し、20 回とも成功。
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：82 passed、0 failed（追補 1 の値。その後 grimodex-db は変えていない）。grimodex-db の全件は未実行。
+- `vitest run --config vitest.electron.config.ts electron/main/narrativeMaintenance*`：17 file、348 件成功、1 件 expected fail（整形の後に再実行）。
+- clippy：`cargo clippy -p grimodex-db --all-targets -- -D warnings` と、`cargo clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` が成功。
+- eslint：変えた 2 file のうち `narrativeMaintenanceTriggers.graphDemand.test.ts` は 0 件。`narrativeMaintenance.test.ts` は基点にも 543 件の prettier の指摘が既にあり、足した部分は 0 件（足した部分だけを prettier で整形した。file 全体は整形していない）。
+- 実行していないもの：`--features licensing,legacy-keyring-migration` の cargo test、grimodex-db の全件、Electron を起動する観測（S-G）、Node の TSFN の drain の実測、実 backend 全体での F-1 の loop、hosted CI（Quick／Full）。
+
+**独立レビューの反映と窓を閉じる判断（追補 4。2026-11-19。この節を残す commit ではコード・試験を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま）**
+
+- 位置づけ：独立レビュー（Opus）が、判断「窓なし」に窓を 2 つ見つけた。この枝（`claude/pubg5-old-workspace-event-gap`）は「窓なし、試験だけ」から「窓を閉じる」変更に変える。F-1 は別 PR（枝 `claude/pubg5-missing-project-wake`）で直すので、この枝の F-1 の expected-fail 2 本（vitest の `it.fails`、Rust の `should_panic`）は commit `57973981` で外した（基点の内容へ戻した）。上の F-1 の節の記録（測定・到達・候補）は別 PR の材料として残す。
+- 委任と停止点：DR-PUBG-5-13・5-14 と同じ（C-product の worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。push・PR・merge は統合者。新しい送信先・保存範囲の拡大・閾値の緩和・新しい契約・authority は無い。
+
+**判定の 1・2 を「成功経路では」に限定する（訂正）**
+- 判定 1（E2 は Ready 公開の前）と 2（getter が新 binding を返すのは E2 の後）は、`open_workspace` と `restore_backup` の成功経路の記述だった。失敗枝では成り立たない。
+  - `restore_backup` の blocking の closure は、drain の失敗（`drain_preempted_maintenance_runs_after_workspace_swap`）、`complete_admission_handoff()?`、`workspace_swap_owner_authority(&state, true)?` の失敗で、E2 の emit の前に `Err` を返す。外側の `force_recovery` は `NEX_WORKSPACE_RESTORE_PANIC` だけを見るので、通常の publisher（`publish_workspace_lifecycle_from_workspace_off_runtime`）が Ready（復元後の新 binding）を公開する。E2 は出ない。
+  - `open_workspace` の swap の後の失敗で RecoveryRequired が候補の binding を持ち、後の maintenance recovery の reconcile（`lib.rs` の `publish_workspace_lifecycle_from_workspace`）が E2 なしで Ready にする同類の経路がある。
+  - この 2 形では、E1（旧 workspace の需要）が TSFN の queue に先にあり、main が処理する時点で getter が新 binding を返すと、E1 は新 binding に束縛され、E2 の `clearGraphDemands` が無いので wake が新 workspace の同名の project に届く（害は B の判定 1 回。`RefusedUnchanged` なら SQL だけ。ただし F-1 が開いていれば終わらない retry）。
+
+**窓 1（Native）：`build_worker` の prepare 失敗の枝が、切替の後の `ready_generation` を Suspended に書く**
+- 経路：prepare の失敗（`Count`）の後、`retire_current` で worker が participant を放し、その後に `Suspended { ready_generation: shared.ready_generation.load(..) }` を読む。participant を放してから読むまでの間に切替が完了（`ReadyPublished` で `ready_generation` が進む）すると、Suspended に新しい generation と旧 project の refusal が入る。新 workspace の begin は Suspended が current だと見て `RegistrationUnavailable` を答え、そのたびに旧 project の E1 を出す（Suspended の枝の E1 は E2 の後。participant を持つので E2 より前という判定 3 の保証は、slot が古い間だけ成り立つ）。
+- 判断：`ready_generation` は `admit()` の直後（owner thread が `ActiveWorkspaceSnapshot`、つまり participant を持つ間）に読み、prepare の失敗の枝の Suspended にその値を使う。Suspended は「その refusal を観測した Ready の generation」を持つ。切替は participant が 0 になるまで physical exclusive を取れず、`ReadyPublished` はその後なので、読んだ値は切替の完了より前で、切替の後は必ず stale になる（stale な Suspended は答えず、新しい session を始める）。
+- 依頼で最初に挙げた案（`retire_current` の前に読む）を採らなかった理由：実 worker は prepare の中で participant を放す。`CQueryWorkerOwner::prepare` の失敗は `cleanup_error` → `release_claim_after_retirement` で `workspace`（participant の pin）を drop するので、prepare が `Err` を返した時点で participant は既に無い。`retire_current` の前でも切替は完了しうる。`admit()` の直後なら worker の内部に依存しない。FakeWorker は `retire` まで participant を持つので、既存の Fake では見えない。窓を再現する試験の Fake は、実 worker と同じく prepare の失敗の中で participant を放してから止める。
+- 代案の `edge_or_closed` を load の後に見る案：load の後の確認が偽なら、切替の admission（`edge_epoch` は participants の drain の前に進む）はまだで、load は切替の前と言える。真なら Suspended の代わりに別の終端が要る。同じ不変条件（`edge_epoch` は切替の admission で進み、`ReadyPublished` はその後）に依るが、分岐が 1 つ増えるので採らない。
+- 副作用：prepare の間に同じ workspace の `ReadyPublished`（同じ authority の再公開）が入ると、Suspended は stale になり、次の begin は Suspended ではなく新しい session を始める（今は Suspended のまま答える）。その refusal は前の Ready のものなので、一度だけ再判定する方が正しい。上限は変わらず `failures_before_suspend`。
+- 「emit を `retire_current` の前へ移す」（上の判断の 4 に記録した案）では窓 1 は閉じない：窓 1 は emit でなく Suspended の generation の読みで、読みは `retire_current` の前でも後でも participant を持たない。実 worker は prepare の中で participant を放すので、この案は emit にも効かない（「未確認の案」から「効かない案」に訂正する）。
+- 残る窓（判断の 4 のまま。変えない）：`build_worker` の枝の `edge_or_closed` の確認と emit の間に、owner thread が切替の全期間止まる場合だけ。participant は prepare の中で既に放されているので、この間は常に participant を持たない。閉じるには emit の間 participant を新たに取る必要があり、owner の lifecycle の変更になるので、この枝では入れない（別 PR の候補）。
+
+**窓 2（main）：Ready の公開で E2 が出ない失敗枝の後に、旧 workspace の需要が新 binding で残る**
+- 判断：main の `handleBackendEvent` が `workspace:lifecycle-state` を受け、`(status, bindingToken)` が直前の値から変わったときに `clearGraphDemands()` だけを行い、discovery の chain には触れず return する。この event は Native が Ready の公開の後に同じ `EventQueue` へ emit し、E1 は先に同じ queue にあるので、E2 と同じ役割を、E2 の出ない経路でも果たす。
+- 経路ごとの根拠：token は revision ごとに回る（`projected_view_with_projection`）。Ready→Transition→Ready（切替・復元の失敗枝を含む）は Ready が別の token になる。Unchanged（同じ authority の再公開）は元の token に戻るが、status が Ready→Transition→Ready と変わるので、これも変化として数える（同じ authority の需要を 1 回捨てるが、Suspended の slot は次の begin で再び出す。害は無い）。background recovery の projection は token を回さないが、RecoveryRequired を経由するので status の変化で足りる。
+- 入口：`events.ts` の `handleBackendEvent` は、検証済み（`acceptWorkspaceLifecycleView`。revision が古いものと同 revision の食い違いは捨てる）の view を observer に渡す。`index.ts` の observer が `narrativeMaintenanceTriggers.handleBackendEvent` を呼ぶので、`events.ts` は変えない。renderer の `grim:emit` は `broadcastEvent` だけで observer に届かず、renderer は main の lifecycle の判定に触れない（trust boundary は変えない）。payload は `bindingToken` と `status` を読むだけで、壊れていれば捨てる（throw しない）。
+- 採らなかった案：restore の失敗枝で Native が E2 を出す。E2 は discovery の chain の再起動、Codex、Freshness、profile egress の観測など多くの消費者を動かす「workspace が開かれた」の意味の event で、失敗枝で出すと影響が広い。
+- 残余（受け入れる。blocking ではない）：lifecycle-state は Ready の公開の後に emit されるので、getter が新 binding を返してから lifecycle-state を main が処理するまでの間に E1 を処理し、その timer(0) が先に走ると、旧 project の wake が新 workspace へ 1 回届きうる（E2 の成功経路と同じ形の残余。害は B の判定 1 回）。
+- 試験：token／status の変化で、新 binding に束縛された pending の需要が起きない（変異：枝を外すと赤）。同じ (status, token) の再公開では消さない。discovery を起動しない。壊れた payload で throw しない。
+
+**試験の弱さの反映（レビュー 4）**
+- `a_real_switch_queues_the_old_demands_before_workspace_opened_and_the_stale_suspended_slot_asks_nothing` は、demand を participant なしで open の前に出し終えるので、`late == 0` は構造上必ず成り立つ。名前と doc コメントを、実際に固定していること（Ready の公開で stale な Suspended の slot が答えない）に絞る。順序そのものの根拠は participant の保持の試験と読みで、窓 1 は hook で止める新しい試験で固定する。
+
+**F-1 の到達の補足**：F-1（存在しない project の wake が終わらない）は需要 event に固有でなく、通常の durable な discovery の経路（`durableWakeProjects`）からも到達しうる。別 PR（枝 `claude/pubg5-missing-project-wake`）で直す。この PR の判断は F-1 の修正に依存しない（F-1 が開いている間の最悪は、窓 2 の残余で、同名の project が無い workspace への wake が終わらない retry になること）。
+
+**owner／lifecycle matrix と threat model の差分（GDX-PRECHECK-001）**
+- owner（Native の Graph owner の session thread）：Suspended に載せる generation の読みを participant を持つ位置（`admit` の直後）へ移すだけ。start・cancel・有限待機・終了の証拠・error の扱い・子 process・再起動時の状態は変えない。`failures_before_suspend` の上限と wake の最短間隔（2 s から 60 s）も変えない。
+- main（coordinator）：`workspace:lifecycle-state` の受信を 1 つ足し、pending の需要の timer と表を clear する（pending start の「workspace の切替で clear」を、E2 の出ない経路へ広げる）。新しい timer・永続状態・保存範囲・受信先・IPC は無い。
+- threat model の差分：新しい攻撃面は無い。clear は実行を減らす方向で、renderer が lifecycle-state を偽装して需要を捨てさせる経路は無い（renderer の emit は observer に届かない）。残る窓（emit の stall、lifecycle-state の前の timer(0)）の害の上限は上のとおり B の判定 1 回。
+
+**追補 4 の実装の結果と検証（2026-11-19。node は 22）**
+- 変えたもの：`nir1_graph_product.rs` の `build_worker`（`admit` の直後に `admitted_generation` を読み、prepare 失敗の Suspended に使う。+8 行）、`narrativeMaintenanceTriggers.ts`（`workspace:lifecycle-state` の `(status, bindingToken)` の変化で `clearGraphDemands`）。Native の E2・`restore_backup`・`lib.rs`・policy・定数・`#[napi]`（`index.d.ts`）は変えていない。F-1 の expected-fail 2 本は外した（commit `57973981`。`src-tauri` の差分は基点と空）。
+- 凍結の対象 file：`nir1_graph_product.rs` は `native-architecture.mjs` の `PATHS.nodeProduct`（走査対象）。変更箇所は `build_worker` で `FIXED_BODIES` の固定本体の外、`SOURCE_PINS` の paths に Rust file は無い。製品の Native の source が変わるので、凍結の取り直しの項目として数える。`build_worker` より後ろ（約 2400 以降）を指す `nir1_graph_product.rs:NNN` の注記は docs の 8 件（`nir1-cp4-lapse-lane-design-draft.md`、`s3-review-k67-…-check2.md`、`nir1-final-request-eval-proposal-7-draft.md`、`s6-aggregation-s6r1/README.md`、`s7r1-chain-dev-…/design-2026-11-09.md`、`cqavail-decisions.md`）で、いずれも当時の commit の行を指す記録なので書き換えない。scripts の注記（`constants.mjs` の :54・:78・:94 など）は 2400 より前でずれない。
+- 試験の効き（変異。戻した）：(a) Suspended の generation を失敗の後に読む旧コード → `a_refusal_that_finishes_after_the_switch_leaves_a_stale_suspended_slot` が「a Suspended slot that finished after the switch answered registration-unavailable」で赤。(b) `retire_current` の前に読む案（依頼の最初の案）→ 同じ試験が赤（実 worker が prepare の中で participant を放すことの再現）。(c) main の `clearGraphDemands()` の枝を外す → lifecycle view の 2 本が赤。(d) 同値の早期 return を外す → 「keeps a pending demand」が赤。
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：906 passed、0 failed、7 ignored。新しい Native の試験と participant の試験を `--test-threads=2` で 20 回続けて 20/20。
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：81 passed（F-1 の `should_panic` を外した分、追補 3 の 82 から 1 減）。grimodex-db は変えていない。
+- clippy（`-D warnings`）：Native の `--all-targets`、同じく `--features licensing,legacy-keyring-migration`、`-p grimodex-db --all-targets` がすべて成功。
+- `vitest run --config vitest.electron.config.ts`（electron/main 全体を含む全体）：114 file、2,868 件成功。`tsc --noEmit`・`tsc -p electron/tsconfig.json --noEmit`：成功。eslint：足した部分に指摘なし（`narrativeMaintenanceTriggers.ts` の既存の 5 件は基点にもある）。
+- `cargo fmt --check` は基点の時点で多数の file（`lib.rs` など）に指摘があり、足した部分だけを整形した。
+- 実行していないもの：Electron を起動する観測（S-G）、Node の TSFN の drain の実測、`--features licensing,legacy-keyring-migration` の cargo test、grimodex-db の全件、hosted CI（Quick／Full）。`pnpm napi:build` は `#[napi]` の doc コメントを変えていないので不要。
+
+**追補 5：#956・#954 の上への rebase と、基点の変化の反映（2026-11-19）**
+- 基点を `65deca68` から、#956 を squash merge した master（`1971a420`。内容は #956 の head `cc2718d6` と同じ）へ移した。この節の上の commit の hash（`823176aa`・`7cc33cff`・`57973981` など）は rebase の前のもので、今の枝の祖先にはない。
+  - F-1 の expected-fail を外していた `57973981` は、rebase で中身が空になって落ちた。最初の試験の commit のメッセージには「expected-fail で記録する」と残るが、rebase 後のその commit は `it.fails` も `should_panic` も足さない。
+- **F-1 は #954（DR-PUBG-5-19）で直った**。そのため、追補 4 の「窓なし」の受入れの前提（F-1 が直ること）は、今の基点で満たされている。
+  - 窓 2 の残余（E2 の後の E1 で新しい binding を 1 回 wake する）の最悪は、「終わらない retry」ではなく「B の判定 1 回」に戻る。
+  - 存在しない project への wake は、F-1 の修正で no-work の accepted になる。#956 の判定では works が空の cycle を需要の wake だけの cycle と見るので、rediscovery の budget も使わない。
+  - 上の「別 PR で直す」「F-1 が開いていれば」は、rebase 前の時点の記述として残す。
+- 合わさった箇所は Opus で独立レビューした。直したのは次の 1 件で、製品コードに合流で新しく生じる矛盾はなかった。
+  - #956 で、需要の wake は第 3 引数 `"demand"` を渡すようになった。追補 4 で足した vitest 4 本の期待値が 2 引数のままで、落ちていた。
+  - 第 3 引数は緩めずに `"demand"` で固定した。残余の wake が rediscovery の budget を使わないこと（DR-PUBG-5-17 の性質）も、併せて確かめるため。
+  - 作業記録の DR-PUBG-5-18 の行が、改訂前と改訂後で 2 本になっていた。改訂前の 1 本を消した。
+- rebase 後の検証（node は 22）。上の追補 4 の値は rebase 前のもの。
+  - `vitest run --config vitest.electron.config.ts electron/main`：99 file、2,061 件成功（修正の前は上の 4 本が失敗）。`tsc --noEmit`：成功。eslint・prettier：変えた file に指摘なし。
+  - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：907 passed、0 failed、7 ignored。
+  - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：85 passed（#954 が足した試験を含む）。
+  - `verify:quality`：成功。
+  - コードの 6 file は、rebase の前後で差分の行が一致することを照合した（試験の 4 か所の修正を除く）。
