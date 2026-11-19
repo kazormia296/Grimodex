@@ -814,10 +814,20 @@ const INPUT_SETS = [
 ];
 const ALL_TRUE_OUTPUTS = Object.fromEntries(LANES.map((lane) => [lane, "true"]));
 const originalOf = (id) => stripScopeGate(ci.jobs[id].if).original;
-const admitted = (inputs, event, changes) =>
-  Object.keys(ci.jobs).filter((id) => evaluateIf(ci.jobs[id].if, { inputs, event, changes }));
-const admittedOriginals = (inputs, event) =>
-  Object.keys(ci.jobs).filter((id) => evaluateIf(originalOf(id), { inputs, event }));
+// `rust-aggregate` needs `rust`: when `rust` is not admitted it is skipped and
+// the aggregate's `needs.rust.result != 'skipped'` keeps the aggregate out too.
+// The result fed to the aggregate is derived from the admission of `rust` itself.
+const MODELLED_CASCADE_JOBS = ["rust-aggregate"];
+const rustResultOf = (inputs, event, changes) =>
+  evaluateIf(ci.jobs.rust.if, { inputs, event, changes }) ? "success" : "skipped";
+const admitted = (inputs, event, changes) => {
+  const rustResult = rustResultOf(inputs, event, changes);
+  return Object.keys(ci.jobs).filter((id) => evaluateIf(ci.jobs[id].if, { inputs, event, changes, rustResult }));
+};
+const admittedOriginals = (inputs, event) => {
+  const rustResult = evaluateIf(originalOf("rust"), { inputs, event }) ? "success" : "skipped";
+  return Object.keys(ci.jobs).filter((id) => evaluateIf(originalOf(id), { inputs, event, rustResult }));
+};
 
 test("with empty or all-true change scope outputs every job is admitted exactly as before the gate", () => {
   for (const event of EVENTS) {
@@ -859,17 +869,22 @@ test("a false lane output drops exactly that lane's gated jobs and nothing else"
   assert.ok(baseline.includes("changes"));
   for (const [lane, definition] of Object.entries(rawRules.lanes)) {
     const dropped = admitted(inputs, "pull_request", { ...ALL_TRUE_OUTPUTS, [lane]: "false" });
+    // `rust-aggregate` is a cascade job this evaluator models: it follows the
+    // admission of `rust`, so it drops with its lane.
     assert.deepEqual(
       baseline.filter((id) => !dropped.includes(id)).sort(),
-      [...definition.gatedJobs].sort(),
+      [...definition.gatedJobs, ...(definition.cascadeJobs ?? []).filter((id) => MODELLED_CASCADE_JOBS.includes(id))].sort(),
       lane,
     );
     assert.deepEqual(dropped.filter((id) => !baseline.includes(id)), [], lane);
   }
   // Every lane false: only the always-run jobs, the cascade jobs (which skip
-  // through needs on GitHub, outside this evaluator) and `changes` remain.
+  // through needs on GitHub, outside this evaluator; the modelled
+  // `rust-aggregate` is skipped with `rust`) and `changes` remain.
   const noLanes = admitted(inputs, "pull_request", Object.fromEntries(LANES.map((lane) => [lane, "false"])));
-  const cascadeJobs = Object.values(rawRules.lanes).flatMap((definition) => definition.cascadeJobs ?? []);
+  const cascadeJobs = Object.values(rawRules.lanes)
+    .flatMap((definition) => definition.cascadeJobs ?? [])
+    .filter((id) => !MODELLED_CASCADE_JOBS.includes(id));
   assert.deepEqual(
     [...noLanes].sort(),
     [...ALWAYS_RUN_JOBS, "changes", ...cascadeJobs].sort(),

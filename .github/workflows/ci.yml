@@ -372,7 +372,7 @@ jobs:
     name: Frontend (type-check / lint / test)
     needs: [frontend-static, frontend-unit]
     if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Frontend の静的検査と全 shard の成功を確認
@@ -1715,12 +1715,20 @@ jobs:
   # The shared Rust suite runs as three parallel shards (2026-11-19); the job
   # `rust-aggregate` below keeps the required check name. Every shard builds the
   # same workspace with the same features as the former single `cargo test`, so
-  # the test cfg is identical. The shards partition the tests by construction:
-  #   lib-graph    `--lib` tests whose name contains the filter below
+  # the test cfg is identical. Together the shards run the target kinds the
+  # former `cargo test` ran, by construction:
+  #   lib-graph    `--lib` tests whose name contains the filter below (a guard
+  #                fails the shard if the filter matches no test)
   #   lib-rest     `--lib` tests that do not (the same string as `--skip`), so a
   #                new test module lands here unless it matches the filter
   #   integration  binary unit tests, integration tests and doctests (the targets
-  #                `--lib` does not select), plus the feature-specific reruns
+  #                `--lib` does not select), an examples build, plus the
+  #                feature-specific reruns
+  # Examples are built, not run (as the former `cargo test` did): `cargo build
+  # --profile test --examples` compiles them as plain executables under the test
+  # profile, exactly as `cargo test` did. No target with `test = true` among the
+  # benches and examples is covered; there is none today, and a contract test
+  # (scripts/ci-pause.test.mjs) fails if a Cargo.toml declares one.
   # `cargo check` and `cargo clippy` run once, in lib-graph.
   rust:
     name: Shared Rust crates (${{ matrix.shard }})
@@ -1807,13 +1815,22 @@ jobs:
           --features grimodex-semantic/semantic-embedding
           -- -D warnings
 
+      # The name filter selects nothing, and still succeeds, if the module is
+      # renamed; fail then, so the parallelism is not lost silently (lib-rest
+      # still covers every other test, so nothing is missing meanwhile).
       - name: cargo test (lib tests, graph modules)
         if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
-        run: >-
-          cargo test --workspace --exclude grimodex
-          --features grimodex-semantic/semantic-embedding
-          --lib -- narrative_extraction::nir1_graph
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding --lib -- narrative_extraction::nir1_graph 2>&1 | tee "$log"
+          passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"
+          echo "lib-graph: $passed tests passed"
+          if [ "$passed" -eq 0 ]; then
+            echo "lib-graph ran no test: the filter matches no module (renamed?)" >&2
+            exit 1
+          fi
 
       - name: cargo test (lib tests, all other modules)
         if: matrix.shard == 'lib-rest'
@@ -1838,6 +1855,17 @@ jobs:
           cargo test --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
           --doc
+
+      # `cargo test` also built the examples (not run: test = false). The
+      # shards above select no example, so build them here: a plain executable
+      # under the test profile with the same features, as `cargo test` did.
+      - name: cargo build (examples)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo build --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --profile test --examples
 
       - name: cargo test (migration supervisor failpoints)
         if: matrix.shard == 'integration'
