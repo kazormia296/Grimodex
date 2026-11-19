@@ -366,7 +366,11 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       ? " && !inputs.independent_gates" : "";
     // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
     const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
-    const ordinaryCondition = `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
+    // The Quality job also runs on the nightly schedule (its impact step is the only automatic run of the whole
+    // impact selection after a merge); it has no event condition, and the schedule test below pins that.
+    const ordinaryCondition = id === "quality"
+      ? `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
+      : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
@@ -746,6 +750,13 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
+  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs and the Quality job.
+  // Quality's impact step is the only automatic run of the whole impact selection after a merge.
+  assert.deepEqual(admitted({}, "schedule"), [
+    "changes", "quality",
+    "electron-product-journeys-build", "electron-product-journeys-c2zc",
+    "electron-product-journeys", "electron-product-journeys-aggregate",
+  ]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true, source_canonical_contracts: true }), ["electron"]);

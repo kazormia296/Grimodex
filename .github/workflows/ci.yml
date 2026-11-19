@@ -288,9 +288,19 @@ jobs:
 
   quality:
     name: Quality (traceability / impact-selected light gates)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    # The nightly schedule runs this job too (2026-11-19): its impact step is the
+    # only automatic run of the impact-selected suites on `master` now that a
+    # master push does not run them.
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A warm run of the full selection took 39 to 65 minutes on master pushes
+    # (2026-11-18/19), against 90 minutes here. Every event that runs the impact
+    # step (the same condition as the step) gets 150 minutes: a run with a cold
+    # `rust-cache` (for example right after a stable rustc update) may take much
+    # longer, and `rust-cache` saves only after a successful job, so a timeout
+    # may leave the next run cold too (it can still restore part of an older
+    # entry). A pull request or master push job has no cargo work and keeps 90.
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag') && 150 || 90 }}
     env:
       # Impact-selected suites compile many test binaries. Skip DWARF like the
       # rust / electron-native jobs; panic messages and symbol names remain.
@@ -326,11 +336,22 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # Only the impact step below runs cargo (`pnpm verify:quality` and the
+      # install run none: checked on 2026-11-19 with a failing `cargo` on PATH),
+      # so the Rust steps use the impact step's condition. A pull request or
+      # master push job with an empty or stale `target` must not save a
+      # `rust-cache` entry: the entry is immutable per key, a run that finds its
+      # exact key does not save ("Cache up-to-date"), and the entry on the default
+      # branch is the one every other ref restores, so such a save there would
+      # leave the nightly run compiling from scratch every night until the key
+      # changes.
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         with:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         with:
           # The impact-selected suites also build and test the N-API crate
           # (own Cargo.lock / target), which was recompiled from scratch.
@@ -346,25 +367,83 @@ jobs:
           GATE_B2_WORKTREE_SMOKE: "1"
         run: pnpm verify:quality
 
-      # Pull requests do not run this step: the canonical Quick already ran the
-      # same impact selection on the candidate head (2026-11-15). The PR's
-      # ci.yml measures the merge ref (`github.sha`), not the candidate head,
-      # so the combination with master changes that landed after the Quick is
-      # not checked by impact until the master push. A master push and a manual
-      # dispatch still run it; a reusable call inherits the caller's
-      # `github.event_name`, so it follows its caller. Gate B2 accepts only the
-      # events that run it.
+      # The nightly schedule, a manual dispatch and a release tag run this step;
+      # a pull request and a master push do not (2026-11-19).
+      # A pull request does not: the canonical Quick already ran the same impact
+      # selection on the candidate head. A master push does not either: the merge
+      # needed that Quick, and the Frontend, Shared Rust and Electron native jobs
+      # run most of the same tests in full; the job keeps `pnpm verify:quality` as
+      # its contract check. What only impact runs is therefore not checked by a
+      # master push: the grimodex-db tests built with the product feature
+      # `native-current-human-capture` (the N-API crate always enables it; Shared
+      # Rust and the Full registry build without it), the tests of the eval-only
+      # features (`nir1-graph-eval`, `nir1-final-request-eval`), and many Node
+      # tests that no other job or registry entry names by path (the NIR-1
+      # graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
+      # The nightly run covers them: it is the only automatic run of the whole
+      # selection after a merge, so a break that only the combination of merged
+      # changes shows is found by the next nightly run, usually a day or so later
+      # (GitHub's schedule delays or skips runs, so it can take longer).
+      # A schedule, a dispatch and a new tag push have no resolvable comparison
+      # base (a schedule or dispatch event has no `before`; a new tag's `before`
+      # is the zero SHA), so the selector sees an empty or incomplete diff and
+      # selects every suite. Only the nightly run checks that (fail-closed): the
+      # step is red unless every suite was selected and passed, so a selection
+      # narrowed by a stray working-tree path is not a silent partial run. A
+      # dispatch and a release tag call are judged by the selector's exit code
+      # alone, as before (a moved tag, whose `before` resolves, selects by diff).
+      # A reusable call inherits the caller's `github.event_name` and ref. The
+      # only caller is release.yml, whose `ci` job runs on a tag push
+      # (`push`, `ref_type` tag), so the release call keeps running this step.
+      # Gate B2 does not depend on this step: its certification runner runs
+      # `impact-selected-light` itself on the candidate, and it accepts only
+      # `push` and `workflow_dispatch` runs of this workflow (never `schedule`)
+      # with the job names listed in gate-b2.yaml.
       - name: Impact-selected light gates
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         env:
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           QUALITY_HEAD_SHA: ${{ github.sha }}
+          QUALITY_EVENT: ${{ github.event_name }}
         run: |
+          set -eu
+          report="$RUNNER_TEMP/impact-report.json"
           if [ -n "$QUALITY_BASE_SHA" ]; then
-            pnpm eval:impact -- --base "$QUALITY_BASE_SHA" --head "$QUALITY_HEAD_SHA" --run
+            pnpm eval:impact -- --base "$QUALITY_BASE_SHA" --head "$QUALITY_HEAD_SHA" --run --report "$report"
           else
-            pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run
+            pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run --report "$report"
           fi
+          # Nightly only, fail closed: every suite must have been selected, and every selected suite must have passed.
+          if [ "$QUALITY_EVENT" = schedule ]; then
+            node -e '
+              const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+              const selection = report.selection ?? {};
+              const execution = report.execution ?? [];
+              const problems = [];
+              if (selection.allSelected !== true) problems.push("allSelected=" + selection.allSelected + " (" + selection.reason + ")");
+              if (selection.docsMarkdownOnly !== false) problems.push("docsMarkdownOnly=" + selection.docsMarkdownOnly);
+              const suites = selection.suiteIds ?? [];
+              if (suites.length === 0) problems.push("no suite selected");
+              if (execution.length !== suites.length) problems.push("executed " + execution.length + " of " + suites.length + " selected suites");
+              for (const entry of execution) if (entry.status !== "passed") problems.push(entry.suiteId + " " + entry.status);
+              if (problems.length > 0) {
+                console.error("::error title=Impact selection is not the full suite::" + problems.join("; "));
+                process.exit(1);
+              }
+              console.log("impact: all " + suites.length + " suites selected and passed");
+            ' "$report"
+          fi
+
+      # Keep the nightly report so a red night can be traced to the failing
+      # suite and command (also on failure).
+      - name: Upload impact report
+        if: always() && github.event_name == 'schedule'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: impact-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/impact-report.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   # frontend は Gate B2 の必須 job 名（Frontend (type-check / lint / test)）を保つ集約 job。
   # 静的検査は frontend-static で 1 回、Vitest は frontend-unit の 3 shard で並列に走る。

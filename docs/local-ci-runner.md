@@ -66,9 +66,21 @@ that cannot read `docs/` is dropped, and only the Node tests that read documents
 remain. A suite left with no command is `skipped`, not failed. This also applies
 to the Light run of Gate B2 (`scripts/quality/certify-gate-b2.mjs`), which reads
 only the exit code, so it does no harm there. The `ci.yml` of a pull request
-measures the merge ref and the Quick measures the candidate head, so master
-changes that landed after the Quick are first checked by impact on the `master`
-push.
+measures the merge ref and the Quick measures the candidate head. The `ci.yml`
+Quality job runs impact on the nightly schedule, on a manual dispatch and on the
+release workflow's call on a tag push, not on a pull request or a `master` push.
+What only impact runs (the grimodex-db tests built with the product feature
+`native-current-human-capture`, the eval-only feature tests, and many Node tests
+that no other job or registry entry names) is therefore checked on `master` by the
+nightly run, usually a day or so after a merge (GitHub's schedule delays or
+skips runs, so it can take longer), and master changes that landed
+after the Quick are checked by impact there. The nightly, dispatch and tag runs
+have no comparison base (the `before` of a new tag does not resolve), so they
+select every suite and are not narrowed by the docs-markdown-only rule. Only the
+nightly run checks that: its step fails unless every suite was selected and
+passed; a dispatch and a tag call are judged by the selector's exit code alone
+(a moved tag, whose `before` resolves, selects by diff). A nightly run that does
+not succeed is a red `master`.
 
 ### Split hosted Full
 
