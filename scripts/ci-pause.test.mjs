@@ -846,10 +846,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     assert.equal(step.if, profile ? `!inputs.canonical_profile || inputs.canonical_profile == '${profile}'`
       : migrationTests.includes(step) ? "!inputs.canonical_profile" : undefined);
   }
-  assert.deepEqual(migrationTests.map((step) => step.run.trim()), [
+  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
+  assert.deepEqual(migrationTests.map((step) => step === libraryTest ? "<failpoint library>" : step.run.trim()), [
     "cargo test -p grimodex-db --test workspace_migration_supervisor",
     "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
-    "cargo test -p grimodex-db --features test-failpoints --lib",
+    "<failpoint library>",
     "cargo test -p grimodex-db --features test-failpoints --test workspace_safe_mode_outcome",
     "cargo test -p grimodex-db --test release_schema_migration",
     "cargo test -p grimodex-db --features test-failpoints --test migration_subprocess_crash --test restore_subprocess_crash",
@@ -858,10 +859,29 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   ]);
   const crashTest = migrationTests.find(({ name }) => name === "Subprocess crash recovery");
   const safeTest = migrationTests.find(({ name }) => name === "Safe Mode structured outcome + restore-by-id");
-  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
   assert.equal(crashTest["working-directory"], "src-tauri");
   assert.equal(safeTest["working-directory"], "src-tauri");
   assert.equal(libraryTest["working-directory"], "src-tauri");
+  // The library step runs only the modules that hold the test-failpoints injection
+  // points (the feature-off suite is the Shared Rust job's) and fails closed when
+  // a filter stops matching: every failpoint-only test must be reported `ok` and a
+  // floor on the passed count must hold. Never weaken it back to a bare `--lib`.
+  const libraryRun = libraryTest.run;
+  assert.match(libraryRun, /^set -euo pipefail$/m);
+  assert.match(libraryRun, /cargo test -p grimodex-db --features test-failpoints --lib -- \\\n\s+backup_restore:: recovery:: migration_supervisor:: 2>&1 \| tee "\$log"/);
+  const failpointOnlyTests = [
+    "backup_restore::tests::finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once",
+    "backup_restore::tests::normal_restore_epoch_failpoints_never_leave_live_image_epochless",
+    "backup_restore::tests::restore_failure_leaves_declarations_untouched",
+    "recovery::tests::atomic_replace_failure_republish_path_uses_pre_restore_digest",
+    "recovery::tests::forensic_post_replace_failure_requires_recovery_not_main_only_success",
+    "recovery::tests::safe_mode_restore_after_live_seal_failpoint_keeps_wal_commits_and_marker",
+    "recovery::tests::safe_mode_restore_after_replace_failpoint_rolls_back_live",
+    "recovery::tests::safe_mode_restore_after_rollback_snapshot_failpoint_leaves_live",
+  ];
+  for (const name of failpointOnlyTests) assert.ok(libraryRun.includes(`${name}`), name);
+  assert.match(libraryRun, /grep -Fxq "test \$required \.\.\. ok" "\$log"/);
+  assert.match(libraryRun, /test "\$\{passed:-0\}" -ge 50$/m);
   const selectedTests = (inputs) => migrationTests.filter((step) => !step.if || value(step.if, inputs));
   assert.deepEqual(selectedTests(defaults), migrationTests);
   assert.deepEqual(selectedTests({ product_journey_mode: "all" }), migrationTests);
