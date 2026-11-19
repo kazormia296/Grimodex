@@ -262,6 +262,48 @@
 - 確認：U-6（決定済み。2026-11-19）。
 - 検証：第 8 節の「wire bytes」。
 
+#### MP-2 の結果と判断（2026-11-19）
+
+- 置き場：`electron/main/mastra/`（`agentLanguageModel.ts`、`agentModelPolicy.ts`、`agentWire.ts`）。製品の経路からは参照しない。
+- **判断（audit と送信の持ち主）**：adapter は `send` と audit の 4 つ（begin／dispatched／complete／fail）を**注入で受けるだけ**にした。
+  N-API の直接呼出し、`callerIdentity`、audit の書き手、capability の発行は MP-3 の owner が持つ（U-4 の (a)〜(c)）。
+  注入された audit は doGenerate 1 回ごとに begin → dispatched → send → complete（失敗なら fail を 1 回）の順に呼ばれる。
+- **判断（capability の運搬）**：tool-call の `providerMetadata` に載せると Mastra が step の `toolCalls` に残す（**事実**、試験で確認）。
+  そのため turn 内の map（`toolCallId` で引く）にし、tool の `execute` が `context.agent.toolCallId` で引く。
+  audit の complete に渡す応答からは `agentAuthorityCapabilities` を除いた（現行の `chatApi` は応答全体を渡す。合わせるかは MP-3 で決める）。
+- **事実（再試行）**：Mastra 1.83.0 は、`isRetryable:true` の error に対して、既定で model を 3 回呼ぶ。
+  `maxRetries: 0`（Agent と call の両方）だけでは 3 回のまま。既定の error processors を `errorProcessorDefaults: false` で外すと 1 回になる。
+  固定は `AGENT_NO_RETRY_CONFIG`（`maxRetries: 0`、`maxProcessorRetries: 0`、`errorProcessorDefaults: false`）と `AGENT_CALL_OPTIONS`（`toolCallConcurrency: 1`、`maxProcessorRetries: 0`）。
+  call 時の `maxProcessorRetries` は agent の値を上書きするので、call 側にも固定を置く。
+  既定の processors は、`isRetryable` が false でも、error の message が ECONNRESET／socket hang up に当たれば再送する（**事実**）。
+  また、Mastra は error の `cause` の連鎖から `isRetryable` を読む。そこで adapter の error は、message を kind だけの固定の文にし、元の error を `cause` に載せない（別名の field に持つ）。
+  再送を止める正本は固定の設定で、error の形は二重の保険にとどまる。
+- **判断（stopReason と tool の実行）**：現行の loop は stopReason が `tool_use` のときだけ tool を実行する。
+  adapter も、`tool_use` 以外では tool-call を返さない。Chat Completions では `finish_reason:"stop"` と tool_calls が同居しうるし、Anthropic の `max_tokens` では入力の切れた tool_use が届きうる。
+- **事実（中立の名前）**：provider 名か model id のどちらかが anthropic／openai 系だと、tool schema が書き換わる（`additionalProperties`、optional の nullable 化）。
+  中立名（provider と model id の両方）で書換えは 0。prompt の書換え（署名つき reasoning の除去、tool id の書換え）は、anthropic 系の名乗りと既定の processors の両方がそろうときだけ起きる。
+- **事実（Responses の reasoning）**：summary が空で署名だけの block も、Mastra は落とさない（generate と stream）。順は reasoning → tool-call のまま。
+- usage：V4 の写像は route の provider で分ける（Anthropic は total＝input＋read＋write、OpenAI・OpenRouter は total＝input）。台帳と audit には wire の生値を逆算なしで運ぶ。
+- stopReason：tool_use→tool-calls、end_turn／stop_sequence→stop、max_tokens／length／model_context_window_exceeded→length、refusal→content-filter、ほかは other（raw を保持）。
+- 試験：
+  - 特性試験（`src/features/chat/agent/mastraAdapterCharacterization.test.ts`）：本物の `runAgentLoop`＋`chatApi.sendAgentMessage` と、本物の Mastra Agent＋adapter の args を、6 route × 場面 A〜J（H は stopReason が tool_use 以外で tool block が同居する 4 通り、I は結果が null、J は切詰め）で bytes 比較する。
+    6 route は anthropic、openai chat／responses、openrouter chat（claude／その他）、openrouter responses。
+  - 両経路の生の args は `electron/main/mastra/__fixtures__/wire-args/` に書き出す。更新は `GRIMODEX_UPDATE_WIRE_FIXTURES=1` のときだけ。
+  - Rust（`grimodex-ai/src/mastra_wire_parity_tests.rs`）：fixture の args から、送信前の `request_prepared` で最終の body を取る。URL と header は同じ params から組む。current と adapter の bytes 一致を試験する。
+    observer は 3 経路とも送信前に発火した（**事実**）ので、製品の組立ては変えていない。
+    dev-dependencies で serde_json の `preserve_order` を addon の build と同じ条件にした。陰性対照で、key 順の差が bytes の差になることを確かめた。
+- 現行の挙動で気づいた点（MP-2 では直さない）：
+  - Chat Completions は `finish_reason` の `length` を `end_turn` に潰す（Responses は `length`）。
+  - `redacted_thinking` と OpenRouter の `reasoning_details` は往復しない。
+  - Responses は cache の区切りを使わず、`cost` が常に None。
+  - Chat Completions は tool_result の `isError` を送らない。
+- 未確認：OpenRouter の `cache_write_tokens` が `prompt_tokens` に含まれるか（台帳は生の値なので影響しない）。実 key での送信（U-14／U-18）。
+- MP-3 へ渡すこと（MP-2 のレビューから）：
+  - audit の `parentExecutionId` の連鎖（`chatTurnStoreActions.ts` は前の executionId をつなぐ）。特性試験は両側とも null に固定している。
+  - Mastra の既定の logger は、adapter の error を元の error ごと console に出す。logger の注入が要る。
+  - 現行の `chatApi.sendAgentMessage` は、`agentAuthorityCapabilities` を含む応答全体を audit の complete に渡す。ai-audit の writer に redaction があるかは**未確認**。
+  - Rust の parity 試験は、TS の特性試験が args の一致を先に強制するので、単独では落ちない。効いているのは陰性対照、route の検査、欄名の drift の検出。napi の変換（`send_agent_message` の中の順序）は試験側の写しで、drift は欄名だけを見る。
+
 ### MP-3 loop の骨格（tool 0・memory 0）
 
 - 範囲：

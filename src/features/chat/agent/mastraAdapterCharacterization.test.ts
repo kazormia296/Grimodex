@@ -99,6 +99,7 @@ import type {
 } from "./agentTypes";
 import {
   CACHE_SEGMENTS,
+  DEFAULT_TOKEN_BUDGET,
   NEW_USER,
   RAW_HISTORY,
   ROUTES,
@@ -227,7 +228,7 @@ async function runCurrent(route: RouteCase, scene: Scene): Promise<Run> {
   const result = await runAgentLoop({
     messages: buildAgentMsgs(scene.strip ?? true, scene.history ?? RAW_HISTORY),
     tools: structuredClone(SMALL_TOOLS),
-    tokenBudget: 1_000_000,
+    tokenBudget: scene.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
     maxToolCalls: 10,
     callLimitMessage: "CALL_LIMIT",
     tokenBudgetMessage: "TOKEN_LIMIT",
@@ -248,7 +249,7 @@ async function runCurrent(route: RouteCase, scene: Scene): Promise<Run> {
         toolCallId,
         name,
         content: outcome?.ok,
-        summary: "ok",
+        summary: outcome?.summary ?? "ok",
         tokensUsed: 5,
       };
     },
@@ -311,7 +312,10 @@ async function runMastra(
         execute: async (input: Record<string, unknown>) => {
           executed.push({ name: def.name, input });
           // renderer の整形（JSON.stringify／null は summary／失敗は throw）を execute 側で再現して文字列で返す。
-          return formatToolResultContent(scene.results[def.name]);
+          return formatToolResultContent(
+            scene.results[def.name],
+            scene.tokenBudget,
+          );
         },
       }),
     ]),
@@ -409,7 +413,7 @@ describe("Mastra adapter の特性試験（現行の loop と bytes 一致）", 
       "openrouter-chat-other",
       "openrouter-responses",
     ]);
-    expect(cases.length).toBe(6 * 6 + 2);
+    expect(cases.length).toBe(6 * (6 + 2 + 4) + 2);
   });
 
   it.each(

@@ -372,6 +372,8 @@ const toolStep = (style: Style, blocks: Block[]): AgentWireResponse => ({
 export interface ToolOutcome {
   ok?: unknown;
   err?: string;
+  /** `ToolResult.summary`。content が null のとき loop が会話に載せる（既定 "ok"）。 */
+  summary?: string;
 }
 
 export interface Scene {
@@ -379,6 +381,8 @@ export interface Scene {
   /** 履歴の assistant に `stripToolProtocol` を掛けるか（既定 true。現行の renderer と同じ）。 */
   readonly strip?: boolean;
   readonly history?: RawHistory;
+  /** loop の tokenBudget（既定 1,000,000）。tool_result の切詰めの上限（その 1/4）を決める。 */
+  readonly tokenBudget?: number;
   /** この scene を走らせる route の style（省略は全 route）。 */
   readonly onlyStyles?: readonly RouteCase["style"][];
   readonly script: (route: RouteCase) => AgentWireResponse[];
@@ -534,6 +538,81 @@ export const SCENES: readonly Scene[] = [
     },
     results: { search_events: { ok: { events: [], total: 0 } } },
   },
+  // tool 結果が null：loop は JSON.stringify(null) ではなく summary を会話に載せる（呼び手の execute の責務）。
+  {
+    id: "I-tool-null-result",
+    script: (route) => {
+      const style = STYLES[route.style];
+      return [
+        toolStep(style, [
+          {
+            type: "tool_use",
+            id: style.id("nl"),
+            name: "search_events",
+            input: { query: "存在しない" },
+          },
+        ]),
+        final(style, "見つかりませんでした。"),
+      ];
+    },
+    results: {
+      search_events: { ok: null, summary: "該当するイベントはありません。" },
+    },
+  },
+  // tool 結果が token 上限（tokenBudget の 1/4）を超える：loop は切り詰めて "...[truncated: 元 N tokens]" を付ける。
+  {
+    id: "J-tool-result-truncated",
+    tokenBudget: 400,
+    script: (route) => {
+      const style = STYLES[route.style];
+      return [
+        toolStep(style, [
+          {
+            type: "tool_use",
+            id: style.id("tr"),
+            name: "search_events",
+            input: { query: "長い結果", limit: 50 },
+          },
+        ]),
+        final(style, "長い結果を要約しました。"),
+      ];
+    },
+    results: {
+      search_events: {
+        ok: {
+          events: Array.from({ length: 12 }, (_, index) => ({
+            eventId: `e${index}`,
+            title: `長い題名その${index}`,
+          })),
+        },
+      },
+    },
+  },
+  // stopReason が tool_use 以外で tool_use block が同居：loop は tool を実行せず text で止まる。
+  ...(["max_tokens", "refusal", "end_turn", "pause_turn"] as const).map(
+    (stopReason): Scene => ({
+      id: `H-stop-${stopReason}-with-tool-block`,
+      script: (route) => {
+        const style = STYLES[route.style];
+        return [
+          {
+            blocks: [
+              { type: "text", content: "途中まで。" },
+              {
+                type: "tool_use",
+                id: style.id("h"),
+                name: "search_events",
+                input: { query: "王の死", limit: 3 },
+              },
+            ],
+            stopReason,
+            ...style.usage,
+          },
+        ];
+      },
+      results: {},
+    }),
+  ),
 ];
 
 export function scenesFor(route: RouteCase): Scene[] {
@@ -542,13 +621,34 @@ export function scenesFor(route: RouteCase): Scene[] {
   );
 }
 
-/** renderer の `agentLoop` が tool_result の content を作る規則（truncation を除く）。execute が文字列で返す。 */
+export const DEFAULT_TOKEN_BUDGET = 1_000_000;
+/** `agentLoop.ts` の `TOOL_RESULT_TOKEN_CAP_RATIO`（export されないので写す）。 */
+const TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
+
+/**
+ * renderer の `agentLoop` が tool_result の content を作る規則の写し（成功の整形・null は summary・token 上限の切詰め。
+ * 試験の tokenizer は 1 char ＝ 1 token）。adapter の責務ではなく呼び手の tool の `execute` の責務で、
+ * 両経路の wire が一致することを特性試験で確かめる。失敗は throw（adapter が `Error: ` を前置する）。
+ */
 export function formatToolResultContent(
   outcome: ToolOutcome | undefined,
+  tokenBudget = DEFAULT_TOKEN_BUDGET,
 ): string {
   if (outcome?.err) throw new Error(outcome.err);
-  if (outcome?.ok == null) return "No result (not found).";
-  return JSON.stringify(outcome.ok);
+  let content =
+    outcome?.ok == null
+      ? outcome?.summary || "No result (not found)."
+      : JSON.stringify(outcome.ok);
+  const cap = Math.max(
+    1,
+    Math.floor(tokenBudget * TOOL_RESULT_TOKEN_CAP_RATIO),
+  );
+  const tokens = content.length;
+  if (tokens > cap) {
+    const keepChars = Math.max(1, Math.floor((content.length * cap) / tokens));
+    content = `${content.slice(0, keepChars)}...[truncated: 元 ${tokens} tokens]`;
+  }
+  return content;
 }
 
 export function asWireTools(

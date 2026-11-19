@@ -15,7 +15,10 @@ import type { AgentWireResponse } from "./agentWire.js";
  *   model が投げると、既定の設定では 3 回呼ぶ（generate／stream とも。待ち時間は約 6 秒）。
  * - `maxRetries: 0`（Agent の既定でもある）だけでは止まらない。`errorProcessorDefaults: false` で 1 回になる。
  * - `maxProcessorRetries: 0` も併せて固定する（processor 経由の再送の上限）。
- * adapter が投げる error（`AgentModelError`）は `isRetryable:false` なので、設定なしでも再送されない（二重の固定）。
+ * - 既定の `StreamErrorRetryProcessor` は、error の message が /econnreset|socket hang up/i に当たると
+ *   `isRetryable:false` でも再送する（実測：設定なしで send 3 回）。
+ * adapter が投げる error（`AgentModelError`）は `isRetryable:false` で、message は kind だけの固定の文
+ * （元の error の文は `origin` にだけ持つ）なので、設定なしでも再送されない（二重の固定）。
  */
 export const AGENT_NO_RETRY_CONFIG = Object.freeze({
   maxRetries: 0,
@@ -26,6 +29,8 @@ export const AGENT_NO_RETRY_CONFIG = Object.freeze({
 /** `agent.generate(..., options)`／`agent.stream(..., options)` に展開する。tool は tool_use の順に逐次実行（S6 #15）。 */
 export const AGENT_CALL_OPTIONS = Object.freeze({
   toolCallConcurrency: 1,
+  // call 時の maxProcessorRetries は agent の値を上書きする（実測）。ここでも 0 に固定する。
+  maxProcessorRetries: 0,
 } as const);
 
 // ---- error ---------------------------------------------------------------

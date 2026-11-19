@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import type { LanguageModel } from "ai";
 import type { MastraModelConfig } from "@mastra/core/llm";
-import { APICallError } from "ai";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // env の固定の前に Mastra が読む値の対照用（固定で除かれることを確かめる）。load の前に置く。
@@ -116,8 +115,11 @@ const endStep = (text = "終わり"): AgentWireResponse => ({
 });
 
 let kit: MastraTestKit;
+// `ai` の実行時の読込も env の固定と通信 hook の後（`loadMastraForTest()` の後）に行う。
+let APICallError: typeof import("ai").APICallError;
 beforeAll(async () => {
   kit = await loadMastraForTest();
+  ({ APICallError } = await import("ai"));
 });
 afterAll(() => {
   // 試験中の外部への接続は 0。
@@ -306,19 +308,26 @@ describe("境界（注入だけ・未配線）", () => {
     }
   });
 
-  it("製品の経路（electron/main の他 file）から参照されない", () => {
-    const mainDir = path.join(REPO, "electron/main");
-    for (const entry of fs.readdirSync(mainDir, { withFileTypes: true })) {
-      if (
-        !entry.isFile() ||
-        !entry.name.endsWith(".ts") ||
-        /\.(test|spec|testSupport)\.ts$/.test(entry.name)
-      )
-        continue;
-      expect(
-        fs.readFileSync(path.join(mainDir, entry.name), "utf8"),
-        entry.name,
-      ).not.toMatch(/from "\.\/mastra\//);
+  it("製品の経路（electron/main・preload・shared の全 file、subdirectory と動的 import を含む）から参照されない", () => {
+    const own = path.join(REPO, "electron/main/mastra");
+    const walk = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return full === own ? [] : walk(full);
+        return /\.(?:ts|tsx|mjs|cjs|js)$/.test(entry.name) &&
+          !/\.(?:test|spec|testSupport)\.[a-z]+$/.test(entry.name)
+          ? [full]
+          : [];
+      });
+    const files = ["main", "preload", "shared"].flatMap((dir) =>
+      walk(path.join(REPO, "electron", dir)),
+    );
+    expect(files.length).toBeGreaterThan(50);
+    // static／動的 import・require・再 export のどれでも、mastra/ 配下を指す specifier は無い。
+    const reference =
+      /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)["'`][^"'`]*\/mastra\/[^"'`]*["'`]/;
+    for (const file of files) {
+      expect(fs.readFileSync(file, "utf8"), file).not.toMatch(reference);
     }
   });
 });
@@ -671,6 +680,9 @@ describe("再試行しない", () => {
     });
   const throwers: [string, () => Error][] = [
     ["plain Error", () => new Error("boom")],
+    // 既定の StreamErrorRetryProcessor は message が /econnreset|socket hang up/i に当たると isRetryable に関係なく再送する。
+    ["message が ECONNRESET の Error", () => new Error("read ECONNRESET")],
+    ["message が socket hang up の Error", () => new Error("socket hang up")],
     ["isRetryable:true の APICallError", retryable],
     [
       "isRetryable:true を持つ object",
@@ -705,6 +717,56 @@ describe("再試行しない", () => {
         }
       },
     );
+  });
+
+  it("adapter の error の message は kind だけの固定の文で、元の error の文は origin にだけ持つ（ECONNRESET の文が Mastra の再送の matcher に届かない）", async () => {
+    const h = harness([
+      () => {
+        throw new Error("read ECONNRESET");
+      },
+    ]);
+    const error = await h.model
+      .doGenerate({
+        prompt: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+        providerOptions: providerOptions(),
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ kind: "send-failed" });
+    expect(String((error as Error).message)).not.toMatch(
+      /econnreset|socket hang up/i,
+    );
+    expect((error as AgentModelError).origin).toMatchObject({
+      message: "read ECONNRESET",
+    });
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it("call 時の maxProcessorRetries は agent の値を上書きする（陰性対照）。AGENT_CALL_OPTIONS は 0 に固定するので 1 回", async () => {
+    const retrying = {
+      id: "always-retry",
+      name: "always-retry",
+      processAPIError: async () => ({ retry: true }),
+    };
+    const run = async (callOptions: object) => {
+      const h = harness([
+        () => {
+          throw new Error("boom");
+        },
+      ]);
+      const agent = makeAgent(h, {
+        ...AGENT_NO_RETRY_CONFIG,
+        errorProcessors: [retrying],
+      });
+      await agent
+        .generate(USER, { ...callOptions, providerOptions: providerOptions() })
+        .catch(() => undefined);
+      return h.sends.length;
+    };
+    expect(await run({ toolCallConcurrency: 1, maxProcessorRetries: 2 })).toBe(
+      3,
+    );
+    expect(await run(AGENT_CALL_OPTIONS)).toBe(1);
+    expect(AGENT_CALL_OPTIONS.maxProcessorRetries).toBe(0);
   });
 
   it("adapter が投げる error は isRetryable:false で、AI SDK の APICallError として判定される", async () => {
@@ -782,6 +844,104 @@ describe("再試行しない", () => {
   }, 60_000);
 });
 
+describe("stopReason が tool_use 以外のとき tool を実行しない（現行の loop と同じ）", () => {
+  const FINISH = {
+    max_tokens: "length",
+    refusal: "content-filter",
+    end_turn: "stop",
+    pause_turn: "other",
+  } as const;
+
+  describe.each(["generate", "stream"] as const)("%s", (method) => {
+    it.each(Object.entries(FINISH))(
+      "text ＋ tool_use block ＋ stopReason=%s：tool 実行 0・send 1 回・finishReason=%s",
+      async (stopReason, unified) => {
+        const h = harness([
+          {
+            blocks: [
+              { type: "text", content: "途中まで。" },
+              {
+                type: "tool_use",
+                id: "call_s",
+                name: "search_events",
+                input: { query: "a" },
+              },
+            ],
+            stopReason,
+            agentAuthorityCapabilities: {
+              call_s: {
+                capability: "CAP",
+                executionId: "e",
+                chatMessageId: "m",
+                mainOwnedProvenanceId: "p",
+              },
+            },
+          },
+          endStep("2 回目（呼ばれてはならない）"),
+        ]);
+        let executed = 0;
+        const tools = {
+          search_events: kit.createTool({
+            id: "search_events",
+            description: "d",
+            inputSchema: kit.jsonSchema<{ query: string }>({
+              type: "object",
+              properties: { query: { type: "string" } },
+              required: ["query"],
+            }),
+            execute: async () => {
+              executed += 1;
+              return "ok";
+            },
+          }),
+        };
+        const agent = new kit.Agent({
+          id: "stop",
+          name: "stop",
+          instructions: "S",
+          model: h.model,
+          tools,
+          ...AGENT_NO_RETRY_CONFIG,
+        });
+        const options = {
+          ...AGENT_CALL_OPTIONS,
+          providerOptions: providerOptions(),
+        };
+        let text: string;
+        let finishReason: string | undefined;
+        if (method === "generate") {
+          const result = await agent.generate(USER, options);
+          text = result.text;
+          finishReason = result.finishReason;
+        } else {
+          const output = await agent.stream(USER, options);
+          for await (const chunk of output.fullStream) void chunk;
+          text = await output.text;
+          finishReason = await output.finishReason;
+        }
+        expect(executed).toBe(0);
+        expect(h.sends.length).toBe(1);
+        expect(text).toBe("途中まで。");
+        expect(finishReason).toBe(unified);
+        // tool-call を出さない応答の capability・input は保持しない。
+        expect(h.capabilities.get("call_s")).toBeUndefined();
+      },
+    );
+  });
+
+  it("モデル層の finishReason の raw は wire の値のまま", async () => {
+    const h = harness([{ blocks: [], stopReason: "pause_turn" }]);
+    const result = await h.model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+      providerOptions: providerOptions(),
+    });
+    expect(result.finishReason).toEqual({
+      unified: "other",
+      raw: "pause_turn",
+    });
+  });
+});
+
 describe("capability を tool の execute の文脈へ届ける", () => {
   const SECRET = "CAP-SECRET-0123456789";
   const grant = {
@@ -825,6 +985,8 @@ describe("capability を tool の execute の文脈へ届ける", () => {
       providerOptions: providerOptions(),
     });
     expect(seen).toEqual(grant);
+    // get は one-shot：引いた grant は map から消える（clear しなくても古い値が残らない）。
+    expect(h.capabilities.get("call_cap")).toBeUndefined();
     expect(h.capabilities.get("call_other")).toBeUndefined();
     // 2 回目の send（会話に戻る側）にも、audit にも、Mastra の結果にも capability は出ない。
     expect(JSON.stringify(h.sends)).not.toContain(SECRET);

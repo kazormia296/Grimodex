@@ -666,6 +666,9 @@ function usageRaw(response: AgentWireResponse): JsonObject {
 function responseToContent(response: AgentWireResponse): Content[] {
   const citations = response.citations ?? [];
   const content: Content[] = [];
+  // 現行の loop（agentLoop.ts）は stopReason が "tool_use" のときだけ tool を実行し、それ以外は text で止まる。
+  // Chat Completions は finish_reason:"stop" と tool_calls が同居しうるので、tool_use 以外では tool-call を出さない。
+  const emitToolCalls = response.stopReason === "tool_use";
   for (const block of response.blocks) {
     if (block.type === "text") {
       content.push({ type: "text", text: block.content });
@@ -680,7 +683,7 @@ function responseToContent(response: AgentWireResponse): Content[] {
           },
         },
       });
-    } else {
+    } else if (emitToolCalls) {
       content.push({
         type: "tool-call",
         toolCallId: block.id,
@@ -774,7 +777,10 @@ function contentToStream(
 
 // ---- model ---------------------------------------------------------------
 
-/** 応答の capability を tool の `execute` の文脈へ届ける継ぎ目（turn 内の map。toolCallId で引く）。 */
+/**
+ * 応答の capability を tool の `execute` の文脈へ届ける継ぎ目（turn 内の map。toolCallId で引く）。
+ * `get` は one-shot：返した grant は map から消える（instance を再利用しても古い値が残らない）。
+ */
 export interface AgentCapabilityStore {
   get(toolCallId: string): AgentWireCapabilityGrant | undefined;
   clear(): void;
@@ -794,6 +800,9 @@ export interface CreateAgentLanguageModelOptions<H extends AgentAuditHandle> {
 
 /**
  * 1 turn に 1 つ作る（tool_use の input と capability を turn の間だけ保持する）。
+ * `originalInputs`（tool_use の input の key 順）は turn 内の step をまたいで要るので、寿命は model instance
+ * ＝ turn 単位で、途中で消さない。instance は再利用しない前提（次の turn は新しく作る）。capability は
+ * `get` で消える one-shot。
  * Mastra の `Agent` の `model` にそのまま渡せる。
  */
 export function createAgentLanguageModel<H extends AgentAuditHandle>(
@@ -809,7 +818,11 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
     doStreamCalls: 0,
   };
   const capabilities: AgentCapabilityStore = {
-    get: (toolCallId) => capabilityMap.get(toolCallId),
+    get: (toolCallId) => {
+      const grant = capabilityMap.get(toolCallId);
+      capabilityMap.delete(toolCallId);
+      return grant;
+    },
     clear: () => capabilityMap.clear(),
   };
 
@@ -858,7 +871,7 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
         ? error
         : new AgentModelError(
             "send-failed",
-            error instanceof Error ? error.message : String(error),
+            "send_agent_message failed (see origin)",
             error,
           );
     }
@@ -881,14 +894,17 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
       throw new AgentModelError("audit-failed", "audit complete failed", error);
     }
 
-    for (const block of raw.blocks) {
-      if (block.type === "tool_use")
-        originalInputs.set(block.id, structuredClone(block.input));
-    }
-    for (const [toolCallId, grant] of Object.entries(
-      agentAuthorityCapabilities ?? {},
-    )) {
-      capabilityMap.set(toolCallId, grant);
+    // tool-call を出すのは stopReason が tool_use のときだけ（responseToContent）。出さない応答の値は保持しない。
+    if (raw.stopReason === "tool_use") {
+      for (const block of raw.blocks) {
+        if (block.type === "tool_use")
+          originalInputs.set(block.id, structuredClone(block.input));
+      }
+      for (const [toolCallId, grant] of Object.entries(
+        agentAuthorityCapabilities ?? {},
+      )) {
+        capabilityMap.set(toolCallId, grant);
+      }
     }
     return { response: raw, provider };
   }
