@@ -337,6 +337,33 @@ describe("registerEventBus: napi TSFn 配線", () => {
     }
   });
 
+  it("DR-PUBG-5-18: a validated workspace lifecycle view reaches the observer (the maintenance coordinator ends old demands by it); an invalid one does not", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = makeBackend();
+    const observer = vi.fn();
+    registerEventBus(backend, observer);
+    const view = {
+      schemaVersion: 1,
+      revision: 900_001,
+      status: "ready",
+      bindingToken: "token-dr-pubg-5-18",
+      activation: "ready",
+    };
+    backend.capturedCallback?.(
+      "workspace:lifecycle-state",
+      JSON.stringify(view),
+    );
+    expect(observer).toHaveBeenCalledExactlyOnceWith(
+      "workspace:lifecycle-state",
+      view,
+    );
+    backend.capturedCallback?.(
+      "workspace:lifecycle-state",
+      JSON.stringify({ ...view, revision: 900_002, activation: "none" }),
+    );
+    expect(observer).toHaveBeenCalledOnce();
+  });
+
   it("napi 発でも allowlist 外チャネルは warn して破棄する（Phase 3 の更新漏れ検出）", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const backend = makeBackend();

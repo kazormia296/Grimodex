@@ -95,6 +95,13 @@ struct FakePlan {
     retire_release: AtomicBool,
     retire_quarantines: AtomicBool,
     retire_leaks_participant: AtomicBool,
+    /// DR-PUBG-5-18 (追補 4): a failing prepare releases the participant and
+    /// then stalls until `prepare_stall_release`, as the real worker does (its
+    /// cleanup drops the workspace pin inside `prepare`, before the owner thread
+    /// sees the `Err`). `prepare_stalled` counts the stalls that began.
+    prepare_failure_stalls: AtomicBool,
+    prepare_stalled: AtomicUsize,
+    prepare_stall_release: AtomicBool,
     create_times: Mutex<Vec<Instant>>,
 }
 
@@ -167,7 +174,16 @@ impl GraphWorker for FakeWorker {
         let mode = *lock(&self.plan.prepare_mode);
         match mode {
             PrepareMode::Ok => Ok(()),
-            PrepareMode::Fail(text) => Err(anyhow!(text)),
+            PrepareMode::Fail(text) => {
+                if self.plan.prepare_failure_stalls.load(Ordering::SeqCst) {
+                    drop(self.snapshot.take());
+                    self.plan.prepare_stalled.fetch_add(1, Ordering::SeqCst);
+                    while !self.plan.prepare_stall_release.load(Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                Err(anyhow!(text))
+            }
             PrepareMode::Hold => self.hold(),
             PrepareMode::HoldThenFail(text) => {
                 self.hold()?;

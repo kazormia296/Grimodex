@@ -2470,6 +2470,13 @@ fn build_worker(
     let Some((snapshot, core)) = admit(context, key, epoch) else {
         return Built::Exit(GraphUnavailable::Invalidated);
     };
+    // DR-PUBG-5-18 (追補 4): the generation a refusal is recorded under is read
+    // here, while this thread holds the participant. A switch needs the
+    // participant gone before it can publish its Ready, so it is read before
+    // any later Ready. The real worker releases the participant inside
+    // `prepare`, so reading at the failure (even before `retire_current`) can
+    // already be after a whole switch.
+    let admitted_generation = shared.ready_generation.load(Ordering::SeqCst);
     // CQ-DEFER: a held query cancelled meanwhile creates no worker.
     if held_cancelled(held) {
         return Built::Exit(GraphUnavailable::Cancelled);
@@ -2515,7 +2522,7 @@ fn build_worker(
                 drop(slot);
                 guard.exit = Some(if failures >= config.failures_before_suspend {
                     Phase::Suspended {
-                        ready_generation: shared.ready_generation.load(Ordering::SeqCst),
+                        ready_generation: admitted_generation,
                         reason,
                         refused_project: Some(key.project_id.clone()),
                     }
