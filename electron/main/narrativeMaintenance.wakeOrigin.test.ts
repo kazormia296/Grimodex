@@ -668,11 +668,11 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
             ["discovery", false],
             ["demand", true],
           ] as const
-        ).map(([origin, expected]) => [name, first, extra, origin, expected] as const),
+        ).map(([origin, expected]) => [name, origin, expected, first, extra] as const),
       ),
     )(
-      "%s requeues its %s wake under the same origin",
-      async (_name, first, extra, origin, expected) => {
+      "%s requeues a %s wake under the same origin",
+      async (_name, origin, expected, first, extra) => {
         const run = vi
           .fn()
           .mockResolvedValueOnce(first)
