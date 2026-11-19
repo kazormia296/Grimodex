@@ -441,7 +441,8 @@ describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は appl
         if (entry.isDirectory()) walk(full);
         else if (
           /\.ts$/.test(entry.name) &&
-          !/\.(test|spec)\.ts$/.test(entry.name) &&
+          // 試験の補助（*.testSupport.ts）は試験からだけ読まれ、製品の bundle に入らない。
+          !/\.(test|spec|testSupport)\.ts$/.test(entry.name) &&
           !/\.d\.ts$/.test(entry.name)
         ) {
           out[path.relative(repoRoot, full)] = fs.readFileSync(full, "utf8");
