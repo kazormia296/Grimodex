@@ -1052,6 +1052,13 @@ function deliveryFenceResolution(raw: unknown): "fenced" | "out-of-order" {
 
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
+/**
+ * Native refuses a delivery-failure receipt for a project the live workspace
+ * does not have (DR-PUBG-5-19). The project's durable state is gone with it, so
+ * there is nothing to recover: the trigger ends instead of being queued again.
+ */
+const NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE =
+  "NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING";
 const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
   "NEX_VERIFY_GRAPH_STATE_CHANGED";
 const NARRATIVE_MAINTENANCE_ATTEMPT_CANCELLED_CODE =
@@ -2022,26 +2029,42 @@ export function createNarrativeMaintenanceScheduler(
     noteMutation();
   };
 
+  /**
+   * "accepted": Native wrote the receipt and the durable recovery wake.
+   * "project-missing": Native refused the receipt because the live workspace
+   * has no such project (terminal; DR-PUBG-5-19). "retained": anything else,
+   * the trigger stays queued.
+   */
   const persistDeliveryFailure = async (
     failure: NarrativeMaintenanceDeliveryFailure,
-  ): Promise<boolean> => {
+  ): Promise<"accepted" | "project-missing" | "retained"> => {
     const recordFailure = backend?.recordNarrativeMaintenanceDeliveryFailure;
     if (typeof recordFailure !== "function") {
       warn(
         "[narrative-maintenance] Native failure receipt API is unavailable; retaining trigger",
       );
-      return false;
+      return "retained";
     }
     try {
       return deliveryFailureReceiptAccepted(
         await recordFailure.call(backend, failure),
-      );
+      )
+        ? "accepted"
+        : "retained";
     } catch (receiptError) {
+      if (
+        hasExactFailureCode(
+          errorMessage(receiptError),
+          NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE,
+        )
+      ) {
+        return "project-missing";
+      }
       warn(
         "[narrative-maintenance] failed to persist delivery failure receipt; retaining trigger:",
         receiptError,
       );
-      return false;
+      return "retained";
     }
   };
 
@@ -4316,7 +4339,7 @@ export function createNarrativeMaintenanceScheduler(
               // outbox is the durable recovery owner across restart, rather
               // than this process-local parked Map.
               retryCounts.set(key, retryCount);
-              const accepted = await persistDeliveryFailure({
+              const persisted = await persistDeliveryFailure({
                 schemaVersion: 1,
                 scope: "work",
                 projectId: work.projectId,
@@ -4327,10 +4350,18 @@ export function createNarrativeMaintenanceScheduler(
                 retryCount,
                 error: error instanceof Error ? error.message : String(error),
               });
-              if (accepted) {
+              if (persisted === "accepted") {
                 retryCounts.delete(key);
                 warn(
                   `[narrative-maintenance] retry exhausted for canonical key ${key}; native failure receipt and durable recovery wake persisted for project ${work.projectId}`,
+                  error,
+                );
+              } else if (persisted === "project-missing") {
+                // DR-PUBG-5-19: the live workspace has no such project, so
+                // there is no durable state to recover. End the work.
+                retryCounts.delete(key);
+                warn(
+                  `[narrative-maintenance] retry exhausted for canonical key ${key}; ${NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE}: project ${work.projectId} does not exist in the workspace, dropping the work`,
                   error,
                 );
               } else {
@@ -4356,7 +4387,7 @@ export function createNarrativeMaintenanceScheduler(
                 requeuedCount += 1;
                 firstRetryCount ??= retryCount;
               } else {
-                const accepted = await persistDeliveryFailure({
+                const persisted = await persistDeliveryFailure({
                   schemaVersion: 1,
                   scope: "wake",
                   projectId,
@@ -4364,10 +4395,18 @@ export function createNarrativeMaintenanceScheduler(
                   retryCount,
                   error: error instanceof Error ? error.message : String(error),
                 });
-                if (accepted) {
+                if (persisted === "accepted") {
                   durableWakeRetryCounts.delete(wakeKey);
                   warn(
                     `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; native failure receipt and durable recovery wake persisted`,
+                    error,
+                  );
+                } else if (persisted === "project-missing") {
+                  // DR-PUBG-5-19: the live workspace has no such project, so
+                  // there is no durable state to recover. End the wake.
+                  durableWakeRetryCounts.delete(wakeKey);
+                  warn(
+                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; ${NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE}: project ${projectId} does not exist in the workspace, dropping the wake`,
                     error,
                   );
                 } else {

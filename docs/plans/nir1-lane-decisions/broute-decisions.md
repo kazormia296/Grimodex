@@ -1004,3 +1004,68 @@
 - `fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
 - C2-ZC の receipt（`--base 1dcc7b88437b4720350d7e537811d595a716c055`、clean tree、`resolvedHeadSha` は `996efe597faaf42585fc14150b4173df64495294`）：`sha256:2acfeb15653e531dad6bd1ea22bf4acca5d32dc82ceb7dc53265e6dbb0fb26db`。
 - **省いたもの**：CI の `ci:local:quick --part 2` の impact の選択の手元の再現は、重いので実施していない。落ちた試験は、その選択が使う形（`--features nir1-material-diagnostics --lib`）の全件で通った。
+
+### DR-PUBG-5-19：存在しない project の maintenance の wake が終わらない（F-1）の直し（2026-11-19）
+
+- 位置づけ：PUB-G の前提 #5 の途中で見つかった別件の不具合 F-1。DR-PUBG-5-18（別の枝）が expected-fail の試験で記録したものを、直った状態を正で assert する試験に替える。この commit（最初の commit）は判断と信頼境界の記録で、コード・policy・定数は変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：NIR-1 の C-product（worker／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。枝 `claude/pubg5-missing-project-wake`（基点は origin/master `65deca68`）。push も PR も作らない。新しい送信先・保存範囲・閾値の緩和・契約・authority は足さない（下の threat model の差分）。
+- 凍結の対象との関係：触れる file は `maintenance_runtime.rs`、`narrativeMaintenance.ts`、試験だけ。`native-architecture.mjs` の `FIXED_BODIES`（`nir1_graph_product.rs` の 4 関数の本体）と `PATHS` の対象 file、CP-4 の `SOURCE_PINS` の対象 file（harness の file）には触れない。
+
+#### 1. 事実（再現。検証の節に結果を追記する）
+
+- Native：wake の cycle は、project が workspace に無いと、launch が Closed・Seam・Product のどれでも `FOREIGN KEY constraint failed`（787）で失敗する。gate が閉なら `judge_graph_index_build` は DB に触れず skip する（`nir1_graph_index_maintenance.rs` の冒頭）ので、FK は通常の durable discovery から出る。discovery（`discover_durable_maintenance_work_in_tx_with_control`）は、project に current epoch が無く、wake の reason が `is_backfill_wake`（`durable-wake` を含む）なら、project の存在を見ずに Backfill の work を作る。その Backfill の run／epoch の行の insert が `projects` への FK で落ちる。
+- N-API：delivery failure の receipt（`record_maintenance_delivery_failure_wake`）は project が無ければ `Err(NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING)`。この Err は、audit の JSONL の追記（durable な receipt）の後、outbox の書込みの前に出る。
+- main：scheduler は wake の cycle の失敗を `NARRATIVE_MAINTENANCE_MAX_RETRIES`（3）まで retry し、尽きたら `persistDeliveryFailure` を呼ぶ。receipt が reject されると `accepted === false` で trigger を保持し、再び queue に戻す（`workspace-binding-mismatch` などの typed non-ACK と同じ扱い）。PROJECT_MISSING の reject もここに落ちるので、約 1 秒ごとの cycle が止まらない。work のとき（`scope: "work"`）も同じ。1 時間の fake time で 4,270 cycle（DR-PUBG-5-18 の測定）。
+- 今の製品の経路で届くか：main の scheduler は wake の発生源（Graph の需要、hasMore の継続、completion の wake）を区別しない。hasMore の継続と completion の wake、そして work の item は、Graph の const が false でも使われる。したがって、backlog の継続を持つ project をユーザーが削除すると、今の製品でも届く。
+
+#### 2. 判断
+
+**判断 1：直しは Native と main の両方に入れる（(a) と (b)）**
+- (a) Native：discovery の Backfill を作る枝（current epoch が無く `is_backfill_wake`）で、同じ immediate transaction の中で `projects` の行の存在を読み、無ければ `Ok(None)`（no work）にする。wake の cycle は Accepted・`has_more` false で終わり、main は accepted の cycle として wake を消費する。これが wake の出所で終わらせる直しで、retry の log も JSONL の追記も増えない。FK 制約が有効なので、project が無ければ epoch・run の行も cascade で無く、他の枝（current epoch あり）には影響しない。
+- (b) main：`persistDeliveryFailure` が、receipt の reject の message が code `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING` で始まる（既存の `hasExactFailureCode` の形）ときだけ、「project が無いので trigger を捨てる」終端として扱う（`work` と `wake` の両方）。retry の数（3）・遅延（1,000 ms）は変えない。(a) だけでは、work の item（その project の cycle が FK で失敗する）や、(a) の判定の後に project が消えた競合（判定は通り、実行で FK）を止められないので、(b) を足す。receipt を拒否したのは live な authority の同じ DB（binding が一致した後）の読みなので、renderer が偽造できる値ではなく、binding が違う・workspace が無いときは今までどおり typed non-ACK で保持する。
+- (a) だけ、(b) だけにしない理由：(b) だけだと wake のたびに最大 3 回 retry して JSONL に 1 行足すまで終わらない（約 5 s）。(a) だけだと work の item と競合が残る。
+
+**判断 2：project の存在の判定が変わる競合（実装の後に、コードを読んで訂正した 2026-11-19）**
+- 判定は Native の immediate transaction の 1 snapshot。project の行は 1 つの transaction で commit されるので、commit 前の project はこの判定から見えない（見えないことは、存在しないとして no-work になることを意味する）。
+- commit の前に wake が来ることがあるか：wake と work の project id の出所を読んだ。(1) workspace の列挙（`discover_projects` は `projects` の commit 済みの行を読む）、(2) wake outbox（`narrative_maintenance_wake_outbox.project_id` は `projects(id)` への FK で `ON DELETE CASCADE`。行があれば project がある）、(3) hasMore の継続と completion の wake（直前の cycle が処理した project の id）、(4) Graph の需要（owner が観測した project）。どれも commit 済みの行か、commit 済みの project に対する直前の結果から来る。commit 前の id を出す経路は、この範囲では見つからなかった。renderer の作成経路（独立レビュー、2026-11-19）は次の 4 つの根拠で閉じる：(i) `electron/main/index.ts` の注記（trigger の発見は main process が持ち、renderer は project の scope を渡さない）と、production で `scheduler.request(` を呼ぶ箇所が 0 件であること（test だけ）。renderer の SQL が project を作っても、maintenance の work を直接 main に渡す入口が無い。(ii) coordinator の wake の発生源は、Native の discovery（`discover_projects`）が commit 済みの `projects` の行から作るものである。(iii) wake outbox の `project_id` は `projects(id)` への FK で `ON DELETE CASCADE`（`migrate.rs`）。(iv) project の作成の書込みの進行中は、discovery の `BEGIN IMMEDIATE` は busy になり（no-wait の接続は `BUSY` の typed な失敗として main に返り、retry の対象）、「project が無い」とは判定されない。判定されるのは、作成の commit の前に snapshot を取れたときの「まだ無い」だけで、その id を持つ wake は上の (1)〜(4) のとおり commit の前には出ない。以前の挙動も同じ project に対し FK で 3 回（約 3 s）失敗するだけで、その後は receipt が PROJECT_MISSING で拒否されて回復しなかった。変更後に失いうるのは、その 3 s の窓の中の 1 回の wake だけで、新しい project の backfill は workspace-opened と project 自身の trigger が起こす。
+- project の id：renderer が作る project の id は新規の id で、migration が seed する固定の `default-project` だけは同じ id が残る。同じ binding の中で削除の後に同じ id で再作成されても、古い wake が no-op の spurious な wake として 1 回 Accepted で消えるだけで、再作成された project の discovery は壊れない（Backfill は、その project の epoch が無ければ次の workspace-opened・wake で作られる）。
+- scan の staging の project は行が既にあり、既存の判定（staging なら no-work）のまま。今回の変更に影響しない。
+- (a) の後に project が消える競合は (b) で終わる（work・wake とも、尽きた後の receipt が PROJECT_MISSING）。
+
+**判断 3：一時的な失敗は今のまま**
+- busy・容量・`NEX_MAINTENANCE_TRANSIENT`・SQLite の lock・receipt の他の失敗（`INVALID`、typed non-ACK、message が exact な code でないもの）は、変えない。retry の上限・遅延・budget の数値は変えない（緩めない）。
+
+#### 3. owner／lifecycle matrix（GDX-PRECHECK-001。新しい非同期・process・timer は足さない）
+
+| 項目 | 扱い |
+|---|---|
+| entry | 既存の wake の cycle と delivery failure の receipt。新しい entry・IPC・`#[napi]` は無い |
+| start | 変更なし。(a) は discovery の SELECT 1 本（Backfill を作る枝だけ）、(b) は既存の catch の分岐 |
+| retry | 変更なし（3 回、1,000 ms）。PROJECT_MISSING の receipt の後だけ、その trigger は retry の対象から外れる |
+| reentrant | 変更なし。捨てるのは (workspace binding, project) の key の entry 1 つだけで、他の key・他の project は独立 |
+| admission closure | 変更なし。binding の不一致・workspace 無しの typed non-ACK は今までどおり保持 |
+| pending start | 新しい timer は無い。捨てた trigger の retry の timer は、既存の経路（requeuedCount が 0 なら再 schedule しない）で作られない |
+| active handle | 無い（同期の SELECT と、既存の await の中の分岐） |
+| cancel | 変更なし（既存の permit の stop・attempt の cancel） |
+| 有限待機 | 無い。wake 1 件は最大 retry 3 回＋receipt 1 回で終わる（以前は無限） |
+| 終了の証拠 | cycle の Accepted の receipt（(a)）、または `persistDeliveryFailure` の終端の結果と retry count の削除（(b)）。quiescence の `queueIdle` が true になることを試験で確かめる。reject や kill だけを終了とみなさない |
+| error／timeout／onClosed | cycle の FK 以外の失敗は今までどおり。receipt の PROJECT_MISSING だけが終端。warn の log に project id と code を出す（本文は出さない） |
+| 再起動時の状態 | 新しい永続状態は無い。捨てた wake に対応する durable な行（outbox 等）は、FK の ON DELETE CASCADE で project と一緒に無い |
+
+#### 4. threat model の差分（委任の内の技術的な改訂）
+
+確認済みの actor・防御・受信先・受入れは変えない。
+- 新しい攻撃：無い。偽の PROJECT_MISSING で正当な trigger を捨てさせる攻撃は、reject を作るのが Native の同じ authority の DB の読みで、renderer が値を注入できないので成立しない（main の backend は信頼境界の内側）。renderer が存在しない project の id を wake に載せられても（需要の経路）、今まで資源を消費し続けたのに対し、有限になる。
+- 防御：変更前に無かった上限（wake 1 件につき cycle の数）が入る。receipt の JSONL への追記は、変更前は 1 周ごとに 1 行ずつ無限に増えた（保存範囲の拡大ではなく、バグによる増加）が、変更後は終端の 1 回。
+- 受信先・保存：どちらも増えない。audit の JSONL は既存の書き先と形のまま。
+- 受入れ：製品の既定（const false）の挙動は、存在する project の wake と work では変わらない。存在しない project だけが、無限の retry から終端に変わる。
+- 委任の外に当たるもの（避けたもの）：retry の上限・遅延の変更、新しい receipt の status・契約、保存範囲の拡大、policy・定数の変更。
+
+#### 5. 実装と検証の結果（2026-11-19。最後の code commit `a409415e`。§1 の「検証の節に結果を追記する」の分）
+
+- **再現**：直す前に、(1) vitest（mock の backend。cycle は FK、receipt は PROJECT_MISSING の reject）で、wake（Graph の需要）・hasMore の継続・work の 3 つとも、fake time 600 s で 600〜601 cycle（上限は 5）。(2) Rust（実 DB）で、存在しない id と削除済みの id（`DELETE FROM projects` の cascade）の wake の cycle が、Closed・Seam・Product の 3 launch とも `FOREIGN KEY constraint failed: Error code 787`。main の discovery（workspace-opened）も、その project の Backfill の work を返していた。原因は、discovery が project の存在を見ずに Backfill を作ること。再現は層ごとで通しではない（main は mock、Native は実 DB）。
+- **直した後**：同じ試験が通る（cycle は Accepted・`has_more` なし・registered／started／completed／grants が空、main は終端で `queueIdle`）。存在する project は Backfill を今まで通り作る（`a_wake_for_a_project_the_workspace_has_still_discovers_its_backfill`）。Native の試験で、receipt の message が JavaScript 側で `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING:` から始まり、wake の行は書かれないことを確かめた（main の先頭一致が製品の文字列で効く前提）。
+- **変異**：Rust の存在確認を外す→3 本が落ちる。main の catch の分岐を外す→wake・hasMore・work の 3 本が落ちる。wake の枝だけ外す→wake と hasMore の 2 本。work の枝だけ外す→work の 1 本。どの reject も終端にする、先頭一致を部分一致にする→「PROJECT_MISSING 以外の reject は retry が続く」の 1 本が落ちる。いずれも戻して通ることを確かめた。
+- **全件**：grimodex-db `--lib` 2,872 passed・0 failed・63 ignored。Native `--lib --features licensing,legacy-keyring-migration` 917 passed・7 ignored。clippy `-D warnings`（grimodex-db `--all-targets`、Native は同 features）成功。vitest（`vitest.electron.config.ts`、electron 全体）2,863 passed（cargo の build と同時に走らせた 1 回目は 3 件落ち、同じ commit の再実行 2 回で全件成功。負荷のときの揺れと見ているが、原因は特定していない）。tsc（`electron/tsconfig.json`・root）成功。`validate:architecture` 成功。
+- **残る既知の挙動**：receipt は、JSONL の追記の後に project の存在を確かめて拒否する既存の順序のまま。終端になったので追記は 1 回。
+- **追補（独立レビューの指摘、すべて低。2026-11-19）**：(1) 終端でない reject（busy、INVALID、先頭一致でない message、typed non-ACK）の保持の試験を、work と wake の両方で回す。wake の枝を `persisted !== "accepted"` で捨てる変異と、work の枝の同じ変異のそれぞれで赤になることを確かめた。(2) work と hasMore の試験の backend に `getNarrativeMaintenanceWorkspaceBinding` を足し、receipt の引数（scope、projectId、null でない workspaceBinding）を `toHaveBeenCalledWith` で固定した。(3) 上限は wake と work が 4 回（初回＋retry 3）、hasMore が 5 回（accepted の 1 回＋4）と正確にした。Rust の `missing_project_wake_problems` は、Closed の launch では main の discovery が `Idle` だけを許す。(4) project-missing の 2 つの枝の warn に、code と project id を出す（matrix の error の行と一致）。(5) 判断 2 の renderer の作成経路の「未確認」は、上の 4 つの根拠で閉じた。(6) 名指しの work が project の無い DB でどう終わるかを、Native（db の cycle）の試験で固定した（`a_named_work_item_for_a_project_the_workspace_does_not_have_ends_or_fails_on_the_foreign_key`）：Verify と Rebuild は Accepted・`has_more` なしで終わる（stale な item）、Backfill は `FOREIGN KEY constraint failed` で失敗する。この Backfill の失敗が、main 側の (b)（retry の後の PROJECT_MISSING の receipt を終端にする）が要る理由の 1 つ。

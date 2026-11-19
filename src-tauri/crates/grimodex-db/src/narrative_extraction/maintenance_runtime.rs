@@ -2520,6 +2520,18 @@ fn discover_cycle_work(
     Ok(graph_plan.into_work())
 }
 
+/// Whether `projects` has the row. A missing project owns no durable
+/// maintenance state (the foreign keys cascade), so discovery has nothing to
+/// do for it.
+fn project_exists_in_tx(conn: &Connection, project_id: &str) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+        [project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 pub(crate) fn is_scan_staging_project_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -2617,16 +2629,24 @@ pub(crate) fn discover_durable_maintenance_work_in_tx_with_control(
         // Backfill is the only phase allowed to create the initial Epoch.
         // Restore/Epoch wakes fail closed until the restore installer has
         // durably minted its restore Epoch.
-        return if is_backfill_wake(reason) {
-            Ok(Some(DesiredWork::new(
-                project_id.to_string(),
-                AutomaticRunKind::Backfill,
-                LEGACY_BACKFILL_WORK_KEY,
-                reason.to_string(),
-            )?))
-        } else {
-            Ok(None)
-        };
+        //
+        // DR-PUBG-5-19: a wake for a project the workspace does not have (a
+        // stale Graph Index demand, or a project deleted while its hasMore
+        // continuation or completion wake waited) has no durable state to
+        // discover. Minting a Backfill for it makes the cycle fail on the
+        // `projects` foreign key, which main retried without end. The read
+        // shares this transaction's snapshot, and a project row commits in one
+        // transaction, so a project that is being created is not a missing
+        // project here: no wake names it before it commits.
+        if !is_backfill_wake(reason) || !project_exists_in_tx(conn, project_id)? {
+            return Ok(None);
+        }
+        return Ok(Some(DesiredWork::new(
+            project_id.to_string(),
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            reason.to_string(),
+        )?));
     };
 
     // A restored image may already contain a current Epoch while carrying no
