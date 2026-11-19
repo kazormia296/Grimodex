@@ -103,6 +103,36 @@ async function queryAuditRows(harness, page) {
   return result?.rows ?? [];
 }
 
+/**
+ * The first read after `open_workspace`: the open settles asynchronously, so
+ * wait (as the Chronicle journey does) while the DB answers "switching" or
+ * "no workspace", and fail on anything else.
+ */
+async function waitForAuditRows(harness, page) {
+  const outcome = await harness.waitUntil(
+    async () => {
+      try {
+        return { ready: true, rows: await queryAuditRows(harness, page) };
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === "db_execute rejected: No workspace is open" ||
+            /^db_execute rejected: WORKSPACE_SWITCHING(?::|$)/u.test(
+              error.message,
+            ))
+        ) {
+          return false;
+        }
+        return { ready: false, error };
+      }
+    },
+    "the opened workspace answers the audit read",
+    30_000,
+  );
+  if (!outcome.ready) throw outcome.error;
+  return outcome.rows;
+}
+
 export function createMastraAgentTurnJourney({ configureWorkspace }) {
   return {
     id: ID,
@@ -117,7 +147,7 @@ export function createMastraAgentTurnJourney({ configureWorkspace }) {
           harness.invokeOk(gate.page, command, args);
         // Bind the main-trusted workspace (the identity carries it after Native's event).
         await invoke("open_workspace", { path: workspace });
-        assert.deepEqual(await queryAuditRows(harness, gate.page), []);
+        assert.deepEqual(await waitForAuditRows(harness, gate.page), []);
 
         // Refusals: typed, and nothing is written.
         assertRefusal(
