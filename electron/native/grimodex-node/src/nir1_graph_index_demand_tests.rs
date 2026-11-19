@@ -457,3 +457,47 @@ async fn a_real_switch_queues_the_old_demands_before_workspace_opened_and_the_st
         fixture.plan.release.store(true, Ordering::SeqCst);
     }
 }
+
+/// DR-PUBG-5-18 (R-B): the reason the Suspended branches' events come before
+/// `workspace:opened`. Their callers (Related Scenes' `begin_admitted`, D-final's
+/// `ActiveWorkspaceSnapshot`) hold a workspace participant while they ask, and a
+/// switch cannot reach its physical boundary (the swap, then E2) until every
+/// participant has gone. Here a participant is held the way D-final holds one:
+/// the open is admitted but queues no `workspace:opened` and does not finish;
+/// once the participant is dropped it completes and E2 is queued.
+#[tokio::test]
+async fn a_held_workspace_participant_keeps_workspace_opened_out_of_the_queue() {
+    let fixture = RefusalFixture::new("rb-participant");
+    let state = Arc::clone(fixture.state());
+    let held = grimodex_db::state::active_workspace_snapshot(&state.ws).expect("a snapshot");
+    let backend = crate::Backend {
+        state: Arc::clone(&state),
+    };
+    let target = fixture.w2.to_string_lossy().into_owned();
+    let open = tokio::spawn(async move { backend.open_workspace(target).await });
+    let queued_opened = |state: &Arc<AppState>| {
+        state
+            .events
+            .pending_for_test()
+            .iter()
+            .any(|(channel, _)| channel == "workspace:opened")
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!open.is_finished(), "the open finished under a held participant");
+    assert!(
+        !queued_opened(&state),
+        "workspace:opened was queued under a held participant"
+    );
+    drop(held);
+    let opened = tokio::time::timeout(Duration::from_secs(10), open)
+        .await
+        .expect("the open settles once the participant is gone")
+        .expect("open task")
+        .expect("open outcome");
+    let opened: serde_json::Value = serde_json::from_str(&opened).expect("open JSON");
+    assert!(
+        matches!(opened["status"].as_str(), Some("ready" | "migrated")),
+        "{opened}"
+    );
+    assert!(queued_opened(&state), "no workspace:opened after the open");
+}

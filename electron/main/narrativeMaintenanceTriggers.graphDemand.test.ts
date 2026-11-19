@@ -304,10 +304,7 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     h.state.binding = REPLACEMENT;
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
-      ["project-a"],
-      REPLACEMENT,
-    );
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(["project-a"], REPLACEMENT);
   });
 
   it("DR-PUBG-5-18: the residual the DR accepts: a demand that reaches main after workspace:opened is bound to the replacement and wakes it once", async () => {
