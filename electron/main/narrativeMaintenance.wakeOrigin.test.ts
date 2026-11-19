@@ -577,9 +577,9 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       false,
     ],
     [
-      "a receipt whose only durable work failed (nothing advanced)",
+      "a receipt whose only durable work failed (its re-pickup must not wait for the next wake)",
       ["failed-verify"],
-      true,
+      false,
     ],
     [
       "a receipt of the build and a Verify",

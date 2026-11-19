@@ -495,28 +495,21 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
     expect(demand.discoveries).toBe(4);
     expect(demand.rediscoveries).toBe(baseline.rediscoveries);
 
-    // A demand cycle whose only durable work failed advanced nothing, so it
-    // does not use the budget either (a planner that keeps returning the same
-    // work must not be spent down by demand).
-    const failedVerify = [
-      {
-        workKey:
-          "narrative-maintenance:v1/dependency-verify/project-wake-0/verify:v1",
-        status: "failed" as const,
-      },
-    ];
-    const failed = await chainDiscoveries("demand", 6, failedVerify);
-    expect(failed.discoveries).toBe(4);
-    expect(failed.rediscoveries).toBe(baseline.rediscoveries);
-
-    // Residual (DR-PUBG-5-17 addendum 1-C): a demand cycle that Native says
-    // completed durable chain work is not demand-only and takes the
-    // rediscovery that chain needs, so a long run of such cycles does draw on
-    // the budget.
-    const advancing = await chainDiscoveries("demand", 6, [
-      { ...failedVerify[0]!, status: "succeeded" as const },
-    ]);
-    expect(advancing.rediscoveries).toBeGreaterThan(baseline.rediscoveries);
+    // Residual (DR-PUBG-5-17 addendum 1-C, same as the base): a demand cycle
+    // that Native says ran durable chain work -- even work that failed, whose
+    // re-pickup must not wait for the next wake -- is not demand-only and
+    // takes the rediscovery, so a run of such cycles does draw on the chain's
+    // budget. To be re-examined when the dev measurement (S-E) has numbers.
+    for (const status of ["failed", "succeeded"] as const) {
+      const ranWork = await chainDiscoveries("demand", 6, [
+        {
+          workKey:
+            "narrative-maintenance:v1/dependency-verify/project-wake-0/verify:v1",
+          status,
+        },
+      ]);
+      expect(ranWork.rediscoveries).toBeGreaterThan(baseline.rediscoveries);
+    }
 
     // Control: the same wakes as discovery wakes take rediscoveries too.
     const discovery = await chainDiscoveries("discovery", 6);

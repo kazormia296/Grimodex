@@ -770,10 +770,11 @@ function sameMaintenanceWorkShape(
 
 /**
  * DR-PUBG-5-17 (addendum 1). A wake-only cycle is "demand-only" only when
- * Native's terminal receipt proves it did not advance the durable chain: no
- * work at all, the Graph Index build, or work that did not succeed. For an
- * empty wire batch Native plans durable work per wake project itself, and a
- * cycle that completed Verify/Backfill/Rebuild must keep its rediscovery. No
+ * Native's terminal receipt proves it ran no durable chain work: no work at
+ * all, or the Graph Index build only. For an empty wire batch Native plans
+ * durable work per wake project itself, and a cycle that ran any other work
+ * (even one that failed: its re-pickup must not wait for the next wake) keeps
+ * its rediscovery, as at the base. No
  * receipt (replayed delivery, an adapter without the lifecycle methods)
  * proves nothing, so the answer is "no". This reads the receipt only; Main
  * still never dispatches the build itself.
@@ -781,17 +782,15 @@ function sameMaintenanceWorkShape(
 const NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX =
   "narrative-maintenance:v1/nir1-graph-index-build/";
 
-function receiptAdvancedNoDurableChainWork(
+function receiptRanOnlyGraphIndexBuild(
   receipt: NarrativeMaintenanceTerminalReceipt | null,
 ): boolean {
   return (
     receipt !== null &&
-    receipt.works.every(
-      (work) =>
-        work.status !== "succeeded" ||
-        work.workKey.startsWith(
-          NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX,
-        ),
+    receipt.works.every((work) =>
+      work.workKey.startsWith(
+        NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX,
+      ),
     )
   );
 }
@@ -3910,7 +3909,7 @@ export function createNarrativeMaintenanceScheduler(
           const followup = options.onCycleAccepted?.({
             demandOnly:
               demandOnlyCycle &&
-              receiptAdvancedNoDurableChainWork(nativeTerminalReceipt),
+              receiptRanOnlyGraphIndexBuild(nativeTerminalReceipt),
           });
           void Promise.resolve(followup).catch((callbackError: unknown) => {
             warn(
