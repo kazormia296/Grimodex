@@ -313,6 +313,12 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   // regardless (Main's gate comes first); this is the restricted profile's own
   // refusal, for the day the gate is opened.
   ["chat_agent_ir_select", "plaintext-publication"],
+  // Mastra agent turn (MP-3b, DR-MP3-11): a turn sends the chat to the user's
+  // provider, as `send_agent_message` does, so a restricted profile refuses
+  // it. Main's gate L answers first and is closed in every product launch
+  // (`mastraAgentTurnGate.ts`); this is the restricted profile's own refusal,
+  // for the day the gate is opened.
+  ["mastra_agent_turn_start", "old-external-ai"],
 ]);
 
 const ALLOWED_STOP_COMMANDS = new Set([
@@ -321,6 +327,9 @@ const ALLOWED_STOP_COMMANDS = new Set([
   "abort_post_effect_run",
   "abort_cli_chat_stream",
   "codex_app_interrupt_turn",
+  // The cancel of a Mastra agent turn (DR-MP3-11): like `abort_chat_stream`, it
+  // stops work and publishes nothing, so a restricted profile lets it through.
+  "mastra_agent_turn_cancel",
 ]);
 
 // Every current non-egress command is classified explicitly. New commands
@@ -462,6 +471,9 @@ const INTERNAL_COMMANDS = new Set([
   "list_backups",
   "list_recovery_candidates",
   "list_system_fonts",
+  // The cancel of a Mastra agent turn (DR-MP3-11): it also stops, see the stop
+  // ledger above; both ledgers list it by design (as `abort_chat_stream`).
+  "mastra_agent_turn_cancel",
   "map_write_bundle",
   "mozkey_download_and_install",
   "narrative_extraction_append_decision",

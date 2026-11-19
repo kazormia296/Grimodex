@@ -28,6 +28,11 @@ import {
   isNir1LocalGenerationCommand,
   toErrorString,
 } from "../shared/ipcContract.js";
+import {
+  hasMastraAgentTurnForbiddenKey,
+  isMastraAgentTurnCommand,
+  mastraAgentTurnRefusalValue,
+} from "../shared/mastraAgentTurnWire.js";
 import type {
   CanonicalAuthorityRoute,
   CommandArgs,
@@ -69,6 +74,11 @@ import {
   type Nir1LocalGenerationLaunch,
 } from "./nir1LocalGeneration.js";
 import { chatAgentIrGateRefusal } from "./chatAgentIr.js";
+import {
+  createMastraAgentTurnRoute,
+  openMastraAgentTurnGate,
+  parseMastraAgentTurnCiSeam,
+} from "./mastraAgentTurnGate.js";
 import { defaultUserDataDirectoriesForApp } from "./userData.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
@@ -2161,6 +2171,16 @@ export function registerIpcRouter(
     secrets,
     profileEgress,
   });
+  // Mastra agent turn (MP-3b, gate L, DR-MP3-17): Main's gate is open only for
+  // the journey seam; it reads the same launch facts, once, as the seam above
+  // and has no Native entry to open.
+  const mastraAgentTurn = createMastraAgentTurnRoute({
+    open: openMastraAgentTurnGate({
+      seam: parseMastraAgentTurnCiSeam(nir1LocalGenerationLaunch),
+      isPackaged: nir1LocalGenerationLaunch.isPackaged,
+    }),
+    profileEgress,
+  });
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async (periodic) => {
       if (!backend?.relatedScenesReconcile)
@@ -2205,6 +2225,10 @@ export function registerIpcRouter(
         // chat IR (DR-CHATIR-S1-27): closed in every launch, with no seam.
         const chatAgentIrRefusal = chatAgentIrGateRefusal(cmd);
         if (chatAgentIrRefusal) return chatAgentIrRefusal;
+        // Mastra agent turn (gate L): closed in every product launch; first for
+        // the same reason, nothing of the invoke is reached while it is closed.
+        const mastraAgentTurnRefusal = mastraAgentTurn.gateRefusal(cmd);
+        if (mastraAgentTurnRefusal) return mastraAgentTurnRefusal;
         if (
           cmd === "capture_current_chat_input" &&
           event.sender.isDestroyed()
@@ -2247,6 +2271,12 @@ export function registerIpcRouter(
                 return { ...boundArgs, payload };
               })()
             : boundArgs;
+        // The Mastra turn route refuses a renderer that sends a key that is
+        // Main's (the identity below replaces `callerIdentity`, so it is read
+        // here, before that).
+        const mastraForgedKey =
+          isMastraAgentTurnCommand(cmd) &&
+          hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
         );
@@ -2321,6 +2351,20 @@ export function registerIpcRouter(
           );
           if (refusal) return refusal;
         }
+        if (isMastraAgentTurnCommand(cmd)) {
+          const refusal = mastraAgentTurn.admit(cmd, {
+            sender: event.sender,
+            win,
+            callerIdentity,
+          });
+          if (refusal) return refusal;
+          if (mastraForgedKey) {
+            return {
+              ok: true,
+              value: mastraAgentTurnRefusalValue(cmd, "invalid"),
+            };
+          }
+        }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
           // settles, so stage 2 can send it a typed terminal.
@@ -2329,7 +2373,11 @@ export function registerIpcRouter(
           try {
             return await dispatchInvoke(cmd, args, {
               backend,
-              shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+              shell: {
+                ...buildShellCommandHandlers(win),
+                ...injectedHandlers,
+                ...mastraAgentTurn.handlers,
+              },
               secrets,
               broadcast,
               issueAgentAuthorityCapabilities: (agentArgs, response) =>

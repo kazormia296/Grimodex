@@ -59,6 +59,11 @@ export type AiAuditOwner =
   | "native-semantic"
   /** Electron の local 生成 route（Native の専用 append と sweep だけが監査を書く）。 */
   | "native-nir1-local-generation"
+  /**
+   * Electron main が `ai_audit_append_batch` で監査を書く agent turn（MP-3b、DR-MP3-23）。
+   * pathId は変えず、{@link AiPathEntry.additionalAuditOwners} で表す。
+   */
+  | "main-agent"
   | "evaluation-harness"
   | "none";
 
@@ -85,6 +90,12 @@ export interface AiPathEntry {
   transport: string;
   /** request/response 監査を所有する一意な境界。 */
   auditOwner: AiAuditOwner;
+  /**
+   * 同じ pathId で別の書き手が監査を書く場合の、追加の owner（MP-3b、DR-MP3-23）。
+   * 新しい pathId や event type は作らない。ここに書いた owner の callsite は
+   * {@link AI_AUDIT_MAIN_CALLSITES} などの表が実ファイルに結線されていることを試験で確かめる。
+   */
+  additionalAuditOwners?: readonly AiAuditOwner[];
   /** その境界が保証する監査粒度。 */
   captureLevel: AiAuditCaptureLevel;
   /** full-observable を証明する deterministic contract test。 */
@@ -149,6 +160,30 @@ export interface AiAuditRendererCallsite {
   dispatchCall: string;
   auditProperty: "pathId" | "auditPathId";
 }
+
+/**
+ * Electron main の書き手（owner `main-agent`）の callsite（MP-3b）。sink は経路の定数を
+ * 1 か所で宣言し、監査の相関（`auditContext.pathId`）にその定数を使う。試験は実ファイルの AST で
+ * 「`pathConstant` が `pathId` の文字列 literal で宣言され、`auditProperty` の property がその
+ * 定数を指す」ことを確かめる（文字列が test にあるだけでは足りない）。
+ */
+export interface AiAuditMainCallsite {
+  pathId: string;
+  owner: AiAuditOwner;
+  sourceRef: string;
+  pathConstant: string;
+  auditProperty: "pathId";
+}
+
+export const AI_AUDIT_MAIN_CALLSITES: readonly AiAuditMainCallsite[] = [
+  {
+    pathId: "chat_agent_main",
+    owner: "main-agent",
+    sourceRef: "electron/main/mastra/agentAuditSink.ts",
+    pathConstant: "MAIN_AGENT_AUDIT_PATH_ID",
+    auditProperty: "pathId",
+  },
+];
 
 export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
   {
@@ -525,6 +560,9 @@ export const AI_PATHS: AiPathEntry[] = [
     layer: "agent",
     transport: "send_agent_message",
     auditOwner: "renderer-agent",
+    // MP-3b：Mastra の turn は Electron main が同じ pathId で監査を書く。tool 0 の閉じた入口で、
+    // gate L が閉の間は書き手は動かない。Native の呼出しは send_agent_message のままなので transport は変えない。
+    additionalAuditOwners: ["main-agent"],
     captureLevel: "full-observable",
     auditTestRef: AGENT_AND_CHAT_AUDIT_TEST,
     auditTestName: "AI audit path: chat_agent_main",

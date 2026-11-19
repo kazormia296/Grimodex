@@ -271,6 +271,43 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     expect(ledgers.internal).not.toContain("chat_agent_ir_select");
   });
 
+  it("classifies the Mastra agent turn: the start is denied as old-external-ai, the cancel is a stop and internal (MP-3b, DR-MP3-11)", async () => {
+    const ledgers = d2aRouteLedgersForTest();
+    // The start sends the chat to the user's provider, like send_agent_message.
+    expect(ledgers.denied).toContain("mastra_agent_turn_start");
+    expect(route("mastra_agent_turn_start", {}, true)).toBe("old-external-ai");
+    expect(ledgers.ownDataRead).not.toContain("mastra_agent_turn_start");
+    expect(ledgers.nir1Publication).not.toContain("mastra_agent_turn_start");
+    expect(ledgers.internal).not.toContain("mastra_agent_turn_start");
+    expect(ledgers.stop).not.toContain("mastra_agent_turn_start");
+    // The cancel is in both the stop and the internal ledger, as abort_chat_stream.
+    expect(ledgers.stop).toContain("mastra_agent_turn_cancel");
+    expect(ledgers.internal).toContain("mastra_agent_turn_cancel");
+    expect(ledgers.denied).not.toContain("mastra_agent_turn_cancel");
+    expect(ledgers.stop).toContain("abort_chat_stream");
+    expect(ledgers.internal).toContain("abort_chat_stream");
+    // The gate: restricted refuses the start and passes the cancel.
+    const gate = await createProfileEgressGate(backend(true));
+    const callerIdentity = gate.issueCallerIdentity(11);
+    expect(() =>
+      gate.assertInvoke("mastra_agent_turn_start", { callerIdentity }),
+    ).toThrow(DENIED("old-external-ai"));
+    expect(() =>
+      gate.assertInvoke("mastra_agent_turn_cancel", { callerIdentity }),
+    ).not.toThrow();
+    // Unrestricted passes both.
+    const open = await createProfileEgressGate(backend(false));
+    const openIdentity = open.issueCallerIdentity(11);
+    for (const command of [
+      "mastra_agent_turn_start",
+      "mastra_agent_turn_cancel",
+    ]) {
+      expect(() =>
+        open.assertInvoke(command, { callerIdentity: openIdentity }),
+      ).not.toThrow();
+    }
+  });
+
   it("moves the three derived-index updates to internal", () => {
     const ledgers = d2aRouteLedgersForTest();
     for (const command of DERIVED_INDEX_COMMANDS) {
