@@ -838,6 +838,51 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
     );
 
     it.each([
+      ["discovery", "demand", true],
+      ["demand", "discovery", false],
+    ] as const)(
+      "a %s wake dropped as PROJECT_MISSING keeps the live %s wake that entered the same key during the cycle, under its own origin",
+      async (droppedOrigin, midOrigin, expectedDemandOnly) => {
+        const state = { goneExists: false };
+        let wakeMid: (() => void) | null = null;
+        const run = vi.fn(
+          async (request: { wakeProjectIds?: readonly string[] }) => {
+            if (run.mock.calls.length === 4) wakeMid?.();
+            if (
+              !state.goneExists &&
+              (request.wakeProjectIds ?? []).includes("gone")
+            ) {
+              throw new Error(FK);
+            }
+            return accepted();
+          },
+        );
+        const recordFailure = vi.fn(async () => {
+          // The project is back before the refusal ends the dropped wake.
+          state.goneExists = true;
+          throw new Error(MISSING);
+        });
+        const { wake, accepts, scheduler } = setup(
+          run as unknown as ReturnType<typeof vi.fn>,
+          { interruptAttempts: 4, recordFailure },
+        );
+        wakeMid = () => wake(["gone"], midOrigin);
+        await startedAndIdle();
+
+        wake(["gone"], droppedOrigin);
+        await vi.advanceTimersByTimeAsync(600_000);
+
+        // The dropped wake ends on its refused receipt; the wake that entered
+        // its key during the 4th attempt is neither deleted with it nor given
+        // its origin: it runs once more and is accepted under its own.
+        expect(recordFailure).toHaveBeenCalledOnce();
+        expect(run).toHaveBeenCalledTimes(5);
+        expect(accepts()).toEqual([expectedDemandOnly]);
+        expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
+      },
+    );
+
+    it.each([
       ["demand", "discovery", false],
       ["discovery", "demand", true],
     ] as const)(
