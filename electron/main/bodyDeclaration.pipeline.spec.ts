@@ -962,12 +962,21 @@ describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)"
   }
 
   const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  // The dialog opens only after Native's preview (real SQLite I/O on a thread
+  // pool) has finished, so the wait is bounded by wall-clock time. A count of
+  // `setImmediate` turns is not: an idle loop spends them in milliseconds, and
+  // a slow runner needs far longer than that. The clock is `performance.now()`,
+  // which the `setTimeout`-only fake timers below leave real, and `tick` stays
+  // a `setImmediate` for the same reason (no real timer is needed here).
+  const WAIT_LIMIT_MS = 30_000;
   async function until(condition: () => boolean, what: string): Promise<void> {
-    for (let i = 0; i < 5_000; i += 1) {
-      if (condition()) return;
+    const deadline = performance.now() + WAIT_LIMIT_MS;
+    while (!condition()) {
+      if (performance.now() > deadline) {
+        throw new Error(`timed out waiting for ${what}`);
+      }
       await tick();
     }
-    throw new Error(`timed out waiting for ${what}`);
   }
   const PENDING = Symbol("pending");
   /** What the promise settled to, or PENDING when it is still waiting after a while. */
