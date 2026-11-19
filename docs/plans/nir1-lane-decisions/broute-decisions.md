@@ -1231,3 +1231,12 @@
 - 判定と F-1 の関係：「窓なし」の受入れは、F-1 が切替の前に直ることを前提にする。F-1 が開いている間、受け入れた残余（`build_worker` の枝の停止）の最悪は、同名の project が無い workspace で「B の判定 1 回」ではなく終わらない retry になる。
 - F-1 の expected-fail 2 本（vitest の `it.fails`、Rust の `should_panic`）は (4) の範囲外の追加で、R-B の試験と独立に外せる（試験の commit `823176aa` の該当 2 hunk）。
 - commit の trailer：task の指定（`Claude Opus 5.5`）に従った。この session に渡された attribution の指示は `Claude Sonnet 5.5` で食い違う。統合者が決める。
+
+**最終の検証（追補 3。2026-11-19。head は追補 2 の commit `7cc33cff`。その後の commit はこの節だけを足す docs の commit。node は 22）**
+- `fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0。`7cc33cff` で実行）。`tsc --noEmit`・`pnpm -s validate:architecture`：成功。
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：905 passed、0 failed、7 ignored（participant の試験を足した後）。新しい Native の試験 2 本（実 switch の順序、participant の保持）を、`--test-threads=2` で 20 回続けて実行し、20 回とも成功。
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：82 passed、0 failed（追補 1 の値。その後 grimodex-db は変えていない）。grimodex-db の全件は未実行。
+- `vitest run --config vitest.electron.config.ts electron/main/narrativeMaintenance*`：17 file、348 件成功、1 件 expected fail（整形の後に再実行）。
+- clippy：`cargo clippy -p grimodex-db --all-targets -- -D warnings` と、`cargo clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` が成功。
+- eslint：変えた 2 file のうち `narrativeMaintenanceTriggers.graphDemand.test.ts` は 0 件。`narrativeMaintenance.test.ts` は基点にも 543 件の prettier の指摘が既にあり、足した部分は 0 件（足した部分だけを prettier で整形した。file 全体は整形していない）。
+- 実行していないもの：`--features licensing,legacy-keyring-migration` の cargo test、grimodex-db の全件、Electron を起動する観測（S-G）、Node の TSFN の drain の実測、実 backend 全体での F-1 の loop、hosted CI（Quick／Full）。
