@@ -15,7 +15,10 @@ import type {
   SceneTimeIndex,
   TemporalAnchor,
 } from "@/features/codex/phaseResolver";
-import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
+import {
+  buildSceneTimeIndex,
+  listScenesBeforeInReadingOrder,
+} from "@/features/codex/context/sceneTimeIndex";
 import {
   canExposeResolvedCodexIdentity,
   canIncludeResolvedCodexContext,
@@ -1017,16 +1020,11 @@ export async function collectSceneContext(
     }
     chapterOutlines.push(...path.reverse());
   }
+  // 読む順（木の DFS 順）で直前の、あらすじのある場面。
   const previousReadingNode = currentScene
-    ? allNodes
-        .filter(
-          (node) =>
-            node.nodeType === "scene" &&
-            node.id !== scene.id &&
-            cmpKeys(node.sortOrder, currentScene.sortOrder) < 0 &&
-            Boolean(node.synopsis?.trim()),
-        )
-        .sort((left, right) => cmpKeys(right.sortOrder, left.sortOrder))[0]
+    ? listScenesBeforeInReadingOrder(allNodes, scene.id)
+        .filter((node) => Boolean(node.synopsis?.trim()))
+        .at(-1)
     : undefined;
   const previousScene = previousReadingNode?.synopsis
     ? {
