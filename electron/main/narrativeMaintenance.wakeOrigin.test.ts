@@ -57,15 +57,102 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
     vi.restoreAllMocks();
   });
 
-  function setup(runCycle: ReturnType<typeof vi.fn>) {
+  type ReceiptWork = { workKey: string; status: "succeeded" | "failed" };
+  const GRAPH_BUILD_WORK: ReceiptWork = {
+    workKey:
+      "narrative-maintenance:v1/nir1-graph-index-build/project-a/nir1-graph-index-build/epoch/epoch-1",
+    status: "succeeded",
+  };
+  const FAILED_VERIFY_WORK: ReceiptWork = {
+    workKey: "narrative-maintenance:v1/dependency-verify/project-a/verify:v1",
+    status: "failed",
+  };
+  const VERIFY_WORK: ReceiptWork = {
+    workKey: "narrative-maintenance:v1/dependency-verify/project-a/verify:v1",
+    status: "succeeded",
+  };
+
+  /**
+   * A backend with the attempt lifecycle, so the scheduler adopts a Native
+   * terminal receipt for each accepted cycle. `receiptWorks` is what Native
+   * says the cycle ran (a wake-only cycle plans its own durable work).
+   */
+  interface SetupOptions {
+    /** What Native's receipt says a succeeded cycle ran. */
+    readonly receiptWorks?: readonly ReceiptWork[];
+    /** A rejected first call leaves an interrupted attempt (wake requeued). */
+    readonly interruptFirstAttempt?: boolean;
+    /** Interrupt this many leading attempts instead (overrides the flag). */
+    readonly interruptAttempts?: number;
+    /** The stop reason of that interrupted first attempt (default none). */
+    readonly stopReason?: "foreground-preempted" | null;
+    /** The binding the backend reports (and every attempt/receipt carries). */
+    readonly binding?: typeof BINDING;
+    /** The binding `wake()` registers under (default: `binding`). */
+    readonly wakeBinding?: typeof BINDING;
+    readonly reconcile?: ReturnType<typeof vi.fn>;
+  }
+
+  function lifecycleBackend(
+    runCycle: ReturnType<typeof vi.fn>,
+    options: SetupOptions = {},
+  ) {
+    const binding = options.binding ?? BINDING;
+    const interruptedAttemptIds = new Set<string>();
+    const interruptCount =
+      options.interruptAttempts ?? (options.interruptFirstAttempt ? 1 : 0);
+    return {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle: runCycle,
+      ...(options.reconcile === undefined
+        ? {}
+        : { reconcileNarrativeMaintenanceRecovery: options.reconcile }),
+      ackNarrativeMaintenanceDelivery: vi
+        .fn()
+        .mockResolvedValue({ status: "retired" }),
+      beginNarrativeMaintenanceAttempt: vi.fn(
+        (attemptId: string, received: typeof BINDING) => {
+          if (interruptedAttemptIds.size < interruptCount) {
+            interruptedAttemptIds.add(attemptId);
+          }
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: received.authorityId,
+            generation: received.generation,
+          });
+        },
+      ),
+      cancelNarrativeMaintenanceAttempt: vi.fn((attemptId: string) => {
+        // A rejected call leaves Native's attempt interrupted (no stop
+        // reason): the scheduler then requeues the claimed wake.
+        const interrupted = interruptedAttemptIds.has(attemptId);
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: interrupted ? "interrupted" : "succeeded",
+          stopReason: interrupted ? (options.stopReason ?? null) : null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: interrupted ? null : binding.generation,
+          works: interrupted ? [] : (options.receiptWorks ?? []),
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      }),
+    } as unknown as Parameters<typeof createNarrativeMaintenanceScheduler>[0];
+  }
+
+  function setup(
+    runCycle: ReturnType<typeof vi.fn>,
+    options: SetupOptions = {},
+  ) {
     const onCycleAccepted = vi.fn(
       (_cycle: NarrativeMaintenanceAcceptedCycle) => {},
     );
+    const wakeBinding = options.wakeBinding ?? options.binding ?? BINDING;
     const scheduler = createNarrativeMaintenanceScheduler(
-      {
-        getNarrativeMaintenanceWorkspaceBinding: () => BINDING,
-        runNarrativeMaintenanceCycle: runCycle,
-      } as unknown as Parameters<typeof createNarrativeMaintenanceScheduler>[0],
+      lifecycleBackend(runCycle, options),
       { warn: vi.fn(), onCycleAccepted },
     );
     schedulers.push(scheduler);
@@ -77,11 +164,11 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       origin === undefined
         ? scheduler.requestGraphIndexBuildWakesWithBinding?.(
             projectIds,
-            BINDING,
+            wakeBinding,
           )
         : scheduler.requestGraphIndexBuildWakesWithBinding?.(
             projectIds,
-            BINDING,
+            wakeBinding,
             origin,
           );
     const accepts = () =>
@@ -101,7 +188,8 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
     wake(["project-a"], "demand");
     await vi.advanceTimersByTimeAsync(BACKLOG);
 
-    expect(run).toHaveBeenCalledExactlyOnceWith({
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0]).toMatchObject({
       work: [],
       wakeProjectIds: ["project-a"],
       workspaceBinding: BINDING,
@@ -193,7 +281,7 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       .fn()
       .mockRejectedValueOnce(new Error("transient"))
       .mockResolvedValue(accepted());
-    const { wake, accepts } = setup(run);
+    const { wake, accepts } = setup(run, { interruptFirstAttempt: true });
     await startedAndIdle();
 
     wake(["project-a"], "demand");
@@ -211,7 +299,7 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       .fn()
       .mockImplementationOnce(() => first.promise)
       .mockResolvedValue(accepted());
-    const { wake, accepts } = setup(run);
+    const { wake, accepts } = setup(run, { interruptFirstAttempt: true });
     await startedAndIdle();
 
     wake(["project-a"], "demand");
@@ -234,7 +322,7 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       .fn()
       .mockImplementationOnce(() => first.promise)
       .mockResolvedValue(accepted());
-    const { wake, accepts } = setup(run);
+    const { wake, accepts } = setup(run, { interruptFirstAttempt: true });
     await startedAndIdle();
 
     wake(["project-a"], "discovery");
@@ -405,4 +493,277 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
 
     expect(accepts()).toEqual([false]);
   });
+
+  // ---- addendum 1 (independent review) ----------------------------------
+
+  it("a discovery wake that merges into a demand cycle's key while the cycle awaits its recovery preflight is not absorbed as demand (race A)", async () => {
+    const releaseReconcile = deferred<null>();
+    const reconcile = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockImplementationOnce(() => releaseReconcile.promise)
+      .mockResolvedValue(null);
+    const run = vi.fn().mockResolvedValue(accepted());
+    const { wake, accepts } = setup(run, { reconcile });
+    await startedAndIdle();
+
+    wake(["project-a"], "demand");
+    await vi.advanceTimersByTimeAsync(BACKLOG);
+    // The demand cycle has claimed its entry and is parked in the preflight.
+    expect(run).not.toHaveBeenCalled();
+    wake(["project-a"]);
+    releaseReconcile.resolve(null);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY * 4);
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0]).toMatchObject({
+      wakeProjectIds: ["project-a"],
+    });
+    expect(accepts()).toEqual([false]);
+  });
+
+  it("a discovery wake that merges into the key of a parked capacity retry of a demand cycle is not absorbed as demand (race B)", async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "maintenance-delivery-capacity",
+      })
+      .mockResolvedValue(accepted());
+    const { wake, accepts } = setup(run);
+    await startedAndIdle();
+
+    wake(["project-a"], "demand");
+    await vi.advanceTimersByTimeAsync(BACKLOG);
+    expect(run).toHaveBeenCalledOnce();
+    wake(["project-a"]);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY * 6);
+
+    expect(run.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(accepts()).toEqual([false]);
+  });
+
+  it("a discovery cycle that Native could not admit for capacity keeps discovery when the exact request is retried (RetryableDelivery.wakeEntries)", async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "maintenance-delivery-capacity",
+      })
+      .mockResolvedValue(accepted());
+    const { wake, accepts } = setup(run);
+    await startedAndIdle();
+
+    wake(["project-a"], "discovery");
+    await vi.advanceTimersByTimeAsync(BACKLOG);
+    expect(accepts()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY * 2);
+
+    expect(run.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(accepts()).toEqual([false]);
+  });
+
+  it.each([
+    ["no receipt (an adapter without the attempt lifecycle)", "none", false],
+    ["an empty receipt", [], true],
+    [
+      "a receipt of the Graph Index build only",
+      ["graph"],
+      true,
+    ],
+    [
+      "a receipt where the wake also advanced the durable chain (Verify succeeded)",
+      ["verify"],
+      false,
+    ],
+    [
+      "a receipt whose only durable work failed (nothing advanced)",
+      ["failed-verify"],
+      true,
+    ],
+    [
+      "a receipt of the build and a Verify",
+      ["graph", "verify"],
+      false,
+    ],
+  ] as const)(
+    "a wake-only demand cycle with %s is demand-only: %s",
+    async (_name, receipt, expected) => {
+      const run = vi.fn().mockResolvedValue(accepted());
+      const named = (kinds: readonly string[]) =>
+        kinds.map((kind) =>
+          kind === "graph"
+            ? GRAPH_BUILD_WORK
+            : kind === "failed-verify"
+              ? FAILED_VERIFY_WORK
+              : VERIFY_WORK,
+        );
+      let accepts: () => boolean[];
+      let wake: ReturnType<typeof setup>["wake"];
+      if (receipt === "none") {
+        const onCycleAccepted = vi.fn(
+          (_cycle: NarrativeMaintenanceAcceptedCycle) => {},
+        );
+        const scheduler = createNarrativeMaintenanceScheduler(
+          {
+            getNarrativeMaintenanceWorkspaceBinding: () => BINDING,
+            runNarrativeMaintenanceCycle: run,
+          } as unknown as Parameters<
+            typeof createNarrativeMaintenanceScheduler
+          >[0],
+          { warn: vi.fn(), onCycleAccepted },
+        );
+        schedulers.push(scheduler);
+        scheduler.start();
+        wake = (ids, origin) =>
+          scheduler.requestGraphIndexBuildWakesWithBinding?.(
+            ids,
+            BINDING,
+            origin,
+          );
+        accepts = () =>
+          onCycleAccepted.mock.calls.map(([cycle]) => cycle.demandOnly);
+      } else {
+        const fixture = setup(run, { receiptWorks: named(receipt) });
+        wake = fixture.wake;
+        accepts = fixture.accepts;
+      }
+      await startedAndIdle();
+
+      wake(["project-a"], "demand");
+      await vi.advanceTimersByTimeAsync(BACKLOG);
+
+      expect(run).toHaveBeenCalledOnce();
+      expect(accepts()).toEqual([expected]);
+    },
+  );
+
+  describe("a discovery wake is never demoted, and a demand wake never promoted, by a requeue", () => {
+    const cases = [
+      [
+        "a preempted cycle",
+        { status: "accepted", hasMore: false, preempted: true },
+        { stopReason: "foreground-preempted" as const },
+      ],
+      ["a deferred adapter", { status: "deferred", hasMore: false }, {}],
+      [
+        "a workspace binding mismatch",
+        {
+          status: "workspace-unavailable",
+          reason: "maintenance-workspace-binding-mismatch",
+        },
+        {},
+      ],
+      ["a not-admitted cycle", { status: "not-admitted" }, {}],
+      [
+        "a workspace-unavailable cycle",
+        { status: "workspace-unavailable", reason: "maintenance-test" },
+        {},
+      ],
+    ] as const;
+    it.each(
+      cases.flatMap(([name, first, extra]) =>
+        (
+          [
+            ["discovery", false],
+            ["demand", true],
+          ] as const
+        ).map(([origin, expected]) => [name, first, extra, origin, expected] as const),
+      ),
+    )(
+      "%s requeues its %s wake under the same origin",
+      async (_name, first, extra, origin, expected) => {
+        const run = vi
+          .fn()
+          .mockResolvedValueOnce(first)
+          .mockResolvedValue(accepted());
+        const { wake, accepts } = setup(run, {
+          interruptFirstAttempt: true,
+          ...extra,
+        });
+        await startedAndIdle();
+
+        wake(["project-a"], origin);
+        await vi.advanceTimersByTimeAsync(BACKLOG);
+        expect(run).toHaveBeenCalledOnce();
+        // A deferred adapter or a binding mismatch parks the wake until the
+        // next explicit request (a demand one, which must not change the
+        // parked origin).
+        if (
+          first.status === "deferred" ||
+          ("reason" in first &&
+            first.reason === "maintenance-workspace-binding-mismatch")
+        ) {
+          wake(["project-a"], "demand");
+        }
+        await vi.advanceTimersByTimeAsync(120_000);
+
+        expect(run.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(accepts().at(-1)).toBe(expected);
+        expect(accepts().filter((flag) => flag !== expected)).toEqual([]);
+      },
+    );
+  });
+
+  describe("a rebind of a retained wake keeps its origin", () => {
+    const W1 = { authorityId: "authority-w1", generation: 3 };
+    const W2 = { authorityId: "authority-w1-reopened", generation: 9 };
+    it.each([
+      ["demand", true],
+      ["discovery", false],
+    ] as const)("a %s wake stays %s after Native's rebound proof", async (origin, expected) => {
+      const reconcile = vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "reconciled",
+          descriptorId: 12,
+          reason: "maintenance-recovery-complete",
+          recoveredBinding: W1,
+          activeBinding: W2,
+          reboundBinding: W2,
+        })
+        .mockResolvedValue({ status: "none" });
+      const run = vi.fn().mockResolvedValue(accepted());
+      const { wake, accepts } = setup(run, {
+        binding: W2,
+        wakeBinding: W1,
+        reconcile,
+      });
+      // Registered before the first timer, so Native's one proof is spent on
+      // this wake's own cycle.
+      wake(["project-a"], origin);
+      await vi.advanceTimersByTimeAsync(INITIAL + BACKLOG + ERROR_RETRY * 2);
+
+      expect(run).toHaveBeenCalledOnce();
+      expect(run.mock.calls[0]?.[0]).toMatchObject({
+        wakeProjectIds: ["project-a"],
+        workspaceBinding: W2,
+      });
+      expect(accepts()).toEqual([expected]);
+    });
+  });
+
+  it.each([
+    ["discovery", false],
+    ["demand", true],
+  ] as const)(
+    "a %s wake keeps its origin through every retry, including the one after the retry budget when no failure receipt can be persisted",
+    async (origin, expected) => {
+      const run = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockResolvedValue(accepted());
+      const { wake, accepts } = setup(run, { interruptAttempts: 4 });
+      await startedAndIdle();
+
+      wake(["project-a"], origin);
+      await vi.advanceTimersByTimeAsync(600_000);
+
+      expect(run.mock.calls.length).toBeGreaterThanOrEqual(5);
+      expect(accepts()).toEqual([expected]);
+    },
+  );
 });

@@ -270,6 +270,44 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
   });
 
   /**
+   * The attempt lifecycle a production backend has: each accepted cycle ends
+   * with a Native terminal receipt. DR-PUBG-5-17 trusts a wake-only cycle to be
+   * demand-only only on that receipt, so a backend without it never skips.
+   */
+  function lifecycleMethods(
+    receiptWorks: readonly { workKey: string; status: "succeeded" | "failed" }[] = [],
+  ) {
+    return {
+      ackNarrativeMaintenanceDelivery: vi
+        .fn()
+        .mockResolvedValue({ status: "retired" }),
+      beginNarrativeMaintenanceAttempt: vi.fn(
+        (attemptId: string, received: typeof binding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: received.authorityId,
+            generation: received.generation,
+          }),
+      ),
+      cancelNarrativeMaintenanceAttempt: vi.fn((attemptId: string) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: "succeeded",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: binding.generation,
+          works: receiptWorks,
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        }),
+      ),
+    };
+  }
+
+  /**
    * DR-PUBG-5-17. The chain is alive (its first discovery is in flight) while a
    * wake cycle is accepted. The number of discoveries counts the rediscoveries
    * that cycle asked for: a rediscovery queued behind the in-flight discovery
@@ -277,6 +315,7 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
    */
   async function discoveriesWithWakeDuringLiveChain(
     wake: "none" | "demand-event" | "demand" | "discovery" | "mixed",
+    receiptWorks: readonly { workKey: string; status: "succeeded" | "failed" }[] = [],
   ) {
     let releaseFirst: (value: string) => void = () => {};
     const discoverNarrativeMaintenanceWork = vi
@@ -302,6 +341,7 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
       ),
       discoverNarrativeMaintenanceWork,
       runNarrativeMaintenanceCycle,
+      ...lifecycleMethods(receiptWorks),
       onEvent(callback: (channel: unknown, payload: unknown) => void) {
         onEvent = callback;
       },
@@ -349,6 +389,29 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
     // The demand's cycle is accepted, but it was a demand-only cycle.
     expect(await discoveriesWithWakeDuringLiveChain("demand-event")).toBe(1);
     expect(await discoveriesWithWakeDuringLiveChain("demand")).toBe(1);
+    // The same demand cycle, when Native says it advanced the durable chain
+    // (a Verify), still asks for the rediscovery that chain needs ...
+    const verifyWork = [
+      {
+        workKey:
+          "narrative-maintenance:v1/dependency-verify/project-electron-route/verify:v1",
+        status: "succeeded" as const,
+      },
+    ];
+    expect(await discoveriesWithWakeDuringLiveChain("demand", verifyWork)).toBe(
+      2,
+    );
+    // ... while a cycle that only built the Graph Index does not.
+    const buildWork = [
+      {
+        workKey:
+          "narrative-maintenance:v1/nir1-graph-index-build/project-electron-route/nir1-graph-index-build/epoch/epoch-1",
+        status: "succeeded" as const,
+      },
+    ];
+    expect(await discoveriesWithWakeDuringLiveChain("demand", buildWork)).toBe(
+      1,
+    );
     // W1 and the seam's B wake register with the default origin: unchanged.
     expect(await discoveriesWithWakeDuringLiveChain("discovery")).toBe(2);
     // The same key asked for by both origins is a discovery wake.
@@ -364,6 +427,7 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
   async function chainDiscoveries(
     injected: "none" | "demand" | "discovery",
     injections: number,
+    receiptWorks: readonly { workKey: string; status: "succeeded" | "failed" }[] = [],
   ) {
     const discoverNarrativeMaintenanceWork = vi.fn().mockImplementation(
       async () =>
@@ -384,6 +448,7 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
       ),
       discoverNarrativeMaintenanceWork,
       runNarrativeMaintenanceCycle,
+      ...lifecycleMethods(receiptWorks),
       onEvent(callback: (channel: unknown, payload: unknown) => void) {
         onEvent = callback;
       },
@@ -429,6 +494,29 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
     expect(demand.cycles).toBeGreaterThan(baseline.cycles);
     expect(demand.discoveries).toBe(4);
     expect(demand.rediscoveries).toBe(baseline.rediscoveries);
+
+    // A demand cycle whose only durable work failed advanced nothing, so it
+    // does not use the budget either (a planner that keeps returning the same
+    // work must not be spent down by demand).
+    const failedVerify = [
+      {
+        workKey:
+          "narrative-maintenance:v1/dependency-verify/project-wake-0/verify:v1",
+        status: "failed" as const,
+      },
+    ];
+    const failed = await chainDiscoveries("demand", 6, failedVerify);
+    expect(failed.discoveries).toBe(4);
+    expect(failed.rediscoveries).toBe(baseline.rediscoveries);
+
+    // Residual (DR-PUBG-5-17 addendum 1-C): a demand cycle that Native says
+    // completed durable chain work is not demand-only and takes the
+    // rediscovery that chain needs, so a long run of such cycles does draw on
+    // the budget.
+    const advancing = await chainDiscoveries("demand", 6, [
+      { ...failedVerify[0]!, status: "succeeded" as const },
+    ]);
+    expect(advancing.rediscoveries).toBeGreaterThan(baseline.rediscoveries);
 
     // Control: the same wakes as discovery wakes take rediscoveries too.
     const discovery = await chainDiscoveries("discovery", 6);

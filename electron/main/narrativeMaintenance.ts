@@ -769,6 +769,34 @@ function sameMaintenanceWorkShape(
 }
 
 /**
+ * DR-PUBG-5-17 (addendum 1). A wake-only cycle is "demand-only" only when
+ * Native's terminal receipt proves it did not advance the durable chain: no
+ * work at all, the Graph Index build, or work that did not succeed. For an
+ * empty wire batch Native plans durable work per wake project itself, and a
+ * cycle that completed Verify/Backfill/Rebuild must keep its rediscovery. No
+ * receipt (replayed delivery, an adapter without the lifecycle methods)
+ * proves nothing, so the answer is "no". This reads the receipt only; Main
+ * still never dispatches the build itself.
+ */
+const NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX =
+  "narrative-maintenance:v1/nir1-graph-index-build/";
+
+function receiptAdvancedNoDurableChainWork(
+  receipt: NarrativeMaintenanceTerminalReceipt | null,
+): boolean {
+  return (
+    receipt !== null &&
+    receipt.works.every(
+      (work) =>
+        work.status !== "succeeded" ||
+        work.workKey.startsWith(
+          NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX,
+        ),
+    )
+  );
+}
+
+/**
  * Selectively retain work Native says was interrupted or never started.
  * `null` means the receipt cannot prove coverage of the wire batch, so it
  * cannot safely select either work to retry or work to omit.
@@ -3291,23 +3319,28 @@ export function createNarrativeMaintenanceScheduler(
     ];
     // DR-PUBG-5-17. A project sent under both origins counts as discovery.
     const sendingWakeOrigins = new Map<string, NarrativeMaintenanceWakeOrigin>();
-    for (const entry of sendingWakeEntries) {
-      sendingWakeOrigins.set(
-        entry.projectId,
-        sendingWakeOrigins.get(entry.projectId) === "discovery" ||
-          entry.origin === "discovery"
-          ? "discovery"
-          : "demand",
-      );
-    }
+    let demandOnlyCycle = false;
+    const recomputeSendingWakeOrigins = (): void => {
+      sendingWakeOrigins.clear();
+      for (const entry of sendingWakeEntries) {
+        sendingWakeOrigins.set(
+          entry.projectId,
+          sendingWakeOrigins.get(entry.projectId) === "discovery" ||
+            entry.origin === "discovery"
+            ? "discovery"
+            : "demand",
+        );
+      }
+      demandOnlyCycle =
+        backendBatch.length === 0 &&
+        sendingWakeEntries.length > 0 &&
+        sendingWakeEntries.every((entry) => entry.origin === "demand");
+    };
+    recomputeSendingWakeOrigins();
     const sendingWakeOriginOf = (
       projectId: string,
     ): NarrativeMaintenanceWakeOrigin =>
       sendingWakeOrigins.get(projectId) ?? "discovery";
-    const demandOnlyCycle =
-      backendBatch.length === 0 &&
-      sendingWakeEntries.length > 0 &&
-      sendingWakeEntries.every((entry) => entry.origin === "demand");
     let cycleBinding =
       deliveryRetry?.workspaceBinding ??
       backendBatch[0]?.workspaceBinding ??
@@ -3509,6 +3542,27 @@ export function createNarrativeMaintenanceScheduler(
       deliverySequences.set(deliveryFingerprint, deliverySequence);
     }
     clearCoordinatorWait();
+    // DR-PUBG-5-17. The origins above were read before the awaits (descriptor
+    // recovery, ACK retry). A discovery wake that merged into the same key
+    // meanwhile is about to be absorbed by the delete below, so promote the
+    // snapshot from the live map first: otherwise the rediscovery that the
+    // absorbed wake asked for would be suppressed (and, for a retried
+    // delivery, so would the origin recorded in `wakeEntries`).
+    if (
+      sendingWakeEntries.some(
+        (entry) =>
+          entry.origin !== "discovery" &&
+          durableWakeProjects.get(entry.wakeKey)?.origin === "discovery",
+      )
+    ) {
+      sendingWakeEntries = sendingWakeEntries.map((entry) =>
+        entry.origin !== "discovery" &&
+        durableWakeProjects.get(entry.wakeKey)?.origin === "discovery"
+          ? { ...entry, origin: "discovery" as const }
+          : entry,
+      );
+      recomputeSendingWakeOrigins();
+    }
     for (const entry of sendingWakeEntries) {
       durableWakeProjects.delete(entry.wakeKey);
       deferredWakeProjects.delete(entry.wakeKey);
@@ -3854,7 +3908,9 @@ export function createNarrativeMaintenanceScheduler(
       if (cycleResult.status === "accepted" && !disposed) {
         try {
           const followup = options.onCycleAccepted?.({
-            demandOnly: demandOnlyCycle,
+            demandOnly:
+              demandOnlyCycle &&
+              receiptAdvancedNoDurableChainWork(nativeTerminalReceipt),
           });
           void Promise.resolve(followup).catch((callbackError: unknown) => {
             warn(
