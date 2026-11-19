@@ -47,6 +47,7 @@ export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS = 60_000;
 export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_KEYS = 8;
 export const NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_PROJECT_ID_LENGTH = 512;
 const GRAPH_INDEX_DEMAND_CHANNEL = "narrative-maintenance:graph-index-demand";
+const WORKSPACE_LIFECYCLE_CHANNEL = "workspace:lifecycle-state";
 
 /** The minimum spacing after the `firedInRun`-th wake of a run (k >= 1). */
 export function narrativeMaintenanceGraphDemandIntervalMs(
@@ -892,6 +893,31 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     graphDemands.clear();
   };
 
+  // DR-PUBG-5-18 追補 4: `workspace:opened` is not emitted by every path that
+  // publishes a replacement's Ready (a failure branch of a restore, or an open
+  // that fails after its swap and is reconciled later). Native emits the
+  // `workspace:lifecycle-state` of that Ready after it, on the same queue and
+  // after any demand the old workspace raised, so a change of (status,
+  // bindingToken) ends the old workspace's demands the way that event does. It
+  // only clears: it is not a discovery trigger, and a view that changes
+  // neither value (a revision bump of one Ready) keeps the pending demands.
+  let lastLifecycleViewKey: string | null = null;
+  const handleWorkspaceLifecycleView = (payload: unknown): void => {
+    if (disposed) return;
+    if (payload === null || typeof payload !== "object") return;
+    const { status, bindingToken } = payload as Record<string, unknown>;
+    if (
+      typeof status !== "string" ||
+      (bindingToken !== null && typeof bindingToken !== "string")
+    ) {
+      return;
+    }
+    const key = JSON.stringify([status, bindingToken]);
+    if (key === lastLifecycleViewKey) return;
+    lastLifecycleViewKey = key;
+    clearGraphDemands();
+  };
+
   const fireGraphDemand = (key: string, entry: GraphDemandEntry): void => {
     if (disposed || graphDemands.get(key) !== entry) return;
     // The binding was bound when the demand arrived; a replacement workspace
@@ -1394,6 +1420,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     handleBackendEvent(channel, payload): void {
       if (channel === GRAPH_INDEX_DEMAND_CHANNEL) {
         handleGraphIndexDemand(payload);
+        return;
+      }
+      if (channel === WORKSPACE_LIFECYCLE_CHANNEL) {
+        handleWorkspaceLifecycleView(payload);
         return;
       }
       if (
