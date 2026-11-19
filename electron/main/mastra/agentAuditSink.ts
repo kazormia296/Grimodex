@@ -25,9 +25,11 @@
  *
  * Each execution gets one terminal. A second terminal call for the execution
  * (for example the owner's ambiguous terminal after the adapter's own, or the
- * reverse) writes nothing. A terminal whose append failed releases the claim so
- * that one more terminal can be tried; a late duplicate is then refused by the
- * audit's lifecycle check, not silently doubled.
+ * reverse) waits for one in flight and writes nothing if it was written. If the
+ * terminal in flight failed, the waiting call writes its own, so a failed
+ * `complete` does not leave the execution start-only behind an ambiguous call.
+ * A request to stop (any terminal call) is remembered for good: the execution
+ * is never dispatched afterwards, even if that terminal's append failed.
  *
  * An ambiguous terminal (DR-MP3-10) is not a new event type: it is the
  * `execution.failed` (or `execution.cancelled`) row with the payload
@@ -192,8 +194,16 @@ export function createMainAgentAuditSink(
   const now = options.now ?? Date.now;
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
   const operationId = options.operationId ?? randomUUID();
-  /** executionIds whose terminal is claimed or written (one each; released only if its append failed). */
-  const terminals = new Set<string>();
+  /**
+   * executionIds for which a terminal was ever requested. Never released: an
+   * execution that was asked to stop does not go on to dispatch, whatever the
+   * terminal's append did.
+   */
+  const stopped = new Set<string>();
+  /** executionIds whose terminal is durable (one each). */
+  const written = new Set<string>();
+  /** The terminal append in flight, per execution; it settles to whether it succeeded. */
+  const pending = new Map<string, Promise<boolean>>();
   /** executionIds whose begin batch is durable and whose dispatch is not yet written. */
   const dispatchable = new Set<string>();
 
@@ -227,20 +237,45 @@ export function createMainAgentAuditSink(
     }
   }
 
-  /** Writes the terminal batch once; a second claim writes nothing. */
+  /**
+   * Writes the terminal batch once. A caller that finds a terminal in flight
+   * waits for its result: if it was written there is nothing to add, and if its
+   * append failed this caller writes its own (so a failed `complete` cannot
+   * leave an execution start-only behind an ambiguous call that returned early).
+   * The claim is taken synchronously, so only one writer is ever in flight.
+   */
   async function terminal(
     handle: MainAgentAuditHandle,
     build: () => Promise<readonly AiAuditEventInput[]>,
   ): Promise<void> {
-    if (terminals.has(handle.executionId)) return;
-    terminals.add(handle.executionId);
-    dispatchable.delete(handle.executionId);
-    try {
-      await append(handle, await build());
-    } catch (error) {
-      // Nothing durable is known: let one more terminal try.
-      terminals.delete(handle.executionId);
-      throw error;
+    const id = handle.executionId;
+    stopped.add(id);
+    dispatchable.delete(id);
+    for (;;) {
+      if (written.has(id)) return;
+      const inFlight = pending.get(id);
+      if (inFlight !== undefined) {
+        await inFlight;
+        continue;
+      }
+      let failure: unknown;
+      const attempt = (async (): Promise<boolean> => {
+        try {
+          await append(handle, await build());
+          written.add(id);
+          return true;
+        } catch (error) {
+          failure = error;
+          return false;
+        } finally {
+          pending.delete(id);
+        }
+      })();
+      pending.set(id, attempt);
+      // The attempt awaits `build()` first, so its `finally` cannot run before
+      // this set.
+      if (!(await attempt)) throw failure;
+      return;
     }
   }
 
@@ -282,7 +317,7 @@ export function createMainAgentAuditSink(
     async dispatched(handle) {
       // After a terminal (a forced abort) nothing is dispatched: the throw
       // reaches the adapter before the send.
-      if (terminals.has(handle.executionId)) {
+      if (stopped.has(handle.executionId)) {
         throw new Error("AGENT_AUDIT_TERMINAL_ALREADY_WRITTEN");
       }
       if (!dispatchable.has(handle.executionId)) {
@@ -302,9 +337,9 @@ export function createMainAgentAuditSink(
           now(),
         ),
       ]);
-      // A terminal claimed while the append was in flight (a forced abort):
-      // the send must not follow, whatever the append did.
-      if (terminals.has(handle.executionId)) {
+      // A stop requested while the append was in flight (a forced abort): the
+      // send must not follow, whatever the terminal's own append does.
+      if (stopped.has(handle.executionId)) {
         throw new Error("AGENT_AUDIT_TERMINAL_ALREADY_WRITTEN");
       }
       dispatchable.delete(handle.executionId);

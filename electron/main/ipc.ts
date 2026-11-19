@@ -28,7 +28,11 @@ import {
   isNir1LocalGenerationCommand,
   toErrorString,
 } from "../shared/ipcContract.js";
-import { isMastraAgentTurnCommand } from "../shared/mastraAgentTurnWire.js";
+import {
+  hasMastraAgentTurnForbiddenKey,
+  isMastraAgentTurnCommand,
+  mastraAgentTurnRefusalValue,
+} from "../shared/mastraAgentTurnWire.js";
 import type {
   CanonicalAuthorityRoute,
   CommandArgs,
@@ -2267,6 +2271,12 @@ export function registerIpcRouter(
                 return { ...boundArgs, payload };
               })()
             : boundArgs;
+        // The Mastra turn route refuses a renderer that sends a key that is
+        // Main's (the identity below replaces `callerIdentity`, so it is read
+        // here, before that).
+        const mastraForgedKey =
+          isMastraAgentTurnCommand(cmd) &&
+          hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
         );
@@ -2348,6 +2358,12 @@ export function registerIpcRouter(
             callerIdentity,
           });
           if (refusal) return refusal;
+          if (mastraForgedKey) {
+            return {
+              ok: true,
+              value: mastraAgentTurnRefusalValue(cmd, "invalid"),
+            };
+          }
         }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke

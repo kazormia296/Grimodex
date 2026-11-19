@@ -11,7 +11,15 @@
 import { describe, it, expect } from "vitest";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import ts from "typescript";
 import {
   AI_AUDIT_MAIN_CALLSITES,
@@ -143,9 +151,11 @@ const AI_TRANSPORT_COMMANDS: Record<string, string[]> = {
  * - 行コメント（//）は雑に除去してコメント内の文字列マッチを減らす（ブロック
  *   コメント等は完璧でないが、誤検出は「過剰に網羅扱い」側＝安全側に倒れる）。
  */
-function scanInvokedAiCommands(): Set<string> {
+function scanInvokedAiCommands(
+  root: string = SRC_ROOT,
+  commandNames: readonly string[] = Object.keys(AI_TRANSPORT_COMMANDS),
+): Set<string> {
   const found = new Set<string>();
-  const commandNames = Object.keys(AI_TRANSPORT_COMMANDS);
   const walk = (dir: string) => {
     for (const ent of readdirSync(dir, { withFileTypes: true })) {
       if (ent.name === "node_modules" || ent.name.startsWith(".")) continue;
@@ -171,8 +181,19 @@ function scanInvokedAiCommands(): Set<string> {
       }
     }
   };
-  walk(SRC_ROOT);
+  walk(root);
   return found;
+}
+
+/** 走査で見つかった command のうち、レジストリの transport に網羅されないもの。 */
+function uncoveredAiCommands(
+  used: ReadonlySet<string>,
+  table: Readonly<Record<string, string[]>>,
+  registeredTransports: ReadonlySet<string>,
+): string[] {
+  return [...used].filter(
+    (cmd) => !(table[cmd] ?? []).some((t) => registeredTransports.has(t)),
+  );
 }
 
 function callCarriesLiteralAuditPath(input: {
@@ -413,16 +434,10 @@ describe("AI path registry — completeness", () => {
     ).toBeGreaterThan(0);
 
     const registeredTransports = new Set(AI_PATHS.map((p) => p.transport));
-    for (const cmd of used) {
-      const acceptable = AI_TRANSPORT_COMMANDS[cmd] ?? [];
-      const covered = acceptable.some((t) => registeredTransports.has(t));
-      expect(
-        covered,
-        `本番で invoke される AI transport "${cmd}" を網羅するレジストリ ` +
-          `エントリが無い（transport=${acceptable.join("|")} のいずれかを ` +
-          `AI_PATHS に登録すること）`,
-      ).toBe(true);
-    }
+    expect(
+      uncoveredAiCommands(used, AI_TRANSPORT_COMMANDS, registeredTransports),
+      "本番で invoke される AI transport を網羅するレジストリ エントリが無い（AI_PATHS に登録すること）",
+    ).toEqual([]);
   }, 30_000); // src/ 全走査は数秒かかるため既定 5s を引き上げる
 
   // ── FINDING B: testName 指定エントリは参照先テストに当該テストが実在する ──────
@@ -581,21 +596,58 @@ describe("AI path registry — the main-agent audit owner (MP-3b, DR-MP3-23)", (
     }
   });
 
-  it("the new start command is in the transport scan, and the scan sees the wrapper's invoke (negative control)", () => {
+  it("the new start command is in the transport scan, and the scan sees the wrapper's invoke", () => {
     expect(AI_TRANSPORT_COMMANDS.mastra_agent_turn_start).toEqual([
       "send_agent_message",
     ]);
-    const used = scanInvokedAiCommands();
     // The wrapper invokes with a literal, which is the only form the scan reads.
-    expect(used.has("mastra_agent_turn_start")).toBe(true);
-    // The scan's pattern itself: a literal is seen, a constant is not.
-    const seen = (line: string) =>
-      new RegExp('invoke[^(]*\\(\\s*"mastra_agent_turn_start"').test(line);
-    expect(seen('return invoke<R>("mastra_agent_turn_start", a);')).toBe(true);
-    expect(seen("return invoke<R>(MASTRA_AGENT_TURN_START_COMMAND, a);")).toBe(
-      false,
-    );
+    expect(scanInvokedAiCommands().has("mastra_agent_turn_start")).toBe(true);
   }, 30_000);
+
+  // The scan looks only for the keys of AI_TRANSPORT_COMMANDS: an AI transport
+  // that nobody wrote into that table is not seen at all, so what protects a
+  // new command is the hand-written table (and the equality above), not the
+  // scan. These cases run the real scan over fixture trees to show exactly what
+  // it does and does not catch.
+  it("the real scan, on fixtures: a tabled literal invoke is found, an unregistered table entry fails the coverage check, an untabled command and a constant are not seen", () => {
+    const root = mkdtempSync(join(tmpdir(), "ai-path-scan-"));
+    try {
+      writeFileSync(
+        join(root, "literal.ts"),
+        'export const a = () => invoke<R>("mastra_agent_turn_start", x);\n' +
+          'export const b = () => invoke("untabled_ai_command", x);\n',
+      );
+      writeFileSync(
+        join(root, "constant.ts"),
+        "export const c = () => invoke<R>(MASTRA_AGENT_TURN_START_COMMAND, x);\n",
+      );
+      writeFileSync(
+        join(root, "ignored.test.ts"),
+        'invoke("mastra_agent_turn_start", x);\n',
+      );
+      const table = { mastra_agent_turn_start: ["send_agent_message"] };
+      const names = Object.keys(table);
+      // The tabled literal is seen; the untabled command and the constant are not.
+      expect([...scanInvokedAiCommands(root, names)]).toEqual([
+        "mastra_agent_turn_start",
+      ]);
+      expect(
+        [
+          ...scanInvokedAiCommands(root, [...names, "untabled_ai_command"]),
+        ].sort(),
+      ).toEqual(["mastra_agent_turn_start", "untabled_ai_command"]);
+      // With no registry entry for the table's transport, the coverage check fails.
+      const found = scanInvokedAiCommands(root, names);
+      expect(uncoveredAiCommands(found, table, new Set(["other"]))).toEqual([
+        "mastra_agent_turn_start",
+      ]);
+      expect(
+        uncoveredAiCommands(found, table, new Set(["send_agent_message"])),
+      ).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("AI runtime route registry — Web Editor direct transports", () => {

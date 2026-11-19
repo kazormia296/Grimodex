@@ -623,19 +623,52 @@ describe("with the gate open (3b: the checks run, a start is not run)", () => {
     ).toEqual(REFUSED("cancel", "invalid"));
   });
 
-  it("a renderer's own callerIdentity is replaced by Main's before the request is read", async () => {
-    // The router defines Main's identity as a non-enumerable property over the
-    // renderer's key, so a forged one never reaches the route; the raw wire
-    // parser refuses it (wire test) for a caller that has no router.
+  it("a renderer that sends a key that is Main's is refused as invalid, callerIdentity included (the router replaces it, so it is read first)", async () => {
     const r = await rig({ launch: activeLaunch() });
+    for (const extra of [
+      { callerIdentity: { senderId: 999, forged: true } },
+      { callerIdentity: null },
+      { capability: "c" },
+      { executionId: "e" },
+    ]) {
+      expect(
+        valueOf(
+          await r.invoke(MASTRA_AGENT_TURN_START_COMMAND, {
+            ...START,
+            ...extra,
+          }),
+        ),
+        JSON.stringify(extra),
+      ).toEqual(REFUSED("start", "invalid"));
+    }
+    expect(
+      valueOf(
+        await r.invoke(MASTRA_AGENT_TURN_CANCEL_COMMAND, {
+          ...CANCEL,
+          callerIdentity: { senderId: 999 },
+        }),
+      ),
+    ).toEqual(REFUSED("cancel", "invalid"));
+    // A destroyed sender is refused as such first, and a closed gate answers
+    // before any of this.
+    r.sender.destroyed = true;
     expect(
       valueOf(
         await r.invoke(MASTRA_AGENT_TURN_START_COMMAND, {
           ...START,
-          callerIdentity: { senderId: 999, forged: true },
+          callerIdentity: {},
         }),
       ),
-    ).toEqual(REFUSED("start", "unsupported"));
+    ).toEqual(REFUSED("start", "sender-refused"));
+    const closed = await rig();
+    expect(
+      valueOf(
+        await closed.invoke(MASTRA_AGENT_TURN_START_COMMAND, {
+          ...START,
+          callerIdentity: {},
+        }),
+      ),
+    ).toEqual(REFUSED("start", "gate-closed"));
   });
 
   it("cancel of a turn Main does not know is a no-op that says so", async () => {

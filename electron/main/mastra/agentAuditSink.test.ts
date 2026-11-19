@@ -157,7 +157,7 @@ describe("begin and dispatched", () => {
     ]);
   });
 
-  it("names every row by Main's execution, the kept path ID and a null parent, with appVersion last and the owner as metadata", async () => {
+  it("names every row by Main's execution, the kept path ID and a null parent, with appVersion last, and labels no row with an owner", async () => {
     const { sink, calls } = makeSink();
     const handle = await begun(sink);
     expect(handle.executionId).toBe("00000000-0000-4000-8000-000000000001");
@@ -323,6 +323,126 @@ describe("a terminal that is claimed while the dispatch is being written", () =>
       .flatMap((call) => call.events)
       .filter((event) => event.eventType === "execution.failed");
     expect(terminals).toHaveLength(1);
+  });
+});
+
+describe("a stop that is requested while a dispatch or a terminal is in flight", () => {
+  const isTerminalBatch = (call: AppendCall) =>
+    call.events.some((event) =>
+      [
+        "execution.failed",
+        "execution.succeeded",
+        "execution.cancelled",
+      ].includes(event.eventType),
+    );
+
+  it("in-flight dispatched and a terminal whose append fails twice: the dispatch still does not go on to a send", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { sink } = makeSink(async (call) => {
+      if (types(call).includes("request.dispatched")) await gate;
+      if (isTerminalBatch(call)) throw new Error("storage down");
+    });
+    const handle = await sink.begin(request());
+    const dispatching = sink.dispatched(handle);
+    await Promise.resolve();
+    const stopping = sink.ambiguous(handle, { cause: "workspace-switch" });
+    // The terminal's append fails (and is re-sent once and fails again), which
+    // releases its claim; the dispatch must still be refused.
+    await expect(stopping).rejects.toThrow("storage down");
+    release();
+    await expect(dispatching).rejects.toThrow(
+      "AGENT_AUDIT_TERMINAL_ALREADY_WRITTEN",
+    );
+    // And a dispatch asked for later is refused too: the stop is remembered.
+    await expect(sink.dispatched(handle)).rejects.toThrow(
+      "AGENT_AUDIT_TERMINAL_ALREADY_WRITTEN",
+    );
+  });
+
+  it("an ambiguous call waits for a complete in flight, and writes nothing if it was written", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { sink, calls } = makeSink(async (call) => {
+      if (types(call).includes("response.completed")) await gate;
+    });
+    const handle = await begun(sink);
+    const completing = sink.complete(handle, COMPLETION);
+    await Promise.resolve();
+    let ambiguousDone = false;
+    const ambiguous = sink.ambiguous(handle, { cause: "quit" }).then(() => {
+      ambiguousDone = true;
+    });
+    await Promise.resolve();
+    // It has not returned early: the complete is still in flight.
+    expect(ambiguousDone).toBe(false);
+    release();
+    await Promise.all([completing, ambiguous]);
+    expect(types(calls.at(-1)!)).toEqual([
+      "response.completed",
+      "execution.succeeded",
+    ]);
+    expect(calls.filter(isTerminalBatch)).toHaveLength(1);
+  });
+
+  it("an ambiguous call whose complete in flight fails writes its own terminal (never start-only)", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { sink, calls } = makeSink(async (call) => {
+      if (types(call).includes("response.completed")) {
+        await gate;
+        throw new Error("storage down");
+      }
+    });
+    const handle = await begun(sink);
+    const completing = sink.complete(handle, COMPLETION);
+    await Promise.resolve();
+    const ambiguous = sink.ambiguous(handle, { cause: "quit" });
+    release();
+    await expect(completing).rejects.toThrow("storage down");
+    await ambiguous;
+    const terminals = calls.filter(
+      (call) =>
+        isTerminalBatch(call) && !types(call).includes("response.completed"),
+    );
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0].events[0]).toMatchObject({
+      eventType: "execution.failed",
+      payload: { remoteOutcome: "unknown", responseObserved: false },
+    });
+  });
+
+  it("two waiters behind one failing terminal write exactly one terminal between them", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { sink, calls } = makeSink(async (call) => {
+      if (types(call).includes("response.completed")) {
+        await gate;
+        throw new Error("storage down");
+      }
+    });
+    const handle = await begun(sink);
+    const completing = sink.complete(handle, COMPLETION);
+    await Promise.resolve();
+    const a = sink.ambiguous(handle, { cause: "quit" });
+    const b = sink.fail(handle, new Error("late"));
+    release();
+    await expect(completing).rejects.toThrow();
+    await Promise.all([a, b]);
+    expect(
+      calls.filter(
+        (call) =>
+          isTerminalBatch(call) && !types(call).includes("response.completed"),
+      ),
+    ).toHaveLength(1);
   });
 });
 

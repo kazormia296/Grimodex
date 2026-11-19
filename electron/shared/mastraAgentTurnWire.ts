@@ -95,6 +95,18 @@ export const MASTRA_AGENT_TURN_FORBIDDEN_KEYS = [
   "callerIdentity",
 ] as const;
 
+/**
+ * Whether a request's own enumerable top-level keys include one of Main's. The
+ * router replaces `callerIdentity` with Main's own (a non-enumerable value) before
+ * a handler sees the arguments, so it asks this on the renderer's arguments first.
+ */
+export function hasMastraAgentTurnForbiddenKey(args: unknown): boolean {
+  if (typeof args !== "object" || args === null) return false;
+  return Object.keys(args).some((key) =>
+    (MASTRA_AGENT_TURN_FORBIDDEN_KEYS as readonly string[]).includes(key),
+  );
+}
+
 export type MastraAgentTurnRole = "system" | "user" | "assistant";
 export const MASTRA_AGENT_TURN_ROLES: readonly MastraAgentTurnRole[] = [
   "system",
@@ -274,7 +286,9 @@ function fail(issue: MastraAgentTurnWireIssue): {
  * A non-enumerable own property is skipped, not refused: Main's router attaches
  * the caller identity (and other sidecars) that way, and such a property never
  * crosses IPC. A renderer's own `callerIdentity` is an enumerable key, which
- * `keyIssue` refuses as forbidden when this parser sees the raw request.
+ * `keyIssue` refuses as forbidden when this parser sees the raw request. The
+ * router replaces that key with Main's, so it asks
+ * `hasMastraAgentTurnForbiddenKey` on the renderer's arguments first.
  */
 function plainEntries(value: unknown): ReadonlyMap<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -425,7 +439,9 @@ function parseRoute(
 
 function parseMessages(
   value: unknown,
-): MastraAgentTurnParse<readonly MastraAgentTurnMessage[]> {
+):
+  | { readonly ok: true; readonly total: number }
+  | { readonly ok: false; readonly issue: MastraAgentTurnWireIssue } {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
@@ -459,7 +475,7 @@ function parseMessages(
       return fail("text-too-long");
     }
   }
-  return { ok: true, value: value as readonly MastraAgentTurnMessage[] };
+  return { ok: true, total };
 }
 
 /**
@@ -482,6 +498,9 @@ export function parseMastraAgentTurnStartRequest(
   if (!messages.ok) return messages;
   const route = parseRoute(entries.get("route"));
   if (!route.ok) return route;
+  // The cache segments and the volatile tail are model-visible text too: they
+  // count toward the same total as the messages.
+  let total = messages.total;
   const segments = entries.get("systemCacheSegments");
   if (
     segments !== null &&
@@ -496,6 +515,9 @@ export function parseMastraAgentTurnStartRequest(
   ) {
     return fail("segments");
   }
+  for (const segment of (segments ?? []) as readonly string[]) {
+    total += segment.length;
+  }
   const tail = entries.get("systemVolatileTail");
   if (
     tail !== null &&
@@ -504,9 +526,20 @@ export function parseMastraAgentTurnStartRequest(
   ) {
     return fail("volatile-tail");
   }
+  if (typeof tail === "string") total += tail.length;
+  if (total > MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX) {
+    return fail("text-too-long");
+  }
   const tools = entries.get("tools");
-  // Tool 0: the only tools array of this route is the empty one.
-  if (!Array.isArray(tools) || tools.length !== 0) return fail("tools");
+  // Tool 0: the only tools array of this route is the empty one, with no
+  // other enumerable property either.
+  if (
+    !Array.isArray(tools) ||
+    tools.length !== 0 ||
+    Object.keys(tools).length !== 0
+  ) {
+    return fail("tools");
+  }
   return { ok: true, value: value as MastraAgentTurnStartRequest };
 }
 

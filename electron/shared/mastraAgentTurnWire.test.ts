@@ -10,6 +10,7 @@ import {
   type AgentAdapterOwnedKey,
 } from "../main/mastra/agentWire.js";
 import {
+  hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
   MASTRA_AGENT_TURN_COMMANDS,
@@ -477,6 +478,9 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(issueOf(start({ tools: null }))).toBe("tools");
     expect(issueOf(start({ tools: {} }))).toBe("tools");
     expect(issueOf(start({ tools: undefined }))).toBe("tools");
+    // An empty array that carries an enumerable property is not empty.
+    const tools = Object.assign([], { extra: { name: "t" } });
+    expect(issueOf(start({ tools }))).toBe("tools");
   });
 
   it("checks the cache segments and the volatile tail", () => {
@@ -502,6 +506,73 @@ describe("parseMastraAgentTurnStartRequest", () => {
         }),
       ),
     ).toBe("volatile-tail");
+  });
+
+  it("counts the cache segments and the volatile tail toward the total text", () => {
+    const chunk = "x".repeat(MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX);
+    const full = Math.floor(
+      MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX / chunk.length,
+    );
+    const messages = Array.from({ length: full }, () => ({
+      role: "user",
+      content: chunk,
+    }));
+    const rest = MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX - full * chunk.length;
+    // Exactly at the total: accepted.
+    expect(
+      issueOf(
+        start({
+          messages,
+          systemCacheSegments: ["y".repeat(rest)],
+          systemVolatileTail: null,
+        }),
+      ),
+    ).toBeNull();
+    // One unit over, in the segments or in the tail.
+    expect(
+      issueOf(
+        start({
+          messages,
+          systemCacheSegments: ["y".repeat(rest + 1)],
+          systemVolatileTail: null,
+        }),
+      ),
+    ).toBe("text-too-long");
+    expect(
+      issueOf(
+        start({
+          messages,
+          systemCacheSegments: null,
+          systemVolatileTail: "y".repeat(rest + 1),
+        }),
+      ),
+    ).toBe("text-too-long");
+    expect(
+      issueOf(
+        start({
+          messages,
+          systemCacheSegments: ["y".repeat(rest)],
+          systemVolatileTail: "z",
+        }),
+      ),
+    ).toBe("text-too-long");
+  });
+
+  it("tells whether a request's own keys include one that is Main's", () => {
+    expect(hasMastraAgentTurnForbiddenKey(start())).toBe(false);
+    for (const key of MASTRA_AGENT_TURN_FORBIDDEN_KEYS) {
+      expect(hasMastraAgentTurnForbiddenKey({ ...start(), [key]: 1 })).toBe(
+        true,
+      );
+    }
+    // A non-enumerable key (Main's own sidecar) is not the renderer's.
+    const sidecar = { ...start() };
+    Object.defineProperty(sidecar, "callerIdentity", {
+      value: {},
+      enumerable: false,
+    });
+    expect(hasMastraAgentTurnForbiddenKey(sidecar)).toBe(false);
+    expect(hasMastraAgentTurnForbiddenKey(null)).toBe(false);
   });
 
   it("never echoes a value of the request in its issue", () => {
