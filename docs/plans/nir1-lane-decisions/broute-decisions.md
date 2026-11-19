@@ -1197,16 +1197,16 @@
 **害の上限（T-RB3。測った）— 別件 F-1：存在しない project の wake は終わらない**
 
 - Native（`grimodex-db`、実行）：存在しない project の `wakeProjectIds` を持つ cycle（`run_system_work_cycle_with_nir1_graph_runtime_and_product`）は、launch が閉・seam・product のどれでも `Err(FOREIGN KEY constraint failed, code 787)` で終わる。
-- main（vitest、scheduler。cycle は上の Err、`recordNarrativeMaintenanceDeliveryFailure` は `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING` で reject する mock。後者は `record_maintenance_delivery_failure_wake` の `ensure!`〔`restore_rebuild.rs`〕の読みで、Native の実呼出しは未実行）：cycle は 10 秒で 10 回、60 秒で 70 回、600 秒で 670 回、3600 秒で 4270 回。約 1 回／秒で止まらず、`queueIdle` は false のまま。`retryCount` が上限（3）を越えると `persistDeliveryFailure` が false を返し、wake が再 queue される（`narrativeMaintenance.ts` の wake の retry）。
-- 到達：stale な event に限らない。需要の timer は最大 60 秒待つので、その間に同じ workspace で project が消えても同じ形になる。const が false の間は Native が需要 event を出さないので、今の製品では不活性。
+- main（vitest、scheduler。**最小の mock**〔attempt・ACK・terminal receipt の method を持たない〕。cycle は上の Err、`recordNarrativeMaintenanceDeliveryFailure` は `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING` で reject する mock。後者は `record_maintenance_delivery_failure_wake` の `ensure!`〔`restore_rebuild.rs`〕の読みで、Native の実呼出しは未実行）：cycle は 10 秒で 10 回、60 秒で 70 回、600 秒で 670 回、3600 秒で 4270 回。約 1 回／秒で止まらず、`queueIdle` は false のまま。`retryCount` が上限（3）を越えると `persistDeliveryFailure` が false を返し、wake が再 queue される（`narrativeMaintenance.ts` の wake の retry）。
+- 到達：stale な event に限らない。需要の timer は最大 60 秒待つので、その間に同じ workspace で project が消えても同じ形になる。需要 event の経路は、const が false の間は Native が event を出さないので不活性。他の wake 源（hasMore の継続など、`durableWakeProjects` を作る経路）で今の製品に到達しうるかは未確認（Rust の probe は gate が閉でも FK で落ちた）。
 - 扱い：この枝では直さない（(4) の範囲外で、retry の終端の意味を変える）。切替の前に直す候補として統合者へ報告する。直し方の候補：Native の wake が存在しない project を no-work の accepted で受ける、または main が `PROJECT_MISSING` の receipt の失敗を終端として扱う。試験は「望ましい形」を expected-fail で置き（vitest の `it.fails`、Rust の `should_panic`）、直ると赤になって印を外す形にする。
 - 同名の project が新 workspace にある場合の害は、DR-PUBG-5-14 のとおり B の判定 1 回（`RefusedUnchanged` なら SQL だけ）で、需要の最短間隔（2 秒から 60 秒）で有界。
 
 **委任の内外と GDX-PRECHECK-001**
 
 - 内。Native→main の observer-only の内部 event の読みの確認と、試験だけの追加。新しい IPC・権限・保存先・送信先・閾値の緩和を含まない。
-- owner／lifecycle matrix の差分：無し（コードを変えない）。threat model の差分：無し。F-1 は新しい攻撃面ではなく、既存の retry の終端の欠け（可用性）で、const が false の間は不活性。
-- 試験（既存 file に足す。新しい file は作らない）：main の vitest（E1 と E2 を同じ tick で渡す／getter が throw の間／E2 の後の E1 は新 binding の 1 回）、Native の実 `open_workspace` による順序（旧 workspace の demand はすべて `workspace:opened` より前、切替の後の Suspended の slot は答えない）、F-1 の expected-fail 2 本。hook で止める試験（T-RB1）は、窓が見つかって binding を載せた後の回帰試験なので、この枝には入れない。
+- owner／lifecycle matrix の差分：無し（コードを変えない）。threat model の差分：無し。F-1 は新しい攻撃面ではなく、既存の retry の終端の欠け（可用性）で、需要 event の経路では const が false の間は不活性（他の wake 源は未確認）。
+- 試験（既存 file に足す。新しい file は作らない）：main の vitest（E1 と E2 を同じ tick で渡す／getter が throw の間／E2 の後の E1 は新 binding の 1 回）、Native の実 `open_workspace` による順序（旧 workspace の demand はすべて `workspace:opened` より前、切替の後の Suspended の slot は答えない）、D-final と同じ形で保持した participant の下では `workspace:opened` が queue に入らず open も終わらないこと（判定の 3 の要）、F-1 の expected-fail 2 本。hook で止める試験（T-RB1）は、窓が見つかって binding を載せた後の回帰試験なので、この枝には入れない。
 
 **未確認**
 - Node の TSFN の drain の件数上限、E1 と E2 が別 callback になる条件（実測していない。S-G は行わない）。
@@ -1221,3 +1221,13 @@
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：82 passed、0 failed（F-1 の `should_panic` を含む）。grimodex-db の全件は実行していない（変えたのは試験 file だけ）。
 - `tsc --noEmit`：成功。`pnpm -s validate:architecture`：成功。`fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
 - 実行していないもの：Electron を起動する観測（S-G）、Node の TSFN の drain の実測、F-1 の Native 側の receipt の実呼出し、clippy・`--features licensing,legacy-keyring-migration` の cargo test・hosted CI（Quick／Full）。
+
+**レビューの反映（追補 2。2026-11-19）**
+- 経路の列挙の根拠（上の 1）：Core が `Ready` を代入するのは `set_ready`・`activate`・`complete_unchanged`・`abandon_background_recovery` の 4 関数で、test 以外の呼出しは Native の adapter（`workspace_lifecycle_view.rs` の `ensure_authority_ready`・`complete_transition_from_workspace`・`abandon_background_recovery`）経由だけ。adapter の production の呼出し元（`lib.rs`、head なしで全件）：maintenance recovery の reconcile（`:3995`）、background recovery の失敗で同じ binding へ戻す枝（`:4118`）、`ensure_authority_ready`（`:4270`・`:9183`。互換）、`open_workspace`（`:11802`）、`restore_backup`（`:12285`）、`restore_recovery_candidate`（`:12437`）。別の workspace の authority が `Ready` に入るのは `open_workspace` と `restore_backup` だけで、どちらも E2 は Ready 公開の前。ほかは同じ authority（または authority を持たない）で、別の workspace への切替ではない。
+- 判定の 3 の要（participant が E2 を止める）：`open_workspace_supervised`（`lib.rs:11664`）、`restore_backup`（`:12141`）、`restore_recovery_candidate`（`:12433`）は、blocking の closure の先頭で `acquire_transition_physical_exclusive` を取り、その後に入れ替えと E2 の emit が来る。試験 `a_held_workspace_participant_keeps_workspace_opened_out_of_the_queue` で、D-final と同じ形の participant を保持している間は、open が admit されても終わらず `workspace:opened` も queue に無く、drop の後に完了して E2 が入ることを固定した（保持しない変異で落ちる。戻した）。この試験は participant を保持する側の事実を固定するだけで、呼出し元（`begin_admitted`、D-final の `ActiveWorkspaceSnapshot`）が emit の間 participant を持ち続けることは読みのまま。
+- 訂正（上の 2）：getter が binding を返すのは「Core が `Ready(binding)` のときだけ」ではない。`resolve_workspace_snapshot` には、Core が NoWorkspace で authority が入っている互換の枝（Tauri shell と legacy の startup 用）があり、Ok を返す。Electron の切替は Transition を通るので、切替の経路の判定は変わらない。
+- 訂正（上の 4）：「emit を `retire_current` の前へ移す」案は、拒否された worker がその時点で participant を持つかを読んでいない。未確認の案として残す。
+- F-1 の確認の範囲：N-API の実呼出し（`backend_with_workspace`、uncommitted の probe で実行し破棄）で、存在しない project の delivery-failure receipt は `Err(NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING)`、attempt 付きの cycle は `Err(FOREIGN KEY constraint failed)`（`reconcile_narrative_maintenance_recovery` の後の 2 回目も同じ）で reject されることを確かめた。これは上の mock の応答と同じ形。scheduler の loop 自体は最小 mock で測ったもので、実 backend 全体（attempt の begin／cancel、terminal receipt を含む）での loop は未実行。
+- 判定と F-1 の関係：「窓なし」の受入れは、F-1 が切替の前に直ることを前提にする。F-1 が開いている間、受け入れた残余（`build_worker` の枝の停止）の最悪は、同名の project が無い workspace で「B の判定 1 回」ではなく終わらない retry になる。
+- F-1 の expected-fail 2 本（vitest の `it.fails`、Rust の `should_panic`）は (4) の範囲外の追加で、R-B の試験と独立に外せる（試験の commit `823176aa` の該当 2 hunk）。
+- commit の trailer：task の指定（`Claude Opus 5.5`）に従った。この session に渡された attribution の指示は `Claude Sonnet 5.5` で食い違う。統合者が決める。
