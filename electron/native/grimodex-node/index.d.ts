@@ -697,9 +697,9 @@ export declare class Backend {
    * quote) of Scenes before `currentSceneId`, for a query the chat agent
    * wrote. Closed: while the Native gate is closed this is an error
    * (`CHAT_IR_GATE_CLOSED`) before the payload is parsed, and nothing in the
-   * product opens it. A call that ends is always `{status, success, items}`
-   * with a status of the closed set; only a gate or a request-shape refusal
-   * is an error.
+   * product opens it. A call that ends is always the five keys
+   * `{status, success, items, eventIds, excludedEventIds}` with a status of
+   * the closed set; only a gate or a request-shape refusal is an error.
    */
   chatAgentIrSelect(payload: any): Promise<string>
   relatedScenesContinue(ownerKey: string, operationTicket: string, callerIdentity?: string | undefined | null): Promise<string>
