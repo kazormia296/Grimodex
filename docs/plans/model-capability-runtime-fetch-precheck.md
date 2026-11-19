@@ -465,4 +465,5 @@ auto-merge は使いません。次のどれかに当たると、PR を **draft*
 - workflow を一度も実行していません。`actionlint` は repo にも環境にも無く、使っていません（構造は `js-yaml` で読み、試験で固定しました）。
 - 「Actions に PR 作成を許可」が不要であること、App の token が作る PR で `pull_request` の workflow が起動すること、`gh api` と `gh pr ready` が App の token で通ること。
 - master と `automation/*` の ruleset（署名必須・push の制限）の有無。
+- 固定の枝を force で更新するとき、master の `.github/workflows/**` が枝より新しいと、Workflows 権限の無い App の token の push を GitHub が拒否する可能性があります（症状：`refusing to allow a GitHub App to create or update workflow ... without workflows permission`）。push するのは「新しい master の先頭＋写しの commit 1 つ」で、master 側の workflow の変更は remote に既にあるため、起きない見込みですが、確かめていません。この repo は `ci.yml` の変更が多いので、起きれば頻繁です。対処の候補は、(1) open の PR が無いときは枝を消してから push する、(2) App に Workflows の権限を足す（新しい権限なので、ユーザーの確認が要ります）。今回はどちらも実装していません。
 - `curl` の `--max-filesize` が content-length の無い応答で効くかは、curl の版によります。そのため取得後の byte 数の確認と、`parseModelsDevText` の同じ上限で重ねて守っています。

@@ -354,26 +354,39 @@ describe("readCandidateFromDir（artifact の取り込み）", () => {
     }
   });
 
-  it("余分な file・別の名前・空の directory・symlink を拒否する", () => {
-    const extra = tempDir();
-    const renamed = tempDir();
-    const empty = tempDir();
-    const linked = tempDir();
-    try {
-      writeFileSync(path.join(extra.dir, CANDIDATE_FILE_NAME), "{}\n");
-      writeFileSync(path.join(extra.dir, "run.mjs"), "process.exit(0)\n");
-      assert.throws(() => readCandidateFromDir(extra.dir), /1 file だけ/);
-      writeFileSync(path.join(renamed.dir, "other.json"), "{}\n");
-      assert.throws(() => readCandidateFromDir(renamed.dir), /1 file だけ/);
-      assert.throws(() => readCandidateFromDir(empty.dir), /1 file だけ/);
-      writeFileSync(path.join(linked.dir, "target"), "{}\n");
-      rmSync(path.join(linked.dir, "target"));
-      symlinkSync("/etc/hostname", path.join(linked.dir, CANDIDATE_FILE_NAME));
-      assert.throws(() => readCandidateFromDir(linked.dir), /通常の file/);
-    } finally {
-      for (const temp of [extra, renamed, empty, linked]) temp.cleanup();
-    }
-  });
+  it(
+    "余分な file・別の名前・空の directory・symlink を拒否する",
+    {
+      // symlink の作成に権限が要る環境（Windows）では飛ばす。CI は Linux だけで走る。
+      skip: process.platform === "win32",
+    },
+    () => {
+      const extra = tempDir();
+      const renamed = tempDir();
+      const empty = tempDir();
+      const linked = tempDir();
+      const outside = tempDir();
+      try {
+        writeFileSync(path.join(extra.dir, CANDIDATE_FILE_NAME), "{}\n");
+        writeFileSync(path.join(extra.dir, "run.mjs"), "process.exit(0)\n");
+        assert.throws(() => readCandidateFromDir(extra.dir), /1 file だけ/);
+        writeFileSync(path.join(renamed.dir, "other.json"), "{}\n");
+        assert.throws(() => readCandidateFromDir(renamed.dir), /1 file だけ/);
+        assert.throws(() => readCandidateFromDir(empty.dir), /1 file だけ/);
+        // 通常の file に見える中身でも、symlink なら読まない（target は directory の外の temp）。
+        writeFileSync(path.join(outside.dir, "target.json"), "{}\n");
+        symlinkSync(
+          path.join(outside.dir, "target.json"),
+          path.join(linked.dir, CANDIDATE_FILE_NAME),
+        );
+        assert.throws(() => readCandidateFromDir(linked.dir), /通常の file/);
+      } finally {
+        for (const temp of [extra, renamed, empty, linked, outside]) {
+          temp.cleanup();
+        }
+      }
+    },
+  );
 });
 
 describe("compare の CLI", () => {
