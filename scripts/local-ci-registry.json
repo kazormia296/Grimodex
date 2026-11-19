@@ -429,7 +429,8 @@
             "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
             "scripts/generate-licenses.test.mjs",
             "scripts/license-policy.test.mjs",
-            "scripts/semantic-reranker-release.test.mjs"
+            "scripts/semantic-reranker-release.test.mjs",
+            "electron/scripts/mastra-ee-check.test.mjs"
           ],
           "id": "electron.contracts",
           "after": ["bootstrap.workspace-build"],

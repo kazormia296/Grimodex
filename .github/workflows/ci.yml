@@ -882,6 +882,7 @@ jobs:
           scripts/generate-licenses.test.mjs
           scripts/license-policy.test.mjs
           scripts/semantic-reranker-release.test.mjs
+          electron/scripts/mastra-ee-check.test.mjs
 
       - name: Electron type-check
         if: ${{ !inputs.source_focused }}
