@@ -33,6 +33,10 @@ import {
   registerAnthropicModelCaps,
   isDynamicCapsStale,
 } from "./agent/dynamicModelCaps";
+import {
+  reloadRegistryModelCaps,
+  startRegistryModelCapsLoad,
+} from "./agent/registryModelCaps";
 
 export interface AiSettingsState {
   settings: AiSettings | null;
@@ -785,6 +789,11 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   chatEndpointIdOverride: null,
 
   loadSettings: async () => {
+    // 共有 registry（main が取得・同梱した能力の写し）を 1 回だけ読む。読めたら revision を上げ、
+    // 描画済みの能力表の解決を引き直させる。読めなければ registry の層が無いまま（今の挙動）。
+    void startRegistryModelCapsLoad(() => {
+      set((state) => ({ modelCapsRevision: state.modelCapsRevision + 1 }));
+    });
     // A read invoked while a save is pending must observe the post-save
     // backend snapshot, never commit the pre-save endpoint/model afterward.
     let saveBarrier: Promise<void>;
@@ -856,6 +865,11 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
           ? { settings: { ...state.settings, modelInfoAutoUpdate: enabled } }
           : {},
       );
+      // main は無効の間は同梱の写しだけを返す（cache も削除する）。この窓が持つ写しも読み直し、
+      // 「止めると同梱の情報だけを使う」の約束を、再起動を待たずに守る。待たない（切替を遅らせない）。
+      void reloadRegistryModelCaps(() => {
+        set((state) => ({ modelCapsRevision: state.modelCapsRevision + 1 }));
+      });
     });
     settingsSaveTail = toggleTransaction.catch(() => undefined);
     await toggleTransaction;
