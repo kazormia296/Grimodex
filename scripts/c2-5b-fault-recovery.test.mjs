@@ -8,6 +8,23 @@ import {
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 
+// 関数の宣言から、対応する閉じ括弧までの本体だけを切り出す（本体の外の一致を除く）。
+function extractFunctionBody(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `function ${name} must exist`);
+  const open = source.indexOf("{", source.indexOf(")", start));
+  assert.notEqual(open, -1, `function ${name} must have a body`);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, index + 1);
+    }
+  }
+  assert.fail(`function ${name} body must be closed`);
+}
+
 const stateSourcePromise = readFile(
   new URL(
     "../electron/native/grimodex-node/src/state.rs",
@@ -101,8 +118,13 @@ test("process interruption returns a strict ACK for the main-only delayed exit o
   );
   assert.match(
     schedulerSource,
-    /scheduleNarrativeMaintenanceProcessInterruption[\s\S]*process\.exit\(/,
+    /scheduleNarrativeMaintenanceProcessInterruption[\s\S]*exit: CiProcessExit = exitWithoutEnvironmentTeardown/,
     "only the validated main callback may schedule the delayed process exit",
+  );
+  assert.match(
+    extractFunctionBody(schedulerSource, "exitWithoutEnvironmentTeardown"),
+    /reallyExit\.call\(process, code\)/,
+    "the interruption exit must not run Electron's app.exit (napi async resolver abort)",
   );
 });
 
