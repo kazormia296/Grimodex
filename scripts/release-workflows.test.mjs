@@ -617,6 +617,7 @@ describe("release workflow boundary", () => {
       "release-public-smoke.yml",
       "packaged-smoke.yml",
       "update-route-watch.yml",
+      "update-model-capabilities.yml",
     ]) {
       const workflow = await readWorkflow(name);
       for (const uses of collectUses(workflow)) {
