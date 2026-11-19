@@ -2,7 +2,11 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import { codexEntries } from "@/db/schema";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { listPhasesByEntryIds } from "../phaseApi";
+import { listRawDetailValuesByEntryIds } from "../detailApi";
+import {
+  listDetailOverridesByPhaseIds,
+  listPhasesByEntryIds,
+} from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
 import { isCodexContextModeHiddenFromAi } from "./codexVisibilityPolicy";
 import { resolveCodexContexts } from "./resolvedCodexContext";
@@ -12,6 +16,17 @@ import type { TemporalAnchor } from "./sceneTimeIndex";
 export interface CodexTextForAi {
   summary: string | null;
   content: string;
+  /**
+   * base の mode が hidden（または不明）で、Phase 解決後は hidden でないもの。
+   * true のときだけ summary・content・detailValues が Phase 解決後で、false なら base の文
+   * （hidden でない項目の文は今までどおり base のまま返す）。
+   */
+  released: boolean;
+  /**
+   * released で `withDetails` のときだけ。Phase 解決後の詳細値（definitionId → 値。null は
+   * Phase による消去）。base の詳細は作者が秘匿した状態の値なので、これを使う。
+   */
+  detailValues?: ReadonlyMap<string, string | null>;
 }
 
 export interface CodexAiResolution {
@@ -31,8 +46,9 @@ export interface CodexAiResolution {
  * `nonSceneContextSource` と同じ規則で、現在の場面があればその場面、なければ base。
  *
  * base が hidden でも現在の場面の Phase で mentioned 等に解除されたものは通すが、
- * その文は base ではなく Phase 解決後（chat の通常の文脈と同じ）を返す。base の文は
- * 作者が秘匿と印した内容そのものだからである。
+ * その文は base ではなく Phase 解決後（chat の通常の文脈と同じ）を返す（`released`）。
+ * base の文は作者が秘匿と印した内容そのものだからである。base が hidden でない項目の
+ * 文は置き換えない（`released` が false で base の文のまま）。
  *
  * fail-closed：DB に無い id・不明な mode も hidden に数える。suppress・mentioned・
  * Phase による絞り込みは足さない（全部開示、hidden だけを守る）。
@@ -44,6 +60,8 @@ export async function resolveCodexForAi(input: {
   /** 現在の場面。空・未指定なら base で解決する。 */
   sceneId?: string | null;
   withContent?: boolean;
+  /** true なら、released の項目に Phase 解決後の詳細値（detailValues）を付ける。 */
+  withDetails?: boolean;
 }): Promise<CodexAiResolution> {
   const ids = [...new Set(input.entryIds)];
   const hidden = new Set<string>();
@@ -97,6 +115,7 @@ export async function resolveCodexForAi(input: {
     sceneTimeIndex,
     resolutionMode,
   });
+  const released: typeof entries = [];
   for (const entry of entries) {
     const resolved = resolvedById.get(entry.id);
     const mode = resolved?.contextMode ?? entry.contextMode;
@@ -104,10 +123,49 @@ export async function resolveCodexForAi(input: {
       hidden.add(entry.id);
       continue;
     }
+    // 置き換えは「base が hidden（または不明）で、解決後が hidden でない」項目だけ。
+    const isReleased =
+      resolved !== undefined &&
+      isCodexContextModeHiddenFromAi(entry.contextMode);
+    if (isReleased) released.push(entry);
     texts.set(entry.id, {
-      summary: resolved ? resolved.summary : entry.summary,
-      content: resolved ? resolved.content : entry.content,
+      summary: isReleased ? resolved.summary : entry.summary,
+      content: isReleased ? resolved.content : entry.content,
+      released: isReleased,
     });
+  }
+  if (input.withDetails && released.length > 0) {
+    // 詳細は Phase の override と base の値から解決する（chat の sceneContextSource と同じ形）。
+    const releasedIds = released.map((entry) => entry.id);
+    const releasedPhases = phases.filter((phase) =>
+      releasedIds.includes(phase.entryId),
+    );
+    const overrides = await listDetailOverridesByPhaseIds(
+      releasedPhases.map((phase) => phase.id),
+    );
+    const rawDetails = await listRawDetailValuesByEntryIds(releasedIds);
+    const baseDetailsByEntry = new Map<string, Map<string, string | null>>();
+    for (const detail of rawDetails) {
+      const values =
+        baseDetailsByEntry.get(detail.entryId) ??
+        new Map<string, string | null>();
+      values.set(detail.definitionId, detail.value);
+      baseDetailsByEntry.set(detail.entryId, values);
+    }
+    const detailResolved = resolveCodexContexts({
+      entries: released,
+      phases: releasedPhases,
+      phaseDetailOverrides: overrides,
+      baseDetailsByEntry,
+      anchor,
+      sceneTimeIndex,
+      resolutionMode,
+    }).resolvedById;
+    for (const entry of released) {
+      const text = texts.get(entry.id);
+      const detailValues = detailResolved.get(entry.id)?.detailValues;
+      if (text && detailValues) texts.set(entry.id, { ...text, detailValues });
+    }
   }
   return { hidden, texts };
 }
@@ -138,8 +196,11 @@ export async function dropCodexHiddenFromAi<T extends { id: string }>(
   for (const row of rows) {
     if (hidden.has(row.id)) continue;
     const text = texts.get(row.id);
+    // 置き換えるのは、Phase で hidden を解除された（base が hidden だった）項目だけ。
     out.push(
-      text && "summary" in row ? { ...row, summary: text.summary } : row,
+      text?.released && "summary" in row
+        ? { ...row, summary: text.summary }
+        : row,
     );
   }
   return out;
@@ -149,7 +210,8 @@ export async function dropCodexHiddenFromAi<T extends { id: string }>(
  * `ids` から hidden を除いた id を、順序を保って返す。beat・インライン AI のように
  * 検出済みの id の列を持つ経路用。判定に失敗したときは fail-closed で何も渡さない
  * （生成は続けられるが、Codex の要約は付かない）。`summaries` は、Phase で hidden を
- * 解除された Codex が base の要約を運ばないための、Phase 解決後の要約（id 単位）。
+ * 解除された Codex（base が hidden だったもの）だけが、base の要約を運ばないための、
+ * Phase 解決後の要約（id 単位）。ほかの項目は含まれず、呼び側の base の要約のまま。
  */
 export async function visibleCodexForAi(
   ids: readonly string[],
@@ -162,7 +224,9 @@ export async function visibleCodexForAi(
       ...options,
     });
     const summaries = new Map<string, string | null>();
-    for (const [id, text] of texts) summaries.set(id, text.summary);
+    for (const [id, text] of texts) {
+      if (text.released) summaries.set(id, text.summary);
+    }
     return { ids: ids.filter((id) => !hidden.has(id)), summaries };
   } catch (error) {
     debugLog.warn(

@@ -177,6 +177,65 @@ describe("Phase が hidden を解除した Codex", () => {
     expect((await send("scene-1")).codexSummaries).toBe("");
     h.phases = [];
   });
+
+  it("hidden でない項目の要約は Phase の summaryOverride があっても base のまま", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "p1",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        node("scene-1", "a0"),
+        node("scene-2", "a1"),
+      ]),
+      resolutionMode: "reading",
+    });
+    h.rows = ENTRIES.map(({ id, summary, contextMode }) => ({
+      id,
+      summary,
+      contextMode,
+    }));
+    h.phases = ["a", "c"].map((entryId) => ({
+      id: `ph-${entryId}`,
+      entryId,
+      anchorNodeId: "scene-2",
+      label: "後半",
+      summaryOverride: "Phase の要約",
+      contentOverride: null,
+      contextModeOverride: null,
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const ctx = await buildInlineAiContextForSend({
+      editor: editorLike("x"),
+      projectTitle: "P",
+      sceneTitle: "S",
+      matchedCodexIds: ["a", "c"],
+      codexEntries: ENTRIES,
+      projectId: "p1",
+      sceneId: "scene-2",
+    });
+    expect(ctx.codexSummaries).toBe(
+      "- Alice: 勇敢な騎士\n- Carol: suppress の要約",
+    );
+    h.phases = [];
+  });
 });
 
 describe("インライン AI の送信経路は hidden 判定を通る", () => {

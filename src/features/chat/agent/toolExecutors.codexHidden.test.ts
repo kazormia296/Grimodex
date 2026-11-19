@@ -22,6 +22,9 @@ const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   activeSceneId: "scene-1" as string | null,
   phases: [] as Array<Record<string, unknown>>,
+  overrides: [] as Array<Record<string, unknown>>,
+  defs: [] as Array<Record<string, unknown>>,
+  vals: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("@/lib/tauri", () => ({ invoke: h.invoke }));
@@ -36,6 +39,8 @@ vi.mock("@/features/project/projectStore", () => ({
 vi.mock("@/features/codex/phaseApi", () => ({
   listPhasesByEntryIds: async (ids: string[]) =>
     h.phases.filter((p) => ids.includes(String(p["entryId"]))),
+  listDetailOverridesByPhaseIds: async (ids: string[]) =>
+    h.overrides.filter((o) => ids.includes(String(o["phaseId"]))),
 }));
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
   extractPlainText: (s: string) => s,
@@ -70,7 +75,8 @@ vi.mock("@/features/foreshadow/api", () => ({
 }));
 
 vi.mock("@/db/client", async () => {
-  const { codexEntries } = await import("@/db/schema");
+  const { codexEntries, codexDetailDefinitions, codexDetailValues } =
+    await import("@/db/schema");
   const project = (cols: Record<string, unknown> | undefined) =>
     h.entries.map((entry) => {
       if (!cols) return { ...entry };
@@ -97,10 +103,15 @@ vi.mock("@/db/client", async () => {
         resolve: (v: unknown[]) => unknown,
         reject: (r: unknown) => unknown,
       ) =>
-        Promise.resolve(table === codexEntries ? project(cols) : []).then(
-          resolve,
-          reject,
-        ),
+        Promise.resolve(
+          table === codexEntries
+            ? project(cols)
+            : table === codexDetailDefinitions
+              ? h.defs
+              : table === codexDetailValues
+                ? h.vals
+                : [],
+        ).then(resolve, reject),
     };
     return chain;
   };
@@ -141,6 +152,9 @@ function ids(content: unknown): string[] {
 beforeEach(() => {
   h.entries = [VISIBLE, HIDDEN, SUPPRESS];
   h.phases = [];
+  h.overrides = [];
+  h.defs = [];
+  h.vals = [];
   h.activeSceneId = "scene-1";
   h.invoke.mockReset();
   h.invoke.mockImplementation((cmd: string) => {
@@ -407,5 +421,177 @@ describe("agent tool は hidden の Codex を model に渡さない", () => {
       id: "e-reveal",
     });
     expect(before.content).toBeNull();
+  });
+  describe("Phase 解決後の文・詳細", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "proj-A",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const phase = (entryId: string, over: Record<string, unknown>) => ({
+      id: `ph-${entryId}`,
+      entryId,
+      anchorNodeId: "scene-2",
+      label: "後半",
+      summaryOverride: null,
+      contentOverride: null,
+      contextModeOverride: null,
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+      ...over,
+    });
+    beforeEach(() => {
+      usePhaseStore.setState({
+        sceneTimeIndex: buildSceneTimeIndex([
+          node("scene-1", "a0"),
+          node("scene-2", "a1"),
+        ]),
+        resolutionMode: "reading",
+      });
+      h.activeSceneId = "scene-2";
+      h.defs = [
+        {
+          id: "d-secret",
+          name: "正体",
+          typeSlug: "character",
+          includeInContext: true,
+        },
+        {
+          id: "d-age",
+          name: "年齢",
+          typeSlug: "character",
+          includeInContext: true,
+        },
+      ];
+    });
+
+    it("get_codex_entry: Phase で解除された hidden の詳細は base でなく解決後（null は消去）", async () => {
+      h.entries = [
+        entry({ id: "e-reveal", contextMode: "hidden", summary: "base" }),
+      ];
+      h.vals = [
+        {
+          entryId: "e-reveal",
+          definitionId: "d-secret",
+          value: "base の秘匿の正体",
+        },
+        {
+          entryId: "e-reveal",
+          definitionId: "d-age",
+          value: "base の秘匿の年齢",
+        },
+      ];
+      h.phases = [phase("e-reveal", { contextModeOverride: "mentioned" })];
+      h.overrides = [
+        {
+          id: "o1",
+          phaseId: "ph-e-reveal",
+          definitionId: "d-secret",
+          value: "公開された正体",
+        },
+        {
+          id: "o2",
+          phaseId: "ph-e-reveal",
+          definitionId: "d-age",
+          value: null,
+        },
+      ];
+      const res = await executeTool("get_codex_entry", "c", { id: "e-reveal" });
+      const details = (
+        res.content as { details: Array<{ field: string; value: unknown }> }
+      ).details;
+      expect(details).toEqual([
+        { field: "正体", value: "公開された正体" },
+        { field: "年齢", value: null },
+      ]);
+      expect(JSON.stringify(res)).not.toContain("base の秘匿");
+    });
+
+    it("hidden でない項目の詳細は Phase の override があっても base のまま（範囲を足さない）", async () => {
+      h.entries = [entry({ id: "e-ok", contextMode: "mentioned" })];
+      h.vals = [
+        { entryId: "e-ok", definitionId: "d-secret", value: "base の正体" },
+      ];
+      h.phases = [phase("e-ok", {})];
+      h.overrides = [
+        {
+          id: "o1",
+          phaseId: "ph-e-ok",
+          definitionId: "d-secret",
+          value: "Phase の正体",
+        },
+      ];
+      const res = await executeTool("get_codex_entry", "c", { id: "e-ok" });
+      const details = (
+        res.content as { details: Array<{ field: string; value: unknown }> }
+      ).details;
+      expect(details).toContainEqual({ field: "正体", value: "base の正体" });
+    });
+
+    it("hidden でない項目の文は Phase の override があっても base のまま（8 経路の代表）", async () => {
+      for (const mode of ["always", "mentioned", "suppress"]) {
+        const id = `e-${mode}`;
+        h.entries = [
+          entry({
+            id,
+            contextMode: mode,
+            summary: "base の要約",
+            content: "base の本文",
+          }),
+        ];
+        h.phases = [
+          phase(id, {
+            summaryOverride: "Phase の要約",
+            contentOverride: "Phase の本文",
+          }),
+        ];
+        const got = await executeTool("get_codex_entry", "c", { id });
+        const content = got.content as { summary: string; body: string };
+        expect(content.summary).toBe("base の要約");
+        expect(content.body).toBe("base の本文");
+        for (const tool of ["list_codex_by_type", "search_codex_by_tags"]) {
+          const res = await executeTool(tool, "c", {
+            type: "character",
+            tags: ["t"],
+          });
+          expect(JSON.stringify(res.content)).toContain("base の要約");
+          expect(JSON.stringify(res.content)).not.toContain("Phase の要約");
+        }
+        const search = await executeTool("search_codex", "c", { query: "龍" });
+        expect(JSON.stringify(search.content)).toContain("base の要約");
+        expect(JSON.stringify(search.content)).not.toContain("Phase の要約");
+      }
+    });
+
+    it("search_codex: summary は null にならず空文字（Phase 解除で summary が null でも）", async () => {
+      h.entries = [
+        entry({ id: "e-r", contextMode: "hidden", summary: "base" }),
+      ];
+      h.phases = [
+        phase("e-r", {
+          contextModeOverride: "mentioned",
+          summaryOverride: null,
+        }),
+      ];
+      const res = await executeTool("search_codex", "c", { query: "龍" });
+      for (const row of res.content as Array<{ summary: unknown }>) {
+        expect(typeof row.summary).toBe("string");
+      }
+    });
   });
 });

@@ -34,7 +34,11 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
-import { sendWhenFresh } from "@/features/editor/inlineAi/sendWhenFresh";
+import {
+  captureEditorSendSnapshot,
+  isEditorSendSnapshotCurrent,
+  sendWhenFresh,
+} from "@/features/editor/inlineAi/sendWhenFresh";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -2043,32 +2047,40 @@ export function EditorPane({
         setPaletteOpen(true);
         return;
       }
-      const node = useTreeStore.getState().nodes.find((n) => n.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      // hidden 判定が DB を引くので非同期。送信時点の文書・projection・書込み可否を
-      // await の前に取り、判定の間に変わっていたら送らない（A/B 経路と同じ）。
-      const documentSnapshot = ed.state.doc;
-      const projectionKey = inputProjectionKeyRef.current;
-      sendWhenFresh(
-        buildInlineAiContextForSend({
-          editor: ed,
-          projectTitle,
-          sceneTitle: node?.title ?? "",
-          matchedCodexIds,
-          codexEntries,
-          projectId: useTreeStore.getState().projectId,
-          sceneId: node?.id ?? null,
+      // hidden 判定が DB を引くので非同期。送信時点の文書・選択・projection・書込み可否を
+      // 控え、判定の間に変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移った
+      // ときは送らない）。
+      sendWhenFresh({
+        capture: () => ({
+          ...captureEditorSendSnapshot(ed),
+          projectionKey: inputProjectionKeyRef.current,
         }),
-        () =>
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((n) => n.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor: ed,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
           inputProjectionReadyRef.current &&
           editorWritableRef.current &&
-          inputProjectionKeyRef.current === projectionKey &&
-          ed.state.doc.eq(documentSnapshot),
-        (context) => generate(cmd, context),
-      );
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(ed, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context) => generate(cmd, context),
+      });
     },
     [dbNativeEditor, nodeId, generate],
   );
@@ -3021,35 +3033,40 @@ export function EditorPane({
   const handlePaletteSubmit = useCallback(
     (command: InlineAiCommand, prompt: string) => {
       if (!editor) return;
-      const node = useTreeStore
-        .getState()
-        .nodes.find((candidate) => candidate.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      // hidden 判定が DB を引くので非同期。判定の間に文書・projection・書込み可否が
-      // 変わっていたら送らない（A/B 経路と同じ）。
-      const documentSnapshot = editor.state.doc;
-      const projectionKey = inputProjectionKeyRef.current;
-      sendWhenFresh(
-        buildInlineAiContextForSend({
-          editor,
-          projectTitle,
-          sceneTitle: node?.title ?? "",
-          matchedCodexIds,
-          codexEntries,
-          arg: prompt || undefined,
-          projectId: useTreeStore.getState().projectId,
-          sceneId: node?.id ?? null,
+      // hidden 判定が DB を引くので非同期。判定の間に文書・選択・projection・書込み可否が
+      // 変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      sendWhenFresh({
+        capture: () => ({
+          ...captureEditorSendSnapshot(editor),
+          projectionKey: inputProjectionKeyRef.current,
         }),
-        () =>
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((candidate) => candidate.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg: prompt || undefined,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
           inputProjectionReadyRef.current &&
           editorWritableRef.current &&
-          inputProjectionKeyRef.current === projectionKey &&
-          editor.state.doc.eq(documentSnapshot),
-        (context) => generate(command, context),
-      );
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(editor, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context) => generate(command, context),
+      });
     },
     [editor, generate, nodeId],
   );
@@ -3063,36 +3080,43 @@ export function EditorPane({
       ) {
         return;
       }
-      const node = useTreeStore
-        .getState()
-        .nodes.find((candidate) => candidate.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。送信時点の
-      // カーソル・文書・projection は await の前に取り、判定の間に変わっていたら送らない。
-      const { from, to } = editor.state.selection;
-      const documentSnapshot = editor.state.doc;
-      const projectionKey = inputProjectionKeyRef.current;
       const lang = getCurrentProjectLanguage();
-      sendWhenFresh(
-        buildInlineAiContextForSend({
-          editor,
-          projectTitle,
-          sceneTitle: node?.title ?? "",
-          matchedCodexIds,
-          codexEntries,
-          arg: prompt || undefined,
-          projectId: useTreeStore.getState().projectId,
-          sceneId: node?.id ?? null,
+      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。送信時点の
+      // 選択・文書・projection を控え、判定の間に変わっていたら今の状態で 1 回だけ
+      // 作り直す（別の文書へ移ったときは送らない）。適用先の範囲は context を作った
+      // 時点の選択を使う。
+      sendWhenFresh({
+        capture: () => ({
+          ...captureEditorSendSnapshot(editor),
+          projectionKey: inputProjectionKeyRef.current,
         }),
-        () =>
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((candidate) => candidate.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg: prompt || undefined,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
           inputProjectionReadyRef.current &&
           editorWritableRef.current &&
-          inputProjectionKeyRef.current === projectionKey &&
-          editor.state.doc.eq(documentSnapshot),
-        (context) => {
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(editor, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context, snapshot) => {
+          const { from, to, projectionKey, doc: documentSnapshot } = snapshot;
           const messages: AbInlineState["messages"] = [
             {
               role: "system",
@@ -3114,7 +3138,7 @@ export function EditorPane({
             documentSnapshot,
           });
         },
-      );
+      });
     },
     [editor, nodeId],
   );

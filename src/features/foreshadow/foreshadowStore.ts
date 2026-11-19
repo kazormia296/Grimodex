@@ -943,8 +943,10 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       const payoffContent = sceneContents.get(foreshadow.payoffSceneId) ?? "";
       const payoffText = prosemirrorToText(payoffContent);
 
+      // hidden の判定は回収の場面（payoffSceneId）の Phase 解決後で行う。
       const relatedCodex = await detectRelatedCodex(
         [payoffText, ...pastScenes.map((s) => s.excerpt)].join("\n"),
+        { sceneId: foreshadow.payoffSceneId },
       );
 
       const results = await proposePastSetups({
@@ -1309,8 +1311,10 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         orderIndex,
       }));
 
+      // hidden の判定は章の最後の場面の Phase 解決後で行う（章の読み終わりの状態）。
       const relatedCodex = await detectRelatedCodex(
         scenes.map((s) => s.bodyText).join("\n"),
+        { sceneId: scenes[scenes.length - 1]?.sceneId },
       );
 
       const { items } = get();

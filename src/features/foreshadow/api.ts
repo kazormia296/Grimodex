@@ -6,6 +6,7 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
+import { visibleCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { invoke } from "@/lib/tauri";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getPromptCatalog } from "@/prompts/index";
@@ -1353,16 +1354,26 @@ const RELATED_CODEX_CHAR_LIMIT = 3000;
  * relatedCodex 形式（id/name/summary）に整形する。chat の auto-detect と
  * 同じ text ベースのマッチング（editor 非依存）。summary 空のエントリは
  * prompt で `- name: ` にしかならないため除外する。
+ *
+ * 作者が AI に秘匿（hidden）と印した Codex は、`sceneId`（あれば）の Phase 解決後の mode で
+ * 判定して落とす（chat の通常の文脈と同じ正本）。base が hidden でも Phase で解除された
+ * ものは、base ではなく Phase 解決後の summary を使う。判定に失敗したら何も渡さない
+ * （fail-closed）。suppress は従来どおり検出対象外。
  */
 export async function detectRelatedCodex(
   text: string,
+  options: { sceneId?: string | null } = {},
 ): Promise<ProposeRequest["relatedCodex"]> {
   if (!text.trim()) return [];
   const entries = useCodexStore.getState().entries;
-  const detectable = entries.filter(
-    (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
+  const detectable = entries.filter((e) => e.contextMode !== "suppress");
+  const matchedAll = await findMentionedEntriesAsync(text, detectable);
+  const visible = await visibleCodexForAi(
+    matchedAll.map((m) => m.id),
+    { projectId: useTreeStore.getState().projectId, sceneId: options.sceneId },
   );
-  const matched = await findMentionedEntriesAsync(text, detectable);
+  const visibleIds = new Set(visible.ids);
+  const matched = matchedAll.filter((m) => visibleIds.has(m.id));
   const byId = new Map(detectable.map((e) => [e.id, e]));
 
   const result: ProposeRequest["relatedCodex"] = [];
@@ -1370,7 +1381,11 @@ export async function detectRelatedCodex(
   for (const m of matched) {
     const entry = byId.get(m.id);
     if (!entry) continue;
-    const summary = (entry.summary ?? "").trim();
+    const summary = (
+      (visible.summaries.has(entry.id)
+        ? visible.summaries.get(entry.id)
+        : entry.summary) ?? ""
+    ).trim();
     if (!summary) continue;
     const line = `- ${entry.name}: ${summary}`;
     if (total + line.length + 1 > RELATED_CODEX_CHAR_LIMIT) break;

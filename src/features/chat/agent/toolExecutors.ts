@@ -339,11 +339,14 @@ async function searchCodex(
 
   // hidden は sparse・dense のどちらの arm からも落とす（dense の hit は DB を通らず
   // name・summary を運ぶので、融合の後に id で判定する）。
-  const content = await dropHiddenCodex(
-    dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse,
-    projectId,
-    scope,
-  );
+  // Phase 解決後の summary は null になりえるので、前と同じ形（空文字）に揃える。
+  const content = (
+    await dropHiddenCodex(
+      dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse,
+      projectId,
+      scope,
+    )
+  ).map((row) => ({ ...row, summary: row.summary ?? "" }));
   const json = JSON.stringify(content);
   return {
     name: "search_codex",
@@ -575,13 +578,15 @@ async function resolveCodexTextForAi(
   projectId: string,
   scope?: ChatTurnToolScope,
   /** hidden でないのに解決結果が無いときの代わり（通常は起きない）。 */
-  fallback: CodexTextForAi = { summary: null, content: "" },
+  fallback: CodexTextForAi = { summary: null, content: "", released: false },
+  withDetails = false,
 ): Promise<CodexTextForAi | null> {
   const { hidden, texts } = await resolveCodexForAi({
     entryIds: [id],
     projectId,
     sceneId: chronicleSceneId(scope),
     withContent: true,
+    withDetails,
   });
   if (hidden.has(id)) return null;
   return texts.get(id) ?? fallback;
@@ -844,10 +849,13 @@ async function getCodexEntry(
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
   // hidden は存在しない id と同じ応答にする（存在を明かさない）。
   const resolvedText = entry
-    ? await resolveCodexTextForAi(id, projectId, scope, {
-        summary: entry.summary,
-        content: entry.content,
-      })
+    ? await resolveCodexTextForAi(
+        id,
+        projectId,
+        scope,
+        { summary: entry.summary, content: entry.content, released: false },
+        true,
+      )
     : null;
   if (!entry || !resolvedText)
     return {
@@ -872,6 +880,12 @@ async function getCodexEntry(
   const details = defs
     .filter((d) => d.includeInContext)
     .map((d) => {
+      // Phase で hidden を解除された項目は、base（秘匿した状態）の詳細でなく Phase 解決後の
+      // 詳細（null は Phase による消去）を返す。ほかの項目は今までどおり base の値。
+      const resolvedDetails = resolvedText.detailValues;
+      if (resolvedText.released && resolvedDetails) {
+        return { field: d.name, value: resolvedDetails.get(d.id) ?? null };
+      }
       const val = vals.find((v) => v.definitionId === d.id);
       return { field: d.name, value: val?.value ?? null };
     });

@@ -8,7 +8,11 @@ import {
 } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
-import { sendWhenFresh } from "@/features/editor/inlineAi/sendWhenFresh";
+import {
+  captureEditorSendSnapshot,
+  isEditorSendSnapshotCurrent,
+  sendWhenFresh,
+} from "@/features/editor/inlineAi/sendWhenFresh";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -111,38 +115,45 @@ export function useLinearInlineAi(params: {
   const runGenerate = useCallback(
     (command: InlineAiCommand, arg?: string) => {
       if (!inlineAiEditor) return;
-      const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
       // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。エディタ由来の
-      // 項目は buildInlineAiContextForSend が同期で取る。
-      // 判定の間に文書・projection・書込み可否が変わっていたら送らない。
-      const documentSnapshot = inlineAiEditor.state.doc;
-      const startKey = projectionStateRef.current.key;
-      sendWhenFresh(
-        buildInlineAiContextForSend({
-          editor: inlineAiEditor,
-          projectTitle,
-          sceneTitle: node?.title ?? "",
-          matchedCodexIds,
-          codexEntries,
-          arg,
-          projectId: useTreeStore.getState().projectId,
-          sceneId: node?.id ?? null,
+      // 項目は buildInlineAiContextForSend が同期で取る。判定の間に文書・選択・projection・
+      // 書込み可否が変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      sendWhenFresh({
+        capture: () => ({
+          ...captureEditorSendSnapshot(inlineAiEditor),
+          key: projectionStateRef.current.key,
         }),
-        () => {
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((n) => n.id === sceneId);
+          return buildInlineAiContextForSend({
+            editor: inlineAiEditor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        canRebuild: (snapshot) => {
+          const state = projectionStateRef.current;
+          return state.ready && state.writable && state.key === snapshot.key;
+        },
+        isFresh: (snapshot) => {
           const state = projectionStateRef.current;
           return (
             state.ready &&
             state.writable &&
-            state.key === startKey &&
-            inlineAiEditor.state.doc.eq(documentSnapshot)
+            state.key === snapshot.key &&
+            isEditorSendSnapshotCurrent(inlineAiEditor, snapshot)
           );
         },
-        (context) => generate(command, context),
-      );
+        run: (context) => generate(command, context),
+      });
     },
     [inlineAiEditor, sceneId, generate],
   );

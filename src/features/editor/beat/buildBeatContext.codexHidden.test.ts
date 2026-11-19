@@ -13,13 +13,15 @@ interface FakeRow {
 const h = vi.hoisted(() => ({
   rows: [] as FakeRow[],
   failDb: false,
+  phases: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("@/features/project/api", () => ({
   getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
 }));
 vi.mock("@/features/codex/phaseApi", () => ({
-  listPhasesByEntryIds: async () => [],
+  listPhasesByEntryIds: async (ids: string[]) =>
+    h.phases.filter((p) => ids.includes(String(p["entryId"]))),
 }));
 vi.mock("@/db/client", async () => {
   const { codexEntries } = await import("@/db/schema");
@@ -52,6 +54,8 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import type { CodexEntry } from "@/features/codex/api";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import { buildBeatContextForGeneration } from "./buildBeatContext";
 
 function makeEntry(
@@ -101,6 +105,7 @@ function createEditorWithBeat(content: Record<string, unknown>[]) {
 describe("buildBeatContextForGeneration — hidden の Codex", () => {
   beforeEach(() => {
     h.failDb = false;
+    h.phases = [];
     const entries = [
       makeEntry("char-akane", "朱音", "主人公。雨を嫌う。", "mentioned"),
       makeEntry("char-rin", "凛", "作者が秘匿した要約", "hidden"),
@@ -171,6 +176,119 @@ describe("buildBeatContextForGeneration — hidden の Codex", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.ctx.codexSummaries).toBe("");
+    editor.destroy();
+  });
+  it("hidden でない項目の要約は Phase の summaryOverride があっても base のまま", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "p1",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        node("scene-1", "a0"),
+        node("scene-2", "a1"),
+      ]),
+      resolutionMode: "reading",
+    });
+    h.phases = ["char-akane", "char-sup"].map((entryId) => ({
+      id: `ph-${entryId}`,
+      entryId,
+      anchorNodeId: "scene-2",
+      label: "後半",
+      summaryOverride: "Phase の要約",
+      contentOverride: null,
+      contextModeOverride: null,
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const editor = createEditorWithBeat([{ type: "text", text: "雨の夜" }]);
+    useCodexHighlightStore.setState({
+      matchedEntryIds: ["char-akane", "char-sup"],
+    });
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-2",
+      "p1",
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ctx.codexSummaries).toContain("- 朱音: 主人公。雨を嫌う。");
+      expect(result.ctx.codexSummaries).toContain("- 雫: suppress の要約");
+      expect(result.ctx.codexSummaries).not.toContain("Phase の要約");
+    }
+    editor.destroy();
+  });
+
+  it("Phase で hidden が解除された項目は解決後の要約を渡す", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "p1",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        node("scene-1", "a0"),
+        node("scene-2", "a1"),
+      ]),
+      resolutionMode: "reading",
+    });
+    h.phases = [
+      {
+        id: "ph-rin",
+        entryId: "char-rin",
+        anchorNodeId: "scene-2",
+        label: "公開",
+        summaryOverride: "公開された要約",
+        contentOverride: null,
+        contextModeOverride: "mentioned",
+        version: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    const editor = createEditorWithBeat([{ type: "text", text: "雨の夜" }]);
+    useCodexHighlightStore.setState({ matchedEntryIds: ["char-rin"] });
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-2",
+      "p1",
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ctx.codexSummaries).toBe("- 凛: 公開された要約");
+    }
     editor.destroy();
   });
 });
