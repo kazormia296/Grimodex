@@ -173,6 +173,8 @@ export interface MastraTurnSwitchLease {
 }
 
 export interface MastraTurnOwner {
+  /** Whether Main's gate is open for this launch: the one reading the router uses too. */
+  readonly open: boolean;
   /** The route's `MastraAgentTurnOwnerPort` (it takes the invoke's real Electron objects). */
   start(
     context: MastraTurnInvokeContext,
@@ -259,6 +261,14 @@ export function createMastraTurnOwner(
   const bySession = new Map<string, Turn>();
   /** Turns holding a slot: attached ones, and detached ones whose Native send has not settled. */
   const slots = new Set<Turn>();
+  /**
+   * Turns a forced abort detached from their caller whose ambiguous terminal is
+   * still being written. The caller's `finally` takes a turn out of `attached`
+   * a few microtasks after the abort, long before the append is done, so the
+   * waits (quiesce, lease, quit) must read this set too, or a turn the sender's
+   * own destruction just aborted would look like "no turn".
+   */
+  const forcedPending = new Set<Turn>();
   /** closed-profile and closed-quit are one-way; a switch is a counter that resume lowers. */
   let closed: "profile" | "quit" | null = null;
   let switchDepth = 0;
@@ -286,17 +296,19 @@ export function createMastraTurnOwner(
 
   const loadRuntime = (): Promise<MastraAgentRuntime> => {
     if (runtimePromise === null) {
-      runtimePromise = options.loadRuntime().then(
-        (module) =>
+      runtimePromise = options
+        .loadRuntime()
+        .then((module) =>
           module.createMastraAgentRuntime({
             log: (level, message) => log(level, `mastra: ${message}`),
           }),
-        (error) => {
-          // A failed load is not cached: the next start tries once.
+        )
+        .catch((error: unknown) => {
+          // A failed load, or a factory that throws, is not cached: the next
+          // start tries once.
           runtimePromise = null;
           throw error;
-        },
-      );
+        });
     }
     return runtimePromise;
   };
@@ -335,7 +347,22 @@ export function createMastraTurnOwner(
       );
     });
     turn.forcedTerminal = terminal;
+    forcedPending.add(turn);
+    const settled = (): void => {
+      forcedPending.delete(turn);
+    };
+    terminal.then(settled, settled);
     return terminal;
+  };
+
+  /**
+   * Every turn a wait must cover: the attached ones, the detached ones whose
+   * terminal is still being written, and the detached ones Native still holds.
+   */
+  const coveredTurns = (): Turn[] => {
+    const covered = new Set<Turn>([...attached.values(), ...forcedPending]);
+    for (const turn of slots) if (turn.nativeInFlight > 0) covered.add(turn);
+    return [...covered];
   };
 
   /** Each send and each begin: the turn's own checks before anything leaves Main (DR-MP3-5). */
@@ -704,6 +731,7 @@ export function createMastraTurnOwner(
   const attachedTurns = (): Turn[] => [...attached.values()];
 
   return {
+    open: options.open,
     start: (context, request) => start(context, request),
     cancel: (context, request) => cancel(context, request),
 
@@ -711,7 +739,7 @@ export function createMastraTurnOwner(
       // Admission first, and for good (a restricted or unavailable profile
       // does not reopen until the process restarts).
       closed ??= "profile";
-      const turns = attachedTurns();
+      const turns = coveredTurns();
       if (turns.length === 0) return;
       const inNative = turns.some((turn) => turn.nativeInFlight > 0);
       const terminals = turns.map((turn) => forceAbort(turn, "restricted"));
@@ -737,7 +765,7 @@ export function createMastraTurnOwner(
           switchDepth = Math.max(0, switchDepth - 1);
         },
       };
-      const turns = attachedTurns();
+      const turns = coveredTurns();
       if (turns.length === 0) return lease;
       const terminals = turns.map((turn) =>
         forceAbort(turn, "workspace-switch"),
@@ -769,7 +797,7 @@ export function createMastraTurnOwner(
       shutdownPromise = (async () => {
         let timer: ReturnType<typeof setTimeout> | null = null;
         try {
-          const turns = attachedTurns();
+          const turns = coveredTurns();
           if (turns.length === 0) return;
           const terminals = turns.map((turn) =>
             forceAbort(turn, "quit").then(

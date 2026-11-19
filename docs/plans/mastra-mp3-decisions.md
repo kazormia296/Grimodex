@@ -328,13 +328,14 @@ DR-MP3-4 は「`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だ
 |---|---|---|
 | 成功 | `{status:"completed", turnId, executionId, response}`（response は adapter の send が受けた生の応答。Mastra の text は使わない） | complete（`execution.succeeded`） |
 | provider・adapter の失敗 | `ok:false`（原因の message。adapter の固定文ではなく origin の message。legacy の失敗と同じ見え方） | fail（`execution.failed`。adapter の error は kind を `agentErrorKind` に残す） |
-| user-stop（dispatch の前） | `ok:false` `MASTRA_AGENT_TURN_CANCELLED` | `execution.cancelled`（ambiguous の印なし。送っていないので結果は既知） |
-| user-stop（dispatch の後） | 通常の完了（送信中の呼出しは切らない＝今の Stop と同じ強さ） | complete |
+| user-stop（Native の send の前。dispatch の行の前でも後でもよい） | `ok:false` `MASTRA_AGENT_TURN_CANCELLED` | `execution.cancelled`（ambiguous の印なし。Native に送っていないので結果は既知。dispatch の行が既にある場合もある） |
+| user-stop（Native の send の後） | 通常の完了（送信中の呼出しは切らない＝今の Stop と同じ強さ） | complete |
 | forced（restricted／workspace-switch／quit／sender-gone） | `ok:false` `MASTRA_AGENT_TURN_ABORTED: <原因>`（Native の settle を待たず先に返す） | ambiguous の `execution.failed`（1 回） |
 | runtime の load の失敗 | `ok:false`（load の error の message）。行は 0、次の start は新しい load | なし |
 | 拒否 | typed refusal（`ok:true`） | なし |
 
-- user-stop は「次の step を始めない」。この経路は tool 0・`maxSteps: 1` の 1 step なので、dispatch の前なら cancelled、後なら完了になる。
+- user-stop は「次の step を始めない」。この経路は tool 0・`maxSteps: 1` の 1 step なので、Native の send の前（begin・dispatch の行の書込み中や設定の解決中を含む）なら cancelled、後なら完了になる。
+- forced と complete が競合したとき：complete の行が先に書かれても、start は `ABORTED` を返す（行は `execution.succeeded`、renderer には失敗。保守的な側。応答を捨てるだけで、二重の terminal は書かない）。
 
 ### DR-MP3-28 runtime と bundle の境界（技術判断）
 
@@ -357,7 +358,7 @@ DR-MP3-4 は「`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だ
 
 - **restricted**：owner は egress participant `mastra-turn-owner`（index.ts。既存 3 件の隣）。quiesce で ①admission を（一方向に）閉じる ②forced の abort ③Native の stop の要求（下）④各 turn の ambiguous terminal を待つ（gate の 30 秒の枠。書けなければ quiesce が reject → `participant-failed` → unavailable、枠を超えたら gate が `participant-timeout` と forceStop）。
   turn が 0 件なら何もしない（Native の stop も呼ばない＝閉の launch で、製品の abort が stage 5 から stage 3 へ前倒しにならない）。
-  **gate の API を最小に拡張**：`registerMainEgressParticipant` の quiesce が `{ abortNativeInFlight() }` を受ける（reserved の間だけ有効な既存の `abortInFlight` の貸出し。既存の participant は引数を無視する）。
+  **gate の API を最小に拡張**：`registerMainEgressParticipant` の quiesce が `{ abortNativeInFlight() }` を受ける（reserved の間だけ有効な既存の `abortInFlight` の貸出し。stage 3 が終わると gate が無効にし、後から呼んでも何もしない（試験で固定）。既存の participant は引数を無視する。全 participant に渡す）。
   Native の send 自体を止めるのは Native の側（stage 5 の cancel、または貸出しの stop）で、owner は Native の完了を待たない。
 - **workspace 切替**：`ipc.ts` の lease 列の**先頭**に owner の lease。`quiesceForWorkspaceSwitch()` は admission を `busy` にし、全 turn を forced abort し、各 turn の ambiguous terminal を**旧 workspace に**書き終えてから返す（30 秒の bound。超えたら警告して先へ進む。ユーザーの切替を止めない）。
   `resume()`（成功でも失敗でも）で admission を戻す（複数の切替は counter）。lease の前に path の検査があるので、不正な path では turn を止めない。
@@ -365,18 +366,23 @@ DR-MP3-4 は「`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だ
 - **quit**：`shutdown()` を dispose（`shutdownWorkspaceLifecycle` を待たせる `Promise.all` の中。外に置くと workspace が先に閉じて start-only になる）と complete の両方に置く。`T_quit`＝5 秒（暫定、`MASTRA_TURN_QUIT_BOUND_MS`）。有界・冪等（同じ promise）・非 reject。書けなければ start-only が残る（回収なし。報告書が数える）。
 - **sender 消失**：per-turn の listener（`destroyed`・`render-process-gone`・main frame の `did-start-navigation`・window の `closed`）。subframe と same-document の遷移では止めない。turn の終端で必ず外す（試験が listener 0 を固定）。
 - forced で切り離した turn の遅れた Native の settle は捨てる（result は返さず、2 つ目の terminal も書かない）。forced の ambiguous は begin が進行中なら**その完了を待ってから**書く（handle が要るため）。begin の前なら row は 0。
+- **切り離した turn の terminal も待つ**：forced の abort で呼出し側の promise は数 microtask で settle し turn 表から外れるが、ambiguous の append はまだ進行中。
+  そのため owner は「terminal の書込み中の切り離した turn」と「Native にまだいる切り離した turn」を別の集合で持ち、restricted の quiesce・workspace 切替の lease・quit の 3 つの待ち（と restricted の Native の stop の要否）は、attached に加えてこの集合も対象にする（bound は変えない）。
+  窓の closed（sender-gone）の直後の quit・reload 直後の切替・restricted でも、terminal が書き終わる前に先へ進まない（試験 3 件）。
 
 ### DR-MP3-31 検証（3c）と未確認
 
 - 実装した試験：owner の lifecycle（sender 破棄・window close・reload・identity の入替・restricted の実 `beginProfileActivation`・workspace 切替の lease・quit の有界・hook・busy・上限）、loader、bundle 経由の runtime（再試行なし・kind の保持・logger）、静的配線、gate の route（owner との接続、lease の順序）、sink の cancel、`isAgentModelError`。
 - 未確認（D11 の受入れ条件）：forced の ambiguous の**後**に Native 側の observer が同じ execution へ行を足さないか（post-terminal）は、実 provider への送信が要るので実 addon の pipeline spec では確かめていない（reqwest は Node の guard の外）。
   足されて ledger の検証が壊れるなら DR-MP3-6 の規則 4 を改訂する（新しい契約の確認が要る）。
-- 未確認：packaged の asar の `require`・load 時間（MP-13）。Native の `shutdownWorkspaceLifecycle` が in-flight の send を待つかは、journey（Electron）で確かめる。
+- 未確認：packaged の asar の `require`・load 時間（MP-13）。Native の `shutdownWorkspaceLifecycle` が in-flight の send を待つかは、**MP-11／MP-13 の実 provider の測定で確かめる**（journey は送信せず、fake AI が `sendAgentMessage` を置き換えるので確かめられない）。
 
 ### DR-MP3-32 journey（3c。技術判断）
 
 - journey `mastra-agent-turn-gate-load-audit`（`electron/scripts/mastra-agent-turn-product-journey.mjs`、shard 3、catalog 36→37）。gate L の seam（`CI=true`、owner token、起動ごとの nonce、journey 専用 userData）を**起動の間だけ** `process.env` に置いて開け、main の IPC を `harness.invokeOk` で直接叩く（renderer の分岐は MP-4）。
-- **送信しない形**：API key を設定しないので、owner の send は key の解決（`No API key configured for anthropic`）で止まり、Native の `send_agent_message` に届かない。provider・network・key は関与しない。
+- **送信しない形**：API key を設定しないので、owner の send は key の解決（`No API key configured for anthropic`）で止まり、Native の `send_agent_message` に届かない。provider・network・key は関与しない。送信しないのは「key が無いこと」と「fake AI が `sendAgentMessage` を置き換えること」の 2 重。
+  前提：D-Bus の keyring が見える host では、起動時の legacy keyring の移行（`migrateLegacyKeyringToSafeStorage`）が journey の userData に key を入れることがあり、そのとき `/No API key configured/` の検査は落ちうる（漏れではなく、検査が前提を外れる）。
+  既存の手段として移行済みの marker（`LEGACY_KEYRING_MIGRATION_MARKER`）で移行を飛ばせるが、journey が TS の定数と形を複製することになり、実行できない状態では確かめられないので使っていない（新しい seam も作らない）。落ちたらこの前提を疑う。
   確かめること：refusal（invalid／持込み key／unsupported）と未知の cancel は行を 0 件書く／admitted の start が runtime を lazy load し実 Agent を回す／workspace chain に dispatch の 3 行＋failed の terminal 1 件（start-only 0、ambiguous の印なし、dispatchBoundary が main 発）。
   in-flight の lifecycle（cancel・workspace 切替・restricted・quit）は owner の単体試験が持つ（実 provider なしでは Electron で再現できない）。
 - 未実施：実 addon の pipeline spec（Anthropic／OpenAI／OpenRouter の base URL は settings で変えられず、Native まで届くと実 host へ出るので「送信の直前で止める」形が作れない）。load 状態の通信 0 の観測（`NODE_OPTIONS` の guard が Electron main で使えるかは未確認）は journey の実行時に親が行う。

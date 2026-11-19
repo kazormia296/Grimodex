@@ -85,7 +85,11 @@ describe("index.ts: the owner is an egress participant, a quit step and an event
         continue;
       }
       // index.ts makes them; the two modules define them.
-      if (["index.ts", "mastraTurnOwner.ts", "mastraAgentLoader.ts"].includes(file)) {
+      if (
+        ["index.ts", "mastraTurnOwner.ts", "mastraAgentLoader.ts"].includes(
+          file,
+        )
+      ) {
         continue;
       }
       const text = codeOf(`electron/main/${file}`);
@@ -99,7 +103,7 @@ describe("index.ts: the owner is an egress participant, a quit step and an event
 describe("ipc.ts: the router hands the owner its invoke and its workspace-switch lease", () => {
   it("the shell handlers come from the route with the invoke's sender, window and issued identity (never the context-less ones)", () => {
     expect(IPC).toMatch(
-      /\.\.\.mastraAgentTurn\.handlersFor\(\{ sender: event\.sender, win, callerIdentity, \}\),/,
+      /\.\.\.\(isMastraAgentTurnCommand\(cmd\) \? mastraAgentTurn\.handlersFor\(\{ sender: event\.sender, win, callerIdentity, \}\) : \{\}\),/,
     );
     expect(IPC).not.toMatch(/\.\.\.mastraAgentTurn\.handlers[^F]/);
     expect(IPC).toMatch(/owner: mastraTurnOwner,/);

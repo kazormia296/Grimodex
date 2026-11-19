@@ -85,7 +85,7 @@ export interface MainAgentAuditHandle extends AgentAuditHandle {
 
 export interface MainAgentAuditSink extends AgentAuditSink<MainAgentAuditHandle> {
   /**
-   * The terminal of an execution the user stopped before it was dispatched
+   * The terminal of an execution the user stopped before Main's send to Native (the dispatch row may already be written)
    * (`execution.cancelled`, with no ambiguous mark: nothing was sent, so the
    * outcome is known). It is the one terminal of the execution like the others.
    */
@@ -404,7 +404,7 @@ export function createMainAgentAuditSink(
         buildAiAuditCancelledEvents(
           contextOf(handle),
           await sanitizeAiAuditDiagnostic(
-            `main agent turn stopped by the user before dispatch: ${input.reason}`,
+            `main agent turn stopped by the user before the send to Native: ${input.reason}`,
             "reason",
           ),
           {},

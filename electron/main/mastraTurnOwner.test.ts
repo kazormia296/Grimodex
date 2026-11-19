@@ -134,6 +134,8 @@ interface Harness {
   };
   readonly logs: string[];
   appendBehavior: { fail: boolean; hang: Deferred<void> | null };
+  /** Runs inside Native's settings read: the window between the dispatch row and the send. */
+  hooks: { onSettings: (() => void) | null };
   newContext(senderId?: number): {
     context: MastraTurnInvokeContext;
     sender: FakeSender;
@@ -163,6 +165,7 @@ function harness(
   const logs: string[] = [];
   const profile = { restricted: false, unavailable: false, activating: false };
   const appendBehavior: Harness["appendBehavior"] = { fail: false, hang: null };
+  const hooks: Harness["hooks"] = { onSettings: null };
   const native = overrides.native ?? "immediate";
   let loadFailuresLeft = overrides.loadFails ? 1 : 0;
 
@@ -178,6 +181,7 @@ function harness(
       return JSON.stringify({ insertedCount: 1 });
     },
     async getAiSettings(): Promise<string> {
+      hooks.onSettings?.();
       return JSON.stringify({ provider: "anthropic" });
     },
     async sendAgentMessage(
@@ -276,6 +280,7 @@ function harness(
     profile,
     logs,
     appendBehavior,
+    hooks,
     newContext(senderId = senderSeq++) {
       const sender = new FakeSender(senderId);
       const win = new FakeWindow(senderId + 1000);
@@ -1007,6 +1012,128 @@ describe("a replaced workspace binding (the event hook)", () => {
   });
 });
 
+describe("a turn a forced abort detached is still waited for (terminal in flight)", () => {
+  /** A turn in Native whose sender is then destroyed, with the terminal's append held. */
+  async function detachedWithHeldTerminal() {
+    const h = harness({ native: "hold" });
+    const c = h.newContext();
+    const started = h.owner.start(c.context, startRequest(TURN_A));
+    started.catch(() => undefined);
+    await flush();
+    h.appendBehavior.hang = deferred<void>();
+    c.sender.emit("destroyed");
+    await flush();
+    // The caller already settled and left the attached table.
+    expect(h.owner.activeTurnCount()).toBe(0);
+    return h;
+  }
+
+  it("quit waits for the terminal of a turn the sender's destruction just aborted (no start-only)", async () => {
+    const h = await detachedWithHeldTerminal();
+    let done = false;
+    const quit = h.owner.shutdown().then(() => {
+      done = true;
+    });
+    await flush();
+    expect(done).toBe(false);
+    h.appendBehavior.hang!.resolve();
+    await quit;
+    expect(h.terminalsOf()).toHaveLength(1);
+  });
+
+  it("a workspace switch's lease waits for it, so the terminal still reaches the old workspace", async () => {
+    const h = await detachedWithHeldTerminal();
+    let leased = false;
+    const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+      leased = true;
+      return value;
+    });
+    await flush();
+    expect(leased).toBe(false);
+    h.appendBehavior.hang!.resolve();
+    await (await lease).resume(true);
+    expect(h.terminalsOf()).toHaveLength(1);
+    expect(h.appended.every((call) => call.path === WORKSPACE)).toBe(true);
+  });
+
+  it("the restricted quiesce waits for it and asks Native to stop what the detached turn still has there", async () => {
+    const h = await detachedWithHeldTerminal();
+    const abortNativeInFlight = vi.fn(() => true);
+    let done = false;
+    const quiesce = h.owner
+      .quiesceForProfileEgress({ abortNativeInFlight })
+      .then(() => {
+        done = true;
+      });
+    await flush();
+    expect(done).toBe(false);
+    expect(abortNativeInFlight).toHaveBeenCalledTimes(1);
+    h.appendBehavior.hang!.resolve();
+    await quiesce;
+    expect(h.terminalsOf()).toHaveLength(1);
+  });
+});
+
+describe("smaller lifecycle points", () => {
+  it("a runtime factory that throws is not cached either: the next start builds again", async () => {
+    let calls = 0;
+    const h = harness({
+      loadRuntime: async () => ({
+        createMastraAgentRuntime: () => {
+          calls += 1;
+          if (calls === 1) throw new Error("factory failed");
+          return {
+            runTurn: async (input: MastraAgentTurnInput) => {
+              const handle = await input.audit.begin({
+                messages: [],
+                tools: [],
+                ...input.route,
+              } as unknown as AgentAuditRequest);
+              await input.audit.fail(handle, new Error("stop here"));
+              throw new Error("stop here");
+            },
+          };
+        },
+      }),
+    });
+    const { context } = h.newContext();
+    await expect(h.owner.start(context, startRequest(uuid()))).rejects.toThrow(
+      "factory failed",
+    );
+    await expect(h.owner.start(context, startRequest(uuid()))).rejects.toThrow(
+      "stop here",
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("a cancel after the dispatch row and before the send to Native ends as cancelled with no send, and the row says so", async () => {
+    const h = harness({ native: "hold" });
+    const { context } = h.newContext();
+    h.hooks.onSettings = () => {
+      h.owner.cancel(context, { turnId: TURN_A });
+    };
+    await expect(h.owner.start(context, startRequest(TURN_A))).rejects.toThrow(
+      /MASTRA_AGENT_TURN_CANCELLED/,
+    );
+    expect(h.sends).toHaveLength(0);
+    expect(h.types()).toEqual([
+      "execution.started",
+      "request.prepared",
+      "request.dispatched",
+      "execution.cancelled",
+    ]);
+    expect(JSON.stringify(h.terminalsOf()[0]?.payload)).toContain(
+      "before the send to Native",
+    );
+    expect(h.terminalsOf()[0]?.payload).not.toHaveProperty("remoteOutcome");
+  });
+
+  it("the owner carries the gate flag the router reads", () => {
+    expect(harness().owner.open).toBe(true);
+    expect(harness({ open: false }).owner.open).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The real profile gate: the owner is registered as the product registers it
 // (`index.ts`), and a real `beginProfileActivation` runs stages 2 to 7 over it.
@@ -1140,6 +1267,22 @@ describe("restricted: the real activation (stage 3 of the egress gate)", () => {
     expect(
       refusalReason(await h.owner.start(context, startRequest(uuid()))),
     ).toBe("restricted");
+  });
+
+  it("the stop request lent to a participant is valid for stage 3 only: a kept context does nothing afterwards", async () => {
+    const { gate, activate, native } = await activationRig();
+    let kept: { abortNativeInFlight(): boolean } | null = null;
+    gate.registerMainEgressParticipant("keeper", async (context) => {
+      kept = context;
+    });
+    expect(await activate()).toEqual({ state: "restricted" });
+    const abort =
+      native.profileActivationAbortInFlight as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    expect(abort).not.toHaveBeenCalled();
+    expect(kept!.abortNativeInFlight()).toBe(false);
+    expect(abort).not.toHaveBeenCalled();
   });
 
   it("a terminal that never lands is cut by the gate's bound: unavailable (participant-timeout), the owner is force-stopped", async () => {

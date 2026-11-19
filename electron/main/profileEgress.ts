@@ -1634,8 +1634,13 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
     // in Native, so that work can end before the participant's own bound runs
     // out. It is the request stage 5 (or a failed stage 4) makes anyway, made
     // early; it opens and closes nothing.
+    // Valid only for stage 3: the stop request is lent while the reservation is
+    // held, and a call after the stage (a participant that kept the context)
+    // does nothing.
+    let participantContextValid = true;
     const participantContext: MainEgressParticipantContext = {
-      abortNativeInFlight: () => this.requestNativeInFlightAbort(),
+      abortNativeInFlight: () =>
+        participantContextValid ? this.requestNativeInFlightAbort() : false,
     };
     const pending = new Set(participants.map(([name]) => name));
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1681,6 +1686,7 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
       );
       if (failed) throw failed.reason;
     } finally {
+      participantContextValid = false;
       if (timer !== null) clearTimeout(timer);
     }
   }

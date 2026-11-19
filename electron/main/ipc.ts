@@ -2187,10 +2187,14 @@ export function registerIpcRouter(
   // the journey seam; it reads the same launch facts, once, as the seam above
   // and has no Native entry to open.
   const mastraAgentTurn = createMastraAgentTurnRoute({
-    open: openMastraAgentTurnGate({
-      seam: parseMastraAgentTurnCiSeam(nir1LocalGenerationLaunch),
-      isPackaged: nir1LocalGenerationLaunch.isPackaged,
-    }),
+    // The owner's own flag when there is one (index.ts reads the seam once and
+    // the owner, the loader and this route share that answer).
+    open:
+      mastraTurnOwner?.open ??
+      openMastraAgentTurnGate({
+        seam: parseMastraAgentTurnCiSeam(nir1LocalGenerationLaunch),
+        isPackaged: nir1LocalGenerationLaunch.isPackaged,
+      }),
     profileEgress,
     owner: mastraTurnOwner,
   });
@@ -2391,11 +2395,13 @@ export function registerIpcRouter(
               shell: {
                 ...buildShellCommandHandlers(win),
                 ...injectedHandlers,
-                ...mastraAgentTurn.handlersFor({
-                  sender: event.sender,
-                  win,
-                  callerIdentity,
-                }),
+                ...(isMastraAgentTurnCommand(cmd)
+                  ? mastraAgentTurn.handlersFor({
+                      sender: event.sender,
+                      win,
+                      callerIdentity,
+                    })
+                  : {}),
               },
               secrets,
               broadcast,
@@ -2441,7 +2447,8 @@ export function registerIpcRouter(
               // is written to the OLD workspace (bounded) before Native's open,
               // which could not write to it afterwards. Native's send is not
               // stopped; the open still waits for it as it does today.
-              const mastraLease = await mastraTurnOwner?.quiesceForWorkspaceSwitch?.();
+              const mastraLease =
+                await mastraTurnOwner?.quiesceForWorkspaceSwitch?.();
               if (mastraLease) acquired.push(mastraLease);
               const maintenanceLease =
                 await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
