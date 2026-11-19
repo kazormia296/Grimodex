@@ -311,9 +311,10 @@ drop every cargo command and every other command that cannot read `docs/`; only 
 remain. A suite left with no command is reported as `skipped`, which is not a failure and not a pass of those commands.
 The suite selection, requirements and Heavy reports are unchanged. This also reaches the Light run of Gate B2
 (`scripts/quality/certify-gate-b2.mjs`), which reads only the exit code, so it is harmless there. The impact step of `ci.yml`
-is never narrowed this way: the nightly schedule and a manual dispatch have no comparison base, and the `before` of a new tag
-push does not resolve, so each selects every suite, and the step fails (fail-closed) unless the selector reports every suite
-selected, no docs-markdown-only narrowing, and every suite passed. The docs-only PR exception below is narrower (it excludes
+is not narrowed this way on the nightly schedule or a manual dispatch (neither has a comparison base), nor on a new tag push (its
+`before` does not resolve): each selects every suite. Only the nightly run checks that, and fails (fail-closed) unless the
+selector reports every suite selected, no docs-markdown-only narrowing, and every suite passed; a dispatch and a release tag
+call are judged by the selector's exit code alone (a moved tag, whose `before` resolves, selects by diff). The docs-only PR exception below is narrower (it excludes
 operational-rule documents and documents named by path) and is not implied by this selection.
 
 Before any canonical Quick/Full evidence, focused validation finishes first. If a completion commit is in scope,

@@ -384,10 +384,11 @@ jobs:
       # A schedule, a dispatch and a new tag push have no resolvable comparison
       # base (a schedule or dispatch event has no `before`; a new tag's `before`
       # is the zero SHA), so the selector sees an empty or incomplete diff and
-      # selects every suite. The step then checks that every suite was selected
-      # and passed, and fails otherwise (fail-closed: a selection narrowed by a
-      # stray working-tree path, or by a moved tag's resolvable `before`, is red,
-      # not a silent partial run).
+      # selects every suite. Only the nightly run checks that (fail-closed): the
+      # step is red unless every suite was selected and passed, so a selection
+      # narrowed by a stray working-tree path is not a silent partial run. A
+      # dispatch and a release tag call are judged by the selector's exit code
+      # alone, as before (a moved tag, whose `before` resolves, selects by diff).
       # A reusable call inherits the caller's `github.event_name` and ref. The
       # only caller is release.yml, whose `ci` job runs on a tag push
       # (`push`, `ref_type` tag), so the release call keeps running this step.
@@ -400,6 +401,7 @@ jobs:
         env:
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           QUALITY_HEAD_SHA: ${{ github.sha }}
+          QUALITY_EVENT: ${{ github.event_name }}
         run: |
           set -eu
           report="$RUNNER_TEMP/impact-report.json"
@@ -408,24 +410,26 @@ jobs:
           else
             pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run --report "$report"
           fi
-          # Fail closed: every suite must have been selected, and every selected suite must have passed.
-          node -e '
-            const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-            const selection = report.selection ?? {};
-            const execution = report.execution ?? [];
-            const problems = [];
-            if (selection.allSelected !== true) problems.push("allSelected=" + selection.allSelected + " (" + selection.reason + ")");
-            if (selection.docsMarkdownOnly !== false) problems.push("docsMarkdownOnly=" + selection.docsMarkdownOnly);
-            const suites = selection.suiteIds ?? [];
-            if (suites.length === 0) problems.push("no suite selected");
-            if (execution.length !== suites.length) problems.push("executed " + execution.length + " of " + suites.length + " selected suites");
-            for (const entry of execution) if (entry.status !== "passed") problems.push(entry.suiteId + " " + entry.status);
-            if (problems.length > 0) {
-              console.error("::error title=Impact selection is not the full suite::" + problems.join("; "));
-              process.exit(1);
-            }
-            console.log("impact: all " + suites.length + " suites selected and passed");
-          ' "$report"
+          # Nightly only, fail closed: every suite must have been selected, and every selected suite must have passed.
+          if [ "$QUALITY_EVENT" = schedule ]; then
+            node -e '
+              const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+              const selection = report.selection ?? {};
+              const execution = report.execution ?? [];
+              const problems = [];
+              if (selection.allSelected !== true) problems.push("allSelected=" + selection.allSelected + " (" + selection.reason + ")");
+              if (selection.docsMarkdownOnly !== false) problems.push("docsMarkdownOnly=" + selection.docsMarkdownOnly);
+              const suites = selection.suiteIds ?? [];
+              if (suites.length === 0) problems.push("no suite selected");
+              if (execution.length !== suites.length) problems.push("executed " + execution.length + " of " + suites.length + " selected suites");
+              for (const entry of execution) if (entry.status !== "passed") problems.push(entry.suiteId + " " + entry.status);
+              if (problems.length > 0) {
+                console.error("::error title=Impact selection is not the full suite::" + problems.join("; "));
+                process.exit(1);
+              }
+              console.log("impact: all " + suites.length + " suites selected and passed");
+            ' "$report"
+          fi
 
   frontend:
     name: Frontend (type-check / lint / test)

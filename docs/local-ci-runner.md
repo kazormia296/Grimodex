@@ -72,8 +72,10 @@ that no other job or registry entry names) is therefore checked on `master` by t
 nightly run, up to about a day after a merge, and master changes that landed
 after the Quick are checked by impact there. The nightly, dispatch and tag runs
 have no comparison base (the `before` of a new tag does not resolve), so they
-select every suite and are never narrowed by the docs-markdown-only rule; the
-step fails unless every suite was selected and passed. A nightly run that does
+select every suite and are not narrowed by the docs-markdown-only rule. Only the
+nightly run checks that: its step fails unless every suite was selected and
+passed; a dispatch and a tag call are judged by the selector's exit code alone
+(a moved tag, whose `before` resolves, selects by diff). A nightly run that does
 not succeed is a red `master`.
 
 ### Split hosted Full

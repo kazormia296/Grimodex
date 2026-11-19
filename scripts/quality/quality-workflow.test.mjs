@@ -1226,7 +1226,7 @@ test("CI runs the diff gate with full history and selected light suites", async 
   assert.deepEqual(registry.profiles.quick, ["impact"]);
 });
 
-test("the impact step fails closed unless every suite was selected and passed", async () => {
+test("the nightly impact step fails closed unless every suite was selected and passed; dispatch and tag calls follow the exit code", async () => {
   const workflow = await read(".github/workflows/ci.yml");
   const impact = yaml
     .load(workflow)
@@ -1293,6 +1293,7 @@ test("the impact step fails closed unless every suite was selected and passed", 
           RUNNER_TEMP: directory,
           QUALITY_BASE_SHA: "",
           QUALITY_HEAD_SHA: "b".repeat(40),
+          QUALITY_EVENT: "schedule",
           ...event,
           FAKE_PNPM_LOG: log,
           FAKE_PNPM_REPORT: report ? reportFile : "",
@@ -1333,6 +1334,25 @@ test("the impact step fails closed unless every suite was selected and passed", 
     // The selector itself failing, or writing no report, is red too.
     assert.notEqual((await run("selector-failed", withExecution(full), { exit: 1 })).status, 0);
     assert.notEqual((await run("no-report", null)).status, 0);
+
+    // A manual dispatch and a release tag call (event `push`, ref_type tag) keep the behavior they had
+    // before the nightly check: the selector's exit code alone decides. A selection narrowed by a
+    // resolvable base (a moved tag) still passes when the selector exits 0, whatever the report says.
+    for (const event of ["workflow_dispatch", "push"]) {
+      for (const [label, report] of [
+        ["narrowed selection", withExecution(narrowed)],
+        ["docs-markdown-only selection", withExecution(docsOnly, () => "skipped")],
+        ["a suite that was skipped", withExecution(full, (_, index) => (index === 3 ? "skipped" : "passed"))],
+        ["fewer executions than suites", { ...full, execution: [] }],
+        ["no report", null],
+      ]) {
+        const result = await run(`${event}-${label.replaceAll(" ", "-")}`, report, { event: { QUALITY_EVENT: event } });
+        assert.equal(result.status, 0, `${event}: ${label} passes on the selector's exit code\n${result.stderr}`);
+        assert.doesNotMatch(result.stderr, /Impact selection is not the full suite/, `${event}: ${label}`);
+      }
+      const failed = await run(`${event}-selector-failed`, withExecution(full), { event: { QUALITY_EVENT: event }, exit: 1 });
+      assert.notEqual(failed.status, 0, `${event}: a failing selector is red`);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
