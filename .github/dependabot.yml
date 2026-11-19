@@ -5,6 +5,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Mastra は exact pin で、手動でだけ上げる（ee の検査・通信の観測・adapter の適合を毎回通す。
+      # docs/plans/mastra-migration-plan.md の第 11 節）。
+      - dependency-name: "@mastra/*"
     groups:
       tauri:
         patterns:

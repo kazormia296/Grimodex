@@ -287,6 +287,18 @@
   - main の lifecycle 試験：sender 破棄、window close、restricted の切替、quit、workspace の切替。
   - **製品の bundle で ee の検査**（MP-1 の script）、asar の列挙、`perf:budget`、起動時間。
   - 通信の捕捉：packaged の main で、起動から終了まで宛先 0（P1(b)）。
+  - MP-1 のレビューから MP-3 の受入れに送る条件：
+    - 製品の build（`electron/scripts/build.mjs`）に ee の stub plugin（`electron/scripts/mastra-ee-stub-plugin.mjs`）を入れる。
+    - ee の検査（`electron/scripts/mastra-ee-check.mjs`）を、製品の main・preload・renderer の bundle と、`require()` の経路（`.cjs`）に当てる。
+      MP-1 の「製品の main bundle に `@mastra/*` が入らない」検査は、このときその検査に差し替える。
+    - `ci.yml` の production build の後に、`dist-electron/main.cjs` とその `.map` を検査する（ee 固有の文字列が 0。目印は ee の実装にだけある文字列）。
+    - env 固定の配線先（`electron/main/mastraEnv.ts` の `apply()` を呼び、固定後の `process.env` を読む箇所を `originalEnv()` に切り替える）：
+      `cliAi.ts` の `mergedEnv`、`codexAppServer/process.ts`、`vivliostyle.ts:471`、`backend.ts:131`、`ipc.ts:2106`、
+      `cliAi.ts:300-330` の opencode の `{env:NAME}`（同じ process の中での読出し）。`env:` を明示しない spawn は、固定後の env を継承する。
+    - `originalEnv()` は、固定前の env を凍結して保持する写しであること（呼ぶたびに新しい写しを返し、写しを変えても保持した写しは変わらない）。
+    - `release.yml` で `checkPackage`（app.asar の ee の検査）を呼ぶか。今は `packaged-smoke.yml` だけが呼ぶ。
+    - picomatch の再判断：`@mastra/core` が `picomatch 4.0.7`（GHSA-fc5q の対象）を直接引く。Mastra が picomatch を利用者の入力に使う経路を調べ、
+      `scripts/pnpm-audit.mjs` の例外（期限 12/18）をユーザーに再確認する（2026-11-19 の決定：例外を続け、MP-3 の前に再判断）。
 - 旗：L 閉。journey の seam だけが開ける。
 - 確認：U-4（U-3 は決定済み）。
 - 検証：第 8 節の「通信」「bundle・起動」。

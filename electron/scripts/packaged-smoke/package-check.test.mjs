@@ -5,7 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { GRAPH_WORKER_SEAM_MARKER } from "../verify-release-graph-worker.mjs";
-import { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkPackage, forbiddenContent, listAsarEntries, peSubsystem, resourcesDirOf } from "./package-check.mjs";
+import { EE_CONTENT_MARKERS } from "../mastra-ee-patterns.mjs";
+import { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkPackage, forbiddenContent, listAsarEntries, mastraEeEntries, peSubsystem, resourcesDirOf } from "./package-check.mjs";
 
 /** asar の header だけを持つ合成の file（中身の bytes は使わない） */
 function writeAsar(file, tree) {
@@ -111,4 +112,80 @@ test("app.asar の中身に harness・probe の固有の文字列があれば不
   assert.equal(result.ok, false);
   assert.match(result.failures.join("\n"), /中身に harness／probe の文字列: dnsprobe\.test/);
   assert.ok(FORBIDDEN_ASAR_CONTENT.includes("webrtc-block-probe"));
+});
+
+/** `a/b/c.js` の path から入れ子の asar の tree を作る */
+function treeWith(...paths) {
+  const tree = { ...PRODUCT_TREE };
+  for (const file of paths) {
+    const parts = file.split("/");
+    let node = tree;
+    for (const part of parts.slice(0, -1)) {
+      node[part] ??= { files: {} };
+      node = node[part].files;
+    }
+    node[parts.at(-1)] = { size: 1, offset: "0" };
+  }
+  return tree;
+}
+
+test("app.asar の ee の file の判定は、拡張子と package を問わず、ee の無い @mastra の file は拾わない", () => {
+  const ee = [
+    "node_modules/@mastra/core/dist/ee-abc123.js",
+    "node_modules/@mastra/core/dist/ee-abc123.cjs",
+    "node_modules/@mastra/core/dist/ee-abc123.js.map",
+    "node_modules/@mastra/core/dist/auth/ee/index.js",
+    "node_modules/@mastra/core/dist/_types/@internal_auth@0.0.37/dist/ee/index.d.ts",
+    "node_modules/@mastra/memory/dist/ee/index.js",
+    "node_modules/@mastra/editor/dist/ee-zzz.js",
+    "@mastra/core/dist/ee-top.js",
+  ];
+  assert.deepEqual(mastraEeEntries(ee), ee);
+  assert.deepEqual(mastraEeEntries(["node_modules/@mastra/core/dist/agent/index.js", "dist-electron/main.cjs", "dist/assets/free-chunk.js"]), []);
+});
+
+test("package の検査: app.asar に Mastra の ee の file があれば不合格、ee の無い @mastra の file は記録だけ", { skip: process.platform === "win32" }, async () => {
+  const clean = await checkPackage({ appDir: fakeApp({ asarTree: PRODUCT_TREE }), platform: "linux" });
+  assert.equal(clean.ok, true);
+  assert.deepEqual(clean.recorded.asar.mastraEeEntries, []);
+  assert.equal(clean.recorded.asar.mastraEntries, 0);
+  // ee が無い @mastra の file だけなら合格（記録は残る）。bundle に入れる方針なので、本来は 0 のはず。
+  const notEe = await checkPackage({ appDir: fakeApp({ asarTree: treeWith("node_modules/@mastra/core/dist/agent/index.js") }), platform: "linux" });
+  assert.equal(notEe.ok, true);
+  assert.equal(notEe.recorded.asar.mastraEntries, 1);
+  for (const file of ["node_modules/@mastra/core/dist/ee-abc123.cjs", "node_modules/@mastra/core/dist/auth/ee/index.js", "node_modules/@mastra/memory/dist/ee/index.js"]) {
+    const result = await checkPackage({ appDir: fakeApp({ asarTree: treeWith(file) }), platform: "linux" });
+    assert.equal(result.ok, false, file);
+    assert.match(result.failures.join("\n"), /Mastra の ee の file/);
+    assert.deepEqual(result.recorded.asar.mastraEeEntries, [file]);
+  }
+});
+
+test("package の検査: app.asar の中身に Mastra の ee 固有の文字列があれば不合格（chunk の境界をまたぐ一致も見る）", { skip: process.platform === "win32" }, async () => {
+  const appDir = fakeApp({ asarTree: PRODUCT_TREE });
+  const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
+  assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), []);
+  const marker = EE_CONTENT_MARKERS[0];
+  const filler = Buffer.alloc(1024 * 1024 - 5, 0x20);
+  fs.appendFileSync(asar, Buffer.concat([filler, Buffer.from(`x.${marker}(y)`)]));
+  assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), [marker]);
+  const result = await checkPackage({ appDir, platform: "linux" });
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.join("\n").includes(`Mastra の ee 固有の文字列: ${marker}`));
+  assert.deepEqual(result.recorded.asar.mastraEeContent, [marker]);
+});
+
+test("package の検査: ee の外の Apache-2.0 の部分（telemetry）の文字列が .map の sourcesContent に在っても不合格にしない", { skip: process.platform === "win32" }, async () => {
+  const appDir = fakeApp({ asarTree: PRODUCT_TREE });
+  const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
+  // stub を当てた bundle の source map に残る、ee の外の部分の文字列（mastra-ee-check.test.mjs が実物で確かめている）。
+  const apacheSources = JSON.stringify({ sourcesContent: ["captureEEEvent('ee_feature_used'); trackEvent('ee_license_check');"] });
+  fs.appendFileSync(asar, Buffer.from(apacheSources));
+  for (const word of ["captureEEEvent", "ee_feature_used", "ee_license_check"]) {
+    assert.equal(EE_CONTENT_MARKERS.includes(word), false, word);
+  }
+  const result = await checkPackage({ appDir, platform: "linux" });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.recorded.asar.mastraEeContent, []);
 });

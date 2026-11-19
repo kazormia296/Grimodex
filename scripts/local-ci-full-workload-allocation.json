@@ -1,6 +1,6 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:d3f8566a9655e90236e1659e989e1213a944aba2d48072fb3e1078aa4c324fc5",
+  "registryDigest": "sha256:80aac4d888d06174a798d38587fcbebb7d64ba5cce3441b4736e5d75f908191d",
   "maxParallelTasks": 1,
   "sources": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "8effe7c9941eca86b32808edfb521d9438dc7b5fb328ccbf997182207238fc17"
+      "sha256": "3eda9b544815d1b458de2ce524c3d0e5e6a1cf34c197ce94148fe859987e423a"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
@@ -41,11 +41,11 @@
     },
     {
       "path": "package.json",
-      "sha256": "b5e06b3ae93b80cdd0b78693dd833bf826d15cc906646162e919c4c661f0ae63"
+      "sha256": "22a4b18a51e6965ec8918aec859bf8c3f54457cf44cd3a033e40da830126c1bc"
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "628e164415d3fab9dfa5b32fc2e0c47584b0a188e40076556829eef0dea49d15"
+      "sha256": "6186dd7ad06d3922b9e2fe714faddc94e00ffe960f16da601c0cc5fb63f8b61c"
     },
     {
       "path": "src-tauri/Cargo.toml",
