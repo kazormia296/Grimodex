@@ -91,6 +91,8 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
     /** The binding `wake()` registers under (default: `binding`). */
     readonly wakeBinding?: typeof BINDING;
     readonly reconcile?: ReturnType<typeof vi.fn>;
+    /** The delivery-failure receipt backend (absent: no receipt can be persisted). */
+    readonly recordFailure?: ReturnType<typeof vi.fn>;
   }
 
   function lifecycleBackend(
@@ -107,6 +109,9 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       ...(options.reconcile === undefined
         ? {}
         : { reconcileNarrativeMaintenanceRecovery: options.reconcile }),
+      ...(options.recordFailure === undefined
+        ? {}
+        : { recordNarrativeMaintenanceDeliveryFailure: options.recordFailure }),
       ackNarrativeMaintenanceDelivery: vi
         .fn()
         .mockResolvedValue({ status: "retired" }),
@@ -766,4 +771,117 @@ describe("DR-PUBG-5-17: wake origin and demandOnly", () => {
       expect(accepts()).toEqual([expected]);
     },
   );
+
+  // DR-PUBG-5-19 (F-1) x DR-PUBG-5-17. A wake whose project the workspace does
+  // not have ends (PROJECT_MISSING receipt after the bounded retries). Ending
+  // it must leave nothing of its origin behind and must not change the
+  // rediscovery decision (demandOnly) of any other wake.
+  describe("a wake dropped as PROJECT_MISSING leaves no origin behind", () => {
+    const MISSING =
+      "NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING: project 'gone' does not exist";
+    const FK = "FOREIGN KEY constraint failed";
+
+    // Native's cycle fails (FK) while the project is missing and accepts once
+    // it exists; `exists` is flipped by the test.
+    function missingProject(
+      receipt: (request: { projectId: string }) => Promise<unknown>,
+    ) {
+      const state = { goneExists: false };
+      const run = vi.fn(
+        async (request: { wakeProjectIds?: readonly string[] }) => {
+          if (
+            !state.goneExists &&
+            (request.wakeProjectIds ?? []).includes("gone")
+          ) {
+            throw new Error(FK);
+          }
+          return accepted();
+        },
+      );
+      const recordFailure = vi.fn(receipt);
+      return { state, run, recordFailure };
+    }
+
+    it.each([
+      ["discovery", "demand", true],
+      ["demand", "discovery", false],
+    ] as const)(
+      "a dropped %s wake does not decide the origin of the next %s wake for the same project",
+      async (droppedOrigin, nextOrigin, expectedDemandOnly) => {
+        const { state, run, recordFailure } = missingProject(async () => {
+          throw new Error(MISSING);
+        });
+        const { wake, accepts, scheduler, onCycleAccepted } = setup(
+          run as unknown as ReturnType<typeof vi.fn>,
+          { interruptAttempts: 4, recordFailure },
+        );
+        await startedAndIdle();
+
+        wake(["gone"], droppedOrigin);
+        await vi.advanceTimersByTimeAsync(600_000);
+        // First attempt and its bounded retries, one refused receipt, no
+        // accepted cycle (so no rediscovery either), and nothing left queued.
+        expect(run).toHaveBeenCalledTimes(4);
+        expect(recordFailure).toHaveBeenCalledOnce();
+        expect(onCycleAccepted).not.toHaveBeenCalled();
+        expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
+
+        // The project comes back; the next wake registers under its own origin
+        // only (a merge with a lingering entry would make discovery win, or
+        // keep the retry counter, and change demandOnly).
+        state.goneExists = true;
+        wake(["gone"], nextOrigin);
+        await vi.advanceTimersByTimeAsync(BACKLOG);
+        expect(accepts()).toEqual([expectedDemandOnly]);
+        expect(run).toHaveBeenCalledTimes(5);
+      },
+    );
+
+    it.each([
+      ["demand", "discovery", false],
+      ["discovery", "demand", true],
+    ] as const)(
+      "a dropped %s wake in the same cycle as a retained %s wake does not change the retained wake's demandOnly",
+      async (droppedOrigin, keptOrigin, expectedDemandOnly) => {
+        const { state, run, recordFailure } = missingProject(
+          async (request) => {
+            if (request.projectId === "gone") throw new Error(MISSING);
+            // A transient refusal: the wake stays queued under its origin.
+            throw new Error("SQLITE_BUSY: database is locked");
+          },
+        );
+        const { wake, accepts, scheduler, onCycleAccepted } = setup(
+          run as unknown as ReturnType<typeof vi.fn>,
+          { interruptAttempts: 4, recordFailure },
+        );
+        await startedAndIdle();
+
+        wake(["gone"], droppedOrigin);
+        wake(["project-a"], keptOrigin);
+        await vi.advanceTimersByTimeAsync(BACKLOG);
+        // Both wakes are in the first cycle.
+        expect(run.mock.calls[0]?.[0]).toMatchObject({
+          wakeProjectIds: expect.arrayContaining(["gone", "project-a"]),
+        });
+        await vi.advanceTimersByTimeAsync(600_000);
+
+        // "gone" ended on its refused receipt; "project-a" was retained, then
+        // ran alone and was accepted under its own origin.
+        expect(state.goneExists).toBe(false);
+        expect(recordFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: "gone" }),
+        );
+        expect(recordFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: "project-a" }),
+        );
+        expect(onCycleAccepted).toHaveBeenCalledOnce();
+        expect(accepts()).toEqual([expectedDemandOnly]);
+        const last = run.mock.calls.at(-1)?.[0] as {
+          wakeProjectIds?: readonly string[];
+        };
+        expect(last.wakeProjectIds).toEqual(["project-a"]);
+        expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
+      },
+    );
+  });
 });
