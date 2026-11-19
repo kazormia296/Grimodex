@@ -60,7 +60,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 36 ||
+  IDS.length !== 37 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -86,6 +86,7 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
   Object.freeze([
     "chat-stream-snippet-switch",
     "chat-stream-codex-switch",
+    "mastra-agent-turn-gate-load-audit",
     "chronicle-extract-current-scene-apply-reopen",
   ]),
   Object.freeze([
@@ -135,7 +136,7 @@ if (
   FIXED_PRODUCT_JOURNEY_SHARDS.length !== 7 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
     (ids, index) =>
-      ids.length !== [6, 4, 3, 6, 6, 7, 4][index] ||
+      ids.length !== [6, 4, 4, 6, 6, 7, 4][index] ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),

@@ -81,6 +81,10 @@ import {
 } from "./mastraAgentTurnGate.js";
 import { defaultUserDataDirectoriesForApp } from "./userData.js";
 import { mastraOriginalEnv } from "./mastraEnv.js";
+import type {
+  MastraTurnOwner,
+  MastraTurnSwitchLease,
+} from "./mastraTurnOwner.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
   PROFILE_EGRESS_STATUS_COMMAND,
@@ -2103,7 +2107,7 @@ function releaseUnpublishedRelatedScenesOperation(
  * registered. Anything unreadable is a packaged (closed) launch; a packaged
  * launch reads no environment value (K5/3 必須防御 17).
  */
-function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
+export function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
   const closed: Nir1LocalGenerationLaunch = {
     isPackaged: true,
     env: {},
@@ -2159,6 +2163,13 @@ export function registerIpcRouter(
    * omits it, and the router reads Electron's `app` once; tests pass it.
    */
   nir1LocalGenerationLaunch: Nir1LocalGenerationLaunch = nir1LocalGenerationLaunchFromApp(),
+  /**
+   * The Mastra agent turn owner (MP-3c). Optional so that the route alone can be
+   * registered (tests, and 3b's shape): without it an admitted start is
+   * `unsupported`. The owner holds the turns; this router holds the gate and
+   * the workspace switch's lease.
+   */
+  mastraTurnOwner?: MastraTurnOwner,
 ): void {
   // NIR-1 local generation (DD-1b): Main's gate is open only when the journey
   // seam opened Native's gate at this registration (DR-DD1B-3, DR-DD1B-4).
@@ -2181,6 +2192,7 @@ export function registerIpcRouter(
       isPackaged: nir1LocalGenerationLaunch.isPackaged,
     }),
     profileEgress,
+    owner: mastraTurnOwner,
   });
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async (periodic) => {
@@ -2209,7 +2221,9 @@ export function registerIpcRouter(
         : null;
       let workspaceOpenResult: "success" | "failure" = "failure";
       let workspaceSwitchLeases: Array<
-        NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+        | NarrativeMaintenanceQuiesceLease
+        | NarrativeFreshnessQuiesceLease
+        | MastraTurnSwitchLease
       > = [];
       try {
         if (typeof cmd !== "string") {
@@ -2377,7 +2391,11 @@ export function registerIpcRouter(
               shell: {
                 ...buildShellCommandHandlers(win),
                 ...injectedHandlers,
-                ...mastraAgentTurn.handlers,
+                ...mastraAgentTurn.handlersFor({
+                  sender: event.sender,
+                  win,
+                  callerIdentity,
+                }),
               },
               secrets,
               broadcast,
@@ -2413,9 +2431,18 @@ export function registerIpcRouter(
               );
             }
             const acquired: Array<
-              NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+              | NarrativeMaintenanceQuiesceLease
+              | NarrativeFreshnessQuiesceLease
+              | MastraTurnSwitchLease
             > = [];
             try {
+              // Mastra agent turns first (DR-MP3-12): admission closes and every
+              // turn is aborted synchronously, and each one's ambiguous terminal
+              // is written to the OLD workspace (bounded) before Native's open,
+              // which could not write to it afterwards. Native's send is not
+              // stopped; the open still waits for it as it does today.
+              const mastraLease = await mastraTurnOwner?.quiesceForWorkspaceSwitch?.();
+              if (mastraLease) acquired.push(mastraLease);
               const maintenanceLease =
                 await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
               if (

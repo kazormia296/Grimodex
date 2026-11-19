@@ -718,6 +718,7 @@ test("package.json exposes the runner and canonical product journey contracts", 
     "scripts/chronicle-extraction-product-journey.test.mjs",
     "scripts/chronicle-edited-apply-product-journey.test.mjs",
     "scripts/chronicle-current-scene-product-journey.test.mjs",
+    "scripts/mastra-agent-turn-product-journey.test.mjs",
   ]) {
     assert.ok(
       packageJson.scripts["test:product-journey-contracts"]

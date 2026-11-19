@@ -934,6 +934,19 @@ function denied(route: D2aRoute, detail: string): Error {
   return new Error(`${D2A_EGRESS_DENIED_MARKER} ${route}: ${detail}`);
 }
 
+/**
+ * What a main egress participant's `quiesce` is given (stage 3). A participant
+ * that has no use for it ignores the argument.
+ */
+export interface MainEgressParticipantContext {
+  /**
+   * Native's stop request for the AI in flight, valid while the activation holds
+   * its reservation (stage 3). It never throws and returns whether Native took
+   * it. Calling it again repeats the same request.
+   */
+  abortNativeInFlight(): boolean;
+}
+
 export interface ProfileEgressGate {
   readonly restricted: boolean;
   readonly unavailable: boolean;
@@ -974,7 +987,7 @@ export interface ProfileEgressGate {
    */
   registerMainEgressParticipant(
     name: string,
-    quiesce: () => Promise<void>,
+    quiesce: (context: MainEgressParticipantContext) => Promise<void>,
     forceStop?: () => unknown,
   ): void;
   /**
@@ -1040,7 +1053,7 @@ interface NativeBoundProfileEgressGateInit {
 }
 
 interface MainEgressParticipant {
-  readonly quiesce: () => Promise<void>;
+  readonly quiesce: (context: MainEgressParticipantContext) => Promise<void>;
   readonly forceStop: (() => unknown) | null;
 }
 
@@ -1407,7 +1420,7 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
 
   registerMainEgressParticipant(
     name: string,
-    quiesce: () => Promise<void>,
+    quiesce: (context: MainEgressParticipantContext) => Promise<void>,
     forceStop?: () => unknown,
   ): void {
     if (name.trim() !== name || name.length === 0) {
@@ -1580,24 +1593,27 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
    * failing call is logged and never stops the move to unavailable: Main
    * refuses every new class and every late result from here on either way.
    */
-  private requestNativeInFlightAbort(): void {
+  private requestNativeInFlightAbort(): boolean {
     const abort = this.abortInFlight;
     if (!abort) {
       console.error(
         "[grimodex-electron] D2a profile activation: Native cannot stop the AI in flight (no abort call)",
       );
-      return;
+      return false;
     }
     try {
       if (abort() !== true) {
         console.error(
           "[grimodex-electron] D2a profile activation: Native held no reservation to stop the AI in flight",
         );
+        return false;
       }
+      return true;
     } catch (error) {
       console.error(
         `[grimodex-electron] D2a profile activation: Native's stop request failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return false;
     }
   }
 
@@ -1613,6 +1629,14 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
   private async stopMainParticipants(): Promise<void> {
     const participants = [...this.mainEgressParticipants.entries()];
     if (participants.length === 0) return;
+    // The stop request Native offers while the activation holds its
+    // reservation (stage 3). The gate lends it to a participant whose work is
+    // in Native, so that work can end before the participant's own bound runs
+    // out. It is the request stage 5 (or a failed stage 4) makes anyway, made
+    // early; it opens and closes nothing.
+    const participantContext: MainEgressParticipantContext = {
+      abortNativeInFlight: () => this.requestNativeInFlightAbort(),
+    };
     const pending = new Set(participants.map(([name]) => name));
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<"timeout">((resolve) => {
@@ -1621,7 +1645,7 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
     const all = Promise.allSettled(
       participants.map(async ([name, participant]) => {
         try {
-          await participant.quiesce();
+          await participant.quiesce(participantContext);
         } catch (error) {
           throw new ProfileActivationStageError(
             "participant-failed",

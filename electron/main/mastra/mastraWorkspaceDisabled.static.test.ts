@@ -30,6 +30,8 @@ const repoRoot = path.resolve(
   "..",
 );
 const MASTRA_DIR = path.join("electron", "main", "mastra");
+/** 3 つ目の bundle の名前を持ってよい唯一の file（MP-3c の lazy loader）。 */
+const LOADER_FILE = path.join("electron", "main", "mastraAgentLoader.ts");
 
 /**
  * `@mastra` の module 指定の許可リスト（完全一致）。今の製品（agentRuntime）と MP-2 の adapter が使う subpath だけ。
@@ -168,7 +170,14 @@ function fileViolations(file: string, text: string): string[] {
       mastraLiterals.push(node);
     }
     if (value !== undefined && /mastra-agent(?:\.cjs)?/.test(value)) {
-      found.push(`${file}: mastra-agent の参照`);
+      // 3 つ目の bundle の名前を持ってよいのは lazy loader の 1 file だけで、そこでも定数（変数の初期値）としてだけ。
+      // `require("…mastra-agent…")` のように literal を直に渡すと、esbuild が main.cjs に bundle してしまう。
+      const isLoaderConstant =
+        file === LOADER_FILE &&
+        node.parent !== undefined &&
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.initializer === node;
+      if (!isLoaderConstant) found.push(`${file}: mastra-agent の参照`);
     }
     if (ts.isIdentifier(node) && FORBIDDEN_NAMES.has(node.text)) {
       found.push(`${file}: ${node.text}`);
@@ -309,6 +318,35 @@ describe("Mastra の workspace／skills を有効にしない（picomatch の例
     expect(violations(sources)).toEqual([]);
   });
 
+  it("3 つ目の bundle を名前で読むのは lazy loader の 1 file だけで、literal でなく変数の `require` で読む（main.cjs に bundle されない）", () => {
+    const sources = productSources();
+    const holders = Object.entries(sources)
+      .filter(([, text]) => {
+        const source = ts.createSourceFile(
+          "x.ts",
+          text,
+          ts.ScriptTarget.Latest,
+          true,
+        );
+        let found = false;
+        const walk = (node: ts.Node) => {
+          const value = literalText(node);
+          if (value !== undefined && /mastra-agent/.test(value)) found = true;
+          ts.forEachChild(node, walk);
+        };
+        walk(source);
+        return found;
+      })
+      .map(([file]) => file);
+    expect(holders).toEqual([LOADER_FILE]);
+    const loader = sources[LOADER_FILE] ?? "";
+    // 名前は定数の初期値で、`require` は createRequire の戻り値を変数の引数で呼ぶ。
+    expect(loader).toMatch(/const BUNDLE_FILE = "mastra-agent\.cjs"/);
+    expect(loader).toMatch(/createRequire\(__filename\)\(target\)/);
+    expect(loader).not.toMatch(/require\(\s*["'`]/);
+    expect(loader).not.toMatch(/import\s*\(/);
+  });
+
   it("`@mastra` の import は electron/main/mastra/ の下だけ（agentRuntime.ts を含む）で、renderer（src/）からは 0 件", () => {
     const importers = Object.entries(productSources())
       .filter(([, text]) => text.includes("@mastra"))
@@ -385,6 +423,9 @@ describe("Mastra の workspace／skills を有効にしない（picomatch の例
       "electron/main/g.ts": "const m = new Mastra({});",
       "electron/main/i.ts":
         'const p = require(path.join(dir, "mastra-agent.cjs"));',
+      // loader でも、literal を呼出しに直に渡す・loader 以外が定数に持つのは違反
+      [LOADER_FILE]: 'const p = require("./mastra-agent.cjs");',
+      "electron/main/i2.ts": 'const BUNDLE_FILE = "mastra-agent.cjs";',
       // key（shorthand・引用符・computed・代入・spread・assign・defineProperty）
       [inMastra("w.ts")]: `${base}new Agent({ workspace: w });`,
       [inMastra("w2.ts")]: `${base}new Agent({ id, workspace });`,
@@ -417,8 +458,10 @@ describe("Mastra の workspace／skills を有効にしない（picomatch の例
       ).toBe(true);
     }
     // comment の言及、許可リストの import、他の欄、electron の workspace の通常の使い方は違反にしない。
+    // loader の定数（変数の初期値）は 3 つ目の bundle の名前を持ってよい。
     expect(
       violations({
+        [LOADER_FILE]: 'const BUNDLE_FILE = "mastra-agent.cjs";',
         [inMastra("ok.ts")]:
           `${base}import type { MastraModelConfig } from "@mastra/core/llm";\nimport { createTool } from "@mastra/core/tools";\n// workspace: skills: addWorkspace @mastra/core/skills\n/* new Mastra( */\nnew Agent({ id: "a", name: "n", instructions: "i", model });`,
         "electron/main/ok2.ts":
