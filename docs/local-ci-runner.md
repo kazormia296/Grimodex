@@ -203,8 +203,7 @@ Pull requests only: registered `ci.yml` has a `Change scope` job (`changes`) tha
 skips heavy lanes when every changed path is neutral for them. The rules are
 `scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
 `base...head` diff and needs no dependency installation. The lanes are journeys
-(the two journey roots; the shards, the aggregate and runtime performance skip
-through `needs`), Rust (shared crates and the C-query worker, which a pull request
+(the two journey roots; the shards and the aggregate skip through `needs`), Rust (shared crates and the C-query worker, which a pull request
 runs on Linux only: macOS and Windows run in the `master` push), native,
 migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
 Quality, Frontend and Electron always run. Selection is deny by default: an
@@ -229,9 +228,18 @@ section to the job summary (authoritative over any table above it) and rewrites
 the JSON artifact with the final values.
 `changes` is built not to fail (soft steps, a 3 minute step timeout on the
 checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
-which run every lane, but if the `changes` job itself fails as a whole the shard,
-aggregate and runtime-performance jobs are skipped by their implicit `success()`
+which run every lane, but if the `changes` job itself fails as a whole the shard
+and aggregate jobs (and, on a non-pull-request event, runtime performance) are
+skipped by their implicit `success()`
 and the journeys evidence of that run is lost.
+The `electron-runtime-performance` job (the 50k-character / 20-Beat gate) is not a pull request
+check: its absolute-time thresholds are unstable on a shared hosted VM, so a pull request
+event never runs it (it is skipped, not passed). The `master` push, manual dispatch and reusable
+calls run it exactly as before, with the same thresholds, retry rule and measurement; the
+registered Full stage `electron-runtime-performance` is unchanged. The registered Quick profile
+(`impact` only) never had this stage, so nothing before the merge inspects runtime performance;
+its three deterministic contract tests (`runtime-performance-fixture`, `-retry`, `-io-settle`)
+run in the pull request through the `electron` job.
 After the merge, compare the time from the start of a run until each lane starts,
 before and after the introduction.
 

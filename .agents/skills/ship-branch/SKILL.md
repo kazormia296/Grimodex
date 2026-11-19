@@ -98,6 +98,7 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
    PRの`ci.yml`は、Qualityのimpact-selected Light suite（canonical Quickが同じ候補で実行済み）を繰り返さず、C-query workerはLinuxだけで走らせる。
    PRの`ci.yml`はmerge ref（`github.sha`）を測り、Quickは候補headを測る。Quickの後に進んだmasterとの組合せは、impactではmasterへのpushまで検査されない。
    その2つとmacOS／Windowsのworkerはmasterのpushの`ci.yml`で走るため、PRのcheckがgreenでも、macOS／Windowsだけの失敗はmergeの後にmasterのpushで見つかり、masterの赤として§8に従う。
+   Electron runtime performance jobは共有VMの絶対時間が不安定なため、PRの`ci.yml`では走らせない。PRのcheckがgreenでもその証拠にならず、失敗はmergeの後にmasterのpushの`ci.yml`とmasterのFullで見つかり、masterの赤として§8に従う。
 6. release PRでmergeまでがゴールでCIが許可されている場合だけ、Fullを要求する。初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
    祖先であることを確認する。branchが遅れていれば安全に更新してレビュー対象を取り直し、cleanなcommit済みHEADで最初のstageから
    やり直す。この前提を満たした後、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
