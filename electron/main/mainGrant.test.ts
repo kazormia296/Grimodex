@@ -392,7 +392,11 @@ describe("F3 the product shows no dialog", () => {
       message: "FORGED MESSAGE",
       detail: "FORGED DETAIL",
     });
-    expect(env.ok).toBe(false);
+    // The router refuses the unknown field by name, before Native sees it.
+    expect(env).toEqual({
+      ok: false,
+      error: expect.stringContaining("`title`"),
+    });
     expect(backend.narrativeSceneBodyDeclarationDeclare).not.toHaveBeenCalled();
     const requestJson = (
       backend.mainGrantPreview.mock.calls[0] as unknown as [string, string]
@@ -663,7 +667,7 @@ describe("F5 a second confirmation is refused, not queued", () => {
   });
 });
 
-describe("F6 a closed gate means no dialog", () => {
+describe("F6 a closed gate means no confirmation", () => {
   it("refuses with Native's closed code and shows nothing", async () => {
     const backend = fakeBackend({
       mainGrantPreview: vi.fn(async () => {

@@ -314,9 +314,13 @@ async function launch(
     /**
      * "product" keeps the seam's gate but uses the product's own confirmation
      * (`approveMainGrantWithoutDialog`: no OS dialog, DR-CB2-17) in place of the
-     * seam's replacement. Default: the seam's replacement confirmation.
+     * seam's replacement. A function replaces the confirmation outright (a
+     * test that holds it open). Default: the seam's replacement confirmation.
      */
-    confirmation?: "seam" | "product";
+    confirmation?:
+      | "seam"
+      | "product"
+      | ((confirmation: { signal: AbortSignal }) => Promise<boolean>);
   },
 ): Promise<Launch> {
   vi.resetModules();
@@ -367,7 +371,12 @@ async function launch(
   });
   const mainGrant = createMainGrantController({
     backend: backend as NapiBackendLike,
-    confirm: options.confirmation === "product" ? undefined : started?.confirm,
+    confirm:
+      typeof options.confirmation === "function"
+        ? options.confirmation
+        : options.confirmation === "product"
+          ? undefined
+          : started?.confirm,
   });
   registerIpcRouter(
     backend as NapiBackendLike,
@@ -912,16 +921,18 @@ describe("N-13 the state read follows a declaration through the real router", ()
 // PUB-G 前提 #41（DR-CB2-17、DR-CB3-20 を置き換え）: 製品の既定の確認は OS ダイアログを
 // 出さず、preview の直後に承認する。実 router、実 MainGrant、実 Native の上で、renderer の
 // 本物の `src/lib/tauri.ts`（ipcQueue）と宣言の API を、`window.grimodex.invoke` 経由で動かす。
-// 以前の W1〜W6（ダイアログの間の待ち、60 秒、キャンセル、window の close）は、ダイアログが
-// 無くなったので到達しない（sender と window の消失による revoke、期限、同時 1 件の busy は
-// `mainGrant.test.ts` が注入した confirm と保留した writer で固定している）。ここで固定するのは、
-// 実 Native を通した次の実挙動:
+// ダイアログの間の待ちと 60 秒は製品の経路では起きない。sender と window の消失による revoke、
+// 期限、同時 1 件の busy の単体は `mainGrant.test.ts` にある。ここで固定するのは、実 Native を
+// 通した次の実挙動:
 //   W1 ダイアログなしで宣言でき（`dialog.showMessageBox` は 0 回）、状態の読取が宣言を返す。
 //      続けて宣言し直せる（確認の枠が残らない）。
-//   W2 古い OCC（別の宣言が先に通った後の token）での宣言は、閉じた code で拒否され、
-//      何も書かれず、次の宣言がまた通る。
-//   W3 renderer の strict quiescence（workspace の切替・window の close）は、確認を待たず、
-//      writer が戻れば終わる（失敗として報告されない）。
+//   W2 古い OCC の宣言は Native の preview（check_expected_occ）で拒否され、何も書かれず、
+//      次の宣言がまた通る。
+//   W3 renderer の strict quiescence は、writer が戻るまで待ち、失敗として報告されない。
+//   W4 確認を保留している間（注入した confirm。CI seam の形）に本文を保存して承認すると、
+//      Native が preview から書込みまでの間の再読込の照合で拒否し、何も書かれず、次の宣言が通る
+//      （DR-CB2-17 (2)(b) が preview→issue→consume の順を残す理由）。
+//   W5 確認を保留している間に window を close すると、何も書かれず、枠が空く。
 describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)", () => {
   // The renderer's own modules, through the `@` alias of the config.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -937,6 +948,32 @@ describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)"
   interface Outcome {
     ok: boolean;
     code?: string;
+  }
+
+  /**
+   * A confirmation that stays open (the CI seam's shape): the first call waits
+   * for `release`, or for its signal to abort (declined); later calls approve.
+   */
+  function heldConfirmation() {
+    const seen: { signal: AbortSignal }[] = [];
+    let release: (approved: boolean) => void = () => undefined;
+    const confirm = (confirmation: { signal: AbortSignal }) => {
+      seen.push(confirmation);
+      if (seen.length > 1) return Promise.resolve(true);
+      return new Promise<boolean>((resolve) => {
+        release = resolve;
+        confirmation.signal.addEventListener("abort", () => resolve(false));
+      });
+    };
+    return { confirm, seen, release: (approved: boolean) => release(approved) };
+  }
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  async function until(condition: () => boolean, what: string): Promise<void> {
+    for (let i = 0; i < 5_000; i += 1) {
+      if (condition()) return;
+      await tick();
+    }
+    throw new Error(`timed out waiting for ${what}`);
   }
 
   /** `src/lib/tauri.ts` and the declaration API, bridged onto this launch's router. */
@@ -981,11 +1018,15 @@ describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)"
         },
       }) as Promise<Outcome>;
     const declare = async (): Promise<Outcome> => declareFrom(await read());
+    const tree = await rendererModule("@/features/tree/api");
+    const saveBody = (text: string) =>
+      tree.saveSceneContent(SCENE, tiptapDoc(text));
     const ipcQueue = await rendererModule("@/lib/ipcQueue");
     return {
       read,
       declare,
       declareFrom,
+      saveBody,
       quiesce: ipcQueue.awaitPendingIpcActualTasks as () => Promise<void>,
     };
   }
@@ -997,12 +1038,15 @@ describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)"
   for (const restricted of [false, true]) {
     const label = restricted ? "restricted" : "unrestricted";
 
-    async function start(name: string) {
+    async function start(
+      name: string,
+      confirmation: Parameters<typeof launch>[1]["confirmation"] = "product",
+    ) {
       const fixture = await newFixture(name);
       const main = await launch(fixture, {
         restricted,
         seam: {},
-        confirmation: "product",
+        confirmation,
       });
       const renderer = await rendererOn(main, fixture.workspace);
       return { fixture, main, renderer };
@@ -1028,17 +1072,16 @@ describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)"
       await main.shutdown();
     });
 
-    it(`${label}: W2 a stale confirmation is refused with nothing written, and the next declaration goes through`, async () => {
+    it(`${label}: W2 an out-of-date snapshot is refused at Native's preview with nothing written, and the next declaration goes through`, async () => {
       const { fixture, main, renderer } = await start("dl-b");
       const stale = await renderer.read();
       expect(await renderer.declareFrom(stale)).toEqual({ ok: true });
       const digest = dataDigest(fixture.workspace);
 
       // The same snapshot again: the declaration it expected to replace
-      // (none) is not the stored one any more.
+      // (none) is not the stored one any more, so the preview refuses.
       const refused = await renderer.declareFrom(stale);
-      expect(refused.ok).toBe(false);
-      expect(refused.code).toEqual(expect.any(String));
+      expect(refused).toEqual({ ok: false, code: "state-changed" });
       expect(dataDigest(fixture.workspace)).toBe(digest);
 
       expect(await renderer.declare()).toEqual({ ok: true });
@@ -1046,8 +1089,8 @@ describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)"
       await main.shutdown();
     });
 
-    it(`${label}: W3 the renderer's strict quiescence does not wait on a confirmation`, async () => {
-      const { main, renderer } = await start("dl-c");
+    it(`${label}: W3 the renderer's strict quiescence waits for the writer and is not reported as a failure`, async () => {
+      const { fixture, main, renderer } = await start("dl-c");
       // Nothing in flight: it settles at once.
       await renderer.quiesce();
 
@@ -1055,11 +1098,50 @@ describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)"
       const snapshot = await renderer.read();
       const declaring = renderer.declareFrom(snapshot);
       const drained = renderer.quiesce();
-      expect(await declaring).toEqual({ ok: true });
-      // No dialog and no 60 s limit: the drain ends with the writer and is not
-      // reported as a failed mutation.
+      // The drain ends only after the writer returned: the declaration is
+      // already stored when it settles (no 60 s limit, no dialog to wait for).
       await expect(drained).resolves.toBeUndefined();
+      expect(scopeRow(fixture.workspace).json).not.toBeNull();
+      expect(await declaring).toEqual({ ok: true });
       expect(mocks.showMessageBox).not.toHaveBeenCalled();
+      await main.shutdown();
+    });
+
+    it(`${label}: W4 a body saved while the confirmation is held makes the approval fail in Native (closed code), with nothing written`, async () => {
+      const held = heldConfirmation();
+      const { fixture, main, renderer } = await start("dl-d", held.confirm);
+      const snapshot = await renderer.read();
+      const digestBefore = dataDigest(fixture.workspace);
+
+      const declaring = renderer.declareFrom(snapshot);
+      await until(() => held.seen.length === 1, "the held confirmation");
+      await renderer.saveBody("Saved while the confirmation is held.");
+      held.release(true);
+      // The body is no longer the one the preview bound: Native refuses it in its re-read between the preview and the write.
+      expect(await declaring).toEqual({ ok: false, code: "grant-failed" });
+      expect(scopeRow(fixture.workspace).json).toBeNull();
+      expect((await renderer.read()).state.kind).toBe("none");
+      expect(dataDigest(fixture.workspace)).not.toBe(digestBefore);
+
+      // Nothing is left held: the next declaration goes through.
+      expect(await renderer.declare()).toEqual({ ok: true });
+      await main.shutdown();
+    });
+
+    it(`${label}: W5 closing the window while the confirmation is held writes nothing and frees the slot`, async () => {
+      const held = heldConfirmation();
+      const { fixture, main, renderer } = await start("dl-e", held.confirm);
+      const snapshot = await renderer.read();
+      const digest = dataDigest(fixture.workspace);
+
+      const declaring = renderer.declareFrom(snapshot);
+      await until(() => held.seen.length === 1, "the held confirmation");
+      main.window.emit("closed");
+      expect(await declaring).toEqual({ ok: false, code: "grant-revoked" });
+      expect(held.seen[0]!.signal.aborted).toBe(true);
+      expect(dataDigest(fixture.workspace)).toBe(digest);
+
+      expect(await renderer.declare()).toEqual({ ok: true });
       await main.shutdown();
     });
   }

@@ -2235,7 +2235,7 @@ export function registerIpcRouter(
         // exact scheduler-owned id below after admission succeeds.
         // Grant-shaped fields a renderer put next to a request that needs
         // Main's one-time grant are dropped; the grant is attached only by
-        // `mainGrant`, as a non-enumerable sidecar after the dialog.
+        // `mainGrant`, as a non-enumerable sidecar after Main's approval.
         const rendererSafeArgs = isGrantRequiredCommand(cmd)
           ? stripRendererGrantFields(boundArgs)
           : MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
@@ -2440,7 +2440,7 @@ export function registerIpcRouter(
           }
           if (isGrantRequiredCommand(cmd)) {
             // Never dispatched on the renderer's word: Main's confirmation
-            // (preview, dialog, issue) comes first, or the command is refused.
+            // (preview, approval, issue) comes first, or the command is refused.
             envelope = mainGrant
               ? await mainGrant.run({
                   command: cmd,

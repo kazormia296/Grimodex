@@ -155,7 +155,7 @@ export interface MainGrantController {
 /**
  * Main's record that a confirmation is in flight (DSN §7.2 "Main の記録と
  * Native の slot の両方"). One per process, shared by every controller that
- * shows a grant dialog (MG-1 and the profile activation, P3-2): the second
+ * holds a grant confirmation (MG-1 and the profile activation, P3-2): the second
  * confirmation of any kind is refused with busy, never queued.
  */
 export interface MainGrantInFlight {
