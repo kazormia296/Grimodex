@@ -35,7 +35,7 @@ const ci = yaml.load(await readFile(path.join(repoRoot, ".github/workflows/ci.ym
 const rawRules = JSON.parse(await readFile(path.join(repoRoot, "scripts/ci-change-scope.json"), "utf8"));
 const rules = await loadScopeRules();
 const LANES = laneNames(rules);
-const ALWAYS_RUN_JOBS = ["quality", "frontend", "electron"];
+const ALWAYS_RUN_JOBS = ["quality", "frontend-static", "frontend-unit", "frontend", "electron"];
 const OTHER_OWNERS = ["canonical", "existing-os-suitability", "changes"];
 
 const ALL_RUN = Object.fromEntries(LANES.map((lane) => [lane, true]));
@@ -90,7 +90,14 @@ test("every job is gated, a cascade of a gated job, or always runs; nothing else
       assert.doesNotMatch(JSON.stringify(job), /needs\.changes|"changes"/u, id);
     }
   }
-  for (const id of ALWAYS_RUN_JOBS) assert.equal(jobOf(id).needs, undefined, id);
+  // An always-run job may wait only for other always-run jobs (the frontend
+  // aggregate waits for its two split jobs), never for the change scope.
+  for (const id of ALWAYS_RUN_JOBS) {
+    for (const need of [jobOf(id).needs ?? []].flat()) {
+      assert.ok(ALWAYS_RUN_JOBS.includes(need), `${id} must not wait for ${need}`);
+    }
+  }
+  assert.deepEqual(jobOf("frontend").needs, ["frontend-static", "frontend-unit"]);
 });
 
 function jobOf(id) {

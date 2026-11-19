@@ -4986,7 +4986,11 @@ test("paused CI keeps every product journey job definition available", async () 
     if (jobId === "rust-aggregate") assert.ok(aggregateWrap, "rust-aggregate must wrap its guard in the shard-result gate");
     const guardSource = aggregateWrap ? `\${{ ${aggregateWrap[1]} }}` : gate.gated ? `\${{ ${gate.original} }}` : job.if ?? "";
     const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(guardSource);
-    const ordinaryGuard = selected ? selected[2] : unwrapIf(guardSource);
+    // The frontend aggregate adds `!cancelled()` so a failed split job turns the
+    // required check red instead of skipped; its admission is still the ordinary guard.
+    const aggregate = jobId === "frontend" ? /^!cancelled\(\) && \((.+)\)$/su.exec(unwrapIf(job.if)) : null;
+    if (jobId === "frontend") assert.ok(aggregate, "frontend aggregate must run after a failed split job");
+    const ordinaryGuard = aggregate ? aggregate[1] : selected ? selected[2] : unwrapIf(guardSource);
     assert.equal(
       ordinaryGuard,
       jobId === "electron"

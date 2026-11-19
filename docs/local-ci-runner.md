@@ -10,6 +10,9 @@ task carries the original shared-Rust test obligation exactly once.
 The renderer unit suite runs as complementary Vitest `1/3`, `2/3`, and `3/3`
 shards; the final task carries the existing `frontend.unit` obligation, and all
 three results are bound into the receipt.
+Hosted `ci.yml` runs the same `1/3`-`3/3` partition as the `frontend-unit` matrix
+and the static checks once as `frontend-static`; the `frontend` job keeps its
+Gate B2 name and only aggregates those two (a matrix job cannot keep the name).
 
 Each registry command has a stable `id`. `after` lists direct task
 dependencies, `lane` prevents two tasks with the same exclusive lane from

@@ -791,8 +791,8 @@ describe("release workflow boundary", () => {
     const release = await readWorkflow("release.yml");
     const expectedNodeOptions = "--max-old-space-size=4096";
     const expectedGuardedSteps = [
-      ["ci.yml", "frontend", "型チェック"],
-      ["ci.yml", "frontend", "Web Editor-only production artifact"],
+      ["ci.yml", "frontend-static", "型チェック"],
+      ["ci.yml", "frontend-static", "Web Editor-only production artifact"],
       ["ci.yml", "electron", "Electron production build"],
       [
         "ci.yml",

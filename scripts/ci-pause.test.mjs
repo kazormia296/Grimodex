@@ -368,7 +368,12 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     const gate = stripScopeGate(job.if);
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
-    assert.equal(unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
+    // The frontend aggregate adds `!cancelled()` so that a failed split job turns
+    // the required check red instead of leaving it skipped (which branch
+    // protection would read as passing); its admission stays the ordinary one.
+    const aggregateGuard = id === "frontend" ? /^!cancelled\(\) && \((.+)\)$/su.exec(unwrapIf(job.if)) : null;
+    if (id === "frontend") assert.ok(aggregateGuard, "frontend aggregate must run after a failed split job");
+    assert.equal(aggregateGuard ? aggregateGuard[1] : unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
@@ -459,9 +464,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const value = (expression, inputs, event = "workflow_dispatch", changes = {}) => evaluateIf(expression, { inputs, event, changes });
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
   const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
-  // 18 product jobs, the shared Rust aggregate (the required check name of the
+  // 20 product jobs (`frontend` is an aggregate over frontend-static and
+  // frontend-unit), the shared Rust aggregate (the required check name of the
   // three `rust` shards) and the pull-request `changes` job.
-  assert.equal(ordinary.length, 20);
+  assert.equal(ordinary.length, 22);
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
@@ -472,7 +478,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   // Every remaining job keeps its complete commands; the worker matrix is not a new executor.
   const independent = admitted({ ...defaults, independent_gates: true });
   assert.deepEqual(independent, [
-    "quality", "frontend", "lfm-encoder-phase0", "browser", "webgl", "storybook",
+    "quality", "frontend", "frontend-static", "frontend-unit", "lfm-encoder-phase0", "browser", "webgl", "storybook",
     "security", "electron", "electron-windows-installer-contract",
     "nir1-c-query-worker",
   ]);

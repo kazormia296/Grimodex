@@ -366,11 +366,32 @@ jobs:
             pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run
           fi
 
+  # frontend は Gate B2 の必須 job 名（Frontend (type-check / lint / test)）を保つ集約 job。
+  # 静的検査は frontend-static で 1 回、Vitest は frontend-unit の 3 shard で並列に走る。
   frontend:
     name: Frontend (type-check / lint / test)
+    needs: [frontend-static, frontend-unit]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Frontend の静的検査と全 shard の成功を確認
+        env:
+          STATIC_RESULT: ${{ needs.frontend-static.result }}
+          UNIT_RESULT: ${{ needs.frontend-unit.result }}
+        run: |
+          echo "frontend-static: $STATIC_RESULT"
+          echo "frontend-unit: $UNIT_RESULT"
+          if [ "$STATIC_RESULT" != "success" ] || [ "$UNIT_RESULT" != "success" ]; then
+            echo "Frontend の静的検査または Vitest shard が成功していない" >&2
+            exit 1
+          fi
+
+  frontend-static:
+    name: Frontend static checks (type-check / lint / architecture / web editor)
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -402,13 +423,37 @@ jobs:
       - name: Browser CI performance contracts
         run: pnpm test:browser-ci
 
-      - name: テスト
-        run: pnpm test:node --run
-
       - name: Web Editor-only production artifact
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:web-editor
+
+  frontend-unit:
+    name: Frontend unit tests (shard ${{ matrix.shard }}/3)
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # test:node が build:workspace:dependencies を含むため、別 step の build は置かない。
+      - name: テスト (Vitest shard ${{ matrix.shard }}/3)
+        run: pnpm test:node --run --shard=${{ matrix.shard }}/3
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)

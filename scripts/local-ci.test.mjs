@@ -475,6 +475,9 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   // `rust` shards. The local `rust` stage runs the whole suite, so the aggregate
   // has no stage of its own.
   const rustSplitJobs = ["rust-aggregate"];
+  // `frontend` stays the one hosted job mapped to the frontend stage; the
+  // static checks and the three Vitest shards run as these two split jobs.
+  const frontendSplitJobs = ["frontend-static", "frontend-unit"];
   // `changes` is the pull-request-only change-scope job. It is not a Full CI
   // stage, so it is deliberately absent from registry.hostedJobs.
   const ordinaryJobs = Object.keys(workflow.jobs).filter(
@@ -483,10 +486,11 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
       id !== "existing-os-suitability" &&
       id !== "changes" &&
       !productJourneySplitJobs.includes(id) &&
-      !rustSplitJobs.includes(id),
+      !rustSplitJobs.includes(id) &&
+      !frontendSplitJobs.includes(id),
   );
   assert.equal(ordinaryJobs.length, 15);
-  for (const id of [...productJourneySplitJobs, ...rustSplitJobs]) {
+  for (const id of [...productJourneySplitJobs, ...rustSplitJobs, ...frontendSplitJobs]) {
     assert.ok(Object.hasOwn(workflow.jobs, id), id);
   }
   assert.deepEqual(Object.keys(registry.hostedJobs).sort(), ordinaryJobs.sort());
@@ -585,6 +589,81 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
       `${jobId} must map to a stage in the full local profile`,
     );
   }
+});
+
+// The hosted job `if` is written either bare or inside `${{ }}`, optionally as
+// `!cancelled() && (<admission>)`; this returns just the admission expression.
+function unwrapAdmission(expression) {
+  const body = String(expression).replace(/^\$\{\{\s*|\s*\}\}$/gu, "");
+  const gated = /^!cancelled\(\) && \((.+)\)$/su.exec(body);
+  return gated ? gated[1] : body;
+}
+
+test("hosted frontend job aggregates one static job and three complementary Vitest shards", async () => {
+  const registry = await readRegistry();
+  const workflow = yaml.load(await read(".github/workflows/ci.yml"));
+  const gate = yaml.load(await read("evals/certifications/gate-b2.yaml"));
+  const { frontend } = workflow.jobs;
+  const staticJob = workflow.jobs["frontend-static"];
+  const unitJob = workflow.jobs["frontend-unit"];
+  const runs = (job) => job.steps.map((step) => step.run ?? "");
+
+  // The Gate B2 required job name stays on the aggregate, not on a matrix leg
+  // (a matrix job would be reported as "<name> (1)" and miss the contract).
+  assert.ok(gate.fullCi.requiredJobs.includes(frontend.name));
+  assert.equal(frontend.strategy, undefined);
+  assert.deepEqual(frontend.needs, ["frontend-static", "frontend-unit"]);
+  assert.ok(frontend.steps.every((step) => step.uses === undefined));
+  const verdict = frontend.steps.at(-1);
+  assert.deepEqual(verdict.env, {
+    STATIC_RESULT: "${{ needs.frontend-static.result }}",
+    UNIT_RESULT: "${{ needs.frontend-unit.result }}",
+  });
+  assert.match(
+    verdict.run,
+    /\[ "\$STATIC_RESULT" != "success" \] \|\| \[ "\$UNIT_RESULT" != "success" \][\s\S]*exit 1/u,
+  );
+
+  // The split jobs keep the admission of the original frontend job; the
+  // aggregate only adds `!cancelled()` so that a failed leg turns it red.
+  const admission = unwrapAdmission(staticJob.if);
+  assert.equal(unwrapAdmission(unitJob.if), admission);
+  assert.equal(frontend.if, `\${{ !cancelled() && (${admission}) }}`);
+  assert.equal(staticJob.if.startsWith("${{"), false);
+
+  // Static checks run once; the full Vitest run exists only as shards.
+  assert.deepEqual(
+    staticJob.steps.filter((step) => step.run).map((step) => step.run),
+    [
+      "pnpm install --frozen-lockfile",
+      "pnpm build:workspace:dependencies",
+      "pnpm exec tsc --noEmit",
+      "pnpm lint",
+      "pnpm validate:architecture",
+      "pnpm test:browser-ci",
+      "pnpm build:web-editor",
+    ],
+  );
+  assert.equal(staticJob.strategy, undefined);
+  assert.deepEqual(unitJob.strategy, { "fail-fast": false, matrix: { shard: [1, 2, 3] } });
+  assert.deepEqual(
+    runs(unitJob).filter((run) => run.includes("test:node")),
+    ["pnpm test:node --run --shard=${{ matrix.shard }}/3"],
+  );
+  for (const job of [frontend, staticJob, unitJob]) {
+    for (const run of runs(job)) {
+      assert.equal(/test:node --run\s*$/u.test(run), false, "no unsharded Vitest run");
+    }
+  }
+
+  // Hosted shards and the local registry shards are the same 1/3..3/3 partition.
+  const localShards = registry.stages.frontend.commands
+    .filter((command) => command.id.startsWith("frontend.unit"))
+    .map((command) => command.args[command.args.indexOf("--shard") + 1]);
+  assert.deepEqual(
+    localShards,
+    unitJob.strategy.matrix.shard.map((index) => `${index}/${unitJob.strategy.matrix.shard.length}`),
+  );
 });
 
 test("C2-ZC fixture builder is candidate-bound and rejects a missing Cargo manifest path", async () => {
