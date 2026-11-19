@@ -36,8 +36,9 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
     expect(Object.isFrozen(MASTRA_PINNED_ENV)).toBe(true);
   });
 
-  it("除く名前：MASTRA_* の全部と、OM_*・VERCEL_OIDC_TOKEN・3 社の API key だけ（Windows は大文字小文字を区別しない）", () => {
+  it("除く名前は型で決まる：先頭（MASTRA_・OM_・AI_GATEWAY_・VERCEL_）、末尾（key・token・secret・宛先）、明示の名前", () => {
     for (const name of [
+      // 先頭
       "MASTRA_DEV",
       "MASTRA_AUTO_REFRESH_PROVIDERS",
       "MASTRA_LICENSE_KEY",
@@ -47,25 +48,64 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
       "OM_DEBUG",
       "OM_REPRO_CAPTURE",
       "OM_REPRO_CAPTURE_DIR",
+      "OM_OTHER",
+      "AI_GATEWAY_API_KEY",
+      "AI_GATEWAY_BASE_URL",
       "VERCEL_OIDC_TOKEN",
+      "VERCEL_DEPLOYMENT_ID",
+      "VERCEL_ENV",
+      "VERCEL_PROJECT_ID",
+      "VERCEL_REGION",
+      // 末尾
+      "OPENROUTER_API_KEY",
+      "PINECONE_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "NETLIFY_TOKEN",
+      "SOME_API_TOKEN",
+      "SOME_ACCESS_TOKEN",
+      "SESSION_SECRET",
+      "SOME_SECRET_KEY",
+      "DB_PASSWORD",
+      "SOME_PRIVATE_KEY",
+      "OPENAI_BASE_URL",
+      "ANTHROPIC_BASE_URL",
+      // 明示の名前
       "OPENAI_API_KEY",
       "ANTHROPIC_API_KEY",
       "GOOGLE_GENERATIVE_AI_API_KEY",
       "GOOGLE_API_KEY",
+      "DATABASE_URL",
+      "AZURE_RESOURCE_NAME",
     ]) {
       expect(isMastraRemovedEnvName(name, "linux"), name).toBe(true);
     }
     for (const name of [
       "PATH",
       "HOME",
-      "ANTHROPIC_AUTH_TOKEN",
-      "OPENROUTER_API_KEY",
-      "OM_OTHER",
+      "NODE_ENV",
       "NOT_MASTRA_DEV",
+      "XOM_DEBUG",
+      "TOKENIZER",
+      "SECRETARY",
+      "API_KEY_FILE",
+      // POSIX の env 名は大文字小文字を区別する。
       "openai_api_key",
       "mastra_dev",
     ]) {
       expect(isMastraRemovedEnvName(name, "linux"), name).toBe(false);
+    }
+    // 既存の明示の名前は、型の規則に当たる名前も含めて一覧に残す。
+    for (const name of [
+      "OM_DEBUG",
+      "OM_REPRO_CAPTURE",
+      "OM_REPRO_CAPTURE_DIR",
+      "VERCEL_OIDC_TOKEN",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "GOOGLE_API_KEY",
+    ]) {
+      expect(MASTRA_REMOVED_ENV_NAMES).toContain(name);
     }
     expect(isMastraRemovedEnvName("openai_api_key", "win32")).toBe(true);
     expect(isMastraRemovedEnvName("Mastra_Dev", "win32")).toBe(true);
@@ -76,7 +116,9 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
     const env: NodeJS.ProcessEnv = {
       PATH: "/usr/bin",
       HOME: "/home/u",
-      ANTHROPIC_AUTH_TOKEN: "keep-me",
+      NODE_ENV: "production",
+      ANTHROPIC_AUTH_TOKEN: "dummy-auth",
+      OPENROUTER_API_KEY: "dummy-openrouter",
       MASTRA_DEV: "true",
       MASTRA_AUTO_REFRESH_PROVIDERS: "true",
       MASTRA_TELEMETRY_DISABLED: "0",
@@ -97,13 +139,14 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
     expect(env).toEqual({
       PATH: "/usr/bin",
       HOME: "/home/u",
-      ANTHROPIC_AUTH_TOKEN: "keep-me",
+      NODE_ENV: "production",
       MASTRA_TELEMETRY_DISABLED: "1",
       MASTRA_OFFLINE: "true",
     });
     expect(result.removed).toEqual(
       [
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
         "GOOGLE_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
         "MASTRA_AUTO_REFRESH_PROVIDERS",
@@ -114,6 +157,7 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
         "OM_REPRO_CAPTURE",
         "OM_REPRO_CAPTURE_DIR",
         "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
         "VERCEL_OIDC_TOKEN",
       ].sort(),
     );
@@ -125,6 +169,8 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
     const env: NodeJS.ProcessEnv = {
       Path: "C:\\x",
       openai_api_key: "dummy",
+      Some_Token: "dummy",
+      Vercel_Env: "preview",
       Mastra_Dev: "1",
       Mastra_Offline: "false",
     };
@@ -140,6 +186,7 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
     const env: NodeJS.ProcessEnv = {
       PATH: "/usr/bin",
       ANTHROPIC_API_KEY: "dummy-anthropic",
+      ANTHROPIC_AUTH_TOKEN: "dummy-auth",
       MASTRA_DEV: "true",
     };
     const pin = createMastraEnvPin({ env, platform: "linux" });
@@ -152,6 +199,7 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
     expect(copy).toEqual({
       PATH: "/usr/bin",
       ANTHROPIC_API_KEY: "dummy-anthropic",
+      ANTHROPIC_AUTH_TOKEN: "dummy-auth",
       MASTRA_DEV: "true",
     });
     // 子 process に渡す写しを変えても、元の写しにも env にも響かない。
@@ -173,7 +221,20 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
 });
 
 describe("版を上げたときの drift の検知（計画書の第 11 節の 1）", () => {
-  const readDistJs = (pkg: string): string[] => {
+  /**
+   * apply の後に値が残ってよい、key や token でない無害な設定。理由のコメントを付けて、版を上げて
+   * 新しい名前が増えたときだけ足す。増えた名前が秘密や宛先なら、ここへ足さず除く規則を直す。
+   */
+  const HARMLESS_ENV_ALLOWLIST: ReadonlySet<string> = new Set([
+    "NODE_ENV", // 実行モードの文字列。
+    "PATH", // 実行 file の探索 path。
+    "ProgramFiles", // Windows の Program Files の path（shell の探索）。
+    "npm_package_version", // npm が置く自分の版数。
+    "EMBED_BATCH_SIZE", // embedding の batch の件数（数値）。
+    "NETLIFY_SITE_ID", // deployer の site id（識別子。token の NETLIFY_TOKEN は除かれる）。deployer は使わない。
+  ]);
+
+  const distJs = (pkg: string): string[] => {
     const dist = fs.realpathSync(
       path.join(repoRoot, "node_modules", "@mastra", pkg, "dist"),
     );
@@ -189,37 +250,65 @@ describe("版を上げたときの drift の検知（計画書の第 11 節の 1
     return files;
   };
 
-  it("@mastra/memory の dist が読む env は、全部が除く一覧に入っている（新しい env が増えたら落ちる）", () => {
+  /** dist が読む env 名を、`process.env.X`、`process.env["X"]`、`environmentVariableName: "X"`（loadApiKey／loadOptionalSetting）で拾う。 */
+  const readEnvNames = (pkg: string): Set<string> => {
     const names = new Set<string>();
-    for (const file of readDistJs("memory")) {
+    for (const file of distJs(pkg)) {
       const text = fs.readFileSync(file, "utf8");
       for (const match of text.matchAll(
         /process\.env(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[["']([A-Za-z_][A-Za-z0-9_]*)["']\])/g,
       )) {
         names.add(match[1] ?? match[2]);
       }
+      for (const match of text.matchAll(
+        /environmentVariableName\s*:\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/g,
+      )) {
+        names.add(match[1]);
+      }
     }
-    expect([...names].length).toBeGreaterThan(0);
-    for (const name of names) {
-      expect(isMastraRemovedEnvName(name, "linux"), name).toBe(true);
+    return names;
+  };
+
+  it("拾う名前の抽出器が、dist の実物から名前を拾えている（0 件で通らない）", () => {
+    const memory = readEnvNames("memory");
+    const core = readEnvNames("core");
+    // process.env.X、process.env["X"]、environmentVariableName の 3 つの形から、それぞれ拾えている。
+    expect(memory).toContain("OM_DEBUG");
+    expect(core).toContain("MASTRA_DEV");
+    expect(core).toContain("NODE_ENV");
+    expect(core).toContain("OPENAI_BASE_URL");
+    expect(core.size).toBeGreaterThan(30);
+  });
+
+  it("@mastra/memory と @mastra/core の dist が読む env は、apply の後に値が残るのが、固定する 2 つと許可の一覧だけ（新しい名前が増えたら落ちる）", () => {
+    const names = new Set([...readEnvNames("memory"), ...readEnvNames("core")]);
+    const env: NodeJS.ProcessEnv = {};
+    for (const name of names) env[name] = "dummy";
+    createMastraEnvPin({ env, platform: "linux" }).apply();
+    const remaining = Object.keys(env).filter(
+      (name) =>
+        !(name in MASTRA_PINNED_ENV) && !HARMLESS_ENV_ALLOWLIST.has(name),
+    );
+    expect(remaining).toEqual([]);
+    // 許可の一覧は、実際に dist が読む名前だけ（読まなくなった名前が残らない）。
+    for (const name of HARMLESS_ENV_ALLOWLIST) {
+      expect(names.has(name), name).toBe(true);
     }
-    // 計数が 3 社の key を引く表も、除く一覧に入っている。
-    const source = readDistJs("memory")
+    // 計数が 3 社の key を引く表の名前は、全部が除かれる。
+    const source = distJs("memory")
       .map((file) => fs.readFileSync(file, "utf8"))
       .join("\n");
     const table = source.match(/PROVIDER_API_KEY_ENV_VARS = \{([^}]*)\}/)?.[1];
     expect(table).toBeTruthy();
     for (const name of table!.match(/"[A-Z0-9_]+"/g) ?? []) {
-      expect(MASTRA_REMOVED_ENV_NAMES).toContain(name.slice(1, -1));
+      expect(isMastraRemovedEnvName(name.slice(1, -1), "linux")).toBe(true);
     }
   });
 
   it("固定する 2 つの env 名を、@mastra/core の dist が今も参照している（名前が変わったら落ちる）", () => {
-    const text = readDistJs("core")
-      .map((file) => fs.readFileSync(file, "utf8"))
-      .join("\n");
+    const names = readEnvNames("core");
     for (const name of Object.keys(MASTRA_PINNED_ENV)) {
-      expect(text, name).toContain(name);
+      expect(names.has(name), name).toBe(true);
     }
   });
 });
@@ -291,11 +380,14 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
     method: string;
     path: string;
     originalHost: string | undefined;
-    keyHeader: string | undefined;
+    /** key の header がダミー key と一致したか（値そのものは記録しない）。 */
+    keyMatches: boolean | undefined;
   }
 
   // arm ごとに process.env を元に戻す（固定を当てる arm が env を変えるため）。
+  // 開発機に実 key があっても使わないよう、各 arm の前に key・token などの env を消す。
   let envSnapshot: NodeJS.ProcessEnv = {};
+  const DUMMY_KEY = "dummy-m13a-not-a-real-key";
   const setEnv = (name: string, value: string) => {
     process.env[name] = value;
   };
@@ -353,6 +445,8 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
   };
 
   beforeAll(async () => {
+    // fetch の差し替えは、@mastra/* を import するより前に行う（load 時に fetch を握られても捕捉できるように）。
+    restoreFetch = installLoopbackFetch();
     server = createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -362,8 +456,8 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
           method: req.method ?? "",
           path: req.url ?? "",
           originalHost: req.headers["x-original-host"] as string | undefined,
-          keyHeader: arm
-            ? (req.headers[arm.header] as string | undefined)
+          keyMatches: arm
+            ? req.headers[arm.header] === arm.keyHeader(DUMMY_KEY)
             : undefined,
         });
         res.setHeader("content-type", "application/json");
@@ -379,29 +473,30 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
       server.listen(0, "127.0.0.1", resolve),
     );
     port = (server.address() as AddressInfo).port;
-    // 実在の Mastra を load する（env を読むのは呼出し時なので、load の順序は結果に影響しない）。
+    // 実在の Mastra を load する。
     const { TokenCounter } = await import("@mastra/memory/processors");
     makeCounter = (model) => new TokenCounter({ model }) as unknown as Counter;
   }, 60_000);
 
   afterAll(async () => {
+    restoreFetch?.();
+    restoreFetch = undefined;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   const resetRun = () => {
     received = [];
     attempts = [];
-    restoreFetch?.();
-    restoreFetch = installLoopbackFetch();
   };
 
   beforeEach(() => {
     envSnapshot = { ...process.env };
+    for (const name of Object.keys(process.env)) {
+      if (isMastraRemovedEnvName(name)) delete process.env[name];
+    }
   });
 
   afterEach(() => {
-    restoreFetch?.();
-    restoreFetch = undefined;
     for (const name of Object.keys(process.env)) {
       if (!(name in envSnapshot)) delete process.env[name];
     }
@@ -450,7 +545,7 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
     describe(`${arm.provider}（${arm.envName}）`, () => {
       it("固定なし：ダミー key があると POST を試み、key が模擬 server に届く", async () => {
         resetRun();
-        setEnv(arm.envName, "dummy-m13a-not-a-real-key");
+        setEnv(arm.envName, DUMMY_KEY);
         const total = await count(arm.provider, arm.modelId);
         expect(providerAttempts()).toEqual([
           { method: "POST", host: arm.host, path: arm.path },
@@ -460,7 +555,7 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
           method: "POST",
           path: arm.path,
           originalHost: arm.host,
-          keyHeader: arm.keyHeader("dummy-m13a-not-a-real-key"),
+          keyMatches: true,
         });
         // 模擬 server の数が計数に使われている（ローカルの見積りではない）。
         expect(total).toBeGreaterThanOrEqual(REMOTE_TOKENS);
@@ -468,7 +563,7 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
 
       it("固定あり：POST は 0 件、key は届かず、ローカルの見積りだけで数える。key を戻すと再び POST が出る", async () => {
         resetRun();
-        setEnv(arm.envName, "dummy-m13a-not-a-real-key");
+        setEnv(arm.envName, DUMMY_KEY);
         const pin = createMastraEnvPin();
         pin.apply();
         expect(process.env[arm.envName]).toBeUndefined();
@@ -477,22 +572,20 @@ describe("M13(a)：ダミー key の対照走行（loopback の模擬 server）"
         expect(received).toEqual([]);
         expect(pinnedTotal).toBeLessThan(REMOTE_TOKENS);
         // 0 件が固定の効果であること：key だけ戻すと、同じ経路で POST が出る（cache のせいではない）。
-        process.env[arm.envName] = "dummy-m13a-not-a-real-key";
+        process.env[arm.envName] = DUMMY_KEY;
         const restoredTotal = await count(arm.provider, arm.modelId);
         expect(providerAttempts()).toHaveLength(1);
         expect(received).toHaveLength(1);
         expect(restoredTotal).toBeGreaterThanOrEqual(REMOTE_TOKENS);
         // 子 process 用の写しには、固定を当てる前の key が残っている。
-        expect(pin.originalEnv()[arm.envName]).toBe(
-          "dummy-m13a-not-a-real-key",
-        );
+        expect(pin.originalEnv()[arm.envName] === DUMMY_KEY).toBe(true);
       });
     });
   }
 
   it("provider 名が 3 社でなければ、固定なしでも POST しない（D3 の別の防御。M13(c) の別系統は data URL では出ない）", async () => {
     resetRun();
-    setEnv("OPENAI_API_KEY", "dummy-m13a-not-a-real-key");
+    setEnv("OPENAI_API_KEY", DUMMY_KEY);
     await count("grimodex-rust", "gpt-4o");
     expect(providerAttempts()).toEqual([]);
     expect(received).toEqual([]);

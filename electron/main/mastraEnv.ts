@@ -6,10 +6,16 @@
  *
  * - 固定する値：`MASTRA_TELEMETRY_DISABLED` は厳密に `"1"`（`0`・`disabled`・空文字は無効化にならない）、
  *   `MASTRA_OFFLINE` は `"true"`。
- * - 除く env：`MASTRA_*` の全部（`MASTRA_DEV`・`MASTRA_AUTO_REFRESH_PROVIDERS`・license 系を含む）、
- *   `OM_DEBUG`（cwd の `om-debug.log` への書込み）、`OM_REPRO_CAPTURE`・`OM_REPRO_CAPTURE_DIR`
- *   （会話の再現 file の書込み）、`VERCEL_OIDC_TOKEN`、memory が attachment の token 数を POST する
- *   3 社の API key（M13(a)）。利用者の shell の env は Electron に継承されるので、ここで落とす。
+ * - 除く env は、名前を 1 つずつ並べず、型で除く（安全側）。core の dist は `*_API_KEY` を約 190 名参照し、
+ *   名前の列挙では漏れる（`process.env[変数]` や `loadOptionalSetting` が読む名前を grep で拾えない）。
+ *   - 名前の先頭：`MASTRA_`（`MASTRA_DEV`・`MASTRA_AUTO_REFRESH_PROVIDERS`・license 系）、`OM_`
+ *     （`OM_DEBUG` は cwd の `om-debug.log` への書込み、`OM_REPRO_CAPTURE*` は会話の再現 file の書込み）、
+ *     `AI_GATEWAY_`、`VERCEL_`（`VERCEL_OIDC_TOKEN` を含む）。
+ *   - 名前の末尾：`_API_KEY`、`_API_TOKEN`、`_ACCESS_TOKEN`、`_SECRET`、`_SECRET_KEY`、`_TOKEN`、`_PASSWORD`、
+ *     `_PRIVATE_KEY`、`_BASE_URL`（宛先を変えうる）。
+ *   - 明示の名前：memory が attachment の token 数を POST する 3 社の API key（M13(a)）と、
+ *     宛先・接続先を決める `DATABASE_URL`、`AZURE_RESOURCE_NAME`。
+ *   - 利用者の shell の env は Electron に継承されるので、ここで落とす。
  * - 子 process（`cliAi`／`codexAppServer`）は `process.env` から env を組む。固定を当てた後の
  *   `process.env` を渡すと旗が閉じていても挙動が変わるので、元の env の写しを `originalEnv()` で渡す。
  *   写しを渡す配線は MP-3 で行う（この MP では配線しない）。
@@ -23,14 +29,31 @@ export const MASTRA_PINNED_ENV = Object.freeze({
   MASTRA_OFFLINE: "true",
 } as const);
 
-/** 名前の先頭がこれなら除く（`MASTRA_*` の全部）。 */
+/** 名前の先頭がこれなら除く。 */
 export const MASTRA_REMOVED_ENV_PREFIXES: readonly string[] = Object.freeze([
   "MASTRA_",
+  "OM_",
+  "AI_GATEWAY_",
+  "VERCEL_",
+]);
+
+/** 名前の末尾がこれなら除く（key・token・secret・宛先）。 */
+export const MASTRA_REMOVED_ENV_SUFFIXES: readonly string[] = Object.freeze([
+  "_API_KEY",
+  "_API_TOKEN",
+  "_ACCESS_TOKEN",
+  "_SECRET",
+  "_SECRET_KEY",
+  "_TOKEN",
+  "_PASSWORD",
+  "_PRIVATE_KEY",
+  "_BASE_URL",
 ]);
 
 /**
- * 名前が一致したら除く env。
- * `GOOGLE_*` は memory の attachment の計数が引く 2 つ、API key は M13(a) の 3 社。
+ * 名前が一致したら除く env（明示の一覧）。型の規則が当たらない名前も、ここに残す。
+ * 3 社の key は M13(a)（memory が attachment の token 数を POST する）、`DATABASE_URL` と
+ * `AZURE_RESOURCE_NAME` は接続先を決める。
  */
 export const MASTRA_REMOVED_ENV_NAMES: readonly string[] = Object.freeze([
   "OM_DEBUG",
@@ -41,6 +64,8 @@ export const MASTRA_REMOVED_ENV_NAMES: readonly string[] = Object.freeze([
   "ANTHROPIC_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
   "GOOGLE_API_KEY",
+  "DATABASE_URL",
+  "AZURE_RESOURCE_NAME",
 ]);
 
 /** Windows の env 名は大文字小文字を区別しないので、plain object でも大文字に揃えて比べる。 */
@@ -56,6 +81,7 @@ export function isMastraRemovedEnvName(
   const key = fold(name, platform);
   return (
     MASTRA_REMOVED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+    MASTRA_REMOVED_ENV_SUFFIXES.some((suffix) => key.endsWith(suffix)) ||
     MASTRA_REMOVED_ENV_NAMES.some((removed) => key === removed)
   );
 }
