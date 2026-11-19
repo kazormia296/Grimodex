@@ -102,7 +102,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     h.demand("project-a");
     expect(h.wakes).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(["project-a"], FIRST);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      FIRST,
+      "demand",
+    );
     // It is not a discovery: no discovery call, no work, and the wake chain
     // has no reason to rediscover.
     expect(h.discoverNarrativeMaintenanceWork).not.toHaveBeenCalled();
@@ -204,7 +208,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     h.demand("project-new");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST);
+    expect(h.wakes).toHaveBeenLastCalledWith(
+      ["project-new"],
+      FIRST,
+      "demand",
+    );
   });
 
   it("drops the demand when the binding changed before the wake fires, and never wakes the replacement workspace for the old project", async () => {
@@ -218,10 +226,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     // The new binding is its own pair.
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(["project-a"], {
-      authorityId: "authority-demand",
-      generation: 2,
-    });
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      { authorityId: "authority-demand", generation: 2 },
+      "demand",
+    );
   });
 
   it("ignores a demand when no workspace binding is available", async () => {
@@ -357,7 +366,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     h.demand("project-new");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST);
+    expect(h.wakes).toHaveBeenLastCalledWith(
+      ["project-new"],
+      FIRST,
+      "demand",
+    );
   });
 
   it("shows a waiting demand to the quiescence writer and settles when it fires", async () => {

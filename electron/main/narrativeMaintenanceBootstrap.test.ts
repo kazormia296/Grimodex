@@ -137,6 +137,29 @@ describe("C2-5B production maintenance bootstrap", () => {
     }
   });
 
+  it("DR-PUBG-5-17: onCycleAccepted asks for a rediscovery unless the cycle was demand-only, and always drains the wake outbox", () => {
+    const scheduler = fakeScheduler();
+    const coordinator = fakeCoordinator();
+    const createScheduler = vi.fn(
+      (_backend: unknown, _options: { onCycleAccepted?: unknown }) =>
+        scheduler,
+    );
+    bootstrapNarrativeMaintenance(null, parseNarrativeMaintenanceCiSeam({}), {
+      createScheduler: createScheduler as never,
+      createCoordinator: (() => coordinator) as never,
+    });
+    const onCycleAccepted = createScheduler.mock.calls[0]?.[1]
+      .onCycleAccepted as (cycle: { demandOnly: boolean }) => void;
+
+    onCycleAccepted({ demandOnly: false });
+    expect(coordinator.requestRediscovery).toHaveBeenCalledTimes(1);
+    expect(coordinator.drainWakeOutbox).toHaveBeenCalledTimes(1);
+
+    onCycleAccepted({ demandOnly: true });
+    expect(coordinator.requestRediscovery).toHaveBeenCalledTimes(1);
+    expect(coordinator.drainWakeOutbox).toHaveBeenCalledTimes(2);
+  });
+
   it("DR-PUBG-5-14: every launch that runs maintenance lets the coordinator accept Graph Index wakes (DR-BSEAM-1 accepted them for the B-ROUTE launch only)", () => {
     const bRouteEnv = {
       CI: "true",

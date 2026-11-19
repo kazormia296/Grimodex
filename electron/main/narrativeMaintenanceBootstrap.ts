@@ -69,8 +69,12 @@ export function bootstrapNarrativeMaintenance(
     onCompletionRecoveryAcknowledged: (currentBinding) => {
       coordinator?.requestRecoveryRediscovery(currentBinding);
     },
-    onCycleAccepted: () => {
-      coordinator?.requestRediscovery();
+    onCycleAccepted: ({ demandOnly }) => {
+      // DR-PUBG-5-17: a cycle that carried only Graph Index demand wakes (no
+      // work, no discovery wake) does not spend the discovery chain's
+      // rediscovery budget. W1, the seam's B wake and every work cycle still
+      // do, as before.
+      if (!demandOnly) coordinator?.requestRediscovery();
       // Accepted cycles double as a wake-outbox drain point so an Epoch
       // rotation whose live event was lost mid-session is still delivered.
       void coordinator?.drainWakeOutbox();

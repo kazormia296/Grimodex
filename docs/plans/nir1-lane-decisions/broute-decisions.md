@@ -807,7 +807,7 @@
 - 受入れ：製品の既定（const false）では、event 0、main の timer 0、wake 0、B の判定の SQL 0。
 
 **切替の前に決める項目（PUB-G の PR の前。挙動は PR-2 では変えない）**
-- 需要の wake の cycle が before-cutover の chain の rediscovery の budget を消費する結合（判断 5 の訂正）。PR-1 は BeforeCutover を fail-closed に保ったのに対し、需要の wake が chain の budget を減らせるのは不釣り合い。決め方の例：需要の wake の cycle では `requestRediscovery` を呼ばない（bootstrap の `onCycleAccepted` の配線の変更になり、cutover の準備の chain の既存の挙動に触れるので、別の判断）。
+- **（DR-PUBG-5-17 で解決）** - 需要の wake の cycle が before-cutover の chain の rediscovery の budget を消費する結合（判断 5 の訂正）。PR-1 は BeforeCutover を fail-closed に保ったのに対し、需要の wake が chain の budget を減らせるのは不釣り合い。決め方の例：需要の wake の cycle では `requestRediscovery` を呼ばない（bootstrap の `onCycleAccepted` の配線の変更になり、cutover の準備の chain の既存の挙動に触れるので、別の判断）。
 - wake の頻度の数値（間隔 2 s から 60 s、key の上限 8、reset の 60 s）は、dev の journey の実測で決める（R3）。
 - Suspended の出口（R-A の残り。設計の変更が要る）：refused project の B が skip する（current）か `RefusedUnchanged` で publish が無いと、slot は Suspended のままで、出口は lifecycle の edge と再起動だけになる。これは単一 project でも同じ（DR の「`Ok(false)` の代理が外れる」場合）。直すなら、Suspended を project ごとにする、または需要の key が違えば Suspended を見ずに rebuild へ回す（owner の契約の変更）。別の project の B の publish が Suspended を解く挙動（逆向き）は、1 回の再試行（CP2a-D49）が空振りして Suspended に戻るので自己修復し、害は小さい。PR-2 では変えない。
 - 旧 workspace の需要の event が新 workspace の binding で束縛される隙（R-B）：窓は、読みによる限り実質無い。理由と、確かめていない部分は下の「レビューの反映」に記す。残る極小の窓（owner thread が epoch の確認と emit の間で切替の全期間止まる場合）を閉じるなら、payload に owner の世代を載せて main で照合する（判断 3 の payload の変更）。PR-2 では変えない。
