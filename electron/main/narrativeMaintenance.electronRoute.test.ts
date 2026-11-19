@@ -269,68 +269,250 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
     runtime.scheduler?.dispose();
   });
 
-  it("an accepted demand-wake cycle asks a live discovery chain for one more rediscovery, as every accepted cycle does (bootstrap's onCycleAccepted)", async () => {
-    async function run(withDemand: boolean) {
-      let releaseFirst: (value: string) => void = () => {};
-      const discoverNarrativeMaintenanceWork = vi
+  /**
+   * The attempt lifecycle a production backend has: each accepted cycle ends
+   * with a Native terminal receipt. DR-PUBG-5-17 trusts a wake-only cycle to be
+   * demand-only only on that receipt, so a backend without it never skips.
+   */
+  function lifecycleMethods(
+    receiptWorks: readonly { workKey: string; status: "succeeded" | "failed" }[] = [],
+  ) {
+    return {
+      ackNarrativeMaintenanceDelivery: vi
         .fn()
-        .mockImplementationOnce(
-          () =>
-            new Promise<string>((resolve) => {
-              releaseFirst = resolve;
-            }),
-        )
-        .mockResolvedValue(
-          JSON.stringify({ workspaceBinding: binding, pages: [] }),
-        );
-      const runNarrativeMaintenanceCycle = vi
-        .fn()
-        .mockResolvedValue(
-          JSON.stringify({ status: "accepted", hasMore: false }),
-        );
-      let onEvent: ((channel: unknown, payload: unknown) => void) | null = null;
-      const backend = {
-        getNarrativeMaintenanceWorkspaceBinding: vi.fn(() =>
-          JSON.stringify(binding),
-        ),
-        discoverNarrativeMaintenanceWork,
-        runNarrativeMaintenanceCycle,
-        onEvent(callback: (channel: unknown, payload: unknown) => void) {
-          onEvent = callback;
+        .mockResolvedValue({ status: "retired" }),
+      beginNarrativeMaintenanceAttempt: vi.fn(
+        (attemptId: string, received: typeof binding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: received.authorityId,
+            generation: received.generation,
+          }),
+      ),
+      cancelNarrativeMaintenanceAttempt: vi.fn((attemptId: string) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: "succeeded",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: binding.generation,
+          works: receiptWorks,
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        }),
+      ),
+    };
+  }
+
+  /**
+   * DR-PUBG-5-17. The chain is alive (its first discovery is in flight) while a
+   * wake cycle is accepted. The number of discoveries counts the rediscoveries
+   * that cycle asked for: a rediscovery queued behind the in-flight discovery
+   * runs once more after it, while with no request the chain ends.
+   */
+  async function discoveriesWithWakeDuringLiveChain(
+    wake: "none" | "demand-event" | "demand" | "discovery" | "mixed",
+    receiptWorks: readonly { workKey: string; status: "succeeded" | "failed" }[] = [],
+  ) {
+    let releaseFirst: (value: string) => void = () => {};
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            releaseFirst = resolve;
+          }),
+      )
+      .mockResolvedValue(
+        JSON.stringify({ workspaceBinding: binding, pages: [] }),
+      );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(
+        JSON.stringify({ status: "accepted", hasMore: false }),
+      );
+    let onEvent: ((channel: unknown, payload: unknown) => void) | null = null;
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: vi.fn(() =>
+        JSON.stringify(binding),
+      ),
+      discoverNarrativeMaintenanceWork,
+      runNarrativeMaintenanceCycle,
+      ...lifecycleMethods(receiptWorks),
+      onEvent(callback: (channel: unknown, payload: unknown) => void) {
+        onEvent = callback;
+      },
+    } as unknown as NarrativeMaintenanceBackendLike & NapiBackendLike;
+    const emit = (channel: unknown, payload: unknown) =>
+      onEvent?.(channel, payload);
+    const runtime = bootstrapNarrativeMaintenance(backend, productionSeam());
+    registerEventBus(backend, (channel, eventPayload) => {
+      runtime.coordinator?.handleBackendEvent(channel, eventPayload);
+    });
+    const requestWakes = runtime.scheduler?.requestGraphIndexBuildWakesWithBinding?.bind(
+      runtime.scheduler,
+    );
+    // The chain is alive with its first discovery in flight.
+    emit("workspace:opened", {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+    if (wake === "demand-event") {
+      emit(
+        "narrative-maintenance:graph-index-demand",
+        '{"projectId":"project-electron-route"}',
+      );
+    } else if (wake === "demand") {
+      requestWakes?.(["project-electron-route"], binding, "demand");
+    } else if (wake === "discovery") {
+      requestWakes?.(["project-electron-route"], binding);
+    } else if (wake === "mixed") {
+      requestWakes?.(["project-electron-route"], binding, "demand");
+      requestWakes?.(["project-electron-route"], binding, "discovery");
+    }
+    if (wake !== "none") {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    }
+    releaseFirst(JSON.stringify({ workspaceBinding: binding, pages: [] }));
+    await vi.runAllTimersAsync();
+    const discoveries = discoverNarrativeMaintenanceWork.mock.calls.length;
+    runtime.coordinator?.dispose();
+    runtime.scheduler?.dispose();
+    return discoveries;
+  }
+
+  it("an accepted demand-wake cycle does not ask a live discovery chain for a rediscovery (DR-PUBG-5-17), where a discovery wake's cycle still does", async () => {
+    expect(await discoveriesWithWakeDuringLiveChain("none")).toBe(1);
+    // The demand's cycle is accepted, but it was a demand-only cycle.
+    expect(await discoveriesWithWakeDuringLiveChain("demand-event")).toBe(1);
+    expect(await discoveriesWithWakeDuringLiveChain("demand")).toBe(1);
+    // The same demand cycle, when Native says it advanced the durable chain
+    // (a Verify), still asks for the rediscovery that chain needs ...
+    const verifyWork = [
+      {
+        workKey:
+          "narrative-maintenance:v1/dependency-verify/project-electron-route/verify:v1",
+        status: "succeeded" as const,
+      },
+    ];
+    expect(await discoveriesWithWakeDuringLiveChain("demand", verifyWork)).toBe(
+      2,
+    );
+    // ... while a cycle that only built the Graph Index does not.
+    const buildWork = [
+      {
+        workKey:
+          "narrative-maintenance:v1/nir1-graph-index-build/project-electron-route/nir1-graph-index-build/epoch/epoch-1",
+        status: "succeeded" as const,
+      },
+    ];
+    expect(await discoveriesWithWakeDuringLiveChain("demand", buildWork)).toBe(
+      1,
+    );
+    // W1 and the seam's B wake register with the default origin: unchanged.
+    expect(await discoveriesWithWakeDuringLiveChain("discovery")).toBe(2);
+    // The same key asked for by both origins is a discovery wake.
+    expect(await discoveriesWithWakeDuringLiveChain("mixed")).toBe(2);
+  });
+
+  /**
+   * The chain's rediscovery budget is three. The planner keeps returning the
+   * same work, so the chain does 1 + 3 discoveries and then stops. Wakes that
+   * ride along must not change that count when they are demand, and must
+   * (the control) use it up when they are not.
+   */
+  async function chainDiscoveries(
+    injected: "none" | "demand" | "discovery",
+    injections: number,
+    receiptWorks: readonly { workKey: string; status: "succeeded" | "failed" }[] = [],
+  ) {
+    const discoverNarrativeMaintenanceWork = vi.fn().mockImplementation(
+      async () =>
+        JSON.stringify({
+          workspaceBinding: binding,
+          pages: [{ work: [workFor("workspace-opened")] }],
+        }),
+    );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(
+        JSON.stringify({ status: "accepted", hasMore: false }),
+      );
+    let onEvent: ((channel: unknown, payload: unknown) => void) | null = null;
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: vi.fn(() =>
+        JSON.stringify(binding),
+      ),
+      discoverNarrativeMaintenanceWork,
+      runNarrativeMaintenanceCycle,
+      ...lifecycleMethods(receiptWorks),
+      onEvent(callback: (channel: unknown, payload: unknown) => void) {
+        onEvent = callback;
+      },
+    } as unknown as NarrativeMaintenanceBackendLike & NapiBackendLike;
+    const emit = (channel: unknown, payload: unknown) =>
+      onEvent?.(channel, payload);
+    const runtime = bootstrapNarrativeMaintenance(backend, productionSeam());
+    registerEventBus(backend, (channel, eventPayload) => {
+      runtime.coordinator?.handleBackendEvent(channel, eventPayload);
+    });
+    const requestRediscovery = vi.spyOn(
+      runtime.coordinator!,
+      "requestRediscovery",
+    );
+    emit("workspace:opened", {});
+    for (let i = 0; i < injections && injected !== "none"; i += 1) {
+      await vi.advanceTimersByTimeAsync(40);
+      runtime.scheduler?.requestGraphIndexBuildWakesWithBinding?.(
+        [`project-wake-${i}`],
+        binding,
+        injected === "demand" ? "demand" : undefined,
+      );
+    }
+    await vi.runAllTimersAsync();
+    const result = {
+      discoveries: discoverNarrativeMaintenanceWork.mock.calls.length,
+      rediscoveries: requestRediscovery.mock.calls.length,
+      cycles: runNarrativeMaintenanceCycle.mock.calls.length,
+    };
+    runtime.coordinator?.dispose();
+    runtime.scheduler?.dispose();
+    return result;
+  }
+
+  it("demand wake cycles do not use up the chain's rediscovery budget of three; discovery wake cycles do", async () => {
+    const baseline = await chainDiscoveries("none", 0);
+    // 1 discovery, then 3 rediscoveries (the budget), each after an accepted
+    // work cycle.
+    expect(baseline.discoveries).toBe(4);
+    expect(baseline.rediscoveries).toBe(baseline.cycles);
+
+    const demand = await chainDiscoveries("demand", 6);
+    expect(demand.cycles).toBeGreaterThan(baseline.cycles);
+    expect(demand.discoveries).toBe(4);
+    expect(demand.rediscoveries).toBe(baseline.rediscoveries);
+
+    // Residual (DR-PUBG-5-17 addendum 1-C, same as the base): a demand cycle
+    // that Native says ran durable chain work -- even work that failed, whose
+    // re-pickup must not wait for the next wake -- is not demand-only and
+    // takes the rediscovery, so a run of such cycles does draw on the chain's
+    // budget. To be re-examined when the dev measurement (S-E) has numbers.
+    for (const status of ["failed", "succeeded"] as const) {
+      const ranWork = await chainDiscoveries("demand", 6, [
+        {
+          workKey:
+            "narrative-maintenance:v1/dependency-verify/project-wake-0/verify:v1",
+          status,
         },
-      } as unknown as NarrativeMaintenanceBackendLike & NapiBackendLike;
-      const emit = (channel: unknown, payload: unknown) =>
-        onEvent?.(channel, payload);
-      const runtime = bootstrapNarrativeMaintenance(backend, productionSeam());
-      registerEventBus(backend, (channel, eventPayload) => {
-        runtime.coordinator?.handleBackendEvent(channel, eventPayload);
-      });
-      // The chain is alive with its first discovery in flight.
-      emit("workspace:opened", {});
-      await vi.advanceTimersByTimeAsync(0);
-      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
-      if (withDemand) {
-        emit(
-          "narrative-maintenance:graph-index-demand",
-          '{"projectId":"project-electron-route"}',
-        );
-        await vi.advanceTimersByTimeAsync(5_000);
-        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
-      }
-      releaseFirst(JSON.stringify({ workspaceBinding: binding, pages: [] }));
-      await vi.runAllTimersAsync();
-      const discoveries = discoverNarrativeMaintenanceWork.mock.calls.length;
-      runtime.coordinator?.dispose();
-      runtime.scheduler?.dispose();
-      return discoveries;
+      ]);
+      expect(ranWork.rediscoveries).toBeGreaterThan(baseline.rediscoveries);
     }
 
-    // The demand's cycle is accepted like any other, so the bootstrap asks the
-    // coordinator for a rediscovery (one attempt of its budget of three) while
-    // the chain is alive; with the chain ended that request is a no-op. This
-    // coupling is the existing wiring, which a Graph Index wake (W1 or W2)
-    // joins (DR-PUBG-5-14 reviews it).
-    expect(await run(false)).toBe(1);
-    expect(await run(true)).toBe(2);
+    // Control: the same wakes as discovery wakes take rediscoveries too.
+    const discovery = await chainDiscoveries("discovery", 6);
+    expect(discovery.rediscoveries).toBeGreaterThan(baseline.rediscoveries);
   });
 });

@@ -462,12 +462,12 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   // DR-PUBG-5-14: Graph Index build wakes asked for by Native's Graph owner.
   // This state shares none of the discovery chain's timer, generation, wake
   // reason or outbox ACK, and it ends in a direct
-  // `scheduler.requestGraphIndexBuildWakesWithBinding` call. It is not
-  // independent of the chain's rediscovery budget, though: an accepted wake
-  // cycle goes through bootstrap's `onCycleAccepted`, which calls
-  // `requestRediscovery()`, so while a before-cutover chain is alive the cycle
-  // consumes one of its rediscoveries. To be decided before PUB-G
-  // (DR-PUBG-5-14, "切替の前に決める項目").
+  // `scheduler.requestGraphIndexBuildWakesWithBinding` call, which names the
+  // wake's origin as `"demand"`. DR-PUBG-5-17: a cycle that carries only such
+  // wakes is reported to bootstrap's `onCycleAccepted` as `demandOnly`, and
+  // bootstrap then does not call `requestRediscovery()`, so a demand never
+  // spends the chain's rediscovery budget. A discovery's own Graph Index wake
+  // (W1), the seam's B wake and every work cycle keep spending it.
   interface GraphDemandEntry {
     readonly binding: NarrativeMaintenanceWorkspaceBinding;
     readonly projectId: string;
@@ -921,7 +921,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     entry.lastFiredAtMs = Date.now();
     entry.firedInRun += 1;
     try {
-      requestWakes.call(scheduler, [entry.projectId], entry.binding);
+      requestWakes.call(scheduler, [entry.projectId], entry.binding, "demand");
     } catch (error) {
       // No retry: the next demand asks again after the spacing.
       warn("[narrative-maintenance] Graph Index demand wake failed:", error);
