@@ -31,6 +31,8 @@ describe("mastraAgentLoader", () => {
 
   it("applies the env pin immediately before the read, then reads <bundleDir>/mastra-agent.cjs once", async () => {
     const order: string[] = [];
+    // Built with the platform's own separators (Windows has `\\app\\dist-electron`).
+    const bundleDir = path.resolve("app", "dist-electron");
     const loader = createMastraAgentLoader({
       isOpen: () => true,
       applyEnv: () => order.push("apply"),
@@ -38,13 +40,13 @@ describe("mastraAgentLoader", () => {
         order.push(`require ${path.basename(file)} in ${path.dirname(file)}`);
         return RUNTIME;
       },
-      bundleDir: "/app/dist-electron",
+      bundleDir,
     });
     expect(order).toEqual([]);
     await expect(loader.load()).resolves.toBe(RUNTIME);
     expect(order).toEqual([
       "apply",
-      "require mastra-agent.cjs in /app/dist-electron",
+      `require mastra-agent.cjs in ${bundleDir}`,
     ]);
     expect(loader.loaded).toBe(true);
   });

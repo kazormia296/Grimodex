@@ -276,7 +276,7 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     contracts: ["mastra:agent-turn-gate-load-audit"],
     capabilities: ["electron", "napi"],
     description:
-      "gate L opened by its own seam -> typed refusals write nothing -> admitted start lazy-loads the third bundle and runs the real Agent -> dispatch rows and one failed terminal in the workspace audit chain, no send (no key, no provider)",
+      "gate L opened by its own seam -> typed refusals write nothing -> admitted start lazy-loads the third bundle, then ok:false for the missing key before the Agent runs -> no audit row, nothing sent",
   },
   {
     id: "editor-pending-project-switch",

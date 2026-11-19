@@ -1,19 +1,20 @@
-// Mastra agent turn (MP-3c, docs/plans/mastra-mp3-decisions.md DR-MP3-17, -23, -27..-31):
+// Mastra agent turn (MP-3c, docs/plans/mastra-mp3-decisions.md DR-MP3-13, -17, -27, -32):
 // with gate L opened by the journey's own seam, Main's two IPC commands are driven
 // directly (harness.invokeOk, no renderer branch: that is MP-4).
 //
 // What it proves in a real Electron main, against the real addon:
 //   - refusals are typed and write nothing (invalid, forbidden key, unsupported);
 //   - an unknown cancel is a no-op (found: false);
-//   - an admitted start loads the third bundle (lazy, only now), runs the real
-//     Agent, and writes the audit rows of a dispatch in order
-//     (started, prepared, dispatched) and closes the execution with ONE failed
-//     terminal, through the real `ai_audit_append_batch`, in the workspace chain.
-// What it does not do: send. No API key is configured, so Main's send closure
-// stops at the key's resolution, before Native's `send_agent_message`; no
-// provider, no network, no key is involved (the fake AI of the journey harness
-// is also on, as in every journey). The in-flight cases (cancel, workspace
-// switch, restricted, quit) are in `electron/main/mastraTurnOwner.test.ts`.
+//   - an admitted start lazy-loads the third bundle (the owner loads the runtime
+//     first, then resolves settings and the key: an error that names the key can
+//     only come after a successful load), and with no API key it is `ok:false`
+//     with that reason, before the Agent runs: no audit row, nothing start-only,
+//     nothing sent. The journey harness fails the run on any error-looking line
+//     of Main's stderr, so a quiet run also proves nothing was logged as a fault.
+// What it does not do: the dispatch rows and the terminal. They are held by the
+// real-addon pipeline spec (`mastraAgentAudit.pipeline.spec.ts`) and the owner's
+// unit tests; a dispatch with a real provider is MP-13's acceptance. A key cannot
+// be given here (headless safeStorage is basic_text, which the key store refuses).
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
@@ -30,12 +31,6 @@ export const MASTRA_GATE_OWNER_TOKEN = "mp3b-turn-gate-owner-v1";
 
 export const START_COMMAND = "mastra_agent_turn_start";
 export const CANCEL_COMMAND = "mastra_agent_turn_cancel";
-
-const DISPATCH_ROWS = [
-  "execution.started",
-  "request.prepared",
-  "request.dispatched",
-];
 
 /** A valid start request of the wire (`electron/shared/mastraAgentTurnWire.ts`). */
 export function startRequest(overrides = {}) {
@@ -94,40 +89,6 @@ export async function withMastraGateEnvironment(launch, env = process.env) {
 /** A typed refusal (an `ok:true` value), never an error and never a row. */
 export function assertRefusal(value, command, reason) {
   assert.deepEqual(value, { status: "refused", command, reason });
-}
-
-/**
- * Every execution of the rows is a dispatch's three rows in order and exactly
- * one failed terminal after them: nothing start-only, nothing completed (no
- * send happened), and no ambiguous mark (the outcome is known: not sent).
- * Returns the execution IDs in order.
- */
-export function assertClosedFailedExecutions(rows, expectedCount) {
-  const byExecution = new Map();
-  for (const row of rows) {
-    const list = byExecution.get(row.execution_id) ?? [];
-    list.push(row);
-    byExecution.set(row.execution_id, list);
-  }
-  assert.equal(byExecution.size, expectedCount, "executions written");
-  for (const [executionId, list] of byExecution) {
-    assert.deepEqual(
-      list.map((row) => row.event_type),
-      [...DISPATCH_ROWS, "execution.failed"],
-      `execution ${executionId}: dispatch rows then one failed terminal`,
-    );
-    assert.ok(list.every((row) => row.path_id === "chat_agent_main"));
-    const dispatched = JSON.parse(String(list[2].payload));
-    assert.equal(
-      dispatched.dispatchBoundary,
-      "before_electron_main_native_send",
-    );
-    assert.equal(dispatched.transportTarget, "electron-main-native");
-    const failed = JSON.parse(String(list[3].payload));
-    assert.equal(failed.remoteOutcome, undefined);
-    assert.equal(failed.responseObserved, undefined);
-  }
-  return [...byExecution.keys()];
 }
 
 async function queryAuditRows(harness, page) {
@@ -208,20 +169,19 @@ export function createMastraAgentTurnJourney({ configureWorkspace }) {
           auditRows: 0,
         });
 
-        // An admitted start: the runtime is loaded now (lazy), the real Agent
-        // runs, the dispatch rows are written, and Main's send stops before
-        // Native because no API key is configured (no network, no provider).
+        // An admitted start: the runtime is loaded now (lazy), then the key is
+        // resolved. No key is configured, so the start is `ok:false` with that
+        // reason before the Agent runs. Twice: nothing is cached or left behind.
         for (let attempt = 0; attempt < 2; attempt += 1) {
           await assert.rejects(
             invoke(START_COMMAND, startRequest()),
             /No API key configured for anthropic/,
           );
         }
-        const rows = await queryAuditRows(harness, gate.page);
-        const executions = assertClosedFailedExecutions(rows, 2);
-        harness.recordTimeline(`${ID}/dispatch-rows-closed`, {
-          executions: executions.length,
-          rows: rows.length,
+        assert.deepEqual(await queryAuditRows(harness, gate.page), []);
+        harness.recordTimeline(`${ID}/no-key-no-rows`, {
+          loadedThenRejectedForKey: 2,
+          auditRows: 0,
           sent: false,
         });
       } finally {

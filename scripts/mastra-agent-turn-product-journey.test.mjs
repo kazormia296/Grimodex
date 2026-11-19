@@ -17,7 +17,6 @@ import {
   MASTRA_GATE_OWNER_TOKEN,
   MASTRA_GATE_OWNER_TOKEN_ENV,
   START_COMMAND,
-  assertClosedFailedExecutions,
   assertRefusal,
   createMastraAgentTurnJourney,
   startRequest,
@@ -151,67 +150,6 @@ test("assertRefusal accepts exactly the typed refusal", () => {
   ]) {
     assert.throws(() => assertRefusal(wrong, "start", "invalid"));
   }
-});
-
-const rowsOf = (executionId, types, overrides = {}) =>
-  types.map((event_type, index) => ({
-    sequence: index,
-    execution_id: executionId,
-    event_type,
-    path_id: "chat_agent_main",
-    payload: JSON.stringify(
-      event_type === "request.dispatched"
-        ? {
-            dispatchBoundary: "before_electron_main_native_send",
-            transportTarget: "electron-main-native",
-          }
-        : {},
-    ),
-    ...overrides,
-  }));
-const CLOSED = [
-  "execution.started",
-  "request.prepared",
-  "request.dispatched",
-  "execution.failed",
-];
-
-test("closed executions: each is the dispatch rows then one failed terminal (a negative control for each way to be wrong)", () => {
-  assert.deepEqual(
-    assertClosedFailedExecutions(
-      [...rowsOf("a", CLOSED), ...rowsOf("b", CLOSED)],
-      2,
-    ),
-    ["a", "b"],
-  );
-  // start-only, completed (a send happened), a second terminal, missing dispatch, wrong count.
-  for (const bad of [
-    rowsOf("a", CLOSED.slice(0, 3)),
-    rowsOf("a", [
-      ...CLOSED.slice(0, 3),
-      "response.completed",
-      "execution.succeeded",
-    ]),
-    rowsOf("a", [...CLOSED, "execution.failed"]),
-    rowsOf("a", [CLOSED[0], CLOSED[3]]),
-  ]) {
-    assert.throws(() => assertClosedFailedExecutions(bad, 1));
-  }
-  assert.throws(() => assertClosedFailedExecutions(rowsOf("a", CLOSED), 2));
-  // An ambiguous mark is not what a known not-sent failure carries.
-  const marked = rowsOf("a", CLOSED);
-  marked[3].payload = JSON.stringify({ remoteOutcome: "unknown" });
-  assert.throws(() => assertClosedFailedExecutions(marked, 1));
-  // A row written by another path, or at the wrong boundary.
-  assert.throws(() =>
-    assertClosedFailedExecutions(rowsOf("a", CLOSED, { path_id: "other" }), 1),
-  );
-  const wrongBoundary = rowsOf("a", CLOSED);
-  wrongBoundary[2].payload = JSON.stringify({
-    dispatchBoundary: "before_renderer_send",
-    transportTarget: "electron-main-native",
-  });
-  assert.throws(() => assertClosedFailedExecutions(wrongBoundary, 1));
 });
 
 test("the journey drives Main's IPC directly (no renderer branch) and sends nothing", () => {

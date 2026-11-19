@@ -127,7 +127,7 @@
 
 ### DR-MP3-13 send の経路・result・audit の検証・T_quit（技術判断）
 
-- main は既存の `send_agent_message`（backend の N-API）を呼ぶ。settings と key は `resolveRequiredAiKeyAndSettings` を **export して共有**する（再実装しない。settings は 1 回だけ読む規則）。
+- main は既存の `send_agent_message`（backend の N-API）を呼ぶ。settings と key は `resolveRequiredAiKeyAndSettings` を **export して共有**する（再実装しない。settings は 1 回だけ読む規則）。3c では**turn の開始で 1 回**（runtime の load の後、Agent を回す前、audit の begin の前）に解決し、解決した値を send に渡す。送れないと分かっている run（key 無し・settings が読めない）は始めず、audit の行も書かず、log も出さずに `ok:false` で返す（利用者の通常の状態であって Main の失敗ではない）。
 - start の result は、adapter の send が受けた **生の応答**（`AgentWireResponse`）と **main 採番の `executionId`**。Mastra の `result.text`（全 step の連結）は使わない
   （thinking・signature・stopReason が失われる）。
 - audit の append は `ipcContract` の検証関数（`requireNativeAiAuditContext` ほか）を通す。
@@ -380,11 +380,9 @@ DR-MP3-4 は「`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だ
 ### DR-MP3-32 journey（3c。技術判断）
 
 - journey `mastra-agent-turn-gate-load-audit`（`electron/scripts/mastra-agent-turn-product-journey.mjs`、shard 3、catalog 36→37）。gate L の seam（`CI=true`、owner token、起動ごとの nonce、journey 専用 userData）を**起動の間だけ** `process.env` に置いて開け、main の IPC を `harness.invokeOk` で直接叩く（renderer の分岐は MP-4）。
-- **送信しない形**：API key を設定しないので、owner の send は key の解決（`No API key configured for anthropic`）で止まり、Native の `send_agent_message` に届かない。provider・network・key は関与しない。送信しないのは「key が無いこと」と「fake AI が `sendAgentMessage` を置き換えること」の 2 重。
-  前提：D-Bus の keyring が見える host では、起動時の legacy keyring の移行（`migrateLegacyKeyringToSafeStorage`）が journey の userData に key を入れることがあり、そのとき `/No API key configured/` の検査は落ちうる（漏れではなく、検査が前提を外れる）。
-  既存の手段として移行済みの marker（`LEGACY_KEYRING_MIGRATION_MARKER`）で移行を飛ばせるが、journey が TS の定数と形を複製することになり、実行できない状態では確かめられないので使っていない（新しい seam も作らない）。落ちたらこの前提を疑う。
-  確かめること：refusal（invalid／持込み key／unsupported）と未知の cancel は行を 0 件書く／admitted の start が runtime を lazy load し実 Agent を回す／workspace chain に dispatch の 3 行＋failed の terminal 1 件（start-only 0、ambiguous の印なし、dispatchBoundary が main 発）。
-  in-flight の lifecycle（cancel・workspace 切替・restricted・quit）は owner の単体試験が持つ（実 provider なしでは Electron で再現できない）。
-- 未実施：実 addon の pipeline spec（Anthropic／OpenAI／OpenRouter の base URL は settings で変えられず、Native まで届くと実 host へ出るので「送信の直前で止める」形が作れない）。load 状態の通信 0 の観測（`NODE_OPTIONS` の guard が Electron main で使えるかは未確認）は journey の実行時に親が行う。
+- 確かめること：(1) refusal（invalid／持込み key／unsupported）と未知の cancel は audit の行を 0 件書く、(2) admitted の start で runtime が lazy load される（owner は load の後に key を解決するので、key の欠落を名指す error は load の成功後にしか出ない）、(3) key が無いので `ok:false`、Agent は回らず audit の行は 0 件（start-only 0、送信 0）、(4) harness が main の stderr の error 系の行で落とすので、静かに通ることが「失敗として記録していない」証拠。
+- key を与えない理由：headless の journey では `safeStorage` が basic_text で、`keyStore` は fail-closed のため `save_api_key` も使えない。key を与える seam や harness の許可は足さない（新しい契約・閾値の緩和になる）。
+- **dispatch の 3 行と terminal は journey では見ない**：実 addon の pipeline spec（`mastraAgentAudit.pipeline.spec.ts`）と owner の単体試験（実の sink）が持つ。実 provider での dispatch は MP-13 の受入れ。
+- 前提：D-Bus の keyring が見える host では、起動時の legacy keyring の移行（`migrateLegacyKeyringToSafeStorage`）が journey の userData に key を入れることがあり、(3) の検査は落ちうる（漏れではない）。marker（`LEGACY_KEYRING_MIGRATION_MARKER`）で移行を飛ばせるが、TS の定数と形の複製になるので使っていない。
+- 未実施：load 状態の通信 0 の観測（`NODE_OPTIONS` の guard が Electron main で使えるかは未確認。DR-MP3-25）。
 - Full の資源の見積もり：新しい journey の inventory 2 件は `agent-stream-workspace-switch` と同じ値を新しい id で足した（新しい閾値は作らない）。
-

@@ -27,7 +27,6 @@
  */
 import {
   resolveRequiredAiKeyAndSettings,
-  type CommandArgs,
   type NapiBackendLike,
   type SecretsResolver,
 } from "../shared/ipcContract.js";
@@ -442,7 +441,11 @@ export function createMastraTurnOwner(
   // The turn's send: Native's `send_agent_message`, through Main's own closure.
   // -------------------------------------------------------------------------
 
-  const sendFor = (turn: Turn, backend: MastraTurnBackend): AgentSend => {
+  const sendFor = (
+    turn: Turn,
+    backend: MastraTurnBackend,
+    credentials: { readonly settings: unknown; readonly apiKey: string },
+  ): AgentSend => {
     return async (args: AgentWireArgs) => {
       assertLive(turn);
       // Native does not take the caller identity here: a legacy permit, and the
@@ -452,20 +455,9 @@ export function createMastraTurnOwner(
       if (typeof send !== "function") {
         throw new Error("IPC_BACKEND_UNAVAILABLE: sendAgentMessage");
       }
-      // Settings and the key are resolved here, once for this send, through
-      // the contract's own function (not a copy).
-      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
-        backend,
-        nativeArgs as unknown as CommandArgs,
-        {
-          backend: backend,
-          shell: {},
-          secrets: options.secrets,
-        },
-        "mastra_agent_turn_start",
-      );
-      // The identity and the profile may have changed during the await.
-      assertLive(turn);
+      // Settings and the key were resolved once, before the turn began
+      // (`start`): a run that cannot be sent is never begun (DR-MP3-13).
+      const { settings, apiKey } = credentials;
       turn.nativeInFlight += 1;
       let pending: Promise<string>;
       try {
@@ -662,13 +654,33 @@ export function createMastraTurnOwner(
         turn.cancelObserved = true;
         throw new MastraTurnCancelled();
       }
+      // Settings and the key are resolved ONCE, here, through the contract's own
+      // function (not a copy), before the Agent runs and before any audit row:
+      // a run that is known not to be sendable (no key, unreadable settings) is
+      // not begun, so no start-only row and no failed provider turn is made for
+      // an ordinary user state. The failure is the caller's `ok:false`; it is
+      // not logged here (it is not a fault of Main's).
+      const credentials = await Promise.race([
+        resolveRequiredAiKeyAndSettings(
+          backend,
+          {
+            provider: request.route.provider,
+            endpointId: request.route.endpointId,
+          },
+          { backend, shell: {}, secrets: options.secrets },
+          "mastra_agent_turn_start",
+        ),
+        forcedRace,
+      ]);
+      // The identity, the profile or a stop may have changed during the await.
+      assertLive(turn);
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,
         route: request.route as unknown as AgentRoute,
         systemCacheSegments: request.systemCacheSegments,
         systemVolatileTail: request.systemVolatileTail,
-        send: sendFor(turn, backend),
+        send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
         signal: turn.controller.signal,
       });

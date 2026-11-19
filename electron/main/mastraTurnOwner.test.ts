@@ -126,6 +126,7 @@ interface Harness {
   /** Resolves the oldest pending Native send. */
   nativeSends: Deferred<string>[];
   readonly loads: { count: number };
+  readonly settingsReads: { count: number };
   readonly issued: Set<unknown>;
   readonly profile: {
     restricted: boolean;
@@ -134,8 +135,8 @@ interface Harness {
   };
   readonly logs: string[];
   appendBehavior: { fail: boolean; hang: Deferred<void> | null };
-  /** Runs inside Native's settings read: the window between the dispatch row and the send. */
-  hooks: { onSettings: (() => void) | null };
+  /** Runs while an append of the given event type is in flight: the window between the dispatch row and the send. */
+  hooks: { onAppend: ((types: string[]) => void) | null };
   newContext(senderId?: number): {
     context: MastraTurnInvokeContext;
     sender: FakeSender;
@@ -161,11 +162,12 @@ function harness(
   const sends: Harness["sends"] = [];
   const nativeSends: Deferred<string>[] = [];
   const loads = { count: 0 };
+  const settingsReads = { count: 0 };
   const issued = new Set<unknown>();
   const logs: string[] = [];
   const profile = { restricted: false, unavailable: false, activating: false };
   const appendBehavior: Harness["appendBehavior"] = { fail: false, hang: null };
-  const hooks: Harness["hooks"] = { onSettings: null };
+  const hooks: Harness["hooks"] = { onAppend: null };
   const native = overrides.native ?? "immediate";
   let loadFailuresLeft = overrides.loadFails ? 1 : 0;
 
@@ -175,13 +177,14 @@ function harness(
       projectId: string | null,
       events: unknown,
     ): Promise<string> {
+      hooks.onAppend?.((events as AiAuditEventInput[]).map((e) => e.eventType));
       if (appendBehavior.hang) await appendBehavior.hang.promise;
       if (appendBehavior.fail) throw new Error("append failed");
       appended.push({ path, projectId, events: events as AiAuditEventInput[] });
       return JSON.stringify({ insertedCount: 1 });
     },
     async getAiSettings(): Promise<string> {
-      hooks.onSettings?.();
+      settingsReads.count += 1;
       return JSON.stringify({ provider: "anthropic" });
     },
     async sendAgentMessage(
@@ -276,6 +279,7 @@ function harness(
     sends,
     nativeSends,
     loads,
+    settingsReads,
     issued,
     profile,
     logs,
@@ -1074,6 +1078,68 @@ describe("a turn a forced abort detached is still waited for (terminal in flight
   });
 });
 
+describe("settings and key are resolved once, before the turn begins (DR-MP3-13)", () => {
+  it("a turn is run with settings read once and one key resolution", async () => {
+    const resolve = vi.fn(() => "key-1");
+    const h = harness({ secrets: { resolveApiKeyForRequest: resolve } });
+    const { context } = h.newContext();
+    completed(await h.owner.start(context, startRequest(TURN_A)));
+    expect(h.settingsReads.count).toBe(1);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith(
+      { provider: "anthropic" },
+      "anthropic",
+      null,
+    );
+  });
+
+  it("no key: the Agent is not run, nothing is sent, no audit row is begun, nothing is logged, and the start is ok:false with the reason", async () => {
+    let ran = 0;
+    const h = harness({
+      secrets: {
+        resolveApiKeyForRequest: () => {
+          throw new Error("No API key configured for anthropic");
+        },
+      },
+      loadRuntime: async () => ({
+        createMastraAgentRuntime: () => ({
+          runTurn: async () => {
+            ran += 1;
+          },
+        }),
+      }),
+    });
+    const { context } = h.newContext();
+    await expect(h.owner.start(context, startRequest(TURN_A))).rejects.toThrow(
+      "No API key configured for anthropic",
+    );
+    expect(ran).toBe(0);
+    expect(h.sends).toHaveLength(0);
+    expect(h.appended).toHaveLength(0);
+    expect(h.settingsReads.count).toBe(1);
+    expect(h.logs).toEqual([]);
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("unreadable settings behave the same", async () => {
+    const bad = harness({
+      backend: {
+        getAiSettings: async () => {
+          throw new Error("settings unreadable");
+        },
+        aiAuditAppendBatch: async () => "{}",
+        sendAgentMessage: async () => "{}",
+      } as unknown as NapiBackendLike,
+    });
+    const other = bad.newContext();
+    await expect(
+      bad.owner.start(other.context, startRequest(uuid())),
+    ).rejects.toThrow("settings unreadable");
+    expect(bad.appended).toHaveLength(0);
+  });
+});
+
 describe("smaller lifecycle points", () => {
   it("a runtime factory that throws is not cached either: the next start builds again", async () => {
     let calls = 0;
@@ -1109,8 +1175,10 @@ describe("smaller lifecycle points", () => {
   it("a cancel after the dispatch row and before the send to Native ends as cancelled with no send, and the row says so", async () => {
     const h = harness({ native: "hold" });
     const { context } = h.newContext();
-    h.hooks.onSettings = () => {
-      h.owner.cancel(context, { turnId: TURN_A });
+    h.hooks.onAppend = (types) => {
+      if (types.includes("request.dispatched")) {
+        h.owner.cancel(context, { turnId: TURN_A });
+      }
     };
     await expect(h.owner.start(context, startRequest(TURN_A))).rejects.toThrow(
       /MASTRA_AGENT_TURN_CANCELLED/,
