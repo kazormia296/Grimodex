@@ -1134,24 +1134,53 @@ test("CI runs the diff gate with full history and selected light suites", async 
   assert.match(workflow, /pnpm eval:impact/);
   assert.match(workflow, /--run/);
 
-  // Q (2026-11-15): the impact step does not run on a pull request, because the
-  // canonical Quick already ran the same selection on the candidate head (the
-  // PR's ci.yml itself measures the merge ref). Every other event (master push,
-  // manual dispatch) still runs it with `--run`; a reusable call inherits the
-  // caller's event, and Gate B2 accepts only the events that run it.
+  // Q (2026-11-15) and 2026-11-19: the impact step runs only on a manual
+  // dispatch and on a release tag. A pull request does not run it (the
+  // canonical Quick already ran the same selection on the candidate head), and
+  // neither does a master push (the merge needed that Quick, and the Frontend,
+  // Shared Rust and Electron native jobs run most of the same tests in full).
+  // A reusable call inherits the caller's event and ref, so the release
+  // workflow's call on a tag push keeps running it and a dispatched caller runs
+  // it. Gate B2 still lists `push` in acceptedEvents because the job runs on a
+  // push; the Gate B2 Light run of `impact-selected-light` is done by the
+  // certification runner on the candidate, not by this step. The job itself,
+  // with its checkout identity and `pnpm verify:quality`, still runs on every
+  // event the job runs on.
   const quality = yaml.load(workflow).jobs.quality;
   const impactSteps = quality.steps.filter(
     (step) => step.name === "Impact-selected light gates",
   );
   assert.equal(impactSteps.length, 1);
   const [impact] = impactSteps;
-  assert.equal(impact.if, "github.event_name != 'pull_request'");
+  assert.equal(
+    impact.if,
+    "github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'",
+  );
+  // Truth table of the step condition. `schedule` never reaches the job, and a
+  // `workflow_call` reports its caller's event and ref: the release workflow
+  // calls ci.yml on a tag push, a master push is a branch ref.
+  const impactRuns = ({ event, refType }) =>
+    impact.if.split("||").some((clause) => {
+      const [, key, value] =
+        clause.trim().match(/^github\.(event_name|ref_type) == '([^']+)'$/) ?? [];
+      return (key === "event_name" ? event : refType) === value;
+    });
+  for (const [scenario, context, runs] of [
+    ["pull_request", { event: "pull_request", refType: "branch" }, false],
+    ["master push", { event: "push", refType: "branch" }, false],
+    ["schedule", { event: "schedule", refType: "branch" }, false],
+    ["workflow_dispatch", { event: "workflow_dispatch", refType: "branch" }, true],
+    ["workflow_call from a dispatch", { event: "workflow_dispatch", refType: "branch" }, true],
+    ["workflow_call from the release tag push", { event: "push", refType: "tag" }, true],
+  ]) {
+    assert.equal(impactRuns(context), runs, `impact step on ${scenario}`);
+  }
   assert.match(impact.run, /pnpm eval:impact -- --base "\$QUALITY_BASE_SHA" --head "\$QUALITY_HEAD_SHA" --run/);
   assert.match(impact.run, /pnpm eval:impact -- --head "\$QUALITY_HEAD_SHA" --run/);
   assert.equal(
     quality.steps.filter((step) => /eval:impact/.test(step.run ?? "")).length,
     1,
-    "no other Quality step runs the impact gate unconditionally",
+    "no other Quality step runs the impact gate",
   );
   // The check that PRs still run, and the job name Gate B2 requires.
   assert.ok(

@@ -283,16 +283,20 @@ outside a standard GitHub-hosted job, so a local Full is never merge evidence. W
 compilation remains a separate manual Full CI / tag-release obligation; an unavailable release-only
 check is never passed.
 
-What the ordinary `ci.yml` runs depends on the event. On a pull request its Quality job does not repeat the
-impact-selected Light suites (the canonical Quick, which the merge needs on the same candidate, already runs that
-selection) and its C-query worker matrix runs on Linux only; the `master` push and a manual dispatch run both in
-full (the impact step of a push that changes only docs Markdown is narrowed by the docs-markdown-only selection below), the worker on Linux, macOS and Windows (a reusable call inherits its caller's event and follows it). The Electron runtime performance job
-(absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. A green pull request check is therefore no runtime performance evidence: a failure of that job is found after the merge, in the `ci.yml` of the `master` push and in the `master` Full, and is handled as a red `master`. The `ci.yml`
-of a pull request measures the merge ref (`github.sha`), while the Quick measures the candidate head, and impact does not
-check the combination with master changes that landed after the Quick until the `master` push. A pull request run is
-therefore not evidence for the impact-selected suites, for the macOS and Windows workers or for the Electron runtime performance job: a failure that only those
-show is found after the merge, in the `ci.yml` of the `master` push, and is handled as a red `master`. The merge
-condition itself is unchanged: the rebased candidate's complete Quick plus the `ci.yml` of the candidate head.
+What the ordinary `ci.yml` runs depends on the event. Its Quality job does not run the impact-selected Light suites on a
+pull request or on a `master` push; only a manual dispatch and the release workflow's call on a tag push run that step (a
+reusable call inherits its caller's event and ref and follows them). The canonical Quick, which the merge needs on
+the same candidate, already runs that selection, and the Frontend, Shared Rust and Electron native jobs run most of the same
+tests in full; the Quality job keeps `pnpm verify:quality` as its contract check on every event. What only impact runs (the
+eval-feature `cargo test` commands and a few validators) is therefore checked by the Quick before the merge and not again by
+the `master` push. A pull request's C-query worker matrix runs on Linux only; the `master` push and a manual dispatch run it on
+Linux, macOS and Windows. The Electron runtime performance job (absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. A green pull request check is therefore no runtime performance evidence: a failure of that job is found after the merge, in the `ci.yml` of the `master` push and in the `master` Full, and is handled as a red `master`. The `ci.yml` of a pull request measures the merge ref (`github.sha`), while the Quick measures the
+candidate head, so a combination with master changes that landed after the Quick is not checked by impact at all. A pull
+request run is therefore not evidence for the impact-selected suites, for the macOS and Windows workers or for the Electron runtime performance job: a failure that only
+those show is found, for the workers and the runtime performance job, in the `ci.yml` of the `master` push and is handled as a red `master`; a failure that
+only impact would show is found by no automatic run after the merge: it surfaces only when a later Quick selects the same
+suite, on a manual dispatch, or on the release workflow's tag run. The merge condition itself is unchanged: the rebased
+candidate's complete Quick plus the `ci.yml` of the candidate head.
 
 Docs-markdown-only selection (a rule of the impact selector, separate from the docs-only PR exception below, which
 decides merge conditions). When every changed path matches `^docs/.+\.md$`, work records included, the Light suites
@@ -300,8 +304,8 @@ drop every cargo command and every other command that cannot read `docs/`; only 
 (`pnpm test:quality`, `pnpm test:narrative:*`, `node --test ...` and the one electron vitest file that reads `docs/`)
 remain. A suite left with no command is reported as `skipped`, which is not a failure and not a pass of those commands.
 The suite selection, requirements and Heavy reports are unchanged. This also reaches the Light run of Gate B2
-(`scripts/quality/certify-gate-b2.mjs`), which reads only the exit code, so it is harmless there. A `master` push of
-such a change is narrowed in the same way. The docs-only PR exception below is narrower (it excludes
+(`scripts/quality/certify-gate-b2.mjs`), which reads only the exit code, so it is harmless there. A manual dispatch of
+`ci.yml` (or a release tag) on such a change is narrowed in the same way. The docs-only PR exception below is narrower (it excludes
 operational-rule documents and documents named by path) and is not implied by this selection.
 
 Before any canonical Quick/Full evidence, focused validation finishes first. If a completion commit is in scope,

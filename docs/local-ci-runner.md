@@ -63,9 +63,11 @@ that cannot read `docs/` is dropped, and only the Node tests that read documents
 remain. A suite left with no command is `skipped`, not failed. This also applies
 to the Light run of Gate B2 (`scripts/quality/certify-gate-b2.mjs`), which reads
 only the exit code, so it does no harm there. The `ci.yml` of a pull request
-measures the merge ref and the Quick measures the candidate head, so master
-changes that landed after the Quick are first checked by impact on the `master`
-push.
+measures the merge ref and the Quick measures the candidate head. The `ci.yml`
+Quality job runs impact only on a manual dispatch and on the release workflow's
+call on a tag push, not on a pull request or a `master` push, so master changes
+that landed after the Quick are not checked by impact unless a dispatch or the
+next Quick runs it.
 
 ### Split hosted Full
 
