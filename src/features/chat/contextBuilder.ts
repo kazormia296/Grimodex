@@ -1,7 +1,7 @@
 import type { Tiktoken } from "tiktoken/lite/init";
 import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { listScenesBeforeInReadingOrder } from "@/features/codex/context/sceneTimeIndex";
 import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
   AUTHOR_POLICY_TAG,
@@ -2352,21 +2352,15 @@ export function buildStorySoFar(
   tokenBudget: number,
   lang?: string,
 ): string {
-  // Find the current scene's sortOrder
   const currentScene = allNodes.find((n) => n.id === currentSceneId);
   if (!currentScene) return "";
 
-  // Find all scenes that come before the current scene in sortOrder
-  const precedingScenes = allNodes
-    .filter(
-      (n) =>
-        n.nodeType === "scene" &&
-        n.id !== currentSceneId &&
-        cmpKeys(n.sortOrder, currentScene.sortOrder) < 0 &&
-        n.synopsis != null &&
-        n.synopsis.trim() !== "",
-    )
-    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  // 読む順（木の DFS 順）で現在の場面より前の場面。sortOrder は親ごとの
+  // fractional index なので、章をまたぐ前後の判定には使わない。
+  const precedingScenes = listScenesBeforeInReadingOrder(
+    allNodes,
+    currentSceneId,
+  ).filter((n) => n.synopsis != null && n.synopsis.trim() !== "");
 
   if (precedingScenes.length === 0) return "";
 

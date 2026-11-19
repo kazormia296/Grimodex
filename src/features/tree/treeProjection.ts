@@ -1,5 +1,5 @@
 import { useSceneStore } from "./store";
-import { useTreeStore } from "./treeStore";
+import { useTreeStore, type TreeNodeData } from "./treeStore";
 
 export interface TreeNodeSummary {
   id: string;
@@ -45,6 +45,14 @@ export function listTreeSceneSummaries(): TreeSceneSummary[] {
       title,
       sortOrder,
     }));
+}
+
+/**
+ * Read every Tree node (folders included) for workflows that need the reading
+ * order (DFS over folders), which scene-only summaries cannot express.
+ */
+export function listTreeNodes(): TreeNodeData[] {
+  return useSceneStore.getState().nodes;
 }
 
 /** Persist and project a synopsis update through the Tree-owned command. */
