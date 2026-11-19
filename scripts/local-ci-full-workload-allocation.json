@@ -1,6 +1,6 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:fe4b9f9148b24c9df0a201ef4503cf73e379642d2810613282eed1933851ef5b",
+  "registryDigest": "sha256:33c2b080353e185731f241c314b95ab5da15417356a92d9470cce36c5b640d8a",
   "maxParallelTasks": 1,
   "sources": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "a4bd00f739db9a8bc62d5dc6f50fc9c67926c559f2d5b4e98df8c772dc017b7f"
+      "sha256": "8d1d8c31cf63ccddf9ac188899aed8c72e4d206bc319db1edb49257be218b96a"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",

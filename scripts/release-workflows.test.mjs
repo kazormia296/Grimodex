@@ -1116,12 +1116,17 @@ describe("packaged smoke workflow (CP-2b P2)", () => {
   const workflowBody = async () => (await readFile(workflowFile, "utf8"))
     .split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
 
-  it("runs only on harness pull requests and explicit dispatch, never with pull_request_target", async () => {
+  it("runs only on harness, dependency and packaging pull requests and explicit dispatch, never with pull_request_target", async () => {
     const workflow = await readWorkflow("packaged-smoke.yml");
     assert.deepEqual(Object.keys(workflow.on).sort(), ["pull_request", "workflow_dispatch"]);
+    // harness の変更に加え、Mastra の ee の検査（app.asar に ee が無いこと。MP-1）のために、依存・配布の設定・検査の識別子の変更でも走る。
     assert.deepEqual(workflow.on.pull_request.paths, [
       ".github/workflows/packaged-smoke.yml",
       "electron/scripts/packaged-smoke/**",
+      "package.json",
+      "pnpm-lock.yaml",
+      "electron-builder.yml",
+      "electron/scripts/mastra-ee-*.mjs",
     ]);
     assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ["candidate_ref", "os"]);
     assert.deepEqual(workflow.on.workflow_dispatch.inputs.os.options, ["all", "linux", "windows", "mac"]);

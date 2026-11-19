@@ -165,11 +165,27 @@ test("package の検査: app.asar の中身に Mastra の ee 固有の文字列�
   const appDir = fakeApp({ asarTree: PRODUCT_TREE });
   const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
   assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), []);
+  const marker = EE_CONTENT_MARKERS[0];
   const filler = Buffer.alloc(1024 * 1024 - 5, 0x20);
-  fs.appendFileSync(asar, Buffer.concat([filler, Buffer.from("x.captureEEEvent(y)")]));
-  assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), ["captureEEEvent"]);
+  fs.appendFileSync(asar, Buffer.concat([filler, Buffer.from(`x.${marker}(y)`)]));
+  assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), [marker]);
   const result = await checkPackage({ appDir, platform: "linux" });
   assert.equal(result.ok, false);
-  assert.match(result.failures.join("\n"), /Mastra の ee 固有の文字列: captureEEEvent/);
-  assert.deepEqual(result.recorded.asar.mastraEeContent, ["captureEEEvent"]);
+  assert.ok(result.failures.join("\n").includes(`Mastra の ee 固有の文字列: ${marker}`));
+  assert.deepEqual(result.recorded.asar.mastraEeContent, [marker]);
+});
+
+test("package の検査: ee の外の Apache-2.0 の部分（telemetry）の文字列が .map の sourcesContent に在っても不合格にしない", { skip: process.platform === "win32" }, async () => {
+  const appDir = fakeApp({ asarTree: PRODUCT_TREE });
+  const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
+  // stub を当てた bundle の source map に残る、ee の外の部分の文字列（mastra-ee-check.test.mjs が実物で確かめている）。
+  const apacheSources = JSON.stringify({ sourcesContent: ["captureEEEvent('ee_feature_used'); trackEvent('ee_license_check');"] });
+  fs.appendFileSync(asar, Buffer.from(apacheSources));
+  for (const word of ["captureEEEvent", "ee_feature_used", "ee_license_check"]) {
+    assert.equal(EE_CONTENT_MARKERS.includes(word), false, word);
+  }
+  const result = await checkPackage({ appDir, platform: "linux" });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.recorded.asar.mastraEeContent, []);
 });

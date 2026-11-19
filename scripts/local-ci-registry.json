@@ -430,7 +430,8 @@
             "scripts/generate-licenses.test.mjs",
             "scripts/license-policy.test.mjs",
             "scripts/semantic-reranker-release.test.mjs",
-            "electron/scripts/mastra-ee-check.test.mjs"
+            "electron/scripts/mastra-ee-check.test.mjs",
+            "electron/scripts/packaged-smoke/package-check.test.mjs"
           ],
           "id": "electron.contracts",
           "after": ["bootstrap.workspace-build"],

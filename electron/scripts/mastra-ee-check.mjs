@@ -28,7 +28,10 @@ import { EE_STUB_MARK, eeStubPlugin } from "./mastra-ee-stub-plugin.mjs";
 
 export { EE_CONTENT_MARKERS, EE_INPUT };
 
-/** 検査用の entry。製品の bundle ではなく、CI の検査にだけ使う。 */
+/**
+ * 検査用の entry。製品の bundle ではなく、CI の検査にだけ使う。
+ * `require` は `require()` で解決される経路（`.cjs`）。MP-3 が遅延 `require` を使っても stub が当たることを見る。
+ */
 export const INSPECTION_ENTRIES = Object.freeze({
   core: [
     'import { Agent } from "@mastra/core/agent";',
@@ -39,13 +42,24 @@ export const INSPECTION_ENTRIES = Object.freeze({
     'import { Memory } from "@mastra/memory";',
     "export const used = [Agent, Memory];",
   ].join("\n"),
+  require: [
+    'const { Agent } = require("@mastra/core/agent");',
+    'const { Memory } = require("@mastra/memory");',
+    "exports.used = [Agent, Memory];",
+  ].join("\n"),
 });
 
-/** 同梱が許される ee の file の一覧（版ごとに hash と版数が変わる部分は正規化する）。 */
+/** 同梱が許される ee の file／dir の一覧（版ごとに hash と版数が変わる部分は正規化する）。 */
 export const KNOWN_EE_INVENTORY = Object.freeze([
   "@mastra/core/dist/_types/@internal_auth@*/dist/ee",
+  "@mastra/core/dist/_types/@internal_auth@*/dist/ee/defaults",
+  "@mastra/core/dist/_types/@internal_auth@*/dist/ee/defaults/rbac",
+  "@mastra/core/dist/_types/@internal_auth@*/dist/ee/interfaces",
   "@mastra/core/dist/agent-builder/ee",
   "@mastra/core/dist/auth/ee",
+  "@mastra/core/dist/auth/ee/defaults",
+  "@mastra/core/dist/auth/ee/defaults/rbac",
+  "@mastra/core/dist/auth/ee/interfaces",
   "@mastra/core/dist/ee-<hash>",
 ]);
 
@@ -54,6 +68,7 @@ export async function bundleForInspection({
   entry,
   plugins = [],
   rootDir = defaultRootDir,
+  sourcemap = false,
 }) {
   if (!Object.hasOwn(INSPECTION_ENTRIES, entry)) {
     throw new Error(`未知の検査 entry: ${entry}`);
@@ -72,14 +87,23 @@ export async function bundleForInspection({
       sourcefile: `mastra-ee-check-${entry}.ts`,
       loader: "ts",
     },
-    sourcemap: false,
+    // 書き出さない（write:false）。外部の source map を出力として得るために出力先の名前だけ要る。
+    outfile: path.join(rootDir, "mastra-ee-check.out.cjs"),
+    sourcemap,
     logLevel: "silent",
     write: false,
     metafile: true,
     plugins,
   });
   return {
-    text: result.outputFiles.map((file) => file.text).join(""),
+    text: result.outputFiles
+      .filter((file) => !file.path.endsWith(".map"))
+      .map((file) => file.text)
+      .join(""),
+    mapText: result.outputFiles
+      .filter((file) => file.path.endsWith(".map"))
+      .map((file) => file.text)
+      .join(""),
     metafile: result.metafile,
     warnings: result.warnings.length,
   };
@@ -214,12 +238,23 @@ export function inventoryEeEntries(rootDir = defaultRootDir) {
     for (const pkg of fs.readdirSync(scope)) {
       const dist = path.join(scope, pkg, "dist");
       if (!fs.existsSync(dist)) continue;
+      // ee/ の下は深さを問わず、部分ディレクトリも列挙する（新しい入れ子が増えたら棚卸しが変わる）。
+      const addSubdirectories = (dir, relative) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const rel = `${relative}/${entry.name}`;
+          found.add(normalizeEe(pkg, rel));
+          addSubdirectories(path.join(dir, entry.name), rel);
+        }
+      };
       const walk = (dir, relative) => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const rel = relative ? `${relative}/${entry.name}` : entry.name;
           if (entry.isDirectory()) {
-            if (entry.name === "ee") found.add(normalizeEe(pkg, rel));
-            else walk(path.join(dir, entry.name), rel);
+            if (entry.name === "ee") {
+              found.add(normalizeEe(pkg, rel));
+              addSubdirectories(path.join(dir, entry.name), rel);
+            } else walk(path.join(dir, entry.name), rel);
           } else if (/^ee-/.test(entry.name)) {
             found.add(normalizeEe(pkg, rel));
           }
