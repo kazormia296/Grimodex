@@ -1240,3 +1240,41 @@
 - clippy：`cargo clippy -p grimodex-db --all-targets -- -D warnings` と、`cargo clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` が成功。
 - eslint：変えた 2 file のうち `narrativeMaintenanceTriggers.graphDemand.test.ts` は 0 件。`narrativeMaintenance.test.ts` は基点にも 543 件の prettier の指摘が既にあり、足した部分は 0 件（足した部分だけを prettier で整形した。file 全体は整形していない）。
 - 実行していないもの：`--features licensing,legacy-keyring-migration` の cargo test、grimodex-db の全件、Electron を起動する観測（S-G）、Node の TSFN の drain の実測、実 backend 全体での F-1 の loop、hosted CI（Quick／Full）。
+
+**独立レビューの反映と窓を閉じる判断（追補 4。2026-11-19。この節を残す commit ではコード・試験を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま）**
+
+- 位置づけ：独立レビュー（Opus）が、判断「窓なし」に窓を 2 つ見つけた。この枝（`claude/pubg5-old-workspace-event-gap`）は「窓なし、試験だけ」から「窓を閉じる」変更に変える。F-1 は別 PR（枝 `claude/pubg5-missing-project-wake`）で直すので、この枝の F-1 の expected-fail 2 本（vitest の `it.fails`、Rust の `should_panic`）は commit `57973981` で外した（基点の内容へ戻した）。上の F-1 の節の記録（測定・到達・候補）は別 PR の材料として残す。
+- 委任と停止点：DR-PUBG-5-13・5-14 と同じ（C-product の worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。push・PR・merge は統合者。新しい送信先・保存範囲の拡大・閾値の緩和・新しい契約・authority は無い。
+
+**判定の 1・2 を「成功経路では」に限定する（訂正）**
+- 判定 1（E2 は Ready 公開の前）と 2（getter が新 binding を返すのは E2 の後）は、`open_workspace` と `restore_backup` の成功経路の記述だった。失敗枝では成り立たない。
+  - `restore_backup` の blocking の closure は、drain の失敗（`drain_preempted_maintenance_runs_after_workspace_swap`）、`complete_admission_handoff()?`、`workspace_swap_owner_authority(&state, true)?` の失敗で、E2 の emit の前に `Err` を返す。外側の `force_recovery` は `NEX_WORKSPACE_RESTORE_PANIC` だけを見るので、通常の publisher（`publish_workspace_lifecycle_from_workspace_off_runtime`）が Ready（復元後の新 binding）を公開する。E2 は出ない。
+  - `open_workspace` の swap の後の失敗で RecoveryRequired が候補の binding を持ち、後の maintenance recovery の reconcile（`lib.rs` の `publish_workspace_lifecycle_from_workspace`）が E2 なしで Ready にする同類の経路がある。
+  - この 2 形では、E1（旧 workspace の需要）が TSFN の queue に先にあり、main が処理する時点で getter が新 binding を返すと、E1 は新 binding に束縛され、E2 の `clearGraphDemands` が無いので wake が新 workspace の同名の project に届く（害は B の判定 1 回。`RefusedUnchanged` なら SQL だけ。ただし F-1 が開いていれば終わらない retry）。
+
+**窓 1（Native）：`build_worker` の prepare 失敗の枝が、切替の後の `ready_generation` を Suspended に書く**
+- 経路：prepare の失敗（`Count`）の後、`retire_current` で worker が participant を放し、その後に `Suspended { ready_generation: shared.ready_generation.load(..) }` を読む。participant を放してから読むまでの間に切替が完了（`ReadyPublished` で `ready_generation` が進む）すると、Suspended に新しい generation と旧 project の refusal が入る。新 workspace の begin は Suspended が current だと見て `RegistrationUnavailable` を答え、そのたびに旧 project の E1 を出す（Suspended の枝の E1 は E2 の後。participant を持つので E2 より前という判定 3 の保証は、slot が古い間だけ成り立つ）。
+- 判断：`ready_generation` は `admit()` の直後（owner thread が `ActiveWorkspaceSnapshot`、つまり participant を持つ間）に読み、prepare の失敗の枝の Suspended にその値を使う。Suspended は「その refusal を観測した Ready の generation」を持つ。切替は participant が 0 になるまで physical exclusive を取れず、`ReadyPublished` はその後なので、読んだ値は切替の完了より前で、切替の後は必ず stale になる（stale な Suspended は答えず、新しい session を始める）。
+- 依頼で最初に挙げた案（`retire_current` の前に読む）を採らなかった理由：実 worker は prepare の中で participant を放す。`CQueryWorkerOwner::prepare` の失敗は `cleanup_error` → `release_claim_after_retirement` で `workspace`（participant の pin）を drop するので、prepare が `Err` を返した時点で participant は既に無い。`retire_current` の前でも切替は完了しうる。`admit()` の直後なら worker の内部に依存しない。FakeWorker は `retire` まで participant を持つので、既存の Fake では見えない。窓を再現する試験の Fake は、実 worker と同じく prepare の失敗の中で participant を放してから止める。
+- 代案の `edge_or_closed` を load の後に見る案：load の後の確認が偽なら、切替の admission（`edge_epoch` は participants の drain の前に進む）はまだで、load は切替の前と言える。真なら Suspended の代わりに別の終端が要る。同じ不変条件（`edge_epoch` は切替の admission で進み、`ReadyPublished` はその後）に依るが、分岐が 1 つ増えるので採らない。
+- 副作用：prepare の間に同じ workspace の `ReadyPublished`（同じ authority の再公開）が入ると、Suspended は stale になり、次の begin は Suspended ではなく新しい session を始める（今は Suspended のまま答える）。その refusal は前の Ready のものなので、一度だけ再判定する方が正しい。上限は変わらず `failures_before_suspend`。
+- 「emit を `retire_current` の前へ移す」（上の判断の 4 に記録した案）では窓 1 は閉じない：窓 1 は emit でなく Suspended の generation の読みで、読みは `retire_current` の前でも後でも participant を持たない。実 worker は prepare の中で participant を放すので、この案は emit にも効かない（「未確認の案」から「効かない案」に訂正する）。
+- 残る窓（判断の 4 のまま。変えない）：`build_worker` の枝の `edge_or_closed` の確認と emit の間に、owner thread が切替の全期間止まる場合だけ。participant は prepare の中で既に放されているので、この間は常に participant を持たない。閉じるには emit の間 participant を新たに取る必要があり、owner の lifecycle の変更になるので、この枝では入れない（別 PR の候補）。
+
+**窓 2（main）：Ready の公開で E2 が出ない失敗枝の後に、旧 workspace の需要が新 binding で残る**
+- 判断：main の `handleBackendEvent` が `workspace:lifecycle-state` を受け、`(status, bindingToken)` が直前の値から変わったときに `clearGraphDemands()` だけを行い、discovery の chain には触れず return する。この event は Native が Ready の公開の後に同じ `EventQueue` へ emit し、E1 は先に同じ queue にあるので、E2 と同じ役割を、E2 の出ない経路でも果たす。
+- 経路ごとの根拠：token は revision ごとに回る（`projected_view_with_projection`）。Ready→Transition→Ready（切替・復元の失敗枝を含む）は Ready が別の token になる。Unchanged（同じ authority の再公開）は元の token に戻るが、status が Ready→Transition→Ready と変わるので、これも変化として数える（同じ authority の需要を 1 回捨てるが、Suspended の slot は次の begin で再び出す。害は無い）。background recovery の projection は token を回さないが、RecoveryRequired を経由するので status の変化で足りる。
+- 入口：`events.ts` の `handleBackendEvent` は、検証済み（`acceptWorkspaceLifecycleView`。revision が古いものと同 revision の食い違いは捨てる）の view を observer に渡す。`index.ts` の observer が `narrativeMaintenanceTriggers.handleBackendEvent` を呼ぶので、`events.ts` は変えない。renderer の `grim:emit` は `broadcastEvent` だけで observer に届かず、renderer は main の lifecycle の判定に触れない（trust boundary は変えない）。payload は `bindingToken` と `status` を読むだけで、壊れていれば捨てる（throw しない）。
+- 採らなかった案：restore の失敗枝で Native が E2 を出す。E2 は discovery の chain の再起動、Codex、Freshness、profile egress の観測など多くの消費者を動かす「workspace が開かれた」の意味の event で、失敗枝で出すと影響が広い。
+- 残余（受け入れる。blocking ではない）：lifecycle-state は Ready の公開の後に emit されるので、getter が新 binding を返してから lifecycle-state を main が処理するまでの間に E1 を処理し、その timer(0) が先に走ると、旧 project の wake が新 workspace へ 1 回届きうる（E2 の成功経路と同じ形の残余。害は B の判定 1 回）。
+- 試験：token／status の変化で、新 binding に束縛された pending の需要が起きない（変異：枝を外すと赤）。同じ (status, token) の再公開では消さない。discovery を起動しない。壊れた payload で throw しない。
+
+**試験の弱さの反映（レビュー 4）**
+- `a_real_switch_queues_the_old_demands_before_workspace_opened_and_the_stale_suspended_slot_asks_nothing` は、demand を participant なしで open の前に出し終えるので、`late == 0` は構造上必ず成り立つ。名前と doc コメントを、実際に固定していること（Ready の公開で stale な Suspended の slot が答えない）に絞る。順序そのものの根拠は participant の保持の試験と読みで、窓 1 は hook で止める新しい試験で固定する。
+
+**F-1 の到達の補足**：F-1（存在しない project の wake が終わらない）は需要 event に固有でなく、通常の durable な discovery の経路（`durableWakeProjects`）からも到達しうる。別 PR（枝 `claude/pubg5-missing-project-wake`）で直す。この PR の判断は F-1 の修正に依存しない（F-1 が開いている間の最悪は、窓 2 の残余で、同名の project が無い workspace への wake が終わらない retry になること）。
+
+**owner／lifecycle matrix と threat model の差分（GDX-PRECHECK-001）**
+- owner（Native の Graph owner の session thread）：Suspended に載せる generation の読みを participant を持つ位置（`admit` の直後）へ移すだけ。start・cancel・有限待機・終了の証拠・error の扱い・子 process・再起動時の状態は変えない。`failures_before_suspend` の上限と wake の最短間隔（2 s から 60 s）も変えない。
+- main（coordinator）：`workspace:lifecycle-state` の受信を 1 つ足し、pending の需要の timer と表を clear する（pending start の「workspace の切替で clear」を、E2 の出ない経路へ広げる）。新しい timer・永続状態・保存範囲・受信先・IPC は無い。
+- threat model の差分：新しい攻撃面は無い。clear は実行を減らす方向で、renderer が lifecycle-state を偽装して需要を捨てさせる経路は無い（renderer の emit は observer に届かない）。残る窓（emit の stall、lifecycle-state の前の timer(0)）の害の上限は上のとおり B の判定 1 回。
