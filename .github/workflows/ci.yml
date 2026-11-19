@@ -904,6 +904,11 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
+      # Mastra 移行 MP-3a：製品の bundle（main／preload に @mastra が無い、mastra-agent.cjs は ee の stub を通る）。
+      - name: Mastra ee check on the product bundles
+        if: ${{ !inputs.source_focused }}
+        run: node electron/scripts/mastra-ee-check.mjs --dist
+
       - name: Renderer performance budget
         if: ${{ !inputs.source_focused }}
         run: pnpm perf:budget

@@ -1,6 +1,18 @@
 /**
  * Mastra の ee 由来のコードが配布物に入らないことの検査（Mastra 移行 MP-1、脅威モデル D8／T8、計画書の第 4.3・11 節）。
  *
+ * 2 つの mode。
+ * - 既定（`node electron/scripts/mastra-ee-check.mjs`）：MP-1 の検査。検査用の entry で素の bundle と stub ありの bundle を比べる。
+ * - `--dist`（MP-3a、docs/plans/mastra-mp3-decisions.md の DR-MP3-19）：製品の bundle（`node electron/scripts/build.mjs` の
+ *   出力 `dist-electron/`）に当てる。既定の検査も含めて走らせる。
+ *   - main.cjs と preload.cjs（とその .map）に `@mastra` が 0。
+ *   - mastra-agent.cjs は stub の目印を 1 件以上持ち、ee 固有の文字列が 0、`.map` を作っていない。
+ *   - 全 bundle の config に ee の stub plugin が入っている（dev の watch が落とさない）。
+ *   - 陰性対照：mastra-agent の config から stub を外すと、ee の input と文字列を検出して落ちる。
+ *   - picomatch（GHSA-fc5q の例外の対象）を import する依存の外の file は、workspace-skills の chunk だけ
+ *     （@mastra/core を上げて importer が増えたら落ちる）。
+ *   - main.cjs・preload.cjs・mastra-agent.cjs の大きさは出力の `bytes` に記録するだけ（失敗にしない。DR-MP3-21）。
+ *
  * - 陰性対照：stub なしの素の bundle で、ee の input と ee 固有の文字列を検出できること。
  *   検出が壊れていて「0 件で通る」ことを防ぐ。
  * - 陽性：stub を当てた bundle で、metafile の ee の input が stub を通ったものだけで、
@@ -273,7 +285,7 @@ function normalizeEe(pkg, relative) {
   return `@mastra/${pkg}/dist/${normalized}`;
 }
 
-/** 製品の main bundle を metafile 付きで組み、`@mastra/*` の input を返す（MP-1：0 件のはず）。 */
+/** 製品の main bundle を metafile 付きで組み、`@mastra/*` の input を返す（0 件のはず。Mastra は mastra-agent.cjs にだけ入る）。 */
 export async function productBundleMastraInputs(rootDir = defaultRootDir) {
   const { entryPoints, outfile, ...common } = bundleConfigs[0];
   const result = await esbuild.build({
@@ -293,6 +305,248 @@ export async function productBundleMastraInputs(rootDir = defaultRootDir) {
       (sum, f) => sum + f.contents.length,
       0,
     ),
+  };
+}
+
+/** 製品の bundle の名前（`dist-electron/` の出力）。 */
+export const PRODUCT_BUNDLES = Object.freeze({
+  main: "main.cjs",
+  preload: "preload.cjs",
+  mastraAgent: "mastra-agent.cjs",
+});
+
+/**
+ * picomatch を import してよい `@mastra/core` の chunk。GHSA-fc5q の期限つきの例外（scripts/pnpm-audit.mjs）は、
+ * workspace を有効にしないことを前提にする。picomatch に届くのはこの chunk だけであることを固定し、
+ * 版を上げて importer が増えたら落とす（docs/plans/mastra-mp3-decisions.md の DR-MP3-15）。
+ */
+export const PICOMATCH_ALLOWED_IMPORTER =
+  /[\\/]@mastra[\\/]core[\\/]dist[\\/]workspace-skills-[A-Za-z0-9_-]+\.[cm]?js$/;
+
+const PICOMATCH_INPUT = /[\\/]picomatch[\\/]/;
+
+/** metafile で picomatch を import している、picomatch の外の input（重複なし、昇順）。 */
+export function picomatchImporters(metafile) {
+  const picomatchInputs = new Set(
+    Object.keys(metafile.inputs).filter((file) => PICOMATCH_INPUT.test(file)),
+  );
+  const importers = new Set();
+  for (const [file, info] of Object.entries(metafile.inputs)) {
+    if (picomatchInputs.has(file)) continue;
+    for (const entry of info.imports ?? []) {
+      if (picomatchInputs.has(entry.path)) importers.add(file);
+    }
+  }
+  return [...importers].sort();
+}
+
+/**
+ * 製品の bundle の出力 file の検査（副作用なし。合成した入力でも失敗の分岐を試せる）。
+ * `files` は `{ main, preload, mastraAgent }` の text、`mapTexts` は main／preload の .map の text（無ければ省く）、
+ * `distEntries` は dist-electron の file 名の一覧。
+ */
+export function evaluateDistFiles({ files, mapTexts = {}, distEntries }) {
+  const failures = [];
+  for (const name of ["main", "preload"]) {
+    const text = files[name];
+    if (typeof text !== "string" || text.length === 0) {
+      failures.push(`${PRODUCT_BUNDLES[name]} が無い、または空`);
+      continue;
+    }
+    if (text.includes("@mastra")) {
+      failures.push(`${PRODUCT_BUNDLES[name]} に @mastra が入っている`);
+    }
+    if (typeof mapTexts[name] === "string") {
+      // `sources` の path だけを見る。sourcesContent には自分の source の comment（`@mastra/*` を import しない、など）が入る。
+      try {
+        const sources = JSON.parse(mapTexts[name]).sources ?? [];
+        const bad = sources.filter((source) =>
+          /@mastra[+/\\]/.test(String(source)),
+        );
+        if (bad.length > 0) {
+          failures.push(
+            `${PRODUCT_BUNDLES[name]}.map の sources に @mastra が入っている: ${bad.length} 件`,
+          );
+        }
+      } catch {
+        failures.push(`${PRODUCT_BUNDLES[name]}.map を JSON として読めない`);
+      }
+    }
+  }
+  const agent = files.mastraAgent;
+  if (typeof agent !== "string" || agent.length === 0) {
+    failures.push(`${PRODUCT_BUNDLES.mastraAgent} が無い、または空`);
+  } else {
+    if (!agent.includes(EE_STUB_MARK)) {
+      failures.push(
+        `${PRODUCT_BUNDLES.mastraAgent} に stub の目印（${EE_STUB_MARK}）が無い（stub が当たっていない）`,
+      );
+    }
+    const found = markersIn(agent);
+    if (found.length > 0) {
+      failures.push(
+        `${PRODUCT_BUNDLES.mastraAgent} に ee 固有の文字列が残る: ${found.join(", ")}`,
+      );
+    }
+    if (/\/\/#\s*sourceMappingURL=/.test(agent)) {
+      failures.push(
+        `${PRODUCT_BUNDLES.mastraAgent} が source map を参照している`,
+      );
+    }
+  }
+  if (distEntries.includes(`${PRODUCT_BUNDLES.mastraAgent}.map`)) {
+    failures.push(`${PRODUCT_BUNDLES.mastraAgent}.map がある（作らない）`);
+  }
+  return failures;
+}
+
+/** 全 bundle の config に ee の stub plugin が入っていること（plugins を落とす書き換えを検出する）。 */
+export function stubPluginFailures(configs = bundleConfigs) {
+  return configs
+    .filter(
+      (config) =>
+        !(config.plugins ?? []).some(
+          (plugin) => plugin.name === "mastra-ee-stub",
+        ),
+    )
+    .map(
+      (config) =>
+        `bundle の config に ee の stub plugin が無い: ${path.basename(String(config.outfile))}`,
+    );
+}
+
+async function buildInMemory(config, rootDir, plugins) {
+  const result = await esbuild.build({
+    ...config,
+    absWorkingDir: rootDir,
+    sourcemap: false,
+    logLevel: "silent",
+    write: false,
+    metafile: true,
+    plugins,
+  });
+  return {
+    text: result.outputFiles
+      .filter((file) => !file.path.endsWith(".map"))
+      .map((file) => file.text)
+      .join(""),
+    mapText: "",
+    metafile: result.metafile,
+    warnings: result.warnings.length,
+  };
+}
+
+/**
+ * 製品の bundle（`dist-electron/`。先に `node electron/scripts/build.mjs`）に当てる検査（MP-3a）。
+ * 失敗は返り値の `failures` に集め、throw しない。
+ */
+export async function checkDist({
+  rootDir = defaultRootDir,
+  distDir = path.join(defaultRootDir, "dist-electron"),
+} = {}) {
+  const failures = [...stubPluginFailures()];
+  const read = (name) => {
+    try {
+      return fs.readFileSync(path.join(distDir, name), "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  const distEntries = fs.existsSync(distDir) ? fs.readdirSync(distDir) : [];
+  const files = {
+    main: read(PRODUCT_BUNDLES.main),
+    preload: read(PRODUCT_BUNDLES.preload),
+    mastraAgent: read(PRODUCT_BUNDLES.mastraAgent),
+  };
+  failures.push(
+    ...evaluateDistFiles({
+      files,
+      mapTexts: {
+        main: read(`${PRODUCT_BUNDLES.main}.map`),
+        preload: read(`${PRODUCT_BUNDLES.preload}.map`),
+      },
+      distEntries,
+    }),
+  );
+
+  // config から in-memory で組み直し、陰性対照（stub なし）と陽性（stub あり）を比べる。
+  const agentConfig = bundleConfigs.find(
+    (config) =>
+      path.basename(String(config.outfile)) === PRODUCT_BUNDLES.mastraAgent,
+  );
+  let picomatch = [];
+  let agentEntry;
+  if (!agentConfig) {
+    failures.push("bundleConfigs に mastra-agent の config が無い");
+  } else {
+    const raw = await buildInMemory(agentConfig, rootDir, []);
+    const stubLog = [];
+    const stubbed = await buildInMemory(agentConfig, rootDir, [
+      eeStubPlugin(stubLog),
+    ]);
+    agentEntry = evaluateEntry({
+      name: "mastra-agent",
+      raw,
+      stubbed,
+      stubLog,
+      rootDir,
+    });
+    failures.push(...agentEntry.failures.map((f) => `mastra-agent: ${f}`));
+    picomatch = picomatchImporters(stubbed.metafile);
+    if (picomatch.length === 0) {
+      failures.push(
+        "picomatch の importer を 1 件も検出できない（検出が壊れているか、依存が変わった）",
+      );
+    }
+    for (const importer of picomatch) {
+      if (!PICOMATCH_ALLOWED_IMPORTER.test(importer)) {
+        failures.push(
+          `picomatch を import する想定外の file: ${importer}（workspace-skills の chunk だけが許される）`,
+        );
+      }
+    }
+  }
+  // main／preload の config も、in-memory で組み直して @mastra の input が 0 であること。
+  const product = {};
+  for (const name of ["main", "preload"]) {
+    const config = bundleConfigs.find(
+      (candidate) =>
+        path.basename(String(candidate.outfile)) === PRODUCT_BUNDLES[name],
+    );
+    if (!config) {
+      failures.push(
+        `bundleConfigs に ${PRODUCT_BUNDLES[name]} の config が無い`,
+      );
+      continue;
+    }
+    const built = await buildInMemory(config, rootDir, config.plugins ?? []);
+    const mastraInputs = findMastraInputs(built.metafile);
+    product[name] = {
+      inputs: Object.keys(built.metafile.inputs).length,
+      mastraInputs,
+    };
+    if (mastraInputs.length > 0) {
+      failures.push(
+        `${PRODUCT_BUNDLES[name]} の bundle に @mastra/* の input がある: ${mastraInputs.length} 件`,
+      );
+    }
+  }
+  const bytes = Object.fromEntries(
+    Object.entries(PRODUCT_BUNDLES).map(([key, name]) => {
+      try {
+        return [name, fs.statSync(path.join(distDir, name)).size];
+      } catch {
+        return [name, null];
+      }
+    }),
+  );
+  return {
+    ok: failures.length === 0,
+    failures,
+    bytes,
+    picomatchImporters: picomatch,
+    agent: agentEntry?.summary,
+    product,
   };
 }
 
@@ -321,7 +575,7 @@ export async function checkMastraEe({ rootDir = defaultRootDir } = {}) {
   const product = await productBundleMastraInputs(rootDir);
   if (product.mastraInputs.length > 0) {
     failures.push(
-      `製品の main bundle に @mastra/* が入っている（MP-3 より前）: ${product.mastraInputs.length} 件`,
+      `製品の main bundle に @mastra/* が入っている: ${product.mastraInputs.length} 件`,
     );
   }
   return { ok: failures.length === 0, failures, entries, inventory, product };
@@ -332,10 +586,20 @@ const isDirectRun =
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isDirectRun) {
+  const dist = process.argv.includes("--dist");
   const result = await checkMastraEe();
-  console.log(JSON.stringify(result, null, 2));
-  if (!result.ok) {
-    console.error(result.failures.map((failure) => `- ${failure}`).join("\n"));
+  const failures = [...result.failures];
+  const output = { ...result };
+  if (dist) {
+    const distResult = await checkDist();
+    failures.push(...distResult.failures);
+    output.dist = distResult;
+  }
+  output.ok = failures.length === 0;
+  output.failures = failures;
+  console.log(JSON.stringify(output, null, 2));
+  if (!output.ok) {
+    console.error(failures.map((failure) => `- ${failure}`).join("\n"));
     process.exitCode = 1;
   }
 }

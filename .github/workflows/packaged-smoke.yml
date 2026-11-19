@@ -20,6 +20,9 @@ on:
       - pnpm-lock.yaml
       - electron-builder.yml
       - electron/scripts/mastra-ee-*.mjs
+      # 3 つ目の bundle（mastra-agent.cjs）を作る build と、その entry（Mastra 移行 MP-3a）
+      - electron/scripts/build.mjs
+      - electron/main/mastra/**
   workflow_dispatch:
     inputs:
       candidate_ref:

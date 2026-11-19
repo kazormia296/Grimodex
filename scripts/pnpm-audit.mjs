@@ -10,9 +10,12 @@ import { join } from "node:path";
 // through single-branch repeated extglobs) has no published fix; the registry's latest picomatch is 4.0.7.
 // In pnpm-lock.yaml picomatch is pulled by build and test tools (vite, vitest, rollup plugins,
 // tinyglobby, fdir), and now also directly by `@mastra/core` (Mastra migration MP-1, 2026-11-19), which
-// depends on picomatch 4.0.7. The product bundle does not include `@mastra/core` until MP-3. Before MP-3,
-// check whether Mastra feeds user input to picomatch, and reconfirm this exception with the user
-// (decided 2026-11-19: keep the exception, reconsider before MP-3).
+// depends on picomatch 4.0.7. The product bundle `dist-electron/mastra-agent.cjs` includes `@mastra/core`
+// from MP-3a. Decided 2026-11-19: the exception continues, and the Mastra workspace is never enabled,
+// which keeps user input away from picomatch (docs/plans/mastra-mp3-decisions.md DR-MP3-14 and DR-MP3-15).
+// Two checks keep that true: a static check that no product code enables a Mastra workspace or skills
+// (electron/main/mastra/mastraWorkspaceDisabled.static.test.ts), and `mastra-ee-check.mjs --dist`, which pins
+// the only importer of picomatch in the bundle to the workspace-skills chunk of `@mastra/core`.
 // When a fixed picomatch is published, raise it and remove this exception.
 // The exception ends at 2026-12-18 00:00 JST; extending it needs a fresh decision.
 const TEMPORARY_IGNORED_GHSAS = [

@@ -1128,6 +1128,8 @@ describe("packaged smoke workflow (CP-2b P2)", () => {
       "pnpm-lock.yaml",
       "electron-builder.yml",
       "electron/scripts/mastra-ee-*.mjs",
+      "electron/scripts/build.mjs",
+      "electron/main/mastra/**",
     ]);
     assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ["candidate_ref", "os"]);
     assert.deepEqual(workflow.on.workflow_dispatch.inputs.os.options, ["all", "linux", "windows", "mac"]);
@@ -1510,5 +1512,40 @@ describe("update route watch (CP-2b P3, H1)", () => {
       fetchImpl,
     });
     assert.equal(hops.length, MAX_REDIRECTS + 1);
+  });
+});
+
+// Mastra 移行 MP-3a（docs/plans/mastra-mp3-decisions.md の DR-MP3-20）:
+// release の 3 OS の build job が、packaging の後に app.asar の ee・harness の検査を走らせる。
+describe("release app.asar check (Mastra MP-3a)", () => {
+  it("runs the asar check on every host after packaging and before the upload, without the worker check", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const steps = workflow.jobs.build.steps;
+    const index = steps.findIndex(
+      (step) =>
+        typeof step.run === "string" &&
+        step.run.includes("electron/scripts/mastra-ee-asar-check.mjs"),
+    );
+    assert.ok(index >= 0, "release.yml に asar の検査の step");
+    assert.equal(steps[index].run.trim(), "node electron/scripts/mastra-ee-asar-check.mjs release/electron");
+    // 3 OS 全部で走る（matrix の絞り込みや skip の条件を付けない）
+    assert.equal(steps[index].if, undefined);
+    assert.equal(steps[index]["continue-on-error"], undefined);
+    const upload = steps.findIndex((step) => String(step.uses ?? "").startsWith("actions/upload-artifact@"));
+    assert.ok(upload > index, "upload の前");
+    for (const needle of ["electron-builder --publish never", "electron:build"]) {
+      const built = steps.findIndex((step) => typeof step.run === "string" && step.run.includes(needle));
+      assert.ok(built >= 0 && built < index, `${needle} の後`);
+    }
+    // worker の検証は electron:native:release の中にある。asar の検査は worker を呼ばない（重複させない）。
+    const asarCheck = await readFile(
+      path.join(repoRoot, "electron", "scripts", "mastra-ee-asar-check.mjs"),
+      "utf8",
+    );
+    assert.doesNotMatch(asarCheck, /verifyReleaseGraphWorker|verify-release-graph-worker/);
+    assert.match(
+      steps.find((step) => String(step.run ?? "").includes("electron:native:release")).run,
+      /electron:native:release/,
+    );
   });
 });
