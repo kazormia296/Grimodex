@@ -4161,7 +4161,7 @@ test("package scripts expose canonical local CI entrypoints", async () => {
   );
   assert.equal(
     packageJson.scripts["ci:build:desktop"],
-    "node electron/scripts/build.mjs && pnpm exec vite build",
+    "node electron/scripts/build.mjs && node electron/scripts/mastra-ee-check.mjs --dist && pnpm exec vite build",
   );
   assert.equal(
     packageJson.scripts["ci:verify:quality"],

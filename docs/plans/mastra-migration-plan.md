@@ -264,6 +264,9 @@
 
 ### MP-3 loop の骨格（tool 0・memory 0）
 
+- **分割（決定 2026-11-19）**：MP-3 を 3a（土台：build・製品 bundle の ee 検査・asar・env の配線）、3b（閉じた入口：契約・Main の gate L・audit の枠）、
+  3c（turn owner・runtime・lifecycle・journey）の 3 PR に分ける。範囲の読み替え（renderer の分岐は MP-4、packaged の検査は MP-13、
+  旗 L に Native の entry を足さない）と判断は [MP-3 の判断記録](mastra-mp3-decisions.md)（DR-MP3-n）。以下の範囲・条件は、その読み替えを適用して読む。
 - 範囲：
   - main の turn owner。Mastra の `Agent` を、tool 0・memory 無しで 1 turn 走らせる。
   - abort、進捗 event、同じ session の再入の拒否、複数 window。
@@ -558,6 +561,8 @@
 - **U-3**：PR の分け方と順序（MP-0〜13）、旗が closed gate 2 本（L と M）であること、開けるのは journey の seam だけであること、を承認。
   - 付随して残る点：新しい `PrePublicationEntry`（L、M）の追加が、新しい authority に当たるか。
     承認がこれを含むかは**未確認**。MP-3 の前に確かめる。
+- **MP-3 の分割と範囲**：3a／3b／3c の 3 PR。env は Grimodex 自身の owner token 5 名だけを実名で除かない。picomatch の例外（期限 12/18）は続け、
+  Mastra の workspace を有効にしない検査を入れる。判断の正本は [MP-3 の判断記録](mastra-mp3-decisions.md)。
 - **U-5**：依存の追加（`@mastra/core`、`@mastra/memory`）、`pnpm install`、`THIRD_PARTY_LICENSES.md` の更新を承認。version の更新は手動だけ。
   env の固定は、load の時だけ適用し、子 process には元の env の写しを渡す（推奨どおり）。
 - **U-6**：最初から主要な provider すべて（Anthropic、OpenAI、OpenRouter）に対応する（推奨の「Anthropic から」ではない）。

@@ -1502,8 +1502,9 @@ operations escape ordinary process-group cleanup.
 The Web Editor Vite build writes directly to
 `.artifacts/local-ci/runs/<run-id>/web-editor`. The existing Web Editor artifact
 validator checks that directory independently of the Desktop build's normal
-`dist` output, so the builds may overlap. `ci:build:desktop` builds Electron and
-the renderer without repeating the earlier workspace build and typecheck.
+`dist` output, so the builds may overlap. `ci:build:desktop` builds Electron, checks that the product bundles carry no Mastra
+ee code (`mastra-ee-check.mjs --dist`), and builds the renderer without repeating the
+earlier workspace build and typecheck.
 
 The runner creates `.artifacts/local-ci/checkout.lock` with exclusive `wx`
 creation, resolves the candidate before and after execution, and releases the

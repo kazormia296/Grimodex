@@ -631,6 +631,10 @@ jobs:
           tar -czf "release/electron/Grimodex-${VERSION}-mac-${ARCH}.app.tar.gz" \
             -C "$(dirname "$APP")" "$(basename "$APP")"
 
+      # Mastra 移行 MP-3a：app.asar に ee の code・harness の file が無く、mastra-agent.cjs がある（worker の検証は別）。
+      - name: Verify app.asar has no Mastra ee code or harness files
+        run: node electron/scripts/mastra-ee-asar-check.mjs release/electron
+
       - name: Require electron-updater metadata for this host
         run: >-
           node scripts/verify-electron-updater-metadata.mjs

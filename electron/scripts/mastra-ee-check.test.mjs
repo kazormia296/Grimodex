@@ -14,13 +14,23 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
-import { rootDir } from "./build.mjs";
+import {
+  BUNDLE_BYTE_BUDGET,
+  bundleByteFailures,
+} from "./bundle-byte-budget.mjs";
+import { bundleConfigs, composePlugins, rootDir } from "./build.mjs";
 import {
   EE_CONTENT_MARKERS,
   EE_INPUT,
   KNOWN_EE_INVENTORY,
+  PICOMATCH_ALLOWED_IMPORTER,
+  PRODUCT_BUNDLES,
   bundleForInspection,
+  checkDist,
   checkMastraEe,
+  evaluateDistFiles,
+  picomatchImporters,
+  stubPluginFailures,
   evaluateEntry,
   findEeInputs,
   findMastraInputs,
@@ -592,7 +602,7 @@ test("findEeInputs は tree-shake で出力から消えた input を bytesInOutp
   assert.deepEqual(findMastraInputs(metafile), [file]);
 });
 
-test("MP-1：製品の main bundle に @mastra/* は入らない（MP-3 で ee の検査に差し替える）", async () => {
+test("製品の main bundle に @mastra/* は入らない（Mastra は mastra-agent.cjs にだけ入る）", async () => {
   const product = await productBundleMastraInputs(rootDir);
   assert.ok(product.inputs > 100, "製品の bundle を組めている");
   assert.deepEqual(product.mastraInputs, []);
@@ -705,3 +715,317 @@ test("Mastra は exact pin で手動でだけ上げる：dependabot の npm か�
 test("inventoryEeEntries は pnpm の store に無い root では空を返す", () => {
   assert.deepEqual(inventoryEeEntries(path.join(repoRoot, "nonexistent")), []);
 });
+
+// ---- MP-3a：製品の bundle（dist-electron）に当てる検査（--dist） ----
+
+test("bundleConfigs：main を先頭に保ち、3 つ目の bundle は mastra-agent.cjs（.map なし）。全 config に ee の stub plugin が入る", () => {
+  assert.deepEqual(
+    bundleConfigs.map((config) => path.basename(String(config.outfile))),
+    ["main.cjs", "preload.cjs", "mastra-agent.cjs"],
+  );
+  assert.deepEqual(stubPluginFailures(), []);
+  const agent = bundleConfigs[2];
+  assert.equal(agent.sourcemap, false, "mastra-agent は .map を作らない");
+  assert.ok(bundleConfigs[0].sourcemap && bundleConfigs[1].sourcemap);
+  // mastra-ee-check の esbuild の共通設定は bundleConfigs[0]（main）から取る。
+  assert.match(String(bundleConfigs[0].outfile), /main\.cjs$/);
+  // 検査用の bundle の plugins は共通設定の spread の後に明示で渡る（config の stub が陰性対照を汚さない）。
+  const stubless = bundleConfigs.map((config) => ({ ...config, plugins: [] }));
+  assert.equal(stubPluginFailures(stubless).length, 3);
+  assert.equal(
+    stubPluginFailures([{ outfile: "x/mastra-agent.cjs" }]).length,
+    1,
+  );
+});
+
+test("composePlugins：config の plugins（ee の stub）を落とさず、呼び手の plugin を後ろへ足す（dev.mjs の watch）", () => {
+  const extra = { name: "electron-restart", setup() {} };
+  for (const config of bundleConfigs) {
+    const composed = composePlugins(config, [extra]);
+    assert.deepEqual(
+      composed.map((plugin) => plugin.name),
+      ["mastra-ee-stub", "electron-restart"],
+    );
+    assert.equal(composed[0], config.plugins[0]);
+  }
+  assert.deepEqual(composePlugins({}, []), []);
+  const dev = fs.readFileSync(path.join(here, "dev.mjs"), "utf8");
+  assert.match(dev, /composePlugins\(config,/);
+  assert.doesNotMatch(
+    dev,
+    /^\s*plugins:\s*\[/m,
+    "dev.mjs は plugins を直接差し替えない",
+  );
+});
+
+const GOOD_FILES = Object.freeze({
+  main: "const a = 1;",
+  preload: "const b = 2;",
+  mastraAgent: `const MARK = '${EE_STUB_MARK}';`,
+});
+
+test("evaluateDistFiles：合格の形と、各失敗の分岐（@mastra 混入・stub 目印なし・ee 文字列・.map）", () => {
+  const ok = (overrides = {}) =>
+    evaluateDistFiles({
+      files: { ...GOOD_FILES, ...overrides.files },
+      mapTexts: overrides.mapTexts,
+      distEntries: overrides.distEntries ?? ["main.cjs", "mastra-agent.cjs"],
+    });
+  assert.deepEqual(ok(), []);
+  assert.match(
+    ok({ files: { main: "require('@mastra/core')" } }).join("\n"),
+    /main\.cjs に @mastra/,
+  );
+  assert.match(
+    ok({ files: { preload: "x@mastra" } }).join("\n"),
+    /preload\.cjs に @mastra/,
+  );
+  assert.match(
+    ok({
+      mapTexts: { main: '{"sources":["node_modules/@mastra/core/x.js"]}' },
+    }).join("\n"),
+    /main\.cjs\.map の sources に @mastra/,
+  );
+  assert.match(
+    ok({
+      mapTexts: {
+        preload:
+          '{"sources":["../node_modules/.pnpm/@mastra+core@1.0.0/x.js"]}',
+      },
+    }).join("\n"),
+    /preload\.cjs\.map の sources に @mastra/,
+  );
+  // sourcesContent の comment の言及は違反にしない。
+  assert.deepEqual(
+    ok({
+      mapTexts: {
+        main: '{"sources":["../electron/main/mastraEnv.ts"],"sourcesContent":["// @mastra/* を import しない"]}',
+      },
+    }),
+    [],
+  );
+  assert.match(
+    ok({ mapTexts: { main: "not json" } }).join("\n"),
+    /JSON として読めない/,
+  );
+  assert.match(
+    ok({ files: { mastraAgent: "const a = 1;" } }).join("\n"),
+    /stub の目印/,
+  );
+  for (const marker of EE_CONTENT_MARKERS) {
+    assert.match(
+      ok({
+        files: { mastraAgent: `${GOOD_FILES.mastraAgent}\n"${marker}"` },
+      }).join("\n"),
+      /ee 固有の文字列が残る/,
+      marker,
+    );
+  }
+  assert.match(
+    ok({
+      files: {
+        mastraAgent: `${GOOD_FILES.mastraAgent}\n//# sourceMappingURL=a.map`,
+      },
+    }).join("\n"),
+    /source map を参照/,
+  );
+  assert.match(
+    ok({ distEntries: ["mastra-agent.cjs", "mastra-agent.cjs.map"] }).join(
+      "\n",
+    ),
+    /mastra-agent\.cjs\.map がある/,
+  );
+  assert.match(ok({ files: { main: "" } }).join("\n"), /main\.cjs が無い/);
+  assert.match(
+    ok({ files: { mastraAgent: undefined } }).join("\n"),
+    /mastra-agent\.cjs が無い/,
+  );
+});
+
+test("picomatchImporters：picomatch の外から picomatch を import する file だけを返す", () => {
+  const pm =
+    "node_modules/.pnpm/picomatch@4.0.7/node_modules/picomatch/index.js";
+  const pmLib =
+    "node_modules/.pnpm/picomatch@4.0.7/node_modules/picomatch/lib/utils.js";
+  const chunk =
+    "node_modules/.pnpm/@mastra+core@1.83.0_x/node_modules/@mastra/core/dist/workspace-skills-AbC_1-2.js";
+  const other =
+    "node_modules/.pnpm/@mastra+core@1.83.0_x/node_modules/@mastra/core/dist/agent-xyz.js";
+  const metafile = {
+    inputs: {
+      [pm]: { bytes: 1, imports: [{ path: pmLib }] },
+      [pmLib]: { bytes: 1, imports: [] },
+      [chunk]: { bytes: 1, imports: [{ path: pm }] },
+      [other]: { bytes: 1, imports: [{ path: pmLib }] },
+      "src/x.ts": { bytes: 1, imports: [] },
+    },
+  };
+  assert.deepEqual(picomatchImporters(metafile), [other, chunk].sort());
+  assert.equal(PICOMATCH_ALLOWED_IMPORTER.test(chunk), true);
+  assert.equal(PICOMATCH_ALLOWED_IMPORTER.test(other), false);
+  assert.equal(
+    PICOMATCH_ALLOWED_IMPORTER.test(
+      "a/@mastra/memory/dist/workspace-skills-x.js",
+    ),
+    false,
+  );
+  assert.deepEqual(picomatchImporters({ inputs: {} }), []);
+});
+
+/** bundleConfigs を一時 dir に書き出す（`plugins` と `sourcemap` は呼び手が上書きできる）。 */
+async function buildDist(dir, overrides = {}) {
+  for (const config of bundleConfigs) {
+    const name = path.basename(String(config.outfile));
+    await esbuild.build({
+      ...config,
+      absWorkingDir: rootDir,
+      outfile: path.join(dir, name),
+      logLevel: "silent",
+      ...(overrides[name] ?? {}),
+    });
+  }
+}
+
+test("checkDist：製品の config から書き出した dist は合格し、stub を外した mastra-agent・.map つき・main への混入は落ちる（陰性対照）", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-ee-dist-"));
+  try {
+    await buildDist(dir);
+    const good = await checkDist({ rootDir, distDir: dir });
+    assert.deepEqual(good.failures, []);
+    assert.equal(good.ok, true);
+    assert.ok(good.bytes["mastra-agent.cjs"] > 1_000_000);
+    assert.ok(good.bytes["main.cjs"] > 0 && good.bytes["preload.cjs"] > 0);
+    assert.equal(good.picomatchImporters.length, 1);
+    assert.match(good.picomatchImporters[0], PICOMATCH_ALLOWED_IMPORTER);
+    assert.deepEqual(good.product.main.mastraInputs, []);
+
+    // stub を外した mastra-agent.cjs（ee の実体が入る）を dist に置く。
+    await esbuild.build({
+      ...bundleConfigs[2],
+      absWorkingDir: rootDir,
+      outfile: path.join(dir, "mastra-agent.cjs"),
+      logLevel: "silent",
+      plugins: [],
+    });
+    const noStub = await checkDist({ rootDir, distDir: dir });
+    assert.equal(noStub.ok, false);
+    assert.match(noStub.failures.join("\n"), /ee 固有の文字列が残る/);
+    assert.match(noStub.failures.join("\n"), /stub の目印/);
+
+    // .map つき
+    await buildDist(dir, { "mastra-agent.cjs": { sourcemap: true } });
+    const withMap = await checkDist({ rootDir, distDir: dir });
+    assert.match(withMap.failures.join("\n"), /mastra-agent\.cjs\.map がある/);
+    assert.match(withMap.failures.join("\n"), /source map を参照/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("checkDist：dist が無い（build 前）なら、黙って通さず落ちる", async () => {
+  const result = await checkDist({
+    rootDir,
+    distDir: path.join(os.tmpdir(), "grimodex-ee-dist-missing"),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.failures.join("\n"), /main\.cjs が無い/);
+  assert.match(result.failures.join("\n"), /mastra-agent\.cjs が無い/);
+});
+
+test("ci.yml と local CI（ci:build:desktop）：production build の後に --dist を走らせる", () => {
+  const workflow = yaml.load(
+    fs.readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8"),
+  );
+  const steps = workflow.jobs.electron.steps;
+  const buildIndex = steps.findIndex(
+    (step) => step.run === "pnpm electron:build",
+  );
+  const checkIndex = steps.findIndex(
+    (step) =>
+      typeof step.run === "string" &&
+      step.run.includes("electron/scripts/mastra-ee-check.mjs --dist"),
+  );
+  assert.ok(buildIndex >= 0 && checkIndex > buildIndex, "build の後に --dist");
+  assert.equal(steps[checkIndex].if, "${{ !inputs.source_focused }}");
+  // local CI は新しい task id を作らず、既存の electron.build（`pnpm ci:build:desktop`）の中で走らせる
+  // （task id を足すと registryDigest と workload allocation の terms が要る）。
+  const registry = JSON.parse(
+    fs.readFileSync(
+      path.join(repoRoot, "scripts/local-ci-registry.json"),
+      "utf8",
+    ),
+  );
+  const build = registry.stages.electron.commands.find(
+    ({ id }) => id === "electron.build",
+  );
+  assert.deepEqual(build.args, ["ci:build:desktop"]);
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
+  );
+  const parts = manifest.scripts["ci:build:desktop"]
+    .split("&&")
+    .map((part) => part.trim());
+  assert.deepEqual(parts, [
+    "node electron/scripts/build.mjs",
+    "node electron/scripts/mastra-ee-check.mjs --dist",
+    "pnpm exec vite build",
+  ]);
+});
+
+test("PRODUCT_BUNDLES の名前は build.mjs の出力と一致する", () => {
+  assert.deepEqual(
+    Object.values(PRODUCT_BUNDLES),
+    bundleConfigs.map((config) => path.basename(String(config.outfile))),
+  );
+});
+
+test("byte の予算（ratchet）：main／preload の上限を超えるか測れないと落ち、mastra-agent.cjs は予算を持たない", async () => {
+  assert.deepEqual(Object.keys(BUNDLE_BYTE_BUDGET), [
+    "main.cjs",
+    "preload.cjs",
+  ]);
+  assert.deepEqual(
+    bundleByteFailures({
+      "main.cjs": BUNDLE_BYTE_BUDGET["main.cjs"],
+      "preload.cjs": 1,
+      "mastra-agent.cjs": 99_000_000,
+    }),
+    [],
+  );
+  assert.match(
+    bundleByteFailures({
+      "main.cjs": BUNDLE_BYTE_BUDGET["main.cjs"] + 1,
+      "preload.cjs": 1,
+    }).join("\n"),
+    /main\.cjs が byte の予算を超えた/,
+  );
+  // @mastra が混ざった main（約 13 MB 増）は必ず超える。
+  assert.equal(
+    bundleByteFailures({
+      "main.cjs": 3_070_561 + 13_000_000,
+      "preload.cjs": 20_934,
+    }).length,
+    1,
+  );
+  assert.match(
+    bundleByteFailures({ "main.cjs": null, "preload.cjs": 1 }).join("\n"),
+    /測れない/,
+  );
+  // 実際の config から組んだ bundle は予算に収まる（予算が現実とずれていない）。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-ee-budget-"));
+  try {
+    await buildDist(dir);
+    const result = await checkDist({ rootDir, distDir: dir });
+    assert.deepEqual(result.failures, []);
+    for (const [name, limit] of Object.entries(BUNDLE_BYTE_BUDGET)) {
+      assert.ok(
+        result.bytes[name] <= limit,
+        `${name}: ${result.bytes[name]} <= ${limit}`,
+      );
+      // 余裕は小さい（予算が緩すぎて、Mastra の混入を見逃さない）。
+      assert.ok(limit < result.bytes[name] * 1.1, `${name} の余裕は 10% 未満`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 120_000);

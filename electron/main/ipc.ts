@@ -70,6 +70,7 @@ import {
 } from "./nir1LocalGeneration.js";
 import { chatAgentIrGateRefusal } from "./chatAgentIr.js";
 import { defaultUserDataDirectoriesForApp } from "./userData.js";
+import { mastraOriginalEnv } from "./mastraEnv.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
   PROFILE_EGRESS_STATUS_COMMAND,
@@ -2103,7 +2104,7 @@ function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
     if (app.isPackaged !== false) return closed;
     return {
       isPackaged: false,
-      env: process.env,
+      env: mastraOriginalEnv(),
       userDataDir: app.getPath("userData"),
       defaultUserDataDirs: () => defaultUserDataDirectoriesForApp(app),
     };

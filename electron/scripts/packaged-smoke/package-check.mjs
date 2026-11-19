@@ -12,78 +12,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { EE_CONTENT_MARKERS, EE_INPUT } from "../mastra-ee-patterns.mjs";
+import { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkAsar, forbiddenContent, listAsarEntries, mastraEeEntries } from "../mastra-ee-asar-check.mjs";
 import { graphWorkerName, verifyReleaseGraphWorker } from "../verify-release-graph-worker.mjs";
 
-/** app.asar に入ってはならない file の名前（harness と probe の道具） */
-export const FORBIDDEN_ASAR_ENTRY = /packaged-smoke|webrtc-block-probe|renderer-isolation-probe|dnslog|doh-canary|dns-canary/i;
-
-/**
- * asar の header（先頭 16 bytes の pickle の後の JSON）を読み、file の path の一覧を返す。
- * 形: uint32 4、uint32 header の pickle の大きさ、uint32 pickle の payload、uint32 JSON の長さ、JSON。
- */
-export function listAsarEntries(file) {
-  const fd = fs.openSync(file, "r");
-  try {
-    const head = Buffer.alloc(16);
-    if (fs.readSync(fd, head, 0, 16, 0) !== 16) throw new Error("asar の header が短い");
-    const jsonLength = head.readUInt32LE(12);
-    if (jsonLength <= 0 || jsonLength > 64 * 1024 * 1024) throw new Error(`asar の header の長さが不正: ${jsonLength}`);
-    const json = Buffer.alloc(jsonLength);
-    if (fs.readSync(fd, json, 0, jsonLength, 16) !== jsonLength) throw new Error("asar の header の JSON が短い");
-    const header = JSON.parse(json.toString("utf8"));
-    const out = [];
-    const walk = (node, prefix) => {
-      for (const [name, child] of Object.entries(node.files ?? {})) {
-        const entry = prefix ? `${prefix}/${name}` : name;
-        if (child && typeof child === "object" && child.files) walk(child, entry);
-        else out.push(entry);
-      }
-    };
-    walk(header, "");
-    return out.sort();
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-/** app.asar の中身（bytes）に現れてはならない harness・probe の固有の文字列（製品の bundle に harness の code が混ざったら検出） */
-export const FORBIDDEN_ASAR_CONTENT = Object.freeze([
-  "dnsprobe.test", "probe.test:", "webrtc-block-probe", "renderer-isolation-probe", "packaged-smoke", "PROBE_DNSLOG", "PROBE_RENDERER_SCRIPT", "form-submit-shim",
-]);
-
-/** file の bytes に含まれる禁止の文字列（chunk の境界をまたぐ一致も見る） */
-export function forbiddenContent(file, needles = FORBIDDEN_ASAR_CONTENT) {
-  const encoded = needles.map((needle) => Buffer.from(needle, "latin1"));
-  const longest = Math.max(...encoded.map((needle) => needle.length));
-  const found = new Set();
-  const fd = fs.openSync(file, "r");
-  try {
-    const chunk = 1024 * 1024;
-    const buffer = Buffer.alloc(chunk + longest - 1);
-    let carry = 0;
-    for (;;) {
-      const read = fs.readSync(fd, buffer, carry, chunk, null);
-      if (read === 0) break;
-      const filled = carry + read;
-      const view = buffer.subarray(0, filled);
-      encoded.forEach((needle, index) => { if (view.includes(needle)) found.add(needles[index]); });
-      carry = Math.min(longest - 1, filled);
-      buffer.copy(buffer, 0, filled - carry, filled);
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  return [...found].sort();
-}
-
-/**
- * asar の file 一覧のうち、Mastra の ee 由来のもの（.js／.cjs／.map／.d.ts を問わない）。
- * asar の entry は先頭に区切りが無いので、`@mastra/` が先頭の entry も拾えるよう `/` を足して照合する。
- */
-export function mastraEeEntries(entries) {
-  return entries.filter((entry) => EE_INPUT.test(`/${entry}`));
-}
+// asar の検査（harness・probe・ee・Mastra の bundle）は release.yml の 3 OS も呼ぶため、
+// harness の外の electron/scripts/mastra-ee-asar-check.mjs に置いた（Mastra 移行 MP-3a、DR-MP3-20）。ここは再 export する。
+export { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkAsar, forbiddenContent, listAsarEntries, mastraEeEntries };
 
 /** PE の Optional Header の Subsystem（2 = GUI、3 = console）。PE でなければ null */
 export function peSubsystem(file) {
@@ -121,23 +55,8 @@ export async function checkPackage({ appDir, platform = process.platform }) {
       recorded.codesign = `not-verified:${String(error?.stderr ?? error?.message ?? error).split("\n")[0].slice(0, 160)}`;
     }
   }
-  const asar = path.join(resources, "app.asar");
-  try {
-    const entries = listAsarEntries(asar);
-    const forbidden = entries.filter((entry) => FORBIDDEN_ASAR_ENTRY.test(entry));
-    const content = forbiddenContent(asar);
-    const eeEntries = mastraEeEntries(entries);
-    const eeContent = forbiddenContent(asar, EE_CONTENT_MARKERS);
-    // @mastra の file が asar にあるか（MP-3 以前は 0。MP-3 以後も bundle に入るだけで、node_modules は載らない）は記録だけにする。
-    const mastraEntries = entries.filter((entry) => /(^|\/)@mastra\//.test(entry)).length;
-    recorded.asar = { entries: entries.length, forbidden, forbiddenContent: content, mastraEntries, mastraEeEntries: eeEntries, mastraEeContent: eeContent };
-    if (entries.length === 0) failures.push("app.asar: file が 0（走査が何も見ていない）");
-    if (forbidden.length) failures.push(`app.asar に harness／probe の file: ${forbidden.slice(0, 5).join(", ")}`);
-    if (content.length) failures.push(`app.asar の中身に harness／probe の文字列: ${content.join(", ")}`);
-    if (eeEntries.length) failures.push(`app.asar に Mastra の ee の file: ${eeEntries.slice(0, 5).join(", ")}`);
-    if (eeContent.length) failures.push(`app.asar の中身に Mastra の ee 固有の文字列: ${eeContent.join(", ")}`);
-  } catch (error) {
-    failures.push(`app.asar: ${String(error?.message ?? error)}`);
-  }
+  const asarResult = checkAsar(path.join(resources, "app.asar"));
+  recorded.asar = asarResult.recorded;
+  failures.push(...asarResult.failures);
   return { ok: failures.length === 0, failures, recorded };
 }

@@ -10,6 +10,7 @@ import path from "node:path";
 import { app } from "electron";
 
 import { IPC_BACKEND_UNAVAILABLE_MARKER } from "../shared/ipcContract.js";
+import { mastraOriginalEnvValue } from "./mastraEnv.js";
 import type {
   NapiBackendLike,
   ShellCommandHandlers,
@@ -69,7 +70,7 @@ async function defaultProbeCandidate(
 
 function defaultResolution(): McpSidecarResolution {
   return {
-    overridePath: process.env.GRIMODEX_MCP_PATH,
+    overridePath: mastraOriginalEnvValue("GRIMODEX_MCP_PATH"),
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     mainDir: __dirname,

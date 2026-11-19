@@ -493,7 +493,8 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
     const esbuild = (await import("esbuild")).default;
     const forbidden =
       /LD_PRELOAD|PROBE_DNSLOG|dnslog|dns-canary|doh-canary|webrtc-block-probe/i;
-    expect(buildModule.bundleConfigs.length).toBe(2);
+    // main、preload、mastra-agent（Mastra 移行 MP-3a の 3 つ目の bundle。製品の asar に入るので同じ走査に含める）。
+    expect(buildModule.bundleConfigs.length).toBe(3);
     for (const config of buildModule.bundleConfigs) {
       const result = await esbuild.build({
         ...config,
@@ -506,8 +507,15 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
       expect(result.outputFiles.length).toBe(1);
       const text = result.outputFiles[0].text;
       // 束ねた出力が空でない（走査が何も見ていないわけではない）。NC-1 の module が main に入っている。
-      const isMain = /electron[\\/]main[\\/]/.test(String(config.entryPoints));
-      expect(text.length).toBeGreaterThan(isMain ? 1_000_000 : 1_000);
+      const isMain = /electron[\\/]main[\\/]index\.ts$/.test(
+        String(config.entryPoints),
+      );
+      const isMastraAgent = /mastra[\\/]agentRuntime\.ts$/.test(
+        String(config.entryPoints),
+      );
+      expect(text.length).toBeGreaterThan(
+        isMain || isMastraAgent ? 1_000_000 : 1_000,
+      );
       expect(text.match(forbidden), String(config.entryPoints)).toBeNull();
       if (isMain) expect(text).toContain("grimodex-rule-sentinel.invalid");
     }

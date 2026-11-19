@@ -12,13 +12,18 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 
 import {
+  MASTRA_ALLOWED_ENV_NAMES,
   MASTRA_PINNED_ENV,
   MASTRA_REMOVED_ENV_NAMES,
+  MASTRA_REMOVED_ENV_PREFIXES,
   createMastraEnvPin,
   isMastraRemovedEnvName,
+  mastraOriginalEnv,
+  mastraOriginalEnvValue,
 } from "./mastraEnv.js";
 
 const repoRoot = path.resolve(
@@ -27,7 +32,7 @@ const repoRoot = path.resolve(
   "..",
 );
 
-describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
+describe("mastraEnv（env の固定。apply は MP-3c まで呼ばない）", () => {
   it("固定する値は厳密に MASTRA_TELEMETRY_DISABLED=1 と MASTRA_OFFLINE=true", () => {
     expect(MASTRA_PINNED_ENV).toEqual({
       MASTRA_TELEMETRY_DISABLED: "1",
@@ -220,6 +225,331 @@ describe("mastraEnv（env の固定。MP-1 では未配線）", () => {
   });
 });
 
+const OWNER_TOKEN_NAMES = [
+  "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN",
+  "GRIMODEX_BODY_DECLARATION_CI_OWNER_TOKEN",
+  "GRIMODEX_PROFILE_ACTIVATION_CI_OWNER_TOKEN",
+  "GRIMODEX_NIR1_LOCAL_GENERATION_CI_OWNER_TOKEN",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+] as const;
+
+describe("実名の許可リスト（MP-3a、DR-MP3-8）：Grimodex 自身の owner token 5 名だけを除かない", () => {
+  it("許可リストは実名 5 つで、凍結され、決定のとおりの名前", () => {
+    expect([...MASTRA_ALLOWED_ENV_NAMES]).toEqual([...OWNER_TOKEN_NAMES]);
+    expect(Object.isFrozen(MASTRA_ALLOWED_ENV_NAMES)).toBe(true);
+  });
+
+  it("許可名は MASTRA_／OM_／AI_GATEWAY_／VERCEL_ で始まらず、除去の固定名と交わらない（型の規則に当たるのは _TOKEN だけ）", () => {
+    for (const name of MASTRA_ALLOWED_ENV_NAMES) {
+      for (const prefix of MASTRA_REMOVED_ENV_PREFIXES) {
+        expect(name.startsWith(prefix), `${name} は ${prefix} で始まる`).toBe(
+          false,
+        );
+      }
+      expect(MASTRA_REMOVED_ENV_NAMES, name).not.toContain(name);
+      expect(name.endsWith("_TOKEN"), name).toBe(true);
+    }
+    expect(new Set(MASTRA_ALLOWED_ENV_NAMES).size).toBe(
+      MASTRA_ALLOWED_ENV_NAMES.length,
+    );
+  });
+
+  it("5 名は残り、同じ形の他の名前（GRIMODEX_FOO_TOKEN など）は除かれる。許可は実名の完全一致だけ", () => {
+    for (const name of OWNER_TOKEN_NAMES) {
+      expect(isMastraRemovedEnvName(name, "linux"), name).toBe(false);
+    }
+    for (const name of [
+      "GRIMODEX_FOO_TOKEN",
+      "GRIMODEX_OPENAI_API_KEY",
+      "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_API_KEY",
+      "X_GRIMODEX_BODY_DECLARATION_CI_OWNER_TOKEN",
+      "GRIMODEX_NEW_CI_OWNER_TOKEN",
+      "GRIMODEX_MASTRA_API_KEY",
+    ]) {
+      expect(isMastraRemovedEnvName(name, "linux"), name).toBe(true);
+    }
+    // GRIMODEX_ 始まり全体の除外ではない：除去の規則に当たらない名前は、もともと残る。
+    expect(isMastraRemovedEnvName("GRIMODEX_NODE_PATH", "linux")).toBe(false);
+  });
+
+  it("比較は fold を通す：Windows では大小を問わず残り、POSIX は大小を区別する", () => {
+    for (const name of OWNER_TOKEN_NAMES) {
+      expect(isMastraRemovedEnvName(name.toLowerCase(), "win32"), name).toBe(
+        false,
+      );
+      expect(
+        isMastraRemovedEnvName(
+          name.replace(/GRIMODEX_/, "Grimodex_").replace(/_TOKEN$/, "_Token"),
+          "win32",
+        ),
+        name,
+      ).toBe(false);
+    }
+    expect(isMastraRemovedEnvName("grimodex_foo_token", "win32")).toBe(true);
+    // POSIX の小文字の名前は、末尾の規則（大文字）に当たらず残る（もともとの挙動）。
+    expect(isMastraRemovedEnvName("grimodex_foo_token", "linux")).toBe(false);
+  });
+
+  it("apply は 5 名を残し、同じ形の他の名前を除く（Linux と Windows の plain object）", () => {
+    for (const platform of ["linux", "win32"] as const) {
+      const env: NodeJS.ProcessEnv = {
+        PATH: "/usr/bin",
+        GRIMODEX_FOO_TOKEN: "dummy-foo",
+        ANTHROPIC_API_KEY: "dummy-anthropic",
+      };
+      for (const name of OWNER_TOKEN_NAMES) env[name] = "dummy-owner";
+      const result = createMastraEnvPin({ env, platform }).apply();
+      for (const name of OWNER_TOKEN_NAMES) {
+        expect(env[name], `${platform} ${name}`).toBe("dummy-owner");
+        expect(result.removed).not.toContain(name);
+      }
+      expect(env.GRIMODEX_FOO_TOKEN).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(result.removed).toEqual(
+        ["ANTHROPIC_API_KEY", "GRIMODEX_FOO_TOKEN"].sort(),
+      );
+    }
+  });
+});
+
+describe("originalEnv の配線（MP-3a、DR-MP3-9）：apply の前は live の process.env と同値で、gate 閉で挙動が変わらない", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("共有の pin の mastraOriginalEnv は、apply の前は live の process.env の写しと同値で、後の変更も見える", () => {
+    expect(mastraOriginalEnv()).toEqual({ ...process.env });
+    expect(mastraOriginalEnv()).not.toBe(process.env);
+    vi.stubEnv("GRIMODEX_MP3A_PROBE", "after-construction");
+    expect(mastraOriginalEnv().GRIMODEX_MP3A_PROBE).toBe("after-construction");
+    expect(mastraOriginalEnvValue("GRIMODEX_MP3A_PROBE")).toBe(
+      "after-construction",
+    );
+    vi.stubEnv("GRIMODEX_MP3A_PROBE", undefined);
+    expect(mastraOriginalEnvValue("GRIMODEX_MP3A_PROBE")).toBeUndefined();
+    // 写しを変えても process.env に響かない。
+    const copy = mastraOriginalEnv();
+    copy.GRIMODEX_MP3A_WRITE = "x";
+    expect(process.env.GRIMODEX_MP3A_WRITE).toBeUndefined();
+  });
+
+  it("名前引きは apply の前後で同じ値（apply の後は固定前の写し）。除く名前も固定前の値を返す", () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin",
+      OPENROUTER_API_KEY: "dummy-openrouter",
+      MASTRA_DEV: "true",
+    };
+    const pin = createMastraEnvPin({ env, platform: "linux" });
+    expect(pin.originalEnvValue("OPENROUTER_API_KEY")).toBe("dummy-openrouter");
+    pin.apply();
+    expect(env.OPENROUTER_API_KEY).toBeUndefined();
+    expect(pin.originalEnvValue("OPENROUTER_API_KEY")).toBe("dummy-openrouter");
+    expect(pin.originalEnvValue("MASTRA_DEV")).toBe("true");
+    expect(pin.originalEnvValue("MASTRA_OFFLINE")).toBeUndefined();
+    expect(pin.originalEnvValue("PATH")).toBe("/usr/bin");
+    expect(pin.originalEnvValue("absent")).toBeUndefined();
+  });
+
+  it("Windows：写しも名前引きも、process.env と同じく大文字小文字を区別しない（実 key が Path でも PATH で引ける）", () => {
+    const env: NodeJS.ProcessEnv = {
+      Path: "C:\\Windows",
+      LocalAppData: "C:\\Users\\u\\AppData\\Local",
+      ANTHROPIC_API_KEY: "dummy",
+    };
+    const pin = createMastraEnvPin({ env, platform: "win32" });
+    const before = pin.originalEnv();
+    expect(before.PATH).toBe("C:\\Windows");
+    expect(before.LOCALAPPDATA).toBe("C:\\Users\\u\\AppData\\Local");
+    expect("PATH" in before).toBe(true);
+    expect(pin.originalEnvValue("PATH")).toBe("C:\\Windows");
+    expect(pin.originalEnvValue("localappdata")).toBe(
+      "C:\\Users\\u\\AppData\\Local",
+    );
+    // 実 key は変わらない（spawn の env に Path がそのまま渡る）。
+    expect(Object.keys(before).sort()).toEqual(
+      ["ANTHROPIC_API_KEY", "LocalAppData", "Path"].sort(),
+    );
+    expect({ ...before }).toEqual({ ...env });
+    pin.apply();
+    const after = pin.originalEnv();
+    expect(after.path).toBe("C:\\Windows");
+    expect(after.ANTHROPIC_API_KEY).toBe("dummy");
+    expect(env.Path).toBe("C:\\Windows");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    // 写しへの書込みは、固定前の写しにも env にも響かない。大小違いの名前は同じ key に書く。
+    after.PATH = "changed";
+    expect(after.Path).toBe("changed");
+    expect(pin.originalEnv().Path).toBe("C:\\Windows");
+    delete after.pAtH;
+    expect(after.Path).toBeUndefined();
+  });
+
+  it("POSIX の写しは plain object のまま（大小を区別する）", () => {
+    const pin = createMastraEnvPin({
+      env: { Path: "/x" },
+      platform: "linux",
+    });
+    expect(pin.originalEnv().PATH).toBeUndefined();
+    expect(pin.originalEnvValue("PATH")).toBeUndefined();
+    expect(pin.originalEnvValue("Path")).toBe("/x");
+  });
+
+  it("構築後に process.env の object が差し替わっても、既定の pin は新しい process.env を見る", () => {
+    const real = process.env;
+    const pin = createMastraEnvPin({ platform: "linux" });
+    try {
+      process.env = { PATH: "/replaced" };
+      expect(pin.originalEnv()).toEqual({ PATH: "/replaced" });
+    } finally {
+      process.env = real;
+    }
+  });
+});
+
+describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は apply を呼ばない。呼ぶのは MP-3c）", () => {
+  /** コメントと文字列の中の言及を除いた code。 */
+  const codeOf = (text: string): string =>
+    text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+  /** electron の製品 code（試験・spec 以外の .ts）。 */
+  const productSources = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (
+          /\.ts$/.test(entry.name) &&
+          !/\.(test|spec)\.ts$/.test(entry.name) &&
+          !/\.d\.ts$/.test(entry.name)
+        ) {
+          out[path.relative(repoRoot, full)] = fs.readFileSync(full, "utf8");
+        }
+      }
+    };
+    for (const sub of ["main", "shared", "preload"]) {
+      walk(path.join(repoRoot, "electron", sub));
+    }
+    return out;
+  };
+
+  /** mastraEnv.ts の外で、pin の作成・apply・固定の定数に触れている file と理由。 */
+  const violations = (sources: Record<string, string>): string[] => {
+    const found: string[] = [];
+    for (const [file, text] of Object.entries(sources)) {
+      if (file.endsWith(path.join("electron", "main", "mastraEnv.ts"))) {
+        continue;
+      }
+      const code = codeOf(text);
+      for (const match of code.matchAll(
+        /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["'][^"']*mastraEnv(?:\.js)?["']/g,
+      )) {
+        for (const raw of match[1].split(",")) {
+          const name = raw.trim().split(/\s+as\s+/)[0];
+          if (
+            name &&
+            name !== "mastraOriginalEnv" &&
+            name !== "mastraOriginalEnvValue" &&
+            !/^type\s/.test(name) &&
+            name !== "MastraEnvPin" &&
+            name !== "MastraEnvPinResult"
+          ) {
+            found.push(`${file}: mastraEnv から ${name} を import している`);
+          }
+        }
+      }
+      if (/createMastraEnvPin|sharedPin|\bMASTRA_PINNED_ENV\b/.test(code)) {
+        found.push(`${file}: pin の作成か固定の定数に触れている`);
+      }
+      if (/\bimport\s*\*\s*as\s+\w+\s+from\s*["'][^"']*mastraEnv/.test(code)) {
+        found.push(`${file}: mastraEnv を namespace import している`);
+      }
+    }
+    return found;
+  };
+
+  it("製品の code は mastraOriginalEnv／mastraOriginalEnvValue だけを import し、pin を作らず apply に届かない", () => {
+    const sources = productSources();
+    expect(Object.keys(sources).length).toBeGreaterThan(50);
+    expect(violations(sources)).toEqual([]);
+    // mastraEnv を使う file が配線の想定どおり（読む箇所が 0 件になっていない）。
+    const users = Object.entries(sources)
+      .filter(
+        ([file, text]) =>
+          !file.endsWith(path.join("main", "mastraEnv.ts")) &&
+          /from\s*["'][^"']*mastraEnv(?:\.js)?["']/.test(text),
+      )
+      .map(([file]) => file.split(path.sep).slice(-2).join("/"))
+      .sort();
+    expect(users).toEqual(
+      [
+        "main/backend.ts",
+        "main/cliAi.ts",
+        "main/ipc.ts",
+        "main/mcpSidecar.ts",
+        "codexAppServer/process.ts",
+        "main/vivliostyle.ts",
+      ].sort(),
+    );
+  });
+
+  it("陰性対照：pin を作る・apply に届く import は検出される", () => {
+    expect(
+      violations({
+        "electron/main/x.ts":
+          'import { createMastraEnvPin } from "./mastraEnv.js";\nconst pin = createMastraEnvPin(); pin.apply();',
+        "electron/main/y.ts":
+          'import * as env from "./mastraEnv.js";\nenv.mastraOriginalEnv();',
+        "electron/main/z.ts":
+          'import { mastraOriginalEnv, MASTRA_PINNED_ENV as P } from "./mastraEnv.js";',
+        "electron/main/ok.ts":
+          '// createMastraEnvPin は書かない\nimport { mastraOriginalEnv } from "./mastraEnv.js";',
+      }).length,
+    ).toBe(5);
+  });
+
+  it("apply の呼び出しは mastraEnv.ts の定義だけ（共有 pin への入口を export していない）", () => {
+    const text = codeOf(
+      fs.readFileSync(
+        path.join(repoRoot, "electron/main/mastraEnv.ts"),
+        "utf8",
+      ),
+    );
+    expect([...text.matchAll(/\.apply\(/g)]).toEqual([]);
+    expect(text).not.toMatch(/export\s+(?:const|let|function)\s+sharedPin/);
+    expect(text).not.toMatch(/export\s*\{[^}]*sharedPin/);
+    expect(
+      [...text.matchAll(/export\s+function\s+(\w+)/g)].map((m) => m[1]),
+    ).toEqual([
+      "isMastraRemovedEnvName",
+      "createMastraEnvPin",
+      "mastraOriginalEnv",
+      "mastraOriginalEnvValue",
+    ]);
+  });
+
+  it("配線した箇所は process.env を直接読まない（ipc.ts は launch の env だけ、backend.ts は GRIMODEX_NODE_PATH を除く）", () => {
+    const read = (rel: string) =>
+      codeOf(fs.readFileSync(path.join(repoRoot, rel), "utf8"));
+    for (const rel of [
+      "electron/main/cliAi.ts",
+      "electron/main/codexAppServer/process.ts",
+      "electron/main/vivliostyle.ts",
+      "electron/main/mcpSidecar.ts",
+    ]) {
+      expect(read(rel), rel).not.toMatch(/process\.env/);
+      expect(read(rel), rel).toMatch(/mastraOriginalEnv/);
+    }
+    const backend = read("electron/main/backend.ts");
+    expect(backend.match(/process\.env/g)).toHaveLength(1);
+    expect(backend).toMatch(/process\.env\.GRIMODEX_NODE_PATH/);
+    expect(backend.match(/= mastraOriginalEnv\(\)/g)).toHaveLength(2);
+    expect(read("electron/main/ipc.ts")).toMatch(
+      /isPackaged: false,\s*env: mastraOriginalEnv\(\)/,
+    );
+  });
+});
+
 describe("版を上げたときの drift の検知（計画書の第 11 節の 1）", () => {
   /**
    * apply の後に値が残ってよい、key や token でない無害な設定。理由のコメントを付けて、版を上げて
@@ -302,6 +632,19 @@ describe("版を上げたときの drift の検知（計画書の第 11 節の 1
     expect(table).toBeTruthy();
     for (const name of table!.match(/"[A-Z0-9_]+"/g) ?? []) {
       expect(isMastraRemovedEnvName(name.slice(1, -1), "linux")).toBe(true);
+    }
+  });
+
+  it("許可リスト（Grimodex 自身の owner token）の名前を、@mastra の dist は読まない。GRIMODEX_ の名前も読まない（読むようになったら落ちる。DR-MP3-8）", () => {
+    for (const pkg of ["core", "memory"]) {
+      const names = readEnvNames(pkg);
+      for (const name of MASTRA_ALLOWED_ENV_NAMES) {
+        expect(names.has(name), `${pkg}: ${name}`).toBe(false);
+      }
+      expect(
+        [...names].filter((name) => /^grimodex_/i.test(name)),
+        pkg,
+      ).toEqual([]);
     }
   });
 

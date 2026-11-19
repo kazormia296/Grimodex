@@ -20,6 +20,7 @@ import type {
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
 import { createCliLineAdapter, type CliKind } from "./cliAdapters.js";
+import { mastraOriginalEnv, mastraOriginalEnvValue } from "./mastraEnv.js";
 
 export const MAX_CLI_LINE_BYTES = 1024 * 1024;
 export const MAX_CLI_STREAM_BYTES = 64 * 1024 * 1024;
@@ -317,17 +318,18 @@ function readOpenCodeConfig(candidate: string): string | null {
 
 function openCodeReferencedEnvKeys(cwd?: string): string[] {
   const keys = new Set<string>();
-  const inlineConfig = process.env.OPENCODE_CONFIG_CONTENT;
+  const inlineConfig = mastraOriginalEnvValue("OPENCODE_CONFIG_CONTENT");
   if (inlineConfig) {
     for (const key of extractEnvReferences(inlineConfig)) keys.add(key);
   }
 
   const workingDirectory = cwd ?? process.cwd();
-  const homeDirectory = process.env.HOME ?? process.env.USERPROFILE;
+  const homeDirectory =
+    mastraOriginalEnvValue("HOME") ?? mastraOriginalEnvValue("USERPROFILE");
   const xdgConfigDirectory =
-    process.env.XDG_CONFIG_HOME ??
+    mastraOriginalEnvValue("XDG_CONFIG_HOME") ??
     (homeDirectory ? path.join(homeDirectory, ".config") : undefined);
-  const explicitConfig = process.env.OPENCODE_CONFIG;
+  const explicitConfig = mastraOriginalEnvValue("OPENCODE_CONFIG");
   const configCandidates = [
     explicitConfig ? path.resolve(workingDirectory, explicitConfig) : undefined,
     xdgConfigDirectory
@@ -385,7 +387,7 @@ function mergedEnv(
   }
   const environment: NodeJS.ProcessEnv = {};
   for (const key of keys) {
-    const value = process.env[key];
+    const value = mastraOriginalEnvValue(key);
     if (value !== undefined) environment[key] = value;
   }
   if (extra) {
@@ -1362,7 +1364,9 @@ export function createCliAiManager(
   supplied: CliAiDependencies = {},
 ): CliAiManager {
   const platform = supplied.platform ?? process.platform;
-  const env = supplied.env ?? process.env;
+  // 使う時点で引く（構築時に写しを撮ると、後の process.env の変更が見えなくなる）。固定前の env の写し（MP-3a、DR-MP3-9）。
+  const currentEnv = (): NodeJS.ProcessEnv =>
+    supplied.env ?? mastraOriginalEnv();
   const homeDir = supplied.homeDir ?? os.homedir();
   const isFile = supplied.isFile ?? defaultIsFile;
   const resolveRealPath = supplied.realPath ?? defaultRealPath;
@@ -1408,7 +1412,7 @@ export function createCliAiManager(
       detectCliBinaryMain(kind, {
         runner: trackedRunner,
         platform,
-        env,
+        env: currentEnv(),
         homeDir,
         isFile,
         readDir,
