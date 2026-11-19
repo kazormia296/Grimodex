@@ -76,6 +76,8 @@
 
 Mastra の判断の後の見通し：送信が Rust に残るので、cache の可否と reasoning の判定を一本化するには、能力の解決結果が Rust に届く必要がある。案 R が有力。Mastra の registry の能力は attachment／temperature／structuredOutput／reasoning だけなので、この lane の正本にはしない。確定は spike の後。
 
+参照：Mastra 移行の実装計画 [`mastra-migration-plan.md`](mastra-migration-plan.md)（調査は [`mastra-migration-survey.md`](mastra-migration-survey.md)）。
+
 ## 6. 実行時の registry の取得（§2 の決定の具体化）
 
 - **送信者**：main か Rust（§5）。renderer からは送らない。renderer は CSP で `connect-src 'self'`、RS-1 の封じ込めの対象。
