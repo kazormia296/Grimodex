@@ -14,10 +14,6 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
-import {
-  BUNDLE_BYTE_BUDGET,
-  bundleByteFailures,
-} from "./bundle-byte-budget.mjs";
 import { bundleConfigs, composePlugins, rootDir } from "./build.mjs";
 import {
   EE_CONTENT_MARKERS,
@@ -979,52 +975,20 @@ test("PRODUCT_BUNDLES の名前は build.mjs の出力と一致する", () => {
   );
 });
 
-test("byte の予算（ratchet）：main／preload の上限を超えるか測れないと落ち、mastra-agent.cjs は予算を持たない", async () => {
-  assert.deepEqual(Object.keys(BUNDLE_BYTE_BUDGET), [
-    "main.cjs",
-    "preload.cjs",
-  ]);
-  assert.deepEqual(
-    bundleByteFailures({
-      "main.cjs": BUNDLE_BYTE_BUDGET["main.cjs"],
-      "preload.cjs": 1,
-      "mastra-agent.cjs": 99_000_000,
-    }),
-    [],
-  );
-  assert.match(
-    bundleByteFailures({
-      "main.cjs": BUNDLE_BYTE_BUDGET["main.cjs"] + 1,
-      "preload.cjs": 1,
-    }).join("\n"),
-    /main\.cjs が byte の予算を超えた/,
-  );
-  // @mastra が混ざった main（約 13 MB 増）は必ず超える。
-  assert.equal(
-    bundleByteFailures({
-      "main.cjs": 3_070_561 + 13_000_000,
-      "preload.cjs": 20_934,
-    }).length,
-    1,
-  );
-  assert.match(
-    bundleByteFailures({ "main.cjs": null, "preload.cjs": 1 }).join("\n"),
-    /測れない/,
-  );
-  // 実際の config から組んだ bundle は予算に収まる（予算が現実とずれていない）。
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-ee-budget-"));
+test("大きさは記録するだけで、失敗にしない（main／preload に @mastra が入ることは文字列と metafile の検査が別に捕まえる。DR-MP3-21）", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-ee-bytes-"));
   try {
     await buildDist(dir);
     const result = await checkDist({ rootDir, distDir: dir });
     assert.deepEqual(result.failures, []);
-    for (const [name, limit] of Object.entries(BUNDLE_BYTE_BUDGET)) {
-      assert.ok(
-        result.bytes[name] <= limit,
-        `${name}: ${result.bytes[name]} <= ${limit}`,
-      );
-      // 余裕は小さい（予算が緩すぎて、Mastra の混入を見逃さない）。
-      assert.ok(limit < result.bytes[name] * 1.1, `${name} の余裕は 10% 未満`);
+    for (const name of ["main.cjs", "preload.cjs", "mastra-agent.cjs"]) {
+      assert.ok(result.bytes[name] > 0, `${name} の大きさを記録する`);
     }
+    // 大きな main でも、大きさでは落ちない（@mastra の混入は別の検査が落とす）。
+    fs.appendFileSync(path.join(dir, "main.cjs"), "x".repeat(5_000_000));
+    const bigger = await checkDist({ rootDir, distDir: dir });
+    assert.deepEqual(bigger.failures, []);
+    assert.ok(bigger.bytes["main.cjs"] > 5_000_000);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

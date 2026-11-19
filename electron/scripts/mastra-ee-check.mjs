@@ -11,7 +11,7 @@
  *   - 陰性対照：mastra-agent の config から stub を外すと、ee の input と文字列を検出して落ちる。
  *   - picomatch（GHSA-fc5q の例外の対象）を import する依存の外の file は、workspace-skills の chunk だけ
  *     （@mastra/core を上げて importer が増えたら落ちる）。
- *   - main.cjs と preload.cjs の大きさが byte の予算（bundle-byte-budget.mjs の ratchet）以内。
+ *   - main.cjs・preload.cjs・mastra-agent.cjs の大きさは出力の `bytes` に記録するだけ（失敗にしない。DR-MP3-21）。
  *
  * - 陰性対照：stub なしの素の bundle で、ee の input と ee 固有の文字列を検出できること。
  *   検出が壊れていて「0 件で通る」ことを防ぐ。
@@ -35,7 +35,6 @@ import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 
 import { bundleConfigs, rootDir as defaultRootDir } from "./build.mjs";
-import { bundleByteFailures } from "./bundle-byte-budget.mjs";
 import { EE_CONTENT_MARKERS, EE_INPUT } from "./mastra-ee-patterns.mjs";
 import { EE_STUB_MARK, eeStubPlugin } from "./mastra-ee-stub-plugin.mjs";
 
@@ -541,7 +540,6 @@ export async function checkDist({
       }
     }),
   );
-  failures.push(...bundleByteFailures(bytes));
   return {
     ok: failures.length === 0,
     failures,

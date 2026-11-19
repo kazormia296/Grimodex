@@ -167,6 +167,14 @@ function caseInsensitiveEnv(copy: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     has(target, prop) {
       return find(prop) !== undefined || Reflect.has(target, prop);
     },
+    getOwnPropertyDescriptor(target, prop) {
+      // `Object.hasOwn(env, "CI")` と `Object.getOwnPropertyDescriptor` も大小を区別しない（`has` と整合させる）。
+      const key = find(prop);
+      return Reflect.getOwnPropertyDescriptor(
+        target,
+        key === undefined ? prop : key,
+      );
+    },
     set(target, prop, value) {
       if (typeof prop !== "string") return Reflect.set(target, prop, value);
       target[find(prop) ?? prop] = value as string | undefined;

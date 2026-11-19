@@ -28,14 +28,14 @@
 - 3c（owner・runtime）：turn owner、lifecycle（participant、quit、workspace 切替）、agentRuntime の本実装、lazy load、静的検査の拡張、journey。
   gate が閉なら Mastra を load しない。変わるのは seam で開けたときだけ。
 - 3a の中身は、最小の `electron/main/mastra/agentRuntime.ts`（Agent を import して型と factory の雛形を export するだけ。製品のどこからも require しない）、
-  3 つ目の bundle、ee 検査の差し替え、asar 検査の切り出し、byte の ratchet、env の許可リストと配線。
+  3 つ目の bundle、ee 検査の差し替え、asar 検査の切り出し、env の許可リストと配線（大きさは記録だけ。DR-MP3-21）。
 
 ### DR-MP3-2 計画の読み替え（範囲の変更。決定）
 
 - renderer の engine 分岐は **MP-4 へ移す**。理由：agent mode の turn は常に tool が非空（manifest の 44 本）なので、tool 0 の turn は製品でも journey でも作れない。
   MP-3 の renderer の分岐は journey のための新しい test hook（新しい authority になりうる）を要する。製品の挙動は MP-4 まで変わらないので、閉の保証が強い。
 - packaged での load・通信 0・asar 内の `require` は **MP-13 の受入れ**にする。packaged の seam は閉で、load する入口を新設しない。
-  MP-3 は、閉状態（Mastra を load しない）の確認、非 packaged の seam journey、ee・asar・byte の検査で受け入れる。
+  MP-3 は、閉状態（Mastra を load しない）の確認、非 packaged の seam journey、ee・asar の検査で受け入れる。
 - 旗 L は **Main の gate と journey の seam だけ**にする。Native の `PrePublicationEntry`（L）と新しい Main 専用 N-API は **足さない**（計画書の第 4.1 節の型は踏襲しない）。
   Native の closure は、既存の `send_agent_message` が renderer から常に届くため、旗 L では何も閉じない。旗 M（memory の書込み）で Native の entry を足す。
 - 影響：3b の範囲は Native・Rust を含まない。`electron/native/grimodex-node/src/main_grant.rs` と `index.d.ts` は MP-3 で変えない。
@@ -86,9 +86,9 @@
 | 原因 | abort する者 | 待つもの（枠） | terminal の書き手・時機・形 | 遅れた Native の settle |
 |---|---|---|---|---|
 | user-stop（renderer の cancel） | owner（`user-stop`）。次の step を始めない | turn の自然な終端（枠なし。送信中の呼出しは切らない＝今の Stop と同じ強さ） | adapter が通常の complete／fail。取消しだけなら `execution.cancelled` | 捨てるものは無い（通常の終端） |
-| restricted（profile の切替） | owner が participant の quiesce の中で admission を閉じ、reserved 中に `forced` | owner 自身の settle と terminal の書込み（30 秒の枠。Native の send は待たない） | owner が quiesce の中で ambiguous の terminal（restricted 中も append は通る）。書けなければ quiesce は unavailable を返す（既存の経路） | 捨てる。Native の cancel（stage 5）で send は速やかに reject し、permit も落ちる |
+| restricted（profile の切替） | owner が participant の quiesce の中で admission を閉じ、reserved 中に `forced` | owner 自身の settle と terminal の書込み（30 秒の枠。Native の send は待たない） | owner が quiesce の中で ambiguous の terminal。quiesce（stage 3）は Native の commit（stage 4〜5）より前なので、この時点ではまだ restricted ではなく append は通る（restricted になった後も `ai_audit_append_batch` が通ることは `profileEgress.ts` の `INTERNAL_COMMANDS` で別に成り立つ）。書けなければ quiesce は unavailable を返す（既存の経路） | 捨てる。Native の cancel（stage 5）で send は速やかに reject し、permit も落ちる |
 | workspace 切替 | owner の lease（`ipc.ts` の lease 列）。切替の分岐の先頭で同期 abort | lease の取得に main 側の時間 bound。Native の open の**前**に terminal を書き終える | owner が**旧 workspace に** ambiguous の terminal（切替後は旧 workspace へ書けないので前に書く） | 捨てる。send は旧 workspace の pin に束縛され、新 workspace へ書かない |
-| quit | finalizer（dispose と complete の両方の `shutdown()`） | `T_quit`＝5 秒（暫定。30 秒の予算の内側）。有界・冪等・非 reject | owner が bound 内で ambiguous の terminal。書けなければ start-only のまま残し、Native の recover（Drop、起動時 sweep）が InterruptedUnknown で閉じる | 捨てる（process が終わる） |
+| quit | finalizer（dispose と complete の両方の `shutdown()`） | `T_quit`＝5 秒（暫定。30 秒の予算の内側）。有界・冪等・非 reject | owner が bound 内で ambiguous の terminal。書けなければ start-only のまま残る（**回収なし**。DR-MP3-10） | 捨てる（process が終わる） |
 | sender 消失（`destroyed`・`render-process-gone`・main frame の遷移・window の `closed`） | per-turn listener（DR-MP3-7） | 待たない（renderer は居ない） | owner が現在の workspace に ambiguous の terminal | 捨てる（返す先が無い） |
 
 ### DR-MP3-7 sender 消失の検知と listener（技術判断）
@@ -101,7 +101,9 @@
 - 新しい event type は足さない。**terminal 行**（`execution.failed`。取消しだけなら `execution.cancelled`）に payload
   `remoteOutcome:"unknown"`、`conservative:true`、`captureState:"partial"`、`responseObserved:false` を付けたものを「ambiguous の audit 行」と定義する（NIR-1 local generation と同形）。
 - **start-only**（`execution.started` があり terminal が 0 件）は「閉じていない異常」として区別する。報告書の `ambiguousExecutionCount` は start-only を数える既存の定義のまま。
-- 届かない仕事は、audit の start を書いた後、必ず terminal を上の形で書く（D11、X21、X22 の受入れ条件）。書く前に終了した場合は Native の recover が閉じる。
+- 届かない仕事は、audit の start を書いた後、必ず terminal を上の形で書く（D11、X21、X22 の受入れ条件）。書く前に終了した場合の回収は**ない**：`InterruptedUnknown` と Drop／起動時 sweep は `nir1_generation*.rs` と `nir1_local_transport.rs`（NIR-1 の local generation）だけにあり、`ai_audit` と `grimodex-ai` に回収は無い。
+  `chat_agent_main` の start-only は残り、`reportCoverage.ts` が `ambiguousExecutionCount` として数えるだけ（脅威モデル D11 の「終了証跡」は、terminal を書けた場合に限って満たされる）。
+  回収が要るなら、3c で新しい契約として確認する（3a・3b では足さない）。
 - 脅威モデルの「ambiguous の audit 行」の語は、この定義（payload の `remoteOutcome:"unknown"`）を指す。MP-11 の件数は payload で数える reader を足す（読出しだけの追加）。
   この文書は脅威モデルの文言を変えない。
 - 新 authority・閾値・送信先・保存範囲には触れない。
@@ -114,7 +116,7 @@
   「自分の settle」は owner 側の turn の promise（DR-MP3-6 の規則 2 で abort に競わせて先に settle する）で、Native の send の完了ではない。
   quiesce が Native の send を待つと 30 秒の participant-timeout になるので、待たない。原因別の表は DR-MP3-6。
 
-### DR-MP3-12 workspace 切替（技術判断。W9 の読み替え）
+### DR-MP3-12 workspace 切替（ユーザー決定 2026-11-19。W9 の読み替え）
 
 - `ipc.ts` の lease 列に turn owner の lease を足す。受付を閉じ、**旧 workspace に ambiguous の terminal 行を書いてから** Native の open に進む。
   切替の分岐の先頭で同期 abort する。第 2 段の hook は `workspace:opened` だけでは不足（置換の Ready を publish しない path がある）なので、
@@ -168,8 +170,9 @@
     例外は `ipc.ts` の NIR-1 local generation の launch の env で、`registerIpcRouter` の登録時に 1 回だけ読む構造（`parseNir1LocalGenerationCiSeam` を 1 回呼ぶ）なので、
     登録時の写しは live の参照と同値。packaged は env を読まない（`isPackaged !== false` の分岐では `mastraOriginalEnv()` を呼ばない）。`apply()` の前は live の `process.env` の写しと同値で、gate 閉の挙動は変わらない（試験で固定）。
   - Windows の `process.env` は名前の大文字小文字を区別しない。plain な写しは `Path` を `PATH` で引けなくなるので、win32 の写しは大文字小文字を区別しない Proxy で包み、名前引きも fold を通す。
-- 未配線のまま残した読出し（apply の前後で値が変わらない名前だけ）：`index.ts` の seam の読出し、`userData.ts`、`linuxGraphics.ts`、`isolatedHome.ts`、`externalMountFs.ts`、`backend.ts` の `GRIMODEX_NODE_PATH`。
-  これらが読む名前は除去規則に当たらない（owner token は許可リストで残る）。
+- 未配線のまま残した読出し：`index.ts`（153、180、809、822 の env と seam の読出し）、`userData.ts`、`linuxGraphics.ts`、`isolatedHome.ts`、`externalMountFs.ts`、`devRendererUrl.ts`、
+  `productJourneyAi.ts`（110、132）、`narrativeMaintenanceCiSeam.ts`（292）、`ipc.ts`（1727 の `GRIMODEX_WORKSPACE_OPEN_TRACE`）、`backend.ts` の `GRIMODEX_NODE_PATH`、`preload/index.ts`。
+  これらが読む名前は除去規則に当たらない（owner token は許可リストで残る）ので、実害はない。`preload/index.ts` は別 process（sandbox の preload）の env で、main の `apply()` の影響を受けない。
 
 ### DR-MP3-14 workspace を有効にしない（決定＋技術判断）
 
@@ -189,7 +192,9 @@
   main.cjs・preload.cjs に picomatch は入らない。
 - 固定：`mastra-ee-check.mjs --dist` が importer を workspace-skills の chunk に pin する。`@mastra/core` を上げて importer が増えたら落ちる（設計）。
 - 延長は別の確認（期限 12/18 は変えない。fixed の picomatch が出たら上げて例外を外す）。
-- 信頼境界：picomatch に届く入力は、workspace の skills の glob だけ。利用者の入力は Mastra の workspace に渡さない。
+- 信頼境界：picomatch に届く入力は、workspace の skills の glob と、workspace の file 操作（`workspace-*.js` の `createGlobMatcher`）の glob。利用者の入力は Mastra の workspace に渡さない。
+- 補足：workspace-skills の chunk は `evented-execution` が BM25（tokenize）のために常に import する。chunk は load されるが、workspace を使わなければ picomatch の呼出しは無い。
+  だから importer の pin は「到達しない」の証明ではなく、「importer が増えたら気づく」ための検査で、到達を防ぐのは DR-MP3-14 の静的検査。
 
 ### DR-MP3-16 再試行なし・telemetry・env の固定（決定）
 
@@ -221,7 +226,7 @@
   - main.cjs・preload.cjs（と `.map` の `sources`）に `@mastra` が 0。`.map` は `sources` の path だけを見る（`sourcesContent` には自分の source の comment が入る）。
   - mastra-agent.cjs は stub の目印（`__EE_STUB__`）が 1 件以上、ee 固有の文字列が 0、`.map` が無い。全 bundle の config に stub plugin がある。
   - 陰性対照：mastra-agent の config から stub を外した build は ee の input と文字列を検出して落ちる（`.cjs` の require 経路の検査用 entry も走る）。
-  - picomatch の importer の pin（DR-MP3-15）、byte の予算（DR-MP3-21）。
+  - picomatch の importer の pin（DR-MP3-15）。大きさは `bytes` に記録するだけ（DR-MP3-21）。
 - CI：`ci.yml` の electron job の production build の後に `--dist` の step を足した。local CI は新しい task id を作らず（`registryDigest` と workload allocation の terms が要る）、
   registry の `electron.build`（`pnpm ci:build:desktop`）の中で走らせる（`package.json` の `ci:build:desktop` に足し、`local-ci-full-workload-allocation.json` の `package.json` の sha256 を同期した）。
   `pnpm electron:build`（NIR の標準 build の固定 command）は変えない。
@@ -234,12 +239,14 @@
   `<os>-unpacked/resources/app.asar`（macOS は `Contents/Resources/app.asar`）を全部検査し、1 つも無ければ失敗する。worker の検証は呼ばない（`electron:native:release` に既にあり、重複させない）。
 - `packaged-smoke.yml` の PR の paths に `electron/scripts/build.mjs` と `electron/main/mastra/**` を足した。
 
-### DR-MP3-21 byte の予算（ratchet。技術判断）
+### DR-MP3-21 bundle の大きさは記録だけ（予算の gate を置かない。技術判断）
 
-- `electron/scripts/bundle-byte-budget.mjs`：main.cjs ≤ 3,100,000 bytes、preload.cjs ≤ 22,000 bytes（現在値＋小さな余裕）。`--dist` が照合する。
-  Mastra の混入（MB 単位）は必ず超え、通常の main の変更（数 KB）は収まる。増える変更は予算を意図して上げる commit にする。
-- 新設の予算で、既存の閾値（`perf:budget`、起動時間、`coldStartMs`）は緩めない。mastra-agent.cjs は予算を持たず、大きさを記録するだけ（load 時間は MP-3c）。
-- `perf:budget` は renderer の bundle だけを見る。3a は renderer の source を変えないので、値は変わらない。
+- main.cjs・preload.cjs に byte の予算（ratchet）を**置かない**。余裕（現在値＋数十 KB）は main.cjs の自然な増加で数日で尽き、無関係な PR を赤にする。
+  また新しい閾値は、ユーザーの確認が要る新しい gate になる。
+- main／preload に Mastra が入ることは、別の検査が捕まえる：`mastra-ee-check.mjs --dist` の `@mastra` の文字列検査（`.cjs` と `.map` の `sources`）と、in-memory build の metafile の `@mastra/*` の input（0 件）。
+  大きさでしか見えない混入は無い（Mastra は MB 単位で、必ず `@mastra` の文字列と input を伴う）。
+- 大きさは `--dist` の出力（`bytes`）に記録として出すだけで、失敗にしない（3a の実測は DR-MP3-18）。mastra-agent.cjs の load 時間は MP-3c で測る。
+- 既存の閾値（`perf:budget`、起動時間、`coldStartMs`）は緩めない。`perf:budget` は renderer の bundle だけを見る。3a は renderer の source を変えないので、値は変わらない。
 
 ### DR-MP3-22 NIR の標準 build の receipt の外（技術判断）
 

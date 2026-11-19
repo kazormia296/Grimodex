@@ -370,6 +370,15 @@ describe("originalEnv の配線（MP-3a、DR-MP3-9）：apply の前は live の
       ["ANTHROPIC_API_KEY", "LocalAppData", "Path"].sort(),
     );
     expect({ ...before }).toEqual({ ...env });
+    // `Object.hasOwn`／`getOwnPropertyDescriptor` も大小を区別しない（process.env と同じ）。
+    expect(Object.hasOwn(before, "PATH")).toBe(true);
+    expect(Object.hasOwn(before, "path")).toBe(true);
+    expect(Object.hasOwn(before, "localappdata")).toBe(true);
+    expect(Object.hasOwn(before, "ABSENT")).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(before, "PATH")?.value).toBe(
+      "C:\\Windows",
+    );
+    expect(Object.getOwnPropertyDescriptor(before, "ABSENT")).toBeUndefined();
     pin.apply();
     const after = pin.originalEnv();
     expect(after.path).toBe("C:\\Windows");
@@ -382,6 +391,18 @@ describe("originalEnv の配線（MP-3a、DR-MP3-9）：apply の前は live の
     expect(pin.originalEnv().Path).toBe("C:\\Windows");
     delete after.pAtH;
     expect(after.Path).toBeUndefined();
+  });
+
+  it('Windows の写しで、実 key が Ci でも Object.hasOwn(copy, "CI") が真になる（seam の own property の読出し）', () => {
+    const pin = createMastraEnvPin({
+      env: { Ci: "true" },
+      platform: "win32",
+    });
+    const copy = pin.originalEnv();
+    expect(Object.hasOwn(copy, "CI")).toBe(true);
+    expect(copy.CI).toBe("true");
+    expect(Object.keys(copy)).toEqual(["Ci"]);
+    expect(Object.hasOwn(copy, "OTHER")).toBe(false);
   });
 
   it("POSIX の写しは plain object のまま（大小を区別する）", () => {
