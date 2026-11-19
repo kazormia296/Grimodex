@@ -36,6 +36,11 @@ keyring = ["dep:keyring"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "rt", "macros", "net", "io-util"] }
+# Electron addon (grimodex-node) の build では、他の crate 経由で serde_json の
+# preserve_order と float_roundtrip が有効になる（`cargo tree -e features` で確認）。
+# 単体の `cargo test -p grimodex-ai` でも同じ条件にして、wire body の key 順・数値表現を
+# addon の送信と揃える（src/mastra_wire_parity_tests.rs）。製品の依存は変えない。
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
