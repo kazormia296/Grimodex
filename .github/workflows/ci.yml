@@ -366,11 +366,32 @@ jobs:
             pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run
           fi
 
+  # frontend は Gate B2 の必須 job 名（Frontend (type-check / lint / test)）を保つ集約 job。
+  # 静的検査は frontend-static で 1 回、Vitest は frontend-unit の 3 shard で並列に走る。
   frontend:
     name: Frontend (type-check / lint / test)
+    needs: [frontend-static, frontend-unit]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Frontend の静的検査と全 shard の成功を確認
+        env:
+          STATIC_RESULT: ${{ needs.frontend-static.result }}
+          UNIT_RESULT: ${{ needs.frontend-unit.result }}
+        run: |
+          echo "frontend-static: $STATIC_RESULT"
+          echo "frontend-unit: $UNIT_RESULT"
+          if [ "$STATIC_RESULT" != "success" ] || [ "$UNIT_RESULT" != "success" ]; then
+            echo "Frontend の静的検査または Vitest shard が成功していない" >&2
+            exit 1
+          fi
+
+  frontend-static:
+    name: Frontend static checks (type-check / lint / architecture / web editor)
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -402,13 +423,37 @@ jobs:
       - name: Browser CI performance contracts
         run: pnpm test:browser-ci
 
-      - name: テスト
-        run: pnpm test:node --run
-
       - name: Web Editor-only production artifact
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:web-editor
+
+  frontend-unit:
+    name: Frontend unit tests (shard ${{ matrix.shard }}/3)
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # test:node が build:workspace:dependencies を含むため、別 step の build は置かない。
+      - name: テスト (Vitest shard ${{ matrix.shard }}/3)
+        run: pnpm test:node --run --shard=${{ matrix.shard }}/3
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
@@ -1677,12 +1722,34 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The shared Rust suite runs as three parallel shards (2026-11-19); the job
+  # `rust-aggregate` below keeps the required check name. Every shard builds the
+  # same workspace with the same features as the former single `cargo test`, so
+  # the test cfg is identical. Together the shards run the target kinds the
+  # former `cargo test` ran, by construction:
+  #   lib-graph    `--lib` tests whose name contains the filter below (a guard
+  #                fails the shard if the filter matches no test)
+  #   lib-rest     `--lib` tests that do not (the same string as `--skip`), so a
+  #                new test module lands here unless it matches the filter
+  #   integration  binary unit tests, integration tests and doctests (the targets
+  #                `--lib` does not select), an examples build, plus the
+  #                feature-specific reruns
+  # Examples are built, not run (as the former `cargo test` did): `cargo build
+  # --profile test --examples` compiles them as plain executables under the test
+  # profile, exactly as `cargo test` did. No target with `test = true` among the
+  # benches and examples is covered; there is none today, and a contract test
+  # (scripts/ci-pause.test.mjs) fails if a Cargo.toml declares one.
+  # `cargo check` and `cargo clippy` run once, in lib-graph.
   rust:
-    name: Shared Rust crates (check / clippy / test)
+    name: Shared Rust crates (${{ matrix.shard }})
     needs: [changes]
     if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [lib-graph, lib-rest, integration]
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -1741,27 +1808,77 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.shard }}
 
       - name: cargo check
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo check --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
 
       - name: cargo clippy
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo clippy --workspace --exclude grimodex --all-targets
           --features grimodex-semantic/semantic-embedding
           -- -D warnings
 
-      - name: cargo test
+      # The name filter selects nothing, and still succeeds, if the module is
+      # renamed; fail then, so the parallelism is not lost silently (lib-rest
+      # still covers every other test, so nothing is missing meanwhile).
+      - name: cargo test (lib tests, graph modules)
+        if: matrix.shard == 'lib-graph'
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding --lib -- narrative_extraction::nir1_graph 2>&1 | tee "$log"
+          passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"
+          echo "lib-graph: $passed tests passed"
+          if [ "$passed" -eq 0 ]; then
+            echo "lib-graph ran no test: the filter matches no module (renamed?)" >&2
+            exit 1
+          fi
+
+      - name: cargo test (lib tests, all other modules)
+        if: matrix.shard == 'lib-rest'
         working-directory: src-tauri
         run: >-
           cargo test --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
+          --lib -- --skip narrative_extraction::nir1_graph
+
+      - name: cargo test (binary unit tests and integration tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --bins --test '*'
+
+      - name: cargo test (doctests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --doc
+
+      # `cargo test` also built the examples (not run: test = false). The
+      # shards above select no example, so build them here: a plain executable
+      # under the test profile with the same features, as `cargo test` did.
+      - name: cargo build (examples)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo build --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --profile test --examples
 
       - name: cargo test (migration supervisor failpoints)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: >-
           cargo test
@@ -1770,6 +1887,7 @@ jobs:
           --test workspace_migration_supervisor
 
       - name: cargo test (narrative runtime authority)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: >-
           cargo test
@@ -1779,8 +1897,26 @@ jobs:
       # 通常buildではlicensingが無効なため、共有runtimeのnetwork/race testsは
       # workspace testだけだとcfgで0件になる。releaseと同じfeatureを明示する。
       - name: cargo test (license runtime with licensing feature)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: cargo test -p grimodex-license --features licensing
+
+  # The required check name of the shared Rust suite (Gate B2 `requiredJobs`).
+  # It succeeds only when every shard of `rust` succeeded. `!cancelled()` keeps
+  # the implicit success() from skipping it when `changes` was skipped (a
+  # standalone canonical profile), so a failed shard fails this job instead of
+  # skipping it; it is skipped only when `rust` itself was (lane false).
+  rust-aggregate:
+    name: Shared Rust crates (check / clippy / test)
+    needs: [rust]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.rust.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every shared Rust shard
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: test "$RUST_RESULT" = success
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})

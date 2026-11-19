@@ -4974,7 +4974,7 @@ test("paused CI keeps every product journey job definition available", async () 
       assert.equal(unwrapIf(gate.original), unwrapIf(PRODUCT_JOURNEY_GUARD), jobId);
       continue;
     }
-    const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
+    const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "rust-aggregate", "migration-recovery-gate"].includes(jobId)
       ? " && !inputs.independent_gates" : "";
     // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
     const eventCondition = jobId === "electron-runtime-performance"
@@ -4983,8 +4983,18 @@ test("paused CI keeps every product journey job definition available", async () 
     // A job may additionally be selected by its own exact canonical profiles;
     // its ordinary guard must still be the exact grouped alternative. The
     // change-scope gate, when present, is peeled off first.
-    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(gate.gated ? `\${{ ${gate.original} }}` : job.if ?? "");
-    const ordinaryGuard = selected ? selected[2] : unwrapIf(gate.gated ? gate.original : job.if);
+    // `rust-aggregate` wraps the same expression in `!cancelled() && (...) && needs.rust.result != 'skipped'`.
+    const aggregateWrap = jobId === "rust-aggregate"
+      ? /^\$\{\{ !cancelled\(\) && \((.+)\) && needs\.rust\.result != 'skipped' \}\}$/su.exec(job.if ?? "")
+      : null;
+    if (jobId === "rust-aggregate") assert.ok(aggregateWrap, "rust-aggregate must wrap its guard in the shard-result gate");
+    const guardSource = aggregateWrap ? `\${{ ${aggregateWrap[1]} }}` : gate.gated ? `\${{ ${gate.original} }}` : job.if ?? "";
+    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(guardSource);
+    // The frontend aggregate adds `!cancelled()` so a failed split job turns the
+    // required check red instead of skipped; its admission is still the ordinary guard.
+    const aggregate = jobId === "frontend" ? /^!cancelled\(\) && \((.+)\)$/su.exec(unwrapIf(job.if)) : null;
+    if (jobId === "frontend") assert.ok(aggregate, "frontend aggregate must run after a failed split job");
+    const ordinaryGuard = aggregate ? aggregate[1] : selected ? selected[2] : unwrapIf(guardSource);
     assert.equal(
       ordinaryGuard,
       jobId === "electron"
