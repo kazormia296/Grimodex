@@ -14,6 +14,7 @@ import { dirname, resolve, join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import ts from "typescript";
 import {
+  AI_AUDIT_MAIN_CALLSITES,
   AI_AUDIT_RENDERER_CALLSITES,
   AI_PATHS,
   AI_RUNTIME_ROUTES,
@@ -130,6 +131,10 @@ const AI_TRANSPORT_COMMANDS: Record<string, string[]> = {
   // Electron の local 生成 route（DT-4 が登録。command の実体は DT-5／DD-1 が足し、
   // src/ に invoke が現れるまでは走査の対象にならない）。
   nir1_local_generation_start: ["nir1_local_generation_start"],
+  // Mastra agent turn（MP-3b、DR-MP3-23）：Native の呼出しは send_agent_message のままなので、
+  // registry の transport も send_agent_message（chat_agent_main）。owner は追加欄 `main-agent`。
+  // wrapper（src/lib/mastraAgentTurn.ts）は literal で invoke し、この走査に載る。
+  mastra_agent_turn_start: ["send_agent_message"],
 };
 
 /**
@@ -445,6 +450,152 @@ describe("AI path registry — completeness", () => {
       ).toBe(true);
     }
   }, 30_000); // testRef ファイル読み込みのため既定 5s を引き上げる
+});
+
+/**
+ * Electron main の書き手の callsite を実ファイルの AST で確かめる（MP-3b）：
+ * `pathConstant` が `pathId` の文字列 literal で宣言され、`auditProperty` の property が
+ * その定数を指す。
+ */
+function mainSourceCarriesAuditPath(input: {
+  sourceText: string;
+  pathId: string;
+  pathConstant: string;
+  auditProperty: string;
+}): boolean {
+  const sourceFile = ts.createSourceFile(
+    "main-callsite.ts",
+    input.sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let declared = false;
+  let used = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(sourceFile) === input.pathConstant &&
+      node.initializer !== undefined &&
+      ts.isStringLiteral(node.initializer) &&
+      node.initializer.text === input.pathId
+    ) {
+      declared = true;
+    }
+    if (
+      ts.isPropertyAssignment(node) &&
+      node.name.getText(sourceFile) === input.auditProperty &&
+      ts.isIdentifier(node.initializer) &&
+      node.initializer.text === input.pathConstant
+    ) {
+      used = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return declared && used;
+}
+
+describe("AI path registry — the main-agent audit owner (MP-3b, DR-MP3-23)", () => {
+  it("chat_agent_main keeps its path ID, transport and primary owner; main-agent is an additional owner", () => {
+    const entry = AI_PATHS.find((path) => path.id === "chat_agent_main");
+    expect(entry).toMatchObject({
+      transport: "send_agent_message",
+      auditOwner: "renderer-agent",
+      additionalAuditOwners: ["main-agent"],
+    });
+    // A new path ID is not made for the new writer.
+    expect(AI_PATHS.some((path) => /main[-_]?agent/u.test(path.id))).toBe(
+      false,
+    );
+  });
+
+  it("main-agent is only ever an additional owner, and only of paths with a main callsite", () => {
+    for (const path of AI_PATHS) {
+      expect(path.auditOwner, `${path.id} primary owner`).not.toBe(
+        "main-agent",
+      );
+      const additional = path.additionalAuditOwners ?? [];
+      if (additional.includes("main-agent")) {
+        expect(
+          AI_AUDIT_MAIN_CALLSITES.some(
+            (callsite) =>
+              callsite.pathId === path.id && callsite.owner === "main-agent",
+          ),
+          `${path.id} は main の callsite が必要`,
+        ).toBe(true);
+      }
+    }
+    for (const callsite of AI_AUDIT_MAIN_CALLSITES) {
+      const entry = AI_PATHS.find((path) => path.id === callsite.pathId);
+      expect(entry?.additionalAuditOwners, callsite.pathId).toContain(
+        callsite.owner,
+      );
+    }
+  });
+
+  it.each(AI_AUDIT_MAIN_CALLSITES)(
+    "main audit callsite: $pathId ($sourceRef)",
+    (callsite) => {
+      const absolute = join(REPO_ROOT, callsite.sourceRef);
+      expect(existsSync(absolute), callsite.sourceRef).toBe(true);
+      expect(
+        mainSourceCarriesAuditPath({
+          sourceText: readFileSync(absolute, "utf8"),
+          pathId: callsite.pathId,
+          pathConstant: callsite.pathConstant,
+          auditProperty: callsite.auditProperty,
+        }),
+        `${callsite.sourceRef} に ${callsite.pathConstant} = "${callsite.pathId}" と ` +
+          `${callsite.auditProperty}: ${callsite.pathConstant} が無い`,
+      ).toBe(true);
+    },
+  );
+
+  it("the callsite check fails for a source without the constant or its use (negative control)", () => {
+    const input = {
+      pathId: "chat_agent_main",
+      pathConstant: "MAIN_AGENT_AUDIT_PATH_ID",
+      auditProperty: "pathId",
+    };
+    const good =
+      'export const MAIN_AGENT_AUDIT_PATH_ID = "chat_agent_main";\n' +
+      "const ctx = { pathId: MAIN_AGENT_AUDIT_PATH_ID };";
+    expect(mainSourceCarriesAuditPath({ ...input, sourceText: good })).toBe(
+      true,
+    );
+    for (const sourceText of [
+      // the constant names another path
+      'export const MAIN_AGENT_AUDIT_PATH_ID = "other";\nconst c = { pathId: MAIN_AGENT_AUDIT_PATH_ID };',
+      // declared but never used as the audit property
+      'export const MAIN_AGENT_AUDIT_PATH_ID = "chat_agent_main";',
+      // a literal in place of the constant
+      'export const MAIN_AGENT_AUDIT_PATH_ID = "chat_agent_main";\nconst c = { pathId: "chat_agent_main" };',
+      // a mention in a comment only
+      '// MAIN_AGENT_AUDIT_PATH_ID = "chat_agent_main"; pathId: MAIN_AGENT_AUDIT_PATH_ID',
+    ]) {
+      expect(
+        mainSourceCarriesAuditPath({ ...input, sourceText }),
+        sourceText,
+      ).toBe(false);
+    }
+  });
+
+  it("the new start command is in the transport scan, and the scan sees the wrapper's invoke (negative control)", () => {
+    expect(AI_TRANSPORT_COMMANDS.mastra_agent_turn_start).toEqual([
+      "send_agent_message",
+    ]);
+    const used = scanInvokedAiCommands();
+    // The wrapper invokes with a literal, which is the only form the scan reads.
+    expect(used.has("mastra_agent_turn_start")).toBe(true);
+    // The scan's pattern itself: a literal is seen, a constant is not.
+    const seen = (line: string) =>
+      new RegExp('invoke[^(]*\\(\\s*"mastra_agent_turn_start"').test(line);
+    expect(seen('return invoke<R>("mastra_agent_turn_start", a);')).toBe(true);
+    expect(seen("return invoke<R>(MASTRA_AGENT_TURN_START_COMMAND, a);")).toBe(
+      false,
+    );
+  }, 30_000);
 });
 
 describe("AI runtime route registry — Web Editor direct transports", () => {

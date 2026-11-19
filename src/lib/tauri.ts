@@ -245,6 +245,14 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   // command would be a mutation: no timeout, and a hold on the workspace
   // switch and close quiescence. The route itself is closed (S1-A).
   ["chat_agent_ir_select", CHAT_AGENT_IR_TIMEOUT_MS],
+  // The Mastra agent turn (MP-3b) is deliberately NOT here: `mastra_agent_turn_start`
+  // settles when the whole turn does, so it is a mutation with no caller timeout
+  // (a timeout would end the wait while Main's turn runs on), and
+  // `mastra_agent_turn_cancel` is a mutation too. The queue runs four commands at
+  // a time, so a cancel is not held behind pending starts only while fewer than
+  // four are pending (and it is refused while an audit export freezes mutations):
+  // MP-4 keeps the pending starts of a window under that, or gives the cancel a
+  // lane. `tauri.electron.test.ts` pins the no-timeout and the one-pending case.
   // CB-3: the author's screen reads a Scene's declaration state. It must not
   // wait behind a declare (a confirmation dialog of up to 60 s) in the
   // mutation queue.
