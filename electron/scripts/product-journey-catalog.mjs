@@ -464,6 +464,7 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenance.preemptBackoff.test.ts",
   "electron/main/narrativeMaintenance.wiring.test.ts",
   "electron/main/narrativeMaintenance.electronRoute.test.ts",
+  "electron/main/narrativeMaintenance.wakeOrigin.test.ts",
   "electron/main/narrativeMaintenanceBootstrap.ts",
   "electron/main/narrativeMaintenanceBootstrap.test.ts",
   "electron/main/narrativeMaintenanceCiSeam.ts",
