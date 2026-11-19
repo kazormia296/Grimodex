@@ -338,7 +338,7 @@ describe("caller timeout policy（electron 分岐）", () => {
       details: { timeoutMs: 10_000 },
     });
     // The writers keep awaiting their real result (a timeout cannot cancel
-    // native work, and the declare waits on Main's dialog).
+    // native work, and this declare has not been answered yet).
     const declare = invoke("narrative_scene_body_declaration_declare").then(
       () => "settled",
       () => "settled",

@@ -8,9 +8,10 @@
  * writes it down, and it never shows "effective" while a read is loading,
  * failed or unknown.
  *
- * It does not build an approval of its own. Pressing declare asks Main to open
- * its confirmation dialog, which is the only place a declaration is approved;
- * revoking needs no confirmation. Every message comes from a closed code, and
+ * It does not build an approval of its own. The five checks and the declare
+ * button are the only confirmation of a declaration: there is no OS dialog
+ * since PUB-G #41 (DR-CB2-17), and Main cannot observe them. Revoking needs no
+ * confirmation. Every message comes from a closed code, and
  * no raw error text, excerpt, body, digest or token is rendered. While the
  * product UI constant is off the hook does nothing and this renders nothing.
  *
@@ -477,7 +478,7 @@ function OutcomeNotice({
   const { t } = useTranslation();
   let text: string | null = null;
   if (busy === "declare") {
-    // Only an announcement that Main's own dialog is the next step. This panel
+    // Only an announcement that the declaration is being saved. This panel
     // never shows an approval of its own.
     text = t(`${PREFIX}.declaring`);
   } else if (busy === "revoke") {

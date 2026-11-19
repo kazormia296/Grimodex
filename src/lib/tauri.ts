@@ -246,8 +246,7 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   // switch and close quiescence. The route itself is closed (S1-A).
   ["chat_agent_ir_select", CHAT_AGENT_IR_TIMEOUT_MS],
   // CB-3: the author's screen reads a Scene's declaration state. It must not
-  // wait behind a declare (a confirmation dialog of up to 60 s) in the
-  // mutation queue.
+  // wait behind a declare in the mutation queue.
   ["narrative_scene_body_declaration_state", IPC_TIMEOUT_MS],
   // These reads can legitimately include process/network startup or a model
   // cold-load, so retain the existing five-minute caller budget.

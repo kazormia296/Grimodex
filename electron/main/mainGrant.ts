@@ -2,12 +2,17 @@
  * Main's one-time confirmation of a protected author action (MG-1, CB-2).
  *
  * A command in `GRANT_REQUIRED_COMMANDS` is not dispatched on the renderer's
- * word. Main asks Native to read the target and build the dialog text
- * (`mainGrantPreview`), shows that text and nothing else in a native dialog,
- * and only after an explicit approval asks Native for the grant
- * (`mainGrantIssue`). The grant travels to Native as a non-enumerable symbol
- * sidecar on the dispatch args; it is never returned to the renderer, never
- * put in an event, and never stored in a renderer-reachable value.
+ * word. Main asks Native to read the target and bind a preview
+ * (`mainGrantPreview`), approves it (see `approveMainGrantWithoutDialog`), and
+ * asks Native for the grant (`mainGrantIssue`). The grant travels to Native as
+ * a non-enumerable symbol sidecar on the dispatch args; it is never returned
+ * to the renderer, never put in an event, and never stored in a
+ * renderer-reachable value.
+ *
+ * Since PUB-G #41 (DR-CB2-17) the product shows no OS dialog: the author's
+ * confirmation is the renderer's own five checks and button, which Main
+ * cannot observe. The order preview, issue, consume stays because Native
+ * re-reads the target and refuses when it changed in between.
  *
  * Main keeps at most one confirmation in flight for the whole process (the
  * second one is refused with `MAIN_GRANT_BUSY`, never queued). Native's slot
@@ -19,9 +24,6 @@
  * database is read, so Main shows no dialog. Nothing here opens it.
  */
 import { createHash } from "node:crypto";
-
-import { dialog } from "electron";
-import type { BrowserWindow } from "electron";
 
 import {
   MAIN_GRANT_SIDECAR,
@@ -85,7 +87,10 @@ export function stripRendererGrantFields(
   return copy;
 }
 
-/** What `confirm` is shown. The text is Native's, never the renderer's. */
+/**
+ * What `confirm` is given. `display` is Native's text; the product shows it
+ * to nobody (DR-CB2-17). The CI seam records it in its receipt.
+ */
 export interface MainGrantConfirmation {
   readonly kind: MainGrantKind;
   readonly display: string;
@@ -93,7 +98,7 @@ export interface MainGrantConfirmation {
   readonly senderId: number;
   readonly windowId: number;
   /**
-   * Digest over what Main bound the approval to: the kind, the dialog text,
+   * Digest over what Main bound the approval to: the kind, the display text,
    * the request and the sender and window. Native keeps its own binding and
    * its u64 values; they never reach Main.
    */
@@ -179,38 +184,23 @@ export function createMainGrantInFlight(): MainGrantInFlight {
 
 export interface MainGrantControllerOptions {
   readonly backend: NapiBackendLike | null;
-  /** Replaces only the dialog's display and button press (the CI seam). */
+  /** Replaces the product's automatic approval (the CI seam). */
   readonly confirm?: MainGrantConfirm;
   /** Shared with the profile activation controller; one per process. */
   readonly inFlight?: MainGrantInFlight;
 }
 
-const DIALOG_TITLE = "本文の開示の宣言";
-const DIALOG_CANCEL = "キャンセル";
-const DIALOG_CONFIRM = "宣言する";
-
 /**
- * The product's dialog. Its text is Native's `display` only. The default
- * button is Cancel; the only other button is the explicit confirmation. The
- * button labels are fixed strings of this module.
+ * The product's confirmation: no OS dialog (PUB-G #41, DR-CB2-17). It approves
+ * unless the confirmation already ended (`signal` aborted). Main cannot tell
+ * that a person pressed the renderer's button; it only knows the request came
+ * from a registered renderer with the gate open. Native still refuses a stale
+ * or foreign request, so this is not a bypass of the grant.
  */
-export async function showMainGrantDialog(
+export async function approveMainGrantWithoutDialog(
   confirmation: MainGrantConfirmation,
 ): Promise<boolean> {
-  const { response } = await dialog.showMessageBox(
-    confirmation.win as unknown as BrowserWindow,
-    {
-      type: "question",
-      title: DIALOG_TITLE,
-      message: confirmation.display,
-      buttons: [DIALOG_CANCEL, DIALOG_CONFIRM],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      signal: confirmation.signal,
-    },
-  );
-  return response === 1;
+  return !confirmation.signal.aborted;
 }
 
 export function canonicalJson(value: unknown): string {
@@ -264,7 +254,7 @@ function callerIdentityJson(args: Record<string, unknown>): string | undefined {
 export function createMainGrantController(
   options: MainGrantControllerOptions,
 ): MainGrantController {
-  const confirm = options.confirm ?? showMainGrantDialog;
+  const confirm = options.confirm ?? approveMainGrantWithoutDialog;
   /** At most one confirmation for the whole process, whatever its kind. */
   const inFlight = options.inFlight ?? createMainGrantInFlight();
 

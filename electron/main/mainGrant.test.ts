@@ -1,10 +1,13 @@
 // CB-2 / S3 (K2/4 `graph-target-scene-body-disclosure`): Main's one-time
-// confirmation (MG-1). F1-F6 and F8-F10 of the CB-2 acceptance.
+// confirmation (MG-1). F1-F6 and F8-F10 of the CB-2 acceptance. Since PUB-G
+// #41 (DR-CB2-17) the product's confirmation shows no OS dialog; the held
+// confirmations here are the CI seam's shape (an injected `confirm`).
 import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
+import type { MainGrantConfirm, MainGrantConfirmation } from "./mainGrant.js";
 import {
   IPC,
   MAIN_GRANT_SIDECAR,
@@ -57,6 +60,7 @@ const {
   MAIN_GRANT_REQUIRED,
   MAIN_GRANT_REVOKED,
   MAIN_GRANT_SENDER_UNAVAILABLE,
+  approveMainGrantWithoutDialog,
   createMainGrantController,
   isGrantRequiredCommand,
   stripRendererGrantFields,
@@ -137,20 +141,21 @@ function fakeBackend(overrides: Record<string, unknown> = {}) {
   return backend;
 }
 
-/** A dialog that stays open until the test settles it. */
-function heldDialog() {
-  let settle: (response: number) => void = () => undefined;
-  mocks.showMessageBox.mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        settle = (response) => resolve({ response, checkboxChecked: false });
-      }),
-  );
-  return { settle: (response: number) => settle(response) };
-}
-
-function answerDialog(response: number): void {
-  mocks.showMessageBox.mockResolvedValue({ response, checkboxChecked: false });
+/**
+ * A confirmation of the CI seam's shape (an injected `confirm`). The first
+ * call stays open until the test settles it; later calls approve at once.
+ */
+function heldConfirm() {
+  const seen: MainGrantConfirmation[] = [];
+  let settle: (approved: boolean) => void = () => undefined;
+  const confirm: MainGrantConfirm = (confirmation) => {
+    seen.push(confirmation);
+    if (seen.length > 1) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      settle = resolve;
+    });
+  };
+  return { confirm, seen, settle: (approved: boolean) => settle(approved) };
 }
 
 function registerRouter(
@@ -224,7 +229,6 @@ describe("F2 a renderer cannot forge a confirmation", () => {
   it("drops grant-shaped fields and never sends the renderer's grant", async () => {
     const backend = fakeBackend();
     const invoke = registerRouter(backend, fakeWindow());
-    answerDialog(1);
     const sender = fakeSender();
     const env = await invoke({ sender }, DECLARE, {
       ...DECLARE_ARGS(),
@@ -287,7 +291,6 @@ describe("F2 a renderer cannot forge a confirmation", () => {
     ]) {
       const backend = fakeBackend();
       const invoke = registerRouter(backend, fakeWindow());
-      answerDialog(1);
       const args = DECLARE_ARGS();
       Object.assign(args.payload, extra);
       const env = await invoke({ sender: fakeSender() }, DECLARE, args);
@@ -302,7 +305,6 @@ describe("F2 a renderer cannot forge a confirmation", () => {
   it("does not put the grant or the preview in the response", async () => {
     const backend = fakeBackend();
     const invoke = registerRouter(backend, fakeWindow());
-    answerDialog(1);
     const env = await invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
     const wire = JSON.stringify(env);
     expect(wire).not.toContain("grant-secret");
@@ -331,7 +333,6 @@ describe("F2 a renderer cannot forge a confirmation", () => {
 
   it("attaches the grant as a non-enumerable sidecar", async () => {
     const backend = fakeBackend();
-    answerDialog(1);
     const dispatch = vi.fn(
       async (): Promise<Envelope> => ({
         ok: true,
@@ -363,44 +364,79 @@ describe("F2 a renderer cannot forge a confirmation", () => {
   });
 });
 
-describe("F3 the dialog text comes only from Native", () => {
-  it("shows Native's display, defaults to Cancel, and ignores renderer text", async () => {
+// PUB-G #41 (DR-CB2-17): the product shows no OS dialog. The renderer's own
+// five checks and button are the only confirmation, and Main approves at once.
+describe("F3 the product shows no dialog", () => {
+  it("approves without an OS dialog, in the order preview, issue, writer", async () => {
     const backend = fakeBackend();
     const invoke = registerRouter(backend, fakeWindow());
-    answerDialog(0);
+    const env = await invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
+    expect(env).toEqual({ ok: true, value: { outcome: "declared" } });
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
+    const first = (fn: { mock: { invocationCallOrder: number[] } }) =>
+      fn.mock.invocationCallOrder[0]!;
+    expect(first(backend.mainGrantPreview)).toBeLessThan(
+      first(backend.mainGrantIssue),
+    );
+    expect(first(backend.mainGrantIssue)).toBeLessThan(
+      first(backend.narrativeSceneBodyDeclarationDeclare),
+    );
+  });
+
+  it("never lets renderer-supplied text reach Native: only the request goes to the preview, and an unknown field is refused", async () => {
+    const backend = fakeBackend();
+    const invoke = registerRouter(backend, fakeWindow());
     const env = await invoke({ sender: fakeSender() }, DECLARE, {
       ...DECLARE_ARGS(),
       title: "FORGED TITLE",
       message: "FORGED MESSAGE",
       detail: "FORGED DETAIL",
     });
-    expect(mocks.showMessageBox).toHaveBeenCalledTimes(1);
-    const [parent, options] = mocks.showMessageBox.mock.calls[0] as [
-      unknown,
-      Record<string, unknown>,
-    ];
-    expect(parent).toBeDefined();
-    expect(options.message).toBe(DISPLAY);
-    expect(options.defaultId).toBe(0);
-    expect(options.cancelId).toBe(0);
-    const buttons = options.buttons as string[];
-    expect(buttons).toHaveLength(2);
-    expect(buttons[0]).toBe("キャンセル");
-    expect(JSON.stringify(options)).not.toContain("FORGED");
-    // Cancel is a closed refusal; nothing is issued or dispatched.
+    expect(env.ok).toBe(false);
+    expect(backend.narrativeSceneBodyDeclarationDeclare).not.toHaveBeenCalled();
+    const requestJson = (
+      backend.mainGrantPreview.mock.calls[0] as unknown as [string, string]
+    )[1];
+    expect(requestJson).not.toContain("FORGED");
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
+    // The grant Main issued is not left behind.
+    expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");
+  });
+
+  it("the default approval says yes unless the confirmation already ended", async () => {
+    const live = new AbortController();
+    const base = {
+      kind: "body-declaration",
+      display: DISPLAY,
+      win: fakeWindow(),
+      senderId: 7,
+      windowId: 11,
+      approvalDigest: "digest",
+    } as const;
+    await expect(
+      approveMainGrantWithoutDialog({ ...base, signal: live.signal }),
+    ).resolves.toBe(true);
+    live.abort();
+    await expect(
+      approveMainGrantWithoutDialog({ ...base, signal: live.signal }),
+    ).resolves.toBe(false);
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it("a confirmation that declines (the CI seam's shape) is a closed refusal and nothing is issued", async () => {
+    const backend = fakeBackend();
+    const held = heldConfirm();
+    const invoke = registerRouter(backend, fakeWindow(), held.confirm);
+    const pending = invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
+    await flush();
+    // Native's text still reaches an injected confirmation (the CI receipt).
+    expect(held.seen[0]!.display).toBe(DISPLAY);
+    held.settle(false);
+    const env = await pending;
     expect(env).toEqual({ ok: false, error: MAIN_GRANT_CANCELLED });
     expect(backend.mainGrantIssue).not.toHaveBeenCalled();
     expect(backend.narrativeSceneBodyDeclarationDeclare).not.toHaveBeenCalled();
     expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");
-  });
-
-  it("closing the dialog (the cancel id) is not an approval", async () => {
-    const backend = fakeBackend();
-    const invoke = registerRouter(backend, fakeWindow());
-    answerDialog(0);
-    const env = await invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
-    expect(env.ok).toBe(false);
-    expect(backend.mainGrantIssue).not.toHaveBeenCalled();
   });
 });
 
@@ -428,19 +464,16 @@ describe("F4 a confirmation ends when its owner goes away", () => {
       const backend = fakeBackend();
       const sender = fakeSender();
       const win = fakeWindow();
-      const invoke = registerRouter(backend, win);
-      const dialog = heldDialog();
+      const held = heldConfirm();
+      const invoke = registerRouter(backend, win, held.confirm);
       const pending = invoke({ sender }, DECLARE, DECLARE_ARGS());
       await flush();
-      expect(mocks.showMessageBox).toHaveBeenCalledTimes(1);
+      expect(held.seen).toHaveLength(1);
       trigger(sender, win);
       expect(backend.mainGrantRevokeSender).toHaveBeenCalledWith(7);
       expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");
-      const signal = (
-        mocks.showMessageBox.mock.calls[0][1] as { signal: AbortSignal }
-      ).signal;
-      expect(signal.aborted).toBe(true);
-      dialog.settle(1);
+      expect(held.seen[0]!.signal.aborted).toBe(true);
+      held.settle(true);
       const env = await pending;
       expect(env).toEqual({ ok: false, error: MAIN_GRANT_REVOKED });
       expect(backend.mainGrantIssue).not.toHaveBeenCalled();
@@ -453,32 +486,29 @@ describe("F4 a confirmation ends when its owner goes away", () => {
   it("does not revoke for a subframe navigation", async () => {
     const backend = fakeBackend();
     const sender = fakeSender();
-    const invoke = registerRouter(backend, fakeWindow());
-    const dialog = heldDialog();
+    const held = heldConfirm();
+    const invoke = registerRouter(backend, fakeWindow(), held.confirm);
     const pending = invoke({ sender }, DECLARE, DECLARE_ARGS());
     await flush();
     sender.emit("did-start-navigation", { isMainFrame: false });
     expect(backend.mainGrantRevokeSender).not.toHaveBeenCalled();
-    dialog.settle(1);
+    held.settle(true);
     expect((await pending).ok).toBe(true);
   });
 
   it("revokes when the preview's time runs out", async () => {
     vi.useFakeTimers();
     const backend = fakeBackend();
-    const invoke = registerRouter(backend, fakeWindow());
-    const dialog = heldDialog();
+    const held = heldConfirm();
+    const invoke = registerRouter(backend, fakeWindow(), held.confirm);
     const pending = invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(59_999);
     expect(backend.mainGrantRevoke).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");
-    const signal = (
-      mocks.showMessageBox.mock.calls[0][1] as { signal: AbortSignal }
-    ).signal;
-    expect(signal.aborted).toBe(true);
-    dialog.settle(1);
+    expect(held.seen[0]!.signal.aborted).toBe(true);
+    held.settle(true);
     expect(await pending).toEqual({ ok: false, error: MAIN_GRANT_REVOKED });
     expect(backend.mainGrantIssue).not.toHaveBeenCalled();
   });
@@ -541,7 +571,6 @@ describe("F4 a confirmation ends when its owner goes away", () => {
       }),
     });
     const invoke = registerRouter(backend, fakeWindow());
-    answerDialog(1);
     const env = await invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
     expect(env.ok).toBe(false);
     expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");
@@ -553,7 +582,6 @@ describe("F4 a confirmation ends when its owner goes away", () => {
     const sender = fakeSender();
     const win = fakeWindow();
     const invoke = registerRouter(backend, win);
-    answerDialog(1);
     await invoke({ sender }, DECLARE, DECLARE_ARGS());
     for (const event of [
       "destroyed",
@@ -567,10 +595,10 @@ describe("F4 a confirmation ends when its owner goes away", () => {
 });
 
 describe("F5 a second confirmation is refused, not queued", () => {
-  it("answers MAIN_GRANT_BUSY while a dialog is open, then recovers", async () => {
+  it("answers MAIN_GRANT_BUSY while a confirmation is held, then recovers", async () => {
     const backend = fakeBackend();
-    const invoke = registerRouter(backend, fakeWindow());
-    const dialog = heldDialog();
+    const held = heldConfirm();
+    const invoke = registerRouter(backend, fakeWindow(), held.confirm);
     const first = invoke({ sender: fakeSender(7) }, DECLARE, DECLARE_ARGS());
     await flush();
     const second = await invoke(
@@ -579,15 +607,47 @@ describe("F5 a second confirmation is refused, not queued", () => {
       DECLARE_ARGS(),
     );
     expect(second).toEqual({ ok: false, error: MAIN_GRANT_BUSY });
-    // The second request never reached Native or the dialog.
+    // The second request never reached Native or the confirmation.
     expect(backend.mainGrantPreview).toHaveBeenCalledTimes(1);
-    expect(mocks.showMessageBox).toHaveBeenCalledTimes(1);
-    dialog.settle(1);
+    expect(held.seen).toHaveLength(1);
+    held.settle(true);
     expect((await first).ok).toBe(true);
-    answerDialog(1);
     expect(
       (await invoke({ sender: fakeSender(9) }, DECLARE, DECLARE_ARGS())).ok,
     ).toBe(true);
+  });
+
+  // DR-CB2-17: with no dialog the slot is held from the preview to the end of
+  // the writer, and the second declaration is still refused, never queued.
+  it("answers MAIN_GRANT_BUSY while the writer runs under the product's own approval, then recovers", async () => {
+    let finish: (wire: string) => void = () => undefined;
+    const backend = fakeBackend();
+    backend.narrativeSceneBodyDeclarationDeclare.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const invoke = registerRouter(backend, fakeWindow());
+    const first = invoke({ sender: fakeSender(7) }, DECLARE, DECLARE_ARGS());
+    await vi.waitFor(() =>
+      expect(
+        backend.narrativeSceneBodyDeclarationDeclare,
+      ).toHaveBeenCalledTimes(1),
+    );
+    const second = await invoke(
+      { sender: fakeSender(8) },
+      DECLARE,
+      DECLARE_ARGS(),
+    );
+    expect(second).toEqual({ ok: false, error: MAIN_GRANT_BUSY });
+    expect(backend.mainGrantPreview).toHaveBeenCalledTimes(1);
+    finish(JSON.stringify({ outcome: "declared" }));
+    expect((await first).ok).toBe(true);
+    expect(
+      (await invoke({ sender: fakeSender(9) }, DECLARE, DECLARE_ARGS())).ok,
+    ).toBe(true);
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
   });
 
   it("passes Native's busy refusal through as the closed code", async () => {
@@ -638,7 +698,6 @@ describe("F6 a closed gate means no dialog", () => {
       }),
     });
     const invoke = registerRouter(backend, fakeWindow());
-    answerDialog(1);
     const env = await invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
     expect(env).toEqual({ ok: false, error: "MAIN_GRANT_STATE_CHANGED" });
     expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");

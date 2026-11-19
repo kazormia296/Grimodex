@@ -59,10 +59,8 @@ export const BODY_DECLARATION_TRANSLATIONS = {
     axesPending: "5 項目をすべて確認すると宣言できます。",
     declare: "宣言する",
     redeclare: "改めて宣言する",
-    declareHint:
-      "押すと Grimodex 本体の確認ダイアログが開きます。宣言は、そのダイアログで承認したときだけ行われます。",
-    declaring:
-      "Grimodex 本体の確認ダイアログを待っています。この間、ほかの保存が待たされることがあります。",
+    declareHint: "押すと、確認した 5 項目のとおりに宣言が保存されます。",
+    declaring: "宣言を保存しています。",
     unsavedWait:
       "本文・title・あらすじに未保存の編集があります。保存を待ってください。保存された内容が宣言の対象になります。",
     blockerPrefix: "いまは宣言できません。",
@@ -141,21 +139,20 @@ export const BODY_DECLARATION_TRANSLATIONS = {
       "invalid-request": "要求が正しくありません。",
       "state-changed":
         "Scene の状態が途中で変わりました。最新の状態を読み直したので、確認してからもう一度行ってください。",
-      "display-mismatch":
-        "確認ダイアログの内容と Scene の状態が一致しませんでした。",
+      "display-mismatch": "確認した内容と Scene の状態が一致しませんでした。",
       "request-conflict": "同じ要求が重複しました。",
       "commit-failed":
         "保存の結果を確認できませんでした。最新の状態を読み直しています。",
       internal: "内部エラーが発生しました。",
       "store-failure":
         "保存先が混み合っているか、一時的に使えません。しばらくしてからもう一度試してください。",
-      "grant-cancelled": "確認ダイアログがキャンセルされました。",
-      "grant-expired": "確認ダイアログの期限が切れました。",
+      "grant-cancelled": "確認がキャンセルされました。",
+      "grant-expired": "確認の期限が切れました。",
       "grant-revoked": "確認が取り消されました。",
       "grant-busy":
-        "ほかの確認ダイアログが開いています。終えてからもう一度試してください。",
+        "ほかの確認が進行中です。終えてからもう一度試してください。",
       "grant-required": "確認の経路が使えません。",
-      "grant-sender-unavailable": "確認ダイアログを開けませんでした。",
+      "grant-sender-unavailable": "確認を開始できませんでした。",
       "grant-failed": "確認を完了できませんでした。",
       "egress-denied": "この操作は許可されていません。",
       timeout: "応答がありませんでした。最新の状態を読み直してください。",
@@ -213,9 +210,8 @@ export const BODY_DECLARATION_TRANSLATIONS = {
     declare: "Declare",
     redeclare: "Declare again",
     declareHint:
-      "A confirmation dialog of Grimodex itself opens when you press this. The declaration is made only if you approve it in that dialog.",
-    declaring:
-      "Waiting for the confirmation dialog of Grimodex itself. Other saves may wait meanwhile.",
+      "Pressing this saves the declaration as you confirmed the five items.",
+    declaring: "Saving the declaration.",
     unsavedWait:
       "The body, title or synopsis has unsaved edits. Wait for them to be saved; the saved content is what the declaration covers.",
     blockerPrefix: "Declaring is not possible right now.",
@@ -300,21 +296,20 @@ export const BODY_DECLARATION_TRANSLATIONS = {
       "state-changed":
         "The Scene changed meanwhile. The latest state was read again; review it and try again.",
       "display-mismatch":
-        "The confirmation dialog did not match the state of the Scene.",
+        "What you confirmed did not match the state of the Scene.",
       "request-conflict": "The same request was repeated.",
       "commit-failed":
         "The result of saving could not be confirmed. Reading the latest state again.",
       internal: "An internal error occurred.",
       "store-failure":
         "The store is busy or temporarily unavailable. Try again in a moment.",
-      "grant-cancelled": "The confirmation dialog was cancelled.",
-      "grant-expired": "The confirmation dialog timed out.",
+      "grant-cancelled": "The confirmation was cancelled.",
+      "grant-expired": "The confirmation timed out.",
       "grant-revoked": "The confirmation was withdrawn.",
       "grant-busy":
-        "Another confirmation dialog is open. Finish it and try again.",
+        "Another confirmation is in progress. Finish it and try again.",
       "grant-required": "The confirmation path is not available.",
-      "grant-sender-unavailable":
-        "The confirmation dialog could not be opened.",
+      "grant-sender-unavailable": "The confirmation could not be started.",
       "grant-failed": "The confirmation could not be completed.",
       "egress-denied": "This operation is not allowed.",
       timeout: "There was no answer. Reload the latest state.",

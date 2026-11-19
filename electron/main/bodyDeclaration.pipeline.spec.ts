@@ -312,18 +312,18 @@ async function launch(
     isPackaged?: boolean;
     seam?: "none" | SeamEnvOptions;
     /**
-     * "product" keeps the seam's gate but shows the product's own dialog
-     * (`showMainGrantDialog`, with `dialog.showMessageBox` mocked), so a test
-     * can hold the dialog open. Default: the seam's replacement confirmation.
+     * "product" keeps the seam's gate but uses the product's own confirmation
+     * (`approveMainGrantWithoutDialog`: no OS dialog, DR-CB2-17) in place of the
+     * seam's replacement. Default: the seam's replacement confirmation.
      */
-    dialog?: "seam" | "product";
+    confirmation?: "seam" | "product";
   },
 ): Promise<Launch> {
   vi.resetModules();
   mocks.handlers.clear();
   mocks.showMessageBox.mockReset();
-  // A dialog that would be shown is a cancel; the tests assert none is shown
-  // where none may be.
+  // The product shows no OS dialog; a dialog that would be shown is a cancel,
+  // and the tests assert none is shown.
   mocks.showMessageBox.mockResolvedValue({
     response: 0,
     checkboxChecked: false,
@@ -367,7 +367,7 @@ async function launch(
   });
   const mainGrant = createMainGrantController({
     backend: backend as NapiBackendLike,
-    confirm: options.dialog === "product" ? undefined : started?.confirm,
+    confirm: options.confirmation === "product" ? undefined : started?.confirm,
   });
   registerIpcRouter(
     backend as NapiBackendLike,
@@ -909,73 +909,20 @@ describe("N-13 the state read follows a declaration through the real router", ()
   }
 });
 
-// PUB-G 前提 #41（DR-CB3-20）: 確認ダイアログが開いている間（最大 60 秒）の待ち。
-// 製品のダイアログ（`showMainGrantDialog`。`dialog.showMessageBox` だけ保留に差し替え）、
-// 実 router、実 MainGrant、実 Native の上で、renderer の本物の `src/lib/tauri.ts`
-// （ipcQueue）と宣言の API を、`window.grimodex.invoke` 経由で動かす。
-//
-// DR-CB3-20 は「ほかの mutation が待つ」と書くが、現行コードでは待たない（renderer の
-// queue は同時 4 本、Main と Native はダイアログの間に lock を持たない）。ここで固定するのは
-// 実際の挙動:
-//   W1 ダイアログ中も、本文の保存（mutation）と状態の読取は待たされず通る。
-//   W2 ダイアログ中の 2 つ目の確認は grant-busy で閉じる（待たない）。
-//   W3 承認すれば宣言できる。ダイアログ中に本文を保存していたら、承認しても宣言は
-//      書かれず閉じた code で終わる（承認した時点の本文が、確認した本文ではないため）。
-//   W4 キャンセル、60 秒の期限、window の close のどれでも、宣言は何も書かず閉じた code
-//      で終わり、確認の枠が残らない（次の宣言がまた通る）。
-//   W5 ダイアログの文言は Native の display、ボタンは製品の固定文字列で、既定はキャンセル。
-//   W6 実際に待つのは renderer の strict quiescence（workspace の切替・window の close）だけで、
-//      開いているダイアログが終わるまで（長くても 60 秒の期限まで）待つ。
-describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)", () => {
-  interface Held {
-    options: {
-      title?: string;
-      message?: string;
-      buttons?: string[];
-      defaultId?: number;
-      cancelId?: number;
-      signal?: AbortSignal;
-    };
-    /** The author presses a button (an index into `buttons`). */
-    press(response: number): void;
-  }
-
-  /** Each `dialog.showMessageBox` stays open until a button is pressed or its signal aborts. */
-  function holdDialogs(): { shown: Held[] } {
-    const shown: Held[] = [];
-    mocks.showMessageBox.mockImplementation(
-      (_win: unknown, options: Held["options"]) =>
-        new Promise((resolve) => {
-          shown.push({
-            options,
-            press: (response) => resolve({ response, checkboxChecked: false }),
-          });
-          options.signal?.addEventListener("abort", () =>
-            resolve({
-              response: options.cancelId ?? 0,
-              checkboxChecked: false,
-            }),
-          );
-        }),
-    );
-    return { shown };
-  }
-
-  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-  async function until(condition: () => boolean, what: string): Promise<void> {
-    for (let i = 0; i < 5_000; i += 1) {
-      if (condition()) return;
-      await tick();
-    }
-    throw new Error(`timed out waiting for ${what}`);
-  }
-  const PENDING = Symbol("pending");
-  /** What the promise settled to, or PENDING when it is still waiting after a while. */
-  async function peek<T>(promise: Promise<T>): Promise<T | typeof PENDING> {
-    for (let i = 0; i < 100; i += 1) await tick();
-    return Promise.race([promise, Promise.resolve(PENDING)]);
-  }
-
+// PUB-G 前提 #41（DR-CB2-17、DR-CB3-20 を置き換え）: 製品の既定の確認は OS ダイアログを
+// 出さず、preview の直後に承認する。実 router、実 MainGrant、実 Native の上で、renderer の
+// 本物の `src/lib/tauri.ts`（ipcQueue）と宣言の API を、`window.grimodex.invoke` 経由で動かす。
+// 以前の W1〜W6（ダイアログの間の待ち、60 秒、キャンセル、window の close）は、ダイアログが
+// 無くなったので到達しない（sender と window の消失による revoke、期限、同時 1 件の busy は
+// `mainGrant.test.ts` が注入した confirm と保留した writer で固定している）。ここで固定するのは、
+// 実 Native を通した次の実挙動:
+//   W1 ダイアログなしで宣言でき（`dialog.showMessageBox` は 0 回）、状態の読取が宣言を返す。
+//      続けて宣言し直せる（確認の枠が残らない）。
+//   W2 古い OCC（別の宣言が先に通った後の token）での宣言は、閉じた code で拒否され、
+//      何も書かれず、次の宣言がまた通る。
+//   W3 renderer の strict quiescence（workspace の切替・window の close）は、確認を待たず、
+//      writer が戻れば終わる（失敗として報告されない）。
+describe("DL the declaration's product confirmation shows no dialog (PUB-G #41)", () => {
   // The renderer's own modules, through the `@` alias of the config.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type Renderer = Record<string, any>;
@@ -1010,7 +957,6 @@ describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)"
     const api = await rendererModule(
       "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationApi",
     );
-    const tree = await rendererModule("@/features/tree/api");
     const scene = {
       workspacePath: workspace,
       projectId: PROJECT,
@@ -1021,9 +967,8 @@ describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)"
       expect(result.ok).toBe(true);
       return result.snapshot as Snapshot;
     };
-    const declare = async (): Promise<Outcome> => {
-      const snapshot = await read();
-      return api.declareBody({
+    const declareFrom = (snapshot: Snapshot): Promise<Outcome> =>
+      api.declareBody({
         scene,
         occ: snapshot.occ,
         declarationToken: snapshot.declarationToken,
@@ -1034,24 +979,16 @@ describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)"
           reveal: true,
           pov: true,
         },
-      });
-    };
-    const saveBody = (text: string) =>
-      tree.saveSceneContent(SCENE, tiptapDoc(text));
+      }) as Promise<Outcome>;
+    const declare = async (): Promise<Outcome> => declareFrom(await read());
     const ipcQueue = await rendererModule("@/lib/ipcQueue");
     return {
       read,
       declare,
-      saveBody,
+      declareFrom,
       quiesce: ipcQueue.awaitPendingIpcActualTasks as () => Promise<void>,
     };
   }
-
-  const bodyOf = (workspace: string) =>
-    queryRows<{ content: string }>(
-      workspace,
-      `SELECT content FROM tree_nodes WHERE id = '${SCENE}'`,
-    )[0]!.content;
 
   afterAll(() => {
     delete (globalThis as Record<string, unknown>).window;
@@ -1065,64 +1002,18 @@ describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)"
       const main = await launch(fixture, {
         restricted,
         seam: {},
-        dialog: "product",
+        confirmation: "product",
       });
-      const dialogs = holdDialogs();
       const renderer = await rendererOn(main, fixture.workspace);
-      return { fixture, main, dialogs, renderer };
+      return { fixture, main, renderer };
     }
 
-    it(`${label}: W1 W2 W3 W5 a state read, a body save and a second confirmation do not wait; approving after a save declares nothing`, async () => {
-      const { fixture, main, dialogs, renderer } = await start("dl-a");
+    it(`${label}: W1 declares with no OS dialog, the read follows, and a second declaration is not held back`, async () => {
+      const { fixture, main, renderer } = await start("dl-a");
       expect((await renderer.read()).state.kind).toBe("none");
 
-      const declaring = renderer.declare();
-      await until(() => dialogs.shown.length === 1, "the dialog");
-      const dialog = dialogs.shown[0]!;
-      // W5: Native's text, the product's fixed buttons, Cancel is the default.
-      expect(dialog.options.title).toBe("本文の開示の宣言");
-      expect(dialog.options.buttons).toEqual(["キャンセル", "宣言する"]);
-      expect([dialog.options.defaultId, dialog.options.cancelId]).toEqual([
-        0, 0,
-      ]);
-      expect(dialog.options.message).toEqual(expect.any(String));
-      expect(dialog.options.message).not.toContain(BODY);
-      expect(dialog.options.signal).toBeInstanceOf(AbortSignal);
-      expect(await peek(declaring)).toBe(PENDING);
-
-      // W1: neither the read nor a body save waits for the dialog.
-      expect((await renderer.read()).state.kind).toBe("none");
-      const text = "Saved while the dialog is open.";
-      await renderer.saveBody(text);
-      expect(bodyOf(fixture.workspace)).toContain(text);
-      expect(await peek(declaring)).toBe(PENDING);
-
-      // W2: a second confirmation is refused at once; no second dialog.
-      expect(await renderer.declare()).toEqual({
-        ok: false,
-        code: "grant-busy",
-      });
-      expect(dialogs.shown).toHaveLength(1);
-
-      // W3: the author approves the text they were shown. The body is no longer
-      // the one they confirmed, so Native refuses and nothing is declared.
-      dialog.press(1);
-      expect(await declaring).toEqual({ ok: false, code: "grant-failed" });
-      expect(scopeRow(fixture.workspace).json).toBeNull();
-      expect((await renderer.read()).state.kind).toBe("none");
-      expect(bodyOf(fixture.workspace)).toContain(text);
-      await main.shutdown();
-    });
-
-    it(`${label}: W3 approving with nothing changed in the meantime declares, and the read follows`, async () => {
-      const { fixture, main, dialogs, renderer } = await start("dl-b");
-      const declaring = renderer.declare();
-      await until(() => dialogs.shown.length === 1, "the dialog");
-      // The read during the dialog does not wait and sees no declaration yet.
-      expect((await renderer.read()).state.kind).toBe("none");
-      expect(await peek(declaring)).toBe(PENDING);
-      dialogs.shown[0]!.press(1);
-      expect(await declaring).toEqual({ ok: true });
+      expect(await renderer.declare()).toEqual({ ok: true });
+      expect(mocks.showMessageBox).not.toHaveBeenCalled();
       expect((await renderer.read()).state).toEqual({
         kind: "declared",
         effective: true,
@@ -1130,93 +1021,45 @@ describe("DL the declaration's confirmation dialog while it is open (PUB-G #41)"
         blocker: null,
       });
       expect(scopeRow(fixture.workspace).json).not.toBeNull();
+
+      // The slot is free again: a declaration from the new state goes through.
+      expect(await renderer.declare()).toEqual({ ok: true });
+      expect(mocks.showMessageBox).not.toHaveBeenCalled();
       await main.shutdown();
     });
 
-    it(`${label}: W6 the renderer's strict quiescence (workspace switch, window close) waits for the open dialog and no longer than its limit`, async () => {
-      const { main, dialogs, renderer } = await start("dl-d");
-      // Nothing in flight: it settles at once.
-      expect(await peek(renderer.quiesce())).toBeUndefined();
-
-      const cancelled = renderer.declare();
-      await until(() => dialogs.shown.length === 1, "the first dialog");
-      const drained = renderer.quiesce();
-      expect(await peek(drained)).toBe(PENDING);
-      dialogs.shown[0]!.press(0);
-      expect(await cancelled).toEqual({ ok: false, code: "grant-cancelled" });
-      // The drain reports the cancelled declare as a failed mutation (the close
-      // is refused, nothing is lost). Current behaviour; PUB-G #41 notes it.
-      await expect(drained).rejects.toMatchObject({
-        message: expect.stringContaining("MAIN_GRANT_CANCELLED"),
-      });
-
-      // Left alone, the limit ends it: the wait is bounded by Native's 60 s.
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const expiring = renderer.declare();
-        await until(() => dialogs.shown.length === 2, "the second dialog");
-        const drainedAgain = renderer.quiesce();
-        await vi.advanceTimersByTimeAsync(59_999);
-        expect(await peek(drainedAgain)).toBe(PENDING);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(await expiring).toEqual({ ok: false, code: "grant-revoked" });
-        await expect(drainedAgain).rejects.toMatchObject({
-          message: expect.stringContaining("MAIN_GRANT_REVOKED"),
-        });
-      } finally {
-        vi.useRealTimers();
-      }
-      // Approved: the drain completes with the declaration.
-      const approved = renderer.declare();
-      await until(() => dialogs.shown.length === 3, "the third dialog");
-      const drainedApproved = renderer.quiesce();
-      expect(await peek(drainedApproved)).toBe(PENDING);
-      dialogs.shown[2]!.press(1);
-      expect(await approved).toEqual({ ok: true });
-      await drainedApproved;
-      await main.shutdown();
-    });
-
-    it(`${label}: W4 Cancel, the 60 s limit and closing the window each end the wait with nothing written and free the next declaration`, async () => {
-      const { fixture, main, dialogs, renderer } = await start("dl-c");
+    it(`${label}: W2 a stale confirmation is refused with nothing written, and the next declaration goes through`, async () => {
+      const { fixture, main, renderer } = await start("dl-b");
+      const stale = await renderer.read();
+      expect(await renderer.declareFrom(stale)).toEqual({ ok: true });
       const digest = dataDigest(fixture.workspace);
-      // Cancel.
-      const cancelled = renderer.declare();
-      await until(() => dialogs.shown.length === 1, "the first dialog");
-      dialogs.shown[0]!.press(0);
-      expect(await cancelled).toEqual({ ok: false, code: "grant-cancelled" });
+
+      // The same snapshot again: the declaration it expected to replace
+      // (none) is not the stored one any more.
+      const refused = await renderer.declareFrom(stale);
+      expect(refused.ok).toBe(false);
+      expect(refused.code).toEqual(expect.any(String));
       expect(dataDigest(fixture.workspace)).toBe(digest);
 
-      // The 60 s limit (Native's `expiresInMs`; Main's timer aborts the dialog).
-      // Only timers are faked; Native and the queue's promises are real.
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const expiring = renderer.declare();
-        await until(() => dialogs.shown.length === 2, "the second dialog");
-        await vi.advanceTimersByTimeAsync(59_999);
-        expect(await peek(expiring)).toBe(PENDING);
-        expect(dialogs.shown[1]!.options.signal!.aborted).toBe(false);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(dialogs.shown[1]!.options.signal!.aborted).toBe(true);
-        expect(await expiring).toEqual({ ok: false, code: "grant-revoked" });
-      } finally {
-        vi.useRealTimers();
-      }
-      expect(dataDigest(fixture.workspace)).toBe(digest);
+      expect(await renderer.declare()).toEqual({ ok: true });
+      expect(mocks.showMessageBox).not.toHaveBeenCalled();
+      await main.shutdown();
+    });
 
-      // The window is closed while the dialog is open.
-      const closing = renderer.declare();
-      await until(() => dialogs.shown.length === 3, "the third dialog");
-      main.window.emit("closed");
-      expect(await closing).toEqual({ ok: false, code: "grant-revoked" });
-      expect(dialogs.shown[2]!.options.signal!.aborted).toBe(true);
-      expect(dataDigest(fixture.workspace)).toBe(digest);
+    it(`${label}: W3 the renderer's strict quiescence does not wait on a confirmation`, async () => {
+      const { main, renderer } = await start("dl-c");
+      // Nothing in flight: it settles at once.
+      await renderer.quiesce();
 
-      // Nothing is left held: the next declaration opens a dialog and is approved.
-      const next = renderer.declare();
-      await until(() => dialogs.shown.length === 4, "the fourth dialog");
-      dialogs.shown[3]!.press(1);
-      expect(await next).toEqual({ ok: true });
+      // The read is done first: a drain that has started refuses new work.
+      const snapshot = await renderer.read();
+      const declaring = renderer.declareFrom(snapshot);
+      const drained = renderer.quiesce();
+      expect(await declaring).toEqual({ ok: true });
+      // No dialog and no 60 s limit: the drain ends with the writer and is not
+      // reported as a failed mutation.
+      await expect(drained).resolves.toBeUndefined();
+      expect(mocks.showMessageBox).not.toHaveBeenCalled();
       await main.shutdown();
     });
   }

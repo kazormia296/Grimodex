@@ -784,14 +784,14 @@ describe("the first read and a re-read (DR-PUBG-39-1, DR-PUBG-39-2)", () => {
 });
 
 describe("declaring (U-9)", () => {
-  it("only announces Main's dialog and sends the closed payload", async () => {
+  it("only announces the save (no OS dialog) and sends the closed payload", async () => {
     const gate = deferred<unknown>();
     installNative({ declare: () => gate.promise });
     renderSection();
     await ready("draft");
     confirmAll();
     expect(screen.getByTestId("scene-body-declaration")).toHaveTextContent(
-      "確認ダイアログが開きます",
+      "宣言が保存されます",
     );
     fireEvent.click(declareButton() as HTMLButtonElement);
     await waitFor(() => expect(calls(DECLARE)).toHaveLength(1));
@@ -810,9 +810,9 @@ describe("declaring (U-9)", () => {
       "sceneId",
       "values",
     ]);
-    // While Main's dialog is open the panel waits and offers nothing else.
+    // While the declaration is being saved the panel waits and offers nothing else.
     expect(screen.getByTestId("body-declaration-outcome")).toHaveTextContent(
-      "確認ダイアログを待っています",
+      "宣言を保存しています",
     );
     expect(declareButton()).toBeDisabled();
     expect(revokeButton()).toBeNull();
@@ -831,8 +831,8 @@ describe("declaring (U-9)", () => {
   });
 
   it.each([
-    ["MAIN_GRANT_CANCELLED", "確認ダイアログがキャンセルされました"],
-    ["MAIN_GRANT_EXPIRED", "確認ダイアログの期限が切れました"],
+    ["MAIN_GRANT_CANCELLED", "確認がキャンセルされました"],
+    ["MAIN_GRANT_EXPIRED", "確認の期限が切れました"],
     ["MAIN_GRANT_REVOKED", "確認が取り消されました"],
   ])(
     "says nothing was declared after %s and reads again",
