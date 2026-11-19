@@ -5,6 +5,9 @@
 
 use super::*;
 use crate::narrative_extraction::discover_durable_maintenance_work_with_coordinates;
+use crate::narrative_extraction::maintenance_runtime::{
+    AutomaticRunKind, LEGACY_BACKFILL_WORK_KEY, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
 use crate::narrative_extraction::incremental_freshness::run_incremental_freshness_cycle;
 use crate::narrative_extraction::maintenance_lifecycle::create_maintenance_run_in_tx;
 use crate::narrative_extraction::maintenance_route_registry::{
@@ -3601,7 +3604,10 @@ fn missing_project_wake_problems(fixture: &Fixture, missing: &str) -> Vec<String
             seam.as_ref(),
             launch.product(),
         ) {
-            Ok(MaintenanceProjectDiscovery::Idle | MaintenanceProjectDiscovery::GraphIndexBuildWake) => {}
+            Ok(MaintenanceProjectDiscovery::Idle) => {}
+            // A gate-open launch may return a Graph wake, which the cycle above
+            // ends; a closed gate never does.
+            Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake) if launch != Launch::Closed => {}
             other => problems.push(format!("{launch:?}: discovery {other:?}")),
         }
     }
@@ -3654,4 +3660,64 @@ fn a_wake_for_a_project_the_workspace_has_still_discovers_its_backfill() {
     let missing = discover_durable_maintenance_work_with_coordinates(&db, "no-such-project", "durable-wake", None)
         .expect("discover a missing project");
     assert!(missing.is_none(), "{missing:?}");
+}
+
+#[test]
+fn a_named_work_item_for_a_project_the_workspace_does_not_have_ends_or_fails_on_the_foreign_key() {
+    // DR-PUBG-5-19: discovery's no-work for a missing project only ends a wake.
+    // A work item main already holds for a project deleted meanwhile still
+    // reaches the cycle. A named Verify or Rebuild is a stale item that the
+    // cycle accepts with nothing left; a named Backfill fails on the `projects`
+    // foreign key, so main's bounded retry and its terminal PROJECT_MISSING
+    // receipt (the main-side fix) are what end it.
+    const MISSING: &str = "project-the-workspace-does-not-have";
+    let _serial = serial();
+    let fixture = Fixture::new().expect("fixture");
+    let cases = [
+        (
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY.to_string(),
+            None,
+        ),
+        (
+            AutomaticRunKind::Verify,
+            format!("{VERIFY_WORK_KEY_PREFIX}epoch-1"),
+            Some("epoch-1".to_string()),
+        ),
+        (
+            AutomaticRunKind::RebuildDerived,
+            REBUILD_DERIVED_WORK_KEY.to_string(),
+            Some("epoch-1".to_string()),
+        ),
+    ];
+    for (run_kind, work_key, semantic_epoch_id) in cases {
+        let recorder = Recorder::default();
+        let request = MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: MISSING.to_string(),
+                run_kind,
+                work_key,
+                semantic_epoch_id,
+                reasons: vec!["open".to_string()],
+            }],
+            wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        };
+        let result = run_cycle_on(fixture.db(), Some(fixture.runtime()), &request, None, &recorder);
+        match run_kind {
+            AutomaticRunKind::Backfill => {
+                let error = result.expect_err("a named Backfill for a missing project fails");
+                assert!(format!("{error:#}").contains("FOREIGN KEY constraint failed"), "{error:#}");
+            }
+            _ => {
+                let result = result.unwrap_or_else(|error| {
+                    panic!("{run_kind:?}: a stale named item is accepted: {error:#}")
+                });
+                assert_eq!(result.status, MaintenanceCycleStatus::Accepted, "{run_kind:?}");
+                assert!(!result.has_more, "{run_kind:?}");
+            }
+        }
+    }
 }

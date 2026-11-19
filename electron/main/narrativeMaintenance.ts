@@ -4361,7 +4361,7 @@ export function createNarrativeMaintenanceScheduler(
                 // there is no durable state to recover. End the work.
                 retryCounts.delete(key);
                 warn(
-                  `[narrative-maintenance] retry exhausted for canonical key ${key}; project ${work.projectId} does not exist in the workspace, dropping the work`,
+                  `[narrative-maintenance] retry exhausted for canonical key ${key}; ${NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE}: project ${work.projectId} does not exist in the workspace, dropping the work`,
                   error,
                 );
               } else {
@@ -4406,7 +4406,7 @@ export function createNarrativeMaintenanceScheduler(
                   // there is no durable state to recover. End the wake.
                   durableWakeRetryCounts.delete(wakeKey);
                   warn(
-                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; the project does not exist in the workspace, dropping the wake`,
+                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; ${NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE}: project ${projectId} does not exist in the workspace, dropping the wake`,
                     error,
                   );
                 } else {

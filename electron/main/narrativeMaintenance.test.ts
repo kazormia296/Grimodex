@@ -3681,8 +3681,13 @@ describe("narrative maintenance scheduler", () => {
   const PROJECT_MISSING_RECEIPT =
     "NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING: project 'gone' does not exist";
 
+  const MISSING_PROJECT_BINDING = {
+    authorityId: "authority-missing-project",
+    generation: 4,
+  };
+
   it("a Graph Index wake for a project the workspace does not have settles instead of retrying forever", async () => {
-    const binding = { authorityId: "authority-missing-project", generation: 4 };
+    const binding = MISSING_PROJECT_BINDING;
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockRejectedValue(new Error(FOREIGN_KEY_FAILURE));
@@ -3698,15 +3703,23 @@ describe("narrative maintenance scheduler", () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     scheduler.requestGraphIndexBuildWakesWithBinding?.(["gone"], binding);
     await vi.advanceTimersByTimeAsync(600_000);
-    // Bounded: the first attempt and its retries, not one cycle a second.
-    expect(runNarrativeMaintenanceCycle.mock.calls.length).toBeLessThanOrEqual(
-      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    // The first attempt and its bounded retries, not one cycle a second.
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
     );
     expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledOnce();
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "wake",
+        projectId: "gone",
+        workspaceBinding: binding,
+      }),
+    );
     expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
   });
 
   it("a hasMore continuation for a project deleted meanwhile settles instead of retrying forever", async () => {
+    const binding = MISSING_PROJECT_BINDING;
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockResolvedValueOnce(acceptedCycle(true))
@@ -3715,6 +3728,7 @@ describe("narrative maintenance scheduler", () => {
       .fn()
       .mockRejectedValue(new Error(PROJECT_MISSING_RECEIPT));
     const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
       runNarrativeMaintenanceCycle,
       recordNarrativeMaintenanceDeliveryFailure,
     });
@@ -3722,14 +3736,24 @@ describe("narrative maintenance scheduler", () => {
     scheduler.start();
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     await vi.advanceTimersByTimeAsync(600_000);
-    expect(runNarrativeMaintenanceCycle.mock.calls.length).toBeLessThanOrEqual(
+    // The accepted hasMore cycle, then the continuation wake's first attempt
+    // and its bounded retries.
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
       NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
     );
     expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledOnce();
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "wake",
+        projectId: "project-1",
+        workspaceBinding: binding,
+      }),
+    );
     expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
   });
 
   it("a work item for a project deleted meanwhile settles instead of retrying forever", async () => {
+    const binding = MISSING_PROJECT_BINDING;
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockRejectedValue(new Error(FOREIGN_KEY_FAILURE));
@@ -3737,6 +3761,7 @@ describe("narrative maintenance scheduler", () => {
       .fn()
       .mockRejectedValue(new Error(PROJECT_MISSING_RECEIPT));
     const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
       runNarrativeMaintenanceCycle,
       recordNarrativeMaintenanceDeliveryFailure,
     });
@@ -3744,43 +3769,70 @@ describe("narrative maintenance scheduler", () => {
     scheduler.start();
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     await vi.advanceTimersByTimeAsync(600_000);
-    expect(runNarrativeMaintenanceCycle.mock.calls.length).toBeLessThanOrEqual(
-      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
     );
     expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledOnce();
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "work",
+        projectId: "gone",
+        workspaceBinding: binding,
+      }),
+    );
     expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
   });
 
-  it("a refused receipt that is not PROJECT_MISSING keeps retrying the wake (a transient failure is not terminal)", async () => {
-    for (const refusal of [
-      new Error("SQLITE_BUSY: database is locked"),
-      new Error("NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: projectId is required"),
-      // Only the exact code prefix is terminal.
-      new Error(`wrapped ${PROJECT_MISSING_RECEIPT}`),
-      { status: "workspace-binding-mismatch" },
-    ]) {
-      const runNarrativeMaintenanceCycle = vi
-        .fn()
-        .mockRejectedValue(new Error("NEX_MAINTENANCE_TRANSIENT: busy"));
-      const recordNarrativeMaintenanceDeliveryFailure =
-        refusal instanceof Error
-          ? vi.fn().mockRejectedValue(refusal)
-          : vi.fn().mockResolvedValue(refusal);
-      const { scheduler } = createScheduler({
-        runNarrativeMaintenanceCycle,
-        recordNarrativeMaintenanceDeliveryFailure,
-      });
-      scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
-      scheduler.start();
-      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
-      await vi.advanceTimersByTimeAsync(60_000);
-      // The exhausted retries are not a terminal outcome: the trigger stays
-      // queued and the cycle keeps running.
-      expect(
-        runNarrativeMaintenanceCycle.mock.calls.length,
-      ).toBeGreaterThan(NARRATIVE_MAINTENANCE_MAX_RETRIES + 2);
-      expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
-      await scheduler.dispose();
+  it("a refused receipt that is not PROJECT_MISSING keeps retrying a work item and a wake (a transient failure is not terminal)", async () => {
+    const binding = MISSING_PROJECT_BINDING;
+    for (const scope of ["work", "wake"] as const) {
+      for (const refusal of [
+        new Error("SQLITE_BUSY: database is locked"),
+        new Error(
+          "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: projectId is required",
+        ),
+        // Only the exact code prefix is terminal.
+        new Error(`wrapped ${PROJECT_MISSING_RECEIPT}`),
+        { status: "workspace-binding-mismatch" },
+      ]) {
+        const runNarrativeMaintenanceCycle = vi
+          .fn()
+          .mockRejectedValue(new Error("NEX_MAINTENANCE_TRANSIENT: busy"));
+        const recordNarrativeMaintenanceDeliveryFailure =
+          refusal instanceof Error
+            ? vi.fn().mockRejectedValue(refusal)
+            : vi.fn().mockResolvedValue(refusal);
+        const { scheduler } = createScheduler({
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+          recordNarrativeMaintenanceDeliveryFailure,
+        });
+        scheduler.start();
+        if (scope === "work") {
+          scheduler.request(
+            work("project-1", "backfill", "backfill:v2", "open"),
+          );
+          await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+        } else {
+          await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+          scheduler.requestGraphIndexBuildWakesWithBinding?.(
+            ["project-1"],
+            binding,
+          );
+        }
+        await vi.advanceTimersByTimeAsync(60_000);
+        // The exhausted retries are not a terminal outcome: the trigger stays
+        // queued, its receipt is asked for again and the cycle keeps running.
+        expect(
+          runNarrativeMaintenanceCycle.mock.calls.length,
+          `${scope}: ${String(refusal instanceof Error ? refusal.message : "typed non-ACK")}`,
+        ).toBeGreaterThan(NARRATIVE_MAINTENANCE_MAX_RETRIES + 2);
+        expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ scope }),
+        );
+        expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+        await scheduler.dispose();
+      }
     }
   });
 
