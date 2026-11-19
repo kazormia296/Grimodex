@@ -215,11 +215,7 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     h.demand("project-new");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenLastCalledWith(
-      ["project-new"],
-      FIRST,
-      "demand",
-    );
+    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST, "demand");
   });
 
   it("drops the demand when the binding changed before the wake fires, and never wakes the replacement workspace for the old project", async () => {
@@ -304,7 +300,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     h.state.binding = REPLACEMENT;
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(["project-a"], REPLACEMENT);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      REPLACEMENT,
+      "demand",
+    );
   });
 
   it("DR-PUBG-5-18: the residual the DR accepts: a demand that reaches main after workspace:opened (the event cannot tell its workspace) is bound to the replacement and wakes it once", async () => {
@@ -324,7 +324,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
     expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
-    expect(h.wakes).toHaveBeenLastCalledWith(["project-a"], REPLACEMENT);
+    expect(h.wakes).toHaveBeenLastCalledWith(
+      ["project-a"],
+      REPLACEMENT,
+      "demand",
+    );
     await vi.advanceTimersByTimeAsync(120_000);
     expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
   });
@@ -369,7 +373,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     // The replacement's own demand after the view is its own.
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(["project-a"], REPLACEMENT);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      REPLACEMENT,
+      "demand",
+    );
   });
 
   it("DR-PUBG-5-18: a change of status alone (a recovery that leaves and re-enters Ready under one token) ends the demands too", async () => {
@@ -400,7 +408,11 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     expect(vi.getTimerCount()).toBe(1);
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(["project-a"], FIRST);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      FIRST,
+      "demand",
+    );
     // The view is not a discovery trigger: no chain timer, no discovery.
     await vi.advanceTimersByTimeAsync(120_000);
     expect(h.discoverNarrativeMaintenanceWork).not.toHaveBeenCalled();
@@ -544,11 +556,7 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     );
     h.demand("project-new");
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.wakes).toHaveBeenLastCalledWith(
-      ["project-new"],
-      FIRST,
-      "demand",
-    );
+    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST, "demand");
   });
 
   it("shows a waiting demand to the quiescence writer and settles when it fires", async () => {
