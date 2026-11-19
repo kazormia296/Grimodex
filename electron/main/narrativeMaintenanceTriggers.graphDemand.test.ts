@@ -35,6 +35,8 @@ function setup(
 ) {
   const state = {
     binding: options.binding === undefined ? FIRST : options.binding,
+    // A transition answers WORKSPACE_SWITCHING (the getter throws).
+    switching: false,
   };
   const requestGraphIndexBuildWakesWithBinding = vi.fn();
   const requestManyWithBinding = vi.fn();
@@ -48,7 +50,12 @@ function setup(
   const warn = vi.fn();
   const coordinator = createNarrativeMaintenanceTriggerCoordinator(
     {
-      getNarrativeMaintenanceWorkspaceBinding: () => state.binding,
+      getNarrativeMaintenanceWorkspaceBinding: () => {
+        if (state.switching) {
+          throw new Error("WORKSPACE_SWITCHING: workspace is switching");
+        }
+        return state.binding;
+      },
       discoverNarrativeMaintenanceWork,
     },
     scheduler,
@@ -257,6 +264,69 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     // The same pair starts a new run (the table was cleared).
     h.demand("project-a");
     await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
+  });
+
+  // DR-PUBG-5-18 (R-B). Native emits a demand (E1) before `workspace:opened`
+  // (E2) of a switch, because the callers of the Suspended branches hold a
+  // workspace participant that the switch has to wait for. The event carries no
+  // binding, so main binds it to the live binding when it handles it.
+  const REPLACEMENT: NarrativeMaintenanceWorkspaceBinding = {
+    authorityId: "authority-replacement",
+    generation: 1,
+  };
+
+  it("DR-PUBG-5-18: a demand handled once the replacement is Ready, in the same drain as workspace:opened, wakes nothing", async () => {
+    const h = harness();
+    // The queue holds E1 then E2 when main gets to them: the getter already
+    // answers the replacement's binding, and both events run before any timer.
+    h.state.binding = REPLACEMENT;
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    h.coordinator.handleBackendEvent("workspace:opened", {
+      path: "/replacement",
+      restoreOnly: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.wakes).not.toHaveBeenCalled();
+  });
+
+  it("DR-PUBG-5-18: a demand that meets a switching workspace is dropped without a timer, and the next demand after the switch is its own", async () => {
+    const h = harness();
+    h.state.switching = true;
+    h.demand("project-a");
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.warn).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.wakes).not.toHaveBeenCalled();
+    h.state.switching = false;
+    h.state.binding = REPLACEMENT;
+    h.demand("project-a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledExactlyOnceWith(
+      ["project-a"],
+      REPLACEMENT,
+    );
+  });
+
+  it("DR-PUBG-5-18: the residual the DR accepts: a demand that reaches main after workspace:opened is bound to the replacement and wakes it once", async () => {
+    const h = harness();
+    h.state.binding = REPLACEMENT;
+    h.coordinator.handleBackendEvent("workspace:opened", {
+      path: "/replacement",
+      restoreOnly: false,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const afterOpen = h.wakes.mock.calls.length;
+    // Native does not emit this order in a switch (the E1 of a participant
+    // holder is queued first); only a thread that stalled across the whole
+    // switch could. The event cannot tell, so it is the replacement's demand.
+    h.demand("project-a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
+    expect(h.wakes).toHaveBeenLastCalledWith(["project-a"], REPLACEMENT);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(h.wakes).toHaveBeenCalledTimes(afterOpen + 1);
   });
 

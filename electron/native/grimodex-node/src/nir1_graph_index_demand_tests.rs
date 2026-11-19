@@ -362,3 +362,98 @@ fn b_publish_leaves_a_registration_refused_suspension_with_one_retry() {
     assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), creates + 1);
     assert_eq!(demand_count(&fixture), asked, "the retry asked for nothing");
 }
+
+/// DR-PUBG-5-18 (R-B), through a real `open_workspace` switch with no hook: every
+/// demand a Suspended slot raised for the old workspace sits in the event queue
+/// before the switch's `workspace:opened`, none comes after it, and once the
+/// replacement is Ready the stale Suspended slot answers nothing (the Ready
+/// publication moved `ready_generation`), so a begin starts a new session
+/// instead of naming the old workspace's refused project. The callers of both
+/// Suspended branches hold a workspace participant, which the switch has to wait
+/// for, so their events are queued before E2. The thread-stall window of the
+/// `build_worker` branch is not observable without a hook and is recorded in the
+/// DR, not here.
+#[tokio::test]
+async fn a_real_switch_queues_the_old_demands_before_workspace_opened_and_the_stale_suspended_slot_asks_nothing(
+) {
+    for deferred in [false, true] {
+        let fixture = RefusalFixture::new(if deferred { "rb-deferred" } else { "rb-begin" });
+        let state = Arc::clone(fixture.state());
+        *lock(&state.nir1_graph.shared.index_demand_product_for_test) = Some(open_token());
+        *lock(&fixture.plan.prepare_mode) = PrepareMode::Fail(REFUSED);
+        let query = GraphQuery {
+            project_id: PROJECT.into(),
+            query_scene_id: SCENE.into(),
+            seed_entity_id: "entity".into(),
+        };
+        let ask = |state: &Arc<AppState>| -> GraphBegin {
+            if deferred {
+                state.nir1_graph.begin_deferred(state, query.clone())
+            } else {
+                state.nir1_graph.begin(state, query.clone())
+            }
+        };
+        let events = |state: &Arc<AppState>| state.events.pending_for_test();
+        let demands = |state: &Arc<AppState>| {
+            events(state)
+                .iter()
+                .filter(|(channel, _)| channel == GRAPH_INDEX_DEMAND_EVENT)
+                .count()
+        };
+
+        wait_until("suspended after five failures", || {
+            let _ = state.nir1_graph.begin(&state, query.clone());
+            state.nir1_graph.slot_kind_for_test() == GraphSlotKind::Suspended
+        });
+        // The control: a begin that meets the Suspended slot asks for B.
+        let before_control = demands(&state);
+        assert!(matches!(
+            ask(&state),
+            GraphBegin::Unavailable(GraphUnavailable::RegistrationUnavailable)
+        ));
+        let asked = demands(&state);
+        assert_eq!(asked, before_control + 1, "deferred: {deferred}");
+
+        // A session of the replacement must not be refused (and so not ask).
+        *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+        let opened = fixture
+            .backend
+            .open_workspace(fixture.w2.to_string_lossy().into_owned())
+            .await
+            .expect("open outcome");
+        let opened: serde_json::Value = serde_json::from_str(&opened).expect("open JSON");
+        assert!(
+            matches!(opened["status"].as_str(), Some("ready" | "migrated")),
+            "deferred: {deferred}: {opened}"
+        );
+
+        let queued = events(&state);
+        let position_opened = queued
+            .iter()
+            .position(|(channel, _)| channel == "workspace:opened")
+            .unwrap_or_else(|| panic!("deferred: {deferred}: no workspace:opened event"));
+        let late = queued
+            .iter()
+            .enumerate()
+            .filter(|(position, (channel, _))| {
+                channel == GRAPH_INDEX_DEMAND_EVENT && *position > position_opened
+            })
+            .count();
+        assert_eq!(late, 0, "deferred: {deferred}: a demand after workspace:opened");
+        assert_eq!(demands(&state), asked, "deferred: {deferred}");
+
+        // The replacement is Ready: the old Suspended slot is stale and a begin
+        // starts a new session (held, so it neither answers nor asks).
+        match ask(&state) {
+            GraphBegin::Unavailable(GraphUnavailable::Warming) => {}
+            GraphBegin::Pending(ticket) => ticket.finish(GraphTicketUse::Unused),
+            GraphBegin::Unavailable(reason) => panic!(
+                "deferred: {deferred}: a stale Suspended slot answered {}",
+                reason.as_str()
+            ),
+            GraphBegin::Cached(_) => panic!("deferred: {deferred}: unexpected cache hit"),
+        }
+        assert_eq!(demands(&state), asked, "deferred: {deferred}");
+        fixture.plan.release.store(true, Ordering::SeqCst);
+    }
+}
