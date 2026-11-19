@@ -882,6 +882,8 @@ jobs:
           scripts/generate-licenses.test.mjs
           scripts/license-policy.test.mjs
           scripts/semantic-reranker-release.test.mjs
+          scripts/generate-model-capability-snapshot.test.mjs
+          scripts/update-model-capabilities-workflow.test.mjs
 
       - name: Electron type-check
         if: ${{ !inputs.source_focused }}
