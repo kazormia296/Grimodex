@@ -14,6 +14,7 @@
  *   node scripts/generate-model-capability-snapshot.mjs compare --base <master の写し> \
  *     (--candidate <候補の file> | --candidate-dir <artifact の directory>) \
  *     [--report <json>] [--summary <md>] [--pr-title <txt>] [--pr-body <md>] [--github-output <file>]
+ *   node scripts/generate-model-capability-snapshot.mjs same-models --a <PR の枝の写し> --b <候補> [--github-output <file>]
  *   node scripts/generate-model-capability-snapshot.mjs raw-limit
  *
  * generate: normalizeModelsDev → canonicalize → parseSnapshot の順に通し、自己検証してから書く。
@@ -27,6 +28,8 @@
  *   出力は件数・真偽・列挙した code・検証を通した id だけで、upstream の文字列は出さない。
  *   候補が拒否されたとき（stale／generated-at-conflict／schema 等）は非 0 で終わり、PR を作らない。
  *   急減（shrunk）だけは拒否でなく draft の PR にする（Q9。人の確認を必須にする）。
+ * same-models: 2 つの写しの models が generatedAt を除いて同じかを `same=true|false` で出す（既存の PR の枝の
+ *   写しと候補が同じなら、定期 workflow は push しない）。
  * raw-limit: models.dev の応答の byte 数の上限（SNAPSHOT_POLICY.maxRawBytes）を出す。curl の上限に使う。
  *
  * 失敗の出力は code と件数だけで、入力の本文は出さない。
@@ -209,6 +212,8 @@ function diffModels(base, next) {
   let added = 0;
   let removed = 0;
   let changed = 0;
+  // maxOutputTokens の値から値への変化（compareSnapshots は報告しない）。本文の注意の欄に出す。
+  const outputChanges = { total: 0, items: [] };
   for (const key of Object.keys(next.models)) {
     const before = base.models[key];
     if (before === undefined) {
@@ -219,11 +224,25 @@ function diffModels(base, next) {
     if (ENTRY_KEYS.some((field) => before[field] !== after[field])) {
       changed += 1;
     }
+    if (
+      before.maxOutputTokens !== undefined &&
+      after.maxOutputTokens !== undefined &&
+      before.maxOutputTokens !== after.maxOutputTokens
+    ) {
+      outputChanges.total += 1;
+      if (outputChanges.items.length < SNAPSHOT_POLICY.maxFindings) {
+        outputChanges.items.push({
+          key,
+          from: before.maxOutputTokens,
+          to: after.maxOutputTokens,
+        });
+      }
+    }
   }
   for (const key of Object.keys(base.models)) {
     if (next.models[key] === undefined) removed += 1;
   }
-  return { added, removed, changed };
+  return { added, removed, changed, outputChanges };
 }
 
 function providerTable(base, next) {
@@ -254,7 +273,10 @@ export function evaluateUpdate({ baseText, candidateText, nowMs }) {
   }
   const baseMs = Date.parse(base.snapshot.generatedAt);
   const baseAgeDays = Math.max(0, Math.floor((nowMs - baseMs) / DAY_MS));
-  const diff = diffModels(base.snapshot, candidate.snapshot);
+  const { outputChanges, ...diff } = diffModels(
+    base.snapshot,
+    candidate.snapshot,
+  );
   const common = {
     version: 1,
     baseGeneratedAt: base.snapshot.generatedAt,
@@ -268,6 +290,7 @@ export function evaluateUpdate({ baseText, candidateText, nowMs }) {
     },
     providers: providerTable(base.snapshot, candidate.snapshot),
     digest: candidate.digest,
+    outputChanges,
   };
   if (diff.added === 0 && diff.removed === 0 && diff.changed === 0) {
     // generatedAt だけが違う写しは更新としない（毎回 PR になるのを避ける）。
@@ -279,6 +302,7 @@ export function evaluateUpdate({ baseText, candidateText, nowMs }) {
       draftReasons: [],
       attentionTotal: 0,
       findings: [],
+      outputChanges: { total: 0, items: [] },
     };
   }
   const compared = compareSnapshots(
@@ -295,6 +319,7 @@ export function evaluateUpdate({ baseText, candidateText, nowMs }) {
       draftReasons: [],
       attentionTotal: 0,
       findings: [],
+      outputChanges: { total: 0, items: [] },
     };
   }
   const findings = compared.findings;
@@ -425,7 +450,7 @@ export function renderPrBody(report) {
     lines.push(
       "### 確認が要る点",
       "",
-      "この PR は **draft** です。内容を人が確認し、問題が無ければ ready にしてから merge します（auto-merge は使いません）。",
+      "この PR は **draft** です。内容を人が確認し、問題が無ければ人が ready にしてから merge します。workflow は draft に戻すことだけをし、ready にはしません（auto-merge も使いません）。",
       "",
       ...DRAFT_REASONS.filter((reason) =>
         report.draftReasons.includes(reason),
@@ -436,6 +461,18 @@ export function renderPrBody(report) {
   const rendered = report.findings
     .map(renderFinding)
     .filter((line) => line !== null);
+  // maxOutputTokens の変化（compareSnapshots は報告しない）。key は検証し直し、値は整数だけを出す。
+  const outputChanges = report.outputChanges ?? { total: 0, items: [] };
+  for (const item of outputChanges.items) {
+    rendered.push(
+      `${codeKey(item.key)} の maxOutputTokens: ${safeInteger(item.from)} → ${safeInteger(item.to)}`,
+    );
+  }
+  if (outputChanges.total > outputChanges.items.length) {
+    rendered.push(
+      `上限のため省略した maxOutputTokens の変化: ${safeInteger(outputChanges.total - outputChanges.items.length)} 件`,
+    );
+  }
   if (rendered.length > 0) {
     lines.push(
       `### 検出（最大 ${SNAPSHOT_POLICY.maxFindings} 件）`,
@@ -492,8 +529,11 @@ function readRegularFile(file, maxBytes) {
   return readFileSync(file, "utf8");
 }
 
-/** artifact の directory から候補を読む。唯一の通常の file だけを受け入れる（symlink・余分な file を拒否）。 */
+/** artifact の directory から候補を読む。通常の directory の中の唯一の通常の file だけを受け入れる（symlink・余分な file を拒否）。 */
 export function readCandidateFromDir(dir) {
+  if (!lstatSync(dir).isDirectory()) {
+    throw new Error("artifact の directory が通常の directory ではありません");
+  }
   const entries = readdirSync(dir);
   if (entries.length !== 1 || entries[0] !== CANDIDATE_FILE_NAME) {
     throw new Error("artifact は候補の写し 1 file だけでなければなりません");
@@ -502,6 +542,36 @@ export function readCandidateFromDir(dir) {
     path.join(dir, CANDIDATE_FILE_NAME),
     SNAPSHOT_POLICY.maxSnapshotBytes,
   );
+}
+
+/**
+ * 2 つの写しの models が、generatedAt を除いて同じか。a が検証を通らなければ「違う」（上書きしてよい）。
+ * b（候補）が検証を通らなければ例外。定期 workflow が、PR の枝の写しと候補を比べて、同じなら
+ * push しないために使う（毎週の上書きを避ける）。
+ */
+export function sameModels(aText, bText, nowMs) {
+  const b = parseSnapshot(bText, SNAPSHOT_POLICY, { nowMs });
+  if (!b.ok) throw new Error(`候補の検証に失敗: ${b.code}`);
+  const a = parseSnapshot(aText, SNAPSHOT_POLICY, { nowMs });
+  if (!a.ok) return false;
+  return (
+    canonicalize({ ...a.snapshot, generatedAt: b.snapshot.generatedAt }) ===
+    canonicalize(b.snapshot)
+  );
+}
+
+function runSameModels(options) {
+  const a = options.get("--a");
+  const b = options.get("--b");
+  if (!a || !b) throw new Error("same-models には --a と --b が要ります");
+  const same = sameModels(
+    readRegularFile(a, SNAPSHOT_POLICY.maxSnapshotBytes),
+    readRegularFile(b, SNAPSHOT_POLICY.maxSnapshotBytes),
+    Date.now(),
+  );
+  const outputFile = options.get("--github-output");
+  if (outputFile) appendFileSync(outputFile, `same=${same}\n`, "utf8");
+  console.log(`same=${same}`);
 }
 
 function runCompare(options) {
@@ -547,7 +617,7 @@ function runCompare(options) {
   if (outputFile) {
     appendFileSync(
       outputFile,
-      `changed=${report.status === "changed"}\ndraft=${report.draft}\n`,
+      `changed=${report.status === "changed"}\ndraft=${report.draft}\nstale=${report.baseStale}\n`,
       "utf8",
     );
   }
@@ -633,12 +703,19 @@ function main(argv) {
     runCompare(options);
     return;
   }
+  if (command === "same-models") {
+    if (positional.length !== 1) {
+      throw new Error("same-models に位置引数は要りません");
+    }
+    runSameModels(options);
+    return;
+  }
   if (command === "raw-limit") {
     console.log(String(SNAPSHOT_POLICY.maxRawBytes));
     return;
   }
   throw new Error(
-    "使い方: generate <models.dev の応答> --generated-at <時刻> | check [<file>] | compare --base <file> --candidate <file> | raw-limit",
+    "使い方: generate <models.dev の応答> --generated-at <時刻> | check [<file>] | compare --base <file> --candidate <file> | same-models --a <file> --b <file> | raw-limit",
   );
 }
 

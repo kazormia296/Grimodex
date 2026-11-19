@@ -373,27 +373,30 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 
 ユーザーは、§7.1 と §7.3 の暫定値を「この値で確定し merge」と回答した。`SNAPSHOT_POLICY`（`electron/shared/modelCapabilityRegistry.ts`）と、scheduler・fetch・store の値（`electron/main/modelCapability*.ts`）は確定値とする。上の節の「暫定」は、この時点で確定に読み替える。運用で問題が出たら、別の PR で直す。
 
-### 7.6 定期 workflow の技術事項（2026-11-19）
+### 7.6 定期 workflow の技術事項（2026-11-19、同日のレビューで改訂）
 
 §7 の回答（Q7〜Q9）と §3.3 の T4・T7・T10 の範囲内で決めた実装の事項です。承認済みの仕様から外れた点は「仕様との差」に分けて書きました。この workflow はまだ一度も実行していません（実行にはユーザーの作業が要ります）。
 
 #### 構造
 
-- 置き場所：`.github/workflows/update-model-capabilities.yml`。判断の本体は `scripts/generate-model-capability-snapshot.mjs` の `compare`、試験は `scripts/update-model-capabilities-workflow.test.mjs`（workflow の静的な試験）と `scripts/generate-model-capability-snapshot.test.mjs`（`compare` の試験）。
+- 置き場所：`.github/workflows/update-model-capabilities.yml`。判断の本体は `scripts/generate-model-capability-snapshot.mjs` の `compare`・`same-models`、試験は `scripts/update-model-capabilities-workflow.test.mjs`（workflow の構造の試験と、create-pr job の step を偽の `gh` とローカルの bare repo で順に動かす模擬）と `scripts/generate-model-capability-snapshot.test.mjs`（`compare` と `same-models` の試験）。
 - 起動：`schedule`（週 1 回、月曜 03:41 UTC＝12:41 JST）と `workflow_dispatch`。`concurrency` の group は `update-model-capabilities`（`cancel-in-progress: false`）。
 - schedule を週 1 回にした理由：更新 PR は `electron/**` に触れるため、PR の `ci.yml` は全 lane が走ります（`scripts/ci-change-scope.json` の `forceAll`）。毎日にすると、人が merge するまで PR を更新するたびに CI の枠を使います。前例の `update-route-watch.yml` も週 1 回です。app は同梱の写しで動き続け、新しいモデルは能力表に無い id の既定値になるだけです。急ぐときは `workflow_dispatch` を使います。
 - job は 2 つです。
-  - `generate`（`contents: read`、secrets なし）：`curl` で `https://models.dev/api.json` を取得し（T4。`-L` なし、`--proto '=https'`、`--max-filesize`＝`SNAPSHOT_POLICY.maxRawBytes`〔script の `raw-limit` から取る〕、`--max-time 60`、`--connect-timeout 15`、HTTP 200 の確認、取得後の byte 数の再確認）、`generate` で写しを生成・自己検証し、`compare` で master の写しと比べます。変更があれば写し 1 file だけを artifact（保持 7 日）にします。`generatedAt` は runner の時計から取ります。
-  - `create-pr`（`contents: read`）：`generate` が `changed=true` を返し、`github.ref` が `refs/heads/master` のときだけ動きます。`master` を checkout し、artifact を directory ごと受け取り、**master の版の** 検証 module で `compare` をやり直します（artifact の script は実行しません）。変更の有無・draft の判定・PR の title と本文は、すべてこの job が自分で計算します（`generate` の job output から使うのは `changed` の真偽 1 つだけで、`if` の条件です）。その後、App の token を発行し、固定の枝 `automation/model-capabilities` へ push し、PR を作成または更新します。
+  - `generate`（`contents: read`、secrets なし）：`curl` で `https://models.dev/api.json` を取得し（T4。`-L` なし、`--proto '=https'`、`--max-filesize`＝`SNAPSHOT_POLICY.maxRawBytes`〔script の `raw-limit` から取る〕、`--max-time 60`、`--connect-timeout 15`、HTTP 200 の確認、取得後の byte 数の再確認）、`generate` で写しを生成・自己検証し、`compare` で master の写しと比べます（警告は summary だけ。ここで失敗にすると更新 PR を妨げます）。写し 1 file だけを artifact（保持 7 日）にします。変更が無くても渡します。`generatedAt` は runner の時計から取ります。
+  - `create-pr`（`contents: read`、Environment `model-capabilities`）：`github.ref` が `refs/heads/master` のときだけ動き、**変更の有無に依らず動きます**。`master` を checkout し、artifact を directory ごと受け取り、**master の版の** 検証 module で `compare` をやり直します（artifact の script は実行せず、通常の directory の中の `model-capabilities.json` 1 file だけを読みます）。変更の有無・draft の判定・古さ・PR の title と本文は、すべてこの job が自分で計算します（`generate` の job output は使いません）。
 - 依存の install はしません（`pnpm` を呼ばない。Node 22 が `.ts` を直接 import します）。action はすべて commit の SHA で固定し、`persist-credentials: false` にしています。`run` の中に `${{ }}` を置かず、式は env・with・if に限った allowlist です（試験が固定）。
 
-#### 権限と secret（Q8）
+#### 権限・secret・Environment・variable（Q8）
 
 - **GITHUB_TOKEN は全体も 2 つの job も `contents: read` のままです。** PR の作成と push は GitHub App の token だけが行います。token の発行時に `permission-contents: write` と `permission-pull-requests: write` だけを指定するので、App に付けた権限のうち、この 2 つ以外は token に載りません。
-- secret の名前（repo の Actions secrets）：
+- secret の名前（**Environment `model-capabilities` の secrets**）：
   - `MODEL_REGISTRY_APP_CLIENT_ID`：App の Client ID。固定した `actions/create-github-app-token` の v3.3.0 は `app-id` を非推奨にし、`client-id` を勧めているため、App ID ではなく Client ID を使います。
   - `MODEL_REGISTRY_APP_PRIVATE_KEY`：App の private key（`.pem` の全文）。
-- 2 つのどちらかが未登録のときは、`create-pr` は検証までを行い、token の発行・push・PR の作成を飛ばします。job は成功で終わり、summary に「secret 未設定」、画面に warning を出します。
+- Environment を使う理由：`workflow_dispatch` は master 以外の枝からも起動できます。Environment の「Deployment branches」を master だけに限ると、別の枝の workflow は secret を使えません（`create-pr` は `github.ref` が master のときだけ動くので、二重の防御です）。
+- repo の variable `MODEL_REGISTRY_CONFIGURED`（値 `true`）：設定の完了を宣言する印です。
+  - 未設定の間（初回の設定の前）：secret が無ければ、`create-pr` は検証までを行い、PR を作らずに summary と warning に「secret 未設定」と出して **成功** で終わります。
+  - `true` の後：secret の欠落と、master の写しが 30 日を超えて古いこと（T10）を **job の失敗** にします。
 - 「Actions に PR 作成を許可」の repo 設定は **不要**（見込み）です。この設定は GITHUB_TOKEN が PR を作るための設定で、この workflow は App の token を使い、GITHUB_TOKEN は PR を作りません。App の token が作る PR は `pull_request` の workflow（Quick と `ci.yml`）を起動します。ただし、まだ実行していないので **未確認** です。
 - 固定した action：
 
@@ -407,9 +410,9 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 
   `create-github-app-token` は v3.4.0（2026-11-18）が最新でしたが、公開から 1 日のため、公開から約 5 週の v3.3.0 を選びました。commit は GitHub の API（tag の ref）で確かめました。
 
-#### draft の判定（Q9）
+#### draft の判定と、既存の PR の扱い（Q9）
 
-auto-merge は使いません。次のどれかに当たると、PR を **draft** で作ります。PR が既にあるときも、毎回この判定に合わせて draft の状態を直します（人が ready にした後に新しい写しで急減などが出たら、draft に戻ります）。
+auto-merge は使いません。次のどれかに当たると、PR を **draft** で作ります。
 
 | 理由（code） | 条件 | 出どころ |
 |---|---|---|
@@ -419,29 +422,51 @@ auto-merge は使いません。次のどれかに当たると、PR を **draft*
 | `high-churn` | （追加＋削除＋変更）が前回の件数の 20% を超えた | **新しい暫定値**（`REVIEW_POLICY.maxChurnRatio`） |
 
 - `compareSnapshots` は急減を finding でなく **失敗（`shrunk`）として返します**。Q9 の「急減は draft」に従い、`shrunk` だけは拒否せず draft の PR にします（本文に「配布済みの app は、同梱の写しとの比較でこの写しを拒否します」と書きます。§7.3 の採用の手順のため）。`stale`・`generated-at-conflict`・`schema` は拒否で、job を失敗させ、PR を作りません（W4）。
-- `REVIEW_POLICY` の 2 つの数値（20 件、20%）は `SNAPSHOT_POLICY` に無いので、script の定数として新設しました（`SNAPSHOT_POLICY` は変えていません）。**運用で実測した後に、ユーザーの確認が要る暫定値です。**
+- `REVIEW_POLICY` の数値（20 件、20%、古さの 30 日、候補の時刻の未来側の許容 5 分）は `SNAPSHOT_POLICY` に無いので、script の定数として新設しました（`SNAPSHOT_POLICY` は変えていません）。**運用で実測した後に、ユーザーの確認が要る暫定値です。**
 - `generatedAt` だけが違う（models が同一の）写しは更新としません（毎週 PR になるのを避けるため）。
+- `maxOutputTokens` の値から値への変化は、`compareSnapshots` が報告しないので、script が数えて、本文の「検出」の欄に件数（`maxFindings` で切り、残りは件数）と、検証し直した key で出します。draft の判定には使いません。
+
+既存の PR（固定の枝の open の PR）があるときの順序は、次のとおりです（試験が順序を固定しています）。
+
+1. master と差が無くなった（候補の models が master と同じ）なら、PR に固定の文のコメントを付けて **閉じ**、終わります（枝は残し、次の実行で上書きします）。
+2. 変更があるなら、PR の枝の写しと候補を、`generatedAt` を除いて比べます（`same-models`）。**同じなら何もしません**（毎週の上書きを止め、人が確認した内容の draft／ready の状態も変えません）。枝の写しを読めない・検証を通らないときは「違う」として扱います。
+3. 違い、判定が draft で、PR が draft でないときは、**push より前に** PR を draft にします（`gh pr ready --undo`）。draft になったことを API で確かめ、ならなければ **push せずに job を失敗させます**。
+4. 固定の枝へ push し、PR の title と本文を更新します。
+5. **workflow は PR を ready にしません**（draft に戻すことだけをします）。ready にするのは人の操作です。新しい PR は、判定が draft なら draft で、そうでなければ通常の PR で作ります。
+6. 固定の枝は自動化の専用で、人の commit は次の実行で上書きされます（仕様どおり）。
 
 #### 検証の分担（T7）
 
-- PR 作成 job の再検証：候補が `check` と同じ検証（`parseSnapshot`、`source` が `grimodex`、捨てられる項目が 0 件、書式が `generate` の出力と 1 byte も違わない）を通ること、`generatedAt` が CI の時計から 5 分より先でないこと（実行時の 1 日の許容より厳しい）、master の写しとの `compareSnapshots` の結果。artifact は「`model-capabilities.json` 1 file だけの通常の file」でなければ拒否します（symlink・余分な file を拒否）。
+- PR 作成 job の再検証：候補が `check` と同じ検証（`parseSnapshot`、`source` が `grimodex`、捨てられる項目が 0 件、書式が `generate` の出力と 1 byte も違わない）を通ること、`generatedAt` が CI の時計から 5 分より先でないこと（実行時の 1 日の許容より厳しい）、master の写しとの `compareSnapshots` の結果。artifact は「通常の directory の中の、`model-capabilities.json` 1 file だけ（通常の file）」でなければ拒否します（symlink の directory・symlink の file・余分な file を拒否）。
 - PR の本文・title：件数・検証済みの時刻・列挙した理由・検証を通した key だけから script が組み立てます。key は検証し直し、必ず code span で出し、通らない値は省略します。commit message・PR の title・枝名は固定の文字列（日付は検証済みの `generatedAt` だけ）です。
-- push：master から切った枝に、写し 1 file だけを commit し（`git status --porcelain` が `M  electron/resources/model-capabilities.json` だけであることを確かめる）、`HEAD:refs/heads/automation/model-capabilities` へ `--force` で push します。master へは push しません。token は push 1 回の環境変数（`GIT_CONFIG_*`）にだけ渡し、`.git/config` にも commit にも引数にも出しません。固定の枝は自動化の専用で、人の commit を置かないでください（次の実行で上書きします）。
+- push：master から切った枝に、写し 1 file だけを commit し（`git status --porcelain` が `M  electron/resources/model-capabilities.json` だけであることを確かめる）、`HEAD:refs/heads/automation/model-capabilities` へ `--force` で push します。master へは push しません。token は push 1 回の環境変数（`GIT_CONFIG_*`）にだけ渡し、`.git/config` にも commit にも引数にも出しません。push が拒否されたときは、`::error` の注釈を出して job を失敗させます。
 
-#### T10（古さの警告）
+#### T10（古さ）の扱い
 
-`compare` が、master の写しの `generatedAt` から 30 日を超えたときに、job の summary と GitHub の warning に警告を出します（`REVIEW_POLICY.staleWarningDays`）。上流が 30 日変わらないときにも出ます（誤警報になり得ます）。更新 PR が merge されないとき、または workflow が止まっているときの手がかりです。
+`compare` が、master の写しの `generatedAt` から 30 日を超えたときに、summary と GitHub の warning に出します。`generate` job では警告だけです（失敗にすると、古さを直す更新 PR が作れなくなります）。`create-pr` job は、`MODEL_REGISTRY_CONFIGURED=true` の後なら、PR の作成・更新の **後**（最後の step）に失敗にします。**失敗にした理由**：更新 PR が merge されないまま、または workflow が止まったまま気づかない状態を、見える形にする価値が大きいためです。誤警報になるのは、models.dev が 30 日間まったく変わらない場合ですが、openrouter などの変更の頻度から、起きにくいと見ています。誤警報が続くようなら、variable を外すか、閾値を別の PR で直します。
 
 #### commit の author
 
 `github-actions[bot]`（`41898282+github-actions[bot]@users.noreply.github.com`）の固定値にしました。App の bot の user id を API で引く手順が要らず、PR を作る token とは独立です。CI が起動するかどうかは push と PR 作成の token（App）で決まり、author では決まりません。commit は署名されません（API 経由でなく `git push`）。master または `automation/*` に「署名必須」の ruleset があるときは、merge できない可能性があります（未確認）。
+
+#### force push と Workflows 権限（2026-11-19 の調査）
+
+- 疑い：固定の枝を force で更新するとき、master の `.github/workflows/**` が変わった後だと、Workflows 権限の無い App の token の push を GitHub が拒否するか（症状：`refusing to allow a GitHub App to create or update workflow ... without workflows permission`）。
+- 調べたこと（GitHub の公開 docs と公開の issue の読み取りだけ）：
+  - [Scopes for OAuth apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps) の `workflow` scope の説明に、「Workflow files can be committed without this scope if the same file (with both the same path and contents) exists on another branch in the same repository」とあります。つまり、push する commit が、他の枝に同じ path・同じ内容で既にある workflow file を含むだけなら、権限は要りません。
+  - この workflow が push するのは「その時点の master の先頭＋写しの commit 1 つ」です。写しの commit は workflow file に触れず、master 側の workflow file は master に同じ内容で存在するので、記述どおりなら拒否されません。
+  - 公開の issue（[actions/create-github-app-token#301](https://github.com/actions/create-github-app-token/issues/301) など）の拒否は、push する commit が workflow file を変えている例です。枝が base より遅れているだけで拒否される、という記述は見つかりませんでした。
+- **結論：拒否されない見込みです。ただし確かめられていません。** 上の記述は OAuth app の scope のもので、GitHub App の `workflows` permission に同じ例外があるか、force push（既存の枝の更新）でも同じ判定かは、docs で確かめられませんでした。
+- 対処：実装していません（App に Workflows 権限は足しません）。拒否されたときは、push の step が `::error`（Workflows 権限による拒否の可能性）を出して job を失敗させるので、気づけます。拒否が実際に起きたら、候補は次のとおりです。(1) 拒否されたときに、既存の枝を消して（open の PR は閉じられます）、新しい枝として push し直し、PR を作り直す。新しい枝の作成は、master にある workflow file が「既に remote にある」ので通る見込みです。(2) App に Workflows の権限を足す。新しい権限なので、ユーザーの確認が要ります。
 
 #### 仕様との差
 
 - §1 W2 の案は「`contents: write`・`pull-requests: write` を PR 作成 job に付ける」でしたが、App の token で足りるため、**GITHUB_TOKEN には write を付けません**（権限を狭める方向の差です。repo に足す新しい権限は、GitHub App の権限だけです）。
 - `shrunk` を拒否でなく draft の PR にしました（Q9 の読み）。
 - secret は App ID でなく Client ID にしました（上記）。
-- `REVIEW_POLICY` の 2 つの閾値は新しい暫定値です。
+- `create-pr` は、変更が無くても master の実行では動きます（open の古い PR を閉じるため。token の発行と Deployment の記録が、毎週残ります）。
+- secret は repo の secrets でなく、Environment の secrets にしました（レビューの指摘。別の枝からの dispatch で使えないようにするため）。
+- `REVIEW_POLICY` の数値は新しい暫定値です。
 
 #### ユーザーがする作業の手順
 
@@ -452,18 +477,21 @@ auto-merge は使いません。次のどれかに当たると、PR を **draft*
    - 「Where can this GitHub App be installed?」は **Only on this account**。
 2. **鍵と Client ID を控える**：作成後の画面で **Client ID** を控え、「Private keys」で **Generate a private key**（`.pem` が落ちます）。
 3. **repo に install する**：App の画面 → Install App → 自分のアカウント → **Only select repositories** → `kazormia296/Grimodex` だけを選ぶ。
-4. **secret を登録する**：repo の Settings → Secrets and variables → Actions → New repository secret。
+4. **Environment を作る**：repo の Settings → Environments → New environment → 名前は **`model-capabilities`**。「Deployment branches and tags」を **Selected branches and tags** にし、`master` だけを追加します。Required reviewers は付けません（無人で動かすため）。workflow を先に動かすと、保護の無い同名の Environment が自動で作られるので、この手順を先に行います。
+5. **secret を Environment に登録する**：その Environment の画面 → Environment secrets → Add secret。
    - `MODEL_REGISTRY_APP_CLIENT_ID`：Client ID。
    - `MODEL_REGISTRY_APP_PRIVATE_KEY`：`.pem` の全文（`-----BEGIN` と `-----END` の行を含む）。
-   - 登録後、`.pem` は他の場所へ複製せず、不要なら消します。
-5. **repo の設定を確かめる**：「Actions に PR 作成を許可」は変えなくて構いません。`automation/*` への push を止める ruleset や、署名必須の ruleset が無いことを確かめます。
-6. **動作を確かめる**：Actions → Update model capabilities → Run workflow（branch は master）。`generate` が成功し、差分があれば `create-pr` が `automation/model-capabilities` の PR を作ります。secret を登録する前に動かすと、`create-pr` は summary に「secret 未設定」を出して成功で終わります。
-7. 更新 PR は draft かどうかを確認し、人が内容を確認して merge します（auto-merge は使いません）。draft の PR は、本文の「確認が要る点」を読んでから ready にします。
+   - repo の secrets ではなく、Environment の secrets に登録します。登録後、`.pem` は他の場所へ複製せず、不要なら消します。
+6. **repo の設定を確かめる**：「Actions に PR 作成を許可」は変えなくて構いません。`automation/*` への push を止める ruleset や、署名必須の ruleset が無いことを確かめます。
+7. **動作を確かめる**：Actions → Update model capabilities → Run workflow（branch は master）。`generate` が成功し、差分があれば `create-pr` が `automation/model-capabilities` の PR を作ります。差分が無ければ PR は作られず、成功で終わります。
+8. **variable を立てる**（7 が成功してから）：repo の Settings → Secrets and variables → Actions → Variables → New repository variable。名前 **`MODEL_REGISTRY_CONFIGURED`**、値 **`true`**。これ以後、secret の欠落と、master の写しが 30 日を超えて古いことが、job の失敗として見えます。
+9. 更新 PR は draft かどうかを確認し、人が内容を確認して merge します（auto-merge は使いません）。draft の PR は、本文の「確認が要る点」を読んでから ready にします。workflow は ready にしません。
 
 #### 未確認のこと
 
-- workflow を一度も実行していません。`actionlint` は repo にも環境にも無く、使っていません（構造は `js-yaml` で読み、試験で固定しました）。
-- 「Actions に PR 作成を許可」が不要であること、App の token が作る PR で `pull_request` の workflow が起動すること、`gh api` と `gh pr ready` が App の token で通ること。
+- workflow を一度も実行していません。`actionlint` は repo にも環境にも無く、使っていません（構造は `js-yaml` で読み、試験で固定しました。create-pr job の step は、偽の `gh` で順に動かして確かめました）。
+- Environment の secrets を、job の `env` の `secrets` 式（`APP_SECRETS_CONFIGURED`）で読めること。読めないと、secret を登録しても「secret 未設定」になります（variable を立てた後なら失敗として見えます）。
+- 「Actions に PR 作成を許可」が不要であること、App の token が作る PR で `pull_request` の workflow が起動すること、`gh api` と `gh pr ready --undo` が App の token で通ること。
 - master と `automation/*` の ruleset（署名必須・push の制限）の有無。
-- 固定の枝を force で更新するとき、master の `.github/workflows/**` が枝より新しいと、Workflows 権限の無い App の token の push を GitHub が拒否する可能性があります（症状：`refusing to allow a GitHub App to create or update workflow ... without workflows permission`）。push するのは「新しい master の先頭＋写しの commit 1 つ」で、master 側の workflow の変更は remote に既にあるため、起きない見込みですが、確かめていません。この repo は `ci.yml` の変更が多いので、起きれば頻繁です。対処の候補は、(1) open の PR が無いときは枝を消してから push する、(2) App に Workflows の権限を足す（新しい権限なので、ユーザーの確認が要ります）。今回はどちらも実装していません。
+- force push と Workflows 権限（上の節）。
 - `curl` の `--max-filesize` が content-length の無い応答で効くかは、curl の版によります。そのため取得後の byte 数の確認と、`parseModelsDevText` の同じ上限で重ねて守っています。

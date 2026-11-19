@@ -28,6 +28,7 @@ import {
   renderPrBody,
   renderPrTitle,
   renderSummary,
+  sameModels,
 } from "./generate-model-capability-snapshot.mjs";
 
 const scriptFile = fileURLToPath(
@@ -138,6 +139,7 @@ describe("evaluateUpdate（定期 workflow の判断）", () => {
     assert.ok(report.findings.some((f) => f.code === "model-count-dropped"));
     const body = renderPrBody(report);
     assert.match(body, /\*\*draft\*\*/);
+    assert.match(body, /ready にはしません/);
     assert.match(
       body,
       /配布済みの app は、同梱の写しとの比較でこの写しを拒否します/,
@@ -326,6 +328,63 @@ describe("PR の本文（upstream の文字列を展開しない）", () => {
     assert.doesNotMatch(body, /undefined/);
   });
 
+  it("maxOutputTokens の変化を、件数と検証を通した key で本文の検出の欄に出す（draft にはしない）", () => {
+    const base = models(100);
+    const next = { ...base };
+    for (const key of ["openai/model-3", "openai/model-4"]) {
+      next[key] = { ...base[key], maxOutputTokens: 16_384 };
+    }
+    const report = evaluate(base, next);
+    assert.equal(report.draft, false);
+    assert.equal(report.status, "changed");
+    assert.deepEqual(report.outputChanges, {
+      total: 2,
+      items: [
+        { key: "openai/model-3", from: 8_192, to: 16_384 },
+        { key: "openai/model-4", from: 8_192, to: 16_384 },
+      ],
+    });
+    const body = renderPrBody(report);
+    assert.match(body, /### 検出/);
+    assert.match(body, /- `openai\/model-3` の maxOutputTokens: 8192 → 16384/);
+    assert.match(body, /- `openai\/model-4` の maxOutputTokens: 8192 → 16384/);
+    // 値が field ごと無くなる変化は、compareSnapshots の field-removed が拾う（ここには出ない）。
+    const removed = { ...base };
+    removed["openai/model-5"] = { ...base["openai/model-5"] };
+    delete removed["openai/model-5"].maxOutputTokens;
+    const removedReport = evaluate(base, removed);
+    assert.equal(removedReport.outputChanges.total, 0);
+    assert.ok(removedReport.findings.some((f) => f.code === "field-removed"));
+  });
+
+  it("maxOutputTokens の変化は maxFindings で切り、残りは件数で出す。key は検証し直す", () => {
+    const base = models(150);
+    const next = {};
+    for (const [key, entry] of Object.entries(base)) {
+      next[key] = { ...entry, maxOutputTokens: 16_384 };
+    }
+    const report = evaluate(base, next);
+    assert.equal(report.outputChanges.total, 150);
+    assert.equal(report.outputChanges.items.length, 100);
+    const body = renderPrBody(report);
+    assert.match(body, /上限のため省略した maxOutputTokens の変化: 50 件/);
+    // key と値が不正なら、注意の欄でも省略する。
+    const crafted = {
+      ...report,
+      outputChanges: {
+        total: 2,
+        items: [
+          { key: "@everyone", from: 1, to: 2 },
+          { key: "openai/model-1", from: "<b>", to: 1e300 },
+        ],
+      },
+    };
+    const craftedBody = renderPrBody(crafted);
+    assert.doesNotMatch(craftedBody, /@everyone|<b>/);
+    assert.match(craftedBody, /（key を省略） の maxOutputTokens: 1 → 2/);
+    assert.match(craftedBody, /`openai\/model-1` の maxOutputTokens: \? → \?/);
+  });
+
   it("本文は draft でない PR に「確認が要る点」を出さない", () => {
     const report = evaluate(models(100), {
       ...models(100),
@@ -387,6 +446,29 @@ describe("readCandidateFromDir（artifact の取り込み）", () => {
       }
     },
   );
+
+  it(
+    "directory 自体が symlink なら、中身が正しくても拒否する",
+    { skip: process.platform === "win32" },
+    () => {
+      const real = tempDir();
+      const holder = tempDir();
+      try {
+        writeFileSync(path.join(real.dir, CANDIDATE_FILE_NAME), "{}\n");
+        // 通常の directory なら読める（対照）。
+        assert.equal(readCandidateFromDir(real.dir), "{}\n");
+        const link = path.join(holder.dir, "candidate");
+        symlinkSync(real.dir, link);
+        assert.throws(
+          () => readCandidateFromDir(link),
+          /通常の directory ではありません/,
+        );
+      } finally {
+        real.cleanup();
+        holder.cleanup();
+      }
+    },
+  );
 });
 
 describe("compare の CLI", () => {
@@ -442,7 +524,10 @@ describe("compare の CLI", () => {
         path.join(temp.dir, "report.json"),
       ]);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(readFileSync(out, "utf8"), "changed=true\ndraft=false\n");
+      assert.equal(
+        readFileSync(out, "utf8"),
+        "changed=true\ndraft=false\nstale=false\n",
+      );
       assert.match(readFileSync(summary, "utf8"), /判定: changed/);
       assert.match(
         readFileSync(path.join(temp.dir, "title.txt"), "utf8"),
@@ -485,7 +570,10 @@ describe("compare の CLI", () => {
         path.join(temp.dir, "body.md"),
       ]);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(readFileSync(out, "utf8"), "changed=false\ndraft=false\n");
+      assert.equal(
+        readFileSync(out, "utf8"),
+        "changed=false\ndraft=false\nstale=false\n",
+      );
       assert.equal(existsSync(path.join(temp.dir, "body.md")), false);
     } finally {
       temp.cleanup();
@@ -540,6 +628,19 @@ describe("compare の CLI", () => {
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /^::warning title=.*40 日経っています/m);
       assert.match(readFileSync(summary, "utf8"), /警告/);
+      // job が失敗の判断に使う output（stale=true）も出す。
+      const out = path.join(temp.dir, "out.txt");
+      const again = run([
+        "compare",
+        "--base",
+        baseFile,
+        "--candidate-dir",
+        candidateDir,
+        "--github-output",
+        out,
+      ]);
+      assert.equal(again.status, 0, again.stderr);
+      assert.match(readFileSync(out, "utf8"), /^stale=true$/m);
     } finally {
       temp.cleanup();
     }
@@ -581,6 +682,92 @@ describe("compare の CLI", () => {
       ]);
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /1 file だけ/);
+    } finally {
+      temp.cleanup();
+    }
+  });
+});
+
+describe("same-models（PR の枝の写しと候補の比較）", () => {
+  const T0 = Date.parse("2026-11-19T12:00:00Z");
+
+  it("generatedAt を除いて同じなら true、models か source が違えば false", () => {
+    const models30 = models(30);
+    const a = snapshotText(models30, "2026-11-17T00:00:00Z");
+    const b = snapshotText(models30, "2026-11-19T11:59:00Z");
+    assert.equal(sameModels(a, b, T0), true);
+    assert.equal(sameModels(b, b, T0), true);
+    assert.equal(
+      sameModels(
+        snapshotText(
+          { ...models30, ...models(1, "openai", 99) },
+          "2026-11-17T00:00:00Z",
+        ),
+        b,
+        T0,
+      ),
+      false,
+    );
+    const changed = { ...models30 };
+    changed["openai/model-1"] = {
+      ...changed["openai/model-1"],
+      contextWindow: 1_500,
+    };
+    assert.equal(
+      sameModels(snapshotText(changed, "2026-11-17T00:00:00Z"), b, T0),
+      false,
+    );
+    assert.equal(
+      sameModels(
+        snapshotText(models30, "2026-11-17T00:00:00Z", "models.dev"),
+        b,
+        T0,
+      ),
+      false,
+    );
+  });
+
+  it("枝の写しが検証を通らなければ false（上書きしてよい）、候補が通らなければ例外", () => {
+    const b = snapshotText(models(30), "2026-11-19T11:59:00Z");
+    assert.equal(sameModels("{", b, T0), false);
+    assert.equal(sameModels("", b, T0), false);
+    assert.throws(() => sameModels(b, "{", T0), /候補の検証に失敗/);
+  });
+
+  it("CLI：same=true|false を github-output と標準出力に出し、引数が足りなければ失敗する", () => {
+    const temp = tempDir();
+    try {
+      const nowMs = Date.now();
+      const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+      const a = path.join(temp.dir, "a.json");
+      const b = path.join(temp.dir, "b.json");
+      writeFileSync(a, snapshotText(models(30), iso(nowMs - 3 * 86_400_000)));
+      writeFileSync(b, snapshotText(models(30), iso(nowMs - 60_000)));
+      const out = path.join(temp.dir, "out.txt");
+      const same = spawnSync(
+        process.execPath,
+        [scriptFile, "same-models", "--a", a, "--b", b, "--github-output", out],
+        { encoding: "utf8" },
+      );
+      assert.equal(same.status, 0, same.stderr);
+      assert.equal(same.stdout.trim(), "same=true");
+      assert.equal(readFileSync(out, "utf8"), "same=true\n");
+      writeFileSync(a, snapshotText(models(31), iso(nowMs - 3 * 86_400_000)));
+      const different = spawnSync(
+        process.execPath,
+        [scriptFile, "same-models", "--a", a, "--b", b, "--github-output", out],
+        { encoding: "utf8" },
+      );
+      assert.equal(different.status, 0, different.stderr);
+      assert.equal(readFileSync(out, "utf8"), "same=true\nsame=false\n");
+      const missing = spawnSync(
+        process.execPath,
+        [scriptFile, "same-models", "--a", a],
+        {
+          encoding: "utf8",
+        },
+      );
+      assert.notEqual(missing.status, 0);
     } finally {
       temp.cleanup();
     }

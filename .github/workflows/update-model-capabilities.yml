@@ -1,21 +1,27 @@
 name: Update model capabilities
 
 # モデル能力の写し（electron/resources/model-capabilities.json）を models.dev から作り直し、
-# 変更があれば更新 PR を作る。app は master のこの file を実行時に取得し、同梱もする。
+# 変更があれば更新 PR を作る（master と差が無くなったら、open の古い PR を閉じる）。
+# app は master のこの file を実行時に取得し、同梱もする。
 # 正本: docs/plans/model-capability-runtime-fetch-precheck.md の §1（W1〜W5）、§3.3（T1・T3・T4・T7・T10）、
 # §7（ユーザーの回答。Q7〜Q9）、§7.6（この workflow の技術事項と、ユーザーがする作業の手順）。
 #
 # 2 つの job に分ける（T7）。
 #   generate  : contents: read だけ・secrets なし。models.dev を上限付きで取得し、写しを生成・自己検証する。
-#   create-pr : 変更があるときだけ動く。GitHub App の token（Q8）で固定の枝に push し、PR を作る。
+#   create-pr : master のときだけ動く（Environment model-capabilities。deployment branches は master だけ）。
 #               artifact に含まれる script は実行せず、master の版の検証 module で写しを検証し直し、
-#               変更の有無・draft の判定・PR の本文を自分で計算する。write の権限は App の token だけで、
-#               GITHUB_TOKEN は contents: read のまま（この job でも write を持たない）。
+#               変更の有無・draft の判定・PR の本文を自分で計算する。変更があれば GitHub App の token（Q8）で
+#               固定の枝に push し、PR を作る。write の権限は App の token だけで、GITHUB_TOKEN は
+#               contents: read のまま（この job でも write を持たない）。
+#               既存の PR があるときの順序：PR の枝の写しと候補が同じなら何もしない → draft にする（急減など）→
+#               push → PR の title・本文を更新する。draft にできなければ push しない。ready にするのは人の操作。
 # upstream の文字列は shell や ${{ }} に展開しない。PR の本文は件数・時刻・検証を通した id だけから
 # script が組み立てる。auto-merge は使わない（Q9。急減・大量の変更は draft の PR にする）。
 #
-# GitHub App の secret（MODEL_REGISTRY_APP_CLIENT_ID／MODEL_REGISTRY_APP_PRIVATE_KEY）が未登録の間は、
-# create-pr は検証までを行い、PR を作らずに summary へ「secret 未設定」と出して成功で終わる。
+# GitHub App の secret（MODEL_REGISTRY_APP_CLIENT_ID／MODEL_REGISTRY_APP_PRIVATE_KEY。Environment に置く）が
+# 未登録の間は、create-pr は検証までを行い、PR を作らずに summary へ「secret 未設定」と出して成功で終わる。
+# repo の variable MODEL_REGISTRY_CONFIGURED が true（設定の完了を宣言した後）なら、secret の欠落と、
+# master の写しが 30 日を超えて古いこと（T10）を、job の失敗にする。
 
 on:
   schedule:
@@ -40,8 +46,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-    outputs:
-      changed: ${{ steps.compare.outputs.changed }}
     env:
       # 取得先はこの定数だけ。redirect は辿らない（curl に -L を付けない）。
       MODELS_DEV_URL: https://models.dev/api.json
@@ -87,18 +91,16 @@ jobs:
             --out "$RUNNER_TEMP/candidate/model-capabilities.json"
 
       - name: Compare with the snapshot on master
-        id: compare
         run: |
           set -euo pipefail
           node scripts/generate-model-capability-snapshot.mjs compare \
             --base electron/resources/model-capabilities.json \
             --candidate "$RUNNER_TEMP/candidate/model-capabilities.json" \
-            --summary "$GITHUB_STEP_SUMMARY" \
-            --github-output "$GITHUB_OUTPUT"
+            --summary "$GITHUB_STEP_SUMMARY"
 
-      # 生成した写し 1 file だけを渡す。models.dev の応答も script も渡さない。
+      # 生成した写し 1 file だけを渡す。models.dev の応答も script も渡さない。変更の有無は create-pr が
+      # 自分で判定する（差が無くなったときに open の古い PR を閉じるため、変更が無くても渡す）。
       - name: Upload the candidate snapshot
-        if: ${{ steps.compare.outputs.changed == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: model-capabilities-candidate-${{ github.run_id }}
@@ -110,9 +112,12 @@ jobs:
   create-pr:
     name: Open or update the update PR
     needs: generate
-    if: ${{ needs.generate.outputs.changed == 'true' && github.repository == 'kazormia296/Grimodex' && github.ref == 'refs/heads/master' }}
+    if: ${{ github.repository == 'kazormia296/Grimodex' && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # secrets は Environment に置く。deployment branches を master だけに限り、別の枝から dispatch した
+    # workflow が secret を使えないようにする。
+    environment: model-capabilities
     permissions:
       contents: read
     env:
@@ -120,6 +125,8 @@ jobs:
       SNAPSHOT_PATH: electron/resources/model-capabilities.json
       # secret の中身ではなく、設定済みかどうかの真偽だけを取る。
       APP_SECRETS_CONFIGURED: ${{ secrets.MODEL_REGISTRY_APP_CLIENT_ID != '' && secrets.MODEL_REGISTRY_APP_PRIVATE_KEY != '' }}
+      # 初回の設定が済んだら true にする repo の variable。未設定の間は、secret の欠落を警告で済ませる。
+      MODEL_REGISTRY_CONFIGURED: ${{ vars.MODEL_REGISTRY_CONFIGURED }}
     steps:
       # 検証 module は master の版を使う。artifact の中の script は実行しない。
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -137,7 +144,7 @@ jobs:
           name: model-capabilities-candidate-${{ github.run_id }}
           path: ${{ runner.temp }}/candidate
 
-      # 生成 job の判断（変更の有無・draft）は信頼せず、候補を検証し直して自分で決める。
+      # 生成 job の判断は信頼せず、候補を検証し直して自分で決める（変更の有無・draft・古さ）。
       - name: Re-validate the candidate with the master validation module
         id: verify
         run: |
@@ -150,8 +157,17 @@ jobs:
             --summary "$GITHUB_STEP_SUMMARY" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Skip PR creation because the GitHub App secrets are not set
-        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED != 'true' }}
+      # 設定の完了を宣言した後（MODEL_REGISTRY_CONFIGURED=true）の secret の欠落は、失敗として見えるようにする。
+      - name: Fail because the GitHub App secrets are missing after setup
+        if: ${{ env.APP_SECRETS_CONFIGURED != 'true' && env.MODEL_REGISTRY_CONFIGURED == 'true' }}
+        run: |
+          set -euo pipefail
+          echo "::error title=secret の欠落::MODEL_REGISTRY_CONFIGURED=true なのに MODEL_REGISTRY_APP_CLIENT_ID／MODEL_REGISTRY_APP_PRIVATE_KEY（Environment model-capabilities の secrets）が未登録です"
+          echo "> **失敗**: 設定の完了（\`MODEL_REGISTRY_CONFIGURED=true\`）の後に、GitHub App の secret が欠けています。docs/plans/model-capability-runtime-fetch-precheck.md の §7.6 を見てください。" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Skip PR creation because the GitHub App secrets are not set yet
+        if: ${{ env.APP_SECRETS_CONFIGURED != 'true' && env.MODEL_REGISTRY_CONFIGURED != 'true' && steps.verify.outputs.changed == 'true' }}
         run: |
           set -euo pipefail
           echo "::warning title=secret 未設定::MODEL_REGISTRY_APP_CLIENT_ID／MODEL_REGISTRY_APP_PRIVATE_KEY が未登録のため、更新 PR を作りません（生成と検証は完了）"
@@ -161,9 +177,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # token は push と PR の操作だけを持つ（contents と pull-requests の write。ほかの権限は持たない）。
+      # 変更が無くても、open の古い PR を閉じるために発行する。
       - name: Create the GitHub App token
         id: app-token
-        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED == 'true' }}
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' }}
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.MODEL_REGISTRY_APP_CLIENT_ID }}
@@ -171,8 +188,87 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      - name: Look up the open PR of the fixed branch
+        id: pr
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          owner="${REPOSITORY%%/*}"
+          existing="$(gh api "repos/${REPOSITORY}/pulls?state=open&base=master&head=${owner}:${AUTOMATION_BRANCH}" \
+            --jq '.[0] | select(. != null) | [.number, .draft] | @tsv')"
+          number=""
+          is_draft=""
+          if [ -n "$existing" ]; then
+            number="${existing%%$'\t'*}"
+            is_draft="${existing##*$'\t'}"
+            case "$number" in '' | *[!0-9]*) echo "PR の番号が不正です" >&2; exit 1 ;; esac
+            case "$is_draft" in true | false) ;; *) echo "PR の draft の値が不正です" >&2; exit 1 ;; esac
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "is_draft=$is_draft" >> "$GITHUB_OUTPUT"
+
+      # master と差が無くなった（models.dev が戻った、または写しが merge 済み）なら、古い PR を閉じる。
+      - name: Close the stale PR because master already matches
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' && steps.verify.outputs.changed != 'true' && steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in '' | *[!0-9]*) echo "PR の番号が不正です" >&2; exit 1 ;; esac
+          gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f body='master の写しと models.dev の内容に差が無くなったため、この PR を閉じます（定期 workflow による自動の操作です）。' > /dev/null
+          gh api --method PATCH "repos/${REPOSITORY}/pulls/${PR_NUMBER}" -f state=closed > /dev/null
+          echo "PR #${PR_NUMBER} を閉じました（master と差が無い）" >> "$GITHUB_STEP_SUMMARY"
+
+      # 毎週の上書きを止める。PR の枝の写しと候補が、generatedAt を除いて同じなら、何もしない（人が確認した
+      # 内容の draft／ready の状態も変えない）。枝の写しを読めない・検証できないときは「違う」として扱う。
+      - name: Compare the PR branch snapshot with the candidate
+        id: same
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' && steps.verify.outputs.changed == 'true' && steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          branch_file="$RUNNER_TEMP/branch-snapshot.json"
+          if gh api "repos/${REPOSITORY}/contents/${SNAPSHOT_PATH}?ref=${AUTOMATION_BRANCH}" \
+            -H 'Accept: application/vnd.github.raw+json' > "$branch_file"; then
+            node scripts/generate-model-capability-snapshot.mjs same-models \
+              --a "$branch_file" --b "$RUNNER_TEMP/candidate/model-capabilities.json" \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            echo "same=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$(tail -n 1 "$GITHUB_OUTPUT")" = "same=true" ]; then
+            echo "PR #${PR_NUMBER} は同じ内容なので、push も更新もしません" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # 順序の固定：既存の PR を draft にしてから push する。draft にできなければ job を失敗させ、push しない
+      # （この step が失敗すると、後の step は動かない）。急減などの写しが、ready の PR に載ったままにならない。
+      - name: Draft the existing PR before pushing
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' && steps.verify.outputs.changed == 'true' && steps.pr.outputs.number != '' && steps.same.outputs.same != 'true' && steps.verify.outputs.draft == 'true' && steps.pr.outputs.is_draft != 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in '' | *[!0-9]*) echo "PR の番号が不正です" >&2; exit 1 ;; esac
+          gh pr ready "$PR_NUMBER" --repo "$REPOSITORY" --undo
+          state="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.draft')"
+          if [ "$state" != true ]; then
+            echo "::error title=draft にできません::既存の PR を draft にできなかったので、push しません"
+            exit 1
+          fi
+
       - name: Push the fixed branch
-        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED == 'true' }}
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' && steps.verify.outputs.changed == 'true' && steps.same.outputs.same != 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -188,47 +284,46 @@ jobs:
           # token は checkout が残さない。この push 1 回の環境変数にだけ渡し、.git/config にも引数にも出さない。
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)"
           echo "::add-mask::$auth"
-          GIT_CONFIG_COUNT=1 \
-          GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
-          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
-            git push --force origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+          if ! GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push --force origin "HEAD:refs/heads/$AUTOMATION_BRANCH"; then
+            echo "::error title=push に失敗::固定の枝への push が拒否されました（Workflows 権限による拒否の可能性。docs/plans/model-capability-runtime-fetch-precheck.md の §7.6 の「未確認のこと」）"
+            exit 1
+          fi
 
+      # 既存の PR は title と本文だけを更新する。ready にはしない（draft にするのは上の step、ready は人の操作）。
+      # 新しい PR は、判定が draft なら draft で作る。
       - name: Open or update the PR
-        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED == 'true' }}
+        if: ${{ env.APP_SECRETS_CONFIGURED == 'true' && steps.verify.outputs.changed == 'true' && steps.same.outputs.same != 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           DRAFT: ${{ steps.verify.outputs.draft }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
           case "$DRAFT" in true | false) ;; *) echo "draft の値が不正です" >&2; exit 1 ;; esac
-          owner="${REPOSITORY%%/*}"
           title="$(head -n 1 "$RUNNER_TEMP/pr-title.txt")"
-          find_pr() {
-            gh api "repos/${REPOSITORY}/pulls?state=open&base=master&head=${owner}:${AUTOMATION_BRANCH}" \
-              --jq '.[0] | select(. != null) | [.number, .draft] | @tsv'
-          }
-          existing="$(find_pr)"
-          # 作成・更新の応答から番号と draft の状態を取る（一覧の反映の遅れに依らない）。
-          if [ -z "$existing" ]; then
-            result="$(gh api --method POST "repos/${REPOSITORY}/pulls" \
+          if [ -z "$PR_NUMBER" ]; then
+            number="$(gh api --method POST "repos/${REPOSITORY}/pulls" \
               -f title="$title" -f head="$AUTOMATION_BRANCH" -f base=master \
               -F body=@"$RUNNER_TEMP/pr-body.md" -F draft="$DRAFT" \
-              --jq '[.number, .draft] | @tsv')"
+              --jq '.number')"
           else
-            number="${existing%%$'\t'*}"
-            case "$number" in '' | *[!0-9]*) echo "PR の番号が不正です" >&2; exit 1 ;; esac
-            result="$(gh api --method PATCH "repos/${REPOSITORY}/pulls/${number}" \
+            case "$PR_NUMBER" in *[!0-9]*) echo "PR の番号が不正です" >&2; exit 1 ;; esac
+            number="$(gh api --method PATCH "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
               -f title="$title" -F body=@"$RUNNER_TEMP/pr-body.md" \
-              --jq '[.number, .draft] | @tsv')"
+              --jq '.number')"
           fi
-          number="${result%%$'\t'*}"
-          is_draft="${result##*$'\t'}"
           case "$number" in '' | *[!0-9]*) echo "PR の番号を取得できません" >&2; exit 1 ;; esac
-          # 今回の判定に合わせる。急減・大量の変更なら draft に戻し、人の確認を必須にする（Q9）。
-          if [ "$DRAFT" = true ] && [ "$is_draft" = false ]; then
-            gh pr ready "$number" --repo "$REPOSITORY" --undo
-          elif [ "$DRAFT" = false ] && [ "$is_draft" = true ]; then
-            gh pr ready "$number" --repo "$REPOSITORY"
-          fi
           echo "PR #${number} (draft=${DRAFT})" >> "$GITHUB_STEP_SUMMARY"
+
+      # T10：設定の完了を宣言した後は、master の写しが 30 日を超えて古いことを失敗として見えるようにする。
+      # PR の作成・更新（上の step）の後に判定するので、失敗が更新 PR を妨げない。
+      - name: Fail when the master snapshot is stale after setup
+        if: ${{ steps.verify.outputs.stale == 'true' && env.MODEL_REGISTRY_CONFIGURED == 'true' }}
+        run: |
+          set -euo pipefail
+          echo "::error title=モデル能力の写しが古い::master の写しが 30 日を超えて更新されていません（更新 PR が merge されていない、または models.dev に変更が無い）"
+          exit 1
