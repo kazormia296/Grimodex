@@ -1,0 +1,234 @@
+name: Update model capabilities
+
+# モデル能力の写し（electron/resources/model-capabilities.json）を models.dev から作り直し、
+# 変更があれば更新 PR を作る。app は master のこの file を実行時に取得し、同梱もする。
+# 正本: docs/plans/model-capability-runtime-fetch-precheck.md の §1（W1〜W5）、§3.3（T1・T3・T4・T7・T10）、
+# §7（ユーザーの回答。Q7〜Q9）、§7.6（この workflow の技術事項と、ユーザーがする作業の手順）。
+#
+# 2 つの job に分ける（T7）。
+#   generate  : contents: read だけ・secrets なし。models.dev を上限付きで取得し、写しを生成・自己検証する。
+#   create-pr : 変更があるときだけ動く。GitHub App の token（Q8）で固定の枝に push し、PR を作る。
+#               artifact に含まれる script は実行せず、master の版の検証 module で写しを検証し直し、
+#               変更の有無・draft の判定・PR の本文を自分で計算する。write の権限は App の token だけで、
+#               GITHUB_TOKEN は contents: read のまま（この job でも write を持たない）。
+# upstream の文字列は shell や ${{ }} に展開しない。PR の本文は件数・時刻・検証を通した id だけから
+# script が組み立てる。auto-merge は使わない（Q9。急減・大量の変更は draft の PR にする）。
+#
+# GitHub App の secret（MODEL_REGISTRY_APP_CLIENT_ID／MODEL_REGISTRY_APP_PRIVATE_KEY）が未登録の間は、
+# create-pr は検証までを行い、PR を作らずに summary へ「secret 未設定」と出して成功で終わる。
+
+on:
+  schedule:
+    # 週 1 回（月曜 03:41 UTC）。更新 PR は electron/** に触れるため ci.yml の全 lane が走る（ci-change-scope の
+    # forceAll）。毎日にすると、人が merge するまで PR を更新するたびに CI を使うので、前例の
+    # update-route-watch.yml と同じ週 1 回にする。急ぎのときは workflow_dispatch を使う。
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-model-capabilities
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    name: Generate and validate the snapshot
+    if: ${{ github.repository == 'kazormia296/Grimodex' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    env:
+      # 取得先はこの定数だけ。redirect は辿らない（curl に -L を付けない）。
+      MODELS_DEV_URL: https://models.dev/api.json
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # .ts の検証 module は Node 22.18 以降の型の除去で直接 import する。依存の install は要らない。
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Fetch models.dev with byte and time limits
+        run: |
+          set -euo pipefail
+          # 上限は SNAPSHOT_POLICY.maxRawBytes（T4）。--max-filesize は content-length の無い応答に効かない
+          # curl の版があるので、取得後の byte 数も確かめる。parseModelsDevText も同じ上限で守る。
+          raw_limit="$(node scripts/generate-model-capability-snapshot.mjs raw-limit)"
+          output="$RUNNER_TEMP/models-dev-api.json"
+          status="$(curl --silent --show-error \
+            --proto '=https' --tlsv1.2 \
+            --connect-timeout 15 --max-time 60 \
+            --max-filesize "$raw_limit" \
+            --user-agent 'Grimodex-Model-Registry-CI' \
+            --header 'Accept: application/json' \
+            --output "$output" --write-out '%{http_code}' \
+            "$MODELS_DEV_URL")"
+          test "$status" = "200"
+          size="$(wc -c < "$output")"
+          test "$size" -gt 0
+          test "$size" -le "$raw_limit"
+
+      - name: Generate and self-validate the candidate snapshot
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate"
+          # generatedAt は runner の時計から取る（応答の header は使わない）。
+          generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          node scripts/generate-model-capability-snapshot.mjs generate \
+            "$RUNNER_TEMP/models-dev-api.json" \
+            --generated-at "$generated_at" \
+            --out "$RUNNER_TEMP/candidate/model-capabilities.json"
+
+      - name: Compare with the snapshot on master
+        id: compare
+        run: |
+          set -euo pipefail
+          node scripts/generate-model-capability-snapshot.mjs compare \
+            --base electron/resources/model-capabilities.json \
+            --candidate "$RUNNER_TEMP/candidate/model-capabilities.json" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --github-output "$GITHUB_OUTPUT"
+
+      # 生成した写し 1 file だけを渡す。models.dev の応答も script も渡さない。
+      - name: Upload the candidate snapshot
+        if: ${{ steps.compare.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: model-capabilities-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/candidate/model-capabilities.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  create-pr:
+    name: Open or update the update PR
+    needs: generate
+    if: ${{ needs.generate.outputs.changed == 'true' && github.repository == 'kazormia296/Grimodex' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      AUTOMATION_BRANCH: automation/model-capabilities
+      SNAPSHOT_PATH: electron/resources/model-capabilities.json
+      # secret の中身ではなく、設定済みかどうかの真偽だけを取る。
+      APP_SECRETS_CONFIGURED: ${{ secrets.MODEL_REGISTRY_APP_CLIENT_ID != '' && secrets.MODEL_REGISTRY_APP_PRIVATE_KEY != '' }}
+    steps:
+      # 検証 module は master の版を使う。artifact の中の script は実行しない。
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Download the candidate snapshot
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: model-capabilities-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/candidate
+
+      # 生成 job の判断（変更の有無・draft）は信頼せず、候補を検証し直して自分で決める。
+      - name: Re-validate the candidate with the master validation module
+        id: verify
+        run: |
+          set -euo pipefail
+          node scripts/generate-model-capability-snapshot.mjs compare \
+            --base "$SNAPSHOT_PATH" \
+            --candidate-dir "$RUNNER_TEMP/candidate" \
+            --pr-title "$RUNNER_TEMP/pr-title.txt" \
+            --pr-body "$RUNNER_TEMP/pr-body.md" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Skip PR creation because the GitHub App secrets are not set
+        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED != 'true' }}
+        run: |
+          set -euo pipefail
+          echo "::warning title=secret 未設定::MODEL_REGISTRY_APP_CLIENT_ID／MODEL_REGISTRY_APP_PRIVATE_KEY が未登録のため、更新 PR を作りません（生成と検証は完了）"
+          {
+            echo ""
+            echo "> **secret 未設定**: \`MODEL_REGISTRY_APP_CLIENT_ID\` と \`MODEL_REGISTRY_APP_PRIVATE_KEY\` が未登録のため、更新 PR は作っていません。生成と検証は完了しています。手順は docs/plans/model-capability-runtime-fetch-precheck.md の §7.6。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # token は push と PR の操作だけを持つ（contents と pull-requests の write。ほかの権限は持たない）。
+      - name: Create the GitHub App token
+        id: app-token
+        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED == 'true' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.MODEL_REGISTRY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MODEL_REGISTRY_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Push the fixed branch
+        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # 候補の写し 1 file だけを、master から切った固定の枝に commit する（Q7）。
+          git switch --quiet --create "$AUTOMATION_BRANCH"
+          cp -- "$RUNNER_TEMP/candidate/model-capabilities.json" "$SNAPSHOT_PATH"
+          git add -- "$SNAPSHOT_PATH"
+          test "$(git status --porcelain)" = "M  $SNAPSHOT_PATH"
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --quiet --message 'chore(chat): モデル能力の写しを更新する（定期 workflow）'
+          # token は checkout が残さない。この push 1 回の環境変数にだけ渡し、.git/config にも引数にも出さない。
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push --force origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+
+      - name: Open or update the PR
+        if: ${{ steps.verify.outputs.changed == 'true' && env.APP_SECRETS_CONFIGURED == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          DRAFT: ${{ steps.verify.outputs.draft }}
+        run: |
+          set -euo pipefail
+          case "$DRAFT" in true | false) ;; *) echo "draft の値が不正です" >&2; exit 1 ;; esac
+          owner="${REPOSITORY%%/*}"
+          title="$(head -n 1 "$RUNNER_TEMP/pr-title.txt")"
+          find_pr() {
+            gh api "repos/${REPOSITORY}/pulls?state=open&base=master&head=${owner}:${AUTOMATION_BRANCH}" \
+              --jq '.[0] | select(. != null) | [.number, .draft] | @tsv'
+          }
+          existing="$(find_pr)"
+          # 作成・更新の応答から番号と draft の状態を取る（一覧の反映の遅れに依らない）。
+          if [ -z "$existing" ]; then
+            result="$(gh api --method POST "repos/${REPOSITORY}/pulls" \
+              -f title="$title" -f head="$AUTOMATION_BRANCH" -f base=master \
+              -F body=@"$RUNNER_TEMP/pr-body.md" -F draft="$DRAFT" \
+              --jq '[.number, .draft] | @tsv')"
+          else
+            number="${existing%%$'\t'*}"
+            case "$number" in '' | *[!0-9]*) echo "PR の番号が不正です" >&2; exit 1 ;; esac
+            result="$(gh api --method PATCH "repos/${REPOSITORY}/pulls/${number}" \
+              -f title="$title" -F body=@"$RUNNER_TEMP/pr-body.md" \
+              --jq '[.number, .draft] | @tsv')"
+          fi
+          number="${result%%$'\t'*}"
+          is_draft="${result##*$'\t'}"
+          case "$number" in '' | *[!0-9]*) echo "PR の番号を取得できません" >&2; exit 1 ;; esac
+          # 今回の判定に合わせる。急減・大量の変更なら draft に戻し、人の確認を必須にする（Q9）。
+          if [ "$DRAFT" = true ] && [ "$is_draft" = false ]; then
+            gh pr ready "$number" --repo "$REPOSITORY" --undo
+          elif [ "$DRAFT" = false ] && [ "$is_draft" = true ]; then
+            gh pr ready "$number" --repo "$REPOSITORY"
+          fi
+          echo "PR #${number} (draft=${DRAFT})" >> "$GITHUB_STEP_SUMMARY"
