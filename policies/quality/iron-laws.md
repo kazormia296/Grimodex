@@ -286,7 +286,8 @@ check is never passed.
 What the ordinary `ci.yml` runs depends on the event. On a pull request its Quality job does not repeat the
 impact-selected Light suites (the canonical Quick, which the merge needs on the same candidate, already runs that
 selection) and its C-query worker matrix runs on Linux only; the `master` push and a manual dispatch run both in
-full (the impact step of a push that changes only docs Markdown is narrowed by the docs-markdown-only selection below), the worker on Linux, macOS and Windows (a reusable call inherits its caller's event and follows it). The `ci.yml`
+full (the impact step of a push that changes only docs Markdown is narrowed by the docs-markdown-only selection below), the worker on Linux, macOS and Windows (a reusable call inherits its caller's event and follows it). The Electron runtime performance job
+(absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. The `ci.yml`
 of a pull request measures the merge ref (`github.sha`), while the Quick measures the candidate head, and impact does not
 check the combination with master changes that landed after the Quick until the `master` push. A pull request run is
 therefore not evidence for the impact-selected suites or for the macOS and Windows workers: a failure that only those

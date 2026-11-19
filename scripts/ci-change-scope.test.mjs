@@ -862,11 +862,45 @@ test("a false lane output drops exactly that lane's gated jobs and nothing else"
   // Every lane false: only the always-run jobs, the cascade jobs (which skip
   // through needs on GitHub, outside this evaluator) and `changes` remain.
   const noLanes = admitted(inputs, "pull_request", Object.fromEntries(LANES.map((lane) => [lane, "false"])));
-  const cascadeJobs = Object.values(rawRules.lanes).flatMap((definition) => definition.cascadeJobs ?? []);
+  // A cascade job that the event never admits (runtime performance is not a
+  // pull request check) is absent from the baseline too.
+  const cascadeJobs = Object.values(rawRules.lanes)
+    .flatMap((definition) => definition.cascadeJobs ?? [])
+    .filter((id) => baseline.includes(id));
   assert.deepEqual(
     [...noLanes].sort(),
     [...ALWAYS_RUN_JOBS, "changes", ...cascadeJobs].sort(),
   );
+});
+
+test("runtime performance is not a pull request check and is unchanged for every other event", () => {
+  // The guard before the pull request was excluded; only the event may differ.
+  const beforeGuard =
+    "github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates";
+  const job = jobOf("electron-runtime-performance");
+  assert.equal(job.needs, "electron-product-journeys-build");
+  assert.equal(stripScopeGate(job.if).gated, false, "a cascade job never names the change scope");
+  for (const event of EVENTS) {
+    for (const inputs of INPUT_SETS) {
+      const label = `${event} ${JSON.stringify(inputs)}`;
+      assert.equal(
+        evaluateIf(job.if, { inputs, event }),
+        evaluateIf(beforeGuard, { inputs, event }) && event !== "pull_request",
+        label,
+      );
+    }
+  }
+  // Spelled out for the default dispatch inputs: pull_request is the only event that changes.
+  const truth = Object.fromEntries(
+    EVENTS.map((event) => [event, evaluateIf(job.if, { inputs: defaultsFromDispatch, event })]),
+  );
+  assert.deepEqual(truth, {
+    push: true,
+    schedule: false,
+    workflow_dispatch: true,
+    workflow_call: true,
+    pull_request: false,
+  });
 });
 
 test("a false output never reaches a standalone canonical profile or an independent gates run", () => {

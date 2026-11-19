@@ -364,7 +364,9 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
     const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
-    const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
+    // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
+    const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
+    const ordinaryCondition = `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);

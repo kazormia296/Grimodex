@@ -907,7 +907,9 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
+    # Not a pull request check: the absolute-time thresholds are unstable on a shared hosted VM, so it is
+    # recorded by the master push, dispatch and reusable calls (thresholds and retry rules are unchanged).
+    if: github.event_name != 'schedule' && github.event_name != 'pull_request' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     # Reuses the N-API module and app bundle built once for the product journeys.
     needs: electron-product-journeys-build
     runs-on: ubuntu-24.04
