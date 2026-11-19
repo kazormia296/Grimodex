@@ -13,10 +13,21 @@ import {
   markAiAuditTerminalAppendStarted,
   reservePendingAiAuditExecution,
 } from "./executionRegistry";
+import {
+  buildAiAuditBeginEvents,
+  buildAiAuditCancelledEvents,
+  buildAiAuditCompletedEvents,
+  buildAiAuditDispatchedEvent,
+  buildAiAuditFailedEvents,
+  createAiAuditEvent,
+  sanitizeAiAuditDiagnostic,
+  sanitizedErrorSnapshot,
+  TERMINAL_AI_AUDIT_EVENT_TYPES,
+  withOptionalMetadata,
+} from "@/../electron/shared/aiAuditEvents";
 import type {
   AiAuditAppendResult,
   AiAuditCaptureState,
-  AiAuditErrorSnapshot,
   AiAuditEventInput,
   AiAuditExecutionHandle,
   AiAuditJsonObject,
@@ -27,205 +38,6 @@ import type {
   AiAuditVerifyResult,
   BeginAiAuditExecutionInput,
 } from "./types";
-
-const REDACTED_CREDENTIAL = "[REDACTED:credential]" as const;
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
-  return Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
-interface PendingRedaction {
-  readonly original: string;
-  readonly path: string;
-  readonly ruleId: string;
-}
-
-const CREDENTIAL_KEY_SUFFIXES = [
-  "authorization",
-  "authentication",
-  "auth",
-  "api_key",
-  "access_token",
-  "token",
-  "bearer",
-  "access_key_id",
-  "secret_access_key",
-  "private_key",
-  "secret",
-  "password",
-  "passwd",
-  "cookie",
-] as const;
-
-/**
- * Diagnostics often spell credentials with a provider prefix
- * (`OPENAI_API_KEY`, `ANTHROPIC_TOKEN`, `azureOpenAiAccessToken`). Normalize
- * separators/camelCase and classify by the credential suffix so adding a new
- * provider cannot silently bypass the diagnostic-only sanitizer.
- */
-function isCredentialDiagnosticKey(key: string): boolean {
-  const normalized = key
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
-    .replace(/[^A-Za-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .toLowerCase();
-  return (
-    normalized.split("_").includes("auth") ||
-    CREDENTIAL_KEY_SUFFIXES.some(
-      (suffix) => normalized === suffix || normalized.endsWith(`_${suffix}`),
-    )
-  );
-}
-
-export async function sanitizeAiAuditDiagnostic(
-  diagnostic: string,
-  path: string,
-): Promise<{
-  readonly value: string;
-  readonly redactions: readonly AiAuditRedactionRecord[];
-}> {
-  const pending: PendingRedaction[] = [];
-  const remember = (original: string, ruleId: string): string => {
-    pending.push({ original, path, ruleId });
-    return REDACTED_CREDENTIAL;
-  };
-
-  let value = diagnostic.replace(/https?:\/\/[^\s"'<>]+/giu, (candidate) => {
-    try {
-      const url = new URL(candidate);
-      if (!url.username && !url.password && !url.search && !url.hash) {
-        return candidate;
-      }
-      const userInfo =
-        url.username || url.password ? `${REDACTED_CREDENTIAL}@` : "";
-      const queryKeys = Array.from(url.searchParams.keys());
-      const query =
-        queryKeys.length === 0
-          ? ""
-          : `?${queryKeys
-              .map((key) => `${encodeURIComponent(key)}=${REDACTED_CREDENTIAL}`)
-              .join("&")}`;
-      const fragment = url.hash ? `#${REDACTED_CREDENTIAL}` : "";
-      pending.push({
-        original: candidate,
-        path,
-        ruleId: "transport-url-credentials-v1",
-      });
-      return `${url.protocol}//${userInfo}${url.host}${url.pathname}${query}${fragment}`;
-    } catch {
-      return candidate;
-    }
-  });
-
-  // Serialized JSON has a closing quote between the sensitive property name
-  // and `:` (for example `{"api_key":"secret"}`), so it cannot be covered by
-  // the assignment/header rule below without a dedicated shape.
-  value = value.replace(
-    /(["'])([^"'\\\r\n]{1,128})\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gu,
-    (match, keyQuote: string, key: string, secret: string) => {
-      if (!isCredentialDiagnosticKey(key)) return match;
-      const valueQuote = secret[0] ?? '"';
-      return `${keyQuote}${key}${keyQuote}:${valueQuote}${remember(
-        secret,
-        "transport-diagnostic-json-property-v1",
-      )}${valueQuote}`;
-    },
-  );
-
-  value = value.replace(
-    /(^|\r?\n)([A-Za-z][A-Za-z0-9_. -]{0,127})\s*:\s*([^\r\n]*)/gu,
-    (match, lineStart: string, key: string, secret: string) => {
-      if (!isCredentialDiagnosticKey(key)) return match;
-      return `${lineStart}${key}: ${remember(
-        secret,
-        "transport-diagnostic-header-v1",
-      )}`;
-    },
-  );
-
-  value = value.replace(
-    /\b([A-Za-z][A-Za-z0-9_.-]{0,127})\b\s*([:=])\s*("[^"]*"|'[^']*'|(?:Bearer\s+)?[^\s,;]+)/giu,
-    (match, key: string, separator: string, secret: string) => {
-      if (!isCredentialDiagnosticKey(key)) return match;
-      if (secret.includes(REDACTED_CREDENTIAL)) return match;
-      return `${key}${separator} ${remember(
-        secret,
-        "transport-diagnostic-assignment-v1",
-      )}`;
-    },
-  );
-  value = value.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, (secret) =>
-    remember(secret, "transport-bearer-v1"),
-  );
-  value = value.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, (secret) =>
-    remember(secret, "transport-api-key-token-v1"),
-  );
-
-  const redactions = await Promise.all(
-    pending.map(async ({ original, path: redactionPath, ruleId }) => ({
-      path: redactionPath,
-      category: "credential" as const,
-      ruleId,
-      originalSha256: await sha256Hex(original),
-      originalByteLength: new TextEncoder().encode(original).byteLength,
-      placeholder: REDACTED_CREDENTIAL,
-      reversible: false as const,
-    })),
-  );
-  return { value, redactions };
-}
-
-function errorSnapshot(error: unknown): AiAuditErrorSnapshot {
-  if (error instanceof Error) {
-    const code = (error as Error & { readonly code?: unknown }).code;
-    return {
-      name: error.name || "Error",
-      message: error.message,
-      ...(typeof code === "string" ? { code } : {}),
-    };
-  }
-  if (error && typeof error === "object") {
-    const record = error as Record<string, unknown>;
-    return {
-      name: typeof record.name === "string" ? record.name : "Error",
-      message:
-        typeof record.message === "string"
-          ? record.message
-          : "Non-Error transport failure",
-      ...(typeof record.code === "string" ? { code: record.code } : {}),
-    };
-  }
-  return { name: "Error", message: String(error) };
-}
-
-async function sanitizedErrorSnapshot(error: unknown): Promise<{
-  readonly error: AiAuditErrorSnapshot;
-  readonly redactions: readonly AiAuditRedactionRecord[];
-}> {
-  const snapshot = errorSnapshot(error);
-  const [name, message, code] = await Promise.all([
-    sanitizeAiAuditDiagnostic(snapshot.name, "error.name"),
-    sanitizeAiAuditDiagnostic(snapshot.message, "error.message"),
-    snapshot.code === undefined
-      ? Promise.resolve({ value: undefined, redactions: [] as const })
-      : sanitizeAiAuditDiagnostic(snapshot.code, "error.code"),
-  ]);
-  return {
-    error: {
-      name: name.value,
-      message: message.value,
-      ...(code.value === undefined ? {} : { code: code.value }),
-    },
-    redactions: [...name.redactions, ...message.redactions, ...code.redactions],
-  };
-}
 
 export function snapshotAiAuditWorkspacePath(): string {
   const state = useWorkspaceStore.getState();
@@ -248,31 +60,33 @@ export function assertAiAuditWorkspacePath(
   }
 }
 
+function eventContext(handle: AiAuditExecutionHandle) {
+  return {
+    executionId: handle.executionId,
+    operationId: handle.operationId,
+    parentExecutionId: handle.parentExecutionId,
+    pathId: handle.pathId,
+    appVersion: packageJson.version,
+  };
+}
+
 function event(
   handle: AiAuditExecutionHandle,
   eventType: AiAuditEventInput["eventType"],
   payload: AiAuditEventInput["payload"],
   timestamp = Date.now(),
 ): AiAuditEventInput {
-  return {
-    eventId: crypto.randomUUID(),
-    executionId: handle.executionId,
-    operationId: handle.operationId,
-    parentExecutionId: handle.parentExecutionId,
-    pathId: handle.pathId,
+  return createAiAuditEvent(
+    eventContext(handle),
     eventType,
+    payload,
     timestamp,
-    payload: { ...payload, appVersion: packageJson.version },
-  };
+  );
 }
 
-const TERMINAL_AI_AUDIT_EVENT_TYPES = new Set<AiAuditEventInput["eventType"]>([
-  "execution.succeeded",
-  "execution.failed",
-  "execution.cancelled",
-  "execution.skipped",
-  "execution.cache_hit",
-]);
+// Re-exported for the callers of the renderer's audit API; the implementation
+// is shared with Electron main's agent audit sink.
+export { sanitizeAiAuditDiagnostic };
 
 async function append(
   handle: AiAuditExecutionHandle,
@@ -314,13 +128,6 @@ async function append(
   }
 }
 
-function withOptionalMetadata(
-  payload: AiAuditJsonObject,
-  metadata: AiAuditJsonObject | undefined,
-): AiAuditJsonObject {
-  return metadata === undefined ? payload : { ...payload, metadata };
-}
-
 function reserveAiAuditHandle(
   input: BeginAiAuditExecutionInput,
   expectedWorkspacePath: string,
@@ -354,38 +161,18 @@ async function appendAiAuditBegin(
   handle: AiAuditExecutionHandle,
   input: BeginAiAuditExecutionInput,
 ): Promise<void> {
-  const captureState = input.captureState ?? "complete";
-  const limitations = input.limitations;
   await append(
     handle,
-    [
-      event(
-        handle,
-        "execution.started",
-        withOptionalMetadata(
-          {
-            captureState,
-            ...(limitations === undefined ? {} : { limitations }),
-          },
-          input.metadata,
-        ) as AiAuditEventInput["payload"],
-        handle.startedAt,
-      ),
-      event(
-        handle,
-        "request.prepared",
-        withOptionalMetadata(
-          {
-            captureState,
-            credentialsExcluded: true,
-            request: input.request as unknown as AiAuditJsonObject,
-            ...(limitations === undefined ? {} : { limitations }),
-          },
-          input.metadata,
-        ) as AiAuditEventInput["payload"],
-        handle.startedAt,
-      ),
-    ],
+    buildAiAuditBeginEvents(
+      eventContext(handle),
+      {
+        captureState: input.captureState,
+        limitations: input.limitations,
+        metadata: input.metadata,
+        request: input.request as unknown as AiAuditJsonObject,
+      },
+      handle.startedAt,
+    ),
     { failureDisposition: "caller-will-abandon" },
   );
 }
@@ -447,10 +234,7 @@ export async function markAiAuditDispatched(
   details: AiAuditJsonObject = {},
 ): Promise<void> {
   await append(handle, [
-    event(handle, "request.dispatched", {
-      captureState: "complete",
-      ...details,
-    }),
+    buildAiAuditDispatchedEvent(eventContext(handle), details, Date.now()),
   ]);
 }
 
@@ -618,28 +402,10 @@ export async function completeAiAuditExecution(
   },
 ): Promise<void> {
   const completedAt = Date.now();
-  await append(handle, [
-    event(
-      handle,
-      "response.completed",
-      withOptionalMetadata(
-        { captureState: "complete", response: input.response },
-        input.metadata,
-      ) as AiAuditEventInput["payload"],
-      completedAt,
-    ),
-    event(
-      handle,
-      "execution.succeeded",
-      withOptionalMetadata(
-        input.usage === undefined
-          ? { captureState: "complete" }
-          : { captureState: "complete", usage: input.usage },
-        input.metadata,
-      ) as AiAuditEventInput["payload"],
-      completedAt,
-    ),
-  ]);
+  await append(
+    handle,
+    buildAiAuditCompletedEvents(eventContext(handle), input, completedAt),
+  );
 }
 
 export async function cacheHitAiAuditExecution(
@@ -711,40 +477,10 @@ export async function failAiAuditExecution(
   const sanitized = await prepareAiAuditTerminal(handle, () =>
     sanitizedErrorSnapshot(input.error),
   );
-  const events: AiAuditEventInput[] = [];
-  if (input.partialResponse !== undefined) {
-    events.push(
-      event(
-        handle,
-        "response.partial",
-        { captureState: "partial", response: input.partialResponse },
-        failedAt,
-      ),
-    );
-  }
-  events.push(
-    event(
-      handle,
-      "execution.failed",
-      withOptionalMetadata(
-        {
-          captureState:
-            sanitized.redactions.length > 0
-              ? "redacted"
-              : input.partialResponse === undefined
-                ? "complete"
-                : "partial",
-          error: sanitized.error as unknown as AiAuditJsonObject,
-          ...(sanitized.redactions.length === 0
-            ? {}
-            : { redactions: sanitized.redactions }),
-        },
-        input.metadata,
-      ) as AiAuditEventInput["payload"],
-      failedAt,
-    ),
+  await append(
+    handle,
+    buildAiAuditFailedEvents(eventContext(handle), sanitized, input, failedAt),
   );
-  await append(handle, events);
 }
 
 export async function cancelAiAuditExecution(
@@ -759,40 +495,15 @@ export async function cancelAiAuditExecution(
   const sanitizedReason = await prepareAiAuditTerminal(handle, () =>
     sanitizeAiAuditDiagnostic(input.reason, "reason"),
   );
-  const events: AiAuditEventInput[] = [];
-  if (input.partialResponse !== undefined) {
-    events.push(
-      event(
-        handle,
-        "response.partial",
-        { captureState: "partial", response: input.partialResponse },
-        cancelledAt,
-      ),
-    );
-  }
-  events.push(
-    event(
-      handle,
-      "execution.cancelled",
-      withOptionalMetadata(
-        {
-          captureState:
-            sanitizedReason.redactions.length > 0
-              ? "redacted"
-              : input.partialResponse === undefined
-                ? "complete"
-                : "partial",
-          reason: sanitizedReason.value,
-          ...(sanitizedReason.redactions.length === 0
-            ? {}
-            : { redactions: sanitizedReason.redactions }),
-        },
-        input.metadata,
-      ) as AiAuditEventInput["payload"],
+  await append(
+    handle,
+    buildAiAuditCancelledEvents(
+      eventContext(handle),
+      sanitizedReason,
+      input,
       cancelledAt,
     ),
   );
-  await append(handle, events);
 }
 
 export interface NextAttemptInput {

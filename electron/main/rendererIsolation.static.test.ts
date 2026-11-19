@@ -773,6 +773,40 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     );
   });
 
+  it("gate L (Mastra agent turn) is Main's only: no Native gate opener, no @mastra, and the seam count stays three (MP-3b, DR-MP3-2)", () => {
+    const gateFile = "mastraAgentTurnGate.ts";
+    const text = stripComments(
+      readFileSync(path.join(MAIN_DIR, gateFile), "utf8"),
+    );
+    // No reference to the Native gate opener in any form, so the exact list
+    // of the three seams above stays the whole list.
+    expect(text).not.toMatch(/mainOpenPrePublicationGate|PrePublicationEntry/);
+    expect(gateOpenReferences([{ file: gateFile, text }])).toEqual([]);
+    // It imports no `@mastra/*` (the runtime is loaded by 3c's owner) and no
+    // Native module.
+    expect(text).not.toMatch(/@mastra\b/);
+    expect(text).not.toMatch(/from\s+["'][^"']*native[^"']*["']/i);
+    // The wire module has no import at all (the renderer compiles it).
+    const wire = stripComments(
+      readFileSync(
+        path.join(REPO, "electron/shared/mastraAgentTurnWire.ts"),
+        "utf8",
+      ),
+    );
+    expect(wire).not.toMatch(/^\s*import\b/m);
+    // Nothing else in the product's Main names the gate or its seam.
+    const namers = productSources()
+      .filter(
+        ({ file, text: source }) =>
+          file !== gateFile &&
+          /MASTRA_AGENT_TURN_CI_|parseMastraAgentTurnCiSeam|openMastraAgentTurnGate/.test(
+            stripComments(source),
+          ),
+      )
+      .map(({ file }) => file);
+    expect(namers).toEqual(["ipc.ts"]);
+  });
+
   it("the gate-opening check catches the call forms that a `.name(` pattern misses (R-1)", () => {
     for (const evasion of [
       'backend?.mainOpenPrePublicationGate?.("profile-activation");',

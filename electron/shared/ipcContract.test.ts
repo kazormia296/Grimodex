@@ -22,6 +22,8 @@ import {
   MAIN_GRANT_SIDECAR,
   NAPI_COMMANDS,
   RENDERER_EVENT_CHANNEL_ALLOWLIST,
+  resolveRequiredAiKeyAndSettings,
+  runAiAuditAppendBatch,
   SHELL_COMMAND_NAMES,
   toErrorString,
   unimplementedError,
@@ -12362,5 +12364,194 @@ describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
         "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
       )?.code,
     ).toBe("WORKSPACE_SWITCHING");
+  });
+});
+
+describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
+  it("the two commands are Main-processed, never Native ones, and no Main-only N-API was added", () => {
+    expect(SHELL_COMMAND_NAMES).toEqual(
+      expect.arrayContaining([
+        "mastra_agent_turn_start",
+        "mastra_agent_turn_cancel",
+      ]),
+    );
+    expect(
+      Object.keys(NAPI_COMMANDS).filter((name) => /mastra/iu.test(name)),
+    ).toEqual([]);
+    // Gate L is Main's only (DR-MP3-2): the backend contract has no member for it.
+    const source = readFileSync(
+      new URL("./ipcContract.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).not.toMatch(/mainMastra|mastraAgentTurn\w*\?\(/u);
+    // They are added at the end of the shell list and nowhere else.
+    expect(SHELL_COMMAND_NAMES.slice(-2)).toEqual([
+      "mastra_agent_turn_start",
+      "mastra_agent_turn_cancel",
+    ]);
+    expect(
+      SHELL_COMMAND_NAMES.filter((name) => name.startsWith("mastra_")),
+    ).toHaveLength(2);
+  });
+
+  it("dispatches to the Main handler and wraps its value; without a handler it is unimplemented", async () => {
+    const seen: unknown[] = [];
+    const result = await dispatchInvoke(
+      "mastra_agent_turn_start",
+      { turnId: "t" },
+      {
+        backend: null,
+        shell: {
+          mastra_agent_turn_start: async (args) => {
+            seen.push(args);
+            return {
+              status: "refused",
+              command: "start",
+              reason: "gate-closed",
+            };
+          },
+        },
+      },
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: { status: "refused", command: "start", reason: "gate-closed" },
+    });
+    expect(seen).toEqual([{ turnId: "t" }]);
+    const missing = await dispatchInvoke(
+      "mastra_agent_turn_cancel",
+      {},
+      { backend: null, shell: {} },
+    );
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain(IPC_UNIMPLEMENTED_MARKER);
+  });
+});
+
+describe("runAiAuditAppendBatch (the sink's way into ai_audit_append_batch, MP-3b)", () => {
+  const event = {
+    eventId: "e-1",
+    executionId: "x-1",
+    operationId: "o-1",
+    parentExecutionId: null,
+    pathId: "chat_agent_main",
+    eventType: "execution.started",
+    timestamp: 1,
+    payload: { captureState: "complete" },
+  };
+
+  function appendBackend() {
+    const calls: unknown[][] = [];
+    const backend = {
+      aiAuditAppendBatch: async (...args: unknown[]) => {
+        calls.push(args);
+        return JSON.stringify({
+          insertedCount: 1,
+          tailSequence: 1,
+          tailHash: "h",
+        });
+      },
+    } as unknown as NapiBackendLike;
+    return { backend, calls };
+  }
+
+  it("makes the same call as the NAPI entry for the same arguments", async () => {
+    const args = {
+      expectedWorkspacePath: "/ws",
+      projectId: "p",
+      events: [event],
+    };
+    const viaEntry = appendBackend();
+    const viaHelper = appendBackend();
+    const entry = await NAPI_COMMANDS.ai_audit_append_batch.run(
+      viaEntry.backend,
+      args,
+      { backend: viaEntry.backend, shell: {} },
+    );
+    const helper = await runAiAuditAppendBatch(viaHelper.backend, args);
+    expect(helper).toEqual(entry);
+    expect(viaHelper.calls).toEqual(viaEntry.calls);
+    expect(viaHelper.calls).toEqual([["/ws", "p", [event]]]);
+  });
+
+  it("refuses the same arguments before the backend is called", async () => {
+    for (const args of [
+      { projectId: "p", events: [event] },
+      { expectedWorkspacePath: "/ws", projectId: " p", events: [event] },
+      { expectedWorkspacePath: "/ws", projectId: "p", events: [] },
+      {
+        expectedWorkspacePath: "/ws",
+        projectId: "p",
+        events: [{ ...event, extra: 1 }],
+      },
+      {
+        expectedWorkspacePath: "/ws",
+        projectId: "p",
+        events: [{ ...event, eventType: "x" }],
+      },
+      {
+        expectedWorkspacePath: "/ws",
+        projectId: "p",
+        events: [{ ...event, pathId: "nir1_local_generation_writing" }],
+      },
+    ]) {
+      const viaHelper = appendBackend();
+      const viaEntry = appendBackend();
+      const helperError = await runAiAuditAppendBatch(
+        viaHelper.backend,
+        args,
+      ).then(
+        () => null,
+        (error: unknown) => String(error),
+      );
+      const entryError = await NAPI_COMMANDS.ai_audit_append_batch
+        .run(viaEntry.backend, args, { backend: viaEntry.backend, shell: {} })
+        .then(
+          () => null,
+          (error: unknown) => String(error),
+        );
+      expect(helperError).not.toBeNull();
+      expect(helperError).toBe(entryError);
+      expect(viaHelper.calls).toEqual([]);
+    }
+  });
+});
+
+describe("resolveRequiredAiKeyAndSettings is shared, not copied (MP-3b, DR-MP3-13)", () => {
+  it("reads the settings once and resolves the key from that same snapshot", async () => {
+    const settingsReads: number[] = [];
+    const backend = {
+      getAiSettings: async () => {
+        settingsReads.push(1);
+        return JSON.stringify({ provider: "anthropic" });
+      },
+    } as unknown as NapiBackendLike;
+    const resolved: unknown[][] = [];
+    const result = await resolveRequiredAiKeyAndSettings(
+      backend,
+      { provider: "anthropic", endpointId: null },
+      {
+        backend,
+        shell: {},
+        secrets: {
+          resolveApiKeyForRequest: (...args: unknown[]) => {
+            resolved.push(args);
+            return "k";
+          },
+        } as never,
+      },
+      "send_agent_message",
+    );
+    expect(result).toEqual({
+      settings: { provider: "anthropic" },
+      apiKey: "k",
+    });
+    expect(settingsReads).toHaveLength(1);
+    expect(resolved).toEqual([[{ provider: "anthropic" }, "anthropic", null]]);
+    // Without a secrets resolver it is a configuration error, not a read.
+    await expect(
+      resolveRequiredAiKeyAndSettings(backend, {}, { backend, shell: {} }, "c"),
+    ).rejects.toThrow("IPC_SECRETS_UNAVAILABLE");
+    expect(settingsReads).toHaveLength(1);
   });
 });
