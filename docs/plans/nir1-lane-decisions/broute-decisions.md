@@ -1212,3 +1212,12 @@
 - Node の TSFN の drain の件数上限、E1 と E2 が別 callback になる条件（実測していない。S-G は行わない）。
 - F-1 の Native 側の receipt の失敗（`PROJECT_MISSING`）の実呼出し。
 - 全 process の journey での stale な通知の件数（S-G。計画の測定は別）。
+
+**実装の結果と検証（追補。2026-11-19。head は試験の commit `823176aa`。node は 22、`/home/grimodex/worktrees/Grimodex/pubg5-rb-gap` の cargo の target）**
+- 製品のコード・policy・定数の変更：無し。`nir1_graph_product.rs`・`native-architecture.mjs` の `FIXED_BODIES`／`SOURCE_PINS` の対象 file には触れていない。`#[napi]` の doc コメントも変えていない（`pnpm napi:build` と `index.d.ts` の更新は不要）。
+- 試験の効き（変異。戻した）：`workspace:opened` の `clearGraphDemands` を外すと、新しい vitest 1 本（E1 と E2 を同じ tick で渡す形）と既存の「a new workspace … clears」が落ちる。`ReadyPublished` の `ready_generation` の更新を外すと、実 switch の Native 試験が「stale な Suspended の slot が `registration-unavailable` を答えた」で落ちる。
+- `vitest run --config vitest.electron.config.ts electron/main/narrativeMaintenance*`：17 file、348 件成功、1 件 expected fail（F-1）。
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：904 passed、0 failed、7 ignored。
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：82 passed、0 failed（F-1 の `should_panic` を含む）。grimodex-db の全件は実行していない（変えたのは試験 file だけ）。
+- `tsc --noEmit`：成功。`pnpm -s validate:architecture`：成功。`fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
+- 実行していないもの：Electron を起動する観測（S-G）、Node の TSFN の drain の実測、F-1 の Native 側の receipt の実呼出し、clippy・`--features licensing,legacy-keyring-migration` の cargo test・hosted CI（Quick／Full）。
