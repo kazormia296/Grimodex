@@ -150,7 +150,7 @@ jobs:
 
       - name: Upload existing OS suitability source-shaped evidence
         if: always() && steps.os-selection.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-os-suitability-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -279,7 +279,7 @@ jobs:
         if: github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-change-scope-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-change-scope.json
@@ -321,7 +321,7 @@ jobs:
           echo "checkout commit=${COMMIT_SHA} tree=${TREE_SHA} event=${GITHUB_EVENT_NAME} github.sha=${GITHUB_SHA}"
 
       - name: Upload checkout identity
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: checkout-identity-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/ci/checkout-identity.json
@@ -438,7 +438,7 @@ jobs:
       # suite and command (also on failure).
       - name: Upload impact report
         if: always() && github.event_name == 'schedule'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: impact-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/impact-report.json
@@ -607,7 +607,7 @@ jobs:
 
       - name: Upload Browser performance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-ci-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/browser-ci/browser.json
@@ -663,7 +663,7 @@ jobs:
 
       - name: Upload WebGL performance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: webgl-ci-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/browser-ci/webgl.json
@@ -716,7 +716,7 @@ jobs:
 
       - name: Upload Storybook performance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: storybook-ci-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/browser-ci/storybook.json
@@ -867,7 +867,7 @@ jobs:
 
       - name: Upload canonical connection source contracts
         if: always() && inputs.source_focused && inputs.source_canonical_contracts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -904,7 +904,7 @@ jobs:
 
       - name: Upload source-focused repair evidence
         if: always() && inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-source-focused-${{ github.run_id }}-${{ github.run_attempt }}
           include-hidden-files: true
@@ -969,7 +969,7 @@ jobs:
 
       - name: Upload audit compatibility evidence
         if: always() && inputs.source_focused && inputs.source_audit_compat
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-audit-compat-${{ github.run_id }}-${{ github.run_attempt }}
           include-hidden-files: true
@@ -1092,7 +1092,7 @@ jobs:
 
       - name: Upload Electron runtime performance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-runtime-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/electron-runtime-performance/
@@ -1228,7 +1228,7 @@ jobs:
 
       - name: Upload product journey build outputs
         if: steps.product-journey-impact.outputs.should_run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-product-journeys-build-${{ github.run_id }}
           path: ${{ runner.temp }}/product-journey-build.tar
@@ -1238,7 +1238,7 @@ jobs:
 
       - name: Upload product journey impact report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-product-journeys-impact-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/product-journeys
@@ -1353,7 +1353,7 @@ jobs:
           cp -R "$RUNNER_TEMP/grimodex-c2zc-restore-fixture" "$stage/fixture"
 
       - name: Upload C2-ZC evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-product-journeys-c2zc-${{ github.run_id }}
           path: ${{ runner.temp }}/c2zc-evidence
@@ -1447,7 +1447,7 @@ jobs:
 
       - name: Upload product journey shard artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-product-journeys-shard-${{ matrix.shard }}-${{ github.run_id }}
           path: ${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}
@@ -1541,7 +1541,7 @@ jobs:
 
       - name: Upload product journey aggregate
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-product-journeys-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1792,7 +1792,7 @@ jobs:
 
       - name: Upload native compile-only allocation observations
         if: always() && inputs.canonical_profile == 'native-development-build'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-build-allocation-${{ github.run_id }}-${{ github.run_attempt }}
           # Shaped public metadata only; complete private log bodies stay private.
