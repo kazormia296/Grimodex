@@ -578,7 +578,12 @@ async function resolveCodexTextForAi(
   projectId: string,
   scope?: ChatTurnToolScope,
   /** hidden でないのに解決結果が無いときの代わり（通常は起きない）。 */
-  fallback: CodexTextForAi = { summary: null, content: "", released: false },
+  fallback: CodexTextForAi = {
+    summary: null,
+    content: "",
+    released: false,
+    mode: "",
+  },
   withDetails = false,
 ): Promise<CodexTextForAi | null> {
   const { hidden, texts } = await resolveCodexForAi({
@@ -853,7 +858,12 @@ async function getCodexEntry(
         id,
         projectId,
         scope,
-        { summary: entry.summary, content: entry.content, released: false },
+        {
+          summary: entry.summary,
+          content: entry.content,
+          released: false,
+          mode: entry.contextMode,
+        },
         true,
       )
     : null;

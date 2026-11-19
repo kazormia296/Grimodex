@@ -167,10 +167,10 @@ describe("detectRelatedCodex", () => {
       setEntries([makeEntry({ id: "c-1", name: "朱音" })]);
       h.phases = [phase("c-1", { contextModeOverride: "hidden" })];
       await expect(
-        detectRelatedCodex("朱音が現れた。", { sceneId: "scene-1" }),
+        detectRelatedCodex("朱音が現れた。", { sceneIds: ["scene-1"] }),
       ).resolves.toHaveLength(1);
       await expect(
-        detectRelatedCodex("朱音が現れた。", { sceneId: "scene-2" }),
+        detectRelatedCodex("朱音が現れた。", { sceneIds: ["scene-2"] }),
       ).resolves.toEqual([]);
     });
 
@@ -197,13 +197,13 @@ describe("detectRelatedCodex", () => {
         }),
       ];
       const result = await detectRelatedCodex("朱音が現れた。", {
-        sceneId: "scene-2",
+        sceneIds: ["scene-2"],
       });
       expect(result).toEqual([
         { id: "c-1", name: "朱音", summary: "公開された要約" },
       ]);
       await expect(
-        detectRelatedCodex("朱音が現れた。", { sceneId: "scene-1" }),
+        detectRelatedCodex("朱音が現れた。", { sceneIds: ["scene-1"] }),
       ).resolves.toEqual([]);
     });
 
@@ -213,9 +213,46 @@ describe("detectRelatedCodex", () => {
       ]);
       h.phases = [phase("c-1", { summaryOverride: "Phase の要約" })];
       const result = await detectRelatedCodex("朱音が現れた。", {
-        sceneId: "scene-2",
+        sceneIds: ["scene-2"],
       });
       expect(result[0]?.summary).toBe("base の要約");
+    });
+    it("照合は hidden を除いた候補と分ける（長い hidden の名前が、重なる hidden でない項目を消さない）", async () => {
+      setEntries([
+        makeEntry({
+          id: "c-h",
+          name: "黒い森の主",
+          summary: "秘匿の要約",
+          contextMode: "hidden",
+        }),
+        makeEntry({ id: "c-a", name: "森の主", summary: "公開の要約" }),
+      ]);
+      const result = await detectRelatedCodex("黒い森の主が来た。");
+      expect(result.map((e) => e.id)).toEqual(["c-a"]);
+      expect(JSON.stringify(result)).not.toContain("秘匿の要約");
+    });
+
+    it("Phase 解決後に suppress になる項目（base が hidden でも）は送らない", async () => {
+      setEntries([
+        makeEntry({ id: "c-1", name: "朱音", contextMode: "hidden" }),
+      ]);
+      h.phases = [phase("c-1", { contextModeOverride: "suppress" })];
+      await expect(
+        detectRelatedCodex("朱音が現れた。", { sceneIds: ["scene-2"] }),
+      ).resolves.toEqual([]);
+    });
+
+    it("複数の場面は、どれかで hidden（Phase 解決後）なら落とす", async () => {
+      setEntries([makeEntry({ id: "c-1", name: "朱音" })]);
+      h.phases = [phase("c-1", { contextModeOverride: "hidden" })];
+      await expect(
+        detectRelatedCodex("朱音が現れた。", {
+          sceneIds: ["scene-1", "scene-2"],
+        }),
+      ).resolves.toEqual([]);
+      await expect(
+        detectRelatedCodex("朱音が現れた。", { sceneIds: ["scene-1"] }),
+      ).resolves.toHaveLength(1);
     });
   });
 });

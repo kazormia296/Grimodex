@@ -22,6 +22,8 @@ export interface CodexTextForAi {
    * （hidden でない項目の文は今までどおり base のまま返す）。
    */
   released: boolean;
+  /** Phase 解決後の mode（解決結果が無ければ base）。 */
+  mode: string;
   /**
    * released で `withDetails` のときだけ。Phase 解決後の詳細値（definitionId → 値。null は
    * Phase による消去）。base の詳細は作者が秘匿した状態の値なので、これを使う。
@@ -132,6 +134,7 @@ export async function resolveCodexForAi(input: {
       summary: isReleased ? resolved.summary : entry.summary,
       content: isReleased ? resolved.content : entry.content,
       released: isReleased,
+      mode,
     });
   }
   if (input.withDetails && released.length > 0) {
@@ -216,25 +219,33 @@ export async function dropCodexHiddenFromAi<T extends { id: string }>(
 export async function visibleCodexForAi(
   ids: readonly string[],
   options: { projectId?: string | null; sceneId?: string | null } = {},
-): Promise<{ ids: string[]; summaries: Map<string, string | null> }> {
-  if (ids.length === 0) return { ids: [], summaries: new Map() };
+): Promise<{
+  ids: string[];
+  summaries: Map<string, string | null>;
+  /** 渡してよいもののうち、Phase 解決後の mode が suppress の id（呼び側が必要なら除く）。 */
+  suppressed: Set<string>;
+}> {
+  if (ids.length === 0)
+    return { ids: [], summaries: new Map(), suppressed: new Set() };
   try {
     const { hidden, texts } = await resolveCodexForAi({
       entryIds: ids,
       ...options,
     });
     const summaries = new Map<string, string | null>();
+    const suppressed = new Set<string>();
     for (const [id, text] of texts) {
       if (text.released) summaries.set(id, text.summary);
+      if (text.mode === "suppress") suppressed.add(id);
     }
-    return { ids: ids.filter((id) => !hidden.has(id)), summaries };
+    return { ids: ids.filter((id) => !hidden.has(id)), summaries, suppressed };
   } catch (error) {
     debugLog.warn(
       "codex-hidden",
       "hidden 判定に失敗したので Codex の要約を渡さない",
       errorDetail(error),
     );
-    return { ids: [], summaries: new Map() };
+    return { ids: [], summaries: new Map(), suppressed: new Set() };
   }
 }
 

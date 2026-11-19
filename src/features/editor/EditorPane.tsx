@@ -37,6 +37,8 @@ import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAi
 import {
   captureEditorSendSnapshot,
   isEditorSendSnapshotCurrent,
+  requestAttentionIfInlineAiBusy,
+  requestInlineAiAttention,
   sendWhenFresh,
 } from "@/features/editor/inlineAi/sendWhenFresh";
 import {
@@ -2050,7 +2052,10 @@ export function EditorPane({
       // hidden 判定が DB を引くので非同期。送信時点の文書・選択・projection・書込み可否を
       // 控え、判定の間に変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移った
       // ときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
       sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
         capture: () => ({
           ...captureEditorSendSnapshot(ed),
           projectionKey: inputProjectionKeyRef.current,
@@ -3035,7 +3040,10 @@ export function EditorPane({
       if (!editor) return;
       // hidden 判定が DB を引くので非同期。判定の間に文書・選択・projection・書込み可否が
       // 変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
       sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
         capture: () => ({
           ...captureEditorSendSnapshot(editor),
           projectionKey: inputProjectionKeyRef.current,

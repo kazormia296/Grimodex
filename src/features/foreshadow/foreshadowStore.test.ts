@@ -1150,11 +1150,11 @@ describe("foreshadowStore", () => {
       // hidden の判定は回収の場面の Phase 解決後で行う。
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-scene-payoff"),
-        { sceneId: "scene-payoff" },
+        { sceneIds: ["scene-payoff"] },
       );
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-scene-a"),
-        { sceneId: "scene-payoff" },
+        { sceneIds: ["scene-payoff"] },
       );
       const req = mockProposePastSetups.mock.calls[0][0];
       expect(req.relatedCodex).toEqual([
@@ -1229,10 +1229,10 @@ describe("foreshadowStore", () => {
       expect(mockSaveScene.mock.invocationCallOrder[0]).toBeLessThan(
         mockLoadSceneContents.mock.invocationCallOrder[0],
       );
-      // hidden の判定は章の最後の場面の Phase 解決後で行う。
+      // 章の中のどれかの場面で hidden（Phase 解決後）なら落とす。
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-s-1"),
-        { sceneId: "s-2" },
+        { sceneIds: ["s-1", "s-2"] },
       );
       const req = mockAuditChapter.mock.calls[0][0];
       expect(req.relatedCodex).toEqual([

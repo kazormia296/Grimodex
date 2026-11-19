@@ -1,6 +1,23 @@
 import type { Editor } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { useInlineAiStore } from "./inlineAiStore";
+
+/**
+ * 別のインライン AI が進行中（idle でない）なら、ツールバーの注意喚起（揺れ）を出して true を返す。
+ * 呼び側は送らずに戻る。`generate` が従来出していた通知を、非同期の context を作る前に出すため。
+ */
+export function requestAttentionIfInlineAiBusy(): boolean {
+  const state = useInlineAiStore.getState();
+  if (state.status === "idle") return false;
+  state.requestAttention();
+  return true;
+}
+
+/** 取りやめ（送らなかった）ときの通知。作者に何も見えないままにしない。 */
+export function requestInlineAiAttention(): void {
+  useInlineAiStore.getState().requestAttention();
+}
 
 /** 送信を決めた時点の編集状態（文書・選択）。鮮度の比較に使う。 */
 export interface EditorSendSnapshot {
@@ -40,6 +57,8 @@ export interface SendWhenFreshOptions<S, T> {
    * 省略時は常に作り直す。
    */
   canRebuild?: (snapshot: S) => boolean;
+  /** 送らずに取りやめたとき（作り直せない変化、作り直しても古い）に呼ぶ。 */
+  onAbandon?: () => void;
   /** 有効な context を、その context を作った時点の snapshot とともに受けて送る。 */
   run: (context: T, snapshot: S) => void;
 }
@@ -66,6 +85,7 @@ export function sendWhenFresh<S, T>(options: SendWhenFreshOptions<S, T>): void {
         "inline-ai",
         "インライン AI の送信を取りやめた（作り直せない変化）",
       );
+      options.onAbandon?.();
       return;
     }
     const second = options.capture();
@@ -78,6 +98,7 @@ export function sendWhenFresh<S, T>(options: SendWhenFreshOptions<S, T>): void {
       "inline-ai",
       "インライン AI の送信を取りやめた（作り直しても状態が変わった）",
     );
+    options.onAbandon?.();
   })().catch((error: unknown) => {
     debugLog.warn(
       "inline-ai",

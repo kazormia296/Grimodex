@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { sendWhenFresh } from "./sendWhenFresh";
+import { requestAttentionIfInlineAiBusy, sendWhenFresh } from "./sendWhenFresh";
+import { useInlineAiStore } from "./inlineAiStore";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -89,5 +90,66 @@ describe("sendWhenFresh", () => {
     await flush();
     process.off("unhandledRejection", unhandled);
     expect(unhandled).not.toHaveBeenCalled();
+  });
+});
+
+describe("取りやめの通知と、進行中の別のインライン AI", () => {
+  it("作り直せない変化で取りやめるとき onAbandon を呼ぶ", async () => {
+    const { state, run, build } = setup();
+    const onAbandon = vi.fn();
+    sendWhenFresh({
+      capture: () => state.rev,
+      build,
+      isFresh: (snapshot) => state.rev === snapshot,
+      canRebuild: () => false,
+      onAbandon,
+      run,
+    });
+    state.rev = 1;
+    await flush();
+    expect(onAbandon).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("作り直しても古いとき onAbandon を呼ぶ。送れたときは呼ばない", async () => {
+    const state = { rev: 0 };
+    const onAbandon = vi.fn();
+    const run = vi.fn();
+    sendWhenFresh({
+      capture: () => state.rev,
+      build: async (snapshot: number) => {
+        state.rev += 1;
+        return snapshot;
+      },
+      isFresh: (snapshot) => state.rev === snapshot,
+      onAbandon,
+      run,
+    });
+    await flush();
+    expect(onAbandon).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+
+    const ok = vi.fn();
+    const onAbandon2 = vi.fn();
+    sendWhenFresh({
+      capture: () => 0,
+      build: async () => "ctx",
+      isFresh: () => true,
+      onAbandon: onAbandon2,
+      run: ok,
+    });
+    await flush();
+    expect(ok).toHaveBeenCalled();
+    expect(onAbandon2).not.toHaveBeenCalled();
+  });
+
+  it("別のインライン AI が進行中なら注意喚起を出して true、idle なら何もしない", () => {
+    useInlineAiStore.setState({ status: "idle", attentionNonce: 0 });
+    expect(requestAttentionIfInlineAiBusy()).toBe(false);
+    expect(useInlineAiStore.getState().attentionNonce).toBe(0);
+    useInlineAiStore.setState({ status: "generating" });
+    expect(requestAttentionIfInlineAiBusy()).toBe(true);
+    expect(useInlineAiStore.getState().attentionNonce).toBe(1);
+    useInlineAiStore.setState({ status: "idle", attentionNonce: 0 });
   });
 });

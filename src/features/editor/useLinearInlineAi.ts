@@ -11,6 +11,8 @@ import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAi
 import {
   captureEditorSendSnapshot,
   isEditorSendSnapshotCurrent,
+  requestAttentionIfInlineAiBusy,
+  requestInlineAiAttention,
   sendWhenFresh,
 } from "@/features/editor/inlineAi/sendWhenFresh";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
@@ -118,7 +120,10 @@ export function useLinearInlineAi(params: {
       // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。エディタ由来の
       // 項目は buildInlineAiContextForSend が同期で取る。判定の間に文書・選択・projection・
       // 書込み可否が変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
       sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
         capture: () => ({
           ...captureEditorSendSnapshot(inlineAiEditor),
           key: projectionStateRef.current.key,
