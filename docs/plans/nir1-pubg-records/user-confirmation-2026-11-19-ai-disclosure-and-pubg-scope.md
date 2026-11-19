@@ -34,3 +34,17 @@
 ## 扱い
 - PUB-G の範囲と順序が変わる。前提一覧（`pubg-prereq-inventory-2026-11-03.md`）は、起案の結果を待って付け直す。
 - AI 経路の 1（「これまでのあらすじ」と「直前の場面」の前後）は、不具合として PR #976 で直している。
+
+## 追記（2026-11-20 未明、AskUserQuestion）：草案の確定に要る 4 点
+草案：`fusion-eval-data/design-notes/pubg-pivot-2026-11-19/`（graph-restricted-draft.md、declaration-abolition-draftref-draft.md、ai-disclosure-adr-draft.md、consistency-check.md）。
+1. **Graph の restricted 条件：案 A で進める（推奨）**
+   - Native の restricted の要求（`nir1_graph_product.rs:1302-1304`、:2809、`related_scenes/graph.rs:600-603`）を外し、Graph を R・IR と同じ扱いにする。
+   - Graph の応答は画面にだけ使い、AI 送信・Packing・履歴・書き出しには載せない。新しい送信先はできない。
+   - 確認済みの K3/2（`caller-profile-egress`）の Graph の行を改訂する、新しい draftRef を起案する。
+   - 起案の前に、未確認の 2 点（`PublicationGuard.finish` が Graph の返却を覆うか、unrestricted での cache key の意味）を確かめる。
+   - 最後の凍結で、unrestricted の Graph の parity を測り足す（閾値は変えない）。
+2. **宣言の廃止の後に A1（Scene Scope の一致）を残すか：選ばず「Fableに聞いてみてください」**。統合者が Fable に相談し、結果を示して改めて伺う。
+3. **#968：閉じる（推奨）**。2026-11-20 に merge せずに閉じた。DR-CB2-17 の分析は、廃止の draftRef に引き継ぐ。
+4. **宣言のコードの撤去の時期：PUB-G の後（推奨）**
+   - 凍結の前は、reader の判定（宣言の読込、束縛の照合、veto、quarantine）だけを外す。
+   - 列（body_declaration_json など）は残して使わない。migration はしない。
