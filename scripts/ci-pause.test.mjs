@@ -362,7 +362,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   for (const [id, job] of Object.entries(ci.jobs)) {
     if (id === "electron" || id === "canonical" || id === "existing-os-suitability") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
-    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
+    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "rust-aggregate", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
     const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
@@ -376,6 +376,8 @@ test("registered CI exposes only opt-in canonical source contracts without gener
         ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
+      : id === "rust-aggregate"
+        ? `\${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition})) && needs.rust.result != 'skipped' }}`
         : id === "migration-recovery-gate"
           ? `\${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (${ordinaryCondition}) }}`
           : ordinaryCondition), id);
@@ -457,8 +459,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const value = (expression, inputs, event = "workflow_dispatch", changes = {}) => evaluateIf(expression, { inputs, event, changes });
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
   const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
-  // 18 product jobs plus the pull-request `changes` job.
-  assert.equal(ordinary.length, 19);
+  // 18 product jobs, the shared Rust aggregate (the required check name of the
+  // three `rust` shards) and the pull-request `changes` job.
+  assert.equal(ordinary.length, 20);
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
@@ -489,11 +492,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       assert.deepEqual(admitted({ ...defaults, independent_gates: true, [field]: malformed }), ["canonical"], `independent ${field}=${malformed}`);
     }
   }
-  // Standalone selection reuses the complete ordinary Rust owner. Even mixed
-  // inputs select only that owner, whose literal guard runs BEFORE any setup.
+  // Standalone selection reuses the complete ordinary Rust owner: the three
+  // `rust` shards and the `rust-aggregate` that carries the required check name.
+  // Even mixed inputs select only those, whose literal guard runs BEFORE any setup.
   const rust = ci.jobs.rust;
   const shared = { ...defaults, canonical_profile: "shared-rust" };
-  assert.deepEqual(admitted(shared), ["rust"]);
+  assert.deepEqual(admitted(shared), ["rust", "rust-aggregate"]);
   assert.equal(rust["runs-on"], "ubuntu-latest");
   assert.equal(rust["timeout-minutes"], 45);
   assert.deepEqual(rust.env, {
@@ -649,7 +653,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(registry.stages.rust.commands.find(({ id }) => id === "rust.c-query-worker").args, ["scripts/nir1-c-query-worker-ci.sh"]);
   for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
-    assert.deepEqual(admitted(inputs, event), ["rust"]);
+    assert.deepEqual(admitted(inputs, event), ["rust", "rust-aggregate"]);
     const env = Object.fromEntries(Object.entries(sharedSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
     return executeShared("bash", ["-c", sharedSelection.run], { timeout: 10000, env: {
       ...process.env, ...env, GITHUB_EVENT_NAME: event,
@@ -669,15 +673,45 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   for (const malformed of ["shared-rust ", " shared-rust", "shared-rust$(exit 0)", "shared-rust-unknown"]) {
     assert.deepEqual(admitted({ ...shared, canonical_profile: malformed }), ["canonical"]);
   }
-  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => step.run.trim()), [
-    "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
-    "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings",
-    "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
-    "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
-    "cargo test -p grimodex-db --test narrative_runtime_authority",
-    "cargo test -p grimodex-license --features licensing",
+  // The former single `cargo test` is split into three shards that partition
+  // its tests by construction. Every shard builds the same workspace with the
+  // same features, so the test cfg is identical; check and clippy run once.
+  assert.deepEqual(rust.strategy, { "fail-fast": false, matrix: { shard: ["lib-graph", "lib-rest", "integration"] } });
+  assert.equal(rust.name, "Shared Rust crates (${{ matrix.shard }})");
+  assert.equal(rust.steps.find(({ uses }) => uses?.startsWith("Swatinem/rust-cache@")).with.key, "${{ matrix.shard }}");
+  const base = "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding";
+  const graphFilter = "narrative_extraction::nir1_graph";
+  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => [step.if, step.run.trim()]), [
+    ["matrix.shard == 'lib-graph'", "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding"],
+    ["matrix.shard == 'lib-graph'", "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings"],
+    // `--lib` selects every unit test of the workspace libraries. The same
+    // string is the filter in one shard and the `--skip` in the other, so the two
+    // are exact complements and a new test module falls into lib-rest.
+    ["matrix.shard == 'lib-graph'", `${base} --lib -- ${graphFilter}`],
+    ["matrix.shard == 'lib-rest'", `${base} --lib -- --skip ${graphFilter}`],
+    // The targets `--lib` does not select: binary unit tests, integration tests
+    // (cargo rejects `--doc` combined with other selectors) and doctests.
+    ["matrix.shard == 'integration'", `${base} --bins --test '*'`],
+    ["matrix.shard == 'integration'", `${base} --doc`],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-db --test narrative_runtime_authority"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-license --features licensing"],
   ]);
   for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
+  // The Gate B2 required name stays on the aggregate, which succeeds only when
+  // every shard did. `!cancelled()` keeps a failed shard from skipping it (the
+  // implicit success() would, when `changes` was skipped by a standalone
+  // canonical profile), and it is skipped only when `rust` itself was.
+  for (const [result, expected] of [["success", true], ["failure", true], ["skipped", false]]) {
+    assert.equal(evaluateIf(ci.jobs["rust-aggregate"].if, { inputs: shared, event: "workflow_dispatch", changes: {}, rustResult: result }), expected, `rust result ${result}`);
+  }
+  const aggregate = ci.jobs["rust-aggregate"];
+  assert.equal(aggregate.name, "Shared Rust crates (check / clippy / test)");
+  assert.deepEqual(aggregate.needs, ["rust"]);
+  assert.equal(aggregate["runs-on"], "ubuntu-24.04");
+  assert.equal(aggregate.steps.length, 1);
+  assert.deepEqual(aggregate.steps[0].env, { RUST_RESULT: "${{ needs.rust.result }}" });
+  assert.equal(aggregate.steps[0].run, 'test "$RUST_RESULT" = success');
 
   // Fixed original build, complete public/release tests, compile-only or licensed MCP steps on the existing owner.
   // These source assertions do not execute or admit any consumer lane.

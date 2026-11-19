@@ -49,9 +49,9 @@ test("existing OS suitability is the sole fail-closed owner before setup for mal
     await assert.rejects(validate({ ...defaults, canonical_profile: value }));
     await assert.rejects(validate({ ...defaults, canonical_profile: value, candidate_head: "b".repeat(40), independent_gates: true }));
   }
-  // 18 product jobs plus the pull-request `changes` job.
-  assert.equal(admitted(defaults).length, 19);
-  assert.equal(admitted({ product_journey_mode: "all" }).length, 19);
+  // 18 product jobs, the shared Rust aggregate and the pull-request `changes` job.
+  assert.equal(admitted(defaults).length, 20);
+  assert.equal(admitted({ product_journey_mode: "all" }).length, 20);
   assert.deepEqual(admitted({ ...defaults, canonical_profile: "contracts" }), ["canonical"]);
 });
 

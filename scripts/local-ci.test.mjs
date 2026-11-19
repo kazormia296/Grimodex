@@ -471,6 +471,10 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
     "electron-product-journeys-c2zc",
     "electron-product-journeys-aggregate",
   ];
+  // The shared Rust aggregate carries the required check name of the three
+  // `rust` shards. The local `rust` stage runs the whole suite, so the aggregate
+  // has no stage of its own.
+  const rustSplitJobs = ["rust-aggregate"];
   // `changes` is the pull-request-only change-scope job. It is not a Full CI
   // stage, so it is deliberately absent from registry.hostedJobs.
   const ordinaryJobs = Object.keys(workflow.jobs).filter(
@@ -478,10 +482,11 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
       id !== "canonical" &&
       id !== "existing-os-suitability" &&
       id !== "changes" &&
-      !productJourneySplitJobs.includes(id),
+      !productJourneySplitJobs.includes(id) &&
+      !rustSplitJobs.includes(id),
   );
   assert.equal(ordinaryJobs.length, 15);
-  for (const id of productJourneySplitJobs) {
+  for (const id of [...productJourneySplitJobs, ...rustSplitJobs]) {
     assert.ok(Object.hasOwn(workflow.jobs, id), id);
   }
   assert.deepEqual(Object.keys(registry.hostedJobs).sort(), ordinaryJobs.sort());

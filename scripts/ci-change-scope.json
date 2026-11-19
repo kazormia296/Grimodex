@@ -52,7 +52,8 @@
     "rust": {
       "mode": "neutral",
       "neutral": ["docs", "ci-and-ai"],
-      "gatedJobs": ["rust", "nir1-c-query-worker"]
+      "gatedJobs": ["rust", "nir1-c-query-worker"],
+      "cascadeJobs": ["rust-aggregate"]
     },
     "native": {
       "mode": "neutral",

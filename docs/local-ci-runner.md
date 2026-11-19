@@ -560,14 +560,26 @@ acceptance, which comes from the executed cases. Exposing the profile neither wa
 B/Full, final acceptance or canonical gates nor changes any fixed value.
 
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
-selects **only the complete existing `rust` job**. This reuses the registered
+selects **only the complete existing `rust` job**: its three shards (`lib-graph`,
+`lib-rest`, `integration`) and `rust-aggregate`, which keeps the required check
+name `Shared Rust crates (check / clippy / test)`. This reuses the registered
 workflow and its existing string input; it adds no dispatch input or executor.
 Keep product mode `all`, all booleans false, and candidate tuple/options empty.
 The job's first literal shell guard rejects mixed inputs and nonliteral case
-before checkout/setup. Other malformed profiles still go to the canonical
-owner for rejection. Default/reusable CI, the ten-job independent selection,
-all six Cargo invocations, features, dependencies, build-profile environment,
-cache and 30-minute timeout are unchanged. The shared Rust job explicitly empties
+before checkout/setup in every shard. Other malformed profiles still go to the
+canonical owner for rejection. Default/reusable CI, the ten-job independent
+selection, features, dependencies and build-profile environment are unchanged.
+The shards run the former single `cargo test --workspace --exclude grimodex
+--features grimodex-semantic/semantic-embedding` as an exact partition, with the
+same workspace build and therefore the same test cfg: `lib-graph` runs `--lib`
+with the filter `narrative_extraction::nir1_graph`, `lib-rest` runs `--lib` with
+the same string as `--skip` (so a new test module lands in `lib-rest`), and
+`integration` runs the targets `--lib` does not select (`--bins --test '*'` and
+`--doc`). `cargo check` and `cargo clippy` run once, in `lib-graph`; the
+`test-failpoints`, `narrative_runtime_authority` and `licensing` reruns run in
+`integration`. Each shard has its own `rust-cache` key and the 45-minute
+timeout. `rust-aggregate` succeeds only when every shard succeeded. The local
+`rust` stage still runs the whole suite. The shared Rust job explicitly empties
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPEN_ROUTER_API_KEY`,
 `ANTHROPIC_API_KEY` and `SAKANA_API_KEY`, overriding inherited credentials for
 both standalone and default/reusable callers. The unfiltered suite includes

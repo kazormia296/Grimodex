@@ -873,7 +873,7 @@ test("a false output never reaches a standalone canonical profile or an independ
   // `changes` is skipped for these, so its outputs are empty and the selected
   // jobs must still run (and `!cancelled()` keeps them from being skipped).
   const standalone = { ...defaultsFromDispatch, canonical_profile: "shared-rust" };
-  assert.deepEqual(admitted(standalone, "workflow_dispatch", {}), ["rust"]);
+  assert.deepEqual(admitted(standalone, "workflow_dispatch", {}), ["rust", "rust-aggregate"]);
   const independent = admitted({ ...defaultsFromDispatch, independent_gates: true }, "workflow_dispatch", {});
   assert.ok(independent.includes("browser") && independent.includes("nir1-c-query-worker"));
   assert.ok(!independent.includes("changes"));

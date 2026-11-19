@@ -1667,12 +1667,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The shared Rust suite runs as three parallel shards (2026-11-19); the job
+  # `rust-aggregate` below keeps the required check name. Every shard builds the
+  # same workspace with the same features as the former single `cargo test`, so
+  # the test cfg is identical. The shards partition the tests by construction:
+  #   lib-graph    `--lib` tests whose name contains the filter below
+  #   lib-rest     `--lib` tests that do not (the same string as `--skip`), so a
+  #                new test module lands here unless it matches the filter
+  #   integration  binary unit tests, integration tests and doctests (the targets
+  #                `--lib` does not select), plus the feature-specific reruns
+  # `cargo check` and `cargo clippy` run once, in lib-graph.
   rust:
-    name: Shared Rust crates (check / clippy / test)
+    name: Shared Rust crates (${{ matrix.shard }})
     needs: [changes]
     if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [lib-graph, lib-rest, integration]
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -1731,27 +1745,57 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.shard }}
 
       - name: cargo check
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo check --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
 
       - name: cargo clippy
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo clippy --workspace --exclude grimodex --all-targets
           --features grimodex-semantic/semantic-embedding
           -- -D warnings
 
-      - name: cargo test
+      - name: cargo test (lib tests, graph modules)
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo test --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
+          --lib -- narrative_extraction::nir1_graph
+
+      - name: cargo test (lib tests, all other modules)
+        if: matrix.shard == 'lib-rest'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --lib -- --skip narrative_extraction::nir1_graph
+
+      - name: cargo test (binary unit tests and integration tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --bins --test '*'
+
+      - name: cargo test (doctests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --doc
 
       - name: cargo test (migration supervisor failpoints)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: >-
           cargo test
@@ -1760,6 +1804,7 @@ jobs:
           --test workspace_migration_supervisor
 
       - name: cargo test (narrative runtime authority)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: >-
           cargo test
@@ -1769,8 +1814,26 @@ jobs:
       # 通常buildではlicensingが無効なため、共有runtimeのnetwork/race testsは
       # workspace testだけだとcfgで0件になる。releaseと同じfeatureを明示する。
       - name: cargo test (license runtime with licensing feature)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: cargo test -p grimodex-license --features licensing
+
+  # The required check name of the shared Rust suite (Gate B2 `requiredJobs`).
+  # It succeeds only when every shard of `rust` succeeded. `!cancelled()` keeps
+  # the implicit success() from skipping it when `changes` was skipped (a
+  # standalone canonical profile), so a failed shard fails this job instead of
+  # skipping it; it is skipped only when `rust` itself was (lane false).
+  rust-aggregate:
+    name: Shared Rust crates (check / clippy / test)
+    needs: [rust]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.rust.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every shared Rust shard
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: test "$RUST_RESULT" = success
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
