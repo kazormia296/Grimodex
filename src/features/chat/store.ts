@@ -33,6 +33,7 @@ import {
   registerAnthropicModelCaps,
   isDynamicCapsStale,
 } from "./agent/dynamicModelCaps";
+import { startRegistryModelCapsLoad } from "./agent/registryModelCaps";
 
 export interface AiSettingsState {
   settings: AiSettings | null;
@@ -785,6 +786,11 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   chatEndpointIdOverride: null,
 
   loadSettings: async () => {
+    // 共有 registry（main が取得・同梱した能力の写し）を 1 回だけ読む。読めたら revision を上げ、
+    // 描画済みの能力表の解決を引き直させる。読めなければ registry の層が無いまま（今の挙動）。
+    void startRegistryModelCapsLoad(() => {
+      set((state) => ({ modelCapsRevision: state.modelCapsRevision + 1 }));
+    });
     // A read invoked while a save is pending must observe the post-save
     // backend snapshot, never commit the pre-save endpoint/model afterward.
     let saveBarrier: Promise<void>;

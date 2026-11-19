@@ -9,6 +9,7 @@ import {
   warnNoUsableEffortOnce,
   type DynamicModelMeta,
 } from "./dynamicModelCaps";
+import { getRegistryModelCaps } from "./registryModelCaps";
 import { ollamaContextLengthSettingKeys, type AiProvider } from "../types";
 
 /** モデルの能力情報 */
@@ -18,6 +19,7 @@ export type ModelContextWindowSource =
   | "default"
   | "hardcoded"
   | "dynamic"
+  | "registry"
   | "runner"
   | "model-parameter"
   | "ollama-settings"
@@ -487,7 +489,7 @@ const TABLE_KEY_SUFFIX = /^(?:-\d{8})?(?::[a-z]+)?$/u;
  * 使うが、live の値は載っていない id のために取っておく）。将来世代の近似
  * （resolveFutureAnthropicGeneration）や 200K の推定にも落とさない。
  */
-function isListedInCapabilityTable(model: string): boolean {
+export function isListedInCapabilityTable(model: string): boolean {
   if (MODEL_CAPABILITIES[model]) return true;
   const resolved = OPENROUTER_PREFIXED[model];
   if (resolved && MODEL_CAPABILITIES[resolved]) return true;
@@ -503,6 +505,62 @@ function isListedInCapabilityTable(model: string): boolean {
         MODEL_CAPABILITIES[canonical] !== undefined && hasDatedKey(prefixed),
     ) || Object.keys(MODEL_CAPABILITIES).some(hasDatedKey)
   );
+}
+
+/** Test-only：能力表の key（MODEL_CAPABILITIES と OPENROUTER_PREFIXED の別名）を全て返す。 */
+export function __capabilityTableIdsForTests(): string[] {
+  return [
+    ...Object.keys(MODEL_CAPABILITIES),
+    ...Object.keys(OPENROUTER_PREFIXED),
+  ];
+}
+
+/**
+ * 共有 registry の値（main が取得・同梱するモデル能力の写し）を、能力表に載っていない id にだけ
+ * 重ねる（PR-C3、Q1）。
+ *
+ * - 表に載っている id（`isListedInCapabilityTable`：完全一致・別名・正規化・日付付き）は、
+ *   同じ object をそのまま返す。表に無い field を埋めることもしない。前方一致の近似
+ *   （`gpt-5-6` が `gpt-5` に当たる等）は「載っている」に数えないので、registry が近似より優先する。
+ * - 使うのは context・最大出力・tool の 3 つだけ。`reasoning` の真偽値は使わない：thinking・
+ *   effort・reasoning の送り方は今のまま変えない（親文書 §3、precheck §7.1）。
+ * - field が無ければ下の層（近似・既定）の値のまま。`toolCall: false` は明示の非対応だけ。
+ * - Anthropic の `toolCall` は使わない（Claude の tool は製品の判断で全て対応とする。親文書 §4）。
+ * - provider が写しの対象でなければ素通し。Sakana は provider 全体が製品の判断の分岐
+ *   （resolveModelCapabilities）で上書きされるので、この値は届かない。
+ *
+ * live（OpenRouter の動的 metadata、Anthropic の一覧）はこの後の merge で field 単位に上書きするので、
+ * 順序は 製品の判断 > live > registry > 表の近似・既定 になる。
+ */
+function applyRegistryCaps(
+  model: string,
+  provider: AiProvider,
+  base: ModelCapabilities,
+): ModelCapabilities {
+  const entry = getRegistryModelCaps(provider, model);
+  if (entry === null || isListedInCapabilityTable(model)) return base;
+  const { contextWindow, maxOutputTokens } = entry;
+  const toolCall = provider === "anthropic" ? undefined : entry.toolCall;
+  if (
+    contextWindow === undefined &&
+    maxOutputTokens === undefined &&
+    toolCall === undefined
+  ) {
+    return base;
+  }
+  return {
+    ...base,
+    ...(contextWindow !== undefined
+      ? {
+          contextWindow,
+          modelContextWindow: contextWindow,
+          contextWindowIsEffective: true,
+          contextWindowSource: "registry" as const,
+        }
+      : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(toolCall !== undefined ? { supportsTools: toolCall } : {}),
+  };
 }
 
 /**
@@ -869,8 +927,12 @@ export function resolveModelCapabilities(
   } | null,
   apiVariant?: string | null,
 ): ModelCapabilities {
-  const hardcoded = getModelCapabilities(model);
   const provider = settings?.provider as AiProvider | undefined;
+  // 表の値。provider が分かれば、表に無い id にだけ共有 registry の値を重ねる（live はこの上に重なる）。
+  const tableCaps = getModelCapabilities(model);
+  const hardcoded = provider
+    ? applyRegistryCaps(model, provider, tableCaps)
+    : tableCaps;
   const dynamic = provider
     ? getDynamicModelMeta(
         provider,

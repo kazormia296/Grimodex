@@ -18,7 +18,7 @@ export type {
  * - main が契約の形で返さなかった値も null（壊れた値を能力表へ入れない）。
  * - IPC の失敗（同梱も cache も使えない、restricted の閉鎖など）は reject する。呼び出し側が自前の表へ落ちる。
  *
- * 能力表への統合は次の PR。返る key は `<provider>/<id>` だけで、表示や AI への入力にしない。
+ * 能力表への統合は `features/chat/agent/registryModelCaps.ts`（PR-C3）。返る key は `<provider>/<id>` だけで、表示や AI への入力にしない。
  */
 export async function getModelCapabilitySnapshot(): Promise<ModelCapabilitySnapshotView | null> {
   if (!isElectron()) return null;
