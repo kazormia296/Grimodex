@@ -373,6 +373,55 @@ GDX-PRECHECK-001 が名指しする項目：entry／start／retry／reentrant、
 
 ユーザーは、§7.1 と §7.3 の暫定値を「この値で確定し merge」と回答した。`SNAPSHOT_POLICY`（`electron/shared/modelCapabilityRegistry.ts`）と、scheduler・fetch・store の値（`electron/main/modelCapability*.ts`）は確定値とする。上の節の「暫定」は、この時点で確定に読み替える。運用で問題が出たら、別の PR で直す。
 
+### 7.5 PR-C3 の技術事項（2026-11-19）
+
+PR-C2 で main が取得・同梱する写しを、renderer のチャットの能力表に統合した。§7 の回答（Q1、Q13、Q17）と §7.1 の範囲内で決めた事項で、新しい IPC command・event・契約は足していない（読むのは既存の `get_model_capability_snapshot` だけ）。
+
+#### 読み込みと保持
+
+- 読み込み：`useAiSettingsStore.loadSettings` の最初の呼び出しで 1 回だけ（`startRegistryModelCapsLoad`、single-flight）。AI 設定を読む画面（チャット欄、設定、起動時の準備）が先に動いたときに始まる。起動の直後に別の入口を足してはいない。
+  - 読めたら `modelCapsRevision` を 1 回だけ上げる。描画済みの ContextBar や route を、live の登録と同じ仕組みで引き直させるため。
+  - Electron でない（Web 版）・IPC の失敗・契約の形でない値は、どれも「registry の層が無い」扱い（今の挙動のまま）。失敗しても読み直さない（次の起動まで）。例外は `loadSettings` に漏らさない。
+  - IPC の wrapper（`@/lib/modelCapabilitySnapshot`、検証 module を含む）は動的 import にし、起動の chunk に載せない。Electron でなければ chunk も読まない。
+- 保持：`src/features/chat/agent/registryModelCaps.ts` の module state（`Map`）。store には置かない。key は `<provider>/<id>`、値は context と最大出力の 2 つだけ（`reasoning`・`toolCall` は持たない）。対応する provider の key 以外と、使える field が無い項目は持たない。
+- 通知：main の取得で cache が更新されても、renderer へ知らせる event は作らない（新しい契約になるため）。反映は次の起動。**必要だと判断した場合は別 PR で、新しい契約として決める。**
+- 自動更新を無効にしたとき（§7.3 の説明文の約束「止めると同梱の情報だけを使う」を守るため）：`setModelInfoAutoUpdate` の保存が成功した直後に、切り替えた窓が同じ既存の IPC で写しを読み直し（`reloadRegistryModelCaps`）、差し替えて revision を上げる。main は設定が無効の間は同梱の写しだけを返す（`readAdoptedSnapshot`）ので、cache 由来の値は残らない。読み直しに失敗したら層を消す。最初の読み込みが走行中でも、遅れて届いた古い結果は世代番号で捨てる。有効に戻したときも同じ読み直しを行う（cache はまだ無いので同梱の写しのまま）。**他の窓へは届かない**（AI 設定を窓の間で同期する仕組みが無いのと同じ。次の起動で揃う）。新しい command・event は足していない。
+
+#### 層の実装（`modelLimits.ts` の `applyRegistryCaps`）
+
+- 順序：ユーザーの上書き（OpenAI 互換の customMax など）＞ 製品の判断 ＞ provider の live ＞ registry ＞ 表の近似・既定。`resolveModelCapabilities` が、表の値（`getModelCapabilities`）の直後に registry を重ね、その結果を live の merge（`mergeAnthropicLive`／`mergeDynamicCaps`）へ渡す。既存の `dyn.x ?? hardcoded.x` が、そのまま field 単位の「live ＞ registry」になる。
+- 表の id を守る仕組み（Q1）：
+  1. `isListedInCapabilityTable(model)`（既存の規則：完全一致・別名・ドット正規化・日付付き `-\d{8}`（Anthropic の形）と `-\d{4}-\d{2}-\d{2}`（OpenAI の形）・`:variant`）が真なら、同じ object をそのまま返す。表に無い field を埋めることもしない。
+  2. 前方一致は「載っている」に数えない。`gpt-5.6` が `gpt-5` に前方一致する近似より、registry が優先する。
+  3. 写しの引き方は provider と id の完全一致だけ（前方一致・ドットの正規化・大文字小文字の寄せはしない）。OpenRouter だけ、旧い `openrouter/` prefix は、完全一致に当たらなければ外して引く（dynamicModelCaps と同じ）。**表の判定も、外した後の id に掛ける**（`openrouter/anthropic/claude-opus-4.6` のように、prefix の有無で表の保護が外れない。表の側は prefix を知らないので、その id の表の値は今までどおり既定のまま）。
+  4. provider が写しの 4 つ（anthropic、openai、openrouter、sakana）でなければ素通し。provider が分からない呼び出し（`getModelCapabilities`、設定なし）は表だけ。
+- 使う field：context と最大出力の 2 つだけ。context は `modelContextWindow`・`contextWindowIsEffective: true`・`contextWindowSource: "registry"` と合わせて入れる。field が無ければ下の層の値のまま。
+  - **`reasoning` は使わない。** thinking・effort・reasoning の送信（`buildThinkingParams`、`supportsThinking` 系の flag、`canDisableReasoning`、`reasoningEffortValues` など）は変えない（§7.1）。
+  - **`toolCall` は使わない（全 provider）。** 写しの元（models.dev）にデータの誤りの前例がある：`openai/gpt-3.5-turbo` は `toolCall: false` だが、実際は function calling に対応している。OpenAI には live の上書きの層が無いので、誤りがそのまま agent の tool を止める。tool の可否は表・live・既定のまま（Anthropic は元から製品の判断で全て対応。親文書 §4）。誤りの影響が出る件数の実測（同梱の写し、表に無い id）：OpenAI 29 件中 1 件、OpenRouter 345 件中 50 件。
+  - **budget_tokens 方式の thinking を送る近似には重ねない。** 表の Claude 4.5 系の key に前方一致するが表に載っていない id（`claude-opus-4-5-preview` など）は、`supportsThinking` が真の近似になる。予算は `contextWindow × 0.04`、request の `max_tokens` は「予算 ＋ 既定の応答の長さ」を context・最大出力で clamp した値なので、registry の値で予算が動いたり、小さい最大出力・context で `max_tokens` が予算以下になって request が不正になったりし得る。そこで `base.supportsThinking` が真なら、context も最大出力も registry を重ねず、近似のまま返す（live の merge は表に無い Anthropic の id で `supportsThinking` を必ず false にするので、registry を重ねた後に真になる経路は無い）。試験は、大きい context・小さい最大出力・小さい context のどれでも、`thinking` の予算と `outputBudget` が前後で同一で、`max_tokens` が予算を上回ることを確かめる。
+- **Sakana は registry の効果が無い。** `provider === "sakana"` の分岐が、provider 全体を製品の判断（1M／32K／tools あり）で上書きするため。この分岐を変えると fugu の製品値が動くので変えていない。写しの 4 provider には含めたままで、変えるなら別の判断にする。
+- `ModelContextWindowSource` に `"registry"` を足した。renderer の型だけで、IPC・Rust・main には出ない（確認済み。`finalizeTurnPayload` が値で分岐するのは Ollama だけ）。
+
+#### 挙動の変化（意図したもの）
+
+- 表に無い id の context が、既定の 8K（または近似）から写しの値になる。送る context の量と compaction の閾値が変わる。
+- 表に無い id の最大出力が写しの値になり、`resolveOutputBudgetPlan` の clamp を通じて、wire の `max_tokens` が写しの値以下に抑えられ得る（thinking・effort の送信とは別の変化）。
+- 日付付きの判定に、OpenAI の形 `-\d{4}-\d{2}-\d{2}` を足した（ユーザーの決定「表の照合は完全一致・別名・日付付き」）。`gpt-4o-2024-05-13`、`gpt-4o-mini-2024-07-18` のような OpenAI の日付 id は、表の key の日付付きとして「載っている」扱いになり、registry は触れない。日付でない末尾（`-2024-05`、`-2024-5-13`）や、別のバージョンへの前方一致（`gpt-5-6`）は広げていない。この規則は `mergeAnthropicLive` の「表に載っている id は live も使わない」の判定も共有するが、Anthropic の実際の id は `-\d{8}` の形なので影響は無い。
+
+#### 既知の差
+
+- 読み込みが終わる前（`loadSettings` の直後の数 ms〜IPC の往復）の最初の turn は、registry の層が無いまま、表だけで解決される。仕様の範囲として直さない（読めたら revision が上がり、以後の解決は registry を含む）。
+
+#### 試験
+
+- `registryModelCaps.test.ts`（26 件）：表の全 key（別名・ドット表記・日付付き・`:variant`）× 3 provider、旧い `openrouter/` prefix を付けた表の id、既知の Anthropic 14 件（live の登録の前後）、同梱の写しの全 key で、載っている id は前後が `toEqual`、載っていない id は context・出力が写しの値（tool・thinking は変わらない。budget_tokens 方式の近似は全く変わらない）。表に無い id の context・出力、`toolCall: false` でも tool が止まらないこと、OpenAI の日付付き id、field 欠落時の既定、live ＞ registry（Anthropic・OpenRouter）、届かない経路（OpenAI 互換・Ollama・CLI・AI のべりすと・Sakana・provider なし）、`buildThinkingParams` と thinking 系の flag が `reasoning` の true・false で変わらないこと。
+- `registryModelCapsLoad.test.ts`（9 件）：IPC の 1 回呼び、single-flight、失敗・不正な値・Web 版で層が無い扱い、切替後の読み直し（同梱へ差し替え・失敗で層を消す・走行中の古い結果を捨てる・Web 版は何もしない）。`store.registryCaps.test.ts`（5 件）：`loadSettings` から読み、revision が 1 回だけ上がること、失敗しても `loadSettings` が成功すること、無効にした後に読み直すこと（保存に失敗したら読み直さない）。
+- `resolveTurnRoute.test.ts`（2 件を追加）：route の水準で、表に無い id の `thinking`・`toolProtocol` が前後で同一、context が写しの値、wire の最大出力（`outputBudget.requestMaxOutputTokens`・`wireOutputTokens`）が写しの最大出力を超えないこと。budget_tokens 方式の近似では、予算・`outputBudget` が前後で同一で、`max_tokens` が予算を上回ること。
+
+#### 未確認
+
+- packaged の build と実機の起動（renderer が実際に写しを読み、表に無いモデルの context が変わること）。`pnpm perf:budget`（起動の chunk の大きさ）は実行していない。動的 import で検証 module を起動の chunk から外したが、実測は CI の値で確かめる。
+
 ### 7.6 定期 workflow の技術事項（2026-11-19、同日のレビューで改訂）
 
 §7 の回答（Q7〜Q9）と §3.3 の T4・T7・T10 の範囲内で決めた実装の事項です。承認済みの仕様から外れた点は「仕様との差」に分けて書きました。この workflow はまだ一度も実行していません（実行にはユーザーの作業が要ります）。
@@ -495,3 +544,5 @@ auto-merge は使いません。次のどれかに当たると、PR を **draft*
 - master と `automation/*` の ruleset（署名必須・push の制限）の有無。
 - force push と Workflows 権限（上の節）。
 - `curl` の `--max-filesize` が content-length の無い応答で効くかは、curl の版によります。そのため取得後の byte 数の確認と、`parseModelsDevText` の同じ上限で重ねて守っています。
+
+- **REVIEW_POLICY の確定（2026-11-19）**：ユーザーは 4 つの値（変更 20 件、churn 20%、古さ 30 日、未来側の許容 5 分）を「この値で確定」と回答した。

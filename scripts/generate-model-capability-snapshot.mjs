@@ -157,7 +157,7 @@ export function checkSnapshotText(text, nowMs) {
 
 /**
  * 更新 PR を draft にする閾値と、古さの警告の日数。SNAPSHOT_POLICY には無い値で、定期 workflow の
- * 実装（2026-11-19）で新設した暫定値（運用の実測の後にユーザーが確認する）。急減の判定は
+ * 実装（2026-11-19）で新設し、同日にユーザー確認で確定した値。急減の判定は
  * SNAPSHOT_POLICY の minCountRatio 等を compareSnapshots 経由でそのまま使う。
  */
 export const REVIEW_POLICY = Object.freeze({
