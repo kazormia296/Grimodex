@@ -158,6 +158,50 @@ describe("narrative maintenance scheduler", () => {
     expect(exit).toHaveBeenCalledExactlyOnceWith(86);
   });
 
+  it("exits the interrupted process without Electron environment teardown by default", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    };
+    const reallyExit = vi.fn();
+    const processExit = vi.fn();
+    const processLike = process as unknown as {
+      reallyExit?: unknown;
+      exit: unknown;
+    };
+    const savedReallyExit = processLike.reallyExit;
+    const savedExit = processLike.exit;
+    processLike.reallyExit = reallyExit;
+    processLike.exit = processExit;
+    try {
+      const scheduled: Array<() => void> = [];
+      const pending = scheduleNarrativeMaintenanceProcessInterruption(
+        { getNarrativeMaintenanceWorkspaceBinding: () => binding },
+        ack,
+        binding,
+        () => true,
+        (callback) => {
+          scheduled.push(callback);
+        },
+      );
+      scheduled[0]?.();
+      await expect(pending).resolves.toBe(true);
+      // app.exit 相当の process.exit は環境の解放で async N-API の resolver を
+      // env=null で呼び、SIGABRT になる。exit code 86 を保つため通さない。
+      expect(reallyExit).toHaveBeenCalledExactlyOnceWith(86);
+      expect(processExit).not.toHaveBeenCalled();
+    } finally {
+      processLike.reallyExit = savedReallyExit;
+      processLike.exit = savedExit;
+    }
+  });
+
   it("keeps an interruption cycle in flight until the scheduled exit boundary", async () => {
     const binding = { authorityId: "authority-1", generation: 7 };
     const ack: NarrativeMaintenanceCycleResult = {

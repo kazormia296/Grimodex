@@ -5824,7 +5824,7 @@ export function createProductJourneyHarness({
       actualSignalCode !== null
     ) {
       throw new Error(
-        `cannot consume a narrative maintenance receipt before the bound process exits with code ${PRODUCT_JOURNEY_INTERRUPTED_EXIT_CODE} and no signal for ${phase}`,
+        `cannot consume a narrative maintenance receipt before the bound process exits with code ${PRODUCT_JOURNEY_INTERRUPTED_EXIT_CODE} and no signal for ${phase} (actual exit code ${actualExitCode}, signal ${actualSignalCode})`,
       );
     }
     if (

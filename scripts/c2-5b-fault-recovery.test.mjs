@@ -101,8 +101,13 @@ test("process interruption returns a strict ACK for the main-only delayed exit o
   );
   assert.match(
     schedulerSource,
-    /scheduleNarrativeMaintenanceProcessInterruption[\s\S]*process\.exit\(/,
+    /scheduleNarrativeMaintenanceProcessInterruption[\s\S]*exit: CiProcessExit = exitWithoutEnvironmentTeardown/,
     "only the validated main callback may schedule the delayed process exit",
+  );
+  assert.match(
+    schedulerSource,
+    /function exitWithoutEnvironmentTeardown[\s\S]*reallyExit\.call\(process, code\)/,
+    "the interruption exit must not run Electron's environment teardown (napi async resolver abort)",
   );
 });
 
