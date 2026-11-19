@@ -1,7 +1,14 @@
-# Mastra 移行の脅威モデルと owner／lifecycle の表（draft、2026-11-19）
+# Mastra 移行の脅威モデルと owner／lifecycle の表（2026-11-19 確定）
 
-- 状態：**draft・ユーザーの確認待ち（U-1）**。確認が済むまで凍結しない。
-  確認が未了なら、MP-1 以降の最初の変更の前に `[precheck]` で止まる（[GDX-PRECHECK-001](../../policies/quality/iron-laws.md#GDX-PRECHECK-001)）。
+- 状態：**確定（U-1、2026-11-19 にユーザーが「このまま確定」と回答）**。変更は新しい確認を要する。
+- 同時の回答：
+  - 残るリスクのうち、次の 3 つを、旗を開ける前の受入れの条件に上げる。
+    - P5(c)：tool の本文を observer と題名から絞る。
+    - X10：message の削除で、由来する OM の部分を消す。
+    - X13：実 key で、token 数の POST が起きないことを測る。実在の provider へ送る測定で、U-18 として承認された。
+  - 選ばれなかった残るリスクは、開示して受け入れる。
+  - 旗 L・M の新しい `PrePublicationEntry`（closed gate。開けられるのは journey の seam だけ）は、U-3 の承認に含める。
+    確認が未了なら、MP-1 以降の最初の変更の前に `[precheck]` で止まる（[GDX-PRECHECK-001](../../policies/quality/iron-laws.md#GDX-PRECHECK-001)）。
 - 位置づけ：この文書は**ユーザーの確認ではない**。NIR-1 の事前委任（AGENTS.md の作業範囲）は、この移行に及ばない。
 - 親文書：[`mastra-migration-plan.md`](mastra-migration-plan.md)（MP の割当て、U-n、P1〜P18 の回答）。
 - 範囲：移行後に生じる、送信・保存・subprocess・背景処理・非同期 lifecycle の棚卸し（X）、脅威（T）、必須の防御（D）、
@@ -449,7 +456,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 
 ## 5. 残るリスク
 
-記録済みの未確認と、決定が残した点だけを挙げる（新しい脅威は作らない）。受け入れるか、MP の受入れ条件に昇格させるかは、U-1 で伺う。
+記録済みの未確認と、決定が残した点だけを挙げる（新しい脅威は作らない）。受入れ条件に上げたものは冒頭の「同時の回答」のとおり（2026-11-19）。
 
 - **通信の観測の限界**（X19、X20、R-8）：hook の盲点。packaged の OS 側の捕捉（D12）で補うが、15 分間隔の telemetry、gateway、ee の bridge、`child_process` の全 call site は未確認。
 - **key ありの token 数の POST**（X13、R-9）：実測なし。止める条件を要件にしただけ。ダミー key の対照は MP-1、実 key は U-18。
