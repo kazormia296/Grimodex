@@ -1095,6 +1095,12 @@
 - 残る未確認：実 Native が wake-only cycle の receipt に載せる Graph build の key は、Rust の定数と試験の key からの読みで、実 Native の receipt では観測していない（外れていれば skip が働かず基点の挙動に戻るだけで、安全側）。
 - 試験：`wakeOrigin.test.ts` の receipt の表（receipt なし→false、空→true、Graph build だけ→true、Verify が succeeded→false、Verify が failed→false、build＋Verify→false）。`electronRoute.test.ts` は実 bootstrap と実 scheduler の経路で、Verify を載せた demand の cycle は rediscovery を 1 回足し（discoveries 2）、build だけの cycle は足さない（discoveries 1）。budget の試験は、failed／succeeded の work を毎回載せる需要の cycle が rediscovery を使うことを残余として固定する。既存の demand 向け試験は、production の backend と同じ attempt lifecycle と receipt を持つ backend に変えた。
 
+**追補 2（2026-11-19。F-1〔DR-PUBG-5-19、#954〕を取り込んだ後の組合せの確認）**
+
+- 位置づけ：F-1 は `persistDeliveryFailure` の戻り（"accepted" | "project-missing" | "retained"）と、work・wake の retry の catch の分岐（project-missing なら retry count を消して trigger を捨てる）を変えた。本 DR の origin の保持・昇格・requeue と同じ catch に載るので、取り込み後の意味を読みと試験で確かめた。判断・数値・契約は変えない。
+- 読み：wake は cycle の開始時（native 呼出しの前）に `durableWakeProjects` から delete されており、catch の retry 分岐と "retained" 分岐だけが `setDurableWake(…, sendingWakeOriginOf(projectId))` で戻す。"project-missing" の分岐は戻さないので、捨てた wake の origin は `durableWakeProjects` に残らない。捨てた cycle は失敗なので `onCycleAccepted` を呼ばず、rediscovery の判定には関わらない。cycle の途中に同じ key へ入った別の wake は生きている entry として残り、その origin で扱う。
+- 試験（`wakeOrigin.test.ts`）：(1) discovery を捨てた後の同じ project への demand は `demandOnly=true`、demand を捨てた後の discovery は false（lingering な origin が merge に効かない）。捨てる間に `onCycleAccepted` は 0 回、queueIdle。(2) 同じ cycle で、捨てる wake と "retained" になる別 project の wake を載せ、後者が残った origin のまま単独で受理される（捨てた側の origin が影響しない。両方の組合せ）。project-missing の分岐で wake を requeue する変異で落ちることを確かめた。
+
 ### DR-PUBG-5-19：存在しない project の maintenance の wake が終わらない（F-1）の直し（2026-11-19）
 
 - 位置づけ：PUB-G の前提 #5 の途中で見つかった別件の不具合 F-1。DR-PUBG-5-18（別の枝）が expected-fail の試験で記録したものを、直った状態を正で assert する試験に替える。この commit（最初の commit）は判断と信頼境界の記録で、コード・policy・定数は変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
