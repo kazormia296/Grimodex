@@ -1289,3 +1289,21 @@
 - `vitest run --config vitest.electron.config.ts`（electron/main 全体を含む全体）：114 file、2,868 件成功。`tsc --noEmit`・`tsc -p electron/tsconfig.json --noEmit`：成功。eslint：足した部分に指摘なし（`narrativeMaintenanceTriggers.ts` の既存の 5 件は基点にもある）。
 - `cargo fmt --check` は基点の時点で多数の file（`lib.rs` など）に指摘があり、足した部分だけを整形した。
 - 実行していないもの：Electron を起動する観測（S-G）、Node の TSFN の drain の実測、`--features licensing,legacy-keyring-migration` の cargo test、grimodex-db の全件、hosted CI（Quick／Full）。`pnpm napi:build` は `#[napi]` の doc コメントを変えていないので不要。
+
+**追補 5：#956・#954 の上への rebase と、基点の変化の反映（2026-11-19）**
+- 基点を `65deca68` から、#956 を squash merge した master（`1971a420`。内容は #956 の head `cc2718d6` と同じ）へ移した。この節の上の commit の hash（`823176aa`・`7cc33cff`・`57973981` など）は rebase の前のもので、今の枝の祖先にはない。
+  - F-1 の expected-fail を外していた `57973981` は、rebase で中身が空になって落ちた。最初の試験の commit のメッセージには「expected-fail で記録する」と残るが、rebase 後のその commit は `it.fails` も `should_panic` も足さない。
+- **F-1 は #954（DR-PUBG-5-19）で直った**。そのため、追補 4 の「窓なし」の受入れの前提（F-1 が直ること）は、今の基点で満たされている。
+  - 窓 2 の残余（E2 の後の E1 で新しい binding を 1 回 wake する）の最悪は、「終わらない retry」ではなく「B の判定 1 回」に戻る。
+  - 存在しない project への wake は、F-1 の修正で no-work の accepted になる。#956 の判定では works が空の cycle を需要の wake だけの cycle と見るので、rediscovery の budget も使わない。
+  - 上の「別 PR で直す」「F-1 が開いていれば」は、rebase 前の時点の記述として残す。
+- 合わさった箇所は Opus で独立レビューした。直したのは次の 1 件で、製品コードに合流で新しく生じる矛盾はなかった。
+  - #956 で、需要の wake は第 3 引数 `"demand"` を渡すようになった。追補 4 で足した vitest 4 本の期待値が 2 引数のままで、落ちていた。
+  - 第 3 引数は緩めずに `"demand"` で固定した。残余の wake が rediscovery の budget を使わないこと（DR-PUBG-5-17 の性質）も、併せて確かめるため。
+  - 作業記録の DR-PUBG-5-18 の行が、改訂前と改訂後で 2 本になっていた。改訂前の 1 本を消した。
+- rebase 後の検証（node は 22）。上の追補 4 の値は rebase 前のもの。
+  - `vitest run --config vitest.electron.config.ts electron/main`：99 file、2,061 件成功（修正の前は上の 4 本が失敗）。`tsc --noEmit`：成功。eslint・prettier：変えた file に指摘なし。
+  - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`（全件）：907 passed、0 failed、7 ignored。
+  - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：85 passed（#954 が足した試験を含む）。
+  - `verify:quality`：成功。
+  - コードの 6 file は、rebase の前後で差分の行が一致することを照合した（試験の 4 か所の修正を除く）。
