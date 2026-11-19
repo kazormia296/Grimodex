@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -571,31 +571,43 @@ describe("CliAiManager", () => {
       expect(fake.hashFile).toHaveBeenCalledOnce();
     });
 
-    it("実ファイルの既定 stat/hash：同じ size で中身を書き換えると ctime が変わり承認を取り直す", async () => {
-      const dir = mkdtempSync(path.join(os.tmpdir(), "grimodex-cli-stat-"));
-      try {
-        const binary = path.join(dir, "claude");
-        writeFileSync(binary, "#!/bin/sh\necho one\n", { mode: 0o755 });
-        const runner = new FakeRunner();
-        const authorizeExecutable = vi.fn(async () => true);
-        const manager = createCliAiManager(() => {}, {
-          runner,
-          platform: "linux",
-          authorizeExecutable,
-        });
+    // 実 fs の既定 stat（本番が通る経路）。platform を linux に固定するので Windows では走らせない。
+    it.skipIf(process.platform === "win32")(
+      "実ファイルの既定 stat：同じ中身なら hash を省き、同じ size で書き換えると ctime が変わり承認を取り直す",
+      async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "grimodex-cli-stat-"));
+        try {
+          const binary = path.join(dir, "claude");
+          writeFileSync(binary, "#!/bin/sh\necho one\n", { mode: 0o755 });
+          const runner = new FakeRunner();
+          const authorizeExecutable = vi.fn(async () => true);
+          // 既定の statFile のまま、hash だけ呼出し数を数える（中身そのものを返す）
+          const hashFile = vi.fn(async (candidate: string) =>
+            readFileSync(candidate, "utf8"),
+          );
+          const manager = createCliAiManager(() => {}, {
+            runner,
+            platform: "linux",
+            hashFile,
+            authorizeExecutable,
+          });
 
-        await manager.handlers.test_cli_connection({ binaryPath: binary });
-        await manager.handlers.test_cli_connection({ binaryPath: binary });
-        expect(authorizeExecutable).toHaveBeenCalledOnce();
+          await manager.handlers.test_cli_connection({ binaryPath: binary });
+          await manager.handlers.test_cli_connection({ binaryPath: binary });
+          await manager.handlers.test_cli_connection({ binaryPath: binary });
+          expect(authorizeExecutable).toHaveBeenCalledOnce();
+          expect(hashFile).toHaveBeenCalledOnce();
 
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        writeFileSync(binary, "#!/bin/sh\necho two\n", { mode: 0o755 });
-        await manager.handlers.test_cli_connection({ binaryPath: binary });
-        expect(authorizeExecutable).toHaveBeenCalledTimes(2);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          writeFileSync(binary, "#!/bin/sh\necho two\n", { mode: 0o755 });
+          await manager.handlers.test_cli_connection({ binaryPath: binary });
+          expect(authorizeExecutable).toHaveBeenCalledTimes(2);
+          expect(hashFile).toHaveBeenCalledTimes(3);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
 
     it("stat が一致しても realpath が変われば全文 hash して再確認する", async () => {
       const runner = new FakeRunner();
