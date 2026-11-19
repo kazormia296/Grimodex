@@ -1307,3 +1307,50 @@
   - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_graph_index_maintenance`：85 passed（#954 が足した試験を含む）。
   - `verify:quality`：成功。
   - コードの 6 file は、rebase の前後で差分の行が一致することを照合した（試験の 4 か所の修正を除く）。
+
+### DR-PUBG-5-20：#5 (1) の dev の journey の測定の決定規則（事前登録。2026-11-19。計画 `q5-graph-index-pre-switch-plan.md` §3.6）
+
+- 位置づけ：PUB-G の前提 #5 の点 (1)（Graph Index の製品の wake を、const を開けた dev 専用枝で測る）の、**測定の前に**固定する決定規則。結果を見てから基準を動かさない。この節を残す commit ではコード・試験・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：DR-PUBG-5-13・5-14 と同じ（C-product の worker／owner／lifecycle の技術判断）。測定の開始はユーザーが「準備でき次第すぐ」と回答した（contracts `846ff757`、`user-confirmation-2026-11-19-pubg-q4-41-6-measure.md` の 4）。緩める側の決定はこの DR の外で、測定の数字を添えてユーザーに伺う。新しい送信先・保存範囲の拡大・新しい契約・authority は無い。
+- 番号：計画は決定規則を「DR-PUBG-5-19」としていたが、その番号は F-1（#954）が使ったので、5-20 に振り直した。
+
+**測定の形（計画からの変更）**
+- dev 枝は今の origin/master（#954・#956 を含む）の上に作る。eval の build（`standard-build.mjs` の `captureCandidate`）が origin/master を祖先に要るため。計画の「(2) を入れる前の master を基線にする」は、dev 枝の上に #956 を戻す commit を足した別の dev 枝（S-E の基線）で代える。
+- 腕の作り方（read-only の調査 M0 と、その独立の反証で確かめた。`fusion-eval-data/design-notes/pubg-parallel-2026-11-19/m0-harness.md`・`m0-harness-refute.md`）：
+  - 腕 1（Graph owner は開、B の製品 wake の token は閉）＝ eval build で、dev の env なし。token の本番の消費点（需要 event・discovery・cycle）は const 由来なので、全部閉じる。
+  - 腕 2（全部開）＝ 同じ eval build に dev の env を与え、`maintenance_product_publication()` だけが `from_const::<true>()` を返す dev 専用の patch。const 本体と assert は触らない。
+  - 腕 0（全部閉）は eval build では作れない【未確認】。腕 0 と腕 1 の差は Graph owner そのものの費用で、数値の決定に使わないので、作れなければ測らない。
+  - dev の patch は、pin の試験と native-architecture の検査を赤にする。merge しない前提でだけ許す。
+- 点 (3) の案 3-g（B の `Validated` を Suspended の出口に数える）は、read-only の調査 M-3 とその反証で捨てた（`m3-validated-exit.md`・`m3-validated-exit-refute.md`）。
+  - registration は process の中の validate 済みに依存しない。
+  - hook は outcome を受け取らない。
+  - 出口が無い 3 つの形のどれにも、出口を作らない。
+  - 試行を増やす（K1b の線の外）。
+  - (3) の既定は 3-a（据え置き＋開示）。測定で「起きて困る」と出たら、3-b〜3-e と (a′) は委任の外なので、数字を添えてユーザーに伺う。
+
+**前景の遅延の線（腕 2 と腕 1 の差。同じ fixture、ABBA の順、各場面 3 反復以上）**
+- 保存（renderer の `saveSceneContent` の IPC の応答）の p50：**+12% 以内、かつ +1.5 ms 以内**。
+  - DB 段 1 の PR-1 の G1 の線（ユーザーの決定。`db-connection-decisions.md:332`）を借りる。
+  - 同じ「前景の保存 IPC の p50 の悪化」を測る線なので、この形に当てはまると判断した。
+- Related Scenes の query（`fetchRelatedPastScenes` の hybrid）の p50：**+10% 以内**。
+  - 同じ DR の G3 の線（project 削除の p50 が +10% 以内）の比率を借りる。
+  - query には CP-4 の P（Hybrid p95 ≤ 65.04 ms）もある。腕 2 の p95 が P を超えたら、上の線の内でも「締める側」に回す。
+- この 2 つは新しい防御の線で、既存の確認済みの閾値を緩めない。計画 §7 の判断どおり委任の内とした。異論があれば測定の前に止める。
+
+**決定表（計画 §3.6 の表を固定する）**
+
+| 観測（腕 2 と腕 1 の差） | 決定 | 委任 |
+|---|---|---|
+| 持続する需要の下で、1 key あたり B の build が 1 回／分以下で、前景の悪化が上の線の内で、通常の使い方（S-B・S-C）で drop（key 満杯）が 0 | 2〜60 s・key 8・reset 60 s を**据え置く** | 内 |
+| 前景の悪化が線を超える、または worker の再 spawn の費用が大きい（publish ごとの退役と再 spawn が、前景の線を超える遅れを作る） | 最短間隔の底を上げる、上限を上げる、reset を長くする、key を減らす＝**締める側** | 内（実測を DR に記録）。ただし、上限を延ばすと DR-PUBG-5-9 の有限待機が延び、reset を長くすると drop が増える。この 2 つは matrix と drop の数で確かめてから決める |
+| 通常の使い方で key 上限 8 に当たって需要が捨てられ、Graph が使えない時間が長い | key を増やす＝**緩める** | **外**（ユーザーに伺う） |
+| 間隔の底 2 s が長すぎて、「作り直しの後の query から Graph を使う」までの遅れが目立つ | 底を短くする＝**緩める** | **外**（ユーザーに伺う） |
+| Suspended に入った後、出口の無い形（`BindingCurrent`／`RefusedUnchanged` の skip、時間／容量の上限の拒否）で滞在が続く | 3-a（開き直すか再起動するまで戻らない、を開示）のまま閉じるか、3-b〜3-e・(a′) を起案するか | **結果の軽重にかかわらず、ユーザーに伺ってから閉じる**。3-b〜3-e・(a′) は外 |
+
+- 「Graph が使えない時間が長い」の目安：各場面の実時間のうち、Related Scenes の応答が Graph なし（R＋IR）だった時間の割合が 10% を超えること。この 10% も新しい線で、上と同じく内とした。key・間隔の行には、この目安をそのまま当てる。
+- 点 (3)（Suspended の出口）だけは、目安の内に収まって「軽い」と出ても、統合者だけでは閉じない。
+  - 理由：3-a で閉じると、作者から見て「関連シーンの Graph が、作業スペースを開き直すかアプリを再起動するまで、黙って使えなくなる」ことを、公開時に受け入れることになる。
+  - 伺うときに添える数字：Suspended に入った回数、入った後の滞在時間、出口の種類の内訳、出口の無い形の頻度、Graph が使えない時間の割合。
+  - この扱いは、2026-11-19 に side agent からユーザーへ出た注意（「そうなってよいかを、測定の結果が出たら一度確かめてください」）を受けて足した。
+- 測定は CP-4 の評価・凍結・正式 run の記録を作らない。台帳に数えない dev の測定で、開示では「dev の測定。const だけを開けた形で、切替の PR の形とは違う」と明記する。
+- 記録：結果は `fusion-eval-data/design-notes/` の下の dev の測定の dir と、この DR の追補に書く。数値を締める変更は別の PR にする（vitest）。
