@@ -1248,8 +1248,9 @@ describe("collectSceneContext previousScene reading order", () => {
     };
   }
 
-  // sortOrder は親ごとの fractional index。章 2 の 1 場面目（a0）は
-  // 現在場面（章 1 の 2 場面目、a1）より sortOrder の文字列比較では小さいが、読む順では後。
+  // sortOrder は親ごとの fractional index。章 2 の 1 場面目（a0V）は
+  // 現在場面（章 1 の 2 場面目、a1）より sortOrder の文字列比較では小さく、
+  // 章 1 の 1 場面目（a0）より大きいので、旧実装では直前の場面に選ばれる。読む順では後。
   function nodesWith(chapter1Scene1Synopsis: string | null): TreeNodeData[] {
     return [
       treeNode({ id: "ch1", nodeType: "folder", sortOrder: "a0" }),
@@ -1271,7 +1272,7 @@ describe("collectSceneContext previousScene reading order", () => {
         id: "c2s1",
         nodeType: "scene",
         parentId: "ch2",
-        sortOrder: "a0",
+        sortOrder: "a0V",
         synopsis: "chapter-2-scene-1-synopsis",
       }),
     ];

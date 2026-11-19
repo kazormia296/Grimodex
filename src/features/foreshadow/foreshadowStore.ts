@@ -27,7 +27,7 @@ import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { listScenesBeforeInReadingOrder } from "@/features/codex/context/sceneTimeIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import {
   refreshForeshadowPayoffMarkVersions,
@@ -44,6 +44,7 @@ import { deriveLabel } from "./deriveLabel";
 import { getActiveEditor } from "@/features/editor/editorProjection";
 import {
   getActiveTreeSceneId,
+  listTreeNodes,
   listTreeSceneSummaries,
 } from "@/features/tree/treeProjection";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -915,15 +916,13 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       const activeSceneId = getActiveTreeSceneId();
       if (activeSceneId) await saveScene(activeSceneId);
 
-      const nodes = listTreeSceneSummaries();
-      const payoffNode = nodes.find((n) => n.id === foreshadow.payoffSceneId);
-      const sceneNodes = nodes
-        .filter(
-          (n) =>
-            n.id !== foreshadow.payoffSceneId &&
-            (payoffNode ? n.sortOrder < payoffNode.sortOrder : true),
-        )
-        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+      // 回収場面より前の場面は読む順（木の DFS 順）で決める。sortOrder は親ごとの
+      // fractional index で、章をまたぐ文字列比較には使えない。
+      // 回収場面が読む順に無い（archived・孤児）ときは空になる。
+      const sceneNodes = listScenesBeforeInReadingOrder(
+        listTreeNodes(),
+        foreshadow.payoffSceneId,
+      );
 
       const selectedSceneNodes = sceneNodes.slice(0, 30);
       const sceneContents = await loadSceneContents([
