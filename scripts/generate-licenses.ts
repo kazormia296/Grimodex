@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { load as loadYaml } from "js-yaml";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { formatLicensesMarkdown } from "../src/features/licenses/formatter";
 import type { LicenseEntry } from "../src/features/licenses/types";
@@ -248,14 +249,215 @@ function runPnpmLicenseList(args: readonly string[]): string {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/*  pnpm-lock.yaml からの production closure                            */
+/* ------------------------------------------------------------------ */
+
+interface LockfileDependencyMap {
+  [name: string]: string | { version?: string } | undefined;
+}
+
+interface LockfileImporter {
+  dependencies?: LockfileDependencyMap;
+  optionalDependencies?: LockfileDependencyMap;
+}
+
+interface LockfileSnapshot {
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  optional?: boolean;
+}
+
+export interface PnpmLockfile {
+  importers?: Record<string, LockfileImporter>;
+  snapshots?: Record<string, LockfileSnapshot>;
+}
+
+export interface ProductionPackage {
+  name: string;
+  version: string;
+  optional: boolean;
+}
+
+/** `name@1.2.3(peer@1)(...)` から実パッケージ名と version を取り出す（alias 名は使わない）。 */
+function parseSnapshotKey(key: string): { name: string; version: string } {
+  const withoutPeers = key.replace(/\(.*$/s, "");
+  const at = withoutPeers.lastIndexOf("@");
+  if (at <= 0) throw new Error(`Unrecognized pnpm lockfile key: ${key}`);
+  return {
+    name: withoutPeers.slice(0, at),
+    version: withoutPeers.slice(at + 1),
+  };
+}
+
+/**
+ * pnpm-lock.yaml の importers（dependencies／optionalDependencies のみ。dev は除外）から
+ * snapshots をたどり、production 閉包の name@version を決定的に列挙する。
+ * alias（`name: pkg@ver`）は実名で解決する。`link:` など snapshots に無い参照は
+ * workspace member なので辿らない（その importer 自身の依存は全 importer として含まれる）。
+ */
+export function collectProductionClosure(
+  lockfile: PnpmLockfile,
+): ProductionPackage[] {
+  const snapshots = lockfile.snapshots ?? {};
+  const resolve = (name: string, ref: string): string | undefined => {
+    if (`${name}@${ref}` in snapshots) return `${name}@${ref}`;
+    if (ref in snapshots) return ref;
+    return undefined;
+  };
+
+  const visited = new Set<string>();
+  const queue: string[] = [];
+  const enqueue = (name: string, ref: string | undefined) => {
+    if (typeof ref !== "string") return;
+    const key = resolve(name, ref);
+    if (key && !visited.has(key)) {
+      visited.add(key);
+      queue.push(key);
+    }
+  };
+
+  for (const importer of Object.values(lockfile.importers ?? {})) {
+    for (const group of [
+      importer.dependencies,
+      importer.optionalDependencies,
+    ]) {
+      for (const [name, spec] of Object.entries(group ?? {})) {
+        enqueue(name, typeof spec === "string" ? spec : spec?.version);
+      }
+    }
+  }
+
+  while (queue.length > 0) {
+    const key = queue.pop() as string;
+    const snapshot = snapshots[key];
+    for (const group of [
+      snapshot.dependencies,
+      snapshot.optionalDependencies,
+    ]) {
+      for (const [name, ref] of Object.entries(group ?? {})) {
+        enqueue(name, ref);
+      }
+    }
+  }
+
+  const packages = new Map<string, ProductionPackage>();
+  for (const key of visited) {
+    const { name, version } = parseSnapshotKey(key);
+    const id = `${name}@${version}`;
+    const optional = snapshots[key].optional === true;
+    const known = packages.get(id);
+    // peer context 違いの同一 name@version は 1 件へ。1 つでも非 optional なら必須扱い。
+    packages.set(id, {
+      name,
+      version,
+      optional: known ? known.optional && optional : optional,
+    });
+  }
+  return [...packages.values()].sort(
+    (a, b) =>
+      compareStrings(a.name, b.name) || compareStrings(a.version, b.version),
+  );
+}
+
+/** node_modules/.pnpm 配下から name@version の実体ディレクトリを決定的に探す。 */
+function findVirtualStorePackageDir(
+  virtualStoreDir: string,
+  pkg: ProductionPackage,
+): string | undefined {
+  const prefix = `${pkg.name.replace(/\//g, "+")}@${pkg.version}`;
+  let entries: string[];
+  try {
+    entries = readdirSync(virtualStoreDir);
+  } catch {
+    return undefined;
+  }
+  const candidates = entries
+    .filter(
+      (entry) =>
+        entry === prefix ||
+        entry.startsWith(`${prefix}_`) ||
+        entry.startsWith(`${prefix}(`),
+    )
+    .sort(compareStrings);
+  for (const entry of candidates) {
+    const pkgDir = join(virtualStoreDir, entry, "node_modules", pkg.name);
+    if (existsSync(join(pkgDir, "package.json"))) return pkgDir;
+  }
+  return undefined;
+}
+
+/**
+ * `pnpm licenses list` は alias 経由の同名 package（例: @mastra/core の
+ * `@a2a-js/sdk-v0_3` → `@a2a-js/sdk@0.3.14`）を実行ごとに出したり出さなかったりする。
+ * lockfile から求めた production 閉包に実在し、pnpm の出力に欠けた package を、
+ * node_modules/.pnpm の実体から補う。pnpm の出力から何が欠けても結果は同じになる。
+ */
+export function completeNpmLicenseReport(
+  report: PnpmLicenseReport,
+  closure: readonly ProductionPackage[],
+  virtualStoreDir: string,
+): PnpmLicenseReport {
+  const reported = new Set<string>();
+  for (const packages of Object.values(report)) {
+    if (!Array.isArray(packages)) continue;
+    for (const pkg of packages) {
+      for (const version of pkg.versions ?? []) {
+        reported.add(`${pkg.name}@${version}`);
+      }
+    }
+  }
+
+  const supplements: PnpmLicensePackage[] = [];
+  for (const pkg of closure) {
+    if (reported.has(`${pkg.name}@${pkg.version}`)) continue;
+    const pkgDir = findVirtualStorePackageDir(virtualStoreDir, pkg);
+    if (!pkgDir) {
+      // 他 platform 向けの optional 依存はインストールされない。それ以外の欠落は
+      // node_modules が lockfile と食い違っているので生成を止める。
+      if (pkg.optional) continue;
+      throw new Error(
+        `Production package ${pkg.name}@${pkg.version} from pnpm-lock.yaml is ` +
+          `not installed under ${virtualStoreDir}; run pnpm install`,
+      );
+    }
+    supplements.push({
+      name: pkg.name,
+      versions: [pkg.version],
+      paths: [pkgDir],
+    });
+  }
+  if (supplements.length === 0) return report;
+  return {
+    ...report,
+    // pnpm の license 分類は使えない。entry 側で package.json の license を優先する。
+    UNKNOWN: [...(report.UNKNOWN ?? []), ...supplements],
+  };
+}
+
+function readWorkspaceLockfile(): PnpmLockfile {
+  const parsed = loadYaml(readFileSync(join(ROOT, "pnpm-lock.yaml"), "utf-8"));
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Invalid pnpm-lock.yaml");
+  }
+  return parsed as PnpmLockfile;
+}
+
 export function gatherNpmLicenses(
   runPnpm: PnpmLicenseRunner = runPnpmLicenseList,
+  lockfile: PnpmLockfile = readWorkspaceLockfile(),
+  virtualStoreDir: string = join(ROOT, "node_modules", ".pnpm"),
 ): LicenseEntry[] {
   const parsed = JSON.parse(runPnpm(PNPM_LICENSE_LIST_ARGS)) as unknown;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Invalid pnpm license report");
   }
-  return buildNpmLicenseEntries(parsed as PnpmLicenseReport);
+  const report = completeNpmLicenseReport(
+    parsed as PnpmLicenseReport,
+    collectProductionClosure(lockfile),
+    virtualStoreDir,
+  );
+  return buildNpmLicenseEntries(report);
 }
 
 /* ------------------------------------------------------------------ */
