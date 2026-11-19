@@ -11,6 +11,10 @@ pub mod ai_responses;
 pub mod emit;
 pub mod params;
 
+// Mastra adapter と現行の経路で、Rust が送る body が bytes で同一かを確かめる試験（test 専用）。
+#[cfg(test)]
+mod mastra_wire_parity_tests;
+
 include!(concat!(env!("OUT_DIR"), "/agent_tool_manifest.rs"));
 
 // チャット送信パラメータ準備の pure helper（Tauri / napi 共用）を crate root へ

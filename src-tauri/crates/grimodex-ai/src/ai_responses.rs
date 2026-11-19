@@ -556,7 +556,7 @@ struct StreamChunkPayload<'a> {
 
 /// `{base}/responses` への POST RequestBuilder を組み立てる。OpenAI は常に Bearer 認証、
 /// 互換 gateway はキーが空なら無認証(ローカル proxy 等)。
-fn build_request(
+pub(crate) fn build_request(
     client: &reqwest::Client,
     provider: &AiProvider,
     api_key: &str,
