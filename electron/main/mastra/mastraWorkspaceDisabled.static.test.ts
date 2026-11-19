@@ -424,7 +424,8 @@ describe("Mastra の workspace／skills を有効にしない（picomatch の例
       "electron/main/i.ts":
         'const p = require(path.join(dir, "mastra-agent.cjs"));',
       // loader でも、literal を呼出しに直に渡す・loader 以外が定数に持つのは違反
-      [LOADER_FILE]: 'const p = require("./mastra-agent.cjs");',
+      // 文字列を分けて書く（CI の変更範囲の import 走査が、この fixture を本物の require と読まないように）。
+      [LOADER_FILE]: "const p = require(" + '"./mastra-agent.cjs"' + ");",
       "electron/main/i2.ts": 'const BUNDLE_FILE = "mastra-agent.cjs";',
       // key（shorthand・引用符・computed・代入・spread・assign・defineProperty）
       [inMastra("w.ts")]: `${base}new Agent({ workspace: w });`,
