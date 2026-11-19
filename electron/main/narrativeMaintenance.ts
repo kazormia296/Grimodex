@@ -506,12 +506,13 @@ type CiProcessInterruptionExitScheduler = (callback: () => void) => unknown;
 type CiProcessExit = (code: number) => never | void;
 
 /**
- * Electron main の `process.exit` は `app.exit` 相当で、環境の解放（Node の
- * cleanup）を通る。そこへ非同期 N-API 呼び出しの完了が重なると、napi-rs 2.16 が
- * 生成する resolver が env=null で呼ばれ、`failed to delete napi ref` の assert で
- * SIGABRT になる（signal 終了で、exit code 86 にならない）。この seam は
- * 「プロセス中断」を模すだけなので、環境の解放を通さず即座に終了する
- * `process.reallyExit` を使う。取れない環境でだけ `process.exit` に退く。
+ * Electron main の `process.exit` は `app.exit` 相当で、呼び出し元に戻り、窓の破棄・
+ * quit・Node 環境の解放を通る。そこへ非同期 N-API 呼び出しの完了が重なると、
+ * napi-rs 2.16 が生成する resolver が env=null で呼ばれ、`failed to delete napi ref`
+ * の assert で SIGABRT になる（signal 終了で、exit code 86 にならない）。この seam は
+ * 「プロセス中断」を模すだけなので、Electron の app.exit（窓の破棄、quit、Node 環境の
+ * 解放）を通らず、JS に戻らない `process.reallyExit` を使う。inspector の切断待ちなど
+ * process の終了処理の一部は通りうる。取れない環境でだけ `process.exit` に退く。
  */
 function exitWithoutEnvironmentTeardown(code: number): never | void {
   const reallyExit = (

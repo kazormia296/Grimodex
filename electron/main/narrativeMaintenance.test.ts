@@ -190,6 +190,7 @@ describe("narrative maintenance scheduler", () => {
           scheduled.push(callback);
         },
       );
+      expect(scheduled).toHaveLength(1);
       scheduled[0]?.();
       await expect(pending).resolves.toBe(true);
       // app.exit 相当の process.exit は環境の解放で async N-API の resolver を
@@ -198,6 +199,52 @@ describe("narrative maintenance scheduler", () => {
       expect(processExit).not.toHaveBeenCalled();
     } finally {
       processLike.reallyExit = savedReallyExit;
+      processLike.exit = savedExit;
+    }
+  });
+
+  it("falls back to process.exit by default when process.reallyExit is unavailable", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    };
+    const processExit = vi.fn();
+    const processLike = process as unknown as {
+      reallyExit?: unknown;
+      exit: unknown;
+    };
+    const hadReallyExit = Object.prototype.hasOwnProperty.call(
+      processLike,
+      "reallyExit",
+    );
+    const savedReallyExit = processLike.reallyExit;
+    const savedExit = processLike.exit;
+    processLike.reallyExit = undefined;
+    processLike.exit = processExit;
+    try {
+      const scheduled: Array<() => void> = [];
+      const pending = scheduleNarrativeMaintenanceProcessInterruption(
+        { getNarrativeMaintenanceWorkspaceBinding: () => binding },
+        ack,
+        binding,
+        () => true,
+        (callback) => {
+          scheduled.push(callback);
+        },
+      );
+      expect(scheduled).toHaveLength(1);
+      scheduled[0]?.();
+      await expect(pending).resolves.toBe(true);
+      expect(processExit).toHaveBeenCalledExactlyOnceWith(86);
+    } finally {
+      if (hadReallyExit) processLike.reallyExit = savedReallyExit;
+      else delete processLike.reallyExit;
       processLike.exit = savedExit;
     }
   });
