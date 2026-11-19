@@ -2,6 +2,7 @@
 
 - 状態：調査の記録。spike の前。ユーザーの判断（loop と tool は main、送信は Rust、telemetry は止める、memory を使う、依存を受け入れる）を前提にした。
 - 方法：5 観点の並列調査 → 統合 → 点検（workflow `wf_6aa0cac4-7cd`）。点検の訂正は末尾の付録 A。
+- 後続：spike の後の実装計画は [`mastra-migration-plan.md`](mastra-migration-plan.md)、脅威モデルと owner／lifecycle の表は [`mastra-migration-threat-model.md`](mastra-migration-threat-model.md)。この調査は spike の前の記録で、更新していない。
 
 
 基点：worktree `/home/grimodex/worktrees/Grimodex/model-caps` の HEAD は 8f63ac8e。origin/master の 01dd6821 の子孫で、docs の commit が 1 件載るだけなのでコードは同じ。
