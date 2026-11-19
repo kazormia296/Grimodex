@@ -4976,6 +4976,10 @@ test("paused CI keeps every product journey job definition available", async () 
     }
     const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
       ? " && !inputs.independent_gates" : "";
+    // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
+    const eventCondition = jobId === "electron-runtime-performance"
+      ? "github.event_name != 'schedule' && github.event_name != 'pull_request'"
+      : "github.event_name != 'schedule'";
     // A job may additionally be selected by its own exact canonical profiles;
     // its ordinary guard must still be the exact grouped alternative. The
     // change-scope gate, when present, is peeled off first.
@@ -4985,7 +4989,7 @@ test("paused CI keeps every product journey job definition available", async () 
       ordinaryGuard,
       jobId === "electron"
         ? `github.event_name != 'schedule'${canonicalExclusion}`
-        : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
+        : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
       `${jobId} must retain its ordinary execution guard and exact canonical/independent exclusions`,
     );
   }

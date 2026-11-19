@@ -364,7 +364,9 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
     const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
-    const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
+    // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
+    const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
+    const ordinaryCondition = `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
@@ -419,6 +421,279 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     ".artifacts/ci-source-focused/checkout-identity.json",
     ".artifacts/canonical-source/contracts.tap",
   ]);
+});
+
+// The `test-failpoints` library step of migration-recovery-gate runs only the
+// modules that hold the feature. These constants are the single source for the
+// step's expected run text and for the source scan below.
+const failpointLibraryModules = ["backup_restore", "recovery", "migration_supervisor"];
+const failpointLibraryRequiredTests = [
+  "backup_restore::tests::finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once",
+  "backup_restore::tests::normal_restore_epoch_failpoints_never_leave_live_image_epochless",
+  "backup_restore::tests::restore_failure_leaves_declarations_untouched",
+  "recovery::tests::atomic_replace_failure_republish_path_uses_pre_restore_digest",
+  "recovery::tests::forensic_post_replace_failure_requires_recovery_not_main_only_success",
+  "recovery::tests::safe_mode_restore_after_live_seal_failpoint_keeps_wal_commits_and_marker",
+  "recovery::tests::safe_mode_restore_after_replace_failpoint_rolls_back_live",
+  "recovery::tests::safe_mode_restore_after_rollback_snapshot_failpoint_leaves_live",
+];
+const failpointLibraryPassedFloor = 58;
+const failpointLibraryRunLines = [
+  "set -euo pipefail",
+  'log="${RUNNER_TEMP:-/tmp}/migration-failpoint-lib.log"',
+  "cargo test -p grimodex-db --features test-failpoints --lib -- \\",
+  `  ${failpointLibraryModules.map((name) => `${name}::`).join(" ")} 2>&1 | tee "$log"`,
+  "for required in \\",
+  ...failpointLibraryRequiredTests.map((name, index, all) => `  ${name}${index === all.length - 1 ? "; do" : " \\"}`),
+  '  grep -Fxq "test $required ... ok" "$log"',
+  "done",
+  `passed="$(sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed; 0 failed;.*/\\1/p' "$log" | head -n 1)"`,
+  `test "\${passed:-0}" -ge ${failpointLibraryPassedFloor}`,
+];
+
+// Minimal Rust lexer + item scanner (no dependency): returns the full names
+// (module::path::fn) of every `#[test]` function that exists only with the
+// `test-failpoints` feature, either through its own cfg attribute or an enclosing
+// `mod`. Attribute order, interleaved attributes/comments, `cfg(all(test, ...))`
+// and nested inline modules are handled; `not(...)` never counts as requiring it.
+function rustTokens(source) {
+  const tokens = [];
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const c = source[i];
+    if (/\s/.test(c)) { i += 1; continue; }
+    if (c === "/" && source[i + 1] === "/") { while (i < n && source[i] !== "\n") i += 1; continue; }
+    if (c === "/" && source[i + 1] === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (source[i] === "/" && source[i + 1] === "*") { depth += 1; i += 2; }
+        else if (source[i] === "*" && source[i + 1] === "/") { depth -= 1; i += 2; }
+        else i += 1;
+      }
+      continue;
+    }
+    const raw = /^b?r(#*)"/.exec(source.slice(i, i + 40));
+    if (raw) {
+      const close = `"${raw[1]}`;
+      const start = i + raw[0].length;
+      const end = source.indexOf(close, start);
+      assert.notEqual(end, -1, "unterminated raw string");
+      tokens.push({ t: "str", v: source.slice(start, end) });
+      i = end + close.length;
+      continue;
+    }
+    if (c === '"' || (c === "b" && source[i + 1] === '"')) {
+      i += c === "b" ? 2 : 1;
+      let value = "";
+      while (i < n && source[i] !== '"') {
+        if (source[i] === "\\") { value += source[i + 1] ?? ""; i += 2; } else { value += source[i]; i += 1; }
+      }
+      tokens.push({ t: "str", v: value });
+      i += 1;
+      continue;
+    }
+    if (c === "'") {
+      if (source[i + 1] === "\\") {
+        const end = source.indexOf("'", i + 3);
+        i = end + 1;
+        continue;
+      }
+      if (source[i + 2] === "'") { i += 3; continue; }
+      i += 1; // lifetime marker; the identifier follows
+      continue;
+    }
+    const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i, i + 200));
+    if (word) { tokens.push({ t: "id", v: word[0] }); i += word[0].length; continue; }
+    const number = /^[0-9][A-Za-z0-9_.]*/.exec(source.slice(i, i + 100));
+    if (number) { tokens.push({ t: "id", v: number[0] }); i += number[0].length; continue; }
+    tokens.push({ t: "p", v: c });
+    i += 1;
+  }
+  return tokens;
+}
+
+// Does this attribute's token list make the item exist only with the feature?
+function attributeRequiresFailpoints(attribute) {
+  if (attribute[0]?.v !== "cfg" || attribute[1]?.v !== "(") return false;
+  let index = 2;
+  const parse = () => {
+    const name = attribute[index++]?.v;
+    if (attribute[index]?.v === "=") {
+      index += 1;
+      const literal = attribute[index++];
+      return name === "feature" && literal?.t === "str" && literal.v === "test-failpoints";
+    }
+    if (attribute[index]?.v !== "(") return false;
+    index += 1;
+    const args = [];
+    while (index < attribute.length && attribute[index].v !== ")") {
+      args.push(parse());
+      if (attribute[index]?.v === ",") index += 1;
+    }
+    index += 1;
+    if (name === "all") return args.some(Boolean);
+    if (name === "any") return args.length > 0 && args.every(Boolean);
+    return false;
+  };
+  return parse();
+}
+
+function attributeIsTest(attribute) {
+  const path = [];
+  for (let index = 0; index < attribute.length; index += 1) {
+    if (attribute[index].t === "id") path.push(attribute[index].v);
+    else if (attribute[index].v === ":") continue;
+    else break;
+  }
+  return path.length > 0 && path[path.length - 1] === "test" && attribute[0].v !== "cfg";
+}
+
+function failpointOnlyLibraryTests(source, filePrefix) {
+  const tokens = rustTokens(source);
+  const found = [];
+  const stack = [];
+  let pending = [];
+  const scopeGated = () => stack.some((scope) => scope.gated);
+  const scopePath = () => [...filePrefix, ...stack.filter((scope) => scope.kind === "mod").map((scope) => scope.name)];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.v === "#" && token.t === "p") {
+      let j = i + 1;
+      const inner = tokens[j]?.v === "!";
+      if (inner) j += 1;
+      if (tokens[j]?.v !== "[") continue;
+      let depth = 0;
+      const attribute = [];
+      for (j += 1; j < tokens.length; j += 1) {
+        if (tokens[j].v === "[" && tokens[j].t === "p") depth += 1;
+        if (tokens[j].v === "]" && tokens[j].t === "p") { if (depth === 0) break; depth -= 1; }
+        attribute.push(tokens[j]);
+      }
+      if (inner) {
+        if (attributeRequiresFailpoints(attribute)) {
+          if (stack.length) stack[stack.length - 1].gated = true; else stack.unshift({ kind: "file", gated: true });
+        }
+      } else pending.push(attribute);
+      i = j;
+      continue;
+    }
+    if (token.t === "id" && token.v === "mod" && tokens[i + 1]?.t === "id") {
+      const name = tokens[i + 1].v;
+      const gated = pending.some(attributeRequiresFailpoints);
+      if (tokens[i + 2]?.v === "{") {
+        stack.push({ kind: "mod", name, gated });
+        i += 2;
+      } else {
+        assert.ok(!gated && !scopeGated(), `feature-gated external module ${name}; extend the scanner`);
+        i += 1;
+      }
+      pending = [];
+      continue;
+    }
+    if (token.t === "id" && token.v === "fn" && tokens[i + 1]?.t === "id") {
+      const top = stack[stack.length - 1];
+      if (!top || top.kind === "mod" || top.kind === "macro") {
+        if (pending.some(attributeIsTest) && (pending.some(attributeRequiresFailpoints) || scopeGated())) {
+          found.push([...scopePath(), tokens[i + 1].v].join("::"));
+        }
+      }
+      pending = [];
+      i += 1;
+      continue;
+    }
+    if (token.t === "p" && token.v === "{") {
+      const macroCall = tokens[i - 1]?.v === "!" && tokens[i - 2]?.t === "id";
+      stack.push({ kind: macroCall ? "macro" : "other", gated: false });
+      pending = [];
+      continue;
+    }
+    if (token.t === "p" && token.v === "}") { stack.pop(); pending = []; continue; }
+    if (token.t === "p" && token.v === ";") pending = [];
+  }
+  return found;
+}
+
+async function failpointSourceScan() {
+  const srcRoot = path.join(repoRoot, "src-tauri/crates/grimodex-db/src");
+  const modules = new Set();
+  const tests = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { await walk(file); continue; }
+      if (!entry.name.endsWith(".rs")) continue;
+      const source = await readFile(file, "utf8");
+      if (!/feature\s*=\s*"test-failpoints"/.test(source)) continue;
+      const segments = path.relative(srcRoot, file).slice(0, -3).split(path.sep);
+      if (segments[segments.length - 1] === "mod") segments.pop();
+      if (segments.length === 1 && ["lib", "main"].includes(segments[0])) segments.pop();
+      modules.add(segments[0] ?? "<crate root>");
+      tests.push(...failpointOnlyLibraryTests(source, segments));
+    }
+  };
+  await walk(srcRoot);
+  return { modules: [...modules].sort(), tests: tests.sort() };
+}
+
+test("failpoint library step scanner sees feature-only tests in any attribute order or module nesting", () => {
+  const source = `
+    // #[test] in a comment, and "#[test]" in a string, are not tests
+    const NOT_A_TEST: &str = "#[cfg(feature = \\"test-failpoints\\")] #[test] fn in_string() {}";
+    #[test]
+    fn always_on() {}
+    #[cfg(not(feature = "test-failpoints"))]
+    #[test]
+    fn feature_off_only() {}
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn plain_order() {}
+    #[test]
+    /* interleaved */
+    #[ignore = "slow"]
+    // comment
+    #[cfg(feature = "test-failpoints")]
+    fn reversed_order_with_noise() {}
+    #[cfg(all(test, feature = "test-failpoints"))]
+    mod gated_mod {
+      #[test]
+      fn in_gated_mod() {}
+      mod deeper {
+        #[test]
+        fn in_gated_nested_mod() { let c = '{'; let l: &'static str = "}"; }
+      }
+    }
+    #[cfg(any(test, feature = "test-failpoints"))]
+    #[test]
+    fn any_is_not_feature_only() {}
+    mod tests {
+      #[cfg(feature = "test-failpoints")]
+      #[test]
+      fn nested_inline() {}
+      fn helper_with_body() { if true { return; } }
+      #[test]
+      fn ungated_after_helper() {}
+    }
+  `;
+  assert.deepEqual(failpointOnlyLibraryTests(source, ["m"]).sort(), [
+    "m::gated_mod::deeper::in_gated_nested_mod",
+    "m::gated_mod::in_gated_mod",
+    "m::plain_order",
+    "m::reversed_order_with_noise",
+    "m::tests::nested_inline",
+  ]);
+});
+
+test("failpoint library step covers exactly the failpoint modules and tests found in the source", async () => {
+  const { modules, tests } = await failpointSourceScan();
+  // A scan that matches nothing must not pass: the source has failpoint-only tests today.
+  assert.ok(tests.length > 0, "scanner found no feature-only library tests");
+  assert.equal(tests.length, failpointLibraryRequiredTests.length);
+  // A new file that mentions the feature, or a new/renamed feature-only test, must be
+  // added to the step's filter / required list (and so to the run text it pins).
+  assert.deepEqual(modules, [...failpointLibraryModules].sort());
+  assert.deepEqual(tests, [...failpointLibraryRequiredTests].sort());
 });
 
 test("registered canonical reuse excludes ordinary jobs for every valid or malformed request", async () => {
@@ -846,10 +1121,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     assert.equal(step.if, profile ? `!inputs.canonical_profile || inputs.canonical_profile == '${profile}'`
       : migrationTests.includes(step) ? "!inputs.canonical_profile" : undefined);
   }
-  assert.deepEqual(migrationTests.map((step) => step.run.trim()), [
+  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
+  assert.deepEqual(migrationTests.map((step) => step === libraryTest ? "<failpoint library>" : step.run.trim()), [
     "cargo test -p grimodex-db --test workspace_migration_supervisor",
     "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
-    "cargo test -p grimodex-db --features test-failpoints --lib",
+    "<failpoint library>",
     "cargo test -p grimodex-db --features test-failpoints --test workspace_safe_mode_outcome",
     "cargo test -p grimodex-db --test release_schema_migration",
     "cargo test -p grimodex-db --features test-failpoints --test migration_subprocess_crash --test restore_subprocess_crash",
@@ -858,10 +1134,18 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   ]);
   const crashTest = migrationTests.find(({ name }) => name === "Subprocess crash recovery");
   const safeTest = migrationTests.find(({ name }) => name === "Safe Mode structured outcome + restore-by-id");
-  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
   assert.equal(crashTest["working-directory"], "src-tauri");
   assert.equal(safeTest["working-directory"], "src-tauri");
   assert.equal(libraryTest["working-directory"], "src-tauri");
+  // The whole run block is pinned (comment lines aside, which the shell ignores) so a
+  // `|| true`, `set +e` or any other fail-open edit turns this red. The step runs
+  // only the modules that hold the test-failpoints feature (the feature-off suite is
+  // the Shared Rust job's) and fails closed when a filter stops matching. Never
+  // weaken it back to a bare `--lib`.
+  assert.deepEqual(
+    libraryTest.run.split("\n").filter((line) => !line.trimStart().startsWith("#")),
+    [...failpointLibraryRunLines, ""],
+  );
   const selectedTests = (inputs) => migrationTests.filter((step) => !step.if || value(step.if, inputs));
   assert.deepEqual(selectedTests(defaults), migrationTests);
   assert.deepEqual(selectedTests({ product_journey_mode: "all" }), migrationTests);

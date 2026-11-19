@@ -870,6 +870,9 @@ jobs:
           scripts/windows-release-workflow.test.mjs
           scripts/electron-v2-cleanup.test.mjs
           scripts/electron-runtime-performance-workflow.test.mjs
+          scripts/runtime-performance-fixture.test.mjs
+          scripts/runtime-performance-retry.test.mjs
+          scripts/runtime-performance-io-settle.test.mjs
           scripts/impact/core.test.mjs
           scripts/product-journey-impact.test.mjs
           scripts/product-journey-ratchet-hardening.test.mjs
@@ -912,7 +915,9 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
+    # Not a pull request check: the absolute-time thresholds are unstable on a shared hosted VM, so it is
+    # recorded by the master push, dispatch and reusable calls (thresholds and retry rules are unchanged).
+    if: github.event_name != 'schedule' && github.event_name != 'pull_request' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     # Reuses the N-API module and app bundle built once for the product journeys.
     needs: electron-product-journeys-build
     runs-on: ubuntu-24.04
@@ -1950,7 +1955,30 @@ jobs:
       - name: Migration recovery failpoint library tests
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-library'"
         working-directory: src-tauri
-        run: cargo test -p grimodex-db --features test-failpoints --lib
+        run: |
+          set -euo pipefail
+          # The feature-off library suite already runs in the Shared Rust job. The
+          # failpoint injection points are in backup_restore.rs and
+          # migration_supervisor.rs, and the feature-only library tests are in
+          # backup_restore.rs and recovery.rs, so only these three modules' library
+          # tests are run here. Fail closed: a filter that stops matching, or a
+          # required failpoint-only test that did not run, fails.
+          log="${RUNNER_TEMP:-/tmp}/migration-failpoint-lib.log"
+          cargo test -p grimodex-db --features test-failpoints --lib -- \
+            backup_restore:: recovery:: migration_supervisor:: 2>&1 | tee "$log"
+          for required in \
+            backup_restore::tests::finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once \
+            backup_restore::tests::normal_restore_epoch_failpoints_never_leave_live_image_epochless \
+            backup_restore::tests::restore_failure_leaves_declarations_untouched \
+            recovery::tests::atomic_replace_failure_republish_path_uses_pre_restore_digest \
+            recovery::tests::forensic_post_replace_failure_requires_recovery_not_main_only_success \
+            recovery::tests::safe_mode_restore_after_live_seal_failpoint_keeps_wal_commits_and_marker \
+            recovery::tests::safe_mode_restore_after_replace_failpoint_rolls_back_live \
+            recovery::tests::safe_mode_restore_after_rollback_snapshot_failpoint_leaves_live; do
+            grep -Fxq "test $required ... ok" "$log"
+          done
+          passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed; 0 failed;.*/\1/p' "$log" | head -n 1)"
+          test "${passed:-0}" -ge 58
 
       - name: Safe Mode structured outcome + restore-by-id
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-safe-mode'"
