@@ -147,6 +147,61 @@ pub const NARRATIVE_DECISION_LOOKUP_INDEXES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+/// 英語 project 用 `_en` FTS 索引の AFTER DELETE trigger を `(trigger 名, 本体表,
+/// `_en` 索引表)` で並べたもの。checkpoint と `migrate.rs` が同じ定義を共有する。
+///
+/// trigger に言語の WHEN（`projects.language` を引く副照会）を付けてはならない。
+/// FK の ON DELETE CASCADE は親行（projects／chat_sessions）を先に消してから子行を
+/// 消すので、WHEN の副照会が NULL になって trigger が発火せず、`_en` に孤児の行が残る。
+/// 本体の rowid が再利用されると次の INSERT が standalone FTS5 の rowid 重複
+/// （constraint failed 1555）で失敗し、削除済みの本文も `_en` の shadow に残る。
+/// 存在しない rowid の DELETE は無害なので、削除側に言語の guard は要らない。
+pub const EN_FTS_DELETE_TRIGGERS: [(&str, &str, &str); 5] = [
+    ("codex_fts_en_ad", "codex_entries", "codex_fts_en"),
+    ("snippets_fts_en_ad", "snippets", "snippets_fts_en"),
+    (
+        "chat_messages_fts_en_ad",
+        "chat_messages",
+        "chat_messages_fts_en",
+    ),
+    ("tree_nodes_fts_en_ad", "tree_nodes", "tree_nodes_fts_en"),
+    (
+        "post_effect_annotations_fts_en_ad",
+        "post_effect_annotations",
+        "post_effect_annotations_fts_en",
+    ),
+];
+
+/// [`EN_FTS_DELETE_TRIGGERS`] の 1 本分の `CREATE TRIGGER`（guard なし）。
+pub fn en_fts_delete_trigger_sql(trigger: &str, base_table: &str, fts_table: &str) -> String {
+    format!(
+        "CREATE TRIGGER {trigger} AFTER DELETE ON {base_table} \
+         BEGIN DELETE FROM {fts_table} WHERE rowid = old.rowid; END"
+    )
+}
+
+/// `_en` の AFTER DELETE trigger 5 本が、すべて guard なしの現行の形で入っているか。
+///
+/// SCHEMA 46 のままの in-version repair 用の不変条件。旧 build が guard 付きの形を
+/// 入れた DB や、trigger が欠けた DB は偽になり、同版でも full migration が走って
+/// 差し替えと孤児の掃除が行われる。読み取りだけで、接続は変更しない。
+pub fn has_en_fts_delete_triggers(conn: &Connection) -> anyhow::Result<bool> {
+    for (trigger, base_table, fts_table) in EN_FTS_DELETE_TRIGGERS {
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [trigger],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let expected = en_fts_delete_trigger_sql(trigger, base_table, fts_table);
+        if actual.as_deref().map(compact_sql) != Some(compact_sql(&expected)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
     ("scope_id", "TEXT", true, 0),
@@ -736,6 +791,9 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// Version 46 adds the write clock (`grimodex_write_clock`), the database
 /// lineage row, and one AFTER INSERT/UPDATE/DELETE trigger per real table
 /// ([`crate::write_clock`]); it never touches an existing table or row.
+/// SCHEMA 46 also carries an in-version repair of the `_en` FTS AFTER DELETE
+/// triggers ([`EN_FTS_DELETE_TRIGGERS`]): the language guard they once had is
+/// gone, and the repair sweeps the orphaned `_en` rows the guard left behind.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
     Ok(SCHEMA_VERSION == 46
         && has_v3_physical_invariants(conn)?
@@ -793,6 +851,11 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // idempotent DDL replay rather than a version bump.
         && table_exists(conn, "narrative_maintenance_wake_outbox")?
         && has_timelapse_creation_baseline_triggers(conn)?
+        // `_en` FTS の AFTER DELETE trigger は guard なしの現行の形でなければならない。
+        // SCHEMA 46 のままの in-version repair で、guard 付きの旧形（cascade 削除で
+        // 孤児の索引行が残る）の DB は偽になり、full migration が差し替えと孤児の掃除を
+        // 1 つの savepoint で行う。版を上げないので、旧 build でも開ける。
+        && has_en_fts_delete_triggers(conn)?
         // Version 46 (DR-DBC-3): the write clock, its lineage row, and one exact
         // AFTER INSERT/UPDATE/DELETE trigger set per real table. Required at the
         // previous marker too, so a marker-only 45 -> 46 step cannot skip the
@@ -3017,5 +3080,42 @@ mod tests {
         )
         .expect("create policy");
         assert!(has_v4_checkpoint_invariants(&conn).expect("policy present"));
+    }
+
+    /// `_en` の AFTER DELETE trigger は、guard なしの現行の形が 5 本そろったときだけ
+    /// 真になる。guard 付きの旧形（cascade で孤児を残す）と欠落は偽。
+    #[test]
+    fn en_fts_delete_triggers_probe_requires_the_unguarded_shape() {
+        let conn = Connection::open_in_memory().expect("open");
+        for (_, base_table, _) in EN_FTS_DELETE_TRIGGERS {
+            conn.execute_batch(&format!("CREATE TABLE {base_table} (id TEXT);"))
+                .expect("base table");
+        }
+        let install = |conn: &Connection, trigger: &str, base: &str, fts: &str| {
+            conn.execute_batch(&en_fts_delete_trigger_sql(trigger, base, fts))
+                .expect("install trigger");
+        };
+        assert!(!has_en_fts_delete_triggers(&conn).expect("no triggers"));
+        for (trigger, base_table, fts_table) in EN_FTS_DELETE_TRIGGERS {
+            install(&conn, trigger, base_table, fts_table);
+        }
+        assert!(has_en_fts_delete_triggers(&conn).expect("all current"));
+
+        // guard 付きの旧形に戻すと偽になる。
+        conn.execute_batch(
+            "DROP TRIGGER snippets_fts_en_ad;
+             CREATE TRIGGER snippets_fts_en_ad AFTER DELETE ON snippets
+               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+             BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END;",
+        )
+        .expect("legacy guarded");
+        assert!(!has_en_fts_delete_triggers(&conn).expect("guarded"));
+
+        // 1 本だけ欠けても偽になる。戻せば真。
+        conn.execute_batch("DROP TRIGGER snippets_fts_en_ad;")
+            .expect("drop");
+        assert!(!has_en_fts_delete_triggers(&conn).expect("missing"));
+        install(&conn, "snippets_fts_en_ad", "snippets", "snippets_fts_en");
+        assert!(has_en_fts_delete_triggers(&conn).expect("restored"));
     }
 }

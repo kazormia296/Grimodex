@@ -1694,6 +1694,79 @@ fn test_en_fts_no_orphan_on_cascade_delete() {
     assert_eq!(reindexed, 1, "new en scene indexed cleanly after cascade");
 }
 
+/// 再生（full DDL）の経路でも、収束済みの DB の `_en` の repair は早期に return する。
+/// `migrate_for_restore_preflight`（restore preflight と supervisor の修復が使う `force_full`）は
+/// fast path を通らず `ensure_en_fts` まで進むが、`_en` の 5 表を作り直したり trigger に触れたり
+/// してはならない（作り直しは既存の行を全部消して入れ直す）。guard 付きの旧形なら直す。
+#[test]
+fn force_full_migrate_leaves_a_converged_en_fts_alone_and_repairs_a_guarded_one() {
+    let db = current_schema_db();
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO chat_sessions(id, project_id, title, model) VALUES ('s1', 'p_en', 'S', 'm');
+             INSERT INTO chat_messages(id, session_id, role, content)
+               VALUES ('m1', 's1', 'assistant', 'alpha live row');
+             -- 本体に無い rowid の行。`_en` の作り直しがあれば消える（目印）。
+             INSERT INTO chat_messages_fts_en(rowid, content) VALUES (999999, 'sentinelword');",
+        )
+        .expect("seed a live row and a sentinel");
+    }
+    let sentinel = |db: &Database| -> i64 {
+        let conn = db.conn.lock().expect("lock");
+        conn.query_row(
+            "SELECT count(*) FROM chat_messages_fts_en WHERE chat_messages_fts_en MATCH '\"sentinelword\"'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("sentinel count")
+    };
+    assert_eq!(sentinel(&db), 1);
+
+    db.migrate_for_restore_preflight()
+        .expect("force-full migrate of a converged database");
+    {
+        let conn = db.conn.lock().expect("lock");
+        assert!(grimodex_core::workspace_schema::has_en_fts_delete_triggers(&conn).expect("probe"));
+    }
+    assert_eq!(
+        sentinel(&db),
+        1,
+        "収束済みの DB の force_full は `_en` を作り直さない"
+    );
+
+    // 対照：guard 付きの旧形なら、同じ経路が trigger を直して `_en` を作り直す。
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "DROP TRIGGER chat_messages_fts_en_ad;
+             CREATE TRIGGER chat_messages_fts_en_ad AFTER DELETE ON chat_messages
+               WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = old.session_id)) LIKE 'en%'
+             BEGIN DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid; END;",
+        )
+        .expect("guarded trigger");
+        assert!(
+            !grimodex_core::workspace_schema::has_en_fts_delete_triggers(&conn).expect("probe")
+        );
+    }
+    db.migrate_for_restore_preflight()
+        .expect("force-full migrate of a guarded database");
+    {
+        let conn = db.conn.lock().expect("lock");
+        assert!(grimodex_core::workspace_schema::has_en_fts_delete_triggers(&conn).expect("probe"));
+        let live: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM chat_messages_fts_en WHERE chat_messages_fts_en MATCH '\"alpha\"'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("live row count");
+        assert_eq!(live, 1, "作り直しの後も英語の生きた行は索引されている");
+    }
+    assert_eq!(sentinel(&db), 0, "旧形の修復は `_en` を作り直す");
+}
+
 #[test]
 fn test_nullify_codex_source_on_message_delete() {
     let db = current_schema_db();

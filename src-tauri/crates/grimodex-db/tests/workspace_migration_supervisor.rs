@@ -510,6 +510,143 @@ fn current_marker_missing_change_feed_index_is_shadow_repaired() {
     .expect("verify repaired workspace");
 }
 
+/// 旧形（guard 付き）の `_en` FTS の AFTER DELETE trigger を持つ現行版の DB は、同版でも
+/// 不変条件が偽になり shadow migration で修復される。修復の後は孤児が消え、保存が通り、
+/// 次の open は fast path（snapshot も live の書き換えも無し）に戻る。
+#[test]
+fn current_marker_with_guarded_en_fts_delete_triggers_is_shadow_repaired_then_fast_path() {
+    let orphan_rows = |conn: &rusqlite::Connection,
+                       base: &str,
+                       fts: &str|
+     -> rusqlite::Result<i64> {
+        conn.query_row(
+            &format!("SELECT count(*) FROM {fts} WHERE rowid NOT IN (SELECT rowid FROM {base})"),
+            [],
+            |row| row.get(0),
+        )
+    };
+    let ws = temp_workspace("guarded-en-fts");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            // 生きた英語 project `pk` の行を先に、消す英語 project `pe` の行を後（末尾）に入れる。
+            conn.execute_batch(
+                "INSERT INTO projects (id, title, language) VALUES ('pk','Keep','en'), ('pe','Gone','en');
+                 INSERT INTO chat_sessions (id, project_id, title, model)
+                   VALUES ('sk1','pk','K1','m'), ('se1','pe','E1','m');
+                 INSERT INTO chat_messages (id, session_id, role, content) VALUES
+                   ('keep1','sk1','assistant','keepchat survives'),
+                   ('gone1','se1','assistant','orphanchat leaves');
+                 INSERT INTO codex_entries (id, project_id, name, content) VALUES
+                   ('kc','pk','Keepcodex','keepcodexbody'), ('gc','pe','Gonecodex','orphancodexbody');
+                 INSERT INTO snippets (id, project_id, title, content) VALUES
+                   ('ks','pk','Keepsnip','keepsnipbody'), ('gs','pe','Gonesnip','orphansnipbody');
+                 -- 旧 build の状態：guard 付きの 3 本で、`en_ad_unguarded` の旗は無い。
+                 DROP TRIGGER chat_messages_fts_en_ad;
+                 CREATE TRIGGER chat_messages_fts_en_ad AFTER DELETE ON chat_messages WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = old.session_id)) LIKE 'en%' BEGIN DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid; END;
+                 DROP TRIGGER codex_fts_en_ad;
+                 CREATE TRIGGER codex_fts_en_ad AFTER DELETE ON codex_entries WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM codex_fts_en WHERE rowid = old.rowid; END;
+                 DROP TRIGGER snippets_fts_en_ad;
+                 CREATE TRIGGER snippets_fts_en_ad AFTER DELETE ON snippets WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%' BEGIN DELETE FROM snippets_fts_en WHERE rowid = old.rowid; END;
+                 DELETE FROM fts_meta WHERE key = 'en_ad_unguarded';
+                 DELETE FROM projects WHERE id = 'pe';",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "guard 付きの delete trigger は現行の checkpoint を偽にする"
+            );
+            for (base, fts) in [
+                ("chat_messages", "chat_messages_fts_en"),
+                ("codex_entries", "codex_fts_en"),
+                ("snippets", "snippets_fts_en"),
+            ] {
+                assert_eq!(orphan_rows(conn, base, fts)?, 1, "事前条件：{fts} に孤児が 1 行");
+            }
+            Ok(())
+        })
+        .expect("shape guarded-trigger fixture");
+    }
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("repair");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            ..
+        } => {
+            assert_eq!(from_schema, SCHEMA_VERSION);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            drop(opened);
+        }
+        other => panic!("expected shadow repair, got {other:?}"),
+    }
+    let snapshot_count = |ws: &Path| {
+        fs::read_dir(ws.join("backups/migrations"))
+            .map(|entries| entries.filter_map(|e| e.ok()).count())
+            .unwrap_or(0)
+    };
+    let snapshots_after_repair = snapshot_count(&ws);
+    assert!(snapshots_after_repair >= 1, "修復の前の snapshot が残る");
+
+    {
+        let db = Database::new(&db_path).expect("reopen repaired");
+        db.with_conn(|conn| {
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            for (base, fts) in [
+                ("chat_messages", "chat_messages_fts_en"),
+                ("codex_entries", "codex_fts_en"),
+                ("snippets", "snippets_fts_en"),
+            ] {
+                assert_eq!(orphan_rows(conn, base, fts)?, 0, "{fts} の孤児が消える");
+            }
+            let kept: i64 = conn.query_row(
+                "SELECT count(*) FROM chat_messages_fts_en
+                  WHERE chat_messages_fts_en MATCH '\"keepchat\"'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(kept, 1, "生きた英語の行の索引は残る");
+            // 残っていた孤児の rowid を再利用する保存が通る。
+            conn.execute_batch(
+                "INSERT INTO chat_messages (id, session_id, role, content)
+                   VALUES ('new1','sk1','assistant','newchat fresh');
+                 INSERT INTO codex_entries (id, project_id, name, content)
+                   VALUES ('nc','pk','Newcodex','newcodexbody');
+                 INSERT INTO snippets (id, project_id, title, content)
+                   VALUES ('ns','pk','Newsnip','newsnipbody');",
+            )?;
+            Ok(())
+        })
+        .expect("verify repaired workspace and the next saves");
+    }
+
+    // 修復の後の open は fast path：Ready で、live の file も snapshot も変わらない。
+    let before = sha256_file(&db_path);
+    match migration_supervisor::open_or_migrate_workspace_db(&ws).expect("reopen") {
+        WorkspaceOpenDbOutcome::Ready {
+            from_schema,
+            to_schema,
+            opened,
+        } => {
+            assert_eq!(from_schema, SCHEMA_VERSION);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            drop(opened);
+        }
+        other => panic!("a repaired workspace must open on the fast path, got {other:?}"),
+    }
+    assert_eq!(
+        sha256_file(&db_path),
+        before,
+        "fast path は live を書き換えない"
+    );
+    assert_eq!(snapshot_count(&ws), snapshots_after_repair);
+}
+
 #[test]
 fn current_marker_missing_change_feed_nullable_column_is_shadow_repaired() {
     let ws = temp_workspace("missing-feed-column");
