@@ -10,6 +10,7 @@ import path from "node:path";
 import { app, dialog } from "electron";
 
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import { mastraOriginalEnv } from "./mastraEnv.js";
 
 interface GrimodexNodeModule {
   Backend: new (
@@ -128,7 +129,7 @@ export function resolveSemanticResourceRoot(
     resourcesPath: process.resourcesPath,
     mainDir: __dirname,
   },
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = mastraOriginalEnv(),
 ): string {
   if (resolution.isPackaged) {
     return path.join(resolution.resourcesPath, "resources", "semantic");
@@ -169,7 +170,7 @@ export function resolveRerankerResourceRoot(
     resourcesPath: process.resourcesPath,
     mainDir: __dirname,
   },
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = mastraOriginalEnv(),
 ): string | null {
   if (resolution.isPackaged) {
     return path.join(

@@ -83,6 +83,29 @@ export function buildReadingOrder(nodes: TreeNodeData[]): Map<string, number> {
   return result;
 }
 
+/**
+ * 読む順（{@link buildReadingOrder}、木の DFS 順）で現在の scene より前にある
+ * live scene を、読む順の昇順で返す。`sortOrder` は親ごとの fractional index
+ * なので、章をまたぐ比較には使えない。現在の scene が読む順に無い
+ * （archived・孤児・存在しない）ときは空配列。
+ */
+export function listScenesBeforeInReadingOrder(
+  nodes: TreeNodeData[],
+  currentSceneId: string,
+): TreeNodeData[] {
+  const readingOrder = buildReadingOrder(nodes);
+  const currentIndex = readingOrder.get(currentSceneId);
+  if (currentIndex === undefined) return [];
+  return nodes
+    .filter((node) => {
+      const index = readingOrder.get(node.id);
+      return (
+        node.nodeType === "scene" && index !== undefined && index < currentIndex
+      );
+    })
+    .sort((a, b) => readingOrder.get(a.id)! - readingOrder.get(b.id)!);
+}
+
 export function buildSceneTimeIndex(
   nodes: TreeNodeData[],
   revision = 0,

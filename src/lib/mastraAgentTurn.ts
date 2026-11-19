@@ -1,0 +1,85 @@
+/**
+ * The renderer's wrapper of the two Mastra agent turn commands (MP-3b,
+ * DR-MP3-4; wire: `electron/shared/mastraAgentTurnWire.ts`).
+ *
+ * Nothing calls it yet: the renderer's engine branch is MP-4 (DR-MP3-2), and
+ * Main's gate is closed in every product launch, so a start answers
+ * `gate-closed` and the legacy route stays the only one. The wrapper holds no
+ * state and does no retry. A refusal is a value (`ok:true` on the wire); a
+ * restricted profile's denial (an error from the profile gate) is folded into
+ * the same `restricted` value, as the chat IR wrapper does. Any other failure of
+ * the call is the caller's: it is rethrown, never turned into a refusal.
+ *
+ * Both calls use the router's default lane (a mutation): a start settles when
+ * the turn does, so it has no caller timeout. The queue runs four commands at a
+ * time, so a cancel is not held behind pending starts only while fewer than four
+ * are pending (MP-4 keeps the pending starts under that, or gives the cancel a
+ * lane; it is also refused while an audit export freezes mutations).
+ */
+import {
+  parseMastraAgentTurnCancelResult,
+  parseMastraAgentTurnStartResult,
+  type MastraAgentTurnCancelRequest,
+  type MastraAgentTurnRefusalReason,
+  type MastraAgentTurnStartRequest,
+} from "@/../electron/shared/mastraAgentTurnWire";
+import { invoke, isD2aEgressDenied } from "@/lib/tauri";
+
+export type MastraAgentTurnStartOutcome =
+  | {
+      readonly kind: "completed";
+      readonly turnId: string;
+      readonly executionId: string;
+      /** The adapter's raw `AgentWireResponse`; the caller checks it (MP-4). */
+      readonly response: Readonly<Record<string, unknown>>;
+    }
+  | { readonly kind: "refused"; readonly reason: MastraAgentTurnRefusalReason }
+  /** Main's answer is not an answer of this route. */
+  | { readonly kind: "invalid-response" };
+
+export type MastraAgentTurnCancelOutcome =
+  | { readonly kind: "ok"; readonly found: boolean }
+  | { readonly kind: "refused"; readonly reason: MastraAgentTurnRefusalReason }
+  | { readonly kind: "invalid-response" };
+
+/** Starts a turn; settles when the turn does. */
+export async function startMastraAgentTurn(
+  request: MastraAgentTurnStartRequest,
+): Promise<MastraAgentTurnStartOutcome> {
+  let raw: unknown;
+  try {
+    raw = await invoke<unknown>("mastra_agent_turn_start", {
+      ...request,
+    });
+  } catch (error) {
+    if (isD2aEgressDenied(error))
+      return { kind: "refused", reason: "restricted" };
+    throw error;
+  }
+  const answer = parseMastraAgentTurnStartResult(raw);
+  if (answer === null) return { kind: "invalid-response" };
+  if (answer.status === "refused") {
+    return { kind: "refused", reason: answer.reason };
+  }
+  return {
+    kind: "completed",
+    turnId: answer.turnId,
+    executionId: answer.executionId,
+    response: answer.response,
+  };
+}
+
+/** Stops a turn after its current step. An unknown or finished turn is `found: false`. */
+export async function cancelMastraAgentTurn(
+  request: MastraAgentTurnCancelRequest,
+): Promise<MastraAgentTurnCancelOutcome> {
+  const raw = await invoke<unknown>("mastra_agent_turn_cancel", {
+    turnId: request.turnId,
+  });
+  const answer = parseMastraAgentTurnCancelResult(raw);
+  if (answer === null) return { kind: "invalid-response" };
+  if (answer.status === "refused") {
+    return { kind: "refused", reason: answer.reason };
+  }
+  return { kind: "ok", found: answer.found };
+}

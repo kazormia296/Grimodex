@@ -493,7 +493,8 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
     const esbuild = (await import("esbuild")).default;
     const forbidden =
       /LD_PRELOAD|PROBE_DNSLOG|dnslog|dns-canary|doh-canary|webrtc-block-probe/i;
-    expect(buildModule.bundleConfigs.length).toBe(2);
+    // main、preload、mastra-agent（Mastra 移行 MP-3a の 3 つ目の bundle。製品の asar に入るので同じ走査に含める）。
+    expect(buildModule.bundleConfigs.length).toBe(3);
     for (const config of buildModule.bundleConfigs) {
       const result = await esbuild.build({
         ...config,
@@ -506,8 +507,15 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
       expect(result.outputFiles.length).toBe(1);
       const text = result.outputFiles[0].text;
       // 束ねた出力が空でない（走査が何も見ていないわけではない）。NC-1 の module が main に入っている。
-      const isMain = /electron[\\/]main[\\/]/.test(String(config.entryPoints));
-      expect(text.length).toBeGreaterThan(isMain ? 1_000_000 : 1_000);
+      const isMain = /electron[\\/]main[\\/]index\.ts$/.test(
+        String(config.entryPoints),
+      );
+      const isMastraAgent = /mastra[\\/]agentRuntime\.ts$/.test(
+        String(config.entryPoints),
+      );
+      expect(text.length).toBeGreaterThan(
+        isMain || isMastraAgent ? 1_000_000 : 1_000,
+      );
       expect(text.match(forbidden), String(config.entryPoints)).toBeNull();
       if (isMain) expect(text).toContain("grimodex-rule-sentinel.invalid");
     }
@@ -771,6 +779,40 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     expect(profile).toMatch(
       /export const PROFILE_ACTIVATION_CI_GATE_ENTRY = "profile-activation";/,
     );
+  });
+
+  it("gate L (Mastra agent turn) is Main's only: no Native gate opener, no @mastra, and the seam count stays three (MP-3b, DR-MP3-2)", () => {
+    const gateFile = "mastraAgentTurnGate.ts";
+    const text = stripComments(
+      readFileSync(path.join(MAIN_DIR, gateFile), "utf8"),
+    );
+    // No reference to the Native gate opener in any form, so the exact list
+    // of the three seams above stays the whole list.
+    expect(text).not.toMatch(/mainOpenPrePublicationGate|PrePublicationEntry/);
+    expect(gateOpenReferences([{ file: gateFile, text }])).toEqual([]);
+    // It imports no `@mastra/*` (the runtime is loaded by 3c's owner) and no
+    // Native module.
+    expect(text).not.toMatch(/@mastra\b/);
+    expect(text).not.toMatch(/from\s+["'][^"']*native[^"']*["']/i);
+    // The wire module has no import at all (the renderer compiles it).
+    const wire = stripComments(
+      readFileSync(
+        path.join(REPO, "electron/shared/mastraAgentTurnWire.ts"),
+        "utf8",
+      ),
+    );
+    expect(wire).not.toMatch(/^\s*import\b/m);
+    // Nothing else in the product's Main names the gate or its seam.
+    const namers = productSources()
+      .filter(
+        ({ file, text: source }) =>
+          file !== gateFile &&
+          /MASTRA_AGENT_TURN_CI_|parseMastraAgentTurnCiSeam|openMastraAgentTurnGate/.test(
+            stripComments(source),
+          ),
+      )
+      .map(({ file }) => file);
+    expect(namers).toEqual(["ipc.ts"]);
   });
 
   it("the gate-opening check catches the call forms that a `.name(` pattern misses (R-1)", () => {

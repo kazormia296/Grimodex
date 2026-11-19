@@ -41,7 +41,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "22a4b18a51e6965ec8918aec859bf8c3f54457cf44cd3a033e40da830126c1bc"
+      "sha256": "1dedf51c4488968ba069e6c3110594cf73455157e4b7d06b017bfbdcce8386fa"
     },
     {
       "path": "pnpm-lock.yaml",
@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "44621ea715bfe165e514b655ed7fd42c9480dc67c1be649bfae7347340d217d9"
+      "sha256": "7e00fa53fa79a8c45ab241385ffad80f0ee333b1cdb157b3612883621ee07873"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",

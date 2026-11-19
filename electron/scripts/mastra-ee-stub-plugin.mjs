@@ -41,9 +41,9 @@ function isArrayDeclaration(source, local) {
 
 /**
  * export 文から { local, exported, from? } を取る（ESM と CJS）。
- * - ESM：`export { a, b as c }`（`from "..."` つきの再 export を含む）、`export const|let|var|function|class NAME`。
+ * - ESM：`export { a, b as c }`（module 指定つきの再 export を含む）、`export const|let|var|function|class NAME`。
  * - CJS：`Object.defineProperty(exports, "N", { get() { return L; } })`、`exports.N = L;`、
- *   `exports.N = require_x.M;`（`const require_x = require("...")` を `from` に解決する）。
+ *   `exports.N = require_x.M;`（`const require_x = require(<module 指定>)` を `from` に解決する）。
  * それ以外（`export default`、`export *`、`module.exports`）は、公開名の取りこぼしを黙って許さないために throw する。
  */
 function parseExports(source) {

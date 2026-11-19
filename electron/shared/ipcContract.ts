@@ -28,6 +28,10 @@ import {
   findInvalidAgentSettingChanges,
 } from "./agentSettingCatalog.js";
 import { MODEL_CAPABILITY_SNAPSHOT_COMMAND } from "./modelCapabilitySnapshotWire.js";
+import {
+  MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  MASTRA_AGENT_TURN_START_COMMAND,
+} from "./mastraAgentTurnWire.js";
 import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
@@ -3048,6 +3052,33 @@ function validateAiAuditRedactions(
       );
     }
   });
+}
+
+/**
+ * `ai_audit_append_batch` of the NAPI table, as a function: the checks of the
+ * arguments (the workspace path, the project, 1..256 events of the exact keys,
+ * the NIR-1 local namespace reservation) and the call into Native.
+ *
+ * Electron main's agent audit sink (MP-3b, DR-MP3-23) appends through this too,
+ * so a batch Main writes passes the same checks as one the renderer sends and
+ * the two cannot drift. It adds no command: the sink calls it with the backend
+ * Main holds, and no renderer reaches it except through the NAPI entry above.
+ */
+export async function runAiAuditAppendBatch(
+  backend: Pick<NapiBackendLike, "aiAuditAppendBatch">,
+  args: CommandArgs,
+): Promise<unknown> {
+  return parseWire(
+    await backend.aiAuditAppendBatch(
+      requireNonEmptyString(
+        args,
+        "expectedWorkspacePath",
+        "ai_audit_append_batch",
+      ),
+      requireAiAuditProjectId(args, "ai_audit_append_batch"),
+      requireAiAuditEvents(args),
+    ),
+  );
 }
 
 function requireAiAuditEvents(args: CommandArgs): CommandArgs[] {
@@ -9618,18 +9649,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
   ai_audit_append_batch: {
-    run: async (b, a) =>
-      parseWire(
-        await b.aiAuditAppendBatch(
-          requireNonEmptyString(
-            a,
-            "expectedWorkspacePath",
-            "ai_audit_append_batch",
-          ),
-          requireAiAuditProjectId(a, "ai_audit_append_batch"),
-          requireAiAuditEvents(a),
-        ),
-      ),
+    run: (b, a) => runAiAuditAppendBatch(b, a),
   },
   ai_audit_read_snapshot: {
     run: async (b, a) =>
@@ -12200,8 +12220,11 @@ async function resolvePostEffectAiSnapshot(
  * TOCTOU で「read#1 の provider のキーが read#2 の endpoint へ」流れる事故を防ぐ）。
  * secrets 不在は構成エラーとして明示。キー未設定時は resolveApiKeyForRequest が Tauri と
  * 同じ `No API key configured for <provider>` を throw する。
+ *
+ * MP-3b（DR-MP3-13）: Main の agent 送信も、この関数を共有する（再実装しない。
+ * 設定を 1 回だけ読む規則はここにしかない）。
  */
-async function resolveRequiredAiKeyAndSettings(
+export async function resolveRequiredAiKeyAndSettings(
   backend: NapiBackendLike,
   args: CommandArgs,
   deps: DispatchDeps,
@@ -12425,6 +12448,11 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // モデル能力の registry の写し（PR-C2、Q17）: 採用済みの写し（cache、無ければ同梱）を返す読み取り
   // 専用の 1 本。main の常駐 manager が持ち、Native へは行かない。取得を始める command は無い。
   MODEL_CAPABILITY_SNAPSHOT_COMMAND,
+  // Mastra agent turn (MP-3b, DR-MP3-4): a start that settles when the turn
+  // does, and its cancel. Both are Main-owned; the route is closed in every
+  // product launch (`mastraAgentTurnGate.ts`) and never reaches Native.
+  MASTRA_AGENT_TURN_START_COMMAND,
+  MASTRA_AGENT_TURN_CANCEL_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
+import { visibleCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { invoke } from "@/lib/tauri";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getPromptCatalog } from "@/prompts/index";
@@ -1353,24 +1354,66 @@ const RELATED_CODEX_CHAR_LIMIT = 3000;
  * relatedCodex 形式（id/name/summary）に整形する。chat の auto-detect と
  * 同じ text ベースのマッチング（editor 非依存）。summary 空のエントリは
  * prompt で `- name: ` にしかならないため除外する。
+ *
+ * 作者が AI に秘匿（hidden）と印した Codex は、`sceneIds`（複数なら、どれか 1 つの場面で
+ * hidden なら落とす）の Phase 解決後の mode で判定して落とす（chat の通常の文脈と同じ正本）。
+ * 場面が無ければ base。base が hidden でも Phase で解除されたものは、base ではなく
+ * Phase 解決後の summary を使う。解決後の mode が suppress のものも従来どおり対象外。
+ * 判定に失敗したら何も渡さない（fail-closed）。
+ *
+ * 照合は 2 回に分ける。重なりでは最長一致が勝つので、hidden の長い名前（「アリス・スミス」）が
+ * 範囲を取って、重なる hidden でない項目（「アリス」）を消さないようにするため、
+ * (1) hidden と suppress を除いた従来の候補、(2) base が hidden の項目だけ（Phase で解除された
+ * ものを拾う）を別々に照合して合わせる。
  */
 export async function detectRelatedCodex(
   text: string,
+  options: { sceneIds?: ReadonlyArray<string | null | undefined> } = {},
 ): Promise<ProposeRequest["relatedCodex"]> {
   if (!text.trim()) return [];
   const entries = useCodexStore.getState().entries;
-  const detectable = entries.filter(
+  const regular = entries.filter(
     (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
   );
-  const matched = await findMentionedEntriesAsync(text, detectable);
-  const byId = new Map(detectable.map((e) => [e.id, e]));
+  const baseHidden = entries.filter((e) => e.contextMode === "hidden");
+  const matchedRegular = await findMentionedEntriesAsync(text, regular);
+  const matchedHidden =
+    baseHidden.length > 0
+      ? await findMentionedEntriesAsync(text, baseHidden)
+      : [];
+  const seen = new Set<string>();
+  const matchedAll = [...matchedRegular, ...matchedHidden].filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+  const projectId = useTreeStore.getState().projectId;
+  const anchors = options.sceneIds?.length ? options.sceneIds : [undefined];
+  const allIds = matchedAll.map((m) => m.id);
+  let visibleIds = new Set<string>(allIds);
+  const suppressed = new Set<string>();
+  let summaries = new Map<string, string | null>();
+  for (const sceneId of anchors) {
+    const visible = await visibleCodexForAi(allIds, { projectId, sceneId });
+    const ids = new Set(visible.ids);
+    visibleIds = new Set([...visibleIds].filter((id) => ids.has(id)));
+    for (const id of visible.suppressed) suppressed.add(id);
+    // 解除された項目の summary は最後の場面の解決後（全場面で hidden でないもの）。
+    summaries = visible.summaries;
+  }
+  const matched = matchedAll.filter(
+    (m) => visibleIds.has(m.id) && !suppressed.has(m.id),
+  );
+  const byId = new Map(entries.map((e) => [e.id, e]));
 
   const result: ProposeRequest["relatedCodex"] = [];
   let total = 0;
   for (const m of matched) {
     const entry = byId.get(m.id);
     if (!entry) continue;
-    const summary = (entry.summary ?? "").trim();
+    const summary = (
+      (summaries.has(entry.id) ? summaries.get(entry.id) : entry.summary) ?? ""
+    ).trim();
     if (!summary) continue;
     const line = `- ${entry.name}: ${summary}`;
     if (total + line.length + 1 > RELATED_CODEX_CHAR_LIMIT) break;

@@ -299,6 +299,40 @@ describe("caller timeout policy（electron 分岐）", () => {
     });
   });
 
+  it("mastra_agent_turn_start は turn の完了まで待つ mutation で、caller timeout も read lane も無い。cancel は start の後ろに並ばない（MP-3b）", async () => {
+    vi.useFakeTimers();
+    const bridge = installBridge({
+      invoke: vi.fn().mockImplementation((command: string) =>
+        command === "mastra_agent_turn_cancel"
+          ? Promise.resolve({
+              ok: true,
+              value: { status: "ok", turnId: "t", found: true },
+            })
+          : new Promise(() => {}),
+      ),
+    });
+    const { invoke } = await import("./tauri");
+    let startSettled = false;
+    void invoke("mastra_agent_turn_start", { turnId: "t" }).then(
+      () => {
+        startSettled = true;
+      },
+      () => {
+        startSettled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    // Far past every caller timeout of the read lanes (10 s, 20 s).
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(startSettled).toBe(false);
+    // The pending start does not hold the cancel back.
+    await expect(
+      invoke("mastra_agent_turn_cancel", { turnId: "t" }),
+    ).resolves.toEqual({ status: "ok", turnId: "t", found: true });
+    expect(bridge.invoke).toHaveBeenCalledTimes(2);
+    expect(startSettled).toBe(false);
+  });
+
   it.each([
     "foreshadow_load_anchors_for_scene",
     "list_annotations_for_scene",

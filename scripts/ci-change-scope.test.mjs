@@ -35,7 +35,7 @@ const ci = yaml.load(await readFile(path.join(repoRoot, ".github/workflows/ci.ym
 const rawRules = JSON.parse(await readFile(path.join(repoRoot, "scripts/ci-change-scope.json"), "utf8"));
 const rules = await loadScopeRules();
 const LANES = laneNames(rules);
-const ALWAYS_RUN_JOBS = ["quality", "frontend", "electron"];
+const ALWAYS_RUN_JOBS = ["quality", "frontend-static", "frontend-unit", "frontend", "electron"];
 const OTHER_OWNERS = ["canonical", "existing-os-suitability", "changes"];
 
 const ALL_RUN = Object.fromEntries(LANES.map((lane) => [lane, true]));
@@ -90,7 +90,14 @@ test("every job is gated, a cascade of a gated job, or always runs; nothing else
       assert.doesNotMatch(JSON.stringify(job), /needs\.changes|"changes"/u, id);
     }
   }
-  for (const id of ALWAYS_RUN_JOBS) assert.equal(jobOf(id).needs, undefined, id);
+  // An always-run job may wait only for other always-run jobs (the frontend
+  // aggregate waits for its two split jobs), never for the change scope.
+  for (const id of ALWAYS_RUN_JOBS) {
+    for (const need of [jobOf(id).needs ?? []].flat()) {
+      assert.ok(ALWAYS_RUN_JOBS.includes(need), `${id} must not wait for ${need}`);
+    }
+  }
+  assert.deepEqual(jobOf("frontend").needs, ["frontend-static", "frontend-unit"]);
 });
 
 function jobOf(id) {
@@ -807,10 +814,20 @@ const INPUT_SETS = [
 ];
 const ALL_TRUE_OUTPUTS = Object.fromEntries(LANES.map((lane) => [lane, "true"]));
 const originalOf = (id) => stripScopeGate(ci.jobs[id].if).original;
-const admitted = (inputs, event, changes) =>
-  Object.keys(ci.jobs).filter((id) => evaluateIf(ci.jobs[id].if, { inputs, event, changes }));
-const admittedOriginals = (inputs, event) =>
-  Object.keys(ci.jobs).filter((id) => evaluateIf(originalOf(id), { inputs, event }));
+// `rust-aggregate` needs `rust`: when `rust` is not admitted it is skipped and
+// the aggregate's `needs.rust.result != 'skipped'` keeps the aggregate out too.
+// The result fed to the aggregate is derived from the admission of `rust` itself.
+const MODELLED_CASCADE_JOBS = ["rust-aggregate"];
+const rustResultOf = (inputs, event, changes) =>
+  evaluateIf(ci.jobs.rust.if, { inputs, event, changes }) ? "success" : "skipped";
+const admitted = (inputs, event, changes) => {
+  const rustResult = rustResultOf(inputs, event, changes);
+  return Object.keys(ci.jobs).filter((id) => evaluateIf(ci.jobs[id].if, { inputs, event, changes, rustResult }));
+};
+const admittedOriginals = (inputs, event) => {
+  const rustResult = evaluateIf(originalOf("rust"), { inputs, event }) ? "success" : "skipped";
+  return Object.keys(ci.jobs).filter((id) => evaluateIf(originalOf(id), { inputs, event, rustResult }));
+};
 
 test("with empty or all-true change scope outputs every job is admitted exactly as before the gate", () => {
   for (const event of EVENTS) {
@@ -852,28 +869,70 @@ test("a false lane output drops exactly that lane's gated jobs and nothing else"
   assert.ok(baseline.includes("changes"));
   for (const [lane, definition] of Object.entries(rawRules.lanes)) {
     const dropped = admitted(inputs, "pull_request", { ...ALL_TRUE_OUTPUTS, [lane]: "false" });
+    // `rust-aggregate` is a cascade job this evaluator models: it follows the
+    // admission of `rust`, so it drops with its lane.
     assert.deepEqual(
       baseline.filter((id) => !dropped.includes(id)).sort(),
-      [...definition.gatedJobs].sort(),
+      [...definition.gatedJobs, ...(definition.cascadeJobs ?? []).filter((id) => MODELLED_CASCADE_JOBS.includes(id))].sort(),
       lane,
     );
     assert.deepEqual(dropped.filter((id) => !baseline.includes(id)), [], lane);
   }
   // Every lane false: only the always-run jobs, the cascade jobs (which skip
-  // through needs on GitHub, outside this evaluator) and `changes` remain.
+  // through needs on GitHub, outside this evaluator; the modelled
+  // `rust-aggregate` is skipped with `rust`) and `changes` remain.
   const noLanes = admitted(inputs, "pull_request", Object.fromEntries(LANES.map((lane) => [lane, "false"])));
-  const cascadeJobs = Object.values(rawRules.lanes).flatMap((definition) => definition.cascadeJobs ?? []);
+  // Runtime performance is not a pull request check, so the pull request never
+  // admits it; every other cascade job (shards, aggregate) must still be admitted.
+  const PULL_REQUEST_EXCLUDED_CASCADE_JOBS = ["electron-runtime-performance"];
+  assert.deepEqual(
+    baseline.filter((id) => PULL_REQUEST_EXCLUDED_CASCADE_JOBS.includes(id)),
+    [],
+  );
+  const cascadeJobs = Object.values(rawRules.lanes)
+    .flatMap((definition) => definition.cascadeJobs ?? [])
+    .filter((id) => !PULL_REQUEST_EXCLUDED_CASCADE_JOBS.includes(id) && !MODELLED_CASCADE_JOBS.includes(id));
   assert.deepEqual(
     [...noLanes].sort(),
     [...ALWAYS_RUN_JOBS, "changes", ...cascadeJobs].sort(),
   );
 });
 
+test("runtime performance is not a pull request check and is unchanged for every other event", () => {
+  // The guard before the pull request was excluded; only the event may differ.
+  const beforeGuard =
+    "github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates";
+  const job = jobOf("electron-runtime-performance");
+  assert.equal(job.needs, "electron-product-journeys-build");
+  assert.equal(stripScopeGate(job.if).gated, false, "a cascade job never names the change scope");
+  for (const event of EVENTS) {
+    for (const inputs of INPUT_SETS) {
+      const label = `${event} ${JSON.stringify(inputs)}`;
+      assert.equal(
+        evaluateIf(job.if, { inputs, event }),
+        evaluateIf(beforeGuard, { inputs, event }) && event !== "pull_request",
+        label,
+      );
+    }
+  }
+  // Spelled out for the default dispatch inputs: pull_request is the only event that changes.
+  const truth = Object.fromEntries(
+    EVENTS.map((event) => [event, evaluateIf(job.if, { inputs: defaultsFromDispatch, event })]),
+  );
+  assert.deepEqual(truth, {
+    push: true,
+    schedule: false,
+    workflow_dispatch: true,
+    workflow_call: true,
+    pull_request: false,
+  });
+});
+
 test("a false output never reaches a standalone canonical profile or an independent gates run", () => {
   // `changes` is skipped for these, so its outputs are empty and the selected
   // jobs must still run (and `!cancelled()` keeps them from being skipped).
   const standalone = { ...defaultsFromDispatch, canonical_profile: "shared-rust" };
-  assert.deepEqual(admitted(standalone, "workflow_dispatch", {}), ["rust"]);
+  assert.deepEqual(admitted(standalone, "workflow_dispatch", {}), ["rust", "rust-aggregate"]);
   const independent = admitted({ ...defaultsFromDispatch, independent_gates: true }, "workflow_dispatch", {});
   assert.ok(independent.includes("browser") && independent.includes("nir1-c-query-worker"));
   assert.ok(!independent.includes("changes"));

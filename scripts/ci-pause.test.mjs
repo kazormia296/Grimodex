@@ -362,13 +362,24 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   for (const [id, job] of Object.entries(ci.jobs)) {
     if (id === "electron" || id === "canonical" || id === "existing-os-suitability") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
-    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
+    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "rust-aggregate", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
-    const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
+    // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
+    const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
+    // The Quality job also runs on the nightly schedule (its impact step is the only automatic run of the whole
+    // impact selection after a merge); it has no event condition, and the schedule test below pins that.
+    const ordinaryCondition = id === "quality"
+      ? `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
+      : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
-    assert.equal(unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
+    // The frontend aggregate adds `!cancelled()` so that a failed split job turns
+    // the required check red instead of leaving it skipped (which branch
+    // protection would read as passing); its admission stays the ordinary one.
+    const aggregateGuard = id === "frontend" ? /^!cancelled\(\) && \((.+)\)$/su.exec(unwrapIf(job.if)) : null;
+    if (id === "frontend") assert.ok(aggregateGuard, "frontend aggregate must run after a failed split job");
+    assert.equal(aggregateGuard ? aggregateGuard[1] : unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
@@ -376,6 +387,8 @@ test("registered CI exposes only opt-in canonical source contracts without gener
         ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
+      : id === "rust-aggregate"
+        ? `\${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition})) && needs.rust.result != 'skipped' }}`
         : id === "migration-recovery-gate"
           ? `\${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (${ordinaryCondition}) }}`
           : ordinaryCondition), id);
@@ -421,6 +434,279 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   ]);
 });
 
+// The `test-failpoints` library step of migration-recovery-gate runs only the
+// modules that hold the feature. These constants are the single source for the
+// step's expected run text and for the source scan below.
+const failpointLibraryModules = ["backup_restore", "recovery", "migration_supervisor"];
+const failpointLibraryRequiredTests = [
+  "backup_restore::tests::finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once",
+  "backup_restore::tests::normal_restore_epoch_failpoints_never_leave_live_image_epochless",
+  "backup_restore::tests::restore_failure_leaves_declarations_untouched",
+  "recovery::tests::atomic_replace_failure_republish_path_uses_pre_restore_digest",
+  "recovery::tests::forensic_post_replace_failure_requires_recovery_not_main_only_success",
+  "recovery::tests::safe_mode_restore_after_live_seal_failpoint_keeps_wal_commits_and_marker",
+  "recovery::tests::safe_mode_restore_after_replace_failpoint_rolls_back_live",
+  "recovery::tests::safe_mode_restore_after_rollback_snapshot_failpoint_leaves_live",
+];
+const failpointLibraryPassedFloor = 58;
+const failpointLibraryRunLines = [
+  "set -euo pipefail",
+  'log="${RUNNER_TEMP:-/tmp}/migration-failpoint-lib.log"',
+  "cargo test -p grimodex-db --features test-failpoints --lib -- \\",
+  `  ${failpointLibraryModules.map((name) => `${name}::`).join(" ")} 2>&1 | tee "$log"`,
+  "for required in \\",
+  ...failpointLibraryRequiredTests.map((name, index, all) => `  ${name}${index === all.length - 1 ? "; do" : " \\"}`),
+  '  grep -Fxq "test $required ... ok" "$log"',
+  "done",
+  `passed="$(sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed; 0 failed;.*/\\1/p' "$log" | head -n 1)"`,
+  `test "\${passed:-0}" -ge ${failpointLibraryPassedFloor}`,
+];
+
+// Minimal Rust lexer + item scanner (no dependency): returns the full names
+// (module::path::fn) of every `#[test]` function that exists only with the
+// `test-failpoints` feature, either through its own cfg attribute or an enclosing
+// `mod`. Attribute order, interleaved attributes/comments, `cfg(all(test, ...))`
+// and nested inline modules are handled; `not(...)` never counts as requiring it.
+function rustTokens(source) {
+  const tokens = [];
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const c = source[i];
+    if (/\s/.test(c)) { i += 1; continue; }
+    if (c === "/" && source[i + 1] === "/") { while (i < n && source[i] !== "\n") i += 1; continue; }
+    if (c === "/" && source[i + 1] === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (source[i] === "/" && source[i + 1] === "*") { depth += 1; i += 2; }
+        else if (source[i] === "*" && source[i + 1] === "/") { depth -= 1; i += 2; }
+        else i += 1;
+      }
+      continue;
+    }
+    const raw = /^b?r(#*)"/.exec(source.slice(i, i + 40));
+    if (raw) {
+      const close = `"${raw[1]}`;
+      const start = i + raw[0].length;
+      const end = source.indexOf(close, start);
+      assert.notEqual(end, -1, "unterminated raw string");
+      tokens.push({ t: "str", v: source.slice(start, end) });
+      i = end + close.length;
+      continue;
+    }
+    if (c === '"' || (c === "b" && source[i + 1] === '"')) {
+      i += c === "b" ? 2 : 1;
+      let value = "";
+      while (i < n && source[i] !== '"') {
+        if (source[i] === "\\") { value += source[i + 1] ?? ""; i += 2; } else { value += source[i]; i += 1; }
+      }
+      tokens.push({ t: "str", v: value });
+      i += 1;
+      continue;
+    }
+    if (c === "'") {
+      if (source[i + 1] === "\\") {
+        const end = source.indexOf("'", i + 3);
+        i = end + 1;
+        continue;
+      }
+      if (source[i + 2] === "'") { i += 3; continue; }
+      i += 1; // lifetime marker; the identifier follows
+      continue;
+    }
+    const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i, i + 200));
+    if (word) { tokens.push({ t: "id", v: word[0] }); i += word[0].length; continue; }
+    const number = /^[0-9][A-Za-z0-9_.]*/.exec(source.slice(i, i + 100));
+    if (number) { tokens.push({ t: "id", v: number[0] }); i += number[0].length; continue; }
+    tokens.push({ t: "p", v: c });
+    i += 1;
+  }
+  return tokens;
+}
+
+// Does this attribute's token list make the item exist only with the feature?
+function attributeRequiresFailpoints(attribute) {
+  if (attribute[0]?.v !== "cfg" || attribute[1]?.v !== "(") return false;
+  let index = 2;
+  const parse = () => {
+    const name = attribute[index++]?.v;
+    if (attribute[index]?.v === "=") {
+      index += 1;
+      const literal = attribute[index++];
+      return name === "feature" && literal?.t === "str" && literal.v === "test-failpoints";
+    }
+    if (attribute[index]?.v !== "(") return false;
+    index += 1;
+    const args = [];
+    while (index < attribute.length && attribute[index].v !== ")") {
+      args.push(parse());
+      if (attribute[index]?.v === ",") index += 1;
+    }
+    index += 1;
+    if (name === "all") return args.some(Boolean);
+    if (name === "any") return args.length > 0 && args.every(Boolean);
+    return false;
+  };
+  return parse();
+}
+
+function attributeIsTest(attribute) {
+  const path = [];
+  for (let index = 0; index < attribute.length; index += 1) {
+    if (attribute[index].t === "id") path.push(attribute[index].v);
+    else if (attribute[index].v === ":") continue;
+    else break;
+  }
+  return path.length > 0 && path[path.length - 1] === "test" && attribute[0].v !== "cfg";
+}
+
+function failpointOnlyLibraryTests(source, filePrefix) {
+  const tokens = rustTokens(source);
+  const found = [];
+  const stack = [];
+  let pending = [];
+  const scopeGated = () => stack.some((scope) => scope.gated);
+  const scopePath = () => [...filePrefix, ...stack.filter((scope) => scope.kind === "mod").map((scope) => scope.name)];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.v === "#" && token.t === "p") {
+      let j = i + 1;
+      const inner = tokens[j]?.v === "!";
+      if (inner) j += 1;
+      if (tokens[j]?.v !== "[") continue;
+      let depth = 0;
+      const attribute = [];
+      for (j += 1; j < tokens.length; j += 1) {
+        if (tokens[j].v === "[" && tokens[j].t === "p") depth += 1;
+        if (tokens[j].v === "]" && tokens[j].t === "p") { if (depth === 0) break; depth -= 1; }
+        attribute.push(tokens[j]);
+      }
+      if (inner) {
+        if (attributeRequiresFailpoints(attribute)) {
+          if (stack.length) stack[stack.length - 1].gated = true; else stack.unshift({ kind: "file", gated: true });
+        }
+      } else pending.push(attribute);
+      i = j;
+      continue;
+    }
+    if (token.t === "id" && token.v === "mod" && tokens[i + 1]?.t === "id") {
+      const name = tokens[i + 1].v;
+      const gated = pending.some(attributeRequiresFailpoints);
+      if (tokens[i + 2]?.v === "{") {
+        stack.push({ kind: "mod", name, gated });
+        i += 2;
+      } else {
+        assert.ok(!gated && !scopeGated(), `feature-gated external module ${name}; extend the scanner`);
+        i += 1;
+      }
+      pending = [];
+      continue;
+    }
+    if (token.t === "id" && token.v === "fn" && tokens[i + 1]?.t === "id") {
+      const top = stack[stack.length - 1];
+      if (!top || top.kind === "mod" || top.kind === "macro") {
+        if (pending.some(attributeIsTest) && (pending.some(attributeRequiresFailpoints) || scopeGated())) {
+          found.push([...scopePath(), tokens[i + 1].v].join("::"));
+        }
+      }
+      pending = [];
+      i += 1;
+      continue;
+    }
+    if (token.t === "p" && token.v === "{") {
+      const macroCall = tokens[i - 1]?.v === "!" && tokens[i - 2]?.t === "id";
+      stack.push({ kind: macroCall ? "macro" : "other", gated: false });
+      pending = [];
+      continue;
+    }
+    if (token.t === "p" && token.v === "}") { stack.pop(); pending = []; continue; }
+    if (token.t === "p" && token.v === ";") pending = [];
+  }
+  return found;
+}
+
+async function failpointSourceScan() {
+  const srcRoot = path.join(repoRoot, "src-tauri/crates/grimodex-db/src");
+  const modules = new Set();
+  const tests = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { await walk(file); continue; }
+      if (!entry.name.endsWith(".rs")) continue;
+      const source = await readFile(file, "utf8");
+      if (!/feature\s*=\s*"test-failpoints"/.test(source)) continue;
+      const segments = path.relative(srcRoot, file).slice(0, -3).split(path.sep);
+      if (segments[segments.length - 1] === "mod") segments.pop();
+      if (segments.length === 1 && ["lib", "main"].includes(segments[0])) segments.pop();
+      modules.add(segments[0] ?? "<crate root>");
+      tests.push(...failpointOnlyLibraryTests(source, segments));
+    }
+  };
+  await walk(srcRoot);
+  return { modules: [...modules].sort(), tests: tests.sort() };
+}
+
+test("failpoint library step scanner sees feature-only tests in any attribute order or module nesting", () => {
+  const source = `
+    // #[test] in a comment, and "#[test]" in a string, are not tests
+    const NOT_A_TEST: &str = "#[cfg(feature = \\"test-failpoints\\")] #[test] fn in_string() {}";
+    #[test]
+    fn always_on() {}
+    #[cfg(not(feature = "test-failpoints"))]
+    #[test]
+    fn feature_off_only() {}
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn plain_order() {}
+    #[test]
+    /* interleaved */
+    #[ignore = "slow"]
+    // comment
+    #[cfg(feature = "test-failpoints")]
+    fn reversed_order_with_noise() {}
+    #[cfg(all(test, feature = "test-failpoints"))]
+    mod gated_mod {
+      #[test]
+      fn in_gated_mod() {}
+      mod deeper {
+        #[test]
+        fn in_gated_nested_mod() { let c = '{'; let l: &'static str = "}"; }
+      }
+    }
+    #[cfg(any(test, feature = "test-failpoints"))]
+    #[test]
+    fn any_is_not_feature_only() {}
+    mod tests {
+      #[cfg(feature = "test-failpoints")]
+      #[test]
+      fn nested_inline() {}
+      fn helper_with_body() { if true { return; } }
+      #[test]
+      fn ungated_after_helper() {}
+    }
+  `;
+  assert.deepEqual(failpointOnlyLibraryTests(source, ["m"]).sort(), [
+    "m::gated_mod::deeper::in_gated_nested_mod",
+    "m::gated_mod::in_gated_mod",
+    "m::plain_order",
+    "m::reversed_order_with_noise",
+    "m::tests::nested_inline",
+  ]);
+});
+
+test("failpoint library step covers exactly the failpoint modules and tests found in the source", async () => {
+  const { modules, tests } = await failpointSourceScan();
+  // A scan that matches nothing must not pass: the source has failpoint-only tests today.
+  assert.ok(tests.length > 0, "scanner found no feature-only library tests");
+  assert.equal(tests.length, failpointLibraryRequiredTests.length);
+  // A new file that mentions the feature, or a new/renamed feature-only test, must be
+  // added to the step's filter / required list (and so to the run text it pins).
+  assert.deepEqual(modules, [...failpointLibraryModules].sort());
+  assert.deepEqual(tests, [...failpointLibraryRequiredTests].sort());
+});
+
 test("registered canonical reuse excludes ordinary jobs for every valid or malformed request", async () => {
   const ci = await readWorkflow(".github/workflows/ci.yml");
   const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
@@ -457,11 +743,20 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const value = (expression, inputs, event = "workflow_dispatch", changes = {}) => evaluateIf(expression, { inputs, event, changes });
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
   const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
-  // 18 product jobs plus the pull-request `changes` job.
-  assert.equal(ordinary.length, 19);
+  // 20 product jobs (`frontend` is an aggregate over frontend-static and
+  // frontend-unit), the shared Rust aggregate (the required check name of the
+  // three `rust` shards) and the pull-request `changes` job.
+  assert.equal(ordinary.length, 22);
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
+  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs and the Quality job.
+  // Quality's impact step is the only automatic run of the whole impact selection after a merge.
+  assert.deepEqual(admitted({}, "schedule"), [
+    "changes", "quality",
+    "electron-product-journeys-build", "electron-product-journeys-c2zc",
+    "electron-product-journeys", "electron-product-journeys-aggregate",
+  ]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true, source_canonical_contracts: true }), ["electron"]);
@@ -469,7 +764,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   // Every remaining job keeps its complete commands; the worker matrix is not a new executor.
   const independent = admitted({ ...defaults, independent_gates: true });
   assert.deepEqual(independent, [
-    "quality", "frontend", "lfm-encoder-phase0", "browser", "webgl", "storybook",
+    "quality", "frontend", "frontend-static", "frontend-unit", "lfm-encoder-phase0", "browser", "webgl", "storybook",
     "security", "electron", "electron-windows-installer-contract",
     "nir1-c-query-worker",
   ]);
@@ -489,11 +784,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       assert.deepEqual(admitted({ ...defaults, independent_gates: true, [field]: malformed }), ["canonical"], `independent ${field}=${malformed}`);
     }
   }
-  // Standalone selection reuses the complete ordinary Rust owner. Even mixed
-  // inputs select only that owner, whose literal guard runs BEFORE any setup.
+  // Standalone selection reuses the complete ordinary Rust owner: the three
+  // `rust` shards and the `rust-aggregate` that carries the required check name.
+  // Even mixed inputs select only those, whose literal guard runs BEFORE any setup.
   const rust = ci.jobs.rust;
   const shared = { ...defaults, canonical_profile: "shared-rust" };
-  assert.deepEqual(admitted(shared), ["rust"]);
+  assert.deepEqual(admitted(shared), ["rust", "rust-aggregate"]);
   assert.equal(rust["runs-on"], "ubuntu-latest");
   assert.equal(rust["timeout-minutes"], 45);
   assert.deepEqual(rust.env, {
@@ -649,7 +945,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(registry.stages.rust.commands.find(({ id }) => id === "rust.c-query-worker").args, ["scripts/nir1-c-query-worker-ci.sh"]);
   for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
-    assert.deepEqual(admitted(inputs, event), ["rust"]);
+    assert.deepEqual(admitted(inputs, event), ["rust", "rust-aggregate"]);
     const env = Object.fromEntries(Object.entries(sharedSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
     return executeShared("bash", ["-c", sharedSelection.run], { timeout: 10000, env: {
       ...process.env, ...env, GITHUB_EVENT_NAME: event,
@@ -669,15 +965,119 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   for (const malformed of ["shared-rust ", " shared-rust", "shared-rust$(exit 0)", "shared-rust-unknown"]) {
     assert.deepEqual(admitted({ ...shared, canonical_profile: malformed }), ["canonical"]);
   }
-  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => step.run.trim()), [
-    "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
-    "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings",
-    "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
-    "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
-    "cargo test -p grimodex-db --test narrative_runtime_authority",
-    "cargo test -p grimodex-license --features licensing",
+  // The former single `cargo test` is split into three shards that cover its
+  // target kinds by construction. Every shard builds the same workspace with the
+  // same features, so the test cfg is identical; check and clippy run once.
+  // Examples are only built (as `cargo test` did), in the integration shard.
+  assert.deepEqual(rust.strategy, { "fail-fast": false, matrix: { shard: ["lib-graph", "lib-rest", "integration"] } });
+  assert.equal(rust.name, "Shared Rust crates (${{ matrix.shard }})");
+  assert.equal(rust.steps.find(({ uses }) => uses?.startsWith("Swatinem/rust-cache@")).with.key, "${{ matrix.shard }}");
+  const base = "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding";
+  const graphFilter = "narrative_extraction::nir1_graph";
+  // The lib-graph test step runs the filtered `--lib` tests inside a guard
+  // script (asserted below); it is represented here by its `cargo test` line.
+  const graphStep = rust.steps.find((step) => step.name === "cargo test (lib tests, graph modules)");
+  const graphCargo = `${base} --lib -- ${graphFilter}`;
+  assert.deepEqual(graphStep.run.trim().split("\n").filter((line) => line.startsWith("cargo ")), [`${graphCargo} 2>&1 | tee "$log"`]);
+  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => [step.if, step === graphStep ? graphCargo : step.run.trim()]), [
+    ["matrix.shard == 'lib-graph'", "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding"],
+    ["matrix.shard == 'lib-graph'", "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings"],
+    // `--lib` selects every unit test of the workspace libraries. The same
+    // string is the filter in one shard and the `--skip` in the other, so the two
+    // are exact complements and a new test module falls into lib-rest.
+    ["matrix.shard == 'lib-graph'", graphCargo],
+    ["matrix.shard == 'lib-rest'", `${base} --lib -- --skip ${graphFilter}`],
+    // The targets `--lib` does not select: binary unit tests, integration tests
+    // (cargo rejects `--doc` combined with other selectors) and doctests.
+    ["matrix.shard == 'integration'", `${base} --bins --test '*'`],
+    ["matrix.shard == 'integration'", `${base} --doc`],
+    // The former `cargo test` also built the examples (test = false: not run) as
+    // plain executables under the test profile; none of the selectors above
+    // builds them. `cargo test --examples` would compile them as a test harness
+    // instead, and `cargo build --examples` without `--profile test` would use
+    // the dev profile; neither is the same compilation.
+    ["matrix.shard == 'integration'", "cargo build --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding --profile test --examples"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-db --test narrative_runtime_authority"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-license --features licensing"],
   ]);
   for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
+  // The Gate B2 required name stays on the aggregate, which succeeds only when
+  // every shard did. `!cancelled()` keeps a failed shard from skipping it (the
+  // implicit success() would, when `changes` was skipped by a standalone
+  // canonical profile), and it is skipped only when `rust` itself was.
+  for (const [result, expected] of [["success", true], ["failure", true], ["skipped", false]]) {
+    assert.equal(evaluateIf(ci.jobs["rust-aggregate"].if, { inputs: shared, event: "workflow_dispatch", changes: {}, rustResult: result }), expected, `rust result ${result}`);
+  }
+  const aggregate = ci.jobs["rust-aggregate"];
+  assert.equal(aggregate.name, "Shared Rust crates (check / clippy / test)");
+  assert.deepEqual(aggregate.needs, ["rust"]);
+  assert.equal(aggregate["runs-on"], "ubuntu-24.04");
+  assert.equal(aggregate.steps.length, 1);
+  assert.deepEqual(aggregate.steps[0].env, { RUST_RESULT: "${{ needs.rust.result }}" });
+  assert.equal(aggregate.steps[0].run, 'test "$RUST_RESULT" = success');
+  // Neither aggregate may turn a bad shard result into success. Run the real
+  // scripts for every non-success result: `failure` and `cancelled` run the job
+  // (`!cancelled()` holds) and it exits red; `skipped` is the rust-aggregate skip
+  // condition (its `if` is false) and the script would be red anyway.
+  const exitCode = async (script, env) => {
+    try {
+      await executeShared("bash", ["-c", script], { timeout: 10000, env: { ...process.env, ...env } });
+      return 0;
+    } catch (error) {
+      return error.code;
+    }
+  };
+  assert.equal(await exitCode(aggregate.steps[0].run, { RUST_RESULT: "success" }), 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.notEqual(await exitCode(aggregate.steps[0].run, { RUST_RESULT: result }), 0, `rust-aggregate ${result}`);
+    assert.equal(evaluateIf(aggregate.if, { inputs: shared, event: "workflow_dispatch", changes: {}, rustResult: result }), result !== "skipped", `rust-aggregate runs after ${result}`);
+  }
+  const frontendVerdict = ci.jobs.frontend.steps.at(-1);
+  assert.equal(await exitCode(frontendVerdict.run, { STATIC_RESULT: "success", UNIT_RESULT: "success" }), 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.notEqual(await exitCode(frontendVerdict.run, { STATIC_RESULT: result, UNIT_RESULT: "success" }), 0, `frontend static ${result}`);
+    assert.notEqual(await exitCode(frontendVerdict.run, { STATIC_RESULT: "success", UNIT_RESULT: result }), 0, `frontend unit ${result}`);
+  }
+  assert.equal(ci.jobs.frontend["runs-on"], "ubuntu-24.04");
+  // A job-level `continue-on-error` would report `success` to `needs.*.result`
+  // and let the aggregates pass over a failed shard.
+  for (const id of ["rust", "rust-aggregate", "frontend", "frontend-static", "frontend-unit"]) {
+    assert.equal(ci.jobs[id]["continue-on-error"], undefined, `${id} must not continue on error`);
+  }
+  // The lib-graph guard: a filter that matches no test must not stay green, a
+  // failing cargo keeps its own exit code (the pipe through tee must not hide
+  // it), and a real count passes. Run the real step script against a fake cargo.
+  const fakeBin = await mkdtemp(path.join(tmpdir(), "lib-graph-guard-"));
+  try {
+    await writeFile(path.join(fakeBin, "cargo"), '#!/bin/bash\nprintf "%s\\n" "$FAKE_CARGO_OUTPUT"\nexit "${FAKE_CARGO_EXIT:-0}"\n', { mode: 0o755 });
+    const skipped = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s";
+    const ran = `${skipped}\n\nrunning 7 tests\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.10s`;
+    const guard = (output, code = 0) => exitCode(graphStep.run, {
+      PATH: `${fakeBin}:${process.env.PATH}`, FAKE_CARGO_OUTPUT: output, FAKE_CARGO_EXIT: String(code),
+    });
+    assert.equal(await guard(ran), 0);
+    assert.equal(await guard(skipped), 1);
+    assert.equal(await guard(ran, 101), 101);
+    assert.equal(await guard(skipped, 101), 101);
+  } finally {
+    await rm(fakeBin, { recursive: true, force: true });
+  }
+  // No shard runs a bench or example with `test = true` (the former `cargo test`
+  // would have; examples are only built). Cargo.toml is scanned without
+  // `cargo metadata`; auto-discovered examples/benches default to test = false.
+  const cargoManifests = [path.join(repoRoot, "src-tauri/Cargo.toml")];
+  for (const entry of await readdir(path.join(repoRoot, "src-tauri/crates"), { withFileTypes: true })) {
+    if (entry.isDirectory()) cargoManifests.push(path.join(repoRoot, "src-tauri/crates", entry.name, "Cargo.toml"));
+  }
+  for (const manifest of cargoManifests) {
+    const text = await readFile(manifest, "utf8").catch(() => "");
+    for (const table of text.split(/^(?=\s*\[)/mu)) {
+      if (/^\s*\[\[?(?:example|bench)\]?\]/u.test(table)) {
+        assert.doesNotMatch(table, /^\s*test\s*=\s*true\b/mu, `${path.relative(repoRoot, manifest)}: a [[example]]/[[bench]] with test = true is in no Rust shard`);
+      }
+    }
+  }
 
   // Fixed original build, complete public/release tests, compile-only or licensed MCP steps on the existing owner.
   // These source assertions do not execute or admit any consumer lane.
@@ -846,10 +1246,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     assert.equal(step.if, profile ? `!inputs.canonical_profile || inputs.canonical_profile == '${profile}'`
       : migrationTests.includes(step) ? "!inputs.canonical_profile" : undefined);
   }
-  assert.deepEqual(migrationTests.map((step) => step.run.trim()), [
+  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
+  assert.deepEqual(migrationTests.map((step) => step === libraryTest ? "<failpoint library>" : step.run.trim()), [
     "cargo test -p grimodex-db --test workspace_migration_supervisor",
     "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
-    "cargo test -p grimodex-db --features test-failpoints --lib",
+    "<failpoint library>",
     "cargo test -p grimodex-db --features test-failpoints --test workspace_safe_mode_outcome",
     "cargo test -p grimodex-db --test release_schema_migration",
     "cargo test -p grimodex-db --features test-failpoints --test migration_subprocess_crash --test restore_subprocess_crash",
@@ -858,10 +1259,18 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   ]);
   const crashTest = migrationTests.find(({ name }) => name === "Subprocess crash recovery");
   const safeTest = migrationTests.find(({ name }) => name === "Safe Mode structured outcome + restore-by-id");
-  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
   assert.equal(crashTest["working-directory"], "src-tauri");
   assert.equal(safeTest["working-directory"], "src-tauri");
   assert.equal(libraryTest["working-directory"], "src-tauri");
+  // The whole run block is pinned (comment lines aside, which the shell ignores) so a
+  // `|| true`, `set +e` or any other fail-open edit turns this red. The step runs
+  // only the modules that hold the test-failpoints feature (the feature-off suite is
+  // the Shared Rust job's) and fails closed when a filter stops matching. Never
+  // weaken it back to a bare `--lib`.
+  assert.deepEqual(
+    libraryTest.run.split("\n").filter((line) => !line.trimStart().startsWith("#")),
+    [...failpointLibraryRunLines, ""],
+  );
   const selectedTests = (inputs) => migrationTests.filter((step) => !step.if || value(step.if, inputs));
   assert.deepEqual(selectedTests(defaults), migrationTests);
   assert.deepEqual(selectedTests({ product_journey_mode: "all" }), migrationTests);

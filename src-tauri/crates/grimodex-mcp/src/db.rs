@@ -284,6 +284,10 @@ pub fn find_scene_by_title(
         .context("find_scene_by_title query failed")
 }
 
+/// Codex の読み出しは、作者が AI に秘匿と印した（`context_mode = 'hidden'`）entry を
+/// 返さない。判定は get_writing_context（tools/context.rs の `collect_codex_layer`）と同じ
+/// base 値で、一覧・名前検索・タグ検索・全文検索・関連・子の列挙のすべてに掛ける。
+/// id 指定の取得（`get_codex_entry_full`）は存在しない id と同じ「not found」にする。
 pub fn list_codex_entries(
     conn: &Connection,
     project_id: &str,
@@ -295,7 +299,7 @@ pub fn list_codex_entries(
                 e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
-         WHERE e.project_id = ?1",
+         WHERE e.project_id = ?1 AND e.context_mode != 'hidden'",
     );
     if filter.type_slug.is_some() {
         sql.push_str(" AND e.type = ?2");
@@ -364,7 +368,7 @@ pub fn get_codex_entry_full(
                     e.children_budget, e.source_chat_message_id, e.version
              FROM codex_entries e
              LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
-             WHERE e.id = ?1 AND e.project_id = ?2",
+             WHERE e.id = ?1 AND e.project_id = ?2 AND e.context_mode != 'hidden'",
             params![entry_id, project_id],
             |row| {
                 Ok((
@@ -454,7 +458,7 @@ pub fn get_codex_entry_full(
                 e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
-         WHERE e.parent_id = ?1 ORDER BY e.name",
+         WHERE e.parent_id = ?1 AND e.context_mode != 'hidden' ORDER BY e.name",
     )?;
     let children: Vec<CodexEntrySummary> = stmt
         .query_map(params![entry_id], map_codex_summary)?
@@ -487,7 +491,8 @@ pub fn find_codex_by_name(
                 e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
-         WHERE e.project_id = ?1 AND e.name LIKE ?2 ORDER BY e.name",
+         WHERE e.project_id = ?1 AND e.name LIKE ?2 AND e.context_mode != 'hidden'
+         ORDER BY e.name",
     )?;
     let rows = stmt.query_map(params![project_id, pattern], map_codex_summary)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -656,7 +661,7 @@ pub fn search_fts(
             let mut stmt = conn.prepare(
                 "SELECT id, name, COALESCE(summary, '')
                  FROM codex_entries
-                 WHERE project_id = ?1
+                 WHERE project_id = ?1 AND context_mode != 'hidden'
                    AND (name LIKE ?2 OR aliases LIKE ?2 OR summary LIKE ?2 OR content LIKE ?2)
                  LIMIT ?3",
             )?;
@@ -676,7 +681,7 @@ pub fn search_fts(
                 "SELECT e.id, e.name, COALESCE(e.summary, '')
                  FROM codex_fts
                  JOIN codex_entries e ON e.rowid = codex_fts.rowid
-                 WHERE codex_fts MATCH ?1 AND e.project_id = ?2
+                 WHERE codex_fts MATCH ?1 AND e.project_id = ?2 AND e.context_mode != 'hidden'
                  ORDER BY rank LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![match_expr, project_id, lim], |row| {
@@ -1132,7 +1137,8 @@ pub fn search_codex_by_tags(
          FROM codex_entries ce
          JOIN codex_entry_tags cet ON ce.id = cet.entry_id
          JOIN codex_tags ct ON cet.tag_id = ct.id
-         WHERE ce.project_id = ? AND ct.name IN ({placeholders})"
+         WHERE ce.project_id = ? AND ce.context_mode != 'hidden'
+           AND ct.name IN ({placeholders})"
     );
 
     let mut query_params: Vec<rusqlite::types::Value> =
@@ -1212,7 +1218,8 @@ pub fn find_related_entries(
     type_filter: Option<&str>,
 ) -> Result<Vec<RelatedCodexEntry>> {
     let source = conn.query_row(
-        "SELECT name, aliases FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        "SELECT name, aliases FROM codex_entries
+         WHERE id = ?1 AND project_id = ?2 AND context_mode != 'hidden'",
         params![entry_id, project_id],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
     );
@@ -1239,7 +1246,7 @@ pub fn find_related_entries(
 
     let mut sql = format!(
         "SELECT id, name, type, summary FROM codex_entries
-         WHERE project_id = ? AND id != ? AND ({like_clause})"
+         WHERE project_id = ? AND id != ? AND context_mode != 'hidden' AND ({like_clause})"
     );
     let mut query_params: Vec<rusqlite::types::Value> = vec![
         rusqlite::types::Value::Text(project_id.to_string()),
@@ -5207,5 +5214,176 @@ pub(crate) mod tests {
             Some("Novel A")
         );
         assert_eq!(fetch_project_title(&conn, "missing").unwrap(), None);
+    }
+
+    // ─── Codex hidden（AI に秘匿）は MCP の読み出しでも返さない ──────────────────
+    // 判定は get_writing_context（tools/context.rs の collect_codex_layer）と同じく、
+    // codex_entries.context_mode == 'hidden' の base 値。suppress・mentioned・always は
+    // 今のまま返す（全部開示、作者が印した hidden だけを守る）。
+
+    const HIDDEN_SUMMARY: &str = "hidden-lore-summary";
+
+    fn seed_codex_with_hidden(conn: &Connection) {
+        insert_project(conn, "p1", "Novel");
+        insert_codex_entry(conn, "e-visible", "p1", "Alice", "character");
+        insert_codex_entry(conn, "e-hidden", "p1", "Bob", "character");
+        insert_codex_entry(conn, "e-suppress", "p1", "Carol", "character");
+        conn.execute(
+            "UPDATE codex_entries SET summary = 'visible-lore-summary' WHERE id = 'e-visible'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE codex_entries SET summary = ?1, context_mode = 'hidden' WHERE id = 'e-hidden'",
+            params![HIDDEN_SUMMARY],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE codex_entries SET summary = 'suppress-lore-summary', context_mode = 'suppress' \
+             WHERE id = 'e-suppress'",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn seed_codex_fts(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE codex_fts USING fts5(
+                 name, aliases, summary, tags_cache, content,
+                 content=codex_entries, content_rowid=rowid, tokenize='trigram'
+             );
+             INSERT INTO codex_fts(codex_fts) VALUES('rebuild');",
+        )
+        .unwrap();
+    }
+
+    fn codex_ids(entries: &[CodexEntrySummary]) -> Vec<&str> {
+        entries.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn hidden_codex_is_not_listed() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        let entries = list_codex_entries(&conn, "p1", &CodexFilter::default()).unwrap();
+        assert_eq!(codex_ids(&entries), vec!["e-visible", "e-suppress"]);
+    }
+
+    #[test]
+    fn hidden_codex_is_not_listed_with_type_and_tag_filter() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        link_tag(&conn, "p1", "e-visible", "magic");
+        conn.execute(
+            "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES ('e-hidden', 'tag-magic')",
+            [],
+        )
+        .unwrap();
+        let entries = list_codex_entries(
+            &conn,
+            "p1",
+            &CodexFilter {
+                type_slug: Some("character".to_string()),
+                tag: Some("magic".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(codex_ids(&entries), vec!["e-visible"]);
+    }
+
+    #[test]
+    fn hidden_codex_is_not_found_by_name() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        assert!(find_codex_by_name(&conn, "p1", "Bob").unwrap().is_empty());
+        assert_eq!(find_codex_by_name(&conn, "p1", "Carol").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hidden_codex_get_by_id_is_indistinguishable_from_missing() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        let hidden = get_codex_entry_full(&conn, "p1", "e-hidden").unwrap_err();
+        let missing = get_codex_entry_full(&conn, "p1", "e-none").unwrap_err();
+        assert_eq!(
+            format!("{hidden:#}").replace("e-hidden", "ID"),
+            format!("{missing:#}").replace("e-none", "ID"),
+        );
+        assert!(!format!("{hidden:#}").contains(HIDDEN_SUMMARY));
+        assert!(get_codex_entry_full(&conn, "p1", "e-suppress").is_ok());
+    }
+
+    #[test]
+    fn hidden_codex_children_are_not_returned() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        insert_codex_entry(&conn, "e-parent", "p1", "Parent", "lore");
+        conn.execute(
+            "UPDATE codex_entries SET parent_id = 'e-parent' \
+             WHERE id IN ('e-visible', 'e-hidden', 'e-suppress')",
+            [],
+        )
+        .unwrap();
+        let full = get_codex_entry_full(&conn, "p1", "e-parent").unwrap();
+        assert_eq!(codex_ids(&full.children), vec!["e-visible", "e-suppress"]);
+    }
+
+    #[test]
+    fn hidden_codex_is_not_found_by_tags() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        link_tag(&conn, "p1", "e-visible", "magic");
+        conn.execute(
+            "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES ('e-hidden', 'tag-magic')",
+            [],
+        )
+        .unwrap();
+        let hits = search_codex_by_tags(&conn, "p1", &["magic".into()]).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "e-visible");
+    }
+
+    #[test]
+    fn hidden_codex_is_not_found_by_search_like() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        // 3 文字未満の語は LIKE 経路。
+        let hits = search_fts(&conn, "p1", "lo", "codex", 20).unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert!(ids.contains(&"e-visible"), "{ids:?}");
+        assert!(ids.contains(&"e-suppress"), "{ids:?}");
+        assert!(!ids.contains(&"e-hidden"), "{ids:?}");
+        let by_name = search_fts(&conn, "p1", "Bo", "all", 20).unwrap();
+        assert!(by_name.iter().all(|h| h.id != "e-hidden"));
+    }
+
+    #[test]
+    fn hidden_codex_is_not_found_by_search_fts() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        seed_codex_fts(&conn);
+        let hits = search_fts(&conn, "p1", "lore-summary", "codex", 20).unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert!(ids.contains(&"e-visible"), "{ids:?}");
+        assert!(!ids.contains(&"e-hidden"), "{ids:?}");
+        assert!(hits.iter().all(|h| h.excerpt != HIDDEN_SUMMARY));
+    }
+
+    #[test]
+    fn hidden_codex_is_not_related() {
+        let conn = make_simple_db();
+        seed_codex_with_hidden(&conn);
+        conn.execute(
+            "UPDATE codex_entries SET summary = 'mentions Alice' WHERE id IN ('e-hidden', 'e-suppress')",
+            [],
+        )
+        .unwrap();
+        let related = find_related_entries(&conn, "p1", "e-visible", None).unwrap();
+        let ids: Vec<&str> = related.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["e-suppress"]);
+        // 起点が hidden なら、存在しない id と同じ空の応答。
+        assert!(find_related_entries(&conn, "p1", "e-hidden", None)
+            .unwrap()
+            .is_empty());
     }
 }
