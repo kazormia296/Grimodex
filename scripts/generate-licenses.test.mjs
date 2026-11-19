@@ -203,10 +203,14 @@ describe("third-party license generation", () => {
     };
 
     let invokedArgs;
-    const entries = generator.gatherNpmLicenses((args) => {
-      invokedArgs = [...args];
-      return JSON.stringify(report);
-    });
+    const entries = generator.gatherNpmLicenses(
+      (args) => {
+        invokedArgs = [...args];
+        return JSON.stringify(report);
+      },
+      { importers: {}, snapshots: {} },
+      path.join(fixtureRoot, "node_modules/.pnpm"),
+    );
 
     assert.deepEqual(invokedArgs, ["licenses", "list", "--prod", "--json"]);
     assert.deepEqual(
@@ -258,6 +262,143 @@ describe("third-party license generation", () => {
           ],
         }),
       /Mismatched pnpm license paths for broken-runtime/,
+    );
+  });
+
+  it("derives the production closure from the lockfile with real package names", () => {
+    const closure = generator.collectProductionClosure({
+      importers: {
+        ".": {
+          dependencies: {
+            "@scope/app": { specifier: "^1", version: "1.0.0(peer@1.0.0)" },
+            "local-pkg": {
+              specifier: "workspace:*",
+              version: "link:packages/local",
+            },
+          },
+          optionalDependencies: { "opt-native": "2.0.0" },
+        },
+        "packages/local": { dependencies: { "local-dep": "3.0.0" } },
+      },
+      snapshots: {
+        "@scope/app@1.0.0(peer@1.0.0)": {
+          dependencies: {
+            "alias-v1": "uuid@11.1.1",
+            "alias-v0": "uuid@10.0.0",
+            "dev-looking": "shared@1.0.0",
+          },
+        },
+        "shared@1.0.0": {},
+        "uuid@11.1.1": {},
+        "uuid@10.0.0": {},
+        "opt-native@2.0.0": { optional: true },
+        "local-dep@3.0.0": {},
+        "dev-only@9.0.0": {},
+      },
+    });
+    assert.deepEqual(
+      closure.map(({ name, version, optional }) => [name, version, optional]),
+      [
+        ["@scope/app", "1.0.0", false],
+        ["local-dep", "3.0.0", false],
+        ["opt-native", "2.0.0", true],
+        ["shared", "1.0.0", false],
+        ["uuid", "10.0.0", false],
+        ["uuid", "11.1.1", false],
+      ],
+    );
+  });
+
+  it("returns the same npm entries however pnpm drops aliased packages", async (t) => {
+    const fixtureRoot = await mkdtemp(
+      path.join(os.tmpdir(), "grimodex-license-determinism-"),
+    );
+    t.after(() => rm(fixtureRoot, { recursive: true, force: true }));
+    const virtualStore = path.join(fixtureRoot, "node_modules/.pnpm");
+
+    const install = async (dir, name, version) => {
+      const pkgDir = path.join(virtualStore, dir, "node_modules", name);
+      await mkdir(pkgDir, { recursive: true });
+      await writeFile(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({ name, version, license: "MIT" }),
+      );
+      await writeFile(path.join(pkgDir, "LICENSE"), `${name} ${version}\n`);
+      return pkgDir;
+    };
+    await install("@a2a-js+sdk@0.3.14", "@a2a-js/sdk", "0.3.14");
+    const sdkNew = await install("@a2a-js+sdk@1.0.1", "@a2a-js/sdk", "1.0.1");
+    const uuid = await install("uuid@11.1.1", "uuid", "11.1.1");
+    const core = await install("core@1.0.0_peer@1.0.0", "core", "1.0.0");
+    // opt-native（他 platform 向けの optional 依存）はインストールされていない。
+
+    const lockfile = {
+      importers: {
+        ".": {
+          dependencies: { core: "1.0.0(peer@1.0.0)" },
+          devDependencies: { dev: "1.0.0" },
+        },
+      },
+      snapshots: {
+        "core@1.0.0(peer@1.0.0)": {
+          dependencies: {
+            "@a2a-js/sdk-v0_3": "@a2a-js/sdk@0.3.14",
+            "@a2a-js/sdk-v1": "@a2a-js/sdk@1.0.1",
+          },
+          optionalDependencies: { "opt-native": "2.0.0" },
+        },
+        "@a2a-js/sdk@0.3.14": { dependencies: { uuid: "11.1.1" } },
+        "@a2a-js/sdk@1.0.1": { dependencies: { uuid: "11.1.1" } },
+        "uuid@11.1.1": {},
+        "opt-native@2.0.0": { optional: true },
+        "dev@1.0.0": {},
+      },
+    };
+
+    const full = {
+      MIT: [
+        { name: "core", versions: ["1.0.0"], paths: [core] },
+        { name: "@a2a-js/sdk", versions: ["1.0.1"], paths: [sdkNew] },
+        { name: "uuid", versions: ["11.1.1"], paths: [uuid] },
+      ],
+    };
+    const gather = (report) =>
+      generator
+        .gatherNpmLicenses(() => JSON.stringify(report), lockfile, virtualStore)
+        .map(({ name, version, license, licenseText }) => [
+          name,
+          version,
+          license,
+          licenseText,
+        ]);
+
+    const expected = gather(full);
+    assert.deepEqual(
+      expected.map(([name, version]) => `${name}@${version}`),
+      ["@a2a-js/sdk@0.3.14", "@a2a-js/sdk@1.0.1", "core@1.0.0", "uuid@11.1.1"],
+    );
+    // 閉包に無い dev 依存と、未インストールの optional 依存は入らない。
+
+    // pnpm が package を 1 つ（または全部）落としても結果は変わらない。
+    for (const dropped of ["core", "@a2a-js/sdk", "uuid"]) {
+      assert.deepEqual(
+        gather({
+          MIT: full.MIT.filter((pkg) => pkg.name !== dropped),
+        }),
+        expected,
+        `pnpm omitted ${dropped}`,
+      );
+    }
+    assert.deepEqual(gather({}), expected);
+
+    // 非 optional の閉包 package が未インストールなら、黙って欠落させず止める。
+    await rm(path.join(virtualStore, "uuid@11.1.1"), {
+      recursive: true,
+      force: true,
+    });
+    assert.throws(
+      () => gather({ MIT: full.MIT.filter((pkg) => pkg.name !== "uuid") }),
+      /uuid@11\.1\.1 from pnpm-lock\.yaml is not installed/,
     );
   });
 
