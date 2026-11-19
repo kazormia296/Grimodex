@@ -119,6 +119,26 @@ export interface CliExecutableIdentity {
   sha256: string;
 }
 
+/**
+ * 承認時に控える実行ファイルの stat。起動直前に完全一致するなら全文 SHA-256 を省く。
+ * ctime は同じ権限の utimes でも戻せないので必ず含める（DR-M1-5）。
+ */
+export interface CliFileStat {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}
+
+/** ユーザーが実行確認ダイアログを拒否した。detect_cli_binary だけが null（未検出）にする。 */
+export class CliExecutableNotAuthorizedError extends Error {
+  constructor(executable: string) {
+    super(`CLI executable was not authorized: ${executable}`);
+    this.name = "CliExecutableNotAuthorizedError";
+  }
+}
+
 export interface CliDetectDependencies {
   runner: CliProcessRunner;
   platform: NodeJS.Platform;
@@ -137,6 +157,8 @@ interface CliAiDependencies {
   realPath?: (candidate: string) => Promise<string>;
   readDir?: (candidate: string) => Promise<Dirent[]>;
   hashFile?: (candidate: string) => Promise<string | null>;
+  /** 取得できない（null）ときは毎回全文 hash に落とす。 */
+  statFile?: (candidate: string) => Promise<CliFileStat | null>;
   detectBinary?: (kind: CliKind) => Promise<string | null>;
   authorizeExecutable?: (
     kind: CliKind,
@@ -722,6 +744,11 @@ interface ValidatedCliExecutable {
 interface AuthorizedCliExecutable extends ValidatedCliExecutable {
   /** SHA-256 approved by the user for this exact canonical executable. */
   sha256: string;
+  /**
+   * 承認時（hash の前後で一致したとき）の stat。null なら起動のたびに全文 hash する。
+   * 同じ SHA-256 のまま stat だけ変わったときは、その場で取り直す。
+   */
+  stat: CliFileStat | null;
 }
 
 async function validateCliExecutable(
@@ -846,6 +873,32 @@ async function defaultReadDir(candidate: string): Promise<Dirent[]> {
   } catch {
     return [];
   }
+}
+
+async function defaultStatFile(candidate: string): Promise<CliFileStat | null> {
+  try {
+    const value = await stat(candidate, { bigint: true });
+    if (!value.isFile()) return null;
+    return {
+      dev: value.dev,
+      ino: value.ino,
+      size: value.size,
+      mtimeNs: value.mtimeNs,
+      ctimeNs: value.ctimeNs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameFileStat(a: CliFileStat, b: CliFileStat): boolean {
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs
+  );
 }
 
 async function defaultHashFile(candidate: string): Promise<string | null> {
@@ -1368,6 +1421,7 @@ export function createCliAiManager(
   const resolveRealPath = supplied.realPath ?? defaultRealPath;
   const readDir = supplied.readDir ?? defaultReadDir;
   const hashFile = supplied.hashFile ?? defaultHashFile;
+  const statFile = supplied.statFile ?? defaultStatFile;
   const runner = supplied.runner ?? createNodeCliProcessRunner(platform);
   const runnerOperations = new Set<Promise<unknown>>();
   const trackRunnerOperation = <T>(operation: Promise<T>): Promise<T> => {
@@ -1446,7 +1500,31 @@ export function createCliAiManager(
     Map<string, AuthorizedCliExecutable>
   >();
   const detectedExecutables = new Map<CliKind, AuthorizedCliExecutable>();
+  // PATH 検出で承認済みの (kind, canonical path)。detect の refresh が detectedExecutables を
+  // 捨てても、同じ identity なら OS ダイアログを出し直さない（DR-M1-2）。memory のみ・
+  // custom path の authorizedExecutables とは混ぜない。
+  const approvedDetections = new Map<
+    CliKind,
+    Map<string, AuthorizedCliExecutable>
+  >();
+  const pendingDetectApprovals = new Map<string, Promise<unknown>>();
   const detectionGenerations = new Map<CliKind, number>();
+  const rememberDetectedApproval = (
+    kind: CliKind,
+    executable: AuthorizedCliExecutable,
+  ): void => {
+    const approved =
+      approvedDetections.get(kind) ??
+      new Map<string, AuthorizedCliExecutable>();
+    approved.set(executable.executable, executable);
+    approvedDetections.set(kind, approved);
+  };
+  const forgetDetectedApproval = (kind: CliKind, canonical: string): void => {
+    const approved = approvedDetections.get(kind);
+    if (!approved) return;
+    approved.delete(canonical);
+    if (approved.size === 0) approvedDetections.delete(kind);
+  };
   const trustAuthorizedExecutable = (
     kind: CliKind,
     executable: AuthorizedCliExecutable,
@@ -1477,6 +1555,18 @@ export function createCliAiManager(
     ) {
       detectedExecutables.delete(kind);
     }
+    const approved = approvedDetections.get(kind);
+    if (approved) {
+      for (const [canonical, executable] of approved) {
+        if (
+          executable.requestedPath === validated.requestedPath &&
+          executable.executable !== validated.executable
+        ) {
+          approved.delete(canonical);
+        }
+      }
+      if (approved.size === 0) approvedDetections.delete(kind);
+    }
     const trusted = authorizedExecutables.get(kind);
     if (!trusted) return;
     for (const [canonical, executable] of trusted) {
@@ -1492,13 +1582,19 @@ export function createCliAiManager(
   const fingerprintExecutable = async (
     validated: ValidatedCliExecutable,
   ): Promise<AuthorizedCliExecutable> => {
+    // stat → 全文 hash → stat。前後が一致したときだけ stat を控える（DR-M1-5）。
+    // 一致しなければ承認した hash と別の中身の stat を覚えかねないので、null にして
+    // 以後は毎回全文 hash に落とす。
+    const before = await statFile(validated.executable);
     const sha256 = await hashFile(validated.executable);
     if (!sha256) {
       throw new Error(
         `CLI executable could not be fingerprinted: ${validated.executable}`,
       );
     }
-    return { ...validated, sha256 };
+    const after = before ? await statFile(validated.executable) : null;
+    const stat = before && after && sameFileStat(before, after) ? after : null;
+    return { ...validated, sha256, stat };
   };
   const authorizeValidatedExecutable = async (
     kind: CliKind,
@@ -1511,9 +1607,7 @@ export function createCliAiManager(
         sha256: executable.sha256,
       }))
     ) {
-      throw new Error(
-        `CLI executable was not authorized: ${executable.executable}`,
-      );
+      throw new CliExecutableNotAuthorizedError(executable.executable);
     }
     return executable;
   };
@@ -1531,6 +1625,39 @@ export function createCliAiManager(
       requestedPath: executable.requestedPath,
       executable: canonical,
     });
+  };
+  /**
+   * 承認済みの identity が今も同じかを確かめる（detect の再実行と起動直前で共通。DR-M1-5）。
+   * canonical path・regular file・network path の検査は常に行い、path が同じで stat が
+   * 承認時と完全一致するときだけ全文 hash を省く。stat が取れない・記録が無い・不一致なら
+   * 全文 hash に落とし、SHA-256 が同じなら stat だけ取り直す（ダイアログは出さない）。
+   */
+  const checkExecutableIdentity = async (
+    authorized: AuthorizedCliExecutable,
+  ): Promise<
+    { unchanged: true } | { unchanged: false; current: AuthorizedCliExecutable }
+  > => {
+    const canonical = await resolveRealPath(authorized.executable);
+    if (platform === "win32" && isWindowsNetworkPath(canonical)) {
+      throw new Error("CLI executable cannot resolve to a network path");
+    }
+    if (!(await isFile(canonical))) {
+      throw new Error(`CLI executable is not a regular file: ${canonical}`);
+    }
+    const samePath = canonical === authorized.executable;
+    if (samePath && authorized.stat) {
+      const now = await statFile(canonical);
+      if (now && sameFileStat(now, authorized.stat)) return { unchanged: true };
+    }
+    const current = await fingerprintExecutable({
+      requestedPath: authorized.requestedPath,
+      executable: canonical,
+    });
+    if (samePath && current.sha256 === authorized.sha256) {
+      authorized.stat = current.stat;
+      return { unchanged: true };
+    }
+    return { unchanged: false, current };
   };
   const detectAndTrust = async (
     kind: CliKind,
@@ -1565,8 +1692,49 @@ export function createCliAiManager(
     );
     ensureNotDisposed();
     if (!isLatest()) return latestResult();
-    const authorized = await authorizeValidatedExecutable(kind, validated);
+
+    // 同じ (kind, canonical path) の承認ダイアログが出ている間は、その結果を待つ。
+    const approvalKey = `${kind}\0${validated.executable}`;
+    const pending = pendingDetectApprovals.get(approvalKey);
+    if (pending) {
+      await pending.catch(() => undefined);
+      ensureNotDisposed();
+      if (!isLatest()) return latestResult();
+    }
+
+    // この session で承認済みの同じ identity なら、ダイアログを出し直さない（DR-M1-3）。
+    const remembered = approvedDetections.get(kind)?.get(validated.executable);
+    if (remembered) {
+      const check = await checkExecutableIdentity(remembered);
+      ensureNotDisposed();
+      if (!isLatest()) return latestResult();
+      if (check.unchanged) {
+        // 別の PATH 名で同じ canonical に着いたときは requestedPath だけ差し替える。
+        const record =
+          remembered.requestedPath === validated.requestedPath
+            ? remembered
+            : { ...remembered, requestedPath: validated.requestedPath };
+        rememberDetectedApproval(kind, record);
+        detectedExecutables.set(kind, record);
+        return record;
+      }
+      // 中身が変わった承認は無効。下で承認を取り直す。
+      forgetDetectedApproval(kind, validated.executable);
+    }
+
+    const approval = authorizeValidatedExecutable(kind, validated);
+    pendingDetectApprovals.set(approvalKey, approval);
+    let authorized: AuthorizedCliExecutable;
+    try {
+      authorized = await approval;
+    } finally {
+      if (pendingDetectApprovals.get(approvalKey) === approval) {
+        pendingDetectApprovals.delete(approvalKey);
+      }
+    }
     ensureNotDisposed();
+    // 並行した検出で最新でない側の承認も、許可された事実は捨てない（再ダイアログを避ける）。
+    rememberDetectedApproval(kind, authorized);
     if (!isLatest()) return latestResult();
     detectedExecutables.set(kind, authorized);
     return authorized;
@@ -1623,23 +1791,21 @@ export function createCliAiManager(
         trusted.delete(authorized.executable);
         if (trusted.size === 0) authorizedExecutables.delete(kind);
       }
+      forgetDetectedApproval(kind, authorized.executable);
     };
 
-    let current: AuthorizedCliExecutable;
+    let check: Awaited<ReturnType<typeof checkExecutableIdentity>>;
     try {
-      current = await refreshExecutableIdentity(authorized);
+      check = await checkExecutableIdentity(authorized);
     } catch (cause) {
       invalidate();
       throw new Error("CLI executable changed after authorization", { cause });
     }
     ensureNotDisposed();
 
-    if (
-      current.executable === authorized.executable &&
-      current.sha256 === authorized.sha256
-    ) {
-      return current.executable;
-    }
+    // stat が承認時と同じ（または SHA-256 が同じ）なら、承認は有効のまま。
+    if (check.unchanged) return authorized.executable;
+    const current = check.current;
 
     // A path or content change invalidates the old consent. Re-confirm the new
     // canonical identity, then check it once more after the dialog and
@@ -1650,9 +1816,7 @@ export function createCliAiManager(
         sha256: current.sha256,
       }))
     ) {
-      throw new Error(
-        `CLI executable was not authorized: ${current.executable}`,
-      );
+      throw new CliExecutableNotAuthorizedError(current.executable);
     }
     ensureNotDisposed();
 
@@ -1670,7 +1834,10 @@ export function createCliAiManager(
     }
     ensureNotDisposed();
 
-    if (wasDetected) detectedExecutables.set(kind, confirmed);
+    if (wasDetected) {
+      detectedExecutables.set(kind, confirmed);
+      rememberDetectedApproval(kind, confirmed);
+    }
     if (wasExplicit) trustAuthorizedExecutable(kind, confirmed);
     return confirmed.executable;
   };
@@ -2042,8 +2209,17 @@ export function createCliAiManager(
     detect_cli_binary: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = parseCliKind(args.cli);
-      const detected = await detectAndTrust(kind, true);
-      return detected?.requestedPath ?? null;
+      try {
+        const detected = await detectAndTrust(kind, true);
+        return detected?.requestedPath ?? null;
+      } catch (error) {
+        // 実行確認ダイアログの拒否は「未検出」と同じ扱いにする（設定の読込を失敗させない。
+        // DR-M1-4）。SHA-256 を取れないなどの失敗は拒否ではないので投げ直す。
+        if (error instanceof CliExecutableNotAuthorizedError) {
+          return detectedExecutables.get(kind)?.requestedPath ?? null;
+        }
+        throw error;
+      }
     }),
 
     test_cli_connection: trackedHandler(async (args) => {
@@ -2150,34 +2326,28 @@ export function createCliAiManager(
       let runnerQuiescence: Promise<boolean>;
       try {
         runnerQuiescence = trackedRunner.quiesceForProfileEgress
-          ? waitForRunnerQuiescence(
-              trackedRunner.quiesceForProfileEgress(),
-            )
+          ? waitForRunnerQuiescence(trackedRunner.quiesceForProfileEgress())
           : Promise.resolve(true);
       } catch {
         runnerQuiescence = Promise.resolve(false);
       }
-      const [
-        stopped,
-        commandsSettled,
-        handlersSettled,
-        runnerQuiesced,
-      ] = await Promise.all([
-        Promise.all(
-          activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
-        ),
-        Promise.all(
-          activeRunnerOperations.map((operation) =>
-            waitForRunnerOperation(operation),
+      const [stopped, commandsSettled, handlersSettled, runnerQuiesced] =
+        await Promise.all([
+          Promise.all(
+            activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
           ),
-        ),
-        Promise.all(
-          activeHandlerOperations.map((operation) =>
-            waitForRunnerOperation(operation),
+          Promise.all(
+            activeRunnerOperations.map((operation) =>
+              waitForRunnerOperation(operation),
+            ),
           ),
-        ),
-        runnerQuiescence,
-      ]);
+          Promise.all(
+            activeHandlerOperations.map((operation) =>
+              waitForRunnerOperation(operation),
+            ),
+          ),
+          runnerQuiescence,
+        ]);
       if (disposeError) throw toError(disposeError);
       if (
         stopped.some((value) => !value) ||

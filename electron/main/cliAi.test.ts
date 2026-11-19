@@ -12,6 +12,7 @@ import {
   detectCliBinaryMain,
   MAX_CLI_LINE_BYTES,
   type CliCommandSpec,
+  type CliFileStat,
   type CliProcessResult,
   type CliProcessRunner,
   type RunningCliProcess,
@@ -84,6 +85,29 @@ interface EmittedEvent {
 }
 
 const stableHashFile = async (): Promise<string> => "stable-sha256";
+
+/** hash と stat を 1 つの「実行ファイル」から返す fake。中身・stat を試験から差し替える。 */
+function fakeExecutableFile(initial: {
+  sha256: string;
+  stat: CliFileStat | null;
+}) {
+  const file = { ...initial };
+  const hashFile = vi.fn(async () => file.sha256);
+  const statFile = vi.fn(async () => (file.stat ? { ...file.stat } : null));
+  return { file, hashFile, statFile };
+}
+
+const fileStat = (
+  stamp: bigint,
+  extra: Partial<CliFileStat> = {},
+): CliFileStat => ({
+  dev: 1n,
+  ino: 10n,
+  size: 1000n,
+  mtimeNs: stamp,
+  ctimeNs: stamp,
+  ...extra,
+});
 
 function createHarness() {
   const events: EmittedEvent[] = [];
@@ -262,7 +286,7 @@ describe("CliAiManager", () => {
     );
   });
 
-  it("PATH自動検出されたcanonical pathも初回authorizationを要求する", async () => {
+  it("PATH自動検出されたcanonical pathも初回authorizationを要求し、拒否は未検出(null)として返す", async () => {
     const runner = new FakeRunner();
     const detectBinary = vi.fn(async () => "/usr/local/bin/claude");
     const authorizeExecutable = vi.fn(async () => false);
@@ -276,18 +300,336 @@ describe("CliAiManager", () => {
       authorizeExecutable,
     });
 
+    // 拒否しても reject せず null（設定の読込を失敗させない）
     await expect(
       manager.handlers.detect_cli_binary({ cli: "claude" }),
-    ).rejects.toThrow("CLI executable was not authorized");
+    ).resolves.toBeNull();
     expect(authorizeExecutable).toHaveBeenCalledWith(
       "claude",
       "/usr/local/bin/claude",
       { sha256: "abc123" },
     );
     expect(runner.runCalls).toHaveLength(0);
+
+    // 拒否は記憶しない。次の検出でまた確認する
+    await expect(
+      manager.handlers.detect_cli_binary({ cli: "claude" }),
+    ).resolves.toBeNull();
+    expect(authorizeExecutable).toHaveBeenCalledTimes(2);
+
+    // bare name の spawn 経路は拒否を今のとおり throw する（未検出と偽らない）
+    await expect(
+      manager.handlers.test_cli_connection({ binaryPath: "claude" }),
+    ).rejects.toThrow("CLI executable was not authorized");
+    expect(runner.runCalls).toHaveLength(0);
   });
 
-  it("許可済み identity も実行直前に再hashし、同一なら再確認しない", async () => {
+  describe("承認済み binary の再確認を省く（DR-M1）", () => {
+    const setup = (
+      initial: { sha256: string; stat: CliFileStat | null },
+      authorize: () => boolean | Promise<boolean> = () => true,
+    ) => {
+      const runner = new FakeRunner();
+      runner.runResult.stdout = "claude 1.2.3\n";
+      const fake = fakeExecutableFile(initial);
+      const authorizeExecutable = vi.fn(async () => authorize());
+      const manager = createCliAiManager(() => {}, {
+        runner,
+        platform: "linux",
+        isFile: async () => true,
+        realPath: async (candidate) => candidate,
+        hashFile: fake.hashFile,
+        statFile: fake.statFile,
+        detectBinary: async () => "/usr/local/bin/claude",
+        authorizeExecutable,
+        forceKillAfterMs: 20,
+      });
+      return { runner, manager, authorizeExecutable, ...fake };
+    };
+
+    it("同じ identity の 2 回目の detect はダイアログも全文 hash も出さない", async () => {
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+
+      await expect(
+        t.manager.handlers.detect_cli_binary({ cli: "claude" }),
+      ).resolves.toBe("/usr/local/bin/claude");
+      await expect(
+        t.manager.handlers.detect_cli_binary({ cli: "claude" }),
+      ).resolves.toBe("/usr/local/bin/claude");
+
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      expect(t.hashFile).toHaveBeenCalledOnce();
+    });
+
+    it("stat が取れないときも detect のダイアログは 1 回で、hash は取り直す", async () => {
+      const t = setup({ sha256: "sha-1", stat: null });
+
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      expect(t.hashFile).toHaveBeenCalledTimes(2);
+    });
+
+    it("detect の再実行で中身が変わっていれば承認を取り直し、拒否なら null で旧承認も捨てる", async () => {
+      let allow = true;
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) }, () => allow);
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+
+      t.file.sha256 = "sha-2";
+      t.file.stat = fileStat(2n);
+      allow = false;
+      await expect(
+        t.manager.handlers.detect_cli_binary({ cli: "claude" }),
+      ).resolves.toBeNull();
+      expect(t.authorizeExecutable).toHaveBeenLastCalledWith(
+        "claude",
+        "/usr/local/bin/claude",
+        { sha256: "sha-2" },
+      );
+
+      // 旧 identity に戻っても、旧承認は残っていないので確認し直す
+      t.file.sha256 = "sha-1";
+      t.file.stat = fileStat(1n);
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      expect(t.authorizeExecutable).toHaveBeenCalledTimes(3);
+    });
+
+    it("SHA-256 を取れない検出の失敗は拒否ではないので reject のまま", async () => {
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+      t.hashFile.mockResolvedValueOnce("");
+      await expect(
+        t.manager.handlers.detect_cli_binary({ cli: "claude" }),
+      ).rejects.toThrow("could not be fingerprinted");
+      expect(t.authorizeExecutable).not.toHaveBeenCalled();
+    });
+
+    it("同じ binary の並行した detect は確認ダイアログを 1 つにまとめる", async () => {
+      let release!: (allowed: boolean) => void;
+      const t = setup(
+        { sha256: "sha-1", stat: fileStat(1n) },
+        () =>
+          new Promise<boolean>((resolve) => {
+            release = resolve;
+          }),
+      );
+
+      const first = t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      await vi.waitFor(() => expect(t.authorizeExecutable).toHaveBeenCalled());
+      const second = t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      release(true);
+
+      // 古い側（first）は世代で捨てられ、最新（second）が承認結果を返す
+      await first;
+      await expect(second).resolves.toBe("/usr/local/bin/claude");
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+    });
+
+    it("検出で承認した binary があっても、別の custom path の確認は省かない", async () => {
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/custom/claude",
+      });
+
+      expect(t.authorizeExecutable).toHaveBeenCalledTimes(2);
+      expect(t.authorizeExecutable).toHaveBeenLastCalledWith(
+        "claude",
+        "/opt/custom/claude",
+        { sha256: "sha-1" },
+      );
+    });
+
+    it("検出で承認した binary の起動は、stat が同じなら全文 hash を省く", async () => {
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      expect(t.hashFile).toHaveBeenCalledOnce();
+
+      await t.manager.handlers.test_cli_connection({ binaryPath: "claude" });
+      await t.manager.handlers.detect_cli_binary({ cli: "claude" });
+
+      expect(t.hashFile).toHaveBeenCalledOnce();
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      expect(t.runner.runCalls).toHaveLength(1);
+    });
+
+    it("起動: stat が承認時と同じなら全文 hash を省く", async () => {
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+
+      expect(t.hashFile).toHaveBeenCalledOnce();
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      expect(t.runner.runCalls).toHaveLength(3);
+    });
+
+    it.each([
+      ["mtime", fileStat(2n, { ctimeNs: 1n })],
+      ["ctime", fileStat(1n, { ctimeNs: 5n })],
+      ["size", fileStat(1n, { size: 999n })],
+      ["inode", fileStat(1n, { ino: 11n })],
+      ["device", fileStat(1n, { dev: 2n })],
+    ])(
+      "起動: %s が違えば全文 hash を取り直し、SHA-256 が同じなら再確認せず stat を取り直す",
+      async (_name, changed) => {
+        const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+        await t.manager.handlers.test_cli_connection({
+          binaryPath: "/opt/claude",
+        });
+        expect(t.hashFile).toHaveBeenCalledOnce();
+
+        t.file.stat = changed;
+        await t.manager.handlers.test_cli_connection({
+          binaryPath: "/opt/claude",
+        });
+        expect(t.hashFile).toHaveBeenCalledTimes(2);
+        // stat を取り直したので、次は省ける
+        await t.manager.handlers.test_cli_connection({
+          binaryPath: "/opt/claude",
+        });
+        expect(t.hashFile).toHaveBeenCalledTimes(2);
+        expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      },
+    );
+
+    it("起動: stat が違い中身も変われば承認を取り直し、拒否なら spawn しない", async () => {
+      let allow = true;
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) }, () => allow);
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+
+      t.file.sha256 = "sha-2";
+      t.file.stat = fileStat(2n);
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      expect(t.authorizeExecutable).toHaveBeenLastCalledWith(
+        "claude",
+        "/opt/claude",
+        { sha256: "sha-2" },
+      );
+      expect(t.runner.runCalls).toHaveLength(2);
+
+      t.file.sha256 = "sha-3";
+      t.file.stat = fileStat(3n);
+      allow = false;
+      await expect(
+        t.manager.handlers.test_cli_connection({ binaryPath: "/opt/claude" }),
+      ).rejects.toThrow("CLI executable was not authorized");
+      expect(t.runner.runCalls).toHaveLength(2);
+    });
+
+    it("承認時の stat が hash の前後で変わっていたら記録せず、毎回全文 hash する", async () => {
+      const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
+      let calls = 0;
+      t.statFile.mockImplementation(async () => fileStat(BigInt(calls++)));
+
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      t.statFile.mockImplementation(async () => fileStat(1n));
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+
+      // 1 回目：承認の hash + 起動の hash、2 回目：起動の hash（stat の記録が無いので毎回 hash）
+      expect(t.hashFile).toHaveBeenCalledTimes(3);
+    });
+
+    it("stat が一致しても regular file でなくなっていれば起動しない", async () => {
+      const runner = new FakeRunner();
+      const fake = fakeExecutableFile({ sha256: "sha-1", stat: fileStat(1n) });
+      // 1 回目の起動（validate・起動直前）の後の起動直前の検査（4 回目）で regular file でなくなる
+      let isFileCalls = 0;
+      const manager = createCliAiManager(() => {}, {
+        runner,
+        platform: "linux",
+        isFile: async () => ++isFileCalls < 4,
+        realPath: async (candidate) => candidate,
+        hashFile: fake.hashFile,
+        statFile: fake.statFile,
+        authorizeExecutable: async () => true,
+      });
+      await manager.handlers.test_cli_connection({ binaryPath: "/opt/claude" });
+
+      await expect(
+        manager.handlers.test_cli_connection({ binaryPath: "/opt/claude" }),
+      ).rejects.toThrow("CLI executable changed after authorization");
+      expect(runner.runCalls).toHaveLength(1);
+      expect(fake.hashFile).toHaveBeenCalledOnce();
+    });
+
+    it("実ファイルの既定 stat/hash：同じ size で中身を書き換えると ctime が変わり承認を取り直す", async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), "grimodex-cli-stat-"));
+      try {
+        const binary = path.join(dir, "claude");
+        writeFileSync(binary, "#!/bin/sh\necho one\n", { mode: 0o755 });
+        const runner = new FakeRunner();
+        const authorizeExecutable = vi.fn(async () => true);
+        const manager = createCliAiManager(() => {}, {
+          runner,
+          platform: "linux",
+          authorizeExecutable,
+        });
+
+        await manager.handlers.test_cli_connection({ binaryPath: binary });
+        await manager.handlers.test_cli_connection({ binaryPath: binary });
+        expect(authorizeExecutable).toHaveBeenCalledOnce();
+
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        writeFileSync(binary, "#!/bin/sh\necho two\n", { mode: 0o755 });
+        await manager.handlers.test_cli_connection({ binaryPath: binary });
+        expect(authorizeExecutable).toHaveBeenCalledTimes(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("stat が一致しても realpath が変われば全文 hash して再確認する", async () => {
+      const runner = new FakeRunner();
+      const fake = fakeExecutableFile({ sha256: "sha-1", stat: fileStat(1n) });
+      let target = "/opt/a/claude";
+      const authorizeExecutable = vi.fn(async () => true);
+      const manager = createCliAiManager(() => {}, {
+        runner,
+        platform: "linux",
+        isFile: async () => true,
+        realPath: async () => target,
+        hashFile: fake.hashFile,
+        statFile: fake.statFile,
+        authorizeExecutable,
+      });
+      await manager.handlers.test_cli_connection({
+        binaryPath: "/opt/link/claude",
+      });
+
+      target = "/opt/b/claude";
+      await manager.handlers.test_cli_connection({
+        binaryPath: "/opt/link/claude",
+      });
+
+      expect(authorizeExecutable).toHaveBeenCalledTimes(2);
+      expect(authorizeExecutable).toHaveBeenLastCalledWith(
+        "claude",
+        "/opt/b/claude",
+        { sha256: "sha-1" },
+      );
+    });
+  });
+
+  it("許可済み identity は stat を取れなければ実行直前に再hashし、同一なら再確認しない", async () => {
     const runner = new FakeRunner();
     runner.runResult.stdout = "claude 1.2.3\n";
     const hashFile = vi.fn(stableHashFile);
@@ -1448,7 +1790,9 @@ describe("CliAiManager", () => {
     const capture = manager.handlers.test_cli_connection({
       binaryPath: "/usr/local/bin/claude",
     });
-    await expect(capture).rejects.toThrow("CLI command timed out after 10000ms");
+    await expect(capture).rejects.toThrow(
+      "CLI command timed out after 10000ms",
+    );
 
     await expect(manager.quiesceForProfileEgress()).rejects.toThrow(
       "CLI egress transport did not quiesce",

@@ -2129,6 +2129,21 @@ describe("useAiSettingsStore", () => {
       expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(true);
     });
 
+    it("検出がエラーで reject しても設定の読込は通り、未検出として扱う（確認ダイアログの拒否など）", async () => {
+      mockGetAiSettings.mockResolvedValueOnce(cliSettings);
+      mockHasApiKey.mockResolvedValueOnce(false);
+      mockDetectCliBinary.mockRejectedValueOnce(
+        new Error("CLI executable was not authorized: /usr/local/bin/claude"),
+      );
+
+      await expect(
+        useAiSettingsStore.getState().loadSettings(),
+      ).resolves.toBeUndefined();
+
+      expect(useAiSettingsStore.getState().settings).toEqual(cliSettings);
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
+    });
+
     it("does not call detectCliBinary for non-CLI providers", async () => {
       mockGetAiSettings.mockResolvedValueOnce(defaultSettings);
       mockHasApiKey.mockResolvedValueOnce(true);
@@ -2156,6 +2171,19 @@ describe("useAiSettingsStore", () => {
 
       expect(mockDetectCliBinary).toHaveBeenCalledWith("claude");
       expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(true);
+    });
+
+    it("検出が reject しても保存は完了し、未検出として扱う", async () => {
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      mockDetectCliBinary.mockRejectedValueOnce(
+        new Error("CLI executable was not authorized: /usr/local/bin/claude"),
+      );
+
+      await expect(
+        useAiSettingsStore.getState().saveSettings(cliSettings),
+      ).resolves.not.toThrow();
+
+      expect(useAiSettingsStore.getState().cliBinaryAvailable).toBe(false);
     });
 
     it("re-detects when CLI kind changes", async () => {

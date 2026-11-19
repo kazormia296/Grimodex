@@ -22,11 +22,12 @@ subprocess を起動する経路の変更なので、GDX-PRECHECK-001 の表（�
 - **DR-M1-2（承認の記憶は memory 内だけ）**
   - 記憶は `createCliAiManager` の closure の中の Map で、プロセスの寿命（= Electron の session）を超えない。disk・設定・renderer へは書かない。
   - 理由：disk に残すと同意が session を越えて持ち越される。それは別のユーザー判断（#42 と同じ型）で、今回の回答の範囲外。
-  - 記憶の鍵は (kind, canonical path)、値は承認時の SHA-256 と stat。`detectedExecutables`（refresh が消す）とは別の Map（`approvedDetections`）にする。`authorizedExecutables`（custom path の承認）とも混ぜない：混ぜると、PATH で承認した binary と同じ canonical path を renderer が custom path として渡したときに、custom path の確認が黙って省かれる。
+  - 記憶の鍵は (kind, canonical path)、値は承認時の SHA-256 と stat。`detectedExecutables`（refresh が消す）とは別の Map（`approvedDetections`）にする。`authorizedExecutables`（custom path の承認）とも混ぜない：混ぜると、PATH で承認した binary と同じ canonical path を renderer が custom path として渡したときに、custom path の確認が黙って省かれる。なお今の `trustedExecutable` は、現在の `detectedExecutables` の canonical path と同じ custom path を信頼する。これは変えない（記憶は検出の再実行の照合にだけ使い、custom path の経路へは広げない）。
 - **DR-M1-3（記憶の書込み・消去の規則）**
   - 書込み：OS ダイアログで「許可」が返った直後。`isLatest()`（世代の判定）より前に行う。後だと、並行した設定の読込で最新でない側の承認が捨てられ、同じダイアログがもう一度出る。
   - 消去（現状維持側）：(i) 同じ canonical path で SHA-256 が変わった（`prepareExecutableForSpawn` の `invalidate()` と detect の照合）。(ii) `invalidateChangedRequestedPath` と同じ条件（同じ requestedPath で canonical が変わった）。(iii) dispose（manager ごと消える）。
   - 検出が記憶と一致したときは `detectedExecutables` に記憶の record を入れる（requestedPath だけ違うときは複製して差し替える）。`prepareExecutableForSpawn` は object の同一性（`===`）で wasDetected と invalidate を判定するので、記憶と detected は同じ object を共有する。
+  - 並行した検出のうち世代で古くなった側は、今までどおり `latestResult()`（その時点の最新。まだ無ければ null）を返す。承認の記憶と同じ canonical のダイアログは 1 つになるが、古い側が承認結果の path を返すことは保証しない。
   - 同じ (kind, canonical path) の承認ダイアログが並行して出ているときは、後続の detect はその完了を待ってから記憶を引く（`pendingDetectApprovals`）。待ちは同じ manager の中の Promise だけで、timer や background を足さない。
 - **DR-M1-4（拒否の扱い）**
   - ダイアログの拒否は専用の error 型（`CliExecutableNotAuthorizedError`、message は今と同じ）で区別し、`detect_cli_binary` の handler だけが null（未検出と同じ）にする。
