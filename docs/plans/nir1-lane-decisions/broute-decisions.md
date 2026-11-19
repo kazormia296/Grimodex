@@ -1004,3 +1004,57 @@
 - `fnm exec --using=22 pnpm -s verify:quality`：成功（exit 0）。
 - C2-ZC の receipt（`--base 1dcc7b88437b4720350d7e537811d595a716c055`、clean tree、`resolvedHeadSha` は `996efe597faaf42585fc14150b4173df64495294`）：`sha256:2acfeb15653e531dad6bd1ea22bf4acca5d32dc82ceb7dc53265e6dbb0fb26db`。
 - **省いたもの**：CI の `ci:local:quick --part 2` の impact の選択の手元の再現は、重いので実施していない。落ちた試験は、その選択が使う形（`--features nir1-material-diagnostics --lib`）の全件で通った。
+
+### DR-PUBG-5-19：存在しない project の maintenance の wake が終わらない（F-1）の直し（2026-11-19）
+
+- 位置づけ：PUB-G の前提 #5 の途中で見つかった別件の不具合 F-1。DR-PUBG-5-18（別の枝）が expected-fail の試験で記録したものを、直った状態を正で assert する試験に替える。この commit（最初の commit）は判断と信頼境界の記録で、コード・policy・定数は変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：NIR-1 の C-product（worker／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。枝 `claude/pubg5-missing-project-wake`（基点は origin/master `65deca68`）。push も PR も作らない。新しい送信先・保存範囲・閾値の緩和・契約・authority は足さない（下の threat model の差分）。
+- 凍結の対象との関係：触れる file は `maintenance_runtime.rs`、`narrativeMaintenance.ts`、試験だけ。`native-architecture.mjs` の `FIXED_BODIES`（`nir1_graph_product.rs` の 4 関数の本体）と `PATHS` の対象 file、CP-4 の `SOURCE_PINS` の対象 file（harness の file）には触れない。
+
+#### 1. 事実（再現。検証の節に結果を追記する）
+
+- Native：wake の cycle は、project が workspace に無いと、launch が Closed・Seam・Product のどれでも `FOREIGN KEY constraint failed`（787）で失敗する。gate が閉なら `judge_graph_index_build` は DB に触れず skip する（`nir1_graph_index_maintenance.rs` の冒頭）ので、FK は通常の durable discovery から出る。discovery（`discover_durable_maintenance_work_in_tx_with_control`）は、project に current epoch が無く、wake の reason が `is_backfill_wake`（`durable-wake` を含む）なら、project の存在を見ずに Backfill の work を作る。その Backfill の run／epoch の行の insert が `projects` への FK で落ちる。
+- N-API：delivery failure の receipt（`record_maintenance_delivery_failure_wake`）は project が無ければ `Err(NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING)`。この Err は、audit の JSONL の追記（durable な receipt）の後、outbox の書込みの前に出る。
+- main：scheduler は wake の cycle の失敗を `NARRATIVE_MAINTENANCE_MAX_RETRIES`（3）まで retry し、尽きたら `persistDeliveryFailure` を呼ぶ。receipt が reject されると `accepted === false` で trigger を保持し、再び queue に戻す（`workspace-binding-mismatch` などの typed non-ACK と同じ扱い）。PROJECT_MISSING の reject もここに落ちるので、約 1 秒ごとの cycle が止まらない。work のとき（`scope: "work"`）も同じ。1 時間の fake time で 4,270 cycle（DR-PUBG-5-18 の測定）。
+- 今の製品の経路で届くか：main の scheduler は wake の発生源（Graph の需要、hasMore の継続、completion の wake）を区別しない。hasMore の継続と completion の wake、そして work の item は、Graph の const が false でも使われる。したがって、backlog の継続を持つ project をユーザーが削除すると、今の製品でも届く。
+
+#### 2. 判断
+
+**判断 1：直しは Native と main の両方に入れる（(a) と (b)）**
+- (a) Native：discovery の Backfill を作る枝（current epoch が無く `is_backfill_wake`）で、同じ immediate transaction の中で `projects` の行の存在を読み、無ければ `Ok(None)`（no work）にする。wake の cycle は Accepted・`has_more` false で終わり、main は accepted の cycle として wake を消費する。これが wake の出所で終わらせる直しで、retry の log も JSONL の追記も増えない。FK 制約が有効なので、project が無ければ epoch・run の行も cascade で無く、他の枝（current epoch あり）には影響しない。
+- (b) main：`persistDeliveryFailure` が、receipt の reject の message が code `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING` で始まる（既存の `hasExactFailureCode` の形）ときだけ、「project が無いので trigger を捨てる」終端として扱う（`work` と `wake` の両方）。retry の数（3）・遅延（1,000 ms）は変えない。(a) だけでは、work の item（その project の cycle が FK で失敗する）や、(a) の判定の後に project が消えた競合（判定は通り、実行で FK）を止められないので、(b) を足す。receipt を拒否したのは live な authority の同じ DB（binding が一致した後）の読みなので、renderer が偽造できる値ではなく、binding が違う・workspace が無いときは今までどおり typed non-ACK で保持する。
+- (a) だけ、(b) だけにしない理由：(b) だけだと wake のたびに最大 3 回 retry して JSONL に 1 行足すまで終わらない（約 5 s）。(a) だけだと work の item と競合が残る。
+
+**判断 2：project の存在の判定が変わる競合**
+- 判定は Native の immediate transaction の 1 snapshot。project の行は 1 つの transaction で commit されるので、「作成中」の project は commit までは見えない。wake の出所（workspace の列挙、Graph の需要、hasMore、completion）は commit 済みの project の id だけを持つ。作成の commit より前に wake が来ることは無い。仮に来て捨てても、新しい project の backfill は、その project 自身の trigger（作成後の登録・workspace-opened）が起こす。scan の staging の project は行が既にあり、既存の判定（staging なら no-work）のままで、今回の変更に影響しない。
+- 同じ id の project の再作成：id は UUID で再利用しない。古い wake を捨てるのは正しい。
+- (a) の後に project が消える競合は (b) で終わる（work・wake とも、尽きた後の receipt が PROJECT_MISSING）。
+
+**判断 3：一時的な失敗は今のまま**
+- busy・容量・`NEX_MAINTENANCE_TRANSIENT`・SQLite の lock・receipt の他の失敗（`INVALID`、typed non-ACK、message が exact な code でないもの）は、変えない。retry の上限・遅延・budget の数値は変えない（緩めない）。
+
+#### 3. owner／lifecycle matrix（GDX-PRECHECK-001。新しい非同期・process・timer は足さない）
+
+| 項目 | 扱い |
+|---|---|
+| entry | 既存の wake の cycle と delivery failure の receipt。新しい entry・IPC・`#[napi]` は無い |
+| start | 変更なし。(a) は discovery の SELECT 1 本（Backfill を作る枝だけ）、(b) は既存の catch の分岐 |
+| retry | 変更なし（3 回、1,000 ms）。PROJECT_MISSING の receipt の後だけ、その trigger は retry の対象から外れる |
+| reentrant | 変更なし。捨てるのは (workspace binding, project) の key の entry 1 つだけで、他の key・他の project は独立 |
+| admission closure | 変更なし。binding の不一致・workspace 無しの typed non-ACK は今までどおり保持 |
+| pending start | 新しい timer は無い。捨てた trigger の retry の timer は、既存の経路（requeuedCount が 0 なら再 schedule しない）で作られない |
+| active handle | 無い（同期の SELECT と、既存の await の中の分岐） |
+| cancel | 変更なし（既存の permit の stop・attempt の cancel） |
+| 有限待機 | 無い。wake 1 件は最大 retry 3 回＋receipt 1 回で終わる（以前は無限） |
+| 終了の証拠 | cycle の Accepted の receipt（(a)）、または `persistDeliveryFailure` の終端の結果と retry count の削除（(b)）。quiescence の `queueIdle` が true になることを試験で確かめる。reject や kill だけを終了とみなさない |
+| error／timeout／onClosed | cycle の FK 以外の失敗は今までどおり。receipt の PROJECT_MISSING だけが終端。warn の log に project id と code を出す（本文は出さない） |
+| 再起動時の状態 | 新しい永続状態は無い。捨てた wake に対応する durable な行（outbox 等）は、project が無いので cascade で無い |
+
+#### 4. threat model の差分（委任の内の技術的な改訂）
+
+確認済みの actor・防御・受信先・受入れは変えない。
+- 新しい攻撃：無い。偽の PROJECT_MISSING で正当な trigger を捨てさせる攻撃は、reject を作るのが Native の同じ authority の DB の読みで、renderer が値を注入できないので成立しない（main の backend は信頼境界の内側）。renderer が存在しない project の id を wake に載せられても（需要の経路）、今まで資源を消費し続けたのに対し、有限になる。
+- 防御：変更前に無かった上限（wake 1 件につき cycle の数）が入る。receipt の JSONL への追記は、変更前は 1 周ごとに 1 行ずつ無限に増えた（保存範囲の拡大ではなく、バグによる増加）が、変更後は終端の 1 回。
+- 受信先・保存：どちらも増えない。audit の JSONL は既存の書き先と形のまま。
+- 受入れ：製品の既定（const false）の挙動は、存在する project の wake と work では変わらない。存在しない project だけが、無限の retry から終端に変わる。
+- 委任の外に当たるもの（避けたもの）：retry の上限・遅延の変更、新しい receipt の status・契約、保存範囲の拡大、policy・定数の変更。
