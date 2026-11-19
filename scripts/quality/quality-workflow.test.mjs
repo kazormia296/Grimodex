@@ -1133,9 +1133,11 @@ test("CI runs the diff gate with full history and selected light suites", async 
   assert.match(workflow, /^ {2}quality:\s*$/m);
   // The nightly schedule gets a longer timeout than the 90 minutes of the other events: a warm full
   // selection took up to about 65 minutes, and rust-cache saves only after a successful job.
+  // Every event that runs the impact step (the step's own condition) gets 150 minutes; a pull request
+  // or master push job has no cargo work and keeps 90.
   assert.equal(
     yaml.load(workflow).jobs.quality["timeout-minutes"],
-    "${{ github.event_name == 'schedule' && 150 || 90 }}",
+    "${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag') && 150 || 90 }}",
   );
   assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /pnpm eval:impact/);
@@ -1159,6 +1161,29 @@ test("CI runs the diff gate with full history and selected light suites", async 
   assert.equal(impactSteps.length, 1);
   const [impact] = impactSteps;
   assert.equal(impact.if, impactCondition);
+  // The fail-closed wiring: the step reads its event from QUALITY_EVENT (a GitHub expression in env, never
+  // expanded inside the shell fragment), and the full-suite check runs only when it is `schedule`.
+  assert.deepEqual(impact.env, {
+    QUALITY_BASE_SHA: "${{ github.event.pull_request.base.sha || github.event.before }}",
+    QUALITY_HEAD_SHA: "${{ github.sha }}",
+    QUALITY_EVENT: "${{ github.event_name }}",
+  });
+  assert.doesNotMatch(impact.run, /\$\{\{/);
+  assert.match(impact.run, /if \[ "\$QUALITY_EVENT" = schedule \]; then\s+node -e '/);
+  // The nightly report is kept as an artifact (also when the step fails) to trace a red night; the
+  // action is the SHA ci.yml already pins for its other uploads.
+  const uploads = quality.steps.filter((step) => step.name === "Upload impact report");
+  assert.equal(uploads.length, 1);
+  assert.equal(quality.steps.indexOf(uploads[0]), quality.steps.indexOf(impact) + 1);
+  assert.equal(uploads[0].if, "always() && github.event_name == 'schedule'");
+  assert.equal(uploads[0].uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+  assert.deepEqual(uploads[0].with, {
+    name: "impact-report-${{ github.run_id }}-${{ github.run_attempt }}",
+    path: "${{ runner.temp }}/impact-report.json",
+    "if-no-files-found": "ignore",
+    "retention-days": 14,
+  });
+  assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7\.0\.1\n {8}with:\n {10}name: impact-report-/);
   // Only the impact step runs cargo (pnpm verify:quality runs none: see the next test), so the Rust
   // toolchain and rust-cache steps follow the impact step. A pull request or master push job must not
   // save an empty rust-cache entry under the key the nightly run needs to save.

@@ -69,7 +69,8 @@ release workflow's call on a tag push, not on a pull request or a `master` push.
 What only impact runs (the grimodex-db tests built with the product feature
 `native-current-human-capture`, the eval-only feature tests, and many Node tests
 that no other job or registry entry names) is therefore checked on `master` by the
-nightly run, up to about a day after a merge, and master changes that landed
+nightly run, usually a day or so after a merge (GitHub's schedule delays or
+skips runs, so it can take longer), and master changes that landed
 after the Quick are checked by impact there. The nightly, dispatch and tag runs
 have no comparison base (the `before` of a new tag does not resolve), so they
 select every suite and are not narrowed by the docs-markdown-only rule. Only the

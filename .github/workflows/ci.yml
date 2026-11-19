@@ -294,11 +294,13 @@ jobs:
     if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks }}
     runs-on: ubuntu-latest
     # A warm run of the full selection took 39 to 65 minutes on master pushes
-    # (2026-11-18/19), against 90 minutes here. The nightly run is the one that
-    # saves the `rust-cache` entry the other runs restore, and `rust-cache` saves
-    # only after a successful job, so a cold nightly must be able to finish: a
-    # timeout would leave the next night cold as well.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 150 || 90 }}
+    # (2026-11-18/19), against 90 minutes here. Every event that runs the impact
+    # step (the same condition as the step) gets 150 minutes: a run with a cold
+    # `rust-cache` (for example right after a stable rustc update) may take much
+    # longer, and `rust-cache` saves only after a successful job, so a timeout
+    # may leave the next run cold too (it can still restore part of an older
+    # entry). A pull request or master push job has no cargo work and keeps 90.
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag') && 150 || 90 }}
     env:
       # Impact-selected suites compile many test binaries. Skip DWARF like the
       # rust / electron-native jobs; panic messages and symbol names remain.
@@ -380,7 +382,8 @@ jobs:
       # graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
       # The nightly run covers them: it is the only automatic run of the whole
       # selection after a merge, so a break that only the combination of merged
-      # changes shows is found by the next nightly run, up to about a day later.
+      # changes shows is found by the next nightly run, usually a day or so later
+      # (GitHub's schedule delays or skips runs, so it can take longer).
       # A schedule, a dispatch and a new tag push have no resolvable comparison
       # base (a schedule or dispatch event has no `before`; a new tag's `before`
       # is the zero SHA), so the selector sees an empty or incomplete diff and
@@ -430,6 +433,17 @@ jobs:
               console.log("impact: all " + suites.length + " suites selected and passed");
             ' "$report"
           fi
+
+      # Keep the nightly report so a red night can be traced to the failing
+      # suite and command (also on failure).
+      - name: Upload impact report
+        if: always() && github.event_name == 'schedule'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: impact-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/impact-report.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   frontend:
     name: Frontend (type-check / lint / test)

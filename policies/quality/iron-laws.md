@@ -294,8 +294,8 @@ the tests of the eval-only features (`nir1-graph-eval`, `nir1-final-request-eval
 registry entry names by path (the NIR-1 graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
 The nightly run (the `ci.yml` run of the schedule: the change scope, the product journeys in `all` mode and the Quality job)
 runs the whole impact selection on `master`, so a break that only the combination of merged changes shows is found by the
-nightly run, up to about a day after the merge, not by the merge or the `master` push. A nightly run that ends in anything
-other than success is handled as a red `master`. A pull request's C-query worker matrix runs on Linux only; the `master` push
+nightly run, usually a day or so after the merge (GitHub's schedule delays or skips runs, so it can take longer), not by the
+merge or the `master` push. A nightly run that ends in anything other than success is handled as a red `master`. A pull request's C-query worker matrix runs on Linux only; the `master` push
 and a manual dispatch run it on Linux, macOS and Windows. The Electron runtime performance job (absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. A green pull request check is therefore no runtime performance evidence: a failure of that job is found after the merge, in the `ci.yml` of the `master` push and in the `master` Full, and is handled as a red `master`. The `ci.yml` of a pull request measures the merge ref (`github.sha`), while the Quick measures the
 candidate head, so a combination with master changes that landed after the Quick is not checked by impact in the pull request
 run. A pull request run is therefore not evidence for the impact-selected suites, for the macOS and Windows workers or for the
@@ -472,10 +472,15 @@ revert. The `ci.yml` run of the `master` push of a docs-only merge that does not
 handled by the same rules: it clears when a re-run of it or the `ci.yml` run of a later `master` push succeeds, or when
 the fix or the revert is on `origin/master`, and the unrelated-flake exception and its record requirement are the same.
 The newest nightly `ci.yml` run (event `schedule`, branch `master`) that does not succeed is also a red master, handled by the
-same rules: it clears when a re-run of it or a newer nightly run succeeds, or when the fix or the revert is on
+same rules; it is judged by its last concluded attempt, and a run still in progress is skipped in favour of the newest run with a
+concluded attempt. It clears when a re-run of it or a newer nightly run succeeds, or when the fix or the revert is on
 `origin/master`, and the unrelated-flake exception and its record requirement are the same. The nightly run is the only
 automatic run of the whole impact selection after a merge, so this red is not left for later: the rules above (merge only the
-fix or the revert while it is red) apply to it as they do to a master Full.
+fix or the revert while it is red) apply to it as they do to a master Full. A green nightly run whose `createdAt` is more than 36
+hours old is not evidence that the newest master is clean: dispatch `ci.yml` on `master` (no inputs; with no comparison base
+the impact step selects every suite) and treat its conclusion, impact step included, like the nightly run's, watching it as a
+master Full is watched and not holding the next merge for it; the dispatched run does not pass the nightly-only check that every
+suite was selected, so confirm that in its step summary.
 
 A release PR's initial merge Full first confirms the fetched current `origin/master` is an ancestor of the candidate
 HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the same expanded strings to
