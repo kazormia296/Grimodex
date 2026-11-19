@@ -6,7 +6,7 @@
 - 親文書：[`mastra-migration-plan.md`](mastra-migration-plan.md)（MP の割当て、U-n、P1〜P18 の回答）。
 - 範囲：移行後に生じる、送信・保存・subprocess・背景処理・非同期 lifecycle の棚卸し（X）、脅威（T）、必須の防御（D）、
   残るリスク、owner／lifecycle の表（W）。
-- 根拠の略記は計画書の第 0 節。`S-Mn`、`S2`〜`S6`、`M`、`Q`、`設計 §n` は local の spike 枝（`claude/mastra-spike`）にあり、master に無い。
+- 根拠の略記は計画書の第 0 節。`R-n` は計画書の第 9 節、`U-n` は第 7 節、`MP-n` は第 6 節。`S-Mn`、`S2`〜`S6`、`M`、`Q`、`設計 §n` は local の spike 枝（`claude/mastra-spike`）にあり、master に無い。
   この文書は、必要な事実だけを ID 付きで要約した。
 - 区別：**実行**（spike で走らせた）、**読解**（dist や docs を読んだ）、**未確認**。根拠が無い欄は「未確認」と書き、推測で埋めない。
 - ee については決定だけを書く（D8）。license の条文の引用と読解は入れない（U-2）。
@@ -144,6 +144,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - owner なし（Mastra memory の内部で、adapter の外）。
 - 起動：image part の URL（http／https）に寸法が無いとき。`https.request` ×5 を記録した（実行。S-M8）。provider 名を 3 社にしても同じ。
 - 止め方：**env を消しても、provider 名を変えても止まらない**（実行。S-M8）。止められるのは、attachment（画像 URL）を memory の message に通さないことだけ。
+  provider 名が 3 社以外の分岐は、むしろこの GET に流れる（読解。M13）。したがって D3（provider 名の中立）だけでは足りず、D4 と対で要件にする。
 - 決定：memory の message に画像 URL を通さず、この直接の GET を起こさない（2026-11-18）。
 - 根拠：S-M8、M13(c)。
 
@@ -269,23 +270,23 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 
 ### 3.3 必須の防御（D1〜D15）
 
-| D   | 防御                                                                                                                                                                                                                                                                                           | 効く T  | MP                 |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------ |
-| D1  | env の固定（load の時だけ。U-5）：`MASTRA_TELEMETRY_DISABLED="1"`、`MASTRA_OFFLINE=true`。`MASTRA_DEV`・`MASTRA_AUTO_REFRESH_PROVIDERS` を未設定に。`OM_DEBUG`・`OM_REPRO_CAPTURE`・`OM_REPRO_CAPTURE_DIR`、API key 系、`MASTRA_*`、`VERCEL_OIDC_TOKEN` を除去。子 process には元の env の写し | T1、T10 | 1、3、10           |
-| D2  | model・embedder は object のみ。文字列 id は型と実行時の両方で禁止（model router／gateway を使わない）                                                                                                                                                                                         | T1      | 10                 |
-| D3  | Mastra に渡す provider 名と model id を中立にする（`openai`／`google`／`anthropic` にしない）。X13 の POST と、provider 依存の tool schema の書換え（S5）を避ける。**3 provider 対応で必須**                                                                                                   | T1      | 2                  |
-| D4  | attachment（画像・PDF）を memory の message に通さない。URL 画像を agent の入力に通さない                                                                                                                                                                                                      | T1、T12 | 3、10              |
-| D5  | 背景呼出しは Rust の adapter 経由。新 route 4 本（`memory_observer`、`memory_reflector`、`memory_title`、`memory_embedding`）。audit の begin 行が無ければ Native が拒否する。executable contract test                                                                                         | T2      | 10                 |
-| D6  | restricted、`nir1-local-*`、CLI／codex-app-server、非 agent chat は memory の対象外（読まない・書かない）。restricted の loop は拒否                                                                                                                                                           | T3      | 3、8、9            |
-| D7  | resource＝project。WM は嗜好・文体の template だけ。recall と OM は thread scope（P13）。OM の `retrieval` は off 固定。`workingMemory.agentManaged:false`（P15）                                                                                                                              | T4、T9  | 10                 |
-| D8  | ee：`@mastra/core` の ee 由来のコードは、stub と build の検査で配布物に入れない。version を上げるたびに検査する（P10）                                                                                                                                                                         | T8      | 1、3、13、第 11 節 |
-| D9  | adapter の書込み規則（P9）：`ON CONFLICT DO UPDATE`。`REPLACE` 禁止。role='signal' を除外。差し込みを user で INSERT しない（system／`context` で渡す）。`parts_json` だけ更新。別 session の id 衝突は失敗。typed refusal。新表の台帳登録（P18＝`closed`）                                    | T6      | 7、8               |
-| D10 | 削除：message 削除で由来する OM の部分を消す（P4）。project 削除で WM・OM を必ず消す（P3）。vector は削除・export・backup の範囲                                                                                                                                                               | T7      | 11、12             |
-| D11 | lifecycle：admission closure、inflight 計数、audit の terminal と Native の terminal receipt を終了証跡にする。`settled()` は証跡にしない。届かない仕事は ambiguous の audit 行で閉じる（X21、X22）                                                                                            | T5      | 3、11              |
-| D12 | 通信の観測：packaged の main で、起動から終了まで OS 側の捕捉（P1(b)）。hook の自己試験を毎回付ける。15 分間隔の telemetry を含む長さと、終了時                                                                                                                                                | T1      | 1、3、10、13       |
-| D13 | capability の維持（one-shot、`senderId`・projectId・入力 digest の束縛）。chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）                                                                                                                                                                    | T11     | 3、6               |
-| D14 | 開示と consent（policy version・route・provider・実際の接続先に束縛）。機能ごとの on／off、`memoryModel`、WM の閲覧・編集・消去、観測の消去（P8）                                                                                                                                              | T12     | 12                 |
-| D15 | Mastra の storage は memory の domain だけ。observability・workflows・agents ほか全 domain を `false`（traces を保存しない）                                                                                                                                                                   | T4      | 8                  |
+| D   | 防御                                                                                                                                                                                                                                                                                           | 効く T  | MP                         |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------------------------- |
+| D1  | env の固定（load の時だけ。U-5）：`MASTRA_TELEMETRY_DISABLED="1"`、`MASTRA_OFFLINE=true`。`MASTRA_DEV`・`MASTRA_AUTO_REFRESH_PROVIDERS` を未設定に。`OM_DEBUG`・`OM_REPRO_CAPTURE`・`OM_REPRO_CAPTURE_DIR`、API key 系、`MASTRA_*`、`VERCEL_OIDC_TOKEN` を除去。子 process には元の env の写し | T1、T10 | 1、3、10                   |
+| D2  | model・embedder は object のみ。文字列 id は型と実行時の両方で禁止（model router／gateway を使わない）                                                                                                                                                                                         | T1      | 10                         |
+| D3  | Mastra に渡す provider 名と model id を中立にする（`openai`／`google`／`anthropic` にしない）。X13 の POST と、provider 依存の tool schema の書換え（S5）を避ける。**3 provider 対応で必須**。ただし provider 名が 3 社以外の分岐は X11 の GET に流れるので、D4 と対で要件にする               | T1      | 2                          |
+| D4  | attachment（画像・PDF）を memory の message に通さない。URL 画像を agent の入力に通さない                                                                                                                                                                                                      | T1、T12 | 3、10                      |
+| D5  | 背景呼出しは Rust の adapter 経由。新 route 4 本（`memory_observer`、`memory_reflector`、`memory_title`、`memory_embedding`）。audit の begin 行が無ければ Native が拒否する。executable contract test                                                                                         | T2      | 10                         |
+| D6  | restricted、`nir1-local-*`、CLI／codex-app-server、非 agent chat は memory の対象外（読まない・書かない）。restricted の loop は拒否                                                                                                                                                           | T3      | 3、8、9                    |
+| D7  | resource＝project。WM は嗜好・文体の template だけ。recall と OM は thread scope（P13）。OM の `retrieval` は off 固定。`workingMemory.agentManaged:false`（P15）                                                                                                                              | T4、T9  | 10                         |
+| D8  | ee：`@mastra/core` の ee 由来のコードは、stub と build の検査で配布物に入れない。version を上げるたびに検査する（P10）                                                                                                                                                                         | T8      | 1、3、13、計画書の第 11 節 |
+| D9  | adapter の書込み規則（P9）：`ON CONFLICT DO UPDATE`。`REPLACE` 禁止。role='signal' を除外。差し込みを user で INSERT しない（system／`context` で渡す）。`parts_json` だけ更新。別 session の id 衝突は失敗。typed refusal。新表の台帳登録（P18＝`closed`）                                    | T6      | 7、8                       |
+| D10 | 削除：message 削除で由来する OM の部分を消す（P4）。project 削除で WM・OM を必ず消す（P3）。vector は削除・export・backup の範囲                                                                                                                                                               | T7      | 11、12                     |
+| D11 | lifecycle：admission closure、inflight 計数、audit の terminal と Native の terminal receipt を終了証跡にする。`settled()` は証跡にしない。届かない仕事は ambiguous の audit 行で閉じる（X21、X22）                                                                                            | T5      | 3、11                      |
+| D12 | 通信の観測：packaged の main で、起動から終了まで OS 側の捕捉（P1(b)）。hook の自己試験を毎回付ける。15 分間隔の telemetry を含む長さと、終了時                                                                                                                                                | T1      | 1、3、10、13               |
+| D13 | capability の維持（one-shot、`senderId`・projectId・入力 digest の束縛）。chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）                                                                                                                                                                    | T11     | 3、6                       |
+| D14 | 開示と consent（policy version・route・provider・実際の接続先に束縛）。機能ごとの on／off、`memoryModel`、WM の閲覧・編集・消去、観測の消去（P8）                                                                                                                                              | T12     | 12                         |
+| D15 | Mastra の storage は memory の domain だけ。observability・workflows・agents ほか全 domain を `false`（traces を保存しない）                                                                                                                                                                   | T4      | 8                          |
 
 ## 4. owner／lifecycle の表 W1〜W10
 
@@ -461,7 +462,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - **adapter が模型であること**（T6、P9）：全 schema の試験は模型の adapter。製品の adapter で、MP-7・MP-8 でやり直す。
 - **並行性**（R-4）：別接続の書込み、WAL、busy、背景と前景の重なりは未測定。
 - **file 書込み**（X18、R-36）：読解のみ。実行での確認は MP-1。
-- **stub が `undefined` を返す名前の呼び手**（R-11）：版ごとに変わりうる。version を上げるたびの検査（D8、第 11 節）で見る。
+- **stub が `undefined` を返す名前の呼び手**（R-11）：版ごとに変わりうる。version を上げるたびの検査（D8、計画書の第 11 節）で見る。
 - **provider ごとの usage の会計**（R-21）：OpenAI・OpenRouter は未確認。誤ると費用の記録が狂う。MP-2 で確かめる。
 
 ## 6. U-1 で確かめる点

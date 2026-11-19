@@ -155,7 +155,7 @@
 
 | MP  | 内容                                                                          | 層                    | 旗   | 戻せるか                |
 | --- | ----------------------------------------------------------------------------- | --------------------- | ---- | ----------------------- |
-| 0   | 段 0：脅威モデルの確認、lifecycle 表の確定、役割、docs の着地                 | 文書                  | -    | docs の revert          |
+| 0   | 段 0：計画書と、脅威モデル・lifecycle 表（draft）の着地                       | 文書                  | -    | docs の revert          |
 | 1   | 依存・ee の stub と検査・env 固定・licenses                                   | build、CI             | -    | revert                  |
 | 2   | `LanguageModelV4` adapter（B′。3 provider）と parity 試験                     | main                  | -    | revert                  |
 | 3   | loop の骨格（tool 0・memory 0）、gate L、lifecycle、audit owner、typed IPC    | renderer、IPC、main   | L 閉 | revert                  |
@@ -457,7 +457,7 @@
 
 ### MP-11 lifecycle（closure、quit、削除時の purge）
 
-- 範囲：W4〜W7、W9、W10（設計 §5.1）の実装。
+- 範囲：W4〜W7、W9、W10（[脅威モデル](mastra-migration-threat-model.md)の第 4 節）の実装。
   - closure、inflight 計数、`T_quit`（暫定 5 秒。P11）、quit finalizer と workspace 切替の participant 登録。
   - AbortSignal が届かない仕事（題名、embedding、背景 observer。S-M6）は、ambiguous の audit 行で閉じる。`settled()` は終了証跡にしない（X22）。
   - flag（`isObserving` など）の stale 回復（S-M5）。
