@@ -1005,6 +1005,70 @@
 - C2-ZC の receipt（`--base 1dcc7b88437b4720350d7e537811d595a716c055`、clean tree、`resolvedHeadSha` は `996efe597faaf42585fc14150b4173df64495294`）：`sha256:2acfeb15653e531dad6bd1ea22bf4acca5d32dc82ceb7dc53265e6dbb0fb26db`。
 - **省いたもの**：CI の `ci:local:quick --part 2` の impact の選択の手元の再現は、重いので実施していない。落ちた試験は、その選択が使う形（`--features nir1-material-diagnostics --lib`）の全件で通った。
 
+### DR-PUBG-5-17：需要の wake の cycle が rediscovery の budget を消費する結合を切る（2026-11-19。DR-PUBG-5-14 の「切替の前に決める項目」の 1 つ目）
+
+- 位置づけ：mutation の前の判断と信頼境界の記録（この commit は docs だけ。コード・定数・policy は変えない）。計画は `fusion-eval-data/design-notes/cp4-final-freeze-prep-2026-11-19/q5-graph-index-pre-switch-plan.md` の §4（課題 #5 の点 (2)）。枝 `claude/pubg5-demand-wake-rediscovery`（基点は origin/master `65deca68`）。
+- 委任と停止点：DR-PUBG-5-13・-14 と同じ（C-product の worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。push・PR・merge は統合者が後でレビューしてから行う。`PRODUCT_GRAPH_PUBLISHED` は false のまま。切替の本体（const・registry 3→4 本・policy の `wired` の行）は入れない。`native-architecture.mjs` の `FIXED_BODIES` と `SOURCE_PINS` の対象 file には触れない（main の TS だけの変更）。
+
+**読んで確かめたこと（`65deca68`）**
+- `onCycleAccepted` は scheduler が `cycleResult.status === "accepted"` のときだけ、cycle の応答の直後に引数なしで呼ぶ（`narrativeMaintenance.ts` の cycle 本体。`coalesced`・失敗・`deferred`・`not-admitted`・`workspace-unavailable` では呼ばない）。呼出し元は bootstrap の 1 か所だけで、`coordinator.requestRediscovery()` と `drainWakeOutbox()` を呼ぶ。repo 全体の grep でも、`onCycleAccepted`・`requestGraphIndexBuildWakesWithBinding`・`durableWakeProjects` は `electron/main/narrativeMaintenance*.ts` と、その試験・DR 文書にしか無い（`scripts/`、`evals/`、`policies/`、`native-architecture.mjs` の pin、`observation-prep.v1.json` には無い）。
+- 1 cycle が送る wake は、work の batch が空のときだけ（`sendingWakeEntries` は `backendBatch.length === 0` の枝でしか非空にならない）。再送（`deliveryRetry`）は、元の cycle の `work` と `wakeEntries` をそのまま写すので、work と wake が同じ cycle に載ることは無い。したがって「混ざった cycle」は、(i) 由来が異なる wake（需要の project と discovery の project）が同じ cycle に載る場合と、(ii) work の cycle を指す。(ii) は wake が空なので、今のまま rediscovery を呼ぶ。`backendBatch`・`wireBatch`・`sendingWakeEntries` は cycle の途中で再代入されない。
+- wake の entry（`durableWakeProjects`）を書く場所は 11 か所：入口（`requestGraphIndexBuildWakesWithBinding`）、rebind（binding の付け替え）、completion proof の復元（`completionWakeProjects`）、`retainCycleContinuation`（hasMore）、preempt・deferred・workspace mismatch・not-admitted・workspace-unavailable・失敗の requeue（retry count と delivery failure の受理の失敗の戻し）。再送用の `RetryableDelivery.wakeEntries` は entry を spread で写す。
+- `requestRediscovery` は `lastWakeReason === null`（chain 終了）なら no-op、budget 3（`NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS`）、遅延 250 ms。尽きると `markExhausted`。fingerprint の変化で 0 に戻る。
+
+**判断 1：由来（origin）は entry に持たせる。既定は必ず `"discovery"`（今の挙動の側）**
+- `NarrativeMaintenanceWakeOrigin = "demand" | "discovery"`。`requestGraphIndexBuildWakesWithBinding(projectIds, binding, origin = "discovery")`。需要の timer の発火（`fireGraphDemand`）だけが `"demand"` を渡す。discovery の W1（`wakeProjectIds`）、seam の B の wake、origin を知らない呼出し・復元は、すべて `"discovery"`（今のまま）。
+- 新しい IPC・`#[napi]`・wire の項目は無い。origin は main の process-local な記録で、Native へも永続にも出ない（再起動で wake ごと消える。需要の wake は元から永続しない）。
+
+**判断 2：同じ key では discovery が勝つ（降格しない）。書込みは 1 つの関数に集める**
+- 不変条件：**需要は、需要が無かった場合に呼ばれたはずの rediscovery を 1 回も減らさない**。需要の cycle の in-flight の間に同じ key へ discovery の wake が入り、その後 cycle が失敗して requeue するとき、requeue が `"demand"` で上書きすると、discovery の wake が降格し、需要が rediscovery を抑止できてしまう（新しい害）。これを防ぐため、`durableWakeProjects` への書込みを 1 つの関数にし、既存の entry が `"discovery"` なら `"discovery"` を保つ。入口・rebind・全 requeue がこれを通る。
+- 逆向き（discovery の requeue が、新しく来た demand に上書きされる）は、同じ規則で discovery が残る。
+
+**判断 3：`demandOnly` は「実際に送ったもの」で計算する**
+- `demandOnly = (wireBatch が空) && (sendingWakeEntries が 1 件以上) && (その全件が demand)`。`onCycleAccepted({ demandOnly })` として渡す。再送（`deliveryRetry`）でも、写した `wakeEntries` の origin で同じ式になる。
+- bootstrap：`demandOnly` のときは `requestRediscovery()` を呼ばない。`drainWakeOutbox()` は今のまま必ず呼ぶ（wake outbox の drain は chain と別。Epoch rotation の live event の取りこぼしの回収点）。`onWorkspaceBindingMismatch`・`onCompletionRecoveryAcknowledged` の rediscovery は変えない。
+
+**判断 4：hasMore の継続（`retainCycleContinuation`）と復元の origin**
+- work の cycle の継続は discovery（work の project は由来を持たない。既存の hasMore の試験と stall の試験が依存する）。wake だけの cycle の継続は、project ごとに entry の origin を引き継ぐ。引き継がないと、需要 → hasMore の経路で budget の消費が残り、不変条件の目的が欠ける。
+- completion proof の復元（`completionWakeProjects`。`string[]`）は origin を落とすので、並行して `completionWakeOrigins`（project → origin）を持ち、復元時にそれを使う。無ければ `"discovery"`（不明は今の挙動）。
+- delivery failure の persist（`persistDeliveryFailure` の scope `wake`）は永続の recovery wake で、再起動後は discovery の wakeProjectIds として戻る（origin は `"discovery"`）。変えない。
+
+**判断 5：変えないもの**：budget（3）、遅延（250 ms）、cooldown（5〜60 s）、需要の wake の数値（間隔 2〜60 s、key 8、reset 60 s）、W1・seam・work の cycle の rediscovery、`coalesced` の扱い、Native、IPC、schema。数値は 1 つも緩めない（消費を減らす側だが、budget 自体は変えない）。
+
+**範囲外として記録だけするもの（残る結合）**
+- 需要の cycle が workspace binding の不一致や `maintenance-workspace-changed-during-cycle` に当たると、`onWorkspaceBindingMismatch` → `requestRediscovery()` が budget を消費する経路が残る。これは binding の不一致という別の原因の回復で、需要 wake の受理とは別の結合。今回は変えない。
+- before-cutover の chain は、需要で急かされなくなる。chain が止まって見える場合の再開は、今までどおり Freshness の NOT_READY の cooldown が担う（変えない）。
+
+**owner／lifecycle matrix（background／async-lifecycle。DR-PUBG-5-9 の項目に沿う。新しい源・timer・handle は足さない）**
+
+| 項目 | 扱い |
+|---|---|
+| entry | 既存の 2 経路に origin の印を足すだけ。(W1) discovery の `wakeProjectIds`、seam の B の wake → `"discovery"`。(W2) 需要の timer の発火（`fireGraphDemand`）→ `"demand"`。新しい入口・event・IPC は無い |
+| start | 変わらない。scheduler の timer と cycle の admission は今のまま。origin は cycle の開始条件に入らない |
+| retry | requeue は origin を保つ（判断 2 の merge）。retry count・backoff・`persistDeliveryFailure` は変わらない。再送（`deliveryRetry`）は `wakeEntries` ごと origin を写す |
+| reentrant | (binding, project) ごとに pending は 1 つ（変わらない）。同じ key に両方が来たら `"discovery"`。降格は無い |
+| 混ざった cycle | work の cycle は wake が空なので `demandOnly=false`。由来が異なる wake を同じ cycle に載せたときは `demandOnly=false`（今のまま rediscovery を呼ぶ）。需要の project だけの wake の cycle だけが `true` |
+| hasMore の継続 | work の継続は discovery。wake だけの継続は project ごとの origin を引き継ぐ（判断 4） |
+| completion の復元 | `completionWakeOrigins` で復元。無ければ `"discovery"` |
+| origin 不明時の既定 | 常に `"discovery"`（今の挙動） |
+| admission closure | 変わらない。dispose・quiesce・workspace 切替で `durableWakeProjects` ごと消える（origin も一緒に消える） |
+| pending start | 新しい timer は無い。`onCycleAccepted` の中で `requestRediscovery` を呼ばないだけで、coordinator の timer（250 ms の rediscovery）を 1 つ減らす側 |
+| active handle | 変わらない（cycle の permit と attempt。origin は handle を持たない） |
+| cancel | 変わらない。origin は cancel の経路に関与しない |
+| 有限待機 | 待ちを足さない。`demandOnly` は cycle の完了時の同期の計算 |
+| 終了の証拠 | 変わらない。timer の clear と dispose の記録、cycle の terminal receipt |
+| error／timeout／onClosed | 失敗の requeue は origin を保つ（判断 2）。callback の例外は今までどおり warn で握る |
+| 再起動時の状態 | 永続する状態は無い。origin は process-local。再起動後は discovery の wake として戻る |
+
+**threat model の差分（委任の内の技術的な改訂。actor・防御・受信先・受入れは変えない）**
+- 新しい攻撃：untrusted な renderer が seed 付きの begin を繰り返し、需要の wake を起こして before-cutover の chain の budget を尽きさせる経路が、**閉じる**（DR-PUBG-5-14 の判断 5 の残余リスクの解消）。新しく開く経路は無い。
+- 新しく生まれうる害（防ぐもの）：需要の origin が discovery の wake を降格し、rediscovery を抑止する。判断 2 の merge と、競合（需要の cycle の in-flight → 同じ key に discovery → cycle の失敗 → 次の cycle）の試験で防ぐ。
+- 受信先・保存：増えない。新しい書込み・保存先・送信先・durable な行・IPC は無い。
+- 受入れ：const が false の間は挙動不変（event 0、timer 0、wake 0、B の SQL 0）。W1・seam・work の cycle の rediscovery は今まで通りの回数。
+- 委任の外に当たるもの（避けたもの）：budget・遅延・cooldown・需要の間隔・key の上限の変更、新しい契約・authority、Native の変更。
+
+**試験計画**：scheduler の単体（`onCycleAccepted` の引数。需要だけ → true、discovery だけ・work の cycle・由来が異なる wake（順序 2 通り）→ false、requeue 後の保持、降格の競合、hasMore の継続、再送）、bootstrap（`drainWakeOutbox` は常に呼ぶ）、production の bootstrap と実 scheduler（`narrativeMaintenance.electronRoute.test.ts` の「需要の受理が rediscovery を 1 回足す」を意図して 0 回に書き換え、discovery 由来の対照を足す）、budget の回数（需要の cycle を budget の 3 を超えて受理させても尽きず、その後 discovery 由来の cycle が 3 回消費できる）、変異 2 種（判定を外す、混ざった cycle を demand と数える）。
+
 ### DR-PUBG-5-19：存在しない project の maintenance の wake が終わらない（F-1）の直し（2026-11-19）
 
 - 位置づけ：PUB-G の前提 #5 の途中で見つかった別件の不具合 F-1。DR-PUBG-5-18（別の枝）が expected-fail の試験で記録したものを、直った状態を正で assert する試験に替える。この commit（最初の commit）は判断と信頼境界の記録で、コード・policy・定数は変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
