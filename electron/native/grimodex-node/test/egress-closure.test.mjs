@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import { closeMockServer, startMockServer } from "./mock-http.mjs";
 import { activateThroughGrant } from "./profile-activation-helper.mjs";
@@ -24,6 +24,30 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 const roots = [];
 process.on("exit", () => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+// A Backend that opened a workspace keeps workspace maintenance writing under
+// it after `openWorkspace` resolves. The exit hook above removes the roots
+// synchronously, so without a proven Closed it races that writer and fails with
+// ENOTEMPTY on the workspace opened last. Every Backend this file builds is
+// closed, and must prove it, before the process exits.
+const backends = [];
+
+function newBackend(appData) {
+  const backend = new Backend(appData);
+  backends.push(backend);
+  return backend;
+}
+
+after(async () => {
+  for (const backend of backends) {
+    const wire = await backend.shutdownWorkspaceLifecycle();
+    assert.equal(
+      JSON.parse(wire).status,
+      "closed",
+      "Native cleanup must prove Closed",
+    );
+  }
 });
 
 const DENIED = /D2A_EGRESS_DENIED:.*provider egress is closed while the profile is restricted/;
@@ -192,7 +216,7 @@ test("control: an unrestricted profile still reaches the provider through the sa
   try {
     const { appData } = newRoot();
     writeAiSettings(appData, baseUrl);
-    const backend = new Backend(appData);
+    const backend = newBackend(appData);
     const status = JSON.parse(await backend.initializeProfileEgress());
     assert.equal(status.restricted, false);
     const settings = JSON.parse(await backend.getAiSettings());
@@ -215,7 +239,7 @@ test("G-2: all eight legacy entries refuse after activation, for a registered st
   try {
     const { root, appData } = newRoot();
     writeAiSettings(appData, baseUrl);
-    const backend = new Backend(appData);
+    const backend = newBackend(appData);
     await backend.initializeProfileEgress();
     const status = JSON.parse(await activateThroughGrant(backend));
     assert.equal(status.restricted, true);
@@ -238,13 +262,13 @@ test("G-2: all eight legacy entries refuse in a process restarted on a restricte
   try {
     const { root, appData } = newRoot();
     writeAiSettings(appData, baseUrl);
-    const first = new Backend(appData);
+    const first = newBackend(appData);
     await first.initializeProfileEgress();
     await activateThroughGrant(first);
 
     // A new Backend on the same app data is a restarted process: Main's
     // "stop the external transports" participants never ran for it.
-    const restarted = new Backend(appData);
+    const restarted = newBackend(appData);
     const status = JSON.parse(await restarted.initializeProfileEgress());
     assert.equal(status.restricted, true);
     assert.equal(status.inFlightStopped, true);

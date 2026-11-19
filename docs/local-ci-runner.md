@@ -206,8 +206,7 @@ Pull requests only: registered `ci.yml` has a `Change scope` job (`changes`) tha
 skips heavy lanes when every changed path is neutral for them. The rules are
 `scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
 `base...head` diff and needs no dependency installation. The lanes are journeys
-(the two journey roots; the shards, the aggregate and runtime performance skip
-through `needs`), Rust (shared crates and the C-query worker, which a pull request
+(the two journey roots; the shards and the aggregate skip through `needs`), Rust (shared crates and the C-query worker, which a pull request
 runs on Linux only: macOS and Windows run in the `master` push), native,
 migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
 Quality, Frontend and Electron always run. Selection is deny by default: an
@@ -232,9 +231,18 @@ section to the job summary (authoritative over any table above it) and rewrites
 the JSON artifact with the final values.
 `changes` is built not to fail (soft steps, a 3 minute step timeout on the
 checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
-which run every lane, but if the `changes` job itself fails as a whole the shard,
-aggregate and runtime-performance jobs are skipped by their implicit `success()`
+which run every lane, but if the `changes` job itself fails as a whole the shard
+and aggregate jobs (and, on a non-pull-request event, runtime performance) are
+skipped by their implicit `success()`
 and the journeys evidence of that run is lost.
+The `electron-runtime-performance` job (the 50k-character / 20-Beat gate) is not a pull request
+check: its absolute-time thresholds are unstable on a shared hosted VM, so a pull request
+event never runs it (it is skipped, not passed). The `master` push, manual dispatch and reusable
+calls run it exactly as before, with the same thresholds, retry rule and measurement; the
+registered Full stage `electron-runtime-performance` is unchanged. The registered Quick profile
+(`impact` only) never had this stage, so nothing before the merge inspects runtime performance;
+its three deterministic contract tests (`runtime-performance-fixture`, `-retry`, `-io-settle`)
+run in the pull request through the `electron` job.
 After the merge, compare the time from the start of a run until each lane starts,
 before and after the introduction.
 
@@ -795,20 +803,38 @@ apply original risk-derived applicable prerequisites before a distinct dispatch;
 selector/source-contract success is not Cargo, complete Gate A2, resource admission,
 B authority or Full evidence.
 
-For the remaining failpoint-enabled library command, `canonical_profile=migration-library`
-selects the same existing `migration-recovery-gate` owner and only its unchanged
-`Migration recovery failpoint library tests` step: `cargo test -p grimodex-db
---features test-failpoints --lib` in `src-tauri`. This is the original unfiltered
-library command, including restore/recovery failpoint units, not a complete Gate A2
-pass. The successful crash/Safe Mode steps and five other commands are skipped,
-not replayed or passed. Default/reusable callers retain all eight commands and
+For the failpoint-enabled library step, `canonical_profile=migration-library`
+selects the same existing `migration-recovery-gate` owner and only its
+`Migration recovery failpoint library tests` step. Since 2026-11-19 that step is
+filtered: `cargo test -p grimodex-db --features test-failpoints --lib --
+backup_restore:: recovery:: migration_supervisor::` in `src-tauri`, no longer the
+whole library (about 2,940 tests, 17-21 minutes). Basis: the Shared Rust job
+already runs the same library without the feature, and a name diff of the
+feature-on and feature-off `--list` shows the feature adds exactly eight tests, all in
+`backup_restore::tests` and `recovery::tests`. `test-failpoints` is referenced only
+by `backup_restore.rs`, `recovery.rs` and `migration_supervisor.rs` (the latter has
+no library tests; its failpoint suite is a separate integration-test step), so these
+three module filters cover every test that compiles only under the feature plus every
+production module whose behaviour the feature can change. The step is fail-closed: it
+requires each of those eight tests to be reported `ok` and at least 58 passed (the
+current count), so a renamed module or filter cannot pass with zero or few tests, and
+`scripts/ci-pause.test.mjs` pins the whole run block and scans `grimodex-db/src` so a
+new feature-gated file or test must be added to the filter and the required list.
+This is not a complete Gate A2 pass. The successful crash/Safe Mode steps and five other commands are
+skipped, not replayed or passed. Default/reusable callers retain all eight steps and
 the same bootstrap, frozen dependencies, cache, profiles and timeout. Keep product
 mode `all`, false booleans and empty canonical tuple/options; the first literal
 guard rejects mixed inputs, case variants and wrong events before checkout/setup.
-Unknown profiles reach canonical rejection. No input/job/executor or test suppression
-is added. Actual library consumers and original risk-derived applicable prerequisites
-must be reviewed before a distinct dispatch; source proof alone does not authorize
-Cargo, ignored real-worker/diagnostic cases, B or Full.
+Unknown profiles reach canonical rejection. No input, job or executor is added; the
+only narrowing is the module filter above. A standalone `canonical_profile=migration-library`
+dispatch runs only those 58 tests, so it is not a receipt for the registry's
+`migration.failpoints-lib` (Full / local, unfiltered). `release.yml` calls `ci.yml`
+(`uses: ./.github/workflows/ci.yml`), so the tag Release CI also runs this filtered step;
+the unfiltered `--features test-failpoints --lib` run remains in the hosted Full
+(registry `migration.failpoints-lib` in `scripts/local-ci-registry.json`) that a release
+PR requires as merge evidence and a release tag requires on the merged commit. Actual
+library consumers and original risk-derived applicable prerequisites must be reviewed
+before a distinct dispatch; source proof alone does not authorize Cargo, ignored real-worker/diagnostic cases, B or Full.
 
 For grouped remaining migration proof, `canonical_profile=migration-remaining`
 selects only four unchanged steps on the same existing `migration-recovery-gate`
