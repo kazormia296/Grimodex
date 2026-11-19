@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import yaml from "js-yaml";
+import { evaluateIf } from "../ci-change-scope.test-support.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1129,36 +1131,45 @@ test("CI runs the diff gate with full history and selected light suites", async 
   const workflow = await read(".github/workflows/ci.yml");
 
   assert.match(workflow, /^ {2}quality:\s*$/m);
-  assert.equal(yaml.load(workflow).jobs.quality["timeout-minutes"], 90);
+  // The nightly schedule gets a longer timeout than the 90 minutes of the other events: a warm full
+  // selection took up to about 65 minutes, and rust-cache saves only after a successful job.
+  assert.equal(
+    yaml.load(workflow).jobs.quality["timeout-minutes"],
+    "${{ github.event_name == 'schedule' && 150 || 90 }}",
+  );
   assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /pnpm eval:impact/);
   assert.match(workflow, /--run/);
 
-  // Q (2026-11-15) and 2026-11-19: the impact step runs only on a manual
-  // dispatch and on a release tag. A pull request does not run it (the
-  // canonical Quick already ran the same selection on the candidate head), and
-  // neither does a master push (the merge needed that Quick, and the Frontend,
-  // Shared Rust and Electron native jobs run most of the same tests in full).
-  // A reusable call inherits the caller's event and ref, so the release
-  // workflow's call on a tag push keeps running it and a dispatched caller runs
-  // it. Gate B2 still lists `push` in acceptedEvents because the job runs on a
-  // push; the Gate B2 Light run of `impact-selected-light` is done by the
-  // certification runner on the candidate, not by this step. The job itself,
-  // with its checkout identity and `pnpm verify:quality`, still runs on every
-  // event the job runs on.
+  // Q (2026-11-15) and 2026-11-19: the impact step runs on the nightly schedule, on a manual dispatch
+  // and on a release tag. A pull request does not run it (the canonical Quick already ran the same
+  // selection on the candidate head), and neither does a master push (the merge needed that Quick, and
+  // the Frontend, Shared Rust and Electron native jobs run most of the same tests in full); the nightly
+  // run is the only automatic run of the whole selection after a merge. A reusable call inherits the
+  // caller's event and ref; its only caller, release.yml, calls on a tag push. Gate B2 is not weakened:
+  // its certification runner runs `impact-selected-light` itself on the candidate, and Gate B2 accepts
+  // only `push` and `workflow_dispatch` runs of ci.yml, never `schedule`. The job itself, with its
+  // checkout identity and `pnpm verify:quality`, still runs on every event the job runs on.
   const quality = yaml.load(workflow).jobs.quality;
+  const impactCondition =
+    "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'";
   const impactSteps = quality.steps.filter(
     (step) => step.name === "Impact-selected light gates",
   );
   assert.equal(impactSteps.length, 1);
   const [impact] = impactSteps;
-  assert.equal(
-    impact.if,
-    "github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'",
+  assert.equal(impact.if, impactCondition);
+  // Only the impact step runs cargo (pnpm verify:quality runs none: see the next test), so the Rust
+  // toolchain and rust-cache steps follow the impact step. A pull request or master push job must not
+  // save an empty rust-cache entry under the key the nightly run needs to save.
+  const rustSteps = quality.steps.filter((step) =>
+    /^(dtolnay\/rust-toolchain|Swatinem\/rust-cache)@/.test(step.uses ?? ""),
   );
-  // Truth table of the step condition. `schedule` never reaches the job, and a
-  // `workflow_call` reports its caller's event and ref: the release workflow
-  // calls ci.yml on a tag push, a master push is a branch ref.
+  assert.equal(rustSteps.length, 2);
+  for (const step of rustSteps) assert.equal(step.if, impactCondition, step.uses);
+  // Truth table of the step condition (job `quality`, step "Impact-selected light gates").
+  // A `workflow_call` reports its caller's event and ref: the release workflow calls ci.yml on a tag
+  // push; a master push is a branch ref.
   const impactRuns = ({ event, refType }) =>
     impact.if.split("||").some((clause) => {
       const [, key, value] =
@@ -1168,12 +1179,32 @@ test("CI runs the diff gate with full history and selected light suites", async 
   for (const [scenario, context, runs] of [
     ["pull_request", { event: "pull_request", refType: "branch" }, false],
     ["master push", { event: "push", refType: "branch" }, false],
-    ["schedule", { event: "schedule", refType: "branch" }, false],
+    ["schedule", { event: "schedule", refType: "branch" }, true],
     ["workflow_dispatch", { event: "workflow_dispatch", refType: "branch" }, true],
+    ["workflow_dispatch of independent_gates", { event: "workflow_dispatch", refType: "branch" }, true],
+    ["workflow_dispatch of source_focused", { event: "workflow_dispatch", refType: "branch" }, true],
     ["workflow_call from a dispatch", { event: "workflow_dispatch", refType: "branch" }, true],
     ["workflow_call from the release tag push", { event: "push", refType: "tag" }, true],
   ]) {
     assert.equal(impactRuns(context), runs, `impact step on ${scenario}`);
+  }
+  // The job runs on a schedule and with independent_gates; a canonical profile, candidate input or
+  // source_focused request never reaches it (the dispatch inputs the job `if` excludes).
+  const jobAdmitted = (inputs, event) => evaluateIf(quality.if, { inputs, event });
+  const dispatchDefaults = Object.fromEntries(
+    Object.entries(yaml.load(workflow).on.workflow_dispatch.inputs).map(([name, input]) => [name, input.default ?? ""]),
+  );
+  for (const [scenario, inputs, event, admitted] of [
+    ["pull_request", {}, "pull_request", true],
+    ["push", {}, "push", true],
+    ["schedule (no inputs)", {}, "schedule", true],
+    ["workflow_dispatch", dispatchDefaults, "workflow_dispatch", true],
+    ["workflow_dispatch independent_gates", { ...dispatchDefaults, independent_gates: true }, "workflow_dispatch", true],
+    ["workflow_dispatch source_focused", { ...dispatchDefaults, source_focused: true }, "workflow_dispatch", false],
+    ["workflow_dispatch canonical_profile", { ...dispatchDefaults, canonical_profile: "quick" }, "workflow_dispatch", false],
+    ["workflow_dispatch candidate_head", { ...dispatchDefaults, candidate_head: "a".repeat(40) }, "workflow_dispatch", false],
+  ]) {
+    assert.equal(jobAdmitted(inputs, event), admitted, `job quality on ${scenario}`);
   }
   assert.match(impact.run, /pnpm eval:impact -- --base "\$QUALITY_BASE_SHA" --head "\$QUALITY_HEAD_SHA" --run/);
   assert.match(impact.run, /pnpm eval:impact -- --head "\$QUALITY_HEAD_SHA" --run/);
@@ -1195,10 +1226,146 @@ test("CI runs the diff gate with full history and selected light suites", async 
   const gateB2 = yaml.load(await read("evals/certifications/gate-b2.yaml"));
   assert.ok(gateB2.fullCi.acceptedEvents.includes("push"));
   assert.ok(!gateB2.fullCi.acceptedEvents.includes("pull_request"));
+  // A schedule run is never Gate B2 evidence, and the impact run of the Gate B2 Light suite is the
+  // certification runner's own (`injectCandidateComparison`), not this step's.
+  assert.ok(!gateB2.fullCi.acceptedEvents.includes("schedule"));
   assert.ok(gateB2.fullCi.requiredJobs.includes(quality.name));
+  const lightImpact = gateB2.requiredLight.find((entry) => entry.id === "impact-selected-light");
+  assert.deepEqual(lightImpact.command, ["pnpm", "eval:impact", "--", "--run"]);
+  assert.equal(lightImpact.injectCandidateComparison, true);
   // The canonical Quick profile still runs the impact stage.
   const registry = JSON.parse(await read("scripts/local-ci-registry.json"));
   assert.deepEqual(registry.profiles.quick, ["impact"]);
+});
+
+test("the impact step fails closed unless every suite was selected and passed", async () => {
+  const workflow = await read(".github/workflows/ci.yml");
+  const impact = yaml
+    .load(workflow)
+    .jobs.quality.steps.find((step) => step.name === "Impact-selected light gates");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "grimodex-impact-step-"));
+  try {
+    // A stand-in `pnpm` that writes a prepared report where `--report` points, or fails, as the test says.
+    await mkdir(path.join(directory, "bin"));
+    const fakePnpm = path.join(directory, "bin", "pnpm");
+    await writeFile(
+      fakePnpm,
+      [
+        "#!/bin/sh",
+        'echo "$@" >> "$FAKE_PNPM_LOG"',
+        '[ -z "$FAKE_PNPM_EXIT" ] || exit "$FAKE_PNPM_EXIT"',
+        'while [ $# -gt 0 ]; do',
+        '  if [ "$1" = "--report" ]; then',
+        '    [ -z "$FAKE_PNPM_REPORT" ] || cp "$FAKE_PNPM_REPORT" "$2"',
+        "  fi",
+        "  shift",
+        "done",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    // Real reports of the selector, so the fields the step reads are the selector's own: the full
+    // selection (a forced-all path), a narrowed one, and the docs-markdown-only one (which is also
+    // "allSelected" but narrows the commands).
+    const realReport = (changedFile) => {
+      const reportPath = path.join(directory, `${path.basename(changedFile)}.json`);
+      const result = spawnSync(
+        process.execPath,
+        ["scripts/quality/impact-map.mjs", "--changed-file", changedFile, "--format", "json", "--report", reportPath],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(readFileSync(reportPath, "utf8"));
+    };
+    const withExecution = (report, statusOf = () => "passed") => ({
+      ...report,
+      execution: report.selection.suiteIds.map((suiteId, index) => ({
+        suiteId,
+        status: statusOf(suiteId, index),
+      })),
+    });
+    const full = realReport("package.json");
+    assert.equal(full.selection.allSelected, true);
+    assert.equal(full.selection.docsMarkdownOnly, false);
+    const narrowed = realReport("src/features/chat/chatApi.ts");
+    assert.equal(narrowed.selection.allSelected, false);
+    const docsOnly = realReport("docs/plans/nir1-continuation-2026-10.md");
+    assert.equal(docsOnly.selection.allSelected, true);
+    assert.equal(docsOnly.selection.docsMarkdownOnly, true);
+
+    const run = async (label, report, { event = {}, exit } = {}) => {
+      const reportFile = path.join(directory, `${label}.json`);
+      if (report) await writeFile(reportFile, JSON.stringify(report));
+      const log = path.join(directory, `${label}.log`);
+      const result = spawnSync("bash", ["-c", impact.run], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${path.join(directory, "bin")}${path.delimiter}${process.env.PATH}`,
+          RUNNER_TEMP: directory,
+          QUALITY_BASE_SHA: "",
+          QUALITY_HEAD_SHA: "b".repeat(40),
+          ...event,
+          FAKE_PNPM_LOG: log,
+          FAKE_PNPM_REPORT: report ? reportFile : "",
+          FAKE_PNPM_EXIT: exit === undefined ? "" : String(exit),
+        },
+      });
+      let logged = "";
+      try {
+        logged = readFileSync(log, "utf8");
+      } catch {
+        // The stand-in never ran.
+      }
+      return { ...result, log: logged };
+    };
+    const passing = await run("full", withExecution(full));
+    assert.equal(passing.status, 0, passing.stderr);
+    assert.match(passing.stdout, /impact: all \d+ suites selected and passed/);
+    // No base: the head-only command. With a base: the base and head command.
+    assert.match(passing.log, /^eval:impact -- --head b{40} --run --report /m);
+    const withBase = await run("with-base", withExecution(full), { event: { QUALITY_BASE_SHA: "a".repeat(40) } });
+    assert.equal(withBase.status, 0, withBase.stderr);
+    assert.match(withBase.log, /^eval:impact -- --base a{40} --head b{40} --run --report /m);
+
+    for (const [label, report] of [
+      ["narrowed selection", withExecution(narrowed)],
+      ["docs-markdown-only selection", withExecution(docsOnly, () => "skipped")],
+      ["docs-markdown-only selection that passed", withExecution(docsOnly)],
+      ["a suite that did not pass", withExecution(full, (_, index) => (index === 3 ? "failed" : "passed"))],
+      ["a suite that was skipped", withExecution(full, (_, index) => (index === 3 ? "skipped" : "passed"))],
+      ["fewer executions than suites", { ...full, execution: withExecution(full).execution.slice(1) }],
+      ["no execution", full],
+      ["no suite", { selection: { ...full.selection, suiteIds: [] }, execution: [] }],
+    ]) {
+      const result = await run(label.replaceAll(" ", "-"), report);
+      assert.notEqual(result.status, 0, `${label} must fail the step`);
+      assert.match(result.stderr, /::error title=Impact selection is not the full suite::/, label);
+    }
+    // The selector itself failing, or writing no report, is red too.
+    assert.notEqual((await run("selector-failed", withExecution(full), { exit: 1 })).status, 0);
+    assert.notEqual((await run("no-report", null)).status, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pnpm verify:quality runs no cargo, so only the impact step needs the Rust toolchain", async () => {
+  // The Rust toolchain and rust-cache steps of job `quality` are skipped on a pull request and a master
+  // push (previous test). That is only sound while the install and `pnpm verify:quality` never run cargo.
+  const packageJson = JSON.parse(await read("package.json"));
+  assert.doesNotMatch(packageJson.scripts["verify:quality"], /cargo/);
+  for (const hook of ["preinstall", "install", "postinstall", "prepare"]) {
+    assert.equal(packageJson.scripts[hook], undefined, `root ${hook} script`);
+  }
+  // Every `pnpm` / `node` command of verify:quality is a script of this repository's package.json; the
+  // package scripts it names run no cargo either (checked with a failing `cargo` on PATH, 2026-11-19).
+  const named = [...packageJson.scripts["verify:quality"].matchAll(/pnpm (?:-s )?([\w:-]+)/g)].map((match) => match[1]);
+  for (const name of named) {
+    if (packageJson.scripts[name] !== undefined) {
+      assert.doesNotMatch(packageJson.scripts[name], /\bcargo\b|napi:build/, `script ${name}`);
+    }
+  }
 });
 
 test("repo routing points AI behavior authoring and diff evaluation to narrow skills", async () => {

@@ -95,8 +95,9 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
    祖先確認からやり直す（候補base／headとQuick receiptを取り直す）。通常のPRのmergeまでが依頼されていてもCIが明示的に除外されている場合は、
    Quickとmergeを開始せず、merge readinessを主張しない。
    同じheadの`ci.yml`の成功には、§2.10の2つの例外がある。
-   `ci.yml`のQualityは、PRでもmasterのpushでもimpact-selected Light suiteを実行しない（canonical Quickが同じ候補で実行済み。手動のworkflow_dispatchとreleaseのtag pushの呼出しだけが実行する）。C-query workerはPRではLinuxだけで走らせる。
-   PRの`ci.yml`はmerge ref（`github.sha`）を測り、Quickは候補headを測る。Quickの後に進んだmasterとの組合せは、impactでは検査されない（mergeの後に自動で検査するrunはなく、後のQuickが同じsuiteを選んだとき、手動dispatch、releaseのtagのrunで見つかる）。
+   `ci.yml`のQualityは、PRでもmasterのpushでもimpact-selected Light suiteを実行しない（canonical Quickが同じ候補で実行済み。夜間のschedule、手動のworkflow_dispatch、releaseのtag pushの呼出しが実行する）。C-query workerはPRではLinuxだけで走らせる。
+   impactだけが回すもの（製品構成のfeature `native-current-human-capture`つきのgrimodex-dbの試験、評価専用featureの試験、ほかのjobもregistryも名指ししない多数のNode試験）は、mergeの後もmasterのpushでは検査されない。
+   PRの`ci.yml`はmerge ref（`github.sha`）を測り、Quickは候補headを測る。Quickの後に進んだmasterとの組合せは、PRのrunではimpactで検査されない（mergeの後は夜間のrunが全suiteを回すので、組合せの破損は最長でおよそ1日後に夜間のrunで見つかり、masterの赤として§8に従う）。
    macOS／Windowsのworkerはmasterのpushの`ci.yml`で走るため、PRのcheckがgreenでも、macOS／Windowsだけの失敗はmergeの後にmasterのpushで見つかり、masterの赤として§8に従う。
    Electron runtime performance jobは共有VMの絶対時間が不安定なため、PRの`ci.yml`では走らせない。PRのcheckがgreenでもその証拠にならず、失敗はmergeの後にmasterのpushの`ci.yml`とmasterのFullで見つかり、masterの赤として§8に従う。
 6. release PRでmergeまでがゴールでCIが許可されている場合だけ、Fullを要求する。初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
@@ -302,6 +303,7 @@ required checks、手順2のQuick receipt、review の確認は同じである�
 - requested changes と未解決 review thread がない
 - master の Full が赤でない（判定は §8.5。run の結論ではなく attempt の結論で見るので、全 job を再実行している間も、直前の attempt が赤なら赤のままである）。
   赤ならその修正または revert 以外の PR を merge しない（§8.6）。
+- 直近の夜間の `ci.yml`（schedule）が赤でない（判定は §8 の冒頭。success 以外で終わった夜間の run は master の赤で、その修正または revert 以外の PR を merge しない）。
 
 通常path（通常のPR）では、さらに次を確認する。
 
@@ -370,6 +372,12 @@ run idを完了報告に書く。見届けは、終わるまで待てる担当�
 その赤は、そのrunの再実行の成功、より新しいmasterのpushの`ci.yml`の成功、または原因の修正かrevertが`origin/master`に入ったときに解ける。
 無関係なflakeの例外とその記録の要件は、本節5と同じである。
 本節5〜6の赤の判定と対応は、docs-only PRの後も他のPRのmergeに今のまま適用する。
+夜間の`ci.yml`（schedule）は、masterのpushが回さないimpactの全suiteを回す唯一の自動のrunで、journeysも回す。
+直近のrunを`gh run list --workflow ci.yml --event schedule --branch master --limit 1 --json databaseId,status,conclusion,attempt,headSha,createdAt`で特定する
+（実行中・queuedで結論のないrunは、直前のattemptまたは直前のrunの結論で判定する。本節5のFullと同じ）。
+そのrunがsuccess以外（failure、cancelled、timed outなど）で終わったら、masterの赤として本節5〜6に従う。
+その赤は、そのrunの再実行の成功、より新しい夜間のrunの成功、または原因の修正かrevertが`origin/master`に入ったときに解ける。
+無関係なflakeの例外とその記録の要件は、本節5と同じである。
 
 1. §7の反映確認の後、`git fetch origin master` を実行する。dispatch の `candidate_base` 入力（下の `master_base`）には、直前にcompleteなFull
    （全part jobと`full-aggregate`が成功）を通した master の commit を使う。`gh run list --workflow canonical-ci.yml --branch master --status success` のrunを新しい順に見て、
