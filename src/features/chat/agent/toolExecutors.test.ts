@@ -66,6 +66,20 @@ vi.mock("@/features/agent-writes/event", () => ({
   agentRemoveEventRelation: mockAgentRemoveEventRelation,
 }));
 
+// hidden の判定（DB）は toolExecutors.codexHidden.test.ts が検証する。ここは素通し。
+vi.mock("@/features/codex/context/codexHiddenFromAi", () => ({
+  dropCodexHiddenFromAi: async <T>(rows: readonly T[]) => [...rows],
+  resolveCodexForAi: async () => ({
+    hidden: new Set<string>(),
+    texts: new Map(),
+  }),
+  visibleCodexIdsForAi: async (ids: readonly string[]) => [...ids],
+  visibleCodexForAi: async (ids: readonly string[]) => ({
+    ids: [...ids],
+    summaries: new Map(),
+  }),
+}));
+
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
 vi.mock("@/features/foreshadow/api", () => ({
