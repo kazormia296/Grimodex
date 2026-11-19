@@ -10,6 +10,9 @@ task carries the original shared-Rust test obligation exactly once.
 The renderer unit suite runs as complementary Vitest `1/3`, `2/3`, and `3/3`
 shards; the final task carries the existing `frontend.unit` obligation, and all
 three results are bound into the receipt.
+Hosted `ci.yml` runs the same `1/3`-`3/3` partition as the `frontend-unit` matrix
+and the static checks once as `frontend-static`; the `frontend` job keeps its
+Gate B2 name and only aggregates those two (a matrix job cannot keep the name).
 
 Each registry command has a stable `id`. `after` lists direct task
 dependencies, `lane` prevents two tasks with the same exclusive lane from
@@ -63,9 +66,21 @@ that cannot read `docs/` is dropped, and only the Node tests that read documents
 remain. A suite left with no command is `skipped`, not failed. This also applies
 to the Light run of Gate B2 (`scripts/quality/certify-gate-b2.mjs`), which reads
 only the exit code, so it does no harm there. The `ci.yml` of a pull request
-measures the merge ref and the Quick measures the candidate head, so master
-changes that landed after the Quick are first checked by impact on the `master`
-push.
+measures the merge ref and the Quick measures the candidate head. The `ci.yml`
+Quality job runs impact on the nightly schedule, on a manual dispatch and on the
+release workflow's call on a tag push, not on a pull request or a `master` push.
+What only impact runs (the grimodex-db tests built with the product feature
+`native-current-human-capture`, the eval-only feature tests, and many Node tests
+that no other job or registry entry names) is therefore checked on `master` by the
+nightly run, usually a day or so after a merge (GitHub's schedule delays or
+skips runs, so it can take longer), and master changes that landed
+after the Quick are checked by impact there. The nightly, dispatch and tag runs
+have no comparison base (the `before` of a new tag does not resolve), so they
+select every suite and are not narrowed by the docs-markdown-only rule. Only the
+nightly run checks that: its step fails unless every suite was selected and
+passed; a dispatch and a tag call are judged by the selector's exit code alone
+(a moved tag, whose `before` resolves, selects by diff). A nightly run that does
+not succeed is a red `master`.
 
 ### Split hosted Full
 
@@ -568,14 +583,37 @@ acceptance, which comes from the executed cases. Exposing the profile neither wa
 B/Full, final acceptance or canonical gates nor changes any fixed value.
 
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
-selects **only the complete existing `rust` job**. This reuses the registered
+selects **only the complete existing `rust` job**: its three shards (`lib-graph`,
+`lib-rest`, `integration`) and `rust-aggregate`, which keeps the required check
+name `Shared Rust crates (check / clippy / test)`. This reuses the registered
 workflow and its existing string input; it adds no dispatch input or executor.
 Keep product mode `all`, all booleans false, and candidate tuple/options empty.
 The job's first literal shell guard rejects mixed inputs and nonliteral case
-before checkout/setup. Other malformed profiles still go to the canonical
-owner for rejection. Default/reusable CI, the ten-job independent selection,
-all six Cargo invocations, features, dependencies, build-profile environment,
-cache and 30-minute timeout are unchanged. The shared Rust job explicitly empties
+before checkout/setup in every shard. Other malformed profiles still go to the
+canonical owner for rejection. The features, dependencies and build-profile
+environment of the shared Rust job are unchanged. Default/reusable CI is
+not unchanged for this job and for `frontend` (split as described here and
+above); the other jobs keep their commands. The shards run the target kinds of the former single
+`cargo test --workspace --exclude grimodex --features
+grimodex-semantic/semantic-embedding`, with the same workspace build and
+therefore the same test cfg: `lib-graph` runs `--lib` with the filter
+`narrative_extraction::nir1_graph` and fails if that filter ran no test (so a
+renamed module cannot silently drop the parallelism), `lib-rest` runs `--lib`
+with the same string as `--skip` (so a new test module lands in `lib-rest`), and
+`integration` runs the targets `--lib` does not select (`--bins --test '*'` and
+`--doc`). The examples are **built, not run**, as the former `cargo test` did:
+`integration` runs `cargo build --workspace --exclude grimodex --features
+grimodex-semantic/semantic-embedding --profile test --examples`, which compiles
+them as plain executables under the test profile (verified against `cargo test
+-v`; `cargo test --examples --no-run` would compile a `--test` harness
+instead). Not covered by any shard: a bench or example declared with
+`test = true` (there is none; `scripts/ci-pause.test.mjs` fails when a
+`Cargo.toml` declares one). `cargo check` and `cargo clippy` run once, in
+`lib-graph`; the `test-failpoints`, `narrative_runtime_authority` and
+`licensing` reruns run in `integration`. Each shard has its own `rust-cache` key
+and the 45-minute timeout. `rust-aggregate` succeeds only when every shard
+succeeded. The local `rust` stage still runs the whole suite. The shared Rust
+job explicitly empties
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPEN_ROUTER_API_KEY`,
 `ANTHROPIC_API_KEY` and `SAKANA_API_KEY`, overriding inherited credentials for
 both standalone and default/reusable callers. The unfiltered suite includes
@@ -832,7 +870,8 @@ applicable prerequisites before dispatch. Source contracts and this partial
 selection are not complete/current Gate A2, resource admission, native lifecycle,
 B authority or Full proof; native/runtime/3OS lanes are not implicitly selected.
 
-The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
+The twelve-job independent selection (the former ten plus `frontend-static` and
+`frontend-unit`) is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are
 rejected by the sole canonical owner before setup. Before dispatch, record the

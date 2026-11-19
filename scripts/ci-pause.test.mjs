@@ -362,15 +362,24 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   for (const [id, job] of Object.entries(ci.jobs)) {
     if (id === "electron" || id === "canonical" || id === "existing-os-suitability") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
-    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
+    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "rust-aggregate", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
     // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
     const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
-    const ordinaryCondition = `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
+    // The Quality job also runs on the nightly schedule (its impact step is the only automatic run of the whole
+    // impact selection after a merge); it has no event condition, and the schedule test below pins that.
+    const ordinaryCondition = id === "quality"
+      ? `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
+      : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
-    assert.equal(unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
+    // The frontend aggregate adds `!cancelled()` so that a failed split job turns
+    // the required check red instead of leaving it skipped (which branch
+    // protection would read as passing); its admission stays the ordinary one.
+    const aggregateGuard = id === "frontend" ? /^!cancelled\(\) && \((.+)\)$/su.exec(unwrapIf(job.if)) : null;
+    if (id === "frontend") assert.ok(aggregateGuard, "frontend aggregate must run after a failed split job");
+    assert.equal(aggregateGuard ? aggregateGuard[1] : unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
@@ -378,6 +387,8 @@ test("registered CI exposes only opt-in canonical source contracts without gener
         ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
+      : id === "rust-aggregate"
+        ? `\${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition})) && needs.rust.result != 'skipped' }}`
         : id === "migration-recovery-gate"
           ? `\${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (${ordinaryCondition}) }}`
           : ordinaryCondition), id);
@@ -732,11 +743,20 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const value = (expression, inputs, event = "workflow_dispatch", changes = {}) => evaluateIf(expression, { inputs, event, changes });
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
   const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
-  // 18 product jobs plus the pull-request `changes` job.
-  assert.equal(ordinary.length, 19);
+  // 20 product jobs (`frontend` is an aggregate over frontend-static and
+  // frontend-unit), the shared Rust aggregate (the required check name of the
+  // three `rust` shards) and the pull-request `changes` job.
+  assert.equal(ordinary.length, 22);
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
+  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs and the Quality job.
+  // Quality's impact step is the only automatic run of the whole impact selection after a merge.
+  assert.deepEqual(admitted({}, "schedule"), [
+    "changes", "quality",
+    "electron-product-journeys-build", "electron-product-journeys-c2zc",
+    "electron-product-journeys", "electron-product-journeys-aggregate",
+  ]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true, source_canonical_contracts: true }), ["electron"]);
@@ -744,7 +764,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   // Every remaining job keeps its complete commands; the worker matrix is not a new executor.
   const independent = admitted({ ...defaults, independent_gates: true });
   assert.deepEqual(independent, [
-    "quality", "frontend", "lfm-encoder-phase0", "browser", "webgl", "storybook",
+    "quality", "frontend", "frontend-static", "frontend-unit", "lfm-encoder-phase0", "browser", "webgl", "storybook",
     "security", "electron", "electron-windows-installer-contract",
     "nir1-c-query-worker",
   ]);
@@ -764,11 +784,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       assert.deepEqual(admitted({ ...defaults, independent_gates: true, [field]: malformed }), ["canonical"], `independent ${field}=${malformed}`);
     }
   }
-  // Standalone selection reuses the complete ordinary Rust owner. Even mixed
-  // inputs select only that owner, whose literal guard runs BEFORE any setup.
+  // Standalone selection reuses the complete ordinary Rust owner: the three
+  // `rust` shards and the `rust-aggregate` that carries the required check name.
+  // Even mixed inputs select only those, whose literal guard runs BEFORE any setup.
   const rust = ci.jobs.rust;
   const shared = { ...defaults, canonical_profile: "shared-rust" };
-  assert.deepEqual(admitted(shared), ["rust"]);
+  assert.deepEqual(admitted(shared), ["rust", "rust-aggregate"]);
   assert.equal(rust["runs-on"], "ubuntu-latest");
   assert.equal(rust["timeout-minutes"], 45);
   assert.deepEqual(rust.env, {
@@ -924,7 +945,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(registry.stages.rust.commands.find(({ id }) => id === "rust.c-query-worker").args, ["scripts/nir1-c-query-worker-ci.sh"]);
   for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
-    assert.deepEqual(admitted(inputs, event), ["rust"]);
+    assert.deepEqual(admitted(inputs, event), ["rust", "rust-aggregate"]);
     const env = Object.fromEntries(Object.entries(sharedSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
     return executeShared("bash", ["-c", sharedSelection.run], { timeout: 10000, env: {
       ...process.env, ...env, GITHUB_EVENT_NAME: event,
@@ -944,15 +965,119 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   for (const malformed of ["shared-rust ", " shared-rust", "shared-rust$(exit 0)", "shared-rust-unknown"]) {
     assert.deepEqual(admitted({ ...shared, canonical_profile: malformed }), ["canonical"]);
   }
-  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => step.run.trim()), [
-    "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
-    "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings",
-    "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
-    "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
-    "cargo test -p grimodex-db --test narrative_runtime_authority",
-    "cargo test -p grimodex-license --features licensing",
+  // The former single `cargo test` is split into three shards that cover its
+  // target kinds by construction. Every shard builds the same workspace with the
+  // same features, so the test cfg is identical; check and clippy run once.
+  // Examples are only built (as `cargo test` did), in the integration shard.
+  assert.deepEqual(rust.strategy, { "fail-fast": false, matrix: { shard: ["lib-graph", "lib-rest", "integration"] } });
+  assert.equal(rust.name, "Shared Rust crates (${{ matrix.shard }})");
+  assert.equal(rust.steps.find(({ uses }) => uses?.startsWith("Swatinem/rust-cache@")).with.key, "${{ matrix.shard }}");
+  const base = "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding";
+  const graphFilter = "narrative_extraction::nir1_graph";
+  // The lib-graph test step runs the filtered `--lib` tests inside a guard
+  // script (asserted below); it is represented here by its `cargo test` line.
+  const graphStep = rust.steps.find((step) => step.name === "cargo test (lib tests, graph modules)");
+  const graphCargo = `${base} --lib -- ${graphFilter}`;
+  assert.deepEqual(graphStep.run.trim().split("\n").filter((line) => line.startsWith("cargo ")), [`${graphCargo} 2>&1 | tee "$log"`]);
+  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => [step.if, step === graphStep ? graphCargo : step.run.trim()]), [
+    ["matrix.shard == 'lib-graph'", "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding"],
+    ["matrix.shard == 'lib-graph'", "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings"],
+    // `--lib` selects every unit test of the workspace libraries. The same
+    // string is the filter in one shard and the `--skip` in the other, so the two
+    // are exact complements and a new test module falls into lib-rest.
+    ["matrix.shard == 'lib-graph'", graphCargo],
+    ["matrix.shard == 'lib-rest'", `${base} --lib -- --skip ${graphFilter}`],
+    // The targets `--lib` does not select: binary unit tests, integration tests
+    // (cargo rejects `--doc` combined with other selectors) and doctests.
+    ["matrix.shard == 'integration'", `${base} --bins --test '*'`],
+    ["matrix.shard == 'integration'", `${base} --doc`],
+    // The former `cargo test` also built the examples (test = false: not run) as
+    // plain executables under the test profile; none of the selectors above
+    // builds them. `cargo test --examples` would compile them as a test harness
+    // instead, and `cargo build --examples` without `--profile test` would use
+    // the dev profile; neither is the same compilation.
+    ["matrix.shard == 'integration'", "cargo build --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding --profile test --examples"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-db --test narrative_runtime_authority"],
+    ["matrix.shard == 'integration'", "cargo test -p grimodex-license --features licensing"],
   ]);
   for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
+  // The Gate B2 required name stays on the aggregate, which succeeds only when
+  // every shard did. `!cancelled()` keeps a failed shard from skipping it (the
+  // implicit success() would, when `changes` was skipped by a standalone
+  // canonical profile), and it is skipped only when `rust` itself was.
+  for (const [result, expected] of [["success", true], ["failure", true], ["skipped", false]]) {
+    assert.equal(evaluateIf(ci.jobs["rust-aggregate"].if, { inputs: shared, event: "workflow_dispatch", changes: {}, rustResult: result }), expected, `rust result ${result}`);
+  }
+  const aggregate = ci.jobs["rust-aggregate"];
+  assert.equal(aggregate.name, "Shared Rust crates (check / clippy / test)");
+  assert.deepEqual(aggregate.needs, ["rust"]);
+  assert.equal(aggregate["runs-on"], "ubuntu-24.04");
+  assert.equal(aggregate.steps.length, 1);
+  assert.deepEqual(aggregate.steps[0].env, { RUST_RESULT: "${{ needs.rust.result }}" });
+  assert.equal(aggregate.steps[0].run, 'test "$RUST_RESULT" = success');
+  // Neither aggregate may turn a bad shard result into success. Run the real
+  // scripts for every non-success result: `failure` and `cancelled` run the job
+  // (`!cancelled()` holds) and it exits red; `skipped` is the rust-aggregate skip
+  // condition (its `if` is false) and the script would be red anyway.
+  const exitCode = async (script, env) => {
+    try {
+      await executeShared("bash", ["-c", script], { timeout: 10000, env: { ...process.env, ...env } });
+      return 0;
+    } catch (error) {
+      return error.code;
+    }
+  };
+  assert.equal(await exitCode(aggregate.steps[0].run, { RUST_RESULT: "success" }), 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.notEqual(await exitCode(aggregate.steps[0].run, { RUST_RESULT: result }), 0, `rust-aggregate ${result}`);
+    assert.equal(evaluateIf(aggregate.if, { inputs: shared, event: "workflow_dispatch", changes: {}, rustResult: result }), result !== "skipped", `rust-aggregate runs after ${result}`);
+  }
+  const frontendVerdict = ci.jobs.frontend.steps.at(-1);
+  assert.equal(await exitCode(frontendVerdict.run, { STATIC_RESULT: "success", UNIT_RESULT: "success" }), 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.notEqual(await exitCode(frontendVerdict.run, { STATIC_RESULT: result, UNIT_RESULT: "success" }), 0, `frontend static ${result}`);
+    assert.notEqual(await exitCode(frontendVerdict.run, { STATIC_RESULT: "success", UNIT_RESULT: result }), 0, `frontend unit ${result}`);
+  }
+  assert.equal(ci.jobs.frontend["runs-on"], "ubuntu-24.04");
+  // A job-level `continue-on-error` would report `success` to `needs.*.result`
+  // and let the aggregates pass over a failed shard.
+  for (const id of ["rust", "rust-aggregate", "frontend", "frontend-static", "frontend-unit"]) {
+    assert.equal(ci.jobs[id]["continue-on-error"], undefined, `${id} must not continue on error`);
+  }
+  // The lib-graph guard: a filter that matches no test must not stay green, a
+  // failing cargo keeps its own exit code (the pipe through tee must not hide
+  // it), and a real count passes. Run the real step script against a fake cargo.
+  const fakeBin = await mkdtemp(path.join(tmpdir(), "lib-graph-guard-"));
+  try {
+    await writeFile(path.join(fakeBin, "cargo"), '#!/bin/bash\nprintf "%s\\n" "$FAKE_CARGO_OUTPUT"\nexit "${FAKE_CARGO_EXIT:-0}"\n', { mode: 0o755 });
+    const skipped = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s";
+    const ran = `${skipped}\n\nrunning 7 tests\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.10s`;
+    const guard = (output, code = 0) => exitCode(graphStep.run, {
+      PATH: `${fakeBin}:${process.env.PATH}`, FAKE_CARGO_OUTPUT: output, FAKE_CARGO_EXIT: String(code),
+    });
+    assert.equal(await guard(ran), 0);
+    assert.equal(await guard(skipped), 1);
+    assert.equal(await guard(ran, 101), 101);
+    assert.equal(await guard(skipped, 101), 101);
+  } finally {
+    await rm(fakeBin, { recursive: true, force: true });
+  }
+  // No shard runs a bench or example with `test = true` (the former `cargo test`
+  // would have; examples are only built). Cargo.toml is scanned without
+  // `cargo metadata`; auto-discovered examples/benches default to test = false.
+  const cargoManifests = [path.join(repoRoot, "src-tauri/Cargo.toml")];
+  for (const entry of await readdir(path.join(repoRoot, "src-tauri/crates"), { withFileTypes: true })) {
+    if (entry.isDirectory()) cargoManifests.push(path.join(repoRoot, "src-tauri/crates", entry.name, "Cargo.toml"));
+  }
+  for (const manifest of cargoManifests) {
+    const text = await readFile(manifest, "utf8").catch(() => "");
+    for (const table of text.split(/^(?=\s*\[)/mu)) {
+      if (/^\s*\[\[?(?:example|bench)\]?\]/u.test(table)) {
+        assert.doesNotMatch(table, /^\s*test\s*=\s*true\b/mu, `${path.relative(repoRoot, manifest)}: a [[example]]/[[bench]] with test = true is in no Rust shard`);
+      }
+    }
+  }
 
   // Fixed original build, complete public/release tests, compile-only or licensed MCP steps on the existing owner.
   // These source assertions do not execute or admit any consumer lane.
