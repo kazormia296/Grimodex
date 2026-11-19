@@ -1948,9 +1948,11 @@ jobs:
         run: |
           set -euo pipefail
           # The feature-off library suite already runs in the Shared Rust job. The
-          # failpoint injection points exist only in these three modules, so only
-          # their library tests are run here. Fail closed: a filter that stops
-          # matching, or a required failpoint-only test that did not run, fails.
+          # failpoint injection points are in backup_restore.rs and
+          # migration_supervisor.rs, and the feature-only library tests are in
+          # backup_restore.rs and recovery.rs, so only these three modules' library
+          # tests are run here. Fail closed: a filter that stops matching, or a
+          # required failpoint-only test that did not run, fails.
           log="${RUNNER_TEMP:-/tmp}/migration-failpoint-lib.log"
           cargo test -p grimodex-db --features test-failpoints --lib -- \
             backup_restore:: recovery:: migration_supervisor:: 2>&1 | tee "$log"
@@ -1966,7 +1968,7 @@ jobs:
             grep -Fxq "test $required ... ok" "$log"
           done
           passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed; 0 failed;.*/\1/p' "$log" | head -n 1)"
-          test "${passed:-0}" -ge 50
+          test "${passed:-0}" -ge 58
 
       - name: Safe Mode structured outcome + restore-by-id
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-safe-mode'"

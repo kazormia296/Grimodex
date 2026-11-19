@@ -782,20 +782,25 @@ by `backup_restore.rs`, `recovery.rs` and `migration_supervisor.rs` (the latter 
 no library tests; its failpoint suite is a separate integration-test step), so these
 three module filters cover every test that compiles only under the feature plus every
 production module whose behaviour the feature can change. The step is fail-closed: it
-requires each of those eight tests to be reported `ok` and at least 50 passed, so a
-renamed module or filter cannot pass with zero or few tests. This is not a complete
-Gate A2 pass. The successful crash/Safe Mode steps and five other commands are
+requires each of those eight tests to be reported `ok` and at least 58 passed (the
+current count), so a renamed module or filter cannot pass with zero or few tests, and
+`scripts/ci-pause.test.mjs` pins the whole run block and scans `grimodex-db/src` so a
+new feature-gated file or test must be added to the filter and the required list.
+This is not a complete Gate A2 pass. The successful crash/Safe Mode steps and five other commands are
 skipped, not replayed or passed. Default/reusable callers retain all eight steps and
 the same bootstrap, frozen dependencies, cache, profiles and timeout. Keep product
 mode `all`, false booleans and empty canonical tuple/options; the first literal
 guard rejects mixed inputs, case variants and wrong events before checkout/setup.
-Unknown profiles reach canonical rejection. No input/job/executor or test suppression
-is added. The Full / local registry stage `migration-recovery-gate`
-(`migration.failpoints-lib` in `scripts/local-ci-registry.json`) is unchanged and still
-runs the unfiltered `--features test-failpoints --lib`; no source contract requires it
-to equal the hosted step. Actual library consumers and original risk-derived
-applicable prerequisites must be reviewed before a distinct dispatch; source proof
-alone does not authorize Cargo, ignored real-worker/diagnostic cases, B or Full.
+Unknown profiles reach canonical rejection. No input, job or executor is added; the
+only narrowing is the module filter above. A standalone `canonical_profile=migration-library`
+dispatch runs only those 58 tests, so it is not a receipt for the registry's
+`migration.failpoints-lib` (Full / local, unfiltered). `release.yml` calls `ci.yml`
+(`uses: ./.github/workflows/ci.yml`), so the tag Release CI also runs this filtered step;
+the unfiltered `--features test-failpoints --lib` run remains in the hosted Full
+(registry `migration.failpoints-lib` in `scripts/local-ci-registry.json`) that a release
+PR requires as merge evidence and a release tag requires on the merged commit. Actual
+library consumers and original risk-derived applicable prerequisites must be reviewed
+before a distinct dispatch; source proof alone does not authorize Cargo, ignored real-worker/diagnostic cases, B or Full.
 
 For grouped remaining migration proof, `canonical_profile=migration-remaining`
 selects only four unchanged steps on the same existing `migration-recovery-gate`
