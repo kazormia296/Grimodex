@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
+
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { beginAiAuditExecution } from "./api";
 
 import {
   _resetQuiescenceLeasesForTests,
@@ -25,6 +30,8 @@ import {
 import {
   _resetPendingAiAuditExecutionsForTests,
   completePendingAiAuditExecution,
+  failPendingAiAuditPersistence,
+  hasRunningAiAuditExecutions,
   reservePendingAiAuditExecution,
 } from "./executionRegistry";
 
@@ -39,6 +46,13 @@ function identityDependencies(): AiAuditExportBoundaryOverrides {
     getCurrentWorkspaceIdentity: () => ({ ...IDENTITY.workspace }),
   };
 }
+
+beforeEach(() => {
+  useWorkspaceStore.setState({
+    activeWorkspacePath: IDENTITY.workspace.path,
+    workspaceSwitchInProgress: false,
+  });
+});
 
 afterEach(() => {
   _resetQuiescenceLeasesForTests();
@@ -103,7 +117,7 @@ describe("AI audit export boundary", () => {
 
     const task = runAiAuditExportBoundary(IDENTITY, readFrozenState, {
       ...identityDependencies(),
-      hasPendingAiAuditExecutions: vi.fn(() => {
+      hasRunningAiAuditExecutions: vi.fn(() => {
         auditCheck += 1;
         order.push(`audit-check-${auditCheck}`);
         return false;
@@ -281,6 +295,93 @@ describe("AI audit export boundary", () => {
     await expect(
       enqueueIpc("save_scene", async () => "saved", null, "mutation"),
     ).resolves.toBe("saved");
+  });
+
+  it("closes AI admission once the lease is held, so no execution can start during the export", async () => {
+    const readFrozenState = vi.fn(async () => "bundle");
+    let lateBegin: unknown;
+
+    await expect(
+      runAiAuditExportBoundary(IDENTITY, readFrozenState, {
+        ...identityDependencies(),
+        acquireLease: async () => {
+          const lease = acquireQuiescenceLease("audit-export");
+          // The real begin path, attempted right after the lease is granted.
+          lateBegin = await beginAiAuditExecution({
+            projectId: IDENTITY.projectId,
+            pathId: "chat.direct",
+            executionId: "late-execution",
+            request: { messages: [{ role: "user", content: "late" }] },
+          }).catch((error: unknown) => error);
+          return lease;
+        },
+        awaitPendingIpcActualTasks: vi.fn(async () => undefined),
+        flushStrictQuiescence: vi.fn(async () => undefined),
+      }),
+    ).resolves.toBe("bundle");
+
+    expect(String((lateBegin as Error).message)).toContain(
+      "AI_AUDIT_ADMISSION_BLOCKED",
+    );
+    expect(hasRunningAiAuditExecutions()).toBe(false);
+  });
+
+  it.each([
+    ["the first IPC drain", "ipc-drain-1"],
+    ["strict quiescence flush", "flush"],
+    ["the post-seal IPC drain", "ipc-drain-2"],
+  ])(
+    "refuses and releases when an execution appears after %s",
+    async (_label, stage) => {
+      let drains = 0;
+      const appear = (): void =>
+        reservePendingAiAuditExecution(`late-${stage}`);
+      const readFrozenState = vi.fn(async () => "must not publish");
+
+      const refusal = await runAiAuditExportBoundary(
+        IDENTITY,
+        readFrozenState,
+        {
+          ...identityDependencies(),
+          awaitPendingIpcActualTasks: vi.fn(async () => {
+            drains += 1;
+            if (stage === `ipc-drain-${drains}`) appear();
+          }),
+          flushStrictQuiescence: vi.fn(async () => {
+            if (stage === "flush") appear();
+          }),
+        },
+      ).catch((error: unknown) => error);
+
+      expect(isAiAuditExportBusyError(refusal)).toBe(true);
+      expect(readFrozenState).not.toHaveBeenCalled();
+      expect(isQuiescenceLeaseActive()).toBe(false);
+      expect(canScheduleQuiescenceMutation()).toBe(true);
+    },
+  );
+
+  it("fails with the persistence cause, not a busy refusal, when a terminal could not be persisted", async () => {
+    reservePendingAiAuditExecution("failed-terminal");
+    failPendingAiAuditPersistence("failed-terminal", new Error("disk full"));
+    expect(hasRunningAiAuditExecutions()).toBe(false);
+    const acquireLease = vi.fn(async () =>
+      acquireQuiescenceLease("audit-export"),
+    );
+    const readFrozenState = vi.fn(async () => "must not publish");
+
+    const failure = await runAiAuditExportBoundary(IDENTITY, readFrozenState, {
+      ...identityDependencies(),
+      acquireLease,
+    }).catch((error: unknown) => error);
+
+    expect(isAiAuditExportBusyError(failure)).toBe(false);
+    expect((failure as Error).message).toContain(
+      "did not persist required audit evidence",
+    );
+    expect((failure as Error).cause).toEqual(new Error("disk full"));
+    expect(acquireLease).not.toHaveBeenCalled();
+    expect(readFrozenState).not.toHaveBeenCalled();
+    expect(isQuiescenceLeaseActive()).toBe(false);
   });
 
   it("exports as before once the execution reached its durable terminal", async () => {

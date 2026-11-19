@@ -475,7 +475,7 @@ describe("AI audit bundle export", () => {
           frozenReadProof,
         }),
       {
-        hasPendingAiAuditExecutions: vi.fn(() => false),
+        hasRunningAiAuditExecutions: vi.fn(() => false),
         awaitPendingIpcActualTasks: vi.fn(async () => undefined),
         flushStrictQuiescence: vi.fn(async () => undefined),
         getLoadedProjectId: () => "project-1",
@@ -516,7 +516,7 @@ describe("AI audit bundle export", () => {
         savedProof = proof;
       },
       {
-        hasPendingAiAuditExecutions: vi.fn(() => false),
+        hasRunningAiAuditExecutions: vi.fn(() => false),
         awaitPendingIpcActualTasks: vi.fn(async () => undefined),
         flushStrictQuiescence: vi.fn(async () => undefined),
         getLoadedProjectId: () => "project-1",
@@ -567,7 +567,7 @@ describe("AI audit bundle export", () => {
         );
       },
       {
-        hasPendingAiAuditExecutions: vi.fn(() => false),
+        hasRunningAiAuditExecutions: vi.fn(() => false),
         awaitPendingIpcActualTasks: vi.fn(async () => undefined),
         flushStrictQuiescence: vi.fn(async () => undefined),
         getLoadedProjectId: () => "project-1",

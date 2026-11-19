@@ -7,7 +7,10 @@ import {
   type WorkspaceIdentity,
 } from "@/runtime/workspaceIdentity";
 import { awaitPendingIpcActualTasksForAuditExport } from "@/lib/ipcQueue";
-import { hasPendingAiAuditExecutions } from "./executionRegistry";
+import {
+  assertNoAiAuditPersistenceFailure,
+  hasRunningAiAuditExecutions,
+} from "./executionRegistry";
 import { AiAuditExportBusyError } from "./exportBusyError";
 
 export interface AiAuditExportIdentity {
@@ -79,7 +82,8 @@ interface AiAuditExportBoundaryDependencies {
   readonly acquireLease: (
     reason: "audit-export",
   ) => AiAuditExportLease | Promise<AiAuditExportLease>;
-  readonly hasPendingAiAuditExecutions: () => boolean;
+  readonly hasRunningAiAuditExecutions: () => boolean;
+  readonly assertNoAiAuditPersistenceFailure: () => void;
   readonly awaitPendingIpcActualTasks: () => Promise<void>;
   readonly flushStrictQuiescence: () => Promise<void>;
   readonly getLoadedProjectId: () => string | null;
@@ -91,7 +95,8 @@ export type AiAuditExportBoundaryOverrides =
 
 const DEFAULT_DEPENDENCIES: AiAuditExportBoundaryDependencies = {
   acquireLease: acquireQuiescenceLeaseAfterTimelapseGenesis,
-  hasPendingAiAuditExecutions,
+  hasRunningAiAuditExecutions,
+  assertNoAiAuditPersistenceFailure,
   awaitPendingIpcActualTasks: awaitPendingIpcActualTasksForAuditExport,
   flushStrictQuiescence,
   getLoadedProjectId,
@@ -155,7 +160,7 @@ export function captureAiAuditExportIdentity(
  *
  * An export never waits for an audited AI execution (DR-AAEX-1): the lease
  * has no deadline and holds every save and read, so a long model response
- * would stall the application. If an execution is pending before the lease, or
+ * would stall the application. If an execution is running before the lease, or
  * as soon as the lease has closed AI admission, the export is refused with
  * AiAuditExportBusyError and the lease is released. Admission being closed,
  * nothing can start afterwards; later checks only fail closed.
@@ -181,7 +186,10 @@ export async function runAiAuditExportBoundary<T>(
   assertExpectedIdentity(identity);
   const deps = dependencies(overrides);
   const refuseWhileAiRunning = (): void => {
-    if (deps.hasPendingAiAuditExecutions()) throw new AiAuditExportBusyError();
+    if (deps.hasRunningAiAuditExecutions()) throw new AiAuditExportBusyError();
+    // An execution whose terminal could not be persisted is not running: the
+    // export fails with its cause instead of hiding the missing evidence.
+    deps.assertNoAiAuditPersistenceFailure();
   };
   // Refuse before the lease so that a click during a long response never
   // stops saving at all.

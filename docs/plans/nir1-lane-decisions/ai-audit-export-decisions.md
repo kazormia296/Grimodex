@@ -21,6 +21,9 @@ export を始めた時点で実行中の AI があれば、待たずに断る。
    lease の取得で AI の admission（`beginAiAuditExecution` の `AI_AUDIT_ADMISSION_BLOCKED`）が閉じた後の確認だけがその隙を閉じる。以後は新しい実行が始まらない。
 3. strict flush の前後・IPC の actual task の drain の後の各 `awaitPendingAiAuditExecutions()` は、待ちでなく同じ確認に置き換える
    （admission が閉じているので、2 の後に保留が現れるのは想定外で、現れたら待たずに断る）。
+   断る対象は「実行中」だけで、terminal の durable 化に失敗して `persistenceFailure` が立った entry は実行中に数えない
+   （終端を待っても来ないので、断ると監査証拠の欠落が毎回「AI の実行中」に化けて隠れる）。その entry があるときは従来どおり、
+   原因（`cause`）つきの `AI audit execution … did not persist required audit evidence` で失敗させる。実行中の確認と同じ位置（各確認点）で行う。
 4. 断りは closed な code `AI_AUDIT_EXPORT_AI_RUNNING` の型付きエラー（`AiAuditExportBusyError`）で表す。
    UI は `attribution.aiAudit.aiRunning`（ja／en）を「AI の実行中なので、終わってから書き出してください」の趣旨で出す。
    これは失敗（`exportFailed`）ではなく案内なので、alert でなく status で出す。
@@ -55,6 +58,7 @@ export 中に実行を止める・待つ要求ではない。export の凍結（
 - 実行中の AI があるとき：待たずに `AI_AUDIT_EXPORT_AI_RUNNING` で断る。lease を取らない／取った場合は放し、`canScheduleQuiescenceMutation()` が true、
   strict flush・read が呼ばれない。保存（mutation IPC）が止まらない。
 - lease の取得中に AI が始まった場合（前の確認は通る）：lease の直後の確認で断り、lease が放される。
+- terminal の durable 化に失敗した entry があるとき：busy でなく原因つきの失敗になる。lease の後（flush・drain・seal の後）に実行が現れても断る。lease 取得後の `beginAiAuditExecution` は `AI_AUDIT_ADMISSION_BLOCKED` で拒否される。
 - 実行中の AI が無いとき：今までどおり書き出せる（既存の順序の試験の確認を、待ちから確認に直す）。
 - UI：断りのとき `attribution.aiAudit.aiRunning` を status で出し、ZIP を組まず download しない。
 - 文言：`ja.json`／`en.json` の同じ key があり、locale の検査が通る。
