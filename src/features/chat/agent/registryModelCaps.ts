@@ -27,6 +27,11 @@ export const REGISTRY_CAPS_PROVIDERS: ReadonlySet<AiProvider> =
 /** key は `<provider>/<model id>`。null は「層が無い」（Web 版、読めなかった、まだ読んでいない）。 */
 let entries: ReadonlyMap<string, RegistryModelCaps> | null = null;
 let loading: Promise<boolean> | null = null;
+/**
+ * 読み込み（最初の読み込み・切替後の読み直し）の世代。新しい読み込みを始めたら進め、古い読み込みの
+ * 結果は捨てる（遅れて届いた古い写しが、新しい状態を上書きしない）。
+ */
+let generation = 0;
 
 function positiveSafeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
@@ -91,18 +96,18 @@ export function getRegistryModelCaps(
   return null;
 }
 
-async function loadOnce(): Promise<boolean> {
+/** main が採用した写しを読む。読めなければ（Web 版・IPC の失敗・契約外の値）null。reject しない。 */
+async function readView(): Promise<ModelCapabilitySnapshotView | null> {
   try {
     // Electron 以外（Web 版）は写しが無い。IPC の wrapper の chunk も読まない。
-    if (!isElectron()) return false;
+    if (!isElectron()) return null;
     // 検証 module を含むので、起動の graph に載せない。
     const { getModelCapabilitySnapshot } =
       await import("@/lib/modelCapabilitySnapshot");
-    const view = await getModelCapabilitySnapshot();
-    return view === null ? false : setRegistryModelCaps(view);
+    return await getModelCapabilitySnapshot();
   } catch {
     // 同梱も cache も使えない・IPC の失敗は、registry の層が無い扱い（今の挙動のまま）。
-    return false;
+    return null;
   }
 }
 
@@ -110,6 +115,7 @@ async function loadOnce(): Promise<boolean> {
  * 写しを 1 回だけ読む（single-flight。失敗しても読み直さない）。読み込みを始めた最初の呼び出しだけが、
  * 読めたときに `onLoaded` を呼ぶ（呼び出し側が再描画の合図を 1 回だけ出すため）。2 回目以降は
  * 同じ promise を返し、`onLoaded` は呼ばない。promise は reject しない。
+ * 読み込みの途中で `reloadRegistryModelCaps` が始まったら、この結果は捨てる（false）。
  *
  * main の取得で cache が更新されても renderer へは通知しない（新しい契約になるため）。反映は次の起動。
  */
@@ -117,15 +123,43 @@ export function startRegistryModelCapsLoad(
   onLoaded?: () => void,
 ): Promise<boolean> {
   if (loading !== null) return loading;
-  loading = loadOnce().then((loaded) => {
-    if (loaded) onLoaded?.();
-    return loaded;
+  const mine = ++generation;
+  loading = readView().then((view) => {
+    if (mine !== generation || view === null) return false;
+    setRegistryModelCaps(view);
+    onLoaded?.();
+    return true;
   });
   return loading;
+}
+
+/**
+ * 「モデル情報の自動更新」を切り替えた窓で、写しを読み直す。main は設定が無効の間は同梱の写しだけを
+ * 返す（cache も削除する）ので、無効にした直後に読み直せば、cache 由来の値を持ち続けない（設定の説明文の
+ * 約束：「止めると同梱の情報だけを使う」）。既存の IPC を同じ窓から呼ぶだけで、新しい event・契約は無い。
+ * 他の窓へは届かない（AI 設定を窓の間で同期する仕組みが無いのと同じで、次の起動で揃う）。
+ *
+ * 読み直しに失敗したら、古い写しを残さず層を消す（今の挙動のまま）。読み直した（差し替えた・消した）
+ * ときに `onChanged` を呼ぶ。Web 版では何もしない。promise は reject しない。
+ */
+export async function reloadRegistryModelCaps(
+  onChanged?: () => void,
+): Promise<boolean> {
+  if (!isElectron()) return false;
+  const mine = ++generation;
+  const view = await readView();
+  // もっと新しい読み込みが始まっていたら、その結果に任せる。
+  if (mine !== generation) return false;
+  if (view === null) entries = null;
+  else setRegistryModelCaps(view);
+  onChanged?.();
+  return true;
 }
 
 /** Test-only reset（保持した写しと、読み込みの済み印）。 */
 export function __resetRegistryModelCapsForTests(): void {
   entries = null;
   loading = null;
+  // 走行中の読み込みの結果を捨てる。
+  generation += 1;
 }

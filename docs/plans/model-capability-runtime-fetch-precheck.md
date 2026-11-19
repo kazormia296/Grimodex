@@ -384,7 +384,8 @@ PR-C2 で main が取得・同梱する写しを、renderer のチャットの�
   - Electron でない（Web 版）・IPC の失敗・契約の形でない値は、どれも「registry の層が無い」扱い（今の挙動のまま）。失敗しても読み直さない（次の起動まで）。例外は `loadSettings` に漏らさない。
   - IPC の wrapper（`@/lib/modelCapabilitySnapshot`、検証 module を含む）は動的 import にし、起動の chunk に載せない。Electron でなければ chunk も読まない。
 - 保持：`src/features/chat/agent/registryModelCaps.ts` の module state（`Map`）。store には置かない。key は `<provider>/<id>`、値は context・最大出力・toolCall の 3 つだけ（`reasoning` は持たない）。対応する provider の key 以外と、使える field が無い項目は持たない。
-- 通知：main の取得で cache が更新されても、renderer へ知らせる event は作らない（新しい契約になるため）。反映は次の起動。自動更新を無効にして main が cache を削除しても、renderer は読み込み済みの写しを再起動まで持つ（同梱の写しと同じ種類の事実の表で、通信も増えない）。**必要だと判断した場合は別 PR で、新しい契約として決める。**
+- 通知：main の取得で cache が更新されても、renderer へ知らせる event は作らない（新しい契約になるため）。反映は次の起動。**必要だと判断した場合は別 PR で、新しい契約として決める。**
+- 自動更新を無効にしたとき（§7.3 の説明文の約束「止めると同梱の情報だけを使う」を守るため）：`setModelInfoAutoUpdate` の保存が成功した直後に、切り替えた窓が同じ既存の IPC で写しを読み直し（`reloadRegistryModelCaps`）、差し替えて revision を上げる。main は設定が無効の間は同梱の写しだけを返す（`readAdoptedSnapshot`）ので、cache 由来の値は残らない。読み直しに失敗したら層を消す。最初の読み込みが走行中でも、遅れて届いた古い結果は世代番号で捨てる。有効に戻したときも同じ読み直しを行う（cache はまだ無いので同梱の写しのまま）。**他の窓へは届かない**（AI 設定を窓の間で同期する仕組みが無いのと同じ。次の起動で揃う）。新しい command・event は足していない。
 
 #### 層の実装（`modelLimits.ts` の `applyRegistryCaps`）
 
@@ -392,7 +393,7 @@ PR-C2 で main が取得・同梱する写しを、renderer のチャットの�
 - 表の id を守る仕組み（Q1）：
   1. `isListedInCapabilityTable(model)`（既存の規則：完全一致・別名・ドット正規化・日付付き `-\d{8}`・`:variant`）が真なら、同じ object をそのまま返す。表に無い field を埋めることもしない。
   2. 前方一致は「載っている」に数えない。`gpt-5.6` が `gpt-5` に前方一致する近似より、registry が優先する。
-  3. 写しの引き方は provider と id の完全一致だけ（前方一致・ドットの正規化・大文字小文字の寄せはしない）。OpenRouter だけ、旧い `openrouter/` prefix は、完全一致に当たらなければ外して引く（dynamicModelCaps と同じ）。
+  3. 写しの引き方は provider と id の完全一致だけ（前方一致・ドットの正規化・大文字小文字の寄せはしない）。OpenRouter だけ、旧い `openrouter/` prefix は、完全一致に当たらなければ外して引く（dynamicModelCaps と同じ）。**表の判定も、外した後の id に掛ける**（`openrouter/anthropic/claude-opus-4.6` のように、prefix の有無で表の保護が外れない。表の側は prefix を知らないので、その id の表の値は今までどおり既定のまま）。
   4. provider が写しの 4 つ（anthropic、openai、openrouter、sakana）でなければ素通し。provider が分からない呼び出し（`getModelCapabilities`、設定なし）は表だけ。
 - 使う field：context、最大出力、toolCall の 3 つだけ。context は `modelContextWindow`・`contextWindowIsEffective: true`・`contextWindowSource: "registry"` と合わせて入れる。field が無ければ下の層の値のまま。`toolCall: false` は明示の非対応として `supportsTools` を false にする。
   - **`reasoning` は使わない。** thinking・effort・reasoning の送信（`buildThinkingParams`、`supportsThinking` 系の flag、`canDisableReasoning`、`reasoningEffortValues` など）は変えない（§7.1）。
@@ -403,13 +404,15 @@ PR-C2 で main が取得・同梱する写しを、renderer のチャットの�
 #### 挙動の変化（意図したもの）
 
 - 表に無い id の context が、既定の 8K（または近似）から写しの値になる。送る context の量と compaction の閾値が変わる。
+- `toolCall: false` で、表に無い id の agent の tool が止まる（`supportsTools` が false になる）。同梱の写し（2026-11-18 の生成）で数えると、表に無い id のうち、OpenAI は 29 件中 1 件（`gpt-3.5-turbo`）、OpenRouter は 345 件中 50 件。OpenRouter は live（`supported_parameters`）が取れていれば live が優先するので、registry が効くのは live が無いとき（offline、取得前）だけ。Anthropic は `toolCall` を使わないので 0 件。
 - 表に無い id の最大出力が写しの値になり、`resolveOutputBudgetPlan` の clamp を通じて、wire の `max_tokens` が写しの値以下に抑えられ得る（thinking・effort の送信とは別の変化）。
 - 日付付きの判定は既存の `-\d{8}` だけで、広げていない。`gpt-4o-2024-05-13` のような OpenAI の日付 id は「表に無い」扱いになり、写しに key があれば写しの値が入る。
 
 #### 試験
 
-- `registryModelCaps.test.ts`（23 件）：表の全 key（別名・ドット表記・日付付き・`:variant`）× 3 provider、既知の Anthropic 14 件（live の登録の前後）、同梱の写しの全 key で、載っている id は前後が `toEqual`、載っていない id は 3 field が写しの値。表に無い id の context・出力・tool、field 欠落時の既定、live ＞ registry（Anthropic・OpenRouter）、届かない経路（OpenAI 互換・Ollama・CLI・AI のべりすと・Sakana・provider なし）、`buildThinkingParams` と thinking 系の flag が `reasoning` の true・false で変わらないこと。
-- `registryModelCapsLoad.test.ts`（5 件）：IPC の 1 回呼び、single-flight、失敗・不正な値・Web 版で層が無い扱い。`store.registryCaps.test.ts`（3 件）：`loadSettings` から読み、revision が 1 回だけ上がること、失敗しても `loadSettings` が成功すること。
+- `registryModelCaps.test.ts`（24 件）：表の全 key（別名・ドット表記・日付付き・`:variant`）× 3 provider、旧い `openrouter/` prefix を付けた表の id、既知の Anthropic 14 件（live の登録の前後）、同梱の写しの全 key で、載っている id は前後が `toEqual`、載っていない id は 3 field が写しの値。表に無い id の context・出力・tool、field 欠落時の既定、live ＞ registry（Anthropic・OpenRouter）、届かない経路（OpenAI 互換・Ollama・CLI・AI のべりすと・Sakana・provider なし）、`buildThinkingParams` と thinking 系の flag が `reasoning` の true・false で変わらないこと。
+- `registryModelCapsLoad.test.ts`（9 件）：IPC の 1 回呼び、single-flight、失敗・不正な値・Web 版で層が無い扱い、切替後の読み直し（同梱へ差し替え・失敗で層を消す・走行中の古い結果を捨てる・Web 版は何もしない）。`store.registryCaps.test.ts`（5 件）：`loadSettings` から読み、revision が 1 回だけ上がること、失敗しても `loadSettings` が成功すること、無効にした後に読み直すこと（保存に失敗したら読み直さない）。
+- `resolveTurnRoute.test.ts`（1 件を追加）：route の水準で、表に無い id の `thinking`・`toolProtocol` が前後で同一、context が写しの値、wire の最大出力（`outputBudget.requestMaxOutputTokens`・`wireOutputTokens`）が写しの最大出力を超えないこと。
 
 #### 未確認
 

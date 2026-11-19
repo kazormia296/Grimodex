@@ -5,7 +5,15 @@ import {
   __resetDynamicModelCapsForTests,
   registerDynamicModelCaps,
 } from "../agent/dynamicModelCaps";
-import { DEFAULT_AI_SETTINGS, ollamaContextLengthSettingKey } from "../types";
+import {
+  __resetRegistryModelCapsForTests,
+  setRegistryModelCaps,
+} from "../agent/registryModelCaps";
+import {
+  DEFAULT_AI_SETTINGS,
+  ollamaContextLengthSettingKey,
+  type AiProvider,
+} from "../types";
 import {
   isLocalInferenceRoute,
   resolveChatTurnRoute,
@@ -15,10 +23,59 @@ import {
 describe("resolveChatTurnRoute", () => {
   beforeEach(() => {
     __resetDynamicModelCapsForTests();
+    __resetRegistryModelCapsForTests();
   });
 
   afterEach(() => {
     __resetDynamicModelCapsForTests();
+    __resetRegistryModelCapsForTests();
+  });
+
+  it("registry の写し（表に無い id）は context と最大出力だけを変え、thinking・effort の送信は変えない（PR-C3）", () => {
+    const cases = [
+      { provider: "openai", model: "gpt-6-astra" },
+      { provider: "openai", model: "gpt-5.6" },
+      { provider: "anthropic", model: "claude-fable-5-2" },
+      { provider: "anthropic", model: "claude-3-7-sonnet-20250219" },
+      { provider: "openrouter", model: "vendor/new-model" },
+    ] as const;
+    const resolve = (provider: AiProvider, model: string) =>
+      resolveChatTurnRoute({
+        surface: "agent",
+        activeSettings: { ...DEFAULT_AI_SETTINGS, provider, model },
+        activeApiVariant: null,
+        taskEffort: "high",
+        thinkingEnabled: true,
+      });
+    const before = cases.map(({ provider, model }) => resolve(provider, model));
+    setRegistryModelCaps({
+      models: Object.fromEntries(
+        cases.map(({ provider, model }) => [
+          `${provider}/${model}`,
+          // 最大出力は、既定の応答の長さ（4,096）より小さい値にする（clamp が wire に届く）。
+          {
+            contextWindow: 333_000,
+            maxOutputTokens: 2_048,
+            toolCall: true,
+            reasoning: true,
+          },
+        ]),
+      ),
+    });
+    cases.forEach(({ provider, model }, index) => {
+      const after = resolve(provider, model);
+      expect(after.thinking, `${provider}/${model}`).toEqual(
+        before[index].thinking,
+      );
+      expect(after.toolProtocol).toBe(before[index].toolProtocol);
+      expect(after.contextWindow, `${provider}/${model}`).toBe(333_000);
+      expect(after.capabilities.contextWindowSource).toBe("registry");
+      // wire の最大出力は、写しの最大出力を超えない。
+      expect(after.outputBudget.requestMaxOutputTokens).toBeLessThanOrEqual(
+        2_048,
+      );
+      expect(after.wireOutputTokens).toBeLessThanOrEqual(2_048);
+    });
   });
 
   it("uses the model visible-output capability instead of an OpenAI provider heuristic", () => {

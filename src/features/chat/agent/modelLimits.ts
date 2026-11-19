@@ -538,7 +538,19 @@ function applyRegistryCaps(
   base: ModelCapabilities,
 ): ModelCapabilities {
   const entry = getRegistryModelCaps(provider, model);
-  if (entry === null || isListedInCapabilityTable(model)) return base;
+  if (entry === null) return base;
+  // 写しの照合は、OpenRouter の旧い `openrouter/` prefix を外した id でも当たる。表の判定も、
+  // 外した後の id に掛ける（prefix の有無で表の保護が外れない）。
+  const unprefixed =
+    provider === "openrouter" && model.startsWith("openrouter/")
+      ? model.slice("openrouter/".length)
+      : null;
+  if (
+    isListedInCapabilityTable(model) ||
+    (unprefixed !== null && isListedInCapabilityTable(unprefixed))
+  ) {
+    return base;
+  }
   const { contextWindow, maxOutputTokens } = entry;
   const toolCall = provider === "anthropic" ? undefined : entry.toolCall;
   if (

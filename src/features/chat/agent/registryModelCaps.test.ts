@@ -203,6 +203,36 @@ describe("表に載っている id には registry が一切触れない（Q1）
     });
   });
 
+  it("OpenRouter の旧い openrouter/ prefix を付けた表の id でも、registry は触れない（prefix を外した id に表の判定を掛ける）", () => {
+    const openrouter = { provider: "openrouter" };
+    const listed = [
+      "openrouter/anthropic/claude-opus-4.6",
+      "openrouter/openai/gpt-4o",
+      "openrouter/anthropic/claude-sonnet-4-6-20250514",
+    ];
+    const before = listed.map((id) => resolveModelCapabilities(id, openrouter));
+    // prefix なし・ありの両方の key に、違う値を入れる（外して引いても、完全一致で引いても同じ）。
+    setRegistry(
+      Object.fromEntries(
+        listed.flatMap((id) => [
+          [`openrouter/${id.slice("openrouter/".length)}`, DIFFERENT],
+          [`openrouter/${id}`, DIFFERENT],
+        ]),
+      ),
+    );
+    expect(
+      getRegistryModelCaps(
+        "openrouter",
+        "openrouter/anthropic/claude-opus-4.6",
+      ),
+    ).toMatchObject({ contextWindow: 123_456 });
+    listed.forEach((id, index) => {
+      expect(resolveModelCapabilities(id, openrouter), id).toEqual(
+        before[index],
+      );
+    });
+  });
+
   it("表に載っている id の、表に無い field を registry で埋めることもしない", () => {
     // `gpt-4o` の表の定義は maxOutputTokens を持たない。registry が持っていても足さない。
     const before = resolveModelCapabilities("gpt-4o", { provider: "openai" });

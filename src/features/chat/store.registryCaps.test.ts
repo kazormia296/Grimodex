@@ -108,3 +108,59 @@ describe("loadSettings と registry の写し", () => {
     expect(useAiSettingsStore.getState().modelCapsRevision).toBe(0);
   });
 });
+
+describe("setModelInfoAutoUpdate と registry の写し", () => {
+  const CACHE_VIEW = {
+    ...VIEW,
+    models: { "openai/gpt-6-astra": { contextWindow: 2_000_000 } },
+  };
+  const BUNDLED_VIEW = {
+    ...VIEW,
+    origin: "bundled",
+    models: { "openai/gpt-6-astra": { contextWindow: 1_050_000 } },
+  };
+
+  it("無効にした後、この窓の写しを読み直して revision を上げる（cache 由来の値を持ち続けない）", async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, value: CACHE_VIEW })
+      .mockResolvedValueOnce({ ok: true, value: BUNDLED_VIEW });
+    installBridge(invoke);
+    vi.mocked(api.setModelInfoAutoUpdate).mockResolvedValue(undefined);
+    await useAiSettingsStore.getState().loadSettings();
+    await startRegistryModelCapsLoad();
+    expect(getRegistryModelCaps("openai", "gpt-6-astra")).toEqual({
+      contextWindow: 2_000_000,
+    });
+    expect(useAiSettingsStore.getState().modelCapsRevision).toBe(1);
+
+    await useAiSettingsStore.getState().setModelInfoAutoUpdate(false);
+    await vi.waitFor(() =>
+      expect(useAiSettingsStore.getState().modelCapsRevision).toBe(2),
+    );
+
+    expect(vi.mocked(api.setModelInfoAutoUpdate)).toHaveBeenCalledWith(false);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(getRegistryModelCaps("openai", "gpt-6-astra")).toEqual({
+      contextWindow: 1_050_000,
+    });
+  });
+
+  it("切替の保存に失敗したら、読み直さない", async () => {
+    const invoke = vi.fn().mockResolvedValue({ ok: true, value: CACHE_VIEW });
+    installBridge(invoke);
+    vi.mocked(api.setModelInfoAutoUpdate).mockRejectedValue(new Error("no"));
+    await useAiSettingsStore.getState().loadSettings();
+    await startRegistryModelCapsLoad();
+
+    await expect(
+      useAiSettingsStore.getState().setModelInfoAutoUpdate(false),
+    ).rejects.toThrow("no");
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(useAiSettingsStore.getState().modelCapsRevision).toBe(1);
+    expect(getRegistryModelCaps("openai", "gpt-6-astra")).toEqual({
+      contextWindow: 2_000_000,
+    });
+  });
+});

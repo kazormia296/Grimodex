@@ -33,7 +33,10 @@ import {
   registerAnthropicModelCaps,
   isDynamicCapsStale,
 } from "./agent/dynamicModelCaps";
-import { startRegistryModelCapsLoad } from "./agent/registryModelCaps";
+import {
+  reloadRegistryModelCaps,
+  startRegistryModelCapsLoad,
+} from "./agent/registryModelCaps";
 
 export interface AiSettingsState {
   settings: AiSettings | null;
@@ -862,6 +865,11 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
           ? { settings: { ...state.settings, modelInfoAutoUpdate: enabled } }
           : {},
       );
+      // main は無効の間は同梱の写しだけを返す（cache も削除する）。この窓が持つ写しも読み直し、
+      // 「止めると同梱の情報だけを使う」の約束を、再起動を待たずに守る。待たない（切替を遅らせない）。
+      void reloadRegistryModelCaps(() => {
+        set((state) => ({ modelCapsRevision: state.modelCapsRevision + 1 }));
+      });
     });
     settingsSaveTail = toggleTransaction.catch(() => undefined);
     await toggleTransaction;
