@@ -228,14 +228,18 @@ section to the job summary (authoritative over any table above it) and rewrites
 the JSON artifact with the final values.
 `changes` is built not to fail (soft steps, a 3 minute step timeout on the
 checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
-which run every lane, but if the `changes` job itself fails as a whole the shard,
-aggregate jobs are skipped by their implicit `success()`
+which run every lane, but if the `changes` job itself fails as a whole the shard
+and aggregate jobs (and, on a non-pull-request event, runtime performance) are
+skipped by their implicit `success()`
 and the journeys evidence of that run is lost.
 The `electron-runtime-performance` job (the 50k-character / 20-Beat gate) is not a pull request
 check: its absolute-time thresholds are unstable on a shared hosted VM, so a pull request
 event never runs it (it is skipped, not passed). The `master` push, manual dispatch and reusable
 calls run it exactly as before, with the same thresholds, retry rule and measurement; the
-registered Quick and Full stage `electron-runtime-performance` is unchanged.
+registered Full stage `electron-runtime-performance` is unchanged. The registered Quick profile
+(`impact` only) never had this stage, so nothing before the merge inspects runtime performance;
+its three deterministic contract tests (`runtime-performance-fixture`, `-retry`, `-io-settle`)
+run in the pull request through the `electron` job.
 After the merge, compare the time from the start of a run until each lane starts,
 before and after the introduction.
 

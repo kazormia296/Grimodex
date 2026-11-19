@@ -862,11 +862,16 @@ test("a false lane output drops exactly that lane's gated jobs and nothing else"
   // Every lane false: only the always-run jobs, the cascade jobs (which skip
   // through needs on GitHub, outside this evaluator) and `changes` remain.
   const noLanes = admitted(inputs, "pull_request", Object.fromEntries(LANES.map((lane) => [lane, "false"])));
-  // A cascade job that the event never admits (runtime performance is not a
-  // pull request check) is absent from the baseline too.
+  // Runtime performance is not a pull request check, so the pull request never
+  // admits it; every other cascade job (shards, aggregate) must still be admitted.
+  const PULL_REQUEST_EXCLUDED_CASCADE_JOBS = ["electron-runtime-performance"];
+  assert.deepEqual(
+    baseline.filter((id) => PULL_REQUEST_EXCLUDED_CASCADE_JOBS.includes(id)),
+    [],
+  );
   const cascadeJobs = Object.values(rawRules.lanes)
     .flatMap((definition) => definition.cascadeJobs ?? [])
-    .filter((id) => baseline.includes(id));
+    .filter((id) => !PULL_REQUEST_EXCLUDED_CASCADE_JOBS.includes(id));
   assert.deepEqual(
     [...noLanes].sort(),
     [...ALWAYS_RUN_JOBS, "changes", ...cascadeJobs].sort(),

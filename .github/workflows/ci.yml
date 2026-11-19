@@ -870,6 +870,9 @@ jobs:
           scripts/windows-release-workflow.test.mjs
           scripts/electron-v2-cleanup.test.mjs
           scripts/electron-runtime-performance-workflow.test.mjs
+          scripts/runtime-performance-fixture.test.mjs
+          scripts/runtime-performance-retry.test.mjs
+          scripts/runtime-performance-io-settle.test.mjs
           scripts/impact/core.test.mjs
           scripts/product-journey-impact.test.mjs
           scripts/product-journey-ratchet-hardening.test.mjs
