@@ -55,6 +55,7 @@ vi.mock("@/features/ai-audit/exportBundle", () => ({
   downloadAiAuditBundle: downloadBundle,
 }));
 
+import { AiAuditExportBusyError } from "@/features/ai-audit/exportBusyError";
 import { AttributionProjectView } from "./AttributionProjectView";
 
 describe("AttributionProjectView AI audit export", () => {
@@ -122,5 +123,27 @@ describe("AttributionProjectView AI audit export", () => {
     });
     expect(buildBundle).not.toHaveBeenCalled();
     expect(downloadBundle).not.toHaveBeenCalled();
+  });
+
+  it("shows the AI-running guidance as a status, not a failure, and exports nothing", async () => {
+    runBoundary.mockRejectedValueOnce(new AiAuditExportBusyError());
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    render(<AttributionProjectView />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "attribution.exportAiAuditBundle",
+      }),
+    );
+
+    const notice = await screen.findByText("attribution.aiAudit.aiRunning");
+    expect(notice).toHaveAttribute("role", "status");
+    expect(screen.queryByText("attribution.aiAudit.exportFailed")).toBeNull();
+    expect(buildBundle).not.toHaveBeenCalled();
+    expect(downloadBundle).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });

@@ -4429,6 +4429,7 @@
     "exportAiAuditBundle": "AI evidence audit ZIP",
     "exportAiAuditBundleTitle": "Export current body attribution, the forward execution ledger, and selected surviving legacy evidence with a structural AI-origin basis. This is not a complete pre-ledger history. The ZIP may contain full prompts, context, responses, other scenes, and secrets typed into model-visible content; review every file before sharing",
     "aiAudit": {
+      "aiRunning": "An AI run is in progress, so the export was not started. Export again after it finishes.",
       "verificationFailed": "The audit ZIP was exported, but hash-chain verification failed. Review its README and manifest.",
       "exportFailed": "The AI use audit ZIP could not be exported."
     },

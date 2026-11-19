@@ -29,6 +29,7 @@ import {
   captureAiAuditExportIdentity,
   runAiAuditExportBoundary,
 } from "@/features/ai-audit/exportBoundary";
+import { isAiAuditExportBusyError } from "@/features/ai-audit/exportBusyError";
 
 type SortColumn = "scene" | "total" | "human" | "ai" | "unknown" | "aiPct";
 type SortDir = "asc" | "desc";
@@ -91,7 +92,7 @@ export function AttributionProjectView() {
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [auditExportNotice, setAuditExportNotice] = useState<
-    "verificationFailed" | "exportFailed" | null
+    "verificationFailed" | "exportFailed" | "aiRunning" | null
   >(null);
   const [collapsedChapters, setCollapsedChapters] = useState<Set<string>>(
     new Set(),
@@ -202,8 +203,13 @@ export function AttributionProjectView() {
         setAuditExportNotice("verificationFailed");
       }
     } catch (error) {
-      console.error("[AiAuditBundle] export failed", error);
-      setAuditExportNotice("exportFailed");
+      if (isAiAuditExportBusyError(error)) {
+        // A refusal, not a failure: the author retries once the AI finishes.
+        setAuditExportNotice("aiRunning");
+      } else {
+        console.error("[AiAuditBundle] export failed", error);
+        setAuditExportNotice("exportFailed");
+      }
     } finally {
       setIsExporting(false);
     }

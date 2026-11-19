@@ -83,6 +83,11 @@ export function failPendingAiAuditPersistence(
   entry.signalTerminalAttempt();
 }
 
+/** Synchronous view of the registry; never waits (see the audit export boundary). */
+export function hasPendingAiAuditExecutions(): boolean {
+  return pendingExecutions.size > 0;
+}
+
 /**
  * Waits to a fixed point because completing one attempt may synchronously
  * reserve a retry/fallback child before the current waiter resumes.
