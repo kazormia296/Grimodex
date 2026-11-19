@@ -303,7 +303,7 @@ required checks、手順2のQuick receipt、review の確認は同じである�
 - requested changes と未解決 review thread がない
 - master の Full が赤でない（判定は §8.5。run の結論ではなく attempt の結論で見るので、全 job を再実行している間も、直前の attempt が赤なら赤のままである）。
   赤ならその修正または revert 以外の PR を merge しない（§8.6）。
-- 直近の夜間の `ci.yml`（schedule）が赤でない（判定は §8 の冒頭。success 以外で終わった夜間の run は master の赤で、その修正または revert 以外の PR を merge しない）。
+- 直近の夜間の `ci.yml`（schedule）が赤でない（判定は §8 の冒頭。success 以外で終わった夜間の run は master の赤で、§8.5 の例外を除き、その修正または revert 以外の PR を merge しない）。
 
 通常path（通常のPR）では、さらに次を確認する。
 
@@ -374,7 +374,7 @@ run idを完了報告に書く。見届けは、終わるまで待てる担当�
 本節5〜6の赤の判定と対応は、docs-only PRの後も他のPRのmergeに今のまま適用する。
 夜間の`ci.yml`（schedule）は、masterのpushが回さないimpactの全suiteを回す唯一の自動のrunで、journeysも回す。
 直近のrunを`gh run list --workflow ci.yml --event schedule --branch master --limit 1 --json databaseId,status,conclusion,attempt,headSha,createdAt`で特定する
-（実行中・queuedで結論のないrunは、直前のattemptまたは直前のrunの結論で判定する。本節5のFullと同じ）。
+（実行中・queuedで結論のないrunは、`attempt`が2以上なら直前のattemptの結論で判定する。`attempt`が1なら飛ばして、`--limit`を増やして次に新しいrunを見る。本節5のFullと同じ）。
 そのrunがsuccess以外（failure、cancelled、timed outなど）で終わったら、masterの赤として本節5〜6に従う。
 その赤は、そのrunの再実行の成功、より新しい夜間のrunの成功、または原因の修正かrevertが`origin/master`に入ったときに解ける。
 無関係なflakeの例外とその記録の要件は、本節5と同じである。

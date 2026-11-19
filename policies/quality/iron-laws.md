@@ -291,7 +291,7 @@ most of the same tests in full; the Quality job keeps `pnpm verify:quality` as i
 impact runs is therefore not checked by the `master` push: the grimodex-db tests built with the product feature
 `native-current-human-capture` (the N-API crate always enables it; the Shared Rust job and the Full registry build without it),
 the tests of the eval-only features (`nir1-graph-eval`, `nir1-final-request-eval`), and many Node tests that no other job or
-registry entry names (the NIR-1 graph-eval, packing and retrieval tests, the WebRTC block probes, product journey shard tests).
+registry entry names by path (the NIR-1 graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
 The nightly run (the `ci.yml` run of the schedule: the change scope, the product journeys in `all` mode and the Quality job)
 runs the whole impact selection on `master`, so a break that only the combination of merged changes shows is found by the
 nightly run, up to about a day after the merge, not by the merge or the `master` push. A nightly run that ends in anything
@@ -472,8 +472,9 @@ handled by the same rules: it clears when a re-run of it or the `ci.yml` run of 
 the fix or the revert is on `origin/master`, and the unrelated-flake exception and its record requirement are the same.
 The newest nightly `ci.yml` run (event `schedule`, branch `master`) that does not succeed is also a red master, handled by the
 same rules: it clears when a re-run of it or a newer nightly run succeeds, or when the fix or the revert is on
-`origin/master`, and the unrelated-flake exception and its record requirement are the same. Because the nightly run is the
-only automatic run of the whole impact selection after a merge, a merge does not proceed while the newest nightly run is red.
+`origin/master`, and the unrelated-flake exception and its record requirement are the same. The nightly run is the only
+automatic run of the whole impact selection after a merge, so this red is not left for later: the rules above (merge only the
+fix or the revert while it is red) apply to it as they do to a master Full.
 
 A release PR's initial merge Full first confirms the fetched current `origin/master` is an ancestor of the candidate
 HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the same expanded strings to

@@ -337,11 +337,12 @@ jobs:
       # Only the impact step below runs cargo (`pnpm verify:quality` and the
       # install run none: checked on 2026-11-19 with a failing `cargo` on PATH),
       # so the Rust steps use the impact step's condition. A pull request or
-      # master push job with an empty `target` must not save a `rust-cache`
-      # entry: the entry is immutable per key, a run that finds its exact key
-      # does not save ("Cache up-to-date"), and the entry on the default branch
-      # is the one every other ref restores, so an empty save there would leave
-      # the nightly run compiling from scratch every night until the key changes.
+      # master push job with an empty or stale `target` must not save a
+      # `rust-cache` entry: the entry is immutable per key, a run that finds its
+      # exact key does not save ("Cache up-to-date"), and the entry on the default
+      # branch is the one every other ref restores, so such a save there would
+      # leave the nightly run compiling from scratch every night until the key
+      # changes.
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         with:
@@ -375,8 +376,8 @@ jobs:
       # `native-current-human-capture` (the N-API crate always enables it; Shared
       # Rust and the Full registry build without it), the tests of the eval-only
       # features (`nir1-graph-eval`, `nir1-final-request-eval`), and many Node
-      # tests that no other job or registry entry names (nir1-graph-eval,
-      # nir1-packing, nir1-retrieval, the WebRTC block probes, journey shards).
+      # tests that no other job or registry entry names by path (the NIR-1
+      # graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
       # The nightly run covers them: it is the only automatic run of the whole
       # selection after a merge, so a break that only the combination of merged
       # changes shows is found by the next nightly run, up to about a day later.

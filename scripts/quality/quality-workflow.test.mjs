@@ -1167,44 +1167,32 @@ test("CI runs the diff gate with full history and selected light suites", async 
   );
   assert.equal(rustSteps.length, 2);
   for (const step of rustSteps) assert.equal(step.if, impactCondition, step.uses);
-  // Truth table of the step condition (job `quality`, step "Impact-selected light gates").
-  // A `workflow_call` reports its caller's event and ref: the release workflow calls ci.yml on a tag
-  // push; a master push is a branch ref.
-  const impactRuns = ({ event, refType }) =>
+  // Truth table: does the impact step of job `quality` run? It does when the job is admitted (its `if`
+  // on the event and the dispatch inputs) and the step condition holds. A `workflow_call` reports its
+  // caller's event and ref: the only caller, release.yml, calls ci.yml on a tag push (`push`, ref_type
+  // tag; the only input is product_journey_mode); a master push is a branch ref.
+  const impactRuns = ({ event, refType, inputs }) =>
+    evaluateIf(quality.if, { inputs, event }) &&
     impact.if.split("||").some((clause) => {
       const [, key, value] =
         clause.trim().match(/^github\.(event_name|ref_type) == '([^']+)'$/) ?? [];
       return (key === "event_name" ? event : refType) === value;
     });
-  for (const [scenario, context, runs] of [
-    ["pull_request", { event: "pull_request", refType: "branch" }, false],
-    ["master push", { event: "push", refType: "branch" }, false],
-    ["schedule", { event: "schedule", refType: "branch" }, true],
-    ["workflow_dispatch", { event: "workflow_dispatch", refType: "branch" }, true],
-    ["workflow_dispatch of independent_gates", { event: "workflow_dispatch", refType: "branch" }, true],
-    ["workflow_dispatch of source_focused", { event: "workflow_dispatch", refType: "branch" }, true],
-    ["workflow_call from a dispatch", { event: "workflow_dispatch", refType: "branch" }, true],
-    ["workflow_call from the release tag push", { event: "push", refType: "tag" }, true],
-  ]) {
-    assert.equal(impactRuns(context), runs, `impact step on ${scenario}`);
-  }
-  // The job runs on a schedule and with independent_gates; a canonical profile, candidate input or
-  // source_focused request never reaches it (the dispatch inputs the job `if` excludes).
-  const jobAdmitted = (inputs, event) => evaluateIf(quality.if, { inputs, event });
   const dispatchDefaults = Object.fromEntries(
     Object.entries(yaml.load(workflow).on.workflow_dispatch.inputs).map(([name, input]) => [name, input.default ?? ""]),
   );
-  for (const [scenario, inputs, event, admitted] of [
-    ["pull_request", {}, "pull_request", true],
-    ["push", {}, "push", true],
-    ["schedule (no inputs)", {}, "schedule", true],
-    ["workflow_dispatch", dispatchDefaults, "workflow_dispatch", true],
-    ["workflow_dispatch independent_gates", { ...dispatchDefaults, independent_gates: true }, "workflow_dispatch", true],
-    ["workflow_dispatch source_focused", { ...dispatchDefaults, source_focused: true }, "workflow_dispatch", false],
-    ["workflow_dispatch canonical_profile", { ...dispatchDefaults, canonical_profile: "quick" }, "workflow_dispatch", false],
-    ["workflow_dispatch candidate_head", { ...dispatchDefaults, candidate_head: "a".repeat(40) }, "workflow_dispatch", false],
+  for (const [scenario, context, runs] of [
+    ["pull_request", { event: "pull_request", refType: "branch", inputs: {} }, false],
+    ["master push", { event: "push", refType: "branch", inputs: {} }, false],
+    ["schedule", { event: "schedule", refType: "branch", inputs: {} }, true],
+    ["workflow_dispatch", { event: "workflow_dispatch", refType: "branch", inputs: dispatchDefaults }, true],
+    ["workflow_dispatch independent_gates", { event: "workflow_dispatch", refType: "branch", inputs: { ...dispatchDefaults, independent_gates: true } }, true],
+    ["workflow_dispatch source_focused", { event: "workflow_dispatch", refType: "branch", inputs: { ...dispatchDefaults, source_focused: true } }, false],
+    ["workflow_dispatch canonical_profile", { event: "workflow_dispatch", refType: "branch", inputs: { ...dispatchDefaults, canonical_profile: "quick" } }, false],
+    ["workflow_dispatch candidate_head", { event: "workflow_dispatch", refType: "branch", inputs: { ...dispatchDefaults, candidate_head: "a".repeat(40) } }, false],
+    ["workflow_call from the release tag push", { event: "push", refType: "tag", inputs: { product_journey_mode: "all" } }, true],
   ]) {
-    assert.equal(jobAdmitted(inputs, event), admitted, `job quality on ${scenario}`);
+    assert.equal(impactRuns(context), runs, `impact step on ${scenario}`);
   }
   assert.match(impact.run, /pnpm eval:impact -- --base "\$QUALITY_BASE_SHA" --head "\$QUALITY_HEAD_SHA" --run/);
   assert.match(impact.run, /pnpm eval:impact -- --head "\$QUALITY_HEAD_SHA" --run/);
