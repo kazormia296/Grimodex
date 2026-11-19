@@ -1025,9 +1025,11 @@
 - (b) main：`persistDeliveryFailure` が、receipt の reject の message が code `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING` で始まる（既存の `hasExactFailureCode` の形）ときだけ、「project が無いので trigger を捨てる」終端として扱う（`work` と `wake` の両方）。retry の数（3）・遅延（1,000 ms）は変えない。(a) だけでは、work の item（その project の cycle が FK で失敗する）や、(a) の判定の後に project が消えた競合（判定は通り、実行で FK）を止められないので、(b) を足す。receipt を拒否したのは live な authority の同じ DB（binding が一致した後）の読みなので、renderer が偽造できる値ではなく、binding が違う・workspace が無いときは今までどおり typed non-ACK で保持する。
 - (a) だけ、(b) だけにしない理由：(b) だけだと wake のたびに最大 3 回 retry して JSONL に 1 行足すまで終わらない（約 5 s）。(a) だけだと work の item と競合が残る。
 
-**判断 2：project の存在の判定が変わる競合**
-- 判定は Native の immediate transaction の 1 snapshot。project の行は 1 つの transaction で commit されるので、「作成中」の project は commit までは見えない。wake の出所（workspace の列挙、Graph の需要、hasMore、completion）は commit 済みの project の id だけを持つ。作成の commit より前に wake が来ることは無い。仮に来て捨てても、新しい project の backfill は、その project 自身の trigger（作成後の登録・workspace-opened）が起こす。scan の staging の project は行が既にあり、既存の判定（staging なら no-work）のままで、今回の変更に影響しない。
-- 同じ id の project の再作成：id は UUID で再利用しない。古い wake を捨てるのは正しい。
+**判断 2：project の存在の判定が変わる競合（実装の後に、コードを読んで訂正した 2026-11-19）**
+- 判定は Native の immediate transaction の 1 snapshot。project の行は 1 つの transaction で commit されるので、commit 前の project はこの判定から見えない（見えないことは、存在しないとして no-work になることを意味する）。
+- commit の前に wake が来ることがあるか：wake と work の project id の出所を読んだ。(1) workspace の列挙（`discover_projects` は `projects` の commit 済みの行を読む）、(2) wake outbox（`narrative_maintenance_wake_outbox.project_id` は `projects(id)` への FK で `ON DELETE CASCADE`。行があれば project がある）、(3) hasMore の継続と completion の wake（直前の cycle が処理した project の id）、(4) Graph の需要（owner が観測した project）。どれも commit 済みの行か、commit 済みの project に対する直前の結果から来る。commit 前の id を出す経路は、この範囲では見つからなかった。ただし renderer の SQL（Drizzle）が project を作る経路で、作成の commit の前に main へ trigger を出す箇所があるかは**未確認**（読んでいない）。あったとしても、以前の挙動も同じ project に対し FK で 3 回（約 3 s）失敗するだけで、その後は receipt が PROJECT_MISSING で拒否されて回復しなかった。変更後に失うのは、その 3 s の窓の中で commit が間に合ったときの 1 回の wake だけで、新しい project の backfill は workspace-opened と project 自身の trigger が起こす。
+- project の id：renderer が作る project の id は新規の id で、migration が seed する固定の `default-project` だけは同じ id が残る。同じ binding の中で削除の後に同じ id で再作成されても、古い wake が no-op の spurious な wake として 1 回 Accepted で消えるだけで、再作成された project の discovery は壊れない（Backfill は、その project の epoch が無ければ次の workspace-opened・wake で作られる）。
+- scan の staging の project は行が既にあり、既存の判定（staging なら no-work）のまま。今回の変更に影響しない。
 - (a) の後に project が消える競合は (b) で終わる（work・wake とも、尽きた後の receipt が PROJECT_MISSING）。
 
 **判断 3：一時的な失敗は今のまま**
@@ -1048,7 +1050,7 @@
 | 有限待機 | 無い。wake 1 件は最大 retry 3 回＋receipt 1 回で終わる（以前は無限） |
 | 終了の証拠 | cycle の Accepted の receipt（(a)）、または `persistDeliveryFailure` の終端の結果と retry count の削除（(b)）。quiescence の `queueIdle` が true になることを試験で確かめる。reject や kill だけを終了とみなさない |
 | error／timeout／onClosed | cycle の FK 以外の失敗は今までどおり。receipt の PROJECT_MISSING だけが終端。warn の log に project id と code を出す（本文は出さない） |
-| 再起動時の状態 | 新しい永続状態は無い。捨てた wake に対応する durable な行（outbox 等）は、project が無いので cascade で無い |
+| 再起動時の状態 | 新しい永続状態は無い。捨てた wake に対応する durable な行（outbox 等）は、FK の ON DELETE CASCADE で project と一緒に無い |
 
 #### 4. threat model の差分（委任の内の技術的な改訂）
 
@@ -1058,3 +1060,11 @@
 - 受信先・保存：どちらも増えない。audit の JSONL は既存の書き先と形のまま。
 - 受入れ：製品の既定（const false）の挙動は、存在する project の wake と work では変わらない。存在しない project だけが、無限の retry から終端に変わる。
 - 委任の外に当たるもの（避けたもの）：retry の上限・遅延の変更、新しい receipt の status・契約、保存範囲の拡大、policy・定数の変更。
+
+#### 5. 実装と検証の結果（2026-11-19。最後の code commit `a409415e`。§1 の「検証の節に結果を追記する」の分）
+
+- **再現**：直す前に、(1) vitest（mock の backend。cycle は FK、receipt は PROJECT_MISSING の reject）で、wake（Graph の需要）・hasMore の継続・work の 3 つとも、fake time 600 s で 600〜601 cycle（上限は 5）。(2) Rust（実 DB）で、存在しない id と削除済みの id（`DELETE FROM projects` の cascade）の wake の cycle が、Closed・Seam・Product の 3 launch とも `FOREIGN KEY constraint failed: Error code 787`。main の discovery（workspace-opened）も、その project の Backfill の work を返していた。原因は、discovery が project の存在を見ずに Backfill を作ること。再現は層ごとで通しではない（main は mock、Native は実 DB）。
+- **直した後**：同じ試験が通る（cycle は Accepted・`has_more` なし・registered／started／completed／grants が空、main は終端で `queueIdle`）。存在する project は Backfill を今まで通り作る（`a_wake_for_a_project_the_workspace_has_still_discovers_its_backfill`）。Native の試験で、receipt の message が JavaScript 側で `NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING:` から始まり、wake の行は書かれないことを確かめた（main の先頭一致が製品の文字列で効く前提）。
+- **変異**：Rust の存在確認を外す→3 本が落ちる。main の catch の分岐を外す→wake・hasMore・work の 3 本が落ちる。wake の枝だけ外す→wake と hasMore の 2 本。work の枝だけ外す→work の 1 本。どの reject も終端にする、先頭一致を部分一致にする→「PROJECT_MISSING 以外の reject は retry が続く」の 1 本が落ちる。いずれも戻して通ることを確かめた。
+- **全件**：grimodex-db `--lib` 2,872 passed・0 failed・63 ignored。Native `--lib --features licensing,legacy-keyring-migration` 917 passed・7 ignored。clippy `-D warnings`（grimodex-db `--all-targets`、Native は同 features）成功。vitest（`vitest.electron.config.ts`、electron 全体）2,863 passed（cargo の build と同時に走らせた 1 回目は 3 件落ち、同じ commit の再実行 2 回で全件成功。負荷のときの揺れと見ているが、原因は特定していない）。tsc（`electron/tsconfig.json`・root）成功。`validate:architecture` 成功。
+- **残る既知の挙動**：receipt は、JSONL の追記の後に project の存在を確かめて拒否する既存の順序のまま。終端になったので追記は 1 回。
