@@ -8,8 +8,12 @@ import { join } from "node:path";
 //
 // Temporary exception (decided by the user on 2026-11-18): GHSA-fc5q-39xc-vjpf (picomatch <=4.0.7, ReDoS
 // through single-branch repeated extglobs) has no published fix; the registry's latest picomatch is 4.0.7.
-// In pnpm-lock.yaml picomatch is pulled only by build and test tools (vite, vitest, rollup plugins,
-// tinyglobby, fdir). When a fixed picomatch is published, raise it and remove this exception.
+// In pnpm-lock.yaml picomatch is pulled by build and test tools (vite, vitest, rollup plugins,
+// tinyglobby, fdir), and now also directly by `@mastra/core` (Mastra migration MP-1, 2026-11-19), which
+// depends on picomatch 4.0.7. The product bundle does not include `@mastra/core` until MP-3. Before MP-3,
+// check whether Mastra feeds user input to picomatch, and reconfirm this exception with the user
+// (decided 2026-11-19: keep the exception, reconsider before MP-3).
+// When a fixed picomatch is published, raise it and remove this exception.
 // The exception ends at 2026-12-18 00:00 JST; extending it needs a fresh decision.
 const TEMPORARY_IGNORED_GHSAS = [
   { id: "GHSA-fc5q-39xc-vjpf", expiresAt: "2026-12-18T00:00:00+09:00" },
