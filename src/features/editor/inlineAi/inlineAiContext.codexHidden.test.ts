@@ -13,10 +13,12 @@ const h = vi.hoisted(() => ({
     summary: string | null;
     contextMode: string;
   }>,
+  phases: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("@/features/codex/phaseApi", () => ({
-  listPhasesByEntryIds: async () => [],
+  listPhasesByEntryIds: async (ids: string[]) =>
+    h.phases.filter((p) => ids.includes(String(p["entryId"]))),
 }));
 vi.mock("@/db/client", async () => {
   const { codexEntries } = await import("@/db/schema");
@@ -43,6 +45,8 @@ vi.mock("@/db/client", async () => {
 });
 
 import { buildInlineAiContextForSend } from "./inlineAiContext";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 
 function editorLike(text: string): Editor {
   const state = EditorState.create({
@@ -112,6 +116,69 @@ describe("buildInlineAiContextForSend", () => {
   });
 });
 
+describe("Phase が hidden を解除した Codex", () => {
+  it("base の hidden の要約でなく Phase 解決後の要約を渡す", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "p1",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        node("scene-1", "a0"),
+        node("scene-2", "a1"),
+      ]),
+      resolutionMode: "reading",
+    });
+    h.rows = [
+      { id: "b", summary: "作者が秘匿した要約", contextMode: "hidden" },
+    ];
+    h.phases = [
+      {
+        id: "ph",
+        entryId: "b",
+        anchorNodeId: "scene-2",
+        label: "公開",
+        summaryOverride: "公開された要約",
+        contentOverride: null,
+        contextModeOverride: "mentioned",
+        version: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    const send = (sceneId: string) =>
+      buildInlineAiContextForSend({
+        editor: editorLike("x"),
+        projectTitle: "P",
+        sceneTitle: "S",
+        matchedCodexIds: ["b"],
+        codexEntries: ENTRIES,
+        projectId: "p1",
+        sceneId,
+      });
+    expect((await send("scene-2")).codexSummaries).toBe(
+      "- Bob: 公開された要約",
+    );
+    expect((await send("scene-1")).codexSummaries).toBe("");
+    h.phases = [];
+  });
+});
+
 describe("インライン AI の送信経路は hidden 判定を通る", () => {
   const root = resolve(__dirname, "../..");
   for (const file of ["editor/EditorPane.tsx", "editor/useLinearInlineAi.ts"]) {
@@ -119,6 +186,11 @@ describe("インライン AI の送信経路は hidden 判定を通る", () => {
       const source = readFileSync(resolve(root, file), "utf8");
       expect(source).not.toMatch(/\bbuildInlineAiContext\(/);
       expect(source).toMatch(/\bbuildInlineAiContextForSend\(/);
+      // 非同期の context は、送る前の鮮度の検査と reject の処理（sendWhenFresh）を通す。
+      expect(source).not.toMatch(
+        /buildInlineAiContextForSend\([\s\S]*?\}\)\.then\(/,
+      );
+      expect(source).toMatch(/\bsendWhenFresh\(/);
     });
   }
 });

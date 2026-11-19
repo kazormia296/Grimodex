@@ -3,7 +3,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { visibleCodexIdsForAi } from "@/features/codex/context/codexHiddenFromAi";
+import { visibleCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 // NOTE: findBeatById must come from "./insertBeatStream" — generateBeatOnce's
 // tests mock that module and assert the call goes through the mock.
@@ -48,6 +48,8 @@ export interface BeatGenerationContext {
 export function buildBeatCodexSummaries(
   matchedIds: readonly string[],
   entries: ReadonlyArray<{ id: string; name: string; summary: string | null }>,
+  /** Phase 解決後の要約（id 単位）。あれば entries の base の要約より優先する。 */
+  resolvedSummaries?: ReadonlyMap<string, string | null>,
 ): string {
   if (matchedIds.length === 0) return "";
   const idSet = new Set(matchedIds);
@@ -55,7 +57,11 @@ export function buildBeatCodexSummaries(
   let total = 0;
   for (const entry of entries) {
     if (!idSet.has(entry.id)) continue;
-    const summary = (entry.summary ?? "").trim();
+    const summary = (
+      (resolvedSummaries?.has(entry.id)
+        ? resolvedSummaries.get(entry.id)
+        : entry.summary) ?? ""
+    ).trim();
     if (!summary) continue;
     const line = `- ${entry.name}: ${summary}`;
     if (total + line.length + 1 > CODEX_SUMMARIES_LIMIT) break;
@@ -137,13 +143,15 @@ export async function buildBeatContextForGeneration(
     if (mention.beatId === beatId) matchedIds.add(mention.codexId);
   }
   // 作者が hidden（AI に秘匿）と印した Codex は、検出・@mention のどちらでも要約を渡さない。
-  const visibleIds = await visibleCodexIdsForAi([...matchedIds], {
+  // Phase で hidden を解除された Codex は、base ではなく Phase 解決後の要約を渡す。
+  const visible = await visibleCodexForAi([...matchedIds], {
     projectId,
     sceneId,
   });
   const codexSummaries = buildBeatCodexSummaries(
-    visibleIds,
+    visible.ids,
     codexEntries ?? [],
+    visible.summaries,
   );
 
   return {

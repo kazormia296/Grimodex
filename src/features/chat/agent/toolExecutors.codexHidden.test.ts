@@ -339,4 +339,73 @@ describe("agent tool は hidden の Codex を model に渡さない", () => {
     });
     expect(ids(after.content)).toEqual([]);
   });
+
+  it("Phase が hidden を解除した Codex は base の hidden の文でなく Phase 解決後の文を返す", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "proj-A",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        node("scene-1", "a0"),
+        node("scene-2", "a1"),
+      ]),
+      resolutionMode: "reading",
+    });
+    h.entries = [
+      entry({
+        id: "e-reveal",
+        summary: "base の秘匿の要約",
+        content: "base の秘匿の本文",
+        contextMode: "hidden",
+      }),
+    ];
+    h.phases = [
+      {
+        id: "ph-reveal",
+        entryId: "e-reveal",
+        anchorNodeId: "scene-2",
+        label: "公開",
+        summaryOverride: "公開された要約",
+        contentOverride: "公開された本文",
+        contextModeOverride: "mentioned",
+        version: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    h.activeSceneId = "scene-2";
+    const got = await executeTool("get_codex_entry", "c", { id: "e-reveal" });
+    const list = await executeTool("list_codex_by_type", "c", {
+      type: "character",
+    });
+    for (const res of [got, list]) {
+      const text = JSON.stringify(res);
+      expect(text).toContain("公開された要約");
+      expect(text).not.toContain("base の秘匿の要約");
+      expect(text).not.toContain("base の秘匿の本文");
+    }
+    expect(JSON.stringify(got)).toContain("公開された本文");
+    // 解除の前の場面では hidden のまま。
+    h.activeSceneId = "scene-1";
+    const before = await executeTool("get_codex_entry", "c", {
+      id: "e-reveal",
+    });
+    expect(before.content).toBeNull();
+  });
 });

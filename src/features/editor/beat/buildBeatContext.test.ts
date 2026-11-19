@@ -4,6 +4,10 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // hidden の判定（DB）は buildBeatContext.codexHidden.test.ts が検証する。ここは素通し。
 vi.mock("@/features/codex/context/codexHiddenFromAi", () => ({
   visibleCodexIdsForAi: async (ids: readonly string[]) => [...ids],
+  visibleCodexForAi: async (ids: readonly string[]) => ({
+    ids: [...ids],
+    summaries: new Map(),
+  }),
 }));
 
 vi.mock("@/features/project/api", () => ({

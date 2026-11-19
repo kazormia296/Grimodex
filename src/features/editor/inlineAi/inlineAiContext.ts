@@ -1,7 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import type { InlineAiContext } from "./inlineAiTypes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { visibleCodexIdsForAi } from "@/features/codex/context/codexHiddenFromAi";
+import { visibleCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 
 /** カーソル前後の抽出文字数（バイト換算ではなく PM 位置単位） */
 const CURSOR_BEFORE_CHARS = 500;
@@ -103,19 +103,25 @@ export async function buildInlineAiContextForSend(
 ): Promise<InlineAiContext> {
   const { projectId, sceneId, ...rest } = input;
   const base = buildInlineAiContext({ ...rest, matchedCodexIds: [] });
-  const visibleIds = await visibleCodexIdsForAi(rest.matchedCodexIds, {
+  // Phase で hidden を解除された Codex は、base ではなく Phase 解決後の要約を渡す。
+  const visible = await visibleCodexForAi(rest.matchedCodexIds, {
     projectId,
     sceneId,
   });
   return {
     ...base,
-    codexSummaries: buildCodexSummaries(visibleIds, rest.codexEntries),
+    codexSummaries: buildCodexSummaries(
+      visible.ids,
+      rest.codexEntries,
+      visible.summaries,
+    ),
   };
 }
 
 function buildCodexSummaries(
   matchedIds: string[],
   entries: CodexEntryLike[],
+  resolvedSummaries?: ReadonlyMap<string, string | null>,
 ): string {
   if (matchedIds.length === 0) return "";
   const idSet = new Set(matchedIds);
@@ -123,7 +129,11 @@ function buildCodexSummaries(
   let total = 0;
   for (const entry of entries) {
     if (!idSet.has(entry.id)) continue;
-    const summary = (entry.summary ?? "").trim();
+    const summary = (
+      (resolvedSummaries?.has(entry.id)
+        ? resolvedSummaries.get(entry.id)
+        : entry.summary) ?? ""
+    ).trim();
     if (!summary) continue;
     const line = `- ${entry.name}: ${summary}`;
     if (total + line.length + 1 > CODEX_SUMMARIES_LIMIT) break;

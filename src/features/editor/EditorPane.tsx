@@ -34,6 +34,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
+import { sendWhenFresh } from "@/features/editor/inlineAi/sendWhenFresh";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -2047,15 +2048,27 @@ export function EditorPane({
         useWorkspaceStore.getState().activeWorkspaceName ?? "";
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
-      void buildInlineAiContextForSend({
-        editor: ed,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        projectId: useTreeStore.getState().projectId,
-        sceneId: node?.id ?? null,
-      }).then((context) => generate(cmd, context));
+      // hidden 判定が DB を引くので非同期。送信時点の文書・projection・書込み可否を
+      // await の前に取り、判定の間に変わっていたら送らない（A/B 経路と同じ）。
+      const documentSnapshot = ed.state.doc;
+      const projectionKey = inputProjectionKeyRef.current;
+      sendWhenFresh(
+        buildInlineAiContextForSend({
+          editor: ed,
+          projectTitle,
+          sceneTitle: node?.title ?? "",
+          matchedCodexIds,
+          codexEntries,
+          projectId: useTreeStore.getState().projectId,
+          sceneId: node?.id ?? null,
+        }),
+        () =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === projectionKey &&
+          ed.state.doc.eq(documentSnapshot),
+        (context) => generate(cmd, context),
+      );
     },
     [dbNativeEditor, nodeId, generate],
   );
@@ -3015,16 +3028,28 @@ export function EditorPane({
         useWorkspaceStore.getState().activeWorkspaceName ?? "";
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
-      void buildInlineAiContextForSend({
-        editor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg: prompt || undefined,
-        projectId: useTreeStore.getState().projectId,
-        sceneId: node?.id ?? null,
-      }).then((context) => generate(command, context));
+      // hidden 判定が DB を引くので非同期。判定の間に文書・projection・書込み可否が
+      // 変わっていたら送らない（A/B 経路と同じ）。
+      const documentSnapshot = editor.state.doc;
+      const projectionKey = inputProjectionKeyRef.current;
+      sendWhenFresh(
+        buildInlineAiContextForSend({
+          editor,
+          projectTitle,
+          sceneTitle: node?.title ?? "",
+          matchedCodexIds,
+          codexEntries,
+          arg: prompt || undefined,
+          projectId: useTreeStore.getState().projectId,
+          sceneId: node?.id ?? null,
+        }),
+        () =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === projectionKey &&
+          editor.state.doc.eq(documentSnapshot),
+        (context) => generate(command, context),
+      );
     },
     [editor, generate, nodeId],
   );
@@ -3051,45 +3076,45 @@ export function EditorPane({
       const documentSnapshot = editor.state.doc;
       const projectionKey = inputProjectionKeyRef.current;
       const lang = getCurrentProjectLanguage();
-      void buildInlineAiContextForSend({
-        editor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg: prompt || undefined,
-        projectId: useTreeStore.getState().projectId,
-        sceneId: node?.id ?? null,
-      }).then((context) => {
-        if (
-          !inputProjectionReadyRef.current ||
-          !editorWritableRef.current ||
-          inputProjectionKeyRef.current !== projectionKey ||
-          !editor.state.doc.eq(documentSnapshot)
-        ) {
-          return;
-        }
-        const messages: AbInlineState["messages"] = [
-          {
-            role: "system",
-            content: buildInlineSystemPrompt(command, context, lang),
-          },
-          {
-            role: "user",
-            content: buildInlineUserPrompt(command, context, lang),
-          },
-        ];
-        const isReplace = command.mode === "replace" && from !== to;
-        setAbInline({
-          messages,
-          mode: isReplace ? "replace" : "insert",
-          originalRange: isReplace ? { from, to } : null,
-          insertPos: isReplace ? null : from,
-          projectId: getCurrentProjectId(),
-          projectionKey,
-          documentSnapshot,
-        });
-      });
+      sendWhenFresh(
+        buildInlineAiContextForSend({
+          editor,
+          projectTitle,
+          sceneTitle: node?.title ?? "",
+          matchedCodexIds,
+          codexEntries,
+          arg: prompt || undefined,
+          projectId: useTreeStore.getState().projectId,
+          sceneId: node?.id ?? null,
+        }),
+        () =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === projectionKey &&
+          editor.state.doc.eq(documentSnapshot),
+        (context) => {
+          const messages: AbInlineState["messages"] = [
+            {
+              role: "system",
+              content: buildInlineSystemPrompt(command, context, lang),
+            },
+            {
+              role: "user",
+              content: buildInlineUserPrompt(command, context, lang),
+            },
+          ];
+          const isReplace = command.mode === "replace" && from !== to;
+          setAbInline({
+            messages,
+            mode: isReplace ? "replace" : "insert",
+            originalRange: isReplace ? { from, to } : null,
+            insertPos: isReplace ? null : from,
+            projectId: getCurrentProjectId(),
+            projectionKey,
+            documentSnapshot,
+          });
+        },
+      );
     },
     [editor, nodeId],
   );

@@ -8,6 +8,7 @@ import {
 } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
+import { sendWhenFresh } from "@/features/editor/inlineAi/sendWhenFresh";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -68,6 +69,17 @@ export function useLinearInlineAi(params: {
     null,
   );
   const seenProjectionKeyRef = useRef("");
+  // 非同期の context 作成の間に projection が変わったかを、送信時点で見るための最新値。
+  const projectionStateRef = useRef({
+    key: projectionKey,
+    ready: projectionReady,
+    writable: projectionWritable,
+  });
+  projectionStateRef.current = {
+    key: projectionKey,
+    ready: projectionReady,
+    writable: projectionWritable,
+  };
 
   useEffect(() => {
     const projectionChanged =
@@ -106,16 +118,31 @@ export function useLinearInlineAi(params: {
       const codexEntries = useCodexStore.getState().entries;
       // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。エディタ由来の
       // 項目は buildInlineAiContextForSend が同期で取る。
-      void buildInlineAiContextForSend({
-        editor: inlineAiEditor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg,
-        projectId: useTreeStore.getState().projectId,
-        sceneId: node?.id ?? null,
-      }).then((context) => generate(command, context));
+      // 判定の間に文書・projection・書込み可否が変わっていたら送らない。
+      const documentSnapshot = inlineAiEditor.state.doc;
+      const startKey = projectionStateRef.current.key;
+      sendWhenFresh(
+        buildInlineAiContextForSend({
+          editor: inlineAiEditor,
+          projectTitle,
+          sceneTitle: node?.title ?? "",
+          matchedCodexIds,
+          codexEntries,
+          arg,
+          projectId: useTreeStore.getState().projectId,
+          sceneId: node?.id ?? null,
+        }),
+        () => {
+          const state = projectionStateRef.current;
+          return (
+            state.ready &&
+            state.writable &&
+            state.key === startKey &&
+            inlineAiEditor.state.doc.eq(documentSnapshot)
+          );
+        },
+        (context) => generate(command, context),
+      );
     },
     [inlineAiEditor, sceneId, generate],
   );

@@ -102,7 +102,8 @@ import {
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
 import {
   dropCodexHiddenFromAi,
-  listCodexIdsHiddenFromAi,
+  resolveCodexForAi,
+  type CodexTextForAi,
 } from "@/features/codex/context/codexHiddenFromAi";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
@@ -564,18 +565,35 @@ function dropHiddenCodex<T extends { id: string }>(
   });
 }
 
-/** hidden の Codex を指す id（読めない・存在しない id と同じ「見つからない」扱いにする）。 */
+/**
+ * id の Codex を AI へ渡してよい形で返す。hidden なら null（読めない・存在しない id と同じ
+ * 「見つからない」扱いにする）。summary と本文は Phase 解決後（現在の場面があればその場面）で、
+ * base が hidden で Phase が解除したものも base の文を返さない。
+ */
+async function resolveCodexTextForAi(
+  id: string,
+  projectId: string,
+  scope?: ChatTurnToolScope,
+  /** hidden でないのに解決結果が無いときの代わり（通常は起きない）。 */
+  fallback: CodexTextForAi = { summary: null, content: "" },
+): Promise<CodexTextForAi | null> {
+  const { hidden, texts } = await resolveCodexForAi({
+    entryIds: [id],
+    projectId,
+    sceneId: chronicleSceneId(scope),
+    withContent: true,
+  });
+  if (hidden.has(id)) return null;
+  return texts.get(id) ?? fallback;
+}
+
+/** hidden の Codex を指す id か。 */
 async function isCodexHiddenFromAi(
   id: string,
   projectId: string,
   scope?: ChatTurnToolScope,
 ): Promise<boolean> {
-  const hidden = await listCodexIdsHiddenFromAi({
-    entryIds: [id],
-    projectId,
-    sceneId: chronicleSceneId(scope),
-  });
-  return hidden.has(id);
+  return (await resolveCodexTextForAi(id, projectId, scope)) === null;
 }
 
 function eventSearchLimit(params: Record<string, unknown>): number {
@@ -825,7 +843,13 @@ async function getCodexEntry(
     .from(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
   // hidden は存在しない id と同じ応答にする（存在を明かさない）。
-  if (!entry || (await isCodexHiddenFromAi(id, projectId, scope)))
+  const resolvedText = entry
+    ? await resolveCodexTextForAi(id, projectId, scope, {
+        summary: entry.summary,
+        content: entry.content,
+      })
+    : null;
+  if (!entry || !resolvedText)
     return {
       name: "get_codex_entry",
       content: null,
@@ -869,14 +893,16 @@ async function getCodexEntry(
 
   // 本体テキスト (ProseMirror JSON → plain text)。Tool description が
   // "full content body" と謳う以上、ここで抜けてはいけない。
-  const body = entry.content ? extractPlainText(entry.content) : "";
+  const body = resolvedText.content
+    ? extractPlainText(resolvedText.content)
+    : "";
 
   const result = {
     id: entry.id,
     name: entry.name,
     type: entry.type,
     aliases: entry.aliases ? (JSON.parse(entry.aliases) as string[]) : [],
-    summary: entry.summary ?? "",
+    summary: resolvedText.summary ?? "",
     body,
     details,
     children: children.map((c) => ({
