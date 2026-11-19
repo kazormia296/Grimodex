@@ -81,3 +81,13 @@ export function canExposeResolvedCodexIdentity(
 ): boolean {
   return resolveCodexContextExposure(contextMode, reason) !== "excluded";
 }
+
+/**
+ * 作者が「AI に秘匿」と印した（hidden）か、不明な値の Phase 解決済み mode。
+ * `explicit-pin` は hidden と不明値だけを除外する契機なので、suppress・mentioned の
+ * 絞り込みを足さずに「hidden だけ」を正本の matrix から導ける。
+ * agent tool・beat・インライン AI のように、契機を持たない読み出し経路が使う。
+ */
+export function isCodexContextModeHiddenFromAi(contextMode: string): boolean {
+  return !canIncludeResolvedCodexContext(contextMode, "explicit-pin");
+}

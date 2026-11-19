@@ -3,6 +3,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { visibleCodexIdsForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 // NOTE: findBeatById must come from "./insertBeatStream" — generateBeatOnce's
 // tests mock that module and assert the call goes through the mock.
@@ -135,8 +136,13 @@ export async function buildBeatContextForGeneration(
   for (const mention of extractBeatMentions(editor.state.doc)) {
     if (mention.beatId === beatId) matchedIds.add(mention.codexId);
   }
+  // 作者が hidden（AI に秘匿）と印した Codex は、検出・@mention のどちらでも要約を渡さない。
+  const visibleIds = await visibleCodexIdsForAi([...matchedIds], {
+    projectId,
+    sceneId,
+  });
   const codexSummaries = buildBeatCodexSummaries(
-    [...matchedIds],
+    visibleIds,
     codexEntries ?? [],
   );
 

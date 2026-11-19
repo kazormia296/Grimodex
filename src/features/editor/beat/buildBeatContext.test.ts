@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+// hidden の判定（DB）は buildBeatContext.codexHidden.test.ts が検証する。ここは素通し。
+vi.mock("@/features/codex/context/codexHiddenFromAi", () => ({
+  visibleCodexIdsForAi: async (ids: readonly string[]) => [...ids],
+}));
+
 vi.mock("@/features/project/api", () => ({
   getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
 }));

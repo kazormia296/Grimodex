@@ -100,6 +100,10 @@ import {
   type EventSearchHit,
 } from "@/features/semantic-search/api";
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
+import {
+  dropCodexHiddenFromAi,
+  listCodexIdsHiddenFromAi,
+} from "@/features/codex/context/codexHiddenFromAi";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
 import {
@@ -224,6 +228,7 @@ function orderByIds<T extends { id: string }>(rows: T[], ids: string[]): T[] {
 
 async function searchCodex(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const query = String(params["query"] ?? "").trim();
   if (!query)
@@ -331,8 +336,13 @@ async function searchCodex(
     return [] as CodexSearchHit[];
   });
 
-  const content =
-    dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse;
+  // hidden は sparse・dense のどちらの arm からも落とす（dense の hit は DB を通らず
+  // name・summary を運ぶので、融合の後に id で判定する）。
+  const content = await dropHiddenCodex(
+    dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse,
+    projectId,
+    scope,
+  );
   const json = JSON.stringify(content);
   return {
     name: "search_codex",
@@ -538,6 +548,36 @@ function chronicleSceneId(scope?: ChatTurnToolScope): string {
     : (useTreeStore.getState().activeSceneId ?? "");
 }
 
+/**
+ * 作者が hidden（AI に秘匿）と印した Codex を、tool の結果から落とす。判定は chat の
+ * 通常の文脈と同じ正本（`listCodexIdsHiddenFromAi`）。現在の場面は年表の tool と同じ規則で、
+ * 呼ぶ位置が挙動の一部なので、結果を作り終えた後（await の後）で呼ぶ。
+ */
+function dropHiddenCodex<T extends { id: string }>(
+  rows: readonly T[],
+  projectId: string,
+  scope?: ChatTurnToolScope,
+): Promise<T[]> {
+  return dropCodexHiddenFromAi(rows, {
+    projectId,
+    sceneId: chronicleSceneId(scope),
+  });
+}
+
+/** hidden の Codex を指す id（読めない・存在しない id と同じ「見つからない」扱いにする）。 */
+async function isCodexHiddenFromAi(
+  id: string,
+  projectId: string,
+  scope?: ChatTurnToolScope,
+): Promise<boolean> {
+  const hidden = await listCodexIdsHiddenFromAi({
+    entryIds: [id],
+    projectId,
+    sceneId: chronicleSceneId(scope),
+  });
+  return hidden.has(id);
+}
+
 function eventSearchLimit(params: Record<string, unknown>): number {
   const rawLimit = Number(params["limit"]);
   return Number.isFinite(rawLimit) && rawLimit > 0
@@ -720,6 +760,7 @@ async function searchEventsWithIr(
 
 async function listCodexByType(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const projectId = useTreeStore.getState().projectId;
@@ -742,7 +783,7 @@ async function listCodexByType(
       and(eq(codexEntries.projectId, projectId), eq(codexEntries.type, type)),
     );
 
-  const content = rows.map((r) => ({
+  const content = (await dropHiddenCodex(rows, projectId, scope)).map((r) => ({
     id: r.id,
     name: r.name,
     summary: r.summary ?? "",
@@ -759,6 +800,7 @@ async function listCodexByType(
 
 async function getCodexEntry(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id)
@@ -782,7 +824,8 @@ async function getCodexEntry(
     .select()
     .from(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  if (!entry)
+  // hidden は存在しない id と同じ応答にする（存在を明かさない）。
+  if (!entry || (await isCodexHiddenFromAi(id, projectId, scope)))
     return {
       name: "get_codex_entry",
       content: null,
@@ -810,15 +853,19 @@ async function getCodexEntry(
     });
 
   // Child entries (summaries only)
-  const children = await db
-    .select({
-      id: codexEntries.id,
-      name: codexEntries.name,
-      type: codexEntries.type,
-      summary: codexEntries.summary,
-    })
-    .from(codexEntries)
-    .where(eq(codexEntries.parentId, id));
+  const children = await dropHiddenCodex(
+    await db
+      .select({
+        id: codexEntries.id,
+        name: codexEntries.name,
+        type: codexEntries.type,
+        summary: codexEntries.summary,
+      })
+      .from(codexEntries)
+      .where(eq(codexEntries.parentId, id)),
+    projectId,
+    scope,
+  );
 
   // 本体テキスト (ProseMirror JSON → plain text)。Tool description が
   // "full content body" と謳う以上、ここで抜けてはいけない。
@@ -901,6 +948,7 @@ async function listCodexTags(
 
 async function searchCodexByTags(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const tags = Array.isArray(params["tags"])
     ? (params["tags"] as unknown[]).map(String)
@@ -936,12 +984,14 @@ async function searchCodexByTags(
       and(eq(codexEntries.projectId, projectId), inArray(codexTags.name, tags)),
     );
 
-  const content = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    summary: row.summary ?? "",
-  }));
+  const content = (await dropHiddenCodex(rows, projectId, scope)).map(
+    (row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      summary: row.summary ?? "",
+    }),
+  );
   const json = JSON.stringify(content);
   return {
     name: "search_codex_by_tags",
@@ -958,6 +1008,7 @@ async function searchCodexByTags(
  */
 async function findRelatedEntries(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id)
@@ -981,7 +1032,8 @@ async function findRelatedEntries(
     .select()
     .from(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  if (!source)
+  // 起点が hidden なら存在しない id と同じ応答にする（存在を明かさない）。
+  if (!source || (await isCodexHiddenFromAi(id, projectId, scope)))
     return {
       name: "find_related_entries",
       content: [],
@@ -1038,12 +1090,14 @@ async function findRelatedEntries(
     )
     .limit(20);
 
-  const content = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    summary: row.summary ?? "",
-  }));
+  const content = (await dropHiddenCodex(rows, projectId, scope)).map(
+    (row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      summary: row.summary ?? "",
+    }),
+  );
   const json = JSON.stringify(content);
   return {
     name: "find_related_entries",
@@ -2066,12 +2120,17 @@ type Executor = (
  */
 /** Read-only tools — frozen allowlist (security review F-2). */
 export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
-  search_codex: searchCodex,
-  list_codex_by_type: listCodexByType,
-  get_codex_entry: getCodexEntry,
+  search_codex: (params, _requestId, _authorization, context) =>
+    searchCodex(params, context?.scope),
+  list_codex_by_type: (params, _requestId, _authorization, context) =>
+    listCodexByType(params, context?.scope),
+  get_codex_entry: (params, _requestId, _authorization, context) =>
+    getCodexEntry(params, context?.scope),
   list_codex_tags: listCodexTags,
-  search_codex_by_tags: searchCodexByTags,
-  find_related_entries: findRelatedEntries,
+  search_codex_by_tags: (params, _requestId, _authorization, context) =>
+    searchCodexByTags(params, context?.scope),
+  find_related_entries: (params, _requestId, _authorization, context) =>
+    findRelatedEntries(params, context?.scope),
   list_chapters: () => listChapters(),
   get_scene: getScene,
   search_scenes: searchScenes,

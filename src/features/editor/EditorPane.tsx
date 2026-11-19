@@ -33,7 +33,7 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
+import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -2047,14 +2047,15 @@ export function EditorPane({
         useWorkspaceStore.getState().activeWorkspaceName ?? "";
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
+      void buildInlineAiContextForSend({
         editor: ed,
         projectTitle,
         sceneTitle: node?.title ?? "",
         matchedCodexIds,
         codexEntries,
-      });
-      generate(cmd, context);
+        projectId: useTreeStore.getState().projectId,
+        sceneId: node?.id ?? null,
+      }).then((context) => generate(cmd, context));
     },
     [dbNativeEditor, nodeId, generate],
   );
@@ -3014,15 +3015,16 @@ export function EditorPane({
         useWorkspaceStore.getState().activeWorkspaceName ?? "";
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
+      void buildInlineAiContextForSend({
         editor,
         projectTitle,
         sceneTitle: node?.title ?? "",
         matchedCodexIds,
         codexEntries,
         arg: prompt || undefined,
-      });
-      generate(command, context);
+        projectId: useTreeStore.getState().projectId,
+        sceneId: node?.id ?? null,
+      }).then((context) => generate(command, context));
     },
     [editor, generate, nodeId],
   );
@@ -3043,35 +3045,50 @@ export function EditorPane({
         useWorkspaceStore.getState().activeWorkspaceName ?? "";
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
+      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。送信時点の
+      // カーソル・文書・projection は await の前に取り、判定の間に変わっていたら送らない。
+      const { from, to } = editor.state.selection;
+      const documentSnapshot = editor.state.doc;
+      const projectionKey = inputProjectionKeyRef.current;
+      const lang = getCurrentProjectLanguage();
+      void buildInlineAiContextForSend({
         editor,
         projectTitle,
         sceneTitle: node?.title ?? "",
         matchedCodexIds,
         codexEntries,
         arg: prompt || undefined,
-      });
-      const lang = getCurrentProjectLanguage();
-      const messages: AbInlineState["messages"] = [
-        {
-          role: "system",
-          content: buildInlineSystemPrompt(command, context, lang),
-        },
-        {
-          role: "user",
-          content: buildInlineUserPrompt(command, context, lang),
-        },
-      ];
-      const { from, to } = editor.state.selection;
-      const isReplace = command.mode === "replace" && from !== to;
-      setAbInline({
-        messages,
-        mode: isReplace ? "replace" : "insert",
-        originalRange: isReplace ? { from, to } : null,
-        insertPos: isReplace ? null : from,
-        projectId: getCurrentProjectId(),
-        projectionKey: inputProjectionKeyRef.current,
-        documentSnapshot: editor.state.doc,
+        projectId: useTreeStore.getState().projectId,
+        sceneId: node?.id ?? null,
+      }).then((context) => {
+        if (
+          !inputProjectionReadyRef.current ||
+          !editorWritableRef.current ||
+          inputProjectionKeyRef.current !== projectionKey ||
+          !editor.state.doc.eq(documentSnapshot)
+        ) {
+          return;
+        }
+        const messages: AbInlineState["messages"] = [
+          {
+            role: "system",
+            content: buildInlineSystemPrompt(command, context, lang),
+          },
+          {
+            role: "user",
+            content: buildInlineUserPrompt(command, context, lang),
+          },
+        ];
+        const isReplace = command.mode === "replace" && from !== to;
+        setAbInline({
+          messages,
+          mode: isReplace ? "replace" : "insert",
+          originalRange: isReplace ? { from, to } : null,
+          insertPos: isReplace ? null : from,
+          projectId: getCurrentProjectId(),
+          projectionKey,
+          documentSnapshot,
+        });
       });
     },
     [editor, nodeId],

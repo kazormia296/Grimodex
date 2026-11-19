@@ -7,7 +7,7 @@ import {
   type InlineAiProjectionAuthority,
 } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
-import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
+import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -104,15 +104,18 @@ export function useLinearInlineAi(params: {
         useWorkspaceStore.getState().activeWorkspaceName ?? "";
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
+      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。エディタ由来の
+      // 項目は buildInlineAiContextForSend が同期で取る。
+      void buildInlineAiContextForSend({
         editor: inlineAiEditor,
         projectTitle,
         sceneTitle: node?.title ?? "",
         matchedCodexIds,
         codexEntries,
         arg,
-      });
-      generate(command, context);
+        projectId: useTreeStore.getState().projectId,
+        sceneId: node?.id ?? null,
+      }).then((context) => generate(command, context));
     },
     [inlineAiEditor, sceneId, generate],
   );
