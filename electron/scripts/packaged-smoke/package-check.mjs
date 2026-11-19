@@ -3,7 +3,8 @@
  *
  * 合否に使うもの: (a) 同梱の worker（`resources/bin/nir1-c-query-worker[.exe]`）が存在し、通常 file、POSIX で実行可能、
  * seam の文字列（`NIR1_C_QUERY_TEST_`）を含まない（P1 の `verifyReleaseGraphWorker` をそのまま使う）、(b) `app.asar` の file 一覧に
- * harness・canary・攻撃 JS・名前解決の記録層・probe の file が無い。
+ * harness・canary・攻撃 JS・名前解決の記録層・probe の file が無い、(c) `app.asar` に Mastra の ee 由来の file と、
+ * ee 固有の文字列が無い（Mastra 移行 MP-1、脅威モデル D8／T8、計画書の第 4.3 節。bundle の検査は mastra-ee-check.mjs）。
  * 記録だけのもの: Windows の worker の PE subsystem、macOS の `codesign --verify`（A 案の無署名の `--dir` では意味がない）。
  * env 名の数と Windows の console window は観測しない（gate が閉じていて製品の経路で spawn できない。DR-CP2B-P2-8）。
  */
@@ -11,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { EE_CONTENT_MARKERS, EE_INPUT } from "../mastra-ee-patterns.mjs";
 import { graphWorkerName, verifyReleaseGraphWorker } from "../verify-release-graph-worker.mjs";
 
 /** app.asar に入ってはならない file の名前（harness と probe の道具） */
@@ -75,6 +77,14 @@ export function forbiddenContent(file, needles = FORBIDDEN_ASAR_CONTENT) {
   return [...found].sort();
 }
 
+/**
+ * asar の file 一覧のうち、Mastra の ee 由来のもの（.js／.cjs／.map／.d.ts を問わない）。
+ * asar の entry は先頭に区切りが無いので、`@mastra/` が先頭の entry も拾えるよう `/` を足して照合する。
+ */
+export function mastraEeEntries(entries) {
+  return entries.filter((entry) => EE_INPUT.test(`/${entry}`));
+}
+
 /** PE の Optional Header の Subsystem（2 = GUI、3 = console）。PE でなければ null */
 export function peSubsystem(file) {
   const buffer = fs.readFileSync(file);
@@ -116,10 +126,16 @@ export async function checkPackage({ appDir, platform = process.platform }) {
     const entries = listAsarEntries(asar);
     const forbidden = entries.filter((entry) => FORBIDDEN_ASAR_ENTRY.test(entry));
     const content = forbiddenContent(asar);
-    recorded.asar = { entries: entries.length, forbidden, forbiddenContent: content };
+    const eeEntries = mastraEeEntries(entries);
+    const eeContent = forbiddenContent(asar, EE_CONTENT_MARKERS);
+    // @mastra の file が asar にあるか（MP-3 以前は 0。MP-3 以後も bundle に入るだけで、node_modules は載らない）は記録だけにする。
+    const mastraEntries = entries.filter((entry) => /(^|\/)@mastra\//.test(entry)).length;
+    recorded.asar = { entries: entries.length, forbidden, forbiddenContent: content, mastraEntries, mastraEeEntries: eeEntries, mastraEeContent: eeContent };
     if (entries.length === 0) failures.push("app.asar: file が 0（走査が何も見ていない）");
     if (forbidden.length) failures.push(`app.asar に harness／probe の file: ${forbidden.slice(0, 5).join(", ")}`);
     if (content.length) failures.push(`app.asar の中身に harness／probe の文字列: ${content.join(", ")}`);
+    if (eeEntries.length) failures.push(`app.asar に Mastra の ee の file: ${eeEntries.slice(0, 5).join(", ")}`);
+    if (eeContent.length) failures.push(`app.asar の中身に Mastra の ee 固有の文字列: ${eeContent.join(", ")}`);
   } catch (error) {
     failures.push(`app.asar: ${String(error?.message ?? error)}`);
   }
