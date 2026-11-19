@@ -28,9 +28,9 @@ subprocess を起動する経路の変更なので、GDX-PRECHECK-001 の表（�
   - 消去（現状維持側）：(i) 同じ canonical path で SHA-256 が変わった（`prepareExecutableForSpawn` の `invalidate()` と detect の照合）。(ii) `invalidateChangedRequestedPath` と同じ条件（同じ requestedPath で canonical が変わった）。(iii) dispose（manager ごと消える）。
   - 検出が記憶と一致したときは `detectedExecutables` に記憶の record を入れる（requestedPath だけ違うときは複製して差し替える）。`prepareExecutableForSpawn` は object の同一性（`===`）で wasDetected と invalidate を判定するので、記憶と detected は同じ object を共有する。
   - 並行した検出のうち世代で古くなった側は、今までどおり `latestResult()`（その時点の最新。まだ無ければ null）を返す。承認の記憶と同じ canonical のダイアログは 1 つになるが、古い側が承認結果の path を返すことは保証しない。
-  - 同じ (kind, canonical path) の承認ダイアログが並行して出ているときは、後続の detect はその完了を待ってから記憶を引く（`pendingDetectApprovals`）。待ちは同じ manager の中の Promise だけで、timer や background を足さない。
+  - 同じ (kind, canonical path) の承認ダイアログが並行して出ているときは、後続の detect はその完了を待ってから記憶を引く（`pendingDetectApprovals`）。先頭が拒否（`CliExecutableNotAuthorizedError`）なら、待ち側も同じ error で終わり、新しいダイアログは出さない（並行した load と save で最大 2 回出る、を防ぐ）。拒否以外の失敗は待ち側へ伝えず、待ち側が自分で承認に進む。待ちは同じ manager の中の Promise だけで、timer や background を足さない。
 - **DR-M1-4（拒否の扱い）**
-  - ダイアログの拒否は専用の error 型（`CliExecutableNotAuthorizedError`、message は今と同じ）で区別し、`detect_cli_binary` の handler だけが null（未検出と同じ）にする。
+  - ダイアログの拒否は専用の error 型（`CliExecutableNotAuthorizedError`、message は今と同じ）で区別し、`detect_cli_binary` の handler だけが捕まえる。返す値は `detectedExecutables.get(kind)?.requestedPath ?? null`：検出済みの binary が別にあればその requestedPath、無ければ null（未検出と同じ）。
   - `resolveExecutable`（bare name の spawn 経路）、custom path、`prepareExecutableForSpawn` は今のとおり throw する。SHA-256 を取れない（fingerprint の失敗）は拒否ではないので、detect でも throw のまま。
   - 拒否は記憶しない（次の検出でまたダイアログが出る）。拒否の記憶は新しい仕様で、今回の回答に無い。
   - renderer：`src/features/chat/store.ts` の `resolveCliBinaryAvailability` に catch を足し、detect が reject しても false（未検出と同じ）を返す。`loadSettings` と `saveSettings` の両方がこの helper を通る。
@@ -43,6 +43,7 @@ subprocess を起動する経路の変更なので、GDX-PRECHECK-001 の表（�
   - この照合は 1 つの helper（`checkExecutableIdentity`）にし、detect の refresh と spawn の両方で使う。stat は注入できる依存（`statFile`）にする。
 - **DR-M1-6（残余）**
   - stat の一致で hash を省くと、「承認時と同じ dev・ino・size・mtime・ctime のまま中身だけ差し替える」攻撃は検出できない。これには、(1) その binary への書込み権を既に持ち、かつ (2) ctime を戻す（時計の操作、デバイスへの直接書込み、承認直後の同一 timestamp の粒度内の書換え）力が要る。
+  - 緩和策（racy-git 型）：承認の直前に書かれたファイルは、timestamp の粒度の中での書換えを stat で見分けられない。承認時の `ctimeNs` が現在から 2 s（`RACY_STAT_WINDOW_NS`、未来の ctime を含む）以内なら stat を記録せず（null）、毎回全文 hash に落とす。同じ SHA-256 を確認した時点で窓の外になっていれば、そこで stat を取り直す（`checkExecutableIdentity`）。時刻は注入できる依存（`nowMs`）。
   - 書込み権があれば、今も承認の前に差し替えれば足りる（承認は中身を保証せず、path と SHA-256 を作者に見せるだけ）。renderer は fs スコープの外の path へ書けない前提は変わらない。rename での差し替えは ino が変わるので検出する。
   - 起動直前の照合から実際の spawn までの TOCTOU は、今の全文 hash 方式にもある（hash の後に差し替えられる）。変わらない。
   - 承認した binary は、同じ session 内でユーザーが追加の確認なしに再検出できる。これは意図した変更で、承認の寿命は session のままである。
@@ -75,6 +76,6 @@ subprocess を起動する経路の変更なので、GDX-PRECHECK-001 の表（�
 
 ## 受入れの観点（試験）
 
-- (a) 同じ binary の 2 回目の detect でダイアログが出ない。拒否で detect が null、renderer の設定の読込が通る。SHA-256 が変わると再確認する。並行した同じ binary のダイアログは 1 回。custom path は今のとおり。
-- (b) stat 一致で全文 hash を省く。stat 不一致で hash を取り直し、同じなら再確認せず stat を取り直す。中身が変われば承認を取り直す。承認時の stat の前後が不一致なら記録せず毎回 hash する。stat が取れないときは hash に落ちる。
+- (a) 同じ binary の 2 回目の detect でダイアログが出ない。拒否で detect が null、renderer の設定の読込が通る。SHA-256 が変わると再確認する。並行した同じ binary のダイアログは 1 回（先頭が拒否なら待ち側も拒否で、ダイアログは 1 回のまま）。custom path は今のとおり。
+- (b) stat 一致で全文 hash を省く。stat 不一致で hash を取り直し、同じなら再確認せず stat を取り直す。中身が変われば承認を取り直す。承認時の stat の前後が不一致なら、または ctime が現在から 2 s 以内（未来を含む）なら記録せず毎回 hash し、窓を過ぎた後の照合で記録する。stat が取れないときは hash に落ちる。
 - renderer：detect が reject しても `loadSettings`・`saveSettings` が settings を反映し、`cliBinaryAvailable` は false。

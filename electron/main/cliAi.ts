@@ -131,6 +131,12 @@ export interface CliFileStat {
   ctimeNs: bigint;
 }
 
+/**
+ * ctime が現在からこの範囲内（未来を含む）の stat は承認時に記録しない（racy-git 型の緩和。
+ * DR-M1-6）。timestamp の粒度が粗いファイルシステム（FAT の 2 s など）を覆う長さ。
+ */
+const RACY_STAT_WINDOW_NS = 2_000_000_000n;
+
 /** ユーザーが実行確認ダイアログを拒否した。detect_cli_binary だけが null（未検出）にする。 */
 export class CliExecutableNotAuthorizedError extends Error {
   constructor(executable: string) {
@@ -159,6 +165,8 @@ interface CliAiDependencies {
   hashFile?: (candidate: string) => Promise<string | null>;
   /** 取得できない（null）ときは毎回全文 hash に落とす。 */
   statFile?: (candidate: string) => Promise<CliFileStat | null>;
+  /** 現在時刻（ms）。承認直後の書換え（racy）を避ける判定にだけ使う。 */
+  nowMs?: () => number;
   detectBinary?: (kind: CliKind) => Promise<string | null>;
   authorizeExecutable?: (
     kind: CliKind,
@@ -1422,6 +1430,7 @@ export function createCliAiManager(
   const readDir = supplied.readDir ?? defaultReadDir;
   const hashFile = supplied.hashFile ?? defaultHashFile;
   const statFile = supplied.statFile ?? defaultStatFile;
+  const nowMs = supplied.nowMs ?? Date.now;
   const runner = supplied.runner ?? createNodeCliProcessRunner(platform);
   const runnerOperations = new Set<Promise<unknown>>();
   const trackRunnerOperation = <T>(operation: Promise<T>): Promise<T> => {
@@ -1507,7 +1516,10 @@ export function createCliAiManager(
     CliKind,
     Map<string, AuthorizedCliExecutable>
   >();
-  const pendingDetectApprovals = new Map<string, Promise<unknown>>();
+  const pendingDetectApprovals = new Map<
+    string,
+    Promise<AuthorizedCliExecutable>
+  >();
   const detectionGenerations = new Map<CliKind, number>();
   const rememberDetectedApproval = (
     kind: CliKind,
@@ -1593,7 +1605,16 @@ export function createCliAiManager(
       );
     }
     const after = before ? await statFile(validated.executable) : null;
-    const stat = before && after && sameFileStat(before, after) ? after : null;
+    // 承認の直前に書かれたファイルは、timestamp の粒度の中での書換えを stat で見分けられない
+    // （racy-git 型）。ctime が現在に近いうちは stat を記録せず、全文 hash に落とす。
+    // 時計の先走り（ctime が未来）も同じく記録しない。以後の照合で同じ SHA-256 を確認した
+    // 時点で窓の外なら、そこで stat を取り直す。
+    const stable =
+      before !== null &&
+      after !== null &&
+      sameFileStat(before, after) &&
+      BigInt(nowMs()) * 1_000_000n - after.ctimeNs >= RACY_STAT_WINDOW_NS;
+    const stat = stable ? after : null;
     return { ...validated, sha256, stat };
   };
   const authorizeValidatedExecutable = async (
@@ -1697,9 +1718,17 @@ export function createCliAiManager(
     const approvalKey = `${kind}\0${validated.executable}`;
     const pending = pendingDetectApprovals.get(approvalKey);
     if (pending) {
-      await pending.catch(() => undefined);
+      // 拒否は待ち側も同じ結果にする（並行した load と save でダイアログを出し直さない）。
+      // 拒否以外の失敗は待ち側の判断に影響させず、下で自分の承認に進む。
+      let denied: CliExecutableNotAuthorizedError | null = null;
+      try {
+        await pending;
+      } catch (error) {
+        if (error instanceof CliExecutableNotAuthorizedError) denied = error;
+      }
       ensureNotDisposed();
       if (!isLatest()) return latestResult();
+      if (denied) throw denied;
     }
 
     // この session で承認済みの同じ identity なら、ダイアログを出し直さない（DR-M1-3）。
@@ -2326,28 +2355,34 @@ export function createCliAiManager(
       let runnerQuiescence: Promise<boolean>;
       try {
         runnerQuiescence = trackedRunner.quiesceForProfileEgress
-          ? waitForRunnerQuiescence(trackedRunner.quiesceForProfileEgress())
+          ? waitForRunnerQuiescence(
+              trackedRunner.quiesceForProfileEgress(),
+            )
           : Promise.resolve(true);
       } catch {
         runnerQuiescence = Promise.resolve(false);
       }
-      const [stopped, commandsSettled, handlersSettled, runnerQuiesced] =
-        await Promise.all([
-          Promise.all(
-            activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
+      const [
+        stopped,
+        commandsSettled,
+        handlersSettled,
+        runnerQuiesced,
+      ] = await Promise.all([
+        Promise.all(
+          activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
+        ),
+        Promise.all(
+          activeRunnerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
           ),
-          Promise.all(
-            activeRunnerOperations.map((operation) =>
-              waitForRunnerOperation(operation),
-            ),
+        ),
+        Promise.all(
+          activeHandlerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
           ),
-          Promise.all(
-            activeHandlerOperations.map((operation) =>
-              waitForRunnerOperation(operation),
-            ),
-          ),
-          runnerQuiescence,
-        ]);
+        ),
+        runnerQuiescence,
+      ]);
       if (disposeError) throw toError(disposeError);
       if (
         stopped.some((value) => !value) ||

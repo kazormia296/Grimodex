@@ -86,6 +86,9 @@ interface EmittedEvent {
 
 const stableHashFile = async (): Promise<string> => "stable-sha256";
 
+/** 実 fs の stat に依存しない（dev 機に claude があっても結果が変わらない）。stat を取れない扱い。 */
+const noStatFile = async (): Promise<CliFileStat | null> => null;
+
 /** hash と stat を 1 つの「実行ファイル」から返す fake。中身・stat を試験から差し替える。 */
 function fakeExecutableFile(initial: {
   sha256: string;
@@ -118,6 +121,7 @@ function createHarness() {
     {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -253,6 +257,7 @@ describe("CliAiManager", () => {
     const denied = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -268,6 +273,7 @@ describe("CliAiManager", () => {
     const allowed = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: async () => "abc123",
@@ -293,6 +299,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: async () => "abc123",
@@ -427,6 +434,69 @@ describe("CliAiManager", () => {
       expect(t.authorizeExecutable).toHaveBeenCalledOnce();
     });
 
+    it("並行した detect の先頭が拒否されたら、待っていた側も拒否として終わり、ダイアログは 1 つだけ", async () => {
+      let release!: (allowed: boolean) => void;
+      const t = setup(
+        { sha256: "sha-1", stat: fileStat(1n) },
+        () =>
+          new Promise<boolean>((resolve) => {
+            release = resolve;
+          }),
+      );
+
+      const first = t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      await vi.waitFor(() => expect(t.authorizeExecutable).toHaveBeenCalled());
+      const second = t.manager.handlers.detect_cli_binary({ cli: "claude" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      release(false);
+
+      await expect(first).resolves.toBeNull();
+      await expect(second).resolves.toBeNull();
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+      expect(t.runner.runCalls).toHaveLength(0);
+    });
+
+    it("承認の直前に書かれた（ctime が現在に近い）binary は stat を記録せず、窓を過ぎてから取り直す", async () => {
+      const nowNs = BigInt(Date.now()) * 1_000_000n;
+      const t = setup({ sha256: "sha-1", stat: fileStat(nowNs) });
+
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      // 承認の hash + 起動の hash（stat は記録されていない）
+      expect(t.hashFile).toHaveBeenCalledTimes(2);
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      expect(t.hashFile).toHaveBeenCalledTimes(3);
+
+      // 窓の外になった stat は、同じ SHA-256 を確認した時点で記録され、以後は hash を省く
+      t.file.stat = fileStat(1n);
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      expect(t.hashFile).toHaveBeenCalledTimes(4);
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      expect(t.hashFile).toHaveBeenCalledTimes(4);
+      expect(t.authorizeExecutable).toHaveBeenCalledOnce();
+    });
+
+    it("ctime が未来（時計の先走り）の binary も stat を記録しない", async () => {
+      const futureNs = (BigInt(Date.now()) + 3_600_000n) * 1_000_000n;
+      const t = setup({ sha256: "sha-1", stat: fileStat(futureNs) });
+
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+      await t.manager.handlers.test_cli_connection({
+        binaryPath: "/opt/claude",
+      });
+
+      expect(t.hashFile).toHaveBeenCalledTimes(3);
+    });
+
     it("検出で承認した binary があっても、別の custom path の確認は省かない", async () => {
       const t = setup({ sha256: "sha-1", stat: fileStat(1n) });
       await t.manager.handlers.detect_cli_binary({ cli: "claude" });
@@ -551,18 +621,27 @@ describe("CliAiManager", () => {
     it("stat が一致しても regular file でなくなっていれば起動しない", async () => {
       const runner = new FakeRunner();
       const fake = fakeExecutableFile({ sha256: "sha-1", stat: fileStat(1n) });
-      // 1 回目の起動（validate・起動直前）の後の起動直前の検査（4 回目）で regular file でなくなる
-      let isFileCalls = 0;
+      // 呼出し回数ではなく呼出し元で切り替える。requestedPath（/opt/claude）は realpath で
+      // /opt/real/claude に解決される。2 回目の起動で validate（requestedPath を解決）が
+      // 済んだ後、起動直前の検査（承認済みの canonical path を再解決）に入った時点で
+      // regular file でなくなる。
+      const canonical = "/opt/real/claude";
+      let armed = false;
+      let regularFile = true;
       const manager = createCliAiManager(() => {}, {
         runner,
         platform: "linux",
-        isFile: async () => ++isFileCalls < 4,
-        realPath: async (candidate) => candidate,
+        isFile: async () => regularFile,
+        realPath: async (candidate) => {
+          if (armed && candidate === canonical) regularFile = false;
+          return candidate === "/opt/claude" ? canonical : candidate;
+        },
         hashFile: fake.hashFile,
         statFile: fake.statFile,
         authorizeExecutable: async () => true,
       });
       await manager.handlers.test_cli_connection({ binaryPath: "/opt/claude" });
+      armed = true;
 
       await expect(
         manager.handlers.test_cli_connection({ binaryPath: "/opt/claude" }),
@@ -588,6 +667,8 @@ describe("CliAiManager", () => {
           const manager = createCliAiManager(() => {}, {
             runner,
             platform: "linux",
+            // 書いたばかりの binary は racy の窓の中なので、時計だけ窓の外へ進める
+            nowMs: () => Date.now() + 60_000,
             hashFile,
             authorizeExecutable,
           });
@@ -649,6 +730,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile,
@@ -673,6 +755,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: async () => null,
@@ -701,6 +784,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async () => canonicalPaths.shift() ?? "/opt/v2/claude",
       hashFile: stableHashFile,
@@ -746,6 +830,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile,
@@ -795,6 +880,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: async () => hashes.shift() ?? "second-replacement-sha",
@@ -823,6 +909,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "win32",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: resolveRealPath,
       authorizeExecutable: async () => true,
@@ -843,6 +930,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "win32",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -869,6 +957,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -908,6 +997,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary,
@@ -1244,6 +1334,7 @@ describe("CliAiManager", () => {
       {
         runner,
         platform: "linux",
+        statFile: noStatFile,
         isFile,
         realPath: async (candidate) => candidate,
         hashFile: stableHashFile,
@@ -1438,6 +1529,7 @@ describe("CliAiManager", () => {
       {
         runner,
         platform: "linux",
+        statFile: noStatFile,
         isFile: async () => true,
         realPath: async (candidate) => candidate,
         detectBinary: async (kind) => `/usr/local/bin/${kind}`,
@@ -1465,6 +1557,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary: async (kind) => `/usr/local/bin/${kind}`,
@@ -1490,6 +1583,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary: async (kind) => `/usr/local/bin/${kind}`,
@@ -1516,6 +1610,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async () =>
         new Promise<string>((resolve) => {
@@ -1579,6 +1674,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary: async () =>
@@ -1609,6 +1705,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner: new FakeRunner(),
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       detectBinary: async () =>
@@ -1678,6 +1775,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -1720,6 +1818,7 @@ describe("CliAiManager", () => {
       const manager = createCliAiManager(() => {}, {
         runner,
         platform: "linux",
+        statFile: noStatFile,
         isFile: async () => true,
         realPath: async (candidate) => candidate,
         hashFile: stableHashFile,
@@ -1762,6 +1861,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -1793,6 +1893,7 @@ describe("CliAiManager", () => {
     const manager = createCliAiManager(() => {}, {
       runner,
       platform: "linux",
+      statFile: noStatFile,
       isFile: async () => true,
       realPath: async (candidate) => candidate,
       hashFile: stableHashFile,
@@ -1802,9 +1903,7 @@ describe("CliAiManager", () => {
     const capture = manager.handlers.test_cli_connection({
       binaryPath: "/usr/local/bin/claude",
     });
-    await expect(capture).rejects.toThrow(
-      "CLI command timed out after 10000ms",
-    );
+    await expect(capture).rejects.toThrow("CLI command timed out after 10000ms");
 
     await expect(manager.quiesceForProfileEgress()).rejects.toThrow(
       "CLI egress transport did not quiesce",
