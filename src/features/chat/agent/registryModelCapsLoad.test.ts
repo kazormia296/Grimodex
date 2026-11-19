@@ -62,10 +62,10 @@ describe("registry の写しの読み込み（startRegistryModelCapsLoad）", ()
       undefined,
     );
     expect(onLoaded).toHaveBeenCalledTimes(1);
+    // 使うのは context と最大出力だけ（toolCall・reasoning は持たない）。
     expect(getRegistryModelCaps("openai", "gpt-6-astra")).toEqual({
       contextWindow: 1_050_000,
       maxOutputTokens: 128_000,
-      toolCall: true,
     });
     const after = resolveModelCapabilities("gpt-6-astra", OPENAI);
     expect(after.contextWindow).toBe(1_050_000);

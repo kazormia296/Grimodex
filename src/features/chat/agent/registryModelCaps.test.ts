@@ -27,7 +27,7 @@ import {
 
 /**
  * PR-C3：共有 registry（main が取得・同梱した能力の写し）は、能力表に無い id にだけ使う（Q1）。
- * 使うのは context・最大出力・tool の 3 つだけで、thinking・effort の送信は変えない。
+ * 使うのは context と最大出力の 2 つだけで、tool の可否と thinking・effort の送信は変えない。
  */
 
 const store: Record<string, string> = {};
@@ -88,9 +88,10 @@ beforeEach(() => {
 });
 
 describe("registry の保持（setRegistryModelCaps／getRegistryModelCaps）", () => {
-  it("対応する provider の key だけを持ち、使う 3 field に絞る（reasoning は持たない）", () => {
+  it("対応する provider の key だけを持ち、使う 2 field に絞る（reasoning・toolCall は持たない）", () => {
     setRegistry({
-      "openai/gpt-x": { contextWindow: 10, reasoning: true },
+      "openai/gpt-x": { contextWindow: 10, reasoning: true, toolCall: false },
+      "openai/tool-only": { toolCall: false },
       "ollama-cloud/foo": { contextWindow: 20 },
       "google/gemini": { contextWindow: 30 },
       "openai/reasoning-only": { reasoning: true },
@@ -100,6 +101,7 @@ describe("registry の保持（setRegistryModelCaps／getRegistryModelCaps）", 
       contextWindow: 10,
     });
     expect(getRegistryModelCaps("openai", "reasoning-only")).toBeNull();
+    expect(getRegistryModelCaps("openai", "tool-only")).toBeNull();
     // 対応表に無い provider は引けない。
     expect(getRegistryModelCaps("ollama", "foo")).toBeNull();
     expect(getRegistryModelCaps("openai-compatible", "gpt-x")).toBeNull();
@@ -174,6 +176,7 @@ describe("表に載っている id には registry が一切触れない（Q1）
       id,
       dotted(id),
       `${id}-20991231`,
+      `${id}-2099-12-31`,
       `${id}:free`,
     ];
     const keys: Array<[string, string]> = [];
@@ -233,6 +236,38 @@ describe("表に載っている id には registry が一切触れない（Q1）
     });
   });
 
+  it("OpenAI の日付付き id（-YYYY-MM-DD）は、表の key の日付付きとして載っている扱いで、registry は触れない", () => {
+    const ids = [
+      "gpt-4o-2024-05-13",
+      "gpt-4o-2024-08-06",
+      "gpt-4o-mini-2024-07-18",
+      "gpt-5-2025-08-07",
+      "o3-2025-04-16",
+      "o3-mini-2025-01-31",
+    ];
+    for (const id of ids) expect(isListedInCapabilityTable(id), id).toBe(true);
+    // 日付でない・別のバージョンへの前方一致は載っていない（広げていない）。
+    for (const id of [
+      "gpt-4o-2024-05",
+      "gpt-4o-20240513x",
+      "gpt-5-6",
+      "gpt-4o-2024-5-13",
+    ]) {
+      expect(isListedInCapabilityTable(id), id).toBe(false);
+    }
+    const openai = { provider: "openai" };
+    const before = ids.map((id) => resolveModelCapabilities(id, openai));
+    setRegistry(
+      Object.fromEntries(ids.map((id) => [`openai/${id}`, DIFFERENT])),
+    );
+    expect(getRegistryModelCaps("openai", "gpt-4o-2024-05-13")).toMatchObject({
+      contextWindow: 123_456,
+    });
+    ids.forEach((id, index) => {
+      expect(resolveModelCapabilities(id, openai), id).toEqual(before[index]);
+    });
+  });
+
   it("表に載っている id の、表に無い field を registry で埋めることもしない", () => {
     // `gpt-4o` の表の定義は maxOutputTokens を持たない。registry が持っていても足さない。
     const before = resolveModelCapabilities("gpt-4o", { provider: "openai" });
@@ -279,7 +314,7 @@ describe("表に載っている id には registry が一切触れない（Q1）
     });
   });
 
-  it("同梱の写しの全 key：載っている id は今の値のまま、載っていない id だけ context・出力・tool が写しの値になる", () => {
+  it("同梱の写しの全 key：載っている id は今の値のまま、載っていない id だけ context・出力が写しの値になる（tool・thinking は変わらない）", () => {
     const models = bundled.models as Models;
     const targets = Object.keys(models)
       .map((key) => {
@@ -310,17 +345,19 @@ describe("表に載っている id には registry が一切触れない（Q1）
         return;
       }
       unlisted += 1;
+      if (prev.supportsThinking) {
+        // budget_tokens 方式の thinking を送る近似には重ねない。
+        expect(next, key).toEqual(prev);
+        return;
+      }
       expect(next.contextWindow, key).toBe(
         entry.contextWindow ?? prev.contextWindow,
       );
       expect(next.maxOutputTokens, key).toBe(
         entry.maxOutputTokens ?? prev.maxOutputTokens,
       );
-      expect(next.supportsTools, key).toBe(
-        provider === "anthropic"
-          ? prev.supportsTools
-          : (entry.toolCall ?? prev.supportsTools),
-      );
+      // toolCall は使わない（写しの元の誤り。tool の可否は今のまま）。
+      expect(next.supportsTools, key).toBe(prev.supportsTools);
       // reasoning の真偽値で、thinking・effort の送り方が変わらない。
       expect(pickThinking(next), key).toEqual(pickThinking(prev));
     });
@@ -330,7 +367,7 @@ describe("表に載っている id には registry が一切触れない（Q1）
 });
 
 describe("表に載っていない id では registry の値を使う", () => {
-  it("OpenAI の未知モデル：既定の 8K・出力の既定から、写しの context・出力・tool になる", () => {
+  it("OpenAI の未知モデル：既定の 8K・出力の既定から、写しの context・出力になる（toolCall:false でも tool は止めない）", () => {
     const before = resolveModelCapabilities("gpt-6-astra", {
       provider: "openai",
     });
@@ -357,7 +394,8 @@ describe("表に載っていない id では registry の値を使う", () => {
       contextWindowIsEffective: true,
       contextWindowSource: "registry",
       maxOutputTokens: 128_000,
-      supportsTools: false,
+      // 写しの toolCall:false（元の誤りの前例）では tool を止めない。
+      supportsTools: true,
     });
     // 他の field（thinking・reasoning・予約の既定）は変わらない。
     expect(pickThinking(after)).toEqual(pickThinking(before));
@@ -422,7 +460,7 @@ describe("表に載っていない id では registry の値を使う", () => {
       contextWindow: 200_000,
       contextWindowSource: "registry",
       maxOutputTokens: 64_000,
-      // Claude の tool は製品の判断。写しの toolCall:false では止めない。
+      // 写しの toolCall:false では tool を止めない。
       supportsTools: true,
       supportsThinking: false,
       supportsAdaptiveThinking: false,
@@ -449,15 +487,20 @@ describe("表に載っていない id では registry の値を使う", () => {
     after = resolveModelCapabilities("gpt-6-astra", { provider: "openai" });
     expect(after).toEqual({ ...base, maxOutputTokens: 50_000 });
     expect(after.contextWindowSource).toBe("default");
-    // toolCall だけ：true は既定と同じ、false は明示の非対応。
-    setRegistry({ "openai/gpt-6-astra": { toolCall: true } });
+    // toolCall は使わない：true・false のどちらも、tool の可否は下の層のまま。
+    for (const toolCall of [true, false]) {
+      setRegistry({ "openai/gpt-6-astra": { toolCall } });
+      expect(
+        resolveModelCapabilities("gpt-6-astra", { provider: "openai" }),
+      ).toEqual(base);
+    }
+    setRegistry({
+      "openai/gpt-6-astra": { contextWindow: 500_000, toolCall: false },
+    });
     expect(
-      resolveModelCapabilities("gpt-6-astra", { provider: "openai" }),
-    ).toEqual(base);
-    setRegistry({ "openai/gpt-6-astra": { toolCall: false } });
-    expect(
-      resolveModelCapabilities("gpt-6-astra", { provider: "openai" }),
-    ).toEqual({ ...base, supportsTools: false });
+      resolveModelCapabilities("gpt-6-astra", { provider: "openai" })
+        .supportsTools,
+    ).toBe(base.supportsTools);
     // reasoning だけの項目は、そもそも持たない。
     setRegistry({ "openai/gpt-6-astra": { reasoning: true } });
     expect(
@@ -529,7 +572,7 @@ describe("provider の live は registry より優先する", () => {
     });
   });
 
-  it("OpenRouter：live の context・tool が registry に勝ち、live に無い field は registry が埋める", () => {
+  it("OpenRouter：live の context・tool が registry に勝ち、live に無い出力は registry が埋める", () => {
     const id = "vendor/new-model";
     setRegistry({
       "openrouter/vendor/new-model": {
@@ -556,14 +599,14 @@ describe("provider の live は registry より優先する", () => {
       // live の tools が勝つ
       supportsTools: true,
     });
-    // live が tool を返さない（parameter の一覧が無い）ときは registry の false。
+    // live が tool を返さない（parameter の一覧が無い）ときも、registry の toolCall:false は使わない。
     __resetDynamicModelCapsForTests();
     registerDynamicModelCaps("openrouter", [
       { id, name: id, contextLength: 64_000 },
     ]);
     expect(
       resolveModelCapabilities(id, { provider: "openrouter" }),
-    ).toMatchObject({ contextWindow: 64_000, supportsTools: false });
+    ).toMatchObject({ contextWindow: 64_000, supportsTools: true });
   });
 });
 
@@ -664,6 +707,50 @@ describe("registry が届かない経路", () => {
   });
 });
 
+describe("budget_tokens 方式の thinking は registry で動かない", () => {
+  // 表の Claude 4.5 系に前方一致する、表に無い id（近似で budget_tokens 方式の thinking を送る）。
+  const IDS = ["claude-opus-4-5-preview", "claude-sonnet-4-5-20250929-preview"];
+
+  it("近似は budget_tokens 方式で、registry の context・出力を重ねない（予算と max_tokens の clamp が動かない）", () => {
+    const anthropic = { provider: "anthropic" };
+    for (const id of IDS) {
+      expect(isListedInCapabilityTable(id), id).toBe(false);
+      expect(resolveModelCapabilities(id, anthropic).supportsThinking).toBe(
+        true,
+      );
+    }
+    const run = () =>
+      IDS.map((id) => ({
+        caps: resolveModelCapabilities(id, anthropic),
+        thinking: buildThinkingParams(
+          id,
+          "high",
+          "summarized",
+          true,
+          anthropic,
+        ),
+      }));
+    const before = run();
+    // 予算は contextWindow × 0.04（200K → 8,000）。
+    for (const { thinking } of before) {
+      expect(thinking).toMatchObject({
+        thinking: { type: "enabled", budget_tokens: 8_000 },
+      });
+    }
+    // 大きい context（予算が増える）と、小さい最大出力（max_tokens が予算以下になる）の両方を試す。
+    for (const entry of [
+      { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      { contextWindow: 1_000_000, maxOutputTokens: 2_048 },
+      { contextWindow: 4_096, maxOutputTokens: 1_024 },
+    ]) {
+      setRegistry(
+        Object.fromEntries(IDS.map((id) => [`anthropic/${id}`, entry])),
+      );
+      expect(run()).toEqual(before);
+    }
+  });
+});
+
 describe("thinking と effort の送信は registry で変わらない", () => {
   const CASES: Array<{ provider: string; id: string }> = [
     // Anthropic：表の id と表に無い id（adaptive／budget／送らない）
@@ -673,6 +760,9 @@ describe("thinking と effort の送信は registry で変わらない", () => {
     { provider: "anthropic", id: "claude-haiku-4-5" },
     { provider: "anthropic", id: "claude-fable-5-2" },
     { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
+    // 表に無い id で、近似が budget_tokens 方式の thinking を送るもの
+    { provider: "anthropic", id: "claude-opus-4-5-preview" },
+    { provider: "anthropic", id: "claude-sonnet-4-5-20250929-preview" },
     // OpenAI：表の id、表に無い id（近似が reasoning を持つもの・持たないもの）
     { provider: "openai", id: "o3" },
     { provider: "openai", id: "gpt-5-pro" },

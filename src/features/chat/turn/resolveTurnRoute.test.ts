@@ -78,6 +78,51 @@ describe("resolveChatTurnRoute", () => {
     });
   });
 
+  it("budget_tokens 方式の thinking を送る近似（表に無い Claude 4.5 系の id）は、registry で予算も max_tokens も動かず、max_tokens は予算を上回る（PR-C3）", () => {
+    const ids = [
+      "claude-opus-4-5-preview",
+      "claude-sonnet-4-5-20250929-preview",
+    ];
+    const resolve = (model: string) =>
+      resolveChatTurnRoute({
+        surface: "agent",
+        activeSettings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model,
+        },
+        activeApiVariant: null,
+        taskEffort: "high",
+        thinkingEnabled: true,
+      });
+    const before = ids.map(resolve);
+    for (const route of before) {
+      expect(route.thinking).toMatchObject({
+        thinking: { type: "enabled", budget_tokens: 8_000 },
+      });
+    }
+    // 大きい context（予算が増える）と、小さい最大出力・小さい context（clamp が予算以下になる）。
+    for (const entry of [
+      { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      { contextWindow: 1_000_000, maxOutputTokens: 2_048 },
+      { contextWindow: 4_096, maxOutputTokens: 1_024 },
+    ]) {
+      setRegistryModelCaps({
+        models: Object.fromEntries(ids.map((id) => [`anthropic/${id}`, entry])),
+      });
+      ids.forEach((id, index) => {
+        const after = resolve(id);
+        expect(after.thinking, id).toEqual(before[index].thinking);
+        expect(after.outputBudget, id).toEqual(before[index].outputBudget);
+        expect(after.wireOutputTokens, id).toBe(before[index].wireOutputTokens);
+        const budget = (
+          after.thinking as { thinking?: { budget_tokens?: number } }
+        ).thinking?.budget_tokens;
+        expect(after.wireOutputTokens, id).toBeGreaterThan(budget ?? 0);
+      });
+    }
+  });
+
   it("uses the model visible-output capability instead of an OpenAI provider heuristic", () => {
     const route = resolveChatTurnRoute({
       surface: "chat",

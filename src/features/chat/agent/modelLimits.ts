@@ -478,8 +478,11 @@ function resolveHardcoded(model: string): ModelCapabilityDefinition {
   );
 }
 
-/** 表の key の後ろに付いてよいもの（日付サフィックスと `:variant`）。 */
-const TABLE_KEY_SUFFIX = /^(?:-\d{8})?(?::[a-z]+)?$/u;
+/**
+ * 表の key の後ろに付いてよいもの（日付サフィックスと `:variant`）。日付は Anthropic の `-20250929`
+ * と、OpenAI の `-2024-05-13` の 2 つの形を認める。
+ */
+const TABLE_KEY_SUFFIX = /^(?:-\d{8}|-\d{4}-\d{2}-\d{2})?(?::[a-z]+)?$/u;
 
 /**
  * 能力表（MODEL_CAPABILITIES／OPENROUTER_PREFIXED）に載っている id か。
@@ -522,10 +525,15 @@ export function __capabilityTableIdsForTests(): string[] {
  * - 表に載っている id（`isListedInCapabilityTable`：完全一致・別名・正規化・日付付き）は、
  *   同じ object をそのまま返す。表に無い field を埋めることもしない。前方一致の近似
  *   （`gpt-5-6` が `gpt-5` に当たる等）は「載っている」に数えないので、registry が近似より優先する。
- * - 使うのは context・最大出力・tool の 3 つだけ。`reasoning` の真偽値は使わない：thinking・
- *   effort・reasoning の送り方は今のまま変えない（親文書 §3、precheck §7.1）。
- * - field が無ければ下の層（近似・既定）の値のまま。`toolCall: false` は明示の非対応だけ。
- * - Anthropic の `toolCall` は使わない（Claude の tool は製品の判断で全て対応とする。親文書 §4）。
+ * - 使うのは context と最大出力の 2 つだけ。`reasoning` の真偽値は使わない：thinking・
+ *   effort・reasoning の送り方は今のまま変えない（親文書 §3、precheck §7.1）。`toolCall` も使わない：
+ *   写しの元に誤りがあり（`openai/gpt-3.5-turbo` は false だが実際は対応）、OpenAI には live の
+ *   上書きが無いので、誤りで agent の tool が止まる。tool の可否は表・live・既定のまま。
+ * - field が無ければ下の層（近似・既定）の値のまま。
+ * - budget_tokens 方式の thinking（`supportsThinking`）を送る近似（表の Claude 4.5 系に前方一致する
+ *   id）には重ねない。予算は `contextWindow × 0.04`、request の `max_tokens` は 予算 ＋ 既定の応答の長さ
+ *   を context・最大出力で clamp した値で、registry の値で予算が動いたり、`max_tokens` が予算以下に
+ *   なって request が不正になったりしないようにする（thinking の送信を変えない）。
  * - provider が写しの対象でなければ素通し。Sakana は provider 全体が製品の判断の分岐
  *   （resolveModelCapabilities）で上書きされるので、この値は届かない。
  *
@@ -552,12 +560,9 @@ function applyRegistryCaps(
     return base;
   }
   const { contextWindow, maxOutputTokens } = entry;
-  const toolCall = provider === "anthropic" ? undefined : entry.toolCall;
-  if (
-    contextWindow === undefined &&
-    maxOutputTokens === undefined &&
-    toolCall === undefined
-  ) {
+  // budget_tokens 方式の thinking を送る近似には重ねない（予算と max_tokens の clamp を動かさない）。
+  if (base.supportsThinking) return base;
+  if (contextWindow === undefined && maxOutputTokens === undefined) {
     return base;
   }
   return {
@@ -571,7 +576,6 @@ function applyRegistryCaps(
         }
       : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-    ...(toolCall !== undefined ? { supportsTools: toolCall } : {}),
   };
 }
 

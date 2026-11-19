@@ -5,8 +5,11 @@ import type { AiProvider } from "../types";
 /**
  * 共有 registry（main が取得・同梱するモデル能力の写し）の renderer 側の保持（PR-C3）。
  *
- * 使うのは context・最大出力・tool の 3 つだけ。写しの `reasoning` は持たない：thinking・effort の
- * 送り方は provider 別の製品の判断で決め、真偽値 1 つで決めない（親文書 §3、precheck §7.1）。
+ * 使うのは context と最大出力の 2 つだけ。写しの `reasoning` と `toolCall` は持たない。
+ * - `reasoning`：thinking・effort の送り方は provider 別の製品の判断で決め、真偽値 1 つで決めない
+ *   （親文書 §3、precheck §7.1）。
+ * - `toolCall`：写しの元（models.dev）に誤りがある（例：`openai/gpt-3.5-turbo` は false だが実際は
+ *   function calling に対応）。OpenAI には live の上書きが無く、誤りで agent の tool が止まるため使わない。
  *
  * 能力表に無い id にだけ重ねる規則は modelLimits.ts（`applyRegistryCaps`）が持つ。ここは
  * 「provider ＋ id の完全一致で引く」ことと、「読めなければ無い扱い」だけを担う。
@@ -14,7 +17,6 @@ import type { AiProvider } from "../types";
 export interface RegistryModelCaps {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
-  readonly toolCall?: boolean;
 }
 
 /**
@@ -40,7 +42,7 @@ function positiveSafeInteger(value: unknown): number | undefined {
 }
 
 /**
- * main が返した写しを保持する。対応する provider の key だけを、3 つの field に絞って写す
+ * main が返した写しを保持する。対応する provider の key だけを、2 つの field に絞って写す
  * （main の検証済みの値でも、ここで形を確かめ直す）。使える field が 1 つも無い項目は持たない。
  * 保持したら true。
  */
@@ -56,19 +58,12 @@ export function setRegistryModelCaps(
     }
     const contextWindow = positiveSafeInteger(raw.contextWindow);
     const maxOutputTokens = positiveSafeInteger(raw.maxOutputTokens);
-    const toolCall =
-      typeof raw.toolCall === "boolean" ? raw.toolCall : undefined;
-    if (
-      contextWindow === undefined &&
-      maxOutputTokens === undefined &&
-      toolCall === undefined
-    ) {
+    if (contextWindow === undefined && maxOutputTokens === undefined) {
       continue;
     }
     next.set(key, {
       ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      ...(toolCall !== undefined ? { toolCall } : {}),
     });
   }
   entries = next;
