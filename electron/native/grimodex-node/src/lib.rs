@@ -21935,6 +21935,63 @@ mod narrative_maintenance_foreground_release_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// DR-PUBG-5-19: the receipt for a project the live workspace does not have
+    /// is refused, and the message that reaches JavaScript starts with the exact
+    /// code main treats as terminal (`hasExactFailureCode`). Neither a wake nor a
+    /// delivery-failure record (the outbox) is written for it.
+    #[tokio::test]
+    async fn delivery_failure_receipt_for_a_missing_project_is_refused_with_the_exact_code() {
+        let (backend, root) = backend_with_workspace("delivery-failure-project-missing");
+        let binding: Value = serde_json::from_str(
+            &backend
+                .get_narrative_maintenance_workspace_binding()
+                .expect("read workspace binding")
+                .expect("active workspace binding"),
+        )
+        .expect("binding JSON");
+        for scope in ["wake", "work"] {
+            let mut payload = serde_json::json!({
+                "schemaVersion": 1,
+                "scope": scope,
+                "projectId": "project-the-workspace-does-not-have",
+                "workspaceBinding": binding.clone(),
+                "retryCount": 4,
+                "error": "FOREIGN KEY constraint failed",
+            });
+            if scope == "work" {
+                payload["runKind"] = serde_json::json!("dependency-verify");
+                payload["workKey"] = serde_json::json!("dependency-verify:epoch-1");
+                payload["semanticEpochId"] = serde_json::json!("epoch-1");
+            }
+            let error = backend
+                .record_narrative_maintenance_delivery_failure(payload)
+                .await
+                .expect_err("a receipt for a missing project is refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING: project '"),
+                "{scope}: {message}"
+            );
+            assert!(
+                error
+                    .reason
+                    .starts_with("NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING:"),
+                "{scope}: the JavaScript message must start with the code: {}",
+                error.reason
+            );
+        }
+        let listed: Vec<Value> = serde_json::from_str(
+            &backend
+                .list_narrative_maintenance_wake_outbox()
+                .await
+                .expect("list wakes"),
+        )
+        .expect("wake list JSON");
+        assert!(listed.is_empty(), "a refused receipt writes no wake");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     async fn start_foreground_run(backend: &Backend) -> (String, PinnedWorkspaceDb) {
         configure_foreground_seam(backend);
         let authority = active_database(&backend.state.ws).expect("active authority");

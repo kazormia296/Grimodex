@@ -4,6 +4,7 @@
 //! process-local and a newer authority retires older authorities' records.
 
 use super::*;
+use crate::narrative_extraction::discover_durable_maintenance_work_with_coordinates;
 use crate::narrative_extraction::incremental_freshness::run_incremental_freshness_cycle;
 use crate::narrative_extraction::maintenance_lifecycle::create_maintenance_run_in_tx;
 use crate::narrative_extraction::maintenance_route_registry::{
@@ -3532,4 +3533,125 @@ fn product_gate_calls_the_completion_hook_for_a_publish_and_for_nothing_else() -
     assert!(Recorder::graph(&recorder.noop).is_empty());
     assert_eq!(generation(fixture.db())?, None);
     Ok(())
+}
+
+/// DR-PUBG-5-19 (F-1). A wake for a project the workspace does not have (a
+/// stale Graph Index demand, a hasMore continuation or a completion wake of a
+/// project deleted meanwhile) is accepted with no work, in every launch. The
+/// cycle used to fail with `FOREIGN KEY constraint failed` (error 787) because
+/// discovery minted a Backfill for the missing project, which main retried and
+/// whose delivery-failure receipt was refused (see the vitest in
+/// `electron/main/narrativeMaintenance.test.ts`).
+///
+/// Collects every launch's outcome and asserts once, so a regression names all
+/// the launches that fail.
+fn missing_project_wake_problems(fixture: &Fixture, missing: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
+        let recorder = Recorder::default();
+        let request = MaintenanceCycleRequest {
+            work: Vec::new(),
+            wake_project_ids: vec![missing.to_string()],
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        };
+        let result = with_control(&recorder, |control| {
+            run_system_work_cycle_with_nir1_graph_runtime_and_product(
+                fixture.db(),
+                &request,
+                |_| RecoveryMode::SameProcessLive,
+                launch.seam().as_ref(),
+                None,
+                Some(control),
+                Some(fixture.runtime()),
+                launch.product(),
+            )
+        });
+        match result {
+            Err(error) => problems.push(format!("{launch:?}: the cycle failed: {error:#}")),
+            Ok(result) => {
+                if result.status != MaintenanceCycleStatus::Accepted {
+                    problems.push(format!("{launch:?}: status {:?}", result.status));
+                }
+                if result.has_more {
+                    problems.push(format!("{launch:?}: has_more"));
+                }
+                for (name, list) in [
+                    ("registered", &recorder.registered),
+                    ("started", &recorder.started),
+                    ("completed", &recorder.completed),
+                    ("grants", &recorder.grants),
+                ] {
+                    if !list.lock().expect("recorder").is_empty() {
+                        problems.push(format!("{launch:?}: {name} is not empty"));
+                    }
+                }
+            }
+        }
+        // The discovery main runs for a workspace-opened wake never mints a
+        // Backfill for it (an Idle, or a Graph wake that the cycle above ends).
+        let seam = launch.seam();
+        let coordinates = effective_maintenance_coordinates(seam.as_ref()).expect("coordinates");
+        match discover_maintenance_project_for_main_with_product(
+            fixture.db(),
+            missing,
+            "workspace-opened",
+            Some(&coordinates),
+            seam.as_ref(),
+            launch.product(),
+        ) {
+            Ok(MaintenanceProjectDiscovery::Idle | MaintenanceProjectDiscovery::GraphIndexBuildWake) => {}
+            other => problems.push(format!("{launch:?}: discovery {other:?}")),
+        }
+    }
+    problems
+}
+
+#[test]
+fn a_wake_for_a_project_the_workspace_does_not_have_is_accepted_with_no_work() {
+    const MISSING: &str = "project-the-workspace-does-not-have";
+    let _serial = serial();
+    let fixture = Fixture::new().expect("fixture");
+    let problems = missing_project_wake_problems(&fixture, MISSING);
+    assert!(problems.is_empty(), "a wake for a missing project is accepted with no work: {problems:#?}");
+}
+
+#[test]
+fn a_wake_for_a_project_deleted_meanwhile_is_accepted_with_no_work() {
+    let _serial = serial();
+    let fixture = Fixture::new().expect("fixture");
+    fixture
+        .db()
+        .with_conn(|conn| {
+            let deleted = conn.execute("DELETE FROM projects WHERE id = ?1", [PROJECT])?;
+            assert_eq!(deleted, 1, "the fixture's project existed");
+            Ok(())
+        })
+        .expect("delete the project");
+    let problems = missing_project_wake_problems(&fixture, PROJECT);
+    assert!(problems.is_empty(), "a wake for a deleted project is accepted with no work: {problems:#?}");
+}
+
+#[test]
+fn a_wake_for_a_project_the_workspace_has_still_discovers_its_backfill() {
+    // The existence check is only for a missing project: an existing project
+    // with no Semantic Epoch still gets its Backfill from a durable wake.
+    let _serial = serial();
+    let directory = TestDirectory(
+        std::env::temp_dir().join(format!("nir1-b-route-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir_all(&directory.0).expect("directory");
+    let db = Database::new(&directory.0.join("grimodex.db")).expect("db");
+    db.migrate().expect("migrate");
+    for reason in ["durable-wake", "workspace-opened"] {
+        let work = discover_durable_maintenance_work_with_coordinates(&db, "default-project", reason, None)
+            .expect("discover");
+        let work = work.unwrap_or_else(|| panic!("{reason}: an existing project gets its Backfill"));
+        assert_eq!(work.project_id, "default-project");
+        assert_eq!(work.run_kind, AutomaticRunKind::Backfill);
+    }
+    let missing = discover_durable_maintenance_work_with_coordinates(&db, "no-such-project", "durable-wake", None)
+        .expect("discover a missing project");
+    assert!(missing.is_none(), "{missing:?}");
 }
