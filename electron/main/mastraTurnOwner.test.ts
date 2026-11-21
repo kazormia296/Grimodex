@@ -3,6 +3,7 @@
 // order (begin, dispatched, send, complete or fail) against Main's real audit
 // sink; the real Agent and the third bundle are in `mastra/agentRuntime.bundle.test.ts`.
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,6 +26,7 @@ import type {
 import type { AgentAuditRequest, AgentWireArgs } from "./mastra/agentWire.js";
 import {
   createMastraTurnOwner,
+  MASTRA_TURN_FALLBACK_PROJECT_ID,
   MASTRA_TURN_FORCED_BOUND_MS,
   MASTRA_TURN_PER_SENDER_MAX,
   MASTRA_TURN_QUIT_BOUND_MS,
@@ -81,6 +83,8 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
 };
 
+const PROJECT_ID = "project-1";
+
 function startRequest(
   turnId: string,
   extra: Partial<MastraAgentTurnStartRequest> = {},
@@ -88,6 +92,9 @@ function startRequest(
   return {
     turnId,
     chatSessionId: `session-${turnId}`,
+    projectId: PROJECT_ID,
+    currentSceneId: "scene-1",
+    chatMessageId: `message-${turnId}`,
     messages: [
       { role: "system", content: "You write." },
       { role: "user", content: "Continue." },
@@ -218,7 +225,14 @@ function harness(
         try {
           await input.audit.dispatched(handle);
           raw = await input.send(
-            { ...request, auditContext: handle.auditContext } as AgentWireArgs,
+            {
+              ...request,
+              // As the adapter's `buildWireArgs` does.
+              ...(handle.chatMessageId
+                ? { chatMessageId: handle.chatMessageId }
+                : {}),
+              auditContext: handle.auditContext,
+            } as AgentWireArgs,
             { signal: input.signal },
           );
         } catch (error) {
@@ -355,11 +369,14 @@ describe("start: the turn's route and result", () => {
       "response.completed",
       "execution.succeeded",
     ]);
-    // Rows are written to the issued identity's workspace, in the workspace chain.
+    // Rows are written to the issued identity's workspace, in the request's
+    // project chain (the legacy route's `project:<id>`; MP-4a).
     expect(h.appended.every((call) => call.path === identity.workspaceId)).toBe(
       true,
     );
-    expect(h.appended.every((call) => call.projectId === null)).toBe(true);
+    expect(h.appended.every((call) => call.projectId === PROJECT_ID)).toBe(
+      true,
+    );
     // The result's execution ID is the one of the rows.
     expect(h.terminalsOf()[0]?.executionId).toBe(result.executionId);
     expect(h.sends).toHaveLength(1);
@@ -369,13 +386,85 @@ describe("start: the turn's route and result", () => {
     expect(h.sends[0]?.args).not.toHaveProperty("callerIdentity");
     expect(h.sends[0]?.args.auditContext).toMatchObject({
       expectedWorkspacePath: WORKSPACE,
-      projectId: null,
+      // The send names the scope the rows were appended to: Native's dispatch
+      // precondition compares the two.
+      projectId: PROJECT_ID,
       pathId: "chat_agent_main",
       parentExecutionId: null,
       executionId: result.executionId,
     });
+    // The message ID rides the send's arguments (as in the legacy route), not a row.
+    expect(h.sends[0]?.args.chatMessageId).toBe(`message-${TURN_A}`);
+    expect(JSON.stringify(h.appended)).not.toContain(`message-${TURN_A}`);
     expect(h.owner.activeTurnCount()).toBe(0);
     expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("writes each turn to its own project's chain, and the append and the send name the same scope", async () => {
+    const h = harness();
+    const { context } = h.newContext();
+    const a = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { projectId: "project-a" }),
+      ),
+    );
+    const b = completed(
+      await h.owner.start(
+        context,
+        startRequest(uuid(), { projectId: "project-b", currentSceneId: null }),
+      ),
+    );
+    for (const [result, projectId] of [
+      [a, "project-a"],
+      [b, "project-b"],
+    ] as const) {
+      const rows = h.appended.filter((call) =>
+        call.events.some((event) => event.executionId === result.executionId),
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((call) => call.projectId === projectId)).toBe(true);
+      const send = h.sends.find(
+        (candidate) =>
+          (candidate.args.auditContext as { executionId?: string })
+            .executionId === result.executionId,
+      );
+      expect(send?.args.auditContext).toMatchObject({ projectId });
+    }
+  });
+
+  it("refuses the fallback project ID as unsupported: no runtime load, no row, no send, no slot", async () => {
+    const h = harness();
+    const { context } = h.newContext();
+    expect(MASTRA_TURN_FALLBACK_PROJECT_ID).toBe("default-project");
+    expect(
+      refusalReason(
+        await h.owner.start(
+          context,
+          startRequest(TURN_A, { projectId: MASTRA_TURN_FALLBACK_PROJECT_ID }),
+        ),
+      ),
+    ).toBe("unsupported");
+    expect(h.loads.count).toBe(0);
+    expect(h.appended).toHaveLength(0);
+    expect(h.sends).toHaveLength(0);
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+    // The same turn with a real project is admitted.
+    completed(await h.owner.start(context, startRequest(TURN_A)));
+  });
+
+  it("the fallback literal is the renderer's FALLBACK_PROJECT_ID", () => {
+    const source = readFileSync(
+      new URL(
+        "../../src/application/project/currentProjectAuthority.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(
+      /export const FALLBACK_PROJECT_ID = "([^"]*)"/u.exec(source)?.[1],
+    ).toBe(MASTRA_TURN_FALLBACK_PROJECT_ID);
   });
 
   it("loads the runtime once for many turns, and a failed load is not cached (no rows; the next start tries again)", async () => {

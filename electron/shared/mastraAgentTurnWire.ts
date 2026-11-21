@@ -177,6 +177,26 @@ export interface MastraAgentTurnStartRequest {
   readonly turnId: string;
   /** The chat session (`sessionIdForPersist ?? activeSessionId`); one turn per sender and session. */
   readonly chatSessionId: string;
+  /**
+   * The project the turn's audit rows are chained to (`project:<id>`, as the
+   * legacy route does; MP-4a, DR-MP4-1, -2). The renderer's own claim: Main
+   * checks its form only (non-empty, no surrounding whitespace, no control
+   * character) and never that the project exists. `"default-project"` is not
+   * a project: Main's owner refuses it as `unsupported`.
+   */
+  readonly projectId: string;
+  /**
+   * The scene the author has open, or `null` for none (an empty string from
+   * the renderer is read as `null`). A claim too: the form is checked, the
+   * scene is not looked up.
+   */
+  readonly currentSceneId: string | null;
+  /**
+   * The assistant message this turn answers: what the legacy route's
+   * `auditContext.chatMessageId` carries (DR-MP4-23). It rides the send's
+   * arguments, not an audit row. A claim, form-checked only.
+   */
+  readonly chatMessageId: string;
   readonly messages: readonly MastraAgentTurnMessage[];
   readonly route: MastraAgentTurnRoute;
   readonly systemCacheSegments: readonly string[] | null;
@@ -188,6 +208,9 @@ export interface MastraAgentTurnStartRequest {
 const START_KEYS = [
   "turnId",
   "chatSessionId",
+  "projectId",
+  "currentSceneId",
+  "chatMessageId",
   "messages",
   "route",
   "systemCacheSegments",
@@ -249,6 +272,9 @@ export type MastraAgentTurnWireIssue =
   | "forbidden-key"
   | "turn-id"
   | "chat-session-id"
+  | "project-id"
+  | "current-scene-id"
+  | "chat-message-id"
   | "messages"
   | "message"
   | "text-too-long"
@@ -342,6 +368,28 @@ function isTrimmedId(value: unknown): value is string {
     value.length <= MASTRA_AGENT_TURN_ID_UTF16_MAX &&
     value === value.trim()
   );
+}
+
+/**
+ * A C0 or C1 control character (U+0085 included), a line or paragraph
+ * separator or a byte order mark. JS `trim()` and Rust `str::trim()` differ on
+ * the edge of this set (U+0085 only Rust trims, U+FEFF only JS trims), so a
+ * value `trim()` accepts here could be one Native's `ai_audit_scope_id` refuses
+ * (`ai_audit.rs`). None of them is in a real ID, and none is allowed anywhere
+ * in one, so the two `trim`s agree on every value that passes.
+ */
+const SCOPE_ID_FORBIDDEN =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/u;
+
+/**
+ * The form of `projectId` and `chatMessageId` (and a non-null `currentSceneId`):
+ * `isTrimmedId` and no forbidden character, so what Native's
+ * `ai_audit_scope_id` takes (non-empty, no surrounding whitespace) is
+ * a superset of what passes here.
+ */
+function isScopeId(value: unknown): value is string {
+  return isTrimmedId(value) && !SCOPE_ID_FORBIDDEN.test(value);
 }
 
 function isShortString(value: unknown): value is string {
@@ -479,9 +527,12 @@ function parseMessages(
 }
 
 /**
- * Checks a start request: exactly the seven keys, a UUID turn ID, a trimmed
- * session ID, text messages, a route of a supported provider, and no tool.
- * The returned value is the same object (nothing is copied or rewritten).
+ * Checks a start request: exactly the ten keys, a UUID turn ID, a trimmed
+ * session ID, the three scope fields (`projectId`, `currentSceneId`,
+ * `chatMessageId`), text messages, a route of a supported provider, and no
+ * tool. The returned value is the same object, except that an empty
+ * `currentSceneId` is read as `null` (a shallow copy with that one field
+ * changed). Nothing else is copied or rewritten.
  */
 export function parseMastraAgentTurnStartRequest(
   value: unknown,
@@ -494,6 +545,18 @@ export function parseMastraAgentTurnStartRequest(
   if (!isTrimmedId(entries.get("chatSessionId"))) {
     return fail("chat-session-id");
   }
+  if (!isScopeId(entries.get("projectId"))) return fail("project-id");
+  const currentSceneId = entries.get("currentSceneId");
+  // An empty string is "no scene" (the chat store's `activeSceneId` can be
+  // empty); only a non-empty value is checked as an ID.
+  if (
+    currentSceneId !== null &&
+    currentSceneId !== "" &&
+    !isScopeId(currentSceneId)
+  ) {
+    return fail("current-scene-id");
+  }
+  if (!isScopeId(entries.get("chatMessageId"))) return fail("chat-message-id");
   const messages = parseMessages(entries.get("messages"));
   if (!messages.ok) return messages;
   const route = parseRoute(entries.get("route"));
@@ -539,6 +602,15 @@ export function parseMastraAgentTurnStartRequest(
     Object.keys(tools).length !== 0
   ) {
     return fail("tools");
+  }
+  if (currentSceneId === "") {
+    return {
+      ok: true,
+      value: {
+        ...(value as MastraAgentTurnStartRequest),
+        currentSceneId: null,
+      },
+    };
   }
   return { ok: true, value: value as MastraAgentTurnStartRequest };
 }

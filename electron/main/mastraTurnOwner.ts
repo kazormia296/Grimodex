@@ -73,6 +73,14 @@ export const MASTRA_TURN_PER_SENDER_MAX = 4;
 /** Turns Main holds at once (DR-MP3-4). */
 export const MASTRA_TURN_TOTAL_MAX = 8;
 
+/**
+ * The renderer's fallback project ID (`FALLBACK_PROJECT_ID` in
+ * `src/application/project/currentProjectAuthority.ts`): it names no project.
+ * The wire file takes no import, so the literal is here and a test holds it
+ * against the renderer's (DR-MP4-1).
+ */
+export const MASTRA_TURN_FALLBACK_PROJECT_ID = "default-project";
+
 const START_COMMAND = MASTRA_AGENT_TURN_START_COMMAND;
 
 // ---------------------------------------------------------------------------
@@ -211,6 +219,15 @@ interface Turn {
   readonly senderId: number;
   readonly windowId: number;
   readonly sessionKey: string;
+  /**
+   * The three fields of the start request, bound once at start and never
+   * changed in the turn (DR-MP4-1). Claims of the renderer, form-checked by the
+   * wire parser only. `projectId` is the audit scope the sink appends to and
+   * the send names; `chatMessageId` rides the send's arguments.
+   */
+  readonly projectId: string;
+  readonly currentSceneId: string | null;
+  readonly chatMessageId: string;
   readonly identity: unknown;
   readonly controller: AbortController;
   sink: MainAgentAuditSink;
@@ -595,6 +612,9 @@ export function createMastraTurnOwner(
       typeof backend.sendAgentMessage !== "function" ||
       typeof backend.aiAuditAppendBatch !== "function" ||
       split === null ||
+      // The fallback project ID names no project (DR-MP4-1); the renderer does
+      // not start this route for it, and Main refuses it too.
+      request.projectId === MASTRA_TURN_FALLBACK_PROJECT_ID ||
       typeof workspacePath !== "string" ||
       workspacePath.trim() === ""
     ) {
@@ -611,8 +631,11 @@ export function createMastraTurnOwner(
     const sink = createMainAgentAuditSink({
       backend,
       appVersion: options.appVersion,
-      // The wire carries no project: the rows go in the workspace chain (DR-MP3-23).
-      projectId: null,
+      // The rows go in the project's chain, as the legacy route's do. The sink
+      // hands this one value to the append and to the send's audit context, so
+      // Native's dispatch precondition checks the same scope the rows are in.
+      projectId: request.projectId,
+      chatMessageId: request.chatMessageId,
       expectedWorkspacePath: workspacePath,
       randomUUID,
     });
@@ -622,6 +645,9 @@ export function createMastraTurnOwner(
       senderId: sender.id,
       windowId: win.id,
       sessionKey: sessionKeyOf(sender.id, request.chatSessionId),
+      projectId: request.projectId,
+      currentSceneId: request.currentSceneId,
+      chatMessageId: request.chatMessageId,
       identity: callerIdentity,
       controller: new AbortController(),
       sink,

@@ -113,6 +113,12 @@ export interface MainAgentAuditSinkOptions {
   readonly appVersion: string;
   /** The turn's project (`null` records in the workspace chain). */
   readonly projectId: string | null;
+  /**
+   * The assistant message the turn answers (the legacy route's
+   * `auditContext.chatMessageId`). It goes on the handle, so the send's
+   * arguments carry it; it is not in any audit row, as in the legacy route.
+   */
+  readonly chatMessageId?: string;
   /** The workspace the turn was admitted under; Native compares it with the active one. */
   readonly expectedWorkspacePath: string;
   /** One per turn; defaults to a fresh UUID. */
@@ -306,6 +312,9 @@ export function createMainAgentAuditSink(
         executionId,
         operationId,
         startedAt,
+        ...(options.chatMessageId !== undefined
+          ? { chatMessageId: options.chatMessageId }
+          : {}),
       };
       await append(
         handle,

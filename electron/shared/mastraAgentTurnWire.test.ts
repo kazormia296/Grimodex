@@ -54,6 +54,9 @@ function start(overrides: Record<string, unknown> = {}) {
   return {
     turnId: TURN_ID,
     chatSessionId: "session-1",
+    projectId: "project-1",
+    currentSceneId: "scene-1",
+    chatMessageId: "message-1",
     messages: [
       { role: "system", content: "You write." },
       { role: "user", content: "Continue." },
@@ -188,6 +191,9 @@ describe("parseMastraAgentTurnStartRequest", () => {
     for (const key of [
       "turnId",
       "chatSessionId",
+      "projectId",
+      "currentSceneId",
+      "chatMessageId",
       "messages",
       "route",
       "systemCacheSegments",
@@ -269,6 +275,111 @@ describe("parseMastraAgentTurnStartRequest", () => {
     ]) {
       expect(issueOf(start({ turnId })), String(turnId)).toBe("turn-id");
     }
+  });
+
+  // MP-4a (DR-MP4-1): the three scope fields. Their form is checked, never
+  // their existence, and the value the parser returns is the renderer's own.
+  const BAD_SCOPE_IDS: readonly unknown[] = [
+    "",
+    " ",
+    " p",
+    "p ",
+    "\tp",
+    "p\n",
+    // C1 NEL: Rust's `trim()` strips it, JS's does not; refused at the edge...
+    "\u0085p",
+    "p\u0085",
+    // ...and anywhere else (the two `trim`s then agree on what passes).
+    "p\u0085q",
+    "p\u0000q",
+    "p\u001fq",
+    "p\u007fq",
+    "p\u009fq",
+    "p\u2028q",
+    "p\u2029q",
+    "\ufeffp",
+    "\u00a0p",
+    "\u3000p",
+    null,
+    undefined,
+    7,
+    {},
+    ["p"],
+    "p".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX + 1),
+  ];
+
+  it("requires a trimmed, bounded, control-free, non-empty projectId", () => {
+    for (const projectId of BAD_SCOPE_IDS) {
+      expect(issueOf(start({ projectId })), String(projectId)).toBe(
+        "project-id",
+      );
+    }
+    for (const projectId of [
+      "p",
+      "project-1",
+      "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
+      "p q",
+      "プロジェクト",
+      "p".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX),
+    ]) {
+      expect(issueOf(start({ projectId })), projectId).toBeNull();
+    }
+  });
+
+  it('does not refuse "default-project" in the parser: the owner does (a form check only)', () => {
+    expect(issueOf(start({ projectId: "default-project" }))).toBeNull();
+  });
+
+  it("requires a trimmed, bounded, control-free, non-empty chatMessageId", () => {
+    for (const chatMessageId of BAD_SCOPE_IDS) {
+      expect(issueOf(start({ chatMessageId })), String(chatMessageId)).toBe(
+        "chat-message-id",
+      );
+    }
+    expect(issueOf(start({ chatMessageId: "msg-1" }))).toBeNull();
+  });
+
+  it("takes currentSceneId as a string or null; an empty string is null", () => {
+    expect(issueOf(start({ currentSceneId: "scene-1" }))).toBeNull();
+    const nullScene = start({ currentSceneId: null });
+    const parsedNull = parseMastraAgentTurnStartRequest(nullScene);
+    expect(parsedNull.ok && parsedNull.value).toBe(nullScene);
+    // An empty string is read as null; only that field changes, and the
+    // renderer's own object is not mutated.
+    const empty = start({ currentSceneId: "" });
+    const parsedEmpty = parseMastraAgentTurnStartRequest(empty);
+    expect(parsedEmpty.ok).toBe(true);
+    if (parsedEmpty.ok) {
+      expect(parsedEmpty.value).toEqual({ ...empty, currentSceneId: null });
+      expect(parsedEmpty.value.currentSceneId).toBeNull();
+    }
+    expect(empty.currentSceneId).toBe("");
+    // A non-empty value is checked as an ID; a type mismatch is refused, not coerced.
+    for (const currentSceneId of BAD_SCOPE_IDS.filter(
+      (value) => value !== "" && value !== null,
+    )) {
+      expect(issueOf(start({ currentSceneId })), String(currentSceneId)).toBe(
+        "current-scene-id",
+      );
+    }
+    expect(issueOf(start({ currentSceneId: undefined }))).toBe(
+      "current-scene-id",
+    );
+    expect(issueOf(start({ currentSceneId: false }))).toBe("current-scene-id");
+  });
+
+  it("the three scope fields are required keys (START_KEYS is ten)", () => {
+    const wire = readFileSync(
+      new URL("./mastraAgentTurnWire.ts", import.meta.url),
+      "utf8",
+    );
+    const keys = /const START_KEYS = \[([^\]]*)\]/u
+      .exec(wire)?.[1]
+      ?.match(/"([A-Za-z]+)"/gu);
+    expect(keys).toHaveLength(10);
+    expect(Object.keys(start()).sort()).toEqual(
+      keys?.map((key) => key.slice(1, -1)).sort(),
+    );
   });
 
   it("requires a trimmed, bounded, non-empty chatSessionId (an unsettled session is invalid)", () => {
@@ -580,6 +691,9 @@ describe("parseMastraAgentTurnStartRequest", () => {
     for (const request of [
       start({ turnId: secret }),
       start({ chatSessionId: ` ${secret}` }),
+      start({ projectId: ` ${secret}` }),
+      start({ currentSceneId: ` ${secret}` }),
+      start({ chatMessageId: `${secret}\u0085` }),
       start({ messages: [{ role: secret, content: secret }] }),
       start({ route: route({ provider: secret }) }),
       { ...start(), [secret]: secret },

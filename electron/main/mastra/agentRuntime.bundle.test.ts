@@ -139,6 +139,9 @@ const request = (
 ): MastraAgentTurnStartRequest => ({
   turnId: TURN,
   chatSessionId: "s1",
+  projectId: "project-1",
+  currentSceneId: null,
+  chatMessageId: "message-1",
   messages: [
     { role: "system", content: "You write." },
     { role: "user", content: "Continue the scene." },

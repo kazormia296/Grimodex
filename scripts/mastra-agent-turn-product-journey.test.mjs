@@ -94,7 +94,7 @@ test("the seam names and the wire are the product's: the gate file and the wire 
   const wire = read("electron/shared/mastraAgentTurnWire.ts");
   assert.ok(wire.includes(`"${START_COMMAND}"`));
   assert.ok(wire.includes(`"${CANCEL_COMMAND}"`));
-  // The request has exactly the wire's seven keys.
+  // The request has exactly the wire's ten keys.
   const keys = /const START_KEYS = \[([^\]]*)\]/
     .exec(wire)?.[1]
     ?.split(",")
