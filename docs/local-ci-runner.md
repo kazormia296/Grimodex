@@ -69,12 +69,15 @@ only the exit code, so it does no harm there. The `ci.yml` of a pull request
 measures the merge ref and the Quick measures the candidate head. The `ci.yml`
 Quality job runs impact on the nightly schedule, on a manual dispatch and on the
 release workflow's call on a tag push, not on a pull request or a `master` push.
-What only impact runs (the grimodex-db tests built with the product feature
-`native-current-human-capture`, the eval-only feature tests, and many Node tests
-that no other job or registry entry names) is therefore checked on `master` by the
-nightly run, usually a day or so after a merge (GitHub's schedule delays or
+What only impact runs (the eval-only feature tests, including the
+`nir1-final-request-eval` combination with `native-current-human-capture`, and
+many Node tests that no other job or registry entry names) is therefore checked
+on `master` by the nightly run, usually a day or so after a merge (GitHub's schedule delays or
 skips runs, so it can take longer), and master changes that landed
-after the Quick are checked by impact there. The nightly, dispatch and tag runs
+after the Quick are checked by impact there. The grimodex-db tests that the
+Shared Rust integration shard runs with `native-current-human-capture` are
+checked by the `master` push; the feature-only tests that its filters do not
+name run in no job, impact included. The nightly, dispatch and tag runs
 have no comparison base (the `before` of a new tag does not resolve), so they
 select every suite and are not narrowed by the docs-markdown-only rule. Only the
 nightly run checks that: its step fails unless every suite was selected and
@@ -591,12 +594,15 @@ Keep product mode `all`, all booleans false, and candidate tuple/options empty.
 The job's first literal shell guard rejects mixed inputs and nonliteral case
 before checkout/setup in every shard. Other malformed profiles still go to the
 canonical owner for rejection. The features, dependencies and build-profile
-environment of the shared Rust job are unchanged. Default/reusable CI is
+environment of the shared Rust job are unchanged: the profile selects the job
+as it is, so it includes the two `native-current-human-capture` steps of the
+`integration` shard (described below) as well. Default/reusable CI is
 not unchanged for this job and for `frontend` (split as described here and
 above); the other jobs keep their commands. The shards run the target kinds of the former single
 `cargo test --workspace --exclude grimodex --features
 grimodex-semantic/semantic-embedding`, with the same workspace build and
-therefore the same test cfg: `lib-graph` runs `--lib` with the filter
+therefore the same test cfg (except for the two `native-current-human-capture`
+steps of `integration`, below): `lib-graph` runs `--lib` with the filter
 `narrative_extraction::nir1_graph` and fails if that filter ran no test (so a
 renamed module cannot silently drop the parallelism), `lib-rest` runs `--lib`
 with the same string as `--skip` (so a new test module lands in `lib-rest`), and
@@ -610,7 +616,20 @@ instead). Not covered by any shard: a bench or example declared with
 `test = true` (there is none; `scripts/ci-pause.test.mjs` fails when a
 `Cargo.toml` declares one). `cargo check` and `cargo clippy` run once, in
 `lib-graph`; the `test-failpoints`, `narrative_runtime_authority` and
-`licensing` reruns run in `integration`. Each shard has its own `rust-cache` key
+`licensing` reruns run in `integration`, and so do two steps that build
+`grimodex-db` alone with the product feature `native-current-human-capture`
+(the N-API crate always enables it, so these are the tests of the shipped
+build, which the feature-off steps do not compile): the library tests of the
+six filters, with `--test-threads=1`, that the impact suite
+`nir1-entity-relation-review` runs with the feature (each filter fails the step
+if it matches no test, so a renamed module cannot silently drop its tests) and
+the integration binaries `chat_typed_writers`, `d2a_m_t_typed_writers` and
+`d2a_restricted_generic_sql_shapes`. The impact suite keeps those commands (the
+canonical Quick runs them before a merge when impact selects the suite). The other feature-only tests of
+`grimodex-db` that no filter names (for example the modules under
+`scene_disclosure`, `related_scenes_requalification` and
+`scene_body_declaration`) run in no job. The Full registry builds without the
+feature. Each shard has its own `rust-cache` key
 and the 45-minute timeout. `rust-aggregate` succeeds only when every shard
 succeeded. The local `rust` stage still runs the whole suite. The shared Rust
 job explicitly empties
