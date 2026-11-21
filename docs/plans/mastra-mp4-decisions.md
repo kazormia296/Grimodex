@@ -878,6 +878,8 @@ legacy の `shouldAbortTurn`（`chatTurnStoreActions.ts:490-498`†、条件は 
 - **K-4（読む順・localeCompare）**：Node 24.18.0（ICU 78.3、CLDR 48.0）での実測のみ。UUID 小文字は ja／en／und／de／sv で差 0（200,000 対）。大文字・`_` を含む id は
   `localeCompare` と binary で約 1.5% 異なる。da ロケールだけ "aa" で差が出る（UUID でも 90/50,000）。同順位の id の tie-break にだけ効く。
   phase の並びにも同種の比較が 2 か所ある（`resolveApplicablePhases.ts:87`、`phaseResolver.ts:190`）。Electron の main の既定 locale と Chromium での実測は未確認。
+  **tool 定義の並び（DR-MP4-30）：否定側で答えが出た**（2026-11-21、PR-3 のレビュー）。`LC_ALL=cs_CZ.UTF-8` の Node では `localeCompare` の並びが変わり（cs・sk で "ch" が "h" の後ろ）、drift 試験と legacyGolden の 17 件中 6 件が落ちた。
+  4c-1 で comparator を固定 locale／code unit にするか（renderer の cs・sk の利用者の bytes が変わるので判断が要る）、locale を変えた試験を足すかを決める。4b（PR-3）は挙動を変えていない。
   **4b では `localeCompare` の tie-break を現状のまま共有する**（変えるなら確認）。Rust の `derive_live_scene_projection` は流用しない（TS と Rust で 11 件中 7 件が異なる）。
 - **K-5（store から DB までの窓）**：Q5 の窓は次の 7 つ。止まるのは 4c-2 で、4b は止めない。(1) `resolutionMode` の変更から DB 反映まで（300 ms の trailing debounce。書込み失敗では store が戻らず永続的にずれる。
   `flushProjectMetadataWrites` を turn 前に呼べば窓は消せるが失敗時の扱いの判断が要る）。(2) tree の並べ替え・移動（store が先、直後に DB。`moveTreeNode` に rollback なし。
