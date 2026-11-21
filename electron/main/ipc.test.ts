@@ -82,6 +82,16 @@ function invokeHandler(): (
   return handler;
 }
 
+/**
+ * The raw `db_execute` result of Native (`serialize_profile_egress_db_result`
+ * in grimodex-node): every row is an object keyed by column name, with the
+ * internal result-kind marker still attached (Main strips it later, for the
+ * renderer only).
+ */
+function nativeDbReadResult(rows: Array<Record<string, unknown>>): string {
+  return JSON.stringify({ rows, __grimodexDbResultKind: "read" });
+}
+
 const activeNarrativeMaintenanceCiSeam: Extract<
   NarrativeMaintenanceCiSeam,
   { active: true }
@@ -117,9 +127,7 @@ async function issueAgentCapability(
     }),
   );
   const dbExecute = vi.fn(async () =>
-    JSON.stringify({
-      rows: [[JSON.stringify({ preset: "full" })]],
-    }),
+    nativeDbReadResult([{ ai_policy: JSON.stringify({ preset: "full" }) }]),
   );
   registerIpcRouter(
     {
@@ -589,9 +597,14 @@ describe("registerIpcRouter fail-soft logging", () => {
       JSON.stringify({ provider: "openai", model: "gpt-test" }),
     );
     const dbExecute = vi.fn(async () =>
-      JSON.stringify({
-        rows: [[JSON.stringify({ preset: "full", toggles: { chat: true } })]],
-      }),
+      nativeDbReadResult([
+        {
+          ai_policy: JSON.stringify({
+            preset: "full",
+            toggles: { chat: true },
+          }),
+        },
+      ]),
     );
     registerIpcRouter(
       {
@@ -775,6 +788,128 @@ describe("registerIpcRouter fail-soft logging", () => {
         "agentAuthorityCapabilities",
       );
     }
+  });
+
+  describe("agent capability issuance reads the project ai_policy row", () => {
+    async function capabilitiesFor(
+      dbResult: string,
+      toolName = "create_foreshadow",
+    ): Promise<unknown> {
+      const dbExecute = vi.fn(async () => dbResult);
+      registerIpcRouter(
+        {
+          dbExecute,
+          getAiSettings: vi.fn(async () =>
+            JSON.stringify({ provider: "openai", model: "gpt-test" }),
+          ),
+          sendAgentMessage: vi.fn(async () =>
+            JSON.stringify({
+              blocks: [
+                {
+                  type: "tool_use",
+                  id: "call-1",
+                  name: toolName,
+                  input: { title: "from the model" },
+                },
+              ],
+              stopReason: "tool_use",
+            }),
+          ),
+        } as unknown as NapiBackendLike,
+        {},
+        {
+          resolveApiKeyForRequest: vi.fn(() => "test-key"),
+          getApiKeyForRequest: vi.fn(() => null),
+        },
+      );
+      const envelope = await invokeHandler()(
+        { sender: { id: 710 } },
+        "send_agent_message",
+        {
+          messages: [{ role: "user", content: "write a clue" }],
+          tools: [{ name: toolName }],
+          provider: "openai",
+          chatMessageId: "assistant-policy",
+          auditContext: {
+            expectedWorkspacePath: "/tmp/workspace",
+            projectId: "p1",
+            operationId: "turn-policy",
+            executionId: "execution-policy",
+            parentExecutionId: null,
+            pathId: "chat_agent_main",
+          },
+        },
+      );
+      expect(envelope.ok).toBe(true);
+      if (!envelope.ok) throw new Error("send_agent_message failed");
+      return (envelope.value as Record<string, unknown>)
+        .agentAuthorityCapabilities;
+    }
+
+    it("withholds the capability when an object row carries a restrictive policy", async () => {
+      for (const preset of ["off", "review-only", "custom"]) {
+        mocks.handlers.clear();
+        const grants = await capabilitiesFor(
+          nativeDbReadResult([{ ai_policy: JSON.stringify({ preset }) }]),
+        );
+        expect(grants, preset).toBeUndefined();
+      }
+    });
+
+    it("withholds the capability for a toggle that turns the tool's policy off", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([
+          {
+            ai_policy: JSON.stringify({
+              preset: "full",
+              toggles: { knowledgeWrite: false },
+            }),
+          },
+        ]),
+      );
+      expect(grants).toBeUndefined();
+    });
+
+    it("issues the capability for an object row with the full preset", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: JSON.stringify({ preset: "full" }) }]),
+      );
+      expect(grants).toMatchObject({
+        "call-1": { capability: expect.any(String) },
+      });
+    });
+
+    it("keeps the documented NULL default (full) for an object row", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: null }]),
+      );
+      expect(grants).toMatchObject({
+        "call-1": { capability: expect.any(String) },
+      });
+    });
+
+    it("still reads a positional array row", async () => {
+      const restrictive = await capabilitiesFor(
+        JSON.stringify({ rows: [[JSON.stringify({ preset: "off" })]] }),
+      );
+      expect(restrictive).toBeUndefined();
+    });
+
+    it("fails closed for a row shape it cannot read", async () => {
+      for (const result of [
+        nativeDbReadResult([]),
+        nativeDbReadResult([
+          { other_column: JSON.stringify({ preset: "full" }) },
+        ]),
+        nativeDbReadResult([{}]),
+        JSON.stringify({ rows: [[]] }),
+        JSON.stringify({ rows: ["full"] }),
+        JSON.stringify({ rows: [null] }),
+      ]) {
+        mocks.handlers.clear();
+        expect(await capabilitiesFor(result), result).toBeUndefined();
+      }
+    });
   });
 
   it("rejects Chronicle imports without an Agent capability", () => {

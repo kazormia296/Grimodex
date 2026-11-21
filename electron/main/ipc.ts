@@ -1041,6 +1041,24 @@ function pruneAgentAuthorityCapabilities(now = Date.now()): void {
   }
 }
 
+const UNREADABLE_POLICY_ROW = Symbol("unreadable-policy-row");
+
+/**
+ * Native `db_execute` returns each row as an object (column name -> value;
+ * `grimodex-db` `execute_impl`). The renderer proxy maps it positionally, so a
+ * positional array row is accepted as well. Anything else, or an object
+ * without the `ai_policy` column, is unreadable (fail closed by the caller).
+ */
+function aiPolicyColumn(row: unknown): unknown {
+  if (Array.isArray(row)) {
+    return row.length >= 1 ? row[0] : UNREADABLE_POLICY_ROW;
+  }
+  if (isRecord(row) && Object.hasOwn(row, "ai_policy")) {
+    return row.ai_policy;
+  }
+  return UNREADABLE_POLICY_ROW;
+}
+
 async function policyAllowsAgentTool(
   backend: NapiBackendLike,
   projectId: string,
@@ -1063,8 +1081,11 @@ async function policyAllowsAgentTool(
   const parsed = JSON.parse(raw) as { rows?: unknown };
   const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
   if (rows.length === 0) return false;
-  const first = Array.isArray(rows[0]) ? rows[0][0] : undefined;
-  return parsePolicyAllows(first, policy);
+  const column = aiPolicyColumn(rows[0]);
+  // A row whose shape cannot be read is never treated as a NULL policy: that
+  // would grant the default (full) to a project whose real policy is unknown.
+  if (column === UNREADABLE_POLICY_ROW) return false;
+  return parsePolicyAllows(column, policy);
 }
 
 function responseBlocks(response: unknown): Array<Record<string, unknown>> {
