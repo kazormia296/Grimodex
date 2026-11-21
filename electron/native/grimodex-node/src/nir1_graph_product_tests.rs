@@ -2215,6 +2215,21 @@ fn recording_notifier(fixture: &ProductFixture) -> Arc<Mutex<Vec<String>>> {
     notices
 }
 
+/// Warms the worker with the hook already in place and returns the recorder
+/// with the first READY's notice consumed. `build_and_serve` publishes READY
+/// first and announces it after releasing the slot, so a hook installed once
+/// `warm` returns can still be handed that notice; a test that asserts on the
+/// notices of its own query must not see it.
+fn warm_and_drain_ready_notice(fixture: &ProductFixture) -> Arc<Mutex<Vec<String>>> {
+    let notices = recording_notifier(fixture);
+    fixture.warm();
+    wait_until("announcement of the first READY", || {
+        lock(&notices).len() == 1
+    });
+    lock(&notices).clear();
+    notices
+}
+
 /// A query answered stale or busy through its ticket leaves the demand unserved,
 /// exactly like a warming answer: the READY that the session rebuilds afterwards
 /// is announced once, for that project (DSN §3.4 (a)).
@@ -2364,8 +2379,7 @@ fn unserved_projects_are_distinct_bounded_and_taken_once() {
 #[test]
 fn a_result_finished_unused_after_it_arrived_fills_the_cache_and_announces() {
     let fixture = ProductFixture::new();
-    fixture.warm();
-    let notices = recording_notifier(&fixture);
+    let notices = warm_and_drain_ready_notice(&fixture);
     let ticket = pending(fixture.begin("entity"));
     assert!(matches!(
         ticket.wait_timeout(Duration::from_secs(2)),
@@ -2382,8 +2396,7 @@ fn a_result_finished_unused_after_it_arrived_fills_the_cache_and_announces() {
 #[test]
 fn dropping_an_unfinished_ticket_cancels_the_query_and_never_caches() {
     let fixture = ProductFixture::new();
-    fixture.warm();
-    let notices = recording_notifier(&fixture);
+    let notices = warm_and_drain_ready_notice(&fixture);
     *lock(&fixture.plan.query_mode) = QueryMode::Hold;
     let ticket = pending(fixture.begin("entity"));
     let waiter = ticket.waiter();
