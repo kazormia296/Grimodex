@@ -6,8 +6,8 @@ fn raw_wire_value<T: serde::Serialize>(value: &T) -> Result<Value> {
     Ok(serde_json::from_str(&serde_json::to_string(value)?)?)
 }
 
-/// `guard` is the start-time admission of a restricted profile's
-/// `nir1-publication` call (K3/2). The return-time recheck runs after the
+/// `guard` is the start-time admission of a `nir1-publication` call (K3/2;
+/// an unrestricted profile admits unchecked). The return-time recheck runs after the
 /// operation exists; when it fails the pending operation this call created is
 /// released here, so a discarded result leaves no owner or ticket behind.
 pub(crate) async fn begin(

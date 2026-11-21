@@ -9,8 +9,11 @@
  * is not opened with it: K2/5 removed the declaration from the Graph-only
  * Scene's judgement, so a Graph-only row needs no author action.) Native's
  * gate is the second, independent lock: with this on and
- * the gate closed the owner answers `not-activated` (`profile-not-restricted`
- * when unrestricted) and no Graph payload reaches the renderer.
+ * the gate closed the owner answers `not-activated` and no Graph payload
+ * reaches the renderer. (K3/2 Graph row: an unrestricted profile is no longer
+ * closed by the profile gate; a restricted one answers `not-activated` until
+ * its stop barrier is confirmed. `profile-not-restricted` stays in the wire
+ * set but Native no longer produces it.)
  */
 export const NIR1_GRAPH_UI_ENABLED = false as const;
 

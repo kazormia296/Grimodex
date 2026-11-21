@@ -20,7 +20,7 @@
 //! excerpt, no body, no path text (Mandatory defense 5, P2-1). The click
 //! requalifies from those in a new read transaction, and answers the range only
 //! (no body digest ever leaves Native, P2-5).
-use super::graph::{gate_reason, GraphState};
+use super::graph::{graph_gate_reason, GraphState};
 use super::*;
 use crate::nir1_graph_product::GraphUnavailable;
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
@@ -483,7 +483,7 @@ pub(super) fn click(
     identity: &str,
     entry: &ClickEntry,
 ) -> Result<Value> {
-    if gate_reason(state).is_some() {
+    if graph_gate_reason(state, &lease.data.graph).is_some() {
         return Ok(unavailable("invalidated"));
     }
     if !current_operation(state, lease)? {
@@ -506,7 +506,7 @@ pub(super) fn click(
     if !lease.is_live(Instant::now()) || !current_request(state, &lease.data.request)? {
         return Ok(unavailable("invalidated"));
     }
-    if gate_reason(state).is_some() {
+    if graph_gate_reason(state, &lease.data.graph).is_some() {
         return Ok(unavailable("invalidated"));
     }
     Ok(json!({
