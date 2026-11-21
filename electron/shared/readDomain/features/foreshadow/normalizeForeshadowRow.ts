@@ -1,6 +1,6 @@
-import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
-import { attachNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
-import type { ForeshadowLoadBearing, ForeshadowRow } from "./types";
+import { attachCreateResultMetadata } from "../../lib/createResultMetadata.js";
+import { attachNativeMutationMetadata } from "../../lib/nativeMutationMetadata.js";
+import type { ForeshadowLoadBearing, ForeshadowRow } from "./types.js";
 
 function toDate(value: unknown): Date {
   if (value instanceof Date) return value;

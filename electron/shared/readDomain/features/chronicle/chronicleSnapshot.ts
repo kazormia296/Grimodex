@@ -1,24 +1,24 @@
-import { cmpKeys } from "@/features/tree/fractionalIndex";
-import type { EventPrecision } from "@/db/schema";
+import { cmpKeys } from "../tree/fractionalIndex.js";
+import type { EventPrecision } from "../../db/schema.js";
 import {
   seasonOf,
   formatChronicleDate,
   formatRelativeDays,
   type ChronicleCalendar,
   type DateLang,
-} from "./chronicleTime";
+} from "./chronicleTime.js";
 import {
   resolveSceneAnchor,
   type ChronicleAnchor,
   type SceneChronicle,
-} from "./resolveSceneAnchor";
-import { projectVisibleChronicle } from "./chronicleSecrecy";
+} from "./resolveSceneAnchor.js";
+import { projectVisibleChronicle } from "./chronicleSecrecy.js";
 import type {
   EventRow,
   ParticipantRow,
   EventRelationRow,
   SceneEventRow,
-} from "./api";
+} from "./eventRows.js";
 
 // ───────── 出力上限（≤600 トークン gate の土台） ─────────
 const MAX_RECENT = 8;

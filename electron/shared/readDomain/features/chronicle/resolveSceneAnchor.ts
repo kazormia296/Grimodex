@@ -1,6 +1,6 @@
-import { cmpKeys } from "@/features/tree/fractionalIndex";
-import type { EventPrecision } from "@/db/schema";
-import type { EventRow, SceneEventRow } from "./api";
+import { cmpKeys } from "../tree/fractionalIndex.js";
+import type { EventPrecision } from "../../db/schema.js";
+import type { EventRow, SceneEventRow } from "./eventRows.js";
 
 /**
  * 現在シーンの「作中時刻アンカー」。

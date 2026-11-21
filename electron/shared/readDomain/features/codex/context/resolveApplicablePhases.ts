@@ -1,13 +1,13 @@
-import type { CodexEntryPhase } from "@/db/schema";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
-import { compareInstantValues } from "@/lib/time";
+import type { CodexEntryPhase } from "../../../db/schema.js";
+import { cmpKeys } from "../../tree/fractionalIndex.js";
+import { compareInstantValues } from "../../../lib/time.js";
 import {
   isAutoStoryReady,
   type PhaseResolutionMode,
   type ResolutionAxis,
   type SceneTimeIndex,
   type TemporalAnchor,
-} from "./sceneTimeIndex";
+} from "./sceneTimeIndex.js";
 
 export type PhaseFallbackReason =
   | "auto-incomplete-story-coverage"

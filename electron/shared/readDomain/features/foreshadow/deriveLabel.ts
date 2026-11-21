@@ -1,4 +1,4 @@
-import type { DerivedLabel, ForeshadowRow } from "./types";
+import type { DerivedLabel, ForeshadowRow } from "./types.js";
 
 /**
  * Legacy UI label derivation (unchanged for backward compatibility).

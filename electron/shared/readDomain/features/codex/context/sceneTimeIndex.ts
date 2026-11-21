@@ -1,10 +1,10 @@
-import type { TreeNodeData } from "@/features/tree/treeStore";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
-import type { TemporalNodeId } from "@/features/narrative-extraction/temporal/nodes";
+import type { TreeNodeData } from "../../tree/types.js";
+import { cmpKeys } from "../../tree/fractionalIndex.js";
 import type {
   StoryCompare,
   StoryRankResult,
-} from "@/features/narrative-extraction/temporal/solver/resolveStoryRanks";
+  TemporalNodeId,
+} from "../../narrative-extraction/temporal/types.js";
 
 export type PhaseResolutionMode = "reading" | "story" | "auto";
 export type ResolutionAxis = "reading" | "story";

@@ -1,12 +1,12 @@
-import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
+import { generateKeyBetween, cmpKeys } from "../tree/fractionalIndex.js";
 import {
   type CalendarReform,
   reformDayToDate,
   reformDateToDay,
   reformDaysInYear,
   reformMonthLength,
-} from "./chronicleReform";
-export type { CalendarReform } from "./chronicleReform";
+} from "./chronicleReform.js";
+export type { CalendarReform } from "./chronicleReform.js";
 
 export interface SeasonBoundary {
   /** 季節名（例「冬」）。 */

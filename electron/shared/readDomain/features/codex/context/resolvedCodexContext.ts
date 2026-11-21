@@ -1,18 +1,21 @@
-import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
+import type {
+  CodexEntryPhase,
+  CodexPhaseDetailOverride,
+} from "../../../db/schema.js";
 import {
   resolveCodexState,
   type PhaseResolutionMode,
   type ResolvedCodexState,
   type SceneTimeIndex,
   type TemporalAnchor,
-} from "../phaseResolver";
+} from "../phaseResolver.js";
 export {
   canExposeResolvedCodexIdentity,
   canIncludeResolvedCodexContext,
   type CodexContextInclusionReason,
   type CodexContextExposure,
   resolveCodexContextExposure,
-} from "./codexVisibilityPolicy";
+} from "./codexVisibilityPolicy.js";
 
 export type ResolvableCodexContextEntry = {
   id: string;

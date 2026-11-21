@@ -1,4 +1,4 @@
-import { cmpKeys } from "./fractionalIndex";
+import { cmpKeys } from "./fractionalIndex.js";
 
 export interface ReadingOrderNode {
   id: string;

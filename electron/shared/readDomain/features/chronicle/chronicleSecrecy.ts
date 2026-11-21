@@ -3,7 +3,7 @@ import type {
   ParticipantRow,
   EventRelationRow,
   SceneEventRow,
-} from "./api";
+} from "./eventRows.js";
 
 /**
  * 作中年表イベントの AI 秘匿（reveal アンカー方式）。

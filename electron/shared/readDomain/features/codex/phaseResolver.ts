@@ -1,6 +1,9 @@
-import type { TreeNodeData } from "@/features/tree/treeStore";
-import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
-import { compareInstantValues } from "@/lib/time";
+import type { TreeNodeData } from "../tree/types.js";
+import type {
+  CodexEntryPhase,
+  CodexPhaseDetailOverride,
+} from "../../db/schema.js";
+import { compareInstantValues } from "../../lib/time.js";
 import {
   buildReadingOrder,
   buildSceneTimeIndex,
@@ -9,11 +12,11 @@ import {
   type ResolutionAxis,
   type SceneTimeIndex,
   type TemporalAnchor,
-} from "./context/sceneTimeIndex";
+} from "./context/sceneTimeIndex.js";
 import {
   resolveApplicablePhases,
   type PhaseFallbackReason,
-} from "./context/resolveApplicablePhases";
+} from "./context/resolveApplicablePhases.js";
 
 export type {
   PhaseResolutionMode,
