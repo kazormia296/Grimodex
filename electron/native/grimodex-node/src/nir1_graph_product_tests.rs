@@ -1016,15 +1016,11 @@ fn ready_publication_and_startup_never_prewarm() {
 #[test]
 fn cancelled_ticket_never_publishes_or_caches() {
     let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
     fixture.warm();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&calls);
-    assert!(fixture
-        .state
-        .nir1_graph
-        .set_graph_ready_notifier(Arc::new(move |_notice: &GraphReadyNotice| {
-            counted.fetch_add(1, Ordering::SeqCst);
-        })));
+    wait_until("announcement of the first READY", || {
+        lock(&notices).len() == 1
+    });
     *lock(&fixture.plan.query_mode) = QueryMode::Hold;
     let ticket = pending(fixture.begin("entity"));
     let waiter = ticket.waiter();
@@ -1046,7 +1042,8 @@ fn cancelled_ticket_never_publishes_or_caches() {
     assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.diagnostics().retired_idle, 0);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // Only the first READY was announced.
+    assert_eq!(lock(&notices).len(), 1);
 }
 
 /// DR-DBC-7: replaces `cancel_before_the_freshness_read_never_queries`, which
@@ -1100,15 +1097,11 @@ fn cancel_before_the_owner_receives_the_query_never_queries() {
 #[test]
 fn late_unused_result_fills_the_single_entry_cache_and_notifies() {
     let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
     fixture.warm();
-    let notices = Arc::new(Mutex::new(Vec::<String>::new()));
-    let recorded = Arc::clone(&notices);
-    assert!(fixture
-        .state
-        .nir1_graph
-        .set_graph_ready_notifier(Arc::new(move |notice: &GraphReadyNotice| {
-            lock(&recorded).push(notice.project_id.clone());
-        })));
+    wait_until("announcement of the first READY", || {
+        lock(&notices).len() == 1
+    });
     *lock(&fixture.plan.query_mode) = QueryMode::Hold;
     let ticket = pending(fixture.begin("entity"));
     ticket.finish(GraphTicketUse::Unused);
@@ -1116,7 +1109,11 @@ fn late_unused_result_fills_the_single_entry_cache_and_notifies() {
     wait_until("late cache", || {
         fixture.state.nir1_graph.cache_len_for_test() == 1
     });
-    assert_eq!(lock(&notices).clone(), vec![PROJECT.to_string()]);
+    // The first READY, then the late-cache announcement.
+    assert_eq!(
+        lock(&notices).clone(),
+        vec![PROJECT.to_string(), PROJECT.to_string()]
+    );
     match fixture.begin("entity") {
         GraphBegin::Cached(cached) => {
             assert_eq!(cached.graph.seed_entity_id, "entity");
@@ -2502,14 +2499,11 @@ fn preparing_refuses_another_key_as_busy_without_reserving_it() {
 #[test]
 fn quarantined_late_unused_result_never_refills_the_cache() {
     let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
     fixture.warm();
-    let notified = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&notified);
-    assert!(fixture.state.nir1_graph.set_graph_ready_notifier(Arc::new(
-        move |_notice: &GraphReadyNotice| {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
-    )));
+    wait_until("announcement of the first READY", || {
+        lock(&notices).len() == 1
+    });
     // The result is delivered, but its cleanup cannot be proved: quarantine.
     *lock(&fixture.plan.query_mode) = QueryMode::OkThenQuarantine;
     let ticket = pending(fixture.begin("entity"));
@@ -2523,7 +2517,8 @@ fn quarantined_late_unused_result_never_refills_the_cache() {
     // The caller finishes late and unused, after the quarantine.
     ticket.finish(GraphTicketUse::Unused);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
-    assert_eq!(notified.load(Ordering::SeqCst), 0);
+    // Only the first READY was announced.
+    assert_eq!(lock(&notices).len(), 1);
     assert!(matches!(
         fixture.begin("entity"),
         GraphBegin::Unavailable(GraphUnavailable::RestartRequired)
@@ -2799,8 +2794,11 @@ fn unserved_projects_are_distinct_bounded_and_taken_once() {
 #[test]
 fn a_result_finished_unused_after_it_arrived_fills_the_cache_and_announces() {
     let fixture = ProductFixture::new();
-    fixture.warm();
     let notices = recording_notifier(&fixture);
+    fixture.warm();
+    wait_until("announcement of the first READY", || {
+        lock(&notices).len() == 1
+    });
     let ticket = pending(fixture.begin("entity"));
     assert!(matches!(
         ticket.wait_timeout(Duration::from_secs(2)),
@@ -2810,15 +2808,22 @@ fn a_result_finished_unused_after_it_arrived_fills_the_cache_and_announces() {
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
     ticket.finish(GraphTicketUse::Unused);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 1);
-    assert_eq!(lock(&notices).clone(), vec![PROJECT.to_string()]);
+    // The first READY, then the late-cache announcement.
+    assert_eq!(
+        lock(&notices).clone(),
+        vec![PROJECT.to_string(), PROJECT.to_string()]
+    );
     assert_eq!(fixture.diagnostics().late_cached, 1);
 }
 
 #[test]
 fn dropping_an_unfinished_ticket_cancels_the_query_and_never_caches() {
     let fixture = ProductFixture::new();
-    fixture.warm();
     let notices = recording_notifier(&fixture);
+    fixture.warm();
+    wait_until("announcement of the first READY", || {
+        lock(&notices).len() == 1
+    });
     *lock(&fixture.plan.query_mode) = QueryMode::Hold;
     let ticket = pending(fixture.begin("entity"));
     let waiter = ticket.waiter();
@@ -2836,7 +2841,8 @@ fn dropping_an_unfinished_ticket_cancels_the_query_and_never_caches() {
         fixture.plan.retires.load(Ordering::SeqCst) == 1
     });
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
-    assert!(lock(&notices).is_empty());
+    // Only the first READY was announced; the cancelled query announced nothing.
+    assert_eq!(lock(&notices).clone(), vec![PROJECT.to_string()]);
 }
 
 #[test]
