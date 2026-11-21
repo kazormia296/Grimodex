@@ -62,6 +62,7 @@ import type {
   MastraAgentTurnSender,
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
+import type { MainReadHooks } from "./mastraRead/nativeCall.js";
 import type { MainEgressParticipantContext } from "./profileEgress.js";
 
 /** `T_quit`: the quit finalizer's wait for the owner (provisional; DR-MP3-13, P11). */
@@ -205,8 +206,18 @@ export interface MastraTurnOwner {
   handleBackendEvent(channel: string, payload: unknown): void;
   /** How many turns are attached (running or preparing). */
   activeTurnCount(): number;
-  /** Turns plus the Native sends a forced abort detached from (slots in use). */
+  /** Turns plus the Native sends and reads a forced abort detached from (slots in use). */
   slotsInUse(): number;
+  /**
+   * The read lifecycle of one attached turn (DR-MP4-5): the `assertLive` and
+   * the in-flight count a Native read is put between. `null` when no such turn
+   * is attached. Nothing in the product calls it yet (no tool is connected);
+   * tests do. Take it before a forced abort: the abort takes the turn out of
+   * the table, but the hooks keep working for the turn they were made for.
+   */
+  readHooks(turnId: string): MainReadHooks | null;
+  /** Native reads, over all turns, that have not settled (a timed-out one still counts). */
+  readsInFlight(): number;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +252,14 @@ interface Turn {
   rejectForced: (error: Error) => void;
   /** Native sends of this turn that have not settled (a detached one still counts). */
   nativeInFlight: number;
+  /**
+   * Native reads of this turn that have not settled (DR-MP4-5; counted apart
+   * from the sends). A read whose caller timed out still counts until Native's
+   * own settle.
+   */
+  readInFlight: number;
+  /** Resolvers waiting for `readInFlight` to reach 0. */
+  readIdleWaiters: (() => void)[];
   /** The raw response the adapter's send received and the sink completed. */
   response: Record<string, unknown> | null;
   /** The owner's caller is done (returned or rejected). */
@@ -285,6 +304,8 @@ export function createMastraTurnOwner(
    * own destruction just aborted would look like "no turn".
    */
   const forcedPending = new Set<Turn>();
+  /** Turns with a Native read that has not settled (attached or not). */
+  const readTurns = new Set<Turn>();
   /** closed-profile and closed-quit are one-way; a switch is a counter that resume lowers. */
   let closed: "profile" | "quit" | null = null;
   let switchDepth = 0;
@@ -304,7 +325,7 @@ export function createMastraTurnOwner(
 
   const releaseSlotIfIdle = (turn: Turn): void => {
     if (turn.slotReleased) return;
-    if (turn.finished && turn.nativeInFlight === 0) {
+    if (turn.finished && turn.nativeInFlight === 0 && turn.readInFlight === 0) {
       turn.slotReleased = true;
       slots.delete(turn);
     }
@@ -373,13 +394,34 @@ export function createMastraTurnOwner(
 
   /**
    * Every turn a wait must cover: the attached ones, the detached ones whose
-   * terminal is still being written, and the detached ones Native still holds.
+   * terminal is still being written, and the detached ones Native still holds
+   * (a send or a read).
    */
   const coveredTurns = (): Turn[] => {
-    const covered = new Set<Turn>([...attached.values(), ...forcedPending]);
+    const covered = new Set<Turn>([
+      ...attached.values(),
+      ...forcedPending,
+      ...readTurns,
+    ]);
     for (const turn of slots) if (turn.nativeInFlight > 0) covered.add(turn);
     return [...covered];
   };
+
+  /** Resolves once the turn has no Native read left (never rejects). */
+  const readsDrained = (turn: Turn): Promise<void> =>
+    turn.readInFlight === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          turn.readIdleWaiters.push(resolve);
+        });
+
+  /**
+   * One wait over the turns' terminals and their reads: the terminals and the
+   * read drains share the caller's single bound (no second timer), and a
+   * terminal that fails still fails `allTerminals` as before.
+   */
+  const readDrains = (turns: Turn[]): Promise<void> =>
+    Promise.all(turns.map(readsDrained)).then(() => undefined);
 
   /** Each send and each begin: the turn's own checks before anything leaves Main (DR-MP3-5). */
   const assertLive = (turn: Turn): void => {
@@ -406,6 +448,46 @@ export function createMastraTurnOwner(
       throw new MastraTurnAborted(cause);
     }
   };
+
+  // -------------------------------------------------------------------------
+  // The turn's reads (DR-MP4-5, W11): the hooks `runNativeRead` puts around a
+  // Native read. Nothing connects a read to a turn yet; tests use `readHooks`.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The same checks as a send's (forced, user stop, the profile's three
+   * states, the identity and the sender), called synchronously before the read
+   * is sent and again after it answered. A turn the caller already left takes
+   * no read: it is no longer in a table the waits read.
+   */
+  const assertReadLive = (turn: Turn): void => {
+    assertLive(turn);
+    if (turn.finished) {
+      throw new Error("MASTRA_TURN_READ_AFTER_END: the turn has ended");
+    }
+  };
+
+  /** Counts a read from its start to Native's own settle, whoever stopped waiting. */
+  const trackRead = (turn: Turn, settled: Promise<void>): void => {
+    turn.readInFlight += 1;
+    readTurns.add(turn);
+    const done = (): void => {
+      turn.readInFlight -= 1;
+      if (turn.readInFlight === 0) {
+        readTurns.delete(turn);
+        const waiters = turn.readIdleWaiters;
+        turn.readIdleWaiters = [];
+        for (const resolve of waiters) resolve();
+      }
+      releaseSlotIfIdle(turn);
+    };
+    settled.then(done, done);
+  };
+
+  const readHooksOf = (turn: Turn): MainReadHooks => ({
+    assertLive: () => assertReadLive(turn),
+    trackInFlight: (settled) => trackRead(turn, settled),
+  });
 
   // -------------------------------------------------------------------------
   // The turn's sink: Main's sink, with the owner's checks and bookkeeping.
@@ -659,6 +741,8 @@ export function createMastraTurnOwner(
       forcedTerminal: null,
       rejectForced,
       nativeInFlight: 0,
+      readInFlight: 0,
+      readIdleWaiters: [],
       response: null,
       finished: false,
       slotReleased: false,
@@ -786,7 +870,11 @@ export function createMastraTurnOwner(
       if (inNative) context?.abortNativeInFlight();
       // A terminal that cannot be written fails the quiesce: the activation
       // fails closed (unavailable), the existing path.
-      await Promise.all(terminals);
+      // The reads Native still holds are waited for too, inside the gate's own
+      // bound (no timer here): a read that never settles ends as the gate's
+      // participant timeout, the same fail-closed end as a terminal that never
+      // lands. `Promise.all` keeps a failed terminal failing the quiesce.
+      await Promise.all([...terminals, readDrains(turns)]);
     },
 
     forceStopForProfileEgress() {
@@ -814,7 +902,8 @@ export function createMastraTurnOwner(
       });
       try {
         const outcome = await Promise.race([
-          Promise.allSettled(terminals),
+          // One bound for the terminals and the reads Native still holds.
+          Promise.allSettled([...terminals, readDrains(turns)]),
           bound,
         ]);
         if (outcome === "timeout") {
@@ -846,7 +935,11 @@ export function createMastraTurnOwner(
           const bound = new Promise<void>((resolve) => {
             timer = setTimeout(resolve, quitBoundMs);
           });
-          await Promise.race([Promise.all(terminals), bound]);
+          // One bound for the terminals and the reads Native still holds.
+          await Promise.race([
+            Promise.all([...terminals, readDrains(turns)]),
+            bound,
+          ]);
         } catch {
           // Bounded and never rejecting: a failure leaves a start-only row, which the report counts.
         } finally {
@@ -874,5 +967,14 @@ export function createMastraTurnOwner(
 
     activeTurnCount: () => attached.size,
     slotsInUse: () => slots.size,
+    readHooks(turnId) {
+      const turn = attached.get(turnId);
+      return turn === undefined ? null : readHooksOf(turn);
+    },
+    readsInFlight() {
+      let count = 0;
+      for (const turn of readTurns) count += turn.readInFlight;
+      return count;
+    },
   };
 }
