@@ -156,6 +156,11 @@ rules:
       - src/help/**
       - electron/shared/agentSettingCatalog.ts
       - electron/shared/agentSettingGlobalSettingsIpc.test.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
+      - electron/shared/mastraRead/**
+      - electron/main/mastraRead/**
+      - electron/main/mastraMainRead.pipeline.spec.ts
       - src/features/settings/agentSettingApply.ts
       - src/features/settings/agentSettingCatalog.test.ts
       - src/features/chat/components/SettingProposalCard.tsx

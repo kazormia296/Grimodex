@@ -578,6 +578,25 @@ requirements:
       - electron/main/d2aEgressRows.pipeline.spec.ts
       - electron/main/d2aOwnDataPaths.pipeline.spec.ts
       - electron/main/d2aOwnDataRead.pipeline.spec.ts
+      - electron/main/mastraRead/db.ts
+      - electron/main/mastraRead/db.test.ts
+      - electron/main/mastraRead/errors.ts
+      - electron/main/mastraRead/nativeCall.ts
+      - electron/main/mastraRead/nativeCall.test.ts
+      - electron/main/mastraRead/typed.ts
+      - electron/main/mastraRead/typed.test.ts
+      - electron/main/mastraRead/irClosure.static.test.ts
+      - electron/main/mastraMainRead.pipeline.spec.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
+      - electron/shared/mastraRead/sql.ts
+      - electron/shared/mastraRead/sql.test.ts
+      - electron/shared/mastraRead/tables.ts
+      - electron/shared/mastraRead/tables.test.ts
+      - electron/shared/mastraRead/ports.ts
+      - electron/shared/mastraRead/ports.test.ts
+      - electron/shared/mastraRead/tokenizer.ts
+      - electron/shared/mastraRead/tokenizer.testSupport.ts
       - electron/main/d2aActivation.pipeline.spec.ts
       - electron/main/profileEgressStateFile.pipeline.spec.ts
       - electron/main/profileActivation.test.ts
