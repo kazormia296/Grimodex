@@ -24,10 +24,11 @@ const REGISTRY_PATH = path.join(
 
 /**
  * The validator is strict by default: a missing or empty canonical schema fails
- * (DR-MP4-3 addendum). Fixture roots in this file have no schema file at all, so
- * they opt out explicitly through this one helper. A fixture that does contain a
+ * (DR-MP4-3 addendum). Fixture roots in this file either have no schema file at
+ * all or keep the old layout (a legacy `src/db/schema.ts` with tables and no
+ * canonical), so they opt out explicitly through this one helper. Any other
  * schema file is checked in full even here (`scanNarrativeSchema` ignores the
- * opt-out when a file exists and is wrong).
+ * opt-out when a file exists and is wrong). `main()` never opts out.
  */
 function validateFixtureRoot(options) {
   return validateNarrativeWriters({ requireSchema: false, ...options });
