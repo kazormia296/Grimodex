@@ -2,7 +2,8 @@
  * MP-4b PR-3b-2：PR-3b-1 の 3 本に続き、残りの pure module 21 本を `electron/shared/readDomain/` へ移し、
  * 旧 path は 1 行の `export * from` にした。importer（旧 path の import）が壊れないことを、
  * file の形と実行時の同一性で固定する（`readDomainReExport.test.ts` の続き。3 本はそちらが担当）。
- * 型だけの module（tree/types、foreshadow/types）は実行時の export が 0 で、名前の一致（空）だけを見る。
+ * 型だけの module（tree/types）は実行時の export が 0 で、名前の一致（空）だけを見る。
+ * foreshadow/types は型に加えて実行時の export（`safeParseAiEvaluation`）を持つので、値の同一性も見る。
  * 型は `tsc`（root と electron の NodeNext）が見る。
  */
 import { readFileSync } from "node:fs";
@@ -170,7 +171,13 @@ describe.each(MOVED)("$path の旧 path は実体の re-export", (moved) => {
 
   it("実体は `@/` を使わず、相対 import は NodeNext 向けに `.js` 付き", () => {
     const text = readFileSync(resolve(REPO_ROOT, realFile), "utf8");
-    expect(text).not.toMatch(/from\s+["']@\//);
+    // alias の import は 3 形（from 付き・動的 import・副作用 import）のどれも弾く。CI の変更範囲の walker が
+    // この試験の文字列を import と読まないよう、alias の接頭辞は実行時に組み立てる（旧 path と同じ作り方）。
+    const aliasPrefix = ["@", ""].join("/");
+    const aliasImport = new RegExp(
+      `(?:\\bfrom\\s*|\\bimport\\s*\\(?\\s*)["'\`]${aliasPrefix}`,
+    );
+    expect(text).not.toMatch(aliasImport);
     for (const match of text.matchAll(/from\s+["'](\.{1,2}\/[^"']*)["']/g)) {
       expect(match[1], `${realFile}: ${match[0]}`).toMatch(/\.js$/);
     }

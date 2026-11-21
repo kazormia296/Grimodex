@@ -183,10 +183,7 @@ test("the NIR-1 Entity/Relation suite covers the typed review seam and its contr
     "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
     "product-journey-shards.test.mjs",
   ]) {
-    assert.match(
-      commandText,
-      new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    );
+    assert.match(commandText, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });
 
@@ -336,12 +333,8 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
   }
 
   const sharedSelection = selectImpact(map, ["electron/shared/ipcContract.ts"]);
-  assert.ok(
-    sharedSelection.matchedRuleIds.includes("nir1-entity-relation-review"),
-  );
-  assert.ok(
-    sharedSelection.matchedRuleIds.includes("narrative-semantic-contract"),
-  );
+  assert.ok(sharedSelection.matchedRuleIds.includes("nir1-entity-relation-review"));
+  assert.ok(sharedSelection.matchedRuleIds.includes("narrative-semantic-contract"));
   assert.ok(sharedSelection.suiteIds.includes("narrative-semantic-contract"));
   assert.equal(sharedSelection.fallback, false);
 
@@ -381,10 +374,7 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
   for (const [changedPath, overlappingRuleId] of sharedBoundaryExpectations) {
     const selection = selectImpact(map, [changedPath]);
     assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"));
-    assert.ok(
-      selection.matchedRuleIds.includes(overlappingRuleId),
-      changedPath,
-    );
+    assert.ok(selection.matchedRuleIds.includes(overlappingRuleId), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
 
@@ -394,19 +384,13 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
   const emptySelection = selectImpact(map, []);
   assert.equal(emptySelection.fallback, true);
   assert.deepEqual(emptySelection.suiteIds, map.allSuites);
-  const unavailableSelection = selectImpact(
-    map,
-    ["src/features/codex/useCodexEntityRelationReview.ts"],
-    {
-      forceAllReason: "changed range unavailable",
-    },
-  );
+  const unavailableSelection = selectImpact(map, ["src/features/codex/useCodexEntityRelationReview.ts"], {
+    forceAllReason: "changed range unavailable",
+  });
   assert.equal(unavailableSelection.fallback, true);
   assert.deepEqual(unavailableSelection.suiteIds, map.allSuites);
 
-  const qualityDefinitionSelection = selectImpact(map, [
-    "evals/quality-manifest.yaml",
-  ]);
+  const qualityDefinitionSelection = selectImpact(map, ["evals/quality-manifest.yaml"]);
   assert.deepEqual(qualityDefinitionSelection.suiteIds, map.allSuites);
   assert.equal(qualityDefinitionSelection.fallback, false);
 });
@@ -564,8 +548,7 @@ test("D-final current-Human acceptance and schema-v40 authority have executable 
     ),
   );
 
-  const changeFeed =
-    "src-tauri/crates/grimodex-db/tests/narrative_change_feed.rs";
+  const changeFeed = "src-tauri/crates/grimodex-db/tests/narrative_change_feed.rs";
   const changeFeedSelection = selectImpact(map, [changeFeed]);
   assert.deepEqual(changeFeedSelection.unmatchedPaths, []);
   assert.ok(
@@ -583,9 +566,7 @@ test("D-final current-Human acceptance and schema-v40 authority have executable 
   assert.equal(changeFeedSelection.fallback, false);
   assert.ok(
     LIGHT_SUITE_DEFINITIONS["narrative-runtime"].commands.some((command) =>
-      command.includes(
-        "fresh_schema_22_contains_the_canonical_writer_origin_contract",
-      ),
+      command.includes("fresh_schema_22_contains_the_canonical_writer_origin_contract"),
     ),
   );
 
@@ -622,10 +603,7 @@ test("D-final current-Human acceptance and schema-v40 authority have executable 
 test("NIR-1 post-B paths select executable core/DB checks and retain separate Native acceptance", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -670,12 +648,8 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_packing_session_tests.rs",
     "electron/native/grimodex-node/src/nir1_history_turns_tests.rs",
   ];
-  const nativeAcceptance =
-    "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
-  const g01Assets = [
-    "evals/nir1-g01/fixture.v1.json",
-    "src/features/related-scenes/nir1G01Feasibility.test.ts",
-  ];
+  const nativeAcceptance = "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
+  const g01Assets = ["evals/nir1-g01/fixture.v1.json", "src/features/related-scenes/nir1G01Feasibility.test.ts"];
   const graphCaseAssets = [
     "evals/nir1-graph/manifest.v1.json",
     "evals/nir1-graph/g05-current-revision-freshness.v1.json",
@@ -705,14 +679,8 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     ...postBCandidatePaths,
   ]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.matchedRuleIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
   const postBSelection = selectImpact(map, postBCandidatePaths);
@@ -729,41 +697,25 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   );
   assert.ok(postBSelection.suiteIds.includes("narrative-runtime"));
   assert.ok(postBSelection.suiteIds.includes("tool-policy"));
-  for (const requirementId of [
-    "GDX-ARTIFACT-001",
-    "GDX-NARR-SEMANTIC-CONTRACT-001",
-  ]) {
-    const requirement = manifest.requirements.find(
-      (candidate) => candidate.id === requirementId,
-    );
+  for (const requirementId of ["GDX-ARTIFACT-001", "GDX-NARR-SEMANTIC-CONTRACT-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
     assert.ok(requirement, requirementId);
     for (const implementation of implementations) {
-      assert.ok(
-        requirement.implementedBy.includes(implementation),
-        `${requirementId}: ${implementation}`,
-      );
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
     }
     for (const testPath of tests) {
-      assert.ok(
-        requirement.lightTests.includes(testPath),
-        `${requirementId}: ${testPath}`,
-      );
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
     }
   }
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
-  const ground = manifest.requirements.find(
-    (candidate) => candidate.id === "GDX-GROUND-001",
-  );
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands
+    .map((command) => command.join(" "));
+  const ground = manifest.requirements.find((candidate) => candidate.id === "GDX-GROUND-001");
   assert.ok(ground.implementedBy.includes(g01Assets[0]));
   assert.ok(ground.lightTests.includes(g01Assets[1]));
   assert.ok(commandLines.some((command) => command.includes(g01Assets[1])));
   assert.ok(ground.implementedBy.includes(graphCaseAssets[0]));
   assert.ok(ground.lightTests.includes(graphCaseAssets[3]));
-  assert.ok(
-    commandLines.some((command) => command.includes(graphCaseAssets[3])),
-  );
+  assert.ok(commandLines.some((command) => command.includes(graphCaseAssets[3])));
   for (const command of [
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-core --test narrative_nir1_receipt",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_graph -- --test-threads=1",
@@ -791,9 +743,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   ]) {
     assert.ok(commandLines.includes(command), command);
   }
-  const semantic = manifest.requirements.find(
-    (candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
-  );
+  const semantic = manifest.requirements.find((candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001");
   assert.ok(semantic.heavyTests.includes(nativeAcceptance));
   assert.equal(semantic.lightTests.includes(nativeAcceptance), false);
 });
@@ -810,7 +760,8 @@ test("final NIR drafts and workspace authority select narrow quality suites", as
     "docs/plans/nir1-c-target-scene-body-authority-proposal-draft.md",
     "docs/plans/nir1-d2b-history-authority-proposal-draft.md",
   ];
-  const workspaceAuthority = "src-tauri/crates/grimodex-db/src/state.rs";
+  const workspaceAuthority =
+    "src-tauri/crates/grimodex-db/src/state.rs";
 
   for (const changedPath of nirDrafts) {
     const selection = selectImpact(map, [changedPath]);
@@ -819,11 +770,7 @@ test("final NIR drafts and workspace authority select narrow quality suites", as
       selection.matchedRuleIds.includes("nir1-entity-relation-review"),
       changedPath,
     );
-    assert.deepEqual(
-      selection.suiteIds,
-      ["nir1-entity-relation-review"],
-      changedPath,
-    );
+    assert.deepEqual(selection.suiteIds, ["nir1-entity-relation-review"], changedPath);
     assert.equal(selection.fallback, false, changedPath);
     assert.equal(selection.allSelected, false, changedPath);
   }
@@ -996,19 +943,10 @@ test("shared agent instructions and Claude adapters select all Light suites expl
     "policies/quality/iron-laws.md",
   ]) {
     const selection = selectImpact(map, [instructionPath]);
-    assert.ok(
-      selection.matchedRuleIds.includes("quality-foundation"),
-      instructionPath,
-    );
+    assert.ok(selection.matchedRuleIds.includes("quality-foundation"), instructionPath);
     assert.deepEqual(selection.suiteIds, map.allSuites, instructionPath);
-    assert.ok(
-      selection.requirementIds.includes("GDX-PRECHECK-001"),
-      instructionPath,
-    );
-    assert.ok(
-      selection.requirementIds.includes("GDX-TRACE-001"),
-      instructionPath,
-    );
+    assert.ok(selection.requirementIds.includes("GDX-PRECHECK-001"), instructionPath);
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"), instructionPath);
     assert.equal(selection.fallback, false, instructionPath);
   }
 });
@@ -1242,8 +1180,7 @@ test("the Drizzle schema moved to electron/shared keeps its narrative selection 
   assert.ok(canonical.requirementIds.includes("GDX-NARR-DETAIL-001"));
   assert.ok(canonical.requirementIds.includes("GDX-NARR-TEMPORAL-001"));
   // Moving the file must never select less than editing it at the old path did.
-  for (const id of legacy.suiteIds)
-    assert.ok(canonical.suiteIds.includes(id), id);
+  for (const id of legacy.suiteIds) assert.ok(canonical.suiteIds.includes(id), id);
   for (const id of legacy.requirementIds)
     assert.ok(canonical.requirementIds.includes(id), id);
   // time.ts and temporal.ts matched no rule before the move and still fall back to all suites.
@@ -1256,10 +1193,7 @@ test("the Drizzle schema moved to electron/shared keeps its narrative selection 
 });
 
 test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never select less than editing them at the old path", async () => {
-  const source = await readFile(
-    new URL("../../evals/impact-map.yaml", import.meta.url),
-    "utf8",
-  );
+  const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
   const map = parseImpactMap(source);
   // 21 files moved from src/ (the old path is now a one-line re-export) and 3 modules split out of
   // api.ts, nodes.ts, resolveStoryRanks.ts and semanticRecall.ts. None of them is added to a rule on purpose
@@ -1292,12 +1226,16 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     "features/narrative-extraction/temporal/types",
     "features/chat/rrfK",
   ];
+  const splitFrom = [
+    "src/features/chronicle/api.ts",
+    "src/features/narrative-extraction/temporal/nodes.ts",
+    "src/features/narrative-extraction/temporal/solver/resolveStoryRanks.ts",
+    "src/features/chat/semanticRecall.ts",
+  ];
   assert.equal(moved.length, 21);
   for (const name of moved) {
     const legacy = selectImpact(map, [`src/${name}.ts`]);
-    const canonical = selectImpact(map, [
-      `electron/shared/readDomain/${name}.ts`,
-    ]);
+    const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
     if (canonical.fallback) continue; // all suites is never narrower than the old selection
     assert.equal(legacy.fallback, false, name);
     for (const id of legacy.suiteIds)
@@ -1305,12 +1243,18 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     for (const id of legacy.requirementIds)
       assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
   }
-  // A path that matches no rule must fall back to every suite, never to none.
+  // A new module must select at least what editing the file it was split out of selected. A path that
+  // matches no rule falls back to every suite (suiteIds and requirementIds both become the full set).
+  const sourceSelections = splitFrom.map((path) => selectImpact(map, [path]));
+  assert.ok(sourceSelections.every((selection) => selection.suiteIds.length > 0));
   for (const name of created) {
-    const selection = selectImpact(map, [
-      `electron/shared/readDomain/${name}.ts`,
-    ]);
-    assert.ok(selection.fallback || selection.suiteIds.length > 0, name);
+    const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
+    for (const selection of sourceSelections) {
+      for (const id of selection.suiteIds)
+        assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
+      for (const id of selection.requirementIds)
+        assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+    }
   }
 });
 
@@ -1354,12 +1298,10 @@ test("the extracted chat stream transport preserves audit and Web Editor impact 
 });
 
 test("standard-build producer selects provenance and lifecycle fixture coverage", async () => {
-  const map = parseImpactMap(
-    await readFile(
-      new URL("../../evals/impact-map.yaml", import.meta.url),
-      "utf8",
-    ),
-  );
+  const map = parseImpactMap(await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  ));
   for (const changedPath of [
     "scripts/quality/run-nir1-retrieval.mjs",
     "scripts/quality/nir1-retrieval/standard-build.mjs",
@@ -1369,25 +1311,15 @@ test("standard-build producer selects provenance and lifecycle fixture coverage"
     const selection = selectImpact(map, [changedPath]);
     assert.equal(selection.fallback, false, changedPath);
     assert.ok(selection.matchedRuleIds.includes("nir1-standard-build"));
-    for (const requirement of [
-      "GDX-PRECHECK-001",
-      "GDX-ARTIFACT-001",
-      "GDX-TRACE-001",
-    ])
+    for (const requirement of ["GDX-PRECHECK-001", "GDX-ARTIFACT-001", "GDX-TRACE-001"])
       assert.ok(selection.requirementIds.includes(requirement), changedPath);
     assert.ok(selection.suiteIds.includes("quality-workflow"), changedPath);
     assert.ok(selection.suiteIds.includes("retrieval-grounding"), changedPath);
   }
-  assert.ok(
-    LIGHT_SUITE_DEFINITIONS["retrieval-grounding"].commands.some(
-      (command) =>
-        command[0] === "node" &&
-        command[1] === "--test" &&
-        command.includes(
-          "scripts/quality/nir1-retrieval/standard-build.test.mjs",
-        ),
-    ),
-  );
+  assert.ok(LIGHT_SUITE_DEFINITIONS["retrieval-grounding"].commands.some(
+    (command) => command[0] === "node" && command[1] === "--test"
+      && command.includes("scripts/quality/nir1-retrieval/standard-build.test.mjs"),
+  ));
 });
 
 test("semantic recall and reranker runtimes preserve audit impact coverage", async () => {
@@ -1438,24 +1370,13 @@ test("NIR-1 capacity paths select their feature-gated diagnostic suite", async (
     "src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs",
   ]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.matchedRuleIds.includes("nir1-capacity-diagnostics"),
-      changedPath,
-    );
-    assert.ok(
-      selection.suiteIds.includes("nir1-capacity-diagnostics"),
-      changedPath,
-    );
-    assert.ok(
-      selection.requirementIds.includes("GDX-ISOLATION-001"),
-      changedPath,
-    );
+    assert.ok(selection.matchedRuleIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(selection.requirementIds.includes("GDX-ISOLATION-001"), changedPath);
     assert.ok(selection.requirementIds.includes("GDX-TRACE-001"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
-  const suiteCommands = JSON.stringify(
-    LIGHT_SUITE_DEFINITIONS["nir1-capacity-diagnostics"].commands,
-  );
+  const suiteCommands = JSON.stringify(LIGHT_SUITE_DEFINITIONS["nir1-capacity-diagnostics"].commands);
   assert.match(suiteCommands, /nir1-material-capacity-probe\.test\.mjs/);
   assert.match(suiteCommands, /nir1-material-diagnostics/);
   assert.match(suiteCommands, /narrative_extraction::nir1_capacity/);
@@ -1473,17 +1394,12 @@ test("NIR-1 capacity paths select their feature-gated diagnostic suite", async (
 test("NIR-1 C-query worker, diagnostics, CI harness and continuation records stay classified", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
   const requirement = (id) => {
-    const found = manifest.requirements.find(
-      (candidate) => candidate.id === id,
-    );
+    const found = manifest.requirements.find((candidate) => candidate.id === id);
     assert.ok(found, id);
     return found;
   };
@@ -1492,10 +1408,7 @@ test("NIR-1 C-query worker, diagnostics, CI harness and continuation records sta
     assert.deepEqual(selection.unmatchedPaths, [], changedPath);
     assert.equal(selection.fallback, false, changedPath);
     for (const ruleId of ruleIds) {
-      assert.ok(
-        selection.matchedRuleIds.includes(ruleId),
-        `${changedPath}: ${ruleId}`,
-      );
+      assert.ok(selection.matchedRuleIds.includes(ruleId), `${changedPath}: ${ruleId}`);
     }
     return selection;
   };
@@ -1508,15 +1421,9 @@ test("NIR-1 C-query worker, diagnostics, CI harness and continuation records sta
   ];
   for (const changedPath of worker) {
     const selection = expectRules(changedPath, ["nir1-entity-relation-review"]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     for (const id of ["GDX-ARTIFACT-001", "GDX-NARR-SEMANTIC-CONTRACT-001"]) {
-      assert.ok(
-        requirement(id).implementedBy.includes(changedPath),
-        `${id}: ${changedPath}`,
-      );
+      assert.ok(requirement(id).implementedBy.includes(changedPath), `${id}: ${changedPath}`);
     }
   }
 
@@ -1531,65 +1438,35 @@ test("NIR-1 C-query worker, diagnostics, CI harness and continuation records sta
   ];
   for (const changedPath of diagnostics) {
     const selection = expectRules(changedPath, ["nir1-capacity-diagnostics"]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-capacity-diagnostics"),
-      changedPath,
-    );
-    assert.ok(
-      requirement("GDX-ISOLATION-001").implementedBy.includes(changedPath),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(requirement("GDX-ISOLATION-001").implementedBy.includes(changedPath), changedPath);
   }
 
   const ciHarness = "scripts/nir1-c-query-worker-ci.sh";
-  const ciSelection = expectRules(ciHarness, [
-    "workflow-runtime",
-    "nir1-entity-relation-review",
-  ]);
-  assert.equal(
-    ciSelection.allSelected,
-    true,
-    "the dataset-bound C-query CI harness selects every suite",
-  );
+  const ciSelection = expectRules(ciHarness, ["workflow-runtime", "nir1-entity-relation-review"]);
+  assert.equal(ciSelection.allSelected, true, "the dataset-bound C-query CI harness selects every suite");
   assert.ok(requirement("GDX-TRACE-001").implementedBy.includes(ciHarness));
 
   const lifecycle = "src/application/chat/chatTurnLifecycle.ts";
-  const lifecycleSelection = expectRules(lifecycle, [
-    "ai-routing",
-    "nir1-entity-relation-review",
-  ]);
+  const lifecycleSelection = expectRules(lifecycle, ["ai-routing", "nir1-entity-relation-review"]);
   assert.ok(lifecycleSelection.suiteIds.includes("ai-routing"));
   for (const id of ["GDX-ROUTE-001", "GDX-PRECHECK-001"]) {
-    assert.ok(
-      requirement(id).implementedBy.includes(lifecycle),
-      `${id}: ${lifecycle}`,
-    );
+    assert.ok(requirement(id).implementedBy.includes(lifecycle), `${id}: ${lifecycle}`);
   }
 
   const matrix = "docs/plans/maintenance-transient-recovery-matrix.md";
-  const matrixSelection = expectRules(matrix, [
-    "narrative-maintenance-product-journeys",
-  ]);
+  const matrixSelection = expectRules(matrix, ["narrative-maintenance-product-journeys"]);
   assert.ok(matrixSelection.suiteIds.includes("narrative-runtime"));
   assert.ok(requirement("GDX-PRECHECK-001").implementedBy.includes(matrix));
 
   const record = "docs/plans/nir1-continuation-2026-10.md";
   const recordSelection = expectRules(record, ["quality-foundation"]);
-  assert.equal(
-    recordSelection.allSelected,
-    true,
-    "the delegation record selects every suite",
-  );
+  assert.equal(recordSelection.allSelected, true, "the delegation record selects every suite");
   assert.ok(requirement("GDX-PRECHECK-001").implementedBy.includes(record));
 
   const postB = "docs/plans/nir1-post-b-execution-plan.md";
-  expectRules(postB, [
-    "narrative-semantic-contract",
-    "nir1-entity-relation-review",
-  ]);
-  assert.ok(
-    requirement("GDX-NARR-SEMANTIC-CONTRACT-001").implementedBy.includes(postB),
-  );
+  expectRules(postB, ["narrative-semantic-contract", "nir1-entity-relation-review"]);
+  assert.ok(requirement("GDX-NARR-SEMANTIC-CONTRACT-001").implementedBy.includes(postB));
 
   // Receptacle globs: modules and records added by later NIR-1 lanes select
   // the NIR-1 suite instead of falling back to every suite.
@@ -1607,10 +1484,7 @@ test("NIR-1 C-query worker, diagnostics, CI harness and continuation records sta
     "docs/plans/nir1-c-query-acceptance-2026-10.md",
   ]) {
     const selection = expectRules(futurePath, ["nir1-entity-relation-review"]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      futurePath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), futurePath);
   }
 });
 
@@ -1932,10 +1806,7 @@ test("C2-ZC impact registration is structured and rejects gate command/test/rece
 test("NIR-1 final-request (DP-H) assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -1970,50 +1841,27 @@ test("NIR-1 final-request (DP-H) assets are registered, selected and executed by
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.matchedRuleIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
-  for (const requirementId of [
-    "GDX-GROUND-001",
-    "GDX-ISOLATION-001",
-    "GDX-TRACE-001",
-  ]) {
-    const requirement = manifest.requirements.find(
-      (candidate) => candidate.id === requirementId,
-    );
+  for (const requirementId of ["GDX-GROUND-001", "GDX-ISOLATION-001", "GDX-TRACE-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
     assert.ok(requirement, requirementId);
     for (const implementation of implementations) {
-      assert.ok(
-        requirement.implementedBy.includes(implementation),
-        `${requirementId}: ${implementation}`,
-      );
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
     }
     for (const testPath of tests) {
-      assert.ok(
-        requirement.lightTests.includes(testPath),
-        `${requirementId}: ${testPath}`,
-      );
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
     }
   }
   // Every test the manifest lists is a command argument of the suite, and the
   // Rust evaluation tests run with the evaluation feature.
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
-  for (const testPath of tests.filter(
-    (candidate) => !candidate.endsWith(".rs"),
-  )) {
-    assert.ok(
-      commandLines.some((command) => command.includes(testPath)),
-      testPath,
-    );
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests.filter((candidate) => !candidate.endsWith(".rs"))) {
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
   }
   for (const command of [
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features nir1-final-request-eval --lib nir1_final_request_eval -- --test-threads=1",
@@ -2026,10 +1874,7 @@ test("NIR-1 final-request (DP-H) assets are registered, selected and executed by
 test("CP-4 S1c-2 setup driver and runner assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -2049,46 +1894,29 @@ test("CP-4 S1c-2 setup driver and runner assets are registered, selected and exe
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
   // As S1b and S1c-1, the harness files belong to GDX-ISOLATION-001.
   for (const requirementId of ["GDX-ISOLATION-001"]) {
-    const requirement = manifest.requirements.find(
-      (candidate) => candidate.id === requirementId,
-    );
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
     assert.ok(requirement, requirementId);
     for (const implementation of implementations)
-      assert.ok(
-        requirement.implementedBy.includes(implementation),
-        `${requirementId}: ${implementation}`,
-      );
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
     for (const testPath of tests)
-      assert.ok(
-        requirement.lightTests.includes(testPath),
-        `${requirementId}: ${testPath}`,
-      );
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
   }
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
   for (const testPath of tests)
-    assert.ok(
-      commandLines.some((command) => command.includes(testPath)),
-      testPath,
-    );
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
 
 test("CP-4 S1a evaluation-only Graph assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -2105,40 +1933,24 @@ test("CP-4 S1a evaluation-only Graph assets are registered, selected and execute
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
   for (const requirementId of ["GDX-ISOLATION-001", "GDX-TRACE-001"]) {
-    const requirement = manifest.requirements.find(
-      (candidate) => candidate.id === requirementId,
-    );
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
     assert.ok(requirement, requirementId);
     for (const implementation of implementations) {
-      assert.ok(
-        requirement.implementedBy.includes(implementation),
-        `${requirementId}: ${implementation}`,
-      );
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
     }
     for (const testPath of tests) {
-      assert.ok(
-        requirement.lightTests.includes(testPath),
-        `${requirementId}: ${testPath}`,
-      );
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
     }
   }
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
-  for (const testPath of tests.filter(
-    (candidate) => !candidate.endsWith(".rs"),
-  )) {
-    assert.ok(
-      commandLines.some((command) => command.includes(testPath)),
-      testPath,
-    );
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests.filter((candidate) => !candidate.endsWith(".rs"))) {
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
   }
   assert.ok(
     commandLines.includes(
@@ -2150,10 +1962,7 @@ test("CP-4 S1a evaluation-only Graph assets are registered, selected and execute
 test("CP-4 TR trace runner and build receipt check assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -2174,40 +1983,25 @@ test("CP-4 TR trace runner and build receipt check assets are registered, select
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
-  const requirement = manifest.requirements.find(
-    (candidate) => candidate.id === "GDX-ISOLATION-001",
-  );
+  const requirement = manifest.requirements.find((candidate) => candidate.id === "GDX-ISOLATION-001");
   assert.ok(requirement, "GDX-ISOLATION-001");
   for (const implementation of implementations)
-    assert.ok(
-      requirement.implementedBy.includes(implementation),
-      implementation,
-    );
+    assert.ok(requirement.implementedBy.includes(implementation), implementation);
+  for (const testPath of tests) assert.ok(requirement.lightTests.includes(testPath), testPath);
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
   for (const testPath of tests)
-    assert.ok(requirement.lightTests.includes(testPath), testPath);
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
-  for (const testPath of tests)
-    assert.ok(
-      commandLines.some((command) => command.includes(testPath)),
-      testPath,
-    );
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
 
 test("CP-4 S5-A formal Graph arm runner assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -2224,40 +2018,25 @@ test("CP-4 S5-A formal Graph arm runner assets are registered, selected and exec
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
-  const requirement = manifest.requirements.find(
-    (candidate) => candidate.id === "GDX-ISOLATION-001",
-  );
+  const requirement = manifest.requirements.find((candidate) => candidate.id === "GDX-ISOLATION-001");
   assert.ok(requirement, "GDX-ISOLATION-001");
   for (const implementation of implementations)
-    assert.ok(
-      requirement.implementedBy.includes(implementation),
-      implementation,
-    );
+    assert.ok(requirement.implementedBy.includes(implementation), implementation);
+  for (const testPath of tests) assert.ok(requirement.lightTests.includes(testPath), testPath);
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
   for (const testPath of tests)
-    assert.ok(requirement.lightTests.includes(testPath), testPath);
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
-  for (const testPath of tests)
-    assert.ok(
-      commandLines.some((command) => command.includes(testPath)),
-      testPath,
-    );
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
 
 test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
-    readFile(
-      new URL("../../evals/quality-manifest.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
   ]);
   const map = parseImpactMap(impactSource);
   const manifest = yaml.load(manifestSource);
@@ -2280,41 +2059,26 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
-    assert.ok(
-      selection.suiteIds.includes("nir1-entity-relation-review"),
-      changedPath,
-    );
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
     assert.equal(selection.fallback, false, changedPath);
   }
-  const requirement = manifest.requirements.find(
-    (candidate) => candidate.id === "GDX-ISOLATION-001",
-  );
+  const requirement = manifest.requirements.find((candidate) => candidate.id === "GDX-ISOLATION-001");
   assert.ok(requirement, "GDX-ISOLATION-001");
   for (const implementation of implementations)
-    assert.ok(
-      requirement.implementedBy.includes(implementation),
-      implementation,
-    );
+    assert.ok(requirement.implementedBy.includes(implementation), implementation);
+  for (const testPath of tests) assert.ok(requirement.lightTests.includes(testPath), testPath);
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
   for (const testPath of tests)
-    assert.ok(requirement.lightTests.includes(testPath), testPath);
-  const commandLines = LIGHT_SUITE_DEFINITIONS[
-    "nir1-entity-relation-review"
-  ].commands.map((command) => command.join(" "));
-  for (const testPath of tests)
-    assert.ok(
-      commandLines.some((command) => command.includes(testPath)),
-      testPath,
-    );
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
 
 // B1 (2026-11-15): a docs-markdown-only selection runs no cargo command and only the
 // commands that can read docs/.
 async function loadImpactMap() {
   return parseImpactMap(
-    await readFile(
-      new URL("../../evals/impact-map.yaml", import.meta.url),
-      "utf8",
-    ),
+    await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
   );
 }
 
@@ -2327,10 +2091,7 @@ test("a docs-markdown-only selection keeps the suite selection but drops every c
   const map = await loadImpactMap();
   for (const changed of [
     ["docs/plans/nir1-continuation-2026-10.md"],
-    [
-      "docs/some-new-note.md",
-      "docs/plans/nir1-c-scene-connection-candidate.md",
-    ],
+    ["docs/some-new-note.md", "docs/plans/nir1-c-scene-connection-candidate.md"],
     ["docs/adr/005-narrative-semantic-core-boundary.md"],
   ]) {
     const selection = selectImpact(map, changed);
@@ -2345,10 +2106,7 @@ test("a docs-markdown-only selection keeps the suite selection but drops every c
   const cargoBefore = Object.values(LIGHT_SUITE_DEFINITIONS)
     .flatMap((definition) => definition.commands)
     .filter(([executable]) => executable === "cargo");
-  assert.ok(
-    cargoBefore.length > 0,
-    "the full suites do contain cargo commands",
-  );
+  assert.ok(cargoBefore.length > 0, "the full suites do contain cargo commands");
   const kept = keptDocsMarkdownOnlyCommands();
   assert.deepEqual(
     kept.filter(([executable]) => executable === "cargo"),
@@ -2369,25 +2127,14 @@ test("a docs-markdown-only selection keeps the suite selection but drops every c
 });
 
 test("a docs-markdown-only selection still runs the Node tests that read docs/", () => {
-  const kept = keptDocsMarkdownOnlyCommands().map((command) =>
-    command.join(" "),
-  );
+  const kept = keptDocsMarkdownOnlyCommands().map((command) => command.join(" "));
   const keptText = kept.join("\n");
   assert.ok(kept.includes("pnpm test:quality"));
   assert.ok(kept.includes("pnpm test:narrative:execution-state"));
   assert.ok(kept.includes("pnpm test:narrative:semantic-contract"));
-  assert.match(
-    keptText,
-    /scripts\/quality\/nir1-graph\/observation-prep\.test\.mjs/,
-  );
-  assert.match(
-    keptText,
-    /electron\/scripts\/webrtc-block-probe-nc1\.test\.mjs/,
-  );
-  assert.match(
-    keptText,
-    /scripts\/quality\/nir1-graph-eval\/admission\.test\.mjs/,
-  );
+  assert.match(keptText, /scripts\/quality\/nir1-graph\/observation-prep\.test\.mjs/);
+  assert.match(keptText, /electron\/scripts\/webrtc-block-probe-nc1\.test\.mjs/);
+  assert.match(keptText, /scripts\/quality\/nir1-graph-eval\/admission\.test\.mjs/);
   assert.match(keptText, /scripts\/quality\/nir1-graph\/contract\.test\.mjs/);
   assert.ok(
     kept.includes(
@@ -2500,11 +2247,7 @@ test("a change that is not only Markdown under docs/ keeps every command", async
     [],
   ]) {
     assert.equal(isDocsMarkdownOnlyChange(changed), false, changed.join(","));
-    assert.equal(
-      selectImpact(map, changed).docsMarkdownOnly,
-      false,
-      changed.join(","),
-    );
+    assert.equal(selectImpact(map, changed).docsMarkdownOnly, false, changed.join(","));
   }
   // An incomplete diff is never a docs-markdown-only selection, whatever its paths.
   assert.equal(
@@ -2519,12 +2262,7 @@ test("docs-markdown-only execution reports a suite with nothing to run as skippe
   const selection = selectImpact(map, ["docs/some-new-note.md"]);
   const results = await runSelectedSuites({
     ...selection,
-    suiteIds: [
-      "ai-routing",
-      "tool-policy",
-      "prompt-contract",
-      "narrative-extraction",
-    ],
+    suiteIds: ["ai-routing", "tool-policy", "prompt-contract", "narrative-extraction"],
   });
   assert.deepEqual(
     results.map((entry) => [entry.suiteId, entry.status, entry.steps.length]),
@@ -2537,3 +2275,4 @@ test("docs-markdown-only execution reports a suite with nothing to run as skippe
   );
   assert.match(formatImpactSummary(selection, results), /ai-routing: skipped/);
 });
+
