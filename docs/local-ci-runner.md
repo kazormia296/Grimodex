@@ -69,18 +69,25 @@ only the exit code, so it does no harm there. The `ci.yml` of a pull request
 measures the merge ref and the Quick measures the candidate head. The `ci.yml`
 Quality job runs impact on the nightly schedule, on a manual dispatch and on the
 release workflow's call on a tag push, not on a pull request or a `master` push.
-What only impact runs (the grimodex-db tests built with the product feature
-`native-current-human-capture`, the eval-only feature tests, and many Node tests
-that no other job or registry entry names) is therefore checked on `master` by the
-nightly run, usually a day or so after a merge (GitHub's schedule delays or
+What only impact runs (the eval-only feature tests, including the
+`nir1-final-request-eval` combination with `native-current-human-capture`, and
+many Node tests that no other job or registry entry names) is therefore checked
+on `master` by the nightly run, usually a day or so after a merge (GitHub's schedule delays or
 skips runs, so it can take longer), and master changes that landed
-after the Quick are checked by impact there. The nightly, dispatch and tag runs
+after the Quick are checked by impact there. The grimodex-db tests that the
+Shared Rust integration shard runs with `native-current-human-capture` are
+checked by the `master` push; the feature-only tests that its filters do not
+name run in no job, impact included. The nightly, dispatch and tag runs
 have no comparison base (the `before` of a new tag does not resolve), so they
 select every suite and are not narrowed by the docs-markdown-only rule. Only the
 nightly run checks that: its step fails unless every suite was selected and
 passed; a dispatch and a tag call are judged by the selector's exit code alone
 (a moved tag, whose `before` resolves, selects by diff). A nightly run that does
-not succeed is a red `master`.
+not succeed is a red `master`. The nightly run also runs the C-query worker on
+macOS and Windows only (Linux ran in the `master` push): it is the catch-all for
+the legs a `master` push skipped (see the change scope below). A nightly
+macOS or Windows leg that was cancelled because no runner was obtained is red by
+the same rule, and is cleared by a successful re-run of that job.
 
 ### Split hosted Full
 
@@ -219,7 +226,7 @@ skips heavy lanes when every changed path is neutral for them. The rules are
 `scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
 `base...head` diff and needs no dependency installation. The lanes are journeys
 (the two journey roots; the shards and the aggregate skip through `needs`), Rust (shared crates and the C-query worker, which a pull request
-runs on Linux only: macOS and Windows run in the `master` push), native,
+runs on Linux only: a `master` push runs macOS and Windows only for worker paths, and the nightly run runs them, see below), native,
 migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
 Quality, Frontend and Electron always run. Selection is deny by default: an
 unclassified path, a forced-all path (workflows, lockfiles, manifests,
@@ -242,11 +249,34 @@ When the shell falls back to running every lane, it appends a `Final outputs`
 section to the job summary (authoritative over any table above it) and rewrites
 the JSON artifact with the final values.
 `changes` is built not to fail (soft steps, a 3 minute step timeout on the
-checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
+checkout, a 10 minute job timeout; the step timeouts add up to 9 minutes): a skipped `changes` job leaves empty outputs,
 which run every lane, but if the `changes` job itself fails as a whole the shard
 and aggregate jobs (and, on a non-pull-request event, runtime performance) are
 skipped by their implicit `success()`
 and the journeys evidence of that run is lost.
+
+The C-query worker's macOS and Windows legs follow a separate decision, made
+only for a push to `master` (the `crossos` step of `changes`; the lane outputs
+above are not touched). The rules are `scripts/ci-cross-os-scope.json` (the
+grimodex-db and grimodex-core crates, Cargo manifests and locks, `.cargo`,
+`.gitattributes`, the worker script, this decision code and `.github/workflows`,
+and the repository files those crates include or address by a `../` path; a test
+derives the last group); `scripts/ci-cross-os-scope.mjs` decides from the
+`before..after` diff of the push. The legs are skipped only when the diff is
+complete, non-empty and safe, both commits resolve, and no changed path is a
+trigger in either the checked-out rules or the `before` commit's copy of them;
+any doubt (a force push, an unresolvable or all-zero `before`, a failure of the
+step) runs them, and a push that changes the decision code, its rules or a
+workflow is never judged by that code. Linux always runs. A skipped leg was
+**not verified** by that push: it is skipped, not passed. The nightly run and the
+release workflow's call (a tag push) cover them. A manual dispatch without
+inputs, with `canonical_profile=c-query-workers` or with `independent_gates`
+(where `changes` is skipped) runs all three; `c-query-practical` and
+`c-query-lifecycle` run Linux only. Known gaps that only the nightly run closes:
+a pull request that adds a new `../` external reference to a crate is not checked
+by the derivation test in the Quick of a Rust-only pull request, and a `master`
+push that creates no run (such as `[skip ci]`) and changes a worker path is not
+seen by the next push's decision, which diffs only its own `before..after`.
 The `electron-runtime-performance` job (the 50k-character / 20-Beat gate) is not a pull request
 check: its absolute-time thresholds are unstable on a shared hosted VM, so a pull request
 event never runs it (it is skipped, not passed). The `master` push, manual dispatch and reusable
@@ -591,12 +621,15 @@ Keep product mode `all`, all booleans false, and candidate tuple/options empty.
 The job's first literal shell guard rejects mixed inputs and nonliteral case
 before checkout/setup in every shard. Other malformed profiles still go to the
 canonical owner for rejection. The features, dependencies and build-profile
-environment of the shared Rust job are unchanged. Default/reusable CI is
+environment of the shared Rust job are unchanged: the profile selects the job
+as it is, so it includes the two `native-current-human-capture` steps of the
+`integration` shard (described below) as well. Default/reusable CI is
 not unchanged for this job and for `frontend` (split as described here and
 above); the other jobs keep their commands. The shards run the target kinds of the former single
 `cargo test --workspace --exclude grimodex --features
 grimodex-semantic/semantic-embedding`, with the same workspace build and
-therefore the same test cfg: `lib-graph` runs `--lib` with the filter
+therefore the same test cfg (except for the two `native-current-human-capture`
+steps of `integration`, below): `lib-graph` runs `--lib` with the filter
 `narrative_extraction::nir1_graph` and fails if that filter ran no test (so a
 renamed module cannot silently drop the parallelism), `lib-rest` runs `--lib`
 with the same string as `--skip` (so a new test module lands in `lib-rest`), and
@@ -610,7 +643,20 @@ instead). Not covered by any shard: a bench or example declared with
 `test = true` (there is none; `scripts/ci-pause.test.mjs` fails when a
 `Cargo.toml` declares one). `cargo check` and `cargo clippy` run once, in
 `lib-graph`; the `test-failpoints`, `narrative_runtime_authority` and
-`licensing` reruns run in `integration`. Each shard has its own `rust-cache` key
+`licensing` reruns run in `integration`, and so do two steps that build
+`grimodex-db` alone with the product feature `native-current-human-capture`
+(the N-API crate always enables it, so these are the tests of the shipped
+build, which the feature-off steps do not compile): the library tests of the
+six filters, with `--test-threads=1`, that the impact suite
+`nir1-entity-relation-review` runs with the feature (each filter fails the step
+if it matches no test, so a renamed module cannot silently drop its tests) and
+the integration binaries `chat_typed_writers`, `d2a_m_t_typed_writers` and
+`d2a_restricted_generic_sql_shapes`. The impact suite keeps those commands (the
+canonical Quick runs them before a merge when impact selects the suite). The other feature-only tests of
+`grimodex-db` that no filter names (for example the modules under
+`scene_disclosure`, `related_scenes_requalification` and
+`scene_body_declaration`) run in no job. The Full registry builds without the
+feature. Each shard has its own `rust-cache` key
 and the 45-minute timeout. `rust-aggregate` succeeds only when every shard
 succeeded. The local `rust` stage still runs the whole suite. The shared Rust
 job explicitly empties

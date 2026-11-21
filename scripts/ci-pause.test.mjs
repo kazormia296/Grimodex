@@ -10,10 +10,12 @@ import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 import { buildLocalCiPlan } from "./local-ci.mjs";
+import { LIGHT_SUITE_DEFINITIONS } from "./quality/impact-map.mjs";
 import { evaluateIf, laneByGatedJob, stripScopeGate, unwrapIf } from "./ci-change-scope.test-support.mjs";
 // The pull-request change-scope tests run wherever this file runs (verify:quality,
 // local Quick/Full) without adding a test file to package.json or the registry.
 import "./ci-change-scope.test.mjs";
+import "./ci-cross-os-scope.test.mjs";
 import { normalizedDestination } from "./local-ci-setup-observation.mjs";
 import {
   acquireWorkloadInput,
@@ -368,7 +370,8 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
     // The Quality job also runs on the nightly schedule (its impact step is the only automatic run of the whole
     // impact selection after a merge); it has no event condition, and the schedule test below pins that.
-    const ordinaryCondition = id === "quality"
+    // The C-query worker runs on the nightly schedule too (macOS and Windows only, see its matrix test).
+    const ordinaryCondition = id === "quality" || id === "nir1-c-query-worker"
       ? `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
       : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
@@ -461,6 +464,39 @@ const failpointLibraryRunLines = [
   `passed="$(sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed; 0 failed;.*/\\1/p' "$log" | head -n 1)"`,
   `test "\${passed:-0}" -ge ${failpointLibraryPassedFloor}`,
 ];
+
+// The product-configuration library step of the Shared Rust integration shard
+// runs the same filters, with the same arguments, as the `native-current-human-capture`
+// commands of the impact suite `nir1-entity-relation-review` (impact-map.mjs).
+// The filters and the integration binaries are derived from that suite (only the
+// commands whose `--features` is exactly `native-current-human-capture`; the
+// combination with `nir1-final-request-eval` stays impact-only), so a change on
+// one side only turns the comparison with ci.yml red. Each filter is guarded on
+// its own: a filter that matches no test must not stay green. There is no
+// passed-count floor (a new threshold needs the user's confirmation). The whole
+// run text is pinned here, as for the failpoint step.
+const nativeCaptureImpactPrefix = ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "-p", "grimodex-db"];
+const nativeCaptureImpactCommands = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.filter((command) => command[command.indexOf("--features") + 1] === "native-current-human-capture");
+const nativeCaptureImpactTail = (command) => command.slice(command.indexOf("--features") + 2);
+const nativeCaptureImpactLib = nativeCaptureImpactCommands.filter((command) => nativeCaptureImpactTail(command)[0] === "--lib");
+const nativeCaptureImpactIntegration = nativeCaptureImpactCommands.filter((command) => nativeCaptureImpactTail(command)[0] !== "--lib");
+const nativeCaptureLibFilters = nativeCaptureImpactLib.map((command) => nativeCaptureImpactTail(command)[1]);
+const nativeCaptureLibCargo = 'cargo test -p grimodex-db --features native-current-human-capture --lib "$filter" -- --test-threads=1';
+const nativeCaptureLibRunLines = [
+  "set -euo pipefail",
+  'log="${RUNNER_TEMP:-/tmp}/native-current-human-capture-lib.log"',
+  "for filter in \\",
+  ...nativeCaptureLibFilters.map((name, index, all) => `  ${name}${index === all.length - 1 ? "; do" : " \\"}`),
+  `  ${nativeCaptureLibCargo} 2>&1 | tee "$log"`,
+  `  passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"`,
+  '  echo "$filter: $passed tests passed"',
+  '  if [ "$passed" -eq 0 ]; then',
+  '    echo "$filter ran no test: the filter matches no module (renamed?)" >&2',
+  "    exit 1",
+  "  fi",
+  "done",
+];
+const nativeCaptureIntegrationCargo = ["cargo", "test", "-p", "grimodex-db", "--features", "native-current-human-capture", ...nativeCaptureImpactIntegration.flatMap((command) => nativeCaptureImpactTail(command))].join(" ");
 
 // Minimal Rust lexer + item scanner (no dependency): returns the full names
 // (module::path::fn) of every `#[test]` function that exists only with the
@@ -750,12 +786,14 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
-  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs and the Quality job.
-  // Quality's impact step is the only automatic run of the whole impact selection after a merge.
+  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs, the Quality job and
+  // the C-query worker (whose nightly matrix is macOS and Windows only; it is the catch-all for the legs a master
+  // push skips). Quality's impact step is the only automatic run of the whole impact selection after a merge.
   assert.deepEqual(admitted({}, "schedule"), [
     "changes", "quality",
     "electron-product-journeys-build", "electron-product-journeys-c2zc",
     "electron-product-journeys", "electron-product-journeys-aggregate",
+    "nir1-c-query-worker",
   ]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
@@ -832,23 +870,34 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const terminalRefusalsOnly = { ...defaults, canonical_profile: "c-query-terminal-refusals" };
   const lifecycleOnly = { ...defaults, canonical_profile: "c-query-lifecycle" };
   const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, terminalRefusalsOnly, practicalOnly, frameLifecycleOnly, lifecycleOnly];
-  // B3 (2026-11-15): a pull request runs the worker on Linux only; every other
-  // event (master push, manual dispatch) keeps the three OSes. A reusable call
-  // is not an event of its own: the called workflow inherits the caller's
-  // `github.event_name`, so "workflow_call" is never a value of it.
-  assert.equal(workers.strategy.matrix.os, "${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
-  const matrixFor = (event, profile = "") => {
-    const expression = workers.strategy.matrix.os;
-    const condition = expression.slice(expression.indexOf("fromJSON((") + "fromJSON((".length, expression.indexOf(") && '"));
-    const pullRequestOnly = evaluateIf(`\${{ ${condition} }}`, { inputs: { canonical_profile: profile }, event, changes: {} });
-    return pullRequestOnly ? ["ubuntu-latest"] : ["ubuntu-latest", "macos-latest", "windows-latest"];
+  // B3 (2026-11-15): a pull request runs the worker on Linux only. A master push runs Linux, and macOS and
+  // Windows only when the `crossos` step of `changes` does not output exactly 'false'. The nightly schedule runs
+  // macOS and Windows only; a manual dispatch and the release call (a tag push) keep the three OSes. A reusable call
+  // is not an event of its own: the called workflow inherits the caller's `github.event_name`, so "workflow_call"
+  // is never a value of it.
+  assert.equal(workers.strategy.matrix.os, "${{ fromJSON(github.event_name == 'schedule' && '[\"macos-latest\",\"windows-latest\"]' || ((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request' || needs.changes.outputs.cquery_cross_os == 'false') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]')) }}");
+  const ALL_OS = ["ubuntu-latest", "macos-latest", "windows-latest"];
+  const matrixFor = (event, profile = "", cqueryCrossOs) => {
+    // The restricted evaluator also covers fromJSON: the `${{ }}` wrapper is dropped and fromJSON becomes JSON.parse.
+    const expression = workers.strategy.matrix.os.replace(/^\$\{\{\s*|\s*\}\}$/gu, "").replace("fromJSON(", "JSON.parse(");
+    const outputs = cqueryCrossOs === undefined ? {} : { cquery_cross_os: cqueryCrossOs };
+    return evaluateIf(`\${{ ${expression} }}`, { inputs: { canonical_profile: profile }, event, changes: outputs });
   };
   assert.deepEqual(matrixFor("pull_request"), ["ubuntu-latest"]);
-  for (const event of ["push", "workflow_dispatch"]) {
-    assert.deepEqual(matrixFor(event), ["ubuntu-latest", "macos-latest", "windows-latest"], event);
+  assert.deepEqual(matrixFor("pull_request", "", "true"), ["ubuntu-latest"]);
+  // The nightly: macOS and Windows only, whatever the (never set) output says.
+  assert.deepEqual(matrixFor("schedule"), ["macos-latest", "windows-latest"]);
+  assert.deepEqual(matrixFor("schedule", "", "false"), ["macos-latest", "windows-latest"]);
+  // A master push: only an exact 'false' drops macOS and Windows; every doubt keeps all three.
+  assert.deepEqual(matrixFor("push", "", "false"), ["ubuntu-latest"]);
+  for (const odd of [undefined, "", "true", "TRUE", "0", "no", " false", "invalid"]) {
+    assert.deepEqual(matrixFor("push", "", odd), ALL_OS, `push ${JSON.stringify(odd)}`);
   }
-  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-workers"), ["ubuntu-latest", "macos-latest", "windows-latest"]);
+  // A manual dispatch (no output: `changes` skips the crossos step) and the release call (a tag push, no output).
+  assert.deepEqual(matrixFor("workflow_dispatch"), ALL_OS);
+  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-workers"), ALL_OS);
   assert.deepEqual(matrixFor("workflow_dispatch", "c-query-practical"), ["ubuntu-latest"]);
+  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-lifecycle"), ["ubuntu-latest"]);
   for (const standalone of workerProfiles) {
     await validateWorkers(standalone);
     await validateWorkers({ ...standalone, source_focused: "" });
@@ -967,7 +1016,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   }
   // The former single `cargo test` is split into three shards that cover its
   // target kinds by construction. Every shard builds the same workspace with the
-  // same features, so the test cfg is identical; check and clippy run once.
+  // same features, so the test cfg is identical, except for the two
+  // `native-current-human-capture` steps of the integration shard (grimodex-db
+  // built alone with the product feature); check and clippy run once.
   // Examples are only built (as `cargo test` did), in the integration shard.
   assert.deepEqual(rust.strategy, { "fail-fast": false, matrix: { shard: ["lib-graph", "lib-rest", "integration"] } });
   assert.equal(rust.name, "Shared Rust crates (${{ matrix.shard }})");
@@ -979,7 +1030,22 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const graphStep = rust.steps.find((step) => step.name === "cargo test (lib tests, graph modules)");
   const graphCargo = `${base} --lib -- ${graphFilter}`;
   assert.deepEqual(graphStep.run.trim().split("\n").filter((line) => line.startsWith("cargo ")), [`${graphCargo} 2>&1 | tee "$log"`]);
-  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => [step.if, step === graphStep ? graphCargo : step.run.trim()]), [
+  // The product-configuration library step is a guarded loop over the impact
+  // filters: its whole run text is pinned (like the failpoint step) and it is
+  // represented in the list below by a fixed string, as the graph step is by its
+  // `cargo test` line.
+  // The derivation above must see the impact commands as they are written: 6
+  // library commands and 1 integration command, each with the fixed prefix and
+  // (for the library ones) the fixed tail.
+  assert.equal(nativeCaptureImpactLib.length, 6);
+  assert.equal(nativeCaptureImpactIntegration.length, 1);
+  for (const command of nativeCaptureImpactCommands) assert.deepEqual(command.slice(0, command.indexOf("--features")), nativeCaptureImpactPrefix);
+  for (const command of nativeCaptureImpactLib) assert.deepEqual(nativeCaptureImpactTail(command).slice(2), ["--", "--test-threads=1"]);
+  assert.deepEqual(nativeCaptureImpactTail(nativeCaptureImpactIntegration[0]).filter((_, index) => index % 2 === 0), ["--test", "--test", "--test"]);
+  const nativeLibStep = rust.steps.find((step) => step.name === "cargo test (native-current-human-capture library tests)");
+  assert.deepEqual(nativeLibStep.run.trim().split("\n"), nativeCaptureLibRunLines);
+  const nativeLibRepresentative = `for each of ${nativeCaptureLibFilters.length} filters: ${nativeCaptureLibCargo}`;
+  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => [step.if, step === graphStep ? graphCargo : step === nativeLibStep ? nativeLibRepresentative : step.run.trim()]), [
     ["matrix.shard == 'lib-graph'", "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding"],
     ["matrix.shard == 'lib-graph'", "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings"],
     // `--lib` selects every unit test of the workspace libraries. The same
@@ -1000,6 +1066,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     ["matrix.shard == 'integration'", "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor"],
     ["matrix.shard == 'integration'", "cargo test -p grimodex-db --test narrative_runtime_authority"],
     ["matrix.shard == 'integration'", "cargo test -p grimodex-license --features licensing"],
+    // The product configuration: the N-API crate always enables
+    // `native-current-human-capture`, which the steps above never turn on.
+    ["matrix.shard == 'integration'", nativeLibRepresentative],
+    ["matrix.shard == 'integration'", nativeCaptureIntegrationCargo],
   ]);
   for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
   // The Gate B2 required name stays on the aggregate, which succeeds only when
@@ -1062,6 +1132,61 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     assert.equal(await guard(skipped, 101), 101);
   } finally {
     await rm(fakeBin, { recursive: true, force: true });
+  }
+  // The product-configuration guard, one filter at a time: a filter that matches
+  // no test fails the step (naming it on stderr) and no later filter is called, a
+  // failing cargo keeps its exit code at any position, and the six cargo calls
+  // carry the feature, `--lib`, the filter and `--test-threads=1`. Run the real
+  // step script against a fake cargo.
+  const captureBin = await mkdtemp(path.join(tmpdir(), "native-capture-guard-"));
+  try {
+    await writeFile(path.join(captureBin, "cargo"), [
+      "#!/bin/bash",
+      'printf "%s\\n" "$*" >> "$FAKE_CALLS"',
+      'for argument in "$@"; do',
+      '  if [ "$argument" = "${FAKE_FAIL_FILTER:-}" ]; then',
+      '    echo "error: test failed" >&2',
+      "    exit 101",
+      "  fi",
+      '  if [ "$argument" = "${FAKE_EMPTY_FILTER:-}" ]; then',
+      '    printf "running 0 tests\\n\\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\\n"',
+      "    exit 0",
+      "  fi",
+      "done",
+      'printf "running 5 tests\\n\\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.10s\\n"',
+      "",
+    ].join("\n"), { mode: 0o755 });
+    let caseNumber = 0;
+    const capture = async (env) => {
+      const calls = path.join(captureBin, `calls-${caseNumber++}.log`);
+      let code = 0;
+      let stderr = "";
+      try {
+        await executeShared("bash", ["-c", nativeLibStep.run], { timeout: 10000, env: {
+          ...process.env, PATH: `${captureBin}:${process.env.PATH}`, RUNNER_TEMP: captureBin, FAKE_CALLS: calls, FAKE_EMPTY_FILTER: "", FAKE_FAIL_FILTER: "", ...env,
+        } });
+      } catch (error) {
+        code = error.code;
+        stderr = error.stderr;
+      }
+      const recorded = (await readFile(calls, "utf8")).trim().split("\n");
+      return { code, stderr, recorded };
+    };
+    const expectedCalls = nativeCaptureLibFilters.map((filter) => `test -p grimodex-db --features native-current-human-capture --lib ${filter} -- --test-threads=1`);
+    const green = await capture({});
+    assert.equal(green.code, 0);
+    assert.deepEqual(green.recorded, expectedCalls);
+    for (const [index, filter] of nativeCaptureLibFilters.entries()) {
+      const empty = await capture({ FAKE_EMPTY_FILTER: filter });
+      assert.equal(empty.code, 1, `an empty filter ${filter} must fail`);
+      assert.ok(empty.stderr.includes(`${filter} ran no test`), `the empty filter ${filter} is named`);
+      assert.deepEqual(empty.recorded, expectedCalls.slice(0, index + 1), `no filter after the empty ${filter} is called`);
+      const failed = await capture({ FAKE_FAIL_FILTER: filter });
+      assert.equal(failed.code, 101, `a failing cargo keeps its code (${filter})`);
+      assert.deepEqual(failed.recorded, expectedCalls.slice(0, index + 1), `no filter after the failing ${filter} is called`);
+    }
+  } finally {
+    await rm(captureBin, { recursive: true, force: true });
   }
   // No shard runs a bench or example with `test = true` (the former `cargo test`
   // would have; examples are only built). Cargo.toml is scanned without

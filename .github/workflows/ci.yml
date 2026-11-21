@@ -176,9 +176,12 @@ jobs:
       candidate_head: ${{ inputs.candidate_head || '' }}
       max_parallel_tasks: ${{ inputs.max_parallel_tasks || '' }}
 
-  # Pull requests only: skip heavy lanes whose inputs the diff cannot reach.
+  # Pull requests: skip heavy lanes whose inputs the diff cannot reach.
   # Deny by default. Every other event, an empty or incomplete diff, an
-  # unclassified path, or any failure here leaves all lanes running. This job
+  # unclassified path, or any failure here leaves all lanes running. A push to
+  # master gets a second, separate decision (the `crossos` step): whether the
+  # C-query worker also runs on macOS and Windows, from the same kind of diff.
+  # It never changes the lane outputs. This job
   # is not meant to fail (every step that can fail has continue-on-error, and
   # the checkout has its own step timeout), because a job-level failure would
   # make the unchanged shard/aggregate/runtime-performance jobs skip through
@@ -198,9 +201,10 @@ jobs:
       browser: ${{ steps.scope.outputs.browser }}
       lfm: ${{ steps.scope.outputs.lfm }}
       security: ${{ steps.scope.outputs.security }}
+      cquery_cross_os: ${{ steps.crossos.outputs.cquery_cross_os }}
     steps:
-      - name: Check out the pull request for its diff
-        if: github.event_name == 'pull_request'
+      - name: Check out the diff
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
         continue-on-error: true
         timeout-minutes: 3
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -209,7 +213,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js for the scope script
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -285,6 +289,48 @@ jobs:
           path: ${{ runner.temp }}/ci-change-scope.json
           if-no-files-found: ignore
           retention-days: 14
+
+      # A master push only: whether the C-query worker also runs on macOS and
+      # Windows. Only an exact `false` skips those legs; an empty, invalid or
+      # failed decision runs them (fail open). The nightly run, a dispatch and
+      # the release call (a tag push) never reach this step and run them.
+      - name: Decide whether the C-query worker runs on macOS and Windows
+        id: crossos
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PUSH_REF: ${{ github.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -u
+          decision=""
+          # A push that changes the decision code, its rules, the impact helper or a workflow is never
+          # judged by that code: git diff exits 1 for a change and 128 for an error, and both run the legs.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$PUSH_REF" = "refs/heads/master" ] && [ -n "$BEFORE_SHA" ] && [ -n "$AFTER_SHA" ] &&
+            git diff --quiet "$BEFORE_SHA" "$AFTER_SHA" -- 'scripts/ci-cross-os-scope.*' scripts/impact/ .github/workflows/; then
+            decision="$(node scripts/ci-cross-os-scope.mjs --event "$GITHUB_EVENT_NAME" --ref "$PUSH_REF" --before "$BEFORE_SHA" --after "$AFTER_SHA" --summary "$GITHUB_STEP_SUMMARY")" || decision=""
+          fi
+          # A valid true or false from the script comes with the script's own summary; only the rest gets the fallback note.
+          fallback=0
+          case "$decision" in
+            "cquery_cross_os=false" | "cquery_cross_os=true") ;;
+            *)
+              fallback=1
+              decision="cquery_cross_os=true"
+              ;;
+          esac
+          # The output comes first: nothing after this may change what the matrix reads.
+          printf '%s\n' "$decision" >> "$GITHUB_OUTPUT"
+          if [ "$fallback" = "1" ]; then
+            {
+              echo "## C-query worker on macOS and Windows"
+              echo
+              echo "The macOS and Windows legs run: the decision was true, unavailable or invalid, or this push changes the decision code, its rules or a workflow."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   quality:
     name: Quality (traceability / impact-selected light gates)
@@ -374,12 +420,15 @@ jobs:
       # needed that Quick, and the Frontend, Shared Rust and Electron native jobs
       # run most of the same tests in full; the job keeps `pnpm verify:quality` as
       # its contract check. What only impact runs is therefore not checked by a
-      # master push: the grimodex-db tests built with the product feature
-      # `native-current-human-capture` (the N-API crate always enables it; Shared
-      # Rust and the Full registry build without it), the tests of the eval-only
-      # features (`nir1-graph-eval`, `nir1-final-request-eval`), and many Node
-      # tests that no other job or registry entry names by path (the NIR-1
-      # graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
+      # master push: the tests of the eval-only features (`nir1-graph-eval`,
+      # `nir1-final-request-eval`, including its combination with
+      # `native-current-human-capture`), and many Node tests that no other job or
+      # registry entry names by path (the NIR-1 graph-eval, graph, packing and
+      # retrieval tests, the WebRTC block probes). The grimodex-db tests that the
+      # Shared Rust integration shard runs with `native-current-human-capture`
+      # (the product configuration: the N-API crate always enables the feature)
+      # are checked by a master push. The grimodex-db feature-only tests that
+      # the shard's filters do not name run in no job, impact included.
       # The nightly run covers them: it is the only automatic run of the whole
       # selection after a merge, so a break that only the combination of merged
       # changes shows is found by the next nightly run, usually a day or so later
@@ -1804,15 +1853,18 @@ jobs:
   # The shared Rust suite runs as three parallel shards (2026-11-19); the job
   # `rust-aggregate` below keeps the required check name. Every shard builds the
   # same workspace with the same features as the former single `cargo test`, so
-  # the test cfg is identical. Together the shards run the target kinds the
-  # former `cargo test` ran, by construction:
+  # the test cfg is identical, except for the two `native-current-human-capture`
+  # steps of the integration shard (below), which build `grimodex-db` alone with
+  # that feature. Together the shards run the target kinds the former `cargo
+  # test` ran, by construction:
   #   lib-graph    `--lib` tests whose name contains the filter below (a guard
   #                fails the shard if the filter matches no test)
   #   lib-rest     `--lib` tests that do not (the same string as `--skip`), so a
   #                new test module lands here unless it matches the filter
   #   integration  binary unit tests, integration tests and doctests (the targets
   #                `--lib` does not select), an examples build, plus the
-  #                feature-specific reruns
+  #                feature-specific reruns (`test-failpoints`, `licensing` and
+  #                `native-current-human-capture`)
   # Examples are built, not run (as the former `cargo test` did): `cargo build
   # --profile test --examples` compiles them as plain executables under the test
   # profile, exactly as `cargo test` did. No target with `test = true` among the
@@ -1980,6 +2032,54 @@ jobs:
         working-directory: src-tauri
         run: cargo test -p grimodex-license --features licensing
 
+      # Product configuration: the N-API crate always enables
+      # `native-current-human-capture`, so these grimodex-db tests are the ones
+      # that run in the shipped build; the feature-off suite above and in the
+      # other shards does not compile them. The filters, the `--test-threads=1`
+      # and the integration binaries are the same as the `native-current-human-capture`
+      # commands of the impact suite `nir1-entity-relation-review`
+      # (scripts/quality/impact-map.mjs), which stays as it is. They are not a
+      # whole-library run (about 2,940 tests, 17-21 minutes). A filter that
+      # matches no test (a renamed module) selects nothing and still succeeds, so
+      # the step fails then; each filter is guarded on its own. The run text is
+      # pinned by scripts/ci-pause.test.mjs.
+      - name: cargo test (native-current-human-capture library tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP:-/tmp}/native-current-human-capture-lib.log"
+          for filter in \
+            narrative_extraction::nir1_history_context::tests \
+            narrative_extraction::nir1_history_requalification::tests \
+            narrative_extraction::nir1_history_budget \
+            narrative_extraction::nir1_history_adoption \
+            nir1_generation::tests::hc1_reads \
+            narrative_extraction::nir1_packing; do
+            cargo test -p grimodex-db --features native-current-human-capture --lib "$filter" -- --test-threads=1 2>&1 | tee "$log"
+            passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"
+            echo "$filter: $passed tests passed"
+            if [ "$passed" -eq 0 ]; then
+              echo "$filter ran no test: the filter matches no module (renamed?)" >&2
+              exit 1
+            fi
+          done
+
+      # The CW typed-writer tests compile only with the feature, so the
+      # `--test '*'` step above runs an empty binary for `chat_typed_writers`.
+      # `d2a_m_t_typed_writers` and `d2a_restricted_generic_sql_shapes` have no
+      # cfg; they are kept for parity with the impact command.
+      - name: cargo test (native-current-human-capture integration tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test
+          -p grimodex-db
+          --features native-current-human-capture
+          --test chat_typed_writers
+          --test d2a_m_t_typed_writers
+          --test d2a_restricted_generic_sql_shapes
+
   # The required check name of the shared Rust suite (Gate B2 `requiredJobs`).
   # It succeeds only when every shard of `rust` succeeded. `!cancelled()` keeps
   # the implicit success() from skipping it when `changes` was skipped (a
@@ -2000,15 +2100,18 @@ jobs:
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
     needs: [changes]
-    if: ${{ !cancelled() && (inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks)) && needs.changes.outputs.rust != 'false' }}
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks)) && needs.changes.outputs.rust != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        # A pull request runs the real-worker tests on Linux only (2026-11-15);
-        # the master push and a manual dispatch (a reusable call follows its
-        # caller's event) keep the three-OS matrix, so a macOS- or Windows-only failure is found by the
-        # `ci.yml` of the master push after the merge.
-        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        # A pull request runs the real-worker tests on Linux only (2026-11-15).
+        # A master push runs Linux, and macOS and Windows only when it changes a
+        # path in scripts/ci-cross-os-scope.json (the `crossos` step of `changes`
+        # sets cquery_cross_os; only an exact 'false' skips them). The nightly
+        # run runs macOS and Windows only (Linux ran in the push). A manual
+        # dispatch and the release call (a reusable call follows its caller's
+        # event, a tag push) keep the three-OS matrix.
+        os: ${{ fromJSON(github.event_name == 'schedule' && '["macos-latest","windows-latest"]' || ((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request' || needs.changes.outputs.cquery_cross_os == 'false') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]')) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

@@ -288,18 +288,19 @@ schedule, on a manual dispatch and on the release workflow's call on a tag push,
 push (a reusable call inherits its caller's event and ref and follows them). The canonical Quick, which the merge needs on
 the same candidate, already runs that selection before the merge, and the Frontend, Shared Rust and Electron native jobs run
 most of the same tests in full; the Quality job keeps `pnpm verify:quality` as its contract check on every event. What only
-impact runs is therefore not checked by the `master` push: the grimodex-db tests built with the product feature
-`native-current-human-capture` (the N-API crate always enables it; the Shared Rust job and the Full registry build without it),
-the tests of the eval-only features (`nir1-graph-eval`, `nir1-final-request-eval`), and many Node tests that no other job or
+impact runs is therefore not checked by the `master` push: the tests of the eval-only features (`nir1-graph-eval`,
+`nir1-final-request-eval`, including its combination with `native-current-human-capture`), and many Node tests that no other job or
 registry entry names by path (the NIR-1 graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
-The nightly run (the `ci.yml` run of the schedule: the change scope, the product journeys in `all` mode and the Quality job)
+The grimodex-db tests that the Shared Rust `integration` shard runs with `native-current-human-capture` (the N-API crate always enables
+that feature; the shard runs six filtered library test groups and three integration binaries with it, and the Full registry builds
+without it) are checked by the `master` push; the feature-only tests that those filters do not name run in no job, impact included.
+The nightly run (the `ci.yml` run of the schedule: the change scope, the product journeys in `all` mode, the Quality job and, on macOS and Windows only, the C-query worker)
 runs the whole impact selection on `master`, so a break that only the combination of merged changes shows is found by the
 nightly run, usually a day or so after the merge (GitHub's schedule delays or skips runs, so it can take longer), not by the
-merge or the `master` push. A nightly run that ends in anything other than success is handled as a red `master`. A pull request's C-query worker matrix runs on Linux only; the `master` push
-and a manual dispatch run it on Linux, macOS and Windows. The Electron runtime performance job (absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. A green pull request check is therefore no runtime performance evidence: a failure of that job is found after the merge, in the `ci.yml` of the `master` push and in the `master` Full, and is handled as a red `master`. The `ci.yml` of a pull request measures the merge ref (`github.sha`), while the Quick measures the
+merge or the `master` push. A nightly run that ends in anything other than success is handled as a red `master`; this includes a nightly C-query worker leg on macOS or Windows that was cancelled because no runner was obtained, which is red by the same rule and is cleared by a successful re-run of that job. A pull request's C-query worker matrix runs on Linux only. The `master` push always runs it on Linux, and on macOS and Windows only when the push changes a path the worker is built from or reads (the list is `scripts/ci-cross-os-scope.json`); any doubt (a force push, a `before` commit that cannot be resolved, an empty or incomplete diff, a failure of the deciding step) runs them. The nightly run runs macOS and Windows only, since Linux ran in the push. A manual dispatch without inputs, with `canonical_profile=c-query-workers` or with `independent_gates`, and the release workflow's call run all three (`c-query-practical` and `c-query-lifecycle` run Linux only). Gaps that only the nightly run closes: a new external `../` reference added by a Rust-only pull request, whose Quick does not run the derivation test, and a `master` push that creates no run (such as `[skip ci]`) and changes a worker path, which the next push's decision does not see. A `master` push that skipped the macOS and Windows legs did not verify them, and is not a pass for them. The Electron runtime performance job (absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. A green pull request check is therefore no runtime performance evidence: a failure of that job is found after the merge, in the `ci.yml` of the `master` push and in the `master` Full, and is handled as a red `master`. The `ci.yml` of a pull request measures the merge ref (`github.sha`), while the Quick measures the
 candidate head, so a combination with master changes that landed after the Quick is not checked by impact in the pull request
 run. A pull request run is therefore not evidence for the impact-selected suites, for the macOS and Windows workers or for the
-Electron runtime performance job: a failure that only those show is found, for the workers and the runtime performance job, in
+Electron runtime performance job: a failure that only those show is found, for the macOS and Windows workers, in the `ci.yml` of the `master` push when the push changed a worker path and otherwise in the next nightly run (or earlier by a manual dispatch), for the runtime performance job in
 the `ci.yml` of the `master` push, and for the impact-selected suites in the next nightly run (or earlier by a manual
 dispatch), and is handled as a red `master`. The merge condition itself is unchanged: the rebased candidate's complete Quick
 plus the `ci.yml` of the candidate head.
@@ -471,6 +472,7 @@ that only has merge authority and finds master red stops merging and reports to 
 revert. The `ci.yml` run of the `master` push of a docs-only merge that does not succeed is also a red master and is
 handled by the same rules: it clears when a re-run of it or the `ci.yml` run of a later `master` push succeeds, or when
 the fix or the revert is on `origin/master`, and the unrelated-flake exception and its record requirement are the same.
+When the cause is a C-query worker leg on macOS or Windows, a later `master` push clears it only if that push ran those legs and they succeeded; a push that skipped them does not.
 The newest nightly `ci.yml` run (event `schedule`, branch `master`) that does not succeed is also a red master, handled by the
 same rules; it is judged by its last concluded attempt, and a run still in progress is skipped in favour of the newest run with a
 concluded attempt. It clears when a re-run of it or a newer nightly run succeeds, or when the fix or the revert is on

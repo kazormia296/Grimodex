@@ -51,10 +51,13 @@ const only = (runs) => Object.fromEntries(LANES.map((lane) => [lane, runs.includ
 
 test("change scope rules, the changes job outputs and its shell fallback name the same lanes", () => {
   const changes = ci.jobs.changes;
-  assert.deepEqual(Object.keys(changes.outputs).sort(), [...LANES].sort());
+  // The lane outputs come from the `scope` step; the one extra output is the
+  // separate master-push decision of the `crossos` step (scripts/ci-cross-os-scope.test.mjs).
+  assert.deepEqual(Object.keys(changes.outputs).sort(), [...LANES, "cquery_cross_os"].sort());
   for (const lane of LANES) {
     assert.equal(changes.outputs[lane], `\${{ steps.scope.outputs.${lane} }}`, lane);
   }
+  assert.equal(changes.outputs.cquery_cross_os, "${{ steps.crossos.outputs.cquery_cross_os }}");
   const scope = changes.steps.find(({ id }) => id === "scope");
   const listed = /^lanes="([^"]+)"$/mu.exec(scope.run);
   assert.ok(listed, "the shell fallback must list the lanes literally");
@@ -131,7 +134,7 @@ test("cascade jobs skip through the needs chain of a gated job, and the pinned n
   );
 });
 
-test("the changes job never fails the run and diffs only for pull requests", () => {
+test("the changes job never fails the run and diffs only for pull requests and master pushes", () => {
   const changes = jobOf("changes");
   assert.equal(changes.name, "Change scope");
   assert.equal(changes["runs-on"], "ubuntu-24.04");
@@ -143,15 +146,31 @@ test("the changes job never fails the run and diffs only for pull requests", () 
     changes.if,
     "${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}",
   );
-  const [checkout, setup, scope, upload] = changes.steps;
-  assert.equal(changes.steps.length, 4);
+  // `crossos` is last so that the destructuring of the first four steps stays put.
+  const [checkout, setup, scope, upload, crossos] = changes.steps;
+  assert.equal(changes.steps.length, 5);
   assert.match(checkout.uses, /^actions\/checkout@[0-9a-f]{40}$/u);
   assert.equal(checkout["timeout-minutes"], 3);
   assert.equal(checkout.with["fetch-depth"], 0);
   assert.equal(checkout.with["persist-credentials"], false);
   assert.match(setup.uses, /^actions\/setup-node@[0-9a-f]{40}$/u);
   assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
-  for (const step of [checkout, setup, upload]) assert.equal(step.if, "github.event_name == 'pull_request'");
+  // The checkout and Node are shared with the master-push decision of the `crossos` step; the scope step
+  // itself still diffs only for a pull request (its shell guard), and the evidence upload is for pull requests.
+  for (const step of [checkout, setup]) {
+    assert.equal(step.if, "github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')");
+  }
+  assert.equal(upload.if, "github.event_name == 'pull_request'");
+  assert.equal(crossos.id, "crossos");
+  assert.equal(crossos.if, "github.event_name == 'push' && github.ref == 'refs/heads/master'");
+  assert.equal(crossos["timeout-minutes"], 1);
+  assert.deepEqual(crossos.env, {
+    PUSH_REF: "${{ github.ref }}",
+    BEFORE_SHA: "${{ github.event.before }}",
+    AFTER_SHA: "${{ github.sha }}",
+  });
+  assert.doesNotMatch(crossos.run, /\$\{\{/u, "no expression is interpolated into the script");
+  assert.doesNotMatch(crossos.run, /\|\|\s*true/u);
   // A failed step would fail `changes`, and a job-level failure also skips the
   // unchanged shard/aggregate/runtime-performance jobs (their implicit
   // success() sees the failed ancestor), so every step may fail softly.
@@ -1134,7 +1153,7 @@ test("every step of the changes job has its own timeout inside the job's timeout
   assert.ok(total < job["timeout-minutes"], `step timeouts ${total} must stay below the job timeout ${job["timeout-minutes"]}`);
 });
 
-test("the workflow step runs every lane for push, schedule, dispatch and call without a checkout", async () => {
+test("the workflow scope step runs every lane for push, schedule, dispatch and call without diffing (its own step; the crossos step is separate)", async () => {
   for (const event of ["push", "schedule", "workflow_dispatch", "workflow_call"]) {
     await withTemp(async (root) => {
       // No repository, no base/head and (via the failing command) no usable node.
