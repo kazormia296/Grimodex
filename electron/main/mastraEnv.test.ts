@@ -427,7 +427,7 @@ describe("originalEnv の配線（MP-3a、DR-MP3-9）：apply の前は live の
   });
 });
 
-describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は apply を呼ばない。呼ぶのは MP-3c）", () => {
+describe("apply に届く入口は mastraEnv.ts の外に無い（呼べるのは lazy loader だけ。MP-3c）", () => {
   /** コメントと文字列の中の言及を除いた code。 */
   const codeOf = (text: string): string =>
     text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -455,6 +455,9 @@ describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は appl
     return out;
   };
 
+  /** `applyMastraEnvPin` を import してよい唯一の file（Mastra を load する直前に当てる lazy loader）。 */
+  const APPLY_IMPORTER = path.join("electron", "main", "mastraAgentLoader.ts");
+
   /** mastraEnv.ts の外で、pin の作成・apply・固定の定数に触れている file と理由。 */
   const violations = (sources: Record<string, string>): string[] => {
     const found: string[] = [];
@@ -472,6 +475,7 @@ describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は appl
             name &&
             name !== "mastraOriginalEnv" &&
             name !== "mastraOriginalEnvValue" &&
+            !(name === "applyMastraEnvPin" && file === APPLY_IMPORTER) &&
             !/^type\s/.test(name) &&
             name !== "MastraEnvPin" &&
             name !== "MastraEnvPinResult"
@@ -508,11 +512,27 @@ describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は appl
         "main/backend.ts",
         "main/cliAi.ts",
         "main/ipc.ts",
+        "main/mastraAgentLoader.ts",
         "main/mcpSidecar.ts",
         "codexAppServer/process.ts",
         "main/vivliostyle.ts",
       ].sort(),
     );
+  });
+
+  it("`applyMastraEnvPin` を import するのは lazy loader だけ（他の file の import は違反）", () => {
+    expect(
+      violations({
+        [APPLY_IMPORTER]:
+          'import { applyMastraEnvPin } from "./mastraEnv.js";',
+      }),
+    ).toEqual([]);
+    expect(
+      violations({
+        "electron/main/ipc.ts":
+          'import { applyMastraEnvPin } from "./mastraEnv.js";',
+      }).length,
+    ).toBe(1);
   });
 
   it("陰性対照：pin を作る・apply に届く import は検出される", () => {
@@ -537,7 +557,11 @@ describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は appl
         "utf8",
       ),
     );
-    expect([...text.matchAll(/\.apply\(/g)]).toEqual([]);
+    // 共有 pin の `apply()` を呼ぶのは `applyMastraEnvPin` の 1 箇所だけ。
+    expect([...text.matchAll(/\.apply\(/g)].length).toBe(1);
+    expect(text).toMatch(
+      /export function applyMastraEnvPin\(\): MastraEnvPinResult \{\s*return sharedPin\.apply\(\);\s*\}/,
+    );
     expect(text).not.toMatch(/export\s+(?:const|let|function)\s+sharedPin/);
     expect(text).not.toMatch(/export\s*\{[^}]*sharedPin/);
     expect(
@@ -547,6 +571,7 @@ describe("apply に届く入口は mastraEnv.ts の外に無い（MP-3a は appl
       "createMastraEnvPin",
       "mastraOriginalEnv",
       "mastraOriginalEnvValue",
+      "applyMastraEnvPin",
     ]);
   });
 

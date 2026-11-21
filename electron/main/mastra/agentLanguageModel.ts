@@ -27,6 +27,7 @@ import type { MastraModelConfig } from "@mastra/core/llm";
 import {
   AgentModelError,
   assertSupportedAgentProvider,
+  isAgentModelError,
   wireStopReasonToFinishReason,
   wireToAgentUsage,
   type AgentSupportedProvider,
@@ -867,7 +868,7 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
           auditError,
         );
       }
-      throw error instanceof AgentModelError
+      throw isAgentModelError(error)
         ? error
         : new AgentModelError(
             "send-failed",

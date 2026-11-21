@@ -270,6 +270,15 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
       "Agent-mode send_agent_message -> strict workspace quiescence -> old-workspace transcript/audit persistence",
   },
   {
+    id: "mastra-agent-turn-gate-load-audit",
+    domains: ["chat", "sqlite"],
+    interactions: ["chat->sqlite"],
+    contracts: ["mastra:agent-turn-gate-load-audit"],
+    capabilities: ["electron", "napi"],
+    description:
+      "gate L opened by its own seam -> typed refusals write nothing -> admitted start lazy-loads the third bundle, then ok:false for the missing key before the Agent runs -> no audit row, nothing sent",
+  },
+  {
     id: "editor-pending-project-switch",
     domains: ["editor", "project-lifecycle"],
     interactions: ["editor->project-lifecycle"],
@@ -504,6 +513,8 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "scripts/chronicle-edited-apply-product-journey.test.mjs",
       "electron/scripts/chronicle-current-scene-product-journey.mjs",
       "scripts/chronicle-current-scene-product-journey.test.mjs",
+      "electron/scripts/mastra-agent-turn-product-journey.mjs",
+      "scripts/mastra-agent-turn-product-journey.test.mjs",
       "scripts/product-journey-*.test.mjs",
       "scripts/electron-product-journey-*.test.mjs",
       "scripts/electron-product-journeys.test.mjs",
@@ -566,6 +577,23 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     id: "chat",
     domains: ["chat"],
     paths: ["src/features/chat/**", "src/application/chat/**"],
+  },
+  {
+    id: "mastra-agent-turn",
+    domains: ["chat", "sqlite"],
+    contracts: ["mastra:agent-turn-gate-load-audit"],
+    paths: [
+      "electron/main/mastraTurnOwner.ts",
+      "electron/main/mastraAgentLoader.ts",
+      "electron/main/mastraAgentTurnGate.ts",
+      "electron/main/mastraEnv.ts",
+      "electron/main/mastra/**",
+      "electron/shared/mastraAgentTurnWire.ts",
+      "electron/shared/aiAuditEvents.ts",
+      "electron/scripts/build.mjs",
+      "electron/scripts/mastra-agent-turn-product-journey.mjs",
+      "scripts/mastra-agent-turn-product-journey.test.mjs",
+    ],
   },
   {
     id: "scene-scope",
@@ -826,6 +854,10 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
   {
     id: "scope-transition:agent-stream:workspace",
     domains: ["chat", "workspace-lifecycle"],
+  },
+  {
+    id: "mastra:agent-turn-gate-load-audit",
+    domains: ["chat", "sqlite"],
   },
   {
     id: "scope-transition:editor-pending:project",

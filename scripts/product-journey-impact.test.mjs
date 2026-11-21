@@ -66,6 +66,7 @@ test("the current catalog has complete journey, contract, and interaction covera
     "agent-stream-project-switch",
     "chat-stream-workspace-switch",
     "agent-stream-workspace-switch",
+  "mastra-agent-turn-gate-load-audit",
     "editor-pending-project-switch",
     "mcp-external-write-conflict",
     "chronicle-native-roundtrip",

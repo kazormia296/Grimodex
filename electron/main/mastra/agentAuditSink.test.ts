@@ -299,6 +299,55 @@ describe("begin and dispatched", () => {
   });
 });
 
+describe("the user's stop before the dispatch (MP-3c)", () => {
+  it("writes one `execution.cancelled` with no ambiguous mark, claims the terminal (a later one writes nothing) and the dispatch does not go on", async () => {
+    const { sink, calls } = makeSink();
+    const handle = await sink.begin(request());
+    await sink.cancel(handle, { reason: "user-stop" });
+    await sink.ambiguous(handle, { cause: "quit" });
+    await sink.fail(handle, new Error("late"));
+    await expect(sink.dispatched(handle)).rejects.toThrow(
+      "AGENT_AUDIT_TERMINAL_ALREADY_WRITTEN",
+    );
+    const terminals = calls
+      .flatMap((call) => call.events)
+      .filter((event) => /^execution\./.test(event.eventType))
+      .filter((event) => event.eventType !== "execution.started");
+    expect(terminals.map((event) => event.eventType)).toEqual([
+      "execution.cancelled",
+    ]);
+    expect(terminals[0]?.payload).not.toHaveProperty("remoteOutcome");
+    expect(terminals[0]?.payload).not.toHaveProperty("conservative");
+  });
+});
+
+describe("an AgentModelError from another bundle (MP-3c)", () => {
+  it("keeps its kind and origin in the failed row although `instanceof` does not hold", async () => {
+    // The shape the adapter's class has in the third bundle: a different class with the same name and fields.
+    class OtherBundleAgentModelError extends Error {
+      readonly isRetryable = false;
+      readonly kind = "invalid-response";
+      readonly origin = new Error("the real cause");
+      constructor() {
+        super("fixed text");
+        this.name = "AgentModelError";
+      }
+    }
+    const { sink, calls } = makeSink();
+    const handle = await sink.begin(request());
+    const foreign = new OtherBundleAgentModelError();
+    expect(foreign).not.toBeInstanceOf(AgentModelError);
+    await sink.fail(handle, foreign);
+    const failed = calls
+      .flatMap((call) => call.events)
+      .find((event) => event.eventType === "execution.failed");
+    const text = JSON.stringify(failed?.payload);
+    expect(text).toContain('"agentErrorKind":"invalid-response"');
+    expect(text).toContain("the real cause");
+    expect(text).not.toContain("fixed text");
+  });
+});
+
 describe("a terminal that is claimed while the dispatch is being written", () => {
   it("fails the dispatch before the send, even though its append went through", async () => {
     let release: () => void = () => undefined;

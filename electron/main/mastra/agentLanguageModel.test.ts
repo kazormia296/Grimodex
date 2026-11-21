@@ -308,7 +308,7 @@ describe("境界（注入だけ・未配線）", () => {
     }
   });
 
-  it("製品の経路（electron/main・preload・shared の全 file、subdirectory と動的 import を含む）から参照されない", () => {
+  it("製品の経路（electron/main・preload・shared の全 file、subdirectory と動的 import を含む）が mastra/ を参照するのは、owner と loader の決まった specifier だけ", () => {
     const own = path.join(REPO, "electron/main/mastra");
     const walk = (dir: string): string[] =>
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -323,12 +323,41 @@ describe("境界（注入だけ・未配線）", () => {
       walk(path.join(REPO, "electron", dir)),
     );
     expect(files.length).toBeGreaterThan(50);
-    // static／動的 import・require・再 export のどれでも、mastra/ 配下を指す specifier は無い。
+    // static／動的 import・require・再 export のどれでも、mastra/ 配下を指す specifier を全部集める。
     const reference =
-      /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)["'`][^"'`]*\/mastra\/[^"'`]*["'`]/;
+      /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)["'`]([^"'`]*\/mastra\/[^"'`]*)["'`]/g;
+    // MP-3c：main の owner（sink・方針・型）と lazy loader（runtime の型だけ）。adapter（agentLanguageModel）と
+    // runtime の実体は、3 つ目の bundle の中にだけあり、main は `require(変数)` で読む（loader）。
+    const allowed: Record<string, readonly string[]> = {
+      "mastraTurnOwner.ts": [
+        "./mastra/agentAuditSink.js",
+        "./mastra/agentModelPolicy.js",
+        "./mastra/agentRuntime.js",
+        "./mastra/agentWire.js",
+      ],
+      "mastraAgentLoader.ts": ["./mastra/agentRuntime.js"],
+    };
+    const found: Record<string, string[]> = {};
     for (const file of files) {
-      expect(fs.readFileSync(file, "utf8"), file).not.toMatch(reference);
+      const text = fs.readFileSync(file, "utf8");
+      const specifiers = [...text.matchAll(reference)].map((m) => m[1]!);
+      if (specifiers.length > 0) found[path.basename(file)] = specifiers.sort();
+      // 実体（値）を読み込むのは sink と方針だけ。runtime と wire は型だけ。
+      for (const match of text.matchAll(
+        /^import\s+(type\s+)?[^;]*?from\s+"([^"]*\/mastra\/[^"]+)";/gms,
+      )) {
+        const isType = match[1] !== undefined;
+        if (/agentRuntime|agentWire/.test(match[2]!)) {
+          expect(isType, `${file}: ${match[2]}`).toBe(true);
+        }
+        expect(match[2], file).not.toMatch(/agentLanguageModel/);
+      }
     }
+    expect(found).toEqual(
+      Object.fromEntries(
+        Object.entries(allowed).map(([file, list]) => [file, [...list].sort()]),
+      ),
+    );
   });
 });
 
