@@ -71,6 +71,7 @@ interface Rig {
   readonly sends: unknown[];
   readonly rows: AiAuditEventInput[];
   readonly logs: string[];
+  readonly appendProjects: (string | null)[];
   context(): Parameters<ReturnType<typeof createMastraTurnOwner>["start"]>[0];
 }
 
@@ -78,13 +79,15 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
   const sends: unknown[] = [];
   const rows: AiAuditEventInput[] = [];
   const logs: string[] = [];
+  const appendProjects: (string | null)[] = [];
   const identity = { senderId: 7, workspaceId: "/work/w" };
   const backend = {
     async aiAuditAppendBatch(
       _path: string,
-      _project: string | null,
+      project: string | null,
       events: unknown,
     ): Promise<string> {
+      appendProjects.push(project);
       rows.push(...(events as AiAuditEventInput[]));
       return "{}";
     },
@@ -115,6 +118,7 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
     sends,
     rows,
     logs,
+    appendProjects,
     context: () => ({
       sender: {
         id: 7,
@@ -192,7 +196,15 @@ describe("the real Agent in the third bundle", () => {
       tools: unknown[];
       provider: string;
       callerIdentity?: unknown;
+      auditContext?: { projectId?: unknown };
+      chatMessageId?: unknown;
     };
+    // MP-4a: the real owner, Agent and adapter carry the wire's project and
+    // chat message to the send, and every row is appended to that project.
+    expect(sent.auditContext).toMatchObject({ projectId: "project-1" });
+    expect(sent.chatMessageId).toBe("message-1");
+    expect(r.appendProjects.length).toBeGreaterThan(0);
+    expect(new Set(r.appendProjects)).toEqual(new Set(["project-1"]));
     expect(sent.messages).toEqual([
       { role: "system", content: "You write." },
       { role: "user", content: "Continue the scene." },

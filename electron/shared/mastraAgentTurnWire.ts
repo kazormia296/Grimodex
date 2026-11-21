@@ -181,8 +181,11 @@ export interface MastraAgentTurnStartRequest {
    * The project the turn's audit rows are chained to (`project:<id>`, as the
    * legacy route does; MP-4a, DR-MP4-1, -2). The renderer's own claim: Main
    * checks its form only (non-empty, no surrounding whitespace, no control
-   * character) and never that the project exists. `"default-project"` is not
-   * a project: Main's owner refuses it as `unsupported`.
+   * character) and never that the project exists; Native's foreign key
+   * (`ai_audit_events.project_id` references `projects`) refuses an unknown
+   * project at the first append, so such a turn ends with no row and no send.
+   * `"default-project"` is not a project: Main's owner refuses it as
+   * `unsupported`.
    */
   readonly projectId: string;
   /**
