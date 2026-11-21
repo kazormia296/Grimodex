@@ -2046,7 +2046,11 @@ jobs:
       # and the integration binaries are the same as the `native-current-human-capture`
       # commands of the impact suite `nir1-entity-relation-review`
       # (scripts/quality/impact-map.mjs), which stays as it is. They are not a
-      # whole-library run (about 2,940 tests, 17-21 minutes). A filter that
+      # whole-library run (about 2,940 tests, 17-21 minutes). The last three filters
+      # (scene_disclosure, related_scenes_requalification, scene_body_declaration)
+      # compile only with the feature and ran in no job before; the K2/5 PR-1
+      # rewrote about 1,400 lines of those tests (about 70 s, 14 s and 54 s).
+      # A filter that
       # matches no test (a renamed module) selects nothing and still succeeds, so
       # the step fails then; each filter is guarded on its own. The run text is
       # pinned by scripts/ci-pause.test.mjs.
@@ -2062,7 +2066,10 @@ jobs:
             narrative_extraction::nir1_history_budget \
             narrative_extraction::nir1_history_adoption \
             nir1_generation::tests::hc1_reads \
-            narrative_extraction::nir1_packing; do
+            narrative_extraction::nir1_packing \
+            narrative_extraction::nir1_graph::scene_disclosure \
+            narrative_extraction::nir1_graph::related_scenes_requalification \
+            narrative_extraction::scene_body_declaration; do
             cargo test -p grimodex-db --features native-current-human-capture --lib "$filter" -- --test-threads=1 2>&1 | tee "$log"
             passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"
             echo "$filter: $passed tests passed"
