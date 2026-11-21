@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Pull-request lane skipping for .github/workflows/ci.yml (first stage). A lane is skipped only when EVERY changed path is in that lane's neutral sets (or, for trigger lanes, when NO changed path is a trigger). Anything unclassified, incomplete, empty, or outside pull_request runs every lane.",
+  "description": "Pull-request lane skipping for .github/workflows/ci.yml (first and second stage). A lane is skipped only when EVERY changed path is in that lane's neutral sets (or, for trigger lanes, when NO changed path is a trigger). Anything unclassified, incomplete, empty, or outside pull_request runs every lane. The frontend lane (Frontend static and unit tests) skips for docs only; the rust and migration lanes skip for ci-and-ai paths and for renderer-code (src TypeScript, TSX and CSS) because no Rust crate reads those files.",
   "forceAll": [
     ".github/workflows/**",
     "package.json",
@@ -23,6 +23,11 @@
       "*.md",
       "public/RELEASE_NOTES/**",
       "experiments/**"
+    ],
+    "renderer-code": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "src/**/*.css"
     ],
     "ci-and-ai": [
       "scripts/quality/**",
@@ -51,7 +56,12 @@
     },
     "rust": {
       "mode": "neutral",
-      "neutral": ["docs", "ci-and-ai"],
+      "neutral": ["docs", "ci-and-ai", "renderer-code"],
+      "neverNeutral": [
+        "src/**/fixtures/**",
+        "src/**/__fixtures__/**",
+        "src/**/parity/**"
+      ],
       "gatedJobs": ["rust", "nir1-c-query-worker"],
       "cascadeJobs": ["rust-aggregate"]
     },
@@ -69,7 +79,12 @@
     },
     "migration": {
       "mode": "neutral",
-      "neutral": ["docs", "ci-and-ai"],
+      "neutral": ["docs", "ci-and-ai", "renderer-code"],
+      "neverNeutral": [
+        "src/**/fixtures/**",
+        "src/**/__fixtures__/**",
+        "src/**/parity/**"
+      ],
       "gatedJobs": ["migration-recovery-gate"]
     },
     "windows": {
@@ -97,6 +112,13 @@
       "mode": "neutral",
       "neutral": ["docs", "ci-and-ai"],
       "gatedJobs": ["security"]
+    },
+    "frontend": {
+      "mode": "neutral",
+      "neutral": ["docs"],
+      "neverNeutral": ["docs/lp/**", "docs/screenshots/**", "public/**"],
+      "gatedJobs": ["frontend-static", "frontend-unit"],
+      "cascadeJobs": ["frontend"]
     }
   }
 }

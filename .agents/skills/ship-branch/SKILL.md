@@ -99,6 +99,7 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
    impactだけが回すもの（評価専用featureの試験（`nir1-final-request-eval`と`native-current-human-capture`の組合せを含む）、ほかのjobもregistryも名指ししない多数のNode試験）は、mergeの後もmasterのpushでは検査されない。
    Shared Rustのintegration shardが製品構成のfeature `native-current-human-capture`で回すgrimodex-dbの試験はmasterのpushで検査される。shardのfilterが名指ししないfeature限定の試験は、impactを含むどのjobも回さない。
    PRの`ci.yml`はmerge ref（`github.sha`）を測り、Quickは候補headを測る。Quickの後に進んだmasterとの組合せは、PRのrunではimpactで検査されない（mergeの後は夜間のrunが全suiteを回すので、組合せの破損は通常1日あまり後（GitHubのscheduleの遅延や欠落で延びる）に夜間のrunで見つかり、masterの赤として§8に従う）。
+   PRの`ci.yml`は`Change scope` jobが変更範囲で省くlaneも持つ。docsだけ（`docs/lp`・`docs/screenshots`・`public`を除く）ならFrontend（`frontend`集約を含む）、renderer code（`src`のTS／TSX／CSS。fixture・`__fixtures__`・`parity`を除く）だけならShared Rust（`rust-aggregate`を含む）・C-query worker・Gate A2を省く。skippedは検証していない（passではない）。laneで省かれた集約checkがあっても、GitHub上のrunの結論は`success`のまま。現在、check名を必須にするprotectionは無い。省いた分の証拠はmasterのpushの`ci.yml`（pushは全laneを走らせる）で、PRのcheckがgreenでもその証拠にならない。
    PRのcheckがgreenでも、macOS／Windowsのworkerの失敗は、worker関係のpathを変えたpushならそのmasterのpushの`ci.yml`で、そうでなければ次の夜間のrun（または手動のdispatch）で、mergeの後に見つかり、masterの赤として§8に従う。macOS／Windowsのlegを省いたpushは、それらを検証していない（passではない）。
    Electron runtime performance jobは共有VMの絶対時間が不安定なため、PRの`ci.yml`では走らせない。PRのcheckがgreenでもその証拠にならず、失敗はmergeの後にmasterのpushの`ci.yml`とmasterのFullで見つかり、masterの赤として§8に従う。
 6. release PRでmergeまでがゴールでCIが許可されている場合だけ、Fullを要求する。初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの

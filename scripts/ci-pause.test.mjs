@@ -378,9 +378,9 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
     if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
     // The frontend aggregate adds `!cancelled()` so that a failed split job turns
-    // the required check red instead of leaving it skipped (which branch
-    // protection would read as passing); its admission stays the ordinary one.
-    const aggregateGuard = id === "frontend" ? /^!cancelled\(\) && \((.+)\)$/su.exec(unwrapIf(job.if)) : null;
+    // the check red instead of leaving it skipped; its admission stays the ordinary one. Like
+    // rust-aggregate it is skipped when its first child is (frontend lane off, docs-only pull request).
+    const aggregateGuard = id === "frontend" ? /^!cancelled\(\) && \((.+)\) && needs\.frontend-static\.result != 'skipped'$/su.exec(unwrapIf(job.if)) : null;
     if (id === "frontend") assert.ok(aggregateGuard, "frontend aggregate must run after a failed split job");
     assert.equal(aggregateGuard ? aggregateGuard[1] : unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`

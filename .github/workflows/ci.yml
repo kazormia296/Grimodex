@@ -201,6 +201,7 @@ jobs:
       browser: ${{ steps.scope.outputs.browser }}
       lfm: ${{ steps.scope.outputs.lfm }}
       security: ${{ steps.scope.outputs.security }}
+      frontend: ${{ steps.scope.outputs.frontend }}
       cquery_cross_os: ${{ steps.crossos.outputs.cquery_cross_os }}
     steps:
       - name: Check out the diff
@@ -230,7 +231,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -u
-          lanes="journeys rust native migration windows browser lfm security"
+          lanes="journeys rust native migration windows browser lfm security frontend"
           decision=""
           # A pull request that changes the decision code or a workflow is never judged by that code:
           # git diff exits 1 for a change and 128 for an error, and both leave every lane running.
@@ -243,7 +244,7 @@ jobs:
             count="$(printf '%s\n' "$decision" | grep -Ecx "$lane=(true|false)")" || count=0
             [ "$count" = "1" ] || valid=0
           done
-          [ "$(printf '%s\n' "$decision" | grep -c .)" = "8" ] || valid=0
+          [ "$(printf '%s\n' "$decision" | grep -c .)" = "9" ] || valid=0
           fallback=0
           if [ "$valid" != "1" ]; then
             fallback=1
@@ -496,10 +497,14 @@ jobs:
 
   # frontend は Gate B2 の必須 job 名（Frontend (type-check / lint / test)）を保つ集約 job。
   # 静的検査は frontend-static で 1 回、Vitest は frontend-unit の 3 shard で並列に走る。
+  # frontend lane（docs だけの pull request で skip。scripts/ci-change-scope.json）では
+  # 2 つの子が skip され、この集約も skip される（rust-aggregate と同じ形）。
+  # 子の一方だけが skipped のときは、下の検証 step が fail-closed で赤にする。
+  # Gate B2 は push と workflow_dispatch の run だけを受け、そこでは lane が全部 true なので、この skip は届かない。
   frontend:
     name: Frontend (type-check / lint / test)
     needs: [frontend-static, frontend-unit]
-    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.frontend-static.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -517,7 +522,8 @@ jobs:
 
   frontend-static:
     name: Frontend static checks (type-check / lint / architecture / web editor)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.frontend != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -558,7 +564,8 @@ jobs:
 
   frontend-unit:
     name: Frontend unit tests (shard ${{ matrix.shard }}/3)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.frontend != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

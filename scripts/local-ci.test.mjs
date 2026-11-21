@@ -26,6 +26,7 @@ import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 
+import { stripScopeGate } from "./ci-change-scope.test-support.mjs";
 import { runLocalCiTasks } from "./local-ci-runner.mjs";
 import {
   closeMockServer,
@@ -591,14 +592,6 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   }
 });
 
-// The hosted job `if` is written either bare or inside `${{ }}`, optionally as
-// `!cancelled() && (<admission>)`; this returns just the admission expression.
-function unwrapAdmission(expression) {
-  const body = String(expression).replace(/^\$\{\{\s*|\s*\}\}$/gu, "");
-  const gated = /^!cancelled\(\) && \((.+)\)$/su.exec(body);
-  return gated ? gated[1] : body;
-}
-
 test("hosted frontend job aggregates one static job and three complementary Vitest shards", async () => {
   const registry = await readRegistry();
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
@@ -624,12 +617,18 @@ test("hosted frontend job aggregates one static job and three complementary Vite
     /\[ "\$STATIC_RESULT" != "success" \] \|\| \[ "\$UNIT_RESULT" != "success" \][\s\S]*exit 1/u,
   );
 
-  // The split jobs keep the admission of the original frontend job; the
-  // aggregate only adds `!cancelled()` so that a failed leg turns it red.
-  const admission = unwrapAdmission(staticJob.if);
-  assert.equal(unwrapAdmission(unitJob.if), admission);
-  assert.equal(frontend.if, `\${{ !cancelled() && (${admission}) }}`);
-  assert.equal(staticJob.if.startsWith("${{"), false);
+  // The split jobs keep the admission of the original frontend job inside the change-scope gate of the `frontend`
+  // lane (a docs-only pull request skips them). The aggregate adds `!cancelled()` so that a failed leg turns it
+  // red, and is skipped together with its first child, as `rust-aggregate` is.
+  const staticGate = stripScopeGate(staticJob.if);
+  const unitGate = stripScopeGate(unitJob.if);
+  assert.deepEqual([staticGate.gated, staticGate.lane], [true, "frontend"]);
+  assert.deepEqual([unitGate.gated, unitGate.lane], [true, "frontend"]);
+  assert.deepEqual(staticJob.needs, ["changes"]);
+  assert.deepEqual(unitJob.needs, ["changes"]);
+  const admission = staticGate.original;
+  assert.equal(unitGate.original, admission);
+  assert.equal(frontend.if, `\${{ !cancelled() && (${admission}) && needs.frontend-static.result != 'skipped' }}`);
 
   // Static checks run once; the full Vitest run exists only as shards.
   assert.deepEqual(

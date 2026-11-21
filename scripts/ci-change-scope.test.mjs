@@ -35,7 +35,8 @@ const ci = yaml.load(await readFile(path.join(repoRoot, ".github/workflows/ci.ym
 const rawRules = JSON.parse(await readFile(path.join(repoRoot, "scripts/ci-change-scope.json"), "utf8"));
 const rules = await loadScopeRules();
 const LANES = laneNames(rules);
-const ALWAYS_RUN_JOBS = ["quality", "frontend-static", "frontend-unit", "frontend", "electron"];
+// The Frontend jobs are no longer here: they belong to the `frontend` lane (docs-only pull requests skip them).
+const ALWAYS_RUN_JOBS = ["quality", "electron"];
 const OTHER_OWNERS = ["canonical", "existing-os-suitability", "changes"];
 
 const ALL_RUN = Object.fromEntries(LANES.map((lane) => [lane, true]));
@@ -62,8 +63,8 @@ test("change scope rules, the changes job outputs and its shell fallback name th
   const listed = /^lanes="([^"]+)"$/mu.exec(scope.run);
   assert.ok(listed, "the shell fallback must list the lanes literally");
   assert.deepEqual(listed[1].split(" ").sort(), [...LANES].sort());
-  assert.match(scope.run, /grep -c \.\)" = "8"/u, "the shell checks for exactly eight lines");
-  assert.equal(LANES.length, 8);
+  assert.match(scope.run, /grep -c \.\)" = "9"/u, "the shell checks for exactly nine lines");
+  assert.equal(LANES.length, 9);
   for (const lane of LANES) assert.match(lane, /^[a-z][a-z0-9]*$/u);
 });
 
@@ -93,14 +94,17 @@ test("every job is gated, a cascade of a gated job, or always runs; nothing else
       assert.doesNotMatch(JSON.stringify(job), /needs\.changes|"changes"/u, id);
     }
   }
-  // An always-run job may wait only for other always-run jobs (the frontend
-  // aggregate waits for its two split jobs), never for the change scope.
+  // An always-run job may wait only for other always-run jobs, never for the change scope.
   for (const id of ALWAYS_RUN_JOBS) {
     for (const need of [jobOf(id).needs ?? []].flat()) {
       assert.ok(ALWAYS_RUN_JOBS.includes(need), `${id} must not wait for ${need}`);
     }
   }
+  // The frontend aggregate is a cascade of the frontend lane: it waits for its two gated jobs, not for `changes`.
   assert.deepEqual(jobOf("frontend").needs, ["frontend-static", "frontend-unit"]);
+  assert.equal(laneOfJob["frontend-static"], "frontend");
+  assert.equal(laneOfJob["frontend-unit"], "frontend");
+  assert.equal(cascade.get("frontend"), "frontend");
 });
 
 function jobOf(id) {
@@ -198,11 +202,12 @@ test("docs-only changes skip every heavy lane including journeys", () => {
 test("release notes are docs for every lane except windows, whose installer bundles public/", () => {
   // vite's publicDir (public/) is copied into dist/, which electron-builder
   // packs, so the Windows installer contract reads public/RELEASE_NOTES/**.
-  assert.deepEqual(lanesFor(["public/RELEASE_NOTES/v2.0.0.ja.md"]), only(["windows"]));
-  assert.deepEqual(lanesFor(["docs/a.md", "public/RELEASE_NOTES/v2.0.0.ja.md"]), only(["windows"]));
+  // The frontend lane also runs: vite copies public/ into dist/, and the web editor artifact check scans the .md files there.
+  assert.deepEqual(lanesFor(["public/RELEASE_NOTES/v2.0.0.ja.md"]), only(["windows", "frontend"]));
+  assert.deepEqual(lanesFor(["docs/a.md", "public/RELEASE_NOTES/v2.0.0.ja.md"]), only(["windows", "frontend"]));
 });
 
-test("CI, scripts and AI instruction changes skip the Rust, native, migration, windows, browser, lfm and security lanes but run journeys", () => {
+test("CI, scripts and AI instruction changes skip the Rust, native, migration, windows, browser, lfm and security lanes but run journeys and frontend", () => {
   assert.deepEqual(
     lanesFor([
       "scripts/quality/impact-map.mjs",
@@ -212,13 +217,13 @@ test("CI, scripts and AI instruction changes skip the Rust, native, migration, w
       "evals/quality-manifest.yaml",
       "evals/impact-map.yaml",
     ]),
-    only(["journeys"]),
+    only(["journeys", "frontend"]),
   );
   // scripts/local-ci*.mjs are imported by the native and Windows lanes' own
   // JS tests (through electron/scripts), so those two lanes keep running.
-  assert.deepEqual(lanesFor(["scripts/local-ci-runner.mjs"]), only(["journeys", "native", "windows"]));
-  // Docs plus CI assets: journeys run because the CI assets are not docs.
-  assert.deepEqual(lanesFor(["docs/a.md", "scripts/quality/x.mjs"]), only(["journeys"]));
+  assert.deepEqual(lanesFor(["scripts/local-ci-runner.mjs"]), only(["journeys", "native", "windows", "frontend"]));
+  // Docs plus CI assets: journeys and frontend run because the CI assets are not docs.
+  assert.deepEqual(lanesFor(["docs/a.md", "scripts/quality/x.mjs"]), only(["journeys", "frontend"]));
 });
 
 test("the lfm lane runs only when its own directory changes, even beside docs or other code", () => {
@@ -231,15 +236,16 @@ test("the lfm lane runs only when its own directory changes, even beside docs or
 });
 
 test("mixed changes decide each lane from its own neutral set", () => {
-  // Docs plus renderer: only the lanes a renderer change cannot reach are skipped.
+  // Docs plus renderer code: only the lanes a renderer change cannot reach are skipped. No Rust crate reads
+  // a TypeScript source, so rust and migration (Gate A2) skip; native stays (its pipeline specs import renderer code).
   assert.deepEqual(
     lanesFor(["docs/a.md", "src/features/editor/a.ts"]),
-    only(["journeys", "rust", "native", "migration", "windows", "browser", "security"]),
+    only(["journeys", "native", "windows", "browser", "security", "frontend"]),
   );
   // CI assets plus an unclassified script still run everything but lfm.
   assert.deepEqual(
     lanesFor(["scripts/quality/x.mjs", "scripts/browser-ci-benchmark.mjs"]),
-    only(["journeys", "rust", "native", "migration", "windows", "browser", "security"]),
+    only(["journeys", "rust", "native", "migration", "windows", "browser", "security", "frontend"]),
   );
 });
 
@@ -559,11 +565,15 @@ test("every file a skippable lane's JS tests import stays outside that lane's ne
       ...(await listFiles("electron/main", /\.pipeline\.spec\.ts$/u)),
     ],
     windows: await listFiles("electron", /^(?:main|preload|shared)\/.*\.test\.ts$/u),
-    migration: [
-      "electron/shared/ipcContract.test.ts",
-      "src/features/workspace/store.test.ts",
-      "src/features/workspace/recovery/RecoveryShell.test.tsx",
-    ].map((file) => path.join(repoRoot, file)),
+    // The frontend lane runs vitest.config.ts (every non-browser unit test and its setup file), and its static job
+    // type-checks all of src (tsconfig include), lints it and builds the renderer: every TS/TSX file under src and
+    // the renderer entry are entries too, so an import of a docs-set file (`?raw`, JSON, fixtures) from anywhere in
+    // src would fail here instead of letting a docs-only change skip the lane.
+    frontend: [
+      ...(await listFiles("src", /\.tsx?$/u)),
+      ...(await rendererEntries()),
+      path.join(repoRoot, "vite.config.ts"),
+    ],
     browser: [
       ...(await listFiles("src", /\.browser\.test\.tsx?$/u)),
       ...(await storybookEntries()),
@@ -580,14 +590,35 @@ test("every file a skippable lane's JS tests import stays outside that lane's ne
   const controls = {
     native: { includes: ["scripts/quality/run-nir1-retrieval.mjs", "scripts/local-ci-xvfb.mjs"], atLeast: 500 },
     windows: { includes: ["electron/main/aiKeyNaming.ts", "scripts/local-ci-xvfb.mjs"], atLeast: 150 },
-    migration: { includes: ["src/features/workspace/store.ts"], atLeast: 500 },
+    // `unresolved` is the exact list of specifiers the walker may not follow. For the frontend lane these are
+    // import-shaped text that is not a real import (an assertion on another file's source in AiAuditLazyImport.test.ts)
+    // and vi.mock or type-only specifiers of modules that do not exist (the mock is a no-op), all inside src/. None
+    // can reach a docs, experiments or public path, which is the only thing the frontend lane's neutral set contains.
+    // A new entry here must be checked by a person, not added blindly.
+    frontend: {
+      includes: ["src/lib/i18n.ts", "src/features/workspace/store.ts"],
+      atLeast: 1500,
+      unresolved: [
+        "src/AiAuditLazyImport.test.ts -> ./aiScaffold/AiTreeDialog",
+        "src/AiAuditLazyImport.test.ts -> ./chatStreamTransport",
+        "src/AiAuditLazyImport.test.ts -> ./cliApi",
+        "src/AiAuditLazyImport.test.ts -> ./codexAppApi",
+        "src/AiAuditLazyImport.test.ts -> ./lazyTransportApi",
+        "src/AiAuditLazyImport.test.ts -> ./singleShotTransport",
+        "src/features/codex/components/CodexDetailContent.test.tsx -> ./CodexEditLockBanner",
+        "src/features/editor/sceneEditorSurfaceParity.test.tsx -> @/features/editor/useInsertHighlight",
+        "src/features/legal/EulaConsentDialog.test.tsx -> ./MarkdownDocPlaceholder",
+        "src/features/related-scenes/useNir1EvidenceNavigation.lazy.test.ts -> ./nir1GraphApi",
+        "src/features/related-scenes/useNir1EvidenceNavigation.lazy.test.ts -> ./types",
+      ],
+    },
     browser: { includes: ["src/index.css", "src/lib/i18n.ts"], atLeast: 1500 },
     journeys: { includes: ["src/main.tsx", "src/lib/i18n.ts"], atLeast: 1500 },
   };
   for (const [lane, entries] of Object.entries(laneEntries)) {
     assert.ok(entries.length > 0, `${lane} must have test entries`);
     const closure = await importClosure(entries);
-    assert.deepEqual(closure.unresolved, [], `${lane}: relative or @/ specifiers the walker could not resolve`);
+    assert.deepEqual(closure.unresolved, controls[lane].unresolved ?? [], `${lane}: relative or @/ specifiers the walker could not resolve`);
     assert.ok(closure.files.length >= controls[lane].atLeast, `${lane}: closure has only ${closure.files.length} files`);
     for (const included of controls[lane].includes) {
       assert.ok(closure.files.includes(included), `${lane}: the walk must reach ${included}`);
@@ -720,6 +751,272 @@ test("every repository path the native crate reads from outside its directory ke
   assert.equal(lanesFor(["scripts/quality/nir1-other/x.mjs"]).native, false);
 });
 
+test("renderer-code (src TypeScript, TSX and CSS) skips Rust and Gate A2 only; everything else still reaches them", () => {
+  // Renderer code alone, and beside docs: no Rust crate reads these files.
+  for (const sample of ["src/features/foo/Bar.tsx", "src/lib/x.ts", "src/index.css", "src/features/editor/useThing.test.ts"]) {
+    for (const paths of [[sample], ["docs/a.md", sample]]) {
+      const lanes = lanesFor(paths);
+      assert.equal(lanes.rust, false, paths.join(" + "));
+      assert.equal(lanes.migration, false, paths.join(" + "));
+      // Every other lane that reads the renderer still runs, and lfm is a trigger lane.
+      for (const lane of ["journeys", "native", "windows", "browser", "security", "frontend"]) {
+        assert.equal(lanes[lane], true, `${lane}: ${paths.join(" + ")}`);
+      }
+      assert.equal(lanes.lfm, false, paths.join(" + "));
+    }
+  }
+  // Anything under src that is not code (JSON, markdown, SQL, images, other languages) or that sits in a fixture
+  // directory keeps both lanes: Rust crates read src fixtures (src/db/generated/schema-contract.json and others).
+  for (const sample of [
+    "src/features/settings/README.md",
+    "src/x.fixture.json",
+    "src/db/generated/schema-contract.json",
+    "src/features/a/data.sql",
+    "src/assets/logo.png",
+    "src/features/chronicle/fixtures/chronicle-snapshot/x.ts",
+    "src/features/chat/agent/__fixtures__/x.ts",
+    "src/features/agent-writes/parity/x.ts",
+    "src/features/a/fixtures/deep/x.css",
+  ]) {
+    for (const paths of [[sample], ["docs/a.md", sample]]) {
+      const lanes = lanesFor(paths);
+      assert.equal(lanes.rust, true, paths.join(" + "));
+      assert.equal(lanes.migration, true, paths.join(" + "));
+    }
+  }
+  // A Rust change, an electron change (forced) or a renderer change beside a Rust one runs both.
+  for (const paths of [
+    ["src/a.ts", "src-tauri/crates/grimodex-db/src/lib.rs"],
+    ["src/a.ts", "electron/main/index.ts"],
+    ["src/a.ts", "electron/native/grimodex-node/src/lib.rs"],
+    ["src/a.ts", "scripts/schema-seed-ja.sql"],
+  ]) {
+    const lanes = lanesFor(paths);
+    assert.equal(lanes.rust && lanes.migration, true, paths.join(" + "));
+  }
+  // electron/** stays forced for every lane (a separate decision; see docs/local-ci-runner.md).
+  assert.deepEqual(lanesFor(["electron/main/index.ts"]), ALL_RUN);
+  assert.deepEqual(lanesFor(["electron/shared/ipcContract.ts"]), ALL_RUN);
+  // Control: without the rust and migration neverNeutral entries, fixture directories would be skippable.
+  const weakened = structuredClone(rawRules);
+  delete weakened.lanes.rust.neverNeutral;
+  delete weakened.lanes.migration.neverNeutral;
+  const weakRules = compileScopeRules(weakened);
+  const weak = decideScope({ rules: weakRules, changedPaths: ["src/features/chronicle/fixtures/chronicle-snapshot/x.ts"] });
+  assert.equal(weak.lanes.rust.run, false);
+  assert.equal(weak.lanes.migration.run, false);
+});
+
+test("the frontend lane skips for docs only, and docs/lp, docs/screenshots and public stay in it", () => {
+  assert.equal(lanesFor(["docs/a.md", "README.md", "experiments/x.py"]).frontend, false);
+  assert.equal(lanesFor(["docs/plans/nir1-continuation-2026-10.md"]).frontend, false);
+  // What the frontend jobs read from the docs set: LP sources and assets, screenshots, and public/ (vite copies it into dist/).
+  for (const sample of [
+    "docs/lp/lp-variant-h.jsx",
+    "docs/lp/assets/lp-app.js",
+    "docs/lp/x.html",
+    "docs/screenshots/generated/x.png",
+    "public/RELEASE_NOTES/v1.md",
+    "public/TERMS_ja.md",
+    "public/PRIVACY_en.md",
+  ]) {
+    assert.equal(lanesFor([sample]).frontend, true, sample);
+    assert.equal(lanesFor(["docs/a.md", sample]).frontend, true, `docs + ${sample}`);
+  }
+  // Code and CI assets are not docs: the frontend lane runs. (experiments/** is docs, the lfm lane aside.)
+  for (const sample of ["src/a.ts", "scripts/quality/x.mjs", ".agents/skills/x/SKILL.md", "policies/quality/iron-laws.md"]) {
+    assert.equal(lanesFor(["docs/a.md", sample]).frontend, true, sample);
+  }
+  // Control: with docs as the only neutral set and no neverNeutral, the LP assets would be skippable.
+  const weakened = structuredClone(rawRules);
+  delete weakened.lanes.frontend.neverNeutral;
+  const weak = decideScope({ rules: compileScopeRules(weakened), changedPaths: ["docs/lp/lp-variant-h.jsx", "public/RELEASE_NOTES/v1.md"] });
+  assert.equal(weak.lanes.frontend.run, false);
+});
+
+/** Comment lines are dropped; a literal in a comment or a doc string says nothing about what a crate reads. */
+const withoutCommentLines = (source) => source.split("\n").filter((line) => !/^\s*(?:\/\/|\*|\/\*)/u.test(line));
+
+/** A literal path and, for a directory (no extension in the last segment), the files a read of it can reach. */
+function literalCandidates(literal, { directoryChildren }) {
+  const trimmed = literal.replace(/\/+$/u, "");
+  const last = trimmed.split("/").pop();
+  if (/\.[A-Za-z0-9]+$/u.test(last) || !directoryChildren) return [trimmed];
+  return [trimmed, `${trimmed}/x.json`, `${trimmed}/x.ts`, `${trimmed}/x.css`];
+}
+
+test("every repository path the shared Rust workspace reads from outside its directory keeps the rust and migration lanes", async () => {
+  // The rust and migration lanes run the src-tauri workspace (cargo). Rust may read repository files outside
+  // src-tauri by relative path (include_str!, CARGO_MANIFEST_DIR joins, build.rs, fixtures). A path the lane skips
+  // for a docs, CI-assets or renderer-code change would let that change skip the tests that read it.
+  // The scan finds string literals; it cannot see a path assembled from segments. A grep of src-tauri (2026-11-21) found
+  // no bare `"../.."` directory handed to a walk beyond src-tauri and electron/native (repo_root() joins only
+  // `src-tauri/**` and `electron/native/**`), no `.join("src")` other than the crate's own src, and no read of a `.ts`,
+  // `.tsx` or `.css` file. A new such read would need this test and the renderer-code set reviewed together.
+  // Only src-tauri is scanned: electron/native is the native lane's crate (its reads are the native scan above, and
+  // electron/** is forced for every lane anyway).
+  const top = "(?:src|electron|scripts|policies|evals|docs|public|test-fixtures|ime-contract|experiments|\\.agents|\\.claude)";
+  const repoLiteral = new RegExp(`"((?:\\.{1,2}/|/)*)(${top}/[^"\\s]*)"`, "gu");
+  const rootFile = /"(?:\.\.\/)+(agent-tool-manifest[^"\s]*|[A-Za-z0-9_.-]+\.(?:json|ya?ml|toml))"/gu;
+  const tracked = (await trackedFiles()).filter((file) => /^src-tauri\/.*\.rs$/u.test(file));
+  assert.ok(tracked.length > 200, `only ${tracked.length} Rust files were scanned`);
+  const found = new Map();
+  for (const file of tracked) {
+    for (const line of withoutCommentLines(await readFile(path.join(repoRoot, file), "utf8"))) {
+      for (const match of line.matchAll(repoLiteral)) {
+        const [, prefix, rest] = match;
+        const concrete = rest.replace(/\{[^}]*\}/gu, "x");
+        // `"src/lib.rs"` without a `../` is relative to the crate itself, not to the repository's src/.
+        const crateRelative = concrete.startsWith("src/") && !/\.\.\//u.test(prefix);
+        found.set(concrete, { file, directoryChildren: !crateRelative, ...found.get(concrete) });
+      }
+      for (const match of line.matchAll(rootFile)) found.set(match[1], { file, directoryChildren: false, ...found.get(match[1]) });
+    }
+  }
+  // Controls: the scan finds the known reads of each kind.
+  for (const expected of [
+    "src/db/generated/schema-contract.json",
+    "src/features/timelapse/hash-vectors.json",
+    "src/features/chronicle/fixtures/chronicle-snapshot",
+    "electron/main/mastra/__fixtures__/wire-args",
+    "agent-tool-manifest.json",
+    "policies/narrative/protected-writers.json",
+    "scripts/schema-seed-ja.sql",
+    "evals/nir1-capacity/manifest.v1.json",
+  ]) {
+    assert.ok(found.has(expected), `the scan must find ${expected}`);
+  }
+  assert.ok(found.size >= 20, `only ${found.size} paths found`);
+  const checked = [];
+  for (const [literal, { file, directoryChildren }] of found) {
+    // Renderer code is the one skippable class, so a read of a TypeScript, TSX or CSS file would be a hole.
+    assert.doesNotMatch(literal, /\.(?:tsx?|css)$/u, `${literal} (read in ${file}) is renderer code; Rust must not skip for it`);
+    for (const candidate of literalCandidates(literal, { directoryChildren })) {
+      checked.push(candidate);
+      for (const lane of ["rust", "migration"]) {
+        assert.equal(lanesFor([candidate])[lane], true, `${lane}: ${candidate} (read in ${file})`);
+        assert.equal(lanesFor(["docs/a.md", candidate])[lane], true, `${lane}: docs + ${candidate} (read in ${file})`);
+        assert.equal(lanesFor(["docs/a.md", "scripts/quality/x.mjs", candidate])[lane], true, `${lane}: docs + ci + ${candidate}`);
+      }
+    }
+  }
+  assert.ok(checked.includes("src/features/chronicle/fixtures/chronicle-snapshot/x.ts"), "directory reads are checked with their children");
+  // Controls (the rules still skip what Rust does not read).
+  assert.equal(lanesFor(["src/lib/x.ts"]).rust, false);
+  assert.equal(lanesFor(["docs/a.md", "src/a.ts"]).migration, false);
+});
+
+test("every path the frontend jobs read from the docs set keeps the frontend lane", async () => {
+  // frontend-static (tsc, eslint, architecture, browser CI contracts, web editor build) and frontend-unit (vitest over
+  // src) can read files of the docs set: LP sources, screenshots and public/. Scan what they run for such literals.
+  const tracked = await trackedFiles();
+  const scanned = tracked.filter((file) =>
+    /^src\/.*\.tsx?$/u.test(file)
+    || /^packages\/.*\.(?:[cm]?[jt]sx?)$/u.test(file)
+    || /^(?:vite|vitest[A-Za-z.-]*|eslint)\.config\.[cm]?[jt]s$/u.test(file)
+    || /^scripts\/(?:validate-architecture|browser-ci-|check-performance-budgets|runtime-performance-budget|validate-web-editor-artifact)/u.test(file),
+  );
+  assert.ok(scanned.length > 500, `only ${scanned.length} files were scanned`);
+  const literal = /["'`]((?:\.{1,2}\/)*(?:docs|experiments|public)\/[^"'`\s]*)["'`]/gu;
+  // A root-level Markdown file name is also docs-set content; only names of files that really exist in the repository root count.
+  const rootMarkdown = /["'`](?:\.\.\/)*([A-Za-z0-9_-]+\.md)["'`]/gu;
+  const rootFiles = new Set(tracked.filter((file) => /^[A-Za-z0-9_-]+\.md$/u.test(file)));
+  assert.ok(rootFiles.has("README.md"));
+  // Names that match a root file but are not reads of it (checked by a person; add nothing here blindly).
+  const notReads = new Set([
+    "src/features/ai-audit/exportBundle.ts::README.md", // a zip entry name the export bundle writes
+    "src/features/ai-audit/exportBundle.test.ts::README.md", // the same zip entry, read back from the archive
+    "src/features/legal/constants.test.ts::LICENSING.md", // a phrase the bundled Terms must contain, not a read of the file
+  ]);
+  const found = new Map();
+  for (const file of scanned) {
+    for (const line of withoutCommentLines(await readFile(path.join(repoRoot, file), "utf8"))) {
+      for (const match of line.matchAll(literal)) {
+        const concrete = match[1].replace(/^(?:\.{1,2}\/)+/u, "").replace(/\$\{[^}]*\}/gu, "x");
+        if (!found.has(concrete)) found.set(concrete, file);
+      }
+      for (const match of line.matchAll(rootMarkdown)) {
+        if (rootFiles.has(match[1]) && !notReads.has(`${file}::${match[1]}`) && !found.has(match[1])) found.set(match[1], file);
+      }
+    }
+  }
+  for (const expected of ["docs/lp/lp-variant-h.jsx", "docs/lp/assets", "docs/lp/assets/lp-app.js", "docs/screenshots/generated", "public/TERMS_x.md"]) {
+    assert.ok(found.has(expected), `the scan must find ${expected}`);
+  }
+  for (const [concrete, file] of found) {
+    for (const candidate of literalCandidates(concrete, { directoryChildren: true })) {
+      assert.equal(lanesFor([candidate]).frontend, true, `${candidate} (read in ${file})`);
+      assert.equal(lanesFor(["docs/a.md", candidate]).frontend, true, `docs + ${candidate} (read in ${file})`);
+    }
+  }
+  // The web editor artifact check scans the .md files vite copies from public/ into dist/.
+  assert.equal(lanesFor(["public/RELEASE_NOTES/v2.0.0.ja.md"]).frontend, true);
+  // Other root and docs markdown is not read by any frontend job.
+  assert.equal(lanesFor(["README.md", "docs/plans/a.md", "experiments/x.py"]).frontend, false);
+});
+
+test("Gate A2's JS tests also run in jobs the renderer-code skip leaves running, and the frontend lane runs for every non-docs change", async () => {
+  // Gate A2 (migration lane) runs two JS commands besides cargo. A renderer-only change skips the migration lane, so the
+  // same files must be run by another job that this change still reaches. The closure of these tests lies in
+  // `src` (renderer code the migration lane no longer sees) and in electron (forced for every lane).
+  const a2 = jobOf("migration-recovery-gate");
+  const commands = a2.steps
+    .map((step) => String(step.run ?? "").replace(/\s+/gu, " ").trim())
+    .filter((command) => /^pnpm test(?::electron)? --run /u.test(command));
+  assert.deepEqual(commands, [
+    "pnpm test:electron --run electron/shared/ipcContract.test.ts",
+    "pnpm test --run src/features/workspace/store.test.ts src/features/workspace/recovery/RecoveryShell.test.tsx",
+  ]);
+  const electronFiles = ["electron/shared/ipcContract.test.ts"];
+  const srcFiles = ["src/features/workspace/store.test.ts", "src/features/workspace/recovery/RecoveryShell.test.tsx"];
+  for (const file of [...electronFiles, ...srcFiles]) assert.ok(await isFile(path.join(repoRoot, file)), file);
+
+  // `pnpm test` is plain vitest: the default config is vitest.config.ts, whose include/exclude select the src tests.
+  const pkg = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+  assert.match(pkg.scripts.test, /&& vitest$/u);
+  const unitConfig = await readFile(path.join(repoRoot, "vitest.config.ts"), "utf8");
+  assert.match(unitConfig, /include:\s*\["src\/\*\*\/\*\.test\.\{ts,tsx\}"\]/u);
+  assert.match(unitConfig, /exclude:\s*\["src\/\*\*\/\*\.browser\.test\.\{ts,tsx\}"\]/u);
+  for (const file of srcFiles) {
+    assert.match(file, /^src\/.*\.test\.tsx?$/u, file);
+    assert.doesNotMatch(file, /\.browser\.test\.tsx?$/u, file);
+  }
+  const frontendUnit = jobOf("frontend-unit");
+  assert.ok(frontendUnit.steps.some((step) => /^pnpm test:node --run\b/u.test(String(step.run ?? ""))));
+  assert.equal(stripScopeGate(frontendUnit.if).lane, "frontend");
+
+  // `pnpm test:electron` is vitest.electron.config.ts; the electron job runs it whole and is not behind any lane.
+  const electronConfig = await readFile(path.join(repoRoot, "vitest.electron.config.ts"), "utf8");
+  assert.match(electronConfig, /include:\s*\["electron\/\{main,preload,shared\}\/\*\*\/\*\.test\.ts"\]/u);
+  for (const file of electronFiles) assert.match(file, /^electron\/(?:main|preload|shared)\/.*\.test\.ts$/u);
+  const electronJob = jobOf("electron");
+  const electronTestStep = electronJob.steps.find((step) => String(step.run ?? "").trim() === "pnpm test:electron --run");
+  assert.ok(electronTestStep);
+  // The step runs on a pull request with the default inputs (its own `if`, and the job's).
+  assert.equal(evaluateIf(electronTestStep.if, { inputs: defaultsFromDispatch, event: "pull_request" }), true);
+  assert.equal(evaluateIf(electronJob.if, { inputs: defaultsFromDispatch, event: "pull_request" }), true);
+  assert.equal(stripScopeGate(electronJob.if).gated, false);
+  assert.ok(ALWAYS_RUN_JOBS.includes("electron"));
+  for (const file of electronFiles) {
+    assert.deepEqual(lanesFor([file]), ALL_RUN, file);
+    assert.deepEqual(lanesFor(["docs/a.md", file]), ALL_RUN, `docs + ${file}`);
+  }
+
+  // The frontend lane runs for these files, alone and beside docs, and for every file of their import closure under src.
+  const closure = await importClosure([...electronFiles, ...srcFiles].map((file) => path.join(repoRoot, file)));
+  assert.deepEqual(closure.unresolved, []);
+  assert.ok(closure.files.includes("src/features/workspace/store.ts"));
+  assert.ok(closure.files.length >= 100, `closure has only ${closure.files.length} files`);
+  for (const file of [...srcFiles, ...closure.files.filter((candidate) => candidate.startsWith("src/"))]) {
+    assert.equal(lanesFor([file]).frontend, true, file);
+    assert.equal(lanesFor(["docs/a.md", file]).frontend, true, `docs + ${file}`);
+  }
+  // The only change that skips the frontend lane is docs only, which Gate A2 does not cover either.
+  const docsOnly = lanesFor(["docs/a.md"]);
+  assert.equal(docsOnly.frontend, false);
+  assert.equal(docsOnly.migration, false);
+});
+
 test("the lfm lane trigger is the lfm job's own working directory", () => {
   const job = jobOf("lfm-encoder-phase0");
   const directory = job.defaults.run["working-directory"];
@@ -794,6 +1091,9 @@ test("rule files that cannot be trusted are rejected instead of guessed at", asy
     (rules) => { rules.version = 2; },
     (rules) => { rules.forceAll = []; },
     (rules) => { rules.lanes.rust.neutral = ["missing-set"]; },
+    (rules) => { rules.lanes.frontend.neutral = ["missing-set"]; },
+    (rules) => { rules.lanes.frontend.neverNeutral = ["docs/{a,b}/**"]; },
+    (rules) => { delete rules.lanes.frontend.gatedJobs; },
     (rules) => { rules.lanes.rust.mode = "guess"; },
     (rules) => { rules.lanes.Rust = rules.lanes.rust; delete rules.lanes.rust; },
     (rules) => { delete rules.lanes.rust.gatedJobs; },
@@ -835,17 +1135,20 @@ const ALL_TRUE_OUTPUTS = Object.fromEntries(LANES.map((lane) => [lane, "true"]))
 const originalOf = (id) => stripScopeGate(ci.jobs[id].if).original;
 // `rust-aggregate` needs `rust`: when `rust` is not admitted it is skipped and
 // the aggregate's `needs.rust.result != 'skipped'` keeps the aggregate out too.
-// The result fed to the aggregate is derived from the admission of `rust` itself.
-const MODELLED_CASCADE_JOBS = ["rust-aggregate"];
-const rustResultOf = (inputs, event, changes) =>
-  evaluateIf(ci.jobs.rust.if, { inputs, event, changes }) ? "success" : "skipped";
+// The `frontend` aggregate does the same with `frontend-static`.
+// The result fed to each aggregate is derived from the admission of its first child itself.
+const MODELLED_CASCADE_JOBS = ["rust-aggregate", "frontend"];
+const resultOf = (id, inputs, event, changes) =>
+  evaluateIf(ci.jobs[id].if, { inputs, event, changes }) ? "success" : "skipped";
 const admitted = (inputs, event, changes) => {
-  const rustResult = rustResultOf(inputs, event, changes);
-  return Object.keys(ci.jobs).filter((id) => evaluateIf(ci.jobs[id].if, { inputs, event, changes, rustResult }));
+  const rustResult = resultOf("rust", inputs, event, changes);
+  const staticResult = resultOf("frontend-static", inputs, event, changes);
+  return Object.keys(ci.jobs).filter((id) => evaluateIf(ci.jobs[id].if, { inputs, event, changes, rustResult, staticResult }));
 };
 const admittedOriginals = (inputs, event) => {
   const rustResult = evaluateIf(originalOf("rust"), { inputs, event }) ? "success" : "skipped";
-  return Object.keys(ci.jobs).filter((id) => evaluateIf(originalOf(id), { inputs, event, rustResult }));
+  const staticResult = evaluateIf(originalOf("frontend-static"), { inputs, event }) ? "success" : "skipped";
+  return Object.keys(ci.jobs).filter((id) => evaluateIf(originalOf(id), { inputs, event, rustResult, staticResult }));
 };
 
 test("with empty or all-true change scope outputs every job is admitted exactly as before the gate", () => {
@@ -888,8 +1191,8 @@ test("a false lane output drops exactly that lane's gated jobs and nothing else"
   assert.ok(baseline.includes("changes"));
   for (const [lane, definition] of Object.entries(rawRules.lanes)) {
     const dropped = admitted(inputs, "pull_request", { ...ALL_TRUE_OUTPUTS, [lane]: "false" });
-    // `rust-aggregate` is a cascade job this evaluator models: it follows the
-    // admission of `rust`, so it drops with its lane.
+    // `rust-aggregate` and `frontend` are cascade jobs this evaluator models: each follows the
+    // admission of its lane's gated job, so it drops with its lane.
     assert.deepEqual(
       baseline.filter((id) => !dropped.includes(id)).sort(),
       [...definition.gatedJobs, ...(definition.cascadeJobs ?? []).filter((id) => MODELLED_CASCADE_JOBS.includes(id))].sort(),
@@ -915,6 +1218,37 @@ test("a false lane output drops exactly that lane's gated jobs and nothing else"
     [...noLanes].sort(),
     [...ALWAYS_RUN_JOBS, "changes", ...cascadeJobs].sort(),
   );
+});
+
+test("a false frontend output skips both Frontend jobs and the aggregate; only a lane run keeps the check", () => {
+  const inputs = defaultsFromDispatch;
+  const FRONTEND = ["frontend-static", "frontend-unit", "frontend"];
+  const off = admitted(inputs, "pull_request", { ...ALL_TRUE_OUTPUTS, frontend: "false" });
+  for (const id of FRONTEND) assert.ok(!off.includes(id), `${id} must skip with the lane`);
+  const on = admitted(inputs, "pull_request", ALL_TRUE_OUTPUTS);
+  for (const id of FRONTEND) assert.ok(on.includes(id), `${id} must run with the lane`);
+  // A skipped `changes` job (a standalone canonical profile or independent gates) and every non-pull-request event keep the jobs
+  // where they were before the lane existed.
+  // (A reusable call from release.yml inherits the caller's `push` event, so `push` covers it.)
+  for (const event of ["push", "workflow_dispatch"]) {
+    const ran = admitted(inputs, event, {});
+    for (const id of FRONTEND) assert.ok(ran.includes(id), `${event}: ${id}`);
+  }
+  // The aggregate itself: skipped when its first child is skipped, run (and judged by its fail-closed step) otherwise.
+  const aggregate = jobOf("frontend");
+  assert.equal(stripScopeGate(aggregate.if).gated, false);
+  assert.match(aggregate.if, /&& needs\.frontend-static\.result != 'skipped' \}\}$/u);
+  for (const [staticResult, expected] of [["skipped", false], ["success", true], ["failure", true], ["cancelled", true]]) {
+    assert.equal(evaluateIf(aggregate.if, { inputs, event: "pull_request", staticResult }), expected, staticResult);
+  }
+  // Fail closed: the aggregate's step is red unless both children succeeded (a skipped child included).
+  const verify = aggregate.steps.find((step) => /STATIC_RESULT/u.test(String(step.run)));
+  assert.match(verify.run, /\[ "\$STATIC_RESULT" != "success" \] \|\| \[ "\$UNIT_RESULT" != "success" \]/u);
+  assert.match(verify.run, /exit 1/u);
+  // A standalone canonical profile or independent gates run excludes the Frontend jobs, as before.
+  for (const excluded of [{ ...inputs, canonical_profile: "shared-rust" }, { ...inputs, source_focused: true }]) {
+    assert.deepEqual(admitted(excluded, "workflow_dispatch", {}).filter((id) => FRONTEND.includes(id)), []);
+  }
 });
 
 test("runtime performance is not a pull request check and is unchanged for every other event", () => {
@@ -1058,7 +1392,7 @@ async function withTemp(callback) {
 const asBooleans = (outputs) => Object.fromEntries(LANES.map((lane) => [lane, outputs[lane]]));
 const ALL_TRUE_STRINGS = Object.fromEntries(LANES.map((lane) => [lane, "true"]));
 
-/** The job summary's last section lists the eight final lines the jobs read. */
+/** The job summary's last section lists the final lane lines the jobs read. */
 function assertFinalOutputsSummary(summary, finalOutputs, label) {
   const section = summary.slice(summary.lastIndexOf("### Final outputs"));
   assert.match(section, /^### Final outputs/u, label);
@@ -1092,7 +1426,17 @@ test("the workflow step skips lanes for a real docs-only pull request diff and r
   });
 });
 
-test("the workflow step runs every lane for a source change, but still skips lfm", async () => {
+test("the workflow step runs every lane but lfm for an unclassified source change, and also skips Rust and Gate A2 for renderer code", async () => {
+  await withTemp(async (root) => {
+    const { repo, base, head } = await makeRepository(
+      root,
+      { "docs/a.md": "one\n", "src/a.json": "{}\n", "src/a.ts": "export {};\n" },
+      { "src/a.json": "{\"a\":1}\n" },
+    );
+    const result = await runScopeStep({ root, repo, event: "pull_request", base, head });
+    // A src JSON file is not renderer code: Rust crates read such fixtures, so rust and migration run.
+    assert.deepEqual(asBooleans(result.outputs), { ...ALL_TRUE_STRINGS, lfm: "false" });
+  });
   await withTemp(async (root) => {
     const { repo, base, head } = await makeRepository(
       root,
@@ -1100,8 +1444,17 @@ test("the workflow step runs every lane for a source change, but still skips lfm
       { "src/a.ts": "export const a = 1;\n" },
     );
     const result = await runScopeStep({ root, repo, event: "pull_request", base, head });
-    assert.deepEqual(asBooleans(result.outputs), { ...ALL_TRUE_STRINGS, lfm: "false" });
+    assert.deepEqual(asBooleans(result.outputs), { ...ALL_TRUE_STRINGS, lfm: "false", rust: "false", migration: "false" });
+    assertFinalOutputsSummary(result.summary, result.outputs, "renderer code only");
   });
+  // A docs-only diff (LP assets and release notes excepted) now skips the Frontend jobs too; those two paths keep them.
+  for (const [changed, frontend] of [["docs/lp/lp-variant-h.jsx", "true"], ["public/TERMS_ja.md", "true"], ["docs/guide.md", "false"]]) {
+    await withTemp(async (root) => {
+      const { repo, base, head } = await makeRepository(root, { [changed]: "one\n" }, { [changed]: "two\n" });
+      const result = await runScopeStep({ root, repo, event: "pull_request", base, head });
+      assert.equal(result.outputs.frontend, frontend, changed);
+    });
+  }
 });
 
 test("the workflow step never lets a pull request's own decision code or workflow judge it", async () => {
@@ -1125,6 +1478,7 @@ test("the workflow step never lets a pull request's own decision code or workflo
         head,
         command: `printf '${LANES.map((lane) => `${lane}=false`).join("\\n")}\\n'`,
       });
+      // All nine lanes, frontend included, run: this is the only observation of the shell guard for the new lane.
       assert.deepEqual(asBooleans(result.outputs), ALL_TRUE_STRINGS, changed);
       assertFinalOutputsSummary(result.summary, result.outputs, changed);
     }
@@ -1181,7 +1535,7 @@ test("the workflow step falls back to every lane when the script or its output i
       "partial output": { command: lanesOutput(allFalse.slice(0, 3)) },
       "unknown value": { command: lanesOutput(allFalse.map((line, index) => (index === 0 ? "journeys=maybe" : line))) },
       "extra line": { command: lanesOutput([...allFalse, "extra=false"]) },
-      "duplicate lane": { command: lanesOutput([...allFalse.slice(0, 7), allFalse[0]]) },
+      "duplicate lane": { command: lanesOutput([...allFalse.slice(0, LANES.length - 1), allFalse[0]]) },
       "garbage": { command: "echo 'journeys=false rust=false'" },
       "crash after output": { command: `${lanesOutput(allFalse)}; exit 3` },
     };
@@ -1263,9 +1617,10 @@ const collectPaths = (paths) => async () => ({ paths, complete: true, reason: "C
 test("a pull request that weakens the rules cannot skip a lane the base commit's rules run", async () => {
   const headRules = compileScopeRules(weakenedRules());
   const collect = collectPaths(["scripts/ci-change-scope.json"]);
-  // Control: judged by its own rules alone, the edit skips everything but journeys.
+  // Control: judged by its own rules alone, the edit skips everything but journeys and frontend
+  // (the weakened rules make it CI-neutral, and the frontend lane's neutral set is docs only).
   const alone = await pullRequestRun({ rules: headRules, collect, loadBaseRules: async () => null });
-  assert.deepEqual(alone.lanes, only(["journeys"]));
+  assert.deepEqual(alone.lanes, only(["journeys", "frontend"]));
   assert.equal(alone.decision.baseRules, "absent");
   // With the base commit's rules, the rules file is a forced-all path.
   const combined = await pullRequestRun({ rules, collect, loadBaseRules: async () => rules });
@@ -1287,10 +1642,10 @@ test("each lane runs when either the head rules or the base commit's rules run i
   delete baseRaw.lanes.security;
   const baseRules = compileScopeRules(baseRaw);
   const loadBaseRules = async () => baseRules;
-  // Control: the head rules alone skip every lane except journeys.
-  assert.deepEqual((await pullRequestRun({ rules, collect, loadBaseRules: async () => null })).lanes, only(["journeys"]));
+  // Control: the head rules alone skip every lane except journeys and frontend.
+  assert.deepEqual((await pullRequestRun({ rules, collect, loadBaseRules: async () => null })).lanes, only(["journeys", "frontend"]));
   const { decision, lanes } = await pullRequestRun({ rules, collect, loadBaseRules });
-  assert.deepEqual(lanes, only(["journeys", "rust", "security"]));
+  assert.deepEqual(lanes, only(["journeys", "rust", "security", "frontend"]));
   assert.match(decision.lanes.rust.reason, /^Base commit rules: /u);
   assert.match(decision.lanes.security.reason, /do not know this lane/u);
   assert.match(decision.lanes.browser.reason, /The base commit's rules agree\.$/u);
@@ -1304,7 +1659,7 @@ test("each lane runs when either the head rules or the base commit's rules run i
   assert.deepEqual(stricter.lanes, { ...ALL_RUN, lfm: false });
   // Control: the loose rules alone would have skipped these lanes.
   const looseAlone = await pullRequestRun({ rules: looseRules, collect: collectPaths(["scripts/other/a.mjs"]), loadBaseRules: async () => null });
-  assert.deepEqual(looseAlone.lanes, only(["journeys"]));
+  assert.deepEqual(looseAlone.lanes, only(["journeys", "frontend"]));
 });
 
 test("base rules that cannot be read or trusted run every lane, and head rules that already run everything skip the lookup", async () => {
@@ -1395,7 +1750,7 @@ test("the workflow step applies the base commit's rules read from git, not the c
       { "scripts/ci-change-scope.json": JSON.stringify(weakenedRules()) },
     );
     const alone = await runScopeStep({ root, repo: bare.repo, event: "pull_request", base: bare.base, head: bare.head, command });
-    assert.deepEqual(asBooleans(alone.outputs), { ...Object.fromEntries(LANES.map((lane) => [lane, "false"])), journeys: "true" });
+    assert.deepEqual(asBooleans(alone.outputs), { ...Object.fromEntries(LANES.map((lane) => [lane, "false"])), journeys: "true", frontend: "true" });
     assert.equal(JSON.parse(await readFile(path.join(alone.files.temp, "ci-change-scope.json"), "utf8")).baseRules, "absent");
     assert.match(alone.summary, /base commit has no/u);
   });
@@ -1450,7 +1805,8 @@ test("a rename from a neutral path to a docs path (or back) counts the neutral s
     assert.match((await git(repo, "diff", "--name-status", "--find-renames", `${base}...${head}`)).stdout, /^R\d+\tsrc\/a\.ts\tdocs\/a\.ts\n$/u);
     const out = await decideReal(repo, base, head);
     assert.deepEqual(out.decision.changedPaths, ["docs/a.ts", "src/a.ts"]);
-    assert.deepEqual(out.lanes, { ...ALL_RUN, lfm: false });
+    // src/a.ts is renderer code (no Rust crate reads it), so rust and migration skip; the docs side alone never decides a lane.
+    assert.deepEqual(out.lanes, { ...ALL_RUN, lfm: false, rust: false, migration: false });
 
     // The same move back into src: the docs side is neutral, the src side is not.
     const back = await decideReal(repo, head, await (async () => {
@@ -1458,7 +1814,7 @@ test("a rename from a neutral path to a docs path (or back) counts the neutral s
       return commit({}, "move back");
     })());
     assert.deepEqual(back.decision.changedPaths, ["docs/a.ts", "src/a.ts"]);
-    assert.deepEqual(back.lanes, { ...ALL_RUN, lfm: false });
+    assert.deepEqual(back.lanes, { ...ALL_RUN, lfm: false, rust: false, migration: false });
 
     // Control: a rename inside docs touches only neutral paths, so every lane skips.
     const before = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
