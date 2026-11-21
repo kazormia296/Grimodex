@@ -1,0 +1,63 @@
+{
+  "tool": "get_chapter_summaries",
+  "cases": [
+    {
+      "case": "rows: 現行は node_type に chapter が無い（CHECK は folder／scene／note）ので 0 chapters",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "0 chapters with scene summaries",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "0 chapters with scene summaries",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "0 chapters with scene summaries",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

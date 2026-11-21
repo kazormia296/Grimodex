@@ -1,0 +1,221 @@
+{
+  "tool": "get_scene",
+  "cases": [
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: 本文を prosemirrorToText で返す",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-s1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene '出会い' (38 chars)",
+        "tokensUsed": 80,
+        "content": {
+          "id": "n-s1",
+          "title": "出会い",
+          "content": "雨の降る朝、アリアは古い塔の前に立っていた。\n老魔術師は静かに扉を開けた。\n"
+        }
+      },
+      "contentJson": "{\"id\":\"n-s1\",\"title\":\"出会い\",\"content\":\"雨の降る朝、アリアは古い塔の前に立っていた。\\n老魔術師は静かに扉を開けた。\\n\"}"
+    },
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: 長い本文は切らない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-s3"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene '裏切り' (279 chars)",
+        "tokensUsed": 320,
+        "content": {
+          "id": "n-s3",
+          "title": "裏切り",
+          "content": "裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。\n"
+        }
+      },
+      "contentJson": "{\"id\":\"n-s3\",\"title\":\"裏切り\",\"content\":\"裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。\\n\"}"
+    },
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: archived の場面も読める",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-arch"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene '没シーン' (17 chars)",
+        "tokensUsed": 61,
+        "content": {
+          "id": "n-arch",
+          "title": "没シーン",
+          "content": "没にした本文。魔法は使われない。\n"
+        }
+      },
+      "contentJson": "{\"id\":\"n-arch\",\"title\":\"没シーン\",\"content\":\"没にした本文。魔法は使われない。\\n\"}"
+    },
+    {
+      "case": "empty: note は Scene not found",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-note1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: folder は Scene not found",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-ch1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 存在しない id",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-none"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "id": "n-s1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: main から他 project の場面は読めない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "x-s1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の場面を読める",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "id": "x-s1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene '出会い' (22 chars)",
+        "tokensUsed": 63,
+        "content": {
+          "id": "x-s1",
+          "title": "出会い",
+          "content": "他作品の魔法の本文。秘密の鍵はここにある。\n"
+        }
+      },
+      "contentJson": "{\"id\":\"x-s1\",\"title\":\"出会い\",\"content\":\"他作品の魔法の本文。秘密の鍵はここにある。\\n\"}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": "n-s1"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: 空の id は no-project より先（No id provided）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": ""
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "No id provided",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: 空白だけの id も先に弾く",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": "  "
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "No id provided",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    }
+  ]
+}

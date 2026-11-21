@@ -1,0 +1,114 @@
+{
+  "tool": "list_chapters",
+  "cases": [
+    {
+      "case": "rows: part／chapter／scene だけ（folder は node_type に chapter が無いので出ない）。archived の場面も出る。note は出ない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_chapters",
+        "summary": "5 nodes (parts/chapters/scenes)",
+        "tokensUsed": 425,
+        "content": [
+          {
+            "id": "n-s1",
+            "parentId": "n-ch1",
+            "nodeType": "scene",
+            "title": "出会い",
+            "status": "draft"
+          },
+          {
+            "id": "n-s2",
+            "parentId": "n-ch1",
+            "nodeType": "scene",
+            "title": "旅立ち",
+            "status": "outline"
+          },
+          {
+            "id": "n-s3",
+            "parentId": "n-ch2",
+            "nodeType": "scene",
+            "title": "裏切り",
+            "status": "complete"
+          },
+          {
+            "id": "n-s4",
+            "parentId": "n-ch2",
+            "nodeType": "scene",
+            "title": "終幕",
+            "status": "final"
+          },
+          {
+            "id": "n-arch",
+            "parentId": "n-ch2",
+            "nodeType": "scene",
+            "title": "没シーン",
+            "status": "outline"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"n-s1\",\"parentId\":\"n-ch1\",\"nodeType\":\"scene\",\"title\":\"出会い\",\"status\":\"draft\"},{\"id\":\"n-s2\",\"parentId\":\"n-ch1\",\"nodeType\":\"scene\",\"title\":\"旅立ち\",\"status\":\"outline\"},{\"id\":\"n-s3\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"裏切り\",\"status\":\"complete\"},{\"id\":\"n-s4\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"終幕\",\"status\":\"final\"},{\"id\":\"n-arch\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"没シーン\",\"status\":\"outline\"}]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {},
+      "result": {
+        "name": "list_chapters",
+        "summary": "0 nodes (parts/chapters/scenes)",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の場面だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_chapters",
+        "summary": "2 nodes (parts/chapters/scenes)",
+        "tokensUsed": 175,
+        "content": [
+          {
+            "id": "x-s1",
+            "parentId": "x-folder",
+            "nodeType": "scene",
+            "title": "出会い",
+            "status": "draft"
+          },
+          {
+            "id": "x-s2",
+            "parentId": "x-folder",
+            "nodeType": "scene",
+            "title": "旅立ち",
+            "status": "outline"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-s1\",\"parentId\":\"x-folder\",\"nodeType\":\"scene\",\"title\":\"出会い\",\"status\":\"draft\"},{\"id\":\"x-s2\",\"parentId\":\"x-folder\",\"nodeType\":\"scene\",\"title\":\"旅立ち\",\"status\":\"outline\"}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "list_chapters",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

@@ -1,0 +1,189 @@
+{
+  "tool": "search_scenes",
+  "cases": [
+    {
+      "case": "rows: 短い語 2 字（LIKE-OR の arm。archived の場面も出る）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "2 scenes found",
+        "tokensUsed": 308,
+        "content": [
+          {
+            "id": "n-s3",
+            "title": "裏切り",
+            "excerpt": "...誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアは..."
+          },
+          {
+            "id": "n-arch",
+            "title": "没シーン",
+            "excerpt": "没にした本文。魔法は使われない。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"excerpt\":\"...誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアは...\"},{\"id\":\"n-arch\",\"title\":\"没シーン\",\"excerpt\":\"没にした本文。魔法は使われない。\"}]"
+    },
+    {
+      "case": "rows: 3 字以上（fts_search の arm → id で Drizzle。長い本文は 200 字に切る）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "アリア"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "2 scenes found",
+        "tokensUsed": 326,
+        "content": [
+          {
+            "id": "n-s1",
+            "title": "出会い",
+            "excerpt": "雨の降る朝、アリアは古い塔の前に立っていた。 老魔術師は静かに扉を開けた。"
+          },
+          {
+            "id": "n-s3",
+            "title": "裏切り",
+            "excerpt": "...なかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアは..."
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"n-s1\",\"title\":\"出会い\",\"excerpt\":\"雨の降る朝、アリアは古い塔の前に立っていた。 老魔術師は静かに扉を開けた。\"},{\"id\":\"n-s3\",\"title\":\"裏切り\",\"excerpt\":\"...なかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアは...\"}]"
+    },
+    {
+      "case": "rows: タイトルの語",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "旅立ち"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "1 scenes found",
+        "tokensUsed": 52,
+        "content": [
+          {
+            "id": "n-s2",
+            "title": "旅立ち",
+            "excerpt": "二人は塔を後にした。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"excerpt\":\"二人は塔を後にした。\"}]"
+    },
+    {
+      "case": "empty: 一致なし",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "存在しない語"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "0 scenes found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "0 scenes found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の場面だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "1 scenes found",
+        "tokensUsed": 63,
+        "content": [
+          {
+            "id": "x-s1",
+            "title": "出会い",
+            "excerpt": "他作品の魔法の本文。秘密の鍵はここにある。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-s1\",\"title\":\"出会い\",\"excerpt\":\"他作品の魔法の本文。秘密の鍵はここにある。\"}]"
+    },
+    {
+      "case": "XPROJ: main から他 project にしかない語は出ない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "他作品"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "0 scenes found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 空の query は no-project より先（0 scenes found）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": ""
+      },
+      "result": {
+        "name": "search_scenes",
+        "summary": "0 scenes found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

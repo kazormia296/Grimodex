@@ -1,0 +1,193 @@
+{
+  "tool": "find_related_entries",
+  "cases": [
+    {
+      "case": "rows: 起点 c-mage の name・aliases で LIKE（起点自身は除く）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "c-mage"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "2 related to 老魔術師",
+        "tokensUsed": 142,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "type": "location",
+            "summary": "老魔術師の住処"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-tower\",\"name\":\"古い塔\",\"type\":\"location\",\"summary\":\"老魔術師の住処\"}]"
+    },
+    {
+      "case": "rows: type で絞る",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "c-mage",
+        "type": "location"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "1 related to 老魔術師 (type=location)",
+        "tokensUsed": 69,
+        "content": [
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "type": "location",
+            "summary": "老魔術師の住処"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-tower\",\"name\":\"古い塔\",\"type\":\"location\",\"summary\":\"老魔術師の住処\"}]"
+    },
+    {
+      "case": "hidden: 起点が hidden なら存在しない id と同じ応答",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "c-secret"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "Entry not found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "hidden: Phase 解除後（n-s3）の c-released は起点にできる",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "id": "c-released"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "0 related to 幻の騎士",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 一致なし",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "c-item"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "0 related to 魔法の杖",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "id": "c-mage"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "Entry not found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: main から他 project の id を起点にできない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "x-c-aria"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "Entry not found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の行だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "id": "x-c-aria"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "0 related to アリア",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": "c-mage"
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 空の id は no-project より先（No id provided）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": ""
+      },
+      "result": {
+        "name": "find_related_entries",
+        "summary": "No id provided",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

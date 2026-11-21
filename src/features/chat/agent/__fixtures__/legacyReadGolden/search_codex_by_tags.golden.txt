@@ -1,0 +1,222 @@
+{
+  "tool": "search_codex_by_tags",
+  "cases": [
+    {
+      "case": "rows: 1 タグ（hidden の c-secret は落ちる）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "tags": [
+          "魔法"
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "2 entries found",
+        "tokensUsed": 143,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"}]"
+    },
+    {
+      "case": "rows: 複数タグは和集合（distinct）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "tags": [
+          "魔法",
+          "場所"
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "3 entries found",
+        "tokensUsed": 211,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          },
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "type": "location",
+            "summary": "老魔術師の住処"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"},{\"id\":\"c-tower\",\"name\":\"古い塔\",\"type\":\"location\",\"summary\":\"老魔術師の住処\"}]"
+    },
+    {
+      "case": "rows: 数値は文字列化される",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "tags": [
+          "魔法",
+          1
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "2 entries found",
+        "tokensUsed": 143,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"}]"
+    },
+    {
+      "case": "empty: 紐づきのないタグ",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "tags": [
+          "未使用"
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "tags": [
+          "魔法"
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の行だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "tags": [
+          "魔法"
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "1 entries found",
+        "tokensUsed": 70,
+        "content": [
+          {
+            "id": "x-c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "他作品の少女"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"他作品の少女\"}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "tags": [
+          "魔法"
+        ]
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 空配列は no-project より先（No tags provided）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "tags": []
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "No tags provided",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 配列でない tags も先に弾く",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "tags": "魔法"
+      },
+      "result": {
+        "name": "search_codex_by_tags",
+        "summary": "No tags provided",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}
