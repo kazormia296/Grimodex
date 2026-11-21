@@ -1133,6 +1133,101 @@ describe("foreshadowStore", () => {
       ]);
     });
 
+    function makeFolderNode(
+      id: string,
+      sortOrder: string,
+      parentId: string | null = null,
+    ) {
+      return {
+        id,
+        nodeType: "folder",
+        title: `title-${id}`,
+        sortOrder,
+        parentId,
+      };
+    }
+
+    // sortOrder は親ごとの fractional index なので、章をまたぐ比較には使えない。
+    it("章をまたぐときは sortOrder でなく読む順（木の DFS 順）で回収場面より前を選ぶ", async () => {
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [
+          makeFolderNode("ch-1", "a0"),
+          makeFolderNode("ch-2", "a1"),
+          makeSceneNode("c1s1", "a0", "ch-1"),
+          makeSceneNode("c1s2", "a1", "ch-1"),
+          makeSceneNode("c2s1", "a0", "ch-2"),
+          makeSceneNode("c2s2", "a1", "ch-2"),
+        ],
+        activeSceneId: null,
+      } as never);
+
+      // 回収場面が章 1 の 2 場面目：章 2 の場面（sortOrder は a0 でも後）は含めない
+      useForeshadowStore.setState({
+        items: [
+          {
+            ...makeRow({ id: "f-1", payoffSceneId: "c1s2" }),
+            label: "planned",
+            setupCount: 0,
+          },
+        ],
+      });
+      await useForeshadowStore.getState().proposeSetups("f-1");
+      expect(
+        mockProposePastSetups.mock.calls[0][0].pastScenes.map((s) => s.sceneId),
+      ).toEqual(["c1s1"]);
+
+      // 回収場面が章 2 の 1 場面目：章 1 の 2 場面目（sortOrder は a1 でも前）も含める
+      mockProposePastSetups.mockClear();
+      useForeshadowStore.setState({
+        items: [
+          {
+            ...makeRow({ id: "f-1", payoffSceneId: "c2s1" }),
+            label: "planned",
+            setupCount: 0,
+          },
+        ],
+      });
+      await useForeshadowStore.getState().proposeSetups("f-1");
+      expect(
+        mockProposePastSetups.mock.calls[0][0].pastScenes.map((s) => ({
+          sceneId: s.sceneId,
+          orderIndex: s.orderIndex,
+        })),
+      ).toEqual([
+        { sceneId: "c1s1", orderIndex: 1 },
+        { sceneId: "c1s2", orderIndex: 2 },
+      ]);
+    });
+
+    it("読む順で前の場面が 30 件を超えるときは、先頭の 30 件を読む順で渡す", async () => {
+      // 章 1 に 35 場面（sortOrder は昇順）。回収場面は章 2 の先頭（sortOrder は a0）。
+      const scenes = Array.from({ length: 35 }, (_, i) =>
+        makeSceneNode(
+          `s-${String(i).padStart(2, "0")}`,
+          `a${String.fromCharCode(97 + i)}`,
+          "ch-1",
+        ),
+      );
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [
+          makeFolderNode("ch-1", "a0"),
+          makeFolderNode("ch-2", "a1"),
+          ...scenes,
+          makeSceneNode("scene-payoff", "a0", "ch-2"),
+        ],
+        activeSceneId: null,
+      } as never);
+
+      await useForeshadowStore.getState().proposeSetups("f-1");
+
+      const ids = mockProposePastSetups.mock.calls[0][0].pastScenes.map(
+        (s) => s.sceneId,
+      );
+      expect(ids).toHaveLength(30);
+      expect(ids[0]).toBe("s-00");
+      expect(ids[29]).toBe("s-29");
+    });
+
     it("検出した relatedCodex を空配列でなく実エントリで渡す", async () => {
       mockUseSceneStore.getState.mockReturnValue({
         nodes: [
@@ -1147,11 +1242,14 @@ describe("foreshadowStore", () => {
 
       await useForeshadowStore.getState().proposeSetups("f-1");
 
+      // hidden の判定は回収の場面の Phase 解決後で行う。
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-scene-payoff"),
+        { sceneIds: ["scene-payoff"] },
       );
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-scene-a"),
+        { sceneIds: ["scene-payoff"] },
       );
       const req = mockProposePastSetups.mock.calls[0][0];
       expect(req.relatedCodex).toEqual([
@@ -1226,8 +1324,10 @@ describe("foreshadowStore", () => {
       expect(mockSaveScene.mock.invocationCallOrder[0]).toBeLessThan(
         mockLoadSceneContents.mock.invocationCallOrder[0],
       );
+      // 章の中のどれかの場面で hidden（Phase 解決後）なら落とす。
       expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
         expect.stringContaining("body-s-1"),
+        { sceneIds: ["s-1", "s-2"] },
       );
       const req = mockAuditChapter.mock.calls[0][0];
       expect(req.relatedCodex).toEqual([

@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { listScenesBeforeInReadingOrder } from "@/features/codex/context/sceneTimeIndex";
 import { loadSceneContents } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
@@ -51,13 +51,8 @@ export function StorySoFarCoverage() {
   // Compute derived state before any early returns (Rules of Hooks)
   const precedingScenes = useMemo(
     () =>
-      currentScene
-        ? nodes.filter(
-            (n) =>
-              n.nodeType === "scene" &&
-              n.id !== activeSceneId &&
-              cmpKeys(n.sortOrder, currentScene.sortOrder) < 0,
-          )
+      currentScene && activeSceneId
+        ? listScenesBeforeInReadingOrder(nodes, activeSceneId)
         : [],
     [nodes, activeSceneId, currentScene],
   );

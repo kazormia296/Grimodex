@@ -403,6 +403,12 @@ FTS5 トリグラムインデックスを使った横断検索。日本語対応
 
 Codex エントリの一覧を取得する。
 
+> **AI に秘匿（`context_mode = 'hidden'`）の Codex は、Codex の読み出し系 tool のどれにも返さない。**
+> 一覧、`get_codex_entry`（子の列挙を含む）、`find_related_entries`、`search_codex_by_tags`、
+> `search_project` の Codex 検索が対象で、判定は `get_writing_context` と同じ base の `context_mode`。
+> `get_codex_entry` に hidden の `entry_id` を渡した応答は、存在しない id と同じ「not found」。
+> suppress・mentioned・always は従来どおり返す。
+
 ```json
 {
   "name": "list_codex_entries",

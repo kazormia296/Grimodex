@@ -1234,3 +1234,80 @@ describe("collectSceneContext", () => {
     expect(result.promptInput.pinnedCodexEntries).toEqual([]);
   });
 });
+
+describe("collectSceneContext previousScene reading order", () => {
+  function treeNode(
+    overrides: Partial<TreeNodeData> &
+      Pick<TreeNodeData, "id" | "nodeType" | "sortOrder">,
+  ): TreeNodeData {
+    return {
+      ...sceneNode,
+      title: overrides.id,
+      synopsis: null,
+      ...overrides,
+    };
+  }
+
+  // sortOrder は親ごとの fractional index。章 2 の 1 場面目（a0V）は
+  // 現在場面（章 1 の 2 場面目、a1）より sortOrder の文字列比較では小さく、
+  // 章 1 の 1 場面目（a0）より大きいので、旧実装では直前の場面に選ばれる。読む順では後。
+  function nodesWith(chapter1Scene1Synopsis: string | null): TreeNodeData[] {
+    return [
+      treeNode({ id: "ch1", nodeType: "folder", sortOrder: "a0" }),
+      treeNode({ id: "ch2", nodeType: "folder", sortOrder: "a1" }),
+      treeNode({
+        id: "c1s1",
+        nodeType: "scene",
+        parentId: "ch1",
+        sortOrder: "a0",
+        synopsis: chapter1Scene1Synopsis,
+      }),
+      treeNode({
+        id: "scene-1",
+        nodeType: "scene",
+        parentId: "ch1",
+        sortOrder: "a1",
+      }),
+      treeNode({
+        id: "c2s1",
+        nodeType: "scene",
+        parentId: "ch2",
+        sortOrder: "a0V",
+        synopsis: "chapter-2-scene-1-synopsis",
+      }),
+    ];
+  }
+
+  async function collect(nodes: TreeNodeData[]) {
+    return collectSceneContext(request(), {
+      ...phaseDeps([]),
+      listTreeNodes: () => nodes,
+      getTemporalResolution: () => ({
+        sceneTimeIndex: buildSceneTimeIndex(nodes),
+        resolutionMode: "reading",
+      }),
+    });
+  }
+
+  it("uses the previous scene in the same chapter, never a later chapter's scene", async () => {
+    const result = await collect(nodesWith("chapter-1-scene-1-synopsis"));
+
+    expect(result.promptInput.previousScene).toEqual({
+      title: "c1s1",
+      synopsis: "chapter-1-scene-1-synopsis",
+    });
+    expect(result.promptInput.storySoFar).toContain(
+      "chapter-1-scene-1-synopsis",
+    );
+    expect(result.promptInput.storySoFar).not.toContain(
+      "chapter-2-scene-1-synopsis",
+    );
+  });
+
+  it("has no previous scene when only a later chapter's scene has a synopsis", async () => {
+    const result = await collect(nodesWith(null));
+
+    expect(result.promptInput.previousScene).toBeUndefined();
+    expect(result.promptInput.storySoFar).toBeUndefined();
+  });
+});

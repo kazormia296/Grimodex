@@ -148,9 +148,12 @@ vi.mock("@/features/editor/inlineAi/useInlineAiDiff", () => ({
     getActiveStagingId: () => null,
   }),
 }));
-const mockBuildContext = vi.hoisted(() => vi.fn(() => ({ sentinel: "ctx" })));
+// AI へ送る経路は hidden 判定（DB）を通る非同期の buildInlineAiContextForSend を使う。
+const mockBuildContext = vi.hoisted(() =>
+  vi.fn((..._args: unknown[]) => Promise.resolve({ sentinel: "ctx" })),
+);
 vi.mock("@/features/editor/inlineAi/inlineAiContext", () => ({
-  buildInlineAiContext: mockBuildContext,
+  buildInlineAiContextForSend: mockBuildContext,
 }));
 vi.mock("@/features/editor/inlineAi/InlineAIToolbar", () => ({
   InlineAIToolbar: ({
@@ -993,7 +996,9 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
 
     dispatchSlashCommand({ id: "continue", mode: "insert" });
 
-    expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1),
+    );
     expect(inlineAiSpies.generate).toHaveBeenCalledWith(
       expect.objectContaining({ id: "continue" }),
       { sentinel: "ctx" },
@@ -1020,10 +1025,12 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
       getByTestId("palette-submit").click();
     });
 
+    await waitFor(() =>
+      expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1),
+    );
     expect(mockBuildContext).toHaveBeenLastCalledWith(
       expect.objectContaining({ arg: "テーマ" }),
     );
-    expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1);
     expect(inlineAiSpies.generate).toHaveBeenCalledWith(
       expect.objectContaining({ id: "describe" }),
       { sentinel: "ctx" },

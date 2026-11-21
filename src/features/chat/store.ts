@@ -452,8 +452,14 @@ async function resolveCliBinaryAvailability(
   settings: AiSettings,
 ): Promise<boolean> {
   if (settings.cli?.binaryPath?.trim()) return true;
-  const path = await detectCliBinary(settings.cli?.kind ?? "claude");
-  return path !== null;
+  try {
+    const path = await detectCliBinary(settings.cli?.kind ?? "claude");
+    return path !== null;
+  } catch {
+    // 実行確認ダイアログの拒否や検出の失敗は「未検出」と同じ扱いにする。
+    // ここで投げると、設定の読込・保存ごと失敗してしまう。
+    return false;
+  }
 }
 
 /**

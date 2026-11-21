@@ -33,7 +33,14 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
+import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
+import {
+  captureEditorSendSnapshot,
+  isEditorSendSnapshotCurrent,
+  requestAttentionIfInlineAiBusy,
+  requestInlineAiAttention,
+  sendWhenFresh,
+} from "@/features/editor/inlineAi/sendWhenFresh";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -2042,19 +2049,43 @@ export function EditorPane({
         setPaletteOpen(true);
         return;
       }
-      const node = useTreeStore.getState().nodes.find((n) => n.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor: ed,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
+      // hidden 判定が DB を引くので非同期。送信時点の文書・選択・projection・書込み可否を
+      // 控え、判定の間に変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移った
+      // ときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
+      sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
+        capture: () => ({
+          ...captureEditorSendSnapshot(ed),
+          projectionKey: inputProjectionKeyRef.current,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((n) => n.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor: ed,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(ed, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context) => generate(cmd, context),
       });
-      generate(cmd, context);
     },
     [dbNativeEditor, nodeId, generate],
   );
@@ -3007,22 +3038,43 @@ export function EditorPane({
   const handlePaletteSubmit = useCallback(
     (command: InlineAiCommand, prompt: string) => {
       if (!editor) return;
-      const node = useTreeStore
-        .getState()
-        .nodes.find((candidate) => candidate.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg: prompt || undefined,
+      // hidden 判定が DB を引くので非同期。判定の間に文書・選択・projection・書込み可否が
+      // 変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
+      sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
+        capture: () => ({
+          ...captureEditorSendSnapshot(editor),
+          projectionKey: inputProjectionKeyRef.current,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((candidate) => candidate.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg: prompt || undefined,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(editor, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context) => generate(command, context),
       });
-      generate(command, context);
     },
     [editor, generate, nodeId],
   );
@@ -3036,42 +3088,64 @@ export function EditorPane({
       ) {
         return;
       }
-      const node = useTreeStore
-        .getState()
-        .nodes.find((candidate) => candidate.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg: prompt || undefined,
-      });
       const lang = getCurrentProjectLanguage();
-      const messages: AbInlineState["messages"] = [
-        {
-          role: "system",
-          content: buildInlineSystemPrompt(command, context, lang),
+      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。送信時点の
+      // 選択・文書・projection を控え、判定の間に変わっていたら今の状態で 1 回だけ
+      // 作り直す（別の文書へ移ったときは送らない）。適用先の範囲は context を作った
+      // 時点の選択を使う。
+      sendWhenFresh({
+        capture: () => ({
+          ...captureEditorSendSnapshot(editor),
+          projectionKey: inputProjectionKeyRef.current,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((candidate) => candidate.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg: prompt || undefined,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
         },
-        {
-          role: "user",
-          content: buildInlineUserPrompt(command, context, lang),
+        isFresh: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(editor, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context, snapshot) => {
+          const { from, to, projectionKey, doc: documentSnapshot } = snapshot;
+          const messages: AbInlineState["messages"] = [
+            {
+              role: "system",
+              content: buildInlineSystemPrompt(command, context, lang),
+            },
+            {
+              role: "user",
+              content: buildInlineUserPrompt(command, context, lang),
+            },
+          ];
+          const isReplace = command.mode === "replace" && from !== to;
+          setAbInline({
+            messages,
+            mode: isReplace ? "replace" : "insert",
+            originalRange: isReplace ? { from, to } : null,
+            insertPos: isReplace ? null : from,
+            projectId: getCurrentProjectId(),
+            projectionKey,
+            documentSnapshot,
+          });
         },
-      ];
-      const { from, to } = editor.state.selection;
-      const isReplace = command.mode === "replace" && from !== to;
-      setAbInline({
-        messages,
-        mode: isReplace ? "replace" : "insert",
-        originalRange: isReplace ? { from, to } : null,
-        insertPos: isReplace ? null : from,
-        projectId: getCurrentProjectId(),
-        projectionKey: inputProjectionKeyRef.current,
-        documentSnapshot: editor.state.doc,
       });
     },
     [editor, nodeId],
