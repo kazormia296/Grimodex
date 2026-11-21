@@ -164,6 +164,8 @@ function harness(
   overrides: Partial<MastraTurnOwnerOptions> & {
     native?: "hold" | "immediate";
     loadFails?: boolean;
+    /** Runs in the turn after the dispatch row and before the send (a tool's read, as PR-4 will). */
+    runRead?: (owner: MastraTurnOwner) => Promise<unknown>;
   } = {},
 ): Harness {
   const appended: Harness["appended"] = [];
@@ -225,6 +227,7 @@ function harness(
         let raw;
         try {
           await input.audit.dispatched(handle);
+          await overrides.runRead?.(owner);
           raw = await input.send(
             {
               ...request,
@@ -1012,7 +1015,7 @@ describe("workspace switch: the owner's lease (DR-MP3-12)", () => {
     await (await lease).resume(false);
     expect(
       h.logs.some((m) =>
-        /terminals not written within the switch bound/.test(m),
+        /terminals or reads not settled within the switch bound/.test(m),
       ),
     ).toBe(true);
     h.appendBehavior.hang.resolve();
@@ -1680,7 +1683,7 @@ describe("read lifecycle: the hooks, the count and the waits (DR-MP4-5)", () => 
       expect(leased).toBe(true);
       expect(
         h.logs.some((m) =>
-          /terminals not written within the switch bound/.test(m),
+          /terminals or reads not settled within the switch bound/.test(m),
         ),
       ).toBe(true);
       // Not stopped, only no longer waited for.
@@ -1811,6 +1814,285 @@ describe("read lifecycle: the hooks, the count and the waits (DR-MP4-5)", () => 
       for (const hold of h.nativeSends) hold.resolve(JSON.stringify(RESPONSE));
       await vi.advanceTimersByTimeAsync(0);
       expect(h.owner.slotsInUse()).toBe(0);
+    });
+  });
+
+  describe("a turn that ended normally is waited for, never aborted again (reads only)", () => {
+    /** A turn that completed while a read is still in Native; the append can be made to fail first. */
+    async function endedWithLateRead(failAppend = false) {
+      const { h, hooks, started } = await heldTurn();
+      const native = deferred<string>();
+      const { result } = read(hooks, native);
+      if (failAppend) h.appendBehavior.fail = true;
+      for (const hold of h.nativeSends) hold.resolve(JSON.stringify(RESPONSE));
+      if (failAppend) await started.catch(() => undefined);
+      else completed(await started);
+      await flush();
+      expect(h.owner.activeTurnCount()).toBe(0);
+      expect(h.owner.readsInFlight()).toBe(1);
+      return { h, native, result };
+    }
+
+    it("a workspace switch waits for the read and writes no second terminal", async () => {
+      const { h, native, result } = await endedWithLateRead();
+      const before = h.types();
+      let leased = false;
+      const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+        leased = true;
+        return value;
+      });
+      await flush();
+      expect(leased).toBe(false);
+      expect(h.types()).toEqual(before);
+      native.resolve("rows");
+      await result;
+      await (await lease).resume(false);
+      expect(h.types()).toEqual(before);
+      expect(h.terminalsOf()).toHaveLength(1);
+    });
+
+    it("quit waits for the read and writes no second terminal", async () => {
+      const { h, native, result } = await endedWithLateRead();
+      const before = h.types();
+      let done = false;
+      const quit = h.owner.shutdown().then(() => {
+        done = true;
+      });
+      await flush();
+      expect(done).toBe(false);
+      native.resolve("rows");
+      await result;
+      await quit;
+      expect(h.types()).toEqual(before);
+      expect(h.terminalsOf()).toHaveLength(1);
+    });
+
+    it("the restricted quiesce waits for the read, writes no second terminal, and asks Native to stop nothing (no send is in flight)", async () => {
+      const { h, native, result } = await endedWithLateRead();
+      const before = h.types();
+      const abortNativeInFlight = vi.fn(() => true);
+      let done = false;
+      const quiesce = h.owner
+        .quiesceForProfileEgress({ abortNativeInFlight })
+        .then(() => {
+          done = true;
+        });
+      await flush();
+      expect(done).toBe(false);
+      native.resolve("rows");
+      await result;
+      await quiesce;
+      expect(h.types()).toEqual(before);
+      expect(abortNativeInFlight).not.toHaveBeenCalled();
+    });
+
+    it("a turn whose last terminal could not be written is not aborted by the read's wait: the restricted quiesce does not fail on it", async () => {
+      const { h, native, result } = await endedWithLateRead(true);
+      const abortNativeInFlight = vi.fn(() => true);
+      const quiesce = h.owner.quiesceForProfileEgress({ abortNativeInFlight });
+      const settled = quiesce.then(
+        () => "resolved",
+        () => "rejected",
+      );
+      native.resolve("rows");
+      await result;
+      expect(await settled).toBe("resolved");
+      // The failing append was not tried a second time.
+      expect(h.terminalsOf()).toHaveLength(0);
+    });
+
+    it("a read that is refused for an ended turn touches nothing: no abort, no terminal, whatever the profile says", async () => {
+      const { h, hooks, started } = await heldTurn();
+      for (const hold of h.nativeSends) hold.resolve(JSON.stringify(RESPONSE));
+      completed(await started);
+      const before = h.types();
+      h.profile.restricted = true;
+      const { call, result } = read(hooks, deferred<string>());
+      expect(await result).toMatchObject({
+        ok: false,
+        error: { message: expect.stringMatching(/READ_AFTER_END/) },
+      });
+      await flush();
+      expect(call).not.toHaveBeenCalled();
+      expect(h.types()).toEqual(before);
+    });
+  });
+
+  describe("the count follows each read", () => {
+    it("two reads of one turn: the first settling does not release the wait, the second does", async () => {
+      const { h, hooks } = await heldTurn();
+      const first = deferred<string>();
+      const second = deferred<string>();
+      const a = read(hooks, first);
+      const b = read(hooks, second);
+      expect(h.owner.readsInFlight()).toBe(2);
+      let leased = false;
+      const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+        leased = true;
+        return value;
+      });
+      first.resolve("1");
+      await a.result;
+      await flush();
+      expect(h.owner.readsInFlight()).toBe(1);
+      expect(leased).toBe(false);
+      second.resolve("2");
+      await b.result;
+      await (await lease).resume(false);
+      expect(leased).toBe(true);
+      expect(h.owner.readsInFlight()).toBe(0);
+    });
+
+    it("once a read settled, the next switch does not wait for it (no bound is spent)", async () => {
+      vi.useFakeTimers();
+      const { h, c, hooks } = await heldTurn({
+        forcedBoundMs: MASTRA_TURN_FORCED_BOUND_MS,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const native = deferred<string>();
+      const { result } = read(hooks, native);
+      c.sender.emit("destroyed");
+      native.resolve("rows");
+      await vi.advanceTimersByTimeAsync(0);
+      await result;
+      expect(h.owner.readsInFlight()).toBe(0);
+      let leased = false;
+      const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+        leased = true;
+        return value;
+      });
+      // No timer is advanced: nothing is waited for.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(leased).toBe(true);
+      await (await lease).resume(false);
+    });
+  });
+
+  describe("the terminals and the reads share one bound", () => {
+    it(`a switch with a terminal that never lands AND a read that never settles returns at ${MASTRA_TURN_FORCED_BOUND_MS} ms, not later`, async () => {
+      vi.useFakeTimers();
+      const { h, hooks } = await heldTurn({
+        forcedBoundMs: MASTRA_TURN_FORCED_BOUND_MS,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      read(hooks, deferred<string>());
+      h.appendBehavior.hang = deferred<void>();
+      let leased = false;
+      const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+        leased = true;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(MASTRA_TURN_FORCED_BOUND_MS - 1);
+      expect(leased).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(leased).toBe(true);
+      await (await lease).resume(false);
+      h.appendBehavior.hang.resolve();
+    });
+
+    it(`quit with both returns at ${MASTRA_TURN_QUIT_BOUND_MS} ms, not later`, async () => {
+      vi.useFakeTimers();
+      const { h, hooks } = await heldTurn({
+        quitBoundMs: MASTRA_TURN_QUIT_BOUND_MS,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      read(hooks, deferred<string>());
+      h.appendBehavior.hang = deferred<void>();
+      let done = false;
+      const quit = h.owner.shutdown().then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(MASTRA_TURN_QUIT_BOUND_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      await quit;
+      expect(done).toBe(true);
+      h.appendBehavior.hang.resolve();
+    });
+
+    it("a terminal that lands late and a read that never settles still return at the one bound (no second bound after the terminal)", async () => {
+      vi.useFakeTimers();
+      const { h, hooks } = await heldTurn({
+        forcedBoundMs: MASTRA_TURN_FORCED_BOUND_MS,
+        quitBoundMs: MASTRA_TURN_QUIT_BOUND_MS,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      read(hooks, deferred<string>());
+      h.appendBehavior.hang = deferred<void>();
+      let leased = false;
+      const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+        leased = true;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(MASTRA_TURN_FORCED_BOUND_MS - 10_000);
+      h.appendBehavior.hang.resolve();
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(leased).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(leased).toBe(true);
+      await (await lease).resume(false);
+    });
+
+    it("a read that settles while the terminal still hangs does not end the wait early", async () => {
+      vi.useFakeTimers();
+      const { h, hooks } = await heldTurn({
+        forcedBoundMs: MASTRA_TURN_FORCED_BOUND_MS,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const native = deferred<string>();
+      read(hooks, native);
+      h.appendBehavior.hang = deferred<void>();
+      let leased = false;
+      const lease = h.owner.quiesceForWorkspaceSwitch().then((value) => {
+        leased = true;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      native.resolve("rows");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(leased).toBe(false);
+      await vi.advanceTimersByTimeAsync(MASTRA_TURN_FORCED_BOUND_MS);
+      expect(leased).toBe(true);
+      await (await lease).resume(false);
+      h.appendBehavior.hang.resolve();
+    });
+  });
+
+  describe("a user stop inside a read", () => {
+    it("the read throws CANCELLED before Native is called, and the turn ends as cancelled with one execution.cancelled", async () => {
+      const call = vi.fn(() => Promise.resolve("rows"));
+      let readError: Error | null = null;
+      let context: MastraTurnInvokeContext | null = null;
+      const h = harness({
+        native: "hold",
+        runRead: async (owner) => {
+          owner.cancel(context!, { turnId: TURN_A } as never);
+          try {
+            await runNativeRead(call, {
+              command: "db_execute",
+              timeoutMs: null,
+              hooks: owner.readHooks(TURN_A)!,
+            });
+          } catch (error) {
+            readError = error as Error;
+            throw error;
+          }
+        },
+      });
+      const c = h.newContext();
+      context = c.context;
+      const outcome = await h.owner.start(c.context, startRequest(TURN_A)).then(
+        () => "resolved",
+        (error: Error) => error.message,
+      );
+      expect(readError).not.toBeNull();
+      expect((readError as unknown as Error).message).toMatch(/CANCELLED/);
+      expect(call).not.toHaveBeenCalled();
+      expect(outcome).toMatch(/CANCELLED/);
+      expect(h.types().filter((t) => t === "execution.cancelled")).toHaveLength(
+        1,
+      );
+      expect(h.sends).toHaveLength(0);
     });
   });
 });

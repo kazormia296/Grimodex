@@ -407,21 +407,50 @@ export function createMastraTurnOwner(
     return [...covered];
   };
 
-  /** Resolves once the turn has no Native read left (never rejects). */
-  const readsDrained = (turn: Turn): Promise<void> =>
-    turn.readInFlight === 0
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => {
-          turn.readIdleWaiters.push(resolve);
-        });
+  /**
+   * Whether a wait must end the turn (`forceAbort`: the terminal) and not only
+   * wait for it. A turn that ended normally, whose caller is gone and which
+   * only a late read still keeps, already has its terminal: it is waited for
+   * (its read), never aborted (no second terminal on an execution that observed
+   * its response, and no failing append to fail a quiesce again).
+   */
+  const needsAbort = (turn: Turn): boolean =>
+    !turn.finished || turn.forcedCause !== null || turn.nativeInFlight > 0;
 
   /**
-   * One wait over the turns' terminals and their reads: the terminals and the
-   * read drains share the caller's single bound (no second timer), and a
-   * terminal that fails still fails `allTerminals` as before.
+   * The reads Native still holds, over `turns`: `settled` resolves once every
+   * turn has none left (never rejects). `release` takes the waiters out and
+   * resolves it, for a wait the bound cut (an unsettled read would otherwise
+   * leave one waiter behind per wait).
    */
-  const readDrains = (turns: Turn[]): Promise<void> =>
-    Promise.all(turns.map(readsDrained)).then(() => undefined);
+  const readDrains = (
+    turns: Turn[],
+  ): { settled: Promise<void>; release: () => void } => {
+    const waiters: { turn: Turn; resolve: () => void }[] = [];
+    const settled = Promise.all(
+      turns.map((turn) =>
+        turn.readInFlight === 0
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              waiters.push({ turn, resolve });
+              turn.readIdleWaiters.push(resolve);
+            }),
+      ),
+    ).then(() => undefined);
+    return {
+      settled,
+      release: () => {
+        for (const { turn, resolve } of waiters) {
+          turn.readIdleWaiters = turn.readIdleWaiters.filter(
+            (waiter) => waiter !== resolve,
+          );
+          resolve();
+        }
+      },
+    };
+  };
+  /** The profile quiesce's drains, released when the gate force-stops the owner. */
+  const profileDrains = new Set<() => void>();
 
   /** Each send and each begin: the turn's own checks before anything leaves Main (DR-MP3-5). */
   const assertLive = (turn: Turn): void => {
@@ -458,13 +487,17 @@ export function createMastraTurnOwner(
    * The same checks as a send's (forced, user stop, the profile's three
    * states, the identity and the sender), called synchronously before the read
    * is sent and again after it answered. A turn the caller already left takes
-   * no read: it is no longer in a table the waits read.
+   * no read (its slot may be released and no wait reads it): that check comes
+   * right after the forced one and before the rest, so an ended turn is never
+   * aborted nor marked cancelled by a late read.
    */
   const assertReadLive = (turn: Turn): void => {
-    assertLive(turn);
+    if (turn.forcedCause !== null)
+      throw new MastraTurnAborted(turn.forcedCause);
     if (turn.finished) {
       throw new Error("MASTRA_TURN_READ_AFTER_END: the turn has ended");
     }
+    assertLive(turn);
   };
 
   /** Counts a read from its start to Native's own settle, whoever stopped waiting. */
@@ -864,7 +897,9 @@ export function createMastraTurnOwner(
       const turns = coveredTurns();
       if (turns.length === 0) return;
       const inNative = turns.some((turn) => turn.nativeInFlight > 0);
-      const terminals = turns.map((turn) => forceAbort(turn, "restricted"));
+      const terminals = turns
+        .filter(needsAbort)
+        .map((turn) => forceAbort(turn, "restricted"));
       // Reserved: Native's own stop request for what is in Native, only when
       // something of ours is (a launch with no turn leaves stage 5 as it was).
       if (inNative) context?.abortNativeInFlight();
@@ -874,11 +909,19 @@ export function createMastraTurnOwner(
       // bound (no timer here): a read that never settles ends as the gate's
       // participant timeout, the same fail-closed end as a terminal that never
       // lands. `Promise.all` keeps a failed terminal failing the quiesce.
-      await Promise.all([...terminals, readDrains(turns)]);
+      const drains = readDrains(turns);
+      profileDrains.add(drains.release);
+      try {
+        await Promise.all([...terminals, drains.settled]);
+      } finally {
+        profileDrains.delete(drains.release);
+      }
     },
 
     forceStopForProfileEgress() {
       for (const turn of attachedTurns()) void forceAbort(turn, "restricted");
+      // The gate's bound ran out: its wait is over, so the read waiters go too.
+      for (const release of [...profileDrains]) release();
     },
 
     async quiesceForWorkspaceSwitch() {
@@ -893,9 +936,10 @@ export function createMastraTurnOwner(
       };
       const turns = coveredTurns();
       if (turns.length === 0) return lease;
-      const terminals = turns.map((turn) =>
-        forceAbort(turn, "workspace-switch"),
-      );
+      const terminals = turns
+        .filter(needsAbort)
+        .map((turn) => forceAbort(turn, "workspace-switch"));
+      const drains = readDrains(turns);
       let timer: ReturnType<typeof setTimeout> | null = null;
       const bound = new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), forcedBoundMs);
@@ -903,16 +947,17 @@ export function createMastraTurnOwner(
       try {
         const outcome = await Promise.race([
           // One bound for the terminals and the reads Native still holds.
-          Promise.allSettled([...terminals, readDrains(turns)]),
+          Promise.allSettled([...terminals, drains.settled]),
           bound,
         ]);
         if (outcome === "timeout") {
           log(
             "warn",
-            "main agent turn: terminals not written within the switch bound",
+            "main agent turn: terminals or reads not settled within the switch bound",
           );
         }
       } finally {
+        drains.release();
         if (timer !== null) clearTimeout(timer);
       }
       return lease;
@@ -923,26 +968,29 @@ export function createMastraTurnOwner(
       closed = "quit";
       shutdownPromise = (async () => {
         let timer: ReturnType<typeof setTimeout> | null = null;
+        let drains: ReturnType<typeof readDrains> | null = null;
         try {
           const turns = coveredTurns();
           if (turns.length === 0) return;
-          const terminals = turns.map((turn) =>
+          const terminals = turns.filter(needsAbort).map((turn) =>
             forceAbort(turn, "quit").then(
               () => undefined,
               () => undefined,
             ),
           );
+          drains = readDrains(turns);
           const bound = new Promise<void>((resolve) => {
             timer = setTimeout(resolve, quitBoundMs);
           });
           // One bound for the terminals and the reads Native still holds.
           await Promise.race([
-            Promise.all([...terminals, readDrains(turns)]),
+            Promise.all([...terminals, drains.settled]),
             bound,
           ]);
         } catch {
           // Bounded and never rejecting: a failure leaves a start-only row, which the report counts.
         } finally {
+          drains?.release();
           if (timer !== null) clearTimeout(timer);
         }
       })();
