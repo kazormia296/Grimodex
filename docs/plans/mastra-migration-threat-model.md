@@ -265,7 +265,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 | T8  | 配布物に、入れないと決めたコード（ee 由来）が混入する                                                                                                                                   | X16                       | P10、決定 2026-11-18（**この文書で足した**）       |
 | T9  | 会話・tool 結果に混ざる指示文が、tool の誤実行や、WM・OM を通じた永続化に使われる                                                                                                       | X1、X5                    | 設計 §5.3 の「信頼しない」、M20                    |
 | T10 | 利用者の shell の env（API key、`OM_DEBUG` など）が継承され、Mastra に使われる                                                                                                          | X13、X18                  | 設計 §5.3 の「信頼しない」                         |
-| T11 | loop が main に移ることで、製品認可（capability）と、確認済みの chat IR S1 の脅威モデルの前提が落ちる                                                                                   | -（loop 側。MP-3〜MP-6）  | 計画書 R-5、R-25（**この文書で足した**）           |
+| T11 | loop が main に移ることで、製品認可（capability）と、確認済みの chat IR S1 の脅威モデルの前提が落ちる（chat IR S1 は **IR を開ける lane へ延期。MP-4 も閉のまま**、2026-11-21 のユーザー決定） | -（loop 側。MP-3〜MP-6）  | 計画書 R-5、R-25（**この文書で足した**）           |
 | T12 | 保存・送信の範囲の拡大が、開示と consent なしに起きる                                                                                                                                   | X1〜X8                    | P7、P8、GDX-AI-CONSENT-001（**この文書で足した**） |
 
 ### 3.2 範囲外
@@ -291,7 +291,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 | D10 | 削除：message 削除で由来する OM の部分を消す（P4）。project 削除で WM・OM を必ず消す（P3）。vector は削除・export・backup の範囲                                                                                                                                                               | T7      | 11、12                     |
 | D11 | lifecycle：admission closure、inflight 計数、audit の terminal と Native の terminal receipt を終了証跡にする。`settled()` は証跡にしない。届かない仕事は ambiguous の audit 行で閉じる（X21、X22）                                                                                            | T5      | 3、11                      |
 | D12 | 通信の観測：packaged の main で、起動から終了まで OS 側の捕捉（P1(b)）。hook の自己試験を毎回付ける。15 分間隔の telemetry を含む長さと、終了時                                                                                                                                                | T1      | 1、3、10、13               |
-| D13 | capability の維持（one-shot、`senderId`・projectId・入力 digest の束縛）。chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）                                                                                                                                                                    | T11     | 3、6                       |
+| D13 | capability の維持（one-shot、`senderId`・projectId・入力 digest の束縛）。chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）は**延期**（IR を開ける lane。MP-4 は IR を閉のままにし、静的試験で固定。2026-11-21 のユーザー決定）                                                     | T11     | 3、6                       |
 | D14 | 開示と consent（policy version・route・provider・実際の接続先に束縛）。機能ごとの on／off、`memoryModel`、WM の閲覧・編集・消去、観測の消去（P8）                                                                                                                                              | T12     | 12                         |
 | D15 | Mastra の storage は memory の domain だけ。observability・workflows・agents ほか全 domain を `false`（traces を保存しない）                                                                                                                                                                   | T4      | 8                          |
 
@@ -481,7 +481,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 5. 残るリスク（第 5 節）のうち、受け入れるものと、MP の受入れ条件に昇格させるもの。特に、P5(c)（tool 本文が observer と題名に入る）、X13 の key あり、X10 の部分削除。
 6. W 表を spike の結果で変えた点（W3 の保存の束ね方、W4・W6・W7 の取消し、W10 の `T_quit`）が、決定済み（P11、X21）の範囲に収まるか。
 7. 付随して残る点：新しい `PrePublicationEntry`（旗 L・M）が新しい authority に当たるか（計画書の第 7.1 節 U-3）。
-   chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）。
+   chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）は、**IR を開ける lane へ延期**（2026-11-21 のユーザー決定）。MP-4 は IR を閉のままにする。
 
 ## 7. この文書が確認していないこと
 

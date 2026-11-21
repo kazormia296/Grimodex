@@ -348,24 +348,33 @@
 - 確認：U-4（U-3 は決定済み）。
 - 検証：第 8 節の「通信」「bundle・起動」。
 - 注：chat IR S1 の `chat_agent_ir_select` は全 launch で閉じた gate（`electron/main/chatAgentIr.ts`）で、
-  確認済みの脅威モデルは renderer の loop を前提にしている。loop が main に移ると受け手が変わる。U-4 で再確認する。
+  確認済みの脅威モデルは renderer の loop を前提にしている。loop が main に移ると受け手が変わる。
+  **U-4(f) は、IR を開ける lane へ延期する（2026-11-21 のユーザー決定。DR-MP3-3 どおり）。**
+  MP-4 でも chat IR は閉のままで、main の tool に IR を呼ぶ executor が無いことを静的試験で固定する
+  （[MP-4 の判断](mastra-mp4-decisions.md) DR-MP4-21）。
 
 ### MP-4 tool 基盤、loop 規則、read tool
 
 - 範囲：
   - manifest の 44 本（master で read 26、write 16、destructive 2）を Mastra の tool に。schema は `toolDefinitions.ts` の元の定義（adapter が `$schema`／`additionalProperties` を戻す。S6）。
+    **段階に読み替える（2026-11-21 のユーザー決定 U-7(D)。[MP-4 の判断](mastra-mp4-decisions.md)第 1.2 節）**：
+    MP-4 は、データ read のうち main の `dbExecute` と既存の Native の typed 呼出しで動く 20 本（M4。`get_codex_entry` は guard の扱い待ちで外す）を main の tool にする。
+    `get_ui_state`・`ask_user`・UI 系の write 4 本は MP-5（main→renderer の RPC）、残りの write 14 本は MP-6、`run_research` は MP-4 では移さない（DR-MP3-3）。help 2 本は MP-5 に寄せる案（**未確認。確認 C-12**）。
+    MP-4 の間は main の tool が 44 本そろわず、製品の agent-mode turn（毎 turn 44 本を宣言する）は Mastra に届かない（読み替えの帰結。**帰結の確認は C-5**）。旗 L は閉のまま。
   - **loop 規則を同値に写す**（閾値の黙示変更は委任外）：
     - tool 回数の上限（窓に応じて 25／16／12／10。survey の点検は 25／16 だけ確認）、予算（窓の 30%、下限 2,000）。
     - `ask_user` は別枠 8、1 件の結果が予算の 25% を超えたら切詰め、上限到達時に制御 message を 1 回入れてもう 1 度だけ応答。
     - 未宣言 tool の拒否、abort、`beginAgentToolTurn` の turn 単位の分離。
   - **`run_research`（子 agent）**：manifest の 44 本の 1 つ。main の loop から子 loop を走らせる。
     子は `run_research` を持たない（`toolDefinitions.ts:958-963`）。audit の経路は `agent_research_subagent`（U-4(e)）。
+    **MP-4 では移さない**（DR-MP3-3。扱いは旗 L を開ける前に決める。[DR-MP4-22](mastra-mp4-decisions.md)）。
   - **read 系 tool の main 化**。
     - **事実**：`src/features/chat/agent/toolExecutors.ts` は renderer の資源に依存する
       （`:6` の `db`＝renderer の Drizzle、`:38` の `useTreeStore`、`:94` の `useProseStagingStore`）。main では使えない。
-    - 移す方式（Native の typed command を足す／`backend.dbExecute`）は**未決**（U-7）。
-    - `countTokens`（tokenizer）が main で動くかは**未確認**。semantic search の呼出し経路も要確認。
-- 層：main。N-API は、read 用の command が要るなら新設（新しい contract）。renderer は engine の分岐だけ。
+    - 移す方式は**決定済み（U-7 は (D) 混合。2026-11-21）**：tool の核を共有 module に出し、main から既存の `backend.dbExecute` と
+      既存の Native の typed 呼出し（`fts_search`、`codex_semantic_search`、`events_semantic_search`、`foreshadow_list_open_for_context`）で同じ SQL を発行する。新しい N-API は足さない。
+    - `countTokens`（tokenizer）が main で動くかは**未確認**（plain Node の probe は動作。Electron main・asar は未確認。置き場と配布は [DR-MP4-18](mastra-mp4-decisions.md) と確認 C-8）。
+- 層：main。N-API は**新設しない**（U-7 の決定）。renderer は engine の分岐だけ。
 - 条件：
   - `agentLoop.test` の特性試験を、legacy と Mastra の**両方**に流して同値。
   - tool schema の bytes 一致（S6 #1〜#3）。
@@ -373,13 +382,14 @@
   - read tool の結果が legacy と同値（fixture 比較）。
   - 長い履歴・大きい tool 結果（S6 の未測定）。
 - 旗：L 閉。
-- 確認：U-7。
+- 確認：U-7 は決定済み（2026-11-21）。残る確認は [MP-4 の判断](mastra-mp4-decisions.md)の第 8 節（C-1〜C-16）。
 
 ### MP-5 main→renderer の RPC と UI tool
 
 - 範囲：
   - main→renderer の request／response の新設。既存の event は一方向（`electron/shared/ipcContract.ts:303-307` の `BACKEND_EVENT_CHANNEL_ALLOWLIST`。renderer の `emit` からは送れない）。
   - renderer に残る 6 本：`ask_user`、`run_app_command`、`apply_layout_preset`、`propose_setting_change`、`propose_scene_body`、`get_ui_state`（survey 付録 A）。
+    MP-4 の判断で help 2 本（`get_app_help_index`、`get_app_help`）を足して 8 本にする案（[DR-MP4-11](mastra-mp4-decisions.md)、確認 C-12 の回答待ち）。
   - 保留中の renderer 喪失（window close、reload、crash）時の所有と終了証跡。有限の待ち。
   - 同じ session の再入、複数 window。
 - 層：renderer、IPC、main。
@@ -575,7 +585,7 @@
 | ---- | ------- | ----------------------------------------------------- | ------------------- | ---------------- |
 | U-1  | 1       | 脅威モデルの確認と凍結（**確定 2026-11-19**）         | contract            | -                |
 | U-4  | 3       | loop 移動の未決一式                                   | authority、contract | 内訳に           |
-| U-7  | 4       | read tool の main 化の方式                            | contract            | なし             |
+| U-7  | 4       | read tool の main 化の方式（**決定 2026-11-21：(D) 混合**） | contract            | -                |
 | U-8  | 5       | UI tool を RPC にするか                               | contract、authority | なし             |
 | U-9  | 6       | write 後処理の書き手の移動                            | 保存、authority     | 前倒しはしない   |
 | U-10 | 7       | `SCHEMA_VERSION` の bump                              | 保存、contract      | 13a の後に載せる |
@@ -625,13 +635,13 @@
     - `run_research` は manifest の 44 本の 1 つ（read。`agent-tool-manifest.json:43`、`toolDefinitions.ts:792`）で、
       子 loop を走らせる。audit の経路は `agent_research_subagent`（`aiPathRegistry.ts:537`）。main の loop から子 loop をどこで走らせるかが要る。
     - 推奨：main chat だけを先に（Q2）。ただし子 agent の扱いは MP-4 で決める。
-  - (f) chat IR S1 の確認済み脅威モデルの再確認（受け手が main の loop に移る）。
+  - (f) chat IR S1 の確認済み脅威モデルの再確認（受け手が main の loop に移る）。**延期（2026-11-21 のユーザー決定）**：IR を開ける lane で行う。MP-4 は IR を閉のままにし、静的試験で固定する。
   - (g) restricted の扱い。推奨：今と同じ拒否。
   - (h) `browser-mock.ts` の loop を残すか。
   - (i) 添付つき turn の扱い。推奨：legacy に落とす。
   - (j) 文脈の組立（`refreshContextLayers`、`contextBuilder`）を renderer に残すか。残すなら、新しい IPC で何を main に渡すか。
   - (k) agent 経路を stream にするか、非 stream のままか（今は非 stream の invoke。abort の IPC が無い）。
-- **U-7**：read tool の main 化の方式。新しい N-API の read command が要るか。tokenizer の置き場。
+- **U-7**：read tool の main 化の方式。**決定済み（2026-11-21）**：(D) 混合。共有 core＋既存の `dbExecute` と typed 呼出しで、新しい N-API は不要。`get_ui_state`・`ask_user` は MP-5 の RPC、help 2 本は RPC（案。C-12）。tokenizer の置き場は未決（[DR-MP4-18](mastra-mp4-decisions.md)、C-8）。
 - **U-8**：UI tool（6 本）を、main→renderer の RPC にするか、loop を一度終えて再開する形にするか。renderer 喪失時の扱い。
 - **U-9**：write 後処理（undo、timelapse、index の予約）の書き手と永続先が main に移ること。`requiresUserConfirmation` を前倒しするか（推奨：しない）。
 - **U-10**：`SCHEMA_VERSION` の bump。旧版では DB を開けなくなる一方向の変更。どの release に載せるか。推奨：L の単独出荷（13a）の後。
@@ -753,13 +763,13 @@ X1〜X23 の「未確認」のセルは、R-8（通信）、R-13〜R-17、R-35�
 | R-22 | 英語 project の `_en` FTS（#950 の後の挙動）                                                                             | 事実（推定） | S-M14、#950                   | MP-7                    |
 | R-23 | NIR-1 の capture の作成順                                                                                                | 未試験       | S-M14                         | MP-9                    |
 | R-24 | 並行 lane（chat IR S1、model-caps）が agent 経路を触っている                                                             | 事実         | 第 2 節                       | MP-3〜MP-6 の順序       |
-| R-25 | `chat_agent_ir_select` の脅威モデルが renderer の loop 前提                                                              | 事実         | survey §4                     | MP-3（U-4(f)）          |
+| R-25 | `chat_agent_ir_select` の脅威モデルが renderer の loop 前提                                                              | 事実         | survey §4                     | 延期（IR を開ける lane。MP-4 は静的試験で閉を固定。2026-11-21 決定） |
 | R-26 | embedding の言語ごとの model と次元、model 未 download                                                                   | 未確認       | S-M9                          | MP-10                   |
 | R-27 | 同梱の observer／reflector／題名の prompt の質（日本語の小説）                                                           | 未確認       | -                             | MP-10（U-15）           |
 | R-28 | 旗 off で env の固定が子 process に及ぶ                                                                                  | 事実         | 第 4.3 節                     | MP-1（U-5）             |
 | R-29 | 旗を再び on にするときの OM の seed                                                                                      | 事実         | S-M5、X9                      | MP-9、第 10.2 節        |
 | R-30 | `new Mastra` の "in-memory" の警告。domain を `false` にする構成                                                         | 事実         | S-M3                          | MP-8                    |
-| R-31 | tokenizer（`countTokens`）が main で動くか                                                                               | 未確認       | survey §4                     | MP-4                    |
+| R-31 | tokenizer（`countTokens`）が main で動くか（plain Node の probe は動作、約 163 ms。Electron main・asar・配布は未確認）    | 未確認       | survey §4、mp4-decisions DR-MP4-18 | MP-4                    |
 | R-32 | `data-om-*` の part と assistant の 2 行分割の読み手                                                                     | 推測         | S-M2、設計 §1.4               | MP-9                    |
 | R-33 | vector の「export」が zip export を指すか                                                                                | 未確認       | P3、X7                        | MP-12（U-19）           |
 | R-34 | Mastra／AI SDK の `doGenerate` の自動の再試行と model の fallback                                                        | 未確認       | S-M6、脅威モデル第 4 節       | MP-2、MP-3              |
