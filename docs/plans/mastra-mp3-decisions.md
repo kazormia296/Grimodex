@@ -320,6 +320,8 @@ DR-MP3-4 は「`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だ
   それ以外は黙って組み替えず `unsupported`（MP-2 の特性試験の写像に乗る形だけを通す）。
 - audit の入力：`expectedWorkspacePath` は **identity の `workspaceId`**（profile gate が Native の `workspace:opened` で束ねた、main が信頼する現在の path）。`projectId` は **null**（wire に project が無いので workspace chain に書く）。
   **確認要（MP-4 の前）**：renderer の `chat_agent_main` の行は project の chain に書かれるので、engine 経路の行が別の chain に入る。wire に `projectId` を足すのは新しい契約になる。
+  **解消（2026-11-21 のユーザー決定、MP-4a）**：wire に `projectId`・`currentSceneId`・`chatMessageId` の 3 欄を足し、owner は `projectId` を audit sink と send に渡して legacy と同じ `project:<id>` の chain に書く（MP-3 の行は workspace chain のまま、移行しない）。
+  詳細は `docs/plans/mastra-mp4-decisions.md` の DR-MP4-1、2、23（別の枝にある草稿。merge 後はそちらを参照）。
   path が identity に無い turn は `unsupported`。
 - 各 step の send の直前（と begin の前）に、`isIssuedCallerIdentity(turn.identity)`・profile が closed でない・sender が破棄されていない、を検査する。外れたら forced（原因は restricted／sender-gone／workspace-switch）。Native には callerIdentity を載せない。
 - 結果の写像（renderer から見える形）：

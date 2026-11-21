@@ -79,7 +79,7 @@ function request(extra: Record<string, unknown> = {}): AgentAuditRequest {
 
 function makeSink(
   behavior?: (call: AppendCall, index: number) => void | Promise<void>,
-  options: { projectId?: string | null } = {},
+  options: { projectId?: string | null; chatMessageId?: string } = {},
 ) {
   const fake = fakeBackend(behavior);
   let uuid = 0;
@@ -89,6 +89,9 @@ function makeSink(
     appVersion: "9.9.9",
     projectId:
       options.projectId === undefined ? "project-1" : options.projectId,
+    ...(options.chatMessageId !== undefined
+      ? { chatMessageId: options.chatMessageId }
+      : {}),
     expectedWorkspacePath: "/ws/a",
     operationId: "op-1",
     now: () => (clock += 1),
@@ -267,6 +270,28 @@ describe("begin and dispatched", () => {
     expect(first.executionId).not.toBe(second.executionId);
     expect(first.operationId).toBe(second.operationId);
     expect(calls.every((call) => call.projectId === null)).toBe(true);
+  });
+
+  it("the project is one value: every append and the send's audit context name the same scope", async () => {
+    const { sink, calls } = makeSink(undefined, { projectId: "project-9" });
+    const handle = await sink.begin(request());
+    await sink.dispatched(handle);
+    await sink.complete(handle, COMPLETION);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.projectId === "project-9")).toBe(true);
+    expect(handle.auditContext.projectId).toBe("project-9");
+  });
+
+  it("the chatMessageId is on the handle (the send's arguments carry it) and in no audit row", async () => {
+    const { sink, calls } = makeSink(undefined, { chatMessageId: "msg-42" });
+    const handle = await sink.begin(request());
+    expect(handle.chatMessageId).toBe("msg-42");
+    await sink.dispatched(handle);
+    await sink.complete(handle, COMPLETION);
+    expect(JSON.stringify(calls)).not.toContain("msg-42");
+    // Without one (an owner that has none), the handle has no such key.
+    const bare = await makeSink().sink.begin(request());
+    expect("chatMessageId" in bare).toBe(false);
   });
 
   it("a failed begin leaves no handle: nothing is dispatched", async () => {

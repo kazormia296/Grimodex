@@ -37,6 +37,9 @@ export function startRequest(overrides = {}) {
   return {
     turnId: randomUUID(),
     chatSessionId: `journey-session-${randomUUID()}`,
+    projectId: `journey-project-${randomUUID()}`,
+    currentSceneId: null,
+    chatMessageId: `journey-message-${randomUUID()}`,
     messages: [
       { role: "system", content: "MASTRA-AGENT-TURN-JOURNEY system" },
       { role: "user", content: "MASTRA-AGENT-TURN-JOURNEY prompt" },
@@ -95,7 +98,7 @@ async function queryAuditRows(harness, page) {
   const result = await harness.invokeOk(page, "db_execute", {
     sql: `SELECT sequence, execution_id, event_type, path_id, payload
             FROM ai_audit_events
-           WHERE scope_id = 'workspace' AND path_id = 'chat_agent_main'
+           WHERE path_id = 'chat_agent_main'
            ORDER BY sequence`,
     params: [],
     method: "all",
@@ -183,6 +186,21 @@ export function createMastraAgentTurnJourney({ configureWorkspace }) {
           "start",
           "unsupported",
         );
+        // The fallback project ID names no project: Main's owner refuses it
+        // (MP-4a), a request that is otherwise valid.
+        assertRefusal(
+          await invoke(
+            START_COMMAND,
+            startRequest({ projectId: "default-project" }),
+          ),
+          "start",
+          "unsupported",
+        );
+        assertRefusal(
+          await invoke(START_COMMAND, startRequest({ projectId: "" })),
+          "start",
+          "invalid",
+        );
         assertRefusal(await invoke(CANCEL_COMMAND, {}), "cancel", "invalid");
         const unknownTurn = randomUUID();
         assert.deepEqual(
@@ -195,7 +213,7 @@ export function createMastraAgentTurnJourney({ configureWorkspace }) {
         );
         assert.deepEqual(await queryAuditRows(harness, gate.page), []);
         harness.recordTimeline(`${ID}/refusals-write-nothing`, {
-          refusals: 6,
+          refusals: 8,
           auditRows: 0,
         });
 
