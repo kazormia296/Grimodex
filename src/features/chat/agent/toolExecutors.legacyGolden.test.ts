@@ -18,8 +18,12 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  *   `toolExecutors.legacyNativePort.test.ts` で固定する。
  * - dense の「行あり」は、`events_semantic_search`／`codex_semantic_search` にだけ canned の hit を
  *   返して作る（scenario 名に `canned` と付ける）。
- * - ORDER BY の無い SELECT（list_codex_by_type、find_related_entries、LIKE の arm、
- *   list_chapters の同順位）の並びは、sql.js の行の返り順に依存する（実 addon では異なりうる）。
+ * - ORDER BY の無い SELECT（list_codex_by_type、find_related_entries、LIKE の arm）の並びは、
+ *   sql.js の行の返り順に依存する（実 addon では異なりうる）。list_chapters／get_chapter_summaries の
+ *   並びは tree の DFS（兄弟ごとの sortOrder、同順位は id）で、行の返り順に依存しない。
+ * - archived（外部 Markdown のマウントでファイルの消失・重複により自動で soft delete された行）は、
+ *   read tool 5 本と get_chapter_summaries が行単位（`archived_at IS NULL`）で除く。祖先だけが
+ *   archived の行は renderer の listNodes と同じく残る（seed の n-part2＞n-s5）。
  *
  * golden の再生成：該当 file を消して `pnpm exec vitest --run <この file>`（CI では書かれず落ちる）。
  * 再生成した差分は人が目で確認する。
@@ -296,12 +300,12 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   list_chapters: [
     sc(
-      "rows: part／chapter／scene だけ（folder は node_type に chapter が無いので出ない）。archived の場面も出る。note は出ない",
+      "rows: folder と scene を読む順（tree の DFS。兄弟ごとの sortOrder）で出す。note は出ない。archived の場面・folder は出ない。祖先だけが archived の場面は DFS の外として末尾に出る",
       MAIN_S1,
       {},
     ),
     sc("empty: 空の project", EMPTY, {}),
-    sc("XPROJ: 他 project は他 project の場面だけ", OTHER, {}),
+    sc("XPROJ: 他 project は他 project の folder と場面だけ", OTHER, {}),
     sc("no-project", NO_PROJECT, {}),
   ],
   get_scene: [
@@ -316,9 +320,14 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
       { id: "n-s3" },
     ),
     sc(
-      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: archived の場面も読める",
+      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）empty: archived（外部ファイルの消失）の場面は Scene not found",
       MAIN_S1,
       { id: "n-arch" },
+    ),
+    sc(
+      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: 祖先の folder だけが archived の場面は読める（行単位の規則）",
+      MAIN_S1,
+      { id: "n-s5" },
     ),
     sc("empty: note は Scene not found", MAIN_S1, { id: "n-note1" }),
     sc("empty: folder は Scene not found", MAIN_S1, { id: "n-ch1" }),
@@ -335,13 +344,32 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
     sc("order: 空白だけの id も先に弾く", NO_PROJECT, { id: "  " }),
   ],
   search_scenes: [
-    sc("rows: 短い語 2 字（LIKE-OR の arm。archived の場面も出る）", MAIN_S1, {
-      query: "魔法",
-    }),
     sc(
-      "rows: 3 字以上（fts_search の arm → id で Drizzle。長い本文は 200 字に切る）",
+      "rows: 短い語 2 字（LIKE-OR の arm。archived の場面は出ない）",
+      MAIN_S1,
+      {
+        query: "魔法",
+      },
+    ),
+    sc(
+      "rows: 3 字以上（fts_search の arm → id で Drizzle。長い本文は 200 字に切る。archived の場面は Drizzle の再取得で落ちる）",
       MAIN_S1,
       { query: "アリア" },
+    ),
+    sc(
+      "empty: 3 字以上の語が archived の場面にだけ当たる（fts_search の hit は Drizzle の再取得で落ちて 0 件）",
+      MAIN_S1,
+      { query: "外部ファイル" },
+    ),
+    sc(
+      "rows: 短い語 2 字（LIKE-OR の arm）。祖先の folder だけが archived の場面は出る",
+      MAIN_S1,
+      { query: "親が" },
+    ),
+    sc(
+      "rows: 3 字以上（fts_search の arm）。祖先の folder だけが archived の場面は出る",
+      MAIN_S1,
+      { query: "親フォルダ" },
     ),
     sc("rows: タイトルの語", MAIN_S1, { query: "旅立ち" }),
     sc("empty: 一致なし", MAIN_S1, { query: "存在しない語" }),
@@ -375,7 +403,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   get_chapter_summaries: [
     sc(
-      "rows: 現行は node_type に chapter が無い（CHECK は folder／scene／note）ので 0 chapters",
+      "rows: 全階層の folder を DFS の読む順に章とし、直下の場面のうち synopsis が空でないものを並べる。synopsis が空の場面・archived の場面は出ない。archived の folder は章にならない",
       MAIN_S1,
       {},
     ),
@@ -419,10 +447,13 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   get_scene_timeline_neighbors: [
     sc(
-      "rows: 先頭の場面（previous なし、next は最大 3 件。archived も候補）",
+      "rows: 先頭の場面（previous なし、next は最大 3 件。archived の場面は候補にならない）",
       MAIN_S1,
       { sceneId: "n-s1" },
     ),
+    sc("empty: archived の場面を起点にすると Scene not found", MAIN_S1, {
+      sceneId: "n-arch",
+    }),
     sc("rows: 中間の場面（作中順で前後）", MAIN_S1, { sceneId: "n-s3" }),
     sc("rows: 末尾に近い場面", MAIN_S1, { sceneId: "n-s2" }),
     sc("empty: storyTimeOrder の無い場面", MAIN_S1, { sceneId: "n-s4" }),
@@ -447,7 +478,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   get_thread_scenes: [
     sc(
-      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch",
+      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch。archived の場面に結ばれた link は出ない",
       MAIN_S1,
       { threadId: "th-main" },
     ),
@@ -654,7 +685,7 @@ describe("legacy の事実の固定（DB の制約・空 project）", () => {
     await seedLegacyReadFixture();
   });
 
-  it("tree_nodes.node_type の CHECK は folder／scene／note だけ（'chapter' は作れない。list_chapters／get_chapter_summaries の 'chapter' は現行 DB では当たらない）", async () => {
+  it("tree_nodes.node_type の CHECK は folder／scene／note だけ（'chapter'／'part' は作れない。list_chapters／get_chapter_summaries は folder を章として読む）", async () => {
     await expect(
       invoke("db_execute", {
         sql: "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES ('n-chapter', 'p-main', 'chapter', '章', 'z0', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
