@@ -232,6 +232,7 @@ requirements:
       - agent-tool-manifest.json
       - src/features/chat/agent/toolManifest.ts
       - src/features/chat/agent/toolDefinitions.ts
+      - electron/shared/agentReadToolDefinitions.ts
       - src/features/chat/agent/appHelpTools.ts
       - src/help/helpCatalog.ts
       - src/help/helpDocs.ts
@@ -245,6 +246,9 @@ requirements:
       - src-tauri/crates/grimodex-ai/build.rs
     lightTests:
       - src/features/chat/agent/toolDefinitions.test.ts
+      - src/features/chat/agent/toolDefinitions.legacyGolden.test.ts
+      - src/features/chat/agent/agentReadToolDefinitions.drift.test.ts
+      - electron/shared/agentReadToolDefinitions.static.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/appHelpTools.test.ts
       - src/help/helpIndex.test.ts
