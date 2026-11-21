@@ -7,7 +7,11 @@ import {
   type WorkspaceIdentity,
 } from "@/runtime/workspaceIdentity";
 import { awaitPendingIpcActualTasksForAuditExport } from "@/lib/ipcQueue";
-import { awaitPendingAiAuditExecutions } from "./executionRegistry";
+import {
+  assertNoAiAuditPersistenceFailure,
+  hasRunningAiAuditExecutions,
+} from "./executionRegistry";
+import { AiAuditExportBusyError } from "./exportBusyError";
 
 export interface AiAuditExportIdentity {
   readonly projectId: string;
@@ -78,7 +82,8 @@ interface AiAuditExportBoundaryDependencies {
   readonly acquireLease: (
     reason: "audit-export",
   ) => AiAuditExportLease | Promise<AiAuditExportLease>;
-  readonly awaitPendingAiAuditExecutions: () => Promise<void>;
+  readonly hasRunningAiAuditExecutions: () => boolean;
+  readonly assertNoAiAuditPersistenceFailure: () => void;
   readonly awaitPendingIpcActualTasks: () => Promise<void>;
   readonly flushStrictQuiescence: () => Promise<void>;
   readonly getLoadedProjectId: () => string | null;
@@ -90,7 +95,8 @@ export type AiAuditExportBoundaryOverrides =
 
 const DEFAULT_DEPENDENCIES: AiAuditExportBoundaryDependencies = {
   acquireLease: acquireQuiescenceLeaseAfterTimelapseGenesis,
-  awaitPendingAiAuditExecutions,
+  hasRunningAiAuditExecutions,
+  assertNoAiAuditPersistenceFailure,
   awaitPendingIpcActualTasks: awaitPendingIpcActualTasksForAuditExport,
   flushStrictQuiescence,
   getLoadedProjectId,
@@ -152,11 +158,17 @@ export function captureAiAuditExportIdentity(
 /**
  * Runs all report and ledger reads under one renderer-local frozen boundary.
  *
+ * An export never waits for an audited AI execution (DR-AAEX-1): the lease
+ * has no deadline and holds every save and read, so a long model response
+ * would stall the application. If an execution is running before the lease, or
+ * as soon as the lease has closed AI admission, the export is refused with
+ * AiAuditExportBusyError and the lease is released. Admission being closed,
+ * nothing can start afterwards; later checks only fail closed.
+ *
  * The lease closes application mutation/AI admission synchronously. Strict
- * quiescence then waits active renderer audits through their durable terminal,
- * retains and drains pre-existing native read/derived tasks that can append
- * Rust-side audit events, and drains resulting Browser/editor persistence.
- * After strict quiescence reaches registry zero, low-level mutation IPC closes
+ * quiescence then retains and drains pre-existing native read/derived tasks
+ * that can append Rust-side audit events, and drains resulting Browser/editor
+ * persistence. After strict quiescence, low-level mutation IPC closes
  * synchronously and every actual task is drained once more. The global
  * read/derived barriers remain closed; only deterministic audit-export
  * database queries are admitted for the supplied callback. Project/Workspace
@@ -173,25 +185,30 @@ export async function runAiAuditExportBoundary<T>(
 ): Promise<T> {
   assertExpectedIdentity(identity);
   const deps = dependencies(overrides);
+  const refuseWhileAiRunning = (): void => {
+    if (deps.hasRunningAiAuditExecutions()) throw new AiAuditExportBusyError();
+    // An execution whose terminal could not be persisted is not running: the
+    // export fails with its cause instead of hiding the missing evidence.
+    deps.assertNoAiAuditPersistenceFailure();
+  };
+  // Refuse before the lease so that a click during a long response never
+  // stops saving at all.
+  refuseWhileAiRunning();
   const lease = await deps.acquireLease("audit-export");
   try {
     assertCurrentIdentity(identity, deps);
-    await deps.awaitPendingAiAuditExecutions();
+    // Lease acquisition awaits, so an execution may have started since the
+    // check above; its admission is closed now, so this check is final.
+    refuseWhileAiRunning();
     await deps.awaitPendingIpcActualTasks();
-    // A pre-existing IPC caller can settle a renderer continuation that owns
-    // an already-reserved audit execution. Close that final handoff before the
-    // general persistence flush begins.
-    await deps.awaitPendingAiAuditExecutions();
+    refuseWhileAiRunning();
     await deps.flushStrictQuiescence();
-    // Strict flush can wait other producers after its own AI stage. Reassert
-    // registry zero before closing the low-level mutation lane; a valid retry
-    // child can only reserve while its pending parent is still visible here.
-    await deps.awaitPendingAiAuditExecutions();
+    refuseWhileAiRunning();
     lease.sealMutationAdmissionForControlledRead();
     // Close over a direct IPC scheduled by the final strict-flush continuation
     // before allowing even safe export reads.
     await deps.awaitPendingIpcActualTasks();
-    await deps.awaitPendingAiAuditExecutions();
+    refuseWhileAiRunning();
     assertCurrentIdentity(identity, deps);
     lease.openControlledReadPhase();
     const proof = issueFrozenReadProof(identity);
