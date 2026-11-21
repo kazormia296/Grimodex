@@ -1372,3 +1372,36 @@
   - 保存の p50 の線（+12% 以内かつ +1.5 ms 以内）は変えない。保存は Graph の状態に依らない。
   - 線の値（+12%、+1.5 ms、+10%、65.04 ms、10%）は変えない。変えたのは、比べる対象を同じ条件の query にそろえたことだけ。結果を見てから動かしたのではなく、予行の段階で比べ方の欠陥を見つけたので、本測定の前に直す。
 - 委任：測定の手順の技術判断で、閾値の緩和ではない（値は同じで、比べる対象を同じ条件にそろえた）。異論があれば、本測定の結果を判定に使う前に止める。
+
+**追補 2：本測定の結果と、決定表による決定（2026-11-21。ユーザーの確認は contracts `340a3274`、`nir1-pubg-records/user-confirmation-2026-11-21-pubg5-measure-decisions.md`）**
+- 測定：dev の本測定 `pubg5-main-1`／`1b`／`1c`。build と setup は 3 つとも同じ（node sha256 `8582c142…`、worker `c4aea759…`、`pubg5-setup2`）。
+  - unit は独立なので、pattern 単位で貼り合わせた。S-A と S-C の idle は `main-1`、`quiet-after-graph-input` は `main-1b`、残りの 6 pattern は `main-1c`。
+  - 中断は 2 回。`main-1` は GNOME の自動 suspend で page を失った。`main-1b` はマシンの再起動で止まった。どちらも製品の panic の記録は無い。中断した pattern の unit は集計に使わず、trace だけ残した。
+  - 結果と根拠は `fusion-eval-data/pubg5-dev-journey-2026-11-19/main-1-aggregate/RESULT.md`。判定に効く 5 点は、raw の trace から独立に確かめた（C-1 は独立の反証も受けた）。
+  - 台帳に数えない dev の測定。const だけを開けた形で、切替の PR の形とは違う。
+- 前景の線：判定できた値（各腕 20 件以上）は、すべて線の内。締める側の発動は無い。
+  - 保存の p50 の差は −49〜+7.4%、増えた側の最大は +0.70 ms。−49% は graph-input-burst で、腕 1 の r1・r2 の外れ。
+  - query の p50 の差は、同じ Graph の状態の層どうしで −30〜+1.2%。
+  - 腕 2 の p95 は、全体で 32.8〜62.7 ms、used の層で 37.0〜45.6 ms（20 件以上の層）。
+  - 層を混ぜた全体の p50 の差（たとえば graph-input-query-2s の +64%）は、追補 1 のとおり開示だけにする。
+  - used の層の件数が 20 未満の pattern は判定外とし、値だけを開示する。sparse-burst は `graph-ready` 4 件で p95 99.2 ms（`graphUsed` の flag で数えると 49 件で 85.0 ms）、graph-input-burst は 14 件で p95 80.0 ms。どちらも、10 件／秒の連打で同時実行の上限と warming の待ちが重なったもので、腕 1 も同じ形になる。
+- 行 1（据え置き）：「1 key あたり B の build が 1 回／分以下」が満たされない。
+  - 腕 2 の publish は、45 s ごとの Graph の入力で 0.80〜1.27 回／分、20 s ごとで 2.0 回／分。publish の回数は書込みの回数と同じ。
+  - 行 2 には当たらない。前景の線を越えず、再 spawn の費用も出ていない（prepare は 9〜18 ms）。
+  - key 満杯の drop は測っていない（S-D が未実装）。
+  - 表はこの結果を決めていない。**ユーザーの確認により、2〜60 s・key 8・reset 60 s を据え置く**。
+- 10% の目安：Graph の入力のある 3 pattern の腕 2 で超えた。2s は時間の 14.5〜17%、30s は最悪の位相で 100%、burst は 63.8%。
+  - 原因は trace で確定した。B は Graph の入力の書込みでは起きず、query の registration が拒否された後の demand（DR-PUBG-5-14）で起きる。そのため、書込みの後の最初の query は、必ず Graph なしで返る。
+  - 回復は publish から p50 3.97 s かかる。その約 99% は、Graph owner の失敗の後の再試行の待ち（約 2 s）と、query の周期。B の最短間隔の底（2 s）は効いていない（delayMs は 0）。
+  - 行 3（key の上限）・行 4（底）の形ではない。**ユーザーの確認により、受け入れて開示する**。製品は変えない。
+  - 開示の文面は「Codex を書き換えた直後の関連シーンは、一度だけ関係のつながりを使わずに並ぶことがある」。
+  - 製品のパネルの取り直し方（場面の切替と準備の知らせ）で、Graph に自動で戻るかを測る dev の unit は、後で回して記録する（委任の内）。
+- 点 (3)：切替後の形（腕 2）では、Suspended に 8 回入り、すべて `b-publish-resume` で出た。滞在は p50 62 ms、最大 2.1 s。
+  - 出口の無い Suspended は 0 回。
+  - 前段（B が clean のまま registration が拒否され、B の attempt が publish に至らない形）は 5 件あった。どれも 1 回で止まり、次の prepare の成功で失敗の回数が 0 に戻った。
+  - 腕 1（B の wake なし）は、Graph の入力のある 4 pattern の各 unit で Suspended に入り、出口が無かった。
+  - **ユーザーの確認により、3-a で閉じる**。公開時に「まれに、作業スペースを開き直すかアプリを再起動するまで、関連シーンの Graph が黙って使えなくなる場合がある」と開示する。3-b〜3-e と (a′) は起案しない。
+- dev の道具の注意（判定は変わらない）：
+  - report の `bPreempted` は 0 だが、trace には `foreground-preempted` で終わった B の attempt が 22 件ある。driver の数え漏れ。
+  - 長い測定は `systemd-inhibit` の下で起動する。
+- この追補ではコード・試験・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
