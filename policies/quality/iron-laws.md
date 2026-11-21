@@ -288,10 +288,12 @@ schedule, on a manual dispatch and on the release workflow's call on a tag push,
 push (a reusable call inherits its caller's event and ref and follows them). The canonical Quick, which the merge needs on
 the same candidate, already runs that selection before the merge, and the Frontend, Shared Rust and Electron native jobs run
 most of the same tests in full; the Quality job keeps `pnpm verify:quality` as its contract check on every event. What only
-impact runs is therefore not checked by the `master` push: the grimodex-db tests built with the product feature
-`native-current-human-capture` (the N-API crate always enables it; the Shared Rust job and the Full registry build without it),
-the tests of the eval-only features (`nir1-graph-eval`, `nir1-final-request-eval`), and many Node tests that no other job or
+impact runs is therefore not checked by the `master` push: the tests of the eval-only features (`nir1-graph-eval`,
+`nir1-final-request-eval`, including its combination with `native-current-human-capture`), and many Node tests that no other job or
 registry entry names by path (the NIR-1 graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
+The grimodex-db tests that the Shared Rust `integration` shard runs with `native-current-human-capture` (the N-API crate always enables
+that feature; the shard runs six filtered library test groups and three integration binaries with it, and the Full registry builds
+without it) are checked by the `master` push; the feature-only tests that those filters do not name run in no job, impact included.
 The nightly run (the `ci.yml` run of the schedule: the change scope, the product journeys in `all` mode and the Quality job)
 runs the whole impact selection on `master`, so a break that only the combination of merged changes shows is found by the
 nightly run, usually a day or so after the merge (GitHub's schedule delays or skips runs, so it can take longer), not by the
