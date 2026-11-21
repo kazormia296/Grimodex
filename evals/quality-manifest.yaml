@@ -1940,6 +1940,9 @@ requirements:
       - .agents/skills/test-feature/SKILL.md
       - docs/local-ci-runner.md
       - scripts/nir1-c-query-worker-ci.sh
+      - scripts/ci-cross-os-scope.mjs
+      - scripts/ci-cross-os-scope.json
+      - scripts/ci-cross-os-scope.test.mjs
       - scripts/local-ci.mjs
       - scripts/local-ci-impact-parts.mjs
       - scripts/local-ci-quick-parts.mjs

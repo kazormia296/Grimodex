@@ -4999,8 +4999,8 @@ test("paused CI keeps every product journey job definition available", async () 
       ordinaryGuard,
       jobId === "electron"
         ? `github.event_name != 'schedule'${canonicalExclusion}`
-        : jobId === "quality"
-          ? // The Quality job also runs on the nightly schedule: it has no event condition.
+        : jobId === "quality" || jobId === "nir1-c-query-worker"
+          ? // The Quality job and the C-query worker (macOS and Windows only) also run on the nightly schedule: they have no event condition.
             `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
           : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
       `${jobId} must retain its ordinary execution guard and exact canonical/independent exclusions`,

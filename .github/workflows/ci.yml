@@ -176,9 +176,12 @@ jobs:
       candidate_head: ${{ inputs.candidate_head || '' }}
       max_parallel_tasks: ${{ inputs.max_parallel_tasks || '' }}
 
-  # Pull requests only: skip heavy lanes whose inputs the diff cannot reach.
+  # Pull requests: skip heavy lanes whose inputs the diff cannot reach.
   # Deny by default. Every other event, an empty or incomplete diff, an
-  # unclassified path, or any failure here leaves all lanes running. This job
+  # unclassified path, or any failure here leaves all lanes running. A push to
+  # master gets a second, separate decision (the `crossos` step): whether the
+  # C-query worker also runs on macOS and Windows, from the same kind of diff.
+  # It never changes the lane outputs. This job
   # is not meant to fail (every step that can fail has continue-on-error, and
   # the checkout has its own step timeout), because a job-level failure would
   # make the unchanged shard/aggregate/runtime-performance jobs skip through
@@ -198,9 +201,10 @@ jobs:
       browser: ${{ steps.scope.outputs.browser }}
       lfm: ${{ steps.scope.outputs.lfm }}
       security: ${{ steps.scope.outputs.security }}
+      cquery_cross_os: ${{ steps.crossos.outputs.cquery_cross_os }}
     steps:
-      - name: Check out the pull request for its diff
-        if: github.event_name == 'pull_request'
+      - name: Check out the diff
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
         continue-on-error: true
         timeout-minutes: 3
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -209,7 +213,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js for the scope script
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -285,6 +289,48 @@ jobs:
           path: ${{ runner.temp }}/ci-change-scope.json
           if-no-files-found: ignore
           retention-days: 14
+
+      # A master push only: whether the C-query worker also runs on macOS and
+      # Windows. Only an exact `false` skips those legs; an empty, invalid or
+      # failed decision runs them (fail open). The nightly run, a dispatch and
+      # the release call (a tag push) never reach this step and run them.
+      - name: Decide whether the C-query worker runs on macOS and Windows
+        id: crossos
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PUSH_REF: ${{ github.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -u
+          decision=""
+          # A push that changes the decision code, its rules, the impact helper or a workflow is never
+          # judged by that code: git diff exits 1 for a change and 128 for an error, and both run the legs.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$PUSH_REF" = "refs/heads/master" ] && [ -n "$BEFORE_SHA" ] && [ -n "$AFTER_SHA" ] &&
+            git diff --quiet "$BEFORE_SHA" "$AFTER_SHA" -- 'scripts/ci-cross-os-scope.*' scripts/impact/ .github/workflows/; then
+            decision="$(node scripts/ci-cross-os-scope.mjs --event "$GITHUB_EVENT_NAME" --ref "$PUSH_REF" --before "$BEFORE_SHA" --after "$AFTER_SHA" --summary "$GITHUB_STEP_SUMMARY")" || decision=""
+          fi
+          # A valid true or false from the script comes with the script's own summary; only the rest gets the fallback note.
+          fallback=0
+          case "$decision" in
+            "cquery_cross_os=false" | "cquery_cross_os=true") ;;
+            *)
+              fallback=1
+              decision="cquery_cross_os=true"
+              ;;
+          esac
+          # The output comes first: nothing after this may change what the matrix reads.
+          printf '%s\n' "$decision" >> "$GITHUB_OUTPUT"
+          if [ "$fallback" = "1" ]; then
+            {
+              echo "## C-query worker on macOS and Windows"
+              echo
+              echo "The macOS and Windows legs run: the decision was true, unavailable or invalid, or this push changes the decision code, its rules or a workflow."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   quality:
     name: Quality (traceability / impact-selected light gates)
@@ -2000,15 +2046,18 @@ jobs:
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
     needs: [changes]
-    if: ${{ !cancelled() && (inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks)) && needs.changes.outputs.rust != 'false' }}
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks)) && needs.changes.outputs.rust != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        # A pull request runs the real-worker tests on Linux only (2026-11-15);
-        # the master push and a manual dispatch (a reusable call follows its
-        # caller's event) keep the three-OS matrix, so a macOS- or Windows-only failure is found by the
-        # `ci.yml` of the master push after the merge.
-        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        # A pull request runs the real-worker tests on Linux only (2026-11-15).
+        # A master push runs Linux, and macOS and Windows only when it changes a
+        # path in scripts/ci-cross-os-scope.json (the `crossos` step of `changes`
+        # sets cquery_cross_os; only an exact 'false' skips them). The nightly
+        # run runs macOS and Windows only (Linux ran in the push). A manual
+        # dispatch and the release call (a reusable call follows its caller's
+        # event, a tag push) keep the three-OS matrix.
+        os: ${{ fromJSON(github.event_name == 'schedule' && '["macos-latest","windows-latest"]' || ((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request' || needs.changes.outputs.cquery_cross_os == 'false') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]')) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

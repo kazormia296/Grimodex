@@ -80,7 +80,11 @@ select every suite and are not narrowed by the docs-markdown-only rule. Only the
 nightly run checks that: its step fails unless every suite was selected and
 passed; a dispatch and a tag call are judged by the selector's exit code alone
 (a moved tag, whose `before` resolves, selects by diff). A nightly run that does
-not succeed is a red `master`.
+not succeed is a red `master`. The nightly run also runs the C-query worker on
+macOS and Windows only (Linux ran in the `master` push): it is the catch-all for
+the legs a `master` push skipped (see the change scope below). A nightly
+macOS or Windows leg that was cancelled because no runner was obtained is red by
+the same rule, and is cleared by a successful re-run of that job.
 
 ### Split hosted Full
 
@@ -219,7 +223,7 @@ skips heavy lanes when every changed path is neutral for them. The rules are
 `scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
 `base...head` diff and needs no dependency installation. The lanes are journeys
 (the two journey roots; the shards and the aggregate skip through `needs`), Rust (shared crates and the C-query worker, which a pull request
-runs on Linux only: macOS and Windows run in the `master` push), native,
+runs on Linux only: a `master` push runs macOS and Windows only for worker paths, and the nightly run runs them, see below), native,
 migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
 Quality, Frontend and Electron always run. Selection is deny by default: an
 unclassified path, a forced-all path (workflows, lockfiles, manifests,
@@ -242,11 +246,34 @@ When the shell falls back to running every lane, it appends a `Final outputs`
 section to the job summary (authoritative over any table above it) and rewrites
 the JSON artifact with the final values.
 `changes` is built not to fail (soft steps, a 3 minute step timeout on the
-checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
+checkout, a 10 minute job timeout; the step timeouts add up to 9 minutes): a skipped `changes` job leaves empty outputs,
 which run every lane, but if the `changes` job itself fails as a whole the shard
 and aggregate jobs (and, on a non-pull-request event, runtime performance) are
 skipped by their implicit `success()`
 and the journeys evidence of that run is lost.
+
+The C-query worker's macOS and Windows legs follow a separate decision, made
+only for a push to `master` (the `crossos` step of `changes`; the lane outputs
+above are not touched). The rules are `scripts/ci-cross-os-scope.json` (the
+grimodex-db and grimodex-core crates, Cargo manifests and locks, `.cargo`,
+`.gitattributes`, the worker script, this decision code and `.github/workflows`,
+and the repository files those crates include or address by a `../` path; a test
+derives the last group); `scripts/ci-cross-os-scope.mjs` decides from the
+`before..after` diff of the push. The legs are skipped only when the diff is
+complete, non-empty and safe, both commits resolve, and no changed path is a
+trigger in either the checked-out rules or the `before` commit's copy of them;
+any doubt (a force push, an unresolvable or all-zero `before`, a failure of the
+step) runs them, and a push that changes the decision code, its rules or a
+workflow is never judged by that code. Linux always runs. A skipped leg was
+**not verified** by that push: it is skipped, not passed. The nightly run and the
+release workflow's call (a tag push) cover them. A manual dispatch without
+inputs, with `canonical_profile=c-query-workers` or with `independent_gates`
+(where `changes` is skipped) runs all three; `c-query-practical` and
+`c-query-lifecycle` run Linux only. Known gaps that only the nightly run closes:
+a pull request that adds a new `../` external reference to a crate is not checked
+by the derivation test in the Quick of a Rust-only pull request, and a `master`
+push that creates no run (such as `[skip ci]`) and changes a worker path is not
+seen by the next push's decision, which diffs only its own `before..after`.
 The `electron-runtime-performance` job (the 50k-character / 20-Beat gate) is not a pull request
 check: its absolute-time thresholds are unstable on a shared hosted VM, so a pull request
 event never runs it (it is skipped, not passed). The `master` push, manual dispatch and reusable
