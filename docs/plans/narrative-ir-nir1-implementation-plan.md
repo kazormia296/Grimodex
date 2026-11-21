@@ -33,7 +33,7 @@ L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの�
 2026-09-12追記: 基点 master@96654340ddd2a0407f2fe8aea41a940c3aa516ce で、L6〜L9の実装順序・公開条件・送信境界・互換profile・受入れ区分を
 [L6〜L9実行計画](nir1-l6-l9-execution-plan.md)へ分離して文書化した。L0〜L5はマージ済みで、#572のtyped基盤runtimeは実装済みだが、L6〜L9のproduction runtime integration、activation、受入れは未完了である。
 本追記以降、L6〜L9の実行契約は新文書を参照する。従前の「今回の継続実装範囲はL0〜L5」という記述は、2026-09-08時点の承認範囲を示す履歴であり、現在のL6〜L9実行契約を制限しない。
-公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋C＋D2a、Packingは C＋D1＋D2a＋D2b-1＋D2b-2 とする。
+公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋C（K3/2R-1でD2aを外した）、Packingは C＋D1＋D2a＋D2b-1＋D2b-2 とする。
 
 ### Historical R0 ledger snapshot (2026-09-13)
 
@@ -44,7 +44,7 @@ R0は文書・既存quality contract test・manifest traceだけを変更し、r
 `evals/nir1-retrieval/manifest.json`であり、Graph G-01〜G-08、Packing P-01〜P-12（文体／台詞／描写／exact quote／長距離関係／構造の各2件）の詳細表と、
 事前指定改善G-01／P-12、Packing baselineの費用境界はL6〜L9実行計画へ集約する。
 R0 merged with five proposal/3 contract rows (proposal scope only). PR #579 records the sixth proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`; the exact user confirmation makes this row explicitly ratified and effective as a contract. The exact ref `nir1-l6-l9-contract-proposal/4#typed-revision-material` and user confirmation are recorded in the execution-plan ledger. A2 becomes ready only after A1＋D2a. These records do not complete the downstream threat model or activate any runtime or consumer.
-Graphの製品公開条件は A3＋B＋C＋D2a、Packingの製品公開条件は C＋D1＋D2a＋D2b-1＋D2b-2 とし、
+Graphの製品公開条件は A3＋B＋C（K3/2R-1でD2aを外した）、Packingの製品公開条件は C＋D1＋D2a＋D2b-1＋D2b-2 とし、
 standaloneのPR-P固定性能gateは解決済みで、残るのは Graph-integrated recheck pending/Hold（Graph統合再確認）だけとする。`author-value: not-measured` は保持する。R0自体の開始判定はreadyだが、下流laneのproduction runtime integration開始・activation・受入れはblockedのままである。
 
 2026-09-08、`codex/nir1-material-replay` の clean HEAD

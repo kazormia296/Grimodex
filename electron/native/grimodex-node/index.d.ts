@@ -706,8 +706,9 @@ export declare class Backend {
   /**
    * `nir1-publication` (K3/2). One command carries both the wait for the
    * Graph and the renderer's settle declaration (CP-3a D5). The Graph is
-   * handed out only when it is restricted, stopped and published (PUB-G),
-   * and again here at return.
+   * handed out only when the product gate is open (PUB-G) and the profile is
+   * unrestricted or, if restricted, its stop barrier is confirmed; checked
+   * again here at return (and before a Graph-only click handle is kept).
    */
   relatedScenesGraphContinue(ownerKey: string, request: any, callerIdentity?: string | undefined | null): Promise<string>
   relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>

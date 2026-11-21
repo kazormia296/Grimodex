@@ -377,11 +377,54 @@ fn begin_with_seed_while_pub_g_is_closed_reports_not_activated_and_runs_no_query
 }
 
 #[test]
-fn an_unrestricted_profile_never_starts_a_query() {
+fn an_unrestricted_profile_starts_a_query_when_the_gate_is_open() {
+    // K3/2 (Graph row): the Graph is for the screen only, so an unrestricted
+    // profile gets it like a restricted one once PUB-G is open.
     let fixture = Fixture::with(true, false);
+    assert!(!fixture.state.profile_egress.status().restricted);
+    let graph = fixture.pending();
+    assert!(!graph.is_settled());
+    graph.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(graph.claim(&[]));
+    let outcome = await_graph(
+        &fixture.state,
+        &graph,
+        &plan,
+        Duration::from_secs(2),
+        live_ir(IrState::Available),
+    );
+    assert!(
+        matches!(outcome, GraphAwait::Ready(_)),
+        "the Graph reaches the join"
+    );
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
+    // The warm-up's worker and the held query's own.
+    assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), 2);
+    assert_eq!(gate_reason(&fixture.state), None);
+    graph.declare(GraphTicketUse::Unused);
+    let_the_query_end(&fixture);
+}
+
+#[test]
+fn an_unrestricted_profile_with_a_closed_gate_is_still_not_activated() {
+    let fixture = Fixture::with(false, false);
     let graph = GraphState::default();
     let wire = graph.start(&fixture.state, Fixture::query());
-    assert_eq!(wire["reason"], "profile-not-restricted");
+    assert_eq!(wire["reason"], "not-activated");
+    assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_restricted_profile_before_its_stop_is_confirmed_starts_no_query() {
+    let fixture = Fixture::with(true, true);
+    fixture
+        .state
+        .profile_egress
+        .begin_startup_barrier()
+        .expect("barrier");
+    let graph = GraphState::default();
+    let wire = graph.start(&fixture.state, Fixture::query());
+    assert_eq!(wire["reason"], "not-activated");
     assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), 0);
 }
 
@@ -547,6 +590,265 @@ fn the_requalification_hooks_sit_at_the_result_and_at_the_return() {
     assert!(claim < waiter && waiter < join);
     assert!(assemble < noted && noted < classify);
     assert!(kept < returned && returned < leaves);
+}
+
+/// K32R-4: the return-time recheck of the entry sits before the handle of a
+/// Graph-only row is kept (source order, for the same reason as above), the
+/// handle is kept nowhere else, and nothing that can fail follows the keeping
+/// in `await_request` (the entry's own `finish` is skipped once this ran).
+#[test]
+fn the_entry_recheck_comes_before_the_click_handle_is_kept() {
+    let source = include_str!("graph.rs");
+    let body = &source[source
+        .find("async fn await_request(")
+        .expect("await_request")..];
+    let body = &body[..body.find("\n}\n").expect("end of await_request")];
+    let recheck = body
+        .find("keep_once_returned(&state, guard, finished, || {")
+        .expect("the recheck");
+    let kept = body
+        .find("graph_response::keep_click(&lease.data.graph, click);")
+        .expect("keep_click");
+    assert!(recheck < kept);
+    assert_eq!(body.matches("keep_click(").count(), 1);
+    let after = &body[kept..];
+    let after = &after[after.find("})?;").expect("the end of the recheck") + 4..];
+    assert!(
+        !after.contains('?') && !after.contains("return "),
+        "no failing step after the handle is kept"
+    );
+    // `graph_continue` rechecks once: only when the keeping did not.
+    let wrapper = &source[source
+        .find("pub(crate) async fn graph_continue(")
+        .expect("graph_continue")..];
+    let wrapper = &wrapper[..wrapper.find("\n}\n").expect("end of graph_continue")];
+    assert_eq!(wrapper.matches("guard.finish(&state)").count(), 1);
+    assert!(wrapper.contains("if !finished.load(Ordering::SeqCst) {"));
+}
+
+/// K32R-4 / §3.5 (6): a payload discarded by the recheck because the profile
+/// was activated after an unrestricted admission keeps no handle, and a
+/// recheck that ran is recorded.
+#[test]
+fn a_payload_discarded_by_the_recheck_keeps_no_click_handle() {
+    let fixture = Fixture::with(true, false);
+    let guard = crate::publication_guard::PublicationGuard::admit(&fixture.state, None)
+        .expect("an unrestricted profile admits");
+    let finished = AtomicBool::new(false);
+    let mut kept = false;
+    keep_once_returned(&fixture.state, &guard, &finished, || kept = true)
+        .expect("nothing changed");
+    assert!(kept, "an unchanged profile keeps the handle");
+    assert!(finished.load(Ordering::SeqCst));
+    let guard = crate::publication_guard::PublicationGuard::admit(&fixture.state, None)
+        .expect("an unrestricted profile admits");
+    fixture
+        .state
+        .profile_egress
+        .activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )
+        .expect("restricted profile");
+    let finished = AtomicBool::new(false);
+    let mut kept = false;
+    let error = keep_once_returned(&fixture.state, &guard, &finished, || kept = true)
+        .expect_err("the activation discards the payload");
+    assert!(format!("{error:#}").contains(crate::profile_egress::D2A_EGRESS_DENIED_MARKER));
+    assert!(!kept, "no handle is kept after a failed recheck");
+    assert!(!finished.load(Ordering::SeqCst));
+}
+
+// ---- K32R-8: the slot answers only the caller_epoch it was made under -------
+
+/// The first restricted activation, stop confirmed: `caller_epoch` moves.
+fn activate(fixture: &Fixture) {
+    fixture
+        .state
+        .profile_egress
+        .activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )
+        .expect("restricted profile");
+}
+
+/// A delivered result of an unrestricted profile, declared unused (so it is
+/// the owner's next-query cache entry).
+fn cache_one_unrestricted_result(fixture: &Fixture) {
+    let first = fixture.pending();
+    first.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(first.claim(&[]));
+    let outcome = await_graph(
+        &fixture.state,
+        &first,
+        &plan,
+        Duration::from_secs(2),
+        live_ir(IrState::Available),
+    );
+    assert!(matches!(outcome, GraphAwait::Ready(_)));
+    first.declare(GraphTicketUse::Unused);
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 1);
+}
+
+/// F1 (a): an unrestricted `begin` that hit the cache keeps the projection in
+/// its slot. After an activation, the restricted caller's continue gets
+/// `invalidated` and the projection is dropped, though the profile gate and
+/// the identity admission both pass.
+#[test]
+fn a_cache_hit_made_unrestricted_is_not_returned_after_an_activation() {
+    let fixture = Fixture::with(true, false);
+    cache_one_unrestricted_result(&fixture);
+    let second = GraphState::default();
+    assert_eq!(
+        start_released(&second, &fixture.state),
+        json!({"status": "pending"})
+    );
+    assert!(!second.is_settled());
+    second.set_dense_scene_ids(dense(&[]));
+    activate(&fixture);
+    assert_eq!(fixture.state.profile_egress.status().caller_epoch, 1);
+    // What the old defenses saw: nothing to refuse.
+    assert_eq!(gate_reason(&fixture.state), None);
+    // The await's order: claim, then the gate where the result leaves.
+    let plan = plan_of(second.claim(&[]));
+    assert_eq!(
+        graph_gate_reason(&fixture.state, &second),
+        Some(GraphUnavailable::Invalidated)
+    );
+    assert!(second.is_settled(), "the projection is dropped");
+    // The plan made before the discard no longer reaches the caller: the
+    // await sees a settled slot.
+    let outcome = await_graph(
+        &fixture.state,
+        &second,
+        &plan,
+        Duration::from_secs(2),
+        live_ir(IrState::Available),
+    );
+    assert!(matches!(
+        outcome,
+        GraphAwait::Unavailable(GraphUnavailable::Cancelled)
+    ));
+    // A second continue is refused as always.
+    assert!(matches!(
+        second.claim(&[]),
+        Claim::Reply(GraphUnavailable::Cancelled)
+    ));
+}
+
+/// F1 (b): a delivered ticket of epoch N is not handed to the caller of
+/// epoch N + 1, and it is cancelled, never cached.
+#[test]
+fn a_delivered_ticket_made_unrestricted_is_not_returned_after_an_activation() {
+    let fixture = Fixture::with(true, false);
+    let graph = fixture.pending();
+    graph.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(graph.claim(&[]));
+    let outcome = await_graph(
+        &fixture.state,
+        &graph,
+        &plan,
+        Duration::from_secs(2),
+        live_ir(IrState::Available),
+    );
+    assert!(matches!(outcome, GraphAwait::Ready(_)), "delivered");
+    activate(&fixture);
+    assert_eq!(gate_reason(&fixture.state), None);
+    assert_eq!(
+        graph_gate_reason(&fixture.state, &graph),
+        Some(GraphUnavailable::Invalidated)
+    );
+    assert!(graph.is_settled());
+    // The renderer's late `unused` after the discard caches nothing.
+    graph.declare(GraphTicketUse::Unused);
+    let_the_query_end(&fixture);
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
+    // Asked again, the slot is settled; nothing of it is waited for.
+    assert!(matches!(
+        graph.claim(&[]),
+        Claim::Reply(GraphUnavailable::Cancelled)
+    ));
+}
+
+/// F1 (d): without an activation the same steps return as before. An
+/// unrestricted profile stays unrestricted and a restricted profile keeps its
+/// epoch.
+#[test]
+fn a_slot_of_the_same_caller_epoch_is_returned_as_before() {
+    for restricted in [false, true] {
+        let fixture = Fixture::with(true, restricted);
+        let graph = fixture.pending();
+        graph.set_dense_scene_ids(dense(&[]));
+        let plan = plan_of(graph.claim(&[]));
+        assert_eq!(graph_gate_reason(&fixture.state, &graph), None);
+        let outcome = await_graph(
+            &fixture.state,
+            &graph,
+            &plan,
+            Duration::from_secs(2),
+            live_ir(IrState::Available),
+        );
+        assert!(matches!(outcome, GraphAwait::Ready(_)), "{restricted}");
+        assert_eq!(graph_gate_reason(&fixture.state, &graph), None);
+        assert!(!graph.is_settled(), "{restricted}");
+        graph.declare(GraphTicketUse::Used);
+        let_the_query_end(&fixture);
+    }
+}
+
+/// The binding is read before the hand-over, so it is never newer than the
+/// ticket's own epoch; a slot with no query keeps nothing to leak, and a
+/// slot made after the activation is bound to the new epoch.
+#[test]
+fn a_slot_made_after_the_activation_is_bound_to_the_new_epoch() {
+    let fixture = Fixture::with(true, false);
+    activate(&fixture);
+    let graph = fixture.pending();
+    assert_eq!(graph_gate_reason(&fixture.state, &graph), None);
+    assert!(!graph.discard_if_rebound(1));
+    assert!(graph.discard_if_rebound(0));
+    assert!(graph.is_settled());
+    let_the_query_end(&fixture);
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
+}
+
+/// F1 (c), the part that can be fixed in source: the click handle of a
+/// Graph-only row is used only through `graph_gate_reason` (the entry of
+/// `graph_response::click` and where its answer leaves), and the await uses
+/// it after the claim and at both places where the result leaves. A handle is
+/// not buildable in this crate (`ClickEntry` holds database-crate types), so
+/// the discard itself is checked by `discard_if_rebound` above.
+#[test]
+fn the_click_and_the_await_check_the_caller_epoch_binding() {
+    let response = include_str!("graph_response.rs");
+    let click = &response[response.find("pub(super) fn click(").expect("click")..];
+    let click = &click[..click.find("\n}\n").expect("end of click")];
+    assert!(click.contains("graph_gate_reason(state, &lease.data.graph)"));
+    assert!(!click.contains(" gate_reason("));
+    let entry = click.find("graph_gate_reason(").expect("entry gate");
+    assert!(entry < click.find("current_operation(").expect("current_operation"));
+    assert!(entry < click.find("click_in_workspace(").expect("the read"));
+    assert_eq!(click.matches("graph_gate_reason(").count(), 2);
+    let source = include_str!("graph.rs");
+    let body = &source[source
+        .find("async fn await_request(")
+        .expect("await_request")..];
+    let body = &body[..body.find("\n}\n").expect("end of await_request")];
+    assert_eq!(
+        body.matches("graph_gate_reason(&state, &lease.data.graph)")
+            .count(),
+        3
+    );
+    assert!(!body.contains(" gate_reason(&state)"));
+    let claimed = body.find("Claim::Await(plan) => plan,").expect("claim");
+    assert!(claimed < body.find("graph_gate_reason(").expect("first gate"));
+    // LP-GATE: every exit releases a cache hit's window, so the first gate
+    // comes after the window guard.
+    let guard = body
+        .find("let window = CachedWindowRelease(lease.clone());")
+        .expect("window guard");
+    assert!(guard < body.find("graph_gate_reason(").expect("first gate"));
 }
 
 // ---- RS-JOIN: the IR arrival and the IR continue (DR-RSJ-3, DR-RSJ-4) -------
@@ -1628,11 +1930,27 @@ fn the_gate_is_rechecked_where_the_result_leaves() {
         gate_reason(&closed.state),
         Some(GraphUnavailable::NotActivated)
     );
+    // K3/2 (Graph row): an unrestricted profile is not closed by the profile
+    // gate; a restricted one is, until its stop barrier is confirmed.
     let unrestricted = Fixture::with(true, false);
+    assert_eq!(gate_reason(&unrestricted.state), None);
+    let barrier = Fixture::new();
+    assert_eq!(gate_reason(&barrier.state), None);
+    barrier
+        .state
+        .profile_egress
+        .begin_startup_barrier()
+        .expect("barrier");
     assert_eq!(
-        gate_reason(&unrestricted.state),
-        Some(GraphUnavailable::ProfileNotRestricted)
+        gate_reason(&barrier.state),
+        Some(GraphUnavailable::NotActivated)
     );
+    barrier
+        .state
+        .profile_egress
+        .confirm_in_flight_stopped()
+        .expect("stop confirmed");
+    assert_eq!(gate_reason(&barrier.state), None);
     let open = Fixture::new();
     assert_eq!(gate_reason(&open.state), None);
     open.state.nir1_graph.close_for_shutdown();

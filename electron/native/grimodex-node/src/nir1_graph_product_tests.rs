@@ -428,17 +428,446 @@ fn a1_owner_is_not_activated_before_pub_g() {
 }
 
 #[test]
+fn profile_gate_closes_only_a_restricted_profile_without_a_confirmed_stop() {
+    // K32R-1: the one pure judgement the four call sites share.
+    let fixture = ProductFixture::with(true, false, true);
+    let unrestricted = fixture.state.profile_egress.status();
+    assert!(!unrestricted.restricted && unrestricted.in_flight_stopped);
+    assert_eq!(profile_gate(&unrestricted), None);
+    // The inputs of the judgement, one by one.
+    for (restricted, stopped, closed) in [
+        (false, true, false),
+        (false, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
+        let status = ProfileEgressStatus {
+            restricted,
+            in_flight_stopped: stopped,
+            ..unrestricted.clone()
+        };
+        assert_eq!(
+            profile_gate(&status),
+            closed.then_some(GraphUnavailable::NotActivated),
+            "restricted={restricted} stopped={stopped}"
+        );
+    }
+}
+
+/// A restricted profile whose stop barrier has begun and is not confirmed
+/// (the state a restricted startup is in until the stop is confirmed).
+fn enter_barrier(fixture: &ProductFixture) {
+    let status = fixture
+        .state
+        .profile_egress
+        .begin_startup_barrier()
+        .expect("barrier");
+    assert!(status.restricted && !status.in_flight_stopped);
+}
+
+fn leave_barrier(fixture: &ProductFixture) {
+    let status = fixture
+        .state
+        .profile_egress
+        .confirm_in_flight_stopped()
+        .expect("stop confirmed");
+    assert!(status.restricted && status.in_flight_stopped);
+}
+
+#[test]
+fn a_restricted_profile_before_its_stop_is_confirmed_is_not_activated() {
+    let fixture = ProductFixture::new();
+    enter_barrier(&fixture);
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::NotActivated)
+    ));
+    assert_eq!(creates_of(&fixture), 0);
+    let diagnostics = fixture.diagnostics();
+    assert_eq!(
+        diagnostics.unavailable[GraphUnavailable::NotActivated.index()],
+        1
+    );
+    assert_eq!(
+        diagnostics.unavailable[GraphUnavailable::ProfileNotRestricted.index()],
+        0,
+        "the old reason is no longer produced"
+    );
+    // Once the stop is confirmed the same begin goes on.
+    leave_barrier(&fixture);
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Warming)
+    ));
+}
+
+fn creates_of(fixture: &ProductFixture) -> usize {
+    fixture.plan.creates.load(Ordering::SeqCst)
+}
+
+#[test]
+fn the_owner_thread_admits_no_worker_while_the_barrier_is_on() {
+    // The barrier begins after `begin` passed and before the owner thread
+    // admits: nothing is created or queried.
+    let fixture = ProductFixture::new();
+    let weak = Arc::downgrade(&fixture.state);
+    fixture
+        .state
+        .nir1_graph
+        .set_admit_hook_for_test(Arc::new(move || {
+            if let Some(state) = weak.upgrade() {
+                let _ = state.profile_egress.begin_startup_barrier();
+            }
+        }));
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Warming)
+    ));
+    wait_until("the owner thread to give up", || {
+        fixture.kind() != GraphSlotKind::Preparing
+    });
+    assert_eq!(creates_of(&fixture), 0, "no worker while the barrier is on");
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_query_does_not_start_across_the_barrier_and_its_worker_is_retired() {
+    // K32R-2: a worker made while the profile admitted the Graph is retired,
+    // not returned to READY, when the barrier is on where its query would
+    // start. The held query (the product's Related Scenes path) is answered
+    // not-activated and no query reaches the worker.
+    let fixture = ProductFixture::new();
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+    let ticket = pending(
+        fixture
+            .state
+            .nir1_graph
+            .begin_deferred(&fixture.state, fixture.query("entity")),
+    );
+    ticket.release_after_own_commits();
+    wait_until("the prepare to be under way", || {
+        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    });
+    enter_barrier(&fixture);
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    match ticket.wait_timeout(Duration::from_secs(5)) {
+        Some(GraphTicketOutcome::Unavailable(reason)) => {
+            assert_eq!(reason, GraphUnavailable::NotActivated)
+        }
+        _ => panic!("expected not-activated"),
+    }
+    wait_until("the slot to be free", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn a_begin_query_does_not_start_across_the_barrier_and_its_worker_is_retired() {
+    // K32R-2 on the `begin` path (held = false): a READY worker is queried
+    // through `serve_ready`. The barrier begins between that begin (which
+    // passed) and the owner thread's query start: no query reaches the worker,
+    // it is retired (not returned to READY), and the ticket is not-activated.
+    let fixture = ProductFixture::new();
+    fixture.warm();
+    assert_eq!(creates_of(&fixture), 1);
+    let weak = Arc::downgrade(&fixture.state);
+    fixture
+        .state
+        .nir1_graph
+        .set_query_hook_for_test(Arc::new(move || {
+            if let Some(state) = weak.upgrade() {
+                let _ = state.profile_egress.begin_startup_barrier();
+            }
+        }));
+    let ticket = pending(fixture.begin("entity"));
+    match ticket.wait_timeout(Duration::from_secs(5)) {
+        Some(GraphTicketOutcome::Unavailable(reason)) => {
+            assert_eq!(reason, GraphUnavailable::NotActivated)
+        }
+        _ => panic!("expected not-activated"),
+    }
+    wait_until("the slot to be free", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 1);
+    assert_eq!(creates_of(&fixture), 1, "nothing is rebuilt across the barrier");
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn a_ready_worker_made_unrestricted_is_not_reused_after_activation() {
+    // K32R-2 (caller_epoch): the worker was admitted at caller_epoch 0. The
+    // first restricted activation (stop confirmed) moves the epoch to 1, so the
+    // READY worker answers no restricted caller: it is retired unqueried and a
+    // cold worker is built through the rekey path.
+    let fixture = ProductFixture::with(true, false, true);
+    fixture.warm();
+    assert_eq!(creates_of(&fixture), 1);
+    assert_eq!(fixture.state.profile_egress.status().caller_epoch, 0);
+    let status = fixture
+        .state
+        .profile_egress
+        .activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )
+        .expect("restricted profile");
+    assert_eq!(status.caller_epoch, 1);
+    assert!(status.restricted && status.in_flight_stopped);
+    assert!(
+        matches!(
+            fixture.begin("entity"),
+            GraphBegin::Unavailable(GraphUnavailable::Warming)
+        ),
+        "the old worker is not queried"
+    );
+    wait_until("the cold rebuild to be READY", || {
+        creates_of(&fixture) == 2 && fixture.kind() == GraphSlotKind::Ready
+    });
+    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    // The new worker carries epoch 1 and is used.
+    let ticket = pending(fixture.begin("entity"));
+    assert!(matches!(
+        ticket.wait_timeout(Duration::from_secs(5)),
+        Some(GraphTicketOutcome::Available(_))
+    ));
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(creates_of(&fixture), 2);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn a_ready_worker_of_the_same_epoch_is_reused() {
+    // The counterpart: same caller_epoch, the READY worker answers as before.
+    let fixture = ProductFixture::new();
+    fixture.warm();
+    let ticket = pending(fixture.begin("entity"));
+    assert!(matches!(
+        ticket.wait_timeout(Duration::from_secs(5)),
+        Some(GraphTicketOutcome::Available(_))
+    ));
+    assert_eq!(creates_of(&fixture), 1);
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn a_queued_query_of_a_worker_from_an_older_epoch_is_not_started() {
+    // The same epoch check where the query starts: the activation (stop
+    // confirmed, so the barrier gate is open) comes after the query was queued.
+    let fixture = ProductFixture::with(true, false, true);
+    fixture.warm();
+    let weak = Arc::downgrade(&fixture.state);
+    fixture
+        .state
+        .nir1_graph
+        .set_query_hook_for_test(Arc::new(move || {
+            if let Some(state) = weak.upgrade() {
+                let _ = state.profile_egress.activate_first_restricted_publication(
+                    &crate::main_grant::ConsumedProfileActivation::for_test(),
+                    true,
+                );
+            }
+        }));
+    let ticket = pending(fixture.begin("entity"));
+    match ticket.wait_timeout(Duration::from_secs(5)) {
+        Some(GraphTicketOutcome::Unavailable(reason)) => {
+            assert_eq!(reason, GraphUnavailable::Invalidated)
+        }
+        _ => panic!("expected invalidated"),
+    }
+    wait_until("the slot to be free", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 1);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn a_query_made_before_the_barrier_is_not_touched_by_the_new_check() {
+    // The same flow without the barrier still queries (the check opens).
+    let fixture = ProductFixture::new();
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+    let ticket = pending(
+        fixture
+            .state
+            .nir1_graph
+            .begin_deferred(&fixture.state, fixture.query("entity")),
+    );
+    ticket.release_after_own_commits();
+    wait_until("the prepare to be under way", || {
+        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    });
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        ticket.wait_timeout(Duration::from_secs(5)),
+        Some(GraphTicketOutcome::Available(_))
+    ));
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn an_unrestricted_graph_cached_under_epoch_zero_is_not_reused_after_activation() {
+    // §3.5 (6): the cache key carries `caller_epoch`; the first restricted
+    // activation moves it, so what an unrestricted profile cached is never
+    // handed to the restricted caller. The entry is not consumed before the
+    // activation and the TTL is long, so only the key can make it unusable.
+    let fixture = ProductFixture::with(true, false, true);
+    fixture.state.nir1_graph.set_config_for_test(GraphOwnerConfig {
+        cache_ttl: Duration::from_secs(60),
+        ..fast_config()
+    });
+    assert_eq!(fixture.state.profile_egress.status().caller_epoch, 0);
+    let ticket = pending(
+        fixture
+            .state
+            .nir1_graph
+            .begin_deferred(&fixture.state, fixture.query("entity")),
+    );
+    ticket.release_after_own_commits();
+    assert!(matches!(
+        ticket.wait_timeout(Duration::from_secs(5)),
+        Some(GraphTicketOutcome::Available(_))
+    ));
+    ticket.finish(GraphTicketUse::Unused);
+    wait_until("the late cache", || {
+        fixture.state.nir1_graph.cache_len_for_test() == 1
+    });
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    let status = fixture
+        .state
+        .profile_egress
+        .activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )
+        .expect("restricted profile");
+    assert_eq!(status.caller_epoch, 1);
+    assert_eq!(
+        fixture.state.nir1_graph.cache_len_for_test(),
+        1,
+        "the entry is still there: nothing but the key is under test"
+    );
+    let again = fixture
+        .state
+        .nir1_graph
+        .begin_deferred(&fixture.state, fixture.query("entity"));
+    assert!(
+        !matches!(again, GraphBegin::Cached(_)),
+        "the epoch of the key differs"
+    );
+    if let GraphBegin::Pending(ticket) = again {
+        ticket.finish(GraphTicketUse::Cancelled);
+    }
+}
+
+#[test]
+fn a_worker_made_unrestricted_does_not_query_after_the_profile_restricts_and_barriers() {
+    // K32R-2, the case the check exists for: the worker was prepared while the
+    // profile was unrestricted; the profile is then restricted and its stop is
+    // not confirmed (a restart's barrier) where the query would start.
+    let fixture = ProductFixture::with(true, false, true);
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+    let ticket = pending(
+        fixture
+            .state
+            .nir1_graph
+            .begin_deferred(&fixture.state, fixture.query("entity")),
+    );
+    ticket.release_after_own_commits();
+    wait_until("the prepare to be under way", || {
+        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    });
+    fixture
+        .state
+        .profile_egress
+        .activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            false,
+        )
+        .expect("restricted, stop not confirmed");
+    let status = fixture.state.profile_egress.status();
+    assert!(status.restricted && !status.in_flight_stopped);
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    match ticket.wait_timeout(Duration::from_secs(5)) {
+        Some(GraphTicketOutcome::Unavailable(reason)) => {
+            assert_eq!(reason, GraphUnavailable::NotActivated)
+        }
+        _ => panic!("expected not-activated"),
+    }
+    wait_until("the slot to be free", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 1);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+#[test]
+fn with_authorized_preparation_still_refuses_an_unrestricted_profile_with_the_graph_gate_open() {
+    // §3.5 (4), narrowed to what this checks: opening the Graph gate for an
+    // unrestricted profile does not change `with_authorized_preparation`, which
+    // stays restricted-only (its closure is never run). What keeps an
+    // unrestricted capture out of the Graph owner end to end is the test
+    // `napi_unrestricted_capture_and_retirement_are_legacy_only_without_db_writes`
+    // in `nir1_prepared_request.rs`.
+    let fixture = ProductFixture::with(true, false, true);
+    assert!(fixture.state.nir1_graph.publication_is_open());
+    let status = fixture.state.profile_egress.status();
+    assert!(!status.restricted);
+    let caller = crate::profile_egress::CallerIdentity {
+        profile_id: status.profile_id,
+        caller_id: "unrestricted-caller".into(),
+        caller_epoch: status.caller_epoch,
+        sender_id: 1,
+        workspace_id: Some("workspace".into()),
+        session_id: "session".into(),
+    };
+    let mut reached = false;
+    let refused =
+        fixture
+            .state
+            .profile_egress
+            .with_authorized_preparation(&caller, "workspace", || {
+                reached = true;
+                Ok(())
+            });
+    assert!(refused.is_err());
+    assert!(!reached, "the preparation closure is never run");
+    assert_eq!(fixture.diagnostics().begins, 0);
+    assert_eq!(creates_of(&fixture), 0);
+}
+
+#[test]
 fn a1_module_has_no_napi_entry() {
     assert!(!include_str!("nir1_graph_product.rs").contains("#[napi"));
 }
 
 #[test]
-fn activation_requires_registration_restricted_profile_and_worker() {
+fn activation_requires_registration_the_profile_gate_and_worker() {
+    // K3/2 (Graph row): an unrestricted profile is not refused. It goes on to
+    // the worker like a restricted one (here: the first begin warms).
     let unrestricted = ProductFixture::with(true, false, true);
+    assert!(!unrestricted.state.profile_egress.status().restricted);
     assert!(matches!(
         unrestricted.begin("entity"),
-        GraphBegin::Unavailable(GraphUnavailable::ProfileNotRestricted)
+        GraphBegin::Unavailable(GraphUnavailable::Warming)
     ));
+    wait_until("READY", || unrestricted.kind() == GraphSlotKind::Ready);
+    assert_eq!(
+        unrestricted.diagnostics().unavailable[GraphUnavailable::ProfileNotRestricted.index()],
+        0
+    );
     let no_worker = ProductFixture::with(true, true, false);
     assert!(matches!(
         no_worker.begin("entity"),
@@ -1619,6 +2048,12 @@ fn cache_entry_is_usable_only_before_ttl_with_the_same_epochs() {
         ..key.clone()
     };
     assert!(!cache_entry_usable(&entry, &other_caller, 7, stored_at, ttl));
+    // An unrestricted profile's epoch (0) never matches the activated one (1).
+    let unrestricted = CacheKey {
+        caller_epoch: 0,
+        ..key.clone()
+    };
+    assert!(!cache_entry_usable(&entry, &unrestricted, 7, stored_at, ttl));
 }
 
 #[test]

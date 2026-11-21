@@ -31,10 +31,11 @@ use super::graph_response::{self, ClickEntry};
 use super::*;
 use crate::nir1_graph_commit_gate::WindowLease;
 use crate::nir1_graph_product::{
-    CachedGraph, GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome, GraphTicketUse,
-    GraphTicketWaiter, GraphUnavailable,
+    profile_gate, CachedGraph, GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome,
+    GraphTicketUse, GraphTicketWaiter, GraphUnavailable,
 };
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
+use std::sync::atomic::AtomicBool;
 use std::sync::Condvar;
 
 /// D7: the most a `graph_continue` waits for the ticket and the IR response.
@@ -59,6 +60,11 @@ struct GraphInner {
     claimed: bool,
     /// The owner's lifecycle edge epoch when the query was handed over.
     edge_epoch: u64,
+    /// K32R-8: the profile's `caller_epoch` read before the query was handed
+    /// over (so never newer than the one the ticket or the cache hit was made
+    /// under). The slot's projection and the click handle are used only while
+    /// it still equals the current one; an activation moves it.
+    caller_epoch: u64,
     /// The Graph-only row the one response of this operation showed, by its
     /// opaque handle: the binding and the path's identifiers and tokens a click
     /// is compared with. At most one; it lives and dies with the lease. Never a
@@ -73,6 +79,7 @@ impl Default for GraphInner {
             dense_scene_ids: None,
             claimed: false,
             edge_epoch: 0,
+            caller_epoch: 0,
             click: None,
         }
     }
@@ -210,6 +217,10 @@ impl GraphState {
     /// `graph` field of the `begin` response.
     pub(super) fn start(&self, state: &Arc<AppState>, query: GraphQuery) -> Value {
         let edge_epoch = state.nir1_graph.edge_epoch();
+        // K32R-8: read before the hand-over. An activation in between can only
+        // make this older than the epoch the owner saw, which discards the
+        // slot later (safe), never the reverse.
+        let caller_epoch = state.profile_egress.status().caller_epoch;
         let begin = state.nir1_graph.begin_deferred(state, query);
         let (slot, wire) = match begin {
             GraphBegin::Pending(ticket) => (GraphSlot::Pending(ticket), graph_pending()),
@@ -224,8 +235,36 @@ impl GraphState {
         };
         let mut inner = lock_inner(&self.inner);
         inner.edge_epoch = edge_epoch;
+        inner.caller_epoch = caller_epoch;
         inner.slot = slot;
         wire
+    }
+
+    /// K32R-8: true when `current` is not the `caller_epoch` this slot was
+    /// made under (an activation completed since). The projection of the slot
+    /// and the click handle are then dropped and the ticket is cancelled (so
+    /// it is never cached), and nothing of it is returned to the new caller.
+    /// The ticket is finished outside the lock, as `declare` does.
+    pub(super) fn discard_if_rebound(&self, current: u64) -> bool {
+        let ticket = {
+            let mut inner = lock_inner(&self.inner);
+            if inner.caller_epoch == current {
+                return false;
+            }
+            inner.click = None;
+            if matches!(inner.slot, GraphSlot::Pending(_) | GraphSlot::Cached(..)) {
+                match std::mem::replace(&mut inner.slot, GraphSlot::Settled) {
+                    GraphSlot::Pending(ticket) => Some(ticket),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(ticket) = ticket {
+            ticket.finish(GraphTicketUse::Cancelled);
+        }
+        true
     }
 
     /// The lifecycle epoch of the owner when the query was handed over.
@@ -589,7 +628,8 @@ fn lease_probe<T: LeaseEnd>(lease: &LeaseOf<T>) -> LeaseProbe {
 }
 
 /// The reason the Graph may not be handed out now, if any. The owner already
-/// checked these at `begin`; they are checked again where the result leaves.
+/// checked these at `begin`; they are checked again where the result leaves
+/// (and from the click, which calls this too).
 pub(super) fn gate_reason(state: &AppState) -> Option<GraphUnavailable> {
     if state.nir1_graph.is_closed() {
         return Some(GraphUnavailable::Invalidated);
@@ -597,21 +637,39 @@ pub(super) fn gate_reason(state: &AppState) -> Option<GraphUnavailable> {
     if !state.nir1_graph.publication_is_open() {
         return Some(GraphUnavailable::NotActivated);
     }
-    let status = state.profile_egress.status();
-    if !(status.restricted && status.in_flight_stopped) {
-        return Some(GraphUnavailable::ProfileNotRestricted);
+    // K3/2 (Graph row): an unrestricted profile hands the Graph out like R and
+    // IR; only a restricted profile whose stop barrier is not confirmed is
+    // closed. The mode change in between is `PublicationGuard::finish`'s.
+    profile_gate(&state.profile_egress.status())
+}
+
+/// `gate_reason` plus the K32R-8 binding: the slot (its projection, its ticket
+/// and the click handle) answers only the `caller_epoch` it was made under.
+/// A Graph made while the profile was unrestricted is not handed to the
+/// restricted caller of an activation that completed since; that is
+/// `Invalidated` (an existing wire reason), and the slot is discarded.
+pub(super) fn graph_gate_reason(state: &AppState, graph: &GraphState) -> Option<GraphUnavailable> {
+    if let Some(reason) = gate_reason(state) {
+        return Some(reason);
     }
-    None
+    graph
+        .discard_if_rebound(state.profile_egress.status().caller_epoch)
+        .then_some(GraphUnavailable::Invalidated)
 }
 
 /// `related_scenes_graph_continue`. The caller (the N-API entry) has admitted
-/// the call and runs the return-time recheck on the result.
+/// the call; `guard` is that admission and is consumed here: the return-time
+/// recheck (`PublicationGuard::finish`) runs exactly once, on every way out.
+/// For an Available Graph it runs before the handle of a Graph-only row is
+/// kept (K32R-4), so a payload it discards leaves no handle in the lease.
 pub(crate) async fn graph_continue(
     state: Arc<AppState>,
     owner: String,
     request: Value,
+    guard: PublicationGuard,
 ) -> Result<Value> {
-    match GraphContinueRequest::parse(request)? {
+    let finished = AtomicBool::new(false);
+    let value = match GraphContinueRequest::parse(request)? {
         GraphContinueRequest::Settle {
             operation_ticket,
             settle,
@@ -622,18 +680,32 @@ pub(crate) async fn graph_continue(
             settle.ticket_use(),
             Instant::now(),
         )? {
-            Settled::Declared => Ok(json!({"status": "settled"})),
-            Settled::Unknown => Ok(unavailable("cancelled")),
+            Settled::Declared => json!({"status": "settled"}),
+            Settled::Unknown => unavailable("cancelled"),
             Settled::Expired(lease) => {
                 announce_invalidated(&state, &lease);
-                Ok(unavailable("cancelled"))
+                unavailable("cancelled")
             }
         },
         GraphContinueRequest::Await {
             operation_ticket,
             raw_scene_ids,
-        } => await_request(state, owner, operation_ticket, raw_scene_ids).await,
+        } => {
+            await_request(
+                Arc::clone(&state),
+                owner,
+                operation_ticket,
+                raw_scene_ids,
+                &guard,
+                &finished,
+            )
+            .await?
+        }
+    };
+    if !finished.load(Ordering::SeqCst) {
+        guard.finish(&state)?;
     }
+    Ok(value)
 }
 
 pub(super) enum Settled<T> {
@@ -677,6 +749,8 @@ async fn await_request(
     owner: String,
     ticket: String,
     raw_scene_ids: Vec<String>,
+    guard: &PublicationGuard,
+    finished: &AtomicBool,
 ) -> Result<Value> {
     let reply = |reason: GraphUnavailable| -> Result<Value> { Ok(unavailable(reason.as_str())) };
     let Some(lease) = state.related_scenes.owned(&owner, &ticket)? else {
@@ -699,6 +773,11 @@ async fn await_request(
     let eval_waiter = eval_waiter_of(&plan);
     // LP-GATE: the window of a cache hit ends with this join, on every exit.
     let window = CachedWindowRelease(lease.clone());
+    // K32R-8: a slot made under another `caller_epoch` is not awaited. It is
+    // checked after the window guard, so this exit releases the window too.
+    if let Some(reason) = graph_gate_reason(&state, &lease.data.graph) {
+        return reply(reason);
+    }
     let waiting = {
         let state = Arc::clone(&state);
         let lease = lease.clone();
@@ -735,7 +814,7 @@ async fn await_request(
         Ok(Err(error)) => return Err(error),
         Err(_) => return reply(GraphUnavailable::Failed),
     }
-    if let Some(reason) = gate_reason(&state) {
+    if let Some(reason) = graph_gate_reason(&state, &lease.data.graph) {
         return reply(reason);
     }
     // The requalification reads the database: on a blocking thread, with the
@@ -777,16 +856,35 @@ async fn await_request(
     if !lease.is_live(Instant::now()) {
         return stopped(&state, &ticket, &lease, GraphUnavailable::Invalidated);
     }
-    if let Some(reason) = gate_reason(&state) {
+    if let Some(reason) = graph_gate_reason(&state, &lease.data.graph) {
         return reply(reason);
     }
     if !current_request(&state, &lease.data.request)? {
         return stopped(&state, &ticket, &lease, GraphUnavailable::Invalidated);
     }
-    graph_response::keep_click(&lease.data.graph, click);
+    keep_once_returned(&state, guard, finished, || {
+        graph_response::keep_click(&lease.data.graph, click);
+    })?;
     #[cfg(feature = "nir1-graph-eval")]
     eval_note_requalification_returned(eval_waiter.as_ref());
     Ok(wire)
+}
+
+/// K32R-4: the return-time recheck of the entry (`PublicationGuard::finish`)
+/// comes before the handle of a Graph-only row is kept, so a payload that
+/// `finish` discards (an activation in between) leaves no click handle in the
+/// lease. `finished` tells `graph_continue` that the one recheck has run, so
+/// nothing that can fail follows the keeping.
+pub(super) fn keep_once_returned(
+    state: &AppState,
+    guard: &PublicationGuard,
+    finished: &AtomicBool,
+    keep: impl FnOnce(),
+) -> Result<()> {
+    guard.finish(state)?;
+    finished.store(true, Ordering::SeqCst);
+    keep();
+    Ok(())
 }
 
 /// K6/7 (ii-b) (2-2): the evaluation build keeps a waiter on the ticket, so

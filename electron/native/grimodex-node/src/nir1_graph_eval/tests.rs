@@ -291,15 +291,20 @@ fn p7_the_gate_opens_only_for_the_owner_register_was_given() {
 }
 
 #[test]
-fn p7_an_unrestricted_profile_still_refuses_after_registration() {
+fn p7_an_unrestricted_profile_goes_on_to_the_worker_after_registration() {
+    // K3/2 (Graph row): the profile gate no longer refuses an unrestricted
+    // profile; only the registration (the publication gate) and the worker do.
     let _serial = serial();
     let fixture = OwnerFixture::new(false);
     fixture.install_echo_worker();
     record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    let ticket = fixture.pending_after_warm();
+    // The echo worker answers: the Graph is handed out, not refused.
     assert!(matches!(
-        fixture.begin("entity"),
-        GraphBegin::Unavailable(GraphUnavailable::ProfileNotRestricted)
+        ticket.wait_timeout(Duration::from_secs(2)),
+        Some(GraphTicketOutcome::Available(_))
     ));
+    ticket.finish(GraphTicketUse::Cancelled);
 }
 
 // ---- the begin records ----------------------------------------------------------

@@ -13413,8 +13413,9 @@ impl Backend {
 
     /// `nir1-publication` (K3/2). One command carries both the wait for the
     /// Graph and the renderer's settle declaration (CP-3a D5). The Graph is
-    /// handed out only when it is restricted, stopped and published (PUB-G),
-    /// and again here at return.
+    /// handed out only when the product gate is open (PUB-G) and the profile is
+    /// unrestricted or, if restricted, its stop barrier is confirmed; checked
+    /// again here at return (and before a Graph-only click handle is kept).
     #[napi]
     pub async fn related_scenes_graph_continue(
         &self,
@@ -13424,10 +13425,12 @@ impl Backend {
     ) -> Result<String> {
         let guard = publication_guard::PublicationGuard::admit(&self.state, caller_identity)
             .map_err(publication_err_to_napi)?;
-        let value = related_scenes::graph_continue(Arc::clone(&self.state), owner_key, request)
-            .await
-            .map_err(related_scenes_err_to_napi)?;
-        guard.finish(&self.state).map_err(publication_err_to_napi)?;
+        // The return-time recheck runs inside, once, before a Graph-only click
+        // handle is kept (K32R-4); there is none to run here.
+        let value =
+            related_scenes::graph_continue(Arc::clone(&self.state), owner_key, request, guard)
+                .await
+                .map_err(related_scenes_err_to_napi)?;
         Ok(value.to_string())
     }
 

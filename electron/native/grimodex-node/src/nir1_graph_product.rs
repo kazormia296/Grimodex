@@ -50,6 +50,7 @@ use grimodex_db::{
 
 use crate::nir1_graph_commit_gate::{GateCounters, GraphCommitGate, WindowLease};
 use crate::nir1_graph_dfinal::GraphWaitPlan;
+use crate::profile_egress::ProfileEgressStatus;
 use crate::state::AppState;
 
 #[cfg(test)]
@@ -182,6 +183,19 @@ impl GraphUnavailable {
     fn index(self) -> usize {
         self as usize
     }
+}
+
+/// K3/2 (Graph row, K32R-1): the one profile gate of the Graph, shared by
+/// `begin` (admit_and_route), the owner thread (`admit`), the query start
+/// (`serve_query`) and the return-time `gate_reason`.
+///
+/// An unrestricted profile never closes it: its `in_flight_stopped` is true by
+/// construction, and the Graph answer is for the screen only (no egress). A
+/// restricted profile closes it until the stop barrier is confirmed. The
+/// reason is `NotActivated`; `ProfileNotRestricted` stays in the closed set
+/// but is no longer produced.
+pub(crate) fn profile_gate(status: &ProfileEgressStatus) -> Option<GraphUnavailable> {
+    (status.restricted && !status.in_flight_stopped).then_some(GraphUnavailable::NotActivated)
 }
 
 #[derive(Clone, Debug)]
@@ -553,6 +567,10 @@ struct Shared {
     /// owner thread with no lock of this owner held.
     #[cfg(test)]
     admit_hook_for_test: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Test-only: runs in `serve_query` just before the profile gate is read
+    /// (owner thread, no lock of this owner held).
+    #[cfg(test)]
+    query_hook_for_test: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -592,6 +610,8 @@ impl Shared {
             publication_open_for_eval: AtomicBool::new(false),
             #[cfg(test)]
             admit_hook_for_test: Mutex::new(None),
+            #[cfg(test)]
+            query_hook_for_test: Mutex::new(None),
         }
     }
 
@@ -916,6 +936,11 @@ struct Session {
     thread_id: u64,
     key: GraphKey,
     epoch: u64,
+    /// K32R-2: the `caller_epoch` the current worker was admitted under (set
+    /// where it is created, under the slot lock). A READY worker is reused only
+    /// for a caller of the same epoch: an activation bumps it, so a worker made
+    /// while the profile was unrestricted never answers a restricted caller.
+    worker_caller_epoch: Option<u64>,
     last_demand: Instant,
     commands: SyncSender<Command>,
     join: Option<JoinHandle<()>>,
@@ -1300,8 +1325,8 @@ impl Nir1GraphProductOwner {
             return shared.count_unavailable(GraphUnavailable::NotActivated);
         }
         let status = state.profile_egress.status();
-        if !(status.restricted && status.in_flight_stopped) {
-            return shared.count_unavailable(GraphUnavailable::ProfileNotRestricted);
+        if let Some(reason) = profile_gate(&status) {
+            return shared.count_unavailable(reason);
         }
         let Some(factory) = shared.worker.get().cloned() else {
             return shared.count_unavailable(GraphUnavailable::WorkerUnavailable);
@@ -1633,6 +1658,11 @@ impl Nir1GraphProductOwner {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_query_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.query_hook_for_test) = Some(hook);
+    }
+
+    #[cfg(test)]
     pub(crate) fn slot_kind_for_test(&self) -> GraphSlotKind {
         self.slot_kind()
     }
@@ -1950,6 +1980,7 @@ impl Shared {
                     thread_id,
                     key,
                     epoch,
+                    worker_caller_epoch: None,
                     last_demand: now,
                     commands,
                     join: Some(join),
@@ -2165,6 +2196,21 @@ impl Shared {
                 #[cfg(feature = "nir1-graph-eval")]
                 crate::nir1_graph_eval::note_busy_cause("edge-before-query");
                 return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
+            }
+            if session.worker_caller_epoch != Some(demand.cache_key.caller_epoch) {
+                // K32R-2: the worker was made under another caller_epoch (an
+                // activation came after it). Retire it unqueried and rebuild
+                // through the rekey path (the same key, a cold worker). The
+                // answer is `warming` (the demand is announced at READY), not
+                // `busy`: the Busy answers and their cause hooks are a closed,
+                // pinned set (K32R-5).
+                session.pending_rekey = Some(PendingRekey {
+                    key: demand.key.clone(),
+                    demand_at: demand.now,
+                });
+                let _ = session.commands.try_send(Command::Retire);
+                slot.phase = Phase::Retiring;
+                return self.unserved(GraphUnavailable::Warming, &demand.key.project_id);
             }
             session.last_demand = demand.now;
             let cache_key = demand.cache_key;
@@ -2467,7 +2513,7 @@ fn build_worker(
             ticket.attach_window(window);
         }
     }
-    let Some((snapshot, core)) = admit(context, key, epoch) else {
+    let Some((snapshot, core, caller_epoch)) = admit(context, key, epoch) else {
         return Built::Exit(GraphUnavailable::Invalidated);
     };
     // DR-PUBG-5-18 (追補 4): the generation a refusal is recorded under is read
@@ -2486,6 +2532,18 @@ fn build_worker(
         binding: key.binding.clone(),
         core,
     }));
+    // K32R-2: the epoch read at the admission above (never newer than the
+    // worker), so a later activation always differs from it.
+    {
+        let mut slot = lock(&shared.slot);
+        if let Some(session) = slot
+            .session
+            .as_mut()
+            .filter(|session| session.thread_id == context.thread_id)
+        {
+            session.worker_caller_epoch = Some(caller_epoch);
+        }
+    }
     let prepare_started = Instant::now();
     bump(&shared.diagnostics.prepares_started);
     guard.index_change_at_prepare = Some(shared.graph_index_change.load(Ordering::SeqCst));
@@ -2792,7 +2850,7 @@ fn admit(
     context: &SessionContext,
     key: &GraphKey,
     epoch: u64,
-) -> Option<(ActiveWorkspaceSnapshot, WorkspaceLifecycleCore)> {
+) -> Option<(ActiveWorkspaceSnapshot, WorkspaceLifecycleCore, u64)> {
     let shared = &context.shared;
     if edge_or_closed(shared, epoch) {
         return None;
@@ -2806,7 +2864,7 @@ fn admit(
     }
     let state = context.state.upgrade()?;
     let status = state.profile_egress.status();
-    if !(status.restricted && status.in_flight_stopped) {
+    if profile_gate(&status).is_some() {
         return None;
     }
     let snapshot = active_workspace_snapshot(&state.ws).ok()?;
@@ -2822,7 +2880,7 @@ fn admit(
     if edge_or_closed(shared, epoch) {
         return None;
     }
-    Some((snapshot, core))
+    Some((snapshot, core, status.caller_epoch))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2967,6 +3025,44 @@ fn serve_query(
             return_to_ready(shared);
         }
         return ServeNext::Ready;
+    }
+    // K32R-2: a worker made while the profile was unrestricted can outlive the
+    // restricted barrier. Look at the gate once more where the query starts:
+    // while it is closed nothing is queried and the worker is retired (never
+    // returned to READY). The worker's input holds nothing profile-derived and
+    // it reads the local database only; what is handed out is decided by
+    // `gate_reason` and `PublicationGuard::finish`. The profile mutex is taken
+    // here exactly as in `admit` (owner thread, no Graph lock held).
+    #[cfg(test)]
+    {
+        let hook = lock(&shared.query_hook_for_test).clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    // The same read also compares the caller_epoch the worker was admitted
+    // under: an activation after it retires the worker unqueried (the slot lock
+    // is taken after the profile mutex is released, never nested).
+    let status = context
+        .state
+        .upgrade()
+        .map(|state| state.profile_egress.status());
+    let worker_epoch = lock(&shared.slot)
+        .session
+        .as_ref()
+        .filter(|session| session.thread_id == context.thread_id)
+        .and_then(|session| session.worker_caller_epoch);
+    let closed = match status {
+        Some(status) => profile_gate(&status).or_else(|| {
+            (worker_epoch != Some(status.caller_epoch)).then_some(GraphUnavailable::Invalidated)
+        }),
+        None => Some(GraphUnavailable::Invalidated),
+    };
+    if let Some(reason) = closed {
+        ticket.deliver(GraphTicketOutcome::Unavailable(reason));
+        guard.in_flight = None;
+        retire_current(guard);
+        return ServeNext::Exit;
     }
     let Some(worker) = guard.worker.as_mut() else {
         ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Failed));
