@@ -288,6 +288,17 @@ export function scanSource(name: string, text: string): string[] {
   return violations;
 }
 
+// The import fixtures are built at run time: written as literal import
+// statements, the CI change-scope walker would read them as this file's own
+// imports and fail to resolve them.
+const importFrom = (specifier: string): string =>
+  "import { x } from " + JSON.stringify(specifier) + ";";
+const requireOf = (specifier: string): string =>
+  "const x = req" +
+  "uire(" +
+  JSON.stringify(specifier) +
+  ");\nexport const f = x;";
+
 describe("main's read port: the chat IR stays closed and commands are named literally", () => {
   const files = scannedFiles();
 
@@ -441,10 +452,7 @@ describe("the scanner catches each violation (negative control)", () => {
       "a require with a computed specifier",
       "export const f = (p: string) => require(p);",
     ],
-    [
-      "a require of the tool executors",
-      'const x = require("./toolExecutors.js");\nexport const f = x;',
-    ],
+    ["a require of the tool executors", requireOf("./toolExecutors.js")],
     [
       "an import = require of ipcContract",
       'import c = require("../../shared/ipcContract.js");\nexport const f = c;',
@@ -521,21 +529,18 @@ describe("the scanner catches each violation (negative control)", () => {
       "export const m = (b: { chatAgentIrSelect(): void }) => b.chatAgentIrSelect();",
     ],
     ["the flag", "export const f = CHAT_AGENT_IR_ENABLED;"],
-    [
-      "the availability module",
-      'import { x } from "./chatAgentIrAvailability.js";',
-    ],
-    ["the wire module", 'import { x } from "../chatAgentIrWire.js";'],
-    ["the result module", 'import { x } from "./chatIrToolResult.js";'],
-    ["the renderer's IR module", 'import { x } from "@/lib/chatIr";'],
+    ["the availability module", importFrom("./chatAgentIrAvailability.js")],
+    ["the wire module", importFrom("../chatAgentIrWire.js")],
+    ["the result module", importFrom("./chatIrToolResult.js")],
+    ["the renderer's IR module", importFrom("@/lib/chatIr")],
     ["the gate kind", 'export const k = "chat-agent-ir";'],
     ["the IR search", "export const s = searchEventsWithIr;"],
     ["the IR description", "export const d = SEARCH_EVENTS_IR_DESCRIPTION;"],
     ["a name in a comment", "// uses chatAgentIrSelect\nexport const a = 1;"],
-    ["an import from src", 'import { x } from "../../../src/lib/tauri";'],
-    ["an alias import from the renderer", 'import { x } from "@/db/client";'],
-    ["the tool definitions", 'import { x } from "./toolDefinitions.js";'],
-    ["the tool executors", 'import { x } from "./toolExecutors.js";'],
+    ["an import from src", importFrom("../../../src/lib/tauri")],
+    ["an alias import from the renderer", importFrom("@/db/client")],
+    ["the tool definitions", importFrom("./toolDefinitions.js")],
+    ["the tool executors", importFrom("./toolExecutors.js")],
   ])("flags %s", (_name, source) => {
     expect(scanSource("bad.ts", source)).not.toEqual([]);
   });
