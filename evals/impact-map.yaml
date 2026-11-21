@@ -63,6 +63,7 @@ rules:
       - scripts/local-ci-process-supervisor.test.mjs
       - docs/local-ci-runner.md
       - scripts/ci-pause.test.mjs
+      - scripts/ci-cross-os-scope.*
       - scripts/nir1-c-query-worker-ci.sh
     requirements:
       - GDX-TRACE-001

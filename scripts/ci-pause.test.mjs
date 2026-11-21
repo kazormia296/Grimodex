@@ -15,6 +15,7 @@ import { evaluateIf, laneByGatedJob, stripScopeGate, unwrapIf } from "./ci-chang
 // The pull-request change-scope tests run wherever this file runs (verify:quality,
 // local Quick/Full) without adding a test file to package.json or the registry.
 import "./ci-change-scope.test.mjs";
+import "./ci-cross-os-scope.test.mjs";
 import { normalizedDestination } from "./local-ci-setup-observation.mjs";
 import {
   acquireWorkloadInput,
@@ -369,7 +370,8 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     const eventCondition = id === "electron-runtime-performance" ? "github.event_name != 'schedule' && github.event_name != 'pull_request'" : "github.event_name != 'schedule'";
     // The Quality job also runs on the nightly schedule (its impact step is the only automatic run of the whole
     // impact selection after a merge); it has no event condition, and the schedule test below pins that.
-    const ordinaryCondition = id === "quality"
+    // The C-query worker runs on the nightly schedule too (macOS and Windows only, see its matrix test).
+    const ordinaryCondition = id === "quality" || id === "nir1-c-query-worker"
       ? `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
       : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     const gate = stripScopeGate(job.if);
@@ -784,12 +786,14 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
-  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs and the Quality job.
-  // Quality's impact step is the only automatic run of the whole impact selection after a merge.
+  // The nightly schedule (no inputs) admits exactly the change scope, the four journey jobs, the Quality job and
+  // the C-query worker (whose nightly matrix is macOS and Windows only; it is the catch-all for the legs a master
+  // push skips). Quality's impact step is the only automatic run of the whole impact selection after a merge.
   assert.deepEqual(admitted({}, "schedule"), [
     "changes", "quality",
     "electron-product-journeys-build", "electron-product-journeys-c2zc",
     "electron-product-journeys", "electron-product-journeys-aggregate",
+    "nir1-c-query-worker",
   ]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
@@ -866,23 +870,34 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const terminalRefusalsOnly = { ...defaults, canonical_profile: "c-query-terminal-refusals" };
   const lifecycleOnly = { ...defaults, canonical_profile: "c-query-lifecycle" };
   const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, terminalRefusalsOnly, practicalOnly, frameLifecycleOnly, lifecycleOnly];
-  // B3 (2026-11-15): a pull request runs the worker on Linux only; every other
-  // event (master push, manual dispatch) keeps the three OSes. A reusable call
-  // is not an event of its own: the called workflow inherits the caller's
-  // `github.event_name`, so "workflow_call" is never a value of it.
-  assert.equal(workers.strategy.matrix.os, "${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
-  const matrixFor = (event, profile = "") => {
-    const expression = workers.strategy.matrix.os;
-    const condition = expression.slice(expression.indexOf("fromJSON((") + "fromJSON((".length, expression.indexOf(") && '"));
-    const pullRequestOnly = evaluateIf(`\${{ ${condition} }}`, { inputs: { canonical_profile: profile }, event, changes: {} });
-    return pullRequestOnly ? ["ubuntu-latest"] : ["ubuntu-latest", "macos-latest", "windows-latest"];
+  // B3 (2026-11-15): a pull request runs the worker on Linux only. A master push runs Linux, and macOS and
+  // Windows only when the `crossos` step of `changes` does not output exactly 'false'. The nightly schedule runs
+  // macOS and Windows only; a manual dispatch and the release call (a tag push) keep the three OSes. A reusable call
+  // is not an event of its own: the called workflow inherits the caller's `github.event_name`, so "workflow_call"
+  // is never a value of it.
+  assert.equal(workers.strategy.matrix.os, "${{ fromJSON(github.event_name == 'schedule' && '[\"macos-latest\",\"windows-latest\"]' || ((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request' || needs.changes.outputs.cquery_cross_os == 'false') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]')) }}");
+  const ALL_OS = ["ubuntu-latest", "macos-latest", "windows-latest"];
+  const matrixFor = (event, profile = "", cqueryCrossOs) => {
+    // The restricted evaluator also covers fromJSON: the `${{ }}` wrapper is dropped and fromJSON becomes JSON.parse.
+    const expression = workers.strategy.matrix.os.replace(/^\$\{\{\s*|\s*\}\}$/gu, "").replace("fromJSON(", "JSON.parse(");
+    const outputs = cqueryCrossOs === undefined ? {} : { cquery_cross_os: cqueryCrossOs };
+    return evaluateIf(`\${{ ${expression} }}`, { inputs: { canonical_profile: profile }, event, changes: outputs });
   };
   assert.deepEqual(matrixFor("pull_request"), ["ubuntu-latest"]);
-  for (const event of ["push", "workflow_dispatch"]) {
-    assert.deepEqual(matrixFor(event), ["ubuntu-latest", "macos-latest", "windows-latest"], event);
+  assert.deepEqual(matrixFor("pull_request", "", "true"), ["ubuntu-latest"]);
+  // The nightly: macOS and Windows only, whatever the (never set) output says.
+  assert.deepEqual(matrixFor("schedule"), ["macos-latest", "windows-latest"]);
+  assert.deepEqual(matrixFor("schedule", "", "false"), ["macos-latest", "windows-latest"]);
+  // A master push: only an exact 'false' drops macOS and Windows; every doubt keeps all three.
+  assert.deepEqual(matrixFor("push", "", "false"), ["ubuntu-latest"]);
+  for (const odd of [undefined, "", "true", "TRUE", "0", "no", " false", "invalid"]) {
+    assert.deepEqual(matrixFor("push", "", odd), ALL_OS, `push ${JSON.stringify(odd)}`);
   }
-  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-workers"), ["ubuntu-latest", "macos-latest", "windows-latest"]);
+  // A manual dispatch (no output: `changes` skips the crossos step) and the release call (a tag push, no output).
+  assert.deepEqual(matrixFor("workflow_dispatch"), ALL_OS);
+  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-workers"), ALL_OS);
   assert.deepEqual(matrixFor("workflow_dispatch", "c-query-practical"), ["ubuntu-latest"]);
+  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-lifecycle"), ["ubuntu-latest"]);
   for (const standalone of workerProfiles) {
     await validateWorkers(standalone);
     await validateWorkers({ ...standalone, source_focused: "" });
