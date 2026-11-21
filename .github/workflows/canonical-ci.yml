@@ -234,7 +234,7 @@ jobs:
 
       - name: Upload canonical connection source contracts
         if: always() && inputs.profile == 'contracts' && (steps.setup_observation.outcome != 'skipped' || steps.contracts.outcome != 'skipped')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -252,7 +252,7 @@ jobs:
       # jobs, never only failed ones, or the aggregate refuses the mixed parts.
       - name: Upload Full part evidence
         if: always() && inputs.profile == 'full' && steps.canonical.outcome != 'skipped'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canonical-full-part-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -273,7 +273,7 @@ jobs:
       # bound to one attempt like Full: re-run ALL jobs, never only failed ones.
       - name: Upload Quick part evidence
         if: always() && inputs.profile == 'quick' && steps.canonical.outcome != 'skipped'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canonical-quick-part-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -287,7 +287,7 @@ jobs:
 
       - name: Upload existing canonical evidence
         if: always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ inputs.profile == 'full' && format('canonical-full-diagnostics-{0}', matrix.part) || inputs.profile == 'quick' && format('canonical-quick-diagnostics-{0}', matrix.part) || 'canonical-ci' }}-${{ github.run_id }}-${{ github.run_attempt }}
           # Assessment-only attempts publish shaped setup owner/acquisition/close/
@@ -364,7 +364,7 @@ jobs:
 
       - name: Upload existing canonical evidence
         if: always() && steps.aggregate.outcome != 'skipped'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -438,7 +438,7 @@ jobs:
 
       - name: Upload existing canonical evidence
         if: always() && steps.aggregate.outcome != 'skipped'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
