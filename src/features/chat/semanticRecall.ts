@@ -11,6 +11,7 @@ import {
   selectHybridRecallHitsWithPolicy,
 } from "./hybridRecallSelection";
 import { resolveSemanticRerankerLanguage } from "./semanticRerankerMode";
+import { RRF_K } from "@/../electron/shared/readDomain/features/chat/rrfK";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -86,8 +87,8 @@ export const SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN = 900;
  * Reciprocal Rank Fusion (RRF) で順位融合することで固有名詞 recall を補う。
  * 設計: docs/Grimodex_セマンティック検索の閾値とモデル特性.md (Q5 改善策 #4)。
  */
-/** RRF の定数 k。順位 r のスコア寄与は 1/(k+r)。情報検索の慣例値 60。 */
-export const RRF_K = 60;
+// RRF の定数 k は shared module に出した（MP-4b PR-3b-2）。ここでは後方互換のため再エクスポートする。
+export { RRF_K };
 /**
  * sparse 救済の床マージン。sparse top-N に居るシーンは、cosine が床 (minScore) を
  * 割っても `floor - margin` までなら注入を許す。語彙一致だが意味的には無関係な

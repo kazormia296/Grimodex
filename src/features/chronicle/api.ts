@@ -9,6 +9,19 @@ import {
   treeNodes,
 } from "@/db/schema";
 import type { EventPrecision, EventKind, EventGranularity } from "@/db/schema";
+import type {
+  EventRow,
+  ParticipantRow,
+  SceneEventRow,
+  EventRelationRow,
+} from "@/../electron/shared/readDomain/features/chronicle/eventRows";
+// 行の型の正本は shared module（MP-4b PR-3b-2）。ここでは後方互換のため再エクスポートする。
+export type {
+  EventRow,
+  ParticipantRow,
+  SceneEventRow,
+  EventRelationRow,
+} from "@/../electron/shared/readDomain/features/chronicle/eventRows";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 // 暦復元の正本は chronicleTime（純粋モジュール）へ集約。ここでは後方互換の再エクスポート。
@@ -63,36 +76,6 @@ function rethrowEventVersionConflict(eventId: string, err: unknown): never {
     throw new EventVersionConflictError(eventId);
   }
   throw err;
-}
-
-export interface EventRow {
-  id: string;
-  projectId: string;
-  title: string;
-  note: string | null;
-  /** 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。null/空 = 未入力。 */
-  detail: string | null;
-  ordinal: string;
-  primaryCodexId: string | null;
-  /** 未割当の整理用サブレーン id（null=既定の未割当レーン）。 */
-  laneGroup: string | null;
-  locationCodexId: string | null;
-  startTime: number | null;
-  endTime: number | null;
-  startMinute: number | null;
-  endMinute: number | null;
-  startGranularity: EventGranularity;
-  endGranularity: EventGranularity;
-  precision: EventPrecision;
-  kind: EventKind;
-  /** AI 秘匿フラグ（reveal アンカー方式）。true=条件付きで AI 文脈から除外。 */
-  secret: boolean;
-  /** 読む順の開示アンカー（明示上書き専用）。null=自動導出 or 恒久秘匿。 */
-  revealSceneId: string | null;
-  /** Aggregate OCC version (event row + participant set). */
-  version: number;
-  createdAt: string;
-  updatedAt: string;
 }
 
 function s(v: unknown, fallback = ""): string {
@@ -294,11 +277,6 @@ export async function deleteEvent(
 }
 
 // ───────── participants ─────────
-export interface ParticipantRow {
-  eventId: string;
-  codexEntryId: string;
-  role: string | null;
-}
 
 export async function listEventParticipants(
   eventId: string,
@@ -375,10 +353,6 @@ export async function listEventParticipantsForProject(
 }
 
 // ───────── scene_events 橋 ─────────
-export interface SceneEventRow {
-  sceneId: string;
-  eventId: string;
-}
 
 export async function listSceneEvents(
   eventIds: string[],
@@ -632,10 +606,6 @@ export async function upsertProjectCalendar(
 }
 
 // ───────── event_relations（因果エッジ） ─────────
-export interface EventRelationRow {
-  causeId: string;
-  effectId: string;
-}
 
 export async function listEventRelations(
   projectId: string,

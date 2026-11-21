@@ -1,4 +1,4 @@
-import { RRF_K } from "../semanticRecall";
+import { RRF_K } from "@/../electron/shared/readDomain/features/chat/rrfK";
 import type { CodexSearchHit } from "@/features/semantic-search/api";
 
 /**
