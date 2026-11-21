@@ -96,7 +96,8 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
    Quickとmergeを開始せず、merge readinessを主張しない。
    同じheadの`ci.yml`の成功には、§2.10の2つの例外がある。
    `ci.yml`のQualityは、PRでもmasterのpushでもimpact-selected Light suiteを実行しない（canonical Quickが同じ候補で実行済み。夜間のschedule、手動のworkflow_dispatch、releaseのtag pushの呼出しが実行する）。C-query workerはPRではLinuxだけで走らせる。masterのpushはLinuxを必ず走らせ、macOS／Windowsはworker関係のpath（一覧は`scripts/ci-cross-os-scope.json`）を変えたときだけ走らせる。夜間のscheduleはmacOS／Windowsだけを走らせ、入力なしの手動のworkflow_dispatch、`canonical_profile=c-query-workers`、`independent_gates`、releaseの呼出しは3 OSすべてを走らせる（`c-query-practical`と`c-query-lifecycle`はLinuxだけ）。
-   impactだけが回すもの（製品構成のfeature `native-current-human-capture`つきのgrimodex-dbの試験、評価専用featureの試験、ほかのjobもregistryも名指ししない多数のNode試験）は、mergeの後もmasterのpushでは検査されない。
+   impactだけが回すもの（評価専用featureの試験（`nir1-final-request-eval`と`native-current-human-capture`の組合せを含む）、ほかのjobもregistryも名指ししない多数のNode試験）は、mergeの後もmasterのpushでは検査されない。
+   Shared Rustのintegration shardが製品構成のfeature `native-current-human-capture`で回すgrimodex-dbの試験はmasterのpushで検査される。shardのfilterが名指ししないfeature限定の試験は、impactを含むどのjobも回さない。
    PRの`ci.yml`はmerge ref（`github.sha`）を測り、Quickは候補headを測る。Quickの後に進んだmasterとの組合せは、PRのrunではimpactで検査されない（mergeの後は夜間のrunが全suiteを回すので、組合せの破損は通常1日あまり後（GitHubのscheduleの遅延や欠落で延びる）に夜間のrunで見つかり、masterの赤として§8に従う）。
    PRのcheckがgreenでも、macOS／Windowsのworkerの失敗は、worker関係のpathを変えたpushならそのmasterのpushの`ci.yml`で、そうでなければ次の夜間のrun（または手動のdispatch）で、mergeの後に見つかり、masterの赤として§8に従う。macOS／Windowsのlegを省いたpushは、それらを検証していない（passではない）。
    Electron runtime performance jobは共有VMの絶対時間が不安定なため、PRの`ci.yml`では走らせない。PRのcheckがgreenでもその証拠にならず、失敗はmergeの後にmasterのpushの`ci.yml`とmasterのFullで見つかり、masterの赤として§8に従う。
