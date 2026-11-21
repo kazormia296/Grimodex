@@ -1,0 +1,347 @@
+{
+  "tool": "get_chronicle_state",
+  "cases": [
+    {
+      "case": "rows: sceneId 指定（S1。hidden の secret は snapshot に入らない）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "Chronicle state at scene (stamped)",
+        "tokensUsed": 402,
+        "content": {
+          "time": {
+            "source": "stamped",
+            "startTime": 5400,
+            "season": null,
+            "precision": "exact",
+            "formattedDate": "1015年第1日"
+          },
+          "characters": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "status": "alive",
+              "age": 15,
+              "location": "古い塔"
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "status": "unknown",
+              "age": null,
+              "location": "古い塔"
+            }
+          ],
+          "recentEvents": [
+            {
+              "eventId": "ev-meet",
+              "title": "老魔術師との出会い",
+              "note": null,
+              "relTime": "同日"
+            }
+          ],
+          "unresolvedCausal": [],
+          "offpage": []
+        }
+      },
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":5400,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1015年第1日\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":15,\"location\":\"古い塔\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":\"古い塔\"}],\"recentEvents\":[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"relTime\":\"同日\"}],\"unresolvedCausal\":[],\"offpage\":[]}"
+    },
+    {
+      "case": "rows: sceneId 省略は activeSceneId（S3）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "Chronicle state at scene (stamped)",
+        "tokensUsed": 440,
+        "content": {
+          "time": {
+            "source": "stamped",
+            "startTime": 3600,
+            "season": null,
+            "precision": "exact",
+            "formattedDate": "1010年"
+          },
+          "characters": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "status": "alive",
+              "age": 10,
+              "location": null
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "status": "unknown",
+              "age": null,
+              "location": null
+            }
+          ],
+          "recentEvents": [
+            {
+              "eventId": "ev-war",
+              "title": "魔術戦争",
+              "note": "昔の戦争",
+              "relTime": "同日"
+            }
+          ],
+          "unresolvedCausal": [
+            {
+              "causeTitle": "魔術戦争",
+              "effectTitle": "老魔術師との出会い"
+            }
+          ],
+          "offpage": []
+        }
+      },
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":3600,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1010年\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":10,\"location\":null},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"同日\"}],\"unresolvedCausal\":[{\"causeTitle\":\"魔術戦争\",\"effectTitle\":\"老魔術師との出会い\"}],\"offpage\":[]}"
+    },
+    {
+      "case": "rows: sceneId 指定は activeSceneId より優先",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "Chronicle state at scene (stamped)",
+        "tokensUsed": 402,
+        "content": {
+          "time": {
+            "source": "stamped",
+            "startTime": 5400,
+            "season": null,
+            "precision": "exact",
+            "formattedDate": "1015年第1日"
+          },
+          "characters": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "status": "alive",
+              "age": 15,
+              "location": "古い塔"
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "status": "unknown",
+              "age": null,
+              "location": "古い塔"
+            }
+          ],
+          "recentEvents": [
+            {
+              "eventId": "ev-meet",
+              "title": "老魔術師との出会い",
+              "note": null,
+              "relTime": "同日"
+            }
+          ],
+          "unresolvedCausal": [],
+          "offpage": []
+        }
+      },
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":5400,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"1015年第1日\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":15,\"location\":\"古い塔\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":\"古い塔\"}],\"recentEvents\":[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"relTime\":\"同日\"}],\"unresolvedCausal\":[],\"offpage\":[]}"
+    },
+    {
+      "case": "rows: UI 言語が en",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3",
+        "language": "en"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "Chronicle state at scene (stamped)",
+        "tokensUsed": 450,
+        "content": {
+          "time": {
+            "source": "stamped",
+            "startTime": 3600,
+            "season": null,
+            "precision": "exact",
+            "formattedDate": "Year 1010"
+          },
+          "characters": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "status": "alive",
+              "age": 10,
+              "location": null
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "status": "unknown",
+              "age": null,
+              "location": null
+            }
+          ],
+          "recentEvents": [
+            {
+              "eventId": "ev-war",
+              "title": "魔術戦争",
+              "note": "昔の戦争",
+              "relTime": "same day"
+            }
+          ],
+          "unresolvedCausal": [
+            {
+              "causeTitle": "魔術戦争",
+              "effectTitle": "老魔術師との出会い"
+            }
+          ],
+          "offpage": []
+        }
+      },
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":3600,\"season\":null,\"precision\":\"exact\",\"formattedDate\":\"Year 1010\"},\"characters\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"status\":\"alive\",\"age\":10,\"location\":null},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"relTime\":\"same day\"}],\"unresolvedCausal\":[{\"causeTitle\":\"魔術戦争\",\"effectTitle\":\"老魔術師との出会い\"}],\"offpage\":[]}"
+    },
+    {
+      "case": "empty: 場面なし・sceneId なし",
+      "world": {
+        "projectId": "p-main"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "No sceneId and no active scene",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 年表の出来事が無い project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "No chronicle events",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: main から他 project の sceneId を指定",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "x-s1"
+      },
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "Chronicle state at scene (none)",
+        "tokensUsed": 164,
+        "content": {
+          "time": {
+            "source": "none",
+            "startTime": null,
+            "season": null,
+            "precision": null,
+            "formattedDate": null
+          },
+          "characters": [],
+          "recentEvents": [],
+          "unresolvedCausal": [],
+          "offpage": []
+        }
+      },
+      "contentJson": "{\"time\":{\"source\":\"none\",\"startTime\":null,\"season\":null,\"precision\":null,\"formattedDate\":null},\"characters\":[],\"recentEvents\":[],\"unresolvedCausal\":[],\"offpage\":[]}"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の年表",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "Chronicle state at scene (stamped)",
+        "tokensUsed": 315,
+        "content": {
+          "time": {
+            "source": "stamped",
+            "startTime": 100,
+            "season": null,
+            "precision": "exact",
+            "formattedDate": null
+          },
+          "characters": [
+            {
+              "codexId": "x-c-aria",
+              "name": "アリア",
+              "status": "unknown",
+              "age": null,
+              "location": null
+            }
+          ],
+          "recentEvents": [
+            {
+              "eventId": "x-ev-1",
+              "title": "他作品の出来事",
+              "note": null,
+              "relTime": null
+            }
+          ],
+          "unresolvedCausal": [],
+          "offpage": []
+        }
+      },
+      "contentJson": "{\"time\":{\"source\":\"stamped\",\"startTime\":100,\"season\":null,\"precision\":\"exact\",\"formattedDate\":null},\"characters\":[{\"codexId\":\"x-c-aria\",\"name\":\"アリア\",\"status\":\"unknown\",\"age\":null,\"location\":null}],\"recentEvents\":[{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"note\":null,\"relTime\":null}],\"unresolvedCausal\":[],\"offpage\":[]}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: sceneId 省略と場面なしでも no-project が先（No active project）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "get_chronicle_state",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    }
+  ]
+}

@@ -1,0 +1,278 @@
+{
+  "tool": "get_scene_timeline_neighbors",
+  "cases": [
+    {
+      "case": "rows: 先頭の場面（previous なし、next は最大 3 件。archived も候補）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "previous: 0, next: 3",
+        "tokensUsed": 273,
+        "content": {
+          "currentSceneStoryTimeLabel": "春の朝",
+          "previous": [],
+          "next": [
+            {
+              "id": "n-s3",
+              "title": "裏切り",
+              "storyTimeLabel": "初夏",
+              "synopsis": "黒幕の正体が明かされる。"
+            },
+            {
+              "id": "n-s2",
+              "title": "旅立ち",
+              "storyTimeLabel": "夏",
+              "synopsis": ""
+            },
+            {
+              "id": "n-arch",
+              "title": "没シーン",
+              "storyTimeLabel": null,
+              "synopsis": "没にしたシーン。"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"春の朝\",\"previous\":[],\"next\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"storyTimeLabel\":\"初夏\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":\"夏\",\"synopsis\":\"\"},{\"id\":\"n-arch\",\"title\":\"没シーン\",\"storyTimeLabel\":null,\"synopsis\":\"没にしたシーン。\"}]}"
+    },
+    {
+      "case": "rows: 中間の場面（作中順で前後）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-s3"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "previous: 1, next: 2",
+        "tokensUsed": 273,
+        "content": {
+          "currentSceneStoryTimeLabel": "初夏",
+          "previous": [
+            {
+              "id": "n-s1",
+              "title": "出会い",
+              "storyTimeLabel": "春の朝",
+              "synopsis": "アリアが老魔術師と出会う。"
+            }
+          ],
+          "next": [
+            {
+              "id": "n-s2",
+              "title": "旅立ち",
+              "storyTimeLabel": "夏",
+              "synopsis": ""
+            },
+            {
+              "id": "n-arch",
+              "title": "没シーン",
+              "storyTimeLabel": null,
+              "synopsis": "没にしたシーン。"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"初夏\",\"previous\":[{\"id\":\"n-s1\",\"title\":\"出会い\",\"storyTimeLabel\":\"春の朝\",\"synopsis\":\"アリアが老魔術師と出会う。\"}],\"next\":[{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":\"夏\",\"synopsis\":\"\"},{\"id\":\"n-arch\",\"title\":\"没シーン\",\"storyTimeLabel\":null,\"synopsis\":\"没にしたシーン。\"}]}"
+    },
+    {
+      "case": "rows: 末尾に近い場面",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-s2"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "previous: 2, next: 1",
+        "tokensUsed": 285,
+        "content": {
+          "currentSceneStoryTimeLabel": "夏",
+          "previous": [
+            {
+              "id": "n-s3",
+              "title": "裏切り",
+              "storyTimeLabel": "初夏",
+              "synopsis": "黒幕の正体が明かされる。"
+            },
+            {
+              "id": "n-s1",
+              "title": "出会い",
+              "storyTimeLabel": "春の朝",
+              "synopsis": "アリアが老魔術師と出会う。"
+            }
+          ],
+          "next": [
+            {
+              "id": "n-arch",
+              "title": "没シーン",
+              "storyTimeLabel": null,
+              "synopsis": "没にしたシーン。"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"夏\",\"previous\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"storyTimeLabel\":\"初夏\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s1\",\"title\":\"出会い\",\"storyTimeLabel\":\"春の朝\",\"synopsis\":\"アリアが老魔術師と出会う。\"}],\"next\":[{\"id\":\"n-arch\",\"title\":\"没シーン\",\"storyTimeLabel\":null,\"synopsis\":\"没にしたシーン。\"}]}"
+    },
+    {
+      "case": "empty: storyTimeOrder の無い場面",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-s4"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "Target scene has no storyTimeOrder set",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
+    },
+    {
+      "case": "empty: 存在しない場面",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-none"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
+    },
+    {
+      "case": "XPROJ: main から他 project の場面は Scene not found",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "x-s1"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の場面",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "sceneId": "x-s1"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "previous: 0, next: 1",
+        "tokensUsed": 131,
+        "content": {
+          "currentSceneStoryTimeLabel": "他の春",
+          "previous": [],
+          "next": [
+            {
+              "id": "x-s2",
+              "title": "旅立ち",
+              "storyTimeLabel": null,
+              "synopsis": "他作品の旅立ち。"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"他の春\",\"previous\":[],\"next\":[{\"id\":\"x-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":null,\"synopsis\":\"他作品の旅立ち。\"}]}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "sceneId": "n-s1"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
+    },
+    {
+      "case": "order: 空の sceneId は no-project より先（No sceneId provided）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "sceneId": ""
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "No sceneId provided",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
+    }
+  ]
+}

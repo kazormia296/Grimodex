@@ -1,0 +1,276 @@
+{
+  "tool": "get_foreshadow_detail",
+  "cases": [
+    {
+      "case": "rows: 回収予定の場面あり・setup 3 件（orphan と AI 評価のみを含む）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-1"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "老魔術師の杖: 3 setup(s), payoff planned",
+        "tokensUsed": 605,
+        "content": {
+          "id": "fs-1",
+          "title": "老魔術師の杖",
+          "intent": "杖が後で鍵になる",
+          "notes": "作者だけのメモ",
+          "loadBearing": "critical",
+          "payoffConfirmed": false,
+          "abandoned": false,
+          "payoffScene": {
+            "id": "n-s3",
+            "title": "裏切り"
+          },
+          "setups": [
+            {
+              "sceneId": "n-s1",
+              "sceneTitle": "出会い",
+              "kind": "designated_existing",
+              "strength": "subtle",
+              "attribution": "ai",
+              "aiRationale": "",
+              "isOrphan": false
+            },
+            {
+              "sceneId": "n-s2",
+              "sceneTitle": "旅立ち",
+              "kind": "inserted_new",
+              "strength": "overt",
+              "attribution": "human",
+              "aiRationale": "強調された",
+              "isOrphan": false
+            },
+            {
+              "sceneId": "n-arch",
+              "sceneTitle": "没シーン",
+              "kind": "rewritten",
+              "strength": "moderate",
+              "attribution": "human",
+              "aiRationale": "",
+              "isOrphan": true
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"fs-1\",\"title\":\"老魔術師の杖\",\"intent\":\"杖が後で鍵になる\",\"notes\":\"作者だけのメモ\",\"loadBearing\":\"critical\",\"payoffConfirmed\":false,\"abandoned\":false,\"payoffScene\":{\"id\":\"n-s3\",\"title\":\"裏切り\"},\"setups\":[{\"sceneId\":\"n-s1\",\"sceneTitle\":\"出会い\",\"kind\":\"designated_existing\",\"strength\":\"subtle\",\"attribution\":\"ai\",\"aiRationale\":\"\",\"isOrphan\":false},{\"sceneId\":\"n-s2\",\"sceneTitle\":\"旅立ち\",\"kind\":\"inserted_new\",\"strength\":\"overt\",\"attribution\":\"human\",\"aiRationale\":\"強調された\",\"isOrphan\":false},{\"sceneId\":\"n-arch\",\"sceneTitle\":\"没シーン\",\"kind\":\"rewritten\",\"strength\":\"moderate\",\"attribution\":\"human\",\"aiRationale\":\"\",\"isOrphan\":true}]}"
+    },
+    {
+      "case": "rows: secret の伏線も読める（secret の判定なし。DR-MP4-24）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-2"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "黒幕の伏線: 1 setup(s), payoff unset",
+        "tokensUsed": 305,
+        "content": {
+          "id": "fs-2",
+          "title": "黒幕の伏線",
+          "intent": "黒幕は最初から出ている",
+          "notes": "",
+          "loadBearing": "supporting",
+          "payoffConfirmed": false,
+          "abandoned": false,
+          "payoffScene": null,
+          "setups": [
+            {
+              "sceneId": "n-s3",
+              "sceneTitle": "裏切り",
+              "kind": "designated_existing",
+              "strength": "subtle",
+              "attribution": "human",
+              "aiRationale": "",
+              "isOrphan": false
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"fs-2\",\"title\":\"黒幕の伏線\",\"intent\":\"黒幕は最初から出ている\",\"notes\":\"\",\"loadBearing\":\"supporting\",\"payoffConfirmed\":false,\"abandoned\":false,\"payoffScene\":null,\"setups\":[{\"sceneId\":\"n-s3\",\"sceneTitle\":\"裏切り\",\"kind\":\"designated_existing\",\"strength\":\"subtle\",\"attribution\":\"human\",\"aiRationale\":\"\",\"isOrphan\":false}]}"
+    },
+    {
+      "case": "rows: 回収済み",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-3"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "回収済みの伏線: 0 setup(s), payoff confirmed",
+        "tokensUsed": 177,
+        "content": {
+          "id": "fs-3",
+          "title": "回収済みの伏線",
+          "intent": "回収した",
+          "notes": "",
+          "loadBearing": "optional",
+          "payoffConfirmed": true,
+          "abandoned": false,
+          "payoffScene": {
+            "id": "n-s4",
+            "title": "終幕"
+          },
+          "setups": []
+        }
+      },
+      "contentJson": "{\"id\":\"fs-3\",\"title\":\"回収済みの伏線\",\"intent\":\"回収した\",\"notes\":\"\",\"loadBearing\":\"optional\",\"payoffConfirmed\":true,\"abandoned\":false,\"payoffScene\":{\"id\":\"n-s4\",\"title\":\"終幕\"},\"setups\":[]}"
+    },
+    {
+      "case": "rows: setup なし・回収先なし（unset）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-5"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "軽い伏線: 0 setup(s), payoff unset",
+        "tokensUsed": 143,
+        "content": {
+          "id": "fs-5",
+          "title": "軽い伏線",
+          "intent": "",
+          "notes": "",
+          "loadBearing": null,
+          "payoffConfirmed": false,
+          "abandoned": false,
+          "payoffScene": null,
+          "setups": []
+        }
+      },
+      "contentJson": "{\"id\":\"fs-5\",\"title\":\"軽い伏線\",\"intent\":\"\",\"notes\":\"\",\"loadBearing\":null,\"payoffConfirmed\":false,\"abandoned\":false,\"payoffScene\":null,\"setups\":[]}"
+    },
+    {
+      "case": "empty: 存在しない id",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-none"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "Foreshadow not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "id": "fs-1"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "Foreshadow not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: main から他 project の伏線は読めない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "x-fs-1"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "Foreshadow not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の伏線を読める",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "id": "x-fs-1"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "他作品の伏線: 1 setup(s), payoff unset",
+        "tokensUsed": 314,
+        "content": {
+          "id": "x-fs-1",
+          "title": "他作品の伏線",
+          "intent": "他作品の意図（secret）",
+          "notes": "他作品のメモ",
+          "loadBearing": "critical",
+          "payoffConfirmed": false,
+          "abandoned": false,
+          "payoffScene": null,
+          "setups": [
+            {
+              "sceneId": "x-s1",
+              "sceneTitle": "出会い",
+              "kind": "designated_existing",
+              "strength": "overt",
+              "attribution": "human",
+              "aiRationale": "",
+              "isOrphan": false
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"x-fs-1\",\"title\":\"他作品の伏線\",\"intent\":\"他作品の意図（secret）\",\"notes\":\"他作品のメモ\",\"loadBearing\":\"critical\",\"payoffConfirmed\":false,\"abandoned\":false,\"payoffScene\":null,\"setups\":[{\"sceneId\":\"x-s1\",\"sceneTitle\":\"出会い\",\"kind\":\"designated_existing\",\"strength\":\"overt\",\"attribution\":\"human\",\"aiRationale\":\"\",\"isOrphan\":false}]}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": "fs-1"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: 空の id は no-project より先（No id provided）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "id": ""
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "No id provided",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    }
+  ]
+}
