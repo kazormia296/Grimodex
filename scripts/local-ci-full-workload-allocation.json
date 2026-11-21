@@ -1,6 +1,6 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:80aac4d888d06174a798d38587fcbebb7d64ba5cce3441b4736e5d75f908191d",
+  "registryDigest": "sha256:4d7594c626640f164dc840cad20470fd87279bc248c98bcd3271537a0a316b2b",
   "maxParallelTasks": 1,
   "sources": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "3eda9b544815d1b458de2ce524c3d0e5e6a1cf34c197ce94148fe859987e423a"
+      "sha256": "466bb0483e84a7306736da8898c2c356523ea935f66497daef44e33260c97191"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
@@ -41,7 +41,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "1dedf51c4488968ba069e6c3110594cf73455157e4b7d06b017bfbdcce8386fa"
+      "sha256": "50186b38a1c40f33ed9d097ff614c5165e7b8704fd1e730c0dc8db69bef1af01"
     },
     {
       "path": "pnpm-lock.yaml",
@@ -105,7 +105,7 @@
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
-      "sha256": "559f58afea5aa7eeed2c15907e20f50785cb8a8c506edf427e7f89293abb99df"
+      "sha256": "76ac71ceb1d0da3571b5a53a12489a9d012a46b9ef58e9f55bc77b8321020823"
     },
     {
       "path": "src/features/chat/chatScopeRegistry.json",
@@ -133,7 +133,7 @@
     },
     {
       "path": "electron/scripts/product-journey-shards.mjs",
-      "sha256": "4bc24ab28ed1127329002de3fd557ff718200d479d427838f789644bfcaf3b19"
+      "sha256": "7c71afce30d681ca68c266264292b6f560cbcf18db25c5120131c13259147827"
     }
   ],
   "fullMemoryRisk": {
@@ -1993,6 +1993,88 @@
     },
     {
       "id": "journey.agent-stream-workspace-switch.failure",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Official backup image and full receipt/diagnostic text snapshots plus1920x1080 RGBA/PNG scanlines/header image under source-selected Xvfb screen. Full-page/HiDPI screenshot growth remains covered by fixtures.uncertainty; no screenshot suppression. Producer separately charges original+whole artifact copy+renderer.png.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "backup",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "receipt-snapshot",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "diagnostics",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "screenshot",
+          "bytes": "8364032",
+          "inodes": "1"
+        }
+      ]
+    },
+    {
+      "id": "journey.mastra-agent-turn-gate-load-audit.runtime",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Entire mastra-agent-turn-gate-load-audit case/restart/workspace scenario: schema baseline plus Q512 mutation image per owned-tree aggregate, whole desktop/renderer/log image for profile settings/userData and full renderer assets plus RGBA surface image for browser disk/GPU caches, complete log/receipt text images. Cross-case no-sharing forecast, NOT app measurement. Extra workspace/restart image in other; no serial/fail-fast savings.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "db",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "wal",
+          "bytes": "18104320",
+          "inodes": "1"
+        },
+        {
+          "role": "shm",
+          "bytes": "65536",
+          "inodes": "1"
+        },
+        {
+          "role": "user-data",
+          "bytes": "177168384",
+          "inodes": "785"
+        },
+        {
+          "role": "cache",
+          "bytes": "55279616",
+          "inodes": "778"
+        },
+        {
+          "role": "logs",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "receipts",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "other",
+          "bytes": "17997824",
+          "inodes": "2"
+        }
+      ]
+    },
+    {
+      "id": "journey.mastra-agent-turn-gate-load-audit.failure",
       "sources": [
         2,
         29

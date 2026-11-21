@@ -67,6 +67,27 @@ export class AgentModelError extends Error {
   }
 }
 
+/**
+ * `AgentModelError` かどうか。class の同一性ではなく形で見る：adapter は 3 つ目の bundle（mastra-agent.cjs）で
+ * 動き、audit の sink は main.cjs にあるので、同じ source の class が 2 つの copy になり `instanceof` が false になる
+ * （origin と kind が audit から落ちる）。名前と `kind`・`origin` の欄で見る。
+ */
+export function isAgentModelError(value: unknown): value is AgentModelError {
+  if (value instanceof AgentModelError) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as {
+    name?: unknown;
+    kind?: unknown;
+    isRetryable?: unknown;
+  };
+  return (
+    candidate.name === "AgentModelError" &&
+    typeof candidate.kind === "string" &&
+    candidate.isRetryable === false &&
+    "origin" in value
+  );
+}
+
 export type AgentModelErrorKind =
   | "unsupported-provider"
   | "unsupported-request"

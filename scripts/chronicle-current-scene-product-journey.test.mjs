@@ -56,7 +56,7 @@ test("the current-scene journey is a distinct required catalog entry with its ow
     PRODUCT_JOURNEY_CATALOG.map((row) => row.id),
     "runnable journeys follow catalog order",
   );
-  assert.equal(PRODUCT_JOURNEY_CATALOG.length, 36);
+  assert.equal(PRODUCT_JOURNEY_CATALOG.length, 37);
 });
 
 test("the current-scene journey sits in the third shard, after the shard's existing journeys", () => {
@@ -65,13 +65,13 @@ test("the current-scene journey sits in the third shard, after the shard's exist
   );
   assert.equal(shard, 2, "third shard");
   const ids = FIXED_PRODUCT_JOURNEY_SHARDS[shard];
-  assert.equal(ids.length, 3);
+  assert.equal(ids.length, 4);
   assert.equal(ids.at(-1), ID);
   assert.equal(
     FIXED_PRODUCT_JOURNEY_SHARDS.filter((list) => list.includes(ID)).length,
     1,
   );
-  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS.flat().length, 36);
+  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS.flat().length, 37);
 });
 
 test("a Chronicle review UI or journey-script change selects all three Chronicle journeys", () => {

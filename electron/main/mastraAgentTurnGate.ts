@@ -17,13 +17,14 @@
  *   It replaces nothing else: the destination, the transport, the key, the
  *   profile gate and the audit stay the product's. Renderer, preload, IPC and
  *   settings can neither enable nor disable it.
- * - With the gate open, 3b still has no turn owner (3c's): the sender, its
- *   window and the caller identity are checked, the request is re-checked with
- *   the wire's parser, and an admitted `start` is refused as `unsupported`.
- *   `cancel` of a turn that is not known answers `found: false`.
+ * - With the gate open the sender, its window and the caller identity are
+ *   checked, the request is re-checked with the wire's parser, and an admitted
+ *   command goes to the turn owner (`mastraTurnOwner.ts`, 3c). Without an owner
+ *   (3b's shape, and the tests of the route alone) an admitted `start` is
+ *   refused as `unsupported` and `cancel` answers `found: false`.
  *
- * This file imports no `@mastra/*` (a static test holds it); the owner that
- * loads the runtime is 3c's.
+ * This file imports no `@mastra/*` (a static test holds it); the owner loads the
+ * runtime, and only while this gate is open.
  */
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -43,6 +44,10 @@ import type {
   Envelope,
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
+import type {
+  MastraAgentTurnCancelRequest,
+  MastraAgentTurnStartRequest,
+} from "../shared/mastraAgentTurnWire.js";
 import type { ProfileEgressGate } from "./profileEgress.js";
 
 export const MASTRA_AGENT_TURN_CI_SEAM_VERSION = 1;
@@ -191,6 +196,22 @@ export interface MastraAgentTurnInvokeContext {
   readonly callerIdentity: unknown;
 }
 
+/**
+ * What the route needs of the turn owner (`mastraTurnOwner.ts`): the two
+ * commands, for a request the route has already admitted and parsed.
+ */
+export interface MastraAgentTurnOwnerPort {
+  /** A start's answer value (a refusal or the completed turn), or a rejection. */
+  start(
+    context: MastraAgentTurnInvokeContext,
+    request: MastraAgentTurnStartRequest,
+  ): Promise<unknown>;
+  cancel(
+    context: MastraAgentTurnInvokeContext,
+    request: MastraAgentTurnCancelRequest,
+  ): unknown;
+}
+
 export interface MastraAgentTurnRoute {
   /** Whether the seam opened Main's gate for this launch. */
   readonly open: boolean;
@@ -209,12 +230,22 @@ export interface MastraAgentTurnRoute {
     command: MastraAgentTurnCommand,
     context: MastraAgentTurnInvokeContext,
   ): Envelope | null;
-  /** The shell handlers of the two commands (they re-check the request). */
+  /**
+   * The shell handlers of the two commands (they re-check the request). These
+   * carry no sender, so they never reach the owner: a start is `unsupported`.
+   */
   readonly handlers: ShellCommandHandlers;
+  /**
+   * The same handlers for one admitted invoke: with the sender, its window and
+   * the caller identity the router issued, which the owner binds a turn to.
+   */
+  handlersFor(context: MastraAgentTurnInvokeContext): ShellCommandHandlers;
 }
 
 export interface MastraAgentTurnRouteOptions {
   readonly open: boolean;
+  /** The turn owner; without one an admitted start is `unsupported`. */
+  readonly owner?: MastraAgentTurnOwnerPort;
   readonly profileEgress?: Pick<ProfileEgressGate, "isIssuedCallerIdentity">;
 }
 
@@ -232,25 +263,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createMastraAgentTurnRoute(
   options: MastraAgentTurnRouteOptions,
 ): MastraAgentTurnRoute {
-  const { open, profileEgress } = options;
+  const { open, profileEgress, owner } = options;
 
   const handlerValue = (
     command: MastraAgentTurnCommand,
     args: CommandArgs,
+    context: MastraAgentTurnInvokeContext | null,
   ): unknown => {
     // Defense in depth: the router answers a closed gate first.
     if (!open) return mastraAgentTurnRefusalValue(command, "gate-closed");
     if (command === MASTRA_AGENT_TURN_START_COMMAND) {
       const parsed = parseMastraAgentTurnStartRequest(args);
       if (!parsed.ok) return mastraAgentTurnRefusalValue(command, "invalid");
-      // 3b has no turn owner (3c's): an admitted request is not run.
-      return mastraAgentTurnRefusalValue(command, "unsupported");
+      // Without an owner, or without the invoke's sender, nothing is run.
+      if (!owner || !context) {
+        return mastraAgentTurnRefusalValue(command, "unsupported");
+      }
+      return owner.start(context, parsed.value);
     }
     const parsed = parseMastraAgentTurnCancelRequest(args);
     if (!parsed.ok) return mastraAgentTurnRefusalValue(command, "invalid");
-    // No turn exists in 3b, so there is nothing to stop.
-    return { status: "ok", turnId: parsed.value.turnId, found: false };
+    if (!owner || !context) {
+      return { status: "ok", turnId: parsed.value.turnId, found: false };
+    }
+    return owner.cancel(context, parsed.value);
   };
+
+  const handlersWith = (
+    context: MastraAgentTurnInvokeContext | null,
+  ): ShellCommandHandlers => ({
+    [MASTRA_AGENT_TURN_START_COMMAND]: (args) =>
+      new Promise((resolve, reject) => {
+        try {
+          resolve(
+            handlerValue(MASTRA_AGENT_TURN_START_COMMAND, args, context),
+          );
+        } catch (error) {
+          reject(error);
+        }
+      }),
+    [MASTRA_AGENT_TURN_CANCEL_COMMAND]: (args) =>
+      new Promise((resolve, reject) => {
+        try {
+          resolve(
+            handlerValue(MASTRA_AGENT_TURN_CANCEL_COMMAND, args, context),
+          );
+        } catch (error) {
+          reject(error);
+        }
+      }),
+  });
 
   return {
     open,
@@ -277,11 +339,8 @@ export function createMastraAgentTurnRoute(
       return null;
     },
 
-    handlers: {
-      [MASTRA_AGENT_TURN_START_COMMAND]: (args) =>
-        Promise.resolve(handlerValue(MASTRA_AGENT_TURN_START_COMMAND, args)),
-      [MASTRA_AGENT_TURN_CANCEL_COMMAND]: (args) =>
-        Promise.resolve(handlerValue(MASTRA_AGENT_TURN_CANCEL_COMMAND, args)),
-    },
+    handlers: handlersWith(null),
+
+    handlersFor: (context) => handlersWith(context),
   };
 }

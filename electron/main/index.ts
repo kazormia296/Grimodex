@@ -40,7 +40,13 @@ import {
   parseBodyDeclarationCiSeam,
   startBodyDeclarationCiSeam,
 } from "./bodyDeclarationCiSeam.js";
-import { registerIpcRouter } from "./ipc.js";
+import { nir1LocalGenerationLaunchFromApp, registerIpcRouter } from "./ipc.js";
+import { createMastraAgentLoader } from "./mastraAgentLoader.js";
+import {
+  openMastraAgentTurnGate,
+  parseMastraAgentTurnCiSeam,
+} from "./mastraAgentTurnGate.js";
+import { createMastraTurnOwner } from "./mastraTurnOwner.js";
 import {
   createMainGrantController,
   createMainGrantInFlight,
@@ -589,7 +595,39 @@ if (!gotSingleInstanceLock) {
     // 3, bounded). These callbacks never cross the renderer/preload contract.
     // The license check is not a participant: it keeps running (L-1, D-8);
     // Native picks the restricted client from the reservation on.
+    // Mastra agent turn owner (MP-3c, DR-MP3-11, -12, -13). It reads the same
+    // launch facts as the router's gate (one read, shared), so a launch the
+    // gate keeps closed never loads the runtime: the loader refuses first. The
+    // owner is created in every launch (it holds no turn and no runtime until a
+    // start reaches it, which only an open gate allows).
+    const mastraAgentTurnLaunch = nir1LocalGenerationLaunchFromApp();
+    const mastraAgentTurnOpen = openMastraAgentTurnGate({
+      seam: parseMastraAgentTurnCiSeam(mastraAgentTurnLaunch),
+      isPackaged: mastraAgentTurnLaunch.isPackaged,
+    });
+    const mastraAgentLoader = createMastraAgentLoader({
+      isOpen: () => mastraAgentTurnOpen,
+    });
+    const mastraTurnOwner = createMastraTurnOwner({
+      open: mastraAgentTurnOpen,
+      backend,
+      secrets: keyStore,
+      profile: profileEgress,
+      loadRuntime: () => mastraAgentLoader.load(),
+      appVersion: app.getVersion(),
+      log: (level, message) => {
+        console[level](`[mastra-turn-owner] ${message}`);
+      },
+    });
     if (!profileEgress.unavailable) {
+      // The turn owner is an egress participant: quiesce closes admission,
+      // aborts what is reserved, and waits (inside the 30 s frame) for each
+      // turn's terminal row, before Native persists the restriction.
+      profileEgress.registerMainEgressParticipant(
+        "mastra-turn-owner",
+        (context) => mastraTurnOwner.quiesceForProfileEgress(context),
+        () => mastraTurnOwner.forceStopForProfileEgress(),
+      );
       profileEgress.registerMainEgressParticipant(
         "cli-ai",
         () => cliAi.quiesceForProfileEgress(),
@@ -713,11 +751,18 @@ if (!gotSingleInstanceLock) {
             () => undefined,
             (error) => error,
           );
+        // The Mastra turn owner ends its turns (their ambiguous terminals are
+        // written while the workspace is still open) before Native's shutdown;
+        // bounded by T_quit, idempotent, never rejects (DR-MP3-13).
+        const mastraResult = Promise.resolve().then(() =>
+          mastraTurnOwner.shutdown(),
+        );
         const nativeResult = Promise.all([
           rendererTeardown,
           coordinatorResult,
           schedulerResult,
           freshnessResult,
+          mastraResult,
         ])
           .then(() => backend?.shutdownWorkspaceLifecycle?.())
           .then(
@@ -770,6 +815,8 @@ if (!gotSingleInstanceLock) {
           () => cliAi.disposeAll(),
           () => codexApp.dispose(),
           () => externalMount.disposeAll(),
+          // The same call as dispose's (idempotent), for a quit that reaches here without it.
+          () => mastraTurnOwner.shutdown(),
         ]),
       quit: () => app.quit(),
       exit: (code) => {
@@ -872,6 +919,8 @@ if (!gotSingleInstanceLock) {
       mainGrant,
       profileActivation,
       aiStreamTerminals,
+      mastraAgentTurnLaunch,
+      mastraTurnOwner,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
@@ -882,6 +931,9 @@ if (!gotSingleInstanceLock) {
       (channel, payload) => {
         narrativeFreshness.handleBackendEvent(channel, payload);
         narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
+        // A replaced workspace binding ends the Mastra turns whose identity
+        // is no longer issued (the profile gate has observed the event first).
+        mastraTurnOwner.handleBackendEvent(channel, payload);
         if (channel === "workspace:opened") {
           void codexApp.handleWorkspaceChanged();
         }
