@@ -582,6 +582,7 @@ impl Shared {
                 rebuild: RebuildLedger::default(),
                 exited: Vec::new(),
                 deferred: None,
+                refusals: Vec::new(),
             }),
             edge_epoch: AtomicU64::new(0),
             ready_generation: AtomicU64::new(0),
@@ -800,6 +801,8 @@ impl Shared {
             } else if !matches!(slot.phase, Phase::Quarantined { .. }) {
                 slot.phase = Phase::Closed;
             }
+            // DR-PUBG-5-21: nothing is announced after a close.
+            slot.refusals.clear();
         }
         self.signal_ready();
     }
@@ -879,6 +882,82 @@ struct SlotState {
     /// CQ-DEFER: the one held Related Scenes query. Some exactly while the
     /// phase is `Deferred`; only the owner thread of the slot's session takes it.
     deferred: Option<DeferredDemand>,
+    /// DR-PUBG-5-21: the projects whose registration was refused, and who waits
+    /// for each one's Graph Index build. Under the slot lock, like the ledger.
+    refusals: Vec<RefusalWatch>,
+}
+
+/// DR-PUBG-5-21: one refused project (a Graph Index build of it can fix the
+/// registration) and the projects whose demand was answered
+/// `registration-unavailable` meanwhile. `edge_epoch` is the lifecycle epoch the
+/// refusal belongs to: a row of another epoch is never announced.
+struct RefusalWatch {
+    refused_project: String,
+    edge_epoch: u64,
+    waiting: Vec<String>,
+}
+
+impl SlotState {
+    /// Records that `waiting` was answered `registration-unavailable` because
+    /// `refused`'s registration was refused. Distinct and bounded like
+    /// `unserved`; a row of another epoch is replaced.
+    fn watch_refusal(&mut self, refused: &str, waiting: &str, edge_epoch: u64) {
+        let at = self
+            .refusals
+            .iter()
+            .position(|row| row.refused_project == refused);
+        let mut row = match at {
+            Some(index) => {
+                let row = self.refusals.remove(index);
+                if row.edge_epoch == edge_epoch {
+                    row
+                } else {
+                    RefusalWatch {
+                        refused_project: refused.to_owned(),
+                        edge_epoch,
+                        waiting: Vec::new(),
+                    }
+                }
+            }
+            None => RefusalWatch {
+                refused_project: refused.to_owned(),
+                edge_epoch,
+                waiting: Vec::new(),
+            },
+        };
+        if !row.waiting.iter().any(|existing| existing == waiting) {
+            if row.waiting.len() == MAX_UNSERVED_PROJECTS {
+                row.waiting.remove(0);
+            }
+            row.waiting.push(waiting.to_owned());
+        }
+        // The most recently refused (or waited on) row is the last one.
+        if self.refusals.len() == MAX_UNSERVED_PROJECTS {
+            self.refusals.remove(0);
+        }
+        self.refusals.push(row);
+    }
+
+    /// A demand answered from the failure backoff names no refused project: it
+    /// joins the latest refusal of this epoch, or (none left) its own project.
+    fn watch_latest_refusal(&mut self, waiting: &str, edge_epoch: u64) {
+        let refused = match self.refusals.last() {
+            Some(row) if row.edge_epoch == edge_epoch => row.refused_project.clone(),
+            _ => waiting.to_owned(),
+        };
+        self.watch_refusal(&refused, waiting, edge_epoch);
+    }
+
+    /// B's publish for `project`: the waiting projects of its refusal, once, if
+    /// that refusal belongs to `edge_epoch`. Rows of another epoch are dropped.
+    fn take_refusal(&mut self, project: &str, edge_epoch: u64) -> Option<Vec<String>> {
+        self.refusals.retain(|row| row.edge_epoch == edge_epoch);
+        let at = self
+            .refusals
+            .iter()
+            .position(|row| row.refused_project == project)?;
+        Some(self.refusals.remove(at).waiting)
+    }
 }
 
 /// CQ-DEFER: a Related Scenes query held until its begin's own commits are
@@ -976,6 +1055,29 @@ fn note_held_unserved(slot: &mut SlotState, result: &GraphBegin, project_id: &st
         waiting.remove(0);
     }
     waiting.push(project_id.to_owned());
+}
+
+/// DR-PUBG-5-21: a demand answered `registration-unavailable` (from the
+/// Suspended slot, or from the failure backoff) waits for the refused project's
+/// Graph Index build. `refused` is the Suspended slot's refused project when it
+/// answered. Under the slot lock, in both begin entries.
+fn note_registration_wait(
+    slot: &mut SlotState,
+    result: &GraphBegin,
+    project_id: &str,
+    refused: Option<&str>,
+    edge_epoch: u64,
+) {
+    if !matches!(
+        result,
+        GraphBegin::Unavailable(GraphUnavailable::RegistrationUnavailable)
+    ) {
+        return;
+    }
+    match refused {
+        Some(refused) => slot.watch_refusal(refused, project_id, edge_epoch),
+        None => slot.watch_latest_refusal(project_id, edge_epoch),
+    }
 }
 
 /// The other key a READY session is asked to rekey to, and when that demand
@@ -1479,12 +1581,22 @@ impl Nir1GraphProductOwner {
     ) {
         if item.run_kind == grimodex_db::narrative_extraction::AutomaticRunKind::Nir1GraphIndexBuild
         {
-            self.resume_after_graph_index_change();
+            self.resume_after_graph_index_publish(Some(&item.project_id));
         }
     }
 
     /// Called after B's publish (B-ROUTE/CP-3a, CP2a-D47) to leave Suspended.
     pub(crate) fn resume_after_graph_index_change(&self) {
+        self.resume_after_graph_index_publish(None);
+    }
+
+    /// B's publish. Leaves Suspended (CP2a-D47). DR-PUBG-5-21: when `published`
+    /// is a project whose registration was refused, the refusal can be fixed
+    /// now: its failure wait is lifted once (the failure count stays, as in
+    /// D49) and the projects that waited on it are announced `graph-ready`,
+    /// once each, after the slot lock is released. A refusal of another epoch,
+    /// or a closed or quarantined owner, announces nothing.
+    fn resume_after_graph_index_publish(&self, published: Option<&str>) {
         let resumed_failures = resumed_failure_count(&self.shared.config());
         let mut slot = lock(&self.shared.slot);
         // CP2a-D48: under the slot lock, so `SessionGuard::drop` orders itself
@@ -1495,6 +1607,23 @@ impl Nir1GraphProductOwner {
             // CP2a-D49: one retry against the new index, not five.
             slot.rebuild.consecutive_failures = resumed_failures;
             slot.rebuild.last_failure = None;
+        }
+        let mut announce = Vec::new();
+        if let Some(project) = published {
+            let edge_epoch = self.shared.edge_epoch.load(Ordering::SeqCst);
+            let waiting = slot.take_refusal(project, edge_epoch);
+            let live = !self.shared.closed.load(Ordering::SeqCst)
+                && !matches!(slot.phase, Phase::Quarantined { .. } | Phase::Closed);
+            if let (Some(waiting), true) = (waiting, live) {
+                // The next demand may start a session at once (the rebuild
+                // minimum interval still applies), not after the failure wait.
+                slot.rebuild.last_failure_at = None;
+                announce = waiting;
+            }
+        }
+        drop(slot);
+        for project in announce {
+            self.shared.notify_ready(&project);
         }
     }
 
@@ -1831,6 +1960,7 @@ impl Shared {
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let project_id = demand.key.project_id.clone();
+        let demand_epoch = demand.epoch;
         let mut index_demand: Option<String> = None;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
@@ -1890,6 +2020,13 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_registration_wait(
+            &mut slot,
+            &result,
+            &project_id,
+            index_demand.as_deref(),
+            demand_epoch,
+        );
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
         if let Some(project) = index_demand {
@@ -2011,6 +2148,7 @@ impl Shared {
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let limit = *lock(&self.deferred_limit);
         let project_id = demand.key.project_id.clone();
+        let demand_epoch = demand.epoch;
         let mut index_demand: Option<String> = None;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
@@ -2071,6 +2209,13 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_registration_wait(
+            &mut slot,
+            &result,
+            &project_id,
+            index_demand.as_deref(),
+            demand_epoch,
+        );
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
         if let Some(project) = index_demand {
@@ -2576,6 +2721,15 @@ fn build_worker(
                     slot.rebuild.consecutive_failures.saturating_add(1);
                 slot.rebuild.last_failure_at = Some(Instant::now());
                 slot.rebuild.last_failure = Some(reason);
+                // DR-PUBG-5-21: the refused project, and the demand that met
+                // the refusal, wait for its Graph Index build's publish. Under
+                // the same slot lock as the ledger, and before the demand
+                // below can wake B. A refusal of an old epoch is not recorded.
+                if reason == GraphUnavailable::RegistrationUnavailable
+                    && !edge_or_closed(&shared, epoch)
+                {
+                    slot.watch_refusal(&key.project_id, &key.project_id, epoch);
+                }
                 let failures = slot.rebuild.consecutive_failures;
                 drop(slot);
                 guard.exit = Some(if failures >= config.failures_before_suspend {
