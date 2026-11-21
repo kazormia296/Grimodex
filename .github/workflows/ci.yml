@@ -350,7 +350,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         with:
           # The impact-selected suites also build and test the N-API crate
@@ -1193,7 +1193,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         if: steps.product-journey-impact.outputs.should_run == 'true'
         with:
           workspaces: |
@@ -1300,7 +1300,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: src-tauri
           key: electron-product-journeys-c2zc
@@ -1582,7 +1582,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: src-tauri
           key: ime-windows-atomic
@@ -1731,7 +1731,7 @@ jobs:
           toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: |
             src-tauri
@@ -1890,7 +1890,7 @@ jobs:
           toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: src-tauri
           key: ${{ matrix.shard }}
@@ -2096,7 +2096,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: src-tauri
 
@@ -2198,7 +2198,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: |
             src-tauri
