@@ -1405,3 +1405,92 @@
   - report の `bPreempted` は 0 だが、trace には `foreground-preempted` で終わった B の attempt が 22 件ある。driver の数え漏れ。
   - 長い測定は `systemd-inhibit` の下で起動する。
 - この追補ではコード・試験・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+
+### DR-PUBG-5-21：Codex の書換えの後、関連シーンのパネルが自分で Graph に戻らない（E）の直し（2026-11-22）
+
+- 位置づけ：DR-PUBG-5-20 追補 2 が「後で回して記録する」とした dev の unit E の結果から、ユーザーが「製品を直す」を選んだ分（contracts `327b9b5f`、`user-confirmation-2026-11-22-pubg5-panel-refresh.md`）。この commit（最初の commit）は判断と信頼境界の記録で、コードは変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：NIR-1 の C-product（worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。枝 `claude/pubg5-panel-refresh`（基点 origin/master `269e2577`）。PR・merge まで。新しい送信先・保存範囲・閾値の緩和（確認台帳の閾値と Gold）・契約・authority は足さない。
+- 凍結の対象との関係：触れる file は `electron/native/grimodex-node/src/nir1_graph_product.rs`（`native-architecture.mjs` の `PATHS.nodeProduct`。`FIXED_BODIES` の 4 関数〔`publication_open`・`begin`・`begin_deferred`・`begin_probed`〕には触れない）、`src/features/related-scenes/useNir1RelatedScenes.ts`、試験。CP-4 の harness と evals（`trace-*.v1.json` の `productTriggers`、`observation-prep-author-declaration.v1.json` の sha の記録）は変えない。`eval:fixtures` が照合する `FETCH_DEBOUNCE_MS`（400）と `graphReadyFirstRefreshMs` の式は変えない。harness 側の追従は S4 の枝の一覧に足す。
+
+#### 1. 事実（dev の E。`fusion-eval-data/pubg5-dev-journey-2026-11-19/panel-unit/PLAN.md`）
+
+- 製品の hook を harness に mount し、driver は query を出さない形で測った。公開の形（腕 2）で、Codex の summary を書き換えた後、パネルが自分で Graph に戻った件は 0/4（60 s）、0/2（10 分）、0/8（20 s）。作者が次に場面を移るか本文を保存すると 8/8 が約 0.5 s で戻った。
+- 仕組み（trace）：書込みで lease が無効 → hook が index-ready で取り直す → その query の worker が `StartupRegistrationRefused`（B が dirty）で失敗 → owner が `request_index_build`（DR-PUBG-5-14）→ main の需要の wake → B が約 30 ms で publish → `note_maintenance_work_completed` → `resume_after_graph_index_change`。この関数は Suspended を解くだけで、renderer に何も知らせない。hook の `awaitsGraphReady` は late・warming・stale・busy だけで、`registration-unavailable` では取り直さない。
+- 失敗の待ち：拒否の後、owner の ledger は `consecutive_failures = 1`・`last_failure_at` で、2 s の間の需要は `backoff_refusal` が同じ `registration-unavailable` を返す。
+
+#### 2. 判断
+
+**判断 1：Native が「B の publish で直りうる」ことを知らせ、hook がそれを待つ（両方）**
+- (a) Native：registration の拒否の答えを受けた project を記録し、拒否された project の B の publish（`note_maintenance_work_completed` の Graph build の item で、`item.project_id` が拒否された project と一致）の後に、記録した project へ既存の `graph-ready` の notice（`GraphReadyNotice { project_id }`、payload の形は変えない）を 1 回ずつ出す。出したら記録を消す。
+- (b) renderer：hook の `awaitsGraphReady` に `graph-unavailable:registration-unavailable` を足す。取り直しは既存の `graph-ready` の経路（1 generation に 1 回、最初の取り直しは 0 ms、連鎖は `FETCH_DEBOUNCE_MS`）をそのまま使う。新しい timer・listener・IPC は足さない。
+- (a) だけ、(b) だけにしない理由：(a) だけだと hook は `registration-unavailable` の結果のときに通知を捨てる（`graphReadyGeneration` が null）。(b) だけだと通知が来ない。renderer だけの timer の再試行は、owner の待ちの定数に結合した盲目の再試行になり、B が publish しない場合にも空の query を出すので採らない。
+
+**判断 2：記録する project と、知らせる時**
+- 記録する：(i) prepare が `RegistrationUnavailable` で終わった session の key の project（拒否された project）。(ii) その拒否の後の待ち（`backoff_refusal` が `RegistrationUnavailable` を返したとき）と、`Suspended { reason: RegistrationUnavailable }` の間に答えを受けた、需要の側の project（DR-PUBG-5-14 の注記のとおり、拒否された project と別でありうる）。
+- 記録は `MAX_UNSERVED_PROJECTS` で上限を付ける（古いものから捨てる。`unserved` と同じ形）。各行に、記録した時の `edge_epoch` を持つ。知らせる時に `edge_epoch` が違う行（workspace の切替・close の後）は捨て、知らせない。close の後は何も出さない。
+- 知らせる時：拒否された project の B の publish の後、owner の lock の外で。拒否された project と違う project の publish では知らせない（その publish はこの拒否を直さない）。
+- 旧 workspace の B の work が切替の後に完了した場合：拒否の記録の `edge_epoch` が今と違えば知らせない。同じ binding の中の同名の project は、DR-PUBG-5-18 と同じ読みで、spurious な取り直しが 1 回起きるだけ（Raw の結果は変わらない）。
+
+**判断 3：失敗の待ちは、拒否された project の publish 1 回につき 1 回だけ解く（CP2a-D49 と同じ規則に寄せる）**
+- 通知で出た取り直しが 2 s の待ちに当たると、同じ答えが返り、次の通知は来ない。そこで、拒否された project の B の publish のときは、`last_failure_at` を消して直後の試行を 1 回許す。`consecutive_failures` は残す（Suspended からの復帰は D49 のとおり `failures_before_suspend - 1`）。次の prepare が失敗すれば ledger は進み、5 回目で Suspended に入る。成功すれば 0 に戻る。
+- D49 との関係：D49 は「publish 1 回につき試行 1 回」で、Suspended の復帰の後は 1 段手前の backoff を残した。この判断は、拒否された project の publish のときに限り、その 1 回の試行を待たずに許す。spawn の回数の上限は「拒否された project の B の publish 1 回につき 1 回」のままで、B の publish の頻度は main の需要の最短間隔（2〜60 s・key 8・reset 60 s。11-21 にユーザーが据え置き）で押さえられる。`rebuild_min_interval`（1 s、失敗した prepare の開始から）は残す。
+- 確認台帳・Gold の閾値ではない（owner の待ちは確認台帳に無い。11-21 の「2〜60 s」は main の需要の最短間隔で別物）。待ちの定数そのもの（2 s・60 s・5 回）は変えない。
+
+**判断 4：残る挙動（直しの後も残るもの。測定の後に作者の場面で示して、開示を伺い直す）**
+- 書換えの直後の最初の表示は、今と同じく Graph なしで出る。戻るのは B の publish と取り直しの後（見込みは 1〜2 s。`rebuild_min_interval` を含む。測定で確かめる）。
+- B が publish に至らない場合は、今と同じく戻らない：需要の wake の gate が閉（公開前の製品、腕 1）、`skip:binding-current`（B が clean のまま拒否される前段）、`foreground-preempted`、key 満杯の drop（未測定）。これらで需要が次の取り直しなしに B を再び起こすかは、実装の中で読んで §5 に書く。
+
+#### 3. owner／lifecycle matrix（GDX-PRECHECK-001。新しい非同期・process・timer は足さない）
+
+| 項目 | 扱い |
+|---|---|
+| entry | 既存の `note_maintenance_work_completed`（呼出しは `work_completed` closure の 1 箇所）と、既存の答えの経路。新しい entry・IPC・`#[napi]`・event 名は無い |
+| start | 変更なし。通知は既存の `notify_ready`（notifier は owner の lock の外で呼ぶ） |
+| retry | 判断 3 の 1 回だけ。拒否された project の publish が無ければ今までどおり |
+| reentrant | 記録は owner の既存の mutex の下。publish の hook が並んでも、記録を take してから知らせるので、同じ project に 2 回出さない |
+| admission closure | 変更なし。close・Quarantined の後は知らせない（`edge_epoch` と `closed` を見る） |
+| pending start | 無い。timer を足さない |
+| active handle | 無い |
+| cancel | 変更なし |
+| 有限待機 | 無い（待たない）。通知の回数は、記録の上限と publish の回数で押さえられる |
+| 終了の証拠 | 通知は既存の event queue に積むだけ。owner の close は記録を捨てる |
+| error／timeout／onClosed | notifier の失敗は既存のとおり無視される（optional の listener）。renderer の listener の登録の失敗は query を止めない（既存） |
+| 再起動時の状態 | 新しい永続状態は無い（process 内の記録だけ） |
+
+#### 4. threat model の差分（委任の内の技術的な改訂）
+
+確認済みの actor・防御・受信先・受入れは変えない。
+- 新しい攻撃面：無い。通知の payload は既存の `{ projectId }` だけで、main の allowlist（`profileEgress.ts`）と payload の検査（`events.ts`）を通る既存の event。renderer は通知の回数を増やせない（記録は Native の答えからだけ作られる）。
+- 資源：worker の spawn は「拒否された project の B の publish 1 回につき 1 回」が上限。renderer の取り直しは通知 1 回につき 1 回（hook の既存の規則）。
+- 受信先・保存：増えない。外部への送信は無い（Graph と関連シーンは local）。
+- 公開前の製品：`PRODUCT_GRAPH_PUBLISHED` が false の間は需要の wake が出ず B が publish しないので、(a) の通知は出ない。(b) は、通知が来ない限り何もしない。
+- 委任の外に当たるもの（避けたもの）：待ちの定数・Suspended の回数・需要の最短間隔の変更、新しい event・契約、保存範囲の拡大。
+
+#### 5. 実装と検証の結果（2026-11-22。code の commit `9da64619`・`fb9e8ac1`・`03ac2d07`）
+
+- 実装：
+  - 記録は `SlotState.refusals: Vec<RefusalWatch>`（`refused_project`・`edge_epoch`・`waiting`。行数と waiting の数は `MAX_UNSERVED_PROJECTS` で上限）。slot の lock の下に置いた。拒否の記録と、publish の時の「待ちを解く＋記録を take」が同じ lock の区間に入り、取りこぼしの窓ができないため。
+  - 記録の場所は 2 つ。(i) `build_worker` の拒否の数え（`!edge_or_closed` のとき）。(ii) `demand` と `demand_deferred` の末尾の `note_registration_wait`。後者では、Suspended の答えは `refused_project` の行に入れ、待ちの答えは同じ epoch の直近の行に入れる（行が無ければ作る）。
+  - publish の側は `resume_after_graph_index_publish(Some(project))` で処理する。順に、D49 の Suspended の解除 → 同じ lock の中で行を take（別 epoch の行は捨てる）→ closed でも Quarantined／Closed でもなく、slot の `last_failure` が `RegistrationUnavailable` のときだけ `last_failure_at` を消す → lock の外で 1 回ずつ通知。
+  - READY のとき（`build_and_serve`・`run_deferred`）は、その project の行を通知なしで消す。
+- 独立の反証（Opus、DR を見せない）の指摘と扱い：
+  - 中 1：prepare の途中に B が publish すると、拒否が publish の後に記録され、通知が出ない（D48 の窓）。→ 直した（`03ac2d07`）。拒否を記録するときに `index_change_at_prepare` と `graph_index_change` を比べ、違えば行を作らない。そのうえで、`last_failure_at` を消し、session の終わりに lock の外で 1 回通知する（session の終わる前に出すと、取り直しが Warming に当たる）。
+  - 低 2：行が READY の後も残る。→ 直した（READY で消す。待ちを解くのは拒否の待ちのときだけ）。
+  - 試験の隙：→ 直した。close と Quarantined は epoch を進めずに確かめる形にした。edge の後の拒否は「記録されない」ことを直接 assert する。D48 の窓、READY、held query 自身の拒否、行の無い `watch_latest_refusal` の試験を足した。直しを外す変異 6 種で、対応する試験が落ちることを確かめた。
+  - 低 3・4・5 は直さず、下の「残る挙動」に記す。
+- 試験：`cargo test`（nir1_graph）202 passed、clippy（`--all-targets -D warnings`）clean、`native-architecture.test.mjs` 26/26、`eval:fixtures` errors 0、`vitest src/features/related-scenes` 532 passed、`tsc --noEmit` 成功。
+- dev の E の取り直し（`fusion-eval-data/pubg5-dev-journey-2026-11-19/panel-unit/PLAN.md`。dev 枝 `3e2e0325`＝この枝の `03ac2d07`＋dev の計装。台帳に数えない）：
+  - 腕 2：書換えの後、操作なしで 16/16 が graph-ready に戻った（直しの前は 0/16）。panel-stay は p50 2,106 ms・最大 2,230 ms、panel-switch は p50 4,874 ms（離れた 3 s を含む）。契機はすべて `graph-ready` の取り直し。
+  - 腕 1（B の wake なし）：0/16 で変わらない。
+  - burst（10 件／秒）：unit ごとに、書込み 3・B の publish 3・通知 3。prepare は 61・62 回で、直しの前（main-1c の 4 unit）の 48〜59 回とほぼ同じ。前景の線は全部内。
+- 残る挙動（判断 4 の確かめ。開示はユーザーに伺い直す）：
+  - 書換えの直後の最初の表示は Graph なしで、戻るのは約 2 s 後（`rebuild_min_interval` と prepare を含む）。
+  - B が publish に至らないときは戻らない。たとえば、需要の wake の gate が閉（公開前の製品）、main の需要の間引き（同じ key は 2〜60 s）、key 8 件が満杯での drop（Native も renderer も気づかない）、`skip:binding-current`。待ち（`backoff_refusal`）の中の需要は B を起こさない。
+  - Suspended が別の project の publish で抜けたとき（D47）、待っている側には通知しない。D49 の待ちが残るので、知らせても同じ答えになる。次の操作で戻る。
+  - edge をまたいだ ledger の待ちの中で、新しい workspace の project が registration-unavailable を受けた場合、行はできるが B を要求しない。この直しの前からある形。
+  - query の時点で `RegistrationRequired` が返ると、registration-unavailable として出るが、記録も B の要求も無い（この直しの前と同じ）。
+- S4 の枝で直す写し（この PR では変えない）：
+  - `scripts/quality/nir1-graph-eval/followup.mjs`（113・845〜850・1129〜1164 付近）、`followup.test.mjs`（389 の N22・1740）、`run-sample.mjs`（39 の `B_UNUSABLE_REASONS`・231）、`join.mjs`（115）。
+  - `renderer/cp4-hook-probe.tsx`（registration-unavailable の後にも取り直しが出るので、再 query の読みに響きうる）、`renderer/cp4-harness.ts`（680〜740 の graph-ready 待ち）。
+  - `evals/nir1-graph/observation-prep-author-declaration.v1.json`（141 の hook の sha の記録。基点 `7a10dd11` の値）。
+  - docs の旧仕様の記述：`cp3a-decisions.md` の DR-CP3A-43 と U-7 の「4 つの outcome」。
