@@ -3,16 +3,18 @@
 //!
 //! A Graph-only target is a Scene that a Graph path reached by an explicit
 //! pin and that is not already in the R+IR result. It may fill the common
-//! extra slot of Related Scenes only if its author declared its whole body
-//! (`scope-storage-authority`) and every judgement below still holds *now*,
-//! read afresh from the database in the caller's read transaction.
+//! extra slot of Related Scenes when every judgement below holds *now*, read
+//! afresh from the database in the caller's read transaction. No author
+//! action is needed and none is read (K2/5: the declaration, its binding, the
+//! veto records and the quarantine are not part of the judgement).
 //!
 //! This file is the S1 part: the candidate scan and the judgements that never
 //! read the body. The reader
 //!
 //! - walks the frame's associations in tuple order and stops at the first one
 //!   that passes everything (the body of that one is read later, by S2);
-//! - reads the declaration from its row (never from the feed or a cache);
+//! - reads the Scene's A1 binding and the Scope authority from their rows
+//!   (never from the feed or a cache);
 //! - writes nothing, keeps no cache, and returns a result that carries no
 //!   reason: "no candidate", "an ineligible one" and "a limit was exceeded"
 //!   are the same [`NotAppended`], so the answer can never change the Graph's
@@ -29,11 +31,7 @@ use grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1;
 use rusqlite::Connection;
 
 use super::Nir1GraphSceneAssociation;
-use crate::narrative_extraction::scene_body_declaration::{
-    is_scene_body_declaration_quarantined, StoredSceneBodyDeclaration,
-};
 use crate::narrative_extraction::{QueryIdentityState, RetrievalQueryContext};
-use crate::nir1_generation::history_context::DurableWorkspaceIdentity;
 use crate::state::ActiveWorkspaceSnapshot;
 use grimodex_core::narrative_nir1::MAX_GRAPH_SCENES;
 
@@ -71,9 +69,9 @@ impl AppendSlot {
     }
 }
 
-/// The plain workspace ID and the canonical locator digest that a declaration
-/// is bound to, plus the means to ask whether the workspace is quarantined.
-/// Made only from an [`ActiveWorkspaceSnapshot`]; it holds no path.
+/// The plain workspace ID and the canonical locator digest that a response's
+/// binding is bound to. Made only from an [`ActiveWorkspaceSnapshot`]; it holds
+/// no path.
 pub struct GraphDisclosureWorkspace {
     parts: Option<WorkspaceParts>,
 }
@@ -81,7 +79,6 @@ pub struct GraphDisclosureWorkspace {
 pub(super) struct WorkspaceParts {
     pub(super) workspace_id: String,
     pub(super) canonical_locator_digest: String,
-    identity: DurableWorkspaceIdentity,
 }
 
 impl GraphDisclosureWorkspace {
@@ -97,23 +94,10 @@ impl GraphDisclosureWorkspace {
             (Some(binding), Some(identity)) => Some(WorkspaceParts {
                 workspace_id: binding.workspace_id.to_string(),
                 canonical_locator_digest: identity.canonical_locator_digest.as_str().to_owned(),
-                identity: identity.clone(),
             }),
             _ => None,
         };
         Self { parts }
-    }
-
-    /// True while a declaration COMMIT of this workspace had an unknown outcome
-    /// in this process. The reader checks it before it reads the database and
-    /// again before it adopts a candidate; a caller checks it once more after
-    /// its read transaction ended and discards the result when it is true.
-    /// A workspace without values is reported as quarantined (nothing may be
-    /// disclosed from it).
-    pub fn is_quarantined(&self) -> bool {
-        self.parts
-            .as_ref()
-            .is_none_or(|parts| is_scene_body_declaration_quarantined(&parts.identity))
     }
 
     pub(super) fn parts(&self) -> Option<&WorkspaceParts> {
@@ -263,8 +247,8 @@ impl fmt::Debug for GraphOnlyScanInput<'_> {
 }
 
 /// "No Graph-only Scene is added." One value for every reason: no candidate,
-/// an ineligible one, a limit exceeded, no free slot, no workspace value, a
-/// quarantined workspace. It changes nothing else about the response.
+/// an ineligible one, a limit exceeded, no free slot, no workspace value. It
+/// changes nothing else about the response.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NotAppended;
 
@@ -290,12 +274,11 @@ pub struct GraphOnlyCandidate {
     /// The frame's association, kept so a click can be revalidated with the
     /// very same pin and path (it is request-local and never persisted).
     association: Nir1GraphSceneAssociation,
-    /// The Scene's current title; its digest equals the declaration's.
+    /// The Scene's current title, as the scan read it.
     title: String,
     scene_incarnation_id: String,
     scope_source_token: String,
     scene_source_token: String,
-    declaration: StoredSceneBodyDeclaration,
 }
 
 impl fmt::Debug for GraphOnlyCandidate {

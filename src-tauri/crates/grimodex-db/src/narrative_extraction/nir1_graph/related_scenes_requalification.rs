@@ -363,19 +363,6 @@ pub struct QualifiedGraphForRelatedScenes {
     pub graph_only_row: Option<GraphOnlyRow>,
 }
 
-impl QualifiedGraphForRelatedScenes {
-    /// The last check of a response: after the read transaction ended, a
-    /// workspace whose declaration COMMIT had an unknown outcome in this
-    /// process discloses nothing. The Graph-only Scene is dropped (like any
-    /// other Graph-only failure) and the path additions stay (DR-CB4-12 (4)).
-    pub fn drop_graph_only_if_quarantined(&mut self, workspace: &GraphDisclosureWorkspace) {
-        if workspace.is_quarantined() {
-            self.graph_only = GraphOnlySceneDisclosure::NotAppended(NotAppended);
-            self.graph_only_row = None;
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum GraphRequalification {
     /// The whole Graph contributes nothing.
@@ -915,8 +902,8 @@ impl GraphPathRevalidator for ClickRevalidator<'_, '_> {
 
 /// Revalidates a clicked Graph-only row: CB-4's click revalidation, with the
 /// row's path compared with the identifiers and tokens the response kept
-/// ([`GraphClickPath`]) against this snapshot's A3, and the pin, declaration,
-/// title and body checked again. `conn` must be in a new read transaction.
+/// ([`GraphClickPath`]) against this snapshot's A3, and the pin, title and
+/// body checked again. `conn` must be in a new read transaction.
 /// `Allowed` carries the range to go to; anything that no longer holds is the
 /// closed [`GraphOnlyClick::Refused`]; an `Err` is a cancel, a deadline or a
 /// storage failure.
@@ -944,10 +931,6 @@ pub fn requalify_graph_only_click(
 /// [`GraphRequalification::Dropped`] with a closed reason; a Graph-only
 /// candidate that is absent, ineligible or too costly to judge is
 /// `graph_only: NotAppended` and changes nothing else.
-///
-/// After the transaction ended, check
-/// [`GraphDisclosureWorkspace::is_quarantined`] once more and drop an
-/// `Eligible` when it is true (DR-CB4-12 (4)).
 pub fn requalify_graph_for_related_scenes(
     conn: &mut Connection,
     input: &GraphRequalificationInput<'_>,

@@ -1,48 +1,42 @@
-//! E group (CB-4 S3): how a declaration expires, seen from the reader.
+//! E group (CB-4 S3, rewritten for K2/5): what the reader answers after the
+//! Scene changed, seen through the production writers.
 //!
-//! CB-1's `scene_body_declaration/invalidation_tests.rs` ran every production
-//! writer and looked at the storage layer (the binding no longer matches). This
-//! file runs the same writers and looks at what the reader finally answers:
+//! K2/5 removed the declaration from the reader, so nothing "expires" any more.
+//! The reader is bound to the values it read itself, and this file runs the
+//! same production writers as before and looks at three properties:
 //!
-//! 1. right after the declaration is placed the Scene is `Eligible`;
-//! 2. after the production writer the reader answers `NotAppended` for the
-//!    frame as it is now and for the frame the response used, and a click on
-//!    the binding the response made is refused;
-//! 3. putting the Scene back (title A -> B -> A with `updatedAt` restored, a
-//!    folder moved and moved back, a registry changed and changed back, ...)
-//!    does not make it eligible again.
+//! 1. **A Scene with no declaration and no veto is disclosed.** Right after
+//!    the response, the fresh frame is `Eligible` and a click is allowed.
+//! 2. **A stale frame adds nothing.** After a change that moves the Scene's
+//!    source token, scope token or incarnation (a body save, until the Index
+//!    catches up with a new frame), the frame the response used is
+//!    `NotAppended`, and the fresh frame is `Eligible` with the new excerpt.
+//! 3. **A click on the response's binding is refused when what the response
+//!    read changed**: the body (source token, digests, range), the title (its
+//!    digest), the A1 (incarnation, scope token) or the workspace (ID, locator)
+//!    and is allowed when it did not (a folder move that leaves the Scene's own
+//!    rows alone, a title put back with its token).
 //!
-//! No test names *which* component of the binding differs. Before X1-2 a body
-//! or title change moves the v1 token; after X1-2 it moves the body Source
-//! token and the title digest. Both orders pass (XK-1, XK-2).
+//! No test names *which* component differs. The oracle of `assert_follows` is
+//! the reader itself: the click is allowed exactly when a new disclosure over
+//! the current rows binds the same values, and the tests that know the answer
+//! add it (`assert_old_response_refused`, `assert_holds`).
 //!
-//! ## E10: the 失効 table of the draft and the tests that hold each row
+//! ## E10: the writers that this file runs
 //!
-//! | row (draft `scope-storage-authority`, 失効) | reader test (this file) | writer exercised |
-//! |---|---|---|
-//! | body save, same-text re-save, original text saved back | `e1_body_save_*` | `save_scene_body_bundle` |
-//! | body patch with the same text (`bumpVersion` true/false) | `e1_body_patch_*` | `tree_node_patch` |
-//! | title / metadata patch (`bumpVersion` true/false) | `e1_title_and_metadata_*` | `tree_node_patch` |
-//! | title A -> B -> A, `updatedAt` restored, future `updatedAt` interrupted | `e2_*` | `tree_node_patch`, Chronicle bulk (+ undo/redo) |
-//! | Scene move / reorder / story order / archive / POV and back | `e3_scene_placement_*` | `tree_node_patch` |
-//! | AI Apply | `e3_ai_apply_*` | `apply_ai_tree_plan` |
-//! | Codex rename propagation | `e3_codex_rename_*` | `apply_codex_rename` |
-//! | Chronicle bulk (forward, undo, redo), temporal commit writers | `e3_bulk_and_temporal_*` | `agent_chronicle_bulk_mutate_impl`, `apply_*_in_tx` |
-//! | folder move / reorder / archive and back (X1-1) | `e3_folder_*` | `tree_node_patch` on the folder |
-//! | A1 update, same value, holder set and put back | `e4_a1_*` | `update_narrative_scene_scope` |
-//! | registry change and change back (every declaration of the project) | `e4_registry_*` | `update_narrative_scene_scope_registry` |
-//! | Codex character restore invalidates A1 | `e4_codex_character_restore_*` | `invalidate_character_references_with_events_in_tx` |
-//! | body version restore, also with identical bytes | `e5_body_version_restore_*` | `restore_scene_revision` |
-//! | project snapshot restore | `e5_project_snapshot_restore_*` | `apply_project_snapshot_restore` |
-//! | backup restore and Safe Mode restore (staged image clear) | `e5_staged_restore_*` | `clear_all_scene_body_declarations_for_staged_restore` |
-//! | duplicate, delete and re-create with the same id, Trash restore | `e6_*` | `tree_node_create`, `tree_node_delete`, `trash_bin::restore` |
-//! | copy / move of the workspace, workspace ID change, and back | `e7_*` | (reopen of the workspace) |
-//! | veto record added after the declaration, then removed | `e8_*` | (rows the Chronicle / foreshadow writers own) |
-//! | revoke, resend of the revoke, re-declare | `e9_*` | `revoke_scene_body`, `declare_scene_body` |
-//!
-//! Rows that this file does not run: a backup older than schema 43 (no
-//! declaration columns; CB-1's migration tests) and a locator that cannot be
-//! determined (`tests.rs` A6).
+//! | writer | test |
+//! |---|---|
+//! | `save_scene_body_bundle` | `e1_body_save_*` |
+//! | `tree_node_patch` (body, title, metadata, placement, POV) | `e1_*`, `e2_*`, `e3_scene_placement_*`, `e8_*` |
+//! | Chronicle bulk (+ undo/redo), temporal commit writers | `e2_*`, `e3_bulk_and_temporal_*` |
+//! | `apply_ai_tree_plan`, `apply_codex_rename` | `e3_ai_apply_*`, `e3_codex_rename_*` |
+//! | folder move / reorder / archive and back | `e3_folder_*` |
+//! | A1, registry, Codex character restore | `e4_*` |
+//! | body version restore, project snapshot restore, staged restore | `e5_*` |
+//! | duplicate, delete and re-create, Trash restore | `e6_*` |
+//! | copy / move of the workspace, workspace ID change | `e7_*` |
+//! | records and POV added after the response | `e8_*` |
+//! | the declaration writer and its revoke (not read by the reader) | `e9_*` |
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use rusqlite::{params, OptionalExtension};
@@ -50,9 +44,7 @@ use serde_json::{json, Value};
 
 use grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1;
 
-use super::body_tests::{
-    assert_nothing_added, assert_refused, click, disclose, disclose_with, eligible, place_real,
-};
+use super::body_tests::{assert_refused, click, disclose, disclose_with, eligible};
 use super::tests::{add_pin, add_scene, event, execute, fixture, foreshadow, Path};
 use super::*;
 use crate::domain_writes::{
@@ -63,9 +55,7 @@ use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
     body_json, budget, declare, request_for, revoke_request, set_a1, Env, PROJECT, SCENE,
 };
 use crate::narrative_extraction::scene_body_declaration::{
-    clear_all_scene_body_declarations_for_staged_restore, read_scene_body_declaration,
-    read_scene_body_declaration_state, revoke_scene_body, DeclareRefusal, RevokeResponse,
-    SceneBodyDeclarationRead, StateRequest,
+    clear_all_scene_body_declarations_for_staged_restore, revoke_scene_body, RevokeResponse,
 };
 use crate::narrative_extraction::task_leases::with_immediate_transaction;
 use crate::narrative_extraction::{
@@ -148,69 +138,96 @@ fn answer(
     disclose_with(env, &[association], &mut Path::yes(), &mut || Ok(()))
 }
 
-/// Declares the Scene's body as it is now and shows it: the response's binding.
+/// Shows the Scene as it is now: the response's binding.
 fn arm(env: &Env, scene: &str) -> GraphOnlySceneBinding {
-    place_real(env, scene);
     let shown = eligible(disclose(env, &[scene]));
     assert_eq!(shown.scene_id(), scene);
     shown.binding().clone()
 }
 
-/// CB-3's state read says the Scene's declaration is `effective` right now.
-/// The author's screen and the reader judge the query-independent conditions
-/// with the same parts, so the two must agree at every step of this file: a
-/// screen that says "not effective" while the reader can disclose, or the other
-/// way round, is a defect (CB-3 P2-2).
-fn state_is_effective(env: &Env, scene: &str) -> bool {
-    match read_scene_body_declaration_state(
-        &env.snapshot(),
-        &StateRequest {
-            project_id: PROJECT.to_owned(),
-            scene_id: scene.to_owned(),
-        },
-        &budget(),
-    ) {
-        Ok(read) => read.state.is_effective(),
-        // A quarantined workspace claims nothing.
-        Err(DeclareRefusal::RestartRequired) => false,
-        Err(refusal) => panic!("the state read failed: {refusal}"),
-    }
+/// What `assert_follows` found: the click on the response's binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Click {
+    Allowed,
+    Refused,
 }
 
-/// The reader answers `Eligible` for the Scene as it is now, and so does the
-/// state read (`effective`).
-fn assert_holds(env: &Env, scene: &str, step: &str) {
-    let now = fresh(env, scene).unwrap_or_else(|| panic!("{step}: the Scene has no frame"));
-    match answer(env, now).unwrap() {
-        GraphOnlySceneDisclosure::Eligible(_) => {}
-        other => panic!("{step}: the Scene should be eligible, got {other:?}"),
-    }
-    assert!(
-        state_is_effective(env, scene),
-        "{step}: the reader is eligible but the state read is not effective"
-    );
-}
-
-/// The reader adds nothing for the Scene as it is now and for the frame the
-/// response used, and the click on the response's binding is refused.
-fn assert_expired(env: &Env, scene: &str, shown: &GraphOnlySceneBinding, step: &str) {
-    assert!(
-        !state_is_effective(env, scene),
-        "{step}: the reader adds nothing but the state read says effective"
-    );
-    if let Some(now) = fresh(env, scene) {
-        let result = answer(env, now).unwrap();
+/// The three properties of the file for the Scene as it is now, judged by a
+/// new disclosure over the current rows:
+///
+/// - the frame the response used adds nothing unless it is still the Scene's
+///   frame (property 2);
+/// - the click on the response's binding is allowed exactly when the new
+///   disclosure binds the same values (property 3), and is refused when the
+///   Scene is no longer disclosed.
+///
+/// Returns the click, so a test that knows the answer can assert it.
+fn assert_follows(env: &Env, scene: &str, shown: &GraphOnlySceneBinding, step: &str) -> Click {
+    let now = fresh(env, scene);
+    let stale = answer(env, shown.association.clone()).unwrap();
+    if now.as_ref() != Some(&shown.association) {
         assert!(
-            matches!(result, GraphOnlySceneDisclosure::NotAppended(NotAppended)),
-            "{step}: the current frame must add nothing, got {result:?}"
+            matches!(stale, GraphOnlySceneDisclosure::NotAppended(NotAppended)),
+            "{step}: the frame the response used must add nothing, got {stale:?}"
         );
     }
-    let old = answer(env, shown.association.clone()).unwrap();
-    assert!(
-        matches!(old, GraphOnlySceneDisclosure::NotAppended(NotAppended)),
-        "{step}: the frame the response used must add nothing, got {old:?}"
+    let current = now.map(|frame| answer(env, frame).unwrap());
+    let clicked = click(env, shown).unwrap_or_else(|error| panic!("{step}: {error:#}"));
+    let allowed = matches!(clicked, GraphOnlyClick::Allowed(_));
+    match current {
+        Some(GraphOnlySceneDisclosure::Eligible(current)) => {
+            let again = current.binding();
+            let same = again.body == shown.body
+                && again.title_digest == shown.title_digest
+                && again.scene_incarnation_id == shown.scene_incarnation_id
+                && again.scope_source_token == shown.scope_source_token
+                && again.authority_revision_token == shown.authority_revision_token
+                && again.association == shown.association;
+            assert_eq!(
+                allowed, same,
+                "{step}: the click must follow the values the reader reads now"
+            );
+            if let GraphOnlyClick::Allowed(range) = clicked {
+                assert_eq!(range, current.range(), "{step}");
+            }
+        }
+        _ => assert!(
+            !allowed,
+            "{step}: nothing is disclosed, the click must be refused"
+        ),
+    }
+    if allowed {
+        Click::Allowed
+    } else {
+        Click::Refused
+    }
+}
+
+/// The fresh frame is `Eligible`; its binding is returned so that a test can
+/// look at the excerpt and the tokens the Scene is disclosed with now.
+fn assert_holds_with(env: &Env, scene: &str, step: &str) -> (String, GraphOnlySceneBinding) {
+    let now = fresh(env, scene).unwrap_or_else(|| panic!("{step}: the Scene has no frame"));
+    match answer(env, now).unwrap() {
+        GraphOnlySceneDisclosure::Eligible(now) => {
+            (now.excerpt().to_owned(), now.binding().clone())
+        }
+        other => panic!("{step}: the Scene should be eligible, got {other:?}"),
+    }
+}
+
+/// The fresh frame is `Eligible`.
+fn assert_holds(env: &Env, scene: &str, step: &str) {
+    assert_holds_with(env, scene, step);
+}
+
+/// The frame the response used adds nothing (when it is not the Scene's frame
+/// any more) and the click is refused.
+fn assert_old_response_refused(env: &Env, scene: &str, shown: &GraphOnlySceneBinding, step: &str) {
+    assert_eq!(
+        assert_follows(env, scene, shown, step),
+        Click::Refused,
+        "{step}: the click must be refused"
     );
-    assert_refused(env, shown, step);
 }
 
 fn scene_row(env: &Env, scene: &str, column: &str) -> String {
@@ -234,23 +251,29 @@ fn add_folder(env: &Env, id: &str) {
 // ---- E1: body, title and metadata -------------------------------------------------
 
 #[test]
-fn e1_body_save_same_text_resave_and_original_restored_never_hold_again() {
+fn e1_body_save_same_text_resave_and_original_restored_refuse_the_old_response() {
     let env = fixture();
     let shown = arm(&env, "b1");
     let original = scene_row(&env, "b1", "content");
     let changed = body_json("Another body.");
 
     writers::save_body(db(&env), "b1", &changed, T1);
-    assert_expired(&env, "b1", &shown, "body save");
+    assert_old_response_refused(&env, "b1", &shown, "body save");
+    // Once the frame catches up (a fresh association), the Scene is disclosed
+    // with the new excerpt, and the old response's range is not the new one.
+    let (excerpt, now) = assert_holds_with(&env, "b1", "the new frame after a body save");
+    assert_eq!(excerpt, "Another body.");
+    assert_ne!(now.body.source_token, shown.body.source_token);
+    assert_ne!(now.body.canonical_digest, shown.body.canonical_digest);
     writers::save_body(db(&env), "b1", &changed, T2);
-    assert_expired(&env, "b1", &shown, "same text saved again");
+    assert_old_response_refused(&env, "b1", &shown, "same text saved again");
     writers::save_body(db(&env), "b1", &original, "2026-10-19T03:00:00.000Z");
     assert_eq!(scene_row(&env, "b1", "content"), original);
-    assert_expired(&env, "b1", &shown, "original text saved back");
+    assert_old_response_refused(&env, "b1", &shown, "original text saved back");
 }
 
 #[test]
-fn e1_body_patch_with_the_same_text_still_expires() {
+fn e1_body_patch_with_the_same_text_still_refuses_the_old_response() {
     let env = fixture();
     let ids = scenes(&env, "m", 2);
     for (scene, bump) in ids.iter().zip([true, false]) {
@@ -262,7 +285,7 @@ fn e1_body_patch_with_the_same_text_still_expires() {
             bump,
             T1,
         );
-        assert_expired(
+        assert_old_response_refused(
             &env,
             scene,
             &shown,
@@ -272,7 +295,7 @@ fn e1_body_patch_with_the_same_text_still_expires() {
 }
 
 #[test]
-fn e1_title_and_metadata_patches_expire() {
+fn e1_title_and_metadata_patches_refuse_the_old_response() {
     let env = fixture();
     let cases = [
         ("title", json!("Renamed")),
@@ -291,14 +314,14 @@ fn e1_title_and_metadata_patches_expire() {
         let (field, value) = &cases[index / 2];
         let bump = index % 2 == 0;
         patch(&env, scene, json!({ *field: value.clone() }), bump, T1);
-        assert_expired(&env, scene, shown, &format!("{field} patch, bump={bump}"));
+        assert_old_response_refused(&env, scene, shown, &format!("{field} patch, bump={bump}"));
     }
 }
 
 // ---- E2: ABA and interruption -------------------------------------------------------
 
 #[test]
-fn e2_title_a_b_a_with_the_first_updated_at_never_holds_again() {
+fn e2_title_a_b_a_with_the_first_updated_at_refuses_the_old_response() {
     let env = fixture();
     let ids = scenes(&env, "m", 2);
     for (scene, bump) in ids.iter().zip([true, false]) {
@@ -307,7 +330,7 @@ fn e2_title_a_b_a_with_the_first_updated_at_never_holds_again() {
         let first_updated_at = scene_row(&env, scene, "updated_at");
 
         patch(&env, scene, json!({ "title": "B" }), bump, T1);
-        assert_expired(&env, scene, &shown, &format!("title B, bump={bump}"));
+        assert_old_response_refused(&env, scene, &shown, &format!("title B, bump={bump}"));
         patch(
             &env,
             scene,
@@ -316,7 +339,7 @@ fn e2_title_a_b_a_with_the_first_updated_at_never_holds_again() {
             &first_updated_at,
         );
         assert_eq!(scene_row(&env, scene, "title"), title);
-        assert_expired(
+        assert_old_response_refused(
             &env,
             scene,
             &shown,
@@ -330,7 +353,7 @@ fn e2_title_a_b_a_with_the_first_updated_at_never_holds_again() {
             bump,
             &first_updated_at,
         );
-        assert_expired(
+        assert_old_response_refused(
             &env,
             scene,
             &shown,
@@ -340,7 +363,7 @@ fn e2_title_a_b_a_with_the_first_updated_at_never_holds_again() {
 }
 
 #[test]
-fn e2_an_interrupted_future_updated_at_never_holds_again() {
+fn e2_an_interrupted_future_updated_at_refuses_the_old_response() {
     const FAR_FUTURE: &str = "2099-01-01T00:00:00.000Z";
     let env = fixture();
     let shown = arm(&env, "b1");
@@ -348,22 +371,22 @@ fn e2_an_interrupted_future_updated_at_never_holds_again() {
 
     // patch(future) -> Chronicle bulk (+ undo, redo) -> patch(same future).
     patch(&env, "b1", json!({ "title": "B" }), false, FAR_FUTURE);
-    assert_expired(&env, "b1", &shown, "future patch");
+    assert_old_response_refused(&env, "b1", &shown, "future patch");
     let forward = writers::bulk(
         db(&env),
         json!([{ "kind": "sceneSetPov", "sceneId": "b1",
                  "baseUpdatedAt": scene_row(&env, "b1", "updated_at"),
                  "povCharacterId": "c1" }]),
     );
-    assert_expired(&env, "b1", &shown, "bulk forward");
+    assert_old_response_refused(&env, "b1", &shown, "bulk forward");
     let journal = forward["undoJournalId"].as_str().unwrap().to_owned();
     for direction in ["undo", "redo", "undo"] {
         writers::undo_or_redo(db(&env), &journal, direction);
-        assert_expired(&env, "b1", &shown, direction);
+        assert_old_response_refused(&env, "b1", &shown, direction);
     }
     patch(&env, "b1", json!({ "title": title }), false, FAR_FUTURE);
     assert_eq!(scene_row(&env, "b1", "title"), title);
-    assert_expired(&env, "b1", &shown, "same future updatedAt, title back");
+    assert_old_response_refused(&env, "b1", &shown, "same future updatedAt, title back");
     patch(
         &env,
         "b1",
@@ -372,13 +395,13 @@ fn e2_an_interrupted_future_updated_at_never_holds_again() {
         "2026-07-29T00:00:00.000Z",
     );
     patch(&env, "b1", json!({ "title": title }), false, FAR_FUTURE);
-    assert_expired(&env, "b1", &shown, "stale and repeated");
+    assert_old_response_refused(&env, "b1", &shown, "stale and repeated");
 }
 
 // ---- E3: placement, writers of other kinds, folders ------------------------------------
 
 #[test]
-fn e3_scene_placement_fields_and_back_never_hold_again() {
+fn e3_scene_placement_fields_and_back_refuse_the_old_response() {
     let env = fixture();
     add_folder(&env, "f2");
     let cases: [(&str, Value, Option<Value>); 5] = [
@@ -414,16 +437,21 @@ fn e3_scene_placement_fields_and_back_never_hold_again() {
         let (name, forward, back) = &cases[index / 2];
         let bump = index % 2 == 0;
         patch(&env, scene, forward.clone(), bump, T1);
-        assert_expired(&env, scene, shown, &format!("{name}, bump={bump}"));
+        assert_old_response_refused(&env, scene, shown, &format!("{name}, bump={bump}"));
         if let Some(back) = back {
             patch(&env, scene, back.clone(), bump, T2);
-            assert_expired(&env, scene, shown, &format!("{name} put back, bump={bump}"));
+            assert_old_response_refused(
+                &env,
+                scene,
+                shown,
+                &format!("{name} put back, bump={bump}"),
+            );
         }
     }
 }
 
 #[test]
-fn e3_ai_apply_expires() {
+fn e3_ai_apply_refuses_the_old_response() {
     let env = fixture();
     add_folder(&env, "f2");
     execute(
@@ -471,7 +499,7 @@ fn e3_ai_apply_expires() {
     )
     .expect("AI rename");
     assert_eq!(scene_row(&env, "b1", "title"), "Renamed by AI");
-    assert_expired(&env, "b1", &renamed, "AI rename");
+    assert_old_response_refused(&env, "b1", &renamed, "AI rename");
 
     let moved = arm(&env, "b2");
     apply_ai_tree_plan(
@@ -485,11 +513,11 @@ fn e3_ai_apply_expires() {
     )
     .expect("AI move");
     assert_eq!(scene_row(&env, "b2", "parent_id"), "f2");
-    assert_expired(&env, "b2", &moved, "AI move");
+    assert_old_response_refused(&env, "b2", &moved, "AI move");
 }
 
 #[test]
-fn e3_codex_rename_propagation_expires() {
+fn e3_codex_rename_propagation_refuses_the_old_response() {
     let env = fixture();
     let shown = arm(&env, "b1");
     let payload: CodexRenameApplyPayload = serde_json::from_value(json!({
@@ -510,11 +538,11 @@ fn e3_codex_rename_propagation_expires() {
     .expect("rename payload");
     apply_codex_rename(db(&env), payload).expect("codex rename");
     assert_eq!(scene_row(&env, "b1", "title"), "Hero's scene");
-    assert_expired(&env, "b1", &shown, "Codex rename propagation");
+    assert_old_response_refused(&env, "b1", &shown, "Codex rename propagation");
 }
 
 #[test]
-fn e3_bulk_and_temporal_operations_expire() {
+fn e3_bulk_and_temporal_operations_refuse_the_old_response() {
     let env = fixture();
     let first = arm(&env, "b1");
     let second = arm(&env, "b2");
@@ -531,20 +559,20 @@ fn e3_bulk_and_temporal_operations_expire() {
               "endTime": null, "endMinute": null, "endGranularity": "none" },
         ]),
     );
-    assert_expired(&env, "b1", &first, "bulk POV");
-    assert_expired(&env, "b2", &second, "bulk date");
+    assert_old_response_refused(&env, "b1", &first, "bulk POV");
+    assert_old_response_refused(&env, "b2", &second, "bulk date");
     let journal = forward["undoJournalId"].as_str().unwrap().to_owned();
     for direction in ["undo", "redo"] {
         writers::undo_or_redo(db(&env), &journal, direction);
-        assert_expired(&env, "b1", &first, &format!("bulk {direction} (POV)"));
-        assert_expired(&env, "b2", &second, &format!("bulk {direction} (date)"));
+        assert_old_response_refused(&env, "b1", &first, &format!("bulk {direction} (POV)"));
+        assert_old_response_refused(&env, "b2", &second, &format!("bulk {direction} (date)"));
     }
     writers::bulk(
         db(&env),
         json!([{ "kind": "sceneClearDate", "sceneId": "b2",
                  "baseUpdatedAt": scene_row(&env, "b2", "updated_at") }]),
     );
-    assert_expired(&env, "b2", &second, "bulk clear date");
+    assert_old_response_refused(&env, "b2", &second, "bulk clear date");
 
     env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
@@ -560,7 +588,7 @@ fn e3_bulk_and_temporal_operations_expire() {
             Ok(())
         })
     });
-    assert_expired(&env, "b3", &third, "temporal Chronicle metadata patch");
+    assert_old_response_refused(&env, "b3", &third, "temporal Chronicle metadata patch");
 
     let fourth = arm(&env, "b3");
     env.with_conn_mut(|conn| {
@@ -577,11 +605,11 @@ fn e3_bulk_and_temporal_operations_expire() {
             Ok(())
         })
     });
-    assert_expired(&env, "b3", &fourth, "story order materialize");
+    assert_old_response_refused(&env, "b3", &fourth, "story order materialize");
 }
 
 #[test]
-fn e3_folder_move_reorder_archive_and_back_never_hold_again() {
+fn e3_folder_move_reorder_archive_and_back_refuse_the_old_response() {
     let cases: [(&str, Value, Value); 3] = [
         (
             "move",
@@ -613,29 +641,37 @@ fn e3_folder_move_reorder_archive_and_back_never_hold_again() {
             let outside = arm(&env, "b1");
 
             patch(&env, "f1", forward.clone(), bump, T1);
-            assert_expired(&env, "u1", &under_a, &format!("folder {name}, bump={bump}"));
-            assert_expired(
-                &env,
-                "u2",
-                &under_b,
-                &format!("folder {name} (2), bump={bump}"),
+            for (scene, shown, label) in [("u1", &under_a, "1"), ("u2", &under_b, "2")] {
+                let step = format!("folder {name} ({label}), bump={bump}");
+                assert_old_response_refused(&env, scene, shown, &step);
+                // A reorder puts the folder after the query Scene, and an
+                // archive hides it: the fresh frame adds nothing then (it is
+                // the reading order and the live check that decide, not a
+                // declaration).
+                if name == "move" {
+                    assert_holds(&env, scene, &step);
+                }
+            }
+            // A change of the tree moves the Scope authority's revision (the
+            // reading order), which every response is bound to; the Scene
+            // outside the folder is disclosed again by the next request.
+            assert_old_response_refused(&env, "b1", &outside, "a Scene outside the folder");
+            let (_, now) = assert_holds_with(&env, "b1", "a Scene outside the folder");
+            assert_ne!(
+                now.authority_revision_token, outside.authority_revision_token,
+                "the folder change moved the Scope authority's revision"
             );
-            assert_holds(&env, "b1", "a Scene outside the folder is not touched");
-            let _ = &outside;
+            assert!(
+                now.body == outside.body,
+                "the Scene's own values did not move"
+            );
 
             patch(&env, "f1", back.clone(), bump, T2);
-            assert_expired(
-                &env,
-                "u1",
-                &under_a,
-                &format!("folder {name} back, bump={bump}"),
-            );
-            assert_expired(
-                &env,
-                "u2",
-                &under_b,
-                &format!("folder {name} back (2), bump={bump}"),
-            );
+            for (scene, shown, label) in [("u1", &under_a, "1"), ("u2", &under_b, "2")] {
+                let step = format!("folder {name} back ({label}), bump={bump}");
+                assert_old_response_refused(&env, scene, shown, &step);
+                assert_holds(&env, scene, &step);
+            }
             assert_holds(&env, "b1", "the outside Scene after the round trip");
         }
     }
@@ -644,7 +680,7 @@ fn e3_folder_move_reorder_archive_and_back_never_hold_again() {
 // ---- E4: A1, registry, Codex characters -------------------------------------------------
 
 #[test]
-fn e4_a1_update_same_value_holder_set_and_put_back_never_hold_again() {
+fn e4_a1_update_same_value_holder_set_and_put_back_refuse_the_old_response() {
     let env = fixture();
     add_pin(&env, SCENE, "2026-10-19T00:30:00Z");
     let shown = arm(&env, SCENE);
@@ -664,7 +700,7 @@ fn e4_a1_update_same_value_holder_set_and_put_back_never_hold_again() {
         .expect("A1 update");
     };
     reader(&env);
-    assert_expired(&env, SCENE, &shown, "A1 written again");
+    assert_old_response_refused(&env, SCENE, &shown, "A1 written again");
     update_narrative_scene_scope(
         db(&env),
         a1_with(
@@ -676,7 +712,7 @@ fn e4_a1_update_same_value_holder_set_and_put_back_never_hold_again() {
         ),
     )
     .expect("A1 holder set");
-    assert_expired(&env, SCENE, &shown, "A1 holder set");
+    assert_old_response_refused(&env, SCENE, &shown, "A1 holder set");
     update_narrative_scene_scope(
         db(&env),
         a1_with(
@@ -686,7 +722,7 @@ fn e4_a1_update_same_value_holder_set_and_put_back_never_hold_again() {
         ),
     )
     .expect("A1 holder back");
-    assert_expired(&env, SCENE, &shown, "A1 holder put back");
+    assert_old_response_refused(&env, SCENE, &shown, "A1 holder put back");
 }
 
 /// CB-1's payload builder names Scene `s1` and unresolved query axes; the
@@ -712,7 +748,7 @@ fn a1_with(
 }
 
 #[test]
-fn e4_registry_change_and_change_back_expire_every_declaration_of_the_project() {
+fn e4_registry_change_and_change_back_refuse_the_old_response_of_every_scene_of_the_project() {
     let env = fixture();
     add_pin(&env, SCENE, "2026-10-19T00:30:00Z");
     let armed: Vec<(String, GraphOnlySceneBinding)> = ["b1", "b2", "b3", SCENE]
@@ -722,17 +758,18 @@ fn e4_registry_change_and_change_back_expire_every_declaration_of_the_project() 
 
     writers::registry_edit(db(&env), Some("timeline:extra"));
     for (scene, shown) in &armed {
-        assert_expired(&env, scene, shown, &format!("registry change, {scene}"));
+        assert_old_response_refused(&env, scene, shown, &format!("registry change, {scene}"));
     }
-    // A -> B -> A on the registry brings none of them back (XK-3).
+    // A -> B -> A on the registry is a new generation: none of the old
+    // responses comes back (XK-3).
     writers::registry_edit(db(&env), None);
     for (scene, shown) in &armed {
-        assert_expired(&env, scene, shown, &format!("registry put back, {scene}"));
+        assert_old_response_refused(&env, scene, shown, &format!("registry put back, {scene}"));
     }
 }
 
 #[test]
-fn e4_codex_character_restore_invalidating_a1_expires() {
+fn e4_codex_character_restore_invalidating_a1_refuses_the_old_response() {
     let env = fixture();
     add_pin(&env, SCENE, "2026-10-19T00:30:00Z");
     let version = db(&env)
@@ -766,8 +803,8 @@ fn e4_codex_character_restore_invalidating_a1_expires() {
     );
     // The restore also reset the query Scene's A1 (it names c1 too), so the
     // query is unavailable and nothing can be shown. The Scene's own A1 moved
-    // on from the one the declaration was bound to.
-    assert_expired(&env, SCENE, &declared, "character restore invalidates A1");
+    // on from the one the response was bound to.
+    assert_old_response_refused(&env, SCENE, &declared, "character restore invalidates A1");
     let current_scope_token: String = env.with_conn(|conn| {
         Ok(conn.query_row(
             "SELECT source_token FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
@@ -855,27 +892,26 @@ fn revision_restore(env: &Env, scene: &str, request: &str, same_bytes: bool) {
 }
 
 #[test]
-fn e5_body_version_restore_expires_also_with_identical_bytes() {
+fn e5_body_version_restore_refuses_the_old_response_also_with_identical_bytes() {
     let env = fixture();
     for (scene, same) in [("b1", false), ("b2", true)] {
         let shown = arm(&env, scene);
         revision_restore(&env, scene, &writers::unique("restore"), same);
-        assert_expired(
+        assert_old_response_refused(
             &env,
             scene,
             &shown,
             &format!("revision restore, identical={same}"),
         );
-        // A declaration made afterwards is a new one and holds; the old
-        // binding is still refused.
-        place_real(&env, scene);
-        assert_holds(&env, scene, "declared again after the restore");
-        assert_refused(&env, &shown, "the old response after a new declaration");
+        // The Scene is disclosed again with its new frame; the old response
+        // is still refused.
+        assert_holds(&env, scene, "the new frame after the restore");
+        assert_refused(&env, &shown, "the old response after a new frame");
     }
 }
 
 #[test]
-fn e5_project_snapshot_restore_clears_the_declaration() {
+fn e5_project_snapshot_restore_follows_the_rows() {
     use crate::project_snapshots::{
         apply_project_snapshot_restore, create_project_snapshot,
         ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
@@ -913,86 +949,90 @@ fn e5_project_snapshot_restore_clears_the_declaration() {
         },
     )
     .expect("restore");
-    assert_expired(&env, "b1", &shown, "project snapshot restore");
-    place_real(&env, "b1");
-    assert_holds(&env, "b1", "declared again after the restore");
+    assert_eq!(
+        assert_follows(&env, "b1", &shown, "project snapshot restore"),
+        Click::Allowed,
+        "a Labels restore leaves the Scene's rows and the authority as they were"
+    );
+    assert_holds(&env, "b1", "the Scene after the restore");
 }
 
 #[test]
-fn e5_staged_restore_clear_expires_every_declaration() {
+fn e5_staged_restore_clear_of_the_declaration_cells_changes_nothing_for_the_reader() {
+    // K2/5: the reader reads no declaration, so clearing the cells (what a
+    // backup or Safe Mode restore does to the staged image) is not a change.
     let env = fixture();
     let armed: Vec<_> = ["b1", "b2", "b3"]
         .iter()
         .map(|s| (s.to_string(), arm(&env, s)))
         .collect();
+    for (scene, _) in &armed {
+        super::tests::place(&env, scene);
+    }
     let cleared = clear_all_scene_body_declarations_for_staged_restore(db(&env)).expect("clear");
     assert_eq!(cleared, 3);
     for (scene, shown) in &armed {
-        assert_expired(
-            &env,
-            scene,
-            shown,
-            &format!("backup / Safe Mode restore, {scene}"),
+        assert_eq!(
+            assert_follows(
+                &env,
+                scene,
+                shown,
+                &format!("backup / Safe Mode restore, {scene}")
+            ),
+            Click::Allowed
         );
     }
-    place_real(&env, "b1");
-    assert_holds(&env, "b1", "declared again after the restore");
 }
 
 // ---- E6: identity ----------------------------------------------------------------------------
 
 #[test]
-fn e6_a_duplicate_has_no_declaration() {
+fn e6_a_duplicate_is_a_scene_of_its_own() {
     let env = fixture();
     let shown = arm(&env, "b1");
     let content = scene_row(&env, "b1", "content");
     writers::create_scene(db(&env), "b1-copy", "Title of b1", &content);
     set_a1(db(&env), PROJECT, "b1-copy", true);
     add_pin(&env, "b1-copy", "2026-10-19T00:40:00Z");
-    // Everything but the declaration is in place for the copy.
-    let result = answer(&env, fresh(&env, "b1-copy").unwrap()).unwrap();
+    // Nobody declared the copy: it is disclosed with its own frame and
+    // binding.
+    let copy = eligible(answer(&env, fresh(&env, "b1-copy").unwrap()).unwrap());
+    assert_eq!(copy.scene_id(), "b1-copy");
+    assert_ne!(
+        copy.binding().scene_incarnation_id,
+        shown.scene_incarnation_id
+    );
+    // The original is disclosed as before. A new Scene changes the Scope
+    // authority's revision, which the old response was bound to, so the old
+    // response is the one that is refused (it is made again by the next
+    // request).
+    let (_, now) = assert_holds_with(&env, "b1", "the original after its duplicate");
+    assert_ne!(
+        now.authority_revision_token, shown.authority_revision_token,
+        "a new Scene moved the Scope authority's revision"
+    );
     assert!(
-        matches!(result, GraphOnlySceneDisclosure::NotAppended(NotAppended)),
-        "{result:?}"
+        now.body == shown.body,
+        "the original's own values did not move"
     );
-    place_real(&env, "b1-copy");
-    assert_holds(
-        &env,
-        "b1-copy",
-        "control: the copy is eligible once it is declared",
-    );
-    assert_holds(&env, "b1", "the original is untouched by its duplicate");
-    click(&env, &shown).expect("click");
-}
-
-/// The Scene has no declaration (or no binding row at all).
-fn assert_no_stored_declaration(env: &Env, scene: &str, step: &str) {
-    let read = env.with_conn(|conn| read_scene_body_declaration(conn, PROJECT, scene));
-    assert!(
-        matches!(
-            read,
-            SceneBodyDeclarationRead::None | SceneBodyDeclarationRead::Unavailable(_)
-        ),
-        "{step}: expected no declaration, read {read:?}"
-    );
+    assert_old_response_refused(&env, "b1", &shown, "the authority revision moved");
 }
 
 #[test]
-fn e6_delete_and_recreate_with_the_same_id_has_no_declaration() {
+fn e6_delete_and_recreate_with_the_same_id_refuses_the_old_response() {
     let env = fixture();
     let shown = arm(&env, "b1");
     let content = scene_row(&env, "b1", "content");
     let title = scene_row(&env, "b1", "title");
     writers::delete_scene(db(&env), "b1");
-    assert_expired(&env, "b1", &shown, "after delete");
+    assert_old_response_refused(&env, "b1", &shown, "after delete");
     writers::create_scene(db(&env), "b1", &title, &content);
     add_pin(&env, "b1", "2026-10-19T00:00:00Z");
-    assert_no_stored_declaration(&env, "b1", "recreated with the same id");
-    assert_expired(&env, "b1", &shown, "recreated with the same id");
+    assert_old_response_refused(&env, "b1", &shown, "recreated with the same id");
 }
 
 #[test]
-fn e6_trash_restore_does_not_bring_back_the_declaration() {
+fn e6_trash_restore_does_not_bring_back_the_old_response() {
     let env = fixture();
     let shown = arm(&env, "b1");
     let title = scene_row(&env, "b1", "title");
@@ -1034,18 +1074,8 @@ fn e6_trash_restore_does_not_bring_back_the_declaration() {
         },
     )
     .expect("restore from Trash");
-    assert_no_stored_declaration(&env, &restored.new_id, "the restored Scene");
-    assert_no_stored_declaration(&env, "b1", "the deleted Scene's id");
-    set_a1(db(&env), PROJECT, &restored.new_id, true);
-    add_pin(&env, &restored.new_id, "2026-10-19T00:41:00Z");
-    if let Some(now) = fresh(&env, &restored.new_id) {
-        let result = answer(&env, now).unwrap();
-        assert!(
-            matches!(result, GraphOnlySceneDisclosure::NotAppended(NotAppended)),
-            "{result:?}"
-        );
-    }
-    assert_expired(&env, "b1", &shown, "the old response after a Trash restore");
+    assert_ne!(restored.new_id, "b1", "the restored Scene is a new Scene");
+    assert_old_response_refused(&env, "b1", &shown, "the old response after a Trash restore");
 }
 
 // ---- E7: the workspace ------------------------------------------------------------------------
@@ -1074,20 +1104,23 @@ mod workspace {
     }
 
     #[test]
-    fn e7_a_copy_of_the_workspace_is_refused_and_the_original_path_holds_again() {
+    fn e7_a_copy_of_the_workspace_refuses_the_response_and_the_original_path_allows_it_again() {
         let mut env = fixture();
         let shown = arm(&env, "b1");
         env.close();
         let copy = sibling(&env, "copy");
         copy_dir(&env.path, &copy);
         env.reopen_via(&copy);
-        // Same workspace ID, same rows, another canonical locator.
-        assert_expired(&env, "b1", &shown, "a copy of the workspace");
+        // Same workspace ID, same rows, another canonical locator: the Scene
+        // is disclosed there with its own binding, and the response of the
+        // other workspace is refused.
+        assert_holds(&env, "b1", "a copy of the workspace");
+        assert_refused(&env, &shown, "a copy of the workspace");
         env.close();
         let _ = std::fs::remove_dir_all(&copy);
 
-        // Back at the original folder with the original ID: the same bytes of
-        // the declaration are valid again, and the old response is allowed.
+        // Back at the original folder with the original ID: the response is
+        // allowed again.
         env.reopen();
         assert_holds(&env, "b1", "the original path");
         assert!(matches!(
@@ -1097,7 +1130,7 @@ mod workspace {
     }
 
     #[test]
-    fn e7_a_moved_workspace_and_a_changed_workspace_id_are_refused() {
+    fn e7_a_moved_workspace_and_a_changed_workspace_id_refuse_the_response() {
         let mut env = fixture();
         let shown = arm(&env, "b1");
 
@@ -1106,7 +1139,7 @@ mod workspace {
         env.close();
         env.workspace_id = "another-workspace-id".into();
         env.reopen();
-        assert_expired(&env, "b1", &shown, "another workspace ID");
+        assert_refused(&env, &shown, "another workspace ID");
 
         // The folder moves (another canonical locator, the ID restored).
         env.close();
@@ -1114,7 +1147,7 @@ mod workspace {
         copy_dir(&env.path, &moved);
         env.workspace_id = original_id;
         env.reopen_via(&moved);
-        assert_expired(&env, "b1", &shown, "a moved workspace");
+        assert_refused(&env, &shown, "a moved workspace");
         env.close();
         let _ = std::fs::remove_dir_all(&moved);
 
@@ -1126,7 +1159,7 @@ mod workspace {
 // ---- E8: veto records ---------------------------------------------------------------------------
 
 #[test]
-fn e8_secret_records_added_after_the_declaration_expire_it_and_removing_them_restores_it() {
+fn e8_secret_records_added_after_the_response_change_nothing() {
     let env = fixture();
     let ids = scenes(&env, "m", 3);
     let armed: Vec<_> = ids.iter().map(|id| (id.clone(), arm(&env, id))).collect();
@@ -1139,70 +1172,59 @@ fn e8_secret_records_added_after_the_declaration_expire_it_and_removing_them_res
         "INSERT INTO scene_events (scene_id, event_id) VALUES ('m2', 'ev2');",
     );
     for (scene, shown) in &armed {
-        assert_expired(&env, scene, shown, &format!("secret record, {scene}"));
-    }
-
-    // The records are rows the author can remove; the binding was never
-    // touched, so the same bytes of the declaration are usable again.
-    execute(
-        &env,
-        "DELETE FROM scene_events WHERE event_id = 'ev2';
-         DELETE FROM events WHERE id IN ('ev1', 'ev2');
-         DELETE FROM foreshadows WHERE id = 'fs1';",
-    );
-    for (scene, _) in &armed {
-        assert_holds(&env, scene, &format!("records removed, {scene}"));
+        assert_eq!(
+            assert_follows(&env, scene, shown, &format!("secret record, {scene}")),
+            Click::Allowed
+        );
+        assert_holds(&env, scene, &format!("secret record, {scene}"));
     }
 }
 
 #[test]
-fn e8_a_pov_added_after_the_declaration_does_not_come_back_when_removed() {
+fn e8_a_pov_added_after_the_response_moves_the_token_and_does_not_hide_the_scene() {
     let env = fixture();
     let shown = arm(&env, "b1");
     patch(&env, "b1", json!({ "povCharacterId": "c1" }), true, T1);
-    assert_expired(&env, "b1", &shown, "POV set");
+    assert_old_response_refused(&env, "b1", &shown, "POV set");
+    assert_holds(&env, "b1", "POV set: the new frame is disclosed");
     patch(&env, "b1", json!({ "povCharacterId": null }), true, T2);
-    assert_expired(&env, "b1", &shown, "POV removed again");
+    assert_old_response_refused(&env, "b1", &shown, "POV removed again");
 }
 
-// ---- E9: revoke, resend, re-declare ----------------------------------------------------------------
+// ---- E9: the declaration writer is not read --------------------------------------------------------
 
 #[test]
-fn e9_a_revoke_its_resend_and_a_new_declaration() {
+fn e9_a_declaration_its_revoke_and_a_new_declaration_do_not_touch_the_reader() {
+    // PR-2 removes the writer; until then it still writes the cells. The
+    // reader does not read them, so what the writer does is not seen.
     let env = Env::new();
     add_pin(&env, SCENE, "2026-10-19T00:50:00Z");
+    let shown = arm(&env, SCENE);
     let request = request_for(&env, PROJECT, SCENE);
     declare(&env, request.clone()).expect("production declaration");
-    let shown = eligible(disclose(&env, &[SCENE])).binding().clone();
+    assert_eq!(
+        assert_follows(&env, SCENE, &shown, "after the declaration"),
+        Click::Allowed
+    );
     let token = env.declaration_token(SCENE).expect("declared");
 
     let revoke = revoke_request(PROJECT, SCENE, &token);
-    let revoked = revoke_scene_body(
-        &env.snapshot(),
-        revoke.clone(),
-        &budget(),
-    )
-    .unwrap();
+    let revoked = revoke_scene_body(&env.snapshot(), revoke.clone(), &budget()).unwrap();
     assert_eq!(revoked.response, RevokeResponse::Revoked);
-    assert_expired(&env, SCENE, &shown, "after the revoke");
-
-    // The resend answers from its record and brings nothing back.
-    let replay = revoke_scene_body(
-        &env.snapshot(),
-        revoke.clone(),
-        &budget(),
-    )
-    .unwrap();
-    assert!(replay.replayed);
-    assert_expired(&env, SCENE, &shown, "the revoke resent");
-
-    // Sending the very first declare request again is a replay of its record.
+    assert_eq!(
+        assert_follows(&env, SCENE, &shown, "after the revoke"),
+        Click::Allowed
+    );
+    assert!(
+        revoke_scene_body(&env.snapshot(), revoke, &budget())
+            .unwrap()
+            .replayed
+    );
     let _ = declare(&env, request);
-    assert_nothing_added(&disclose(&env, &[SCENE]));
-    assert_refused(&env, &shown, "after the declaration request was resent");
-
-    // A new declaration is a new one: it holds, and the old response does not.
     declare(&env, request_for(&env, PROJECT, SCENE)).expect("declared again");
+    assert_eq!(
+        assert_follows(&env, SCENE, &shown, "declared again"),
+        Click::Allowed
+    );
     assert_holds(&env, SCENE, "declared again");
-    assert_refused(&env, &shown, "the old response after a new declaration");
 }

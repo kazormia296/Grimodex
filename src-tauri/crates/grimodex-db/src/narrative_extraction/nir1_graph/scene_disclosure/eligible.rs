@@ -11,8 +11,9 @@ use crate::narrative_extraction::nir1_graph::Nir1GraphSceneAssociation;
 
 use super::NotAppended;
 
-/// What the saved body of the adopted Scene gave when it was read: the digests
-/// the declaration is bound to, plus the excerpt's digest and range.
+/// What the saved body of the adopted Scene gave when it was read: the source
+/// token and the digests, plus the excerpt's digest and range. A click is
+/// compared with these values, which the response read itself.
 #[derive(Clone, Eq, PartialEq)]
 pub(super) struct BodyFacts {
     /// `v{version}@{updated_at}` as the body read saw it.
@@ -42,9 +43,6 @@ pub struct GraphOnlySceneBinding {
     pub(super) canonical_locator_digest: String,
     pub(super) scene_incarnation_id: String,
     pub(super) scope_source_token: String,
-    /// The declaration that held: its ID and stored token.
-    pub(super) declaration_id: String,
-    pub(super) declaration_token: String,
     pub(super) title_digest: String,
     pub(super) body: BodyFacts,
 }
@@ -71,7 +69,7 @@ impl EligibleGraphScene {
         &self.scene_id
     }
 
-    /// The title the author declared (its digest is the declaration's).
+    /// The Scene's title as the response read it.
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -111,7 +109,7 @@ pub struct GraphSceneRange {
 }
 
 impl fmt::Debug for GraphSceneRange {
-    // The values are positions in a declared body; they are not printed.
+    // The values are positions in a Scene's body; they are not printed.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GraphSceneRange")

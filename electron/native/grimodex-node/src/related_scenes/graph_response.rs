@@ -8,12 +8,12 @@
 //!
 //! * `pathAttachments`: the path of each Scene the response displays, with the
 //!   text of the typed Revision this snapshot read (never the worker's);
-//! * `graphOnly`: at most one Scene the author declared, with its title, the
-//!   first non-empty line of its body and the exact range, an opaque handle and
-//!   the path that reaches it. Every reason the row is absent (no candidate,
-//!   ineligible, over a limit, no free slot, a quarantined workspace) is the
-//!   one value `null`: the response can not tell them apart (Mandatory
-//!   defense 9).
+//! * `graphOnly`: at most one Scene that the pin and the path reach, with its
+//!   title, the first non-empty line of its body and the exact range, an
+//!   opaque handle and the path that reaches it. No author action is needed
+//!   (K2/5). Every reason the row is absent (no candidate, ineligible, over a
+//!   limit, no free slot) is the one value `null`: the response can not tell
+//!   them apart (Mandatory defense 9).
 //!
 //! What the operation keeps for the click is the CB-4 binding (digests and
 //! tokens) and the identifiers and tokens of the row's path: no response, no
@@ -343,15 +343,12 @@ pub(super) fn requalify_in_workspace(
             };
             requalify_graph_for_related_scenes(conn, &input, &mut || checkpoint.check())
         })?;
-    let mut qualified = match outcome {
+    let qualified = match outcome {
         GraphRequalification::Dropped(reason) => {
             return Ok(Assembled::Unavailable(drop_reason(reason)));
         }
         GraphRequalification::Qualified(qualified) => qualified,
     };
-    // After the transaction: a quarantined workspace discloses no Graph-only
-    // Scene (DR-CB4-12 (4)).
-    qualified.drop_graph_only_if_quarantined(&disclosure_workspace);
     Ok(response(request.query_binding, *qualified))
 }
 
@@ -388,10 +385,10 @@ pub(super) struct RowFields<'a> {
 }
 
 /// The row's wire, or `None` when it can not be shown inside the bounds the
-/// response keeps (a title or an excerpt larger than the declaration itself
-/// allows, or a path that is not the Scene's). Both texts are bounded by the
-/// declaration and the body read already; the check is a defense, and its
-/// answer is the one `null` of every other reason.
+/// response keeps (a title or an excerpt larger than the K1b limits allow, or a
+/// path that is not the Scene's). Both texts are bounded by the title and body
+/// reads already; the check is a defense, and its answer is the one `null` of
+/// every other reason.
 pub(super) fn row_wire(fields: &RowFields<'_>, identity: &str) -> Option<Value> {
     if fields.title.len() > SCENE_BODY_TITLE_MAX_BYTES
         || fields.excerpt.len() > SCENE_BODY_READ_MAX_BYTES
@@ -475,9 +472,8 @@ pub(super) fn keep_click(graph: &GraphState, click: Option<Box<(String, ClickEnt
 // ---- the click --------------------------------------------------------------
 
 /// `nir1_evidence_qualify` for a Graph-only handle. In a new read transaction
-/// the judgement of the row (the path, the pin, the declaration, the title, the
-/// body) runs again against what the response bound, and only the range comes
-/// back. Whatever no longer holds, a lost gate and a failure of any kind are
+/// the judgement of the row (the path, the pin, the title, the body) runs
+/// again against what the response bound, and only the range comes back. Whatever no longer holds, a lost gate and a failure of any kind are
 /// `unavailable`; the operation (and so the R+IR list) is invalidated only when
 /// it is itself stale.
 pub(super) fn click(
@@ -565,11 +561,8 @@ pub(super) fn click_requalified(
             )
         },
     )?;
-    // A quarantine that began during the read is a refusal (DR-CB4-12 (4)).
     Ok(match verdict {
-        GraphOnlyClick::Allowed(range) if !disclosure_workspace.is_quarantined() => {
-            Some((range.start_utf16, range.end_utf16))
-        }
-        GraphOnlyClick::Allowed(_) | GraphOnlyClick::Refused(_) => None,
+        GraphOnlyClick::Allowed(range) => Some((range.start_utf16, range.end_utf16)),
+        GraphOnlyClick::Refused(_) => None,
     })
 }
