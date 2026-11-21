@@ -6,7 +6,8 @@
  * （snake_case）、真偽は 0/1、foreshadow 系の時刻は epoch ms の整数、他は ISO 文字列。
  *
  * 構成（3 project）：
- * - `main`：全部入りの project。archived の場面、hidden の Codex、secret の出来事・伏線を含む。
+ * - `main`：全部入りの project。archived の場面・folder（外部ファイルの消失で archived）、
+ *   hidden の Codex、secret の出来事・伏線を含む。
  * - `other`：main と同じ名前・タグ・題名を持つ別 project の行（XPROJ の漏れを見る）。
  * - `empty`：行が 1 つも無い project（「空」の結果を見る）。
  * - `big`：9 場面に結ばれた筋を 1 本だけ持つ project（`get_thread_scenes` の上限 8 を見る）。
@@ -115,11 +116,13 @@ export const LEGACY_READ_SEED: readonly SeedTable[] = [
     table: "tree_nodes",
     rows: [
       // --- main ---------------------------------------------------------
+      // sort_order は兄弟ごとの並び（全体で単調ではない）。読む順は DFS で、
+      // 第一部＞第一章＞（出会い・旅立ち）、第一部＞第二章＞（裏切り・終幕・…）、設定メモ、の順。
       treeNode("n-part1", "p-main", "folder", "第一部", "a0"),
-      treeNode("n-ch1", "p-main", "folder", "第一章", "a1", {
+      treeNode("n-ch1", "p-main", "folder", "第一章", "a0", {
         parent_id: "n-part1",
       }),
-      treeNode("n-s1", "p-main", "scene", "出会い", "a2", {
+      treeNode("n-s1", "p-main", "scene", "出会い", "a0", {
         parent_id: "n-ch1",
         status: "draft",
         synopsis: "アリアが老魔術師と出会う。",
@@ -131,7 +134,7 @@ export const LEGACY_READ_SEED: readonly SeedTable[] = [
         ),
         char_count: 30,
       }),
-      treeNode("n-s2", "p-main", "scene", "旅立ち", "a3", {
+      treeNode("n-s2", "p-main", "scene", "旅立ち", "a1", {
         parent_id: "n-ch1",
         status: "outline",
         synopsis: null,
@@ -139,10 +142,10 @@ export const LEGACY_READ_SEED: readonly SeedTable[] = [
         story_time_label: "夏",
         content: pmDoc("二人は塔を後にした。"),
       }),
-      treeNode("n-ch2", "p-main", "folder", "第二章", "a4", {
+      treeNode("n-ch2", "p-main", "folder", "第二章", "a1", {
         parent_id: "n-part1",
       }),
-      treeNode("n-s3", "p-main", "scene", "裏切り", "a5", {
+      treeNode("n-s3", "p-main", "scene", "裏切り", "a0", {
         parent_id: "n-ch2",
         status: "complete",
         synopsis: "黒幕の正体が明かされる。",
@@ -150,21 +153,35 @@ export const LEGACY_READ_SEED: readonly SeedTable[] = [
         story_time_label: "初夏",
         content: LONG_MAGIC_BODY,
       }),
-      treeNode("n-s4", "p-main", "scene", "終幕", "a6", {
+      treeNode("n-s4", "p-main", "scene", "終幕", "a1", {
         parent_id: "n-ch2",
         status: "final",
         synopsis: "物語は幕を閉じる。",
         content: LONG_FINALE_BODY,
       }),
-      treeNode("n-arch", "p-main", "scene", "没シーン", "a7", {
+      // 外部 Markdown のマウントで、ファイルの消失・重複により自動で archived（soft delete）になった場面。
+      treeNode("n-arch", "p-main", "scene", "外部ファイルが消えた場面", "a2", {
         parent_id: "n-ch2",
-        synopsis: "没にしたシーン。",
+        synopsis: "外部 Markdown のファイル消失で archived になった場面。",
         story_time_order: "a4",
         archived_at: "2026-02-01T00:00:00.000Z",
-        content: pmDoc("没にした本文。魔法は使われない。"),
+        content: pmDoc(
+          "アリアは外部ファイルの消失を知らない。魔法は使われない。",
+        ),
       }),
-      treeNode("n-note1", "p-main", "note", "設定メモ", "a8", {
+      treeNode("n-note1", "p-main", "note", "設定メモ", "a1", {
         content: pmDoc("メモの本文。"),
+      }),
+      // 外部フォルダの消失で archived になった folder。下の場面は自身は archived でない
+      // （祖先だけが archived。listNodes と同じく行単位の archived_at だけで除外する）。
+      treeNode("n-part2", "p-main", "folder", "外部フォルダが消えた部", "a2", {
+        archived_at: "2026-02-01T00:00:00.000Z",
+      }),
+      treeNode("n-s5", "p-main", "scene", "親が消えた場面", "a0", {
+        parent_id: "n-part2",
+        status: "draft",
+        synopsis: "親フォルダだけが archived の場面。",
+        content: pmDoc("親フォルダの消失後も残った場面の本文。"),
       }),
       // --- other（main と同じ題名・語を持つ）-----------------------------
       treeNode("x-folder", "p-other", "folder", "他の章", "a0"),

@@ -34,6 +34,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { orderNodesInReadingOrder } from "@/features/tree/treeReadingOrder";
 import { countTokens } from "../contextBuilder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -1183,14 +1184,15 @@ async function listChapters(): Promise<Omit<ToolResult, "toolCallId">> {
     .where(
       and(
         eq(treeNodes.projectId, projectId),
-        inArray(treeNodes.nodeType, ["part", "chapter", "scene"]),
+        inArray(treeNodes.nodeType, ["folder", "scene"]),
+        // 外部 Markdown のファイル消失・重複で自動の soft delete になった行は読ませない。
+        // 祖先だけが archived の行は listNodes と同じく残る（root から届かない行として末尾に並ぶ）。
+        isNull(treeNodes.archivedAt),
       ),
     );
 
-  // Sort by sortOrder for consistent output
-  nodes.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-  const content = nodes.map((n) => ({
+  // tree の読む順（DFS。兄弟ごとの sortOrder）。全体を 1 回の sortOrder で並べない。
+  const content = orderNodesInReadingOrder(nodes).map(({ node: n }) => ({
     id: n.id,
     parentId: n.parentId ?? null,
     nodeType: n.nodeType,
@@ -1234,7 +1236,13 @@ async function getScene(
       nodeType: treeNodes.nodeType,
     })
     .from(treeNodes)
-    .where(and(eq(treeNodes.id, id), eq(treeNodes.projectId, projectId)));
+    .where(
+      and(
+        eq(treeNodes.id, id),
+        eq(treeNodes.projectId, projectId),
+        isNull(treeNodes.archivedAt),
+      ),
+    );
 
   if (!node || node.nodeType !== "scene") {
     return {
@@ -1256,6 +1264,11 @@ async function getScene(
     tokensUsed: countTokens(json),
   };
 }
+
+/** search_scenes が返す最大件数。 */
+const SEARCH_SCENES_LIMIT = 10;
+/** fts_search に渡す件数。Rust の `search_fts` の上限（50）。archived を落とした後に切るため多めに取る。 */
+const SEARCH_SCENES_FTS_FETCH_LIMIT = 50;
 
 async function searchScenes(
   params: Record<string, unknown>,
@@ -1285,7 +1298,14 @@ async function searchScenes(
 
   let rows: Array<{ id: string; title: string; content: string }>;
   if (allTrigramFriendly) {
-    const hitIds = await sparseSearchIds(projectId, query, "scenes", 10);
+    // archived（重複の行は生きている行と同じ本文）が上位の枠を使わないよう、Rust の上限まで多めに取り、
+    // archived を落として元の FTS の順に並べてから SEARCH_SCENES_LIMIT 件に切る。
+    const hitIds = await sparseSearchIds(
+      projectId,
+      query,
+      "scenes",
+      SEARCH_SCENES_FTS_FETCH_LIMIT,
+    );
     if (hitIds.length === 0) {
       rows = [];
     } else {
@@ -1301,11 +1321,12 @@ async function searchScenes(
             and(
               eq(treeNodes.projectId, projectId),
               eq(treeNodes.nodeType, "scene"),
+              isNull(treeNodes.archivedAt),
               inArray(treeNodes.id, hitIds),
             ),
           ),
         hitIds,
-      );
+      ).slice(0, SEARCH_SCENES_LIMIT);
     }
   } else {
     rows = await db
@@ -1319,13 +1340,14 @@ async function searchScenes(
         and(
           eq(treeNodes.projectId, projectId),
           eq(treeNodes.nodeType, "scene"),
+          isNull(treeNodes.archivedAt),
           buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
             treeNodes.title,
             treeNodes.content,
           ]),
         ),
       )
-      .limit(10);
+      .limit(SEARCH_SCENES_LIMIT);
   }
 
   const content = rows.map((row) => ({
@@ -1451,43 +1473,46 @@ async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
       summary: "No active project",
       tokensUsed: 0,
     };
-  const chapters = await db
-    .select({
-      id: treeNodes.id,
-      title: treeNodes.title,
-      sortOrder: treeNodes.sortOrder,
-    })
-    .from(treeNodes)
-    .where(
-      and(
-        eq(treeNodes.projectId, projectId),
-        eq(treeNodes.nodeType, "chapter"),
-      ),
-    );
-
-  chapters.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-  const scenes = await db
+  // 現行 schema の node_type は folder／scene／note だけ。folder を章として扱う
+  // （MCP の get_chapter_summaries と同じ形）。全階層の folder を tree の読む順（DFS）に並べる。
+  const rows = await db
     .select({
       id: treeNodes.id,
       parentId: treeNodes.parentId,
+      nodeType: treeNodes.nodeType,
       title: treeNodes.title,
       synopsis: treeNodes.synopsis,
       sortOrder: treeNodes.sortOrder,
     })
     .from(treeNodes)
     .where(
-      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
+      and(
+        eq(treeNodes.projectId, projectId),
+        inArray(treeNodes.nodeType, ["folder", "scene"]),
+        // 自動 soft delete（外部ファイルの消失・重複）の行は除く。listNodes と同じ行単位の規則。
+        isNull(treeNodes.archivedAt),
+      ),
     );
+
+  const ordered = orderNodesInReadingOrder(rows).map(({ node }) => node);
+  const chapters = ordered.filter((n) => n.nodeType === "folder");
+  const scenesByParent = new Map<string, typeof ordered>();
+  for (const n of ordered) {
+    if (n.nodeType !== "scene" || n.parentId === null) continue;
+    if ((n.synopsis ?? "").trim() === "") continue;
+    const siblings = scenesByParent.get(n.parentId) ?? [];
+    siblings.push(n);
+    scenesByParent.set(n.parentId, siblings);
+  }
 
   const content = chapters.map((ch) => ({
     id: ch.id,
     title: ch.title,
-    scenes: scenes
-      .filter((s) => s.parentId === ch.id)
-      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder))
-      .map((s) => ({ id: s.id, title: s.title, synopsis: s.synopsis ?? "" }))
-      .filter((s) => s.synopsis),
+    scenes: (scenesByParent.get(ch.id) ?? []).map((s) => ({
+      id: s.id,
+      title: s.title,
+      synopsis: s.synopsis ?? "",
+    })),
   }));
 
   const json = JSON.stringify(content);
@@ -1660,7 +1685,13 @@ async function getSceneTimelineNeighbors(
       storyTimeLabel: treeNodes.storyTimeLabel,
     })
     .from(treeNodes)
-    .where(and(eq(treeNodes.id, sceneId), eq(treeNodes.projectId, projectId)));
+    .where(
+      and(
+        eq(treeNodes.id, sceneId),
+        eq(treeNodes.projectId, projectId),
+        isNull(treeNodes.archivedAt),
+      ),
+    );
 
   if (!target || !target.storyTimeOrder) {
     return {
@@ -1694,6 +1725,7 @@ async function getSceneTimelineNeighbors(
       and(
         eq(treeNodes.projectId, target.projectId),
         eq(treeNodes.nodeType, "scene"),
+        isNull(treeNodes.archivedAt),
       ),
     );
 
@@ -2053,7 +2085,15 @@ async function getThreadScenes(
       sortOrder: plotThreadSceneLinks.sortOrder,
     })
     .from(plotThreadSceneLinks)
-    .where(eq(plotThreadSceneLinks.threadId, threadId));
+    // 行が無い node（削除済みなど）の link は従来どおり残し、archived の場面の link だけ除く。
+    // dedup と THREAD_SCENE_MAX の切り詰めより前に外す（archived が枠を使わない）。
+    .leftJoin(treeNodes, eq(plotThreadSceneLinks.nodeId, treeNodes.id))
+    .where(
+      and(
+        eq(plotThreadSceneLinks.threadId, threadId),
+        isNull(treeNodes.archivedAt),
+      ),
+    );
 
   // PLOT_PHASE_TYPES 順 → 同 phase 内は sortOrder。
   const orderedLinks = [...links].sort((a, b) => {
@@ -2073,6 +2113,7 @@ async function getThreadScenes(
             and(
               inArray(treeNodes.id, nodeIds),
               eq(treeNodes.projectId, projectId),
+              isNull(treeNodes.archivedAt),
             ),
           )
       : [];

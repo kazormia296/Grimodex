@@ -101,7 +101,7 @@ describe("legacy が呼ぶ Native 経路の command・引数・scope（Native �
       ]);
     });
 
-    it("search_scenes（3 字以上）：scope='scenes'、limit=10", async () => {
+    it("search_scenes（3 字以上）：scope='scenes'、limit=50（Rust の上限。archived を Drizzle で落とした後に 10 件へ切るため、以前の 10 から変更）", async () => {
       await setLegacyReadWorld(MAIN_S1);
       await run("search_scenes", { query: "アリア" });
       expect(legacyReadInvokeBridge.calls("fts_search")).toEqual([
@@ -111,7 +111,7 @@ describe("legacy が呼ぶ Native 経路の command・引数・scope（Native �
             projectId: "p-main",
             query: "アリア",
             scope: "scenes",
-            limit: 10,
+            limit: 50,
           },
         },
       ]);

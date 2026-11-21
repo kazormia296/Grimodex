@@ -2,7 +2,7 @@
   "tool": "get_scene_timeline_neighbors",
   "cases": [
     {
-      "case": "rows: 先頭の場面（previous なし、next は最大 3 件。archived も候補）",
+      "case": "rows: 先頭の場面（previous なし、next は最大 3 件。archived の場面は候補にならない）",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -12,8 +12,8 @@
       },
       "result": {
         "name": "get_scene_timeline_neighbors",
-        "summary": "previous: 0, next: 3",
-        "tokensUsed": 273,
+        "summary": "previous: 0, next: 2",
+        "tokensUsed": 198,
         "content": {
           "currentSceneStoryTimeLabel": "春の朝",
           "previous": [],
@@ -29,17 +29,32 @@
               "title": "旅立ち",
               "storyTimeLabel": "夏",
               "synopsis": ""
-            },
-            {
-              "id": "n-arch",
-              "title": "没シーン",
-              "storyTimeLabel": null,
-              "synopsis": "没にしたシーン。"
             }
           ]
         }
       },
-      "contentJson": "{\"currentSceneStoryTimeLabel\":\"春の朝\",\"previous\":[],\"next\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"storyTimeLabel\":\"初夏\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":\"夏\",\"synopsis\":\"\"},{\"id\":\"n-arch\",\"title\":\"没シーン\",\"storyTimeLabel\":null,\"synopsis\":\"没にしたシーン。\"}]}"
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"春の朝\",\"previous\":[],\"next\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"storyTimeLabel\":\"初夏\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":\"夏\",\"synopsis\":\"\"}]}"
+    },
+    {
+      "case": "empty: archived の場面を起点にすると Scene not found",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "sceneId": "n-arch"
+      },
+      "result": {
+        "name": "get_scene_timeline_neighbors",
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": {
+          "previous": [],
+          "next": [],
+          "currentSceneStoryTimeLabel": null
+        }
+      },
+      "contentJson": "{\"previous\":[],\"next\":[],\"currentSceneStoryTimeLabel\":null}"
     },
     {
       "case": "rows: 中間の場面（作中順で前後）",
@@ -52,8 +67,8 @@
       },
       "result": {
         "name": "get_scene_timeline_neighbors",
-        "summary": "previous: 1, next: 2",
-        "tokensUsed": 273,
+        "summary": "previous: 1, next: 1",
+        "tokensUsed": 198,
         "content": {
           "currentSceneStoryTimeLabel": "初夏",
           "previous": [
@@ -70,17 +85,11 @@
               "title": "旅立ち",
               "storyTimeLabel": "夏",
               "synopsis": ""
-            },
-            {
-              "id": "n-arch",
-              "title": "没シーン",
-              "storyTimeLabel": null,
-              "synopsis": "没にしたシーン。"
             }
           ]
         }
       },
-      "contentJson": "{\"currentSceneStoryTimeLabel\":\"初夏\",\"previous\":[{\"id\":\"n-s1\",\"title\":\"出会い\",\"storyTimeLabel\":\"春の朝\",\"synopsis\":\"アリアが老魔術師と出会う。\"}],\"next\":[{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":\"夏\",\"synopsis\":\"\"},{\"id\":\"n-arch\",\"title\":\"没シーン\",\"storyTimeLabel\":null,\"synopsis\":\"没にしたシーン。\"}]}"
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"初夏\",\"previous\":[{\"id\":\"n-s1\",\"title\":\"出会い\",\"storyTimeLabel\":\"春の朝\",\"synopsis\":\"アリアが老魔術師と出会う。\"}],\"next\":[{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"storyTimeLabel\":\"夏\",\"synopsis\":\"\"}]}"
     },
     {
       "case": "rows: 末尾に近い場面",
@@ -93,8 +102,8 @@
       },
       "result": {
         "name": "get_scene_timeline_neighbors",
-        "summary": "previous: 2, next: 1",
-        "tokensUsed": 285,
+        "summary": "previous: 2, next: 0",
+        "tokensUsed": 211,
         "content": {
           "currentSceneStoryTimeLabel": "夏",
           "previous": [
@@ -111,17 +120,10 @@
               "synopsis": "アリアが老魔術師と出会う。"
             }
           ],
-          "next": [
-            {
-              "id": "n-arch",
-              "title": "没シーン",
-              "storyTimeLabel": null,
-              "synopsis": "没にしたシーン。"
-            }
-          ]
+          "next": []
         }
       },
-      "contentJson": "{\"currentSceneStoryTimeLabel\":\"夏\",\"previous\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"storyTimeLabel\":\"初夏\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s1\",\"title\":\"出会い\",\"storyTimeLabel\":\"春の朝\",\"synopsis\":\"アリアが老魔術師と出会う。\"}],\"next\":[{\"id\":\"n-arch\",\"title\":\"没シーン\",\"storyTimeLabel\":null,\"synopsis\":\"没にしたシーン。\"}]}"
+      "contentJson": "{\"currentSceneStoryTimeLabel\":\"夏\",\"previous\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"storyTimeLabel\":\"初夏\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s1\",\"title\":\"出会い\",\"storyTimeLabel\":\"春の朝\",\"synopsis\":\"アリアが老魔術師と出会う。\"}],\"next\":[]}"
     },
     {
       "case": "empty: storyTimeOrder の無い場面",

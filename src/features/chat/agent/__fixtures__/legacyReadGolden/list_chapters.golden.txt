@@ -2,7 +2,7 @@
   "tool": "list_chapters",
   "cases": [
     {
-      "case": "rows: part／chapter／scene だけ（folder は node_type に chapter が無いので出ない）。archived の場面も出る。note は出ない",
+      "case": "rows: folder と scene を読む順（tree の DFS。兄弟ごとの sortOrder）で出す。note は出ない。archived の場面・folder は出ない。祖先だけが archived の場面は DFS の外として末尾に出る",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -10,9 +10,23 @@
       "params": {},
       "result": {
         "name": "list_chapters",
-        "summary": "5 nodes (parts/chapters/scenes)",
-        "tokensUsed": 425,
+        "summary": "8 nodes (parts/chapters/scenes)",
+        "tokensUsed": 690,
         "content": [
+          {
+            "id": "n-part1",
+            "parentId": null,
+            "nodeType": "folder",
+            "title": "第一部",
+            "status": "outline"
+          },
+          {
+            "id": "n-ch1",
+            "parentId": "n-part1",
+            "nodeType": "folder",
+            "title": "第一章",
+            "status": "outline"
+          },
           {
             "id": "n-s1",
             "parentId": "n-ch1",
@@ -25,6 +39,13 @@
             "parentId": "n-ch1",
             "nodeType": "scene",
             "title": "旅立ち",
+            "status": "outline"
+          },
+          {
+            "id": "n-ch2",
+            "parentId": "n-part1",
+            "nodeType": "folder",
+            "title": "第二章",
             "status": "outline"
           },
           {
@@ -42,15 +63,15 @@
             "status": "final"
           },
           {
-            "id": "n-arch",
-            "parentId": "n-ch2",
+            "id": "n-s5",
+            "parentId": "n-part2",
             "nodeType": "scene",
-            "title": "没シーン",
-            "status": "outline"
+            "title": "親が消えた場面",
+            "status": "draft"
           }
         ]
       },
-      "contentJson": "[{\"id\":\"n-s1\",\"parentId\":\"n-ch1\",\"nodeType\":\"scene\",\"title\":\"出会い\",\"status\":\"draft\"},{\"id\":\"n-s2\",\"parentId\":\"n-ch1\",\"nodeType\":\"scene\",\"title\":\"旅立ち\",\"status\":\"outline\"},{\"id\":\"n-s3\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"裏切り\",\"status\":\"complete\"},{\"id\":\"n-s4\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"終幕\",\"status\":\"final\"},{\"id\":\"n-arch\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"没シーン\",\"status\":\"outline\"}]"
+      "contentJson": "[{\"id\":\"n-part1\",\"parentId\":null,\"nodeType\":\"folder\",\"title\":\"第一部\",\"status\":\"outline\"},{\"id\":\"n-ch1\",\"parentId\":\"n-part1\",\"nodeType\":\"folder\",\"title\":\"第一章\",\"status\":\"outline\"},{\"id\":\"n-s1\",\"parentId\":\"n-ch1\",\"nodeType\":\"scene\",\"title\":\"出会い\",\"status\":\"draft\"},{\"id\":\"n-s2\",\"parentId\":\"n-ch1\",\"nodeType\":\"scene\",\"title\":\"旅立ち\",\"status\":\"outline\"},{\"id\":\"n-ch2\",\"parentId\":\"n-part1\",\"nodeType\":\"folder\",\"title\":\"第二章\",\"status\":\"outline\"},{\"id\":\"n-s3\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"裏切り\",\"status\":\"complete\"},{\"id\":\"n-s4\",\"parentId\":\"n-ch2\",\"nodeType\":\"scene\",\"title\":\"終幕\",\"status\":\"final\"},{\"id\":\"n-s5\",\"parentId\":\"n-part2\",\"nodeType\":\"scene\",\"title\":\"親が消えた場面\",\"status\":\"draft\"}]"
     },
     {
       "case": "empty: 空の project",
@@ -67,7 +88,7 @@
       "contentJson": "[]"
     },
     {
-      "case": "XPROJ: 他 project は他 project の場面だけ",
+      "case": "XPROJ: 他 project は他 project の folder と場面だけ",
       "world": {
         "projectId": "p-other",
         "activeSceneId": "x-s1"
@@ -75,9 +96,16 @@
       "params": {},
       "result": {
         "name": "list_chapters",
-        "summary": "2 nodes (parts/chapters/scenes)",
-        "tokensUsed": 175,
+        "summary": "3 nodes (parts/chapters/scenes)",
+        "tokensUsed": 262,
         "content": [
+          {
+            "id": "x-folder",
+            "parentId": null,
+            "nodeType": "folder",
+            "title": "他の章",
+            "status": "outline"
+          },
           {
             "id": "x-s1",
             "parentId": "x-folder",
@@ -94,7 +122,7 @@
           }
         ]
       },
-      "contentJson": "[{\"id\":\"x-s1\",\"parentId\":\"x-folder\",\"nodeType\":\"scene\",\"title\":\"出会い\",\"status\":\"draft\"},{\"id\":\"x-s2\",\"parentId\":\"x-folder\",\"nodeType\":\"scene\",\"title\":\"旅立ち\",\"status\":\"outline\"}]"
+      "contentJson": "[{\"id\":\"x-folder\",\"parentId\":null,\"nodeType\":\"folder\",\"title\":\"他の章\",\"status\":\"outline\"},{\"id\":\"x-s1\",\"parentId\":\"x-folder\",\"nodeType\":\"scene\",\"title\":\"出会い\",\"status\":\"draft\"},{\"id\":\"x-s2\",\"parentId\":\"x-folder\",\"nodeType\":\"scene\",\"title\":\"旅立ち\",\"status\":\"outline\"}]"
     },
     {
       "case": "no-project",

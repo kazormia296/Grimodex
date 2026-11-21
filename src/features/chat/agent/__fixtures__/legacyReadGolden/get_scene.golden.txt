@@ -44,7 +44,7 @@
       "contentJson": "{\"id\":\"n-s3\",\"title\":\"裏切り\",\"content\":\"裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。\\n\"}"
     },
     {
-      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: archived の場面も読める",
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）empty: archived（外部ファイルの消失）の場面は Scene not found",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -54,15 +54,32 @@
       },
       "result": {
         "name": "get_scene",
-        "summary": "Scene '没シーン' (17 chars)",
-        "tokensUsed": 61,
+        "summary": "Scene not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: 祖先の folder だけが archived の場面は読める（行単位の規則）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "n-s5"
+      },
+      "result": {
+        "name": "get_scene",
+        "summary": "Scene '親が消えた場面' (20 chars)",
+        "tokensUsed": 65,
         "content": {
-          "id": "n-arch",
-          "title": "没シーン",
-          "content": "没にした本文。魔法は使われない。\n"
+          "id": "n-s5",
+          "title": "親が消えた場面",
+          "content": "親フォルダの消失後も残った場面の本文。\n"
         }
       },
-      "contentJson": "{\"id\":\"n-arch\",\"title\":\"没シーン\",\"content\":\"没にした本文。魔法は使われない。\\n\"}"
+      "contentJson": "{\"id\":\"n-s5\",\"title\":\"親が消えた場面\",\"content\":\"親フォルダの消失後も残った場面の本文。\\n\"}"
     },
     {
       "case": "empty: note は Scene not found",
