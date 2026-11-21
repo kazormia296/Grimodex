@@ -18,6 +18,9 @@ vi.mock("@/features/project/api", () => ({
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ projectId: "p1" }) },
 }));
+vi.mock("./context/codexHiddenFromAi", () => ({
+  listCodexIdsHiddenFromAi: vi.fn().mockResolvedValue(new Set<string>()),
+}));
 
 import { inferReadings, parseYomiResponse } from "./codexYomi";
 

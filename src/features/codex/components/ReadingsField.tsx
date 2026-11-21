@@ -12,6 +12,8 @@ interface ReadingsFieldProps {
   /** AI 読み推定 (漢字表記が対象)。未指定ならボタンを出さない。 */
   onEstimate?: () => void;
   estimating?: boolean;
+  /** AI に秘匿（hidden）の項目は AI へ送らない。true なら推定ボタンを無効にして理由を示す。 */
+  estimateBlockedHidden?: boolean;
 }
 
 /**
@@ -26,6 +28,7 @@ export function ReadingsField({
   onChange,
   onEstimate,
   estimating = false,
+  estimateBlockedHidden = false,
 }: ReadingsFieldProps) {
   const { t } = useTranslation();
 
@@ -53,7 +56,12 @@ export function ReadingsField({
             type="button"
             data-testid="readings-estimate"
             onClick={onEstimate}
-            disabled={estimating}
+            disabled={estimating || estimateBlockedHidden}
+            title={
+              estimateBlockedHidden
+                ? t("codex.readings.estimateHidden")
+                : undefined
+            }
             className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
           >
             {estimating ? (
@@ -65,6 +73,15 @@ export function ReadingsField({
           </button>
         )}
       </div>
+
+      {onEstimate && hasEstimable && estimateBlockedHidden && (
+        <p
+          data-testid="readings-estimate-hidden-note"
+          className="text-[11px] text-muted-foreground/70"
+        >
+          {t("codex.readings.estimateHidden")}
+        </p>
+      )}
 
       <div className="space-y-1.5">
         {surfaces.map((surface, i) => {

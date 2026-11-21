@@ -22,6 +22,8 @@ import { normalizeReading, isHiraganaReading } from "./reading";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 import i18next from "@/lib/i18n";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { listCodexIdsHiddenFromAi } from "./context/codexHiddenFromAi";
 
 /** 1 表記の推定結果。yomi はひらがな正規化済み。 */
 export interface YomiResult {
@@ -42,6 +44,19 @@ export const YOMI_MAX_ENTRIES = 100;
 
 export const CODEX_YOMI_NO_VALID_RESULT = "CODEX_YOMI_NO_VALID_RESULT" as const;
 
+export const CODEX_YOMI_HIDDEN_CHECK_FAILED =
+  "CODEX_YOMI_HIDDEN_CHECK_FAILED" as const;
+
+/** hidden（AI に秘匿）の判定に失敗したため、何も送らなかった。 */
+export class YomiHiddenCheckFailedError extends Error {
+  readonly code = CODEX_YOMI_HIDDEN_CHECK_FAILED;
+
+  constructor() {
+    super(i18next.t("codex.readings.estimateFailed"));
+    this.name = "YomiHiddenCheckFailedError";
+  }
+}
+
 export class YomiNoValidResultError extends Error {
   readonly code = CODEX_YOMI_NO_VALID_RESULT;
 
@@ -53,7 +68,11 @@ export class YomiNoValidResultError extends Error {
 
 /**
  * エントリ群の漢字表記の読みを一括推定する。
- * policy off / 入力なしは空 Map。送信失敗・有効結果なしは reject し、ユーザー操作の
+ * 作者が hidden（AI に秘匿）と印した Codex は、一括・単体のどちらの経路でも送らない
+ * （送信の直前に再判定して落とす。呼び側が先に除いていても、list 後に hidden へ変わった
+ * 項目を含めて守る）。判定は base の mode（`listCodexIdsHiddenFromAi`、DB に無い id も
+ * hidden 扱い）。判定に失敗したときは fail-closed で何も送らず reject する。
+ * policy off / 入力なし / 全件 hidden は空 Map。送信失敗・有効結果なしは reject し、ユーザー操作の
  * 呼び出し側が理由を通知する（既存 readings は常に保持）。
  * 返り値: entry id → [{surface, yomi}]。
  */
@@ -83,13 +102,32 @@ export async function inferReadings(
   )
     return result;
 
+  // 送信の直前に hidden を再判定する。chunk を逐次送る実行の途中で作者が hidden に
+  // 変えた項目も、ここで落ちる。
+  let sendable: typeof targets;
+  try {
+    const hidden = await listCodexIdsHiddenFromAi({
+      entryIds: targets.map((e) => e.id),
+      projectId: useTreeStore.getState().projectId,
+    });
+    sendable = targets.filter((e) => !hidden.has(e.id));
+  } catch (error) {
+    debugLog.warn(
+      "codex-hidden",
+      "hidden 判定に失敗したので読みの推定を送らない",
+      errorDetail(error),
+    );
+    throw new YomiHiddenCheckFailedError();
+  }
+  if (sendable.length === 0) return result;
+
   // hallucination 照合先: id → その id で許可された surface 集合。
   const validSurfacesById = new Map<string, Set<string>>(
-    targets.map((e) => [e.id, new Set(e.surfaces)]),
+    sendable.map((e) => [e.id, new Set(e.surfaces)]),
   );
 
   const prompt = getPromptCatalog(lang).codexYomi.buildYomiEstimationPrompt({
-    entries: targets.map((e) => ({
+    entries: sendable.map((e) => ({
       id: e.id,
       category: e.category,
       surfaces: e.surfaces,

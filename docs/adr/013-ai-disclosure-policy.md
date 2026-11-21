@@ -123,7 +123,7 @@ ADR 002 自身が、AI への spoiler 防止を「読者体験のためではな
 - beat の povName
 - MCP は Phase の override による hidden を見ない（`context.rs` と同じ base の判定）
 
-**IME の読みの一括推定（AI 送信。例外にしない）。** hidden の項目の名前と別名が provider に届いていた（`ReadingsBackfillSection.tsx`。PR #981 本文「残漏れ」）。確認 4（2026-11-20）で「直す（hidden は送らない）」と決まった。一括推定の対象から hidden を外し、読みは作者が手で入れるか個別に推定する（確認文 3）。IME の辞書は、ローカルで AI 送信ではないので、例外の表のままである。
+**IME の読みの一括推定（AI 送信。例外にしない）。** hidden の項目の名前と別名が provider に届いていた（`ReadingsBackfillSection.tsx`。PR #981 本文「残漏れ」）。確認 4 と 2026-11-21 の回答で「直す（hidden は送らない）」と決まった。一括推定の対象から hidden を外す。項目ごとの「AIで推定」も、hidden の項目では使えない（ボタンを無効にする。2026-11-21 の回答、contracts 19605110）。hidden の項目の読みは作者が手で入れる（確認文 3）。送信の直前にも `inferReadings` が hidden を再判定して落とす（base の mode。判定に失敗したら送らない）。IME の辞書は、ローカルで AI 送信ではないので、例外の表のままである。
 
 D2 の「AI に渡さない」は、これらを直すまでは**主な内容の経路**についての約束で、派生情報（件数、名前、tag 数）を含む完全な約束ではない。確認文 4 のとおり、hidden を送らない向き（確認 4 と同じ）で次の PR で直すことを既定とする（integrator の判断）。許容として明記する場合は、その旨を改めて決める。
 
@@ -188,7 +188,7 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 | 3 | beat／inline の文脈 | 7 | inline_ai_stream、ab_inline、beat_generation、beat_alternative、beats_from_synopsis、synopsis_from_beats、beat_role | TS | `buildBeatContext` は `generateBeatOnce.ts`、`useBeatGeneration.ts`、`generateBeatAlternative.ts` の 3 つだけ。inline は `inlineAiContext.ts` |
 | 4 | post-effect の payload | 10 | post_effect_* 10 件 | TS で組み Rust が送る | `src/features/post-effect/*PayloadBuilder.ts` が 7 つ＋ impact-review の `snapshot.ts` ＋ live reader |
 | 5 | 抽出の文脈 | 24 | narrative_* 18、generic_import_* 4、chronicle_extract、plot_thread_propose | TS | 作者視点でよいと決定済み（D2 の例外） |
-| 6 | 単発の補助（対象は作者が選ぶ） | 9 | synopsis、summarization、foreshadow_audit_chapter、foreshadow_propose_past_setups、foreshadow_evaluate_setup_strength、codex_judgment、codex_yomi、map_branch、tree_scaffold | TS | 伏線の AI 監査は全伏線（secret 含む）の title／intent を送る（`foreshadowStore.ts:1320-1324`、棚卸し）。codex_yomi は IME の読みの推定（確認 4 で hidden を一括推定の対象から外す） |
+| 6 | 単発の補助（対象は作者が選ぶ） | 9 | synopsis、summarization、foreshadow_audit_chapter、foreshadow_propose_past_setups、foreshadow_evaluate_setup_strength、codex_judgment、codex_yomi、map_branch、tree_scaffold | TS | 伏線の AI 監査は全伏線（secret 含む）の title／intent を送る（`foreshadowStore.ts:1320-1324`、棚卸し）。codex_yomi は IME の読みの推定（確認 4 で hidden を一括推定の対象から外す。個別の「AIで推定」も不可） |
 | 7 | local 生成の Packing | 2 | nir1_local_generation_writing、nir1_local_generation_review | Rust（閉） | D1 の対象外（IR／Graph 由来） |
 | 8 | 作品データを組まない／選別だけ | 9 | session_title、ai_connection_test、agent_call_limit、relation_injection（評価用）、semantic_search、semantic_embedding_index、semantic_reranker、semantic_reranker_shadow、fts_search | — | embedding・recall は #1 に入る候補の選別で、位置ラベルの対象（読む順の関門が無い。`sceneContextSource.ts:1286`） |
 | 外 | MCP | — | （registry の外） | Rust | `grimodex-mcp/src/tools/*.rs`、`db.rs`。位置は DFS |
@@ -266,7 +266,7 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 5. **ab_chat・cli・codex_app が chat の文脈を継ぐか**（経路 6 件の割り当て）。
 6. **beat／inline の検出 Codex の上流（`matchedEntryIds` ←`codexMatchOrchestrator.ts`）が hidden を除くか**。#981 は要約の送信側を直すが、上流の確認は本文に無い。
 7. **MCP FTS（`db.rs:677-679`）と pinned Codex（`chatApi.ts:842`）の hidden の扱い**。#981 は MCP の名前・LIKE・FTS を対象に挙げるが、個別には読んでいない。
-8. **IME の読みの推定の hidden の除外**：確認 4 で「一括推定の対象から hidden を外す」と決まった。個別推定での hidden の扱いと、除外の設定の有無は、実装の前に確かめる（IME 設計書 §8 は辞書の設定を挙げる。読みの推定側は未確認）。
+8. **IME の読みの推定の hidden の除外**：確認 4 で「一括推定の対象から hidden を外す」と決まった（個別の「AIで推定」も不可）。個別推定での hidden の扱いは **2026-11-21 に回答済み：送らない**（ボタンでも送らず、読みは作者が手で入れる。contracts 19605110）。実装済み：一括推定は hidden を対象から外し、個別の「AIで推定」は hidden の項目で無効にし、送信の直前にも `inferReadings` が hidden を再判定して落とす（判定に失敗したら送らない）。
 9. **別起案 (b) の前提**：`PublicationGuard.finish` が Graph の返却を覆うか、unrestricted での cache key の意味（決定記録:44）。読みでは確認済みで、click handle と activation をまたぐ operation は draftRef の「実装前の確認事項」に残る。
 10. **AI 経路の registry 全体で、unrestricted の Graph 応答が chat に混ざらないこと**（grep 1 回の根拠を、経路全体に当て直す）。
 
@@ -280,7 +280,7 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 
 ### J2 印の強さ（意味）と例外
 - **確認済み（2026-11-20、確認 3 の (b)。範囲は上のとおり）。** Codex の hidden と年表の secret は「どの経路でも AI に渡さない」、伏線の secret と Codex の suppress は「自動では渡さない（作者が尋ねたり tool で開いたりすれば渡る）」。今の挙動の追認で、設計書と UI 文言を実装に合わせる。当場面に紐づく伏線は、その場面の文脈として自動に含める（現状追認。確認の記録の要旨に明記は無く、「今の挙動の追認」に含むと integrator が読んだ）。
-- 例外：抽出の経路（作者視点）、IME の辞書（ローカル）。IME の読みの推定は AI 送信だが例外にせず、確認 4 で hidden を一括推定の対象から外すと決まった（確認文 3）。
+- 例外：抽出の経路（作者視点）、IME の辞書（ローカル）。IME の読みの推定は AI 送信だが例外にせず、確認 4 で hidden を一括推定の対象から外すと決まった（個別の「AIで推定」も不可、確認文 3）。
 - 影響：agent tool が伏線の詳細を secret でも返すこと（`toolExecutors.ts:1442-1444` は project の境界だけを守る）は、この意味なら仕様になる。
 
 ### J3 既定値
@@ -315,7 +315,7 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 | 0 | 【J1・記録】`#ai-default-disclosure`：AI への開示の既定は「印の無い作品知識は位置のラベル付きで全部渡し、作者が付けた印（Codex の hidden、年表の secret）と位置の正しさは守る」。ADR 002 の「AI に隠すのが既定」の位置づけをこの範囲で追補する | 回答済み（2026-11-19、(c)） |
 | 1 | 【J1 の範囲】`#ai-default-disclosure-scope`：上の「全部開示」は IR・Graph 由来の応答（新しいデータ分類）を含まない。Graph の応答は画面だけで使い、AI の request・Packing・履歴・書き出しには載せない（経路の契約）。場面の本文などの元データは各経路の読み取り口から AI に渡す。実装計画 A8 の「既存の送信同意を自動で広げない」を維持する | **確認済み（2026-11-20、確認 3 の (a)。記録に無かった点の確認）** |
 | 2 | 【J2】`#ai-author-mark-strength`：Codex の hidden と年表の secret は「AI に渡さない」、伏線の secret と Codex の suppress は「自動では渡さない（明示的に取りに行けば見える。今書いている場面に紐づく伏線は、その場面の文脈として自動に含める）」と定め、抽出の経路と IME の辞書は対象外とし、設計書と UI 文言をこの意味に合わせる | **確認済み（2026-11-20、確認 3 の (b)）。確認の記録の要旨は 2 段の強さと今の挙動の追認で、当場面の伏線の自動の扱いと、抽出の経路・IME の辞書を対象外とすることは要旨に明記が無く、「今の挙動の追認」に含むと integrator が読んだ** |
-| 3 | 【IME の読みの推定】`#ai-ime-reading-inference`：IME の読みの一括推定（AI 送信）が、hidden の項目の名前と別名を provider に送る現状は直す。hidden の項目は一括推定の対象から外し、読みは作者が手で入れるか個別に推定する。例外にしない | **確認済み（2026-11-20、確認 4。直す）** |
+| 3 | 【IME の読みの推定】`#ai-ime-reading-inference`：IME の読みの一括推定（AI 送信）が、hidden の項目の名前と別名を provider に送る現状は直す。hidden の項目は一括推定の対象から外し、読みは作者が手で入れるか個別に推定する。例外にしない | **確認済み（2026-11-20、確認 4。直す）**。確認当時の記録。2026-11-21 の回答で、個別の「AIで推定」も不可に更新（contracts 19605110） |
 | 4 | 【hidden の修正の範囲】`#hidden-leak-fix`：「3・4 辺りは許容していた」は agent tool（3）と MCP（4）を指すと読み、そのうち Codex の hidden の返却だけを許容の外とする。PR #981（merge 済み）がその主な経路を塞いだ。#981 に残る派生情報（年表の参加者名、統計の件数、tag の usageCount、hidden の id への更新の応答、beat の povName、MCP の Phase override）は、hidden を送らない向き（確認 3 と同じ）で次の PR で直すことを既定とする。許容として明記する場合は、その旨を回答してほしい | **未確認**（番号の読みと残漏れの扱い。送信範囲は狭まる方向で、広がらない） |
 | 5 | 【J3 (1)】`#ai-default-secret-foreshadow`：伏線の新規の既定の secret を false にする（既存の印は自動では変えず、見直しの導線を出す）。新規の伏線は未回収一覧で既定で AI に渡る | **別に確認する（未確認）。外部 provider への送信が広がる** |
 | 7 | 【J4】`#ai-unrevealed-auto-injection`：まだ明かされていない情報（Codex の未来の Phase、reveal 前の出来事）は、当面は自動の注入に入れず、開いている経路への位置のラベルだけを足す。入れる場合（J4 (b)）は測定の後に別の確認を求める | 既定は (a)＋ラベルで送信範囲は広がらない。**(b) は別に確認する（未確認）** |
