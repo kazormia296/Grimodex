@@ -1,34 +1,24 @@
 import { db } from "@/db/client";
 import { treeNodes, codexEntries, codexTypes } from "@/db/schema";
-import { and, eq, isNull } from "drizzle-orm";
+import { eq, asc } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { orderNodesInReadingOrder } from "@/features/tree/treeReadingOrder";
-
-const MAX_HEADING_LEVEL = 6;
 
 export async function exportAsMarkdown(): Promise<string> {
-  // 外部 Markdown のファイル消失・重複で自動の soft delete になった行は出力しない。
-  // 祖先だけが archived の行は listNodes と同じく残る（root から届かない行として末尾に並ぶ）。
-  const nodes = await db
+  const scenes = await db
     .select()
     .from(treeNodes)
-    .where(
-      and(
-        eq(treeNodes.projectId, getCurrentProjectId()),
-        isNull(treeNodes.archivedAt),
-      ),
-    );
+    .where(eq(treeNodes.projectId, getCurrentProjectId()))
+    .orderBy(asc(treeNodes.sortOrder));
 
-  // 読む順は tree の DFS（兄弟ごとの sortOrder）。見出しの深さは folder の入れ子の深さ
-  // （第一部＞第一章＞場面 なら # ＞ ## ＞ ###）。
   const parts: string[] = [];
-  for (const { node, depth } of orderNodesInReadingOrder(nodes)) {
-    const heading = "#".repeat(Math.min(depth + 1, MAX_HEADING_LEVEL));
-    if (node.nodeType === "folder") {
-      parts.push(`${heading} ${node.title}\n`);
+  for (const node of scenes) {
+    if (node.nodeType === "part") {
+      parts.push(`# ${node.title}\n`);
+    } else if (node.nodeType === "chapter") {
+      parts.push(`## ${node.title}\n`);
     } else if (node.nodeType === "scene" || node.nodeType === "note") {
-      parts.push(`${heading} ${node.title}\n`);
+      parts.push(`### ${node.title}\n`);
       const text = prosemirrorToText(node.content);
       if (text.trim()) parts.push(text + "\n");
     }

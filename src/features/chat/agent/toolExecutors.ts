@@ -1265,6 +1265,11 @@ async function getScene(
   };
 }
 
+/** search_scenes が返す最大件数。 */
+const SEARCH_SCENES_LIMIT = 10;
+/** fts_search に渡す件数。Rust の `search_fts` の上限（50）。archived を落とした後に切るため多めに取る。 */
+const SEARCH_SCENES_FTS_FETCH_LIMIT = 50;
+
 async function searchScenes(
   params: Record<string, unknown>,
 ): Promise<Omit<ToolResult, "toolCallId">> {
@@ -1293,7 +1298,14 @@ async function searchScenes(
 
   let rows: Array<{ id: string; title: string; content: string }>;
   if (allTrigramFriendly) {
-    const hitIds = await sparseSearchIds(projectId, query, "scenes", 10);
+    // archived（重複の行は生きている行と同じ本文）が上位の枠を使わないよう、Rust の上限まで多めに取り、
+    // archived を落として元の FTS の順に並べてから SEARCH_SCENES_LIMIT 件に切る。
+    const hitIds = await sparseSearchIds(
+      projectId,
+      query,
+      "scenes",
+      SEARCH_SCENES_FTS_FETCH_LIMIT,
+    );
     if (hitIds.length === 0) {
       rows = [];
     } else {
@@ -1314,7 +1326,7 @@ async function searchScenes(
             ),
           ),
         hitIds,
-      );
+      ).slice(0, SEARCH_SCENES_LIMIT);
     }
   } else {
     rows = await db
@@ -1335,7 +1347,7 @@ async function searchScenes(
           ]),
         ),
       )
-      .limit(10);
+      .limit(SEARCH_SCENES_LIMIT);
   }
 
   const content = rows.map((row) => ({
