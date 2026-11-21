@@ -94,6 +94,10 @@ const SOURCE_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const TEST_SOURCE = /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const DECLARATION = /\.d\.[cm]?ts$/u;
 
+/** Repo-relative, with `/` separators on every OS (Windows yields `\\`). */
+const repoRelative = (file: string): string =>
+  path.relative(repoRoot, file).split(path.sep).join("/");
+
 function* sourceFiles(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
     const full = path.join(dir, name);
@@ -303,7 +307,7 @@ describe("main's read port: the chat IR stays closed and commands are named lite
   const files = scannedFiles();
 
   it("scans a non-empty set that holds the modules of this PR", () => {
-    const relative = files.map((file) => path.relative(repoRoot, file));
+    const relative = files.map((file) => repoRelative(file));
     expect(files.length).toBeGreaterThanOrEqual(10);
     for (const expected of [
       "electron/main/mastraRead/db.ts",
@@ -320,7 +324,7 @@ describe("main's read port: the chat IR stays closed and commands are named lite
 
   it("has no violation in any of them", () => {
     const violations = files.flatMap((file) =>
-      scanSource(path.relative(repoRoot, file), readFileSync(file, "utf8")),
+      scanSource(repoRelative(file), readFileSync(file, "utf8")),
     );
     expect(violations).toEqual([]);
   });
@@ -329,7 +333,7 @@ describe("main's read port: the chat IR stays closed and commands are named lite
     const users = files.filter((file) =>
       readFileSync(file, "utf8").includes("NAPI_COMMANDS"),
     );
-    expect(users.map((file) => path.relative(repoRoot, file))).toEqual([
+    expect(users.map((file) => repoRelative(file))).toEqual([
       "electron/main/mastraRead/typed.ts",
     ]);
     const used = new Set(
