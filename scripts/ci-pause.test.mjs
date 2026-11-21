@@ -1034,10 +1034,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   // filters: its whole run text is pinned (like the failpoint step) and it is
   // represented in the list below by a fixed string, as the graph step is by its
   // `cargo test` line.
-  // The derivation above must see the impact commands as they are written: 6
+  // The derivation above must see the impact commands as they are written: 9
   // library commands and 1 integration command, each with the fixed prefix and
   // (for the library ones) the fixed tail.
-  assert.equal(nativeCaptureImpactLib.length, 6);
+  assert.equal(nativeCaptureImpactLib.length, 9);
   assert.equal(nativeCaptureImpactIntegration.length, 1);
   for (const command of nativeCaptureImpactCommands) assert.deepEqual(command.slice(0, command.indexOf("--features")), nativeCaptureImpactPrefix);
   for (const command of nativeCaptureImpactLib) assert.deepEqual(nativeCaptureImpactTail(command).slice(2), ["--", "--test-threads=1"]);
@@ -1135,7 +1135,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   }
   // The product-configuration guard, one filter at a time: a filter that matches
   // no test fails the step (naming it on stderr) and no later filter is called, a
-  // failing cargo keeps its exit code at any position, and the six cargo calls
+  // failing cargo keeps its exit code at any position, and the nine cargo calls
   // carry the feature, `--lib`, the filter and `--test-threads=1`. Run the real
   // step script against a fake cargo.
   const captureBin = await mkdtemp(path.join(tmpdir(), "native-capture-guard-"));

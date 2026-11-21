@@ -672,15 +672,15 @@ instead). Not covered by any shard: a bench or example declared with
 `grimodex-db` alone with the product feature `native-current-human-capture`
 (the N-API crate always enables it, so these are the tests of the shipped
 build, which the feature-off steps do not compile): the library tests of the
-six filters, with `--test-threads=1`, that the impact suite
+nine filters, with `--test-threads=1`, that the impact suite
 `nir1-entity-relation-review` runs with the feature (each filter fails the step
 if it matches no test, so a renamed module cannot silently drop its tests) and
 the integration binaries `chat_typed_writers`, `d2a_m_t_typed_writers` and
 `d2a_restricted_generic_sql_shapes`. The impact suite keeps those commands (the
-canonical Quick runs them before a merge when impact selects the suite). The other feature-only tests of
-`grimodex-db` that no filter names (for example the modules under
-`scene_disclosure`, `related_scenes_requalification` and
-`scene_body_declaration`) run in no job. The Full registry builds without the
+canonical Quick runs them before a merge when impact selects the suite). The nine filters include
+`nir1_graph::scene_disclosure`, `nir1_graph::related_scenes_requalification`
+and `scene_body_declaration`. The other feature-only tests of `grimodex-db`
+that no filter names run in no job. The Full registry builds without the
 feature. Each shard has its own `rust-cache` key
 and the 45-minute timeout. `rust-aggregate` succeeds only when every shard
 succeeded. The local `rust` stage still runs the whole suite. The shared Rust
