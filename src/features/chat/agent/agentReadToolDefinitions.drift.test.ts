@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   M4_READ_TOOL_NAMES,
   SEARCH_EVENTS_DESCRIPTION,
@@ -11,12 +11,10 @@ import {
   type AgentReadToolParameterSchema,
 } from "../../../../electron/shared/agentReadToolDefinitions";
 import type { AgentToolDefinition, ToolParameterSchema } from "./agentTypes";
-import { CHAT_AGENT_IR_ENABLED } from "./chatAgentIrAvailability";
 import {
   AGENT_TOOLS,
   getDeterministicAgentTools,
   getResearchSubagentTools,
-  snapshotAgentTools,
 } from "./toolDefinitions";
 
 /**
@@ -38,6 +36,35 @@ const golden = (name: string) =>
 /** 1 tool 1 行。PR-0 の golden（`definitions.*.bytes.txt`）と同じ形。 */
 function linesOf(tools: readonly unknown[]): string {
   return `${tools.map((t) => JSON.stringify(t)).join("\n")}\n`;
+}
+
+/**
+ * main と renderer の M4 の部分を比べる。IR が閉なら全体の bytes が一致する。
+ * IR が開なら search_events の説明だけが「main の説明＋ IR の説明」で、残りの 19 本と
+ * search_events の name・schema は bytes が一致する。
+ */
+function expectSameExceptIrSuffix(
+  main: readonly AgentReadToolDefinition[],
+  renderer: readonly AgentToolDefinition[],
+  irOpen: boolean,
+): void {
+  expect(renderer).toHaveLength(main.length);
+  if (!irOpen) {
+    expect(JSON.stringify(renderer)).toBe(JSON.stringify(main));
+    return;
+  }
+  for (const [index, tool] of main.entries()) {
+    const other = renderer[index]!;
+    if (tool.name === "search_events") {
+      expect(other.description.startsWith(tool.description)).toBe(true);
+      expect(other.description.length).toBeGreaterThan(tool.description.length);
+      expect(JSON.stringify({ ...other, description: "" })).toBe(
+        JSON.stringify({ ...tool, description: "" }),
+      );
+    } else {
+      expect(JSON.stringify(other)).toBe(JSON.stringify(tool));
+    }
+  }
 }
 
 // 型の相互代入：shared の定義型と renderer の型は同形でなければならない（片方だけ変えると tsc が落ちる）。
@@ -65,44 +92,16 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
     ]);
   });
 
-  it("宣言順：main の module の 20 本は、AGENT_TOOLS の M4 の部分と bytes で一致し、PR-0 の golden とも一致する", () => {
-    const main = createM4ReadToolDefinitions();
-    const renderer = AGENT_TOOLS.filter((t) => M4.has(t.name));
-    // IR が閉の間、renderer の search_events の説明は shared の版と同じ。
-    if (!CHAT_AGENT_IR_ENABLED) {
-      expect(JSON.stringify(main)).toBe(JSON.stringify(renderer));
-    }
-    if (!CHAT_AGENT_IR_ENABLED) {
-      expect(linesOf(main)).toBe(golden("definitions.m4.bytes"));
-    }
+  it("main の定義（宣言順・決定的な並び）は、flag に依らず PR-0 の golden と bytes で一致する", () => {
+    expect(linesOf(createM4ReadToolDefinitions())).toBe(
+      golden("definitions.m4.bytes"),
+    );
+    expect(linesOf(getDeterministicM4ReadTools())).toBe(
+      golden("definitions.m4-deterministic.bytes"),
+    );
   });
 
-  it("session の snapshot（snapshotAgentTools。chatTurnPreflight が固定する）の M4 の部分は、main の決定的な定義と bytes・並びが一致する", () => {
-    const main = getDeterministicM4ReadTools();
-    const snapshotM4 = snapshotAgentTools().filter((t) => M4.has(t.name));
-    expect(main).toHaveLength(20);
-    expect(main.map((t) => t.name)).toEqual(snapshotM4.map((t) => t.name));
-    if (!CHAT_AGENT_IR_ENABLED) {
-      expect(JSON.stringify(main)).toBe(JSON.stringify(snapshotM4));
-      expect(linesOf(main)).toBe(golden("definitions.m4-deterministic.bytes"));
-    } else {
-      // IR を開ける lane：search_events の説明は IR の説明を後ろに足した版で、それ以外は bytes が一致する。
-      for (const [index, tool] of main.entries()) {
-        const other = snapshotM4[index]!;
-        if (tool.name === "search_events") {
-          expect(other.description.startsWith(tool.description)).toBe(true);
-          expect({ ...other, description: "" }).toEqual({
-            ...tool,
-            description: "",
-          });
-        } else {
-          expect(JSON.stringify(other)).toBe(JSON.stringify(tool));
-        }
-      }
-    }
-  });
-
-  it("session の snapshot の並び：M4 の名前順（localeCompare）は main の並びと同じで、Node の code unit の sort とも一致する", () => {
+  it("session の snapshot の並び：M4 の名前順（localeCompare）は main の並びと同じ（同じ process の既定 locale の下でだけ。main と renderer の locale が違えば並びは変わりうる。K-4）、既定 locale の Node では code unit の sort とも一致する", () => {
     const names = getDeterministicM4ReadTools().map((t) => t.name);
     expect(names).toEqual(
       [...M4_READ_TOOL_NAMES].sort((a, b) => a.localeCompare(b)),
@@ -115,7 +114,7 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
     ).toEqual(names);
   });
 
-  it("renderer の決定的な一覧は、44 本のどの順でも shared の sort 関数の結果と同じ（renderer は同じ関数を使う）", () => {
+  it("renderer の決定的な一覧は、shared の sort 関数の結果と同じ（renderer は同じ関数を使う。locale は同じ process の既定）", () => {
     expect(JSON.stringify(getDeterministicAgentTools())).toBe(
       JSON.stringify(sortToolDefinitionsDeterministic(AGENT_TOOLS)),
     );
@@ -138,6 +137,57 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
         ),
       ),
     );
+  });
+
+  afterEach(() => {
+    vi.doUnmock("./chatAgentIrAvailability");
+    vi.resetModules();
+  });
+
+  describe.each([
+    { irOpen: false, label: "IR が閉（製品の現状）" },
+    { irOpen: true, label: "IR が開（search_events の説明だけ IR 版）" },
+  ])("renderer の定義と main の drift：$label", ({ irOpen }) => {
+    async function loadRenderer() {
+      vi.resetModules();
+      vi.doMock("./chatAgentIrAvailability", () => ({
+        CHAT_AGENT_IR_ENABLED: irOpen,
+      }));
+      return import("./toolDefinitions");
+    }
+
+    it("宣言順：AGENT_TOOLS の M4 の部分は main の 20 本と一致する（IR が開なら search_events の説明だけ後ろに足される）", async () => {
+      expect.hasAssertions();
+      const renderer = await loadRenderer();
+      const main = createM4ReadToolDefinitions();
+      const rendererM4 = renderer.AGENT_TOOLS.filter((t) => M4.has(t.name));
+      expect(rendererM4.map((t) => t.name)).toEqual(main.map((t) => t.name));
+      expectSameExceptIrSuffix(main, rendererM4, irOpen);
+    });
+
+    it("session の snapshot の M4 の部分は、main の決定的な定義と bytes・並びが一致する（IR が開なら search_events の説明だけ後ろに足される）", async () => {
+      expect.hasAssertions();
+      const renderer = await loadRenderer();
+      const main = getDeterministicM4ReadTools();
+      const snapshotM4 = renderer
+        .snapshotAgentTools()
+        .filter((t) => M4.has(t.name));
+      expect(main).toHaveLength(20);
+      expect(snapshotM4.map((t) => t.name)).toEqual(main.map((t) => t.name));
+      expectSameExceptIrSuffix(main, snapshotM4, irOpen);
+    });
+
+    it("research sub-agent の M4 の部分は、IR の開閉に依らず main の定義と bytes で一致する", async () => {
+      expect.hasAssertions();
+      const renderer = await loadRenderer();
+      const research = renderer
+        .getResearchSubagentTools()
+        .filter((t) => M4.has(t.name));
+      const main = getDeterministicM4ReadTools().filter((t) =>
+        research.some((r) => r.name === t.name),
+      );
+      expect(JSON.stringify(research)).toBe(JSON.stringify(main));
+    });
   });
 
   it("sortSchemaKeys：key を再帰的に昇順に並べ、配列と prototype を持たない値はそのまま、入力は変えない", () => {

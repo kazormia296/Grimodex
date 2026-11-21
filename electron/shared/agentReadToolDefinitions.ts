@@ -40,7 +40,7 @@ export interface AgentReadToolDefinition {
 
 /**
  * M4 の 20 本の name。並びは renderer の `AGENT_TOOLS` の宣言順（部分集合）と同じ。
- * main は wire の名前をこの集合と照合する（DR-MP4-20）。
+ * Q4 で tools の wire が名前だけになった場合に、main は wire の名前をこの集合と照合する（DR-MP4-21 の 3）。
  */
 export const M4_READ_TOOL_NAMES = [
   "search_codex",
@@ -379,8 +379,11 @@ export function sortSchemaKeys(obj: unknown): unknown {
 
 /**
  * 決定的な tool 一覧：name を `localeCompare` で並べ、schema の key を再帰的に sort する。
- * 入力は変えない。renderer の session の snapshot（`getDeterministicAgentTools`）と main が
- * 同じ関数で並べるので、bytes と並びが一致する（DR-MP4-30）。
+ * 入力は変えない。renderer の session の snapshot（`getDeterministicAgentTools`）と main は同じ関数で並べる。
+ * `localeCompare` は locale に依存する。並びが一致するのは、同じ process の既定 locale の下でだけで、
+ * main と renderer の locale が違えば並びが変わりうる（例：Node の cs・sk では "ch" が "h" の後ろ。
+ * 名前は ASCII の snake_case だが、この 44 本の中にも影響が出る。K-4、DR-MP4-30）。
+ * この PR は既存の挙動（renderer の今の並びと同じ comparator）を変えない。
  */
 export function sortToolDefinitionsDeterministic<
   T extends AgentReadToolDefinition,
@@ -393,7 +396,7 @@ export function sortToolDefinitionsDeterministic<
     }));
 }
 
-/** main が組む M4 の定義（name 順＋ schema の key を sort）。renderer の snapshot の M4 の部分と bytes で一致する。 */
+/** main が組む M4 の定義（name 順＋ schema の key を sort）。renderer の snapshot の M4 の部分と、同じ既定 locale の下では bytes で一致する。 */
 export function getDeterministicM4ReadTools(): AgentReadToolDefinition[] {
   return sortToolDefinitionsDeterministic(createM4ReadToolDefinitions());
 }
