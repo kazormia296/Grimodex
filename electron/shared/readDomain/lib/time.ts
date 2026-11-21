@@ -1,6 +1,6 @@
-import { Temporal } from "./temporal";
+import { Temporal } from "./temporal.js";
 
-export { Temporal } from "./temporal";
+export { Temporal } from "./temporal.js";
 
 export type InstantInput = string | number | Date | Temporal.Instant;
 

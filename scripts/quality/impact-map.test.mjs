@@ -1147,6 +1147,7 @@ test("Temporal IR, adapter, and Calendar changes select the Temporal requirement
     "src/features/chronicle/ChronicleCalendarPopover.test.tsx",
     "src/features/revision/projectSnapshotApi.ts",
     "src/db/schema.ts",
+    "electron/shared/readDomain/db/schema.ts",
     "src/db/generated/schema-contract.json",
     "src/db/projectCalendarSchema.test.ts",
     "src/lib/browser-mock.ts",
@@ -1159,6 +1160,35 @@ test("Temporal IR, adapter, and Calendar changes select the Temporal requirement
     assert.ok(selection.requirementIds.includes("GDX-NARR-TEMPORAL-001"));
     assert.ok(selection.suiteIds.includes("narrative-extraction"));
     assert.equal(selection.fallback, false);
+  }
+});
+
+test("the Drizzle schema moved to electron/shared keeps its narrative selection and joins the read-tool policy", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const legacy = selectImpact(map, ["src/db/schema.ts"]);
+  const canonical = selectImpact(map, [
+    "electron/shared/readDomain/db/schema.ts",
+  ]);
+
+  assert.equal(canonical.fallback, false);
+  assert.ok(canonical.matchedRuleIds.includes("narrative-extraction"));
+  assert.ok(canonical.matchedRuleIds.includes("tool-policy"));
+  assert.ok(canonical.requirementIds.includes("GDX-NARR-DETAIL-001"));
+  assert.ok(canonical.requirementIds.includes("GDX-NARR-TEMPORAL-001"));
+  // Moving the file must never select less than editing it at the old path did.
+  for (const id of legacy.suiteIds) assert.ok(canonical.suiteIds.includes(id), id);
+  for (const id of legacy.requirementIds)
+    assert.ok(canonical.requirementIds.includes(id), id);
+  // time.ts and temporal.ts matched no rule before the move and still fall back to all suites.
+  for (const moved of [
+    "electron/shared/readDomain/lib/time.ts",
+    "electron/shared/readDomain/lib/temporal.ts",
+  ]) {
+    assert.equal(selectImpact(map, [moved]).fallback, true, moved);
   }
 });
 

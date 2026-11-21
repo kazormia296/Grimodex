@@ -3,7 +3,8 @@
  * （非ライブ・キー不要・通常スイートで実行）。
  *
  * 過去に .ts ファイルが事実上バイナリ化（NUL バイト混入）して壊れた事故の
- * 再発防止。src 配下の *.ts / *.tsx を一度だけ読み、生 NUL (0x00) や
+ * 再発防止。src 配下と、src から移した共有 module の置き場
+ * （electron/shared/readDomain。MP-4b PR-3b）の *.ts / *.tsx を一度だけ読み、生 NUL (0x00) や
  * 許可外の制御文字を含むファイルが無いことを保証する。
  * 通常の空白（\t \n \r）は許可する。
  */
@@ -15,6 +16,8 @@ import { readdirSync, readFileSync } from "node:fs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 // src/lib → src まで 1 階層上がる。
 const SRC_ROOT = resolve(HERE, "..");
+// src から移した module（schema・time・temporal ほか）の置き場。移動後も同じ検査を受ける。
+const READ_DOMAIN_ROOT = resolve(HERE, "../../electron/shared/readDomain");
 
 // 走査対象外（依存・ビルド成果物・バイナリアセット）。
 const SKIP_DIRS = new Set(["node_modules", "dist", "build", "assets"]);
@@ -37,9 +40,15 @@ const DISALLOWED_CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 
 describe("source files — 制御バイト混入禁止", () => {
   it("src 配下の *.ts / *.tsx に生 NUL / 制御文字を含まない", () => {
+    // （src から移した electron/shared/readDomain も同じ test で走査する）
     const files: string[] = [];
     collectSourceFiles(SRC_ROOT, files);
     expect(files.length).toBeGreaterThan(0);
+    // 移した file が走査から黙って外れないよう、置き場の file 数も確かめる（schema.ts など）。
+    const readDomainFiles: string[] = [];
+    collectSourceFiles(READ_DOMAIN_ROOT, readDomainFiles);
+    expect(readDomainFiles.length).toBeGreaterThan(0);
+    files.push(...readDomainFiles);
 
     const offenders: string[] = [];
     for (const file of files) {

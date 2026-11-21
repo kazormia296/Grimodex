@@ -10,7 +10,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { isNotNull, isNull } from "drizzle-orm";
-import { nowInstantString } from "@/lib/time";
+import { nowInstantString } from "../lib/time.js";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),

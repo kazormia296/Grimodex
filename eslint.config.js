@@ -38,6 +38,8 @@ export default tseslint.config(
     files: [
       "src/**/*.{js,jsx,ts,tsx}",
       "electron/preload/**/*.{js,jsx,ts,tsx}",
+      // MP-4b PR-3b: renderer の module を移した置き場。移動前は src/** の規則が掛かっていた。
+      "electron/shared/readDomain/**/*.{js,jsx,ts,tsx}",
     ],
     plugins: {
       "grimodex-boundaries": {
