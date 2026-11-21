@@ -1,7 +1,11 @@
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { NAPI_COMMANDS } from "../../shared/ipcContract.js";
-import type { NapiBackendLike } from "../../shared/ipcContract.js";
+import type {
+  DispatchDeps,
+  NapiBackendLike,
+} from "../../shared/ipcContract.js";
 import type { FtsScope } from "../../shared/mastraRead/ports.js";
 import type { MainIssuedCallerIdentity } from "../profileEgress.js";
 import { MainReadError } from "./errors.js";
@@ -219,14 +223,113 @@ describe("the caller timeouts", () => {
 });
 
 describe("the four commands do not use `deps` (DR-MP4-6)", () => {
-  it.each([
+  const KEYS = [
     "fts_search",
     "codex_semantic_search",
     "events_semantic_search",
     "foreshadow_list_open_for_context",
-  ] as const)("%s declares (backend, args) only", (key) => {
-    // A function's `length` counts its declared parameters: a third one
-    // (`deps`) would make this fail the day one of them starts to use it.
-    expect(NAPI_COMMANDS[key]!.run.length).toBeLessThanOrEqual(2);
+  ] as const;
+  const ARGS: Record<(typeof KEYS)[number], Record<string, unknown>> = {
+    fts_search: { projectId: "p", query: "q", scope: "codex", limit: 1 },
+    codex_semantic_search: {
+      expectedWorkspacePath: "/ws/one",
+      projectId: "p",
+      query: "q",
+      limit: 1,
+    },
+    events_semantic_search: {
+      expectedWorkspacePath: "/ws/one",
+      projectId: "p",
+      query: "q",
+      limit: 1,
+    },
+    foreshadow_list_open_for_context: { projectId: "p" },
+  };
+
+  /** The function node of `run`'s source, parsed. */
+  function runNode(source: string): ts.FunctionLikeDeclaration {
+    const file = ts.createSourceFile(
+      "run.ts",
+      // A function expression or an arrow, or else a method (`run(b, a) {}`).
+      /^(?:async\s+)?(?:function\b|\(|[\w$]+\s*=>)/u.test(source)
+        ? `const f = ${source};`
+        : `const o = { ${source} };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let found: ts.FunctionLikeDeclaration | undefined;
+    const visit = (node: ts.Node): void => {
+      if (
+        found === undefined &&
+        (ts.isArrowFunction(node) ||
+          ts.isFunctionExpression(node) ||
+          ts.isMethodDeclaration(node))
+      ) {
+        found = node;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    if (found === undefined) throw new Error(`no function in: ${source}`);
+    return found;
+  }
+
+  it.each(KEYS)(
+    "%s declares at most (backend, args): no third, no rest, no `arguments`",
+    (key) => {
+      const run = NAPI_COMMANDS[key]!.run;
+      // `length` counts declared parameters before a default or a rest.
+      expect(run.length).toBeLessThanOrEqual(2);
+      const node = runNode(run.toString());
+      expect(node.parameters.length).toBeLessThanOrEqual(2);
+      expect(node.parameters.some((p) => p.dotDotDotToken)).toBe(false);
+      let usesArguments = false;
+      const visit = (n: ts.Node): void => {
+        if (ts.isIdentifier(n) && n.text === "arguments") usesArguments = true;
+        ts.forEachChild(n, visit);
+      };
+      visit(node);
+      expect(usesArguments).toBe(false);
+    },
+  );
+
+  it("the check itself sees a rest parameter and `arguments`", () => {
+    const rest = runNode("async (...a) => a[2]");
+    expect(rest.parameters.some((p) => p.dotDotDotToken)).toBe(true);
+    let sees = false;
+    const visit = (n: ts.Node): void => {
+      if (ts.isIdentifier(n) && n.text === "arguments") sees = true;
+      ts.forEachChild(n, visit);
+    };
+    visit(runNode("function () { return arguments[2]; }"));
+    expect(sees).toBe(true);
+    expect(runNode("async (b, a, d) => d").parameters.length).toBe(3);
+  });
+
+  it.each(KEYS)("%s runs with a `deps` that throws on any use", async (key) => {
+    const touched: string[] = [];
+    const trap = new Proxy(
+      {},
+      {
+        get: (_t, prop) => {
+          touched.push(String(prop));
+          throw new Error(`deps.${String(prop)} was read`);
+        },
+        has: (_t, prop) => {
+          touched.push(String(prop));
+          throw new Error(`deps has ${String(prop)}`);
+        },
+        ownKeys: () => {
+          touched.push("ownKeys");
+          throw new Error("deps keys were read");
+        },
+      },
+    ) as unknown as DispatchDeps;
+    const { backend } = backendWith();
+    await expect(
+      NAPI_COMMANDS[key]!.run(backend, ARGS[key]!, trap),
+    ).resolves.not.toThrow();
+    expect(touched).toEqual([]);
   });
 });

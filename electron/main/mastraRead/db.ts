@@ -46,7 +46,6 @@ export interface MainReadDbOptions extends MainReadHooks {
 
 const ALLOWED_METHODS: ReadonlySet<string> = new Set(["all", "values"]);
 const RESULT_KEYS = ["__grimodexDbResultKind", "rows"] as const;
-const MARKER_KEY = "__grimodexDbResultKind";
 
 export function createMainReadDb(options: MainReadDbOptions): CoreReadDbClient {
   const { identity } = options;
@@ -142,7 +141,7 @@ export function parseNativeReadResult(raw: unknown): unknown[][] {
     );
   }
   const answer = parsed as Record<string, unknown>;
-  if (answer[MARKER_KEY] !== "read") {
+  if (answer.__grimodexDbResultKind !== "read") {
     throw new MainReadError(
       "result-marker",
       "main read db: the answer is not marked as a read",
@@ -150,10 +149,9 @@ export function parseNativeReadResult(raw: unknown): unknown[][] {
     );
   }
   const keys = Object.keys(answer).sort();
-  if (
-    keys.length !== RESULT_KEYS.length ||
-    keys.some((k, i) => k !== RESULT_KEYS[i])
-  ) {
+  // (No computed key here: the static test forbids one in a file that handles
+  // the backend, so a method cannot be reached through a variable.)
+  if (keys.join("\u0000") !== RESULT_KEYS.join("\u0000")) {
     throw new MainReadError(
       "result-key",
       "main read db: the answer has unexpected keys",

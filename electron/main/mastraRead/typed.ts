@@ -32,10 +32,21 @@ import { runNativeRead, type MainReadHooks } from "./nativeCall.js";
  *
  * The four commands' `run` take `(backend, args)` only; the frozen empty
  * `deps` below satisfies the type, and `typed.test.ts` fails if one of them
- * starts reading `deps`.
+ * declares a third or a rest parameter, uses `arguments`, or touches a `deps`
+ * that throws on use. The backend this module is given is typed as those four
+ * methods only (`MainTypedReadsBackend`).
  */
+/** The four methods the typed reads call, and nothing else of the backend. */
+export type MainTypedReadsBackend = Pick<
+  NapiBackendLike,
+  | "ftsSearch"
+  | "codexSemanticSearch"
+  | "eventsSemanticSearch"
+  | "foreshadowListOpenForContext"
+>;
+
 export interface MainTypedReadsOptions extends MainReadHooks {
-  readonly backend: NapiBackendLike;
+  readonly backend: MainTypedReadsBackend;
   /** The identity Main issued this turn; its `workspaceId` pins the semantic reads. */
   readonly identity: MainIssuedCallerIdentity;
 }
@@ -54,7 +65,12 @@ const FTS_SCOPES: ReadonlySet<string> = new Set<FtsScope>([
 export function createMainTypedReads(
   options: MainTypedReadsOptions,
 ): CoreNativeReads {
-  const { backend, identity } = options;
+  const { identity } = options;
+  const backend = options.backend;
+  // `run` is typed on the whole interface. Only the four methods above exist on
+  // the type this module is given, and the four commands below reach only
+  // those (`typed.test.ts` and the static test hold that).
+  const nativeBackend = backend as NapiBackendLike;
 
   const workspacePath = (command: string): string => {
     const id = identity?.workspaceId;
@@ -91,7 +107,7 @@ export function createMainTypedReads(
       return runNativeRead(
         () =>
           NAPI_COMMANDS.fts_search.run(
-            backend,
+            nativeBackend,
             {
               projectId,
               query: args.query,
@@ -120,7 +136,7 @@ export function createMainTypedReads(
       return runNativeRead(
         () =>
           NAPI_COMMANDS.codex_semantic_search.run(
-            backend,
+            nativeBackend,
             {
               expectedWorkspacePath,
               projectId,
@@ -149,7 +165,7 @@ export function createMainTypedReads(
       return runNativeRead(
         () =>
           NAPI_COMMANDS.events_semantic_search.run(
-            backend,
+            nativeBackend,
             {
               expectedWorkspacePath,
               projectId,
@@ -173,7 +189,7 @@ export function createMainTypedReads(
       return runNativeRead(
         () =>
           NAPI_COMMANDS.foreshadow_list_open_for_context.run(
-            backend,
+            nativeBackend,
             { projectId },
             NO_DEPS,
           ),

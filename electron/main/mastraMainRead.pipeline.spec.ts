@@ -170,14 +170,19 @@ describe("main's DB read adapter against the real Native addon", () => {
       identity: ws.identity,
     });
     const db = drizzle(client);
+    // The columns are deliberately NOT in alphabetical (or table) order: a row
+    // mapped by `Object.values` would put them in the wrong place if Native's
+    // key order were sorted, and a test whose columns happen to be sorted would
+    // not see it.
     const rows = await db
       .select({
-        id: treeNodes.id,
-        title: treeNodes.title,
         version: treeNodes.version,
+        title: treeNodes.title,
+        id: treeNodes.id,
       })
       .from(treeNodes)
       .where(eq(treeNodes.projectId, ws.projectId))
+      .orderBy(treeNodes.id)
       .limit(3);
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
@@ -186,16 +191,20 @@ describe("main's DB read adapter against the real Native addon", () => {
       expect(row.title).not.toBe(row.id);
       expect(typeof row.version).toBe("number");
     }
-    // The same rows by the raw wire: id and title are the first two columns.
+    // The same rows by the raw wire, in the same column order.
     const raw = JSON.parse(
       await ws.backend.dbExecute(
-        'select "id","title","version" from "tree_nodes" where "project_id" = ? limit 3',
+        'select "version","title","id" from "tree_nodes" where "project_id" = ? order by "id" limit 3',
         [ws.projectId],
         "all",
       ),
-    ) as { rows: Array<{ id: string; title: string }> };
-    expect(rows.map((r) => r.id)).toEqual(raw.rows.map((r) => r.id));
+    ) as {
+      rows: Array<{ version: number; title: string; id: string }>;
+    };
+    expect(Object.keys(raw.rows[0]!)).toEqual(["version", "title", "id"]);
+    expect(rows.map((r) => r.version)).toEqual(raw.rows.map((r) => r.version));
     expect(rows.map((r) => r.title)).toEqual(raw.rows.map((r) => r.title));
+    expect(rows.map((r) => r.id)).toEqual(raw.rows.map((r) => r.id));
   });
 
   it("keeps every column of a repeated name, in position", async () => {

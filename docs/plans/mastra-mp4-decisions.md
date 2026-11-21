@@ -300,6 +300,7 @@ GDX-PRECHECK-001 の項目（entry、admission closure、pending-start、handle 
   core の Drizzle の select を走査する静的試験（DR-MP4-21 の 4）は PR-4。表は 21 本（codex 系 7、tree_nodes・snippets、年表 5、plot_thread 系 3、foreshadow 系 3、projects）。FK の先だけの `chat_sessions`・`chat_messages`・`codex_types` と closed 表・設定は入れない。表の増減は `tables.ts` と `tables.test.ts` の差分として見える。PR-4 で core が実際に触る表に固定し直す。
 - **行の写像**：Native の object の行を `Object.values` で位置対応に直す。**整数様の key（`"0"`、`"12"`）の列がある行は throw**（`Object.values` は整数様 key を先に並べ替え、位置が壊れる。`select 1` の列名が `1` など）。重複列名は Native が `\u0000N` を付けるので全列が残る（実 addon で固定）。`get` と `run` は送らない。
 - **typed read**：fts の scope は union の型と実行時の検査の両方。semantic 2 本は `expectedWorkspacePath` を turn の identity の `workspaceId` から渡し、null・空・backend の method なしは Native を呼ばずに throw。legacy が呼出しの後に行う workspace の照合（`SEMANTIC_WORKSPACE_CHANGED`）は、main では turn の `assertLive` の前後の再確認で置き換える。PR-2 は `MainReadHooks`（`assertLive`、`trackInFlight`）に turn の値を渡す。
+- **PR-4 への制約（core の Drizzle）**：送信前の検査は Drizzle の select の形だけを通す（字句は SQLite に合わせる：空白は ASCII の 6 文字、非 ASCII は文字列・引用識別子・コメントの外で拒否、placeholder は `?`／`?N` だけ。表の参照は `名前 [as] [別名]` の後ろを join の語・`on`・`using`・句の語・`)`・`;`・文末に限る。`from (` は `( select` の 1 重だけ）。**`.get()`・`findFirst()` は送れない**（method `get` を拒否する。上の「`get` と `run` は送らない」）ので、先頭 1 行は `.limit(1)` と `rows[0]` で読む。`db.$with`／`db.with`（`with` で始まる文）も送れない。実測（Drizzle 0.45.2 の出力 29 形を誤拒否なしで通す）は `sql.drizzle.test.ts`。
 - **core の `projectId` は必須**（`assertCoreProjectId`）は core の新 entry だけ。既存の共有関数（`resolveCodexForAi` など）の signature と falsy の挙動は変えない。
 
 ### DR-MP4-5 read の時点の規則（技術判断）
