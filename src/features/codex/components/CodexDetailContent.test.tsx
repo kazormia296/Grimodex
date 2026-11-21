@@ -143,8 +143,15 @@ vi.mock("./CodexEditLockBanner", () => ({
 
 vi.mock("./RelationsTab", () => ({ RelationsTab: () => null }));
 vi.mock("./TrackingTab", () => ({
-  TrackingTab: (props: { onEstimateReadings: () => void }) => (
-    <button data-testid="estimate-readings" onClick={props.onEstimateReadings}>
+  TrackingTab: (props: {
+    onEstimateReadings: () => void;
+    estimateBlockedHidden?: boolean;
+  }) => (
+    <button
+      data-testid="estimate-readings"
+      data-blocked-hidden={String(props.estimateBlockedHidden ?? false)}
+      onClick={props.onEstimateReadings}
+    >
       estimate
     </button>
   ),
@@ -258,6 +265,46 @@ describe("CodexDetailContent draft integrity", () => {
         surfaces: ["刹那"],
       }),
     ]);
+  });
+
+  it("does not send a hidden entry's names to AI and flags the estimate as blocked", async () => {
+    render(
+      <CodexDetailContent
+        entry={{ ...INITIAL_ENTRY, name: "刹那", contextMode: "hidden" }}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+
+    const button = screen.getByTestId("estimate-readings");
+    expect(button).toHaveAttribute("data-blocked-hidden", "true");
+    fireEvent.click(button);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockInferReadings).not.toHaveBeenCalled();
+  });
+
+  it("warns instead of ending silently when the estimate returns no readings", async () => {
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockInferReadings.mockResolvedValueOnce(new Map());
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("estimate-readings"));
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        "AIから有効な読みを取得できませんでした。モデル設定を確認して再試行してください。",
+      ),
+    );
   });
 
   it("reports an AI reading transport failure instead of failing silently", async () => {

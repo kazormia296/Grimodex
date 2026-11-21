@@ -75,6 +75,7 @@ describe("ReadingsBackfillSection", () => {
         name: "刹那",
         aliases: null,
         readings: null,
+        contextMode: "mentioned",
       },
     ] as never);
     vi.mocked(listCodexTypes).mockResolvedValue([
