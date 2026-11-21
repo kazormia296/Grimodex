@@ -23,7 +23,7 @@ export const SCENE_SCOPE_DEFAULT_TRANSLATIONS = {
         sceneScopeRefUnregistered:
           "選んだ値が Scope の語彙にありません。場面の Scope 欄の「Scope の語彙」で追加してから選んでください。",
         sceneScopeRegistryWarning:
-          "この値は Scope の語彙にありません。使うには、先に場面の Scope 欄の「Scope の語彙」で追加してください。語彙に追加すると、このプロジェクトの承認済みの解釈と本文の宣言がすべて失効し、作り直しが必要になります。",
+          "この値は Scope の語彙にありません。使うには、先に場面の Scope 欄の「Scope の語彙」で追加してください。語彙に追加すると、このプロジェクトの承認済みの解釈がすべて失効し、作り直しが必要になります。",
         sceneScopeDefaultInvalid:
           "このプロジェクトの Scope の既定の記録を読めません。既定は使われず、新しい場面は未設定で作られます。",
         sceneScopeDefaultConflict:
@@ -31,7 +31,7 @@ export const SCENE_SCOPE_DEFAULT_TRANSLATIONS = {
         sceneScopeApplyUnset: "未設定の場面に既定を当てる",
         sceneScopeApplyLegacy: "以前からの場面にも既定を当てる",
         sceneScopeApplyConfirm:
-          "{{count}} 件の場面にプロジェクトの既定（{{value}}）を当てます。当てた場面に結びついた承認済みの解釈と本文の宣言は失効します。",
+          "{{count}} 件の場面にプロジェクトの既定（{{value}}）を当てます。当てた場面に結びついた承認済みの解釈は失効します。",
         sceneScopeApplyNone: "当てる対象の場面はありません。",
         sceneScopeApplyResult:
           "{{applied}} 件に当てました。{{failed}} 件は当てられませんでした。",
@@ -81,7 +81,7 @@ export const SCENE_SCOPE_DEFAULT_TRANSLATIONS = {
         sceneScopeRefUnregistered:
           'The chosen value is not in the scope vocabulary. Add it under "Scope registry" in a scene\'s scope field first.',
         sceneScopeRegistryWarning:
-          'This value is not in the scope vocabulary. To use it, first add it under "Scope registry" in a scene\'s scope field. Adding it invalidates every approved interpretation and body declaration in this project; they must be recreated.',
+          'This value is not in the scope vocabulary. To use it, first add it under "Scope registry" in a scene\'s scope field. Adding it invalidates every approved interpretation in this project; they must be recreated.',
         sceneScopeDefaultInvalid:
           "The default scope record of this project cannot be read. No default is used and new scenes start unset.",
         sceneScopeDefaultConflict:
@@ -89,7 +89,7 @@ export const SCENE_SCOPE_DEFAULT_TRANSLATIONS = {
         sceneScopeApplyUnset: "Apply the default to unset scenes",
         sceneScopeApplyLegacy: "Apply the default to earlier scenes",
         sceneScopeApplyConfirm:
-          "This applies the project default ({{value}}) to {{count}} scenes. Approved interpretations and body declarations tied to those scenes are invalidated.",
+          "This applies the project default ({{value}}) to {{count}} scenes. Approved interpretations tied to those scenes are invalidated.",
         sceneScopeApplyNone: "There are no scenes to apply the default to.",
         sceneScopeApplyResult:
           "Applied to {{applied}} scenes. {{failed}} could not be applied.",

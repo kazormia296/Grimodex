@@ -1,10 +1,9 @@
 //! C and D groups (CB-4 S2): the body step, the result, and the click
 //! revalidation.
 //!
-//! Declarations here carry the digests of the body as it is read (made like the
-//! production writer's, but placed with the `#[cfg(test)]` setter so a body the
-//! writer would refuse, for example one with a beat POV, can be declared), or
-//! come from the production writer itself.
+//! K2/5: the reader needs no declaration. The Scenes of the fixture are
+//! disclosed as they are, and a click is compared with the values the response
+//! read (the source token, the digests, the range and the title digest).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,12 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rusqlite::params;
-use uuid::Uuid;
-
-use grimodex_core::narrative_scene_body_declaration::{
-    NarrativeSceneBodyDeclarationBindingV1, NarrativeSceneBodyDeclarationV1,
-    NarrativeSceneBodySourceV1,
-};
 
 use super::body::{body_reads, reset_body_reads};
 use super::counters::local_counts;
@@ -29,15 +22,13 @@ use super::*;
 use crate::narrative_extraction::retrieval_admission::{
     read_retrieval_scene_source, read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
 };
-use crate::narrative_extraction::scene_body_declaration::test_support::{
-    set_scene_body_declaration_for_test, TEST_DECLARED_AT,
-};
 use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
-    body_json, declare, request_for, set_a1, Env, PROJECT,
+    body_json, set_a1, Env, PROJECT,
 };
 use crate::narrative_extraction::scene_body_declaration::{
-    quarantine_scene_body_declaration_workspace_for_test, scene_body_declaration_veto,
-    scene_body_title_digest, VetoLimits, SCENE_BODY_READ_MAX_BYTES,
+    clear_scene_body_declaration_workspace_quarantine_for_test,
+    quarantine_scene_body_declaration_workspace_for_test, SCENE_BODY_READ_MAX_BYTES,
+    SCENE_BODY_TITLE_MAX_BYTES,
 };
 use crate::narrative_extraction::task_leases::with_immediate_transaction;
 
@@ -51,74 +42,6 @@ pub(super) fn set_content(env: &Env, scene: &str, content: &str) {
         )?;
         Ok(())
     });
-}
-
-/// Declares the Scene's body as it is read now: real digests, the Ready
-/// workspace's values, and `tamper` applied to the binding before it is placed.
-/// Fails when the body cannot be read within the limits.
-pub(super) fn try_place_real(
-    env: &Env,
-    scene: &str,
-    tamper: impl Fn(&mut NarrativeSceneBodyDeclarationBindingV1),
-) -> anyhow::Result<NarrativeSceneBodyDeclarationV1> {
-    let workspace = GraphDisclosureWorkspace::from_snapshot(&env.snapshot());
-    let parts = workspace.parts().expect("workspace values");
-    env.with_conn_mut(|conn| {
-        Ok(with_immediate_transaction(conn, |tx| {
-            let RetrievalSceneSourceRead::Available(source) = read_retrieval_scene_source_bounded(
-                tx,
-                PROJECT,
-                scene,
-                SCENE_BODY_READ_MAX_BYTES,
-                SCENE_BODY_READ_MAX_BYTES,
-                &mut || Ok(()),
-                &mut |_| Ok(()),
-            )?
-            else {
-                anyhow::bail!("body is not available");
-            };
-            let (incarnation, scope_token): (String, String) = tx.query_row(
-                "SELECT scene_incarnation_id, source_token FROM narrative_scene_scope_bindings
-                  WHERE project_id = ?1 AND scene_id = ?2",
-                params![PROJECT, scene],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            let title: String = tx.query_row(
-                "SELECT title FROM tree_nodes WHERE id = ?1",
-                [scene],
-                |row| row.get(0),
-            )?;
-            let mut binding = NarrativeSceneBodyDeclarationBindingV1 {
-                project_id: PROJECT.to_owned(),
-                scene_id: scene.to_owned(),
-                scene_incarnation_id: incarnation,
-                scope_source_token: scope_token,
-                body_source: NarrativeSceneBodySourceV1 {
-                    source_identity: source.query_source.source_key.clone(),
-                    source_token: source.query_source.revision_token.clone(),
-                    storage_digest: source.query_source.storage_digest.clone(),
-                    canonical_digest: source.query_source.canonical_text_digest.clone(),
-                    normalizer_version: source.query_source.normalizer_version.to_owned(),
-                    utf16_length: u64::try_from(source.query_source.canonical_utf16_length)?,
-                },
-                title_digest: scene_body_title_digest(&title)?,
-                workspace_id: parts.workspace_id.clone(),
-                canonical_locator_digest: parts.canonical_locator_digest.clone(),
-            };
-            tamper(&mut binding);
-            let declaration = NarrativeSceneBodyDeclarationV1::new(
-                Uuid::new_v4().to_string(),
-                TEST_DECLARED_AT,
-                binding,
-            )?;
-            set_scene_body_declaration_for_test(tx, &declaration)?;
-            Ok(declaration)
-        }))
-    })
-}
-
-pub(super) fn place_real(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
-    try_place_real(env, scene, |_| {}).expect("a readable body")
 }
 
 pub(super) fn disclose_with(
@@ -233,9 +156,8 @@ fn count_body_statements(env: &Env) -> Arc<AtomicUsize> {
 // ---- C1: the positive result -------------------------------------------------
 
 #[test]
-fn c1_a_declared_scene_is_eligible_with_its_title_excerpt_and_range() {
+fn c1_a_scene_without_a_declaration_is_eligible_with_its_title_excerpt_and_range() {
     let env = fixture();
-    place_real(&env, "b1");
     reset_body_reads();
     let scene = eligible(disclose(&env, &["b1"]));
     assert_eq!(scene.scene_id(), "b1");
@@ -256,7 +178,6 @@ fn c1_the_range_points_into_the_canonical_text_after_blank_lines_and_surrogates(
     let env = fixture();
     let body = paragraphs(&["", "   ", "\u{1F338}a Mira 日本語", "second line"]);
     set_content(&env, "b1", &body);
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     assert_eq!(scene.excerpt(), "\u{1F338}a Mira 日本語");
     let canonical = env.with_conn(|conn| {
@@ -284,7 +205,6 @@ fn c1_the_range_points_into_the_canonical_text_after_blank_lines_and_surrogates(
 fn c1_a_single_short_line_with_a_surrogate_pair_is_three_units() {
     let env = fixture();
     set_content(&env, "b1", &body_json("\u{1F338}a"));
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     assert_eq!((scene.range().start_utf16, scene.range().end_utf16), (0, 3));
 }
@@ -292,9 +212,8 @@ fn c1_a_single_short_line_with_a_surrogate_pair_is_three_units() {
 // ---- C2: the same workspace opened again -----------------------------------------
 
 #[test]
-fn c2_a_workspace_that_is_closed_and_opened_again_keeps_its_declaration() {
+fn c2_a_workspace_that_is_closed_and_opened_again_still_discloses() {
     let mut env = fixture();
-    place_real(&env, "b1");
     assert!(matches!(
         disclose(&env, &["b1"]),
         GraphOnlySceneDisclosure::Eligible(_)
@@ -309,11 +228,12 @@ fn c2_a_workspace_that_is_closed_and_opened_again_keeps_its_declaration() {
 #[test]
 fn c3_only_the_adopted_candidates_body_is_read() {
     let env = fixture();
-    // b1 has no declaration; b2 and b3 are declared.
-    place_real(&env, "b2");
-    place_real(&env, "b3");
+    // b1's frame is behind; b2 and b3 pass.
+    let mut candidates = associations(&env, &["b1", "b2", "b3"]);
+    candidates[0].scene_source_token = "v0@1970-01-01T00:00:00Z".into();
     reset_body_reads();
-    let scene = eligible(disclose(&env, &["b1", "b2", "b3"]));
+    let scene =
+        eligible(disclose_with(&env, &candidates, &mut Path::yes(), &mut || Ok(())).unwrap());
     assert_eq!(scene.scene_id(), "b2");
     assert_eq!(body_reads(), ["b2"], "neither b1 nor b3 was read");
 }
@@ -321,11 +241,10 @@ fn c3_only_the_adopted_candidates_body_is_read() {
 #[test]
 fn c3_a_candidate_rejected_by_its_body_stops_the_query() {
     let env = fixture();
-    place_real(&env, "b1");
-    place_real(&env, "b2");
     reset_body_reads();
-    // b1's body changes without any token moving: the digest differs.
-    set_content(&env, "b1", &body_json("Another body."));
+    // b1's body is not a document: the body step rejects it, and the query
+    // stops there.
+    set_content(&env, "b1", "this is not json");
     let result = disclose(&env, &["b1", "b2"]);
     assert_nothing_added(&result);
     assert_eq!(body_reads(), ["b1"], "b2's body is not read");
@@ -333,45 +252,14 @@ fn c3_a_candidate_rejected_by_its_body_stops_the_query() {
 
 // ---- C4: the body step's refusals -------------------------------------------------
 
-#[test]
-fn c4_a_declaration_that_differs_from_the_body_read_is_not_appended() {
-    type Tamper = Box<dyn Fn(&mut NarrativeSceneBodyDeclarationBindingV1)>;
-    let cases: Vec<(&str, Tamper)> = vec![
-        (
-            "storage digest",
-            Box::new(|binding| binding.body_source.storage_digest = test_digest('1')),
-        ),
-        (
-            "canonical digest",
-            Box::new(|binding| binding.body_source.canonical_digest = test_digest('2')),
-        ),
-        (
-            "normalizer version",
-            Box::new(|binding| {
-                binding.body_source.normalizer_version = "gdx-canonical-text/0".to_owned()
-            }),
-        ),
-        (
-            "utf16 length",
-            Box::new(|binding| binding.body_source.utf16_length += 1),
-        ),
-    ];
-    for (name, tamper) in cases {
-        let env = fixture();
-        try_place_real(&env, "b1", tamper).unwrap();
-        reset_body_reads();
-        let result = disclose(&env, &["b1"]);
-        assert_nothing_added(&result);
-        assert_eq!(body_reads(), ["b1"], "{name}: the body was read once");
-    }
-}
-
 fn test_digest(seed: char) -> String {
     format!("sha256:{}", seed.to_string().repeat(64))
 }
 
 #[test]
-fn c4_a_beat_pov_in_the_saved_body_vetoes() {
+fn c4_a_beat_pov_in_the_saved_body_does_not_hide_the_scene() {
+    // K2/5 removed the veto: a `sceneBeat` with a POV is disclosed like any
+    // other body.
     let env = fixture();
     let body = serde_json::json!({
         "type": "doc",
@@ -383,12 +271,11 @@ fn c4_a_beat_pov_in_the_saved_body_vetoes() {
     })
     .to_string();
     set_content(&env, "b1", &body);
-    place_real(&env, "b1");
-    let result = disclose(&env, &["b1"]);
-    assert_nothing_added(&result);
+    let scene = eligible(disclose(&env, &["b1"]));
+    assert_eq!(scene.excerpt(), "Opening.");
     let totals: BTreeMap<_, _> = counts().into_iter().collect();
-    assert_eq!(totals.get("veto"), Some(&1), "{totals:?}");
-    // A beat without a POV is fine.
+    assert_eq!(totals.get("disclosed"), Some(&1), "{totals:?}");
+    // A beat without a POV is fine, too.
     let env = fixture();
     let body = serde_json::json!({
         "type": "doc",
@@ -399,7 +286,6 @@ fn c4_a_beat_pov_in_the_saved_body_vetoes() {
     })
     .to_string();
     set_content(&env, "b1", &body);
-    place_real(&env, "b1");
     assert!(matches!(
         disclose(&env, &["b1"]),
         GraphOnlySceneDisclosure::Eligible(_)
@@ -410,11 +296,9 @@ fn c4_a_beat_pov_in_the_saved_body_vetoes() {
 fn c4_an_empty_body_or_one_that_is_not_json_is_not_appended() {
     let env = fixture();
     set_content(&env, "b1", &paragraphs(&["", "  "]));
-    place_real(&env, "b1");
     assert_nothing_added(&disclose(&env, &["b1"]));
 
     let env = fixture();
-    place_real(&env, "b1");
     set_content(&env, "b1", "this is not json");
     assert_nothing_added(&disclose(&env, &["b1"]));
     let totals: BTreeMap<_, _> = counts().into_iter().collect();
@@ -450,7 +334,6 @@ fn direct_bounded_read(env: &Env, scene: &str) {
 #[test]
 fn c4_a_body_above_the_read_limit_is_rejected_before_it_is_materialized() {
     let env = fixture();
-    place_real(&env, "b1");
     // Above SCENE_BODY_READ_MAX_BYTES: the shared reader stops after its length
     // probe, and the reader adds no statement of its own that mentions the body.
     set_content(&env, "b1", &"x".repeat(SCENE_BODY_READ_MAX_BYTES + 1));
@@ -473,7 +356,6 @@ fn c4_a_body_above_the_read_limit_is_rejected_before_it_is_materialized() {
 #[test]
 fn c4_a_body_above_the_canonical_parse_limit_is_not_appended() {
     let env = fixture();
-    place_real(&env, "b1");
     // Below the storage limit, above the shared canonical parse limit (32 KiB).
     set_content(&env, "b1", &body_json(&"a".repeat(40_000)));
     assert_nothing_added(&disclose(&env, &["b1"]));
@@ -482,18 +364,9 @@ fn c4_a_body_above_the_canonical_parse_limit_is_not_appended() {
 }
 
 #[test]
-fn c4_the_body_is_read_once_by_the_shared_reader_and_once_by_the_veto() {
+fn c4_the_body_is_read_once_by_the_shared_reader() {
     let env = fixture();
-    place_real(&env, "b1");
     let reader = body_statements_of(&env, || direct_bounded_read(&env, "b1"));
-    let veto = body_statements_of(&env, || {
-        env.db()
-            .db()
-            .with_read_transaction(|conn| {
-                scene_body_declaration_veto(conn, PROJECT, "b1", VetoLimits::DEFAULT).map(|_| ())
-            })
-            .unwrap();
-    });
     let context_cost = body_statements_of(&env, || drop(query(&env)));
     let mut result = None;
     let whole = body_statements_of(&env, || result = Some(disclose(&env, &["b1"])));
@@ -501,37 +374,42 @@ fn c4_the_body_is_read_once_by_the_shared_reader_and_once_by_the_veto() {
         result.unwrap(),
         GraphOnlySceneDisclosure::Eligible(_)
     ));
-    // The writer's veto has a fixed signature, so it reads the same Scene's
-    // saved body once more; nothing else mentions the body.
-    assert_eq!(whole - context_cost, reader + veto);
+    // The writer's veto (which read the saved body once more) is not part of
+    // the reader any more; nothing else mentions the body.
+    assert_eq!(whole - context_cost, reader);
 }
 
 // ---- C5: the title and the sizes -----------------------------------------------------
 
 #[test]
-fn c5_the_title_is_the_declared_one_and_a_changed_title_is_not_appended() {
+fn c5_the_title_shown_is_the_current_one_and_one_above_the_limit_is_not_appended() {
     let env = fixture();
-    place_real(&env, "b1");
     execute(
         &env,
         "UPDATE tree_nodes SET title = 'Changed' WHERE id = 'b1';",
     );
+    assert_eq!(eligible(disclose(&env, &["b1"])).title(), "Changed");
+    execute(
+        &env,
+        &format!(
+            "UPDATE tree_nodes SET title = '{}' WHERE id = 'b1';",
+            "t".repeat(SCENE_BODY_TITLE_MAX_BYTES + 1)
+        ),
+    );
     assert_nothing_added(&disclose(&env, &["b1"]));
 }
 
-// ---- C6: the writer and the reader read one text ---------------------------------------
+// ---- C6: the bounded and the unbounded reader read one text ---------------------------------------
 
 #[test]
-fn c6_the_excerpt_comes_from_the_text_the_writer_and_the_preview_read() {
+fn c6_the_excerpt_comes_from_the_text_both_shared_readers_give() {
     let env = fixture();
     set_content(&env, "b1", &paragraphs(&["", "First line", "Second line"]));
-    let declared = declare(&env, request_for(&env, PROJECT, "b1")).expect("production declaration");
-    let _ = declared;
     let scene = eligible(disclose(&env, &["b1"]));
     assert_eq!(scene.excerpt(), "First line");
 
-    // The bounded read (the writer's and the reader's) and the unbounded read
-    // give byte-identical canonical text, and the declaration holds its digest.
+    // The bounded read (the reader's) and the unbounded read (the preview's)
+    // give byte-identical canonical text, and the response holds its digest.
     env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let RetrievalSceneSourceRead::Available(bounded) = read_retrieval_scene_source_bounded(
@@ -575,7 +453,6 @@ fn c6_the_excerpt_comes_from_the_text_the_writer_and_the_preview_read() {
 #[test]
 fn d1_an_unchanged_scene_is_allowed_at_the_same_range() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     let GraphOnlyClick::Allowed(range) = click(&env, scene.binding()).unwrap() else {
         panic!("the click should be allowed");
@@ -596,7 +473,6 @@ fn d1_an_unchanged_scene_is_allowed_at_the_same_range() {
 #[test]
 fn d1_a_click_needs_a_read_transaction() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     let workspace = workspace(&env);
     let query = query(&env);
@@ -689,32 +565,6 @@ fn d2_a_change_after_the_response_refuses_the_click_and_putting_it_back_does_not
             }),
         ),
         (
-            "the declaration revoked",
-            Box::new(|env| {
-                raw_cells(
-                    env,
-                    "b1",
-                    rusqlite::types::Value::Null,
-                    rusqlite::types::Value::Null,
-                )
-            }),
-        ),
-        (
-            "the same declaration made again",
-            Box::new(|env| {
-                place_real(env, "b1");
-            }),
-        ),
-        (
-            "a secret record added",
-            Box::new(|env| {
-                execute(
-                    env,
-                    "UPDATE tree_nodes SET pov_character_id = 'c1' WHERE id = 'b1';",
-                )
-            }),
-        ),
-        (
             "the pin moved",
             Box::new(|env| {
                 execute(
@@ -725,14 +575,9 @@ fn d2_a_change_after_the_response_refuses_the_click_and_putting_it_back_does_not
                 )
             }),
         ),
-        (
-            "the workspace quarantined",
-            Box::new(|env| quarantine_scene_body_declaration_workspace_for_test(&env.snapshot())),
-        ),
     ];
     for (name, change) in changes {
         let env = fixture();
-        place_real(&env, "b1");
         let scene = eligible(disclose(&env, &["b1"]));
         assert!(
             matches!(
@@ -749,9 +594,62 @@ fn d2_a_change_after_the_response_refuses_the_click_and_putting_it_back_does_not
 }
 
 #[test]
+fn d2_a_change_of_a_declaration_a_record_or_the_writers_quarantine_does_not_refuse_the_click() {
+    // K2/5: the click is bound to what the response read of the body and the
+    // title; nothing about a declaration, a veto record or a quarantine is.
+    type Change = Box<dyn Fn(&Env)>;
+    let changes: Vec<(&str, Change)> = vec![
+        (
+            "a declaration placed",
+            Box::new(|env| {
+                super::tests::place(env, "b1");
+            }),
+        ),
+        (
+            "the declaration cells cleared",
+            Box::new(|env| {
+                super::tests::place(env, "b1");
+                raw_cells(
+                    env,
+                    "b1",
+                    rusqlite::types::Value::Null,
+                    rusqlite::types::Value::Null,
+                )
+            }),
+        ),
+        (
+            "a secret record and a POV added",
+            Box::new(|env| {
+                super::tests::foreshadow(env, "f1", 1, Some("b1"));
+                execute(
+                    env,
+                    "UPDATE tree_nodes SET pov_character_id = 'c1' WHERE id = 'b1';",
+                )
+            }),
+        ),
+        (
+            "the writer's quarantine",
+            Box::new(|env| quarantine_scene_body_declaration_workspace_for_test(&env.snapshot())),
+        ),
+    ];
+    for (name, change) in changes {
+        let env = fixture();
+        let scene = eligible(disclose(&env, &["b1"]));
+        change(&env);
+        assert!(
+            matches!(
+                click(&env, scene.binding()).unwrap(),
+                GraphOnlyClick::Allowed(_)
+            ),
+            "{name}"
+        );
+        clear_scene_body_declaration_workspace_quarantine_for_test(&env.snapshot());
+    }
+}
+
+#[test]
 fn d2_a_binding_for_another_workspace_or_query_is_refused() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     type Tamper = Box<dyn Fn(&mut GraphOnlySceneBinding)>;
     let cases: Vec<(&str, Tamper)> = vec![
@@ -777,8 +675,16 @@ fn d2_a_binding_for_another_workspace_or_query_is_refused() {
         ),
         ("range", Box::new(|binding| binding.body.end_utf16 += 1)),
         (
-            "declaration id",
-            Box::new(|binding| binding.declaration_id = Uuid::new_v4().to_string()),
+            "title digest",
+            Box::new(|binding| binding.title_digest = test_digest('6')),
+        ),
+        (
+            "source token",
+            Box::new(|binding| binding.body.source_token = "v0@1970-01-01T00:00:00Z".into()),
+        ),
+        (
+            "canonical digest",
+            Box::new(|binding| binding.body.canonical_digest = test_digest('5')),
         ),
     ];
     for (name, tamper) in cases {
@@ -791,7 +697,6 @@ fn d2_a_binding_for_another_workspace_or_query_is_refused() {
 #[test]
 fn d2_the_path_is_asked_again_at_the_click() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     let mut path = Path::yes();
     assert!(matches!(
@@ -811,7 +716,6 @@ fn d2_the_path_is_asked_again_at_the_click() {
 #[test]
 fn d3_every_refusal_is_the_same_value_and_names_nothing() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     let mut other = scene.binding().clone();
     other.body.end_utf16 += 1;
@@ -838,7 +742,6 @@ fn d3_every_refusal_is_the_same_value_and_names_nothing() {
 #[test]
 fn d4_a_click_does_not_read_the_change_feed() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     restrict(&env, |action| {
         matches!(action, rusqlite::hooks::AuthAction::Read { table_name, .. }
@@ -854,7 +757,6 @@ fn d4_a_click_does_not_read_the_change_feed() {
 #[test]
 fn a_checkpoint_that_fails_anywhere_is_an_error_and_makes_no_partial_result() {
     let env = fixture();
-    place_real(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let mut stopped_at = 0;
     for stop_on in 1..200 {
@@ -890,7 +792,6 @@ fn a_checkpoint_that_fails_anywhere_is_an_error_and_makes_no_partial_result() {
 #[test]
 fn a_click_whose_checkpoint_fails_is_an_error() {
     let env = fixture();
-    place_real(&env, "b1");
     let scene = eligible(disclose(&env, &["b1"]));
     let workspace = workspace(&env);
     let query = query(&env);
@@ -920,8 +821,8 @@ fn a_click_whose_checkpoint_fails_is_an_error() {
 
 /// Not part of the normal run: `cargo test --release ... measure_ -- --ignored
 /// --nocapture`. Eight candidates; the first seven pass everything except the
-/// veto (a Scene POV, found late), the eighth is declared with the largest body
-/// the limits admit. Prints how long the whole response and the click take.
+/// path (which is asked last), the eighth has the largest body the limits
+/// admit. Prints how long the whole response and the click take.
 #[test]
 #[ignore = "K1b measurement; run in release with --ignored --nocapture"]
 fn measure_graph_only_scene_timings() {
@@ -944,33 +845,32 @@ fn measure_graph_only_scene_timings() {
     while low < high {
         let middle = (low + high).div_ceil(2);
         set_content(&env, target, &long(middle));
-        if try_place_real(&env, target, |_| {}).is_ok() {
+        if matches!(
+            disclose(&env, &[target]),
+            GraphOnlySceneDisclosure::Eligible(_)
+        ) {
             low = middle;
         } else {
             high = middle - 1;
         }
     }
     set_content(&env, target, &long(low));
-    place_real(&env, target);
     let bytes = long(low).len();
+    let mut refusing = Path::yes();
     for scene in &scenes[..7] {
-        place_real(&env, scene);
-        execute(
-            &env,
-            &format!("UPDATE tree_nodes SET pov_character_id = 'c1' WHERE id = '{scene}';"),
-        );
+        refusing = refusing.answering(scene, super::tests::Answer::No);
     }
     let candidates = associations(&env, &scenes);
     let mut samples = Vec::new();
     let mut click_samples = Vec::new();
     for _ in 0..20 {
         let started = Instant::now();
-        let result = disclose_with(&env, &candidates, &mut Path::yes(), &mut || Ok(())).unwrap();
+        let result = disclose_with(&env, &candidates, &mut refusing, &mut || Ok(())).unwrap();
         samples.push(started.elapsed());
         let scene = eligible(result);
         let started = Instant::now();
         assert!(matches!(
-            click(&env, scene.binding()).unwrap(),
+            click_with(&env, scene.binding(), &mut refusing).unwrap(),
             GraphOnlyClick::Allowed(_)
         ));
         click_samples.push(started.elapsed());

@@ -5,8 +5,10 @@
  * While this is `false` the renderer reads no pin, sends no Graph seed (begin
  * is byte-identical to the one before CP-3a), never requests the Graph UI
  * chunk and draws no Graph row. Turning it on is a PUB-G change, made together
- * with `BODY_DECLARATION_UI_ENABLED` and Native's product gate under the same
- * approval. Native's gate is the second, independent lock: with this on and
+ * with Native's product gate under the same approval. (The body declaration UI
+ * is not opened with it: K2/5 removed the declaration from the Graph-only
+ * Scene's judgement, so a Graph-only row needs no author action.) Native's
+ * gate is the second, independent lock: with this on and
  * the gate closed the owner answers `not-activated` (`profile-not-restricted`
  * when unrestricted) and no Graph payload reaches the renderer.
  */

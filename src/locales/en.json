@@ -4159,10 +4159,10 @@
       "scopeDefaultBadge": "Project default ({{value}})",
       "scopeNotMainLine": "This scene is outside the main line. Only interpretations from scenes in the same scope appear.",
       "scopeApplyDefault": "Apply the default",
-      "scopeApplyConfirm": "This applies the project default scope ({{value}}) to this scene. Approved interpretations and body declarations tied to this scene are invalidated.",
+      "scopeApplyConfirm": "This applies the project default scope ({{value}}) to this scene. Approved interpretations tied to this scene are invalidated.",
       "scopeApplyLegacyWarning": "Once applied, an earlier scene cannot go back to its earlier state.",
       "scopeApplyRun": "Apply",
-      "scopeRegistryWarning": "Saving a changed vocabulary invalidates every approved interpretation and body declaration in this project; they must be recreated.",
+      "scopeRegistryWarning": "Saving a changed vocabulary invalidates every approved interpretation in this project; they must be recreated.",
       "scopeNotDefault": "This scene's scope differs from the project default ({{value}}). Only interpretations from scenes in the same scope appear.",
       "scopeApplyUnsavedWarning": "Unsaved changes in the scope field will be discarded.",
       "scopeLegacyEmptyRegistry": "The scope vocabulary is empty. Saving now records the scene as set with unresolved axes, and approved interpretations stop appearing. Add values under \"Scope registry\" first."

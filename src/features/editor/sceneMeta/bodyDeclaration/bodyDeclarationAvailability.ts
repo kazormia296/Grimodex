@@ -3,12 +3,11 @@
  *
  * The product keeps Graph's Scene disclosure closed until PUB-G. While this is
  * `false` the section renders nothing and no declaration command is invoked at
- * all. Turning it on is a PUB-G change: it is made together with opening the
- * product gate in Native, under the same approval. Native's gate is the second,
- * independent lock: with this on and the gate closed the read answers
- * `gate-closed` and the section stays hidden. PUB-G changes this together
- * with the Related Scenes Graph UI constant (`NIR1_GRAPH_UI_ENABLED`,
- * DR-CP3B-2).
+ * all. K2/5: the reader no longer reads a declaration (a Graph-only Scene needs
+ * no author action), so PUB-G does not open this UI and the Related Scenes
+ * Graph UI constant (`NIR1_GRAPH_UI_ENABLED`, DR-CP3B-2) is not changed with
+ * it. Native's gate (`gate-closed`) stays the second, independent lock. The UI,
+ * its writer and its gate are removed in a later PR (K2/5 PR-2).
  */
 export const BODY_DECLARATION_UI_ENABLED = false as const;
 

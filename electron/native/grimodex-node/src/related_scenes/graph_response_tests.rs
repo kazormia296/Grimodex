@@ -1,7 +1,7 @@
 //! CP-3a S2b tests: the response of `related_scenes_graph_continue` and the
 //! pieces the click is built from. The full positive path (an eligible
 //! Graph-only row, its click) needs a Chronicle index proof, typed Revisions and
-//! a declared Scene that only the database crate can build; it is covered there
+//! a pinned Scene that only the database crate can build; it is covered there
 //! (`related_scenes_requalification` tests) with these Native pieces around it:
 //! the composition of the displayed set, the checkpoint, the failure mapping,
 //! the wire and the one `null` of every absent Graph-only row.
@@ -13,9 +13,7 @@ use crate::related_scenes::graph_response::{
 };
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
 use grimodex_db::narrative_extraction::scene_body_declaration::{
-    clear_scene_body_declaration_workspace_quarantine_for_test,
-    quarantine_scene_body_declaration_workspace_for_test, SCENE_BODY_READ_MAX_BYTES,
-    SCENE_BODY_TITLE_MAX_BYTES,
+    SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
 };
 use grimodex_db::narrative_extraction::{
     validation_terminated, AppendSlot, GraphOnlySceneDisclosure, GraphPathAttachment,
@@ -302,7 +300,7 @@ fn the_graph_only_row_is_bounded_and_belongs_to_its_path() {
         )
     };
     let title = |bytes: usize| "t".repeat(bytes);
-    // The limits the declaration and the body read already keep: at the limit
+    // The K1b limits the title and the body read already keep: at the limit
     // the row is made, one byte over it is not.
     assert!(fields(&title(SCENE_BODY_TITLE_MAX_BYTES), "x", "s-9").is_some());
     assert!(fields(&title(SCENE_BODY_TITLE_MAX_BYTES + 1), "x", "s-9").is_none());
@@ -456,9 +454,9 @@ fn a_current_empty_graph_answers_available_with_no_paths_and_a_null_graph_only_r
 
 #[test]
 fn every_reason_the_graph_only_row_is_absent_gives_the_same_bytes() {
-    // N-8 (Mandatory defense 9): no candidate, a closed slot (the IR's Scene,
-    // eight Raw items) and a workspace quarantined after the read answer with
-    // byte-identical responses. Nothing in the bytes says which.
+    // N-8 (Mandatory defense 9): no candidate and a closed slot (the IR's Scene,
+    // eight Raw items) answer with byte-identical responses. Nothing in the
+    // bytes says which.
     let fixture = Fixture::new();
     fixture.seed_world();
     let projection = empty_projection(GENERATION, SEED);
@@ -468,10 +466,7 @@ fn every_reason_the_graph_only_row_is_absent_gives_the_same_bytes() {
     let no_candidate = bytes(&composition(&["a"], false, 1));
     let ir_took_the_slot = bytes(&composition(&["a"], true, 1));
     let raw_is_full = bytes(&composition(&["a"], false, 8));
-    quarantine_scene_body_declaration_workspace_for_test(&fixture.workspace());
-    let quarantined = bytes(&composition(&["a"], false, 1));
-    clear_scene_body_declaration_workspace_quarantine_for_test(&fixture.workspace());
-    for other in [&ir_took_the_slot, &raw_is_full, &quarantined] {
+    for other in [&ir_took_the_slot, &raw_is_full] {
         assert_eq!(&no_candidate, other);
     }
 }

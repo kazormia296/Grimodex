@@ -17,10 +17,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use grimodex_core::narrative_nir1::EntityInput;
-use grimodex_core::narrative_scene_body_declaration::{
-    NarrativeSceneBodyDeclarationBindingV1, NarrativeSceneBodyDeclarationV1,
-    NarrativeSceneBodySourceV1,
-};
 use grimodex_core::narrative_scene_scope::{
     NarrativeSceneMaterialConstraintV1, NarrativeSceneQueryIdentityV1,
     NarrativeScopeCompatibilityMarkerV1, NarrativeScopeConstraintV1, NarrativeScopePrincipalV1,
@@ -28,7 +24,6 @@ use grimodex_core::narrative_scene_scope::{
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
-use uuid::Uuid;
 
 use super::super::{Nir1GraphEdge, Nir1GraphMaterialBinding, Nir1GraphNode, Nir1QualifiedGraph};
 use super::*;
@@ -42,16 +37,6 @@ use crate::narrative_extraction::nir1_packing::tests::di1a_graph::{write_seal, G
 use crate::narrative_extraction::nir1_packing::tests::{
     PreparedWorkspace, RAW_SOURCE_PROJECT as PROJECT, RAW_SOURCE_SCENE as QUERY,
 };
-use crate::narrative_extraction::retrieval_admission::{
-    read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
-};
-use crate::narrative_extraction::scene_body_declaration::test_support::{
-    set_scene_body_declaration_for_test, TEST_DECLARED_AT,
-};
-use crate::narrative_extraction::scene_body_declaration::{
-    scene_body_title_digest, SCENE_BODY_READ_MAX_BYTES,
-};
-use crate::narrative_extraction::task_leases::with_immediate_transaction;
 use crate::narrative_extraction::{
     ensure_scene_scope_binding_in_tx, read_narrative_scene_scope, read_retrieval_query_context,
     update_narrative_scene_scope, NarrativeSceneScopeUpdatePayload, NarrativeSceneScopeUpdateV1,
@@ -213,78 +198,6 @@ impl World {
             })
             .unwrap();
         GraphDisclosureQuery::from_retrieval_query_context(&context)
-    }
-
-    /// Declares the Scene's whole body as it is now, with real digests and the
-    /// Ready workspace's values.
-    fn declare(&self, scene: &str) {
-        let binding = self.snapshot.live_binding().expect("Ready binding");
-        let identity = self
-            .snapshot
-            .durable_workspace_identity()
-            .expect("durable identity");
-        self.db()
-            .with_conn_mut(|conn| {
-                with_immediate_transaction(conn, |tx| {
-                    let RetrievalSceneSourceRead::Available(source) =
-                        read_retrieval_scene_source_bounded(
-                            tx,
-                            PROJECT,
-                            scene,
-                            SCENE_BODY_READ_MAX_BYTES,
-                            SCENE_BODY_READ_MAX_BYTES,
-                            &mut || Ok(()),
-                            &mut |_| Ok(()),
-                        )?
-                    else {
-                        anyhow::bail!("body is not available");
-                    };
-                    let (incarnation, scope_token): (String, String) = tx.query_row(
-                        "SELECT scene_incarnation_id, source_token
-                           FROM narrative_scene_scope_bindings
-                          WHERE project_id = ?1 AND scene_id = ?2",
-                        params![PROJECT, scene],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?;
-                    let title: String = tx.query_row(
-                        "SELECT title FROM tree_nodes WHERE id = ?1",
-                        [scene],
-                        |row| row.get(0),
-                    )?;
-                    let declaration = NarrativeSceneBodyDeclarationV1::new(
-                        Uuid::new_v4().to_string(),
-                        TEST_DECLARED_AT,
-                        NarrativeSceneBodyDeclarationBindingV1 {
-                            project_id: PROJECT.to_owned(),
-                            scene_id: scene.to_owned(),
-                            scene_incarnation_id: incarnation,
-                            scope_source_token: scope_token,
-                            body_source: NarrativeSceneBodySourceV1 {
-                                source_identity: source.query_source.source_key.clone(),
-                                source_token: source.query_source.revision_token.clone(),
-                                storage_digest: source.query_source.storage_digest.clone(),
-                                canonical_digest: source.query_source.canonical_text_digest.clone(),
-                                normalizer_version: source
-                                    .query_source
-                                    .normalizer_version
-                                    .to_owned(),
-                                utf16_length: u64::try_from(
-                                    source.query_source.canonical_utf16_length,
-                                )?,
-                            },
-                            title_digest: scene_body_title_digest(&title)?,
-                            workspace_id: binding.workspace_id.to_string(),
-                            canonical_locator_digest: identity
-                                .canonical_locator_digest
-                                .as_str()
-                                .to_owned(),
-                        },
-                    )?;
-                    set_scene_body_declaration_for_test(tx, &declaration)?;
-                    Ok(())
-                })
-            })
-            .unwrap();
     }
 
     /// The worker's Graph as of before `change`, with the tokens of the
@@ -534,16 +447,6 @@ fn evaluated() -> Vec<String> {
     EVALUATED.with(|log| log.borrow().clone())
 }
 
-/// The world with `g3` and `g4` declared (their Revisions are the first's and
-/// the second's), so both Graph-only candidates are eligible.
-fn declared_world() -> World {
-    let world = World::new().unwrap();
-    for scene in ["g3", "g4"] {
-        world.declare(scene);
-    }
-    world
-}
-
 fn is_validation_terminated_error(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -554,7 +457,7 @@ fn is_validation_terminated_error(error: &anyhow::Error) -> bool {
 
 #[test]
 fn a_current_graph_attaches_the_displayed_paths_and_discloses_one_graph_only_scene() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     assert_eq!(scene_ids(&result.attachments), ["g1", "g2"]);
@@ -918,7 +821,7 @@ fn attached_scene_pin_move_delete_reinsert_or_archive_drops_the_graph() {
 #[test]
 fn graph_only_failure_changes_neither_the_state_nor_the_attachments() {
     let baseline = {
-        let world = declared_world();
+        let world = World::new().unwrap();
         let projection = world.projection();
         let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
         assert_eq!(graph_only_scene(&result), Some("g3"));
@@ -926,22 +829,14 @@ fn graph_only_failure_changes_neither_the_state_nor_the_attachments() {
     };
 
     type Change = (&'static str, &'static str);
-    let changes: [Change; 6] = [
+    let changes: [Change; 4] = [
         (
             "the pin moved",
             "UPDATE scene_codex_pins SET created_at = '2031-01-01T00:00:00Z' WHERE scene_id = 'g3';",
         ),
         (
-            "the body changed after the declaration",
+            "the body was saved after the Graph was built",
             "UPDATE tree_nodes SET content = '{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Rewritten.\"}]}]}', version = version + 1, updated_at = '2026-10-23T01:00:00.000Z' WHERE id = 'g3';",
-        ),
-        (
-            "the declaration was removed",
-            "UPDATE narrative_scene_scope_bindings SET body_declaration_json = NULL, body_declaration_token = NULL WHERE scene_id = 'g3';",
-        ),
-        (
-            "the title changed",
-            "UPDATE tree_nodes SET title = 'Another title' WHERE id = 'g3';",
         ),
         (
             "the Scene was archived",
@@ -953,7 +848,7 @@ fn graph_only_failure_changes_neither_the_state_nor_the_attachments() {
         ),
     ];
     for (name, sql) in changes {
-        let world = declared_world();
+        let world = World::new().unwrap();
         let projection = world.projection_with_stale_scenes(|| world.execute(sql));
         let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
         // The first candidate failed; the next one (`g4`) is the one adopted,
@@ -964,12 +859,10 @@ fn graph_only_failure_changes_neither_the_state_nor_the_attachments() {
 
     // Every candidate failing: still `Qualified`, the same attachments, and
     // nothing in the value says which candidate failed or why.
-    let world = declared_world();
-    let projection = world.projection();
-    world.execute(
-        "UPDATE narrative_scene_scope_bindings SET body_declaration_json = NULL,
-                body_declaration_token = NULL WHERE scene_id IN ('g3', 'g4');",
-    );
+    let world = World::new().unwrap();
+    let projection = world.projection_with_stale_scenes(|| {
+        world.execute("DELETE FROM scene_codex_pins WHERE scene_id IN ('g3', 'g4');")
+    });
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     assert_eq!(result.attachments, baseline);
     assert_eq!(graph_only_scene(&result), None);
@@ -980,7 +873,7 @@ fn graph_only_failure_changes_neither_the_state_nor_the_attachments() {
 
     // A candidate's path that no longer holds is the same answer. `g4`'s is the
     // second edge; `g3`'s (the first edge) is intact and adopted.
-    let world = declared_world();
+    let world = World::new().unwrap();
     let mut projection = world.projection();
     let mut binding = (*projection.graph.edges[1].binding).clone();
     binding.freshness_token = "sha256:stale".into();
@@ -994,24 +887,50 @@ fn graph_only_failure_changes_neither_the_state_nor_the_attachments() {
 
 #[test]
 fn graph_only_slot_closed_makes_no_database_read_for_candidates() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
+    // The reader reads no declaration, whatever the slot. A closed slot makes
+    // none of the candidates' reads: their body (`tree_nodes.content`), their
+    // pins and their A1 scope rows are read only with the slot open (the query
+    // Scene's own rows are read in both, so the closed counts are compared
+    // with the open ones rather than with zero).
     let declaration_reads = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&declaration_reads);
+    let content_reads = Arc::new(AtomicUsize::new(0));
+    let pin_reads = Arc::new(AtomicUsize::new(0));
+    let scope_reads = Arc::new(AtomicUsize::new(0));
+    let (declarations, contents) = (Arc::clone(&declaration_reads), Arc::clone(&content_reads));
+    let (pins, scopes) = (Arc::clone(&pin_reads), Arc::clone(&scope_reads));
     world
         .db()
         .with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| {
-                if matches!(context.action, AuthAction::Read { column_name, .. }
-                    if column_name == "body_declaration_json")
+                if let AuthAction::Read {
+                    table_name,
+                    column_name,
+                } = context.action
                 {
-                    counted.fetch_add(1, Ordering::SeqCst);
+                    if column_name == "body_declaration_json"
+                        || column_name == "body_declaration_token"
+                    {
+                        declarations.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if table_name == "tree_nodes" && column_name == "content" {
+                        contents.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if table_name == "scene_codex_pins" {
+                        pins.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if table_name == "narrative_scene_scope_bindings" {
+                        scopes.fetch_add(1, Ordering::SeqCst);
+                    }
                 }
                 Authorization::Allow
             }))?;
             Ok(())
         })
         .unwrap();
+    let counters = [&content_reads, &pin_reads, &scope_reads];
+    let mut closed_reads = Vec::new();
     for slot in [
         AppendSlot {
             ir_uses_common_slot: true,
@@ -1022,6 +941,9 @@ fn graph_only_slot_closed_makes_no_database_read_for_candidates() {
             raw_count: 8,
         },
     ] {
+        counters
+            .iter()
+            .for_each(|counter| counter.store(0, Ordering::SeqCst));
         let budget = ample();
         let result = qualified(
             Call::new(&world, &projection, &["g1", "g2"])
@@ -1031,17 +953,37 @@ fn graph_only_slot_closed_makes_no_database_read_for_candidates() {
         );
         assert_eq!(graph_only_scene(&result), None);
         assert_eq!(scene_ids(&result.attachments), ["g1", "g2"]);
-        assert_eq!(
-            declaration_reads.load(Ordering::SeqCst),
-            0,
-            "a closed slot reads no declaration"
-        );
+        closed_reads.push(counters.map(|counter| counter.load(Ordering::SeqCst)));
         assert_eq!(budget.vm_steps_used(), 0, "and installs no budget");
     }
-    // With the slot open the candidates are read.
+    // With the slot open the candidates' body, pins and scope rows are read,
+    // each more often than a closed slot reads them.
+    counters
+        .iter()
+        .for_each(|counter| counter.store(0, Ordering::SeqCst));
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     assert_eq!(graph_only_scene(&result), Some("g3"));
-    assert!(declaration_reads.load(Ordering::SeqCst) > 0);
+    let open_reads = counters.map(|counter| counter.load(Ordering::SeqCst));
+    for closed in &closed_reads {
+        for (index, name) in [
+            "tree_nodes.content",
+            "scene_codex_pins",
+            "narrative_scene_scope_bindings",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                closed[index] < open_reads[index],
+                "{name}: closed {closed:?} against open {open_reads:?}"
+            );
+        }
+    }
+    assert_eq!(
+        declaration_reads.load(Ordering::SeqCst),
+        0,
+        "no declaration cell is read, with the slot closed or open"
+    );
     world
         .db()
         .with_conn_mut(|conn| {
@@ -1055,7 +997,7 @@ fn graph_only_slot_closed_makes_no_database_read_for_candidates() {
 
 #[test]
 fn graph_only_sql_budget_n_and_n_plus_one() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let displayed = ["g1", "g2"];
     let used = {
@@ -1069,7 +1011,7 @@ fn graph_only_sql_budget_n_and_n_plus_one() {
         budget.vm_steps_used()
     };
     assert!(used > 0);
-    println!("GRAPH_ONLY_VM_STEPS g3 eligible (2 Revisions, 2 candidates declared): {used}");
+    println!("GRAPH_ONLY_VM_STEPS g3 eligible (2 Revisions, 2 candidates): {used}");
 
     let baseline = qualified(Call::new(&world, &projection, &displayed).run()).attachments;
     // N steps are within the budget; N + 1 is not. (The count is exact: the
@@ -1103,7 +1045,7 @@ fn graph_only_sql_budget_n_and_n_plus_one() {
 
 #[test]
 fn graph_only_deadline_before_and_after() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let base = Instant::now();
     let deadline = base + Duration::from_millis(100);
@@ -1132,7 +1074,7 @@ fn graph_only_deadline_before_and_after() {
 fn the_budget_is_not_in_force_outside_the_graph_only_judgement() {
     // A budget of zero steps stops only the Graph-only judgement: the path
     // additions and the seal and seed reads run under the transaction.
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let budget = GraphOnlyBudget::new(0, None);
     let result = qualified(
@@ -1156,7 +1098,7 @@ fn the_budget_is_not_in_force_outside_the_graph_only_judgement() {
 
 #[test]
 fn a_real_cancel_inside_the_graph_only_judgement_is_an_error() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     // How many checkpoints a whole requalification calls.
     let total = {
@@ -1194,7 +1136,7 @@ fn a_real_cancel_inside_the_graph_only_judgement_is_an_error() {
 #[test]
 fn a_cancel_during_a_budgeted_judgement_wins_over_the_budget() {
     // The budget runs out and the lease is cancelled: the cancel is the answer.
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let calls = AtomicUsize::new(0);
     let mut check = || {
@@ -1213,7 +1155,7 @@ fn a_cancel_during_a_budgeted_judgement_wins_over_the_budget() {
 
 #[test]
 fn the_participant_stop_and_deadline_are_errors_not_a_budget() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     // The participant's stop flag, raised while the Graph-only judgement runs
     // (by a checkpoint late in the call), stops SQLite with a typed error.
@@ -1294,7 +1236,7 @@ fn path_text_comes_from_the_parent_read_not_the_worker() {
 
 #[test]
 fn requalification_reads_each_revision_once_and_bounds_the_work() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     // Four displayed paths over two Revisions, and the Graph-only candidate
     // path over the same two: each Revision is evaluated once.
@@ -1317,7 +1259,7 @@ fn requalification_reads_each_revision_once_and_bounds_the_work() {
     EVALUATED.with(|log| log.borrow_mut().clear());
     let result = qualified(Call::new(&world, &projection, &["g1", "g3"]).run());
     assert_eq!(scene_ids(&result.attachments), ["g1", "g3"]);
-    assert_eq!(graph_only_scene(&result), Some("g4"));
+    assert_eq!(graph_only_scene(&result), Some("g2"));
     assert_eq!(evaluated().len(), 2, "{:?}", evaluated());
 }
 
@@ -1395,7 +1337,7 @@ fn a_malformed_association_is_not_current() {
 
 #[test]
 fn the_output_types_print_without_their_contents() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     let printed = format!("{result:?}");
@@ -1415,7 +1357,7 @@ fn the_default_step_budget_is_the_graph_querys() {
 /// machine. Run with `--nocapture`.
 #[test]
 fn measure_graph_only_vm_steps() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let steps = |displayed: &[&str], budget: GraphOnlyBudget| {
         let result = qualified(
@@ -1468,7 +1410,7 @@ fn click_with(
 
 #[test]
 fn the_graph_only_row_carries_the_path_text_and_the_pin_of_its_scene() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     assert_eq!(graph_only_scene(&result), Some("g3"));
@@ -1488,7 +1430,7 @@ fn the_graph_only_row_carries_the_path_text_and_the_pin_of_its_scene() {
 fn the_graph_only_path_text_is_made_even_when_no_displayed_path_read_that_revision() {
     // Nothing is displayed, so the path additions evaluated no Revision; the
     // judgement does, and the row's text is made from what it read.
-    let world = declared_world();
+    let world = World::new().unwrap();
     let mut projection = world.projection();
     for edge in &mut projection.graph.edges {
         let mut relation = (*edge.relation).clone();
@@ -1497,7 +1439,7 @@ fn the_graph_only_path_text_is_made_even_when_no_displayed_path_read_that_revisi
     }
     let result = qualified(Call::new(&world, &projection, &[]).run());
     assert!(result.attachments.is_empty());
-    assert_eq!(graph_only_scene(&result), Some("g3"));
+    assert_eq!(graph_only_scene(&result), Some("g1"));
     let row = row_of(&result);
     assert_eq!(row.path.edges.len(), 1);
     assert_eq!(row.path.edges[0].relation_type, "knows");
@@ -1509,17 +1451,17 @@ fn the_graph_only_path_text_is_made_even_when_no_displayed_path_read_that_revisi
         .iter()
         .flat_map(|edge| &edge.evidence)
         .all(|evidence| !evidence.quote.contains("WORKER")));
-    assert_eq!(evaluated().len(), 1, "g3 needs the first Revision only");
+    assert_eq!(evaluated().len(), 1, "g1 needs the first Revision only");
 }
 
 #[test]
 fn a_graph_only_row_exists_exactly_when_the_disclosure_is_eligible() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     // Eligible: a row.
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     assert!(result.graph_only_row.is_some());
-    // A closed slot, and no declared candidate: no row, one answer.
+    // A closed slot: no row, one answer.
     let closed = AppendSlot {
         ir_uses_common_slot: true,
         raw_count: 3,
@@ -1534,15 +1476,18 @@ fn a_graph_only_row_exists_exactly_when_the_disclosure_is_eligible() {
         result.graph_only,
         GraphOnlySceneDisclosure::NotAppended(NotAppended)
     ));
+    // No candidate that is not displayed has a pin left: no row, one answer.
     let world = World::new().unwrap();
-    let projection = world.projection();
+    let projection = world.projection_with_stale_scenes(|| {
+        world.execute("DELETE FROM scene_codex_pins WHERE scene_id IN ('g3', 'g4');")
+    });
     let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     assert!(result.graph_only_row.is_none());
 }
 
 #[test]
 fn a_graph_only_path_text_over_the_limit_is_not_appended_and_changes_nothing_else() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let baseline = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
     let one_scene_text: usize = baseline.attachments[0]
@@ -1564,10 +1509,10 @@ fn a_graph_only_path_text_over_the_limit_is_not_appended_and_changes_nothing_els
         })
         .sum();
     assert!(one_scene_text > 0);
-    // g1 and g2 use both Revisions' Relations; g3's path is g1's Relation,
-    // already charged. A displayed set that charges nothing leaves the
-    // judgement to read g3's own text, and a limit one byte short of it refuses
-    // that text only.
+    // g1 and g2 use both Revisions' Relations; g1's path is the first
+    // Revision's Relation. A displayed set that charges nothing leaves the
+    // judgement to read g1's own text (the first candidate), and a limit one
+    // byte short of it refuses that text only.
     TEST_TEXT_LIMIT.with(|limit| limit.set(Some(one_scene_text - 1)));
     let result = qualified(Call::new(&world, &projection, &[]).run());
     assert!(result.attachments.is_empty());
@@ -1579,14 +1524,14 @@ fn a_graph_only_path_text_over_the_limit_is_not_appended_and_changes_nothing_els
     // At the limit exactly, the row is made.
     TEST_TEXT_LIMIT.with(|limit| limit.set(Some(one_scene_text)));
     let result = qualified(Call::new(&world, &projection, &[]).run());
-    assert_eq!(graph_only_scene(&result), Some("g3"));
+    assert_eq!(graph_only_scene(&result), Some("g1"));
     assert!(result.graph_only_row.is_some());
     TEST_TEXT_LIMIT.with(|limit| limit.set(None));
 }
 
 #[test]
 fn a_clicked_graph_only_row_is_requalified_without_the_projection() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let result = {
         let projection = world.projection();
         qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
@@ -1608,11 +1553,7 @@ fn a_clicked_graph_only_row_is_requalified_without_the_projection() {
 #[test]
 fn a_click_is_refused_after_any_change_the_response_did_not_see() {
     type Change = (&'static str, &'static str);
-    let changes: [Change; 6] = [
-        (
-            "the declaration was revoked",
-            "UPDATE narrative_scene_scope_bindings SET body_declaration_json = NULL, body_declaration_token = NULL WHERE scene_id = 'g3';",
-        ),
+    let changes: [Change; 5] = [
         (
             "the body was saved again",
             "UPDATE tree_nodes SET content = '{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Rewritten.\"}]}]}', version = version + 1, updated_at = '2026-10-23T01:00:00.000Z' WHERE id = 'g3';",
@@ -1635,7 +1576,7 @@ fn a_click_is_refused_after_any_change_the_response_did_not_see() {
         ),
     ];
     for (name, sql) in changes {
-        let world = declared_world();
+        let world = World::new().unwrap();
         let result = {
             let projection = world.projection();
             qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
@@ -1671,7 +1612,7 @@ fn a_click_is_refused_when_the_retained_path_no_longer_holds() {
         }),
     ];
     for (name, tamper) in tampers {
-        let world = declared_world();
+        let world = World::new().unwrap();
         let result = {
             let projection = world.projection();
             qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
@@ -1698,7 +1639,7 @@ fn a_click_is_refused_when_the_retained_path_no_longer_holds() {
         );
     }
     // A path that lost an edge, or whose scope revision changed, is refused.
-    let world = declared_world();
+    let world = World::new().unwrap();
     let result = {
         let projection = world.projection();
         qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
@@ -1722,7 +1663,7 @@ fn a_click_is_refused_when_the_retained_path_no_longer_holds() {
 
 #[test]
 fn a_real_cancel_during_a_click_is_an_error_not_a_refusal() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let result = {
         let projection = world.projection();
         qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
@@ -1746,29 +1687,41 @@ fn a_real_cancel_during_a_click_is_an_error_not_a_refusal() {
 }
 
 #[test]
-fn a_workspace_quarantined_after_the_read_drops_the_graph_only_row_and_keeps_the_paths() {
+fn a_declaration_a_secret_record_or_the_writers_quarantine_changes_neither_the_row_nor_the_click() {
     use crate::narrative_extraction::scene_body_declaration::{
         clear_scene_body_declaration_workspace_quarantine_for_test,
         quarantine_scene_body_declaration_workspace_for_test,
     };
-    let world = declared_world();
-    let projection = world.projection();
-    let mut result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+    // K2/5: the response is made without a declaration, a veto record or a
+    // quarantine, and none of them added after it refuses the click.
+    let world = World::new().unwrap();
+    let result = {
+        let projection = world.projection();
+        qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
+    };
+    let GraphOnlySceneDisclosure::Eligible(scene) = &result.graph_only else {
+        panic!("eligible without any declaration")
+    };
     assert!(result.graph_only_row.is_some());
-    let attachments = result.attachments.clone();
-    let workspace = world.workspace();
-    // Not quarantined: nothing changes.
-    result.drop_graph_only_if_quarantined(&workspace);
-    assert!(result.graph_only_row.is_some());
-    quarantine_scene_body_declaration_workspace_for_test(&world.snapshot);
-    result.drop_graph_only_if_quarantined(&workspace);
-    clear_scene_body_declaration_workspace_quarantine_for_test(&world.snapshot);
-    assert!(result.graph_only_row.is_none());
-    assert!(matches!(
-        result.graph_only,
-        GraphOnlySceneDisclosure::NotAppended(NotAppended)
+    let row = row_of(&result);
+    world.execute(&format!(
+        "UPDATE tree_nodes SET pov_character_id = 'nir1-bob' WHERE id = 'g3';
+         INSERT INTO foreshadows (id, project_id, title, payoff_scene_id, secret, abandoned,
+                                  payoff_confirmed, created_at, updated_at)
+         VALUES ('f-secret', '{PROJECT}', 'F', 'g3', 1, 0, 1, 0, 0);
+         INSERT INTO events (id, project_id, secret, reveal_scene_id)
+         VALUES ('e-secret', '{PROJECT}', 1, 'g3');
+         UPDATE narrative_scene_scope_bindings
+            SET body_declaration_json = '{{}}', body_declaration_token = 'not-a-token'
+          WHERE scene_id = 'g3';"
     ));
-    assert_eq!(result.attachments, attachments);
+    quarantine_scene_body_declaration_workspace_for_test(&world.snapshot);
+    let clicked = click(&world, scene.binding(), &row.click_path).unwrap();
+    clear_scene_body_declaration_workspace_quarantine_for_test(&world.snapshot);
+    match clicked {
+        GraphOnlyClick::Allowed(range) => assert_eq!(range, scene.range()),
+        GraphOnlyClick::Refused(_) => panic!("the click was refused"),
+    }
 }
 
 /// R-3 of the TASK (does the requalification fit the merge window?): the time of
@@ -1778,7 +1731,7 @@ fn a_workspace_quarantined_after_the_read_drops_the_graph_only_row_and_keeps_the
 /// the record.
 #[test]
 fn measure_requalification_time() {
-    let world = declared_world();
+    let world = World::new().unwrap();
     let projection = world.projection();
     let mut times = Vec::new();
     for _ in 0..21 {
@@ -1817,7 +1770,7 @@ fn every_reason_there_is_no_graph_only_row_leaves_the_same_value_for_the_respons
     };
 
     // No candidate: the projection reaches the displayed Scenes only.
-    let world = declared_world();
+    let world = World::new().unwrap();
     let mut reduced = world.projection();
     reduced
         .graph
@@ -1832,7 +1785,7 @@ fn every_reason_there_is_no_graph_only_row_leaves_the_same_value_for_the_respons
         "the comparison needs path additions to compare"
     );
 
-    // The same world with its declared candidates: one is eligible, and the
+    // The same world with its candidates: one is eligible, and the
     // path additions are the same as without any candidate.
     let projection = world.projection();
     let eligible = qualified(Call::new(&world, &projection, &displayed).run());
@@ -1868,15 +1821,14 @@ fn every_reason_there_is_no_graph_only_row_leaves_the_same_value_for_the_respons
         assert_eq!(absent("closed slot", result), no_candidate);
     }
 
-    // Steps 3 and 4: every declared candidate refused (the declaration is
-    // gone; the body changed after it).
+    // Steps 3 and 4: every candidate refused (the pins are gone; the body
+    // was saved after the Graph was built).
     let refusals = [
-        "UPDATE narrative_scene_scope_bindings SET body_declaration_json = NULL,
-                body_declaration_token = NULL WHERE scene_id IN ('g3', 'g4');",
+        "DELETE FROM scene_codex_pins WHERE scene_id IN ('g3', 'g4');",
         "UPDATE tree_nodes SET content = '{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Rewritten.\"}]}]}', version = version + 1, updated_at = '2026-10-23T01:00:00.000Z' WHERE id IN ('g3', 'g4');",
     ];
     for sql in refusals {
-        let world = declared_world();
+        let world = World::new().unwrap();
         let projection = world.projection_with_stale_scenes(|| world.execute(sql));
         let result = qualified(Call::new(&world, &projection, &displayed).run());
         assert_eq!(absent(sql, result), no_candidate, "{sql}");
