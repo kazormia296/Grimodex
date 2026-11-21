@@ -2,6 +2,10 @@ import type { BrowserMock } from "./browser-mock";
 import { enqueueIpc } from "./ipcQueue";
 import { electronBridge, isElectron } from "./shell";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import {
+  AI_IPC_TIMEOUT_MS,
+  IPC_TIMEOUT_MS,
+} from "@/../electron/shared/ipcCallerTimeouts";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
@@ -15,8 +19,6 @@ export function isTauri(): boolean {
  * 分岐順は isTauri → isElectron → browser-mock。
  */
 export { isElectron } from "./shell";
-
-const IPC_TIMEOUT_MS = 10_000;
 
 const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
 
@@ -51,8 +53,9 @@ export function isD2aEgressDenied(error: unknown): boolean {
   return false;
 }
 
-/** AI inference can take several minutes on local hardware (Ollama etc.) */
-const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
+// IPC_TIMEOUT_MS (10 s) and AI_IPC_TIMEOUT_MS (5 min, AI inference on local
+// hardware) come from the shared module, which Electron main's read port uses
+// too (MP-4b, DR-MP4-4). The values are unchanged.
 /**
  * Caller timeout of `chat_agent_ir_select` (chat IR, DR-CHATIR-S1-3). Longer
  * than the longest end of a Native call: its 10 s deadline plus one inference
