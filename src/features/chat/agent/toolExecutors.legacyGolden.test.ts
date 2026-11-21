@@ -44,6 +44,7 @@ import {
 } from "./__fixtures__/legacyReadSeed";
 import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
 import {
+  bindLegacyReadHarnessPorts,
   runLegacyReadScenarios,
   seedLegacyReadFixture,
   setLegacyReadWorkspaceIdentity,
@@ -51,6 +52,14 @@ import {
   type LegacyReadScenario,
   type LegacyReadWorld,
 } from "./legacyReadHarness.testSupport";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+
+bindLegacyReadHarnessPorts({
+  executeRun: (sql, params) =>
+    invoke("db_execute", { sql, params, method: "run" }),
+  setTreeState: (state) => useTreeStore.setState(state),
+  setPhaseState: (state) => usePhaseStore.setState(state),
+});
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 

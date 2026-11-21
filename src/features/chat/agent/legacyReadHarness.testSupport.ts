@@ -4,6 +4,10 @@
  * 実 sql.js（browser-mock）の `@/db/client` に対して `executeTool` を呼ぶ。seed は
  * `__fixtures__/legacyReadSeed.ts`（data）を、`db_execute` の INSERT で入れる。
  *
+ * architecture validator は `*.test.ts` 以外を製品 source として数える。cross-feature の
+ * store 書込み（tree／phase）と generic DB route（`db_execute`）は、この file では持たず、
+ * 試験 file が `bindLegacyReadHarnessPorts` で渡す（試験 file は validator の対象外）。
+ *
  * 前提（golden の注記）：
  * - `countTokens` は試験側で `../contextBuilder` を差し替え、1 文字（UTF-16 の length）＝1 token
  *   に固定する。tokenizer の mode（exact／heuristic／live-estimate）で golden が揺れない。
@@ -11,11 +15,8 @@
  * - store（tree／phase）は実物を使い、`nodes` は seed した DB の `listNodes`（archived 除外）から作る。
  */
 import { executeTool } from "./toolExecutors";
-import { invoke } from "@/lib/tauri";
 import { listNodes } from "@/features/tree/api";
-import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/types";
-import { usePhaseStore } from "@/features/codex/phaseStore";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import i18next, { ensureLocale } from "@/lib/i18n";
@@ -24,6 +25,36 @@ import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
 import { LEGACY_READ_SEED, type SeedRow } from "./__fixtures__/legacyReadSeed";
 
 export const LEGACY_READ_WORKSPACE_PATH = "/workspace/legacy-read.grimodex";
+
+/** 試験 file が実物の store／invoke に結ぶ口。実物は試験側で import する。 */
+export interface LegacyReadHarnessPorts {
+  /** `invoke("db_execute", { sql, params, method: "run" })` と同じ。 */
+  readonly executeRun: (sql: string, params: unknown[]) => Promise<unknown>;
+  /** 実物の tree store の `setState`。 */
+  readonly setTreeState: (state: {
+    projectId: string;
+    nodes: TreeNodeData[];
+    activeSceneId: string;
+  }) => void;
+  /** 実物の phase store の `setState`。 */
+  readonly setPhaseState: (state: {
+    sceneTimeIndex: ReturnType<typeof buildSceneTimeIndex>;
+    resolutionMode: "reading" | "story" | "auto";
+  }) => void;
+}
+
+let ports: LegacyReadHarnessPorts | null = null;
+
+export function bindLegacyReadHarnessPorts(next: LegacyReadHarnessPorts): void {
+  ports = next;
+}
+
+function requirePorts(): LegacyReadHarnessPorts {
+  if (!ports) {
+    throw new Error("bindLegacyReadHarnessPorts must be called first");
+  }
+  return ports;
+}
 
 let seeded: Promise<void> | null = null;
 
@@ -40,11 +71,10 @@ async function insertLegacyReadFixture(): Promise<void> {
       const sql = `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
         .map(() => "?")
         .join(", ")})`;
-      await invoke("db_execute", {
+      await requirePorts().executeRun(
         sql,
-        params: columns.map((c) => row[c]),
-        method: "run",
-      });
+        columns.map((c) => row[c]),
+      );
     }
   }
   legacyReadInvokeBridge.reset();
@@ -68,12 +98,12 @@ export async function setLegacyReadWorld(
   const nodes = (world.projectId
     ? await listNodes(world.projectId)
     : []) as unknown as TreeNodeData[];
-  useTreeStore.setState({
+  requirePorts().setTreeState({
     projectId: world.projectId,
     nodes,
     activeSceneId: world.activeSceneId ?? "",
   });
-  usePhaseStore.setState({
+  requirePorts().setPhaseState({
     sceneTimeIndex: buildSceneTimeIndex(nodes),
     resolutionMode: world.resolutionMode ?? "reading",
   });

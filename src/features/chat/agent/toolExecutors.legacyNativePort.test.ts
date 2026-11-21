@@ -37,12 +37,23 @@ import {
 } from "./__fixtures__/legacyReadSeed";
 import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
 import {
+  bindLegacyReadHarnessPorts,
   LEGACY_READ_WORKSPACE_PATH,
   seedLegacyReadFixture,
   setLegacyReadWorkspaceIdentity,
   setLegacyReadWorld,
   type LegacyReadWorld,
 } from "./legacyReadHarness.testSupport";
+import { invoke } from "@/lib/tauri";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+
+bindLegacyReadHarnessPorts({
+  executeRun: (sql, params) =>
+    invoke("db_execute", { sql, params, method: "run" }),
+  setTreeState: (state) => useTreeStore.setState(state),
+  setPhaseState: (state) => usePhaseStore.setState(state),
+});
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
