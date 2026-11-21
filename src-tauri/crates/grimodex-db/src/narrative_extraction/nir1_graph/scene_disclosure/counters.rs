@@ -3,7 +3,7 @@
 //!
 //! A count names an outcome, never a target. There is no Scene ID, title,
 //! digest, range or length here, so the counters can be read by an operator or
-//! a test without learning anything about a declared Scene (Mandatory defense
+//! a test without learning anything about a Scene (Mandatory defense
 //! 2). The public result of the reader does not carry the outcome at all
 //! (Mandatory defense 9); this is a process-local tally for the Native side.
 
@@ -16,8 +16,6 @@ pub(crate) enum Count {
     SlotUnavailable,
     /// No workspace ID or canonical locator digest could be taken.
     WorkspaceUnavailable,
-    /// A previous declaration COMMIT of this workspace had an unknown outcome.
-    Quarantined,
     /// The query context does not name a resolved reading query.
     QueryUnavailable,
     /// The Scope authority read now is not the one the query context names.
@@ -28,12 +26,8 @@ pub(crate) enum Count {
     ScopeRejected,
     /// The Scene is not strictly before the query in the reading order.
     ReadingNotBefore,
-    /// No declaration, or one that cannot be used.
-    DeclarationUnavailable,
-    /// The declaration's binding does not hold now.
+    /// A value the response bound (or the Scene's title) does not hold now.
     BindingMismatch,
-    /// A veto record contradicts the declaration.
-    Veto,
     /// The frame's values differ from the parent's read.
     FrameMismatch,
     /// The pin moved, was deleted or was re-inserted.
@@ -58,18 +52,15 @@ pub(crate) enum Count {
 }
 
 impl Count {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 18] = [
         Self::SlotUnavailable,
         Self::WorkspaceUnavailable,
-        Self::Quarantined,
         Self::QueryUnavailable,
         Self::AuthorityChanged,
         Self::SceneNotLive,
         Self::ScopeRejected,
         Self::ReadingNotBefore,
-        Self::DeclarationUnavailable,
         Self::BindingMismatch,
-        Self::Veto,
         Self::FrameMismatch,
         Self::PinChanged,
         Self::PathRejected,
@@ -86,15 +77,12 @@ impl Count {
         match self {
             Self::SlotUnavailable => "slot-unavailable",
             Self::WorkspaceUnavailable => "workspace-unavailable",
-            Self::Quarantined => "quarantined",
             Self::QueryUnavailable => "query-unavailable",
             Self::AuthorityChanged => "authority-changed",
             Self::SceneNotLive => "scene-not-live",
             Self::ScopeRejected => "scope-rejected",
             Self::ReadingNotBefore => "reading-not-before",
-            Self::DeclarationUnavailable => "declaration-unavailable",
             Self::BindingMismatch => "binding-mismatch",
-            Self::Veto => "veto",
             Self::FrameMismatch => "frame-mismatch",
             Self::PinChanged => "pin-changed",
             Self::PathRejected => "path-rejected",

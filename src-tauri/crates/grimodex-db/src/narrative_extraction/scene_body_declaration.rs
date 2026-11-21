@@ -576,8 +576,6 @@ pub use limits::{
     SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
     SCENE_BODY_VETO_MAX_ROWS, VETO_CONTENT_LIMIT_MARKER, VETO_ROW_LIMIT_MARKER,
 };
-#[cfg(feature = "native-current-human-capture")]
-pub(in crate::narrative_extraction) use veto::scene_body_declaration_veto_records;
 pub use veto::{scene_body_declaration_veto, BodyDeclarationVeto, VetoLimits};
 
 // The writers need the bounded Scene reader, which exists only in the Electron

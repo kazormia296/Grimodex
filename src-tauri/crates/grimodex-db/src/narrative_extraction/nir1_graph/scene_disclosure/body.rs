@@ -3,16 +3,15 @@
 //! Only the one candidate the scan adopted has its body read here, within the
 //! K1b limits: the storage and canonical sizes are checked before the body is
 //! materialized, the peak before it is parsed. The digests, the normalizer
-//! version and the UTF-16 length that were read are compared with the
-//! declaration's binding; the veto is the writer's own function; the excerpt is
-//! the first non-empty line of the canonical text.
+//! version and the UTF-16 length that were read become the `BodyFacts` a click
+//! is compared with; the excerpt is the first non-empty line of the canonical
+//! text.
 
 use std::cell::Cell;
 #[cfg(test)]
 use std::cell::RefCell;
 
 use anyhow::{ensure, Result};
-use grimodex_core::narrative_scene_body_declaration::NarrativeSceneBodySourceV1;
 use rusqlite::Connection;
 
 use super::counters::{record, Count};
@@ -21,7 +20,7 @@ use super::judge::{is_budget_interrupt, is_storage_failure, read_title};
 use super::{
     evaluate_graph_only_append, GraphDisclosureQuery, GraphDisclosureWorkspace, GraphOnlyCandidate,
     GraphOnlyScan, GraphOnlyScanInput, GraphOnlySceneDisclosure, GraphPathRevalidator, NotAppended,
-    QueryParts, WorkspaceParts,
+    QueryParts,
 };
 use crate::narrative_extraction::nir1_graph::scenes::first_non_empty_anchor;
 use crate::narrative_extraction::read_narrative_scene_scope;
@@ -29,10 +28,7 @@ use crate::narrative_extraction::retrieval_admission::{
     read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
 };
 use crate::narrative_extraction::scene_body_declaration::{
-    read_scene_body_declaration, scene_body_declaration_binding_mismatches,
-    scene_body_declaration_veto, scene_body_title_digest, SceneBodyDeclarationCurrentFacts,
-    SceneBodyDeclarationRead, VetoLimits, SCENE_BODY_READ_MAX_BYTES,
-    SCENE_BODY_READ_PEAK_MAX_BYTES, VETO_CONTENT_LIMIT_MARKER, VETO_ROW_LIMIT_MARKER,
+    scene_body_title_digest, SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES,
 };
 use crate::nir1_generation::error_chain_contains;
 
@@ -85,12 +81,11 @@ fn absorb(error: anyhow::Error, control_failed: &Cell<bool>) -> Result<BodyStep>
 /// rejects the candidate (DR-CB4-23); a failing checkpoint is still an `Err`.
 pub(super) fn read_body(
     conn: &Connection,
-    workspace: &WorkspaceParts,
     query: &QueryParts,
     candidate: &GraphOnlyCandidate,
     check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<BodyStep> {
-    match read_body_steps(conn, workspace, query, candidate, &mut *check) {
+    match read_body_steps(conn, query, candidate, &mut *check) {
         Err(error) if is_budget_interrupt(&error) => {
             check()?;
             Ok(BodyStep::Rejected(Count::ResourceLimit))
@@ -101,7 +96,6 @@ pub(super) fn read_body(
 
 fn read_body_steps(
     conn: &Connection,
-    workspace: &WorkspaceParts,
     query: &QueryParts,
     candidate: &GraphOnlyCandidate,
     check: &mut dyn FnMut() -> Result<()>,
@@ -149,54 +143,15 @@ fn read_body_steps(
         return Ok(BodyStep::Rejected(Count::BodyUnreadable));
     }
 
-    // The digests that were read now, against the declaration. Everything
-    // else in the binding (incarnation, tokens, title, workspace) is compared
-    // in full here too, so a value that changed since the scan cannot pass.
+    // The values the response binds (and a click compares with): what this
+    // read saw of the body.
     let Ok(utf16_length) = u64::try_from(source.query_source.canonical_utf16_length) else {
         return Ok(BodyStep::Rejected(Count::BodyUnreadable));
     };
-    let facts = SceneBodyDeclarationCurrentFacts {
-        project_id: project.to_owned(),
-        scene_id: scene.to_owned(),
-        scene_incarnation_id: candidate.scene_incarnation_id.clone(),
-        scope_source_token: candidate.scope_source_token.clone(),
-        body_source: NarrativeSceneBodySourceV1 {
-            source_identity: source.query_source.source_key.clone(),
-            source_token: source.query_source.revision_token.clone(),
-            storage_digest: source.query_source.storage_digest.clone(),
-            canonical_digest: source.query_source.canonical_text_digest.clone(),
-            normalizer_version: source.query_source.normalizer_version.to_owned(),
-            utf16_length,
-        },
-        title_digest: scene_body_title_digest(&candidate.title)?,
-        workspace_id: workspace.workspace_id.clone(),
-        canonical_locator_digest: workspace.canonical_locator_digest.clone(),
-    };
-    if !scene_body_declaration_binding_mismatches(&candidate.declaration.declaration, &facts)
-        .is_empty()
-    {
-        return Ok(BodyStep::Rejected(Count::BindingMismatch));
-    }
     // The scan's token and the body read's token are two reads of the same
     // Scene row in one transaction.
     if source.query_source.revision_token != candidate.scene_source_token {
         return Ok(BodyStep::Rejected(Count::FrameMismatch));
-    }
-    guarded()?;
-
-    // The writer's own veto, with the saved body's `sceneBeat` POV. The
-    // records part ran for this Scene in the scan; the body part is run here,
-    // for this one Scene only.
-    match scene_body_declaration_veto(conn, project, scene, VetoLimits::DEFAULT) {
-        Ok(None) => {}
-        Ok(Some(_)) => return Ok(BodyStep::Rejected(Count::Veto)),
-        Err(error)
-            if error_chain_contains(&error, VETO_ROW_LIMIT_MARKER)
-                || error_chain_contains(&error, VETO_CONTENT_LIMIT_MARKER) =>
-        {
-            return Ok(BodyStep::Rejected(Count::ResourceLimit));
-        }
-        Err(error) => return absorb(error, &control_failed),
     }
     guarded()?;
 
@@ -215,10 +170,10 @@ fn read_body_steps(
 
     Ok(BodyStep::Read(Box::new(BodyRead {
         facts: BodyFacts {
-            source_token: facts.body_source.source_token,
-            storage_digest: facts.body_source.storage_digest,
-            canonical_digest: facts.body_source.canonical_digest,
-            normalizer_version: facts.body_source.normalizer_version,
+            source_token: source.query_source.revision_token.clone(),
+            storage_digest: source.query_source.storage_digest.clone(),
+            canonical_digest: source.query_source.canonical_text_digest.clone(),
+            normalizer_version: source.query_source.normalizer_version.to_owned(),
             utf16_length,
             excerpt_digest: anchor.digest,
             start_utf16: anchor.start_utf16,
@@ -240,9 +195,7 @@ fn not_appended(count: Count) -> GraphOnlySceneDisclosure {
 /// control (cancel/deadline) or storage failure and carries no partial result.
 ///
 /// Call it in the Related Scenes participant's read transaction, as
-/// [`evaluate_graph_only_append`] (whose conditions apply unchanged). After the
-/// transaction ended, check [`GraphDisclosureWorkspace::is_quarantined`] once
-/// more and discard an `Eligible` when it is true.
+/// [`evaluate_graph_only_append`] (whose conditions apply unchanged).
 pub fn evaluate_graph_only_scene(
     conn: &Connection,
     input: &GraphOnlyScanInput<'_>,
@@ -262,9 +215,8 @@ pub fn evaluate_graph_only_scene(
 /// The scan's cached values, read again now. A candidate is only valid in the
 /// read transaction that made it; this makes that a property of the code
 /// instead of a rule for the caller: a candidate that is carried into another
-/// transaction is compared with the declaration, the Scope token and the title
-/// as they are at this moment, and any difference rejects it (a revoked or
-/// replaced declaration, a changed A1, a changed title).
+/// transaction is compared with the Scope token and the title as they are at
+/// this moment, and any difference rejects it (a changed A1, a changed title).
 fn reverify_candidate(
     conn: &Connection,
     project: &str,
@@ -272,16 +224,6 @@ fn reverify_candidate(
     control_failed: &Cell<bool>,
 ) -> Result<Option<Count>> {
     let scene = candidate.association.scene_id.as_str();
-    let declared = match read_scene_body_declaration(conn, project, scene) {
-        Ok(SceneBodyDeclarationRead::Declared(declared)) => declared,
-        Ok(_) => return Ok(Some(Count::DeclarationUnavailable)),
-        Err(error) => return absorb_count(error, control_failed, Count::DeclarationUnavailable),
-    };
-    if declared.token != candidate.declaration.token
-        || declared.declaration.declaration_id != candidate.declaration.declaration.declaration_id
-    {
-        return Ok(Some(Count::BindingMismatch));
-    }
     let scope = match read_narrative_scene_scope(conn, project, scene) {
         Ok(read) => read.binding,
         Err(error) => return absorb_count(error, control_failed, Count::ScopeRejected),
@@ -346,16 +288,11 @@ pub(super) fn disclose_graph_only_candidate(
         }
         Err(error) => return Err(error),
     }
-    let body = match read_body(conn, workspace_parts, query_parts, &candidate, &mut guarded)? {
+    let body = match read_body(conn, query_parts, &candidate, &mut guarded)? {
         BodyStep::Read(body) => *body,
         BodyStep::Rejected(count) => return Ok(not_appended(count)),
     };
-    // A COMMIT of unknown outcome that began while the body was read.
-    if workspace.is_quarantined() {
-        return Ok(not_appended(Count::Quarantined));
-    }
     record(Count::Disclosed);
-    let declaration = &candidate.declaration;
     Ok(GraphOnlySceneDisclosure::Eligible(Box::new(
         EligibleGraphScene {
             scene_id: candidate.association.scene_id.clone(),
@@ -370,9 +307,7 @@ pub(super) fn disclose_graph_only_candidate(
                 canonical_locator_digest: workspace_parts.canonical_locator_digest.clone(),
                 scene_incarnation_id: candidate.scene_incarnation_id.clone(),
                 scope_source_token: candidate.scope_source_token.clone(),
-                declaration_id: declaration.declaration.declaration_id.clone(),
-                declaration_token: declaration.token.clone(),
-                title_digest: declaration.declaration.binding.title_digest.clone(),
+                title_digest: scene_body_title_digest(&candidate.title)?,
                 body: body.facts,
             },
         },

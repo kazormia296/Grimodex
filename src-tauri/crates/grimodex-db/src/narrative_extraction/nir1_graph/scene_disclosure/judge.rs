@@ -7,13 +7,12 @@ use std::cell::Cell;
 
 use anyhow::Result;
 use grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1;
-use grimodex_core::narrative_scene_body_declaration::NarrativeSceneBodySourceV1;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::counters::{record, Count};
 use super::{
     GraphOnlyCandidate, GraphOnlyScan, GraphOnlyScanInput, GraphPathRevalidator, NotAppended,
-    QueryParts, WorkspaceParts,
+    QueryParts,
 };
 use crate::narrative_extraction::nir1_graph::scenes::{
     read_scene_frame_tokens, recheck_scene_pin, validate_scene_scope, SceneJoinBudget,
@@ -23,10 +22,7 @@ use crate::narrative_extraction::nir1_graph::Nir1GraphSceneAssociation;
 use crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority;
 use crate::narrative_extraction::read_narrative_scene_scope;
 use crate::narrative_extraction::scene_body_declaration::{
-    archived_in_chain, read_scene_body_declaration, scene_body_declaration_binding_mismatches,
-    scene_body_declaration_veto_records, scene_body_title_digest, SceneBodyDeclarationCurrentFacts,
-    SceneBodyDeclarationRead, SCENE_BODY_TITLE_MAX_BYTES, SCENE_BODY_VETO_MAX_ROWS,
-    VETO_ROW_LIMIT_MARKER,
+    archived_in_chain, SCENE_BODY_TITLE_MAX_BYTES,
 };
 use crate::nir1_generation::{classify_store_error, error_chain_contains, Nir1StoreFailure};
 
@@ -39,11 +35,6 @@ const JOIN_MAX_ROWS: usize = 32;
 /// they are read.
 const JOIN_MAX_BYTES: usize = 64 * 1024;
 
-/// Most veto rows over all candidates of one scan: each candidate may look at
-/// the confirmed 512, so 8 candidates look at 4096 at most.
-const VETO_QUERY_MAX_ROWS: usize =
-    grimodex_core::narrative_nir1::MAX_GRAPH_SCENES * SCENE_BODY_VETO_MAX_ROWS;
-
 enum Verdict {
     Adopt(Box<GraphOnlyCandidate>),
     /// The candidate is not adopted; the scan goes on.
@@ -54,15 +45,12 @@ enum Verdict {
 
 struct Judge<'a> {
     conn: &'a Connection,
-    workspace: &'a WorkspaceParts,
-    workspace_handle: &'a super::GraphDisclosureWorkspace,
     query: &'a QueryParts,
     path: &'a mut dyn GraphPathRevalidator,
     check: &'a mut dyn FnMut() -> Result<()>,
     /// Set when the caller's checkpoint returned an `Err`.
     control_failed: Cell<bool>,
     budget: SceneJoinBudget,
-    veto_rows_left: usize,
     authority: Option<NarrativeProjectScopeAuthorityV1>,
 }
 
@@ -118,11 +106,8 @@ fn scan_candidates(
     if !input.slot.is_open() {
         return not_appended(Count::SlotUnavailable);
     }
-    let Some(workspace) = input.workspace.parts() else {
+    if input.workspace.parts().is_none() {
         return not_appended(Count::WorkspaceUnavailable);
-    };
-    if input.workspace.is_quarantined() {
-        return not_appended(Count::Quarantined);
     }
     let Some(query) = input.query.parts() else {
         return not_appended(Count::QueryUnavailable);
@@ -130,14 +115,11 @@ fn scan_candidates(
 
     let mut judge = Judge {
         conn,
-        workspace,
-        workspace_handle: input.workspace,
         query,
         path,
         check,
         control_failed: Cell::new(false),
         budget: SceneJoinBudget::new(JOIN_MAX_ROWS, JOIN_MAX_BYTES),
-        veto_rows_left: VETO_QUERY_MAX_ROWS,
         authority: None,
     };
     for association in input.candidates.iter().take(max_candidates) {
@@ -276,7 +258,8 @@ impl Judge<'_> {
 
         // A1: explicit and resolved, matching the query on the three axes,
         // the holder and the audience, and strictly before the query in the
-        // reading order. The declaration relaxes none of it.
+        // reading order. Nothing else relaxes it: no author action is needed
+        // and none is read.
         let scope = match read_narrative_scene_scope(conn, project, scene) {
             Ok(read) => read.binding,
             Err(error) => return self.absorb(error, Count::ScopeRejected),
@@ -323,14 +306,6 @@ impl Judge<'_> {
             return Ok(Verdict::Skip(Count::ScopeRejected));
         }
 
-        // The declaration, read from its row.
-        let declared = match read_scene_body_declaration(conn, project, scene) {
-            Ok(SceneBodyDeclarationRead::Declared(declared)) => declared,
-            Ok(_) => return Ok(Verdict::Skip(Count::DeclarationUnavailable)),
-            Err(error) => return self.absorb(error, Count::DeclarationUnavailable),
-        };
-        self.checkpoint()?;
-
         // The Scene row's current tokens (no body) and title.
         let frame = {
             let Self {
@@ -356,61 +331,12 @@ impl Judge<'_> {
         if !title_fits {
             return Ok(Verdict::Skip(Count::BindingMismatch));
         }
-        // A title that is not valid UTF-8 cannot match the declared digest:
-        // the candidate is skipped, the scan goes on.
+        // A title that is not valid UTF-8 cannot be shown: the candidate is
+        // skipped, the scan goes on.
         let Some(title) = read_title(conn, project, scene)? else {
             return Ok(Verdict::Skip(Count::BindingMismatch));
         };
-        let title_digest = scene_body_title_digest(&title)?;
-
-        // The binding, against the current values. The body's digests are not
-        // known without reading the body, so the declaration's own are put in
-        // their place here; the body step compares the digests it reads.
-        let bound = &declared.declaration.binding.body_source;
-        let facts = SceneBodyDeclarationCurrentFacts {
-            project_id: project.to_owned(),
-            scene_id: scene.to_owned(),
-            scene_incarnation_id: scope.scene_incarnation_id.clone(),
-            scope_source_token: scope.source_token.clone(),
-            body_source: NarrativeSceneBodySourceV1 {
-                source_identity: format!("project:scene:{scene}"),
-                source_token: frame.source_token.clone(),
-                storage_digest: bound.storage_digest.clone(),
-                canonical_digest: bound.canonical_digest.clone(),
-                normalizer_version: bound.normalizer_version.clone(),
-                utf16_length: bound.utf16_length,
-            },
-            title_digest,
-            workspace_id: self.workspace.workspace_id.clone(),
-            canonical_locator_digest: self.workspace.canonical_locator_digest.clone(),
-        };
-        if !scene_body_declaration_binding_mismatches(&declared.declaration, &facts).is_empty() {
-            return Ok(Verdict::Skip(Count::BindingMismatch));
-        }
         self.checkpoint()?;
-
-        // Records that already classify the body as secret or as seen from
-        // one viewpoint. Looking at the saved body is the body step's.
-        let max_rows = self.veto_rows_left.min(SCENE_BODY_VETO_MAX_ROWS);
-        match scene_body_declaration_veto_records(conn, project, scene, max_rows) {
-            Ok(records) => {
-                self.veto_rows_left = self.veto_rows_left.saturating_sub(records.rows_looked_at);
-                if records.veto.is_some() {
-                    return Ok(Verdict::Skip(Count::Veto));
-                }
-            }
-            Err(error) if error_chain_contains(&error, VETO_ROW_LIMIT_MARKER) => {
-                return Ok(Verdict::Stop(Count::ResourceLimit));
-            }
-            Err(error) => return self.absorb(error, Count::Veto),
-        }
-        self.checkpoint()?;
-
-        // A COMMIT of unknown outcome blocks every disclosure of this
-        // workspace until the process restarts.
-        if self.workspace_handle.is_quarantined() {
-            return Ok(Verdict::Stop(Count::Quarantined));
-        }
 
         // The frame's values are the parent's read.
         let frame_holds = frame.incarnation_id.as_deref() == Some(incarnation_id)
@@ -467,7 +393,6 @@ impl Judge<'_> {
             scene_incarnation_id: scope.scene_incarnation_id,
             scope_source_token: scope.source_token,
             scene_source_token: frame.source_token,
-            declaration: declared,
         })))
     }
 }
