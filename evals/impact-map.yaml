@@ -156,6 +156,8 @@ rules:
       - src/help/**
       - electron/shared/agentSettingCatalog.ts
       - electron/shared/agentSettingGlobalSettingsIpc.test.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - src/features/settings/agentSettingApply.ts
       - src/features/settings/agentSettingCatalog.test.ts
       - src/features/chat/components/SettingProposalCard.tsx
@@ -338,6 +340,8 @@ rules:
       - electron/main/ipc.ts
       - electron/main/ipc.test.ts
       - src/lib/tauri.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - src/lib/tauri.electron.test.ts
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
@@ -396,6 +400,8 @@ rules:
       - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
       - src/lib/tauri.electron.test.ts
       - src/lib/tauri.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - electron/main/ipc.test.ts
       - electron/main/ipc.ts
       - electron/main/profileEgress.test.ts
@@ -628,6 +634,8 @@ rules:
       - src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx
       - src/features/layout/adaptive/MobileWorkspaceSurfaces.egress.test.tsx
       - src/lib/tauri.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - src/lib/tauri.egressClosure.test.ts
       - src/features/chat/components/ChatInput.editClosed.test.tsx
       - src/features/chat/components/ChatInput.nonSceneEdit.test.tsx

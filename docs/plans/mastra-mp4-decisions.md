@@ -276,7 +276,7 @@ GDX-PRECHECK-001 の項目（entry、admission closure、pending-start、handle 
 - **この検査は一層にすぎず、read-only の証明ではない**。SQLite は `WITH … DELETE／UPDATE／INSERT` を許すので、「SELECT／WITH で始まる」ではなく先頭が `SELECT` のものだけを通す（core が `WITH` を使うなら再検討。7 file の grep で `WITH`／`.with(`／`$with` が見つからない†）。
   実行時に組み立てた SQL（model の入力の混入）は先頭の検査だけでは捕まらないので、静的試験（core は Drizzle の select だけを発行し、model の入力から SQL 文字列を作らない）と事後検出（marker）を併用する。
 - **既存バグ（触らない）**：`policyAllowsAgentTool` は object の行を配列として読み、`rows[0]` が配列でなければ `first` を undefined にする。
-  `parsePolicyAllows` は undefined を true にするので fail-open（`ipc.ts:1064-1068`†、`:989-1000`†）。別 lane で修正中。
+  `parsePolicyAllows` は undefined を true にするので fail-open（`ipc.ts:1064-1068`†、`:989-1000`†）。別 lane で修正中。**（#989 で修正済み。MP-4b PR-1 の時点の base では `aiPolicyColumn` が object の行を読む）**
   新しい reader はこの読み方を踏まず、行は object 前提で書き、policy の欠損は `parseAiPolicy` と同じ「full」の扱いを共有 module で揃える（DR-MP4-26）。
 - unrestricted では Native に read-only の強制が無い（`own_data_read` は restricted のみ。`lib.rs:10711-10741`†：unrestricted は `execute_renderer_with_result` で、renderer 用の authorizer のまま書込みも commit される）。
   事前の強制を Native に足すのは新しい契約なので足さない（決定 2、回答 3）。補いは上の送信前の検査＋事後検出＋静的試験＋caller の timeout。残るリスクは脅威モデルに記載済み（T13、D16）。
@@ -286,6 +286,23 @@ GDX-PRECHECK-001 の項目（entry、admission closure、pending-start、handle 
   - 対応：`db_execute`（SELECT のみ。legacy の `callerTimeoutForCommand` は SELECT/WITH の read に 10 秒。`tauri.ts:382-389`†）と `fts_search`（`:238`†）は 10 秒。`codex_semantic_search`・`events_semantic_search` は 5 分（`:268-269`†）。
   - **`foreshadow_list_open_for_context` は legacy も caller timeout が無い**（`READ_ONLY_COMMAND_TIMEOUTS` に載らない。`:227-270`†。mutation の lane で動く）。main も timeout を付けず、abort との race（cancel・forced で結果を捨てる）と in-flight の計数で有界にする。値を新しく置くなら **C-18**。
   - caller の timeout は Native を止めない（`tauri.ts:56-62`† のコメントと `ipcQueue.ts` の slot の保持と同じ性質）。timeout で結果を捨てて turn を失敗にするが、**in-flight の計数は settle まで残す**（DR-MP4-5 の 4。slot の解放と quiesce の待ちに含める）。
+
+### DR-MP4-4 追補（MP-4b PR-1 の実装で決めたこと。技術判断。2026-11-21）
+
+呼び手のない基盤（timeout 定数、db adapter、typed read 4 本、port の型、静的試験）を置いた PR-1 で、設計に足した判断。新しい契約・authority・送信先・保存範囲・閾値は足していない。
+
+- **第 5 引数（`own_data_read`）は付けない。** restricted の turn を作らない DR-MP4-5 と整合し、unrestricted では無効果（実測）。将来 restricted の turn を許すときに再評価する。試験は `dbExecute` の呼出しが 4 引数であることを固定する（`mastraRead/db.test.ts`、実 addon の spec）。
+- **timeout の共有 module**（`electron/shared/ipcCallerTimeouts.ts`。import なし）は、`IPC_TIMEOUT_MS`・`AI_IPC_TIMEOUT_MS` と、main が使う 4 command（`db_execute`・`fts_search`・`codex_semantic_search`・`events_semantic_search`）の対応だけを持つ。command の表ごとは出さない（IR の gate の command 名を main の閉包に入れない）。値は変えない。
+  `foreshadow_list_open_for_context` は legacy にも caller timeout が無いので置かない（新しい値は C-18）。
+  **対応は同値でなく写し**：legacy の `db_execute` は renderer の判定（SELECT／WITH で始まり、書込み系の語を本文に持たない）を満たす文だけ 10 秒で、満たさない文は timeout なしで待つ。main は送信前の SELECT 検査を通った文だけを送り、常に 10 秒で切る。
+- **送信前の検査に足したもの**：複文（末尾の `;` 以外）、comma join、table-valued function、allowlist 外の表、他の schema（`main` 以外）、未終端の文字列・コメント・NUL は、Native を呼ばずに throw する。
+  **`from`／`join` の直後の `(` が `select` でないもの**（`from (some_table)`、`from (a, b)`）と、**`(` で始まらない `in`**（`where id in some_table`）も throw する。SQLite はどちらも表名として読む（実 addon で確認：`select … from (labels)` は読める、`… where id in labels` は表として引かれ列数の不一致で落ちる）ので、`from <名前>` だけを読む検査では allowlist の外が見えない。Drizzle はどちらの形も出さない。**これも一層の防御で、read-only の証明ではない**（`WITH … DELETE` は先頭の検査で落とすが、SQLite が受ける副作用のある関数などは捕まらない）。
+- **表の allowlist は実行時の検査にした**（`electron/shared/mastraRead/sql.ts`、`tables.ts`）。理由：PR-1 には core が無く、静的試験には走査する SQL が無い。実行時の検査は SQL の組立方（Drizzle か、model の入力の混入か）に依らず効く。Drizzle の `from "t"`／`join "t"` を読み、読めない形は throw（fail closed）。
+  core の Drizzle の select を走査する静的試験（DR-MP4-21 の 4）は PR-4。表は 21 本（codex 系 7、tree_nodes・snippets、年表 5、plot_thread 系 3、foreshadow 系 3、projects）。FK の先だけの `chat_sessions`・`chat_messages`・`codex_types` と closed 表・設定は入れない。表の増減は `tables.ts` と `tables.test.ts` の差分として見える。PR-4 で core が実際に触る表に固定し直す。
+- **行の写像**：Native の object の行を `Object.values` で位置対応に直す。**整数様の key（`"0"`、`"12"`）の列がある行は throw**（`Object.values` は整数様 key を先に並べ替え、位置が壊れる。`select 1` の列名が `1` など）。重複列名は Native が `\u0000N` を付けるので全列が残る（実 addon で固定）。`get` と `run` は送らない。
+- **typed read**：fts の scope は union の型と実行時の検査の両方。semantic 2 本は `expectedWorkspacePath` を turn の identity の `workspaceId` から渡し、null・空・backend の method なしは Native を呼ばずに throw。legacy が呼出しの後に行う workspace の照合（`SEMANTIC_WORKSPACE_CHANGED`）は、main では turn の `assertLive` の前後の再確認で置き換える。PR-2 は `MainReadHooks`（`assertLive`、`trackInFlight`）に turn の値を渡す。
+- **PR-4 への制約（core の Drizzle）**：送信前の検査は Drizzle の select の形だけを通す（字句は SQLite に合わせる：空白は ASCII の 6 文字、非 ASCII は文字列・引用識別子・コメントの外で拒否、placeholder は `?`／`?N` だけ。表の参照は `名前 [as] [別名]` の後ろを join の語・`on`・`using`・句の語・`)`・`;`・文末に限る。`from (` は `( select` の 1 重だけ）。**`.get()`・`findFirst()` は送れない**（method `get` を拒否する。上の「`get` と `run` は送らない」）ので、先頭 1 行は `.limit(1)` と `rows[0]` で読む。`db.$with`／`db.with`（`with` で始まる文）も送れない。実測（Drizzle 0.45.2 の出力 29 形を誤拒否なしで通す）は `sql.drizzle.test.ts`。
+- **core の `projectId` は必須**（`assertCoreProjectId`）は core の新 entry だけ。既存の共有関数（`resolveCodexForAi` など）の signature と falsy の挙動は変えない。
 
 ### DR-MP4-5 read の時点の規則（技術判断）
 
