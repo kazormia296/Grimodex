@@ -31,6 +31,7 @@ import {
   type ReadingMap,
 } from "../reading";
 import { inferReadings } from "../codexYomi";
+import { isCodexContextModeHiddenFromAi } from "../context/codexVisibilityPolicy";
 import { prepareRenamePropagation } from "../rename/renameEngine";
 import { useRenamePropagationStore } from "../rename/renamePropagationStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -793,11 +794,15 @@ export function CodexDetailContent({
     return ct?.label ?? entry.type;
   }, [entry.type]);
 
+  const estimateBlockedHidden = isCodexContextModeHiddenFromAi(contextMode);
+
   // 指定表記のうち漢字を含み読み未設定のものを AI 推定し、readings へ即マージ保存する。
   // 既存の読みは上書きしない (ユーザー編集を尊重)。fire-and-forget で UI を止めない。
   const estimateReadingsFor = useCallback(
     async (targetSurfaces: string[], base: ReadingMap) => {
       if (!showReadings) return;
+      // hidden（AI に秘匿）の項目の名前・別名は AI へ送らない。読みは作者が手で入れる。
+      if (estimateBlockedHidden) return;
       const need = targetSurfaces.filter(
         (s) => needsAiReading(s) && !(base[s]?.length ?? 0),
       );
@@ -818,7 +823,11 @@ export function CodexDetailContent({
         setEstimatingReadings(false);
       }
       const results = m.get(entry.id);
-      if (!results?.length) return;
+      if (!results?.length) {
+        // 空の結果は黙って終わらせない（hidden の再判定による空も区別できないため同じ文言）。
+        toast.warning(i18next.t("codex.readings.estimateNoResult"));
+        return;
+      }
       // 最新の永続 readings (store が真実源) へ非破壊マージする。AI 応答待ちの間に
       // 入った編集を保つため base ではなく store の現値を起点にする。
       const storeEntry = useCodexStore
@@ -844,7 +853,13 @@ export function CodexDetailContent({
       setReadings(next);
       await persistStructuralPatch({ readings: serializeReadings(next) });
     },
-    [entry.id, persistStructuralPatch, resolveCategoryLabel, showReadings],
+    [
+      entry.id,
+      estimateBlockedHidden,
+      persistStructuralPatch,
+      resolveCategoryLabel,
+      showReadings,
+    ],
   );
 
   const handleEstimateReadings = () => {
@@ -1030,6 +1045,7 @@ export function CodexDetailContent({
             onReadingsChange={(next) => void handleReadingsChange(next)}
             onEstimateReadings={handleEstimateReadings}
             estimatingReadings={estimatingReadings}
+            estimateBlockedHidden={estimateBlockedHidden}
             showReadings={showReadings}
           />
         )}

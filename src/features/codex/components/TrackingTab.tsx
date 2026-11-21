@@ -15,6 +15,8 @@ interface TrackingTabProps {
   onReadingsChange: (next: ReadingMap) => void;
   onEstimateReadings: () => void;
   estimatingReadings: boolean;
+  /** hidden（AI に秘匿）の項目は読みの AI 推定を使えない。 */
+  estimateBlockedHidden?: boolean;
   /** Readings are a Japanese-project feature; tracking controls remain universal. */
   showReadings: boolean;
 }
@@ -29,6 +31,7 @@ export function TrackingTab({
   onReadingsChange,
   onEstimateReadings,
   estimatingReadings,
+  estimateBlockedHidden = false,
   showReadings,
 }: TrackingTabProps) {
   return (
@@ -41,6 +44,7 @@ export function TrackingTab({
           onChange={onReadingsChange}
           onEstimate={onEstimateReadings}
           estimating={estimatingReadings}
+          estimateBlockedHidden={estimateBlockedHidden}
         />
       )}
       <ExcludedAliasesField

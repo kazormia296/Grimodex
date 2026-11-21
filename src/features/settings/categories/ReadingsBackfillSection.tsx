@@ -23,6 +23,7 @@ import {
 import { inferReadings, YOMI_MAX_ENTRIES } from "@/features/codex/codexYomi";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { isCodexContextModeHiddenFromAi } from "@/features/codex/context/codexVisibilityPolicy";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 
@@ -75,6 +76,8 @@ export function ReadingsBackfillSection() {
 
       const work: WorkItem[] = [];
       for (const e of entries as CodexEntry[]) {
+        // AI に秘匿（hidden・不明な mode）の項目は対象外。黙って外す。
+        if (isCodexContextModeHiddenFromAi(e.contextMode)) continue;
         const readings = parseReadings(e.readings);
         const surfaces = surfacesForEntry(e.name, parseAliases(e.aliases));
         const need = surfaces.filter(
