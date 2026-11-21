@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Pull-request lane skipping for .github/workflows/ci.yml (first stage).
+// Pull-request lane skipping for .github/workflows/ci.yml (first and second stage).
 //
 // Deny by default: a lane is skipped only when EVERY changed path is in that
 // lane's neutral sets, or (trigger lanes) when NO changed path is a trigger.

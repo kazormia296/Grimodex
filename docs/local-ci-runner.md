@@ -227,8 +227,9 @@ skips heavy lanes when every changed path is neutral for them. The rules are
 `base...head` diff and needs no dependency installation. The lanes are journeys
 (the two journey roots; the shards and the aggregate skip through `needs`), Rust (shared crates and the C-query worker, which a pull request
 runs on Linux only: a `master` push runs macOS and Windows only for worker paths, and the nightly run runs them, see below), native,
-migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
-Quality, Frontend and Electron always run. Selection is deny by default: an
+migration (Gate A2), windows, browser (Browser, WebGL, Storybook), LFM, security and
+frontend (`frontend-static`, the three `frontend-unit` shards and the `frontend` aggregate).
+Quality and Electron always run. Selection is deny by default: an
 unclassified path, a forced-all path (workflows, lockfiles, manifests,
 `electron/**`), an empty or incomplete diff, any failure, and every event other
 than `pull_request` (push, schedule, manual dispatch, reusable call) run every
@@ -236,6 +237,30 @@ lane. A lane skipped this way was **not verified** by that pull request run: it
 is skipped, not passed. Its evidence comes from the master push run and the
 canonical Quick and Full runs. The job summary and the `ci-change-scope-*`
 artifact record each lane's reason.
+Two lanes were added in the second stage. The frontend lane skips for a docs-only
+change (the docs set: `docs/**`, root `*.md`, `public/RELEASE_NOTES/**`, `experiments/**`);
+`docs/lp/**`, `docs/screenshots/**` and `public/**` keep it running, because the
+frontend tests read the LP sources and assets, `captureManifest` names the
+screenshot directory, and vite copies `public/` into `dist/`, which the web
+editor artifact check scans. The Rust and migration lanes also skip when every
+changed path is renderer code (`src/**/*.ts`, `*.tsx`, `*.css`, the
+`renderer-code` set) besides docs and CI assets: no Rust crate reads those
+files. Anything else under `src` (JSON, SQL, Markdown, images) and the fixture
+directories (`src/**/fixtures/**`, `__fixtures__`, `parity`) keep Rust running,
+since the crates include `src/db/generated/schema-contract.json` and other
+fixtures; a test scans the `src-tauri` Rust sources for such reads. Native,
+windows, browser, journeys and security are **not** narrowed by renderer-only
+changes: native runs the renderer pipeline specs through the `@/` alias,
+windows builds the renderer, and `electron/**` stays forced for every lane (a
+change under `electron/` runs Rust and Gate A2 as before). The two JS commands of
+Gate A2 (the IPC contract test, and the workspace store and Recovery Shell tests) also run in the
+always-on Electron job and in `frontend-unit`, which a test pins. The `frontend`
+aggregate (check name `Frontend (type-check / lint / test)`) and
+`rust-aggregate` (`Shared Rust crates (check / clippy / test)`) are skipped with
+their lane; a skipped aggregate is not a pass. No branch protection or ruleset
+requires a check by name (checked 2026-11-21). Gate B2 accepts only `push` and
+`workflow_dispatch` runs of `ci.yml`, where every lane runs, so these skips never reach its required
+jobs.
 The decision is made with both the pull request's `scripts/ci-change-scope.json`
 and the base commit's copy of it (read from git, so no second checkout), and a
 lane is skipped only when both rules skip it: a pull request cannot skip a lane by

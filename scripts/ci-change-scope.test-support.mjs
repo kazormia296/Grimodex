@@ -41,13 +41,21 @@ export function laneByGatedJob(rules) {
  * `success()`. GitHub string equality is case-insensitive, so every compared
  * operand (inputs, github and needs) is lowercased.
  */
-export function evaluateIf(expression, { inputs = {}, event = "workflow_dispatch", changes = {}, rustResult = "success" } = {}) {
-  const body = unwrapIf(expression).replace(
-    /(inputs\.\w+|github\.\w+|needs\.[\w.]+)\s*([!=]=)\s*('[^']*')/gu,
-    "String($1 ?? '').toLowerCase() $2 $3",
-  );
-  // `rustResult` is the result of the `rust` shard job that `rust-aggregate` needs.
-  const needs = { changes: { outputs: { ...changes } }, rust: { result: rustResult } };
+export function evaluateIf(expression, { inputs = {}, event = "workflow_dispatch", changes = {}, rustResult = "success", staticResult = "success" } = {}) {
+  // A job id with a hyphen (needs.frontend-static.result) is not a JS identifier chain: rewrite it to a bracket access first.
+  const body = unwrapIf(expression)
+    .replace(/needs\.([a-z][a-z0-9-]*)\.result\b/gu, 'needs["$1"].result')
+    .replace(
+      /(inputs\.\w+|github\.\w+|needs\.[\w.]+|needs\["[\w-]+"\]\.\w+)\s*([!=]=)\s*('[^']*')/gu,
+      "String($1 ?? '').toLowerCase() $2 $3",
+    );
+  // `rustResult` is the result of the `rust` shard job that `rust-aggregate` needs;
+  // `staticResult` is the result of `frontend-static`, which the `frontend` aggregate checks.
+  const needs = {
+    changes: { outputs: { ...changes } },
+    rust: { result: rustResult },
+    "frontend-static": { result: staticResult },
+  };
   return new Function(
     "inputs",
     "github",

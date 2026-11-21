@@ -304,6 +304,11 @@ Electron runtime performance job: a failure that only those show is found, for t
 the `ci.yml` of the `master` push, and for the impact-selected suites in the next nightly run (or earlier by a manual
 dispatch), and is handled as a red `master`. The merge condition itself is unchanged: the rebased candidate's complete Quick
 plus the `ci.yml` of the candidate head.
+A pull request's `ci.yml` also skips the lanes its diff cannot reach (the `Change scope` job; every other event runs every lane): the
+Frontend jobs and their aggregate for a docs-only change (not `docs/lp`, `docs/screenshots` or `public`), and the Shared Rust jobs with their aggregate, the C-query worker and Gate A2
+for a change whose paths are only renderer code (`src` TypeScript, TSX and CSS, not fixture, `__fixtures__` or `parity` directories), docs and CI assets. A skipped job is not a pass, a
+skipped aggregate check leaves the run's conclusion `success`, and the pull request run is no evidence for what it skipped; the `ci.yml`
+of the `master` push, which runs every lane, is.
 
 Docs-markdown-only selection (a rule of the impact selector, separate from the docs-only PR exception below, which
 decides merge conditions). When every changed path matches `^docs/.+\.md$`, work records included, the Light suites
