@@ -1629,6 +1629,7 @@ requirements:
       - src/features/codex/details/presetSemanticBindings.ts
       - src/features/codex/detailPresets.ts
       - src/db/schema.ts
+      - electron/shared/readDomain/db/schema.ts
       - src-tauri/crates/grimodex-db/src/migrate.rs
       - src-tauri/crates/grimodex-db/src/project_snapshots.rs
       - src/features/revision/projectSnapshotApi.ts
@@ -1678,6 +1679,7 @@ requirements:
       - src/features/revision/projectSnapshotNative.ts
       - src/features/revision/projectSnapshotScopes.ts
       - src/db/schema.ts
+      - electron/shared/readDomain/db/schema.ts
       - src/lib/browser-mock.ts
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - src-tauri/crates/grimodex-db/src/migrate.rs

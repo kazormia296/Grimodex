@@ -212,17 +212,126 @@ function collectScanFiles(repoRoot) {
   return files;
 }
 
-function findUnregisteredNarrativeAuthorityTables(repoRoot, registry) {
-  const schemaPath = path.join(repoRoot, "src/db/schema.ts");
-  if (!existsSync(schemaPath)) return [];
-  const schema = readFileSync(schemaPath, "utf8");
-  const schemaTables = new Set(
-    [
-      ...schema.matchAll(
-        /sqliteTable\(\s*["']((?:narrative_[a-z0-9_]+|change_events|state_snapshots))["']/g,
+// MP-4b PR-3b-1 (DR-MP4-3 addendum): the Drizzle schema lives in
+// `electron/shared/readDomain/db/schema.ts` so Electron main can import it.
+// `src/db/schema.ts` is a one-line re-export stub for the renderer. A stub has
+// no `sqliteTable(...)`, so reading only the legacy path would silently scan
+// zero tables and the inverse-coverage gate would stop detecting anything.
+export const SCHEMA_CANONICAL_PATH = "electron/shared/readDomain/db/schema.ts";
+export const SCHEMA_LEGACY_PATH = "src/db/schema.ts";
+
+const NARRATIVE_SCHEMA_TABLE_PATTERN =
+  /sqliteTable\(\s*["']((?:narrative_[a-z0-9_]+|change_events|state_snapshots))["']/g;
+
+const SCHEMA_REEXPORT_STATEMENT_PATTERN =
+  /^export\s+\*\s+from\s+["'][^"']*electron\/shared\/readDomain\/db\/schema(?:\.js|\.ts)?["']$/;
+
+function narrativeTablesIn(source) {
+  return [
+    ...new Set(
+      [...source.matchAll(NARRATIVE_SCHEMA_TABLE_PATTERN)].map(
+        (match) => match[1],
       ),
-    ].map((match) => match[1]),
+    ),
+  ].sort();
+}
+
+function isSchemaReExportStub(source) {
+  const body = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .trim();
+  if (body === "") return false;
+  const statements = body
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter((statement) => statement !== "");
+  return (
+    statements.length > 0 &&
+    statements.every((statement) =>
+      SCHEMA_REEXPORT_STATEMENT_PATTERN.test(statement),
+    )
   );
+}
+
+function readSchemaFile(repoRoot, relativePath) {
+  const absolute = path.join(repoRoot, relativePath);
+  if (!existsSync(absolute)) {
+    return { path: relativePath, exists: false, source: "", tables: [] };
+  }
+  const source = readFileSync(absolute, "utf8");
+  return {
+    path: relativePath,
+    exists: true,
+    source,
+    tables: narrativeTablesIn(source),
+  };
+}
+
+/**
+ * Reads the canonical schema (and the legacy path) and reports what it saw.
+ * Strict by default: with `requireSchema` a missing canonical schema fails, and
+ * an existing canonical schema that yields zero narrative tables always fails,
+ * so the gate can never go quietly empty. Only fixtures with no schema file at
+ * all may opt out (`requireSchema: false`).
+ */
+export function scanNarrativeSchema(repoRoot, { requireSchema = true } = {}) {
+  const canonical = readSchemaFile(repoRoot, SCHEMA_CANONICAL_PATH);
+  const legacy = readSchemaFile(repoRoot, SCHEMA_LEGACY_PATH);
+  const violations = [];
+  if (!canonical.exists && requireSchema) {
+    violations.push({
+      code: "canonical-missing",
+      path: SCHEMA_CANONICAL_PATH,
+      detail: "the canonical Drizzle schema file does not exist",
+    });
+  }
+  if (canonical.exists && canonical.tables.length === 0) {
+    violations.push({
+      code: "canonical-empty",
+      path: SCHEMA_CANONICAL_PATH,
+      detail:
+        "the canonical schema has no sqliteTable() for a narrative authority table, so the coverage scan would be empty",
+    });
+  }
+  const legacyIsStub = legacy.exists && isSchemaReExportStub(legacy.source);
+  if (legacyIsStub && !canonical.exists) {
+    // `requireSchema: false` only excuses a fixture with no schema file at all.
+    violations.push({
+      code: "legacy-stub-dangling",
+      path: SCHEMA_LEGACY_PATH,
+      detail:
+        "the legacy re-export stub points at a canonical schema that does not exist",
+    });
+  }
+  if (legacy.exists && legacy.tables.length === 0 && !legacyIsStub) {
+    violations.push({
+      code: "legacy-not-reexport",
+      path: SCHEMA_LEGACY_PATH,
+      detail: `the legacy path must be \`export * from ".../${SCHEMA_CANONICAL_PATH.replace(/\.ts$/, "")}"\` (or itself define the narrative tables)`,
+    });
+  }
+  const tables = [...new Set([...canonical.tables, ...legacy.tables])].sort();
+  return {
+    requireSchema,
+    canonical: {
+      path: canonical.path,
+      exists: canonical.exists,
+      tables: canonical.tables,
+    },
+    legacy: {
+      path: legacy.path,
+      exists: legacy.exists,
+      tables: legacy.tables,
+      reExportStub: legacyIsStub,
+    },
+    tables,
+    violations,
+  };
+}
+
+function findUnregisteredNarrativeAuthorityTables(schemaScan, registry) {
+  const schemaTables = new Set(schemaScan.tables);
   const registered = new Set(registry.map((entry) => entry.table));
   return NARRATIVE_AUTHORITY_TABLES.filter(
     (table) => schemaTables.has(table) && !registered.has(table),
@@ -505,6 +614,7 @@ export function validateNarrativeWriters({
   repoRoot = REPO_ROOT,
   registryPath = REGISTRY_PATH,
   includeDeferred = false,
+  requireSchema = true,
 } = {}) {
   const registry = JSON.parse(readFileSync(registryPath, "utf8"));
   const active = registry.filter((entry) => entry.enforcement === "active");
@@ -517,8 +627,9 @@ export function validateNarrativeWriters({
     scanEntries.map((entry) => [entry.table, entry]),
   );
   const violations = [];
+  const schemaScan = scanNarrativeSchema(repoRoot, { requireSchema });
   const registryCoverageViolations = findUnregisteredNarrativeAuthorityTables(
-    repoRoot,
+    schemaScan,
     registry,
   );
   /** @type {Map<string, { aggregate: string, table: string, enforcement: string, nativeWriter: string, legacyWriters: Set<string> }>} */
@@ -588,6 +699,8 @@ export function validateNarrativeWriters({
     scannedFiles: files.length,
     violations,
     registryCoverageViolations,
+    schemaScan,
+    schemaScanViolations: schemaScan.violations,
     inventory,
   };
 }
@@ -615,6 +728,8 @@ function main() {
           scannedFiles: result.scannedFiles,
           violations: result.violations,
           registryCoverageViolations: result.registryCoverageViolations,
+          schemaScan: result.schemaScan,
+          schemaScanViolations: result.schemaScanViolations,
           inventory: result.inventory,
         },
         null,
@@ -648,6 +763,19 @@ function main() {
     for (const violation of result.violations) {
       console.error(
         `  - ${violation.file}: ${violation.table} (${violation.writer}) via ${violation.identifiers.join(", ")}`,
+      );
+    }
+    process.exitCode = 1;
+    return;
+  }
+
+  if (result.schemaScanViolations.length > 0) {
+    console.error(
+      "The Drizzle schema scan is not trustworthy (the coverage gate must not run empty):",
+    );
+    for (const violation of result.schemaScanViolations) {
+      console.error(
+        `  - ${violation.code}: ${violation.path}: ${violation.detail}`,
       );
     }
     process.exitCode = 1;

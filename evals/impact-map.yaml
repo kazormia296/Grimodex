@@ -160,6 +160,7 @@ rules:
       - electron/shared/ipcCallerTimeouts.test.ts
       - electron/shared/agentReadToolDefinitions.ts
       - electron/shared/agentReadToolDefinitions.static.test.ts
+      - electron/shared/readDomain/db/schema.ts
       - src/features/settings/agentSettingApply.ts
       - src/features/settings/agentSettingCatalog.test.ts
       - src/features/chat/components/SettingProposalCard.tsx
@@ -780,6 +781,7 @@ rules:
       - src/features/revision/projectSnapshotNative.ts
       - src/features/revision/projectSnapshotScopes.ts
       - src/db/schema.ts
+      - electron/shared/readDomain/db/schema.ts
       - src/db/generated/schema-contract.json
       - src/db/projectCalendarSchema.test.ts
       - src/lib/browser-mock.ts

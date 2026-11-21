@@ -258,6 +258,18 @@ GDX-PRECHECK-001 の項目（entry、admission closure、pending-start、handle 
 - 既存の `toolExecutors.test.ts` は `@/db/client` と `invoke` を mock している。core 化の後も legacy の結果が変わらないことを、この試験で固定してから進める。
 - tool の**定義**（name・description・schema）の出所は core とは別に、IR を含まない共有 module に分ける（DR-MP4-30）。
 
+### DR-MP4-3 追補（MP-4b PR-3b-1 の実装で決めたこと。技術判断。2026-11-22）
+
+`src/db/schema.ts`・`src/lib/time.ts`・`src/lib/temporal.ts` を `electron/shared` へ移す PR-3b-1 の、mutation の前の判断。DR-MP4-3 の「置き場 A（確定）」の範囲内で、新しい契約・authority・送信先・保存範囲・閾値の緩和は伴わない。走査の縮小もしない（下の 4・5 は広げる向き）。手順書の反証（2026-11-21）の直しを取り込んだ。
+
+1. **DR-MP4-3a 置き場：`electron/shared/readDomain/` に `src/` の相対 path を mirror する。** 例：`src/db/schema.ts` → `electron/shared/readDomain/db/schema.ts`。決定文書・計画に置き場名は無く、これが初出の案。理由は、moved 同士の相対 import が拡張子（`.js`）の追加だけで済み、`@/` を機械的に相対へ直せること。flat 等にするなら PR-3b-2 の書換え表が変わる。移動先 path に除外 fragment（`/generated/`・`/fixtures/`・`schema-seed`・`.test.` など）を含めない（`validate-narrative-writers` の走査から黙って外れるため）。
+2. **DR-MP4-3b 旧 path は 1 行の `export * from "@/../electron/shared/readDomain/<path>";`。** src に前例があるのは `@/../electron/shared/...` の **import** であり、`export *` の re-export stub は **初出**。`export default` は 3 本のどれにも無い（grep 0）ので `export *` で named export と型が揃う。importer の import 文は変えない。試験は src に残し、stub 越しに実体を検証する。
+3. **DR-MP4-3c validator は strict を既定にする。** `validate-narrative-writers` は実体の新 path を読み、`sqliteTable` の一致が 0 なら失敗する（canonical が無い場合も失敗）。旧 path は `export * from "…schema"` の stub のときだけ許す。schema を持たない fixture は `requireSchema: false` を明示して緩める（fixture は試験側の 1 つの helper にまとめる）。緩めて通るのは「schema file が 1 つも無い」場合と、canonical が無く legacy（`src/db/schema.ts`）が `sqliteTable` を持つ旧配置の fixture で、それ以外の file があれば常に検査する（`main()` は緩めないので、実 repo で canonical が無ければ `canonical-missing` で落ちる）（canonical が空、legacy が stub でも schema でもない、stub があるのに canonical が無い、はどれも `requireSchema` に関係なく失敗）。旧 validator は stub＋未登録表の fixture で違反 0 を返した（穴の再現。base の validator で確認）。re-export の辿りは validator に持ち込まない。pin は件数でなく、**移動前の base で実測した表名の集合に対する包含**（表を足しても落ちない。表が減る・消えると落ちる）。
+4. **DR-MP4-3d lint の範囲を広げる。** 移した file は `eslint src electron/preload`（と、それに含まれる prettier）の外に出るので、`electron/shared/readDomain` を `lint`／`lint:fix` に足す。同じ理由で `grimodex-boundaries/narrative-maintenance`（renderer と preload に掛かる）の対象にも足す。`package.json` の変更は ci-change-scope の全 lane になる（広がる向きで安全）。
+5. **DR-MP4-3e 評価範囲は狭めない。** 新しい schema path を `evals/impact-map.yaml` の `narrative-extraction` に足す（schema の編集で選ばれる suite を、移動前と同じ以上にする）。schema は PR-4 以降で main の read tool（`tool-policy`）の共有基盤にもなるので、`tool-policy` にも足す（選択は移動前の上位集合）。`quality-manifest.yaml` の GDX-NARR-DETAIL-001・GDX-NARR-TEMPORAL-001 の `implementedBy` に新 path を足す（旧 path は stub として残す）。`time.ts`・`temporal.ts` は移動前も rule に当たらず（全 suite）、足さない。他の file を rule に足して全 suite から絞ることはしない。
+6. **DR-MP4-3f src だけを歩く gate。** 制御バイト検査（`noControlBytes.test.ts`）は実体が範囲外になるので root に `electron/shared/readDomain` を足す（その root の file 数が 0 より大きいことも検査）。`aiPathRegistry`・`i18n.localeOrder`・`mastraAgentTurn` の走査が探す語（`invoke(`、`addResourceBundle(`、`mastraAgentTurn` の import）は 3 file に無く、影響なし。`validate-native-writer-ownership` は Rust だけで対象外。
+7. **PR-3b-2 への持ち越し：** `toolTurnCache` を移すかの判断、型の切り出し 3 module、`RRF_K`、残りの 21 本。PR-4 で main が schema を値 import するとき、`vi.mock("@/db/schema", partial)`（18 file）は旧 path の stub にだけ掛かる点を再確認する（3b-1 では moved 側の schema の import は無く、seam は 0）。
+
 ### DR-MP4-4 main の db adapter（技術判断）
 
 - main の read は `backend.dbExecute(sql, params, method, JSON.stringify(turn.identity))` で、identity は **owner が発行した turn の値**（wire 由来にしない）。

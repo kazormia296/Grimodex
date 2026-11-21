@@ -22,6 +22,8 @@ test("rejects narrative maintenance imports from renderer and preload", async ()
   for (const filePath of [
     "src/features/example.ts",
     "electron/preload/index.ts",
+    // renderer の module を移した共有の置き場にも同じ規則が掛かる（MP-4b PR-3b）
+    "electron/shared/readDomain/features/example.ts",
   ]) {
     const messages = await lintText(
       'import { createNarrativeMaintenanceScheduler } from "../../electron/main/narrativeMaintenance.js";',

@@ -1,1 +1,1 @@
-export { Temporal } from "temporal-polyfill";
+export * from "@/../electron/shared/readDomain/lib/temporal";
