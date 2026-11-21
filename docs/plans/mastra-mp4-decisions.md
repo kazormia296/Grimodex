@@ -144,7 +144,7 @@ Owner／Boundary／Consumer は略記する。Status は `unknown` なら実装�
 | P29 | workspace 切替・quiesce と turn（renderer の drain と main の forced の順） | renderer の watcher、owner | lease の通知で cancel（既存の契約）。(b)(c) は不変条件の変更なので C-17（DR-MP4-29） | owner | 切替が turn の終わりまで待たされない（高々 1 send） | forced（main） | lifecycle 試験 | unknown（K-22、K-24） |
 | P30 | audit export と Mastra の turn（registry への登録） | renderer（engine 分岐） | start の間 registry に予約・完了を登録（DR-MP4-31） | export boundary | export は AI の実行中なら断る | - | registry の test | planned |
 
-**unknown 行と PR の対応**（実装の前に解消する）：4b は P5（K-4、K-5）、P3（K-6）、P27（K-16）、P28（K-23）。4c-1 は P7（K-7）、P9・P10（K-1〜K-3）、P14・P20・P25（Q4）、P23。4c-2 は P21（Q5、K-17）、P29（K-22）。
+**unknown 行と PR の対応**（実装の前に解消する）：4b は P5（K-4、K-5）、P3（K-6）。**P27（K-16）・P28（K-23）は 2026-11-21 に 4c-1 へ持ち越した**（第 5 節「4b の PR 計画」の 4）。4c-1 は P7（K-7）、P9・P10（K-1〜K-3）、P14・P20・P25（Q4）、P23。4c-2 は P21（Q5、K-17）、P29（K-22）。
 
 ### 3.3 lifecycle note（非同期の行）
 
@@ -254,6 +254,7 @@ GDX-PRECHECK-001 の項目（entry、admission closure、pending-start、handle 
 - `chronicle/api.ts`、`src/features/codex/phaseApi.ts`、`src/features/codex/detailApi.ts`† は read と write が同居する（store や timelapse を import する）ので、
   read 専用の module に分けてから core が import する。
 - A が成り立たなければ、決定 2 の (D) の範囲で置き場だけを見直し、改訂をこの文書に残す。
+- **改訂（2026-11-21）：置き場は A に確定**（技術判断。根拠は K-10 の実測。第 5 節「4b の PR 計画」の 1。分割後の pure の下限は 143 module・454 KB、A′ は 23 表、B は electron の NodeNext の tsc で落ちる）。A″（載せ方）は 4c で coldStartMs を測って判断する。
 - 既存の `toolExecutors.test.ts` は `@/db/client` と `invoke` を mock している。core 化の後も legacy の結果が変わらないことを、この試験で固定してから進める。
 - tool の**定義**（name・description・schema）の出所は core とは別に、IR を含まない共有 module に分ける（DR-MP4-30）。
 
@@ -792,14 +793,150 @@ legacy の `shouldAbortTurn`（`chatTurnStoreActions.ts:490-498`†、条件は 
 - tokenizer の実装（wasm の配り方）は **4b に入れない**。4b は port と試験用の数え値（1 文字＝1 token と、renderer の exact）までで、
   実装は 4c-1 で入れる（init の測定と配線の spike は 4b の中で、build が使えるときに行う。配布物は変えない）。
   spike では main thread の占有（init、大きい読みの結果の整形と数え）も測る（DR-MP4-18、K-16）。
+  **（2026-11-21：tokenizer の実装と K-16 の spike は 4c-1 へ持ち越す。4b は port の型と試験用の数え値まで。第 5 節「4b の PR 計画」の 4。）**
 - 試験：legacy の `toolExecutors.test.ts` が core 化の後も通る（結果が変わらない）。実 addon の pipeline spec（`d2aOwnDataRead.pipeline.spec.ts` の型）で同じ fixture DB を renderer 版（invoke の proxy）と main 版（dbExecute の adapter）で比べる。
   最重要の項目：hidden（phase 解除、released の summary・本文・details）、年表 secret の位置フィルタ、XPROJ、barrier なしの差（Q5 まで同値試験の対象外と注記）、
   **他 project の `currentSceneId` を渡す fixture**（DR-MP4-8）、**場面なし null の年表（secret を隠す）と Codex（base）**（DR-MP4-1）、adapter の送信前の検査（SELECT 以外で Native を呼ばない。spy）、timeout 定数が renderer の表と一致。
 - 脅威モデル：回答 3 の分（T13・D16・W11・残るリスク）は**反映済み**。失効の観測の弱まりは Q5 の回答の後に 4c-2 で書く。
-- **precheck の条件**：回答 3（**済**）。P2-2（caller の timeout。DR-MP4-4 に設計を書いた。実装と試験が条件）。import 閉包の実測（K-10）。K-4・K-5。K-6。
+- **precheck の条件**：回答 3（**済**）。P2-2（caller の timeout。DR-MP4-4 に設計を書いた。実装と試験が条件）。import 閉包の実測（K-10。**2026-11-21 に実測済み。残る未確認は第 5 節「4b の PR 計画」の 2**）。K-4・K-5。K-6。
+  （K-16 の spike と K-23 の確認は 4c-1 へ持ち越した。第 5 節「4b の PR 計画」の 4）
   budget・閾値の測定で既存の ceiling を超えるなら実装を止めて確認する（C-8、C-16。条件つき）。
 - merge 条件：Quick、独立レビュー（第 7 節）。`get_foreshadow_detail` の既存の非対称（DR-MP4-24）を PR 本文に書く。P5 の入力（DR-MP4-8）は K-4・K-5 の解消が前提。
 - 製品の挙動は不変：main の新しい module はどこからも呼ばれない。
+
+### 4b の PR 計画（2026-11-21、実測の後）
+
+- 出所：4b の実測 workflow（wf_060f17b9-df2。K-10・K-4・K-5・K-6）の統合と、その反証。数と行番号は実測 agent の報告で、この小節の起案では再実行していない
+  （†のない数は未再確認）。PR-0 の列に書く legacy の事実だけは、PR-0 の試験を実際に走らせて確かめた。
+- 区別：置き場 A の確定と PR の分け方は**技術判断**（確認は報告のみ。ユーザーの確認で止めない）。止めるのは、品質ゲートの走査対象を狭める・閾値を緩める場合だけ。
+  新しい送信先・保存範囲の拡大・新しい契約や authority は 4b の範囲に見当たらない。ただし「main の adapter が turn の identity を付けて `backend.dbExecute` を直に呼ぶ」ことは、
+  DR-MP4-4・5 で承認済みの authority と同じ経路を user data の表の read へ広げる判断として扱う（`ipc.ts:1064-1082` の policy 判定の SELECT が前例。read 専用・表は allowlist・unrestricted 限定）。
+
+#### 1. 置き場 A の確定（DR-MP4-3 の改訂）
+
+- **決定：A（共有 core と schema を `electron/shared` に置き、`src/db/schema.ts` は re-export にする）。A′ と B は採らない。**
+  bundle の載せ方（A″＝4 つ目の lazy bundle）の判断は 4c へ送る。
+- 根拠（K-10 の実測）：
+  1. 閉包の大きさを決めるのは置き場ではなく「read／write の分割」と「store・invoke・db・i18n・countTokens の port 化」。分割しないと、どの案でも
+     610 module・13.5 MB（read 側の直接 import だけの R1）から 705 module・15.6 MB（`toolExecutors` 全体の E1）になる。
+     分割後の pure の下限は **143 module・454 KB**（E2）、drizzle の sqlite-proxy を足して 148 module・574 KB（E2A）。
+     React・zustand・i18next・@tauri・`lib/tauri`・`db/client` は閉包に入らない。置き場の差は、型検査・品質ゲート・drift の運用コストにだけ出る。
+  2. **B は electron の NodeNext の tsc で落ちる**（`electron/tsconfig.json`：NodeNext、paths なし。src の 24 file だけで 38 件）。bundle は通る
+     （esbuild は src の file について最寄りの tsconfig の paths で `@/` を解決する）が、electron は現在 src を 1 件も import しておらず、その慣習を破る。
+     節約できるのは pure 26 本の path の書換えだけで、分割が要る 11 module は B でも減らない。
+  3. **A′ は表が設計書の「18＋2」でなく 23 表**（FK 先を含む。約 32.5 KB。`schema.ts` は 168 KB）。drift 試験の対象が設計より広く、節約は約 113 KB だけ
+     （E2A 573,705 → E2Ap 460,944）。temporal-polyfill（約 179〜188 KB）は phaseResolver 経由で残る。
+  4. **A は実現できる見込み**。pure 26 本の変更は、`@/` の 19 行と拡張子なしの相対 import の 19 行の機械的な書換えと、型 6 つ
+     （`EventRow`、`SceneEventRow`、`TreeNodeData`、`TemporalNodeId`、`StoryCompare`、`StoryRankResult`）の切り出し。
+     NodeNext での DOM 型・Node 型の error は 0。`schema.ts` の NodeNext 上の error は `@/lib/time`（`schema.ts:13`）の 1 件だけ。
+     src の importer は 157 file（試験込みで 206）だが、re-export にすれば import 文は変えずに済む。
+  5. 4b は turn に繋がず core の呼び手は試験だけ。esbuild は entry から辿れる module だけを bundle に入れるので、**4b では main.cjs は増えない**と見込む
+     （推論。未ビルド。PR-1 の merge 前に esbuild を `write:false` で再現して差分 0 を確認する）。A の約 +0.63 MB（+20%）が効くのは 4c の接続時で、
+     載せ方（main.cjs か A″か）は coldStartMs（上限 4,000 ms）への影響を測ってから 4c で決める。超える見込みなら閾値の緩和・新設になるので、その時に確認する。
+- A の代償と対策：
+  - 品質ゲートの更新は**緩和でなく走査対象の追従と負の試験の追加**（PR 本文にそう書く）。`validate-narrative-writers.mjs:216-228` は `schema.ts` を読んで
+    `sqliteTable("narrative_…")` を数える。実体が無くても `existsSync` は通り、検出が空のまま通る。そこで validator は**実体の新 path を読み、`sqliteTable` の検出が 0 件なら失敗**にする
+    （空の検出を許さない）。旧 path は re-export のときだけ許す。ほかに `evals/impact-map.yaml:772`（schema 系の trigger に新 path）、`evals/quality-manifest.yaml:1608,1657`、
+    `validate-narrative-writers.test.mjs` が `src/db/schema.ts` を fixture として書き出す箇所（`:342` 付近）の追従が同じ PR に要る（gate の更新は 3 か所でなく、この試験 file を含めて 4 か所）。
+  - `schema.ts` が `lib/time`・`lib/temporal` を引くので、この 2 つも移すか相対 import にする。
+  - 閉じた narrative 表を含む 143 表が main から import できる状態になる。**表の allowlist 試験**（下の PR-4）と IR の静的試験で抑える。
+  - `chronicleReadingPosition.ts` は **IR 専用**（`isEventBeforeOrAtScene`、`passesIrExclusionApproximation`。製品での利用者は `toolExecutors` の IR 近似だけ）なので、
+    移動の対象から**外して src に残す**（renderer 層。IR の近似は renderer 層に残すという切り方と一致させる）。移すと、IR の静的試験（DR-MP4-21。`chatAgentIrClosure.test.ts:89-108` が列挙）と
+    「近似は `search_events` だけが使う」の走査（`toolExecutors.chatIr.test.ts:1480-1500`。src だけを走査）が、実体の無い re-export stub に対して空のまま通る。
+    PR-3b の本文に移す 26 本の一覧を列挙する。
+- 決定の種別は決定 2 の (D) の範囲の技術判断。新しい送信先・保存範囲・authority・閾値の緩和を伴わない。
+
+#### 2. 実測の要約（K-10・K-4・K-5・K-6）
+
+- **K-10（import 閉包）**：上の根拠 1〜4。**残る未確認**：型 6 つを実体に差し替えた後の NodeNext の追加 error、分割後の抽出関数そのものの NodeNext の compile、
+  `validate:architecture` に electron から src への禁止規則があるかの網羅（`scripts/validate-architecture.mjs` に electron の語は出ないことまで確認。`eslint.config.js` 全体は未精査）、
+  esbuild の動的 import が `__esm` で遅延評価されるか。renderer が electron/shared の `.js` 付きの相対 specifier を受けることと、`validate-narrative-writers` が import した識別子名で protected 表を検出し
+  module specifier に依らないこと（走査 root に electron を含む）、`schema.contract.test.ts` が `export *` の re-export で通ることは確認した。
+- **K-4（読む順・localeCompare）**：Node 24.18.0（ICU 78.3、CLDR 48.0）での実測のみ。UUID 小文字は ja／en／und／de／sv で差 0（200,000 対）。大文字・`_` を含む id は
+  `localeCompare` と binary で約 1.5% 異なる。da ロケールだけ "aa" で差が出る（UUID でも 90/50,000）。同順位の id の tie-break にだけ効く。
+  phase の並びにも同種の比較が 2 か所ある（`resolveApplicablePhases.ts:87`、`phaseResolver.ts:190`）。Electron の main の既定 locale と Chromium での実測は未確認。
+  **4b では `localeCompare` の tie-break を現状のまま共有する**（変えるなら確認）。Rust の `derive_live_scene_projection` は流用しない（TS と Rust で 11 件中 7 件が異なる）。
+- **K-5（store から DB までの窓）**：Q5 の窓は次の 7 つ。止まるのは 4c-2 で、4b は止めない。(1) `resolutionMode` の変更から DB 反映まで（300 ms の trailing debounce。書込み失敗では store が戻らず永続的にずれる。
+  `flushProjectMetadataWrites` を turn 前に呼べば窓は消せるが失敗時の扱いの判断が要る）。(2) tree の並べ替え・移動（store が先、直後に DB。`moveTreeNode` に rollback なし。
+  **ずれの向きは両方向**。追加・削除・`storyTimeOrder` は DB が先なので逆向きの短い窓）。(3) 外部プロセスの書込み（750 ms の polling。grid／chronicle bulk の scene 以外の tree 構造変更が store に届く経路は未確認）。
+  (4) `activeSceneId` の不一致（active scene の削除・外部の再読込は chat へ publish せず passive effect に頼る）。(5) turn 中の変更（main は batch／turn の開始時点で固定、legacy は live）。
+  (6) `localeCompare` の既定ロケール（上の K-4）。(7) 本文の barrier（`get_scene`・`get_thread_scenes`。DR-MP4-9）。
+  **DR-MP4-8 の「DB が古いと開示側にずれうる」は片方向の記述。移動のずれは両方向**（現在の場面を前へ、または reveal／anchor の場面を後ろへ動かすと DB が古い main のほうが広く開示し、逆なら狭い）と直す。
+- **K-6（main の read の閉包）**：main の閉包が触る表は 20（`codex_detail_definitions`、`codex_detail_values`、`codex_phase_detail_overrides`、`foreshadow_codex_links` を含む）。
+  - **「main の read 表は全部 internal」は誤り**。foreshadow 系 3 表・plot_thread 系 3 表・typed read 4 本は own-data-read（restricted の分類）。DR-MP4-5 の下（restricted の turn を作らない）では直呼びが JS gate を通らないため実害はない。
+    P3 の行と脅威モデルの文言に「internal 前提」があれば直す。**さらに閉包の表のうち 14 表が台帳外（unclassified）で、台帳外の表は read として通る**。DR-MP4-5 が restricted の turn を作らない前提で足りるかは確認が要る。
+    restricted（activate 後）に main から `dbExecute` を 4 引数で直に呼んだときの実挙動は実 addon で通していない（ソース読解と既存 spec の前例のみ）。
+  - 技術判断：main の `dbExecute` に第 5 引数（own_data_read）を付けない（restricted の turn を作らない DR-MP4-5 と整合し、unrestricted では無効果。将来 restricted を許すときに再評価）。
+  - 技術判断：timeout は定数 2 つ（`IPC_TIMEOUT_MS` 10,000、`AI_IPC_TIMEOUT_MS` 300,000）と 4 command の対応だけを shared に出す。表ごと出すと `chat_agent_ir_select` の文字列が main の閉包に入り、DR-MP4-21 の静的走査と衝突する。値は変えない。
+    **差を残す**：legacy の `db_execute` は `isReadOnlyDbExecute`（SELECT／WITH で始まり、INSERT・UPDATE・PRAGMA などの語が quoted を除く本文に無い）を満たすときだけ 10 秒で、満たさないと timeout なし。
+    main の adapter は送信前の SELECT 検査を通った文だけを 10 秒で扱う。legacy が timeout なしになる境界の文は main では 10 秒で打ち切る。4 command の対応は同値でなく**写し**。
+  - 設計書への反映：timeout の根拠行は `:268-270` でなく `:268-269`。
+
+#### 3. 設計書の訂正
+
+| 設計書の記載 | 実測 |
+|---|---|
+| DR-MP4-3「閉包の見積り約 20 module」 | 直接 import の数としては妥当。推移閉包は 610〜705 module |
+| 「src が electron/shared を import する前例 38 file」 | 機械的 grep で 33 file（試験込み 60） |
+| A′ の表は「18＋2」 | 23 表（FK 先を含む） |
+| `impact-map.yaml:771` | 772 |
+| `chatTurnPreflight.ts` の path | `src/application/chat/` が正しい |
+| DR-MP4-4「既存バグ：`policyAllowsAgentTool` が object の行を配列として読む」 | 当たらない。#989 で直っており設計書が古い（`aiPolicyColumn` が object 行を読む）。main が identity を付けて `backend.dbExecute` を直に呼ぶ前例は既に `ipc.ts:1064-1082` にある（policy 判定の SELECT） |
+| DR-MP4-8「DB が古いと開示側にずれうる」 | 片方向の記述。両方向（K-5 の (2)） |
+| IR 分岐の切り出しは 4 行（`:55`、`:447`、`:527`、`:668`） | 足りない。ほかに import の `:50-64`、`:111-113`、`:460-466`、`:702`、`:2570` |
+| 「main の read 表は全部 internal」 | 誤り（K-6） |
+| DR-MP4-3「core の `projectId` は必須（空なら throw）」と legacy の「No active project を結果で返す」 | 食い違う。**no-project の分岐と引数検査の順序は renderer の薄い層に残し、必須は core の新 entry にだけ課す**。既存の共有関数（`resolveCodexForAi`／`visibleCodexForAi`）のシグネチャと falsy な projectId のときの挙動は変えない |
+
+#### 4. PR の表（PR-0〜PR-9。反証の直しを入れた形）
+
+旗 L は閉のまま、turn に繋がない。同時に出す PR は 2 本まで（セッション間の取り決め）。後続の各 PR の「製品が変わらない」ことは、PR-0 の golden が不変であることで言える。
+ただし PR-0 の golden は browser-mock（sql.js）由来で、fts は LIKE の arm、semantic 2 本は `[]`、foreshadow は Drizzle の分岐になる。**Native の fts／typed read の結果の同値は示さず、main 側の同値は PR-9 の実 addon spec の担当**（PR 本文に書く）。
+
+| PR | 範囲 | 試験で閉じる方法 | 前提・止まる点 |
+|---|---|---|---|
+| PR-0 | **legacy の特性試験（試験だけ。製品のコード 0 行）**。20 本×{行あり、空、no-project、XPROJ、引数検査と no-project の順序}を実 sql.js で golden（content と JSON の bytes）に。legacy が Native へ出す invoke（command・引数・scope）を spy で固定。定義の bytes（44 本、M4 の 20 本、research subset、CREATOR_TOOLS の順、snapshot の並び）。`countTokens` は 1 文字＝1 token に固定。seed は data として再利用できる形（`__fixtures__/legacyReadSeed.ts`） | `toolExecutors.legacyGolden.test.ts`（golden 20 file）、`toolExecutors.legacyNativePort.test.ts`、`toolDefinitions.legacyGolden.test.ts`。golden は未変更の legacy から生成 | 試験だけ（Quick）。新 file は `impact-map.yaml` の tool-policy の paths（`src/features/chat/agent/**`）の下にあるので、選択される requirement・suite は親が確認する。`__fixtures__/` は `ci-change-scope` で Rust・migration の lane を落とさない扱い |
+| PR-1 | 基盤（呼び手なし）：timeout 定数の shared module（値不変）、db adapter（送信前に先頭 SELECT を検査、method は all／values のみ、marker は read のみ、整数様 key は throw）、typed read 4 本、port の型（getter 形）、**tokenizer の port の型と試験用の数え値（1 文字＝1 token）**、IR 静的試験の枠（走査対象が空でない assert と負の fixture）、K-6 の実 addon spec 1 本。**semantic 2 本の port は `workspacePath`（turn の identity 由来）を渡し、backend の method が無いときは fail-closed（throw）にする。legacy の事後 identity 照合（`SEMANTIC_WORKSPACE_CHANGED`）は main では `assertLive`（3 状態）で置き換える** | 値の一致（`tauri.electron.test.ts` の 10,000 の pin）、adapter の拒否（`dbExecute` の spy が 0 回）、静的試験、実 addon spec に semantic 2 本の workspace 不一致の拒否 | 実 addon が要る spec は napi build の後。既存の定数以外の値を置かない（C-18）。**merge 前に esbuild を `write:false` で再現して main.cjs の差分 0 を確認** |
+| PR-2 | read の lifecycle（DR-MP4-5）：in-flight の計数、`assertLive` の 3 状態、await 後の再確認、quiesce・forced・quit の待ちへの算入 | `mastraTurnOwner.test.ts`。owner（878 行）を触るので単独 review | 既存の bound（5 s、30 s）に乗せ、新しい値を置かない。PR-1 と並行可 |
+| PR-3 | IR を含まない定義 module（M4 の 20 本、`SEARCH_EVENTS_DESCRIPTION`、`sortSchemaKeys` と決定的 sort）を `electron/shared` に置き、renderer の `toolDefinitions.ts` は import して IR の部分だけ足す | PR-0 の bytes golden と `toolDefinitions.chatIr.test.ts` の 6 件が不変。drift 試験（bytes と並び）は **src に置く**。IR 静的試験（定義 module が `toolDefinitions.ts` を import しない） | schema に依存しないので置き場の確定を待たずに出せる。**tool の description と schema は AI へ渡す入力（AI behavior asset）なので、grimodex-impact-gate を適用し Quick だけにしない**。新 module を `quality-manifest` の `implementedBy`（GDX-TOOL-001）と `impact-map` の tool-policy の paths に追加（追従）。型は shared に置くか `agentWire.ts:25` の前例（複製＋相互代入試験）に倣う |
+| PR-3b | **移設**：pure 26 本（`schema.ts`、`lib/time`・`lib/temporal` を含む。`chronicleReadingPosition` は含めない）を `electron/shared` に移し、旧 path は re-export。`@/` と拡張子の書換え、型 6 つの切り出し、`RRF_K` の別 module 化（`semanticRecall` は re-export）。同じ PR で品質ゲートを更新（上の 1。validator は実体の新 path を読み 0 件で失敗、`validate-narrative-writers.test.mjs` の fixture、impact-map、quality-manifest） | tsc（electron NodeNext）、既存の renderer 試験が無変更で通る、validate-narrative-writers の負の試験（未登録の narrative 表を検出）。**着手前に、移す 26 module を参照する `vi.mock` と `readFileSync` 系の走査を grep で全数にして PR 本文に一覧し、mock が要る箇所は新 path にも掛ける**（移動先の module 同士の相対 import は旧 path の mock を通らず、試験は通るが内部の呼出しが実物になる） | 置き場 A（上の 1）。C-8（起動 graph の ratchet）。設計書にこの PR は無く、PR-4 の前提として追加する。受入れに `inlineAiContext.codexHidden.test`、beat、foreshadow、`contextBuilder` の hidden 関連の既存試験を加える（`phaseResolver`・`sceneTimeIndex`・`resolveApplicablePhases` の呼び手が波及する） |
+| PR-4 | core の骨格（ports、`createReadExecutors(ctx)`、legacy 側の ctx＝live getter）＋B1（list_codex_tags、list_chapters、get_chapter_summaries、get_scene_timeline_neighbors）＋B2（list_plot_threads、get_thread_scenes、get_scene）。legacy の re-point は同じ PR で行う（コピーを先に置いて後で切り替える案は約 1,500 行が一時的に二重になるので採らない） | PR-0 の golden が不変、既存の 4 本が無変更で通る（mock の seam を保つ）。**表の allowlist 試験**（K-6 の実測値＝20 表を基準に固定。増減は PR の差分として見える形にし、closed 表を 1 つ足すと落ちる負の fixture を入れる）。「core が store・invoke・tauri・i18n・IR を import しない」静的試験は **src に置く**。**PR-9 の同値 spec（同じ fixture DB を renderer 経路と main の adapter で比べる）の最初の版を受入れに入れる** | PR-3b の後。**着手前に `withDetails` の経路（`codexHiddenFromAi` が `detailApi`・`phaseApi` を import する）を core に含めるか legacy に残すかを決め、allowlist をその値に固定する**。B2 の本文 2 本は barrier なしと明記し、同値試験の対象外（Q5 の後に判断） |
+| PR-5 | B3（search_scenes、search_snippets）＋B4（list_open_foreshadows、get_foreshadow_detail）。`foreshadow/api.ts` の read 部分を read 専用 module に分ける | PR-0 の golden（Native 経路は覆わない）、typed read の spy（PR-0 の `legacyNativePort` が呼び方の基準）、search 整形 5 件、read 専用 module の単体試験。**PR-9 の実 addon 同値 spec が前提** | `normalizeForeshadowRow` が import する metadata 系（write 側）を外せるかは未確認 |
+| PR-6 | DR-MP4-8 の入力の再構築：`tree_nodes`（`project_id` 一致、`archived_at IS NULL`、6 列）から readingOrder・sceneTimeIndex、`projects` の resolutionMode。他 project／不明の `currentSceneId` は null 扱い | renderer の `buildReadingOrder`／`buildSceneTimeIndex` との parity、他 project の fixture、`localeCompare` の比較。**mode が null・不明値のときの main の既定（fail-closed か base 解決か）を決めて入れ、legacy の前 project の mode の持ち越し（`projectRuntimeComposition.ts:87-89`。phaseStore の初期値は reading、DB の既定は auto）との差を DR に明記する** | K-4・K-5。Rust の `derive_live_scene_projection` は流用しない |
+| PR-7 | B6 年表（list_events、get_event_detail、get_character_timeline、get_chronicle_state、search_events の IR 無しの部分）。`chronicle/api` の read 専用 module と型の分離、`chronicleToolCache`／`toolTurnCache` の turn 単位 instance、UI 言語の port | `chronicleReadTools.test.ts` 12 件と chatIr 110 件が無変更で通る、並行 turn の cache の試験。**PR-9 が前提** | PR-6 の後 |
+| PR-8 | B5 Codex hidden（search_codex、list_codex_by_type、search_codex_by_tags、find_related_entries）。`codexHiddenFromAi` の port 化（sceneTimeIndex・resolutionMode を入力で受ける）、`phaseApi`／`detailApi` の read の分離、hybrid 融合。**既存の公開関数のシグネチャと falsy な projectId の挙動は変えない（projectId 必須は core の新 entry だけ）** | `codexHidden` 17 件と hybrid 2 件が無変更で通る。`inlineAiContext.codexHidden.test`・beat・foreshadow・`contextBuilder` の hidden 関連の既存試験。**PR-9 が前提** | PR-6 の後。`get_codex_entry` は legacy に残り、共有 helper の公開 API を保つ |
+| **PR-9（必須。任意でない）** | 実 addon での同値 spec（同じ fixture DB を renderer 経路と main の adapter で比べる）。fixture は PR-0 の `legacyReadSeed.ts` を共用する | `d2aOwnDataRead.pipeline.spec.ts` の型。fts／semantic 2 本の workspace 不一致／foreshadow の Native 分岐を含む | 実 addon の build。**main の経路が legacy と同じ結果を返すことを言える唯一の oracle**。typed read を使う PR-5・7・8 の前提 |
+
+- 順序：PR-0 → PR-3 を先に、PR-1・2 は並行、PR-3b → PR-4（PR-9 の最初の版を含む）→ PR-9 → PR-5、PR-6 → PR-7・8（PR-9 が前提）。
+  入力（現在の場面・読む順・resolutionMode）が要らない B1〜B4 の 11 本を先に移し、要る B5・B6 は PR-6 の後に置く。束の分け方は領域名でなく入力の要否。
+- 試験の置き場：**renderer の module（`@/…` や src の相対 path）を import する試験（drift 試験、PR-4 の静的試験など）は src に置く**（`vitest.config.ts` が拾う。src から `electron/shared` を import する前例がある）。
+  `electron/shared` に置く core の単体試験は**相対 import だけ**にする（`vitest.electron.config.ts` に `@` の alias が無く、include は `electron/{main,preload,shared}/**/*.test.ts` だけ。
+  `electron/tsconfig.json` の include は main・preload・shared で、試験 file も NodeNext の tsc に入る）。
+- IR の切り方：core は「slice の前の候補の段」（visible、readingOrder、sceneEvents、eventById、currentSceneId、limit）を返し、renderer 層が位置 filter と近似を同じ位置（secrecy の後、slice の前）で掛ける。
+  `toolExecutors.chatIr.test.ts` の 110 件を無変更で通すことを受入れの条件にする。
+- 4b-1／4b-2／4b-3 との対応：4b-1＝PR-0・1・3（PR-2 は別）、4b-2＝PR-3b・4・5（PR-9 を挟む）、4b-3＝PR-6〜8。
+- 4c-1 へ持ち越す：**tokenizer の実装と K-16（main thread の占有）の spike、K-23（session の tools snapshot が app の版をまたいで残るか）の確認**。4b の範囲からは外す（この改訂が記録。
+  P27・P28 の precheck の条件は 4c-1 に移る）。PR-1 には tokenizer の port の型と試験用の数え値までを入れる。
+
+#### 5. PR-0 の golden で固定した legacy の事実（re-point で変えない）
+
+PR-0 の試験を実際に走らせて確かめた。意図しない挙動に見えても**直さず固定**している（直すのは別の変更）。
+
+- `tree_nodes.node_type` の CHECK は `folder`／`scene`／`note` だけ。`list_chapters` の `["part","chapter","scene"]` は scene しか当たらず、`get_chapter_summaries` の `"chapter"` は**現行 DB では常に 0 件**
+  （`0 chapters with scene summaries`）。folder は出ない。
+- `list_chapters`・`get_scene`・`search_scenes`（LIKE の arm）・`get_scene_timeline_neighbors`・`get_thread_scenes` は `archived_at` で絞らない（archived の場面が出る・読める）。tree store の `nodes`（`listNodes`）は archived を除く。
+  PR-6 の「archived 除外」は store 側の投影の話で、tool の SQL の挙動ではない。
+- `list_codex_tags` の `usageCount` は hidden の Codex の分も数える。`get_foreshadow_detail` は secret の伏線も返す（DR-MP4-24）。
+  `search_events` は dense の hit のうち project の年表に無い event id を hidden 判定の対象にせず素通しする（Native が project で絞る前提）。
+- 引数検査と no-project の順序は tool ごとに違う。**引数が先**：search_codex・search_events・search_scenes・search_snippets（空の query）、search_codex_by_tags（空の配列）、find_related_entries・get_scene・get_foreshadow_detail（空の id）、
+  get_scene_timeline_neighbors（空の sceneId）、get_thread_scenes（空の threadId）。**no-project が先**：get_event_detail・get_character_timeline・get_chronicle_state・list_events と、引数を検査しない list 系。
+- store の読取り位置（試験で固定したもの）：`projectId` は 20 本とも呼出しの冒頭で 1 回（最初の invoke で store の project を切り替えても結果は変わらない）。
+  `search_events` の現在の場面と読む順（`nodes`）、`search_codex`・`list_codex_by_type` の hidden 判定の場面は await の後。`list_events` の現在の場面は events の読みの後、`scene_events` の読みの前。
+  **固定していない（コードの読みだけ）**：`get_event_detail`・`get_character_timeline`・`get_chronicle_state` の場面・読む順の読取り位置（`get_chronicle_state` は `activeSceneId` を最初の await の前に読み、`nodes` は `Promise.all` の後。
+  `get_event_detail` は `nodes` を後でもう 1 回読む）、Codex 側の phase store（`sceneTimeIndex`・`resolutionMode`）の読取り位置。PR-7・8 の着手時に足す。
+- 並びは `ORDER BY` が無い SELECT（`list_codex_by_type`、`find_related_entries`、`search_codex_by_tags`、LIKE の arm、`get_foreshadow_detail` の setup、`get_thread_scenes` の branch、`list_chapters` の同順位）で
+  sql.js の行の返り順に依存する（実 addon では異なりうる）。tree の `sort_order` は同順位が起きないよう main project では全 node 別の値にしてある。
+- **覆えない範囲**：`get_chapter_summaries` は現行 DB で常に 0 件なので、章→場面の整形と `list_chapters` の part／chapter の枝は golden を通らない（行ありを作るには CHECK を外した fixture か mock 行が要る）。
+  Native 経路の結果、本文の barrier（`awaitPendingSceneContentWrite`）、`get_codex_entry` は範囲外。
 
 ### 4c-1 loop 規則・tool の接続（main 側。journey の seam だけが届く）
 
@@ -869,7 +1006,7 @@ legacy の `shouldAbortTurn`（`chatTurnStoreActions.ts:490-498`†、条件は 
 `[precheck]` で止める点（PR ごと。各 PR の条件は第 5 節にも書いた）：
 
 - **4a**：回答 1 は**済**。PR 本文に DR-MP4-1・2・23 と信頼境界、journey の catalog の digest（`workload-allocation.json`）、`verify:quality`（Node 22）、Quick。**4a は 3 欄をまとめて、回答 1 の後に着手する（回答済み）**。
-- **4b**：回答 3（**済**）、P2-2（caller の timeout。設計は DR-MP4-4）、import 閉包の実測（K-10）、K-4・K-5・K-6。
+- **4b**：回答 3（**済**）、P2-2（caller の timeout。設計は DR-MP4-4）、import 閉包の実測（K-10）、K-4・K-5・K-6。（K-10 は 2026-11-21 に実測済みで残りは第 5 節「4b の PR 計画」の 2。K-16・K-23 は 4c-1 へ持ち越した）
   budget・閾値の測定で既存の ceiling を超えるなら実装を止めて確認する（C-8、C-16。条件つき）。read の timeout に既存の定数以外の値を置くなら C-18。
 - **4c-1**：P1-1・P2-3 の反映（DR-MP4-28・30）、**Q4 の回答**、改訂後の独立レビュー。Q4 の回答まで、wire の拡張・rules module・`maxSteps` の上限・begin の前の注入点・tokenizer の同梱・main thread の対策に入らない。C-10 は schema の方式を (C) から変えるときだけ。
 - **4c-2**：P1-2・P2-1 の反映（DR-MP4-29・31）、**Q5 の回答**、改訂後の独立レビュー。Q5 の回答まで、engine 分岐・watcher・flush・registry・失効の観測の脅威モデルへの追記に入らない。C-17 は quiescence の不変条件を変えるときだけ。
@@ -933,13 +1070,13 @@ legacy の `shouldAbortTurn`（`chatTurnStoreActions.ts:490-498`†、条件は 
 | K-1 | begin の前の注入点（DR-MP4-28 の案 A）で messages の末尾に user message を足したとき、`request.prepared` と wire の bytes が一致すること。案 B（`prepareStep`）で messageList に足した場合の順序と `createdAt` による並べ替え、`prepareStep` から `systemCacheSegments`（providerOptions）を変えられるか |
 | K-2 | `maxSteps` の上限（導出式 `maxToolCalls＋maxUserQuestions`）が、Mastra の step の数え方（最後の応答の step を含むか）で legacy の最大 send 数を覆うか。（`stopReason` が `tool_use` でなく tool_use block がある応答は、adapter が tool-call を出さないので問題にならない。`agentLanguageModel.ts:670-672` の読解） |
 | K-3 | Mastra の tool 実行が `abortSignal` をバッチの途中でどう見るか。legacy の場面切替が authority の検査で次の tool 前に必ず abort されるか（scene scope の persisted session では `activeSceneId` の変化だけでは abort せず、場面切替が `activeSessionId` の変化を伴うかが未確認）。abort 後の `finalText` と `onTextChunk` |
-| K-4 | tree store の nodes と DB の `tree_nodes` の完全一致、`buildReadingOrder` の `localeCompare` の Chromium と Node の差、`sceneTimeIndex` の DB からの再構築 |
-| K-5 | `projectMetadataWriteQueue` の debounce の長さ。`resolutionMode` と tree の並びの store から DB までの窓。chat store と tree store の `activeSceneId` と `projectId` の常時一致（起動直後と project 切替） |
-| K-6 | 実 addon で main から `dbExecute` に identity を渡したときの挙動（napi が非 enumerable の値を落とすか。MP-3 の K と同種）。全 select（boolean・timestamp・json の列）での renderer 経路との一致。（Drizzle の method `get` の期待形は、`sqlite-proxy/session.js` の読解で「1 行の平らな配列」と確定した。DR-MP4-4） |
+| K-4 | tree store の nodes と DB の `tree_nodes` の完全一致、`buildReadingOrder` の `localeCompare` の Chromium と Node の差、`sceneTimeIndex` の DB からの再構築（2026-11-21 に実測したが、残る未確認がある。要約と残りは第 5 節「4b の PR 計画」の 2） |
+| K-5 | `projectMetadataWriteQueue` の debounce の長さ。`resolutionMode` と tree の並びの store から DB までの窓。chat store と tree store の `activeSceneId` と `projectId` の常時一致（起動直後と project 切替）（2026-11-21 に実測したが、残る未確認がある。要約と残りは第 5 節「4b の PR 計画」の 2） |
+| K-6 | 実 addon で main から `dbExecute` に identity を渡したときの挙動（napi が非 enumerable の値を落とすか。MP-3 の K と同種）。全 select（boolean・timestamp・json の列）での renderer 経路との一致。（Drizzle の method `get` の期待形は、`sqlite-proxy/session.js` の読解で「1 行の平らな配列」と確定した。DR-MP4-4）（2026-11-21 に実測したが、残る未確認がある。要約と残りは第 5 節「4b の PR 計画」の 2） |
 | K-7 | tokenizer：Electron main での動作・init 時間・event loop の塞がり、asar 内の読込、esbuild への binary の埋込みと main.cjs の parse コスト、`encode()` の特殊 token での挙動、main が renderer の同梱 asset（hash 付きの名前）を読めるか |
 | K-8 | sink の `operationId` を turn UUID に揃えたときの影響（usage 台帳の鍵）。（legacy の `chatMessageId` が turn 内で一定かは、`assistantMsg` が turn に 1 つで `:1188`†・`:1277`† が同じ `assistantMsg.id` を使うので**一定と確認した**） |
 | K-9 | hermes の turn を adapter が扱えるか。添付つき turn が他の入口で agent 経路に流れないか。public web search 経路の privacy 分離 |
-| K-10 | `schema.ts` の import 閉包（静的に数えた一覧は DR-MP4-3）、electron の tsconfig（NodeNext、lib は ES2023）で compile できるか、bundle と起動への影響。（参照する script・test は確認した：`validate-narrative-writers.mjs:216-228`†、`impact-map.yaml:771`†、`quality-manifest.yaml:1608,1657`†） |
+| K-10 | `schema.ts` の import 閉包（静的に数えた一覧は DR-MP4-3）、electron の tsconfig（NodeNext、lib は ES2023）で compile できるか、bundle と起動への影響。（参照する script・test は確認した：`validate-narrative-writers.mjs:216-228`†、`impact-map.yaml:771`†、`quality-manifest.yaml:1608,1657`†）（2026-11-21 に実測したが、残る未確認がある。要約と残りは第 5 節「4b の PR 計画」の 2） |
 | K-11 | Mastra の入力検証が実際の 44 本（`ask_user` の入れ子、配列 9・enum 8・minimum 1）で無変形か。ai の `jsonSchema()` が無検証になる機構 |
 | K-12 | `product-journey-catalog`／`workload-allocation` の registryDigest が wire と journey script の変更で動くか |
 | K-13 | `run_research` を将来 main に移すときの子 loop の置き場（audit の parent の連鎖、usage、進捗） |

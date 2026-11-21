@@ -1,0 +1,251 @@
+{
+  "tool": "get_character_timeline",
+  "cases": [
+    {
+      "case": "rows: 主役 c-aria（誕生を基準に年齢を計算）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "codexId": "c-aria"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "2 events for アリア",
+        "tokensUsed": 226,
+        "content": {
+          "character": "アリア",
+          "events": [
+            {
+              "id": "ev-birth",
+              "title": "アリアの誕生",
+              "kind": "birth",
+              "ordinal": "a0",
+              "startTime": 0,
+              "ageAtEvent": 0
+            },
+            {
+              "id": "ev-meet",
+              "title": "老魔術師との出会い",
+              "kind": "generic",
+              "ordinal": "a2",
+              "startTime": 5400,
+              "ageAtEvent": 15
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"character\":\"アリア\",\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"ageAtEvent\":0},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":15}]}"
+    },
+    {
+      "case": "rows: 参加者 c-mage（S3。戦争を含む。恒久秘匿の死は出ない）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "codexId": "c-mage"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "2 events for 老魔術師",
+        "tokensUsed": 233,
+        "content": {
+          "character": "老魔術師",
+          "events": [
+            {
+              "id": "ev-war",
+              "title": "魔術戦争",
+              "kind": "generic",
+              "ordinal": "a1",
+              "startTime": 3600,
+              "ageAtEvent": null
+            },
+            {
+              "id": "ev-meet",
+              "title": "老魔術師との出会い",
+              "kind": "generic",
+              "ordinal": "a2",
+              "startTime": 5400,
+              "ageAtEvent": null
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null}]}"
+    },
+    {
+      "case": "rows: S1 の c-mage（戦争は hidden）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "codexId": "c-mage"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "1 events for 老魔術師",
+        "tokensUsed": 135,
+        "content": {
+          "character": "老魔術師",
+          "events": [
+            {
+              "id": "ev-meet",
+              "title": "老魔術師との出会い",
+              "kind": "generic",
+              "ordinal": "a2",
+              "startTime": 5400,
+              "ageAtEvent": null
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null}]}"
+    },
+    {
+      "case": "empty: 関与のない codex（名前の解決もなく id を character に）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "codexId": "c-item"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "0 events for 魔法の杖",
+        "tokensUsed": 32,
+        "content": {
+          "character": "魔法の杖",
+          "events": []
+        }
+      },
+      "contentJson": "{\"character\":\"魔法の杖\",\"events\":[]}"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "codexId": "c-aria"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "0 events for c-aria",
+        "tokensUsed": 34,
+        "content": {
+          "character": "c-aria",
+          "events": []
+        }
+      },
+      "contentJson": "{\"character\":\"c-aria\",\"events\":[]}"
+    },
+    {
+      "case": "XPROJ: main から他 project の codex id",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "codexId": "x-c-aria"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "0 events for x-c-aria",
+        "tokensUsed": 36,
+        "content": {
+          "character": "x-c-aria",
+          "events": []
+        }
+      },
+      "contentJson": "{\"character\":\"x-c-aria\",\"events\":[]}"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の出来事だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "codexId": "x-c-aria"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "1 events for アリア",
+        "tokensUsed": 130,
+        "content": {
+          "character": "アリア",
+          "events": [
+            {
+              "id": "x-ev-1",
+              "title": "他作品の出来事",
+              "kind": "generic",
+              "ordinal": "a0",
+              "startTime": 100,
+              "ageAtEvent": null
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"character\":\"アリア\",\"events\":[{\"id\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"ordinal\":\"a0\",\"startTime\":100,\"ageAtEvent\":null}]}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "codexId": "c-aria"
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": {
+          "events": []
+        }
+      },
+      "contentJson": "{\"events\":[]}"
+    },
+    {
+      "case": "order: 引数の検査は no-project の後（空の codexId × no-project は No active project）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "codexId": ""
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": {
+          "events": []
+        }
+      },
+      "contentJson": "{\"events\":[]}"
+    },
+    {
+      "case": "order: project があれば空の codexId は codexId is required",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "codexId": ""
+      },
+      "result": {
+        "name": "get_character_timeline",
+        "summary": "codexId is required",
+        "tokensUsed": 0,
+        "content": {
+          "events": []
+        }
+      },
+      "contentJson": "{\"events\":[]}"
+    }
+  ]
+}

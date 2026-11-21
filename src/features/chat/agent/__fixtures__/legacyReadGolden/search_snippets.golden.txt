@@ -1,0 +1,163 @@
+{
+  "tool": "search_snippets",
+  "cases": [
+    {
+      "case": "rows: 短い語 2 字（LIKE-OR の arm）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "1 snippets found",
+        "tokensUsed": 75,
+        "content": [
+          {
+            "id": "sn-1",
+            "title": "魔法の描写メモ",
+            "tags": [
+              "描写"
+            ],
+            "preview": "光の粒が舞い上がる魔法の描写。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"sn-1\",\"title\":\"魔法の描写メモ\",\"tags\":[\"描写\"],\"preview\":\"光の粒が舞い上がる魔法の描写。\"}]"
+    },
+    {
+      "case": "rows: 3 字以上（fts_search の arm → id で Drizzle）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "老魔術師"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "1 snippets found",
+        "tokensUsed": 73,
+        "content": [
+          {
+            "id": "sn-2",
+            "title": "台詞案",
+            "tags": [],
+            "preview": "「お待ちしていました」と老魔術師は言った。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"sn-2\",\"title\":\"台詞案\",\"tags\":[],\"preview\":\"「お待ちしていました」と老魔術師は言った。\"}]"
+    },
+    {
+      "case": "empty: 一致なし",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "存在しない語"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "0 snippets found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "0 snippets found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の行だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "1 snippets found",
+        "tokensUsed": 73,
+        "content": [
+          {
+            "id": "x-sn-1",
+            "title": "他作品の魔法メモ",
+            "tags": [
+              "描写"
+            ],
+            "preview": "他作品の魔法の描写。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-sn-1\",\"title\":\"他作品の魔法メモ\",\"tags\":[\"描写\"],\"preview\":\"他作品の魔法の描写。\"}]"
+    },
+    {
+      "case": "XPROJ: main から他 project にしかない語は出ない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "他作品"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "0 snippets found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 空の query は no-project より先（0 snippets found）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": ""
+      },
+      "result": {
+        "name": "search_snippets",
+        "summary": "0 snippets found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

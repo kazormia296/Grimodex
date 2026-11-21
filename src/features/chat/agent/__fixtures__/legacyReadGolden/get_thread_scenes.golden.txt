@@ -1,0 +1,322 @@
+{
+  "tool": "get_thread_scenes",
+  "cases": [
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "threadId": "th-main"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread '主筋': 4/4 scene(s)",
+        "tokensUsed": 1631,
+        "content": {
+          "id": "th-main",
+          "name": "主筋",
+          "description": "アリアの旅",
+          "sceneCount": 4,
+          "scenes": [
+            {
+              "id": "n-s1",
+              "title": "出会い",
+              "phaseType": "introduce",
+              "note": "出会い",
+              "excerpt": "雨の降る朝、アリアは古い塔の前に立っていた。\n老魔術師は静かに扉を開けた。\n"
+            },
+            {
+              "id": "n-arch",
+              "title": "没シーン",
+              "phaseType": "develop",
+              "note": "archived の場面",
+              "excerpt": "没にした本文。魔法は使われない。\n"
+            },
+            {
+              "id": "n-s3",
+              "title": "裏切り",
+              "phaseType": "develop",
+              "note": "重複して結ばれた場面",
+              "excerpt": "裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。\n"
+            },
+            {
+              "id": "n-s4",
+              "title": "終幕",
+              "phaseType": "resolve",
+              "note": "",
+              "excerpt": "終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだ"
+            }
+          ],
+          "branches": [
+            {
+              "fromThreadId": "th-main",
+              "toThreadId": "th-sub",
+              "atNodeId": "n-s3",
+              "kind": "branch"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"th-main\",\"name\":\"主筋\",\"description\":\"アリアの旅\",\"sceneCount\":4,\"scenes\":[{\"id\":\"n-s1\",\"title\":\"出会い\",\"phaseType\":\"introduce\",\"note\":\"出会い\",\"excerpt\":\"雨の降る朝、アリアは古い塔の前に立っていた。\\n老魔術師は静かに扉を開けた。\\n\"},{\"id\":\"n-arch\",\"title\":\"没シーン\",\"phaseType\":\"develop\",\"note\":\"archived の場面\",\"excerpt\":\"没にした本文。魔法は使われない。\\n\"},{\"id\":\"n-s3\",\"title\":\"裏切り\",\"phaseType\":\"develop\",\"note\":\"重複して結ばれた場面\",\"excerpt\":\"裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。裏切りの夜、塔の最上階には誰もいなかった。老魔術師が残した魔法の痕跡だけが、淡い光となって床に滲んでいた。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。アリアはその光を指でなぞり、黒幕の名を口にした。\\n\"},{\"id\":\"n-s4\",\"title\":\"終幕\",\"phaseType\":\"resolve\",\"note\":\"\",\"excerpt\":\"終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだった。終幕の朝は静かだ\"}],\"branches\":[{\"fromThreadId\":\"th-main\",\"toThreadId\":\"th-sub\",\"atNodeId\":\"n-s3\",\"kind\":\"branch\"}]}"
+    },
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: branch の受け側",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "threadId": "th-sub"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread 'サブ': 1/1 scene(s)",
+        "tokensUsed": 253,
+        "content": {
+          "id": "th-sub",
+          "name": "サブ",
+          "description": "",
+          "sceneCount": 1,
+          "scenes": [
+            {
+              "id": "n-s2",
+              "title": "旅立ち",
+              "phaseType": "introduce",
+              "note": "",
+              "excerpt": "二人は塔を後にした。\n"
+            }
+          ],
+          "branches": [
+            {
+              "fromThreadId": "th-main",
+              "toThreadId": "th-sub",
+              "atNodeId": "n-s3",
+              "kind": "branch"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"th-sub\",\"name\":\"サブ\",\"description\":\"\",\"sceneCount\":1,\"scenes\":[{\"id\":\"n-s2\",\"title\":\"旅立ち\",\"phaseType\":\"introduce\",\"note\":\"\",\"excerpt\":\"二人は塔を後にした。\\n\"}],\"branches\":[{\"fromThreadId\":\"th-main\",\"toThreadId\":\"th-sub\",\"atNodeId\":\"n-s3\",\"kind\":\"branch\"}]}"
+    },
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）empty: 場面に結ばれていない筋",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "threadId": "th-empty"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread '未連結': 0/0 scene(s)",
+        "tokensUsed": 99,
+        "content": {
+          "id": "th-empty",
+          "name": "未連結",
+          "description": "場面に結ばれていない筋",
+          "sceneCount": 0,
+          "scenes": [],
+          "branches": []
+        }
+      },
+      "contentJson": "{\"id\":\"th-empty\",\"name\":\"未連結\",\"description\":\"場面に結ばれていない筋\",\"sceneCount\":0,\"scenes\":[],\"branches\":[]}"
+    },
+    {
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: 9 場面に結ばれた筋は 8 場面で切る（sceneCount は 9）",
+      "world": {
+        "projectId": "p-big"
+      },
+      "params": {
+        "threadId": "th-big"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread '長い筋': 8/9 scene(s)",
+        "tokensUsed": 809,
+        "content": {
+          "id": "th-big",
+          "name": "長い筋",
+          "description": "9 場面に結ばれた筋（上限 8 の確認）",
+          "sceneCount": 9,
+          "scenes": [
+            {
+              "id": "b-s1",
+              "title": "大場面1",
+              "phaseType": "develop",
+              "note": "大場面1",
+              "excerpt": "大場面1の本文。\n"
+            },
+            {
+              "id": "b-s2",
+              "title": "大場面2",
+              "phaseType": "develop",
+              "note": "大場面2",
+              "excerpt": "大場面2の本文。\n"
+            },
+            {
+              "id": "b-s3",
+              "title": "大場面3",
+              "phaseType": "develop",
+              "note": "大場面3",
+              "excerpt": "大場面3の本文。\n"
+            },
+            {
+              "id": "b-s4",
+              "title": "大場面4",
+              "phaseType": "develop",
+              "note": "大場面4",
+              "excerpt": "大場面4の本文。\n"
+            },
+            {
+              "id": "b-s5",
+              "title": "大場面5",
+              "phaseType": "develop",
+              "note": "大場面5",
+              "excerpt": "大場面5の本文。\n"
+            },
+            {
+              "id": "b-s6",
+              "title": "大場面6",
+              "phaseType": "develop",
+              "note": "大場面6",
+              "excerpt": "大場面6の本文。\n"
+            },
+            {
+              "id": "b-s7",
+              "title": "大場面7",
+              "phaseType": "develop",
+              "note": "大場面7",
+              "excerpt": "大場面7の本文。\n"
+            },
+            {
+              "id": "b-s8",
+              "title": "大場面8",
+              "phaseType": "develop",
+              "note": "大場面8",
+              "excerpt": "大場面8の本文。\n"
+            }
+          ],
+          "branches": []
+        }
+      },
+      "contentJson": "{\"id\":\"th-big\",\"name\":\"長い筋\",\"description\":\"9 場面に結ばれた筋（上限 8 の確認）\",\"sceneCount\":9,\"scenes\":[{\"id\":\"b-s1\",\"title\":\"大場面1\",\"phaseType\":\"develop\",\"note\":\"大場面1\",\"excerpt\":\"大場面1の本文。\\n\"},{\"id\":\"b-s2\",\"title\":\"大場面2\",\"phaseType\":\"develop\",\"note\":\"大場面2\",\"excerpt\":\"大場面2の本文。\\n\"},{\"id\":\"b-s3\",\"title\":\"大場面3\",\"phaseType\":\"develop\",\"note\":\"大場面3\",\"excerpt\":\"大場面3の本文。\\n\"},{\"id\":\"b-s4\",\"title\":\"大場面4\",\"phaseType\":\"develop\",\"note\":\"大場面4\",\"excerpt\":\"大場面4の本文。\\n\"},{\"id\":\"b-s5\",\"title\":\"大場面5\",\"phaseType\":\"develop\",\"note\":\"大場面5\",\"excerpt\":\"大場面5の本文。\\n\"},{\"id\":\"b-s6\",\"title\":\"大場面6\",\"phaseType\":\"develop\",\"note\":\"大場面6\",\"excerpt\":\"大場面6の本文。\\n\"},{\"id\":\"b-s7\",\"title\":\"大場面7\",\"phaseType\":\"develop\",\"note\":\"大場面7\",\"excerpt\":\"大場面7の本文。\\n\"},{\"id\":\"b-s8\",\"title\":\"大場面8\",\"phaseType\":\"develop\",\"note\":\"大場面8\",\"excerpt\":\"大場面8の本文。\\n\"}],\"branches\":[]}"
+    },
+    {
+      "case": "empty: 存在しない id",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "threadId": "th-none"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "threadId": "th-main"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: main から他 project の筋は Thread not found",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "threadId": "x-th-main"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の筋",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "threadId": "x-th-main"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "Thread '他作品の主筋': 1/1 scene(s)",
+        "tokensUsed": 201,
+        "content": {
+          "id": "x-th-main",
+          "name": "他作品の主筋",
+          "description": "他作品の筋",
+          "sceneCount": 1,
+          "scenes": [
+            {
+              "id": "x-s1",
+              "title": "出会い",
+              "phaseType": "introduce",
+              "note": "他作品の出会い",
+              "excerpt": "他作品の魔法の本文。秘密の鍵はここにある。\n"
+            }
+          ],
+          "branches": []
+        }
+      },
+      "contentJson": "{\"id\":\"x-th-main\",\"name\":\"他作品の主筋\",\"description\":\"他作品の筋\",\"sceneCount\":1,\"scenes\":[{\"id\":\"x-s1\",\"title\":\"出会い\",\"phaseType\":\"introduce\",\"note\":\"他作品の出会い\",\"excerpt\":\"他作品の魔法の本文。秘密の鍵はここにある。\\n\"}],\"branches\":[]}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "threadId": "th-main"
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: 空の threadId は no-project より先（No threadId provided）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "threadId": ""
+      },
+      "result": {
+        "name": "get_thread_scenes",
+        "summary": "No threadId provided",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    }
+  ]
+}
