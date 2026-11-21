@@ -333,3 +333,34 @@ describe("the four commands do not use `deps` (DR-MP4-6)", () => {
     expect(touched).toEqual([]);
   });
 });
+
+describe("the backend the typed reads keep", () => {
+  it("is narrowed at run time to the four methods: the run sees no other method", async () => {
+    const seen: string[][] = [];
+    const original = NAPI_COMMANDS.fts_search.run;
+    const backend = {
+      ftsSearch: async () => "[]",
+      chatAgentIrSelect: async () => "must-not-be-reachable",
+      dbExecute: async () => "must-not-be-reachable",
+    };
+    const spy = vi
+      .spyOn(NAPI_COMMANDS.fts_search, "run")
+      .mockImplementation(async (b: unknown, a: unknown, d: unknown) => {
+        seen.push(Object.keys(b as object).sort());
+        return original(b as never, a as never, d as never);
+      });
+    try {
+      const reads = createMainTypedReads({
+        backend: backend as never,
+        identity: { workspaceId: "/w" } as never,
+      });
+      await reads
+        .fts({ projectId: "p", query: "q", scope: "codex", limit: 1 } as never)
+        .catch(() => undefined);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    for (const keys of seen) expect(keys).toEqual(["ftsSearch"]);
+  });
+});

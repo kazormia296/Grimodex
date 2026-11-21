@@ -62,15 +62,39 @@ const FTS_SCOPES: ReadonlySet<string> = new Set<FtsScope>([
   "snippets",
 ]);
 
+type AnyMethod = (...args: unknown[]) => unknown;
+
+function bound(source: object, method: unknown): AnyMethod | undefined {
+  return typeof method === "function"
+    ? (method as AnyMethod).bind(source)
+    : undefined;
+}
+
+function narrowBackend(source: MainTypedReadsBackend): MainTypedReadsBackend {
+  const narrowed: Record<string, AnyMethod> = {};
+  const fts = bound(source, source.ftsSearch);
+  if (fts) narrowed.ftsSearch = fts;
+  const codex = bound(source, source.codexSemanticSearch);
+  if (codex) narrowed.codexSemanticSearch = codex;
+  const events = bound(source, source.eventsSemanticSearch);
+  if (events) narrowed.eventsSemanticSearch = events;
+  const foreshadow = bound(source, source.foreshadowListOpenForContext);
+  if (foreshadow) narrowed.foreshadowListOpenForContext = foreshadow;
+  return Object.freeze(narrowed) as unknown as MainTypedReadsBackend;
+}
+
 export function createMainTypedReads(
   options: MainTypedReadsOptions,
 ): CoreNativeReads {
   const { identity } = options;
-  const backend = options.backend;
+  // Copied at run time into an object that has the four methods and nothing
+  // else: the Pick above is a type only, and the object the caller passes has
+  // every method of the backend. A missing method stays missing (fail closed).
+  const backend = narrowBackend(options.backend);
   // `run` is typed on the whole interface. Only the four methods above exist on
-  // the type this module is given, and the four commands below reach only
-  // those (`typed.test.ts` and the static test hold that).
-  const nativeBackend = backend as NapiBackendLike;
+  // the object it gets, and the four commands below reach only those
+  // (`typed.test.ts` and the static test hold that).
+  const nativeBackend = backend as unknown as NapiBackendLike;
 
   const workspacePath = (command: string): string => {
     const id = identity?.workspaceId;
