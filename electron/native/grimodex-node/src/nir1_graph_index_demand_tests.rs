@@ -833,11 +833,17 @@ fn a_publish_after_a_lifecycle_edge_announces_nothing() {
             .consecutive_failures
             == 1
     });
+    assert!(
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .refusals
+            .is_empty(),
+        "a refusal that ended after the edge is not recorded"
+    );
     publish_graph_index(&fixture, PROJECT);
     assert!(notified(&notices).is_empty());
 }
 
-/// After a close nothing is announced.
+/// After a close the record is gone and nothing is announced.
 #[test]
 fn a_publish_after_close_announces_nothing() {
     let fixture = ProductFixture::new();
@@ -848,9 +854,59 @@ fn a_publish_after_close_announces_nothing() {
         demand_through(&fixture, false, PROJECT),
         Some(GraphUnavailable::RegistrationUnavailable)
     );
+    assert!(!lock(&fixture.state.nir1_graph.shared.slot)
+        .refusals
+        .is_empty());
     fixture.state.nir1_graph.close_for_shutdown();
+    assert!(
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .refusals
+            .is_empty(),
+        "close drops the record"
+    );
     publish_graph_index(&fixture, PROJECT);
     assert!(notified(&notices).is_empty());
+}
+
+/// The closed flag and the Quarantined phase stop an announcement on their own,
+/// with the record present and the epoch unchanged (a close also moves the
+/// epoch, which would hide the check).
+#[test]
+fn a_closed_or_quarantined_owner_announces_nothing_even_with_a_current_record() {
+    for quarantined in [false, true] {
+        let fixture = ProductFixture::new();
+        let notices = recording_notifier(&fixture);
+        long_backoff(&fixture, 5);
+        refuse_once(&fixture, PrepareMode::Fail(REFUSED));
+        let epoch_before = fixture.state.nir1_graph.shared.edge_epoch.load(Ordering::SeqCst);
+        if quarantined {
+            let binding = ready_binding(&fixture.state).expect("a Ready binding");
+            lock(&fixture.state.nir1_graph.shared.slot).phase = Phase::Quarantined { binding };
+        } else {
+            fixture
+                .state
+                .nir1_graph
+                .shared
+                .closed
+                .store(true, Ordering::SeqCst);
+        }
+        assert_eq!(
+            fixture.state.nir1_graph.shared.edge_epoch.load(Ordering::SeqCst),
+            epoch_before
+        );
+        assert!(!lock(&fixture.state.nir1_graph.shared.slot)
+            .refusals
+            .is_empty());
+        publish_graph_index(&fixture, PROJECT);
+        assert!(
+            notified(&notices).is_empty(),
+            "quarantined: {quarantined}"
+        );
+        assert!(
+            failure_wait_is_set(&fixture),
+            "quarantined: {quarantined}: the wait is not lifted"
+        );
+    }
 }
 
 /// A suspension by refusal: one publish announces the project once, however many
@@ -942,4 +998,212 @@ fn the_refusal_record_is_bounded() {
     slot.watch_refusal("old", "demand", 7);
     assert!(slot.take_refusal("old", 8).is_none());
     assert!(slot.refusals.is_empty());
+}
+
+/// B published while the prepare ran and the prepare (which saw the old index) was
+/// then refused: no row is made, the failure wait is lifted once and the project
+/// is announced once when the session has ended, though no later publish comes.
+#[test]
+fn a_publish_during_the_prepare_announces_the_refusal_that_follows() {
+    for failures_before_suspend in [5, 1] {
+        let fixture = ProductFixture::new();
+        let notices = recording_notifier(&fixture);
+        long_backoff(&fixture, failures_before_suspend);
+        *lock(&fixture.plan.prepare_mode) = PrepareMode::HoldThenFail(REFUSED);
+        assert!(matches!(
+            fixture.begin("entity"),
+            GraphBegin::Unavailable(GraphUnavailable::Warming)
+        ));
+        wait_until("prepare is held", || {
+            fixture.plan.prepares.load(Ordering::SeqCst) == 1
+        });
+        // B publishes while the prepare runs: there is no record to announce yet.
+        publish_graph_index(&fixture, PROJECT);
+        assert!(notified(&notices).is_empty());
+        fixture.plan.release.store(true, Ordering::SeqCst);
+        wait_until("announced once the session ended", || {
+            !notified(&notices).is_empty() && fixture.kind() == GraphSlotKind::Empty
+        });
+        thread::sleep(Duration::from_millis(100));
+        let label = format!("failures before suspend: {failures_before_suspend}");
+        assert_eq!(notified(&notices), vec![PROJECT.to_owned()], "{label}");
+        assert!(
+            lock(&fixture.state.nir1_graph.shared.slot)
+                .refusals
+                .is_empty(),
+            "{label}: no row is made"
+        );
+        assert!(!failure_wait_is_set(&fixture), "{label}");
+        // The next demand starts a session instead of meeting the wait.
+        *lock(&fixture.plan.prepare_mode) = PrepareMode::Ok;
+        assert_ne!(
+            demand_through(&fixture, false, PROJECT),
+            Some(GraphUnavailable::RegistrationUnavailable),
+            "{label}"
+        );
+    }
+    // The count stays when the slot does not suspend.
+    let fixture = ProductFixture::new();
+    long_backoff(&fixture, 5);
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::HoldThenFail(REFUSED);
+    let _ = fixture.begin("entity");
+    wait_until("prepare is held", || {
+        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    });
+    publish_graph_index(&fixture, PROJECT);
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    wait_until("one counted failure", || {
+        fixture.kind() == GraphSlotKind::Empty
+            && lock(&fixture.state.nir1_graph.shared.slot)
+                .rebuild
+                .consecutive_failures
+                == 1
+    });
+}
+
+/// A session that reaches READY drops its project's row without announcing it
+/// (the READY announces for the key), so a later publish announces nothing.
+#[test]
+fn a_ready_session_drops_its_projects_refusal_row() {
+    let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
+    long_backoff(&fixture, 5);
+    refuse_once(&fixture, PrepareMode::Fail(REFUSED));
+    assert!(!lock(&fixture.state.nir1_graph.shared.slot)
+        .refusals
+        .is_empty());
+    // B's index is fixed by other means: the wait ends and the prepare succeeds.
+    fixture.state.nir1_graph.set_config_for_test(fast_config());
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Ok;
+    wait_until("a session starts", || {
+        matches!(
+            fixture.begin("entity"),
+            GraphBegin::Unavailable(GraphUnavailable::Warming)
+        )
+    });
+    wait_until("READY", || fixture.kind() == GraphSlotKind::Ready);
+    assert!(
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .refusals
+            .is_empty(),
+        "READY drops the row"
+    );
+    wait_until("the READY is announced", || !notified(&notices).is_empty());
+    let announced = notified(&notices).len();
+    publish_graph_index(&fixture, PROJECT);
+    assert_eq!(notified(&notices).len(), announced);
+}
+
+/// B's publish lifts only a wait that a refusal set: with the row present but the
+/// ledger's last failure being another reason, the project is announced and the
+/// wait stays.
+#[test]
+fn a_publish_lifts_only_a_wait_that_a_refusal_set() {
+    let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
+    long_backoff(&fixture, 5);
+    refuse_once(&fixture, PrepareMode::Fail(REFUSED));
+    // A later failure of another kind: the row stays, the ledger's reason changes.
+    fixture.state.nir1_graph.set_config_for_test(GraphOwnerConfig {
+        failure_backoff_initial: Duration::from_millis(1),
+        failure_backoff_max: Duration::from_millis(1),
+        ..fast_config()
+    });
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Fail(EXIT_BEFORE_READY);
+    wait_until("a worker failure is counted", || {
+        let _ = fixture.begin("entity");
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .rebuild
+            .consecutive_failures
+            >= 2
+            && fixture.kind() == GraphSlotKind::Empty
+    });
+    long_backoff(&fixture, 5);
+    // The failure the wait now belongs to is a worker's.
+    {
+        let mut slot = lock(&fixture.state.nir1_graph.shared.slot);
+        slot.rebuild.last_failure = Some(GraphUnavailable::WorkerUnavailable);
+        slot.rebuild.last_failure_at = Some(Instant::now());
+        assert!(!slot.refusals.is_empty());
+    }
+    publish_graph_index(&fixture, PROJECT);
+    assert_eq!(notified(&notices), vec![PROJECT.to_owned()]);
+    assert!(failure_wait_is_set(&fixture));
+}
+
+/// The held query's own prepare is refused (Related Scenes' entry): the refused
+/// project is recorded and its publish announces it once.
+#[test]
+fn a_held_querys_own_refusal_is_recorded_and_announced_by_the_publish() {
+    let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
+    long_backoff(&fixture, 5);
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Fail(REFUSED);
+    let GraphBegin::Pending(ticket) = fixture
+        .state
+        .nir1_graph
+        .begin_deferred(&fixture.state, fixture.query("entity"))
+    else {
+        panic!("an empty slot holds the query");
+    };
+    ticket.release_after_own_commits();
+    assert!(matches!(
+        ticket.wait_timeout(Duration::from_secs(5)),
+        Some(GraphTicketOutcome::Unavailable(
+            GraphUnavailable::RegistrationUnavailable
+        ))
+    ));
+    ticket.finish(GraphTicketUse::Unused);
+    wait_until("the refusal is recorded", || {
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .refusals
+            .iter()
+            .any(|row| row.refused_project == PROJECT && row.waiting == [PROJECT.to_owned()])
+    });
+    assert!(notified(&notices).is_empty());
+    publish_graph_index(&fixture, PROJECT);
+    assert_eq!(notified(&notices), vec![PROJECT.to_owned()]);
+    assert!(!failure_wait_is_set(&fixture));
+}
+
+/// A demand answered from the wait while no row exists (or only a row of an
+/// older epoch) makes its own project the refused one.
+#[test]
+fn a_wait_answer_without_a_current_row_names_its_own_project() {
+    let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
+    long_backoff(&fixture, 5);
+    refuse_once(&fixture, PrepareMode::Fail(REFUSED));
+    lock(&fixture.state.nir1_graph.shared.slot).refusals.clear();
+    assert_eq!(
+        demand_through(&fixture, false, OTHER_PROJECT),
+        Some(GraphUnavailable::RegistrationUnavailable)
+    );
+    {
+        let slot = lock(&fixture.state.nir1_graph.shared.slot);
+        assert_eq!(slot.refusals.len(), 1);
+        assert_eq!(slot.refusals[0].refused_project, OTHER_PROJECT);
+        assert_eq!(slot.refusals[0].waiting, vec![OTHER_PROJECT.to_owned()]);
+    }
+    publish_graph_index(&fixture, OTHER_PROJECT);
+    assert_eq!(notified(&notices), vec![OTHER_PROJECT.to_owned()]);
+
+    // Unit level: a last row of another epoch is not joined.
+    let mut slot = SlotState {
+        phase: Phase::Empty,
+        session: None,
+        rebuild: RebuildLedger::default(),
+        exited: Vec::new(),
+        deferred: None,
+        refusals: Vec::new(),
+    };
+    slot.watch_refusal("a", "a", 1);
+    slot.watch_latest_refusal("b", 2);
+    assert_eq!(slot.refusals.len(), 2);
+    assert_eq!(slot.refusals[1].refused_project, "b");
+    assert_eq!(slot.refusals[1].edge_epoch, 2);
+    // A last row of the same epoch is joined.
+    slot.watch_latest_refusal("c", 2);
+    assert_eq!(slot.refusals.len(), 2);
+    assert_eq!(slot.refusals[1].waiting, vec!["b".to_owned(), "c".to_owned()]);
 }

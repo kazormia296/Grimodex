@@ -948,6 +948,12 @@ impl SlotState {
         self.watch_refusal(&refused, waiting, edge_epoch);
     }
 
+    /// A session of `project` reached READY: its refusal is over, so its row is
+    /// dropped without an announcement (the READY announces for the key itself).
+    fn drop_refusal(&mut self, project: &str) {
+        self.refusals.retain(|row| row.refused_project != project);
+    }
+
     /// B's publish for `project`: the waiting projects of its refusal, once, if
     /// that refusal belongs to `edge_epoch`. Rows of another epoch are dropped.
     fn take_refusal(&mut self, project: &str, edge_epoch: u64) -> Option<Vec<String>> {
@@ -1599,6 +1605,9 @@ impl Nir1GraphProductOwner {
     fn resume_after_graph_index_publish(&self, published: Option<&str>) {
         let resumed_failures = resumed_failure_count(&self.shared.config());
         let mut slot = lock(&self.shared.slot);
+        // Read before the Suspended resume below clears the reason.
+        let registration_failure =
+            slot.rebuild.last_failure == Some(GraphUnavailable::RegistrationUnavailable);
         // CP2a-D48: under the slot lock, so `SessionGuard::drop` orders itself
         // before or after this publish.
         self.shared.graph_index_change.fetch_add(1, Ordering::SeqCst);
@@ -1617,7 +1626,10 @@ impl Nir1GraphProductOwner {
             if let (Some(waiting), true) = (waiting, live) {
                 // The next demand may start a session at once (the rebuild
                 // minimum interval still applies), not after the failure wait.
-                slot.rebuild.last_failure_at = None;
+                // Only a wait that a refusal set is lifted.
+                if registration_failure {
+                    slot.rebuild.last_failure_at = None;
+                }
                 announce = waiting;
             }
         }
@@ -2430,6 +2442,10 @@ struct SessionGuard {
     /// CQ-DEFER: filled by the Drop with the held session's waiting projects;
     /// `session_main` announces them once the slot shows the session's end.
     announce_after: Rc<RefCell<Vec<String>>>,
+    /// DR-PUBG-5-21: projects whose refusal ended after B had already published
+    /// during the prepare; `session_main` announces them (unconditionally, once)
+    /// when the slot shows the session's end.
+    refusal_announce: Rc<RefCell<Vec<String>>>,
 }
 
 impl Drop for SessionGuard {
@@ -2520,6 +2536,7 @@ impl Drop for SessionGuard {
 fn session_main(context: SessionContext) {
     let shared = Arc::clone(&context.shared);
     let announce_after = Rc::new(RefCell::new(Vec::new()));
+    let refusal_announce = Rc::new(RefCell::new(Vec::new()));
     {
         let mut guard = SessionGuard {
             shared: Arc::clone(&shared),
@@ -2531,6 +2548,7 @@ fn session_main(context: SessionContext) {
             quarantined: false,
             index_change_at_prepare: None,
             announce_after: Rc::clone(&announce_after),
+            refusal_announce: Rc::clone(&refusal_announce),
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| run_session(&mut guard, &context)));
         if outcome.is_err() {
@@ -2554,6 +2572,12 @@ fn session_main(context: SessionContext) {
         if shared.take_unserved(&project_id) {
             shared.notify_ready(&project_id);
         }
+    }
+    // DR-PUBG-5-21: B published while the prepare that was then refused ran, so
+    // no later publish will announce it. Now that the slot is free, once.
+    let refused = std::mem::take(&mut *refusal_announce.borrow_mut());
+    for project_id in refused {
+        shared.notify_ready(&project_id);
     }
 }
 
@@ -2619,6 +2643,7 @@ fn build_and_serve(
         slot.phase = Phase::Ready;
         slot.rebuild.consecutive_failures = 0;
         slot.rebuild.last_failure = None;
+        slot.drop_refusal(&key.project_id);
     }
     bump(&shared.diagnostics.prepares_ready);
     shared.signal_ready();
@@ -2725,10 +2750,24 @@ fn build_worker(
                 // the refusal, wait for its Graph Index build's publish. Under
                 // the same slot lock as the ledger, and before the demand
                 // below can wake B. A refusal of an old epoch is not recorded.
+                //
+                // If B published while this prepare ran (the same comparison as
+                // D48), the refusal judged an index that is gone and no later
+                // publish will announce it: no row is made. The failure wait is
+                // lifted once (the count stays) and the project is announced
+                // once, when the session has ended.
                 if reason == GraphUnavailable::RegistrationUnavailable
                     && !edge_or_closed(&shared, epoch)
                 {
-                    slot.watch_refusal(&key.project_id, &key.project_id, epoch);
+                    let published_during_prepare = guard
+                        .index_change_at_prepare
+                        .is_some_and(|seen| seen != shared.graph_index_change.load(Ordering::SeqCst));
+                    if published_during_prepare {
+                        slot.rebuild.last_failure_at = None;
+                        guard.refusal_announce.borrow_mut().push(key.project_id.clone());
+                    } else {
+                        slot.watch_refusal(&key.project_id, &key.project_id, epoch);
+                    }
                 }
                 let failures = slot.rebuild.consecutive_failures;
                 drop(slot);
@@ -2816,6 +2855,7 @@ fn run_deferred(
         slot.phase = Phase::InUse;
         slot.rebuild.consecutive_failures = 0;
         slot.rebuild.last_failure = None;
+        slot.drop_refusal(&key.project_id);
     }
     bump(&shared.diagnostics.prepares_ready);
     let _ = serve_query(
