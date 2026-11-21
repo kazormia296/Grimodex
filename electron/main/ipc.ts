@@ -1045,9 +1045,11 @@ const UNREADABLE_POLICY_ROW = Symbol("unreadable-policy-row");
 
 /**
  * Native `db_execute` returns each row as an object (column name -> value;
- * `grimodex-db` `execute_impl`). The renderer proxy maps it positionally, so a
- * positional array row is accepted as well. Anything else, or an object
- * without the `ai_policy` column, is unreadable (fail closed by the caller).
+ * `grimodex-db` `execute_impl`), so the object branch is the real path. The
+ * positional array branch is never produced by Native; it exists only for
+ * compatibility with test mocks (main does not receive array rows from
+ * Native). Anything else, or an object without the `ai_policy` column, is
+ * unreadable (fail closed by the caller).
  */
 function aiPolicyColumn(row: unknown): unknown {
   if (Array.isArray(row)) {
