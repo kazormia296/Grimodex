@@ -1,6 +1,7 @@
 # Mastra 移行の脅威モデルと owner／lifecycle の表（2026-11-19 確定）
 
 - 状態：**確定（U-1、2026-11-19 にユーザーが「このまま確定」と回答）**。変更は新しい確認を要する。
+- 改訂の記録（2026-11-21、ユーザー確認済み）：[MP-4 の判断](mastra-mp4-decisions.md)の決定 3 と回答 3 により、T13・D16・W11 と残るリスクの 1 行を足し、chat IR の文言を「IR を開ける lane まで閉（MP-4 を含む）」に揃えた。
 - 同時の回答：
   - 残るリスクのうち、次の 3 つを、旗を開ける前の受入れの条件に上げる。
     - P5(c)：tool の本文を observer と題名から絞る。
@@ -265,8 +266,9 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 | T8  | 配布物に、入れないと決めたコード（ee 由来）が混入する                                                                                                                                   | X16                       | P10、決定 2026-11-18（**この文書で足した**）       |
 | T9  | 会話・tool 結果に混ざる指示文が、tool の誤実行や、WM・OM を通じた永続化に使われる                                                                                                       | X1、X5                    | 設計 §5.3 の「信頼しない」、M20                    |
 | T10 | 利用者の shell の env（API key、`OM_DEBUG` など）が継承され、Mastra に使われる                                                                                                          | X13、X18                  | 設計 §5.3 の「信頼しない」                         |
-| T11 | loop が main に移ることで、製品認可（capability）と、確認済みの chat IR S1 の脅威モデルの前提が落ちる                                                                                   | -（loop 側。MP-3〜MP-6）  | 計画書 R-5、R-25（**この文書で足した**）           |
+| T11 | loop が main に移ることで、製品認可（capability）と、確認済みの chat IR S1 の脅威モデルの前提が落ちる（chat IR S1 は **IR を開ける lane まで閉（MP-4 を含む）**。再確認はその lane で行う。2026-11-21 のユーザー決定） | -（loop 側。MP-3〜MP-6）  | 計画書 R-5、R-25（**この文書で足した**）           |
 | T12 | 保存・送信の範囲の拡大が、開示と consent なしに起きる                                                                                                                                   | X1〜X8                    | P7、P8、GDX-AI-CONSENT-001（**この文書で足した**） |
+| T13 | main の agent loop が read tool のために `dbExecute` と typed read を直接呼ぶ。JS の profile gate を通らず、unrestricted では Native に read-only の強制も workspace の pin も無い。read が書込みや IR の表・他の表に触れる、workspace の切替をまたいで読む | -（loop 側。MP-4） | [MP-4 の判断](mastra-mp4-decisions.md)の決定 3、回答 3（**2026-11-21 に足した**） |
 
 ### 3.2 範囲外
 
@@ -275,7 +277,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - Mastra Gateway（`msk_` key）の利用。使わない（D2）。
 - Web Editor の handoff。廃止済みなので考慮しない。
 
-### 3.3 必須の防御（D1〜D15）
+### 3.3 必須の防御（D1〜D16）
 
 | D   | 防御                                                                                                                                                                                                                                                                                           | 効く T  | MP                         |
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------------------------- |
@@ -291,11 +293,12 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 | D10 | 削除：message 削除で由来する OM の部分を消す（P4）。project 削除で WM・OM を必ず消す（P3）。vector は削除・export・backup の範囲                                                                                                                                                               | T7      | 11、12                     |
 | D11 | lifecycle：admission closure、inflight 計数、audit の terminal と Native の terminal receipt を終了証跡にする。`settled()` は証跡にしない。届かない仕事は ambiguous の audit 行で閉じる（X21、X22）                                                                                            | T5      | 3、11                      |
 | D12 | 通信の観測：packaged の main で、起動から終了まで OS 側の捕捉（P1(b)）。hook の自己試験を毎回付ける。15 分間隔の telemetry を含む長さと、終了時                                                                                                                                                | T1      | 1、3、10、13               |
-| D13 | capability の維持（one-shot、`senderId`・projectId・入力 digest の束縛）。chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）                                                                                                                                                                    | T11     | 3、6                       |
+| D13 | capability の維持（one-shot、`senderId`・projectId・入力 digest の束縛）。chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）は、**IR を開ける lane まで閉（MP-4 を含む）**。再確認はその lane で行い、MP-4 は静的試験で閉を固定する（2026-11-21 のユーザー決定）                                                     | T11     | 3、6                       |
 | D14 | 開示と consent（policy version・route・provider・実際の接続先に束縛）。機能ごとの on／off、`memoryModel`、WM の閲覧・編集・消去、観測の消去（P8）                                                                                                                                              | T12     | 12                         |
 | D15 | Mastra の storage は memory の domain だけ。observability・workflows・agents ほか全 domain を `false`（traces を保存しない）                                                                                                                                                                   | T4      | 8                          |
+| D16 | main の read の防御（MP-4。回答 3）：(1) 送信前の SELECT 検査（先頭が SELECT、method は `all`／`values`、params は配列。外れたら Native を呼ばない）、(2) 返りの marker が `'read'` でなければ事後に fail-closed、(3) core が参照する表の allowlist と、IR を参照しないことの静的試験、(4) read の開始の直前と await の後に `assertLive`（`profileClosed()` の 3 状態を含む）、(5) caller の timeout（legacy と同じ既存の定数を共有 module に出す。`db_execute`・`fts_search` は 10 秒、semantic 2 本は 5 分。`foreshadow_list_open_for_context` は legacy も timeout が無く、MP-4 の判断で扱う）、(6) in-flight の計数と待ち（W11） | T13 | 4（4b） |
 
-## 4. owner／lifecycle の表 W1〜W10
+## 4. owner／lifecycle の表 W1〜W11
 
 要件の正本は GDX-PRECHECK-001。表は、全 entry／start／retry／reentrant、admission closure、pending-start、active handle の所有、取消し、有限の待ち、
 実際の終了証跡、error／timeout／onClosed の所有、永続 restart state を覆う。
@@ -432,6 +435,19 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - error／timeout／onClosed：finalizer が `quit-memory-timeout` を記録して先へ進む。残った仕事は ambiguous の audit 行として閉じる（X21）。
 - 永続 restart state：W6 の flag が残りうる。次回起動で stale 回復（M12）。
 
+**W11 main の read tool の呼出し（`dbExecute`・typed read。MP-4。2026-11-21 に足した）**
+
+- owner：main の turn owner（Turn が所有する）。
+- entry・再入：read tool の execute。1 turn の tool は直列（`toolCallConcurrency: 1` を固定。`electron/main/mastra/agentModelPolicy.ts:30-34`）。
+- admission closure：`profileClosed()`（restricted／unavailable／activating）、workspace の切替、quit、forced で closed。開始の直前に同期で `assertLive` を通す。
+- pending-start：無し（検査を通れば即呼ぶ）。
+- active handle：N-API 呼出しの Promise。owner が send とは別の counter で数える。
+- 取消し：呼出しは止められない。await の後に `forcedCause` と `assertLive` を再確認し、外れていれば結果を捨てて turn の abort に合流する。
+- 有限の待ち：D16 の (5) の対象（`db_execute`・`fts_search`・semantic 2 本）は caller の timeout。`foreshadow_list_open_for_context` は legacy も caller timeout が無いので付けず、abort との race と下の上限だけ。slot の解放と quiesce の待ちは、既存の forced の上限（`MASTRA_TURN_FORCED_BOUND_MS`＝30 秒）と quit の上限（`MASTRA_TURN_QUIT_BOUND_MS`＝5 秒。暫定。`electron/main/mastraTurnOwner.ts:68-71`）に乗せ、新しい値を置かない。
+- 終了の証跡：呼出しの返り（settle）。**slot の計数だけに使う**。永続化の終了証跡ではない（D11 の「`settled()` は証跡にしない」と区別する。read は何も永続しない）。
+- error／timeout／onClosed：owner が所有する。失敗と timeout は turn の失敗。caller の timeout は Native を止めないので、計数は settle まで残す。
+- 永続 restart state：無し（read だけ）。
+
 ### 4.2 GDX-PRECHECK-001 の項目ごとの、spike で確かめたことと未確認
 
 | 項目                              | spike で確かめたこと                                                                                                                                                                     | 未確認・未解決                                                                    |
@@ -458,6 +474,7 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 
 記録済みの未確認と、決定が残した点だけを挙げる（新しい脅威は作らない）。受入れ条件に上げたものは冒頭の「同時の回答」のとおり（2026-11-19）。
 
+- **main の read は Native の read-only の強制に頼れない**（T13、D16）：unrestricted では Native の `db_execute` に read-only の強制も workspace の pin も無い（pin があるのは semantic 系だけ）。補いは JS の防御（D16）で、各層は read-only の証明ではない。2026-11-21 のユーザー確認（回答 3）で受け入れた。
 - **通信の観測の限界**（X19、X20、R-8）：hook の盲点。packaged の OS 側の捕捉（D12）で補うが、15 分間隔の telemetry、gateway、ee の bridge、`child_process` の全 call site は未確認。
 - **key ありの token 数の POST**（X13、R-9）：実測なし。止める条件を要件にしただけ。ダミー key の対照は MP-1、実 key は U-18。
 - **tool 結果の本文が、題名と同 turn の step 間の observer に入る**（X1、X4、P5(c)、R-13）：暫定で開示して許容。絞る手当てを確かめたら要件に昇格する。
@@ -481,11 +498,11 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 5. 残るリスク（第 5 節）のうち、受け入れるものと、MP の受入れ条件に昇格させるもの。特に、P5(c)（tool 本文が observer と題名に入る）、X13 の key あり、X10 の部分削除。
 6. W 表を spike の結果で変えた点（W3 の保存の束ね方、W4・W6・W7 の取消し、W10 の `T_quit`）が、決定済み（P11、X21）の範囲に収まるか。
 7. 付随して残る点：新しい `PrePublicationEntry`（旗 L・M）が新しい authority に当たるか（計画書の第 7.1 節 U-3）。
-   chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）。
+   chat IR S1 の確認済み脅威モデルの再確認（U-4(f)）は、**IR を開ける lane まで閉（MP-4 を含む）**（2026-11-21 のユーザー決定）。再確認はその lane で行う。
 
 ## 7. この文書が確認していないこと
 
 - 本物の Rust・N-API・ONNX、packaged の Electron main、Chromium 側の通信。
 - 製品の build への stub の導入（spike の枝のみ）。
 - 欄の「owner」「開示」「設定」は未実装。
-- T の ID と、D の番号は、この文書で振った。
+- T の ID と、D の番号は、この文書で振った。T13・D16・W11 は MP-4 の判断で足した（2026-11-21）。
