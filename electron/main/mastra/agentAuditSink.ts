@@ -55,7 +55,7 @@ import {
   runAiAuditAppendBatch,
   type NapiBackendLike,
 } from "../../shared/ipcContract.js";
-import { AgentModelError } from "./agentModelPolicy.js";
+import { isAgentModelError, type AgentModelError } from "./agentModelPolicy.js";
 import type {
   AgentAuditCompletion,
   AgentAuditHandle,
@@ -84,6 +84,15 @@ export interface MainAgentAuditHandle extends AgentAuditHandle {
 }
 
 export interface MainAgentAuditSink extends AgentAuditSink<MainAgentAuditHandle> {
+  /**
+   * The terminal of an execution the user stopped before Main's send to Native (the dispatch row may already be written)
+   * (`execution.cancelled`, with no ambiguous mark: nothing was sent, so the
+   * outcome is known). It is the one terminal of the execution like the others.
+   */
+  cancel(
+    handle: MainAgentAuditHandle,
+    input: { readonly reason: "user-stop" },
+  ): Promise<void>;
   /**
    * The ambiguous terminal of an execution Main cannot close with an observed
    * outcome (a forced abort, a switch, a quit, a gone sender). `failed` for a
@@ -367,7 +376,9 @@ export function createMainAgentAuditSink(
     async fail(handle, error) {
       // The adapter wraps a send's failure in its own error; the audit records
       // the cause (the adapter's kind is kept as metadata).
-      const wrapped = error instanceof AgentModelError ? error : null;
+      const wrapped: AgentModelError | null = isAgentModelError(error)
+        ? error
+        : null;
       const cause =
         wrapped !== null && wrapped.origin !== undefined
           ? wrapped.origin
@@ -383,6 +394,21 @@ export function createMainAgentAuditSink(
               : { metadata: { agentErrorKind: wrapped.kind } }),
           },
           failedAt,
+        ),
+      );
+    },
+
+    async cancel(handle, input) {
+      const at = now();
+      await terminal(handle, async () =>
+        buildAiAuditCancelledEvents(
+          contextOf(handle),
+          await sanitizeAiAuditDiagnostic(
+            `main agent turn stopped by the user before the send to Native: ${input.reason}`,
+            "reason",
+          ),
+          {},
+          at,
         ),
       );
     },

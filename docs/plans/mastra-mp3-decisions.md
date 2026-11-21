@@ -1,6 +1,7 @@
 # MP-3（loop の骨格：tool 0・memory 0）の判断の記録
 
-- 状態：**3a の実装と同時に置く記録**。3b・3c の実装は後の PR で、この文書の判断に従う（変える場合は、その PR でこの文書を改訂する）。
+- 状態：3a の実装と同時に置いた記録。**3b（閉じた入口）の細部は第 5 節、3c（owner・runtime・lifecycle）の実装の事実と判断は第 6 節**に追記した。
+  判断を変える場合は、その PR でこの文書を改訂する。
 - 親の文書：[Mastra 移行の実装計画](mastra-migration-plan.md)の第 6 節 MP-3、[脅威モデル](mastra-migration-threat-model.md)。
 - ID：`DR-MP3-n`（通し番号。節ごとにまとめて並べるので、番号は節の中で前後する）。PR 本文にも同じ ID と信頼境界を載せる。
 - 区別：**決定**（ユーザー、2026-11-19）、**技術判断**（この lane の判断。根拠つき）、**読み替え**（計画書の範囲の変更）、**申し送り**。
@@ -55,7 +56,7 @@
 
 - 決定：IPC は **開始と取消の 2 本**。progress event は MP-4／5。Stop は **今と同じ強さ**（step 間で止める。送信中の provider 呼出しの途中で切らない）。
 - 技術判断：
-  - handler は shell 経路（`SHELL_COMMAND_NAMES` ＋ `handlersForOwner`）。`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だけ。
+  - handler は shell 経路（`SHELL_COMMAND_NAMES`）。`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だけ、と書いたが、実装はこれより広い（第 5 節 5-6 に実際の差分）。
   - gate が閉なら `ok:true` の typed refusal（`gate-closed`）を返す。refusal の閉集合は `gate-closed`／`restricted`／`unsupported`／`busy`／`sender-refused`／`invalid`。
   - turnId は renderer が採番（UUID）。同じ session の再入は `(senderId, chatSessionId)` の一意で `busy` として拒否。引数名は `chatSessionId`（`identity.sessionId` との取り違えを避ける）。
     上限は sender あたり 4、全体 8 程度（3c で定数にする）。
@@ -126,7 +127,7 @@
 
 ### DR-MP3-13 send の経路・result・audit の検証・T_quit（技術判断）
 
-- main は既存の `send_agent_message`（backend の N-API）を呼ぶ。settings と key は `resolveRequiredAiKeyAndSettings` を **export して共有**する（再実装しない。settings は 1 回だけ読む規則）。
+- main は既存の `send_agent_message`（backend の N-API）を呼ぶ。settings と key は `resolveRequiredAiKeyAndSettings` を **export して共有**する（再実装しない。settings は 1 回だけ読む規則）。3c では**turn の開始で 1 回**（runtime の load の後、Agent を回す前、audit の begin の前）に解決し、解決した値を send に渡す。送れないと分かっている run（key 無し・settings が読めない）は始めず、audit の行も書かず、log も出さずに `ok:false` で返す（利用者の通常の状態であって Main の失敗ではない）。
 - start の result は、adapter の send が受けた **生の応答**（`AgentWireResponse`）と **main 採番の `executionId`**。Mastra の `result.text`（全 step の連結）は使わない
   （thinking・signature・stopReason が失われる）。
 - audit の append は `ipcContract` の検証関数（`requireNativeAiAuditContext` ほか）を通す。
@@ -278,3 +279,110 @@
   size の閾値は無く、`pnpm test:electron-perf` は緑（3a で確認）。起動時間（`coldStartMs` など）は Electron が要るので 3a では未測定（閉のとき mastra-agent.cjs は load されない）。
 - 3b の前に確かめる未確認：napi が非 enumerable の `callerIdentity` を落とすか、Native の shutdown が in-flight の send を待つか、workspace 切替後の send の pin／audit の挙動。
   3c の前に確かめる未確認：packaged の asar 内の `require(変数)`、Electron main での load 時間。
+
+## 5. 3b の細部（3b の実装の事実。3c の前提）
+
+### 5-1 command・上限・lane
+
+- command 名は `mastra_agent_turn_start`／`mastra_agent_turn_cancel`（`electron/shared/mastraAgentTurnWire.ts`）。refusal の閉集合は DR-MP3-4 のとおり 6 種（`gate-closed`／`restricted`／`unsupported`／`busy`／`sender-refused`／`invalid`）で、3c は理由を足さない。
+- wire の上限（暫定。引き上げるときは wire と試験を 1 commit で変える）：messages 2048 件、1 件 2,000,000 字・合計 8,000,000 字（UTF-16）、cache segment 64 件、ID 200 字、route の文字列 2,000 字、route の JSON は深さ 6・節 512。
+- owner の上限は **sender あたり 4、全体 8**（3c で `MASTRA_TURN_PER_SENDER_MAX`／`MASTRA_TURN_TOTAL_MAX` の定数にした）。
+- lane：start は D2a の `old-external-ai` で DENIED（restricted では typed ではなく `D2A_EGRESS_DENIED` の error。renderer は legacy に落ちる）。cancel は `ALLOWED_STOP` と `INTERNAL` の両方（`abort_chat_stream` 型）。
+  renderer の wrapper（`src/lib/mastraAgentTurn.ts`）は start を timeout なしの mutation、cancel を start の後ろに並ばない lane に置く。
+
+### 5-2 audit の owner と書き手
+
+- 行そのものに owner の label は付けない。main が書いた行と renderer が書いた行は `dispatchBoundary`（`before_electron_main_native_send`）と `transportTarget`（`electron-main-native`）で区別でき、registry 側の `AiPathEntry` の owner 欄（`main-agent`）で経路を区別する。`pathId` は `chat_agent_main` のまま。
+- sink（`electron/main/mastra/agentAuditSink.ts`）の `stop` と terminal の意味：
+  - どの terminal の呼出し（complete／fail／ambiguous／cancel）も、その execution の「停止の要求」として**永久に覚える**。以後 `dispatched` は投げる（`AGENT_AUDIT_TERMINAL_ALREADY_WRITTEN`）。terminal の append が失敗しても、dispatch に進まない。
+  - terminal は execution ごとに 1 回。先の呼出しが append 中なら待ち、書けていれば何も書かず、書けなかったら待っていた呼出しが自分の terminal を書く（start-only を作らない）。
+  - ambiguous は新しい event type ではなく、`execution.failed`（取消しだけなら `execution.cancelled`）に `remoteOutcome:"unknown"`・`conservative:true`・`captureState:"partial"`・`responseObserved:false`（DR-MP3-10）。
+- 持込みの拒否は 2 段：router が renderer の enumerable key に Main の key（`capability`・`auditContext`・`pathId`・`executionId`・`callerIdentity`）があれば、identity を差し替える前に typed `invalid`（`hasMastraAgentTurnForbiddenKey`）。wire の parser も同じ key を `forbidden-key` で拒む。
+- cancel の対象は、開始した sender と window が同じ turn だけ（3c）。他の sender の cancel は `found:false`。
+
+### 5-3 DR-MP3-4 の `ipc.ts` の実装との差
+
+DR-MP3-4 は「`ipc.ts` の変更は gate 閉の 1 行と workspace の hook だけ」と書いたが、実装は次のとおり広い。
+
+- gate 閉の応答（router の先頭）、route の生成（seam の launch 事実は NIR-1 local と同じ 1 回の読み）、sender・window・identity の `admit`、持込み key の拒否、shell handler の結合。
+- 3c：handler を invoke ごとに `handlersFor({sender, win, callerIdentity})` にし、WORKSPACE_SWITCH の lease 列の先頭に owner の lease を足した。末尾の任意引数に owner を足した。
+
+## 6. 3c の判断と実装の事実
+
+信頼境界（3c）：renderer は新しい権限を得ない。製品の renderer は新しい IPC を呼ばない（MP-4）。gate L は閉のまま（journey の seam だけが開ける）。
+閉の launch では Mastra を load せず、owner は turn も runtime も持たず、quiesce・lease・shutdown は即 return する。Native への新しい入口・新しい送信先・保存範囲・event type・pathId・capability は 0。
+
+### DR-MP3-27 owner の構造（技術判断）
+
+- `electron/main/mastraTurnOwner.ts`。turn は (sender, window, 発行された callerIdentity) に束ねる。再入は (senderId, chatSessionId) で 1 つ、同じ turnId も `busy`。
+  slot は turn の間と、forced で切り離した後も**その turn の Native の send が settle するまで**持つ（切り離しの繰返しで Native の送信が無制限に溜まらない）。
+- 事前検査（rows を書く前）：gate 開・admission・profile が閉じていない・sender の identity が発行済み・上限。`messages` は「先頭に system が 1 件、残りは user／assistant、最後が user」だけを通す。
+  それ以外は黙って組み替えず `unsupported`（MP-2 の特性試験の写像に乗る形だけを通す）。
+- audit の入力：`expectedWorkspacePath` は **identity の `workspaceId`**（profile gate が Native の `workspace:opened` で束ねた、main が信頼する現在の path）。`projectId` は **null**（wire に project が無いので workspace chain に書く）。
+  **確認要（MP-4 の前）**：renderer の `chat_agent_main` の行は project の chain に書かれるので、engine 経路の行が別の chain に入る。wire に `projectId` を足すのは新しい契約になる。
+  path が identity に無い turn は `unsupported`。
+- 各 step の send の直前（と begin の前）に、`isIssuedCallerIdentity(turn.identity)`・profile が closed でない・sender が破棄されていない、を検査する。外れたら forced（原因は restricted／sender-gone／workspace-switch）。Native には callerIdentity を載せない。
+- 結果の写像（renderer から見える形）：
+
+| 終わり方 | start の結果 | audit の terminal |
+|---|---|---|
+| 成功 | `{status:"completed", turnId, executionId, response}`（response は adapter の send が受けた生の応答。Mastra の text は使わない） | complete（`execution.succeeded`） |
+| provider・adapter の失敗 | `ok:false`（原因の message。adapter の固定文ではなく origin の message。legacy の失敗と同じ見え方） | fail（`execution.failed`。adapter の error は kind を `agentErrorKind` に残す） |
+| user-stop（Native の send の前。dispatch の行の前でも後でもよい） | `ok:false` `MASTRA_AGENT_TURN_CANCELLED` | `execution.cancelled`（ambiguous の印なし。Native に送っていないので結果は既知。dispatch の行が既にある場合もある） |
+| user-stop（Native の send の後） | 通常の完了（送信中の呼出しは切らない＝今の Stop と同じ強さ） | complete |
+| forced（restricted／workspace-switch／quit／sender-gone） | `ok:false` `MASTRA_AGENT_TURN_ABORTED: <原因>`（Native の settle を待たず先に返す） | ambiguous の `execution.failed`（1 回） |
+| runtime の load の失敗 | `ok:false`（load の error の message）。行は 0、次の start は新しい load | なし |
+| 拒否 | typed refusal（`ok:true`） | なし |
+
+- user-stop は「次の step を始めない」。この経路は tool 0・`maxSteps: 1` の 1 step なので、Native の send の前（begin・dispatch の行の書込み中や設定の解決中を含む）なら cancelled、後なら完了になる。
+- forced と complete が競合したとき：complete の行が先に書かれても、start は `ABORTED` を返す（行は `execution.succeeded`、renderer には失敗。保守的な側。応答を捨てるだけで、二重の terminal は書かない）。
+
+### DR-MP3-28 runtime と bundle の境界（技術判断）
+
+- `agentRuntime.ts`（3 つ目の bundle の entry）に入れるのは Agent・adapter・方針だけ。audit の sink と Native への send は main 側の owner が作って**注入**する（`ipcContract` を 3 つ目の bundle に持ち込まない）。
+  main は runtime の型だけを import する（静的試験が `agentLanguageModel` を main が読まないこと、`agentRuntime`・`agentWire` は `import type` だけであることを固定する）。
+- class は境界をまたいで `instanceof` で見ない：sink は main.cjs、adapter は mastra-agent.cjs にあり、同じ source の `AgentModelError` が 2 つの copy になる。`isAgentModelError`（名前・`kind`・`origin`・`isRetryable:false` の形）を使う。bundle 経由の試験が `agentErrorKind` の保持を固定する。
+- Agent には workspace・skills・memory・mcp・browser を渡さない。再試行なしは `AGENT_NO_RETRY_CONFIG` を**明示の key で**渡し（`new` の引数に spread を使わない静的検査のため）、`AGENT_CALL_OPTIONS` ＋ `maxSteps: 1` を generate に渡す。
+  実行時の tool 名の許可リスト（`MASTRA_AGENT_TOOL_ALLOWLIST`、MP-3 は空）を、Agent の `listTools()` の key と照合する（外れたら turn を始める前に投げる）。
+- logger：Agent に注入する（`__setLogger`。`@mastra/core/logger` の import は許可リストの拡張になるので避け、型は `Parameters<Agent["__setLogger"]>[0]`）。Mastra が出す警告の**引数（元の error・request）は捨て**、先頭の文字列だけを owner の `log` に渡す。
+- 実測（bundle 経由の試験）：provider の失敗（message が `ECONNRESET` で `isRetryable:true`）でも send は 1 回・fail の row は 1 件。console と注入 logger に原因の文字列は出ない。
+
+### DR-MP3-29 lazy loader（技術判断）
+
+- `electron/main/mastraAgentLoader.ts`：`createRequire(__filename)(変数)`（literal の `require` は esbuild が main.cjs に bundle してしまう）。`mastra-agent` の文字列を持つ製品 file はこの 1 file だけで、そこでも定数の初期値だけ（3a の静的試験を意図して改訂した。陰性対照は残す）。
+- gate が閉なら load しない（env にも file にも触れず `gate-closed`）。load の直前に `applyMastraEnvPin()`（`mastraEnv.ts` に足した、共有 pin への**唯一の入口**。loader だけが import でき、静的試験が固定する）。
+- single-flight（1 回 yield してから読むので、同じ turn に来た呼出しは 1 つの load を共有する）、成功は process の間保持、失敗は保持せず、loader の中で再試行しない（次の呼出しが新しい load）。
+- 未確認（MP-13）：packaged の asar 内で `createRequire` が通るか、Electron main での load 時間、固定後の load の宛先 0。
+
+### DR-MP3-30 lifecycle（技術判断。W9 の読み替えは DR-MP3-12 のとおり）
+
+- **restricted**：owner は egress participant `mastra-turn-owner`（index.ts。既存 3 件の隣）。quiesce で ①admission を（一方向に）閉じる ②forced の abort ③Native の stop の要求（下）④各 turn の ambiguous terminal を待つ（gate の 30 秒の枠。書けなければ quiesce が reject → `participant-failed` → unavailable、枠を超えたら gate が `participant-timeout` と forceStop）。
+  turn が 0 件なら何もしない（Native の stop も呼ばない＝閉の launch で、製品の abort が stage 5 から stage 3 へ前倒しにならない）。
+  **gate の API を最小に拡張**：`registerMainEgressParticipant` の quiesce が `{ abortNativeInFlight() }` を受ける（reserved の間だけ有効な既存の `abortInFlight` の貸出し。stage 3 が終わると gate が無効にし、後から呼んでも何もしない（試験で固定）。既存の participant は引数を無視する。全 participant に渡す）。
+  Native の send 自体を止めるのは Native の側（stage 5 の cancel、または貸出しの stop）で、owner は Native の完了を待たない。
+- **workspace 切替**：`ipc.ts` の lease 列の**先頭**に owner の lease。`quiesceForWorkspaceSwitch()` は admission を `busy` にし、全 turn を forced abort し、各 turn の ambiguous terminal を**旧 workspace に**書き終えてから返す（30 秒の bound。超えたら警告して先へ進む。ユーザーの切替を止めない）。
+  `resume()`（成功でも失敗でも）で admission を戻す（複数の切替は counter）。lease の前に path の検査があるので、不正な path では turn を止めない。
+  第 2 段の hook（index.ts の event bus の observer）：`workspace:opened` と `workspace:lifecycle-state` で、identity が**もう発行されていない** turn だけを abort する（lifecycle の通知ごとに全 abort しない）。profile gate が先に観測するので identity の失効が見える。実効の防御は send 直前の検査。
+- **quit**：`shutdown()` を dispose（`shutdownWorkspaceLifecycle` を待たせる `Promise.all` の中。外に置くと workspace が先に閉じて start-only になる）と complete の両方に置く。`T_quit`＝5 秒（暫定、`MASTRA_TURN_QUIT_BOUND_MS`）。有界・冪等（同じ promise）・非 reject。書けなければ start-only が残る（回収なし。報告書が数える）。
+- **sender 消失**：per-turn の listener（`destroyed`・`render-process-gone`・main frame の `did-start-navigation`・window の `closed`）。subframe と same-document の遷移では止めない。turn の終端で必ず外す（試験が listener 0 を固定）。
+- forced で切り離した turn の遅れた Native の settle は捨てる（result は返さず、2 つ目の terminal も書かない）。forced の ambiguous は begin が進行中なら**その完了を待ってから**書く（handle が要るため）。begin の前なら row は 0。
+- **切り離した turn の terminal も待つ**：forced の abort で呼出し側の promise は数 microtask で settle し turn 表から外れるが、ambiguous の append はまだ進行中。
+  そのため owner は「terminal の書込み中の切り離した turn」と「Native にまだいる切り離した turn」を別の集合で持ち、restricted の quiesce・workspace 切替の lease・quit の 3 つの待ち（と restricted の Native の stop の要否）は、attached に加えてこの集合も対象にする（bound は変えない）。
+  窓の closed（sender-gone）の直後の quit・reload 直後の切替・restricted でも、terminal が書き終わる前に先へ進まない（試験 3 件）。
+
+### DR-MP3-31 検証（3c）と未確認
+
+- 実装した試験：owner の lifecycle（sender 破棄・window close・reload・identity の入替・restricted の実 `beginProfileActivation`・workspace 切替の lease・quit の有界・hook・busy・上限）、loader、bundle 経由の runtime（再試行なし・kind の保持・logger）、静的配線、gate の route（owner との接続、lease の順序）、sink の cancel、`isAgentModelError`。
+- 未確認（D11 の受入れ条件）：forced の ambiguous の**後**に Native 側の observer が同じ execution へ行を足さないか（post-terminal）は、実 provider への送信が要るので実 addon の pipeline spec では確かめていない（reqwest は Node の guard の外）。
+  足されて ledger の検証が壊れるなら DR-MP3-6 の規則 4 を改訂する（新しい契約の確認が要る）。
+- 未確認：packaged の asar の `require`・load 時間（MP-13）。Native の `shutdownWorkspaceLifecycle` が in-flight の send を待つかは、**MP-11／MP-13 の実 provider の測定で確かめる**（journey は送信せず、fake AI が `sendAgentMessage` を置き換えるので確かめられない）。
+
+### DR-MP3-32 journey（3c。技術判断）
+
+- journey `mastra-agent-turn-gate-load-audit`（`electron/scripts/mastra-agent-turn-product-journey.mjs`、shard 3、catalog 36→37）。gate L の seam（`CI=true`、owner token、起動ごとの nonce、journey 専用 userData）を**起動の間だけ** `process.env` に置いて開け、main の IPC を `harness.invokeOk` で直接叩く（renderer の分岐は MP-4）。
+- 確かめること：(1) refusal（invalid／持込み key／unsupported）と未知の cancel は audit の行を 0 件書く、(2) admitted の start で runtime が lazy load される（owner は load の後に key を解決するので、key の欠落を名指す error は load の成功後にしか出ない）、(3) key が無いので `ok:false`、Agent は回らず audit の行は 0 件（start-only 0、送信 0）、(4) harness が main の stderr の error 系の行で落とすので、静かに通ることが「失敗として記録していない」証拠。
+- key を与えない理由：headless の journey では `safeStorage` が basic_text で、`keyStore` は fail-closed のため `save_api_key` も使えない。key を与える seam や harness の許可は足さない（新しい契約・閾値の緩和になる）。
+- **dispatch の 3 行と terminal は journey では見ない**：実 addon の pipeline spec（`mastraAgentAudit.pipeline.spec.ts`）と owner の単体試験（実の sink）が持つ。実 provider での dispatch は MP-13 の受入れ。
+- 前提：D-Bus の keyring が見える host では、起動時の legacy keyring の移行（`migrateLegacyKeyringToSafeStorage`）が journey の userData に key を入れることがあり、(3) の検査は落ちうる（漏れではない）。marker（`LEGACY_KEYRING_MIGRATION_MARKER`）で移行を飛ばせるが、TS の定数と形の複製になるので使っていない。
+- 未実施：load 状態の通信 0 の観測（`NODE_OPTIONS` の guard が Electron main で使えるかは未確認。DR-MP3-25）。
+- Full の資源の見積もり：新しい journey の inventory 2 件は `agent-stream-workspace-switch` と同じ値を新しい id で足した（新しい閾値は作らない）。

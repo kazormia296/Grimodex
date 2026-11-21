@@ -21,6 +21,7 @@ import {
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import {
   createMastraAgentTurnRoute,
+  type MastraAgentTurnOwnerPort,
   MASTRA_AGENT_TURN_CI_ENV_NAMES,
   MASTRA_AGENT_TURN_CI_NONCE_ENV,
   MASTRA_AGENT_TURN_CI_OWNER_TOKEN,
@@ -215,6 +216,7 @@ async function rig(
     restricted?: boolean;
     launch?: MastraAgentTurnLaunch;
     wrapGate?: (gate: ProfileEgressGate) => ProfileEgressGate;
+    owner?: MastraAgentTurnOwnerPort;
   } = {},
 ): Promise<Rig> {
   mocks.handlers.clear();
@@ -238,6 +240,10 @@ async function rig(
     mainOpenPrePublicationGate: record("mainOpenPrePublicationGate"),
     sendAgentMessage: record("sendAgentMessage"),
     aiAuditAppendBatch: record("aiAuditAppendBatch"),
+    openWorkspace: async (workspacePath: string) => {
+      calls.push("openWorkspace");
+      return JSON.stringify({ path: workspacePath });
+    },
   } as unknown as NapiBackendLike;
   const real = await createProfileEgressGate(backend);
   const gate = options.wrapGate ? options.wrapGate(real) : real;
@@ -262,6 +268,7 @@ async function rig(
     undefined,
     undefined,
     options.launch,
+    options.owner as never,
   );
   const handler = mocks.handlers.get(IPC.invoke) as (
     event: unknown,
@@ -756,6 +763,115 @@ describe("with the gate open (3b: the checks run, a start is not run)", () => {
     expect(
       valueOf(await r.invoke(MASTRA_AGENT_TURN_CANCEL_COMMAND, CANCEL)),
     ).toEqual({ status: "ok", turnId: TURN_ID, found: false });
+  });
+
+  it("an admitted start and cancel go to the owner with the invoke's sender, window and issued identity (MP-3c)", async () => {
+    const seen: { command: string; context: unknown; request: unknown }[] = [];
+    const owner: MastraAgentTurnOwnerPort = {
+      start: async (context, request) => {
+        seen.push({ command: "start", context, request });
+        return { status: "completed", turnId: request.turnId };
+      },
+      cancel: (context, request) => {
+        seen.push({ command: "cancel", context, request });
+        return { status: "ok", turnId: request.turnId, found: true };
+      },
+    };
+    const r = await rig({ launch: activeLaunch(), owner });
+    expect(
+      valueOf(await r.invoke(MASTRA_AGENT_TURN_START_COMMAND, START)),
+    ).toEqual({ status: "completed", turnId: TURN_ID });
+    expect(
+      valueOf(await r.invoke(MASTRA_AGENT_TURN_CANCEL_COMMAND, CANCEL)),
+    ).toEqual({ status: "ok", turnId: TURN_ID, found: true });
+    expect(seen.map((entry) => entry.command)).toEqual(["start", "cancel"]);
+    const context = seen[0]!.context as {
+      sender: unknown;
+      win: unknown;
+      callerIdentity: unknown;
+    };
+    expect(context.sender).toBe(r.sender);
+    expect(context.win).toBe(r.win);
+    // The identity is the one Main issued to this sender, never one the renderer sent.
+    expect(r.gate.isIssuedCallerIdentity?.(context.callerIdentity)).toBe(true);
+    expect(seen[0]!.request).toEqual(START);
+  });
+
+  it("an owner that rejects reaches the renderer as an error envelope, not as a typed value", async () => {
+    const owner: MastraAgentTurnOwnerPort = {
+      start: () => Promise.reject(new Error("MASTRA_AGENT_TURN_ABORTED: quit")),
+      cancel: () => ({ status: "ok", turnId: TURN_ID, found: false }),
+    };
+    const r = await rig({ launch: activeLaunch(), owner });
+    const start = await r.invoke(MASTRA_AGENT_TURN_START_COMMAND, START);
+    expect(start.ok).toBe(false);
+    if (!start.ok) expect(start.error).toContain("MASTRA_AGENT_TURN_ABORTED");
+  });
+
+  it("an invalid request never reaches the owner, and a closed gate never reaches it either", async () => {
+    const start = vi.fn(async () => ({}));
+    const cancel = vi.fn(() => ({}));
+    const owner: MastraAgentTurnOwnerPort = { start, cancel };
+    const open = await rig({ launch: activeLaunch(), owner });
+    expect(
+      valueOf(
+        await open.invoke(MASTRA_AGENT_TURN_START_COMMAND, {
+          ...START,
+          tools: [{ name: "x" }],
+        }),
+      ),
+    ).toEqual(REFUSED("start", "invalid"));
+    expect(
+      valueOf(await open.invoke(MASTRA_AGENT_TURN_CANCEL_COMMAND, {})),
+    ).toEqual(REFUSED("cancel", "invalid"));
+    const closed = await rig({ owner });
+    expect(
+      valueOf(await closed.invoke(MASTRA_AGENT_TURN_START_COMMAND, START)),
+    ).toEqual(REFUSED("start", "gate-closed"));
+    expect(start).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("the context-less handlers never reach an owner (a start is unsupported)", async () => {
+    const start = vi.fn(async () => ({}));
+    const route = createMastraAgentTurnRoute({
+      open: true,
+      owner: { start, cancel: vi.fn(() => ({})) },
+    });
+    expect(
+      await route.handlers[MASTRA_AGENT_TURN_START_COMMAND]!(START),
+    ).toEqual(REFUSED("start", "unsupported"));
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("a workspace switch takes the owner's lease before Native's open and resumes it after, with the open's result (MP-3c, DR-MP3-12)", async () => {
+    const order: string[] = [];
+    const owner = {
+      start: async () => ({}),
+      cancel: () => ({}),
+      quiesceForWorkspaceSwitch: async () => {
+        order.push("lease");
+        return {
+          resume: async (success: boolean) => {
+            order.push(`resume ${success}`);
+          },
+        };
+      },
+    } as unknown as MastraAgentTurnOwnerPort;
+    const r = await rig({ launch: activeLaunch(), owner });
+    r.calls.length = 0;
+    const result = await r.invoke("open_workspace", { path: "/work/new" });
+    expect(result.ok).toBe(true);
+    // Native's open ran between the lease and its resume.
+    expect(r.calls).toContain("openWorkspace");
+    expect(order).toEqual(["lease", "resume true"]);
+    // A switch that fails resumes with false, and nothing is left closed.
+    const failing = await rig({ launch: activeLaunch(), owner });
+    order.length = 0;
+    const refused = await failing.invoke("open_workspace", { path: "" });
+    expect(refused.ok).toBe(false);
+    // An invalid path is refused before any lease: no turn is aborted for nothing.
+    expect(order).toEqual([]);
   });
 
   it("does not change what other commands see", async () => {

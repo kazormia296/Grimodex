@@ -251,3 +251,12 @@ export function mastraOriginalEnv(): NodeJS.ProcessEnv {
 export function mastraOriginalEnvValue(name: string): string | undefined {
   return sharedPin.originalEnvValue(name);
 }
+
+/**
+ * Mastra を load する直前に、共有 pin の `apply()` を 1 回当てる（MP-3c）。除く env を消し、固定する値を置く。
+ * 冪等（2 回目以降は env に触れない）。呼んでよいのは lazy loader（`mastraAgentLoader.ts`）だけで、
+ * 静的試験（mastraEnv.test.ts）がそれを固定する。
+ */
+export function applyMastraEnvPin(): MastraEnvPinResult {
+  return sharedPin.apply();
+}

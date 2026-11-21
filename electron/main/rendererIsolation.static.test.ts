@@ -689,7 +689,7 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
       "createProfileEgressGate(initializedBackend, { backendConstructionFailure: initializedBackend ? null : getBackendConstructionFailure(), });",
       // The request controller and the router.
       "createProfileActivationController({ backend, gate: profileEgress, inFlight: mainGrantInFlight, confirm: profileActivationCiSeam?.confirm, });",
-      "mainGrant, profileActivation, aiStreamTerminals, );",
+      "mainGrant, profileActivation, aiStreamTerminals, mastraAgentTurnLaunch, mastraTurnOwner, );",
       // R-3: the seam refuses the ordinary data directories.
       "defaultUserDataDirs: defaultUserDataDirectoriesForApp(app),",
     ]) {
@@ -812,7 +812,10 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
           ),
       )
       .map(({ file }) => file);
-    expect(namers).toEqual(["ipc.ts"]);
+    // `ipc.ts` builds the route; `index.ts` (MP-3c) reads the same seam once so
+    // that the owner and the loader are closed under the same condition. Neither
+    // opens a Native gate (the check above holds that for the whole product).
+    expect(namers).toEqual(["index.ts", "ipc.ts"]);
   });
 
   it("the gate-opening check catches the call forms that a `.name(` pattern misses (R-1)", () => {
