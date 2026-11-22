@@ -58,10 +58,15 @@ the head has already passed) is exempt through one crate-private entry,
 and limited to `scene-scope` events (DR-SRC-8). Undo and Redo are refused with
 `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` when the forward
 transaction they replay predates a restore marker (DR-SRC-9), except the undo
-and redo of an AI-extraction apply commit (`undo_commit` / `redo_commit`,
-DR-SRC-12): those are told apart by the database rows of the replayed root
-transaction, its commit and its journal, and are guarded by the commit's own
-preflight and by the continuity check instead. The sentence above
+and redo of an AI-extraction apply commit (`undo_commit` / `redo_commit`)
+whose operations are all of a kind verified through a real restore (DR-SRC-12:
+Chronicle event create, Codex entry create and patch, Scene and Event Chronicle
+patch, Codex detail value patch). Those are told apart by the database rows of
+the replayed root transaction, its commit, its journal entities and its
+operations, and are guarded by the commit's own preflight and by the continuity
+check instead. A commit of any other kind (Plot, Foreshadow, temporal
+node/constraint/projection, Codex phase, semantic binding, story order, and so
+on), or one that mixes a verified kind with another, stays refused. The sentence above
 (one marker per restore, no per-object events) is unchanged. Rationale:
 `docs/plans/nir1-lane-decisions/snapshot-restore-feed-continuity-decisions.md`.
 

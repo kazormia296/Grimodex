@@ -1,7 +1,7 @@
 # スナップショットの復元の後の、変更の記録の連続性（判断の記録）
 
 - 対象：スナップショットの復元の後、編集と削除が `NARRATIVE_CHANGE_FEED_DISCONTINUITY` で失敗し続ける不具合の修正。
-- この修正は、NIR-1 の残レーンの委任の外である。直し方（守りを、復元の前後に限って弱めること）は、ユーザーが選んだ（2026-11-22。確認 81。記録は、枝 `claude/nir1-contracts` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。確認 81 は commit `d107cb4ea`、確認 83〔本文を含む復元の 2 回目の失敗〕は `b1e0fe16c`、確認 88〔取り込みの取り消し・やり直しを拒否の対象から外す〕は `6fe47662a`）。この文書は、その選択の範囲内の、技術判断と信頼境界を記す。選択の範囲を超える判断は、ここに書かず、ユーザーに伺う。
+- この修正は、NIR-1 の残レーンの委任の外である。直し方（守りを、復元の前後に限って弱めること）は、ユーザーが選んだ（2026-11-22。確認 81。記録は、枝 `claude/nir1-contracts` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。確認 81 は commit `d107cb4ea`、確認 83〔本文を含む復元の 2 回目の失敗〕は `b1e0fe16c`、確認 88〔取り込みの取り消し・やり直しを、確かめた種類だけ拒否の対象から外す〕は `6fe47662a`。確認 88 までの全記録は contracts `512d1a508`）。この文書は、その選択の範囲内の、技術判断と信頼境界を記す。選択の範囲を超える判断は、ここに書かず、ユーザーに伺う。
 - この文書の最初の版（DR-SRC-1〜5）は、製品のコードを変える前に置く。実装で決めた細部は、後の DR として足す。
 
 ## 1. 不具合（実行で確かめた。2026-11-22）
@@ -105,10 +105,10 @@
 
 ### DR-SRC-9　復元の前の「元に戻す」・「やり直し」を拒む
 
-- 形：Undo／Redo の変更の記録を書く唯一の入口（`append_narrative_change_transaction_in_tx`）で、lineage root の forward transaction より新しい、その project の復元の marker があれば拒む。エラーの接頭辞は `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE`（固定）。journal replay、typed writer の inverse（codex／domain／map／extraction／renderer replay）、取り込みの `undo_commit`／`redo_commit` は、すべてこの append を通る（**取り込みの取り消し・やり直しは、確認 88 で拒否の対象から外した。DR-SRC-12。** 以下の「拒む」は、それ以外の replay の話である）。schema は変えない（journal に列を足さない）。
+- 形：Undo／Redo の変更の記録を書く唯一の入口（`append_narrative_change_transaction_in_tx`）で、lineage root の forward transaction より新しい、その project の復元の marker があれば拒む。エラーの接頭辞は `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE`（固定）。journal replay、typed writer の inverse（codex／domain／map／extraction／renderer replay）、取り込みの `undo_commit`／`redo_commit` は、すべてこの append を通る（**取り込みの取り消し・やり直しのうち、確かめた種類だけは、確認 88 で拒否の対象から外した。DR-SRC-12。** 以下の「拒む」は、それ以外の replay〔確かめていない種類の取り込みの取り消し・やり直しを含む〕の話である）。schema は変えない（journal に列を足さない）。
 - 判定は、同じ request の再送の確認（`existing_result`）の後に置く。復元の後でも、すでに記録した結果の再送は、その結果を返す。
 - 復元の scope では絞らない（DR-SRC-7 と同じ理由。復元の成功の後は renderer 全体が reload されるので、作者から見える動きとも同じ）。拒むのは「元の書き込みが、復元の marker より古い」ものだけで、復元の後に行った操作の undo／redo は通る。本文が同じ net no-op の復元は marker を書かないので、何も拒まない。
-- 作者から見える動き：復元の後は、復元の前の操作を「元に戻す」「やり直し」で戻せない（当初は AI の適用の取り消しを含めたが、**取り込みの取り消し・やり直しは DR-SRC-12 で対象から外した**。それは取り込みの専用の守りで扱う）。復元の成功の後は renderer が reload され、履歴は消えるので、main window では今も同じ。別窓に残った履歴からの操作は、この拒否で止まる。
+- 作者から見える動き：復元の後は、復元の前の操作を「元に戻す」「やり直し」で戻せない（当初は AI の適用の取り消しを含めたが、**確かめた種類の取り込みの取り消し・やり直しは DR-SRC-12 で対象から外した**。それは取り込みの専用の守りで扱う。確かめていない種類は、拒んだまま）。復元の成功の後は renderer が reload され、履歴は消えるので、main window では今も同じ。別窓に残った履歴からの操作は、この拒否で止まる。
 - renderer は変えない。エラーの符号が既存の分類（version conflict など）に誤って当たらないことは、`src/lib` の分類で確かめる。
 - 残る危険：`change_event_uid` が無い public-floor 期の legacy journal は、replay 時に forward が新しく作られるので拒めない。`undo.rs` が maintenance_events 空のとき append を呼ばない経路は、行を変えないので影響しない。
 
@@ -131,7 +131,9 @@
 
 根拠：ユーザーの確認 88（枝 `claude/nir1-contracts` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`）。確認 88 は、DR-SRC-9 の拒否の対象から AI 抽出の「取り込みの取り消し」（`narrative_extraction_undo_commit`）と「やり直し」（`narrative_extraction_redo_commit`）を外すことを決めた。条件は、取り込みの専用の守りで復元の後の編集が巻き戻らないことを、試験で確かめること。確かめられなければ外さない。選択の範囲を超える判断は、ここに書かない。
 
-### DR-SRC-12　取り込みの取り消し・やり直しを、DR-SRC-9 の拒否の対象から外す
+### DR-SRC-12　取り込みの取り消し・やり直しを、確かめた種類だけ、DR-SRC-9 の拒否の対象から外す
+
+**改訂（2026-11-22。同じ DR-SRC-12 の実装を、確認 88 の条件に合わせて狭めた）**：最初の実装は、述語が取り込みの commit の種類を問わず拒否の対象から外していた。確認 88 の条件は「専用の守りで、復元の後の編集が巻き戻らないことを、試験で確かめてから外す。確かめられなければ、外さずに、あらためて伺う」であり、確かめていない種類まで外すことは、この条件に合わない。そのため、述語に **種類の条件を足し、確かめた種類だけを外す**。確かめていない種類は、復元の後は、今までどおり拒む（`NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE`）。確かめていない種類を新しく確かめて広げることは、この改訂ではしない（別の作業。確認 88 の範囲に収まるが、試験が先）。以下の本文のうち、「種類を問わず」と読める箇所は、この改訂の記述（「外し方」の種類の条件、「残るもの」）が優先する。
 
 **確かめたこと（実行した。拒否を外した状態で、実際の復元 `apply_project_snapshot_restore` を通した。復元の marker は手で作っていない）**
 
@@ -151,12 +153,13 @@
 - (g) 場面の Chronicle patch（`temporal.scene.metadata.patch`）の取り込み（版 0 → 1。スナップショットは取り込みの前）→ Body の復元（場面の版は 0）→ 作者が場面を編集（`tree_node_patch`、版 1 = 取り込んだ時の版と一致）→ 取り消し：専用の守り（版だけ）は通るが、連続性の検査が `NARRATIVE_CHANGE_FEED_DISCONTINUITY` で止め、編集は残る。（試験 `tests/temporal_constraint_commit.rs` の `commit_undo_after_restore`。）
 - (h) 出来事の Chronicle patch（`temporal.event.metadata.patch`）：(g) と同じ形（復元で版 0、復元の後の編集で版 1 が衝突）。`NARRATIVE_CHANGE_FEED_DISCONTINUITY` で止まり、編集は残る。
 - (i) Codex の detail value の patch（`codex.detail.value.set`、版 1 → 2。スナップショットは取り込みの前）→ Codex の復元（版 1）→ 作者が `detail.value.upsert`（版 2 = 取り込んだ時の版と一致）→ 取り消し：専用の守りは通るが、`NARRATIVE_CHANGE_FEED_DISCONTINUITY` で止まり、編集は残る。（試験 `tests/codex_narrative_commit.rs` の `undo_of_a_detail_value_patch_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed`。）
-- 以上の確かめた種類（出来事の作成、Codex の項目の作成・patch、場面と出来事の Chronicle patch、detail value の patch）では、復元の後の編集が黙って消える・巻き戻る筋書きは見つからなかった。
+- 以上の確かめた種類（出来事の作成、Codex の項目の作成・patch、場面と出来事の Chronicle patch、detail value の patch）では、復元の後の編集が黙って消える・巻き戻る筋書きは見つからなかった。**外すのは、この種類だけである。**
 - **守りの実体**：版だけを比べる種類（Codex の項目・detail value・場面と出来事の Chronicle patch）で、復元の後の編集と版が衝突しても止まるのは、変更の記録の連続性の検査（head の after と今の before の一致）が働くからである。**この守りは、書き込みが head を通ること（製品の Rust の書き手は全部通る）に依存する。** head を書かない書き込み（SQL の直書きなど）を挟んで版が一致すると、連続性の検査は止めず、取り消しが復元の後の値を取り込みの前に戻す。点検では、(i) の作者の編集を head を書かない `UPDATE` に替えて確認した（取り消しが通り、値が戻り、版が 3 になった）。ここでは再実行していない。点検の報告では、製品の Rust の書き手はどれも Feed を通る（全部の書き手をここで再確認してはいない）。実害は、SQL の直書きなど Feed を通らない書き込みに限る。
 
 **外し方（呼び出し側の申告に頼らない）**
 
-- `append_narrative_change_transaction_in_tx` の DR-SRC-9 の拒否に、「この Undo／Redo は取り込みの commit の replay か」を DB の事実で見分ける述語 `replays_an_apply_commit` を足す。真なら拒否しない。判断の根拠は、lineage root（replay される forward transaction）の DB の行と、その行が指す commit と journal の行だけである。root が、同じ project の `cause_kind = 'forward'`、`origin = 'ai-apply'`、`source_domain = 'narrative.commit.apply'`、`commit_id`／`journal_id` が今の Undo／Redo の commit／journal と一致し、`narrative_apply_commits` と `narrative_commit_journals` に同じ commit の行があること。呼び出しの引数の `commit_id`／`journal_id` は、**root の行の commit／journal と一致するかを確かめるためにだけ読む**（commit の root を replay するなら commit を名指すしかない。名指さなければ偽。引数の申告を信じて真にはしない）。今の transaction の `origin`／`source_domain` は使わない。述語の否定の試験は `change_feed_restore_entry_tests.rs` の `replays_an_apply_commit_predicate`（origin・source_domain・cause_kind・commit／journal の食い違い・名指しなし・別 project の各形で偽）。
+- `append_narrative_change_transaction_in_tx` の DR-SRC-9 の拒否に、「この Undo／Redo は取り込みの commit の replay か」を DB の事実で見分ける述語 `replays_an_apply_commit` を足す。真なら拒否しない。判断の根拠は、lineage root（replay される forward transaction）の DB の行と、その行が指す commit と journal の行、およびその commit の操作の行だけである。root が、同じ project の `cause_kind = 'forward'`、`origin = 'ai-apply'`、`source_domain = 'narrative.commit.apply'`、`commit_id`／`journal_id` が今の Undo／Redo の commit／journal と一致し、`narrative_apply_commits` と `narrative_commit_journals` に同じ commit の行があること。呼び出しの引数の `commit_id`／`journal_id` は、**root の行の commit／journal と一致するかを確かめるためにだけ読む**（commit の root を replay するなら commit を名指すしかない。名指さなければ偽。引数の申告を信じて真にはしない）。今の transaction の `origin`／`source_domain` は使わない。
+- **種類の条件（改訂で足した）**：commit が含む操作の種類を、次の 2 つの DB の行で確かめ、**両方が、確かめた種類だけ**のときに真にする。(1) journal（`narrative_commit_journals.after_json` の `entities`。取り消し・やり直しが実際に replay する行）の全 entity の `(entityKind, opKind)` が、確かめた組 `(event, create)`、`(codex_entry, create)`、`(codex_entry, patch)`、`(temporal_scene_chronicle, patch)`、`(temporal_event_chronicle, patch)`、`(codex_detail_value, patch)` のどれかであること（`opKind` が無い entity は、undo.rs と同じく `create` として読む）。entity が 0 件、`after_json` が欠ける・読めない・`entities` が配列でない場合は偽。(2) `narrative_apply_operations.operation_kind`（その commit の全行）が、`chronicle.event.create`、`codex.entry.create`、`codex.entry.patch`、`temporal.scene.metadata.patch`、`temporal.event.metadata.patch`、`codex.detail.value.set` のどれかで、1 行以上あること。**確かめた種類と確かめていない種類が 1 つの commit に混ざるときは偽（拒む。安全な側）。** detail value の作成（`codex_detail_value` の `create`）は確かめていないので、(1) が弾く（`codex.detail.value.set` は作成にも patch にも使われるので、種類は journal の `opKind` で決める）。journal の entity の種類は、書き手（`commit.rs`）が commit のときに決め、取り消し・やり直しは更新しても kind を変えない（`update_journal_after`）。述語の否定の試験は `change_feed_restore_entry_tests.rs` の `replays_an_apply_commit_predicate`（origin・source_domain・cause_kind・commit／journal の食い違い・名指しなし・別 project・種類〔確かめていない entity、混ざった commit、journal の欠落・不正、操作の行の欠落・確かめていない種類〕の各形で偽）。復元を通した確かめていない種類の試験は、`plot_thread_narrative_commit.rs`・`foreshadow_narrative_commit.rs`・`temporal_constraint_commit.rs`・`codex_phase_detail_commit.rs` にある（復元の marker の後の取り消し・やり直しが `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` で拒まれ、何も変わらない）。
 - 呼び出しの引数に「復元を無視する」の印は足さない。新しい入口（`pub(crate)` の関数）も足さない。`append_narrative_change_transaction_in_tx` の型は変えない。schema・migration・列・索引は変えない。
 - 本番で `commit_id` と `journal_id` を持つ Undo／Redo を書くのは、`narrative_extraction/undo.rs` の取り込みの取り消し・やり直しだけである（source を `commit_id: Some` で検索した。他の typed writer の replay は commit を名指さない）。
 
@@ -168,12 +171,12 @@
 
 **作者から見える動き**
 
-- 復元の後も、取り込みの取り消し・やり直しを押せる。結果は次のどれか。(1) 出来事に触れない復元（Codex の復元など）の後は、取り消し・やり直しが今までどおり通る。(2) 出来事を含む復元（Body の復元）の後は、取り消しが「取り込んだ後に編集されている」の系統の符号（`NEX_COMMIT_EVENT_EDITED` など）で拒まれる。以前は `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` だった。出来事は残る。(3) 復元の後に編集した出来事・項目は、取り消しで消えない・戻らない。(4) 取り込みの前のスナップショットへ復元して出来事が消えた後のやり直しは、出来事を作り直す（作者が押したときだけ）。
+- **確かめた種類の commit だけ**、復元の後も、取り込みの取り消し・やり直しを押せる。確かめていない種類〔Codex の phase、semantic binding、場面の story-order、Plot thread、Foreshadow、時間の node・constraint・projection、detail value の作成、Codex の関係、bind-existing〕を含む commit は、復元の後は今までどおり `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` で拒まれ、何も変わらない（混ざった commit も拒む）。確かめた種類の結果は次のどれか。(1) 出来事に触れない復元（Codex の復元など）の後は、取り消し・やり直しが今までどおり通る。(2) 出来事を含む復元（Body の復元）の後は、取り消しが「取り込んだ後に編集されている」の系統の符号（`NEX_COMMIT_EVENT_EDITED` など）で拒まれる。以前は `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` だった。出来事は残る。(3) 復元の後に編集した出来事・項目は、取り消しで消えない・戻らない。(4) 取り込みの前のスナップショットへ復元して出来事が消えた後のやり直しは、出来事を作り直す（作者が押したときだけ）。
 - 復元の成功の後は renderer が reload され、履歴は消える。main window では、この違いは、別窓に残った履歴からの操作でだけ見える。
 
 **残るもの**
 
-- **確認 88 の条件（専用の守りで、復元の後の編集が巻き戻らないことを、試験で確かめてから外す）は、確かめた種類についてだけ満たした。** 述語は kind を問わず、取り込みの commit の取り消し・やり直しを拒否の対象から外している。確かめた種類は、出来事（Chronicle の作成）、Codex の項目（作成・patch）、場面と出来事の Chronicle patch、detail value の patch である。
-- **復元を通した試験を足していない種類**（確かめられなかった筋書き）：Codex の phase（create／patch）、semantic binding、場面の story-order（`temporal.story-order.materialize`）、Plot thread（thread／marker／branch）、Foreshadow、時間の node・constraint・projection。これらは版などの比較（`undo.rs` の `preflight_undo_entity`）と連続性の検査で守る点は同じだが、復元の後の編集で版が一致する場合に連続性の検査が止めることは、この種類では確かめていない。Plot・Foreshadow は書き手が before を head から取る（DR-SRC-10）ので、連続性の検査が働かない可能性がある。外した範囲を確かめた種類に狭める（述語の対象を絞る）判断は、確認 88 の範囲を超えるので、ここでは足さず、ユーザーに報告する。
+- **確認 88 の条件（専用の守りで、復元の後の編集が巻き戻らないことを、試験で確かめてから外す）は、確かめた種類についてだけ満たした。** 述語は、確かめた種類だけを拒否の対象から外す（上の「種類の条件」。最初の実装は種類を問わず外していたが、改訂で絞った）。確かめた種類は、出来事（Chronicle の作成）、Codex の項目（作成・patch）、場面と出来事の Chronicle patch、detail value の patch である。
+- **確かめていない種類は、拒んだまま**（復元を通した試験を足していない。確かめられなかった筋書き）：Codex の phase（create／patch）、semantic binding、場面の story-order（`temporal.story-order.materialize`）、Plot thread（thread／marker／branch）、Foreshadow、時間の node・constraint・projection、detail value の作成、Codex の関係（`codex.relation.create`）、bind-existing。これらは版などの比較（`undo.rs` の `preflight_undo_entity`）と連続性の検査で守る点は同じだが、復元の後の編集で版が一致する場合に連続性の検査が止めることは、この種類では確かめていない。Plot・Foreshadow は書き手が before を head から取る（DR-SRC-10）ので、連続性の検査が働かない可能性がある。確認 88 の条件のとおり、確かめていない種類は外さず、述語の対象を確かめた種類に絞った（改訂）。確かめた種類を広げるには、その種類ごとに、復元を通した試験（復元の後の編集で版が一致する筋書きを含む）で確かめてから、述語の表（`change_feed.rs` の `REPLAY_EXEMPT_ENTITIES`／`REPLAY_EXEMPT_OPERATIONS`）に足す。足すときは、確認 88 の範囲か、あらためてユーザーに伺うかを、その時に決める。
 - 復元の行に版が無い scope（Codex の項目、場面、Snippet）は、復元で版が 0 に戻るので、版だけを比べる守りは、復元の後の編集と衝突し得る。衝突は連続性の検査が止める（確かめた種類で確認済み。上の「守りの実体」の限界つき）。
 - browser-mock は、`narrative_extraction` の commit の取り消し・やり直しを持たないので、変えない。
