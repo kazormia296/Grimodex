@@ -25,7 +25,10 @@ import { _electron } from "playwright";
 
 import { rootDir } from "./build.mjs";
 import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
-import { createGpuChannelFailureScanner } from "./runtime-performance-retry.mjs";
+import {
+  createGpuChannelFailureScanner,
+  measureProjectOpen,
+} from "./runtime-performance-retry.mjs";
 import {
   aggregateAppProcessMemory,
   appMemoryMeasurement,
@@ -230,6 +233,8 @@ const performanceMetrics = {
   coldStartFirstFrameMs: null,
   coldStartGpuChannelFailureOffsetsMs: null,
   projectOpenMs: null,
+  projectOpenTotalMs: null,
+  projectOpenStartedAtFirstFrame: null,
   editorInput: null,
   autosave: null,
   memory: {
@@ -2684,11 +2689,15 @@ async function phaseWrite() {
         state: "visible",
         timeout: LAUNCH_TIMEOUT_MS,
       });
+      // projectOpenMs の測り始めは「開き始めと最初の描画の遅い方」（DR-PIS-10）。
+      // 3 つの値は同じ renderer の performance の時計で、この 1 回の読取りで取る
+      // （main の時計や Node の performance.now() は混ぜない）。
       const projectOpenTiming = await page.evaluate((markName) => {
-        const marks = performance.getEntriesByName(markName, "mark");
-        const startedAt = marks.at(-1)?.startTime;
+        const lastStart = (name) =>
+          performance.getEntriesByName(name, "mark").at(-1)?.startTime ?? null;
         return {
-          startedAt: startedAt ?? null,
+          startedAt: lastStart(markName),
+          firstFrameAt: lastStart("grimodex:renderer-first-frame"),
           editorReadyAt: performance.now(),
         };
       }, WORKSPACE_OPEN_START_MARK);
@@ -2697,8 +2706,21 @@ async function phaseWrite() {
           `workspace open start mark not found: ${WORKSPACE_OPEN_START_MARK}`,
         );
       }
-      performanceMetrics.projectOpenMs =
-        projectOpenTiming.editorReadyAt - projectOpenTiming.startedAt;
+      const projectOpen = measureProjectOpen({
+        workspaceOpenStartMs: projectOpenTiming.startedAt,
+        firstFrameMs: projectOpenTiming.firstFrameAt,
+        editorReadyAtMs: projectOpenTiming.editorReadyAt,
+      });
+      if (projectOpen.projectOpenMs == null) {
+        throw new Error("project open timing is invalid");
+      }
+      performanceMetrics.projectOpenMs = projectOpen.projectOpenMs;
+      // 今までの定義（開き始めからの合計）。記録だけで gate にしない。
+      performanceMetrics.projectOpenTotalMs = projectOpen.projectOpenTotalMs;
+      // false = 最初の描画の印が使えず（欠落・読取りより後など）total に倒れた。
+      // その run では stall の取り直しが効かないことを metrics から読めるように残す。
+      performanceMetrics.projectOpenStartedAtFirstFrame =
+        projectOpen.startedAtFirstFrame;
       log("  seed scene の Editor surface を確認（projectOpen完了）");
 
       const perfEditor = perfEditorSurface
