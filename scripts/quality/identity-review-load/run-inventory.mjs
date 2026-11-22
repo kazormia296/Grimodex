@@ -110,7 +110,10 @@ export function electronEnv(extra) {
  * - DBUS_SESSION_BUS_ADDRESS が login session の bus（/run/user）でないこと
  * - TMPDIR が出力 dir の下の 0700 であること
  * - sqlite3 が使えること（AI の行の 0 件の確認に要る）
+ * - 出力先が短く、どの cell の userData の SingletonSocket も起動できる長さに収まること
  */
+export const LONGEST_CELL_DIR_NAME = 20;
+export const MAX_SOCKET_PATH_ESTIMATE = 95;
 export function precheckEnvironment(output, env = process.env) {
   for (const name of ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]) {
     assert.ok(!env[name], `[precheck] ${name} must be unset`);
@@ -129,15 +132,20 @@ export function precheckEnvironment(output, env = process.env) {
   );
   // Chromium の SingletonSocket（unix socket、sun_path 108）が userData の下に作られる。
   // 長い出力先では Electron が起動しない（Process failed to launch）ので、先に止める。
+  // 2026-11-23 の試走：この式の長さが 95 の cell（A-g-ja-3-matrix-L2）は起動し、99 の cell
+  // （A-g-ja-3-cumulative-L2）は起動しなかった。旧式は dir に cell の名前を使い、固定の 20 字・
+  // 上限 100 で測っていたので、長い名前を拾えなかった。測定 A・B の cell の dir は launcher-common の cellDirName で
+  // 16 字以下に固定し、目録の dir（`${mode}-${work}`）は最長 20 字。20 字で測り、上限は起動を確かめた 95。
+  // 既定の出力先（DEFAULT_OUTPUT）では 90 になる（試験で固定）。
   const longest = path.join(
     path.resolve(output),
     "run",
-    "extract-empty-g-ja-1",
+    "x".repeat(LONGEST_CELL_DIR_NAME),
     "user-data",
     "SingletonSocket",
   );
   assert.ok(
-    longest.length <= 100,
+    longest.length <= MAX_SOCKET_PATH_ESTIMATE,
     "[precheck] OUTPUT_PATH_TOO_LONG output dir path is too long for the userData socket",
   );
   const tmp = env.TMPDIR ?? "";

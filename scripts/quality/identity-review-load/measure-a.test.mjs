@@ -270,3 +270,56 @@ test("runCompleted／cellStatus：prepass が complete でない run・提案 0 
     "extract-unverified",
   );
 });
+
+test("cell の dir の名前は、起動前の検査が測る長さに収まり、既定の出力先は検査を通る", async () => {
+  const path = await import("node:path");
+  const { planCells: plan } = await import("./run-measure-a.mjs");
+  const { WORKS } = await import("./lib.mjs");
+  const { B1_LEVELS } = await import("./run-measure-b.mjs");
+  const { cellDirName } = await import("./launcher-common.mjs");
+  const { LONGEST_CELL_DIR_NAME, MAX_SOCKET_PATH_ESTIMATE } = await import(
+    "./run-inventory.mjs"
+  );
+  const works = Object.keys(WORKS);
+  // A：runCell は `A-${cell.id}` を cellDirName で dir の名前にする。solo は全作品で作って最長を測る。
+  const aIds = plan(works, { soloWorks: works, only: null }).map(
+    (cell) => `A-${cell.id}`,
+  );
+  // B：`B-${mode}-${work}-${level}` と乾いた実行の `B-dry-${work}`。
+  const bIds = works.flatMap((work) => [
+    `B-dry-${work}`,
+    ...["trial", "b1", "b2"].flatMap((mode) =>
+      B1_LEVELS.map((level) => `B-${mode}-${work}-${level}`),
+    ),
+  ]);
+  const ids = [...aIds, ...bIds];
+  const names = ids.map(cellDirName);
+  assert.ok(aIds.length > 0 && bIds.length > 0);
+  // 名前は互いに重ならず、後始末が見分ける接頭辞（B- と B-dry-）を保つ。
+  assert.equal(new Set(names).size, ids.length);
+  ids.forEach((id, i) => {
+    assert.equal(id.startsWith("B-dry-"), names[i].startsWith("B-dry-"));
+    assert.equal(id.slice(0, 2), names[i].slice(0, 2));
+  });
+  // 目録の dir（`${mode}-${work}`）も含めて最長を測る。
+  const inventoryNames = works.flatMap((work) =>
+    ["inventory", "extract-empty"].map((mode) => `${mode}-${work}`),
+  );
+  const longest = Math.max(
+    ...[...names, ...inventoryNames].map((n) => n.length),
+  );
+  assert.ok(
+    longest <= LONGEST_CELL_DIR_NAME,
+    `longest cell dir name ${longest} > ${LONGEST_CELL_DIR_NAME}`,
+  );
+  // 既定の出力先で、検査の式が上限に収まる。
+  const estimate = path.join(
+    "/home/grimodex/identity-review-load-2026-11",
+    "run",
+    "x".repeat(LONGEST_CELL_DIR_NAME),
+    "user-data",
+    "SingletonSocket",
+  ).length;
+  assert.ok(estimate <= MAX_SOCKET_PATH_ESTIMATE, `default output ${estimate}`);
+  assert.throws(() => cellDirName("C-x"), /CELL_ID_PREFIX/u);
+});

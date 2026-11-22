@@ -400,6 +400,9 @@ export function assertOutputClean(output, scenesTexts) {
 export const EXTERNAL_COMMANDS = Object.freeze([
   "narrative_extraction_claim_task",
   "nir1_pack_context",
+  // master の取り込み（2026-11-23）で DENIED_COMMANDS に増えたもの（chat の IR）。
+  // Mastra の agent turn（mastra_agent_*）は ipcContract に無いので、下の AI_COMMAND の形で拾う。
+  "chat_agent_ir_select",
   "get_ai_settings",
   "save_ai_settings",
   "semantic_download_model",
@@ -408,7 +411,7 @@ export const EXTERNAL_COMMANDS = Object.freeze([
   "deactivate_license",
 ]);
 const AI_COMMAND =
-  /^(send_|codex_app_|start_post_effect_run|.*_cli_|.*_cli$|list_ai_models|test_ai_connection|get_mcp_config|nir1_local_generation|nir1_local_conversation|ai_(?!audit_read_snapshot$|audit_verify$)|.*judg|vivliostyle_)/u;
+  /^(send_|codex_app_|mastra_agent_|start_post_effect_run|.*_cli_|.*_cli$|list_ai_models|test_ai_connection|get_mcp_config|nir1_local_generation|nir1_local_conversation|ai_(?!audit_read_snapshot$|audit_verify$)|.*judg|vivliostyle_)/u;
 export function findAiCommands(commandNames) {
   return [...new Set(commandNames)]
     .filter((name) => AI_COMMAND.test(name) || EXTERNAL_COMMANDS.includes(name))

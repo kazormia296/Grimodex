@@ -5,6 +5,7 @@
 // 出力は件数・ID・hash・path だけ。
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import {
   chmodSync,
@@ -227,6 +228,22 @@ export function finishCellCleanup(cell, { userData, workRoot }) {
  * 返り値に cell の観測（IPC の command 名・AI 行の数・接続先・時間）を付ける。
  * 本文・表記の文字列は載せない。
  */
+/**
+ * cell の作業 dir の名前（cell の名前と切り離した短い固定長）。Chromium の SingletonSocket の path の
+ * 長さが cell の名前で変わらないようにする（2026-11-23 の試走で、長い名前の cell だけが起動しなかった）。
+ * 後始末（cleanup.mjs の findKeyResidue）は `B-`（`B-dry-` を除く）で key を持ちうる cell を見分けるので、
+ * その接頭辞は残す。最長は `B-dry-` ＋ 10 桁の 16 字で、run-inventory の LONGEST_CELL_DIR_NAME（20）に収まる。
+ */
+export function cellDirName(cellId) {
+  assert.ok(
+    /^(A|B)-/u.test(cellId),
+    "[precheck] CELL_ID_PREFIX cell id must start with A- or B-",
+  );
+  const hash = createHash("sha256").update(cellId).digest("hex").slice(0, 10);
+  if (cellId.startsWith("B-dry-")) return `B-dry-${hash}`;
+  return `${cellId.slice(0, 2)}${hash}`;
+}
+
 export async function runCell({
   output,
   vite,
@@ -240,7 +257,7 @@ export async function runCell({
   keep = false,
 }) {
   const runRoot = path.join(output, "run");
-  const workRoot = path.join(runRoot, cellId);
+  const workRoot = path.join(runRoot, cellDirName(cellId));
   rmSync(workRoot, { recursive: true, force: true });
   const userData = path.join(workRoot, "user-data");
   const workspaceDir = path.join(workRoot, "workspace");
