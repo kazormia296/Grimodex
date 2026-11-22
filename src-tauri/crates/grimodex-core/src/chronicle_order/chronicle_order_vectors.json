@@ -1,0 +1,6941 @@
+{
+  "schemaVersion": 1,
+  "purpose": "年表の出来事の幅・並び・前後の判定（CED/1 の K1・K2・K2a、DR-CED-3〜6）、現在地（C3・C3a・C4、DR-CED-7）、移行で入れる仮の日時（I2、DR-CED-8）の、画面側（TypeScript）と Native（Rust）が共有する試験用の例。期待値は、暦の定義から手で数えた値で、関数の出力ではない。幅は分（日 × 1440 + 分）の区間で、start を含み、end を含まない。",
+  "calendars": {
+    "plain360": {
+      "daysPerYear": 360,
+      "seasonBoundaries": [
+        {
+          "name": "春",
+          "startDayOfYear": 0
+        },
+        {
+          "name": "夏",
+          "startDayOfYear": 90
+        },
+        {
+          "name": "秋",
+          "startDayOfYear": 180
+        },
+        {
+          "name": "冬",
+          "startDayOfYear": 270
+        }
+      ],
+      "startYear": 0,
+      "months": [
+        {
+          "name": "M1",
+          "days": 30
+        },
+        {
+          "name": "M2",
+          "days": 30
+        },
+        {
+          "name": "M3",
+          "days": 30
+        },
+        {
+          "name": "M4",
+          "days": 30
+        },
+        {
+          "name": "M5",
+          "days": 30
+        },
+        {
+          "name": "M6",
+          "days": 30
+        },
+        {
+          "name": "M7",
+          "days": 30
+        },
+        {
+          "name": "M8",
+          "days": 30
+        },
+        {
+          "name": "M9",
+          "days": 30
+        },
+        {
+          "name": "M10",
+          "days": 30
+        },
+        {
+          "name": "M11",
+          "days": 30
+        },
+        {
+          "name": "M12",
+          "days": 30
+        }
+      ],
+      "leap": {
+        "kind": "none"
+      },
+      "reform": null
+    },
+    "plain360Unsorted": {
+      "daysPerYear": 360,
+      "seasonBoundaries": [
+        {
+          "name": "冬",
+          "startDayOfYear": 270
+        },
+        {
+          "name": "春",
+          "startDayOfYear": 0
+        },
+        {
+          "name": "秋",
+          "startDayOfYear": 180
+        },
+        {
+          "name": "夏",
+          "startDayOfYear": 90
+        }
+      ],
+      "startYear": 0,
+      "months": [
+        {
+          "name": "M1",
+          "days": 30
+        },
+        {
+          "name": "M2",
+          "days": 30
+        },
+        {
+          "name": "M3",
+          "days": 30
+        },
+        {
+          "name": "M4",
+          "days": 30
+        },
+        {
+          "name": "M5",
+          "days": 30
+        },
+        {
+          "name": "M6",
+          "days": 30
+        },
+        {
+          "name": "M7",
+          "days": 30
+        },
+        {
+          "name": "M8",
+          "days": 30
+        },
+        {
+          "name": "M9",
+          "days": 30
+        },
+        {
+          "name": "M10",
+          "days": 30
+        },
+        {
+          "name": "M11",
+          "days": 30
+        },
+        {
+          "name": "M12",
+          "days": 30
+        }
+      ],
+      "leap": null,
+      "reform": null
+    },
+    "gregorian2000": {
+      "daysPerYear": 365,
+      "seasonBoundaries": [
+        {
+          "name": "春",
+          "startDayOfYear": 60
+        },
+        {
+          "name": "夏",
+          "startDayOfYear": 152
+        },
+        {
+          "name": "秋",
+          "startDayOfYear": 244
+        },
+        {
+          "name": "冬",
+          "startDayOfYear": 335
+        }
+      ],
+      "startYear": 2000,
+      "months": [
+        {
+          "name": "1月",
+          "days": 31
+        },
+        {
+          "name": "2月",
+          "days": 28
+        },
+        {
+          "name": "3月",
+          "days": 31
+        },
+        {
+          "name": "4月",
+          "days": 30
+        },
+        {
+          "name": "5月",
+          "days": 31
+        },
+        {
+          "name": "6月",
+          "days": 30
+        },
+        {
+          "name": "7月",
+          "days": 31
+        },
+        {
+          "name": "8月",
+          "days": 31
+        },
+        {
+          "name": "9月",
+          "days": 30
+        },
+        {
+          "name": "10月",
+          "days": 31
+        },
+        {
+          "name": "11月",
+          "days": 30
+        },
+        {
+          "name": "12月",
+          "days": 31
+        }
+      ],
+      "leap": {
+        "kind": "gregorian",
+        "monthIndex": 1
+      },
+      "reform": null
+    },
+    "leapDecember": {
+      "daysPerYear": 360,
+      "seasonBoundaries": [],
+      "startYear": 0,
+      "months": [
+        {
+          "name": "M1",
+          "days": 30
+        },
+        {
+          "name": "M2",
+          "days": 30
+        },
+        {
+          "name": "M3",
+          "days": 30
+        },
+        {
+          "name": "M4",
+          "days": 30
+        },
+        {
+          "name": "M5",
+          "days": 30
+        },
+        {
+          "name": "M6",
+          "days": 30
+        },
+        {
+          "name": "M7",
+          "days": 30
+        },
+        {
+          "name": "M8",
+          "days": 30
+        },
+        {
+          "name": "M9",
+          "days": 30
+        },
+        {
+          "name": "M10",
+          "days": 30
+        },
+        {
+          "name": "M11",
+          "days": 30
+        },
+        {
+          "name": "M12",
+          "days": 30
+        }
+      ],
+      "leap": {
+        "kind": "gregorian",
+        "monthIndex": 11
+      },
+      "reform": null
+    },
+    "yearOnly100": {
+      "daysPerYear": 100,
+      "seasonBoundaries": [],
+      "startYear": 0,
+      "months": null,
+      "leap": null,
+      "reform": null
+    },
+    "singleSeason360": {
+      "daysPerYear": 360,
+      "seasonBoundaries": [
+        {
+          "name": "雨季",
+          "startDayOfYear": 100
+        }
+      ],
+      "startYear": 0,
+      "months": null,
+      "leap": null,
+      "reform": null
+    },
+    "noYear": {
+      "daysPerYear": 0,
+      "seasonBoundaries": [],
+      "startYear": 0,
+      "months": null,
+      "leap": null,
+      "reform": null
+    },
+    "reform1582": {
+      "daysPerYear": 365,
+      "seasonBoundaries": [
+        {
+          "name": "春",
+          "startDayOfYear": 60
+        },
+        {
+          "name": "夏",
+          "startDayOfYear": 152
+        },
+        {
+          "name": "秋",
+          "startDayOfYear": 244
+        },
+        {
+          "name": "冬",
+          "startDayOfYear": 335
+        }
+      ],
+      "startYear": 1582,
+      "months": [
+        {
+          "name": "1月",
+          "days": 31
+        },
+        {
+          "name": "2月",
+          "days": 28
+        },
+        {
+          "name": "3月",
+          "days": 31
+        },
+        {
+          "name": "4月",
+          "days": 30
+        },
+        {
+          "name": "5月",
+          "days": 31
+        },
+        {
+          "name": "6月",
+          "days": 30
+        },
+        {
+          "name": "7月",
+          "days": 31
+        },
+        {
+          "name": "8月",
+          "days": 31
+        },
+        {
+          "name": "9月",
+          "days": 30
+        },
+        {
+          "name": "10月",
+          "days": 31
+        },
+        {
+          "name": "11月",
+          "days": 30
+        },
+        {
+          "name": "12月",
+          "days": 31
+        }
+      ],
+      "leap": {
+        "kind": "gregorian",
+        "monthIndex": 1
+      },
+      "reform": {
+        "gregorianStart": {
+          "year": 1582,
+          "monthIndex": 9,
+          "dayOfMonth": 15
+        },
+        "region": "gregorian1582"
+      }
+    }
+  },
+  "spanCases": [
+    {
+      "id": "time-with-minute",
+      "description": "時刻：10 日 600 分は 1 分の幅",
+      "calendar": "plain360",
+      "event": {
+        "id": "e1",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 15000,
+        "end": 15001
+      }
+    },
+    {
+      "id": "time-minute-null",
+      "description": "時刻で分が null：0 分として 1 分の幅",
+      "calendar": "plain360",
+      "event": {
+        "id": "e2",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 14401
+      }
+    },
+    {
+      "id": "time-calendar-null",
+      "description": "暦が null でも時刻は求まる",
+      "calendar": null,
+      "event": {
+        "id": "e3",
+        "ordinal": "a0",
+        "startTime": 5,
+        "startMinute": 90,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 7290,
+        "end": 7291
+      }
+    },
+    {
+      "id": "time-last-minute",
+      "description": "時刻：1439 分（日の最後の 1 分）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e4",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": 1439,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 15839,
+        "end": 15840
+      }
+    },
+    {
+      "id": "day-leftover-minute",
+      "description": "日で分が残っている：数えない（1 日の幅）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e5",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": 600,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "day-calendar-null",
+      "description": "暦が null でも日は求まる",
+      "calendar": null,
+      "event": {
+        "id": "e6",
+        "ordinal": "a0",
+        "startTime": 3,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 4320,
+        "end": 5760
+      }
+    },
+    {
+      "id": "day-negative",
+      "description": "日が負（紀元より前）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e7",
+        "ordinal": "a0",
+        "startTime": -5,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -7200,
+        "end": -5760
+      }
+    },
+    {
+      "id": "month-plain-mid",
+      "description": "月：保存された日（45）が月の途中。M2 は 30..59",
+      "calendar": "plain360",
+      "event": {
+        "id": "e8",
+        "ordinal": "a0",
+        "startTime": 45,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 86400
+      }
+    },
+    {
+      "id": "month-plain-first",
+      "description": "月：保存された日が月の初日（30）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e9",
+        "ordinal": "a0",
+        "startTime": 30,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 86400
+      }
+    },
+    {
+      "id": "month-plain-last",
+      "description": "月：保存された日が月の末日（59）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e10",
+        "ordinal": "a0",
+        "startTime": 59,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 86400
+      }
+    },
+    {
+      "id": "month-leftover-minute",
+      "description": "月で分が残っている：数えない",
+      "calendar": "plain360",
+      "event": {
+        "id": "e11",
+        "ordinal": "a0",
+        "startTime": 45,
+        "startMinute": 500,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 86400
+      }
+    },
+    {
+      "id": "month-negative-day",
+      "description": "月：負の日（-1）は、前年（-1 年）の最後の月 M12 = -30..-1",
+      "calendar": "plain360",
+      "event": {
+        "id": "e12",
+        "ordinal": "a0",
+        "startTime": -1,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -43200,
+        "end": 0
+      }
+    },
+    {
+      "id": "month-gregorian-leap-feb",
+      "description": "月：閏年の 2 月（2000 年は 4/100/400 の閏）は 29 日。2 月は 31..59",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e13",
+        "ordinal": "a0",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 44640,
+        "end": 86400
+      }
+    },
+    {
+      "id": "month-gregorian-common-feb",
+      "description": "月：平年の 2 月（2001 年）は 28 日。2 月 1 日は 366+31=397 で 397..424",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e14",
+        "ordinal": "a0",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 571680,
+        "end": 612000
+      }
+    },
+    {
+      "id": "month-gregorian-century-feb",
+      "description": "月：100 の倍数で 400 の倍数でない年（2100 年）の 2 月は 28 日。2100 年の 1 月 1 日は 36525",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e15",
+        "ordinal": "a0",
+        "startTime": 36560,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 52640640,
+        "end": 52680960
+      }
+    },
+    {
+      "id": "month-leap-december",
+      "description": "月：閏日が 12 月の暦（leap.monthIndex=11）。0 年の 12 月は 31 日（330..360）",
+      "calendar": "leapDecember",
+      "event": {
+        "id": "e16",
+        "ordinal": "a0",
+        "startTime": 340,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 475200,
+        "end": 519840
+      }
+    },
+    {
+      "id": "month-leap-december-year4",
+      "description": "月：閏日が 12 月の暦。4 年は閏で、4 年の 12 月は 1771..1801",
+      "calendar": "leapDecember",
+      "event": {
+        "id": "e17",
+        "ordinal": "a0",
+        "startTime": 1780,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 2550240,
+        "end": 2594880
+      }
+    },
+    {
+      "id": "month-no-months-fallback",
+      "description": "月の定義が無い暦：保存された開始の 1 日",
+      "calendar": "yearOnly100",
+      "event": {
+        "id": "e18",
+        "ordinal": "a0",
+        "startTime": 250,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 360000,
+        "end": 361440
+      }
+    },
+    {
+      "id": "month-no-year-fallback",
+      "description": "1 年の日数が決まらない暦：保存された開始の 1 日",
+      "calendar": "noYear",
+      "event": {
+        "id": "e19",
+        "ordinal": "a0",
+        "startTime": 7,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 10080,
+        "end": 11520
+      }
+    },
+    {
+      "id": "month-calendar-null",
+      "description": "暦が null：保存された開始の 1 日",
+      "calendar": null,
+      "event": {
+        "id": "e20",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 144000,
+        "end": 145440
+      }
+    },
+    {
+      "id": "month-reform-cutover",
+      "description": "改暦（1582-10-15 から）：切替の月（10 月）は 21 日。10 月 1 日は 273、10 月 4 日は 276、10 月 15 日は 277。10 月 = 273..293",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e21",
+        "ordinal": "a0",
+        "startTime": 280,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 393120,
+        "end": 423360
+      }
+    },
+    {
+      "id": "month-reform-cutover-julian-day",
+      "description": "改暦：切替前（ユリウス）の日 276（10 月 4 日）が入る月も、10 月 = 273..293",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e22",
+        "ordinal": "a0",
+        "startTime": 276,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 393120,
+        "end": 423360
+      }
+    },
+    {
+      "id": "month-reform-after-cutover",
+      "description": "改暦：切替の翌月（11 月）は 294..323",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e23",
+        "ordinal": "a0",
+        "startTime": 300,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 423360,
+        "end": 466560
+      }
+    },
+    {
+      "id": "month-reform-gregorian-common-feb",
+      "description": "改暦：切替後の平年（1583 年）の 2 月は 386..413",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e24",
+        "ordinal": "a0",
+        "startTime": 390,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 555840,
+        "end": 596160
+      }
+    },
+    {
+      "id": "month-reform-gregorian-leap-feb",
+      "description": "改暦：切替後の閏年（1584 年）の 2 月は 29 日で 751..779",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e25",
+        "ordinal": "a0",
+        "startTime": 760,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 1081440,
+        "end": 1123200
+      }
+    },
+    {
+      "id": "month-reform-julian-common-feb",
+      "description": "改暦：切替前（ユリウス）の平年（1582 年）の 2 月は 31..58",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e26",
+        "ordinal": "a0",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 44640,
+        "end": 84960
+      }
+    },
+    {
+      "id": "month-reform-julian-leap-feb",
+      "description": "改暦：切替前（ユリウス）の閏年（1580 年）の 2 月は 29 日。1580 年の 1 月 1 日は -731 で 2 月は -700..-672",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e27",
+        "ordinal": "a0",
+        "startTime": -690,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -1008000,
+        "end": -966240
+      }
+    },
+    {
+      "id": "month-reform-julian-century-leap-feb",
+      "description": "改暦：ユリウスは 100 の倍数でも 4 の倍数なら閏（1500 年）。1500 年の 1 月 1 日は -29951、2 月は -29920..-29892",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e28",
+        "ordinal": "a0",
+        "startTime": -29900,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -43084800,
+        "end": -43043040
+      }
+    },
+    {
+      "id": "year-plain-mid",
+      "description": "年：保存された日（400）が年の途中。1 年は 360..719",
+      "calendar": "plain360",
+      "event": {
+        "id": "e29",
+        "ordinal": "a0",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 518400,
+        "end": 1036800
+      }
+    },
+    {
+      "id": "year-negative",
+      "description": "年：負の日（-1）は -1 年（-360..-1）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e30",
+        "ordinal": "a0",
+        "startTime": -1,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -518400,
+        "end": 0
+      }
+    },
+    {
+      "id": "year-leftover-minute",
+      "description": "年で分が残っている：数えない",
+      "calendar": "plain360",
+      "event": {
+        "id": "e31",
+        "ordinal": "a0",
+        "startTime": 400,
+        "startMinute": 500,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 518400,
+        "end": 1036800
+      }
+    },
+    {
+      "id": "year-gregorian-leap-400",
+      "description": "年：2000 年（400 の倍数）は閏で 366 日（0..365）",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e32",
+        "ordinal": "a0",
+        "startTime": 200,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 0,
+        "end": 527040
+      }
+    },
+    {
+      "id": "year-gregorian-common",
+      "description": "年：2001 年は 366..730",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e33",
+        "ordinal": "a0",
+        "startTime": 500,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 527040,
+        "end": 1052640
+      }
+    },
+    {
+      "id": "year-gregorian-leap-4",
+      "description": "年：2004 年は閏で 1461..1826",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e34",
+        "ordinal": "a0",
+        "startTime": 1500,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 2103840,
+        "end": 2630880
+      }
+    },
+    {
+      "id": "year-gregorian-century-common",
+      "description": "年：2100 年は閏でない。36525..36889",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e35",
+        "ordinal": "a0",
+        "startTime": 36600,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 52596000,
+        "end": 53121600
+      }
+    },
+    {
+      "id": "year-leap-december",
+      "description": "年：閏日が 12 月の暦の 0 年は 361 日",
+      "calendar": "leapDecember",
+      "event": {
+        "id": "e36",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 0,
+        "end": 519840
+      }
+    },
+    {
+      "id": "year-leap-december-common",
+      "description": "年：閏日が 12 月の暦の 1 年は 360 日で 361..720",
+      "calendar": "leapDecember",
+      "event": {
+        "id": "e37",
+        "ordinal": "a0",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 519840,
+        "end": 1038240
+      }
+    },
+    {
+      "id": "year-leap-december-year4",
+      "description": "年：閏日が 12 月の暦の 4 年は 361 日で 1441..1801",
+      "calendar": "leapDecember",
+      "event": {
+        "id": "e38",
+        "ordinal": "a0",
+        "startTime": 1500,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 2075040,
+        "end": 2594880
+      }
+    },
+    {
+      "id": "year-no-months-calendar",
+      "description": "月が無くても年は求まる（1 年 100 日、2 年は 200..299）",
+      "calendar": "yearOnly100",
+      "event": {
+        "id": "e39",
+        "ordinal": "a0",
+        "startTime": 250,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 288000,
+        "end": 432000
+      }
+    },
+    {
+      "id": "year-single-season-calendar",
+      "description": "季節が 1 つでも年は求まる",
+      "calendar": "singleSeason360",
+      "event": {
+        "id": "e40",
+        "ordinal": "a0",
+        "startTime": 50,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 0,
+        "end": 518400
+      }
+    },
+    {
+      "id": "year-no-year-fallback",
+      "description": "1 年の日数が決まらない暦：保存された開始の 1 日",
+      "calendar": "noYear",
+      "event": {
+        "id": "e41",
+        "ordinal": "a0",
+        "startTime": 7,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 10080,
+        "end": 11520
+      }
+    },
+    {
+      "id": "year-calendar-null",
+      "description": "暦が null：保存された開始の 1 日",
+      "calendar": null,
+      "event": {
+        "id": "e42",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 144000,
+        "end": 145440
+      }
+    },
+    {
+      "id": "year-reform-cutover",
+      "description": "改暦：切替の年（1582 年）は 10 日短く 355 日（0..354）",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e43",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 0,
+        "end": 511200
+      }
+    },
+    {
+      "id": "year-reform-after",
+      "description": "改暦：切替の翌年（1583 年）は 355..719",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e44",
+        "ordinal": "a0",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 511200,
+        "end": 1036800
+      }
+    },
+    {
+      "id": "year-reform-julian-leap-century",
+      "description": "改暦：ユリウスの 1500 年は閏で 366 日（-29951..-29586）",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e45",
+        "ordinal": "a0",
+        "startTime": -29800,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -43129440,
+        "end": -42602400
+      }
+    },
+    {
+      "id": "season-plain-summer",
+      "description": "季節：夏（境界 90）は 90..179",
+      "calendar": "plain360",
+      "event": {
+        "id": "e46",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 129600,
+        "end": 259200
+      }
+    },
+    {
+      "id": "season-plain-winter",
+      "description": "季節：冬（境界 270）は 270..359",
+      "calendar": "plain360",
+      "event": {
+        "id": "e47",
+        "ordinal": "a0",
+        "startTime": 300,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 388800,
+        "end": 518400
+      }
+    },
+    {
+      "id": "season-plain-spring-year1",
+      "description": "季節：1 年の春（境界 0）は 360..449",
+      "calendar": "plain360",
+      "event": {
+        "id": "e48",
+        "ordinal": "a0",
+        "startTime": 370,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 518400,
+        "end": 648000
+      }
+    },
+    {
+      "id": "season-plain-boundary-day",
+      "description": "季節：保存された日が境界の日（90）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e49",
+        "ordinal": "a0",
+        "startTime": 90,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 129600,
+        "end": 259200
+      }
+    },
+    {
+      "id": "season-plain-negative",
+      "description": "季節：負の日（-1）は -1 年の冬 -90..-1",
+      "calendar": "plain360",
+      "event": {
+        "id": "e50",
+        "ordinal": "a0",
+        "startTime": -1,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -129600,
+        "end": 0
+      }
+    },
+    {
+      "id": "season-unsorted-boundaries",
+      "description": "季節：境界が昇順でない暦でも、昇順に直して求める（夏 90..179）",
+      "calendar": "plain360Unsorted",
+      "event": {
+        "id": "e51",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 129600,
+        "end": 259200
+      }
+    },
+    {
+      "id": "season-leftover-minute",
+      "description": "季節で分が残っている：数えない",
+      "calendar": "plain360",
+      "event": {
+        "id": "e52",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": 700,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 129600,
+        "end": 259200
+      }
+    },
+    {
+      "id": "season-gregorian-spring",
+      "description": "季節：2000 年の春（境界 60）は 60..151",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e53",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 86400,
+        "end": 218880
+      }
+    },
+    {
+      "id": "season-gregorian-autumn-boundary",
+      "description": "季節：秋（境界 244）の初日 244 は 244..334",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e54",
+        "ordinal": "a0",
+        "startTime": 244,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 351360,
+        "end": 482400
+      }
+    },
+    {
+      "id": "season-gregorian-winter-crosses-year",
+      "description": "季節：冬（境界 335）は年をまたぎ、翌年の春の境界 60 の前まで。2000 年の冬は 335..425",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e55",
+        "ordinal": "a0",
+        "startTime": 350,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 482400,
+        "end": 613440
+      }
+    },
+    {
+      "id": "season-gregorian-winter-before-first-boundary",
+      "description": "季節：最初の境界（60）より前の 2001 年 10 日（376）は、前年の冬の続き 335..425",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e56",
+        "ordinal": "a0",
+        "startTime": 376,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 482400,
+        "end": 613440
+      }
+    },
+    {
+      "id": "season-gregorian-winter-before-first-boundary-year0",
+      "description": "季節：2000 年 5 日は、1999 年（365 日）の冬の続き。1999 年の冬は -365+335=-30 から 60 の前まで",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e57",
+        "ordinal": "a0",
+        "startTime": 5,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -43200,
+        "end": 86400
+      }
+    },
+    {
+      "id": "season-gregorian-winter-into-leap-year",
+      "description": "季節：2003 年の冬（1096+335=1431）は、閏の 2004 年（1461）の 60 日目の前まで 1520",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e58",
+        "ordinal": "a0",
+        "startTime": 1451,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 2060640,
+        "end": 2190240
+      }
+    },
+    {
+      "id": "season-single-boundary-after",
+      "description": "季節の境界が 1 つ（100）：境界以後は 100..459（翌年の境界の前まで）",
+      "calendar": "singleSeason360",
+      "event": {
+        "id": "e59",
+        "ordinal": "a0",
+        "startTime": 150,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 144000,
+        "end": 662400
+      }
+    },
+    {
+      "id": "season-single-boundary-before-first",
+      "description": "季節の境界が 1 つ：最初の境界より前（50）は、前年の境界から -260..99",
+      "calendar": "singleSeason360",
+      "event": {
+        "id": "e60",
+        "ordinal": "a0",
+        "startTime": 50,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -374400,
+        "end": 144000
+      }
+    },
+    {
+      "id": "season-no-boundaries-fallback",
+      "description": "季節の境界が無い暦：保存された開始の 1 日",
+      "calendar": "leapDecember",
+      "event": {
+        "id": "e61",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 144000,
+        "end": 145440
+      }
+    },
+    {
+      "id": "season-no-year-fallback",
+      "description": "1 年の日数が決まらない暦：保存された開始の 1 日",
+      "calendar": "noYear",
+      "event": {
+        "id": "e62",
+        "ordinal": "a0",
+        "startTime": 7,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 10080,
+        "end": 11520
+      }
+    },
+    {
+      "id": "season-no-boundaries-no-months-fallback",
+      "description": "季節の境界も月も無い暦：保存された開始の 1 日",
+      "calendar": "yearOnly100",
+      "event": {
+        "id": "e63",
+        "ordinal": "a0",
+        "startTime": 250,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 360000,
+        "end": 361440
+      }
+    },
+    {
+      "id": "season-calendar-null",
+      "description": "暦が null：保存された開始の 1 日",
+      "calendar": null,
+      "event": {
+        "id": "e64",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 144000,
+        "end": 145440
+      }
+    },
+    {
+      "id": "season-reform-spring",
+      "description": "改暦：切替の年の春は 60..151（年内通日で決まる）",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e65",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 86400,
+        "end": 218880
+      }
+    },
+    {
+      "id": "season-reform-winter-crosses-cutover-year",
+      "description": "改暦：切替の年（355 日）の冬（境界 335）は 335..414（翌年 1583 年の 60 日目 = 355+60 の前まで）",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e66",
+        "ordinal": "a0",
+        "startTime": 340,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 482400,
+        "end": 597600
+      }
+    },
+    {
+      "id": "season-reform-spring-after",
+      "description": "改暦：切替の翌年（1583 年、355 から）の春（境界 60）は 415..506",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e67",
+        "ordinal": "a0",
+        "startTime": 455,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 597600,
+        "end": 730080
+      }
+    },
+    {
+      "id": "end-day-day",
+      "description": "終わり（日）：10 日から 12 日の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e68",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 12,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 18720
+      }
+    },
+    {
+      "id": "end-day-same-day",
+      "description": "終わり（日）が開始と同じ日：1 日の幅",
+      "calendar": "plain360",
+      "event": {
+        "id": "e69",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 10,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-time",
+      "description": "終わり（時刻）：12 日 600 分の 1 分後まで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e70",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 12,
+        "endMinute": 600,
+        "endGranularity": "time"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 17881
+      }
+    },
+    {
+      "id": "end-time-minute-null",
+      "description": "終わり（時刻）で分が null：0 分の 1 分後まで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e71",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 12,
+        "endMinute": null,
+        "endGranularity": "time"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 17281
+      }
+    },
+    {
+      "id": "end-time-start-time",
+      "description": "時刻から時刻まで（同じ日）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e72",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": 100,
+        "startGranularity": "time",
+        "endTime": 10,
+        "endMinute": 200,
+        "endGranularity": "time"
+      },
+      "expected": {
+        "start": 14500,
+        "end": 14601
+      }
+    },
+    {
+      "id": "end-day-after-start-time",
+      "description": "開始が時刻、終わりが同じ日（日）：その日の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e73",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "endTime": 10,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 15000,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-month",
+      "description": "終わり（月）：2 か月目（60..89）の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e74",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 70,
+        "endMinute": null,
+        "endGranularity": "month"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 129600
+      }
+    },
+    {
+      "id": "end-season",
+      "description": "終わり（季節）：夏（90..179）の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e75",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 100,
+        "endMinute": null,
+        "endGranularity": "season"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 259200
+      }
+    },
+    {
+      "id": "end-year",
+      "description": "終わり（年）：1 年（360..719）の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e76",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 400,
+        "endMinute": null,
+        "endGranularity": "year"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 1036800
+      }
+    },
+    {
+      "id": "end-none",
+      "description": "終わりの粒度が none：終わりが無いものとして扱う",
+      "calendar": "plain360",
+      "event": {
+        "id": "e77",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 12,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-unknown-granularity",
+      "description": "終わりの粒度が知らない文字列：終わりが無いものとして扱う",
+      "calendar": "plain360",
+      "event": {
+        "id": "e78",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 12,
+        "endMinute": null,
+        "endGranularity": "decade"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-time-null-with-granularity",
+      "description": "終わりの日が null で粒度だけがある：終わりが無いものとして扱う",
+      "calendar": "plain360",
+      "event": {
+        "id": "e79",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-before-start",
+      "description": "終わりが開始より前：終わりが無いものとして扱う",
+      "calendar": "plain360",
+      "event": {
+        "id": "e80",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 5,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-ends-where-start-begins",
+      "description": "終わり（9 日の終わり）が開始（10 日の始まり）に接する：終わりが無いものとして扱う",
+      "calendar": "plain360",
+      "event": {
+        "id": "e81",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 9,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 15840
+      }
+    },
+    {
+      "id": "end-month-ends-where-start-month-begins",
+      "description": "終わり（前の月の末日）が開始の月の始まりに接する：終わりが無いものとして扱う",
+      "calendar": "plain360",
+      "event": {
+        "id": "e82",
+        "ordinal": "a0",
+        "startTime": 45,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": 20,
+        "endMinute": null,
+        "endGranularity": "month"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 86400
+      }
+    },
+    {
+      "id": "end-start-month",
+      "description": "開始が月：月の初日から、終わり（日）の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e83",
+        "ordinal": "a0",
+        "startTime": 45,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": 100,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 145440
+      }
+    },
+    {
+      "id": "end-start-season-end-month",
+      "description": "開始が季節・終わりが月：夏の初日（90）から、終わりの月（180..209）の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e84",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": 200,
+        "endMinute": null,
+        "endGranularity": "month"
+      },
+      "expected": {
+        "start": 129600,
+        "end": 302400
+      }
+    },
+    {
+      "id": "end-start-year-end-year",
+      "description": "開始が年・終わりが年：1 年の初日（360）から 2 年の終わり（1079）まで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e85",
+        "ordinal": "a0",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": 800,
+        "endMinute": null,
+        "endGranularity": "year"
+      },
+      "expected": {
+        "start": 518400,
+        "end": 1555200
+      }
+    },
+    {
+      "id": "end-calendar-null-month",
+      "description": "暦が null：終わり（月）も保存された終わりの 1 日",
+      "calendar": null,
+      "event": {
+        "id": "e86",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 12,
+        "endMinute": null,
+        "endGranularity": "month"
+      },
+      "expected": {
+        "start": 14400,
+        "end": 18720
+      }
+    },
+    {
+      "id": "end-reform-month",
+      "description": "改暦：終わり（切替の月）は 10 月の終わり（293）まで",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e87",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 280,
+        "endMinute": null,
+        "endGranularity": "month"
+      },
+      "expected": {
+        "start": 144000,
+        "end": 423360
+      }
+    },
+    {
+      "id": "none-start-null",
+      "description": "開始の日が null（粒度は day）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e88",
+        "ordinal": "a0",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": null
+    },
+    {
+      "id": "none-granularity-none",
+      "description": "粒度が none で日がある",
+      "calendar": "plain360",
+      "event": {
+        "id": "e89",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "none",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": null
+    },
+    {
+      "id": "none-unknown-granularity",
+      "description": "開始の粒度が知らない文字列",
+      "calendar": "plain360",
+      "event": {
+        "id": "e90",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "decade",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": null
+    },
+    {
+      "id": "none-end-only",
+      "description": "終わりだけがある（開始が無い）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e91",
+        "ordinal": "a0",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "endTime": 20,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": null
+    },
+    {
+      "id": "none-all-null",
+      "description": "日時の欄が全部 none／null",
+      "calendar": "plain360",
+      "event": {
+        "id": "e92",
+        "ordinal": "a0",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": null
+    },
+    {
+      "id": "none-time-granularity-start-null",
+      "description": "開始の日が null で粒度が time（分がある）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e93",
+        "ordinal": "a0",
+        "startTime": null,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": null
+    },
+    {
+      "id": "none-calendar-null",
+      "description": "暦が null でも、日時が無ければ null",
+      "calendar": null,
+      "event": {
+        "id": "e94",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "none",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": null
+    },
+    {
+      "id": "month-gregorian-negative-leap",
+      "description": "改暦なしの閏のある暦で、起点より前の日：-1420 日は 1996 年（閏年）の 2 月。1996-01-01 は -1461 日で、2 月は -1430 日から 29 日間（末日は -1402 日）",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e-neg-leap-m",
+        "ordinal": "a0",
+        "startTime": -1420,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -2059200,
+        "end": -2017440
+      }
+    },
+    {
+      "id": "year-gregorian-negative-leap",
+      "description": "改暦なしの閏のある暦で、起点より前の日：-1420 日は 1996 年（閏年・366 日）。初日は -1461 日、末日は -1096 日",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e-neg-leap-y",
+        "ordinal": "a0",
+        "startTime": -1420,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": -2103840,
+        "end": -1576800
+      }
+    },
+    {
+      "id": "end-inside-start-month-before-stored-day",
+      "description": "開始が月だけ（保存された日は 45）で、終わりが、同じ月の中の、保存された日より前の日（35）：終わりを使う。開始の基準は、幅の始まり（月初）である（DR-CED-10）。月初 30 日から、35 日の終わりまで",
+      "calendar": "plain360",
+      "event": {
+        "id": "e1",
+        "ordinal": "a0",
+        "startTime": 45,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": 35,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "expected": {
+        "start": 43200,
+        "end": 51840
+      }
+    },
+    {
+      "id": "time-minute-above-range",
+      "description": "粒度が時刻で、分が 1 日の分数より大きい（1500）：丸めず、日 × 1440 ＋ 分のまま（DR-CED-11）。10 日 1500 分",
+      "calendar": "plain360",
+      "event": {
+        "id": "e1",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": 1500,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 15900,
+        "end": 15901
+      }
+    },
+    {
+      "id": "time-minute-negative",
+      "description": "粒度が時刻で、分が負（-30）：丸めず、日 × 1440 ＋ 分のまま（DR-CED-11）。10 日 -30 分",
+      "calendar": "plain360",
+      "event": {
+        "id": "e1",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": -30,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "expected": {
+        "start": 14370,
+        "end": 14371
+      }
+    }
+  ],
+  "orderCases": [
+    {
+      "id": "order-tie-ordinal-then-id",
+      "description": "同じ日時：裏の並び → id。a0 の e-b と e-c は id の順、a1 の e-a は最後",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "e-a",
+          "ordinal": "a1",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e-c",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e-b",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["e-b", "e-c", "e-a"]
+    },
+    {
+      "id": "order-date-before-ordinal",
+      "description": "日時が違えば、裏の並びは見ない（日時の早い方が先）",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "e-late",
+          "ordinal": "a0",
+          "startTime": 20,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e-early",
+          "ordinal": "a9",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["e-early", "e-late"]
+    },
+    {
+      "id": "order-month-uses-span-start",
+      "description": "月だけの出来事（保存された日 50、幅の始まり 30）は、日 30 の出来事と同点（裏の並びで先）、日 40 の出来事より前",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "d40",
+          "ordinal": "a2",
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "m",
+          "ordinal": "a5",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "month",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d30",
+          "ordinal": "a1",
+          "startTime": 30,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d20",
+          "ordinal": "a3",
+          "startTime": 20,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["d20", "d30", "m", "d40"]
+    },
+    {
+      "id": "order-season-and-year-use-span-start",
+      "description": "季節（保存された日 100、始まり 90）・年（保存された日 400、始まり 360）は、幅の始まりで並ぶ",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "d365",
+          "ordinal": "a0",
+          "startTime": 365,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "year",
+          "ordinal": "a0",
+          "startTime": 400,
+          "startMinute": null,
+          "startGranularity": "year",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d95",
+          "ordinal": "a0",
+          "startTime": 95,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "season",
+          "ordinal": "a0",
+          "startTime": 100,
+          "startMinute": null,
+          "startGranularity": "season",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["season", "d95", "year", "d365"]
+    },
+    {
+      "id": "order-calendar-null-no-span-start",
+      "description": "暦が null：月は保存された日そのもので並ぶ（幅の始まりを使わない）",
+      "calendar": null,
+      "events": [
+        {
+          "id": "month",
+          "ordinal": "a0",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "month",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d40",
+          "ordinal": "a0",
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["d40", "month"]
+    },
+    {
+      "id": "order-undated-last",
+      "description": "日時の無い出来事は、日時のある出来事の全部の後ろ。その中は 裏の並び → id",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "u-1",
+          "ordinal": "a2",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "u-9",
+          "ordinal": "a0",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-late",
+          "ordinal": "a9",
+          "startTime": 9999,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "u-4",
+          "ordinal": "a1",
+          "startTime": 5,
+          "startMinute": null,
+          "startGranularity": "decade",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "u-3",
+          "ordinal": "a0",
+          "startTime": 3,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "u-end",
+          "ordinal": "a3",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": 20,
+          "endMinute": null,
+          "endGranularity": "day"
+        }
+      ],
+      "expectedOrder": ["d-late", "u-3", "u-9", "u-4", "u-1", "u-end"]
+    },
+    {
+      "id": "order-ordinal-forms",
+      "description": "裏の並びが a0 と a000000000000 の混在：文字列の辞書順（Zz < a0 < a000000000000 < a1）",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "k-a1",
+          "ordinal": "a1",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "k-long",
+          "ordinal": "a000000000000",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "k-a0",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "k-zz",
+          "ordinal": "Zz",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["k-zz", "k-a0", "k-long", "k-a1"]
+    },
+    {
+      "id": "order-time-vs-day",
+      "description": "時刻と日：日の出来事は 0 分扱い（残った分は数えない）。0 分と日は同点で裏の並び、600 分は後",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "t600",
+          "ordinal": "a1",
+          "startTime": 10,
+          "startMinute": 600,
+          "startGranularity": "time",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "day-m900",
+          "ordinal": "a5",
+          "startTime": 10,
+          "startMinute": 900,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "t-null",
+          "ordinal": "a3",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "time",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "t0",
+          "ordinal": "a2",
+          "startTime": 10,
+          "startMinute": 0,
+          "startGranularity": "time",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["t0", "t-null", "day-m900", "t600"]
+    },
+    {
+      "id": "order-end-ignored",
+      "description": "終わりは並びに効かない：同じ開始なら、終わりのある出来事も裏の並びの順",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "x-long",
+          "ordinal": "a9",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": 50,
+          "endMinute": null,
+          "endGranularity": "day"
+        },
+        {
+          "id": "y-next",
+          "ordinal": "a0",
+          "startTime": 11,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "z-same",
+          "ordinal": "a1",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["z-same", "x-long", "y-next"]
+    },
+    {
+      "id": "order-reform-month",
+      "description": "改暦の月（10 月 = 273..293、保存された日 280）は、日 275 の出来事より前",
+      "calendar": "reform1582",
+      "events": [
+        {
+          "id": "d290",
+          "ordinal": "a0",
+          "startTime": 290,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "month",
+          "ordinal": "a0",
+          "startTime": 280,
+          "startMinute": null,
+          "startGranularity": "month",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d275",
+          "ordinal": "a0",
+          "startTime": 275,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["month", "d275", "d290"]
+    },
+    {
+      "id": "order-gregorian-year",
+      "description": "グレゴリオ暦：2001 年（保存された日 500、始まり 366）は、日 400 の出来事より前",
+      "calendar": "gregorian2000",
+      "events": [
+        {
+          "id": "d400",
+          "ordinal": "a0",
+          "startTime": 400,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "y2001",
+          "ordinal": "a0",
+          "startTime": 500,
+          "startMinute": null,
+          "startGranularity": "year",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["y2001", "d400"]
+    },
+    {
+      "id": "order-negative-days",
+      "description": "負の日と 0 を含む並び",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "d0",
+          "ordinal": "a0",
+          "startTime": 0,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-10",
+          "ordinal": "a0",
+          "startTime": -10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-360-year",
+          "ordinal": "a0",
+          "startTime": -100,
+          "startMinute": null,
+          "startGranularity": "year",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["d-360-year", "d-10", "d0"]
+    },
+    {
+      "id": "order-all-undated",
+      "description": "全部が日時の無い出来事：裏の並び → id",
+      "calendar": "plain360",
+      "events": [
+        {
+          "id": "b",
+          "ordinal": "a1",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "a",
+          "ordinal": "a1",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "c",
+          "ordinal": "a0",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none"
+        }
+      ],
+      "expectedOrder": ["c", "a", "b"]
+    },
+    {
+      "id": "order-empty",
+      "description": "出来事が 0 件",
+      "calendar": "plain360",
+      "events": [],
+      "expectedOrder": []
+    }
+  ],
+  "relationCases": [
+    {
+      "id": "rel-all-before",
+      "description": "全部が前：10 日の出来事、現在地 100 日",
+      "calendar": "plain360",
+      "event": {
+        "id": "e95",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-all-after",
+      "description": "全部が後：200 日の出来事、現在地 100 日",
+      "calendar": "plain360",
+      "event": {
+        "id": "e96",
+        "ordinal": "a0",
+        "startTime": 200,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-same-day-concurrent",
+      "description": "同じ日：同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e97",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-adjacent-day-before",
+      "description": "接する（出来事の終わり＝現在地の始まり）：前日は before（DR-CED-6）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e98",
+        "ordinal": "a0",
+        "startTime": 99,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-adjacent-day-after",
+      "description": "接する（現在地の終わり＝出来事の始まり）：翌日は after（DR-CED-6）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e99",
+        "ordinal": "a0",
+        "startTime": 101,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-month-event-contains-anchor",
+      "description": "月の出来事（90..119）が現在地 100 日を含む：同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e100",
+        "ordinal": "a0",
+        "startTime": 91,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-interval-overlap",
+      "description": "期間の出来事（90 日から 110 日）が現在地 100 日と重なる：同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e101",
+        "ordinal": "a0",
+        "startTime": 90,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 110,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-interval-ends-before-anchor",
+      "description": "期間の出来事（90 日から 99 日）の終わりが現在地 100 日に接する：before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e102",
+        "ordinal": "a0",
+        "startTime": 90,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 99,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-interval-starts-after-anchor",
+      "description": "期間の出来事（101 日から 110 日）：after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e103",
+        "ordinal": "a0",
+        "startTime": 101,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 110,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-time-event-day-anchor-concurrent",
+      "description": "時刻つきの出来事（100 日 600 分）と日の現在地（100 日）：同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e104",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-time-event-day-anchor-before",
+      "description": "時刻つきの出来事（99 日 1439 分）の終わりが日の現在地（100 日）に接する：before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e105",
+        "ordinal": "a0",
+        "startTime": 99,
+        "startMinute": 1439,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-time-event-day-anchor-after",
+      "description": "時刻つきの出来事（101 日 0 分）が日の現在地（100 日）の終わりに接する：after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e106",
+        "ordinal": "a0",
+        "startTime": 101,
+        "startMinute": 0,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-day-event-time-anchor-concurrent",
+      "description": "日の出来事（100 日）と時刻の現在地（100 日 600 分）：同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e107",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-time-vs-time-before",
+      "description": "時刻どうし：599 分の 1 分は、現在地 600 分に接する、before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e108",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": 599,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-time-vs-time-same",
+      "description": "時刻どうし：同じ 600 分は同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e109",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-time-vs-time-after",
+      "description": "時刻どうし：601 分は現在地 600 分の終わりに接する、after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e110",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": 601,
+        "startGranularity": "time",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-day-event-time-anchor-prev-day",
+      "description": "日の出来事（99 日）と時刻の現在地（100 日 600 分）：before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e111",
+        "ordinal": "a0",
+        "startTime": 99,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-month-anchor-event-before-stored-day",
+      "description": "月の現在地（保存された日 100 = 90..119 の月全体、DR-CED-5）：保存された日より前の 91 日も同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e112",
+        "ordinal": "a0",
+        "startTime": 91,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-month-anchor-event-end-of-month",
+      "description": "月の現在地：月末の 119 日も同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e113",
+        "ordinal": "a0",
+        "startTime": 119,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-month-anchor-next-month",
+      "description": "月の現在地：次の月の初日（120 日）は after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e114",
+        "ordinal": "a0",
+        "startTime": 120,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-month-anchor-prev-month",
+      "description": "月の現在地：前の月の末日（89 日）は before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e115",
+        "ordinal": "a0",
+        "startTime": 89,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-season-anchor-inside",
+      "description": "季節の現在地（保存された日 100 = 夏 90..179）：170 日は同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e116",
+        "ordinal": "a0",
+        "startTime": 170,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-season-anchor-next",
+      "description": "季節の現在地：次の季節の初日（180 日）は after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e117",
+        "ordinal": "a0",
+        "startTime": 180,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-year-anchor-prev",
+      "description": "年の現在地（保存された日 400 = 360..719）：359 日は before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e118",
+        "ordinal": "a0",
+        "startTime": 359,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-year-anchor-first",
+      "description": "年の現在地：初日 360 は同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e119",
+        "ordinal": "a0",
+        "startTime": 360,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-year-anchor-last",
+      "description": "年の現在地：末日 719 は同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e120",
+        "ordinal": "a0",
+        "startTime": 719,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-year-anchor-next",
+      "description": "年の現在地：次の年の初日 720 は after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e121",
+        "ordinal": "a0",
+        "startTime": 720,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 400,
+        "startMinute": null,
+        "startGranularity": "year",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-stamped-anchor-concurrent",
+      "description": "出来事で決めた現在地（stamped）も同じ日は同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e122",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "stamped",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-stamped-month-anchor-whole-month",
+      "description": "開始が月の出来事で決めた現在地（stamped）は、その月の全体（DR-CED-5）：保存された日 100 の前の 91 日も同時進行",
+      "calendar": "plain360",
+      "event": {
+        "id": "e123",
+        "ordinal": "a0",
+        "startTime": 91,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "approx",
+        "source": "stamped",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-proxy-same-day-before",
+      "description": "proxy の現在地と重なる出来事は before（K2a）",
+      "calendar": "plain360",
+      "event": {
+        "id": "e124",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-proxy-month-overlap-before",
+      "description": "proxy の現在地（日）と重なる月の出来事も before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e125",
+        "ordinal": "a0",
+        "startTime": 91,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-proxy-anchor-month-overlap-before",
+      "description": "proxy の現在地（月）と重なる日の出来事（119 日）も before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e126",
+        "ordinal": "a0",
+        "startTime": 119,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-proxy-after",
+      "description": "proxy の現在地の後の出来事は after",
+      "calendar": "plain360",
+      "event": {
+        "id": "e127",
+        "ordinal": "a0",
+        "startTime": 101,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-proxy-before",
+      "description": "proxy の現在地より前の出来事は before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e128",
+        "ordinal": "a0",
+        "startTime": 99,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-proxy-interval-overlap-before",
+      "description": "proxy の現在地と重なる期間の出来事（90 日から 110 日）も before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e129",
+        "ordinal": "a0",
+        "startTime": 90,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": 110,
+        "endMinute": null,
+        "endGranularity": "day"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-anchor-none-unknown",
+      "description": "現在地が決まらない（source が none）：unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e130",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "source": "none",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-anchor-none-with-fields-unknown",
+      "description": "source が none なら、日時の欄が残っていても unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e131",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "none",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-event-undated-unknown",
+      "description": "出来事に日時が無い（日が null）：unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e132",
+        "ordinal": "a0",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-event-granularity-none-unknown",
+      "description": "出来事の粒度が none：unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e133",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "none",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-event-undated-proxy-unknown",
+      "description": "出来事に日時が無ければ、proxy でも unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e134",
+        "ordinal": "a0",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "proxy",
+        "proxySceneId": "scene-prev"
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-anchor-granularity-none-unknown",
+      "description": "現在地の粒度が none（source は stamped）：unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e135",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": "exact",
+        "source": "stamped",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-anchor-time-null-unknown",
+      "description": "現在地の日が null（source は scene）：unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e136",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "id": "rel-month-event-calendar-null-before",
+      "description": "暦が null：月の出来事は保存された日の 1 日（100）、現在地 101 日より before",
+      "calendar": null,
+      "event": {
+        "id": "e137",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 101,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-month-event-calendar-null-concurrent",
+      "description": "暦が null：月の出来事は保存された日の 1 日。現在地 100 日と同時進行",
+      "calendar": null,
+      "event": {
+        "id": "e138",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-gregorian-leap-day-month",
+      "description": "閏日（2000-02-29 = 59 日）の現在地と、2 月の出来事：同時進行",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e139",
+        "ordinal": "a0",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 59,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-gregorian-leap-day-next-month",
+      "description": "閏日（59 日）の現在地と、3 月の出来事（60..90）：after",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e140",
+        "ordinal": "a0",
+        "startTime": 70,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 59,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-gregorian-leap-day-next-day",
+      "description": "閏日（59 日）の翌日（60 日 = 3 月 1 日）：after",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e141",
+        "ordinal": "a0",
+        "startTime": 60,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 59,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-reform-consecutive-days",
+      "description": "改暦：10 月 4 日（276）の次の日 10 月 15 日（277）は after",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e142",
+        "ordinal": "a0",
+        "startTime": 277,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 276,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-reform-cutover-month-concurrent",
+      "description": "改暦：切替の月（273..293）の出来事は、10 月 15 日の現在地と同時進行",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e143",
+        "ordinal": "a0",
+        "startTime": 275,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 277,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-reform-year-concurrent",
+      "description": "改暦：1582 年の出来事は、10 月 4 日（276）の現在地と同時進行",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e144",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "year",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 276,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-reform-next-month-after",
+      "description": "改暦：11 月（294..）の出来事は、10 月 4 日（276）の現在地の after",
+      "calendar": "reform1582",
+      "event": {
+        "id": "e145",
+        "ordinal": "a0",
+        "startTime": 300,
+        "startMinute": null,
+        "startGranularity": "month",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 276,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "after"
+    },
+    {
+      "id": "rel-season-event-vs-day-anchor",
+      "description": "季節の出来事（夏 90..179）の終わりが、日の現在地（180 日）の始まりに接する：before",
+      "calendar": "plain360",
+      "event": {
+        "id": "e146",
+        "ordinal": "a0",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 180,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "before"
+    },
+    {
+      "id": "rel-winter-crossing-year",
+      "description": "年をまたぐ冬（2000 年の冬 335..425）の出来事と、2001 年 10 日（376）の現在地：同時進行",
+      "calendar": "gregorian2000",
+      "event": {
+        "id": "e147",
+        "ordinal": "a0",
+        "startTime": 350,
+        "startMinute": null,
+        "startGranularity": "season",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 376,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "source": "scene",
+        "proxySceneId": null
+      },
+      "expected": "concurrent"
+    },
+    {
+      "id": "rel-anchor-unknown-granularity-string-unknown",
+      "description": "現在地の粒度が知らない文字列（source は stamped）：日時が無い現在地として、unknown",
+      "calendar": "plain360",
+      "event": {
+        "id": "e-rel-ug",
+        "ordinal": "a0",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "endTime": null,
+        "endMinute": null,
+        "endGranularity": "none"
+      },
+      "anchor": {
+        "ordinal": "",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "fortnight",
+        "precision": "exact",
+        "source": "stamped",
+        "proxySceneId": null
+      },
+      "expected": "unknown"
+    }
+  ],
+  "anchorCases": [
+    {
+      "id": "anchor-scene-date-beats-stamped",
+      "description": "場面に作中日付がある：結び付いた出来事より、場面の日付が先（C4 の 1）",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": 100,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "scene",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-scene-date-time-approx",
+      "description": "場面の作中日付が時刻で、確度がおおよそ：分と確度をそのまま写す",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [],
+      "sceneEvents": [],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": 100,
+          "startMinute": 600,
+          "startGranularity": "time",
+          "precision": "approx"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "scene",
+        "startTime": 100,
+        "startMinute": 600,
+        "startGranularity": "time",
+        "precision": "approx",
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-scene-date-unknown-precision",
+      "description": "場面の作中日付の確度が不明：場面の日付は今までどおり使う（C3）",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [],
+      "sceneEvents": [],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": 100,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "unknown"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "scene",
+        "startTime": 100,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "unknown",
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-scene-granularity-none-not-a-date",
+      "description": "場面の粒度が none：作中日付が無いものとして、結び付いた出来事で決める",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": 100,
+          "startMinute": null,
+          "startGranularity": "none",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-scene-granularity-unknown-string-not-a-date",
+      "description": "場面の粒度が知らない文字列：作中日付が無いものとして扱う",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": 100,
+          "startMinute": null,
+          "startGranularity": "decade",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-scene-start-null-not-a-date",
+      "description": "場面の開始の日が無い：作中日付が無いものとして扱う",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-stamped-single",
+      "description": "場面に結び付いた出来事が 1 件：その出来事（stamped）",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-stamped-latest-by-date-all-a0",
+      "description": "裏の並びが全部 a0 でも、日時が最も後のものを選ぶ",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 30,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 80,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e3",
+          "ordinal": "a0",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e3"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 80,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-stamped-date-beats-ordinal",
+      "description": "裏の並びが先のものより、日時が後のものを選ぶ",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a5",
+          "startTime": 30,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 80,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 80,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-stamped-same-date-ordinal-breaks-tie",
+      "description": "同じ日時：裏の並びが大きい方を選ぶ",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 80,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a1",
+          "startTime": 80,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "approx"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 80,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "approx",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-stamped-same-date-same-ordinal-id-breaks-tie",
+      "description": "同じ日時で裏の並びも同じ：id が大きい方を選ぶ（入力の並びに依らない）",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e-z",
+          "ordinal": "a0",
+          "startTime": 80,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e-a",
+          "ordinal": "a0",
+          "startTime": 80,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e-z"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e-a"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 80,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e-z"
+      }
+    },
+    {
+      "id": "anchor-stamped-month-event-sorts-by-span-start",
+      "description": "月だけの出来事は、幅の始まりで並ぶ：保存された日 50 の月（30〜59）は、45 日の出来事より前",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "month",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 45,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 45,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-stamped-time-event-beats-day-with-leftover-minute",
+      "description": "同じ日：時刻の出来事（300 分）は、日の出来事（残った分 900 は数えない）より後",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": 300,
+          "startGranularity": "time",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e3",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": 900,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e3"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 10,
+        "startMinute": 300,
+        "startGranularity": "time",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-stamped-time-later-minute",
+      "description": "同じ日の時刻の出来事：分が後の方（700）を選ぶ",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": 300,
+          "startGranularity": "time",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": 700,
+          "startGranularity": "time",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "approx"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 10,
+        "startMinute": 700,
+        "startGranularity": "time",
+        "precision": "approx",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-stamped-end-time-ignored",
+      "description": "終わりの日は、並びに使わない：10 日から 200 日の出来事より、50 日の出来事が後",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": 200,
+          "endMinute": null,
+          "endGranularity": "day",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 50,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-approx-is-material",
+      "description": "確度がおおよその出来事は、材料になる（C3）",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 60,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "approx"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 60,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "approx",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-unknown-excluded-when-exact-exists",
+      "description": "同じ場面の、確度が不明の出来事（90 日）は除き、確度が確定の出来事（20 日）で決める",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 90,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 20,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s2",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 20,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-unknown-only-scene-borrows",
+      "description": "確度が不明の出来事だけが結び付いた場面（C3a に当たらない）：手前の場面から借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 20,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "approx"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "approx",
+        "proxySceneId": "s1",
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-undated-event-is-not-material",
+      "description": "日時の無い出来事だけが結び付いた場面：材料にならない。手前の場面から借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e3",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e2"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e3"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s1",
+        "eventId": "e3"
+      }
+    },
+    {
+      "id": "anchor-undated-event-not-material-even-under-c3a",
+      "description": "日時の無い出来事は、C3a に当たっても材料にならない：決まらない",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-proxy-skips-scene-with-only-non-material",
+      "description": "手前の最も近い場面が、材料にできない出来事しか持たないとき、さらに手前の場面まで戻る（DR-CED-7）",
+      "calendar": "plain360",
+      "currentSceneId": "s3",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 20,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s2",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s1",
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-proxy-from-scene-date",
+      "description": "手前の場面に作中日付がある：その日付を借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s3",
+      "events": [],
+      "sceneEvents": [],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s1": {
+          "startTime": 40,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "approx"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "proxy",
+        "startTime": 40,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "approx",
+        "proxySceneId": "s1",
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-proxy-scene-date-nearer-than-event-scene",
+      "description": "作中日付のある場面（s2）が、出来事のある場面（s1）より近い：近い方（s2）の日付を借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s3",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 5,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s2": {
+          "startTime": 70,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "proxy",
+        "startTime": 70,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s2",
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-proxy-scene-date-beats-its-own-events",
+      "description": "借りる先の場面が、日付と出来事の両方を持つ：場面の日付を借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 90,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s1": {
+          "startTime": 60,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "proxy",
+        "startTime": 60,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s1",
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-proxy-nearest-by-reading-order-not-by-date",
+      "description": "借りる先は、読む順で最も近い場面（s2、20 日）。日付が最も後の場面（s1、90 日）ではない",
+      "calendar": "plain360",
+      "currentSceneId": "s3",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 90,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 20,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s2",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 20,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s2",
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-proxy-uses-reading-order-not-input-order",
+      "description": "近さは、読む順の番号で決める：読む順が s3, s1, s2 のとき、s2 の手前は s1",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e3",
+          "ordinal": "a0",
+          "startTime": 30,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s3",
+          "eventId": "e3"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s3", "s1", "s2"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s1",
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-no-borrow-from-later-scene",
+      "description": "後ろの場面からは借りない：決まらない",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-current-scene-not-in-reading-order",
+      "description": "今の場面が読む順に無い：借りない（自分の出来事も日付も無ければ決まらない）",
+      "calendar": "plain360",
+      "currentSceneId": "sX",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-current-scene-not-in-reading-order-own-event",
+      "description": "今の場面が読む順に無くても、自分に結び付いた出来事は使う",
+      "calendar": "plain360",
+      "currentSceneId": "sX",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "sX",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-orphan-link-ignored",
+      "description": "出来事の表に無い eventId の結び付きは無視する：手前の場面から借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s2",
+          "eventId": "ghost"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "exact",
+        "proxySceneId": "s1",
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-orphan-link-only-is-none",
+      "description": "孤児の結び付きしか無い：決まらない",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "ghost"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-empty",
+      "description": "出来事も場面の日付も無い：決まらない",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [],
+      "sceneEvents": [],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-c3a-all-unknown-stamped",
+      "description": "C3a：出来事が全部不明で、作中日付のある場面も無い：不明の出来事を材料にする（日時が最も後のもの）",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 30,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 30,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "unknown",
+        "proxySceneId": null,
+        "eventId": "e2"
+      }
+    },
+    {
+      "id": "anchor-c3a-all-unknown-proxy",
+      "description": "C3a：手前の場面の不明の出来事を借りる",
+      "calendar": "plain360",
+      "currentSceneId": "s2",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "proxy",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "unknown",
+        "proxySceneId": "s1",
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-c3a-undated-event-counts-as-unknown",
+      "description": "C3a：日時の無い出来事は、確度が確定でも不明として数える（B1）。日時のある不明の出来事を材料にする",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": null,
+          "startMinute": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 10,
+        "startMinute": null,
+        "startGranularity": "day",
+        "precision": "unknown",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    },
+    {
+      "id": "anchor-c3a-off-when-dated-live-scene",
+      "description": "C3a に当たらない：出来事は全部不明だが、作中日付のある場面（s4）がある。不明の出来事は材料にならない",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {
+        "s4": {
+          "startTime": 500,
+          "startMinute": null,
+          "startGranularity": "day",
+          "precision": "exact"
+        }
+      },
+      "hasDatedLiveScene": true,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-c3a-off-when-one-event-not-unknown",
+      "description": "C3a に当たらない：場面に結び付いていない出来事が 1 件、確定。結び付いた不明の出来事は材料にならない",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 99,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-c3a-off-when-one-event-approx",
+      "description": "C3a に当たらない：場面に結び付いていない出来事が 1 件、おおよそ",
+      "calendar": "plain360",
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 10,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "unknown"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 99,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "approx"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "none",
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "precision": null,
+        "proxySceneId": null,
+        "eventId": null
+      }
+    },
+    {
+      "id": "anchor-calendar-null",
+      "description": "暦が無くても、日の出来事で決まる。月の出来事は保存された日 1 日の幅で並ぶ（50 日の月だけの出来事が、45 日の出来事より後）",
+      "calendar": null,
+      "currentSceneId": "s1",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "startTime": 50,
+          "startMinute": null,
+          "startGranularity": "month",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "startTime": 45,
+          "startMinute": null,
+          "startGranularity": "day",
+          "endTime": null,
+          "endMinute": null,
+          "endGranularity": "none",
+          "precision": "exact"
+        }
+      ],
+      "sceneEvents": [
+        {
+          "sceneId": "s1",
+          "eventId": "e1"
+        },
+        {
+          "sceneId": "s1",
+          "eventId": "e2"
+        }
+      ],
+      "readingOrder": ["s1", "s2", "s3", "s4"],
+      "sceneChronicle": {},
+      "hasDatedLiveScene": false,
+      "expected": {
+        "source": "stamped",
+        "startTime": 50,
+        "startMinute": null,
+        "startGranularity": "month",
+        "precision": "exact",
+        "proxySceneId": null,
+        "eventId": "e1"
+      }
+    }
+  ],
+  "provisionalCases": [
+    {
+      "id": "prov-after-latest-start",
+      "description": "日時のある出来事の、開始の日が最も後（40 日）の翌日（41 日）から、作った日時の順に 1 日ずつ",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 40,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-01-02T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 41
+        },
+        {
+          "id": "d2",
+          "startTime": 42
+        }
+      ]
+    },
+    {
+      "id": "prov-end-day-counts",
+      "description": "終わりの日（200 日、粒度は日）が、開始より後：最も後の日は 200 日",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": 200,
+          "endGranularity": "day"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 201
+        }
+      ]
+    },
+    {
+      "id": "prov-end-granularity-none-ignored",
+      "description": "終わりの粒度が none：終わりの日（500 日）は数えない",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": 500,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 11
+        }
+      ]
+    },
+    {
+      "id": "prov-end-before-start",
+      "description": "終わりの日（20 日）が開始（100 日）より前：開始の日が最も後",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 100,
+          "startGranularity": "day",
+          "endTime": 20,
+          "endGranularity": "day"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 101
+        }
+      ]
+    },
+    {
+      "id": "prov-scene-date-later",
+      "description": "保管済みでない場面の作中日付（50 日）が、出来事（10 日）より後",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [
+        {
+          "startTime": 50,
+          "startGranularity": "day"
+        }
+      ],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 51
+        }
+      ]
+    },
+    {
+      "id": "prov-scene-date-earlier",
+      "description": "場面の作中日付（5 日）が、出来事（10 日）より前：出来事の日が最も後",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [
+        {
+          "startTime": 5,
+          "startGranularity": "day"
+        }
+      ],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 11
+        }
+      ]
+    },
+    {
+      "id": "prov-scene-granularity-none-ignored",
+      "description": "場面の粒度が none：作中日付が無いものとして、数えない",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [
+        {
+          "startTime": 900,
+          "startGranularity": "none"
+        }
+      ],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 11
+        }
+      ]
+    },
+    {
+      "id": "prov-scene-only",
+      "description": "出来事に日付が無く、場面に作中日付（20 日）がある：21 日から",
+      "events": [
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-01-02T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [
+        {
+          "startTime": 20,
+          "startGranularity": "day"
+        }
+      ],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 21
+        },
+        {
+          "id": "d2",
+          "startTime": 22
+        }
+      ]
+    },
+    {
+      "id": "prov-no-dates-at-all",
+      "description": "出来事にも場面にも日付が無い：暦の起点の日（0 日）から",
+      "events": [
+        {
+          "id": "d3",
+          "ordinal": "a0",
+          "createdAt": "2026-01-03T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-01-02T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 0
+        },
+        {
+          "id": "d2",
+          "startTime": 1
+        },
+        {
+          "id": "d3",
+          "startTime": 2
+        }
+      ]
+    },
+    {
+      "id": "prov-nothing-to-place",
+      "description": "日時の無い出来事が無い：空",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e2",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 20,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [
+        {
+          "startTime": 30,
+          "startGranularity": "day"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "prov-no-events",
+      "description": "出来事が 1 件も無い：空",
+      "events": [],
+      "liveSceneDates": [],
+      "expected": []
+    },
+    {
+      "id": "prov-order-ordinal-then-created-then-id",
+      "description": "置く順：裏の並び → 作った日時 → id。a0 の d3 と d4 は同じ日時なので id の順、d2 は遅い、a1 の d1 は最後",
+      "events": [
+        {
+          "id": "d1",
+          "ordinal": "a1",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d4",
+          "ordinal": "a0",
+          "createdAt": "2026-02-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d3",
+          "ordinal": "a0",
+          "createdAt": "2026-02-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 9,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d3",
+          "startTime": 10
+        },
+        {
+          "id": "d4",
+          "startTime": 11
+        },
+        {
+          "id": "d2",
+          "startTime": 12
+        },
+        {
+          "id": "d1",
+          "startTime": 13
+        }
+      ]
+    },
+    {
+      "id": "prov-all-ordinal-a0-created-order",
+      "description": "裏の並びが全部 a0（画面で作った出来事）：作った順になる",
+      "events": [
+        {
+          "id": "d-c",
+          "ordinal": "a0",
+          "createdAt": "2026-05-03T09:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-a",
+          "ordinal": "a0",
+          "createdAt": "2026-05-01T09:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-d",
+          "ordinal": "a0",
+          "createdAt": "2026-05-04T09:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-b",
+          "ordinal": "a0",
+          "createdAt": "2026-05-02T09:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 100,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d-a",
+          "startTime": 101
+        },
+        {
+          "id": "d-b",
+          "startTime": 102
+        },
+        {
+          "id": "d-c",
+          "startTime": 103
+        },
+        {
+          "id": "d-d",
+          "startTime": 104
+        }
+      ]
+    },
+    {
+      "id": "prov-created-at-mixed-formats",
+      "description": "作った日時の形の混在（ISO と、SQLite の YYYY-MM-DD HH:MM:SS）を、時刻として比べる：SQLite の 09:59:59 が、ISO の 10:00:00 より前",
+      "events": [
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01T10:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01 09:59:59",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d3",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01 10:00:01",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d2",
+          "startTime": 0
+        },
+        {
+          "id": "d1",
+          "startTime": 1
+        },
+        {
+          "id": "d3",
+          "startTime": 2
+        }
+      ]
+    },
+    {
+      "id": "prov-created-at-same-instant-id-breaks-tie",
+      "description": "作った日時が同じ時刻（形が違う）：id の順",
+      "events": [
+        {
+          "id": "d-b",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01 10:00:00",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d-a",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01T10:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d-a",
+          "startTime": 0
+        },
+        {
+          "id": "d-b",
+          "startTime": 1
+        }
+      ]
+    },
+    {
+      "id": "prov-created-at-fractional-seconds",
+      "description": "作った日時の小数秒：SQLite の形の 10:00:00.500 は、10:00:00 より後",
+      "events": [
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01 10:00:00.500",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-03-01 10:00:00",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d2",
+          "startTime": 0
+        },
+        {
+          "id": "d1",
+          "startTime": 1
+        }
+      ]
+    },
+    {
+      "id": "prov-granularity-none-with-day-is-not-a-target",
+      "description": "粒度が none で日がある出来事（I3 の対象）：仮の日時は入れない。その日（70 日）は、最も後の日に数える",
+      "events": [
+        {
+          "id": "n1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 70,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 71
+        }
+      ]
+    },
+    {
+      "id": "prov-month-event-uses-stored-day",
+      "description": "月だけの出来事：幅の終わりでなく、保存された日（50 日）を数える",
+      "events": [
+        {
+          "id": "m1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 50,
+          "startGranularity": "month",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 51
+        }
+      ]
+    },
+    {
+      "id": "prov-end-only-event-is-a-target",
+      "description": "開始が無く、終わりだけがある出来事は、日時の無い出来事：仮の日時を入れる。終わりの日は数えない",
+      "events": [
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": 300,
+          "endGranularity": "day"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 0
+        }
+      ]
+    },
+    {
+      "id": "prov-negative-days",
+      "description": "日が負の出来事（-10 日）：最も後の日の翌日は -9 日",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": -10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": -9
+        }
+      ]
+    },
+    {
+      "id": "prov-start-granularity-unknown-string-day-counts",
+      "description": "開始の日があり、粒度が知らない文字列の出来事（70 日）は、対象にせず、その日だけを最も後の日に数える：d1 は 71 日",
+      "events": [
+        {
+          "id": "n1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 70,
+          "startGranularity": "fortnight",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 71
+        }
+      ]
+    },
+    {
+      "id": "prov-end-granularity-unknown-string-ignored",
+      "description": "終わりの粒度が知らない文字列なら、終わりの日（90 日）は数えない：開始 10 日の翌日、d1 は 11 日",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": 90,
+          "endGranularity": "fortnight"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 11
+        }
+      ]
+    },
+    {
+      "id": "prov-scene-granularity-unknown-string-ignored",
+      "description": "場面の作中日付の粒度が知らない文字列なら、その日（90 日）は数えない：出来事 10 日の翌日、d1 は 11 日",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [
+        {
+          "startTime": 90,
+          "startGranularity": "fortnight"
+        }
+      ],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 11
+        }
+      ]
+    },
+    {
+      "id": "prov-season-event-uses-stored-day",
+      "description": "開始が季節の出来事（保存された日は 100 日）：幅の終わりでなく保存された日から数え、d1 は 101 日",
+      "events": [
+        {
+          "id": "s1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 100,
+          "startGranularity": "season",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 101
+        }
+      ]
+    },
+    {
+      "id": "prov-year-event-uses-stored-day",
+      "description": "開始が年の出来事（保存された日は 100 日）：幅の終わりでなく保存された日から数え、d1 は 101 日",
+      "events": [
+        {
+          "id": "y1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 100,
+          "startGranularity": "year",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 101
+        }
+      ]
+    },
+    {
+      "id": "prov-end-month-event-uses-stored-end-day",
+      "description": "終わりが月の出来事（開始 10 日、終わりの保存された日は 50 日）：終わりの月の幅の終わりでなく、保存された終わりの日 50 日から数え、d1 は 51 日",
+      "events": [
+        {
+          "id": "e1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": 10,
+          "startGranularity": "day",
+          "endTime": 50,
+          "endGranularity": "month"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 51
+        }
+      ]
+    },
+    {
+      "id": "prov-created-at-unreadable-sorts-last",
+      "description": "作った日時が読めない値（片方だけ）：読める方が先。読めない d1 は、id が先でも後ろ：d2 が 1 日目、d1 が 2 日目",
+      "events": [
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "not-a-date",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d2",
+          "startTime": 0
+        },
+        {
+          "id": "d1",
+          "startTime": 1
+        }
+      ]
+    },
+    {
+      "id": "prov-created-at-identical-unreadable-id-breaks-tie",
+      "description": "作った日時が、両方とも同じ読めない値（空文字）：同じ日時として、id の順",
+      "events": [
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 0
+        },
+        {
+          "id": "d2",
+          "startTime": 1
+        }
+      ]
+    },
+    {
+      "id": "prov-created-at-both-unreadable-different-id-breaks-tie",
+      "description": "作った日時が、両方とも読めない、違う値：文字列としては比べず、同じとして扱い、id の順（DR-CED-12）。文字列の順なら d2（aaa）が先になるが、d1 が 1 日目",
+      "events": [
+        {
+          "id": "d2",
+          "ordinal": "a0",
+          "createdAt": "aaa",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        },
+        {
+          "id": "d1",
+          "ordinal": "a0",
+          "createdAt": "zzz",
+          "startTime": null,
+          "startGranularity": "none",
+          "endTime": null,
+          "endGranularity": "none"
+        }
+      ],
+      "liveSceneDates": [],
+      "expected": [
+        {
+          "id": "d1",
+          "startTime": 0
+        },
+        {
+          "id": "d2",
+          "startTime": 1
+        }
+      ]
+    }
+  ]
+}
