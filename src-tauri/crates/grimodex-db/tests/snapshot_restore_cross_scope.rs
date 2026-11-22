@@ -1954,3 +1954,111 @@ fn a_dangling_reference_the_work_already_had_does_not_stop_a_restore() {
     );
     assert_eq!(parked_leftovers(&db), Vec::<String>::new());
 }
+
+// ---------------------------------------------------------------------
+// Found by the review of this change
+// ---------------------------------------------------------------------
+
+/// A snapshot made before the Chronicle existed carries none of the event
+/// tables, so a Body restore leaves the events alone. The scene links
+/// (`scene_events`) cascade from the scenes, which the restore deletes and
+/// inserts again, and nothing in the snapshot puts them back: they must be set
+/// aside like the other links of a scope that is not restored.
+#[test]
+fn a_body_restore_of_a_snapshot_made_before_events_keeps_the_scene_event_links() {
+    let db = new_db();
+    seed_rich(&db);
+    snapshot(&db, "S1");
+    exec(
+        &db,
+        "DELETE FROM project_snapshot_aux
+          WHERE snapshot_id = 'S1'
+            AND scope IN ('events','scene_events','event_participants','event_relations')",
+    );
+    change_after_snapshot(&db, RestoreScope::Body);
+    let links = dump(&db, "scene_events");
+    assert!(
+        !links.is_empty(),
+        "precondition: a scene is linked to an event"
+    );
+    let events = dump(&db, "events");
+    let participants = dump(&db, "event_participants");
+    let r = restore(&db, "r1", "S1", &[RestoreScope::Body]);
+    assert!(!r.no_op);
+    assert_eq!(
+        links,
+        dump(&db, "scene_events"),
+        "the links of the scenes that stay"
+    );
+    assert_eq!(events, dump(&db, "events"), "the events are left alone");
+    assert_eq!(participants, dump(&db, "event_participants"));
+    // Only the AI proposal of the scene whose body changed goes (DR-SRX-8).
+    assert_eq!(r.dropped, kinds(&[("ai_scene_proposals", 1)]));
+    assert_clean(&db, "after a Body restore of a snapshot without events");
+}
+
+/// A proposal that stays was made against a scene version the restore does
+/// not give back; it is aligned with the scene as it is after the restore
+/// (same body, so it is valid), instead of being stale now and looking current
+/// again when the scene's version reaches the old number with another body.
+#[test]
+fn a_kept_proposal_is_made_against_the_scene_as_it_is_after_the_restore() {
+    let db = new_db();
+    seed_rich(&db);
+    exec(
+        &db,
+        "UPDATE tree_nodes SET version = 5 WHERE id = 's1';
+         UPDATE prose_staging SET base_version = 5 WHERE id = 'ps1';",
+    );
+    snapshot(&db, "S1");
+    // s1 keeps its body (only its title changes), s2 gets another one.
+    change_after_snapshot(&db, RestoreScope::Body);
+    restore(&db, "r1", "S1", &[RestoreScope::Body]);
+    let version = scalar_i64(&db, "SELECT version FROM tree_nodes WHERE id = 's1'");
+    assert_ne!(
+        version, 5,
+        "premise: the restore does not give the old version back"
+    );
+    assert_eq!(
+        scalar_i64(&db, "SELECT COUNT(*) FROM prose_staging WHERE id = 'ps1'"),
+        1,
+        "the proposal stayed"
+    );
+    assert_eq!(
+        scalar_i64(
+            &db,
+            "SELECT base_version FROM prose_staging WHERE id = 'ps1'"
+        ),
+        version,
+        "and is made against the scene as it is now"
+    );
+}
+
+/// While links are set aside a value in the parking window means "set aside",
+/// so an id that starts with the window's root would be taken for a link that
+/// did not come back. The restore refuses it before it writes anything.
+#[test]
+fn an_id_that_starts_with_the_parking_prefix_stops_the_restore_before_it_writes() {
+    let db = new_db();
+    seed_rich(&db);
+    snapshot(&db, "S1");
+    change_after_snapshot(&db, RestoreScope::Body);
+    exec(
+        &db,
+        &format!(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, created_at, updated_at, version)
+             VALUES ('{PARK_PREFIX}S1__x','{P}','scene','Odd','{{}}','t','t',0)"
+        ),
+    );
+    let before = snapshot_all(&db);
+    let error = try_restore(&db, "r1", "S1", &[RestoreScope::Body])
+        .err()
+        .expect("the restore is refused");
+    assert!(
+        format!("{error:#}").contains("reserved"),
+        "the reason is the reserved prefix: {error:#}"
+    );
+    assert_eq!(before, snapshot_all(&db), "nothing was written");
+    // (`parked_leftovers` would report the odd id itself.)
+    assert_eq!(foreign_key_violations(&db), 0, "after the refused restore");
+}

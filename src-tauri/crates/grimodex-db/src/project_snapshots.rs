@@ -2880,6 +2880,15 @@ pub fn apply_project_snapshot_restore(
             feed_events.extend(declaration_clear_events);
         }
         if feed_events.is_empty() {
+            // A restore that let a link go is not a net no-op: a link only
+            // falls away when the row it named is gone, and that changes a
+            // Feed object. The two cannot disagree; if they ever do, stop
+            // instead of reporting "nothing changed" over lost links
+            // (DR-SRX-2, the second guard).
+            anyhow::ensure!(
+                dropped.is_empty(),
+                "project snapshot restore dropped links ({dropped:?}) but changed no Feed object"
+            );
             // A net no-op must not manufacture a project restore marker merely
             // to satisfy the non-empty Feed transaction contract.
             // Persist the retry receipt at the current canonical tail instead.

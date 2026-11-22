@@ -140,11 +140,32 @@ fn schema_foreign_keys() -> Vec<Fk> {
         .expect("foreign keys")
 }
 
+/// The tables of the Chronicle that a snapshot made before events existed does
+/// not carry: a Body restore of it leaves them alone (the restore does not
+/// delete `events` then, so nothing re-inserts the rest either).
+const EVENT_TABLES: [&str; 4] = [
+    "events",
+    "event_participants",
+    "scene_events",
+    "event_relations",
+];
+
+/// Is the table deleted and inserted again by a restore of `scopes`?
+fn replaced(table: &str, scopes: &HashSet<RestoreScope>, events_aux: bool) -> bool {
+    let Some(owner) = table_owner(table) else {
+        return false;
+    };
+    scopes.contains(&owner)
+        && !(owner == RestoreScope::Body && EVENT_TABLES.contains(&table) && !events_aux)
+}
+
 /// What a restore of `scopes` must park, derived from the schema alone.
-fn derived(fks: &[Fk], scopes: &HashSet<RestoreScope>) -> BTreeSet<String> {
+/// `events_aux` is whether the snapshot carries the Chronicle's rows.
+fn derived(fks: &[Fk], scopes: &HashSet<RestoreScope>, events_aux: bool) -> BTreeSet<String> {
     let mut vanishing: HashSet<String> = scopes
         .iter()
         .flat_map(|scope| roots(*scope).iter().map(|table| table.to_string()))
+        .filter(|table| events_aux || table != "events")
         .collect();
     // A child the selected scopes own is deleted with its parent and inserted
     // again, so it is a vanishing parent in its turn.
@@ -154,8 +175,10 @@ fn derived(fks: &[Fk], scopes: &HashSet<RestoreScope>) -> BTreeSet<String> {
             if fk.table == "authorship_spans" || fk.on_delete != "CASCADE" {
                 continue;
             }
-            let replaced = table_owner(&fk.table).is_some_and(|owner| scopes.contains(&owner));
-            if vanishing.contains(&fk.parent) && replaced && vanishing.insert(fk.table.clone()) {
+            if vanishing.contains(&fk.parent)
+                && replaced(&fk.table, scopes, events_aux)
+                && vanishing.insert(fk.table.clone())
+            {
                 grew = true;
             }
         }
@@ -170,8 +193,7 @@ fn derived(fks: &[Fk], scopes: &HashSet<RestoreScope>) -> BTreeSet<String> {
         if fk.table == "authorship_spans" || !vanishing.contains(&fk.parent) {
             continue;
         }
-        let replaced = table_owner(&fk.table).is_some_and(|owner| scopes.contains(&owner));
-        if replaced {
+        if replaced(&fk.table, scopes, events_aux) {
             continue;
         }
         if NOT_PARKED
@@ -194,12 +216,12 @@ fn derived(fks: &[Fk], scopes: &HashSet<RestoreScope>) -> BTreeSet<String> {
     parked
 }
 
-fn fixed(scopes: &HashSet<RestoreScope>) -> BTreeSet<String> {
+fn fixed(scopes: &HashSet<RestoreScope>, events_aux: bool) -> BTreeSet<String> {
     let shape = RestoreShape {
         project_id: "p",
         snapshot_id: "s",
         scopes,
-        events_aux: true,
+        events_aux,
     };
     shape
         .active_columns()
@@ -221,22 +243,26 @@ fn the_fixed_list_is_what_the_schema_says_for_every_combination_of_scopes() {
         fks.iter().any(|fk| fk.table == "event_participants"),
         "the schema copy has the foreign keys"
     );
-    for mask in 1u32..(1 << ALL_SCOPES.len()) {
-        let scopes: HashSet<RestoreScope> = ALL_SCOPES
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| mask & (1 << i) != 0)
-            .map(|(_, scope)| *scope)
-            .collect();
-        let want = derived(&fks, &scopes);
-        let have = fixed(&scopes);
-        assert_eq!(
-            have,
-            want,
-            "PARK_COLUMNS disagrees with the schema for {scopes:?}\n  only in the list: {:?}\n  only in the schema: {:?}",
-            have.difference(&want).collect::<Vec<_>>(),
-            want.difference(&have).collect::<Vec<_>>(),
-        );
+    // Both for a snapshot that carries the Chronicle and one made before it
+    // existed (a Body restore of that one leaves the event tables alone).
+    for events_aux in [true, false] {
+        for mask in 1u32..(1 << ALL_SCOPES.len()) {
+            let scopes: HashSet<RestoreScope> = ALL_SCOPES
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, scope)| *scope)
+                .collect();
+            let want = derived(&fks, &scopes, events_aux);
+            let have = fixed(&scopes, events_aux);
+            assert_eq!(
+                have,
+                want,
+                "PARK_COLUMNS disagrees with the schema for {scopes:?} (snapshot has events: {events_aux})\n  only in the list: {:?}\n  only in the schema: {:?}",
+                have.difference(&want).collect::<Vec<_>>(),
+                want.difference(&have).collect::<Vec<_>>(),
+            );
+        }
     }
 }
 

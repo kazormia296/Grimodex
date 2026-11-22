@@ -25,7 +25,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use rusqlite::{named_params, params, params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::{
+    named_params, params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -48,6 +50,7 @@ pub(super) const KIND_ORDER: &[&str] = &[
     "event_participants",
     "event_primary_or_location",
     "event_reveal_scene",
+    "event_scene_links",
     "scene_pov_or_location",
     "scene_codex_links",
     "foreshadow_codex_links",
@@ -291,6 +294,19 @@ pub(super) const PARK_COLUMNS: &[ParkColumn] = &[
         Cascade,
         None,
         Some("analysis_records"),
+    ),
+    // Owned by Body, so it is replaced (and not parked) whenever the snapshot
+    // carries events. A snapshot made before events existed has none: events
+    // are then left alone (see `child_replaced`), and the scene links must be
+    // set aside like the rest of the event tables' links, or the scene's
+    // CASCADE would drop them with nothing to put them back.
+    col(
+        "scene_events",
+        "scene_id",
+        Tn,
+        Cascade,
+        Some(Body),
+        Some("event_scene_links"),
     ),
     col(
         "scene_lens_data",
@@ -783,13 +799,16 @@ fn prose_staging_plan(
         let same_body = match facts.scene_bodies.get(&scene_id) {
             None => false,
             Some(snapshot_body) => {
+                // A real error (busy, I/O) stops the restore; only "no such
+                // scene" means "not the same body".
                 let live: Option<String> = conn
                     .query_row(
                         "SELECT content FROM tree_nodes WHERE id = ?1",
                         params![scene_id],
-                        |row| row.get(0),
+                        |row| row.get::<_, Option<String>>(0),
                     )
-                    .unwrap_or(None);
+                    .optional()?
+                    .flatten();
                 &live == snapshot_body
             }
         };
@@ -929,6 +948,38 @@ fn dangling_references(conn: &Connection, table: &str) -> anyhow::Result<usize> 
     Ok(count)
 }
 
+/// While links are set aside, "a value in the parking window" means "set
+/// aside". An id of a parent row that itself starts with the parking root
+/// would be set aside twice and then be taken for a value that did not come
+/// back. No product code makes such an id (they are UUIDs), but the IPC takes
+/// any string, so the restore refuses before it writes anything.
+fn ensure_no_reserved_ids(conn: &Connection, tables: &HashSet<String>) -> anyhow::Result<()> {
+    let root = crate::change_events::RESTORE_PARK_ROOT;
+    let mut upper = root.to_string();
+    upper.pop();
+    upper.push('`');
+    for parent in Parent::ALL {
+        if !tables.contains(parent.table()) {
+            continue;
+        }
+        let found: bool = conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM \"{}\" WHERE id >= ?1 AND id < ?2)",
+                parent.table()
+            ),
+            params![root, upper],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !found,
+            "project snapshot restore refuses an id in {} that starts with `{root}`: \
+             that prefix is reserved while the links of other scopes are set aside",
+            parent.table()
+        );
+    }
+    Ok(())
+}
+
 /// The tables this restore rewrites a reference column of.
 fn touched_tables(
     conn: &Connection,
@@ -955,6 +1006,7 @@ pub(super) fn park(
     shape: &RestoreShape<'_>,
     plan: &[SnapshotInsertPlan],
 ) -> anyhow::Result<Parked> {
+    ensure_no_reserved_ids(conn, &existing_tables(conn)?)?;
     let facts = plan_facts(plan);
     let tables = existing_tables(conn)?;
     let window = Window::for_snapshot(shape.snapshot_id);
@@ -1032,6 +1084,23 @@ pub(super) fn restore(
                 ":upper": window.upper,
                 ":from": window.original_from,
             },
+        )?;
+    }
+    // A proposal that stays belongs to a scene whose body is the snapshot's,
+    // but the scene is inserted again at the version the plan gives it (not the
+    // one it had), so the version the proposal was made against no longer
+    // names the scene. Left alone, the proposal would be stale now and would
+    // look current again when the scene's version happens to reach that
+    // number with a different body. It is the same body, so the proposal is
+    // valid: it is made against the scene as it is after the restore.
+    if shape.parks_prose_staging() && tables.contains("prose_staging") {
+        conn.execute(
+            "UPDATE prose_staging
+                SET base_version = (SELECT version FROM tree_nodes
+                                     WHERE tree_nodes.id = prose_staging.scene_id)
+              WHERE project_id = ?1 AND status = 'proposed' AND base_version IS NOT NULL
+                AND scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?1)",
+            params![shape.project_id],
         )?;
     }
     // ... then count and detach what is left.
