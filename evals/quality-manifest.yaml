@@ -251,9 +251,12 @@ requirements:
       - electron/shared/agentReadToolDefinitions.static.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/toolExecutors.legacyGolden.test.ts
+      - src/features/chat/agent/toolExecutors.legacyNativePort.test.ts
+      - src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts
       - src/features/chat/agent/readCore.mainAdapter.test.ts
       - electron/shared/readDomain/core/core.static.test.ts
       - electron/shared/readDomain/core/readExecutors.test.ts
+      - electron/shared/readDomain/core/searchTools.test.ts
       - electron/shared/mastraRead/tables.test.ts
       - electron/main/mastraRead/irClosure.static.test.ts
       - electron/main/mastraReadParity.pipeline.spec.ts
@@ -284,6 +287,8 @@ requirements:
       - electron/shared/readDomain/core/treeReadTools.ts
       - electron/shared/readDomain/core/plotThreadTools.ts
       - electron/shared/readDomain/core/codexTagTools.ts
+      - electron/shared/readDomain/core/searchTools.ts
+      - electron/shared/readDomain/core/searchHelpers.ts
       - electron/shared/readDomain/core/sceneBody.ts
       - electron/shared/readDomain/core/readContext.ts
       - electron/shared/readDomain/core/readDb.ts
@@ -989,6 +994,8 @@ requirements:
       - electron/shared/readDomain/core/treeReadTools.ts
       - electron/shared/readDomain/core/plotThreadTools.ts
       - electron/shared/readDomain/core/codexTagTools.ts
+      - electron/shared/readDomain/core/searchTools.ts
+      - electron/shared/readDomain/core/searchHelpers.ts
       - electron/shared/readDomain/core/sceneBody.ts
       - electron/shared/readDomain/core/readContext.ts
       - electron/shared/readDomain/core/readDb.ts
