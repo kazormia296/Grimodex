@@ -7,7 +7,7 @@
 
 ## 1. 実装の前の読み直し（2026-11-22）
 
-起案の §6 が言う「実装の前に、基点のコードを読み直す」を、V1・V2 について行った。読み直しは read-only で、実行はしていない。結果は、repo の外の `design-notes/editor-scene-interpretation-2026-11-21/wf28.json` の `cpl-pov` にある。基点は古い `master` `8a683b45` だったので、実装の基点（`master` `e1aa06ec`）で、行と事実を読み直した。
+起案の §6 が言う「実装の前に、基点のコードを読み直す」を、V1・V2 について行った。読み直しは read-only で、実行はしていない。結果は、repo の外の `design-notes/editor-scene-interpretation-2026-11-21/wf28.json` の `cpl-pov` にある。基点は古い `master` `8a683b45` だったので、実装の着手時の基点（`master` `e1aa06ec`。その後 `469a6b77` を取り込んだ）で、行と事実を読み直した。
 
 - 場面の視点は、`tree_nodes.pov_character_id`（Codex の id）に保存される。チャットの場面の文脈（L3「現在のシーン」）には、題・時期・あらすじ・狙いだけが出ていて、場面の視点は出ていない。
 - 場面の視点を使うのは、予定ビートの節（`buildPendingBeatsSection`）だけである。ビートの視点が場面の視点と違うときにだけ名前を付け、名前は `contextEligibleIds` で絞る。
