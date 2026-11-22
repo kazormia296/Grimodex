@@ -295,6 +295,50 @@ describe("createReadExecutors", () => {
       )!;
       expect(links.sql).toMatch(archivedOf("plot_thread_scene_links"));
     });
+
+    it("get_foreshadow_detail: the payoff scene is asked for by id with the archived condition; no row there means payoffScene null", async () => {
+      const { ctx, captured } = makeCtx({
+        answers: {
+          // A foreshadow (every column, in the schema's order) whose payoff scene is "n1".
+          foreshadows: [
+            [
+              "f1",
+              "p1",
+              "F",
+              null,
+              null,
+              "n1",
+              null,
+              null,
+              0,
+              0,
+              1,
+              null,
+              null,
+              0,
+              null,
+              0,
+              0,
+            ],
+          ],
+          // The statement leaves the archived scene out, so there is no row for it.
+          tree_nodes: [],
+        },
+      });
+      const result = await createReadExecutors(ctx).get_foreshadow_detail({
+        id: "f1",
+      });
+      expect(
+        (result.content as { payoffScene: unknown }).payoffScene,
+      ).toBeNull();
+      expect(result.summary).toBe("F: 0 setup(s), payoff unset");
+      const payoff = captured.find((c) => c.sql.includes('from "tree_nodes"'))!;
+      expect(payoff.sql).toMatch(
+        /"tree_nodes"\."id" = \? and "tree_nodes"\."archived_at" is null/u,
+      );
+      expect(payoff.sql).not.toMatch(/join/u);
+      expect(payoff.params).toEqual(["n1"]);
+    });
   });
 
   it("get_scene: reads the body through the body port, after the node is checked", async () => {

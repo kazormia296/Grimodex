@@ -24,7 +24,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  * - archived（外部 Markdown のマウントでファイルの消失・重複により自動で soft delete された行）は、
  *   read tool 5 本と get_chapter_summaries が行単位（`archived_at IS NULL`）で除く。さらに
  *   list_plot_threads の sceneCount・phases、get_thread_scenes の branches（atNodeId）、
- *   get_foreshadow_detail の setups からも除く（DR-MP4-36）。祖先だけが
+ *   get_foreshadow_detail の setups と payoffScene からも除く（DR-MP4-36）。祖先だけが
  *   archived の行は renderer の listNodes と同じく残る（seed の n-part2＞n-s5）。
  *
  * golden の再生成：該当 file を消して `pnpm exec vitest --run <この file>`（CI では書かれず落ちる）。
@@ -433,6 +433,16 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
       id: "fs-2",
     }),
     sc("rows: 回収済み", MAIN_S1, { id: "fs-3" }),
+    sc(
+      "rows: 回収予定の場面が archived（payoffScene は null、summary は unset。DR-MP4-36）",
+      MAIN_S1,
+      { id: "fs-6" },
+    ),
+    sc(
+      "rows: 回収済みで回収の場面が archived（payoffConfirmed true・payoffScene null。DR-MP4-36）",
+      MAIN_S1,
+      { id: "fs-7" },
+    ),
     sc("rows: setup なし・回収先なし（unset）", MAIN_S1, { id: "fs-5" }),
     sc("empty: 存在しない id", MAIN_S1, { id: "fs-none" }),
     sc("empty: 空の project", EMPTY, { id: "fs-1" }),

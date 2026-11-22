@@ -127,6 +127,60 @@
       "contentJson": "{\"id\":\"fs-3\",\"title\":\"回収済みの伏線\",\"intent\":\"回収した\",\"notes\":\"\",\"loadBearing\":\"optional\",\"payoffConfirmed\":true,\"abandoned\":false,\"payoffScene\":{\"id\":\"n-s4\",\"title\":\"終幕\"},\"setups\":[]}"
     },
     {
+      "case": "rows: 回収予定の場面が archived（payoffScene は null、summary は unset。DR-MP4-36）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-6"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "回収先が消えた伏線: 0 setup(s), payoff unset",
+        "tokensUsed": 168,
+        "content": {
+          "id": "fs-6",
+          "title": "回収先が消えた伏線",
+          "intent": "回収先の場面が archived になった",
+          "notes": "",
+          "loadBearing": null,
+          "payoffConfirmed": false,
+          "abandoned": true,
+          "payoffScene": null,
+          "setups": []
+        }
+      },
+      "contentJson": "{\"id\":\"fs-6\",\"title\":\"回収先が消えた伏線\",\"intent\":\"回収先の場面が archived になった\",\"notes\":\"\",\"loadBearing\":null,\"payoffConfirmed\":false,\"abandoned\":true,\"payoffScene\":null,\"setups\":[]}"
+    },
+    {
+      "case": "rows: 回収済みで回収の場面が archived（payoffConfirmed true・payoffScene null。DR-MP4-36）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "id": "fs-7"
+      },
+      "result": {
+        "name": "get_foreshadow_detail",
+        "summary": "回収済みで回収先が消えた伏線: 0 setup(s), payoff confirmed",
+        "tokensUsed": 173,
+        "content": {
+          "id": "fs-7",
+          "title": "回収済みで回収先が消えた伏線",
+          "intent": "回収した場面が archived になった",
+          "notes": "",
+          "loadBearing": null,
+          "payoffConfirmed": true,
+          "abandoned": false,
+          "payoffScene": null,
+          "setups": []
+        }
+      },
+      "contentJson": "{\"id\":\"fs-7\",\"title\":\"回収済みで回収先が消えた伏線\",\"intent\":\"回収した場面が archived になった\",\"notes\":\"\",\"loadBearing\":null,\"payoffConfirmed\":true,\"abandoned\":false,\"payoffScene\":null,\"setups\":[]}"
+    },
+    {
       "case": "rows: setup なし・回収先なし（unset）",
       "world": {
         "projectId": "p-main",

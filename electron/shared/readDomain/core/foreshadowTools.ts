@@ -113,13 +113,18 @@ export async function getForeshadowDetail(
       and(eq(foreshadowSetups.foreshadowId, id), isNull(treeNodes.archivedAt)),
     );
 
-  // The title of the payoff scene (null when there is no `payoffSceneId`).
+  // The title of the payoff scene (null when there is no `payoffSceneId`). A payoff
+  // scene that is archived is null, the same as when there is no row: its id is not
+  // handed to the model either (see the setups above). The summary below follows it
+  // (planned -> unset), and `payoffConfirmed` is left as it is.
   let payoffScene: { id: string; title: string } | null = null;
   if (fs.payoffSceneId) {
     const [row] = await db
       .select({ id: treeNodes.id, title: treeNodes.title })
       .from(treeNodes)
-      .where(eq(treeNodes.id, fs.payoffSceneId));
+      .where(
+        and(eq(treeNodes.id, fs.payoffSceneId), isNull(treeNodes.archivedAt)),
+      );
     if (row) payoffScene = { id: row.id, title: row.title };
   }
 
