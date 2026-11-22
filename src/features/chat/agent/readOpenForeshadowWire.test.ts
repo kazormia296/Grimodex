@@ -88,8 +88,10 @@ describe("readOpenForeshadowWire", () => {
         abandoned: false,
       });
       expect(wire.foreshadows[0]!.updatedAt).toBeInstanceOf(Date);
-      // fs-2 の setup（fsu-4）は残った伏線の setup ではない。
+      // fs-2 の setup（fsu-4）は残った伏線の setup ではない（fs-1 の setup は fsu-1・2・3・6 の 4 件。
+      // この wire は archived の場面の setup も含む。archived を外すのは get_foreshadow_detail の read）。
       expect(wire.setups.map((s) => s.foreshadowId)).toEqual([
+        "fs-1",
         "fs-1",
         "fs-1",
         "fs-1",

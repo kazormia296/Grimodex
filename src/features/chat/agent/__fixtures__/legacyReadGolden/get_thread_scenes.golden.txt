@@ -2,7 +2,7 @@
   "tool": "get_thread_scenes",
   "cases": [
     {
-      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch。archived の場面に結ばれた link は出ない",
+      "case": "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch。archived の場面に結ばれた link と、archived の場面で合流する branch は出ない",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"

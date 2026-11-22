@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import type { CoreReadContext } from "../../mastraRead/ports.js";
 import { foreshadows, foreshadowSetups, treeNodes } from "../db/schema.js";
@@ -91,7 +91,11 @@ export async function getForeshadowDetail(
     };
   }
 
-  // Setups + scene title (innerJoin); an orphan is a field of its own.
+  // Setups + scene title (innerJoin); an orphan is a field of its own. A setup on
+  // an archived scene (archived automatically when an external Markdown file
+  // disappears or is duplicated) is left out, like the links of get_thread_scenes:
+  // its scene id is not handed to the model, which would only get "Scene not
+  // found" from get_scene. The count in the summary is the count after that.
   const setupRows = await db
     .select({
       sceneId: foreshadowSetups.sceneId,
@@ -105,15 +109,22 @@ export async function getForeshadowDetail(
     })
     .from(foreshadowSetups)
     .innerJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
-    .where(eq(foreshadowSetups.foreshadowId, id));
+    .where(
+      and(eq(foreshadowSetups.foreshadowId, id), isNull(treeNodes.archivedAt)),
+    );
 
-  // The title of the payoff scene (null when there is no `payoffSceneId`).
+  // The title of the payoff scene (null when there is no `payoffSceneId`). A payoff
+  // scene that is archived is null, the same as when there is no row: its id is not
+  // handed to the model either (see the setups above). The summary below follows it
+  // (planned -> unset), and `payoffConfirmed` is left as it is.
   let payoffScene: { id: string; title: string } | null = null;
   if (fs.payoffSceneId) {
     const [row] = await db
       .select({ id: treeNodes.id, title: treeNodes.title })
       .from(treeNodes)
-      .where(eq(treeNodes.id, fs.payoffSceneId));
+      .where(
+        and(eq(treeNodes.id, fs.payoffSceneId), isNull(treeNodes.archivedAt)),
+      );
     if (row) payoffScene = { id: row.id, title: row.title };
   }
 

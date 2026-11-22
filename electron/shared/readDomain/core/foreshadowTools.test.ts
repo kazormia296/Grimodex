@@ -349,7 +349,8 @@ describe("get_foreshadow_detail", () => {
     expect(result.summary).toBe("老魔術師の杖: 2 setup(s), payoff planned");
     expect(result.tokensUsed).toBe(JSON.stringify(result.content).length);
     // Three statements in this order: the foreshadow, its setups joined to the scenes
-    // (where only the foreshadow id), the payoff scene (by id only).
+    // (where the foreshadow id and a scene that is not archived), the payoff scene
+    // (by id, and not archived).
     expect(captured.map((c) => /from "([a-z_]+)"/u.exec(c.sql)![1])).toEqual([
       "foreshadows",
       "foreshadow_setups",
@@ -365,6 +366,76 @@ describe("get_foreshadow_detail", () => {
         ok: true,
       });
     }
+  });
+
+  it("asks for the setups of live scenes only: a setup on an archived scene is not handed to the model (DR-MP4-36)", async () => {
+    // The scripted client does not evaluate SQL. This fixes the statement (the join and the
+    // condition on the scene); the rows on a real SQLite are fixed by the golden
+    // (`toolExecutors.legacyGolden.test.ts`) and on the real addon (`mastraReadParity.pipeline.spec.ts`).
+    const { executors, captured } = makeCtx({ answers: detailAnswers() });
+    await executors.get_foreshadow_detail({ id: "f1" });
+    const setups = captured[1]!.sql;
+    expect(setups).toMatch(/from "foreshadow_setups"/u);
+    expect(setups).toMatch(
+      /"foreshadow_setups"\."foreshadow_id" = \? and "tree_nodes"\."archived_at" is null/u,
+    );
+    expect(captured[1]!.params).toEqual(["f1"]);
+  });
+
+  it("asks for the payoff scene only when it is live: the statement has the archived condition, by id and nothing else (DR-MP4-36)", async () => {
+    // Same as the setups above: the scripted client does not evaluate SQL, so this fixes the
+    // statement. The rows are fixed by the golden and on the real addon.
+    const { executors, captured } = makeCtx({ answers: detailAnswers() });
+    await executors.get_foreshadow_detail({ id: "f1" });
+    const payoff = captured[2]!.sql;
+    expect(payoff).toMatch(/from "tree_nodes"/u);
+    expect(payoff).not.toMatch(/join/u);
+    expect(payoff).toMatch(
+      /"tree_nodes"\."id" = \? and "tree_nodes"\."archived_at" is null/u,
+    );
+    expect(captured[2]!.params).toEqual(["n-pay"]);
+  });
+
+  it("an archived payoff scene comes back as no row: payoffScene null, the summary says unset, and the id is not in the result (DR-MP4-36)", async () => {
+    // The statement above leaves the archived scene out, so the tool gets no row (as for a
+    // payoff scene that has no row): the scripted answer for tree_nodes is empty.
+    const { executors } = makeCtx({
+      answers: {
+        ...detailAnswers(),
+        tree_nodes: [],
+      },
+    });
+    const result = await executors.get_foreshadow_detail({ id: "f1" });
+    expect((result.content as { payoffScene: unknown }).payoffScene).toBeNull();
+    expect(JSON.stringify(result.content)).not.toContain("n-pay");
+    expect(result.summary).toBe("老魔術師の杖: 2 setup(s), payoff unset");
+  });
+
+  it("a confirmed payoff on an archived scene is `payoff confirmed` with payoffScene null (DR-MP4-36)", async () => {
+    const { executors } = makeCtx({
+      answers: {
+        foreshadows: [
+          foreshadowRow({ payoff_scene_id: "n-pay", payoff_confirmed: 1 }),
+        ],
+        tree_nodes: [],
+      },
+    });
+    const result = await executors.get_foreshadow_detail({ id: "f1" });
+    expect(result.content).toMatchObject({
+      payoffConfirmed: true,
+      payoffScene: null,
+    });
+    expect(result.summary).toBe("老魔術師の杖: 0 setup(s), payoff confirmed");
+  });
+
+  it("a live payoff scene stays `payoff planned` with its id and title (DR-MP4-36)", async () => {
+    const { executors } = makeCtx({ answers: detailAnswers() });
+    const result = await executors.get_foreshadow_detail({ id: "f1" });
+    expect((result.content as { payoffScene: unknown }).payoffScene).toEqual({
+      id: "n-pay",
+      title: "裏切り",
+    });
+    expect(result.summary).toBe("老魔術師の杖: 2 setup(s), payoff planned");
   });
 
   it("returns a secret foreshadow and its notes (DR-MP4-24: moved as it is, not decided here)", async () => {
