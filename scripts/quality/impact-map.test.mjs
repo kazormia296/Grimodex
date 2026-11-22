@@ -1258,12 +1258,20 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
   }
 });
 
-test("the shared read core (MP-4b PR-4) selects at least what editing the executors it was moved from selected", async () => {
+test("the shared read core (MP-4b PR-4) selects at least what editing the file it was moved from selected", async () => {
   const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
   const map = parseImpactMap(source);
-  // The code moved out of src/features/chat/agent/toolExecutors.ts, whose edits select the tool-policy suite.
-  // The core's directory is added to the same rule (not to a narrower one), so editing a moved tool still
-  // selects what editing it before the move selected, and never less.
+  // A path that matches no rule falls back to every suite (suiteIds and requirementIds become the full
+  // set), so "at least" is a plain superset check and a fallback is never narrower than its source.
+  const covers = (canonical, legacy, label) => {
+    for (const id of legacy.suiteIds)
+      assert.ok(canonical.suiteIds.includes(id), `${label}: ${id}`);
+    for (const id of legacy.requirementIds)
+      assert.ok(canonical.requirementIds.includes(id), `${label}: ${id}`);
+  };
+  // (1) The code moved out of src/features/chat/agent/toolExecutors.ts, whose edits select the tool-policy
+  // suite. Those files are listed one by one in the tool-policy rule (DR-MP4-32h); a directory glob would
+  // also have caught the two main-only files below and narrowed them.
   const legacy = selectImpact(map, ["src/features/chat/agent/toolExecutors.ts"]);
   assert.equal(legacy.fallback, false);
   assert.ok(legacy.suiteIds.includes("tool-policy"));
@@ -1272,22 +1280,30 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the execut
     "treeReadTools",
     "plotThreadTools",
     "codexTagTools",
-    "sceneBody",
     "readContext",
-    "readDb",
     "toolResult",
   ]) {
     const canonical = selectImpact(map, [`electron/shared/readDomain/core/${name}.ts`]);
-    if (canonical.fallback) continue; // every suite is never narrower than the old selection
-    for (const id of legacy.suiteIds)
-      assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
-    for (const id of legacy.requirementIds)
-      assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+    assert.equal(canonical.fallback, false, name);
+    covers(canonical, legacy, name);
   }
-  // A directory rule, so a file a later PR adds to the core is covered without a list to update.
+  // (2) The two files that are not code moved out of toolExecutors.ts are the main-side counterparts of
+  // files that select more than tool-policy, so each must select at least what its counterpart selects.
+  // sceneBody.ts is main's body reader, the counterpart of the renderer's loadSceneContent(s) in
+  // src/features/tree/api.ts; readDb.ts is main's Drizzle wrapper, the counterpart of src/db/client.ts
+  // and electron/main/mastraRead/db.ts. They match no rule, so they fall back to every suite.
+  const treeApi = selectImpact(map, ["src/features/tree/api.ts"]);
+  const sceneBody = selectImpact(map, ["electron/shared/readDomain/core/sceneBody.ts"]);
+  assert.equal(sceneBody.fallback, true, "sceneBody.ts stays fail-open (every suite)");
+  covers(sceneBody, treeApi, "sceneBody vs tree/api.ts");
+  const readDb = selectImpact(map, ["electron/shared/readDomain/core/readDb.ts"]);
+  assert.equal(readDb.fallback, true, "readDb.ts stays fail-open (every suite)");
+  for (const counterpart of ["src/db/client.ts", "electron/main/mastraRead/db.ts"])
+    covers(readDb, selectImpact(map, [counterpart]), `readDb vs ${counterpart}`);
+  // (3) A file a later PR adds to the core matches no rule either, so it selects every suite (safe by
+  // default) until someone lists it on purpose.
   const later = selectImpact(map, ["electron/shared/readDomain/core/somethingNew.ts"]);
-  assert.equal(later.fallback, false);
-  assert.ok(later.suiteIds.includes("tool-policy"));
+  assert.equal(later.fallback, true);
 });
 
 test("the tool-policy light suite runs the executors' golden and the shared core's tests", () => {

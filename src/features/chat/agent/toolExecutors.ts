@@ -1621,7 +1621,11 @@ const LEGACY_READ_CONTEXT: CoreReadContext = {
   body: {
     barrier: "pending-writes-awaited",
     readSceneBody: (sceneId) => loadSceneContent(sceneId),
-    readSceneBodies: (sceneIds) => loadSceneContents([...sceneIds]),
+    // 一括読みの失敗は空の Map に握る（移す前の `loadSceneContents(...).catch(...)` と同じ。
+    // get_thread_scenes は空の excerpt で成功する）。握るのは legacy の port の側で、
+    // core は port の error をそのまま伝える（DR-MP4-32b。main の port は握らない）。
+    readSceneBodies: (sceneIds) =>
+      loadSceneContents([...sceneIds]).catch(() => new Map<string, string>()),
   },
   countTokens: (text) => countTokens(text),
 };

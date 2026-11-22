@@ -165,21 +165,32 @@ describe("createReadExecutors", () => {
     expect(new Set(projectParams)).toEqual(new Set(["p-1"]));
   });
 
-  it("get_thread_scenes: a failed body batch gives empty excerpts (and an unknown phase is normalized), not a failed tool", async () => {
-    const { ctx, readSceneBodies } = makeCtx({
-      answers: {
-        plot_threads: [["t1", "Thread", null]],
-        plot_thread_scene_links: [["n1", "not-a-phase", null, "a0"]],
-        tree_nodes: [["n1", "Scene 1"]],
-      },
+  it("get_thread_scenes: a failed body batch is not swallowed by the core (the legacy port does that), and an unknown phase is normalized", async () => {
+    const answers = {
+      plot_threads: [["t1", "Thread", null]],
+      plot_thread_scene_links: [["n1", "not-a-phase", null, "a0"]],
+      tree_nodes: [["n1", "Scene 1"]],
+    };
+    const failing = makeCtx({
+      answers,
       readSceneBodies: async () => {
         throw new Error("body store down");
       },
     });
-    const result = await createReadExecutors(ctx).get_thread_scenes({
+    await expect(
+      createReadExecutors(failing.ctx).get_thread_scenes({ threadId: "t1" }),
+    ).rejects.toThrow("body store down");
+    expect(failing.readSceneBodies).toHaveBeenCalledWith(["n1"]);
+
+    // A port that already turned its failure into an empty map (the legacy port)
+    // gives empty excerpts, and the unknown phase is normalized.
+    const swallowed = makeCtx({
+      answers,
+      readSceneBodies: async () => new Map<string, string>(),
+    });
+    const result = await createReadExecutors(swallowed.ctx).get_thread_scenes({
       threadId: "t1",
     });
-    expect(readSceneBodies).toHaveBeenCalledWith(["n1"]);
     expect(result.content).toMatchObject({
       sceneCount: 1,
       scenes: [

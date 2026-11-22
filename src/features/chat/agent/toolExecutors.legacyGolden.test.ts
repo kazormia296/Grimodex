@@ -745,6 +745,27 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     });
   }
 
+  it("get_thread_scenes：本文の一括読みの失敗は legacy の port が握り、空の excerpt で成功する（core は握らない。DR-MP4-32b）", async () => {
+    await setLegacyReadWorld(MAIN_S1);
+    const treeApi = await import("@/features/tree/api");
+    const spy = vi
+      .spyOn(treeApi, "loadSceneContents")
+      .mockRejectedValueOnce(new Error("body store down"));
+    try {
+      const result = await executeTool("get_thread_scenes", "c", {
+        threadId: "th-main",
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(result.error).toBeUndefined();
+      const scenes = (result.content as { scenes: Array<{ excerpt: string }> })
+        .scenes;
+      expect(scenes.length).toBeGreaterThan(0);
+      for (const scene of scenes) expect(scene.excerpt).toBe("");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("search_events：現在の場面は dense の await の後で読む（dense の最中に n-s3 へ切り替えると戦争が見える）", async () => {
     await setLegacyReadWorld(MAIN_S1);
     legacyReadInvokeBridge.override(

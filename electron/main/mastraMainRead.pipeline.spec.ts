@@ -222,15 +222,27 @@ describe("main's DB read adapter against the real Native addon", () => {
     expect(repeated.rows[0]).toHaveLength(3);
     expect(new Set(repeated.rows[0]).size).toBe(1);
 
-    // Two different columns with the same name keep their own values in order.
+    // Two different columns with the same name keep their own values in order:
+    // [child id, parent id]. The parent id is checked against a second select of
+    // the child's own `parent_id`, so a swap of the two positions fails.
     const joined = await client(
-      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "tree_nodes" as "p" on "p"."id" <> "n"."id" limit 1',
+      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "tree_nodes" as "p" on "p"."id" = "n"."parent_id" where "n"."parent_id" is not null order by "n"."id" limit 1',
       [],
       "all",
     );
+    expect(joined.rows).toHaveLength(1);
     expect(joined.rows[0]).toHaveLength(2);
-    // Two different nodes: two different values under one column name.
-    expect(joined.rows[0]![1]).not.toBe(joined.rows[0]![0]);
+    const childId = joined.rows[0]![0];
+    const parentId = joined.rows[0]![1];
+    expect(typeof childId).toBe("string");
+    expect(parentId).not.toBe(childId);
+    const parentOfChild = await client(
+      'select "parent_id" from "tree_nodes" where "id" = ?',
+      [childId],
+      "all",
+    );
+    expect(parentOfChild.rows).toHaveLength(1);
+    expect(parentOfChild.rows[0]).toEqual([parentId]);
   });
 
   it("refuses a column named like an integer, whose position Object.values would change", async () => {

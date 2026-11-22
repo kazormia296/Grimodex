@@ -205,9 +205,12 @@ export async function getThreadScenes(
     note: string;
     excerpt: string;
   }> = [];
-  const contentMap = await ctx.body
-    .readSceneBodies(capped.map((l) => l.nodeId))
-    .catch(() => new Map<string, string>());
+  // port の error はそのまま伝える（握らない）。legacy の port が一括読みの失敗を
+  // 空の Map に握る。main の port の拒否（送信前の検査・caller timeout・marker）は
+  // 空の excerpt の成功に化けず、tool の失敗になる（DR-MP4-32b）。
+  const contentMap = await ctx.body.readSceneBodies(
+    capped.map((l) => l.nodeId),
+  );
   for (const l of capped) {
     const text = prosemirrorToText(contentMap.get(l.nodeId) ?? "");
     scenes.push({
