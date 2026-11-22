@@ -334,7 +334,7 @@ describe("the read core on Main's adapter over the real Native addon gives the r
     const executors = createReadExecutors(ctx);
 
     const compared: Record<string, number> = {};
-    let ftsCases = 0;
+    const ftsCases: Record<string, number> = {};
     for (const tool of CORE_READ_TOOL_NAMES) {
       const cases = goldenOf(tool);
       let done = 0;
@@ -359,8 +359,10 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           continue;
         }
         if (ftsCalls.length === 0) {
-          // Not the FTS arm (a short word's LIKE-OR, an empty query, no
-          // match): nothing reached `fts`, and the golden is compared to the byte.
+          // Not the FTS arm (a short word's LIKE-OR, an empty query): nothing
+          // reached `fts`, and the golden is compared to the byte. A word of
+          // three characters or more that matches nothing still reaches `fts`
+          // and is compared in the branch below.
           expect(
             {
               name: actual.name,
@@ -389,6 +391,17 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           // summary, tokensUsed, and each row (the rows sorted by id, as JSON).
           expect(ftsCalls, label).toHaveLength(1);
           const call = ftsCalls[0]!;
+          // The arguments are fixed here too, not taken on trust from the core:
+          // the project of the case, the trimmed query, the tool's scope, and
+          // the limit (scenes take Rust's 50 to drop archived rows before the
+          // cut to 10; snippets take 10).
+          const params = golden.params as { query?: unknown };
+          expect(call, `${label}: fts arguments`).toEqual({
+            projectId: golden.world.projectId,
+            query: String(params.query ?? "").trim(),
+            scope: tool === "search_scenes" ? "scenes" : "snippets",
+            limit: tool === "search_scenes" ? 50 : 10,
+          });
           const sourceType = call.scope === "scenes" ? "scene" : "snippet";
           const direct = (await realReads.fts(call)) as Array<{
             sourceType: string;
@@ -416,7 +429,7 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           expect(JSON.stringify([...rows].sort(byId)), label).toBe(
             JSON.stringify([...goldenRows].sort(byId)),
           );
-          ftsCases += 1;
+          ftsCases[tool] = (ftsCases[tool] ?? 0) + 1;
         }
         ftsCalls.length = 0;
         // What went to Native is a SELECT by `all` or `values`, with the
@@ -436,9 +449,10 @@ describe("the read core on Main's adapter over the real Native addon gives the r
     expect(Object.keys(compared).sort()).toEqual(
       [...CORE_READ_TOOL_NAMES].sort(),
     );
-    // The FTS-arm comparison above is not vacuous: golden cases do reach `fts`
-    // (search_scenes: 3 cases, search_snippets: 1).
-    expect(ftsCases).toBeGreaterThanOrEqual(4);
+    // The FTS-arm comparison above is not vacuous, per tool: the golden cases
+    // that reach `fts` (search_scenes: アリア, 外部ファイル, 親フォルダ, 旅立ち,
+    // 存在しない語, 他作品; search_snippets: 老魔術師, 存在しない語, 他作品).
+    expect(ftsCases).toEqual({ search_scenes: 6, search_snippets: 3 });
   });
 });
 
