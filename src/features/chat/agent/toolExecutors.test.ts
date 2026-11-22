@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mock deps so executors can be dispatched without a real Tauri / DB runtime.
 const {
   mockInvoke,
-  mockListOpenForeshadows,
+  mockReadOpenForeshadowWire,
   mockTreeProjectId,
   mockAgentCreateForeshadow,
   mockAgentUpdateForeshadow,
@@ -22,7 +22,7 @@ const {
   mockDbRows,
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
-  mockListOpenForeshadows: vi.fn(),
+  mockReadOpenForeshadowWire: vi.fn(),
   mockTreeProjectId: vi.fn<() => string | null>(),
   mockAgentCreateForeshadow: vi.fn(),
   mockAgentUpdateForeshadow: vi.fn(),
@@ -83,7 +83,7 @@ vi.mock("@/features/codex/context/codexHiddenFromAi", () => ({
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
 vi.mock("@/features/foreshadow/api", () => ({
-  listOpenForeshadowsForContext: mockListOpenForeshadows,
+  readOpenForeshadowWire: mockReadOpenForeshadowWire,
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({
@@ -308,28 +308,49 @@ describe("executeReadOnlyTool — read-only dispatch invariant", () => {
 describe("executeTool — Phase 3 dispatch", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    mockListOpenForeshadows.mockReset();
+    mockReadOpenForeshadowWire.mockReset();
     mockTreeProjectId.mockReset();
   });
 
-  it("list_open_foreshadows returns rows from foreshadow API", async () => {
+  // MP-4b PR-5b：port は「wire を返すだけ」（`readOpenForeshadowWire`）で、組み立ては共有 core。
+  // PR-4 の方針（mock の seam を保つ）から外れる（この it と下の「project が無い」の 2 件の mock。DR-MP4-35）。意図は同じ：
+  // 結果の各 field（id・title・intent・loadBearing・setupCount）を確かめ続ける。
+  it("list_open_foreshadows builds its rows from the foreshadow wire", async () => {
     mockTreeProjectId.mockReturnValue("p1");
-    mockListOpenForeshadows.mockResolvedValue([
-      {
-        id: "f1",
-        title: "失われた剣",
-        intent: "勇者の使命",
-        loadBearing: "critical" as const,
-        setupCount: 2,
-      },
-    ]);
+    mockReadOpenForeshadowWire.mockResolvedValue({
+      foreshadows: [
+        {
+          id: "f1",
+          title: "失われた剣",
+          intent: "勇者の使命",
+          load_bearing: "critical",
+          version: 0,
+          payoff_confirmed: 0,
+          abandoned: 0,
+          updated_at: 1_767_225_600_000,
+        },
+      ],
+      setups: [
+        { foreshadow_id: "f1", is_orphan: 0 },
+        { foreshadow_id: "f1", is_orphan: 0 },
+        { foreshadow_id: "f1", is_orphan: 1 },
+      ],
+    });
 
     const result = await executeTool("list_open_foreshadows", "call-1", {});
     expect(result.error).toBeUndefined();
     expect(result.name).toBe("list_open_foreshadows");
-    expect(Array.isArray(result.content)).toBe(true);
-    expect((result.content as unknown[]).length).toBe(1);
-    expect(mockListOpenForeshadows).toHaveBeenCalledWith("p1");
+    expect(result.content).toEqual([
+      {
+        id: "f1",
+        title: "失われた剣",
+        intent: "勇者の使命",
+        loadBearing: "critical",
+        setupCount: 2,
+      },
+    ]);
+    expect(result.summary).toBe("1 open foreshadowing items");
+    expect(mockReadOpenForeshadowWire).toHaveBeenCalledWith("p1");
   });
 
   it("list_open_foreshadows returns empty when no project is active", async () => {
@@ -337,7 +358,7 @@ describe("executeTool — Phase 3 dispatch", () => {
     const result = await executeTool("list_open_foreshadows", "call-2", {});
     expect(result.error).toBeUndefined();
     expect(result.summary).toContain("No active project");
-    expect(mockListOpenForeshadows).not.toHaveBeenCalled();
+    expect(mockReadOpenForeshadowWire).not.toHaveBeenCalled();
   });
 
   it("get_foreshadow_detail rejects empty id without throwing", async () => {

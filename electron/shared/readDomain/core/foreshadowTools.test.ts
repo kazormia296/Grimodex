@@ -1,0 +1,417 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type {
+  CoreNativeReads,
+  CoreReadContext,
+  CoreReadDbClient,
+  CoreTreeState,
+} from "../../mastraRead/ports.js";
+import { checkReadSql } from "../../mastraRead/sql.js";
+import { MAIN_READ_TABLE_SET } from "../../mastraRead/tables.js";
+import { createCoreReadDb } from "./readDb.js";
+import { createReadExecutors } from "./readExecutors.js";
+
+interface Captured {
+  readonly sql: string;
+  readonly params: unknown[];
+  readonly method: string;
+}
+
+const T = 1_767_225_600_000;
+
+/**
+ * One row of `foreshadows`, positional in the schema's column order (the tool
+ * selects every column).
+ */
+const foreshadowRow = (over: Record<string, unknown> = {}): unknown[] => {
+  const v = {
+    id: "f1",
+    project_id: "p1",
+    title: "老魔術師の杖",
+    intent: "杖が後で鍵になる",
+    notes: "作者だけのメモ",
+    payoff_scene_id: null,
+    payoff_from_pos: null,
+    payoff_to_pos: null,
+    payoff_confirmed: 0,
+    abandoned: 0,
+    secret: 0,
+    load_bearing: "critical",
+    mechanism: null,
+    version: 0,
+    codex_link_dirty_at: null,
+    created_at: T,
+    updated_at: T,
+    ...over,
+  };
+  return [
+    v.id,
+    v.project_id,
+    v.title,
+    v.intent,
+    v.notes,
+    v.payoff_scene_id,
+    v.payoff_from_pos,
+    v.payoff_to_pos,
+    v.payoff_confirmed,
+    v.abandoned,
+    v.secret,
+    v.load_bearing,
+    v.mechanism,
+    v.version,
+    v.codex_link_dirty_at,
+    v.created_at,
+    v.updated_at,
+  ];
+};
+
+function makeCtx(
+  opts: {
+    answers?: Record<string, unknown[][]>;
+    foreshadowOpen?: CoreNativeReads["foreshadowOpen"];
+    projectId?: string | (() => string);
+  } = {},
+) {
+  const captured: Captured[] = [];
+  const client: CoreReadDbClient = async (sql, params, method) => {
+    captured.push({ sql, params, method });
+    const table = /from "([a-z_]+)"/u.exec(sql)?.[1] ?? "";
+    return { rows: opts.answers?.[table] ?? [] };
+  };
+  const foreshadowOpen = vi.fn(
+    opts.foreshadowOpen ?? (async () => ({ foreshadows: [], setups: [] })),
+  );
+  const fts = vi.fn(async () => []);
+  const getTreeState = vi.fn(
+    () =>
+      ({
+        projectId:
+          typeof opts.projectId === "function"
+            ? opts.projectId()
+            : (opts.projectId ?? "p1"),
+        nodes: [],
+        activeSceneId: null,
+      }) as CoreTreeState,
+  );
+  const ctx: CoreReadContext = {
+    getDb: () => createCoreReadDb(client),
+    getTreeState,
+    body: {
+      barrier: "none",
+      readSceneBody: async () => "",
+      readSceneBodies: async () => new Map<string, string>(),
+    },
+    native: { fts, foreshadowOpen },
+    countTokens: (text) => text.length,
+  };
+  return {
+    executors: createReadExecutors(ctx),
+    captured,
+    foreshadowOpen,
+    fts,
+    getTreeState,
+  };
+}
+
+const nativeForeshadow = (over: Record<string, unknown> = {}) => ({
+  id: "f1",
+  title: "老魔術師の杖",
+  intent: "杖が後で鍵になる",
+  load_bearing: "critical",
+  version: 0,
+  payoff_confirmed: 0,
+  abandoned: 0,
+  updated_at: T,
+  ...over,
+});
+const nativeSetup = (over: Record<string, unknown> = {}) => ({
+  foreshadow_id: "f1",
+  is_orphan: 0,
+  strength: null,
+  ai_strength: null,
+  ai_reasoning: null,
+  ...over,
+});
+
+describe("list_open_foreshadows", () => {
+  it("asks foreshadowOpen for the project only (once), reads no database and does not use fts", async () => {
+    const { executors, foreshadowOpen, captured, fts } = makeCtx();
+    const result = await executors.list_open_foreshadows({});
+    expect(foreshadowOpen).toHaveBeenCalledTimes(1);
+    expect(foreshadowOpen).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(captured).toEqual([]);
+    expect(fts).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      name: "list_open_foreshadows",
+      content: [],
+      summary: "0 open foreshadowing items",
+      tokensUsed: 2,
+    });
+  });
+
+  it("builds the result from Native's wire: the key order, intent ?? '' and the setup count without orphans", async () => {
+    const { executors } = makeCtx({
+      foreshadowOpen: async () => ({
+        foreshadows: [
+          nativeForeshadow({ id: "f-old", updated_at: T }),
+          nativeForeshadow({
+            id: "f-light",
+            title: "軽い伏線",
+            intent: null,
+            load_bearing: null,
+          }),
+          nativeForeshadow({ id: "f-new", updated_at: T + 10 }),
+        ],
+        setups: [
+          nativeSetup({ foreshadow_id: "f-old" }),
+          nativeSetup({ foreshadow_id: "f-old", is_orphan: 1 }),
+          nativeSetup({ foreshadow_id: "f-new" }),
+          nativeSetup({ foreshadow_id: "f-new" }),
+        ],
+      }),
+    });
+    const result = await executors.list_open_foreshadows({});
+    expect(result.content).toEqual([
+      {
+        id: "f-new",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "critical",
+        setupCount: 2,
+      },
+      {
+        id: "f-old",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "critical",
+        setupCount: 1,
+      },
+      {
+        id: "f-light",
+        title: "軽い伏線",
+        intent: "",
+        loadBearing: null,
+        setupCount: 0,
+      },
+    ]);
+    // The key order is part of the result (the bytes the model reads).
+    expect(JSON.stringify((result.content as unknown[])[2])).toBe(
+      '{"id":"f-light","title":"軽い伏線","intent":"","loadBearing":null,"setupCount":0}',
+    );
+    expect(result.summary).toBe("3 open foreshadowing items");
+    expect(result.tokensUsed).toBe(JSON.stringify(result.content).length);
+  });
+
+  it("shows exactly the foreshadows the read returned: the wire has no secret column, so the secret condition is the read's", async () => {
+    // A read that returned a secret foreshadow would be shown. `mastraReadParity.pipeline.spec.ts`
+    // fixes that Native's own read leaves secret ones out; this fixes that the core does not
+    // pretend to filter what it cannot see.
+    const { executors } = makeCtx({
+      foreshadowOpen: async () => ({
+        foreshadows: [nativeForeshadow({ id: "returned", secret: 1 })],
+        setups: [],
+      }),
+    });
+    const result = await executors.list_open_foreshadows({});
+    expect((result.content as Array<{ id: string }>).map((r) => r.id)).toEqual([
+      "returned",
+    ]);
+  });
+
+  it("fails closed on a malformed wire instead of answering '0 open foreshadowing items'", async () => {
+    for (const wire of [
+      undefined,
+      null,
+      "x",
+      {},
+      { foreshadows: [] },
+      { setups: [] },
+      { foreshadows: [null], setups: [] },
+      { foreshadows: [{ id: "f1" }], setups: [] },
+      { foreshadows: [nativeForeshadow()], setups: [{}] },
+    ]) {
+      const { executors } = makeCtx({ foreshadowOpen: async () => wire });
+      await expect(
+        executors.list_open_foreshadows({}),
+        JSON.stringify(wire) ?? String(wire),
+      ).rejects.toThrow(/foreshadow_list_open_for_context/);
+    }
+  });
+
+  it("does not catch a failure of the read (it reaches the caller)", async () => {
+    const { executors } = makeCtx({
+      foreshadowOpen: async () => {
+        throw new Error("native is down");
+      },
+    });
+    await expect(executors.list_open_foreshadows({})).rejects.toThrow(
+      "native is down",
+    );
+  });
+
+  it("takes the project once, when it runs, and passes that value on", async () => {
+    let n = 0;
+    const { executors, foreshadowOpen, getTreeState } = makeCtx({
+      projectId: () => `p-${++n}`,
+    });
+    await executors.list_open_foreshadows({});
+    expect(getTreeState).toHaveBeenCalledTimes(1);
+    expect(foreshadowOpen).toHaveBeenCalledWith({ projectId: "p-1" });
+  });
+});
+
+describe("get_foreshadow_detail", () => {
+  const detailAnswers = () => ({
+    foreshadows: [
+      foreshadowRow({ payoff_scene_id: "n-pay", payoff_confirmed: 0 }),
+    ],
+    foreshadow_setups: [
+      // sceneId, kind, strength, aiStrength, attribution, aiRationale, isOrphan, sceneTitle
+      ["n1", "designated_existing", null, "subtle", "ai", null, 0, "出会い"],
+      ["n2", "inserted_new", "overt", null, "human", "強調", 1, "旅立ち"],
+    ],
+    tree_nodes: [["n-pay", "裏切り"]],
+  });
+
+  it("answers an empty id before it looks at the project or reads anything", async () => {
+    const { executors, captured, getTreeState } = makeCtx();
+    const result = await executors.get_foreshadow_detail({ id: "  " });
+    expect(result).toEqual({
+      name: "get_foreshadow_detail",
+      content: null,
+      summary: "No id provided",
+      tokensUsed: 0,
+    });
+    expect(getTreeState).not.toHaveBeenCalled();
+    expect(captured).toEqual([]);
+  });
+
+  it("scopes the foreshadow to the project in the SQL (XPROJ), trims the id, and reports a missing one", async () => {
+    const { executors, captured } = makeCtx();
+    const result = await executors.get_foreshadow_detail({ id: " f1 " });
+    expect(result).toEqual({
+      name: "get_foreshadow_detail",
+      content: null,
+      summary: "Foreshadow not found",
+      tokensUsed: 0,
+    });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.sql).toMatch(/from "foreshadows" where/u);
+    expect(captured[0]!.sql).toMatch(/"foreshadows"\."id" = \?/u);
+    expect(captured[0]!.sql).toMatch(/"foreshadows"\."project_id" = \?/u);
+    expect(captured[0]!.params).toEqual(["f1", "p1"]);
+  });
+
+  it("builds the detail in the executor's key order, with the AI rating when there is no human one", async () => {
+    const { executors, captured } = makeCtx({ answers: detailAnswers() });
+    const result = await executors.get_foreshadow_detail({ id: "f1" });
+    expect(result.content).toEqual({
+      id: "f1",
+      title: "老魔術師の杖",
+      intent: "杖が後で鍵になる",
+      notes: "作者だけのメモ",
+      loadBearing: "critical",
+      payoffConfirmed: false,
+      abandoned: false,
+      payoffScene: { id: "n-pay", title: "裏切り" },
+      setups: [
+        {
+          sceneId: "n1",
+          sceneTitle: "出会い",
+          kind: "designated_existing",
+          strength: "subtle",
+          attribution: "ai",
+          aiRationale: "",
+          isOrphan: false,
+        },
+        {
+          sceneId: "n2",
+          sceneTitle: "旅立ち",
+          kind: "inserted_new",
+          strength: "overt",
+          attribution: "human",
+          aiRationale: "強調",
+          isOrphan: true,
+        },
+      ],
+    });
+    expect(Object.keys(result.content as object)).toEqual([
+      "id",
+      "title",
+      "intent",
+      "notes",
+      "loadBearing",
+      "payoffConfirmed",
+      "abandoned",
+      "payoffScene",
+      "setups",
+    ]);
+    expect(result.summary).toBe("老魔術師の杖: 2 setup(s), payoff planned");
+    expect(result.tokensUsed).toBe(JSON.stringify(result.content).length);
+    // Three statements in this order: the foreshadow, its setups joined to the scenes
+    // (where only the foreshadow id), the payoff scene (by id only).
+    expect(captured.map((c) => /from "([a-z_]+)"/u.exec(c.sql)![1])).toEqual([
+      "foreshadows",
+      "foreshadow_setups",
+      "tree_nodes",
+    ]);
+    expect(captured[1]!.sql).toMatch(
+      /inner join "tree_nodes" on "foreshadow_setups"\."scene_id" = "tree_nodes"\."id"/u,
+    );
+    expect(captured[1]!.params).toEqual(["f1"]);
+    expect(captured[2]!.params).toEqual(["n-pay"]);
+    for (const { sql } of captured) {
+      expect(checkReadSql(sql, MAIN_READ_TABLE_SET), sql).toMatchObject({
+        ok: true,
+      });
+    }
+  });
+
+  it("returns a secret foreshadow and its notes (DR-MP4-24: moved as it is, not decided here)", async () => {
+    const { executors } = makeCtx({
+      answers: {
+        foreshadows: [
+          foreshadowRow({
+            id: "f-secret",
+            title: "黒幕の伏線",
+            intent: "黒幕は最初から出ている",
+            notes: "犯人の名前",
+            secret: 1,
+            load_bearing: "supporting",
+          }),
+        ],
+      },
+    });
+    const result = await executors.get_foreshadow_detail({ id: "f-secret" });
+    expect(result.content).toMatchObject({
+      id: "f-secret",
+      intent: "黒幕は最初から出ている",
+      notes: "犯人の名前",
+      loadBearing: "supporting",
+    });
+    expect(result.summary).toBe("黒幕の伏線: 0 setup(s), payoff unset");
+  });
+
+  it("says confirmed when the payoff is confirmed, and does not read a payoff scene that is not set", async () => {
+    const { executors, captured } = makeCtx({
+      answers: { foreshadows: [foreshadowRow({ payoff_confirmed: 1 })] },
+    });
+    const result = await executors.get_foreshadow_detail({ id: "f1" });
+    expect(result.summary).toBe("老魔術師の杖: 0 setup(s), payoff confirmed");
+    expect((result.content as { payoffScene: unknown }).payoffScene).toBeNull();
+    expect(captured).toHaveLength(2);
+  });
+
+  it("takes the project once, and does not call Native", async () => {
+    let n = 0;
+    const { executors, getTreeState, foreshadowOpen, fts, captured } = makeCtx({
+      projectId: () => `p-${++n}`,
+      answers: detailAnswers(),
+    });
+    await executors.get_foreshadow_detail({ id: "f1" });
+    expect(getTreeState).toHaveBeenCalledTimes(1);
+    expect(captured[0]!.params).toEqual(["f1", "p-1"]);
+    expect(foreshadowOpen).not.toHaveBeenCalled();
+    expect(fts).not.toHaveBeenCalled();
+  });
+});
