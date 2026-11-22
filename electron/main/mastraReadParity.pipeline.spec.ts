@@ -70,6 +70,13 @@ import {
   createMainChronicleReadContext,
   createMainChronicleSearchContext,
 } from "../shared/readDomain/core/chronicleMainContext.js";
+import { createMainCodexVisibilityPorts } from "../shared/readDomain/core/codexMainContext.js";
+import { readCodexPhases } from "../shared/readDomain/core/codexReaders.js";
+import {
+  dropHiddenCodexRows,
+  listHiddenCodexIds,
+  resolveCodexAiVisibility,
+} from "../shared/readDomain/core/codexVisibility.js";
 import {
   CHRONICLE_READ_TOOL_NAMES,
   CHRONICLE_SEARCH_TOOL_NAMES,
@@ -78,7 +85,10 @@ import {
 } from "../shared/readDomain/core/chronicleReadExecutors.js";
 import { readEventsFailClosed } from "../shared/readDomain/core/chronicleReaders.js";
 import { buildReadInputs } from "../shared/readDomain/core/readInputs.js";
-import { readChronicleReadInputs } from "../shared/readDomain/core/readInputsReader.js";
+import {
+  readChronicleReadInputs,
+  readReadInputs,
+} from "../shared/readDomain/core/readInputsReader.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
 import {
   CORE_READ_TOOL_NAMES,
@@ -1227,5 +1237,165 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
         /embedding model .* is not installed|semantic/i,
       );
     }
+  });
+});
+
+describe("the Codex visibility decision of the read core (PR-8a) on Main's adapter over the real Native addon", () => {
+  async function visibilityPorts(
+    ws: Workspace,
+    projectId: string,
+    currentSceneId: string | null,
+  ) {
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const inputs = await readReadInputs(db, { projectId, currentSceneId });
+    ws.dbExecute.mockClear();
+    return {
+      db,
+      inputs,
+      ports: createMainCodexVisibilityPorts({ db, inputs }),
+    };
+  }
+
+  const expectOnlySelectsWithIdentity = (ws: Workspace): void => {
+    expect(ws.dbExecute).toHaveBeenCalled();
+    for (const call of ws.dbExecute.mock.calls) {
+      expect(String(call[0])).toMatch(/^\s*select\b/iu);
+      expect(["all", "values"]).toContain(call[2]);
+      expect(call).toHaveLength(4);
+      expect(call[3]).toBe(JSON.stringify(ws.identity));
+    }
+  };
+
+  it("`codex_entry_phases` is readable through the adapter: every column, the types Native returns (integers are numbers, text is strings, NULL is null), the seed's `ph-released`", async () => {
+    const ws = await startSeededWorkspace();
+    const { db } = await visibilityPorts(ws, "p-main", null);
+    const phases = await readCodexPhases(db, ["c-released", "c-aria"]);
+    expect(phases).toEqual([
+      {
+        id: "ph-released",
+        entryId: "c-released",
+        anchorNodeId: "n-s3",
+        label: "正体判明",
+        summaryOverride: "n-s3 で正体が明らかになる騎士。",
+        contentOverride: expect.stringContaining("Phase 解決後の本文。"),
+        contextModeOverride: "mentioned",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        version: 0,
+      },
+    ]);
+    expect(typeof phases[0]!.version).toBe("number");
+    expectOnlySelectsWithIdentity(ws);
+  });
+
+  it("hides the seed's hidden entry, releases `c-released` from n-s3 with the phase's text, keeps another project's entry out, and sends only selects with the caller identity", async () => {
+    const ws = await startSeededWorkspace();
+    const ids = ["c-aria", "c-secret", "c-released", "x-c-aria", "gone"];
+    const decide = async (sceneId: string | null) => {
+      const { ports } = await visibilityPorts(ws, "p-main", sceneId);
+      ws.dbExecute.mockClear();
+      const result = await resolveCodexAiVisibility(ports, {
+        projectId: "p-main",
+        entryIds: ids,
+        sceneId,
+        withContent: true,
+      });
+      expectOnlySelectsWithIdentity(ws);
+      // The entries select and the phases select, in this order.
+      expect(ws.dbExecute.mock.calls.map((c) => String(c[0]))).toEqual([
+        expect.stringMatching(/from "codex_entries"/u),
+        expect.stringMatching(/from "codex_entry_phases"/u),
+      ]);
+      return result;
+    };
+
+    for (const sceneId of ["n-s1", "n-s2", null]) {
+      const r = await decide(sceneId);
+      expect([...r.hidden].sort(), String(sceneId)).toEqual([
+        "c-released",
+        "c-secret",
+        "gone",
+        "x-c-aria",
+      ]);
+      expect([...r.texts.keys()], String(sceneId)).toEqual(["c-aria"]);
+    }
+    const atS3 = await decide("n-s3");
+    expect([...atS3.hidden].sort()).toEqual(["c-secret", "gone", "x-c-aria"]);
+    expect(atS3.texts.get("c-released")).toEqual({
+      summary: "n-s3 で正体が明らかになる騎士。",
+      content: expect.stringContaining("Phase 解決後の本文。"),
+      released: true,
+      mode: "mentioned",
+    });
+    expect(atS3.texts.get("c-aria")).toMatchObject({
+      released: false,
+      summary: "老魔術師を訪ねる旅の少女",
+    });
+  });
+
+  it("listHiddenCodexIds and dropHiddenCodexRows give the same answer, and the turn's input is the project's own (another project's input is refused)", async () => {
+    const ws = await startSeededWorkspace();
+    const { ports } = await visibilityPorts(ws, "p-main", "n-s3");
+    const hidden = await listHiddenCodexIds(ports, {
+      projectId: "p-main",
+      entryIds: ["c-aria", "c-secret", "c-released", "gone"],
+      sceneId: "n-s3",
+    });
+    expect([...hidden].sort()).toEqual(["c-secret", "gone"]);
+    const kept = await dropHiddenCodexRows(
+      ports,
+      [
+        { id: "c-secret", summary: "s" },
+        { id: "c-released", summary: "base" },
+      ],
+      { projectId: "p-main", sceneId: "n-s3" },
+    );
+    expect(kept).toEqual([
+      { id: "c-released", summary: "n-s3 で正体が明らかになる騎士。" },
+    ]);
+    await expect(
+      listHiddenCodexIds(ports, {
+        projectId: "p-other",
+        entryIds: ["x-c-aria"],
+        sceneId: null,
+      }),
+    ).rejects.toThrow(/different project/u);
+    await expect(
+      resolveCodexAiVisibility(ports, {
+        projectId: "",
+        entryIds: ["c-aria"],
+        sceneId: null,
+      }),
+    ).rejects.toBeInstanceOf(CoreProjectRequiredError);
+  });
+
+  it("two phases of one entry at one scene with the same created_at are ordered by id (K-4: the real database gives them in the order the resolver then fixes)", async () => {
+    // `c-mage` is public. `ph-tie-b` hides it and `ph-tie-a` shows it, both at n-s1
+    // with the same time: the resolver orders them by id, so the later id (b) wins.
+    const phase = (id: string, mode: string) => ({
+      sql: "INSERT INTO codex_entry_phases (id, entry_id, anchor_node_id, label, context_mode_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      params: [
+        id,
+        "c-mage",
+        "n-s1",
+        id,
+        mode,
+        "2026-01-02T00:00:00.000Z",
+        "2026-01-02T00:00:00.000Z",
+      ],
+    });
+    const ws = await startSeededWorkspace([
+      phase("ph-tie-b", "hidden"),
+      phase("ph-tie-a", "mentioned"),
+    ]);
+    const { ports } = await visibilityPorts(ws, "p-main", "n-s1");
+    const atS1 = await resolveCodexAiVisibility(ports, {
+      projectId: "p-main",
+      entryIds: ["c-mage"],
+      sceneId: "n-s1",
+    });
+    expect([...atS1.hidden]).toEqual(["c-mage"]);
   });
 });

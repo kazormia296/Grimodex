@@ -8,7 +8,8 @@
  * What is here is EXACTLY the set of tables the Drizzle selects of the shared
  * read core name in `from` and in joins (PR-4: the tools of groups B1 and B2; PR-6: the rows of the hidden and
  * chronicle-secret inputs; PR-5a: the search tools of group B3; PR-5b: the
- * foreshadow tools of group B4; PR-7a: the chronicle tools of group B6).
+ * foreshadow tools of group B4; PR-7a: the chronicle tools of group B6; PR-8a:
+ * the Codex visibility decision).
  * `readDomain/core/core.static.test.ts` scans the core's sources and requires
  * the two to be equal, so a table the core starts to touch (a later PR moving
  * more tools) fails that test until it is added here, and a table that no
@@ -29,9 +30,11 @@
  *     `event_relations`, `project_calendar` (`list_events`, `get_event_detail`,
  *     `get_character_timeline`, `get_chronicle_state`);
  *   - `codex_entries` (PR-7a: only `id` and `name`, for the names the chronicle
- *     tools show; see below for what the table-level rule lets through).
- * It leaves out every table no core tool reads yet (the codex phases and
- * details, `foreshadow_codex_links`), the three
+ *     tools show; see below for what the table-level rule lets through);
+ *   - `codex_entry_phases` (PR-8a: every column of the phases of the entries the
+ *     Codex visibility decision asks about, `readDomain/core/codexReaders.ts`).
+ * It leaves out every table no core tool reads yet (the codex phase detail
+ * overrides, the detail definitions and values, `foreshadow_codex_links`), the three
  * tables the schema pulls in only as foreign-key targets (`chat_sessions`,
  * `chat_messages`, `codex_types`), every closed table (`narrative_*`, `nir1_*`,
  * the chat IR tables, the audit ledger, messages) and settings.
@@ -56,10 +59,21 @@
  * for the hidden-entry rule). What a tool shows of them is that tool's own
  * condition, in the core.
  *
+ * `codex_entry_phases` (PR-8a, DR-MP4-39) is the same kind of entry: a statement
+ * Main sends may read every phase of every entry of every project, every column
+ * (`summary_override` and `content_override`, which can be the private text of a
+ * hidden entry's phase, `context_mode_override`, `anchor_node_id`, `label` and
+ * the times and the version). The reader selects every column because the
+ * resolver's input type is the whole row, and the table has no `project_id`
+ * column, so the project is kept by passing only the ids of entries read under a
+ * project condition. The renderer can already read the table with a generic
+ * `db_execute`, and nothing in Main reaches the reader until the flag L is opened.
+ *
  * The list is pinned by `tables.test.ts`.
  */
 export const MAIN_READ_TABLES: readonly string[] = Object.freeze([
   "codex_entries",
+  "codex_entry_phases",
   "codex_entry_tags",
   "codex_tags",
   "event_participants",
