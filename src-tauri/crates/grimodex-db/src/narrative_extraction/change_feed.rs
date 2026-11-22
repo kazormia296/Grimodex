@@ -20,6 +20,9 @@ use uuid::Uuid;
 /// rebuild old ranges instead of silently interpreting them in a new space.
 pub(crate) const CANONICAL_TEXT_NORMALIZER_VERSION: &str = "gdx-canonical-text/1";
 
+use super::codex_operations::{OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH, OP_KIND_EVENT_CREATE};
+use super::detail_operations::OP_KIND_DETAIL_VALUE_SET;
+use super::temporal_operations::{OP_KIND_EVENT_METADATA_PATCH, OP_KIND_SCENE_METADATA_PATCH};
 use crate::change_events::{
     append_change_events_in_tx, AppendChangeEvent, AppendResult as AppendCanonicalChangeResult,
 };
@@ -394,15 +397,105 @@ fn restore_marker_newer_than(
         .is_some())
 }
 
+/// The journal entities (`entityKind`, `opKind`) whose Undo/Redo through a
+/// real snapshot restore was verified not to roll back a later edit (DR-SRC-12,
+/// confirmation 88): Chronicle event create, Codex entry create and patch, Scene
+/// and Event Chronicle patch, Codex detail value patch. Every other kind
+/// (Codex phase, semantic binding, relation, bind-existing, detail value
+/// create, story order, Plot, Foreshadow, temporal node, constraint and
+/// projection) stays refused after a restore until it is verified and added
+/// here. Widening this table is a separate piece of work: add the test through
+/// a real restore first.
+const REPLAY_EXEMPT_ENTITIES: &[(&str, &str)] = &[
+    ("event", "create"),
+    ("codex_entry", "create"),
+    ("codex_entry", "patch"),
+    ("temporal_scene_chronicle", "patch"),
+    ("temporal_event_chronicle", "patch"),
+    ("codex_detail_value", "patch"),
+];
+
+/// The `narrative_apply_operations.operation_kind` values that correspond to
+/// `REPLAY_EXEMPT_ENTITIES`. `codex.detail.value.set` writes either a create or
+/// a patch; the journal entity decides which, so the pair above is what
+/// admits it.
+const REPLAY_EXEMPT_OPERATIONS: &[&str] = &[
+    OP_KIND_EVENT_CREATE,
+    OP_KIND_ENTRY_CREATE,
+    OP_KIND_ENTRY_PATCH,
+    OP_KIND_SCENE_METADATA_PATCH,
+    OP_KIND_EVENT_METADATA_PATCH,
+    OP_KIND_DETAIL_VALUE_SET,
+];
+
+/// True when the commit's operations are all of a verified kind
+/// (`REPLAY_EXEMPT_ENTITIES`). Both the journal the Undo/Redo replays and the
+/// commit's operation rows must be non-empty and entirely verified: a commit
+/// that mixes a verified kind with another is not exempt, and neither is one
+/// whose journal or operations cannot be read.
+fn commit_has_only_verified_kinds(
+    conn: &Connection,
+    project_id: &str,
+    commit_id: &str,
+    journal_id: &str,
+) -> anyhow::Result<bool> {
+    let after_json: Option<String> = conn
+        .query_row(
+            "SELECT after_json
+               FROM narrative_commit_journals
+              WHERE id = ?1 AND commit_id = ?2 AND project_id = ?3",
+            params![journal_id, commit_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(after) = after_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+        return Ok(false);
+    };
+    let Some(entities) = after.get("entities").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    if entities.is_empty() {
+        return Ok(false);
+    }
+    for entity in entities {
+        let (Some(kind), op_kind) = (
+            entity.get("entityKind").and_then(Value::as_str),
+            // The replay itself reads a missing `opKind` as `create`.
+            entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create"),
+        ) else {
+            return Ok(false);
+        };
+        if !REPLAY_EXEMPT_ENTITIES.contains(&(kind, op_kind)) {
+            return Ok(false);
+        }
+    }
+
+    let mut statement =
+        conn.prepare("SELECT operation_kind FROM narrative_apply_operations WHERE commit_id = ?1")?;
+    let operation_kinds = statement
+        .query_map(params![commit_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(!operation_kinds.is_empty()
+        && operation_kinds
+            .iter()
+            .all(|kind| REPLAY_EXEMPT_OPERATIONS.contains(&kind.as_str())))
+}
+
 /// True when the Undo/Redo being appended replays an AI-extraction apply commit
-/// (`undo_commit` / `redo_commit`, DR-SRC-12). Every fact is read from the
-/// database: the lineage root must be the commit's own forward transaction
-/// (cause `forward`, origin `ai-apply`, source domain
+/// of a verified kind (`undo_commit` / `redo_commit`, DR-SRC-12). Every fact is
+/// read from the database: the lineage root must be the commit's own forward
+/// transaction (cause `forward`, origin `ai-apply`, source domain
 /// `narrative.commit.apply`) of the same project, naming a commit row and a
-/// journal row that belong together, and the new transaction must name that
-/// same commit and journal. Only `undo.rs` writes such transactions; a typed
-/// writer's replay names no commit, so it never matches and stays subject to
-/// the restore refusal.
+/// journal row that belong together, the new transaction must name that same
+/// commit and journal, and every operation of the commit must be of a kind
+/// verified through a real restore (`commit_has_only_verified_kinds`). Only
+/// `undo.rs` writes such transactions; a typed writer's replay names no commit,
+/// so it never matches and stays subject to the restore refusal, and so does
+/// the replay of a commit of a kind that has not been verified.
 fn replays_an_apply_commit(
     conn: &Connection,
     input: &AppendNarrativeChangeTransactionInput,
@@ -413,7 +506,7 @@ fn replays_an_apply_commit(
     else {
         return Ok(false);
     };
-    Ok(conn
+    let is_the_commits_apply_root = conn
         .query_row(
             "SELECT 1
                FROM narrative_change_transactions t
@@ -440,7 +533,11 @@ fn replays_an_apply_commit(
             |row| row.get::<_, i64>(0),
         )
         .optional()?
-        .is_some())
+        .is_some();
+    if !is_the_commits_apply_root {
+        return Ok(false);
+    }
+    commit_has_only_verified_kinds(conn, &input.project_id, commit_id, journal_id)
 }
 
 struct NarrativeChangeObjectHead<'a> {

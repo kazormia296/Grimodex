@@ -1,9 +1,12 @@
+#[path = "../test-support/snapshot_restore.rs"]
+mod snapshot_restore;
 #[path = "../test-support/adapter.rs"]
 mod test_support;
 
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
     CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
+    UndoCommitPayload,
 };
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
@@ -485,4 +488,163 @@ fn plot_two_threads_merge_branch_at_same_scene() {
         Ok(())
     })
     .unwrap();
+}
+
+// --- 復元の後の取り消し・やり直し（DR-SRC-12。確かめていない種類は拒んだまま） ---
+//
+// Plot thread の commit は、確認 88 の条件（専用の守りで、復元の後の編集が巻き戻らない
+// ことを、試験で確かめる）を満たしていない種類である（書き手が before を head から取る
+// ので、連続性の検査が働かない可能性がある）。復元の marker の後は、取り消しもやり直しも
+// NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE で拒まれ、何も変わらない。
+
+fn replay_payload(commit_id: &str, request_id: &str) -> UndoCommitPayload {
+    UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess-plot".to_string(),
+        surface: None,
+        commit_id: Some(commit_id.to_string()),
+        request_id: Some(request_id.to_string()),
+    }
+}
+
+/// How many rows of `table` have this id.
+fn rows(db: &Database, table: &str, id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE id = ?1"),
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })
+    .expect("count rows")
+}
+
+fn commit_status(db: &Database, commit_id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+            [commit_id],
+            |row| row.get::<_, String>(0),
+        )?)
+    })
+    .expect("commit status")
+}
+
+fn assert_superseded_by_restore(result: anyhow::Result<Value>, what: &str) {
+    let error = result.expect_err(what);
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"),
+        "{what}: expected NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE, got {message}"
+    );
+}
+
+/// A commit that creates one Plot thread. (A commit that also creates a marker
+/// cannot be undone at all: the thread's preflight counts the marker.)
+fn apply_thread(db: &Database, tag: &str, thread_id: &str) -> String {
+    let hypothesis = format!("plot-thread:{tag}");
+    let items = [(
+        "plot.thread.create",
+        thread_create(thread_id, &hypothesis, tag),
+    )];
+    let pairs = seed_approved_proposals(db, &format!("run-{tag}"), &format!("set-{tag}"), &items);
+    let applied = prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("req-{tag}"),
+            &format!("digest-{tag}"),
+            &format!("set-{tag}"),
+            &format!("run-{tag}"),
+            zip_ops(&pairs, &items),
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    applied["commitId"].as_str().unwrap().to_string()
+}
+
+/// Redo of a Plot thread commit is not supported at all (`unsupported journal
+/// entity kind 'plot_thread'`), so only the undo is exercised here.
+#[test]
+fn undo_of_a_plot_commit_after_a_snapshot_restore_is_refused_and_changes_nothing() {
+    let db = migrated_db();
+    let undone_before = apply_thread(&db, "pa", "thread-pa");
+    let applied_before = apply_thread(&db, "pb", "thread-pb");
+    // Without a restore, undo works: the refusal below is the restore's doing.
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        replay_payload(&undone_before, "pa-undo"),
+    )
+    .expect("undo before the restore");
+    assert_eq!(undone["status"], "undone");
+
+    snapshot_restore::restore_a_codex_entry_after_snapshot(&db, "project-1", "sess-restore", "p");
+
+    assert_superseded_by_restore(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            replay_payload(&applied_before, "pb-undo"),
+        ),
+        "undo of a Plot thread commit after the restore",
+    );
+    // Nothing changed: thread B stays, thread A stays undone.
+    assert_eq!(rows(&db, "plot_threads", "thread-pb"), 1);
+    assert_eq!(rows(&db, "plot_threads", "thread-pa"), 0);
+    assert_eq!(commit_status(&db, &applied_before), "applied");
+    assert_eq!(commit_status(&db, &undone_before), "undone");
+}
+
+fn entry_create_payload(entry_id: &str, narrative_entity_id: &str) -> Value {
+    json!({
+        "entryId": entry_id,
+        "typeSlug": "character",
+        "name": "Mixed",
+        "summary": null,
+        "aliases": [],
+        "parentId": null,
+        "content": "{\"type\":\"doc\",\"content\":[]}",
+        "narrativeEntityId": narrative_entity_id
+    })
+}
+
+/// A commit that creates a Codex entry (a verified kind) and a Plot thread (not
+/// verified) is refused as a whole: the verified half does not carry the other.
+#[test]
+fn undo_of_a_commit_that_mixes_a_verified_and_an_unverified_kind_is_refused_after_a_restore() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-1", "Scene One");
+    let items = [
+        (
+            "codex.entry.create",
+            entry_create_payload("entry-mix", "ent:mix"),
+        ),
+        (
+            "plot.thread.create",
+            thread_create("thread-mix", "plot-thread:mix", "mix"),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-mix", "set-mix", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-mix",
+            "digest-mix",
+            "set-mix",
+            "run-mix",
+            zip_ops(&pairs, &items),
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+
+    snapshot_restore::restore_a_scene_after_snapshot(&db, "project-1", "sess-restore", "m");
+
+    assert_superseded_by_restore(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            replay_payload(&commit, "mix-undo"),
+        ),
+        "undo of a mixed commit after the restore",
+    );
+    assert_eq!(rows(&db, "codex_entries", "entry-mix"), 1);
+    assert_eq!(rows(&db, "plot_threads", "thread-mix"), 1);
+    assert_eq!(commit_status(&db, &commit), "applied");
 }

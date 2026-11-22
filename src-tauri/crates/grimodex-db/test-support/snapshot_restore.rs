@@ -265,3 +265,92 @@ pub(crate) fn restore(
     )?;
     Ok(report.no_op)
 }
+
+/// Write a real restore marker without touching anything a commit made: add a
+/// Codex entry, snapshot, edit that entry directly, and restore the Codex scope
+/// (the restore changes the edited row back and writes its marker). For the
+/// tests that need "a restore happened after this commit" and nothing else
+/// (DR-SRC-12 の確かめていない種類の試験)。
+pub(crate) fn restore_a_codex_entry_after_snapshot(
+    db: &Database,
+    project_id: &str,
+    session_id: &str,
+    tag: &str,
+) {
+    let entry_id = format!("restore-marker-entry-{tag}");
+    let snapshot_id = format!("snap-marker-{tag}");
+    seed_restore_prerequisites(db, project_id, session_id);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO codex_entries
+                (id, project_id, type, name, aliases, summary, content, parent_id,
+                 version, created_at, updated_at)
+             VALUES (?1, ?2, 'character', 'Marker', '[]', 'before', '{}', NULL, 0, 't', 't')",
+            rusqlite::params![entry_id, project_id],
+        )?;
+        Ok(())
+    })
+    .expect("seed the Codex entry the restore will change");
+    snapshot(db, project_id, &snapshot_id);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE codex_entries SET summary = 'after the snapshot' WHERE id = ?1",
+            rusqlite::params![entry_id],
+        )?;
+        Ok(())
+    })
+    .expect("edit the entry after the snapshot");
+    let no_op = restore(
+        db,
+        project_id,
+        session_id,
+        &format!("restore-marker-{tag}"),
+        &snapshot_id,
+        vec![RestoreScope::Codex],
+    )
+    .expect("restore the Codex scope");
+    assert!(!no_op, "the restore must change rows and write its marker");
+}
+
+/// The same, through the Body scope, for a commit whose rows the Codex scope
+/// would also reset (a Codex entry's version goes back to 0 on a Codex
+/// restore). Adds a Scene of its own, snapshots, renames it, and restores the
+/// Body scope.
+pub(crate) fn restore_a_scene_after_snapshot(
+    db: &Database,
+    project_id: &str,
+    session_id: &str,
+    tag: &str,
+) {
+    let scene_id = format!("restore-marker-scene-{tag}");
+    let snapshot_id = format!("snap-marker-scene-{tag}");
+    seed_restore_prerequisites(db, project_id, session_id);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title)
+             VALUES (?1, ?2, 'scene', 'before')",
+            rusqlite::params![scene_id, project_id],
+        )?;
+        Ok(())
+    })
+    .expect("seed the Scene the restore will change");
+    snapshot(db, project_id, &snapshot_id);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET title = 'after the snapshot' WHERE id = ?1",
+            rusqlite::params![scene_id],
+        )?;
+        Ok(())
+    })
+    .expect("rename the scene after the snapshot");
+    let no_op = restore(
+        db,
+        project_id,
+        session_id,
+        &format!("restore-marker-scene-{tag}"),
+        &snapshot_id,
+        vec![RestoreScope::Body],
+    )
+    .expect("restore the Body scope");
+    assert!(!no_op, "the restore must change rows and write its marker");
+}

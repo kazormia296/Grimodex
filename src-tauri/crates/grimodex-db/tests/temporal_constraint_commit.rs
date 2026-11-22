@@ -1513,3 +1513,134 @@ mod commit_undo_after_restore {
         assert_eq!(scene_state(&db, "scene-rf"), "Scene RF|6|v2");
     }
 }
+
+// --- 復元の後の取り消し・やり直し（DR-SRC-12。確かめていない種類は拒んだまま） ---
+//
+// 時間の node・constraint の commit は、確認 88 の条件（専用の守りで、復元の後の編集が
+// 巻き戻らないことを、試験で確かめる）を満たしていない種類である。復元の marker の後は、
+// 取り消しは NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE で拒まれ、何も変わらない
+// （やり直しは、この種類では元から未対応）。
+
+mod unverified_commit_after_restore {
+    use super::*;
+
+    /// Redo of a temporal node or constraint commit is not supported at all
+    /// (`unsupported journal entity kind 'temporal_node'`), so only the undo is
+    /// exercised here.
+    fn undo(db: &Database, commit_id: &str, request_id: &str) -> anyhow::Result<Value> {
+        narrative_extraction::narrative_extraction_undo_commit(
+            db,
+            UndoCommitPayload {
+                project_id: "project-1".to_string(),
+                session_id: "sess-temporal".to_string(),
+                surface: None,
+                commit_id: Some(commit_id.to_string()),
+                request_id: Some(request_id.to_string()),
+            },
+        )
+    }
+
+    fn assert_superseded_by_restore(result: anyhow::Result<Value>, what: &str) {
+        let error = result.expect_err(what);
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"),
+            "{what}: expected NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE, got {message}"
+        );
+    }
+
+    fn constraint_rows(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_temporal_constraints",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .expect("count constraints")
+    }
+
+    fn node_rows(db: &Database, node_id: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_temporal_nodes WHERE id = ?1",
+                [node_id],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .expect("count nodes")
+    }
+
+    fn commit_status(db: &Database, commit_id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                [commit_id],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .expect("commit status")
+    }
+
+    /// A commit that ensures a Scene node and adds a duration constraint to it.
+    fn apply_node_and_constraint(db: &Database, tag: &str, scene_id: &str) -> String {
+        let node_id = format!("tn:scene:{scene_id}");
+        let applied = apply_items(
+            db,
+            tag,
+            &[
+                (
+                    "temporal.node.ensure",
+                    node_ensure_payload(
+                        &node_id,
+                        json!({ "kind": "scene", "documentRef": scene_id }),
+                    ),
+                ),
+                (
+                    "temporal.constraint.create",
+                    json!({
+                        "kind": "duration",
+                        "nodeId": node_id,
+                        "duration": { "min": 10, "max": 20, "unit": "minute" },
+                        "authority": "model-inferred",
+                        "strictness": "soft",
+                        "sourceIds": [],
+                    }),
+                ),
+            ],
+        );
+        assert_eq!(applied["status"], "applied");
+        applied["commitId"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn undo_of_a_node_and_constraint_commit_after_a_restore_is_refused_and_changes_nothing() {
+        let db = migrated_db();
+        seed_scene(&db, "scene-ta", "Scene TA");
+        seed_scene(&db, "scene-tb", "Scene TB");
+        let undone_before = apply_node_and_constraint(&db, "ta", "scene-ta");
+        let applied_before = apply_node_and_constraint(&db, "tb", "scene-tb");
+        // Without a restore, undo works: the refusals below are the restore's doing.
+        let undone = undo(&db, &undone_before, "ta-undo").expect("undo before the restore");
+        assert_eq!(undone["status"], "undone");
+        assert_eq!(node_rows(&db, "tn:scene:scene-ta"), 0);
+
+        snapshot_restore::restore_a_codex_entry_after_snapshot(
+            &db,
+            "project-1",
+            "sess-restore",
+            "t",
+        );
+
+        assert_superseded_by_restore(
+            undo(&db, &applied_before, "tb-undo"),
+            "undo of a node and constraint commit after the restore",
+        );
+        // Nothing changed: B's node and its one constraint stay, A stays undone.
+        assert_eq!(node_rows(&db, "tn:scene:scene-tb"), 1);
+        assert_eq!(constraint_rows(&db), 1);
+        assert_eq!(node_rows(&db, "tn:scene:scene-ta"), 0);
+        assert_eq!(commit_status(&db, &applied_before), "applied");
+        assert_eq!(commit_status(&db, &undone_before), "undone");
+    }
+}
