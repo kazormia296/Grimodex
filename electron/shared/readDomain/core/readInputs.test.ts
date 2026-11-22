@@ -9,13 +9,16 @@ import { checkReadSql } from "../../mastraRead/sql.js";
 import { MAIN_READ_TABLE_SET } from "../../mastraRead/tables.js";
 import type { CoreReadDbClient } from "../../mastraRead/ports.js";
 import {
+  buildChronicleNodes,
   buildReadInputs,
   normalizeCurrentSceneId,
   resolveReadInputMode,
+  type ReadChronicleTreeRow,
   type ReadInputTreeRow,
 } from "./readInputs.js";
 import { createCoreReadDb } from "./readDb.js";
 import {
+  readChronicleReadInputs,
   readProjectModeRow,
   readReadInputs,
   readTreeRows,
@@ -276,15 +279,24 @@ function makeDb(): DatabaseSync {
     create table tree_nodes (
       id text primary key, project_id text not null, parent_id text,
       node_type text not null, sort_order text not null,
-      story_time_order text, archived_at text
+      story_time_order text, archived_at text,
+      title text not null,
+      chronicle_start_time integer, chronicle_start_minute integer,
+      chronicle_start_granularity text not null,
+      chronicle_precision text not null
     );
     insert into projects values ('p-a', 'story'), ('p-b', 'auto');
     insert into tree_nodes values
-      ('a-f', 'p-a', null, 'folder', 'a0', null, null),
-      ('a-s1', 'p-a', 'a-f', 'scene', 'a0', 'a2', null),
-      ('a-s2', 'p-a', 'a-f', 'scene', 'a1', null, null),
-      ('a-arch', 'p-a', null, 'scene', 'a1', null, '2026-02-01T00:00:00Z'),
-      ('b-s1', 'p-b', null, 'scene', 'a0', 'a1', null);
+      ('a-f', 'p-a', null, 'folder', 'a0', null, null,
+        'Part', null, null, 'none', 'exact'),
+      ('a-s1', 'p-a', 'a-f', 'scene', 'a0', 'a2', null,
+        'First', 12, 30, 'minute', 'approx'),
+      ('a-s2', 'p-a', 'a-f', 'scene', 'a1', null, null,
+        'Second', null, null, 'none', 'exact'),
+      ('a-arch', 'p-a', null, 'scene', 'a1', null, '2026-02-01T00:00:00Z',
+        'Gone', 5, null, 'day', 'exact'),
+      ('b-s1', 'p-b', null, 'scene', 'a0', 'a1', null,
+        'Other', 7, null, 'day', 'exact');
   `);
   return sqlite;
 }
@@ -317,6 +329,11 @@ describe("the reader", () => {
       sortOrder: "a0",
       storyTimeOrder: "a2",
       archivedAt: null,
+      title: "First",
+      chronicleStartTime: 12,
+      chronicleStartMinute: 30,
+      chronicleStartGranularity: "minute",
+      chroniclePrecision: "approx",
     });
     expect(sent).toHaveLength(1);
     expect(sent[0]!.params).toEqual(["p-a"]);
@@ -364,6 +381,11 @@ describe("the reader", () => {
         '"parent_id"',
         '"sort_order"',
         '"story_time_order"',
+        '"title"',
+        '"chronicle_start_time"',
+        '"chronicle_start_minute"',
+        '"chronicle_start_granularity"',
+        '"chronicle_precision"',
       ].sort(),
     );
     // The mode select asks for that one column and nothing else.
@@ -438,5 +460,101 @@ describe("the reader", () => {
       currentSceneId: null,
     });
     expect(sent.map((s) => s.method)).toEqual(["all", "all"]);
+  });
+});
+
+describe("readChronicleReadInputs and buildChronicleNodes (PR-7a)", () => {
+  const chronicleRow = (
+    id: string,
+    extra: Partial<ReadChronicleTreeRow> = {},
+  ): ReadChronicleTreeRow => ({
+    ...row(id, null, "scene", "a0"),
+    title: `title-${id}`,
+    chronicleStartTime: null,
+    chronicleStartMinute: null,
+    chronicleStartGranularity: "none",
+    chroniclePrecision: "exact",
+    ...extra,
+  });
+
+  it("buildChronicleNodes carries the title and the four chronicle columns, keeps the row order, and does not narrow the node type", () => {
+    const rows = [
+      chronicleRow("z", {
+        chronicleStartTime: 3,
+        chronicleStartMinute: 4,
+        chronicleStartGranularity: "minute",
+        chroniclePrecision: "approx",
+      }),
+      chronicleRow("a", { nodeType: "note", archivedAt: "x" }),
+    ];
+    const nodes = buildChronicleNodes(rows);
+    expect(nodes.map((n) => n.id)).toEqual(["z", "a"]);
+    expect(nodes[0]).toEqual({
+      id: "z",
+      parentId: null,
+      nodeType: "scene",
+      title: "title-z",
+      sortOrder: "a0",
+      storyTimeOrder: null,
+      archivedAt: null,
+      chronicleStartTime: 3,
+      chronicleStartMinute: 4,
+      chronicleStartGranularity: "minute",
+      chroniclePrecision: "approx",
+    });
+    expect(nodes[1]).toMatchObject({ nodeType: "note", archivedAt: "x" });
+  });
+
+  it("reads the nodes and the read inputs from ONE tree select (two statements in all, the second is the mode)", async () => {
+    const { client, sent } = clientOver(makeDb());
+    const { inputs, nodes } = await readChronicleReadInputs(
+      createCoreReadDb(client),
+      { projectId: "p-a", currentSceneId: "a-s2" },
+    );
+    expect(sent).toHaveLength(2);
+    expect(sent[0]!.sql.toLowerCase()).toContain('from "tree_nodes"');
+    expect(sent[1]!.sql.toLowerCase()).toContain('from "projects"');
+    expect(nodes.map((n) => n.id).sort()).toEqual(["a-f", "a-s1", "a-s2"]);
+    expect(nodes.find((n) => n.id === "a-s1")).toMatchObject({
+      title: "First",
+      chronicleStartTime: 12,
+      chronicleStartMinute: 30,
+      chronicleStartGranularity: "minute",
+      chroniclePrecision: "approx",
+    });
+    // The reading order and the nodes are from the same rows.
+    expect([...inputs.readingOrder.keys()]).toEqual(["a-s1", "a-s2"]);
+    for (const id of inputs.readingOrder.keys()) {
+      expect(nodes.some((n) => n.id === id)).toBe(true);
+    }
+    expect(inputs.currentSceneId).toBe("a-s2");
+    expect(inputs.resolutionMode).toEqual({ kind: "resolved", mode: "story" });
+    for (const call of sent) {
+      expect(checkReadSql(call.sql, MAIN_READ_TABLE_SET).ok).toBe(true);
+    }
+  });
+
+  it("gives the same read inputs as readReadInputs, and no node of another project or an archived scene", async () => {
+    const { client } = clientOver(makeDb());
+    const db = createCoreReadDb(client);
+    const args = { projectId: "p-a", currentSceneId: "a-s1" } as const;
+    const both = await readChronicleReadInputs(db, args);
+    const only = await readReadInputs(db, args);
+    expect([...both.inputs.readingOrder]).toEqual([...only.readingOrder]);
+    expect(both.inputs.currentSceneId).toBe(only.currentSceneId);
+    expect(both.inputs.resolutionMode).toEqual(only.resolutionMode);
+    expect(both.nodes.map((n) => n.id)).not.toContain("b-s1");
+    expect(both.nodes.map((n) => n.id)).not.toContain("a-arch");
+  });
+
+  it("refuses an empty project id before anything is sent", async () => {
+    const client = vi.fn<CoreReadDbClient>(async () => ({ rows: [] }));
+    await expect(
+      readChronicleReadInputs(createCoreReadDb(client), {
+        projectId: "",
+        currentSceneId: null,
+      }),
+    ).rejects.toThrow("projectId is required");
+    expect(client).not.toHaveBeenCalled();
   });
 });

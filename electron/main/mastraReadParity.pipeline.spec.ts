@@ -54,12 +54,24 @@ import {
   LEGACY_READ_PROJECTS,
   LEGACY_READ_SEED,
 } from "../../src/features/chat/agent/__fixtures__/legacyReadSeed.js";
+import {
+  CHRONICLE_CHARACTERIZATION_STATEMENTS,
+  CHRONICLE_HIDDEN_NAME_EVENT,
+  CHRONICLE_SCENE_OWN_ANCHOR_SCENE,
+} from "../../src/features/chat/agent/__fixtures__/chronicleCharacterizationSeed.js";
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import {
   CoreProjectRequiredError,
   type CoreNativeReads,
   type CoreReadContext,
 } from "../shared/mastraRead/ports.js";
+import { createMainChronicleReadContext } from "../shared/readDomain/core/chronicleMainContext.js";
+import {
+  CHRONICLE_READ_TOOL_NAMES,
+  createChronicleReadExecutors,
+} from "../shared/readDomain/core/chronicleReadExecutors.js";
+import { buildReadInputs } from "../shared/readDomain/core/readInputs.js";
+import { readChronicleReadInputs } from "../shared/readDomain/core/readInputsReader.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
 import {
   CORE_READ_TOOL_NAMES,
@@ -166,7 +178,12 @@ interface Workspace {
  * seed's four projects: every read is by project id, so it is only more rows
  * that a missing project condition would show.
  */
-async function startSeededWorkspace(): Promise<Workspace> {
+async function startSeededWorkspace(
+  extraStatements: ReadonlyArray<{
+    sql: string;
+    params: ReadonlyArray<string | number | null>;
+  }> = [],
+): Promise<Workspace> {
   const root = mkdtempSync(path.join(os.tmpdir(), "grimodex-mp4b-parity-"));
   roots.push(root);
   const appData = path.join(realpathSync(root), "app-data");
@@ -207,7 +224,7 @@ async function startSeededWorkspace(): Promise<Workspace> {
   // Before the workspace is opened: the generic SQL may not create a project
   // row (`PROTECTED_WRITER_SQL`, writer `project.lifecycle`), so the seed is
   // written from a separate process, as `d2aChatWriters.pipeline.spec.ts` does.
-  insertSeedFromAnotherProcess(seeded.path, root);
+  insertSeedFromAnotherProcess(seeded.path, root, extraStatements);
   ok(await route("open_workspace", { path: seeded.path }));
   const dbExecute = vi.fn((...args: Parameters<NapiBackendLike["dbExecute"]>) =>
     backend.dbExecute(...args),
@@ -231,9 +248,15 @@ async function startSeededWorkspace(): Promise<Workspace> {
 function insertSeedFromAnotherProcess(
   workspacePath: string,
   scratchDirectory: string,
+  extraStatements: ReadonlyArray<{
+    sql: string;
+    params: ReadonlyArray<string | number | null>;
+  }>,
 ): void {
   const seedFile = path.join(scratchDirectory, "legacy-read-seed.json");
   writeFileSync(seedFile, JSON.stringify(LEGACY_READ_SEED));
+  const extraFile = path.join(scratchDirectory, "extra-statements.json");
+  writeFileSync(extraFile, JSON.stringify(extraStatements));
   const script = `
 const { DatabaseSync } = require("node:sqlite");
 const { readFileSync } = require("node:fs");
@@ -249,6 +272,9 @@ for (const { table, rows } of JSON.parse(readFileSync(process.argv[2], "utf8")))
     ).run(...columns.map((c) => row[c]));
   }
 }
+for (const { sql, params } of JSON.parse(readFileSync(process.argv[3], "utf8"))) {
+  db.prepare(sql).run(...params);
+}
 db.exec("COMMIT");
 db.close();
 `;
@@ -260,6 +286,7 @@ db.close();
       script,
       path.join(workspacePath, "grimodex.db"),
       seedFile,
+      extraFile,
     ],
     { encoding: "utf8", timeout: 60_000 },
   );
@@ -792,5 +819,146 @@ describe("main's typed reads against the real Native addon: the shape the later 
         );
       }
     }
+  });
+});
+
+describe("the chronicle tools of the read core (PR-7a) on Main's adapter over the real Native addon", () => {
+  /**
+   * The turn of the chronicle tools: the tree from one select and the current
+   * scene of the wire (`readChronicleReadInputs`), then a context built from it.
+   * An empty project cannot read a tree, so it gets empty inputs and the core
+   * stops before it reads anything.
+   */
+  async function chronicleExecutors(
+    ws: Workspace,
+    world: GoldenCase["world"] & { language?: "ja" | "en" },
+  ) {
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const turn =
+      world.projectId === ""
+        ? {
+            inputs: buildReadInputs({
+              projectId: "",
+              treeRows: [],
+              project: null,
+              currentSceneId: null,
+            }),
+            nodes: [],
+          }
+        : await readChronicleReadInputs(db, {
+            projectId: world.projectId,
+            currentSceneId: world.activeSceneId ?? null,
+          });
+    ws.dbExecute.mockClear();
+    const main = createMainChronicleReadContext({
+      db,
+      turn,
+      countTokens: (text) => (text ? text.length : 0),
+      getUiLanguage: () => world.language ?? "ja",
+    });
+    return { executors: createChronicleReadExecutors(main.ctx), main };
+  }
+
+  it("covers exactly the four tools of group B6 (search_events is PR-7b), each with a golden, and none of them is in CORE_READ_TOOL_NAMES", () => {
+    expect([...CHRONICLE_READ_TOOL_NAMES].sort()).toEqual([
+      "get_character_timeline",
+      "get_chronicle_state",
+      "get_event_detail",
+      "list_events",
+    ]);
+    for (const tool of CHRONICLE_READ_TOOL_NAMES) {
+      expect(goldenOf(tool).length, tool).toBeGreaterThan(0);
+      expect((CORE_READ_TOOL_NAMES as readonly string[]).includes(tool)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("every golden case of the four tools is the same on the real addon, to the byte", async () => {
+    const ws = await startSeededWorkspace();
+    const compared: Record<string, number> = {};
+    for (const tool of CHRONICLE_READ_TOOL_NAMES) {
+      const cases = goldenOf(tool);
+      let done = 0;
+      let noProject = 0;
+      for (const golden of cases) {
+        const label = `${tool} / ${golden.case}`;
+        const world = golden.world as GoldenCase["world"] & {
+          language?: "ja" | "en";
+        };
+        const { executors } = await chronicleExecutors(ws, world);
+        let actual: Awaited<ReturnType<(typeof executors)[typeof tool]>>;
+        try {
+          actual = await executors[tool](golden.params);
+        } catch (error) {
+          expect(error, label).toBeInstanceOf(CoreProjectRequiredError);
+          expect(golden.world.projectId, label).toBe("");
+          expect(golden.result.summary, label).toBe("No active project");
+          expect(ws.dbExecute, label).not.toHaveBeenCalled();
+          noProject += 1;
+          continue;
+        }
+        expect(
+          {
+            name: actual.name,
+            summary: actual.summary,
+            tokensUsed: actual.tokensUsed,
+            content: actual.content,
+          },
+          label,
+        ).toEqual({
+          name: golden.result.name,
+          summary: golden.result.summary,
+          tokensUsed: golden.result.tokensUsed,
+          content: golden.result.content,
+        });
+        expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+        for (const call of ws.dbExecute.mock.calls) {
+          expect(String(call[0]), label).toMatch(/^\s*select\b/iu);
+          expect(["all", "values"], label).toContain(call[2]);
+          expect(call, label).toHaveLength(4);
+          expect(call[3], label).toBe(JSON.stringify(ws.identity));
+        }
+        done += 1;
+      }
+      expect(done + noProject, tool).toBe(cases.length);
+      expect(done, tool).toBeGreaterThan(0);
+      compared[tool] = done;
+    }
+    expect(Object.keys(compared).sort()).toEqual(
+      [...CHRONICLE_READ_TOOL_NAMES].sort(),
+    );
+  });
+
+  it("the golden's world has no scene-own date and no event that names a hidden Codex entry; with them (the characterization seed) the real addon answers as the renderer's legacy did", async () => {
+    const ws = await startSeededWorkspace(
+      CHRONICLE_CHARACTERIZATION_STATEMENTS,
+    );
+    const world = { projectId: "p-main", activeSceneId: "n-s3" };
+    const { executors } = await chronicleExecutors(ws, world);
+    // A scene's own chronicle date reaches the anchor: the integer columns come
+    // back as numbers and the text columns as text (n-s2 has no event of its own).
+    const own = await executors.get_chronicle_state({
+      sceneId: CHRONICLE_SCENE_OWN_ANCHOR_SCENE,
+    });
+    expect(own.summary).toBe("Chronicle state at scene (scene)");
+    expect(JSON.stringify(own.content)).toBe(
+      '{"time":{"source":"scene","startTime":7000,"season":null,"precision":"approx","formattedDate":"1019年第161日"},"characters":[{"codexId":"c-secret","name":"黒幕","status":"unknown","age":null,"location":"黒幕"},{"codexId":"c-aria","name":"アリア","status":"alive","age":19,"location":"古い塔"},{"codexId":"c-mage","name":"老魔術師","status":"unknown","age":null,"location":"古い塔"}],"recentEvents":[{"eventId":"ev-hidden-name","title":"黒幕の登場","note":null,"relTime":"約3年前"},{"eventId":"ev-meet","title":"老魔術師との出会い","note":null,"relTime":"約4年前"}],"unresolvedCausal":[],"offpage":[]}',
+    );
+    // The names of a hidden Codex entry are returned as they are (DR-MP4-37).
+    const detail = await executors.get_event_detail({
+      eventId: CHRONICLE_HIDDEN_NAME_EVENT,
+    });
+    expect(detail.content).toMatchObject({
+      primaryCharacter: "黒幕",
+      location: "黒幕",
+      participants: [{ codexId: "c-secret", name: "黒幕", role: "黒幕役" }],
+    });
+    const timeline = await executors.get_character_timeline({
+      codexId: "c-secret",
+    });
+    expect(timeline.content).toMatchObject({ character: "黒幕" });
   });
 });

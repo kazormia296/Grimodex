@@ -26,6 +26,14 @@ import { describe, expect, it, vi } from "vitest";
  * JSON 文字列にして返す。get_foreshadow_detail は Drizzle なので main の DB adapter（`foreshadows`・
  * `foreshadow_setups` が allowlist にある）を通る。
  *
+ * PR-7a の年表 4 本（list_events・get_event_detail・get_character_timeline・get_chronicle_state）：
+ * 別の ctx（`createMainChronicleReadContext`）と別の factory（`createChronicleReadExecutors`）で動かす。
+ * main の入力は store でなく、**turn の開始時に 1 本の tree select から作る**（`readChronicleReadInputs`：
+ * 読む順・場面の題・場面自身の暦日付・現在の場面）。同値を示すのは「turn の途中で何も変わらない」ときだけで、
+ * cache の寿命が turn であることによる差（turn の途中の secret・reveal の変更が次の呼出しに届かない。Q5）と、
+ * 現在の場面が読む順に無いときの `No sceneId and no active scene`（main は null にする）は対象外
+ * （`chronicleMainContext.test.ts` が差として固定する）。
+ *
  * 覆えない範囲：実 Native（実 addon）の行の返り順・型の返り方は見ない（sql.js の結果）。
  * 本文 2 本は main では barrier なし（renderer の未着の書込みを待たない。DR-MP4-9）ので、
  * ここは「待つべき書込みが無い」ときの同値だけを示す。project が空の case は core が
@@ -60,6 +68,15 @@ import {
   createReadExecutors,
 } from "@/../electron/shared/readDomain/core/readExecutors";
 import { createDbSceneBodyReader } from "@/../electron/shared/readDomain/core/sceneBody";
+import { createMainChronicleReadContext } from "@/../electron/shared/readDomain/core/chronicleMainContext";
+import {
+  CHRONICLE_READ_TOOL_NAMES,
+  createChronicleReadExecutors,
+} from "@/../electron/shared/readDomain/core/chronicleReadExecutors";
+import { buildReadInputs } from "@/../electron/shared/readDomain/core/readInputs";
+import { readChronicleReadInputs } from "@/../electron/shared/readDomain/core/readInputsReader";
+import { readCodexNames } from "@/../electron/shared/readDomain/core/chronicleReaders";
+import { listCodexMatchTargets } from "@/features/codex/api";
 import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
 import {
   bindLegacyReadHarnessPorts,
@@ -368,5 +385,123 @@ describe("共有 core の伏線 2 本が main の経路で読むもの（PR-5b�
       CoreProjectRequiredError,
     );
     expect(foreshadowSent).toEqual([]);
+  });
+});
+
+/**
+ * PR-7a：年表 4 本。golden の world から main の turn の入力を作る（tree は DB の 1 本の select、
+ * 現在の場面は wire の値、UI 言語は world の値）。project が空の world は turn を作れない（tree を読まない）ので、
+ * 空の入力で ctx を作り、core が何も読まずに止まることを見る。
+ */
+describe("共有 core の年表 4 本（main の DB adapter と turn の入力の上）が、PR-0 の golden と同じ結果を返す", () => {
+  it("対象は golden を持つ 4 本で、CORE_READ_TOOL_NAMES とは別の表", () => {
+    expect([...CHRONICLE_READ_TOOL_NAMES].sort()).toEqual([
+      "get_character_timeline",
+      "get_chronicle_state",
+      "get_event_detail",
+      "list_events",
+    ]);
+    for (const name of CHRONICLE_READ_TOOL_NAMES) {
+      expect((CORE_READ_TOOL_NAMES as readonly string[]).includes(name)).toBe(
+        false,
+      );
+    }
+  });
+
+  for (const tool of CHRONICLE_READ_TOOL_NAMES) {
+    it(`${tool}：golden の全 case（world・params）で結果が一致する`, async () => {
+      setLegacyReadWorkspaceIdentity();
+      await seedLegacyReadFixture();
+      const cases = goldenOf(tool);
+      expect(cases.length).toBeGreaterThan(0);
+      let compared = 0;
+      let noProject = 0;
+      for (const golden of cases) {
+        await setLegacyReadWorld(golden.world);
+        legacyReadInvokeBridge.reset();
+        sent.length = 0;
+        const label = `${tool} / ${golden.case}`;
+        const turn =
+          golden.world.projectId === ""
+            ? {
+                inputs: buildReadInputs({
+                  projectId: "",
+                  treeRows: [],
+                  project: null,
+                  currentSceneId: null,
+                }),
+                nodes: [],
+              }
+            : await readChronicleReadInputs(mainDb, {
+                projectId: golden.world.projectId,
+                currentSceneId: golden.world.activeSceneId ?? null,
+              });
+        sent.length = 0;
+        const { ctx } = createMainChronicleReadContext({
+          db: mainDb,
+          turn,
+          countTokens: (text) => (text ? text.length : 0),
+          getUiLanguage: () => golden.world.language ?? "ja",
+        });
+        const chronicle = createChronicleReadExecutors(ctx);
+        let actual: Awaited<ReturnType<(typeof chronicle)[typeof tool]>>;
+        try {
+          actual = await chronicle[tool](golden.params);
+        } catch (e) {
+          expect(e, label).toBeInstanceOf(CoreProjectRequiredError);
+          expect(golden.world.projectId, label).toBe("");
+          expect(golden.result.summary, label).toBe("No active project");
+          expect(sent, label).toEqual([]);
+          noProject += 1;
+          continue;
+        }
+        expect(
+          {
+            name: actual.name,
+            summary: actual.summary,
+            tokensUsed: actual.tokensUsed,
+            content: actual.content,
+          },
+          label,
+        ).toEqual({
+          name: golden.result.name,
+          summary: golden.result.summary,
+          tokensUsed: golden.result.tokensUsed,
+          content: golden.result.content,
+        });
+        expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+        for (const statement of sent) {
+          expect(statement.sql, label).toMatch(/^\s*select\b/iu);
+          expect(["all", "values"], label).toContain(statement.method);
+        }
+        compared += 1;
+      }
+      expect(compared + noProject).toBe(cases.length);
+      expect(compared).toBeGreaterThan(0);
+    });
+  }
+
+  it("Codex 名の Map：main の 2 列の select が、renderer の listCodexMatchTargets 由来の Map（chronicleToolCache の codexNamesLoader と同じ作り方）と、同じ key・値・順になる（hidden の entry も含む）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const projectIds = new Set(
+      CHRONICLE_READ_TOOL_NAMES.flatMap((tool) =>
+        goldenOf(tool).map((c) => c.world.projectId),
+      ),
+    );
+    projectIds.delete("");
+    expect(projectIds.size).toBeGreaterThan(0);
+    let named = 0;
+    for (const projectId of projectIds) {
+      const legacy = new Map(
+        (await listCodexMatchTargets(projectId)).map(
+          (e) => [e.id, e.name] as const,
+        ),
+      );
+      const main = await readCodexNames(mainDb, projectId);
+      expect([...main.entries()], projectId).toEqual([...legacy.entries()]);
+      named += main.size;
+    }
+    expect(named).toBeGreaterThan(0);
   });
 });

@@ -110,13 +110,21 @@ async function seedTieProject(): Promise<void> {
 
 const PROJECTS = ["p-main", "p-other", "p-empty", "p-big", "p-tie"] as const;
 
-const sixColumns = (n: {
+// PR-7a: the tree select carries the six columns of the two builders and, in the
+// same statement, the scene title and the four chronicle date columns (the nodes
+// of the chronicle tools). The store's nodes have all eleven.
+const readColumns = (n: {
   id: string;
   parentId: string | null;
   nodeType: string;
   sortOrder: string;
   storyTimeOrder?: string | null;
   archivedAt?: string | null;
+  title: string;
+  chronicleStartTime?: number | null;
+  chronicleStartMinute?: number | null;
+  chronicleStartGranularity?: string;
+  chroniclePrecision?: string;
 }) => ({
   id: n.id,
   parentId: n.parentId ?? null,
@@ -124,6 +132,11 @@ const sixColumns = (n: {
   sortOrder: n.sortOrder,
   storyTimeOrder: n.storyTimeOrder ?? null,
   archivedAt: n.archivedAt ?? null,
+  title: n.title,
+  chronicleStartTime: n.chronicleStartTime ?? null,
+  chronicleStartMinute: n.chronicleStartMinute ?? null,
+  chronicleStartGranularity: n.chronicleStartGranularity ?? "none",
+  chroniclePrecision: n.chroniclePrecision ?? "exact",
 });
 
 const entries = <K, V>(m: ReadonlyMap<K, V>) => [...m.entries()];
@@ -139,14 +152,14 @@ describe("main's rebuilt inputs equal the renderer store's, project by project",
     const storeNodes = useTreeStore.getState().nodes;
     const storeIndex = usePhaseStore.getState().sceneTimeIndex;
 
-    // 行の段：reader が選ぶ行は listNodes（renderer の nodes）と同じ集合・同じ 6 列。
+    // 行の段：reader が選ぶ行は listNodes（renderer の nodes）と同じ集合・同じ列（6 列＋title・年表の 4 列）。
     const rows = await readTreeRows(createCoreReadDb(mainClient), projectId);
     expect(rows.map((r) => r.id).sort()).toEqual(
       storeNodes.map((n) => n.id).sort(),
     );
     const byId = new Map(rows.map((r) => [r.id, r]));
     for (const node of storeNodes) {
-      expect(byId.get(node.id)).toEqual(sixColumns(node));
+      expect(byId.get(node.id)).toEqual(readColumns(node));
     }
     expect(rows.every((r) => r.archivedAt === null)).toBe(true);
 

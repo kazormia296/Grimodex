@@ -19,6 +19,7 @@ import {
   type PhaseResolutionMode,
   type SceneTimeIndex,
 } from "../features/codex/context/sceneTimeIndex.js";
+import type { CoreTreeNode } from "../../mastraRead/ports.js";
 import type { NodeType, TreeNodeData } from "../features/tree/types.js";
 
 /**
@@ -36,6 +37,21 @@ export interface ReadInputTreeRow {
   readonly storyTimeOrder: string | null;
   /** The reader selects `archived_at IS NULL`; a row that still carries one is dropped by the builders too. */
   readonly archivedAt: string | null;
+}
+
+/**
+ * What the chronicle tools need of a tree row besides the six columns above
+ * (PR-7a, DR-MP4-37): the scene's title (`get_event_detail`) and its own
+ * chronicle date (the anchor source of `get_chronicle_state`). One select reads
+ * all of them, so the reading order and the nodes the chronicle tools see come
+ * from the same moment.
+ */
+export interface ReadChronicleTreeRow extends ReadInputTreeRow {
+  readonly title: string;
+  readonly chronicleStartTime: number | null;
+  readonly chronicleStartMinute: number | null;
+  readonly chronicleStartGranularity: string;
+  readonly chroniclePrecision: string;
 }
 
 /** The modes `projects.phase_resolution_mode` may hold (`CHECK` in `migrate.rs`). */
@@ -140,6 +156,30 @@ function toTreeNodeData(
     createdAt: "",
     updatedAt: "",
   };
+}
+
+/**
+ * The nodes of the chronicle tools' tree state, from the rows of the one tree
+ * select (live rows of the project, as the renderer's store holds them). Fields
+ * the tools do not read are not carried. The order of the rows is kept.
+ */
+export function buildChronicleNodes(
+  rows: readonly ReadChronicleTreeRow[],
+): CoreTreeNode[] {
+  return rows.map((row) => ({
+    id: row.id,
+    parentId: row.parentId,
+    // Not narrowed, as in `toTreeNodeData`: only `scene` is acted on.
+    nodeType: row.nodeType as NodeType,
+    title: row.title,
+    sortOrder: row.sortOrder,
+    storyTimeOrder: row.storyTimeOrder,
+    archivedAt: row.archivedAt,
+    chronicleStartTime: row.chronicleStartTime,
+    chronicleStartMinute: row.chronicleStartMinute,
+    chronicleStartGranularity: row.chronicleStartGranularity,
+    chroniclePrecision: row.chroniclePrecision,
+  }));
 }
 
 /** The current scene when it is in the reading order, else null. */

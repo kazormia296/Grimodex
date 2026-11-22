@@ -57,3 +57,35 @@ export interface EventRelationRow {
   causeId: string;
   effectId: string;
 }
+
+// ───────── project_calendar ─────────
+export interface CalendarRow {
+  projectId: string;
+  daysPerYear: number;
+  /** 生 JSON 文字列（SeasonBoundary[]）。パースは chronicleTime 利用側で。 */
+  seasonBoundaries: string;
+  /** 暦の開始年ラベル。 */
+  startYear: number;
+  /** 生 JSON 文字列（MonthDef[]）。'[]'=月概念なし。 */
+  months: string;
+  /** 生 JSON 文字列（string[] 曜日名）。'[]'=曜日概念なし。 */
+  weekdayNames: string;
+  /** day番号0に対応する weekdayNames の index。 */
+  weekdayStartIndex: number;
+  /** 生 JSON 文字列（LeapRule）。'{"kind":"none"}'=閏年なし。 */
+  leapRule: string;
+  /** 年齢の数え方。'full'=満年齢 / 'counting'=数え年。 */
+  ageReckoning: string;
+  /** 生 JSON 文字列（EraDef[] 元号/年号）。'[]'=元号なし。 */
+  eras: string;
+  /** 生 JSON 文字列（CalendarReform | null 改暦）。'null'=改暦なし。 */
+  reform: string;
+  /** 生 JSON 文字列（TimeZoneDef | null タイムゾーン）。'null'=なし。 */
+  timezone: string;
+  /** 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。 */
+  lunarTzMinutes: number;
+  /** Calendar aggregate OCC generation. */
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}

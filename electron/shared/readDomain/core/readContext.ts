@@ -1,6 +1,6 @@
 import {
   assertCoreProjectId,
-  type CoreReadContext,
+  type CoreTreeState,
 } from "../../mastraRead/ports.js";
 
 /**
@@ -13,7 +13,9 @@ import {
  * every later query: a read that took the project twice could meet two
  * different projects across a switch.
  */
-export function requireCoreProjectId(ctx: CoreReadContext): string {
+export function requireCoreProjectId(ctx: {
+  getTreeState(): CoreTreeState;
+}): string {
   const { projectId } = ctx.getTreeState();
   assertCoreProjectId(projectId);
   return projectId;
