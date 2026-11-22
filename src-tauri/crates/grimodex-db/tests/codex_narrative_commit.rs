@@ -3148,9 +3148,12 @@ fn detail_state(db: &Database) -> String {
 
 /// (c) detail value の patch の commit（版 1 → 2）。スナップショットは commit の前（版 1）。
 /// Codex の復元（版 1）→ 復元の後の編集（版 2 = commit の版と偶然一致）→ 取り消し。
-/// 専用の守り（版だけを比べる）は通るが、変更の記録の連続性の検査が止める。編集は残る。
+/// detail value は、復元の後に作者が書いていなくても版が一致し得る（復元は枝を作れる。下の
+/// 試験）ので、確認 88 の点検の後は、確かめた種類から外した。復元の後の取り消しは、復元の
+/// marker より古い commit の replay として拒まれる。編集は残る。
 #[test]
-fn undo_of_a_detail_value_patch_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed() {
+fn undo_of_a_detail_value_patch_after_a_codex_restore_and_a_later_edit_is_refused_and_the_edit_stays(
+) {
     let db = migrated_db();
     seed_existing_entry(&db, "entry-dv", 0);
     seed_detail_definition(&db, "def-dv");
@@ -3203,8 +3206,79 @@ fn undo_of_a_detail_value_patch_after_a_codex_restore_and_a_later_edit_is_stoppe
             &db,
             commit_replay_payload(&commit, "dv-undo"),
         ),
-        &["NARRATIVE_CHANGE_FEED_DISCONTINUITY"],
+        &["NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"],
         "undo of the detail value patch after the Codex restore and a later edit",
     );
     assert_eq!(detail_state(&db), "AUTHOR AFTER RESTORE|v2");
+}
+
+/// 確認 88 の点検（peer の指摘 6）。復元の後に作者が書いていない detail value で、版が取り込みの
+/// 時の版と一致する筋書き。detail value は、復元で版をスナップショットのまま戻す（0 には
+/// ならない）。復元は枝を作れる：S0（版 1、orig）→ 作者が編集（版 2、BRANCH）→ S1 を取る →
+/// S0 へ復元（版 1）→ 取り込みで patch（版 2、AI）→ S1 へ復元（版 2、BRANCH）。復元の後は
+/// 誰も書いていない。専用の守り（版だけ）は通り、head は復元の前の取り込みの書き込み（marker
+/// より古い）なので、連続性の検査は免除で通る。取り消しが通れば、復元の後の値（BRANCH）を黙って
+/// 取り込みの前の値（orig）へ巻き戻す。拒まれなければならない。
+#[test]
+fn undo_of_a_detail_value_patch_after_restores_that_branch_the_version_must_not_roll_back_the_restored_value(
+) {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-dv", 0);
+    seed_detail_definition(&db, "def-dv");
+    db.execute(
+        "INSERT INTO codex_detail_values
+            (id, entry_id, definition_id, value, version, created_at, updated_at)
+         VALUES ('dv-1', 'entry-dv', 'def-dv', 'orig', 1, 't', 't')",
+        &[],
+        "run",
+    )
+    .expect("seed the detail value");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-dvb0");
+
+    author_detail_upsert(&db, "dvb-author", 1, "BRANCH");
+    assert_eq!(detail_state(&db), "BRANCH|v2");
+    snapshot_restore::snapshot(&db, "project-1", "snap-dvb1");
+
+    restore_codex(&db, "restore-dvb0", "snap-dvb0");
+    assert_eq!(detail_state(&db), "orig|v1");
+
+    let items = [(
+        "codex.detail.value.set",
+        json!({
+            "entryId": "entry-dv",
+            "definitionId": "def-dv",
+            "value": "AI",
+            "occ": { "kind": "version", "version": 1 }
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-dvb", "set-dvb", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-dvb",
+            "dg-dvb",
+            "set-dvb",
+            "run-dvb",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(detail_state(&db), "AI|v2");
+
+    restore_codex(&db, "restore-dvb1", "snap-dvb1");
+    // The restored value is not authored after the restore, and its version
+    // equals the version the commit left.
+    assert_eq!(detail_state(&db), "BRANCH|v2");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "dvb-undo"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"],
+        "undo of the detail value patch after a restore that put a different value at the same version",
+    );
+    assert_eq!(detail_state(&db), "BRANCH|v2");
 }

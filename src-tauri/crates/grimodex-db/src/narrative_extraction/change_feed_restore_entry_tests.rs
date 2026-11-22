@@ -568,12 +568,6 @@ mod replays_an_apply_commit_predicate {
                 "patch",
                 "temporal.scene.metadata.patch",
             ),
-            (
-                "temporal_event_chronicle",
-                "patch",
-                "temporal.event.metadata.patch",
-            ),
-            ("codex_detail_value", "patch", "codex.detail.value.set"),
         ] {
             assert!(
                 kind_verdict(&[(entity, Some(op_kind))], &[operation]),
@@ -599,7 +593,16 @@ mod replays_an_apply_commit_predicate {
             ),
             ("codex_relation", "create", "codex.relation.create"),
             ("codex_entry", "bind", "codex.entity.bind-existing"),
-            // Creating a detail value is not the verified patch.
+            // Taken out after a restore that branches showed the version guard
+            // passing while the restored content differs (peer review 6): the
+            // Event Chronicle patch and the detail value patch compare only a
+            // version and a restore puts them back at the snapshot's version.
+            (
+                "temporal_event_chronicle",
+                "patch",
+                "temporal.event.metadata.patch",
+            ),
+            ("codex_detail_value", "patch", "codex.detail.value.set"),
             ("codex_detail_value", "create", "codex.detail.value.set"),
             ("temporal_node", "create", "temporal.node.ensure"),
             ("temporal_node", "ensure-existing", "temporal.node.ensure"),

@@ -1524,6 +1524,13 @@ fn feed_writers_in(files: &[(String, String)]) -> (BTreeMap<String, usize>, BTre
 
 /// The production feed append callers per file (the two public append
 /// functions and the crate-private restore entry).
+///
+/// The count is of occurrences of the three names followed by `(`, so for
+/// `change_feed.rs` it is the three definitions (before the restore entry it
+/// was two definitions plus the one call the canonical entry made to the
+/// narrative one; the bodies now call the private `*_with_mode_*` helpers).
+/// `change_feed.rs` is the writer's own file, kept here as a fixed number so a
+/// new entry or call inside it is noticed.
 const FEED_APPEND_CALLERS: [(&str, usize); 22] = [
     ("agent_writes.rs", 4),
     ("chronicle.rs", 2),

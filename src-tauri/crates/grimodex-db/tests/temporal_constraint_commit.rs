@@ -1325,6 +1325,15 @@ mod commit_undo_after_restore {
         assert!(!no_op, "the restore must change rows and write its marker");
     }
 
+    fn assert_superseded_by_restore(result: anyhow::Result<Value>, what: &str) {
+        let error = result.expect_err(what);
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"),
+            "{what}: expected NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE, got {message}"
+        );
+    }
+
     fn assert_feed_discontinuity(result: anyhow::Result<Value>, what: &str) {
         let error = result.expect_err(what);
         let message = format!("{error:#}");
@@ -1426,8 +1435,11 @@ mod commit_undo_after_restore {
 
     /// (b) 出来事の Chronicle patch の commit（版 0 → 1）。スナップショットは commit の前（版 0）。
     /// Body の復元（版 0）→ 復元の後の編集（版 1 = commit の版と一致）→ 取り消し。
+    /// 出来事の版は、復元の後に作者が書いていなくても一致し得る（復元は枝を作れる。下の試験）
+    /// ので、確認 88 の点検の後は、確かめた種類から外した。復元の後の取り消しは、復元の marker
+    /// より古い commit の replay として拒まれる。復元の後の編集は残る。
     #[test]
-    fn undo_of_an_event_chronicle_patch_after_a_body_restore_and_a_later_edit_is_stopped_by_the_feed(
+    fn undo_of_an_event_chronicle_patch_after_a_body_restore_and_a_later_edit_is_refused_and_the_edit_stays(
     ) {
         let db = migrated_db();
         seed_event(&db, "event-rs", "Event RS");
@@ -1469,12 +1481,129 @@ mod commit_undo_after_restore {
         .expect("author edits the event after the restore");
         assert_eq!(event_state(&db, "event-rs"), "AUTHOR AFTER RESTORE|-1|v1");
 
-        assert_feed_discontinuity(
+        assert_superseded_by_restore(
             undo_result(&db, &commit, "rs-event-undo"),
             "undo after the Body restore and a later event edit",
         );
         assert_eq!(event_state(&db, "event-rs"), "AUTHOR AFTER RESTORE|-1|v1");
     }
+    // --- 復元の後に作者が書いていない object で、版が取り込みの時と一致する筋書き（確認 88 の点検） ---
+    //
+    // 場面（tree_nodes）の版は、復元で 0 に戻る（復元の行に版が無い）。取り込みの patch は版を
+    // 0 以上から 1 以上へ進めるので、復元の直後の場面の版は取り込んだ時の版と一致しない。
+    // 出来事（events）の版は、スナップショットの版のまま戻る。復元は枝を作れる（S0 へ戻して
+    // 取り込み、別の枝の S1 へ戻す）ので、版は一致し得る。どちらの種類も、復元の後に誰も書いて
+    // いない object の取り消しが、復元の後の状態を黙って取り込みの前へ巻き戻してはならない。
+
+    /// 場面：復元の直後（作者は書いていない）は、版が 0 で取り込んだ時の版（1）と一致せず、拒まれる。
+    /// 別の枝を経由しても、場面の版は 0 に戻るので、一致しない。
+    #[test]
+    fn undo_of_a_scene_chronicle_patch_right_after_body_restores_is_refused_and_keeps_the_restored_scene(
+    ) {
+        let db = migrated_db();
+        seed_scene(&db, "scene-ru", "Scene RU");
+        snapshot_restore::seed_restore_prerequisites(&db, "project-1", RESTORE_SESSION);
+        snapshot_restore::snapshot(&db, "project-1", "snap-ru0");
+        tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "project-1".to_string(),
+                request_id: "author-branch-scene".to_string(),
+                session_id: "sess-author".to_string(),
+                event_uid: "uid-author-branch-scene".to_string(),
+                node_id: "scene-ru".to_string(),
+                patch: json!({ "title": "BRANCH" })
+                    .as_object()
+                    .expect("patch")
+                    .clone(),
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "2026-11-22T00:00:00.000Z".to_string(),
+                change_event: None,
+                timelapse_doc_step_coverage: None,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                source_domain: None,
+                op_type: None,
+                canonical_payload: None,
+            },
+        )
+        .expect("author edits the scene on a branch");
+        snapshot_restore::snapshot(&db, "project-1", "snap-ru1");
+        restore_body(&db, "restore-ru0", "snap-ru0");
+        assert_eq!(scene_state(&db, "scene-ru"), "Scene RU|-1|v0");
+
+        let applied = apply_items(&db, "ru-scene", &[chronicle_patch_item("scene-ru", 0)]);
+        let commit = applied["commitId"].as_str().unwrap().to_string();
+        assert_eq!(scene_state(&db, "scene-ru"), "Scene RU|5|v1");
+        restore_body(&db, "restore-ru1", "snap-ru1");
+        assert_eq!(scene_state(&db, "scene-ru"), "BRANCH|-1|v0");
+
+        let error = undo_result(&db, &commit, "ru-scene-undo").expect_err("undo is refused");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("NEX_COMMIT_SCENE_EDITED")
+                || message.contains("NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"),
+            "unexpected refusal: {message}"
+        );
+        assert_eq!(scene_state(&db, "scene-ru"), "BRANCH|-1|v0");
+    }
+
+    /// 出来事：S0（版 0）→ 作者が編集（版 1、BRANCH）→ S1 を取る → S0 へ復元 → 取り込みの
+    /// patch（版 1）→ S1 へ復元（版 1、BRANCH）。復元の後は誰も書いておらず、版は取り込んだ時の
+    /// 版と一致する。取り消しが通れば、復元の後の題（BRANCH）を黙って取り込みの前の状態へ戻す。
+    #[test]
+    fn undo_of_an_event_chronicle_patch_after_restores_that_branch_must_not_roll_back_the_restored_event(
+    ) {
+        let db = migrated_db();
+        seed_event(&db, "event-ru", "Event RU");
+        snapshot_restore::seed_restore_prerequisites(&db, "project-1", RESTORE_SESSION);
+        snapshot_restore::snapshot(&db, "project-1", "snap-rue0");
+        agent_event_update_impl(
+            &db,
+            serde_json::from_value::<AgentEventUpdatePayload>(json!({
+                "projectId": "project-1", "sessionId": "sess-author", "surface": "manual",
+                "eventId": "event-ru", "baseVersion": 0, "title": "BRANCH"
+            }))
+            .expect("update payload"),
+        )
+        .expect("author edits the event on a branch");
+        assert_eq!(event_state(&db, "event-ru"), "BRANCH|-1|v1");
+        snapshot_restore::snapshot(&db, "project-1", "snap-rue1");
+        restore_body(&db, "restore-rue0", "snap-rue0");
+        assert_eq!(event_state(&db, "event-ru"), "Event RU|-1|v0");
+
+        let applied = apply_items(
+            &db,
+            "ru-event",
+            &[(
+                "temporal.event.metadata.patch",
+                json!({
+                    "eventId": "event-ru",
+                    "baseVersion": 0,
+                    "startTime": 5,
+                    "startMinute": 480,
+                    "startGranularity": "time",
+                    "endTime": 5,
+                    "endMinute": 500,
+                    "endGranularity": "time",
+                    "precision": "exact",
+                }),
+            )],
+        );
+        let commit = applied["commitId"].as_str().unwrap().to_string();
+        assert_eq!(event_state(&db, "event-ru"), "Event RU|5|v1");
+        restore_body(&db, "restore-rue1", "snap-rue1");
+        assert_eq!(event_state(&db, "event-ru"), "BRANCH|-1|v1");
+
+        assert_superseded_by_restore(
+            undo_result(&db, &commit, "ru-event-undo"),
+            "undo of the event patch after a restore that put a different event at the same version",
+        );
+        assert_eq!(event_state(&db, "event-ru"), "BRANCH|-1|v1");
+    }
+
     /// 復元の後の最初の書き込みが取り込み（commit）でも通り、2 回目の commit も通る。
     #[test]
     fn a_commit_as_the_first_write_after_a_body_restore_succeeds_twice() {

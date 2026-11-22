@@ -1985,58 +1985,201 @@ fn foreshadow_edit_after_a_restore_is_pinned_as_it_is_today() {
 // production writer of the restore transaction is project_snapshots.rs
 // =====================================================================
 
-fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+/// Directories whose Rust is test, build output or vendored code, never part
+/// of a shipped binary.
+const NON_PRODUCTION_DIRS: &[&str] = &["target", "node_modules", "tests", "test", "test-support"];
+
+fn production_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read dir") {
         let path = entry.expect("entry").path();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if path.is_dir() {
-            rust_sources(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
+            if !NON_PRODUCTION_DIRS.contains(&name.as_str()) {
+                production_rust_sources(&path, out);
+            }
+        } else if path.extension().is_some_and(|e| e == "rs")
+            // In-crate test modules live in `*_tests.rs` / `tests.rs` files.
+            && !name.ends_with("_tests.rs")
+            && name != "tests.rs"
+        {
             out.push(path);
         }
     }
 }
 
+/// `text` without its `#[cfg(test)]` items. A braced item is skipped up to its
+/// matching brace; strings, raw strings, char literals and comments are read
+/// so a brace inside them does not unbalance the count.
+fn without_cfg_test_items(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut copied_to = 0;
+    while let Some(found) = text[i..].find("#[cfg(test)]") {
+        let attr = i + found;
+        out.push_str(&text[copied_to..attr]);
+        let mut j = attr + "#[cfg(test)]".len();
+        // The item runs to a `;` (a `mod x;`) or through its braced body.
+        let mut depth = 0usize;
+        let mut opened = false;
+        while j < bytes.len() {
+            match bytes[j] {
+                b'/' if bytes.get(j + 1) == Some(&b'/') => {
+                    j = text[j..].find('\n').map_or(bytes.len(), |n| j + n);
+                    continue;
+                }
+                b'/' if bytes.get(j + 1) == Some(&b'*') => {
+                    j = text[j + 2..]
+                        .find("*/")
+                        .map_or(bytes.len(), |n| j + 2 + n + 2);
+                    continue;
+                }
+                b'"' => {
+                    j += 1;
+                    while j < bytes.len() && bytes[j] != b'"' {
+                        j += if bytes[j] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b'r' if matches!(bytes.get(j + 1), Some(b'"') | Some(b'#'))
+                    && (j == 0
+                        || !(bytes[j - 1].is_ascii_alphanumeric() || bytes[j - 1] == b'_')) =>
+                {
+                    let hashes = text[j + 1..].bytes().take_while(|b| *b == b'#').count();
+                    if bytes.get(j + 1 + hashes) == Some(&b'"') {
+                        let close = format!("\"{}", "#".repeat(hashes));
+                        j = text[j + 2 + hashes..]
+                            .find(&close)
+                            .map_or(bytes.len(), |n| j + 2 + hashes + n + close.len() - 1);
+                    }
+                }
+                b'\'' => {
+                    // A char literal (`'{'`, `'\n'`); a lifetime has no closing quote.
+                    if bytes.get(j + 1) == Some(&b'\\') {
+                        // Skip the escaped character, then read up to the closing quote.
+                        j += 2 + text[j + 3..].find('\'').map_or(0, |n| n + 1);
+                    } else if bytes.get(j + 2) == Some(&b'\'') {
+                        j += 2;
+                    }
+                }
+                b'{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if opened && depth == 0 {
+                        j += 1;
+                        break;
+                    }
+                }
+                b';' if !opened => {
+                    j += 1;
+                    break;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        copied_to = j.min(bytes.len());
+        i = copied_to;
+    }
+    out.push_str(&text[copied_to..]);
+    out
+}
+
+#[test]
+fn the_cfg_test_scanner_drops_test_items_and_only_those() {
+    let text = r##"
+fn keep_a() { let _ = "append_snapshot_restore_in_tx"; }
+#[cfg(test)]
+mod tests {
+    fn braces_in_literals() { let _ = "}}"; let _ = '}'; let _ = r#"}"#; /* } */ }
+    fn t() { let _ = "project.snapshot.restore"; }
+}
+fn keep_b<'a>(_: &'a str) { let _ = "SNAPSHOT_RESTORE_SOURCE_DOMAIN"; }
+#[cfg(test)]
+mod external_tests;
+fn keep_c() {}
+"##;
+    let kept = without_cfg_test_items(text);
+    assert!(kept.contains("keep_a") && kept.contains("keep_b") && kept.contains("keep_c"));
+    assert!(kept.contains("append_snapshot_restore_in_tx"));
+    assert!(kept.contains("SNAPSHOT_RESTORE_SOURCE_DOMAIN"));
+    assert!(!kept.contains("project.snapshot.restore"));
+    assert!(!kept.contains("braces_in_literals") && !kept.contains("external_tests"));
+}
+
+/// The restore transaction can only be forged by code that spells the entry,
+/// its source domain constant or the domain string. Every production `.rs` of
+/// the Rust workspace crates and of the Electron binding is scanned for each
+/// of the three spellings (`snapshot.restore` also catches a split literal's
+/// tail); the allowed files are exactly the definition and the restore.
+/// Limit: a name built at run time from unrelated pieces is not caught; the
+/// entry stays `pub(crate)`, so only this crate's own code can reach it.
 #[test]
 fn the_restore_only_append_entry_is_crate_private_and_called_from_one_place() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("repository root");
     let mut files = Vec::new();
-    rust_sources(&src, &mut files);
-    let mut callers = Vec::new();
-    let mut origin_writers = Vec::new();
+    production_rust_sources(&repo.join("src-tauri/crates"), &mut files);
+    production_rust_sources(&repo.join("electron/native"), &mut files);
+    assert!(
+        files.len() > 50,
+        "the scan must cover the workspace crates and the Electron binding, found {}",
+        files.len()
+    );
+    let spellings = [
+        "append_snapshot_restore_in_tx",
+        "SNAPSHOT_RESTORE_SOURCE_DOMAIN",
+        "snapshot.restore",
+    ];
+    let mut hits: std::collections::BTreeMap<&str, Vec<String>> =
+        spellings.iter().map(|s| (*s, Vec::new())).collect();
+    let mut change_feed = String::new();
     for file in files {
-        let text = std::fs::read_to_string(&file).expect("read source");
         let name = file
-            .strip_prefix(&src)
+            .strip_prefix(repo)
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        // In-crate test modules exercise the entry; they are not callers.
-        if name.ends_with("_tests.rs") || name.ends_with("/tests.rs") {
-            continue;
+        let text = without_cfg_test_items(&std::fs::read_to_string(&file).expect("read source"));
+        for spelling in spellings {
+            if text.contains(spelling) {
+                hits.get_mut(spelling).unwrap().push(name.clone());
+            }
         }
-        if text.contains("append_snapshot_restore_in_tx") {
-            callers.push(name.clone());
-        }
-        if text.contains("source_domain: \"project.snapshot.restore\"") {
-            origin_writers.push(name);
+        if name == "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs" {
+            change_feed = text;
         }
     }
-    callers.sort();
-    assert_eq!(
-        callers,
-        vec![
-            "narrative_extraction/change_feed.rs".to_string(),
-            "project_snapshots.rs".to_string()
-        ],
-        "append_snapshot_restore_in_tx is defined in change_feed.rs and called only by the restore"
-    );
-    assert_eq!(
-        origin_writers,
-        vec!["project_snapshots.rs".to_string()],
-        "only the restore writes a project.snapshot.restore transaction"
-    );
-    let change_feed = std::fs::read_to_string(src.join("narrative_extraction/change_feed.rs"))
-        .expect("read change_feed.rs");
+    let change_feed_file = "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs";
+    let snapshots_file = "src-tauri/crates/grimodex-db/src/project_snapshots.rs";
+    let both = |a: &str, b: &str| vec![a.to_string(), b.to_string()];
+    for (spelling, expected) in [
+        (
+            "append_snapshot_restore_in_tx",
+            both(change_feed_file, snapshots_file),
+        ),
+        (
+            "SNAPSHOT_RESTORE_SOURCE_DOMAIN",
+            vec![change_feed_file.to_string()],
+        ),
+        ("snapshot.restore", both(change_feed_file, snapshots_file)),
+    ] {
+        let mut found = hits[spelling].clone();
+        found.sort();
+        let mut expected = expected;
+        expected.sort();
+        assert_eq!(
+            found, expected,
+            "`{spelling}` may appear only in the definition and in the restore"
+        );
+    }
     assert!(
         change_feed.contains("pub(crate) fn append_snapshot_restore_in_tx"),
         "the restore-only entry must stay pub(crate)"

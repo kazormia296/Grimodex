@@ -4238,8 +4238,18 @@ export async function createBrowserMock(
       // transaction); this compares the named original transaction directly.
       // A restore writes no undo/redo, so no replay chain can start after one
       // and both compare the same forward transaction in every reachable state
-      // (edit, undo, restore, redo is refused either way). The mock has no
-      // commit replay (DR-SRC-12), so there is no exemption to mirror.
+      // (edit, undo, restore, redo is refused either way). That equivalence is
+      // reasoned from the mock's own writers, not tested against a lineage
+      // root (DR-SRC-11).
+      //
+      // Known difference from Native (DR-SRC-11, DR-SRC-12): the mock has no
+      // AI-extraction commit, hence no `narrative_extraction_undo_commit` or
+      // `redo_commit` and no exemption for them. Native lets the undo and redo
+      // of a commit of a verified kind through this refusal after a restore
+      // (their own guard and the continuity check decide); the mock would
+      // refuse such a replay. No mock path reaches one today. A path that
+      // does must mirror `replays_an_apply_commit` and its table of verified
+      // kinds (`REPLAY_EXEMPT_ENTITIES`) before it is added.
       const root = queryOne(
         `SELECT source_change_event_sequence AS sequence
            FROM narrative_change_transactions

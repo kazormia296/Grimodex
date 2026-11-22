@@ -6205,6 +6205,30 @@ mod commit_undo_after_restore {
         assert_eq!(commit_status(&db, &commit), "applied");
     }
 
+    /// 確認 88 の点検（peer の指摘 6）。出来事の作成は、版だけでなく出来事の全体を比べる。
+    /// 復元が枝を作っても（取り込み → 作者が編集 → S1 を取る → さらに編集 → S1 へ復元）、
+    /// 復元の後に作者が書いていない出来事は、取り込んだ時の内容と一致せず、取り消しは拒まれ、
+    /// 復元で戻した出来事は残る。
+    #[test]
+    fn undo_after_a_restore_to_a_branch_never_removes_the_restored_event() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        author_edit_title(&db, "event-restore-one", "br-edit-1", "枝の題");
+        snapshot(&db, "snap-branch");
+        author_edit_title(&db, "event-restore-one", "br-edit-2", "枝の後の編集");
+        assert!(!restore_body(&db, "restore-branch", "snap-branch"));
+        assert_eq!(event_title(&db, "event-restore-one"), "枝の題");
+
+        assert_code(
+            undo(&db, &commit, "br-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo after a restore to a branch the commit never made",
+        );
+        assert_eq!(event_count(&db), 1);
+        assert_eq!(event_title(&db, "event-restore-one"), "枝の題");
+        assert_eq!(commit_status(&db, &commit), "applied");
+    }
+
     /// (b) 出来事に触れない復元（Codex の scope）の後は、取り込んだ時のままなので、取り消し・
     /// やり直しが通る。取り消しは出来事と紐づきを消し、やり直しは戻す。
     #[test]

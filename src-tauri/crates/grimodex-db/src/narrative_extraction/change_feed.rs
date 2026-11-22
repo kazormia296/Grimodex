@@ -21,8 +21,7 @@ use uuid::Uuid;
 pub(crate) const CANONICAL_TEXT_NORMALIZER_VERSION: &str = "gdx-canonical-text/1";
 
 use super::codex_operations::{OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH, OP_KIND_EVENT_CREATE};
-use super::detail_operations::OP_KIND_DETAIL_VALUE_SET;
-use super::temporal_operations::{OP_KIND_EVENT_METADATA_PATCH, OP_KIND_SCENE_METADATA_PATCH};
+use super::temporal_operations::OP_KIND_SCENE_METADATA_PATCH;
 use crate::change_events::{
     append_change_events_in_tx, AppendChangeEvent, AppendResult as AppendCanonicalChangeResult,
 };
@@ -353,9 +352,9 @@ fn stored_object_head(
 /// restore (its project marker, and the Scene Scope rebinding it performs).
 pub(crate) const SNAPSHOT_RESTORE_SOURCE_DOMAIN: &str = "project.snapshot.restore";
 
-/// True when the project has a snapshot restore (origin `restore`, source
-/// domain `project.snapshot.restore`, carrying the `project-restored`
-/// marker) whose canonical sequence is strictly newer than `sequence`.
+/// The canonical sequence of the project's newest snapshot restore (origin
+/// `restore`, source domain `project.snapshot.restore`, carrying the
+/// `project-restored` marker), or `None` when the project has none.
 ///
 /// This reads only what is already in the database. It is the single fact the
 /// continuity exemption (a mismatching head is let through once) and the
@@ -363,19 +362,21 @@ pub(crate) const SNAPSHOT_RESTORE_SOURCE_DOMAIN: &str = "project.snapshot.restor
 /// narrowed by the restored scopes: a restore changes rows of other scopes
 /// through foreign-key cascades (Codex participants of an event, a Snippet's
 /// Scene), so a scope filter would leave those objects unwritable.
-fn restore_marker_newer_than(
+///
+/// The newest marker is enough: "some restore is newer than `sequence`" is the
+/// same statement as "the newest restore is newer than `sequence`", so a
+/// caller that compares many heads asks once (`ensure_event_history_continuity`).
+fn latest_restore_marker_sequence(
     conn: &Connection,
     project_id: &str,
-    sequence: i64,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<i64>> {
     Ok(conn
         .query_row(
-            "SELECT 1
+            "SELECT t.source_change_event_sequence
                FROM narrative_change_transactions t
               WHERE t.project_id = ?1
-                AND t.source_change_event_sequence > ?2
-                AND t.origin = ?3
-                AND t.source_domain = ?4
+                AND t.origin = ?2
+                AND t.source_domain = ?3
                 AND EXISTS (
                     SELECT 1 FROM narrative_change_events m
                      WHERE m.project_id = t.project_id
@@ -384,48 +385,66 @@ fn restore_marker_newer_than(
                        AND json_extract(m.object_key_json, '$.kind') = 'project'
                        AND json_extract(m.structural_impact_json, '$.event')
                            = 'project-restored')
+              ORDER BY t.source_change_event_sequence DESC
               LIMIT 1",
             params![
                 project_id,
-                sequence,
                 NarrativeChangeOrigin::Restore.as_str(),
                 SNAPSHOT_RESTORE_SOURCE_DOMAIN
             ],
             |row| row.get::<_, i64>(0),
         )
-        .optional()?
-        .is_some())
+        .optional()?)
+}
+
+/// True when the project has a snapshot restore whose canonical sequence is
+/// strictly newer than `sequence` (see `latest_restore_marker_sequence`).
+fn restore_marker_newer_than(
+    conn: &Connection,
+    project_id: &str,
+    sequence: i64,
+) -> anyhow::Result<bool> {
+    Ok(latest_restore_marker_sequence(conn, project_id)?.is_some_and(|latest| latest > sequence))
 }
 
 /// The journal entities (`entityKind`, `opKind`) whose Undo/Redo through a
-/// real snapshot restore was verified not to roll back a later edit (DR-SRC-12,
-/// confirmation 88): Chronicle event create, Codex entry create and patch, Scene
-/// and Event Chronicle patch, Codex detail value patch. Every other kind
+/// real snapshot restore was verified not to roll back what a restore put back
+/// (DR-SRC-12, confirmation 88): Chronicle event create, Codex entry create and
+/// patch, and Scene Chronicle patch.
+///
+/// The Codex entry and Scene kinds compare only a version in `undo.rs`, and a
+/// restore puts an entry or a Scene back at version 0 (the snapshot row has no
+/// version), which no commit's result version equals, so a restore the author
+/// has not written after is refused on the version. The event create compares
+/// the whole event.
+///
+/// The Event Chronicle patch and the Codex detail value patch were taken out
+/// after a real restore showed otherwise: both compare only a version, and a
+/// restore puts them back at the snapshot's version. Restores can branch (back
+/// to S0, commit, then forward to a snapshot S1 taken on another branch), so an
+/// object nobody wrote after the restore can carry the commit's version with
+/// other content; the version guard passes, the head is older than the restore
+/// marker so the continuity check is exempt, and the Undo silently put the
+/// pre-commit content over what the restore had put back. Every other kind
 /// (Codex phase, semantic binding, relation, bind-existing, detail value
 /// create, story order, Plot, Foreshadow, temporal node, constraint and
 /// projection) stays refused after a restore until it is verified and added
 /// here. Widening this table is a separate piece of work: add the test through
-/// a real restore first.
+/// a real restore first, including a restore that branches.
 const REPLAY_EXEMPT_ENTITIES: &[(&str, &str)] = &[
     ("event", "create"),
     ("codex_entry", "create"),
     ("codex_entry", "patch"),
     ("temporal_scene_chronicle", "patch"),
-    ("temporal_event_chronicle", "patch"),
-    ("codex_detail_value", "patch"),
 ];
 
 /// The `narrative_apply_operations.operation_kind` values that correspond to
-/// `REPLAY_EXEMPT_ENTITIES`. `codex.detail.value.set` writes either a create or
-/// a patch; the journal entity decides which, so the pair above is what
-/// admits it.
+/// `REPLAY_EXEMPT_ENTITIES`.
 const REPLAY_EXEMPT_OPERATIONS: &[&str] = &[
     OP_KIND_EVENT_CREATE,
     OP_KIND_ENTRY_CREATE,
     OP_KIND_ENTRY_PATCH,
     OP_KIND_SCENE_METADATA_PATCH,
-    OP_KIND_EVENT_METADATA_PATCH,
-    OP_KIND_DETAIL_VALUE_SET,
 ];
 
 /// True when the commit's operations are all of a verified kind
@@ -1666,6 +1685,11 @@ fn ensure_event_history_continuity(
 ) -> anyhow::Result<()> {
     let mut heads = std::collections::HashMap::<String, Option<BatchHead>>::new();
     let mut mutation_kinds = std::collections::HashMap::<String, String>::new();
+    // The newest restore marker of the project, read at most once per call and
+    // only when a head actually mismatches (an ordinary write reads nothing).
+    // Nothing is written while the batch is checked, so one read answers every
+    // mismatching head of the batch.
+    let mut latest_restore_marker: Option<Option<i64>> = None;
     for event in events {
         let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
         if !heads.contains_key(&identity) {
@@ -1709,7 +1733,18 @@ fn ensure_event_history_continuity(
                         Some(sequence) => {
                             (mode == ContinuityMode::SnapshotRestoreBatch
                                 && is_scene_scope_event_kind(&event.object_key))
-                                || restore_marker_newer_than(conn, project_id, sequence)?
+                                || {
+                                    let latest = match latest_restore_marker {
+                                        Some(latest) => latest,
+                                        None => {
+                                            let latest =
+                                                latest_restore_marker_sequence(conn, project_id)?;
+                                            latest_restore_marker = Some(latest);
+                                            latest
+                                        }
+                                    };
+                                    latest.is_some_and(|latest| latest > sequence)
+                                }
                         }
                         None => false,
                     };
