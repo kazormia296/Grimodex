@@ -1,0 +1,1215 @@
+{
+  "search_codex": {
+    "rows: 短い語 2 字（LIKE-OR の arm）。hidden の黒幕と幻の騎士は落ちる": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "魔法",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-item"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: 3 字以上（fts_search の arm → id で Drizzle）": [
+      {
+        "cmd": "fts_search",
+        "args": {
+          "projectId": "p-main",
+          "query": "老魔術師",
+          "scope": "codex",
+          "limit": 20
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-item",
+          "c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "老魔術師",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-item",
+          "c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-item",
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: 前後の空白は trim される": [
+      {
+        "cmd": "fts_search",
+        "args": {
+          "projectId": "p-main",
+          "query": "アリア",
+          "scope": "codex",
+          "limit": 20
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "アリア",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria"
+        ],
+        "method": "all"
+      }
+    ],
+    "hidden: base が hidden の c-secret は結果に出ない": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%黒幕%",
+          "%黒幕%",
+          "%黒幕%",
+          "%黒幕%",
+          "%黒幕%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "黒幕",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-secret"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-secret"
+        ],
+        "method": "all"
+      }
+    ],
+    "hidden: Phase 解除前（n-s1）は幻の騎士が出ない": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%騎士%",
+          "%騎士%",
+          "%騎士%",
+          "%騎士%",
+          "%騎士%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "騎士",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-released"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-released"
+        ],
+        "method": "all"
+      }
+    ],
+    "hidden: Phase 解除後（n-s3）は幻の騎士が Phase 解決後の summary で出る": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%騎士%",
+          "%騎士%",
+          "%騎士%",
+          "%騎士%",
+          "%騎士%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "騎士",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-released"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-released"
+        ],
+        "method": "all"
+      }
+    ],
+    "canned dense: sparse と RRF 融合し、融合の後に hidden を落とす（S1）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "魔法",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-mage",
+          "c-secret",
+          "c-aria",
+          "c-released",
+          "c-tower",
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-released",
+          "c-item",
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "canned dense: Phase 解除後（S3）は幻の騎士が Phase 解決後の summary で残る": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "魔法",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-mage",
+          "c-secret",
+          "c-aria",
+          "c-released",
+          "c-tower",
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-released",
+          "c-item",
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "canned dense: dense が reject しても sparse だけに退避する": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "魔法",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-item"
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 一致なし": [
+      {
+        "cmd": "fts_search",
+        "args": {
+          "projectId": "p-main",
+          "query": "存在しない語",
+          "scope": "codex",
+          "limit": 20
+        }
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "存在しない語",
+          "limit": 30
+        }
+      }
+    ],
+    "empty: 空の project": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"content\" like ?)) limit ?",
+        "params": [
+          "p-empty",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          "%魔法%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-empty",
+          "query": "魔法",
+          "limit": 30
+        }
+      }
+    ],
+    "XPROJ: 他 project では他 project の行だけ": [
+      {
+        "cmd": "fts_search",
+        "args": {
+          "projectId": "p-other",
+          "query": "アリア",
+          "scope": "codex",
+          "limit": 20
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-other",
+          "x-c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-other",
+          "query": "アリア",
+          "limit": 30
+        }
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-other",
+          "x-c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "x-c-aria"
+        ],
+        "method": "all"
+      }
+    ],
+    "XPROJ: main から他 project にしかない語は出ない": [
+      {
+        "cmd": "fts_search",
+        "args": {
+          "projectId": "p-main",
+          "query": "他作品",
+          "scope": "codex",
+          "limit": 20
+        }
+      },
+      {
+        "cmd": "codex_semantic_search",
+        "args": {
+          "expectedWorkspacePath": "/workspace/legacy-read.grimodex",
+          "projectId": "p-main",
+          "query": "他作品",
+          "limit": 30
+        }
+      }
+    ],
+    "no-project: 引数が有効でも No active project": [],
+    "order: 空の query は no-project より先（0 entries found）": [],
+    "order: 空白だけの query も先に弾く": [],
+    "order: query 欠落（undefined）も先に弾く": []
+  },
+  "list_codex_by_type": {
+    "rows: character（S1。hidden の c-secret と c-released は落ちる）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-main",
+          "character"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-released"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-released"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: character（S3。Phase 解除後の c-released が Phase 解決後の summary で出る）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-main",
+          "character"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-released"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-released"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: location": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-main",
+          "location"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: item（summary が null → 空文字、tags なし）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-main",
+          "item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-item"
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 行のない type": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-main",
+          "lore"
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: type が欠落でも検査せず '' で引く": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-main",
+          ""
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 空の project": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-empty",
+          "character"
+        ],
+        "method": "all"
+      }
+    ],
+    "XPROJ: 他 project は他 project の行だけ": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"summary\", \"tags_cache\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"type\" = ?)",
+        "params": [
+          "p-other",
+          "location"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-other",
+          "x-c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "x-c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "no-project": [],
+    "order: type 欠落でも no-project が先に判定される": []
+  },
+  "search_codex_by_tags": {
+    "rows: 1 タグ（hidden の c-secret は落ちる）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select distinct \"codex_entries\".\"id\", \"codex_entries\".\"name\", \"codex_entries\".\"type\", \"codex_entries\".\"summary\" from \"codex_entries\" inner join \"codex_entry_tags\" on \"codex_entries\".\"id\" = \"codex_entry_tags\".\"entry_id\" inner join \"codex_tags\" on \"codex_entry_tags\".\"tag_id\" = \"codex_tags\".\"id\" where (\"codex_entries\".\"project_id\" = ? and \"codex_tags\".\"name\" in (?))",
+        "params": [
+          "p-main",
+          "魔法"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: 複数タグは和集合（distinct）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select distinct \"codex_entries\".\"id\", \"codex_entries\".\"name\", \"codex_entries\".\"type\", \"codex_entries\".\"summary\" from \"codex_entries\" inner join \"codex_entry_tags\" on \"codex_entries\".\"id\" = \"codex_entry_tags\".\"entry_id\" inner join \"codex_tags\" on \"codex_entry_tags\".\"tag_id\" = \"codex_tags\".\"id\" where (\"codex_entries\".\"project_id\" = ? and \"codex_tags\".\"name\" in (?, ?))",
+        "params": [
+          "p-main",
+          "魔法",
+          "場所"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret",
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: 数値は文字列化される": [
+      {
+        "cmd": "db_execute",
+        "sql": "select distinct \"codex_entries\".\"id\", \"codex_entries\".\"name\", \"codex_entries\".\"type\", \"codex_entries\".\"summary\" from \"codex_entries\" inner join \"codex_entry_tags\" on \"codex_entries\".\"id\" = \"codex_entry_tags\".\"entry_id\" inner join \"codex_tags\" on \"codex_entry_tags\".\"tag_id\" = \"codex_tags\".\"id\" where (\"codex_entries\".\"project_id\" = ? and \"codex_tags\".\"name\" in (?, ?))",
+        "params": [
+          "p-main",
+          "魔法",
+          "1"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-mage",
+          "c-secret"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-mage",
+          "c-secret"
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 紐づきのないタグ": [
+      {
+        "cmd": "db_execute",
+        "sql": "select distinct \"codex_entries\".\"id\", \"codex_entries\".\"name\", \"codex_entries\".\"type\", \"codex_entries\".\"summary\" from \"codex_entries\" inner join \"codex_entry_tags\" on \"codex_entries\".\"id\" = \"codex_entry_tags\".\"entry_id\" inner join \"codex_tags\" on \"codex_entry_tags\".\"tag_id\" = \"codex_tags\".\"id\" where (\"codex_entries\".\"project_id\" = ? and \"codex_tags\".\"name\" in (?))",
+        "params": [
+          "p-main",
+          "未使用"
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 空の project": [
+      {
+        "cmd": "db_execute",
+        "sql": "select distinct \"codex_entries\".\"id\", \"codex_entries\".\"name\", \"codex_entries\".\"type\", \"codex_entries\".\"summary\" from \"codex_entries\" inner join \"codex_entry_tags\" on \"codex_entries\".\"id\" = \"codex_entry_tags\".\"entry_id\" inner join \"codex_tags\" on \"codex_entry_tags\".\"tag_id\" = \"codex_tags\".\"id\" where (\"codex_entries\".\"project_id\" = ? and \"codex_tags\".\"name\" in (?))",
+        "params": [
+          "p-empty",
+          "魔法"
+        ],
+        "method": "all"
+      }
+    ],
+    "XPROJ: 他 project は他 project の行だけ": [
+      {
+        "cmd": "db_execute",
+        "sql": "select distinct \"codex_entries\".\"id\", \"codex_entries\".\"name\", \"codex_entries\".\"type\", \"codex_entries\".\"summary\" from \"codex_entries\" inner join \"codex_entry_tags\" on \"codex_entries\".\"id\" = \"codex_entry_tags\".\"entry_id\" inner join \"codex_tags\" on \"codex_entry_tags\".\"tag_id\" = \"codex_tags\".\"id\" where (\"codex_entries\".\"project_id\" = ? and \"codex_tags\".\"name\" in (?))",
+        "params": [
+          "p-other",
+          "魔法"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-other",
+          "x-c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "x-c-aria"
+        ],
+        "method": "all"
+      }
+    ],
+    "no-project": [],
+    "order: 空配列は no-project より先（No tags provided）": [],
+    "order: 配列でない tags も先に弾く": []
+  },
+  "find_related_entries": {
+    "rows: 起点 c-mage の name・aliases で LIKE（起点自身は除く）": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "c-mage",
+          "p-main"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-mage"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-mage"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" <> ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "c-mage",
+          "%老魔術師%",
+          "%老魔術師%",
+          "%老魔術師%",
+          "%老魔術師%",
+          "%賢者%",
+          "%賢者%",
+          "%賢者%",
+          "%賢者%",
+          "%導師%",
+          "%導師%",
+          "%導師%",
+          "%導師%",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?))",
+        "params": [
+          "p-main",
+          "c-aria",
+          "c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-aria",
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "rows: type で絞る": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "c-mage",
+          "p-main"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-mage"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-mage"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" <> ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ?) and \"codex_entries\".\"type\" = ?) limit ?",
+        "params": [
+          "p-main",
+          "c-mage",
+          "%老魔術師%",
+          "%老魔術師%",
+          "%老魔術師%",
+          "%老魔術師%",
+          "%賢者%",
+          "%賢者%",
+          "%賢者%",
+          "%賢者%",
+          "%導師%",
+          "%導師%",
+          "%導師%",
+          "%導師%",
+          "location",
+          20
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-tower"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-tower"
+        ],
+        "method": "all"
+      }
+    ],
+    "hidden: 起点が hidden なら存在しない id と同じ応答": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "c-secret",
+          "p-main"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-secret"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-secret"
+        ],
+        "method": "all"
+      }
+    ],
+    "hidden: Phase 解除後（n-s3）の c-released は起点にできる": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "c-released",
+          "p-main"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-released"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-released"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" <> ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "c-released",
+          "%幻の騎士%",
+          "%幻の騎士%",
+          "%幻の騎士%",
+          "%幻の騎士%",
+          20
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 一致なし": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "c-item",
+          "p-main"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-main",
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "c-item"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" <> ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ?)) limit ?",
+        "params": [
+          "p-main",
+          "c-item",
+          "%魔法の杖%",
+          "%魔法の杖%",
+          "%魔法の杖%",
+          "%魔法の杖%",
+          "%杖%",
+          "%杖%",
+          "%杖%",
+          "%杖%",
+          20
+        ],
+        "method": "all"
+      }
+    ],
+    "empty: 空の project": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "c-mage",
+          "p-empty"
+        ],
+        "method": "all"
+      }
+    ],
+    "XPROJ: main から他 project の id を起点にできない": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "x-c-aria",
+          "p-main"
+        ],
+        "method": "all"
+      }
+    ],
+    "XPROJ: 他 project では他 project の行だけ": [
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+        "params": [
+          "x-c-aria",
+          "p-other"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+        "params": [
+          "p-other",
+          "x-c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+        "params": [
+          "x-c-aria"
+        ],
+        "method": "all"
+      },
+      {
+        "cmd": "db_execute",
+        "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" <> ? and (\"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ? or \"codex_entries\".\"name\" like ? or \"codex_entries\".\"summary\" like ? or \"codex_entries\".\"aliases\" like ? or \"codex_entries\".\"tags_cache\" like ?)) limit ?",
+        "params": [
+          "p-other",
+          "x-c-aria",
+          "%アリア%",
+          "%アリア%",
+          "%アリア%",
+          "%アリア%",
+          "%アリー%",
+          "%アリー%",
+          "%アリー%",
+          "%アリー%",
+          20
+        ],
+        "method": "all"
+      }
+    ],
+    "no-project": [],
+    "order: 空の id は no-project より先（No id provided）": []
+  }
+}
