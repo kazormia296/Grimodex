@@ -71,7 +71,6 @@ vi.mock("@/features/revision/api", () => ({
 // 製品の DetailsTab と同じ props で包む。
 vi.mock("./CodexEntryHeader", () => ({ CodexEntryHeader: () => null }));
 vi.mock("./DetailTabs", () => ({ DetailTabs: () => null }));
-vi.mock("./CodexEditLockBanner", () => ({ CodexEditLockBanner: () => null }));
 vi.mock("@/features/editor/ExternalEditConflictBanner", () => ({
   ExternalEditConflictBanner: () => null,
 }));
