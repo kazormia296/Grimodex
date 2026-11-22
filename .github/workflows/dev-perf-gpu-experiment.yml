@@ -64,6 +64,8 @@ jobs:
             src-tauri
             electron/native/grimodex-node
           key: electron-product-journeys
+          # dev の実験の枝は cache を保存しない（共有の cache の容量を使わない。master の cache は読む）
+          save-if: false
 
       - run: pnpm install --frozen-lockfile
 
