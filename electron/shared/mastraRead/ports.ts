@@ -58,7 +58,7 @@ export interface CoreTreeState {
 
 export type CorePhaseResolutionMode = "reading" | "story" | "auto";
 
-/** The same shape as `SceneTimeIndex` in `src/features/codex/context/sceneTimeIndex.ts`. */
+/** The same shape as `SceneTimeIndex` in `readDomain/features/codex/context/sceneTimeIndex.ts` (moved from `src/`, MP-4b PR-3b-2). */
 export interface CoreSceneTimeIndex {
   readonly readingOrder: ReadonlyMap<string, number>;
   readonly explicitStoryOrder: ReadonlyMap<string, string>;

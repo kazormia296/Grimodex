@@ -1680,6 +1680,8 @@ requirements:
       - src/features/revision/projectSnapshotScopes.ts
       - src/db/schema.ts
       - electron/shared/readDomain/db/schema.ts
+      - electron/shared/readDomain/features/narrative-extraction/temporal/types.ts
+      - electron/shared/readDomain/features/chronicle/eventRows.ts
       - src/lib/browser-mock.ts
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - src-tauri/crates/grimodex-db/src/migrate.rs

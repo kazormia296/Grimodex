@@ -1192,6 +1192,72 @@ test("the Drizzle schema moved to electron/shared keeps its narrative selection 
   }
 });
 
+test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never select less than editing them at the old path", async () => {
+  const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
+  const map = parseImpactMap(source);
+  // 21 files moved from src/ (the old path is now a one-line re-export) and 3 modules split out of
+  // api.ts, nodes.ts, resolveStoryRanks.ts and semanticRecall.ts. None of them is added to a rule on purpose
+  // (DR-MP4-3e): adding one would narrow the selection from every suite to a few, so they stay fail-open.
+  const moved = [
+    "lib/fts",
+    "lib/prosemirror",
+    "lib/createResultMetadata",
+    "lib/nativeMutationMetadata",
+    "features/tree/fractionalIndex",
+    "features/tree/treeReadingOrder",
+    "features/tree/types",
+    "features/chronicle/chronicleSecrecy",
+    "features/chronicle/chronicleSnapshot",
+    "features/chronicle/chronicleTime",
+    "features/chronicle/chronicleReform",
+    "features/chronicle/resolveSceneAnchor",
+    "features/codex/context/codexVisibilityPolicy",
+    "features/codex/context/resolvedCodexContext",
+    "features/codex/context/resolveApplicablePhases",
+    "features/codex/context/sceneTimeIndex",
+    "features/codex/phaseResolver",
+    "features/codex/prosemirrorTextExtractor",
+    "features/foreshadow/deriveLabel",
+    "features/foreshadow/normalizeForeshadowRow",
+    "features/foreshadow/types",
+  ];
+  const created = [
+    "features/chronicle/eventRows",
+    "features/narrative-extraction/temporal/types",
+    "features/chat/rrfK",
+  ];
+  const splitFrom = [
+    "src/features/chronicle/api.ts",
+    "src/features/narrative-extraction/temporal/nodes.ts",
+    "src/features/narrative-extraction/temporal/solver/resolveStoryRanks.ts",
+    "src/features/chat/semanticRecall.ts",
+  ];
+  assert.equal(moved.length, 21);
+  for (const name of moved) {
+    const legacy = selectImpact(map, [`src/${name}.ts`]);
+    const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
+    if (canonical.fallback) continue; // all suites is never narrower than the old selection
+    assert.equal(legacy.fallback, false, name);
+    for (const id of legacy.suiteIds)
+      assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
+    for (const id of legacy.requirementIds)
+      assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+  }
+  // A new module must select at least what editing the file it was split out of selected. A path that
+  // matches no rule falls back to every suite (suiteIds and requirementIds both become the full set).
+  const sourceSelections = splitFrom.map((path) => selectImpact(map, [path]));
+  assert.ok(sourceSelections.every((selection) => selection.suiteIds.length > 0));
+  for (const name of created) {
+    const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
+    for (const selection of sourceSelections) {
+      for (const id of selection.suiteIds)
+        assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
+      for (const id of selection.requirementIds)
+        assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+    }
+  }
+});
+
 test("Detail codec and preset changes select the Narrative Detail requirement", async () => {
   const source = await readFile(
     new URL("../../evals/impact-map.yaml", import.meta.url),

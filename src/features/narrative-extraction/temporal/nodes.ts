@@ -1,13 +1,15 @@
 import { hasLoneSurrogate } from "../source/digest";
 import type { NarrativeCorpusDocument, Sha256Digest } from "../source/types";
 import type { TemporalTimelineRef } from "./timeline";
+import type { TemporalNodeId } from "@/../electron/shared/readDomain/features/narrative-extraction/temporal/types";
+// 型の正本は shared module（MP-4b PR-3b-2）。ここでは後方互換のため再エクスポートする。
+export type { TemporalNodeId } from "@/../electron/shared/readDomain/features/narrative-extraction/temporal/types";
 
 export type DocumentRef = NarrativeCorpusDocument["ref"];
 export type NarrativeEventId = string;
 export type ObservationId = string;
 export type InferenceId = string;
 export type SemanticFingerprint = Sha256Digest;
-export type TemporalNodeId = `tn:${string}`;
 
 export interface DiscoursePosition {
   readonly documentRef: DocumentRef;
