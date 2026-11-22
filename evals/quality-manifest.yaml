@@ -250,6 +250,12 @@ requirements:
       - src/features/chat/agent/agentReadToolDefinitions.drift.test.ts
       - electron/shared/agentReadToolDefinitions.static.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
+      - src/features/chat/agent/toolExecutors.legacyGolden.test.ts
+      - src/features/chat/agent/readCore.mainAdapter.test.ts
+      - electron/shared/readDomain/core/core.static.test.ts
+      - electron/shared/readDomain/core/readExecutors.test.ts
+      - electron/shared/mastraRead/tables.test.ts
+      - electron/main/mastraRead/irClosure.static.test.ts
       - src/features/chat/agent/appHelpTools.test.ts
       - src/help/helpIndex.test.ts
       - src/help/uiState.test.ts
@@ -273,6 +279,14 @@ requirements:
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - src/features/ai-policy/policyGuard.ts
       - src/features/chat/agent/toolExecutors.ts
+      - electron/shared/readDomain/core/readExecutors.ts
+      - electron/shared/readDomain/core/treeReadTools.ts
+      - electron/shared/readDomain/core/plotThreadTools.ts
+      - electron/shared/readDomain/core/codexTagTools.ts
+      - electron/shared/readDomain/core/sceneBody.ts
+      - electron/shared/readDomain/core/readContext.ts
+      - electron/shared/readDomain/core/readDb.ts
+      - electron/shared/readDomain/core/toolResult.ts
       - src-tauri/crates/grimodex-core/src/nir1_local_send_policy.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/project_ai_policy.rs
       - electron/native/grimodex-node/src/nir1_local_send_policy.rs
@@ -970,6 +984,14 @@ requirements:
       - scripts/quality/validate-semantic-core-boundary.mjs
       - .agents/skills/adversarial-review/SKILL.md
       - src/features/chat/agent/toolExecutors.ts
+      - electron/shared/readDomain/core/readExecutors.ts
+      - electron/shared/readDomain/core/treeReadTools.ts
+      - electron/shared/readDomain/core/plotThreadTools.ts
+      - electron/shared/readDomain/core/codexTagTools.ts
+      - electron/shared/readDomain/core/sceneBody.ts
+      - electron/shared/readDomain/core/readContext.ts
+      - electron/shared/readDomain/core/readDb.ts
+      - electron/shared/readDomain/core/toolResult.ts
       - src/features/chat/agent/chronicleWriteTools.ts
       - src/features/post-effect/api.ts
       - src/features/post-effect/canonicalize.ts

@@ -1258,6 +1258,52 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
   }
 });
 
+test("the shared read core (MP-4b PR-4) selects at least what editing the executors it was moved from selected", async () => {
+  const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
+  const map = parseImpactMap(source);
+  // The code moved out of src/features/chat/agent/toolExecutors.ts, whose edits select the tool-policy suite.
+  // The core's directory is added to the same rule (not to a narrower one), so editing a moved tool still
+  // selects what editing it before the move selected, and never less.
+  const legacy = selectImpact(map, ["src/features/chat/agent/toolExecutors.ts"]);
+  assert.equal(legacy.fallback, false);
+  assert.ok(legacy.suiteIds.includes("tool-policy"));
+  for (const name of [
+    "readExecutors",
+    "treeReadTools",
+    "plotThreadTools",
+    "codexTagTools",
+    "sceneBody",
+    "readContext",
+    "readDb",
+    "toolResult",
+  ]) {
+    const canonical = selectImpact(map, [`electron/shared/readDomain/core/${name}.ts`]);
+    if (canonical.fallback) continue; // every suite is never narrower than the old selection
+    for (const id of legacy.suiteIds)
+      assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
+    for (const id of legacy.requirementIds)
+      assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+  }
+  // A directory rule, so a file a later PR adds to the core is covered without a list to update.
+  const later = selectImpact(map, ["electron/shared/readDomain/core/somethingNew.ts"]);
+  assert.equal(later.fallback, false);
+  assert.ok(later.suiteIds.includes("tool-policy"));
+});
+
+test("the tool-policy light suite runs the executors' golden and the shared core's tests", () => {
+  const commandText = JSON.stringify(LIGHT_SUITE_DEFINITIONS["tool-policy"].commands);
+  for (const test of [
+    "src/features/chat/agent/toolExecutors.legacyGolden.test.ts",
+    "src/features/chat/agent/readCore.mainAdapter.test.ts",
+    "electron/shared/readDomain/core/core.static.test.ts",
+    "electron/shared/readDomain/core/readExecutors.test.ts",
+    "electron/shared/mastraRead/tables.test.ts",
+    "electron/main/mastraRead/irClosure.static.test.ts",
+  ]) {
+    assert.ok(commandText.includes(test), test);
+  }
+});
+
 test("Detail codec and preset changes select the Narrative Detail requirement", async () => {
   const source = await readFile(
     new URL("../../evals/impact-map.yaml", import.meta.url),
