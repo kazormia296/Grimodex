@@ -390,8 +390,9 @@ export function createAutoSave(
     while (pending) {
       // A conflict can arrive while the preceding write is in flight. Keep
       // the coalesced follow-up queued until the user explicitly resolves it;
-      // scene saves do not use OCC, so running that follow-up would otherwise
-      // overwrite the external change while the conflict banner is visible.
+      // a follow-up would otherwise overwrite the external change (a save
+      // does not carry the external revision) while the conflict banner is
+      // visible.
       if (paused) return;
       if (quarantineError !== null) return;
       if (runs >= MAX_DRAIN_RUNS) {
@@ -413,6 +414,13 @@ export function createAutoSave(
       // schedule / flush まで自動再試行しない。
       pending = false;
       await runSave(label);
+      // 保存中に入力があって pending が立ち直していても、background の drain は
+      // 即再実行しない。戻れば startDrain の finally が通常の debounce
+      // （delayMs）で次の timer を張るので、連続入力でも保存が背中合わせに
+      // 走らず、全文 snapshot の追記と 20 回の cap への到達を避けられる。
+      // 明示 flush（閉じる・切替）は従来どおり即時に反復し、窓内の入力を
+      // 取りこぼさない。
+      if (label === "save") return;
     }
   }
 

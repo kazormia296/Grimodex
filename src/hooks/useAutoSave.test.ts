@@ -480,6 +480,124 @@ describe("createAutoSave", () => {
     expect(flushed).toBe(true);
   });
 
+  it("T-7: 保存中に打った分の追従保存は即時でなく通常の debounce 間隔を待つ", async () => {
+    const gates: Array<() => void> = [];
+    const saveFn = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          gates.push(r);
+        }),
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500); // run1 開始
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    autoSave.schedule(); // 保存中の入力
+    gates[0](); // run1 完了
+    await vi.advanceTimersByTimeAsync(0);
+    // 即時に背中合わせで走らない。
+    expect(saveFn).toHaveBeenCalledTimes(1);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(499);
+    expect(saveFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+    gates[1]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  it("T-7: 保存の所要より短い間隔の連続入力でも保存は背中合わせにならず、20 回の cap に当たらない", async () => {
+    const warnSpy = vi.spyOn(debugLog, "warn");
+    const saveDurationMs = 300;
+    const saveFn = vi.fn(
+      () => new Promise<void>((r) => setTimeout(r, saveDurationMs)),
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    // 100 ms ごとに 10 秒間打ち続ける。
+    autoSave.schedule();
+    for (let t = 0; t < 10_000; t += 100) {
+      await vi.advanceTimersByTimeAsync(100);
+      autoSave.schedule();
+    }
+    // 毎回の保存が 100 ms ごとの入力に即追従すると約 25 回に達するが、
+    // debounce（500 ms）を挟むため保存の間隔は所要 300 ms ＋ 500 ms 以上になる。
+    expect(saveFn.mock.calls.length).toBeLessThanOrEqual(
+      Math.ceil(10_000 / (saveDurationMs + 500)) + 1,
+    );
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      "AutoSave",
+      expect.stringContaining("run cap"),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // 打つのを止めると最後の入力が保存される。
+    const before = saveFn.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(500 + saveDurationMs + 500);
+    expect(saveFn.mock.calls.length).toBeGreaterThan(before - 1);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  it("T-7: 保存中に打った後の明示 flush は追従を即時に反復して保存し切る", async () => {
+    const gates: Array<() => void> = [];
+    const saveFn = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          gates.push(r);
+        }),
+    );
+    const autoSave = createAutoSave(saveFn, 5000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(5000); // background run1（in-flight）
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    autoSave.schedule(); // 保存中の入力
+    let flushed = false;
+    const flushing = autoSave.flush().then(() => {
+      flushed = true;
+    });
+    gates[0]();
+    // background の drain が pending を残して戻っても、flush は debounce を
+    // 待たず即時に追従保存へ進む（閉じる・切替で窓内の入力を失わない）。
+    await vi.advanceTimersByTimeAsync(0);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+    expect(flushed).toBe(false);
+    gates[1]();
+    await flushing;
+    expect(flushed).toBe(true);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  it("T-7: flush 自身の drain は background の debounce と別に即時で反復する", async () => {
+    const holder: { schedule?: () => void } = {};
+    let calls = 0;
+    const saveFn = vi.fn(async () => {
+      calls++;
+      if (calls < 3) holder.schedule?.();
+    });
+    const autoSave = createAutoSave(saveFn, 5000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+    holder.schedule = () => void autoSave.schedule();
+
+    autoSave.schedule();
+    await autoSave.flush();
+    expect(saveFn).toHaveBeenCalledTimes(3);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
   it("flush の drain が上限に達したら reject して quiesce 失敗を伝える", async () => {
     const warnSpy = vi.spyOn(debugLog, "warn");
     // save のたびに schedule を再誘発する病的ケース (持続タイピング相当)
