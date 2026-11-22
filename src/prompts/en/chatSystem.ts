@@ -272,6 +272,8 @@ export const EN_CHAT_SYSTEM = {
     foreshadowPayoff: "Payoff",
     /** time-period label of L3 storyTimePreviousScene (only when storyTimeLabel is set) */
     storyTimeLabel: "Time",
+    /** POV character set on the current scene in L3 (distinct from the project-wide `pov` of L1) */
+    scenePov: "POV of this scene",
     /** loadBearing notation for L2 openForeshadows (critical/supporting/optional/unspecified) */
     foreshadowCritical: "Importance: critical",
     foreshadowSupporting: "Importance: supporting",

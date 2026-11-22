@@ -236,6 +236,8 @@ export const JA_CHAT_SYSTEM = {
     foreshadowPayoff: "回収",
     /** L3 storyTimePreviousScene の時期ラベル（storyTimeLabel が設定されている場合のみ） */
     storyTimeLabel: "時期",
+    /** L3 現在のシーンの視点人物（シーンに設定した視点。L1 の作品全体の `pov` とは別） */
+    scenePov: "この場面の視点",
     /** L2 openForeshadows の loadBearing 表記（critical/supporting/optional/unspecified） */
     foreshadowCritical: "重要度: critical",
     foreshadowSupporting: "重要度: supporting",
