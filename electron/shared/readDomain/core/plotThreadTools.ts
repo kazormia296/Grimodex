@@ -64,10 +64,18 @@ export async function listPlotThreads(
             phaseType: plotThreadSceneLinks.phaseType,
           })
           .from(plotThreadSceneLinks)
-          .where(inArray(plotThreadSceneLinks.threadId, threadIds))
+          // archived の場面（外部 Markdown の消失・重複で自動 archived）の link は数えず、
+          // phase にも入れない。get_thread_scenes の links と同じ形（行が無い node の link は残す）。
+          .leftJoin(treeNodes, eq(plotThreadSceneLinks.nodeId, treeNodes.id))
+          .where(
+            and(
+              inArray(plotThreadSceneLinks.threadId, threadIds),
+              isNull(treeNodes.archivedAt),
+            ),
+          )
       : [];
 
-  // thread ごとの distinct scene 数 + 到達 phase 集合。
+  // thread ごとの distinct scene 数 + 到達 phase 集合（archived の場面は除く）。
   const sceneSets = new Map<string, Set<string>>();
   const phaseSets = new Map<string, Set<string>>();
   for (const l of links) {
@@ -231,7 +239,16 @@ export async function getThreadScenes(
       kind: plotThreadBranches.kind,
     })
     .from(plotThreadBranches)
-    .where(eq(plotThreadBranches.projectId, projectId));
+    // archived の場面で分岐・合流する edge は出さない（links の除外と同じく、archived の場面の
+    // id を AI に渡さない。プロットの画面も archived の場面に edge を描かない）。
+    // 行が無い node（at_node_id は FK で cascade されるので通常は無い）は従来どおり残す。
+    .leftJoin(treeNodes, eq(plotThreadBranches.atNodeId, treeNodes.id))
+    .where(
+      and(
+        eq(plotThreadBranches.projectId, projectId),
+        isNull(treeNodes.archivedAt),
+      ),
+    );
   const branches = branchRows.filter(
     (b) => b.fromThreadId === threadId || b.toThreadId === threadId,
   );

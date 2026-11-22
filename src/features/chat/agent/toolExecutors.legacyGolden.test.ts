@@ -22,7 +22,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  *   sql.js の行の返り順に依存する（実 addon では異なりうる）。list_chapters／get_chapter_summaries の
  *   並びは tree の DFS（兄弟ごとの sortOrder、同順位は id）で、行の返り順に依存しない。
  * - archived（外部 Markdown のマウントでファイルの消失・重複により自動で soft delete された行）は、
- *   read tool 5 本と get_chapter_summaries が行単位（`archived_at IS NULL`）で除く。祖先だけが
+ *   read tool 5 本と get_chapter_summaries が行単位（`archived_at IS NULL`）で除く。さらに
+ *   list_plot_threads の sceneCount・phases、get_thread_scenes の branches（atNodeId）、
+ *   get_foreshadow_detail の setups からも除く（DR-MP4-36）。祖先だけが
  *   archived の行は renderer の listNodes と同じく残る（seed の n-part2＞n-s5）。
  *
  * golden の再生成：該当 file を消して `pnpm exec vitest --run <この file>`（CI では書かれず落ちる）。
@@ -423,7 +425,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   get_foreshadow_detail: [
     sc(
-      "rows: 回収予定の場面あり・setup 3 件（orphan と AI 評価のみを含む）",
+      "rows: 回収予定の場面あり・setup 3 件（orphan と AI 評価のみを含む）。archived の場面の setup は出ない（件数にも入らない）",
       MAIN_S1,
       { id: "fs-1" },
     ),
@@ -471,14 +473,18 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
     ),
   ],
   list_plot_threads: [
-    sc("rows: sortOrder 順・distinct な場面数・到達 phase", MAIN_S1, {}),
+    sc(
+      "rows: sortOrder 順・distinct な場面数・到達 phase。archived の場面に結ばれた link は数にも phase にも入らない",
+      MAIN_S1,
+      {},
+    ),
     sc("empty: 空の project", EMPTY, {}),
     sc("XPROJ: 他 project は他 project の筋だけ", OTHER, {}),
     sc("no-project", NO_PROJECT, {}),
   ],
   get_thread_scenes: [
     sc(
-      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch。archived の場面に結ばれた link は出ない",
+      "barrier なし（awaitPendingSceneContentWrite は main で再現しない）rows: phase 順・場面の dedup・excerpt・branch。archived の場面に結ばれた link と、archived の場面で合流する branch は出ない",
       MAIN_S1,
       { threadId: "th-main" },
     ),

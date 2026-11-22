@@ -2,7 +2,7 @@
   "tool": "list_plot_threads",
   "cases": [
     {
-      "case": "rows: sortOrder 順・distinct な場面数・到達 phase",
+      "case": "rows: sortOrder 順・distinct な場面数・到達 phase。archived の場面に結ばれた link は数にも phase にも入らない",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -17,7 +17,7 @@
             "id": "th-main",
             "name": "主筋",
             "description": "アリアの旅",
-            "sceneCount": 4,
+            "sceneCount": 3,
             "phases": [
               "introduce",
               "develop",
@@ -43,7 +43,7 @@
           }
         ]
       },
-      "contentJson": "[{\"id\":\"th-main\",\"name\":\"主筋\",\"description\":\"アリアの旅\",\"sceneCount\":4,\"phases\":[\"introduce\",\"develop\",\"turn\",\"resolve\"]},{\"id\":\"th-sub\",\"name\":\"サブ\",\"description\":\"\",\"sceneCount\":1,\"phases\":[\"introduce\"]},{\"id\":\"th-empty\",\"name\":\"未連結\",\"description\":\"場面に結ばれていない筋\",\"sceneCount\":0,\"phases\":[]}]"
+      "contentJson": "[{\"id\":\"th-main\",\"name\":\"主筋\",\"description\":\"アリアの旅\",\"sceneCount\":3,\"phases\":[\"introduce\",\"develop\",\"turn\",\"resolve\"]},{\"id\":\"th-sub\",\"name\":\"サブ\",\"description\":\"\",\"sceneCount\":1,\"phases\":[\"introduce\"]},{\"id\":\"th-empty\",\"name\":\"未連結\",\"description\":\"場面に結ばれていない筋\",\"sceneCount\":0,\"phases\":[]}]"
     },
     {
       "case": "empty: 空の project",

@@ -2,7 +2,7 @@
   "tool": "get_foreshadow_detail",
   "cases": [
     {
-      "case": "rows: 回収予定の場面あり・setup 3 件（orphan と AI 評価のみを含む）",
+      "case": "rows: 回収予定の場面あり・setup 3 件（orphan と AI 評価のみを含む）。archived の場面の setup は出ない（件数にも入らない）",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -13,7 +13,7 @@
       "result": {
         "name": "get_foreshadow_detail",
         "summary": "老魔術師の杖: 3 setup(s), payoff planned",
-        "tokensUsed": 613,
+        "tokensUsed": 601,
         "content": {
           "id": "fs-1",
           "title": "老魔術師の杖",
@@ -46,8 +46,8 @@
               "isOrphan": false
             },
             {
-              "sceneId": "n-arch",
-              "sceneTitle": "外部ファイルが消えた場面",
+              "sceneId": "n-s4",
+              "sceneTitle": "終幕",
               "kind": "rewritten",
               "strength": "moderate",
               "attribution": "human",
@@ -57,7 +57,7 @@
           ]
         }
       },
-      "contentJson": "{\"id\":\"fs-1\",\"title\":\"老魔術師の杖\",\"intent\":\"杖が後で鍵になる\",\"notes\":\"作者だけのメモ\",\"loadBearing\":\"critical\",\"payoffConfirmed\":false,\"abandoned\":false,\"payoffScene\":{\"id\":\"n-s3\",\"title\":\"裏切り\"},\"setups\":[{\"sceneId\":\"n-s1\",\"sceneTitle\":\"出会い\",\"kind\":\"designated_existing\",\"strength\":\"subtle\",\"attribution\":\"ai\",\"aiRationale\":\"\",\"isOrphan\":false},{\"sceneId\":\"n-s2\",\"sceneTitle\":\"旅立ち\",\"kind\":\"inserted_new\",\"strength\":\"overt\",\"attribution\":\"human\",\"aiRationale\":\"強調された\",\"isOrphan\":false},{\"sceneId\":\"n-arch\",\"sceneTitle\":\"外部ファイルが消えた場面\",\"kind\":\"rewritten\",\"strength\":\"moderate\",\"attribution\":\"human\",\"aiRationale\":\"\",\"isOrphan\":true}]}"
+      "contentJson": "{\"id\":\"fs-1\",\"title\":\"老魔術師の杖\",\"intent\":\"杖が後で鍵になる\",\"notes\":\"作者だけのメモ\",\"loadBearing\":\"critical\",\"payoffConfirmed\":false,\"abandoned\":false,\"payoffScene\":{\"id\":\"n-s3\",\"title\":\"裏切り\"},\"setups\":[{\"sceneId\":\"n-s1\",\"sceneTitle\":\"出会い\",\"kind\":\"designated_existing\",\"strength\":\"subtle\",\"attribution\":\"ai\",\"aiRationale\":\"\",\"isOrphan\":false},{\"sceneId\":\"n-s2\",\"sceneTitle\":\"旅立ち\",\"kind\":\"inserted_new\",\"strength\":\"overt\",\"attribution\":\"human\",\"aiRationale\":\"強調された\",\"isOrphan\":false},{\"sceneId\":\"n-s4\",\"sceneTitle\":\"終幕\",\"kind\":\"rewritten\",\"strength\":\"moderate\",\"attribution\":\"human\",\"aiRationale\":\"\",\"isOrphan\":true}]}"
     },
     {
       "case": "rows: secret の伏線も読める（secret の判定なし。DR-MP4-24）",

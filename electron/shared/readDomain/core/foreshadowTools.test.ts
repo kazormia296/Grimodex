@@ -367,6 +367,20 @@ describe("get_foreshadow_detail", () => {
     }
   });
 
+  it("asks for the setups of live scenes only: a setup on an archived scene is not handed to the model (DR-MP4-36)", async () => {
+    // The scripted client does not evaluate SQL. This fixes the statement (the join and the
+    // condition on the scene); the rows on a real SQLite are fixed by the golden
+    // (`toolExecutors.legacyGolden.test.ts`) and on the real addon (`mastraReadParity.pipeline.spec.ts`).
+    const { executors, captured } = makeCtx({ answers: detailAnswers() });
+    await executors.get_foreshadow_detail({ id: "f1" });
+    const setups = captured[1]!.sql;
+    expect(setups).toMatch(/from "foreshadow_setups"/u);
+    expect(setups).toMatch(
+      /"foreshadow_setups"\."foreshadow_id" = \? and "tree_nodes"\."archived_at" is null/u,
+    );
+    expect(captured[1]!.params).toEqual(["f1"]);
+  });
+
   it("returns a secret foreshadow and its notes (DR-MP4-24: moved as it is, not decided here)", async () => {
     const { executors } = makeCtx({
       answers: {

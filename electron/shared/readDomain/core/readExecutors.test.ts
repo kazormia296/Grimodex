@@ -225,6 +225,78 @@ describe("createReadExecutors", () => {
     });
   });
 
+  describe("archived scenes (DR-MP4-36)", () => {
+    // The scripted client does not evaluate SQL: these fix what is asked (the join and the
+    // condition, in the statement the tool sends). What the rows then are is fixed on a real
+    // SQLite by the golden (`toolExecutors.legacyGolden.test.ts`, `readCore.mainAdapter.test.ts`)
+    // and on the real addon (`mastraReadParity.pipeline.spec.ts`).
+    const archivedOf = (table: string) =>
+      new RegExp(
+        `left join "tree_nodes" on "${table}"\\."[a-z_]+" = "tree_nodes"\\."id"[^]*"tree_nodes"\\."archived_at" is null`,
+        "u",
+      );
+
+    it("list_plot_threads: the links that give sceneCount and phases leave out the archived scenes", async () => {
+      const { ctx, captured } = makeCtx({
+        answers: {
+          plot_threads: [["t1", "Thread", "d", "a0"]],
+          plot_thread_scene_links: [["t1", "n1", "develop"]],
+        },
+      });
+      const result = await createReadExecutors(ctx).list_plot_threads({});
+      expect(result.content).toEqual([
+        {
+          id: "t1",
+          name: "Thread",
+          description: "d",
+          sceneCount: 1,
+          phases: ["develop"],
+        },
+      ]);
+      const links = captured.find((c) =>
+        c.sql.includes('from "plot_thread_scene_links"'),
+      )!;
+      expect(links.sql).toMatch(archivedOf("plot_thread_scene_links"));
+      // A link whose node has no row stays (left join, like get_thread_scenes).
+      expect(links.sql).not.toMatch(/inner join/u);
+      expect(links.params).toEqual(["t1"]);
+    });
+
+    it("get_thread_scenes: the branches leave out the ones at an archived scene, and the other statements are as before", async () => {
+      const { ctx, captured } = makeCtx({
+        answers: {
+          plot_threads: [["t1", "Thread", null]],
+          plot_thread_branches: [
+            ["t1", "t2", "n1", "branch"],
+            ["t3", "t4", "n1", "merge"],
+          ],
+        },
+      });
+      const result = await createReadExecutors(ctx).get_thread_scenes({
+        threadId: "t1",
+      });
+      // Only the branch of this thread is kept (the filter by thread is in the tool).
+      expect((result.content as { branches: unknown[] }).branches).toEqual([
+        {
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "n1",
+          kind: "branch",
+        },
+      ]);
+      const branches = captured.find((c) =>
+        c.sql.includes('from "plot_thread_branches"'),
+      )!;
+      expect(branches.sql).toMatch(archivedOf("plot_thread_branches"));
+      expect(branches.sql).not.toMatch(/inner join/u);
+      expect(branches.params).toEqual(["p1"]);
+      const links = captured.find((c) =>
+        c.sql.includes('from "plot_thread_scene_links"'),
+      )!;
+      expect(links.sql).toMatch(archivedOf("plot_thread_scene_links"));
+    });
+  });
+
   it("get_scene: reads the body through the body port, after the node is checked", async () => {
     const { ctx, readSceneBody } = makeCtx({
       answers: { tree_nodes: [["n1", "Scene 1", "scene"]] },
