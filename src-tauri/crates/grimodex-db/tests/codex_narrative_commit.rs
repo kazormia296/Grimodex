@@ -2803,13 +2803,17 @@ fn alias_added_by_patch_is_removable_by_author_edit_and_undo_then_stops() {
     );
 }
 
-// --- 復元より古い commit の undo / redo は拒む -------------------------------
+// --- 取り込み（commit）の undo / redo と、スナップショットの復元（DR-SRC-9、DR-SRC-12） ---
 //
 // プロジェクトのスナップショットの復元は、行を入れ替えるが object ごとの変更の
-// 記録は書かない。復元の前の commit を、復元の後に取り消す・やり直すと、復元で
-// 消えた状態を戻すか、復元の後の編集を黙って巻き戻す。Undo／Redo の記録を書く
-// 入口で、元の書き込みが復元の marker より古いものを拒む
-// （DR-SRC-9。拒否の符号は NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE）。
+// 記録は書かない。ふつうの履歴の Undo／Redo は、元の書き込みが復元の marker より古ければ
+// NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE で拒まれる（DR-SRC-9。journal の
+// replay は snapshot_restore_feed_continuity.rs）。取り込みの undo_commit／redo_commit は
+// 確認 88 でこの拒否の対象から外した（DR-SRC-12）。専用の守り（undo.rs の preflight）が
+// 復元の後の編集を巻き戻さないことを、実際の復元を通して確かめる。
+
+#[path = "../test-support/snapshot_restore.rs"]
+mod snapshot_restore;
 
 /// 復元の記録の形（origin=restore、source_domain=project.snapshot.restore、
 /// project-restored の marker）を、公開の append で作る。この試験は commit の
@@ -2894,61 +2898,202 @@ fn apply_entry_commit(db: &Database, tag: &str, entry_id: &str) -> String {
     applied["commitId"].as_str().unwrap().to_string()
 }
 
+/// 復元の marker があるだけでは、取り込みの undo／redo は拒まれない（DR-SRC-12。拒否の対象は
+/// ふつうの履歴の Undo／Redo だけ）。復元の marker の形は手で作った（判定の確認だけ。復元の
+/// 実行は下の試験）。
 #[test]
-fn undo_and_redo_of_a_commit_that_predates_a_restore_are_refused() {
+fn a_restore_marker_alone_does_not_refuse_the_undo_or_redo_of_a_commit() {
     const SUPERSEDED: &str = "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE";
     let db = migrated_db();
     let applied_before = apply_entry_commit(&db, "rs-a", "entry-rs-a");
     let undone_before = apply_entry_commit(&db, "rs-b", "entry-rs-b");
-    let undone = narrative_extraction::narrative_extraction_undo_commit(
+    narrative_extraction::narrative_extraction_undo_commit(
         &db,
         commit_replay_payload(&undone_before, "rs-b-undo"),
     )
     .expect("undo before the restore");
-    assert_eq!(undone["status"], "undone");
 
     append_restore_marker(&db, "r1");
 
-    let undo_err = narrative_extraction::narrative_extraction_undo_commit(
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
         &db,
         commit_replay_payload(&applied_before, "rs-a-undo"),
     )
-    .expect_err("undo of a commit older than the restore");
-    assert!(format!("{undo_err:#}").contains(SUPERSEDED), "{undo_err:#}");
-    let redo_err = narrative_extraction::narrative_extraction_redo_commit(
+    .expect("undo of a commit older than the restore marker");
+    assert_eq!(undone["status"], "undone");
+    let redone = narrative_extraction::narrative_extraction_redo_commit(
         &db,
         commit_replay_payload(&undone_before, "rs-b-redo"),
     )
-    .expect_err("redo of a commit older than the restore");
-    assert!(format!("{redo_err:#}").contains(SUPERSEDED), "{redo_err:#}");
-    // Nothing was replayed: the refused calls rolled back.
+    .expect("redo of a commit older than the restore marker");
+    assert_eq!(redone["status"], "redone");
     assert_eq!(
         count_rows(
             &db,
             "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-rs-a'"
         ),
-        1
+        0
     );
     assert_eq!(
         count_rows(
             &db,
             "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-rs-b'"
         ),
-        0
+        1
+    );
+    let _ = SUPERSEDED;
+}
+
+fn entry_state(db: &Database, id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(summary, '-') || '|' || COALESCE(aliases, '-') || '|v' || version
+                   FROM codex_entries WHERE id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "ABSENT".to_string()))
+    })
+    .expect("read the entry state")
+}
+
+fn restore_codex(db: &Database, request_id: &str, snapshot_id: &str) {
+    snapshot_restore::seed_restore_prerequisites(db, "project-1", "sess-restore");
+    let no_op = snapshot_restore::restore(
+        db,
+        "project-1",
+        "sess-restore",
+        request_id,
+        snapshot_id,
+        vec![grimodex_db::project_snapshots::RestoreScope::Codex],
+    )
+    .expect("restore the snapshot");
+    assert!(!no_op, "the restore must change rows and write its marker");
+}
+
+fn assert_refused(result: anyhow::Result<Value>, codes: &[&str], what: &str) {
+    let error = result.expect_err(what);
+    let message = format!("{error:#}");
+    assert!(
+        codes.iter().any(|code| message.contains(code)),
+        "{what}: expected one of {codes:?}, got {message}"
+    );
+}
+
+/// 取り込み（Codex の項目の作成）→ スナップショット → 編集 → Codex の復元 → 取り消し。
+/// 復元は Codex の項目の版を 0 に戻す（復元の行に版が無い）ので、取り込んだ時の版（1）と
+/// 一致せず、取り消しは拒まれる（編集が無くても。拒まれるのは安全な側）。
+#[test]
+fn undo_of_a_created_entry_right_after_a_codex_restore_is_refused_on_the_version() {
+    let db = migrated_db();
+    let commit = apply_entry_commit(&db, "rc1", "entry-rc1");
+    assert_eq!(entry_state(&db, "entry-rc1"), "|[]|v1");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-rc1");
+    product_codex_update(&db, "entry-rc1", 1, "復元の前の編集");
+    restore_codex(&db, "restore-rc1", "snap-rc1");
+    assert_eq!(entry_state(&db, "entry-rc1"), "|[]|v0");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc1-undo"),
+        ),
+        &["NEX_COMMIT_ENTRY_EDITED"],
+        "undo right after the Codex restore",
+    );
+    assert_eq!(entry_state(&db, "entry-rc1"), "|[]|v0");
+}
+
+/// (e) 取り込み → スナップショット → 編集 → Codex の復元 → 編集 → 取り消し。復元の後の編集で
+/// 版が 1 に戻り、取り込んだ時の版と偶然一致する。専用の守り（版だけを比べる）は通るが、
+/// 変更の記録の連続性の検査が止める（取り消しの before は取り込んだ時の状態で、head は復元の
+/// 後の編集）。編集は残り、項目は消えない。
+#[test]
+fn undo_of_a_created_entry_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed() {
+    let db = migrated_db();
+    let commit = apply_entry_commit(&db, "rc2", "entry-rc2");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-rc2");
+    product_codex_update(&db, "entry-rc2", 1, "復元の前の編集");
+    restore_codex(&db, "restore-rc2", "snap-rc2");
+    product_codex_update(&db, "entry-rc2", 0, "復元の後の編集");
+    assert_eq!(entry_state(&db, "entry-rc2"), "復元の後の編集|[]|v1");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc2-undo"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_DISCONTINUITY"],
+        "undo after the Codex restore and a later edit",
+    );
+    assert_eq!(entry_state(&db, "entry-rc2"), "復元の後の編集|[]|v1");
+}
+
+/// (e) patch の commit も同じ：復元の後の編集で版が取り込んだ時の版と一致しても、
+/// 取り消しは変更の記録の連続性の検査で止まり、復元の後の編集（要約）は残る。
+#[test]
+fn undo_of_a_patch_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-rc3", 0);
+    let items = [(
+        "codex.entry.patch",
+        alias_patch_op("entry-rc3", "ent:rc3", 0, &["旧", "新"]),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-rc3", "set-rc3", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-rc3",
+            "dg-rc3",
+            "set-rc3",
+            "run-rc3",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:rc3", "entry-rc3")],
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "作者の要約|[\"旧\",\"新\"]|v1"
+    );
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-rc3");
+    product_codex_update(&db, "entry-rc3", 1, "復元の前の編集");
+    restore_codex(&db, "restore-rc3", "snap-rc3");
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "作者の要約|[\"旧\",\"新\"]|v0"
     );
 
-    // A commit made after the restore is undone and redone as usual.
-    let after = apply_entry_commit(&db, "rs-c", "entry-rs-c");
-    let undone = narrative_extraction::narrative_extraction_undo_commit(
-        &db,
-        commit_replay_payload(&after, "rs-c-undo"),
-    )
-    .expect("undo of a commit made after the restore");
-    assert_eq!(undone["status"], "undone");
-    let redone = narrative_extraction::narrative_extraction_redo_commit(
-        &db,
-        commit_replay_payload(&after, "rs-c-redo"),
-    )
-    .expect("redo of a commit made after the restore");
-    assert_eq!(redone["status"], "redone");
+    // 復元の直後は、版が 0 で、取り込んだ時の版（1）と一致しない。
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc3-undo-1"),
+        ),
+        &["NEX_COMMIT_ENTRY_EDITED"],
+        "undo of the patch right after the Codex restore",
+    );
+
+    // 復元の後の編集で、版が 1 に戻って一致する。守りは連続性の検査。
+    product_codex_update(&db, "entry-rc3", 0, "復元の後の編集");
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "復元の後の編集|[\"旧\",\"新\"]|v1"
+    );
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc3-undo-2"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_DISCONTINUITY"],
+        "undo of the patch after the Codex restore and a later edit",
+    );
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "復元の後の編集|[\"旧\",\"新\"]|v1"
+    );
 }

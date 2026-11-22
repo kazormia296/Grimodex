@@ -394,6 +394,55 @@ fn restore_marker_newer_than(
         .is_some())
 }
 
+/// True when the Undo/Redo being appended replays an AI-extraction apply commit
+/// (`undo_commit` / `redo_commit`, DR-SRC-12). Every fact is read from the
+/// database: the lineage root must be the commit's own forward transaction
+/// (cause `forward`, origin `ai-apply`, source domain
+/// `narrative.commit.apply`) of the same project, naming a commit row and a
+/// journal row that belong together, and the new transaction must name that
+/// same commit and journal. Only `undo.rs` writes such transactions; a typed
+/// writer's replay names no commit, so it never matches and stays subject to
+/// the restore refusal.
+fn replays_an_apply_commit(
+    conn: &Connection,
+    input: &AppendNarrativeChangeTransactionInput,
+    root_transaction_id: &str,
+) -> anyhow::Result<bool> {
+    let (Some(commit_id), Some(journal_id)) =
+        (input.commit_id.as_deref(), input.journal_id.as_deref())
+    else {
+        return Ok(false);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT 1
+               FROM narrative_change_transactions t
+               JOIN narrative_apply_commits c
+                 ON c.id = t.commit_id AND c.project_id = t.project_id
+               JOIN narrative_commit_journals j
+                 ON j.id = t.journal_id AND j.commit_id = c.id
+                AND j.project_id = t.project_id
+              WHERE t.project_id = ?1
+                AND t.id = ?2
+                AND t.cause_kind = 'forward'
+                AND t.origin = ?3
+                AND t.source_domain = 'narrative.commit.apply'
+                AND t.commit_id = ?4
+                AND t.journal_id = ?5
+              LIMIT 1",
+            params![
+                input.project_id,
+                root_transaction_id,
+                NarrativeChangeOrigin::AiApply.as_str(),
+                commit_id,
+                journal_id
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some())
+}
+
 struct NarrativeChangeObjectHead<'a> {
     project_id: &'a str,
     identity: &'a str,
@@ -3019,18 +3068,27 @@ fn append_narrative_change_transaction_with_mode_in_tx(
     // restore). Only what a restore predates is refused; what was done after
     // it is undone and redone as usual. The same request replayed again
     // returned its recorded result above.
+    //
+    // The undo and redo of an AI-extraction apply commit are the exception
+    // (DR-SRC-12): they carry their own guard (`narrative_extraction/undo.rs`
+    // compares what the commit made with the live rows before touching them)
+    // and the continuity check below still stops a later edit. Whether a replay
+    // is one is decided from the replayed root transaction and its commit and
+    // journal rows, never from the caller's source domain or origin.
     if let Some(root_transaction_id) = replay_root_transaction_id.as_deref() {
-        let root_sequence: i64 = conn.query_row(
-            "SELECT source_change_event_sequence
-               FROM narrative_change_transactions
-              WHERE project_id = ?1 AND id = ?2",
-            params![input.project_id, root_transaction_id],
-            |row| row.get(0),
-        )?;
-        anyhow::ensure!(
-            !restore_marker_newer_than(conn, &input.project_id, root_sequence)?,
-            "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE: the change being replayed predates a project snapshot restore and can no longer be undone or redone"
-        );
+        if !replays_an_apply_commit(conn, &input, root_transaction_id)? {
+            let root_sequence: i64 = conn.query_row(
+                "SELECT source_change_event_sequence
+                   FROM narrative_change_transactions
+                  WHERE project_id = ?1 AND id = ?2",
+                params![input.project_id, root_transaction_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !restore_marker_newer_than(conn, &input.project_id, root_sequence)?,
+                "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE: the change being replayed predates a project snapshot restore and can no longer be undone or redone"
+            );
+        }
     }
 
     ensure_event_history_continuity(conn, &input.project_id, &input.events, mode)?;

@@ -57,7 +57,11 @@ the head has already passed) is exempt through one crate-private entry,
 `append_snapshot_restore_in_tx`, used only by `apply_project_snapshot_restore`
 and limited to `scene-scope` events (DR-SRC-8). Undo and Redo are refused with
 `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` when the forward
-transaction they replay predates a restore marker (DR-SRC-9). The sentence above
+transaction they replay predates a restore marker (DR-SRC-9), except the undo
+and redo of an AI-extraction apply commit (`undo_commit` / `redo_commit`,
+DR-SRC-12): those are told apart by the database rows of the replayed root
+transaction, its commit and its journal, and are guarded by the commit's own
+preflight and by the continuity check instead. The sentence above
 (one marker per restore, no per-object events) is unchanged. Rationale:
 `docs/plans/nir1-lane-decisions/snapshot-restore-feed-continuity-decisions.md`.
 

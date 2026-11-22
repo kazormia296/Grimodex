@@ -1138,6 +1138,15 @@ fn apply_current_chronicle_event(
     title: &str,
 ) -> Value {
     insert_scene(db, "scene-1", 0);
+    apply_current_chronicle_event_in_existing_scene(db, run_id, event_id, title)
+}
+
+fn apply_current_chronicle_event_in_existing_scene(
+    db: &Database,
+    run_id: &str,
+    event_id: &str,
+    title: &str,
+) -> Value {
     let payload = event_create_payload(event_id, title, "scene-1", 0);
     let proposal_set_id = current_chronicle_proposal_set_id(run_id);
     let mut pairs = seed_current_chronicle_proposals(
@@ -5900,4 +5909,624 @@ fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_aga
         event_secret_and_reveal(&db, event_id),
         (1, Some("scene-1".to_string()))
     );
+}
+
+// --- 取り込みの取り消し・やり直しと、スナップショットの復元（DR-SRC-12） --------
+//
+// 復元の後も、取り込み（Chronicle の commit）の取り消し・やり直しはできる。
+// 取り消しには専用の守りがある（出来事が、取り込んだ時の snapshot のままでなければ
+// NEX_COMMIT_EVENT_EDITED で拒む）。復元の後の編集が、取り消しで巻き戻らないことを、
+// 実際の復元（apply_project_snapshot_restore）を通して確かめる。
+
+#[path = "../test-support/snapshot_restore.rs"]
+mod snapshot_restore;
+
+mod commit_undo_after_restore {
+    use super::*;
+    use grimodex_db::agent_writes::{
+        agent_event_delete_with_authority_impl, agent_event_set_participants_with_authority_impl,
+        agent_event_update_with_authority_impl, agent_scene_event_mutate_with_authority_impl,
+        AgentEventIdPayload, AgentEventParticipantsPayload, AgentEventUpdatePayload,
+        AgentSceneEventPayload, RendererCanonicalWriteContext,
+    };
+    use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
+    use grimodex_db::project_snapshots::RestoreScope;
+
+    const PROJECT: &str = "project-1";
+    const RESTORE_SESSION: &str = "sess-restore";
+
+    fn human_context(request_id: &str) -> RendererCanonicalWriteContext {
+        RendererCanonicalWriteContext {
+            request_id: request_id.to_string(),
+            event_uid: format!("uid-{request_id}"),
+            authority_session_id: None,
+            origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        }
+    }
+
+    fn scalar(db: &Database, sql: &str) -> i64 {
+        db.with_conn(|conn| Ok(conn.query_row(sql, [], |row| row.get(0))?))
+            .expect("scalar query")
+    }
+
+    fn event_version(db: &Database, id: &str) -> i64 {
+        scalar(db, &format!("SELECT version FROM events WHERE id = '{id}'"))
+    }
+
+    fn event_title(db: &Database, id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn
+                .query_row("SELECT title FROM events WHERE id = ?1", [id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap_or_else(|_| "ABSENT".to_string()))
+        })
+        .expect("event title")
+    }
+
+    /// 作者が画面で出来事を編集する（人の書き込み経路。版は 1 つ進む）。
+    fn author_edit_title(db: &Database, id: &str, request_id: &str, title: &str) {
+        agent_event_update_with_authority_impl(
+            db,
+            serde_json::from_value::<AgentEventUpdatePayload>(json!({
+                "projectId": PROJECT, "sessionId": "sess-author", "surface": "manual",
+                "eventId": id, "baseVersion": event_version(db, id), "title": title
+            }))
+            .expect("update payload"),
+            human_context(request_id),
+        )
+        .expect("author edits the event title");
+    }
+
+    fn author_delete(db: &Database, id: &str, request_id: &str) {
+        agent_event_delete_with_authority_impl(
+            db,
+            serde_json::from_value::<AgentEventIdPayload>(json!({
+                "projectId": PROJECT, "sessionId": "sess-author", "surface": "manual",
+                "eventId": id, "baseVersion": event_version(db, id)
+            }))
+            .expect("delete payload"),
+            human_context(request_id),
+        )
+        .expect("author deletes the event");
+    }
+
+    fn author_set_participants(db: &Database, id: &str, request_id: &str, codex: &[&str]) {
+        agent_event_set_participants_with_authority_impl(
+            db,
+            serde_json::from_value::<AgentEventParticipantsPayload>(json!({
+                "projectId": PROJECT, "sessionId": "sess-author", "surface": "manual",
+                "eventId": id, "baseVersion": event_version(db, id), "codexEntryIds": codex
+            }))
+            .expect("participants payload"),
+            human_context(request_id),
+        )
+        .expect("author sets the participants");
+    }
+
+    fn author_unlink_scene(db: &Database, id: &str, scene: &str, request_id: &str) {
+        agent_scene_event_mutate_with_authority_impl(
+            db,
+            serde_json::from_value::<AgentSceneEventPayload>(json!({
+                "requestId": request_id, "projectId": PROJECT, "sessionId": "sess-author",
+                "surface": "manual", "sceneId": scene, "eventId": id
+            }))
+            .expect("scene link payload"),
+            false,
+            Some(human_context(request_id)),
+        )
+        .expect("author unlinks the scene");
+    }
+
+    fn snapshot(db: &Database, snapshot_id: &str) {
+        snapshot_restore::snapshot(db, PROJECT, snapshot_id);
+    }
+
+    /// 実際の復元（Body の scope。出来事・場面の紐づき・参加者を含む）。
+    fn restore_body(db: &Database, request_id: &str, snapshot_id: &str) -> bool {
+        snapshot_restore::restore(
+            db,
+            PROJECT,
+            RESTORE_SESSION,
+            request_id,
+            snapshot_id,
+            vec![RestoreScope::Body],
+        )
+        .expect("restore the snapshot")
+    }
+
+    fn replay_payload(commit_id: &str, request_id: &str) -> UndoCommitPayload {
+        UndoCommitPayload {
+            project_id: PROJECT.to_string(),
+            session_id: "sess-replay".to_string(),
+            surface: None,
+            commit_id: Some(commit_id.to_string()),
+            request_id: Some(request_id.to_string()),
+        }
+    }
+
+    fn undo(db: &Database, commit_id: &str, request_id: &str) -> anyhow::Result<Value> {
+        narrative_extraction::narrative_extraction_undo_commit(
+            db,
+            replay_payload(commit_id, request_id),
+        )
+    }
+
+    fn redo(db: &Database, commit_id: &str, request_id: &str) -> anyhow::Result<Value> {
+        narrative_extraction::narrative_extraction_redo_commit(
+            db,
+            replay_payload(commit_id, request_id),
+        )
+    }
+
+    fn commit_status(db: &Database, commit_id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                [commit_id],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .expect("commit status")
+    }
+
+    fn prepared_db() -> Database {
+        let db = migrated_db();
+        snapshot_restore::seed_restore_prerequisites(&db, PROJECT, RESTORE_SESSION);
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, version, created_at, updated_at)
+             VALUES ('codex-p1', 'project-1', 'character', '参加者', 0, 't', 't')",
+            &[],
+            "run",
+        )
+        .expect("seed a codex entry (participants, and a Codex-only restore)");
+        db
+    }
+
+    /// 取り込みの 1 件（current Chronicle の経路。場面 1 つに紐づく出来事 1 つ）。
+    fn apply_one(db: &Database) -> String {
+        let applied = apply_current_chronicle_event(
+            db,
+            "run-restore-one",
+            "event-restore-one",
+            "取り込んだ出来事",
+        );
+        assert_eq!(applied["status"], "applied");
+        applied["commitId"].as_str().expect("commit id").to_string()
+    }
+
+    /// 取り込みの 3 件（出来事 3 つ、いずれも場面 1 つに紐づく。1 つに参加者）。
+    fn apply_three(db: &Database) -> String {
+        insert_scene(db, "scene-1", 3);
+        let payloads = [
+            event_create_payload("event-a", "A", "scene-1", 3),
+            event_create_payload("event-b", "B", "scene-1", 3),
+            event_create_payload("event-c", "C", "scene-1", 3),
+        ];
+        let pairs = seed_approved_proposals(db, "run-restore-three", "set-three", &payloads);
+        let ops = pairs
+            .iter()
+            .zip(payloads.iter())
+            .map(|(pair, payload)| (pair.0.clone(), pair.1.clone(), payload.clone()))
+            .collect();
+        let applied = prepare_and_apply(
+            db,
+            build_prepare(
+                "req-restore-three",
+                "digest-restore-three",
+                "set-three",
+                "run-restore-three",
+                ops,
+            ),
+        );
+        assert_eq!(applied["status"], "applied");
+        applied["commitId"].as_str().expect("commit id").to_string()
+    }
+
+    fn assert_code(result: anyhow::Result<Value>, code: &str, what: &str) {
+        let error = result.expect_err(what);
+        assert!(
+            format!("{error:#}").contains(code),
+            "{what}: expected {code}, got {error:#}"
+        );
+    }
+
+    fn event_count(db: &Database) -> i64 {
+        scalar(
+            db,
+            "SELECT COUNT(*) FROM events WHERE project_id = 'project-1'",
+        )
+    }
+
+    /// (a) 取り込み → スナップショット → 編集 → 復元 → 編集 → 取り消し。
+    /// 復元の後の編集は、取り消しで消えない。
+    #[test]
+    fn undo_after_restore_and_a_later_edit_is_refused_and_the_edit_stays() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-a");
+        author_edit_title(&db, "event-restore-one", "a-edit-1", "復元の前の編集");
+        assert!(!restore_body(&db, "restore-a", "snap-a"));
+        assert_eq!(event_title(&db, "event-restore-one"), "取り込んだ出来事");
+
+        author_edit_title(&db, "event-restore-one", "a-edit-2", "復元の後の編集");
+        let version = event_version(&db, "event-restore-one");
+        assert_code(
+            undo(&db, &commit, "a-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo after an edit that followed the restore",
+        );
+        assert_eq!(event_title(&db, "event-restore-one"), "復元の後の編集");
+        assert_eq!(event_version(&db, "event-restore-one"), version);
+        assert_eq!(commit_status(&db, &commit), "applied");
+    }
+
+    /// (b) 取り込み → スナップショット → 編集 → 復元（Body）→ 取り消し。Body の復元は場面の
+    /// 紐づきの incarnation token を振り直すので、出来事は取り込んだ時の snapshot と一致せず、
+    /// 取り消しは拒まれる（編集が無くても。拒まれるのは安全な側。復元の後の編集は無い）。
+    #[test]
+    fn undo_right_after_a_body_restore_is_refused_because_the_scene_link_was_reissued() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-b");
+        author_edit_title(&db, "event-restore-one", "b-edit-1", "復元の前の編集");
+        assert!(!restore_body(&db, "restore-b", "snap-b"));
+        assert_eq!(event_title(&db, "event-restore-one"), "取り込んだ出来事");
+
+        assert_code(
+            undo(&db, &commit, "b-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo right after a Body restore",
+        );
+        assert_eq!(event_count(&db), 1);
+        assert_eq!(event_title(&db, "event-restore-one"), "取り込んだ出来事");
+        assert_eq!(commit_status(&db, &commit), "applied");
+    }
+
+    /// (b) 出来事に触れない復元（Codex の scope）の後は、取り込んだ時のままなので、取り消し・
+    /// やり直しが通る。取り消しは出来事と紐づきを消し、やり直しは戻す。
+    #[test]
+    fn undo_and_redo_after_a_codex_only_restore_work_as_before() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-b2");
+        db.execute(
+            "UPDATE codex_entries SET name = '復元の前の編集' WHERE id = 'codex-p1'",
+            &[],
+            "run",
+        )
+        .expect("edit the codex entry before the restore");
+        let no_op = snapshot_restore::restore(
+            &db,
+            PROJECT,
+            RESTORE_SESSION,
+            "restore-b2",
+            "snap-b2",
+            vec![RestoreScope::Codex],
+        )
+        .expect("restore the Codex scope");
+        assert!(!no_op);
+        assert_eq!(
+            scalar(&db, "SELECT COUNT(*) FROM narrative_change_transactions WHERE source_domain = 'project.snapshot.restore'"),
+            1
+        );
+
+        let undone = undo(&db, &commit, "b2-undo").expect("undo after a Codex-only restore");
+        assert_eq!(undone["status"], "undone");
+        assert_eq!(event_count(&db), 0);
+        assert_eq!(scalar(&db, "SELECT COUNT(*) FROM scene_events"), 0);
+
+        let redone = redo(&db, &commit, "b2-redo").expect("redo after a Codex-only restore");
+        assert_eq!(redone["status"], "redone");
+        assert_eq!(event_count(&db), 1);
+        assert_eq!(event_title(&db, "event-restore-one"), "取り込んだ出来事");
+        assert_eq!(scalar(&db, "SELECT COUNT(*) FROM scene_events"), 1);
+    }
+
+    /// (b) 出来事に触れない復元の後でも、出来事を編集してから取り消せば拒まれ、編集は残る。
+    #[test]
+    fn undo_after_a_codex_only_restore_and_an_event_edit_is_refused_and_the_edit_stays() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-b3");
+        db.execute(
+            "UPDATE codex_entries SET name = '復元の前の編集' WHERE id = 'codex-p1'",
+            &[],
+            "run",
+        )
+        .expect("edit the codex entry before the restore");
+        snapshot_restore::restore(
+            &db,
+            PROJECT,
+            RESTORE_SESSION,
+            "restore-b3",
+            "snap-b3",
+            vec![RestoreScope::Codex],
+        )
+        .expect("restore the Codex scope");
+        author_edit_title(&db, "event-restore-one", "b3-edit", "復元の後の編集");
+
+        assert_code(
+            undo(&db, &commit, "b3-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo after a Codex-only restore and an event edit",
+        );
+        assert_eq!(event_title(&db, "event-restore-one"), "復元の後の編集");
+    }
+
+    /// (c) 取り込み → スナップショット → 取り消し（出来事が消える）→ 復元（出来事が戻る）→
+    /// 編集 → やり直し。出来事が既にあるので、やり直しは拒まれ、復元の後の編集は残る。
+    #[test]
+    fn redo_after_a_restore_brought_the_event_back_is_refused_and_the_edit_stays() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-c");
+        undo(&db, &commit, "c-undo").expect("undo before the restore");
+        assert_eq!(event_count(&db), 0);
+        assert!(!restore_body(&db, "restore-c", "snap-c"));
+        assert_eq!(event_count(&db), 1);
+
+        author_edit_title(&db, "event-restore-one", "c-edit", "復元の後の編集");
+        let version = event_version(&db, "event-restore-one");
+        let error = redo(&db, &commit, "c-redo").expect_err("redo over the restored event");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("NEX_COMMIT_EVENT_EDITED")
+                || message.contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT"),
+            "unexpected redo refusal: {message}"
+        );
+        assert_eq!(event_title(&db, "event-restore-one"), "復元の後の編集");
+        assert_eq!(event_version(&db, "event-restore-one"), version);
+        assert_eq!(commit_status(&db, &commit), "undone");
+        assert_eq!(event_count(&db), 1);
+    }
+
+    /// (c) 編集が無くても、出来事が既にあれば、やり直しは拒まれる（二重に作らない）。
+    #[test]
+    fn redo_after_a_restore_brought_the_event_back_never_creates_a_second_one() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-c2");
+        undo(&db, &commit, "c2-undo").expect("undo before the restore");
+        assert!(!restore_body(&db, "restore-c2", "snap-c2"));
+        assert_eq!(event_count(&db), 1);
+
+        assert!(redo(&db, &commit, "c2-redo").is_err());
+        assert_eq!(event_count(&db), 1);
+        assert_eq!(commit_status(&db, &commit), "undone");
+    }
+
+    /// (d) 取り込み → スナップショット → 出来事を画面で消す → 復元（戻る）→ 取り消し。
+    /// 復元で戻った出来事の場面の紐づきは token が振り直されているので、取り消しは拒まれ、
+    /// 戻った出来事はそのまま残る（作者の編集も、取り消しによる削除も起きない）。
+    #[test]
+    fn undo_after_the_event_was_deleted_and_restored_is_refused_and_the_event_stays() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-d");
+        author_delete(&db, "event-restore-one", "d-delete");
+        assert_eq!(event_count(&db), 0);
+        assert!(!restore_body(&db, "restore-d", "snap-d"));
+        assert_eq!(event_count(&db), 1);
+
+        assert_code(
+            undo(&db, &commit, "d-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo of the restored event",
+        );
+        assert_eq!(event_count(&db), 1);
+        assert_eq!(commit_status(&db, &commit), "applied");
+    }
+
+    /// (d) 復元で戻った出来事を、作者が編集すれば、取り消しは拒まれる。
+    #[test]
+    fn undo_after_the_event_was_deleted_restored_and_edited_is_refused() {
+        let db = prepared_db();
+        let commit = apply_one(&db);
+        snapshot(&db, "snap-d2");
+        author_delete(&db, "event-restore-one", "d2-delete");
+        assert!(!restore_body(&db, "restore-d2", "snap-d2"));
+        author_edit_title(&db, "event-restore-one", "d2-edit", "復元の後の編集");
+
+        assert_code(
+            undo(&db, &commit, "d2-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo after deleting, restoring and editing",
+        );
+        assert_eq!(event_title(&db, "event-restore-one"), "復元の後の編集");
+    }
+
+    /// (f) 3 つの出来事を取り込む。出来事に触れない復元の後に、一部だけを編集したら、取り消し
+    /// 全体が拒まれる（一部だけ巻き戻らない）。編集の種類は、題名・参加者・場面の紐づき。
+    fn three_events_with_one_edited_after_restore(
+        tag: &str,
+        edit: impl Fn(&Database),
+    ) -> (Database, String) {
+        let db = prepared_db();
+        let commit = apply_three(&db);
+        snapshot(&db, &format!("snap-{tag}"));
+        // 復元で戻す差を作る。出来事・紐づきに触れない復元（Codex の scope）にして、
+        // 場面の紐づきの token の振り直しが拒否の原因にならないようにする（拒否の原因を
+        // 復元の後の編集だけにする）。
+        db.execute(
+            "UPDATE codex_entries SET name = '復元の前の編集' WHERE id = 'codex-p1'",
+            &[],
+            "run",
+        )
+        .expect("edit the codex entry before the restore");
+        let no_op = snapshot_restore::restore(
+            &db,
+            PROJECT,
+            RESTORE_SESSION,
+            &format!("restore-{tag}"),
+            &format!("snap-{tag}"),
+            vec![RestoreScope::Codex],
+        )
+        .expect("restore the Codex scope");
+        assert!(!no_op);
+        assert_eq!(event_title(&db, "event-a"), "A");
+        edit(&db);
+        let before = (
+            event_count(&db),
+            scalar(&db, "SELECT COUNT(*) FROM scene_events"),
+        );
+        assert_code(
+            undo(&db, &commit, &format!("{tag}-undo")),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo of the whole commit",
+        );
+        assert_eq!(
+            (
+                event_count(&db),
+                scalar(&db, "SELECT COUNT(*) FROM scene_events")
+            ),
+            before,
+            "a refused undo leaves every event and link"
+        );
+        assert_eq!(event_count(&db), 3);
+        assert_eq!(commit_status(&db, &commit), "applied");
+        (db, commit)
+    }
+
+    #[test]
+    fn undo_of_three_events_is_refused_as_a_whole_when_one_title_was_edited_after_the_restore() {
+        let (db, _) = three_events_with_one_edited_after_restore("f-title", |db| {
+            author_edit_title(db, "event-b", "f-title-edit", "Bの復元後の編集");
+        });
+        assert_eq!(event_title(&db, "event-b"), "Bの復元後の編集");
+        assert_eq!(event_title(&db, "event-a"), "A");
+        assert_eq!(event_title(&db, "event-c"), "C");
+    }
+
+    #[test]
+    fn undo_of_three_events_is_refused_as_a_whole_when_participants_were_edited_after_the_restore()
+    {
+        let (db, _) = three_events_with_one_edited_after_restore("f-part", |db| {
+            author_set_participants(db, "event-a", "f-part-edit", &["codex-p1"]);
+        });
+        assert_eq!(
+            scalar(
+                &db,
+                "SELECT COUNT(*) FROM event_participants WHERE event_id = 'event-a'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn undo_of_three_events_is_refused_as_a_whole_when_a_scene_link_was_removed_after_the_restore()
+    {
+        let (db, _) = three_events_with_one_edited_after_restore("f-link", |db| {
+            author_unlink_scene(db, "event-c", "scene-1", "f-link-edit");
+        });
+        assert_eq!(
+            scalar(
+                &db,
+                "SELECT COUNT(*) FROM scene_events WHERE event_id = 'event-c'"
+            ),
+            0
+        );
+    }
+
+    /// (f) 復元の後に何も編集しなくても、Body の復元は紐づきの token を振り直すので、3 つとも
+    /// 取り消しは拒まれ、何も消えない（一部だけ消えることはない）。
+    #[test]
+    fn undo_of_three_events_right_after_a_body_restore_is_refused_as_a_whole() {
+        let db = prepared_db();
+        let commit = apply_three(&db);
+        snapshot(&db, "snap-f-ok");
+        author_edit_title(&db, "event-b", "f-ok-pre", "復元の前の編集");
+        assert!(!restore_body(&db, "restore-f-ok", "snap-f-ok"));
+
+        assert_code(
+            undo(&db, &commit, "f-ok-undo"),
+            "NEX_COMMIT_EVENT_EDITED",
+            "undo of three events right after a Body restore",
+        );
+        assert_eq!(event_count(&db), 3);
+        assert_eq!(scalar(&db, "SELECT COUNT(*) FROM scene_events"), 3);
+    }
+
+    /// (c) 取り込みの前のスナップショットへ復元して出来事が消えた後に、やり直し。出来事が
+    /// 無いので、やり直しは取り込んだ出来事を作り直し、ほかの内容（場面の題名）は変えない。
+    #[test]
+    fn redo_after_a_restore_to_before_the_commit_recreates_only_the_committed_event() {
+        let db = prepared_db();
+        insert_scene(&db, "scene-1", 0);
+        snapshot(&db, "snap-c3");
+        let applied = apply_current_chronicle_event_in_existing_scene(
+            &db,
+            "run-restore-c3",
+            "event-restore-c3",
+            "取り込んだ出来事",
+        );
+        let commit = applied["commitId"].as_str().expect("commit id").to_string();
+        undo(&db, &commit, "c3-undo").expect("undo before the restore");
+        db.execute(
+            "UPDATE tree_nodes SET title = '場面の編集' WHERE id = 'scene-1'",
+            &[],
+            "run",
+        )
+        .expect("edit the scene before the restore");
+        assert!(!restore_body(&db, "restore-c3", "snap-c3"));
+        assert_eq!(event_count(&db), 0);
+
+        let redone = redo(&db, &commit, "c3-redo").expect("redo after the restore");
+        assert_eq!(redone["status"], "redone");
+        assert_eq!(event_count(&db), 1);
+        assert_eq!(event_title(&db, "event-restore-c3"), "取り込んだ出来事");
+        assert_eq!(
+            scalar(
+                &db,
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = 'scene-1' AND title = 'Scene'"
+            ),
+            1,
+            "the restored scene is not touched by the redo"
+        );
+    }
+
+    /// 取り込みの前のスナップショットへ復元すると出来事が消える。commit はまだ applied なので、
+    /// 取り消しは出来事が無くて拒まれる（何も壊さない）。
+    #[test]
+    fn undo_after_a_restore_that_removed_the_event_is_refused_and_changes_nothing() {
+        let db = prepared_db();
+        insert_scene(&db, "scene-1", 0);
+        snapshot(&db, "snap-g");
+        let applied = apply_current_chronicle_event_in_existing_scene(
+            &db,
+            "run-restore-g",
+            "event-restore-g",
+            "取り込んだ出来事",
+        );
+        let commit = applied["commitId"].as_str().expect("commit id").to_string();
+        assert_eq!(event_count(&db), 1);
+        assert!(!restore_body(&db, "restore-g", "snap-g"));
+        assert_eq!(event_count(&db), 0);
+
+        assert!(undo(&db, &commit, "g-undo").is_err());
+        assert_eq!(event_count(&db), 0);
+        assert_eq!(commit_status(&db, &commit), "applied");
+    }
 }
