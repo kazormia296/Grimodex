@@ -41,7 +41,13 @@ key, and must declare that strategy in their matrix row. A restore is the
 exception: it emits one project-level `project-restored` epoch-reset marker and
 asks C2 for a full rebuild instead of replaying every restored row.
 
-A restore does not write a head for the objects it changes, so the Feed's
+A restore writes one project marker and no head for most of the objects it
+changes. The only per-object events it writes are the Scene-level ones it
+always wrote: one `scene-scope` event per Scene whose Scope binding it
+re-creates, and the `scene-body-declaration` events that clear a Scene's body
+declaration. Those two kinds are the only objects whose head a restore moves;
+the heads of every other kind (events, Codex, Snippets, a Scene's row, the
+calendar, Plot, Foreshadow, and so on) stay where they were. So the Feed's
 continuity check (an event's `before` must equal the object's head) treats it
 as a boundary rather than as a break. The decision is made from facts the
 database already holds, never from a caller's claim (DR-SRC-3, DR-SRC-6): a
@@ -50,7 +56,15 @@ transaction of origin `restore` and source domain `project.snapshot.restore`
 carrying the `project-restored` event) of the same project. It is not narrowed
 by the restored scope, because a restore changes other scopes' rows by cascade.
 The first write records the row as it is and moves the head past the marker, so
-the next write is strict again; a project with no restore, another project's
+the next write is strict again. Until that first write, the Contribution
+`target_state` projection (which reads only Feed events) can undercount: a field
+the restore changed is not evidence of an edit, and the first write's `before`
+is the row as the restore left it, so it can only mark the paths that write
+declares as modified. A writer that skips the Feed (SQL written directly) has
+the same effect after a restore. The production MCP routes go through
+`grimodex_db::agent_writes` and so through the Feed; the Chronicle writers in
+`grimodex-mcp/src/db.rs` do not, but they are `#[allow(dead_code)]` and only
+tests call them. A project with no restore, another project's
 marker, another origin or source domain, and the second event of the same batch
 stay refused. The restore's own Scene Scope rebinding (it re-creates a binding
 the head has already passed) is exempt through one crate-private entry,
@@ -59,15 +73,25 @@ and limited to `scene-scope` events (DR-SRC-8). Undo and Redo are refused with
 `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` when the forward
 transaction they replay predates a restore marker (DR-SRC-9), except the undo
 and redo of an AI-extraction apply commit (`undo_commit` / `redo_commit`)
-whose operations are all of a kind verified through a real restore (DR-SRC-12:
-Chronicle event create, Codex entry create and patch, Scene and Event Chronicle
-patch, Codex detail value patch). Those are told apart by the database rows of
+whose operations are all of a kind verified through a real restore, including a
+restore that branches (DR-SRC-12, revision 2: Chronicle event create, Codex
+entry create and patch, Scene Chronicle patch). There is no screen that calls
+`undo_commit` / `redo_commit` today; this is how they behave for a future one,
+not a change an author sees now. Those are told apart by the database rows of
 the replayed root transaction, its commit, its journal entities and its
 operations, and are guarded by the commit's own preflight and by the continuity
-check instead. A commit of any other kind (Plot, Foreshadow, temporal
-node/constraint/projection, Codex phase, semantic binding, story order, and so
-on), or one that mixes a verified kind with another, stays refused. The sentence above
-(one marker per restore, no per-object events) is unchanged. Rationale:
+check instead. A commit of any other kind (Event Chronicle patch, Codex detail
+value patch, Plot, Foreshadow, temporal node/constraint/projection, Codex phase,
+semantic binding, story order, and so on), or one that mixes a verified kind
+with another, stays refused; whether to lift the ones not verified is for the
+user to decide again (confirmation 88). After a Body restore a verified undo is
+still refused (`NEX_COMMIT_EVENT_EDITED`), because the restore re-issues the
+Scene links' incarnation tokens. Plot and Foreshadow writers take their
+`before` from the Feed head rather than from the row (`plot_threads.rs`,
+`foreshadow.rs`), so the continuity check does not guard them the same way
+(a separate lane, DR-SRC-10). The rule above (one project marker per restore,
+no per-object head for the objects it changes) is unchanged, apart from the two
+Scene-level kinds named at the start. Rationale:
 `docs/plans/nir1-lane-decisions/snapshot-restore-feed-continuity-decisions.md`.
 
 `pnpm test:narrative:change-feed-writers` validates the manifest, known public

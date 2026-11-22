@@ -75,6 +75,7 @@
 | [cli-confirm-decisions.md](cli-confirm-decisions.md) | CLI（claude／codex／opencode）の実行確認の過剰を直す lane（DR-M1-1〜6。NIR-1 の事前委任の外、contracts `206ad2f4` のユーザーの回答の範囲。(a) 同じ session で承認済みの (canonical path, SHA-256) は検出の再実行で再確認しない・拒否は null、記憶は memory のみ、(b) 起動ごとの全文 hash を承認時の stat〔dev・ino・size・mtime・ctime〕の一致で省く、残余と GDX-PRECHECK-001 の表を含む。初回の確認・custom path の確認・Codex App Server は範囲外） |
 | [k25-pr1-decisions.md](k25-pr1-decisions.md) | K2/5 の PR-1（K25P1-1〜8。#996。Graph の追加の場面の reader から本文の宣言・束縛・veto・quarantine と click の handle の宣言の欄を外す） | 確認済み契約 K2/5 の記録（mutation の前の記録） |
 | [k32r-decisions.md](k32r-decisions.md) | K3/2 の Graph の行の改訂の実装（K32R-1〜7。`profile_gate` の共通化、barrier をまたぐ worker と READY の再利用の `caller_epoch` の絞り、理由コード、click の handle、文書。Graph の公開の旗は変えない） | 確認済み K3/2R-1（contracts `11dc9eda` の確認 2）の記録（mutation の前の記録と、実装後の追記） |
+| [snapshot-restore-feed-continuity-decisions.md](snapshot-restore-feed-continuity-decisions.md) | スナップショットの復元の後の変更の記録の連続性（DR-SRC-1〜13。DR-SRC-6〜11: 免除の述語・復元専用の入口・復元の前の Undo／Redo の拒否・browser-mock、DR-SRC-12: 取り込みの取り消し・やり直しを、確かめた種類だけ拒否から外す〔改訂 2 で版だけを比べる 2 種類を戻した〕、DR-SRC-13: 統合者の点検への反映） | ユーザーの確認 81・83・88（contracts `512d1a508`）。**NIR-1 の委任の外**（記録は、mutation の前の判断と、実装・点検の後の追記）。枝 `claude/snapshot-restore-event-head` |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。
 
