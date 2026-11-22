@@ -18,6 +18,9 @@ use grimodex_db::agent_writes::{
     AgentEventParticipantsPayload, AgentEventUpdatePayload, AgentSceneEventPayload,
     AgentUndoJournalPayload, RendererCanonicalWriteContext,
 };
+use grimodex_db::chronicle_bulk::{
+    agent_chronicle_bulk_mutate_with_authority_impl, AgentChronicleBulkPayload,
+};
 use grimodex_db::domain_writes::{
     tree_node_create, tree_node_delete, tree_node_patch, TreeNodeCreatePayload,
     TreeNodeDeletePayload, TreeNodePatchPayload,
@@ -35,6 +38,7 @@ use grimodex_db::project_snapshots::{
     CreateProjectSnapshotPayload, RestoreScope, SnapshotInsertMode, SnapshotInsertPlan,
     SnapshotRestoreTable,
 };
+use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{foreshadow, plot_threads, snippet_writes, Database};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -1710,29 +1714,60 @@ fn edit_undo_restore_edit_then_the_old_journal_is_refused_and_the_edit_stays() {
     let _ = before;
 }
 
+/// 変更の無い restore は marker を書かないので、古い Undo は拒まれない。fixture は、復元が
+/// 行を変えない scope（Foreshadow）だけで、実際の no_op=true と marker 0 件を固定する。
+/// （出来事に場面の紐づきがあれば、本文が同じでも Body の復元は marker を書く。それは下の
+/// `a_body_restore_that_reissues_scene_links_writes_a_marker_even_with_the_same_text`。）
 #[test]
 fn a_net_no_op_restore_does_not_refuse_the_undo() {
     let db = new_db();
     must(bare_event_create(&db, "create-e1", "e1", "orig"), "create");
     must(ev_update(&db, "e1", "J1", "edited"), "edit");
     snapshot(&db, "S1");
-    // The snapshot already holds the current state: nothing to restore.
-    must(body(&db, "r1", "S1"), "restore");
-    if marker_count(&db) == 0 {
+    assert_eq!(
         must(
-            undo_replay(&db, "J1", "undo"),
-            "no marker, nothing is superseded",
-        );
-        assert_eq!(title_of(&db, "e1"), "orig");
-    } else {
-        // The restore did write a marker for this fixture: then the undo of
-        // the older edit is refused by design (not a net no-op).
-        must_fail_with(
-            undo_replay(&db, "J1", "undo"),
-            SUPERSEDED,
-            "marker was written",
-        );
-    }
+            restore(&db, "r1", "S1", vec![RestoreScope::Foreshadow]),
+            "restore a scope that changes nothing"
+        ),
+        "no_op=true"
+    );
+    assert_eq!(marker_count(&db), 0, "a no-op restore writes no marker");
+    must(
+        undo_replay(&db, "J1", "undo"),
+        "no marker, nothing is superseded",
+    );
+    assert_eq!(title_of(&db, "e1"), "orig");
+}
+
+/// 上の逆：出来事に場面の紐づきがあると、本文が同じでも Body の復元は紐づきの
+/// incarnation token を振り直して marker を書く（no_op=false）。古い Undo は拒まれる。
+#[test]
+fn a_body_restore_that_reissues_scene_links_writes_a_marker_even_with_the_same_text() {
+    let db = new_db();
+    must(scene_create(&db, "s1"), "scene");
+    must(bare_event_create(&db, "create-e1", "e1", "orig"), "create");
+    must(ev_update(&db, "e1", "J1", "edited"), "edit");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+             VALUES ('s1', 'e1', 'token-1')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("link the scene and the event");
+    snapshot(&db, "S1");
+    assert_eq!(
+        must(body(&db, "r1", "S1"), "restore"),
+        "no_op=false",
+        "the links are re-issued, so the restore is not a no-op"
+    );
+    assert_eq!(marker_count(&db), 1);
+    must_fail_with(
+        undo_replay(&db, "J1", "undo"),
+        SUPERSEDED,
+        "the marker was written",
+    );
 }
 
 #[test]
@@ -1744,6 +1779,157 @@ fn undo_and_redo_without_any_restore_are_unchanged() {
     assert_eq!(title_of(&db, "e1"), "orig");
     must(undo_replay(&db, "J1", "redo"), "redo");
     assert_eq!(title_of(&db, "e1"), "edited");
+}
+
+// =====================================================================
+// The first write after a restore through the other writers
+// (Chronicle bulk, Scene body bundle) also chains from the restored state
+// =====================================================================
+
+fn bulk(db: &Database, req: &str, operations: Value) -> anyhow::Result<Value> {
+    agent_chronicle_bulk_mutate_with_authority_impl(
+        db,
+        de::<AgentChronicleBulkPayload>(json!({
+            "requestId": req, "projectId": P, "sessionId": SESSION,
+            "surface": "manual", "operations": operations
+        }))?,
+        Some(human_context(req)),
+    )
+}
+
+fn scene_updated_at(db: &Database, id: &str) -> String {
+    one_string(db, "SELECT updated_at FROM tree_nodes WHERE id = ?1", &[id]).expect("updated_at")
+}
+
+fn save_body(db: &Database, scene: &str, req: &str, text: &str) -> anyhow::Result<()> {
+    save_scene_body_bundle(
+        db,
+        SaveSceneBodyBundlePayload {
+            scene_id: scene.to_string(),
+            project_id: P.to_string(),
+            request_id: req.to_string(),
+            session_id: SESSION.to_string(),
+            event_uid: format!("uid-{req}"),
+            origin: NarrativeChangeOrigin::Human,
+            timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
+            include_sidecars: false,
+            base_version: Some(ver(db, "tree_nodes", scene)),
+            updated_at: "2026-11-22T00:00:00.000Z".to_string(),
+            content_json: format!(
+                "{{\"type\":\"doc\",\"content\":[{{\"type\":\"paragraph\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}]}}"
+            ),
+            char_count: text.chars().count() as i64,
+            placed_beat_preview: None,
+            unplaced_beats_doc: "[]".to_string(),
+            unplaced_beat_preview: None,
+            authorship_spans: vec![],
+            foreshadow_setups: vec![],
+            foreshadow_payoffs: vec![],
+            foreshadow_base_versions: std::collections::HashMap::new(),
+            annotation_anchors: vec![],
+            beat_mentions: vec![],
+            beat_pov_overrides: vec![],
+            doc_content_size: 2 + text.chars().count() as i64,
+        },
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn chronicle_bulk_writes_after_a_restore_succeed_twice() {
+    let db = new_db();
+    must(scene_create(&db, "s1"), "scene");
+    must(bare_event_create(&db, "create-e1", "e1", "orig"), "event");
+    snapshot(&db, "S1");
+    must(ev_update(&db, "e1", "edit-e1", "edited"), "edit the event");
+    must(
+        scene_patch(&db, "s1", "edit-s1", "edited scene"),
+        "edit the scene",
+    );
+    must(body(&db, "r1", "S1"), "restore");
+    assert_eq!(marker_count(&db), 1);
+
+    // The first write to each object after the restore.
+    must(
+        bulk(
+            &db,
+            "bulk-lane",
+            json!([{ "kind": "eventSetLane", "eventId": "e1",
+                     "baseVersion": ver(&db, "events", "e1"),
+                     "primaryCodexId": null, "laneGroup": "lane-a" }]),
+        ),
+        "eventSetLane as the first write after the restore",
+    );
+    must(
+        bulk(
+            &db,
+            "bulk-pov",
+            json!([{ "kind": "sceneSetPov", "sceneId": "s1",
+                     "baseUpdatedAt": scene_updated_at(&db, "s1"),
+                     "povCharacterId": null }]),
+        ),
+        "sceneSetPov as the first write after the restore",
+    );
+    // And the second write chains from the first.
+    must(
+        bulk(
+            &db,
+            "bulk-lane-2",
+            json!([{ "kind": "eventSetLane", "eventId": "e1",
+                     "baseVersion": ver(&db, "events", "e1"),
+                     "primaryCodexId": null, "laneGroup": "lane-b" }]),
+        ),
+        "the second eventSetLane",
+    );
+    must(
+        bulk(
+            &db,
+            "bulk-delete",
+            json!([{ "kind": "eventDelete", "eventId": "e1",
+                     "baseVersion": ver(&db, "events", "e1") }]),
+        ),
+        "eventDelete after the restore",
+    );
+}
+
+#[test]
+fn scene_body_saves_after_a_restore_succeed_twice() {
+    let db = new_db();
+    must(scene_create(&db, "s1"), "scene");
+    snapshot(&db, "S1");
+    must(
+        scene_patch(&db, "s1", "edit-s1", "edited scene"),
+        "edit the scene",
+    );
+    must(body(&db, "r1", "S1"), "restore");
+    assert_eq!(marker_count(&db), 1);
+    must(
+        save_body(&db, "s1", "body-1", "first save"),
+        "the first Scene body save after the restore",
+    );
+    must(
+        save_body(&db, "s1", "body-2", "second save"),
+        "the second Scene body save",
+    );
+}
+
+#[test]
+fn scene_body_save_after_the_scene_was_deleted_and_restored_succeeds() {
+    let db = new_db();
+    must(scene_create(&db, "s1"), "scene");
+    snapshot(&db, "S1");
+    must(scene_delete(&db, "s1", "del-s1"), "delete the scene");
+    must(body(&db, "r1", "S1"), "restore brings the scene back");
+    assert_eq!(marker_count(&db), 1);
+    must(
+        save_body(&db, "s1", "body-1", "first save"),
+        "the first Scene body save after delete + restore",
+    );
+    must(
+        save_body(&db, "s1", "body-2", "second save"),
+        "the second Scene body save",
+    );
 }
 
 // =====================================================================

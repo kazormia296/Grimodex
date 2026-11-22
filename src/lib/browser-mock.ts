@@ -4234,6 +4234,12 @@ export async function createBrowserMock(
       }
       // A replay older than a project snapshot restore is refused (Native,
       // DR-SRC-9): the restore replaced rows without recording the change.
+      // Native compares the sequence of the lineage root (the forward
+      // transaction); this compares the named original transaction directly.
+      // A restore writes no undo/redo, so no replay chain can start after one
+      // and both compare the same forward transaction in every reachable state
+      // (edit, undo, restore, redo is refused either way). The mock has no
+      // commit replay (DR-SRC-12), so there is no exemption to mirror.
       const root = queryOne(
         `SELECT source_change_event_sequence AS sequence
            FROM narrative_change_transactions

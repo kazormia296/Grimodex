@@ -2903,7 +2903,6 @@ fn apply_entry_commit(db: &Database, tag: &str, entry_id: &str) -> String {
 /// 実行は下の試験）。
 #[test]
 fn a_restore_marker_alone_does_not_refuse_the_undo_or_redo_of_a_commit() {
-    const SUPERSEDED: &str = "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE";
     let db = migrated_db();
     let applied_before = apply_entry_commit(&db, "rs-a", "entry-rs-a");
     let undone_before = apply_entry_commit(&db, "rs-b", "entry-rs-b");
@@ -2941,7 +2940,6 @@ fn a_restore_marker_alone_does_not_refuse_the_undo_or_redo_of_a_commit() {
         ),
         1
     );
-    let _ = SUPERSEDED;
 }
 
 fn entry_state(db: &Database, id: &str) -> String {
@@ -3096,4 +3094,117 @@ fn undo_of_a_patch_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed
         entry_state(&db, "entry-rc3"),
         "復元の後の編集|[\"旧\",\"新\"]|v1"
     );
+}
+
+// --- detail value の patch の commit と復元（確認 88 の条件を、版だけを比べる種類にも当てる） ---
+
+fn seed_detail_definition(db: &Database, definition_id: &str) {
+    db.execute(
+        "INSERT INTO codex_detail_definitions
+            (id, project_id, type_slug, name, field_type, field_config, sort_order,
+             include_in_context, version, created_at, updated_at)
+         VALUES (?, 'project-1', 'character', '年齢', 'text', NULL, 0, 0, 0, 't', 't')",
+        &[Value::String(definition_id.to_string())],
+        "run",
+    )
+    .expect("insert definition");
+}
+
+/// 作者が画面で detail value を書く（製品の Codex 書き込み経路。head を進める）。
+fn author_detail_upsert(db: &Database, request_id: &str, base_version: i64, value: &str) {
+    let payload: grimodex_db::codex_writes::AgentCodexMutationPayload =
+        serde_json::from_value(json!({
+            "operation": "detail.value.upsert",
+            "projectId": "project-1",
+            "requestId": request_id,
+            "sessionId": "sess-author",
+            "eventUid": format!("uid-{request_id}"),
+            "origin": "human",
+            "surface": "manual",
+            "entryId": "entry-dv",
+            "definitionId": "def-dv",
+            "valueId": "dv-1",
+            "value": value,
+            "baseVersion": base_version
+        }))
+        .expect("detail value payload");
+    grimodex_db::codex_writes::agent_codex_mutate_impl(db, payload)
+        .expect("author writes the detail value");
+}
+
+fn detail_state(db: &Database) -> String {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(value, '-') || '|v' || version
+                   FROM codex_detail_values WHERE id = 'dv-1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "ABSENT".to_string()))
+    })
+    .expect("read the detail value state")
+}
+
+/// (c) detail value の patch の commit（版 1 → 2）。スナップショットは commit の前（版 1）。
+/// Codex の復元（版 1）→ 復元の後の編集（版 2 = commit の版と偶然一致）→ 取り消し。
+/// 専用の守り（版だけを比べる）は通るが、変更の記録の連続性の検査が止める。編集は残る。
+#[test]
+fn undo_of_a_detail_value_patch_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-dv", 0);
+    seed_detail_definition(&db, "def-dv");
+    // 元の値は直に置く（head の無い、取り込みの前の値）。
+    db.execute(
+        "INSERT INTO codex_detail_values
+            (id, entry_id, definition_id, value, version, created_at, updated_at)
+         VALUES ('dv-1', 'entry-dv', 'def-dv', 'orig', 1, 't', 't')",
+        &[],
+        "run",
+    )
+    .expect("seed the detail value");
+    assert_eq!(detail_state(&db), "orig|v1");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-dv");
+
+    let items = [(
+        "codex.detail.value.set",
+        json!({
+            "entryId": "entry-dv",
+            "definitionId": "def-dv",
+            "value": "AI",
+            "occ": { "kind": "version", "version": 1 }
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-dv", "set-dv", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-dv",
+            "dg-dv",
+            "set-dv",
+            "run-dv",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(detail_state(&db), "AI|v2");
+
+    restore_codex(&db, "restore-dv", "snap-dv");
+    assert_eq!(detail_state(&db), "orig|v1");
+
+    // 復元の後の編集で版が 2 になり、commit の版（2）と一致する。
+    author_detail_upsert(&db, "dv-after", 1, "AUTHOR AFTER RESTORE");
+    assert_eq!(detail_state(&db), "AUTHOR AFTER RESTORE|v2");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "dv-undo"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_DISCONTINUITY"],
+        "undo of the detail value patch after the Codex restore and a later edit",
+    );
+    assert_eq!(detail_state(&db), "AUTHOR AFTER RESTORE|v2");
 }
