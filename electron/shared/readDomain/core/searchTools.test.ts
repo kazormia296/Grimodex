@@ -66,7 +66,11 @@ function makeCtx(
       readSceneBody: async () => "",
       readSceneBodies: async () => new Map<string, string>(),
     },
-    native: { fts },
+    // search_scenes・search_snippets は foreshadowOpen を読まない（PR-5b で足した port）。
+    native: {
+      fts,
+      foreshadowOpen: async () => ({ foreshadows: [], setups: [] }),
+    },
     countTokens: (text) => text.length,
   };
   return { executors: createReadExecutors(ctx), captured, fts, getTreeState };

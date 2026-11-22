@@ -1225,12 +1225,18 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     "features/chronicle/eventRows",
     "features/narrative-extraction/temporal/types",
     "features/chat/rrfK",
+    // MP-4b PR-5b: the read side of the foreshadow rows, split out of src/features/foreshadow/api.ts
+    // (and the coercions shared with normalizeForeshadowRow). Not listed in a rule on purpose: api.ts
+    // matches no rule (every suite), so a rule here would narrow the selection below what editing api.ts gave.
+    "features/foreshadow/readRows",
+    "features/foreshadow/coerce",
   ];
   const splitFrom = [
     "src/features/chronicle/api.ts",
     "src/features/narrative-extraction/temporal/nodes.ts",
     "src/features/narrative-extraction/temporal/solver/resolveStoryRanks.ts",
     "src/features/chat/semanticRecall.ts",
+    "src/features/foreshadow/api.ts",
   ];
   assert.equal(moved.length, 21);
   for (const name of moved) {
@@ -1282,6 +1288,7 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     "codexTagTools",
     "searchTools",
     "searchHelpers",
+    "foreshadowTools",
     "readContext",
     "toolResult",
   ]) {
@@ -1315,9 +1322,12 @@ test("the tool-policy light suite runs the executors' golden and the shared core
     "src/features/chat/agent/toolExecutors.legacyNativePort.test.ts",
     "src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts",
     "src/features/chat/agent/readCore.mainAdapter.test.ts",
+    "src/features/chat/agent/readOpenForeshadowWire.test.ts",
     "electron/shared/readDomain/core/core.static.test.ts",
     "electron/shared/readDomain/core/readExecutors.test.ts",
     "electron/shared/readDomain/core/searchTools.test.ts",
+    "electron/shared/readDomain/core/foreshadowTools.test.ts",
+    "electron/shared/readDomain/features/foreshadow/readRows.test.ts",
     "electron/shared/mastraRead/tables.test.ts",
     "electron/main/mastraRead/irClosure.static.test.ts",
   ]) {

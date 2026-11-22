@@ -164,20 +164,20 @@ export interface CoreReadPorts {
 
 /**
  * The ports the read executors use: the database, the tree state (for the
- * project), the body reader, the token counter and, since PR-5a, the full-text
- * read of `native`. A later PR widens this as its tools need more of
+ * project), the body reader, the token counter and `native`, the typed reads
+ * (PR-5a: the full-text read `fts`; PR-5b: the open-foreshadow read
+ * `foreshadowOpen`). A later PR widens this as its tools need more of
  * `CoreReadPorts`; a port no tool reads yet is not asked of the caller.
  *
  * `native` is its own member and not a `Pick` key of `CoreReadPorts`: that
- * would ask for all four typed reads, and the two semantic reads and the
- * foreshadow read have no reader in the core yet (PR-5b, PR-7 and PR-8 add
- * theirs).
+ * would ask for all four typed reads, and the two semantic reads have no reader
+ * in the core yet (PR-7 and PR-8 add theirs).
  */
 export type CoreReadContext = Pick<
   CoreReadPorts,
   "getDb" | "getTreeState" | "body" | "countTokens"
 > & {
-  readonly native: Pick<CoreNativeReads, "fts">;
+  readonly native: Pick<CoreNativeReads, "fts" | "foreshadowOpen">;
 };
 
 /**

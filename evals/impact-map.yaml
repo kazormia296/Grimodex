@@ -167,10 +167,13 @@ rules:
       - electron/shared/readDomain/core/codexTagTools.ts
       - electron/shared/readDomain/core/searchTools.ts
       - electron/shared/readDomain/core/searchHelpers.ts
+      - electron/shared/readDomain/core/foreshadowTools.ts
       - electron/shared/readDomain/core/readContext.ts
       - electron/shared/readDomain/core/toolResult.ts
       - electron/shared/readDomain/core/readExecutors.test.ts
       - electron/shared/readDomain/core/searchTools.test.ts
+      - electron/shared/readDomain/core/foreshadowTools.test.ts
+      - electron/shared/readDomain/features/foreshadow/readRows.test.ts
       - electron/shared/readDomain/core/core.static.test.ts
       - electron/main/mastraReadParity.pipeline.spec.ts
       - src/features/settings/agentSettingApply.ts

@@ -41,6 +41,7 @@ function makeCtx(
     tree?: () => Partial<CoreTreeState>;
     answers?: Record<string, unknown[][]>;
     fts?: CoreNativeReads["fts"];
+    foreshadowOpen?: CoreNativeReads["foreshadowOpen"];
     readSceneBody?: (id: string) => Promise<string>;
     readSceneBodies?: (ids: readonly string[]) => Promise<Map<string, string>>;
   } = {},
@@ -62,17 +63,21 @@ function makeCtx(
   );
   const countTokens = vi.fn((text: string) => text.length);
   const fts = vi.fn(opts.fts ?? (async () => []));
+  const foreshadowOpen = vi.fn(
+    opts.foreshadowOpen ?? (async () => ({ foreshadows: [], setups: [] })),
+  );
   const ctx: CoreReadContext = {
     getDb,
     getTreeState,
     body: { barrier: "none", readSceneBody, readSceneBodies },
-    native: { fts },
+    native: { fts, foreshadowOpen },
     countTokens,
   };
   return {
     ctx,
     captured,
     fts,
+    foreshadowOpen,
     getDb,
     getTreeState,
     readSceneBody,
@@ -82,15 +87,17 @@ function makeCtx(
 }
 
 describe("createReadExecutors", () => {
-  it("builds the nine tools of groups B1, B2 and B3, in a frozen table, and reads no port", () => {
-    const { ctx, getDb, getTreeState, countTokens, fts } = makeCtx();
+  it("builds the eleven tools of groups B1, B2, B3 and B4, in a frozen table, and reads no port", () => {
+    const { ctx, getDb, getTreeState, countTokens, fts, foreshadowOpen } =
+      makeCtx();
     const executors = createReadExecutors(ctx);
     expect(Object.keys(executors).sort()).toEqual(
       [...CORE_READ_TOOL_NAMES].sort(),
     );
-    expect(CORE_READ_TOOL_NAMES).toHaveLength(9);
+    expect(CORE_READ_TOOL_NAMES).toHaveLength(11);
     expect(Object.isFrozen(executors)).toBe(true);
     expect(fts).not.toHaveBeenCalled();
+    expect(foreshadowOpen).not.toHaveBeenCalled();
     expect(getDb).not.toHaveBeenCalled();
     expect(getTreeState).not.toHaveBeenCalled();
     expect(countTokens).not.toHaveBeenCalled();
@@ -100,10 +107,17 @@ describe("createReadExecutors", () => {
     "%s: with no project it throws CoreProjectRequiredError before it reads anything",
     async (tool) => {
       for (const projectId of ["", "   ", undefined, null]) {
-        const { ctx, captured, fts, getDb, readSceneBody, readSceneBodies } =
-          makeCtx({
-            tree: () => ({ projectId: projectId as unknown as string }),
-          });
+        const {
+          ctx,
+          captured,
+          fts,
+          foreshadowOpen,
+          getDb,
+          readSceneBody,
+          readSceneBodies,
+        } = makeCtx({
+          tree: () => ({ projectId: projectId as unknown as string }),
+        });
         await expect(
           createReadExecutors(ctx)[tool]({
             id: "x",
@@ -114,6 +128,7 @@ describe("createReadExecutors", () => {
         ).rejects.toBeInstanceOf(CoreProjectRequiredError);
         expect(getDb).not.toHaveBeenCalled();
         expect(fts).not.toHaveBeenCalled();
+        expect(foreshadowOpen).not.toHaveBeenCalled();
         expect(captured).toEqual([]);
         expect(readSceneBody).not.toHaveBeenCalled();
         expect(readSceneBodies).not.toHaveBeenCalled();
@@ -127,6 +142,7 @@ describe("createReadExecutors", () => {
     ["get_thread_scenes", "threadId", "No threadId provided"],
     ["search_scenes", "query", "0 scenes found"],
     ["search_snippets", "query", "0 snippets found"],
+    ["get_foreshadow_detail", "id", "No id provided"],
   ] as const)(
     "%s: an empty %s is answered before the project is looked at",
     async (tool, key, summary) => {
@@ -249,6 +265,33 @@ describe("createReadExecutors", () => {
           ],
           plot_threads: [["t1", "Thread", "d", "a0"]],
           plot_thread_scene_links: [["n1", "develop", "", "a0"]],
+          // get_foreshadow_detail: a foreshadow (every column, in the schema's order) with a
+          // payoff scene, so that its three statements (the foreshadow, its setups joined to
+          // the scenes, the payoff scene) are all sent.
+          foreshadows: [
+            [
+              "n1",
+              "p1",
+              "F",
+              null,
+              null,
+              "n1",
+              null,
+              null,
+              0,
+              0,
+              1,
+              null,
+              null,
+              0,
+              null,
+              0,
+              0,
+            ],
+          ],
+          foreshadow_setups: [
+            ["n1", "designated_existing", null, null, "human", null, 0, "T"],
+          ],
         },
       });
       await createReadExecutors(ctx)[tool]({
@@ -276,6 +319,8 @@ describe("createReadExecutors", () => {
     expect([...tables].sort()).toEqual([
       "codex_entry_tags",
       "codex_tags",
+      "foreshadow_setups",
+      "foreshadows",
       "plot_thread_branches",
       "plot_thread_scene_links",
       "plot_threads",

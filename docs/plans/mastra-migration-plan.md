@@ -405,7 +405,7 @@
 - 範囲：
   - write 系 tool の main 化（survey 付録 A が挙げる 15 本。`propose_scene_body` を含み、MP-5 の 8 本と重なる）。
     manifest の read 以外は 18 本（write 16、destructive 2）で、survey の 15 本に UI の 3 本（`run_app_command`、`apply_layout_preset`、`propose_setting_change`）を足した数と合う。
-  - **capability（製品認可）の維持**：main の発行（`electron/main/ipc.ts:1557`）と消費（同 `:1644`）を、loop の中で同じ関数で行う。
+  - **capability（製品認可）の維持**：main の発行（`electron/main/ipc.ts:1595`）と消費（同 `:1682`）を、loop の中で同じ関数で行う。
     one-shot、`senderId`・projectId・入力 digest の束縛を保つ。廃止は製品認可の削除で委任外。
   - write 後処理（store の再読込、undo、timelapse、index の予約）の書き手と永続先。main に移る分は renderer への完了 event。
   - `chatMessageId` と、master の #940 の予約行との整合。
