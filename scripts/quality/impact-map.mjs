@@ -111,6 +111,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/agent/toolDefinitions.legacyGolden.test.ts",
         "src/features/chat/agent/readCore.mainAdapter.test.ts",
         "src/features/chat/agent/readOpenForeshadowWire.test.ts",
+        "src/features/chat/agent/toolExecutors.chronicleCharacterization.test.ts",
         "src/features/chat/agent/toolDefinitions.test.ts",
         "src/features/chat/agent/toolExecutors.legacyGolden.test.ts",
         "src/features/chat/agent/toolExecutors.legacyNativePort.test.ts",
@@ -136,6 +137,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "electron/shared/readDomain/core/searchTools.test.ts",
         "electron/shared/readDomain/core/foreshadowTools.test.ts",
         "electron/shared/readDomain/features/foreshadow/readRows.test.ts",
+        "electron/shared/readDomain/core/chronicleTools.test.ts",
+        "electron/shared/readDomain/core/chronicleReaders.test.ts",
+        "electron/shared/readDomain/core/chronicleMainContext.test.ts",
+        "electron/shared/readDomain/features/chronicle/readRows.test.ts",
         "electron/main/mastraRead/irClosure.static.test.ts",
       ],
       [
