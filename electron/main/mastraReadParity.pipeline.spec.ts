@@ -8,7 +8,8 @@
 // ORDER BY, how integers, booleans, timestamps and JSON columns come back, and
 // what a real FTS5 index finds. This spec seeds the SAME data (PR-0's
 // `legacyReadSeed.ts`, which imports nothing) into a real workspace, drives the
-// seven read tools of the core through `createCoreReadDb(createMainReadDb(..))`
+// read tools of the core through `createCoreReadDb(createMainReadDb(..))` (and,
+// for the search tools of PR-5a, Main's typed `fts` over the real FTS5 index)
 // and requires every golden case to come out the same: name, summary,
 // tokensUsed, content, and the bytes of `JSON.stringify(content)`.
 //
@@ -51,6 +52,7 @@ import {
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import {
   CoreProjectRequiredError,
+  type CoreNativeReads,
   type CoreReadContext,
 } from "../shared/mastraRead/ports.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
@@ -108,6 +110,18 @@ const GOLDEN_DIR = path.join(
   "agent",
   "__fixtures__",
   "legacyReadGolden",
+);
+/** The seed's archived scenes: Native's `fts` returns them, the tool drops them. */
+const ARCHIVED_SCENE_IDS: ReadonlySet<string> = new Set(
+  LEGACY_READ_SEED.filter((t) => t.table === "tree_nodes").flatMap((t) =>
+    t.rows
+      .filter(
+        (row) =>
+          (row as Record<string, unknown>)["node_type"] === "scene" &&
+          (row as Record<string, unknown>)["archived_at"] != null,
+      )
+      .map((row) => String((row as Record<string, unknown>)["id"])),
+  ),
 );
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -265,7 +279,7 @@ function goldenOf(tool: string): GoldenCase[] {
 }
 
 describe("the read core on Main's adapter over the real Native addon gives the renderer's results (PR-0 golden)", () => {
-  it("covers exactly the seven tools of groups B1 and B2, each with a golden", () => {
+  it("covers exactly the nine tools of groups B1, B2 and B3, each with a golden", () => {
     expect([...CORE_READ_TOOL_NAMES].sort()).toEqual(
       [
         "get_chapter_summaries",
@@ -275,6 +289,8 @@ describe("the read core on Main's adapter over the real Native addon gives the r
         "list_chapters",
         "list_codex_tags",
         "list_plot_threads",
+        "search_scenes",
+        "search_snippets",
       ].sort(),
     );
     for (const tool of CORE_READ_TOOL_NAMES) {
@@ -282,15 +298,20 @@ describe("the read core on Main's adapter over the real Native addon gives the r
     }
   });
 
-  it("every golden case of the seven tools is the same on the real addon, to the byte", async () => {
+  it("every golden case of the nine tools is the same on the real addon, to the byte", async () => {
     const ws = await startSeededWorkspace();
     const mainDb = createCoreReadDb(
       createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
     );
     // The tree state of a turn is what Main fixes at its start (DR-MP4-8): here
-    // only the project and the active scene, which is all the seven tools read
+    // only the project and the active scene, which is all the nine tools read
     // of it (the tree itself they read from the DB).
     let world: GoldenCase["world"] = { projectId: "" };
+    const realReads = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const ftsCalls: Array<Parameters<CoreNativeReads["fts"]>[0]> = [];
     const ctx: CoreReadContext = {
       getDb: () => mainDb,
       getTreeState: () => ({
@@ -299,12 +320,21 @@ describe("the read core on Main's adapter over the real Native addon gives the r
         activeSceneId: world.activeSceneId ?? null,
       }),
       body: createDbSceneBodyReader(() => mainDb),
+      // The real Native's full-text read, through Main's typed read (PR-5a),
+      // behind a spy: a case that reaches `fts` is the FTS arm (see below).
+      native: {
+        fts: async (args) => {
+          ftsCalls.push(args);
+          return realReads.fts(args);
+        },
+      },
       // The golden counts one UTF-16 unit as one token (PR-0's fixed counter).
       countTokens: (text) => (text ? text.length : 0),
     };
     const executors = createReadExecutors(ctx);
 
     const compared: Record<string, number> = {};
+    let ftsCases = 0;
     for (const tool of CORE_READ_TOOL_NAMES) {
       const cases = goldenOf(tool);
       let done = 0;
@@ -312,6 +342,7 @@ describe("the read core on Main's adapter over the real Native addon gives the r
       for (const golden of cases) {
         world = golden.world;
         ws.dbExecute.mockClear();
+        ftsCalls.length = 0;
         const label = `${tool} / ${golden.case}`;
         let actual: Awaited<ReturnType<(typeof executors)[typeof tool]>>;
         try {
@@ -327,21 +358,67 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           noProject += 1;
           continue;
         }
-        expect(
-          {
-            name: actual.name,
-            summary: actual.summary,
-            tokensUsed: actual.tokensUsed,
-            content: actual.content,
-          },
-          label,
-        ).toEqual({
-          name: golden.result.name,
-          summary: golden.result.summary,
-          tokensUsed: golden.result.tokensUsed,
-          content: golden.result.content,
-        });
-        expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+        if (ftsCalls.length === 0) {
+          // Not the FTS arm (a short word's LIKE-OR, an empty query, no
+          // match): nothing reached `fts`, and the golden is compared to the byte.
+          expect(
+            {
+              name: actual.name,
+              summary: actual.summary,
+              tokensUsed: actual.tokensUsed,
+              content: actual.content,
+            },
+            label,
+          ).toEqual({
+            name: golden.result.name,
+            summary: golden.result.summary,
+            tokensUsed: golden.result.tokensUsed,
+            content: golden.result.content,
+          });
+          expect(JSON.stringify(actual.content), label).toBe(
+            golden.contentJson,
+          );
+        } else {
+          // The FTS arm. The golden's order is browser-mock's LIKE scan order,
+          // which is not an order real FTS5 gives, and the renderer's own
+          // product path takes the order of Native's `fts` too. So the ORDER is
+          // required to be the order the real `fts` returned (with the archived
+          // scenes dropped, and cut to the tool's 10), computed here from a
+          // direct call of the real `fts` with the same arguments (not written
+          // down); everything else is still the golden's, to the byte: the
+          // summary, tokensUsed, and each row (the rows sorted by id, as JSON).
+          expect(ftsCalls, label).toHaveLength(1);
+          const call = ftsCalls[0]!;
+          const sourceType = call.scope === "scenes" ? "scene" : "snippet";
+          const direct = (await realReads.fts(call)) as Array<{
+            sourceType: string;
+            id: string;
+          }>;
+          const expectedIds = direct
+            .filter(
+              (hit) =>
+                hit.sourceType === sourceType &&
+                !(sourceType === "scene" && ARCHIVED_SCENE_IDS.has(hit.id)),
+            )
+            .map((hit) => hit.id)
+            .slice(0, 10);
+          const rows = actual.content as Array<{ id: string }>;
+          const goldenRows = golden.result.content as Array<{ id: string }>;
+          expect(
+            rows.map((row) => row.id),
+            `${label}: order of the real fts`,
+          ).toEqual(expectedIds);
+          const byId = (a: { id: string }, b: { id: string }) =>
+            a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+          expect(actual.name, label).toBe(golden.result.name);
+          expect(actual.summary, label).toBe(golden.result.summary);
+          expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+          expect(JSON.stringify([...rows].sort(byId)), label).toBe(
+            JSON.stringify([...goldenRows].sort(byId)),
+          );
+          ftsCases += 1;
+        }
+        ftsCalls.length = 0;
         // What went to Native is a SELECT by `all` or `values`, with the
         // identity of the turn as the fourth argument and no fifth.
         for (const call of ws.dbExecute.mock.calls) {
@@ -359,6 +436,9 @@ describe("the read core on Main's adapter over the real Native addon gives the r
     expect(Object.keys(compared).sort()).toEqual(
       [...CORE_READ_TOOL_NAMES].sort(),
     );
+    // The FTS-arm comparison above is not vacuous: golden cases do reach `fts`
+    // (search_scenes: 3 cases, search_snippets: 1).
+    expect(ftsCases).toBeGreaterThanOrEqual(4);
   });
 });
 
@@ -466,6 +546,45 @@ describe("main's typed reads against the real Native addon: the shape the later 
     // itself. This pins today's Native; a change here is a finding.
     expect(mainScenes).toContain("n-arch");
     expect(await ids(MAIN, "codex", "魔法")).toContain("c-secret");
+  });
+
+  it("search_scenes drops the archived scene that the real fts returns (the condition is the tool's), search_snippets follows the real fts order", async () => {
+    const ws = await startSeededWorkspace();
+    const reads = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const mainDb = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const executors = createReadExecutors({
+      getDb: () => mainDb,
+      getTreeState: () => ({
+        projectId: MAIN,
+        nodes: [],
+        activeSceneId: null,
+      }),
+      body: createDbSceneBodyReader(() => mainDb),
+      native: reads,
+      countTokens: (text) => (text ? text.length : 0),
+    });
+    // The word is only in the archived scene `n-arch`: Native's fts finds it ...
+    const raw = (await reads.fts({
+      projectId: MAIN,
+      query: "外部ファイル",
+      scope: "scenes",
+      limit: 50,
+    })) as Array<{ id: string }>;
+    expect(raw.map((r) => r.id)).toContain("n-arch");
+    // ... and the tool, which owns the archived condition, does not show it.
+    const scenes = await executors.search_scenes({ query: "外部ファイル" });
+    expect(scenes.content).toEqual([]);
+    expect(scenes.summary).toBe("0 scenes found");
+    // A snippet found by the real index comes back with its tags and preview.
+    const snippets = await executors.search_snippets({ query: "老魔術師" });
+    expect(
+      (snippets.content as Array<{ id: string }>).map((r) => r.id),
+    ).toEqual(["sn-2"]);
   });
 
   it("foreshadowOpen answers Native's own wire: the project's open foreshadows and their setups", async () => {

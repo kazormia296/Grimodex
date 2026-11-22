@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CoreProjectRequiredError,
+  type CoreNativeReads,
   type CoreReadContext,
   type CoreReadDbClient,
   type CoreTreeState,
@@ -39,6 +40,7 @@ function makeCtx(
   opts: {
     tree?: () => Partial<CoreTreeState>;
     answers?: Record<string, unknown[][]>;
+    fts?: CoreNativeReads["fts"];
     readSceneBody?: (id: string) => Promise<string>;
     readSceneBodies?: (ids: readonly string[]) => Promise<Map<string, string>>;
   } = {},
@@ -59,15 +61,18 @@ function makeCtx(
     opts.readSceneBodies ?? (async () => new Map<string, string>()),
   );
   const countTokens = vi.fn((text: string) => text.length);
+  const fts = vi.fn(opts.fts ?? (async () => []));
   const ctx: CoreReadContext = {
     getDb,
     getTreeState,
     body: { barrier: "none", readSceneBody, readSceneBodies },
+    native: { fts },
     countTokens,
   };
   return {
     ctx,
     captured,
+    fts,
     getDb,
     getTreeState,
     readSceneBody,
@@ -77,14 +82,15 @@ function makeCtx(
 }
 
 describe("createReadExecutors", () => {
-  it("builds the seven tools of groups B1 and B2, in a frozen table, and reads no port", () => {
-    const { ctx, getDb, getTreeState, countTokens } = makeCtx();
+  it("builds the nine tools of groups B1, B2 and B3, in a frozen table, and reads no port", () => {
+    const { ctx, getDb, getTreeState, countTokens, fts } = makeCtx();
     const executors = createReadExecutors(ctx);
     expect(Object.keys(executors).sort()).toEqual(
       [...CORE_READ_TOOL_NAMES].sort(),
     );
-    expect(CORE_READ_TOOL_NAMES).toHaveLength(7);
+    expect(CORE_READ_TOOL_NAMES).toHaveLength(9);
     expect(Object.isFrozen(executors)).toBe(true);
+    expect(fts).not.toHaveBeenCalled();
     expect(getDb).not.toHaveBeenCalled();
     expect(getTreeState).not.toHaveBeenCalled();
     expect(countTokens).not.toHaveBeenCalled();
@@ -94,7 +100,7 @@ describe("createReadExecutors", () => {
     "%s: with no project it throws CoreProjectRequiredError before it reads anything",
     async (tool) => {
       for (const projectId of ["", "   ", undefined, null]) {
-        const { ctx, captured, getDb, readSceneBody, readSceneBodies } =
+        const { ctx, captured, fts, getDb, readSceneBody, readSceneBodies } =
           makeCtx({
             tree: () => ({ projectId: projectId as unknown as string }),
           });
@@ -103,9 +109,11 @@ describe("createReadExecutors", () => {
             id: "x",
             sceneId: "x",
             threadId: "x",
+            query: "x",
           }),
         ).rejects.toBeInstanceOf(CoreProjectRequiredError);
         expect(getDb).not.toHaveBeenCalled();
+        expect(fts).not.toHaveBeenCalled();
         expect(captured).toEqual([]);
         expect(readSceneBody).not.toHaveBeenCalled();
         expect(readSceneBodies).not.toHaveBeenCalled();
@@ -117,6 +125,8 @@ describe("createReadExecutors", () => {
     ["get_scene", "id", "No id provided"],
     ["get_scene_timeline_neighbors", "sceneId", "No sceneId provided"],
     ["get_thread_scenes", "threadId", "No threadId provided"],
+    ["search_scenes", "query", "0 scenes found"],
+    ["search_snippets", "query", "0 snippets found"],
   ] as const)(
     "%s: an empty %s is answered before the project is looked at",
     async (tool, key, summary) => {
@@ -246,6 +256,8 @@ describe("createReadExecutors", () => {
         sceneId: "n1",
         threadId: "t1",
         type: "character",
+        // 3 字未満の語：search 2 本は fts を呼ばず LIKE-OR の文を出す。
+        query: "魔法",
       });
       all.push(...captured);
     }
@@ -267,6 +279,7 @@ describe("createReadExecutors", () => {
       "plot_thread_branches",
       "plot_thread_scene_links",
       "plot_threads",
+      "snippets",
       "tree_nodes",
     ]);
   });
