@@ -223,18 +223,14 @@ describe("decideCodexAiVisibility", () => {
       phase("ph-hide", "pub", "s2", { contextModeOverride: "hidden" }),
       phase("ph-rel", "hid", "s2", { contextModeOverride: "mentioned" }),
     ];
-    const baseResult = {
-      hidden: ["hid"],
-      visible: ["pub"],
-    };
 
-    it("no scene (null, undefined, empty, only spaces) is the base anchor: no phase applies", () => {
+    it("no scene (null, undefined, empty, only spaces) is the base anchor, and the scene cannot be resolved: no phase applies, so `pub` (which a phase hides) is hidden too (DR-MP4-41, Q1)", () => {
+      // Before Q1 the result was hidden = [hid], visible = [pub] (fail open).
       for (const sceneId of [null, undefined, "", "   "]) {
         const r = decide({ entries: [PUBLIC, HIDDEN], phases, sceneId });
-        expect([...r.hidden], String(sceneId)).toEqual(baseResult.hidden);
-        expect([...r.texts.keys()], String(sceneId)).toEqual(
-          baseResult.visible,
-        );
+        expect([...r.hidden].sort(), String(sceneId)).toEqual(["hid", "pub"]);
+        expect([...r.texts.keys()], String(sceneId)).toEqual([]);
+        expect(r.released, String(sceneId)).toEqual([]);
         expect(r.anchor, String(sceneId)).toEqual({ kind: "base" });
       }
     });
@@ -253,6 +249,8 @@ describe("decideCodexAiVisibility", () => {
       });
       // `hid` stays hidden: it is hidden at base and its phase (which would release it) does not apply.
       expect(r.hidden.has("hid")).toBe(true);
+      // `pub` is hidden too: a phase hides it and the scene cannot be resolved (DR-MP4-41).
+      expect(r.hidden.has("pub")).toBe(true);
       expect(r.released).toEqual([]);
     });
 
@@ -422,11 +420,17 @@ describe("decideCodexAiVisibility", () => {
       expect([...missing.hidden]).toEqual(["pub"]);
     });
 
-    it("no scene (null, undefined, empty, only spaces) is unchanged: base anchor, a phase that hides does not hide", () => {
-      for (const sceneId of [null, undefined, "", "   "]) {
-        const r = decide({ entries: [PUBLIC], phases: [hideLater], sceneId });
-        expect([...r.hidden], String(sceneId)).toEqual([]);
-        expect([...r.texts.keys()], String(sceneId)).toEqual(["pub"]);
+    it("a phase whose anchor scene no longer exists (dangling) counts as a phase that hides", () => {
+      // The anchor scene is deleted, so the phase never applies; the entry is still
+      // hidden when the scene cannot be resolved (which phases would apply is unknown).
+      const dangling = phase("ph-dangling", "pub", "deleted-scene", {
+        contextModeOverride: "hidden",
+      });
+      for (const sceneId of [MISSING, null, "s1"]) {
+        const r = decide({ entries: [PUBLIC], phases: [dangling], sceneId });
+        expect([...r.hidden], String(sceneId)).toEqual(
+          sceneId === "s1" ? [] : ["pub"],
+        );
       }
     });
 
@@ -471,6 +475,100 @@ describe("decideCodexAiVisibility", () => {
         resolutionMode: { kind: "unresolved" },
       });
       expect([...r.hidden]).toEqual(["pub"]);
+    });
+  });
+
+  // DR-MP4-41 Q1 (2026-11-23): "no scene" cannot be resolved either, so the same rule
+  // applies. The anchor stays base; only the visibility decision changes.
+  describe("no scene (null, undefined, empty, only spaces; DR-MP4-41 Q1)", () => {
+    const NO_SCENE = [null, undefined, "", "   "];
+    const hidePhase = (entryId: string) =>
+      phase(`ph-hide-${entryId}`, entryId, "s2", {
+        contextModeOverride: "hidden",
+      });
+
+    it("hides every kind of entry that a phase hides, and only those", () => {
+      const entries = [
+        entry("pub-phase-hide", "mentioned"), // base public x phase hidden -> hidden (changed by Q1)
+        entry("hid-phase-hide", "hidden"), // base hidden x phase hidden -> hidden (as before)
+        entry("hid-phase-pub", "hidden"), // base hidden x phase public -> hidden (as before)
+        entry("pub-no-phase", "mentioned"), // no phase -> public (as before)
+        entry("pub-phase-pub", "mentioned"), // phases that hide nothing -> public (as before)
+        entry("odd-phase-pub", "not-a-mode"), // unknown mode -> hidden (as before)
+      ];
+      const phases = [
+        hidePhase("pub-phase-hide"),
+        hidePhase("hid-phase-hide"),
+        phase("ph-rel", "hid-phase-pub", "s2", {
+          contextModeOverride: "mentioned",
+        }),
+        phase("ph-text", "pub-phase-pub", "s2", {
+          contentOverride: "later text",
+        }),
+        phase("ph-suppress", "pub-phase-pub", "s3", {
+          contextModeOverride: "suppress",
+        }),
+      ];
+      for (const sceneId of NO_SCENE) {
+        const r = decide({ entries, phases, sceneId });
+        expect([...r.hidden].sort(), String(sceneId)).toEqual([
+          "hid-phase-hide",
+          "hid-phase-pub",
+          "odd-phase-pub",
+          "pub-phase-hide",
+        ]);
+        expect([...r.texts.keys()].sort(), String(sceneId)).toEqual([
+          "pub-no-phase",
+          "pub-phase-pub",
+        ]);
+        expect(r.released, String(sceneId)).toEqual([]);
+        expect(r.anchor, String(sceneId)).toEqual({ kind: "base" });
+      }
+    });
+
+    it("gives the entries that stay public their own base text", () => {
+      const r = decide({
+        entries: [PUBLIC],
+        phases: [
+          phase("ph-text", "pub", "s2", { contentOverride: "later text" }),
+        ],
+        sceneId: null,
+      });
+      expect(r.texts.get("pub")).toMatchObject({
+        content: "pub content",
+        released: false,
+        mode: "mentioned",
+      });
+    });
+
+    it("is the same in every resolution mode and for an empty reading order", () => {
+      for (const mode of ["reading", "story", "auto"] as const) {
+        for (const nodes of [FULL_STORY, NO_STORY, []]) {
+          const r = decide({
+            entries: [PUBLIC],
+            phases: [hidePhase("pub")],
+            sceneId: "  ",
+            nodes,
+            resolutionMode: resolved(mode),
+          });
+          expect([...r.hidden], mode).toEqual(["pub"]);
+        }
+      }
+    });
+
+    it("with an unresolved resolution mode every entry is hidden, as before", () => {
+      const r = decide({
+        entries: [PUBLIC],
+        sceneId: null,
+        resolutionMode: { kind: "unresolved" },
+      });
+      expect([...r.hidden]).toEqual(["pub"]);
+    });
+
+    it("an entry with no phase at all is unchanged (the whole call is not hidden)", () => {
+      const r = decide({ entries: [PUBLIC, HIDDEN, UNKNOWN], sceneId: null });
+      expect([...r.hidden].sort()).toEqual(["hid", "odd"]);
+      expect([...r.texts.keys()]).toEqual(["pub"]);
     });
   });
 

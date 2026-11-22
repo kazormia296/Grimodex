@@ -195,7 +195,7 @@ describe("inferReadings × 実物の hidden 判定 × 実物の DB 層", () => {
     expect(h.send).not.toHaveBeenCalled();
   });
 
-  it("base が mentioned で Phase の override が hidden でも、inferReadings は送る（sceneId を渡さず anchor が base のため Phase を見ない）", async () => {
+  it("base が mentioned で Phase の override が hidden なら、inferReadings は送らない（場面を渡さない＝場面を解決できないので、Phase が hidden にする項目は hidden に倒す。DR-MP4-41 の Q1・Q3）", async () => {
     await putEntry("mentioned", "mentioned");
     const now = new Date().toISOString();
     await db.insert(codexEntryPhases).values({
@@ -212,6 +212,25 @@ describe("inferReadings × 実物の hidden 判定 × 実物の DB 層", () => {
     expect(
       (await listPhasesByEntryIds([ENTRIES.mentioned.id])).map((p) => p.id),
     ).toEqual(["phase-hide-1"]);
+
+    const result = await inferReadings([yomiEntry("mentioned")]);
+
+    expect(h.send).not.toHaveBeenCalled();
+    expect(result.size).toBe(0);
+  });
+
+  it("Phase が hidden にしない（suppress の override だけ）項目は、場面を渡さなくても今までどおり送る（Q1 は Phase が hidden にする項目だけ）", async () => {
+    await putEntry("mentioned", "mentioned");
+    const now = new Date().toISOString();
+    await db.insert(codexEntryPhases).values({
+      id: "phase-suppress-1",
+      entryId: ENTRIES.mentioned.id,
+      anchorNodeId: null,
+      label: "suppress",
+      contextModeOverride: "suppress",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     await inferReadings([yomiEntry("mentioned")]);
 
@@ -240,7 +259,7 @@ describe("listCodexIdsHiddenFromAi（実物）の判定の基準", () => {
     ).toEqual([...ids].sort());
   });
 
-  it("sceneId を渡さない（anchor が base）と Phase の override を見ず、base の mode で判定する（hidden の Phase でも mentioned は通り、解除の Phase でも hidden は hidden のまま）", async () => {
+  it("sceneId を渡さない（場面を解決できない）と、Phase が hidden にする項目は hidden に倒し、base が hidden の項目は解除の Phase があっても hidden のまま（DR-MP4-41 の Q1・Q3。codexYomi の入口）", async () => {
     await putEntry("mentioned", "mentioned");
     await putEntry("hidden", "hidden");
     const now = new Date().toISOString();
@@ -269,6 +288,6 @@ describe("listCodexIdsHiddenFromAi（実物）の判定の基準", () => {
       projectId: P1,
     });
 
-    expect([...hidden]).toEqual([ENTRIES.hidden.id]);
+    expect([...hidden].sort()).toEqual([...ids].sort());
   });
 });

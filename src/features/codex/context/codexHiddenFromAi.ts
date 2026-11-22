@@ -39,7 +39,7 @@ export interface CodexAiResolution {
  * 文は置き換えない（`released` が false で base の文のまま）。
  *
  * fail-closed：DB に無い id・不明な mode も hidden に数える。現在の場面が `sceneTimeIndex` に
- * 無い（Phase が解決できない）ときは、Phase が hidden にする項目も hidden に倒す（DR-MP4-41 (a)、
+ * 無い・場面なし（Phase が解決できない）ときは、Phase が hidden にする項目も hidden に倒す（DR-MP4-41 (a)、
  * 判定は `decideCodexAiVisibility`）。判定の途中で project が切り替わったときは、渡された id を
  * 全部 hidden にする（(b)）。suppress・mentioned・
  * Phase による絞り込みは足さない（全部開示、hidden だけを守る）。

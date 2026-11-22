@@ -12,6 +12,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  *   mode が reading でも story でも同じ結果になる。
  * - DR-MP4-41 (a)：場面が与えられているのに読む順に無いとき、Phase が hidden にする項目
  *   （base 公開・Phase hidden）は hidden に倒す。以前は公開と判定されていた（fail-open）。
+ * - DR-MP4-41 の Q1：場面なし（null・空・空白だけ・未指定）も場面を解決できないので、同じ規則で
+ *   hidden に倒す（以前は base 扱いで公開と判定されていた）。
  * - base が hidden の項目は、Phase が公開にするものも含めて hidden のまま（今までと同じ）。
  * - `setResolutionMode(B の値)` を足しても、index が空のうちは同じ。`recomputeSceneOrder` で
  *   index が入ると、従来どおり正しい判定に戻る。
@@ -199,17 +201,22 @@ describe("resetForProject の直後・場面が index に無いときの hidden 
     expect(hidden.has(KINDS.basePublicPhaseHidden)).toBe(true);
   });
 
-  it("場面なし（sceneId が null・空・空白だけ）は base 扱いのまま（範囲外の B。変えない）", async () => {
+  it("場面なし（sceneId が null・空・空白だけ・未指定）も、場面を解決できないので、Phase が hidden にする項目は hidden に倒す（DR-MP4-41 の Q1）", async () => {
+    // 変わった期待：以前は base 扱い（c-aria は公開、base hidden の 2 つだけ hidden）だった。
+    // いまは c-aria（base 公開・Phase が hidden）も hidden。base hidden の 2 つは今までどおり hidden。
     usePhaseStore.getState().resetForProject();
-    for (const sceneId of [null, "", "   "]) {
+    for (const sceneId of [null, "", "   ", undefined]) {
       const { hidden } = await resolveCodexForAi({
         entryIds: Object.values(KINDS),
         projectId: "p-main",
-        sceneId,
+        ...(sceneId === undefined ? {} : { sceneId }),
       });
-      // Phase は効かない：c-aria は公開、base hidden の 2 つは hidden。
       expect([...hidden].sort(), String(sceneId)).toEqual(
-        [KINDS.baseHidden, KINDS.baseHiddenPhasePublic].sort(),
+        [
+          KINDS.baseHidden,
+          KINDS.basePublicPhaseHidden,
+          KINDS.baseHiddenPhasePublic,
+        ].sort(),
       );
     }
   });

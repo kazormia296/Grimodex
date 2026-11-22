@@ -116,11 +116,13 @@ export interface ReadInputs {
    * archived scene, a folder or a note, or a live scene whose ancestor is
    * archived (it is not in the reading order either). Null makes the chronicle
    * hide secret events (`isEventHiddenFromAi` fails closed on a scene that is
-   * not in the order). The Codex side reads null as the base anchor
-   * (`decideCodexAiVisibility`, DR-MP4-1), and a scene id that is not in the
-   * reading order resolves the same way: no phase applies in either case, and
-   * only the fallback reason differs, which the decision does not read (K-20 (1)
-   * for Codex, PR-8a, DR-MP4-39).
+   * not in the order). The Codex side decides the same way for null and for
+   * an id the reading order does not have: no phase applies, and
+   * `decideCodexAiVisibility` hides an entry that one of its phases hides (fail
+   * closed; DR-MP4-41, which also covers "no scene"). So passing the normalized
+   * null or the raw id gives the same Codex result; only the fallback reason
+   * differs, which the decision does not read (K-20 (1) for Codex, PR-8a,
+   * DR-MP4-39).
    */
   readonly currentSceneId: string | null;
 }

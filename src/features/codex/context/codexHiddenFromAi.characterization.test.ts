@@ -14,7 +14,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  *   `withDetails` の追加の 2 文、ids が 0 件なら 0 文、entries が 0 件なら 1 文で phases を読まない）。
  * - `usePhaseStore` を読む位置（`listPhasesByEntryIds` の await の最中に書き換えた値が使われる）。
  * - Phase の解決：reading・story・auto（Phase が読む順の後ろ・物語時間の前にある例）、base 公開で Phase が
- *   hidden にする、場面が null・空・空白だけのとき base と同じ結果、読む順に無い id のとき（DR-MP4-41 で fail-closed に変更）
+ *   hidden にする、場面が null・空・空白だけのとき・読む順に無い id のとき（DR-MP4-41 で fail-closed に変更）
  *   Phase が hidden にする項目は hidden、前後に空白のある
  *   sceneId は trim される、不明な mode は hidden。
  * - `hidden`・`texts` の挿入順（DB に無い id が先、次に DB の返した entry の順）。
@@ -469,17 +469,27 @@ describe("resolveCodexForAi の Phase の解決", () => {
     );
   });
 
-  it("場面なし（null・未指定・空・空白だけ）は、base で解決する（Phase は効かない）", async () => {
-    // DR-MP4-41：「場面なし」は今までどおり base 扱い（変えない）。
-    const expected = {
-      hidden: ["c-released"],
-      texts: [
-        ["c-aria", false],
-        ["c-mage", false],
-      ],
-    };
+  it("場面なし（null・未指定・空・空白だけ）は、場面が読む順に無いときと同じく、Phase が hidden にする項目を hidden に倒す（DR-MP4-41 の Q1）", async () => {
+    // 変わった期待：以前は base で解決した（hidden＝c-released だけ、texts＝c-aria・c-mage。fail-open）。
+    // いまは Phase が hidden にする c-aria・c-mage も hidden（texts は空）。base hidden の c-released は今までどおり。
     for (const sceneId of [undefined, null, "", "   "]) {
-      expect(await observeIds(sceneId), String(sceneId)).toEqual(expected);
+      expect(await observeIds(sceneId), String(sceneId)).toEqual({
+        hidden: ["c-aria", "c-mage", "c-released"],
+        texts: [],
+      });
+    }
+  });
+
+  it("場面なしでも、Phase が hidden にしない項目（suppress・always の Phase を持つもの）は、今までどおり（Q1 は広げない）", async () => {
+    for (const sceneId of [undefined, null, "", "   "]) {
+      const r = await resolveCodexForAi({
+        entryIds: ["c-tower", "c-item"],
+        projectId: "p-main",
+        ...(sceneId === undefined ? {} : { sceneId }),
+      });
+      expect([...r.hidden], String(sceneId)).toEqual([]);
+      expect(r.texts.get("c-tower")).toMatchObject({ released: false });
+      expect(r.texts.get("c-item")).toMatchObject({ released: false });
     }
   });
 
@@ -609,6 +619,39 @@ describe("resolveCodexForAi の hidden・texts の挿入順", () => {
         })) as { rows: Array<{ id: string }> }
       ).rows.map((row) => row.id),
     );
+  });
+});
+
+describe("resolveCodexForAi の hidden・texts の挿入順（場面なし。DR-MP4-41 の Q1）", () => {
+  it("場面なし 4 値でも、hidden は DB に無い id が先（渡した順）、次に DB が返した entry の順。texts は公開のものだけ（Phase が hidden にする c-aria・c-mage は hidden）", async () => {
+    for (const sceneId of [undefined, null, "", "   "]) {
+      const r = await resolveCodexForAi({
+        entryIds: [
+          "c-aria",
+          "gone-1",
+          "c-secret",
+          "c-mage",
+          "gone-2",
+          "c-tower",
+        ],
+        projectId: "p-main",
+        ...(sceneId === undefined ? {} : { sceneId }),
+      });
+      const dbOrder = (
+        (await invoke("db_execute", {
+          sql: 'select "id" from "codex_entries" where ("codex_entries"."project_id" = ? and "codex_entries"."id" in (?, ?, ?, ?))',
+          params: ["p-main", "c-aria", "c-secret", "c-mage", "c-tower"],
+          method: "all",
+        })) as { rows: Array<{ id: string }> }
+      ).rows.map((row) => row.id);
+      const hiddenIds = ["c-aria", "c-secret", "c-mage"];
+      expect([...r.hidden], String(sceneId)).toEqual([
+        "gone-1",
+        "gone-2",
+        ...dbOrder.filter((id) => hiddenIds.includes(id)),
+      ]);
+      expect([...r.texts.keys()], String(sceneId)).toEqual(["c-tower"]);
+    }
   });
 });
 

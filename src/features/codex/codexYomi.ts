@@ -70,8 +70,8 @@ export class YomiNoValidResultError extends Error {
  * エントリ群の漢字表記の読みを一括推定する。
  * 作者が hidden（AI に秘匿）と印した Codex は、一括・単体のどちらの経路でも送らない
  * （送信の直前に再判定して落とす。呼び側が先に除いていても、list 後に hidden へ変わった
- * 項目を含めて守る）。判定は base の mode（`listCodexIdsHiddenFromAi`、DB に無い id も
- * hidden 扱い）。判定に失敗したときは fail-closed で何も送らず reject する。
+ * 項目を含めて守る）。判定は `listCodexIdsHiddenFromAi`（場面は渡さない。DB に無い id も
+ * hidden 扱い。場面を解決できないので、Phase が hidden にする項目も hidden に倒す：DR-MP4-41）。判定に失敗したときは fail-closed で何も送らず reject する。
  * policy off / 入力なし / 全件 hidden は空 Map。送信失敗・有効結果なしは reject し、ユーザー操作の
  * 呼び出し側が理由を通知する（既存 readings は常に保持）。
  * 返り値: entry id → [{surface, yomi}]。
