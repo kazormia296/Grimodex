@@ -17,10 +17,12 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { parseAliases } from "./codexMatcher";
-import { candidateKey } from "./codexCandidates";
+import { candidateKey, knownNameSet } from "./codexCandidates";
 import type { CodexCandidate } from "./candidateExtractor";
 import i18next from "@/lib/i18n";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { listCodexIdsHiddenFromAiInAnyPhase } from "./context/codexHiddenAnyPhase";
 
 export type SuggestedType = "character" | "location" | "item" | "lore";
 
@@ -46,6 +48,32 @@ const MAX_ENTRIES = 200;
 export const CODEX_JUDGMENT_NO_VALID_RESULT =
   "CODEX_JUDGMENT_NO_VALID_RESULT" as const;
 
+export const CODEX_JUDGMENT_HIDDEN_CHECK_FAILED =
+  "CODEX_JUDGMENT_HIDDEN_CHECK_FAILED" as const;
+
+/** hidden（AI に秘匿）の判定に失敗したため、何も送らなかった。 */
+export class CandidateJudgmentHiddenCheckFailedError extends Error {
+  readonly code = CODEX_JUDGMENT_HIDDEN_CHECK_FAILED;
+
+  constructor() {
+    super(i18next.t("codex.candidates.judgeFailed"));
+    this.name = "CandidateJudgmentHiddenCheckFailedError";
+  }
+}
+
+export const CODEX_JUDGMENT_PROJECT_CHANGED =
+  "CODEX_JUDGMENT_PROJECT_CHANGED" as const;
+
+/** 判定の途中で project が切り替わったため、何も送らなかった。 */
+export class CandidateJudgmentProjectChangedError extends Error {
+  readonly code = CODEX_JUDGMENT_PROJECT_CHANGED;
+
+  constructor() {
+    super(i18next.t("codex.candidates.judgeFailed"));
+    this.name = "CandidateJudgmentProjectChangedError";
+  }
+}
+
 export class CandidateJudgmentNoValidResultError extends Error {
   readonly code = CODEX_JUDGMENT_NO_VALID_RESULT;
 
@@ -61,6 +89,13 @@ type EntryLike = { id: string; name: string | null; aliases: string | null };
  * 候補を一括判定し、`candidateKey(surface) → CandidateJudgment` の Map を返す。
  * policy off / 候補なしは空 Map。送信失敗・有効結果なしは reject し、UI が通知する。
  * いずれの場合も決定的な候補一覧自体は維持される。
+ *
+ * 作者が hidden（AI に秘匿）と印した Codex の id・名前・別名は送らない。この画面は場面を
+ * 持たないので、base が hidden、またはどれかの Phase で hidden の項目を全部除く
+ * （`listCodexIdsHiddenFromAiInAnyPhase`）。判定は送信の直前に DB で行い（呼び側の `entries` は
+ * 古いことがある）、先頭 `MAX_ENTRIES` 件の窓は除いた後に数える。候補そのもの（surface・lemma）が
+ * 除いた項目の名前・別名と同じなら、その候補も送らない。判定に失敗したら、または判定の間に
+ * project が切り替わったら、fail-closed で何も送らず reject する。ADR 013。
  */
 export async function judgeCandidates(
   candidates: ReadonlyArray<CodexCandidate>,
@@ -71,38 +106,78 @@ export async function judgeCandidates(
   if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return result;
   if (candidates.length === 0) return result;
 
+  // projectId は同期的な入口で固定し、以後の await をまたいで使い回す（途中で project が
+  // 切り替わっても、旧 project の候補を新 project の id で送らない）。
+  const projectId = requireAuditProjectId(useTreeStore.getState().projectId);
+
   let lang = "ja";
   try {
-    const project = await getProject(useTreeStore.getState().projectId);
+    const project = await getProject(projectId);
     lang = project?.language ?? "ja";
   } catch {
     // ignore — ja 既定
   }
 
-  const knownIds = new Set(entries.map((e) => e.id));
+  // 送信の直前に hidden を判定して除く。判定に失敗したら送らない（fail-closed）。
+  let sendableEntries: ReadonlyArray<EntryLike>;
+  let hiddenEntries: ReadonlyArray<EntryLike>;
+  try {
+    const hidden = await listCodexIdsHiddenFromAiInAnyPhase({
+      entryIds: entries.map((e) => e.id),
+      projectId,
+    });
+    sendableEntries = entries.filter((e) => !hidden.has(e.id));
+    hiddenEntries = entries.filter((e) => hidden.has(e.id));
+  } catch (error) {
+    debugLog.warn(
+      "codex-hidden",
+      "hidden 判定に失敗したので候補の AI 評価を送らない",
+      errorDetail(error),
+    );
+    throw new CandidateJudgmentHiddenCheckFailedError();
+  }
+
+  // 候補そのもの（surface・lemma）が hidden の名前・別名と同じなら、その候補も送らない
+  // （呼び側が hidden を除いた entries を渡しても、entries に含まれる hidden とは照合できる）。
+  const hiddenKeys = knownNameSet(hiddenEntries);
+  const sendableCandidates = candidates.filter(
+    (c) =>
+      !hiddenKeys.has(candidateKey(c.surface)) &&
+      !hiddenKeys.has(candidateKey(c.lemma)),
+  );
+  if (sendableCandidates.length === 0) return result;
+
+  const knownIds = new Set(sendableEntries.map((e) => e.id));
   // LLM が入力に無い surface を返した場合 (hallucination) を弾く照合先。
-  const validSurfaces = new Set(candidates.map((c) => candidateKey(c.surface)));
+  const validSurfaces = new Set(
+    sendableCandidates.map((c) => candidateKey(c.surface)),
+  );
   const prompt = getPromptCatalog(
     lang,
   ).codexJudgment.buildCandidateJudgmentPrompt({
-    candidates: candidates.slice(0, MAX_CANDIDATES).map((c) => ({
+    candidates: sendableCandidates.slice(0, MAX_CANDIDATES).map((c) => ({
       surface: c.surface,
       lemma: c.lemma,
       count: c.count,
       context: c.context,
     })),
-    existingEntries: entries.slice(0, MAX_ENTRIES).map((e) => ({
+    existingEntries: sendableEntries.slice(0, MAX_ENTRIES).map((e) => ({
       id: e.id,
       name: e.name ?? "",
       aliases: parseAliases(e.aliases),
     })),
   });
 
+  // 判定の await の間に project が切り替わっていたら、送らずに reject する。
+  if (useTreeStore.getState().projectId?.trim() !== projectId) {
+    throw new CandidateJudgmentProjectChangedError();
+  }
+
   const ov = resolveRoleSendOverride("codex_judgment");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
     {
-      projectId: requireAuditProjectId(useTreeStore.getState().projectId),
+      projectId,
       pathId: "codex_judgment",
     },
     undefined, // thinkingParams
