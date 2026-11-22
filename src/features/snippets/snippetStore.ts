@@ -24,7 +24,10 @@ import {
 import { notifyIfWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type { CanonicalWriteReceipt } from "@/features/native-writes/writeContext";
-import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type {
+  TimelapseDocumentRef,
+  TimelapseOwnSaveCapture,
+} from "@/features/timelapse/documentCoverage";
 import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
 import {
   blockIfUnlicensed,
@@ -112,6 +115,8 @@ interface SnippetState {
       baseVersion?: number;
       timelapseDocument?: TimelapseDocumentRef;
       preexistingDraft?: QuiescenceProviderFlushOptions["preexistingDraft"];
+      /** editor の autosave が開いた capture hold。api が引き取る（EAR-12）。 */
+      ownSaveCapture?: TimelapseOwnSaveCapture;
     },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
@@ -325,6 +330,9 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
             ? { timelapseDocument: options.timelapseDocument }
             : {}),
           ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
+          ...(options?.ownSaveCapture
+            ? { ownSaveCapture: options.ownSaveCapture }
+            : {}),
         },
       );
       // 行なし (スコープ miss / 削除済み) = 保存されていない。

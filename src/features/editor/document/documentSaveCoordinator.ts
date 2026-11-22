@@ -2,6 +2,7 @@ import {
   encodeDocumentKey,
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
+import { DocumentMutationLeaseActiveError } from "@/features/editor/document/saveErrors";
 import {
   createQuiescenceProviderId,
   registerQuiescenceProvider,
@@ -47,11 +48,18 @@ export interface DocumentSaveOptions<T> {
   didPersist?: (result: T) => boolean;
   /** Draft admitted before a lifecycle lease began draining autosaves. */
   preexistingDraft?: boolean;
+  /** Debounce 経由の背景の autosave（flush ではない）。 */
+  background?: boolean;
 }
 
 export interface DocumentSaveContext {
   /** Carry the lifecycle permit into the canonical document save path. */
   preexistingDraft?: boolean;
+  /**
+   * 背景の autosave の保存。T0 で `SaveDeferredError` を返して保存を延期して
+   * よいのはこの場合だけ（flush は延期せず必ず保存する）。
+   */
+  background?: boolean;
 }
 
 export interface DocumentMutationOptions<T> {
@@ -89,12 +97,8 @@ export class StaleRetiredDocumentSaveError extends Error {
   }
 }
 
-export class DocumentMutationLeaseActiveError extends Error {
-  constructor() {
-    super("This document is temporarily read-only while content is replaced");
-    this.name = "DocumentMutationLeaseActiveError";
-  }
-}
+// 置き場は saveErrors.ts（useAutoSave が判別するため）。既存の import 先を保つ。
+export { DocumentMutationLeaseActiveError };
 
 function revisionFor(encoded: string): number {
   return documentSaveRevisions.get(encoded)?.revision ?? 0;
@@ -282,8 +286,12 @@ export async function runCoordinatedDocumentSave<T>(
   const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(
     async () => {
       assertSessionFresh(encoded, options.session);
+      const context: DocumentSaveContext = {
+        ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
+        ...(options.background ? { background: true } : {}),
+      };
       const result = await saveLatest(
-        options.preexistingDraft ? { preexistingDraft: true } : undefined,
+        Object.keys(context).length > 0 ? context : undefined,
       );
       if (options.didPersist?.(result) ?? true) {
         recordSuccessfulSave(encoded, options.session);

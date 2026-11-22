@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { AlreadyNotifiedSaveError } from "./saveErrors";
 import {
@@ -7,6 +7,11 @@ import {
 } from "./saveEditorDocument";
 import type { LoadedEditorBinding } from "./types";
 import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
+import {
+  _inspectOwnSaveCapturesForTests,
+  _resetRecorderForTests,
+} from "@/features/timelapse/recorder";
+import type { TimelapseDocumentIdentity } from "@/features/timelapse/documentCoverage";
 
 const persistedSceneBody = {
   contentJson: '{"type":"doc","content":[]}',
@@ -77,8 +82,10 @@ describe("saveEditorDocument", () => {
       const result = await saveEditorDocument(binding, doc, services);
 
       expect(services.persistSceneBody).toHaveBeenCalledOnce();
+      // editor の保存は「自分の autosave」の判別子を付ける（EAR-1）。
       expect(services.persistSceneBody).toHaveBeenCalledWith(binding.id, doc, {
         baseVersion: binding.loadedVersion,
+        writer: "editor-autosave",
       });
       expect(services.updateCodexText).not.toHaveBeenCalled();
       expect(services.updateSnippet).not.toHaveBeenCalled();
@@ -107,6 +114,7 @@ describe("saveEditorDocument", () => {
     expect(services.persistSceneBody).toHaveBeenCalledWith("scene-1", doc, {
       baseVersion: 8,
       preexistingDraft: true,
+      writer: "editor-autosave",
     });
   });
 
@@ -405,5 +413,120 @@ describe("saveEditorDocument", () => {
       expect(error).toBeInstanceOf(AlreadyNotifiedSaveError);
       expect((error as AlreadyNotifiedSaveError).cause).toBeUndefined();
     });
+  });
+});
+
+describe("EAR-24 Codex 本文・断片の保存は、本文の捕捉と同じ同期区間で自分の保存の hold を開いて渡す", () => {
+  afterEach(() => {
+    _resetRecorderForTests();
+  });
+
+  const codexIdentity: TimelapseDocumentIdentity = {
+    projectId: "project-1",
+    domain: "codex",
+    entityType: "codex_entry",
+    entityId: "codex-1",
+  };
+  const snippetIdentity: TimelapseDocumentIdentity = {
+    projectId: "project-1",
+    domain: "snippet",
+    entityType: "snippet",
+    entityId: "snippet-1",
+  };
+
+  /** 本文の捕捉（toJSON／serializeSnippet）の時点で hold が既に開いているかを記録する doc。 */
+  function makeProbeDoc(identity: TimelapseDocumentIdentity) {
+    const seen: number[] = [];
+    const doc = {
+      toJSON: () => {
+        seen.push(_inspectOwnSaveCapturesForTests(identity).activeCaptures);
+        return { type: "doc", content: [] };
+      },
+    } as unknown as ProseMirrorNode;
+    return { doc, seen };
+  }
+
+  it("Codex 本文：toJSON の前に hold を開いて store に渡し、返ったあとには閉じている", async () => {
+    const services = makeServices();
+    const { doc, seen } = makeProbeDoc(codexIdentity);
+    let passed: { release: () => void } | undefined;
+    services.updateCodexText.mockImplementation(
+      async (
+        _id: string,
+        _data: unknown,
+        options: { ownSaveCapture?: never },
+      ) => {
+        passed = options.ownSaveCapture;
+        // store に届いた時点でも hold は開いている。
+        expect(
+          _inspectOwnSaveCapturesForTests(codexIdentity).activeCaptures,
+        ).toBe(1);
+        return { persisted: true, version: 4 };
+      },
+    );
+
+    await saveEditorDocument(
+      { kind: "codex", id: "codex-1", phaseId: null, loadedVersion: 3 },
+      doc,
+      services,
+      { timelapseDocumentIdentity: codexIdentity },
+    );
+
+    expect(seen).toEqual([1]);
+    expect(passed).toBeDefined();
+    expect(_inspectOwnSaveCapturesForTests(codexIdentity).activeCaptures).toBe(
+      0,
+    );
+  });
+
+  it("断片：serializeSnippet の前に hold を開いて store に渡し、失敗しても閉じる", async () => {
+    const services = makeServices({ persisted: false });
+    const seen: number[] = [];
+    services.serializeSnippet.mockImplementation(() => {
+      seen.push(
+        _inspectOwnSaveCapturesForTests(snippetIdentity).activeCaptures,
+      );
+      return "<p>snippet</p>";
+    });
+
+    const error = await saveEditorDocument(
+      { kind: "snippet", id: "snippet-1", loadedVersion: 5 },
+      makeDoc(),
+      services,
+      { timelapseDocumentIdentity: snippetIdentity },
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AlreadyNotifiedSaveError);
+    expect(seen).toEqual([1]);
+    expect(services.updateSnippet.mock.calls[0]?.[2]).toHaveProperty(
+      "ownSaveCapture",
+    );
+    expect(
+      _inspectOwnSaveCapturesForTests(snippetIdentity).activeCaptures,
+    ).toBe(0);
+  });
+
+  it("identity が無ければ hold は開かず従来の経路に倒す。phase の保存は hold を開かない", async () => {
+    const services = makeServices();
+    await saveEditorDocument(
+      { kind: "codex", id: "codex-1", phaseId: null, loadedVersion: 3 },
+      makeDoc(),
+      services,
+    );
+    expect(services.updateCodexText.mock.calls[0]?.[2]).not.toHaveProperty(
+      "ownSaveCapture",
+    );
+    await saveEditorDocument(
+      { kind: "codex", id: "codex-1", phaseId: "phase-1", loadedVersion: 3 },
+      makeDoc(),
+      services,
+      { timelapseDocumentIdentity: codexIdentity },
+    );
+    expect(services.updateCodexPhase.mock.calls[0]?.[2]).not.toHaveProperty(
+      "ownSaveCapture",
+    );
+    expect(_inspectOwnSaveCapturesForTests(codexIdentity).activeCaptures).toBe(
+      0,
+    );
   });
 });

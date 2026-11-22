@@ -1,6 +1,7 @@
 import type { CoreReadContext } from "../../mastraRead/ports.js";
 import { listCodexTags } from "./codexTagTools.js";
 import { getThreadScenes, listPlotThreads } from "./plotThreadTools.js";
+import { searchScenes, searchSnippets } from "./searchTools.js";
 import type { CoreReadExecutor } from "./toolResult.js";
 import {
   getChapterSummaries,
@@ -11,7 +12,8 @@ import {
 
 /**
  * The read tools the shared core implements (Mastra migration MP-4b). PR-4 has
- * the seven of groups B1 and B2; the other read tools move in the PRs after it.
+ * the seven of groups B1 and B2, PR-5a adds the two search tools of group B3;
+ * the other read tools move in the PRs after it.
  * A name here is a tool the renderer's executors call through the core and that
  * main will call through the same code.
  */
@@ -23,6 +25,8 @@ export const CORE_READ_TOOL_NAMES = [
   "list_plot_threads",
   "get_thread_scenes",
   "get_scene",
+  "search_scenes",
+  "search_snippets",
 ] as const;
 
 export type CoreReadToolName = (typeof CORE_READ_TOOL_NAMES)[number];
@@ -49,5 +53,7 @@ export function createReadExecutors(
     list_plot_threads: () => listPlotThreads(ctx),
     get_thread_scenes: (params) => getThreadScenes(ctx, params),
     get_scene: (params) => getScene(ctx, params),
+    search_scenes: (params) => searchScenes(ctx, params),
+    search_snippets: (params) => searchSnippets(ctx, params),
   });
 }

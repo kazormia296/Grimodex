@@ -8,7 +8,7 @@ import { MAIN_READ_TABLE_SET, MAIN_READ_TABLES } from "./tables.js";
  * (`readDomain/core/core.static.test.ts` requires the two to be equal): PR-4
  * had it at the 21 tables the K-6 survey bounded, and fixed it to the 6 the
  * seven tools of groups B1 and B2 touch; PR-6 adds `projects` (the reader of
- * the hidden and chronicle-secret inputs).
+ * the hidden and chronicle-secret inputs); PR-5a adds `snippets` (`search_snippets`).
  */
 const PINNED = [
   "codex_entry_tags",
@@ -17,6 +17,7 @@ const PINNED = [
   "plot_thread_scene_links",
   "plot_threads",
   "projects",
+  "snippets",
   "tree_nodes",
 ];
 
@@ -39,7 +40,6 @@ const NOT_YET = [
   "foreshadows",
   "project_calendar",
   "scene_events",
-  "snippets",
 ];
 
 describe("the read allowlist of tables", () => {
