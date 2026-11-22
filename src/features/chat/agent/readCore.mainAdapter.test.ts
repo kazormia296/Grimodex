@@ -34,6 +34,14 @@ import { describe, expect, it, vi } from "vitest";
  * 現在の場面が読む順に無いときの `No sceneId and no active scene`（main は null にする）は対象外
  * （`chronicleMainContext.test.ts` が差として固定する）。
  *
+ * PR-7b の search_events：もう 1 つの ctx（`createMainChronicleSearchContext`）と factory
+ * （`createChronicleSearchExecutors`）。dense は main の typed read（`eventsSemantic`）に、fake の
+ * `eventsSemanticSearch`（canned の hit を JSON 文字列で返す）を繋ぐ。**この ctx は呼出しごとに events・
+ * scene_events を取り直す**（turn の cache を通さない。DR-MP4-38）ので、PR-7a の ctx と違って
+ * 「同一 turn の list_events と search_events で events の読みが 1 回」にはならない（逆を固定する）。
+ * golden の dense が reject する case は main では tool error（throw）になる（握りは renderer の port にだけ置く。
+ * DR-MP4-38c）ので byte 比較から外し、case 名→native の表で結ぶ。
+ *
  * 覆えない範囲：実 Native（実 addon）の行の返り順・型の返り方は見ない（sql.js の結果）。
  * 本文 2 本は main では barrier なし（renderer の未着の書込みを待たない。DR-MP4-9）ので、
  * ここは「待つべき書込みが無い」ときの同値だけを示す。project が空の case は core が
@@ -68,15 +76,21 @@ import {
   createReadExecutors,
 } from "@/../electron/shared/readDomain/core/readExecutors";
 import { createDbSceneBodyReader } from "@/../electron/shared/readDomain/core/sceneBody";
-import { createMainChronicleReadContext } from "@/../electron/shared/readDomain/core/chronicleMainContext";
+import {
+  createMainChronicleReadContext,
+  createMainChronicleSearchContext,
+} from "@/../electron/shared/readDomain/core/chronicleMainContext";
 import {
   CHRONICLE_READ_TOOL_NAMES,
+  CHRONICLE_SEARCH_TOOL_NAMES,
   createChronicleReadExecutors,
+  createChronicleSearchExecutors,
 } from "@/../electron/shared/readDomain/core/chronicleReadExecutors";
 import { buildReadInputs } from "@/../electron/shared/readDomain/core/readInputs";
 import { readChronicleReadInputs } from "@/../electron/shared/readDomain/core/readInputsReader";
 import { readCodexNames } from "@/../electron/shared/readDomain/core/chronicleReaders";
 import { listCodexMatchTargets } from "@/features/codex/api";
+import { LEGACY_READ_CANNED_EVENT_HITS } from "./__fixtures__/legacyReadSeed";
 import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
 import {
   bindLegacyReadHarnessPorts,
@@ -120,13 +134,31 @@ const backend: Pick<NapiBackendLike, "dbExecute"> = {
 };
 
 /**
- * typed read の backend：`ftsSearch` と `foreshadowListOpenForContext` だけを持つ fake（semantic 2 本は無い＝呼べば fail closed）。
+ * typed read の backend：`ftsSearch`・`foreshadowListOpenForContext`・`eventsSemanticSearch`（PR-7b）を持つ fake
+ * （`codexSemanticSearch` は無い＝呼べば fail closed）。
  * golden を作った browser-mock の `fts_search` handler の結果を JSON 文字列で返す
  * （Native の wire と同じ。実 FTS5 の順は PR-9 の実 addon spec が見る）。
  */
 const ftsSent: Array<{ projectId: string; scope: string; limit: number }> = [];
 const foreshadowSent: string[] = [];
+/** dense（events）：Native の引数の並び（workspace・projectId・query・limit）のまま記録し、答えは試験が差し替える。 */
+const denseSent: Array<{
+  workspace: string;
+  projectId: string;
+  query: string;
+  limit: number;
+}> = [];
+let denseAnswer: (projectId: string) => unknown = () => [];
 const typedBackend = {
+  eventsSemanticSearch: async (
+    workspace: string,
+    projectId: string,
+    query: string,
+    limit: number,
+  ) => {
+    denseSent.push({ workspace, projectId, query, limit });
+    return JSON.stringify(denseAnswer(projectId));
+  },
   ftsSearch: async (
     projectId: string,
     query: string,
@@ -503,5 +535,311 @@ describe("共有 core の年表 4 本（main の DB adapter と turn の入力�
       named += main.size;
     }
     expect(named).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * PR-7b：search_events。golden の 10 case を、**case 名→native の明示の表**で結ぶ（golden の bytes は
+ * 変えない。native は golden test の SCENARIOS にしか無く、case 名の prefix で結ぶと XPROJ の case も canned を
+ * 使うので誤る）。表に無い case が来たら試験が落ちる（無言で通さない）。
+ *   canned：dense が canned の hit を返す／empty：dense が [] を返す（browser-mock の既定）／
+ *   rejects：dense が reject する（main では throw。legacy の port だけが空に握る）／
+ *   none：core が dense に届く前に止まる（no-project・空の query）。
+ */
+type DenseKind = "canned" | "empty" | "rejects" | "none";
+const SEARCH_EVENTS_DENSE: Record<string, DenseKind> = {
+  "canned: S1 では secret の戦争（n-s3 で公開）と恒久秘匿の死が落ちる。DB に無い他 project の id は素通し":
+    "canned",
+  "canned: S3 では戦争が出る（恒久秘匿の死は出ない）": "canned",
+  "canned: 場面なしでは secret を全部隠す（fail-closed）": "canned",
+  "canned: limit=2 で slice": "canned",
+  "canned: limit が数でなければ 10": "canned",
+  "canned: dense が reject したら空配列に退避する": "rejects",
+  "empty: browser-mock の dense は常に []": "empty",
+  "XPROJ: 他 project で canned の hit が main の event id を含んでも、他 project の年表に無い id は hidden 判定の対象外（素通し）":
+    "canned",
+  "no-project: 引数が有効でも No active project": "none",
+  "order: 空の query は no-project より先（0 events found）": "none",
+};
+const XPROJ_CASE =
+  "XPROJ: 他 project で canned の hit が main の event id を含んでも、他 project の年表に無い id は hidden 判定の対象外（素通し）";
+
+/** golden の world から turn の入力を作る（年表 4 本の describe と同じ）。 */
+async function searchTurn(world: LegacyReadGoldenCase["world"]) {
+  return world.projectId === ""
+    ? {
+        inputs: buildReadInputs({
+          projectId: "",
+          treeRows: [],
+          project: null,
+          currentSceneId: null,
+        }),
+        nodes: [],
+      }
+    : await readChronicleReadInputs(mainDb, {
+        projectId: world.projectId,
+        currentSceneId: world.activeSceneId ?? null,
+      });
+}
+
+function makeSearchExecutors(turn: Awaited<ReturnType<typeof searchTurn>>) {
+  const ctx = createMainChronicleSearchContext({
+    db: mainDb,
+    turn,
+    countTokens: (text) => (text ? text.length : 0),
+    native: createMainTypedReads({ backend: typedBackend, identity: IDENTITY }),
+  });
+  return createChronicleSearchExecutors(ctx);
+}
+
+describe("共有 core の search_events（main の DB adapter・turn の入力・typed read の上）が、PR-0 の golden と同じ結果を返す", () => {
+  it("対象は golden を持つ 1 本で、CORE_READ_TOOL_NAMES・CHRONICLE_READ_TOOL_NAMES とは別の表（3 つの表は互いに素で合計 16）", () => {
+    expect([...CHRONICLE_SEARCH_TOOL_NAMES]).toEqual(["search_events"]);
+    const all = [
+      ...CORE_READ_TOOL_NAMES,
+      ...CHRONICLE_READ_TOOL_NAMES,
+      ...CHRONICLE_SEARCH_TOOL_NAMES,
+    ];
+    expect(all).toHaveLength(16);
+    expect(new Set(all).size).toBe(16);
+    expect(goldenOf("search_events").length).toBeGreaterThan(0);
+  });
+
+  it("case 名→native の表は golden の 10 case と過不足なく一致する", () => {
+    expect(goldenOf("search_events").map((c) => c.case)).toEqual(
+      Object.keys(SEARCH_EVENTS_DENSE),
+    );
+  });
+
+  it("golden の全 case（world・params）で結果が一致する（dense が reject する case だけは throw を確かめ、byte 比較から外す）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const cases = goldenOf("search_events");
+    const done: Record<DenseKind, number> = {
+      canned: 0,
+      empty: 0,
+      rejects: 0,
+      none: 0,
+    };
+    for (const golden of cases) {
+      const kind = SEARCH_EVENTS_DENSE[golden.case];
+      if (kind === undefined) throw new Error(`no dense kind: ${golden.case}`);
+      await setLegacyReadWorld(golden.world);
+      legacyReadInvokeBridge.reset();
+      const label = `search_events / ${golden.case}`;
+      const turn = await searchTurn(golden.world);
+      const executors = makeSearchExecutors(turn);
+      denseAnswer = () => {
+        if (kind === "canned") return LEGACY_READ_CANNED_EVENT_HITS;
+        if (kind === "empty") return [];
+        throw new Error("dense unavailable");
+      };
+      sent.length = 0;
+      denseSent.length = 0;
+
+      if (kind === "rejects") {
+        // main は握らない：tool error（throw）で、`[]` の成功にならない。golden の
+        // `0 events found` は legacy の port の握りの結果（renderer の結果は変わらない）。
+        expect(golden.result.summary, label).toBe("0 events found");
+        await expect(
+          executors.search_events(golden.params),
+          label,
+        ).rejects.toThrow();
+        expect(denseSent, label).toHaveLength(1);
+        done.rejects += 1;
+        continue;
+      }
+
+      let actual: Awaited<ReturnType<typeof executors.search_events>>;
+      try {
+        actual = await executors.search_events(golden.params);
+      } catch (e) {
+        expect(e, label).toBeInstanceOf(CoreProjectRequiredError);
+        expect(kind, label).toBe("none");
+        expect(golden.world.projectId, label).toBe("");
+        expect(golden.result.summary, label).toBe("No active project");
+        expect(sent, label).toEqual([]);
+        expect(denseSent, label).toEqual([]);
+        done.none += 1;
+        continue;
+      }
+      expect(
+        {
+          name: actual.name,
+          summary: actual.summary,
+          tokensUsed: actual.tokensUsed,
+          content: actual.content,
+        },
+        label,
+      ).toEqual({
+        name: golden.result.name,
+        summary: golden.result.summary,
+        tokensUsed: golden.result.tokensUsed,
+        content: golden.result.content,
+      });
+      expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+      // dense に送った引数：workspace は turn の identity、project・query は world・params、
+      // limit は fetchLimit（golden の limit=2 は 6、他は 30）。
+      if (kind === "none") {
+        expect(denseSent, label).toEqual([]);
+      } else {
+        expect(denseSent, label).toEqual([
+          {
+            workspace: IDENTITY.workspaceId,
+            projectId: golden.world.projectId,
+            query: golden.params.query,
+            limit: golden.params.limit === 2 ? 6 : 30,
+          },
+        ]);
+      }
+      // 送った文は全部 SELECT（method は all か values）。
+      for (const statement of sent) {
+        expect(statement.sql, label).toMatch(/^\s*select\b/iu);
+        expect(["all", "values"], label).toContain(statement.method);
+      }
+      done[kind] += 1;
+    }
+    expect(done).toEqual({ canned: 6, empty: 1, rejects: 1, none: 2 });
+  });
+
+  it("XPROJ の case の期待（他 project の年表に無い id は、main の secret な event の id でも出る）は、Native が索引を project で絞ることに依存する。fake が他 project に main の id を返すので出る（実 Native では出ない。実 addon の spec が確かめる）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const golden = goldenOf("search_events").find(
+      (c) => c.case === XPROJ_CASE,
+    )!;
+    expect(golden.world.projectId).toBe("p-other");
+    await setLegacyReadWorld(golden.world);
+    legacyReadInvokeBridge.reset();
+    denseAnswer = () => LEGACY_READ_CANNED_EVENT_HITS;
+    const executors = makeSearchExecutors(await searchTurn(golden.world));
+    const result = await executors.search_events(golden.params);
+    const ids = (result.content as Array<{ eventId: string }>).map(
+      (e) => e.eventId,
+    );
+    // p-other の年表には ev-death（恒久秘匿）も ev-war（secret）も無いので、hidden 判定の対象にならず素通しする。
+    expect(ids).toEqual([
+      "ev-war",
+      "ev-meet",
+      "ev-death",
+      "ev-birth",
+      "x-ev-1",
+    ]);
+  });
+
+  it("先頭が hidden で limit が可視の件数より小さい hit 列：hidden を先に落としてから slice する。dense には fetchLimit（limit×3）を送る（golden の canned dense は limit を無視するので、golden ではこの 2 点は見えない）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+    legacyReadInvokeBridge.reset();
+    // S1：ev-war（n-s3 で公開）と ev-death（恒久秘匿）は hidden、ev-meet・ev-birth は可視。
+    denseAnswer = () => [
+      LEGACY_READ_CANNED_EVENT_HITS[0],
+      LEGACY_READ_CANNED_EVENT_HITS[2],
+      LEGACY_READ_CANNED_EVENT_HITS[1],
+      LEGACY_READ_CANNED_EVENT_HITS[3],
+    ];
+    const executors = makeSearchExecutors(
+      await searchTurn({ projectId: "p-main", activeSceneId: "n-s1" }),
+    );
+    denseSent.length = 0;
+    const result = await executors.search_events({ query: "魔術", limit: 1 });
+    expect(
+      (result.content as Array<{ eventId: string }>).map((e) => e.eventId),
+    ).toEqual(["ev-meet"]);
+    expect(denseSent.map((d) => d.limit)).toEqual([3]);
+  });
+
+  it("dense の失敗（workspace の不一致・backend の欠落）は tool error で、`[]` の成功にならない", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+    const turn = await searchTurn({
+      projectId: "p-main",
+      activeSceneId: "n-s1",
+    });
+    // backend に eventsSemanticSearch が無い（fail closed）。
+    const bare = createChronicleSearchExecutors(
+      createMainChronicleSearchContext({
+        db: mainDb,
+        turn,
+        countTokens: (text) => text.length,
+        native: createMainTypedReads({
+          backend: {} as unknown as MainTypedReadsBackend,
+          identity: IDENTITY,
+        }),
+      }),
+    );
+    await expect(bare.search_events({ query: "魔術" })).rejects.toThrow(
+      /backend has no such method/u,
+    );
+    // identity に workspace が無い。
+    const noWorkspace = createChronicleSearchExecutors(
+      createMainChronicleSearchContext({
+        db: mainDb,
+        turn,
+        countTokens: (text) => text.length,
+        native: createMainTypedReads({
+          backend: typedBackend,
+          identity: { ...IDENTITY, workspaceId: "" },
+        }),
+      }),
+    );
+    denseSent.length = 0;
+    await expect(noWorkspace.search_events({ query: "魔術" })).rejects.toThrow(
+      /no workspace/u,
+    );
+    expect(denseSent).toEqual([]);
+  });
+
+  it("events の読みは呼出しごとに取り直す：list_events（cache つきの ctx）が events を読んだ後でも、search_events は 2 回呼べば 2 回読む。cache の後に secret にした event の hit は次の呼出しで落ちる（PR-7a の ctx の cache とは逆）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+    legacyReadInvokeBridge.reset();
+    const turn = await searchTurn({
+      projectId: "p-main",
+      activeSceneId: "n-s1",
+    });
+    const cached = createChronicleReadExecutors(
+      createMainChronicleReadContext({
+        db: mainDb,
+        turn,
+        countTokens: (text) => text.length,
+        getUiLanguage: () => "ja",
+      }).ctx,
+    );
+    const executors = makeSearchExecutors(turn);
+    denseAnswer = () => LEGACY_READ_CANNED_EVENT_HITS;
+    const countFrom = (table: string) =>
+      sent.filter((x) => new RegExp(`from "${table}"`, "iu").test(x.sql))
+        .length;
+    const idsOf = (r: { content: unknown }) =>
+      (r.content as Array<{ eventId: string }>).map((e) => e.eventId);
+
+    sent.length = 0;
+    await cached.list_events({});
+    await cached.list_events({});
+    expect(countFrom("events")).toBe(1); // the cached context: once
+    sent.length = 0;
+    const first = await executors.search_events({ query: "魔術" });
+    expect(idsOf(first)).toContain("ev-meet");
+    await executors.search_events({ query: "魔術" });
+    expect(countFrom("events")).toBe(2); // search_events: once per call
+    expect(countFrom("scene_events")).toBe(2);
+
+    const update = (secret: number, reveal: string | null) =>
+      invoke("db_execute", {
+        sql: "UPDATE events SET secret = ?, reveal_scene_id = ? WHERE id = 'ev-meet'",
+        params: [secret, reveal],
+        method: "run",
+      });
+    try {
+      await update(1, "n-s3"); // 公開の ev-meet が、turn の途中で n-s3 公開の secret になる（今は n-s1）
+      const after = await executors.search_events({ query: "魔術" });
+      expect(idsOf(after)).not.toContain("ev-meet");
+    } finally {
+      await update(0, null);
+    }
   });
 });

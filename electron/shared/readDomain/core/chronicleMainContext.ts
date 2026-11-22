@@ -1,5 +1,7 @@
 import type {
   CoreChronicleReadContext,
+  CoreChronicleSearchContext,
+  CoreNativeReads,
   CoreReadDb,
   CoreTreeState,
   CoreUiLanguage,
@@ -72,14 +74,7 @@ export function createMainChronicleReadContext(
   const codexNames = new SharedLoader((projectId) =>
     readCodexNames(db, projectId),
   );
-  // One fixed state, the same object each time: the nodes array keeps its
-  // reference. `activeSceneId` is the turn's current scene, already null when it
-  // is not a live scene of the project (`ReadInputs.currentSceneId`).
-  const treeState: CoreTreeState = {
-    projectId: turn.inputs.projectId,
-    nodes: turn.nodes,
-    activeSceneId: turn.inputs.currentSceneId,
-  };
+  const treeState = turnTreeState(turn);
   const ctx: CoreChronicleReadContext = {
     getTreeState: () => treeState,
     countTokens: args.countTokens,
@@ -102,6 +97,65 @@ export function createMainChronicleReadContext(
       events.clear();
       sceneEvents.clear();
       codexNames.clear();
+    },
+  };
+}
+
+/**
+ * One fixed state, the same object each time: the nodes array keeps its
+ * reference. `activeSceneId` is the turn's current scene, already null when it
+ * is not a live scene of the project (`ReadInputs.currentSceneId`).
+ */
+function turnTreeState(turn: ChronicleReadInputs): CoreTreeState {
+  return {
+    projectId: turn.inputs.projectId,
+    nodes: turn.nodes,
+    activeSceneId: turn.inputs.currentSceneId,
+  };
+}
+
+/**
+ * The ports of `search_events` for Electron main (PR-7b, DR-MP4-38). Nothing
+ * calls this yet (flag L is closed).
+ *
+ * Unlike the cached context above, **this one reads the events and the
+ * scene-event bridges again for every call**: no `SharedLoader`, no cache of
+ * the turn. The tool drops a hit by the events it knows; a hit whose id is not
+ * among them passes (moved as the renderer has it). A cached list that is older
+ * than the index (an event created or made secret since the turn began) would
+ * turn that into a leak of a secret event's title, which the renderer's batch
+ * cache and its write tools' invalidation never allow. Reading again for each
+ * call keeps the window closed without a wiring of `clear()` (4c-1's). The
+ * dense read, the tree state (one fixed state of the turn, as above) and the
+ * reading order are the turn's. The events are read fail closed
+ * (`readEventsFailClosed`).
+ *
+ * No state outside the arguments: two turns that run at once share nothing.
+ */
+export interface MainChronicleSearchContextArgs {
+  /** `createCoreReadDb(checkedClient)`. */
+  readonly db: CoreReadDb;
+  /** The turn's inputs: from `readChronicleReadInputs`, at the start of the turn. */
+  readonly turn: ChronicleReadInputs;
+  readonly countTokens: (text: string) => number;
+  /** Main's typed read (`createMainTypedReads(...)`): only the dense read of the events index is used. */
+  readonly native: Pick<CoreNativeReads, "eventsSemantic">;
+}
+
+export function createMainChronicleSearchContext(
+  args: MainChronicleSearchContextArgs,
+): CoreChronicleSearchContext {
+  const { db, turn } = args;
+  const treeState = turnTreeState(turn);
+  return {
+    getTreeState: () => treeState,
+    countTokens: args.countTokens,
+    native: args.native,
+    chronicle: {
+      getEvents: (projectId) => readEventsFailClosed(db, projectId),
+      getSceneEvents: (projectId) => readSceneEventsForProject(db, projectId),
+      // The turn's reading order, whatever nodes are passed (they are the turn's).
+      getReadingOrder: () => turn.inputs.readingOrder,
     },
   };
 }
