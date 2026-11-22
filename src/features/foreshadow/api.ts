@@ -30,7 +30,6 @@ import type {
   ForeshadowRow,
   ForeshadowSetupRow,
   ForeshadowStrength,
-  ForeshadowLoadBearing,
   AiEvaluation,
   ForeshadowWithLabel,
   ChapterAuditRequest,
@@ -41,11 +40,21 @@ import type {
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
+import {
+  buildForeshadowsWithLabels,
+  normalizeSetupLabelInput,
+  normalizeSetupRow,
+  openForeshadowsFromWire,
+  type OpenForeshadowForContext,
+  type SetupLabelInput,
+} from "@/../electron/shared/readDomain/features/foreshadow/readRows";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { instantEpochMilliseconds } from "@/lib/time";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export { normalizeForeshadowRow } from "./normalizeForeshadowRow";
+// 共有 core が使う read 専用 module へ移した（MP-4b PR-5b）。旧 path の import を保つ re-export。
+export { buildForeshadowsWithLabels };
+export type { OpenForeshadowForContext };
 
 export type ForeshadowChangeOrigin =
   | "human"
@@ -133,61 +142,6 @@ function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window || "grimodex" in window;
 }
 
-function toDate(value: unknown): Date {
-  if (value instanceof Date) return value;
-  if (typeof value === "number") return new Date(value);
-  if (typeof value === "string") return new Date(value);
-  return new Date(0);
-}
-
-function toNullableDate(value: unknown): Date | null {
-  if (value == null) return null;
-  return toDate(value);
-}
-
-function toBool(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
-  return false;
-}
-
-function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
-  const row = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: String(row.id ?? ""),
-    foreshadowId: String(row.foreshadowId ?? row.foreshadow_id ?? ""),
-    sceneId: String(row.sceneId ?? row.scene_id ?? ""),
-    fromPos: Number(row.fromPos ?? row.from_pos ?? 0),
-    toPos: Number(row.toPos ?? row.to_pos ?? 0),
-    kind: String(
-      row.kind ?? "designated_existing",
-    ) as ForeshadowSetupRow["kind"],
-    strength:
-      (row.strength as ForeshadowSetupRow["strength"] | undefined) ?? null,
-    aiStrength:
-      (row.aiStrength as ForeshadowSetupRow["aiStrength"] | undefined) ??
-      (row.ai_strength as ForeshadowSetupRow["aiStrength"] | undefined) ??
-      null,
-    aiReasoning:
-      (row.aiReasoning as string | null | undefined) ??
-      (row.ai_reasoning as string | null | undefined) ??
-      null,
-    attribution:
-      (row.attribution as ForeshadowSetupRow["attribution"] | undefined) ??
-      "human",
-    aiRationale:
-      (row.aiRationale as string | null | undefined) ??
-      (row.ai_rationale as string | null | undefined) ??
-      null,
-    lastEvaluatedAt: toNullableDate(
-      row.lastEvaluatedAt ?? row.last_evaluated_at,
-    ),
-    isOrphan: toBool(row.isOrphan ?? row.is_orphan),
-    createdAt: toDate(row.createdAt ?? row.created_at),
-    updatedAt: toDate(row.updatedAt ?? row.updated_at),
-  };
-}
-
 // ── Foreshadow CRUD ───────────────────────────────────────────────
 
 export async function createForeshadow(
@@ -246,13 +200,6 @@ export async function listForeshadows(
     .where(eq(foreshadows.projectId, projectId)) as Promise<ForeshadowRow[]>;
 }
 
-type SetupLabelInput = Pick<
-  ForeshadowSetupRow,
-  "foreshadowId" | "isOrphan" | "strength" | "aiStrength" | "aiReasoning"
-> & {
-  sceneId?: string;
-};
-
 /** Grid カード等が per-scene IPC なしで参照する scene → 伏線 ID 索引。 */
 export function buildSceneForeshadowInfoIndex(
   rows: ForeshadowRow[],
@@ -304,45 +251,6 @@ export function buildSetupScenesByForeshadowId(
   return index;
 }
 
-export function buildForeshadowsWithLabels(
-  rows: ForeshadowRow[],
-  setups: SetupLabelInput[],
-): ForeshadowWithLabel[] {
-  if (rows.length === 0) return [];
-
-  const countMap = new Map<string, number>();
-  const weakMap = new Map<string, boolean>();
-
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-    const evaluation = safeParseAiEvaluation(s.aiReasoning);
-    const effectiveStrength =
-      s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
-    if (effectiveStrength === "subtle") {
-      weakMap.set(s.foreshadowId, true);
-    }
-  }
-
-  return rows.map((r) => {
-    const setupCount = countMap.get(r.id) ?? 0;
-    const anyWeak = weakMap.get(r.id) ?? false;
-    return { ...r, setupCount, label: deriveLabel(r, setupCount, anyWeak) };
-  });
-}
-
-function normalizeSetupLabelInput(raw: unknown): SetupLabelInput {
-  const row = normalizeSetupRow(raw);
-  return {
-    foreshadowId: row.foreshadowId,
-    sceneId: row.sceneId,
-    isOrphan: row.isOrphan,
-    strength: row.strength,
-    aiStrength: row.aiStrength,
-    aiReasoning: row.aiReasoning,
-  };
-}
-
 async function invokeForeshadowListWithLabels(
   command: string,
   args: Record<string, unknown>,
@@ -355,89 +263,6 @@ async function invokeForeshadowListWithLabels(
     rows: (res.foreshadows ?? []).map(normalizeForeshadowRow),
     setups: (res.setups ?? []).map(normalizeSetupLabelInput),
   };
-}
-
-function buildOpenForeshadowsForContext(
-  rows: Array<{
-    id: string;
-    title: string;
-    intent: string | null;
-    loadBearing: ForeshadowLoadBearing | null;
-    version: number;
-    payoffConfirmed: boolean;
-    abandoned: boolean;
-    updatedAt: unknown;
-  }>,
-  setups: SetupLabelInput[],
-): OpenForeshadowForContext[] {
-  if (rows.length === 0) return [];
-
-  const labeled = buildForeshadowsWithLabels(
-    rows.map(
-      (r): ForeshadowRow => ({
-        id: r.id,
-        projectId: "",
-        title: r.title,
-        intent: r.intent,
-        notes: null,
-        payoffSceneId: null,
-        payoffFromPos: null,
-        payoffToPos: null,
-        payoffConfirmed: r.payoffConfirmed,
-        abandoned: r.abandoned,
-        secret: false,
-        loadBearing: r.loadBearing,
-        version: r.version,
-        codexLinkDirtyAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(
-          r.updatedAt instanceof Date ||
-            typeof r.updatedAt === "string" ||
-            typeof r.updatedAt === "number"
-            ? (instantEpochMilliseconds(r.updatedAt) ?? Date.now())
-            : Date.now(),
-        ),
-      }),
-    ),
-    setups,
-  );
-  const labelById = new Map(labeled.map((l) => [l.id, l.label]));
-
-  const countMap = new Map<string, number>();
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-  }
-
-  const priority: Record<string, number> = {
-    critical: 0,
-    supporting: 1,
-    optional: 2,
-  };
-  const toMs = (v: unknown): number => {
-    if (v instanceof Date || typeof v === "string" || typeof v === "number") {
-      return instantEpochMilliseconds(v) ?? 0;
-    }
-    return 0;
-  };
-  return rows
-    .map((r) => ({
-      id: r.id,
-      title: r.title,
-      intent: r.intent,
-      loadBearing: r.loadBearing,
-      version: r.version,
-      setupCount: countMap.get(r.id) ?? 0,
-      derivedLabel: labelById.get(r.id),
-      _updatedMs: toMs(r.updatedAt),
-    }))
-    .sort((a, b) => {
-      const pa = priority[a.loadBearing ?? ""] ?? 3;
-      const pb = priority[b.loadBearing ?? ""] ?? 3;
-      if (pa !== pb) return pa - pb;
-      return b._updatedMs - a._updatedMs;
-    })
-    .map(({ _updatedMs: _ms, ...rest }) => rest);
 }
 
 function buildSceneForeshadowContextFromBundle(res: {
@@ -603,29 +428,24 @@ export interface SceneForeshadowInfo {
  * > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
  * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
  */
-export interface OpenForeshadowForContext {
-  id: string;
-  title: string;
-  intent: string | null;
-  loadBearing: ForeshadowLoadBearing | null;
-  version: number;
-  setupCount: number;
-  /** Derived lifecycle label from setup count + strength evaluation. */
-  derivedLabel?: DerivedLabel;
-}
-
-export async function listOpenForeshadowsForContext(
+/**
+ * 未回収伏線を読む wire（`{foreshadows, setups}`）。MP-4b PR-5b：read 専用 module（共有 core）が
+ * この wire から tool の結果を組むので、ここは「wire を取る」だけ（組み立てはしない）。
+ *
+ * - Native（Tauri / Electron）：`foreshadow_list_open_for_context` を `{ projectId }` だけで 1 回 invoke し、
+ *   戻りをそのまま返す（snake_case・真偽は 0/1・時刻は epoch ms。`secret = 0` の絞りは Native の SQL）。
+ * - それ以外（browser-mock・試験）：Drizzle で同じ 2 つの list を camelCase・boolean・Date のまま返す。
+ *   文と順は従来のまま（foreshadows を `secret = false` つきで select し、0 件なら setups の select を
+ *   打たずに空の 2 list を返す）。
+ */
+export async function readOpenForeshadowWire(
   projectId: string,
-): Promise<OpenForeshadowForContext[]> {
+): Promise<unknown> {
   if (isTauriRuntime()) {
-    const { rows, setups } = await invokeForeshadowListWithLabels(
-      "foreshadow_list_open_for_context",
-      { projectId },
-    );
-    return buildOpenForeshadowsForContext(rows, setups);
+    return invoke("foreshadow_list_open_for_context", { projectId });
   }
 
-  const rows = (await db
+  const rows = await db
     .select({
       id: foreshadows.id,
       title: foreshadows.title,
@@ -644,18 +464,9 @@ export async function listOpenForeshadowsForContext(
         eq(foreshadows.abandoned, false),
         eq(foreshadows.secret, false),
       ),
-    )) as Array<{
-    id: string;
-    title: string;
-    intent: string | null;
-    loadBearing: ForeshadowLoadBearing | null;
-    version: number;
-    payoffConfirmed: boolean;
-    abandoned: boolean;
-    updatedAt: unknown;
-  }>;
+    );
 
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { foreshadows: [], setups: [] };
 
   const ids = rows.map((r) => r.id);
   const setups = await db
@@ -670,7 +481,21 @@ export async function listOpenForeshadowsForContext(
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, ids));
 
-  return buildOpenForeshadowsForContext(rows, setups as SetupLabelInput[]);
+  return { foreshadows: rows, setups };
+}
+
+/**
+ * Phase 2 (chat context): プロジェクト全体の未回収伏線（payoffConfirmed=false
+ * かつ abandoned=false、secret を除く）を loadBearing 優先度（critical > supporting >
+ * optional > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
+ * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
+ * wire の取得は `readOpenForeshadowWire`、組み立ては read 専用 module
+ * （`openForeshadowsFromWire`。wire の形が壊れていれば throw する）。
+ */
+export async function listOpenForeshadowsForContext(
+  projectId: string,
+): Promise<OpenForeshadowForContext[]> {
+  return openForeshadowsFromWire(await readOpenForeshadowWire(projectId));
 }
 
 export async function getSceneForeshadowInfo(
