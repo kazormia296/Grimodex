@@ -1,3 +1,5 @@
+#[path = "../test-support/snapshot_restore.rs"]
+mod snapshot_restore;
 #[path = "../test-support/adapter.rs"]
 mod test_support;
 
@@ -89,8 +91,8 @@ fn seed_approved_proposals(
         .iter()
         .enumerate()
         .map(|(index, (kind, payload))| ProposalSeed {
-            proposal_id: Some(format!("prop-{index}")),
-            proposal_key: format!("key-{index}"),
+            proposal_id: Some(format!("{run_id}-prop-{index}")),
+            proposal_key: format!("{run_id}-key-{index}"),
             kind: (*kind).to_string(),
             payload_json: payload.clone(),
             reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
@@ -766,4 +768,146 @@ fn sticky_blocks_phase_undo() {
     )
     .expect_err("sticky should block undo");
     assert!(err.to_string().contains("NEX_UNDO_EXTERNAL_DEPENDENCY"));
+}
+
+// --- 復元の後の取り消し・やり直し（DR-SRC-12。確かめていない種類は拒んだまま） ---
+//
+// Codex の phase と detail value の作成は、確認 88 の条件（専用の守りで、復元の後の編集が
+// 巻き戻らないことを、試験で確かめる）を満たしていない種類である。ここで使う commit は、
+// 確かめた種類（Codex の項目の作成）と確かめていない種類（detail value の作成と phase の
+// 作成）が混ざっている。復元の marker の後は、取り消しが
+// NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE で拒まれ、何も変わらない（やり直しは、
+// detail value を含む commit では元から未対応）。
+// 復元は Body の scope で行う（Codex の scope は項目の版を 0 に戻し、専用の守りが先に拒む）。
+
+fn replay_payload(commit_id: &str, request_id: &str) -> UndoCommitPayload {
+    UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess-phase".to_string(),
+        surface: None,
+        commit_id: Some(commit_id.to_string()),
+        request_id: Some(request_id.to_string()),
+    }
+}
+
+fn assert_superseded_by_restore(result: anyhow::Result<Value>, what: &str) {
+    let error = result.expect_err(what);
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"),
+        "{what}: expected NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE, got {message}"
+    );
+}
+
+fn phase_rows(db: &Database, phase_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM codex_entry_phases WHERE id = ?1",
+            [phase_id],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })
+    .expect("count phases")
+}
+
+fn commit_status(db: &Database, commit_id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+            [commit_id],
+            |row| row.get::<_, String>(0),
+        )?)
+    })
+    .expect("commit status")
+}
+
+/// One commit: a Codex entry (verified kind), a detail value of it (creation,
+/// not verified) and a phase of it (not verified).
+fn apply_entry_detail_phase(db: &Database, tag: &str) -> String {
+    let narrative_entity_id = format!("ent:{tag}");
+    let items = [
+        (
+            "codex.entry.create",
+            entry_create(
+                &format!("entry-{tag}"),
+                &format!("Name {tag}"),
+                &narrative_entity_id,
+            ),
+        ),
+        (
+            "codex.detail.value.set",
+            json!({
+                "detailValueId": format!("dv-{tag}"),
+                "narrativeEntityId": narrative_entity_id,
+                "definitionId": "def-age",
+                "value": "1",
+                "occ": { "kind": "absent" }
+            }),
+        ),
+        (
+            "codex.phase.create",
+            json!({
+                "phaseId": format!("phase-{tag}"),
+                "narrativeEntityId": narrative_entity_id,
+                "label": format!("Phase {tag}"),
+                "detailOverrides": []
+            }),
+        ),
+    ];
+    let pairs = seed_approved_proposals(db, &format!("run-{tag}"), &format!("set-{tag}"), &items);
+    let ops = pairs
+        .iter()
+        .zip(items.iter())
+        .map(|((proposal_id, revision_id), (kind, payload))| {
+            (
+                proposal_id.clone(),
+                revision_id.clone(),
+                (*kind).to_string(),
+                payload.clone(),
+            )
+        })
+        .collect();
+    let applied = prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("req-{tag}"),
+            &format!("digest-{tag}"),
+            &format!("set-{tag}"),
+            &format!("run-{tag}"),
+            ops,
+            vec![],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    applied["commitId"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn undo_of_a_phase_commit_after_a_snapshot_restore_is_refused_and_changes_nothing() {
+    let db = migrated_db();
+    seed_definition(&db, "def-age", "年齢");
+    let undone_before = apply_entry_detail_phase(&db, "pha");
+    let applied_before = apply_entry_detail_phase(&db, "phb");
+    // Without a restore, undo works: the refusal below is the restore's doing.
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        replay_payload(&undone_before, "pha-undo"),
+    )
+    .expect("undo before the restore");
+    assert_eq!(undone["status"], "undone");
+
+    snapshot_restore::restore_a_scene_after_snapshot(&db, "project-1", "sess-restore", "ph");
+
+    assert_superseded_by_restore(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            replay_payload(&applied_before, "phb-undo"),
+        ),
+        "undo of a phase commit after the restore",
+    );
+    // Nothing changed: B's phase stays, A stays undone.
+    assert_eq!(phase_rows(&db, "phase-phb"), 1);
+    assert_eq!(phase_rows(&db, "phase-pha"), 0);
+    assert_eq!(commit_status(&db, &applied_before), "applied");
+    assert_eq!(commit_status(&db, &undone_before), "undone");
 }

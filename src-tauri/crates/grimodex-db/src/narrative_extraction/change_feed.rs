@@ -20,6 +20,8 @@ use uuid::Uuid;
 /// rebuild old ranges instead of silently interpreting them in a new space.
 pub(crate) const CANONICAL_TEXT_NORMALIZER_VERSION: &str = "gdx-canonical-text/1";
 
+use super::codex_operations::{OP_KIND_ENTRY_CREATE, OP_KIND_ENTRY_PATCH, OP_KIND_EVENT_CREATE};
+use super::temporal_operations::OP_KIND_SCENE_METADATA_PATCH;
 use crate::change_events::{
     append_change_events_in_tx, AppendChangeEvent, AppendResult as AppendCanonicalChangeResult,
 };
@@ -312,6 +314,249 @@ pub(crate) fn previous_event_after_state(
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// The durable head of an object together with the sequence of the
+/// transaction that wrote it. The sequence is what the restore exemption
+/// compares with the sequence of a restore marker.
+struct StoredObjectHead {
+    after: (Option<i64>, Option<String>),
+    canonical_sequence: i64,
+}
+
+fn stored_object_head(
+    conn: &Connection,
+    project_id: &str,
+    identity: &str,
+) -> anyhow::Result<Option<StoredObjectHead>> {
+    conn.query_row(
+        "SELECT after_version, after_digest, canonical_sequence
+           FROM narrative_change_object_heads
+          WHERE project_id = ?1 AND object_identity = ?2",
+        params![project_id, identity],
+        |row| {
+            Ok(StoredObjectHead {
+                after: (
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ),
+                canonical_sequence: row.get::<_, i64>(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The `source_domain` of the one transaction that writes a project snapshot
+/// restore (its project marker, and the Scene Scope rebinding it performs).
+pub(crate) const SNAPSHOT_RESTORE_SOURCE_DOMAIN: &str = "project.snapshot.restore";
+
+/// The canonical sequence of the project's newest snapshot restore (origin
+/// `restore`, source domain `project.snapshot.restore`, carrying the
+/// `project-restored` marker), or `None` when the project has none.
+///
+/// This reads only what is already in the database. It is the single fact the
+/// continuity exemption (a mismatching head is let through once) and the
+/// Undo/Redo refusal (a replay older than a restore) rest on. It is not
+/// narrowed by the restored scopes: a restore changes rows of other scopes
+/// through foreign-key cascades (Codex participants of an event, a Snippet's
+/// Scene), so a scope filter would leave those objects unwritable.
+///
+/// The newest marker is enough: "some restore is newer than `sequence`" is the
+/// same statement as "the newest restore is newer than `sequence`", so a
+/// caller that compares many heads asks once (`ensure_event_history_continuity`).
+fn latest_restore_marker_sequence(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT t.source_change_event_sequence
+               FROM narrative_change_transactions t
+              WHERE t.project_id = ?1
+                AND t.origin = ?2
+                AND t.source_domain = ?3
+                AND EXISTS (
+                    SELECT 1 FROM narrative_change_events m
+                     WHERE m.project_id = t.project_id
+                       AND m.transaction_id = t.id
+                       AND m.canonical_sequence = t.source_change_event_sequence
+                       AND json_extract(m.object_key_json, '$.kind') = 'project'
+                       AND json_extract(m.structural_impact_json, '$.event')
+                           = 'project-restored')
+              ORDER BY t.source_change_event_sequence DESC
+              LIMIT 1",
+            params![
+                project_id,
+                NarrativeChangeOrigin::Restore.as_str(),
+                SNAPSHOT_RESTORE_SOURCE_DOMAIN
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?)
+}
+
+/// True when the project has a snapshot restore whose canonical sequence is
+/// strictly newer than `sequence` (see `latest_restore_marker_sequence`).
+fn restore_marker_newer_than(
+    conn: &Connection,
+    project_id: &str,
+    sequence: i64,
+) -> anyhow::Result<bool> {
+    Ok(latest_restore_marker_sequence(conn, project_id)?.is_some_and(|latest| latest > sequence))
+}
+
+/// The journal entities (`entityKind`, `opKind`) whose Undo/Redo through a
+/// real snapshot restore was verified not to roll back what a restore put back
+/// (DR-SRC-12, confirmation 88): Chronicle event create, Codex entry create and
+/// patch, and Scene Chronicle patch.
+///
+/// The Codex entry and Scene kinds compare only a version in `undo.rs`, and a
+/// restore puts an entry or a Scene back at version 0 (the snapshot row has no
+/// version), which no commit's result version equals, so a restore the author
+/// has not written after is refused on the version. The event create compares
+/// the whole event.
+///
+/// The Event Chronicle patch and the Codex detail value patch were taken out
+/// after a real restore showed otherwise: both compare only a version, and a
+/// restore puts them back at the snapshot's version. Restores can branch (back
+/// to S0, commit, then forward to a snapshot S1 taken on another branch), so an
+/// object nobody wrote after the restore can carry the commit's version with
+/// other content; the version guard passes, the head is older than the restore
+/// marker so the continuity check is exempt, and the Undo silently put the
+/// pre-commit content over what the restore had put back. Every other kind
+/// (Codex phase, semantic binding, relation, bind-existing, detail value
+/// create, story order, Plot, Foreshadow, temporal node, constraint and
+/// projection) stays refused after a restore until it is verified and added
+/// here. Widening this table is a separate piece of work: add the test through
+/// a real restore first, including a restore that branches.
+const REPLAY_EXEMPT_ENTITIES: &[(&str, &str)] = &[
+    ("event", "create"),
+    ("codex_entry", "create"),
+    ("codex_entry", "patch"),
+    ("temporal_scene_chronicle", "patch"),
+];
+
+/// The `narrative_apply_operations.operation_kind` values that correspond to
+/// `REPLAY_EXEMPT_ENTITIES`.
+const REPLAY_EXEMPT_OPERATIONS: &[&str] = &[
+    OP_KIND_EVENT_CREATE,
+    OP_KIND_ENTRY_CREATE,
+    OP_KIND_ENTRY_PATCH,
+    OP_KIND_SCENE_METADATA_PATCH,
+];
+
+/// True when the commit's operations are all of a verified kind
+/// (`REPLAY_EXEMPT_ENTITIES`). Both the journal the Undo/Redo replays and the
+/// commit's operation rows must be non-empty and entirely verified: a commit
+/// that mixes a verified kind with another is not exempt, and neither is one
+/// whose journal or operations cannot be read.
+fn commit_has_only_verified_kinds(
+    conn: &Connection,
+    project_id: &str,
+    commit_id: &str,
+    journal_id: &str,
+) -> anyhow::Result<bool> {
+    let after_json: Option<String> = conn
+        .query_row(
+            "SELECT after_json
+               FROM narrative_commit_journals
+              WHERE id = ?1 AND commit_id = ?2 AND project_id = ?3",
+            params![journal_id, commit_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(after) = after_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+        return Ok(false);
+    };
+    let Some(entities) = after.get("entities").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    if entities.is_empty() {
+        return Ok(false);
+    }
+    for entity in entities {
+        let (Some(kind), op_kind) = (
+            entity.get("entityKind").and_then(Value::as_str),
+            // The replay itself reads a missing `opKind` as `create`.
+            entity
+                .get("opKind")
+                .and_then(Value::as_str)
+                .unwrap_or("create"),
+        ) else {
+            return Ok(false);
+        };
+        if !REPLAY_EXEMPT_ENTITIES.contains(&(kind, op_kind)) {
+            return Ok(false);
+        }
+    }
+
+    let mut statement =
+        conn.prepare("SELECT operation_kind FROM narrative_apply_operations WHERE commit_id = ?1")?;
+    let operation_kinds = statement
+        .query_map(params![commit_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(!operation_kinds.is_empty()
+        && operation_kinds
+            .iter()
+            .all(|kind| REPLAY_EXEMPT_OPERATIONS.contains(&kind.as_str())))
+}
+
+/// True when the Undo/Redo being appended replays an AI-extraction apply commit
+/// of a verified kind (`undo_commit` / `redo_commit`, DR-SRC-12). Every fact is
+/// read from the database: the lineage root must be the commit's own forward
+/// transaction (cause `forward`, origin `ai-apply`, source domain
+/// `narrative.commit.apply`) of the same project, naming a commit row and a
+/// journal row that belong together, the new transaction must name that same
+/// commit and journal, and every operation of the commit must be of a kind
+/// verified through a real restore (`commit_has_only_verified_kinds`). Only
+/// `undo.rs` writes such transactions; a typed writer's replay names no commit,
+/// so it never matches and stays subject to the restore refusal, and so does
+/// the replay of a commit of a kind that has not been verified.
+fn replays_an_apply_commit(
+    conn: &Connection,
+    input: &AppendNarrativeChangeTransactionInput,
+    root_transaction_id: &str,
+) -> anyhow::Result<bool> {
+    let (Some(commit_id), Some(journal_id)) =
+        (input.commit_id.as_deref(), input.journal_id.as_deref())
+    else {
+        return Ok(false);
+    };
+    let is_the_commits_apply_root = conn
+        .query_row(
+            "SELECT 1
+               FROM narrative_change_transactions t
+               JOIN narrative_apply_commits c
+                 ON c.id = t.commit_id AND c.project_id = t.project_id
+               JOIN narrative_commit_journals j
+                 ON j.id = t.journal_id AND j.commit_id = c.id
+                AND j.project_id = t.project_id
+              WHERE t.project_id = ?1
+                AND t.id = ?2
+                AND t.cause_kind = 'forward'
+                AND t.origin = ?3
+                AND t.source_domain = 'narrative.commit.apply'
+                AND t.commit_id = ?4
+                AND t.journal_id = ?5
+              LIMIT 1",
+            params![
+                input.project_id,
+                root_transaction_id,
+                NarrativeChangeOrigin::AiApply.as_str(),
+                commit_id,
+                journal_id
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    if !is_the_commits_apply_root {
+        return Ok(false);
+    }
+    commit_has_only_verified_kinds(conn, &input.project_id, commit_id, journal_id)
 }
 
 struct NarrativeChangeObjectHead<'a> {
@@ -1410,24 +1655,51 @@ pub(crate) fn scene_text_impact(
     })))
 }
 
+/// How a feed transaction is checked against the durable head of each object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContinuityMode {
+    /// Every writer: a mismatch with the head is refused, except for a head
+    /// that a later project snapshot restore left behind (once).
+    Normal,
+    /// The transaction written by `apply_project_snapshot_restore` itself. It
+    /// deletes and re-creates a Scene's Scope binding, so the before state of
+    /// its own scene-scope events cannot chain from the head. Only reachable
+    /// through the crate-private `append_snapshot_restore_in_tx`.
+    SnapshotRestoreBatch,
+}
+
+/// A head as seen while one batch is checked: the stored one, or the one an
+/// earlier event of the same batch has just set.
+struct BatchHead {
+    after: (Option<i64>, Option<String>),
+    /// `Some` only for a head read from the database. The restore exemption
+    /// never applies to a head an earlier event of the same batch created.
+    stored_sequence: Option<i64>,
+}
+
 fn ensure_event_history_continuity(
     conn: &Connection,
     project_id: &str,
     events: &[NarrativeChangeEventInput],
+    mode: ContinuityMode,
 ) -> anyhow::Result<()> {
-    let mut heads =
-        std::collections::HashMap::<String, Option<(Option<i64>, Option<String>)>>::new();
+    let mut heads = std::collections::HashMap::<String, Option<BatchHead>>::new();
     let mut mutation_kinds = std::collections::HashMap::<String, String>::new();
+    // The newest restore marker of the project, read at most once per call and
+    // only when a head actually mismatches (an ordinary write reads nothing).
+    // Nothing is written while the batch is checked, so one read answers every
+    // mismatching head of the batch.
+    let mut latest_restore_marker: Option<Option<i64>> = None;
     for event in events {
         let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
-        let prior_after = match heads.get(&identity) {
-            Some(head) => head.clone(),
-            None => {
-                let head = previous_event_after_state(conn, project_id, &identity)?;
-                heads.insert(identity.clone(), head.clone());
-                head
-            }
-        };
+        if !heads.contains_key(&identity) {
+            let head = stored_object_head(conn, project_id, &identity)?.map(|head| BatchHead {
+                after: head.after,
+                stored_sequence: Some(head.canonical_sequence),
+            });
+            heads.insert(identity.clone(), head);
+        }
+        let prior = heads.get(&identity).and_then(Option::as_ref);
         // A project restore starts a new semantic epoch. Its marker is the
         // explicit trigger for C2's full rebuild and intentionally does not
         // need to chain from the immediately preceding project marker: a
@@ -1444,14 +1716,45 @@ fn ensure_event_history_continuity(
         let is_chain_exempt = is_epoch_reset
             || super::scene_body_declaration::is_scene_body_declaration_event(&event.object_key);
         if !is_chain_exempt {
-            if let Some(prior_after) = prior_after {
+            if let Some(prior) = prior {
                 let current_before = (event.before_version, event.before_digest.clone());
-                anyhow::ensure!(
-                    prior_after == current_before,
-                    "NARRATIVE_CHANGE_FEED_DISCONTINUITY: object {identity} previous after state {:?} does not match current before state {:?}",
-                    prior_after,
-                    current_before
-                );
+                if prior.after != current_before {
+                    // A mismatch is let through in two cases, both decided from
+                    // facts the database already holds or from the type of the
+                    // entry point (never from a caller's claim):
+                    // - the head predates a project snapshot restore. A restore
+                    //   replaces rows and writes one project marker but no head,
+                    //   so the first write afterwards cannot chain; it records
+                    //   the row as it really is and moves the head, which makes
+                    //   the next write strict again;
+                    // - the restore's own Scene Scope rebinding (see
+                    //   `ContinuityMode::SnapshotRestoreBatch`).
+                    let exempt = match prior.stored_sequence {
+                        Some(sequence) => {
+                            (mode == ContinuityMode::SnapshotRestoreBatch
+                                && is_scene_scope_event_kind(&event.object_key))
+                                || {
+                                    let latest = match latest_restore_marker {
+                                        Some(latest) => latest,
+                                        None => {
+                                            let latest =
+                                                latest_restore_marker_sequence(conn, project_id)?;
+                                            latest_restore_marker = Some(latest);
+                                            latest
+                                        }
+                                    };
+                                    latest.is_some_and(|latest| latest > sequence)
+                                }
+                        }
+                        None => false,
+                    };
+                    anyhow::ensure!(
+                        exempt,
+                        "NARRATIVE_CHANGE_FEED_DISCONTINUITY: object {identity} previous after state {:?} does not match current before state {:?}",
+                        prior.after,
+                        current_before
+                    );
+                }
             }
         }
         // One transaction gets one `canonical_sequence`, and its events are
@@ -1493,11 +1796,18 @@ fn ensure_event_history_continuity(
         if !is_epoch_reset {
             heads.insert(
                 identity,
-                Some((event.after_version, event.after_digest.clone())),
+                Some(BatchHead {
+                    after: (event.after_version, event.after_digest.clone()),
+                    stored_sequence: None,
+                }),
             );
         }
     }
     Ok(())
+}
+
+fn is_scene_scope_event_kind(object_key: &Value) -> bool {
+    object_key.get("kind").and_then(Value::as_str) == Some("scene-scope")
 }
 
 /// True for the synthetic Project-scoped Epoch markers
@@ -2417,6 +2727,60 @@ pub fn append_canonical_and_narrative_change_in_tx(
     canonical_event: &AppendChangeEvent,
     narrative_input: &AppendNarrativeChangeTransactionInput,
 ) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
+    append_canonical_and_narrative_change_with_mode_in_tx(
+        conn,
+        project_id,
+        session_id,
+        canonical_event,
+        narrative_input,
+        ContinuityMode::Normal,
+    )
+}
+
+/// The entry point of `apply_project_snapshot_restore`, and only of it.
+///
+/// It does the same as [`append_canonical_and_narrative_change_in_tx`]. The
+/// difference is that the restore's own scene-scope events are let through
+/// the continuity check even when they do not chain from the head: the
+/// restore deletes the Scene (CASCADE removes its Scope binding) and
+/// re-creates the binding at version 1, so the before state it can record is
+/// never the head's (a Scene deleted after the snapshot even leaves a head
+/// without a row). Nothing else is exempted: other kinds, markers (already
+/// exempt) and declarations (already exempt) behave as everywhere.
+///
+/// This entry is `pub(crate)`: no other crate, N-API binding, IPC or MCP
+/// route can reach it, and the transaction must say it is a restore.
+pub(crate) fn append_snapshot_restore_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    canonical_event: &AppendChangeEvent,
+    narrative_input: &AppendNarrativeChangeTransactionInput,
+) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
+    anyhow::ensure!(
+        narrative_input.origin == NarrativeChangeOrigin::Restore
+            && narrative_input.cause_kind == NarrativeChangeCauseKind::Forward
+            && narrative_input.source_domain == SNAPSHOT_RESTORE_SOURCE_DOMAIN,
+        "the snapshot restore append entry takes only a forward transaction of origin restore and source domain {SNAPSHOT_RESTORE_SOURCE_DOMAIN}"
+    );
+    append_canonical_and_narrative_change_with_mode_in_tx(
+        conn,
+        project_id,
+        session_id,
+        canonical_event,
+        narrative_input,
+        ContinuityMode::SnapshotRestoreBatch,
+    )
+}
+
+fn append_canonical_and_narrative_change_with_mode_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    canonical_event: &AppendChangeEvent,
+    narrative_input: &AppendNarrativeChangeTransactionInput,
+    mode: ContinuityMode,
+) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
     let canonical_event = crate::change_events::annotate_authority_event(canonical_event);
     anyhow::ensure!(
         !conn.is_autocommit(),
@@ -2459,7 +2823,8 @@ pub fn append_canonical_and_narrative_change_in_tx(
         session_id,
         std::slice::from_ref(&canonical_event),
     )?;
-    let narrative = append_narrative_change_transaction_in_tx(conn, narrative_input)?;
+    let narrative =
+        append_narrative_change_transaction_with_mode_in_tx(conn, narrative_input, mode)?;
     Ok(AppendCanonicalNarrativeChangeResult {
         canonical,
         narrative,
@@ -2532,6 +2897,14 @@ fn is_scene_body_only_event(event: &NarrativeChangeEventInput) -> bool {
 pub fn append_narrative_change_transaction_in_tx(
     conn: &Connection,
     input: &AppendNarrativeChangeTransactionInput,
+) -> anyhow::Result<AppendNarrativeChangeTransactionResult> {
+    append_narrative_change_transaction_with_mode_in_tx(conn, input, ContinuityMode::Normal)
+}
+
+fn append_narrative_change_transaction_with_mode_in_tx(
+    conn: &Connection,
+    input: &AppendNarrativeChangeTransactionInput,
+    mode: ContinuityMode,
 ) -> anyhow::Result<AppendNarrativeChangeTransactionResult> {
     anyhow::ensure!(
         !conn.is_autocommit(),
@@ -2614,6 +2987,9 @@ pub fn append_narrative_change_transaction_in_tx(
         }
     }
 
+    // The forward transaction an Undo/Redo ultimately replays. A replay older
+    // than a project snapshot restore is refused below.
+    let mut replay_root_transaction_id: Option<String> = None;
     if let Some(original_transaction_id) = input.original_transaction_id.as_deref() {
         ensure_project_scoped_reference(
             conn,
@@ -2665,6 +3041,7 @@ pub fn append_narrative_change_transaction_in_tx(
             );
             root_id
         };
+        replay_root_transaction_id = Some(lineage_root_transaction_id.clone());
         anyhow::ensure!(
             original_commit_id == input.commit_id,
             "original transaction does not belong to the named commit"
@@ -2817,7 +3194,36 @@ pub fn append_narrative_change_transaction_in_tx(
         return Ok(existing);
     }
 
-    ensure_event_history_continuity(conn, &input.project_id, &input.events)?;
+    // A restore replaces rows without recording their change, so replaying
+    // something older than it would put back state the restore removed or
+    // silently undo a later edit (the row looks the same as before the
+    // restore). Only what a restore predates is refused; what was done after
+    // it is undone and redone as usual. The same request replayed again
+    // returned its recorded result above.
+    //
+    // The undo and redo of an AI-extraction apply commit are the exception
+    // (DR-SRC-12): they carry their own guard (`narrative_extraction/undo.rs`
+    // compares what the commit made with the live rows before touching them)
+    // and the continuity check below still stops a later edit. Whether a replay
+    // is one is decided from the replayed root transaction and its commit and
+    // journal rows, never from the caller's source domain or origin.
+    if let Some(root_transaction_id) = replay_root_transaction_id.as_deref() {
+        if !replays_an_apply_commit(conn, &input, root_transaction_id)? {
+            let root_sequence: i64 = conn.query_row(
+                "SELECT source_change_event_sequence
+                   FROM narrative_change_transactions
+                  WHERE project_id = ?1 AND id = ?2",
+                params![input.project_id, root_transaction_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !restore_marker_newer_than(conn, &input.project_id, root_sequence)?,
+                "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE: the change being replayed predates a project snapshot restore and can no longer be undone or redone"
+            );
+        }
+    }
+
+    ensure_event_history_continuity(conn, &input.project_id, &input.events, mode)?;
 
     let transaction_id = Uuid::new_v4().to_string();
     conn.execute(
@@ -4038,3 +4444,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "change_feed_restore_entry_tests.rs"]
+mod restore_entry_tests;
