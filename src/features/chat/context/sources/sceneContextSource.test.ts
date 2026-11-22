@@ -1323,6 +1323,23 @@ describe("collectSceneContext scene POV name (CPL/1 V1・V2)", () => {
     expect(povNameOf(result)).toBe("Alice");
   });
 
+  it("keeps the Codex name when a Phase at this scene overrides summary, content and mode", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
+    const result = await collectSceneContext(
+      request({ entries: [alice] }),
+      povDeps("alice", [
+        phase({
+          id: "phase-1",
+          entryId: alice.id,
+          summaryOverride: "Phase summary",
+          contentOverride: "Phase content",
+          contextModeOverride: "mentioned",
+        }),
+      ]),
+    );
+    expect(povNameOf(result)).toBe("Alice");
+  });
+
   it("does not name a character whose Phase at this scene turns hidden", async () => {
     const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
     const result = await collectSceneContext(

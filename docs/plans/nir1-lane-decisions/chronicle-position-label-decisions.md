@@ -27,17 +27,18 @@
 - 名前を引いて渡してよいかの判定は、同じ場面の予定ビートの視点の名前と同じ集合（`contextEligibleIds`。`relationTraversalEntries` の id）にする。hidden のほかに、次を渡さない。
   - Phase 解決後の contextMode が suppress の項目（明示のピンが無いとき）。
   - このターンで作者が自動から外した項目（`excludedAutoEntryIds`）。
-  - 索引に無い id（他の project の行、削除された項目など）。
+  - 索引に無い id（視点の id が、他の project の Codex 項目や、削除された項目を指す場合）。なお、索引そのものに他の project の行が混ざる場合は、この gate ではなく、既存の `collectSceneContext` の throw（foreign-project row）が文脈全体を止める。
 - 理由：場面の視点の名前は、自動の注入である。ADR 013 は、suppress を「自動では渡さない」とし、`CONTEXT_INJECTION.md` も、effective suppress の自動の注入を除く。V2 の字面どおり hidden だけを落とすと、suppress の人物の名前が、新しく自動で出て、確認済みの 2 段の強さを広げる。同じ場面の中で、予定ビートの視点と、場面の視点とで、同じ人物の扱いが分かれることも避ける。
 - 起案の文との関係：V2 は「hidden は必ず渡さない」という必要条件だけを書き、suppress や自動の除外を「渡す」とは書かない。この gate は、V2 より狭い向きで、送信は増えない。送信先・保存の範囲・閾値は動かない。起案の脅威モデル L2（§3）は hidden しか書かないが、改訂ではなく注記で足りる（渡す範囲は L2 の範囲に収まる）。
 - 明示のピンのある suppress の人物は、ピンが `l4SeedIds` に入るので、名前が出る。ピンは作者が選んだ明示の行為で、予定ビートの視点でも同じである。
-- 判定は、`effectiveIndexById`（Phase 解決後。`name` は Phase で変わらない）を引く。索引に無い id は、名前が引けず、渡さない（fail-closed）。名前が空白だけの項目も、行を出さない。
+- 判定は、`effectiveIndexById`（Phase 解決後。`name` は Phase で変わらない。Phase の上書きは summary・content・contextMode だけで、`materializeResolvedCodexContext` は name を触らない。`sceneContextSource.test.ts` に、Phase の上書きがあっても名前が変わらない試験を 1 件入れた）を引く。索引に無い id は、名前が引けず、渡さない（fail-closed）。名前が空白だけの項目も、行を出さない。
 - 判定の固定：`sceneContextSource.test.ts` に、hidden・Phase で hidden が解除された人物・Phase で hidden になった人物・索引に無い id・suppress（ピンなし／ピンあり）・自動の除外・視点なしの場面・場面でない node・空白の名前を入れた。
 
 ### DR-CPL-3　描画の場所と形
 
 - `SceneContext` に、任意の欄 `povName` を足す。L3 の `hasRealScene` の中で、時期（`storyTimeLabel`）の後、あらすじ（`synopsis`）の前に 1 行を足す。空白だけの値は、行を出さない。名前は `trim` する。
 - 行の組み立ては、新しい小さな file（`src/prompts/shared/sceneL3Lines.ts`。時期と視点の 2 行。時期の出力は変えない）に置いた。`contextBuilder.ts` は、大きい module の行数の上限（`policies/architecture/large-module-debt.json`、2389 行）に張り付いていて、増やせないためである。上限は、動かしていない。置き場を `src/prompts/shared/` にしたのは、変更の影響の選択（`evals/impact-map.yaml`）が、すでに分類している path で、新しい file が全 suite の fallback を起こさないためである。
+- 名前は、改行・連続空白を 1 つの空白に畳み（作者指定の Codex リンクの `entryName` と同じ。名前の途中の改行が L3 の新しい行や偽の `### シーン本文` の見出しにならないため）、200 コードポイントで切る（技術判断。`SCENE_POV_NAME_MAX_CODE_POINTS`）。L3 の「題の行から本文の見出しまで」は trim できない先頭なので、Codex の名前に長さの上限が無いと、とても長い名前が予算を超え、場面の本文ごと L3 が落ちるためである。上限は、人物の名前として十分に長い値で、通常の名前は変わらない。渡す内容は名前だけで、範囲は広がらない。
 - 名前の escape は、場面の題・あらすじと同じで、L3 全体を `wrapDataLayer` が包むときの、予約タグの escape に任せる。名前だけの個別の escape は足さない。
 - label は、`labels.pov`（L1 の作品の視点）と別に、`labels.scenePov` を ja・en の両方に足す。ja は「この場面の視点」。L1 の trim の印（`\n視点:`）に、この行は当たらない（行頭が違う）。
 - 視点を設定していない場面の出力は、byte 同一である。固定した期待値（`legacyReadGolden`、`nir1-df06-plain-chat.json` ほか）は、1 つも変えない。`chatSystemBase.txt` と `chatSystemDataBoundaryReminder.txt` は、触らない。
