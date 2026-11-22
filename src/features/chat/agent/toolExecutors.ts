@@ -70,6 +70,14 @@ import {
   getChronicleStateTool,
 } from "./chronicleReadTools";
 import {
+  chronicleSearchExecutor,
+  denseEventHitsOrEmpty,
+} from "./chronicleSearchPort";
+import {
+  eventSearchFetchLimit,
+  eventSearchLimit,
+} from "@/../electron/shared/readDomain/core/chronicleSearchTools";
+import {
   createEventTool,
   updateEventTool,
   deleteEventTool,
@@ -86,7 +94,6 @@ import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
 import {
   codexSemanticSearch,
   type CodexSearchHit,
-  eventsSemanticSearch,
   type EventSearchHit,
 } from "@/features/semantic-search/api";
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
@@ -319,18 +326,11 @@ async function chronicleCandidates(
 
   // AI 秘匿: hidden な secret イベントは hit から除外するため over-fetch（≤30=backendMax）→
   // visible filter → slice(limit)。索引自体は全件のまま（title 漏洩を返却段で防ぐ）。
-  const fetchLimit = Math.min(limit * 3, 30);
-  const hits = await eventsSemanticSearch({
+  const fetchLimit = eventSearchFetchLimit(limit);
+  const hits = await denseEventHitsOrEmpty({
     projectId,
     query,
     limit: fetchLimit,
-  }).catch((e) => {
-    debugLog.warn(
-      "search_events",
-      "dense events search failed (empty fallback)",
-      errorDetail(e),
-    );
-    return [] as EventSearchHit[];
   });
 
   // 現在シーン（currentSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
@@ -430,6 +430,10 @@ async function searchEvents(
   params: Record<string, unknown>,
   scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
+  // 旗が false で scope なしの呼出しは read core へ（MP-4b PR-7b、DR-MP4-38）。旗は呼出しごとに評価する
+  // （`READ_ONLY_EXECUTORS` が load 時に 1 度作られることと混同しない）。scope があるときは、旗が false の
+  // 試験でも今までどおり下の経路（scope の project・場面で動く）。`scope` の真偽は `chronicleProjectId` と同じ。
+  if (!CHAT_AGENT_IR_ENABLED && !scope) return chronicleSearchExecutor(params);
   const candidates = await chronicleCandidates(params, scope);
   if (candidates.kind === "empty") return candidates.result;
   const pool =
@@ -513,13 +517,6 @@ async function isCodexHiddenFromAi(
   scope?: ChatTurnToolScope,
 ): Promise<boolean> {
   return (await resolveCodexTextForAi(id, projectId, scope)) === null;
-}
-
-function eventSearchLimit(params: Record<string, unknown>): number {
-  const rawLimit = Number(params["limit"]);
-  return Number.isFinite(rawLimit) && rawLimit > 0
-    ? Math.min(Math.floor(rawLimit), 30)
-    : 10;
 }
 
 /**
