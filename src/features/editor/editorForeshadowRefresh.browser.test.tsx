@@ -209,7 +209,7 @@ import { useProjectStore } from "../project/projectStore";
 import { useEditorSessionStore } from "./editorSessionStore";
 import { announcePersistedBinding, saveScene } from "./editorSaveRegistry";
 import {
-  COMPOSITION_STALE_MS,
+  COMPOSITION_QUIET_MS,
   hasPendingForeshadowRefresh,
 } from "./pendingForeshadowRefresh";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
@@ -646,7 +646,7 @@ describe.each<[string, Surface]>([
     expect(saveFailures(toastError)).toEqual([]);
   });
 
-  it("EAR-21 変換が固着（compositionend を取りこぼし、view.composing が真のまま）しても、最終活動から COMPOSITION_STALE_MS を過ぎれば pending を適用して背景の保存が再開する", async () => {
+  it("EAR-26 変換が固着（read-only の間に compositionend を取りこぼし、view.composing が真のまま）したら、証拠があるので pending を適用して背景の保存が再開する", async () => {
     installBridge();
     const toastError = vi.spyOn(toast, "error");
     const { editor, pm } = await mountSurface(surface);
@@ -664,15 +664,51 @@ describe.each<[string, Surface]>([
     expect(h.saves).toHaveLength(1);
     expect(editor.view.composing).toBe(true);
 
-    // 時刻だけ進める（実 timer は動かす）。PM の composing は真のまま。
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + COMPOSITION_STALE_MS + 1000);
+    // 外部置換などで read-only が挟まり、その間に compositionend が来る（PM は処理しない）。
+    editor.setEditable(false);
+    endComposition(pm);
+    editor.setEditable(true);
+    expect(editor.view.composing).toBe(true);
+
     await waitFor(() => expect(h.saves.length).toBeGreaterThanOrEqual(2), {
       timeout: 5_000,
     });
     expect(editor.view.composing).toBe(true);
     expect(h.mismatches).toBe(0);
     expect(h.saves[1]!.fsBaseVersion).toBe(2);
+    expect(saveFailures(toastError)).toEqual([]);
+  });
+
+  it("EAR-26 証拠が無い（compositionend を見ていない）変換は、長く静止しても固着と見なさず、背景の保存は延期され続ける", async () => {
+    installBridge();
+    const toastError = vi.spyOn(toast, "error");
+    const { editor, pm } = await mountSurface(surface);
+    const release = await startHeldFirstSave(editor);
+    await userEvent.keyboard("XY");
+    startComposition(pm, editor);
+    release();
+    await waitFor(
+      () => expect(hasPendingForeshadowRefresh(editor)).toBe(true),
+      { timeout: 3_000 },
+    );
+
+    // 時刻だけ進める（実 timer は動かす）。以前はここで固着と見なして dispatch していた。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 60_000);
+      await sleep(1500);
+      expect(h.saves).toHaveLength(1);
+      expect(hasPendingForeshadowRefresh(editor)).toBe(true);
+      expect(editor.view.composing).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    // 変換が終われば適用されて保存が再開する。
+    endComposition(pm);
+    await waitFor(() => expect(h.saves.length).toBeGreaterThanOrEqual(2), {
+      timeout: 5_000,
+    });
+    expect(h.mismatches).toBe(0);
     expect(saveFailures(toastError)).toEqual([]);
   });
 
@@ -744,6 +780,95 @@ describe("peer の保存の通知は変換中に setContent せず、変換が�
         timeout: 3_000,
       },
     );
+  });
+});
+
+describe("EAR-23 content の無い peer の通知は、退避中の古い content の通知を捨てて版だけ進める（EditorPane）", () => {
+  it("変換中に退避した content 付きの通知（v5）より新しい content 無しの通知（v6）が来たら、変換が終わっても古い本文を当てず、次の保存の baseVersion は v6", async () => {
+    installBridge();
+    const { editor, pm } = await mountSurface("pane");
+    editor.commands.focus("start");
+    await nextFrame();
+    startComposition(pm, editor);
+    const binding = (loadedVersion: number) =>
+      ({
+        kind: "tree",
+        id: SCENE_ID,
+        nodeType: "scene",
+        storage: "database",
+        loadedVersion,
+      }) as const;
+    announcePersistedBinding(
+      KEY,
+      "other-instance" as never,
+      binding(5),
+      markedDoc("stale peer text", h.fs.version),
+    );
+    announcePersistedBinding(KEY, "other-instance" as never, binding(6));
+    endComposition(pm);
+    await sleep(COMPOSITION_QUIET_MS + 400);
+    // 古い v5 の本文は当たらない（live mirror が本文の正本）。
+    expect(editor.state.doc.textContent).toBe("start");
+
+    await userEvent.keyboard("AB");
+    await waitForSaved();
+    expect(h.saves.at(-1)!.baseVersion).toBe(6);
+  });
+});
+
+describe("EAR-27 dirty な editor は peer の通知で本文も版も変えない（衝突は保存の OCC が示す。EditorPane）", () => {
+  const binding = (loadedVersion: number) =>
+    ({
+      kind: "tree",
+      id: SCENE_ID,
+      nodeType: "scene",
+      storage: "database",
+      loadedVersion,
+    }) as const;
+
+  it("通常：dirty な間に届いた通知は本文を差し替えず、版も進めない（次の保存の baseVersion は peer の版でない）", async () => {
+    installBridge();
+    const { editor } = await mountSurface("pane");
+    editor.commands.focus("start");
+    await nextFrame();
+    await userEvent.keyboard("AB");
+    expect(isDirty()).toBe(true);
+    announcePersistedBinding(
+      KEY,
+      "other-instance" as never,
+      binding(5),
+      markedDoc("peer text", h.fs.version),
+    );
+    announcePersistedBinding(KEY, "other-instance" as never, binding(6));
+    await nextFrame();
+    expect(editor.state.doc.textContent).toContain("AB");
+    expect(editor.state.doc.textContent).not.toContain("peer");
+    await waitForSaved();
+    expect(h.saves[0]!.baseVersion).not.toBe(5);
+    expect(h.saves[0]!.baseVersion).not.toBe(6);
+  });
+
+  it("変換中に退避した通知は、処理し直す時点で dirty なら、本文も版も変えない", async () => {
+    installBridge();
+    const { editor, pm } = await mountSurface("pane");
+    editor.commands.focus("start");
+    await nextFrame();
+    startComposition(pm, editor);
+    announcePersistedBinding(
+      KEY,
+      "other-instance" as never,
+      binding(5),
+      markedDoc("peer text", h.fs.version),
+    );
+    // 変換の途中で本文が変わる（dirty になる）。
+    editor.commands.insertContent("Q");
+    expect(isDirty()).toBe(true);
+    endComposition(pm);
+    await sleep(COMPOSITION_QUIET_MS + 400);
+    expect(editor.state.doc.textContent).toContain("Q");
+    expect(editor.state.doc.textContent).not.toContain("peer");
+    await waitForSaved();
+    expect(h.saves[0]!.baseVersion).not.toBe(5);
   });
 });
 

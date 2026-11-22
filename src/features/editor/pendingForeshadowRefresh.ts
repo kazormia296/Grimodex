@@ -26,25 +26,32 @@ const pendingByEditor = new WeakMap<Editor, Map<string, ForeshadowRow>>();
 export const COMPOSITION_QUIET_MS = 250;
 
 /**
- * composing が真のまま、この時間 composition・打鍵の活動が無ければ、変換は固着した
- * （compositionend を取りこぼした）と見なす（EAR-21）。ProseMirror は editable が偽の間
- * compositionstart／update／end を処理せず、desktop では composing の時間切れも無いので、
- * 変換中に外部置換などで read-only が挟まると `view.composing` が真のまま残りうる。
+ * 固着した変換（compositionend を取りこぼした）の証拠を、editor の DOM の composition
+ * イベントから editor ごとに記録する（EAR-21、EAR-26）。ProseMirror は `view.editable` が
+ * 偽の間 compositionstart／update／end を処理せず、desktop では composing の時間切れも無い。
+ * 変換中に外部置換などで read-only が挟まり、その間に compositionend が来ると、
+ * `view.composing` が真のまま残る。
+ *
+ * 取りこぼしの証拠は「最後に見た composition のイベントが compositionend（その後に
+ * compositionstart／update が無い）のに、`view.composing` が真」。ProseMirror が
+ * compositionend を処理していれば composing は偽になる（同じイベントの同期処理）ので、
+ * 真のまま残るのはイベントを処理しなかった（editable が偽だった）場合だけ。
+ * 時間だけでは固着と見なさない：遅い変換や、listener を付ける前に始まった変換の途中を
+ * 作者の入力ごと dispatch で乱さないため。証拠が無い composing は変換中のまま延期を続ける
+ * （背景の保存の診断は useAutoSave の EAR-22）。
  */
-export const COMPOSITION_STALE_MS = 10_000;
-
-/** editor ごとの composition・打鍵の最終活動時刻（listener を付けた editor だけ）。 */
-const lastCompositionActivityAt = new WeakMap<Editor, number>();
+type CompositionPhase = "started" | "ended";
+const compositionPhase = new WeakMap<Editor, CompositionPhase>();
 const staleCompositionWarned = new WeakSet<Editor>();
 
-function markCompositionActivity(editor: Editor): void {
-  lastCompositionActivityAt.set(editor, Date.now());
+function markCompositionPhase(editor: Editor, phase: CompositionPhase): void {
+  compositionPhase.set(editor, phase);
   staleCompositionWarned.delete(editor);
 }
 
 /**
  * 変換中（確定前）か。view が無い・破棄済みなら false。ProseMirror の `composing` が真でも、
- * 最終活動から `COMPOSITION_STALE_MS` 以上経っていれば固着と見なして false を返す
+ * compositionend を取りこぼした証拠（上の説明）があれば固着と見なして false を返す
  * （T0 の適用・idle／blur の適用・peer の処理し直しのすべてがここを通る）。
  */
 export function isEditorComposing(editor: Editor): boolean {
@@ -57,8 +64,7 @@ export function isEditorComposing(editor: Editor): boolean {
     return false;
   }
   if (!composing) return false;
-  const lastAt = lastCompositionActivityAt.get(editor);
-  if (lastAt !== undefined && Date.now() - lastAt >= COMPOSITION_STALE_MS) {
+  if (compositionPhase.get(editor) === "ended") {
     if (!staleCompositionWarned.has(editor)) {
       staleCompositionWarned.add(editor);
       debugLog.warn(
@@ -66,10 +72,7 @@ export function isEditorComposing(editor: Editor): boolean {
         "composition looks stuck; treating it as ended",
         {
           sensitivity: "safe",
-          fields: {
-            operation: "composition-stale",
-            idleMs: Date.now() - lastAt,
-          },
+          fields: { operation: "composition-stale" },
         },
       );
     }
@@ -173,7 +176,7 @@ export function applyPendingForeshadowRefreshForFlush(
  * compositionend の後に静止（`COMPOSITION_QUIET_MS`）してから、と blur で `onIdle` を
  * 呼ぶ listener を editor の DOM に付ける。`onIdle` は変換が終わっていることを確かめた
  * 後にだけ呼ぶ。静止の間に compositionstart が来れば取り消し、打鍵（keydown）が来れば
- * 静止の数え直し。あわせて composition・打鍵の最終活動時刻を記録する（固着の判定用）。
+ * 静止の数え直し。あわせて composition イベントの最後の種類を記録する（固着の証拠）。
  * 戻り値は解除関数。
  */
 export function installCompositionIdleListener(
@@ -196,10 +199,9 @@ export function installCompositionIdleListener(
     timer = null;
     if (editor.isDestroyed) return;
     if (isEditorComposing(editor)) {
-      // compositionend の後も composing が真のまま、新しい compositionstart も来ない
-      // （compositionend を取りこぼした固着）。固着と見なされる（EAR-21）まで見張り、
-      // 解けたら onIdle を呼ぶ。peer の通知の処理し直しが次の blur まで取り残されない。
-      // 新しい変換が始まれば compositionstart が timer を取り消す。
+      // compositionend の後も composing が真。新しい変換が始まったなら compositionstart が
+      // timer を取り消す。始まっていなければ、compositionend を取りこぼした固着で、
+      // isEditorComposing が偽を返す（EAR-26）ので onIdle に進む。念のため見張りは続ける。
       arm();
       return;
     }
@@ -210,18 +212,17 @@ export function installCompositionIdleListener(
     timer = setTimeout(fireIfIdle, COMPOSITION_QUIET_MS);
   };
   const onCompositionStart = () => {
-    markCompositionActivity(editor);
+    markCompositionPhase(editor, "started");
     clear();
   };
   const onCompositionUpdate = () => {
-    markCompositionActivity(editor);
+    markCompositionPhase(editor, "started");
   };
   const onCompositionEnd = () => {
-    markCompositionActivity(editor);
+    markCompositionPhase(editor, "ended");
     arm();
   };
   const onTyping = () => {
-    markCompositionActivity(editor);
     if (timer !== null) arm();
   };
   const onBlur = () => {

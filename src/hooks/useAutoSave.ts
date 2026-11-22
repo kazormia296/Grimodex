@@ -52,6 +52,15 @@ export const SAVE_DEFER_RETRY_MS = 300;
  */
 export const SILENT_RETRY_WARN_MS = 10_000;
 
+/**
+ * 明示 flush の option。`editorStaysOpen` は、flush の後も editor が開いたまま
+ * 作者が打ち続ける呼び手（手動保存 Ctrl+S）だけが付ける（EAR-25）。
+ * 閉じる・切替・quiescence の flush は付けず、従来どおり回し切る。
+ */
+export interface AutoSaveFlushOptions extends QuiescenceProviderFlushOptions {
+  editorStaysOpen?: boolean;
+}
+
 export interface AutoSave {
   /**
    * Queues a new user mutation. Returns false while a destructive lifecycle
@@ -66,7 +75,7 @@ export interface AutoSave {
    */
   pause: () => void;
   resume: () => void;
-  flush: (options?: QuiescenceProviderFlushOptions) => Promise<void>;
+  flush: (options?: AutoSaveFlushOptions) => Promise<void>;
   setDelay: (delayMs: number) => void;
 }
 
@@ -469,7 +478,10 @@ export function createAutoSave(
     }
   }
 
-  async function drain(label: "save" | "flush"): Promise<void> {
+  async function drain(
+    label: "save" | "flush",
+    singlePass = false,
+  ): Promise<void> {
     let runs = 0;
     while (pending) {
       // A conflict can arrive while the preceding write is in flight. Keep
@@ -516,15 +528,22 @@ export function createAutoSave(
       // 明示 flush（閉じる・切替）は従来どおり即時に反復し、窓内の入力を
       // 取りこぼさない。
       if (label === "save") return;
+      // editor を閉じない flush（手動保存）は 1 回で返す。窓内の入力は startDrain の
+      // finally が通常の debounce で追従させる（打ち続ける間に即時の反復が
+      // MAX_DRAIN_RUNS に達して、最後の分が次の打鍵まで未保存になるのを避ける）。
+      if (singlePass) return;
     }
   }
 
-  function startDrain(label: "save" | "flush"): Promise<void> {
+  function startDrain(
+    label: "save" | "flush",
+    singlePass = false,
+  ): Promise<void> {
     if (inFlight) return inFlight;
     // drain の開始を microtask へ送ってから inFlight を公開する。saveFn が
     // 同期的に schedule しても「idle」と誤認して timer を作らない。
     const run = Promise.resolve()
-      .then(() => drain(label))
+      .then(() => drain(label, singlePass))
       .finally(() => {
         if (inFlight !== run) return;
         inFlight = null;
@@ -605,7 +624,8 @@ export function createAutoSave(
     if (timerArmed && pending && !inFlight) armTimer();
   }
 
-  async function flush(options?: QuiescenceProviderFlushOptions) {
+  async function flush(options?: AutoSaveFlushOptions) {
+    const singlePass = options?.editorStaysOpen === true;
     if (options?.preexistingDraft === true) {
       // A provider flush may arrive after a background drain has started. Keep
       // the permit on the coalesced drain so any draft that was already queued
@@ -647,7 +667,12 @@ export function createAutoSave(
         // 1 回再試行する。再失敗は runSave からそのまま伝播する。
         if (!pending && lastFailed) pending = true;
         clearTimer();
-        await startDrain("flush");
+        await startDrain("flush", singlePass);
+        // editor を閉じない flush は、今の snapshot を保存したらそこで返す。窓内の入力
+        // （pending）は startDrain の finally が通常の debounce の timer に載せている。
+        // ここで loop に戻ると先頭の clearTimer が timer を消し、即時に反復してしまう。
+        // 保留（衝突・quarantine）が立った場合だけ loop に戻り、従来どおり失敗を伝える。
+        if (singlePass && !paused && quarantineError === null) return;
       }
     } finally {
       // Do not let a lifecycle-only permit authorize a later ordinary save.
@@ -701,12 +726,9 @@ export function useAutoSave(
     autoSaveRef.current?.resume();
   }, []);
 
-  const flush = useCallback(
-    async (options?: QuiescenceProviderFlushOptions) => {
-      await autoSaveRef.current?.flush(options);
-    },
-    [],
-  );
+  const flush = useCallback(async (options?: AutoSaveFlushOptions) => {
+    await autoSaveRef.current?.flush(options);
+  }, []);
 
   const setDelay = useCallback((nextDelayMs: number) => {
     autoSaveRef.current?.setDelay(nextDelayMs);

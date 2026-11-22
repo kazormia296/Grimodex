@@ -828,11 +828,16 @@ export function EditorPane({
               editorInstanceIdRef.current,
             );
         }
+        // 保存中に打たれた分があれば（committed が偽）、doc は T0 の本文で、peer は live
+        // mirror で既に T0 より新しい本文を持っている。T0 を content として渡すと、
+        // 受け手が clean のとき setContent で巻き戻して打鍵を失う（EAR-23）。
+        // その場合は content を付けずに版だけ announce する（受け手は setContent せず
+        // 版だけ進める）。続く追従保存が最新の本文を content 付きで announce する。
         announcePersistedBinding(
           documentKeyFromBinding(result.binding),
           editorInstanceIdRef.current,
           result.binding,
-          doc.toJSON(),
+          committed ? doc.toJSON() : undefined,
         );
       } finally {
         markEnd("editor.save.durableComplete");
@@ -1772,7 +1777,9 @@ export function EditorPane({
     }
     // The scene's project (the loaded tree's) and the workspace of this save.
     const scope = captureWorkspaceWriteScope(useTreeStore.getState().projectId);
-    await flush();
+    // editor は開いたまま作者が打ち続けるので、保存中に打った分の追従は通常の
+    // debounce に戻す（即時に反復して MAX_DRAIN_RUNS に達しない。EAR-25）。
+    await flush({ editorStaysOpen: true });
     if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
     const snapshot = mutationGate.captureSave();

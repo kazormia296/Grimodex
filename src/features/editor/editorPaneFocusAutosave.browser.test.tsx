@@ -665,3 +665,107 @@ describe("T-10：bind した recorder と実 EditorPane の結合（hold が実�
     expect(replayedDocJson(editor)).toEqual(editor.getJSON());
   });
 });
+
+describe("EAR-23：分割表示（同じ場面を 2 つの EditorPane で開く）で、保存中に打った分は peer の表示を T0 に戻さない", () => {
+  async function mountSplit(): Promise<{
+    a: TiptapEditor;
+    b: TiptapEditor;
+    pmA: HTMLElement;
+    pmB: HTMLElement;
+  }> {
+    const view = render(
+      <>
+        <EditorPane
+          nodeId={SCENE_ID}
+          contentType="scene"
+          groupIndex={0}
+          onFocus={() => {}}
+        />
+        <EditorPane
+          nodeId={SCENE_ID}
+          contentType="scene"
+          groupIndex={1}
+          onFocus={() => {}}
+        />
+      </>,
+    );
+    await waitFor(
+      () => {
+        const els =
+          view.container.querySelectorAll<HTMLElement>(".ProseMirror");
+        if (els.length !== 2) throw new Error("both panes are not mounted");
+        if (h.editors.length < 2) throw new Error("editors not captured");
+        for (const e of h.editors as TiptapEditor[]) {
+          if (!e.isEditable) throw new Error("editor not editable yet");
+          if (e.state.doc.textContent !== "start")
+            throw new Error("not loaded");
+        }
+      },
+      { timeout: 10_000 },
+    );
+    const eds = h.editors as TiptapEditor[];
+    const pms = [
+      ...view.container.querySelectorAll<HTMLElement>(".ProseMirror"),
+    ];
+    const pick = (el: HTMLElement) =>
+      eds.find((e) => e.view.dom === el) as TiptapEditor;
+    return {
+      a: pick(pms[0]!),
+      b: pick(pms[1]!),
+      pmA: pms[0]!,
+      pmB: pms[1]!,
+    };
+  }
+
+  it("A の保存中に A で XY を打つと B は live mirror で startABXY になる。A の保存が完了しても B は startAB（T0）に戻らず、B の版は A の保存の版に進み、続けて B で打っても保存が衝突しない", async () => {
+    installBridge();
+    let release!: () => void;
+    h.holdBundle = {
+      release: () => release(),
+      promise: new Promise<void>((r) => (release = r)),
+    };
+    const { a, b } = await mountSplit();
+    a.commands.focus("end");
+    await nextFrame();
+    await userEvent.keyboard("AB");
+    await waitFor(() => expect(h.saves).toHaveLength(1), { timeout: 5_000 });
+    await userEvent.keyboard("XY");
+    expect(a.state.doc.textContent).toBe("startABXY");
+    // B は live mirror（rAF）で追従する。
+    await waitFor(() => expect(b.state.doc.textContent).toBe("startABXY"), {
+      timeout: 3_000,
+    });
+
+    // 完了後の B の本文を全 transaction で見張る（T0 に戻って、後の announce で
+    // 直るのを見逃さない）。
+    const seenOnB: string[] = [];
+    const record = () => seenOnB.push(b.state.doc.textContent);
+    b.on("transaction", record);
+    h.holdBundle = null;
+    release();
+    // 追従保存（debounce 300 ms）より前に、1 回目の announce が済む。
+    await nextFrame();
+    await nextFrame();
+    await nextFrame();
+    expect(isDirty()).toBe(true);
+    expect(b.state.doc.textContent).toBe("startABXY");
+    expect(seenOnB).not.toContain("startAB");
+    b.off("transaction", record);
+
+    // B の版は A の 1 回目の保存の版（1）に進んでいる。B で打っても OCC が衝突しない
+    // （A の追従保存と B の保存は、どちらも baseVersion が 1 以上）。
+    await waitForSaved();
+    expect(h.saves.length).toBeGreaterThanOrEqual(2);
+    expect(h.saves[0]!.baseVersion).toBe(0);
+    expect(h.saves.slice(1).every((save) => (save.baseVersion ?? 0) >= 1)).toBe(
+      true,
+    );
+    b.commands.focus("end");
+    await nextFrame();
+    await userEvent.keyboard("Z");
+    await waitForSaved();
+    const last = h.saves.at(-1)!;
+    expect(last.baseVersion).toBeGreaterThanOrEqual(1);
+    expect(last.payloadText).toContain("startABXYZ");
+  });
+});

@@ -12,7 +12,6 @@ vi.mock("@/features/foreshadow/saveAnchors", () => ({
 
 import {
   COMPOSITION_QUIET_MS,
-  COMPOSITION_STALE_MS,
   applyPendingForeshadowRefresh,
   applyPendingForeshadowRefreshForFlush,
   deferForeshadowRefresh,
@@ -171,57 +170,64 @@ describe("pendingForeshadowRefresh", () => {
   });
 });
 
-describe("EAR-21 固着した変換（compositionend を取りこぼした）", () => {
-  it("listener 無しの editor は composing が真なら変換中のまま（従来どおり）", () => {
+describe("EAR-21／EAR-26 固着した変換（compositionend を取りこぼした）は証拠があるときだけ固着と見なす", () => {
+  it("listener 無しの editor は composing が真なら、時間が経っても変換中のまま", () => {
     const { editor } = makeEditor({ composing: true });
-    vi.advanceTimersByTime(COMPOSITION_STALE_MS * 3);
+    vi.advanceTimersByTime(60 * 60 * 1000);
     expect(isEditorComposing(editor)).toBe(true);
   });
 
-  it("最終活動から COMPOSITION_STALE_MS 以上経った composing は固着と見なし、診断を 1 回だけ残す", () => {
+  it("証拠が無い（compositionstart の後に compositionend を見ていない）composing は、何時間静止しても変換中のまま。診断も出さない", () => {
     const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => undefined);
     const { editor, dom } = makeEditor({ composing: true });
     installCompositionIdleListener(editor, vi.fn());
     dom.dispatchEvent(new Event("compositionstart"));
-
-    vi.advanceTimersByTime(COMPOSITION_STALE_MS - 1);
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    expect(isEditorComposing(editor)).toBe(true);
+    // 遅い変換（更新が続く）でも同じ。
+    dom.dispatchEvent(new Event("compositionupdate"));
+    vi.advanceTimersByTime(60 * 60 * 1000);
     expect(isEditorComposing(editor)).toBe(true);
     expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 
-    vi.advanceTimersByTime(1);
+  it("compositionend を見たのに composing が真のまま（ProseMirror が取りこぼした）なら固着と見なし、診断を 1 回だけ残す", () => {
+    const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => undefined);
+    const { editor, dom } = makeEditor({ composing: true });
+    installCompositionIdleListener(editor, vi.fn());
+    dom.dispatchEvent(new Event("compositionstart"));
+    expect(isEditorComposing(editor)).toBe(true);
+    dom.dispatchEvent(new Event("compositionend"));
     expect(isEditorComposing(editor)).toBe(false);
     expect(isEditorComposing(editor)).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
-    // 本文は出さず、operation と経過だけ。
+    // 本文は出さず、operation だけ。
     expect(warn.mock.calls[0]?.[2]).toMatchObject({
       fields: { operation: "composition-stale" },
     });
     warn.mockRestore();
   });
 
-  it("固着と見なした後は pending を適用できる。新しい活動があれば再び変換中として扱う", () => {
+  it("listener を付ける前に始まった変換の途中で compositionend を見た場合も、証拠になる", () => {
+    const { editor, dom } = makeEditor({ composing: true });
+    installCompositionIdleListener(editor, vi.fn());
+    dom.dispatchEvent(new Event("compositionend"));
+    expect(isEditorComposing(editor)).toBe(false);
+  });
+
+  it("固着と見なした後は pending を適用できる。新しい compositionstart があれば再び変換中として扱う", () => {
     const { editor, dom } = makeEditor({ composing: true });
     installCompositionIdleListener(editor, vi.fn());
     dom.dispatchEvent(new Event("compositionstart"));
     deferForeshadowRefresh(editor, [row("a", 2)]);
     expect(applyPendingForeshadowRefresh(editor, run)).toBe(false);
 
-    vi.advanceTimersByTime(COMPOSITION_STALE_MS);
+    dom.dispatchEvent(new Event("compositionend"));
     expect(applyPendingForeshadowRefresh(editor, run)).toBe(true);
     expect(h.refresh).toHaveBeenCalledTimes(1);
 
-    dom.dispatchEvent(new Event("compositionupdate"));
-    expect(isEditorComposing(editor)).toBe(true);
-  });
-
-  it("composition の更新・打鍵の活動が続く間は固着と見なさない", () => {
-    const { editor, dom } = makeEditor({ composing: true });
-    installCompositionIdleListener(editor, vi.fn());
     dom.dispatchEvent(new Event("compositionstart"));
-    for (let i = 0; i < 5; i += 1) {
-      vi.advanceTimersByTime(COMPOSITION_STALE_MS - 1000);
-      dom.dispatchEvent(new Event("keydown"));
-    }
     expect(isEditorComposing(editor)).toBe(true);
   });
 });
@@ -275,15 +281,16 @@ describe("installCompositionIdleListener", () => {
     const onIdle = vi.fn();
     installCompositionIdleListener(editor, onIdle);
     dom.dispatchEvent(new Event("compositionend"));
+    // 次の変換が始まった（ProseMirror も composing を立てる）。
+    dom.dispatchEvent(new Event("compositionstart"));
     view.composing = true;
     vi.advanceTimersByTime(COMPOSITION_QUIET_MS * 4);
     expect(onIdle).not.toHaveBeenCalled();
-    dom.dispatchEvent(new Event("compositionstart"));
-    vi.advanceTimersByTime(COMPOSITION_STALE_MS * 2);
+    vi.advanceTimersByTime(60 * 60 * 1000);
     expect(onIdle).not.toHaveBeenCalled();
   });
 
-  it("EAR-21 compositionend の後も composing が固着したままなら、固着と見なされた時点で onIdle を呼ぶ（peer の処理し直しが取り残されない）", () => {
+  it("EAR-26 compositionend の後も composing が固着したままなら、idle の見張りが onIdle を呼ぶ（peer の処理し直しが取り残されない）", () => {
     const { editor, view, dom } = makeEditor({ composing: true });
     const onIdle = vi.fn();
     installCompositionIdleListener(editor, onIdle);
@@ -291,12 +298,12 @@ describe("installCompositionIdleListener", () => {
     dom.dispatchEvent(new Event("compositionend"));
     // PM は compositionend を取りこぼしたので composing は真のまま。
     expect(view.composing).toBe(true);
-    vi.advanceTimersByTime(COMPOSITION_STALE_MS - 1);
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS - 1);
     expect(onIdle).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(COMPOSITION_QUIET_MS);
+    vi.advanceTimersByTime(1);
     expect(onIdle).toHaveBeenCalledTimes(1);
     // 呼んだ後は見張りを続けない。
-    vi.advanceTimersByTime(COMPOSITION_STALE_MS * 2);
+    vi.advanceTimersByTime(60 * 60 * 1000);
     expect(onIdle).toHaveBeenCalledTimes(1);
   });
 

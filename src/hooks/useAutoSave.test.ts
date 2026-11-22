@@ -842,6 +842,95 @@ describe("createAutoSave", () => {
     unregister();
   });
 
+  describe("EAR-25 editor を閉じない flush（手動保存）は追従を通常の debounce に戻す", () => {
+    it("打ち続ける間の flush は 1 回保存して返り、追従は即時に反復せず、debounce の後に保存される（cap に当たらない）", async () => {
+      const warnSpy = vi.spyOn(debugLog, "warn");
+      const holder: { schedule?: () => void } = {};
+      // 保存の間に必ず打たれる（持続タイピング）。
+      const saveFn = vi.fn(async () => {
+        holder.schedule?.();
+      });
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      holder.schedule = () => void autoSave.schedule();
+
+      autoSave.schedule();
+      await expect(
+        autoSave.flush({ editorStaysOpen: true }),
+      ).resolves.toBeUndefined();
+      // 1 回だけ保存して返る（即時に 20 回反復して throw しない）。
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(
+        warnSpy.mock.calls.some(([, msg]) => String(msg).includes("cap")),
+      ).toBe(false);
+      // 窓内の入力は未保存として残り、debounce の timer が張られている。
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(saveFn).toHaveBeenCalledTimes(2);
+
+      autoSave.cancel();
+      unregister();
+      warnSpy.mockRestore();
+    });
+
+    it("保存中の入力が無ければ、従来どおり未保存は残らない", async () => {
+      const saveFn = vi.fn(async () => {});
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      await autoSave.flush({ editorStaysOpen: true });
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      unregister();
+    });
+
+    it("background の保存が走っている間の flush は、その完了を待ってから pending を 1 回保存して返る", async () => {
+      const gates: Array<() => void> = [];
+      const saveFn = vi.fn(
+        () =>
+          new Promise<void>((r) => {
+            gates.push(r);
+          }),
+      );
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      autoSave.schedule(); // 保存中の入力
+      let flushed = false;
+      const flushing = autoSave
+        .flush({ editorStaysOpen: true })
+        .then(() => (flushed = true));
+      gates[0]!();
+      await vi.advanceTimersByTimeAsync(0);
+      // その入力は flush 自身が 1 回で保存する。
+      expect(saveFn).toHaveBeenCalledTimes(2);
+      gates[1]!();
+      await flushing;
+      expect(flushed).toBe(true);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      unregister();
+    });
+
+    it("衝突で pause 中なら、従来どおり失敗を伝える（黙って返らない）", async () => {
+      const saveFn = vi.fn(async () => {});
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      autoSave.pause();
+      await expect(autoSave.flush({ editorStaysOpen: true })).rejects.toThrow(
+        "paused",
+      );
+      expect(saveFn).not.toHaveBeenCalled();
+      autoSave.cancel();
+      unregister();
+    });
+  });
+
   it("flush の drain が上限に達したら reject して quiesce 失敗を伝える", async () => {
     const warnSpy = vi.spyOn(debugLog, "warn");
     // save のたびに schedule を再誘発する病的ケース (持続タイピング相当)

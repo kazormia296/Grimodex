@@ -13,7 +13,11 @@ import { saveOutcomeCause, type VersionedSaveOutcome } from "@/lib/saveOutcome";
 import type { AgentWriteResult } from "@/features/agent-writes/event";
 import { AlreadyNotifiedSaveError } from "./saveErrors";
 import type { LoadedEditorBinding } from "./types";
-import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import {
+  openOwnSaveCapture,
+  type TimelapseDocumentRef,
+  type TimelapseOwnSaveCapture,
+} from "@/features/timelapse/documentCoverage";
 import type { TimelapseDocumentIdentity } from "@/features/timelapse/bodyWriteMode";
 
 export interface TimelapseDocumentSaveOptions {
@@ -54,6 +58,8 @@ export interface EditorDocumentServices {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
       preexistingDraft?: boolean;
+      /** 本文の捕捉と同じ同期区間で開いた hold。store／api が引き取る（EAR-24）。 */
+      ownSaveCapture?: TimelapseOwnSaveCapture;
     },
   ) => Promise<VersionedSaveOutcome>;
   updateSnippet: (
@@ -63,6 +69,8 @@ export interface EditorDocumentServices {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
       preexistingDraft?: boolean;
+      /** 本文の捕捉と同じ同期区間で開いた hold。store／api が引き取る（EAR-24）。 */
+      ownSaveCapture?: TimelapseOwnSaveCapture;
     },
   ) => Promise<VersionedSaveOutcome>;
   updateChronicleEvent: (
@@ -79,6 +87,22 @@ export interface EditorDocumentServices {
 export interface SaveEditorDocumentResult {
   binding: LoadedEditorBinding;
   persistedSceneBody?: PersistedSceneBody;
+}
+
+/**
+ * Codex 本文・断片の保存で、本文を捕捉する同じ同期区間に自分の保存の hold を開く
+ * （EAR-24）。identity が無い（descriptor 未確定）なら開かず、従来の経路に倒す。
+ * release は呼び手の finally（冪等）。api に届いた場合は内側でも release される。
+ */
+function openBodyOwnSaveCapture(
+  timelapseOptions: TimelapseDocumentSaveOptions,
+): TimelapseOwnSaveCapture | undefined {
+  const identity = timelapseOptions.timelapseDocumentIdentity;
+  if (!identity) return undefined;
+  return openOwnSaveCapture({
+    projectId: identity.projectId,
+    document: identity,
+  });
 }
 
 /** Serialize with the same ProseMirror schema used by the live editor. */
@@ -147,35 +171,31 @@ export async function saveEditorDocument(
     }
 
     case "codex": {
-      const content = JSON.stringify(doc.toJSON());
-      if (binding.phaseId) {
-        let phaseCause: unknown;
-        const updated = await services.updateCodexPhase(
-          binding.phaseId,
-          { contentOverride: content },
-          {
-            baseVersion: binding.loadedVersion,
-            ...(timelapseOptions.preexistingDraft
-              ? { preexistingDraft: true }
-              : {}),
-            onFailure: (cause) => {
-              phaseCause = cause;
-            },
-          },
+      // 本文の snapshot（toJSON）と同じ同期区間で hold を開く。await を挟まない（EAR-24）。
+      // phase の保存は fence を取らない（phaseApi は runTimelapseMutation）ので hold は要らない。
+      const capture = binding.phaseId
+        ? undefined
+        : openBodyOwnSaveCapture(timelapseOptions);
+      try {
+        const content = JSON.stringify(doc.toJSON());
+        return await saveCodexDocument(
+          binding,
+          content,
+          services,
+          timelapseOptions,
+          capture,
         );
-        if (!updated) {
-          throw new AlreadyNotifiedSaveError(
-            `Codex phase save not persisted: ${binding.phaseId}`,
-            { cause: phaseCause },
-          );
-        }
-        return {
-          binding: { ...binding, loadedVersion: updated.version },
-        };
-      } else {
-        const outcome = await services.updateCodexText(
+      } finally {
+        capture?.release();
+      }
+    }
+
+    case "snippet": {
+      const capture = openBodyOwnSaveCapture(timelapseOptions);
+      try {
+        const outcome = await services.updateSnippet(
           binding.id,
-          { content },
+          { content: services.serializeSnippet(doc) },
           {
             baseVersion: binding.loadedVersion,
             ...(timelapseOptions.timelapseDocument
@@ -184,43 +204,21 @@ export async function saveEditorDocument(
             ...(timelapseOptions.preexistingDraft
               ? { preexistingDraft: true }
               : {}),
+            ...(capture ? { ownSaveCapture: capture } : {}),
           },
         );
         if (!outcome.persisted) {
           throw new AlreadyNotifiedSaveError(
-            `Codex save not persisted: ${binding.id}`,
+            `snippet save not persisted: ${binding.id}`,
             { cause: saveOutcomeCause(outcome) },
           );
         }
         return {
           binding: { ...binding, loadedVersion: outcome.version },
         };
+      } finally {
+        capture?.release();
       }
-    }
-
-    case "snippet": {
-      const outcome = await services.updateSnippet(
-        binding.id,
-        { content: services.serializeSnippet(doc) },
-        {
-          baseVersion: binding.loadedVersion,
-          ...(timelapseOptions.timelapseDocument
-            ? { timelapseDocument: timelapseOptions.timelapseDocument }
-            : {}),
-          ...(timelapseOptions.preexistingDraft
-            ? { preexistingDraft: true }
-            : {}),
-        },
-      );
-      if (!outcome.persisted) {
-        throw new AlreadyNotifiedSaveError(
-          `snippet save not persisted: ${binding.id}`,
-          { cause: saveOutcomeCause(outcome) },
-        );
-      }
-      return {
-        binding: { ...binding, loadedVersion: outcome.version },
-      };
     }
 
     case "chronicle-event": {
@@ -237,4 +235,59 @@ export async function saveEditorDocument(
       };
     }
   }
+}
+
+async function saveCodexDocument(
+  binding: Extract<LoadedEditorBinding, { kind: "codex" }>,
+  content: string,
+  services: EditorDocumentServices,
+  timelapseOptions: TimelapseDocumentSaveOptions,
+  capture: TimelapseOwnSaveCapture | undefined,
+): Promise<SaveEditorDocumentResult> {
+  if (binding.phaseId) {
+    let phaseCause: unknown;
+    const updated = await services.updateCodexPhase(
+      binding.phaseId,
+      { contentOverride: content },
+      {
+        baseVersion: binding.loadedVersion,
+        ...(timelapseOptions.preexistingDraft
+          ? { preexistingDraft: true }
+          : {}),
+        onFailure: (cause) => {
+          phaseCause = cause;
+        },
+      },
+    );
+    if (!updated) {
+      throw new AlreadyNotifiedSaveError(
+        `Codex phase save not persisted: ${binding.phaseId}`,
+        { cause: phaseCause },
+      );
+    }
+    return {
+      binding: { ...binding, loadedVersion: updated.version },
+    };
+  }
+  const outcome = await services.updateCodexText(
+    binding.id,
+    { content },
+    {
+      baseVersion: binding.loadedVersion,
+      ...(timelapseOptions.timelapseDocument
+        ? { timelapseDocument: timelapseOptions.timelapseDocument }
+        : {}),
+      ...(timelapseOptions.preexistingDraft ? { preexistingDraft: true } : {}),
+      ...(capture ? { ownSaveCapture: capture } : {}),
+    },
+  );
+  if (!outcome.persisted) {
+    throw new AlreadyNotifiedSaveError(
+      `Codex save not persisted: ${binding.id}`,
+      { cause: saveOutcomeCause(outcome) },
+    );
+  }
+  return {
+    binding: { ...binding, loadedVersion: outcome.version },
+  };
 }
