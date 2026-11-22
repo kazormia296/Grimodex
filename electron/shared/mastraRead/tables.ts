@@ -30,7 +30,7 @@
  *     `event_relations`, `project_calendar` (`list_events`, `get_event_detail`,
  *     `get_character_timeline`, `get_chronicle_state`);
  *   - `codex_entries` (PR-7a: only `id` and `name`, for the names the chronicle
- * *     tools show; see below for what the table-level rule lets through);
+ *     tools show; see below for what the table-level rule lets through);
  *   - `codex_entry_phases` (PR-8a: every column of the phases of the entries the
  *     Codex visibility decision asks about, `readDomain/core/codexReaders.ts`).
  * It leaves out every table no core tool reads yet (the codex phase detail
