@@ -139,7 +139,9 @@ beforeEach(() => {
   h.hits = [hit("sec"), hit("pub")];
   h.log = [];
   h.getState.mockReset();
-  h.getState.mockImplementation(() => h.tree);
+  // zustand の getState と同じく、呼ぶたびにその時点の snapshot を返す（同じ object を返すと、
+  // 「いつ読んだか」が値に現れない）。
+  h.getState.mockImplementation(() => ({ ...h.tree }));
   h.semantic.mockReset();
   h.semantic.mockImplementation(async () => {
     h.log.push("dense");
