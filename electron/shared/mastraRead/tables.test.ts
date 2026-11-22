@@ -7,7 +7,8 @@ import { MAIN_READ_TABLE_SET, MAIN_READ_TABLES } from "./tables.js";
  * test too. It is the set of tables the shared core's Drizzle selects name
  * (`readDomain/core/core.static.test.ts` requires the two to be equal): PR-4
  * had it at the 21 tables the K-6 survey bounded, and fixed it to the 6 the
- * seven tools of groups B1 and B2 touch.
+ * seven tools of groups B1 and B2 touch; PR-6 adds `projects` (the reader of
+ * the hidden and chronicle-secret inputs).
  */
 const PINNED = [
   "codex_entry_tags",
@@ -15,6 +16,7 @@ const PINNED = [
   "plot_thread_branches",
   "plot_thread_scene_links",
   "plot_threads",
+  "projects",
   "tree_nodes",
 ];
 
@@ -36,7 +38,6 @@ const NOT_YET = [
   "foreshadow_setups",
   "foreshadows",
   "project_calendar",
-  "projects",
   "scene_events",
   "snippets",
 ];

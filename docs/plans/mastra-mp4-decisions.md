@@ -417,7 +417,7 @@ manifest の read は 26 本。`READ_ONLY_EXECUTORS` は 24 本†（`toolExecut
   - core の `projectId` は必須（空なら throw）。`resolveCodexForAi` の projectId が falsy で project 条件が消える形（`codexHiddenFromAi.ts:84-92`†）を port 化で残さない（DR-MP4-3）。
 - **鮮度**：legacy の年表の cache は、events／scene-events／codex 名を batch 内の初回使用時に lazy に読んで共有するが、**読む順は nodes の「参照」をキーにする**ので、tree store が更新されれば batch の途中でも再計算される
   （live。`chronicleToolCache.ts:36-69`†）。main は batch の開始時点の DB で固定する。この差（batch の途中で tree が変わっても main は再計算しない）は Q5(d)。
-  tree store（メモリ）の更新から DB への永続までの窓（並べ替え・追加の直後）は DB が古くなりうる。DB が古いと**作者の画面より多くを解除する向きにずれうる**（開示側）。
+  tree store（メモリ）の更新から DB への永続までの窓（並べ替え・追加の直後）は DB が古くなりうる。DB が古いと**作者の画面とずれる。向きは両方向**（現在の場面を前へ、または reveal／anchor の場面を後ろへ動かした直後は DB が古い main のほうが広く開示し、逆の動かし方なら狭い。追加・削除・`storyTimeOrder` の通常の編集は DB が先なので逆向きの短い窓。**ただし削除の undo は別**：store はメモリの `storyTimeOrder` を戻すが DB の行は NULL で作り直されるので、窓でなく reload まで続く。K-5 の (2)(8)、PR-6 の記録の 6・11）。
   対策は turn 開始前に、`resolutionMode` だけでなく **tree の並びの未保存の変更も flush する**ことと、残る窓を Q5 で受容するかの確認。K-4、K-5。
 - (iii) は renderer の store が先で、DB への書込みは debounce の queue（`projectMetadataWriteQueue`）。窓は未測定（K-5）。flush は **Mastra の分岐に入ってからだけ**行う（legacy の開始を遅らせない。legacy の呼出し順は変えない）。
 - 差：場面を切り替えない turn では live と固定に差が無い。legacy は場面切替を authority の検査で次の tool 前に abort する経路がある（読みによる推定。K-3）が、
@@ -922,11 +922,12 @@ DR-MP4-3（置き場 A、ports）・DR-MP4-3 追補・DR-MP4-4 追補の範囲�
   **tool 定義の並び（DR-MP4-30）：否定側で答えが出た**（2026-11-21、PR-3 のレビュー）。`LC_ALL=cs_CZ.UTF-8` の Node では `localeCompare` の並びが変わり（cs・sk で "ch" が "h" の後ろ）、drift 試験と legacyGolden の 17 件中 6 件が落ちた。
   4c-1 で comparator を固定 locale／code unit にするか（renderer の cs・sk の利用者の bytes が変わるので判断が要る）、locale を変えた試験を足すかを決める。4b（PR-3）は挙動を変えていない。
   **4b では `localeCompare` の tie-break を現状のまま共有する**（変えるなら確認）。Rust の `derive_live_scene_projection` は流用しない（TS と Rust で 11 件中 7 件が異なる）。
-- **K-5（store から DB までの窓）**：Q5 の窓は次の 7 つ。止まるのは 4c-2 で、4b は止めない。(1) `resolutionMode` の変更から DB 反映まで（300 ms の trailing debounce。書込み失敗では store が戻らず永続的にずれる。
+- **K-5（store から DB までの窓）**：Q5 の窓は次の 8 つ。止まるのは 4c-2 で、4b は止めない。(1) `resolutionMode` の変更から DB 反映まで（300 ms の trailing debounce。書込み失敗では store が戻らず永続的にずれる。
   `flushProjectMetadataWrites` を turn 前に呼べば窓は消せるが失敗時の扱いの判断が要る）。(2) tree の並べ替え・移動（store が先、直後に DB。`moveTreeNode` に rollback なし。
-  **ずれの向きは両方向**。追加・削除・`storyTimeOrder` は DB が先なので逆向きの短い窓）。(3) 外部プロセスの書込み（750 ms の polling。grid／chronicle bulk の scene 以外の tree 構造変更が store に届く経路は未確認）。
+  **ずれの向きは両方向**。追加・削除・`storyTimeOrder` の通常の編集は DB が先なので逆向きの短い窓。削除の undo は (8)）。(3) 外部プロセスの書込み（750 ms の polling。grid／chronicle bulk の scene 以外の tree 構造変更が store に届く経路は未確認）。
   (4) `activeSceneId` の不一致（active scene の削除・外部の再読込は chat へ publish せず passive effect に頼る）。(5) turn 中の変更（main は batch／turn の開始時点で固定、legacy は live）。
   (6) `localeCompare` の既定ロケール（上の K-4）。(7) 本文の barrier（`get_scene`・`get_thread_scenes`。DR-MP4-9）。
+  (8) **削除の undo（PR-6 のレビュー P2-1。窓でなく reload まで続く）**：store は削除前の `storyTimeOrder`（と chronicle の欄）を戻すが、DB の行は欄なしの INSERT で NULL のまま作り直される。auto の軸の反転と Codex への影響は PR-6 の記録の 11。
   **DR-MP4-8 の「DB が古いと開示側にずれうる」は片方向の記述。移動のずれは両方向**（現在の場面を前へ、または reveal／anchor の場面を後ろへ動かすと DB が古い main のほうが広く開示し、逆なら狭い）と直す。
 - **K-6（main の read の閉包）**：main の閉包が触る表は 20（`codex_detail_definitions`、`codex_detail_values`、`codex_phase_detail_overrides`、`foreshadow_codex_links` を含む）。
   - **「main の read 表は全部 internal」は誤り**。foreshadow 系 3 表・plot_thread 系 3 表・typed read 4 本は own-data-read（restricted の分類）。DR-MP4-5 の下（restricted の turn を作らない）では直呼びが JS gate を通らないため実害はない。
@@ -969,7 +970,7 @@ DR-MP4-3（置き場 A、ports）・DR-MP4-3 追補・DR-MP4-4 追補の範囲�
 | PR-5 | B3（search_scenes、search_snippets）＋B4（list_open_foreshadows、get_foreshadow_detail）。`foreshadow/api.ts` の read 部分を read 専用 module に分ける | PR-0 の golden（Native 経路は覆わない）、typed read の spy（PR-0 の `legacyNativePort` が呼び方の基準）、search 整形 5 件、read 専用 module の単体試験。**PR-9 の実 addon 同値 spec が前提** | `normalizeForeshadowRow` が import する metadata 系（write 側）を外せるかは未確認 |
 | PR-6 | DR-MP4-8 の入力の再構築：`tree_nodes`（`project_id` 一致、`archived_at IS NULL`、6 列）から readingOrder・sceneTimeIndex、`projects` の resolutionMode。他 project／不明の `currentSceneId` は null 扱い | renderer の `buildReadingOrder`／`buildSceneTimeIndex` との parity、他 project の fixture、`localeCompare` の比較。**mode が null・不明値のときの main の既定（fail-closed か base 解決か）を決めて入れ、legacy の前 project の mode の持ち越し（`projectRuntimeComposition.ts:87-89`。phaseStore の初期値は reading、DB の既定は auto）との差を DR に明記する** | K-4・K-5。Rust の `derive_live_scene_projection` は流用しない |
 | PR-7 | B6 年表（list_events、get_event_detail、get_character_timeline、get_chronicle_state、search_events の IR 無しの部分）。`chronicle/api` の read 専用 module と型の分離、`chronicleToolCache`／`toolTurnCache` の turn 単位 instance、UI 言語の port | `chronicleReadTools.test.ts` 12 件と chatIr 110 件が無変更で通る、並行 turn の cache の試験。**PR-9 が前提** | PR-6 の後 |
-| PR-8 | B5 Codex hidden（search_codex、list_codex_by_type、search_codex_by_tags、find_related_entries）。`codexHiddenFromAi` の port 化（sceneTimeIndex・resolutionMode を入力で受ける）、`phaseApi`／`detailApi` の read の分離、hybrid 融合。**既存の公開関数のシグネチャと falsy な projectId の挙動は変えない（projectId 必須は core の新 entry だけ）** | `codexHidden` 17 件と hybrid 2 件が無変更で通る。`inlineAiContext.codexHidden.test`・beat・foreshadow・`contextBuilder` の hidden 関連の既存試験。**PR-9 が前提** | PR-6 の後。`get_codex_entry` は legacy に残り、共有 helper の公開 API を保つ |
+| PR-8 | B5 Codex hidden（search_codex、list_codex_by_type、search_codex_by_tags、find_related_entries）。`codexHiddenFromAi` の port 化（sceneTimeIndex・resolutionMode を入力で受ける）、`phaseApi`／`detailApi` の read の分離、hybrid 融合。**既存の公開関数のシグネチャと falsy な projectId の挙動は変えない（projectId 必須は core の新 entry だけ）** | `codexHidden` 17 件と hybrid 2 件が無変更で通る。`inlineAiContext.codexHidden.test`・beat・foreshadow・`contextBuilder` の hidden 関連の既存試験。**PR-9 が前提** | PR-6 の後。`get_codex_entry` は legacy に残り、共有 helper の公開 API を保つ。**PR-6 からの申し送り（記録の 11・12）：削除の undo 後の `storyTimeOrder` 欠落は PR-6 の parity 試験の範囲外で、main の同値試験でも見えない。PR-8 の fixture に「store と DB の `storyTimeOrder` が食い違う」例を入れるか、Q5 の窓として受容を明記する。mode の入力の select は `listNodes` の projection と別なので、条件の手書きの一致は parity 試験だけが守る** |
 | **PR-9（必須。任意でない）** | 実 addon での同値 spec（同じ fixture DB を renderer 経路と main の adapter で比べる）。fixture は PR-0 の `legacyReadSeed.ts` を共用する | `d2aOwnDataRead.pipeline.spec.ts` の型。fts／semantic 2 本の workspace 不一致／foreshadow の Native 分岐を含む | 実 addon の build。**main の経路が legacy と同じ結果を返すことを言える唯一の oracle**。typed read を使う PR-5・7・8 の前提 |
 
 - 順序：PR-0 → PR-3 を先に、PR-1・2 は並行、PR-3b → PR-4（PR-9 の最初の版を含む）→ PR-9 → PR-5、PR-6 → PR-7・8（PR-9 が前提）。
@@ -1003,6 +1004,54 @@ PR-0 の試験を実際に走らせて確かめた。意図しない挙動に見
   sql.js の行の返り順に依存する（実 addon では異なりうる）。tree の `sort_order` は同順位が起きないよう main project では全 node 別の値にしてある。
 - **覆えない範囲**：`get_chapter_summaries` は現行 DB で常に 0 件なので、章→場面の整形と `list_chapters` の part／chapter の枝は golden を通らない（行ありを作るには CHECK を外した fixture か mock 行が要る）。
   Native 経路の結果、本文の barrier（`awaitPendingSceneContentWrite`）、`get_codex_entry` は範囲外。
+
+#### 6. PR-6 の判断（hidden・年表 secret の入力の再構築。技術判断。2026-11-22）
+
+呼び手なしの PR（main はまだ使わない。製品の挙動は不変）。新しい契約・authority・送信先・保存範囲・閾値の変更は伴わない。
+
+1. **置き場：`electron/shared/readDomain/core/`（`readInputs.ts`＝pure、`readInputsReader.ts`＝Drizzle の select 2 本）。** DR-MP4-3a の「`src/` の相対 path を mirror する」の**最初の例外**：core は `src/` に対応する path が無い新 module。
+   PR-4 の core（#1011。master）も同じ `core/` に置くので揃う。`irClosure.static.test.ts` の走査は PR-4 が `electron/shared/readDomain` 全体にしており、`core/` はその内側（合流前の枝では `core` を足していた。範囲を広げる向き。`@/`・store・`invoke`・IR の語は 0。import は相対の `.js` と `drizzle-orm` だけ）。
+   renderer の `buildSceneTimeIndex`（内部で `buildReadingOrder`）を**変えずに**呼ぶ。行を `TreeNodeData` の形に写し、読まない欄は中立値にする。Rust の `derive_live_scene_projection` は流用しない（K-4）。
+2. **6 列：** `id`・`parent_id`・`node_type`・`sort_order`・`story_time_order`・`archived_at`（2 つの関数が実際に読む列と照合した。`project_id` は SQL の条件で、行には持たない）。
+   条件は renderer の `listNodes`（`src/features/tree/api.ts`）と同じ `project_id = ? AND archived_at IS NULL`。pure 側も `archivedAt` を渡して二重に除く。`revision` は store の無効化 counter なので 0 固定。
+3. **mode：既定値を置かない。既定は fail-closed（hidden）で、実装は PR-8。** 戻り値は `{kind:"resolved", mode}` か `{kind:"unresolved", reason}`（`project-missing`／`mode-null`／`mode-unknown`）。呼び手が `?? "reading"` と書けない形にした。
+   「不明な mode は hidden」は DR-MP4-8 と P5 の行が既に決めている。PR-6 は**隠す実装を持たない**（Codex の hidden 判定の本体と legacy の anchor の作り方〔`resolveTemporalAnchor`〕は PR-8 の範囲で、ここでは読んでいない）。
+   PR-8 は `unresolved` を明示的に隠す側へ倒し、fixture（mode が null・不明値・project なし）を入れる。**base anchor で解決する案は採っていない**：phase は `contextModeOverride` で entry の公開状態を上書きでき（`phaseResolver.ts` の `applyPhase`）、公開→hidden の phase を持つ entry は base では公開のまま残るので、開示しうる側になる。
+   base を採るなら DR-MP4-8 の変更なので、確認が要る。年表は mode を使わない（読む順と現在の場面だけ。場面が読む順に無ければ secret を隠す）。
+4. **現在の場面：** wire の値が**その project の live な scene 行で、かつ読む順（`buildReadingOrder` の key）に入っている**ときだけ採り、それ以外は null。境界は読む順の key で決める（年表の `isEventHiddenFromAi` が `readingOrder.has` で判定するのと同じ物差し）。試験した id：
+   他 project の場面（`x-s1`）・存在しない・空文字・archived の場面（`n-arch`）・archived の folder・**行は live だが祖先が archived の場面（`n-s5`）**・folder（`n-ch1`）・note（`n-note1`）・project が無い。
+   null を Codex がどう読むか（場面が見つからない id と同値か）は K-20 (1) の未確認のまま、**断定しない**。
+5. **legacy との差（mode）。** legacy の出所は `projectStore.ts:435`（開く）と `:582`（戻す）の `applyProjectMetadata(p)` → `projectRuntimeComposition.ts:87-89`：`phaseResolutionMode` が falsy なら store の mode を**変えない**（前 project の値、無ければ phaseStore の初期値 `reading`）。truthy なら不明値でもそのまま入れ、`resolveApplicablePhases` は `auto`／`story` 以外を reading 軸として扱う。
+   | DB の値 | legacy | main（この PR の入力） |
+   |---|---|---|
+   | `reading`／`story`／`auto` | project を開いたとき store へ（その後の設定 UI の変更は debounce 後に DB。Q5 (1)） | 同じ値（resolved） |
+   | null・空・不明値 | falsy は前 project の mode が残る。不明値は reading 軸 | unresolved（既定は hidden。実装は PR-8） |
+   | project の行が無い | project を開けない | unresolved（`project-missing`） |
+   到達性：`projects.phase_resolution_mode` は `NOT NULL DEFAULT 'auto' CHECK (… IN ('reading','story','auto'))`（`migrate.rs:530-531`）で、browser-mock の sql.js も NULL と `'weird'` の UPDATE を拒む（試験で固定）。**よって unresolved は schema の drift か外部 writer のときだけ**で、通常は差が出ない。
+   phaseStore の初期値 `reading` と DB の既定 `auto` の差は、project を開くと DB の値が store に入るので通常は出ない（project なしでは main は動かない。projectId 必須）。**黙って前 project の mode を引き継ぐことを main は再現できず、再現しない**。
+   ユーザー確認が要る挙動の変更ではない理由：fail-closed は DR-MP4-8 が決定済み、legacy は不変、main は未接続。
+6. **ずれの向き：両方向**（DR-MP4-8 の本文の「開示側」は片方向の記述だったので、この PR で直した。K-5 の (2)）。この PR は入力を DB から作るだけで、store との差は作らないが、PR-8 以降の main が DB を読む限り同じ窓が残る（Q5）。
+   **「追加・削除・`storyTimeOrder` は DB が先なので短い窓」も削除の undo では不正確**（レビュー P2-1）：窓でなく reload まで続く。原因と影響は下の 11。DR-MP4-8 の本文・K-5 (2)(8)・Q5 (b) を直した。
+7. **表の allowlist：`projects` を戻した（PR-4〔#1011〕との合流で）。** PR-4 は `MAIN_READ_TABLES` を 6 表に絞り（`projects` を外した）、`core.static.test.ts` が `readDomain/core/` の Drizzle の select が名指す表の集合と `MAIN_READ_TABLES` の**等しさ**を求める。
+   この PR の `readInputsReader.ts` は `tree_nodes` と `projects`（`phase_resolution_mode` だけ）を読むので、`tables.ts` に `projects` を足し（7 表）、`tables.test.ts` の `PINNED` へ入れて `NOT_YET` から外した。範囲を広げる向きの変更で、他の表は動かない。
+   parity 試験の client は `MAIN_READ_TABLE_SET` で送信前の検査を通すので、`projects` が外れていれば落ちる（負の対照は変わらない）。
+8. **試験：** `readInputs.test.ts`（electron。手書きの行、node:sqlite の実 DB で reader の条件と送信前の検査、同順位の兄弟〔小文字 hex の id だけ。大文字と `_` は locale で並びが変わる〕、行の順序への不変、mode の全分岐）と、`readInputs.parity.test.ts`（src。PR-0 の seed と実 sql.js で、renderer の store の `nodes`・`sceneTimeIndex` と、reader の行の集合・6 列・3 つの map〔挿入順まで〕・数を 5 project〔seed の 4＋同順位の `p-tie`〕で照合）。
+   `buildReadingOrder` は両側で同じ関数なので、比べる価値は**行の段**にある。条件を壊す変異（`archived_at` の除外を外す、`project_id` を `id` に替える）が parity 試験で落ちることを確かめた。
+   **parity 試験の「store 側」の正確な範囲（レビュー P3-3）：** harness（`legacyReadHarness.testSupport.ts` の `setLegacyReadWorld`）が `listNodes` の結果を `TreeNodeData` へ型変換して `buildSceneTimeIndex` に渡すもので、実際の store の経路（`toNodeData`・`applyTreeHydration`・`recomputeSceneOrder`）は通らない。実質「同じ DB を同じ条件で 2 回読む」比較なので、store だけが持つ差（11 の undo）は見えない。`revision` の比較（0 対 0）は外した：harness が作った値で、実 store では `recomputeSceneOrder` が `revision + 1` するので 1 以上になる（main は 0 固定）。
+   reader の送る SQL の列は `readInputs.test.ts` で固定した（tree は 6 列の集合、mode は `select "phase_resolution_mode" from "projects" where` で始まり他の列を含まない。余分な列を足す変異で落ちることを確かめた）。
+   **覆わない：** Chromium と Electron main の `localeCompare` の一致（K-4。Node の既定 locale だけ）、実 addon（Native）での同値（PR-9）、DB が古いときの store とのずれ（Q5）。comparator は変えていない（K-4 の方針どおり、変えるなら確認）。
+9. **reader の形：** 引数は `CoreReadDb`（PR-4 の `createCoreReadDb(client)` が返す Drizzle db。合流の直しで `drizzle(client)` を直に呼ぶ形から寄せた）。select を `await` で配列として受ける（`.get()`・`findFirst`・`$with` は使わない）。2 本は 1 つの snapshot ではない（tree と mode が別の瞬間のものになりうる）。turn の開始時に読んで固定する（DR-MP4-8、Q5 (5)）。
+   reader は `CoreReadContext` の tree state から project を取らず、呼び手が `projectId` を引数で渡す（空は `assertCoreProjectId` で送信前に throw）。main は `createCoreReadDb(checkedClient)` を作って渡す。試験の client も `createCoreReadDb` で包む。
+10. **合流の直し（PR-4 の後。2026-11-22）：** 枝は master `3c73d089` の上に作り直した（`claude/mastra-mp4b6-reading-order-v2`）。`irClosure.static.test.ts` の競合は、PR-4 側が走査 directory を `electron/shared/readDomain` 全体へ広げていたので**それを採り**（PR-6 の `readDomain/core` はその内側）、「走査対象の file が入っている」の列に `readInputs.ts`・`readInputsReader.ts` を足した（PR-4 の 5 file は残した）。
+    直したのは (a) `projects` を `MAIN_READ_TABLES` へ戻した（上の 7）、(b) reader を `CoreReadDb` を受ける形へ寄せた（上の 9）の 2 点。`impact-map` には rule を足していない：PR-6 の新 file は PR-4 の「core の新 file は fallback（全 suite）」のままで、評価範囲は狭めない。
+11. **削除の undo で store と DB が食い違う（Opus のレビュー P2-1。legacy 側の既存の不具合。この PR では直さない）。**
+    - 経路：`deleteTreeSubtree`（`src/application/tree/deleteTreeSubtree.ts:184-186`）の undo は、メモリの `deletedNodes`（元の `storyTimeOrder` 付き）を `applyNodes`＋`recomputeSceneOrder` で store に戻す。DB へは `treeStore.ts:1544-1560` の `restorePersisted` が `api.createNode` を呼ぶが、その型（`src/features/tree/api.ts:404-419`）に `storyTimeOrder` が無く、Rust の `tree_node_create` の INSERT（`src-tauri/crates/grimodex-db/src/domain_writes.rs:3339-3342`）にも `story_time_order` が無い。行は NULL で作り直される。chronicle の欄（`chronicle_*`）も同じ。
+    - 結果：store は `explicitStoryOrder`・`inheritedStoryOrder`・`scheduledSceneCount` を元の値で持つが、DB から作る main の入力は欠落する。**短い窓でなく reload まで続く。** `isAutoStoryReady` は `scheduledSceneCount`・`liveSceneCount` と `resolvedStoryRanks` で決まるので、auto の軸が project 全体で反転しうる（story 軸が ready／not ready のどちらにもずれ、Codex の phase と hidden が両方向に変わる）。年表の secret の位置は読む順だけを使うので、この経路では動かない（確認は PR-7）。
+    - 受入れ：**この PR の parity 試験の範囲外**（上の 8。store の経路を通らない）。K-5 (8)・Q5 (b) に載せ、PR-8 へ申し送る。
+    - 根の修正：`tree_node_create` の payload に `storyTimeOrder`・chronicle の欄を足すか、undo が欄を別の更新で戻す。前者は **IPC 契約の変更なのでユーザー確認が要る**。legacy の不具合として**別 lane**で扱う（PR-6 では触らない。製品の挙動は不変）。
+12. **projection が `listNodes` と別（Opus のレビュー P3-1）。** DR-MP4-8 は「`listNodes` と同じ projection・同じ除外を共有 core から使う」と書くが、実装は 6 列だけの別の select に同じ条件（`project_id = ? AND archived_at IS NULL`）を手で書いた。理由：`listNodes` は renderer の module（`@/db`）で core から import できず、`treeNodeLiteColumns` は 20 列以上を引く。
+    差：(a) 列は 6 対 20 超（読まない欄は中立値）、(b) 条件は同じだが**同じ定義を共有していない**（`listNodes` の条件か列が変わっても reader は変わらない）、(c) `ORDER BY` なし（順序は `buildReadingOrder` が決める）。
+    ずれを検出する手段は `readInputs.parity.test.ts` だけで、**seed に依存する**（seed に無い形の行や、`listNodes` 側だけの条件の変更は見えない。上の 8 の変異の確認も seed の範囲）。共有の定義にするなら `listNodes` の条件を module に切り出す変更が要り、legacy の import が動くので PR-6 では採らない。
 
 ### 4c-1 loop 規則・tool の接続（main 側。journey の seam だけが届く）
 
@@ -1088,7 +1137,7 @@ PR-0 の試験を実際に走らせて確かめた。意図しない挙動に見
 | ID | 内容 | 推奨 | 止まる点 |
 |---|---|---|---|
 | **Q4** | **4c-1 の wire の契約一式**（C-2＋C-3(a)＋C-13＋C-6(1)。回答 2 の「設計がそろってから 1 回にまとめて」）。含むもの：(a) tools の wire の形、(b) 予算（`tokenBudget`・`maxToolCalls`）と制御 message 3 本・UI 言語、(c) step ごとの payload 確定の入力（窓・出力予約・fallback の system）、(d) 結果と進捗の wire（`toolCallRecords`、`stoppedReason`、累計 usage、`citations`、`finalThinkingBlocks`、連結 text、`onProgress`、send ごとの accepted／finalize の通知、Stop 時の途中 text）、(e) C-6(1) を採るなら `fullyInjectedIds`。main が値を検査するときの値域は既存の関数・定数から導き、導けない欄だけ追加で伺う | (a) 名前の list だけ（定義は main が持つ。DR-MP4-30）、(b)(c) renderer が計算した値を渡す（現行の関数を共有。新設・変更しない）、(d) 結果と進捗の wire を新設、(e) 含める（契約を 2 回に保つ） | 4c-1 |
-| **Q5** | **legacy より弱い窓の受容**（C-7＋C-15）。ADR 013（hidden と年表 secret は「どの経路でも渡さない」。`docs/adr/013-ai-disclosure-policy.md:9`†）に対して保護が弱くなる窓：(a) 場面切替後は turn 開始の場面で固定（後ろの場面へ切り替えたなら開示は狭い側、前の場面へなら広い側にずれる）、(b) DB が古い窓（`resolutionMode`、tree の並びの未保存の変更。作者の画面より多くを解除する向きにずれうる）、(c) barrier なし、(d) batch の途中の tree の変更を再計算しない、(e) project・chat authority・policy・license の変化から cancel が届くまで（policy の store から DB への永続の窓を含む。K-17）。緩和（新しい契約なし）：turn 開始前の flush、watcher による cancel（場面・project・policy・ライセンス）、send の直前の main の policy 判定（技術判断。DR-MP4-26） | 緩和を入れた上で、残る窓を受容し、脅威モデルに回答どおり書く。特性試験に明記 | 4c-2（4b は差を確定せずに進める） |
+| **Q5** | **legacy より弱い窓の受容**（C-7＋C-15）。ADR 013（hidden と年表 secret は「どの経路でも渡さない」。`docs/adr/013-ai-disclosure-policy.md:9`†）に対して保護が弱くなる窓：(a) 場面切替後は turn 開始の場面で固定（後ろの場面へ切り替えたなら開示は狭い側、前の場面へなら広い側にずれる）、(b) DB が古い窓（`resolutionMode`、tree の並びの未保存の変更。作者の画面より多くを解除する向きにずれうる。**削除の undo の後は `storyTimeOrder` の欠落が reload まで続き、auto の軸が反転しうる**〔K-5 (8)、PR-6 の記録の 11。根の修正は legacy の別 lane〕）、(c) barrier なし、(d) batch の途中の tree の変更を再計算しない、(e) project・chat authority・policy・license の変化から cancel が届くまで（policy の store から DB への永続の窓を含む。K-17）。緩和（新しい契約なし）：turn 開始前の flush、watcher による cancel（場面・project・policy・ライセンス）、send の直前の main の policy 判定（技術判断。DR-MP4-26） | 緩和を入れた上で、残る窓を受容し、脅威モデルに回答どおり書く。特性試験に明記 | 4c-2（4b は差を確定せずに進める） |
 
 **条件つき**（条件がそろったときだけ伺う）：
 
