@@ -101,7 +101,10 @@ export function ReadingsBackfillSection() {
       // （DR-MP4-41）。件数（total）が合わず、残りが全部該当だと毎回 0 件で終わって同じ項目が
       // 対象に戻るので、送信前と同じ判定で、先に work から除く。
       if (work.length > 0) {
-        const hiddenIds = await listYomiHiddenIds(work.map((w) => w.id));
+        const hiddenIds = await listYomiHiddenIds(
+          work.map((w) => w.id),
+          projectId,
+        );
         if (hiddenIds.size > 0) {
           for (let i = work.length - 1; i >= 0; i--) {
             if (hiddenIds.has(work[i].id)) work.splice(i, 1);

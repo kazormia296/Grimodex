@@ -842,7 +842,7 @@ export function CodexDetailContent({
         // base は公開でも、Phase が hidden にする項目は `inferReadings` が送信前に落とす
         // （DR-MP4-41）。落ちた空の結果を「モデル設定の不具合」と誤って伝えないよう、AI を
         // 呼ぶ前に同じ判定で確かめ、hidden なら秘匿の案内を出して終える。
-        const hiddenIds = await listYomiHiddenIds([entry.id]);
+        const hiddenIds = await listYomiHiddenIds([entry.id], entry.projectId);
         if (hiddenIds.has(entry.id)) {
           toast.info(i18next.t("codex.readings.estimateHidden"));
           return;
@@ -892,6 +892,7 @@ export function CodexDetailContent({
     },
     [
       entry.id,
+      entry.projectId,
       estimateBlockedHidden,
       persistStructuralPatch,
       resolveCategoryLabel,

@@ -66,6 +66,9 @@ export class YomiNoValidResultError extends Error {
   }
 }
 
+/** `listYomiHiddenIds` が 1 回の判定に渡す id の上限。 */
+const HIDDEN_CHECK_CHUNK = 500;
+
 /**
  * 読みの推定で AI へ送れない（hidden に倒れる）項目の id を返す。`inferReadings` の送信直前の
  * 判定と同じ（`listCodexIdsHiddenFromAi`。場面は渡さないので、Phase が hidden にする項目も
@@ -78,10 +81,18 @@ export async function listYomiHiddenIds(
   projectId: string | null = useTreeStore.getState().projectId,
 ): Promise<Set<string>> {
   try {
-    return await listCodexIdsHiddenFromAi({
-      entryIds: [...entryIds],
-      projectId,
-    });
+    // `resolveCodexForAi` は entries・phases を `inArray` の 1 文で読み、分割しない。一括の
+    // 対象が多いと SQLite の変数の上限を超えうるので、500 件ずつに分けて判定する
+    // （`tree/api.ts` の `loadScenesFull` と同じ先例）。上限を超える失敗は fail-closed（下）。
+    const hidden = new Set<string>();
+    for (let i = 0; i < entryIds.length; i += HIDDEN_CHECK_CHUNK) {
+      const part = await listCodexIdsHiddenFromAi({
+        entryIds: entryIds.slice(i, i + HIDDEN_CHECK_CHUNK),
+        projectId,
+      });
+      for (const id of part) hidden.add(id);
+    }
+    return hidden;
   } catch (error) {
     debugLog.warn(
       "codex-hidden",

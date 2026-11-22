@@ -155,9 +155,11 @@ vi.mock("./TrackingTab", () => ({
   TrackingTab: (props: {
     onEstimateReadings: () => void;
     estimateBlockedHidden?: boolean;
+    estimatingReadings?: boolean;
   }) => (
     <button
       data-testid="estimate-readings"
+      data-estimating={String(props.estimatingReadings ?? false)}
       data-blocked-hidden={String(props.estimateBlockedHidden ?? false)}
       onClick={props.onEstimateReadings}
     >
@@ -318,10 +320,44 @@ describe("CodexDetailContent draft integrity", () => {
         "AI に秘匿（hidden）の項目は推定できません。読みは手で入力してください。",
       ),
     );
-    expect(mockListYomiHiddenIds).toHaveBeenCalledWith([entry.id]);
+    // 手元の項目の projectId を明示して渡す（既定の tree store の projectId に頼らない）。
+    expect(mockListYomiHiddenIds).toHaveBeenCalledWith(
+      [entry.id],
+      entry.projectId,
+    );
     expect(mockInferReadings).not.toHaveBeenCalled();
     // 「モデル設定を確認して再試行」の警告は出さない。
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed hidden check, sends nothing to the AI and does not stay busy (fail closed)", async () => {
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockListYomiHiddenIds.mockRejectedValueOnce(new Error("hidden check down"));
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("estimate-readings"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "読みの推定に失敗しました",
+        expect.objectContaining({ description: "hidden check down" }),
+      ),
+    );
+    expect(mockInferReadings).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("estimate-readings")).toHaveAttribute(
+        "data-estimating",
+        "false",
+      ),
+    );
   });
 
   it("warns instead of ending silently when the estimate returns no readings", async () => {

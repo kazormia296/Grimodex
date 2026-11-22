@@ -167,7 +167,11 @@ describe("ReadingsBackfillSection と hidden の Codex", () => {
     expect(sentIds()).toEqual(["a", "b"]);
     // 判定には、base の mode で残った項目をまとめて 1 回で渡す。
     expect(listYomiHiddenIds).toHaveBeenCalledTimes(1);
-    expect(listYomiHiddenIds).toHaveBeenCalledWith(["a", "phase-hidden", "b"]);
+    // 一覧と同じ project（`getCurrentProjectId()`）を明示して渡す。
+    expect(listYomiHiddenIds).toHaveBeenCalledWith(
+      ["a", "phase-hidden", "b"],
+      "project-1",
+    );
   });
 
   it("残りが全部 Phase でだけ hidden なら、inferReadings を呼ばず対象なしの toast で終わる（毎回 0 件の完了にしない）", async () => {
@@ -195,5 +199,23 @@ describe("ReadingsBackfillSection と hidden の Codex", () => {
 
     await waitFor(() => expect(toast.info).toHaveBeenCalled());
     expect(listYomiHiddenIds).not.toHaveBeenCalled();
+  });
+
+  it("事前判定が失敗したら、inferReadings を呼ばず失敗の toast で終わり、実行中の表示が解除される（fail-closed）", async () => {
+    vi.mocked(listCodexEntries).mockResolvedValue([
+      entry("a", "刹那", "mentioned"),
+    ] as never);
+    vi.mocked(listYomiHiddenIds).mockRejectedValue(new Error("check down"));
+
+    await runBackfill();
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("codex.readings.backfillFailed"),
+    );
+    expect(inferReadings).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("readings-backfill-run")).not.toBeDisabled(),
+    );
   });
 });
