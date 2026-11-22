@@ -1170,7 +1170,9 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
     if (outcome.answered) {
       const content = outcome.value.content as Array<{ eventId: string }>;
       expect(Array.isArray(content)).toBe(true);
-      // Native's index is read by project: no hit of another project's event.
+      // Native's index is read by project: no hit of another project's event. (Vacuous
+      // where the seed has no event index: the answer is [] and the loop does not run.
+      // The project scoping itself is pinned in Rust, `events_search_scopes_to_project`.)
       for (const hit of content)
         expect(own.has(hit.eventId), hit.eventId).toBe(true);
     } else {
