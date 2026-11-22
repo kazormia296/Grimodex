@@ -28,7 +28,16 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getSceneVersion, loadSceneFull } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
-import { refreshForeshadowPayoffMarkVersions } from "@/features/foreshadow/saveAnchors";
+import {
+  applyPendingForeshadowRefresh,
+  applyPendingForeshadowRefreshForFlush,
+  deferForeshadowRefresh,
+  discardPendingForeshadowRefresh,
+  hasPendingForeshadowRefresh,
+  installCompositionIdleListener,
+  isEditorComposing,
+} from "@/features/editor/pendingForeshadowRefresh";
+import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import {
   registerDiscardHandler,
   registerRecoveryDraftProvider,
@@ -98,6 +107,7 @@ import {
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import {
   AlreadyNotifiedSaveError,
+  SaveDeferredError,
   INLINE_AI_SAVE_BLOCKED_MESSAGE,
 } from "@/features/editor/document/saveErrors";
 import type { LoadedEditorBinding } from "@/features/editor/document/types";
@@ -300,6 +310,14 @@ function MountedSceneBlock({
   // headless 適用の resync がその編集を上書き消失させる。
   const editGenerationRef = useRef(0);
   const sceneVersionRef = useRef(0);
+  // 変換中に届いた peer の保存の通知（変換が終わったら処理し直す）。
+  const deferredPeerPersistRef = useRef<{
+    binding: LoadedEditorBinding;
+    persistedContent: object;
+  } | null>(null);
+  const persistedBindingHandlerRef = useRef<
+    ((binding: LoadedEditorBinding, persistedContent?: object) => void) | null
+  >(null);
   const [charCount, setCharCount] = useState(0);
   // タイピング中の文字数同期 debounce タイマー (EditorStatsFooter と同じ
   // 200ms trailing)。
@@ -351,6 +369,12 @@ function MountedSceneBlock({
     return extensions;
   }, [isFileBacked]);
 
+  // 伏線 mark の baseVersion の更新（pending）を適用する囲み。
+  const runForeshadowRefresh = useCallback(
+    (apply: () => void) => runProgrammaticProjectionUpdate(apply),
+    [runProgrammaticProjectionUpdate],
+  );
+
   const coreSave = useCallback(
     async (
       context: DocumentSaveContext = {},
@@ -375,6 +399,20 @@ function MountedSceneBlock({
         guardInlineAiPending();
         throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
       }
+      // T0 の直前（editGenAtStart と doc の捕捉より前）：前の保存で未適用の伏線 mark の
+      // baseVersion を適用する。適用が編集世代を進めても、この保存の committed 判定
+      // （editGenAtStart との比較）には数えない。変換中で適用できない背景の保存は、
+      // doc の捕捉・hold・native の呼び出しより前に延期する（EAR-7）。flush は延期せず、
+      // 変換を確定させて適用する。
+      if (hasPendingForeshadowRefresh(ed)) {
+        if (context.background === true) {
+          if (!applyPendingForeshadowRefresh(ed, runForeshadowRefresh)) {
+            throw new SaveDeferredError();
+          }
+        } else {
+          applyPendingForeshadowRefreshForFlush(ed, runForeshadowRefresh);
+        }
+      }
       debugLog.info(
         "LinearSceneBlock",
         `save ${sceneId.slice(0, 8)}`,
@@ -397,15 +435,13 @@ function MountedSceneBlock({
           ? { timelapseDocumentIdentity: timelapseDescriptor.documentIdentity }
           : {}),
         ...(context.preexistingDraft ? { preexistingDraft: true } : {}),
+        writer: "editor-autosave",
       });
-      if (persisted.foreshadowRows.length > 0) {
-        runProgrammaticProjectionUpdate(() => {
-          refreshForeshadowPayoffMarkVersions((apply) => {
-            const tr = ed.state.tr;
-            apply(tr);
-            if (tr.steps.length > 0) ed.view.dispatch(tr);
-          }, persisted.foreshadowRows);
-        });
+      if (persisted.foreshadowRows.length > 0 && !ed.isDestroyed) {
+        // 変換中でなければ従来どおり直ちに適用する。変換中なら pending に残し、
+        // compositionend／blur／次の保存の T0 で必ず適用する（§3.3a）。
+        deferForeshadowRefresh(ed, persisted.foreshadowRows);
+        applyPendingForeshadowRefresh(ed, runForeshadowRefresh);
       }
       if (persisted?.contentVersion !== undefined) {
         sceneVersionRef.current = persisted.contentVersion;
@@ -434,13 +470,7 @@ function MountedSceneBlock({
       }
       return { persisted: true, committed };
     },
-    [
-      documentKey,
-      isFileBacked,
-      runProgrammaticProjectionUpdate,
-      sceneId,
-      treeNodeType,
-    ],
+    [documentKey, isFileBacked, runForeshadowRefresh, sceneId, treeNodeType],
   );
 
   const saveFn = useCallback(
@@ -449,6 +479,7 @@ function MountedSceneBlock({
         session: documentSaveSession,
         didPersist: (attempt) => attempt.persisted,
         ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+        ...(context?.background ? { background: true } : {}),
       });
       if (shouldClearRetainedEditorRecoveryDraft(result)) {
         clearRetainedEditorRecoveryDraft(
@@ -630,6 +661,7 @@ function MountedSceneBlock({
   );
 
   editorRef.current = editor;
+  const editorViewReady = useEditorViewReady(editor);
 
   const loadedFenceDocumentKey = inputProjectionReady ? documentKey : null;
   const loadedFenceProjectId = inputProjectionReady ? loadedProjectId : null;
@@ -743,6 +775,12 @@ function MountedSceneBlock({
       if (binding.loadedVersion < sceneVersionRef.current) return;
       const currentEditor = editorRef.current;
       if (persistedContent && currentEditor && !currentEditor.isDestroyed) {
+        // 変換中の setContent は入力を乱すので、変換が終わった後に同じ通知を処理し直す
+        // （版は進めない。EditorPane と同じ）。
+        if (isEditorComposing(currentEditor)) {
+          deferredPeerPersistRef.current = { binding, persistedContent };
+          return;
+        }
         const finishExternalUpdate = beginApplyingExternalUpdate();
         try {
           runProgrammaticProjectionUpdate(() => {
@@ -751,6 +789,7 @@ function MountedSceneBlock({
               errorOnInvalidContent: true,
             });
           });
+          discardPendingForeshadowRefresh(currentEditor);
         } catch (error) {
           debugLog.error(
             "LinearSceneBlock",
@@ -772,12 +811,18 @@ function MountedSceneBlock({
       instanceId,
       persistedBindingHandler,
     );
-    return () =>
+    persistedBindingHandlerRef.current = persistedBindingHandler;
+    return () => {
+      if (persistedBindingHandlerRef.current === persistedBindingHandler) {
+        persistedBindingHandlerRef.current = null;
+      }
+      deferredPeerPersistRef.current = null;
       unregisterPersistedBindingHandler(
         documentKey,
         instanceId,
         persistedBindingHandler,
       );
+    };
   }, [
     beginApplyingExternalUpdate,
     documentKey,
@@ -936,6 +981,23 @@ function MountedSceneBlock({
   useShowInvisibles(editor);
   useCodexCompletion(editor);
 
+  // 変換（IME）が終わったとき・editor が blur したときに、変換中で遅らせた伏線 mark の
+  // baseVersion の更新と peer の保存の通知を適用する（EAR-7）。
+  useEffect(() => {
+    if (!editor || !editorViewReady) return;
+    return installCompositionIdleListener(editor, () => {
+      applyPendingForeshadowRefresh(editor, runForeshadowRefresh);
+      const deferred = deferredPeerPersistRef.current;
+      if (deferred) {
+        deferredPeerPersistRef.current = null;
+        persistedBindingHandlerRef.current?.(
+          deferred.binding,
+          deferred.persistedContent,
+        );
+      }
+    });
+  }, [editor, editorViewReady, runForeshadowRefresh]);
+
   // Load content
   useEffect(() => {
     if (!editor) return;
@@ -948,6 +1010,9 @@ function MountedSceneBlock({
       // 初回 mount は初期値 true なので no-op。ロード成功時のみ false に戻る。
       // 「未ロード/再ロード窓の保存禁止」は本文消失の最終防衛線 (59ab7c94)。
       loadFailedRef.current = true;
+      // 再ロードする doc は DB の現在の version を持つ。古い pending の baseVersion で巻き戻さない。
+      discardPendingForeshadowRefresh(editor!);
+      deferredPeerPersistRef.current = null;
       loadedTimelapseDescriptorRef.current = null;
       setLoadedProjectId(null);
       publishLoadReady(false);

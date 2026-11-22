@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  SAVE_DEFER_RETRY_MS,
+  SILENT_RETRY_WARN_MS,
   createAutoSave,
   flushAllAutoSaves,
   registerAutoSaveForQuiesce,
@@ -31,6 +33,10 @@ import {
   runAfterTimelapseGenesis,
 } from "@/features/timelapse/genesisBarrier";
 import { _resetEditorAnalysisSchedulerForTests } from "@/lib/editorAnalysisScheduler";
+import {
+  DocumentMutationLeaseActiveError,
+  SaveDeferredError,
+} from "@/features/editor/document/saveErrors";
 
 describe("createAutoSave", () => {
   beforeEach(() => {
@@ -387,7 +393,7 @@ describe("createAutoSave", () => {
 
     await flushing;
     expect(firstError).toBeInstanceOf(TimelapseGenesisBarrierError);
-    expect(calls).toEqual([undefined, { preexistingDraft: true }]);
+    expect(calls).toEqual([{ background: true }, { preexistingDraft: true }]);
 
     lease.release();
     expect(autoSave.schedule()).toBe(true);
@@ -437,7 +443,7 @@ describe("createAutoSave", () => {
     releaseFirst();
 
     await expect(flushing).rejects.toThrow("retry failed");
-    expect(calls).toEqual([undefined, { preexistingDraft: true }]);
+    expect(calls).toEqual([{ background: true }, { preexistingDraft: true }]);
 
     lease.release();
     expect(autoSave.schedule()).toBe(true);
@@ -478,6 +484,451 @@ describe("createAutoSave", () => {
     gates[1](); // run2 完了
     await flushing;
     expect(flushed).toBe(true);
+  });
+
+  it("T-7: 保存中に打った分の追従保存は即時でなく通常の debounce 間隔を待つ", async () => {
+    const gates: Array<() => void> = [];
+    const saveFn = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          gates.push(r);
+        }),
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500); // run1 開始
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    autoSave.schedule(); // 保存中の入力
+    gates[0](); // run1 完了
+    await vi.advanceTimersByTimeAsync(0);
+    // 即時に背中合わせで走らない。
+    expect(saveFn).toHaveBeenCalledTimes(1);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(499);
+    expect(saveFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+    gates[1]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  describe("EAR-7／EAR-13：背景の保存だけが受ける「失敗ではない」拒否", () => {
+    it("背景の保存に印（background）を付け、flush には付けない", async () => {
+      const saveFn = vi.fn().mockResolvedValue(undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(saveFn).toHaveBeenLastCalledWith({ background: true });
+
+      autoSave.schedule();
+      await autoSave.flush();
+      expect(saveFn).toHaveBeenLastCalledWith();
+    });
+
+    it("外部置換の lease への入場拒否は toast も失敗の記録も無しに、通常の debounce 間隔で再試行する（dirty 維持）", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(new DocumentMutationLeaseActiveError())
+        .mockResolvedValue(undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(announce).not.toHaveBeenCalled();
+      // 未保存として数え続ける（dirty を消さない）。
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(saveFn).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      expect(toast.error).not.toHaveBeenCalled();
+      unregister();
+    });
+
+    it("lease が続く間は再試行を繰り返し、上限で諦めず、外れたら保存する", async () => {
+      let leased = true;
+      const saveFn = vi.fn(async () => {
+        if (leased) throw new DocumentMutationLeaseActiveError();
+      });
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500 * 30);
+      expect(saveFn.mock.calls.length).toBeGreaterThan(25);
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+      leased = false;
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      unregister();
+    });
+
+    it("EAR-22 lease の silent retry が SILENT_RETRY_WARN_MS 続いたら診断を 1 回だけ出す（本文なし・止めない）。保存できたら数え直す", async () => {
+      let leased = true;
+      const saveFn = vi.fn(async () => {
+        if (leased) throw new DocumentMutationLeaseActiveError();
+      });
+      const warn = vi
+        .spyOn(debugLog, "warn")
+        .mockImplementation(() => undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS - 600);
+      expect(warn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS * 3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const detail = warn.mock.calls[0]?.[2] as {
+        fields: Record<string, unknown>;
+      };
+      expect(detail.fields.operation).toBe("lease-retry");
+      expect(Object.keys(detail.fields).sort()).toEqual([
+        "count",
+        "elapsedMs",
+        "operation",
+      ]);
+      expect(toast.error).not.toHaveBeenCalled();
+
+      // 保存できたら数え直す：次の連続でまた 1 回出る。
+      leased = false;
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      leased = true;
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS * 2);
+      expect(warn).toHaveBeenCalledTimes(2);
+      warn.mockRestore();
+      unregister();
+    });
+
+    it("EAR-22 延期（SaveDeferredError）が続いても同じ閾値で 1 回だけ診断を出し、延期は止めない", async () => {
+      let deferred = true;
+      const saveFn = vi.fn(async () => {
+        if (deferred) throw new SaveDeferredError();
+      });
+      const warn = vi
+        .spyOn(debugLog, "warn")
+        .mockImplementation(() => undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS + 5000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(
+        (warn.mock.calls[0]?.[2] as { fields: Record<string, unknown> }).fields
+          .operation,
+      ).toBe("save-defer");
+      expect(saveFn.mock.calls.length).toBeGreaterThan(30);
+
+      deferred = false;
+      await vi.advanceTimersByTimeAsync(SAVE_DEFER_RETRY_MS);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      warn.mockRestore();
+      unregister();
+    });
+
+    it("EAR-22 閾値に届かない短い延期は診断を出さない", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(new SaveDeferredError())
+        .mockResolvedValue(undefined);
+      const warn = vi
+        .spyOn(debugLog, "warn")
+        .mockImplementation(() => undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+      unregister();
+    });
+
+    it("flush では従来どおり throw し、toast と失敗の記録を残す", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValue(new DocumentMutationLeaseActiveError());
+      const autoSave = createAutoSave(saveFn, 500);
+      autoSave.schedule();
+      await expect(autoSave.flush()).rejects.toBeInstanceOf(
+        DocumentMutationLeaseActiveError,
+      );
+      expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("延期（SaveDeferredError）は toast も失敗の記録も無しに、短い間隔で張り直し、通常の debounce は使わない", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(new SaveDeferredError())
+        .mockRejectedValueOnce(new SaveDeferredError())
+        .mockResolvedValue(undefined);
+      const autoSave = createAutoSave(saveFn, 5000);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(SAVE_DEFER_RETRY_MS - 1);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(saveFn).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(SAVE_DEFER_RETRY_MS);
+      expect(saveFn).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      expect(toast.error).not.toHaveBeenCalled();
+      unregister();
+    });
+
+    it("延期の間に打てば、次の試行は通常の debounce（延期の間隔を持ち越さない）", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(new SaveDeferredError())
+        .mockResolvedValue(undefined);
+      const autoSave = createAutoSave(saveFn, 2000);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      autoSave.schedule(); // 延期の間に打つ
+      await vi.advanceTimersByTimeAsync(SAVE_DEFER_RETRY_MS);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2000 - SAVE_DEFER_RETRY_MS);
+      expect(saveFn).toHaveBeenCalledTimes(2);
+      unregister();
+    });
+
+    it("延期された保存の最中に cancel された draft は、延期の再試行で蘇らない", async () => {
+      let release!: () => void;
+      const saveFn = vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            release = () => reject(new SaveDeferredError());
+          }),
+      );
+      const autoSave = createAutoSave(saveFn, 500);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      autoSave.cancel();
+      release();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    });
+
+    it("flush は延期の印を受けても背景の延期にせず、flush 自身の drain で保存し切る", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(new SaveDeferredError())
+        .mockResolvedValue(undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500); // 背景の保存が延期される
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      await autoSave.flush(); // flush は即時に保存する
+      expect(saveFn).toHaveBeenCalledTimes(2);
+      expect(saveFn).toHaveBeenLastCalledWith();
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    });
+  });
+
+  it("T-7: 保存の所要より短い間隔の連続入力でも保存は背中合わせにならず、20 回の cap に当たらない", async () => {
+    const warnSpy = vi.spyOn(debugLog, "warn");
+    const saveDurationMs = 300;
+    const saveFn = vi.fn(
+      () => new Promise<void>((r) => setTimeout(r, saveDurationMs)),
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    // 100 ms ごとに 10 秒間打ち続ける。
+    autoSave.schedule();
+    for (let t = 0; t < 10_000; t += 100) {
+      await vi.advanceTimersByTimeAsync(100);
+      autoSave.schedule();
+    }
+    // 毎回の保存が 100 ms ごとの入力に即追従すると約 25 回に達するが、
+    // debounce（500 ms）を挟むため保存の間隔は所要 300 ms ＋ 500 ms 以上になる。
+    expect(saveFn.mock.calls.length).toBeLessThanOrEqual(
+      Math.ceil(10_000 / (saveDurationMs + 500)) + 1,
+    );
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      "AutoSave",
+      expect.stringContaining("run cap"),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // 打つのを止めると最後の入力が保存される。
+    const before = saveFn.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(500 + saveDurationMs + 500);
+    expect(saveFn.mock.calls.length).toBeGreaterThan(before - 1);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  it("T-7: 保存中に打った後の明示 flush は追従を即時に反復して保存し切る", async () => {
+    const gates: Array<() => void> = [];
+    const saveFn = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          gates.push(r);
+        }),
+    );
+    const autoSave = createAutoSave(saveFn, 5000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(5000); // background run1（in-flight）
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    autoSave.schedule(); // 保存中の入力
+    let flushed = false;
+    const flushing = autoSave.flush().then(() => {
+      flushed = true;
+    });
+    gates[0]();
+    // background の drain が pending を残して戻っても、flush は debounce を
+    // 待たず即時に追従保存へ進む（閉じる・切替で窓内の入力を失わない）。
+    await vi.advanceTimersByTimeAsync(0);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+    expect(flushed).toBe(false);
+    gates[1]();
+    await flushing;
+    expect(flushed).toBe(true);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  it("T-7: flush 自身の drain は background の debounce と別に即時で反復する", async () => {
+    const holder: { schedule?: () => void } = {};
+    let calls = 0;
+    const saveFn = vi.fn(async () => {
+      calls++;
+      if (calls < 3) holder.schedule?.();
+    });
+    const autoSave = createAutoSave(saveFn, 5000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+    holder.schedule = () => void autoSave.schedule();
+
+    autoSave.schedule();
+    await autoSave.flush();
+    expect(saveFn).toHaveBeenCalledTimes(3);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    unregister();
+  });
+
+  describe("EAR-25 editor を閉じない flush（手動保存）は追従を通常の debounce に戻す", () => {
+    it("打ち続ける間の flush は 1 回保存して返り、追従は即時に反復せず、debounce の後に保存される（cap に当たらない）", async () => {
+      const warnSpy = vi.spyOn(debugLog, "warn");
+      const holder: { schedule?: () => void } = {};
+      // 保存の間に必ず打たれる（持続タイピング）。
+      const saveFn = vi.fn(async () => {
+        holder.schedule?.();
+      });
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      holder.schedule = () => void autoSave.schedule();
+
+      autoSave.schedule();
+      await expect(
+        autoSave.flush({ editorStaysOpen: true }),
+      ).resolves.toBeUndefined();
+      // 1 回だけ保存して返る（即時に 20 回反復して throw しない）。
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(
+        warnSpy.mock.calls.some(([, msg]) => String(msg).includes("cap")),
+      ).toBe(false);
+      // 窓内の入力は未保存として残り、debounce の timer が張られている。
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(saveFn).toHaveBeenCalledTimes(2);
+
+      autoSave.cancel();
+      unregister();
+      warnSpy.mockRestore();
+    });
+
+    it("保存中の入力が無ければ、従来どおり未保存は残らない", async () => {
+      const saveFn = vi.fn(async () => {});
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      await autoSave.flush({ editorStaysOpen: true });
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      unregister();
+    });
+
+    it("background の保存が走っている間の flush は、その完了を待ってから pending を 1 回保存して返る", async () => {
+      const gates: Array<() => void> = [];
+      const saveFn = vi.fn(
+        () =>
+          new Promise<void>((r) => {
+            gates.push(r);
+          }),
+      );
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      autoSave.schedule(); // 保存中の入力
+      let flushed = false;
+      const flushing = autoSave
+        .flush({ editorStaysOpen: true })
+        .then(() => (flushed = true));
+      gates[0]!();
+      await vi.advanceTimersByTimeAsync(0);
+      // その入力は flush 自身が 1 回で保存する。
+      expect(saveFn).toHaveBeenCalledTimes(2);
+      gates[1]!();
+      await flushing;
+      expect(flushed).toBe(true);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      unregister();
+    });
+
+    it("衝突で pause 中なら、従来どおり失敗を伝える（黙って返らない）", async () => {
+      const saveFn = vi.fn(async () => {});
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      autoSave.pause();
+      await expect(autoSave.flush({ editorStaysOpen: true })).rejects.toThrow(
+        "paused",
+      );
+      expect(saveFn).not.toHaveBeenCalled();
+      autoSave.cancel();
+      unregister();
+    });
   });
 
   it("flush の drain が上限に達したら reject して quiesce 失敗を伝える", async () => {

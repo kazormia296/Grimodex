@@ -112,6 +112,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/agent/readCore.mainAdapter.test.ts",
         "src/features/chat/agent/toolDefinitions.test.ts",
         "src/features/chat/agent/toolExecutors.legacyGolden.test.ts",
+        "src/features/chat/agent/toolExecutors.legacyNativePort.test.ts",
+        "src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts",
         "src/features/chat/agent/toolExecutors.test.ts",
         "src/features/chat/agent/toolTurnCache.test.ts",
         "src/features/chat/components/SettingProposalCard.test.tsx",
@@ -130,6 +132,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "electron/shared/mastraRead/tables.test.ts",
         "electron/shared/readDomain/core/core.static.test.ts",
         "electron/shared/readDomain/core/readExecutors.test.ts",
+        "electron/shared/readDomain/core/searchTools.test.ts",
         "electron/main/mastraRead/irClosure.static.test.ts",
       ],
       [

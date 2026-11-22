@@ -433,6 +433,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
             projectId: TEST_PROJECT_ID,
             storage: "database",
           },
+          writer: "editor-autosave",
         },
       );
     });
@@ -688,6 +689,7 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
         projectId: TEST_PROJECT_ID,
         storage: "database",
       },
+      writer: "editor-autosave",
     });
 
     unmount();

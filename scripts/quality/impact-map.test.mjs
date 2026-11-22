@@ -1280,6 +1280,8 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     "treeReadTools",
     "plotThreadTools",
     "codexTagTools",
+    "searchTools",
+    "searchHelpers",
     "readContext",
     "toolResult",
   ]) {
@@ -1310,9 +1312,12 @@ test("the tool-policy light suite runs the executors' golden and the shared core
   const commandText = JSON.stringify(LIGHT_SUITE_DEFINITIONS["tool-policy"].commands);
   for (const test of [
     "src/features/chat/agent/toolExecutors.legacyGolden.test.ts",
+    "src/features/chat/agent/toolExecutors.legacyNativePort.test.ts",
+    "src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts",
     "src/features/chat/agent/readCore.mainAdapter.test.ts",
     "electron/shared/readDomain/core/core.static.test.ts",
     "electron/shared/readDomain/core/readExecutors.test.ts",
+    "electron/shared/readDomain/core/searchTools.test.ts",
     "electron/shared/mastraRead/tables.test.ts",
     "electron/main/mastraRead/irClosure.static.test.ts",
   ]) {
