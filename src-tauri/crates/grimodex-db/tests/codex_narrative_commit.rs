@@ -2802,3 +2802,483 @@ fn alias_added_by_patch_is_removable_by_author_edit_and_undo_then_stops() {
         "the author's edit stays"
     );
 }
+
+// --- 取り込み（commit）の undo / redo と、スナップショットの復元（DR-SRC-9、DR-SRC-12） ---
+//
+// プロジェクトのスナップショットの復元は、行を入れ替えるが object ごとの変更の
+// 記録は書かない。ふつうの履歴の Undo／Redo は、元の書き込みが復元の marker より古ければ
+// NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE で拒まれる（DR-SRC-9。journal の
+// replay は snapshot_restore_feed_continuity.rs）。取り込みの undo_commit／redo_commit は
+// 確認 88 でこの拒否の対象から外した（DR-SRC-12）。専用の守り（undo.rs の preflight）が
+// 復元の後の編集を巻き戻さないことを、実際の復元を通して確かめる。
+
+#[path = "../test-support/snapshot_restore.rs"]
+mod snapshot_restore;
+
+/// 復元の記録の形（origin=restore、source_domain=project.snapshot.restore、
+/// project-restored の marker）を、公開の append で作る。この試験は commit の
+/// undo／redo の経路が同じ入口を通ることを確かめるだけなので、復元そのものは
+/// 走らせない（復元の実行は snapshot_restore_feed_continuity.rs）。
+fn append_restore_marker(db: &Database, tag: &str) {
+    use grimodex_db::change_events::AppendChangeEvent;
+    use grimodex_db::narrative_extraction::change_feed::{
+        append_canonical_and_narrative_change_in_tx, AppendNarrativeChangeTransactionInput,
+        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    };
+    db.with_conn_mut(|conn| {
+        let transaction = conn.transaction()?;
+        let uid = format!("uid-restore-{tag}");
+        append_canonical_and_narrative_change_in_tx(
+            &transaction,
+            "project-1",
+            "sess",
+            &AppendChangeEvent {
+                event_uid: uid.clone(),
+                scene_id: None,
+                domain: "revision".to_string(),
+                op_type: "project.snapshot.restore".to_string(),
+                entity_type: Some("project_snapshot".to_string()),
+                entity_id: Some(tag.to_string()),
+                payload: "{\"scopes\":[\"codex\"]}".to_string(),
+                timestamp: 1_786_000_000_000,
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: "project-1".to_string(),
+                request_id: format!("req-restore-{tag}"),
+                source_domain: "project.snapshot.restore".to_string(),
+                source_change_event_uid: uid,
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: vec![],
+                occurred_at: "2026-11-22T00:00:00.000Z".to_string(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key: json!({ "kind": "project", "projectId": "project-1" }),
+                    change_kind: "schema".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some(format!("sha256:{}", "a".repeat(64))),
+                    after_version: None,
+                    after_digest: Some(format!("sha256:{}", "b".repeat(64))),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: Some(
+                        json!({ "event": "project-restored", "requiresFullRebuild": true }),
+                    ),
+                }],
+            },
+        )?;
+        transaction.commit()?;
+        Ok(())
+    })
+    .expect("append the restore marker");
+}
+
+fn apply_entry_commit(db: &Database, tag: &str, entry_id: &str) -> String {
+    let items = [(
+        "codex.entry.create",
+        entry_create(entry_id, tag, &format!("ent:{tag}")),
+    )];
+    let pairs = seed_approved_proposals(db, &format!("run-{tag}"), &format!("set-{tag}"), &items);
+    let applied = prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("req-{tag}"),
+            &format!("digest-{tag}"),
+            &format!("set-{tag}"),
+            &format!("run-{tag}"),
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    applied["commitId"].as_str().unwrap().to_string()
+}
+
+/// 復元の marker があるだけでは、取り込みの undo／redo は拒まれない（DR-SRC-12。拒否の対象は
+/// ふつうの履歴の Undo／Redo だけ）。復元の marker の形は手で作った（判定の確認だけ。復元の
+/// 実行は下の試験）。
+#[test]
+fn a_restore_marker_alone_does_not_refuse_the_undo_or_redo_of_a_commit() {
+    let db = migrated_db();
+    let applied_before = apply_entry_commit(&db, "rs-a", "entry-rs-a");
+    let undone_before = apply_entry_commit(&db, "rs-b", "entry-rs-b");
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&undone_before, "rs-b-undo"),
+    )
+    .expect("undo before the restore");
+
+    append_restore_marker(&db, "r1");
+
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&applied_before, "rs-a-undo"),
+    )
+    .expect("undo of a commit older than the restore marker");
+    assert_eq!(undone["status"], "undone");
+    let redone = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&undone_before, "rs-b-redo"),
+    )
+    .expect("redo of a commit older than the restore marker");
+    assert_eq!(redone["status"], "redone");
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-rs-a'"
+        ),
+        0
+    );
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-rs-b'"
+        ),
+        1
+    );
+}
+
+fn entry_state(db: &Database, id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(summary, '-') || '|' || COALESCE(aliases, '-') || '|v' || version
+                   FROM codex_entries WHERE id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "ABSENT".to_string()))
+    })
+    .expect("read the entry state")
+}
+
+fn restore_codex(db: &Database, request_id: &str, snapshot_id: &str) {
+    snapshot_restore::seed_restore_prerequisites(db, "project-1", "sess-restore");
+    let no_op = snapshot_restore::restore(
+        db,
+        "project-1",
+        "sess-restore",
+        request_id,
+        snapshot_id,
+        vec![grimodex_db::project_snapshots::RestoreScope::Codex],
+    )
+    .expect("restore the snapshot");
+    assert!(!no_op, "the restore must change rows and write its marker");
+}
+
+fn assert_refused(result: anyhow::Result<Value>, codes: &[&str], what: &str) {
+    let error = result.expect_err(what);
+    let message = format!("{error:#}");
+    assert!(
+        codes.iter().any(|code| message.contains(code)),
+        "{what}: expected one of {codes:?}, got {message}"
+    );
+}
+
+/// 取り込み（Codex の項目の作成）→ スナップショット → 編集 → Codex の復元 → 取り消し。
+/// 復元は Codex の項目の版を 0 に戻す（復元の行に版が無い）ので、取り込んだ時の版（1）と
+/// 一致せず、取り消しは拒まれる（編集が無くても。拒まれるのは安全な側）。
+#[test]
+fn undo_of_a_created_entry_right_after_a_codex_restore_is_refused_on_the_version() {
+    let db = migrated_db();
+    let commit = apply_entry_commit(&db, "rc1", "entry-rc1");
+    assert_eq!(entry_state(&db, "entry-rc1"), "|[]|v1");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-rc1");
+    product_codex_update(&db, "entry-rc1", 1, "復元の前の編集");
+    restore_codex(&db, "restore-rc1", "snap-rc1");
+    assert_eq!(entry_state(&db, "entry-rc1"), "|[]|v0");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc1-undo"),
+        ),
+        &["NEX_COMMIT_ENTRY_EDITED"],
+        "undo right after the Codex restore",
+    );
+    assert_eq!(entry_state(&db, "entry-rc1"), "|[]|v0");
+}
+
+/// (e) 取り込み → スナップショット → 編集 → Codex の復元 → 編集 → 取り消し。復元の後の編集で
+/// 版が 1 に戻り、取り込んだ時の版と偶然一致する。専用の守り（版だけを比べる）は通るが、
+/// 変更の記録の連続性の検査が止める（取り消しの before は取り込んだ時の状態で、head は復元の
+/// 後の編集）。編集は残り、項目は消えない。
+#[test]
+fn undo_of_a_created_entry_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed() {
+    let db = migrated_db();
+    let commit = apply_entry_commit(&db, "rc2", "entry-rc2");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-rc2");
+    product_codex_update(&db, "entry-rc2", 1, "復元の前の編集");
+    restore_codex(&db, "restore-rc2", "snap-rc2");
+    product_codex_update(&db, "entry-rc2", 0, "復元の後の編集");
+    assert_eq!(entry_state(&db, "entry-rc2"), "復元の後の編集|[]|v1");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc2-undo"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_DISCONTINUITY"],
+        "undo after the Codex restore and a later edit",
+    );
+    assert_eq!(entry_state(&db, "entry-rc2"), "復元の後の編集|[]|v1");
+}
+
+/// (e) patch の commit も同じ：復元の後の編集で版が取り込んだ時の版と一致しても、
+/// 取り消しは変更の記録の連続性の検査で止まり、復元の後の編集（要約）は残る。
+#[test]
+fn undo_of_a_patch_after_a_codex_restore_and_a_later_edit_is_stopped_by_the_feed() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-rc3", 0);
+    let items = [(
+        "codex.entry.patch",
+        alias_patch_op("entry-rc3", "ent:rc3", 0, &["旧", "新"]),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-rc3", "set-rc3", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-rc3",
+            "dg-rc3",
+            "set-rc3",
+            "run-rc3",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:rc3", "entry-rc3")],
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "作者の要約|[\"旧\",\"新\"]|v1"
+    );
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-rc3");
+    product_codex_update(&db, "entry-rc3", 1, "復元の前の編集");
+    restore_codex(&db, "restore-rc3", "snap-rc3");
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "作者の要約|[\"旧\",\"新\"]|v0"
+    );
+
+    // 復元の直後は、版が 0 で、取り込んだ時の版（1）と一致しない。
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc3-undo-1"),
+        ),
+        &["NEX_COMMIT_ENTRY_EDITED"],
+        "undo of the patch right after the Codex restore",
+    );
+
+    // 復元の後の編集で、版が 1 に戻って一致する。守りは連続性の検査。
+    product_codex_update(&db, "entry-rc3", 0, "復元の後の編集");
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "復元の後の編集|[\"旧\",\"新\"]|v1"
+    );
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "rc3-undo-2"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_DISCONTINUITY"],
+        "undo of the patch after the Codex restore and a later edit",
+    );
+    assert_eq!(
+        entry_state(&db, "entry-rc3"),
+        "復元の後の編集|[\"旧\",\"新\"]|v1"
+    );
+}
+
+// --- detail value の patch の commit と復元（確認 88 の条件を、版だけを比べる種類にも当てる） ---
+
+fn seed_detail_definition(db: &Database, definition_id: &str) {
+    db.execute(
+        "INSERT INTO codex_detail_definitions
+            (id, project_id, type_slug, name, field_type, field_config, sort_order,
+             include_in_context, version, created_at, updated_at)
+         VALUES (?, 'project-1', 'character', '年齢', 'text', NULL, 0, 0, 0, 't', 't')",
+        &[Value::String(definition_id.to_string())],
+        "run",
+    )
+    .expect("insert definition");
+}
+
+/// 作者が画面で detail value を書く（製品の Codex 書き込み経路。head を進める）。
+fn author_detail_upsert(db: &Database, request_id: &str, base_version: i64, value: &str) {
+    let payload: grimodex_db::codex_writes::AgentCodexMutationPayload =
+        serde_json::from_value(json!({
+            "operation": "detail.value.upsert",
+            "projectId": "project-1",
+            "requestId": request_id,
+            "sessionId": "sess-author",
+            "eventUid": format!("uid-{request_id}"),
+            "origin": "human",
+            "surface": "manual",
+            "entryId": "entry-dv",
+            "definitionId": "def-dv",
+            "valueId": "dv-1",
+            "value": value,
+            "baseVersion": base_version
+        }))
+        .expect("detail value payload");
+    grimodex_db::codex_writes::agent_codex_mutate_impl(db, payload)
+        .expect("author writes the detail value");
+}
+
+fn detail_state(db: &Database) -> String {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(value, '-') || '|v' || version
+                   FROM codex_detail_values WHERE id = 'dv-1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "ABSENT".to_string()))
+    })
+    .expect("read the detail value state")
+}
+
+/// (c) detail value の patch の commit（版 1 → 2）。スナップショットは commit の前（版 1）。
+/// Codex の復元（版 1）→ 復元の後の編集（版 2 = commit の版と偶然一致）→ 取り消し。
+/// detail value は、復元の後に作者が書いていなくても版が一致し得る（復元は枝を作れる。下の
+/// 試験）ので、確認 88 の点検の後は、確かめた種類から外した。復元の後の取り消しは、復元の
+/// marker より古い commit の replay として拒まれる。編集は残る。
+#[test]
+fn undo_of_a_detail_value_patch_after_a_codex_restore_and_a_later_edit_is_refused_and_the_edit_stays(
+) {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-dv", 0);
+    seed_detail_definition(&db, "def-dv");
+    // 元の値は直に置く（head の無い、取り込みの前の値）。
+    db.execute(
+        "INSERT INTO codex_detail_values
+            (id, entry_id, definition_id, value, version, created_at, updated_at)
+         VALUES ('dv-1', 'entry-dv', 'def-dv', 'orig', 1, 't', 't')",
+        &[],
+        "run",
+    )
+    .expect("seed the detail value");
+    assert_eq!(detail_state(&db), "orig|v1");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-dv");
+
+    let items = [(
+        "codex.detail.value.set",
+        json!({
+            "entryId": "entry-dv",
+            "definitionId": "def-dv",
+            "value": "AI",
+            "occ": { "kind": "version", "version": 1 }
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-dv", "set-dv", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-dv",
+            "dg-dv",
+            "set-dv",
+            "run-dv",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(detail_state(&db), "AI|v2");
+
+    restore_codex(&db, "restore-dv", "snap-dv");
+    assert_eq!(detail_state(&db), "orig|v1");
+
+    // 復元の後の編集で版が 2 になり、commit の版（2）と一致する。
+    author_detail_upsert(&db, "dv-after", 1, "AUTHOR AFTER RESTORE");
+    assert_eq!(detail_state(&db), "AUTHOR AFTER RESTORE|v2");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "dv-undo"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"],
+        "undo of the detail value patch after the Codex restore and a later edit",
+    );
+    assert_eq!(detail_state(&db), "AUTHOR AFTER RESTORE|v2");
+}
+
+/// 確認 88 の点検（peer の指摘 6）。復元の後に作者が書いていない detail value で、版が取り込みの
+/// 時の版と一致する筋書き。detail value は、復元で版をスナップショットのまま戻す（0 には
+/// ならない）。復元は枝を作れる：S0（版 1、orig）→ 作者が編集（版 2、BRANCH）→ S1 を取る →
+/// S0 へ復元（版 1）→ 取り込みで patch（版 2、AI）→ S1 へ復元（版 2、BRANCH）。復元の後は
+/// 誰も書いていない。専用の守り（版だけ）は通り、head は復元の前の取り込みの書き込み（marker
+/// より古い）なので、連続性の検査は免除で通る。取り消しが通れば、復元の後の値（BRANCH）を黙って
+/// 取り込みの前の値（orig）へ巻き戻す。拒まれなければならない。
+#[test]
+fn undo_of_a_detail_value_patch_after_restores_that_branch_the_version_must_not_roll_back_the_restored_value(
+) {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-dv", 0);
+    seed_detail_definition(&db, "def-dv");
+    db.execute(
+        "INSERT INTO codex_detail_values
+            (id, entry_id, definition_id, value, version, created_at, updated_at)
+         VALUES ('dv-1', 'entry-dv', 'def-dv', 'orig', 1, 't', 't')",
+        &[],
+        "run",
+    )
+    .expect("seed the detail value");
+    snapshot_restore::seed_restore_prerequisites(&db, "project-1", "sess-restore");
+    snapshot_restore::snapshot(&db, "project-1", "snap-dvb0");
+
+    author_detail_upsert(&db, "dvb-author", 1, "BRANCH");
+    assert_eq!(detail_state(&db), "BRANCH|v2");
+    snapshot_restore::snapshot(&db, "project-1", "snap-dvb1");
+
+    restore_codex(&db, "restore-dvb0", "snap-dvb0");
+    assert_eq!(detail_state(&db), "orig|v1");
+
+    let items = [(
+        "codex.detail.value.set",
+        json!({
+            "entryId": "entry-dv",
+            "definitionId": "def-dv",
+            "value": "AI",
+            "occ": { "kind": "version", "version": 1 }
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-dvb", "set-dvb", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-dvb",
+            "dg-dvb",
+            "set-dvb",
+            "run-dvb",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    let commit = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(detail_state(&db), "AI|v2");
+
+    restore_codex(&db, "restore-dvb1", "snap-dvb1");
+    // The restored value is not authored after the restore, and its version
+    // equals the version the commit left.
+    assert_eq!(detail_state(&db), "BRANCH|v2");
+
+    assert_refused(
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit, "dvb-undo"),
+        ),
+        &["NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"],
+        "undo of the detail value patch after a restore that put a different value at the same version",
+    );
+    assert_eq!(detail_state(&db), "BRANCH|v2");
+}
