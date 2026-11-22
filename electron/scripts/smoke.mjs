@@ -114,6 +114,32 @@ const RUNTIME_PERFORMANCE_FOREGROUND_SWITCHES = [
   "--disable-backgrounding-occluded-windows",
 ];
 
+// dev 専用の描画実験（claude/dev-perf-gpu-experiment 枝だけ）。環境変数
+// GRIMODEX_DEV_PERF_EXTRA_ELECTRON_ARGS（空白区切り）で、許可した 4 つの
+// Chromium flag だけを Electron の起動引数に足す。ほかの値は throw。空・未設定なら
+// 何も足さず、今までと同じ起動引数になる。
+const DEV_PERF_EXTRA_ELECTRON_ARGS_ENV = "GRIMODEX_DEV_PERF_EXTRA_ELECTRON_ARGS";
+const DEV_PERF_ALLOWED_ELECTRON_ARGS = Object.freeze([
+  "--use-angle=swiftshader",
+  "--enable-unsafe-swiftshader",
+  "--ignore-gpu-blocklist",
+  "--in-process-gpu",
+]);
+
+function readDevPerfExtraElectronArgs(environment = process.env) {
+  const raw = environment[DEV_PERF_EXTRA_ELECTRON_ARGS_ENV];
+  if (typeof raw !== "string") return [];
+  const requested = raw.split(/\s+/u).filter(Boolean);
+  for (const argument of requested) {
+    if (!DEV_PERF_ALLOWED_ELECTRON_ARGS.includes(argument)) {
+      throw new Error(
+        `${DEV_PERF_EXTRA_ELECTRON_ARGS_ENV}: unsupported argument ${JSON.stringify(argument)}`,
+      );
+    }
+  }
+  return requested;
+}
+
 async function seedRuntimePerformanceFixture(page, profile) {
   if (!runtimePerformanceOwnerToken) {
     throw new Error("runtime performance seed owner token is unavailable");
@@ -501,6 +527,9 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
     // backend instead of letting a Wayland host select a different GPU stack.
     args.push("--ozone-platform=x11");
   }
+  // dev 専用の描画実験用の追加引数（空なら何も足さない）。前景 flag と ozone の後、
+  // アプリの入口の前に置く。
+  args.push(...readDevPerfExtraElectronArgs(env));
   // Electron parses Chromium switches as executable options only before the
   // application entry. Arguments after main.cjs belong to the application and
   // do not disable renderer/occlusion throttling.
