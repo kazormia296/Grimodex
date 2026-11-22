@@ -64,6 +64,11 @@ export function isEditorComposing(editor: Editor): boolean {
     return false;
   }
   if (!composing) return false;
+  // read-only の間（外部置換の fence の中など）は固着と判定しない（EAR-26）。取りこぼした
+  // compositionend が届くのはまさにこの間で、いま「変換は終わった」と見なすと、伏線 mark の
+  // dispatch と peer の setContent が置換の最中の editor に入る。証拠は残るので、writable に
+  // 戻った後の判定（見張り・blur・次の T0）が拾う。
+  if (editor.view.editable === false) return true;
   if (compositionPhase.get(editor) === "ended") {
     if (!staleCompositionWarned.has(editor)) {
       staleCompositionWarned.add(editor);

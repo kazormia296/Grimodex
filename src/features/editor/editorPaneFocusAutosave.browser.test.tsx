@@ -750,11 +750,13 @@ describe("EAR-23：分割表示（同じ場面を 2 つの EditorPane で開く�
     expect(isDirty()).toBe(true);
     expect(b.state.doc.textContent).toBe("startABXY");
     expect(seenOnB).not.toContain("startAB");
-    b.off("transaction", record);
 
     // B の版は A の 1 回目の保存の版（1）に進んでいる。B で打っても OCC が衝突しない
     // （A の追従保存と B の保存は、どちらも baseVersion が 1 以上）。
     await waitForSaved();
+    // 追従保存の announce（content 付き）が済んだ後まで、B は T0 に戻っていない。
+    expect(seenOnB).not.toContain("startAB");
+    b.off("transaction", record);
     expect(h.saves.length).toBeGreaterThanOrEqual(2);
     expect(h.saves[0]!.baseVersion).toBe(0);
     expect(h.saves.slice(1).every((save) => (save.baseVersion ?? 0) >= 1)).toBe(
@@ -767,5 +769,36 @@ describe("EAR-23：分割表示（同じ場面を 2 つの EditorPane で開く�
     const last = h.saves.at(-1)!;
     expect(last.baseVersion).toBeGreaterThanOrEqual(1);
     expect(last.payloadText).toContain("startABXYZ");
+  });
+});
+
+describe("EAR-25：手動保存（Ctrl+S）の flush は editor を閉じないので、保存中に打った分の追従を通常の debounce に戻す", () => {
+  it("保存中に打っても、完了の直後に背中合わせの保存は走らず、debounce の後に追従保存で保存される", async () => {
+    installBridge();
+    let release!: () => void;
+    h.holdBundle = {
+      release: () => release(),
+      promise: new Promise<void>((r) => (release = r)),
+    };
+    const { editor } = await mountPane();
+    editor.commands.focus("end");
+    await nextFrame();
+    await userEvent.keyboard("AB");
+    // debounce（300 ms）の前に手動保存する。flush が保存を始めて応答を待つ。
+    await userEvent.keyboard("{Control>}s{/Control}");
+    await waitFor(() => expect(h.saves).toHaveLength(1), { timeout: 5_000 });
+    await userEvent.keyboard("XY");
+    expect(isDirty()).toBe(true);
+    h.holdBundle = null;
+    release();
+    // 即時に反復する flush なら、ここで 2 回目が走る。debounce（300 ms）より十分短い間。
+    await nextFrame();
+    await nextFrame();
+    await nextFrame();
+    expect(h.saves).toHaveLength(1);
+    expect(isDirty()).toBe(true);
+    await waitForSaved();
+    expect(h.saves).toHaveLength(2);
+    expect(h.saves[1]!.payloadText).toContain("startABXY");
   });
 });

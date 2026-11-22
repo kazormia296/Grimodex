@@ -209,6 +209,29 @@ describe("EAR-21／EAR-26 固着した変換（compositionend を取りこぼし
     warn.mockRestore();
   });
 
+  it("EAR-26 read-only の間は、証拠があっても固着と判定しない（置換の fence の中に dispatch を入れない）。writable に戻れば固着と見なす", () => {
+    const { editor, view, dom } = makeEditor({ composing: true });
+    const onIdle = vi.fn();
+    installCompositionIdleListener(editor, onIdle);
+    dom.dispatchEvent(new Event("compositionstart"));
+    deferForeshadowRefresh(editor, [row("a", 2)]);
+    (view as unknown as { editable: boolean }).editable = false;
+    dom.dispatchEvent(new Event("compositionend"));
+    expect(isEditorComposing(editor)).toBe(true);
+    expect(applyPendingForeshadowRefresh(editor, run)).toBe(false);
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS * 8);
+    dom.dispatchEvent(new Event("blur"));
+    expect(onIdle).not.toHaveBeenCalled();
+    expect(h.refresh).not.toHaveBeenCalled();
+
+    (view as unknown as { editable: boolean }).editable = true;
+    // 見張りが続いているので、writable に戻った直後の静止で onIdle に進む。
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+    expect(applyPendingForeshadowRefresh(editor, run)).toBe(true);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("listener を付ける前に始まった変換の途中で compositionend を見た場合も、証拠になる", () => {
     const { editor, dom } = makeEditor({ composing: true });
     installCompositionIdleListener(editor, vi.fn());

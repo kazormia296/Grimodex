@@ -665,8 +665,25 @@ describe.each<[string, Surface]>([
     expect(editor.view.composing).toBe(true);
 
     // 外部置換などで read-only が挟まり、その間に compositionend が来る（PM は処理しない）。
+    const markBefore = markBaseVersion(editor);
     editor.setEditable(false);
     endComposition(pm);
+    expect(editor.view.composing).toBe(true);
+    // read-only の間（置換の fence の中）は、証拠があっても mark の dispatch を入れない。
+    const docChanges: number[] = [];
+    const onTransaction = ({ transaction }: { transaction: unknown }) => {
+      if ((transaction as { docChanged: boolean }).docChanged) {
+        docChanges.push(1);
+      }
+    };
+    editor.on("transaction", onTransaction);
+    await sleep(COMPOSITION_QUIET_MS * 2 + 200);
+    expect(docChanges).toEqual([]);
+    expect(hasPendingForeshadowRefresh(editor)).toBe(true);
+    expect(markBaseVersion(editor)).toBe(markBefore);
+    expect(h.saves).toHaveLength(1);
+    editor.off("transaction", onTransaction);
+    // writable に戻れば、取りこぼしの証拠で適用され、背景の保存が再開する。
     editor.setEditable(true);
     expect(editor.view.composing).toBe(true);
 
@@ -783,7 +800,7 @@ describe("peer の保存の通知は変換中に setContent せず、変換が�
   });
 });
 
-describe("EAR-23 content の無い peer の通知は、退避中の古い content の通知を捨てて版だけ進める（EditorPane）", () => {
+describe("EAR-23 content の無い peer の通知は版だけ進め、退避中の古い content の通知は当たらない（既存の版の guard の固定。EditorPane）", () => {
   it("変換中に退避した content 付きの通知（v5）より新しい content 無しの通知（v6）が来たら、変換が終わっても古い本文を当てず、次の保存の baseVersion は v6", async () => {
     installBridge();
     const { editor, pm } = await mountSurface("pane");
