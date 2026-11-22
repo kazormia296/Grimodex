@@ -50,6 +50,7 @@ vi.mock("@/features/codex/api", () => ({
 
 vi.mock("@/features/codex/codexYomi", () => ({
   inferReadings: vi.fn(),
+  listYomiHiddenIds: vi.fn(async () => new Set<string>()),
   YOMI_MAX_ENTRIES: 20,
 }));
 

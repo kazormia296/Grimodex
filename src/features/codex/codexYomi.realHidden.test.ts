@@ -29,7 +29,11 @@ vi.mock("@/features/ai-usage/recordAiUsage", () => ({
   recordAiUsage: vi.fn(),
 }));
 
-import { inferReadings, CODEX_YOMI_HIDDEN_CHECK_FAILED } from "./codexYomi";
+import {
+  inferReadings,
+  listYomiHiddenIds,
+  CODEX_YOMI_HIDDEN_CHECK_FAILED,
+} from "./codexYomi";
 import { listCodexIdsHiddenFromAi } from "./context/codexHiddenFromAi";
 
 const P1 = "yomi-real-project-1";
@@ -289,5 +293,33 @@ describe("listCodexIdsHiddenFromAi（実物）の判定の基準", () => {
     });
 
     expect([...hidden].sort()).toEqual([...ids].sort());
+  });
+});
+
+describe("listYomiHiddenIds（実物。単体推定・一括の事前判定）", () => {
+  it("base が mentioned で Phase だけが hidden にする項目と、base が hidden の項目を返し、公開の項目は返さない（DR-MP4-41）", async () => {
+    await putEntry("mentioned", "mentioned");
+    await putEntry("always", "always");
+    await putEntry("hidden", "hidden");
+    const now = new Date().toISOString();
+    await db.insert(codexEntryPhases).values({
+      id: "phase-hide-3",
+      entryId: ENTRIES.mentioned.id,
+      anchorNodeId: null,
+      label: "hide",
+      contextModeOverride: "hidden",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const hidden = await listYomiHiddenIds([
+      ENTRIES.mentioned.id,
+      ENTRIES.always.id,
+      ENTRIES.hidden.id,
+    ]);
+
+    expect([...hidden].sort()).toEqual(
+      [ENTRIES.mentioned.id, ENTRIES.hidden.id].sort(),
+    );
   });
 });

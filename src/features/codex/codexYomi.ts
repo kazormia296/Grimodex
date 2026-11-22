@@ -67,6 +67,32 @@ export class YomiNoValidResultError extends Error {
 }
 
 /**
+ * 読みの推定で AI へ送れない（hidden に倒れる）項目の id を返す。`inferReadings` の送信直前の
+ * 判定と同じ（`listCodexIdsHiddenFromAi`。場面は渡さないので、Phase が hidden にする項目も
+ * hidden に倒れる：DR-MP4-41）。呼び側が AI を呼ぶ前に「推定できない項目」を利用者へ伝える
+ * ために使う（単体推定の表示、一括の対象の事前除外）。判定に失敗したときは fail-closed で
+ * `YomiHiddenCheckFailedError`。`projectId` を省くと tree store の現在の project。
+ */
+export async function listYomiHiddenIds(
+  entryIds: readonly string[],
+  projectId: string | null = useTreeStore.getState().projectId,
+): Promise<Set<string>> {
+  try {
+    return await listCodexIdsHiddenFromAi({
+      entryIds: [...entryIds],
+      projectId,
+    });
+  } catch (error) {
+    debugLog.warn(
+      "codex-hidden",
+      "hidden 判定に失敗したので読みの推定を送らない",
+      errorDetail(error),
+    );
+    throw new YomiHiddenCheckFailedError();
+  }
+}
+
+/**
  * エントリ群の漢字表記の読みを一括推定する。
  * 作者が hidden（AI に秘匿）と印した Codex は、一括・単体のどちらの経路でも送らない
  * （送信の直前に再判定して落とす。呼び側が先に除いていても、list 後に hidden へ変わった
@@ -104,21 +130,8 @@ export async function inferReadings(
 
   // 送信の直前に hidden を再判定する。chunk を逐次送る実行の途中で作者が hidden に
   // 変えた項目も、ここで落ちる。
-  let sendable: typeof targets;
-  try {
-    const hidden = await listCodexIdsHiddenFromAi({
-      entryIds: targets.map((e) => e.id),
-      projectId: useTreeStore.getState().projectId,
-    });
-    sendable = targets.filter((e) => !hidden.has(e.id));
-  } catch (error) {
-    debugLog.warn(
-      "codex-hidden",
-      "hidden 判定に失敗したので読みの推定を送らない",
-      errorDetail(error),
-    );
-    throw new YomiHiddenCheckFailedError();
-  }
+  const hidden = await listYomiHiddenIds(targets.map((e) => e.id));
+  const sendable = targets.filter((e) => !hidden.has(e.id));
   if (sendable.length === 0) return result;
 
   // hallucination 照合先: id → その id で許可された surface 集合。

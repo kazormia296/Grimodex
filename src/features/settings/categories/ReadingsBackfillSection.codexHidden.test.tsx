@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReadingsBackfillSection } from "./ReadingsBackfillSection";
 import { listCodexEntries, updateCodexEntry } from "@/features/codex/api";
-import { inferReadings } from "@/features/codex/codexYomi";
+import { inferReadings, listYomiHiddenIds } from "@/features/codex/codexYomi";
 import { listCodexTypes } from "@/features/codex/typeApi";
 
 // 読みの一括推定は、作者が hidden（AI に秘匿）と印した Codex を、対象に入れず AI へ送らない。
@@ -51,6 +51,7 @@ vi.mock("@/features/codex/api", () => ({
 }));
 vi.mock("@/features/codex/codexYomi", () => ({
   inferReadings: vi.fn(),
+  listYomiHiddenIds: vi.fn(),
   YOMI_MAX_ENTRIES: 20,
 }));
 vi.mock("@/features/codex/typeApi", () => ({
@@ -93,6 +94,7 @@ describe("ReadingsBackfillSection と hidden の Codex", () => {
       { slug: "character", label: "人物" },
     ] as never);
     vi.mocked(inferReadings).mockResolvedValue(new Map());
+    vi.mocked(listYomiHiddenIds).mockResolvedValue(new Set());
     vi.mocked(updateCodexEntry).mockResolvedValue({ id: "x" } as never);
   });
 
@@ -149,5 +151,49 @@ describe("ReadingsBackfillSection と hidden の Codex", () => {
 
     await waitFor(() => expect(inferReadings).toHaveBeenCalled());
     expect(sentIds()).toEqual(["s", "a", "m"]);
+  });
+
+  it("base は公開で Phase でだけ hidden の項目は、事前判定で対象から除く（DR-MP4-41）", async () => {
+    vi.mocked(listCodexEntries).mockResolvedValue([
+      entry("a", "刹那", "mentioned"),
+      entry("phase-hidden", "帝都", "mentioned"),
+      entry("b", "剣聖", "always"),
+    ] as never);
+    vi.mocked(listYomiHiddenIds).mockResolvedValue(new Set(["phase-hidden"]));
+
+    await runBackfill();
+
+    await waitFor(() => expect(inferReadings).toHaveBeenCalled());
+    expect(sentIds()).toEqual(["a", "b"]);
+    // 判定には、base の mode で残った項目をまとめて 1 回で渡す。
+    expect(listYomiHiddenIds).toHaveBeenCalledTimes(1);
+    expect(listYomiHiddenIds).toHaveBeenCalledWith(["a", "phase-hidden", "b"]);
+  });
+
+  it("残りが全部 Phase でだけ hidden なら、inferReadings を呼ばず対象なしの toast で終わる（毎回 0 件の完了にしない）", async () => {
+    vi.mocked(listCodexEntries).mockResolvedValue([
+      entry("p1", "刹那", "mentioned"),
+      entry("p2", "帝都", "always"),
+    ] as never);
+    vi.mocked(listYomiHiddenIds).mockResolvedValue(new Set(["p1", "p2"]));
+
+    await runBackfill();
+
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith("codex.readings.backfillNone"),
+    );
+    expect(inferReadings).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("base が hidden の項目だけなら、Phase の事前判定を呼ばない（対象が無い）", async () => {
+    vi.mocked(listCodexEntries).mockResolvedValue([
+      entry("s1", "刹那", "hidden"),
+    ] as never);
+
+    await runBackfill();
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalled());
+    expect(listYomiHiddenIds).not.toHaveBeenCalled();
   });
 });

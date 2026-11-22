@@ -9,7 +9,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexEntry } from "../api";
 import { getCodexEntry } from "../api";
-import { inferReadings } from "../codexYomi";
+import { inferReadings, listYomiHiddenIds } from "../codexYomi";
 import { useCodexStore } from "../codexStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
@@ -32,6 +32,7 @@ vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
     warning: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -42,6 +43,7 @@ vi.mock("../api", async (importOriginal) => {
 
 vi.mock("../codexYomi", () => ({
   inferReadings: vi.fn(() => Promise.resolve(new Map())),
+  listYomiHiddenIds: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 
 vi.mock("../tagApi", async (importOriginal) => {
@@ -211,6 +213,7 @@ const originalUpdate = useCodexStore.getState().update;
 const originalUpdateText = useCodexStore.getState().updateText;
 const mockGetCodexEntry = vi.mocked(getCodexEntry);
 const mockInferReadings = vi.mocked(inferReadings);
+const mockListYomiHiddenIds = vi.mocked(listYomiHiddenIds);
 
 describe("CodexDetailContent draft integrity", () => {
   beforeEach(() => {
@@ -291,6 +294,34 @@ describe("CodexDetailContent draft integrity", () => {
     });
 
     expect(mockInferReadings).not.toHaveBeenCalled();
+  });
+
+  it("shows the hidden notice and does not call the AI when only a phase hides the entry (DR-MP4-41)", async () => {
+    // base は mentioned でボタンは有効。Phase だけが hidden にする項目は、送信前の判定で hidden に倒れる。
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockListYomiHiddenIds.mockResolvedValueOnce(new Set([entry.id]));
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    const button = screen.getByTestId("estimate-readings");
+    expect(button).toHaveAttribute("data-blocked-hidden", "false");
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith(
+        "AI に秘匿（hidden）の項目は推定できません。読みは手で入力してください。",
+      ),
+    );
+    expect(mockListYomiHiddenIds).toHaveBeenCalledWith([entry.id]);
+    expect(mockInferReadings).not.toHaveBeenCalled();
+    // 「モデル設定を確認して再試行」の警告は出さない。
+    expect(toast.warning).not.toHaveBeenCalled();
   });
 
   it("warns instead of ending silently when the estimate returns no readings", async () => {

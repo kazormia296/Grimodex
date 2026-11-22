@@ -106,8 +106,10 @@ function anchorOf(sceneId: string | null | undefined): TemporalAnchor {
  *   case in practice; agent tools and the inline AI then see it).
  * - No scene (null, undefined, empty, whitespace; Q1 of the 2026-11-23
  *   decision). The base anchor applies no phase either. This is the case of the
- *   agent tools, the inline AI while a Codex entry, a snippet or a chronicle
- *   event is edited, beats, foreshadowing and `codexYomi`.
+ *   inline AI while a Codex entry, a snippet or a chronicle event is edited,
+ *   `codexYomi`, and the agent tools (right after start-up, or a project with no
+ *   scene). Beats and foreshadowing need a scene id, so they reach this only as
+ *   the first case (a scene that the reading order does not have).
  * `anchorOf` still reads "no scene" as the base anchor (unchanged); only the
  * visibility decision treats it as unresolvable.
  */
