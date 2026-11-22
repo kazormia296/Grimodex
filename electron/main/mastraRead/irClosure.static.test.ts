@@ -320,6 +320,8 @@ describe("main's read port: the chat IR stays closed and commands are named lite
       "electron/shared/mastraRead/sql.ts",
       "electron/shared/mastraRead/tables.ts",
       "electron/shared/mastraRead/ports.ts",
+      "electron/shared/readDomain/core/readInputs.ts",
+      "electron/shared/readDomain/core/readInputsReader.ts",
       "electron/shared/ipcCallerTimeouts.ts",
       "electron/shared/readDomain/core/readExecutors.ts",
       "electron/shared/readDomain/core/treeReadTools.ts",
