@@ -1066,6 +1066,12 @@ export declare class Backend {
   narrativeExtractionResolveCodexCatalogRevision(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
+  /**
+   * Read-only: the current revisions of the Chronicle Proposals that cite one
+   * Scene as evidence, one page (SRA/1 R1-R3). Native checks the project
+   * binding and caps the page size.
+   */
+  narrativeExtractionListSceneProposals(payload: any): Promise<string>
   narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
   narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>

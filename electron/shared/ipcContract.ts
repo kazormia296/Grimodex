@@ -1201,6 +1201,7 @@ export interface NapiBackendLike {
   narrativeExtractionListChronicleTaskResumeCandidates?(
     payload: unknown,
   ): Promise<string>;
+  narrativeExtractionListSceneProposals?(payload: unknown): Promise<string>;
   narrativeExtractionCancelRun(
     payload: unknown,
     workspaceBinding: unknown,
@@ -1506,6 +1507,61 @@ function requireChronicleTaskResumeCandidatesPayload(
     );
   }
   return { projectId, limit };
+}
+
+/**
+ * The page size cap lives in Native (SCENE_PROPOSALS_PAGE_MAX) and cuts a larger
+ * request down to it; Main only keeps the value a Rust `u32` can hold.
+ */
+const SCENE_PROPOSALS_LIMIT_WIRE_MAX = 0xffff_ffff;
+/**
+ * An identity or cursor longer than this cannot be one of ours. Native counts
+ * UTF-8 bytes (`IDENTITY_MAX_BYTES`) and is the final authority; Main counts the
+ * same unit so a multi-byte id is refused here with the same limit.
+ */
+const SCENE_PROPOSALS_ID_MAX_BYTES = 256;
+
+function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
+  const command = "narrative_extraction_list_scene_proposals";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "sceneId", "cursor", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (key: "projectId" | "sceneId" | "cursor") => {
+    const value = requireNonEmptyString(payload, key, command);
+    if (
+      value.trim().length === 0 ||
+      value.trim() !== value ||
+      new TextEncoder().encode(value).length > SCENE_PROPOSALS_ID_MAX_BYTES
+    ) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-empty exact string of at most ${SCENE_PROPOSALS_ID_MAX_BYTES} bytes`,
+      );
+    }
+    return value;
+  };
+  const validated: CommandArgs = {
+    projectId: exactString("projectId"),
+    sceneId: exactString("sceneId"),
+  };
+  if (Object.hasOwn(payload, "cursor") && payload.cursor !== undefined) {
+    validated.cursor = exactString("cursor");
+  }
+  if (Object.hasOwn(payload, "limit") && payload.limit !== undefined) {
+    const limit = requireSafeInteger(payload, "limit", command);
+    if (limit < 1 || limit > SCENE_PROPOSALS_LIMIT_WIRE_MAX) {
+      throw new Error(
+        `invalid args \`limit\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    validated.limit = limit;
+  }
+  return validated;
 }
 
 function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
@@ -11324,6 +11380,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeExtractionListChronicleTaskResumeCandidates,
           "narrativeExtractionListChronicleTaskResumeCandidates",
         )(requireChronicleTaskResumeCandidatesPayload(a)),
+      ),
+  },
+  narrative_extraction_list_scene_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionListSceneProposals,
+          "narrativeExtractionListSceneProposals",
+        )(requireSceneProposalsPayload(a)),
       ),
   },
   narrative_extraction_cancel_run: {
