@@ -126,3 +126,48 @@
 - browser-mock の連続性の検査（`src/lib/browser-mock.ts` の `insertBrowserNarrativeChange`）にも同じ不具合があった。vitest で再現した（`tree_node_patch`、本文の復元の後の 2 回目の書き込みが `continuity mismatch`）。そのため、Native の DR-SRC-6 と DR-SRC-9 と同じ形を入れた（head の `canonical_sequence` を読み、head がその project の復元の marker より古い食い違いを 1 回通す。復元より古い Undo／Redo を同じ符号で拒む）。scope では絞らない。
 - 復元専用の入口（DR-SRC-8）は mock に入れない。mock の復元は project の marker だけを書き、scene-scope の記録を書かないので、DEF-1 は mock には無い。
 - renderer の分類（`isVersionConflictError`）は、新しい符号を version conflict に数えない（試験で固定）。拒まれた replay は履歴を clear して error を出す既存の経路に入る。renderer の表示は変えない。
+
+## 5. 取り込みの「取り消し」「やり直し」（DR-SRC-12。2026-11-22。製品のコードを変える前に置く）
+
+根拠：ユーザーの確認 88（枝 `claude/nir1-contracts` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`）。確認 88 は、DR-SRC-9 の拒否の対象から AI 抽出の「取り込みの取り消し」（`narrative_extraction_undo_commit`）と「やり直し」（`narrative_extraction_redo_commit`）を外すことを決めた。条件は、取り込みの専用の守りで復元の後の編集が巻き戻らないことを、試験で確かめること。確かめられなければ外さない。選択の範囲を超える判断は、ここに書かない。
+
+### DR-SRC-12　取り込みの取り消し・やり直しを、DR-SRC-9 の拒否の対象から外す
+
+**確かめたこと（実行した。拒否を外した状態で、実際の復元 `apply_project_snapshot_restore` を通した。復元の marker は手で作っていない）**
+
+取り込みの専用の守りが何を比べるか（`narrative_extraction/undo.rs` を読んだ）：
+
+- 取り消し：journal の全 entity について、何も書く前に `preflight_undo_entity` を回す（同じ transaction。1 つでも拒めば全体が拒まれる）。Chronicle の出来事（`event`）は、`collect_event_snapshot`（行の全列、参加者、場面の紐づき〔incarnation token を含む〕、因果の関係）を、`createdAt`／`updatedAt` を除いて、取り込んだ時の snapshot と比べる（`NEX_COMMIT_EVENT_EDITED`）。Codex の項目の作成と patch は、版だけを比べる（`NEX_COMMIT_ENTRY_EDITED`）。
+- やり直し：出来事は「まだ存在すれば拒む」（`NEX_COMMIT_EVENT_EDITED`）、Run があれば現在の年表の catalog の一致も確かめる（`NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT`）。Codex の項目の作成は「まだ存在すれば拒む」、patch は beforeSnapshot と今の行の照合。出来事は取り込んだ時の snapshot から作り直す（既存の行を上書きしない）。
+
+筋書きと結果（試験は `tests/narrative_extraction.rs` の `commit_undo_after_restore`、`tests/codex_narrative_commit.rs`）：
+
+- (a) 取り込み → スナップショット → 出来事を編集 → 復元（Body）→ 出来事を編集 → 取り消し：`NEX_COMMIT_EVENT_EDITED` で拒まれ、復元の後の編集が残る。
+- (b) 取り込み → スナップショット → 編集 → 復元（Body）→ 編集せず取り消し：**拒まれる**（`NEX_COMMIT_EVENT_EDITED`）。Body の復元は場面の紐づき（`scene_events`）の incarnation token を振り直すので、出来事が取り込んだ時の snapshot と一致しない。安全な側の拒否で、実害は無い（出来事は残る）。出来事に触れない復元（Codex の scope）の後なら、取り消しもやり直しも通る（出来事と紐づきが消え、戻る）。出来事に触れない復元の後に出来事を編集してから取り消すと拒まれ、編集が残る。
+- (c) 取り込み → スナップショット → 取り消し → 復元（出来事が戻る）→ 編集 → やり直し：拒まれ（出来事が既に存在する）、復元の後の編集が残る。編集が無くても拒まれ、出来事を二重に作らない。取り込みの前のスナップショットへ復元して出来事が消えた後のやり直しは、取り込んだ出来事だけを作り直し、ほかの内容（場面）は変えない。
+- (d) 取り込み → スナップショット → 出来事を画面で消す → 復元（戻る）→ 取り消し：拒まれ（(b) と同じ原因）、戻った出来事が残る。復元で戻した出来事を編集してから取り消しても拒まれ、編集が残る。
+- (e) Codex：復元（Codex の scope）は項目の版を 0 に戻す（復元の行に版が無い）。取り込んだ時の版（作成なら 1）と一致しないので、復元の直後の取り消しは `NEX_COMMIT_ENTRY_EDITED` で拒まれる。**ただし、復元の後の編集で版が 1 に戻ると、版だけを比べる専用の守りは通る**（作成・patch とも）。この衝突は、変更の記録の連続性の検査（取り消しの before は取り込んだ時の状態、head は復元の後の編集）が `NARRATIVE_CHANGE_FEED_DISCONTINUITY` で止める。編集は残り、項目は消えず、patch の要約も戻らない。Codex の側では、専用の守りだけでは足りず、連続性の検査が実質の守りになる。
+- (f) 3 つの出来事を取り込み、出来事に触れない復元の後に、一部だけを編集（題名、参加者、場面の紐づきの解除のそれぞれ）：取り消し全体が `NEX_COMMIT_EVENT_EDITED` で拒まれ、3 つの出来事と紐づきが残り、commit の状態は `applied` のまま。
+- 復元の後の編集が、黙って消える・巻き戻る筋書きは見つからなかった。
+
+**外し方（呼び出し側の申告に頼らない）**
+
+- `append_narrative_change_transaction_in_tx` の DR-SRC-9 の拒否に、「この Undo／Redo は取り込みの commit の replay か」を DB の事実で見分ける述語 `replays_an_apply_commit` を足す。真なら拒否しない。述語の入力は、lineage root（replay される forward transaction）の DB の行と、その行が指す commit と journal の行だけである。root が、同じ project の `cause_kind = 'forward'`、`origin = 'ai-apply'`、`source_domain = 'narrative.commit.apply'`、`commit_id`／`journal_id` が今の Undo／Redo の commit／journal と一致し、`narrative_apply_commits` と `narrative_commit_journals` に同じ commit の行があること。今の transaction の `origin`／`source_domain` や、呼び出しの引数は使わない。
+- 呼び出しの引数に「復元を無視する」の印は足さない。新しい入口（`pub(crate)` の関数）も足さない。`append_narrative_change_transaction_in_tx` の型は変えない。schema・migration・列・索引は変えない。
+- 本番で `commit_id` と `journal_id` を持つ Undo／Redo を書くのは、`narrative_extraction/undo.rs` の取り込みの取り消し・やり直しだけである（source を `commit_id: Some` で検索した。他の typed writer の replay は commit を名指さない）。
+
+**信頼境界**
+
+- N-API・IPC・MCP から呼べる別の Undo は、この述語に当たらない。journal の replay（`agent_undo_journal`）と typed writer の inverse は commit を名指さないので、述語が偽になり、今までどおり `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` で拒まれる（`tests/snapshot_restore_feed_continuity.rs` の既存の試験が固定している）。commit を名指す Undo は、既存の検査（original が同じ commit に属すること、journal が commit に属すること）を通らなければ書けず、述語はさらに root が commit の本物の apply であることを DB で確かめる。
+- 述語が真でも、連続性の検査（DR-SRC-6）は外れない。復元の後に書いた object は head が marker より新しいので、取り消しの before との食い違いは `NARRATIVE_CHANGE_FEED_DISCONTINUITY` で止まる。
+- 正直な限界（DR-SRC-6 から引き継ぐ）：pub の append を呼べる同一プロセスの Rust 書き手は、commit の root を名指す Undo を直接書ける（取り込みの専用の守りと拒否を飛ばせる）。この書き手は、元から任意の行を書けるので、新しい権限ではない。
+
+**作者から見える動き**
+
+- 復元の後も、取り込みの取り消し・やり直しを押せる。結果は次のどれか。(1) 出来事に触れない復元（Codex の復元など）の後は、取り消し・やり直しが今までどおり通る。(2) 出来事を含む復元（Body の復元）の後は、取り消しが「取り込んだ後に編集されている」の系統の符号（`NEX_COMMIT_EVENT_EDITED` など）で拒まれる。以前は `NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` だった。出来事は残る。(3) 復元の後に編集した出来事・項目は、取り消しで消えない・戻らない。(4) 取り込みの前のスナップショットへ復元して出来事が消えた後のやり直しは、出来事を作り直す（作者が押したときだけ）。
+- 復元の成功の後は renderer が reload され、履歴は消える。main window では、この違いは、別窓に残った履歴からの操作でだけ見える。
+
+**残るもの**
+
+- journal の kind のうち、出来事（Chronicle の作成）と Codex の項目（作成・patch）だけを、実際の復元で確かめた。ほかの kind（Codex の detail value・phase・binding、Plot thread、Foreshadow、時間の node・constraint・projection、場面の Chronicle の patch）は、版などの比較と連続性の検査で守る同じ仕組みだが、復元を通した試験は足していない。復元の行に版が無い scope（Codex の項目、場面、Snippet）は、復元で版が 0 に戻るので、版だけを比べる守りは、復元の後の編集と衝突し得る。衝突は連続性の検査が止める（Codex の項目で確かめた）。
+- browser-mock は、`narrative_extraction` の commit の取り消し・やり直しを持たないので、変えない。
