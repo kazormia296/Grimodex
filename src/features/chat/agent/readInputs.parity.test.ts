@@ -14,6 +14,13 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
  * （project 条件・archived 除外・6 列の写し）。そのため map だけでなく、reader が返す行の集合も
  * renderer の `listNodes` の集合と照合する。
  *
+ * 「renderer 側」の正確な範囲：`setLegacyReadWorld`（`legacyReadHarness.testSupport.ts`）は `listNodes` の結果を
+ * `TreeNodeData` へ型変換して `buildSceneTimeIndex` に渡すだけで、実際の store の経路（`toNodeData`・
+ * `applyTreeHydration`・`recomputeSceneOrder`）は通らない。つまりこの試験は実質「同じ DB を同じ条件で 2 回読む」
+ * 比較で、行の段（条件・6 列の写し）のずれは見えるが、**store だけが持つ差は見えない**。例：削除の undo
+ * （`restorePersisted`）は store にメモリの `storyTimeOrder` を戻すが DB の行は NULL で作り直される（DR-MP4-8、
+ * `docs/plans/mastra-mp4-decisions.md` の PR-6 の判断の 6・8）。この差は parity の範囲外で、PR-8 への申し送り。
+ *
  * 覆わない範囲：Chromium と Electron main の `localeCompare` の一致（K-4。ここは Node の既定 locale だけ）、
  * 実 addon（Native）での同値（PR-9）、DB が古いときの store とのずれ（Q5）。
  */
@@ -143,7 +150,8 @@ describe("main's rebuilt inputs equal the renderer store's, project by project",
     }
     expect(rows.every((r) => r.archivedAt === null)).toBe(true);
 
-    // 値の段：map の中身と挿入順（DFS の順）、数、revision。
+    // 値の段：map の中身と挿入順（DFS の順）、数。revision は比べない：store 側は harness が作った値（0）で、
+    // 実 store では `recomputeSceneOrder` が進めるので 1 以上になる。main は 0 固定（readInputs.ts）。
     const inputs = await readReadInputs(createCoreReadDb(mainClient), {
       projectId,
       currentSceneId: null,
@@ -166,7 +174,6 @@ describe("main's rebuilt inputs equal the renderer store's, project by project",
     expect(inputs.sceneTimeIndex.scheduledSceneCount).toBe(
       storeIndex.scheduledSceneCount,
     );
-    expect(inputs.sceneTimeIndex.revision).toBe(storeIndex.revision);
     expect(inputs.resolutionMode).toEqual({
       kind: "resolved",
       mode: expect.stringMatching(/^(reading|story|auto)$/u),

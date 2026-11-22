@@ -341,6 +341,42 @@ describe("the reader", () => {
     }
   });
 
+  it("pins the columns each select sends (a column added to either select fails here)", async () => {
+    const { client, sent } = clientOver(makeDb());
+    await readTreeRows(createCoreReadDb(client), "p-a");
+    await readProjectModeRow(createCoreReadDb(client), "p-a");
+    expect(sent).toHaveLength(2);
+    const tree = sent[0]!.sql.toLowerCase();
+    const treeColumns = tree.slice(
+      tree.indexOf("select ") + "select ".length,
+      tree.indexOf(" from "),
+    );
+    expect(
+      treeColumns
+        .split(",")
+        .map((c) => c.trim())
+        .sort(),
+    ).toEqual(
+      [
+        '"archived_at"',
+        '"id"',
+        '"node_type"',
+        '"parent_id"',
+        '"sort_order"',
+        '"story_time_order"',
+      ].sort(),
+    );
+    // The mode select asks for that one column and nothing else.
+    expect(
+      sent[1]!.sql.startsWith(
+        'select "phase_resolution_mode" from "projects" where',
+      ),
+    ).toBe(true);
+    expect(sent[1]!.sql.slice(0, sent[1]!.sql.indexOf(" from "))).toBe(
+      'select "phase_resolution_mode"',
+    );
+  });
+
   it("composes both, and ignores another project's current scene", async () => {
     const { client } = clientOver(makeDb());
     const inputs = await readReadInputs(createCoreReadDb(client), {
