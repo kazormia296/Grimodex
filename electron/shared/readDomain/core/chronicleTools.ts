@@ -3,7 +3,10 @@ import type {
   CoreTreeNode,
 } from "../../mastraRead/ports.js";
 import type { EventPrecision } from "../db/schema.js";
-import type { EventRow } from "../features/chronicle/eventRows.js";
+import type {
+  EventRow,
+  SceneEventRow,
+} from "../features/chronicle/eventRows.js";
 import {
   isEventHiddenFromAi,
   projectVisibleChronicle,
@@ -81,6 +84,28 @@ function result(
 }
 
 /**
+ * AI 秘匿: 現在シーン文脈で「hidden」なイベント id 集合を算出（spec §2.5）。
+ * The one place of the core that applies the chronicle's secrecy rule
+ * (`isEventHiddenFromAi`) to a list of events: `visibleEventIds` (the four tools)
+ * is its complement and `search_events` drops its hits by it (DR-MP4-38). A pure
+ * function: where the tree state is read, and when, stays with the caller (the
+ * four tools read it before the scene-event bridges are awaited, `search_events`
+ * after, as the renderer's executors did; the two orders are not interchangeable).
+ * `projectVisibleChronicle` (`get_chronicle_state`) is a separate use of the rule.
+ */
+export function hiddenEventIds(
+  events: readonly EventRow[],
+  currentSceneId: string,
+  deps: { readingOrder: Map<string, number>; sceneEvents: SceneEventRow[] },
+): Set<string> {
+  return new Set(
+    events
+      .filter((e) => isEventHiddenFromAi(e, currentSceneId, deps))
+      .map((e) => e.id),
+  );
+}
+
+/**
  * AI 秘匿: 現在シーン文脈で「可視」イベント id 集合を算出（spec §2.5）。
  * read ツールには chat の scene 文脈が無いため activeSceneId を現在シーンとする
  * （get_chronicle_state と同じ fallback）。activeSceneId 空 → 現在位置不明として
@@ -100,17 +125,11 @@ async function visibleEventIds(
   const readingOrder = new Map(ctx.chronicle.getReadingOrder(state.nodes));
   const currentSceneId = state.activeSceneId ?? "";
   const sceneEvents = await ctx.chronicle.getSceneEvents(projectId);
-  return new Set(
-    events
-      .filter(
-        (e) =>
-          !isEventHiddenFromAi(e, currentSceneId, {
-            readingOrder,
-            sceneEvents,
-          }),
-      )
-      .map((e) => e.id),
-  );
+  const hidden = hiddenEventIds(events, currentSceneId, {
+    readingOrder,
+    sceneEvents,
+  });
+  return new Set(events.filter((e) => !hidden.has(e.id)).map((e) => e.id));
 }
 
 /** 作中順イベント一覧（kind フィルタ可）。XPROJ=events の reader が project gate。 */

@@ -65,6 +65,16 @@ export interface ProjectSnapshotCreatePayload {
   versionIds: string[];
 }
 
+/**
+ * One kind of link a restore does not give back, with how many. `kind` is a
+ * fixed id (never a table name); an id this build does not know is shown as
+ * "other n" by the screen, so the list can grow without breaking an old one.
+ */
+export interface RestoreLossNotice {
+  kind: string;
+  count: number;
+}
+
 export interface ProjectSnapshotRestoreContext {
   structural: boolean;
   liveTables: string[];
@@ -79,6 +89,11 @@ export interface ProjectSnapshotRestoreContext {
   liveSnippetIds: string[];
   liveEventIds: string[];
   liveCodexTagIds: string[];
+  /**
+   * What a restore of the requested scopes would not give back, counted before
+   * anything is written. Absent from an older Native build's response.
+   */
+  lossNotices?: RestoreLossNotice[];
 }
 
 export interface ProjectSnapshotApplyRestoreResult {
@@ -86,6 +101,11 @@ export interface ProjectSnapshotApplyRestoreResult {
   changeEventUid?: string;
   maintenanceTransactionId?: string;
   noOp: boolean;
+  /**
+   * What the restore did not give back, by kind. Absent from a result an
+   * older version stored for an exact retry.
+   */
+  dropped?: RestoreLossNotice[];
 }
 
 export interface SnapshotInsertPlan {
