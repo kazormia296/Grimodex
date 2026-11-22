@@ -20,6 +20,19 @@ describe("isVersionConflictError", () => {
     ).toBe(true);
   });
 
+  it("does not treat a replay refused because of a restore as a version conflict", () => {
+    // The replay predates a project snapshot restore (Native, DR-SRC-9). It is
+    // permanent, not a retryable CAS miss: the history must be cleared and the
+    // error surfaced, not parked as a conflict the author could resolve.
+    expect(
+      isVersionConflictError(
+        new Error(
+          "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE: the change being replayed predates a project snapshot restore and can no longer be undone or redone",
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("returns false for unrelated errors", () => {
     expect(isVersionConflictError(new Error("boom"))).toBe(false);
   });

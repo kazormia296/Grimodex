@@ -2802,3 +2802,153 @@ fn alias_added_by_patch_is_removable_by_author_edit_and_undo_then_stops() {
         "the author's edit stays"
     );
 }
+
+// --- 復元より古い commit の undo / redo は拒む -------------------------------
+//
+// プロジェクトのスナップショットの復元は、行を入れ替えるが object ごとの変更の
+// 記録は書かない。復元の前の commit を、復元の後に取り消す・やり直すと、復元で
+// 消えた状態を戻すか、復元の後の編集を黙って巻き戻す。Undo／Redo の記録を書く
+// 入口で、元の書き込みが復元の marker より古いものを拒む
+// （DR-SRC-9。拒否の符号は NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE）。
+
+/// 復元の記録の形（origin=restore、source_domain=project.snapshot.restore、
+/// project-restored の marker）を、公開の append で作る。この試験は commit の
+/// undo／redo の経路が同じ入口を通ることを確かめるだけなので、復元そのものは
+/// 走らせない（復元の実行は snapshot_restore_feed_continuity.rs）。
+fn append_restore_marker(db: &Database, tag: &str) {
+    use grimodex_db::change_events::AppendChangeEvent;
+    use grimodex_db::narrative_extraction::change_feed::{
+        append_canonical_and_narrative_change_in_tx, AppendNarrativeChangeTransactionInput,
+        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    };
+    db.with_conn_mut(|conn| {
+        let transaction = conn.transaction()?;
+        let uid = format!("uid-restore-{tag}");
+        append_canonical_and_narrative_change_in_tx(
+            &transaction,
+            "project-1",
+            "sess",
+            &AppendChangeEvent {
+                event_uid: uid.clone(),
+                scene_id: None,
+                domain: "revision".to_string(),
+                op_type: "project.snapshot.restore".to_string(),
+                entity_type: Some("project_snapshot".to_string()),
+                entity_id: Some(tag.to_string()),
+                payload: "{\"scopes\":[\"codex\"]}".to_string(),
+                timestamp: 1_786_000_000_000,
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: "project-1".to_string(),
+                request_id: format!("req-restore-{tag}"),
+                source_domain: "project.snapshot.restore".to_string(),
+                source_change_event_uid: uid,
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: vec![],
+                occurred_at: "2026-11-22T00:00:00.000Z".to_string(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key: json!({ "kind": "project", "projectId": "project-1" }),
+                    change_kind: "schema".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some(format!("sha256:{}", "a".repeat(64))),
+                    after_version: None,
+                    after_digest: Some(format!("sha256:{}", "b".repeat(64))),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: Some(
+                        json!({ "event": "project-restored", "requiresFullRebuild": true }),
+                    ),
+                }],
+            },
+        )?;
+        transaction.commit()?;
+        Ok(())
+    })
+    .expect("append the restore marker");
+}
+
+fn apply_entry_commit(db: &Database, tag: &str, entry_id: &str) -> String {
+    let items = [(
+        "codex.entry.create",
+        entry_create(entry_id, tag, &format!("ent:{tag}")),
+    )];
+    let pairs = seed_approved_proposals(db, &format!("run-{tag}"), &format!("set-{tag}"), &items);
+    let applied = prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("req-{tag}"),
+            &format!("digest-{tag}"),
+            &format!("set-{tag}"),
+            &format!("run-{tag}"),
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    applied["commitId"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn undo_and_redo_of_a_commit_that_predates_a_restore_are_refused() {
+    const SUPERSEDED: &str = "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE";
+    let db = migrated_db();
+    let applied_before = apply_entry_commit(&db, "rs-a", "entry-rs-a");
+    let undone_before = apply_entry_commit(&db, "rs-b", "entry-rs-b");
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&undone_before, "rs-b-undo"),
+    )
+    .expect("undo before the restore");
+    assert_eq!(undone["status"], "undone");
+
+    append_restore_marker(&db, "r1");
+
+    let undo_err = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&applied_before, "rs-a-undo"),
+    )
+    .expect_err("undo of a commit older than the restore");
+    assert!(format!("{undo_err:#}").contains(SUPERSEDED), "{undo_err:#}");
+    let redo_err = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&undone_before, "rs-b-redo"),
+    )
+    .expect_err("redo of a commit older than the restore");
+    assert!(format!("{redo_err:#}").contains(SUPERSEDED), "{redo_err:#}");
+    // Nothing was replayed: the refused calls rolled back.
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-rs-a'"
+        ),
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT COUNT(*) FROM codex_entries WHERE id = 'entry-rs-b'"
+        ),
+        0
+    );
+
+    // A commit made after the restore is undone and redone as usual.
+    let after = apply_entry_commit(&db, "rs-c", "entry-rs-c");
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&after, "rs-c-undo"),
+    )
+    .expect("undo of a commit made after the restore");
+    assert_eq!(undone["status"], "undone");
+    let redone = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&after, "rs-c-redo"),
+    )
+    .expect("redo of a commit made after the restore");
+    assert_eq!(redone["status"], "redone");
+}

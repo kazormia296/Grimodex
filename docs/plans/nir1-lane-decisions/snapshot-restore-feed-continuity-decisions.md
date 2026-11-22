@@ -120,3 +120,9 @@
 - 過去の変更の記録の書き換え、壊れた作品の一括診断・修復（次の書き込みで直る）。
 - 実 Electron の journey（`nir1-scene-scope-projection-product-journey.mjs`）：rich project の復元が成功し始めるので、その後の assertion が初めて rich に当たる。未検証（Electron は起動しない）。Full が赤なら修正 PR。
 - schema の版上げ、migration、新しい列・表・索引、閾値の変更、保存範囲の拡大は、していない。
+
+### DR-SRC-11　browser-mock（実装の後に追記）
+
+- browser-mock の連続性の検査（`src/lib/browser-mock.ts` の `insertBrowserNarrativeChange`）にも同じ不具合があった。vitest で再現した（`tree_node_patch`、本文の復元の後の 2 回目の書き込みが `continuity mismatch`）。そのため、Native の DR-SRC-6 と DR-SRC-9 と同じ形を入れた（head の `canonical_sequence` を読み、head がその project の復元の marker より古い食い違いを 1 回通す。復元より古い Undo／Redo を同じ符号で拒む）。scope では絞らない。
+- 復元専用の入口（DR-SRC-8）は mock に入れない。mock の復元は project の marker だけを書き、scene-scope の記録を書かないので、DEF-1 は mock には無い。
+- renderer の分類（`isVersionConflictError`）は、新しい符号を version conflict に数えない（試験で固定）。拒まれた replay は履歴を clear して error を出す既存の経路に入る。renderer の表示は変えない。

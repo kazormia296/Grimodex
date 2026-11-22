@@ -1500,12 +1500,15 @@ fn feed_writers_in(files: &[(String, String)]) -> (BTreeMap<String, usize>, BTre
     let mut scene_builders = BTreeSet::new();
     for (name, source) in files {
         let production = production_source(source);
+        // The restore-only entry (DR-SRC-8) is a feed append too: it is counted
+        // with the two public ones so project_snapshots.rs stays classified.
         let calls = production
             .matches("append_narrative_change_transaction_in_tx(")
             .count()
             + production
                 .matches("append_canonical_and_narrative_change_in_tx(")
-                .count();
+                .count()
+            + production.matches("append_snapshot_restore_in_tx(").count();
         if calls > 0 {
             callers.insert(name.clone(), calls);
         }
@@ -1519,7 +1522,8 @@ fn feed_writers_in(files: &[(String, String)]) -> (BTreeMap<String, usize>, BTre
     (callers, scene_builders)
 }
 
-/// The production feed append callers per file (both append functions).
+/// The production feed append callers per file (the two public append
+/// functions and the crate-private restore entry).
 const FEED_APPEND_CALLERS: [(&str, usize); 22] = [
     ("agent_writes.rs", 4),
     ("chronicle.rs", 2),

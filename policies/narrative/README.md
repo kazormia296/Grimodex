@@ -41,6 +41,26 @@ key, and must declare that strategy in their matrix row. A restore is the
 exception: it emits one project-level `project-restored` epoch-reset marker and
 asks C2 for a full rebuild instead of replaying every restored row.
 
+A restore does not write a head for the objects it changes, so the Feed's
+continuity check (an event's `before` must equal the object's head) treats it
+as a boundary rather than as a break. The decision is made from facts the
+database already holds, never from a caller's claim (DR-SRC-3, DR-SRC-6): a
+mismatch is let through once when the head predates a restore marker (a
+transaction of origin `restore` and source domain `project.snapshot.restore`
+carrying the `project-restored` event) of the same project. It is not narrowed
+by the restored scope, because a restore changes other scopes' rows by cascade.
+The first write records the row as it is and moves the head past the marker, so
+the next write is strict again; a project with no restore, another project's
+marker, another origin or source domain, and the second event of the same batch
+stay refused. The restore's own Scene Scope rebinding (it re-creates a binding
+the head has already passed) is exempt through one crate-private entry,
+`append_snapshot_restore_in_tx`, used only by `apply_project_snapshot_restore`
+and limited to `scene-scope` events (DR-SRC-8). Undo and Redo are refused with
+`NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE` when the forward
+transaction they replay predates a restore marker (DR-SRC-9). The sentence above
+(one marker per restore, no per-object events) is unchanged. Rationale:
+`docs/plans/nir1-lane-decisions/snapshot-restore-feed-continuity-decisions.md`.
+
 `pnpm test:narrative:change-feed-writers` validates the manifest, known public
 routes, implementation modules and symbols, active writer IDs, identity
 contract, fixed exclusion reasons, and runtime evidence. `coverageStatus:
