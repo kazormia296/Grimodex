@@ -5,48 +5,32 @@
  * workspace (the audit ledger, settings, other chat history) that a later
  * change mixed into a read.
  *
- * What is here is an UPPER BOUND of what the read tools of main (the read
- * side of the tool executors, the chronicle read tools and the APIs they call)
- * touch, taken from the K-6 table of the MP-4b plan, which includes entries it
- * marks unconfirmed (`foreshadow_codex_links`, the phase tables, the detail
- * definitions whose only user may be a tool outside main's set):
- *   - the codex: entries, tags, detail definitions and values, phases and the
- *     phase detail overrides;
- *   - the manuscript: the tree, and the snippets;
- *   - the chronicle: events, participants, relations, scene events, calendar;
- *   - plot threads and foreshadows (these are the tables the profile ledger
- *     classes as `read-open`, an own-data-read);
- *   - `projects`, for the AI policy of a project (DR-MP4-26).
- * It leaves out: the three tables the schema pulls in only as foreign-key
- * targets (`chat_sessions`, `chat_messages`, `codex_types`), every closed table
- * (`narrative_*`, `nir1_*`, the chat IR tables, the audit ledger, messages)
- * and settings.
+ * What is here is EXACTLY the set of tables the Drizzle selects of the shared
+ * read core name in `from` and in joins (PR-4: the tools of groups B1 and B2).
+ * `readDomain/core/core.static.test.ts` scans the core's sources and requires
+ * the two to be equal, so a table the core starts to touch (a later PR moving
+ * more tools) fails that test until it is added here, and a table that no
+ * longer appears fails it until it is removed. Either way the change is a
+ * visible diff of this file and of `tables.test.ts`.
+ *   - the manuscript tree: `tree_nodes` (the chapter and scene tools, and the
+ *     scene bodies);
+ *   - the codex tags: `codex_tags`, `codex_entry_tags` (`list_codex_tags`);
+ *   - plot threads: `plot_threads`, `plot_thread_scene_links`,
+ *     `plot_thread_branches`.
+ * It leaves out every table no core tool reads yet (the codex entries, phases
+ * and details, the chronicle, foreshadows, snippets, projects), the three
+ * tables the schema pulls in only as foreign-key targets (`chat_sessions`,
+ * `chat_messages`, `codex_types`), every closed table (`narrative_*`, `nir1_*`,
+ * the chat IR tables, the audit ledger, messages) and settings.
  *
- * The list is pinned by `tables.test.ts`. PR-4 (the core) pins it again to the
- * tables its Drizzle selects actually name; a table that enters or leaves is a
- * visible diff of this file and of that test.
+ * The list is pinned by `tables.test.ts`.
  */
 export const MAIN_READ_TABLES: readonly string[] = Object.freeze([
-  "codex_detail_definitions",
-  "codex_detail_values",
-  "codex_entries",
-  "codex_entry_phases",
   "codex_entry_tags",
-  "codex_phase_detail_overrides",
   "codex_tags",
-  "event_participants",
-  "event_relations",
-  "events",
-  "foreshadow_codex_links",
-  "foreshadow_setups",
-  "foreshadows",
   "plot_thread_branches",
   "plot_thread_scene_links",
   "plot_threads",
-  "project_calendar",
-  "projects",
-  "scene_events",
-  "snippets",
   "tree_nodes",
 ]);
 

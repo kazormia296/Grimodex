@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
-import { assertCoreProjectId } from "./ports.js";
+import type { SceneTimeIndex } from "../readDomain/features/codex/context/sceneTimeIndex.js";
+import type { TreeNodeData } from "../readDomain/features/tree/types.js";
+import {
+  assertCoreProjectId,
+  CoreProjectRequiredError,
+  type CoreSceneTimeIndex,
+  type CoreTreeNode,
+} from "./ports.js";
 import { createPerCodePointTokenizer } from "./tokenizer.testSupport.js";
 
 describe("assertCoreProjectId", () => {
@@ -14,6 +21,31 @@ describe("assertCoreProjectId", () => {
       expect(() => assertCoreProjectId(value)).toThrow(/projectId is required/);
     },
   );
+});
+
+describe("CoreProjectRequiredError", () => {
+  it("is what assertCoreProjectId throws, with the message it always had", () => {
+    let caught: unknown;
+    try {
+      assertCoreProjectId("");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CoreProjectRequiredError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe("CoreProjectRequiredError");
+    expect((caught as Error).message).toBe("read core: projectId is required");
+  });
+});
+
+describe("the port shapes are tied to the moved types", () => {
+  it("TreeNodeData is assignable to CoreTreeNode (the renderer's store state is a CoreTreeState)", () => {
+    expectTypeOf<TreeNodeData>().toExtend<CoreTreeNode>();
+  });
+
+  it("CoreSceneTimeIndex is the moved SceneTimeIndex, not a copy of its shape", () => {
+    expectTypeOf<CoreSceneTimeIndex>().toEqualTypeOf<SceneTimeIndex>();
+  });
 });
 
 describe("the test tokenizer", () => {
