@@ -6,6 +6,8 @@
 // open_workspace と setCurrentWorkspaceIdentity で開く（store の hydrate・lifecycle proof・
 // quiescence lease は通らない）。(d) の live projection は保存なしの seam（skipNativePersist）で読む：
 // 保存後の revisionId・application・restore 経路・永続化の時間は含まない。
+// 保存つきの段（persist:true）の後だけ、readStoredProposals が保存済みの提案の件数（未 review など）を
+// 製品の read-only の command で読む（件数・語だけ。問い 4）。
 // このファイルは tsc の対象外（scripts/）で、Vite が評価時に直接読み込む。
 import { generateNKeysBetween } from "fractional-indexing";
 import { invoke } from "@/lib/tauri";
@@ -41,6 +43,13 @@ import {
   buildCodexStructureCatalogs,
   startCodexStructureExtraction,
 } from "@/features/codex/codexStructureExtractionApi";
+// 保存済みの提案を読む surface の名前（readStoredProposals）。上の import の形は product-parity.test.mjs が固定している。
+import { CODEX_STRUCTURE_EXTRACT_SURFACE_PATH } from "@/features/codex/codexStructureExtractionApi";
+import {
+  narrativeExtractionGetRun,
+  narrativeExtractionGetRunReviewBundle,
+  narrativeExtractionListResumableRuns,
+} from "@/application/narrative-extraction/nativeApi";
 import { isSafeForCodexEntityBulkApprove } from "@/features/codex/codexStructureExtractionStore";
 import {
   activeCandidates,
@@ -51,6 +60,17 @@ import {
   saveDismissedCandidateKeys,
 } from "@/features/codex/codexCandidateDismissals";
 import { judgeCandidates } from "@/features/codex/candidateJudgment";
+import { listCodexIdsHiddenFromAi } from "@/features/codex/context/codexHiddenFromAi";
+import {
+  MODEL_ROLES,
+  ROLE_PROVIDERS_KEY,
+  resolveRoleSendOverride,
+  roleSettingKey,
+} from "@/features/chat/modelRouting";
+import {
+  prepareSettingsHydration,
+  useSettingsStore,
+} from "@/features/settings/settingsStore";
 import type { CodexCandidate } from "@/features/codex/candidateExtractor";
 import { parseAliases } from "@/features/codex/codexMatcher";
 import { getPromptCatalog } from "@/prompts/index";
@@ -65,6 +85,7 @@ import {
 } from "@/features/chat/api";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { buildExistingRelationCatalog } from "@/features/codex/extraction/existingRelationMatcher";
+import { isRelationalTerm } from "@/features/codex/extraction/relationalTerms";
 import { runEntityCandidatePrepass } from "@/features/codex/extraction/entityCandidatePrepass";
 import { buildProjectNarrativeSnapshot } from "@/application/narrative-extraction/projectSnapshotAdapter";
 import { derivePersistedNarrativeSceneScope } from "@/application/narrative-extraction/projectSnapshotAdapter";
@@ -78,6 +99,7 @@ import type {
   NarrativeSourceView,
 } from "@/features/narrative-extraction/source/types";
 import {
+  assertEntryTypesInCatalog,
   candidateKey,
   comparePersistedScene,
   compareHashSets,
@@ -89,12 +111,18 @@ import {
   hashSurface,
   isBulkApprovableRow,
   planNestedFolders,
+  reconcileSeedsWithProposals,
   rubyBaseText,
   rubySurfaceRelation,
+  runGuardedJudge,
   seedMissingFromCandidates,
   scenesFromWork,
+  planProductVisibleRuns,
+  planStoredRuns,
+  STORED_RUN_LIST_LIMIT,
   summarizeCandidateInventory,
   summarizeSeedInventory,
+  summarizeStoredProposals,
 } from "./lib.mjs";
 
 interface WorkJson {
@@ -365,6 +393,13 @@ async function buildCatalogRequest(projectId: string) {
     })),
     projectTypes,
   });
+  // 登録した Entry の型が catalog に同じ型で載ったか（project の型の一覧に無い型は、製品が先頭の型に落とす）。
+  // 落ちていれば bulkBind の人物の判定が実行時と食い違うので、判定できない・不一致なら抽出の前に止める。
+  assertEntryTypesInCatalog({
+    entries: entries.map((entry) => ({ id: entry.id, type: entry.type })),
+    existingCatalog: catalogs.existingCatalog,
+    typeCatalog: catalogs.typeCatalog,
+  });
   const existingRelations = buildExistingRelationCatalog(
     (await listCodexRelations(projectId)).map((row) => ({
       id: row.id,
@@ -484,12 +519,47 @@ async function readSeeds(a: Active, folderId: string, sceneIds: string[]) {
   };
 }
 
-/** (d) startCodexStructureExtraction（useAi:false）を指定 folder に対して呼び、projection を件数で返す。 */
+/**
+ * 保存つきの構造抽出（persist:true）で作られ、その段が最後まで成功した（採用された）run の id（古い順）。
+ * readStoredProposals が最後の 1 つを「この段の run」、それ以外を「前の回の run」と分けるために控える。
+ * id は page の外へ返さない。
+ */
+const persistedRunIds: string[] = [];
+/**
+ * 保存つきの構造抽出で run が作られたが、その後でその段が失敗した（採用されなかった）run の id。
+ * 次の段の「前の回の run」に数えず、別に数える（readStoredProposals の failedIds）。
+ */
+const unadoptedRunIds: string[] = [];
+
+/**
+ * (d) startCodexStructureExtraction（useAi:false）を指定 folder に対して呼び、projection を件数で返す。
+ * 保存つきなら、run を作った後に段が失敗すれば、その run は採用された run の控えに入れず別に控える。
+ */
 async function extractStructure(input: {
   folderPercent: number;
   /** false：Native への Run/ProposalSet の保存を飛ばす（製品の test seam。live の projection だけ読む）。 */
   persist: boolean;
 }) {
+  const started: { runId?: string } = {};
+  try {
+    const result = await extractStructureBody(input, started);
+    if (input.persist && started.runId !== undefined)
+      persistedRunIds.push(started.runId);
+    return result;
+  } catch (error) {
+    if (input.persist && started.runId !== undefined)
+      unadoptedRunIds.push(started.runId);
+    throw error;
+  }
+}
+
+async function extractStructureBody(
+  input: {
+    folderPercent: number;
+    persist: boolean;
+  },
+  started: { runId?: string },
+) {
   const a = requireActive();
   const folderId = a.folderIds[String(input.folderPercent)];
   if (!folderId) throw new Error("[precheck] unknown folder percent");
@@ -522,6 +592,7 @@ async function extractStructure(input: {
     typeCatalog: catalog.typeCatalog,
     existingRelations: catalog.existingRelations,
   });
+  started.runId = projection.runId;
 
   // 既存 Entry の catalog の ref（K0001…）→ Entry の id（名簿の実体 ID）。
   const refToEntityId = new Map<string, string>(
@@ -582,7 +653,17 @@ async function extractStructure(input: {
     ...row,
     bulkApprovable: isBulkApprovableRow(row),
   }));
-  // seed の hash 集合と提案の hash 集合の突合。prepass が complete なのに差があれば失敗。
+  // 製品が planner の前段で seed を落とした件数（呼び名・候補画面で却下済みの表記）。件数だけ返す（表記は返さない）。
+  const skippedRelational = projection.skippedRelationalTerms ?? [];
+  const foldedDismissed = projection.foldedDismissedSurfaces ?? [];
+  const seedDrops = {
+    relationalTerms: skippedRelational.length,
+    relationalByKind: tally(skippedRelational, (t) => String(t.kind)),
+    foldedDismissed: foldedDismissed.length,
+    dismissalsUnavailable: projection.dismissalsUnavailable === true,
+  };
+  // seed の hash 集合と提案の hash 集合の突合。期待は「提案 ＝ seed − 製品が落とした表記」。
+  // prepass が complete なのに成り立たなければ失敗（planner が seed を飛ばした、または prepass の読みが製品と違う）。
   let observed: Record<string, unknown>;
   if (observedSeeds.ok) {
     const seedVsProposal = compareHashSets(
@@ -591,17 +672,27 @@ async function extractStructure(input: {
       ),
       rows.map((r) => r.surfaceHash),
     );
+    const seedReconciliation = reconcileSeedsWithProposals({
+      seedHashes: await Promise.all(
+        observedSeeds.mapped.map((m) => hashSurface(m.surface)),
+      ),
+      proposalHashes: rows.map((r) => r.surfaceHash),
+      droppedRelationalHashes: await Promise.all(
+        skippedRelational.map((t) => hashSurface(t.surface)),
+      ),
+      droppedDismissedHashes: await Promise.all(
+        foldedDismissed.map((t) => hashSurface(t.surface)),
+      ),
+    });
     observed = {
       prepass: observedSeeds.prepass,
       canonicalText: observedSeeds.canonicalText,
       seedVsProposal,
+      seedReconciliation,
     };
-    if (
-      observedSeeds.prepass.status === "complete" &&
-      (seedVsProposal.leftOnly > 0 || seedVsProposal.rightOnly > 0)
-    ) {
+    if (observedSeeds.prepass.status === "complete" && !seedReconciliation.ok) {
       throw new Error(
-        `[artifact] SEED_PROPOSAL_SET_DIFFERS seed and proposal hash sets differ: seedOnly=${seedVsProposal.leftOnly} proposalOnly=${seedVsProposal.rightOnly}`,
+        `[artifact] SEED_PROPOSAL_SET_DIFFERS seed and proposal hash sets differ beyond the seeds the product dropped: seedOnly=${seedReconciliation.seedOnlyUnexplained} proposalOnly=${seedReconciliation.proposalOnlyUnexplained} droppedNotInSeed=${seedReconciliation.droppedNotInSeed} droppedAndProposed=${seedReconciliation.droppedAndProposed} relationalAndDismissed=${seedReconciliation.relationalAndDismissed}`,
       );
     }
   } else {
@@ -620,6 +711,7 @@ async function extractStructure(input: {
       "no-restore-column-no-persist-time",
     ],
     observed,
+    seedDrops,
     runStatus: projection.status,
     entryCountInCatalog: catalog.entryCount,
     typeCountInCatalog: catalog.typeCount,
@@ -946,6 +1038,8 @@ async function bRefresh(rescan: boolean) {
       keyHash,
       count: c.count,
       firstSceneIndex: a.sceneIndexById.get(c.firstSceneId) ?? 0,
+      // 製品の候補画面は、呼び名（isRelationalTerm）には AI が別名を勧めても別名ボタンを出さない。
+      relationalTerm: isRelationalTerm(c.surface),
     });
   }
   bState = {
@@ -1102,49 +1196,141 @@ async function bDeleteKey(input: { provider: string }) {
   return { keyPresent: await hasApiKey(input.provider as never) };
 }
 
-/** 1 要求（judgeCandidates）。失敗は理由の分類だけを返し、メッセージは返さない。 */
+/**
+ * 送る前の guard（F2 の R4）：役割の上書き（aiModel.role.*・aiModel.roleProviders）が空・既定で、製品が送信時に使う
+ * resolveRoleSendOverride("codex_judgment") の 4 欄が全部 null であること。保存先の 3 層（legacy・project・global）は
+ * prepareSettingsHydration で read-only に読み（store は hydrate しない）、live の store の値も見る。
+ * 返すのは件数と真偽だけ（設定の値は返さない）。読めなければ throw（node 側は止める）。
+ */
+async function bAssertRoleDefaults() {
+  const a = requireActive();
+  const snapshot = await prepareSettingsHydration(a.projectId);
+  const layers: Record<string, string>[] = [
+    snapshot.layers.legacy,
+    snapshot.layers.project,
+    snapshot.layers.global,
+  ];
+  const live = useSettingsStore.getState();
+  const rawOf = (key: string): string[] => [
+    ...layers.map((layer) => String(layer[key] ?? "")),
+    String(live.get(key) ?? ""),
+  ];
+  let nonDefaultRoleKeys = 0;
+  for (const role of MODEL_ROLES)
+    if (rawOf(roleSettingKey(role)).some((value) => value.trim() !== ""))
+      nonDefaultRoleKeys++;
+  const providersNonDefault = rawOf(ROLE_PROVIDERS_KEY).some((value) => {
+    if (value.trim() === "") return false;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        Object.keys(parsed as object).length > 0
+      );
+    } catch {
+      return true; // 解釈できない値は既定として扱わない（fail-closed）。
+    }
+  });
+  const override = resolveRoleSendOverride("codex_judgment");
+  return {
+    checked: true as const,
+    roleKeysChecked: MODEL_ROLES.length,
+    nonDefaultRoleKeys,
+    roleProvidersNonDefault: providersNonDefault,
+    sendOverrideClear:
+      override.model === null &&
+      override.provider === null &&
+      override.apiVariant === null &&
+      override.endpointId === null,
+  };
+}
+
+/** 製品の hidden 判定（DB に無い id・不明な mode も hidden に数える）に掛けた Entry の件数。ids は先頭からの窓でもよい。 */
+async function countHiddenAmong(projectId: string, ids: string[]) {
+  const unique = [...new Set(ids)];
+  const hidden = await listCodexIdsHiddenFromAi({
+    entryIds: unique,
+    projectId,
+  });
+  return { checkedCount: unique.length, hiddenCount: hidden.size };
+}
+
+/**
+ * 送る前の guard（F2）：名簿（project の全 Entry。judgeCandidates に渡る entries の元）に hidden が 0 件であること。
+ * 判定は製品の listCodexIdsHiddenFromAi（resolveCodexForAi と同じ。失敗は throw で、node 側は止める）。
+ */
+async function bAssertRosterNotHidden() {
+  const a = requireActive();
+  const entries = await listCodexEntries(a.projectId);
+  const counted = await countHiddenAmong(
+    a.projectId,
+    entries.map((entry) => entry.id),
+  );
+  return {
+    checked: true as const,
+    entryCount: entries.length,
+    checkedCount: counted.checkedCount,
+    hiddenCount: counted.hiddenCount,
+  };
+}
+
+/**
+ * 1 要求（judgeCandidates）。失敗は理由の分類だけを返し、メッセージは返さない。
+ * 送る前の guard の順序（key の導入・policy・候補・役割の上書き・名簿の hidden）は runGuardedJudge（lib.mjs。
+ * fake で振る舞いを試験している）。判定できなければ送らない。
+ */
 async function bJudge() {
   const b = requireB();
   const started = Date.now();
-  // 乾いた実行・key の導入前は送らない（送信の関数が page にあっても、ここで止める）。
-  if (!sendArmed)
-    return { ok: false as const, kind: "not-armed", durationMs: 0 };
-  if (isAiFeatureBlockedByPolicy("analysis") || isWriteRestrictedByLicense()) {
-    return { ok: false as const, kind: "policy-or-license", durationMs: 0 };
-  }
-  if (b.visible.length === 0) {
-    return { ok: false as const, kind: "no-candidates", durationMs: 0 };
-  }
-  try {
-    const map = await judgeCandidates(b.visible, b.entries);
-    if (map.size === 0)
-      return {
-        ok: false as const,
-        kind: "empty-map",
-        durationMs: Date.now() - started,
-      };
-    const knownIds = new Set(b.entries.map((e) => e.id));
-    const judgments = [];
-    for (const [key, j] of map) {
-      judgments.push({
-        keyHash: await hashSurface(key),
-        suggestedType: j.suggestedType,
-        aliasOfId: j.aliasOfId,
-        aliasKnown: j.aliasOfId === null || knownIds.has(j.aliasOfId),
-      });
-    }
-    return {
-      ok: true as const,
-      judgments,
-      durationMs: Date.now() - started,
-    };
-  } catch (error) {
-    return {
-      ok: false as const,
-      ...classifyJudgmentFailure(error),
-      durationMs: Date.now() - started,
-    };
-  }
+  return runGuardedJudge({
+    // 乾いた実行・key の導入前は送らない（送信の関数が page にあっても、ここで止める）。
+    sendArmed,
+    blockedByPolicyOrLicense: () =>
+      isAiFeatureBlockedByPolicy("analysis") || isWriteRestrictedByLicense(),
+    visibleCount: b.visible.length,
+    // 送信の直前の guard（node 側の beforeSend と同じ条件）。
+    assertRoleDefaults: bAssertRoleDefaults,
+    countHiddenInSentWindow: async () =>
+      (
+        await countHiddenAmong(
+          requireActive().projectId,
+          b.entries.slice(0, JUDGMENT_MAX_ENTRIES).map((entry) => entry.id),
+        )
+      ).hiddenCount,
+    judge: async () => {
+      try {
+        const map = await judgeCandidates(b.visible, b.entries);
+        if (map.size === 0)
+          return {
+            ok: false as const,
+            kind: "empty-map",
+            durationMs: Date.now() - started,
+          };
+        const knownIds = new Set(b.entries.map((e) => e.id));
+        const judgments = [];
+        for (const [key, j] of map) {
+          judgments.push({
+            keyHash: await hashSurface(key),
+            suggestedType: j.suggestedType,
+            aliasOfId: j.aliasOfId,
+            aliasKnown: j.aliasOfId === null || knownIds.has(j.aliasOfId),
+          });
+        }
+        return {
+          ok: true as const,
+          judgments,
+          durationMs: Date.now() - started,
+        };
+      } catch (error) {
+        return {
+          ok: false as const,
+          ...classifyJudgmentFailure(error),
+          durationMs: Date.now() - started,
+        };
+      }
+    },
+  });
 }
 
 /**
@@ -1213,7 +1399,14 @@ async function bApply(input: {
 }) {
   const a = requireActive();
   const b = requireB();
-  const counts = { accept: 0, alias: 0, dismiss: 0, missing: 0 };
+  const counts = {
+    accept: 0,
+    alias: 0,
+    dismiss: 0,
+    missing: 0,
+    // 呼び名への別名の決定。製品の画面に別名ボタンが無いので反映しない（missing にも数え、その作品の B2 は判断不能になる）。
+    aliasSuppressedRelational: 0,
+  };
   const dismissed = new Set(b.dismissed);
   let entries = b.entries;
   for (const d of input.decisions) {
@@ -1239,6 +1432,11 @@ async function bApply(input: {
       entries = await listCodexEntries(a.projectId);
       counts.accept++;
     } else {
+      if (isRelationalTerm(surface)) {
+        counts.aliasSuppressedRelational++;
+        counts.missing++;
+        continue;
+      }
       const target = entries.find((e) => e.id === d.targetId);
       if (!target) {
         counts.missing++;
@@ -1264,12 +1462,91 @@ async function bApply(input: {
   return { counts, ...refreshed };
 }
 
+/**
+ * 保存済みの未 review の提案の件数（事前登録の問い 4）。製品の restore と同じ read-only の読み
+ * （narrative_extraction_list_resumable_runs → narrative_extraction_get_run_review_bundle）だけを使い、
+ * 新しい IPC も DB への書き込みも無い。この page の中で件数に縮約し、本文・証拠・表記・id は返さない
+ * （kind と status の語、run の status の語、件数だけ）。
+ * 製品の restoreCodexStructureExtractionReview・runRepository.listResumableRuns は使わない
+ * （warm store の早期 return・limit 8・失敗を握りつぶす fallback があるため、生の nativeApi を直接呼ぶ）。
+ * 列挙は製品の列挙（再開できる run。limit 100）に、この page が保存した run（前の段の run も、失敗した段の run も）を
+ * 足した和集合。失敗した段の run は前の回に数えず、別に数える。作者に見える run（製品の restore が出す run。
+ * folder ごと・先頭 8 件）は planProductVisibleRuns が決め、未 review を見える分とそれ以外に分ける。
+ */
+async function readStoredProposals() {
+  const a = requireActive();
+  const currentRunId = persistedRunIds.at(-1);
+  if (currentRunId === undefined)
+    throw new Error("[precheck] STORED_NO_PERSISTED_RUN no persisted run");
+  const listed = await narrativeExtractionListResumableRuns({
+    projectId: a.projectId,
+    surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+    limit: STORED_RUN_LIST_LIMIT,
+  });
+  const statusOf = new Map(listed.map((s) => [s.runId, String(s.status)]));
+  // 製品の列挙に、この page が保存した run（前の段の run も、失敗した段の run も）を必ず足す。列挙は run の状態で
+  // 絞られるため、前の段の run が一覧から落ちても DB に残る未 review を 0 と読まない。
+  const plan = planStoredRuns({
+    listedIds: listed.map((s) => s.runId),
+    trackedIds: persistedRunIds,
+    failedIds: unadoptedRunIds,
+  });
+  // run の状態と、scope の folder の識別子（作者に見える run の判定に比べるだけ。page の外へ出さない）。
+  const infoById = new Map<
+    string,
+    { runStatus: string; folderKey: string | null }
+  >();
+  for (const { runId } of plan) {
+    const projection = await narrativeExtractionGetRun({
+      runId,
+      projectId: a.projectId,
+    });
+    const scope = projection.run.scopeJson as Record<string, unknown> | null;
+    const folderId = scope && typeof scope === "object" ? scope.folderId : null;
+    infoById.set(runId, {
+      runStatus: statusOf.get(runId) ?? String(projection.run.status),
+      folderKey: typeof folderId === "string" ? folderId : null,
+    });
+  }
+  const visibleRunIds = planProductVisibleRuns({
+    listed: listed.map((s) => ({
+      runId: s.runId,
+      runStatus: infoById.get(s.runId)?.runStatus ?? String(s.status),
+      folderKey: infoById.get(s.runId)?.folderKey ?? null,
+    })),
+  });
+  const runs = [];
+  for (const { runId, role, listedByProduct, tracked, failedStage } of plan) {
+    const bundle = await narrativeExtractionGetRunReviewBundle({
+      runId,
+      projectId: a.projectId,
+    });
+    runs.push({
+      role,
+      listedByProduct,
+      tracked,
+      failedStage,
+      visibleToAuthor: visibleRunIds.has(runId),
+      folderKnown: infoById.get(runId)?.folderKey != null,
+      runStatus: infoById.get(runId)?.runStatus ?? "other",
+      setStatus: bundle.proposalSet ? String(bundle.proposalSet.status) : null,
+      proposals: bundle.proposals.map((proposal) => ({
+        kind: String(proposal.kind),
+        status: String(proposal.status),
+        applied: proposal.application != null,
+      })),
+    });
+  }
+  return summarizeStoredProposals({ runs, listedCount: listed.length });
+}
+
 Object.assign(window, {
   identityLoad: {
     openProject,
     buildNestedWork,
     registerRoster,
     extractStructure,
+    readStoredProposals,
     inventory,
     bPrepare,
     bSynthRoster,
@@ -1277,6 +1554,8 @@ Object.assign(window, {
     bAiGate,
     bConfigureAi,
     bDeleteKey,
+    bAssertRoleDefaults,
+    bAssertRosterNotHidden,
     bJudge,
     bApply,
     ready: true,

@@ -19,6 +19,15 @@ export const MAX_CANDIDATES = 50;
 export const MAX_ENTRIES = 200;
 export const CODEX_JUDGMENT = "codex_judgment";
 export const REPEATS_B1 = 3;
+/**
+ * 測定 B の指標の定義の版。cell の結果（run-measure-b）に載せ、aggregate は版が混ざった入力を止める
+ * （旧 records は版なし＝"legacy"）。測定 A の版（measure-a-metrics.mjs の METRIC_DEFINITION_VERSION）とは別に数える
+ * （A と B は別の表で、合算も比較もしない）。定義を変えたら上げる。
+ *   "legacy"   版の欄が無い records（aliasButtons に関係の呼び名への別名ボタンを含み、B2 の模擬作者は呼び名への別名決定を数える）。
+ *   "b-defs/2" aliasButtons は製品の画面と同じく関係の呼び名を除き（除いた分は aliasButtonsSuppressedRelational）、
+ *              AI が別名を勧めた数を aliasProposed に併記し、B2 の模擬作者は呼び名への別名決定を「反映できなかった」に数える。
+ */
+export const B_METRIC_DEFINITION_VERSION = "b-defs/2";
 
 // ---- 名簿の準備 -------------------------------------------------------------
 
@@ -89,6 +98,184 @@ export function assertAiGate(gate) {
     throw new Error(
       "[precheck] LANGUAGE_NOT_JA candidate judgment needs a ja project",
     );
+}
+
+/**
+ * F2：送る前の guard（役割の上書き・名簿の hidden・宛先）。判定できないときは止める（fail-closed）。
+ * page が返すのは真偽と件数だけ（原稿・表記・設定の値は返さない）。
+ */
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * R4：役割の上書き（aiModel.role.*・aiModel.roleProviders）が空・既定で、製品が送信時に使う
+ * resolveRoleSendOverride("codex_judgment") の 4 欄（model・provider・apiVariant・endpointId）が全部 null であること。
+ * 返り値は records に残す形（件数と真偽だけ）。
+ */
+export function assertRoleOverridesDefault(result) {
+  const ok =
+    result !== null &&
+    typeof result === "object" &&
+    result.checked === true &&
+    isCount(result.roleKeysChecked) &&
+    result.roleKeysChecked >= 7 &&
+    isCount(result.nonDefaultRoleKeys) &&
+    typeof result.roleProvidersNonDefault === "boolean" &&
+    typeof result.sendOverrideClear === "boolean";
+  if (!ok)
+    throw new Error(
+      "[precheck] ROLE_OVERRIDE_UNDECIDABLE the role override check returned an unexpected shape",
+    );
+  if (
+    result.nonDefaultRoleKeys !== 0 ||
+    result.roleProvidersNonDefault ||
+    !result.sendOverrideClear
+  )
+    throw new Error(
+      `[precheck] ROLE_OVERRIDE_NOT_DEFAULT nonDefaultRoleKeys=${result.nonDefaultRoleKeys} roleProvidersNonDefault=${result.roleProvidersNonDefault ? 1 : 0} sendOverrideClear=${result.sendOverrideClear ? 1 : 0}`,
+    );
+  return {
+    roleKeysChecked: result.roleKeysChecked,
+    nonDefaultRoleKeys: 0,
+    roleProvidersNonDefault: false,
+    sendOverrideClear: true,
+  };
+}
+
+/**
+ * 名簿に hidden が 0 件であること。page は、送る Entry（project の全 Entry）を製品の hidden 判定
+ * （listCodexIdsHiddenFromAi。DB に無い id・不明な mode も hidden に数える）に掛けた件数を返す。
+ * 調べた数が Entry の数と違う、期待の数（登録した数）と違う、判定が返らない形なら止める。
+ */
+export function assertRosterNotHidden(
+  result,
+  { expectedEntryCount = null } = {},
+) {
+  const ok =
+    result !== null &&
+    typeof result === "object" &&
+    result.checked === true &&
+    isCount(result.entryCount) &&
+    isCount(result.checkedCount) &&
+    isCount(result.hiddenCount);
+  if (!ok)
+    throw new Error(
+      "[precheck] ROSTER_HIDDEN_UNDECIDABLE the hidden check returned an unexpected shape",
+    );
+  if (result.checkedCount !== result.entryCount)
+    throw new Error(
+      `[precheck] ROSTER_HIDDEN_UNDECIDABLE checked=${result.checkedCount} entries=${result.entryCount}`,
+    );
+  if (expectedEntryCount !== null && result.entryCount !== expectedEntryCount)
+    throw new Error(
+      `[precheck] ROSTER_HIDDEN_UNDECIDABLE entries=${result.entryCount} expected=${expectedEntryCount}`,
+    );
+  if (result.hiddenCount !== 0)
+    throw new Error(
+      `[precheck] ROSTER_HAS_HIDDEN hidden=${result.hiddenCount} of ${result.entryCount}`,
+    );
+  return {
+    entryCount: result.entryCount,
+    checkedCount: result.checkedCount,
+    hiddenCount: 0,
+  };
+}
+
+/** 直近の宛先の標本がこれより古ければ、観測できていないとして止める（ms）。送信の直前に同期で 1 回 tick するので、通常は 0 に近い。 */
+export const EGRESS_OBSERVATION_MAX_AGE_MS = 5_000;
+
+/**
+ * 宛先の観測（createEgressSampler の observation()）が、「許可リスト以外が無い」と言える証拠を備えているか（F3a の B1）。
+ * 違反が無いだけでは足りない：標本が 1 回も成り立たない・直近の tick が失敗・socket を 1 つも見ていない・直近の tick が古い、
+ * のどれでも「何も見ていない」ので通さない。止める理由の code を返す（通すなら null）。
+ */
+export function assessEgressObservation(observation) {
+  if (
+    observation === null ||
+    typeof observation !== "object" ||
+    !Array.isArray(observation.violations)
+  )
+    return "EGRESS_UNDECIDABLE";
+  if (observation.violations.length > 0) return "EGRESS_NOT_ALLOWED";
+  if (
+    !(Number.isInteger(observation.sampleCount) && observation.sampleCount >= 1)
+  )
+    return "EGRESS_UNOBSERVED";
+  if (observation.lastTickOk !== true) return "EGRESS_SAMPLE_FAILED";
+  if (
+    !(
+      Number.isInteger(observation.lastSocketCount) &&
+      observation.lastSocketCount >= 1
+    )
+  )
+    return "EGRESS_NO_SOCKETS";
+  if (
+    !(
+      Number.isFinite(observation.ageMs) &&
+      observation.ageMs >= 0 &&
+      observation.ageMs <= EGRESS_OBSERVATION_MAX_AGE_MS
+    )
+  )
+    return "EGRESS_STALE";
+  return null;
+}
+
+/**
+ * 送る前の条件（宛先の観測・役割の上書き・名簿の hidden）を 1 度に確かめる。例外は投げず、
+ * { ok:true, record } か { ok:false, code } を返す。判定が返らない・形が違うのも ok:false（止める側）。
+ * 宛先は assessEgressObservation（違反が無いだけでなく、観測できている証拠が要る）。
+ */
+export async function evaluateSendPreconditions({
+  roleDefaults,
+  rosterHidden,
+  egressObservation,
+  expectedEntryCount = null,
+}) {
+  let observation;
+  try {
+    observation = egressObservation();
+  } catch {
+    return { ok: false, code: "EGRESS_UNDECIDABLE" };
+  }
+  const egressCode = assessEgressObservation(observation);
+  if (egressCode) return { ok: false, code: egressCode };
+  const record = {
+    egress: {
+      disallowedDestinationCount: 0,
+      sampleCount: observation.sampleCount,
+      lastSocketCount: observation.lastSocketCount,
+    },
+  };
+  for (const [name, code, run, assertFn] of [
+    [
+      "role",
+      "ROLE_OVERRIDE_UNDECIDABLE",
+      roleDefaults,
+      (value) => assertRoleOverridesDefault(value),
+    ],
+    [
+      "hidden",
+      "ROSTER_HIDDEN_UNDECIDABLE",
+      rosterHidden,
+      (value) => assertRosterNotHidden(value, { expectedEntryCount }),
+    ],
+  ]) {
+    let raw;
+    try {
+      raw = await run();
+    } catch {
+      return { ok: false, code }; // page の関数が無い・throw（設定・DB が読めない）は判定できない。
+    }
+    try {
+      record[name] = assertFn(raw);
+    } catch (error) {
+      return {
+        ok: false,
+        code:
+          /\[precheck\] ([A-Z_]+)/u.exec(String(error?.message))?.[1] ?? code,
+      };
+    }
+  }
+  return { ok: true, record };
 }
 
 /** B の Entry は先頭 200 の窓に収まること（窓の外は 0）。 */
@@ -191,11 +378,13 @@ export async function readUsageForRequest(
 }
 
 /** 通信の前に終わる失敗（課金されない）。これ以外の失敗は、行が残っていないか読む。 */
-const NO_COMMUNICATION_KINDS = Object.freeze([
+export const NO_COMMUNICATION_KINDS = Object.freeze([
   "not-armed",
   "policy-or-license",
   "no-candidates",
   "license",
+  "role-override",
+  "hidden-roster",
 ]);
 
 /**
@@ -243,9 +432,27 @@ export async function sendOne({
       estOutputTokens,
       remainingAfterThis,
     });
-    const before = await api.usageRowCount();
+    let before;
+    try {
+      before = await api.usageRowCount();
+    } catch (error) {
+      gate.release?.(); // まだ送っていない（行の数が読めなかった）。予約を取り消してから投げる。
+      throw error;
+    }
     attempts++;
-    const res = await api.judge();
+    let res;
+    try {
+      res = await api.judge();
+    } catch (error) {
+      if (error instanceof BudgetStop) {
+        // 送る直前の guard が止めた（要求は出ていない）。preflight の予約を取り消してから止める。
+        gate.release?.();
+        throw error;
+      }
+      // judge が例外を投げた（page の crash・evaluate の失敗など）。要求が出たか不明のため、行を残して最大の見積りで課金し、
+      // 停止線を立てる（台帳の行が残らない窓を作らない。F3a の M2）。例外の文面は載せない。
+      res = { ok: false, kind: "judge-error", httpStatus: null, durationMs: 0 };
+    }
     let outcome;
     let judgments = null;
     let model = null;
@@ -345,6 +552,14 @@ export function typeMatches(rosterType, suggestedType) {
  * 1 要求の判定を、名簿との一致で数える（名簿は仮の正解。品質の主張に使わない）。
  * candidates：画面の候補（count 降順。先頭 50 が判定の対象）。judgments：keyHash → { suggestedType, aliasOfId }。
  * 名簿に無い表記（未判定）は、誤りにも名簿どおりにも数えない。
+ *
+ * 別名ボタン（aliasButtons）は製品の画面（CodexCandidatesReport.tsx）と同じ条件で数える：AI が別名を勧め（aliasOfId が
+ * 実在 id）、かつ表記が製品の isRelationalTerm に当たらない。呼び名の判定は製品の一覧（extraction/relationalTerms.ts）で、
+ * renderer が候補の行に candidate.relationalTerm（真偽）を付けて渡す（この file に一覧の写しは持たない）。
+ * 旗の無い候補は false（呼び名でない）として数える。
+ *   aliasProposed                       AI が別名を勧めた数（aliasOfId が null でない。ボタンの有無に依らない）
+ *   aliasButtonsSuppressedRelational    別名を勧められたが、呼び名なので製品が別名ボタンを出さない数
+ * 名簿との一致の指標（aliasMatchRoster 等）は AI の判定の中身を見るので、ボタンの有無に依らず aliasOfId で数える。
  */
 export function judgmentMetrics({ index, candidates, judgments }) {
   const m = {
@@ -354,6 +569,8 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     droppedInWindow: 0,
     beyondWindow: Math.max(0, candidates.length - MAX_CANDIDATES),
     aliasButtons: 0,
+    aliasProposed: 0,
+    aliasButtonsSuppressedRelational: 0,
     aliasMatchRoster: 0,
     aliasMismatchRoster: 0,
     aliasOnAmbiguousInSet: 0,
@@ -398,7 +615,12 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     if (inWindow && !judgment) m.droppedInWindow++;
     if (judgment && judgment.aliasKnown === false) m.aliasOfUnknownId++;
     const alias = judgment?.aliasOfId ?? null;
-    if (alias !== null) m.aliasButtons++;
+    if (alias !== null) {
+      m.aliasProposed++;
+      if (candidate.relationalTerm === true)
+        m.aliasButtonsSuppressedRelational++;
+      else m.aliasButtons++;
+    }
     if (honorific) {
       if (alias !== null) m.honorificWithAlias++;
     } else if (relational) {
@@ -609,13 +831,23 @@ function buildRequestRecord(result, prepared, index) {
  * 模擬作者の決定。名簿で既存の実体の表記→別名（登録済みの実体へ）／未登録の実体→受理／
  * 敬称の形・関係の呼び名・場面で指す人が決まらない表記・名簿に無い表記→却下（種類別に数える）。
  * 関係の呼び名（relational）は Codex に登録しないので、別名にも受理にもしない。
+ * relationalTerm：製品の isRelationalTerm に当たる表記（renderer が候補の行に付ける）。製品の候補画面は呼び名には
+ * 別名ボタンを出さないので、名簿で既存の実体でも別名の決定は作れない（理由 relational-no-alias-button の却下にする）。
  */
-export function authorDecision(lookup, registeredIds, rosterTypeOf) {
+export function authorDecision(
+  lookup,
+  registeredIds,
+  rosterTypeOf,
+  { relationalTerm = false } = {},
+) {
   if (lookup.kind === "unlisted" && lookup.cut === true)
     return { action: "dismiss", reason: "cut-roster" };
   if (lookup.kind === "entity" && !lookup.honorific) {
-    if (registeredIds.has(lookup.id))
+    if (registeredIds.has(lookup.id)) {
+      if (relationalTerm)
+        return { action: "dismiss", reason: "relational-no-alias-button" };
       return { action: "alias", targetId: lookup.id, reason: "alias" };
+    }
     return {
       action: "accept",
       newId: lookup.id,
@@ -696,7 +928,9 @@ export async function runB2({
         found.kind === "unlisted" && index.cutKeys?.has(candidate.keyHash)
           ? { ...found, cut: true }
           : found;
-      const d = authorDecision(lookup, registeredIds, rosterTypeOf);
+      const d = authorDecision(lookup, registeredIds, rosterTypeOf, {
+        relationalTerm: candidate.relationalTerm === true,
+      });
       if (d.action === "accept") registeredIds.add(d.newId);
       decisionCounts[d.action]++;
       if (d.action === "dismiss") bump(dismissReasons, d.reason);

@@ -9,6 +9,9 @@
 //
 // 保存の経路：--persist skip（既定。skipNativePersist の seam で live の projection だけ読む）／
 // --persist try（保存を試み、失敗したら理由の code だけ記録して skip に落とす。製品の不具合が直ったら使う。PR #888）。
+// 保存つきの段（persistAttempt が ok）の後に、保存済みの未 review の提案の件数を DB から件数だけ読む
+// （run.storedUnreviewed。事前登録の問い 4。製品の read-only の読み＝list_resumable_runs と get_run_review_bundle）。
+// 保存しない段・保存に失敗した段は 0 ではなく「未計測」（status: not-measured と reason）。
 //
 // 起動例（隔離。unshare -n は使わない）：
 //   env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u XDG_SESSION_TYPE -u DBUS_SESSION_BUS_ADDRESS \
@@ -27,9 +30,12 @@ import {
   ROSTER_LEVELS,
   WORKS,
   assertOutputClean,
+  compareStoredWithProjection,
   findAiCommands,
+  planStoredRead,
   rosterAtLevel,
   safeErrorSummary,
+  storedNotMeasured,
   validateRoster,
 } from "./lib.mjs";
 import {
@@ -168,13 +174,58 @@ export async function measureABody({
         { folderPercent: percent, persist: false },
       ));
     const rows = extract.rows;
-    const metrics = computeMeasureA({ index, rows });
+    const metrics = computeMeasureA({
+      index,
+      rows,
+      seedDrops: extract.seedDrops ?? null,
+    });
+    // 一括承認可の数は、renderer（製品の旗を全行で数えたもの）と metrics（分類の内訳の合計）が同じ run で一致する。
+    // 一致しないのは、分類が製品の一括承認の対象を取りこぼしているか、行の旗が欠けている。
+    // renderer の数が無い（undefined・非整数）なら、照合できないので止める（黙って飛ばさない。fail-closed）。
+    assert.ok(
+      Number.isInteger(extract.counts?.bulkApprovable),
+      "[artifact] BULK_APPROVABLE_COUNT_MISSING renderer did not report counts.bulkApprovable",
+    );
+    assert.equal(
+      metrics.bulkApprovable.total,
+      extract.counts.bulkApprovable,
+      `[artifact] BULK_APPROVABLE_COUNT_DIFFERS renderer=${extract.counts.bulkApprovable} metrics=${metrics.bulkApprovable.total}`,
+    );
+    assert.equal(
+      metrics.bulkApprovable.unexpectedBinding +
+        metrics.bulkApprovable.outsideBulkCategories,
+      0,
+      "[artifact] BULK_APPROVABLE_MISCLASSIFIED",
+    );
+    // 保存済みの未 review の提案の件数（問い 4）。保存つきの段だけ DB から読む（製品の read-only の読み）。
+    // 保存しない段・保存に失敗した段は 0 ではなく「未計測」。読みの失敗は cell の採用可否に入れず、理由だけ記録する。
+    let storedUnreviewed;
+    const plan = planStoredRead(persistAttempt);
+    if (!plan.read) storedUnreviewed = plan.result;
+    else {
+      try {
+        const stored = await page.evaluate(() =>
+          window.identityLoad.readStoredProposals(),
+        );
+        storedUnreviewed = {
+          ...stored,
+          // この段の run の保存済みの件数が、同じ段の projection の件数と合うか（道具の読みの検査）。
+          projectionCheck: compareStoredWithProjection(stored, extract),
+        };
+      } catch (error) {
+        storedUnreviewed = storedNotMeasured(
+          "read-failed",
+          safeErrorSummary(error),
+        );
+      }
+    }
     const summary = { ...extract };
     delete summary.rows;
     runs.push({
       label: `F${percent}`,
       folderPercent: percent,
       persistAttempt,
+      storedUnreviewed,
       completed: runCompleted(extract),
       extract: summary,
       metrics,

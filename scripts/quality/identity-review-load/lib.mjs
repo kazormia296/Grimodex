@@ -487,6 +487,412 @@ export function compareHashSets(left, right) {
   };
 }
 
+/**
+ * seed の hash 集合と提案の hash 集合の突合（件数だけ返す）。
+ * 製品は planner の前段で seed を落とす（codexStructureExtractionApi.ts）：関係の呼び名で名簿に当たらないもの
+ * （projection.skippedRelationalTerms）と、候補画面で却下済みで名簿に当たらないもの
+ * （projection.foldedDismissedSurfaces）。落とした表記は projection に残るので、期待は
+ *   提案の集合 ＝ seed の集合 − 落とした表記
+ * であり、planner が seed を飛ばさない（添字がずれない）ことは、この式が成り立つことで確かめる。
+ * - seedOnlyUnexplained：落とした表記を引いても提案に無い seed（planner が飛ばした）
+ * - proposalOnlyUnexplained：seed に無い提案、または落とした表記なのに提案になっているもの
+ * - droppedNotInSeed：落とした表記が、道具が独立に読んだ seed に無い（prepass の読みが製品と食い違う）
+ * - relationalAndDismissed：同じ表記が両方の落とし先に入った（製品は呼び名を先に落とすので 0 のはず）
+ */
+export function reconcileSeedsWithProposals({
+  seedHashes,
+  proposalHashes,
+  droppedRelationalHashes = [],
+  droppedDismissedHashes = [],
+}) {
+  const seeds = new Set(seedHashes);
+  const proposals = new Set(proposalHashes);
+  const relational = new Set(droppedRelationalHashes);
+  const dismissed = new Set(droppedDismissedHashes);
+  const dropped = new Set([...relational, ...dismissed]);
+  let droppedNotInSeed = 0;
+  let droppedAndProposed = 0;
+  for (const hash of dropped) {
+    if (!seeds.has(hash)) droppedNotInSeed++;
+    if (proposals.has(hash)) droppedAndProposed++;
+  }
+  let relationalAndDismissed = 0;
+  for (const hash of relational)
+    if (dismissed.has(hash)) relationalAndDismissed++;
+  let seedOnlyUnexplained = 0;
+  let proposalOnlyUnexplained = 0;
+  for (const hash of seeds)
+    if (!dropped.has(hash) && !proposals.has(hash)) seedOnlyUnexplained++;
+  for (const hash of proposals)
+    if (!seeds.has(hash) || dropped.has(hash)) proposalOnlyUnexplained++;
+  return {
+    seed: seeds.size,
+    proposal: proposals.size,
+    droppedRelational: relational.size,
+    droppedFoldedDismissed: dismissed.size,
+    droppedNotInSeed,
+    droppedAndProposed,
+    relationalAndDismissed,
+    seedOnlyUnexplained,
+    proposalOnlyUnexplained,
+    ok:
+      droppedNotInSeed === 0 &&
+      relationalAndDismissed === 0 &&
+      seedOnlyUnexplained === 0 &&
+      proposalOnlyUnexplained === 0,
+  };
+}
+
+// ---- 保存済みの未 review の提案の件数（事前登録の問い 4。DB から件数だけ）------------------
+
+/**
+ * Codex の構造抽出が保存する提案の kind（製品の名前。codexStructureExtractionApi.ts の saveProposalSet）と、
+ * その件数に当たる projection の欄。product-parity.test.mjs が製品の source と照合する。
+ */
+export const STORED_PROPOSAL_KIND_FIELDS = Object.freeze({
+  "codex.entity.bind": "entityProposalCount",
+  "codex.relation.create": "relationProposalCount",
+  "codex.detail.base.set": "baseDetailProposalCount",
+  "codex.phase.bind": "phaseProposalCount",
+});
+export const STORED_PROPOSAL_KINDS = Object.freeze(
+  Object.keys(STORED_PROPOSAL_KIND_FIELDS),
+);
+/** 製品の NarrativeProposalStatus（runtime/types.ts）。未 review ＝ "unreviewed"。 */
+export const STORED_PROPOSAL_STATUSES = Object.freeze([
+  "unreviewed",
+  "approved",
+  "rejected",
+  "deferred",
+  "held",
+]);
+/** 製品の NarrativeExtractionRunStatus（runtime/types.ts）。 */
+export const STORED_RUN_STATUSES = Object.freeze([
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "superseded",
+]);
+/** 製品の ProposalSet の status（runtime/types.ts）。 */
+export const STORED_SET_STATUSES = Object.freeze([
+  "draft",
+  "published",
+  "superseded",
+]);
+/** 製品の「再開できる run」の列挙の上限（Native の list_resumable_runs は 1〜100 に収める）。 */
+export const STORED_RUN_LIST_LIMIT = 100;
+/**
+ * 製品の restore（restoreCodexStructureExtractionReview）が列挙する run の数（limit: 8）と、再開できる run の状態
+ * （runRepository.ts の RESUMABLE_RUN_STATUSES）。product-parity.test.mjs が製品の source と照合する。
+ */
+export const STORED_RESTORE_LIST_LIMIT = 8;
+export const STORED_RESUMABLE_RUN_STATUSES = Object.freeze([
+  "pending",
+  "running",
+  "completed",
+]);
+/** 保存済みの run の役割（summarizeStoredProposals が付ける）。current／prior だけが「採用した段の run」。 */
+export const STORED_RUN_ROLES = Object.freeze([
+  "current",
+  "prior",
+  "failed-stage",
+  "untracked",
+]);
+/** 保存済みの提案の読みの定義の版（measure-a-metrics.mjs の METRIC_DEFINITION_VERSION と同じ版の中の定義）。 */
+export const STORED_DEFINITION = "status-unreviewed";
+/** 未計測の理由。0 件とは別のものとして記録する。 */
+export const STORED_NOT_MEASURED_REASONS = Object.freeze([
+  "persist-skipped",
+  "persist-failed",
+  "read-failed",
+]);
+
+/** 既知の語だけを key にして数える（未知の語は other。0 件の key も残して形を固定する）。 */
+function tallyKnown(values, known) {
+  const counts = Object.fromEntries(known.map((k) => [k, 0]));
+  counts.other = 0;
+  for (const value of values) {
+    if (known.includes(value)) counts[value]++;
+    else counts.other++;
+  }
+  return counts;
+}
+const knownOrOther = (value, known) =>
+  known.includes(value) ? value : "other";
+
+/**
+ * 保存済みの提案（DB）から数えた件数。本文・名簿・表記は入らない（kind・status の語と件数だけ）。
+ * runs：製品の read-only の読み（list_resumable_runs と get_run_review_bundle）を行に落としたもの。
+ *   { role: "current"|"prior", listedByProduct, tracked, failedStage, visibleToAuthor, runStatus, setStatus,
+ *     proposals: [{ kind, status, applied }] }
+ *   current ＝ この段の保存の run（道具が控える）。prior ＝ 前の段の run のうち、採用した（道具が控えた）run。
+ *   failed-stage ＝ 道具が保存したが、その段が失敗して採用されなかった run。untracked ＝ 道具が控えていない run
+ *   （保存の失敗の残りなど。製品の列挙にだけある）。採用しなかった 2 つは「前の回」に数えず、別に数える。
+ *   current は高々 1 つ。visibleToAuthor ＝ 製品の restore が作者に出す run（planProductVisibleRuns）。
+ * listedCount：製品の列挙（list_resumable_runs）が返した run の数（limit に達したら打ち切りの旗を立てる）。
+ * 未 review ＝ 提案の status が "unreviewed"（製品の NarrativeProposalStatus。製品の画面の提案ごとの status と同じ。
+ * 違うのは restore が書き換える関係の提案〔根拠が未解決の承認済み・適用不要の保留→未 review〕で、道具は再導出しない）。
+ */
+export function summarizeStoredProposals({ runs, listedCount }) {
+  const roleOf = (run) => {
+    if (run.role === "current") return "current";
+    if (run.failedStage === true) return "failed-stage";
+    if (run.tracked === false) return "untracked";
+    return "prior";
+  };
+  const withRole = runs.map((run) => ({ run, adoption: roleOf(run) }));
+  const ofRole = (...roles) =>
+    withRole
+      .filter((entry) => roles.includes(entry.adoption))
+      .map((entry) => entry.run);
+  const currentRuns = ofRole("current");
+  if (currentRuns.length > 1)
+    throw new Error("[artifact] STORED_CURRENT_RUN_NOT_UNIQUE");
+  const priorRuns = ofRole("prior");
+  const notAdoptedRuns = ofRole("failed-stage", "untracked");
+  const visibleRuns = runs.filter((run) => run.visibleToAuthor === true);
+  const unreviewedOf = (list) =>
+    list.filter((proposal) => proposal.status === "unreviewed");
+  const kindsOf = (list) =>
+    tallyKnown(
+      list.map((proposal) => proposal.kind),
+      STORED_PROPOSAL_KINDS,
+    );
+  const proposalsOfRuns = (list) => list.flatMap((run) => run.proposals);
+  const all = proposalsOfRuns(runs);
+  const current = proposalsOfRuns(currentRuns);
+  const prior = proposalsOfRuns(priorRuns);
+  const notAdopted = proposalsOfRuns(notAdoptedRuns);
+  const visible = proposalsOfRuns(visibleRuns);
+  return {
+    status: "measured",
+    definition: STORED_DEFINITION,
+    listLimit: STORED_RUN_LIST_LIMIT,
+    restoreListLimit: STORED_RESTORE_LIST_LIMIT,
+    listedByProductCount: listedCount,
+    listTruncated: listedCount >= STORED_RUN_LIST_LIMIT,
+    runCount: runs.length,
+    currentRunCount: currentRuns.length,
+    priorRunCount: priorRuns.length,
+    // 採用しなかった run（失敗した段の run と、道具が控えていない run）。「前の回」に数えない。
+    notAdoptedRunCount: notAdoptedRuns.length,
+    failedStageRunCount: ofRole("failed-stage").length,
+    // 製品の列挙にあるが道具が保存していない run（保存の失敗の残りなど）。
+    untrackedRunCount: ofRole("untracked").length,
+    // 製品の restore が作者に出す run の数（folder ごとの最新。それ以外の run の未 review は作者の画面に出ない）。
+    visibleToAuthorRunCount: visibleRuns.length,
+    // scope の folder の識別子が読めなかった run の数（0 のはず。0 でなければ「作者に見える run」が製品とずれる。製品の restore は folder 不明の run をどの folder にも当てるが、planProductVisibleRuns は独立の folder として数えるので、多く出る側にずれる）。
+    folderUnknownRunCount: runs.filter((run) => run.folderKnown !== true)
+      .length,
+    // 道具が保存した run のうち、製品の列挙（再開できる run）に載らなかったもの（前の段の run も含む）。
+    trackedNotListedByProductCount: runs.filter(
+      (run) => run.tracked === true && !run.listedByProduct,
+    ).length,
+    unreviewed: {
+      total: unreviewedOf(all).length,
+      currentRun: unreviewedOf(current).length,
+      priorRuns: unreviewedOf(prior).length,
+      notAdoptedRuns: unreviewedOf(notAdopted).length,
+      // 作者に見える run の分と、それ以外（total = visibleToAuthor + notVisibleToAuthor）。
+      visibleToAuthor: unreviewedOf(visible).length,
+      notVisibleToAuthor:
+        unreviewedOf(all).length - unreviewedOf(visible).length,
+      byKind: kindsOf(unreviewedOf(all)),
+      currentRunByKind: kindsOf(unreviewedOf(current)),
+      priorRunsByKind: kindsOf(unreviewedOf(prior)),
+      visibleToAuthorByKind: kindsOf(unreviewedOf(visible)),
+    },
+    stored: {
+      total: all.length,
+      currentRun: current.length,
+      priorRuns: prior.length,
+      notAdoptedRuns: notAdopted.length,
+      byStatus: tallyKnown(
+        all.map((proposal) => proposal.status),
+        STORED_PROPOSAL_STATUSES,
+      ),
+      byKind: kindsOf(all),
+      currentRunByKind: kindsOf(current),
+      applied: all.filter((proposal) => proposal.applied === true).length,
+    },
+    perRun: [
+      ...currentRuns,
+      ...priorRuns,
+      ...ofRole("failed-stage"),
+      ...ofRole("untracked"),
+    ].map((run) => ({
+      role: roleOf(run),
+      listedByProduct: run.listedByProduct === true,
+      tracked: run.tracked === true,
+      visibleToAuthor: run.visibleToAuthor === true,
+      folderKnown: run.folderKnown === true,
+      runStatus: knownOrOther(run.runStatus, STORED_RUN_STATUSES),
+      setStatus:
+        run.setStatus === null || run.setStatus === undefined
+          ? "none"
+          : knownOrOther(run.setStatus, STORED_SET_STATUSES),
+      total: run.proposals.length,
+      unreviewed: unreviewedOf(run.proposals).length,
+      unreviewedByKind: kindsOf(unreviewedOf(run.proposals)),
+    })),
+  };
+}
+
+/**
+ * 読む run の一覧と役割（純関数）。製品の列挙（listedIds。新しい順）と、道具が保存した run（trackedIds。古い順。
+ * 採用した段の run）と、保存したが段が失敗した run（failedIds）の和集合。製品の列挙は run の状態で絞られる
+ * （pending／running／completed）ので、控えた run を必ず足す（前の段の run が一覧から落ちても、DB に残る
+ * 未 review を 0 と読まない）。今回の run ＝ 最後に採用した保存の run。
+ * failedStage：その段が失敗した run（前の回に数えない）。tracked：採用した段の run として控えたか。
+ */
+export function planStoredRuns({ listedIds, trackedIds, failedIds = [] }) {
+  const currentId = trackedIds.at(-1) ?? null;
+  const listed = new Set(listedIds);
+  const tracked = new Set(trackedIds);
+  const failed = new Set(failedIds);
+  return [...new Set([...listedIds, ...trackedIds, ...failedIds])].map(
+    (runId) => ({
+      runId,
+      role: runId === currentId ? "current" : "prior",
+      listedByProduct: listed.has(runId),
+      tracked: tracked.has(runId),
+      failedStage: failed.has(runId) && !tracked.has(runId),
+    }),
+  );
+}
+
+/**
+ * 製品の restore が作者に出す run の id の集合（純関数）。製品の restore は run の列挙（新しい順、先頭
+ * STORED_RESTORE_LIST_LIMIT 件）のうち、開いた folder の run で最初に復元できたもの 1 つを出す。
+ * ここでは folder ごとに、先頭 8 件のうち再開できる状態の最初の run を「作者に見える run」とする。
+ * listed：製品の列挙（新しい順）の { runId, runStatus, folderKey }。folderKey は run の scope の folder の識別子で、
+ * page の外へ出さない（比べるだけ）。復元の失敗（その run だけ読めない）は再現しない。
+ */
+export function planProductVisibleRuns({ listed }) {
+  const visible = new Set();
+  const seenFolders = new Set();
+  for (const run of listed.slice(0, STORED_RESTORE_LIST_LIMIT)) {
+    if (!STORED_RESUMABLE_RUN_STATUSES.includes(run.runStatus)) continue;
+    const key = run.folderKey ?? null;
+    if (seenFolders.has(key)) continue;
+    seenFolders.add(key);
+    visible.add(run.runId);
+  }
+  return visible;
+}
+
+/** 未計測（0 件ではない）。reason は STORED_NOT_MEASURED_REASONS のどれか。 */
+export function storedNotMeasured(reason, error = null) {
+  if (!STORED_NOT_MEASURED_REASONS.includes(reason))
+    throw new Error(`[precheck] unknown not-measured reason ${reason}`);
+  return {
+    status: "not-measured",
+    reason,
+    ...(error ? { error } : {}),
+  };
+}
+
+/**
+ * 保存つきの段（persistAttempt が ok）だけ DB を読む。保存しない段・保存に失敗した段は未計測
+ * （0 件と区別する。失敗した保存は途中の run を残しうるので、その段の件数は読まない）。
+ */
+export function planStoredRead(persistAttempt) {
+  const status = persistAttempt?.status;
+  if (status === "ok") return { read: true };
+  if (status === "failed")
+    return { read: false, result: storedNotMeasured("persist-failed") };
+  return { read: false, result: storedNotMeasured("persist-skipped") };
+}
+
+/**
+ * この段の run の保存済みの件数が、同じ段の projection の件数（提案の種類ごと）と一致するか。
+ * 保存の経路が提案を落とす・増やすなら食い違う（道具の読みの検査）。件数と kind の名前だけ返す。
+ */
+export function compareStoredWithProjection(stored, extract) {
+  if (stored?.status !== "measured" || stored.currentRunCount !== 1)
+    return { compared: false, ok: null, differingKinds: [] };
+  const differingKinds = STORED_PROPOSAL_KINDS.filter(
+    (kind) =>
+      (stored.stored.currentRunByKind[kind] ?? 0) !==
+      (extract?.[STORED_PROPOSAL_KIND_FIELDS[kind]] ?? 0),
+  );
+  return {
+    compared: true,
+    ok:
+      differingKinds.length === 0 && stored.stored.currentRunByKind.other === 0,
+    differingKinds,
+  };
+}
+
+// ---- 名簿の型が catalog に入ったか（F3b の m2）-------------------------------------------
+
+/**
+ * 登録した Entry の型が、製品の catalog（buildCodexStructureCatalogs の戻り）で同じ型として載ったかを確かめる（純関数）。
+ * 製品は、project の型の一覧に無い型の Entry を先頭の型に落とす（existingCatalog の typeRef が typeCatalog の先頭になる）。
+ * その場合、静的な旗は人物の型と判定しても、実行時の再検査は外す（bulkBind が過大になりうる）。
+ * entries：[{ id, type }]（DB から読んだもの）。existingCatalog：[{ sourceKey, typeRef }]。typeCatalog：[{ ref, slug }]。
+ * 返り値は件数だけ（id・型の文字列は返さない）。missingFromCatalog：catalog に載らなかった Entry。
+ * typeMismatch：catalog の型の slug が、登録した型と違う Entry（先頭の型への落ち）。
+ */
+export function checkEntryTypesInCatalog({
+  entries,
+  existingCatalog,
+  typeCatalog,
+}) {
+  if (
+    !Array.isArray(entries) ||
+    !Array.isArray(existingCatalog) ||
+    !Array.isArray(typeCatalog)
+  )
+    return {
+      determinable: false,
+      checked: 0,
+      missingFromCatalog: 0,
+      typeMismatch: 0,
+    };
+  const slugByRef = new Map(typeCatalog.map((type) => [type?.ref, type?.slug]));
+  const catalogBySource = new Map(
+    existingCatalog.map((item) => [item?.sourceKey, item]),
+  );
+  let missingFromCatalog = 0;
+  let typeMismatch = 0;
+  for (const entry of entries) {
+    const item = catalogBySource.get(entry?.id);
+    if (!item) {
+      missingFromCatalog++;
+      continue;
+    }
+    const slug = slugByRef.get(item.typeRef);
+    if (typeof slug !== "string" || slug !== entry.type) typeMismatch++;
+  }
+  // 型の一覧が空で Entry がある・Entry の型が文字列でない、は判定できない。
+  const determinable =
+    entries.every((entry) => typeof entry?.type === "string") &&
+    (entries.length === 0 || typeCatalog.length > 0);
+  return {
+    determinable,
+    checked: entries.length,
+    missingFromCatalog,
+    typeMismatch,
+  };
+}
+
+/** checkEntryTypesInCatalog が不一致か判定不能なら止める（測定は始めない。件数だけの tag）。 */
+export function assertEntryTypesInCatalog(input) {
+  const result = checkEntryTypesInCatalog(input);
+  if (!result.determinable)
+    throw new Error(
+      `[precheck] ENTRY_TYPE_CATALOG_UNDETERMINABLE checked=${result.checked}`,
+    );
+  if (result.missingFromCatalog > 0 || result.typeMismatch > 0)
+    throw new Error(
+      `[precheck] ENTRY_TYPE_NOT_IN_CATALOG checked=${result.checked} missing=${result.missingFromCatalog} typeMismatch=${result.typeMismatch}`,
+    );
+  return result;
+}
+
 // ---- ルビ（｜親文字《読み》）と ProseMirror 本文 -------------------------------
 
 /**
@@ -1342,12 +1748,56 @@ export function wilsonUpper(k, n, z = 1.96) {
 
 // ---- 測定 B：AI 判定の失敗の分類 ---------------------------------------------
 
-/** 再送してよい失敗の種類（通信の失敗＝429／5xx／接続）。判定の中身の失敗は再送しない。 */
+/**
+ * 再送してよい失敗の種類。再送してよいのは、同じ body の要求が別に続いていないと確かめられる失敗だけ：
+ * 429／5xx（応答が返った。要求は終わっている）と、接続が張れる前に終わった失敗（network-unsent：名前解決の失敗・接続拒否）。
+ * 次は再送しない（F2 の R7）：
+ * - ipc-timeout：IPC が 300 s で諦めても native の送信は続きうる。再送すると同じ body がもう 1 回出る。
+ * - network：timeout・reset・hang up など。要求が相手に届いたかは不明。
+ * 判定の中身の失敗も再送しない。
+ */
 export const RETRYABLE_FAILURE_KINDS = Object.freeze([
   "rate-limit",
   "server",
-  "network",
+  "network-unsent",
 ]);
+
+/**
+ * 送信の直前の guard の順序（renderer の bJudge。page で動く）。どれかが通らなければ judge を呼ばずに、理由の分類だけを返す。
+ *   key の導入前（not-armed）→ policy・ライセンス → 候補が 0 → 役割の上書き（role-override）→ 送る窓の名簿の hidden（hidden-roster）
+ * 役割・hidden の確認が例外を投げる（設定・DB が読めない）のも、判定できないので送らない。judge は全部通った後に 1 回だけ呼ぶ。
+ * 副作用（IPC・設定の読み）は deps で渡すので、fake で振る舞いを試験できる。
+ */
+export async function runGuardedJudge({
+  sendArmed,
+  blockedByPolicyOrLicense,
+  visibleCount,
+  assertRoleDefaults,
+  countHiddenInSentWindow,
+  judge,
+}) {
+  const refuse = (kind) => ({ ok: false, kind, durationMs: 0 });
+  if (!sendArmed) return refuse("not-armed");
+  if (blockedByPolicyOrLicense()) return refuse("policy-or-license");
+  if (visibleCount === 0) return refuse("no-candidates");
+  try {
+    const role = await assertRoleDefaults();
+    if (
+      role.nonDefaultRoleKeys !== 0 ||
+      role.roleProvidersNonDefault ||
+      !role.sendOverrideClear
+    )
+      return refuse("role-override");
+  } catch {
+    return refuse("role-override");
+  }
+  try {
+    if ((await countHiddenInSentWindow()) !== 0) return refuse("hidden-roster");
+  } catch {
+    return refuse("hidden-roster");
+  }
+  return judge();
+}
 
 /**
  * judgeCandidates が投げた例外を、失敗の種類（と HTTP status があれば数値）に分類する。
@@ -1355,7 +1805,9 @@ export const RETRYABLE_FAILURE_KINDS = Object.freeze([
  * - auth：401／403
  * - rate-limit：429
  * - server：5xx（529 を含む）
- * - network：接続・名前解決・timeout
+ * - ipc-timeout：IPC の timeout（native の送信は続いていて、要求が出たか・出続けているか分からない）
+ * - network-unsent：接続が張れる前の失敗（名前解決・接続拒否・到達不能）。要求は出ていない
+ * - network：上以外の接続・timeout・reset（要求が出たか分からない）
  * - no-valid-result：判定の中身が有効でない（CODEX_JUDGMENT_NO_VALID_RESULT）
  * - license：ライセンス制限
  * - other：上のどれでもない
@@ -1371,32 +1823,62 @@ export function classifyJudgmentFailure(error) {
   ]
     .map((part) => String(part ?? ""))
     .join(" ");
-  const status = /\b(?:status|http|error|code)\D{0,6}([45]\d\d)\b/iu.exec(
-    text,
-  )?.[1];
-  const bare = /\b(401|403|429|5\d\d)\b/u.exec(text)?.[1];
-  const code = Number(status ?? bare ?? 0) || null;
   if (/CODEX_JUDGMENT_NO_VALID_RESULT/u.test(text))
     return { kind: "no-valid-result", httpStatus: null };
+  // IPC の timeout は最初に分ける（native の送信は続きうる。HTTP status や timed out の語より優先）。
+  if (/IPC_TIMEOUT|IPC timeout after/u.test(text))
+    return { kind: "ipc-timeout", httpStatus: null };
+  // Rust の応答の失敗の文面 "AI request failed (NNN): …"／"AI request failed (HTTP NNN): …"（grimodex-ai）。応答が返った
+  // 証拠で、括弧の status が正本。本文（detail）に何が書かれていても（512・rate limit など）status を優先して読む（F3a の m1）。
+  const explicit = Number(
+    /AI request failed\s*\((?:HTTP\s*)?(\d{3})\)/iu.exec(text)?.[1] ?? 0,
+  );
+  if (explicit >= 400 && explicit < 600) {
+    if (explicit === 401 || explicit === 403)
+      return { kind: "auth", httpStatus: explicit };
+    if (explicit === 429) return { kind: "rate-limit", httpStatus: 429 };
+    if (explicit >= 500) return { kind: "server", httpStatus: explicit };
+    return { kind: "other", httpStatus: explicit };
+  }
+  // 届いたか分からない語（timeout・reset・broken pipe・hang up など）は、数字・rate limit の語より先に見て、再送しない側に倒す
+  // （"timed out after 500 ms"・"connection reset (status 502)" を 5xx として再送しない）。
+  if (
+    /ETIMEDOUT|ECONNRESET|ECONNABORTED|EPIPE|timed?[ _-]?out|time-?out|\breset\b|broken pipe|hang ?up|connection (?:closed|aborted)|unexpected eof|incomplete message/iu.test(
+      text,
+    )
+  )
+    return { kind: "network", httpStatus: null };
+  // status は、status・http・error・code の語に続く数字だけ読む（文中の 512 などの数字を status にしない）。
+  const labeled = Number(
+    /\b(?:status|http|error|code)\D{0,6}([45]\d\d)\b/iu.exec(text)?.[1] ?? 0,
+  );
+  const code = labeled || null;
   if (/LICENSE|license.?restrict/iu.test(text) && !code)
     return { kind: "license", httpStatus: null };
   if (
     code === 401 ||
     code === 403 ||
+    /\b(401|403)\b/u.test(text) ||
     /unauthori[sz]ed|forbidden|invalid.{0,10}api.?key|authentication/iu.test(
       text,
     )
   )
-    return { kind: "auth", httpStatus: code === 403 ? 403 : 401 };
+    return {
+      kind: "auth",
+      httpStatus: code === 403 || /\b403\b/u.test(text) ? 403 : 401,
+    };
   if (code === 429 || /rate.?limit|too many requests/iu.test(text))
     return { kind: "rate-limit", httpStatus: 429 };
   if (code !== null && code >= 500) return { kind: "server", httpStatus: code };
   if (/overloaded/iu.test(text)) return { kind: "server", httpStatus: 529 };
+  // 接続が張れる前に終わったと言える語だけ（「error sending request」だけは含めない）。
   if (
-    /ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|fetch failed|network|IPC_TIMEOUT|socket hang up/iu.test(
+    /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|dns error|failed to lookup address|connection refused/iu.test(
       text,
     )
   )
+    return { kind: "network-unsent", httpStatus: null };
+  if (/ECONN|ENOTFOUND|EAI_AGAIN|fetch failed|network/iu.test(text))
     return { kind: "network", httpStatus: null };
   return { kind: "other", httpStatus: code };
 }

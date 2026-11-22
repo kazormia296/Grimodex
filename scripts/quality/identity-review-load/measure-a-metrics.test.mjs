@@ -1,6 +1,7 @@
 // 測定 A の指標の試験（合成の名簿と提案。実在の原稿・名簿は使わない）。
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { countBulkApprovable, isBulkApprovableRow } from "./lib.mjs";
 import {
   buildRosterIndex,
   candidateRank,
@@ -10,6 +11,7 @@ import {
   compareSets,
   computeMeasureA,
   lookupRoster,
+  METRIC_DEFINITION_VERSION,
   surfaceKindSet,
   unresolvedReason,
 } from "./measure-a-metrics.mjs";
@@ -200,6 +202,150 @@ test("classifyRow：5 分類と 0（名簿に無い）。順に判定する", as
       .category,
     "manualCreate",
   );
+});
+
+test("classifyRow：bind-existing は一括承認可なら bulkBind、そうでなければ bindCheck（create-new の bulk とは別）", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  const listed = lookupRoster(index, "alpha", [1]);
+  assert.equal(
+    classifyRow(row("alpha", "bind-existing"), listed, {
+      bulkApprovable: true,
+    }).category,
+    "bulkBind",
+  );
+  assert.equal(
+    classifyRow(row("alpha", "bind-existing"), listed, {
+      bulkApprovable: false,
+    }).category,
+    "bindCheck",
+  );
+  // 名簿の外の行は、一括承認可でも名簿の外のまま（分類の順序は変えない）。
+  assert.equal(
+    classifyRow(row("zzz", "bind-existing"), lookupRoster(index, "zzz", [1]), {
+      bulkApprovable: true,
+    }).category,
+    "notInRoster",
+  );
+});
+
+test("computeMeasureA：一括で通る結び付けは一括の側に数え、承認の下限は『ボタン 1 回』にまとめる。renderer の一括承認可の数と合計が一致する", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  // renderer の行は applicability・status・safe から bulkApprovable を作る（製品の 3 条件）。
+  const mk = (keyHash, bindingKind, safe, extra = {}) => {
+    const r = row(keyHash, bindingKind, {
+      applicability: "applicable",
+      status: "unreviewed",
+      safe,
+      ...extra,
+    });
+    return { ...r, bulkApprovable: isBulkApprovableRow(r) };
+  };
+  const rows = [
+    // 一括で通る結び付け（名簿どおり／名簿と違う結び先）。
+    mk("alpha", "bind-existing", true, { bindExistingEntityId: "e1" }),
+    mk("beta", "bind-existing", true, { bindExistingEntityId: "e1" }),
+    // 1 件ずつの結び付け。
+    mk("gamma", "bind-existing", false, { bindExistingEntityId: "e3" }),
+    // 一括で通る create-new。
+    mk("al", "create-new", true),
+    // 名簿に無い表記の一括承認可（件数の合計には入るが、分類は名簿の外）。
+    mk("noise", "create-new", true),
+    mk("noise2", "bind-existing", true, { bindExistingEntityId: "e1" }),
+  ];
+  const m = computeMeasureA({
+    index,
+    rows,
+    seedDrops: { relationalTerms: 2, foldedDismissed: 1 },
+  });
+  assert.equal(m.categoryCounts.bulkBind, 2);
+  assert.equal(m.categoryCounts.bindCheck, 1);
+  assert.equal(m.categoryCounts.bulk, 1);
+  assert.equal(m.categoryCounts.notInRoster, 2);
+  // 一括承認可の合計は renderer の countBulkApprovable（全行）と同じ。内訳に取りこぼしは無い。
+  assert.equal(m.bulkApprovable.total, countBulkApprovable(rows));
+  assert.equal(m.bulkApprovable.total, 5);
+  assert.deepEqual(m.bulkApprovable.byCategory, {
+    bulkBind: 2,
+    bulk: 1,
+    notInRoster: 2,
+  });
+  assert.equal(m.bulkApprovable.unexpectedBinding, 0);
+  assert.equal(m.bulkApprovable.outsideBulkCategories, 0);
+  assert.equal(m.bulkApprovable.bulkTotal, 3);
+  // 一括承認は create と結び付けを合わせてボタン 1 回（2 回に数えない）。
+  assert.equal(m.operations.surfaceUnit.counts.bulk, 1);
+  assert.equal(m.operations.surfaceUnit.counts.bindCheck, 1);
+  assert.equal(m.operations.surfaceUnit.approval, 1 + 1);
+  // 一括に入った結び付けの結び先の違いは別に数える（beta の名簿の実体は e2 だが e1 に結んでいる）。
+  assert.equal(m.mismatch.wrongTarget, 1);
+  assert.equal(m.mismatch.wrongTargetInBulk, 1);
+  // 製品が seed を落とした件数は、加工せず記録する（件数だけ）。
+  assert.deepEqual(m.seedDrops, { relationalTerms: 2, foldedDismissed: 1 });
+  assert.equal(computeMeasureA({ index, rows: [] }).seedDrops, null);
+});
+
+test("computeMeasureA：名簿で結び先が 1 つに定まらない（場面で指す人が変わる・別名の衝突・敬称が複数）表記への一括の結び付けは、結び先違いの危険に数える", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  const mk = (keyHash, bindingKind, safe, extra = {}) => {
+    const r = row(keyHash, bindingKind, {
+      applicability: "applicable",
+      status: "unreviewed",
+      safe,
+      ...extra,
+    });
+    return { ...r, bulkApprovable: isBulkApprovableRow(r) };
+  };
+  const rows = [
+    // 2 つの実体が別名に持つ表記（衝突。ambiguous）。結び先 e1 は集合の中。製品は一括の結び付けにした。
+    mk("shared", "bind-existing", true, { bindExistingEntityId: "e1" }),
+    // 場面 1〜9 にまたがり e5・e6 を指す表記。結び先 e5 は集合の中。
+    mk("moving", "bind-existing", true, {
+      bindExistingEntityId: "e5",
+      scenes: [
+        [2, 1],
+        [7, 1],
+      ],
+    }),
+    // 同じ ambiguous でも、結び先が指しうる実体の集合の外。
+    mk("shared", "bind-existing", true, { bindExistingEntityId: "e3" }),
+    // ambiguous への 1 件ずつの結び付け（一括でない）は、この危険の件数に入らない。
+    mk("shared", "bind-existing", false, { bindExistingEntityId: "e1" }),
+    // 名簿が 1 つの実体に定める表記への一括の結び付けで、結び先が違うもの（従来の数え方）。
+    mk("beta", "bind-existing", true, { bindExistingEntityId: "e1" }),
+    // 名簿どおりの一括の結び付けは数えない。
+    mk("alpha", "bind-existing", true, { bindExistingEntityId: "e1" }),
+  ];
+  const m = computeMeasureA({ index, rows });
+  assert.equal(m.collision.ambiguousRows, 4);
+  assert.equal(m.categoryCounts.bulkBind, 5);
+  assert.equal(m.mismatch.bulkBindOnAmbiguous, 3);
+  assert.equal(m.mismatch.bulkBindOnAmbiguousOutOfSet, 1);
+  assert.equal(m.mismatch.wrongTargetInBulkEntity, 1);
+  // wrongTargetInBulk は 2 つの合計（定義の版 a-defs/2）。
+  assert.equal(m.mismatch.wrongTargetInBulk, 4);
+  assert.equal(
+    m.mismatch.wrongTargetInBulk,
+    m.mismatch.wrongTargetInBulkEntity + m.mismatch.bulkBindOnAmbiguous,
+  );
+  // wrongTarget（一括かどうかを問わない、名簿が 1 つに定める表記だけの数え方）は変えない。
+  assert.equal(m.mismatch.wrongTarget, 1);
+  assert.equal(m.definitionVersion, METRIC_DEFINITION_VERSION);
+});
+
+test("computeMeasureA：一括承認可の行が bulk 系にも名簿の外にも入らなければ、取りこぼしとして数える", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  // bulkApprovable なのに unresolved（製品の旗の定義上ありえない行）。
+  const m = computeMeasureA({
+    index,
+    rows: [
+      row("al", "unresolved", {
+        bulkApprovable: true,
+        candidates: [{ id: "e1", score: 90, methods: ["prefix"] }],
+      }),
+    ],
+  });
+  assert.equal(m.bulkApprovable.unexpectedBinding, 1);
+  assert.equal(m.bulkApprovable.outsideBulkCategories, 1);
 });
 
 test("computeMeasureA：件数・食い違い・操作の数・衝突の挙動", async () => {
@@ -399,7 +545,10 @@ test("lookupRoster：関係の呼び名は kind relational（指しうる実体�
   assert.equal(lookupRoster(index, "beta-alias", [1]).kind, "entity");
   assert.deepEqual(lookupRoster(index, "nobody", [1]), { kind: "unlisted" });
   // 関係の呼び名の欄が無い名簿でも引ける（これまでと同じ）。
-  const plain = await buildRosterIndex({ entities: [relationalRoster.entities[0]] }, ident);
+  const plain = await buildRosterIndex(
+    { entities: [relationalRoster.entities[0]] },
+    ident,
+  );
   assert.equal(lookupRoster(plain, "alpha", [1]).kind, "entity");
 });
 
@@ -437,7 +586,114 @@ test("computeMeasureA：関係の呼び名が作る提案は別の枠（relation
 
 test("classifyRow：relational は 0（名簿に無い）とも 1〜5 とも別の分類", () => {
   assert.equal(
-    classifyRow(row("kin-call", "create-new"), { kind: "relational", ids: ["e1"] }, { bulkApprovable: true }).category,
+    classifyRow(
+      row("kin-call", "create-new"),
+      { kind: "relational", ids: ["e1"] },
+      { bulkApprovable: true },
+    ).category,
     "relational",
   );
+});
+
+// ---- 一括 1 回で誤った Entry ができる件数（a-defs/3。M1）・関係の呼び名の unresolved（m3）-------------------
+
+const wrongEntryRoster = {
+  entities: [
+    {
+      id: "e1",
+      type: "character",
+      name: "alpha",
+      aliases: [{ surface: "shared", level: "L2" }],
+      relationalSurfaces: ["kin-call"],
+    },
+    {
+      id: "e2",
+      type: "character",
+      name: "beta",
+      aliases: [{ surface: "shared", level: "L2" }],
+    },
+  ],
+};
+const mkBulk = (keyHash, bindingKind, extra = {}) => {
+  const r = row(keyHash, bindingKind, {
+    applicability: "applicable",
+    status: "unreviewed",
+    safe: true,
+    ...extra,
+  });
+  return { ...r, bulkApprovable: isBulkApprovableRow(r) };
+};
+
+test("computeMeasureA：一括の create-new が名簿の外・結び先が定まらない表記・既知の実体に向く件数を、一括 1 回で誤った Entry ができる件数として数える（操作の下限は変えない）", async () => {
+  const index = await buildRosterIndex(wrongEntryRoster, ident);
+  const rows = [
+    // 名簿にも対応表にも無い表記（ノイズ）への一括の create-new：2 件。
+    mkBulk("noise-1", "create-new"),
+    mkBulk("noise-2", "create-new"),
+    // 関係の呼び名への一括の create-new：1 件。
+    mkBulk("kin-call", "create-new"),
+    // 名簿で結び先が定まらない表記（別名の衝突）への一括の create-new：1 件。
+    mkBulk("shared", "create-new"),
+    // 名簿が 1 つの実体に定める表記への一括の create-new（後始末の重複）：1 件。
+    mkBulk("alpha", "create-new"),
+    // 数えないもの：一括でない create-new、結び付け、名簿の外でも一括でない行。
+    row("noise-3", "create-new"),
+    mkBulk("beta", "bind-existing", { bindExistingEntityId: "e2" }),
+    row("kin-call", "create-new"),
+  ];
+  const m = computeMeasureA({ index, rows });
+  const w = m.mismatch.bulkCreateWrongEntry;
+  assert.deepEqual(w, {
+    notInRoster: 2,
+    relational: 1,
+    ambiguous: 1,
+    outsideRoster: 4,
+    knownEntity: 1,
+    total: 5,
+  });
+  assert.equal(w.knownEntity, m.mismatch.cleanupBulkOfKnownEntity);
+  // 一括承認可の全行（renderer の数と照合する値）には名簿の外の行も入っている。
+  assert.equal(m.bulkApprovable.total, 6);
+  // 操作の下限は a-defs/2 のまま：名簿の外の行は下限に入れず、一括の「ボタン 1 回」は名簿の実体の行（alpha の create-new・
+  // shared の create-new・beta の結び付け）で数える。
+  assert.equal(m.categoryCounts.notInRoster, 3);
+  assert.equal(m.categoryCounts.relational, 2);
+  assert.equal(m.bulkApprovable.bulkTotal, 3);
+  assert.equal(m.operations.surfaceUnit.counts.bulk, 1);
+});
+
+test("computeMeasureA：名簿の外の一括の create-new しか無くても、一括 1 回の危険は数え、下限の『一括承認 1』は足さない", async () => {
+  const index = await buildRosterIndex(wrongEntryRoster, ident);
+  const m = computeMeasureA({
+    index,
+    rows: [mkBulk("noise-1", "create-new"), mkBulk("kin-call", "create-new")],
+  });
+  assert.equal(m.mismatch.bulkCreateWrongEntry.total, 2);
+  assert.equal(m.mismatch.bulkCreateWrongEntry.outsideRoster, 2);
+  assert.equal(m.operations.surfaceUnit.counts.bulk, 0);
+  assert.equal(m.operations.surfaceUnit.approval, 0);
+  assert.equal(m.operations.surfaceUnit.keepSurface, 0);
+});
+
+test("computeMeasureA：関係の呼び名の unresolved のうち部分一致の候補があるものを別に数える（作者に出る提案。操作の下限には入れない）", async () => {
+  const index = await buildRosterIndex(wrongEntryRoster, ident);
+  const rows = [
+    row("kin-call", "unresolved", {
+      candidates: [{ id: "e1", score: 80, methods: ["prefix"] }],
+    }),
+    row("kin-call", "unresolved", {
+      candidates: [{ id: "e2", score: 60, methods: ["substring", "x"] }],
+    }),
+    // 部分一致でない候補（完全一致）だけの unresolved は数えない。
+    row("kin-call", "unresolved", {
+      candidates: [{ id: "e1", score: 100, methods: ["exact-name"] }],
+    }),
+    row("kin-call", "create-new"),
+  ];
+  const m = computeMeasureA({ index, rows });
+  assert.equal(m.relational.byBinding.unresolved, 3);
+  assert.equal(m.relational.unresolvedWithPartialCandidate, 2);
+  assert.equal(m.operations.surfaceUnit.approval, 0);
+  assert.equal(m.operations.surfaceUnit.keepSurface, 0);
+  assert.equal(m.operations.entityUnit.approval, 0);
 });

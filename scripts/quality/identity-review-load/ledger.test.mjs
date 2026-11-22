@@ -1,6 +1,12 @@
 // 費用の台帳と停止線の試験（API は呼ばない。合成の usage だけ）。
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -96,6 +102,7 @@ test("台帳は 0600 の JSONL で、本文・key の欄を持たない", () => 
       Object.keys(row).sort(),
       [
         "billed",
+        "charge",
         "est_input_tokens",
         "est_output_tokens",
         "failure_kind",
@@ -105,6 +112,7 @@ test("台帳は 0600 の JSONL で、本文・key の欄を持たない", () => 
         "note",
         "ok",
         "output_tokens",
+        "reservation_id",
         "stage",
         "ts",
         "usd",
@@ -515,6 +523,14 @@ test("失敗でも読めた token は課金する。別 surface・分類不能�
       "AI_SURFACE_UNEXPECTED",
     ],
     [{ ok: false, failureKind: "other" }, "UNCLASSIFIED_FAILURE"],
+    // IPC の timeout：native の送信は続きうるので、同じ body の 2 回目を出さないよう停止する（F2 の R7）。
+    [
+      { ok: false, failureKind: "ipc-timeout" },
+      "IPC_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT",
+    ],
+    // page 側の guard が送らずに返した失敗（role-override・hidden-roster）も、次の回へ進めず停止する。
+    [{ ok: false, failureKind: "role-override" }, "ROLE_OVERRIDE_NOT_DEFAULT"],
+    [{ ok: false, failureKind: "hidden-roster" }, "ROSTER_HAS_HIDDEN"],
     [
       { ok: false, failureKind: "no-usage-row", responded: true },
       "USAGE_NOT_RECORDED",
@@ -576,5 +592,242 @@ test("2 倍超の線は、試走の実測 token の 2 倍も並べる（試走�
     );
   } finally {
     rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+const EST = { stage: "B1", estInputTokens: 10_000, estOutputTokens: 5_000 };
+const reservationRows = (file) =>
+  existsSync(`${file}.reservations`)
+    ? readFileSync(`${file}.reservations`, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    : [];
+const ledgerRows = (file) =>
+  readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+const another = (file, overrides = {}) =>
+  createGate({
+    file,
+    model: SONNET,
+    pricing: PRICING,
+    requireTrial: false,
+    ...overrides,
+  });
+
+test("予約（F3a の m3）：送る前に台帳へ予約を取り、並行の launcher の予約も上限に足す。精算で実費に置き換わる", () => {
+  const { dir, file, gate: a } = gate({ totalCapUsd: 0.2 });
+  try {
+    a.preflight(EST);
+    // 予約は別 file（台帳は 1 行 1 要求のまま）。0600。
+    assert.deepEqual(
+      reservationRows(file).map((r) => [r.type, r.stage, r.usd]),
+      [["RESERVE", "B1", 0.07]],
+    );
+    assert.equal(statSync(`${file}.reservations`).mode & 0o777, 0o600);
+    assert.equal(readFileSync(file, "utf8"), "");
+    assert.equal(Number(a.state.reserved.toFixed(4)), 0.07);
+    // 並行の launcher：自分の予約と合わせて上限（0.2）以内なら通り、超えるなら送らない。
+    const b = another(file, { totalCapUsd: 0.2 });
+    assert.equal(Number(b.state.reserved.toFixed(4)), 0.07);
+    b.preflight(EST);
+    const c = another(file, { totalCapUsd: 0.2 });
+    assert.throws(
+      () => c.preflight(EST),
+      (e) =>
+        e instanceof BudgetStop &&
+        e.code === "TOTAL_CAP_WOULD_EXCEED" &&
+        Number(e.detail.reserved.toFixed(4)) === 0.14,
+    );
+    // a が精算する（実費 0.058）：a の予約は実費に置き換わり、b の予約は残る。
+    send(a, ok(9_000, 4_000));
+    assert.equal(
+      ledgerRows(file).at(-1).reservation_id,
+      reservationRows(file)[0].id,
+    );
+    assert.equal(Number(a.state.total.toFixed(4)), 0.058);
+    assert.equal(Number(a.state.reserved.toFixed(4)), 0.07);
+    // b が送らずに取り消す：予約が消え、c が通る。
+    b.release();
+    assert.equal(a.state.pendingReservation, null);
+    assert.equal(Number(another(file).state.reserved.toFixed(4)), 0);
+    c.preflight(EST);
+    // 取り消しは RELEASE 行。台帳の行は増えない。
+    assert.deepEqual(
+      reservationRows(file).map((r) => r.type),
+      ["RESERVE", "RESERVE", "RELEASE", "RESERVE"],
+    );
+    assert.equal(ledgerRows(file).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("予約：精算されないまま終わった予約は残って累計に数える。次の preflight は自分の古い予約を取り消してから取り直す", () => {
+  const { dir, file, gate: a } = gate({ totalCapUsd: 0.2 });
+  try {
+    a.preflight(EST); // process が落ちた（精算も取り消しも無い）と見なす
+    const next = another(file, { totalCapUsd: 0.2 });
+    assert.equal(Number(next.state.reserved.toFixed(4)), 0.07);
+    assert.equal(Number(next.state.total.toFixed(4)), 0);
+    next.preflight(EST);
+    assert.equal(Number(next.state.reserved.toFixed(4)), 0.14);
+    // 同じ gate が精算せずにもう 1 回 preflight した：前の予約は取り消され、積み上がらない。
+    next.preflight(EST);
+    assert.equal(Number(next.state.reserved.toFixed(4)), 0.14);
+    next.release();
+    next.release(); // 二重の取り消しは何もしない
+    assert.equal(Number(another(file).state.reserved.toFixed(4)), 0.07);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("予約：preflight が停止線で止める経路（外挿）も lock の中で deadlock せず、STOP 行が残る", () => {
+  const {
+    dir,
+    file,
+    gate: g,
+  } = gate({
+    totalCapUsd: 1,
+    stageCapsUsd: { ...STAGE_CAPS_USD, B1: 100 },
+  });
+  try {
+    for (let i = 0; i < 12; i++) send(g, ok(10_000, 5_000));
+    assert.throws(
+      () => g.preflight({ ...EST, remainingAfterThis: 3 }),
+      (e) => e.code === "EXTRAPOLATION_EXCEEDS_CAP",
+    );
+    assert.equal(another(file).state.stopped.code, "EXTRAPOLATION_EXCEEDS_CAP");
+    // 予約は取られていない。
+    assert.deepEqual(reservationRows(file), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("届いたか分からない失敗（network・timeout・judge の例外・応答が返ったのに usage が無い）は、最大の見積りで課金し、最初の 1 回で停止線を立てる（F3a の M2）", () => {
+  // 最大の見積り＝試走の実測が無い段は見積りの 2 倍の token の費用（0.14）。
+  for (const [outcome, code] of [
+    [{ ok: false, failureKind: "network" }, "NETWORK_REQUEST_MAY_BE_IN_FLIGHT"],
+    [
+      { ok: false, failureKind: "ipc-timeout" },
+      "IPC_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT",
+    ],
+    [
+      { ok: false, failureKind: "watchdog-timeout" },
+      "WATCHDOG_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT",
+    ],
+    [
+      { ok: false, failureKind: "judge-error" },
+      "JUDGE_ERROR_REQUEST_MAY_BE_IN_FLIGHT",
+    ],
+  ]) {
+    const { dir, file, gate: g } = gate();
+    try {
+      g.preflight(EST);
+      assert.throws(
+        () => send(g, outcome),
+        (e) => e instanceof BudgetStop && e.code === code,
+      );
+      const row = ledgerRows(file)[0];
+      assert.equal(row.usd, 0.14, code);
+      assert.equal(row.charge, "estimate", code);
+      assert.equal(row.billed, false, code);
+      assert.equal(Number(g.state.total.toFixed(4)), 0.14, code);
+      // 較正・外挿の平均には入らない（billed でない）。予約は精算されて消える。
+      assert.equal(g.state.billedRequests, 0);
+      assert.equal(g.state.reserved, 0);
+      assert.equal(another(file).state.stopped.code, code);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  // 応答が返ったのに usage の行が読めなかった（responded）も同じ。応答の無い・送らなかった・応答が返った失敗は 0。
+  const cases = [
+    [
+      { ok: false, failureKind: "no-usage-row", responded: true },
+      0.14,
+      "estimate",
+    ],
+    [
+      {
+        ok: false,
+        failureKind: "tokens-zero",
+        responded: true,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      0.14,
+      "estimate",
+    ],
+    [{ ok: false, failureKind: "no-valid-result" }, 0.14, "estimate"],
+    [{ ok: false, failureKind: "other" }, 0.14, "estimate"],
+    [{ ok: false, failureKind: "other", httpStatus: 400 }, 0, "none"],
+    [{ ok: false, failureKind: "rate-limit", httpStatus: 429 }, 0, "none"],
+    [{ ok: false, failureKind: "server", httpStatus: 503 }, 0, "none"],
+    [{ ok: false, failureKind: "network-unsent" }, 0, "none"],
+    [{ ok: false, failureKind: "not-armed" }, 0, "none"],
+    // usage が読めたものは実測（見積りで上書きしない）。
+    [
+      {
+        ok: false,
+        failureKind: "network",
+        usage: { input_tokens: 9_000, output_tokens: 1_000 },
+      },
+      0.028,
+      "measured",
+    ],
+  ];
+  for (const [outcome, usd, charge] of cases) {
+    const { dir, file, gate: g } = gate();
+    try {
+      g.preflight(EST);
+      try {
+        send(g, outcome);
+      } catch (error) {
+        assert.ok(error instanceof BudgetStop);
+      }
+      const row = ledgerRows(file)[0];
+      assert.equal(row.usd, usd, JSON.stringify(outcome));
+      assert.equal(row.charge, charge, JSON.stringify(outcome));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("最大の見積りは、試走で較正した段では試走の実測の 2 倍の token の線（TOKENS_OVER と同じ式）で、見積りより小さくならない", () => {
+  const {
+    dir,
+    file,
+    gate: g,
+  } = gate({
+    requireTrial: true,
+    totalCapUsd: 15,
+  });
+  try {
+    // 試走：見積り 10k/5k に対して実測 8k/2k（比 0.8・0.4）。
+    g.preflight({ ...EST, stage: "trial" });
+    send(g, ok(8_000, 2_000), { stage: "trial" });
+    // B1：較正した線＝min(2×est×0.8, 2×8000)＝16000 入力、min(2×5000×0.4, 2×2000)＝4000 出力。
+    g.preflight(EST);
+    assert.throws(
+      () => send(g, { ok: false, failureKind: "network" }),
+      (e) => e.code === "NETWORK_REQUEST_MAY_BE_IN_FLIGHT",
+    );
+    const row = ledgerRows(file)
+      .filter((r) => r.type !== "STOP")
+      .at(-1);
+    // 見積り（0.07）より小さい較正値（16k×2+4k×10 = 0.072）でも、max(見積り, 線) になる。
+    assert.equal(row.usd, 0.072);
+    assert.ok(
+      row.usd >= usdOf(PRICING, { input_tokens: 10_000, output_tokens: 5_000 }),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

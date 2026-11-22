@@ -13,10 +13,29 @@
 //       unresolvedCandidateIn   名簿の実体が候補に入っている（順位つき。同点は同順位）
 //       unresolvedCandidateOut  候補に無い
 //   2 typeNeeded         create-new で型が未解決（blocked）
-//   3 bindCheck          bind-existing（1 件ずつ確かめる結び付け。AI なしの経路では完全一致だけ）
+//   3 bindCheck          bind-existing のうち、製品の一括承認の対象でないもの（1 件ずつ確かめる結び付け。
+//                        AI なしの経路では完全一致だけ）
+//   3' bulkBind          bind-existing のうち、製品の一括承認の対象のもの（row.bulkApprovable。完全一致・結び先が人物・
+//                        2 字以上・呼び名でない・他に部分一致の Entry が無い・別名／要約の追加が無い・依存提案が無い・
+//                        根拠が全件完全一致。renderer が製品の isSafeForCodexEntityBulkApprove で旗を出す）
 //   4 bulk               create-new で型が解決済みかつ一括承認可
 //   5 manualCreate       残りの create-new
+// 一括承認（ボタン 1 回）で通るのは bulk と bulkBind の合計（bulkTotal）。bulk は create-new 専用のまま
+// （mismatch.cleanupBulkOfKnownEntity などが create-new を前提にする）。
 import { candidateKey, hashSurface } from "./lib.mjs";
+
+/**
+ * 測定 A の指標の定義の版。computeMeasureA の出力に載せ、aggregate は版が混ざった入力を止める
+ * （旧 records は版なし＝"legacy" として扱い、新しい版と混ぜて集計しない）。定義を変えたら上げる。
+ *   "legacy"   版の欄が無い records（bindCheck に一括承認可の結び付けを含む・aliasButtons に呼び名を含む定義）。
+ *   "a-defs/2" 一括承認の結び付け（bulkBind）を別分類にし、wrongTargetInBulk が名簿の「結び先が 1 つに定まらない表記」
+ *              への一括の結び付けも危険として数え、保存済みの未 review を前の回／未採用の run／作者に見える run で分ける。
+ *   "a-defs/3" 一括の create-new が名簿の外（ノイズ・関係の呼び名）と結び先が 1 つに定まらない表記に向く件数と、既知の実体への
+ *              一括の create-new の件数を合わせた「一括 1 回で誤った Entry ができる件数」（mismatch.bulkCreateWrongEntry）を足し、
+ *              関係の呼び名の unresolved のうち部分一致の候補があるもの（作者に unresolved の提案として出る）を別に数える
+ *              （relational.unresolvedWithPartialCandidate）。操作の下限（承認の下限・表記を残す下限）の定義は a-defs/2 から変えない。
+ */
+export const METRIC_DEFINITION_VERSION = "a-defs/3";
 
 export const CATEGORIES = Object.freeze([
   "notInRoster",
@@ -25,8 +44,17 @@ export const CATEGORIES = Object.freeze([
   "unresolvedCandidateOut",
   "typeNeeded",
   "bindCheck",
+  "bulkBind",
   "bulk",
   "manualCreate",
+]);
+
+/** 一括承認可の行が入ってよい分類（名簿の外の 2 つは分類の前に抜かれる）。 */
+const BULK_ALLOWED_CATEGORIES = new Set([
+  "bulk",
+  "bulkBind",
+  "notInRoster",
+  "relational",
 ]);
 
 /** roster の type → Codex の型 slug（registerRoster に渡す型）。 */
@@ -172,7 +200,8 @@ export function classifyRow(row, lookup, { bulkApprovable }) {
       ? { category: "unresolvedCandidateOut", rank: null }
       : { category: "unresolvedCandidateIn", rank };
   }
-  if (row.bindingKind === "bind-existing") return { category: "bindCheck" };
+  if (row.bindingKind === "bind-existing")
+    return { category: bulkApprovable ? "bulkBind" : "bindCheck" };
   // create-new
   if (row.typeStatus !== "resolved") return { category: "typeNeeded" };
   if (bulkApprovable) return { category: "bulk" };
@@ -186,9 +215,11 @@ function bump(map, key, by = 1) {
 /**
  * 1 run の指標。
  * rows：renderer の extractStructure の rows（bulkApprovable を含む）。
+ * seedDrops：renderer が返す、製品が planner の前段で seed を落とした件数（件数だけ。表記は持たない）。
+ * 受け取った値を加工せず metrics.seedDrops に記録する（無ければ null）。
  * 返り値は件数・ID・割合だけ。
  */
-export function computeMeasureA({ index, rows }) {
+export function computeMeasureA({ index, rows, seedDrops = null }) {
   const categoryCounts = Object.fromEntries(CATEGORIES.map((c) => [c, 0]));
   const notInRosterByKind = {};
   const reasons = {};
@@ -205,13 +236,41 @@ export function computeMeasureA({ index, rows }) {
   };
   const mismatch = {
     wrongTarget: 0,
+    // 一括承認の対象の結び付けで、結び先が違う（または定まらない）危険のあるもの。次の 2 つの合計：
+    //   wrongTargetInBulkEntity  名簿が 1 つの実体に定める表記に、製品が一括で別の実体へ結ぶもの
+    //   bulkBindOnAmbiguous      名簿で結び先が 1 つに定まらない表記（lookup が ambiguous：場面で指す人が変わる表記・
+    //                            別名の衝突・敬称が複数の実体にある表記の 3 種）に、製品が一括で結んだもの
+    //                            （結び先が集合の中でも外でも数える。黙って別人に結ぶ最も危険な型。3 種は分けて数えない）
+    wrongTargetInBulk: 0,
+    wrongTargetInBulkEntity: 0,
+    bulkBindOnAmbiguous: 0,
+    bulkBindOnAmbiguousOutOfSet: 0, // うち結び先が名簿の指しうる実体の集合の外
     leftoverCreateNew: 0,
     leftoverUnresolvedOut: 0,
     cleanupBulkOfKnownEntity: 0,
     typePersonOnNonCharacter: 0,
     typePersonOnNonCharacterInBulk: 0,
+    // 一括承認（ボタン 1 回）で、名簿が正しい Entry と認めない（または認める Entry が既にある）create-new が通る件数。
+    // 操作の下限（bulkTotal）からは名簿の外の行を外したまま（§7.1 の別枠）、危険の側に数える：
+    //   notInRoster   名簿にも敬称の対応表にも無い表記（ノイズ）への一括の create-new
+    //   relational    関係の呼び名（Codex に登録しない種類）への一括の create-new
+    //   ambiguous     名簿で結び先が 1 つに定まらない表記（別名の衝突・場面で指す人が変わる表記・敬称が複数）への一括の create-new
+    //   outsideRoster 上の 3 つの合計（名簿の外・結び先が定まらない表記）
+    //   knownEntity   名簿が 1 つの実体に定める表記への一括の create-new（＝ cleanupBulkOfKnownEntity。後始末の重複）
+    //   total         outsideRoster ＋ knownEntity
+    bulkCreateWrongEntry: {
+      notInRoster: 0,
+      relational: 0,
+      ambiguous: 0,
+      outsideRoster: 0,
+      knownEntity: 0,
+      total: 0,
+    },
   };
   const relationalByBinding = {};
+  // 関係の呼び名の unresolved のうち、部分一致（prefix・substring）の候補があるもの。製品は部分一致の候補がある呼び名を
+  // 落とさず（status none のときだけ落とす）、unresolved の提案として作者に出す。操作の下限には入れない（別枠のまま）。
+  let relationalUnresolvedWithPartialCandidate = 0;
   const collision = {
     ambiguousRows: 0,
     ambiguousByBinding: {},
@@ -231,6 +290,17 @@ export function computeMeasureA({ index, rows }) {
   };
   const entityKeysByCategory = {};
   let bulkTotal = 0;
+  // 一括承認可（row.bulkApprovable）の全行の内訳。renderer の counts.bulkApprovable は全行を数えるので、
+  // notInRoster・relational に入った行も含めて合計を取り、同じ run で renderer の数と一致することを呼び側が確かめる。
+  const bulkApprovableAudit = {
+    total: 0,
+    byCategory: {},
+    byBinding: {},
+    unexpectedBinding: 0, // 一括承認可なのに create-new・bind-existing でない行（製品の旗の定義上は 0）
+    // 一括承認可なのに bulk・bulkBind でも、名簿の外（notInRoster・relational）でもない分類に入った行
+    // （分類が製品の一括承認の対象を取りこぼしている印。0 のはず）。
+    outsideBulkCategories: 0,
+  };
   const proposalByBinding = {};
   const listedByBinding = {};
 
@@ -244,7 +314,23 @@ export function computeMeasureA({ index, rows }) {
     const bulkApprovable = Boolean(row.bulkApprovable);
     const cls = classifyRow(row, lookup, { bulkApprovable });
     categoryCounts[cls.category]++;
+    if (bulkApprovable) {
+      bulkApprovableAudit.total++;
+      bump(bulkApprovableAudit.byCategory, cls.category);
+      bump(bulkApprovableAudit.byBinding, row.bindingKind);
+      if (
+        row.bindingKind !== "create-new" &&
+        row.bindingKind !== "bind-existing"
+      )
+        bulkApprovableAudit.unexpectedBinding++;
+      if (!BULK_ALLOWED_CATEGORIES.has(cls.category))
+        bulkApprovableAudit.outsideBulkCategories++;
+    }
+    // 一括承認可の create-new（ボタン 1 回で Entry が作られる提案）。名簿の外の 2 分類は下で `continue` で抜けるので、
+    // 抜ける前に数える（抜けた後では一括 1 回の危険が表から消える）。
+    const bulkCreate = bulkApprovable && row.bindingKind === "create-new";
     if (cls.category === "notInRoster") {
+      if (bulkCreate) mismatch.bulkCreateWrongEntry.notInRoster++;
       bump(notInRosterByKind, row.bindingKind);
       if (
         row.bindingKind === "unresolved" &&
@@ -260,10 +346,18 @@ export function computeMeasureA({ index, rows }) {
     if (cls.category === "relational") {
       // 関係の呼び名が作る提案。名簿の実体の提案とは別枠（listedByBinding・操作の下限に入れない）。
       bump(relationalByBinding, row.bindingKind);
+      if (
+        row.bindingKind === "unresolved" &&
+        (row.candidates ?? []).some((c) =>
+          (c.methods ?? []).some((m) => PARTIAL.has(m)),
+        )
+      )
+        relationalUnresolvedWithPartialCandidate++;
+      if (bulkCreate) mismatch.bulkCreateWrongEntry.relational++;
       continue;
     }
     bump(listedByBinding, row.bindingKind);
-    if (bulkApprovable && row.bindingKind === "create-new") bulkTotal++;
+    if (cls.category === "bulk" || cls.category === "bulkBind") bulkTotal++;
     const entityKey =
       lookup.kind === "entity"
         ? lookup.id
@@ -275,11 +369,19 @@ export function computeMeasureA({ index, rows }) {
     if (lookup.kind === "ambiguous") {
       collision.ambiguousRows++;
       bump(collision.ambiguousByBinding, row.bindingKind);
+      if (bulkCreate) mismatch.bulkCreateWrongEntry.ambiguous++;
       if (
         row.bindingKind === "bind-existing" &&
         lookup.ids.includes(row.bindExistingEntityId)
       )
         collision.ambiguousBindTargetInSet++;
+      // 一括承認の結び付け（bulkBind）が、名簿で結び先が 1 つに定まらない表記（ambiguous の 3 種）に向く行は危険に数える。
+      if (cls.category === "bulkBind") {
+        mismatch.bulkBindOnAmbiguous++;
+        mismatch.wrongTargetInBulk++;
+        if (!lookup.ids.includes(row.bindExistingEntityId))
+          mismatch.bulkBindOnAmbiguousOutOfSet++;
+      }
     } else if (lookup.via === "name-over-alias") {
       collision.nameOverAliasRows++;
       bump(collision.nameOverAliasByBinding, row.bindingKind);
@@ -327,7 +429,13 @@ export function computeMeasureA({ index, rows }) {
         mismatch.leftoverUnresolvedOut++;
     }
     if (row.bindingKind === "bind-existing" && lookup.kind === "entity") {
-      if (row.bindExistingEntityId !== lookup.id) mismatch.wrongTarget++;
+      if (row.bindExistingEntityId !== lookup.id) {
+        mismatch.wrongTarget++;
+        if (cls.category === "bulkBind") {
+          mismatch.wrongTargetInBulkEntity++;
+          mismatch.wrongTargetInBulk++;
+        }
+      }
     }
     if (row.bindingKind === "create-new" && lookup.kind === "entity") {
       mismatch.leftoverCreateNew++;
@@ -339,6 +447,12 @@ export function computeMeasureA({ index, rows }) {
       }
     }
   }
+
+  const wrongEntry = mismatch.bulkCreateWrongEntry;
+  wrongEntry.outsideRoster =
+    wrongEntry.notInRoster + wrongEntry.relational + wrongEntry.ambiguous;
+  wrongEntry.knownEntity = mismatch.cleanupBulkOfKnownEntity;
+  wrongEntry.total = wrongEntry.outsideRoster + wrongEntry.knownEntity;
 
   // 操作の数（§7.1）。承認の下限と、表記を残す下限。entity の提案だけ。
   const surfaceUnit = {
@@ -377,14 +491,19 @@ export function computeMeasureA({ index, rows }) {
   });
 
   return {
+    definitionVersion: METRIC_DEFINITION_VERSION,
     proposalCount: rows.length,
     proposalByBinding,
     listedByBinding,
     relational: {
       rows: categoryCounts.relational,
       byBinding: relationalByBinding,
+      unresolvedWithPartialCandidate: relationalUnresolvedWithPartialCandidate,
     },
     categoryCounts,
+    bulkApprovable: { ...bulkApprovableAudit, bulkTotal },
+    // 製品が planner の前段で seed を落とした件数（呼び名・候補画面で却下済みの表記）。件数だけ。
+    seedDrops,
     notInRosterByKind,
     unresolved: {
       reasons,

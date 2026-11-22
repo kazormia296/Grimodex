@@ -18,7 +18,7 @@ import console from "node:console";
 import process from "node:process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { setTimeout } from "node:timers";
+import { clearTimeout, setTimeout } from "node:timers";
 import { pathToFileURL } from "node:url";
 import {
   ROSTER_LEVELS,
@@ -33,6 +33,7 @@ import {
 } from "./lib.mjs";
 import { readAiUsageRows, readAuditPathIds } from "./ai-usage-db.mjs";
 import {
+  BudgetStop,
   createGate,
   readModelPricing,
   STAGE_CAPS_USD,
@@ -44,14 +45,21 @@ import {
   buildProjectedPlan,
   checkOnlyCodexJudgment,
   checkUsageCoversSuccesses,
+  assertRoleOverridesDefault,
+  assertRosterNotHidden,
+  B_METRIC_DEFINITION_VERSION,
   dryMeasure,
+  evaluateSendPreconditions,
   remainingRequestsAfterCell,
   runB1,
   runB2,
   truncateRosterForB,
 } from "./measure-b-core.mjs";
+import { assertBuildProvenance } from "./build-provenance.mjs";
+import { buildEgressPolicy, splitList } from "./egress-policy.mjs";
 import {
   DEFAULT_OUTPUT,
+  ROOT,
   assertNoFakeAiEnv,
   assertNoOverlappingJobs,
   ensurePrivateDir,
@@ -97,6 +105,40 @@ export const ALLOWED_REAL_AI_COMMANDS = Object.freeze([
   "save_ai_settings",
   "send_chat_message",
 ]);
+
+/**
+ * 1 要求（page の bJudge）を待つ上限（ms）。send_chat_message には caller の timeout が無く（src/lib/tauri.ts）、止まると
+ * key が disk にあるまま待ち続けるので、道具の側で切る。IPC の AI 用の上限（electron/shared/ipcCallerTimeouts.ts の
+ * AI_IPC_TIMEOUT_MS＝5 分）に合わせる（試験が値の一致を確かめる）。
+ */
+export const JUDGE_WATCHDOG_MS = 300_000;
+/** key を消す呼び出し（page の bDeleteKey）を待つ上限（ms）。超えたら諦めて cell の後始末（workRoot の削除と key の残りの検査）へ進む。 */
+export const KEY_REMOVAL_TIMEOUT_MS = 60_000;
+
+/**
+ * promise に期限を付ける。期限が来たら onTimeout() の値で解決する（例外にしない）。期限前に reject したら、例外を変えずに reject。
+ * timer は必ず止める。期限の後に遅れて reject する元の promise は握りつぶす（未処理の reject にしない）。
+ */
+export function withWatchdog(
+  promise,
+  ms,
+  onTimeout,
+  { setTimer = setTimeout, clearTimer = clearTimeout } = {},
+) {
+  let timer;
+  const guarded = Promise.resolve(promise);
+  guarded.catch(() => undefined);
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimer(() => {
+      try {
+        resolve(onTimeout());
+      } catch (error) {
+        reject(error);
+      }
+    }, ms);
+  });
+  return Promise.race([guarded, timeout]).finally(() => clearTimer(timer));
+}
 
 /** 本測定に進んでよいか（明示の許可が無ければ始めない）。 */
 export function assertSendAllowed(options) {
@@ -174,6 +216,9 @@ export function bindPageApi({
   readUsage = readAiUsageRows,
   sleep,
   allowSend = true,
+  beforeSend = null,
+  judgeWatchdogMs = JUDGE_WATCHDOG_MS,
+  timers = {},
 }) {
   const rows = () => {
     const r = readUsage(workspaceDir);
@@ -195,7 +240,24 @@ export function bindPageApi({
   if (!allowSend) return base;
   return {
     ...base,
-    judge: () => page.evaluate(() => window.identityLoad.bJudge()),
+    // 送信の直前の guard（宛先・役割の上書き・名簿の hidden。F2）。投げれば要求は出ない。
+    // page の bJudge が judgeWatchdogMs を超えて返らなければ、届いたか分からない失敗（watchdog-timeout）として返す
+    // （台帳が最大の見積りで課金し、停止線を立てる。cell は key の後始末へ進む。F3a の m2）。
+    judge: async () => {
+      if (beforeSend) await beforeSend();
+      const started = Date.now();
+      return withWatchdog(
+        page.evaluate(() => window.identityLoad.bJudge()),
+        judgeWatchdogMs,
+        () => ({
+          ok: false,
+          kind: "watchdog-timeout",
+          httpStatus: null,
+          durationMs: Date.now() - started,
+        }),
+        timers,
+      );
+    },
     apply: (decisions) =>
       page.evaluate(
         (d) => window.identityLoad.bApply({ decisions: d }),
@@ -272,9 +334,18 @@ export async function dryCellBody({
     });
     out.push({ level, ...(await dryMeasure({ api })) });
   }
+  // 送らずに、本測定の guard（役割の上書き・名簿の hidden。F2）を合成の名簿に対して読み取りだけで確かめる。
+  // 本測定の cell の頭と同じ page 関数を呼ぶので、課金の前に、設定・DB の読みが測定ページで動くかが分かる。
+  const role = assertRoleOverridesDefault(
+    await page.evaluate(() => window.identityLoad.bAssertRoleDefaults()),
+  );
+  const hidden = assertRosterNotHidden(
+    await page.evaluate(() => window.identityLoad.bAssertRosterNotHidden()),
+  );
   return {
     levels: out,
     synthetic: { entityCount, aliasTotals, candidateCountN0: n0 },
+    preconditions: { role, hidden },
   };
 }
 
@@ -291,7 +362,13 @@ export function dryCellStatus(cell) {
     return "ai-detected";
   if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0)
     return "egress-detected";
-  if ((cell.egress?.sampleCount ?? 0) === 0) return "egress-unverified";
+  // 標本が成り立たない・socket を 1 つも見ていない標本は、何も見ていないのと同じ（実測定の realCellStatus と同じ基準。
+  // 乾いた実行が、本測定の観測の無料の事前確認になる。F3a の B1）。
+  if (
+    (cell.egress?.sampleCount ?? 0) === 0 ||
+    (cell.egress?.socketCountMax ?? 0) === 0
+  )
+    return "egress-unverified";
   return "ok";
 }
 
@@ -318,7 +395,18 @@ export async function measureBBody({
   userData,
   runRoot,
   keep = false,
+  egressObservation,
+  judgeWatchdogMs = JUDGE_WATCHDOG_MS,
+  keyRemovalTimeoutMs = KEY_REMOVAL_TIMEOUT_MS,
+  timers = {},
 }) {
+  // 宛先の観測の関数は必須（無ければ送らない。fail-closed）。返り値は createEgressSampler の observation()：
+  // 違反が無いだけでなく、観測が成り立っている証拠（成功した標本・直近の tick・socket の数・古さ）も要る（F3a の B1）。
+  assert.equal(
+    typeof egressObservation,
+    "function",
+    "[precheck] EGRESS_GUARD_MISSING measureBBody needs the egress observation",
+  );
   const { roster: used, cut, cutEntities } = truncateRosterForB(roster);
   const index = await buildRosterIndex(used);
   // 切った実体の表記（名前・別名）の hash。未登録（unlisted）と分けて数える。
@@ -357,13 +445,39 @@ export async function measureBBody({
       keep,
     });
   }
+  // 送る前の条件（F2：役割の上書きが空・既定／名簿に hidden が 0 件／許可リスト以外の宛先が無い）。
+  // 判定できなければ止める。key はこの後に読むので、止まれば key に触れない。
+  const preconditions = (expectedEntryCount) =>
+    evaluateSendPreconditions({
+      roleDefaults: () =>
+        page.evaluate(() => window.identityLoad.bAssertRoleDefaults()),
+      rosterHidden: () =>
+        page.evaluate(() => window.identityLoad.bAssertRosterNotHidden()),
+      egressObservation,
+      expectedEntryCount,
+    });
+  const head = await preconditions(entries.length);
+  if (!head.ok)
+    assert.fail(`[precheck] ${head.code} the send preconditions are not met`);
+  // 各送信の直前にも確かめる（B2 は要求の間に名簿を変え、宛先は cell の間に変わりうる）。満たさなければ停止線を立てて止める。
+  let sendGuardChecks = 0;
+  const beforeSend = async () => {
+    sendGuardChecks++;
+    const now = await preconditions(null);
+    if (now.ok) return;
+    gate.halt(now.code, {});
+    throw new BudgetStop(now.code, {});
+  };
   // key は検査・登録・backend の確認がすべて通った後、送信の直前に読む（getKey）。
-  const configured = await installKey(page, {
-    provider: PROVIDER,
-    model: MODEL,
-    key: key ?? (await getKey()),
-  });
+  const secret = key ?? (await getKey());
+  // 入れた後に失敗しても（bConfigureAi が key を保存した後に throw するなど）、finally の removeKey を通す（F3a の m7）。
+  let primaryError = null;
   try {
+    const configured = await installKey(page, {
+      provider: PROVIDER,
+      model: MODEL,
+      key: secret,
+    });
     assert.equal(
       configured.provider,
       PROVIDER,
@@ -371,7 +485,13 @@ export async function measureBBody({
     );
     assert.equal(configured.model, MODEL, "[precheck] MODEL_NOT_APPLIED");
     assert.equal(configured.keyPresent, true, "[precheck] KEY_NOT_PRESENT");
-    const api = bindPageApi({ page, workspaceDir });
+    const api = bindPageApi({
+      page,
+      workspaceDir,
+      beforeSend,
+      judgeWatchdogMs,
+      timers,
+    });
     const registeredKeyHashes = await registeredKeyHashesOf(entries);
     let result;
     if (mode === "b2") {
@@ -442,6 +562,7 @@ export async function measureBBody({
         registeredEntries: entries.length,
       },
       safeStorage: safeStorageRecord,
+      preconditions: { ...head.record, sendGuardChecks },
       settings: {
         provider: configured.provider,
         model: configured.model,
@@ -453,13 +574,49 @@ export async function measureBBody({
       usageModels: models,
       resolvedModel: "not-available-from-ai-usage",
     };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await removeKey(page, { provider: PROVIDER });
+    // key を消す。page が止まっていても期限で諦め（cell の後始末が userData を消し、key の残りを検査する）、
+    // 元の例外があればそれを隠さない。
+    try {
+      await withWatchdog(
+        removeKey(page, { provider: PROVIDER }),
+        keyRemovalTimeoutMs,
+        () => {
+          throw new Error(
+            "[artifact] KEY_REMOVAL_TIMEOUT the key removal did not return in time",
+          );
+        },
+        timers,
+      );
+    } catch (removalError) {
+      if (primaryError === null) throw removalError;
+    }
   }
 }
 
 /** 本測定の cell の採用条件：許した AI command だけ。送信回数は IPC の send_chat_message と一致。 */
 export function realCellStatus(cell, value) {
+  // 宛先：許可リストが適用され、標本が 1 回以上成り立ち、許可リスト以外の宛先が無いこと（F2 の R3。乾いた実行と同じ基準）。
+  const egress = cell.egress;
+  // socket を 1 つも見ていない標本（子孫の fd を読めない・root の違い）は、何も見ていないのと同じ（F3a の B1）。
+  if (
+    egress?.policyApplied !== true ||
+    (egress.sampleCount ?? 0) === 0 ||
+    (egress.socketCountMax ?? 0) === 0
+  )
+    return "egress-unverified";
+  if ((egress.disallowedDestinations ?? []).length > 0)
+    return "egress-detected";
+  // build 物の出所が cell の records に残っていること（F2 の R2。照合は runCell の頭と起動の直前）。
+  // cell の後の照合（runCell。build 物・guard の file が cell の間に変わっていない）も要る。
+  if (
+    !/^[0-9a-f]{40}$/u.test(String(cell.buildProvenance?.head)) ||
+    cell.buildProvenance?.stableAfterCell !== true
+  )
+    return "build-unverified";
   const names = cell.ipc?.commandNames ?? [];
   const unexpected = findAiCommands(names).filter(
     (name) => !ALLOWED_REAL_AI_COMMANDS.includes(name),
@@ -492,6 +649,8 @@ function parseArgs(args) {
     ).join(","),
     "trial-work": "",
     "real-env-fifo": "",
+    "egress-allow": "",
+    "egress-resolver": "",
     keep: "false",
   };
   for (let i = 0; i < args.length; i += 2) {
@@ -625,12 +784,20 @@ async function mainReal(options) {
     options.keep !== "true",
     "[precheck] KEEP_FORBIDDEN a real run deletes each cell userData at its end",
   );
+  // 宛先の許可リストが明示されていること（F2 の R3）。cell も key も使わず STOP 行も書かない位置で止める。
+  const egressPolicy = buildEgressPolicy({
+    allowCidrs: splitList(options["egress-allow"]),
+    resolverIps: splitList(options["egress-resolver"]),
+  });
   // key の復号の helper に渡す本物の session の env は、外側の script（launch-measure-b.mjs）が FIFO で 1 回渡す。
   // 無い・本物の bus を指さない（隔離 bus と同じ・socket が無い）なら、cell も key も使わずに止まる。
   const realEnv = assertRealBusEnv(
     await receiveRealEnv(options["real-env-fifo"]),
     { isolatedAddresses: [process.env.DBUS_SESSION_BUS_ADDRESS] },
   );
+  // build 物の出所が今の HEAD の source と一致すること（F2 の R2）。sha256 の計算に数秒かかるので、
+  // 外側の script の FIFO の受け渡しの期限（receiveRealEnv）の後に置く。ここでも cell・key・STOP 行より前。
+  assertBuildProvenance({ root: ROOT });
   const residue = findKeyResidue(output);
   assert.equal(
     residue.length,
@@ -702,6 +869,7 @@ async function mainReal(options) {
           workKey: work,
           dataDir: options["data-dir"],
           plainTextKeyStore: true,
+          egressPolicy,
           keep: false,
           body: (ctx) =>
             measureBBody({
@@ -726,6 +894,8 @@ async function mainReal(options) {
         cell.status = status;
         const result = {
           schemaVersion: "identity-load-measure-b/1",
+          // 指標の定義の版（aggregate が版の混在を止める）。
+          metricDefinitionVersion: B_METRIC_DEFINITION_VERSION,
           work,
           level,
           status,

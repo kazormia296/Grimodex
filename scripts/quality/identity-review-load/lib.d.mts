@@ -108,6 +108,142 @@ export function compareHashSets(
   leftOnly: number;
   rightOnly: number;
 };
+export function reconcileSeedsWithProposals(input: {
+  seedHashes: Iterable<string>;
+  proposalHashes: Iterable<string>;
+  droppedRelationalHashes?: Iterable<string>;
+  droppedDismissedHashes?: Iterable<string>;
+}): {
+  seed: number;
+  proposal: number;
+  droppedRelational: number;
+  droppedFoldedDismissed: number;
+  droppedNotInSeed: number;
+  droppedAndProposed: number;
+  relationalAndDismissed: number;
+  seedOnlyUnexplained: number;
+  proposalOnlyUnexplained: number;
+  ok: boolean;
+};
+
+export const STORED_PROPOSAL_KIND_FIELDS: Readonly<Record<string, string>>;
+export const STORED_PROPOSAL_KINDS: readonly string[];
+export const STORED_PROPOSAL_STATUSES: readonly string[];
+export const STORED_RUN_STATUSES: readonly string[];
+export const STORED_SET_STATUSES: readonly string[];
+export const STORED_RUN_LIST_LIMIT: number;
+export const STORED_RESTORE_LIST_LIMIT: number;
+export const STORED_RESUMABLE_RUN_STATUSES: readonly string[];
+export const STORED_RUN_ROLES: readonly string[];
+export const STORED_DEFINITION: string;
+export const STORED_NOT_MEASURED_REASONS: readonly string[];
+export interface StoredProposalRun {
+  role: "current" | "prior";
+  listedByProduct: boolean;
+  tracked?: boolean;
+  /** その段が失敗して採用されなかった run（前の回に数えない）。 */
+  failedStage?: boolean;
+  /** 製品の restore が作者に出す run（planProductVisibleRuns）。無ければ見えるとは数えない。 */
+  visibleToAuthor?: boolean;
+  /** scope の folder の識別子が読めた run（読めない run は「作者に見える run」の判定が当てにならない）。 */
+  folderKnown?: boolean;
+  runStatus: string;
+  setStatus: string | null;
+  proposals: readonly { kind: string; status: string; applied: boolean }[];
+}
+export interface StoredUnreviewedMeasured {
+  status: "measured";
+  definition: string;
+  listLimit: number;
+  restoreListLimit: number;
+  listedByProductCount: number;
+  listTruncated: boolean;
+  runCount: number;
+  currentRunCount: number;
+  priorRunCount: number;
+  notAdoptedRunCount: number;
+  failedStageRunCount: number;
+  untrackedRunCount: number;
+  visibleToAuthorRunCount: number;
+  folderUnknownRunCount: number;
+  trackedNotListedByProductCount: number;
+  unreviewed: {
+    total: number;
+    currentRun: number;
+    priorRuns: number;
+    notAdoptedRuns: number;
+    visibleToAuthor: number;
+    notVisibleToAuthor: number;
+    byKind: Record<string, number>;
+    currentRunByKind: Record<string, number>;
+    priorRunsByKind: Record<string, number>;
+    visibleToAuthorByKind: Record<string, number>;
+  };
+  stored: {
+    total: number;
+    currentRun: number;
+    priorRuns: number;
+    notAdoptedRuns: number;
+    byStatus: Record<string, number>;
+    byKind: Record<string, number>;
+    currentRunByKind: Record<string, number>;
+    applied: number;
+  };
+  perRun: {
+    role: "current" | "prior" | "failed-stage" | "untracked";
+    listedByProduct: boolean;
+    tracked: boolean;
+    visibleToAuthor: boolean;
+    folderKnown: boolean;
+    runStatus: string;
+    setStatus: string;
+    total: number;
+    unreviewed: number;
+    unreviewedByKind: Record<string, number>;
+  }[];
+}
+export interface StoredUnreviewedNotMeasured {
+  status: "not-measured";
+  reason: "persist-skipped" | "persist-failed" | "read-failed";
+  error?: unknown;
+}
+export function summarizeStoredProposals(input: {
+  runs: readonly StoredProposalRun[];
+  listedCount: number;
+}): StoredUnreviewedMeasured;
+export function planStoredRuns(input: {
+  listedIds: readonly string[];
+  trackedIds: readonly string[];
+  failedIds?: readonly string[];
+}): {
+  runId: string;
+  role: "current" | "prior";
+  listedByProduct: boolean;
+  tracked: boolean;
+  failedStage: boolean;
+}[];
+export function planProductVisibleRuns(input: {
+  listed: readonly {
+    runId: string;
+    runStatus: string;
+    folderKey?: string | null;
+  }[];
+}): Set<string>;
+export function storedNotMeasured(
+  reason: string,
+  error?: unknown,
+): StoredUnreviewedNotMeasured;
+export function planStoredRead(
+  persistAttempt: { status?: string } | null | undefined,
+): { read: true } | { read: false; result: StoredUnreviewedNotMeasured };
+export function compareStoredWithProjection(
+  stored:
+    | StoredUnreviewedMeasured
+    | StoredUnreviewedNotMeasured
+    | null
+    | undefined,
+  extract: Record<string, number | undefined> | null | undefined,
+): { compared: boolean; ok: boolean | null; differingKinds: string[] };
 
 export const REVIEWED_WORKS: readonly string[];
 export function rubyBaseText(paragraph: string): string;
@@ -233,8 +369,42 @@ export function scenesTextsForScan(
   scenes: readonly { paragraphs: readonly string[] }[],
 ): string[];
 
+export function runGuardedJudge<T>(deps: {
+  sendArmed: boolean;
+  blockedByPolicyOrLicense: () => boolean;
+  visibleCount: number;
+  assertRoleDefaults: () => Promise<{
+    nonDefaultRoleKeys: number;
+    roleProvidersNonDefault: boolean;
+    sendOverrideClear: boolean;
+  }>;
+  countHiddenInSentWindow: () => Promise<number>;
+  judge: () => Promise<T>;
+}): Promise<{ ok: false; kind: string; durationMs: number } | T>;
+
 export const RETRYABLE_FAILURE_KINDS: readonly string[];
 export function classifyJudgmentFailure(error: unknown): {
   kind: string;
   httpStatus: number | null;
+};
+
+export function checkEntryTypesInCatalog(input: {
+  entries: readonly { id: string; type: string }[];
+  existingCatalog: readonly { sourceKey: string; typeRef: string }[];
+  typeCatalog: readonly { ref: string; slug: string }[];
+}): {
+  determinable: boolean;
+  checked: number;
+  missingFromCatalog: number;
+  typeMismatch: number;
+};
+export function assertEntryTypesInCatalog(input: {
+  entries: readonly { id: string; type: string }[];
+  existingCatalog: readonly { sourceKey: string; typeRef: string }[];
+  typeCatalog: readonly { ref: string; slug: string }[];
+}): {
+  determinable: boolean;
+  checked: number;
+  missingFromCatalog: number;
+  typeMismatch: number;
 };

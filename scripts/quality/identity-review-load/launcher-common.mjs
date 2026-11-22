@@ -19,6 +19,11 @@ import path from "node:path";
 import process from "node:process";
 import { clearInterval, setInterval } from "node:timers";
 import {
+  assertBuildProvenance,
+  provenanceForRecord,
+} from "./build-provenance.mjs";
+import { createEgressSampler } from "./egress-policy.mjs";
+import {
   WORKS,
   safeErrorSummary,
   scenesFromWork,
@@ -44,17 +49,32 @@ const require = createRequire(import.meta.url);
 /**
  * 本測定の process に持ち込まない env：偽 AI の env（GRIMODEX_PRODUCT_JOURNEY_*）、Rust 側の
  * 送受信の本文を tracing に出す GRIMODEX_AI_WIRE_LOG、trace／debug の RUST_LOG（本文が出うる）。
- * 検査は node の process.env と、main の process.env（名前）の両方に同じ集合を使う。
+ * さらに、key を出力しうる debug 系（F3a の M1）：key は page.evaluate の引数で渡るので、Playwright の protocol log
+ * （DEBUG=pw:protocol など。PWDEBUG も）・node の内部 log（NODE_DEBUG）・Electron の log／stack dump
+ * （ELECTRON_ENABLE_LOGGING・ELECTRON_ENABLE_STACK_DUMPING）・inspector（NODE_OPTIONS の --inspect／--debug）が立っていると、
+ * stderr（stdio inherit）などに key が出うる。立っていれば（空でも）止める。
+ * 検査は node の process.env と、main の process.env（名前と、値が要るものの値）の両方に同じ集合を使う。
  */
 export const FORBIDDEN_ENV_PREFIX = "GRIMODEX_PRODUCT_JOURNEY";
-export const FORBIDDEN_ENV_NAMES = Object.freeze(["GRIMODEX_AI_WIRE_LOG"]);
+export const FORBIDDEN_ENV_NAMES = Object.freeze([
+  "GRIMODEX_AI_WIRE_LOG",
+  "DEBUG",
+  "PWDEBUG",
+  "NODE_DEBUG",
+  "NODE_DEBUG_NATIVE",
+  "ELECTRON_ENABLE_LOGGING",
+  "ELECTRON_ENABLE_STACK_DUMPING",
+]);
 export function findForbiddenEnv(env) {
   return Object.keys(env)
     .filter(
       (name) =>
         name.startsWith(FORBIDDEN_ENV_PREFIX) ||
         FORBIDDEN_ENV_NAMES.includes(name) ||
-        (name === "RUST_LOG" && /\b(trace|debug)\b/iu.test(String(env[name]))),
+        (name === "RUST_LOG" &&
+          /\b(trace|debug)\b/iu.test(String(env[name]))) ||
+        (name === "NODE_OPTIONS" &&
+          /--inspect|--debug/iu.test(String(env[name]))),
     )
     .sort();
 }
@@ -64,7 +84,7 @@ export function assertNoFakeAiEnv(env = process.env) {
   assert.equal(
     found.length,
     0,
-    `[precheck] FORBIDDEN_ENV_SET ${found.length} forbidden variables are set (fake AI, wire log or trace log)`,
+    `[precheck] FORBIDDEN_ENV_SET ${found.length} forbidden variables are set (fake AI, wire log, trace log or a debug setting that can print the key)`,
   );
 }
 
@@ -244,6 +264,27 @@ export function cellDirName(cellId) {
   return `${cellId.slice(0, 2)}${hash}`;
 }
 
+/**
+ * runCell が差し替えられる部品（試験用の注入。本番は既定のまま）：出所の照合・作品の読み込み・Electron の起動・
+ * 製品の root・製品の版。本番で渡さなければ、F2 の guard は常に動く。
+ */
+async function defaultLaunchElectron(options) {
+  const { _electron } = await import("playwright");
+  return _electron.launch({ executablePath: require("electron"), ...options });
+}
+
+/**
+ * cell の出所の照合結果を比べる（head・build 物・guard の file の sha256 がすべて同じか）。
+ * 起動の直前の再照合と、cell の後の照合が使う。
+ */
+export function sameBuildProvenance(a, b) {
+  return (
+    a?.head === b?.head &&
+    JSON.stringify(a?.files) === JSON.stringify(b?.files) &&
+    JSON.stringify(a?.guardFiles) === JSON.stringify(b?.guardFiles)
+  );
+}
+
 export async function runCell({
   output,
   vite,
@@ -253,9 +294,19 @@ export async function runCell({
   dataDir = "",
   passwordStoreBasic = true,
   plainTextKeyStore = false,
+  egressPolicy = null,
   body,
   keep = false,
+  deps = {},
 }) {
+  const d = {
+    assertBuildProvenance,
+    loadWork,
+    launchElectron: defaultLaunchElectron,
+    root: ROOT,
+    productVersion,
+    ...deps,
+  };
   const runRoot = path.join(output, "run");
   const workRoot = path.join(runRoot, cellDirName(cellId));
   rmSync(workRoot, { recursive: true, force: true });
@@ -265,9 +316,11 @@ export async function runCell({
   const xdgDir = path.join(workRoot, "xdg");
   for (const dir of [workRoot, userData, workspaceDir, tmpDir, xdgDir])
     ensurePrivateDir(dir);
-  const loaded = loadWork(workKey, dataDir);
-  const destinations = new Set();
-  let sampleCount = 0;
+  const loaded = d.loadWork(workKey, dataDir);
+  // 宛先の標本（Electron の起動後に作る）。egressPolicy（実測定の許可リスト）があれば許可リスト以外を、
+  // 無ければ loopback 以外をすべて数える。
+  let egressSampler = null;
+  let firstProvenance = null;
   let sampler;
   let app;
   const started = Date.now();
@@ -288,9 +341,13 @@ export async function runCell({
     cellId,
     work: workKey,
     status: "blocked",
-    product: productVersion(),
+    product: d.productVersion(),
   };
   try {
+    // build 物の出所が今の HEAD の source と一致すること（F2 の R2）。満たさなければ Electron を起動しない。
+    // 照合の結果の全体（guard の file の path を含む）は比べるためだけに持ち、records には件数と digest だけを残す。
+    firstProvenance = d.assertBuildProvenance({ root: d.root });
+    cell.buildProvenance = provenanceForRecord(firstProvenance);
     writeFileSync(
       path.join(userData, "legacy-keyring-migration-v1.json"),
       JSON.stringify({
@@ -318,21 +375,29 @@ export async function runCell({
     const address = vite.httpServer.address();
     assert.ok(address && typeof address !== "string");
     const rendererUrl = `http://127.0.0.1:${address.port}/scripts/quality/identity-review-load/renderer.html`;
-    const main = path.join(ROOT, "dist-electron/main.cjs");
+    const main = path.join(d.root, "dist-electron/main.cjs");
     const native = path.join(
-      ROOT,
+      d.root,
       "electron/native/grimodex-node/grimodex-node.node",
     );
     // 本測定の B（plainTextKeyStore）だけ、basic_text の safeStorage を認める上書き（§17.6）を包んだ起動 script を使う。
     const observer = plainTextKeyStore
       ? path.join(import.meta.dirname, "electron-observer-b.mjs")
-      : path.join(ROOT, "scripts/quality/nir1-retrieval/electron-observer.mjs");
+      : path.join(
+          d.root,
+          "scripts/quality/nir1-retrieval/electron-observer.mjs",
+        );
     for (const file of [main, native, observer])
       assert.ok(
         existsSync(file),
-        `[precheck] missing ${path.relative(ROOT, file)}`,
+        `[precheck] missing ${path.relative(d.root, file)}`,
       );
-    const { _electron } = await import("playwright");
+    // 起動の直前にもう一度照合する（cell の準備の間に build 物・guard の file が差し替わっても、別の物を起動しない）。
+    const beforeLaunch = d.assertBuildProvenance({ root: d.root });
+    assert.ok(
+      sameBuildProvenance(beforeLaunch, firstProvenance),
+      "[precheck] BUILD_PROVENANCE_CHANGED_DURING_CELL_SETUP build artifacts changed after the first check",
+    );
     const env = buildMeasureElectronEnv({
       rendererUrl,
       userData,
@@ -344,8 +409,7 @@ export async function runCell({
       plainTextRunRoot: plainTextKeyStore ? runRoot : "",
     });
     assertNoFakeAiEnv(env);
-    app = await _electron.launch({
-      executablePath: require("electron"),
+    app = await d.launchElectron({
       args: [
         "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
         ...(passwordStoreBasic || plainTextKeyStore
@@ -353,7 +417,7 @@ export async function runCell({
           : []),
         observer,
       ],
-      cwd: ROOT,
+      cwd: d.root,
       env,
       timeout: 60000,
     });
@@ -361,22 +425,30 @@ export async function runCell({
     const mainEnv = await app.evaluate(() => ({
       names: Object.keys(process.env),
       rustLog: process.env.RUST_LOG ?? "",
+      nodeOptions: process.env.NODE_OPTIONS ?? "",
     }));
     assertNoFakeAiEnv({
       ...Object.fromEntries(mainEnv.names.map((n) => [n, "1"])),
       ...(mainEnv.names.includes("RUST_LOG")
         ? { RUST_LOG: mainEnv.rustLog }
         : {}),
+      ...(mainEnv.names.includes("NODE_OPTIONS")
+        ? { NODE_OPTIONS: mainEnv.nodeOptions }
+        : {}),
     });
     const rootPid = app.process().pid;
-    sampler = setInterval(() => {
-      try {
-        sampleCount++;
-        if (rootPid) sampleEgress(rootPid, destinations);
-      } catch {
-        // 標本の失敗は run を止めない。
-      }
-    }, 250);
+    // rootPid が取れなければ標本を採れないので、採取の失敗として数える（採取 0 回＝未確認で不採用）。
+    const sampleOf = rootPid
+      ? sampleEgress
+      : () => {
+          throw new Error("no root pid");
+        };
+    egressSampler = createEgressSampler({
+      rootPid,
+      policy: egressPolicy,
+      sample: sampleOf,
+    });
+    sampler = setInterval(() => egressSampler.tick(), 250);
     const page = await app.firstWindow();
     await page.waitForFunction(
       () => window.identityLoad?.ready === true,
@@ -431,6 +503,13 @@ export async function runCell({
       workRoot,
       runRoot,
       keep,
+      // 許可リスト以外の宛先の観測（標本は 250 ms ごと）。測定 B は cell の頭と各送信の直前に見て、あれば止める。
+      // 送信の直前の観測：同期で 1 回 tick してから返す（直近の標本が古くならない）。違反が無いだけでなく、観測が成り立っている
+      // 証拠（成功した標本・socket の数）も渡す（evaluateSendPreconditions が、無ければ止める。F3a の B1）。
+      egressObservation: () => {
+        egressSampler.tick();
+        return egressSampler.observation();
+      },
       scenes: loaded.scenes,
       scenesTexts: loaded.scenesTexts,
     });
@@ -445,15 +524,23 @@ export async function runCell({
       commandNames: [...new Set(names)].sort(),
       commandCounts: counts,
     };
+    // cell の後にも出所を照合する（cell の間に build 物・guard の file・入力が差し替わっていないか。F3a の m5）。
+    // 例外にはせず、records に残す（realCellStatus が不採用にする）。
+    let afterCell = null;
+    try {
+      afterCell = d.assertBuildProvenance({ root: d.root });
+    } catch {
+      // 照合できなければ不安定として扱う。
+    }
+    cell.buildProvenance = {
+      ...cell.buildProvenance,
+      stableAfterCell: sameBuildProvenance(afterCell, firstProvenance),
+    };
     cell.aiRows = countAiRows(workspaceDir);
     clearInterval(sampler);
     sampler = undefined;
-    sampleEgress(rootPid, destinations);
-    cell.egress = {
-      sampleCount,
-      nonLoopbackDestinationCount: destinations.size,
-      nonLoopbackDestinations: [...destinations].sort(),
-    };
+    egressSampler.tick();
+    cell.egress = egressSampler.snapshot();
     cell.elapsedMs = Date.now() - started;
     // 初期値の "blocked" を書き換える。採用の可否（ok など）は呼び出し側が最終の status として書き戻す。
     cell.status = "completed";
@@ -461,6 +548,11 @@ export async function runCell({
   } catch (error) {
     cell.status = "failed";
     cell.errors = [safeErrorSummary(error)];
+    // 失敗した cell にも、そこまでの宛先の標本を残す（宛先が原因の失敗の宛先が記録から消えないように）。
+    if (egressSampler) {
+      egressSampler.tick();
+      cell.egress = egressSampler.snapshot();
+    }
     return { cell, value: null, scenesTexts: loaded.scenesTexts };
   } finally {
     if (sampler) clearInterval(sampler);

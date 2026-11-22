@@ -5,7 +5,13 @@
 //
 // - 単価は src/features/chat/modelPricing.ts の PRICING 表から読む（複製しない）。
 // - 台帳は 1 行 1 要求の JSONL（0600）。本文・key は載せない（件数・token・USD・理由コードだけ）。
-// - 乾いた実行（dry-run）は台帳に書かない。見積りだけを返す。
+// - 乾いた実行（dry-run）は台帳を使わない（preflight も呼ばない。planCost の見積りだけ）。
+// - 送る前に preflight が「予約」（別 file `<台帳>.reservations` の RESERVE 行。台帳は 1 行 1 要求のまま）を lock の中で原子的に書き、送信の後の afterRequest が実費の行
+//   （reservation_id 付き）で精算する（release は送らなかったときの取り消し）。予約は未精算の間、累計と段の費用に足して上限と
+//   比べる（並行の launcher の送信が重なっても上限を超えない・最後の 1 回の超過を抑える。F3a の m3）。送信の後に精算されなかった
+//   予約（process が落ちた）は残り、累計に数える（届いたか分からない送信を 0 円と見ない）。
+// - 届いたか分からない失敗（network・timeout・judge の例外・usage の行が無い応答）は、usage が無ければ最大の見積り
+//   （maxPlausibleUsd＝TOKENS_OVER の線の token での費用）で課金する（charge: "estimate"）。実費を下回らないように。
 // - 上限・停止線は凍結の値で、緩めない（§9）。
 // - 停止（STOP 行）は台帳に追記し、次に createGate が読み込んだときも停止のまま始める（解除は人が行う）。
 // - ai_usage の token の 2 倍超の線は、試走の実測の比（実測 token ÷ 見積り）で較正した値に対する 2 倍。
@@ -47,6 +53,20 @@ export const STOP_LINES = Object.freeze({
   earlyFailures: 3,
   tokenOverFactor: 2,
 });
+/**
+ * 要求が相手に届いたか（課金されたか）分からない失敗の種類。usage の行が読めなければ、最大の見積りで課金する
+ * （afterRequest。応答が返ったのに usage を読めなかった場合〔outcome.responded〕も同じ）。
+ * 429・5xx・認証・接続前（network-unsent）・送らなかった・4xx の応答は含めない（応答が返らなかったと言える。課金は 0）。
+ */
+export const MAY_HAVE_BEEN_BILLED_FAILURE_KINDS = Object.freeze([
+  "network",
+  "ipc-timeout",
+  "watchdog-timeout",
+  "judge-error",
+  "no-valid-result",
+  "empty-map",
+  "other",
+]);
 /** 試走の実測で較正する段（比の元になる段）と、較正が要る段。 */
 export const CALIBRATION_STAGE = "trial";
 export const CALIBRATED_STAGES = Object.freeze(["B1", "B2"]);
@@ -191,9 +211,13 @@ export function createGate({
     chmodSync(file, 0o600);
   }
   const lockFile = file ? `${file}.lock` : null;
+  const reservationFile = file ? `${file}.reservations` : null;
   const state = {
     total: 0,
     byStage: {},
+    reserved: 0, // 未精算の予約の合計 USD（loadFromFile。file が無いときは process 内）
+    reservedByStage: {},
+    pendingReservation: null, // この gate が今持つ予約（preflight で取り、afterRequest／release で閉じる）
     trial: null, // 試走の実測の比（loadFromFile）
     requests: 0, // 結果を受けた要求（成功・失敗とも）
     billedRequests: 0, // token が記録された要求
@@ -215,6 +239,8 @@ export function createGate({
     let maxOut = 0;
     let maxInTokens = 0;
     let maxOutTokens = 0;
+    const reservations = new Map();
+    const settled = new Set();
     for (const line of readFileSync(file, "utf8").split("\n")) {
       if (!line) continue;
       const row = JSON.parse(line);
@@ -222,6 +248,7 @@ export function createGate({
         stopped ??= { code: row.code, detail: row.detail ?? {} };
         continue;
       }
+      if (row.reservation_id) settled.add(row.reservation_id);
       total += row.usd;
       byStage[row.stage] = (byStage[row.stage] ?? 0) + row.usd;
       if (row.billed) billed++;
@@ -238,8 +265,25 @@ export function createGate({
         maxOutTokens = Math.max(maxOutTokens, row.output_tokens);
       }
     }
+    // 予約は別の file（1 行 1 要求の台帳に混ぜない）。RESERVE と RELEASE の行。精算は台帳の行の reservation_id。
+    if (existsSync(reservationFile))
+      for (const line of readFileSync(reservationFile, "utf8").split("\n")) {
+        if (!line) continue;
+        const row = JSON.parse(line);
+        if (row.type === "RESERVE")
+          reservations.set(row.id, { usd: row.usd, stage: row.stage });
+        else if (row.type === "RELEASE") settled.add(row.id);
+      }
     state.total = total;
     state.byStage = byStage;
+    state.reserved = 0;
+    state.reservedByStage = {};
+    for (const [id, r] of reservations) {
+      if (settled.has(id)) continue;
+      state.reserved += r.usd;
+      state.reservedByStage[r.stage] =
+        (state.reservedByStage[r.stage] ?? 0) + r.usd;
+    }
     state.billedRequests = billed;
     state.trial =
       trialN > 0
@@ -271,6 +315,101 @@ export function createGate({
     throw new BudgetStop(code, detail);
   };
 
+  /**
+   * 1 要求の token の上限の線（§9：試走の実測の 2 倍超で停止する線。afterRequest の TOKENS_OVER と同じ式）。
+   * 試走（較正の元の段）は見積りの 2 倍。較正が要る段は、試走の実測の比で較正した見積りの 2 倍と、試走の実測 token の
+   * 2 倍の小さい方。
+   */
+  function tokenLimits(stage, estInputTokens, estOutputTokens) {
+    const calibrated =
+      stage !== CALIBRATION_STAGE && state.trial
+        ? state.trial
+        : {
+            maxIn: 1,
+            maxOut: 1,
+            maxInTokens: Infinity,
+            maxOutTokens: Infinity,
+          };
+    return {
+      inputLimit: Math.min(
+        STOP_LINES.tokenOverFactor * estInputTokens * calibrated.maxIn,
+        STOP_LINES.tokenOverFactor * calibrated.maxInTokens,
+      ),
+      outputLimit: Math.min(
+        STOP_LINES.tokenOverFactor * estOutputTokens * calibrated.maxOut,
+        STOP_LINES.tokenOverFactor * calibrated.maxOutTokens,
+      ),
+    };
+  }
+  /** 1 要求が（停止線を超えない範囲で）かかりうる最大の USD。予約と、届いたか分からない失敗の課金に使う。見積り以上。 */
+  function maxPlausibleUsd(stage, estInputTokens, estOutputTokens) {
+    const { inputLimit, outputLimit } = tokenLimits(
+      stage,
+      estInputTokens,
+      estOutputTokens,
+    );
+    return Math.max(
+      usdOf(pricing, {
+        input_tokens: estInputTokens,
+        output_tokens: estOutputTokens,
+      }),
+      usdOf(pricing, { input_tokens: inputLimit, output_tokens: outputLimit }),
+    );
+  }
+  /**
+   * 送信の前に予約する額：見積り（今の上限の判定と同じ）と、試走の実測の比で較正した見積り（較正が要る段だけ。最大の比）の大きい方。
+   * 較正した見積りが見積りより小さくても、見積りより小さくしない（上限の判定を緩めない）。
+   */
+  function reservationUsd(stage, estInputTokens, estOutputTokens) {
+    const estimate = usdOf(pricing, {
+      input_tokens: estInputTokens,
+      output_tokens: estOutputTokens,
+    });
+    if (!CALIBRATED_STAGES.includes(stage) || !state.trial) return estimate;
+    return Math.max(
+      estimate,
+      usdOf(pricing, {
+        input_tokens: estInputTokens * state.trial.maxIn,
+        output_tokens: estOutputTokens * state.trial.maxOut,
+      }),
+    );
+  }
+  /** lock の中で呼ぶ。この gate の予約を台帳に書く（file が無ければ process 内だけ）。 */
+  function writeReservation(stage, usd) {
+    const id = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    if (file)
+      appendFileSync(
+        reservationFile,
+        `${JSON.stringify({ type: "RESERVE", id, ts: now(), stage, usd: Number(usd.toFixed(6)) })}\n`,
+        { mode: 0o600 },
+      );
+    state.reserved += usd;
+    state.reservedByStage[stage] = (state.reservedByStage[stage] ?? 0) + usd;
+    state.pendingReservation = { id, usd, stage };
+  }
+  /** この gate の予約を、送らなかったものとして閉じる（RELEASE 行）。精算（afterRequest）の前の取り消しにだけ使う。 */
+  function releasePending() {
+    const reservation = state.pendingReservation;
+    if (!reservation) return;
+    state.pendingReservation = null;
+    if (file) {
+      withLock(lockFile, () =>
+        appendFileSync(
+          reservationFile,
+          `${JSON.stringify({ type: "RELEASE", id: reservation.id, ts: now() })}\n`,
+          { mode: 0o600 },
+        ),
+      );
+      loadFromFile();
+    } else {
+      state.reserved = Math.max(0, state.reserved - reservation.usd);
+      state.reservedByStage[reservation.stage] = Math.max(
+        0,
+        (state.reservedByStage[reservation.stage] ?? 0) - reservation.usd,
+      );
+    }
+  }
+
   function extrapolationExceeds(remainingRequests) {
     if (state.total < EXTRAPOLATION_THRESHOLD * totalCapUsd) return false;
     if (state.billedRequests === 0) return false;
@@ -300,8 +439,9 @@ export function createGate({
       });
     },
     /**
-     * 送信の前の検査。remainingAfterThis は、この要求の後に予定している要求の数（外挿に使う）。
-     * 超えるなら送らずに BudgetStop。
+     * 送信の前の検査と予約。remainingAfterThis は、この要求の後に予定している要求の数（外挿に使う）。
+     * 超えるなら送らずに BudgetStop。通れば、最大の見積り（maxPlausibleUsd）の予約を lock の中で台帳に書く
+     * （並行の launcher の予約も累計に足して上限と比べる）。予約は afterRequest が精算し、送らなかったら release する。
      */
     preflight({
       stage,
@@ -309,35 +449,68 @@ export function createGate({
       estOutputTokens,
       remainingAfterThis = 0,
     }) {
-      loadFromFile();
-      if (state.stopped)
+      // 前の予約が精算されないまま次の preflight に来た（送っていない）：取り消してから取り直す。
+      releasePending();
+      const decide = () => {
+        loadFromFile();
+        if (state.stopped) return { kind: "stopped" };
+        if (!(stage in stageCapsUsd))
+          return { kind: "refuse", code: "UNKNOWN_STAGE", detail: { stage } };
+        if (requireTrial && CALIBRATED_STAGES.includes(stage) && !state.trial)
+          return { kind: "refuse", code: "TRIAL_REQUIRED", detail: { stage } };
+        const estimate = usdOf(pricing, {
+          input_tokens: estInputTokens,
+          output_tokens: estOutputTokens,
+        });
+        const hold = reservationUsd(stage, estInputTokens, estOutputTokens);
+        if (state.total + state.reserved + hold > totalCapUsd)
+          return {
+            kind: "refuse",
+            code: "TOTAL_CAP_WOULD_EXCEED",
+            detail: {
+              total: state.total,
+              reserved: state.reserved,
+              estimate,
+              hold,
+              cap: totalCapUsd,
+            },
+          };
+        const stageSpent =
+          (state.byStage[stage] ?? 0) + (state.reservedByStage[stage] ?? 0);
+        if (stageSpent + hold > stageCapsUsd[stage])
+          return {
+            kind: "refuse",
+            code: "STAGE_CAP_WOULD_EXCEED",
+            detail: {
+              stage,
+              stageTotal: stageSpent,
+              estimate,
+              hold,
+              cap: stageCapsUsd[stage],
+            },
+          };
+        if (extrapolationExceeds(remainingAfterThis + 1))
+          return {
+            kind: "stop",
+            code: "EXTRAPOLATION_EXCEEDS_CAP",
+            detail: {
+              total: state.total,
+              remaining: remainingAfterThis + 1,
+            },
+          };
+        writeReservation(stage, hold);
+        return { kind: "ok", estimate };
+      };
+      const decision = file ? withLock(lockFile, decide) : decide();
+      if (decision.kind === "stopped")
         throw new BudgetStop(state.stopped.code, state.stopped.detail);
-      if (!(stage in stageCapsUsd)) refuse("UNKNOWN_STAGE", { stage });
-      if (requireTrial && CALIBRATED_STAGES.includes(stage) && !state.trial)
-        refuse("TRIAL_REQUIRED", { stage });
-      const estimate = usdOf(pricing, {
-        input_tokens: estInputTokens,
-        output_tokens: estOutputTokens,
-      });
-      if (state.total + estimate > totalCapUsd)
-        refuse("TOTAL_CAP_WOULD_EXCEED", {
-          total: state.total,
-          estimate,
-          cap: totalCapUsd,
-        });
-      if ((state.byStage[stage] ?? 0) + estimate > stageCapsUsd[stage])
-        refuse("STAGE_CAP_WOULD_EXCEED", {
-          stage,
-          stageTotal: state.byStage[stage] ?? 0,
-          estimate,
-          cap: stageCapsUsd[stage],
-        });
-      if (extrapolationExceeds(remainingAfterThis + 1))
-        stop("EXTRAPOLATION_EXCEEDS_CAP", {
-          total: state.total,
-          remaining: remainingAfterThis + 1,
-        });
-      return estimate;
+      if (decision.kind === "refuse") refuse(decision.code, decision.detail);
+      if (decision.kind === "stop") stop(decision.code, decision.detail);
+      return decision.estimate;
+    },
+    /** 予約を取ったが、要求を送らずに終わった（送る直前の guard が止めた）ときに、予約を取り消す。 */
+    release() {
+      releasePending();
     },
     /**
      * 送信の後。outcome：{ ok, failureKind?, httpStatus?, usage?: {input_tokens, output_tokens} }。
@@ -357,7 +530,25 @@ export function createGate({
         Number.isFinite(usage.input_tokens) &&
         Number.isFinite(usage.output_tokens) &&
         (usage.input_tokens > 0 || usage.output_tokens > 0);
-      const usd = billed ? usdOf(pricing, usage) : 0;
+      // 届いたか分からない失敗（usage が読めない）は、最大の見積りで課金する（実費を下回らないように。F3a の M2）。
+      // 応答が返らなかったと言える失敗（429・5xx・認証・接続前・送らなかった・4xx の応答）は 0。
+      const clientErrorResponse =
+        Number.isInteger(outcome.httpStatus) &&
+        outcome.httpStatus >= 400 &&
+        outcome.httpStatus < 500;
+      const chargeEstimate =
+        !billed &&
+        !outcome.ok &&
+        !clientErrorResponse &&
+        (outcome.responded === true ||
+          MAY_HAVE_BEEN_BILLED_FAILURE_KINDS.includes(outcome.failureKind));
+      const usd = billed
+        ? usdOf(pricing, usage)
+        : chargeEstimate
+          ? maxPlausibleUsd(stage, estInputTokens, estOutputTokens)
+          : 0;
+      const reservation = state.pendingReservation;
+      state.pendingReservation = null;
       const row = {
         ts: now(),
         stage,
@@ -371,6 +562,8 @@ export function createGate({
         est_input_tokens: estInputTokens,
         est_output_tokens: estOutputTokens,
         usd: Number(usd.toFixed(6)),
+        charge: billed ? "measured" : chargeEstimate ? "estimate" : "none",
+        reservation_id: reservation?.id ?? null,
         note: String(note)
           .replace(/[^A-Za-z0-9_.:/+=\- ]/gu, "_")
           .slice(0, 80),
@@ -384,6 +577,13 @@ export function createGate({
         state.total += row.usd;
         state.byStage[stage] = (state.byStage[stage] ?? 0) + row.usd;
         if (billed) state.billedRequests++;
+        if (reservation) {
+          state.reserved = Math.max(0, state.reserved - reservation.usd);
+          state.reservedByStage[reservation.stage] = Math.max(
+            0,
+            (state.reservedByStage[reservation.stage] ?? 0) - reservation.usd,
+          );
+        }
       }
       state.requests++;
       if (state.window.length < STOP_LINES.earlyWindow)
@@ -403,6 +603,21 @@ export function createGate({
         stop("AUTH_401_403", { httpStatus: outcome.httpStatus ?? null });
       if (outcome.failureKind === "wrong-surface")
         stop("AI_SURFACE_UNEXPECTED", {});
+      // IPC の timeout：native の送信は続きうる（F2 の R7）。同じ body の 2 回目を出さないため、以後の送信を止める。
+      if (outcome.failureKind === "ipc-timeout")
+        stop("IPC_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT", {});
+      // 届いたか分からない失敗（F3a の M2）：最初の 1 回で止める（連続 5 回を待たない）。課金は最大の見積り。
+      if (outcome.failureKind === "network")
+        stop("NETWORK_REQUEST_MAY_BE_IN_FLIGHT", {});
+      if (outcome.failureKind === "watchdog-timeout")
+        stop("WATCHDOG_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT", {});
+      if (outcome.failureKind === "judge-error")
+        stop("JUDGE_ERROR_REQUEST_MAY_BE_IN_FLIGHT", {});
+      // page 側の送信直前の guard（renderer の bJudge）が送らずに返した失敗。node 側の guard と同じく、次の回へ進めず停止する。
+      if (outcome.failureKind === "role-override")
+        stop("ROLE_OVERRIDE_NOT_DEFAULT", {});
+      if (outcome.failureKind === "hidden-roster")
+        stop("ROSTER_HAS_HIDDEN", {});
       if (outcome.failureKind === "other")
         stop("UNCLASSIFIED_FAILURE", {
           httpStatus: outcome.httpStatus ?? null,
@@ -430,22 +645,10 @@ export function createGate({
         // §9：試走の実測値の 2 倍超。(1) 試走の実測の比で較正した見積りの 2 倍（要求が試走より小さいときに
         // 効く）と、(2) 試走の実測 token そのものの 2 倍（試走より大きい要求で §9 より緩くならない）の
         // 先に当たった方で止める。試走自身は見積りの 2 倍。
-        const calibrated =
-          stage !== CALIBRATION_STAGE && state.trial
-            ? state.trial
-            : {
-                maxIn: 1,
-                maxOut: 1,
-                maxInTokens: Infinity,
-                maxOutTokens: Infinity,
-              };
-        const inputLimit = Math.min(
-          STOP_LINES.tokenOverFactor * estInputTokens * calibrated.maxIn,
-          STOP_LINES.tokenOverFactor * calibrated.maxInTokens,
-        );
-        const outputLimit = Math.min(
-          STOP_LINES.tokenOverFactor * estOutputTokens * calibrated.maxOut,
-          STOP_LINES.tokenOverFactor * calibrated.maxOutTokens,
+        const { inputLimit, outputLimit } = tokenLimits(
+          stage,
+          estInputTokens,
+          estOutputTokens,
         );
         if (
           usage.input_tokens > inputLimit ||

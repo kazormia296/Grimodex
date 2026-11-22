@@ -14,6 +14,8 @@ import {
   assertEntriesWithinWindow,
   assertEstimateMatches,
   assertOnlyCodexJudgment,
+  assertRoleOverridesDefault,
+  assertRosterNotHidden,
   authorDecision,
   buildDryRunPlan,
   buildProjectedPlan,
@@ -24,6 +26,7 @@ import {
   registeredSurfaceSplit,
   remainingRequestsAfterCell,
   dryMeasure,
+  evaluateSendPreconditions,
   judgmentMetrics,
   readUsageForRequest,
   runB1,
@@ -1164,7 +1167,298 @@ test("judgmentMetrics：関係の呼び名は別枠（relationalCandidates）で
 test("authorDecision：関係の呼び名は別名にも受理にもせず却下（理由 relational）", () => {
   const typeOf = () => "character";
   assert.deepEqual(
-    authorDecision({ kind: "relational", ids: ["e1", "e2"] }, new Set(["e1"]), typeOf),
+    authorDecision(
+      { kind: "relational", ids: ["e1", "e2"] },
+      new Set(["e1"]),
+      typeOf,
+    ),
     { action: "dismiss", reason: "relational" },
+  );
+});
+
+// ---- 製品の呼び名（isRelationalTerm）に当たる候補は別名ボタンが出ない（#894）--------------------------
+
+test("judgmentMetrics：別名ボタンは、別名を勧められ、かつ製品の呼び名に当たらない候補だけ数える（名簿の relationalSurfaces とは別の集合）", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  const candidate = (keyHash, relationalTerm) => ({
+    keyHash,
+    count: 5,
+    firstSceneIndex: 1,
+    ...(relationalTerm === undefined ? {} : { relationalTerm }),
+  });
+  const candidates = [
+    candidate("c000", true), // 名簿では実体 e1 の別名。製品の呼び名でもある（別名ボタンは出ない）
+    candidate("c001", false), // 別名ボタンが出る
+    candidate("c002"), // 旗なし＝呼び名でない（出る）
+    candidate("zzz1", true), // 名簿に無い表記で、製品の呼び名（出ない）
+    candidate("zzz2", false), // 別名を勧められていない
+  ];
+  const alias = (aliasOfId) => ({
+    suggestedType: "character",
+    aliasOfId,
+    aliasKnown: true,
+  });
+  const judgments = new Map([
+    ["c000", alias("e1")],
+    ["c001", alias("e1")],
+    ["c002", alias("e2")],
+    ["zzz1", alias("e1")],
+    ["zzz2", alias(null)],
+  ]);
+  const m = judgmentMetrics({ index, candidates, judgments });
+  assert.equal(m.aliasProposed, 4);
+  assert.equal(m.aliasButtons, 2); // c001・c002
+  assert.equal(m.aliasButtonsSuppressedRelational, 2); // c000・zzz1
+  assert.equal(
+    m.aliasButtons + m.aliasButtonsSuppressedRelational,
+    m.aliasProposed,
+  );
+  // 名簿との一致の指標は AI の判定の中身（aliasOfId）で数え、ボタンの有無に依らない。
+  assert.equal(m.aliasMatchRoster, 2); // c000・c001（e1）
+  assert.equal(m.aliasOnUnlisted, 1); // zzz1
+});
+
+test("authorDecision：製品の呼び名に当たる表記は、名簿で既存の実体でも別名にせず却下する（別名ボタンが無い）", () => {
+  const typeOf = () => "character";
+  const entity = { kind: "entity", id: "e1", honorific: false };
+  assert.deepEqual(
+    authorDecision(entity, new Set(["e1"]), typeOf, { relationalTerm: true }),
+    { action: "dismiss", reason: "relational-no-alias-button" },
+  );
+  // 旗が false・無しなら今までどおり別名。
+  assert.equal(
+    authorDecision(entity, new Set(["e1"]), typeOf, { relationalTerm: false })
+      .action,
+    "alias",
+  );
+  assert.equal(authorDecision(entity, new Set(["e1"]), typeOf).action, "alias");
+});
+
+test("runB2：候補の relationalTerm 旗を決定に渡す（呼び名は別名の決定にならない）", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  const a = tmpGate({ totalCapUsd: 15 });
+  try {
+    const api = fakeApi({ candidateCount: 10 });
+    api.state.visible[0].relationalTerm = true; // c000
+    const r = await runB2({
+      api,
+      gate: a.gate,
+      index,
+      rosterTypeOf: (id) => index.entities.get(id).type,
+      registeredIds: new Set(["e1", "e2", "e3"]),
+    });
+    const c000 = api.state.applied[0].find((d) => d.keyHash === "c000");
+    assert.equal(c000.action, "dismiss");
+    assert.equal(r.dismissReasons["relational-no-alias-button"], 1);
+    assert.equal(r.decisionCounts.alias, 4); // c001〜c003・c005
+    assert.equal(r.undeterminable, false);
+  } finally {
+    rmSync(a.dir, { recursive: true, force: true });
+  }
+});
+
+test("sendOne（F2 の R7）：IPC の timeout は再送せず、停止線を立てて次の送信を出さない。送ってよいと分かる失敗だけ 1 回再送する", async () => {
+  const run = async (script, expectCode) => {
+    const g = tmpGate();
+    try {
+      const api = fakeApi({ script });
+      let outcome;
+      try {
+        outcome = await sendOne({
+          api,
+          gate: g.gate,
+          stage: "B1",
+          estimate: await api.estimate(),
+          usagePoll: FAST,
+        });
+      } catch (error) {
+        outcome = error;
+      }
+      if (expectCode) {
+        assert.ok(outcome instanceof BudgetStop, "stopped");
+        assert.equal(outcome.code, expectCode);
+        assert.equal(g.gate.state.stopped.code, expectCode);
+      }
+      return { api, outcome, gate: g.gate };
+    } finally {
+      rmSync(g.dir, { recursive: true, force: true });
+    }
+  };
+  // timeout：1 回しか judge を呼ばない（再送すると、続いている送信と同じ body がもう 1 回出る）。
+  const timeout = await run(
+    () => ({ ok: false, kind: "ipc-timeout" }),
+    "IPC_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT",
+  );
+  assert.equal(timeout.api.state.judgeCalls, 1);
+  assert.equal(timeout.outcome.partial.outcome.failureKind, "ipc-timeout");
+  // 停止線が立った後は、次の要求を送らない（B1 の 2・3 回目）。
+  const g2 = tmpGate();
+  try {
+    const api = fakeApi({ script: () => ({ ok: false, kind: "ipc-timeout" }) });
+    const index = await buildRosterIndex(roster, ident);
+    const result = await runB1({
+      api,
+      gate: g2.gate,
+      index,
+      registeredKeyHashes: [],
+      usagePoll: FAST,
+    });
+    assert.equal(api.state.judgeCalls, 1);
+    assert.equal(result.stopped.code, "IPC_TIMEOUT_REQUEST_MAY_BE_IN_FLIGHT");
+    assert.equal(result.requests.length, 1);
+  } finally {
+    rmSync(g2.dir, { recursive: true, force: true });
+  }
+  // 要求が相手に届いたか分からない network（timeout・reset）は再送しない。最初の 1 回で停止線を立てる（F3a の M2）。
+  const network = await run(
+    () => ({ ok: false, kind: "network" }),
+    "NETWORK_REQUEST_MAY_BE_IN_FLIGHT",
+  );
+  assert.equal(network.api.state.judgeCalls, 1);
+  assert.equal(network.outcome.partial.outcome.failureKind, "network");
+  // 接続が張れる前に終わった失敗（network-unsent）は 1 回だけ再送してよい。
+  const unsent = await run((n) =>
+    n === 1 ? { ok: false, kind: "network-unsent" } : { ok: true },
+  );
+  assert.equal(unsent.api.state.judgeCalls, 2);
+  assert.equal(unsent.outcome.ok, true);
+  assert.equal(unsent.outcome.retried, true);
+  // 429・5xx は従来どおり（応答が返った）。
+  const server = await run((n) =>
+    n === 1 ? { ok: false, kind: "server", httpStatus: 529 } : { ok: true },
+  );
+  assert.equal(server.api.state.judgeCalls, 2);
+});
+
+test("送る前の guard の判定（evaluateSendPreconditions）：通れば件数だけ、崩れ・判定不能は理由の code で止める", async () => {
+  const roleOk = {
+    checked: true,
+    roleKeysChecked: 7,
+    nonDefaultRoleKeys: 0,
+    roleProvidersNonDefault: false,
+    sendOverrideClear: true,
+  };
+  const hiddenOk = {
+    checked: true,
+    entryCount: 4,
+    checkedCount: 4,
+    hiddenCount: 0,
+  };
+  const egressOk = {
+    violations: [],
+    sampleCount: 3,
+    lastTickOk: true,
+    lastSocketCount: 5,
+    ageMs: 20,
+  };
+  const ok = await evaluateSendPreconditions({
+    roleDefaults: async () => roleOk,
+    rosterHidden: async () => hiddenOk,
+    egressObservation: () => egressOk,
+    expectedEntryCount: 4,
+  });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.record.egress, {
+    disallowedDestinationCount: 0,
+    sampleCount: 3,
+    lastSocketCount: 5,
+  });
+  assert.deepEqual(ok.record.hidden, {
+    entryCount: 4,
+    checkedCount: 4,
+    hiddenCount: 0,
+  });
+  const base = {
+    roleDefaults: async () => roleOk,
+    rosterHidden: async () => hiddenOk,
+    egressObservation: () => egressOk,
+  };
+  const cases = [
+    [
+      { egressObservation: () => ({ ...egressOk, violations: ["x"] }) },
+      "EGRESS_NOT_ALLOWED",
+    ],
+    [
+      { egressObservation: () => ({ ...egressOk, violations: undefined }) },
+      "EGRESS_UNDECIDABLE",
+    ],
+    [{ egressObservation: () => undefined }, "EGRESS_UNDECIDABLE"],
+    [
+      {
+        egressObservation: () => {
+          throw new Error("x");
+        },
+      },
+      "EGRESS_UNDECIDABLE",
+    ],
+    // 判定できない（何も見ていない）ときも止める：標本が 0・直近の tick が失敗・socket が 0・古い tick（F3a の B1）。
+    [
+      { egressObservation: () => ({ ...egressOk, sampleCount: 0 }) },
+      "EGRESS_UNOBSERVED",
+    ],
+    [
+      { egressObservation: () => ({ ...egressOk, lastTickOk: false }) },
+      "EGRESS_SAMPLE_FAILED",
+    ],
+    [
+      { egressObservation: () => ({ ...egressOk, lastSocketCount: 0 }) },
+      "EGRESS_NO_SOCKETS",
+    ],
+    [
+      { egressObservation: () => ({ ...egressOk, ageMs: 60_000 }) },
+      "EGRESS_STALE",
+    ],
+    [
+      { roleDefaults: async () => ({ ...roleOk, sendOverrideClear: false }) },
+      "ROLE_OVERRIDE_NOT_DEFAULT",
+    ],
+    [{ roleDefaults: async () => undefined }, "ROLE_OVERRIDE_UNDECIDABLE"],
+    [
+      {
+        roleDefaults: async () => {
+          throw new Error("x");
+        },
+      },
+      "ROLE_OVERRIDE_UNDECIDABLE",
+    ],
+    [
+      { rosterHidden: async () => ({ ...hiddenOk, hiddenCount: 2 }) },
+      "ROSTER_HAS_HIDDEN",
+    ],
+    [{ rosterHidden: async () => null }, "ROSTER_HIDDEN_UNDECIDABLE"],
+    [
+      {
+        rosterHidden: async () => {
+          throw new Error("x");
+        },
+      },
+      "ROSTER_HIDDEN_UNDECIDABLE",
+    ],
+  ];
+  for (const [override, code] of cases) {
+    const r = await evaluateSendPreconditions({
+      ...base,
+      ...override,
+      expectedEntryCount: 4,
+    });
+    assert.deepEqual([r.ok, r.code], [false, code]);
+  }
+  // 登録した数と調べた数が違うなら判定できない。
+  const mismatch = await evaluateSendPreconditions({
+    ...base,
+    expectedEntryCount: 5,
+  });
+  assert.equal(mismatch.code, "ROSTER_HIDDEN_UNDECIDABLE");
+  // 単体の assert：数が整数でない・負・欠落も形が違うとして止める。
+  for (const bad of [
+    { ...hiddenOk, hiddenCount: -1 },
+    { ...hiddenOk, hiddenCount: 0.5 },
+    { ...hiddenOk, hiddenCount: undefined },
+    { ...hiddenOk, checked: "yes" },
+  ])
+    assert.throws(() => assertRosterNotHidden(bad), /UNDECIDABLE/u);
+  assert.throws(
+    () => assertRoleOverridesDefault({ ...roleOk, nonDefaultRoleKeys: "0" }),
+    /UNDECIDABLE/u,
   );
 });

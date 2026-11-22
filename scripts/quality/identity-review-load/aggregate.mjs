@@ -23,7 +23,9 @@ import {
   findUnsafeStrings,
   safeErrorSummary,
 } from "./lib.mjs";
+import { B_METRIC_DEFINITION_VERSION } from "./measure-b-core.mjs";
 import {
+  METRIC_DEFINITION_VERSION,
   carryOverStability,
   compareSets,
   surfaceKindSet,
@@ -43,8 +45,109 @@ export const DECLARATIONS = Object.freeze(["not-quality-claim", "not-gold"]);
 export const FORBIDDEN_KEY =
   /authorization|api[-_]?key|credential|password|bearer|secret/iu;
 export const AMBIGUOUS_MATERIAL_MINIMUM = 5; // §8-5：4 作の合計が 5 未満なら「材料なし」
+/** 指標の定義の版の欄が無い records（旧）。新しい版と混ぜて集計しない。 */
+export const LEGACY_METRIC_DEFINITION = "legacy";
+
+/** run の指標の定義の版。欄が無ければ旧（"legacy"）。 */
+export function metricDefinitionOf(run) {
+  return run?.metrics?.definitionVersion ?? LEGACY_METRIC_DEFINITION;
+}
+
+function assertSingleVersion(versions, measure, current) {
+  if (versions.size > 1)
+    throw new Error(
+      `[precheck] METRIC_DEFINITION_VERSIONS_MIXED versions=${[...versions].sort().join(",")} current=${current} measure=${measure}`,
+    );
+  return [...versions][0] ?? null;
+}
+
+/**
+ * 集計に入る全 run の定義の版を 1 つに定める。版が混ざったら止める（旧 records を新しい版と混ぜて
+ * 比べない。数字の意味が違う：bindCheck・wrongTargetInBulk・保存済みの未 review の前の回の定義）。
+ * run が無ければ null。
+ */
+export function assertSingleMetricDefinition(cells) {
+  const versions = new Set();
+  for (const cell of cells)
+    for (const run of cell.runs ?? []) versions.add(metricDefinitionOf(run));
+  return assertSingleVersion(versions, "A", METRIC_DEFINITION_VERSION);
+}
+
+/**
+ * 測定 B の定義の版（cell の結果の metricDefinitionVersion。欄が無ければ "legacy"）。B1・B2 を合わせて 1 つに定め、
+ * 混ざったら止める（aliasButtons・別名の数え方が版で違う）。測定 A の版とは別に数える。
+ */
+export function assertSingleBMetricDefinition(results) {
+  const versions = new Set(
+    results.map((r) => r.metricDefinitionVersion ?? LEGACY_METRIC_DEFINITION),
+  );
+  return assertSingleVersion(versions, "B", B_METRIC_DEFINITION_VERSION);
+}
 
 // ---- 測定 A ------------------------------------------------------------------
+
+/**
+ * 保存済みの未 review の提案の件数（run.storedUnreviewed）の状態：measured／persist-skipped／
+ * persist-failed／read-failed／absent（欄の無い過去の records）。measured 以外は 0 件ではなく「未計測」。
+ */
+export function storedUnreviewedState(run) {
+  const stored = run?.storedUnreviewed;
+  return stored?.status === "measured"
+    ? "measured"
+    : (stored?.reason ?? "absent");
+}
+
+/**
+ * 保存済みの未 review の提案の件数を、表の列（件数だけ。数値か null）に平らにする。
+ * 未計測（保存しない段・保存の失敗・読みの失敗）と欄の無い過去の records は null（0 とは別。理由は
+ * storedUnreviewedState が持つ）。storedProjectionMismatch は同じ段の projection の件数と食い違えば 1。
+ */
+export function flattenStoredUnreviewed(stored) {
+  if (stored?.status !== "measured")
+    return {
+      storedUnreviewedTotal: null,
+      storedUnreviewedCurrentRun: null,
+      storedUnreviewedPriorRuns: null,
+      storedUnreviewedPriorRunsEntity: null,
+      storedUnreviewedPriorRunsRelation: null,
+      storedUnreviewedPriorRunsBaseDetail: null,
+      storedUnreviewedPriorRunsPhase: null,
+      storedUnreviewedNotAdoptedRuns: null,
+      storedUnreviewedVisibleToAuthor: null,
+      storedUnreviewedNotVisibleToAuthor: null,
+      storedFailedStageRuns: null,
+      storedUntrackedRuns: null,
+      storedFolderUnknownRuns: null,
+      storedListTruncated: null,
+      storedProjectionMismatch: null,
+    };
+  const prior = stored.unreviewed.priorRunsByKind;
+  const check = stored.projectionCheck;
+  return {
+    storedUnreviewedTotal: stored.unreviewed.total,
+    storedUnreviewedCurrentRun: stored.unreviewed.currentRun,
+    storedUnreviewedPriorRuns: stored.unreviewed.priorRuns,
+    storedUnreviewedPriorRunsEntity: prior["codex.entity.bind"] ?? 0,
+    storedUnreviewedPriorRunsRelation: prior["codex.relation.create"] ?? 0,
+    storedUnreviewedPriorRunsBaseDetail: prior["codex.detail.base.set"] ?? 0,
+    storedUnreviewedPriorRunsPhase: prior["codex.phase.bind"] ?? 0,
+    // 採用しなかった run（失敗した段の run・道具が控えていない run）の分。前の回に数えない。欄の無い過去の records は null。
+    storedUnreviewedNotAdoptedRuns: stored.unreviewed.notAdoptedRuns ?? null,
+    // 製品の restore が作者に出す run の分と、それ以外（合計は storedUnreviewedTotal）。
+    storedUnreviewedVisibleToAuthor: stored.unreviewed.visibleToAuthor ?? null,
+    storedUnreviewedNotVisibleToAuthor:
+      stored.unreviewed.notVisibleToAuthor ?? null,
+    storedFailedStageRuns: stored.failedStageRunCount ?? null,
+    storedUntrackedRuns: stored.untrackedRunCount ?? null,
+    // folder の識別子が読めなかった run（0 のはず）。製品の restore は folder 不明の run をどの folder にも当てるが、
+    // 写し（planProductVisibleRuns）は独立の folder として数えるので、あれば作者に見える分が製品とずれる（多く出る側）。
+    storedFolderUnknownRuns: stored.folderUnknownRunCount ?? null,
+    // 製品の列挙が上限（100）に達した（件数が過少の可能性）。1 ＝ 達した。
+    storedListTruncated:
+      stored.listTruncated === undefined ? null : stored.listTruncated ? 1 : 0,
+    storedProjectionMismatch: check?.compared ? (check.ok ? 0 : 1) : null,
+  };
+}
 
 /** 1 run の指標（renderer・measure-a-metrics の出力）を、表の列（件数）に平らにする。 */
 export function flattenRunA(run) {
@@ -56,15 +159,29 @@ export function flattenRunA(run) {
     entryCount: run.extract?.entryCountInCatalog ?? null,
     proposals: m.proposalCount,
     notInRoster: c.notInRoster,
-    relational: c.relational ?? 0,
-    relationalUnresolved: m.relational?.byBinding?.unresolved ?? 0,
-    relationalBindExisting: m.relational?.byBinding?.["bind-existing"] ?? 0,
-    relationalCreateNew: m.relational?.byBinding?.["create-new"] ?? 0,
+    // 関係の呼び名の分類を持たない旧 records は 0 でなく null（0 件だったのではなく、分けて数えていない）。
+    relational: c.relational ?? null,
+    relationalUnresolved: m.relational
+      ? (m.relational.byBinding?.unresolved ?? 0)
+      : null,
+    relationalBindExisting: m.relational
+      ? (m.relational.byBinding?.["bind-existing"] ?? 0)
+      : null,
+    relationalCreateNew: m.relational
+      ? (m.relational.byBinding?.["create-new"] ?? 0)
+      : null,
+    // 関係の呼び名の unresolved のうち部分一致の候補があるもの（作者に unresolved の提案として出る。操作の下限には入れない。a-defs/3 から）。
+    relationalUnresolvedPartial:
+      m.relational?.unresolvedWithPartialCandidate ?? null,
     bindCheck: c.bindCheck,
     unresolvedCandidateIn: c.unresolvedCandidateIn,
     unresolvedCandidateOut: c.unresolvedCandidateOut,
     typeNeeded: c.typeNeeded,
     bulk: c.bulk,
+    // 一括承認の結び付けを別分類にする前の旧 records（版なし）は、bulkBind・bulkTotal を 0／bulk の値にせず null にする
+    // （bind-existing の一括の分は bindCheck に入っていて、分けて数えていない）。
+    bulkBind: c.bulkBind ?? null,
+    bulkTotal: m.bulkApprovable?.bulkTotal ?? null,
     manualCreate: c.manualCreate,
     rank1: u.r1,
     rank2: u.r2,
@@ -83,6 +200,24 @@ export function flattenRunA(run) {
     cleanupBulkOfKnownEntity: m.mismatch.cleanupBulkOfKnownEntity,
     typePersonOnNonCharacter: m.mismatch.typePersonOnNonCharacter,
     typePersonOnNonCharacterInBulk: m.mismatch.typePersonOnNonCharacterInBulk,
+    // 旧 records（版なし）は一括の結び先違いを数えていない。0 でなく null。
+    wrongTargetInBulk: m.mismatch.wrongTargetInBulk ?? null,
+    // wrongTargetInBulk の内訳（版 a-defs/2 から。旧 records は null）。
+    wrongTargetInBulkEntity: m.mismatch.wrongTargetInBulkEntity ?? null,
+    bulkBindOnAmbiguous: m.mismatch.bulkBindOnAmbiguous ?? null,
+    bulkBindOnAmbiguousOutOfSet: m.mismatch.bulkBindOnAmbiguousOutOfSet ?? null,
+    // 一括 1 回で誤った Entry ができる件数（版 a-defs/3 から。旧 records は null）：名簿の外・結び先が 1 つに定まらない表記・
+    // 既知の実体への一括の create-new の合計と内訳。操作の下限（bulkTotal）には名簿の外の行を含めないため、この列で表に出す。
+    bulkCreateWrongEntry: m.mismatch.bulkCreateWrongEntry?.total ?? null,
+    bulkCreateOutsideRoster:
+      m.mismatch.bulkCreateWrongEntry?.outsideRoster ?? null,
+    bulkCreateNotInRoster: m.mismatch.bulkCreateWrongEntry?.notInRoster ?? null,
+    bulkCreateRelational: m.mismatch.bulkCreateWrongEntry?.relational ?? null,
+    bulkCreateAmbiguous: m.mismatch.bulkCreateWrongEntry?.ambiguous ?? null,
+    bulkCreateKnownEntity: m.mismatch.bulkCreateWrongEntry?.knownEntity ?? null,
+    // 製品が planner の前段で seed を落とした件数（呼び名・候補画面で却下済みの表記）。件数だけ。
+    seedDroppedRelational: m.seedDrops?.relationalTerms ?? null,
+    seedDroppedFoldedDismissed: m.seedDrops?.foldedDismissed ?? null,
     collisionAmbiguousRows: m.collision.ambiguousRows,
     collisionNameOverAliasRows: m.collision.nameOverAliasRows,
     sceneRangeRows: m.collision.sceneRangeRows,
@@ -93,6 +228,7 @@ export function flattenRunA(run) {
     opsKeepSurfaceSurface: m.operations.surfaceUnit.keepSurface,
     opsApprovalEntity: m.operations.entityUnit.approval,
     opsKeepSurfaceEntity: m.operations.entityUnit.keepSurface,
+    ...flattenStoredUnreviewed(run.storedUnreviewed),
     completed: run.completed ? 1 : 0,
   };
 }
@@ -110,6 +246,8 @@ const MATRIX_LEVELS = ["empty", "L0", "L1", "L2", "L3", "L2-1char"];
  * 作品ごとの表（matrix・決定性・累積・単独）と、決定性・累積の一致の検査、作品間の範囲。
  */
 export function buildMeasureA({ cells, rowsByCell }) {
+  // 指標の定義の版が混ざった入力（旧 records と新しい records）は集計しない。
+  const definitionVersion = assertSingleMetricDefinition(cells);
   const byWork = {};
   for (const cell of cells) {
     const w = (byWork[cell.work] ??= {
@@ -118,8 +256,17 @@ export function buildMeasureA({ cells, rowsByCell }) {
       solo: [],
       determinism: null,
       checks: {},
+      // 保存済みの未 review の件数の状態（段ごと）。measured 以外は件数が null（未計測）。
+      storedStates: {},
     });
     const runs = cell.runs ?? [];
+    for (const run of runs)
+      w.storedStates[
+        cell.kind === "cumulative" || cell.kind === "solo"
+          ? `${cell.kind}-${run.label}`
+          : (cell.level ?? "empty") +
+            (cell.kind === "determinism" ? "-determinism" : "")
+      ] = storedUnreviewedState(run);
     if (cell.kind === "matrix") w.matrix[cell.level] = flattenRunA(runs[0]);
     else if (cell.kind === "baseline") w.matrix.empty = flattenRunA(runs[0]);
     else if (cell.kind === "determinism") w.determinism = flattenRunA(runs[0]);
@@ -168,7 +315,7 @@ export function buildMeasureA({ cells, rowsByCell }) {
     for (const column of Object.keys(perWork[0]))
       ranges[level][column] = rangeOf(perWork.map((row) => row[column]));
   }
-  return { byWork, ranges };
+  return { definitionVersion, byWork, ranges };
 }
 
 // ---- 測定 B ------------------------------------------------------------------
@@ -180,6 +327,8 @@ const B_METRIC_COLUMNS = [
   "droppedInWindow",
   "beyondWindow",
   "aliasButtons",
+  "aliasProposed",
+  "aliasButtonsSuppressedRelational",
   "aliasMatchRoster",
   "aliasMismatchRoster",
   "aliasOnUnlisted",
@@ -208,6 +357,7 @@ function sumMetrics(list) {
 
 /** B1：作品×段ごとに、3 回の最小〜最大・N・判定数・自己一致・失敗・token。 */
 export function buildMeasureB1(results) {
+  assertSingleBMetricDefinition(results);
   return results.map((r) => {
     const res = r.value?.result;
     const requests = res?.requests ?? [];
@@ -238,6 +388,7 @@ export function buildMeasureB1(results) {
 
 /** B2（L2 だけ・1 回）：要求ごとの指標の合計と、決定・却下の内訳。 */
 export function buildMeasureB2(results) {
+  assertSingleBMetricDefinition(results);
   return results.map((r) => {
     const res = r.value?.result;
     const iterations = res?.iterations ?? [];
@@ -298,6 +449,20 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
             remainingInLatestSameSurface: p.remainingInLatestSameSurface,
           }))
         : null,
+      // DB に保存済みの未 review の提案の件数（保存つきの段だけ。未計測は件数 null と state で区別する）。
+      star8Stored:
+        w.cumulative.length > 0
+          ? w.cumulative.map((r) => ({
+              label: r.label,
+              state: w.storedStates?.[`cumulative-${r.label}`] ?? "absent",
+              total: r.storedUnreviewedTotal,
+              currentRun: r.storedUnreviewedCurrentRun,
+              priorRuns: r.storedUnreviewedPriorRuns,
+              notAdoptedRuns: r.storedUnreviewedNotAdoptedRuns,
+              visibleToAuthor: r.storedUnreviewedVisibleToAuthor,
+              notVisibleToAuthor: r.storedUnreviewedNotVisibleToAuthor,
+            }))
+          : null,
     };
   }
   const ambiguousTotal = ambiguousSurfaceCounts
@@ -331,10 +496,11 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
     },
     star8: {
       decided: false,
-      materials: ["remainingInLatestSameSurface"],
+      materials: ["remainingInLatestSameSurface", "storedUnreviewedPriorRuns"],
       cannotSay: [
         "no-run-to-run-carry-over-in-product",
         "seed-stability-not-reauthoring-load",
+        "stored-count-is-unmeasured-without-persist",
       ],
     },
     star1_2_3_6_7: {
@@ -360,8 +526,14 @@ export function buildRecords({
     declarations: [...DECLARATIONS],
     indicatorName: "match-with-roster",
     note: "measure-a-and-measure-b-are-separate-tables-and-are-never-combined-or-ranked",
+    metricDefinitionVersion: measureA?.definitionVersion ?? null,
     measureA: measureA ?? null,
-    measureB: { b1: buildMeasureB1(b1), b2: buildMeasureB2(b2) },
+    // B1 と B2 を合わせても版は 1 つ（混ざったら止める）。測定 A の版とは別。
+    measureB: {
+      definitionVersion: assertSingleBMetricDefinition([...b1, ...b2]),
+      b1: buildMeasureB1(b1),
+      b2: buildMeasureB2(b2),
+    },
     starMapping: measureA
       ? buildStarMapping({ measureA, ambiguousSurfaceCounts })
       : null,
@@ -396,6 +568,35 @@ export function assertRecordsClean(records, scenesTexts = []) {
 
 // ---- 表（markdown。件数だけ）--------------------------------------------------------
 
+/** 保存済みの未 review の件数の表示。未計測（null）は 0 と区別して「未計測」と書く。 */
+function storedText(value) {
+  return value === null || value === undefined ? "未計測" : String(value);
+}
+
+/**
+ * 保存済みの未 review の読みの注記（件数と語だけ）。打ち切り・件数の不一致・採用しなかった run・未計測の理由。
+ * state：storedUnreviewedState の語（measured 以外は 0 件でなく未計測）。
+ */
+export function storedNotes(r, state) {
+  const notes = [];
+  if (state === "absent") notes.push("欄なし");
+  else if (state !== undefined && state !== "measured")
+    notes.push(`未計測(${state})`);
+  if (r.storedListTruncated === 1)
+    notes.push("列挙が上限に達した(過少の可能性)");
+  if (r.storedProjectionMismatch === 1)
+    notes.push("保存と projection の件数が不一致");
+  if ((r.storedFailedStageRuns ?? 0) > 0)
+    notes.push(`失敗した段の run ${r.storedFailedStageRuns}`);
+  if ((r.storedUntrackedRuns ?? 0) > 0)
+    notes.push(`控えに無い run ${r.storedUntrackedRuns}`);
+  if ((r.storedFolderUnknownRuns ?? 0) > 0)
+    notes.push(
+      `folder 不明の run ${r.storedFolderUnknownRuns}(製品はどの folder にも当てるが、写しは独立の folder として数える。作者に見える分が製品とずれる)`,
+    );
+  return notes.length > 0 ? notes.join("・") : "-";
+}
+
 function rangeText(range) {
   if (!range || range.n === 0) return "-";
   return range.min === range.max
@@ -412,7 +613,11 @@ export function renderRecordsMarkdown(records) {
   lines.push(
     `- evidenceScope: ${records.evidenceScope}（${records.declarations.join("・")}）`,
   );
-  lines.push("- 測定 A と B は別表。合算も優劣づけもしない。", "");
+  lines.push("- 測定 A と B は別表。合算も優劣づけもしない。");
+  lines.push(
+    `- 指標の定義の版: 測定 A ${records.measureA?.definitionVersion ?? "-"}／測定 B ${records.measureB?.definitionVersion ?? "-"}（${LEGACY_METRIC_DEFINITION} は版の欄が無い旧 records。A・B それぞれ、版が混ざった入力は集計しない）`,
+  );
+  lines.push("");
   if (records.measureA) {
     lines.push("## 測定 A（構造抽出。AI なし）", "");
     lines.push(
@@ -420,36 +625,38 @@ export function renderRecordsMarkdown(records) {
       "",
     );
     lines.push(
-      "| 作品 | 段 | 場面数 | 提案 | 名簿に無い | 関係の呼び名 | 結び付け確認 | 解決(候補内) | 解決(候補外) | 型を決める | 手で見る create | 一括承認 | 承認の下限 | 表記を残す下限 |",
+      "| 作品 | 段 | 場面数 | 提案 | 名簿に無い | 関係の呼び名 | 関係の呼び名の unresolved(部分一致の候補あり。下限に入れない) | 結び付け確認（1 件ずつ） | 解決(候補内) | 解決(候補外) | 型を決める | 手で見る create | 一括承認(create) | 一括承認(結び付け) | 承認の下限 | 表記を残す下限 | seed を落とした数(呼び名/却下) | 一括の結び先違いの危険(結び先が定まらない表記への一括 含む) | 一括 1 回で誤った Entry ができる件数(うち名簿の外・結び先が定まらない表記) | 保存済みの未 review | うち作者に見える run | 読みの注記 |",
     );
-    lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    lines.push(
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    );
     for (const [work, w] of Object.entries(records.measureA.byWork))
       for (const level of MATRIX_LEVELS) {
         const r = w.matrix[level];
         if (!r) continue;
         lines.push(
-          `| ${work} | ${level} | ${r.sceneCount} | ${r.proposals} | ${r.notInRoster} | ${r.relational} | ${r.bindCheck} | ${r.unresolvedCandidateIn} | ${r.unresolvedCandidateOut} | ${r.typeNeeded} | ${r.manualCreate} | ${r.bulk} | ${r.opsApprovalSurface} | ${r.opsKeepSurfaceSurface} |`,
+          `| ${work} | ${level} | ${r.sceneCount} | ${r.proposals} | ${r.notInRoster} | ${r.relational ?? "-"} | ${r.relationalUnresolved ?? "-"}(${r.relationalUnresolvedPartial ?? "-"}) | ${r.bindCheck} | ${r.unresolvedCandidateIn} | ${r.unresolvedCandidateOut} | ${r.typeNeeded} | ${r.manualCreate} | ${r.bulk} | ${r.bulkBind ?? "-"} | ${r.opsApprovalSurface} | ${r.opsKeepSurfaceSurface} | ${r.seedDroppedRelational ?? "-"}/${r.seedDroppedFoldedDismissed ?? "-"} | ${r.wrongTargetInBulk ?? "-"}(${r.bulkBindOnAmbiguous ?? "-"}) | ${r.bulkCreateWrongEntry ?? "-"}(${r.bulkCreateOutsideRoster ?? "-"}) | ${storedText(r.storedUnreviewedTotal)} | ${storedText(r.storedUnreviewedVisibleToAuthor)} | ${storedNotes(r, w.storedStates?.[level])} |`,
         );
       }
     lines.push("", "作品間の範囲（段ごと）。", "");
     lines.push(
-      "| 段 | 提案 | 結び付け確認 | 解決(候補内) | 解決(候補外) | 一括承認 | 承認の下限 |",
+      "| 段 | 提案 | 結び付け確認（1 件ずつ） | 解決(候補内) | 解決(候補外) | 一括承認(create+結び付け) | 承認の下限 | 一括 1 回で誤った Entry ができる件数 |",
     );
-    lines.push("|---|---|---|---|---|---|---|");
+    lines.push("|---|---|---|---|---|---|---|---|");
     for (const [level, r] of Object.entries(records.measureA.ranges))
       lines.push(
-        `| ${level} | ${rangeText(r.proposals)} | ${rangeText(r.bindCheck)} | ${rangeText(r.unresolvedCandidateIn)} | ${rangeText(r.unresolvedCandidateOut)} | ${rangeText(r.bulk)} | ${rangeText(r.opsApprovalSurface)} |`,
+        `| ${level} | ${rangeText(r.proposals)} | ${rangeText(r.bindCheck)} | ${rangeText(r.unresolvedCandidateIn)} | ${rangeText(r.unresolvedCandidateOut)} | ${rangeText(r.bulkTotal)} | ${rangeText(r.opsApprovalSurface)} | ${rangeText(r.bulkCreateWrongEntry)} |`,
       );
     lines.push("", "累積の列（L2・同じ workspace。場面数ごと）。", "");
     lines.push(
-      "| 作品 | 段 | 場面数 | 提案 | 未 review | 最新に同じ表記で残る |",
+      "| 作品 | 段 | 場面数 | 提案 | 未 review | 最新に同じ表記で残る | 保存済みの未 review（全体） | うち前の回の run | うち採用しなかった run | うち作者に見える run | うち作者に見えない | 読みの注記 |",
     );
-    lines.push("|---|---|---|---|---|---|");
+    lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (const [work, w] of Object.entries(records.measureA.byWork))
       w.cumulative.forEach((r, i) => {
         const p = w.carryOver?.perRun?.[i];
         lines.push(
-          `| ${work} | ${r.label} | ${r.sceneCount} | ${r.proposals} | ${p?.unreviewed ?? "-"} | ${p?.remainingInLatestSameSurface ?? "-"} |`,
+          `| ${work} | ${r.label} | ${r.sceneCount} | ${r.proposals} | ${p?.unreviewed ?? "-"} | ${p?.remainingInLatestSameSurface ?? "-"} | ${storedText(r.storedUnreviewedTotal)} | ${storedText(r.storedUnreviewedPriorRuns)} | ${storedText(r.storedUnreviewedNotAdoptedRuns)} | ${storedText(r.storedUnreviewedVisibleToAuthor)} | ${storedText(r.storedUnreviewedNotVisibleToAuthor)} | ${storedNotes(r, w.storedStates?.[`cumulative-${r.label}`])} |`,
         );
       });
     lines.push("");

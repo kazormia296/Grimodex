@@ -37,6 +37,7 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseIp } from "./egress-policy.mjs";
 import { resolveWorkSource } from "./sources.mjs";
 import {
   WORKS,
@@ -254,7 +255,7 @@ export function countAiRows(workspaceDir) {
 
 // ---- 外向き接続の採取（宛先だけ。本文なし） ------------------------------------
 
-function parseHexAddress(hex, ipv6) {
+export function parseHexAddress(hex, ipv6) {
   const [addr, port] = hex.split(":");
   const bytes = [];
   for (let i = 0; i < addr.length; i += 2) bytes.push(addr.slice(i, i + 2));
@@ -276,14 +277,17 @@ function parseHexAddress(hex, ipv6) {
     port: Number.parseInt(port, 16),
   };
 }
-function isLoopbackOrAny(ip) {
-  return (
-    /^127\./u.test(ip) ||
-    ip === "0.0.0.0" ||
-    ip === "0:0:0:0:0:0:0:1" ||
-    /^0:0:0:0:0:ffff:7f/iu.test(ip) ||
-    /^(0:){7}0$/u.test(ip)
-  );
+/**
+ * loopback（127.0.0.0/8・::1）か未指定（0.0.0.0・::）か。IP を解析して判定する（前方一致にしない：
+ * 文字列の前方一致は ::ffff:0.127.x.x のような非 loopback を loopback に数える。F3a の m4）。
+ * IPv4-mapped IPv6（::ffff:a.b.c.d）は IPv4 として見る（parseIp）。解析できなければ loopback としない（宛先として数える）。
+ */
+export function isLoopbackOrAny(ip) {
+  const parsed = parseIp(ip);
+  if (!parsed) return false;
+  if (parsed.family === 4)
+    return parsed.value === 0n || parsed.value >> 24n === 127n;
+  return parsed.value === 0n || parsed.value === 1n;
 }
 function descendantPids(rootPid) {
   const children = new Map();
@@ -303,7 +307,10 @@ function descendantPids(rootPid) {
     out.push(...(children.get(out[i]) ?? []));
   return out;
 }
-/** rootPid の子孫が持つ socket の、loopback 以外の接続先（"tcp ip:port" の形）を sample に足す。 */
+/**
+ * rootPid の子孫が持つ socket の、loopback 以外の接続先（"tcp ip:port" の形）を sample に足す。
+ * 返り値：読めた /proc/net の表の数（tablesRead。0 なら採取が 1 度も成り立っていない）と、子孫が持つ socket の数。
+ */
 export function sampleEgress(rootPid, destinations) {
   const inodes = new Set();
   for (const pid of descendantPids(rootPid)) {
@@ -317,6 +324,7 @@ export function sampleEgress(rootPid, destinations) {
       // 読めない・消えた。
     }
   }
+  let tablesRead = 0;
   for (const [proto, ipv6] of [
     ["tcp", false],
     ["tcp6", true],
@@ -326,6 +334,7 @@ export function sampleEgress(rootPid, destinations) {
     let table;
     try {
       table = readFileSync(`/proc/net/${proto}`, "utf8");
+      tablesRead++;
     } catch {
       continue;
     }
@@ -338,6 +347,7 @@ export function sampleEgress(rootPid, destinations) {
       destinations.add(`${proto.replace("6", "")} ${remote.ip}:${remote.port}`);
     }
   }
+  return { tablesRead, socketCount: inodes.size };
 }
 
 /**

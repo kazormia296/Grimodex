@@ -9,8 +9,14 @@
 //
 // 使い方（本測定。--confirm-send は run-measure-b.mjs が検査する）：
 //   node scripts/quality/identity-review-load/launch-measure-b.mjs --output <out> -- \
-//     --mode trial --trial-work <work> --confirm-send yes-send-to-anthropic
+//     --mode trial --trial-work <work> --confirm-send yes-send-to-anthropic \
+//     --egress-allow <Anthropic の API の範囲の CIDR,...> [--egress-resolver <loopback でない resolver の IP,...>]
 //   （-- の後ろは run-measure-b.mjs の引数。--output はこの script が run-measure-b.mjs にも渡す）
+// 本測定の前に、build の直後に record-build-provenance.mjs で出所の記録を取る（run-measure-b.mjs が照合する。F2）。
+// 測定の process の中で動く guard の file（renderer.ts など）を変えたら、記録を取り直す（F3a）。
+// key を出力しうる env（DEBUG・PWDEBUG・NODE_DEBUG・ELECTRON_ENABLE_LOGGING・NODE_OPTIONS の --inspect）が立っていると、
+// run-measure-b.mjs が key の前に止まる。実行する shell で外しておく。
+// --egress-allow は人が明示する（この道具は Anthropic の IP 範囲を持たない）。無ければ本測定は始まらない。
 import console from "node:console";
 import process from "node:process";
 import { spawn } from "node:child_process";
