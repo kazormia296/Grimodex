@@ -79,11 +79,44 @@ export interface CodexAiVisibility<TEntry> {
 /**
  * The anchor is the current scene when there is one, else base. A scene that is
  * not in the reading order resolves like base (no phase applies; DR-MP4-1 for
- * Codex), and the base anchor applies none either.
+ * Codex), and the base anchor applies none either. `decideCodexAiVisibility`
+ * does not leave it at that for the visibility decision (DR-MP4-41, below).
  */
 function anchorOf(sceneId: string | null | undefined): TemporalAnchor {
   const trimmed = sceneId?.trim();
   return trimmed ? { kind: "scene", sceneId: trimmed } : { kind: "base" };
+}
+
+/**
+ * A scene id was given (non-empty after trimming) but the reading order does not
+ * have it: it is archived, in the trash or deleted, the index was just reset, or
+ * the id is another project's. No phase can be resolved for it. "No scene" (null,
+ * empty, whitespace) is not this case: that is the base anchor by design.
+ */
+function isSceneUnresolved(
+  sceneId: string | null | undefined,
+  index: SceneTimeIndex,
+): boolean {
+  const trimmed = sceneId?.trim();
+  return Boolean(trimmed) && !index.readingOrder.has(trimmed as string);
+}
+
+/**
+ * DR-MP4-41 (fail closed): when the scene cannot be resolved, an entry that one
+ * of its phases would hide is hidden. The phases were not applied, so base alone
+ * must not be taken as "public" for it. An entry with no phase, or whose phases
+ * hide nothing, is unchanged; an entry that is hidden at base stays hidden.
+ */
+function hasPhaseHiddenFromAi(
+  phases: readonly CodexEntryPhase[] | undefined,
+): boolean {
+  return (
+    phases?.some(
+      (phase) =>
+        phase.contextModeOverride !== null &&
+        isCodexContextModeHiddenFromAi(phase.contextModeOverride),
+    ) ?? false
+  );
 }
 
 export function decideCodexAiVisibility<
@@ -97,14 +130,22 @@ export function decideCodexAiVisibility<
     for (const entry of input.entries) hidden.add(entry.id);
     return { hidden, texts, released, anchor };
   }
-  const { resolvedById } = resolveCodexContexts({
+  const { resolvedById, phasesByEntry } = resolveCodexContexts({
     entries: input.entries,
     phases: input.phases,
     anchor,
     sceneTimeIndex: input.sceneTimeIndex,
     resolutionMode: input.resolutionMode.mode,
   });
+  const sceneUnresolved = isSceneUnresolved(
+    input.sceneId,
+    input.sceneTimeIndex,
+  );
   for (const entry of input.entries) {
+    if (sceneUnresolved && hasPhaseHiddenFromAi(phasesByEntry.get(entry.id))) {
+      hidden.add(entry.id);
+      continue;
+    }
     const resolved = resolvedById.get(entry.id);
     const mode = resolved?.contextMode ?? entry.contextMode;
     if (isCodexContextModeHiddenFromAi(mode)) {

@@ -173,6 +173,40 @@ describe("resolveCodexAiVisibility", () => {
     });
   });
 
+  it("a scene id that the reading order does not have hides an entry that a phase hides (DR-MP4-41); no scene is unchanged", async () => {
+    const { ports } = setup();
+    const ids = ["pub", "hid", "rel", "hide-later"];
+
+    // Archived, in the trash, deleted, or another project's scene: given, but not in the reading order.
+    for (const sceneId of ["s-archived", "  s-archived  "]) {
+      const missing = await ask(ports, ids, sceneId);
+      expect([...missing.hidden].sort(), sceneId).toEqual([
+        "hid",
+        "hide-later",
+        "rel",
+      ]);
+      expect([...missing.texts.keys()], sceneId).toEqual(["pub"]);
+    }
+
+    // No scene is the base anchor, as before: the phase that hides `hide-later` does not apply.
+    for (const sceneId of [null, undefined, "", "   "]) {
+      const none = await ask(ports, ids, sceneId);
+      expect([...none.hidden].sort(), String(sceneId)).toEqual(["hid", "rel"]);
+      expect([...none.texts.keys()].sort(), String(sceneId)).toEqual([
+        "hide-later",
+        "pub",
+      ]);
+    }
+
+    // `listHiddenCodexIds` is the same decision.
+    const hiddenIds = await listHiddenCodexIds(ports, {
+      projectId: "p-a",
+      entryIds: ids,
+      sceneId: "s-archived",
+    });
+    expect(hiddenIds.has("hide-later")).toBe(true);
+  });
+
   it("reads the body only when asked, and a released entry then has the phase's text", async () => {
     const { ports, sent } = setup();
     const without = await ask(ports, ["pub"], "s1");

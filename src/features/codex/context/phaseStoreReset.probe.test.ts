@@ -2,19 +2,20 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * MP-4b PR-8 の疑いの確認：`usePhaseStore.resetForProject()` の直後（`sceneTimeIndex` は空、
- * `resolutionMode` は前の project の値のまま）に `resolveCodexForAi` を呼ぶと、hidden の Codex が
- * AI に見える向き（fail-open）に働くか。**現状の挙動を特性として固定する**（直しではない）。
+ * `usePhaseStore.resetForProject()` の直後（`sceneTimeIndex` は空、`resolutionMode` は前の project の
+ * 値のまま）と、現在の場面が `sceneTimeIndex` に無いときの `resolveCodexForAi` の判定。
+ * 8a では fail-open の疑いとして特性を固定していた。**DR-MP4-41 の決定（fail-closed）で期待を変えた**。
  *
- * 観察（この file が固定する値）：
+ * 固定する値：
  * - 効くのは `resolutionMode` の残りではなく、`sceneTimeIndex` が空であること。現在の場面が
  *   読む順に無いと、Phase は 1 つも効かない（`resolveApplicablePhases` の `current-scene-missing`）ので、
  *   mode が reading でも story でも同じ結果になる。
- * - base が公開で Phase が hidden にする項目は、公開と判定される（fail-open）。
- * - base が hidden の項目は、Phase が公開にするものも含めて hidden のまま（fail-closed 側は守られる）。
- *   つまり漏れるのは「Phase だけが hidden にしている」項目に限られる。
- * - `setResolutionMode(B の値)` を足しても、index が空のうちは変わらない。`recomputeSceneOrder` で
- *   index が入ると正しい判定に戻る。
+ * - DR-MP4-41 (a)：場面が与えられているのに読む順に無いとき、Phase が hidden にする項目
+ *   （base 公開・Phase hidden）は hidden に倒す。以前は公開と判定されていた（fail-open）。
+ * - base が hidden の項目は、Phase が公開にするものも含めて hidden のまま（今までと同じ）。
+ * - `setResolutionMode(B の値)` を足しても、index が空のうちは同じ。`recomputeSceneOrder` で
+ *   index が入ると、従来どおり正しい判定に戻る。
+ * - DR-MP4-41 (b)：判定の途中（DB の await の最中）に project が切り替わったら、全 id が hidden。
  */
 vi.mock("@/lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tauri")>();
@@ -131,7 +132,7 @@ beforeEach(() => {
   });
 });
 
-describe("resetForProject の直後の hidden の判定（既知の疑い）", () => {
+describe("resetForProject の直後・場面が index に無いときの hidden の判定（DR-MP4-41 の決定）", () => {
   it("reset の前（A の mode＝story・index あり）は、3 種とも正しい（hidden／hidden／公開）", async () => {
     expect(await observe()).toEqual({
       baseHidden: true,
@@ -140,17 +141,16 @@ describe("resetForProject の直後の hidden の判定（既知の疑い）", (
     });
   });
 
-  it("reset の直後（index は空、mode は A の story のまま）：Phase だけが hidden にする項目が公開と判定される（fail-open）", async () => {
+  it("reset の直後（index は空、mode は A の story のまま）：Phase だけが hidden にする項目も hidden に倒す（fail-closed）", async () => {
     usePhaseStore.getState().resetForProject();
     const state = usePhaseStore.getState();
     expect(state.resolutionMode).toBe("story");
     expect(state.sceneTimeIndex.readingOrder.size).toBe(0);
-    // 既知の疑い：base 公開で Phase が hidden の c-aria が、AI に渡る向き（hidden でない）になる。
-    // base hidden の c-secret は hidden のまま。base hidden で Phase が公開にする c-released は
-    // Phase が効かないので hidden のまま（fail-closed）。
+    // DR-MP4-41 (a)：base 公開で Phase が hidden の c-aria は hidden（以前は公開と判定された）。
+    // base hidden の c-secret・c-released は、今までどおり hidden のまま。
     expect(await observe()).toEqual({
       baseHidden: true,
-      basePublicPhaseHidden: false,
+      basePublicPhaseHidden: true,
       baseHiddenPhasePublic: true,
     });
   });
@@ -163,19 +163,19 @@ describe("resetForProject の直後の hidden の判定（既知の疑い）", (
     const auto = await observe();
     const expected = {
       baseHidden: true,
-      basePublicPhaseHidden: false,
+      basePublicPhaseHidden: true,
       baseHiddenPhasePublic: true,
     };
     expect(reading).toEqual(expected);
     expect(auto).toEqual(expected);
   });
 
-  it("B の正しい mode を setResolutionMode しても、index が空のうちは fail-open のまま", async () => {
+  it("B の正しい mode を setResolutionMode しても、index が空のうちは fail-closed のまま", async () => {
     usePhaseStore.getState().resetForProject();
     usePhaseStore.getState().setResolutionMode("story");
     expect(await observe()).toEqual({
       baseHidden: true,
-      basePublicPhaseHidden: false,
+      basePublicPhaseHidden: true,
       baseHiddenPhasePublic: true,
     });
   });
@@ -190,12 +190,98 @@ describe("resetForProject の直後の hidden の判定（既知の疑い）", (
     });
   });
 
-  it("現在の場面が index に無いとき（reset と無関係に）も、Phase が効かず同じ fail-open になる", async () => {
+  it("現在の場面が index に無いとき（reset と無関係に）も、Phase が hidden にする項目は hidden（DR-MP4-41 (a)）", async () => {
     const { hidden } = await resolveCodexForAi({
       entryIds: [KINDS.basePublicPhaseHidden],
       projectId: "p-main",
       sceneId: "n-not-in-index",
     });
-    expect(hidden.has(KINDS.basePublicPhaseHidden)).toBe(false);
+    expect(hidden.has(KINDS.basePublicPhaseHidden)).toBe(true);
+  });
+
+  it("場面なし（sceneId が null・空・空白だけ）は base 扱いのまま（範囲外の B。変えない）", async () => {
+    usePhaseStore.getState().resetForProject();
+    for (const sceneId of [null, "", "   "]) {
+      const { hidden } = await resolveCodexForAi({
+        entryIds: Object.values(KINDS),
+        projectId: "p-main",
+        sceneId,
+      });
+      // Phase は効かない：c-aria は公開、base hidden の 2 つは hidden。
+      expect([...hidden].sort(), String(sceneId)).toEqual(
+        [KINDS.baseHidden, KINDS.baseHiddenPhasePublic].sort(),
+      );
+    }
+  });
+});
+
+describe("判定の途中で project が切り替わったら、全 id が hidden（DR-MP4-41 (b)）", () => {
+  const ALL = [
+    KINDS.baseHidden,
+    KINDS.basePublicPhaseHidden,
+    KINDS.baseHiddenPhasePublic,
+    "c-mage",
+    "gone-id",
+  ];
+
+  const resolveAll = () =>
+    resolveCodexForAi({
+      entryIds: ALL,
+      projectId: "p-main",
+      sceneId: "n-s1",
+      withContent: true,
+    });
+
+  it("切り替えが無ければ、公開の項目は公開のまま（制御）", async () => {
+    const { hidden, texts } = await resolveAll();
+    expect(texts.has("c-mage")).toBe(true);
+    expect(hidden.has("c-mage")).toBe(false);
+  });
+
+  it("phases の読みの await の最中に resetForProject すると、全 id が hidden で texts は空", async () => {
+    let fired = false;
+    legacyReadInvokeBridge.setOnCall(({ cmd, args }) => {
+      if (
+        !fired &&
+        cmd === "db_execute" &&
+        String(args?.["sql"]).includes('from "codex_entry_phases"')
+      ) {
+        fired = true;
+        usePhaseStore.getState().resetForProject();
+      }
+    });
+    const { hidden, texts } = await resolveAll();
+    expect(fired).toBe(true);
+    expect([...hidden].sort()).toEqual([...ALL].sort());
+    expect(texts.size).toBe(0);
+  });
+
+  it("entries の読みの await の最中に resetForProject しても、全 id が hidden", async () => {
+    let fired = false;
+    legacyReadInvokeBridge.setOnCall(({ cmd, args }) => {
+      if (
+        !fired &&
+        cmd === "db_execute" &&
+        String(args?.["sql"]).includes('from "codex_entries"')
+      ) {
+        fired = true;
+        usePhaseStore.getState().resetForProject();
+      }
+    });
+    const { hidden, texts } = await resolveAll();
+    expect(fired).toBe(true);
+    expect([...hidden].sort()).toEqual([...ALL].sort());
+    expect(texts.size).toBe(0);
+  });
+
+  it("呼ぶ前に済んだ切り替えは、その呼びの epoch で数える（その後の判定は (a) に従う）", async () => {
+    usePhaseStore.getState().resetForProject();
+    const { hidden } = await resolveCodexForAi({
+      entryIds: [KINDS.basePublicPhaseHidden],
+      projectId: "p-main",
+      sceneId: "n-s1",
+    });
+    // index は空で n-s1 は読む順に無い：(a) で hidden。
+    expect(hidden.has(KINDS.basePublicPhaseHidden)).toBe(true);
   });
 });

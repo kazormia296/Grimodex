@@ -14,7 +14,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  *   `withDetails` の追加の 2 文、ids が 0 件なら 0 文、entries が 0 件なら 1 文で phases を読まない）。
  * - `usePhaseStore` を読む位置（`listPhasesByEntryIds` の await の最中に書き換えた値が使われる）。
  * - Phase の解決：reading・story・auto（Phase が読む順の後ろ・物語時間の前にある例）、base 公開で Phase が
- *   hidden にする、場面が null・空・空白だけ・読む順に無い id のとき base と同じ結果、前後に空白のある
+ *   hidden にする、場面が null・空・空白だけのとき base と同じ結果、読む順に無い id のとき（DR-MP4-41 で fail-closed に変更）
+ *   Phase が hidden にする項目は hidden、前後に空白のある
  *   sceneId は trim される、不明な mode は hidden。
  * - `hidden`・`texts` の挿入順（DB に無い id が先、次に DB の返した entry の順）。
  * - `dropCodexHiddenFromAi` の summary の置換（released で、`summary` キーを持つ行だけ）、
@@ -378,18 +379,36 @@ describe("resolveCodexForAi が usePhaseStore を読む位置", () => {
     expect([...hidden]).toEqual(["c-mage"]);
   });
 
-  it("全 id が DB に無いときは store を読まない（読んだ値が結果に出ない）", async () => {
+  it("全 id が DB に無いときは、冒頭に projectEpoch を控える 1 回だけで、index・mode は読まない（DR-MP4-41 (b)）", async () => {
+    // 変わった期待：以前は 0 回と 1 回。(b) の epoch の控え（関数の冒頭）で、どちらも 1 回増える。
+    // 値（index・mode）を読む回は変わらない：全 id が DB に無ければ、その読みは無い。
     const spy = vi.spyOn(usePhaseStore, "getState");
     try {
       await resolveCodexForAi({ entryIds: ["gone"], projectId: "p-main" });
-      expect(spy).not.toHaveBeenCalled();
-      await resolveCodexForAi({ entryIds: ["c-aria"], projectId: "p-main" });
       expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockClear();
+      await resolveCodexForAi({ entryIds: ["c-aria"], projectId: "p-main" });
+      expect(spy).toHaveBeenCalledTimes(2);
     } finally {
       spy.mockRestore();
     }
   });
 });
+
+/** c-aria（base 公開・Phase が hidden）・c-released（base hidden・Phase が公開）・c-mage（base 公開・Phase が hidden）を判定して、sorted な hidden と texts の released を返す。 */
+async function observeIds(sceneId: string | null | undefined) {
+  const r = await resolveCodexForAi({
+    entryIds: ["c-aria", "c-released", "c-mage"],
+    projectId: "p-main",
+    ...(sceneId === undefined ? {} : { sceneId }),
+  });
+  return {
+    hidden: [...r.hidden].sort(),
+    texts: [...r.texts.entries()]
+      .map(([id, t]) => [id, t.released])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  };
+}
 
 describe("resolveCodexForAi の Phase の解決", () => {
   it("reading：base 公開の c-aria は、Phase が hidden にする n-s2 から hidden（n-s1 では公開）", async () => {
@@ -450,18 +469,8 @@ describe("resolveCodexForAi の Phase の解決", () => {
     );
   });
 
-  it("場面なし（null・未指定・空・空白だけ）と、読む順に無い id は、base で解決する（同じ結果）", async () => {
-    const baseOf = async (sceneId: string | null | undefined) => {
-      const r = await resolveCodexForAi({
-        entryIds: ["c-aria", "c-released", "c-mage"],
-        projectId: "p-main",
-        ...(sceneId === undefined ? {} : { sceneId }),
-      });
-      return {
-        hidden: [...r.hidden],
-        texts: [...r.texts.entries()].map(([id, t]) => [id, t.released]),
-      };
-    };
+  it("場面なし（null・未指定・空・空白だけ）は、base で解決する（Phase は効かない）", async () => {
+    // DR-MP4-41：「場面なし」は今までどおり base 扱い（変えない）。
     const expected = {
       hidden: ["c-released"],
       texts: [
@@ -469,17 +478,36 @@ describe("resolveCodexForAi の Phase の解決", () => {
         ["c-mage", false],
       ],
     };
+    for (const sceneId of [undefined, null, "", "   "]) {
+      expect(await observeIds(sceneId), String(sceneId)).toEqual(expected);
+    }
+  });
+
+  it("場面が与えられているのに読む順に無い（archived・trash・削除済み・別 project の id）とき、Phase が hidden にする項目は hidden に倒す（DR-MP4-41 (a)）", async () => {
+    // 変わった期待：以前は base と同じ結果（c-aria・c-mage は公開、fail-open）だった。
+    // いまは Phase が hidden にする c-aria・c-mage も hidden。base hidden の c-released は今までどおり hidden。
     for (const sceneId of [
-      undefined,
-      null,
-      "",
-      "   ",
       "n-archived",
       "no-such-scene",
       "n-note",
+      "  no-such-scene  ",
     ]) {
-      expect(await baseOf(sceneId), String(sceneId)).toEqual(expected);
+      expect(await observeIds(sceneId), String(sceneId)).toEqual({
+        hidden: ["c-aria", "c-mage", "c-released"],
+        texts: [],
+      });
     }
+  });
+
+  it("場面が読む順に無くても、Phase が hidden にしない項目（suppress・always の Phase を持つもの）は、今までどおり（DR-MP4-41 (a) は広げない）", async () => {
+    const r = await resolveCodexForAi({
+      entryIds: ["c-tower", "c-item"],
+      projectId: "p-main",
+      sceneId: "no-such-scene",
+    });
+    expect([...r.hidden]).toEqual([]);
+    expect(r.texts.get("c-tower")).toMatchObject({ released: false });
+    expect(r.texts.get("c-item")).toMatchObject({ released: false });
   });
 
   it("sceneId は前後の空白を取り除いて使う", async () => {
