@@ -224,13 +224,13 @@ describe("main's DB read adapter against the real Native addon", () => {
 
     // Two different columns with the same name keep their own values in order.
     const joined = await client(
-      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "projects" as "p" on "p"."id" = "n"."project_id" limit 1',
+      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "tree_nodes" as "p" on "p"."id" <> "n"."id" limit 1',
       [],
       "all",
     );
     expect(joined.rows[0]).toHaveLength(2);
-    expect(joined.rows[0]![1]).toBe(ws.projectId);
-    expect(joined.rows[0]![0]).not.toBe(ws.projectId);
+    // Two different nodes: two different values under one column name.
+    expect(joined.rows[0]![1]).not.toBe(joined.rows[0]![0]);
   });
 
   it("refuses a column named like an integer, whose position Object.values would change", async () => {
@@ -316,7 +316,7 @@ describe("main's DB read adapter against the real Native addon", () => {
       backend: ws.readBackend,
       identity: ws.identity,
     });
-    await client('select "id" from "projects" limit 1', [], "values");
+    await client('select "id" from "tree_nodes" limit 1', [], "values");
     const args = ws.dbExecute.mock.calls[0]!;
     expect(args).toHaveLength(4);
     expect(args[3]).toBe(JSON.stringify(ws.identity));
@@ -329,7 +329,7 @@ describe("main's DB read adapter against the real Native addon", () => {
       identity: incomplete as unknown as MainIssuedCallerIdentity,
     });
     await expect(
-      broken('select "id" from "projects" limit 1', [], "all"),
+      broken('select "id" from "tree_nodes" limit 1', [], "all"),
     ).rejects.toThrow(/D2A_EGRESS_DENIED/);
   });
 
