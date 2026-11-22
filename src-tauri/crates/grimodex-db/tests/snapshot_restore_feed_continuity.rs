@@ -1263,7 +1263,7 @@ fn project_calendar_edited_after_the_snapshot_is_writable_after_the_restore() {
 // restored scope ----
 
 #[test]
-fn codex_only_restore_that_empties_participants_leaves_the_event_writable() {
+fn codex_only_restore_keeps_the_participants_and_leaves_the_event_writable() {
     let db = new_db();
     must(codex_create(&db, "c1"), "codex c1");
     must(codex_create(&db, "c2"), "codex c2");
@@ -1285,6 +1285,17 @@ fn codex_only_restore_that_empties_participants_leaves_the_event_writable() {
     must(
         restore(&db, "r1", "S1", vec![RestoreScope::Codex]),
         "codex-only restore",
+    );
+    // DR-SRX-14: the restore used to delete the participants (the foreign key
+    // cascades from the Codex rows it replaces). The links of the Body scope
+    // are set aside and put back now, so both participants are still there.
+    assert_eq!(
+        scalar(
+            &db,
+            "SELECT COUNT(*) FROM event_participants WHERE event_id = 'e1'"
+        ),
+        Some(2),
+        "the participants survive a Codex-only restore"
     );
     assert_head_is_stale(&db, "e1");
     must(
@@ -2343,5 +2354,104 @@ fn the_restore_only_append_entry_is_crate_private_and_called_from_one_place() {
     assert!(
         !change_feed.contains("pub fn append_snapshot_restore_in_tx"),
         "the restore-only entry must not become public"
+    );
+}
+
+// ---- the exemption still carries a restore that DOES drop a link ----
+//
+// Since DR-SRX the links of the scopes that were not restored survive a
+// restore, so the two tests above ("keeps the participants", "detaches a
+// snippet") no longer reach the exemption: nothing about the object changes and
+// its head is still right. These two restore the other way round: the parent
+// of the link is created after the snapshot, so the restore really removes it
+// and the link falls away, the object's state moves off its feed head, and the
+// next write passes only because of the exemption (DR-SRC-3, DR-SRX-14).
+
+#[test]
+fn codex_only_restore_that_removes_the_primary_character_leaves_the_event_writable() {
+    let db = new_db();
+    must(codex_create(&db, "c1"), "codex c1");
+    must(
+        agent_event_create_with_authority_impl(
+            &db,
+            de::<AgentEventCreatePayload>(json!({
+                "requestId": "create-e1", "eventId": "e1", "projectId": P,
+                "sessionId": SESSION, "surface": "manual", "title": "orig",
+                "ordinal": "a0", "kind": "generic", "participantCodexIds": ["c1"],
+            }))
+            .unwrap(),
+            Some(human_context("create-e1")),
+        ),
+        "event",
+    );
+    snapshot(&db, "S1");
+    // After the snapshot a new entry becomes the event's primary character,
+    // through the writer (so the event and its feed head agree).
+    must(codex_create(&db, "c3"), "codex c3 after the snapshot");
+    let bv = ver(&db, "events", "e1");
+    must(
+        agent_event_update_with_authority_impl(
+            &db,
+            de::<AgentEventUpdatePayload>(json!({
+                "projectId": P, "sessionId": SESSION, "surface": "manual",
+                "eventId": "e1", "baseVersion": bv, "primaryCodexId": "c3"
+            }))
+            .unwrap(),
+            human_context("primary-c3"),
+        ),
+        "primary character c3",
+    );
+    must(
+        restore(&db, "r1", "S1", vec![RestoreScope::Codex]),
+        "codex-only restore removes c3",
+    );
+    assert_eq!(
+        scalar(
+            &db,
+            "SELECT COUNT(*) FROM events WHERE id = 'e1' AND primary_codex_id IS NULL"
+        ),
+        Some(1),
+        "the link to the removed entry fell away"
+    );
+    assert_head_is_stale(&db, "e1");
+    must(
+        ev_update(&db, "e1", "post-1", "after"),
+        "event update after its primary character was removed by the restore",
+    );
+}
+
+#[test]
+fn body_only_restore_that_removes_the_snippets_scene_leaves_the_snippet_writable() {
+    let db = new_db();
+    must(scene_create(&db, "s1"), "scene");
+    snapshot(&db, "S1");
+    must(scene_create(&db, "s2"), "scene created after the snapshot");
+    must(
+        snippet_writes::create(
+            &db,
+            de(snippet_merge(
+                snippet_ctx("create-sn1"),
+                json!({"snippetId": "sn1", "title": "Snippet original",
+                       "content": "{\"type\":\"doc\"}", "tagsCache": null,
+                       "contentSource": "human", "sceneId": "s2",
+                       "sourceChatMessageId": null,
+                       "canonicalPayload": {"title": "Snippet original"}}),
+            ))
+            .unwrap(),
+        ),
+        "snippet attached to the scene made after the snapshot",
+    );
+    must(body(&db, "r1", "S1"), "body-only restore removes s2");
+    assert_eq!(
+        scalar(
+            &db,
+            "SELECT COUNT(*) FROM snippets WHERE id = 'sn1' AND scene_id IS NULL"
+        ),
+        Some(1),
+        "the snippet's link to the removed scene fell away"
+    );
+    must(
+        snippet_update(&db, "sn1", "post-1", "after"),
+        "snippet update after its scene was removed by the restore",
     );
 }
