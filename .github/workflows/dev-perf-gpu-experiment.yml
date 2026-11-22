@@ -199,7 +199,12 @@ jobs:
         continue-on-error: true
         env:
           GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY: "1"
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci
+        # 出力を measure.log にも残す：smoke は最後の phase まで通らないと metrics file を書かないため、
+        # 途中で落ちた job の coldStart は log の [runtime-perf] 行から拾う。
+        run: |
+          set -o pipefail
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci 2>&1 \
+            | tee .artifacts/electron-runtime-performance/measure.log
 
       # ci.yml の「Runner-bound Electron runtime diagnostic (failure only)」は写さない：失敗時に
       # 測定をもう 1 回走らせるため、分布に別の測定が混ざる。
@@ -207,9 +212,12 @@ jobs:
       - name: Summarize result
         if: always()
         continue-on-error: true
+        env:
+          MEASURE_OUTCOME: ${{ steps.runtime-performance.outcome }}
         run: |
           node scripts/dev-perf-gpu-experiment-aggregate.mjs \
-            --summary-line .artifacts/electron-runtime-performance >> "$GITHUB_STEP_SUMMARY"
+            --summary-line .artifacts/electron-runtime-performance \
+            --outcome "$MEASURE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload result
         if: always()

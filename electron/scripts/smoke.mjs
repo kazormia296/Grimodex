@@ -529,7 +529,11 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
   }
   // dev 専用の描画実験用の追加引数（空なら何も足さない）。前景 flag と ozone の後、
   // アプリの入口の前に置く。
-  args.push(...readDevPerfExtraElectronArgs(env));
+  const devPerfExtraArgs = readDevPerfExtraElectronArgs(env);
+  if (devPerfExtraArgs.length > 0) {
+    log(`dev perf extra Electron args: ${devPerfExtraArgs.join(" ")}`);
+  }
+  args.push(...devPerfExtraArgs);
   // Electron parses Chromium switches as executable options only before the
   // application entry. Arguments after main.cjs belong to the application and
   // do not disable renderer/occlusion throttling.

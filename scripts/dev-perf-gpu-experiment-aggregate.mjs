@@ -3,13 +3,19 @@
 // 結果を集計する。gh は呼ばない。`gh run download <run id> -D <dir>` で落とした dir を読むだけ。
 //
 //   node scripts/dev-perf-gpu-experiment-aggregate.mjs <downloaded-dir> [--cold-limit 4000] [--open-limit 3000]
-//   node scripts/dev-perf-gpu-experiment-aggregate.mjs --summary-line <artifact-dir>   (workflow の要約 step 用)
+//   node scripts/dev-perf-gpu-experiment-aggregate.mjs --summary-line <artifact-dir> [--outcome <step outcome>]   (workflow の要約 step 用)
 //
 // <downloaded-dir> の下を再帰で探し、dev-perf-experiment.json がある dir を 1 job の artifact として読む。
 // 同じ dir の runtime-metrics*.json と runtime-metrics-io-settle.json を使う。
 //
 // 「最初の試行」の値を使う：transient retry が起きた job は runtime-metrics-attempt-1.json が最初の試行、
 // それ以外は runtime-metrics.json が最初の試行。retry 後の値（2 回目）は集計に入れない。
+//
+// smoke.mjs は最後の phase まで通ったときだけ metrics file を書く。途中で落ちた job（描画 flag で別の
+// 段が壊れた場合など）の coldStart も残すため、workflow は測定の出力を measure.log に tee する。
+// metrics が無いときは、その log の `[runtime-perf] INFO open-evidence marks boot= frame= open= ready=`
+// の行（最初の 1 行）から boot・frame・open・ready（＝coldStartMs と同じ印）を拾い、log 由来として数える
+// （projectOpenMs は log から取れないので空）。
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -44,6 +50,22 @@ function round(value) {
   return value === null ? null : Math.round(value * 10) / 10;
 }
 
+const MARKS_LINE =
+  /\[runtime-perf\] INFO open-evidence marks boot=(\S+) frame=(\S+) open=(\S+) ready=(\S+)/u;
+
+function readMarksFromLog(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  const match = MARKS_LINE.exec(text);
+  if (!match) return null;
+  const [boot, frame, open, ready] = match.slice(1, 5).map((value) => finite(Number(value)));
+  return { boot, frame, open, ready };
+}
+
 /** 1 job の artifact dir から、集計に要る値だけを取る。 */
 export function loadJobRecord(directory) {
   const identity = readJson(path.join(directory, IDENTITY_FILE));
@@ -52,11 +74,12 @@ export function loadJobRecord(directory) {
   const canonicalPath = path.join(directory, "runtime-metrics.json");
   const retried = existsSync(attempt1Path);
   const metrics = readJson(retried ? attempt1Path : canonicalPath);
+  const logMarks = metrics ? null : readMarksFromLog(path.join(directory, "measure.log"));
   const ioSettle = readJson(path.join(directory, "runtime-metrics-io-settle.json"));
   const ioAttempt = Array.isArray(ioSettle?.attempts) ? ioSettle.attempts[0] : null;
   const marks = metrics?.openEvidence?.rendererMarks ?? {};
-  const bootstrapMs = finite(metrics?.coldStartBootstrapMs);
-  const firstFrameMs = finite(metrics?.coldStartFirstFrameMs);
+  const bootstrapMs = finite(metrics?.coldStartBootstrapMs ?? logMarks?.boot);
+  const firstFrameMs = finite(metrics?.coldStartFirstFrameMs ?? logMarks?.frame);
   const ioBefore = metrics?.openEvidence?.host?.beforeLaunch?.pressure?.io?.full?.avg10;
   return {
     variant: identity.variant ?? "unknown",
@@ -66,13 +89,14 @@ export function loadJobRecord(directory) {
     nproc: identity.nproc ?? null,
     retried,
     hasMetrics: metrics !== null,
-    coldStartMs: finite(metrics?.coldStartMs),
+    fromLog: logMarks !== null,
+    coldStartMs: finite(metrics?.coldStartMs ?? logMarks?.ready),
     projectOpenMs: finite(metrics?.projectOpenMs),
     bootstrapMs,
     firstFrameMs,
     firstFrameDelayMs:
       bootstrapMs !== null && firstFrameMs !== null ? firstFrameMs - bootstrapMs : null,
-    workspaceOpenStartMs: finite(marks.workspaceOpenStartMs),
+    workspaceOpenStartMs: finite(marks.workspaceOpenStartMs ?? logMarks?.open),
     gpuChannelFailureCount: Array.isArray(metrics?.coldStartGpuChannelFailureOffsetsMs)
       ? metrics.coldStartGpuChannelFailureOffsetsMs.length
       : null,
@@ -151,7 +175,8 @@ export function buildTable(records, { coldLimit, openLimit }) {
         variant,
         vendor,
         jobs: group.length,
-        noMetrics: group.filter((record) => !record.hasMetrics).length,
+        logOnly: group.filter((record) => !record.hasMetrics && record.fromLog).length,
+        noData: group.filter((record) => !record.hasMetrics && !record.fromLog).length,
         retried: group.filter((record) => record.retried).length,
         cold: stats(cold),
         coldOver: countOver(cold, coldLimit),
@@ -171,7 +196,8 @@ export function buildTable(records, { coldLimit, openLimit }) {
     "variant",
     "runner",
     "jobs",
-    "no-metrics",
+    "log-only",
+    "no-data",
     "retried",
     "coldStartMs min/med/max",
     `cold>${coldLimit}`,
@@ -183,7 +209,8 @@ export function buildTable(records, { coldLimit, openLimit }) {
     row.variant,
     row.vendor,
     String(row.jobs),
-    String(row.noMetrics),
+    String(row.logOnly),
+    String(row.noData),
     String(row.retried),
     formatStats(row.cold),
     `${row.coldOver}/${row.cold.n}`,
@@ -199,7 +226,7 @@ export function buildTable(records, { coldLimit, openLimit }) {
 }
 
 /** workflow の $GITHUB_STEP_SUMMARY 用の 1 行。 */
-export function formatSummaryLine(record) {
+export function formatSummaryLine(record, outcome = null) {
   if (!record) return "- dev-perf-experiment.json not found (no result)";
   const value = (v) => (v === null || v === undefined ? "n/a" : String(round(v)));
   const io =
@@ -212,7 +239,8 @@ export function formatSummaryLine(record) {
     `boot=${value(record.bootstrapMs)} frame=${value(record.firstFrameMs)} ` +
     `openStart=${value(record.workspaceOpenStartMs)} io(full avg10)=${io} ` +
     `gpuFailLines=${record.gpuChannelFailureCount ?? "n/a"} retried=${record.retried}` +
-    (record.hasMetrics ? "" : " (NO METRICS)")
+    (outcome ? ` step=${outcome}` : "") +
+    (record.hasMetrics ? "" : record.fromLog ? " (metrics file missing; values from log)" : " (NO DATA)")
   );
 }
 
@@ -220,16 +248,18 @@ function parseArguments(argv) {
   const options = {
     directory: null,
     summaryLine: null,
+    outcome: null,
     coldLimit: DEFAULT_COLD_LIMIT_MS,
     openLimit: DEFAULT_OPEN_LIMIT_MS,
   };
   for (let index = 2; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--summary-line" || argument === "--cold-limit" || argument === "--open-limit") {
+    if (argument === "--summary-line" || argument === "--outcome" || argument === "--cold-limit" || argument === "--open-limit") {
       const value = argv[index + 1];
       if (!value) throw new Error(`${argument} requires a value`);
       index += 1;
       if (argument === "--summary-line") options.summaryLine = value;
+      else if (argument === "--outcome") options.outcome = value;
       else {
         const parsed = Number(value);
         if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${argument} must be a positive number`);
@@ -254,7 +284,7 @@ function main(argv) {
     return 2;
   }
   if (options.summaryLine) {
-    console.log(formatSummaryLine(loadJobRecord(options.summaryLine)));
+    console.log(formatSummaryLine(loadJobRecord(options.summaryLine), options.outcome));
     return 0;
   }
   if (!options.directory) {
