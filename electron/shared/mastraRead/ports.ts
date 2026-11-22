@@ -93,9 +93,29 @@ export type CorePhaseResolutionMode = "reading" | "story" | "auto";
 /** The moved `SceneTimeIndex` (`readDomain/features/codex/context/sceneTimeIndex.ts`): one definition, not a copy of its shape. */
 export type CoreSceneTimeIndex = SceneTimeIndex;
 
+/**
+ * The resolution mode as a value or an explicit "could not be resolved" (PR-8a,
+ * DR-MP4-39). No default: a caller that reads `unresolved` hides what it was
+ * asked about (DR-MP4-6 item 3, DR-MP4-8). `ReadInputMode`
+ * (`readDomain/core/readInputs.ts`) is assignable to it; the `reason` is for a
+ * log and is not read.
+ */
+export type CorePhaseResolutionState =
+  | { readonly kind: "resolved"; readonly mode: CorePhaseResolutionMode }
+  | { readonly kind: "unresolved"; readonly reason?: string };
+
 export interface CorePhaseState {
-  readonly resolutionMode: CorePhaseResolutionMode;
+  readonly resolutionMode: CorePhaseResolutionState;
   readonly sceneTimeIndex: CoreSceneTimeIndex;
+  /**
+   * The project the two values above belong to, when the implementation knows
+   * it. Main's are built from one project's rows at the start of a turn and carry
+   * it; the renderer's live store has no project and leaves it out. A reader that
+   * is given a project and finds a different one here refuses (PR-8a): a scene
+   * time index of another project would skip every phase, and a phase that hides a
+   * public entry would not apply.
+   */
+  readonly projectId?: string;
 }
 
 export interface CoreBodyReader {
@@ -182,6 +202,36 @@ export type CoreReadContext = Pick<
 };
 
 /**
+ * What the Codex visibility decision loads besides the entries (PR-8a,
+ * DR-MP4-39). A loader port and not a database read: the renderer's
+ * implementation calls its own `listPhasesByEntryIds` (so the seam its tests mock
+ * stays the same), Main's reads `codex_entry_phases` with a Drizzle select
+ * (`readDomain/core/codexReaders.ts`).
+ */
+export interface CoreCodexData {
+  /**
+   * The phases of the given entries, in any order (the resolver orders them).
+   * The caller passes only ids of entries it read under a project condition:
+   * `codex_entry_phases` has no `project_id` column, so a reader cannot enforce
+   * the project, and an id of another project's entry would return that entry's
+   * phases.
+   */
+  listPhases(entryIds: readonly string[]): Promise<schema.CodexEntryPhase[]>;
+}
+
+/**
+ * The ports of the Codex visibility decision (`readDomain/core/codexVisibility.ts`).
+ * Its own type and not a widening of `CoreReadContext`: no tool takes it yet, and
+ * a literal of `CoreReadContext` in a test must not have to grow.
+ */
+export type CoreCodexVisibilityPorts = Pick<
+  CoreReadPorts,
+  "getDb" | "getPhaseState"
+> & {
+  readonly codex: CoreCodexData;
+};
+
+/**
  * What the chronicle read tools (`list_events`, `get_event_detail`,
  * `get_character_timeline`, `get_chronicle_state`; PR-7a, DR-MP4-37) load. A
  * loader port, not a database: the renderer's implementation calls its own
@@ -225,6 +275,34 @@ export type CoreChronicleReadContext = Pick<
   "getTreeState" | "countTokens" | "getUiLanguage"
 > & {
   readonly chronicle: CoreChronicleData;
+};
+
+/**
+ * The ports of `search_events` (PR-7b, DR-MP4-38): the tree state (the project,
+ * the nodes and the active scene), the token counter, the three chronicle
+ * loaders the secrecy check needs, and the dense read of the events index. Its
+ * own type, not a widening of `CoreChronicleReadContext` (which stays as it is:
+ * the four chronicle tools need no dense read) and not of `CoreReadContext`
+ * (`native` there lacks `eventsSemantic`). A `CoreChronicleReadContext` that has
+ * a `native` satisfies this type structurally, but Main does not pass its cached
+ * context: a hit that the cached events do not know would pass the secrecy check
+ * (DR-MP4-38), so Main's context loads the events and the scene-event bridges
+ * again for each call (`createMainChronicleSearchContext`).
+ *
+ * `native.eventsSemantic` answers the wire as it is, not narrowed. A failure of
+ * it is not turned into an empty answer by the core: what a caller does with it
+ * is the caller's (the renderer's port answers an empty list, Main lets the
+ * error out, so a cancel or a timeout never reads as "no event found").
+ */
+export type CoreChronicleSearchContext = Pick<
+  CoreReadPorts,
+  "getTreeState" | "countTokens"
+> & {
+  readonly chronicle: Pick<
+    CoreChronicleData,
+    "getEvents" | "getSceneEvents" | "getReadingOrder"
+  >;
+  readonly native: Pick<CoreNativeReads, "eventsSemantic">;
 };
 
 /**

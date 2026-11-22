@@ -21,7 +21,7 @@ export type AiUsageSurface =
   | "session_title" // チャットセッションタイトル自動生成
   | "summarization" // 進行的要約 (L5)
   | "context_creator" // Context Creator (ピン提案エージェント)
-  | "codex_judgment" // retired: Codex 構造抽出へ移行済み
+  | "codex_judgment" // 候補画面の「AI で評価」(未確定候補の種別・別名判定。hidden の Codex は送らない)
   | "codex_yomi" // Codex 表記の読み(ふりがな)推定 (IME連携 Phase1)
   | "plot_thread_extract" // プロットスレッド抽出ウィザード (Phase 4a)
   | "chronicle_extract" // 作中年表 出来事抽出ウィザード (Chronicle P4f)

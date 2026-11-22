@@ -10,10 +10,12 @@ import { MAIN_READ_TABLE_SET, MAIN_READ_TABLES } from "./tables.js";
  * seven tools of groups B1 and B2 touch; PR-6 adds `projects` (the reader of
  * the hidden and chronicle-secret inputs); PR-5a adds `snippets` (`search_snippets`); PR-5b adds `foreshadows` and
  * `foreshadow_setups` (`get_foreshadow_detail`); PR-7a adds `events`, `event_participants`,
- * `scene_events`, `event_relations`, `project_calendar` and `codex_entries` (the chronicle tools).
+ * `scene_events`, `event_relations`, `project_calendar` and `codex_entries` (the chronicle tools); PR-8a adds
+ * `codex_entry_phases` (the Codex visibility decision).
  */
 const PINNED = [
   "codex_entries",
+  "codex_entry_phases",
   "codex_entry_tags",
   "codex_tags",
   "event_participants",
@@ -39,7 +41,6 @@ const PINNED = [
 const NOT_YET = [
   "codex_detail_definitions",
   "codex_detail_values",
-  "codex_entry_phases",
   "codex_phase_detail_overrides",
   "foreshadow_codex_links",
 ];

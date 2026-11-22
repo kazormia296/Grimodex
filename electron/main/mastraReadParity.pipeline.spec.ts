@@ -51,6 +51,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import {
+  LEGACY_READ_CANNED_EVENT_HITS,
   LEGACY_READ_PROJECTS,
   LEGACY_READ_SEED,
 } from "../../src/features/chat/agent/__fixtures__/legacyReadSeed.js";
@@ -65,13 +66,29 @@ import {
   type CoreNativeReads,
   type CoreReadContext,
 } from "../shared/mastraRead/ports.js";
-import { createMainChronicleReadContext } from "../shared/readDomain/core/chronicleMainContext.js";
+import {
+  createMainChronicleReadContext,
+  createMainChronicleSearchContext,
+} from "../shared/readDomain/core/chronicleMainContext.js";
+import { createMainCodexVisibilityPorts } from "../shared/readDomain/core/codexMainContext.js";
+import { readCodexPhases } from "../shared/readDomain/core/codexReaders.js";
+import {
+  dropHiddenCodexRows,
+  listHiddenCodexIds,
+  resolveCodexAiVisibility,
+} from "../shared/readDomain/core/codexVisibility.js";
 import {
   CHRONICLE_READ_TOOL_NAMES,
+  CHRONICLE_SEARCH_TOOL_NAMES,
   createChronicleReadExecutors,
+  createChronicleSearchExecutors,
 } from "../shared/readDomain/core/chronicleReadExecutors.js";
+import { readEventsFailClosed } from "../shared/readDomain/core/chronicleReaders.js";
 import { buildReadInputs } from "../shared/readDomain/core/readInputs.js";
-import { readChronicleReadInputs } from "../shared/readDomain/core/readInputsReader.js";
+import {
+  readChronicleReadInputs,
+  readReadInputs,
+} from "../shared/readDomain/core/readInputsReader.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
 import {
   CORE_READ_TOOL_NAMES,
@@ -861,7 +878,7 @@ describe("the chronicle tools of the read core (PR-7a) on Main's adapter over th
     return { executors: createChronicleReadExecutors(main.ctx), main };
   }
 
-  it("covers exactly the four tools of group B6 (search_events is PR-7b), each with a golden, and none of them is in CORE_READ_TOOL_NAMES", () => {
+  it("covers exactly the four tools of group B6 (search_events is the next describe), each with a golden, and none of them is in CORE_READ_TOOL_NAMES", () => {
     expect([...CHRONICLE_READ_TOOL_NAMES].sort()).toEqual([
       "get_character_timeline",
       "get_chronicle_state",
@@ -960,5 +977,425 @@ describe("the chronicle tools of the read core (PR-7a) on Main's adapter over th
       codexId: "c-secret",
     });
     expect(timeline.content).toMatchObject({ character: "黒幕" });
+  });
+});
+
+describe("search_events of the read core (PR-7b) on Main's adapter over the real Native addon", () => {
+  const MAIN_PROJECT = LEGACY_READ_PROJECTS.main;
+
+  /**
+   * The turn of `search_events`: the tree from one select and the current scene of
+   * the wire, a context that reads the events and the scene-event bridges again for
+   * every call (DR-MP4-38), and a `native` the caller chooses: a fake that answers
+   * the golden's canned hits (the model-independent comparison), or Main's typed
+   * read over the real backend (what the real index answers depends on the machine).
+   */
+  async function searchExecutors(
+    ws: Workspace,
+    world: GoldenCase["world"],
+    native: Pick<CoreNativeReads, "eventsSemantic">,
+  ) {
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const turn =
+      world.projectId === ""
+        ? {
+            inputs: buildReadInputs({
+              projectId: "",
+              treeRows: [],
+              project: null,
+              currentSceneId: null,
+            }),
+            nodes: [],
+          }
+        : await readChronicleReadInputs(db, {
+            projectId: world.projectId,
+            currentSceneId: world.activeSceneId ?? null,
+          });
+    ws.dbExecute.mockClear();
+    return createChronicleSearchExecutors(
+      createMainChronicleSearchContext({
+        db,
+        turn,
+        countTokens: (text) => (text ? text.length : 0),
+        native,
+      }),
+    );
+  }
+
+  const cannedNative = (
+    sent: unknown[] = [],
+  ): Pick<CoreNativeReads, "eventsSemantic"> => ({
+    eventsSemantic: async (args) => {
+      sent.push(args);
+      return LEGACY_READ_CANNED_EVENT_HITS;
+    },
+  });
+
+  /** The golden cases whose dense answer is the canned hits (the others have no model-independent answer here). */
+  const CANNED_CASE = /^(?:canned: (?!dense が reject)|XPROJ: )/u;
+
+  it("is the one tool of its own table, with a golden", () => {
+    expect([...CHRONICLE_SEARCH_TOOL_NAMES]).toEqual(["search_events"]);
+    expect(goldenOf("search_events").length).toBeGreaterThan(0);
+    const all = [
+      ...CORE_READ_TOOL_NAMES,
+      ...CHRONICLE_READ_TOOL_NAMES,
+      ...CHRONICLE_SEARCH_TOOL_NAMES,
+    ];
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it("the golden cases that answer from the canned hits are the same on the real addon, to the byte (real events and scene_events reads, a fake dense)", async () => {
+    const ws = await startSeededWorkspace();
+    const cases = goldenOf("search_events");
+    let compared = 0;
+    for (const golden of cases.filter((c) => CANNED_CASE.test(c.case))) {
+      const label = `search_events / ${golden.case}`;
+      const sent: Array<{ projectId: string; query: string; limit: number }> =
+        [];
+      const executors = await searchExecutors(
+        ws,
+        golden.world,
+        cannedNative(sent),
+      );
+      const actual = await executors.search_events(golden.params);
+      expect(
+        {
+          name: actual.name,
+          summary: actual.summary,
+          tokensUsed: actual.tokensUsed,
+          content: actual.content,
+        },
+        label,
+      ).toEqual({
+        name: golden.result.name,
+        summary: golden.result.summary,
+        tokensUsed: golden.result.tokensUsed,
+        content: golden.result.content,
+      });
+      expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+      expect(sent, label).toEqual([
+        {
+          projectId: golden.world.projectId,
+          query: golden.params.query,
+          limit: golden.params.limit === 2 ? 6 : 30,
+        },
+      ]);
+      for (const call of ws.dbExecute.mock.calls) {
+        expect(String(call[0]), label).toMatch(/^\s*select\b/iu);
+        expect(["all", "values"], label).toContain(call[2]);
+        expect(call[3], label).toBe(JSON.stringify(ws.identity));
+      }
+      compared += 1;
+    }
+    // S1, S3, no scene, limit=2, limit "abc", XPROJ
+    expect(compared).toBe(6);
+  });
+
+  it("the cases that stop before the dense read (no project; an empty query before the project) are the same, and read nothing", async () => {
+    const ws = await startSeededWorkspace();
+    for (const golden of goldenOf("search_events").filter(
+      (c) => c.case.startsWith("no-project") || c.case.startsWith("order"),
+    )) {
+      const label = golden.case;
+      const sent: unknown[] = [];
+      const executors = await searchExecutors(
+        ws,
+        golden.world,
+        cannedNative(sent),
+      );
+      if (golden.world.projectId === "" && golden.params.query !== "") {
+        await expect(
+          executors.search_events(golden.params),
+          label,
+        ).rejects.toBeInstanceOf(CoreProjectRequiredError);
+      } else {
+        const actual = await executors.search_events(golden.params);
+        expect(actual.summary, label).toBe(golden.result.summary);
+        expect(actual.content, label).toEqual(golden.result.content);
+        expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+      }
+      expect(sent, label).toEqual([]);
+      expect(ws.dbExecute, label).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a dense failure is the tool's error, never `[]` (the golden's `reject` case is a legacy-port result, not compared)", async () => {
+    const ws = await startSeededWorkspace();
+    const golden = goldenOf("search_events").find((c) =>
+      c.case.includes("dense が reject"),
+    )!;
+    expect(golden.result.summary).toBe("0 events found");
+    const executors = await searchExecutors(ws, golden.world, {
+      eventsSemantic: async () => {
+        throw new Error("dense unavailable");
+      },
+    });
+    await expect(executors.search_events(golden.params)).rejects.toThrow(
+      /dense unavailable/,
+    );
+  });
+
+  it("reads `events` and `scene_events` from the real addon again for every call (twice for two calls)", async () => {
+    const ws = await startSeededWorkspace();
+    const executors = await searchExecutors(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s1" },
+      cannedNative(),
+    );
+    const countFrom = (table: string) =>
+      ws.dbExecute.mock.calls.filter((call) =>
+        new RegExp(`from "${table}"`, "iu").test(String(call[0])),
+      ).length;
+    await executors.search_events({ query: "魔術" });
+    await executors.search_events({ query: "魔術" });
+    expect(countFrom("events")).toBe(2);
+    expect(countFrom("scene_events")).toBe(2);
+  });
+
+  it("the real dense read (what it answers depends on the machine): when it answers, every hit is an event of the asked project; when it does not, the tool fails and is never `[]`", async () => {
+    const ws = await startSeededWorkspace();
+    const native = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const executors = await searchExecutors(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s3" },
+      native,
+    );
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const own = new Set(
+      (await readEventsFailClosed(db, MAIN_PROJECT)).map((e) => e.id),
+    );
+    expect(own.size).toBeGreaterThan(0);
+    const outcome = await executors.search_events({ query: "魔術" }).then(
+      (value) => ({ answered: true as const, value }),
+      (error: unknown) => ({ answered: false as const, error: String(error) }),
+    );
+    if (outcome.answered) {
+      const content = outcome.value.content as Array<{ eventId: string }>;
+      expect(Array.isArray(content)).toBe(true);
+      // Native's index is read by project: no hit of another project's event. (Vacuous
+      // where the seed has no event index: the answer is [] and the loop does not run.
+      // The project scoping itself is pinned in Rust, `events_search_scopes_to_project`.)
+      for (const hit of content)
+        expect(own.has(hit.eventId), hit.eventId).toBe(true);
+    } else {
+      expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED/);
+      expect(outcome.error).toMatch(
+        /embedding model .* is not installed|semantic/i,
+      );
+    }
+  });
+
+  it("a workspace that is not the active one is refused and reaches the tool as its failure", async () => {
+    const ws = await startSeededWorkspace();
+    const native = createMainTypedReads({
+      backend: ws.backend,
+      identity: { ...ws.identity, workspaceId: ws.otherDirectory },
+    });
+    const executors = await searchExecutors(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s3" },
+      native,
+    );
+    await expect(executors.search_events({ query: "魔術" })).rejects.toThrow(
+      /SEMANTIC_INDEX_WORKSPACE_CHANGED/,
+    );
+  });
+
+  it("a limit that rounds to 0 passes the real `requireUnsignedInteger` and Native answers none (or the model-less machine refuses; never a workspace error)", async () => {
+    const ws = await startSeededWorkspace();
+    const native = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const executors = await searchExecutors(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s3" },
+      native,
+    );
+    const outcome = await executors
+      .search_events({ query: "魔術", limit: 0.5 })
+      .then(
+        (value) => ({ answered: true as const, value }),
+        (error: unknown) => ({
+          answered: false as const,
+          error: String(error),
+        }),
+      );
+    if (outcome.answered) {
+      expect(outcome.value.summary).toBe("0 events found");
+    } else {
+      expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED|unsigned|integer/i);
+      expect(outcome.error).toMatch(
+        /embedding model .* is not installed|semantic/i,
+      );
+    }
+  });
+});
+
+describe("the Codex visibility decision of the read core (PR-8a) on Main's adapter over the real Native addon", () => {
+  async function visibilityPorts(
+    ws: Workspace,
+    projectId: string,
+    currentSceneId: string | null,
+  ) {
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const inputs = await readReadInputs(db, { projectId, currentSceneId });
+    ws.dbExecute.mockClear();
+    return {
+      db,
+      inputs,
+      ports: createMainCodexVisibilityPorts({ db, inputs }),
+    };
+  }
+
+  const expectOnlySelectsWithIdentity = (ws: Workspace): void => {
+    expect(ws.dbExecute).toHaveBeenCalled();
+    for (const call of ws.dbExecute.mock.calls) {
+      expect(String(call[0])).toMatch(/^\s*select\b/iu);
+      expect(["all", "values"]).toContain(call[2]);
+      expect(call).toHaveLength(4);
+      expect(call[3]).toBe(JSON.stringify(ws.identity));
+    }
+  };
+
+  it("`codex_entry_phases` is readable through the adapter: every column, the types Native returns (integers are numbers, text is strings, NULL is null), the seed's `ph-released`", async () => {
+    const ws = await startSeededWorkspace();
+    const { db } = await visibilityPorts(ws, "p-main", null);
+    const phases = await readCodexPhases(db, ["c-released", "c-aria"]);
+    expect(phases).toEqual([
+      {
+        id: "ph-released",
+        entryId: "c-released",
+        anchorNodeId: "n-s3",
+        label: "正体判明",
+        summaryOverride: "n-s3 で正体が明らかになる騎士。",
+        contentOverride: expect.stringContaining("Phase 解決後の本文。"),
+        contextModeOverride: "mentioned",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        version: 0,
+      },
+    ]);
+    expect(typeof phases[0]!.version).toBe("number");
+    expectOnlySelectsWithIdentity(ws);
+  });
+
+  it("hides the seed's hidden entry, releases `c-released` from n-s3 with the phase's text, keeps another project's entry out, and sends only selects with the caller identity", async () => {
+    const ws = await startSeededWorkspace();
+    const ids = ["c-aria", "c-secret", "c-released", "x-c-aria", "gone"];
+    const decide = async (sceneId: string | null) => {
+      const { ports } = await visibilityPorts(ws, "p-main", sceneId);
+      ws.dbExecute.mockClear();
+      const result = await resolveCodexAiVisibility(ports, {
+        projectId: "p-main",
+        entryIds: ids,
+        sceneId,
+        withContent: true,
+      });
+      expectOnlySelectsWithIdentity(ws);
+      // The entries select and the phases select, in this order.
+      expect(ws.dbExecute.mock.calls.map((c) => String(c[0]))).toEqual([
+        expect.stringMatching(/from "codex_entries"/u),
+        expect.stringMatching(/from "codex_entry_phases"/u),
+      ]);
+      return result;
+    };
+
+    for (const sceneId of ["n-s1", "n-s2", null]) {
+      const r = await decide(sceneId);
+      expect([...r.hidden].sort(), String(sceneId)).toEqual([
+        "c-released",
+        "c-secret",
+        "gone",
+        "x-c-aria",
+      ]);
+      expect([...r.texts.keys()], String(sceneId)).toEqual(["c-aria"]);
+    }
+    const atS3 = await decide("n-s3");
+    expect([...atS3.hidden].sort()).toEqual(["c-secret", "gone", "x-c-aria"]);
+    expect(atS3.texts.get("c-released")).toEqual({
+      summary: "n-s3 で正体が明らかになる騎士。",
+      content: expect.stringContaining("Phase 解決後の本文。"),
+      released: true,
+      mode: "mentioned",
+    });
+    expect(atS3.texts.get("c-aria")).toMatchObject({
+      released: false,
+      summary: "老魔術師を訪ねる旅の少女",
+    });
+  });
+
+  it("listHiddenCodexIds and dropHiddenCodexRows give the same answer, and the turn's input is the project's own (another project's input is refused)", async () => {
+    const ws = await startSeededWorkspace();
+    const { ports } = await visibilityPorts(ws, "p-main", "n-s3");
+    const hidden = await listHiddenCodexIds(ports, {
+      projectId: "p-main",
+      entryIds: ["c-aria", "c-secret", "c-released", "gone"],
+      sceneId: "n-s3",
+    });
+    expect([...hidden].sort()).toEqual(["c-secret", "gone"]);
+    const kept = await dropHiddenCodexRows(
+      ports,
+      [
+        { id: "c-secret", summary: "s" },
+        { id: "c-released", summary: "base" },
+      ],
+      { projectId: "p-main", sceneId: "n-s3" },
+    );
+    expect(kept).toEqual([
+      { id: "c-released", summary: "n-s3 で正体が明らかになる騎士。" },
+    ]);
+    await expect(
+      listHiddenCodexIds(ports, {
+        projectId: "p-other",
+        entryIds: ["x-c-aria"],
+        sceneId: null,
+      }),
+    ).rejects.toThrow(/different project/u);
+    await expect(
+      resolveCodexAiVisibility(ports, {
+        projectId: "",
+        entryIds: ["c-aria"],
+        sceneId: null,
+      }),
+    ).rejects.toBeInstanceOf(CoreProjectRequiredError);
+  });
+
+  it("two phases of one entry at one scene with the same created_at are ordered by id (K-4: the real database gives them in the order the resolver then fixes)", async () => {
+    // `c-mage` is public. `ph-tie-b` hides it and `ph-tie-a` shows it, both at n-s1
+    // with the same time: the resolver orders them by id, so the later id (b) wins.
+    const phase = (id: string, mode: string) => ({
+      sql: "INSERT INTO codex_entry_phases (id, entry_id, anchor_node_id, label, context_mode_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      params: [
+        id,
+        "c-mage",
+        "n-s1",
+        id,
+        mode,
+        "2026-01-02T00:00:00.000Z",
+        "2026-01-02T00:00:00.000Z",
+      ],
+    });
+    const ws = await startSeededWorkspace([
+      phase("ph-tie-b", "hidden"),
+      phase("ph-tie-a", "mentioned"),
+    ]);
+    const { ports } = await visibilityPorts(ws, "p-main", "n-s1");
+    const atS1 = await resolveCodexAiVisibility(ports, {
+      projectId: "p-main",
+      entryIds: ["c-mage"],
+      sceneId: "n-s1",
+    });
+    expect([...atS1.hidden]).toEqual(["c-mage"]);
   });
 });
