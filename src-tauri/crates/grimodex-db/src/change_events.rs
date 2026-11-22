@@ -332,6 +332,94 @@ pub fn append_change_events(
     }
 }
 
+/// Every value a project snapshot restore parks starts with this root; the
+/// rest is the snapshot id (`__grimodex_restore_park_<snapshotId>__<value>`).
+pub(crate) const RESTORE_PARK_ROOT: &str = "__grimodex_restore_park_";
+
+/// The only write of `change_events` outside the append (DR-SRX-9, 確認 115).
+///
+/// A project snapshot restore deletes the scenes of the Body scope and puts
+/// them back, and `change_events.scene_id` (`ON DELETE SET NULL`) would lose
+/// the scene of every row meanwhile. The column is an input of the row's hash,
+/// so a row that lost it no longer verifies. For the length of one restore the
+/// column of this project's rows is set aside as `<prefix><scene id>` and put
+/// back afterwards.
+///
+/// What this can write, and nothing else:
+/// - `park`: `scene_id` becomes `<prefix> || scene_id`, for the rows whose
+///   scene is one of the project's scenes;
+/// - `restore`: a parked value becomes the scene id it was made from when that
+///   scene exists, and NULL when it does not (what the foreign key does when
+///   a scene is deleted).
+///
+/// No other column is read into a write, no value other than "the parked
+/// value, with or without the prefix" or NULL can be produced, and the caller
+/// never passes a string (the prefix is built here from the snapshot id).
+/// Rows are never inserted or deleted.
+pub(crate) struct RestoreSceneIdParking {
+    prefix: String,
+    /// Smallest string above every string that starts with `prefix`.
+    upper: String,
+    /// `substr` start (1-based) of the original value.
+    original_from: i64,
+}
+
+impl RestoreSceneIdParking {
+    pub(crate) fn for_snapshot(snapshot_id: &str) -> Self {
+        let prefix = format!("{RESTORE_PARK_ROOT}{snapshot_id}__");
+        let mut upper = prefix.clone();
+        upper.pop();
+        upper.push('`');
+        let original_from = prefix.chars().count() as i64 + 1;
+        Self {
+            prefix,
+            upper,
+            original_from,
+        }
+    }
+
+    pub(crate) fn park(&self, conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
+        Ok(conn.execute(
+            "UPDATE change_events
+                SET scene_id = ?1 || scene_id
+              WHERE project_id = ?2
+                AND scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?2)",
+            params![self.prefix, project_id],
+        )?)
+    }
+
+    /// Put the parked values back; returns how many rows lost their scene
+    /// because the scene is gone.
+    pub(crate) fn restore(&self, conn: &Connection) -> anyhow::Result<usize> {
+        conn.execute(
+            "UPDATE change_events
+                SET scene_id = substr(scene_id, ?3)
+              WHERE scene_id >= ?1 AND scene_id < ?2
+                AND EXISTS (
+                    SELECT 1 FROM tree_nodes
+                     WHERE tree_nodes.id = substr(change_events.scene_id, ?3)
+                )",
+            params![self.prefix, self.upper, self.original_from],
+        )?;
+        Ok(conn.execute(
+            "UPDATE change_events
+                SET scene_id = NULL
+              WHERE scene_id >= ?1 AND scene_id < ?2",
+            params![self.prefix, self.upper],
+        )?)
+    }
+
+    /// Rows that still carry a parked value (must be 0 before commit).
+    pub(crate) fn remaining(&self, conn: &Connection) -> anyhow::Result<i64> {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM change_events
+              WHERE scene_id >= ?1 AND scene_id < ?2",
+            params![self.prefix, self.upper],
+            |row| row.get::<_, i64>(0),
+        )?)
+    }
+}
+
 impl Database {
     /// Append events received through a renderer-facing command. The generic
     /// low-level append remains available to trusted Native/MCP writers, while

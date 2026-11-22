@@ -1263,7 +1263,7 @@ fn project_calendar_edited_after_the_snapshot_is_writable_after_the_restore() {
 // restored scope ----
 
 #[test]
-fn codex_only_restore_that_empties_participants_leaves_the_event_writable() {
+fn codex_only_restore_keeps_the_participants_and_leaves_the_event_writable() {
     let db = new_db();
     must(codex_create(&db, "c1"), "codex c1");
     must(codex_create(&db, "c2"), "codex c2");
@@ -1285,6 +1285,17 @@ fn codex_only_restore_that_empties_participants_leaves_the_event_writable() {
     must(
         restore(&db, "r1", "S1", vec![RestoreScope::Codex]),
         "codex-only restore",
+    );
+    // DR-SRX-14: the restore used to delete the participants (the foreign key
+    // cascades from the Codex rows it replaces). The links of the Body scope
+    // are set aside and put back now, so both participants are still there.
+    assert_eq!(
+        scalar(
+            &db,
+            "SELECT COUNT(*) FROM event_participants WHERE event_id = 'e1'"
+        ),
+        Some(2),
+        "the participants survive a Codex-only restore"
     );
     assert_head_is_stale(&db, "e1");
     must(

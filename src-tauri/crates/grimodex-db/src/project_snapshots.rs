@@ -24,6 +24,10 @@ use crate::narrative_extraction::change_feed::{
 };
 use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
+mod restore_links;
+
+pub use restore_links::LossNotice;
+
 pub type RawRow = Map<String, Value>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -251,6 +255,11 @@ pub struct ApplyProjectSnapshotRestoreResult {
     pub change_event_uid: Option<String>,
     pub maintenance_transaction_id: Option<String>,
     pub no_op: bool,
+    /// Links of the scopes that were not selected whose target the restore
+    /// removed, by kind (DR-SRX-10). A result stored by an earlier version has
+    /// none.
+    #[serde(default)]
+    pub dropped: Vec<LossNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,6 +292,9 @@ pub struct ProjectSnapshotRestoreContext {
     pub live_snippet_ids: Vec<String>,
     pub live_event_ids: Vec<String>,
     pub live_codex_tag_ids: Vec<String>,
+    /// What a restore of the requested scopes could not give back, counted
+    /// before anything is written (DR-SRX-10).
+    pub loss_notices: Vec<LossNotice>,
 }
 
 struct AuxSpec {
@@ -2354,6 +2366,24 @@ pub fn project_snapshot_restore_context(
             "SELECT id FROM codex_tags WHERE project_id = ?1",
             &project_param,
         )?;
+        let loss_notices = if structural && !requested_scopes.is_empty() {
+            let plan = build_canonical_restore_plan(
+                conn,
+                &project_id,
+                &snapshot_id,
+                &requested_scopes,
+            )?;
+            let plan = restore_links::reshape_authorship_inserts(
+                conn,
+                &snapshot_id,
+                &requested_scopes,
+                plan,
+            )?;
+            let shape = restore_links::shape(conn, &project_id, &snapshot_id, &requested_scopes)?;
+            restore_links::count_losses(conn, &shape, &plan)?
+        } else {
+            Vec::new()
+        };
         Ok(ProjectSnapshotRestoreContext {
             structural,
             live_tables,
@@ -2368,16 +2398,13 @@ pub fn project_snapshot_restore_context(
             live_snippet_ids,
             live_event_ids,
             live_codex_tag_ids,
+            loss_notices,
         })
     })
 }
 
-fn snapshot_has_aux(
-    transaction: &Transaction<'_>,
-    snapshot_id: &str,
-    scope: &str,
-) -> anyhow::Result<bool> {
-    Ok(transaction
+fn snapshot_has_aux(conn: &Connection, snapshot_id: &str, scope: &str) -> anyhow::Result<bool> {
+    Ok(conn
         .query_row(
             "SELECT 1 FROM project_snapshot_aux
               WHERE snapshot_id = ?1 AND scope = ?2",
@@ -2482,135 +2509,6 @@ fn validate_insert_project(
     Ok(())
 }
 
-fn park_map_reference(
-    transaction: &Transaction<'_>,
-    project_id: &str,
-    column: &str,
-    prefix: &str,
-) -> anyhow::Result<()> {
-    let sql = format!(
-        "UPDATE map_node_positions
-            SET \"{column}\" = ?1 || \"{column}\"
-          WHERE \"{column}\" IS NOT NULL
-            AND board_id IN (SELECT id FROM map_boards WHERE project_id = ?2)"
-    );
-    transaction.execute(&sql, params![prefix, project_id])?;
-    Ok(())
-}
-
-fn restore_parked_map_reference(
-    transaction: &Transaction<'_>,
-    project_id: &str,
-    column: &str,
-    target_table: &str,
-    prefix: &str,
-) -> anyhow::Result<()> {
-    let restore_sql = format!(
-        "UPDATE map_node_positions
-            SET \"{column}\" = substr(\"{column}\", length(?1) + 1)
-          WHERE substr(\"{column}\", 1, length(?1)) = ?1
-            AND board_id IN (SELECT id FROM map_boards WHERE project_id = ?2)
-            AND EXISTS (
-                SELECT 1 FROM \"{target_table}\" target
-                 WHERE target.id = substr(map_node_positions.\"{column}\", length(?1) + 1)
-                   AND target.project_id = ?2
-            )"
-    );
-    transaction.execute(&restore_sql, params![prefix, project_id])?;
-    let delete_sql = format!(
-        "DELETE FROM map_node_positions
-          WHERE substr(\"{column}\", 1, length(?1)) = ?1
-            AND board_id IN (SELECT id FROM map_boards WHERE project_id = ?2)"
-    );
-    transaction.execute(&delete_sql, params![prefix, project_id])?;
-    Ok(())
-}
-
-const EDITOR_STICKY_PARK_TABLE: &str = "__grimodex_editor_sticky_restore_park";
-
-/// Protect display-only editor stickies while an owner scope is replaced.
-///
-/// `editor_stickies` is owned by several different scope tables, so deleting
-/// one of those tables' rows can cascade-delete a sticky even when the map
-/// scope is deliberately not being restored. A temporary table keeps the
-/// current rows inside the same transaction; rows whose owner is not rebuilt
-/// are intentionally omitted during restore rather than reintroducing an
-/// orphaned foreign key.
-fn park_editor_stickies(transaction: &Transaction<'_>, project_id: &str) -> anyhow::Result<()> {
-    transaction.execute_batch(&format!(
-        "DROP TABLE IF EXISTS temp.{EDITOR_STICKY_PARK_TABLE};"
-    ))?;
-    let sql = format!(
-        "CREATE TEMP TABLE {EDITOR_STICKY_PARK_TABLE} AS
-         SELECT id, project_id, document_key, body, palette_id, color_slot,
-                inline_offset, block_offset, z_index, version, tree_node_id,
-                codex_entry_id, phase_id, snippet_id, chronicle_event_id,
-                created_at, updated_at
-           FROM editor_stickies
-          WHERE project_id = ?1"
-    );
-    transaction.execute(&sql, params![project_id])?;
-    Ok(())
-}
-
-fn restore_parked_editor_stickies(
-    transaction: &Transaction<'_>,
-    project_id: &str,
-) -> anyhow::Result<()> {
-    let sql = format!(
-        "INSERT OR IGNORE INTO editor_stickies (
-             id, project_id, document_key, body, palette_id, color_slot,
-             inline_offset, block_offset, z_index, version, tree_node_id,
-             codex_entry_id, phase_id, snippet_id, chronicle_event_id,
-             created_at, updated_at
-         )
-         SELECT parked.id, parked.project_id, parked.document_key, parked.body,
-                parked.palette_id, parked.color_slot, parked.inline_offset,
-                parked.block_offset, parked.z_index, parked.version,
-                parked.tree_node_id, parked.codex_entry_id, parked.phase_id,
-                parked.snippet_id, parked.chronicle_event_id, parked.created_at,
-                parked.updated_at
-           FROM temp.{EDITOR_STICKY_PARK_TABLE} AS parked
-          WHERE parked.project_id = ?1
-            AND (
-                (parked.tree_node_id IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM tree_nodes
-                     WHERE tree_nodes.id = parked.tree_node_id
-                       AND tree_nodes.project_id = ?1
-                ))
-                OR
-                (parked.codex_entry_id IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM codex_entries
-                     WHERE codex_entries.id = parked.codex_entry_id
-                       AND codex_entries.project_id = ?1
-                ) AND (
-                    parked.phase_id IS NULL OR EXISTS (
-                        SELECT 1 FROM codex_entry_phases
-                         WHERE codex_entry_phases.id = parked.phase_id
-                           AND codex_entry_phases.entry_id = parked.codex_entry_id
-                    )
-                ))
-                OR
-                (parked.snippet_id IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM snippets
-                     WHERE snippets.id = parked.snippet_id
-                       AND snippets.project_id = ?1
-                ))
-                OR
-                (parked.chronicle_event_id IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM events
-                     WHERE events.id = parked.chronicle_event_id
-                       AND events.project_id = ?1
-                ))
-            )"
-    );
-    transaction.execute(&sql, params![project_id])?;
-    transaction.execute_batch(&format!(
-        "DROP TABLE IF EXISTS temp.{EDITOR_STICKY_PARK_TABLE};"
-    ))?;
-    Ok(())
-}
-
 pub fn apply_project_snapshot_restore(
     db: &Database,
     payload: ApplyProjectSnapshotRestorePayload,
@@ -2687,6 +2585,15 @@ pub fn apply_project_snapshot_restore(
             &scopes,
             &payload.inserts,
         )?;
+        // The provenance of a document belongs to the scope that owns the
+        // document (DR-SRX-7). The plan carries every row of the snapshot, the
+        // restore inserts only those of the selected scopes' documents.
+        let canonical_inserts = restore_links::reshape_authorship_inserts(
+            &transaction,
+            &payload.snapshot_id,
+            &scopes,
+            canonical_inserts,
+        )?;
         if let Some(response) = load_idempotent_response(&transaction, &idempotency_request)? {
             let result = serde_json::from_value(response)?;
             transaction.commit()?;
@@ -2754,38 +2661,16 @@ pub fn apply_project_snapshot_restore(
             None
         };
 
-        let tree_prefix = format!("__grimodex_snapshot_tree_{}__", payload.snapshot_id);
-        let codex_prefix = format!("__grimodex_snapshot_codex_{}__", payload.snapshot_id);
-        let park_tree = scopes.contains(&RestoreScope::Body)
-            && !scopes.contains(&RestoreScope::Map)
-            && table_exists(&transaction, "map_node_positions")?;
-        let park_codex = scopes.contains(&RestoreScope::Codex)
-            && !scopes.contains(&RestoreScope::Map)
-            && table_exists(&transaction, "map_node_positions")?;
-        let park_editor_stickies_needed = !scopes.contains(&RestoreScope::Map)
-            && (scopes.contains(&RestoreScope::Body)
-                || scopes.contains(&RestoreScope::Codex)
-                || scopes.contains(&RestoreScope::Snippet))
-            && table_exists(&transaction, "editor_stickies")?;
-        if park_tree {
-            park_map_reference(
-                &transaction,
-                &payload.project_id,
-                "tree_node_id",
-                &tree_prefix,
-            )?;
-        }
-        if park_codex {
-            park_map_reference(
-                &transaction,
-                &payload.project_id,
-                "codex_entry_id",
-                &codex_prefix,
-            )?;
-        }
-        if park_editor_stickies_needed {
-            park_editor_stickies(&transaction, &payload.project_id)?;
-        }
+        // Set aside, in place, every link of a scope this restore does not
+        // replace to a row it deletes (DR-SRX-2). They come back, or fall away
+        // as the foreign key would, once the snapshot's rows are in.
+        let link_shape = restore_links::shape(
+            &transaction,
+            &payload.project_id,
+            &payload.snapshot_id,
+            &scopes,
+        )?;
+        let parked_links = restore_links::park(&transaction, &link_shape, &canonical_inserts)?;
 
         if scopes.contains(&RestoreScope::Body) {
             delete_for_project(
@@ -2963,28 +2848,8 @@ pub fn apply_project_snapshot_restore(
             }
         }
 
-        if park_editor_stickies_needed {
-            restore_parked_editor_stickies(&transaction, &payload.project_id)?;
-        }
-
-        if park_tree {
-            restore_parked_map_reference(
-                &transaction,
-                &payload.project_id,
-                "tree_node_id",
-                "tree_nodes",
-                &tree_prefix,
-            )?;
-        }
-        if park_codex {
-            restore_parked_map_reference(
-                &transaction,
-                &payload.project_id,
-                "codex_entry_id",
-                "codex_entries",
-                &codex_prefix,
-            )?;
-        }
+        let dropped = restore_links::restore(&transaction, &link_shape, &parked_links)?;
+        restore_links::ensure_nothing_left_parked(&transaction, &link_shape, &parked_links)?;
 
         let feed_after = capture_snapshot_feed_state(
             &transaction,
@@ -3030,6 +2895,7 @@ pub fn apply_project_snapshot_restore(
                 change_event_uid: None,
                 maintenance_transaction_id: None,
                 no_op: true,
+                dropped,
             };
             insert_idempotent_response(
                 &transaction,
@@ -3141,6 +3007,7 @@ pub fn apply_project_snapshot_restore(
             change_event_uid: Some(change_event_uid),
             maintenance_transaction_id: Some(append.narrative.transaction_id),
             no_op: false,
+            dropped,
         };
         insert_idempotent_response(
             &transaction,
