@@ -256,6 +256,10 @@ requirements:
       - src/features/chat/agent/readCore.mainAdapter.test.ts
       - src/features/chat/agent/readOpenForeshadowWire.test.ts
       - src/features/chat/agent/toolExecutors.chronicleCharacterization.test.ts
+      - src/features/chat/agent/toolExecutors.codexHidden.test.ts
+      - src/features/codex/context/codexHiddenFromAi.test.ts
+      - src/features/codex/context/codexHiddenFromAi.characterization.test.ts
+      - src/features/codex/context/codexHiddenFromAi.coreParity.test.ts
       - electron/shared/readDomain/core/core.static.test.ts
       - electron/shared/readDomain/core/readExecutors.test.ts
       - electron/shared/readDomain/core/searchTools.test.ts
@@ -265,7 +269,11 @@ requirements:
       - electron/shared/readDomain/core/chronicleReaders.test.ts
       - electron/shared/readDomain/core/chronicleMainContext.test.ts
       - electron/shared/readDomain/features/chronicle/readRows.test.ts
+      - electron/shared/readDomain/core/codexVisibility.test.ts
+      - electron/shared/readDomain/core/codexMainContext.test.ts
+      - electron/shared/readDomain/features/codex/context/codexAiVisibility.test.ts
       - electron/shared/mastraRead/tables.test.ts
+      - electron/main/mastraRead/db.test.ts
       - electron/main/mastraRead/irClosure.static.test.ts
       - electron/main/mastraReadParity.pipeline.spec.ts
       - src/features/chat/agent/appHelpTools.test.ts

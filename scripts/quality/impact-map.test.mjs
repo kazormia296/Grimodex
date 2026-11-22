@@ -1234,6 +1234,10 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     // calendar normalizers, plus main's fail-closed event normalizer), split out of
     // src/features/chronicle/api.ts. Not listed in a rule on purpose, for the same reason as above.
     "features/chronicle/readRows",
+    // MP-4b PR-8a: the pure Codex visibility decision (the body of the renderer's resolveCodexForAi),
+    // split out of src/features/codex/context/codexHiddenFromAi.ts. Not listed in a rule on purpose:
+    // codexHiddenFromAi.ts matches no rule (every suite), so a rule here would narrow the selection.
+    "features/codex/context/codexAiVisibility",
   ];
   const splitFrom = [
     "src/features/chronicle/api.ts",
@@ -1241,6 +1245,7 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     "src/features/narrative-extraction/temporal/solver/resolveStoryRanks.ts",
     "src/features/chat/semanticRecall.ts",
     "src/features/foreshadow/api.ts",
+    "src/features/codex/context/codexHiddenFromAi.ts",
   ];
   assert.equal(moved.length, 21);
   for (const name of moved) {
@@ -1325,6 +1330,25 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     assert.equal(selected.fallback, true, `${name}.ts stays fail-open (every suite)`);
     covers(selected, chronicleApi, `${name} vs chronicle/api.ts`);
   }
+  // PR-8a: the Codex visibility decision. codexVisibility.ts and codexReaders.ts are the asynchronous entry and
+  // the Drizzle selects of the renderer's resolveCodexForAi / listPhasesByEntryIds (src/features/codex/context/
+  // codexHiddenFromAi.ts, src/features/codex/phaseApi.ts), and codexMainContext.ts is main's counterpart of the
+  // renderer's live phase store. None is listed on a rule, so each falls back to every suite; the pure
+  // features/codex/context/codexAiVisibility.ts does too.
+  const hiddenFromAi = selectImpact(map, ["src/features/codex/context/codexHiddenFromAi.ts"]);
+  const phaseApi = selectImpact(map, ["src/features/codex/phaseApi.ts"]);
+  assert.equal(hiddenFromAi.fallback, true, "codexHiddenFromAi.ts matches no rule (every suite)");
+  for (const file of [
+    "electron/shared/readDomain/core/codexVisibility.ts",
+    "electron/shared/readDomain/core/codexReaders.ts",
+    "electron/shared/readDomain/core/codexMainContext.ts",
+    "electron/shared/readDomain/features/codex/context/codexAiVisibility.ts",
+  ]) {
+    const selected = selectImpact(map, [file]);
+    assert.equal(selected.fallback, true, `${file} stays fail-open (every suite)`);
+    covers(selected, hiddenFromAi, `${file} vs codexHiddenFromAi.ts`);
+    covers(selected, phaseApi, `${file} vs phaseApi.ts`);
+  }
   // (3) A file a later PR adds to the core matches no rule either, so it selects every suite (safe by
   // default) until someone lists it on purpose.
   const later = selectImpact(map, ["electron/shared/readDomain/core/somethingNew.ts"]);
@@ -1340,6 +1364,10 @@ test("the tool-policy light suite runs the executors' golden and the shared core
     "src/features/chat/agent/readCore.mainAdapter.test.ts",
     "src/features/chat/agent/readOpenForeshadowWire.test.ts",
     "src/features/chat/agent/toolExecutors.chronicleCharacterization.test.ts",
+    "src/features/chat/agent/toolExecutors.codexHidden.test.ts",
+    "src/features/codex/context/codexHiddenFromAi.test.ts",
+    "src/features/codex/context/codexHiddenFromAi.characterization.test.ts",
+    "src/features/codex/context/codexHiddenFromAi.coreParity.test.ts",
     "electron/shared/readDomain/core/core.static.test.ts",
     "electron/shared/readDomain/core/readExecutors.test.ts",
     "electron/shared/readDomain/core/searchTools.test.ts",
@@ -1349,7 +1377,11 @@ test("the tool-policy light suite runs the executors' golden and the shared core
     "electron/shared/readDomain/core/chronicleReaders.test.ts",
     "electron/shared/readDomain/core/chronicleMainContext.test.ts",
     "electron/shared/readDomain/features/chronicle/readRows.test.ts",
+    "electron/shared/readDomain/core/codexVisibility.test.ts",
+    "electron/shared/readDomain/core/codexMainContext.test.ts",
+    "electron/shared/readDomain/features/codex/context/codexAiVisibility.test.ts",
     "electron/shared/mastraRead/tables.test.ts",
+    "electron/main/mastraRead/db.test.ts",
     "electron/main/mastraRead/irClosure.static.test.ts",
   ]) {
     assert.ok(commandText.includes(test), test);
