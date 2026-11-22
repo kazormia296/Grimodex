@@ -115,6 +115,8 @@ interface RequestOverrides {
   entries?: CodexContextEntry[];
   sceneContent?: string;
   sceneContentJson?: string;
+  /** A povName already present on the immutable snapshot scene (must never be trusted). */
+  snapshotPovName?: string;
   inputPinnedEntryIds?: string[];
   activeTabId?: string;
   prefetch?: boolean;
@@ -173,6 +175,9 @@ function request(overrides: RequestOverrides = {}) {
         id: "scene-1",
         title: "Scene",
         content: overrides.sceneContent ?? "Body",
+        ...(overrides.snapshotPovName !== undefined
+          ? { povName: overrides.snapshotPovName }
+          : {}),
         ...(overrides.sceneContentJson
           ? { contentJson: overrides.sceneContentJson }
           : {}),
@@ -1232,6 +1237,182 @@ describe("collectSceneContext", () => {
 
     expect(result.promptInput.activeTabContent).toBeUndefined();
     expect(result.promptInput.pinnedCodexEntries).toEqual([]);
+  });
+});
+
+describe("collectSceneContext scene POV name (CPL/1 V1・V2)", () => {
+  function povDeps(
+    povCharacterId: string | null,
+    phases: CodexEntryPhase[] = [],
+    node: Partial<TreeNodeData> = {},
+  ) {
+    const povNode: TreeNodeData = { ...sceneNode, povCharacterId, ...node };
+    return {
+      ...phaseDeps(phases),
+      listTreeNodes: () => [povNode],
+      getTemporalResolution: () => ({
+        sceneTimeIndex: buildSceneTimeIndex([povNode]),
+        resolutionMode: "reading" as const,
+      }),
+    };
+  }
+
+  const povNameOf = (result: Awaited<ReturnType<typeof collectSceneContext>>) =>
+    result.promptInput.scene.povName;
+
+  it("names a visible POV character and renders it in L3 between time label and synopsis", async () => {
+    const alice = entry({ id: "alice", name: "Alice" });
+    const result = await collectSceneContext(
+      request({ entries: [alice] }),
+      povDeps("alice", [], { storyTimeLabel: "Dusk", synopsis: "SYN" }),
+    );
+    expect(povNameOf(result)).toBe("Alice");
+    const { prompt } = buildSystemPrompt({
+      ...result.promptInput,
+      scene: {
+        ...result.promptInput.scene,
+        storyTimeLabel: "Dusk",
+        synopsis: "SYN",
+      },
+      lang: "en",
+    });
+    expect(prompt.indexOf("Time: Dusk")).toBeLessThan(
+      prompt.indexOf("POV of this scene: Alice"),
+    );
+    expect(prompt.indexOf("POV of this scene: Alice")).toBeLessThan(
+      prompt.indexOf("Synopsis: SYN"),
+    );
+  });
+
+  it("names an always-mode POV character that is not mentioned in the body", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
+    const result = await collectSceneContext(
+      request({ entries: [alice], sceneContent: "nobody here" }),
+      povDeps("alice"),
+    );
+    expect(povNameOf(result)).toBe("Alice");
+  });
+
+  it("does not name a hidden POV character, and never trusts a povName on the snapshot", async () => {
+    const hidden = entry({
+      id: "alice",
+      name: "Alice",
+      contextMode: "hidden",
+    });
+    const result = await collectSceneContext(
+      request({ entries: [hidden], snapshotPovName: "Injected" }),
+      povDeps("alice"),
+    );
+    expect(povNameOf(result)).toBeUndefined();
+    expect(JSON.stringify(result.promptInput.scene)).not.toContain("Alice");
+    expect(JSON.stringify(result.promptInput.scene)).not.toContain("Injected");
+  });
+
+  it("names a character whose Phase at this scene lifts hidden", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "hidden" });
+    const result = await collectSceneContext(
+      request({ entries: [alice] }),
+      povDeps("alice", [
+        phase({
+          id: "phase-1",
+          entryId: alice.id,
+          contextModeOverride: "mentioned",
+        }),
+      ]),
+    );
+    expect(povNameOf(result)).toBe("Alice");
+  });
+
+  it("does not name a character whose Phase at this scene turns hidden", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
+    const result = await collectSceneContext(
+      request({ entries: [alice] }),
+      povDeps("alice", [
+        phase({
+          id: "phase-1",
+          entryId: alice.id,
+          contextModeOverride: "hidden",
+        }),
+      ]),
+    );
+    expect(povNameOf(result)).toBeUndefined();
+  });
+
+  it("does not name a POV id that is absent from the Codex index", async () => {
+    const bob = entry({ id: "bob", name: "Bob" });
+    const result = await collectSceneContext(
+      request({ entries: [bob] }),
+      povDeps("ghost"),
+    );
+    expect(povNameOf(result)).toBeUndefined();
+  });
+
+  it("does not name a suppress POV character automatically (same gate as the pending-beat POV)", async () => {
+    const alice = entry({
+      id: "alice",
+      name: "Alice",
+      contextMode: "suppress",
+    });
+    const result = await collectSceneContext(
+      request({ entries: [alice], sceneContent: "Alice appears" }),
+      povDeps("alice"),
+    );
+    expect(povNameOf(result)).toBeUndefined();
+  });
+
+  it("names a suppress POV character only through an explicit pin", async () => {
+    const alice = entry({
+      id: "alice",
+      name: "Alice",
+      contextMode: "suppress",
+    });
+    const result = await collectSceneContext(
+      request({ entries: [alice], sessionId: "session-1" }),
+      {
+        ...povDeps("alice"),
+        listPinnedCodex: async () => [pinnedCodex(alice)],
+      },
+    );
+    expect(povNameOf(result)).toBe("Alice");
+  });
+
+  it("does not name a POV character the author excluded from automatic context this turn", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
+    const result = await collectSceneContext(
+      request({ entries: [alice], excludedAutoEntryIds: ["alice"] }),
+      povDeps("alice"),
+    );
+    expect(povNameOf(result)).toBeUndefined();
+  });
+
+  it("adds nothing for a scene without a POV character", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
+    const withPovNull = await collectSceneContext(
+      request({ entries: [alice] }),
+      povDeps(null),
+    );
+    expect(povNameOf(withPovNull)).toBeUndefined();
+    const { prompt } = buildSystemPrompt(withPovNull.promptInput);
+    expect(prompt).not.toContain("この場面の視点");
+    expect(prompt).not.toContain("POV of this scene");
+  });
+
+  it("does not name a POV character on a non-scene node that shares the id", async () => {
+    const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
+    const result = await collectSceneContext(
+      request({ entries: [alice] }),
+      povDeps("alice", [], { nodeType: "folder" }),
+    );
+    expect(povNameOf(result)).toBeUndefined();
+  });
+
+  it("does not render a blank Codex name", async () => {
+    const blank = entry({ id: "alice", name: "   ", contextMode: "always" });
+    const result = await collectSceneContext(
+      request({ entries: [blank] }),
+      povDeps("alice"),
+    );
+    expect(povNameOf(result)).toBeUndefined();
   });
 });
 

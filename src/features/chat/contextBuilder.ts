@@ -52,6 +52,7 @@ export interface SceneContext {
   intent?: string;
   /** Story-time label for the current scene (e.g. "第3話・夕方"). Injected into L3 when set. */
   storyTimeLabel?: string | null;
+  povName?: string | null; // POV character name, gated by Codex disclosure (prompts/shared/sceneL3Lines.ts)
 }
 
 export interface NoteContext {
@@ -66,6 +67,7 @@ export interface NoteContext {
 // Map (AI Branch) で共有。互換のためここから re-export する。
 export type { ProjectContext } from "@/features/project/contextAtoms";
 import type { ProjectContext } from "@/features/project/contextAtoms";
+import { renderSceneTimeAndPovLines } from "@/prompts/shared/sceneL3Lines";
 
 export interface CodexContext {
   id: string;
@@ -1294,9 +1296,7 @@ function buildSystemPromptWithActiveTokenMode(
   );
   if (hasRealScene) {
     l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}${labelSuffix}`;
-    if (input.scene.storyTimeLabel?.trim()) {
-      l3Text += `\n${s.labels.storyTimeLabel}: ${input.scene.storyTimeLabel.trim()}`;
-    }
+    l3Text += renderSceneTimeAndPovLines(s.labels, input.scene);
     if (input.scene.synopsis) {
       l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
     }
