@@ -11,6 +11,7 @@ const snippetApiHarness = vi.hoisted(() => ({
   invoke: vi.fn(),
   runTimelapseBodyReplacement: vi.fn(),
   runTimelapseBodyWrite: vi.fn(),
+  runTimelapseEditorBodyWrite: vi.fn(),
   runTimelapseMutation: vi.fn(),
   persisted: undefined as Record<string, unknown> | undefined,
 }));
@@ -20,6 +21,7 @@ vi.mock("@/lib/tauri", () => ({ invoke: snippetApiHarness.invoke }));
 vi.mock("@/features/timelapse/bodyWriteMode", () => ({
   runTimelapseBodyReplacement: snippetApiHarness.runTimelapseBodyReplacement,
   runTimelapseBodyWrite: snippetApiHarness.runTimelapseBodyWrite,
+  runTimelapseEditorBodyWrite: snippetApiHarness.runTimelapseEditorBodyWrite,
   runTimelapseMutation: snippetApiHarness.runTimelapseMutation,
 }));
 
@@ -178,6 +180,15 @@ function configureSnippetUpdateHarness(): void {
       },
     ) => callbacks.project(await callbacks.commit(undefined)),
   );
+  snippetApiHarness.runTimelapseEditorBodyWrite.mockImplementation(
+    async (
+      _input: unknown,
+      callbacks: {
+        commit: () => Promise<unknown>;
+        project: (committed: unknown) => Promise<unknown>;
+      },
+    ) => callbacks.project(await callbacks.commit()),
+  );
   snippetApiHarness.runTimelapseMutation.mockImplementation(
     async (_projectId: string, operation: () => Promise<unknown>) =>
       operation(),
@@ -247,5 +258,89 @@ describe("snippet update timelapse admission", () => {
       expect.any(Function),
       undefined,
     );
+  });
+});
+
+describe("snippet update の自分の autosave（EAR-12）", () => {
+  const capture = { commit: vi.fn(), release: vi.fn() };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    configureSnippetUpdateHarness();
+  });
+
+  it("ownSaveCapture と content があれば replacement fence でなく editor の hold を使う", async () => {
+    await updateSnippet(
+      "project-1",
+      "snippet-1",
+      { content: "本文の更新" },
+      { baseVersion: 4, ownSaveCapture: capture },
+    );
+
+    expect(
+      snippetApiHarness.runTimelapseBodyReplacement,
+    ).not.toHaveBeenCalled();
+    expect(snippetApiHarness.runTimelapseBodyWrite).not.toHaveBeenCalled();
+    expect(snippetApiHarness.runTimelapseEditorBodyWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-1",
+        documentIdentity: {
+          projectId: "project-1",
+          domain: "snippet",
+          entityType: "snippet",
+          entityId: "snippet-1",
+        },
+        capture,
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("timelapseDocument があっても ownSaveCapture を優先する", async () => {
+    await updateSnippet(
+      "project-1",
+      "snippet-1",
+      { content: "本文の更新" },
+      {
+        baseVersion: 4,
+        ownSaveCapture: capture,
+        timelapseDocument: {} as never,
+      },
+    );
+
+    expect(snippetApiHarness.runTimelapseBodyWrite).not.toHaveBeenCalled();
+    expect(snippetApiHarness.runTimelapseEditorBodyWrite).toHaveBeenCalledTimes(
+      1,
+    );
+  });
+
+  it("ownSaveCapture が無ければ従来の fence のまま（外部の書き換えの既定）", async () => {
+    await updateSnippet(
+      "project-1",
+      "snippet-1",
+      { content: "本文の更新" },
+      { baseVersion: 4 },
+    );
+
+    expect(
+      snippetApiHarness.runTimelapseEditorBodyWrite,
+    ).not.toHaveBeenCalled();
+    expect(snippetApiHarness.runTimelapseBodyReplacement).toHaveBeenCalledTimes(
+      1,
+    );
+  });
+
+  it("title だけの更新は ownSaveCapture があっても hold を使わない", async () => {
+    await updateSnippet(
+      "project-1",
+      "snippet-1",
+      { title: "タイトルの更新" },
+      { baseVersion: 4, ownSaveCapture: capture },
+    );
+
+    expect(
+      snippetApiHarness.runTimelapseEditorBodyWrite,
+    ).not.toHaveBeenCalled();
+    expect(snippetApiHarness.runTimelapseMutation).toHaveBeenCalledTimes(1);
   });
 });
