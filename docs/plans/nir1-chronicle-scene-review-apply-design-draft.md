@@ -7,7 +7,7 @@
 | Status | ユーザー確認済み（2026-11-22）。規則、残る制限、防御の変更（脅威モデル）と、確認事項を、ユーザーが確認した。実装の前に、基点のコードを読み直す。起案と違う点が見つかれば、その都度、ユーザーに伺う |
 | この lane の位置 | NIR-1 の残レーンの委任の外。規則・脅威モデル・着手は、ユーザーが個別に確認する |
 | 作成日 | 2026-11-22。「今」は、基点の状態を指す。公開済みの版（v2.0.10）には、提案と取り込みの機能が無い |
-| もとになった決定 | 2026-11-21〜22 のユーザーの決定（§1.1）。記録は `claude/nir1-contracts` に置く（未作成） |
+| もとになった決定 | 2026-11-21〜22 のユーザーの決定（§1.1）。記録は、`claude/nir1-contracts` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`（commit `e69df2e1`、追記 `38207868`） |
 | 関係する起案 | CED/1（`nir1-chronicle-event-date-required-proposal/1`。年表の出来事は必ず日時を持ち、前後は日時で比べる。承認して入れる出来事の日時の決め方）と、CPL/1（`nir1-chronicle-position-label-proposal/1`。年表の出来事に「これまで／これから」の区別を付けて AI に渡す）。EET/1（`nir1-chronicle-extraction-event-time-proposal/1`。抽出のときに、AI が出来事の日時を推定する）。規則の番号は、起案ごとに別である。ほかの起案の規則は、「CED/1 の G3」のように呼ぶ |
 | 改める契約 | BAO/1（`nir1-chronicle-bulk-approve-operation-proposal/1`）、ERA/1（`nir1-chronicle-edited-revision-apply-proposal/1`）、SSE/1（`nir1-chronicle-scene-scoped-extraction-proposal/1`）、RR/1（`nir1-chronicle-review-reasons-proposal/1`）の一部と、CAS/1（`nir1-chronicle-apply-keeps-secret-proposal/1`）の「年表の出来事は常に秘密の印つきで作る」。ADR 013 の J3 (2) は、この案が「別の起案」に当たる。NIR-0 の認証の防御 1 つ（年表の一覧が変わっていたら、取り込みの前に失敗する）も、年表の抽出の取り込みについて置き換える。範囲は §2.8 |
 | 変えない契約 | ADR 013 の「作者が付ける印は守る」、IR の admission の規則（PUB-G の後まで変えない） |
