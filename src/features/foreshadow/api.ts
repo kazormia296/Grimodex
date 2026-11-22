@@ -423,12 +423,6 @@ export interface SceneForeshadowInfo {
 }
 
 /**
- * Phase 2 (chat context): プロジェクト全体の未回収伏線（payoffConfirmed=false
- * かつ abandoned=false）を loadBearing 優先度（critical > supporting > optional
- * > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
- * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
- */
-/**
  * 未回収伏線を読む wire（`{foreshadows, setups}`）。MP-4b PR-5b：read 専用 module（共有 core）が
  * この wire から tool の結果を組むので、ここは「wire を取る」だけ（組み立てはしない）。
  *

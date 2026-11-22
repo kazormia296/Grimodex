@@ -34,9 +34,11 @@
  * The list is a table-level allowlist: the checker (`sql.ts`) reads the names
  * of the tables in a statement, not its columns or its conditions. A statement
  * Main sends through the adapter may therefore read every row of every table
- * here, `snippets` bodies included (DR-MP4-34), and the `secret = 1` rows and
- * the `notes` of `foreshadows` (DR-MP4-35; `get_foreshadow_detail` already shows
- * them, DR-MP4-24). What a tool shows of them is that tool's own condition, in
+ * here, of every project: `snippets` bodies included (DR-MP4-34), and all of
+ * `foreshadows` (the `secret = 1` rows and the `notes` too) and of
+ * `foreshadow_setups` (every column, the AI's `ai_reasoning`/`ai_rationale` and
+ * the `from_pos`/`to_pos` of a secret foreshadowing's setups too) (DR-MP4-35;
+ * `get_foreshadow_detail` already shows a foreshadowing's own, DR-MP4-24). What a tool shows of them is that tool's own condition, in
  * the core.
  *
  * The list is pinned by `tables.test.ts`.
