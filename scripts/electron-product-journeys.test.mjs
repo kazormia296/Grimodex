@@ -1375,6 +1375,14 @@ const HELD_FRESHNESS_STUCK_LAUNCH_TIMEOUT_MS = 3_000;
 // before-request の再検証が終わった後の受領書の待ち（deadline）。実時間の待ちは
 // 受領書が見えた時点で終わるので、余裕を持たせても成功経路は遅くならない。
 const HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS = 3_000;
+// 受領書の検査が理由を述べて拒むことを確かめる試験の launch 待ち。短いと、遅い
+// runner で検査より先に electron-launch の timeout が切れ、拒む理由が
+// ProductJourneyOperationTimeoutError に化ける。拒む検査は即座に終わるので、
+// 余裕を持たせても試験は遅くならない。
+const RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS = 3_000;
+// 受領書が「無い」「書きかけ」の拒みは deadline（launchTimeoutMs）の満了で起きるため、
+// 長くすると試験が待つ。launch 自体の timeout は避けつつ、待ちを短く保つ。
+const RECEIPT_DEADLINE_REJECTION_LAUNCH_TIMEOUT_MS = 500;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_TIMEOUT_MS = 2_500;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_ITERATION_TIMEOUT_MS = 250;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_POLL_INTERVAL_MS = 10;
@@ -2022,7 +2030,7 @@ test("harness tolerates the current held-Freshness temp until atomic rename", as
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
-    launchTimeoutMs: 120,
+    launchTimeoutMs: HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS,
     electronLauncher: {
       launch: async ({ env }) => {
         const expected = expectedNarrativeMaintenanceCiReceipt(env);
@@ -2320,7 +2328,7 @@ test("file receipt is accepted even when Playwright consumed stdout before launc
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 100,
+      launchTimeoutMs: HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           // Simulate Playwright consuming the old stdout event before launch
@@ -2403,12 +2411,14 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
       },
       {
         name: "missing",
+        launchTimeoutMs: RECEIPT_DEADLINE_REJECTION_LAUNCH_TIMEOUT_MS,
         writeAfterLaunch: true,
         write: async () => undefined,
         pattern: /missing|receipt/i,
       },
       {
         name: "partial",
+        launchTimeoutMs: RECEIPT_DEADLINE_REJECTION_LAUNCH_TIMEOUT_MS,
         writeAfterLaunch: true,
         write: async (root) => {
           const nonceDir = path.join(root, expected.nonce);
@@ -2487,7 +2497,8 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
       const harness = createProductJourneyHarness({
         mainCjs: "/tmp/fake-main.cjs",
         electronBin: "/tmp/fake-electron",
-        launchTimeoutMs: 20,
+        launchTimeoutMs:
+          testCase.launchTimeoutMs ?? RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
         electronLauncher: {
           launch: async ({ env }) => {
             if (testCase.writeAfterLaunch) {
@@ -2516,7 +2527,12 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
       if (!testCase.writeAfterLaunch) {
         await testCase.write(harness.receiptRoot, harness);
       }
-      await assert.rejects(harness.launch(testCase.name), testCase.pattern);
+      await assert.rejects(harness.launch(testCase.name), (error) => {
+        assert.match(String(error?.message), testCase.pattern);
+        // 検査が拒んだことの確認。launch の timeout に化けた拒みは通さない。
+        assert.doesNotMatch(String(error?.message), /operation timed out/i);
+        return true;
+      });
       await harness.dispose({ success: false, name: testCase.name });
     }
   } finally {
@@ -4509,7 +4525,7 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 30,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async () => {
           stdout.emit(
@@ -4539,7 +4555,7 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
     const failingHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 30,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           const nonceDir = path.join(
@@ -5199,7 +5215,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
     const bridgeHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 50,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           bridgeReceiptPath = path.join(
@@ -5239,7 +5255,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
     const closeHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 50,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           closeReceiptPath = path.join(
