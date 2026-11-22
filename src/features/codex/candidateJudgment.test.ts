@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const mockSend = vi.hoisted(() => vi.fn());
 const mockBlock = vi.hoisted(() => vi.fn(() => false));
+const mockHidden = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: mockSend,
@@ -17,6 +18,10 @@ vi.mock("@/features/project/api", () => ({
 }));
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ projectId: "p1" }) },
+}));
+// hidden の判定（実物の DB を通す試験は candidateJudgment.realHidden.test.ts）。
+vi.mock("./context/codexHiddenAnyPhase", () => ({
+  listCodexIdsHiddenFromAiInAnyPhase: mockHidden,
 }));
 
 import { judgeCandidates } from "./candidateJudgment";
@@ -44,6 +49,8 @@ describe("judgeCandidates", () => {
   beforeEach(() => {
     mockSend.mockReset();
     mockBlock.mockReturnValue(false);
+    mockHidden.mockReset();
+    mockHidden.mockResolvedValue(new Set<string>());
   });
 
   it("種別を正規化採用し、不正種別は捨て、未知 aliasOfId は null に倒す", async () => {
@@ -129,5 +136,96 @@ describe("judgeCandidates", () => {
     await expect(judgeCandidates([cand("円明")], [])).rejects.toThrow(
       "transport unavailable",
     );
+  });
+
+  it("hidden の判定に失敗したら AI を呼ばず reject する（fail-closed）", async () => {
+    aiReturns([]);
+    mockHidden.mockRejectedValue(new Error("db unavailable"));
+
+    await expect(
+      judgeCandidates(
+        [cand("円明")],
+        [{ id: "e1", name: "首都", aliases: null }],
+      ),
+    ).rejects.toMatchObject({ code: "CODEX_JUDGMENT_HIDDEN_CHECK_FAILED" });
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("hidden を除いた後で先頭 200 件の窓を数える（hidden が窓を占めても公開の項目が落ちない）", async () => {
+    aiReturns([
+      {
+        surface: "円明",
+        suggestedType: "character",
+        summary: "",
+        aliasOfId: null,
+      },
+    ]);
+    // 先頭 150 件が hidden、続く 100 件が公開。除く前に 200 件で切ると公開は 50 件しか残らない。
+    const all = Array.from({ length: 250 }, (_, i) => ({
+      id: `id-${String(i).padStart(3, "0")}-x`,
+      name: `名前${String(i).padStart(3, "0")}`,
+      aliases: null,
+    }));
+    mockHidden.mockResolvedValue(new Set(all.slice(0, 150).map((e) => e.id)));
+
+    await judgeCandidates([cand("円明")], all);
+
+    const prompt = (
+      mockSend.mock.calls[0][0] as Array<{ content: string }>
+    )[0].content.toString();
+    for (const e of all.slice(0, 150)) expect(prompt).not.toContain(e.id);
+    // 公開 100 件は全部入る（窓 200 に収まる）。
+    for (const e of all.slice(150)) expect(prompt).toContain(e.id);
+  });
+
+  it("hidden の id を AI が aliasOfId に返しても採用しない（knownIds は除いた後の一覧）", async () => {
+    aiReturns([
+      {
+        surface: "円明",
+        suggestedType: "character",
+        summary: "",
+        aliasOfId: "secret-id",
+      },
+    ]);
+    mockHidden.mockResolvedValue(new Set(["secret-id"]));
+
+    const m = await judgeCandidates(
+      [cand("円明")],
+      [
+        { id: "secret-id", name: "秘匿", aliases: null },
+        { id: "e1", name: "公開", aliases: null },
+      ],
+    );
+
+    expect(m.get("円明")?.aliasOfId).toBeNull();
+  });
+
+  it("候補の表記が hidden の項目の名前・別名・lemma と同じなら、その候補は送らず、全部該当するなら AI を呼ばない", async () => {
+    mockHidden.mockResolvedValue(new Set(["secret-id"]));
+    const entries = [
+      { id: "secret-id", name: "秘匿の帝都", aliases: '["影の都ヴォルグ"]' },
+      { id: "e1", name: "公開", aliases: null },
+    ];
+
+    expect(await judgeCandidates([cand("影の都ヴォルグ")], entries)).toEqual(
+      new Map(),
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+
+    aiReturns([]);
+    await judgeCandidates(
+      [
+        cand("影の都ヴォルグ"),
+        { ...cand("活用形"), lemma: "秘匿の帝都" },
+        cand("円明"),
+      ],
+      entries,
+    ).catch(() => undefined);
+    const prompt = (
+      mockSend.mock.calls[0][0] as Array<{ content: string }>
+    )[0].content.toString();
+    expect(prompt).not.toContain("影の都ヴォルグ");
+    expect(prompt).not.toContain("活用形");
+    expect(prompt).toContain("円明");
   });
 });
