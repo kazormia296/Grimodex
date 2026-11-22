@@ -527,6 +527,11 @@ function readCalls(ws: Workspace): ReadCall[] {
       args: { payload: { projectId: ws.projectId, requestId: "own-request" } },
     },
     {
+      name: "extraction scene proposals",
+      cmd: "narrative_extraction_list_scene_proposals",
+      args: { payload: { projectId: ws.projectId, sceneId: "no-such-scene" } },
+    },
+    {
       name: "maintenance inbox",
       cmd: "narrative_maintenance_inbox_list",
       args: { payload: { projectId: ws.projectId } },

@@ -256,6 +256,7 @@ requirements:
       - electron/shared/readDomain/core/readExecutors.test.ts
       - electron/shared/mastraRead/tables.test.ts
       - electron/main/mastraRead/irClosure.static.test.ts
+      - electron/main/mastraReadParity.pipeline.spec.ts
       - src/features/chat/agent/appHelpTools.test.ts
       - src/help/helpIndex.test.ts
       - src/help/uiState.test.ts

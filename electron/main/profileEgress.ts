@@ -167,7 +167,7 @@ export type D2aRoute =
 
 /**
  * `own-data-read` (K3/2): typed reads of the author's own data that publish
- * nothing outside the profile.  39 commands, each checked by K3/2 to have no
+ * nothing outside the profile.  40 commands, each checked by K3/2 to have no
  * write in its function body.  A command belongs here, in `DENIED_COMMANDS`,
  * in `INTERNAL_COMMANDS`, in the license ledger or in the typed-result
  * ledger, never two; adding or removing a command here needs a new draftRef.
@@ -214,13 +214,14 @@ const OWN_DATA_READ_COMMANDS = [
   "list_scene_lens_for_project",
   "list_annotations_for_scene",
   "list_annotations_for_project",
-  // Extraction review and maintenance inbox (7)
+  // Extraction review and maintenance inbox (8)
   "narrative_extraction_get_run",
   "narrative_extraction_get_run_review_bundle",
   "narrative_extraction_list_resumable_runs",
   "narrative_extraction_is_run_resumable_for_review",
   "narrative_extraction_list_chronicle_task_resume_candidates",
   "narrative_extraction_get_commit_status",
+  "narrative_extraction_list_scene_proposals",
   "narrative_maintenance_inbox_list",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 

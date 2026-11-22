@@ -1,5 +1,5 @@
 // NIR-1 DA-1 ST3 (K3/2 "restricted 下の route 区分"): the five publication route
-// classes, the 39-command own-data-read ledger, the generic-SQL early
+// classes, the 40-command own-data-read ledger, the generic-SQL early
 // classification, and the Main -> Native own-data-read classification.
 //
 // The own-data-read opening is a single switch (`D2A_OWN_DATA_READ_OPEN`, true
@@ -70,7 +70,7 @@ vi.mock("./windows.js", () => ({
 
 const { registerIpcRouter } = await import("./ipc.js");
 
-/** K3/2 "区分の構成": the 39 own-data-read commands, by group. */
+/** K3/2 "区分の構成": the 40 own-data-read commands, by group. */
 const OWN_DATA_READ_BY_GROUP = {
   search: [
     "fts_search",
@@ -119,6 +119,7 @@ const OWN_DATA_READ_BY_GROUP = {
     "narrative_extraction_is_run_resumable_for_review",
     "narrative_extraction_list_chronicle_task_resume_candidates",
     "narrative_extraction_get_commit_status",
+    "narrative_extraction_list_scene_proposals",
     "narrative_maintenance_inbox_list",
   ],
 } as const;
@@ -193,15 +194,15 @@ const DENIED = (route: string) =>
   new RegExp(`^${D2A_EGRESS_DENIED_MARKER} ${route}:`);
 
 describe("own-data-read ledger (K3/2 区分の構成)", () => {
-  it("holds exactly the 39 confirmed commands, each a real NAPI command", () => {
+  it("holds exactly the 40 confirmed commands, each a real NAPI command", () => {
     const ledgers = d2aRouteLedgersForTest();
-    expect(OWN_DATA_READ_COMMANDS).toHaveLength(39);
-    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(39);
+    expect(OWN_DATA_READ_COMMANDS).toHaveLength(40);
+    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(40);
     expect([...ledgers.ownDataRead].sort()).toEqual(
       [...OWN_DATA_READ_COMMANDS].sort(),
     );
     expect(Object.values(OWN_DATA_READ_BY_GROUP).map((g) => g.length)).toEqual([
-      7, 3, 9, 2, 3, 2, 6, 7,
+      7, 3, 9, 2, 3, 2, 6, 8,
     ]);
     for (const command of OWN_DATA_READ_COMMANDS) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
