@@ -33,6 +33,8 @@ pub fn now_rfc3339_millis() -> String {
 
 pub mod canonical_json;
 pub mod change_events;
+pub mod chronicle_calendar;
+pub mod chronicle_order;
 pub mod chronicle_time;
 pub mod codex_matching;
 pub mod contract_string;
