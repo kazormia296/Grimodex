@@ -77,7 +77,11 @@ import {
   recordMiniEditorTransaction,
   type LoadedMiniEditorTimelapseAuthority,
 } from "@/features/editor/miniEditorTimelapse";
-import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import {
+  openOwnSaveCapture,
+  type TimelapseDocumentRef,
+  type TimelapseOwnSaveCapture,
+} from "@/features/timelapse/documentCoverage";
 import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
 
 interface SnippetDetailContentProps {
@@ -89,6 +93,8 @@ interface SnippetDetailContentProps {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
       preexistingDraft?: boolean;
+      /** autosave が content の捕捉と同じ区間で開いた hold（EAR-12）。 */
+      ownSaveCapture?: TimelapseOwnSaveCapture;
     },
   ) => Promise<VersionedSaveOutcome>;
   onDelete: (id: string) => void;
@@ -438,15 +444,36 @@ export function SnippetDetailContent({
       if (saveTitle) data.title = titleSnapshot;
       if (saveContent) data.content = content;
       if (!saveTitle && !saveContent) return;
-      const outcome = await onSave(snippetId, data, {
-        baseVersion: loadedVersionRef.current,
-        ...(loadedTimelapseAuthorityRef.current?.document
-          ? {
-              timelapseDocument: loadedTimelapseAuthorityRef.current.document,
-            }
-          : {}),
-        ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
-      });
+      // content の捕捉（上の getHTML）と同じ同期区間で hold を開く（EAR-12）。
+      // 保存の間に打たれた step は hold に預かり、editor は read-only にならない。
+      const capture = saveContent
+        ? openOwnSaveCapture({
+            projectId: snippet.projectId,
+            document: {
+              projectId: snippet.projectId,
+              domain: "snippet",
+              entityType: "snippet",
+              entityId: snippetId,
+            },
+          })
+        : undefined;
+      let outcome: Awaited<ReturnType<typeof onSave>>;
+      try {
+        outcome = await onSave(snippetId, data, {
+          baseVersion: loadedVersionRef.current,
+          ...(loadedTimelapseAuthorityRef.current?.document
+            ? {
+                timelapseDocument:
+                  loadedTimelapseAuthorityRef.current.document,
+              }
+            : {}),
+          ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+          ...(capture ? { ownSaveCapture: capture } : {}),
+        });
+      } finally {
+        // api に届いた場合は内側で release 済み（冪等）。届かない経路の owner。
+        capture?.release();
+      }
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
           `snippet detail save not persisted: ${snippetId}`,

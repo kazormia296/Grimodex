@@ -29,11 +29,13 @@ import {
 import {
   runTimelapseBodyReplacement,
   runTimelapseBodyWrite,
+  runTimelapseEditorBodyWrite,
   runTimelapseMutation,
 } from "@/features/timelapse/bodyWriteMode";
 import type {
   TimelapseCoverageProof,
   TimelapseDocumentRef,
+  TimelapseOwnSaveCapture,
 } from "@/features/timelapse/documentCoverage";
 
 export {
@@ -358,6 +360,13 @@ interface CodexEntryUpdateOptions {
   /** Draft was admitted before a lifecycle lease began draining autosaves. */
   preexistingDraft?: boolean;
   /**
+   * 作者自身の editor の autosave が content の捕捉と同じ同期区間で開いた hold
+   * （EAR-12）。付けると replacement fence を取らず editor を read-only にしない。
+   * 付けない呼び手（undo／import／agent／mount など外部の書き換え）は従来の fence。
+   * 引き取った後の release はこの api が行い、届かなかった経路は呼び手が行う。
+   */
+  ownSaveCapture?: TimelapseOwnSaveCapture;
+  /**
    * 読み登録の read-modify-write で照合した取得時表記。指定された場合、version
    * を増やさない legacy writer による改名・alias・除外・読み変更も比較検出する。
    */
@@ -521,6 +530,27 @@ export function updateCodexEntry(
     commitCodexEntryUpdate(projectId, id, data, opts, coverage);
   const project = (committed: CodexUpdateCommit | null) =>
     projectCodexEntryUpdate(projectId, id, data, opts, committed);
+
+  if (data.content !== undefined && opts?.ownSaveCapture) {
+    return runTimelapseEditorBodyWrite(
+      {
+        projectId,
+        documentIdentity: {
+          projectId,
+          domain: "codex",
+          entityType: "codex_entry",
+          entityId: id,
+        },
+        capture: opts.ownSaveCapture,
+        ...(opts.preexistingDraft ? { preexistingDraft: true } : {}),
+      },
+      {
+        commit: () => commit(undefined),
+        didCommit: (committed) => committed !== null,
+        project,
+      },
+    );
+  }
 
   if (data.content !== undefined) {
     return runTimelapseBodyWrite(

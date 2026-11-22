@@ -33,7 +33,10 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
-import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type {
+  TimelapseDocumentRef,
+  TimelapseOwnSaveCapture,
+} from "@/features/timelapse/documentCoverage";
 import {
   parseReadings,
   resolveUnsetReadingTargetForSurface,
@@ -240,6 +243,8 @@ interface CodexState {
       baseVersion?: number;
       timelapseDocument?: TimelapseDocumentRef;
       preexistingDraft?: boolean;
+      /** editor の autosave が開いた capture hold。api が引き取る（EAR-12）。 */
+      ownSaveCapture?: TimelapseOwnSaveCapture;
     },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
@@ -931,6 +936,9 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           ? { timelapseDocument: options.timelapseDocument }
           : {}),
         ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
+        ...(options?.ownSaveCapture
+          ? { ownSaveCapture: options.ownSaveCapture }
+          : {}),
       });
       if (!updated) {
         toast.error(i18next.t("codex.store.updateFailed"));

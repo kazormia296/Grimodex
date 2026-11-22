@@ -18,11 +18,13 @@ import {
 import {
   runTimelapseBodyReplacement,
   runTimelapseBodyWrite,
+  runTimelapseEditorBodyWrite,
   runTimelapseMutation,
 } from "@/features/timelapse/bodyWriteMode";
 import type {
   TimelapseCoverageProof,
   TimelapseDocumentRef,
+  TimelapseOwnSaveCapture,
 } from "@/features/timelapse/documentCoverage";
 
 export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
@@ -153,6 +155,13 @@ export async function updateSnippet(
     writeContext?: CanonicalWriteContext;
     timelapseDocument?: TimelapseDocumentRef;
     preexistingDraft?: boolean;
+    /**
+     * 作者自身の editor の autosave が content の捕捉と同じ同期区間で開いた hold
+     * （EAR-12）。付けると replacement fence を取らず editor を read-only にしない。
+     * 付けない呼び手（undo／import／agent など外部の書き換え）は従来の fence。
+     * 引き取った後の release はこの api が行い、届かなかった経路は呼び手が行う。
+     */
+    ownSaveCapture?: TimelapseOwnSaveCapture;
   },
 ): Promise<SnippetWriteResult | undefined> {
   const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
@@ -212,6 +221,21 @@ export async function updateSnippet(
     entityType: "snippet" as const,
     entityId: id,
   };
+  if (data.content !== undefined && opts?.ownSaveCapture) {
+    return runTimelapseEditorBodyWrite(
+      {
+        projectId,
+        documentIdentity,
+        capture: opts.ownSaveCapture,
+        ...(opts.preexistingDraft ? { preexistingDraft: true } : {}),
+      },
+      {
+        commit: () => commit(undefined),
+        didCommit: (committed) => committed !== null,
+        project,
+      },
+    );
+  }
   if (data.content !== undefined) {
     const write = opts?.timelapseDocument
       ? runTimelapseBodyWrite(

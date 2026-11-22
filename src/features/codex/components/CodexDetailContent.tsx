@@ -73,7 +73,10 @@ import {
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
 import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
-import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import {
+  openOwnSaveCapture,
+  type TimelapseDocumentRef,
+} from "@/features/timelapse/documentCoverage";
 
 type VersionedWriter = (baseVersion: number) => Promise<VersionedSaveOutcome>;
 
@@ -422,24 +425,50 @@ export function CodexDetailContent({
       data: Parameters<typeof updateText>[1],
       context?: QuiescenceProviderFlushOptions,
     ) => {
-      const outcome = await enqueueVersionedWrite((baseVersion) =>
-        updateText(entry.id, data, {
-          baseVersion,
-          ...(data.content !== undefined && timelapseDocumentRef.current
-            ? { timelapseDocument: timelapseDocumentRef.current }
-            : {}),
-          ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
-        }),
-      );
-      if (!outcome.persisted) {
-        throw new AlreadyNotifiedSaveError(
-          `codex text save not persisted: ${entry.id}`,
-          { cause: saveOutcomeCause(outcome) },
-        );
+      // content を捕捉した呼び手と同じ同期区間で hold を開く（EAR-12）。
+      // `writeTailRef` の先行書込みを待つ間に打たれた step も hold に預かり、
+      // 本文 snapshot の後に元の順で放流する。editor は read-only にならない。
+      const capture =
+        data.content !== undefined
+          ? openOwnSaveCapture({
+              projectId: entry.projectId,
+              document: {
+                projectId: entry.projectId,
+                domain: "codex",
+                entityType: "codex_entry",
+                entityId: entry.id,
+              },
+            })
+          : undefined;
+      try {
+        const outcome = await enqueueVersionedWrite(async (baseVersion) => {
+          try {
+            return await updateText(entry.id, data, {
+              baseVersion,
+              ...(data.content !== undefined && timelapseDocumentRef.current
+                ? { timelapseDocument: timelapseDocumentRef.current }
+                : {}),
+              ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+              ...(capture ? { ownSaveCapture: capture } : {}),
+            });
+          } finally {
+            // api に届いた場合は内側で release 済み（冪等）。届かない経路
+            // （store の早期 return、例外）の release の owner はここと下の finally。
+            capture?.release();
+          }
+        });
+        if (!outcome.persisted) {
+          throw new AlreadyNotifiedSaveError(
+            `codex text save not persisted: ${entry.id}`,
+            { cause: saveOutcomeCause(outcome) },
+          );
+        }
+        return outcome;
+      } finally {
+        capture?.release();
       }
-      return outcome;
     },
-    [enqueueVersionedWrite, entry.id, updateText],
+    [enqueueVersionedWrite, entry.id, entry.projectId, updateText],
   );
 
   const persistStructuralPatch = useCallback(

@@ -39,6 +39,8 @@ const snippetEditorCaptureMocks = vi.hoisted(() => ({
     current: undefined as ((content: object) => void) | undefined,
   },
   recordChangeEvent: vi.fn(),
+  ownSaveCaptureRelease: vi.fn(),
+  openOwnSaveCapture: vi.fn(),
 }));
 const snippetStoreStateMock = vi.hoisted(() => ({
   entries: [] as Snippet[],
@@ -69,6 +71,7 @@ vi.mock("@tiptap/react", () => ({
 
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: snippetEditorCaptureMocks.recordChangeEvent,
+  openOwnSaveCapture: snippetEditorCaptureMocks.openOwnSaveCapture,
   breakTimelapseDocumentCapture: vi.fn(),
   isTimelapseReplacementFenceActiveForDocument: vi.fn(() => false),
   subscribeTimelapseReplacementFence: vi.fn(() => () => {}),
@@ -524,8 +527,83 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     expect(onSave).toHaveBeenCalledWith(
       "snippet-1",
       { content: "<p>edited body</p>" },
-      { baseVersion: 4 },
+      expect.objectContaining({ baseVersion: 4 }),
     );
+  });
+
+  it("content の保存では hold を開いて onSave に渡し、必ず release する（EAR-12）", async () => {
+    const capture = { commit: vi.fn(), release: vi.fn() };
+    snippetEditorCaptureMocks.openOwnSaveCapture.mockReturnValueOnce(capture);
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
+    const { unmount } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet()}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    editorHtml = "<p>edited body</p>";
+    const updateHandler = onMock.mock.calls.find(
+      ([eventName]) => eventName === "update",
+    )?.[1] as (() => void) | undefined;
+    act(() => updateHandler?.());
+    unmount();
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+
+    expect(snippetEditorCaptureMocks.openOwnSaveCapture).toHaveBeenCalledWith({
+      projectId: "default-project",
+      document: {
+        projectId: "default-project",
+        domain: "snippet",
+        entityType: "snippet",
+        entityId: "snippet-1",
+      },
+    });
+    expect(onSave.mock.calls[0]?.[2]).toMatchObject({
+      ownSaveCapture: capture,
+    });
+    await waitFor(() => expect(capture.release).toHaveBeenCalled());
+  });
+
+  it("onSave が失敗しても hold を release する（EAR-12）", async () => {
+    const capture = { commit: vi.fn(), release: vi.fn() };
+    snippetEditorCaptureMocks.openOwnSaveCapture.mockReturnValueOnce(capture);
+    const onSave = vi.fn().mockRejectedValue(new Error("boom"));
+    const { unmount } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet()}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    editorHtml = "<p>edited body</p>";
+    const updateHandler = onMock.mock.calls.find(
+      ([eventName]) => eventName === "update",
+    )?.[1] as (() => void) | undefined;
+    act(() => updateHandler?.());
+    unmount();
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    await waitFor(() => expect(capture.release).toHaveBeenCalled());
+    discardAllAutoSaves();
+  });
+
+  it("title だけの保存では hold を開かない（EAR-12）", async () => {
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
+    const { getByTestId } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet()}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.change(getByTestId("snippet-detail-title"), {
+      target: { value: "title だけ" },
+    });
+    await act(async () => {
+      await flushAllAutoSaves();
+    });
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(snippetEditorCaptureMocks.openOwnSaveCapture).not.toHaveBeenCalled();
   });
 });
 
