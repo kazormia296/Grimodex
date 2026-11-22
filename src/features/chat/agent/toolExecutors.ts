@@ -1,6 +1,5 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent, loadSceneContents } from "@/features/tree/api";
-import { prosemirrorToText } from "@/lib/prosemirror";
 import { tokenizeFtsQuery as tokenizeQuery, codepointLength } from "@/lib/fts";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
@@ -10,26 +9,20 @@ import {
   codexTags,
   codexDetailDefinitions,
   codexDetailValues,
-  snippets,
   treeNodes,
   foreshadows,
   foreshadowSetups,
 } from "@/db/schema";
-import {
-  and,
-  eq,
-  inArray,
-  isNull,
-  like,
-  ne,
-  or,
-  type AnyColumn,
-  type SQL,
-} from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import {
   createReadExecutors,
   type CoreReadToolName,
 } from "@/../electron/shared/readDomain/core/readExecutors";
+import {
+  buildLikeOrCondition,
+  orderByIds,
+  parseTagsCacheNames,
+} from "@/../electron/shared/readDomain/core/searchHelpers";
 import {
   CoreProjectRequiredError,
   type CoreReadContext,
@@ -123,79 +116,6 @@ interface SparseSearchHit {
   id: string;
 }
 
-/**
- * codex_entries.tags_cache の JSON を tag 名の string[] に展開する。
- * 実態は `[{"name":"tag1","color":null}, ...]` という object 配列だが、
- * 旧スキーマ comment 通りの `["tag1", "tag2"]` 形式のレコードもあり得るため
- * 両形式を許容する。詳細は chatStore.ts の `parseTags` も参照。
- */
-function parseTagsCacheNames(json: string | null | undefined): string[] {
-  if (!json) return [];
-  try {
-    const arr = JSON.parse(json);
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map((v): string | undefined => {
-        if (typeof v === "string") return v;
-        if (v && typeof v === "object" && "name" in v) {
-          const name = (v as { name: unknown }).name;
-          return typeof name === "string" ? name : undefined;
-        }
-        return undefined;
-      })
-      .filter((s): s is string => typeof s === "string" && s.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-const EXCERPT_MAX_CHARS = 200;
-
-/**
- * ProseMirror JSON 本文から plain text の抜粋を作る。tree_nodes.content /
- * snippets.content は生 JSON なので、SQL 側の snippet()/SUBSTR では構造 JSON が
- * そのまま LLM に渡ってしまう（get_scene の prosemirrorToText と非対称だった）。
- * 最初に一致した検索トークンを中心に切り出し、切断した側へ "..." を付ける。
- * どのトークンも本文に無い場合は先頭からの抜粋になる。
- */
-function plainTextExcerpt(content: unknown, tokens: string[]): string {
-  const raw = typeof content === "string" ? content : "";
-  if (!raw) return "";
-  const plain = prosemirrorToText(raw).replace(/\s+/g, " ").trim();
-  if (plain.length <= EXCERPT_MAX_CHARS) return plain;
-  let hit = -1;
-  for (const t of tokens) {
-    const idx = plain.indexOf(t);
-    if (idx >= 0 && (hit < 0 || idx < hit)) hit = idx;
-  }
-  const start =
-    hit < 0 ? 0 : Math.max(0, hit - Math.floor(EXCERPT_MAX_CHARS / 2));
-  const end = Math.min(plain.length, start + EXCERPT_MAX_CHARS);
-  return (
-    (start > 0 ? "..." : "") +
-    plain.slice(start, end) +
-    (end < plain.length ? "..." : "")
-  );
-}
-
-/**
- * トークン群と LIKE 対象列に対し
- * `(col1 LIKE ? OR col2 LIKE ? OR ...) OR (col1 LIKE ? OR ...) OR ...`
- * 形の WHERE 断片と束縛パラメータ配列を組み立てる。
- * trigram で扱えない短いトークンが混じっている場合のフォールバックに使う。
- */
-function buildLikeOrCondition(tokens: string[], columns: AnyColumn[]): SQL {
-  const condition = or(
-    ...tokens.flatMap((token) =>
-      columns.map((column) => like(column, `%${token}%`)),
-    ),
-  );
-  if (!condition) {
-    throw new Error("search requires at least one token and column");
-  }
-  return condition;
-}
-
 async function sparseSearchIds(
   projectId: string,
   query: string,
@@ -213,14 +133,6 @@ async function sparseSearchIds(
   return rows
     .filter((row) => row.sourceType === sourceType)
     .map((row) => row.id);
-}
-
-function orderByIds<T extends { id: string }>(rows: T[], ids: string[]): T[] {
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  return ids.flatMap((id) => {
-    const row = byId.get(id);
-    return row ? [row] : [];
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,205 +1019,6 @@ async function findRelatedEntries(
 }
 
 // ---------------------------------------------------------------------------
-// Scene tools
-// ---------------------------------------------------------------------------
-
-/** search_scenes が返す最大件数。 */
-const SEARCH_SCENES_LIMIT = 10;
-/** fts_search に渡す件数。Rust の `search_fts` の上限（50）。archived を落とした後に切るため多めに取る。 */
-const SEARCH_SCENES_FTS_FETCH_LIMIT = 50;
-
-async function searchScenes(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const query = String(params["query"] ?? "").trim();
-  if (!query)
-    return {
-      name: "search_scenes",
-      content: [],
-      summary: "0 scenes found",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "search_scenes",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  // tree_nodes_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
-  const tokens = tokenizeQuery(query);
-  const allTrigramFriendly =
-    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
-
-  let rows: Array<{ id: string; title: string; content: string }>;
-  if (allTrigramFriendly) {
-    // archived（重複の行は生きている行と同じ本文）が上位の枠を使わないよう、Rust の上限まで多めに取り、
-    // archived を落として元の FTS の順に並べてから SEARCH_SCENES_LIMIT 件に切る。
-    const hitIds = await sparseSearchIds(
-      projectId,
-      query,
-      "scenes",
-      SEARCH_SCENES_FTS_FETCH_LIMIT,
-    );
-    if (hitIds.length === 0) {
-      rows = [];
-    } else {
-      rows = orderByIds(
-        await db
-          .select({
-            id: treeNodes.id,
-            title: treeNodes.title,
-            content: treeNodes.content,
-          })
-          .from(treeNodes)
-          .where(
-            and(
-              eq(treeNodes.projectId, projectId),
-              eq(treeNodes.nodeType, "scene"),
-              isNull(treeNodes.archivedAt),
-              inArray(treeNodes.id, hitIds),
-            ),
-          ),
-        hitIds,
-      ).slice(0, SEARCH_SCENES_LIMIT);
-    }
-  } else {
-    rows = await db
-      .select({
-        id: treeNodes.id,
-        title: treeNodes.title,
-        content: treeNodes.content,
-      })
-      .from(treeNodes)
-      .where(
-        and(
-          eq(treeNodes.projectId, projectId),
-          eq(treeNodes.nodeType, "scene"),
-          isNull(treeNodes.archivedAt),
-          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
-            treeNodes.title,
-            treeNodes.content,
-          ]),
-        ),
-      )
-      .limit(SEARCH_SCENES_LIMIT);
-  }
-
-  const content = rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    excerpt: plainTextExcerpt(row.content, tokens),
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "search_scenes",
-    content,
-    summary: `${content.length} scenes found`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Snippet tools
-// ---------------------------------------------------------------------------
-
-async function searchSnippets(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const query = String(params["query"] ?? "").trim();
-  if (!query)
-    return {
-      name: "search_snippets",
-      content: [],
-      summary: "0 snippets found",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "search_snippets",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  // snippets_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
-  const tokens = tokenizeQuery(query);
-  const allTrigramFriendly =
-    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
-
-  let rows: Array<{
-    id: string;
-    title: string;
-    tagsCache: string | null;
-    content: string;
-  }>;
-  if (allTrigramFriendly) {
-    const hitIds = await sparseSearchIds(projectId, query, "snippets", 10);
-    if (hitIds.length === 0) {
-      rows = [];
-    } else {
-      rows = orderByIds(
-        await db
-          .select({
-            id: snippets.id,
-            title: snippets.title,
-            tagsCache: snippets.tagsCache,
-            content: snippets.content,
-          })
-          .from(snippets)
-          .where(
-            and(
-              eq(snippets.projectId, projectId),
-              inArray(snippets.id, hitIds),
-            ),
-          ),
-        hitIds,
-      );
-    }
-  } else {
-    rows = await db
-      .select({
-        id: snippets.id,
-        title: snippets.title,
-        tagsCache: snippets.tagsCache,
-        content: snippets.content,
-      })
-      .from(snippets)
-      .where(
-        and(
-          eq(snippets.projectId, projectId),
-          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
-            snippets.title,
-            snippets.content,
-            snippets.tagsCache,
-          ]),
-        ),
-      )
-      .limit(10);
-  }
-
-  const content = rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    tags: parseTagsCacheNames(row.tagsCache),
-    preview: plainTextExcerpt(row.content, tokens),
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "search_snippets",
-    content,
-    summary: `${content.length} snippets found`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Foreshadow / Timeline tools (Phase 3)
 // ---------------------------------------------------------------------------
 
@@ -1605,7 +1318,7 @@ type Executor = (
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 // ---------------------------------------------------------------------------
-// 共有 core の read tool（MP-4b PR-4。B1・B2 の 7 本）
+// 共有 core の read tool（MP-4b PR-4。B1・B2 の 7 本、PR-5a で B3 の search_scenes・search_snippets）
 // ---------------------------------------------------------------------------
 
 /**
@@ -1627,6 +1340,9 @@ const LEGACY_READ_CONTEXT: CoreReadContext = {
     readSceneBodies: (sceneIds) =>
       loadSceneContents([...sceneIds]).catch(() => new Map<string, string>()),
   },
+  // fts は args を加工せずそのまま渡す（command・引数・scope・limit は core が決める）。
+  // invoke は arrow の中で読むので、試験の `vi.mock("@/lib/tauri")` が効く。
+  native: { fts: (args) => invoke("fts_search", args) },
   countTokens: (text) => countTokens(text),
 };
 
@@ -1650,6 +1366,8 @@ const LEGACY_NO_PROJECT_CONTENT: Record<CoreReadToolName, () => unknown> = {
   list_plot_threads: () => [],
   get_thread_scenes: () => null,
   get_scene: () => null,
+  search_scenes: () => [],
+  search_snippets: () => [],
 };
 
 function coreReadExecutor(name: CoreReadToolName): Executor {
@@ -1702,8 +1420,8 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
     findRelatedEntries(params, context?.scope),
   list_chapters: coreReadExecutor("list_chapters"),
   get_scene: coreReadExecutor("get_scene"),
-  search_scenes: searchScenes,
-  search_snippets: searchSnippets,
+  search_scenes: coreReadExecutor("search_scenes"),
+  search_snippets: coreReadExecutor("search_snippets"),
   get_chapter_summaries: coreReadExecutor("get_chapter_summaries"),
   list_open_foreshadows: () => listOpenForeshadows(),
   get_foreshadow_detail: getForeshadowDetail,
