@@ -1372,6 +1372,9 @@ function heldFreshnessReceipt(
 }
 
 const HELD_FRESHNESS_STUCK_LAUNCH_TIMEOUT_MS = 3_000;
+// before-request の再検証が終わった後の受領書の待ち（deadline）。実時間の待ちは
+// 受領書が見えた時点で終わるので、余裕を持たせても成功経路は遅くならない。
+const HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS = 3_000;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_TIMEOUT_MS = 2_500;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_ITERATION_TIMEOUT_MS = 250;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_POLL_INTERVAL_MS = 10;
@@ -1625,7 +1628,17 @@ test("held-Freshness receipt is exact, digest-bound, nonce-bound, and size-bound
   );
 });
 
-test("harness accepts a file held-Freshness sequence independently of stdout", async (t) => {
+// 受領書を temp に書いてから rename で公開する。product の writer と同じく、
+// harness は公開前の途中状態を最終ファイルとして見ない。
+async function publishHeldFreshnessReceiptAtomically(finalPath, receipt) {
+  const temporaryPath = `${finalPath}.tmp`;
+  await writeFile(temporaryPath, canonicalValueText(receipt), { mode: 0o600 });
+  await rename(temporaryPath, finalPath);
+}
+
+// 「file の held-Freshness」の試験が共有する launch 済みの harness。launch の
+// 予算は、遅い runner でも before-request の再検証の後の待ちが切れない余裕を持つ。
+async function launchHeldFreshnessFileHarness(t) {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
@@ -1647,7 +1660,7 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
-    launchTimeoutMs: 100,
+    launchTimeoutMs: HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS,
     electronLauncher: {
       launch: async ({ env }) => {
         const launchExpected = expectedNarrativeMaintenanceCiReceipt(env);
@@ -1723,6 +1736,11 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   );
   const launched = await harness.launch("held-freshness-file");
   assert.equal(launched.heldFreshnessArtifact.receipt.sequence, 1);
+  return { harness, launched };
+}
+
+test("harness accepts a file held-Freshness sequence independently of stdout", async (t) => {
+  const { harness, launched } = await launchHeldFreshnessFileHarness(t);
   const firstHeldFreshnessPath = path.join(
     harness.receiptRoot,
     RECEIPT_NONCE,
@@ -1806,38 +1824,11 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
     ),
     /previousSequence/i,
   );
-  const secondReceipt = (async () => {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const request = JSON.parse(
-      await readFile(
-        path.join(
-          harness.receiptRoot,
-          RECEIPT_NONCE,
-          NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
-        ),
-        "utf8",
-      ),
-    );
-    await writeFile(
-      path.join(
-        harness.receiptRoot,
-        RECEIPT_NONCE,
-        "held-freshness-0000000002.json",
-      ),
-      canonicalValueText(
-        heldFreshnessReceipt(
-          2,
-          RECEIPT_NONCE,
-          request.requestNonce,
-          request.phase,
-          request.requestedAt,
-          new Date().toISOString(),
-        ),
-      ),
-      { mode: 0o600 },
-    );
-  })();
-  const fresh = await harness.awaitHeldFreshness(
+  // harness が新しい request を公開し、before-request の再検証を終えるまで待つ。
+  // 固定時間の待ちの後に request を読むと、遅い runner では harness が書く前の
+  // 古い request（INITIAL の nonce）を読み、seq 1 と同じ requestNonce の
+  // 受領書を書いて replay の検出に当たる。
+  const freshWait = harness.awaitHeldFreshness(
     launched.app,
     "held-freshness-file/fresh",
     {
@@ -1848,6 +1839,45 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
       workspaceBinding: { authorityId: "authority-1", generation: 1 },
     },
   );
+  try {
+    await awaitHeldFreshnessBeforeRequestBarrier(harness, {
+      phase: "held-freshness-file/fresh",
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    });
+  } catch (error) {
+    await freshWait.catch(() => undefined);
+    throw error;
+  }
+  const secondReceipt = (async () => {
+    const request = JSON.parse(
+      await readFile(
+        path.join(
+          harness.receiptRoot,
+          RECEIPT_NONCE,
+          NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(request.requestNonce, HELD_FRESHNESS_REQUEST_NONCE);
+    await publishHeldFreshnessReceiptAtomically(
+      path.join(
+        harness.receiptRoot,
+        RECEIPT_NONCE,
+        "held-freshness-0000000002.json",
+      ),
+      heldFreshnessReceipt(
+        2,
+        RECEIPT_NONCE,
+        request.requestNonce,
+        request.phase,
+        request.requestedAt,
+        new Date().toISOString(),
+      ),
+    );
+  })();
+  const fresh = await freshWait;
   await secondReceipt;
   assert.equal(fresh.receipt.sequence, 2);
   assert.equal(
@@ -1914,6 +1944,60 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   );
   await harness.close(launched.app, launched.page, "held-freshness-file");
   assert.deepEqual(await readdir(harness.receiptRoot), []);
+});
+
+test("harness rejects a held-Freshness sequence that replays an earlier request nonce", async (t) => {
+  const { harness, launched } = await launchHeldFreshnessFileHarness(t);
+  const replayWait = harness.awaitHeldFreshness(
+    launched.app,
+    "held-freshness-file/replay",
+    {
+      previousSequence: 1,
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+      authorityId: "authority-1",
+      generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    },
+  );
+  try {
+    await awaitHeldFreshnessBeforeRequestBarrier(harness, {
+      phase: "held-freshness-file/replay",
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    });
+  } catch (error) {
+    await replayWait.catch(() => undefined);
+    throw error;
+  }
+  // seq 1 と同じ（古い）requestNonce を echo する seq 2。新しい request の公開後に
+  // 書くので、起動順の揺れに依存せず、duplicate/replay の検出だけで落ちる。
+  const request = JSON.parse(
+    await readFile(
+      path.join(
+        harness.receiptRoot,
+        RECEIPT_NONCE,
+        NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(request.requestNonce, HELD_FRESHNESS_REQUEST_NONCE);
+  await publishHeldFreshnessReceiptAtomically(
+    path.join(
+      harness.receiptRoot,
+      RECEIPT_NONCE,
+      "held-freshness-0000000002.json",
+    ),
+    heldFreshnessReceipt(
+      2,
+      RECEIPT_NONCE,
+      HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+      request.phase,
+      request.requestedAt,
+      new Date().toISOString(),
+    ),
+  );
+  await assert.rejects(replayWait, /duplicate\/replay/);
 });
 
 test("harness tolerates the current held-Freshness temp until atomic rename", async (t) => {
