@@ -73,13 +73,27 @@ export function useLicenseEditableSync(
     // 発火させる。mount 時の同期がこれを毎回踏み、未ロードの空 doc に
     // pending を arm して本文消失の引き金になっていた (実機ログで特定)。
     // editable の反映自体は setOptions 経由なので emit 無しでも効く。
-    editor.setEditable(!readOnly, false);
+    // 同値 guard（EAR-9）：値が変わらない setEditable も contenteditable／tabindex
+    // を書き直し、focus 中の editor の focus を落としうる。fence・lease・
+    // quiescence の通知はグローバル購読で、他文書の通知でも無条件に届くため、
+    // 望む値が今の値と同じなら呼ばない。
+    const applyEditable = (editable: boolean) => {
+      // view 未 mount の間の isEditable は option と独立に false になりうるので、
+      // option 側も同値のときだけ省く（read-only を取りこぼさない）。
+      if (
+        editor.isEditable === editable &&
+        editor.options.editable === editable
+      )
+        return;
+      editor.setEditable(editable, false);
+    };
+    applyEditable(!readOnly);
     // React の再描画を待つ窓にも transaction を通さないよう、lease state
     // transition では同じ制御を同期適用する。既存の onUpdate scheduling gate
     // と合わせて acquisition〜commit の TOCTOU を閉じる。
     const syncEditable = () => {
       if (editor.isDestroyed) return;
-      editor.setEditable(
+      applyEditable(
         !(
           restricted ||
           forceReadOnly ||
@@ -92,7 +106,6 @@ export function useLicenseEditableSync(
               )
             : false)
         ),
-        false,
       );
     };
     const unsubscribeQuiescence = subscribeQuiescenceLease(syncEditable);

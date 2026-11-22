@@ -34,6 +34,7 @@ export interface EditorDocumentServices {
       timelapseDocument?: TimelapseDocumentRef;
       timelapseDocumentIdentity?: TimelapseDocumentIdentity;
       preexistingDraft?: boolean;
+      writer?: "editor-autosave";
     },
   ) => Promise<PersistedSceneBody>;
   updateCodexPhase: (
@@ -131,6 +132,9 @@ export async function saveEditorDocument(
         {
           baseVersion: binding.loadedVersion,
           ...timelapseOptions,
+          // この関数の呼び手は作者自身の editor の autosave だけ（EAR-1）。
+          // 外部の書き換えは persistSceneBody を直接呼び、既定の fence を使う。
+          writer: "editor-autosave",
         },
       );
       return {

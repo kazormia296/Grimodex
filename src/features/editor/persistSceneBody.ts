@@ -63,6 +63,7 @@ import {
 import {
   runTimelapseBodyReplacement,
   runTimelapseBodyWrite,
+  runTimelapseEditorBodyWrite,
   runTimelapseMutation,
   type TimelapseDocumentIdentity,
 } from "@/features/timelapse/bodyWriteMode";
@@ -102,6 +103,15 @@ export interface PersistSceneBodyOptions {
   timelapseDocumentIdentity?: TimelapseDocumentIdentity;
   /** Draft admitted before a lifecycle lease began draining autosaves. */
   preexistingDraft?: boolean;
+  /**
+   * 呼び手が「作者自身の editor の autosave」だと明示する判別子（EAR-1）。
+   * 付けると fence も文書 lease も取らず、editor を read-only にしない
+   * （recorder の capture hold で doc.step と本文 snapshot の順序を守る）。
+   * 既定は「外部の書き換え」で、付け忘れは従来の fence に倒れる。
+   * `timelapseDocumentIdentity` が無いときも従来の fence に倒れる
+   * （推測した identity では hold の key が step の key と食い違いうるため）。
+   */
+  writer?: "editor-autosave";
 }
 
 interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
@@ -574,21 +584,9 @@ export async function persistSceneBody(
             project: async (committed) => committed,
           },
         )
-      : options.timelapseDocument
-        ? runTimelapseBodyWrite(
-            {
-              projectId,
-              coverageReceipt: options.timelapseDocument,
-              documentIdentity,
-              content: sceneJsonStr,
-              ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
-            },
-            {
-              commit: commitScene,
-              project: async (committed) => committed,
-            },
-          )
-        : runTimelapseBodyReplacement(
+      : options.writer === "editor-autosave" &&
+          options.timelapseDocumentIdentity
+        ? runTimelapseEditorBodyWrite(
             {
               projectId,
               documentIdentity,
@@ -599,6 +597,31 @@ export async function persistSceneBody(
               project: async (committed) => committed,
             },
           )
+        : options.timelapseDocument
+          ? runTimelapseBodyWrite(
+              {
+                projectId,
+                coverageReceipt: options.timelapseDocument,
+                documentIdentity,
+                content: sceneJsonStr,
+                ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
+              },
+              {
+                commit: commitScene,
+                project: async (committed) => committed,
+              },
+            )
+          : runTimelapseBodyReplacement(
+              {
+                projectId,
+                documentIdentity,
+                ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
+              },
+              {
+                commit: () => commitScene(undefined),
+                project: async (committed) => committed,
+              },
+            )
     : runTimelapseMutation(
         projectId,
         () => commitScene(undefined),

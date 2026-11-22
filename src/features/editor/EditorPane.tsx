@@ -845,6 +845,7 @@ export function EditorPane({
         session: documentSaveSession,
         didPersist: (attempt) => attempt.persisted,
         ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+        ...(context?.background ? { background: true } : {}),
       });
       if (shouldClearRetainedEditorRecoveryDraft(result)) {
         clearRetainedEditorRecoveryDraft(saveKey, editorInstanceIdRef.current);

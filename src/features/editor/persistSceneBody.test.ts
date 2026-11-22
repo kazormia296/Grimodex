@@ -60,6 +60,7 @@ const h = vi.hoisted(() => ({
   scheduleEditorAnalysisTask: vi.fn(),
   runTimelapseBodyWrite: vi.fn(),
   runTimelapseBodyReplacement: vi.fn(),
+  runTimelapseEditorBodyWrite: vi.fn(),
   runTimelapseMutation: vi.fn(),
   deriveSceneAiRatio: vi.fn(() => 37 as number | undefined),
   deriveSceneBodySnapshot: vi.fn((_doc: ProseMirrorNode) => ({
@@ -211,6 +212,16 @@ vi.mock("@/features/timelapse/bodyWriteMode", () => ({
     },
   ) => {
     h.runTimelapseBodyReplacement(input, callbacks);
+    return callbacks.commit().then(callbacks.project);
+  },
+  runTimelapseEditorBodyWrite: (
+    input: unknown,
+    callbacks: {
+      commit: () => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => {
+    h.runTimelapseEditorBodyWrite(input, callbacks);
     return callbacks.commit().then(callbacks.project);
   },
   runTimelapseMutation: (
@@ -411,6 +422,125 @@ describe("persistSceneBody — DB-native scene", () => {
       }),
       expect.anything(),
     );
+  });
+
+  describe("writer: editor-autosave（EAR-1）", () => {
+    const IDENTITY = {
+      projectId: "proj-1",
+      domain: "editor",
+      entityType: "scene",
+      entityId: "scene-1",
+      storage: "database",
+    } as const;
+
+    it("identity が渡されたときだけ fence でなく hold の書込みを使い、identity と preexistingDraft をそのまま渡す", async () => {
+      h.state.electron = true;
+
+      await persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+        timelapseDocumentIdentity: IDENTITY,
+        preexistingDraft: true,
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).toHaveBeenCalledTimes(1);
+      expect(h.runTimelapseEditorBodyWrite).toHaveBeenCalledWith(
+        {
+          projectId: "proj-1",
+          documentIdentity: IDENTITY,
+          preexistingDraft: true,
+        },
+        expect.anything(),
+      );
+      expect(h.runTimelapseBodyWrite).not.toHaveBeenCalled();
+      expect(h.runTimelapseBodyReplacement).not.toHaveBeenCalled();
+    });
+
+    it("T-2：hold を開く（runTimelapseEditorBodyWrite の呼び出し）は doc の捕捉・serialize と同じ同期区間にある（top-level に await が入ったら落ちる）", () => {
+      h.state.electron = true;
+
+      // await しない：persistSceneBody の最初の await より前に、serialize と hold の取得が済む。
+      const pending = persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+        timelapseDocumentIdentity: IDENTITY,
+      });
+
+      expect(h.deriveSceneBodySnapshot).toHaveBeenCalledWith(fakeDoc, [], true);
+      expect(h.runTimelapseEditorBodyWrite).toHaveBeenCalledTimes(1);
+      return pending.then(() => undefined);
+    });
+
+    it("receipt（timelapseDocument）が無くても hold を使う", async () => {
+      h.state.electron = true;
+
+      await persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+        timelapseDocumentIdentity: IDENTITY,
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).toHaveBeenCalledTimes(1);
+      expect(h.runTimelapseBodyReplacement).not.toHaveBeenCalled();
+    });
+
+    it("file-backed の場面でも、descriptor の identity（storage: file）どおりの key で hold を開く", async () => {
+      h.state.electron = true;
+      const fileIdentity = { ...IDENTITY, storage: "file" } as const;
+
+      await persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+        timelapseDocumentIdentity: fileIdentity,
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ documentIdentity: fileIdentity }),
+        expect.anything(),
+      );
+    });
+
+    it("identity が無いとき（推測した identity）は writer があっても hold を開かず従来の fence に倒す", async () => {
+      h.state.electron = true;
+
+      await persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).not.toHaveBeenCalled();
+      expect(h.runTimelapseBodyReplacement).toHaveBeenCalledTimes(1);
+    });
+
+    it("identity と receipt があっても writer が無ければ従来の fence（外部の呼び手の既定は外部）", async () => {
+      h.state.electron = true;
+
+      await persistSceneBody("scene-1", fakeDoc, {
+        timelapseDocumentIdentity: IDENTITY,
+        timelapseDocument: { id: "receipt" } as never,
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).not.toHaveBeenCalled();
+      expect(h.runTimelapseBodyWrite).toHaveBeenCalledTimes(1);
+    });
+
+    it("timelapseSteps があれば writer があっても Replacement のまま（autoApplyProse は不変）", async () => {
+      h.state.electron = true;
+
+      await persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+        timelapseDocumentIdentity: IDENTITY,
+        timelapseSteps: [],
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).not.toHaveBeenCalled();
+      expect(h.runTimelapseBodyReplacement).toHaveBeenCalledTimes(1);
+    });
+
+    it("web 経路（Electron でない）では writer を見ない", async () => {
+      await persistSceneBody("scene-1", fakeDoc, {
+        writer: "editor-autosave",
+        timelapseDocumentIdentity: IDENTITY,
+      });
+
+      expect(h.runTimelapseEditorBodyWrite).not.toHaveBeenCalled();
+      expect(h.runTimelapseMutation).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("forwards the loaded OCC version through the browser fallback", async () => {

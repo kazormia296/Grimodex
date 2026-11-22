@@ -397,6 +397,7 @@ function MountedSceneBlock({
           ? { timelapseDocumentIdentity: timelapseDescriptor.documentIdentity }
           : {}),
         ...(context.preexistingDraft ? { preexistingDraft: true } : {}),
+        writer: "editor-autosave",
       });
       if (persisted.foreshadowRows.length > 0) {
         runProgrammaticProjectionUpdate(() => {
@@ -449,6 +450,7 @@ function MountedSceneBlock({
         session: documentSaveSession,
         didPersist: (attempt) => attempt.persisted,
         ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+        ...(context?.background ? { background: true } : {}),
       });
       if (shouldClearRetainedEditorRecoveryDraft(result)) {
         clearRetainedEditorRecoveryDraft(

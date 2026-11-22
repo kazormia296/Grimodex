@@ -6,7 +6,11 @@ import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import { isWorkspaceQuarantinedError } from "@/features/concurrency/workspaceQuarantined";
 import { notifyWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
-import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
+import {
+  AlreadyNotifiedSaveError,
+  DocumentMutationLeaseActiveError,
+  SaveDeferredError,
+} from "@/features/editor/document/saveErrors";
 import {
   createQuiescenceProviderId,
   registerQuiescenceProvider,
@@ -23,6 +27,22 @@ import {
   scheduleEditorAnalysisTask,
 } from "@/lib/editorAnalysisScheduler";
 export { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
+
+/** saveFn に渡す option。`background` は debounce 経由の背景の保存だけが付ける。 */
+export interface AutoSaveSaveOptions extends QuiescenceProviderFlushOptions {
+  /**
+   * debounce の timer 経由（flush ではない）。T0 での延期（`SaveDeferredError`）と
+   * 外部置換の lease への入場拒否の silent retry は、この保存でだけ許される。
+   */
+  background?: boolean;
+}
+
+/**
+ * 保存を延期（`SaveDeferredError`）したあと、次の試行までの間隔。
+ * 伏線 mark の更新が日本語の変換中で適用できない間だけ使う短い値（EAR-7。
+ * 通常の debounce より短く、変換が終われば次の試行が通る。上限は置かない）。
+ */
+export const SAVE_DEFER_RETRY_MS = 300;
 
 export interface AutoSave {
   /**
@@ -312,7 +332,7 @@ function normalizeDelay(delayMs: number): number {
 }
 
 export function createAutoSave(
-  saveFn: (options?: QuiescenceProviderFlushOptions) => Promise<void>,
+  saveFn: (options?: AutoSaveSaveOptions) => Promise<void>,
   initialDelayMs: number,
 ): AutoSave {
   const schedulerKey = `autosave:${nextAutoSaveSchedulerId++}`;
@@ -329,6 +349,10 @@ export function createAutoSave(
    */
   let quarantineError: unknown = null;
   let preexistingDraftPermit = false;
+  /** cancel() のたびに進む。実行中の保存が cancel をまたいだかを見分ける。 */
+  let cancelEpoch = 0;
+  /** 次に張る timer だけが使う間隔（延期の再試行）。使ったら null に戻す。 */
+  let nextTimerDelayMs: number | null = null;
   /**
    * AutoSave instance ごとの単一 drain。saveFn 自体はこの loop からしか呼ばず、
    * 実行中の schedule は pending=true へ畳み込む。これにより古い save が新しい
@@ -339,10 +363,16 @@ export function createAutoSave(
   // 自動保存は数秒おきに発火するため、成功を毎回読み上げると SR 利用者の
   // 執筆を妨げる。失敗 → 成功の回復時のみ announce する (失敗時は Sonner の
   // toast が読み上げるので announce しない: 二重読み上げ防止)。
-  async function runSave(label: "save" | "flush") {
+  async function runSave(
+    label: "save" | "flush",
+  ): Promise<"done" | "retry" | "defer"> {
     try {
-      if (preexistingDraftPermit) {
-        await saveFn({ preexistingDraft: true });
+      const options: AutoSaveSaveOptions = {
+        ...(preexistingDraftPermit ? { preexistingDraft: true } : {}),
+        ...(label === "save" ? { background: true } : {}),
+      };
+      if (Object.keys(options).length > 0) {
+        await saveFn(options);
       } else {
         await saveFn();
       }
@@ -350,7 +380,17 @@ export function createAutoSave(
         lastFailed = false;
         announce(i18next.t("autoSave.recovered"));
       }
+      return "done";
     } catch (e) {
+      // 背景の保存だけが受ける「失敗ではない」2 つ。toast も lastFailed も無しで、
+      // dirty（pending）を維持して後で再試行する。flush は従来どおり失敗として伝える。
+      if (label === "save") {
+        // T0 より前に返る延期（伏線 mark の更新が変換中）。短い間隔で張り直す。
+        if (e instanceof SaveDeferredError) return "defer";
+        // 保存中に打った分の追従保存が、外部置換の lease に当たった。
+        // lease が外れるまで通常の debounce で再試行する（競合の案内が本文を守る）。
+        if (e instanceof DocumentMutationLeaseActiveError) return "retry";
+      }
       lastFailed = true;
       const detail = errorDetail(e);
       debugLog.error("AutoSave", `${label} failed`, detail);
@@ -413,7 +453,18 @@ export function createAutoSave(
       // snapshot をもう 1 回保存する。失敗時は runSave が reject し、次の
       // schedule / flush まで自動再試行しない。
       pending = false;
-      await runSave(label);
+      const epochAtStart = cancelEpoch;
+      const outcome = await runSave(label);
+      if (outcome !== "done") {
+        // 失敗ではなく「今は保存しない」。dirty を戻して通常の経路（startDrain の
+        // finally）に timer を張らせる。drain は pending=false にしてから呼ぶので、
+        // 戻さないと打った分の再保存が消える。cancel をまたいだ場合は戻さない。
+        if (cancelEpoch === epochAtStart) {
+          pending = true;
+          nextTimerDelayMs = outcome === "defer" ? SAVE_DEFER_RETRY_MS : null;
+        }
+        return;
+      }
       // 保存中に入力があって pending が立ち直していても、background の drain は
       // 即再実行しない。戻れば startDrain の finally が通常の debounce
       // （delayMs）で次の timer を張るので、連続入力でも保存が背中合わせに
@@ -453,10 +504,12 @@ export function createAutoSave(
     clearTimer();
     if (paused || quarantineError !== null) return;
     timerArmed = true;
+    const timerDelayMs = nextTimerDelayMs ?? delayMs;
+    nextTimerDelayMs = null;
     scheduleEditorAnalysisTask({
       key: schedulerKey,
       kind: "save",
-      delayMs,
+      delayMs: timerDelayMs,
       run: async () => {
         timerArmed = false;
         // runSave が toast / debugLog を担当済み。共有 scheduler も reject を
@@ -469,6 +522,8 @@ export function createAutoSave(
 
   function cancel() {
     clearTimer();
+    cancelEpoch++;
+    nextTimerDelayMs = null;
     pending = false;
     lastFailed = false;
     quarantineError = null;
@@ -564,7 +619,7 @@ export function createAutoSave(
 }
 
 export function useAutoSave(
-  saveFn: (options?: QuiescenceProviderFlushOptions) => Promise<void>,
+  saveFn: (options?: AutoSaveSaveOptions) => Promise<void>,
   delayMs = 2000,
   lifecycle?: AutoSaveLifecycle,
 ): AutoSave {

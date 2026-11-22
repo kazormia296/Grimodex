@@ -1,35 +1,41 @@
 /**
- * 【製品の不具合を再現する試験】scene の autosave の間に、TipTap editor の focus が外れる。
+ * 部品単位の試験：scene の autosave の間に、TipTap editor の focus が外れない（EAR-1）。
  *
- * 背景：Electron の scene の autosave は persistSceneBody → runTimelapseBodyReplacement
- * （bodyWriteMode.ts）で同期の replacement fence を取り、useLicenseEditableSync が
- * editor.setEditable(false) を呼ぶ（commit と projection の後の release で true に戻る）。
- * TipTap の Tabindex 拡張は editable=false で tabindex を外し、ProseMirror の
- * contenteditable も "false" になる。実 Chromium は focus 中の要素が focusable でなくなると
- * focus を body へ落とし、editable を戻しても focus は戻らない。EditorPane／hook に
- * focus の復元は無い。このため autosave のたびに入力 focus が外れ、次の keystroke が
- * editor に届かない（journey cross-feature-authoring の「editor did not hold focus
- * before undo」の有力な原因）。
+ * 事実の固定（変えない）：TipTap の Tabindex 拡張は editable=false で tabindex を外し、ProseMirror の
+ * contenteditable も "false" になる。実 Chromium は focus 中の要素が focusable でなくなると focus を
+ * body へ落とし、`setEditable(true)` に戻しても focus は戻らない。EditorPane／hook に focus の復元は無い。
+ * だから自分の autosave では editable を一度も切らない（runTimelapseEditorBodyWrite は fence も lease も
+ * 取らず、recorder の capture hold で順序を守る）。外部の書き換え（runTimelapseBodyReplacement。
+ * undo・復元・agent 書込み・import）は従来どおり editor を read-only にする（範囲外）。
  *
- * 【不具合】と付いた試験は「今の挙動」（focus が body に落ちる）を assert する。前提の
- * assert（focus できていた、fence の間は read-only、解除後に editable）が崩れれば別の理由で
- * 失敗するので、it.fails のように前提の失敗が不具合の再現に化けることは無い。製品を直して
- * focus が残るようになると、これらの試験は意図どおり失敗する。そのときは期待値を
- * `toBe(pm)` に反転して回帰試験にする（対照の試験はそのまま）。
+ * 「事実の固定」の試験は、false→true を実際に挟むと focus が落ちること自体を assert する。
+ * 製品の経路（自分の autosave・同値の setEditable・他文書の fence）で落ちないことは別の試験が見る。
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
-import { runTimelapseBodyReplacement } from "@/features/timelapse/bodyWriteMode";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseEditorBodyWrite,
+} from "@/features/timelapse/bodyWriteMode";
+import { userEvent } from "vitest/browser";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
 
 const PROJECT_ID = "project-1";
 const KEY: DocumentKey = { kind: "tree", id: "scene-1", storage: "database" };
+
+const IDENTITY = {
+  projectId: PROJECT_ID,
+  domain: "editor",
+  entityType: "scene",
+  entityId: "scene-1",
+  storage: "database",
+} as const;
 
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -101,7 +107,7 @@ describe("autosave の fence の間の editor focus（実 Chromium）", () => {
     expect(document.activeElement).toBe(pm);
   });
 
-  it("【不具合】setEditable(false) → true の後（描画を挟む）、focus が body に落ちて戻らない", async () => {
+  it("事実の固定：setEditable(false) → true の後（描画を挟む）、focus が body に落ちて戻らない。だから自分の保存では editable を切らない", async () => {
     const { editor } = await mountFocused(false);
     editor.setEditable(false, false);
     await nextFrame();
@@ -110,7 +116,7 @@ describe("autosave の fence の間の editor focus（実 Chromium）", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("【不具合】setEditable(false) → true を同じ task で続けても、focus が body に落ちて戻らない", async () => {
+  it("事実の固定：setEditable(false) → true を同じ task で続けても、focus が body に落ちて戻らない", async () => {
     const { editor } = await mountFocused(false);
     // 間で layout・activeElement を読まない。Chromium が false の間に何も評価しない形。
     editor.setEditable(false, false);
@@ -119,7 +125,17 @@ describe("autosave の fence の間の editor focus（実 Chromium）", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("【不具合】製品の autosave の経路（useLicenseEditableSync と実 fence）で、focus が body に落ちて戻らない", async () => {
+  it("同値の setEditable(true, false) は focus も selection も落とさない（事実の確認。hook の同値 guard は、これが落ちるかどうかに関わらず必須の防御）", async () => {
+    const { editor, pm } = await mountFocused(false);
+    editor.commands.setTextSelection(3);
+    const before = editor.state.selection.from;
+    editor.setEditable(true, false);
+    await nextFrame();
+    expect(document.activeElement).toBe(pm);
+    expect(editor.state.selection.from).toBe(before);
+  });
+
+  it("外部置換の契約（runTimelapseBodyReplacement と useLicenseEditableSync と実 fence）：editor は read-only になり、解除後に戻り、focus は body に落ちる（範囲外。従来どおり）", async () => {
     publishCurrentProjectId(PROJECT_ID);
     setCurrentWorkspaceIdentity({ path: "/fence.gdx", openRevision: 1 });
     const { editor } = await mountFocused(true);
@@ -129,13 +145,7 @@ describe("autosave の fence の間の editor focus（実 Chromium）", () => {
       await runTimelapseBodyReplacement(
         {
           projectId: PROJECT_ID,
-          documentIdentity: {
-            projectId: PROJECT_ID,
-            domain: "editor",
-            entityType: "scene",
-            entityId: "scene-1",
-            storage: "database",
-          },
+          documentIdentity: IDENTITY,
         },
         {
           // persistSceneBody の commit（IPC）の代わり。描画を 1 回挟む。
@@ -153,5 +163,73 @@ describe("autosave の fence の間の editor focus（実 Chromium）", () => {
     await waitFor(() => expect(editor.isEditable).toBe(true));
     await nextFrame();
     expect(document.activeElement).toBe(document.body);
+  });
+
+  it("自分の autosave の経路（useLicenseEditableSync と runTimelapseEditorBodyWrite）：editable は true のまま、focus が editor に残り、保存の間に打った文字が入る", async () => {
+    publishCurrentProjectId(PROJECT_ID);
+    setCurrentWorkspaceIdentity({ path: "/fence.gdx", openRevision: 1 });
+    const { editor, pm } = await mountFocused(true);
+
+    let editableDuringSave: boolean | null = null;
+    await act(async () => {
+      await runTimelapseEditorBodyWrite(
+        { projectId: PROJECT_ID, documentIdentity: IDENTITY },
+        {
+          commit: async () => {
+            await nextFrame();
+            editableDuringSave = editor.isEditable;
+            // 保存の間に実キー入力が本文に入る。
+            await userEvent.keyboard("XY");
+            await nextFrame();
+            return "committed";
+          },
+          project: async (committed) => committed,
+        },
+      );
+    });
+    expect(editableDuringSave).toBe(true);
+    await nextFrame();
+    expect(editor.isEditable).toBe(true);
+    expect(document.activeElement).toBe(pm);
+    expect(editor.state.doc.textContent).toContain("XY");
+    await userEvent.keyboard("Z");
+    expect(editor.state.doc.textContent).toContain("Z");
+  });
+
+  it("T-9 (c) journey：他文書（codex など）の autosave が fence を開閉している間も、focus 中の scene editor は read-only にならず、focus が落ちず、入力が続く", async () => {
+    publishCurrentProjectId(PROJECT_ID);
+    setCurrentWorkspaceIdentity({ path: "/fence.gdx", openRevision: 1 });
+    const { editor, pm } = await mountFocused(true);
+    const setEditable = vi.spyOn(editor, "setEditable");
+
+    await act(async () => {
+      await runTimelapseBodyReplacement(
+        {
+          projectId: PROJECT_ID,
+          documentIdentity: {
+            projectId: PROJECT_ID,
+            domain: "codex",
+            entityType: "codex_entry",
+            entityId: "codex-1",
+          },
+        },
+        {
+          commit: async () => {
+            await nextFrame();
+            // 他文書の fence の間も scene は writable で、打てる。
+            expect(editor.isEditable).toBe(true);
+            await userEvent.keyboard("AB");
+            return "committed";
+          },
+          project: async (committed) => committed,
+        },
+      );
+    });
+    await nextFrame();
+    // 他文書の fence の通知で、望む値が変わらない setEditable は 1 度も呼ばれない。
+    expect(setEditable).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(pm);
+    await userEvent.keyboard("CD");
+    expect(editor.state.doc.textContent).toContain("ABCD");
   });
 });

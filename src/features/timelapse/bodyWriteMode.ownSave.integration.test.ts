@@ -39,8 +39,17 @@ import {
 } from "./recorder";
 import {
   _resetTimelapseBodyWriteTailsForTests,
+  runTimelapseBodyReplacement,
   runTimelapseEditorBodyWrite,
 } from "./bodyWriteMode";
+import {
+  DocumentMutationLeaseActiveError,
+  _resetDocumentSaveCoordinatorForTests,
+  isExclusiveDocumentLeaseActive,
+  runCoordinatedDocumentSave,
+  runExclusiveDocumentMutation,
+} from "@/features/editor/document/documentSaveCoordinator";
+import { isTimelapseReplacementFenceActiveForDocument } from "./documentCoverage";
 import { buildReplayStart } from "./replayStart";
 import { replayEditorSteps, type ReplayEvent } from "./replayEngine";
 import type { TimelapseDocumentIdentity } from "./documentCoverage";
@@ -520,5 +529,133 @@ describe("T-3 (t) release の owner：操作が呼ばれずに reject する", (
     await flushStrict();
     expect(native.events.map((e) => e.sequence)).toEqual([1, 2, 3]);
     expectReplayMatchesEditor();
+  });
+});
+
+describe("T-6 実 lease：自分の保存は文書 lease を取らず、同じ文書の別の保存を拒まない", () => {
+  const KEY = { kind: "tree", id: "scene-1", storage: "database" } as const;
+
+  beforeEach(() => {
+    _resetDocumentSaveCoordinatorForTests();
+  });
+
+  it("runTimelapseEditorBodyWrite の間 lease も fence も active でなく、同じ文書の追従保存は throw せず saveTails で直列化される", async () => {
+    await initRecorderForProject(P);
+    createEditor("start");
+    const order: string[] = [];
+    let leaseDuringWindow: boolean | null = null;
+    let fenceDuringWindow: boolean | null = null;
+    let second: Promise<string> | null = null;
+
+    // 製品と同じ入れ子：runCoordinatedDocumentSave（saveTails）の中で本文書込み。
+    const first = runCoordinatedDocumentSave(KEY, async () => {
+      order.push("first:start");
+      const t0 = editor.doc;
+      await runTimelapseEditorBodyWrite<string, void>(
+        { projectId: P, documentIdentity: ID },
+        {
+          commit: async () => {
+            leaseDuringWindow = isExclusiveDocumentLeaseActive(KEY);
+            fenceDuringWindow = isTimelapseReplacementFenceActiveForDocument(
+              P,
+              KEY,
+            );
+            // 窓の中で追従保存が入る。lease が無いので入場を拒まれず、待たされるだけ。
+            second = runCoordinatedDocumentSave(KEY, async () => {
+              order.push("second:start");
+              return "second";
+            });
+            await Promise.resolve();
+            native.snapshots.push({
+              anchorSequence: native.seq,
+              payload: t0.toJSON(),
+            });
+            order.push("first:committed");
+            return "ok";
+          },
+          project: async () => undefined,
+        },
+      );
+      order.push("first:end");
+      return "first";
+    });
+
+    await expect(first).resolves.toBe("first");
+    expect(leaseDuringWindow).toBe(false);
+    expect(fenceDuringWindow).toBe(false);
+    await expect(second).resolves.toBe("second");
+    expect(order).toEqual([
+      "first:start",
+      "first:committed",
+      "first:end",
+      "second:start",
+    ]);
+  });
+
+  it("対照（外部置換の lease 中）は従来どおり入場を拒む", async () => {
+    let release!: () => void;
+    const held = runExclusiveDocumentMutation(
+      KEY,
+      () => new Promise<void>((resolve) => (release = resolve)),
+    );
+    await expect(
+      runCoordinatedDocumentSave(KEY, async () => "never"),
+    ).rejects.toBeInstanceOf(DocumentMutationLeaseActiveError);
+    release();
+    await held;
+  });
+
+  it("対照（従来の replacement fence の間）は同じ文書の保存を拒む", async () => {
+    await initRecorderForProject(P);
+    createEditor("start");
+    let rejected: unknown = null;
+    await runTimelapseBodyReplacement<string, void>(
+      { projectId: P, documentIdentity: ID },
+      {
+        commit: async () => {
+          try {
+            await runCoordinatedDocumentSave(KEY, async () => "never");
+          } catch (error) {
+            rejected = error;
+          }
+          return "ok";
+        },
+        project: async () => undefined,
+      },
+    );
+    expect(rejected).toBeInstanceOf(DocumentMutationLeaseActiveError);
+  });
+});
+
+describe("T-5 外部置換との順序", () => {
+  it("own の in-flight 中に外部置換が来ても、保留 step は外部置換の flushStrict より先に Native へ流れ、置換の窓では editor が閉じる", async () => {
+    await initRecorderForProject(P);
+    createEditor("start");
+    type("-a");
+    let replacementSaw = -1;
+    let replacement: Promise<void> | null = null;
+
+    await startSave({
+      atCommitStart: () => {
+        type("+held");
+        // own の窓の最中に外部置換（undo・復元など）が同じ project の tail に並ぶ。
+        replacement = runTimelapseBodyReplacement<string, void>(
+          { projectId: P, documentIdentity: ID },
+          {
+            commit: async () => {
+              replacementSaw = native.events.length;
+              return "ok";
+            },
+            project: async () => undefined,
+          },
+        );
+      },
+    });
+    await replacement;
+    await flushStrict();
+
+    // 置換の commit の時点で、own の窓の step（-a と +held）は Native に届いている。
+    expect(replacementSaw).toBe(2);
+    expect(_inspectOwnSaveCapturesForTests(ID).activeCaptures).toBe(0);
   });
 });

@@ -77,8 +77,10 @@ describe("saveEditorDocument", () => {
       const result = await saveEditorDocument(binding, doc, services);
 
       expect(services.persistSceneBody).toHaveBeenCalledOnce();
+      // editor の保存は「自分の autosave」の判別子を付ける（EAR-1）。
       expect(services.persistSceneBody).toHaveBeenCalledWith(binding.id, doc, {
         baseVersion: binding.loadedVersion,
+        writer: "editor-autosave",
       });
       expect(services.updateCodexText).not.toHaveBeenCalled();
       expect(services.updateSnippet).not.toHaveBeenCalled();
@@ -107,6 +109,7 @@ describe("saveEditorDocument", () => {
     expect(services.persistSceneBody).toHaveBeenCalledWith("scene-1", doc, {
       baseVersion: 8,
       preexistingDraft: true,
+      writer: "editor-autosave",
     });
   });
 

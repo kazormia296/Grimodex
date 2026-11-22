@@ -288,6 +288,107 @@ describe("useLicenseEditableSync lifecycle barrier", () => {
     expect(setEditable).toHaveBeenLastCalledWith(true, false);
   });
 
+  describe("同値 guard（EAR-9）", () => {
+    /** 製品の TipTap と同じく、setEditable が isEditable と option を更新する。 */
+    function stateful(initial: boolean) {
+      const editor = {
+        isDestroyed: false,
+        isEditable: initial,
+        options: { editable: initial },
+        setEditable: vi.fn((value: boolean) => {
+          editor.isEditable = value;
+          editor.options.editable = value;
+        }),
+      };
+      return editor;
+    }
+    const KEY = {
+      kind: "tree",
+      id: "scene-guard",
+      storage: "database",
+    } as const;
+
+    it("望む値が今の値と同じなら mount の同期でも setEditable を呼ばない", () => {
+      const editor = stateful(true);
+      renderHook(() =>
+        useLicenseEditableSync(editor as unknown as Editor, false, KEY, "p"),
+      );
+      expect(editor.setEditable).not.toHaveBeenCalled();
+    });
+
+    it("他文書・他 project の fence の通知（望む値が変わらない）では focus 中の editor に setEditable を呼ばない", () => {
+      publishCurrentProjectId("project-guard");
+      setCurrentWorkspaceIdentity({ path: "/guard.gdx", openRevision: 1 });
+      const editor = stateful(true);
+      renderHook(() =>
+        useLicenseEditableSync(
+          editor as unknown as Editor,
+          false,
+          KEY,
+          "project-guard",
+        ),
+      );
+      let fence!: ReturnType<typeof acquireTimelapseReplacementFence>;
+      act(() => {
+        fence = acquireTimelapseReplacementFence({
+          projectId: "project-guard",
+          document: {
+            projectId: "project-guard",
+            domain: "editor",
+            entityType: "scene",
+            entityId: "another-scene",
+            storage: "database",
+          },
+        });
+      });
+      act(() => fence.release());
+      expect(editor.setEditable).not.toHaveBeenCalled();
+      expect(editor.isEditable).toBe(true);
+    });
+
+    it("望む値が変わるとき（自文書の fence）だけ setEditable を呼ぶ", () => {
+      publishCurrentProjectId("project-guard");
+      setCurrentWorkspaceIdentity({ path: "/guard.gdx", openRevision: 1 });
+      const editor = stateful(true);
+      renderHook(() =>
+        useLicenseEditableSync(
+          editor as unknown as Editor,
+          false,
+          KEY,
+          "project-guard",
+        ),
+      );
+      let fence!: ReturnType<typeof acquireTimelapseReplacementFence>;
+      act(() => {
+        fence = acquireTimelapseReplacementFence({
+          projectId: "project-guard",
+          document: {
+            projectId: "project-guard",
+            domain: "editor",
+            entityType: "scene",
+            entityId: "scene-guard",
+            storage: "database",
+          },
+        });
+      });
+      expect(editor.setEditable).toHaveBeenCalledTimes(1);
+      expect(editor.setEditable).toHaveBeenLastCalledWith(false, false);
+      act(() => fence.release());
+      expect(editor.setEditable).toHaveBeenCalledTimes(2);
+      expect(editor.setEditable).toHaveBeenLastCalledWith(true, false);
+    });
+
+    it("isEditable が false でも option が true のままなら read-only を取りこぼさない（view 未 mount の間）", () => {
+      const editor = stateful(true);
+      editor.isEditable = false; // view 未 mount で isEditable だけ false
+      renderHook(() =>
+        useLicenseEditableSync(editor as unknown as Editor, true, KEY, "p"),
+      );
+      expect(editor.setEditable).toHaveBeenCalledWith(false, false);
+      expect(editor.options.editable).toBe(false);
+    });
+  });
+
   it.each([
     "src/features/editor/EditorPane.tsx",
     "src/features/editor/LinearSceneBlock.tsx",
