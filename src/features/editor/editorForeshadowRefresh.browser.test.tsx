@@ -250,9 +250,12 @@ const SCENE: TreeNodeData = {
   updatedAt: "2026-07-28T00:00:00.000Z",
 };
 
-/** 自動保存の失敗の toast（付箋の読込みなど無関係の toast は数えない）。 */
+/**
+ * 保存・伏線に関わる失敗の toast。無関係の toast（この試験の mock の範囲で出る付箋の読込み
+ * 失敗）だけを除いて数える。文言に依らず、保存の失敗の別の文言も素通りさせない。
+ */
 const saveFailures = (spy: { mock: { calls: unknown[][] } }) =>
-  spy.mock.calls.filter((call) => /自動保存|auto-?save/i.test(String(call[0])));
+  spy.mock.calls.filter((call) => !/付箋|sticky/i.test(String(call[0])));
 
 const KEY = { kind: "tree", id: SCENE_ID, storage: "database" } as const;
 const isDirty = () => useEditorSessionStore.getState().isDocumentDirty(KEY);
@@ -610,6 +613,31 @@ describe.each<[string, Surface]>([
     await waitFor(() => expect(markBaseVersion(editor)).toBe(h.fs.version), {
       timeout: 3_000,
     });
+  });
+
+  it("(d) 閉じる（unmount の flush）も、変換中で pending が残っていても延期せず、古い baseVersion で FORESHADOW_VERSION_MISMATCH にならない", async () => {
+    installBridge();
+    const { editor, pm } = await mountSurface(surface);
+    const release = await startHeldFirstSave(editor);
+    await userEvent.keyboard("XY");
+    startComposition(pm, editor);
+    release();
+    await waitFor(
+      () => expect(hasPendingForeshadowRefresh(editor)).toBe(true),
+      {
+        timeout: 3_000,
+      },
+    );
+    expect(h.saves).toHaveLength(1);
+
+    // 変換が続いたまま editor を閉じる（unmount の flush が未保存の本文を保存する）。
+    cleanup();
+    await waitFor(() => expect(h.saves.length).toBeGreaterThanOrEqual(2), {
+      timeout: 5_000,
+    });
+    expect(h.mismatches).toBe(0);
+    expect(h.saves[1]!.fsBaseVersion).toBe(2);
+    expect(h.saves[1]!.payloadText).toContain("XY");
   });
 
   it("(e) pending が無い通常の保存は、従来どおり保存結果の直後に適用される（回帰）", async () => {
