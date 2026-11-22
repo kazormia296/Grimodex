@@ -9,8 +9,9 @@
  * modules, nor a command looked up through `NAPI_COMMANDS` with a variable. So
  * this test reads the new read-port sources more narrowly:
  *   - the scan roots are DIRECTORIES (`electron/main/mastraRead/`,
- *     `electron/shared/mastraRead/`) plus the shared timeout module, so a file
- *     PR-4 and later put there is covered without a list to update;
+ *     `electron/shared/mastraRead/`, and `electron/shared/readDomain/` where the
+ *     shared core lives) plus the shared timeout module, so a file a later PR
+ *     puts there is covered without a list to update;
  *   - no source (comments included) names an IR symbol, command or module;
  *   - no source imports from `src/` (`@/...`), the tool definitions or the tool
  *     executors;
@@ -56,6 +57,9 @@ const repoRoot = path.resolve(
 const SCAN_DIRS = [
   path.join("electron", "main", "mastraRead"),
   path.join("electron", "shared", "mastraRead"),
+  // The shared read core and the pure modules moved with it (PR-4): the same IR
+  // rules reach them, so a core file cannot name an IR symbol or import src/.
+  path.join("electron", "shared", "readDomain"),
 ];
 const SCAN_FILES = [path.join("electron", "shared", "ipcCallerTimeouts.ts")];
 
@@ -317,6 +321,11 @@ describe("main's read port: the chat IR stays closed and commands are named lite
       "electron/shared/mastraRead/tables.ts",
       "electron/shared/mastraRead/ports.ts",
       "electron/shared/ipcCallerTimeouts.ts",
+      "electron/shared/readDomain/core/readExecutors.ts",
+      "electron/shared/readDomain/core/treeReadTools.ts",
+      "electron/shared/readDomain/core/plotThreadTools.ts",
+      "electron/shared/readDomain/core/codexTagTools.ts",
+      "electron/shared/readDomain/db/schema.ts",
     ]) {
       expect(relative).toContain(expected);
     }

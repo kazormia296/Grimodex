@@ -3,9 +3,9 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import { checkReadSql } from "./sql.js";
-import { MAIN_READ_TABLE_SET } from "./tables.js";
+import { CHECKER_FIXTURE_TABLE_SET } from "./sql.testSupport.js";
 
-const check = (sql: unknown) => checkReadSql(sql, MAIN_READ_TABLE_SET);
+const check = (sql: unknown) => checkReadSql(sql, CHECKER_FIXTURE_TABLE_SET);
 
 describe("checkReadSql: a statement that is sent", () => {
   it.each([

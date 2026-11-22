@@ -79,13 +79,33 @@ describe("the statement and the method are checked before anything is sent", () 
   });
 });
 
+describe("the statement of the real-addon spec's repeated-column join", () => {
+  it("passes the check (a self join of an allowlisted table, with <> in on)", async () => {
+    const { dbExecute, client } = fixture();
+    await client(
+      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "tree_nodes" as "p" on "p"."id" <> "n"."id" limit 1',
+      [],
+      "all",
+    );
+    expect(dbExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a table that is no longer allowlisted (the allowlist is the core's six)", async () => {
+    const { dbExecute, client } = fixture();
+    await expect(
+      client('select "id" from "projects" limit 1', [], "all"),
+    ).rejects.toMatchObject({ code: "table-not-allowed", beforeSend: true });
+    expect(dbExecute).not.toHaveBeenCalled();
+  });
+});
+
 describe("what is sent", () => {
   it("is exactly four arguments: the statement, the params, the method and the identity JSON (no own_data_read)", async () => {
     const { dbExecute, client } = fixture();
-    await client("select 1 from projects", ["x"], "values");
+    await client("select 1 from tree_nodes", ["x"], "values");
     const args = dbExecute.mock.calls[0] as unknown[];
     expect(args).toEqual([
-      "select 1 from projects",
+      "select 1 from tree_nodes",
       ["x"],
       "values",
       JSON.stringify(IDENTITY),

@@ -37,7 +37,7 @@ import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { describe, expect, it } from "vitest";
 
 import { checkReadSql } from "./sql.js";
-import { MAIN_READ_TABLE_SET } from "./tables.js";
+import { CHECKER_FIXTURE_TABLE_SET } from "./sql.testSupport.js";
 
 const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -428,7 +428,7 @@ describe("checkReadSql: what Drizzle 0.45 emits is not refused", () => {
     expect(captured.length).toBeGreaterThan(0);
     for (const { sql: statement, method } of captured) {
       expect(["all", "values"]).toContain(method);
-      expect(checkReadSql(statement, MAIN_READ_TABLE_SET)).toEqual({
+      expect(checkReadSql(statement, CHECKER_FIXTURE_TABLE_SET)).toEqual({
         ok: true,
         tables: expect.arrayContaining([...new Set(tables)]),
       });
@@ -444,7 +444,9 @@ describe("checkReadSql: Drizzle shapes this port does not send", () => {
     const cte = db.$with("c").as(db.select().from(treeNodes));
     await db.with(cte).select().from(cte);
     expect(captured).toHaveLength(1);
-    expect(checkReadSql(captured[0]!.sql, MAIN_READ_TABLE_SET)).toMatchObject({
+    expect(
+      checkReadSql(captured[0]!.sql, CHECKER_FIXTURE_TABLE_SET),
+    ).toMatchObject({
       ok: false,
       code: "not-select",
     });

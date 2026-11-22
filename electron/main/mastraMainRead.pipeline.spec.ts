@@ -222,15 +222,27 @@ describe("main's DB read adapter against the real Native addon", () => {
     expect(repeated.rows[0]).toHaveLength(3);
     expect(new Set(repeated.rows[0]).size).toBe(1);
 
-    // Two different columns with the same name keep their own values in order.
+    // Two different columns with the same name keep their own values in order:
+    // [child id, parent id]. The parent id is checked against a second select of
+    // the child's own `parent_id`, so a swap of the two positions fails.
     const joined = await client(
-      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "projects" as "p" on "p"."id" = "n"."project_id" limit 1',
+      'select "n"."id", "p"."id" from "tree_nodes" as "n" join "tree_nodes" as "p" on "p"."id" = "n"."parent_id" where "n"."parent_id" is not null order by "n"."id" limit 1',
       [],
       "all",
     );
+    expect(joined.rows).toHaveLength(1);
     expect(joined.rows[0]).toHaveLength(2);
-    expect(joined.rows[0]![1]).toBe(ws.projectId);
-    expect(joined.rows[0]![0]).not.toBe(ws.projectId);
+    const childId = joined.rows[0]![0];
+    const parentId = joined.rows[0]![1];
+    expect(typeof childId).toBe("string");
+    expect(parentId).not.toBe(childId);
+    const parentOfChild = await client(
+      'select "parent_id" from "tree_nodes" where "id" = ?',
+      [childId],
+      "all",
+    );
+    expect(parentOfChild.rows).toHaveLength(1);
+    expect(parentOfChild.rows[0]).toEqual([parentId]);
   });
 
   it("refuses a column named like an integer, whose position Object.values would change", async () => {
@@ -316,7 +328,7 @@ describe("main's DB read adapter against the real Native addon", () => {
       backend: ws.readBackend,
       identity: ws.identity,
     });
-    await client('select "id" from "projects" limit 1', [], "values");
+    await client('select "id" from "tree_nodes" limit 1', [], "values");
     const args = ws.dbExecute.mock.calls[0]!;
     expect(args).toHaveLength(4);
     expect(args[3]).toBe(JSON.stringify(ws.identity));
@@ -329,7 +341,7 @@ describe("main's DB read adapter against the real Native addon", () => {
       identity: incomplete as unknown as MainIssuedCallerIdentity,
     });
     await expect(
-      broken('select "id" from "projects" limit 1', [], "all"),
+      broken('select "id" from "tree_nodes" limit 1', [], "all"),
     ).rejects.toThrow(/D2A_EGRESS_DENIED/);
   });
 

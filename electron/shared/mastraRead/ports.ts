@@ -1,7 +1,8 @@
 /**
  * The ports of the read core that Electron main and the renderer share
- * (Mastra migration MP-4b, DR-MP4-3). Types and one guard only: the core that
- * takes them arrives in PR-4, and nothing calls this module yet.
+ * (Mastra migration MP-4b, DR-MP4-3). Types and the project guard. The core
+ * that takes them is `readDomain/core/` (PR-4); the renderer's executors call it
+ * through live getters, and main does not call it yet.
  *
  * "Getter form" means a port is read through a function at the moment the core
  * needs it, not captured once. The renderer's implementation returns the live
@@ -10,23 +11,38 @@
  * an accepted difference recorded in the decisions, not something the core
  * hides.
  *
- * The shapes are structural and minimal. `TreeNodeData` and `SceneTimeIndex`
- * live in `src/` and cannot be imported from here (electron's type check does
- * not resolve `@/`); PR-3b moves the pure modules and replaces these
- * structures with the moved types, and the mutual-assignability test that ties
- * them is part of that change. Until then these structures carry only the
- * fields the read tools read.
+ * The shapes are structural and minimal. `CoreTreeNode` carries only the fields
+ * the read tools read, and `TreeNodeData` (moved to `readDomain` in PR-3b) is
+ * assignable to it (`ports.test.ts` ties them). `CoreSceneTimeIndex` is the
+ * moved `SceneTimeIndex` itself (PR-4).
  *
  * A closed chat-IR path has no port here: the core holds only the form without
  * it, and the renderer's thin layer keeps its own branch (DR-MP4-3, DR-MP4-21).
  */
 
-/** What a Drizzle `sqlite-proxy` client returns: one array per row, by position. */
+import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
+
+import type * as schema from "../readDomain/db/schema.js";
+import type { SceneTimeIndex } from "../readDomain/features/codex/context/sceneTimeIndex.js";
+
+/**
+ * The statement client under a Drizzle `sqlite-proxy` database: what the
+ * renderer's `invoke("db_execute")` and main's checked adapter both are. It
+ * returns one array per row, by position.
+ */
 export type CoreReadDbClient = (
   sql: string,
   params: unknown[],
   method: string,
 ) => Promise<{ rows: unknown[][] }>;
+
+/**
+ * The database the core's executors take: a Drizzle query builder over the
+ * schema, not the raw client. The renderer passes its own `db` (so the seam its
+ * tests mock stays the same); main passes `createCoreReadDb(checkedClient)`. The
+ * core issues selects on it and nothing else (`core.static.test.ts`).
+ */
+export type CoreReadDb = SqliteRemoteDatabase<typeof schema>;
 
 export type CoreUiLanguage = "ja" | "en";
 
@@ -58,15 +74,8 @@ export interface CoreTreeState {
 
 export type CorePhaseResolutionMode = "reading" | "story" | "auto";
 
-/** The same shape as `SceneTimeIndex` in `readDomain/features/codex/context/sceneTimeIndex.ts` (moved from `src/`, MP-4b PR-3b-2). */
-export interface CoreSceneTimeIndex {
-  readonly readingOrder: ReadonlyMap<string, number>;
-  readonly explicitStoryOrder: ReadonlyMap<string, string>;
-  readonly inheritedStoryOrder: ReadonlyMap<string, string>;
-  readonly liveSceneCount: number;
-  readonly scheduledSceneCount: number;
-  readonly revision: number;
-}
+/** The moved `SceneTimeIndex` (`readDomain/features/codex/context/sceneTimeIndex.ts`): one definition, not a copy of its shape. */
+export type CoreSceneTimeIndex = SceneTimeIndex;
 
 export interface CorePhaseState {
   readonly resolutionMode: CorePhaseResolutionMode;
@@ -83,6 +92,12 @@ export interface CoreBodyReader {
   readonly barrier: "pending-writes-awaited" | "none";
   /** The body as stored (the editor's JSON text), or `""` when there is none. */
   readSceneBody(sceneId: string): Promise<string>;
+  /**
+   * The bodies of several scenes: an id to its body. An id with no row is not in
+   * the map. The batch is one port call (the renderer reads it in statements of
+   * at most 500 ids), so a failure of the whole batch is one rejection.
+   */
+  readSceneBodies(sceneIds: readonly string[]): Promise<Map<string, string>>;
 }
 
 /** `fts_search`'s scope. A union, not a string: `'all'` cannot be passed. */
@@ -136,7 +151,7 @@ export interface CoreToolCache {
 }
 
 export interface CoreReadPorts {
-  getDb(): CoreReadDbClient;
+  getDb(): CoreReadDb;
   getTreeState(): CoreTreeState;
   getPhaseState(): CorePhaseState;
   readonly body: CoreBodyReader;
@@ -147,11 +162,35 @@ export interface CoreReadPorts {
   readonly cache: CoreToolCache;
 }
 
+/**
+ * The ports the read executors of PR-4 (groups B1 and B2) use: the database, the
+ * tree state (for the project), the body reader and the token counter. A later
+ * PR widens this as its tools need more of `CoreReadPorts`; a port no tool
+ * reads yet is not asked of the caller.
+ */
+export type CoreReadContext = Pick<
+  CoreReadPorts,
+  "getDb" | "getTreeState" | "body" | "countTokens"
+>;
+
+/**
+ * The project a read needs is missing. A distinct class, so a caller that
+ * answers an empty project with a result of its own (the renderer's
+ * `No active project`) can tell it from any other failure without reading the
+ * message.
+ */
+export class CoreProjectRequiredError extends Error {
+  constructor() {
+    super("read core: projectId is required");
+    this.name = "CoreProjectRequiredError";
+  }
+}
+
 /** Refuses an empty or non-string project id (fail closed; never widens a read). */
 export function assertCoreProjectId(
   projectId: unknown,
 ): asserts projectId is string {
   if (typeof projectId !== "string" || projectId.trim() === "") {
-    throw new Error("read core: projectId is required");
+    throw new CoreProjectRequiredError();
   }
 }
