@@ -48,6 +48,8 @@
 | EAR-12 | 技術判断（改訂 2） | codex／snippet は content の捕捉と hold の取得を同じ同期区間にするため、**呼び手が hold を開いて `ownSaveCapture` として api に渡す**（`runTimelapseEditorBodyWrite` に `input.capture`）。`ownSaveCapture` が無い呼び出し（外部の呼び手）は従来の fence。anchor は scene と同形（`agent_writes.rs:3718-3727`、`snippet_writes.rs:686-695` で確認） | §3.3c |
 | EAR-13 | 技術判断 | 追従保存が外部置換の lease に当たった `DocumentMutationLeaseActiveError` は、背景の保存では toast なしの silent retry（dirty 維持、debounce 間隔）。flush は従来どおり throw | §3.3 の useAutoSave 行 (b)、T-5 |
 | EAR-14 | 技術判断 | hold の件数・時間の上限と bounded wait を新設しない（hold は memory だけ、窓は Native commit の長さで有界）。長い hang は今の fence でも同じで、hold は editor を止めないので悪化しない | §3.5、§3.6 A17 |
+| EAR-15 | 技術判断（PR-3 の実装で記録） | **新しい値：** 伏線 mark の更新が変換中で適用できないとき、背景の保存を延期して張り直す間隔は **300 ms**（`SAVE_DEFER_RETRY_MS`、`src/hooks/useAutoSave.ts`）。通常の debounce（既定 2000 ms）より短く、変換が終われば次の試行が通る。上限は置かない（変換が終われば解ける）。延期の間に作者が打てば次の試行は通常の debounce に戻る。flush（閉じる・切替・手動保存）は延期しない。pending が無い場面（伏線 mark の無い場面を含む大半）には影響しない | §3.3 の useAutoSave 行 (a)、§3.3a、§8-9 |
+| EAR-16 | 技術判断（PR-3 の実装で記録） | **peer の保存の通知は、自 editor が変換中なら処理を遅らせる。** 起案の「`setContent` は適用しないが `advancePeerSave` は行う」は、古い本文のまま版だけ進めて後の保存が peer の編集を上書きしうるので採らず、「通知ごと遅らせ、変換が終わった後（compositionend／blur）に同じ通知を処理し直す（版も本文もそこで進める）」にした。処理し直す時点で dirty なら従来どおり何もしない（保存の OCC が競合を示す）。flush で変換を確定させるときの blur は、flush（手動保存を含む）の T0 で伏線 mark の pending があり変換中のときだけ起きる | §3.3 の EditorPane 行、§5-2 |
 
 ## 4. 信頼境界
 
