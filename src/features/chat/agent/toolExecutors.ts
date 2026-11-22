@@ -9,9 +9,6 @@ import {
   codexTags,
   codexDetailDefinitions,
   codexDetailValues,
-  treeNodes,
-  foreshadows,
-  foreshadowSetups,
 } from "@/db/schema";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import {
@@ -34,7 +31,7 @@ import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
-import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
+import { readOpenForeshadowWire } from "@/features/foreshadow/api";
 import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
 import type {
   ChatReadOnlyToolRunContext,
@@ -1019,133 +1016,6 @@ async function findRelatedEntries(
 }
 
 // ---------------------------------------------------------------------------
-// Foreshadow / Timeline tools (Phase 3)
-// ---------------------------------------------------------------------------
-
-async function listOpenForeshadows(): Promise<Omit<ToolResult, "toolCallId">> {
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId) {
-    return {
-      name: "list_open_foreshadows",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  }
-  const rows = await listOpenForeshadowsForContext(projectId);
-  const content = rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    intent: r.intent ?? "",
-    loadBearing: r.loadBearing,
-    setupCount: r.setupCount,
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "list_open_foreshadows",
-    content,
-    summary: `${content.length} open foreshadowing items`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function getForeshadowDetail(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const id = String(params["id"] ?? "").trim();
-  if (!id) {
-    return {
-      name: "get_foreshadow_detail",
-      content: null,
-      summary: "No id provided",
-      tokensUsed: 0,
-    };
-  }
-
-  // XPROJ defense: scope the read-by-id to the active project. Without this,
-  // an injected agent could pass another project's foreshadow UUID and read its
-  // (secret) plot intent/notes/setups. Mirrors getCodexEntry / getScene.
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId) {
-    return {
-      name: "get_foreshadow_detail",
-      content: null,
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  }
-
-  const [fs] = await db
-    .select()
-    .from(foreshadows)
-    .where(and(eq(foreshadows.id, id), eq(foreshadows.projectId, projectId)));
-  if (!fs) {
-    return {
-      name: "get_foreshadow_detail",
-      content: null,
-      summary: "Foreshadow not found",
-      tokensUsed: 0,
-    };
-  }
-
-  // Setups + scene title (innerJoin); orphan は別フィールドで載せる。
-  const setupRows = await db
-    .select({
-      sceneId: foreshadowSetups.sceneId,
-      kind: foreshadowSetups.kind,
-      strength: foreshadowSetups.strength,
-      aiStrength: foreshadowSetups.aiStrength,
-      attribution: foreshadowSetups.attribution,
-      aiRationale: foreshadowSetups.aiRationale,
-      isOrphan: foreshadowSetups.isOrphan,
-      sceneTitle: treeNodes.title,
-    })
-    .from(foreshadowSetups)
-    .innerJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
-    .where(eq(foreshadowSetups.foreshadowId, id));
-
-  // Payoff scene の title 取得（payoffSceneId が無ければ null）
-  let payoffScene: { id: string; title: string } | null = null;
-  if (fs.payoffSceneId) {
-    const [row] = await db
-      .select({ id: treeNodes.id, title: treeNodes.title })
-      .from(treeNodes)
-      .where(eq(treeNodes.id, fs.payoffSceneId));
-    if (row) payoffScene = { id: row.id, title: row.title };
-  }
-
-  const content = {
-    id: fs.id,
-    title: fs.title,
-    intent: fs.intent ?? "",
-    notes: fs.notes ?? "",
-    loadBearing: fs.loadBearing,
-    payoffConfirmed: fs.payoffConfirmed,
-    abandoned: fs.abandoned,
-    payoffScene,
-    setups: setupRows.map((s) => ({
-      sceneId: s.sceneId,
-      sceneTitle: s.sceneTitle,
-      kind: s.kind,
-      // 人手評価が無いとき AI 評価を露出（強度の参考情報）
-      strength: s.strength ?? s.aiStrength ?? null,
-      attribution: s.attribution,
-      aiRationale: s.aiRationale ?? "",
-      isOrphan: s.isOrphan,
-    })),
-  };
-  const json = JSON.stringify(content);
-  return {
-    name: "get_foreshadow_detail",
-    content,
-    summary: `${fs.title}: ${setupRows.length} setup(s), payoff ${
-      fs.payoffConfirmed ? "confirmed" : payoffScene ? "planned" : "unset"
-    }`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Mutating executors (knowledgeWrite policy gated)
 // ---------------------------------------------------------------------------
 
@@ -1318,7 +1188,7 @@ type Executor = (
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 // ---------------------------------------------------------------------------
-// 共有 core の read tool（MP-4b PR-4。B1・B2 の 7 本、PR-5a で B3 の search_scenes・search_snippets）
+// 共有 core の read tool（MP-4b PR-4。B1・B2 の 7 本、PR-5a で B3 の search_scenes・search_snippets、PR-5b で B4 の list_open_foreshadows・get_foreshadow_detail）
 // ---------------------------------------------------------------------------
 
 /**
@@ -1342,7 +1212,12 @@ const LEGACY_READ_CONTEXT: CoreReadContext = {
   },
   // fts は args を加工せずそのまま渡す（command・引数・scope・limit は core が決める）。
   // invoke は arrow の中で読むので、試験の `vi.mock("@/lib/tauri")` が効く。
-  native: { fts: (args) => invoke("fts_search", args) },
+  // foreshadowOpen は wire を返すだけ（組み立ては core。Native なら `{ projectId }` だけで 1 回の invoke、
+  // それ以外は Drizzle の 2 list）。`readOpenForeshadowWire` は arrow の中で読む（試験の mock が効く）。
+  native: {
+    fts: (args) => invoke("fts_search", args),
+    foreshadowOpen: (args) => readOpenForeshadowWire(args.projectId),
+  },
   countTokens: (text) => countTokens(text),
 };
 
@@ -1368,6 +1243,8 @@ const LEGACY_NO_PROJECT_CONTENT: Record<CoreReadToolName, () => unknown> = {
   get_scene: () => null,
   search_scenes: () => [],
   search_snippets: () => [],
+  list_open_foreshadows: () => [],
+  get_foreshadow_detail: () => null,
 };
 
 function coreReadExecutor(name: CoreReadToolName): Executor {
@@ -1423,8 +1300,8 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   search_scenes: coreReadExecutor("search_scenes"),
   search_snippets: coreReadExecutor("search_snippets"),
   get_chapter_summaries: coreReadExecutor("get_chapter_summaries"),
-  list_open_foreshadows: () => listOpenForeshadows(),
-  get_foreshadow_detail: getForeshadowDetail,
+  list_open_foreshadows: coreReadExecutor("list_open_foreshadows"),
+  get_foreshadow_detail: coreReadExecutor("get_foreshadow_detail"),
   get_scene_timeline_neighbors: coreReadExecutor(
     "get_scene_timeline_neighbors",
   ),

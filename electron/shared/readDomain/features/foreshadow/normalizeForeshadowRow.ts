@@ -1,24 +1,7 @@
 import { attachCreateResultMetadata } from "../../lib/createResultMetadata.js";
 import { attachNativeMutationMetadata } from "../../lib/nativeMutationMetadata.js";
+import { toBool, toDate, toNullableDate } from "./coerce.js";
 import type { ForeshadowLoadBearing, ForeshadowRow } from "./types.js";
-
-function toDate(value: unknown): Date {
-  if (value instanceof Date) return value;
-  if (typeof value === "number") return new Date(value);
-  if (typeof value === "string") return new Date(value);
-  return new Date(0);
-}
-
-function toNullableDate(value: unknown): Date | null {
-  if (value == null) return null;
-  return toDate(value);
-}
-
-function toBool(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
-  return false;
-}
 
 export function normalizeForeshadowRow(raw: unknown): ForeshadowRow {
   const row = (raw ?? {}) as Record<string, unknown>;

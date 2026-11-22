@@ -9,7 +9,8 @@
 // what a real FTS5 index finds. This spec seeds the SAME data (PR-0's
 // `legacyReadSeed.ts`, which imports nothing) into a real workspace, drives the
 // read tools of the core through `createCoreReadDb(createMainReadDb(..))` (and,
-// for the search tools of PR-5a, Main's typed `fts` over the real FTS5 index)
+// for the search tools of PR-5a, Main's typed `fts` over the real FTS5 index, and
+// for the foreshadow tools of PR-5b, Main's typed `foreshadowOpen`)
 // and requires every golden case to come out the same: name, summary,
 // tokensUsed, content, and the bytes of `JSON.stringify(content)`.
 //
@@ -17,10 +18,14 @@
 // loosens a comparison to make a case pass.
 //
 // THE TYPED READS (fts, codexSemantic, eventsSemantic, foreshadowOpen) have no
-// golden that Native can match (the golden's fts is browser-mock's LIKE arm,
-// its semantic reads are `[]`, its foreshadow read is a Drizzle branch). Their
-// block below fixes the SHAPE of what the real addon answers on this seed, as
-// the frame PR-5, PR-7 and PR-8 add their cases to.
+// golden that Native can match as a wire (the golden's fts is browser-mock's
+// LIKE arm, its semantic reads are `[]`, its foreshadow read is a Drizzle
+// branch). Their block below fixes the SHAPE of what the real addon answers on
+// this seed, as the frame PR-7 and PR-8 add their cases to. What the tools BUILD
+// from a wire is compared with the golden above: since PR-5a the two search
+// tools (fts, with its order handled as that comparison says) and since PR-5b
+// `list_open_foreshadows`, whose result is built from Native's real
+// `foreshadowOpen` wire and must equal the golden to the byte.
 //
 // Where the data comes from: `legacyReadSeed.ts` and the golden files live
 // under `src/features/chat/agent/__fixtures__/`. The seed file is data only (no
@@ -279,15 +284,17 @@ function goldenOf(tool: string): GoldenCase[] {
 }
 
 describe("the read core on Main's adapter over the real Native addon gives the renderer's results (PR-0 golden)", () => {
-  it("covers exactly the nine tools of groups B1, B2 and B3, each with a golden", () => {
+  it("covers exactly the eleven tools of groups B1, B2, B3 and B4, each with a golden", () => {
     expect([...CORE_READ_TOOL_NAMES].sort()).toEqual(
       [
         "get_chapter_summaries",
+        "get_foreshadow_detail",
         "get_scene",
         "get_scene_timeline_neighbors",
         "get_thread_scenes",
         "list_chapters",
         "list_codex_tags",
+        "list_open_foreshadows",
         "list_plot_threads",
         "search_scenes",
         "search_snippets",
@@ -298,13 +305,13 @@ describe("the read core on Main's adapter over the real Native addon gives the r
     }
   });
 
-  it("every golden case of the nine tools is the same on the real addon, to the byte", async () => {
+  it("every golden case of the eleven tools is the same on the real addon, to the byte", async () => {
     const ws = await startSeededWorkspace();
     const mainDb = createCoreReadDb(
       createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
     );
     // The tree state of a turn is what Main fixes at its start (DR-MP4-8): here
-    // only the project and the active scene, which is all the nine tools read
+    // only the project and the active scene, which is all the eleven tools read
     // of it (the tree itself they read from the DB).
     let world: GoldenCase["world"] = { projectId: "" };
     const realReads = createMainTypedReads({
@@ -312,6 +319,9 @@ describe("the read core on Main's adapter over the real Native addon gives the r
       identity: ws.identity,
     });
     const ftsCalls: Array<Parameters<CoreNativeReads["fts"]>[0]> = [];
+    const foreshadowCalls: Array<
+      Parameters<CoreNativeReads["foreshadowOpen"]>[0]
+    > = [];
     const ctx: CoreReadContext = {
       getDb: () => mainDb,
       getTreeState: () => ({
@@ -326,6 +336,13 @@ describe("the read core on Main's adapter over the real Native addon gives the r
         fts: async (args) => {
           ftsCalls.push(args);
           return realReads.fts(args);
+        },
+        // The real Native's open-foreshadow read, through Main's typed read
+        // (PR-5b), behind a spy: its answer is a wire and the core builds the
+        // tool's result from it (the golden is compared to the byte).
+        foreshadowOpen: async (args) => {
+          foreshadowCalls.push(args);
+          return realReads.foreshadowOpen(args);
         },
       },
       // The golden counts one UTF-16 unit as one token (PR-0's fixed counter).
@@ -343,6 +360,7 @@ describe("the read core on Main's adapter over the real Native addon gives the r
         world = golden.world;
         ws.dbExecute.mockClear();
         ftsCalls.length = 0;
+        foreshadowCalls.length = 0;
         const label = `${tool} / ${golden.case}`;
         let actual: Awaited<ReturnType<(typeof executors)[typeof tool]>>;
         try {
@@ -355,6 +373,7 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           expect(golden.world.projectId, label).toBe("");
           expect(golden.result.summary, label).toBe("No active project");
           expect(ws.dbExecute, label).not.toHaveBeenCalled();
+          expect(foreshadowCalls, label).toEqual([]);
           noProject += 1;
           continue;
         }
@@ -432,6 +451,16 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           ftsCases[tool] = (ftsCases[tool] ?? 0) + 1;
         }
         ftsCalls.length = 0;
+        // list_open_foreshadows reads through the typed read, once, for the
+        // project only, and sends no statement of its own; no other tool does.
+        if (tool === "list_open_foreshadows") {
+          expect(foreshadowCalls, label).toEqual([
+            { projectId: golden.world.projectId },
+          ]);
+          expect(ws.dbExecute, label).not.toHaveBeenCalled();
+        } else {
+          expect(foreshadowCalls, label).toEqual([]);
+        }
         // What went to Native is a SELECT by `all` or `values`, with the
         // identity of the turn as the fourth argument and no fifth.
         for (const call of ws.dbExecute.mock.calls) {
@@ -486,7 +515,9 @@ describe("main's typed reads against the real Native addon: the shape the later 
   // golden comparisons: the renderer's path on sql.js cannot give the same
   // (its fts is a LIKE arm, its semantic reads are `[]`, its foreshadow read is
   // a Drizzle branch). PR-5 (search_scenes, search_snippets, the foreshadow
-  // tools), PR-7 (events) and PR-8 (Codex hidden) add their cases here.
+  // tools), PR-7 (events) and PR-8 (Codex hidden) add their cases here. The
+  // foreshadow tools (PR-5b) also have a golden comparison in the describe above;
+  // the secret case below is the one that must not be empty.
   const MAIN = LEGACY_READ_PROJECTS.main;
   const OTHER = LEGACY_READ_PROJECTS.other;
 
@@ -649,6 +680,77 @@ describe("main's typed reads against the real Native addon: the shape the later 
     expect(
       await reads.foreshadowOpen({ projectId: LEGACY_READ_PROJECTS.empty }),
     ).toEqual({ foreshadows: [], setups: [] });
+  });
+
+  it("a secret foreshadow is not in list_open_foreshadows built from the real Native wire, and get_foreshadow_detail still returns it (DR-MP4-24)", async () => {
+    // The condition `secret = 0` lives in Native's SQL only: the wire has no
+    // secret column, so the core cannot filter again. If Native's SQL changed,
+    // a secret foreshadow's intent would reach the model; this case is what
+    // would show it. It must not be vacuous: the seed's `fs-2` is secret, not
+    // paid off and not abandoned (what would otherwise be listed).
+    const seedRows = LEGACY_READ_SEED.find((t) => t.table === "foreshadows")!
+      .rows as Array<Record<string, unknown>>;
+    const fs2 = seedRows.find((r) => r.id === "fs-2")!;
+    expect(fs2).toMatchObject({
+      project_id: MAIN,
+      secret: 1,
+      payoff_confirmed: 0,
+      abandoned: 0,
+    });
+
+    const ws = await startSeededWorkspace();
+    const reads = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const mainDb = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const executors = createReadExecutors({
+      getDb: () => mainDb,
+      getTreeState: () => ({
+        projectId: MAIN,
+        nodes: [],
+        activeSceneId: null,
+      }),
+      body: createDbSceneBodyReader(() => mainDb),
+      native: reads,
+      countTokens: (text) => (text ? text.length : 0),
+    });
+
+    // The raw wire has neither fs-2 nor a setup of it (fsu-4).
+    const wire = (await reads.foreshadowOpen({ projectId: MAIN })) as {
+      foreshadows: Array<{ id: string }>;
+      setups: Array<{ foreshadow_id: string }>;
+    };
+    expect(wire.foreshadows.map((f) => f.id)).not.toContain("fs-2");
+    expect(wire.setups.map((x) => x.foreshadow_id)).not.toContain("fs-2");
+
+    // The tool's answer is the golden's first case, to the byte, without fs-2.
+    const golden = goldenOf("list_open_foreshadows")[0]!;
+    expect(golden.world.projectId).toBe(MAIN);
+    ws.dbExecute.mockClear();
+    const listed = await executors.list_open_foreshadows({});
+    expect((listed.content as Array<{ id: string }>).map((r) => r.id)).toEqual([
+      "fs-1",
+      "fs-5",
+    ]);
+    expect(JSON.stringify(listed.content)).toBe(golden.contentJson);
+    expect(listed.summary).toBe(golden.result.summary);
+    expect(listed.tokensUsed).toBe(golden.result.tokensUsed);
+    expect(ws.dbExecute).not.toHaveBeenCalled();
+
+    // get_foreshadow_detail answers the same foreshadow by id (moved as it is).
+    const detailGolden = goldenOf("get_foreshadow_detail").find(
+      (c) => (c.params as { id?: unknown }).id === "fs-2",
+    )!;
+    expect(detailGolden).toBeDefined();
+    const detail = await executors.get_foreshadow_detail({ id: "fs-2" });
+    expect(detail.summary).toBe(detailGolden.result.summary);
+    expect(JSON.stringify(detail.content)).toBe(detailGolden.contentJson);
+    expect((detail.content as { id: string; intent: string }).intent).toBe(
+      "黒幕は最初から出ている",
+    );
   });
 
   it("the semantic reads refuse a workspace that is not the active one; for the active one they stop after the workspace check", async () => {

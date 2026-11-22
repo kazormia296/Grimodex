@@ -2,7 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * MP-4b PR-4（B1・B2 の 7 本）と PR-5a（B3 の search_scenes・search_snippets）：共有 core を、main の DB adapter（`createMainReadDb`：送信前の検査・表の
+ * MP-4b PR-4（B1・B2 の 7 本）、PR-5a（B3 の search_scenes・search_snippets）、PR-5b（B4 の
+ * list_open_foreshadows・get_foreshadow_detail）：共有 core を、main の DB adapter（`createMainReadDb`：送信前の検査・表の
  * allowlist・行の位置対応）の上で動かし、PR-0 の golden（未変更の legacy から生成）と
  * 同じ結果になることを確かめる。PR-9 の同値 spec の最初の版（B1・B2 の 7 本）。
  *
@@ -17,6 +18,13 @@ import { describe, expect, it, vi } from "vitest";
  * を通る）に、golden を作ったのと同じ browser-mock の `fts_search` handler を JSON 文字列で
  * 返す fake の `ftsSearch` を繋ぐ（id の順は golden と同じ。browser-mock は scope を無視して
  * archived の場面も返すので、archived の絞りが core の tool 層で働くことも見える）。
+ *
+ * PR-5b の foreshadowOpen：同じく main の typed read（`createMainTypedReads`）に、fake の
+ * `foreshadowListOpenForContext` を繋ぐ。browser-mock に handler が無いので、Native の SQL
+ * （`foreshadow.rs` の `list_open_for_context`：`secret = 0`・未回収・未放棄、setups は別の IN の 1 文）と
+ * 同じ SELECT を sql.js に打ち、Native の wire（snake_case・真偽は 0/1・epoch ms・setups に scene_id なし）の
+ * JSON 文字列にして返す。get_foreshadow_detail は Drizzle なので main の DB adapter（`foreshadows`・
+ * `foreshadow_setups` が allowlist にある）を通る。
  *
  * 覆えない範囲：実 Native（実 addon）の行の返り順・型の返り方は見ない（sql.js の結果）。
  * 本文 2 本は main では barrier なし（renderer の未着の書込みを待たない。DR-MP4-9）ので、
@@ -95,11 +103,12 @@ const backend: Pick<NapiBackendLike, "dbExecute"> = {
 };
 
 /**
- * typed read の backend：`ftsSearch` だけを持つ fake（残りの 3 本は無い＝呼べば fail closed）。
+ * typed read の backend：`ftsSearch` と `foreshadowListOpenForContext` だけを持つ fake（semantic 2 本は無い＝呼べば fail closed）。
  * golden を作った browser-mock の `fts_search` handler の結果を JSON 文字列で返す
  * （Native の wire と同じ。実 FTS5 の順は PR-9 の実 addon spec が見る）。
  */
 const ftsSent: Array<{ projectId: string; scope: string; limit: number }> = [];
+const foreshadowSent: string[] = [];
 const typedBackend = {
   ftsSearch: async (
     projectId: string,
@@ -111,6 +120,32 @@ const typedBackend = {
     return JSON.stringify(
       await invoke("fts_search", { projectId, query, scope, limit }),
     );
+  },
+  // Native の `foreshadow_list_open_for_context` の写し（SQL は `foreshadow.rs` の同名の関数と同じ）。
+  foreshadowListOpenForContext: async (projectId: string) => {
+    foreshadowSent.push(projectId);
+    const read = async (sql: string, params: string[]) =>
+      (
+        (await invoke("db_execute", { sql, params, method: "all" })) as {
+          rows: Record<string, unknown>[];
+        }
+      ).rows;
+    const foreshadows = await read(
+      "SELECT id, title, intent, load_bearing, version, payoff_confirmed, abandoned, updated_at " +
+        "FROM foreshadows " +
+        "WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
+      [projectId],
+    );
+    const ids = foreshadows.map((row) => String(row.id));
+    const setups =
+      ids.length === 0
+        ? []
+        : await read(
+            "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning " +
+              `FROM foreshadow_setups WHERE foreshadow_id IN (${ids.map(() => "?").join(", ")})`,
+            ids,
+          );
+    return JSON.stringify({ foreshadows, setups });
   },
 } as unknown as MainTypedReadsBackend;
 
@@ -141,15 +176,17 @@ const goldenOf = (tool: string): LegacyReadGoldenCase[] => {
 };
 
 describe("共有 core（main の DB adapter の上）が、PR-0 の golden と同じ結果を返す", () => {
-  it("B1・B2 の 7 本と B3 の 2 本（いずれも golden を持つ）を対象にしている", () => {
+  it("B1・B2 の 7 本、B3 の 2 本、B4 の 2 本（いずれも golden を持つ）を対象にしている", () => {
     expect([...CORE_READ_TOOL_NAMES].sort()).toEqual(
       [
         "get_chapter_summaries",
+        "get_foreshadow_detail",
         "get_scene",
         "get_scene_timeline_neighbors",
         "get_thread_scenes",
         "list_chapters",
         "list_codex_tags",
+        "list_open_foreshadows",
         "list_plot_threads",
         "search_scenes",
         "search_snippets",
@@ -170,6 +207,7 @@ describe("共有 core（main の DB adapter の上）が、PR-0 の golden と�
         legacyReadInvokeBridge.reset();
         sent.length = 0;
         ftsSent.length = 0;
+        foreshadowSent.length = 0;
         const label = `${tool} / ${golden.case}`;
         let actual: Awaited<ReturnType<(typeof executors)[typeof tool]>>;
         try {
@@ -262,5 +300,73 @@ describe("共有 core の search 2 本が main の typed read（fts）へ送る�
     await expect(executors.search_scenes({ query: "アリア" })).rejects.toThrow(
       /fts is down/,
     );
+  });
+});
+
+describe("共有 core の伏線 2 本が main の経路で読むもの（PR-5b）", () => {
+  it("list_open_foreshadows は typed read の foreshadowOpen を { projectId } で 1 回だけ呼び、DB の文は送らず、Native の wire（snake_case・0/1・epoch ms・setups に scene_id なし）から組んだ結果が golden と同じ。secret の伏線は出ない", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({
+      projectId: "p-main",
+      activeSceneId: "n-s1",
+    });
+    legacyReadInvokeBridge.reset();
+    sent.length = 0;
+    foreshadowSent.length = 0;
+
+    // main の typed read が core へ渡す wire（Native と同じ形）。
+    const wire = (await MAIN_PORTS.native.foreshadowOpen({
+      projectId: "p-main",
+    })) as {
+      foreshadows: Array<Record<string, unknown>>;
+      setups: Array<Record<string, unknown>>;
+    };
+    expect(wire.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-5"]);
+    expect(Object.keys(wire.foreshadows[0]!).sort()).toEqual(
+      [
+        "abandoned",
+        "id",
+        "intent",
+        "load_bearing",
+        "payoff_confirmed",
+        "title",
+        "updated_at",
+        "version",
+      ].sort(),
+    );
+    expect(wire.foreshadows[0]).toMatchObject({
+      payoff_confirmed: 0,
+      abandoned: 0,
+      updated_at: 1_767_225_600_000,
+    });
+    expect(wire.setups.length).toBeGreaterThan(0);
+    expect(wire.setups.every((s) => !("scene_id" in s))).toBe(true);
+
+    foreshadowSent.length = 0;
+    const result = await executors.list_open_foreshadows({});
+    expect(foreshadowSent).toEqual(["p-main"]);
+    expect(sent).toEqual([]);
+    const ids = (result.content as Array<{ id: string }>).map((r) => r.id);
+    expect(ids).toEqual(["fs-1", "fs-5"]);
+    // fs-2 は secret=1・未回収・未放棄（seed）：list には出ないが、detail は返す（DR-MP4-24）。
+    expect(ids).not.toContain("fs-2");
+    const detail = await executors.get_foreshadow_detail({ id: "fs-2" });
+    expect(detail.summary).toBe("黒幕の伏線: 1 setup(s), payoff unset");
+    expect((detail.content as { id: string }).id).toBe("fs-2");
+    for (const statement of sent) {
+      expect(statement.sql).toMatch(/^\s*select\b/iu);
+    }
+  });
+
+  it("project が空なら foreshadowOpen を呼ばずに止まる", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "" });
+    foreshadowSent.length = 0;
+    await expect(executors.list_open_foreshadows({})).rejects.toBeInstanceOf(
+      CoreProjectRequiredError,
+    );
+    expect(foreshadowSent).toEqual([]);
   });
 });

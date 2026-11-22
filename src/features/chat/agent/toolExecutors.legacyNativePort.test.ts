@@ -47,6 +47,7 @@ import {
 import { invoke } from "@/lib/tauri";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import LEGACY_LIST_OPEN_GOLDEN_RAW from "./__fixtures__/legacyReadGolden/list_open_foreshadows.golden.txt?raw";
 
 bindLegacyReadHarnessPorts({
   executeRun: (sql, params) =>
@@ -371,6 +372,82 @@ describe("legacy が呼ぶ Native 経路の command・引数・scope（Native �
           JSON.stringify(drizzle.content),
         );
         expect(native.summary).toBe(drizzle.summary);
+      } finally {
+        delete holder.grimodex;
+      }
+    });
+
+    it("実 Native の wire（snake_case・真偽は 0/1・時刻は epoch ms・setups に scene_id なし。PR-9 の実 addon の spec が実測した形）から組んだ list_open_foreshadows は golden と byte まで一致する（MP-4b PR-5b。移す前の legacy でも、移した後の core でも同じ試験が通る）", async () => {
+      await setLegacyReadWorld(MAIN_S1);
+      const golden = (
+        JSON.parse(LEGACY_LIST_OPEN_GOLDEN_RAW) as {
+          cases: Array<{
+            case: string;
+            contentJson: string;
+            result: { summary: string; tokensUsed: number };
+          }>;
+        }
+      ).cases[0]!;
+      const realWire = {
+        foreshadows: [
+          {
+            id: "fs-1",
+            title: "老魔術師の杖",
+            intent: "杖が後で鍵になる",
+            load_bearing: "critical",
+            version: 0,
+            payoff_confirmed: 0,
+            abandoned: 0,
+            updated_at: 1_767_225_600_000,
+          },
+          {
+            id: "fs-5",
+            title: "軽い伏線",
+            intent: null,
+            load_bearing: null,
+            version: 0,
+            payoff_confirmed: 0,
+            abandoned: 0,
+            updated_at: 1_767_225_600_000,
+          },
+        ],
+        setups: [
+          {
+            foreshadow_id: "fs-1",
+            is_orphan: 0,
+            strength: null,
+            ai_strength: "subtle",
+            ai_reasoning: null,
+          },
+          {
+            foreshadow_id: "fs-1",
+            is_orphan: 0,
+            strength: "overt",
+            ai_strength: null,
+            ai_reasoning: null,
+          },
+          {
+            foreshadow_id: "fs-1",
+            is_orphan: 1,
+            strength: "moderate",
+            ai_strength: null,
+            ai_reasoning: null,
+          },
+        ],
+      };
+      const holder = window as unknown as { grimodex?: unknown };
+      holder.grimodex = {};
+      try {
+        legacyReadInvokeBridge.reset();
+        legacyReadInvokeBridge.override(
+          "foreshadow_list_open_for_context",
+          () => realWire,
+        );
+        const native = await executeTool("list_open_foreshadows", "call-1", {});
+        expect(JSON.stringify(native.content)).toBe(golden.contentJson);
+        expect(native.summary).toBe(golden.result.summary);
+        expect(native.tokensUsed).toBe(golden.result.tokensUsed);
+        expect(legacyReadInvokeBridge.calls("db_execute")).toEqual([]);
       } finally {
         delete holder.grimodex;
       }
