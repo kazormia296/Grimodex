@@ -1,6 +1,7 @@
 # スナップショットの復元の後の、変更の記録の連続性（判断の記録）
 
 - 対象：スナップショットの復元の後、編集と削除が `NARRATIVE_CHANGE_FEED_DISCONTINUITY` で失敗し続ける不具合の修正。
+- 後続の文書：復元で選んでいない範囲のつながりが消える不具合と、DR-SRC-7・10 が残した「Codex の復元が参加者を消す」件の直しは [snapshot-restore-cross-scope-decisions.md](snapshot-restore-cross-scope-decisions.md)（DR-SRX-1〜14）。
 - この修正は、NIR-1 の残レーンの委任の外である。直し方（守りを、復元の前後に限って弱めること）は、ユーザーが選んだ（2026-11-22。確認 81。記録は、枝 `claude/nir1-contracts` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。確認 81 は commit `d107cb4ea`、確認 83〔本文を含む復元の 2 回目の失敗〕は `b1e0fe16c`、確認 88〔取り込みの取り消し・やり直しを、確かめた種類だけ拒否の対象から外す〕は `6fe47662a`。確認 88 までの全記録は contracts `512d1a508`）。この文書は、その選択の範囲内の、技術判断と信頼境界を記す。選択の範囲を超える判断は、ここに書かず、ユーザーに伺う。
 - この文書の最初の版（DR-SRC-1〜5）は、製品のコードを変える前に置く。実装で決めた細部は、後の DR として足す。
 
