@@ -23,6 +23,13 @@
 import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
 
 import type * as schema from "../readDomain/db/schema.js";
+import type {
+  CalendarRow,
+  EventRelationRow,
+  EventRow,
+  ParticipantRow,
+  SceneEventRow,
+} from "../readDomain/features/chronicle/eventRows.js";
 import type { SceneTimeIndex } from "../readDomain/features/codex/context/sceneTimeIndex.js";
 
 /**
@@ -58,6 +65,15 @@ export interface CoreTreeNode {
   readonly storyTimeOrder: string | null;
   /** A node with an archive time is not live. */
   readonly archivedAt?: string | null;
+  /**
+   * The scene's own chronicle date (the anchor source of `get_chronicle_state`;
+   * PR-7a). The renderer's store nodes carry them (`TreeNodeData`); Main reads them
+   * with the tree select. A node that does not carry them is a node with no date.
+   */
+  readonly chronicleStartTime?: number | null;
+  readonly chronicleStartMinute?: number | null;
+  readonly chronicleStartGranularity?: string;
+  readonly chroniclePrecision?: string;
 }
 
 /**
@@ -136,20 +152,6 @@ export interface CoreLogger {
   error(tag: string, message: string): void;
 }
 
-/**
- * A per-turn cache (DR-MP4-16): main builds one per turn, the renderer keeps
- * its module-level singletons behind this interface. A failed load is not
- * kept, so the next call retries.
- */
-export interface CoreToolCache {
-  getOrLoad<T>(
-    name: string,
-    key: string,
-    load: (key: string) => Promise<T>,
-  ): Promise<T>;
-  clear(): void;
-}
-
 export interface CoreReadPorts {
   getDb(): CoreReadDb;
   getTreeState(): CoreTreeState;
@@ -159,7 +161,6 @@ export interface CoreReadPorts {
   countTokens(text: string): number;
   readonly logger: CoreLogger;
   getUiLanguage(): CoreUiLanguage;
-  readonly cache: CoreToolCache;
 }
 
 /**
@@ -178,6 +179,52 @@ export type CoreReadContext = Pick<
   "getDb" | "getTreeState" | "body" | "countTokens"
 > & {
   readonly native: Pick<CoreNativeReads, "fts" | "foreshadowOpen">;
+};
+
+/**
+ * What the chronicle read tools (`list_events`, `get_event_detail`,
+ * `get_character_timeline`, `get_chronicle_state`; PR-7a, DR-MP4-37) load. A
+ * loader port, not a database: the renderer's implementation calls its own
+ * cached loaders and `chronicle/api` (so the seams its tests mock stay the same),
+ * Main's is built from Drizzle selects over one turn's inputs
+ * (`readDomain/core/chronicleMainContext.ts`). The core never sees which.
+ *
+ * Which of them are cached is the implementation's business (the renderer
+ * shares `getEvents`, `getSceneEvents`, `getCodexNames` and the reading order inside
+ * a batch; `listParticipants`, `listRelations` and `getCalendar` read every call). The
+ * arrays and maps are shared instances: the core reads them and never writes.
+ */
+export interface CoreChronicleData {
+  getEvents(projectId: string): Promise<EventRow[]>;
+  getSceneEvents(projectId: string): Promise<SceneEventRow[]>;
+  /** The codex id to name. Hidden entries are in it (DR-MP4-37: moved as it is). */
+  getCodexNames(projectId: string): Promise<Map<string, string>>;
+  /**
+   * The reading order of the nodes the core was just given. The core passes the
+   * array it got from `getTreeState().nodes` as it is (the renderer memoizes by
+   * that reference) and copies the answer before it hands it to a function that
+   * takes a `Map`.
+   */
+  getReadingOrder(nodes: readonly CoreTreeNode[]): ReadonlyMap<string, number>;
+  listParticipants(
+    projectId: string,
+    eventIds?: string[],
+  ): Promise<ParticipantRow[]>;
+  listRelations(projectId: string): Promise<EventRelationRow[]>;
+  getCalendar(projectId: string): Promise<CalendarRow | null>;
+}
+
+/**
+ * The ports of the chronicle read tools. Its own type and not a widening of
+ * `CoreReadContext`: those tools need no database and no body reader, and a
+ * renderer module that builds this context must not have to import the
+ * renderer's `db` client.
+ */
+export type CoreChronicleReadContext = Pick<
+  CoreReadPorts,
+  "getTreeState" | "countTokens" | "getUiLanguage"
+> & {
+  readonly chronicle: CoreChronicleData;
 };
 
 /**

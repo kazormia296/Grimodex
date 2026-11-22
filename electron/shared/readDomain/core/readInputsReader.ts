@@ -4,7 +4,9 @@
  * passes `createCoreReadDb(checkedClient)` (`readDb.ts`), a test its own
  * capture. Nothing calls this module yet.
  *
- * Two selects, in the shapes the pre-send check (`mastraRead/sql.ts`) accepts:
+ * Two selects (PR-7a: the tree select also carries the scene title and the
+ * chronicle date columns, so that the chronicle tools' nodes and the reading
+ * order come from one statement), in the shapes the pre-send check (`mastraRead/sql.ts`) accepts:
  * awaited as arrays (no `.get()`), no `$with`, no `findFirst`. They name two
  * tables, `tree_nodes` and `projects`, both in `MAIN_READ_TABLES`.
  *
@@ -19,11 +21,13 @@ import {
   assertCoreProjectId,
   type CoreReadDb,
 } from "../../mastraRead/ports.js";
+import type { CoreTreeNode } from "../../mastraRead/ports.js";
 import {
+  buildChronicleNodes,
   buildReadInputs,
+  type ReadChronicleTreeRow,
   type ReadInputProjectRow,
   type ReadInputs,
-  type ReadInputTreeRow,
 } from "./readInputs.js";
 
 /**
@@ -35,7 +39,7 @@ import {
 export async function readTreeRows(
   db: CoreReadDb,
   projectId: string,
-): Promise<ReadInputTreeRow[]> {
+): Promise<ReadChronicleTreeRow[]> {
   assertCoreProjectId(projectId);
   return db
     .select({
@@ -45,6 +49,11 @@ export async function readTreeRows(
       sortOrder: treeNodes.sortOrder,
       storyTimeOrder: treeNodes.storyTimeOrder,
       archivedAt: treeNodes.archivedAt,
+      title: treeNodes.title,
+      chronicleStartTime: treeNodes.chronicleStartTime,
+      chronicleStartMinute: treeNodes.chronicleStartMinute,
+      chronicleStartGranularity: treeNodes.chronicleStartGranularity,
+      chroniclePrecision: treeNodes.chroniclePrecision,
     })
     .from(treeNodes)
     .where(
@@ -72,6 +81,34 @@ export interface ReadReadInputsArgs {
   readonly projectId: string;
   /** The wire's `currentSceneId`; not trusted (see `ReadInputs.currentSceneId`). */
   readonly currentSceneId: string | null | undefined;
+}
+
+/**
+ * The inputs of a turn of the chronicle tools: the read inputs and the tree
+ * nodes (title and chronicle date included), both built from the rows of the one
+ * tree select (the same moment). The mode row is the second statement, as for
+ * `readReadInputs`.
+ */
+export interface ChronicleReadInputs {
+  readonly inputs: ReadInputs;
+  readonly nodes: CoreTreeNode[];
+}
+
+export async function readChronicleReadInputs(
+  db: CoreReadDb,
+  args: ReadReadInputsArgs,
+): Promise<ChronicleReadInputs> {
+  const treeRows = await readTreeRows(db, args.projectId);
+  const project = await readProjectModeRow(db, args.projectId);
+  return {
+    inputs: buildReadInputs({
+      projectId: args.projectId,
+      treeRows,
+      project,
+      currentSceneId: args.currentSceneId,
+    }),
+    nodes: buildChronicleNodes(treeRows),
+  };
 }
 
 export async function readReadInputs(

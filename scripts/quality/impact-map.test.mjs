@@ -1230,6 +1230,10 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     // matches no rule (every suite), so a rule here would narrow the selection below what editing api.ts gave.
     "features/foreshadow/readRows",
     "features/foreshadow/coerce",
+    // MP-4b PR-7a: the read side of the chronicle rows (event, participant, scene-event, relation and
+    // calendar normalizers, plus main's fail-closed event normalizer), split out of
+    // src/features/chronicle/api.ts. Not listed in a rule on purpose, for the same reason as above.
+    "features/chronicle/readRows",
   ];
   const splitFrom = [
     "src/features/chronicle/api.ts",
@@ -1289,6 +1293,9 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     "searchTools",
     "searchHelpers",
     "foreshadowTools",
+    "chronicleTools",
+    "chronicleReadExecutors",
+    "sharedLoader",
     "readContext",
     "toolResult",
   ]) {
@@ -1309,6 +1316,15 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
   assert.equal(readDb.fallback, true, "readDb.ts stays fail-open (every suite)");
   for (const counterpart of ["src/db/client.ts", "electron/main/mastraRead/db.ts"])
     covers(readDb, selectImpact(map, [counterpart]), `readDb vs ${counterpart}`);
+  // chronicleReaders.ts holds the Drizzle selects moved out of the renderer's src/features/chronicle/api.ts,
+  // and chronicleMainContext.ts is main's context of the chronicle tools (the counterpart of the renderer's
+  // chronicle store loaders). Neither is listed on a rule, so each falls back to every suite.
+  const chronicleApi = selectImpact(map, ["src/features/chronicle/api.ts"]);
+  for (const name of ["chronicleReaders", "chronicleMainContext"]) {
+    const selected = selectImpact(map, [`electron/shared/readDomain/core/${name}.ts`]);
+    assert.equal(selected.fallback, true, `${name}.ts stays fail-open (every suite)`);
+    covers(selected, chronicleApi, `${name} vs chronicle/api.ts`);
+  }
   // (3) A file a later PR adds to the core matches no rule either, so it selects every suite (safe by
   // default) until someone lists it on purpose.
   const later = selectImpact(map, ["electron/shared/readDomain/core/somethingNew.ts"]);
@@ -1323,11 +1339,16 @@ test("the tool-policy light suite runs the executors' golden and the shared core
     "src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts",
     "src/features/chat/agent/readCore.mainAdapter.test.ts",
     "src/features/chat/agent/readOpenForeshadowWire.test.ts",
+    "src/features/chat/agent/toolExecutors.chronicleCharacterization.test.ts",
     "electron/shared/readDomain/core/core.static.test.ts",
     "electron/shared/readDomain/core/readExecutors.test.ts",
     "electron/shared/readDomain/core/searchTools.test.ts",
     "electron/shared/readDomain/core/foreshadowTools.test.ts",
     "electron/shared/readDomain/features/foreshadow/readRows.test.ts",
+    "electron/shared/readDomain/core/chronicleTools.test.ts",
+    "electron/shared/readDomain/core/chronicleReaders.test.ts",
+    "electron/shared/readDomain/core/chronicleMainContext.test.ts",
+    "electron/shared/readDomain/features/chronicle/readRows.test.ts",
     "electron/shared/mastraRead/tables.test.ts",
     "electron/main/mastraRead/irClosure.static.test.ts",
   ]) {
