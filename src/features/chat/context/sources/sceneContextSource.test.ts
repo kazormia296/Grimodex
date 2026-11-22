@@ -1364,20 +1364,25 @@ describe("collectSceneContext scene POV name (CPL/1 V1・V2)", () => {
     expect(povNameOf(result)).toBeUndefined();
   });
 
-  it("does not name a suppress POV character automatically (same gate as the pending-beat POV)", async () => {
+  it("names a suppress POV character without a pin (name only, no content)", async () => {
     const alice = entry({
       id: "alice",
       name: "Alice",
       contextMode: "suppress",
+      summary: "Alice private summary",
     });
     const result = await collectSceneContext(
       request({ entries: [alice], sceneContent: "Alice appears" }),
       povDeps("alice"),
     );
-    expect(povNameOf(result)).toBeUndefined();
+    expect(povNameOf(result)).toBe("Alice");
+    expect(JSON.stringify(result.promptInput)).not.toContain(
+      "Alice private summary",
+    );
+    expect(result.promptInput.codexEntries ?? []).toEqual([]);
   });
 
-  it("names a suppress POV character only through an explicit pin", async () => {
+  it("names a suppress POV character that also has an explicit pin", async () => {
     const alice = entry({
       id: "alice",
       name: "Alice",
@@ -1393,10 +1398,24 @@ describe("collectSceneContext scene POV name (CPL/1 V1・V2)", () => {
     expect(povNameOf(result)).toBe("Alice");
   });
 
-  it("does not name a POV character the author excluded from automatic context this turn", async () => {
+  it("names a POV character the author excluded from automatic context this turn", async () => {
     const alice = entry({ id: "alice", name: "Alice", contextMode: "always" });
     const result = await collectSceneContext(
       request({ entries: [alice], excludedAutoEntryIds: ["alice"] }),
+      povDeps("alice"),
+    );
+    expect(povNameOf(result)).toBe("Alice");
+    expect(result.promptInput.codexEntries ?? []).toEqual([]);
+  });
+
+  it("does not name a POV character whose context mode is unreadable (fail closed)", async () => {
+    const alice = entry({
+      id: "alice",
+      name: "Alice",
+      contextMode: "garbled" as CodexContextEntry["contextMode"],
+    });
+    const result = await collectSceneContext(
+      request({ entries: [alice] }),
       povDeps("alice"),
     );
     expect(povNameOf(result)).toBeUndefined();
