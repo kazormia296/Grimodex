@@ -52,6 +52,8 @@ rules:
       - .github/workflows/**
       - docs/DEVELOPMENT_SETUP.md
       - scripts/local-ci.mjs
+      - scripts/local-ci-impact-parts.mjs
+      - scripts/local-ci-quick-parts.mjs
       - scripts/local-ci-registry.json
       - scripts/local-ci-full-workload-allocation.json
       - scripts/local-ci.test.mjs
@@ -61,6 +63,7 @@ rules:
       - scripts/local-ci-process-supervisor.test.mjs
       - docs/local-ci-runner.md
       - scripts/ci-pause.test.mjs
+      - scripts/ci-cross-os-scope.*
       - scripts/nir1-c-query-worker-ci.sh
     requirements:
       - GDX-TRACE-001
@@ -149,6 +152,40 @@ rules:
       - src/features/ai-policy/**
       - src/features/chat/agent/**
       - src/features/chat/toolProtocolParse.ts
+      - src/features/commands/**
+      - src/help/**
+      - electron/shared/agentSettingCatalog.ts
+      - electron/shared/agentSettingGlobalSettingsIpc.test.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
+      - electron/shared/agentReadToolDefinitions.ts
+      - electron/shared/agentReadToolDefinitions.static.test.ts
+      - electron/shared/readDomain/db/schema.ts
+      - electron/shared/readDomain/core/readExecutors.ts
+      - electron/shared/readDomain/core/treeReadTools.ts
+      - electron/shared/readDomain/core/plotThreadTools.ts
+      - electron/shared/readDomain/core/codexTagTools.ts
+      - electron/shared/readDomain/core/searchTools.ts
+      - electron/shared/readDomain/core/searchHelpers.ts
+      - electron/shared/readDomain/core/foreshadowTools.ts
+      - electron/shared/readDomain/core/chronicleTools.ts
+      - electron/shared/readDomain/core/chronicleReadExecutors.ts
+      - electron/shared/readDomain/core/sharedLoader.ts
+      - electron/shared/readDomain/core/readContext.ts
+      - electron/shared/readDomain/core/toolResult.ts
+      - electron/shared/readDomain/core/readExecutors.test.ts
+      - electron/shared/readDomain/core/searchTools.test.ts
+      - electron/shared/readDomain/core/foreshadowTools.test.ts
+      - electron/shared/readDomain/features/foreshadow/readRows.test.ts
+      - electron/shared/readDomain/core/chronicleTools.test.ts
+      - electron/shared/readDomain/core/chronicleMainContext.test.ts
+      - electron/shared/readDomain/features/chronicle/readRows.test.ts
+      - electron/shared/readDomain/core/core.static.test.ts
+      - electron/main/mastraReadParity.pipeline.spec.ts
+      - src/features/settings/agentSettingApply.ts
+      - src/features/settings/agentSettingCatalog.test.ts
+      - src/features/chat/components/SettingProposalCard.tsx
+      - src/features/chat/components/SettingProposalCard.test.tsx
       - src-tauri/crates/grimodex-ai/build.rs
     requirements:
       - GDX-PRECHECK-001
@@ -319,6 +356,7 @@ rules:
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/narrativeMaintenanceTriggers.stall.test.ts
+      - electron/main/narrativeMaintenanceTriggers.graphDemand.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
       - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
@@ -326,6 +364,8 @@ rules:
       - electron/main/ipc.ts
       - electron/main/ipc.test.ts
       - src/lib/tauri.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - src/lib/tauri.electron.test.ts
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
@@ -384,6 +424,8 @@ rules:
       - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
       - src/lib/tauri.electron.test.ts
       - src/lib/tauri.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - electron/main/ipc.test.ts
       - electron/main/ipc.ts
       - electron/main/profileEgress.test.ts
@@ -616,6 +658,8 @@ rules:
       - src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx
       - src/features/layout/adaptive/MobileWorkspaceSurfaces.egress.test.tsx
       - src/lib/tauri.ts
+      - electron/shared/ipcCallerTimeouts.ts
+      - electron/shared/ipcCallerTimeouts.test.ts
       - src/lib/tauri.egressClosure.test.ts
       - src/features/chat/components/ChatInput.editClosed.test.tsx
       - src/features/chat/components/ChatInput.nonSceneEdit.test.tsx
@@ -758,6 +802,7 @@ rules:
       - src/features/revision/projectSnapshotNative.ts
       - src/features/revision/projectSnapshotScopes.ts
       - src/db/schema.ts
+      - electron/shared/readDomain/db/schema.ts
       - src/db/generated/schema-contract.json
       - src/db/projectCalendarSchema.test.ts
       - src/lib/browser-mock.ts
@@ -1339,6 +1384,7 @@ rules:
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/narrativeMaintenanceTriggers.stall.test.ts
+      - electron/main/narrativeMaintenanceTriggers.graphDemand.test.ts
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/main/ipc.ts

@@ -25,6 +25,7 @@ import {
 import { activeCandidates, candidateKey } from "./codexCandidates";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import { parseAliases } from "./codexMatcher";
+import { isRelationalTerm } from "./extraction/relationalTerms";
 import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
@@ -62,6 +63,8 @@ export function CodexCandidatesReport() {
   );
   const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  // 却下の記録を読み終えたか（読み込み前・失敗時の空集合を「全部外した」と見せないため）。
+  const [dismissedLoaded, setDismissedLoaded] = useState(false);
   const [structureOpen, setStructureOpen] = useState(false);
   const structureReviewEnabled = isCodexStructureExtractionReviewEnabled();
 
@@ -110,10 +113,13 @@ export function CodexCandidatesReport() {
   useEffect(() => {
     let cancelled = false;
     commit(new Set());
+    setDismissedLoaded(false);
     if (!projectId) return;
     loadDismissedCandidateKeys(projectId)
       .then((keys) => {
-        if (!cancelled) commit(keys);
+        if (cancelled) return;
+        commit(keys);
+        setDismissedLoaded(true);
       })
       .catch(() => {
         if (!cancelled) commit(new Set());
@@ -214,6 +220,19 @@ export function CodexCandidatesReport() {
     [mutate, t],
   );
 
+  // 構造抽出で畳んだ表記を戻す（打ち手 3）。候補画面と同じ入口（mutate）を通し、
+  // 候補画面の state が古いまま残らないようにする。
+  const handleRestoreDismissedKeys = useCallback(
+    (keys: readonly string[]) => {
+      const prev = dismissedRef.current;
+      const next = new Set(prev);
+      for (const key of keys) next.delete(key);
+      if (next.size === prev.size) return;
+      mutate(next, prev, t("codex.candidates.historyRestore"));
+    },
+    [mutate, t],
+  );
+
   const handleRestoreAll = useCallback(() => {
     mutate(
       new Set(),
@@ -291,6 +310,8 @@ export function CodexCandidatesReport() {
     <CodexStructureExtractDialog
       open={structureOpen}
       onOpenChange={setStructureOpen}
+      onRestoreDismissedCandidates={handleRestoreDismissedKeys}
+      dismissedCandidateKeys={dismissedLoaded ? dismissed : undefined}
     />
   ) : null;
 
@@ -353,9 +374,14 @@ export function CodexCandidatesReport() {
             <ul className="max-h-48 overflow-y-auto px-2 py-1">
               {visible.map((c) => {
                 const j = judgments.get(candidateKey(c.surface));
-                const aliasName = j?.aliasOfId
-                  ? entries.find((e) => e.id === j.aliasOfId)?.name
-                  : undefined;
+                // 関係の呼び名（姉ちゃん・あなた 等）は話し手で指す人が変わるので、
+                // AI が別名を勧めても別名ボタン（handleRegisterAlias への唯一の入口）を出さない。
+                const relationalAliasSuppressed =
+                  !!j?.aliasOfId && isRelationalTerm(c.surface);
+                const aliasName =
+                  j?.aliasOfId && !relationalAliasSuppressed
+                    ? entries.find((e) => e.id === j.aliasOfId)?.name
+                    : undefined;
                 return (
                   <li
                     key={candidateKey(c.surface)}
@@ -380,6 +406,15 @@ export function CodexCandidatesReport() {
                       {j && aliasName ? (
                         <span className="block truncate text-[10px] text-amber-700 dark:text-amber-300">
                           {t("codex.candidates.aliasHint", { name: aliasName })}
+                        </span>
+                      ) : relationalAliasSuppressed ? (
+                        <span
+                          className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70"
+                          data-testid="codex-candidates-relational-note"
+                        >
+                          {t("codex.candidates.relationalAliasNote", {
+                            surface: c.surface,
+                          })}
                         </span>
                       ) : j && j.summary ? (
                         <span className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70">

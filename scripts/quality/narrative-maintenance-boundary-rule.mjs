@@ -33,7 +33,9 @@ function isProtectedFile(filename) {
   const normalized = normalizePath(filename);
   return (
     /(?:^|\/)src\//.test(normalized) ||
-    /(?:^|\/)electron\/preload\//.test(normalized)
+    /(?:^|\/)electron\/preload\//.test(normalized) ||
+    // renderer の module を移した共有の置き場（MP-4b PR-3b）。renderer と同じ規則を保つ。
+    /(?:^|\/)electron\/shared\/readDomain\//.test(normalized)
   );
 }
 

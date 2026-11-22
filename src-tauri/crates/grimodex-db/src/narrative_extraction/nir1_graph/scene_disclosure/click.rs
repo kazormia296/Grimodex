@@ -3,8 +3,11 @@
 //! A click does not trust anything the response made. In a new read
 //! transaction the same judgements run again for the one Scene, against the
 //! values the response bound (instead of the frame's), and the excerpt and its
-//! range must equal the ones that were shown. It does not depend on how a
-//! revocation or a clear is told to the shown row (CP-3); it stands alone.
+//! range must equal the ones that were shown. A change of the body or of the
+//! title between the response and the click is told by the values the response
+//! read (the source token, the digests, the range, the title digest); the
+//! click does not depend on how a change is told to the shown row (CP-3); it
+//! stands alone.
 
 use std::collections::BTreeSet;
 
@@ -29,8 +32,7 @@ fn refused(count: Count) -> GraphOnlyClick {
 /// Revalidates a shown Graph-only Scene for a click.
 ///
 /// `conn` must be in a new read transaction (`Err` otherwise). The scan's
-/// judgements (live, A1, reading order, declaration, binding, veto,
-/// quarantine, frame values, pin, path) run for the one association the
+/// judgements (live, A1, reading order, frame values, pin, path) run for the one association the
 /// response used; the common slot's condition and the tuple-order scan are not
 /// part of it. Then the body step runs and its result must equal the binding.
 /// Anything that does not hold is the one closed [`GraphSceneRevalidationRefused`];
@@ -78,28 +80,23 @@ pub fn requalify_graph_only_scene_disclosure(
         GraphOnlyScan::NotAppended(_) => return Ok(refused(Count::NoCandidate)),
     };
 
-    // What the declaration and the Scene were when the response was made.
+    // What the Scene was when the response was made.
     let title_digest = scene_body_title_digest(&candidate.title)?;
     if candidate.association.scene_id != binding.association.scene_id
         || candidate.scene_incarnation_id != binding.scene_incarnation_id
         || candidate.scope_source_token != binding.scope_source_token
-        || candidate.declaration.declaration.declaration_id != binding.declaration_id
-        || candidate.declaration.token != binding.declaration_token
         || title_digest != binding.title_digest
     {
         return Ok(refused(Count::BindingMismatch));
     }
 
     // Step 4, and the result must be the one that was shown.
-    let body = match read_body(conn, workspace_parts, query_parts, &candidate, check)? {
+    let body = match read_body(conn, query_parts, &candidate, check)? {
         BodyStep::Read(body) => *body,
         BodyStep::Rejected(count) => return Ok(refused(count)),
     };
     if body.facts != binding.body {
         return Ok(refused(Count::BindingMismatch));
-    }
-    if workspace.is_quarantined() {
-        return Ok(refused(Count::Quarantined));
     }
     record(Count::ClickAllowed);
     Ok(GraphOnlyClick::Allowed(GraphSceneRange {

@@ -2,6 +2,10 @@ import type { BrowserMock } from "./browser-mock";
 import { enqueueIpc } from "./ipcQueue";
 import { electronBridge, isElectron } from "./shell";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import {
+  AI_IPC_TIMEOUT_MS,
+  IPC_TIMEOUT_MS,
+} from "@/../electron/shared/ipcCallerTimeouts";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
@@ -15,8 +19,6 @@ export function isTauri(): boolean {
  * 分岐順は isTauri → isElectron → browser-mock。
  */
 export { isElectron } from "./shell";
-
-const IPC_TIMEOUT_MS = 10_000;
 
 const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
 
@@ -51,8 +53,17 @@ export function isD2aEgressDenied(error: unknown): boolean {
   return false;
 }
 
-/** AI inference can take several minutes on local hardware (Ollama etc.) */
-const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
+// IPC_TIMEOUT_MS (10 s) and AI_IPC_TIMEOUT_MS (5 min, AI inference on local
+// hardware) come from the shared module, which Electron main's read port uses
+// too (MP-4b, DR-MP4-4). The values are unchanged.
+/**
+ * Caller timeout of `chat_agent_ir_select` (chat IR, DR-CHATIR-S1-3). Longer
+ * than the longest end of a Native call: its 10 s deadline plus one inference
+ * and one audit write, neither of which can be interrupted. The existing 10 s
+ * would equal the deadline and give up on calls that are still legitimately
+ * running. A caller timeout does not stop Native (it returns its own permit).
+ */
+const CHAT_AGENT_IR_TIMEOUT_MS = 20_000;
 
 export type IpcInvokeErrorCode =
   | "WORKSPACE_SWITCHING"
@@ -218,6 +229,9 @@ function normalizeIpcFailure(command: string, error: unknown): unknown {
  */
 const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["get_global_settings", IPC_TIMEOUT_MS],
+  // モデル能力の registry の写し（PR-C2）：main が file を読んで返すだけの読み取り専用。
+  // 載せないと mutation 扱いになり、timeout が無く、workspace 切替・終了の静止を待たせる。
+  ["get_model_capability_snapshot", IPC_TIMEOUT_MS],
   ["narrative_extraction_capture_workspace_binding", IPC_TIMEOUT_MS],
   ["validate_workspace_path", IPC_TIMEOUT_MS],
   ["list_backups", IPC_TIMEOUT_MS],
@@ -230,6 +244,18 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_restore", IPC_TIMEOUT_MS],
+  // chat IR (DR-CHATIR-S1-3): a read lane with a caller timeout. Left out, the
+  // command would be a mutation: no timeout, and a hold on the workspace
+  // switch and close quiescence. The route itself is closed (S1-A).
+  ["chat_agent_ir_select", CHAT_AGENT_IR_TIMEOUT_MS],
+  // The Mastra agent turn (MP-3b) is deliberately NOT here: `mastra_agent_turn_start`
+  // settles when the whole turn does, so it is a mutation with no caller timeout
+  // (a timeout would end the wait while Main's turn runs on), and
+  // `mastra_agent_turn_cancel` is a mutation too. The queue runs four commands at
+  // a time, so a cancel is not held behind pending starts only while fewer than
+  // four are pending (and it is refused while an audit export freezes mutations):
+  // MP-4 keeps the pending starts of a window under that, or gives the cancel a
+  // lane. `tauri.electron.test.ts` pins the no-timeout and the one-pending case.
   // CB-3: the author's screen reads a Scene's declaration state. It must not
   // wait behind a declare (a confirmation dialog of up to 60 s) in the
   // mutation queue.

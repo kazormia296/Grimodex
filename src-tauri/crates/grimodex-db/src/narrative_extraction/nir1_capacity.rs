@@ -872,10 +872,22 @@ mod tests {
     fn audited_commit_callback_order_holds_with_fts5_and_wal() {
         use std::sync::atomic::AtomicU64;
 
-        let path = std::env::temp_dir().join(format!(
-            "grimodex-commit-order-{}.db",
-            uuid::Uuid::new_v4()
-        ));
+        /// Removes the database and its WAL/SHM files even when an assertion
+        /// below panics (declared before `conn`, so it drops after it).
+        struct RemoveOnDrop(std::path::PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                for suffix in ["", "-wal", "-shm"] {
+                    let mut file = self.0.as_os_str().to_os_string();
+                    file.push(suffix);
+                    let _ = std::fs::remove_file(file);
+                }
+            }
+        }
+
+        let path =
+            std::env::temp_dir().join(format!("grimodex-commit-order-{}.db", uuid::Uuid::new_v4()));
+        let _cleanup = RemoveOnDrop(path.clone());
         let mut conn = Connection::open(&path).unwrap();
         let mode: String = conn
             .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
@@ -920,14 +932,15 @@ mod tests {
         eprintln!("FTS5+WAL COMMIT: callbacks before the commit hook {at_hook}, in total {total}");
         // Init -> Goto drain two callbacks; the FTS5 sync may add more before the
         // hook; the final one comes after it.
-        assert!(at_hook >= 2, "hook after the Init/Goto callbacks: {at_hook}");
-        assert_eq!(total, at_hook + 1, "exactly one callback after the commit hook");
-        drop(conn);
-        for suffix in ["", "-wal", "-shm"] {
-            let mut file = path.as_os_str().to_os_string();
-            file.push(suffix);
-            let _ = std::fs::remove_file(file);
-        }
+        assert!(
+            at_hook >= 2,
+            "hook after the Init/Goto callbacks: {at_hook}"
+        );
+        assert_eq!(
+            total,
+            at_hook + 1,
+            "exactly one callback after the commit hook"
+        );
     }
 
     #[test]

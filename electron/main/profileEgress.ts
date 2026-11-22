@@ -167,7 +167,7 @@ export type D2aRoute =
 
 /**
  * `own-data-read` (K3/2): typed reads of the author's own data that publish
- * nothing outside the profile.  39 commands, each checked by K3/2 to have no
+ * nothing outside the profile.  40 commands, each checked by K3/2 to have no
  * write in its function body.  A command belongs here, in `DENIED_COMMANDS`,
  * in `INTERNAL_COMMANDS`, in the license ledger or in the typed-result
  * ledger, never two; adding or removing a command here needs a new draftRef.
@@ -214,13 +214,14 @@ const OWN_DATA_READ_COMMANDS = [
   "list_scene_lens_for_project",
   "list_annotations_for_scene",
   "list_annotations_for_project",
-  // Extraction review and maintenance inbox (7)
+  // Extraction review and maintenance inbox (8)
   "narrative_extraction_get_run",
   "narrative_extraction_get_run_review_bundle",
   "narrative_extraction_list_resumable_runs",
   "narrative_extraction_is_run_resumable_for_review",
   "narrative_extraction_list_chronicle_task_resume_candidates",
   "narrative_extraction_get_commit_status",
+  "narrative_extraction_list_scene_proposals",
   "narrative_maintenance_inbox_list",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
@@ -308,6 +309,17 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
   ["nir1_pack_context", "plaintext-publication"],
+  // chat IR (DR-CHATIR-S1-27): the approved IR of a chat turn is plaintext a
+  // restricted profile does not publish. The route is closed in every launch
+  // regardless (Main's gate comes first); this is the restricted profile's own
+  // refusal, for the day the gate is opened.
+  ["chat_agent_ir_select", "plaintext-publication"],
+  // Mastra agent turn (MP-3b, DR-MP3-11): a turn sends the chat to the user's
+  // provider, as `send_agent_message` does, so a restricted profile refuses
+  // it. Main's gate L answers first and is closed in every product launch
+  // (`mastraAgentTurnGate.ts`); this is the restricted profile's own refusal,
+  // for the day the gate is opened.
+  ["mastra_agent_turn_start", "old-external-ai"],
 ]);
 
 const ALLOWED_STOP_COMMANDS = new Set([
@@ -316,6 +328,9 @@ const ALLOWED_STOP_COMMANDS = new Set([
   "abort_post_effect_run",
   "abort_cli_chat_stream",
   "codex_app_interrupt_turn",
+  // The cancel of a Mastra agent turn (DR-MP3-11): like `abort_chat_stream`, it
+  // stops work and publishes nothing, so a restricted profile lets it through.
+  "mastra_agent_turn_cancel",
 ]);
 
 // Every current non-egress command is classified explicitly. New commands
@@ -427,6 +442,10 @@ const INTERNAL_COMMANDS = new Set([
   "get_ai_settings",
   "get_global_settings",
   "get_license_state",
+  // Read-only: the adopted model-capability snapshot (the cache, else the
+  // bundled copy). Public metadata only, no plaintext and no egress, so it
+  // stays available while restricted (Q2).
+  "get_model_capability_snapshot",
   "get_narrative_backfill_status",
   // DA-2 (DR-DA2-9): Main answers the closed state itself, before the invoke
   // check, so it also answers while unavailable or after a failed caller
@@ -453,6 +472,9 @@ const INTERNAL_COMMANDS = new Set([
   "list_backups",
   "list_recovery_candidates",
   "list_system_fonts",
+  // The cancel of a Mastra agent turn (DR-MP3-11): it also stops, see the stop
+  // ledger above; both ledgers list it by design (as `abort_chat_stream`).
+  "mastra_agent_turn_cancel",
   "map_write_bundle",
   "mozkey_download_and_install",
   "narrative_extraction_append_decision",
@@ -468,6 +490,10 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_extraction_finish_task",
   "narrative_extraction_prepare_commit",
   "narrative_extraction_redo_commit",
+  // DR-CSX-1: returns only the Native sha256 revision token of the author's own
+  // Codex catalog (no plaintext, no egress), pinned to the captured extraction
+  // workspace binding like the create/save commands around it.
+  "narrative_extraction_resolve_codex_catalog_revision",
   "narrative_extraction_revise_and_decide",
   "narrative_extraction_revise_and_decide_as_human",
   "narrative_extraction_save_proposal_set",
@@ -909,6 +935,19 @@ function denied(route: D2aRoute, detail: string): Error {
   return new Error(`${D2A_EGRESS_DENIED_MARKER} ${route}: ${detail}`);
 }
 
+/**
+ * What a main egress participant's `quiesce` is given (stage 3). A participant
+ * that has no use for it ignores the argument.
+ */
+export interface MainEgressParticipantContext {
+  /**
+   * Native's stop request for the AI in flight, valid while the activation holds
+   * its reservation (stage 3). It never throws and returns whether Native took
+   * it. Calling it again repeats the same request.
+   */
+  abortNativeInFlight(): boolean;
+}
+
 export interface ProfileEgressGate {
   readonly restricted: boolean;
   readonly unavailable: boolean;
@@ -949,7 +988,7 @@ export interface ProfileEgressGate {
    */
   registerMainEgressParticipant(
     name: string,
-    quiesce: () => Promise<void>,
+    quiesce: (context: MainEgressParticipantContext) => Promise<void>,
     forceStop?: () => unknown,
   ): void;
   /**
@@ -1015,7 +1054,7 @@ interface NativeBoundProfileEgressGateInit {
 }
 
 interface MainEgressParticipant {
-  readonly quiesce: () => Promise<void>;
+  readonly quiesce: (context: MainEgressParticipantContext) => Promise<void>;
   readonly forceStop: (() => unknown) | null;
 }
 
@@ -1382,7 +1421,7 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
 
   registerMainEgressParticipant(
     name: string,
-    quiesce: () => Promise<void>,
+    quiesce: (context: MainEgressParticipantContext) => Promise<void>,
     forceStop?: () => unknown,
   ): void {
     if (name.trim() !== name || name.length === 0) {
@@ -1555,24 +1594,27 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
    * failing call is logged and never stops the move to unavailable: Main
    * refuses every new class and every late result from here on either way.
    */
-  private requestNativeInFlightAbort(): void {
+  private requestNativeInFlightAbort(): boolean {
     const abort = this.abortInFlight;
     if (!abort) {
       console.error(
         "[grimodex-electron] D2a profile activation: Native cannot stop the AI in flight (no abort call)",
       );
-      return;
+      return false;
     }
     try {
       if (abort() !== true) {
         console.error(
           "[grimodex-electron] D2a profile activation: Native held no reservation to stop the AI in flight",
         );
+        return false;
       }
+      return true;
     } catch (error) {
       console.error(
         `[grimodex-electron] D2a profile activation: Native's stop request failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return false;
     }
   }
 
@@ -1588,6 +1630,19 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
   private async stopMainParticipants(): Promise<void> {
     const participants = [...this.mainEgressParticipants.entries()];
     if (participants.length === 0) return;
+    // The stop request Native offers while the activation holds its
+    // reservation (stage 3). The gate lends it to a participant whose work is
+    // in Native, so that work can end before the participant's own bound runs
+    // out. It is the request stage 5 (or a failed stage 4) makes anyway, made
+    // early; it opens and closes nothing.
+    // Valid only for stage 3: the stop request is lent while the reservation is
+    // held, and a call after the stage (a participant that kept the context)
+    // does nothing.
+    let participantContextValid = true;
+    const participantContext: MainEgressParticipantContext = {
+      abortNativeInFlight: () =>
+        participantContextValid ? this.requestNativeInFlightAbort() : false,
+    };
     const pending = new Set(participants.map(([name]) => name));
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<"timeout">((resolve) => {
@@ -1596,7 +1651,7 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
     const all = Promise.allSettled(
       participants.map(async ([name, participant]) => {
         try {
-          await participant.quiesce();
+          await participant.quiesce(participantContext);
         } catch (error) {
           throw new ProfileActivationStageError(
             "participant-failed",
@@ -1632,6 +1687,7 @@ class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
       );
       if (failed) throw failed.reason;
     } finally {
+      participantContextValid = false;
       if (timer !== null) clearTimeout(timer);
     }
   }

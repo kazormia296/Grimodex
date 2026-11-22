@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, application_ids_for_commit,
-    events_from_journal_entities, transaction_id_for_source_event,
+    events_from_journal_entities, journal_op_kind_is_bind, transaction_id_for_source_event,
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeOrigin,
 };
 use super::codex_undo::{
@@ -439,14 +439,16 @@ fn mutate_commit(
                                     let live_snapshot =
                                         collect_codex_entry_snapshot(conn, entity_id)?;
                                     (next, live_snapshot)
-                                } else if op_kind == "bind" {
-                                    let live_snapshot =
-                                        collect_codex_entry_snapshot(conn, entity_id)?;
-                                    let version = live_snapshot
+                                } else if journal_op_kind_is_bind(op_kind) {
+                                    // bind は Entry を書かない。journal の行は元の
+                                    // snapshot／版を保つ（作者が後から編集した Entry の
+                                    // live の値で上書きすると、legacy の Forward 事象の
+                                    // digest が元の apply 時と変わる）。
+                                    let version = entity
                                         .get("version")
                                         .and_then(Value::as_i64)
                                         .unwrap_or(1);
-                                    (version, live_snapshot)
+                                    (version, snapshot.clone())
                                 } else {
                                     reapply_codex_entry_create_snapshot(
                                         conn,
@@ -1022,6 +1024,11 @@ fn preflight_undo_entity(
                 .get("opKind")
                 .and_then(Value::as_str)
                 .unwrap_or("create");
+            if journal_op_kind_is_bind(op_kind) {
+                // bind-existing は作者の既存 Entry の行を書かない。undo も触れないので、
+                // 後から作者が Entry を編集していても（版が進んでいても）undo を妨げない。
+                return Ok(());
+            }
             if op_kind == "patch" {
                 let expected_version = entity
                     .get("version")
@@ -1303,7 +1310,19 @@ fn preflight_redo_entity(
                 .get("opKind")
                 .and_then(Value::as_str)
                 .unwrap_or("create");
-            if op_kind == "patch" {
+            if journal_op_kind_is_bind(op_kind) {
+                // undo は bind の Entry に触れていないので、redo の前にも Entry は
+                // そのまま在るはず。無ければ（作者が削除した）結び付け先が無いので止める。
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+                    params![entity_id, project_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    exists == 1,
+                    "NEX_COMMIT_ENTRY_EDITED: bound entry '{entity_id}' no longer exists before redo"
+                );
+            } else if op_kind == "patch" {
                 let before = entity
                     .get("beforeSnapshot")
                     .cloned()
@@ -1397,7 +1416,14 @@ fn undo_one_entity(
                 .get("opKind")
                 .and_then(Value::as_str)
                 .unwrap_or("create");
-            if op_kind == "patch" {
+            if journal_op_kind_is_bind(op_kind) {
+                // bind-existing は作者の既存 Entry を書いていないので、巻き戻す Entry の
+                // 行は無い。ここで create 扱いにすると作者の Entry を消してしまう。
+                // 付随する記録（applications・Field Authority・依存・Contribution）は、
+                // patch など他の op と同じく undo では動かさない既存の規則のまま。
+                // Change Feed の事象も bind の undo／redo では出さない
+                // （`events_from_journal_entities`）。
+            } else if op_kind == "patch" {
                 let before = entity
                     .get("beforeSnapshot")
                     .cloned()

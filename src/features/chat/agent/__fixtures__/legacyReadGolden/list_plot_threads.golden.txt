@@ -1,0 +1,102 @@
+{
+  "tool": "list_plot_threads",
+  "cases": [
+    {
+      "case": "rows: sortOrder 順・distinct な場面数・到達 phase。archived の場面に結ばれた link は数にも phase にも入らない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_plot_threads",
+        "summary": "3 plot thread(s)",
+        "tokensUsed": 286,
+        "content": [
+          {
+            "id": "th-main",
+            "name": "主筋",
+            "description": "アリアの旅",
+            "sceneCount": 3,
+            "phases": [
+              "introduce",
+              "develop",
+              "turn",
+              "resolve"
+            ]
+          },
+          {
+            "id": "th-sub",
+            "name": "サブ",
+            "description": "",
+            "sceneCount": 1,
+            "phases": [
+              "introduce"
+            ]
+          },
+          {
+            "id": "th-empty",
+            "name": "未連結",
+            "description": "場面に結ばれていない筋",
+            "sceneCount": 0,
+            "phases": []
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"th-main\",\"name\":\"主筋\",\"description\":\"アリアの旅\",\"sceneCount\":3,\"phases\":[\"introduce\",\"develop\",\"turn\",\"resolve\"]},{\"id\":\"th-sub\",\"name\":\"サブ\",\"description\":\"\",\"sceneCount\":1,\"phases\":[\"introduce\"]},{\"id\":\"th-empty\",\"name\":\"未連結\",\"description\":\"場面に結ばれていない筋\",\"sceneCount\":0,\"phases\":[]}]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {},
+      "result": {
+        "name": "list_plot_threads",
+        "summary": "0 plot thread(s)",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の筋だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_plot_threads",
+        "summary": "1 plot thread(s)",
+        "tokensUsed": 96,
+        "content": [
+          {
+            "id": "x-th-main",
+            "name": "他作品の主筋",
+            "description": "他作品の筋",
+            "sceneCount": 1,
+            "phases": [
+              "introduce"
+            ]
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-th-main\",\"name\":\"他作品の主筋\",\"description\":\"他作品の筋\",\"sceneCount\":1,\"phases\":[\"introduce\"]}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "list_plot_threads",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

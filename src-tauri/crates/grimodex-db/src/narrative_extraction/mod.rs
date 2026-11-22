@@ -42,6 +42,7 @@ pub mod nir1_graph;
 #[cfg(feature = "nir1-graph-eval")]
 pub mod nir1_graph_eval;
 mod nir1_graph_index_maintenance;
+pub use nir1_graph_index_maintenance::Nir1GraphProductPublication;
 pub use bulk_approval::{
     BulkApprovalReason, BulkApprovalVerdict,
     ChronicleBulkApprovePayload, ChronicleBulkApproveTarget, BULK_APPROVE_MAX_TARGETS,
@@ -173,6 +174,14 @@ mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
 mod retrieval_admission;
+mod scene_proposals;
+pub use scene_proposals::{
+    effective_scene_proposals_limit, narrative_extraction_list_scene_proposals,
+    scene_proposal_reason_code, ListSceneProposalsPayload, SceneProposalChronicleState,
+    SceneProposalDuplicateSuspicion, SceneProposalEvidence, SceneProposalItem, SceneProposalPage,
+    SceneProposalRelatedUse, SceneProposalReviewState, SceneProposalSourceState,
+    SCENE_PROPOSALS_EVIDENCE_MAX, SCENE_PROPOSALS_PAGE_DEFAULT, SCENE_PROPOSALS_PAGE_MAX,
+};
 mod scene_scope;
 mod scene_scope_default;
 #[cfg(test)]
@@ -377,8 +386,10 @@ pub use maintenance_runtime::{
     discover_before_cutover_maintenance_work_with_coordinates, discover_durable_maintenance_work,
     discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, discover_maintenance_project_for_main,
-    effective_maintenance_coordinates, is_transient_maintenance_preemption,
-    nir1_graph_index_build_wakes_main_discovery, plan_maintenance_trigger,
+    discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
+    is_project_local_discovery_failure, is_transient_maintenance_preemption,
+    nir1_graph_index_build_wakes_main_discovery,
+    nir1_graph_index_build_wakes_main_discovery_with_product, plan_maintenance_trigger,
     preflight_maintenance_cycle_request, read_run_ledger, read_run_ledger_for_epoch,
     recovery_canonical_key, retry_backoff_ms, terminalize_interrupted_runs,
     terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
@@ -500,7 +511,8 @@ pub use models::{
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
     NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
     RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RepairNarrativeDependencyDeclarationsPayload, ResolveCodexCatalogRevisionPayload,
+    ResolveCodexCatalogRevisionResult, RetryNarrativeLegacyBackfillPayload,
     ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
     TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
     UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
@@ -613,6 +625,35 @@ pub fn narrative_extraction_is_run_resumable_for_review(
     payload: IsRunResumableForReviewPayload,
 ) -> anyhow::Result<IsRunResumableForReviewResult> {
     repository::is_run_resumable_for_review(db, payload)
+}
+
+/// The current Native revision token of the Project's Codex catalog Source
+/// (`project:codex-catalog:<projectId>`), read with the same resolver that
+/// `save_proposal_set` and Apply use to check a ReadSet (DR-CSX-1). Read-only.
+pub fn narrative_extraction_resolve_codex_catalog_revision(
+    db: &Database,
+    payload: ResolveCodexCatalogRevisionPayload,
+) -> anyhow::Result<ResolveCodexCatalogRevisionResult> {
+    let project_id = payload.project_id;
+    anyhow::ensure!(
+        !project_id.is_empty() && project_id.trim() == project_id,
+        "NEX_SOURCE_KEY_INVALID: projectId must be a non-empty exact string"
+    );
+    let source_key = format!("project:codex-catalog:{project_id}");
+    let current = db.with_conn(|conn| {
+        source_revision::resolve_source_revision(
+            conn,
+            &project_id,
+            "",
+            "codex-catalog",
+            &source_key,
+        )
+    })?;
+    Ok(ResolveCodexCatalogRevisionResult {
+        source_kind: "codex-catalog".to_owned(),
+        source_key,
+        revision_token: current.revision_token,
+    })
 }
 
 pub fn narrative_extraction_list_chronicle_task_resume_candidates(

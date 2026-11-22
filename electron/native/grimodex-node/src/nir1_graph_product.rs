@@ -32,7 +32,6 @@ use grimodex_core::narrative_nir1::MAX_GRAPH_SCENES;
 use grimodex_db::{
     narrative_extraction::{
         nir1_graph::{
-            c_query_freshness::{try_read_c_query_freshness_stamp, CQueryFreshnessStamp},
             c_query_worker::{
                 classify_c_query_failure, CQueryFailure, CQueryRetirement, CQueryWorkerOwner,
                 REQUEST_BYTES,
@@ -40,9 +39,9 @@ use grimodex_db::{
             worker_frame::{UnavailableCategory, UnavailableReason},
             worker_projection::Nir1GraphProjection,
         },
-        Nir1GraphRequest,
+        Nir1GraphProductPublication, Nir1GraphRequest,
     },
-    state::{active_database, active_workspace_snapshot, ActiveWorkspaceSnapshot},
+    state::{active_workspace_snapshot, ActiveWorkspaceSnapshot},
     workspace_lifecycle::{
         LifecycleEdge, LifecycleState, LiveBinding, WorkspaceLifecycleCore,
         WorkspaceLifecycleObserver,
@@ -51,6 +50,7 @@ use grimodex_db::{
 
 use crate::nir1_graph_commit_gate::{GateCounters, GraphCommitGate, WindowLease};
 use crate::nir1_graph_dfinal::GraphWaitPlan;
+use crate::profile_egress::ProfileEgressStatus;
 use crate::state::AppState;
 
 #[cfg(test)]
@@ -63,6 +63,17 @@ pub(crate) const NIR1_GRAPH_RESTART_REQUIRED_REASON_CODE: &str = "nir1-graph-res
 /// the owner, start a worker, or return Graph data (A-1).
 const PRODUCT_GRAPH_PUBLISHED: bool = false;
 const _: () = assert!(!PRODUCT_GRAPH_PUBLISHED);
+
+/// The gate token of the Graph Index build's maintenance route (B; DR-PUBG-5-8,
+/// DR-PUBG-5-13). It is built from `PRODUCT_GRAPH_PUBLISHED` alone, so it is
+/// `None` until PUB-G flips that constant, and it is deliberately not tied to
+/// `publication_open()`: the evaluation arm and unit tests open that gate
+/// without publishing the product, and the CP-4 measurement's seam must keep
+/// B's wake closed. This is the only production construction site of the
+/// token (Native's tests pin it).
+pub(crate) fn maintenance_product_publication() -> Option<Nir1GraphProductPublication> {
+    Nir1GraphProductPublication::from_const::<{ PRODUCT_GRAPH_PUBLISHED }>()
+}
 
 const OWNER_THREAD_NAME: &str = "nir1-graph-owner";
 const COMMAND_CAPACITY: usize = 8;
@@ -172,6 +183,19 @@ impl GraphUnavailable {
     fn index(self) -> usize {
         self as usize
     }
+}
+
+/// K3/2 (Graph row, K32R-1): the one profile gate of the Graph, shared by
+/// `begin` (admit_and_route), the owner thread (`admit`), the query start
+/// (`serve_query`) and the return-time `gate_reason`.
+///
+/// An unrestricted profile never closes it: its `in_flight_stopped` is true by
+/// construction, and the Graph answer is for the screen only (no egress). A
+/// restricted profile closes it until the stop barrier is confirmed. The
+/// reason is `NotActivated`; `ProfileNotRestricted` stays in the closed set
+/// but is no longer produced.
+pub(crate) fn profile_gate(status: &ProfileEgressStatus) -> Option<GraphUnavailable> {
+    (status.restricted && !status.in_flight_stopped).then_some(GraphUnavailable::NotActivated)
 }
 
 #[derive(Clone, Debug)]
@@ -306,6 +330,20 @@ pub(crate) struct GraphReadyNotice {
 
 pub(crate) type GraphReadyNotifier = Arc<dyn Fn(&GraphReadyNotice) + Send + Sync>;
 
+/// The event channel of the Graph Index demand (DR-PUBG-5-14). Main consumes it
+/// only; it is never broadcast to a window and is not in the renderer's
+/// allowlist.
+pub(crate) const GRAPH_INDEX_DEMAND_EVENT: &str = "narrative-maintenance:graph-index-demand";
+
+/// A demand the Graph could not serve because its registration was refused
+/// (`registration-unavailable`): the project's Graph Index build (B) may be
+/// able to fix that. The project ID only (DR-PUBG-5-14).
+pub(crate) struct GraphIndexDemandNotice {
+    pub(crate) project_id: String,
+}
+
+pub(crate) type GraphIndexDemandNotifier = Arc<dyn Fn(&GraphIndexDemandNotice) + Send + Sync>;
+
 /// Everything a worker needs at creation. The product owner never sends it
 /// across a thread: the worker is created, prepared, and retired on one owner
 /// thread.
@@ -417,10 +455,6 @@ pub(crate) struct GraphOwnerDiagnostics {
     pub(crate) prepares_started: u64,
     pub(crate) prepares_ready: u64,
     pub(crate) prepare_failures: u64,
-    pub(crate) stamp0_missing: u64,
-    pub(crate) stamp_fresh: u64,
-    pub(crate) stamp_stale: u64,
-    pub(crate) stamp_unavailable: u64,
     pub(crate) drift_at_query: u64,
     pub(crate) retired_idle: u64,
     pub(crate) retired_edge: u64,
@@ -452,10 +486,6 @@ struct DiagnosticCounters {
     prepares_started: AtomicU64,
     prepares_ready: AtomicU64,
     prepare_failures: AtomicU64,
-    stamp0_missing: AtomicU64,
-    stamp_fresh: AtomicU64,
-    stamp_stale: AtomicU64,
-    stamp_unavailable: AtomicU64,
     drift_at_query: AtomicU64,
     retired_idle: AtomicU64,
     retired_edge: AtomicU64,
@@ -507,6 +537,13 @@ struct Shared {
     next_thread_id: AtomicU64,
     worker: OnceLock<Arc<dyn GraphWorkerFactory>>,
     notifier: Mutex<Option<GraphReadyNotifier>>,
+    /// DR-PUBG-5-14: where a refused registration asks for B (a leaf lock, read
+    /// outside every other lock of this owner).
+    index_demand_notifier: Mutex<Option<GraphIndexDemandNotifier>>,
+    /// Test-only: the product token a test injects (a test module builds an
+    /// open one; production code never does).
+    #[cfg(test)]
+    index_demand_product_for_test: Mutex<Option<Nir1GraphProductPublication>>,
     cache: Mutex<Option<CacheEntry>>,
     config: Mutex<GraphOwnerConfig>,
     /// D-final's wait budget and step. The constants in production; a test
@@ -530,6 +567,10 @@ struct Shared {
     /// owner thread with no lock of this owner held.
     #[cfg(test)]
     admit_hook_for_test: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Test-only: runs in `serve_query` just before the profile gate is read
+    /// (owner thread, no lock of this owner held).
+    #[cfg(test)]
+    query_hook_for_test: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -541,6 +582,7 @@ impl Shared {
                 rebuild: RebuildLedger::default(),
                 exited: Vec::new(),
                 deferred: None,
+                refusals: Vec::new(),
             }),
             edge_epoch: AtomicU64::new(0),
             ready_generation: AtomicU64::new(0),
@@ -554,6 +596,9 @@ impl Shared {
             next_thread_id: AtomicU64::new(1),
             worker: OnceLock::new(),
             notifier: Mutex::new(None),
+            index_demand_notifier: Mutex::new(None),
+            #[cfg(test)]
+            index_demand_product_for_test: Mutex::new(None),
             cache: Mutex::new(None),
             config: Mutex::new(GraphOwnerConfig::default()),
             dfinal_wait: Mutex::new(GraphWaitPlan::default()),
@@ -566,6 +611,8 @@ impl Shared {
             publication_open_for_eval: AtomicBool::new(false),
             #[cfg(test)]
             admit_hook_for_test: Mutex::new(None),
+            #[cfg(test)]
+            query_hook_for_test: Mutex::new(None),
         }
     }
 
@@ -705,6 +752,43 @@ impl Shared {
         }
     }
 
+    /// DR-PUBG-5-14: a demand met a refused registration, so B may be able to
+    /// fix it. Asks main for a Graph Index build wake of this project, only
+    /// while the product token exists (`PRODUCT_GRAPH_PUBLISHED`, false until
+    /// PUB-G): never through `publication_open()`, which an evaluation build or
+    /// a unit test opens, and never through the journey seam. Runs outside
+    /// every lock of this owner.
+    fn request_index_build(&self, project_id: &str) {
+        #[cfg(test)]
+        {
+            let injected = *lock(&self.index_demand_product_for_test);
+            if injected.is_some() {
+                self.request_index_build_for(injected, project_id);
+                return;
+            }
+        }
+        self.request_index_build_for(maintenance_product_publication(), project_id);
+    }
+
+    fn request_index_build_for(
+        &self,
+        product: Option<Nir1GraphProductPublication>,
+        project_id: &str,
+    ) {
+        if product.is_none() {
+            return;
+        }
+        let notifier = lock(&self.index_demand_notifier).clone();
+        if let Some(notifier) = notifier {
+            // A sink that panics must not take the owner thread or a begin down.
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                notifier(&GraphIndexDemandNotice {
+                    project_id: project_id.to_owned(),
+                });
+            }));
+        }
+    }
+
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.edge_epoch.fetch_add(1, Ordering::SeqCst);
@@ -717,6 +801,8 @@ impl Shared {
             } else if !matches!(slot.phase, Phase::Quarantined { .. }) {
                 slot.phase = Phase::Closed;
             }
+            // DR-PUBG-5-21: nothing is announced after a close.
+            slot.refusals.clear();
         }
         self.signal_ready();
     }
@@ -796,6 +882,88 @@ struct SlotState {
     /// CQ-DEFER: the one held Related Scenes query. Some exactly while the
     /// phase is `Deferred`; only the owner thread of the slot's session takes it.
     deferred: Option<DeferredDemand>,
+    /// DR-PUBG-5-21: the projects whose registration was refused, and who waits
+    /// for each one's Graph Index build. Under the slot lock, like the ledger.
+    refusals: Vec<RefusalWatch>,
+}
+
+/// DR-PUBG-5-21: one refused project (a Graph Index build of it can fix the
+/// registration) and the projects whose demand was answered
+/// `registration-unavailable` meanwhile. `edge_epoch` is the lifecycle epoch the
+/// refusal belongs to: a row of another epoch is never announced.
+struct RefusalWatch {
+    refused_project: String,
+    edge_epoch: u64,
+    waiting: Vec<String>,
+}
+
+impl SlotState {
+    /// Records that `waiting` was answered `registration-unavailable` because
+    /// `refused`'s registration was refused. Distinct and bounded like
+    /// `unserved`; a row of another epoch is replaced.
+    fn watch_refusal(&mut self, refused: &str, waiting: &str, edge_epoch: u64) {
+        let at = self
+            .refusals
+            .iter()
+            .position(|row| row.refused_project == refused);
+        let mut row = match at {
+            Some(index) => {
+                let row = self.refusals.remove(index);
+                if row.edge_epoch == edge_epoch {
+                    row
+                } else {
+                    RefusalWatch {
+                        refused_project: refused.to_owned(),
+                        edge_epoch,
+                        waiting: Vec::new(),
+                    }
+                }
+            }
+            None => RefusalWatch {
+                refused_project: refused.to_owned(),
+                edge_epoch,
+                waiting: Vec::new(),
+            },
+        };
+        if !row.waiting.iter().any(|existing| existing == waiting) {
+            if row.waiting.len() == MAX_UNSERVED_PROJECTS {
+                row.waiting.remove(0);
+            }
+            row.waiting.push(waiting.to_owned());
+        }
+        // The most recently refused (or waited on) row is the last one.
+        if self.refusals.len() == MAX_UNSERVED_PROJECTS {
+            self.refusals.remove(0);
+        }
+        self.refusals.push(row);
+    }
+
+    /// A demand answered from the failure backoff names no refused project: it
+    /// joins the latest refusal of this epoch, or (none left) its own project.
+    fn watch_latest_refusal(&mut self, waiting: &str, edge_epoch: u64) {
+        let refused = match self.refusals.last() {
+            Some(row) if row.edge_epoch == edge_epoch => row.refused_project.clone(),
+            _ => waiting.to_owned(),
+        };
+        self.watch_refusal(&refused, waiting, edge_epoch);
+    }
+
+    /// A session of `project` reached READY: its refusal is over, so its row is
+    /// dropped without an announcement (the READY announces for the key itself).
+    fn drop_refusal(&mut self, project: &str) {
+        self.refusals.retain(|row| row.refused_project != project);
+    }
+
+    /// B's publish for `project`: the waiting projects of its refusal, once, if
+    /// that refusal belongs to `edge_epoch`. Rows of another epoch are dropped.
+    fn take_refusal(&mut self, project: &str, edge_epoch: u64) -> Option<Vec<String>> {
+        self.refusals.retain(|row| row.edge_epoch == edge_epoch);
+        let at = self
+            .refusals
+            .iter()
+            .position(|row| row.refused_project == project)?;
+        Some(self.refusals.remove(at).waiting)
+    }
 }
 
 /// CQ-DEFER: a Related Scenes query held until its begin's own commits are
@@ -824,6 +992,10 @@ enum Phase {
     Suspended {
         ready_generation: u64,
         reason: GraphUnavailable,
+        /// The project whose refused registration suspended the slot (DR-PUBG-5-14
+        /// の R-A)。A later demand from another project asks for this project's
+        /// Graph Index build, not its own. `None` only in a test-built phase.
+        refused_project: Option<String>,
     },
     Quarantined {
         binding: LiveBinding,
@@ -849,6 +1021,11 @@ struct Session {
     thread_id: u64,
     key: GraphKey,
     epoch: u64,
+    /// K32R-2: the `caller_epoch` the current worker was admitted under (set
+    /// where it is created, under the slot lock). A READY worker is reused only
+    /// for a caller of the same epoch: an activation bumps it, so a worker made
+    /// while the profile was unrestricted never answers a restricted caller.
+    worker_caller_epoch: Option<u64>,
     last_demand: Instant,
     commands: SyncSender<Command>,
     join: Option<JoinHandle<()>>,
@@ -886,6 +1063,29 @@ fn note_held_unserved(slot: &mut SlotState, result: &GraphBegin, project_id: &st
     waiting.push(project_id.to_owned());
 }
 
+/// DR-PUBG-5-21: a demand answered `registration-unavailable` (from the
+/// Suspended slot, or from the failure backoff) waits for the refused project's
+/// Graph Index build. `refused` is the Suspended slot's refused project when it
+/// answered. Under the slot lock, in both begin entries.
+fn note_registration_wait(
+    slot: &mut SlotState,
+    result: &GraphBegin,
+    project_id: &str,
+    refused: Option<&str>,
+    edge_epoch: u64,
+) {
+    if !matches!(
+        result,
+        GraphBegin::Unavailable(GraphUnavailable::RegistrationUnavailable)
+    ) {
+        return;
+    }
+    match refused {
+        Some(refused) => slot.watch_refusal(refused, project_id, edge_epoch),
+        None => slot.watch_latest_refusal(project_id, edge_epoch),
+    }
+}
+
 /// The other key a READY session is asked to rekey to, and when that demand
 /// arrived. The rekeyed session's idle window runs from that demand.
 struct PendingRekey {
@@ -921,7 +1121,8 @@ struct TicketShared {
     edge_epoch: u64,
     begun_at: Instant,
     owner: Arc<Shared>,
-    /// CP-4 S1a: the stamp attempt and the Busy cause of this ticket.
+    /// CP-4 S1a: the Busy cause of this ticket (DR-DBC-7 adds the worker's
+    /// drift check and the requalification result).
     #[cfg(feature = "nir1-graph-eval")]
     eval_notes: crate::nir1_graph_eval::TicketNotes,
     /// CQ-DEFER: the ticket of a held Related Scenes query. Its cancellation
@@ -1232,8 +1433,8 @@ impl Nir1GraphProductOwner {
             return shared.count_unavailable(GraphUnavailable::NotActivated);
         }
         let status = state.profile_egress.status();
-        if !(status.restricted && status.in_flight_stopped) {
-            return shared.count_unavailable(GraphUnavailable::ProfileNotRestricted);
+        if let Some(reason) = profile_gate(&status) {
+            return shared.count_unavailable(reason);
         }
         let Some(factory) = shared.worker.get().cloned() else {
             return shared.count_unavailable(GraphUnavailable::WorkerUnavailable);
@@ -1365,6 +1566,18 @@ impl Nir1GraphProductOwner {
         true
     }
 
+    /// DR-PUBG-5-14: `AppState` connects the Graph Index demand to the
+    /// EventQueue once. A second call is refused; under test it replaces the
+    /// connection.
+    pub(crate) fn set_graph_index_demand_notifier(&self, notifier: GraphIndexDemandNotifier) -> bool {
+        let mut slot = lock(&self.shared.index_demand_notifier);
+        if slot.is_some() && !cfg!(test) {
+            return false;
+        }
+        *slot = Some(notifier);
+        true
+    }
+
     /// CP2a-D47: the maintenance cycle calls this after each work it completed
     /// (after the work's final transaction committed). Only the Graph Index
     /// build leaves Suspended; the process worker stays gated until PUB-G.
@@ -1374,14 +1587,27 @@ impl Nir1GraphProductOwner {
     ) {
         if item.run_kind == grimodex_db::narrative_extraction::AutomaticRunKind::Nir1GraphIndexBuild
         {
-            self.resume_after_graph_index_change();
+            self.resume_after_graph_index_publish(Some(&item.project_id));
         }
     }
 
     /// Called after B's publish (B-ROUTE/CP-3a, CP2a-D47) to leave Suspended.
     pub(crate) fn resume_after_graph_index_change(&self) {
+        self.resume_after_graph_index_publish(None);
+    }
+
+    /// B's publish. Leaves Suspended (CP2a-D47). DR-PUBG-5-21: when `published`
+    /// is a project whose registration was refused, the refusal can be fixed
+    /// now: its failure wait is lifted once (the failure count stays, as in
+    /// D49) and the projects that waited on it are announced `graph-ready`,
+    /// once each, after the slot lock is released. A refusal of another epoch,
+    /// or a closed or quarantined owner, announces nothing.
+    fn resume_after_graph_index_publish(&self, published: Option<&str>) {
         let resumed_failures = resumed_failure_count(&self.shared.config());
         let mut slot = lock(&self.shared.slot);
+        // Read before the Suspended resume below clears the reason.
+        let registration_failure =
+            slot.rebuild.last_failure == Some(GraphUnavailable::RegistrationUnavailable);
         // CP2a-D48: under the slot lock, so `SessionGuard::drop` orders itself
         // before or after this publish.
         self.shared.graph_index_change.fetch_add(1, Ordering::SeqCst);
@@ -1390,6 +1616,26 @@ impl Nir1GraphProductOwner {
             // CP2a-D49: one retry against the new index, not five.
             slot.rebuild.consecutive_failures = resumed_failures;
             slot.rebuild.last_failure = None;
+        }
+        let mut announce = Vec::new();
+        if let Some(project) = published {
+            let edge_epoch = self.shared.edge_epoch.load(Ordering::SeqCst);
+            let waiting = slot.take_refusal(project, edge_epoch);
+            let live = !self.shared.closed.load(Ordering::SeqCst)
+                && !matches!(slot.phase, Phase::Quarantined { .. } | Phase::Closed);
+            if let (Some(waiting), true) = (waiting, live) {
+                // The next demand may start a session at once (the rebuild
+                // minimum interval still applies), not after the failure wait.
+                // Only a wait that a refusal set is lifted.
+                if registration_failure {
+                    slot.rebuild.last_failure_at = None;
+                }
+                announce = waiting;
+            }
+        }
+        drop(slot);
+        for project in announce {
+            self.shared.notify_ready(&project);
         }
     }
 
@@ -1498,10 +1744,6 @@ impl Nir1GraphProductOwner {
             prepares_started: read(&d.prepares_started),
             prepares_ready: read(&d.prepares_ready),
             prepare_failures: read(&d.prepare_failures),
-            stamp0_missing: read(&d.stamp0_missing),
-            stamp_fresh: read(&d.stamp_fresh),
-            stamp_stale: read(&d.stamp_stale),
-            stamp_unavailable: read(&d.stamp_unavailable),
             drift_at_query: read(&d.drift_at_query),
             retired_idle: read(&d.retired_idle),
             retired_edge: read(&d.retired_edge),
@@ -1554,6 +1796,11 @@ impl Nir1GraphProductOwner {
     #[cfg(test)]
     pub(crate) fn set_admit_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         *lock(&self.shared.admit_hook_for_test) = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_query_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.query_hook_for_test) = Some(hook);
     }
 
     #[cfg(test)]
@@ -1652,6 +1899,28 @@ impl GraphTicketWaiter {
         self.shared.begun_at
     }
 
+    /// Another waiter on the same ticket (the requalification hook in
+    /// `related_scenes/graph.rs` keeps one: the await plan moves away).
+    pub(crate) fn clone_for_eval(&self) -> GraphTicketWaiter {
+        GraphTicketWaiter {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    pub(crate) fn note_requalification_for_eval(
+        &self,
+        result: &'static str,
+        reason: Option<GraphUnavailable>,
+    ) {
+        self.shared
+            .eval_notes
+            .requalification(result, reason.map(GraphUnavailable::as_str));
+    }
+
+    pub(crate) fn note_requalification_returned_for_eval(&self) {
+        self.shared.eval_notes.requalification_returned();
+    }
+
     pub(crate) fn notes_for_eval(&self) -> crate::nir1_graph_eval::TicketNoteSnapshot {
         self.shared.eval_notes.snapshot()
     }
@@ -1703,6 +1972,8 @@ impl Shared {
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let project_id = demand.key.project_id.clone();
+        let demand_epoch = demand.epoch;
+        let mut index_demand: Option<String> = None;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1712,8 +1983,17 @@ impl Shared {
             Phase::Suspended {
                 ready_generation,
                 reason,
+                refused_project,
             } => {
                 if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
+                    // DR-PUBG-5-14: a Suspended slot's only exit is B's
+                    // publish, so this demand asks for B (after the lock). The
+                    // slot holds no project of its own: it is the refused
+                    // project's B that can fix it, not the demanding one's.
+                    if reason == GraphUnavailable::RegistrationUnavailable {
+                        index_demand =
+                            Some(refused_project.unwrap_or_else(|| project_id.clone()));
+                    }
                     self.unserved(reason, &demand.key.project_id)
                 } else {
                     slot.phase = Phase::Empty;
@@ -1752,8 +2032,18 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_registration_wait(
+            &mut slot,
+            &result,
+            &project_id,
+            index_demand.as_deref(),
+            demand_epoch,
+        );
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
+        if let Some(project) = index_demand {
+            self.request_index_build(&project);
+        }
         (result, finished)
     }
 
@@ -1839,6 +2129,7 @@ impl Shared {
                     thread_id,
                     key,
                     epoch,
+                    worker_caller_epoch: None,
                     last_demand: now,
                     commands,
                     join: Some(join),
@@ -1869,6 +2160,8 @@ impl Shared {
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let limit = *lock(&self.deferred_limit);
         let project_id = demand.key.project_id.clone();
+        let demand_epoch = demand.epoch;
+        let mut index_demand: Option<String> = None;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1878,8 +2171,14 @@ impl Shared {
             Phase::Suspended {
                 ready_generation,
                 reason,
+                refused_project,
             } => {
                 if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
+                    // DR-PUBG-5-14: as in `demand`.
+                    if reason == GraphUnavailable::RegistrationUnavailable {
+                        index_demand =
+                            Some(refused_project.unwrap_or_else(|| project_id.clone()));
+                    }
                     self.unserved(reason, &demand.key.project_id)
                 } else {
                     slot.phase = Phase::Empty;
@@ -1922,8 +2221,18 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_registration_wait(
+            &mut slot,
+            &result,
+            &project_id,
+            index_demand.as_deref(),
+            demand_epoch,
+        );
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
+        if let Some(project) = index_demand {
+            self.request_index_build(&project);
+        }
         (result, finished)
     }
 
@@ -2045,6 +2354,21 @@ impl Shared {
                 crate::nir1_graph_eval::note_busy_cause("edge-before-query");
                 return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
             }
+            if session.worker_caller_epoch != Some(demand.cache_key.caller_epoch) {
+                // K32R-2: the worker was made under another caller_epoch (an
+                // activation came after it). Retire it unqueried and rebuild
+                // through the rekey path (the same key, a cold worker). The
+                // answer is `warming` (the demand is announced at READY), not
+                // `busy`: the Busy answers and their cause hooks are a closed,
+                // pinned set (K32R-5).
+                session.pending_rekey = Some(PendingRekey {
+                    key: demand.key.clone(),
+                    demand_at: demand.now,
+                });
+                let _ = session.commands.try_send(Command::Retire);
+                slot.phase = Phase::Retiring;
+                return self.unserved(GraphUnavailable::Warming, &demand.key.project_id);
+            }
             session.last_demand = demand.now;
             let cache_key = demand.cache_key;
             let ticket = TicketShared::new(Arc::clone(self), cache_key, demand.epoch, false);
@@ -2118,6 +2442,10 @@ struct SessionGuard {
     /// CQ-DEFER: filled by the Drop with the held session's waiting projects;
     /// `session_main` announces them once the slot shows the session's end.
     announce_after: Rc<RefCell<Vec<String>>>,
+    /// DR-PUBG-5-21: projects whose refusal ended after B had already published
+    /// during the prepare; `session_main` announces them (unconditionally, once)
+    /// when the slot shows the session's end.
+    refusal_announce: Rc<RefCell<Vec<String>>>,
 }
 
 impl Drop for SessionGuard {
@@ -2208,6 +2536,7 @@ impl Drop for SessionGuard {
 fn session_main(context: SessionContext) {
     let shared = Arc::clone(&context.shared);
     let announce_after = Rc::new(RefCell::new(Vec::new()));
+    let refusal_announce = Rc::new(RefCell::new(Vec::new()));
     {
         let mut guard = SessionGuard {
             shared: Arc::clone(&shared),
@@ -2219,6 +2548,7 @@ fn session_main(context: SessionContext) {
             quarantined: false,
             index_change_at_prepare: None,
             announce_after: Rc::clone(&announce_after),
+            refusal_announce: Rc::clone(&refusal_announce),
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| run_session(&mut guard, &context)));
         if outcome.is_err() {
@@ -2242,6 +2572,12 @@ fn session_main(context: SessionContext) {
         if shared.take_unserved(&project_id) {
             shared.notify_ready(&project_id);
         }
+    }
+    // DR-PUBG-5-21: B published while the prepare that was then refused ran, so
+    // no later publish will announce it. Now that the slot is free, once.
+    let refused = std::mem::take(&mut *refusal_announce.borrow_mut());
+    for project_id in refused {
+        shared.notify_ready(&project_id);
     }
 }
 
@@ -2286,7 +2622,7 @@ fn run_session(guard: &mut SessionGuard, context: &SessionContext) {
 enum Built {
     /// The worker is prepared on this thread and not yet queried; the slot is
     /// not yet published as READY.
-    Ready(Option<CQueryFreshnessStamp>),
+    Ready,
     /// The thread must exit; the reason is what a held query is told.
     Exit(GraphUnavailable),
 }
@@ -2298,25 +2634,26 @@ fn build_and_serve(
     epoch: &mut u64,
 ) -> Next {
     let shared = Arc::clone(&context.shared);
-    let stamp = match build_worker(guard, context, key, *epoch, None) {
-        Built::Ready(stamp) => stamp,
+    match build_worker(guard, context, key, *epoch, None) {
+        Built::Ready => {}
         Built::Exit(_) => return Next::Exit,
-    };
+    }
     {
         let mut slot = lock(&shared.slot);
         slot.phase = Phase::Ready;
         slot.rebuild.consecutive_failures = 0;
         slot.rebuild.last_failure = None;
+        slot.drop_refusal(&key.project_id);
     }
     bump(&shared.diagnostics.prepares_ready);
     shared.signal_ready();
     if shared.take_unserved(&key.project_id) {
         shared.notify_ready(&key.project_id);
     }
-    serve_until_retired(guard, context, key, epoch, stamp)
+    serve_until_retired(guard, context, key, epoch)
 }
 
-/// The rebuild window, the admission (with the S0 stamp), the worker's
+/// The rebuild window, the admission, the worker's
 /// creation and its prepare, with the failure ledger. Ends at READY, which the
 /// caller publishes (or not) itself.
 fn build_worker(
@@ -2335,7 +2672,7 @@ fn build_worker(
         });
     }
     // LP-GATE (DR-CQD-GATE-3, 4): a held query's window opens here, before the
-    // S0 stamp, once no Freshness cycle is in flight. The window then follows
+    // admission, once no Freshness cycle is in flight. The window then follows
     // the answer to its join. Past the wait budget the query goes on without
     // one, as before the gate; a cancellation or an edge is caught below.
     if let Some(ticket) = held {
@@ -2346,9 +2683,16 @@ fn build_worker(
             ticket.attach_window(window);
         }
     }
-    let Some((snapshot, core, stamp)) = admit(context, key, epoch) else {
+    let Some((snapshot, core, caller_epoch)) = admit(context, key, epoch) else {
         return Built::Exit(GraphUnavailable::Invalidated);
     };
+    // DR-PUBG-5-18 (追補 4): the generation a refusal is recorded under is read
+    // here, while this thread holds the participant. A switch needs the
+    // participant gone before it can publish its Ready, so it is read before
+    // any later Ready. The real worker releases the participant inside
+    // `prepare`, so reading at the failure (even before `retire_current`) can
+    // already be after a whole switch.
+    let admitted_generation = shared.ready_generation.load(Ordering::SeqCst);
     // CQ-DEFER: a held query cancelled meanwhile creates no worker.
     if held_cancelled(held) {
         return Built::Exit(GraphUnavailable::Cancelled);
@@ -2358,6 +2702,18 @@ fn build_worker(
         binding: key.binding.clone(),
         core,
     }));
+    // K32R-2: the epoch read at the admission above (never newer than the
+    // worker), so a later activation always differs from it.
+    {
+        let mut slot = lock(&shared.slot);
+        if let Some(session) = slot
+            .session
+            .as_mut()
+            .filter(|session| session.thread_id == context.thread_id)
+        {
+            session.worker_caller_epoch = Some(caller_epoch);
+        }
+    }
     let prepare_started = Instant::now();
     bump(&shared.diagnostics.prepares_started);
     guard.index_change_at_prepare = Some(shared.graph_index_change.load(Ordering::SeqCst));
@@ -2390,16 +2746,51 @@ fn build_worker(
                     slot.rebuild.consecutive_failures.saturating_add(1);
                 slot.rebuild.last_failure_at = Some(Instant::now());
                 slot.rebuild.last_failure = Some(reason);
+                // DR-PUBG-5-21: the refused project, and the demand that met
+                // the refusal, wait for its Graph Index build's publish. Under
+                // the same slot lock as the ledger, and before the demand
+                // below can wake B. A refusal of an old epoch is not recorded.
+                //
+                // If B published while this prepare ran (the same comparison as
+                // D48), the refusal judged an index that is gone and no later
+                // publish will announce it: no row is made. The failure wait is
+                // lifted once (the count stays) and the project is announced
+                // once, when the session has ended.
+                if reason == GraphUnavailable::RegistrationUnavailable
+                    && !edge_or_closed(&shared, epoch)
+                {
+                    let published_during_prepare = guard
+                        .index_change_at_prepare
+                        .is_some_and(|seen| seen != shared.graph_index_change.load(Ordering::SeqCst));
+                    if published_during_prepare {
+                        slot.rebuild.last_failure_at = None;
+                        guard.refusal_announce.borrow_mut().push(key.project_id.clone());
+                    } else {
+                        slot.watch_refusal(&key.project_id, &key.project_id, epoch);
+                    }
+                }
                 let failures = slot.rebuild.consecutive_failures;
                 drop(slot);
                 guard.exit = Some(if failures >= config.failures_before_suspend {
                     Phase::Suspended {
-                        ready_generation: shared.ready_generation.load(Ordering::SeqCst),
+                        ready_generation: admitted_generation,
                         reason,
+                        refused_project: Some(key.project_id.clone()),
                     }
                 } else {
                     Phase::Empty
                 });
+                // DR-PUBG-5-14: the registration was refused, which B may be
+                // able to fix. No lock of this owner is held here. A refusal
+                // that ends after a lifecycle edge (a workspace switch) or a
+                // close belongs to the old workspace, so it asks for nothing:
+                // the demand event carries no binding, and a project of the
+                // same name in the new workspace must not be woken by it.
+                if reason == GraphUnavailable::RegistrationUnavailable
+                    && !edge_or_closed(&shared, epoch)
+                {
+                    shared.request_index_build(&key.project_id);
+                }
             }
             return Built::Exit(reason);
         }
@@ -2410,7 +2801,7 @@ fn build_worker(
         retire_current(guard);
         return Built::Exit(GraphUnavailable::Invalidated);
     }
-    Built::Ready(stamp)
+    Built::Ready
 }
 
 /// What the owner thread takes out of the slot once the begin released it.
@@ -2444,15 +2835,15 @@ fn run_deferred(
     // Until it is answered the held query is this thread's in-flight ticket,
     // so a panic settles it too.
     guard.in_flight = Some(Arc::clone(&held.ticket));
-    let stamp = match build_worker(guard, context, key, *epoch, Some(&held.ticket)) {
-        Built::Ready(stamp) => stamp,
+    match build_worker(guard, context, key, *epoch, Some(&held.ticket)) {
+        Built::Ready => {}
         Built::Exit(reason) => {
             if let Some(ticket) = guard.in_flight.take() {
                 ticket.deliver(GraphTicketOutcome::Unavailable(reason));
             }
             return;
         }
-    };
+    }
     if held.ticket.cancel.load(Ordering::SeqCst) {
         // Settled as cancelled already: nothing is queried.
         guard.in_flight = None;
@@ -2464,13 +2855,13 @@ fn run_deferred(
         slot.phase = Phase::InUse;
         slot.rebuild.consecutive_failures = 0;
         slot.rebuild.last_failure = None;
+        slot.drop_refusal(&key.project_id);
     }
     bump(&shared.diagnostics.prepares_ready);
     let _ = serve_query(
         guard,
         context,
         *epoch,
-        stamp.as_ref(),
         held.request,
         held.ticket,
         true,
@@ -2647,13 +3038,13 @@ fn rekey(shared: &Shared, guard: &mut SessionGuard, key: &mut GraphKey, epoch: &
     }
 }
 
-/// Checks the admission conditions and takes the S0 freshness stamp. The
+/// Checks the admission conditions. The
 /// workspace pin is kept only for prepare; the Native lock is never held here.
 fn admit(
     context: &SessionContext,
     key: &GraphKey,
     epoch: u64,
-) -> Option<(ActiveWorkspaceSnapshot, WorkspaceLifecycleCore, Option<CQueryFreshnessStamp>)> {
+) -> Option<(ActiveWorkspaceSnapshot, WorkspaceLifecycleCore, u64)> {
     let shared = &context.shared;
     if edge_or_closed(shared, epoch) {
         return None;
@@ -2667,7 +3058,7 @@ fn admit(
     }
     let state = context.state.upgrade()?;
     let status = state.profile_egress.status();
-    if !(status.restricted && status.in_flight_stopped) {
+    if profile_gate(&status).is_some() {
         return None;
     }
     let snapshot = active_workspace_snapshot(&state.ws).ok()?;
@@ -2678,16 +3069,12 @@ fn admit(
     {
         return None;
     }
-    let stamp = try_read_c_query_freshness_stamp(snapshot.db().db());
-    if stamp.is_none() {
-        bump(&shared.diagnostics.stamp0_missing);
-    }
     let core = state.ws.lifecycle_core();
     drop(state);
     if edge_or_closed(shared, epoch) {
         return None;
     }
-    Some((snapshot, core, stamp))
+    Some((snapshot, core, status.caller_epoch))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2704,7 +3091,6 @@ fn serve_until_retired(
     context: &SessionContext,
     key: &mut GraphKey,
     epoch: &mut u64,
-    stamp0: Option<CQueryFreshnessStamp>,
 ) -> Next {
     let shared = Arc::clone(&context.shared);
     loop {
@@ -2764,7 +3150,6 @@ fn serve_until_retired(
                     guard,
                     context,
                     *epoch,
-                    stamp0.as_ref(),
                     request,
                     ticket,
                     false,
@@ -2815,7 +3200,6 @@ fn serve_query(
     guard: &mut SessionGuard,
     context: &SessionContext,
     epoch: u64,
-    stamp0: Option<&CQueryFreshnessStamp>,
     request: Nir1GraphRequest,
     ticket: Arc<TicketShared>,
     held: bool,
@@ -2836,32 +3220,43 @@ fn serve_query(
         }
         return ServeNext::Ready;
     }
-    #[cfg(feature = "nir1-graph-eval")]
-    let eval_stamp_attempted_at = Instant::now();
-    let stamp1 = read_stamp_for_query(context, &guard.binding);
-    #[cfg(feature = "nir1-graph-eval")]
-    ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());
-    match (stamp0, stamp1.as_ref()) {
-        (Some(before), Some(after)) if before != after => {
-            bump(&shared.diagnostics.stamp_stale);
-            ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale));
-            guard.in_flight = None;
-            retire_current(guard);
-            if guard.quarantined {
-                return ServeNext::Exit;
-            }
-            return ServeNext::Rebuild;
+    // K32R-2: a worker made while the profile was unrestricted can outlive the
+    // restricted barrier. Look at the gate once more where the query starts:
+    // while it is closed nothing is queried and the worker is retired (never
+    // returned to READY). The worker's input holds nothing profile-derived and
+    // it reads the local database only; what is handed out is decided by
+    // `gate_reason` and `PublicationGuard::finish`. The profile mutex is taken
+    // here exactly as in `admit` (owner thread, no Graph lock held).
+    #[cfg(test)]
+    {
+        let hook = lock(&shared.query_hook_for_test).clone();
+        if let Some(hook) = hook {
+            hook();
         }
-        (Some(_), Some(_)) => bump(&shared.diagnostics.stamp_fresh),
-        _ => bump(&shared.diagnostics.stamp_unavailable),
     }
-    if ticket.cancel.load(Ordering::SeqCst) {
-        ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Cancelled));
+    // The same read also compares the caller_epoch the worker was admitted
+    // under: an activation after it retires the worker unqueried (the slot lock
+    // is taken after the profile mutex is released, never nested).
+    let status = context
+        .state
+        .upgrade()
+        .map(|state| state.profile_egress.status());
+    let worker_epoch = lock(&shared.slot)
+        .session
+        .as_ref()
+        .filter(|session| session.thread_id == context.thread_id)
+        .and_then(|session| session.worker_caller_epoch);
+    let closed = match status {
+        Some(status) => profile_gate(&status).or_else(|| {
+            (worker_epoch != Some(status.caller_epoch)).then_some(GraphUnavailable::Invalidated)
+        }),
+        None => Some(GraphUnavailable::Invalidated),
+    };
+    if let Some(reason) = closed {
+        ticket.deliver(GraphTicketOutcome::Unavailable(reason));
         guard.in_flight = None;
-        if !held {
-            return_to_ready(shared);
-        }
-        return ServeNext::Ready;
+        retire_current(guard);
+        return ServeNext::Exit;
     }
     let Some(worker) = guard.worker.as_mut() else {
         ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Failed));
@@ -2869,6 +3264,8 @@ fn serve_query(
         return ServeNext::Exit;
     };
     let result = worker.query(&request, &ticket.cancel);
+    #[cfg(feature = "nir1-graph-eval")]
+    ticket.eval_notes.worker_check(result.as_ref().err().map(classify_c_query_failure));
     let worker = guard.worker.take();
     let quarantined = worker.as_ref().is_some_and(|worker| worker.quarantined());
     let retirement = worker.map(|worker| worker.retire());
@@ -2924,15 +3321,6 @@ fn serve_query(
 
 fn return_to_ready(shared: &Shared) {
     lock(&shared.slot).phase = Phase::Ready;
-}
-
-fn read_stamp_for_query(context: &SessionContext, binding: &LiveBinding) -> Option<CQueryFreshnessStamp> {
-    let state = context.state.upgrade()?;
-    let db = active_database(&state.ws).ok()?;
-    if db.identity() != binding.authority_instance {
-        return None;
-    }
-    try_read_c_query_freshness_stamp(db.db())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

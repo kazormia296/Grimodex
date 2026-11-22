@@ -1,3 +1,7 @@
+import {
+  getAgentSettingEntry,
+  validateAgentSettingValue,
+} from "@/../electron/shared/agentSettingCatalog";
 import * as api from "./api";
 import { KEY_SCOPE } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
@@ -10,6 +14,9 @@ const CURRENT_VERSION = 1;
  * Migrate app_settings (workspace-scoped DB) to the new split stores:
  * - Global-scope keys → GlobalSettings.userPreferences (global-settings.json)
  * - Project-scope keys → project_settings table (idempotent: skip if already present)
+ *
+ * Catalog keys (agent-proposable settings) whose legacy value fails the catalog validation are
+ * dropped so the default applies and the migration still completes.
  *
  * Reads migration version from app_settings["meta.settingsSchemaVersion"].
  * Safe to call multiple times (idempotent after version bump).
@@ -31,6 +38,15 @@ export async function migrateAppSettingsToScopedStores(): Promise<void> {
     if (key.startsWith("meta.")) continue;
     const scope = KEY_SCOPE[key];
     if (scope === "global") {
+      // main の save_global_settings は目録のキーを UI と同じ範囲・step・型で再検証し、通らない値が
+      // 1 つでもあると保存全体を拒否する。旧版が許した範囲外などの値は落として（既定に任せて）続ける。
+      if (
+        getAgentSettingEntry(key) &&
+        !validateAgentSettingValue(key, value, { fontFamilies: "shape-only" })
+          .ok
+      ) {
+        continue;
+      }
       globalUpdates[key] = value;
     } else if (scope === "project") {
       projectUpdates[key] = value;

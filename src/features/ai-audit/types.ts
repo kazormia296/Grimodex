@@ -1,11 +1,24 @@
-export type AiAuditJsonPrimitive = string | number | boolean | null;
-export type AiAuditJsonValue =
-  | AiAuditJsonPrimitive
-  | AiAuditJsonObject
-  | readonly AiAuditJsonValue[];
-export interface AiAuditJsonObject {
-  readonly [key: string]: AiAuditJsonValue;
-}
+import type {
+  AiAuditCaptureState,
+  AiAuditEventType,
+  AiAuditJsonObject,
+  AiAuditJsonValue,
+} from "@/../electron/shared/aiAuditEvents";
+
+// The event shapes are shared with Electron main's agent audit sink
+// (`electron/shared/aiAuditEvents.ts`, MP-3b); they are re-exported here so
+// that every importer of this file is unchanged.
+export {
+  AI_AUDIT_EVENT_TYPES,
+  type AiAuditCaptureState,
+  type AiAuditErrorSnapshot,
+  type AiAuditEventInput,
+  type AiAuditEventType,
+  type AiAuditJsonObject,
+  type AiAuditJsonPrimitive,
+  type AiAuditJsonValue,
+  type AiAuditRedactionRecord,
+} from "@/../electron/shared/aiAuditEvents";
 
 /** Transport credentials are not model-visible request-body data. */
 interface TransportSecretExclusions {
@@ -54,46 +67,6 @@ export type AiAuditRequestSnapshot = AiAuditRequestCommon &
       }
   );
 
-export const AI_AUDIT_EVENT_TYPES = [
-  "execution.started",
-  "request.prepared",
-  "request.dispatched",
-  "transport.attempt.started",
-  "transport.attempt.finished",
-  "response.partial",
-  "response.completed",
-  "execution.succeeded",
-  "execution.failed",
-  "execution.cancelled",
-  "execution.skipped",
-  "execution.cache_hit",
-  "execution.retrying",
-  "execution.fallback",
-] as const;
-
-export type AiAuditEventType = (typeof AI_AUDIT_EVENT_TYPES)[number];
-/** Completeness is evaluated at the event's declared Grimodex boundary. */
-export type AiAuditCaptureState =
-  | "complete"
-  | "partial"
-  | "redacted"
-  | "truncated"
-  | "legacy_missing"
-  | "unobservable_provider";
-
-export interface AiAuditEventInput {
-  readonly eventId: string;
-  readonly executionId: string;
-  readonly operationId: string;
-  readonly parentExecutionId: string | null;
-  readonly pathId: string;
-  readonly eventType: AiAuditEventType;
-  readonly timestamp: number;
-  readonly payload: AiAuditJsonObject & {
-    readonly captureState: AiAuditCaptureState;
-  };
-}
-
 export interface AiAuditExecutionHandle {
   readonly projectId: string | null;
   readonly expectedWorkspacePath: string;
@@ -121,22 +94,6 @@ export interface BeginAiAuditExecutionInput {
   readonly captureState?: AiAuditCaptureState;
   readonly limitations?: readonly string[];
   readonly timestamp?: number;
-}
-
-export interface AiAuditRedactionRecord extends AiAuditJsonObject {
-  readonly path: string;
-  readonly category: "credential";
-  readonly ruleId: string;
-  readonly originalSha256: string;
-  readonly originalByteLength: number;
-  readonly placeholder: "[REDACTED:credential]";
-  readonly reversible: false;
-}
-
-export interface AiAuditErrorSnapshot {
-  readonly name: string;
-  readonly message: string;
-  readonly code?: string;
 }
 
 export interface AiAuditAppendResult {

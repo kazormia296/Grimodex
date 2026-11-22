@@ -2,9 +2,10 @@
 //! body.
 //!
 //! The fixture is the CB-2 writer tests' Ready workspace over a file-backed,
-//! seeded database. Declarations are placed with the `#[cfg(test)]` setter
-//! (bound to the Scene's current values, so a test can change A1 first and
-//! declare afterwards) or, once, with the production writer.
+//! seeded database. K2/5: the reader needs no declaration, so the Scenes of the
+//! fixture are eligible as they are. A declaration is placed (with the
+//! `#[cfg(test)]` setter) only by the tests that show that it, the cells that
+//! hold it, and a quarantine of its writer are not read.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,12 +30,12 @@ use crate::narrative_extraction::scene_body_declaration::test_support::{
     TEST_DECLARED_AT,
 };
 use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
-    body_json, declare, request_for, set_a1, Env, LEGACY_SCENE, NOW, OTHER_PROJECT, OTHER_SCENE,
-    PROJECT, SCENE, SECOND_SCENE,
+    body_json, set_a1, Env, LEGACY_SCENE, NOW, OTHER_SCENE, PROJECT, SCENE, SECOND_SCENE,
 };
 use crate::narrative_extraction::scene_body_declaration::{
     clear_scene_body_declaration_workspace_quarantine_for_test,
     quarantine_scene_body_declaration_workspace_for_test, scene_body_title_digest, CONTENT_READS,
+    SCENE_BODY_TITLE_MAX_BYTES,
 };
 use crate::narrative_extraction::task_leases::with_immediate_transaction;
 use crate::narrative_extraction::{
@@ -126,8 +127,8 @@ pub(super) fn associations(env: &Env, scenes: &[&str]) -> Vec<Nir1GraphSceneAsso
 }
 
 /// A declaration bound to the Scene as it is now, with the workspace values
-/// of the Ready binding. The body's digests are placeholders: the scan does
-/// not read the body.
+/// of the Ready binding. K2/5: no reader reads it; it is placed only to show
+/// that.
 pub(super) fn place(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
     place_in(env, PROJECT, scene)
 }
@@ -175,12 +176,6 @@ pub(super) fn place_in(env: &Env, project: &str, scene: &str) -> NarrativeSceneB
     })
 }
 
-pub(super) fn place_all(env: &Env, scenes: &[&str]) {
-    for scene in scenes {
-        place(env, scene);
-    }
-}
-
 pub(super) fn workspace(env: &Env) -> GraphDisclosureWorkspace {
     GraphDisclosureWorkspace::from_snapshot(&env.snapshot())
 }
@@ -206,9 +201,10 @@ pub(super) fn query(env: &Env) -> GraphDisclosureQuery {
 /// (for example after a writer changed the reading authority) gives a query
 /// without values, with which the reader adds nothing.
 pub(super) fn query_or_unavailable(env: &Env) -> GraphDisclosureQuery {
-    let read = env.db().db().with_read_transaction(|conn| {
-        read_retrieval_query_context(conn, PROJECT, QUERY)
-    });
+    let read = env
+        .db()
+        .db()
+        .with_read_transaction(|conn| read_retrieval_query_context(conn, PROJECT, QUERY));
     match read {
         Ok(RetrievalQueryContextRead::Available(context)) => {
             GraphDisclosureQuery::from_retrieval_query_context(&context)
@@ -398,7 +394,6 @@ pub(super) fn raw_cells(env: &Env, scene: &str, json: SqlValue, token: SqlValue)
 #[test]
 fn the_first_candidate_that_passes_everything_is_adopted_and_the_rest_are_not_read() {
     let env = fixture();
-    place_all(&env, &["b1", "b2", "b3"]);
     let mut path = Path::yes();
     let result = scan(&env, &associations(&env, &["b1", "b2", "b3"]), &mut path);
     assert_eq!(adopted(&result), "b1");
@@ -407,10 +402,20 @@ fn the_first_candidate_that_passes_everything_is_adopted_and_the_rest_are_not_re
 }
 
 #[test]
-fn a_declaration_made_by_the_production_writer_is_accepted() {
+fn a_scene_without_a_declaration_or_a_veto_is_adopted_with_its_title() {
+    // K2/5: no author action is needed. SCENE has a pin and an explicit A1 and
+    // nobody declared it.
     let env = fixture();
     add_pin(&env, SCENE, "2026-10-19T00:00:09Z");
-    declare(&env, request_for(&env, PROJECT, SCENE)).expect("production declaration");
+    let (json_null, token_null): (bool, bool) = env.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT body_declaration_json IS NULL, body_declaration_token IS NULL
+               FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+            [SCENE],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    });
+    assert!(json_null && token_null, "no declaration was made");
     let mut path = Path::yes();
     let result = scan(&env, &associations(&env, &[SCENE]), &mut path);
     assert_eq!(adopted(&result), SCENE);
@@ -419,16 +424,22 @@ fn a_declaration_made_by_the_production_writer_is_accepted() {
     };
     assert_eq!(candidate.title, "One");
     assert_eq!(candidate.association.scene_id, SCENE);
+    assert_eq!(counts(), [("adopted", 1)]);
 }
 
-// ---- A1: the declaration is read from its row -------------------------------
+// ---- K2/5: the declaration is not read ----------------------------------------
 
 #[test]
-fn a1_no_declaration_or_a_broken_one_is_not_appended() {
+fn a1_whatever_the_declaration_cells_hold_the_scan_does_not_read_them() {
     let env = fixture();
     place(&env, "b1");
     let (json, token) = stored_declaration(&env, "b1");
     let cases: Vec<(&str, SqlValue, SqlValue)> = vec![
+        (
+            "a valid declaration",
+            SqlValue::Text(json.clone()),
+            SqlValue::Text(token.clone()),
+        ),
         ("both NULL", SqlValue::Null, SqlValue::Null),
         ("json only", SqlValue::Text(json.clone()), SqlValue::Null),
         ("token only", SqlValue::Null, SqlValue::Text(token.clone())),
@@ -438,11 +449,6 @@ fn a1_no_declaration_or_a_broken_one_is_not_appended() {
                 "narrative-scene-body-declaration/1",
                 "narrative-scene-body-declaration/9",
             )),
-            SqlValue::Text(token.clone()),
-        ),
-        (
-            "unknown field",
-            SqlValue::Text(json.replacen('{', "{\"extra\":1,", 1)),
             SqlValue::Text(token.clone()),
         ),
         (
@@ -466,35 +472,64 @@ fn a1_no_declaration_or_a_broken_one_is_not_appended() {
             SqlValue::Text(token.clone()),
         ),
     ];
+    let case_count = cases.len();
+    CONTENT_READS.with(|reads| reads.set(0));
     for (name, json_cell, token_cell) in cases {
         raw_cells(&env, "b1", json_cell, token_cell);
-        let reads_before = CONTENT_READS.with(std::cell::Cell::get);
+        // The statements of the scan may not even name the two columns.
+        restrict(&env, |action| {
+            matches!(action, AuthAction::Read { table_name, column_name }
+                if *table_name == "narrative_scene_scope_bindings"
+                    && (*column_name == "body_declaration_json"
+                        || *column_name == "body_declaration_token"))
+        });
         let mut path = Path::yes();
         let result = scan(&env, &associations(&env, &["b1"]), &mut path);
-        assert_not_appended(&result);
-        assert!(path.calls.is_empty(), "{name}");
-        if name == "an oversized cell" || name == "not text" {
-            assert_eq!(
-                CONTENT_READS.with(std::cell::Cell::get),
-                reads_before,
-                "{name}: the cell is rejected without being read"
-            );
-        }
+        unrestrict(&env);
+        assert_eq!(adopted(&result), "b1", "{name}");
+        assert_eq!(path.calls, ["b1"], "{name}");
     }
-    let totals: BTreeMap<_, _> = counts().into_iter().collect();
-    assert_eq!(totals.get("declaration-unavailable"), Some(&9));
+    assert_eq!(
+        CONTENT_READS.with(std::cell::Cell::get),
+        0,
+        "the declaration reader is never run"
+    );
+    assert_eq!(counts(), [("adopted", case_count as u64)]);
 }
 
 #[test]
-fn a1_a_feed_event_without_the_columns_is_not_a_declaration() {
+fn a1_a_declaration_bound_to_another_workspace_or_locator_is_not_read() {
     let env = fixture();
-    place(&env, "b1");
-    // The feed still says "declared"; the row says nothing.
-    raw_cells(&env, "b1", SqlValue::Null, SqlValue::Null);
-    let mut path = Path::yes();
-    let result = scan(&env, &associations(&env, &["b1"]), &mut path);
-    assert_not_appended(&result);
-    assert!(path.calls.is_empty());
+    let other = place(&env, "b1");
+    // Re-bind the same Scene to another workspace ID, then to another locator.
+    for (name, change) in [
+        (
+            "workspace id",
+            Box::new(|binding: &mut NarrativeSceneBodyDeclarationBindingV1| {
+                binding.workspace_id = "another-workspace".into()
+            }) as Box<dyn Fn(&mut NarrativeSceneBodyDeclarationBindingV1)>,
+        ),
+        (
+            "locator",
+            Box::new(|binding| binding.canonical_locator_digest = test_digest('9')),
+        ),
+    ] {
+        let mut binding = other.binding.clone();
+        change(&mut binding);
+        env.with_conn_mut(|conn| {
+            with_immediate_transaction(conn, |tx| {
+                let declaration = NarrativeSceneBodyDeclarationV1::new(
+                    Uuid::new_v4().to_string(),
+                    TEST_DECLARED_AT,
+                    binding.clone(),
+                )?;
+                set_scene_body_declaration_for_test(tx, &declaration)
+            })
+        });
+        let mut path = Path::yes();
+        let result = scan(&env, &associations(&env, &["b1"]), &mut path);
+        assert_eq!(adopted(&result), "b1", "{name}");
+    }
 }
 
 // ---- A2: A1 and the reading order -------------------------------------------
@@ -506,7 +541,6 @@ fn a2_a1_that_is_not_explicit_or_not_resolved_is_rejected() {
     add_pin(&env, LEGACY_SCENE, "2026-10-19T00:01:00Z");
     add_scene(&env, "b4", None, false);
     add_pin(&env, "b4", "2026-10-19T00:01:01Z");
-    place_all(&env, &[LEGACY_SCENE, "b4"]);
     for scene in [LEGACY_SCENE, "b4"] {
         let mut path = Path::yes();
         let result = scan(&env, &associations(&env, &[scene]), &mut path);
@@ -520,7 +554,6 @@ fn a2_a1_that_is_not_explicit_or_not_resolved_is_rejected() {
 #[test]
 fn a2_axes_holder_and_audience_must_match_the_query() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     let candidates = associations(&env, &["b1"]);
     let tampered: Tampering<QueryParts> = vec![
         (
@@ -582,7 +615,6 @@ fn a2_a_scene_at_or_after_the_query_is_not_before_it() {
     add_pin(&env, QUERY, "2026-10-19T00:02:00Z");
     add_scene(&env, "z1", None, true);
     add_pin(&env, "z1", "2026-10-19T00:02:01Z");
-    place_all(&env, &[QUERY, "z1"]);
     for scene in [QUERY, "z1"] {
         let mut path = Path::yes();
         let result = scan(&env, &associations(&env, &[scene]), &mut path);
@@ -596,7 +628,6 @@ fn a2_a_scene_at_or_after_the_query_is_not_before_it() {
 #[test]
 fn a2_the_reading_rank_comes_from_one_authority_read_not_from_the_caller() {
     let env = fixture();
-    place(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     for claimed in [0, 1, u64::MAX] {
         let mut context = context(&env);
@@ -621,7 +652,6 @@ fn a2_the_reading_rank_comes_from_one_authority_read_not_from_the_caller() {
 #[test]
 fn a2_a_query_that_names_another_authority_revision_adds_nothing() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     let mut query = query(&env);
     query.parts.as_mut().unwrap().authority_revision_token = "sha256:other".into();
     let mut path = Path::yes();
@@ -675,7 +705,6 @@ fn a2_a_context_that_is_not_a_resolved_reading_query_has_no_values() {
         );
     }
     // ... and the reader then answers without reading the database.
-    place(&env, "b1");
     deny_every_read(&env);
     let mut path = Path::yes();
     let candidates = associations_without_reads("b1");
@@ -749,8 +778,6 @@ fn a3_scenes_that_are_not_live_are_skipped_and_the_scan_goes_on_in_tuple_order()
     add_scene(&env, "b4", Some("fa"), true);
     add_pin(&env, "b4", "2026-10-19T00:03:00Z");
     add_pin(&env, OTHER_SCENE, "2026-10-19T00:03:01Z");
-    place_all(&env, &["b1", "b2", "b3", "b4"]);
-    place_in(&env, OTHER_PROJECT, OTHER_SCENE);
     let stale = associations(&env, &["b1", "b4", OTHER_SCENE, "b2", "b3"]);
     // b1 is archived, b4's folder is archived, and a Scene of another project
     // is not a Scene of this one.
@@ -778,7 +805,6 @@ fn a3_scenes_that_are_not_live_are_skipped_and_the_scan_goes_on_in_tuple_order()
 #[test]
 fn a4_the_slot_is_open_only_without_ir_and_with_fewer_than_eight_raw() {
     let env = fixture();
-    place(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let workspace = workspace(&env);
     let query = query(&env);
@@ -845,7 +871,6 @@ fn a4_the_slot_is_open_only_without_ir_and_with_fewer_than_eight_raw() {
 #[test]
 fn a4_scenes_already_in_the_result_are_not_scanned() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     let existing: BTreeSet<String> = ["b1".to_owned()].into();
     let mut path = Path::yes();
     let result = scan_with(
@@ -871,7 +896,6 @@ fn a4_scenes_already_in_the_result_are_not_scanned() {
 #[test]
 fn a4_only_the_first_eight_associations_are_considered() {
     let env = fixture();
-    place(&env, "b3");
     let filler = associations_without_reads("filler");
     let mut candidates = Vec::new();
     for index in 0..8 {
@@ -889,36 +913,18 @@ fn a4_only_the_first_eight_associations_are_considered() {
     );
 }
 
-// ---- A5: quarantine ----------------------------------------------------------
+// ---- A5: a quarantine of the declaration writer ------------------------------
 
 #[test]
-fn a5_a_quarantined_workspace_discloses_nothing_and_reads_nothing() {
+fn a5_a_quarantine_of_the_declaration_writer_does_not_stop_the_reader() {
+    // The writer's quarantine (a COMMIT of unknown outcome) is about the
+    // declaration; the reader reads no declaration, so it is not asked.
     let env = fixture();
-    place(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let workspace_values = workspace(&env);
     let query = query(&env);
     let snapshot = env.snapshot();
     quarantine_scene_body_declaration_workspace_for_test(&snapshot);
-    assert!(workspace_values.is_quarantined());
-    deny_every_read(&env);
-    let mut path = Path::yes();
-    let result = scan_with(
-        &env,
-        &workspace_values,
-        &query,
-        OPEN,
-        &BTreeSet::new(),
-        &candidates,
-        &mut path,
-        &mut || Ok(()),
-    )
-    .expect("no database read is made");
-    unrestrict(&env);
-    assert_not_appended(&result);
-    assert_eq!(counts(), [("quarantined", 1)]);
-    clear_scene_body_declaration_workspace_quarantine_for_test(&snapshot);
-    assert!(!workspace_values.is_quarantined());
     let mut path = Path::yes();
     let result = scan_with(
         &env,
@@ -931,39 +937,9 @@ fn a5_a_quarantined_workspace_discloses_nothing_and_reads_nothing() {
         &mut || Ok(()),
     )
     .unwrap();
+    clear_scene_body_declaration_workspace_quarantine_for_test(&snapshot);
     assert_eq!(adopted(&result), "b1");
-}
-
-#[test]
-fn a5_a_quarantine_that_begins_during_the_scan_stops_it_before_adoption() {
-    let env = fixture();
-    place_all(&env, &["b1", "b2"]);
-    let snapshot = env.snapshot();
-    let mut calls = 0;
-    let mut path = Path::yes();
-    let result = scan_with(
-        &env,
-        &workspace(&env),
-        &query(&env),
-        OPEN,
-        &BTreeSet::new(),
-        &associations(&env, &["b1", "b2"]),
-        &mut path,
-        &mut || {
-            calls += 1;
-            if calls == 3 {
-                quarantine_scene_body_declaration_workspace_for_test(&snapshot);
-            }
-            Ok(())
-        },
-    )
-    .unwrap();
-    clear_scene_body_declaration_workspace_quarantine_for_test(&snapshot);
-    assert_not_appended(&result);
-    assert!(path.calls.is_empty(), "nothing is asked of the path");
-    let totals: BTreeMap<_, _> = counts().into_iter().collect();
-    assert_eq!(totals.get("quarantined"), Some(&1), "{totals:?}");
-    assert_eq!(totals.get("adopted"), None);
+    assert_eq!(counts(), [("adopted", 1)]);
 }
 
 // ---- A6: the workspace values -------------------------------------------------
@@ -971,16 +947,11 @@ fn a5_a_quarantine_that_begins_during_the_scan_stops_it_before_adoption() {
 #[test]
 fn a6_a_workspace_without_a_canonical_locator_reads_nothing_and_adds_nothing() {
     let env = fixture();
-    place(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let query = query(&env);
     let unlocated = Env::without_durable_identity();
     let workspace_values = GraphDisclosureWorkspace::from_snapshot(&unlocated.snapshot());
     assert!(workspace_values.parts().is_none());
-    assert!(
-        workspace_values.is_quarantined(),
-        "nothing may be disclosed"
-    );
     deny_every_read(&env);
     let mut path = Path::yes();
     let result = scan_with(
@@ -997,42 +968,6 @@ fn a6_a_workspace_without_a_canonical_locator_reads_nothing_and_adds_nothing() {
     unrestrict(&env);
     assert_not_appended(&result);
     assert_eq!(counts(), [("workspace-unavailable", 1)]);
-}
-
-#[test]
-fn a6_a_declaration_bound_to_another_workspace_or_locator_does_not_hold() {
-    let env = fixture();
-    let other = place(&env, "b1");
-    // Re-bind the same Scene to another workspace ID, then to another locator.
-    for (name, change) in [
-        (
-            "workspace id",
-            Box::new(|binding: &mut NarrativeSceneBodyDeclarationBindingV1| {
-                binding.workspace_id = "another-workspace".into()
-            }) as Box<dyn Fn(&mut NarrativeSceneBodyDeclarationBindingV1)>,
-        ),
-        (
-            "locator",
-            Box::new(|binding| binding.canonical_locator_digest = test_digest('9')),
-        ),
-    ] {
-        let mut binding = other.binding.clone();
-        change(&mut binding);
-        env.with_conn_mut(|conn| {
-            with_immediate_transaction(conn, |tx| {
-                let declaration = NarrativeSceneBodyDeclarationV1::new(
-                    Uuid::new_v4().to_string(),
-                    TEST_DECLARED_AT,
-                    binding.clone(),
-                )?;
-                set_scene_body_declaration_for_test(tx, &declaration)
-            })
-        });
-        let mut path = Path::yes();
-        let result = scan(&env, &associations(&env, &["b1"]), &mut path);
-        assert_not_appended(&result);
-        assert!(path.calls.is_empty(), "{name}");
-    }
 }
 
 // ---- A7: veto ----------------------------------------------------------------
@@ -1060,7 +995,9 @@ pub(super) fn event(env: &Env, id: &str, secret: i64, reveal_scene: Option<&str>
 }
 
 #[test]
-fn a7_a_record_that_classifies_the_body_vetoes_even_when_it_came_after_the_declaration() {
+fn a7_records_that_classify_the_scene_as_secret_or_as_seen_from_one_viewpoint_do_not_hide_it() {
+    // K2/5 removed the veto: a secret foreshadow, a secret event, a Scene POV
+    // and a beat POV are not read, and the Scene is adopted all the same.
     type Mark = Box<dyn Fn(&Env)>;
     let cases: Vec<(&str, Mark)> = vec![
         (
@@ -1135,32 +1072,23 @@ fn a7_a_record_that_classifies_the_body_vetoes_even_when_it_came_after_the_decla
     for (name, mark) in cases {
         let env = fixture();
         foreshadow(&env, "f-open", 0, Some("b1"));
-        place_all(&env, &["b1", "b2"]);
-        let before = {
-            let mut path = Path::yes();
-            adopted(&scan(&env, &associations(&env, &["b1"]), &mut path)).to_owned()
-        };
-        assert_eq!(before, "b1", "{name}: clear before the record");
-        reset_local_counts();
         mark(&env);
         let mut path = Path::yes();
+        // The scan reads none of the records: the statements that name their
+        // tables cannot even be prepared.
+        restrict(&env, |action| {
+            matches!(action, AuthAction::Read { table_name, .. }
+                if ["foreshadows", "foreshadow_setups", "foreshadow_payoffs", "events",
+                    "scene_events", "scene_beat_pov_cache"].contains(table_name))
+                || matches!(action, AuthAction::Read { table_name, column_name }
+                    if *table_name == "tree_nodes" && *column_name == "pov_character_id")
+        });
         let result = scan(&env, &associations(&env, &["b1", "b2"]), &mut path);
-        assert_eq!(adopted(&result), "b2", "{name}");
-        assert_eq!(path.calls, ["b2"], "{name}");
-        let totals: BTreeMap<_, _> = counts().into_iter().collect();
-        assert_eq!(totals.get("veto"), Some(&1), "{name}: {totals:?}");
+        unrestrict(&env);
+        assert_eq!(adopted(&result), "b1", "{name}");
+        assert_eq!(path.calls, ["b1"], "{name}");
+        assert_eq!(counts(), [("adopted", 1)], "{name}");
     }
-}
-
-#[test]
-fn a7_records_that_are_not_secret_do_not_veto() {
-    let env = fixture();
-    foreshadow(&env, "f1", 0, Some("b1"));
-    event(&env, "e1", 0, Some("b1"));
-    place(&env, "b1");
-    let mut path = Path::yes();
-    let result = scan(&env, &associations(&env, &["b1"]), &mut path);
-    assert_eq!(adopted(&result), "b1");
 }
 
 fn many_foreshadows(env: &Env, scene: &str, rows: usize) {
@@ -1177,27 +1105,15 @@ fn many_foreshadows(env: &Env, scene: &str, rows: usize) {
 }
 
 #[test]
-fn a7_more_veto_rows_than_the_limit_is_not_a_veto_and_stops_the_scan() {
+fn a7_a_scene_that_many_records_name_is_adopted_and_the_records_are_not_counted() {
+    // The veto's row limit (512) is gone with the veto: the number of records
+    // that name the Scene is not looked at.
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     many_foreshadows(&env, "b1", 513);
     let mut path = Path::yes();
     let result = scan(&env, &associations(&env, &["b1", "b2"]), &mut path);
-    assert_not_appended(&result);
-    assert!(path.calls.is_empty(), "b2 is not read after the limit");
-    let totals: BTreeMap<_, _> = counts().into_iter().collect();
-    assert_eq!(totals.get("resource-limit"), Some(&1), "{totals:?}");
-    assert_eq!(totals.get("veto"), None, "a limit is not a verdict");
-
-    // Exactly the limit is looked at in full.
-    let env = fixture();
-    place(&env, "b1");
-    many_foreshadows(&env, "b1", 512);
-    let mut path = Path::yes();
-    assert_eq!(
-        adopted(&scan(&env, &associations(&env, &["b1"]), &mut path)),
-        "b1"
-    );
+    assert_eq!(adopted(&result), "b1");
+    assert_eq!(counts(), [("adopted", 1)]);
 }
 
 // ---- A8: the body is not read ---------------------------------------------------
@@ -1205,7 +1121,6 @@ fn a7_more_veto_rows_than_the_limit_is_not_a_veto_and_stops_the_scan() {
 #[test]
 fn a8_the_scan_never_selects_the_body() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     // A body that cannot be parsed and is far above any limit; and a
     // statement that mentions `content` cannot even be prepared.
     execute(
@@ -1239,7 +1154,6 @@ fn a8_the_scan_never_selects_the_body() {
 #[test]
 fn b1_a_frame_value_that_differs_from_the_parent_is_not_adopted() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     let base = associations(&env, &["b1", "b2"]);
     let tampered: Tampering<Nir1GraphSceneAssociation> = vec![
         (
@@ -1277,13 +1191,11 @@ fn b1_a_frame_value_that_differs_from_the_parent_is_not_adopted() {
 fn b1_a_scene_that_changed_after_the_frame_was_made_is_not_adopted() {
     let env = fixture();
     let stale = associations(&env, &["b1"]);
-    // The Scene's row changes after the frame; the declaration is made later,
-    // so it binds the new values and only the frame is behind.
+    // The Scene's row changes after the frame: only the frame is behind.
     execute(
         &env,
         "UPDATE tree_nodes SET updated_at = '2026-10-19T09:09:09.000Z' WHERE id = 'b1';",
     );
-    place(&env, "b1");
     let mut path = Path::yes();
     let result = scan(&env, &stale, &mut path);
     assert_not_appended(&result);
@@ -1297,7 +1209,6 @@ fn b1_a_scene_that_changed_after_the_frame_was_made_is_not_adopted() {
 #[test]
 fn b2_a_pin_that_moved_was_deleted_or_was_inserted_again_is_not_adopted() {
     let env = fixture();
-    place_all(&env, &["b1", "b2", "b3"]);
     execute(
         &env,
         "INSERT INTO codex_entries (id, project_id, type, name) VALUES ('c2', 'p1', 'character', 'Other');",
@@ -1326,11 +1237,15 @@ fn b2_a_pin_that_moved_was_deleted_or_was_inserted_again_is_not_adopted() {
 #[test]
 fn b3_the_path_is_asked_last_and_only_about_candidates_that_passed_everything_else() {
     let env = fixture();
-    // b1 has no declaration; b2 is vetoed; b3 passes.
-    place_all(&env, &["b2", "b3"]);
-    foreshadow(&env, "f1", 1, Some("b2"));
+    // b1's pin moved after the frame, b2's frame token is stale; b3 passes.
+    let mut candidates = associations(&env, &["b1", "b2", "b3"]);
+    candidates[1].scene_source_token = "v0@1970-01-01T00:00:00Z".into();
+    execute(
+        &env,
+        "UPDATE scene_codex_pins SET created_at = '2026-10-19T08:00:00Z' WHERE scene_id = 'b1';",
+    );
     let mut path = Path::yes();
-    let result = scan(&env, &associations(&env, &["b1", "b2", "b3"]), &mut path);
+    let result = scan(&env, &candidates, &mut path);
     assert_eq!(adopted(&result), "b3");
     assert_eq!(path.calls, ["b3"]);
 }
@@ -1338,7 +1253,6 @@ fn b3_the_path_is_asked_last_and_only_about_candidates_that_passed_everything_el
 #[test]
 fn b3_a_no_or_a_failed_revalidation_does_not_adopt_and_the_scan_goes_on() {
     let env = fixture();
-    place_all(&env, &["b1", "b2", "b3"]);
     let mut path = Path::yes()
         .answering("b1", Answer::No)
         .answering("b2", Answer::DataFailure);
@@ -1352,7 +1266,6 @@ fn b3_a_no_or_a_failed_revalidation_does_not_adopt_and_the_scan_goes_on() {
 #[test]
 fn b3_a_storage_failure_of_the_revalidation_is_an_error_not_a_skip() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     let mut path = Path::yes().answering("b1", Answer::StorageFailure);
     let result = scan_with(
         &env,
@@ -1368,36 +1281,33 @@ fn b3_a_storage_failure_of_the_revalidation_is_an_error_not_a_skip() {
     assert_eq!(path.calls, ["b1"]);
 }
 
-#[test]
-fn b3_a_yes_from_the_path_is_not_a_declaration() {
-    let env = fixture();
-    // Every path proof is current, but nobody declared the body.
-    let mut path = Path::yes();
-    let result = scan(&env, &associations(&env, &["b1", "b2", "b3"]), &mut path);
-    assert_not_appended(&result);
-    assert!(path.calls.is_empty(), "the path is not even asked");
-}
-
 // ---- B4: the result carries no reason ------------------------------------------------
 
 #[test]
 fn b4_every_way_of_adding_nothing_is_the_same_value() {
     let env = fixture();
-    place(&env, "b2");
     let mut results = Vec::new();
     // No candidate at all.
     results.push(scan(&env, &[], &mut Path::yes()));
-    // A candidate that is not declared.
-    results.push(scan(&env, &associations(&env, &["b1"]), &mut Path::yes()));
+    // A candidate whose frame is behind.
+    let mut stale = associations(&env, &["b1"]);
+    stale[0].scene_source_token = "v0@1970-01-01T00:00:00Z".into();
+    results.push(scan(&env, &stale, &mut Path::yes()));
     // A candidate the path refuses.
     results.push(scan(
         &env,
         &associations(&env, &["b2"]),
         &mut Path::yes().answering("b2", Answer::No),
     ));
-    // A candidate past the K1b limit of veto rows.
-    many_foreshadows(&env, "b2", 513);
-    results.push(scan(&env, &associations(&env, &["b2"]), &mut Path::yes()));
+    // A candidate whose title is past the K1b limit.
+    execute(
+        &env,
+        &format!(
+            "UPDATE tree_nodes SET title = '{}' WHERE id = 'b3';",
+            "t".repeat(SCENE_BODY_TITLE_MAX_BYTES + 1)
+        ),
+    );
+    results.push(scan(&env, &associations(&env, &["b3"]), &mut Path::yes()));
     // No free slot.
     results.push(
         scan_with(
@@ -1427,7 +1337,6 @@ fn b4_every_way_of_adding_nothing_is_the_same_value() {
 #[test]
 fn b4_a_candidate_and_the_inputs_print_without_their_contents() {
     let env = fixture();
-    place(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let result = scan(&env, &candidates, &mut Path::yes());
     let printed = format!("{result:?}");
@@ -1449,7 +1358,6 @@ fn b4_a_candidate_and_the_inputs_print_without_their_contents() {
 #[test]
 fn a_cancelled_checkpoint_is_an_error_and_no_partial_result_is_made() {
     let env = fixture();
-    place_all(&env, &["b1", "b2"]);
     for stop_at in 1..=8 {
         reset_local_counts();
         let mut calls = 0;
@@ -1484,7 +1392,6 @@ fn a_cancelled_checkpoint_is_an_error_and_no_partial_result_is_made() {
 #[test]
 fn a_connection_that_is_not_in_a_transaction_is_refused() {
     let env = fixture();
-    place(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let workspace_values = workspace(&env);
     let query = query(&env);
@@ -1509,7 +1416,6 @@ fn a_connection_that_is_not_in_a_transaction_is_refused() {
 #[test]
 fn b4_the_diagnostic_is_a_closed_list_of_outcome_counts() {
     let env = fixture();
-    place(&env, "b1");
     let _ = scan(&env, &associations(&env, &["b1"]), &mut Path::yes());
     let totals = super::counters::totals();
     let codes: Vec<&str> = totals.iter().map(|(code, _)| *code).collect();
@@ -1518,15 +1424,12 @@ fn b4_the_diagnostic_is_a_closed_list_of_outcome_counts() {
         [
             "slot-unavailable",
             "workspace-unavailable",
-            "quarantined",
             "query-unavailable",
             "authority-changed",
             "scene-not-live",
             "scope-rejected",
             "reading-not-before",
-            "declaration-unavailable",
             "binding-mismatch",
-            "veto",
             "frame-mismatch",
             "pin-changed",
             "path-rejected",

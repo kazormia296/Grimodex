@@ -18,7 +18,7 @@ use crate::idempotency::{
     insert_idempotent_response, load_idempotent_response, payload_fingerprint, IdempotencyRequest,
 };
 use crate::narrative_extraction::change_feed::{
-    append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
+    append_snapshot_restore_in_tx, narrative_snapshot_digest,
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
@@ -3048,7 +3048,7 @@ pub fn apply_project_snapshot_restore(
             "requestId": payload.request_id,
             "scopes": ordered_scopes.iter().map(|scope| scope.as_str()).collect::<Vec<_>>(),
         });
-        let append = append_canonical_and_narrative_change_in_tx(
+        let append = append_snapshot_restore_in_tx(
             &transaction,
             &payload.project_id,
             &payload.session_id,

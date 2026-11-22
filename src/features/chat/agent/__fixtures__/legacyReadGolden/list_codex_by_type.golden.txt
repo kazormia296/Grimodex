@@ -1,0 +1,235 @@
+{
+  "tool": "list_codex_by_type",
+  "cases": [
+    {
+      "case": "rows: character（S1。hidden の c-secret と c-released は落ちる）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "type": "character"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "2 entries of type 'character'",
+        "tokensUsed": 145,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "summary": "老魔術師を訪ねる旅の少女",
+            "tags": [
+              "主人公",
+              "魔法"
+            ]
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "summary": "塔に住む魔術師",
+            "tags": [
+              "主人公",
+              "魔法"
+            ]
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"summary\":\"老魔術師を訪ねる旅の少女\",\"tags\":[\"主人公\",\"魔法\"]},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"summary\":\"塔に住む魔術師\",\"tags\":[\"主人公\",\"魔法\"]}]"
+    },
+    {
+      "case": "rows: character（S3。Phase 解除後の c-released が Phase 解決後の summary で出る）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "type": "character"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "3 entries of type 'character'",
+        "tokensUsed": 220,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "summary": "老魔術師を訪ねる旅の少女",
+            "tags": [
+              "主人公",
+              "魔法"
+            ]
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "summary": "塔に住む魔術師",
+            "tags": [
+              "主人公",
+              "魔法"
+            ]
+          },
+          {
+            "id": "c-released",
+            "name": "幻の騎士",
+            "summary": "n-s3 で正体が明らかになる騎士。",
+            "tags": []
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"summary\":\"老魔術師を訪ねる旅の少女\",\"tags\":[\"主人公\",\"魔法\"]},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"summary\":\"塔に住む魔術師\",\"tags\":[\"主人公\",\"魔法\"]},{\"id\":\"c-released\",\"name\":\"幻の騎士\",\"summary\":\"n-s3 で正体が明らかになる騎士。\",\"tags\":[]}]"
+    },
+    {
+      "case": "rows: location",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "type": "location"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "1 entries of type 'location'",
+        "tokensUsed": 65,
+        "content": [
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "summary": "老魔術師の住処",
+            "tags": [
+              "場所"
+            ]
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-tower\",\"name\":\"古い塔\",\"summary\":\"老魔術師の住処\",\"tags\":[\"場所\"]}]"
+    },
+    {
+      "case": "rows: item（summary が null → 空文字、tags なし）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "type": "item"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "1 entries of type 'item'",
+        "tokensUsed": 54,
+        "content": [
+          {
+            "id": "c-item",
+            "name": "魔法の杖",
+            "summary": "",
+            "tags": []
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-item\",\"name\":\"魔法の杖\",\"summary\":\"\",\"tags\":[]}]"
+    },
+    {
+      "case": "empty: 行のない type",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "type": "lore"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "0 entries of type 'lore'",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: type が欠落でも検査せず '' で引く",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "0 entries of type ''",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "type": "character"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "0 entries of type 'character'",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の行だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "type": "location"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "1 entries of type 'location'",
+        "tokensUsed": 61,
+        "content": [
+          {
+            "id": "x-c-tower",
+            "name": "古い塔",
+            "summary": "他作品の塔",
+            "tags": []
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-c-tower\",\"name\":\"古い塔\",\"summary\":\"他作品の塔\",\"tags\":[]}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "type": "character"
+      },
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: type 欠落でも no-project が先に判定される",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "list_codex_by_type",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

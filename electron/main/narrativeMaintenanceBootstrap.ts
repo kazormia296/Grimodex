@@ -69,8 +69,12 @@ export function bootstrapNarrativeMaintenance(
     onCompletionRecoveryAcknowledged: (currentBinding) => {
       coordinator?.requestRecoveryRediscovery(currentBinding);
     },
-    onCycleAccepted: () => {
-      coordinator?.requestRediscovery();
+    onCycleAccepted: ({ demandOnly }) => {
+      // DR-PUBG-5-17: a cycle that carried only Graph Index demand wakes (no
+      // work, no discovery wake) does not spend the discovery chain's
+      // rediscovery budget. W1, the seam's B wake and every work cycle still
+      // do, as before.
+      if (!demandOnly) coordinator?.requestRediscovery();
       // Accepted cycles double as a wake-outbox drain point so an Epoch
       // rotation whose live event was lost mid-session is still delivered.
       void coordinator?.drainWakeOutbox();
@@ -91,17 +95,18 @@ export function bootstrapNarrativeMaintenance(
   // The coordinator and scheduler retain their production owners. No
   // maintenance/scheduler callback is allowed to arm acceptance evidence;
   // the held-Freshness writer is fed directly by the Freshness scheduler.
-  // B-ROUTE (DR-BSEAM-1): only the validated, unpackaged CI launch that
-  // selected the gated Graph Index build accepts discovery's project wakes.
-  // Every other launch constructs the coordinator exactly as before.
-  coordinator =
-    seam.active &&
-    seam.ownerToken === NARRATIVE_MAINTENANCE_OWNER_TOKEN &&
-    seam.trigger === "nir1-graph-index-build"
-      ? createCoordinator(backend, scheduler, {
-          acceptGraphIndexBuildWakes: true,
-        })
-      : createCoordinator(backend, scheduler);
+  // The coordinator accepts Native's Graph Index build wakes (discovery's
+  // `wakeProjectIds` and the Graph owner's demand event) in every launch.
+  // B-ROUTE (DR-BSEAM-1) accepted them only for the validated, unpackaged CI
+  // launch that selected the gated build; DR-PUBG-5-14 lifts that, because
+  // main has no gate of its own to read: a main-side constant would be a
+  // second switch beside `PRODUCT_GRAPH_PUBLISHED` (DR-PUBG-5-8), and the
+  // gate lives in Native. While that constant is false Native returns no
+  // wake and emits no demand, and a wake it did return would still meet the
+  // closed gate of the cycle.
+  coordinator = createCoordinator(backend, scheduler, {
+    acceptGraphIndexBuildWakes: true,
+  });
   scheduler.start();
 
   return { scheduler, coordinator };

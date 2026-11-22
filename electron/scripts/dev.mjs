@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 import esbuild from "esbuild";
 import { createServer } from "vite";
 
-import { bundleConfigs, rootDir } from "./build.mjs";
+import { bundleConfigs, composePlugins, rootDir } from "./build.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -123,7 +123,8 @@ async function startEsbuildWatch() {
     );
     const ctx = await esbuild.context({
       ...config,
-      plugins: [
+      // config の plugins（ee の stub）を落とさず、再起動の plugin を足す。
+      plugins: composePlugins(config, [
         {
           name: "electron-restart",
           setup(build) {
@@ -140,7 +141,7 @@ async function startEsbuildWatch() {
             });
           },
         },
-      ],
+      ]),
     });
     buildContexts.push(ctx);
     await ctx.watch();

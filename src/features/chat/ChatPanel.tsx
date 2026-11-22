@@ -86,6 +86,7 @@ import {
   wholeMessageContent,
 } from "./useChatMessageActions";
 import { chatEgressClosureOf } from "./chatEgressClosure";
+import { visibleChatRows } from "./chatMessageRows";
 import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "./nir1/nir1LocalGenerationAvailability";
 import { Nir1LocalGenerationSlot } from "./nir1/Nir1LocalGenerationSlot";
 import type { Nir1LocalAcceptedHandler } from "./nir1/Nir1LocalGenerationPanel";
@@ -412,12 +413,13 @@ function ChatMessageViewport({
   } = useChatMessageViewport({
     messages,
     isLoadingMessages,
+    isStreaming,
     activeSessionId,
     isViewportActive,
   });
   const transcriptMessages = useMemo(
-    () => messages.filter((message) => message.role !== "system"),
-    [messages],
+    () => visibleChatRows(messages, isStreaming),
+    [messages, isStreaming],
   );
   const transcriptPositionById = useMemo(
     () =>
@@ -441,7 +443,7 @@ function ChatMessageViewport({
       >
         {isLoadingMessages ? (
           <MessageBubbleSkeletonList testId="chat-messages-loading" />
-        ) : messages.length === 0 ? (
+        ) : transcriptMessages.length === 0 ? (
           <div className="mt-8 text-center">
             <p className="text-sm text-muted-foreground">
               {t("chat.noMessages")}

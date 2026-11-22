@@ -2908,23 +2908,14 @@ async function runSnapshotChecks(rootCtx, step) {
   });
 
   const ctx = rootCtx;
-  // The rich project (Scope edit history) may fail on the Change Feed chain
-  // (DEF-1, a diagnostic probe).  The basic project (no Scope edit history) is
-  // the contract of draft test 10 and MUST restore: if it fails the journey
-  // fails (fail-closed), never an "unmet" pass.
-  const rich = await runSnapshotRestoreAttempt(ctx, "rich");
-  const attempts = [recordSnapshotAttempt(ctx, rich)];
-  const basic = await runSnapshotRestoreAttempt(second, "basic");
-  attempts.push(recordSnapshotAttempt(ctx, basic));
-  assert.equal(
-    basic.attempt.restored,
-    true,
-    `the body restore of a project without Scope edit history must succeed: ${basic.attempt.error.slice(0, 300)}`,
-  );
-  const contract = rich.attempt.restored ? rich : basic;
-  const contractCtx = rich.attempt.restored ? ctx : second;
-  // An unrelated Change Feed chain observation: delete the Scene the trash
-  // restore of the matrix made.  A rejected delete must roll back.
+  // An unrelated Change Feed chain observation (DEF-3): delete the Scene the
+  // trash restore of the matrix made.  A rejected delete must roll back.  This
+  // runs BEFORE the rich restore attempt: the snapshot is taken inside that
+  // attempt, so a Scene removed here is not part of it, and a Scene that stays
+  // (the delete is rejected) is not deleted after the restore either.  A delete
+  // after a successful restore would drop the binding (ON DELETE CASCADE) of a
+  // Scene that is still in `snapshot.sceneIds`, and the contract assertions
+  // below would fail on a restore that worked.
   const trashScenes = await rows(
     ctx.harness,
     ctx.page,
@@ -2951,6 +2942,22 @@ async function runSnapshotChecks(rootCtx, step) {
       error: outcome.error.slice(0, 400),
     });
   }
+
+  // The rich project (Scope edit history) may fail on the Change Feed chain
+  // (DEF-1, a diagnostic probe).  The basic project (no Scope edit history) is
+  // the contract of draft test 10 and MUST restore: if it fails the journey
+  // fails (fail-closed), never an "unmet" pass.
+  const rich = await runSnapshotRestoreAttempt(ctx, "rich");
+  const attempts = [recordSnapshotAttempt(ctx, rich)];
+  const basic = await runSnapshotRestoreAttempt(second, "basic");
+  attempts.push(recordSnapshotAttempt(ctx, basic));
+  assert.equal(
+    basic.attempt.restored,
+    true,
+    `the body restore of a project without Scope edit history must succeed: ${basic.attempt.error.slice(0, 300)}`,
+  );
+  const contract = rich.attempt.restored ? rich : basic;
+  const contractCtx = rich.attempt.restored ? ctx : second;
   step("probe-def1-snapshot-restore-feed", {
     reproduced: attempts.map((a) => !a.restored),
     attempts,

@@ -14,26 +14,6 @@ export const SETUP_DEFECT_REASONS = new Set([
   "profile-not-restricted",
 ]);
 export const FRESHNESS_REASONS = new Set(["stale", "warming"]);
-/**
- * A Busy cause the product owner never answers (DR-CP4-S1C1-8): a failed
- * stamp read does not make the owner Busy; the Native records it as
- * `freshnessStamp.result: "unavailable"` and the query goes on. A sample with
- * this cause is a harness mistake and stops instead of being counted.
- */
-export const RETIRED_FRESHNESS_STAMP_BUSY = "freshness-stamp-read-failed";
-/** Stamp results without a comparison (matched null): never freshness. */
-export const STAMP_WITHOUT_COMPARISON = new Set([
-  "unavailable",
-  "stamp0-missing",
-]);
-
-export function assertNoRetiredBusy(sample) {
-  if (sample?.graph?.busyCause === RETIRED_FRESHNESS_STAMP_BUSY)
-    throw new Error(
-      "[artifact] the product owner never answers Busy for a stamp read; record it as freshnessStamp.result unavailable",
-    );
-}
-
 export const BOUNDARY_DISAGREEMENTS = Object.freeze({
   notJoinedInTime: "not-joined-in-time",
   joinedLateWithinTolerance: "joined-late-within-tolerance",
@@ -108,19 +88,20 @@ export function joinedWithinWindow(sample) {
 /**
  * K6/2's literal reading of "in the window" for a steady-state first render
  * (K6/2 step 3): only a worker result of this query's ticket, started on a new
- * READY with a matching freshness stamp. Under K6/4's R1 this is structurally
- * false (D′ never publishes READY; S0 is almost never read), so K6/6 (変える点
+ * READY. K6/7 (変える点 4、緩和 R-12) drops the freshness-stamp clause: the
+ * stamp no longer exists (DR-DBC-7), and under R1 the set does not move
+ * because `startSlot.readyFresh === true` is still required. Under K6/4's R1
+ * this is structurally false (D′ never publishes READY), so K6/6 (変える点
  * 3、H1) no longer uses it to decide a first render: followup.mjs
- * `firstRenderOf` is the /6 function. This one stays for the disclosure of
- * the K6/2 reading (変える点 5: `notReadyAtStart`、`stampMismatch`、…) and for
- * the K6/2-era (candidate-less) summaries.
+ * `firstRenderOf` is the function. This one stays for the disclosure of
+ * the K6/2 reading (変える点 5: `notReadyAtStart`) and for the K6/2-era
+ * (candidate-less) summaries.
  */
 export function k62SteadyStateInWindow(sample) {
   return (
     classifyJoin(sample).inWindow &&
     sample.graph.source === "worker" &&
-    sample.startSlot?.readyFresh === true &&
-    sample.freshnessStamp?.matched === true
+    sample.startSlot?.readyFresh === true
   );
 }
 

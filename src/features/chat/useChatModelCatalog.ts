@@ -14,7 +14,10 @@ import {
 } from "./chatModelCatalog";
 import { BROWSER_DIRECT_AI_PROVIDERS } from "./browserProviderPolicy";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
-import { isDynamicCapsStale } from "./agent/dynamicModelCaps";
+import {
+  isDynamicCapsStale,
+  registerAnthropicModelCaps,
+} from "./agent/dynamicModelCaps";
 
 /**
  * チャット入力欄のモデルピッカー(複数プロバイダ横断)用カタログ取得フック。
@@ -52,6 +55,11 @@ const DYNAMIC_CAPS_PROVIDERS = new Set<AiProvider>(["openrouter", "ollama"]);
  * モデル一覧が互いを上書きしないように)。キーは `provider` または `oc:<endpointId>`。
  */
 const moduleCache = new Map<string, AiModel[]>();
+
+/** Test-only reset of the cross-open model list cache. */
+export function __resetChatModelCatalogCacheForTests(): void {
+  moduleCache.clear();
+}
 
 const cacheKeyFor = (provider: AiProvider, endpointId?: string): string => {
   if (provider === "openai-compatible") return `oc:${endpointId ?? ""}`;
@@ -127,6 +135,16 @@ export function useChatModelCatalog(open: boolean): {
           models = refreshed ?? cached ?? null;
         } else {
           models = cached ?? (await listAiModels(p));
+          if (
+            p === "anthropic" &&
+            cached === undefined &&
+            registerAnthropicModelCaps(models)
+          ) {
+            // 非 active でも、選択直後の解決が新しい live を参照できるよう通知する。
+            useAiSettingsStore.setState((state) => ({
+              modelCapsRevision: state.modelCapsRevision + 1,
+            }));
+          }
         }
         if (!models) return null;
         moduleCache.set(key, models);

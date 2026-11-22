@@ -17,6 +17,7 @@
 mod body_declaration_entry;
 #[cfg(test)]
 mod body_declaration_entry_tests;
+mod chat_ir;
 mod convert;
 mod lifecycle_failure_diagnostics;
 #[cfg(feature = "legacy-keyring-migration")]
@@ -8669,11 +8670,12 @@ impl Backend {
                 })
                 .to_string());
             }
-            let discovery = narrative_maintenance::discover_all(
+            let discovery = narrative_maintenance::discover_all_with_product(
                 snapshot.authority.db(),
                 binding,
                 wake_reason,
                 ci_config.as_ref(),
+                nir1_graph_product::maintenance_product_publication(),
             )
             .map_err(AppError::Anyhow)?;
             serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
@@ -9742,8 +9744,10 @@ impl Backend {
                     let cycle_result = {
                         // The pinned authority's runtime lets the shared cycle own
                         // the gated NIR-1 Graph Index build. Its gate opens only for
-                        // the validated journey seam; product launches pass no seam.
-                        narrative_extraction::maintenance_runtime::run_system_work_cycle_with_nir1_graph_runtime(
+                        // the validated journey seam or the product publication token
+                        // (`PRODUCT_GRAPH_PUBLISHED`, false until PUB-G); product
+                        // launches pass no seam.
+                        narrative_extraction::maintenance_runtime::run_system_work_cycle_with_nir1_graph_runtime_and_product(
                     authority.db(),
                     &request,
                     |item| {
@@ -9755,6 +9759,7 @@ impl Backend {
                     foreground_owner.as_ref(),
                     Some(&attempt_control),
                     Some(authority.nir_chronicle_index_runtime()),
+                    nir1_graph_product::maintenance_product_publication(),
                 )
                     };
                     let result = match cycle_result {
@@ -13375,6 +13380,20 @@ impl Backend {
         Ok(result.to_string())
     }
 
+    /// chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR (summary and
+    /// quote) of Scenes before `currentSceneId`, for a query the chat agent
+    /// wrote. Closed: while the Native gate is closed this is an error
+    /// (`CHAT_IR_GATE_CLOSED`) before the payload is parsed, and nothing in the
+    /// product opens it. A call that ends is always the five keys
+    /// `{status, success, items, eventIds, excludedEventIds}` with a status of
+    /// the closed set; only a gate or a request-shape refusal is an error.
+    #[napi]
+    pub async fn chat_agent_ir_select(&self, payload: serde_json::Value) -> Result<String> {
+        chat_ir::select(Arc::clone(&self.state), payload)
+            .await
+            .map_err(|error| Error::from_reason(error.to_string()))
+    }
+
     #[napi]
     pub async fn related_scenes_continue(
         &self,
@@ -13394,8 +13413,9 @@ impl Backend {
 
     /// `nir1-publication` (K3/2). One command carries both the wait for the
     /// Graph and the renderer's settle declaration (CP-3a D5). The Graph is
-    /// handed out only when it is restricted, stopped and published (PUB-G),
-    /// and again here at return.
+    /// handed out only when the product gate is open (PUB-G) and the profile is
+    /// unrestricted or, if restricted, its stop barrier is confirmed; checked
+    /// again here at return (and before a Graph-only click handle is kept).
     #[napi]
     pub async fn related_scenes_graph_continue(
         &self,
@@ -13405,10 +13425,12 @@ impl Backend {
     ) -> Result<String> {
         let guard = publication_guard::PublicationGuard::admit(&self.state, caller_identity)
             .map_err(publication_err_to_napi)?;
-        let value = related_scenes::graph_continue(Arc::clone(&self.state), owner_key, request)
-            .await
-            .map_err(related_scenes_err_to_napi)?;
-        guard.finish(&self.state).map_err(publication_err_to_napi)?;
+        // The return-time recheck runs inside, once, before a Graph-only click
+        // handle is kept (K32R-4); there is none to run here.
+        let value =
+            related_scenes::graph_continue(Arc::clone(&self.state), owner_key, request, guard)
+                .await
+                .map_err(related_scenes_err_to_napi)?;
         Ok(value.to_string())
     }
 
@@ -15496,6 +15518,30 @@ impl Backend {
         .await
     }
 
+    /// Read-only: the Native `codex-catalog` Source revision token, pinned to
+    /// the captured extraction workspace authority (DR-CSX-1).
+    #[napi]
+    pub async fn narrative_extraction_resolve_codex_catalog_revision(
+        &self,
+        payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
+        narrative_extraction_bound_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            workspace_binding,
+            |db, dto| {
+                Ok(serde_json::to_value(
+                    narrative_extraction::narrative_extraction_resolve_codex_catalog_revision(
+                        db, dto,
+                    )?,
+                )?)
+            },
+        )
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_get_run(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
@@ -15525,6 +15571,27 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 Ok(serde_json::to_string(
                     &narrative_extraction::narrative_extraction_list_resumable_runs(db, dto)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only: the current revisions of the Chronicle Proposals that cite one
+    /// Scene as evidence, one page (SRA/1 R1-R3). Native checks the project
+    /// binding and caps the page size.
+    #[napi]
+    pub async fn narrative_extraction_list_scene_proposals(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: narrative_extraction::ListSceneProposalsPayload =
+                from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_list_scene_proposals(db, dto)?,
                 )?)
             })
         })
@@ -21888,6 +21955,63 @@ mod narrative_maintenance_foreground_release_tests {
             ack,
             serde_json::json!({ "status": "accepted", "acknowledged": 1 })
         );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// DR-PUBG-5-19: the receipt for a project the live workspace does not have
+    /// is refused, and the message that reaches JavaScript starts with the exact
+    /// code main treats as terminal (`hasExactFailureCode`). Neither a wake nor a
+    /// delivery-failure record (the outbox) is written for it.
+    #[tokio::test]
+    async fn delivery_failure_receipt_for_a_missing_project_is_refused_with_the_exact_code() {
+        let (backend, root) = backend_with_workspace("delivery-failure-project-missing");
+        let binding: Value = serde_json::from_str(
+            &backend
+                .get_narrative_maintenance_workspace_binding()
+                .expect("read workspace binding")
+                .expect("active workspace binding"),
+        )
+        .expect("binding JSON");
+        for scope in ["wake", "work"] {
+            let mut payload = serde_json::json!({
+                "schemaVersion": 1,
+                "scope": scope,
+                "projectId": "project-the-workspace-does-not-have",
+                "workspaceBinding": binding.clone(),
+                "retryCount": 4,
+                "error": "FOREIGN KEY constraint failed",
+            });
+            if scope == "work" {
+                payload["runKind"] = serde_json::json!("dependency-verify");
+                payload["workKey"] = serde_json::json!("dependency-verify:epoch-1");
+                payload["semanticEpochId"] = serde_json::json!("epoch-1");
+            }
+            let error = backend
+                .record_narrative_maintenance_delivery_failure(payload)
+                .await
+                .expect_err("a receipt for a missing project is refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING: project '"),
+                "{scope}: {message}"
+            );
+            assert!(
+                error
+                    .reason
+                    .starts_with("NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING:"),
+                "{scope}: the JavaScript message must start with the code: {}",
+                error.reason
+            );
+        }
+        let listed: Vec<Value> = serde_json::from_str(
+            &backend
+                .list_narrative_maintenance_wake_outbox()
+                .await
+                .expect("list wakes"),
+        )
+        .expect("wake list JSON");
+        assert!(listed.is_empty(), "a refused receipt writes no wake");
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }

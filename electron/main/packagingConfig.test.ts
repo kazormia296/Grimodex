@@ -107,7 +107,7 @@ describe("Electron release packaging contract", () => {
     ]);
   });
 
-  it("places MCP, the C-query worker, semantic tokenizers, and selected rerankers at runtime paths", () => {
+  it("places MCP, the C-query worker, semantic tokenizers, selected rerankers, and the model-capability snapshot at runtime paths", () => {
     const config = readBuilderConfig();
 
     expect(config.extraResources).toEqual([
@@ -130,6 +130,11 @@ describe("Electron release packaging contract", () => {
         from: "experiments/lfm25-encoder-phase0/local",
         to: "resources/reranker",
         filter: ["phase0b/ja_xsmall/**", "phase0b/en_minilm_l4/**"],
+      },
+      {
+        from: "electron/resources",
+        to: "resources/model-capabilities",
+        filter: ["model-capabilities.json"],
       },
     ]);
   });

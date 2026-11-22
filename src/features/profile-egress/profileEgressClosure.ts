@@ -58,6 +58,10 @@ const RENDERER_DENIED_COMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
   ["nir1_pack_context", "plaintext-publication"],
+  // chat IR (DR-CHATIR-S1-27): Main の台帳と同じ。gate は常に閉で、これは閉鎖の写し。
+  ["chat_agent_ir_select", "plaintext-publication"],
+  // Mastra agent turn (MP-3b, DR-MP3-11): Main の台帳と同じ。cancel は停止なので台帳の外。
+  ["mastra_agent_turn_start", "old-external-ai"],
 ];
 
 let deniedRoutes: Map<string, string> | null = null;

@@ -176,11 +176,178 @@ jobs:
       candidate_head: ${{ inputs.candidate_head || '' }}
       max_parallel_tasks: ${{ inputs.max_parallel_tasks || '' }}
 
+  # Pull requests: skip heavy lanes whose inputs the diff cannot reach.
+  # Deny by default. Every other event, an empty or incomplete diff, an
+  # unclassified path, or any failure here leaves all lanes running. A push to
+  # master gets a second, separate decision (the `crossos` step): whether the
+  # C-query worker also runs on macOS and Windows, from the same kind of diff.
+  # It never changes the lane outputs. This job
+  # is not meant to fail (every step that can fail has continue-on-error, and
+  # the checkout has its own step timeout), because a job-level failure would
+  # make the unchanged shard/aggregate/runtime-performance jobs skip through
+  # their implicit success(). An empty or missing lane output counts as "run"
+  # in each dependent's if, which covers a skipped `changes` job only.
+  changes:
+    name: Change scope
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      journeys: ${{ steps.scope.outputs.journeys }}
+      rust: ${{ steps.scope.outputs.rust }}
+      native: ${{ steps.scope.outputs.native }}
+      migration: ${{ steps.scope.outputs.migration }}
+      windows: ${{ steps.scope.outputs.windows }}
+      browser: ${{ steps.scope.outputs.browser }}
+      lfm: ${{ steps.scope.outputs.lfm }}
+      security: ${{ steps.scope.outputs.security }}
+      frontend: ${{ steps.scope.outputs.frontend }}
+      cquery_cross_os: ${{ steps.crossos.outputs.cquery_cross_os }}
+    steps:
+      - name: Check out the diff
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js for the scope script
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Decide which lanes run
+        id: scope
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          lanes="journeys rust native migration windows browser lfm security frontend"
+          decision=""
+          # A pull request that changes the decision code or a workflow is never judged by that code:
+          # git diff exits 1 for a change and 128 for an error, and both leave every lane running.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] &&
+            git diff --quiet "$BASE_SHA...$HEAD_SHA" -- scripts/ci-change-scope.mjs scripts/impact/ .github/workflows/; then
+            decision="$(node scripts/ci-change-scope.mjs --event "$GITHUB_EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA" --summary "$GITHUB_STEP_SUMMARY" --json "$RUNNER_TEMP/ci-change-scope.json")" || decision=""
+          fi
+          valid=1
+          for lane in $lanes; do
+            count="$(printf '%s\n' "$decision" | grep -Ecx "$lane=(true|false)")" || count=0
+            [ "$count" = "1" ] || valid=0
+          done
+          [ "$(printf '%s\n' "$decision" | grep -c .)" = "9" ] || valid=0
+          fallback=0
+          if [ "$valid" != "1" ]; then
+            fallback=1
+            decision=""
+            for lane in $lanes; do decision="${decision}${lane}=true"$'\n'; done
+          fi
+          # The outputs come first: nothing after this may change what the jobs read.
+          printf '%s' "$decision" >> "$GITHUB_OUTPUT"
+          if [ "$fallback" = "1" ]; then
+            {
+              echo "## Change scope"
+              echo
+              echo "Every lane runs: this is not a pull request, the pull request changes the scope decision code or a workflow, or the scope decision was unavailable or invalid."
+              echo "Anything the script wrote above this line is superseded by the final outputs below."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+              # A script that failed may have left a stale record behind; replace it with the final values.
+              lane_json=""
+              for lane in $lanes; do
+                lane_json="${lane_json}${lane_json:+,}\"${lane}\":{\"run\":true,\"reason\":\"shell fallback\"}"
+              done
+              printf '{"version":1,"event":"pull_request","allSelected":true,"reasonKind":"shell-fallback","reason":"The scope decision was unavailable or invalid; every lane runs.","lanes":{%s}}\n' "$lane_json" > "$RUNNER_TEMP/ci-change-scope.json"
+            fi
+          fi
+          {
+            echo
+            echo "### Final outputs"
+            echo
+            echo "These lines are what the jobs read. They are authoritative over any table above."
+            echo
+            echo '```'
+            printf '%s\n' "${decision%$'\n'}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload change scope evidence
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-change-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-change-scope.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # A master push only: whether the C-query worker also runs on macOS and
+      # Windows. Only an exact `false` skips those legs; an empty, invalid or
+      # failed decision runs them (fail open). The nightly run, a dispatch and
+      # the release call (a tag push) never reach this step and run them.
+      - name: Decide whether the C-query worker runs on macOS and Windows
+        id: crossos
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PUSH_REF: ${{ github.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -u
+          decision=""
+          # A push that changes the decision code, its rules, the impact helper or a workflow is never
+          # judged by that code: git diff exits 1 for a change and 128 for an error, and both run the legs.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$PUSH_REF" = "refs/heads/master" ] && [ -n "$BEFORE_SHA" ] && [ -n "$AFTER_SHA" ] &&
+            git diff --quiet "$BEFORE_SHA" "$AFTER_SHA" -- 'scripts/ci-cross-os-scope.*' scripts/impact/ .github/workflows/; then
+            decision="$(node scripts/ci-cross-os-scope.mjs --event "$GITHUB_EVENT_NAME" --ref "$PUSH_REF" --before "$BEFORE_SHA" --after "$AFTER_SHA" --summary "$GITHUB_STEP_SUMMARY")" || decision=""
+          fi
+          # A valid true or false from the script comes with the script's own summary; only the rest gets the fallback note.
+          fallback=0
+          case "$decision" in
+            "cquery_cross_os=false" | "cquery_cross_os=true") ;;
+            *)
+              fallback=1
+              decision="cquery_cross_os=true"
+              ;;
+          esac
+          # The output comes first: nothing after this may change what the matrix reads.
+          printf '%s\n' "$decision" >> "$GITHUB_OUTPUT"
+          if [ "$fallback" = "1" ]; then
+            {
+              echo "## C-query worker on macOS and Windows"
+              echo
+              echo "The macOS and Windows legs run: the decision was true, unavailable or invalid, or this push changes the decision code, its rules or a workflow."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   quality:
     name: Quality (traceability / impact-selected light gates)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    # The nightly schedule runs this job too (2026-11-19): its impact step is the
+    # only automatic run of the impact-selected suites on `master` now that a
+    # master push does not run them.
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A warm run of the full selection took 39 to 65 minutes on master pushes
+    # (2026-11-18/19), against 90 minutes here. Every event that runs the impact
+    # step (the same condition as the step) gets 150 minutes: a run with a cold
+    # `rust-cache` (for example right after a stable rustc update) may take much
+    # longer, and `rust-cache` saves only after a successful job, so a timeout
+    # may leave the next run cold too (it can still restore part of an older
+    # entry). A pull request or master push job has no cargo work and keeps 90.
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag') && 150 || 90 }}
     env:
       # Impact-selected suites compile many test binaries. Skip DWARF like the
       # rust / electron-native jobs; panic messages and symbol names remain.
@@ -216,11 +383,22 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # Only the impact step below runs cargo (`pnpm verify:quality` and the
+      # install run none: checked on 2026-11-19 with a failing `cargo` on PATH),
+      # so the Rust steps use the impact step's condition. A pull request or
+      # master push job with an empty or stale `target` must not save a
+      # `rust-cache` entry: the entry is immutable per key, a run that finds its
+      # exact key does not save ("Cache up-to-date"), and the entry on the default
+      # branch is the one every other ref restores, so such a save there would
+      # leave the nightly run compiling from scratch every night until the key
+      # changes.
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         with:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         with:
           # The impact-selected suites also build and test the N-API crate
           # (own Cargo.lock / target), which was recompiled from scratch.
@@ -236,22 +414,118 @@ jobs:
           GATE_B2_WORKTREE_SMOKE: "1"
         run: pnpm verify:quality
 
+      # The nightly schedule, a manual dispatch and a release tag run this step;
+      # a pull request and a master push do not (2026-11-19).
+      # A pull request does not: the canonical Quick already ran the same impact
+      # selection on the candidate head. A master push does not either: the merge
+      # needed that Quick, and the Frontend, Shared Rust and Electron native jobs
+      # run most of the same tests in full; the job keeps `pnpm verify:quality` as
+      # its contract check. What only impact runs is therefore not checked by a
+      # master push: the tests of the eval-only features (`nir1-graph-eval`,
+      # `nir1-final-request-eval`, including its combination with
+      # `native-current-human-capture`), and many Node tests that no other job or
+      # registry entry names by path (the NIR-1 graph-eval, graph, packing and
+      # retrieval tests, the WebRTC block probes). The grimodex-db tests that the
+      # Shared Rust integration shard runs with `native-current-human-capture`
+      # (the product configuration: the N-API crate always enables the feature)
+      # are checked by a master push. The grimodex-db feature-only tests that
+      # the shard's filters do not name run in no job, impact included.
+      # The nightly run covers them: it is the only automatic run of the whole
+      # selection after a merge, so a break that only the combination of merged
+      # changes shows is found by the next nightly run, usually a day or so later
+      # (GitHub's schedule delays or skips runs, so it can take longer).
+      # A schedule, a dispatch and a new tag push have no resolvable comparison
+      # base (a schedule or dispatch event has no `before`; a new tag's `before`
+      # is the zero SHA), so the selector sees an empty or incomplete diff and
+      # selects every suite. Only the nightly run checks that (fail-closed): the
+      # step is red unless every suite was selected and passed, so a selection
+      # narrowed by a stray working-tree path is not a silent partial run. A
+      # dispatch and a release tag call are judged by the selector's exit code
+      # alone, as before (a moved tag, whose `before` resolves, selects by diff).
+      # A reusable call inherits the caller's `github.event_name` and ref. The
+      # only caller is release.yml, whose `ci` job runs on a tag push
+      # (`push`, `ref_type` tag), so the release call keeps running this step.
+      # Gate B2 does not depend on this step: its certification runner runs
+      # `impact-selected-light` itself on the candidate, and it accepts only
+      # `push` and `workflow_dispatch` runs of this workflow (never `schedule`)
+      # with the job names listed in gate-b2.yaml.
       - name: Impact-selected light gates
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.ref_type == 'tag'
         env:
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           QUALITY_HEAD_SHA: ${{ github.sha }}
+          QUALITY_EVENT: ${{ github.event_name }}
         run: |
+          set -eu
+          report="$RUNNER_TEMP/impact-report.json"
           if [ -n "$QUALITY_BASE_SHA" ]; then
-            pnpm eval:impact -- --base "$QUALITY_BASE_SHA" --head "$QUALITY_HEAD_SHA" --run
+            pnpm eval:impact -- --base "$QUALITY_BASE_SHA" --head "$QUALITY_HEAD_SHA" --run --report "$report"
           else
-            pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run
+            pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run --report "$report"
+          fi
+          # Nightly only, fail closed: every suite must have been selected, and every selected suite must have passed.
+          if [ "$QUALITY_EVENT" = schedule ]; then
+            node -e '
+              const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+              const selection = report.selection ?? {};
+              const execution = report.execution ?? [];
+              const problems = [];
+              if (selection.allSelected !== true) problems.push("allSelected=" + selection.allSelected + " (" + selection.reason + ")");
+              if (selection.docsMarkdownOnly !== false) problems.push("docsMarkdownOnly=" + selection.docsMarkdownOnly);
+              const suites = selection.suiteIds ?? [];
+              if (suites.length === 0) problems.push("no suite selected");
+              if (execution.length !== suites.length) problems.push("executed " + execution.length + " of " + suites.length + " selected suites");
+              for (const entry of execution) if (entry.status !== "passed") problems.push(entry.suiteId + " " + entry.status);
+              if (problems.length > 0) {
+                console.error("::error title=Impact selection is not the full suite::" + problems.join("; "));
+                process.exit(1);
+              }
+              console.log("impact: all " + suites.length + " suites selected and passed");
+            ' "$report"
           fi
 
+      # Keep the nightly report so a red night can be traced to the failing
+      # suite and command (also on failure).
+      - name: Upload impact report
+        if: always() && github.event_name == 'schedule'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: impact-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/impact-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # frontend は Gate B2 の必須 job 名（Frontend (type-check / lint / test)）を保つ集約 job。
+  # 静的検査は frontend-static で 1 回、Vitest は frontend-unit の 3 shard で並列に走る。
+  # frontend lane（docs だけの pull request で skip。scripts/ci-change-scope.json）では
+  # 2 つの子が skip され、この集約も skip される（rust-aggregate と同じ形）。
+  # 子の一方だけが skipped のときは、下の検証 step が fail-closed で赤にする。
+  # Gate B2 は push と workflow_dispatch の run だけを受け、そこでは lane が全部 true なので、この skip は届かない。
   frontend:
     name: Frontend (type-check / lint / test)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [frontend-static, frontend-unit]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.frontend-static.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Frontend の静的検査と全 shard の成功を確認
+        env:
+          STATIC_RESULT: ${{ needs.frontend-static.result }}
+          UNIT_RESULT: ${{ needs.frontend-unit.result }}
+        run: |
+          echo "frontend-static: $STATIC_RESULT"
+          echo "frontend-unit: $UNIT_RESULT"
+          if [ "$STATIC_RESULT" != "success" ] || [ "$UNIT_RESULT" != "success" ]; then
+            echo "Frontend の静的検査または Vitest shard が成功していない" >&2
+            exit 1
+          fi
+
+  frontend-static:
+    name: Frontend static checks (type-check / lint / architecture / web editor)
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.frontend != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -283,17 +557,43 @@ jobs:
       - name: Browser CI performance contracts
         run: pnpm test:browser-ci
 
-      - name: テスト
-        run: pnpm test:node --run
-
       - name: Web Editor-only production artifact
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:web-editor
 
+  frontend-unit:
+    name: Frontend unit tests (shard ${{ matrix.shard }}/3)
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.frontend != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # test:node が build:workspace:dependencies を含むため、別 step の build は置かない。
+      - name: テスト (Vitest shard ${{ matrix.shard }}/3)
+        run: pnpm test:node --run --shard=${{ matrix.shard }}/3
+
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.lfm != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -319,7 +619,8 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.browser != 'false' }}
     # ubuntu-latest が 26.04 に移った 2026-10-26 から、related-scenes の幅の試験（上限 3000 ms）が
     # 4〜13 秒かかって落ちた（24.04 では 0.4〜1.8 秒。同じ commit のローカル実行は通る）。
     # image を明示し、26.04 への移行は試験の時間を測り直して意図して行う。
@@ -371,8 +672,12 @@ jobs:
 
   webgl:
     name: WebGL (deterministic SwiftShader)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
-    runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.browser != 'false' }}
+    # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
+    # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
+    # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -423,8 +728,12 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
-    runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.browser != 'false' }}
+    # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
+    # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
+    # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -472,7 +781,8 @@ jobs:
 
   security:
     name: Security (audit)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.security != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -740,6 +1050,9 @@ jobs:
           scripts/windows-release-workflow.test.mjs
           scripts/electron-v2-cleanup.test.mjs
           scripts/electron-runtime-performance-workflow.test.mjs
+          scripts/runtime-performance-fixture.test.mjs
+          scripts/runtime-performance-retry.test.mjs
+          scripts/runtime-performance-io-settle.test.mjs
           scripts/impact/core.test.mjs
           scripts/product-journey-impact.test.mjs
           scripts/product-journey-ratchet-hardening.test.mjs
@@ -752,6 +1065,10 @@ jobs:
           scripts/generate-licenses.test.mjs
           scripts/license-policy.test.mjs
           scripts/semantic-reranker-release.test.mjs
+          electron/scripts/mastra-ee-check.test.mjs
+          electron/scripts/packaged-smoke/package-check.test.mjs
+          scripts/generate-model-capability-snapshot.test.mjs
+          scripts/update-model-capabilities-workflow.test.mjs
 
       - name: Electron type-check
         if: ${{ !inputs.source_focused }}
@@ -767,13 +1084,20 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
+      # Mastra 移行 MP-3a：製品の bundle（main／preload に @mastra が無い、mastra-agent.cjs は ee の stub を通る）。
+      - name: Mastra ee check on the product bundles
+        if: ${{ !inputs.source_focused }}
+        run: node electron/scripts/mastra-ee-check.mjs --dist
+
       - name: Renderer performance budget
         if: ${{ !inputs.source_focused }}
         run: pnpm perf:budget
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
+    # Not a pull request check: the absolute-time thresholds are unstable on a shared hosted VM, so it is
+    # recorded by the master push, dispatch and reusable calls (thresholds and retry rules are unchanged).
+    if: github.event_name != 'schedule' && github.event_name != 'pull_request' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     # Reuses the N-API module and app bundle built once for the product journeys.
     needs: electron-product-journeys-build
     runs-on: ubuntu-24.04
@@ -838,7 +1162,8 @@ jobs:
   # merge into the unchanged canonical v5 result.
   electron-product-journeys-build:
     name: Electron product journeys build (N-API / app / MCP)
-    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
+    needs: [changes]
+    if: ${{ !cancelled() && (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) && needs.changes.outputs.journeys != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -978,7 +1303,8 @@ jobs:
 
   electron-product-journeys-c2zc:
     name: Electron product journeys C2-ZC evidence (Rust receipt / restore fixture)
-    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
+    needs: [changes]
+    if: ${{ !cancelled() && (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) && needs.changes.outputs.journeys != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -1282,7 +1608,8 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.windows != 'false' }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -1396,7 +1723,8 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: ${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -1529,11 +1857,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The shared Rust suite runs as three parallel shards (2026-11-19); the job
+  # `rust-aggregate` below keeps the required check name. Every shard builds the
+  # same workspace with the same features as the former single `cargo test`, so
+  # the test cfg is identical, except for the two `native-current-human-capture`
+  # steps of the integration shard (below), which build `grimodex-db` alone with
+  # that feature. Together the shards run the target kinds the former `cargo
+  # test` ran, by construction:
+  #   lib-graph    `--lib` tests whose name contains the filter below (a guard
+  #                fails the shard if the filter matches no test)
+  #   lib-rest     `--lib` tests that do not (the same string as `--skip`), so a
+  #                new test module lands here unless it matches the filter
+  #   integration  binary unit tests, integration tests and doctests (the targets
+  #                `--lib` does not select), an examples build, plus the
+  #                feature-specific reruns (`test-failpoints`, `licensing` and
+  #                `native-current-human-capture`)
+  # Examples are built, not run (as the former `cargo test` did): `cargo build
+  # --profile test --examples` compiles them as plain executables under the test
+  # profile, exactly as `cargo test` did. No target with `test = true` among the
+  # benches and examples is covered; there is none today, and a contract test
+  # (scripts/ci-pause.test.mjs) fails if a Cargo.toml declares one.
+  # `cargo check` and `cargo clippy` run once, in lib-graph.
   rust:
-    name: Shared Rust crates (check / clippy / test)
-    if: ${{ inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    name: Shared Rust crates (${{ matrix.shard }})
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [lib-graph, lib-rest, integration]
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -1592,27 +1946,77 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.shard }}
 
       - name: cargo check
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo check --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
 
       - name: cargo clippy
+        if: matrix.shard == 'lib-graph'
         working-directory: src-tauri
         run: >-
           cargo clippy --workspace --exclude grimodex --all-targets
           --features grimodex-semantic/semantic-embedding
           -- -D warnings
 
-      - name: cargo test
+      # The name filter selects nothing, and still succeeds, if the module is
+      # renamed; fail then, so the parallelism is not lost silently (lib-rest
+      # still covers every other test, so nothing is missing meanwhile).
+      - name: cargo test (lib tests, graph modules)
+        if: matrix.shard == 'lib-graph'
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding --lib -- narrative_extraction::nir1_graph 2>&1 | tee "$log"
+          passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"
+          echo "lib-graph: $passed tests passed"
+          if [ "$passed" -eq 0 ]; then
+            echo "lib-graph ran no test: the filter matches no module (renamed?)" >&2
+            exit 1
+          fi
+
+      - name: cargo test (lib tests, all other modules)
+        if: matrix.shard == 'lib-rest'
         working-directory: src-tauri
         run: >-
           cargo test --workspace --exclude grimodex
           --features grimodex-semantic/semantic-embedding
+          --lib -- --skip narrative_extraction::nir1_graph
+
+      - name: cargo test (binary unit tests and integration tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --bins --test '*'
+
+      - name: cargo test (doctests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --doc
+
+      # `cargo test` also built the examples (not run: test = false). The
+      # shards above select no example, so build them here: a plain executable
+      # under the test profile with the same features, as `cargo test` did.
+      - name: cargo build (examples)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo build --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
+          --profile test --examples
 
       - name: cargo test (migration supervisor failpoints)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: >-
           cargo test
@@ -1621,6 +2025,7 @@ jobs:
           --test workspace_migration_supervisor
 
       - name: cargo test (narrative runtime authority)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: >-
           cargo test
@@ -1630,16 +2035,97 @@ jobs:
       # 通常buildではlicensingが無効なため、共有runtimeのnetwork/race testsは
       # workspace testだけだとcfgで0件になる。releaseと同じfeatureを明示する。
       - name: cargo test (license runtime with licensing feature)
+        if: matrix.shard == 'integration'
         working-directory: src-tauri
         run: cargo test -p grimodex-license --features licensing
 
+      # Product configuration: the N-API crate always enables
+      # `native-current-human-capture`, so these grimodex-db tests are the ones
+      # that run in the shipped build; the feature-off suite above and in the
+      # other shards does not compile them. The filters, the `--test-threads=1`
+      # and the integration binaries are the same as the `native-current-human-capture`
+      # commands of the impact suite `nir1-entity-relation-review`
+      # (scripts/quality/impact-map.mjs), which stays as it is. They are not a
+      # whole-library run (about 2,940 tests, 17-21 minutes). The last three filters
+      # (scene_disclosure, related_scenes_requalification, scene_body_declaration)
+      # compile only with the feature and ran in no job before; the K2/5 PR-1
+      # rewrote about 1,400 lines of those tests (about 70 s, 14 s and 54 s).
+      # A filter that
+      # matches no test (a renamed module) selects nothing and still succeeds, so
+      # the step fails then; each filter is guarded on its own. The run text is
+      # pinned by scripts/ci-pause.test.mjs.
+      - name: cargo test (native-current-human-capture library tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP:-/tmp}/native-current-human-capture-lib.log"
+          for filter in \
+            narrative_extraction::nir1_history_context::tests \
+            narrative_extraction::nir1_history_requalification::tests \
+            narrative_extraction::nir1_history_budget \
+            narrative_extraction::nir1_history_adoption \
+            nir1_generation::tests::hc1_reads \
+            narrative_extraction::nir1_packing \
+            narrative_extraction::nir1_graph::scene_disclosure \
+            narrative_extraction::nir1_graph::related_scenes_requalification \
+            narrative_extraction::scene_body_declaration; do
+            cargo test -p grimodex-db --features native-current-human-capture --lib "$filter" -- --test-threads=1 2>&1 | tee "$log"
+            passed="$(awk '/^test result: /{for(i=2;i<=NF;i++)if($i=="passed;")s+=$(i-1)}END{print s+0}' "$log")"
+            echo "$filter: $passed tests passed"
+            if [ "$passed" -eq 0 ]; then
+              echo "$filter ran no test: the filter matches no module (renamed?)" >&2
+              exit 1
+            fi
+          done
+
+      # The CW typed-writer tests compile only with the feature, so the
+      # `--test '*'` step above runs an empty binary for `chat_typed_writers`.
+      # `d2a_m_t_typed_writers` and `d2a_restricted_generic_sql_shapes` have no
+      # cfg; they are kept for parity with the impact command.
+      - name: cargo test (native-current-human-capture integration tests)
+        if: matrix.shard == 'integration'
+        working-directory: src-tauri
+        run: >-
+          cargo test
+          -p grimodex-db
+          --features native-current-human-capture
+          --test chat_typed_writers
+          --test d2a_m_t_typed_writers
+          --test d2a_restricted_generic_sql_shapes
+
+  # The required check name of the shared Rust suite (Gate B2 `requiredJobs`).
+  # It succeeds only when every shard of `rust` succeeded. `!cancelled()` keeps
+  # the implicit success() from skipping it when `changes` was skipped (a
+  # standalone canonical profile), so a failed shard fails this job instead of
+  # skipping it; it is skipped only when `rust` itself was (lane false).
+  rust-aggregate:
+    name: Shared Rust crates (check / clippy / test)
+    needs: [rust]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.rust.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every shared Rust shard
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: test "$RUST_RESULT" = success
+
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
-    if: ${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks)) && needs.changes.outputs.rust != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        # A pull request runs the real-worker tests on Linux only (2026-11-15).
+        # A master push runs Linux, and macOS and Windows only when it changes a
+        # path in scripts/ci-cross-os-scope.json (the `crossos` step of `changes`
+        # sets cquery_cross_os; only an exact 'false' skips them). The nightly
+        # run runs macOS and Windows only (Linux ran in the push). A manual
+        # dispatch and the release call (a reusable call follows its caller's
+        # event, a tag push) keep the three-OS matrix.
+        os: ${{ fromJSON(github.event_name == 'schedule' && '["macos-latest","windows-latest"]' || ((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request' || needs.changes.outputs.cquery_cross_os == 'false') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]')) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -1719,7 +2205,8 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: ${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.migration != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -1800,7 +2287,30 @@ jobs:
       - name: Migration recovery failpoint library tests
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-library'"
         working-directory: src-tauri
-        run: cargo test -p grimodex-db --features test-failpoints --lib
+        run: |
+          set -euo pipefail
+          # The feature-off library suite already runs in the Shared Rust job. The
+          # failpoint injection points are in backup_restore.rs and
+          # migration_supervisor.rs, and the feature-only library tests are in
+          # backup_restore.rs and recovery.rs, so only these three modules' library
+          # tests are run here. Fail closed: a filter that stops matching, or a
+          # required failpoint-only test that did not run, fails.
+          log="${RUNNER_TEMP:-/tmp}/migration-failpoint-lib.log"
+          cargo test -p grimodex-db --features test-failpoints --lib -- \
+            backup_restore:: recovery:: migration_supervisor:: 2>&1 | tee "$log"
+          for required in \
+            backup_restore::tests::finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once \
+            backup_restore::tests::normal_restore_epoch_failpoints_never_leave_live_image_epochless \
+            backup_restore::tests::restore_failure_leaves_declarations_untouched \
+            recovery::tests::atomic_replace_failure_republish_path_uses_pre_restore_digest \
+            recovery::tests::forensic_post_replace_failure_requires_recovery_not_main_only_success \
+            recovery::tests::safe_mode_restore_after_live_seal_failpoint_keeps_wal_commits_and_marker \
+            recovery::tests::safe_mode_restore_after_replace_failpoint_rolls_back_live \
+            recovery::tests::safe_mode_restore_after_rollback_snapshot_failpoint_leaves_live; do
+            grep -Fxq "test $required ... ok" "$log"
+          done
+          passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed; 0 failed;.*/\1/p' "$log" | head -n 1)"
+          test "${passed:-0}" -ge 58
 
       - name: Safe Mode structured outcome + restore-by-id
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-safe-mode'"

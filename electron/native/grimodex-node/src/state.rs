@@ -109,6 +109,21 @@ pub(crate) fn graph_ready_notifier(
     )
 }
 
+/// The owner's Graph Index demand as an observer-only event for Main (DR-PUBG-5-14):
+/// the project ID only. The owner raises it only while the product token exists.
+pub(crate) fn graph_index_demand_notifier(
+    events: EventQueue,
+) -> crate::nir1_graph_product::GraphIndexDemandNotifier {
+    Arc::new(
+        move |notice: &crate::nir1_graph_product::GraphIndexDemandNotice| {
+            events.emit(
+                crate::nir1_graph_product::GRAPH_INDEX_DEMAND_EVENT,
+                serde_json::json!({"projectId": notice.project_id}),
+            );
+        },
+    )
+}
+
 #[cfg(test)]
 impl EventQueue {
     /// The events not yet handed to a registered callback, oldest first.
@@ -2614,6 +2629,9 @@ pub struct AppState {
     /// backend.onEvent → main → 全窓broadcastへ載る。
     pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
     pub(crate) related_scenes: crate::related_scenes::RelatedScenesService,
+    /// chat IR S1-A: the in-flight limit and the record of issued items.
+    /// Process-local; nothing here is persisted.
+    pub(crate) chat_ir: crate::chat_ir::ChatIrState,
     /// Process-local C-query product owner (CP-2a). Never activated before PUB-G (A-1).
     pub(crate) nir1_graph: crate::nir1_graph_product::Nir1GraphProductOwner,
     /// MG-1 (CB-2): Main's one-time confirmation slot and the closed-by-default
@@ -2807,6 +2825,9 @@ impl AppState {
         // CP-3a: a late Graph result is announced with the project ID only
         // (K3/2's `related-scenes:graph-ready`); the payload never carries data.
         nir1_graph.set_graph_ready_notifier(graph_ready_notifier(events.clone()));
+        // DR-PUBG-5-14: a refused Graph registration asks Main for a Graph Index
+        // build wake of that project (the project ID only; closed until PUB-G).
+        nir1_graph.set_graph_index_demand_notifier(graph_index_demand_notifier(events.clone()));
         let main_grant = crate::main_grant::MainGrantState::new(&lifecycle_core);
         Ok(Self {
             ws: WorkspaceState {
@@ -2837,6 +2858,7 @@ impl AppState {
             )),
             semantic,
             related_scenes: crate::related_scenes::RelatedScenesService::default(),
+            chat_ir: crate::chat_ir::ChatIrState::default(),
             nir1_graph,
             main_grant,
             semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(

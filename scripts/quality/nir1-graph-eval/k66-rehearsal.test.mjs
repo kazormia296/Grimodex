@@ -104,25 +104,45 @@ test("予行: FR-7 の記録が窓内に合流した親の全件に無ければ�
   assert.match(result.next, /neither dropped nor loosened/u);
 });
 
-test("予行: 記録の誤り（FR-8。stale で合流した親）は artifact として止める", () => {
+test("予行: 記録の誤り（FR-8。driftAtQuery が 0 でない親）は artifact として止める", () => {
+  const result = assessK66Rehearsal(
+    rows(30, (repeat) =>
+      repeat === 2 ? [{}, { dPrimeCounters: { driftAtQuery: 1 } }] : [{}, {}],
+    ),
+  );
+  assert.equal(result.status, "artifact");
+  assert.match(result.artifacts[0].message, /FR-8/u);
+});
+
+test("予行: 記録の誤り（K6/7 ②-1。drift を検出したのに合流した親）は artifact として止める", () => {
   const result = assessK66Rehearsal(
     rows(30, (repeat) =>
       repeat === 2
         ? [
+            {},
             {
-              freshnessStamp: {
-                result: "stale",
-                matched: false,
-                attemptedAtNs: 95_000,
+              parent: {
+                ticket: {
+                  settled: true,
+                  outcome: "available",
+                  reason: null,
+                  disposition: "used",
+                  busyCause: null,
+                  workerDrift: { result: "drift", cause: "registration-drift" },
+                  requalification: {
+                    result: "passed",
+                    reason: null,
+                    returned: true,
+                  },
+                },
               },
             },
-            {},
           ]
         : [{}, {}],
     ),
   );
   assert.equal(result.status, "artifact");
-  assert.match(result.artifacts[0].message, /FR-8/u);
+  assert.match(result.artifacts[0].message, /②-1/u);
 });
 
 test("予行の品質の予告: /6 の regime で、Graph が寄与したのに first-render に数えられない親は FAIL（非判定）", () => {

@@ -16,7 +16,7 @@ use grimodex_semantic::audit::{
     TokenizerIdentity,
 };
 use serde_json::json;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 
 fn begin_deferred(fixture: &ProductFixture, seed: &str) -> GraphBegin {
     fixture
@@ -252,16 +252,19 @@ fn p4_a_demand_made_to_wait_by_a_held_session_is_announced_once_at_its_end() {
 /// edit in progress would loop notice → re-query → stale, five audit rows each.
 #[test]
 fn p4_the_held_querys_own_stale_answer_is_not_announced() {
-    let fixture = ProductFixture::new();
+    // DR-DBC-7: the stale answer is the worker's own drift check at the query
+    // (no parent stamp is read). The commit lands after the registration and
+    // before the query, the only window left for F10.
+    let (fixture, plan) = drift_fixture(Duration::ZERO);
     let notices = recording_notifier(&fixture);
-    *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+    plan.query_gate_closed.store(true, Ordering::SeqCst);
     let ticket = pending(begin_deferred(&fixture, "entity"));
     ticket.release_after_own_commits();
-    wait_until("the prepare after the release", || {
-        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    wait_until("the query to reach the worker", || {
+        plan.queries.load(Ordering::SeqCst) == 1
     });
-    commit_an_edit(&fixture, "Edited while the held query prepares");
-    fixture.plan.release.store(true, Ordering::SeqCst);
+    commit_an_edit(&fixture, "Edited while the held query is in the worker");
+    plan.query_gate_closed.store(false, Ordering::SeqCst);
     assert_unavailable(outcome(&ticket), GraphUnavailable::Stale);
     ticket.finish(GraphTicketUse::Unused);
     wait_until("the end of the session", || {
@@ -333,23 +336,27 @@ fn p4_a_notifier_that_calls_back_into_the_owner_is_answered() {
 
 // ---- Negative ----------------------------------------------------------------
 
-/// N1: a commit between the release and the query (F10) is still stale.
+/// N1 (DR-DBC-7 narrows DR-CQD-8): a commit after the worker's registration
+/// and before its query (F10) is still stale: the worker's own drift check
+/// finds it. A commit before the registration's preflight is no longer stale
+/// (the worker registers on the committed state; see
+/// `i_a_a_commit_after_the_release_and_before_the_registration_is_taken_in`).
 #[test]
-fn n1_a_commit_after_the_release_is_still_stale() {
-    let fixture = ProductFixture::new();
+fn n1_a_commit_after_the_registration_is_still_stale() {
+    let (fixture, plan) = drift_fixture(Duration::ZERO);
     let notices = recording_notifier(&fixture);
-    *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+    plan.query_gate_closed.store(true, Ordering::SeqCst);
     let ticket = pending(begin_deferred(&fixture, "entity"));
     ticket.release_after_own_commits();
-    // S0 is read before the worker is created, so the edit lands after it.
-    wait_until("the prepare after the release", || {
-        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    wait_until("the query to reach the worker", || {
+        plan.queries.load(Ordering::SeqCst) == 1
     });
-    commit_an_edit(&fixture, "Edited after the release");
-    fixture.plan.release.store(true, Ordering::SeqCst);
+    commit_an_edit(&fixture, "Edited after the registration");
+    plan.query_gate_closed.store(false, Ordering::SeqCst);
     assert_unavailable(outcome(&ticket), GraphUnavailable::Stale);
-    assert_eq!(fixture.diagnostics().stamp_stale, 1);
-    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(plan.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(plan.drifted.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.diagnostics().drift_at_query, 1);
     ticket.finish(GraphTicketUse::Unused);
     wait_until("the end of the session", || {
         fixture.kind() == GraphSlotKind::Empty
@@ -689,18 +696,17 @@ fn n9_begin_deferred_and_release_never_wait() {
     ticket.finish(GraphTicketUse::Cancelled);
 }
 
-/// The S0 counter sees a release made inside an open read of the workspace's
-/// connection (the owner's wait-0 stamp read finds the connection busy). The
-/// begin releases outside every read (`begin_releases_the_held_query_…`).
+/// A release made inside an open read of the workspace's connection is still
+/// served: the owner holds nothing on that connection for its own freshness
+/// (DR-DBC-7 removed the stamp it read there). The begin releases outside every
+/// read (`begin_releases_the_held_query_…`).
 #[test]
-fn a_release_inside_an_open_read_shows_as_a_missing_s0_stamp() {
+fn a_release_inside_an_open_read_is_still_served() {
     let fixture = ProductFixture::new();
     let ticket = pending(begin_deferred(&fixture, "entity"));
     ticket.release_after_own_commits();
     assert!(matches!(outcome(&ticket), GraphTicketOutcome::Available(_)));
     ticket.finish(GraphTicketUse::Used);
-    assert_eq!(fixture.diagnostics().stamp0_missing, 0);
-    assert_eq!(fixture.diagnostics().stamp_fresh, 1);
     wait_until("the end of the session", || {
         fixture.kind() == GraphSlotKind::Empty
     });
@@ -718,7 +724,6 @@ fn a_release_inside_an_open_read_shows_as_a_missing_s0_stamp() {
         .expect("read");
     assert!(matches!(outcome(&second), GraphTicketOutcome::Available(_)));
     second.finish(GraphTicketUse::Used);
-    assert_eq!(fixture.diagnostics().stamp0_missing, 1);
 }
 
 /// The begin releases its held query after the audited query embedding (its
@@ -806,6 +811,20 @@ struct DriftPlan {
     registration_ms: AtomicU64,
     /// Holds a query after it entered the worker, before its drift check.
     query_gate_closed: AtomicBool,
+    /// The workers created so far.
+    creates: AtomicUsize,
+    /// A commit made by `create`, after the admission and before the worker
+    /// registers (the window the parent's pre-read freshness check used to turn into `stale`).
+    create_hook_commits: AtomicBool,
+    /// What `create`'s commit did, seen from another connection: the rows it
+    /// changed, and `PRAGMA data_version` of an observer connection (the kind
+    /// of connection the worker's drift check uses) before and after it.
+    create_commit_rows: AtomicUsize,
+    create_data_version_before: AtomicI64,
+    create_data_version_after: AtomicI64,
+    /// The scene title the worker's own connection saw when its registration
+    /// began (`prepare`): the state the registration was taken on.
+    registered_title: Mutex<Option<String>>,
 }
 
 struct DriftFactory {
@@ -827,6 +846,25 @@ fn data_version(db: &grimodex_db::Database) -> Result<i64> {
 
 impl GraphWorkerFactory for DriftFactory {
     fn create(&self, start: GraphWorkerStart) -> Box<dyn GraphWorker> {
+        self.plan.creates.fetch_add(1, Ordering::SeqCst);
+        if self.plan.create_hook_commits.load(Ordering::SeqCst) {
+            let observer = grimodex_db::Database::new(&self.db_path).expect("observer connection");
+            let before = data_version(&observer).expect("data_version before the commit");
+            let rows = start
+                .snapshot
+                .db()
+                .with_conn(|conn| {
+                    Ok(conn.execute(
+                        "UPDATE tree_nodes SET title=?1 WHERE id=?2",
+                        ("Edited before the registration", SCENE),
+                    )?)
+                })
+                .expect("commit before the registration");
+            let after = data_version(&observer).expect("data_version after the commit");
+            self.plan.create_commit_rows.store(rows, Ordering::SeqCst);
+            self.plan.create_data_version_before.store(before, Ordering::SeqCst);
+            self.plan.create_data_version_after.store(after, Ordering::SeqCst);
+        }
         Box::new(DriftWorker {
             db_path: self.db_path.clone(),
             plan: Arc::clone(&self.plan),
@@ -842,6 +880,14 @@ impl GraphWorker for DriftWorker {
         self.plan.prepares.fetch_add(1, Ordering::SeqCst);
         let db = grimodex_db::Database::new(&self.db_path)?;
         let before = data_version(&db)?;
+        let title = db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT title FROM tree_nodes WHERE id=?1",
+                [SCENE],
+                |row| row.get::<_, String>(0),
+            )?)
+        })?;
+        *lock(&self.plan.registered_title) = Some(title);
         self.plan.registering.store(true, Ordering::SeqCst);
         thread::sleep(Duration::from_millis(
             self.plan.registration_ms.load(Ordering::SeqCst),
@@ -1003,7 +1049,6 @@ fn i_a_a_query_released_after_the_begins_commits_is_valid_and_the_controls_are_r
     assert_eq!(plan.drifted.load(Ordering::SeqCst), 0);
     assert_eq!(diagnostics.prepare_failures, 0);
     assert_eq!(diagnostics.drift_at_query, 0);
-    assert_eq!(diagnostics.stamp_stale, 0);
     assert_eq!(diagnostics.prepares_ready, 1);
     wait_until("the end of the session", || {
         fixture.kind() == GraphSlotKind::Empty
@@ -1047,27 +1092,19 @@ fn i_a_a_query_released_after_the_begins_commits_is_valid_and_the_controls_are_r
     assert_unavailable(outcome(&late), GraphUnavailable::Stale);
     late.finish(GraphTicketUse::Unused);
     let diagnostics = fixture.diagnostics();
-    assert_eq!(diagnostics.stamp_stale + diagnostics.drift_at_query, 1);
+    assert_eq!(diagnostics.drift_at_query, 1);
 }
 
-/// (i-a) Without S0 (the release's admission found the workspace connection
-/// busy, `stamp_unavailable`), a commit between the READY and the query is
-/// still caught: by the worker's own drift check (`drift_at_query`, stale).
+/// (i-a) A commit between the READY and the query is caught by the worker's
+/// own drift check (`drift_at_query`, stale): the only freshness check left
+/// (DR-DBC-7).
 #[test]
-fn i_a_without_s0_a_commit_before_the_query_is_caught_by_the_worker_drift() {
+fn i_a_a_commit_before_the_query_is_caught_by_the_worker_drift() {
     let (fixture, plan) = drift_fixture(Duration::ZERO);
     let notices = recording_notifier(&fixture);
     plan.query_gate_closed.store(true, Ordering::SeqCst);
     let ticket = pending(begin_deferred(&fixture, "entity"));
-    active_workspace_snapshot(&fixture.state.ws)
-        .expect("workspace")
-        .db()
-        .with_read_transaction(|_conn| {
-            ticket.release_after_own_commits();
-            wait_until("the prepare", || plan.prepares.load(Ordering::SeqCst) == 1);
-            Ok(())
-        })
-        .expect("read");
+    ticket.release_after_own_commits();
     wait_until("the query to reach the worker", || {
         plan.queries.load(Ordering::SeqCst) == 1
     });
@@ -1076,8 +1113,6 @@ fn i_a_without_s0_a_commit_before_the_query_is_caught_by_the_worker_drift() {
     assert_unavailable(outcome(&ticket), GraphUnavailable::Stale);
     ticket.finish(GraphTicketUse::Unused);
     let diagnostics = fixture.diagnostics();
-    assert_eq!(diagnostics.stamp0_missing, 1);
-    assert_eq!(diagnostics.stamp_unavailable, 1);
     assert_eq!(diagnostics.drift_at_query, 1);
     assert_eq!(plan.drifted.load(Ordering::SeqCst), 1);
     wait_until("the end of the session", || {
@@ -1085,6 +1120,44 @@ fn i_a_without_s0_a_commit_before_the_query_is_caught_by_the_worker_drift() {
     });
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
     assert!(lock(&notices).is_empty(), "{:?}", lock(&notices));
+}
+
+/// (i-a) DR-DBC-7: a commit between the release and the worker's registration
+/// (what the parent's pre-read freshness check used to turn into `stale`) is taken into the
+/// registration: the worker answers on the committed state, no drift.
+#[test]
+fn i_a_a_commit_after_the_release_and_before_the_registration_is_taken_in() {
+    let (fixture, plan) = drift_fixture(Duration::ZERO);
+    plan.create_hook_commits.store(true, Ordering::SeqCst);
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    ticket.release_after_own_commits();
+    assert!(matches!(outcome(&ticket), GraphTicketOutcome::Available(_)));
+    ticket.finish(GraphTicketUse::Used);
+    let diagnostics = fixture.diagnostics();
+    assert_eq!(plan.creates.load(Ordering::SeqCst), 1);
+    // The commit happened (one row), and a connection that was open across it
+    // saw the data version move: a stale verdict on a moved version is what a
+    // freshness read taken before it would have made.
+    assert_eq!(plan.create_commit_rows.load(Ordering::SeqCst), 1);
+    assert_ne!(
+        plan.create_data_version_before.load(Ordering::SeqCst),
+        plan.create_data_version_after.load(Ordering::SeqCst),
+        "the commit moved data_version"
+    );
+    // The registration was taken after it, on the committed state.
+    assert_eq!(
+        lock(&plan.registered_title).as_deref(),
+        Some("Edited before the registration")
+    );
+    assert_eq!(plan.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(plan.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(plan.drifted.load(Ordering::SeqCst), 0);
+    assert_eq!(plan.refused.load(Ordering::SeqCst), 0);
+    assert_eq!(diagnostics.drift_at_query, 0);
+    assert_eq!(diagnostics.prepare_failures, 0);
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
 }
 
 // ---- the end of an owner thread with a held query (lifecycle P3-2) -----------
@@ -1278,7 +1351,6 @@ fn i_b_the_real_worker_answers_a_query_released_after_the_begins_commits() {
     ticket.finish(GraphTicketUse::Used);
     assert_eq!(diagnostics.prepare_failures, 0);
     assert_eq!(diagnostics.drift_at_query, 0);
-    assert_eq!(diagnostics.stamp_stale, 0);
     assert_eq!(diagnostics.prepares_ready, 1);
 
     // Control: a READY prepared before the same commits is stale at its query.
@@ -1309,6 +1381,9 @@ fn i_b_the_real_worker_answers_a_query_released_after_the_begins_commits() {
         control_answer,
         Some(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale))
     ));
+    // DR-DBC-7: the real worker's own drift check is what found it (no parent
+    // stamp is read any more).
+    assert_eq!(after.drift_at_query, 1);
     control.finish(GraphTicketUse::Unused);
     owner.close_for_shutdown();
     let deadline = Instant::now() + Duration::from_secs(20);

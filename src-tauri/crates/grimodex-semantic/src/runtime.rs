@@ -85,6 +85,15 @@ pub use audited_query::{
 };
 
 #[cfg(feature = "semantic-embedding")]
+#[path = "runtime_chat_ir.rs"]
+mod chat_ir;
+#[cfg(feature = "semantic-embedding")]
+pub use chat_ir::{
+    ChatIrPrepareOutcome, ChatIrQuery, ChatIrScoreOutcome, ChatIrUnavailable, PendingTerminalAudit,
+    TERMINAL_BACKFILL_BUDGET,
+};
+
+#[cfg(feature = "semantic-embedding")]
 #[path = "runtime_nir1_documents.rs"]
 mod nir1_documents;
 #[cfg(feature = "semantic-embedding")]
@@ -97,6 +106,10 @@ mod audited_query_tests;
 #[cfg(all(test, feature = "semantic-embedding"))]
 #[path = "runtime_nir1_document_tests.rs"]
 mod nir1_document_tests;
+
+#[cfg(all(test, feature = "semantic-embedding"))]
+#[path = "runtime_chat_ir_tests.rs"]
+mod chat_ir_tests;
 
 pub const REINDEX_PROGRESS_EVENT: &str = "semantic:reindex_progress";
 pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "semantic:model_download_progress";
@@ -875,9 +888,29 @@ fn start_embedding_audit(
     tokenizer_may_truncate: bool,
     preflight_before_dispatch: bool,
 ) -> Result<crate::audit::SemanticAuditSession> {
-    use crate::audit::{
-        sha256_hex, SemanticAuditAppender, SemanticAuditContext, SemanticAuditSession,
-    };
+    let appender: Arc<dyn crate::audit::SemanticAuditAppender> = request.database();
+    start_embedding_audit_with_appender(
+        appender,
+        request,
+        project_id,
+        input,
+        tokenizer_may_truncate,
+        preflight_before_dispatch,
+    )
+}
+
+/// `start_embedding_audit` with the appender chosen by the caller (DR-CHATIR-S1-11:
+/// the chat IR query appends through a deadline-bound, waiter-free appender).
+#[cfg(feature = "semantic-embedding")]
+fn start_embedding_audit_with_appender(
+    appender: Arc<dyn crate::audit::SemanticAuditAppender>,
+    request: &SemanticRequest,
+    project_id: &str,
+    input: AuditedEmbeddingInput<'_>,
+    tokenizer_may_truncate: bool,
+    preflight_before_dispatch: bool,
+) -> Result<crate::audit::SemanticAuditSession> {
+    use crate::audit::{sha256_hex, SemanticAuditContext, SemanticAuditSession};
 
     let AuditedEmbeddingInput {
         path_id,
@@ -890,7 +923,6 @@ fn start_embedding_audit(
         metadata,
     } = input;
     let model_text = format!("{model_prefix}{raw_text}");
-    let appender: Arc<dyn SemanticAuditAppender> = request.database();
     let context = SemanticAuditContext {
         project_id: Some(project_id.to_string()),
         operation_id: request.operation_id().to_string(),

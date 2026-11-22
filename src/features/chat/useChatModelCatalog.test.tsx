@@ -2,7 +2,10 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useChatModelCatalog } from "./useChatModelCatalog";
+import {
+  __resetChatModelCatalogCacheForTests,
+  useChatModelCatalog,
+} from "./useChatModelCatalog";
 import { useAiSettingsStore } from "./store";
 import {
   __resetDynamicModelCapsForTests,
@@ -25,6 +28,8 @@ describe("useChatModelCatalog dynamic capabilities", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetDynamicModelCapsForTests();
+    __resetChatModelCatalogCacheForTests();
+    localStorage.clear();
     useAiSettingsStore.setState({
       settings: {
         provider: "openai",
@@ -144,5 +149,76 @@ describe("useChatModelCatalog dynamic capabilities", () => {
     expect(
       getDynamicModelMeta("ollama", "shared:latest", endpointB),
     ).toMatchObject({ ctx: 131_072, tools: true });
+  });
+
+  describe("非 active の Anthropic の一覧の登録", () => {
+    const LIVE_MODEL: AiModel = {
+      id: "claude-fable-5-9",
+      name: "Claude Fable 5.9",
+      contextLength: 400_000,
+      maxCompletionTokens: 60_000,
+    };
+
+    function mockAnthropicList(models: AiModel[]) {
+      mockHasApiKey.mockImplementation(
+        async (provider) => provider === "anthropic",
+      );
+      // ollama は未起動（失敗）にして、別 provider の revision 加算を混ぜない。
+      mockListAiModels.mockImplementation(async (provider) => {
+        if (provider === "anthropic") return models;
+        if (provider === "ollama") throw new Error("ollama is not running");
+        return [];
+      });
+    }
+
+    it("live の limit を持つ一覧は登録し、modelCapsRevision を加算する", async () => {
+      mockAnthropicList([LIVE_MODEL]);
+
+      const { result } = renderHook(() => useChatModelCatalog(true));
+      await waitFor(() => {
+        expect(
+          result.current.sections.some((s) => s.provider === "anthropic"),
+        ).toBe(true);
+      });
+
+      expect(
+        getDynamicModelMeta("anthropic", "claude-fable-5-9"),
+      ).toMatchObject({ ctx: 400_000, out: 60_000 });
+      expect(useAiSettingsStore.getState().modelCapsRevision).toBe(1);
+    });
+
+    it("limit も capabilities も無い固定の予備の一覧は登録せず、revision も動かさない", async () => {
+      mockAnthropicList([
+        { id: "claude-opus-4-1", name: "Claude Opus 4.1" },
+        { id: "claude-fable-5-9", name: "Claude Fable 5.9" },
+      ]);
+
+      const { result } = renderHook(() => useChatModelCatalog(true));
+      await waitFor(() => {
+        expect(
+          result.current.sections.some((s) => s.provider === "anthropic"),
+        ).toBe(true);
+      });
+
+      expect(getDynamicModelMeta("anthropic", "claude-fable-5-9")).toBeNull();
+      expect(getDynamicModelMeta("anthropic", "claude-opus-4-1")).toBeNull();
+      expect(useAiSettingsStore.getState().modelCapsRevision).toBe(0);
+    });
+
+    it("同じ一覧を module cache から返す 2 回目は、再登録も revision の加算もしない", async () => {
+      mockAnthropicList([LIVE_MODEL]);
+
+      const first = renderHook(() => useChatModelCatalog(true));
+      await waitFor(() => expect(first.result.current.loading).toBe(false));
+      expect(useAiSettingsStore.getState().modelCapsRevision).toBe(1);
+      first.unmount();
+
+      const second = renderHook(() => useChatModelCatalog(true));
+      await waitFor(() => expect(second.result.current.loading).toBe(false));
+      expect(
+        mockListAiModels.mock.calls.filter(([p]) => p === "anthropic"),
+      ).toHaveLength(1);
+      expect(useAiSettingsStore.getState().modelCapsRevision).toBe(1);
+    });
   });
 });

@@ -1,0 +1,113 @@
+{
+  "tool": "get_chapter_summaries",
+  "cases": [
+    {
+      "case": "rows: 全階層の folder を DFS の読む順に章とし、直下の場面のうち synopsis が空でないものを並べる。synopsis が空の場面・archived の場面は出ない。archived の folder は章にならない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "3 chapters with scene summaries",
+        "tokensUsed": 283,
+        "content": [
+          {
+            "id": "n-part1",
+            "title": "第一部",
+            "scenes": []
+          },
+          {
+            "id": "n-ch1",
+            "title": "第一章",
+            "scenes": [
+              {
+                "id": "n-s1",
+                "title": "出会い",
+                "synopsis": "アリアが老魔術師と出会う。"
+              }
+            ]
+          },
+          {
+            "id": "n-ch2",
+            "title": "第二章",
+            "scenes": [
+              {
+                "id": "n-s3",
+                "title": "裏切り",
+                "synopsis": "黒幕の正体が明かされる。"
+              },
+              {
+                "id": "n-s4",
+                "title": "終幕",
+                "synopsis": "物語は幕を閉じる。"
+              }
+            ]
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"n-part1\",\"title\":\"第一部\",\"scenes\":[]},{\"id\":\"n-ch1\",\"title\":\"第一章\",\"scenes\":[{\"id\":\"n-s1\",\"title\":\"出会い\",\"synopsis\":\"アリアが老魔術師と出会う。\"}]},{\"id\":\"n-ch2\",\"title\":\"第二章\",\"scenes\":[{\"id\":\"n-s3\",\"title\":\"裏切り\",\"synopsis\":\"黒幕の正体が明かされる。\"},{\"id\":\"n-s4\",\"title\":\"終幕\",\"synopsis\":\"物語は幕を閉じる。\"}]}]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "0 chapters with scene summaries",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "1 chapters with scene summaries",
+        "tokensUsed": 144,
+        "content": [
+          {
+            "id": "x-folder",
+            "title": "他の章",
+            "scenes": [
+              {
+                "id": "x-s1",
+                "title": "出会い",
+                "synopsis": "他作品の出会い。"
+              },
+              {
+                "id": "x-s2",
+                "title": "旅立ち",
+                "synopsis": "他作品の旅立ち。"
+              }
+            ]
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-folder\",\"title\":\"他の章\",\"scenes\":[{\"id\":\"x-s1\",\"title\":\"出会い\",\"synopsis\":\"他作品の出会い。\"},{\"id\":\"x-s2\",\"title\":\"旅立ち\",\"synopsis\":\"他作品の旅立ち。\"}]}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "get_chapter_summaries",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

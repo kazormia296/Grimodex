@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import type { InlineAiContext } from "./inlineAiTypes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { visibleCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 
 /** カーソル前後の抽出文字数（バイト換算ではなく PM 位置単位） */
 const CURSOR_BEFORE_CHARS = 500;
@@ -86,9 +87,41 @@ export function buildInlineAiContext(
   };
 }
 
+/**
+ * AI へ送る context を作る。`buildInlineAiContext` との違いは、作者が hidden（AI に
+ * 秘匿）と印した Codex を要約から除くこと。エディタ由来の項目（選択・カーソル・本文）は
+ * await の前に同期で取り、DB を引く hidden 判定の間にカーソルが動いても変わらない。
+ * 判定は chat の通常の文脈と同じ正本（`listCodexIdsHiddenFromAi`）で、現在の場面が
+ * あればその場面の Phase で解決する。AI へ送る経路は必ずこちらを使う。
+ */
+export async function buildInlineAiContextForSend(
+  input: BuildInlineAiContextInput & {
+    projectId?: string | null;
+    /** 現在の場面。Codex・Snippet の編集中など場面でないときは null。 */
+    sceneId?: string | null;
+  },
+): Promise<InlineAiContext> {
+  const { projectId, sceneId, ...rest } = input;
+  const base = buildInlineAiContext({ ...rest, matchedCodexIds: [] });
+  // Phase で hidden を解除された Codex は、base ではなく Phase 解決後の要約を渡す。
+  const visible = await visibleCodexForAi(rest.matchedCodexIds, {
+    projectId,
+    sceneId,
+  });
+  return {
+    ...base,
+    codexSummaries: buildCodexSummaries(
+      visible.ids,
+      rest.codexEntries,
+      visible.summaries,
+    ),
+  };
+}
+
 function buildCodexSummaries(
   matchedIds: string[],
   entries: CodexEntryLike[],
+  resolvedSummaries?: ReadonlyMap<string, string | null>,
 ): string {
   if (matchedIds.length === 0) return "";
   const idSet = new Set(matchedIds);
@@ -96,7 +129,11 @@ function buildCodexSummaries(
   let total = 0;
   for (const entry of entries) {
     if (!idSet.has(entry.id)) continue;
-    const summary = (entry.summary ?? "").trim();
+    const summary = (
+      (resolvedSummaries?.has(entry.id)
+        ? resolvedSummaries.get(entry.id)
+        : entry.summary) ?? ""
+    ).trim();
     if (!summary) continue;
     const line = `- ${entry.name}: ${summary}`;
     if (total + line.length + 1 > CODEX_SUMMARIES_LIMIT) break;

@@ -1,0 +1,134 @@
+{
+  "schema": "nir1-cp4-trace-run-report/1",
+  "run": "trace-editing-s7r2-1",
+  "attempt": 1,
+  "problems": [],
+  "sessions": {
+    "prep": {
+      "problems": [],
+      "stop": {
+        "closed": true,
+        "closeMs": 522,
+        "signalled": [],
+        "remaining": []
+      }
+    },
+    "measure": {
+      "problems": [],
+      "stop": {
+        "closed": true,
+        "closeMs": 667,
+        "signalled": [],
+        "remaining": []
+      }
+    }
+  },
+  "checks": {
+    "productBuild": {
+      "checked": true,
+      "productReceiptHead": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a",
+      "productReceiptTree": "97ae2b7ad21ab0db7c47dd9d17b404ed0cabc282",
+      "evalReceiptHead": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a",
+      "evalReceiptTree": "97ae2b7ad21ab0db7c47dd9d17b404ed0cabc282",
+      "artifacts": {
+        "dist/index.html": "1506a5ea2452fae3c5505d546138c3e16c7282c0162172e7aa92caa33a6096cc",
+        "dist-electron/main.cjs": "1c72f8ab3ce44a637c6f360e92f2f09970f361ba6d58e67aaada4b309a103c72",
+        "dist-electron/preload.cjs": "1c828b7a67940528b263239830664725881b00ef7b29a073697316fbb67e1e47",
+        "electron/native/grimodex-node/grimodex-node.node": "0c2e22d77f287cef565ba76cfae6379c91a8b7bb43e82567df0a4d060cb137b9"
+      }
+    },
+    "rendererBuild": {
+      "alias": {
+        "from": "src/features/related-scenes/nir1GraphAvailability.ts",
+        "to": "scripts/quality/nir1-graph-eval/renderer/nir1GraphAvailability.eval.ts",
+        "importers": [
+          "src/features/related-scenes/RelatedScenesSection.tsx",
+          "src/features/related-scenes/useNir1RelatedScenes.ts"
+        ],
+        "stubSha256": "01b009b3a5cc25899536703d81a400f8bdc09de4be70a9a04c2067c2f322c1cd",
+        "pluginSha256": "72340cde5709837a9f770ee6ea8ec0c29b2208820944437ab11ce9425436f13f"
+      },
+      "timingShim": {
+        "from": "src/features/related-scenes/nir1RelatedScenesApi.ts",
+        "to": "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+        "importers": [
+          "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+          "src/features/related-scenes/fetchNir1RelatedScenes.ts",
+          "src/features/related-scenes/fetchNir1RelatedScenesGraph.ts",
+          "src/features/related-scenes/nir1EvidenceNavigation.ts",
+          "src/features/related-scenes/nir1RelatedScenesSession.ts",
+          "src/features/related-scenes/useNir1EvidenceNavigation.ts",
+          "src/features/related-scenes/useNir1RelatedScenes.ts"
+        ],
+        "shimSha256": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd"
+      },
+      "fetchTiming": {
+        "from": "src/features/related-scenes/fetchRelatedScenes.ts",
+        "to": "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts",
+        "importers": [
+          "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+          "src/features/related-scenes/useNir1RelatedScenes.ts"
+        ],
+        "shimSha256": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c"
+      },
+      "rendererBundleSha256": "6c0bb54287d91c69c447a4ac20a25d8985c85d54e359b23b1771d2e1d5ee81b0"
+    },
+    "prepIndex": {
+      "durationMs": 85.90000000596046,
+      "probes": 2
+    },
+    "seedPins": {
+      "caseId": "G-02",
+      "variantId": "base",
+      "querySceneId": "d837e2d7-677a-4a7b-8eb0-5aa46496ea05",
+      "productSeed": "129faf50-ac4c-4fff-9639-6e1704270127",
+      "expectedSeed": "129faf50-ac4c-4fff-9639-6e1704270127",
+      "expectedSeedLogical": "g02-orla",
+      "pinCount": 1,
+      "status": "match"
+    },
+    "maintenanceSeam": {
+      "envNames": [
+        "CI",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER"
+      ],
+      "trigger": "nir1-graph-index-build",
+      "nonceSha256": "a9c4b13e7abc1bbae527659240c187e951f14cb8740af3e393aa2555aac5f418"
+    },
+    "measureIndex": {
+      "durationMs": 375.30000001192093,
+      "probes": 2
+    },
+    "counterPoll": {
+      "install": {
+        "installed": true,
+        "intervalMs": 5
+      },
+      "stop": {
+        "stopped": true,
+        "polls": 176253
+      }
+    },
+    "clearSamples": {
+      "cleared": 0,
+      "clockNs": 1963396414
+    },
+    "editor": {
+      "ok": true,
+      "at": 1719.199999988079
+    },
+    "editorText": "Which earlier scene shows an apprentice trained by my chosen mentor?"
+  },
+  "trace": {
+    "stalled": null,
+    "operations": 1003
+  },
+  "partialLog": null
+}

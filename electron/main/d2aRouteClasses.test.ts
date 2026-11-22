@@ -1,5 +1,5 @@
 // NIR-1 DA-1 ST3 (K3/2 "restricted 下の route 区分"): the five publication route
-// classes, the 39-command own-data-read ledger, the generic-SQL early
+// classes, the 40-command own-data-read ledger, the generic-SQL early
 // classification, and the Main -> Native own-data-read classification.
 //
 // The own-data-read opening is a single switch (`D2A_OWN_DATA_READ_OPEN`, true
@@ -70,7 +70,7 @@ vi.mock("./windows.js", () => ({
 
 const { registerIpcRouter } = await import("./ipc.js");
 
-/** K3/2 "区分の構成": the 39 own-data-read commands, by group. */
+/** K3/2 "区分の構成": the 40 own-data-read commands, by group. */
 const OWN_DATA_READ_BY_GROUP = {
   search: [
     "fts_search",
@@ -119,6 +119,7 @@ const OWN_DATA_READ_BY_GROUP = {
     "narrative_extraction_is_run_resumable_for_review",
     "narrative_extraction_list_chronicle_task_resume_candidates",
     "narrative_extraction_get_commit_status",
+    "narrative_extraction_list_scene_proposals",
     "narrative_maintenance_inbox_list",
   ],
 } as const;
@@ -193,15 +194,15 @@ const DENIED = (route: string) =>
   new RegExp(`^${D2A_EGRESS_DENIED_MARKER} ${route}:`);
 
 describe("own-data-read ledger (K3/2 区分の構成)", () => {
-  it("holds exactly the 39 confirmed commands, each a real NAPI command", () => {
+  it("holds exactly the 40 confirmed commands, each a real NAPI command", () => {
     const ledgers = d2aRouteLedgersForTest();
-    expect(OWN_DATA_READ_COMMANDS).toHaveLength(39);
-    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(39);
+    expect(OWN_DATA_READ_COMMANDS).toHaveLength(40);
+    expect(new Set(OWN_DATA_READ_COMMANDS).size).toBe(40);
     expect([...ledgers.ownDataRead].sort()).toEqual(
       [...OWN_DATA_READ_COMMANDS].sort(),
     );
     expect(Object.values(OWN_DATA_READ_BY_GROUP).map((g) => g.length)).toEqual([
-      7, 3, 9, 2, 3, 2, 6, 7,
+      7, 3, 9, 2, 3, 2, 6, 8,
     ]);
     for (const command of OWN_DATA_READ_COMMANDS) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
@@ -246,17 +247,66 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     }
   });
 
-  it("leaves plaintext-publication with exactly the commands K3/2 keeps closed", () => {
-    // claim_task and nir1_pack_context only: the six NIR commands moved to
+  it("leaves plaintext-publication with exactly the commands K3/2 keeps closed, plus the chat IR one-shot", () => {
+    // claim_task and nir1_pack_context (K3/2): the six NIR commands moved to
     // nir1-publication with their Native re-authorization (ST4).
+    // chat_agent_ir_select (chat IR S1-A, DR-CHATIR-S1-27): the confirmed
+    // threat model (§3.7) places it in this existing class, not in
+    // own-data-read or nir1-publication (which would need a new draftRef).
     const plaintext = d2aRouteLedgersForTest()
       .denied.filter(
         (command) => route(command, {}, true) === "plaintext-publication",
       )
       .sort();
     expect(plaintext).toEqual(
-      ["narrative_extraction_claim_task", "nir1_pack_context"].sort(),
+      [
+        "chat_agent_ir_select",
+        "narrative_extraction_claim_task",
+        "nir1_pack_context",
+      ].sort(),
     );
+    // It is in no other class (S1A-3).
+    const ledgers = d2aRouteLedgersForTest();
+    expect(ledgers.ownDataRead).not.toContain("chat_agent_ir_select");
+    expect(ledgers.nir1Publication).not.toContain("chat_agent_ir_select");
+    expect(ledgers.internal).not.toContain("chat_agent_ir_select");
+  });
+
+  it("classifies the Mastra agent turn: the start is denied as old-external-ai, the cancel is a stop and internal (MP-3b, DR-MP3-11)", async () => {
+    const ledgers = d2aRouteLedgersForTest();
+    // The start sends the chat to the user's provider, like send_agent_message.
+    expect(ledgers.denied).toContain("mastra_agent_turn_start");
+    expect(route("mastra_agent_turn_start", {}, true)).toBe("old-external-ai");
+    expect(ledgers.ownDataRead).not.toContain("mastra_agent_turn_start");
+    expect(ledgers.nir1Publication).not.toContain("mastra_agent_turn_start");
+    expect(ledgers.internal).not.toContain("mastra_agent_turn_start");
+    expect(ledgers.stop).not.toContain("mastra_agent_turn_start");
+    // The cancel is in both the stop and the internal ledger, as abort_chat_stream.
+    expect(ledgers.stop).toContain("mastra_agent_turn_cancel");
+    expect(ledgers.internal).toContain("mastra_agent_turn_cancel");
+    expect(ledgers.denied).not.toContain("mastra_agent_turn_cancel");
+    expect(ledgers.stop).toContain("abort_chat_stream");
+    expect(ledgers.internal).toContain("abort_chat_stream");
+    // The gate: restricted refuses the start and passes the cancel.
+    const gate = await createProfileEgressGate(backend(true));
+    const callerIdentity = gate.issueCallerIdentity(11);
+    expect(() =>
+      gate.assertInvoke("mastra_agent_turn_start", { callerIdentity }),
+    ).toThrow(DENIED("old-external-ai"));
+    expect(() =>
+      gate.assertInvoke("mastra_agent_turn_cancel", { callerIdentity }),
+    ).not.toThrow();
+    // Unrestricted passes both.
+    const open = await createProfileEgressGate(backend(false));
+    const openIdentity = open.issueCallerIdentity(11);
+    for (const command of [
+      "mastra_agent_turn_start",
+      "mastra_agent_turn_cancel",
+    ]) {
+      expect(() =>
+        open.assertInvoke(command, { callerIdentity: openIdentity }),
+      ).not.toThrow();
+    }
   });
 
   it("moves the three derived-index updates to internal", () => {
@@ -632,6 +682,7 @@ describe("gate: own-data-read with the shipped opening (the default)", () => {
     for (const command of [
       "narrative_extraction_claim_task",
       "nir1_pack_context",
+      "chat_agent_ir_select",
     ]) {
       expect(() => gate.assertInvoke(command, { callerIdentity })).toThrow(
         DENIED("plaintext-publication"),
@@ -708,6 +759,7 @@ describe("gate: own-data-read with the opening on", () => {
     for (const command of [
       "narrative_extraction_claim_task",
       "nir1_pack_context",
+      "chat_agent_ir_select",
     ]) {
       expect(() => gate.assertInvoke(command, { callerIdentity })).toThrow(
         DENIED("plaintext-publication"),

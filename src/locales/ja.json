@@ -1160,6 +1160,9 @@
       "fusionCostWarning": "パネル数 + judge ぶん課金されます（既定構成で 1 回あたり約 4〜5 倍）。",
       "toolProtocolDesc": "Agent のツール呼び出し形式。auto は model 名に hermes を含む場合のみ Hermes 形式（本文 <tool_call>）として解釈。Qwen 等は hermes を明示選択。",
       "toolProtocolAuto": "auto（推奨）",
+      "modelInfoAutoUpdate": "モデル情報の自動更新",
+      "modelInfoAutoUpdateDesc": "新しいモデルの文脈長や機能の情報を、配布版では raw.githubusercontent.com（GitHub）から、起動のしばらく後と、起動中は 24 時間ごとに取得します（失敗したときは、同じ周期の中で最大 3 回まで試みます。開発用の起動では取得しません）。取得するのは公開のモデル情報だけで、原稿・設定・API キーは送りません。オフにすると、取得した情報を削除し、アプリに同梱の情報だけを使います。",
+      "modelInfoAutoUpdateSaveFailed": "モデル情報の自動更新の設定を保存できませんでした: {{message}}",
       "providerPinDirect": "直接"
     },
     "project": {
@@ -2015,6 +2018,24 @@
     "codexApprovalDiff": "変更内容",
     "codexApprovalAccept": "許可",
     "codexApprovalDecline": "拒否",
+    "settingProposal": {
+      "title": "設定の変更提案",
+      "apply": "適用",
+      "dismiss": "却下",
+      "undo": "元に戻す",
+      "applied": "適用しました。",
+      "dismissed": "却下しました。",
+      "reverted": "元に戻しました。",
+      "alreadySet": "すでにこの値になっています。",
+      "changedSince": "適用後に別の値へ変更されたため、元に戻せません。",
+      "reason": "理由",
+      "on": "オン",
+      "off": "オフ",
+      "applyFailed": "設定を変更できませんでした: {{message}}",
+      "fontUnavailable": "このフォント（{{font}}）はこの端末に見つからないため、適用できませんでした。",
+      "undoFailed": "元に戻せませんでした。",
+      "aria": "設定の変更提案: {{label}}"
+    },
     "sendTitle": "送信 / 右クリック: プロンプトをコピー",
     "stopTitle": "生成中断 (Esc)",
     "stopAriaLabel": "生成中断",
@@ -2347,6 +2368,52 @@
       "allHidden": "整合性の指摘 {{count}} 件を非表示中",
       "show": "再表示"
     },
+    "structureReview": {
+      "bindingExisting": "既存 · {{name}}",
+      "safeHintCreate": "安全一括承認の対象",
+      "safeHintBind": "完全一致の既存への結び付け（一括承認の対象の見込み。承認の直前に今の Codex で確かめ直します）",
+      "bulkBreakdown": "新規作成 {{createCount}} 件・既存への結び付け {{bindCount}} 件",
+      "bulkApproved": "{{count}} 件を承認しました（新規作成 {{createCount}} 件・既存への結び付け {{bindCount}} 件）",
+      "bulkExcluded": "{{count}} 件の結び付けは、今の Codex では一括の条件を満たさないため、1 件ずつの確認に残しました",
+      "bulkCodexUnreadable": "今の Codex を読めなかったため、結び付け {{count}} 件は一括から外しました",
+      "bulkNoLongerSafe": "{{count}} 件は承認の直前に条件が変わったため、一括から外しました",
+      "staleBind": "結び先が編集されたため、今の版で承認し直してください",
+      "staleBindTargetMissing": "結び先の Entry が見つかりません。この結び付けは取り込めないので、却下してください",
+      "errorSave": "承認の保存に失敗しました",
+      "applyExcluded": "{{count}} 件の結び付け（{{names}}）は、承認の後に結び先が変わったため取り込まず、保留に戻しました。構造抽出を開き直すと、今の版で承認し直せます",
+      "boundList": {
+        "title": "一括で通した結び付け（{{count}}）",
+        "hint": "表記が結び先の名前と同じ人を指しているか確かめてください。違うものは選んで拒否か保留にできます。取り込んでも Codex の行は書き換わりません。",
+        "item": "{{surface}} → {{target}}"
+      },
+      "surfaceAlias": {
+        "label": "「{{surface}}」を「{{name}}」の別名にも足す",
+        "hint": "足すと作品全体のすべての場面で効きます。以後の抽出では「{{surface}}」が自動で「{{name}}」に結ばれ、まとめて承認でも通ります。誤っていたら、Codex の編集画面で別名から消してください。",
+        "hintNoBulk": "足すと作品全体のすべての場面で効きます。以後の抽出では「{{surface}}」が自動で「{{name}}」に結ばれます。誤っていたら、Codex の編集画面で別名から消してください。",
+        "saveFailed": "別名の設定の保存に失敗しました",
+        "notAllowed": {
+          "sameEntryPatch": "同じ項目に別名や要約を足す提案が他にあるので、ここでは別名に足せません（取り込みがまとめて失敗するため）",
+          "exactOther": "この表記は別の項目の名前・別名と同じなので、別名に足せません",
+          "partialOther": "この表記は別の項目の名前・別名と一部が重なるので、別名に足せません（次の抽出で区別できなくなるため）",
+          "excluded": "結び先の除外語がこの表記を含むので、別名に足しても効きません",
+          "generic": "今の Codex では、この表記を別名に足せません"
+        }
+      },
+      "applyBlocked": {
+        "sameEntryPatch": "同じ項目に別名や要約を書く承認が重なっているため、取り込めません（{{names}}）。どれか 1 件だけを残し、他は保留か拒否にしてください",
+        "surfaceAlias": "別名に足す表記が、今の Codex では足せなくなりました（{{names}}）。カードで「別名にも足す」を外してから取り込んでください"
+      },
+      "foldedDismissed": {
+        "summary": "候補の一覧で却下した {{count}} 種の表記は、新しい項目として提案していません（Codex の名前・別名に当たる表記は出しています）",
+        "restoredCount": "うち {{count}} 種は却下を外しました",
+        "restore": "却下を外す",
+        "restoreAll": "すべて外す",
+        "restored": "外しました（次の抽出から出ます）",
+        "more": "ほか {{count}} 種を表示",
+        "less": "折りたたむ",
+        "unavailable": "却下の記録を読めなかったため、却下した表記も畳まずに出しています"
+      }
+    },
     "candidates": {
       "title": "未確定の固有名詞候補",
       "occurrences": "{{count}} 回",
@@ -2367,6 +2434,7 @@
       "acceptAlias": "「{{name}}」の別名として登録",
       "acceptNew": "別名にせず新規エントリとして作成",
       "aliasHint": "「{{name}}」の別名?",
+      "relationalAliasNote": "「{{surface}}」は話し手で指す人が変わる呼び方なので、別名の登録は Codex の編集画面から行ってください",
       "type": {
         "character": "人物",
         "location": "場所",
@@ -2551,13 +2619,14 @@
       "estimate": "AIで推定",
       "estimateFailed": "読みの推定に失敗しました",
       "estimateNoResult": "AIから有効な読みを取得できませんでした。モデル設定を確認して再試行してください。",
+      "estimateHidden": "AI に秘匿（hidden）の項目は推定できません。読みは手で入力してください。",
       "manage": "読みを管理",
       "heroLabel": "代表読み",
       "heroPlaceholder": "読みを入力…",
       "auto": "自動: {{yomi}}",
       "noSurfaces": "名前や別名を設定すると読みを登録できます",
       "backfillTitle": "読みの一括推定",
-      "backfillDesc": "漢字を含む表記のうち読み未設定のものを AI が推定して登録します。IME 変換辞書・ルビ・五十音ソートに使われます。",
+      "backfillDesc": "漢字を含む表記のうち読み未設定のものを AI が推定して登録します。IME 変換辞書・ルビ・五十音ソートに使われます。AI に秘匿（hidden）の項目は対象外です。",
       "backfillRun": "未設定の読みを一括推定",
       "backfillRunning": "推定中… ({{done}}/{{total}})",
       "backfillNone": "推定が必要な表記はありません",
@@ -4083,10 +4152,10 @@
       "scopeDefaultBadge": "プロジェクトの既定（{{value}}）",
       "scopeNotMainLine": "この場面は本筋以外の Scope です。同じ Scope の場面の解釈だけが出ます。",
       "scopeApplyDefault": "既定を当てる",
-      "scopeApplyConfirm": "この場面にプロジェクトの既定の Scope（{{value}}）を当てます。この場面に結びついた承認済みの解釈と本文の宣言は失効します。",
+      "scopeApplyConfirm": "この場面にプロジェクトの既定の Scope（{{value}}）を当てます。この場面に結びついた承認済みの解釈は失効します。",
       "scopeApplyLegacyWarning": "以前からの場面に当てると、「以前からの場面」には戻せません。",
       "scopeApplyRun": "当てる",
-      "scopeRegistryWarning": "語彙を変えて保存すると、このプロジェクトの承認済みの解釈と本文の宣言がすべて失効し、作り直しが必要になります。",
+      "scopeRegistryWarning": "語彙を変えて保存すると、このプロジェクトの承認済みの解釈がすべて失効し、作り直しが必要になります。",
       "scopeNotDefault": "この場面はプロジェクトの既定（{{value}}）と違う Scope です。同じ Scope の場面の解釈だけが出ます。",
       "scopeApplyUnsavedWarning": "Scope 欄の保存していない変更は捨てられます。",
       "scopeLegacyEmptyRegistry": "Scope の語彙が空です。このまま保存すると軸が未解決のまま「設定済み」になり、承認済みの解釈が出なくなります。先に「Scope の語彙」で追加してください。"
@@ -4352,6 +4421,7 @@
     "exportAiAuditBundle": "AI使用証拠監査ZIP",
     "exportAiAuditBundleTitle": "現在本文の帰属、導入後のforward実行ledger、DBに残存する旧形式証拠のうちAI由来を構造的に確認できる選択済み証拠を書き出します。監査導入前の完全な履歴ではありません。完全なプロンプト・文脈・応答・他シーン本文や、モデルに渡した秘密情報を含み得るため、共有前に全ファイルを確認してください",
     "aiAudit": {
+      "aiRunning": "AIの実行中なので、書き出せません。終わってからもう一度書き出してください。",
       "verificationFailed": "監査ZIPは書き出しましたが、ハッシュチェーンの整合性確認に失敗しました。ZIP内のREADMEとmanifestを確認してください。",
       "exportFailed": "AI使用監査ZIPを書き出せませんでした。"
     },
@@ -6723,5 +6793,53 @@
       "next": "次: {{title}} →",
       "nextAria": "次: {{title}}を{{destination}}で開く"
     }
+  },
+  "help": {
+    "commands": {
+      "focusScenes": "Scenes パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusCodex": "Codex パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusChatHistory": "Chat History パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusChat": "Chat パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusSnippets": "Snippets パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusAttribution": "Attribution パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusCodexQuick": "Scene Context パネルを開く。すでに開いていても閉じない。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusTimeline": "Timeline パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusChronicle": "作中年表 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusMap": "Map パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusKouetsu": "校閲 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusForeshadow": "伏線 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusTrashBin": "ゴミ箱 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusGrid": "Grid パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusMatrix": "Matrix パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "focusWritingStats": "執筆統計 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。狭い画面（phone 幅）では、開閉ではなく対応する画面への切り替えになる。",
+      "toggleLeftOverlay": "画面の左端のオーバーレイを開閉する。オーバーレイにパネルが置かれていないときと、狭い画面（phone 幅）では何も起きない。",
+      "toggleRightOverlay": "画面の右端のオーバーレイを開閉する。オーバーレイにパネルが置かれていないときと、狭い画面（phone 幅）では何も起きない。",
+      "openSettings": "Settings 画面を開く。最初に表示されるカテゴリは Project。",
+      "splitVertical": "エディタを左右に分ける。現在のタブを右側の第2グループで開く（タブが無いときは空のグループを作る）。狭い画面（phone 幅）では何も起きない。",
+      "splitHorizontal": "エディタを上下に分ける。現在のタブを下側の第2グループで開く（タブが無いときは空のグループを作る）。狭い画面（phone 幅）では何も起きない。",
+      "nextTab": "現在のタブグループで次のタブへ移動する。最後のタブからは最初のタブへ戻る。タブが 2 つ未満のときと、狭い画面（phone 幅）では何も起きない。",
+      "prevTab": "現在のタブグループで前のタブへ移動する。最初のタブからは最後のタブへ戻る。タブが 2 つ未満のときと、狭い画面（phone 幅）では何も起きない。",
+      "find": "エディタにフォーカスがあるとき、本文の検索バーを開く。Scenes のツリーにフォーカスがあるときは、シーンの絞り込み欄にフォーカスする。",
+      "findReplace": "エディタの検索と置換のバーを開く。Windows と Linux だけで使える（macOS では ⌘H が OS の「アプリを隠す」と重なるため、割り当てが無効）。",
+      "save": "エディタにフォーカスがあるとき、編集中の内容を今すぐ保存する。シーンでは手動保存の履歴（リビジョン）も残る。",
+      "inlineAiPalette": "エディタでインライン AI のパレットを開く。Settings の Editor カテゴリでこのショートカットを無効にでき、無効のときは何も起きない。"
+    },
+    "settingsOpenGuide": "Settings 画面を開き、カテゴリ一覧から「{{category}}」を選ぶ。Settings 画面は {{shortcut}} で開ける（画面上部の設定ボタンからも開ける）。",
+    "settingsOpenGuideNoShortcut": "Settings 画面を開き、カテゴリ一覧から「{{category}}」を選ぶ。Settings 画面は画面上部の設定ボタンから開ける。",
+    "macUnavailable": "macOS では使えない",
+    "unbound": "割り当てなし",
+    "refUnavailableHere": "この OS では使えない",
+    "settingsCategoryRef": "Settings の「{{category}}」カテゴリ"
+  },
+  "agentUiOps": {
+    "undo": "元に戻す",
+    "undoAria": "この操作の前の画面の状態に戻す",
+    "undone": "元に戻しました",
+    "undoFailed": {
+      "viewport": "画面の幅が変わったため戻せません",
+      "changed": "その後に配置が変わったため戻せません",
+      "layout": "元に戻せませんでした（前の配置を今の画面では復元できません）"
+    },
+    "superseded": "その後の操作があるため、元に戻せません"
   }
 }

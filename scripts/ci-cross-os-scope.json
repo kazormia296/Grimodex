@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "description": "Which master pushes run the C-query worker on macOS and Windows (.github/workflows/ci.yml, job nir1-c-query-worker). A push that changes none of these paths skips those two legs (Linux still runs); the nightly run and the release call cover them. Anything unclassified, empty, incomplete or unresolvable runs them. The unit is the crate: the worker links all of grimodex-db, which links grimodex-core, so any file of either can break only macOS or Windows. The external files are those the two crates include or address by a ../ path (include_str!, include_bytes!, CARGO_MANIFEST_DIR); scripts/ci-cross-os-scope.test.mjs derives them and fails when one is missing here.",
+  "triggers": [
+    "src-tauri/crates/grimodex-db/**",
+    "src-tauri/crates/grimodex-core/**",
+    "**/Cargo.toml",
+    "**/Cargo.lock",
+    ".cargo/**",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+    "src-tauri/rust-toolchain.toml",
+    ".gitattributes",
+    "scripts/nir1-c-query-worker-ci.sh",
+    "scripts/ci-cross-os-scope.*",
+    "scripts/impact/**",
+    ".github/workflows/**",
+    "evals/nir1-capacity/**",
+    "evals/fixtures/narrative/**",
+    "policies/narrative/**",
+    "src/db/generated/schema-contract.json",
+    "scripts/schema-seed-ja.sql",
+    "scripts/schema-seed-en.sql",
+    "src/features/timelapse/hash-vectors.json",
+    "src/features/agent-writes/parity/**",
+    "src/features/ai-policy/policyDecisionVector.fixture.json",
+    "src/features/codex/context/fixtures/reading-order-parity.json",
+    "src-tauri/resources/sample_project/**"
+  ]
+}

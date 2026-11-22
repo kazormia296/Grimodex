@@ -5,7 +5,15 @@ import {
   __resetDynamicModelCapsForTests,
   registerDynamicModelCaps,
 } from "../agent/dynamicModelCaps";
-import { DEFAULT_AI_SETTINGS, ollamaContextLengthSettingKey } from "../types";
+import {
+  __resetRegistryModelCapsForTests,
+  setRegistryModelCaps,
+} from "../agent/registryModelCaps";
+import {
+  DEFAULT_AI_SETTINGS,
+  ollamaContextLengthSettingKey,
+  type AiProvider,
+} from "../types";
 import {
   isLocalInferenceRoute,
   resolveChatTurnRoute,
@@ -15,10 +23,104 @@ import {
 describe("resolveChatTurnRoute", () => {
   beforeEach(() => {
     __resetDynamicModelCapsForTests();
+    __resetRegistryModelCapsForTests();
   });
 
   afterEach(() => {
     __resetDynamicModelCapsForTests();
+    __resetRegistryModelCapsForTests();
+  });
+
+  it("registry の写し（表に無い id）は context と最大出力だけを変え、thinking・effort の送信は変えない（PR-C3）", () => {
+    const cases = [
+      { provider: "openai", model: "gpt-6-astra" },
+      { provider: "openai", model: "gpt-5.6" },
+      { provider: "anthropic", model: "claude-fable-5-2" },
+      { provider: "anthropic", model: "claude-3-7-sonnet-20250219" },
+      { provider: "openrouter", model: "vendor/new-model" },
+    ] as const;
+    const resolve = (provider: AiProvider, model: string) =>
+      resolveChatTurnRoute({
+        surface: "agent",
+        activeSettings: { ...DEFAULT_AI_SETTINGS, provider, model },
+        activeApiVariant: null,
+        taskEffort: "high",
+        thinkingEnabled: true,
+      });
+    const before = cases.map(({ provider, model }) => resolve(provider, model));
+    setRegistryModelCaps({
+      models: Object.fromEntries(
+        cases.map(({ provider, model }) => [
+          `${provider}/${model}`,
+          // 最大出力は、既定の応答の長さ（4,096）より小さい値にする（clamp が wire に届く）。
+          {
+            contextWindow: 333_000,
+            maxOutputTokens: 2_048,
+            toolCall: true,
+            reasoning: true,
+          },
+        ]),
+      ),
+    });
+    cases.forEach(({ provider, model }, index) => {
+      const after = resolve(provider, model);
+      expect(after.thinking, `${provider}/${model}`).toEqual(
+        before[index].thinking,
+      );
+      expect(after.toolProtocol).toBe(before[index].toolProtocol);
+      expect(after.contextWindow, `${provider}/${model}`).toBe(333_000);
+      expect(after.capabilities.contextWindowSource).toBe("registry");
+      // wire の最大出力は、写しの最大出力を超えない。
+      expect(after.outputBudget.requestMaxOutputTokens).toBeLessThanOrEqual(
+        2_048,
+      );
+      expect(after.wireOutputTokens).toBeLessThanOrEqual(2_048);
+    });
+  });
+
+  it("budget_tokens 方式の thinking を送る近似（表に無い Claude 4.5 系の id）は、registry で予算も max_tokens も動かず、max_tokens は予算を上回る（PR-C3）", () => {
+    const ids = [
+      "claude-opus-4-5-preview",
+      "claude-sonnet-4-5-20250929-preview",
+    ];
+    const resolve = (model: string) =>
+      resolveChatTurnRoute({
+        surface: "agent",
+        activeSettings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model,
+        },
+        activeApiVariant: null,
+        taskEffort: "high",
+        thinkingEnabled: true,
+      });
+    const before = ids.map(resolve);
+    for (const route of before) {
+      expect(route.thinking).toMatchObject({
+        thinking: { type: "enabled", budget_tokens: 8_000 },
+      });
+    }
+    // 大きい context（予算が増える）と、小さい最大出力・小さい context（clamp が予算以下になる）。
+    for (const entry of [
+      { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      { contextWindow: 1_000_000, maxOutputTokens: 2_048 },
+      { contextWindow: 4_096, maxOutputTokens: 1_024 },
+    ]) {
+      setRegistryModelCaps({
+        models: Object.fromEntries(ids.map((id) => [`anthropic/${id}`, entry])),
+      });
+      ids.forEach((id, index) => {
+        const after = resolve(id);
+        expect(after.thinking, id).toEqual(before[index].thinking);
+        expect(after.outputBudget, id).toEqual(before[index].outputBudget);
+        expect(after.wireOutputTokens, id).toBe(before[index].wireOutputTokens);
+        const budget = (
+          after.thinking as { thinking?: { budget_tokens?: number } }
+        ).thinking?.budget_tokens;
+        expect(after.wireOutputTokens, id).toBeGreaterThan(budget ?? 0);
+      });
+    }
   });
 
   it("uses the model visible-output capability instead of an OpenAI provider heuristic", () => {

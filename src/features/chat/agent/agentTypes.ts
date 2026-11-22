@@ -159,6 +159,23 @@ export interface ToolResult {
   summary: string;
   tokensUsed: number;
   error?: string;
+  /** UI 操作ツールが、操作の直前の表示状態を退避した id（「元に戻す」の鍵）。 */
+  undoId?: string;
+  /** propose_setting_change が成功したときだけ付く、検証済みの提案（モデルには返さない）。 */
+  settingProposal?: SettingProposal;
+}
+
+/**
+ * agent の設定変更の提案（設計書 §6）。executor が目録で検証して作る。
+ * chat のカードはこの値からだけ「適用」を描く（モデルの出力そのままからは描かない）。
+ */
+export interface SettingProposal {
+  /** executor が発行する id。カードの適用・却下の状態の鍵。 */
+  id: string;
+  key: string;
+  /** 設定の保存形式へ正規化した提案値。 */
+  value: string;
+  reason?: string;
 }
 
 // メッセージmetadataに保存するツール呼び出し記録
@@ -167,6 +184,20 @@ export interface ToolCallRecord {
   params: Record<string, unknown>;
   resultSummary: string;
   tokensUsed: number;
+  /** 保存するのは id だけ。退避した表示状態はメモリ上にあり、再読込後は「元に戻す」は出ない。 */
+  undoId?: string;
+  /** propose_setting_change の検証済みの提案。無い呼び出し（失敗・保存前の履歴）にはカードを出さない。 */
+  settingProposal?: SettingProposal;
+  /**
+   * chat IR を返した search_events だけに付く、モデルに渡した承認済み要約の出所。
+   * revision ID だけで、本文・題・quote は持たない。cap と limit で落とした item は含めない。
+   * eventIds は承認済み IR が event の ID を持つまで空、generation は null。
+   */
+  usedIds?: {
+    revisionIds: string[];
+    eventIds: string[];
+    generation: number | null;
+  };
 }
 
 // エージェントループ進捗（UIコールバック用）

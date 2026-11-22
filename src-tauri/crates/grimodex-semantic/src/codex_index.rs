@@ -526,4 +526,14 @@ mod tests {
         assert_eq!(s.total_entry_count, 1);
         assert_eq!(s.indexed_entry_count, 1);
     }
+
+    #[test]
+    fn embed_text_keeps_ruby_base_from_codex_body() {
+        let content = r#"{"type":"doc","content":[{"type":"paragraph","content":[
+            {"type":"text","text":"主人公。"},
+            {"type":"ruby","attrs":{"base":"星環","annotation":"せいかん"}},
+            {"type":"text","text":"の守り手。"}]}]}"#;
+        let t = build_codex_embed_text("灯里", "", "", content);
+        assert_eq!(t, "灯里。主人公。星環の守り手。");
+    }
 }

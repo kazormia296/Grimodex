@@ -7,7 +7,14 @@ import {
   type InlineAiProjectionAuthority,
 } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
-import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
+import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
+import {
+  captureEditorSendSnapshot,
+  isEditorSendSnapshotCurrent,
+  requestAttentionIfInlineAiBusy,
+  requestInlineAiAttention,
+  sendWhenFresh,
+} from "@/features/editor/inlineAi/sendWhenFresh";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -68,6 +75,17 @@ export function useLinearInlineAi(params: {
     null,
   );
   const seenProjectionKeyRef = useRef("");
+  // 非同期の context 作成の間に projection が変わったかを、送信時点で見るための最新値。
+  const projectionStateRef = useRef({
+    key: projectionKey,
+    ready: projectionReady,
+    writable: projectionWritable,
+  });
+  projectionStateRef.current = {
+    key: projectionKey,
+    ready: projectionReady,
+    writable: projectionWritable,
+  };
 
   useEffect(() => {
     const projectionChanged =
@@ -99,20 +117,48 @@ export function useLinearInlineAi(params: {
   const runGenerate = useCallback(
     (command: InlineAiCommand, arg?: string) => {
       if (!inlineAiEditor) return;
-      const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor: inlineAiEditor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg,
+      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。エディタ由来の
+      // 項目は buildInlineAiContextForSend が同期で取る。判定の間に文書・選択・projection・
+      // 書込み可否が変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
+      sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
+        capture: () => ({
+          ...captureEditorSendSnapshot(inlineAiEditor),
+          key: projectionStateRef.current.key,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((n) => n.id === sceneId);
+          return buildInlineAiContextForSend({
+            editor: inlineAiEditor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        canRebuild: (snapshot) => {
+          const state = projectionStateRef.current;
+          return state.ready && state.writable && state.key === snapshot.key;
+        },
+        isFresh: (snapshot) => {
+          const state = projectionStateRef.current;
+          return (
+            state.ready &&
+            state.writable &&
+            state.key === snapshot.key &&
+            isEditorSendSnapshotCurrent(inlineAiEditor, snapshot)
+          );
+        },
+        run: (context) => generate(command, context),
       });
-      generate(command, context);
     },
     [inlineAiEditor, sceneId, generate],
   );

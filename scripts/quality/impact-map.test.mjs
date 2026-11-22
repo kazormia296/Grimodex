@@ -8,10 +8,14 @@ import test from "node:test";
 import yaml from "js-yaml";
 
 import {
+  DOCS_READER_VITEST_FILES,
   LIGHT_SUITE_DEFINITIONS,
   collectChangedPaths,
+  docsMarkdownOnlyCommands,
   formatImpactSummary,
+  isDocsMarkdownOnlyChange,
   parseImpactMap,
+  runSelectedSuites,
   selectImpact,
   validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
@@ -725,6 +729,9 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_prepared_request::history_turns_tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib nir1_generation::tests::hc1_reads -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_packing -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_graph::scene_disclosure -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_graph::related_scenes_requalification -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::scene_body_declaration -- --test-threads=1",
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::generation_storage_adapter::adapter_tests -- --test-threads=1",
@@ -1140,6 +1147,7 @@ test("Temporal IR, adapter, and Calendar changes select the Temporal requirement
     "src/features/chronicle/ChronicleCalendarPopover.test.tsx",
     "src/features/revision/projectSnapshotApi.ts",
     "src/db/schema.ts",
+    "electron/shared/readDomain/db/schema.ts",
     "src/db/generated/schema-contract.json",
     "src/db/projectCalendarSchema.test.ts",
     "src/lib/browser-mock.ts",
@@ -1152,6 +1160,199 @@ test("Temporal IR, adapter, and Calendar changes select the Temporal requirement
     assert.ok(selection.requirementIds.includes("GDX-NARR-TEMPORAL-001"));
     assert.ok(selection.suiteIds.includes("narrative-extraction"));
     assert.equal(selection.fallback, false);
+  }
+});
+
+test("the Drizzle schema moved to electron/shared keeps its narrative selection and joins the read-tool policy", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const legacy = selectImpact(map, ["src/db/schema.ts"]);
+  const canonical = selectImpact(map, [
+    "electron/shared/readDomain/db/schema.ts",
+  ]);
+
+  assert.equal(canonical.fallback, false);
+  assert.ok(canonical.matchedRuleIds.includes("narrative-extraction"));
+  assert.ok(canonical.matchedRuleIds.includes("tool-policy"));
+  assert.ok(canonical.requirementIds.includes("GDX-NARR-DETAIL-001"));
+  assert.ok(canonical.requirementIds.includes("GDX-NARR-TEMPORAL-001"));
+  // Moving the file must never select less than editing it at the old path did.
+  for (const id of legacy.suiteIds) assert.ok(canonical.suiteIds.includes(id), id);
+  for (const id of legacy.requirementIds)
+    assert.ok(canonical.requirementIds.includes(id), id);
+  // time.ts and temporal.ts matched no rule before the move and still fall back to all suites.
+  for (const moved of [
+    "electron/shared/readDomain/lib/time.ts",
+    "electron/shared/readDomain/lib/temporal.ts",
+  ]) {
+    assert.equal(selectImpact(map, [moved]).fallback, true, moved);
+  }
+});
+
+test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never select less than editing them at the old path", async () => {
+  const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
+  const map = parseImpactMap(source);
+  // 21 files moved from src/ (the old path is now a one-line re-export) and 3 modules split out of
+  // api.ts, nodes.ts, resolveStoryRanks.ts and semanticRecall.ts. None of them is added to a rule on purpose
+  // (DR-MP4-3e): adding one would narrow the selection from every suite to a few, so they stay fail-open.
+  const moved = [
+    "lib/fts",
+    "lib/prosemirror",
+    "lib/createResultMetadata",
+    "lib/nativeMutationMetadata",
+    "features/tree/fractionalIndex",
+    "features/tree/treeReadingOrder",
+    "features/tree/types",
+    "features/chronicle/chronicleSecrecy",
+    "features/chronicle/chronicleSnapshot",
+    "features/chronicle/chronicleTime",
+    "features/chronicle/chronicleReform",
+    "features/chronicle/resolveSceneAnchor",
+    "features/codex/context/codexVisibilityPolicy",
+    "features/codex/context/resolvedCodexContext",
+    "features/codex/context/resolveApplicablePhases",
+    "features/codex/context/sceneTimeIndex",
+    "features/codex/phaseResolver",
+    "features/codex/prosemirrorTextExtractor",
+    "features/foreshadow/deriveLabel",
+    "features/foreshadow/normalizeForeshadowRow",
+    "features/foreshadow/types",
+  ];
+  const created = [
+    "features/chronicle/eventRows",
+    "features/narrative-extraction/temporal/types",
+    "features/chat/rrfK",
+    // MP-4b PR-5b: the read side of the foreshadow rows, split out of src/features/foreshadow/api.ts
+    // (and the coercions shared with normalizeForeshadowRow). Not listed in a rule on purpose: api.ts
+    // matches no rule (every suite), so a rule here would narrow the selection below what editing api.ts gave.
+    "features/foreshadow/readRows",
+    "features/foreshadow/coerce",
+    // MP-4b PR-7a: the read side of the chronicle rows (event, participant, scene-event, relation and
+    // calendar normalizers, plus main's fail-closed event normalizer), split out of
+    // src/features/chronicle/api.ts. Not listed in a rule on purpose, for the same reason as above.
+    "features/chronicle/readRows",
+  ];
+  const splitFrom = [
+    "src/features/chronicle/api.ts",
+    "src/features/narrative-extraction/temporal/nodes.ts",
+    "src/features/narrative-extraction/temporal/solver/resolveStoryRanks.ts",
+    "src/features/chat/semanticRecall.ts",
+    "src/features/foreshadow/api.ts",
+  ];
+  assert.equal(moved.length, 21);
+  for (const name of moved) {
+    const legacy = selectImpact(map, [`src/${name}.ts`]);
+    const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
+    if (canonical.fallback) continue; // all suites is never narrower than the old selection
+    assert.equal(legacy.fallback, false, name);
+    for (const id of legacy.suiteIds)
+      assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
+    for (const id of legacy.requirementIds)
+      assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+  }
+  // A new module must select at least what editing the file it was split out of selected. A path that
+  // matches no rule falls back to every suite (suiteIds and requirementIds both become the full set).
+  const sourceSelections = splitFrom.map((path) => selectImpact(map, [path]));
+  assert.ok(sourceSelections.every((selection) => selection.suiteIds.length > 0));
+  for (const name of created) {
+    const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
+    for (const selection of sourceSelections) {
+      for (const id of selection.suiteIds)
+        assert.ok(canonical.suiteIds.includes(id), `${name}: ${id}`);
+      for (const id of selection.requirementIds)
+        assert.ok(canonical.requirementIds.includes(id), `${name}: ${id}`);
+    }
+  }
+});
+
+test("the shared read core (MP-4b PR-4) selects at least what editing the file it was moved from selected", async () => {
+  const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
+  const map = parseImpactMap(source);
+  // A path that matches no rule falls back to every suite (suiteIds and requirementIds become the full
+  // set), so "at least" is a plain superset check and a fallback is never narrower than its source.
+  const covers = (canonical, legacy, label) => {
+    for (const id of legacy.suiteIds)
+      assert.ok(canonical.suiteIds.includes(id), `${label}: ${id}`);
+    for (const id of legacy.requirementIds)
+      assert.ok(canonical.requirementIds.includes(id), `${label}: ${id}`);
+  };
+  // (1) The code moved out of src/features/chat/agent/toolExecutors.ts, whose edits select the tool-policy
+  // suite. Those files are listed one by one in the tool-policy rule (DR-MP4-32h); a directory glob would
+  // also have caught the two main-only files below and narrowed them.
+  const legacy = selectImpact(map, ["src/features/chat/agent/toolExecutors.ts"]);
+  assert.equal(legacy.fallback, false);
+  assert.ok(legacy.suiteIds.includes("tool-policy"));
+  for (const name of [
+    "readExecutors",
+    "treeReadTools",
+    "plotThreadTools",
+    "codexTagTools",
+    "searchTools",
+    "searchHelpers",
+    "foreshadowTools",
+    "chronicleTools",
+    "chronicleReadExecutors",
+    "sharedLoader",
+    "readContext",
+    "toolResult",
+  ]) {
+    const canonical = selectImpact(map, [`electron/shared/readDomain/core/${name}.ts`]);
+    assert.equal(canonical.fallback, false, name);
+    covers(canonical, legacy, name);
+  }
+  // (2) The two files that are not code moved out of toolExecutors.ts are the main-side counterparts of
+  // files that select more than tool-policy, so each must select at least what its counterpart selects.
+  // sceneBody.ts is main's body reader, the counterpart of the renderer's loadSceneContent(s) in
+  // src/features/tree/api.ts; readDb.ts is main's Drizzle wrapper, the counterpart of src/db/client.ts
+  // and electron/main/mastraRead/db.ts. They match no rule, so they fall back to every suite.
+  const treeApi = selectImpact(map, ["src/features/tree/api.ts"]);
+  const sceneBody = selectImpact(map, ["electron/shared/readDomain/core/sceneBody.ts"]);
+  assert.equal(sceneBody.fallback, true, "sceneBody.ts stays fail-open (every suite)");
+  covers(sceneBody, treeApi, "sceneBody vs tree/api.ts");
+  const readDb = selectImpact(map, ["electron/shared/readDomain/core/readDb.ts"]);
+  assert.equal(readDb.fallback, true, "readDb.ts stays fail-open (every suite)");
+  for (const counterpart of ["src/db/client.ts", "electron/main/mastraRead/db.ts"])
+    covers(readDb, selectImpact(map, [counterpart]), `readDb vs ${counterpart}`);
+  // chronicleReaders.ts holds the Drizzle selects moved out of the renderer's src/features/chronicle/api.ts,
+  // and chronicleMainContext.ts is main's context of the chronicle tools (the counterpart of the renderer's
+  // chronicle store loaders). Neither is listed on a rule, so each falls back to every suite.
+  const chronicleApi = selectImpact(map, ["src/features/chronicle/api.ts"]);
+  for (const name of ["chronicleReaders", "chronicleMainContext"]) {
+    const selected = selectImpact(map, [`electron/shared/readDomain/core/${name}.ts`]);
+    assert.equal(selected.fallback, true, `${name}.ts stays fail-open (every suite)`);
+    covers(selected, chronicleApi, `${name} vs chronicle/api.ts`);
+  }
+  // (3) A file a later PR adds to the core matches no rule either, so it selects every suite (safe by
+  // default) until someone lists it on purpose.
+  const later = selectImpact(map, ["electron/shared/readDomain/core/somethingNew.ts"]);
+  assert.equal(later.fallback, true);
+});
+
+test("the tool-policy light suite runs the executors' golden and the shared core's tests", () => {
+  const commandText = JSON.stringify(LIGHT_SUITE_DEFINITIONS["tool-policy"].commands);
+  for (const test of [
+    "src/features/chat/agent/toolExecutors.legacyGolden.test.ts",
+    "src/features/chat/agent/toolExecutors.legacyNativePort.test.ts",
+    "src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts",
+    "src/features/chat/agent/readCore.mainAdapter.test.ts",
+    "src/features/chat/agent/readOpenForeshadowWire.test.ts",
+    "src/features/chat/agent/toolExecutors.chronicleCharacterization.test.ts",
+    "electron/shared/readDomain/core/core.static.test.ts",
+    "electron/shared/readDomain/core/readExecutors.test.ts",
+    "electron/shared/readDomain/core/searchTools.test.ts",
+    "electron/shared/readDomain/core/foreshadowTools.test.ts",
+    "electron/shared/readDomain/features/foreshadow/readRows.test.ts",
+    "electron/shared/readDomain/core/chronicleTools.test.ts",
+    "electron/shared/readDomain/core/chronicleReaders.test.ts",
+    "electron/shared/readDomain/core/chronicleMainContext.test.ts",
+    "electron/shared/readDomain/features/chronicle/readRows.test.ts",
+    "electron/shared/mastraRead/tables.test.ts",
+    "electron/main/mastraRead/irClosure.static.test.ts",
+  ]) {
+    assert.ok(commandText.includes(test), test);
   }
 });
 
@@ -1970,3 +2171,206 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
   for (const testPath of tests)
     assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
+
+// B1 (2026-11-15): a docs-markdown-only selection runs no cargo command and only the
+// commands that can read docs/.
+async function loadImpactMap() {
+  return parseImpactMap(
+    await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+  );
+}
+
+const keptDocsMarkdownOnlyCommands = () =>
+  Object.values(LIGHT_SUITE_DEFINITIONS).flatMap((definition) =>
+    docsMarkdownOnlyCommands(definition.commands),
+  );
+
+test("a docs-markdown-only selection keeps the suite selection but drops every cargo command", async () => {
+  const map = await loadImpactMap();
+  for (const changed of [
+    ["docs/plans/nir1-continuation-2026-10.md"],
+    ["docs/some-new-note.md", "docs/plans/nir1-c-scene-connection-candidate.md"],
+    ["docs/adr/005-narrative-semantic-core-boundary.md"],
+  ]) {
+    const selection = selectImpact(map, changed);
+    assert.equal(selection.docsMarkdownOnly, true, changed.join(","));
+    // The suite, requirement, heavy and blocked reporting is not narrowed.
+    assert.ok(selection.suiteIds.length > 0, "suites stay selected as before");
+    assert.match(selection.reason, /Docs-markdown-only selection/);
+  }
+  const allSelection = selectImpact(map, ["docs/some-new-note.md"]);
+  assert.deepEqual(allSelection.suiteIds, [...map.allSuites]);
+
+  const cargoBefore = Object.values(LIGHT_SUITE_DEFINITIONS)
+    .flatMap((definition) => definition.commands)
+    .filter(([executable]) => executable === "cargo");
+  assert.ok(cargoBefore.length > 0, "the full suites do contain cargo commands");
+  const kept = keptDocsMarkdownOnlyCommands();
+  assert.deepEqual(
+    kept.filter(([executable]) => executable === "cargo"),
+    [],
+  );
+  // No kept pnpm script reaches cargo through package.json either.
+  const packageJson = JSON.parse(
+    await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  for (const [executable, script] of kept) {
+    if (executable !== "pnpm") continue;
+    assert.doesNotMatch(
+      packageJson.scripts[script] ?? "",
+      /cargo/,
+      `${script} must not run cargo`,
+    );
+  }
+});
+
+test("a docs-markdown-only selection still runs the Node tests that read docs/", () => {
+  const kept = keptDocsMarkdownOnlyCommands().map((command) => command.join(" "));
+  const keptText = kept.join("\n");
+  assert.ok(kept.includes("pnpm test:quality"));
+  assert.ok(kept.includes("pnpm test:narrative:execution-state"));
+  assert.ok(kept.includes("pnpm test:narrative:semantic-contract"));
+  assert.match(keptText, /scripts\/quality\/nir1-graph\/observation-prep\.test\.mjs/);
+  assert.match(keptText, /electron\/scripts\/webrtc-block-probe-nc1\.test\.mjs/);
+  assert.match(keptText, /scripts\/quality\/nir1-graph-eval\/admission\.test\.mjs/);
+  assert.match(keptText, /scripts\/quality\/nir1-graph\/contract\.test\.mjs/);
+  assert.ok(
+    kept.includes(
+      "pnpm test:electron --run electron/main/rendererContainmentGOpenRecord.test.ts",
+    ),
+    "the electron vitest run is narrowed to the test that reads docs/",
+  );
+  assert.equal(
+    kept.filter((command) => command.startsWith("pnpm test:electron")).length,
+    1,
+  );
+});
+
+test("the vitest files that read docs/ are all accounted for", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const root = new URL("../../", import.meta.url);
+  const found = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(new URL(directory, root), {
+      withFileTypes: true,
+    })) {
+      if (entry.name === "node_modules" || entry.name === "target") continue;
+      const relative = `${directory}${entry.name}`;
+      if (entry.isDirectory()) await walk(`${relative}/`);
+      else if (/\.(?:test|spec)\.tsx?$/u.test(entry.name)) {
+        const text = await readFile(new URL(relative, root), "utf8");
+        const code = text
+          .split("\n")
+          .filter((line) => !/^\s*(?:\/\/|\*|\/\*)/u.test(line));
+        if (code.some((line) => /["'`/]docs(?:[/"'`])/u.test(line))) {
+          found.push(relative);
+        }
+      }
+    }
+  };
+  await walk("src/");
+  await walk("electron/");
+  // Files that name docs/ but do not read Markdown under it (a fake mount
+  // root, a user's own folder, the LP page and screenshot directory).
+  const notMarkdownReaders = [
+    "electron/main/stateFileReach.integration.test.ts",
+    "src/lib/importFile.electron.test.ts",
+    "src/screenshot-scenes/captureManifest.test.ts",
+    "src/screenshot-scenes/lpPublicLinks.test.ts",
+    "src/screenshot-scenes/lpScreenshotContract.test.ts",
+  ];
+  const unaccounted = found.filter(
+    (file) =>
+      !DOCS_READER_VITEST_FILES.includes(file) &&
+      !notMarkdownReaders.includes(file),
+  );
+  assert.deepEqual(
+    unaccounted,
+    [],
+    "a vitest file that reads docs/*.md must be added to DOCS_READER_VITEST_FILES, or here if it only names a path",
+  );
+  for (const file of DOCS_READER_VITEST_FILES) {
+    assert.ok(found.includes(file), `${file} still reads docs/`);
+  }
+});
+
+test("no Rust source embeds a file under docs/ (cargo is dropped for docs-markdown-only)", async () => {
+  // P2 guard: the docs-markdown-only selection drops every cargo command, which
+  // is only safe while no Rust code compiles in a document through
+  // include_str!/include_bytes!. If one starts to, either keep cargo for it or
+  // add the crate to the selection rule. (A runtime fs read of docs/ is not
+  // visible to this scan; it is guarded by review of DOCS_READER_VITEST_FILES.)
+  const { readdir } = await import("node:fs/promises");
+  const root = new URL("../../", import.meta.url);
+  const offenders = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(new URL(directory, root), {
+      withFileTypes: true,
+    })) {
+      if (
+        entry.name === "node_modules" ||
+        entry.name === "target" ||
+        entry.name === ".git"
+      )
+        continue;
+      const relative = `${directory}${entry.name}`;
+      if (entry.isDirectory()) await walk(`${relative}/`);
+      else if (entry.name.endsWith(".rs")) {
+        const text = await readFile(new URL(relative, root), "utf8");
+        if (/include_(?:str|bytes)!\s*\([^)]*docs\//u.test(text)) {
+          offenders.push(relative);
+        }
+      }
+    }
+  };
+  await walk("src-tauri/");
+  await walk("electron/native/");
+  assert.deepEqual(
+    offenders,
+    [],
+    "a Rust file embeds docs/ through include_str!/include_bytes!; cargo must not be dropped for a docs-markdown-only selection",
+  );
+});
+
+test("a change that is not only Markdown under docs/ keeps every command", async () => {
+  const map = await loadImpactMap();
+  for (const changed of [
+    ["docs/some-new-note.md", "src-tauri/crates/grimodex-db/src/lib.rs"],
+    ["docs/some-new-note.md", "AGENTS.md"],
+    ["docs/some-new-note.md", "README.md"],
+    ["docs/lp/lp-variant-h.jsx"],
+    ["docs/screenshots/generated/a.png"],
+    ["docsx/a.md"],
+    ["scripts/quality/impact-map.mjs"],
+    [],
+  ]) {
+    assert.equal(isDocsMarkdownOnlyChange(changed), false, changed.join(","));
+    assert.equal(selectImpact(map, changed).docsMarkdownOnly, false, changed.join(","));
+  }
+  // An incomplete diff is never a docs-markdown-only selection, whatever its paths.
+  assert.equal(
+    selectImpact(map, ["docs/a.md"], { forceAllReason: "diff incomplete" })
+      .docsMarkdownOnly,
+    false,
+  );
+});
+
+test("docs-markdown-only execution reports a suite with nothing to run as skipped, not passed", async () => {
+  const map = await loadImpactMap();
+  const selection = selectImpact(map, ["docs/some-new-note.md"]);
+  const results = await runSelectedSuites({
+    ...selection,
+    suiteIds: ["ai-routing", "tool-policy", "prompt-contract", "narrative-extraction"],
+  });
+  assert.deepEqual(
+    results.map((entry) => [entry.suiteId, entry.status, entry.steps.length]),
+    [
+      ["ai-routing", "skipped", 0],
+      ["tool-policy", "skipped", 0],
+      ["prompt-contract", "skipped", 0],
+      ["narrative-extraction", "skipped", 0],
+    ],
+  );
+  assert.match(formatImpactSummary(selection, results), /ai-routing: skipped/);
+});
+

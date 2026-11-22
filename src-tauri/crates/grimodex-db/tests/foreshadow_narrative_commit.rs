@@ -1,3 +1,5 @@
+#[path = "../test-support/snapshot_restore.rs"]
+mod snapshot_restore;
 #[path = "../test-support/adapter.rs"]
 mod test_support;
 
@@ -968,4 +970,98 @@ fn foreshadow_patch_redo_failure_rolls_back_root_and_all_children() {
         Ok(())
     })
     .unwrap();
+}
+
+// --- 復元の後の取り消し・やり直し（DR-SRC-12。確かめていない種類は拒んだまま） ---
+//
+// Foreshadow の commit は、確認 88 の条件（専用の守りで、復元の後の編集が巻き戻らない
+// ことを、試験で確かめる）を満たしていない種類である。復元の marker の後は、取り消しも
+// やり直しも NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE で拒まれ、何も変わらない。
+
+fn assert_superseded_by_restore(result: anyhow::Result<Value>, what: &str) {
+    let error = result.expect_err(what);
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE"),
+        "{what}: expected NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE, got {message}"
+    );
+}
+
+fn foreshadow_rows(db: &Database, foreshadow_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM foreshadows WHERE id = ?1",
+            [foreshadow_id],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })
+    .expect("count foreshadows")
+}
+
+fn commit_status(db: &Database, commit_id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+            [commit_id],
+            |row| row.get::<_, String>(0),
+        )?)
+    })
+    .expect("commit status")
+}
+
+/// A create commit of one aggregate whose child ids and semantic key do not
+/// collide with another aggregate's.
+fn apply_aggregate(db: &Database, tag: &str) -> String {
+    let payload: Value = serde_json::from_str(
+        &aggregate_create(&format!("fs-{tag}"), &format!("foreshadow-thread:{tag}"))
+            .to_string()
+            .replace("su-1", &format!("su-{tag}"))
+            .replace("po-1", &format!("po-{tag}"))
+            .replace("watch-plant", &format!("watch-plant-{tag}")),
+    )
+    .expect("aggregate payload");
+    let items = [("foreshadow.aggregate.create", payload)];
+    let pairs = seed_approved_proposals(db, &format!("run-{tag}"), &format!("set-{tag}"), &items);
+    let applied = prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("req-{tag}"),
+            &format!("digest-{tag}"),
+            &format!("set-{tag}"),
+            &format!("run-{tag}"),
+            zip_ops(&pairs, &items),
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    applied["commitId"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn undo_and_redo_of_a_foreshadow_commit_after_a_snapshot_restore_are_refused_and_change_nothing() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-1", "Scene One");
+    seed_scene(&db, "scene-2", "Scene Two");
+    let undone_before = apply_aggregate(&db, "fa");
+    let applied_before = apply_aggregate(&db, "fb");
+    // Without a restore, undo works: the refusals below are the restore's doing.
+    let undone =
+        narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload(&undone_before))
+            .expect("undo before the restore");
+    assert_eq!(undone["status"], "undone");
+
+    snapshot_restore::restore_a_codex_entry_after_snapshot(&db, "project-1", "sess-restore", "f");
+
+    assert_superseded_by_restore(
+        narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload(&applied_before)),
+        "undo of a Foreshadow commit after the restore",
+    );
+    assert_superseded_by_restore(
+        narrative_extraction::narrative_extraction_redo_commit(&db, undo_payload(&undone_before)),
+        "redo of a Foreshadow commit after the restore",
+    );
+    // Nothing changed: aggregate B stays, aggregate A stays undone.
+    assert_eq!(foreshadow_rows(&db, "fs-fb"), 1);
+    assert_eq!(foreshadow_rows(&db, "fs-fa"), 0);
+    assert_eq!(commit_status(&db, &applied_before), "applied");
+    assert_eq!(commit_status(&db, &undone_before), "undone");
 }

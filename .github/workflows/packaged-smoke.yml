@@ -14,6 +14,15 @@ on:
     paths:
       - .github/workflows/packaged-smoke.yml
       - electron/scripts/packaged-smoke/**
+      # Mastra の ee の検査（app.asar に ee が無いこと）は、依存・配布の設定・検査の識別子が変わる PR で走らせる
+      # （Mastra 移行 MP-1。docs/plans/mastra-migration-plan.md の第 4.3・11 節）。
+      - package.json
+      - pnpm-lock.yaml
+      - electron-builder.yml
+      - electron/scripts/mastra-ee-*.mjs
+      # 3 つ目の bundle（mastra-agent.cjs）を作る build と、その entry（Mastra 移行 MP-3a）
+      - electron/scripts/build.mjs
+      - electron/main/mastra/**
   workflow_dispatch:
     inputs:
       candidate_ref:

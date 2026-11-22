@@ -11,8 +11,8 @@
 //!   writes (`total_changes`), and every entry point refuses a connection that
 //!   is not in a read transaction.
 //! - S2 (review): a candidate carried into a later transaction is checked
-//!   against the declaration, the Scope token and the title as they are at
-//!   that moment.
+//!   against the Scope token, the title and the Scene's source token as they
+//!   are at that moment.
 //! - Cell conversion failures (a title or body that is not UTF-8) skip the
 //!   candidate instead of failing the whole response.
 //! - A chain of folders longer than the walk's limit is not live.
@@ -28,12 +28,12 @@ use serde::Serialize;
 
 use super::body::disclose_graph_only_candidate;
 use super::body_tests::{
-    assert_nothing_added, click, disclose, disclose_with, eligible, place_real, set_content,
+    assert_nothing_added, click, disclose, disclose_with, eligible, set_content,
 };
 use super::counters::totals;
 use super::tests::{
-    add_pin, add_scene, associations, execute, fixture, query, raw_cells, restrict, unrestrict,
-    workspace, Path, OPEN,
+    add_pin, add_scene, associations, execute, fixture, query, restrict, unrestrict, workspace,
+    Path, OPEN,
 };
 use super::*;
 use crate::narrative_extraction::scene_body_declaration::archived_in_chain;
@@ -82,7 +82,7 @@ const SCENE_ID: &str = "a-zebra-scene-77";
 const TITLE: &str = "Marigold Chapter";
 const LINE: &str = "Quillfeather opens the vault.";
 
-/// A declared Scene whose ID, title and first line are unlike anything else
+/// A Scene whose ID, title and first line are unlike anything else
 /// the fixture prints.
 fn distinctive(env: &Env) {
     add_scene(env, SCENE_ID, None, true);
@@ -92,7 +92,6 @@ fn distinctive(env: &Env) {
         env,
         &format!("UPDATE tree_nodes SET title = '{TITLE}' WHERE id = '{SCENE_ID}';"),
     );
-    place_real(env, SCENE_ID);
 }
 
 /// Every string a Scene's response must not print.
@@ -108,8 +107,6 @@ fn secrets(shown: &EligibleGraphScene) -> Vec<String> {
         binding.body.canonical_digest.clone(),
         binding.body.excerpt_digest.clone(),
         binding.title_digest.clone(),
-        binding.declaration_id.clone(),
-        binding.declaration_token.clone(),
         binding.scene_incarnation_id.clone(),
         binding.scope_source_token.clone(),
         binding.workspace_id.clone(),
@@ -207,12 +204,8 @@ fn f2_a_candidate_rejected_after_its_body_was_read_leaves_nothing_behind() {
     let shown = eligible(disclose(&env, &[SCENE_ID]));
     let secrets = secrets(&shown);
 
-    // The body is read and then differs from the declaration.
-    set_content(
-        &env,
-        SCENE_ID,
-        &body_json("A line the declaration never saw."),
-    );
+    // The body is read and then rejected (it holds no text).
+    set_content(&env, SCENE_ID, "{\"type\":\"doc\",\"content\":[]}");
     let result = disclose(&env, &[SCENE_ID]);
     assert_nothing_added(&result);
     assert_eq!(format!("{result:?}"), "NotAppended(NotAppended)");
@@ -330,7 +323,6 @@ fn dump(conn: &Connection) -> Vec<(String, Vec<String>)> {
 fn f6_no_entry_point_writes_and_the_whole_database_is_byte_identical() {
     let env = fixture();
     distinctive(&env);
-    place_real(&env, "b1");
     let before = env.with_conn(|conn| Ok(dump(conn)));
     assert!(
         before.iter().any(|(_, rows)| !rows.is_empty()),
@@ -427,7 +419,6 @@ fn input_copy<'a>(input: &GraphOnlyScanInput<'a>) -> GraphOnlyScanInput<'a> {
 #[test]
 fn f6_every_entry_point_refuses_a_connection_that_is_not_in_a_read_transaction() {
     let env = fixture();
-    place_real(&env, "b1");
     let shown = eligible(disclose(&env, &["b1"]));
     let workspace = workspace(&env);
     let query = query(&env);
@@ -516,7 +507,6 @@ fn untripped() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
 fn f5_a_budget_interrupt_anywhere_in_the_response_adds_nothing_and_is_never_an_error() {
     use std::sync::atomic::Ordering;
     let env = fixture();
-    place_real(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let workspace = workspace(&env);
     let query = query(&env);
@@ -566,7 +556,6 @@ fn f5_a_budget_interrupt_anywhere_in_the_response_adds_nothing_and_is_never_an_e
 #[test]
 fn f5_a_budget_interrupt_gives_the_same_code_as_every_other_reason_and_changes_no_row() {
     let env = fixture();
-    place_real(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let workspace = workspace(&env);
     let query = query(&env);
@@ -612,7 +601,6 @@ fn f5_a_budget_interrupt_gives_the_same_code_as_every_other_reason_and_changes_n
 fn f5_an_interrupt_with_a_failing_checkpoint_is_the_checkpoints_error() {
     use std::sync::atomic::Ordering;
     let env = fixture();
-    place_real(&env, "b1");
     let candidates = associations(&env, &["b1"]);
     let workspace = workspace(&env);
     let query = query(&env);
@@ -650,7 +638,6 @@ fn f5_an_interrupt_with_a_failing_checkpoint_is_the_checkpoints_error() {
 #[test]
 fn f5_a_budget_interrupt_in_the_body_step_the_carry_over_check_and_the_click_adds_nothing() {
     let env = fixture();
-    place_real(&env, "b1");
     let shown = eligible(disclose(&env, &["b1"]));
     let candidates = associations(&env, &["b1"]);
     let workspace = workspace(&env);
@@ -743,20 +730,13 @@ fn a_candidate_carried_into_a_later_transaction_is_not_eligible_after_any_change
     type Change = Box<dyn Fn(&Env)>;
     let changes: Vec<(&str, Change)> = vec![
         (
-            "the declaration revoked",
+            "the body saved again (the Scene's token moves)",
             Box::new(|env| {
-                raw_cells(
+                execute(
                     env,
-                    "b1",
-                    rusqlite::types::Value::Null,
-                    rusqlite::types::Value::Null,
+                    "UPDATE tree_nodes SET version = version + 1, updated_at = '2026-10-19T09:09:09.000Z'
+                      WHERE id = 'b1';",
                 )
-            }),
-        ),
-        (
-            "a new declaration for the same body",
-            Box::new(|env| {
-                place_real(env, "b1");
             }),
         ),
         (
@@ -775,7 +755,6 @@ fn a_candidate_carried_into_a_later_transaction_is_not_eligible_after_any_change
     ];
     for (name, change) in changes {
         let env = fixture();
-        place_real(&env, "b1");
         let workspace = workspace(&env);
         let query = query(&env);
         let candidates = associations(&env, &["b1"]);
@@ -822,8 +801,6 @@ fn a_candidate_carried_into_a_later_transaction_is_not_eligible_after_any_change
 #[test]
 fn a_title_that_is_not_utf8_skips_the_candidate_and_the_next_one_is_taken() {
     let env = fixture();
-    place_real(&env, "b1");
-    place_real(&env, "b2");
     execute(
         &env,
         "UPDATE tree_nodes SET title = CAST(x'ff41' AS TEXT) WHERE id = 'b1';",
@@ -841,8 +818,6 @@ fn a_title_that_is_not_utf8_skips_the_candidate_and_the_next_one_is_taken() {
 #[test]
 fn a_body_that_is_not_utf8_is_not_appended_and_is_not_an_error() {
     let env = fixture();
-    place_real(&env, "b1");
-    place_real(&env, "b2");
     execute(
         &env,
         "UPDATE tree_nodes SET content = CAST(x'ff' AS TEXT) WHERE id = 'b1';",
@@ -910,8 +885,6 @@ fn a_chain_longer_than_the_walk_is_not_live() {
 #[test]
 fn a_scene_in_a_too_deep_chain_is_not_appended_and_the_next_one_is_taken() {
     let env = fixture();
-    place_real(&env, "b1");
-    place_real(&env, "b2");
     folder_chain(&env, 257, false);
     let result = disclose(&env, &["b1", "b2"]);
     assert_eq!(eligible(result).scene_id(), "b2");

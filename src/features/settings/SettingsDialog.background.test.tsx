@@ -130,6 +130,15 @@ describe("SettingsDialog Background Studio handoff", () => {
     );
   });
 
+  it("exposes the open category as data-settings-category (read by get_ui_state)", () => {
+    render(<SettingsDialog open onClose={vi.fn()} initialCategory="display" />);
+
+    expect(screen.getByTestId("settings-content")).toHaveAttribute(
+      "data-settings-category",
+      "display",
+    );
+  });
+
   it("keeps the desktop settings bounds without phone safe-area padding", () => {
     render(<SettingsDialog open onClose={vi.fn()} initialCategory="display" />);
 

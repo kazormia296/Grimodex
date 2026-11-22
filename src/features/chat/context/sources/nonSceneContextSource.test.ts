@@ -657,6 +657,41 @@ describe("collectNonSceneContext", () => {
     expect(result.scopeAnchor).toBeNull();
   });
 
+  it("never names a scene POV character on a folder/project aggregated pseudo-scene", async () => {
+    const alice = codexEntry("alice", { contextMode: "always" });
+    const povScene: TreeNodeData = {
+      ...scene("scene-1", "a0"),
+      povCharacterId: alice.id,
+    };
+    const result = await collectNonSceneContext(
+      request({
+        scope: { kind: "project" },
+        sourceSnapshot: {
+          treeNodes: [povScene],
+          plotThreadIds: [],
+          plotThreadLinks: [],
+        },
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => [alice],
+        listCodexContextMetadata: async () => [alice],
+        listCodexEntriesByIds: async () => [alice],
+        buildAggregatedScene: async (input: AggregatedSceneInput) => ({
+          aggregatedScene: {
+            id: input.anchorId,
+            title: input.anchorTitle,
+            content: "aggregate",
+          },
+          aggregatedDetected: [],
+        }),
+      }),
+    );
+    expect(result.promptInput.scene.povName).toBeUndefined();
+    const { prompt } = buildSystemPrompt({ ...result.promptInput, lang: "en" });
+    expect(prompt).not.toContain("POV of this scene");
+  });
+
   it("fails when an explicit folder anchor is missing", async () => {
     await expect(
       collectNonSceneContext(

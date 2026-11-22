@@ -11,7 +11,7 @@ import { invoke } from "@/lib/tauri";
 let cachedFonts: string[] | null = null;
 let inflight: Promise<string[]> | null = null;
 
-function fetchSystemFonts(): Promise<string[]> {
+export function fetchSystemFonts(): Promise<string[]> {
   if (cachedFonts) return Promise.resolve(cachedFonts);
   inflight ??= invoke<string[]>("list_system_fonts")
     .then((list) => {

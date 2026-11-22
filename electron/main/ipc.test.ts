@@ -82,6 +82,16 @@ function invokeHandler(): (
   return handler;
 }
 
+/**
+ * The raw `db_execute` result of Native (`serialize_profile_egress_db_result`
+ * in grimodex-node): every row is an object keyed by column name, with the
+ * internal result-kind marker still attached (Main strips it later, for the
+ * renderer only).
+ */
+function nativeDbReadResult(rows: Array<Record<string, unknown>>): string {
+  return JSON.stringify({ rows, __grimodexDbResultKind: "read" });
+}
+
 const activeNarrativeMaintenanceCiSeam: Extract<
   NarrativeMaintenanceCiSeam,
   { active: true }
@@ -117,9 +127,7 @@ async function issueAgentCapability(
     }),
   );
   const dbExecute = vi.fn(async () =>
-    JSON.stringify({
-      rows: [[JSON.stringify({ preset: "full" })]],
-    }),
+    nativeDbReadResult([{ ai_policy: JSON.stringify({ preset: "full" }) }]),
   );
   registerIpcRouter(
     {
@@ -589,9 +597,14 @@ describe("registerIpcRouter fail-soft logging", () => {
       JSON.stringify({ provider: "openai", model: "gpt-test" }),
     );
     const dbExecute = vi.fn(async () =>
-      JSON.stringify({
-        rows: [[JSON.stringify({ preset: "full", toggles: { chat: true } })]],
-      }),
+      nativeDbReadResult([
+        {
+          ai_policy: JSON.stringify({
+            preset: "full",
+            toggles: { chat: true },
+          }),
+        },
+      ]),
     );
     registerIpcRouter(
       {
@@ -775,6 +788,250 @@ describe("registerIpcRouter fail-soft logging", () => {
         "agentAuthorityCapabilities",
       );
     }
+  });
+
+  describe("agent capability issuance reads the project ai_policy row", () => {
+    async function capabilitiesFor(
+      dbResult: string,
+      toolName = "create_foreshadow",
+      toolInput: Record<string, unknown> = { title: "from the model" },
+    ): Promise<unknown> {
+      const dbExecute = vi.fn(async () => dbResult);
+      registerIpcRouter(
+        {
+          dbExecute,
+          getAiSettings: vi.fn(async () =>
+            JSON.stringify({ provider: "openai", model: "gpt-test" }),
+          ),
+          sendAgentMessage: vi.fn(async () =>
+            JSON.stringify({
+              blocks: [
+                {
+                  type: "tool_use",
+                  id: "call-1",
+                  name: toolName,
+                  input: toolInput,
+                },
+              ],
+              stopReason: "tool_use",
+            }),
+          ),
+        } as unknown as NapiBackendLike,
+        {},
+        {
+          resolveApiKeyForRequest: vi.fn(() => "test-key"),
+          getApiKeyForRequest: vi.fn(() => null),
+        },
+      );
+      const envelope = await invokeHandler()(
+        { sender: { id: 710 } },
+        "send_agent_message",
+        {
+          messages: [{ role: "user", content: "write a clue" }],
+          tools: [{ name: toolName }],
+          provider: "openai",
+          chatMessageId: "assistant-policy",
+          auditContext: {
+            expectedWorkspacePath: "/tmp/workspace",
+            projectId: "p1",
+            operationId: "turn-policy",
+            executionId: "execution-policy",
+            parentExecutionId: null,
+            pathId: "chat_agent_main",
+          },
+        },
+      );
+      expect(envelope.ok).toBe(true);
+      if (!envelope.ok) throw new Error("send_agent_message failed");
+      return (envelope.value as Record<string, unknown>)
+        .agentAuthorityCapabilities;
+    }
+
+    // The literal `.default()` of `projects.ai_policy` (src/db/schema.ts) and the
+    // SQL DEFAULT of `grimodex-db` migrate.rs, copied verbatim.
+    const DB_DEFAULT_AI_POLICY =
+      '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}';
+    const policyWith = (
+      overrides: Record<string, boolean>,
+      preset = "custom",
+    ): string =>
+      JSON.stringify({
+        preset,
+        toggles: {
+          ...(
+            JSON.parse(DB_DEFAULT_AI_POLICY) as {
+              toggles: Record<string, boolean>;
+            }
+          ).toggles,
+          ...overrides,
+        },
+      });
+    const TREE_PLAN_INPUT = {
+      kind: "scaffold",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:scene",
+          parentRef: null,
+          nodeType: "scene",
+          title: "Opening",
+        },
+      ],
+    };
+    const SCENE_BODY_INPUT = {
+      sceneId: "scene-1",
+      text: "proposed body",
+      mode: "append",
+    };
+    // tool, input, and the toggle that gates it (AGENT_TOOL_COMMANDS).
+    const GATED_TOOLS: ReadonlyArray<
+      readonly [string, Record<string, unknown>, string]
+    > = [
+      ["create_foreshadow", { title: "from the model" }, "knowledgeWrite"],
+      ["apply_ai_tree_plan", TREE_PLAN_INPUT, "structureWrite"],
+      ["propose_scene_body", SCENE_BODY_INPUT, "bodyWrite"],
+    ];
+
+    it("withholds knowledgeWrite tools for the real DB default policy", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: DB_DEFAULT_AI_POLICY }]),
+        "create_foreshadow",
+      );
+      expect(grants).toBeUndefined();
+    });
+
+    it("withholds structureWrite tools and issues bodyWrite tools for the real DB default policy", async () => {
+      mocks.handlers.clear();
+      const structure = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: DB_DEFAULT_AI_POLICY }]),
+        "apply_ai_tree_plan",
+        TREE_PLAN_INPUT,
+      );
+      expect(structure).toBeUndefined();
+      mocks.handlers.clear();
+      const body = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: DB_DEFAULT_AI_POLICY }]),
+        "propose_scene_body",
+        SCENE_BODY_INPUT,
+      );
+      expect(body).toMatchObject({
+        "call-1": { capability: expect.any(String) },
+      });
+    });
+
+    it("issues a knowledgeWrite tool once only knowledgeWrite is switched on", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([
+          { ai_policy: policyWith({ knowledgeWrite: true }) },
+        ]),
+        "create_foreshadow",
+      );
+      expect(grants).toMatchObject({
+        "call-1": { capability: expect.any(String) },
+      });
+    });
+
+    it.each(GATED_TOOLS)(
+      "gates %s on its own toggle (%s)",
+      async (toolName, input, toggle) => {
+        mocks.handlers.clear();
+        const off = await capabilitiesFor(
+          nativeDbReadResult([{ ai_policy: policyWith({ [toggle]: false }) }]),
+          toolName,
+          input,
+        );
+        expect(off).toBeUndefined();
+
+        mocks.handlers.clear();
+        const on = await capabilitiesFor(
+          nativeDbReadResult([{ ai_policy: policyWith({ [toggle]: true }) }]),
+          toolName,
+          input,
+        );
+        expect(on).toMatchObject({
+          "call-1": { capability: expect.any(String) },
+        });
+      },
+    );
+
+    it.each(GATED_TOOLS)(
+      "lets a false toggle override the full preset for %s (%s)",
+      async (toolName, input, toggle) => {
+        const grants = await capabilitiesFor(
+          nativeDbReadResult([
+            { ai_policy: policyWith({ [toggle]: false }, "full") },
+          ]),
+          toolName,
+          input,
+        );
+        expect(grants).toBeUndefined();
+      },
+    );
+
+    it("withholds the capability when an object row carries a restrictive policy", async () => {
+      for (const preset of ["off", "review-only", "custom"]) {
+        mocks.handlers.clear();
+        const grants = await capabilitiesFor(
+          nativeDbReadResult([{ ai_policy: JSON.stringify({ preset }) }]),
+        );
+        expect(grants, preset).toBeUndefined();
+      }
+    });
+
+    it("withholds the capability for a toggle that turns the tool's policy off", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([
+          {
+            ai_policy: JSON.stringify({
+              preset: "full",
+              toggles: { knowledgeWrite: false },
+            }),
+          },
+        ]),
+      );
+      expect(grants).toBeUndefined();
+    });
+
+    it("issues the capability for an object row with the full preset", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: JSON.stringify({ preset: "full" }) }]),
+      );
+      expect(grants).toMatchObject({
+        "call-1": { capability: expect.any(String) },
+      });
+    });
+
+    it("keeps the documented NULL default (full) for an object row", async () => {
+      const grants = await capabilitiesFor(
+        nativeDbReadResult([{ ai_policy: null }]),
+      );
+      expect(grants).toMatchObject({
+        "call-1": { capability: expect.any(String) },
+      });
+    });
+
+    it("still reads a positional array row", async () => {
+      const restrictive = await capabilitiesFor(
+        JSON.stringify({ rows: [[JSON.stringify({ preset: "off" })]] }),
+      );
+      expect(restrictive).toBeUndefined();
+    });
+
+    it("fails closed for a row shape it cannot read", async () => {
+      for (const result of [
+        nativeDbReadResult([]),
+        nativeDbReadResult([
+          { other_column: JSON.stringify({ preset: "full" }) },
+        ]),
+        nativeDbReadResult([{}]),
+        JSON.stringify({ rows: [[]] }),
+        JSON.stringify({ rows: ["full"] }),
+        JSON.stringify({ rows: [null] }),
+      ]) {
+        mocks.handlers.clear();
+        expect(await capabilitiesFor(result), result).toBeUndefined();
+      }
+    });
   });
 
   it("rejects Chronicle imports without an Agent capability", () => {
@@ -2104,16 +2361,26 @@ describe("registerIpcRouter workspace-open main trace", () => {
   it("joins Freshness then ACKs only the Open target recovery before Native Open", async () => {
     const order: string[] = [];
     let releaseFreshness!: () => void;
-    const freshnessDone = new Promise<void>((resolve) => { releaseFreshness = resolve; });
+    const freshnessDone = new Promise<void>((resolve) => {
+      releaseFreshness = resolve;
+    });
     let releaseAck!: () => void;
-    const ackDone = new Promise<void>((resolve) => { releaseAck = resolve; });
+    const ackDone = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
     const binding = { authorityId: "target-authority", generation: 1 };
-    const reconcileNarrativeMaintenanceRecovery = vi.fn()
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
       .mockImplementationOnce(async (path: string) => {
         order.push(`recover:${path}`);
-        return { status: "reconciled", descriptorId: 81,
-          reason: "maintenance-recovery-complete", recoveredBinding: binding,
-          activeBinding: binding, reboundBinding: binding };
+        return {
+          status: "reconciled",
+          descriptorId: 81,
+          reason: "maintenance-recovery-complete",
+          recoveredBinding: binding,
+          activeBinding: binding,
+          reboundBinding: binding,
+        };
       })
       .mockResolvedValue({ status: "none" });
     const ackNarrativeMaintenanceRecovery = vi.fn(async () => {
@@ -2126,77 +2393,141 @@ describe("registerIpcRouter workspace-open main trace", () => {
       return JSON.stringify({ status: "ready" });
     });
     const scheduler = createNarrativeMaintenanceScheduler({
-      reconcileNarrativeMaintenanceRecovery, ackNarrativeMaintenanceRecovery,
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
     });
     const freshnessResume = vi.fn();
-    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
-      undefined, undefined, undefined, undefined, scheduler, {
+    registerIpcRouter(
+      backendWithOpenWorkspace(openWorkspace),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+      {
         quiesceForWorkspaceSwitch: async () => {
           order.push("freshness");
           await freshnessDone;
           return { resume: freshnessResume };
         },
-      });
-    const invoke = invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" });
+      },
+    );
+    const invoke = invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/target",
+    });
     await vi.waitFor(() => expect(order).toEqual(["freshness"]));
     expect(reconcileNarrativeMaintenanceRecovery).not.toHaveBeenCalled();
     releaseFreshness();
-    await vi.waitFor(() => expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce(),
+    );
     expect(openWorkspace).not.toHaveBeenCalled();
     expect(freshnessResume).not.toHaveBeenCalled();
     releaseAck();
     await expect(invoke).resolves.toMatchObject({ ok: true });
     expect(order).toEqual(["freshness", "recover:/target", "ack", "open"]);
-    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/target"], ["/target"]]);
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([
+      ["/target"],
+      ["/target"],
+    ]);
     expect(freshnessResume).toHaveBeenCalledOnce();
   });
 
-  it.each(["recovery", "descriptor-ack"])("does not Open when target %s fails", async (failure) => {
-    const binding = { authorityId: "target-authority", generation: 1 };
-    const reconcileNarrativeMaintenanceRecovery = vi.fn(async () => {
-      if (failure === "recovery") throw new Error("target recovery unavailable");
-      return { status: "reconciled", descriptorId: 82,
-        reason: "maintenance-recovery-complete", recoveredBinding: binding,
-        activeBinding: binding, reboundBinding: binding };
-    });
-    const ackNarrativeMaintenanceRecovery = vi.fn().mockRejectedValue(new Error("ACK unavailable"));
-    const scheduler = createNarrativeMaintenanceScheduler({
-      reconcileNarrativeMaintenanceRecovery, ackNarrativeMaintenanceRecovery,
-    });
-    const openWorkspace = vi.fn();
-    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
-      undefined, undefined, undefined, undefined, scheduler);
-    await expect(invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" }))
-      .resolves.toMatchObject({ ok: false });
-    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledWith("/target");
-    expect(openWorkspace).not.toHaveBeenCalled();
-  });
+  it.each(["recovery", "descriptor-ack"])(
+    "does not Open when target %s fails",
+    async (failure) => {
+      const binding = { authorityId: "target-authority", generation: 1 };
+      const reconcileNarrativeMaintenanceRecovery = vi.fn(async () => {
+        if (failure === "recovery")
+          throw new Error("target recovery unavailable");
+        return {
+          status: "reconciled",
+          descriptorId: 82,
+          reason: "maintenance-recovery-complete",
+          recoveredBinding: binding,
+          activeBinding: binding,
+          reboundBinding: binding,
+        };
+      });
+      const ackNarrativeMaintenanceRecovery = vi
+        .fn()
+        .mockRejectedValue(new Error("ACK unavailable"));
+      const scheduler = createNarrativeMaintenanceScheduler({
+        reconcileNarrativeMaintenanceRecovery,
+        ackNarrativeMaintenanceRecovery,
+      });
+      const openWorkspace = vi.fn();
+      registerIpcRouter(
+        backendWithOpenWorkspace(openWorkspace),
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        scheduler,
+      );
+      await expect(
+        invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" }),
+      ).resolves.toMatchObject({ ok: false });
+      expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledWith(
+        "/target",
+      );
+      expect(openWorkspace).not.toHaveBeenCalled();
+    },
+  );
 
   it("opens W2 without attempting an unavailable unrelated W1 recovery", async () => {
-    const reconcileNarrativeMaintenanceRecovery = vi.fn(async (path?: string) => {
-      if (path !== "/W2") throw new Error("W1 recovery unavailable");
-      return { status: "none" };
+    const reconcileNarrativeMaintenanceRecovery = vi.fn(
+      async (path?: string) => {
+        if (path !== "/W2") throw new Error("W1 recovery unavailable");
+        return { status: "none" };
+      },
+    );
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
     });
-    const scheduler = createNarrativeMaintenanceScheduler({ reconcileNarrativeMaintenanceRecovery });
-    const openWorkspace = vi.fn(async () => JSON.stringify({ status: "ready" }));
-    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
-      undefined, undefined, undefined, undefined, scheduler);
-    await expect(invokeHandler()({ sender: {} }, "open_workspace", { path: "/W2" }))
-      .resolves.toMatchObject({ ok: true });
+    const openWorkspace = vi.fn(async () =>
+      JSON.stringify({ status: "ready" }),
+    );
+    registerIpcRouter(
+      backendWithOpenWorkspace(openWorkspace),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+    );
+    await expect(
+      invokeHandler()({ sender: {} }, "open_workspace", { path: "/W2" }),
+    ).resolves.toMatchObject({ ok: true });
     expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W2"]]);
     expect(openWorkspace).toHaveBeenCalledWith("/W2");
   });
 
   it.each([undefined, 42, "", " ", "/target\0invalid"])(
-    "rejects invalid Open path %j before quiescence or recovery", async (path) => {
+    "rejects invalid Open path %j before quiescence or recovery",
+    async (path) => {
       const quiesceForWorkspaceSwitch = vi.fn();
       const reconcileRecoveryBeforeWorkspaceOpen = vi.fn();
       const openWorkspace = vi.fn();
-      registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
-        undefined, undefined, undefined, undefined,
-        { quiesceForWorkspaceSwitch, reconcileRecoveryBeforeWorkspaceOpen });
-      await expect(invokeHandler()({ sender: {} }, "open_workspace", { path }))
-        .resolves.toMatchObject({ ok: false });
+      registerIpcRouter(
+        backendWithOpenWorkspace(openWorkspace),
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { quiesceForWorkspaceSwitch, reconcileRecoveryBeforeWorkspaceOpen },
+      );
+      await expect(
+        invokeHandler()({ sender: {} }, "open_workspace", { path }),
+      ).resolves.toMatchObject({ ok: false });
       expect(quiesceForWorkspaceSwitch).not.toHaveBeenCalled();
       expect(reconcileRecoveryBeforeWorkspaceOpen).not.toHaveBeenCalled();
       expect(openWorkspace).not.toHaveBeenCalled();
@@ -2277,7 +2608,12 @@ describe("registerIpcRouter workspace-open main trace", () => {
       const manual = invokeHandler()(
         { sender: {} },
         "verify_narrative_dependency_graph",
-        { payload: { projectId: "project-manual", attemptId: "renderer-forged" } },
+        {
+          payload: {
+            projectId: "project-manual",
+            attemptId: "renderer-forged",
+          },
+        },
       );
       for (let index = 0; index < 5; index += 1) {
         await Promise.resolve();
@@ -3492,20 +3828,14 @@ describe("NIR-1 router sender binding", () => {
 
     const legacySubmission = submission("legacy-1");
     responses.push(JSON.stringify({ status: "unrestricted" }));
-    const legacy = await invokeHandler()(
-      event,
-      "capture_current_chat_input",
-      { submission: legacySubmission },
-    );
-    const protectedRead = await invokeHandler()(
-      event,
-      "db_execute",
-      {
-        sql: "SELECT id FROM chat_sessions WHERE id = ?",
-        params: ["session-1"],
-        method: "get",
-      },
-    );
+    const legacy = await invokeHandler()(event, "capture_current_chat_input", {
+      submission: legacySubmission,
+    });
+    const protectedRead = await invokeHandler()(event, "db_execute", {
+      sql: "SELECT id FROM chat_sessions WHERE id = ?",
+      params: ["session-1"],
+      method: "get",
+    });
     const legacyStream = await invokeHandler()(
       event,
       "send_chat_message_stream",
@@ -4160,7 +4490,9 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
     issueCallerIdentity: vi.fn(() => identity),
     // A failed caller registration: every non-stop command is refused here.
     assertInvoke: vi.fn(() => {
-      throw new Error("D2A_EGRESS_DENIED: unclassified: caller registration failed");
+      throw new Error(
+        "D2A_EGRESS_DENIED: unclassified: caller registration failed",
+      );
     }),
     assertPlaintextPublication: vi.fn(),
     allowsBackendEvent: vi.fn(() => false),
@@ -4231,8 +4563,11 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
     });
     expect(profileEgress.assertInvoke).not.toHaveBeenCalled();
     expect(
-      (backend as unknown as { profileActivationPreview: ReturnType<typeof vi.fn> })
-        .profileActivationPreview,
+      (
+        backend as unknown as {
+          profileActivationPreview: ReturnType<typeof vi.fn>;
+        }
+      ).profileActivationPreview,
     ).not.toHaveBeenCalled();
   });
 
@@ -4265,7 +4600,10 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
     registerIpcRouter(
       { sendChatMessageStream } as unknown as NapiBackendLike,
       {},
-      { resolveApiKeyForRequest: () => "k", getApiKeyForRequest: () => "k" } as never,
+      {
+        resolveApiKeyForRequest: () => "k",
+        getApiKeyForRequest: () => "k",
+      } as never,
       undefined,
       { active: false },
       undefined,
@@ -4357,5 +4695,134 @@ describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, 
       }),
     );
     await expect(activation).resolves.toEqual({ state: "restricted" });
+  });
+});
+
+describe("get_model_capability_snapshot（PR-C2、読み取り専用の typed IPC）を実際の router で通す", () => {
+  beforeEach(() => {
+    mocks.handlers.clear();
+  });
+
+  async function setup(options: { restrict: boolean }) {
+    const { createModelCapabilityRuntime } =
+      await import("./modelCapabilityRuntime.js");
+    const support = await import("./modelCapability.testSupport.js");
+    const temp = support.makeTempDir();
+    const initialStatus = {
+      profileId: "profile-1",
+      callerEpoch: 4,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: nativeSqlPolicyV2(),
+    };
+    let releaseCommit!: (value: string) => void;
+    const backend = {
+      initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      profileActivationCommit: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            releaseCommit = resolve;
+          }),
+      ),
+    };
+    const profileEgress = await createProfileEgressGate(
+      backend as unknown as NapiBackendLike,
+    );
+    const runtime = createModelCapabilityRuntime({
+      isPackaged: false,
+      userDataDir: temp.dir,
+      bundledPath: support.writeBundled(
+        temp.dir,
+        support.snapshotText(
+          support.makeModels(3),
+          support.BUNDLED_GENERATED_AT,
+        ),
+      ),
+      backend: null,
+      profile: profileEgress,
+      fetchImpl: vi.fn(async () => {
+        throw new Error("no network in this test");
+      }),
+      now: () => support.TEST_NOW,
+      log: () => undefined,
+    });
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      runtime.handlers as never,
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    if (options.restrict) {
+      const activation = activateGateForTest(profileEgress);
+      await vi.waitFor(() =>
+        expect(backend.profileActivationCommit).toHaveBeenCalledOnce(),
+      );
+      releaseCommit(
+        JSON.stringify({
+          ...initialStatus,
+          callerEpoch: 5,
+          restricted: true,
+          handlesInvalidated: true,
+        }),
+      );
+      await expect(activation).resolves.toEqual({ state: "restricted" });
+    }
+    return { temp, profileEgress };
+  }
+
+  it("renderer が引数なしで呼んでも成功し、採用済みの写しを返す（Main は列挙できる field を足さない）", async () => {
+    const { temp } = await setup({ restrict: false });
+    try {
+      for (const args of [undefined, {}]) {
+        const envelope = await invokeHandler()(
+          { sender: { id: 7 } },
+          "get_model_capability_snapshot",
+          args,
+        );
+        expect(envelope.ok).toBe(true);
+        if (envelope.ok) {
+          expect(envelope.value).toMatchObject({
+            origin: "bundled",
+            source: "grimodex",
+          });
+        }
+      }
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("restricted の profile でも読める（Q2。internal の route）", async () => {
+    const { temp, profileEgress } = await setup({ restrict: true });
+    try {
+      expect(profileEgress.restricted).toBe(true);
+      const envelope = await invokeHandler()(
+        { sender: { id: 7 } },
+        "get_model_capability_snapshot",
+        {},
+      );
+      expect(envelope.ok).toBe(true);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("renderer が値を載せたら拒否する（取得先・path は renderer から変えられない）", async () => {
+    const { temp } = await setup({ restrict: false });
+    try {
+      const envelope = await invokeHandler()(
+        { sender: { id: 7 } },
+        "get_model_capability_snapshot",
+        { url: "https://evil.example/x.json" },
+      );
+      expect(envelope.ok).toBe(false);
+    } finally {
+      temp.cleanup();
+    }
   });
 });

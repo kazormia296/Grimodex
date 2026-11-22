@@ -5,7 +5,12 @@ import path from "node:path";
 import test from "node:test";
 
 import { GRAPH_WORKER_SEAM_MARKER } from "../verify-release-graph-worker.mjs";
-import { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkPackage, forbiddenContent, listAsarEntries, peSubsystem, resourcesDirOf } from "./package-check.mjs";
+import { EE_CONTENT_MARKERS } from "../mastra-ee-patterns.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+import { checkAsar, checkAsarsUnder, findAsars } from "../mastra-ee-asar-check.mjs";
+import { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkPackage, forbiddenContent, listAsarEntries, mastraEeEntries, peSubsystem, resourcesDirOf } from "./package-check.mjs";
 
 /** asar の header だけを持つ合成の file（中身の bytes は使わない） */
 function writeAsar(file, tree) {
@@ -31,7 +36,7 @@ function fakeApp({ asarTree, workerBytes = Buffer.from("worker-binary"), executa
 
 const PRODUCT_TREE = {
   "package.json": { size: 2, offset: "0" },
-  "dist-electron": { files: { "main.cjs": { size: 1, offset: "0" } } },
+  "dist-electron": { files: { "main.cjs": { size: 1, offset: "0" }, "mastra-agent.cjs": { size: 1, offset: "0" } } },
   dist: { files: { "index.html": { size: 1, offset: "0" } } },
 };
 
@@ -39,7 +44,7 @@ test("asar の header から file の一覧を読む", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gps-asar-"));
   const file = path.join(dir, "app.asar");
   writeAsar(file, PRODUCT_TREE);
-  assert.deepEqual(listAsarEntries(file), ["dist-electron/main.cjs", "dist/index.html", "package.json"]);
+  assert.deepEqual(listAsarEntries(file), ["dist-electron/main.cjs", "dist-electron/mastra-agent.cjs", "dist/index.html", "package.json"]);
   fs.writeFileSync(file, Buffer.alloc(8));
   assert.throws(() => listAsarEntries(file), /短い/);
 });
@@ -58,7 +63,8 @@ test("package の検査: seam のない実行可能な worker と harness の無
   const result = await checkPackage({ appDir, platform: "linux" });
   assert.deepEqual(result.failures, []);
   assert.equal(result.ok, true);
-  assert.equal(result.recorded.asar.entries, 3);
+  assert.equal(result.recorded.asar.entries, 4);
+  assert.equal(result.recorded.asar.mastraAgentBundle, true);
 });
 
 test("package の検査: worker に seam の文字列、実行権なし、不在、app.asar に harness の file があれば不合格", { skip: process.platform === "win32" }, async () => {
@@ -111,4 +117,173 @@ test("app.asar の中身に harness・probe の固有の文字列があれば不
   assert.equal(result.ok, false);
   assert.match(result.failures.join("\n"), /中身に harness／probe の文字列: dnsprobe\.test/);
   assert.ok(FORBIDDEN_ASAR_CONTENT.includes("webrtc-block-probe"));
+});
+
+/** `a/b/c.js` の path から入れ子の asar の tree を作る */
+function treeWith(...paths) {
+  const tree = structuredClone(PRODUCT_TREE);
+  for (const file of paths) {
+    const parts = file.split("/");
+    let node = tree;
+    for (const part of parts.slice(0, -1)) {
+      node[part] ??= { files: {} };
+      node = node[part].files;
+    }
+    node[parts.at(-1)] = { size: 1, offset: "0" };
+  }
+  return tree;
+}
+
+test("app.asar の ee の file の判定は、拡張子と package を問わず、ee の無い @mastra の file は拾わない", () => {
+  const ee = [
+    "node_modules/@mastra/core/dist/ee-abc123.js",
+    "node_modules/@mastra/core/dist/ee-abc123.cjs",
+    "node_modules/@mastra/core/dist/ee-abc123.js.map",
+    "node_modules/@mastra/core/dist/auth/ee/index.js",
+    "node_modules/@mastra/core/dist/_types/@internal_auth@0.0.37/dist/ee/index.d.ts",
+    "node_modules/@mastra/memory/dist/ee/index.js",
+    "node_modules/@mastra/editor/dist/ee-zzz.js",
+    "@mastra/core/dist/ee-top.js",
+  ];
+  assert.deepEqual(mastraEeEntries(ee), ee);
+  assert.deepEqual(mastraEeEntries(["node_modules/@mastra/core/dist/agent/index.js", "dist-electron/main.cjs", "dist/assets/free-chunk.js"]), []);
+});
+
+test("package の検査: app.asar に Mastra の ee の file があれば不合格、ee の無い @mastra の file は記録だけ", { skip: process.platform === "win32" }, async () => {
+  const clean = await checkPackage({ appDir: fakeApp({ asarTree: PRODUCT_TREE }), platform: "linux" });
+  assert.equal(clean.ok, true);
+  assert.deepEqual(clean.recorded.asar.mastraEeEntries, []);
+  assert.equal(clean.recorded.asar.mastraEntries, 0);
+  // ee が無い @mastra の file だけなら合格（記録は残る）。bundle に入れる方針なので、本来は 0 のはず。
+  const notEe = await checkPackage({ appDir: fakeApp({ asarTree: treeWith("node_modules/@mastra/core/dist/agent/index.js") }), platform: "linux" });
+  assert.equal(notEe.ok, true);
+  assert.equal(notEe.recorded.asar.mastraEntries, 1);
+  for (const file of ["node_modules/@mastra/core/dist/ee-abc123.cjs", "node_modules/@mastra/core/dist/auth/ee/index.js", "node_modules/@mastra/memory/dist/ee/index.js"]) {
+    const result = await checkPackage({ appDir: fakeApp({ asarTree: treeWith(file) }), platform: "linux" });
+    assert.equal(result.ok, false, file);
+    assert.match(result.failures.join("\n"), /Mastra の ee の file/);
+    assert.deepEqual(result.recorded.asar.mastraEeEntries, [file]);
+  }
+});
+
+test("package の検査: app.asar の中身に Mastra の ee 固有の文字列があれば不合格（chunk の境界をまたぐ一致も見る）", { skip: process.platform === "win32" }, async () => {
+  const appDir = fakeApp({ asarTree: PRODUCT_TREE });
+  const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
+  assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), []);
+  const marker = EE_CONTENT_MARKERS[0];
+  const filler = Buffer.alloc(1024 * 1024 - 5, 0x20);
+  fs.appendFileSync(asar, Buffer.concat([filler, Buffer.from(`x.${marker}(y)`)]));
+  assert.deepEqual(forbiddenContent(asar, EE_CONTENT_MARKERS), [marker]);
+  const result = await checkPackage({ appDir, platform: "linux" });
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.join("\n").includes(`Mastra の ee 固有の文字列: ${marker}`));
+  assert.deepEqual(result.recorded.asar.mastraEeContent, [marker]);
+});
+
+test("package の検査: ee の外の Apache-2.0 の部分（telemetry）の文字列が .map の sourcesContent に在っても不合格にしない", { skip: process.platform === "win32" }, async () => {
+  const appDir = fakeApp({ asarTree: PRODUCT_TREE });
+  const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
+  // stub を当てた bundle の source map に残る、ee の外の部分の文字列（mastra-ee-check.test.mjs が実物で確かめている）。
+  const apacheSources = JSON.stringify({ sourcesContent: ["captureEEEvent('ee_feature_used'); trackEvent('ee_license_check');"] });
+  fs.appendFileSync(asar, Buffer.from(apacheSources));
+  for (const word of ["captureEEEvent", "ee_feature_used", "ee_license_check"]) {
+    assert.equal(EE_CONTENT_MARKERS.includes(word), false, word);
+  }
+  const result = await checkPackage({ appDir, platform: "linux" });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.recorded.asar.mastraEeContent, []);
+});
+
+// ---- MP-3a：asar の検査を harness の外に切り出し、release.yml の 3 OS も呼ぶ ----
+
+const ASAR_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "mastra-ee-asar-check.mjs");
+
+test("checkAsar：mastra-agent.cjs が無い asar、.map がある asar は不合格（worker を見ない）", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gps-asar-check-"));
+  try {
+    const good = path.join(dir, "good.asar");
+    writeAsar(good, PRODUCT_TREE);
+    const ok = checkAsar(good);
+    assert.deepEqual(ok.failures, []);
+    assert.equal(ok.recorded.mastraAgentBundle, true);
+
+    const noAgent = path.join(dir, "noagent.asar");
+    writeAsar(noAgent, { "dist-electron": { files: { "main.cjs": { size: 1, offset: "0" } } } });
+    assert.match(checkAsar(noAgent).failures.join("\n"), /mastra-agent\.cjs が無い/);
+
+    const withMap = path.join(dir, "map.asar");
+    writeAsar(withMap, treeWith("dist-electron/mastra-agent.cjs.map"));
+    assert.match(checkAsar(withMap).failures.join("\n"), /mastra-agent\.cjs\.map がある/);
+
+    const ee = path.join(dir, "ee.asar");
+    writeAsar(ee, treeWith("node_modules/@mastra/core/dist/ee-abc123.js"));
+    assert.match(checkAsar(ee).failures.join("\n"), /Mastra の ee の file/);
+
+    const missing = checkAsar(path.join(dir, "nope.asar"));
+    assert.equal(missing.ok, false);
+    assert.match(missing.failures.join("\n"), /app\.asar:/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findAsars：linux／win の resources/app.asar と macOS の Contents/Resources/app.asar を見つけ、無ければ checkAsarsUnder は不合格", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gps-asar-find-"));
+  try {
+    assert.deepEqual(findAsars(root), []);
+    assert.equal(checkAsarsUnder(root).ok, false);
+    assert.match(checkAsarsUnder(root).failures.join("\n"), /app\.asar が無い/);
+    const layouts = [
+      ["linux-unpacked", "resources"],
+      ["win-unpacked", "resources"],
+      ["mac-arm64", "Grimodex.app", "Contents", "Resources"],
+    ];
+    for (const layout of layouts) {
+      const dir = path.join(root, ...layout);
+      fs.mkdirSync(dir, { recursive: true });
+      writeAsar(path.join(dir, "app.asar"), PRODUCT_TREE);
+    }
+    // resources の外の app.asar と node_modules の下は拾わない
+    fs.mkdirSync(path.join(root, "other"), { recursive: true });
+    writeAsar(path.join(root, "other", "app.asar"), PRODUCT_TREE);
+    assert.equal(findAsars(root).length, 3);
+    const all = checkAsarsUnder(root);
+    assert.deepEqual(all.failures, []);
+    assert.equal(all.results.length, 3);
+    // 1 つでも悪ければ全体が不合格
+    writeAsar(path.join(root, "win-unpacked", "resources", "app.asar"), treeWith("node_modules/@mastra/core/dist/ee-abc.js"));
+    const bad = checkAsarsUnder(root);
+    assert.equal(bad.ok, false);
+    assert.match(bad.failures.join("\n"), /win-unpacked/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("asar の検査の CLI：合格は 0、悪い asar・asar 無し・引数無しは 0 でない終了", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gps-asar-cli-"));
+  try {
+    const run = (...args) => spawnSync(process.execPath, [ASAR_CLI, ...args], { encoding: "utf8" });
+    assert.equal(run().status, 2);
+    assert.equal(run(root).status, 1);
+    const dir = path.join(root, "linux-unpacked", "resources");
+    fs.mkdirSync(dir, { recursive: true });
+    writeAsar(path.join(dir, "app.asar"), PRODUCT_TREE);
+    const ok = run(root);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.match(ok.stdout, /mastra-agent\.cjs あり/);
+    writeAsar(path.join(dir, "app.asar"), treeWith("node_modules/@mastra/core/dist/ee-abc.js"));
+    const bad = run(root);
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /Mastra の ee の file/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("package-check は asar の検査の関数を再 export し、worker の検証は package-check にだけある", () => {
+  assert.equal(typeof listAsarEntries, "function");
+  const asarModule = fs.readFileSync(ASAR_CLI, "utf8");
+  assert.doesNotMatch(asarModule, /verifyReleaseGraphWorker|verify-release-graph-worker/);
 });

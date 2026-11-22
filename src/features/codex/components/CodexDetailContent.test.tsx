@@ -26,6 +26,7 @@ import {
 import { isWorkspaceQuarantinedError } from "@/features/concurrency/workspaceQuarantined";
 import { CodexDetailContent } from "./CodexDetailContent";
 import { toast } from "sonner";
+import { _inspectOwnSaveCapturesForTests } from "@/features/timelapse/recorder";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -125,8 +126,14 @@ vi.mock("./DetailsTab", () => ({
     summary: string;
     entry: CodexEntry;
     onSummaryChange: (value: string) => void;
+    onContentChange: (content: string) => void;
   }) => (
     <div>
+      <button
+        type="button"
+        data-testid="change-content"
+        onClick={() => props.onContentChange("edited-content")}
+      />
       <textarea
         data-testid="draft-summary"
         value={props.summary}
@@ -143,8 +150,15 @@ vi.mock("./CodexEditLockBanner", () => ({
 
 vi.mock("./RelationsTab", () => ({ RelationsTab: () => null }));
 vi.mock("./TrackingTab", () => ({
-  TrackingTab: (props: { onEstimateReadings: () => void }) => (
-    <button data-testid="estimate-readings" onClick={props.onEstimateReadings}>
+  TrackingTab: (props: {
+    onEstimateReadings: () => void;
+    estimateBlockedHidden?: boolean;
+  }) => (
+    <button
+      data-testid="estimate-readings"
+      data-blocked-hidden={String(props.estimateBlockedHidden ?? false)}
+      onClick={props.onEstimateReadings}
+    >
       estimate
     </button>
   ),
@@ -258,6 +272,46 @@ describe("CodexDetailContent draft integrity", () => {
         surfaces: ["刹那"],
       }),
     ]);
+  });
+
+  it("does not send a hidden entry's names to AI and flags the estimate as blocked", async () => {
+    render(
+      <CodexDetailContent
+        entry={{ ...INITIAL_ENTRY, name: "刹那", contextMode: "hidden" }}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+
+    const button = screen.getByTestId("estimate-readings");
+    expect(button).toHaveAttribute("data-blocked-hidden", "true");
+    fireEvent.click(button);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockInferReadings).not.toHaveBeenCalled();
+  });
+
+  it("warns instead of ending silently when the estimate returns no readings", async () => {
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockInferReadings.mockResolvedValueOnce(new Map());
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("estimate-readings"));
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        "AIから有効な読みを取得できませんでした。モデル設定を確認して再試行してください。",
+      ),
+    );
   });
 
   it("reports an AI reading transport failure instead of failing silently", async () => {
@@ -548,5 +602,100 @@ describe("CodexDetailContent draft integrity", () => {
     resolveWrite?.({ persisted: true, version: 2 });
     await quiesce;
     expect(settled).toBe(true);
+  });
+});
+
+describe("CodexDetailContent の本文 autosave の capture hold（EAR-12）", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsStore.setState({ projectLanguage: "ja" });
+    useEditorSessionStore.getState().resetForProject();
+    useExternalWriteStore.getState().clear();
+    mockGetCodexEntry.mockResolvedValue(INITIAL_ENTRY);
+  });
+
+  afterEach(() => {
+    discardAllAutoSaves();
+  });
+
+  it("content の保存では hold を開いて updateText に渡し、保存の後は残らない", async () => {
+    let seenCapture: unknown;
+    let activeDuringSave = -1;
+    const updateText = vi.fn(
+      async (
+        _id: string,
+        _data: unknown,
+        options?: { ownSaveCapture?: unknown },
+      ) => {
+        seenCapture = options?.ownSaveCapture;
+        activeDuringSave = _inspectOwnSaveCapturesForTests().activeCaptures;
+        return { persisted: true as const, version: 2 };
+      },
+    );
+    useCodexStore.setState({
+      entries: [INITIAL_ENTRY],
+      selectedEntry: INITIAL_ENTRY,
+      update: vi.fn(async () => ({ persisted: true, version: 2 })),
+      updateText,
+    });
+
+    render(<CodexDetailContent entry={INITIAL_ENTRY} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("change-content"));
+    await act(async () => {
+      await flushAllAutoSaves();
+    });
+
+    expect(updateText).toHaveBeenCalledTimes(1);
+    expect(seenCapture).toEqual(
+      expect.objectContaining({ commit: expect.any(Function) }),
+    );
+    expect(activeDuringSave).toBe(1);
+    // store が api に届かず返った経路でも、呼び手が release して残らない。
+    expect(_inspectOwnSaveCapturesForTests().activeCaptures).toBe(0);
+  });
+
+  it("updateText が失敗しても hold を release する", async () => {
+    const updateText = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    useCodexStore.setState({
+      entries: [INITIAL_ENTRY],
+      selectedEntry: INITIAL_ENTRY,
+      updateText,
+    });
+
+    render(<CodexDetailContent entry={INITIAL_ENTRY} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("change-content"));
+    await act(async () => {
+      await flushAllAutoSaves().catch(() => undefined);
+    });
+
+    expect(updateText).toHaveBeenCalledTimes(1);
+    expect(_inspectOwnSaveCapturesForTests().activeCaptures).toBe(0);
+  });
+
+  it("summary だけの保存では hold を開かず ownSaveCapture も渡さない", async () => {
+    const updateText = vi.fn(
+      async (_id: string, _data: unknown, _options?: unknown) => ({
+        persisted: true as const,
+        version: 2,
+      }),
+    );
+    useCodexStore.setState({
+      entries: [INITIAL_ENTRY],
+      selectedEntry: INITIAL_ENTRY,
+      updateText,
+    });
+
+    render(<CodexDetailContent entry={INITIAL_ENTRY} onDelete={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("draft-summary"), {
+      target: { value: "Local summary" },
+    });
+    await act(async () => {
+      await flushAllAutoSaves();
+    });
+
+    expect(updateText).toHaveBeenCalledTimes(1);
+    expect(updateText.mock.calls[0]?.[2]).not.toHaveProperty("ownSaveCapture");
   });
 });

@@ -13,6 +13,7 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "@/lib/colorThemes";
 import { clampUiScalePercent, getUiScaleMaxPercent } from "@/lib/uiScale";
+import { agentSettingRange } from "@/../electron/shared/agentSettingCatalog";
 
 const COLOR_THEME_OPTIONS = COLOR_THEMES.map((t) => ({
   value: t.id,
@@ -253,9 +254,7 @@ export function DisplayCategory({
         >
           <SettingSlider
             settingKey="display.codexHighlightOpacity"
-            min={5}
-            max={25}
-            step={1}
+            {...agentSettingRange("display.codexHighlightOpacity")}
             defaultValue={10}
             format={(v) => `${v * 10}%`}
           />

@@ -1601,6 +1601,59 @@ mod tests {
         .expect("compare Codex aggregate revisions");
     }
 
+    /// DR-CSX-1: the renderer-facing read returns exactly the token the
+    /// ReadSet check resolves, and only for the named Project's catalog.
+    #[test]
+    fn codex_catalog_revision_read_matches_the_read_set_resolver() {
+        use super::super::{
+            narrative_extraction_resolve_codex_catalog_revision,
+            ResolveCodexCatalogRevisionPayload,
+        };
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, content, version)
+                 VALUES ('entry-1', 'p1', 'character', 'Laika', '{}', 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed Codex entry");
+        let read = narrative_extraction_resolve_codex_catalog_revision(
+            &db,
+            ResolveCodexCatalogRevisionPayload {
+                project_id: "p1".to_owned(),
+            },
+        )
+        .expect("read Codex catalog revision");
+        assert_eq!(read.source_kind, "codex-catalog");
+        assert_eq!(read.source_key, "project:codex-catalog:p1");
+        let resolved = db
+            .with_conn(|conn| {
+                resolve_source_revision(
+                    conn,
+                    "p1",
+                    "",
+                    "codex-catalog",
+                    "project:codex-catalog:p1",
+                )
+            })
+            .expect("resolve Codex catalog");
+        assert_eq!(read.revision_token, resolved.revision_token);
+        assert!(read.revision_token.starts_with("sha256:"));
+
+        for project_id in ["", " p1", "p1 "] {
+            let error = narrative_extraction_resolve_codex_catalog_revision(
+                &db,
+                ResolveCodexCatalogRevisionPayload {
+                    project_id: project_id.to_owned(),
+                },
+            )
+            .expect_err("a non-exact Project id must be rejected");
+            assert!(error.to_string().contains("NEX_SOURCE_KEY_INVALID"));
+        }
+    }
+
     #[test]
     fn eligibility_resolution_without_context_is_typed_before_sql() {
         let conn = Connection::open_in_memory().expect("connection");

@@ -208,6 +208,61 @@ describe("ChatPanel virtualization contract", () => {
     expect(opts!.getItemKey?.(1)).toBe("a1");
   });
 
+  it("表示するものが無い空の assistant 行は一覧に出さず（行は残す）、要約のマーカーと生成中の末尾は出す", () => {
+    const blankMeta = JSON.stringify({ stopped: true });
+    const messages = [
+      msg("u1", "user"),
+      { ...msg("blank", "assistant", ""), metadata: blankMeta },
+      {
+        ...msg("tools", "assistant", ""),
+        metadata: JSON.stringify({
+          tool_calls: [{ name: "x", params: {}, summary: "done" }],
+        }),
+      },
+      {
+        ...msg("summary", "assistant", "要約本文"),
+        metadata: JSON.stringify({ summary_id: "1" }),
+      },
+      {
+        ...msg("done-empty", "assistant", ""),
+        model: "claude-x",
+        metadata: JSON.stringify({ tool_calls: [] }),
+      },
+      msg("u2", "user"),
+      msg("pending", "assistant", ""),
+    ];
+    useChatStore.setState({ messages, isStreaming: false });
+    const view = render(<ChatPanel />);
+
+    const opts = virtualizerCapture.opts;
+    // 正常に完了した空の回答（metadata は印なし）は meta 行を出すので隠さない。
+    expect(opts!.count).toBe(5);
+    expect([0, 1, 2, 3, 4].map((i) => opts!.getItemKey?.(i))).toEqual([
+      "u1",
+      "tools",
+      "summary",
+      "done-empty",
+      "u2",
+    ]);
+    // store の行は消さない（出典の参照先）。
+    expect(useChatStore.getState().messages).toHaveLength(7);
+
+    // 生成中は、末尾の（これから埋まる）空の行を隠さない。
+    act(() => {
+      useChatStore.setState({ isStreaming: true });
+    });
+    expect(virtualizerCapture.opts!.count).toBe(6);
+    expect(virtualizerCapture.opts!.getItemKey?.(5)).toBe("pending");
+
+    // 生成が終わった後は、空のまま残った末尾の行を隠す。
+    act(() => {
+      useChatStore.setState({ isStreaming: false });
+    });
+    expect(virtualizerCapture.opts!.count).toBe(5);
+    expect(virtualizerCapture.opts!.getItemKey?.(4)).toBe("u2");
+    view.unmount();
+  });
+
   it("非Chat最大化中だけ virtualizer の scroll element を切り離す", () => {
     useChatStore.setState({ messages: [msg("u1", "user")] });
     render(<ChatPanel />);

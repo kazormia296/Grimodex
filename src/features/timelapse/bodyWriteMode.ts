@@ -1,8 +1,10 @@
 import {
   acquireTimelapseReplacementFence,
+  openOwnSaveCapture,
   type TimelapseCoverageProof,
   type TimelapseDocumentIdentity,
   type TimelapseDocumentRef,
+  type TimelapseOwnSaveCapture,
 } from "./documentCoverage";
 import { runAfterTimelapseGenesis } from "./genesisBarrier";
 import { flushStrict } from "./recorder";
@@ -123,6 +125,71 @@ export function runTimelapseBodyReplacement<TCommit, TResult>(
   );
 
   return task.finally(release);
+}
+
+export interface TimelapseEditorBodyWriteInput {
+  projectId: string;
+  /** 正準の文書 identity。hold の key になる。 */
+  documentIdentity: TimelapseDocumentIdentity;
+  preexistingDraft?: boolean;
+  /**
+   * 呼び手が content の捕捉と同じ同期区間で開いた hold（codex／snippet、EAR-12）。
+   * 引き取った後の release はこの関数が行う。ここに届かなかった経路の release は
+   * 呼び手の（冪等な）release が受け持つ。
+   */
+  capture?: TimelapseOwnSaveCapture;
+}
+
+/**
+ * editor が自分の autosave で本文全体を保存する（EAR-1）。
+ *
+ * 上の 2 関数と違い replacement fence も文書 lease も取らず、editor は
+ * writable のまま。窓内に打たれた doc.step は recorder の capture hold に預かり、
+ * Native の snapshot が commit された後に元の順で放流する。これで anchor 以前の
+ * step はすべて snapshot に含まれ、以後の step は snapshot を土台にする。
+ * 外部の置換（agent 書込み、undo、復元、import）は従来の fence の関数を使うこと。
+ *
+ * hold は最初の await の前に同期で開く。release の owner は 2 つで、どちらも冪等：
+ * 操作が呼ばれた場合は内側の `finally`。次の body 書込みの `flushStrict` が前の
+ * 窓の放流分を必ず見るよう project tail の内側で行い、renderer の projection の
+ * 前に済ませる。操作が呼ばれなかった場合（`runAfterTimelapseGenesis` が authority
+ * の stale や genesis の失敗・abort で操作を呼ばずに reject する）は外側の
+ * `task.finally`。
+ */
+export function runTimelapseEditorBodyWrite<TCommit, TResult>(
+  input: TimelapseEditorBodyWriteInput,
+  callbacks: Omit<TimelapseBodyWriteCallbacks<TCommit, TResult>, "commit"> & {
+    commit(): Promise<TCommit>;
+  },
+): Promise<TResult> {
+  const capture =
+    input.capture ??
+    openOwnSaveCapture({
+      projectId: input.projectId,
+      document: input.documentIdentity,
+    });
+
+  const task = enqueueProjectBodyWrite(input.projectId, () =>
+    runAfterTimelapseGenesis(
+      input.projectId,
+      async () => {
+        let committed: TCommit;
+        try {
+          await flushStrict();
+          committed = await callbacks.commit();
+          if (callbacks.didCommit?.(committed) ?? true) capture.commit();
+        } finally {
+          capture.release();
+        }
+        return callbacks.project(committed);
+      },
+      input.preexistingDraft ? { preexistingDraft: true } : undefined,
+    ),
+  );
+
+  return task.finally(() => {
+    capture.release();
+  });
 }
 
 /**

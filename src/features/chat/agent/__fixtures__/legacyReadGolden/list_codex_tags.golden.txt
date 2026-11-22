@@ -1,0 +1,177 @@
+{
+  "tool": "list_codex_tags",
+  "cases": [
+    {
+      "case": "rows: usageCount の降順（hidden の c-secret の分も数える）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "4 tags",
+        "tokensUsed": 179,
+        "content": [
+          {
+            "id": "t-magic",
+            "name": "魔法",
+            "usageCount": 3
+          },
+          {
+            "id": "t-prot",
+            "name": "主人公",
+            "usageCount": 2
+          },
+          {
+            "id": "t-place",
+            "name": "場所",
+            "usageCount": 1
+          },
+          {
+            "id": "t-unused",
+            "name": "未使用",
+            "usageCount": 0
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"t-magic\",\"name\":\"魔法\",\"usageCount\":3},{\"id\":\"t-prot\",\"name\":\"主人公\",\"usageCount\":2},{\"id\":\"t-place\",\"name\":\"場所\",\"usageCount\":1},{\"id\":\"t-unused\",\"name\":\"未使用\",\"usageCount\":0}]"
+    },
+    {
+      "case": "rows: type=location（typeFilter が null か location を含む）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "type": "location"
+      },
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "4 tags",
+        "tokensUsed": 179,
+        "content": [
+          {
+            "id": "t-magic",
+            "name": "魔法",
+            "usageCount": 3
+          },
+          {
+            "id": "t-prot",
+            "name": "主人公",
+            "usageCount": 2
+          },
+          {
+            "id": "t-place",
+            "name": "場所",
+            "usageCount": 1
+          },
+          {
+            "id": "t-unused",
+            "name": "未使用",
+            "usageCount": 0
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"t-magic\",\"name\":\"魔法\",\"usageCount\":3},{\"id\":\"t-prot\",\"name\":\"主人公\",\"usageCount\":2},{\"id\":\"t-place\",\"name\":\"場所\",\"usageCount\":1},{\"id\":\"t-unused\",\"name\":\"未使用\",\"usageCount\":0}]"
+    },
+    {
+      "case": "rows: type=character（場所タグは出ない）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "type": "character"
+      },
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "3 tags",
+        "tokensUsed": 135,
+        "content": [
+          {
+            "id": "t-magic",
+            "name": "魔法",
+            "usageCount": 3
+          },
+          {
+            "id": "t-prot",
+            "name": "主人公",
+            "usageCount": 2
+          },
+          {
+            "id": "t-unused",
+            "name": "未使用",
+            "usageCount": 0
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"t-magic\",\"name\":\"魔法\",\"usageCount\":3},{\"id\":\"t-prot\",\"name\":\"主人公\",\"usageCount\":2},{\"id\":\"t-unused\",\"name\":\"未使用\",\"usageCount\":0}]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {},
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "0 tags",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project のタグだけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "1 tags",
+        "tokensUsed": 47,
+        "content": [
+          {
+            "id": "x-t-magic",
+            "name": "魔法",
+            "usageCount": 1
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-t-magic\",\"name\":\"魔法\",\"usageCount\":1}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: type 付きでも no-project が先",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "type": "location"
+      },
+      "result": {
+        "name": "list_codex_tags",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

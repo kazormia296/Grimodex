@@ -13,27 +13,9 @@
  * レジストリ経由にする（具体的な loader は chronicleToolCache.ts 側で登録）。
  */
 
-/** 同一 key のロードを in-flight promise ごと共有する lazy 単一スロットキャッシュ。 */
-export class SharedLoader<T> {
-  private slot: { key: string; promise: Promise<T> } | null = null;
-
-  constructor(private readonly load: (key: string) => Promise<T>) {}
-
-  get(key: string): Promise<T> {
-    if (this.slot && this.slot.key === key) return this.slot.promise;
-    const promise = this.load(key).catch((e: unknown) => {
-      // 失敗はキャッシュしない（次の呼び出しで再試行できるようスロットを空ける）。
-      if (this.slot?.promise === promise) this.slot = null;
-      throw e;
-    });
-    this.slot = { key, promise };
-    return promise;
-  }
-
-  clear(): void {
-    this.slot = null;
-  }
-}
+// SharedLoader の本体は shared module（MP-4b PR-7a。Main の turn 単位の cache も使う）。ここは re-export。
+import { SharedLoader } from "@/../electron/shared/readDomain/core/sharedLoader";
+export { SharedLoader };
 
 const resetHooks: Array<() => void> = [];
 

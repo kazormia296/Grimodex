@@ -1,1 +1,3 @@
 src/db/generated/schema-contract.json
+# 生成物。1 model を 1 行にした書式を scripts/generate-model-capability-snapshot.mjs が保つ。
+electron/resources/model-capabilities.json

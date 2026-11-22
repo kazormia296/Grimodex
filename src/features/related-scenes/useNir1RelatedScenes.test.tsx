@@ -195,6 +195,9 @@ describe("Related Scenes graph-ready refresh (CP-3a)", () => {
     "graph-unavailable:warming",
     "graph-unavailable:stale",
     "graph-unavailable:busy",
+    // DR-PUBG-5-21: Native announces the publish of the refused project's
+    // Graph Index build, which is what can fix a refused registration.
+    "graph-unavailable:registration-unavailable",
   ] as const)(
     "refreshes the displayed query once on graph-ready after %s",
     async (outcome) => {
@@ -237,6 +240,66 @@ describe("Related Scenes graph-ready refresh (CP-3a)", () => {
     await ready("p");
     await advance(400);
     expect(h.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  describe("after a refused registration (DR-PUBG-5-21)", () => {
+    const refused = "graph-unavailable:registration-unavailable" as const;
+
+    it("refreshes at once, without the debounce, when the notice follows the publish", async () => {
+      h.fetch.mockResolvedValueOnce(withOutcome(refused));
+      h.fetch.mockResolvedValue(result(false));
+      renderHook(() => useNir1RelatedScenes(true));
+      await advance(0);
+      await advance(400);
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+      await ready("p");
+      await advance(0);
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      expect(h.fetch.mock.calls[1][1].refreshTrigger).toBe("graph-ready");
+    });
+
+    it("keeps a notice that came during the fetch and refreshes once after the refused answer", async () => {
+      let finish!: (value: Nir1RelatedScenesFetchResult) => void;
+      h.fetch.mockImplementationOnce(
+        () =>
+          new Promise<Nir1RelatedScenesFetchResult>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      h.fetch.mockResolvedValue(result(false));
+      renderHook(() => useNir1RelatedScenes(true));
+      await advance(0);
+      await advance(400);
+      await ready("p");
+      await ready("p");
+      await act(async () => {
+        finish(withOutcome(refused));
+      });
+      await advance(0);
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      await advance(1000);
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("refreshes once per generation and ignores another project's notice", async () => {
+      h.fetch.mockResolvedValue(withOutcome(refused));
+      renderHook(() => useNir1RelatedScenes(true));
+      await advance(0);
+      await advance(400);
+      await ready("other");
+      await advance(1000);
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+      await ready("p");
+      await ready("p");
+      await advance(400);
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      // The refreshed generation was refused again and awaits its own notice.
+      await advance(1000);
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      await ready("p");
+      await advance(400);
+      expect(h.fetch).toHaveBeenCalledTimes(3);
+    });
   });
 
   it.each([

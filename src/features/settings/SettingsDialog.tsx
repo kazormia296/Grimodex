@@ -162,6 +162,8 @@ export function SettingsDialog({
           />
           <div
             data-testid="settings-content"
+            // get_ui_state（アプリ内ヘルプ）が、開いているカテゴリを読むための印。
+            data-settings-category={activeCategory}
             className="@container min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
           >
             <div ref={contentRef} data-settings-content-shift>

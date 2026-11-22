@@ -31,10 +31,26 @@ const SLOW_DB_CALL_MS: u128 = 50;
 /// renderer-origin SQL attempts to cross the workspace/file/schema boundary.
 pub const RENDERER_SQL_SECURITY_ERROR: &str = "RENDERER_SQL_SECURITY";
 
-/// Stored typed NIR-1 Evidence shares the legacy proposal payload columns.
-/// Renderer SQL has no row-safe publication predicate, so these columns stay
-/// Native-only until the explicit D2a plaintext publication gate exists.
+/// Stored typed NIR-1 Evidence shares the legacy proposal payload columns, and
+/// the revision's reconciliation envelope repeats the IR statement and the
+/// `evidenceSet[].quote` text. Renderer SQL has no row-safe publication
+/// predicate, so these columns stay Native-only until the explicit D2a
+/// plaintext publication gate exists (`TYPED_PAYLOAD_PROTECTED_COLUMNS`).
 pub const RENDERER_TYPED_PAYLOAD_ERROR: &str = "RENDERER_SQL_TYPED_PAYLOAD";
+
+/// (table, column) pairs whose generic SQL reads are rejected in every mode
+/// (DR-GSQLENV-1). `plan_fragment_json` is deliberately absent: no writer
+/// stores a value there (DR-GSQLENV-2); a change that starts writing it must
+/// re-decide whether it carries IR text. Artifacts' `payload_json` and the
+/// typed review bundle are public surfaces by design and stay readable.
+const TYPED_PAYLOAD_PROTECTED_COLUMNS: &[(&str, &str)] = &[
+    ("narrative_proposals", "payload_json"),
+    ("narrative_proposal_revisions", "payload_json"),
+    (
+        "narrative_proposal_revisions",
+        "reconciliation_envelope_json",
+    ),
+];
 
 /// Stable marker returned when D2a's Native SQL publication guard rejects a
 /// protected read or a statement that would return DML result plaintext.
@@ -305,9 +321,12 @@ fn renderer_typed_payload_read_rejection(ctx: &AuthContext<'_>) -> Option<String
         return None;
     };
 
-    let protected_table = table_name.eq_ignore_ascii_case("narrative_proposals")
-        || table_name.eq_ignore_ascii_case("narrative_proposal_revisions");
-    if protected_table && column_name.eq_ignore_ascii_case("payload_json") {
+    let protected = TYPED_PAYLOAD_PROTECTED_COLUMNS
+        .iter()
+        .any(|(table, column)| {
+            table_name.eq_ignore_ascii_case(table) && column_name.eq_ignore_ascii_case(column)
+        });
+    if protected {
         Some(format!(
             "{RENDERER_TYPED_PAYLOAD_ERROR}: {table_name}.{column_name} contains Native-only typed payload"
         ))
@@ -2109,6 +2128,136 @@ mod tests {
             })
             .expect("verify restricted insert did not persist");
         assert_eq!(restricted_row, 0);
+    }
+
+    /// agent の書き込み tool が出典にする assistant の行は、turn の完了前に空の行として
+    /// 作り、完了時に同じ id へ UPSERT（drizzle の `on conflict … do update … where … returning`）
+    /// で最終の内容にする。この SQL が renderer の generic SQL を通ること、user 行を上書き
+    /// しないこと、NIR-1 の user INSERT trigger（capture の superseded）に触れないことを固定する。
+    #[test]
+    fn renderer_reserved_assistant_row_upsert_passes_generic_sql_without_the_user_trigger() {
+        let db = test_db();
+        db.migrate().expect("migrate schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects(id,title) VALUES ('reserved-project','Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('reserved-session','reserved-project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('reserved-user','reserved-session','user','u','2026-11-18T10:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed chat scope");
+        let upsert = "insert into \"chat_messages\" (\"id\", \"session_id\", \"role\", \"content\", \"model\", \"tokens_in\", \"tokens_out\", \"duration_ms\", \"metadata\", \"is_starred\", \"is_summarized\", \"created_at\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"chat_messages\".\"id\") do update set \"content\" = ?, \"model\" = ?, \"tokens_in\" = ?, \"tokens_out\" = ?, \"metadata\" = ? where (\"chat_messages\".\"session_id\" = ? and \"chat_messages\".\"role\" = ? and \"chat_messages\".\"content\" = ? and \"chat_messages\".\"metadata\" is null) returning \"id\", \"session_id\", \"role\", \"content\"";
+        let params = |id: &str, role: &str, content: &str| {
+            vec![
+                Value::from(id),
+                Value::from("reserved-session"),
+                Value::from(role),
+                Value::from(content),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::from(0),
+                Value::from(0),
+                Value::from("2026-11-18T10:00:00.001Z"),
+                Value::from(content),
+                Value::from("model"),
+                Value::from(1),
+                Value::from(2),
+                Value::from("{\"stopped\":true}"),
+                Value::from("reserved-session"),
+                Value::from("assistant"),
+                Value::from(""),
+            ]
+        };
+
+        // 予約（空の行）→ 完了時の UPSERT。
+        db.execute_renderer(
+            upsert,
+            &params("reserved-assistant", "assistant", ""),
+            "all",
+        )
+        .expect("reserve the assistant row");
+        let finalized = db
+            .execute_renderer(
+                upsert,
+                &params("reserved-assistant", "assistant", "final"),
+                "all",
+            )
+            .expect("finalize the reserved assistant row");
+        assert!(
+            format!("{finalized:?}").contains("final"),
+            "UPSERT must return the updated row: {finalized:?}"
+        );
+        // user 行には効かない（WHERE の role で弾かれ、行は変わらない）。
+        db.execute_renderer(upsert, &params("reserved-user", "assistant", "x"), "all")
+            .expect("conflicting user id is not updated");
+        let (assistant, user): (String, String) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT content || '/' || model || '/' || tokens_out FROM chat_messages WHERE id='reserved-assistant'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT content FROM chat_messages WHERE id='reserved-user'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read rows");
+        assert_eq!(assistant, "final/model/2");
+        assert_eq!(user, "u");
+        // 確定済み（本文あり、metadata あり）の行は WHERE に外れ、更新も返却もされない。
+        let refused = db
+            .execute_renderer(
+                upsert,
+                &params("reserved-assistant", "assistant", "overwrite"),
+                "all",
+            )
+            .expect("a finalized row is left as is");
+        assert!(
+            !format!("{refused:?}").contains("overwrite"),
+            "a finalized row must not be updated: {refused:?}"
+        );
+        let content: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT content FROM chat_messages WHERE id='reserved-assistant'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read the finalized row");
+        assert_eq!(content, "final");
+
+        // NIR-1 の capture を更新する trigger は「AFTER INSERT かつ role='user'」だけ。
+        // assistant の INSERT／UPSERT（UPDATE を含む）はこの trigger の対象外。
+        let trigger_sql: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT sql FROM sqlite_master
+                      WHERE type='trigger' AND tbl_name='chat_messages'
+                        AND name='nir1_chat_input_capture_new_human_invalidate'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read the NIR-1 new-human trigger");
+        let trigger_sql = trigger_sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(trigger_sql.contains("AFTER INSERT ON chat_messages WHEN NEW.role = 'user'"));
     }
 
     #[test]
@@ -6138,3 +6287,7 @@ mod tests {
         .expect("measure");
     }
 }
+
+#[cfg(test)]
+#[path = "execute_envelope_tests.rs"]
+mod envelope_tests;

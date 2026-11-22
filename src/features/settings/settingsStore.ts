@@ -18,6 +18,8 @@ type Layer = Record<string, string>;
 interface PendingSetting {
   value: string;
   projectId: string;
+  /** true なら値を書かず、保存先から key を消す（既定値・言語別の上書きに戻す）。 */
+  remove?: boolean;
 }
 
 export interface SettingsHydrationSnapshot {
@@ -56,6 +58,8 @@ interface SettingsState {
   getNumber: (key: string, defaultValue?: number) => number;
   getBoolean: (key: string, defaultValue?: boolean) => boolean;
   set: (key: string, value: string) => void;
+  /** 明示値を消して既定値（言語別の上書きを含む）に戻す。保存先からもキーを消す。 */
+  unset: (key: string) => void;
   flushPending: () => Promise<void>;
   discardPending: () => void;
 }
@@ -66,6 +70,22 @@ async function persistSetting(
   pending: PendingSetting,
 ): Promise<void> {
   const scope = KEY_SCOPE[key];
+  if (pending.remove) {
+    if (scope === "global") {
+      await globalSettingsRepository.patch((current) => {
+        const prefs = current.userPreferences;
+        if (!prefs || !Object.hasOwn(prefs, key)) return current;
+        const next = { ...prefs };
+        delete next[key];
+        return { ...current, userPreferences: next };
+      });
+    } else if (scope === "project") {
+      await api.deleteProjectSetting(pending.projectId, key);
+    } else {
+      await api.deleteSetting(key);
+    }
+    return;
+  }
   if (scope === "global") {
     await globalSettingsRepository.updateUserPreference(key, pending.value);
   } else if (scope === "project") {
@@ -149,6 +169,27 @@ async function drainPendingSetting(key: string): Promise<void> {
   }
 }
 
+function schedulePersist(key: string, pending: PendingSetting): void {
+  const state = useSettingsStore.getState();
+  const existing = state._timers.get(key);
+  if (existing) clearTimeout(existing);
+  state._pending.set(key, pending);
+
+  const timer = setTimeout(() => {
+    const latestState = useSettingsStore.getState();
+    if (latestState._timers.get(key) === timer) {
+      latestState._timers.delete(key);
+    }
+    void drainPendingSetting(key).catch((error) => {
+      // Normal debounce is best-effort and retains the pending value. Strict
+      // lifecycle flush retries it and propagates failure to veto teardown.
+      console.error(`[settings] persist failed for ${key}`, error);
+    });
+  }, 300);
+
+  state._timers.set(key, timer);
+}
+
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   cache: { ...DEFAULT_SETTINGS },
   layers: { legacy: {}, project: {}, global: {} },
@@ -178,7 +219,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         ) {
           continue;
         }
-        layers[layerForKey(key)][key] = pending.value;
+        if (pending.remove) delete layers[layerForKey(key)][key];
+        else layers[layerForKey(key)][key] = pending.value;
       }
       return {
         layers,
@@ -239,25 +281,23 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       };
       return { layers, cache: buildCache(layers, s.projectLanguage) };
     });
+    schedulePersist(key, { value, projectId: get().projectId });
+  },
 
-    const state = get();
-    const existing = state._timers.get(key);
-    if (existing) clearTimeout(existing);
-    state._pending.set(key, { value, projectId: state.projectId });
-
-    const timer = setTimeout(() => {
-      const latestState = useSettingsStore.getState();
-      if (latestState._timers.get(key) === timer) {
-        latestState._timers.delete(key);
-      }
-      void drainPendingSetting(key).catch((error) => {
-        // Normal debounce is best-effort and retains the pending value. Strict
-        // lifecycle flush retries it and propagates failure to veto teardown.
-        console.error(`[settings] persist failed for ${key}`, error);
-      });
-    }, 300);
-
-    state._timers.set(key, timer);
+  unset: (key: string) => {
+    if (!canScheduleQuiescenceMutation()) return;
+    set((s) => {
+      const which = layerForKey(key);
+      const layer = { ...s.layers[which] };
+      delete layer[key];
+      const layers = { ...s.layers, [which]: layer };
+      return { layers, cache: buildCache(layers, s.projectLanguage) };
+    });
+    schedulePersist(key, {
+      value: "",
+      projectId: get().projectId,
+      remove: true,
+    });
   },
 
   flushPending: async () => {
@@ -303,6 +343,7 @@ registerQuiescenceProvider({
         projectId: pending.projectId,
         key,
         value: pending.value,
+        ...(pending.remove ? { remove: true } : {}),
       }),
     ),
 });

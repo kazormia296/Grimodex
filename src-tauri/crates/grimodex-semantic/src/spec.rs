@@ -142,7 +142,10 @@ pub static SPEC_JA: EmbeddingModelSpec = EmbeddingModelSpec {
 
 /// English chunker version — independent of the Japanese one so English-only
 /// changes never restage Japanese scenes.
-pub const CHUNKER_VERSION_EN: &str = "semantic-prose-chunker-en-v1";
+///
+/// - en-v2: 段落抽出を共有する `extract_paragraph_texts` が inline の atom
+///   (`ruby` / `mention` / `image`) と CR を TS の canonical と同じ規則で読むようになった。
+pub const CHUNKER_VERSION_EN: &str = "semantic-prose-chunker-en-v2";
 
 /// English spec — finalised to bge-small-en-v1.5 by the host calibration
 /// (scripts/calibrate-embedding-threshold.py, 36-pair corpus). bge beat
@@ -202,7 +205,7 @@ mod tests {
             SPEC_JA.full_model_id(),
             "cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1"
         );
-        assert_eq!(SPEC_JA.chunker_version, "semantic-prose-chunker-v1");
+        assert_eq!(SPEC_JA.chunker_version, "semantic-prose-chunker-v2");
         assert_eq!(SPEC_JA.embedding_dim, 256);
         assert_eq!(SPEC_JA.query_prefix, "検索クエリ: ");
         assert_eq!(SPEC_JA.document_prefix, "検索文書: ");

@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "description": "Pull-request lane skipping for .github/workflows/ci.yml (first and second stage). A lane is skipped only when EVERY changed path is in that lane's neutral sets (or, for trigger lanes, when NO changed path is a trigger). Anything unclassified, incomplete, empty, or outside pull_request runs every lane. The frontend lane (Frontend static and unit tests) skips for docs only; the rust and migration lanes skip for ci-and-ai paths and for renderer-code (src TypeScript, TSX and CSS) because no Rust crate reads those files.",
+  "forceAll": [
+    ".github/workflows/**",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    ".npmrc",
+    "patches/**",
+    "**/Cargo.lock",
+    "**/Cargo.toml",
+    ".cargo/**",
+    "electron-builder.yml",
+    "scripts/local-ci-registry.json",
+    "scripts/impact/**",
+    "scripts/ci-change-scope.*",
+    "electron/**"
+  ],
+  "sets": {
+    "docs": [
+      "docs/**",
+      "*.md",
+      "public/RELEASE_NOTES/**",
+      "experiments/**"
+    ],
+    "renderer-code": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "src/**/*.css"
+    ],
+    "ci-and-ai": [
+      "scripts/quality/**",
+      "scripts/local-ci*",
+      ".agents/**",
+      ".claude/**",
+      "policies/quality/**",
+      "evals/quality-manifest.yaml",
+      "evals/impact-map.yaml"
+    ]
+  },
+  "lanes": {
+    "journeys": {
+      "mode": "neutral",
+      "neutral": ["docs"],
+      "neverNeutral": ["AGENTS.md"],
+      "gatedJobs": [
+        "electron-product-journeys-build",
+        "electron-product-journeys-c2zc"
+      ],
+      "cascadeJobs": [
+        "electron-product-journeys",
+        "electron-product-journeys-aggregate",
+        "electron-runtime-performance"
+      ]
+    },
+    "rust": {
+      "mode": "neutral",
+      "neutral": ["docs", "ci-and-ai", "renderer-code"],
+      "neverNeutral": [
+        "src/**/fixtures/**",
+        "src/**/__fixtures__/**",
+        "src/**/parity/**"
+      ],
+      "gatedJobs": ["rust", "nir1-c-query-worker"],
+      "cascadeJobs": ["rust-aggregate"]
+    },
+    "native": {
+      "mode": "neutral",
+      "neutral": ["docs", "ci-and-ai"],
+      "neverNeutral": [
+        "scripts/quality/run-nir1-retrieval.mjs",
+        "scripts/quality/nir1-retrieval/**",
+        "scripts/quality/nir1-graph-eval/**",
+        "scripts/quality/nir1-packing/**",
+        "scripts/local-ci*"
+      ],
+      "gatedJobs": ["electron-native"]
+    },
+    "migration": {
+      "mode": "neutral",
+      "neutral": ["docs", "ci-and-ai", "renderer-code"],
+      "neverNeutral": [
+        "src/**/fixtures/**",
+        "src/**/__fixtures__/**",
+        "src/**/parity/**"
+      ],
+      "gatedJobs": ["migration-recovery-gate"]
+    },
+    "windows": {
+      "mode": "neutral",
+      "neutral": ["docs", "ci-and-ai"],
+      "neverNeutral": [
+        "LICENSING.md",
+        "public/**",
+        "experiments/lfm25-encoder-phase0/local/**",
+        "scripts/local-ci*"
+      ],
+      "gatedJobs": ["electron-windows-installer-contract"]
+    },
+    "browser": {
+      "mode": "neutral",
+      "neutral": ["docs", "ci-and-ai"],
+      "gatedJobs": ["browser", "webgl", "storybook"]
+    },
+    "lfm": {
+      "mode": "trigger",
+      "triggers": ["experiments/lfm25-encoder-phase0/**"],
+      "gatedJobs": ["lfm-encoder-phase0"]
+    },
+    "security": {
+      "mode": "neutral",
+      "neutral": ["docs", "ci-and-ai"],
+      "gatedJobs": ["security"]
+    },
+    "frontend": {
+      "mode": "neutral",
+      "neutral": ["docs"],
+      "neverNeutral": ["docs/lp/**", "docs/screenshots/**", "public/**"],
+      "gatedJobs": ["frontend-static", "frontend-unit"],
+      "cascadeJobs": ["frontend"]
+    }
+  }
+}

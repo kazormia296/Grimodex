@@ -29,6 +29,13 @@ const {
   mockComputeInputHash: vi.fn(),
 }));
 
+// phaseResolver は旧 path（stub）と実体（electron/shared/readDomain）の 2 つの module id を持つ。
+// resolvedCodexContext（実体側）は実体の phaseResolver を相対 import するので、旧 path だけの mock は
+// 素通りする（MP-4b PR-3b-2）。同じ factory を両方に掛け、どちらから呼ばれても mockResolveCodexState に届ける。
+const phaseResolverMockFactory = vi.hoisted(() => () => ({
+  resolveCodexState: mockResolveCodexState,
+}));
+
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: mockGetState },
 }));
@@ -55,9 +62,11 @@ vi.mock("@/features/codex/phaseApi", () => ({
   listDetailOverridesByPhaseIds: mockListOverrides,
 }));
 
-vi.mock("@/features/codex/phaseResolver", () => ({
-  resolveCodexState: mockResolveCodexState,
-}));
+vi.mock("@/features/codex/phaseResolver", phaseResolverMockFactory);
+vi.mock(
+  "@/../electron/shared/readDomain/features/codex/phaseResolver",
+  phaseResolverMockFactory,
+);
 
 vi.mock("@/features/codex/phaseStore", () => ({
   usePhaseStore: {

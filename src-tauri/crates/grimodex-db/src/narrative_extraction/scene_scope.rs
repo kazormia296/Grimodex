@@ -2415,42 +2415,17 @@ pub(crate) fn check_material_constraints_with_memo(
         if scope.compatibility_marker == NarrativeScopeCompatibilityMarkerV1::LegacyAbsent {
             continue;
         }
-        // A non-legacy A1 material row is unavailable until disclosure has
-        // verified exactly one existing Native scope control. Never
-        // re-authorize a historical row from the current DB scope alone.
-        let exact_current_control_count = active_scope_controls
-            .iter()
-            .filter(|parsed| {
-                let control = &parsed.control;
-                match control.source_kind.as_str() {
-                    "project-scope-authority" => {
-                        control.source_key == query.scope_authority_source_key
-                            && control.revision_token == query.scope_authority_revision_token
-                    }
-                    "scope-dependency-projection-v1" => {
-                        parsed.identity.as_ref().is_some_and(|identity| {
-                            identity.project_id == query.project_id
-                                && identity.run_id == owning_run_id
-                                && !identity.secret
-                                && memo.matches(
-                                    &control.source_key,
-                                    identity,
-                                    authority,
-                                    &control.revision_token,
-                                )
-                        })
-                    }
-                    _ => false,
-                }
-            })
-            .count();
-        if exact_current_control_count != 1 {
-            return Some(
-                super::retrieval_admission::RevisionEligibilityReason::MaterialAuthorityUnavailable,
-            );
-        }
-        if scope.compatibility_marker == NarrativeScopeCompatibilityMarkerV1::Unknown {
-            return Some(super::retrieval_admission::RevisionEligibilityReason::ScopeUnsupported);
+        if let Some(reason) = static_material_scope_reason(
+            scope,
+            &query.project_id,
+            &query.scope_authority_source_key,
+            &query.scope_authority_revision_token,
+            authority,
+            active_scope_controls,
+            owning_run_id,
+            memo,
+        ) {
+            return Some(reason);
         }
         for (constraint, identity) in [
             (&scope.material_constraint.timeline, &query.timeline),
@@ -2495,6 +2470,112 @@ pub(crate) fn check_material_constraints_with_memo(
         }
     }
     None
+}
+
+/// What one non-legacy material Scope row decides without any query Scene: the
+/// revision must hold exactly one current Scope control, the row's marker must
+/// not be `unknown`, and no material constraint may be unresolved. A legacy row
+/// is not checked here (the caller skips it). Shared by
+/// `check_material_constraints_with_memo` and the static reader. The Scope
+/// authority coordinate is a parameter: the query-bound check keeps comparing
+/// against the coordinate sealed in its query context, exactly as before, and
+/// the static reader passes the coordinate of the current authority.
+#[allow(clippy::too_many_arguments)]
+fn static_material_scope_reason(
+    scope: &NarrativeSceneScopeBindingV1,
+    project_id: &str,
+    scope_authority_source_key: &str,
+    scope_authority_revision_token: &str,
+    authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    active_scope_controls: &[ParsedScopeControl],
+    owning_run_id: &str,
+    memo: &mut ProjectionRevisionMemo,
+) -> Option<super::retrieval_admission::RevisionEligibilityReason> {
+    // A non-legacy A1 material row is unavailable until disclosure has
+    // verified exactly one existing Native scope control. Never
+    // re-authorize a historical row from the current DB scope alone.
+    let exact_current_control_count = active_scope_controls
+        .iter()
+        .filter(|parsed| {
+            let control = &parsed.control;
+            match control.source_kind.as_str() {
+                "project-scope-authority" => {
+                    control.source_key == scope_authority_source_key
+                        && control.revision_token == scope_authority_revision_token
+                }
+                "scope-dependency-projection-v1" => {
+                    parsed.identity.as_ref().is_some_and(|identity| {
+                        identity.project_id == project_id
+                            && identity.run_id == owning_run_id
+                            && !identity.secret
+                            && memo.matches(
+                                &control.source_key,
+                                identity,
+                                authority,
+                                &control.revision_token,
+                            )
+                    })
+                }
+                _ => false,
+            }
+        })
+        .count();
+    if exact_current_control_count != 1 {
+        return Some(
+            super::retrieval_admission::RevisionEligibilityReason::MaterialAuthorityUnavailable,
+        );
+    }
+    if scope.compatibility_marker == NarrativeScopeCompatibilityMarkerV1::Unknown {
+        return Some(super::retrieval_admission::RevisionEligibilityReason::ScopeUnsupported);
+    }
+    let constraints = &scope.material_constraint;
+    if [
+        &constraints.timeline,
+        &constraints.worldline,
+        &constraints.narrative_layer,
+    ]
+    .into_iter()
+    .any(|constraint| {
+        matches!(
+            constraint,
+            narrative_scene_scope::NarrativeScopeConstraintV1::Unresolved { .. }
+        )
+    }) {
+        return Some(super::retrieval_admission::RevisionEligibilityReason::ScopeUnsupported);
+    }
+    None
+}
+
+/// The part of `check_material_constraints` that does not depend on the Scene
+/// being written: the first reason, in material order, that
+/// `static_material_scope_reason` gives for a non-legacy row. It reads no query
+/// context and changes nothing the query-bound check decides.
+pub(crate) fn check_material_scope_static(
+    material_scopes: &[MaterialSceneScope],
+    project_id: &str,
+    authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    active_scope_controls: &[ParsedScopeControl],
+    owning_run_id: &str,
+) -> Option<super::retrieval_admission::RevisionEligibilityReason> {
+    let mut memo = ProjectionRevisionMemo::default();
+    material_scopes
+        .iter()
+        .map(|material_scope| &material_scope.binding)
+        .filter(|scope| {
+            scope.compatibility_marker != NarrativeScopeCompatibilityMarkerV1::LegacyAbsent
+        })
+        .find_map(|scope| {
+            static_material_scope_reason(
+                scope,
+                project_id,
+                &authority.source.source_key,
+                &authority.source.revision_token,
+                authority,
+                active_scope_controls,
+                owning_run_id,
+                &mut memo,
+            )
+        })
 }
 
 #[cfg(test)]
@@ -3292,7 +3373,9 @@ mod tests {
             .prepare("SELECT id FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'")?
             .query_map([project_id], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(ProjectSceneIds::from_unsorted(ids.iter().map(String::as_str)))
+        Ok(ProjectSceneIds::from_unsorted(
+            ids.iter().map(String::as_str),
+        ))
     }
 
     fn assert_scope_extension_matches_the_value_form(db: &Database) -> (usize, usize) {

@@ -25,7 +25,6 @@
 //   followUp                              K6/4 R7 record (followup.mjs)
 //   a3AtStart: { eligible, reasons }      expected materials at start
 //   startSlot: { readyFresh }             owner slot was a new READY
-//   freshnessStamp: { result, matched, attemptedAtNs }
 //   recordRead: { startedAtNs, finishedAtNs } read-only record connection
 //                                         (*Ns: the evaluation Native clock,
 //                                         native-sample.mjs; never mixed with
@@ -37,7 +36,6 @@
 //   expectedMaterials                     trace queries only
 
 import { createHash } from "node:crypto";
-import { isNativeNs } from "./native-sample.mjs";
 import {
   AVAILABILITY_YARDSTICK,
   GRAPH_CASE_ARMS,
@@ -64,9 +62,7 @@ import {
   BOUNDARY_DISAGREEMENTS,
   FRESHNESS_REASONS,
   SETUP_DEFECT_REASONS,
-  STAMP_WITHOUT_COMPARISON,
   USER_OPERATION,
-  assertNoRetiredBusy,
   classifyJoin,
   k62SteadyStateInWindow,
   lapseKind,
@@ -273,10 +269,6 @@ export function summarizeSteadyStateCase(input) {
     outOfWindowRate: null,
     cacheOrigin: 0,
     notReadyAtStart: 0,
-    stampMismatch: 0,
-    stampWithoutComparison: 0,
-    // K6/6 変える点 5: the stamp results of the measured samples (disclosure).
-    stampResults: {},
     boundaryDisagreement: emptyDisagreement(),
     qualityHold: false,
   };
@@ -311,19 +303,13 @@ export function summarizeSteadyStateCase(input) {
       invalid.push(
         `DR-CP4-F-6: ${row.variantKey}#${row.repeat} matched F6 on another unit than the materials' Revisions`,
       );
-    assertNoRetiredBusy(row);
     const join = classifyJoin(row);
     if (join.disagreement) entry.boundaryDisagreement[join.disagreement] += 1;
     // K6/2's literal reading (disclosure under K6/6 変える点 5; it decides
     // the K6/2-era summary, not the /6 first render — followup.mjs).
     if (k62SteadyStateInWindow(row)) entry.inWindow += 1;
-    const stampKey = row.freshnessStamp?.result ?? "none";
-    entry.stampResults[stampKey] = (entry.stampResults[stampKey] ?? 0) + 1;
     if (row.graph.source === "cache") entry.cacheOrigin += 1;
     if (row.startSlot?.readyFresh !== true) entry.notReadyAtStart += 1;
-    if (row.freshnessStamp?.matched !== true) entry.stampMismatch += 1;
-    if (STAMP_WITHOUT_COMPARISON.has(row.freshnessStamp?.result))
-      entry.stampWithoutComparison += 1;
   }
   if (entry.n !== MEASURED_RUNS_PER_ARM)
     invalid.push(
@@ -558,40 +544,13 @@ function summarizeSteadyStateUnsealed(input) {
 }
 
 /**
- * Rule 4 overlap: the stamp attempt against every record read of the trace
- * (any sample, including re-queries). A missing time anywhere makes the
- * overlap undecidable.
- */
-function busyOverlap(query, allQueries) {
-  // Both sides are evaluation Native ns (native-sample.mjs); nothing here is
-  // compared with the renderer ms of the window.
-  const attempted = query.freshnessStamp?.attemptedAtNs;
-  if (!isNativeNs(attempted)) return "overlap-record-missing";
-  for (const row of allQueries)
-    if (
-      !isNativeNs(row.recordRead?.startedAtNs) ||
-      !isNativeNs(row.recordRead?.finishedAtNs)
-    )
-      return "overlap-record-missing";
-  return allQueries.some(
-    (row) =>
-      row.recordRead.startedAtNs <= attempted &&
-      attempted <= row.recordRead.finishedAtNs,
-  )
-    ? "overlapped"
-    : "clear";
-}
-
-/**
  * Rule 4: lapse, then other, then freshness. Returns the category and the
  * reason name used for it. `setup-defect` reasons invalidate the run.
- * A stamp attempt without a comparison (the stamp read failed, or the READY
- * stamp was missing) is counted on its own and goes to "other", never to
- * freshness (DR-CP4-S1C1-8); its record-read overlap is still computed for
- * disclosure.
+ * K6/7 (変える点 7 (a)): the freshness stamp is gone (DR-DBC-7), so no stamp
+ * clause and no record-read overlap clause apply; a `graph-late` is read by
+ * the start slot alone (`readyFresh`).
  */
-export function outOfWindowCategory(query, allQueries, join) {
-  assertNoRetiredBusy(query);
+export function outOfWindowCategory(query, join) {
   const kind = lapseKind(query, false);
   if (kind && kind !== "iv-empty-contribution")
     return { category: "lapse", reason: kind };
@@ -601,22 +560,12 @@ export function outOfWindowCategory(query, allQueries, join) {
   const reason = graph.outcome === "graph-late" ? "graph-late" : graph.reason;
   if (SETUP_DEFECT_REASONS.has(reason))
     return { category: "setup-defect", reason };
-  const stampResult = query.freshnessStamp?.result;
-  if (STAMP_WITHOUT_COMPARISON.has(stampResult))
-    return {
-      category: "other",
-      reason: `freshness-stamp-${stampResult}:${busyOverlap(query, allQueries)}`,
-    };
   if (FRESHNESS_REASONS.has(reason)) return { category: "freshness", reason };
   if (reason === "busy")
     return { category: "other", reason: `busy:${graph.busyCause ?? "none"}` };
   if (reason === "graph-late") {
-    const fresh =
-      query.startSlot?.readyFresh === true &&
-      query.freshnessStamp?.matched === true;
-    const stale =
-      query.startSlot?.readyFresh === false ||
-      query.freshnessStamp?.matched === false;
+    const fresh = query.startSlot?.readyFresh === true;
+    const stale = query.startSlot?.readyFresh === false;
     if (fresh) return { category: "other", reason: "graph-late:fresh-start" };
     if (stale)
       return { category: "freshness", reason: "graph-late:stale-start" };
@@ -632,6 +581,25 @@ export function mainReason(categories, outOfWindow) {
     if ((categories[name] ?? 0) * 2 > outOfWindow) return name;
   return "none";
 }
+
+/**
+ * K6/7 変える点 7 (b): the main reason decided by rule 5 is read as "other"
+ * when it is "freshness" (under R1 a `graph-late` called "freshness" does not
+ * mean a real freshness problem, K6/6:91). Lapse, none and the rest are not
+ * read over. The record keeps both values.
+ */
+export function readMainReason(main) {
+  // An unset or unknown value is an artifact: reading it through would send
+  // rule 6's last branch (condition met) a main reason nobody decided. `null`
+  // is rule 5's "no out-of-window query" and stays.
+  if (main !== null && !MAIN_REASONS.has(main))
+    throw new Error(
+      `[artifact] the main reason is not one of lapse, other, freshness or none: ${String(main)}`,
+    );
+  return main === "freshness" ? "other" : main;
+}
+
+const MAIN_REASONS = new Set(["lapse", "other", "freshness", "none"]);
 
 function invalidTrace(trace, invalid, Q, requeries, violations = []) {
   return {
@@ -656,18 +624,18 @@ function emptyLapses() {
   };
 }
 
-function emptyStampWithoutComparison() {
+/**
+ * K6/7 変える点 7 (b): `mainReasonBeforeReading` is rule 5's majority as it
+ * stands (`freshness` possible); `mainReason` is the value rule 6 uses, with
+ * `freshness` read as `other`. The category counts (the `freshness` count
+ * included) stay in `categories`.
+ */
+function mainReasonRecord(categories, outOfWindow) {
+  const before = mainReason(categories, outOfWindow);
   return {
-    unavailable: { clear: 0, overlapped: 0, "overlap-record-missing": 0 },
-    "stamp0-missing": { clear: 0, overlapped: 0, "overlap-record-missing": 0 },
+    mainReasonBeforeReading: before,
+    mainReason: readMainReason(before),
   };
-}
-
-function countStamp(stampWithoutComparison, reason) {
-  const stamp = /^freshness-stamp-(unavailable|stamp0-missing):(.+)$/u.exec(
-    reason,
-  );
-  if (stamp) stampWithoutComparison[stamp[1]][stamp[2]] += 1;
 }
 
 /** The (b) values both regimes write (rule 8). */
@@ -699,9 +667,7 @@ function summarizeTraceK62(trace, counted, requeries) {
   const reasons = {};
   const boundaryDisagreement = emptyDisagreement();
   let inWindow = 0;
-  const stampWithoutComparison = emptyStampWithoutComparison();
   for (const query of counted) {
-    assertNoRetiredBusy(query);
     const join = classifyJoin(query);
     if (join.disagreement) boundaryDisagreement[join.disagreement] += 1;
     // Rule 2: only a query of U can be in-window.
@@ -710,16 +676,11 @@ function summarizeTraceK62(trace, counted, requeries) {
     const kind = lapseKind(query, inside);
     if (kind) lapses[kind] += 1;
     if (inside) continue;
-    const { category, reason } = outOfWindowCategory(
-      query,
-      trace.queries,
-      join,
-    );
+    const { category, reason } = outOfWindowCategory(query, join);
     if (category === "setup-defect")
       invalid.push(`${query.queryId} reported ${reason} (setup defect)`);
     else categories[category] += 1;
     reasons[reason] = (reasons[reason] ?? 0) + 1;
-    countStamp(stampWithoutComparison, reason);
   }
   if (invalid.length > 0) return invalidTrace(trace, invalid, Q, requeries);
   const U = usable.length;
@@ -744,10 +705,9 @@ function summarizeTraceK62(trace, counted, requeries) {
     categories,
     reasons,
     boundaryDisagreement,
-    stampWithoutComparison,
     ...traceDisclosure(counted),
     emptyContribution: lapses["iv-empty-contribution"],
-    mainReason: mainReason(categories, outOfWindow),
+    ...mainReasonRecord(categories, outOfWindow),
     requeryCount: requeries.length,
   };
 }
@@ -770,7 +730,6 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
   const categories = { lapse: 0, other: 0, freshness: 0 };
   const reasons = {};
   const boundaryDisagreement = emptyDisagreement();
-  const stampWithoutComparison = emptyStampWithoutComparison();
   const x = emptyX();
   const followUpLapse = {};
   const violations = [];
@@ -804,20 +763,11 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
     for (const question of followUp.questions)
       followUpLapse[question] = (followUpLapse[question] ?? 0) + 1;
     if (!kind && followUp.kind) lapses[followUp.kind] += 1;
-    const stampResult = query.freshnessStamp?.result;
-    const stampReason = STAMP_WITHOUT_COMPARISON.has(stampResult)
-      ? `freshness-stamp-${stampResult}:${busyOverlap(query, trace.queries)}`
-      : null;
-    const { category, reason } = followUpFailureCategory(
-      query,
-      result,
-      stampReason,
-    );
+    const { category, reason } = followUpFailureCategory(query, result);
     if (category === "setup-defect")
       invalid.push(`${query.queryId} reported ${reason} (setup defect)`);
     else categories[category] += 1;
     reasons[reason] = (reasons[reason] ?? 0) + 1;
-    countStamp(stampWithoutComparison, reason);
   });
   if (invalid.length > 0)
     return invalidTrace(trace, invalid, Q, requeries, violations);
@@ -854,10 +804,9 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
       q3: distribution(q.q3),
     },
     boundaryDisagreement,
-    stampWithoutComparison,
     ...traceDisclosure(counted),
     emptyContribution: lapses["iv-empty-contribution"],
-    mainReason: mainReason(categories, outOfWindow),
+    ...mainReasonRecord(categories, outOfWindow),
     requeryCount: requeries.length,
   };
 }
@@ -1308,10 +1257,45 @@ export function evaluateDiagnosticCondition(input) {
   const exceeding = traces.filter((trace) => traceExceeds(trace).outOfWindow);
   if (exceeding.length === 0)
     return { result: "condition-not-met", reason: "b-does-not-hold" };
-  const mains = exceeding.map((trace) => trace.mainReason);
+  // K6/7 変える点 7 (b): rule 6 reads the main reasons after "freshness" was
+  // read as "other"; the values before the reading stay in the record, and
+  // the last branch (every main reason "freshness") is no longer reached.
+  // The reading is applied here too (idempotent): a summary that carries a
+  // "freshness" main reason (a hand-built or older one) is read the same way
+  // and never reaches the last branch (K6/7 攻撃 33).
+  // A trace over the out-of-window yardstick has out-of-window queries, so its
+  // main reason is one of the four values; a missing or unknown one (or a
+  // `null`) is an artifact, never the last branch.
+  for (const trace of exceeding)
+    for (const value of [
+      trace.mainReason,
+      trace.mainReasonBeforeReading ?? trace.mainReason,
+    ])
+      if (!MAIN_REASONS.has(value))
+        throw new Error(
+          `[artifact] a trace over the out-of-window yardstick has no known main reason: ${String(value)}`,
+        );
+  const mainsBeforeReading = exceeding.map(
+    (trace) => trace.mainReasonBeforeReading ?? trace.mainReason,
+  );
+  const mains = exceeding.map((trace) => readMainReason(trace.mainReason));
   if (mains.some((main) => main === "lapse" || main === "none"))
-    return { result: "precheck", reason: "main-reason-lapse-or-none", mains };
+    return {
+      result: "precheck",
+      reason: "main-reason-lapse-or-none",
+      mains,
+      mainsBeforeReading,
+    };
   if (mains.some((main) => main === "other"))
-    return { result: "row-not-used", reason: "main-reason-other", mains };
-  return { result: "condition-met-confirmation-required", mains };
+    return {
+      result: "row-not-used",
+      reason: "main-reason-other",
+      mains,
+      mainsBeforeReading,
+    };
+  return {
+    result: "condition-met-confirmation-required",
+    mains,
+    mainsBeforeReading,
+  };
 }

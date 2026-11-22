@@ -4,14 +4,14 @@
   "policy": "These are migration ceilings, not approved complexity targets. Any growth fails architecture validation; after a reduction, refresh the ceiling.",
   "modules": {
     "src/application/chat/chatTurnStoreActions.ts": {
-      "maxLines": 2749,
+      "maxLines": 2735,
       "maxRuntimeImports": 36
     },
     "src/features/chat/chatApi.ts": {
-      "maxLines": 1261
+      "maxLines": 1239
     },
     "src/features/chat/contextBuilder.ts": {
-      "maxLines": 2395
+      "maxLines": 2389
     },
     "src/features/concurrency/externalWriteFeed.ts": {
       "maxLines": 662

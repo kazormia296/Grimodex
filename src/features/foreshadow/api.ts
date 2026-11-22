@@ -6,6 +6,7 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
+import { visibleCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { invoke } from "@/lib/tauri";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getPromptCatalog } from "@/prompts/index";
@@ -29,7 +30,6 @@ import type {
   ForeshadowRow,
   ForeshadowSetupRow,
   ForeshadowStrength,
-  ForeshadowLoadBearing,
   AiEvaluation,
   ForeshadowWithLabel,
   ChapterAuditRequest,
@@ -40,11 +40,21 @@ import type {
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
+import {
+  buildForeshadowsWithLabels,
+  normalizeSetupLabelInput,
+  normalizeSetupRow,
+  openForeshadowsFromWire,
+  type OpenForeshadowForContext,
+  type SetupLabelInput,
+} from "@/../electron/shared/readDomain/features/foreshadow/readRows";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { instantEpochMilliseconds } from "@/lib/time";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export { normalizeForeshadowRow } from "./normalizeForeshadowRow";
+// 共有 core が使う read 専用 module へ移した（MP-4b PR-5b）。旧 path の import を保つ re-export。
+export { buildForeshadowsWithLabels };
+export type { OpenForeshadowForContext };
 
 export type ForeshadowChangeOrigin =
   | "human"
@@ -132,61 +142,6 @@ function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window || "grimodex" in window;
 }
 
-function toDate(value: unknown): Date {
-  if (value instanceof Date) return value;
-  if (typeof value === "number") return new Date(value);
-  if (typeof value === "string") return new Date(value);
-  return new Date(0);
-}
-
-function toNullableDate(value: unknown): Date | null {
-  if (value == null) return null;
-  return toDate(value);
-}
-
-function toBool(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
-  return false;
-}
-
-function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
-  const row = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: String(row.id ?? ""),
-    foreshadowId: String(row.foreshadowId ?? row.foreshadow_id ?? ""),
-    sceneId: String(row.sceneId ?? row.scene_id ?? ""),
-    fromPos: Number(row.fromPos ?? row.from_pos ?? 0),
-    toPos: Number(row.toPos ?? row.to_pos ?? 0),
-    kind: String(
-      row.kind ?? "designated_existing",
-    ) as ForeshadowSetupRow["kind"],
-    strength:
-      (row.strength as ForeshadowSetupRow["strength"] | undefined) ?? null,
-    aiStrength:
-      (row.aiStrength as ForeshadowSetupRow["aiStrength"] | undefined) ??
-      (row.ai_strength as ForeshadowSetupRow["aiStrength"] | undefined) ??
-      null,
-    aiReasoning:
-      (row.aiReasoning as string | null | undefined) ??
-      (row.ai_reasoning as string | null | undefined) ??
-      null,
-    attribution:
-      (row.attribution as ForeshadowSetupRow["attribution"] | undefined) ??
-      "human",
-    aiRationale:
-      (row.aiRationale as string | null | undefined) ??
-      (row.ai_rationale as string | null | undefined) ??
-      null,
-    lastEvaluatedAt: toNullableDate(
-      row.lastEvaluatedAt ?? row.last_evaluated_at,
-    ),
-    isOrphan: toBool(row.isOrphan ?? row.is_orphan),
-    createdAt: toDate(row.createdAt ?? row.created_at),
-    updatedAt: toDate(row.updatedAt ?? row.updated_at),
-  };
-}
-
 // ── Foreshadow CRUD ───────────────────────────────────────────────
 
 export async function createForeshadow(
@@ -245,13 +200,6 @@ export async function listForeshadows(
     .where(eq(foreshadows.projectId, projectId)) as Promise<ForeshadowRow[]>;
 }
 
-type SetupLabelInput = Pick<
-  ForeshadowSetupRow,
-  "foreshadowId" | "isOrphan" | "strength" | "aiStrength" | "aiReasoning"
-> & {
-  sceneId?: string;
-};
-
 /** Grid カード等が per-scene IPC なしで参照する scene → 伏線 ID 索引。 */
 export function buildSceneForeshadowInfoIndex(
   rows: ForeshadowRow[],
@@ -303,45 +251,6 @@ export function buildSetupScenesByForeshadowId(
   return index;
 }
 
-export function buildForeshadowsWithLabels(
-  rows: ForeshadowRow[],
-  setups: SetupLabelInput[],
-): ForeshadowWithLabel[] {
-  if (rows.length === 0) return [];
-
-  const countMap = new Map<string, number>();
-  const weakMap = new Map<string, boolean>();
-
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-    const evaluation = safeParseAiEvaluation(s.aiReasoning);
-    const effectiveStrength =
-      s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
-    if (effectiveStrength === "subtle") {
-      weakMap.set(s.foreshadowId, true);
-    }
-  }
-
-  return rows.map((r) => {
-    const setupCount = countMap.get(r.id) ?? 0;
-    const anyWeak = weakMap.get(r.id) ?? false;
-    return { ...r, setupCount, label: deriveLabel(r, setupCount, anyWeak) };
-  });
-}
-
-function normalizeSetupLabelInput(raw: unknown): SetupLabelInput {
-  const row = normalizeSetupRow(raw);
-  return {
-    foreshadowId: row.foreshadowId,
-    sceneId: row.sceneId,
-    isOrphan: row.isOrphan,
-    strength: row.strength,
-    aiStrength: row.aiStrength,
-    aiReasoning: row.aiReasoning,
-  };
-}
-
 async function invokeForeshadowListWithLabels(
   command: string,
   args: Record<string, unknown>,
@@ -354,89 +263,6 @@ async function invokeForeshadowListWithLabels(
     rows: (res.foreshadows ?? []).map(normalizeForeshadowRow),
     setups: (res.setups ?? []).map(normalizeSetupLabelInput),
   };
-}
-
-function buildOpenForeshadowsForContext(
-  rows: Array<{
-    id: string;
-    title: string;
-    intent: string | null;
-    loadBearing: ForeshadowLoadBearing | null;
-    version: number;
-    payoffConfirmed: boolean;
-    abandoned: boolean;
-    updatedAt: unknown;
-  }>,
-  setups: SetupLabelInput[],
-): OpenForeshadowForContext[] {
-  if (rows.length === 0) return [];
-
-  const labeled = buildForeshadowsWithLabels(
-    rows.map(
-      (r): ForeshadowRow => ({
-        id: r.id,
-        projectId: "",
-        title: r.title,
-        intent: r.intent,
-        notes: null,
-        payoffSceneId: null,
-        payoffFromPos: null,
-        payoffToPos: null,
-        payoffConfirmed: r.payoffConfirmed,
-        abandoned: r.abandoned,
-        secret: false,
-        loadBearing: r.loadBearing,
-        version: r.version,
-        codexLinkDirtyAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(
-          r.updatedAt instanceof Date ||
-            typeof r.updatedAt === "string" ||
-            typeof r.updatedAt === "number"
-            ? (instantEpochMilliseconds(r.updatedAt) ?? Date.now())
-            : Date.now(),
-        ),
-      }),
-    ),
-    setups,
-  );
-  const labelById = new Map(labeled.map((l) => [l.id, l.label]));
-
-  const countMap = new Map<string, number>();
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-  }
-
-  const priority: Record<string, number> = {
-    critical: 0,
-    supporting: 1,
-    optional: 2,
-  };
-  const toMs = (v: unknown): number => {
-    if (v instanceof Date || typeof v === "string" || typeof v === "number") {
-      return instantEpochMilliseconds(v) ?? 0;
-    }
-    return 0;
-  };
-  return rows
-    .map((r) => ({
-      id: r.id,
-      title: r.title,
-      intent: r.intent,
-      loadBearing: r.loadBearing,
-      version: r.version,
-      setupCount: countMap.get(r.id) ?? 0,
-      derivedLabel: labelById.get(r.id),
-      _updatedMs: toMs(r.updatedAt),
-    }))
-    .sort((a, b) => {
-      const pa = priority[a.loadBearing ?? ""] ?? 3;
-      const pb = priority[b.loadBearing ?? ""] ?? 3;
-      if (pa !== pb) return pa - pb;
-      return b._updatedMs - a._updatedMs;
-    })
-    .map(({ _updatedMs: _ms, ...rest }) => rest);
 }
 
 function buildSceneForeshadowContextFromBundle(res: {
@@ -597,34 +423,23 @@ export interface SceneForeshadowInfo {
 }
 
 /**
- * Phase 2 (chat context): プロジェクト全体の未回収伏線（payoffConfirmed=false
- * かつ abandoned=false）を loadBearing 優先度（critical > supporting > optional
- * > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
- * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
+ * 未回収伏線を読む wire（`{foreshadows, setups}`）。MP-4b PR-5b：read 専用 module（共有 core）が
+ * この wire から tool の結果を組むので、ここは「wire を取る」だけ（組み立てはしない）。
+ *
+ * - Native（Tauri / Electron）：`foreshadow_list_open_for_context` を `{ projectId }` だけで 1 回 invoke し、
+ *   戻りをそのまま返す（snake_case・真偽は 0/1・時刻は epoch ms。`secret = 0` の絞りは Native の SQL）。
+ * - それ以外（browser-mock・試験）：Drizzle で同じ 2 つの list を camelCase・boolean・Date のまま返す。
+ *   文と順は従来のまま（foreshadows を `secret = false` つきで select し、0 件なら setups の select を
+ *   打たずに空の 2 list を返す）。
  */
-export interface OpenForeshadowForContext {
-  id: string;
-  title: string;
-  intent: string | null;
-  loadBearing: ForeshadowLoadBearing | null;
-  version: number;
-  setupCount: number;
-  /** Derived lifecycle label from setup count + strength evaluation. */
-  derivedLabel?: DerivedLabel;
-}
-
-export async function listOpenForeshadowsForContext(
+export async function readOpenForeshadowWire(
   projectId: string,
-): Promise<OpenForeshadowForContext[]> {
+): Promise<unknown> {
   if (isTauriRuntime()) {
-    const { rows, setups } = await invokeForeshadowListWithLabels(
-      "foreshadow_list_open_for_context",
-      { projectId },
-    );
-    return buildOpenForeshadowsForContext(rows, setups);
+    return invoke("foreshadow_list_open_for_context", { projectId });
   }
 
-  const rows = (await db
+  const rows = await db
     .select({
       id: foreshadows.id,
       title: foreshadows.title,
@@ -643,18 +458,9 @@ export async function listOpenForeshadowsForContext(
         eq(foreshadows.abandoned, false),
         eq(foreshadows.secret, false),
       ),
-    )) as Array<{
-    id: string;
-    title: string;
-    intent: string | null;
-    loadBearing: ForeshadowLoadBearing | null;
-    version: number;
-    payoffConfirmed: boolean;
-    abandoned: boolean;
-    updatedAt: unknown;
-  }>;
+    );
 
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { foreshadows: [], setups: [] };
 
   const ids = rows.map((r) => r.id);
   const setups = await db
@@ -669,7 +475,21 @@ export async function listOpenForeshadowsForContext(
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, ids));
 
-  return buildOpenForeshadowsForContext(rows, setups as SetupLabelInput[]);
+  return { foreshadows: rows, setups };
+}
+
+/**
+ * Phase 2 (chat context): プロジェクト全体の未回収伏線（payoffConfirmed=false
+ * かつ abandoned=false、secret を除く）を loadBearing 優先度（critical > supporting >
+ * optional > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
+ * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
+ * wire の取得は `readOpenForeshadowWire`、組み立ては read 専用 module
+ * （`openForeshadowsFromWire`。wire の形が壊れていれば throw する）。
+ */
+export async function listOpenForeshadowsForContext(
+  projectId: string,
+): Promise<OpenForeshadowForContext[]> {
+  return openForeshadowsFromWire(await readOpenForeshadowWire(projectId));
 }
 
 export async function getSceneForeshadowInfo(
@@ -1353,24 +1173,66 @@ const RELATED_CODEX_CHAR_LIMIT = 3000;
  * relatedCodex 形式（id/name/summary）に整形する。chat の auto-detect と
  * 同じ text ベースのマッチング（editor 非依存）。summary 空のエントリは
  * prompt で `- name: ` にしかならないため除外する。
+ *
+ * 作者が AI に秘匿（hidden）と印した Codex は、`sceneIds`（複数なら、どれか 1 つの場面で
+ * hidden なら落とす）の Phase 解決後の mode で判定して落とす（chat の通常の文脈と同じ正本）。
+ * 場面が無ければ base。base が hidden でも Phase で解除されたものは、base ではなく
+ * Phase 解決後の summary を使う。解決後の mode が suppress のものも従来どおり対象外。
+ * 判定に失敗したら何も渡さない（fail-closed）。
+ *
+ * 照合は 2 回に分ける。重なりでは最長一致が勝つので、hidden の長い名前（「アリス・スミス」）が
+ * 範囲を取って、重なる hidden でない項目（「アリス」）を消さないようにするため、
+ * (1) hidden と suppress を除いた従来の候補、(2) base が hidden の項目だけ（Phase で解除された
+ * ものを拾う）を別々に照合して合わせる。
  */
 export async function detectRelatedCodex(
   text: string,
+  options: { sceneIds?: ReadonlyArray<string | null | undefined> } = {},
 ): Promise<ProposeRequest["relatedCodex"]> {
   if (!text.trim()) return [];
   const entries = useCodexStore.getState().entries;
-  const detectable = entries.filter(
+  const regular = entries.filter(
     (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
   );
-  const matched = await findMentionedEntriesAsync(text, detectable);
-  const byId = new Map(detectable.map((e) => [e.id, e]));
+  const baseHidden = entries.filter((e) => e.contextMode === "hidden");
+  const matchedRegular = await findMentionedEntriesAsync(text, regular);
+  const matchedHidden =
+    baseHidden.length > 0
+      ? await findMentionedEntriesAsync(text, baseHidden)
+      : [];
+  const seen = new Set<string>();
+  const matchedAll = [...matchedRegular, ...matchedHidden].filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+  const projectId = useTreeStore.getState().projectId;
+  const anchors = options.sceneIds?.length ? options.sceneIds : [undefined];
+  const allIds = matchedAll.map((m) => m.id);
+  let visibleIds = new Set<string>(allIds);
+  const suppressed = new Set<string>();
+  let summaries = new Map<string, string | null>();
+  for (const sceneId of anchors) {
+    const visible = await visibleCodexForAi(allIds, { projectId, sceneId });
+    const ids = new Set(visible.ids);
+    visibleIds = new Set([...visibleIds].filter((id) => ids.has(id)));
+    for (const id of visible.suppressed) suppressed.add(id);
+    // 解除された項目の summary は最後の場面の解決後（全場面で hidden でないもの）。
+    summaries = visible.summaries;
+  }
+  const matched = matchedAll.filter(
+    (m) => visibleIds.has(m.id) && !suppressed.has(m.id),
+  );
+  const byId = new Map(entries.map((e) => [e.id, e]));
 
   const result: ProposeRequest["relatedCodex"] = [];
   let total = 0;
   for (const m of matched) {
     const entry = byId.get(m.id);
     if (!entry) continue;
-    const summary = (entry.summary ?? "").trim();
+    const summary = (
+      (summaries.has(entry.id) ? summaries.get(entry.id) : entry.summary) ?? ""
+    ).trim();
     if (!summary) continue;
     const line = `- ${entry.name}: ${summary}`;
     if (total + line.length + 1 > RELATED_CODEX_CHAR_LIMIT) break;

@@ -1445,6 +1445,15 @@ fn inspect_verify_gate(
         result.reasons = vec![format!("verify-graph-state-invalid: {error}")];
         return Ok(result);
     }
+    // GDV/1 revision 5 (M-2, GDV-R9 (x)): a Verify that excluded a recognized
+    // not-current Graph binding did not examine it. Readiness, and the C2-ZC
+    // cutover behind it, stay closed exactly as for a current Graph binding.
+    if !report.consumers_excluded_not_current.is_empty() {
+        result.report_clean = report.is_clean();
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-graph-recognized-unavailable".to_string()];
+        return Ok(result);
+    }
     result.report_clean = report.is_clean();
     if !result.report_clean {
         result.state = ReadinessState::Blocked;

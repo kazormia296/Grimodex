@@ -262,25 +262,98 @@ describe("caller timeout policy（electron 分岐）", () => {
     });
   });
 
-  it.each(["foreshadow_load_anchors_for_scene", "list_annotations_for_scene"])(
-    "%s は Editor sidecar read lane の10s枠を使う",
-    async (command) => {
-      vi.useFakeTimers();
-      installBridge({
-        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
-      });
-      const { invoke } = await import("./tauri");
-      const caught = invoke(command).catch((error: unknown) => error);
+  it("chat_agent_ir_select (chat IR) は read lane で、caller timeout は 20s（終了の上限より長い）", async () => {
+    vi.useFakeTimers();
+    // A mutation that never settles must not hold the chat IR call back: it is
+    // a read, not a mutation.
+    const bridge = installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+    void invoke("narrative_scene_body_declaration_declare").catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const caught = invoke("chat_agent_ir_select", {
+      query: "q",
+      projectId: "p",
+      expectedWorkspacePath: "/w",
+      currentSceneId: "s",
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.invoke).toHaveBeenCalledWith(
+      "chat_agent_ir_select",
+      expect.anything(),
+    );
+    // Not the ordinary 10 s: still running at 11 s.
+    let settled = false;
+    void caught.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(caught).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_TIMEOUT",
+      command: "chat_agent_ir_select",
+      details: { timeoutMs: 20_000 },
+    });
+  });
 
-      await vi.advanceTimersByTimeAsync(11_000);
-      await expect(caught).resolves.toMatchObject({
-        name: "IpcInvokeError",
-        code: "IPC_TIMEOUT",
-        command,
-        details: { timeoutMs: 10_000 },
-      });
-    },
-  );
+  it("mastra_agent_turn_start は turn の完了まで待つ mutation で、caller timeout も read lane も無い。cancel は start の後ろに並ばない（MP-3b）", async () => {
+    vi.useFakeTimers();
+    const bridge = installBridge({
+      invoke: vi.fn().mockImplementation((command: string) =>
+        command === "mastra_agent_turn_cancel"
+          ? Promise.resolve({
+              ok: true,
+              value: { status: "ok", turnId: "t", found: true },
+            })
+          : new Promise(() => {}),
+      ),
+    });
+    const { invoke } = await import("./tauri");
+    let startSettled = false;
+    void invoke("mastra_agent_turn_start", { turnId: "t" }).then(
+      () => {
+        startSettled = true;
+      },
+      () => {
+        startSettled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    // Far past every caller timeout of the read lanes (10 s, 20 s).
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(startSettled).toBe(false);
+    // The pending start does not hold the cancel back.
+    await expect(
+      invoke("mastra_agent_turn_cancel", { turnId: "t" }),
+    ).resolves.toEqual({ status: "ok", turnId: "t", found: true });
+    expect(bridge.invoke).toHaveBeenCalledTimes(2);
+    expect(startSettled).toBe(false);
+  });
+
+  it.each([
+    "foreshadow_load_anchors_for_scene",
+    "list_annotations_for_scene",
+    // モデル能力の registry の写し（PR-C2）：読み取り専用の 1 本も同じ 10 秒枠。
+    "get_model_capability_snapshot",
+  ])("%s は Editor sidecar read lane の10s枠を使う", async (command) => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+    const caught = invoke(command).catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    await expect(caught).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_TIMEOUT",
+      command,
+      details: { timeoutMs: 10_000 },
+    });
+  });
 
   it("narrative_scene_body_declaration_state (CB-3) は read lane の10s枠を使い、declare/revoke は使わない", async () => {
     vi.useFakeTimers();
@@ -458,6 +531,7 @@ describe("caller timeout policy（electron 分岐）", () => {
     "nir1_entity_relation_revision_read_current",
     "nir1_entity_relation_revision_restore",
     "narrative_scene_body_declaration_state",
+    "get_model_capability_snapshot",
   ])(
     "%s は lifecycle quiescence を保持せず read caller を cancel する",
     async (command) => {

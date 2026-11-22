@@ -20,8 +20,10 @@ let nextQueryGeneration = 0;
 
 /**
  * A Graph that was not usable yet but may be now: a late arrival, or one still
- * warming, stale or busy. Native emits `graph-ready` when such a result is
- * cached; every other outcome has nothing to wait for.
+ * warming, stale or busy, or one whose registration was refused. Native emits
+ * `graph-ready` when such a result is cached, and (DR-PUBG-5-21) when the Graph
+ * Index build of the refused project publishes, which is what can fix a refused
+ * registration; every other outcome has nothing to wait for.
  */
 function awaitsGraphReady(value: Nir1RelatedScenesFetchResult): boolean {
   const outcome = value.graphOutcome;
@@ -29,7 +31,8 @@ function awaitsGraphReady(value: Nir1RelatedScenesFetchResult): boolean {
     outcome === "graph-late" ||
     outcome === "graph-unavailable:warming" ||
     outcome === "graph-unavailable:stale" ||
-    outcome === "graph-unavailable:busy"
+    outcome === "graph-unavailable:busy" ||
+    outcome === "graph-unavailable:registration-unavailable"
   );
 }
 

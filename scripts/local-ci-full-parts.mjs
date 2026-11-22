@@ -81,12 +81,14 @@ export function buildFullPartTasks(plan, config, partId) {
 }
 
 // One shared UUIDv4 for every part and the aggregate of a workflow attempt.
-export function canonicalGithubRunId(env = process.env) {
+// `kind` separates the derivation of the split Full ("full") and split Quick
+// ("quick") run ids; Full keeps its original value.
+export function canonicalGithubRunId(env = process.env, kind = "full") {
   const runId = env.GITHUB_RUN_ID, attempt = env.GITHUB_RUN_ATTEMPT;
   if (env.RUNNER_ENVIRONMENT !== "github-hosted" || !/^[1-9][0-9]*$/u.test(runId ?? "") || !/^[1-9][0-9]*$/u.test(attempt ?? "")) {
-    throw new Error("Split canonical Full requires a GitHub-hosted workflow run and attempt");
+    throw new Error(`Split canonical ${kind === "full" ? "Full" : "Quick"} requires a GitHub-hosted workflow run and attempt`);
   }
-  const hex = createHash("sha256").update(`grimodex-canonical-full\0${env.GITHUB_REPOSITORY ?? ""}\0${runId}\0${attempt}`).digest("hex");
+  const hex = createHash("sha256").update(`grimodex-canonical-${kind}\0${env.GITHUB_REPOSITORY ?? ""}\0${runId}\0${attempt}`).digest("hex");
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

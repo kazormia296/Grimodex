@@ -1,0 +1,427 @@
+{
+  "tool": "search_codex",
+  "cases": [
+    {
+      "case": "rows: 短い語 2 字（LIKE-OR の arm）。hidden の黒幕と幻の騎士は落ちる",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "3 entries found",
+        "tokensUsed": 200,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          },
+          {
+            "id": "c-item",
+            "name": "魔法の杖",
+            "type": "item",
+            "summary": ""
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"},{\"id\":\"c-item\",\"name\":\"魔法の杖\",\"type\":\"item\",\"summary\":\"\"}]"
+    },
+    {
+      "case": "rows: 3 字以上（fts_search の arm → id で Drizzle）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "老魔術師"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "4 entries found",
+        "tokensUsed": 268,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          },
+          {
+            "id": "c-item",
+            "name": "魔法の杖",
+            "type": "item",
+            "summary": ""
+          },
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "type": "location",
+            "summary": "老魔術師の住処"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"},{\"id\":\"c-item\",\"name\":\"魔法の杖\",\"type\":\"item\",\"summary\":\"\"},{\"id\":\"c-tower\",\"name\":\"古い塔\",\"type\":\"location\",\"summary\":\"老魔術師の住処\"}]"
+    },
+    {
+      "case": "rows: 前後の空白は trim される",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "  アリア  "
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "1 entries found",
+        "tokensUsed": 74,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"}]"
+    },
+    {
+      "case": "hidden: base が hidden の c-secret は結果に出ない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "黒幕"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "hidden: Phase 解除前（n-s1）は幻の騎士が出ない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "騎士"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "hidden: Phase 解除後（n-s3）は幻の騎士が Phase 解決後の summary で出る",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "query": "騎士"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "1 entries found",
+        "tokensUsed": 85,
+        "content": [
+          {
+            "id": "c-released",
+            "name": "幻の騎士",
+            "type": "character",
+            "summary": "n-s3 で正体が明らかになる騎士。"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-released\",\"name\":\"幻の騎士\",\"type\":\"character\",\"summary\":\"n-s3 で正体が明らかになる騎士。\"}]"
+    },
+    {
+      "case": "canned dense: sparse と RRF 融合し、融合の後に hidden を落とす（S1）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "4 entries found",
+        "tokensUsed": 268,
+        "content": [
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          },
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "type": "location",
+            "summary": "老魔術師の住処"
+          },
+          {
+            "id": "c-item",
+            "name": "魔法の杖",
+            "type": "item",
+            "summary": ""
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"},{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-tower\",\"name\":\"古い塔\",\"type\":\"location\",\"summary\":\"老魔術師の住処\"},{\"id\":\"c-item\",\"name\":\"魔法の杖\",\"type\":\"item\",\"summary\":\"\"}]"
+    },
+    {
+      "case": "canned dense: Phase 解除後（S3）は幻の騎士が Phase 解決後の summary で残る",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "5 entries found",
+        "tokensUsed": 352,
+        "content": [
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          },
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-released",
+            "name": "幻の騎士",
+            "type": "character",
+            "summary": "n-s3 で正体が明らかになる騎士。"
+          },
+          {
+            "id": "c-tower",
+            "name": "古い塔",
+            "type": "location",
+            "summary": "老魔術師の住処"
+          },
+          {
+            "id": "c-item",
+            "name": "魔法の杖",
+            "type": "item",
+            "summary": ""
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"},{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-released\",\"name\":\"幻の騎士\",\"type\":\"character\",\"summary\":\"n-s3 で正体が明らかになる騎士。\"},{\"id\":\"c-tower\",\"name\":\"古い塔\",\"type\":\"location\",\"summary\":\"老魔術師の住処\"},{\"id\":\"c-item\",\"name\":\"魔法の杖\",\"type\":\"item\",\"summary\":\"\"}]"
+    },
+    {
+      "case": "canned dense: dense が reject しても sparse だけに退避する",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "3 entries found",
+        "tokensUsed": 200,
+        "content": [
+          {
+            "id": "c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "老魔術師を訪ねる旅の少女"
+          },
+          {
+            "id": "c-mage",
+            "name": "老魔術師",
+            "type": "character",
+            "summary": "塔に住む魔術師"
+          },
+          {
+            "id": "c-item",
+            "name": "魔法の杖",
+            "type": "item",
+            "summary": ""
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"老魔術師を訪ねる旅の少女\"},{\"id\":\"c-mage\",\"name\":\"老魔術師\",\"type\":\"character\",\"summary\":\"塔に住む魔術師\"},{\"id\":\"c-item\",\"name\":\"魔法の杖\",\"type\":\"item\",\"summary\":\"\"}]"
+    },
+    {
+      "case": "empty: 一致なし",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "存在しない語"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の行だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "query": "アリア"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "1 entries found",
+        "tokensUsed": 70,
+        "content": [
+          {
+            "id": "x-c-aria",
+            "name": "アリア",
+            "type": "character",
+            "summary": "他作品の少女"
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-c-aria\",\"name\":\"アリア\",\"type\":\"character\",\"summary\":\"他作品の少女\"}]"
+    },
+    {
+      "case": "XPROJ: main から他 project にしかない語は出ない",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "query": "他作品"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "no-project: 引数が有効でも No active project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": "魔法"
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 空の query は no-project より先（0 entries found）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": ""
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: 空白だけの query も先に弾く",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "query": "   "
+      },
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "order: query 欠落（undefined）も先に弾く",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "search_codex",
+        "summary": "0 entries found",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

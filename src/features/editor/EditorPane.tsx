@@ -18,7 +18,15 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getSceneVersion } from "@/features/tree/api";
-import { refreshForeshadowPayoffMarkVersions } from "@/features/foreshadow/saveAnchors";
+import {
+  applyPendingForeshadowRefresh,
+  applyPendingForeshadowRefreshForFlush,
+  deferForeshadowRefresh,
+  discardPendingForeshadowRefresh,
+  hasPendingForeshadowRefresh,
+  installCompositionIdleListener,
+  isEditorComposing,
+} from "@/features/editor/pendingForeshadowRefresh";
 import { extractPlacedBeatPreview } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
@@ -33,7 +41,14 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
+import { buildInlineAiContextForSend } from "@/features/editor/inlineAi/inlineAiContext";
+import {
+  captureEditorSendSnapshot,
+  isEditorSendSnapshotCurrent,
+  requestAttentionIfInlineAiBusy,
+  requestInlineAiAttention,
+  sendWhenFresh,
+} from "@/features/editor/inlineAi/sendWhenFresh";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -221,6 +236,7 @@ import { hasPendingNir1EvidenceNavigation } from "@/features/related-scenes/nir1
 import {
   AlreadyNotifiedSaveError,
   INLINE_AI_SAVE_BLOCKED_MESSAGE,
+  SaveDeferredError,
 } from "@/features/editor/document/saveErrors";
 import {
   shouldClearRetainedEditorRecoveryDraft,
@@ -633,6 +649,18 @@ export function EditorPane({
   const inlineAiProjectionKeySeenRef = useRef("");
 
   const saveSceneIdRef = useRef(nodeId);
+  // 変換中に届いた peer の保存の通知（変換が終わったら処理し直す）。
+  const deferredPeerPersistRef = useRef<{
+    binding: Parameters<typeof mutationGate.advancePeerSave>[0];
+    persistedContent: object;
+  } | null>(null);
+  const persistedBindingHandlerRef = useRef<
+    | ((
+        binding: Parameters<typeof mutationGate.advancePeerSave>[0],
+        persistedContent?: object,
+      ) => void)
+    | null
+  >(null);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
   // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
   const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
@@ -707,10 +735,42 @@ export function EditorPane({
     [],
   );
 
+  // 伏線 mark の baseVersion の更新（pending）を適用する囲み。dirty を立てない
+  // programmatic な dispatch（保存結果の反映と同形）。
+  const runForeshadowRefresh = useCallback(
+    (apply: () => void) => {
+      mutationGate.runProgrammatic(() => {
+        runProgrammaticProjectionUpdate(apply);
+      });
+    },
+    [mutationGate, runProgrammaticProjectionUpdate],
+  );
+
   const saveLatestFn = useCallback(
     async (
       context: DocumentSaveContext = {},
     ): Promise<EditorSaveAttemptResult> => {
+      // T0 の直前（doc の捕捉より前）：前の保存で未適用の伏線 mark の baseVersion を
+      // 適用する。適用できない（日本語の変換中）背景の保存は、doc の捕捉・setIsSaving・
+      // hold・native の呼び出しより前に延期する（古い baseVersion で FORESHADOW_VERSION_MISMATCH
+      // にならないため。EAR-7）。flush（閉じる・切替・手動保存）は延期せず、変換を確定させて適用する。
+      const preEditor = editorRef.current;
+      if (
+        preEditor &&
+        !preEditor.isDestroyed &&
+        hasPendingForeshadowRefresh(preEditor)
+      ) {
+        if (context.background === true) {
+          if (!applyPendingForeshadowRefresh(preEditor, runForeshadowRefresh)) {
+            throw new SaveDeferredError();
+          }
+        } else {
+          applyPendingForeshadowRefreshForFlush(
+            preEditor,
+            runForeshadowRefresh,
+          );
+        }
+      }
       const snapshot = mutationGate.captureSave();
       const doc = editorRef.current?.state.doc;
       if (!snapshot || !doc) {
@@ -746,15 +806,10 @@ export function EditorPane({
         currentEditor &&
         !currentEditor.isDestroyed
       ) {
-        mutationGate.runProgrammatic(() => {
-          runProgrammaticProjectionUpdate(() => {
-            refreshForeshadowPayoffMarkVersions((apply) => {
-              const tr = currentEditor.state.tr;
-              apply(tr);
-              if (tr.steps.length > 0) currentEditor.view.dispatch(tr);
-            }, persistedForeshadows);
-          });
-        });
+        // 変換中でなければ従来どおり直ちに適用する。変換中なら pending に残し、
+        // compositionend／blur／次の保存の T0 で必ず適用する（捨てない。§3.3a）。
+        deferForeshadowRefresh(currentEditor, persistedForeshadows);
+        applyPendingForeshadowRefresh(currentEditor, runForeshadowRefresh);
       }
       markStart("editor.save.durableComplete");
       let committed: boolean;
@@ -773,11 +828,16 @@ export function EditorPane({
               editorInstanceIdRef.current,
             );
         }
+        // 保存中に打たれた分があれば（committed が偽）、doc は T0 の本文で、peer は live
+        // mirror で既に T0 より新しい本文を持っている。T0 を content として渡すと、
+        // 受け手が clean のとき setContent で巻き戻して打鍵を失う（EAR-23）。
+        // その場合は content を付けずに版だけ announce する（受け手は setContent せず
+        // 版だけ進める）。続く追従保存が最新の本文を content 付きで announce する。
         announcePersistedBinding(
           documentKeyFromBinding(result.binding),
           editorInstanceIdRef.current,
           result.binding,
-          doc.toJSON(),
+          committed ? doc.toJSON() : undefined,
         );
       } finally {
         markEnd("editor.save.durableComplete");
@@ -816,13 +876,7 @@ export function EditorPane({
       }
       return { persisted: true, committed };
     },
-    [
-      coreSave,
-      mutationGate,
-      runProgrammaticProjectionUpdate,
-      setIsDirtyRef,
-      setIsSaving,
-    ],
+    [coreSave, mutationGate, runForeshadowRefresh, setIsDirtyRef, setIsSaving],
   );
   const saveFn = useCallback(
     async (context?: DocumentSaveContext) => {
@@ -838,6 +892,7 @@ export function EditorPane({
         session: documentSaveSession,
         didPersist: (attempt) => attempt.persisted,
         ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+        ...(context?.background ? { background: true } : {}),
       });
       if (shouldClearRetainedEditorRecoveryDraft(result)) {
         clearRetainedEditorRecoveryDraft(saveKey, editorInstanceIdRef.current);
@@ -881,6 +936,14 @@ export function EditorPane({
       }
       const currentEditor = editorRef.current;
       if (persistedContent && currentEditor && !currentEditor.isDestroyed) {
+        // 自分の autosave は editor を read-only にしないので、peer の保存の通知が
+        // 日本語の変換中に届きうる。変換中の setContent は入力を乱すので、変換が
+        // 終わった後（compositionend／blur）に同じ通知を処理し直す。版は進めない
+        // （古い本文のまま版だけ進めて、後の保存が peer の編集を上書きするのを防ぐ）。
+        if (isEditorComposing(currentEditor)) {
+          deferredPeerPersistRef.current = { binding, persistedContent };
+          return;
+        }
         const finishExternalUpdate = beginApplyingExternalUpdate();
         try {
           mutationGate.runProgrammatic(() => {
@@ -893,6 +956,9 @@ export function EditorPane({
               });
             });
           });
+          // doc が peer の最新の本文で置き換わったので、古い pending で
+          // baseVersion を巻き戻さない。
+          discardPendingForeshadowRefresh(currentEditor);
         } catch (error) {
           debugLog.error(
             "EditorPane",
@@ -911,7 +977,12 @@ export function EditorPane({
       editorInstanceId,
       persistedBindingHandler,
     );
+    persistedBindingHandlerRef.current = persistedBindingHandler;
     return () => {
+      if (persistedBindingHandlerRef.current === persistedBindingHandler) {
+        persistedBindingHandlerRef.current = null;
+      }
+      deferredPeerPersistRef.current = null;
       const draft = recoveryProvider();
       if (draft) {
         retainEditorRecoveryDraft(
@@ -1706,7 +1777,9 @@ export function EditorPane({
     }
     // The scene's project (the loaded tree's) and the workspace of this save.
     const scope = captureWorkspaceWriteScope(useTreeStore.getState().projectId);
-    await flush();
+    // editor は開いたまま作者が打ち続けるので、保存中に打った分の追従は通常の
+    // debounce に戻す（即時に反復して MAX_DRAIN_RUNS に達しない。EAR-25）。
+    await flush({ editorStaysOpen: true });
     if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
     const snapshot = mutationGate.captureSave();
@@ -2012,6 +2085,23 @@ export function EditorPane({
     cancel();
   }, [cancel]);
 
+  // 変換（IME）が終わったとき・editor が blur したときに、変換中で遅らせた
+  // 伏線 mark の baseVersion の更新と peer の保存の通知を適用する（EAR-7）。
+  // editor の破棄で pending は WeakMap ごと消える。doc の再ロードでの破棄は load 側。
+  useEffect(() => {
+    if (!mountedEditor) return;
+    return installCompositionIdleListener(mountedEditor, () => {
+      applyPendingForeshadowRefresh(mountedEditor, runForeshadowRefresh);
+      const deferred = deferredPeerPersistRef.current;
+      if (deferred) {
+        deferredPeerPersistRef.current = null;
+        persistedBindingHandlerRef.current?.(
+          deferred.binding,
+          deferred.persistedContent,
+        );
+      }
+    });
+  }, [mountedEditor, runForeshadowRefresh]);
   useCursorOverlay(mountedEditor);
   useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
@@ -2042,19 +2132,43 @@ export function EditorPane({
         setPaletteOpen(true);
         return;
       }
-      const node = useTreeStore.getState().nodes.find((n) => n.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor: ed,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
+      // hidden 判定が DB を引くので非同期。送信時点の文書・選択・projection・書込み可否を
+      // 控え、判定の間に変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移った
+      // ときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
+      sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
+        capture: () => ({
+          ...captureEditorSendSnapshot(ed),
+          projectionKey: inputProjectionKeyRef.current,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((n) => n.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor: ed,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(ed, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context) => generate(cmd, context),
       });
-      generate(cmd, context);
     },
     [dbNativeEditor, nodeId, generate],
   );
@@ -2275,6 +2389,11 @@ export function EditorPane({
         // old binding remains valid only until the pre-switch flush completes.
         loadStarted = true;
         mutationGate.beginLoad();
+        // 再ロードする doc は DB の現在の version を持つ。古い pending の
+        // baseVersion で巻き戻さない。変換中に届いた peer の通知も無効。
+        if (editorRef.current)
+          discardPendingForeshadowRefresh(editorRef.current);
+        deferredPeerPersistRef.current = null;
         loadedTimelapseDescriptorRef.current = null;
         loadedDocumentKeyRef.current = null;
         setLoadedDocumentKey(null);
@@ -3007,22 +3126,43 @@ export function EditorPane({
   const handlePaletteSubmit = useCallback(
     (command: InlineAiCommand, prompt: string) => {
       if (!editor) return;
-      const node = useTreeStore
-        .getState()
-        .nodes.find((candidate) => candidate.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg: prompt || undefined,
+      // hidden 判定が DB を引くので非同期。判定の間に文書・選択・projection・書込み可否が
+      // 変わっていたら今の状態で 1 回だけ作り直す（別の文書へ移ったときは送らない）。
+      // 別のインライン AI が進行中なら、送らずに注意喚起だけ出す（generate の従来の通知）。
+      if (requestAttentionIfInlineAiBusy()) return;
+      sendWhenFresh({
+        onAbandon: requestInlineAiAttention,
+        capture: () => ({
+          ...captureEditorSendSnapshot(editor),
+          projectionKey: inputProjectionKeyRef.current,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((candidate) => candidate.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg: prompt || undefined,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
+        },
+        isFresh: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(editor, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context) => generate(command, context),
       });
-      generate(command, context);
     },
     [editor, generate, nodeId],
   );
@@ -3036,42 +3176,64 @@ export function EditorPane({
       ) {
         return;
       }
-      const node = useTreeStore
-        .getState()
-        .nodes.find((candidate) => candidate.id === nodeId);
-      const projectTitle =
-        useWorkspaceStore.getState().activeWorkspaceName ?? "";
-      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
-      const codexEntries = useCodexStore.getState().entries;
-      const context = buildInlineAiContext({
-        editor,
-        projectTitle,
-        sceneTitle: node?.title ?? "",
-        matchedCodexIds,
-        codexEntries,
-        arg: prompt || undefined,
-      });
       const lang = getCurrentProjectLanguage();
-      const messages: AbInlineState["messages"] = [
-        {
-          role: "system",
-          content: buildInlineSystemPrompt(command, context, lang),
+      // hidden（AI に秘匿）の Codex を除く判定が DB を引くので非同期。送信時点の
+      // 選択・文書・projection を控え、判定の間に変わっていたら今の状態で 1 回だけ
+      // 作り直す（別の文書へ移ったときは送らない）。適用先の範囲は context を作った
+      // 時点の選択を使う。
+      sendWhenFresh({
+        capture: () => ({
+          ...captureEditorSendSnapshot(editor),
+          projectionKey: inputProjectionKeyRef.current,
+        }),
+        build: () => {
+          const node = useTreeStore
+            .getState()
+            .nodes.find((candidate) => candidate.id === nodeId);
+          return buildInlineAiContextForSend({
+            editor,
+            projectTitle:
+              useWorkspaceStore.getState().activeWorkspaceName ?? "",
+            sceneTitle: node?.title ?? "",
+            matchedCodexIds: useCodexHighlightStore.getState().matchedEntryIds,
+            codexEntries: useCodexStore.getState().entries,
+            arg: prompt || undefined,
+            projectId: useTreeStore.getState().projectId,
+            sceneId: node?.id ?? null,
+          });
         },
-        {
-          role: "user",
-          content: buildInlineUserPrompt(command, context, lang),
+        isFresh: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey &&
+          isEditorSendSnapshotCurrent(editor, snapshot),
+        canRebuild: (snapshot) =>
+          inputProjectionReadyRef.current &&
+          editorWritableRef.current &&
+          inputProjectionKeyRef.current === snapshot.projectionKey,
+        run: (context, snapshot) => {
+          const { from, to, projectionKey, doc: documentSnapshot } = snapshot;
+          const messages: AbInlineState["messages"] = [
+            {
+              role: "system",
+              content: buildInlineSystemPrompt(command, context, lang),
+            },
+            {
+              role: "user",
+              content: buildInlineUserPrompt(command, context, lang),
+            },
+          ];
+          const isReplace = command.mode === "replace" && from !== to;
+          setAbInline({
+            messages,
+            mode: isReplace ? "replace" : "insert",
+            originalRange: isReplace ? { from, to } : null,
+            insertPos: isReplace ? null : from,
+            projectId: getCurrentProjectId(),
+            projectionKey,
+            documentSnapshot,
+          });
         },
-      ];
-      const { from, to } = editor.state.selection;
-      const isReplace = command.mode === "replace" && from !== to;
-      setAbInline({
-        messages,
-        mode: isReplace ? "replace" : "insert",
-        originalRange: isReplace ? { from, to } : null,
-        insertPos: isReplace ? null : from,
-        projectId: getCurrentProjectId(),
-        projectionKey: inputProjectionKeyRef.current,
-        documentSnapshot: editor.state.doc,
       });
     },
     [editor, nodeId],

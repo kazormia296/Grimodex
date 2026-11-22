@@ -158,6 +158,97 @@ describe("narrative maintenance scheduler", () => {
     expect(exit).toHaveBeenCalledExactlyOnceWith(86);
   });
 
+  it("exits the interrupted process without Electron environment teardown by default", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    };
+    const reallyExit = vi.fn();
+    const processExit = vi.fn();
+    const processLike = process as unknown as {
+      reallyExit?: unknown;
+      exit: unknown;
+    };
+    const savedReallyExit = processLike.reallyExit;
+    const savedExit = processLike.exit;
+    processLike.reallyExit = reallyExit;
+    processLike.exit = processExit;
+    try {
+      const scheduled: Array<() => void> = [];
+      const pending = scheduleNarrativeMaintenanceProcessInterruption(
+        { getNarrativeMaintenanceWorkspaceBinding: () => binding },
+        ack,
+        binding,
+        () => true,
+        (callback) => {
+          scheduled.push(callback);
+        },
+      );
+      expect(scheduled).toHaveLength(1);
+      scheduled[0]?.();
+      await expect(pending).resolves.toBe(true);
+      // app.exit 相当の process.exit は環境の解放で async N-API の resolver を
+      // env=null で呼び、SIGABRT になる。exit code 86 を保つため通さない。
+      expect(reallyExit).toHaveBeenCalledExactlyOnceWith(86);
+      expect(processExit).not.toHaveBeenCalled();
+    } finally {
+      processLike.reallyExit = savedReallyExit;
+      processLike.exit = savedExit;
+    }
+  });
+
+  it("falls back to process.exit by default when process.reallyExit is unavailable", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    };
+    const processExit = vi.fn();
+    const processLike = process as unknown as {
+      reallyExit?: unknown;
+      exit: unknown;
+    };
+    const hadReallyExit = Object.prototype.hasOwnProperty.call(
+      processLike,
+      "reallyExit",
+    );
+    const savedReallyExit = processLike.reallyExit;
+    const savedExit = processLike.exit;
+    processLike.reallyExit = undefined;
+    processLike.exit = processExit;
+    try {
+      const scheduled: Array<() => void> = [];
+      const pending = scheduleNarrativeMaintenanceProcessInterruption(
+        { getNarrativeMaintenanceWorkspaceBinding: () => binding },
+        ack,
+        binding,
+        () => true,
+        (callback) => {
+          scheduled.push(callback);
+        },
+      );
+      expect(scheduled).toHaveLength(1);
+      scheduled[0]?.();
+      await expect(pending).resolves.toBe(true);
+      expect(processExit).toHaveBeenCalledExactlyOnceWith(86);
+    } finally {
+      if (hadReallyExit) processLike.reallyExit = savedReallyExit;
+      else delete processLike.reallyExit;
+      processLike.exit = savedExit;
+    }
+  });
+
   it("keeps an interruption cycle in flight until the scheduled exit boundary", async () => {
     const binding = { authorityId: "authority-1", generation: 7 };
     const ack: NarrativeMaintenanceCycleResult = {
@@ -3666,6 +3757,174 @@ describe("narrative maintenance scheduler", () => {
     ).toThrow(/invalid Graph Index wake project/);
     await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+  });
+
+  // DR-PUBG-5-19 (F-1). A wake or a work item for a project the workspace
+  // does not have (a stale Graph Index demand, a hasMore continuation or a
+  // completion wake of a project that was deleted meanwhile) ends. Native's
+  // cycle fails with a FOREIGN KEY error for the missing project and, after the
+  // bounded retries, its delivery-failure receipt is refused with
+  // NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING. That refusal is terminal:
+  // the trigger is dropped, not queued again about once a second (4,270 cycles
+  // in an hour of fake time before the fix).
+  const FOREIGN_KEY_FAILURE =
+    "FOREIGN KEY constraint failed\n\nCaused by:\n    Error code 787: constraint failed";
+  const PROJECT_MISSING_RECEIPT =
+    "NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING: project 'gone' does not exist";
+
+  const MISSING_PROJECT_BINDING = {
+    authorityId: "authority-missing-project",
+    generation: 4,
+  };
+
+  it("a Graph Index wake for a project the workspace does not have settles instead of retrying forever", async () => {
+    const binding = MISSING_PROJECT_BINDING;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error(FOREIGN_KEY_FAILURE));
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockRejectedValue(new Error(PROJECT_MISSING_RECEIPT));
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    scheduler.requestGraphIndexBuildWakesWithBinding?.(["gone"], binding);
+    await vi.advanceTimersByTimeAsync(600_000);
+    // The first attempt and its bounded retries, not one cycle a second.
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledOnce();
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "wake",
+        projectId: "gone",
+        workspaceBinding: binding,
+      }),
+    );
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
+  });
+
+  it("a hasMore continuation for a project deleted meanwhile settles instead of retrying forever", async () => {
+    const binding = MISSING_PROJECT_BINDING;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce(acceptedCycle(true))
+      .mockRejectedValue(new Error(FOREIGN_KEY_FAILURE));
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockRejectedValue(new Error(PROJECT_MISSING_RECEIPT));
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(600_000);
+    // The accepted hasMore cycle, then the continuation wake's first attempt
+    // and its bounded retries.
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    );
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledOnce();
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "wake",
+        projectId: "project-1",
+        workspaceBinding: binding,
+      }),
+    );
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
+  });
+
+  it("a work item for a project deleted meanwhile settles instead of retrying forever", async () => {
+    const binding = MISSING_PROJECT_BINDING;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error(FOREIGN_KEY_FAILURE));
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockRejectedValue(new Error(PROJECT_MISSING_RECEIPT));
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+    scheduler.request(work("gone", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledOnce();
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "work",
+        projectId: "gone",
+        workspaceBinding: binding,
+      }),
+    );
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(true);
+  });
+
+  it("a refused receipt that is not PROJECT_MISSING keeps retrying a work item and a wake (a transient failure is not terminal)", async () => {
+    const binding = MISSING_PROJECT_BINDING;
+    for (const scope of ["work", "wake"] as const) {
+      for (const refusal of [
+        new Error("SQLITE_BUSY: database is locked"),
+        new Error(
+          "NEX_MAINTENANCE_DELIVERY_FAILURE_INVALID: projectId is required",
+        ),
+        // Only the exact code prefix is terminal.
+        new Error(`wrapped ${PROJECT_MISSING_RECEIPT}`),
+        { status: "workspace-binding-mismatch" },
+      ]) {
+        const runNarrativeMaintenanceCycle = vi
+          .fn()
+          .mockRejectedValue(new Error("NEX_MAINTENANCE_TRANSIENT: busy"));
+        const recordNarrativeMaintenanceDeliveryFailure =
+          refusal instanceof Error
+            ? vi.fn().mockRejectedValue(refusal)
+            : vi.fn().mockResolvedValue(refusal);
+        const { scheduler } = createScheduler({
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+          recordNarrativeMaintenanceDeliveryFailure,
+        });
+        scheduler.start();
+        if (scope === "work") {
+          scheduler.request(
+            work("project-1", "backfill", "backfill:v2", "open"),
+          );
+          await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+        } else {
+          await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+          scheduler.requestGraphIndexBuildWakesWithBinding?.(
+            ["project-1"],
+            binding,
+          );
+        }
+        await vi.advanceTimersByTimeAsync(60_000);
+        // The exhausted retries are not a terminal outcome: the trigger stays
+        // queued, its receipt is asked for again and the cycle keeps running.
+        expect(
+          runNarrativeMaintenanceCycle.mock.calls.length,
+          `${scope}: ${String(refusal instanceof Error ? refusal.message : "typed non-ACK")}`,
+        ).toBeGreaterThan(NARRATIVE_MAINTENANCE_MAX_RETRIES + 2);
+        expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+          expect.objectContaining({ scope }),
+        );
+        expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+        await scheduler.dispose();
+      }
+    }
   });
 
   it("hasMore keeps a durable backlog wake and invokes the next cycle with an empty batch", async () => {

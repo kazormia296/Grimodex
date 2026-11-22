@@ -12,6 +12,7 @@ import {
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { fetchProjectContext } from "@/features/project/contextAtoms";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { isCodexContextModeHiddenFromAi } from "@/features/codex/context/codexVisibilityPolicy";
 import type { MapSticky, MapAiBranch } from "@/db/schema";
 
 /** 1500 文字を超える seed body は prompt 圧迫を避けるため切り詰める。
@@ -54,6 +55,10 @@ export function collectAiBranchSeeds(
       const id = n.id.slice("codex:".length);
       const entry = codexEntries.find((e) => e.id === id);
       if (!entry) continue;
+      // 作者が AI に秘匿（hidden）と印した Codex は種にしない。chat の
+      // nonSceneContextSource と同じ正本（codexVisibilityPolicy）で、地図は
+      // 場面を持たないので base の mode で判定する。
+      if (isCodexContextModeHiddenFromAi(entry.contextMode)) continue;
       // summary を主、空なら content の本文を fallback。
       const rawBody =
         (entry.summary && entry.summary.trim()) ||
@@ -152,6 +157,8 @@ export async function fetchActiveSessionSpotlight(): Promise<AiBranchSeed[]> {
     const out: AiBranchSeed[] = [];
 
     for (const entry of codexPins) {
+      // hidden の pin は AI に渡さない（seed と同じ判定）。
+      if (isCodexContextModeHiddenFromAi(entry.contextMode)) continue;
       const rawBody =
         (entry.summary && entry.summary.trim()) ||
         (entry.content ? prosemirrorToText(entry.content).trim() : "");

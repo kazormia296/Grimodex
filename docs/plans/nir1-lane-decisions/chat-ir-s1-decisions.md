@@ -1,0 +1,476 @@
+# chat の agent が承認済み Chronicle IR を引く経路（chat IR の S1）— 判断の記録（DR-CHATIR-S1）
+
+この文書は、chat IR の S1（閉じたまま実装する段）の最初の mutation（S1-A0）の前に、技術判断と信頼境界を残す（S1-0）。
+契約と脅威モデルの確認ではない。確認は下の「出所」のとおりユーザーが行った。この文書は確認済みの脅威モデルの文書を書き換えない。
+
+## 出所
+
+| 項目 | 内容 |
+| ---- | ---- |
+| この lane の位置 | **NIR-1 の残レーンの事前委任の外**。AGENTS の事前委任は chat IR に適用されない。契約（★1）・脅威モデル（★2）・audit の置き換え（★3(b)）・送るデータの範囲（★4）は、ユーザーが 2026-11-09 に個別に確認した。下の DR は、確認済みの脅威モデルの「確認が不要な技術判断」（★1・★2 の承認の後の、その設計の範囲内の可逆な実装の詳細）の範囲の判断である |
+| 確認済みの脅威モデル | contracts の commit `357a87b7424e353de5b385ad5bc7eeec36309ab8`（枝 `claude/nir1-contracts`）の `docs/plans/nir1-fusion-records/ir-chat-pilot-2026-11/contract-confirmation-2026-11-09/consumer-contract-threat-model-draft.md`（git blob `de0343de327f47e421633b4a4f667891096dbc54`、SHA-256 `08f26f789501e6149852900e2fd537844843fbd9e1aad062ae33d52698a43db3`、72,170 byte） |
+| 回答の逐語 | 同じ folder の `user-confirmation-2026-11-09-chat-ir-contract.md`（SHA-256 `1e5c48570edd69fdcbd26badf3219b2177e27e9f92304daaa3edd1ef0d383da8`）と `user-decisions-2026-11-09.md`（SHA-256 `2d9296ba78fd7e41e432b37ac2c2541d04a063d185cae507ee3081ba9552d7b2`）。★1「§3 のとおり承認する (推奨)」、★2「draft のとおり確認する。前提は S1 の前に実物で確かめる (推奨)」、★3「audit で IR の本文を置き換える (推奨)」、★4「承認の文言どおり要約と quote に限る (推奨)」（2026-11-09 07:52 JST） |
+| 確認済みの回答（S1-A0 の audit の終端） | contracts の commit `dc533a4edb4dd464a657bd3bcf602c2ac7d3d5ac`（枝 `claude/nir1-contracts`）の `docs/plans/nir1-fusion-records/ir-chat-pilot-2026-11/user-confirmation-2026-11-17-s1-a0-audit-terminal.md`（git blob `933db2f02a0464a0f07946534cd970a99a8523e4`、SHA-256 `2a742c3feed51909492f01aa4bdf53651ba7606ccd8faa2ad8f84aeb4366d34b`）。回答：「終端を書けなければ IR を返さない (Recommended)」（2026-11-17）。確認済みの脅威モデルの文は変えない |
+| 設計の正本 | repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/s1-design-draft.md`（改訂 3、SHA-256 `152bddd319b49f1b60ff427971e34a85d5fe82ace460c4d9984bd15d32bb6812`）。§16 が G3 の未確定のセルの決定、§15 が批評の 11 点の反映 |
+| 批評者の判定 | 独立の批評者の判定（workflow の journal）の要点を、統合者が指示に写したもの。この文書の作業では journal そのものは読んでいない。要点：G1 は通過、G2 は条件つきで通過、G3 は未達。設計の 4 つの条件（★2 の前提、★3 の条件、CI seam、訂正・却下の store）はどれも崩れていない。S1-0 は着手してよい。S1-A は G3 を閉じるまで着手しない |
+| 基点 | `origin/master` `27d71179` |
+
+## 信頼境界
+
+| 境界・actor | 扱い |
+| ---- | ---- |
+| 乗っ取られた renderer | 信頼しない。**範囲外**（確認済みの脅威モデル §4.1・§4.4）。G1 で、unrestricted の既定の起動の renderer が、`related_scenes_begin` → `continue` と review bundle（artifacts）と generic SQL（envelope の列）で、承認済みの IR の要約と quote に既に届くことを実物で確かめた。範囲外の結論を支える |
+| model が `get_scene` で後の Scene を読むこと | 範囲外のまま（契約 §4.4） |
+| 呼び出しの順 | renderer → typed preload IPC → Main（引数の再検証、sender の束縛、restricted の拒否、closed gate）→ N-API（Native の gate、同時実行の上限、期限）→ 共有 Rust。renderer は Node／Electron／N-API を直接 import しない。renderer は鮮度・読み順・承認・scope を渡さない |
+| 閉じ方 | renderer の定数 false、Main の closed gate（CI seam を作らない）、Native の `PrePublicationEntry`。restricted では `plaintext-publication` で拒否 |
+| 送信先 | 新しい宛先を作らない。S1 の間は IR を送らない。S3 の宛先の読みは S3 の前に伺う（D2） |
+| 保存 | `usedIds` は承認 2 の内。発行の記録は process 内だけで本文を持たず、disk に書かない。audit は W1・W2 の `request.prepared` の IR の item を置き換える（★3(b)）。訂正・却下の store と migration は S1 で作らない（J1） |
+| 閾値 | 現行の policy（ja の floor 0.813、en の 0.66、`irMaxScenes` 8）のまま。緩める変更はしない |
+| T12（IR の query が接続を握り、chat が止まる） | 確認済みの必須の防御「期限、one-shot、同時に走る数の上限。期限を過ぎたら IR なしで返す」を、DR-CHATIR-S1-1・2・4 で弱めずに満たす |
+| T16（置き換えの印の悪用） | Native が発行した item と完全に一致する部分だけを置き換える。重複 key の guard を要件にする（DR-CHATIR-S1-8） |
+
+## 判断
+
+| ID | 判断 | 理由と信頼境界 |
+| -- | ---- | -------------- |
+| DR-CHATIR-S1-1 | **G3-U1 期限の方式**：期限は新しく実装する。1 回の呼び出しに 1 つの期限（初期値 10 s）を、(1) 接続の取得と SQL、(2) 埋め込みの待ち、(3) scoring の 3 区間で見る。one-shot は埋め込みの model の load を起こさない（resident でなければ status `embedder-cold` で IR なし）。止められないのは推論 1 回分だけで、終了の上限は「期限＋推論 1 回分」 | 現行の read 経路には期限が無く、埋め込みの待ちは無期限（`runtime_embedder_admission.rs` の foreground）。load は途中で止められず、上限が実質無くなる。T12 の「期限」を 3 区間すべてで実際に効かせる |
+| DR-CHATIR-S1-2 | **G3-U2 waiter を名乗らず、maintenance の cycle の間は取らない取得**：S1-A0 で grimodex-db に、waiter を名乗らない試み（`try_lock_conn_with_check`）を期限の内で短い間隔で繰り返し、取れたら同じ期限の下で SQL を走らせる公開の API を足す。**waiter を名乗らないだけでは maintenance を譲らせないことにならない**（cycle の継ぎ目で取ると次の取得が `NEX_MAINTENANCE_CONNECTION_PREEMPTED` になる。レビューで実測）ので、maintenance の no-wait guard が生きている間は、接続が空いていても取らず busy として期限まで待つ（DR-CHATIR-S1-12）。期限までに取れなければ `connection-busy` で IR なし | 公開の `with_participant_read_transaction` と `pub(crate)` の bounded 版は、接続を待つ間 foreground waiter を名乗り、maintenance に譲らせる。公開の `try_with_participant_read_transaction` は期限を持たない。私的な `participant_read_transaction_control_mode` が try と期限の両方を受けるので、それを包む |
+| DR-CHATIR-S1-3 | **G3-U3 lane と caller timeout**：read lane。command を `src/lib/tauri.ts` の `READ_ONLY_COMMAND_TIMEOUTS` に登録する（S1-A。試験で固定）。caller timeout の初期値は 20 s（終了の上限より長い）。derived lane は採らない | 登録し忘れると mutation lane・timeout なしになり、workspace の切替・close の静止を握る。caller timeout で chat は止まらない |
+| DR-CHATIR-S1-4 | **G3-U4 Native 側の同時実行数**：置く。process 全体で in-flight 2（初期値）。permit は `spawn_blocking` の task の中で取り、task が実際に戻るまで持つ（Promise の settle で離さない）。超えた呼び出しは待たずに `busy` で IR なし | 確認済みの防御「同時に走る数の上限」を Native が持つ。renderer の read lane（window ごとに 3 枠。caller timeout は枠を返さない）だけに頼らない。上限を 3 より小さくし、止まらない one-shot が残っても既存の read-only SQL の枠が残る |
+| DR-CHATIR-S1-5 | **G3-U6 発行の記録の寿命・上限・破棄**：TTL を持たない。**押し出さない**。件数の上限（仮 4,096）に達したら新しい発行を拒む（`ledger-full`、IR なし）。破棄は workspace の DB の identity の変化と process の終了だけ。semantic の epoch は契機にしない。記録は使っても消さない。同じ digest は 1 件に数える。型・発行・満杯の拒否・破棄は S1-A、照合は S1-C | G2 の要件「進行中の turn の entry は押し出さない」と G3 の推奨「古い順に押し出す」の矛盾を、Native が turn を知らずに解く。押し出すと生きている turn の entry に当たり、unmatched（本文が audit に残る）か collision（turn が落ちる）になる。拒む側は IR を送らないだけ。`ask_user` は turn を無期限に開くので時間では切れない。epoch は同じ authority のまま turn の途中で回りうる。限界：長く動く process では枯渇しうる（値は S1-A で測り、S3 の前に見直す） |
+| DR-CHATIR-S1-6 | **G3-U5、U7〜U13**：U5 sub-agent は Native を呼ぶ前に落とす。U7 Stop で wrapper を即 reject しない。U8 IR の失敗は閉じた status（`timeout`・`connection-busy`・`embedder-cold`・`busy`・`ledger-full`・`index-unavailable`・`unsupported` など）を別の欄に置き、年表は返し、「0 件の成功」と分ける。U9 Main は sender id と expectedWorkspacePath の組を検査し、状態を持たない。U10 participant だけを取り、app の終了・close の振る舞いを S1-A の試験で確かめる（待たれない形なら operation guard も取る）。U11 年表 → IR の直列。U12 G2 で解消（channel を狭めない）。U13 G2 で解消（path を絞らない。E1 の置き換えは接続を取る前） | 設計の改訂 3 §16.2。どれも送信先・保存範囲・閾値・契約・authority を動かさない |
+| DR-CHATIR-S1-7 | **J1〜J8**（下の表） | 設計の改訂 3 §8.3 |
+| DR-CHATIR-S1-8 | **audit の置き換えの要件と quote の正本**：quote の正本は revision の envelope の `effectiveMaterialBasis.evidenceSet[]`。`evidence.resolved@1` の artifact は照合の相手。G2 の要件 6 つを S1-A・S1-C の要件にする：(1) 送った文字列 1 つにつき 1 件の redaction の entry で、`originalSha256`・`originalByteLength` は置き換えの前の送った文字列そのもの、item の digest は `chatIrItems[]`。(2) canonical の規則（key は辞書順、数値は整数値なら整数・それ以外は f64 の最短表現、文字列は serde の escape。digest は napi に渡す `Value` から）。(3) executor は item を不透明に運ぶ。cap は `guardedExecuteTool` から渡し、`agentLoop.ts` は変えない。(4) 記録の寿命（DR-CHATIR-S1-5）。(5) 権限は `RedactedBatch` を受ける専用の入口で持つ。(6) 範囲の bytes が parse した値の再直列化と一致するときだけ照合する重複 key の guard。前提の `preserve_order`・`float_roundtrip` は S1-C の試験で CI に固定する。失敗は append の失敗＝送信しない（fail-closed） | ★3 の「送った文字列そのものの digest」を文字どおり満たす。重複 key の guard が無いと、本物と同じ canonical に別の本文を同居させて隠せた（G2 §2-5。T16 の穴）。通常の流れの unmatched 0 は S1-23 で固定する |
+| DR-CHATIR-S1-9 | **PR の分け方と順**：S1-0（この文書。merge で G3 を閉じる）→ **S1-A0**（共有 crate の新しい取得の API と等価性・性質の試験だけ。napi・gate・IPC・製品の呼び手・既存の API の変更・migration は含めない）→ **S1-A**（S1-A0 の API を使う Native の one-shot と台帳。期限、同時実行の上限、発行の記録、要約の射影、canonical の関数、閉じた status、Main の gate と検証、restricted の拒否、`READ_ONLY_COMMAND_TIMEOUTS` の登録と lane の試験。renderer の wrapper・executor は含めない）→ S1-B → S1-C → S1-D | 新しい取得は共有 crate に要る（DR-CHATIR-S1-1・2）。既存の経路を動かさずに等価性を先に固める。S1-A0 も candidate ledger の対象にする |
+| DR-CHATIR-S1-10 | **generic SQL の非対称（事実の記録。別の lane で扱う）**：unrestricted では、renderer の generic SQL で `narrative_proposal_revisions.reconciliation_envelope_json` が読め、IR の statement と quote に届く（G1 §4 の観測）。`execute.rs:299-316` の guard は `payload_json` の列だけを拒否する。確認済みの脅威モデルの「正本は generic SQL で読めない」は `payload_json` には当たるが、この列には当たらない。既存の製品の非対称で、S1 では guard を変えない | ★3 の推奨 (b) の理由 2 の前提は、今の製品では弱い。**結論 (b) は理由 1（ユーザーが (c) で訂正した向き「本文は残さない」）で残る**。範囲外の結論はむしろ支える。ユーザーへの事実の報告は統合者が済ませた。確認済みの防御を弱める決め方ではないので「要確認」には当たらない |
+| DR-CHATIR-S1-11 | **S1-A0 の範囲の拡大（API が 4 つ＋期限つきの audit の append）**。(A) 統合者の技術判断：grimodex-db に 4 つ目の公開 primitive を足す。期限つき・waiter を名乗らない接続の取得（`try_with_conn_until`／`try_with_conn_mut_until`。try を期限の内で繰り返し、取れなければ `None`＝connection-busy。write にも使える）。chat IR の経路の audit の append は、これを使う appender（`try_append_ai_audit_events_for_scope_until`。busy の待ちを切る。DR-CHATIR-S1-12 で min(残り期限, 1 s)）で行う。既存の appender と経路は無変更。(D) 統合者の技術判断：chat IR の経路では project の spec を呼び手が渡し、prepare と scoring の**両方**の引数にする。prepare・scoring の中で DB を読まない（`strict_project_spec` の 5 回を消す）。渡された spec に対して既存と同じ検査（loaded の identity が spec と一致、query の identity が spec と一致、epoch の generation と cache の `Arc::ptr_eq`）を毎回行う。chat IR の query は `AuditedSemanticQuery` と別の型にし、DB を読む既存の API に渡せない。(B) ユーザーの回答（下の ref）：推論の前の記録（start／prepared／dispatched）が期限の内に書けなければ、推論せず IR を返さない。推論の後の終端の記録が期限の内に書けなければ、推論の結果は使わず IR なしで返し（fail-closed）、終端の記録は期限の外で書き足す。**書き足しの持ち主**：結果を受け取った呼び手。型は `PendingTerminalAudit`（`#[must_use]`、同じ event_id・payload のまま）で、`flush_with_budget`（waiter を名乗らない try の繰り返し、初期値 30 s）で書く。同じ event_id の再 append は既存の append が冪等に扱う。**書き足しが失敗したとき**：pending は呼び手の手元に残る（再試行できる）。捨てられるときは `tracing::error` で execution_id を残す。dispatched のまま終端の無い execution が残るが、その結果は IR として使われない（`ChatIrQuery` は終端の append が成功した後でだけ作られる）。終端の無い execution を audit の読み手が crash と同じに扱うことは既存の挙動 | 範囲の拡大は T12 の確認済みの防御を**強める**側（既存の取得は期限なしで foreground waiter を名乗り、project の spec の確認と audit の append で maintenance を譲らせる）。**信頼境界**：(1) spec の出所と鮮度は呼び手（S1-A の Native）の責任。呼び手は spec を同じ read transaction の中の project の language から導く。prepare と scoring で毎回渡すので、既存の「毎回読み直す」より弱くならないのは呼び手が毎回導く場合だけ。(2) 新しい宛先・保存範囲・閾値・契約・authority は無い。埋め込みは local の ONNX で、audit は既存の `ai_audit_events` に既存の形で書く（metadata の `sharedConsumers` と `consumer` が `chat-ir`）。(3) 期限の 3 区間に、audit の append の区間が加わる。append の SQL そのもの（BEGIN IMMEDIATE の後の 1 回の短い書き込み）は途中で止められないので、終了の上限は「期限＋推論 1 回分＋append の書き込み 1 回分」。busy の待ちと接続の取得は期限で打ち切る。(4) 埋め込みの admission は foreground の waiter を名乗る（設計の §3.3 の決定。DB の接続とは別。background の文書 batch は文書の間で譲る）。chat IR は admission を握ったまま、接続を最長で残り期限まで待つので、その間 live の foreground の埋め込みが後ろで待つ。S1-A0 には呼び手が無いので動かない。**未解決として S1-A と統合者の判断に渡す**。(5) 書き足しをどの task・thread で動かすか（応答の後の第 2 の task なら新しい background lifecycle）は S1-A の owner／lifecycle matrix の項目。S1-A0 は型と flush だけで、thread を作らない。S1-A0 の範囲は、設計の §16.3 の「API 3 つ」から「API 4 つ＋期限つきの audit の append」に広がる（napi・gate・IPC・製品の呼び手・既存 API の変更・migration は含めない） |
+| DR-CHATIR-S1-12 | **統合者の判断（S1-A0 のレビューの指摘の修正）**。(1) **maintenance の Run を chat IR のせいで cancel させない**：`connection_deadline.rs` の `try_lock_conn_until_with_check` の各試行で、`maintenance_no_wait_guard_alive()` が真なら、接続が空いていても取らず busy として扱い、期限まで待って `None`（connection-busy）にする。判定は試行の前と、mutex を取った後（`try_lock_conn_with_check` が check を前後で呼ぶ。背景の先払いと同じ形）の両方。chat IR の読みと終端の書き足し（flush）の両方に効く。T12 を強める向き（IR の可用性を下げる）で、既存の maintenance の取得・既存の API の挙動は変えない。**可用性への影響**：maintenance の cycle が生きている間は IR が返らない（`connection-busy`）。cycle の長さと頻度は S1-A／S2 で測る事項。maintenance の guard が生きている間は、participant の読み・audit の append・flush のいずれも busy（`None`／`Ok(false)`）になる。**効かない範囲**：chat IR の呼び出しがすでに接続を握っている間に cycle が始まると、maintenance の最初の取得は held に当たる。これは他の foreground の holder と同じ既存の挙動で、**この判断が満たすのは「継ぎ目で取って preempt しない」だけ**（cycle の開始時に握られている場合の PREEMPTED は残る）。期限は取得だけを bounded にし、握る時間は呼び手の仕事（participant の読みは progress hook で期限まで、append は busy の待ち 1 s 以下＋短い 1 transaction）。呼び出しの thread 自身が maintenance の guard を持つ場合は想定外の呼び手（常に busy になる）。(2) audit の append の busy 待ちを min(残り期限, 1 s) に切る（`BOUNDED_APPEND_MAX_BUSY_WAIT`）。接続を握ったまま他の writer を待つので短くする。足りなければ、推論の前は `ConnectionBusy`（推論しない）、終端は defer（書き足し）。SQLite の busy／locked の error はこの appender で「期限の内に durable にならなかった」として扱う（grimodex-db の API は error のまま）。書き足し（`flush_until`）は busy／locked の writer を期限まで再試行し、期限で `Ok(false)`（pending は残る）。1 s の clip で flush の予算を黙って縮めない。推論の前の append も `append_exact_with_retry` の 1 回の再試行を受けるので、writer の busy の待ちは最大 2 回（約 2 s。残り期限が短ければ期限が先に効く）。それを超えると、期限が残っていても `ConnectionBusy`（可用性の測定事項。合計の待ちを S1-A で測る）。(3) 終端の append が書けなかった理由は `Timeout` に含める（`ChatIrUnavailable::Timeout` の doc に「Timeout は期限切れか、終端の audit が書けなかったこと」と明記）。reason を分けない（推論の前の `ConnectionBusy` と、推論の失敗の `InferenceFailed` は別のまま）。(4) 試験：no-wait guard の下で継ぎ目を繰り返す maintenance 役に chat 側が期限まで polling しても PREEMPTED にならない（guard の判定を外す変異で落ちる）。participant の read の operation 内の `busy_timeout` が残り期限以下、bounded append の前後で接続の `busy_timeout` が既定に戻る、busy の error は busy／locked、embedder admission の `foreground_until`（期限内の解放で走る／待つ間は waiter 1 で background が入らない／期限で取り下げたら waiter 0 で background が入る）。(5) **S1-A への持ち越し**（コードは変えない）：下の箇条 | S1-A0 のレビューで、waiter を名乗らなくても cycle の継ぎ目で取ると maintenance の次の取得が preempt され Run が cancelled になることを実測で再現した。「maintenance を譲らせない」は waiter を名乗らないことだけでは成り立たず、cycle の間は取らないことが要る。確認済みの防御（T12）を弱めず、閾値・送信先・保存範囲・契約・authority は動かさない（可用性を下げる向き）。1 s の clip は、接続を握ったまま他の writer を待つ時間を短くする向きで、足りなければ既存の deferral の規則に落ちる |
+
+### J1〜J8（DR-CHATIR-S1-7）
+
+| J | 判断 | 理由 |
+| -- | ---- | ---- |
+| J1 | 訂正・却下の store と migration を S1 に入れない。S3 の準備に回し、範囲の縮小として PR 本文に書く | 閉じていても migration は出荷され、`user_version` が新しい workspace は前の版で開けなくなる。データは開けるまで生まれず、S2 も使わない |
+| J2 | 選択の純関数を `scoring::run` と共有するか、可視性を広げるかは、S1-A の最初に決める。共有するなら等価性の試験を足す | Related Scenes（live）の回帰の危険と、S2 との照合の楽さの比較 |
+| J3 | chat 用の policy を Related Scenes の policy と分ける。S1 は同じ値で始める | 値の変更が Related Scenes に効かないようにする。緩める向きは委任の外 |
+| J4 | 今の Scene は turn の開始時に捕まえて executor が保持する | T3 の固定 |
+| J5 | 期限の初期値 10 s、終了の上限は「期限＋推論 1 回分」、read lane、caller timeout の初期値 20 s、エラーは閉じた集合 | DR-CHATIR-S1-1・3・6 |
+| J6 | Hermes の channel でも IR を返す（縮小は要らない） | G2 で Hermes を含む 4 形すべてで置き換えが成り立った |
+| J7 | 既存の secret の filter の基準の Scene は、定数 false の間は実行時の `activeSceneId`（今のまま）。true で turn の開始時の Scene に揃える | 定数の外の既存の挙動を変えない |
+| J8 | S1-C は event 単位の `captureState: "redacted"`。path の `captureLevel` を `partial-observable` にする変更は S3 で行い、その前に伺う（D4） | S1 の間は IR の event が生まれないので、path の宣言を変えると記録が事実と違う |
+
+## 「要確認」になる決め方（採っていない）
+
+次の決め方は確認済みの防御を弱めるので、採る場合はユーザーへの確認が要る。この文書の判断はどれも採っていない。
+
+- renderer の read lane だけに頼り、Native の同時実行数の上限を置かない。
+- 期限を無期限にする（model の load を上限なしで期限に含めるのも、実質これに当たる）。
+- foreground waiter を名乗って maintenance を譲らせる取得を使う。
+
+## gate の記録の場所
+
+いずれも repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/`。
+
+| gate | 記録 | SHA-256 | 結果 |
+| ---- | ---- | ------- | ---- |
+| G0 | contracts `357a87b7`（上の「出所」） | — | 済み |
+| G1（S1-17 と review bundle の実物の確認） | `s1-gate-g1.md`（証拠は `s1-g1-evidence/`。応答の実物は外へ出さない） | `730499ed975836417b6dcbe3a3caa46ff7dec704e0bc4374a4d591db974f1d51` | 通過。C1 は発火しない |
+| G2（★3 の条件の spike） | `s1-gate-g2.md`（dev 枝 `claude/dev-chat-ir-g2-spike` は捨てる。push しない） | `eb269fd50c5729e43ced0fa0ec74df5ad186c266f41072a6d0602ff34060cf1d` | 条件つきで通過。C2 は発火しない。残り（実物の行での組み立て直し、要約の射影関数、BPE の実 tokenizer）は設計の §8.1 の G2-残 |
+| G3（owner／lifecycle matrix） | `s1-gate-g3-matrix.md` | `26ef980ac74dd69d08e75324e61cd0266d6f5084b22f0e6119b8ca070954d73f` | matrix は作成済み。未確定のセルの決定はこの文書（DR-CHATIR-S1-1〜6）。**この文書の merge で G3 を閉じる** |
+
+## 範囲外
+
+- 経路の開放（S3）、τ・上限の確定値（S2）、PUB-G。
+- generic SQL の envelope の列の guard（DR-CHATIR-S1-10。別の lane）。
+- 確認済みの脅威モデルの文書の改訂。契約 §3.8 の matrix の文面は書き換えず、この文書と設計の改訂 3 で直す。
+
+## S1-A0 の実装の記録（2026-11-17）
+
+S1-A0（共有 crate の新しい取得の API と等価性・性質の試験）の実装結果。判断は DR-CHATIR-S1-1・2・8・9・11。製品の呼び手・napi・gate・IPC・migration は含めない。既存の API の挙動は変えていない（既存 source の変更は private な関数の引数の置き換えと、private な部分の関数への切り出しだけ。下の「既存 file の変更」）。
+
+### 足した公開 API
+
+| crate | API | 役割 |
+| ----- | --- | ---- |
+| grimodex-db | `Database::try_with_participant_read_transaction_until`（`narrative_maintenance_connection.rs`） | API 1。waiter を名乗らず、try を期限の内で繰り返し、取れたら SQL（progress hook）と busy の待ちも同じ期限の下で走らせる participant の read。取れなければ `Ok(None)`（connection-busy）、取れた後の期限切れは typed な `TimedOut` |
+| grimodex-db | `Database::try_with_conn_until`／`try_with_conn_mut_until`（新 file `connection_deadline.rs`） | API 4（DR-CHATIR-S1-11 の (A)）。期限つき・waiter を名乗らない接続の取得。write にも使える |
+| grimodex-db | `Database::try_append_ai_audit_events_for_scope_until`（`ai_audit.rs`） | API 4 の上の audit の append。busy の待ちを min(残り期限, 1 s) に切る（DR-CHATIR-S1-12）（既存の append は 5 s 固定）。検証・行・順序は既存と同じ |
+| grimodex-semantic | `SemanticRuntime::prepare_chat_ir_query`（新 file `runtime_chat_ir.rs`） | API 2。期限つき・resident だけの埋め込みの取得と chat IR 用の query の準備。model の load を起こさない（`EmbedderCold`）。spec は呼び手が渡し DB を読まない（D）。audit は chat IR の consumer 名で、期限つき・waiter を名乗らない appender（B） |
+| grimodex-semantic | `SemanticRuntime::score_chat_ir_documents_until`／`validate_chat_ir_query_current` | API 3。期限を候補ごとに見る scoring。同じ検査を渡された spec に対して行う |
+| grimodex-semantic | `ChatIrQuery`、`ChatIrPrepareOutcome`、`ChatIrUnavailable`、`ChatIrScoreOutcome`、`PendingTerminalAudit`、`TERMINAL_BACKFILL_BUDGET` | `ChatIrQuery` は `AuditedSemanticQuery` と別の型（DB を読む既存の API に渡せない）。`Query` の variant は pending の記録を持てない（終端の無い結果は型の上で使えない） |
+
+### 既存 file の変更（挙動不変）
+
+- `narrative_maintenance_connection.rs`：private な `try_only: bool` を private な `ConnectionAcquisition`（`Blocking`／`TryOnce`／`TryUntil`）に置き換え、既存の 2 つの呼び手は `Blocking`／`TryOnce` と `None` の busy で呼ぶ（前と同じ）。
+- `ai_audit.rs`：`append_ai_audit_events_with_durability` の本体を、busy の待ちを引数にする private な関数に切り出し、元の関数は `BUSY_TIMEOUT` で呼ぶ（前と同じ）。
+- `runtime.rs`：`start_embedding_audit` の本体を、appender を引数にする private な関数に切り出し、元の関数は `request.database()` で呼ぶ（前と同じ）。`mod`／`pub use` の追加。
+- `runtime_embedder_admission.rs`：`foreground_until` と `acquire_foreground_until` の追加だけ（既存の関数は無変更）。
+- `lib.rs`：`mod connection_deadline;` の 1 行。
+
+### T12 に対する期限の 4 区間と、止められない区間
+
+1. 接続の取得：try の繰り返しを期限で打ち切る（`None`）。foreground waiter を名乗らず、並んだ foreground や finalization を追い越さない。maintenance の cycle（no-wait guard）が生きている間は、空いていても取らない（DR-CHATIR-S1-12。waiter を名乗らないだけでは cycle の継ぎ目で取って preempt する）。
+2. SQL：participant の read は progress hook と busy の待ちが期限で止まる。
+3. 埋め込みの待ち：admission の待ちと embedder の map の try-lock が期限で止まり、waiter の数を戻す。model は load しない。
+4. audit の append と scoring：append の接続の取得が期限で止まり、busy の待ちは min(残り期限, 1 s) で止まる（DR-CHATIR-S1-12）。scoring は候補ごとに期限を見る。
+
+止められない区間は、推論 1 回分（`embed_query`）と、接続を取った後の append の書き込み 1 回分（短い 1 transaction）。終了の上限は「期限＋推論 1 回分＋append の書き込み 1 回分」。
+
+**統合者の受入れが要る差分**：設計の §16 の G3-U1 と DR-CHATIR-S1-1 の終了の上限は「期限＋推論 1 回分」。実装では audit の append の書き込み 1 回分が加わる。audit の append は DR-11 の (B) で期限の内の記録になり、書き込みそのもの（BEGIN IMMEDIATE の後の短い 1 transaction）に progress hook を掛けていないため。採らなかった代案：append の transaction に progress handler を掛けて期限で中断する（hook の登録は `hook_registration` に集約する規則に触れ、S1-A0 の範囲が広がるため。中断しても append は原子的に何も書かれず、pre-inference は `ConnectionBusy`、terminal は defer に倒れるので、T12 を強める向きの追加の実装として S1-A で選べる）。DR-CHATIR-S1-1 の U の決定は変えていない。
+
+### 終端の書き足し（B）の決定
+
+- 推論の前の記録は 1 batch（start／prepared／dispatched）で原子的。期限の内に書けなければ何も書かれず、推論せず `ConnectionBusy`。
+- 推論の後の終端（`response.completed`＋`execution.succeeded`、`execution.failed`、`execution.cancelled`）が期限の内に書けなければ、結果は使わず（`Query` を作らない）、event を元の id・時刻のまま `PendingTerminalAudit` に入れて返す。順序を保つため、一度 defer したら後の append も後ろに積む。
+- 持ち主は呼び手（S1-A の Native）。`flush_with_budget`（waiter を名乗らない try の繰り返し、初期値 30 s。同じ event は既存の append が冪等に扱う）。失敗（busy のまま・エラー）なら pending は手元に残り、再試行できる。捨てられるときは `tracing::error`（execution_id つき）。
+- 終端が期限の内に書けず defer した場合だけでなく、書けたが**期限を過ぎてから**だった場合も IR は返さない（`Timeout`、pending なし。終端は既に durable）。「期限の内に書けなければ結果は使わない」を、書き込みの成否ではなく、書き終えた時刻で判定する。
+- 終端の無い execution が残っても、その結果は IR として使われない。
+- どの task で flush を動かすか（応答の後の第 2 の task なら新しい background lifecycle）は S1-A の owner／lifecycle matrix に渡す。
+
+### 未解決（S1-A と統合者の判断に渡す）
+
+- chat IR は embedder の admission を握ったまま、接続を最長で残り期限まで待つ。その間、live の foreground の埋め込み（Related Scenes など）が admission の後ろで待つ。S1-A0 には呼び手が無いので動かないが、S1-A で期限の初期値（10 s）と合わせて決める。
+- `PendingTerminalAudit` を flush する task の持ち主（上）。
+- prepare と scoring の spec は呼び手が毎回導く前提（DR-CHATIR-S1-11 の信頼境界 (1)）。S1-A で同じ read transaction の中の project の language から導く形を試験で固定する。
+
+## DR-CHATIR-S1-12 の S1-A への持ち越し（コードは変えていない）
+
+- **admission を握ったまま接続を待つ件**：chat IR は埋め込みの admission を握ったまま接続（と audit の append）を最長で残り期限まで待つ。その間 live の foreground の埋め込みが後ろで待つ。pre-inference の append を admission の外に出す案（admission の前に start の記録を書き、取れたら admission を取る）を S1-A で比べる。
+- **query の byte 長の上限**：chat IR の query（embedding の入力）の byte 長に上限が無い。S1-A の Native の入口で上限を置き、超えたら IR なしにする。
+- **`PendingTerminalAudit` の flush**：flush の持ち主（task・thread）、同時に持てる件数の上限、workspace の close 時の lease（close の静止を握らない形で、未 flush を捨てるのか待つのか）を S1-A の owner／lifecycle matrix で決める。
+- **scoring の spec**：spec は同じ read transaction の中の `projects.language` から導く。project 行が無いとき（欠落）の確認と、その場合の status（IR なし）を S1-A の試験で固定する。
+- **`score_accepted_documents` の包み**：既存の `score_accepted_documents` を `score_vectors_until` の包みにして、既存の経路と chat IR の経路で同じ scoring の本体にする（等価性の試験は S1-A0 にある）。Related Scenes の回帰の危険と比べて S1-A で決める。
+
+## S1-A の判断（DR-CHATIR-S1-13〜27、2026-11-17。最初の mutation の前の記録）
+
+chat IR は NIR-1 の残レーンの事前委任の**外**。下の判断は、確認済みの脅威モデル（contracts `357a87b7`）の「確認が不要な技術判断」（★1・★2 の承認の後の、その設計の範囲内の可逆な実装の詳細）の範囲に収まるものだけを統合者の判断として書く。設計の正本は `fusion-eval-data/design-notes/chat-ir-2026-11-08/s1a-design-draft.md`（改訂 2）の §2・§3・§6。**DR-CHATIR-S1-15 だけは、ユーザーの回答（下の ref）を根拠にする**。実装前に原典で照合した結果は、実装後の追記（「S1-A の実装の記録」）に書く。
+
+| 項目 | 内容 |
+| ---- | ---- |
+| 確認済みの回答（S1-A の tail） | contracts の commit `a56a808b`（枝 `claude/nir1-contracts`）の `docs/plans/nir1-fusion-records/ir-chat-pilot-2026-11/user-confirmation-2026-11-17-s1a-flush-tail.md`。回答：「tail を承認 (Recommended)」（2026-11-17）。終端の書き足しは応答を返した後に同じ task で最長 30 s、その間 permit と participant を握り、停止は区切りごとに確かめる。脅威モデル §3.8 は確認済みの版を書き換えず追補で改める（下書き：`fusion-eval-data/design-notes/chat-ir-2026-11-08/threat-model-addendum-s1a-draft.md`。repo には入れない）。S1-A の PR 本文に GDX-PRECHECK-001 の背景作業の行を書く |
+| 基点 | `origin/master` `1dcc7b88`（S1-A0 #931 を含む） |
+
+| ID | 判断 | 理由と信頼境界 |
+| -- | ---- | -------------- |
+| DR-CHATIR-S1-13 | **持ち越し 1（admission を握ったまま接続を待つ件）**：最初の participant の read（T1）に短い接続待ちの上限 `CONNECTION_PROBE`（初期値 1 s）を掛け（`ParticipantSqlOperationBudget::with_connection_lock_timeout`）、取れなければ admission も embedder も取る前に `connection-busy` で返す。prepare は read transaction・接続の外で呼ぶ（接続は 1 本の mutex で、transaction を握ったまま prepare 内の append は必ず busy になる）。grimodex-semantic への hold の上限（S1-A0b）は採らず、S1-A の dev の測定（cycle 中に Related Scenes の埋め込みが待たされる追加 latency の p95 が 1 s を超えるか）の結果が出てから起こす。「直近 busy」を process に覚える negative cache は採らない | T12 の「期限、one-shot、同時に走る数の上限」を**強める**（早く返す）。共有 crate・S1-A0 の API は変えない。残る穴：T1 の後に cycle が始まれば prepare は期限まで握りうる（TOCTOU。DR-12 の「効かない範囲」と同じ）。一過性の busy でも IR が落ちる（可用性は下がる側） |
+| DR-CHATIR-S1-14 | **持ち越し 2（query の長さの上限）**：UTF-16 code unit 500 を正にする（契約 §3.2・Related Scenes の begin と同じ数え方）。UTF-8 byte 1,500 は導出値（1 unit あたり最大 3 byte）で、到達できないので検査に入れず、関数単体の試験だけにする。超過は切り詰めず `query-invalid`（IR なし）。空・空白のみも `query-invalid`。Main と Native の両方で、gate の後・permit の前・埋め込みと audit の前に検査する（Native を正とする） | 契約が「確認が不要」と明記する上限の値。止められない「推論 1 回分」と audit の rawText の大きさを縛る。超過した呼び出しは audit に何も書かず、推論もしない。実 model の上限いっぱいの推論時間は S1-A の dev で測る（【未測定】。長ければ下げる） |
+| DR-CHATIR-S1-15 | **持ち越し 3（`PendingTerminalAudit` の flush）：tail 形を採る**（ユーザーの回答 `a56a808b` が根拠）。応答を先に返し（`oneshot`。`JoinHandle` は待たない）、同じ blocking task・同じ permit・同じ participant のまま、pending があるときだけ tail で flush する。`tail_deadline` は応答の後 30 s（`TERMINAL_BACKFILL_BUDGET`）。`flush_until` を `SLICE`（初期値 250 ms）ごとに刻んで呼び、間に `participant.stop_requested()`（`Err` も停止）を見る。停止が立てば最後に 1 回だけ `CLOSE_FLUSH`（初期値 1 s）で試して、書けなければ捨てる（`PendingTerminalAudit` の `Drop` が `tracing::error` で execution_id を残す。本文・query は出さない）。落とす順は pending → request（Arc）→ participant → permit。pending は task の外へ move しない（同時に持てる数は permit の数 2 以下）。独立の queue／worker／registry／ticket は作らない（採るなら別に確認が要る）。audit export への影響：`ai_audit_read_snapshot` は high-water snapshot なので整合は壊れず、残る影響は export 時点で走っていた chat IR の execution が非終端のまま報告に載ることと、G3 §4 の「Native の期限が export の待ちの上限になる」が成り立たなくなること | 確認済みの §3.8 の「待ちの上限＝Native の期限」「終了の証拠＝Native の応答か期限のエラー」を、tail を含む形に改める（追補の下書きは repo の外）。**GDX-PRECHECK-001 の背景作業の行：当たる**（応答の後に最大 30 s の task が続く。その根拠と matrix の改訂を PR 本文に書く）。participant は shutdown・transition に上限なしで待たれる（読みで確認）ので、tail は停止を区切りごとに見て必ず終わる。close の遅れの上限は ≈ SLICE＋CLOSE_FLUSH＋append の書き込み 1 回（【推測】。S1A-12・S1A-13 の試験で測る）。書けないまま捨てると、終端の無い execution が残る（dispatched のまま。IR としては使われない。crash と同じ読み）。新しい宛先・保存範囲・閾値・契約の変更は無い |
+| DR-CHATIR-S1-16 | **持ち越し 4（scoring の spec）**：T1（prepare の前）・T2（prepare の後）・T3（scoring の後）の各 participant read の**最初**に `projects.language` を読み、その回の spec・floor・cap をその値だけから導く。T2・T3 の値が T1 と文字列として等しくなければ `project-changed`。project 行の欠落は `project-unavailable`（T2・T3 では `project-changed`）。support は `ranking_policy::for_language`（"ja"・"en" の完全一致）に揃え、T1 で `unsupported`（埋め込みの前）にする（`spec_for_language` の "en" 始まり以外は ja という fallback は使わない） | 「同じ read transaction」は prepare をまたげない（F12）ので 3 回の read になる。呼び手が毎回導く（DR-11 の信頼境界 (1)）。T3 は既存と同じく language・選択・validate を 1 transaction にする |
+| DR-CHATIR-S1-17 | **持ち越し 5（`score_accepted_documents` の包み）と J2（選択）：S1-A は live の Related Scenes の挙動に触れない**。`score_accepted_documents` の包み（B）は S1-A0c の別 PR（grimodex-semantic の内側。S1-A と並列に merge 可）。選択の純関数の切り出し（C）は採らず、`chat_ir` に**同じ規則の写し**を置く（score の降順、floor 未満を除く、1 Scene 1 件、cap で打ち切り。同点は Scene ID、revision ID、evidence ID の昇順）。`ranking_policy` は可視性（`pub(crate)`）を上げるだけで、値・挙動は変えない。写しの drift は、同点の並びと floor・cap・重複の試験で固定する（`scoring::run` との直接の等価性の試験は、lease と Chronicle の proof を要し作れない。弱い等価性であることを限界として記録する） | GDX-PRECHECK-001 の「critical candidate は最小に」。live の Related Scenes の変更を S1-A に同居させない。C を採ると S1-A0c → S1-A の直列になるが、写しなら並列に進められる（並列の可否の答え） |
+| DR-CHATIR-S1-18 | **J3（policy）**：chat 用の policy は、同じ policy JSON を使い回す薄い入口（`chat_ir` の `basis_for(language)`）にする。全 language で chat の `(floor, cap)` が Related Scenes の `for_language` と一致することを試験で固定する（drift の防止）。値（floor 0.813／0.66、`irMaxScenes` 8）は変えない | 値を変えるのは閾値の変更（確認の対象）。入口だけを分ける |
+| DR-CHATIR-S1-19 | **permit の位置**：DR-CHATIR-S1-4 の「`spawn_blocking` の task の中で取り」は、意図（task が戻るまで離さない）を、async 側で `try_acquire`（待たない）して closure へ move する形で満たす。queue に積まれて未開始の task も数える（blocking pool が飽和しても上限 2 が効く）。permit は tail が終わるまで離さず、caller timeout・Promise の settle では離れない | DR-4 の意図を保つ（弱めない）。上限は 2 のまま |
+| DR-CHATIR-S1-20 | **G3-U10／S1-29 の決着：participant だけを取る**。shutdown・transition は reader でない participant を**上限なしで**待つ（読みで確認）。したがって N2（blocking task の本体）と tail は、participant の stop と期限で必ず終わる。operation guard（`begin_workspace_operation`）は取らない | participant の方が厳しい（上限なし）。chat IR 専用の stop の登録（registry）は要らない（participant の `stop_requested()` が transition の admit と shutdown の両方で立つ） |
+| DR-CHATIR-S1-21 | **要約の射影（G2-残 (b)）**：`serialized_statement`（`chronicle-semantic-retrieval/1`）は `{summary, actuality, attribution, narrativeFrame}` の順序つき JSON で、S1 の「要約」は **`summary` だけ**（allowlist）。`actuality`・`attribution`・`narrativeFrame`（性質）は送らない（★4 の「要約と quote に限る」）。summary は 400 字（Unicode scalar）を超えれば先頭 400 字＋`…`。quote は evidence の `excerpt()`（180 字＋`…`）。どちらの上限も、実データの分布を見て**下げる向き**は技術判断で、上げるのは確認の対象 | ★4（要約と quote に限る）の内。上限は送るデータを減らす向き。**実装で改めた（原典の確認済みの契約 §3.3 に合わせた）**：item の key は `$grimodexIr`（印）、`origin`（`manuscript`）、`revisionId`、`sceneId`、`sceneTitle`、`summary`、`review`（`human-approved`。「AI の抽出・作者が承認」の明示）、`quotes`（要素 1 つの配列）、`score`。`generation` は契約が「記録用で model には不要」とするので item に入れず、発行の記録だけが持つ。`eventId`（「あれば」）は Native の入力に IR の revision の event ID が無いので入れない（年表との eventId の重複除去は S1-B の executor の仕事。DR 外で要確認の点として返す）。summary の 400 字は実データを見ていない**仮の値**（脅威モデル §7：字数の上限は未定で held-out の後） |
+| DR-CHATIR-S1-22 | **canonical の score の表現**：10 進 4 桁に丸めた f64（`(score as f64 * 10_000).round() / 10_000`）。順序・floor の判定は丸める前の値で行い、丸めるのは出力と digest だけ。canonical の規則：key は辞書順、整数値の数値は整数、文字列は serde の escape。digest は SHA-256 | f32→f64 の拡張は `float_roundtrip` の feature 統合に依存するが、丸めた値は往復で変わらない。S1-28（feature の固定）は S1-C に残る |
+| DR-CHATIR-S1-23 | **発行の記録（ledger）**：仮の上限 4,096 件を据え置く。件数は digest の重複を 1 件に数え、満杯なら**全件 atomic に拒否**（一部だけ入れない。押し出さない）、`ledger-full`。DB の identity の変化で破棄し、semantic の epoch では破棄しない。disk に書かない。lock は `Mutex`（check と insert を 1 つの lock で）。1 件の大きさと伸びは測り、S3 の前に見直す | DR-CHATIR-S1-5 のまま。本文は持たない（digest・byte 長・revision ID・Scene ID・題・score・generation・DB の identity） |
+| DR-CHATIR-S1-24 | **append への progress handler は採らない**（S1-A0 が代案として残したもの）。止められない区間は「推論 1 回分＋append の書き込み 1 回分」のまま | `hook_registration` の集約の規則に触れ、書き込み 1 回は十分短い【推測。測る】。S1-A の測定で長ければ再検討 |
+| DR-CHATIR-S1-25 | **閉じた status の集合と対応表**：`available`、`none-above-threshold`（0 件の成功。失敗の status と別の値）、`timeout`、`connection-busy`、`embedder-cold`、`busy`、`ledger-full`、`index-unavailable`、`unsupported`、`no-current-scene`、`project-unavailable`、`project-changed`、`workspace-unavailable`、`workspace-changed`、`query-invalid`、`inference-failed`、`internal`。`ChatIrUnavailable` からの対応は網羅的な `match`（wildcard 無し）。T1〜T3 の typed 失敗（`ValidationTerminationReason`）：`TimedOut`→`timeout`、`Cancelled`・`Closed`・`ContextUnavailable`→`workspace-unavailable`、`WorkspaceGenerationChanged`→`workspace-changed`、その他→`internal`。`Err(anyhow)` の文字列 code：`SEMANTIC_QUERY_STALE`→`workspace-changed`、`SEMANTIC_QUERY_MODEL_MISMATCH`→`index-unavailable`、`SEMANTIC_QUERY_MODEL_CHANGED`→`internal`、未知・DB の error→`internal`。通常の推論失敗は `internal`（`inference-failed` は終端の書き足しが遅れたときだけ到達。typed 化は S1-A0b）。`Timeout` は「期限切れ」と「終端の audit が書けなかった」を分けない（DR-12 (3)）。**Native の gate が閉じているときは status ではなくエラー**（audit も permit も使わない） | 通常の流れ（close・transition・期限切れ・epoch の回転）を `internal` に落とさない。model に見せる文言は AI の挙動資産として S1-B の品質ゲートで決める |
+| DR-CHATIR-S1-26 | **ChatIrControl**：qualify と status の読みに渡す `GraphWorkControl` は、`RelatedScenesBuildControl` と同じ検査（participant の stop・safe mode・semantic の generation）に**呼び出しの期限**を足した chat 用の実装にする。期限切れは `ValidationTerminationReason::TimedOut` の error | 期限を SQL・qualify の途中でも効かせる（T12） |
+| DR-CHATIR-S1-27 | **Native の gate と Main の gate（二重の閉じ方の実装）**：`PrePublicationEntry::ChatAgentIr`（wire は `chat-agent-ir`）を足す。Native は、gate が閉じていれば **DTO の parse の前に**拒否する（`related_scenes_begin` の parse が先の順は写さない）。開ける呼び手は作らない（CI seam なし。`main_open_pre_publication_gate` に `chat-agent-ir` を渡す呼び手が製品に無いことを grep の試験で固定する）。Main は `chat_agent_ir_select` を常に closed gate で拒否する（`CHAT_IR_GATE_CLOSED` の `ok:false` の error envelope。`nir1LocalGeneration.ts` の `gateRefusal` と同じ位置〔invoke の最初。`profileEgress`・sender の検査より前〕。typed な値ではなく error にしたのは、gate が status の外だから）。restricted の profile では `plaintext-publication`（`DENIED_COMMANDS`）。renderer の `CHAT_AGENT_IR_ENABLED` は S1-B。`READ_ONLY_COMMAND_TIMEOUTS` には caller timeout 20 s の専用定数で登録する（既存の 10 s では終了の上限〔期限＋推論＋append〕より短い） | 設計 §4.3。gate を開ける経路は S3 で、同じ承認の下で決める（開ける呼び手を作るのは確認の対象） |
+
+**範囲外として止める点**（実装中に必要になったら、mutation の前に止めて返す）：新しい送信先・保存範囲の拡大・閾値の緩和・gate を開く呼び手・製品認可の削除・新しい契約や authority、設計の Q-a〜g の「採る場合だけ伺う」側（独立の queue／worker、in-flight の上限を 2 より上げる、model の load の許可、発行の記録の disk 保存や押し出し、policy の値の変更、audit の新しい event・metadata、S1-A の間に IR を送る・開ける経路）。S1-A0b（grimodex-semantic の hold の上限・stop の hook・append の polling の間隔）と S1-A0c（`score_accepted_documents` の包み）は別 PR。
+
+## S1-A の実装の記録（2026-11-17）
+
+S1-A（Native 層。gate は閉じたまま）の実装結果。判断は DR-CHATIR-S1-13〜27。実装は枝 `claude/chat-ir-s1-a`（push・PR は統合者）。renderer の wrapper・executor、IPC の開放、S2 の測定、S1-A0b・S1-A0c は含めない。製品の既定の挙動は変えていない（renderer の `CHAT_AGENT_IR_ENABLED` は S1-B、Main の closed gate と Native の `PrePublicationEntry::ChatAgentIr` が閉じる）。
+
+### 足したもの
+
+| 場所 | 中身 |
+| ---- | ---- |
+| `electron/native/grimodex-node/src/chat_ir.rs` と `chat_ir/` | `select`（gate → 形 → query → permit → participant → pin → blocking task）、`ChatIrConfig`（既定値。10 s・1 s・2・4,096・30 s・250 ms・1 s）、`ChatIrState`（permit と発行の記録）。`status`（閉じた status と対応表）、`request`（DTO と query の検査）、`basis`（language から spec・floor・cap）、`item`（選択の写し・要約の射影・canonical・digest）、`ledger`、`permit`、`tail`、`flow`（`Backend` の trait と 1 回の呼び出しの手順、応答→tail→解放の順）、`native`（実 `Backend`：T1〜T3 と prepare・score） |
+| `main_grant.rs` | `PrePublicationEntry::ChatAgentIr`（wire `chat-agent-ir`。既定で閉。開ける呼び手は無い） |
+| `lib.rs`・`state.rs` | napi `chat_agent_ir_select`、`AppState.chat_ir` |
+| `related_scenes.rs`・`ranking_policy.rs` | 可視性だけ（`pub(crate)`）。値・挙動は変えない |
+| `electron/main/chatAgentIr.ts`・`ipc.ts` | Main の closed gate（常に閉。invoke の最初）。`profileEgress.ts`：`plaintext-publication` |
+| `electron/shared/ipcContract.ts` | `NapiBackendLike.chatAgentIrSelect`、`NAPI_COMMANDS.chat_agent_ir_select`（厳密な 4 key、query は UTF-16 500 unit） |
+| `src/lib/tauri.ts` | `READ_ONLY_COMMAND_TIMEOUTS` に caller timeout 20 s の専用定数で登録 |
+| `src/features/profile-egress/profileEgressClosure.ts` | renderer の拒否台帳（`RENDERER_DENIED_COMMANDS`）に `chat_agent_ir_select`（`plaintext-publication`）。Main の `DENIED_COMMANDS` と一致させる（`profileEgressClosure.test.ts`・`tauri.egressClosure.test.ts` が見る）。gate は常に閉で、renderer の閉鎖は防御に数えない |
+| 試験（実 addon・Main） | `electron/native/grimodex-node/test/chat-ir.test.mjs`（実 addon で gate が parse の前に閉じる）、`electron/main/chatAgentIr.test.ts`（Main の closed gate）、`electron/main/d2aRouteClasses.test.ts`・`electron/shared/ipcContract.test.ts`・`src/lib/tauri.electron.test.ts` の追加 |
+| `index.d.ts` | `chatAgentIrSelect`（`napi build` は `--dts` なしで d.ts を出さなかったので、生成の形に合わせて手で足した） |
+
+### 原典で照合して、設計の草案と違った点（DR-CHATIR-S1-25 の補足を含む）
+
+- `prepare_chat_ir_query` の最初の行（`ensure_background_request_current`）は、epoch が回った後なら `IPC_DERIVED_CANCELLED: semantic background indexing was cancelled` の `Err` を返す。設計の対応表に無かったので、`SEMANTIC_QUERY_STALE` と同じ `workspace-changed` に対応づけた（実 runtime の文字列を試験で固定）。
+- 草案の `catch_unwind` は採らない。panic では sender・permit・participant・pending が unwind で落ち、sender が落ちれば呼び手側は `internal` になる（試験で固定）。
+- 草案が「sender id と expectedWorkspacePath の組を Main で検査」（G3-U9）としたものは、Main に sender ごとの workspace path の正本が無く、Main の gate が常に閉じていて到達しないので実装していない（Native の `expectedWorkspacePath` の pin が正本。他の typed command と同じ）。開ける S1-B・S3 で要否を決める。
+- `current_request` の写し（`is_current`）は Related Scenes と同じく `bind_embedding_generation` を呼ぶ（generation が 0 だと失敗。同じ generation の再 bind は無害）。chat IR の read も同じ現行性の検査を使う。
+- 非終端の execution は `reportCoverage.ts` で `ambiguousExecutionCount` に数えられる（読みで確認。DR-CHATIR-S1-15 の audit export への影響の「非終端のまま報告に載る」はこの数）。
+- 現在の Scene の検査は T1 の軽い SQL（`node_type='scene'`・同 project・archived でない）。`read_chronicle_query_status_with_control` の `Unavailable` はその後なので `index-unavailable`。
+- project が workspace に無い projectId は `project-unavailable`（DB に触れてから判定する。「DB に触れない」は workspace path の不一致だけ）。
+
+### 試験が実物でない範囲（成功扱いにしない）
+
+- 公開済みの Chronicle index と resident の model は Native の試験では作れない。T2・T3 と scoring の実経路（S1A-10 の T2・T3 での `project-changed` の実発火、S1A-23・24 の可視性・現在の Scene の束縛、S1A-8・21 の embedding audit の consumer）は、Backend の seam の試験（flow）と純関数の試験（`derive`・`select_items`）、および S1-A0 の試験（`runtime_chat_ir_tests.rs`：`chat_ir_audit_equals_the_related_scenes_audit_except_the_consumer`）と grimodex-db の qualify の試験（`query_tests.rs`：earlier Scene の query が空であること等）を引く。S1A-23・24 の Native での end-to-end は未実施。
+- S1A-12 (c) の「終了後に authority の Arc が基準へ戻る」は、実 rig の呼び出し（index-unavailable で終わる経路）の前後の `Arc::strong_count` の一致で固定した（`a_whole_call_on_a_real_workspace_...`）。`wait_for_sole_owner` 自体は grimodex-db の `pub(crate)` なので Native の試験からは呼ばない（shutdown・restore がその count で待つので、count の一致が同じ性質の確認）。Fake の `Arc<()>` の試験（flow）は残す。model が要る後段の経路で Arc が残らないことは未実施。
+- 選択は写し（DR-CHATIR-S1-17）。`scoring::run` との直接の等価性の試験は作れない（lease と Chronicle の proof が要る）。弱い等価性。S1A-15（S1-A0c の側）は対象外。
+- `tracing::error`（捨てた pending の execution_id）は `PendingTerminalAudit` の `Drop`（S1-A0）が出す。Native の試験からは実物を作れないので、log の衛生（query が出ない）だけを Native で固定した。
+- dev の測定は未実施：実 model の上限いっぱいの query の推論時間、cycle 中の Related Scenes の埋め込みの追加 latency（S1A-14）、tail の polling の CPU、append の書き込み 1 回の長さ。値はいずれも初期値のまま。
+
+### 変異による確認（head の commit から。`git checkout` で戻し、毎回 `git diff --quiet` で確認）
+
+設計 §5 の「落とすべき変異」を、実装に合わせて表の Rust 26 件（行内の「／」で区切った数。数え直した）と TS 5 件。レビューの後に Rust 2 件を足して 28 件（下の (a)・(c)）。実装担当は 26 件を head `3826c116` で再実施して全件落ちたと報告した（この 26 件の再実施は、レビュー後の修正では取り直していない。修正で変えたのは `select` の関数の切り出し〔`chat_ir.rs`〕と試験・拒否台帳だけ）。レビューの指摘（2026-11-17）の後、コードの head `0a372e82` で次の 3 件を実走し、(a)・(b)・(c) のいずれもその試験だけが落ちた（(b) は表の 1 件の取り直し）：(a) permit の取得を `spawn_blocking` の closure の中へ移す（S1A-4、DR-CHATIR-S1-19）→ `the_limit_holds_while_the_blocking_pool_is_saturated`、(b) `select` の送信側 drop の写像（`wire_of_answer` の `Err` 分岐）を `internal` から `timeout` へ → `a_task_that_ended_without_answering_is_internal`、(c) 呼び出しの中で authority の `Arc` を 1 つ残す（S1A-12 (c)）→ `a_whole_call_on_a_real_workspace_...`。表の「送信側の drop を `internal` にしない」は、以前は小関数 `answer_of_dropped_sender` を変異していて `select` の分岐を通らなかったので、(b) の形に直した（`select` の分岐を関数 `wire_of_answer` に切り出し、`select` と試験が同じ関数を通る）。回していない変異：S1A-8・14〔実 admission〕・21・23・24 と、S1A-10 の T2・T3 の実経路。実物の model・公開済みの Chronicle index が Native の試験で作れないため。生き残りだった 1 件〔M15：log に query を出す〕は、log の試験が thread-local の subscriber で blocking thread の log を見ていなかったため。process 全体の subscriber に直し、取り直して落ちることを確認した。
+
+| 変異 | 落ちた試験（抜粋） |
+| ---- | ---------------- |
+| gate を parse の後ろへ（S1A-2） | `a_closed_gate_refuses_before_the_payload_is_read_and_uses_nothing` |
+| permit を応答で離す／上限 3（S1A-4） | `tails_count_against_the_in_flight_limit`、`the_third_call_is_busy_...` ほか |
+| `select` の送信側 drop の写像を `internal` にしない（S1A-5） | `a_task_that_ended_without_answering_is_internal`（`wire_of_answer` を通る） |
+| permit を blocking task の中で取る（S1A-4、DR-19） | `the_limit_holds_while_the_blocking_pool_is_saturated` |
+| call の中で authority の Arc を残す（S1A-12 (c)） | `a_whole_call_on_a_real_workspace_ends_with_a_status_and_returns_everything` |
+| T1 の接続待ちの上限を外す／`accepted_at` を task の中で取る（S1A-6） | `a_busy_connection_ends_the_first_read_at_the_probe_...`、`a_call_queued_behind_a_saturated_blocking_pool_...` |
+| 期限の確認（発行の前）を外す（S1A-6） | `an_answer_that_is_ready_only_after_the_deadline_is_not_issued` ほか |
+| qualify を prepare の前へ（S1A-7） | `steps_run_in_order_and_prepare_is_a_step_of_its_own` |
+| query を `chars()` で数える／Native の query 検査を外す（S1A-9） | `query_bound_counts_utf16_code_units`、`a_refused_query_uses_no_permit_...` |
+| T1 との language の一致を外す／support を `spec_for_language` に（S1A-10） | `later_reads_refuse_a_changed_project`、`only_ja_and_en_exactly_are_supported` ほか |
+| STALE を `internal`／Closed を `internal`（S1A-11） | `errors_map_by_type_then_by_code`、`typed_terminations_do_not_become_internal` |
+| 応答を tail の後ろへ／tail が stop を見ない／pending の leak（S1A-12・13） | `the_answer_comes_before_the_tail_...`、`a_stop_request_ends_the_tail_...`、`shutdown_is_not_held_up_by_a_call_in_its_tail`、`what_the_task_holds_is_released_...` |
+| 発行の記録：押し出す／identity を見ない／issue を飛ばす（S1A-18） | `ledger_refuses_a_whole_call_...`、`ledger_is_dropped_when_the_database_identity_changes`、`a_full_ledger_refuses_the_call_...` |
+| 性質を item に入れる／score を丸めない（S1A-16・17） | `the_projection_is_an_allowlist_...`、`score_is_rounded_...` |
+| log に query を出す（S1A-19） | `no_path_logs_the_query` |
+| floor の drift（S1A-22）／現在の Scene の検査を外す（S1A-25）／pin の失敗の status（S1A-20） | `basis_floor_and_cap_are_the_ranking_policys`、`the_first_read_refuses_by_project_language_and_scene_...`、`another_workspace_path_is_workspace_changed_...` |
+| TS：登録を外す／caller timeout 10 s／Main の gate を呼ばない／restricted の拒否を外す／query の上限 5000 | `tauri.electron.test.ts`、`chatAgentIr.test.ts`、`d2aRouteClasses.test.ts`、`ipcContract.test.ts` |
+
+tail の close の遅れの観測値（S1A-13。参考）：試験の値（slice 100 ms・close flush 200 ms）で、shutdown の要求から participant の解放まで 2 s 未満。製品の値（250 ms・1 s）での測定は dev で。
+
+### 検証の記録（レビュー後の最終 head。コードの head `0a372e82`、この節を足した docs の commit はコードを変えない）
+
+| command | exit | 件数 |
+| ------- | ---- | ---- |
+| `cargo test --lib`（grimodex-node） | 0 | 894 passed、7 ignored |
+| `cargo test -p grimodex-db --lib`（src-tauri 無変更の回帰確認） | 0 | 2805 passed、63 ignored |
+| `cargo clippy --all-targets -- -D warnings`（grimodex-node） | 0 | 警告 0 |
+| `cargo fmt --check` | 1 | chat_ir の file に差分なし。差分は base にもある他 file（`lib.rs` の mod の順、`nir1_generation.rs` ほか）の既存のずれで、この lane では整形しない |
+| `napi build`＋`node --test test/chat-ir.test.mjs`（実 addon） | 0 | 3 passed |
+| `vitest run --config vitest.electron.config.ts` | 0 | 105 files・2473 passed |
+| `vitest run`（renderer の全件。Quick の範囲） | 0 | 1668 files passed・11 skipped、17008 passed・38 skipped |
+| `tsc --noEmit` | 0 | 型エラー 0 |
+| `fnm exec --using=22 pnpm -s verify:quality`（docs の commit `03101580` で実行） | 0 | test:quality 714 tests・713 pass・0 fail（1 skip）、eval・retrieval fixtures・narrative writers ok |
+
+renderer の台帳の回帰（`profileEgressClosure.test.ts`・`tauri.egressClosure.test.ts` の 2 件）は `9bd90691` で直した。実装時の検証は renderer の試験を含んでいなかったので、以後の検証は renderer の全件を含める。
+
+### owner／lifecycle matrix（GDX-PRECHECK-001 の記録。tail を含む形。確認済みの §3.8 の追補は repo の外の下書き）
+
+| 行 | 入口・開始 | 受付を閉じる | 持ち主 | 取り消し | 待ちの上限 | 終了の証拠 | 再起動時 |
+| -- | ---------- | ------------ | ------ | -------- | ---------- | ---------- | -------- |
+| M：Main | `grim:invoke` 1 回＝Native 1 回 | closed gate（常に閉。invoke の最初）、restricted は `plaintext-publication` | なし（状態を持たない） | なし | なし | Native の応答 | なし |
+| N1：napi 入口 | `chat_agent_ir_select` | Native gate → 形 → query → permit（待たない）→ participant → pin | permit・participant・pin した request を blocking task へ move | caller の Promise の破棄は task を止めない | permit・participant・pin は待たない | 応答（oneshot）。Promise の settle は証拠にしない | なし |
+| N2：blocking task | `spawn_blocking`。accepted_at から期限 10 s（pool の待ちを含む） | gate・検証・permit・participant の後に入る | `Backend`（request→participant の順に drop）・`PendingTerminalAudit` はこの task の local | participant の stop（SQL・取得 loop）、epoch の変化、期限 | T1 の接続待ち 1 s、全体 10 s、止められないのは推論 1 回分と append の書き込み 1 回分（admission・embedder の try-lock・append の待ちは stop を見ない＝S1-A0b の候補） | task の戻り（participant の数・permit の数が戻る） | read のみ。append は commit か rollback |
+| N3：tail | pending があるときだけ、N2 と同じ task の後段（**応答の後に期限を超えて permit・participant を握る**。ユーザーの回答 `a56a808b`） | 新しい受付ではない | `PendingTerminalAudit`（task の外へ move しない。同時数は permit の数 2 以下） | `participant.stop_requested()` を 250 ms ごとに確認。立てば最後に 1 回（1 s） | 30 s（stop の後は ≈ slice＋close flush＋append 1 回） | pending が空、または `Drop` の `tracing::error`（execution_id のみ）。落とす順は pending → request → participant → permit | pending は process 内のみ。消える（終端の無い execution が残る。crash と同じ読み） |
+| L：発行の記録 | N2 の最後の挿入だけ | 満杯なら全件拒否（`ledger-full`） | `AppState` の `Mutex<Ledger>`（disk に書かない） | 押し出さない。DB の identity の変化で破棄。epoch は契機にしない | 短い lock | 受動の表 | 消える |
+| P：permit | async 側で `try_acquire`、task へ move | 超過は即 `busy` | process 全体で 2 の `AtomicUsize` の RAII | なし | 待たない | task の戻り（tail を含む）で解放。caller timeout では離れない | なし |
+| G：Native gate | `PrePublicationEntry::ChatAgentIr` | 閉（既定）。開ける呼び手なし | なし | なし | なし | 該当なし | 再起動で閉 |
+| X：transition・shutdown | participant の `stop_requested()`（transition の admit と shutdown の両方で立つ）。chat IR 専用の registry は無い | participant は Transition／Closed で新規が拒否される | participant | stop → SQL の取得 loop・tail が止まる | participant の数が 0 になるまで待たれる（上限なし）ので N2 の期限と N3 の stop が必須 | participant の数 0、Arc が sole owner | — |
+
+GDX-PRECHECK-001 の区分：**background は当たる**（tail。応答の後に最大 30 s の task が続く）。async lifecycle は当たる（上の表）。subprocess は当たらない（新しい process なし）。外部送信・保存範囲・閾値は変わらない（audit は既存の `ai_audit_events` に同じ event_id・payload で書き足すだけ。要約・quote・Scene の識別を渡す先は S1-B 以降で、S1-A は gate が閉じていて何も送らない）。
+
+## DR-CHATIR-S1-28：tail の最後の試みも 30 s の締切で切る（2026-11-18）
+
+- **きっかけ**：脅威モデルの追補（contracts `3d86610c`、`threat-model-addendum-2026-11-17-s1a-tail.md` の 0.2 の細部 (a)）の点検で見つかった。
+  - `run_tail` は、停止の判定を予算切れの判定より先に行う。
+  - 停止を見た後の最後の試み（`close_flush`）は、`now + close_flush` まで続き、`tail_deadline` で切られていなかった。
+  - そのため、停止が予算の切れ際に立つと、tail は応答の後 30 s を最大約 `CLOSE_FLUSH`（1 s）と書き込み 1 回分だけ越ええた。
+  - ユーザーの承認（contracts `a56a808b`）の文言は「応答の後、最長 30 s」である。
+- **判断**：最後の試みの期限を `min(tail_deadline, now + close_flush)` にする。締切を過ぎていれば試みを始めない（`Stopped { flushed: false }`）。
+  - これで承認の文言どおりになり、承認の範囲を狭める向きの変更だけである。
+  - 新しい宛先・保存範囲・閾値・契約の変更は無い。
+  - ユーザーには、この直しを別 PR で入れることを 2026-11-18 に説明し、「その PR も進めてください」の回答を得た。
+- **残る性質（変わらない）**：始まった append の 1 回は、期限で中断できない（`flush_until` の各試みの busy 待ちは min(残り, 1 s)）。この性質は slice の経路と同じで、追補に記述がある。
+- **試験**：`chat_ir/tests/unit.rs` に 2 本足した。
+  - `tail_last_attempt_never_outlives_the_budget`：予算 200 ms、`close_flush` 2 s で、170 ms の時点で停止を立て、1 s 未満で終わることを見る。直す前は約 2.2 s かかる。
+  - `tail_makes_no_last_attempt_once_the_budget_is_spent`：予算 0 では、最後の試みが始まらないことを見る。
+
+## S1-B の判断（PR-B1。挙動不変の部品だけを閉じたまま置く）
+
+設計の正本は repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/` の `s1b-design-draft-r3.md`（改訂 3）と `s1b-design-draft-r4-delta.md`（改訂 4 の差分。食い違えば差分を優先）。
+基点は `origin/master` `5d09b3c4`。PR-B1 は定数 `false`・型・wire の検証・wrapper・純関数・fixture・試験だけを入れる。status → model 向けの文言、cap・累積、`chatTurnStoreActions.ts`・`toolExecutors.ts`・`searchEvents`・Main・Native・`ipcContract.ts` は変えない。製品の挙動は変わらない。
+
+## DR-CHATIR-S1-29：上限いっぱいの 1 件は最小の cap に入らない（2026-11-18）
+
+- **きっかけ**：S1-B の gate のメモの実測（製品の cap は o200k_base の BPE で数える。`agentLoop.ts`・`contextBuilder.ts`）。
+- **事実**：item 1 件は中央 175 tokens、最大 279 tokens。上限いっぱいの 1 件は 589〜610 tokens で、包み込むと 605〜626 tokens になる（題 4 字のときの値で、上界ではない）。静的な表で最小の窓は 8,000／8,192 で、cap は 600。式の最小 500 は窓が 6,667 未満のとき。
+- **帰結**：設計の前提「1 件は必ず入る」と食い違う。小さい窓では `cap-exceeded` が普通になる。窓が 8,000 で年表が 10 件あれば、実データでも IR は 0 件。窓 32,768 なら 3〜8 件、64,000 以上なら 7〜8 件、128,000 以上は 8 件入る（年表 10 件まで）。
+- **扱い**：executor と agentLoop は同じ関数・同じ mode・同じ文字列で数えるので、余裕は置かない。provider の tokenizer の値は数えない（count_tokens は送らない）。どう扱うかは PR-B2（B-T7・B-T14）で決める。PR-B1 は cap を持たない。
+
+## DR-CHATIR-S1-30：G6 (c)（読み順の 2 つの実装）は試験で固定する（2026-11-18）
+
+- **事実**：IR の admission は Native が DB から読む読み順（`query_reading_rank`）、年表の filter は renderer の `buildReadingOrder`（`src/features/codex/context/sceneTimeIndex.ts`）。実装が 2 つあり、同じ結果になるかの試験は無かった。Rust の半分の対象は、差分 §3 の指定どおり `derive_live_scene_projection`（`project_scope_authority.rs`）とした。**IR の admission の `query_reading_rank` がこの関数から来るかは PR-B1 では確かめていない（未確認）**。S1-A2 の前に確かめ、別の実装なら cargo の試験の対象を直す。
+- **決定（行き先）**：条件 1〜3 の TS の半分は PR-B1 の共有 fixture と `buildReadingOrder` の試験で固定する。Rust の半分（同じ fixture を `include_str!` で読み、順か error を固定）は S1-A2 に置く。**PR-B1 が固定するのは TS の半分だけで、両実装の一致はまだ固定されない。** 条件 4（出所の時点）・5（今の Scene の出所）は PR-B2。
+- **決定（条件 6：軸）**：年表の位置の filter は、project の `phase_resolution_mode`（軸）に関わらず読み順で掛ける。既存の秘匿の filter（`isEventHiddenFromAi`）も軸に関わらず読み順で判定する。story 軸の project では、IR は Native が返さず、年表だけが位置の filter つきで返る。filter を掛ける側なので、秘匿を緩めない。
+- **決定（条件 7：境界）**：境界は「以前」（含む）。結ばれた Scene のうち最も前のものの位置が今の Scene の位置以下なら返す。今の Scene に結ばれた event は返す。既存の秘匿の filter（`readingPos(current) < readingPos(reveal)` のときだけ隠す）の境界と揃う。IR の規則（Native は今の Scene と同じか後を除く）とは向きが違うが、これは設計どおりの非対称である。結ばれた Scene がすべて読み順の外なら返さない（fail-closed）。
+- **注意（既存の規則との違い）**：今の Scene が読み順に無いとき、秘匿の filter は隠す（fail-closed）が、位置の filter は掛けない（確認済みの案 X。IR は 0 件と組）。年表は秘匿の filter だけが掛かった状態で返る。
+- **範囲**：確認済みの規則（△7 の案 B・案 X）の範囲内の技術判断。filter は共有の `searchEvents` に置く（PR-B2）。PR-B1 は純関数 `isEventBeforeOrAtScene` と試験だけ。
+
+## DR-CHATIR-S1-31：G6 (b) と PR-B1 の wire の形（2026-11-18）
+
+- **決定**：request は 4 key（`query`・`projectId`・`expectedWorkspacePath`・`currentSceneId`）のまま。wrapper の引数は object のままにする。応答の top-level の未知の key は拒否する（`invalid-response`。item の key と同じ厳しさで、drift を黙って通さない）。item の `eventId`・`generation`・`quote` は現れたら落とす。
+- **帰結**：S1-A2 が応答に欄（例：除外の eventId）を足すときは、Native・parser（`parseChatAgentIrResponse`）・B-T1 の drift 試験を同じ PR で変える。parser の注と試験に書いてある。
+- **確認が要る点**：候補の eventId を request に足す案は、確認済みの契約 §3.2 の入力の表を増やす変更なので、技術判断では閉じない。S1-A2 を起こす前に ず-1 と束ねて伺う。PR-B1 はこの案もほかの案も塞がない。
+- **PR-B2 への影響**：この案を採るなら、呼び出しの順は「年表の取得 → IR の呼び出し」に固定される（今は並列にできる）。latency の論点として PR-B2 に残す。
+
+## DR-CHATIR-S1-32：PR-B1 の wire の置き場・query の上限の二重の持ち方・error の写像の暫定（2026-11-18）
+
+- **wire の置き場**：`electron/shared/chatAgentIrWire.ts`（import を持たない。renderer と `electron/tsconfig.json` の両方で compile される）。前例は `relatedScenesSearchWire.ts`。`ipcContract.ts` は応答の型を持たず（`Promise<string>`）、12,447 行あるので renderer から import しない。
+- **query の上限の二重の持ち方**：`CHAT_AGENT_IR_QUERY_UTF16_MAX = 500` を wire file にも持ち、Rust の `QUERY_MAX_UTF16`（`request.rs`）と `ipcContract.ts` の 500 の 3 か所の一致を B-T1 の drift 試験で固定する。Native が権威（DR-CHATIR-S1-14）。
+- **件数の上限**：`CHAT_AGENT_IR_MAX_ITEMS = 8` は policy JSON の `irMaxScenes` と対応する。Rust は `ranking_policy.rs` で 8 を要るので、policy の値を変えるには Rust の変更も要る。TS だけが 8 のままでも全 IR が `invalid-response` で捨てられるだけ（fail-safe）。B-T1 が policy を読んで一致を固定する。
+- **error の写像の暫定**：wrapper の `message.includes("CHAT_IR_GATE_CLOSED")` は暫定。Native 由来の前置きが未確認なので prefix にしない。`legacy-ipc-error-text-check` の 5 マーカーの外で、現状は抵触しない。規約の趣旨（feature code は `code` を読む）どおりにするなら `tauri.ts` の `classifyLegacyIpcError` に新しい `code` を足すことになる。gate が閉じている間だけの status で、`tauri.ts` の code の集合を増やす影響のほうが大きいので、移動は統合者の判断（B-18）に残す。
+- **renderer の事前判定の優先順（仮）**：`currentSceneId` が空 → `no-current-scene`、query が空・空白のみ・UTF-16 500 超 → `query-invalid`、`expectedWorkspacePath` または `projectId` が空 → `no-workspace`。改訂 3 の表は `projectId` が空のときの status を挙げていないので、`no-workspace` に仮置きした（新しい status を作らない）。
+- **共有 fixture の置き場**：`src/features/codex/context/fixtures/reading-order-parity.json`。前例の `policies/narrative/fixtures/` は `policies/narrative/**` が `GDX-NARR-SEMANTIC-CONTRACT-001` の対象で、挙動不変の PR に重い評価を持ち込むので避けた。Rust の試験は `include_str!` で読める（S1-A2）。置き場を前例に揃える判断は統合者に残す。
+- **試験の限界**：Rust 側の期待（error か順か）は `project_scope_authority.rs` を読んだ推定で、cargo では実行していない。
+
+## S1-B の判断（PR-B2。定数 `false` のまま、executor への合流・cap・status の文言を閉じたまま置く）
+
+設計の正本は PR-B1 と同じ `s1b-design-draft-r3.md`・`s1b-design-draft-r4-delta.md` に、PR-B2 の詳細設計 `s1b-prb2-design-2026-11-18.md`（repo の外の同じ folder）を足したもの。
+PR-B2 は `CHAT_AGENT_IR_ENABLED = false` のまま（開けない）。定数が `false` の間の製品の挙動は変わらない（`createChatTurnToolContext` は入力の関数を同一のまま返し、`searchEvents` の位置の filter は掛からず、`snapshotAgentTools()` は今と一致する）。
+5 つの commit に分けた：(1) 新しい関数を chat file の外に足す、(2) `chatTurnStoreActions.ts` の切り替え（この file に触れる唯一の commit）、(3a) status の分類と cap の収め、(3b) executor への配線、(3c) 説明文・記録。
+
+## DR-CHATIR-S1-33：`guardedExecuteTool` の抽出と `chatTurnStoreActions.ts` の ratchet（2026-11-18）
+
+- **事実**：`chatTurnStoreActions.ts` は `policies/architecture/large-module-debt.json` の上限（行数 2746、runtime import 36）に張り付いている。試作では、抽出なしで IR・scope の配線を足すと 2758 行（+12）になり、上限を超える。
+- **決定**：PR-B2 の中で、この file に触れる commit を 1 つ（commit 2）にして挙動不変の抽出を行う。`guardedExecuteTool` の本体を `chatAgentToolHandlers.ts` の `createGuardedExecuteTool` へ移し、IR・scope の配線を `createChatTurnToolContext` に集める。別の PR（PR-B0）にはしない：抽出で上限を先に下げると、後の配線の commit が増加になり `--write-baseline` でも通らない（ratchet は増加を拒む）。1 つの commit で抽出と配線を同時に済ませれば、増減は commit 内で相殺し、上限の更新も 1 回で済む。commit 1 は chat file に触れず新しい関数と単体試験だけ、commit 3 以降も chat file に触れない。
+- **ratchet**：同じ commit で上限を 2746 → **2741** に下げる（減少も ratchet が要求する）。runtime import は 36 のまま。上限は上げない。
+- **範囲**：構造の変更だけで、新しい宛先・保存・閾値・契約は無い。定数が `false` のとき `createChatTurnToolContext` は入力の `executeTool`／`executeReadOnlyTool` を同一の関数のまま返す。
+- **試験**：`chatAgentToolHandlers.test.ts`（同一性・`createGuardedExecuteTool` の単体）、`chatTurnStoreActions.uiOperationLimit.static.test.ts`（維持）。
+
+## DR-CHATIR-S1-34：sub-agent の基準の Scene は案 T（turn 開始時の束縛）（2026-11-18）
+
+- **事実**：chat store の `activeSceneId` と project store の写しは React effect で連動するが、遅れと見送りがある。tool が実行時に store を読み直すと、同じ turn の中で基準の Scene が動きうる。
+- **決定**：turn の開始時に `currentSceneId` と `projectId` を `ChatTurnToolScope` へ捕まえ（不変）、main の `executeTool` と sub-agent の `executeReadOnlyTool` の両方に同じ scope を束ねる。束縛は `createChatTurnToolContext` が作る関数の包みで行い、`chatTurnStoreActions.ts` の行は増えない（DR-33 の収支に含む）。tool の中では store を読み直さない。
+- **範囲**：確認済みの規則（△8 の基準の Scene。J4・J7 の turn 開始時の束縛）の内。位置の filter は共有の `searchEvents` にあるので、sub-agent の年表にも掛かる（filter を広げる向きで、秘匿を緩めない）。案 R（sub-agent は実行時の値）は採らない。
+- **定数 `false` の間**：scope は束ねない。既存の秘匿の filter の基準は今のまま（実行時の `activeSceneId`、J7）。scope が無い呼び手は、基準の Scene を従来どおり `getSharedReadingOrder` の直後（await の後）に読む（`chronicleSceneId`）。先頭で読む形にすると await の間に Scene が替わったとき挙動が変わるため。
+
+## DR-CHATIR-S1-35：`usedIds` の受け渡しは案 P（WeakMap、鍵は `params`）と `noteUsedIds` の型（2026-11-18）
+
+- **決定**：`ChatIrCapability.noteUsedIds` を `(key: object, revisionIds: readonly string[]) => void` に直す（PR-B1 の `noteUsedIds(revisionIds)` は鍵を持てない）。turn の文脈が `WeakMap<params, ChatIrUsedIds>` を持ち、`onToolComplete` の先頭（authority の早期 return の前）で `attachUsedIds(record)` が record の `usedIds` に写す。形は `{ revisionIds, eventIds, generation }`。`agentLoop.ts` は変えない（案 Q は採らない）。
+- **中身**：`revisionIds` は cap の収めの後に残った item のものだけ。`eventIds` は空（item が eventId を運ばない。r4-delta §2 の 4）、`generation` は `null`（item に無い。B-17）。item が 0 件なら `usedIds` を書かない。
+- **理由**：案 Q（`agentLoop.ts` に汎用の写し）は `usedIds` を「IR の知識」として agentLoop に入れることになり、△6（ユーザー確認済みの文言）の読みを広げる。案 P は鍵が `params` object なので並列の tool でも壊れない見込み（未確認：将来の並列 loop）。
+- **範囲**：`usedIds` は承認 2 の保存の内（確認済み）。保存範囲は広げない。
+
+## DR-CHATIR-S1-36：DR-CHATIR-S1-29（上限いっぱいの 1 件）の扱い＝cap の収め方（2026-11-18）
+
+- **決定**：「小さい窓で IR が入らないのは設計どおりの縮退として受け入れる。IR を落とし、年表を残す（fail-safe）。item は書き換えない。」
+  - cap は agentLoop と同じ式 `max(1, floor(tokenBudget × 0.25))`、同じ関数・同じ文字列（`countTokens(JSON.stringify(content))`）で測る。余裕は置かない。
+  - cap を超える間、item を**尾から**1 件ずつ落とす（最大 8 回）。item の書き換え・詰めは採らない（B-T4：content に Native が返した各 item の `JSON.stringify(item)` が部分文字列として残る。S1-C の置き換えが頼る）。
+  - 1 件も入らなければ `cap-exceeded`。年表だけで cap を使い切ると分かっているときは Native を呼ばない（事前判定。DR-38）。内部では「呼ばなかった」と「呼んだが入らなかった」を区別し（`called`）、model には同じ `cap-exceeded` を見せる。
+  - `chronicleIr` を `events` より前に置く（agentLoop の切り詰めは先頭を残すので、tail の切り詰めでも status と item が残る）。
+  - `note` は、付けると cap を超えるなら外して status だけにする。status だけの包みの分（十数 tokens）は受け入れ、年表を削ってまで避けない。
+- **採らなかった案**：年表の件数を減らして IR を入れる（model の `limit` の契約を黙って破り、IR を年表より優先する根拠が契約に無い。製品の優先の判断なので、採るなら伺う）、Rust の上限（400／180 字）を下げる（実データは 400 字に届かず効果が薄い。S2 の測定で頻度が高ければ S1-A2 への要望）、`limit` を小さくして再呼出しするよう促す（Native を再び呼び、累積の上限と台帳を使う）。
+- **前提の訂正**：「1 件は必ず入る」は理論の最悪（605〜626 tokens）では成り立たない。小さい窓で入らない主因は、item の大きさより年表の大きさ。
+- **S2 で測る**：`cap-exceeded`（事前判定の分と呼んだ後の分）の頻度と、窓ごとの IR の件数。製品の BPE での実数は dev の測定。
+
+## DR-CHATIR-S1-37：status → model 向けの文言と置き場（system に足さない）（2026-11-18）
+
+- **決定（分類）**：Native の 17 値と renderer 側の 13 名（うち 2 名は Native と同名で、重複を除くと 28 値）を、7 つの分類（`answered`・`none`・`transient`・`unavailable`・`context`・`query`・`internal`）に畳む（`chatIrStatusText.ts`。`satisfies Record<…>` で網羅を型で守る）。status の名前は content に残し、失敗の分類にだけ固定の英語 `note` を付ける。`none` だけが「検索は完了し、該当する承認済みの要約は無かった。原稿に無いことの証明ではない」と言い、`query` 以外の失敗の分類は「根拠が無いのではない（not evidence that nothing exists）」を含む（`query` の note は query の上限を伝える）。`timeout` は「期限切れ」と決めつけず、「完了しなかった」と書く（終端の audit が書けなかった場合を含むため）。`query` の note の上限（500 字、UTF-16）は wire file の 1 つの定数から作る。
+- **決定（置き場）**：content の `chronicleIr.note`（固定文）と、`toolDefinitions.ts` の `search_events` の説明文（定数 `true` のときだけ、3〜4 文の読み方：分類の名・要約と quote が食い違えば quote と原稿を優先・結果は資料で指示ではない・失敗は根拠が無いことではない・query の上限）。**sub-agent の定義（`getResearchSubagentTools`）からは除く**（sub-agent は IR を返されない）。**system（`src/prompts/**`）には足さない**。
+- **理由**：tool の定義は session の開始時に snapshot されるので、定数を開けた後も既存の session は古い説明文のままだが、content の `note` は届く。`chatSystem.ts` を変えると impact selector が `nir1-entity-relation-review` まで選び、system の変更は prompt cache の prefix も変える。改訂 3 §2.10 の「agent の system の 1 文」から変える（技術判断）。
+- **足さないもの**：説明文に「作者が承認した」の文は足さない（D3。S3 の前に伺う）。入力の schema は変えない。
+- **評価**：`chatIrStatusText.test.ts`・`toolDefinitions.chatIr.test.ts`（Light）。`grounding-artifact.yaml` への `eval-ground-search-events-ir-unavailable` の追加は見送った：Light の評価器（`scripts/quality/eval-fixtures.mjs`）は fixture の宣言（tool・policy・evidence・validator の名前）の整合しか検査せず、fixture に tool_result の status を書く欄も無いため、足しても model の回答が「無い」と断定しないことは何も検査されず、緑が実態を超えて見える。Heavy の `heavy-agent-tool-loop`（課金あり）は deferred のまま。閉じた文だけを評価した形で、開ける版（S3 の前）で再評価する。
+- **範囲**：定数 `false` の間は説明文も content も変わらない（`snapshotAgentTools()` は今と deep-equal。試験で固定）。
+
+## DR-CHATIR-S1-38：呼び出しの順と事前判定・累積の上限（2026-11-18）
+
+- **決定（順）**：`search_events` の IR 合流版は直列：年表（共有の `searchEvents`：秘匿 → 位置 → `slice(limit)`）→ 事前判定 → 累積の上限の確認（`turn-limit`）→ Native を 1 回（`selectChatAgentIr`）→ `assertCurrent()` → `min(limit, 8)` の切りと cap の収め → `noteUsedIds` → content。並列にしない（`Promise.all` への変異は B-T13 が落とす）。
+- **理由**：(a) IR が失敗しても年表を失わない、(b) cap の収めは年表の大きさを知らないとできない、(c) 事前判定で Native の呼び出し・台帳・permit を節約できる。直列の追加の遅れは年表の分（local の検索と共有 cache の読み。実測していない）。候補の eventId を渡す案（DR-31）を採る場合も、この順が前提になる。
+- **事前判定**：status だけの包み（`cap-exceeded`）が cap 以上なら、Native を呼ばず `cap-exceeded` で返す。累積の counter は増やさない。下限は `>= cap` だけ（最小の item の tokens で早く切る案は、BPE と heuristic で固定部分が違うので採らない）。
+- **累積の上限（△11。仮の値）**：turn ごとに Native を呼べる回数 6、IR の item の UTF-16 `length` の合計 20,000（`chatIrToolResult.ts` の名前つき定数）。上限に達したら `turn-limit`。文字数は合計で守る：Native を呼ぶ前に判定し、呼んだ後も先頭から残りの枠に収まる item だけを残す（1 件も収まらなければ `turn-limit`。独立レビューの指摘で、1 回の呼び出しで合計を越えられた形を直した）。比率 0.25 の写しは `chatAgentToolHandlers.ts` の 1 か所だけ（B-T7 が実 `runAgentLoop` で固定。`chatIrToolResult.ts` には持たない）。IR 合流版の item の上限は `max(1, eventSearchLimit)` で、`0 < limit < 1` の小数でも空の `available` を返さない（年表の側は今のまま 0 件）。IPC の前に拒まれた呼び出し（preflight の status）は数えない。これらは閾値に当たる：**下げる向きは技術判断、上げる向きはユーザー確認**。値は S2 の測定の後に見直す。
+- **IR を付けない場合**：IR の capability が無い呼び手（sub-agent、定数 `false`、製品外の harness）、空の query、project が無いときは、今の配列のまま返す。
+- **失敗**：IR の失敗は tool の失敗にしない（status を content に載せる。年表は返す）。ただし `assertCurrent()` が throw したとき（project／workspace が turn のものでなくなった）は item を返さず tool を失敗にする。再試行しない。
+- **試験**：B-T7（cap・事前判定の論理。件数は固定しない：vitest は WASM が読めず heuristic になる）・B-T13（順）・B-T14・B-T15。
+- **S1-A2 との関係（2026-11-18 夜のユーザー回答 Q2 の確定。記録は contracts の `ir-chat-pilot-2026-11/user-confirmation-2026-11-18-eventid-d1-fidelity.md`）**：
+  - △7 (4)（IR の規則で除かれた event を年表からも除く）で、除外の結果が得られないときの扱いを次のとおりとする。実装は S1-A2b で、この PR（PR-B2）には含めない。
+  - model が起こせる 3 つ（事前判定の `cap-exceeded`、`turn-limit`、`query-invalid`）では Native を呼ばない。代わりに、secret の event に近似の規則（結ばれた Scene がすべて今の Scene より前）を掛ける。
+  - research sub-agent の `search_events` も近似の規則の対象とする（統合者の技術判断）。sub-agent は IR を呼ばないので除外の結果を得られず、その結果は main の model に返るため。
+  - それ以外の失敗（一時的・構造的）では (4) を掛けない（秘匿と位置の filter だけ）。
+  - 上の直列の順（年表 → 事前判定 → `turn-limit` → Native）は、S1-A2b の前提として保つ。
+
+## S1-A2 の判断（PR-A2a。読み順の Rust の半分の試験）
+
+## DR-CHATIR-S1-39：読み順の cargo 試験の対象・置き場・fixture の追加（2026-11-18）
+
+- **対象**：`derive_live_scene_projection`（`grimodex-db/src/narrative_extraction/project_scope_authority.rs`）。IR の admission の `query_reading_rank` と候補の mapping の `reading_rank` は、どちらもこの関数の順の index から来る（`check_query`〔`retrieval_admission/disclosure.rs`〕← `query_context.rs` の `target.reading_rank` ← `load_live_project_scope_authority` ← この関数。読みで確認）。Rust にある他の読み順の実装は IR の経路を通らないので対象にしない。
+- **置き場**：関数と入力の型が private なので、module 内の unit test（`project_scope_authority/reading_order_tests.rs`）。fixture は `include_str!` で TS と同じ file を読む。DB を通さないので、実 DB では作れない形（未知の型・孤児）も回せる。
+- **固定するもの**：各 case の結果（順、または error の前置きと理由）が fixture の `rust` 欄と一致すること。行の並び（fixture 順・逆順・id 昇順）に依らないこと。order の case で rank が順の index と一致すること。
+- **fixture の追加**：mixed-case の sortOrder、archived の行との sortOrder の重複、親の cycle の 3 case（計 11 case、rejected 7）。
+- **固定しないもの**：TS と Rust の同時の実行、tree を読む時点の差（DB の snapshot 対 renderer の tree store）。これで G6 (c) の条件 1〜3 は両側とも試験で固定された。
+
+## S1-A2b の判断（A1・A2。年表の event の重複の統合と、IR の規則で除かれた event の除外。定数 `false` のまま）
+
+**この lane は NIR-1 の事前委任の外**。確認の根拠は、ユーザーの回答（2026-11-18 夜）：ず-1（規則どおり実装する。△7 (4) と重複の統合の両方）・A2（候補の eventId を request に渡す。契約 §3.2 の入力の追加は承認済み）・D1（§3.3 どおり送る。item の 9 key は変えない）・Q1（d-i）・Q2（折衷）・Q3（脅威モデルの差分 T17〜T20 を受け入れる）。記録は contracts の `ir-chat-pilot-2026-11/user-confirmation-2026-11-18-eventid-d1-fidelity.md`（commit `001bbcc9`・`ec05294c`）。設計の正本は repo の外の `fusion-eval-data/design-notes/chat-ir-2026-11-08/s1a2-design-2026-11-18.md`（冒頭の「§0.2 の Q1〜Q3 への回答」と末尾の「統合者の判断」が本文より優先）。
+`CHAT_AGENT_IR_ENABLED = false` のまま。定数が `false` の間の製品の挙動は変わらない（`search_events` は今と byte 同一。試験 E10 の golden で固定）。
+3 つの commit に分けた：c1 共有 crate（P1〜P3、R1〜R4、測定 MS-1・MS-2）、c2 N-API・Main・wire・wrapper（P4〜P14）、c3 renderer の executor（P15〜P18）と試験 E。
+DR-CHATIR-S1-39（読み順の cargo 試験）は PR-A2a のもの。この PR には含まない。
+
+## DR-CHATIR-S1-40：A1 の出所（案 α）と応答の `eventIds`（2026-11-19）
+
+- **決定**：revision の payload の `eventId` と、`events` の行の実在（project 一致）を突き合わせる。共有 crate に小さな read を置き、Native の T3（`select`）の read transaction の中、`validate` の前に呼ぶ（item と `eventIds` が同じ snapshot に入る）。対象は返す item の revision だけ（8 件以下）。関数は `read_chronicle_event_ids_of_revisions`（payload が不正な JSON の行は eventId なしとして扱う）。応答の top-level に `eventIds`（revisionId → eventId の object）を足す。**常にある**（status だけの応答でも `{}`）。
+- **変えないもの**：item の 9 key・canonical・digest・ledger（B-T4）。SQL の失敗は T3 のエラー（`internal`）で、item も返さない（fail-closed）。
+- **採らなかった案**：applications 表から引く（改訂 3 の B-20。undo で applications が動かないため、適用が戻った event を拾う）。
+
+## DR-CHATIR-S1-41：request の `chronicleEventIds`（2026-11-19）
+
+- **決定**：5 つ目の key `chronicleEventIds: string[]` を**必須**で足す（空の配列は可。optional にすると「送らなかった」と「候補 0 件」が区別できない）。件数 30 以下（年表の over-fetch の上限と同じ）、1 件は 1〜200 UTF-16（空白だけは不可）、重複なし。Main と Native の両方で検査し、違反は `INVALID_REQUEST`（permit の前なので audit も推論もしない）。status は増やさない（17 値のまま）。renderer の wrapper は同じ検査を IPC の前に繰り返し、違反は `ipc-error`（programming error の扱い）。
+- **候補の扱い**：log・audit・ledger に入れない。別の project の ID は SQL が project で JOIN するので「当たらない」だけ。
+- **renderer の送る中身（c3）**：秘匿の filter と位置の filter の後で `slice(limit)` の前の年表の候補（30 件以下、重複を除く）だけ。wire の 1 件の条件（空白だけでない・200 UTF-16 以下）に合わない ID と 30 件を超える分は送らない（1 つ混じると wrapper が IPC の前に `ipc-error` で拒み、Native を呼ばずに (4) を失うため。送らなかった event は年表に残る。DB 由来の ID では起きない見込み）。秘匿で隠れた event と、位置の filter で落ちた event の ID は送らない（承認の文言）。
+
+## DR-CHATIR-S1-42：「除かれた」の範囲（d-i）・T2 の admission の記録・T3 の逆引き・c1 の測定（2026-11-19）
+
+- **範囲（Q1 の回答＝d-i）**：△7 (4) の「IR の規則で除かれた」は、**索引に入っていて、問い合わせの時点の開示の判定（admission）で落ちたもの**に限る。索引に入っていない revision（未承認・stale・版の secret など）は含めない（`NotIndexed` は除かない）。embedding が無いだけの candidate は、admission を別に評価し、通れば「除かれていない」。
+- **T2**：`qualify_proof` が全 candidate の admission の結果を **proposal の単位**で記録し、`NirQualifiedBatch::proposal_admission`（`Admitted`・`NotAdmitted`・`NotIndexed`）で返す（鍵は revision ではなく proposal。build の後に現行の版が変わっても、proof の版の判定で分類できる）。`documents` の中身と順は変えない（Related Scenes は不変）。
+- **T3**：`read_chronicle_excluded_event_ids` が、候補の eventId から現行の版の payload で提案を引き、proof の記録と突き合わせる。1 つの eventId に複数の提案が当たる場合は、1 つでも `NotAdmitted` なら除く（厳しいほう）。
+- **c1 の測定の結果（2026-11-19、判定の線は決めない）**
+  - commit `c77e5153`（＋レビューの修正 `615d3f4b`）。DB は dev 用の `ir-admission-perf/base-g-ja-1/ir/grimodex.db` の写し（sha256 `41a26bbe…7958`、提案 884、scene 117、events 0）。凍結の manifest に名は無い。元は sqlite で開かず、`-wal` が 0 byte のことを確かめて cp。
+  - **MS-1（`qualify_proof` の時間、release、300 回、3 周の p50 の比）**
+    - embedding が全件ある形：scene の doc 数 0〜873 で 1.02〜1.13 倍（絶対値の増は最大でおよそ 0.2 ms。min 同士では +1〜4％）。周ごとのばらつきは約 10％。
+    - 半分が embedding なし：1.39〜1.53 倍（#116 で 0.86–0.90 → 1.31–1.34 ms）。
+    - 全件が embedding なし：前は約 0.002 ms（評価せず skip）、後は最大 1.2〜1.4 ms（全件評価の費用）。
+    - 実運用で embedding なし（token 上限の skip）がどれだけあるかは未測定。Electron 経由の端から端までも未測定。
+  - **MS-2（逆引き SQL、候補 30 件、debug の test build、300 回）**
+    - A2：p50 は約 1.5〜2.0 ms、max は 3.8 ms。`EXPLAIN QUERY PLAN` は `narrative_proposals` の全行の SCAN（行ごとに `json_extract`）→ PK の SEARCH。件数に線形の見込みで、884 より大きい DB は未測定。
+    - A1（8 revision）：p50 は 0.03 ms。PK の検索だけ。events 0 件の DB なので、当たる場合は未測定。
+    - 並べる値：呼び出し全体の deadline 10 s、`SQL_BUSY_TIMEOUT` 1 s。
+  - harness は commit していない。
+
+## DR-CHATIR-S1-43：応答の `excludedEventIds` の意味（2026-11-19）
+
+- **決定**：top-level の `excludedEventIds` は、成功（`available`・`none-above-threshold`）のときだけ配列、それ以外は `null`（**判定していない**）。`ledger-full`・T3 の後の `timeout` も `null`（規則を「成功のときだけ」の 1 つに保つ）。配列は送った候補の部分集合で、検査は wrapper が行い、違反は `invalid-response`（T19）。`eventIds` の key は items の revisionId の部分集合（parser が検査）。
+
+## DR-CHATIR-S1-44：renderer の手順（P15〜P18。c3）（2026-11-19）
+
+- **候補**：共有の `searchEvents` を `chronicleCandidates`（秘匿 → 位置の filter の後、`slice(limit)` の前の列。30 件以下）と、`slice(limit)` の写しに分ける。await の順は変えない（scope が無い呼び手は、基準の Scene を await の後で読む。DR-34）。
+- **順**（直列。B-T13）：候補 → 事前判定（暫定の年表で測る）→ 累積の上限 → Native を 1 回（候補を渡す）→ `assertCurrent()` → 除外 → `slice(limit)`（落とした分は後ろの候補で補う）→ cap と統合 → `noteUsedIds` → content。
+- **統合**：年表と IR に同じ eventId があれば、**IR の item を残し、年表の 1 件を落とす**（quote・要約は IR にしか無く、item は ledger に発行済み）。失うのは作者が直した年表の題と kind で、必要なら model が `get_event_detail` で引ける。統合は **cap の試行（item の件数 k）ごと**に決める（`fitChatIrContent` に `merge` を渡す）。cap で落ちた item の対の年表の event は残る。統合で浮いた tokens は同じ試行の中で使える。統合で除いた分は補充しない。統合するのは、model に見せる年表（`slice` の後）に実際にある event の item だけ。
+- **model に見せる eventId**：統合した item に限り、content の `chronicleIr.eventIds`（revisionId → eventId）に載せる（item の外なので B-T4 に反しない。cap の測定に含める。key の順は `status`・`items`・`eventIds`・`note`）。統合しなかった item の eventId は見せない（年表の秘匿・位置で隠れた event の ID を IR の側から model に渡さない）。統合がなければ content は B2 と同一。
+- **`usedIds.eventIds`**：統合した item の eventId と同じ集合（model が見たものだけ。重複は 1 つ）。`ChatIrCapability.noteUsedIds` の第 3 引数 `eventIds` として渡す。`chatTurnStoreActions.ts` は変えない。
+- **`summary`**：`manuscript ${items}, chronicle ${content の年表の件数}`。統合の後の件数（B2 は暫定の年表の件数。統合がなければ同じ）。
+- **ツールの説明文**：変えない。`chronicleIr.eventIds` の説明は足していない（key が revisionId → eventId で自明。足す場合は AI の挙動資産の変更として別に評価する。S3 の前の再評価の材料）。
+
+## DR-CHATIR-S1-45：除外が得られないときの年表（Q2＝折衷）と近似の規則（2026-11-19）
+
+- **近似の規則**：secret の event について、「結ばれた Scene がすべて今の Scene より前」のときだけ残す（契約 §3.4 (3) の案 A）。`passesIrExclusionApproximation`（`chronicleReadingPosition.ts`。`isEventBeforeOrAtScene` の隣）。secret でない event には掛けない。結ばれた Scene が読み順に無いもの、今の Scene が空・読み順に無いものは残さない（fail-closed）。結ばれた Scene が 1 つも無い secret の event は残す（IR 由来の event は作成の時点では常に結びを持つので、これで (4) を広げない）。**残余**：この「常に結びを持つ」は作成の時点でしか成り立たない。作者の編集や `unstamp_scene_event` で結びが外れうるので、結びの無い secret の event が近似を通る穴は残る（(4) が使えるときは Native の除外が正本）。
+- **掛ける位置**：(4) と同じ（秘匿 → 位置の filter の後、`slice(limit)` の前。落とした分は後ろの候補で補う）。cap は年表の後で測るので測り直しは要らない。
+- **Native を呼ばず、近似の規則を掛ける（model が起こせる不明）**：事前判定の `cap-exceeded`（呼ばなければ (4) は掛からないので、cap と逆向きになる。事前判定は暫定の年表＝近似の前で測る）、呼ぶ前の `turn-limit`（回数・文字数の上限）、renderer の `query-invalid`。Native が返す `query-invalid`（除外が無い）と `ledger-full` も同じ（次項）。
+- **`ledger-full` は近似の側**（統合者の判断、2026-11-19。Q2 の確定「model が起こせる経路には近似の規則」の適用で、新しい契約ではない）：Native の ledger は 4096 件で追い出しが無く（`chat_ir/ledger.rs`）、item の digest は query に依る score を含む。そのため model は query を変え続けて ledger を満たせる。満ちると `ledger-full` が process の終わりまで続く。これを U-a に置くと、満杯にした後は (4) も近似も掛からず T20 の経路そのものになる。Native が答えて除外が `null` の `ledger-full` は、`query-invalid` と同じく近似の規則を掛ける（応答に除外の配列があれば (4)。`ledger-full` は DR-43 のとおり常に `null`）。
+- **research sub-agent**（統合者の技術判断。Q2 の趣旨の内）：sub-agent の `search_events` は IR を呼ばないので除外は常に不明で、結果（`findings`）は main の model に返る。共有の `searchEvents` の中で、**定数が true で turn の scope があるときだけ**近似の規則を掛ける。scope が無い呼び手と、定数 `false` には掛けない。
+- **Native が答えた後は本来の (4)**：Native が答えた後に turn の文字数の枠で 0 件になった（`turn-limit`）場合や、item が cap に入らず `cap-exceeded` になった場合は、除外の配列が手元にあるので近似ではなく (4) を掛ける。近似の規則は (4) の代わりで、得た結果は使う。
+- **(4) も近似も掛けない（U-a）**：一時的・構造的な失敗（`timeout`・`connection-busy`・`embedder-cold`・`busy`・`index-unavailable`・`unsupported`・`no-current-scene`・`project-*`・`workspace-*`・`inference-failed`・`internal`、renderer の `ipc-*`・`caller-timeout`・`invalid-response`・`no-workspace`・`no-current-scene`・`gate-closed`・`egress-denied`）。今の年表のまま返す（G3-U11：IR が失敗しても年表を失わない）。成功のときに除かれた event が、これらの失敗のときには出る穴は残る（実データの g-ja-1 では applications が 0 件で、IR 由来の event が無い）。
+- **範囲**：(4) と近似の規則が掛かるのは `search_events` だけ（契約 §3.4 (5)・§6.2）。`get_chronicle_state` などの別の tool には掛けない（試験 E8 が、近似の関数を import する source が 2 つだけであることを固定する）。
+- **未測定**：近似の規則が通常の運用で掛かる頻度。小さい窓や大きい `limit` では通常の呼び出しでも事前判定の `cap-exceeded` に当たりうる。そのとき、作者が今の Scene に結んだ secret の event が AI から見えなくなる。dev で測り、S3 の確認の材料にする。
+
+## DR-CHATIR-S1-46：脅威モデルの差分（T17〜T20。Q3 で受入れ済み）（2026-11-19）
+
+記録先：確認の記録は contracts の `user-confirmation-2026-11-18-eventid-d1-fidelity.md`（commit `001bbcc9`・`ec05294c`）。差分の本文は repo の外の設計の正本 §6.2。repo 内に脅威モデルの記録は無いので、要点をここに書く。確認済みの脅威モデルの文（`357a87b7`）は書き換えない。
+
+- **データの流れ**：候補の eventId（30 以下）は renderer → Main → Native の中の受け渡しで、どこにも残さず外へ出ない。`excludedEventIds` も同じ（model は「出なかった」ことしか見ない）。`eventIds` は、統合した分だけ `usedIds.eventIds`（承認 2 の ID の範囲）と content の `chronicleIr.eventIds`（既存の provider へ。D1「あれば eventId」）に載る。**新しい送信先・保存範囲の拡大は無い**。年表の結果で eventId は今も送っている。
+- **B1・B2（信頼境界）**：新しい引数を Main と Native の両方で検査する（DR-41）。actor・範囲の区分は変えない。
+- **T17：候補の ID による問い合わせ（oracle）**：任意の eventId を送り、その event の現行の版が Scene S の時点で IR に落とされるかを知る。乗っ取られた renderer は範囲外（generic SQL で直接読める）。model は候補を選べない（候補は executor が DB の検索結果から作る）。1 回 30 件。restricted では command ごと拒否。
+- **T18：候補の水増しによる遅延**：30 件と ID の長さで縛る。SQL は `IN` の 1 文で、期限と busy timeout の内に入る。
+- **T19：応答の drift による誤った除去**：`excludedEventIds` が送った候補の部分集合でない場合、または `eventIds` の key が items に無い場合は `invalid-response`。
+- **T20：model が除外の不明を起こし、(4) を回避する**：prompt injection された model（範囲内の actor）が、`limit` を大きくする（事前判定の `cap-exceeded`）・1 turn に 6 回を超えて呼ぶ（`turn-limit`）・空や 500 超の query・research の sub-agent を呼ぶ、・query を変え続けて Native の ledger を満たす（`ledger-full`。満ちた後は process の終わりまで続く）、で除外が得られない経路に入る。防御は DR-45（secret の event に近似の規則）。一時的・構造的な失敗は U-a（(4) も近似も掛けない）。秘匿と位置の filter はどの経路でも掛かる。
+- **T4・T14**：変わらない（統合は item を書き換えない）。(4) と近似が `search_events` だけに掛かること、model に対する機密の境界ではないことは、契約 §3.4 (5) のまま。
+- **受入れへの影響**：(4) の positive／negative、Q1（d-i。`NotIndexed` は除かない）、除外が不明のときの扱い、wire の部分集合の検査を、試験（R・N・W・E）で固定する。
+
+## DR-CHATIR-S1-47：PR の切り方と、build の時に eventId を持たせる案を採らない理由（2026-11-19）
+
+- **切り方**：PR-B2 → PR-A2a → PR-A2b の順（A2a は読み順の cargo 試験で、A2b と互いに依らない）。A2b は 3 commit（c1 共有 crate、c2 wire、c3 executor）。wire は request の key・`to_wire`・parser・B-T1 のどれか 1 つだけを変えるともう片側が拒否するので、c2 で同時に変える。`toolExecutors.ts` に足す量が大きいが `large-module-debt.json` の対象外。`chatTurnStoreActions.ts` には触れない。
+- **採らなかった案**：build の時に candidate に eventId を持たせる（`IndexedCandidate`）。T3 の SQL は要らなくなるが、build の入力と proof の形を変える（digest と CP-4 の pin への波及の確認が大きい）。proof に無い revision を扱えず、d-ii も実装できない。
+- **検証（c3）**：`pnpm exec tsc --noEmit`、renderer の vitest（`toolExecutors.chatIr.test.ts`・`chatIrToolResult.test.ts`・`chronicleReadingPosition.test.ts`・`chatAgentToolHandlers.test.ts`）、`pnpm validate:architecture`、`verify:quality`、`eval:impact`（Light）。Heavy は課金があるので走らせない（deferred）。

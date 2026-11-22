@@ -10,6 +10,9 @@ task carries the original shared-Rust test obligation exactly once.
 The renderer unit suite runs as complementary Vitest `1/3`, `2/3`, and `3/3`
 shards; the final task carries the existing `frontend.unit` obligation, and all
 three results are bound into the receipt.
+Hosted `ci.yml` runs the same `1/3`-`3/3` partition as the `frontend-unit` matrix
+and the static checks once as `frontend-static`; the `frontend` job keeps its
+Gate B2 name and only aggregates those two (a matrix job cannot keep the name).
 
 Each registry command has a stable `id`. `after` lists direct task
 dependencies, `lane` prevents two tasks with the same exclusive lane from
@@ -43,6 +46,48 @@ condition. Full runs on `master` after such a merge, and it remains the merge
 evidence for a release PR and the release tag. The rule and its procedure live in
 [GDX-TRACE-001](../policies/quality/iron-laws.md#GDX-TRACE-001) and the
 `ship-branch` skill.
+
+Two narrow exceptions let an ordinary PR merge without waiting for the `ci.yml`
+of its candidate head: a head that only merges `origin/master` into a head whose
+`ci.yml` already succeeded (no hand-resolved conflict, disjoint changed files),
+and a docs-only PR (it changes no operational-rule document and no document that
+code or a test outside `docs/` names by path). Both still need the complete
+Quick and a local Node 22 `pnpm -s verify:quality`, a docs-only PR dispatches no
+master Full after its merge and has the `ci.yml` of its `master` push watched
+instead, and neither applies to a release PR. GDX-TRACE-001 is the source of
+truth for the conditions.
+
+### Docs-markdown-only impact selection
+
+Separately from the docs-only PR exception above (a merge-condition rule), the
+impact selector narrows the Light suites when every changed path matches
+`^docs/.+\.md$`, work records included: every cargo command and every command
+that cannot read `docs/` is dropped, and only the Node tests that read documents
+remain. A suite left with no command is `skipped`, not failed. This also applies
+to the Light run of Gate B2 (`scripts/quality/certify-gate-b2.mjs`), which reads
+only the exit code, so it does no harm there. The `ci.yml` of a pull request
+measures the merge ref and the Quick measures the candidate head. The `ci.yml`
+Quality job runs impact on the nightly schedule, on a manual dispatch and on the
+release workflow's call on a tag push, not on a pull request or a `master` push.
+What only impact runs (the eval-only feature tests, including the
+`nir1-final-request-eval` combination with `native-current-human-capture`, and
+many Node tests that no other job or registry entry names) is therefore checked
+on `master` by the nightly run, usually a day or so after a merge (GitHub's schedule delays or
+skips runs, so it can take longer), and master changes that landed
+after the Quick are checked by impact there. The grimodex-db tests that the
+Shared Rust integration shard runs with `native-current-human-capture` are
+checked by the `master` push; the feature-only tests that its filters do not
+name run in no job, impact included. The nightly, dispatch and tag runs
+have no comparison base (the `before` of a new tag does not resolve), so they
+select every suite and are not narrowed by the docs-markdown-only rule. Only the
+nightly run checks that: its step fails unless every suite was selected and
+passed; a dispatch and a tag call are judged by the selector's exit code alone
+(a moved tag, whose `before` resolves, selects by diff). A nightly run that does
+not succeed is a red `master`. The nightly run also runs the C-query worker on
+macOS and Windows only (Linux ran in the `master` push): it is the catch-all for
+the legs a `master` push skipped (see the change scope below). A nightly
+macOS or Windows leg that was cancelled because no runner was obtained is red by
+the same rule, and is cleared by a successful re-run of that job.
 
 ### Split hosted Full
 
@@ -85,6 +130,43 @@ workflow attempt: re-run all jobs, never only failed ones.
 Empty `max_parallel_tasks` selects 1 for Full parts (matching the reviewed
 allocation) and 12 for Quick.
 
+### Split hosted Quick
+
+Hosted canonical Quick runs as three part jobs (`quick-1` to `quick-3`), each on
+its own fresh `ubuntu-24.04` VM, plus the `quick-aggregate` job. The registry's
+Quick stage has three tasks, `impact.select.1` to `impact.select.3`; each runs
+`pnpm eval:impact -- --part <n>/3 ...`, so a part is the subset of the selected
+Light commands that `scripts/local-ci-impact-parts.mjs` assigns to it, run in
+selection order and serially, with the unchanged commands and `--test-threads`.
+Parts keep build trees together: part 1 is `src-tauri` cargo without extra
+features, part 2 is `src-tauri` cargo with features, part 3 is the N-API crate;
+non-cargo commands are dealt out in selection order (3, 1, 3, 2). Nothing runs
+concurrently inside a part, because serial tests carry wall-clock assertions.
+The selection rules in `impact-map.mjs` are untouched; only the assignment of
+selected commands to parts is new.
+
+Each part runs `pnpm ci:local:quick -- --part <n>` with the immutable tuple and
+writes `.artifacts/local-ci/parts/quick-<n>.json` (its task receipt, the task's
+logs and a summary of what the selector ran). `quick-aggregate` downloads every
+part, runs `pnpm ci:local:quick -- --aggregate` and the unchanged
+`pnpm ci:local:verify -- quick` with the same tuple. The aggregate recomputes the
+unsplit selection from base/head in its own checkout and refuses the receipt
+unless every part ran the same selection, exactly its assigned commands, all
+passed, and the parts together ran each selected command once. The final receipt
+has the same shape as a direct Quick plus `parts` (hash-pinned part reports);
+`verify` re-checks those hashes and the coverage. Its execution duration is the
+parts' wall-clock span. Parts, artifact names and the run id belong to one
+workflow attempt: re-run all jobs (or dispatch again), never only failed ones.
+
+A local `pnpm ci:local:quick` is unchanged in effect: the three tasks form a
+chain (`after`), so one process runs the parts one after another, and
+`pnpm ci:local:verify -- quick` needs no part reports. Only hosted Quick uses
+`--part` and `--aggregate`. Quick sets `CARGO_PROFILE_DEV_DEBUG=0` /
+`CARGO_PROFILE_TEST_DEBUG=0`, as the Quality job does. It does not use
+`Swatinem/rust-cache`: canonical Quick is dispatched only on PR branches, whose
+cache scope never restores a master cache, while each branch would save about
+3 GB and evict master's caches.
+
 ### Manual GitHub connection (source preparation)
 
 `.github/workflows/canonical-ci.yml` is a thin manual/reusable adapter to the
@@ -103,6 +185,8 @@ the bounded OS owner; exact malformed or mixed inputs reject before checkout/set
 Nonempty profiles still exclude all fifteen ordinary jobs. Keep product mode
 `all`, all booleans false and canonical tuple/options empty. Existing
 contracts/quick/full semantics are unchanged.
+The pull-request-only `Change scope` job (`changes`) is excluded by every
+nonempty canonical selector as well; see the pull-request lane skipping below.
 
 The single Linux check inventories those fixed executable permissions, owner,
 mode and digest, then attempts user/mount/network/PID namespaces with the
@@ -136,6 +220,98 @@ remain deferred pending reviewed admission and affected proof after removal of
 host-cache reclamation. Removing those deletion steps does not establish resource
 admission or a job pass. These five jobs remain **deferred / SKIPPED, not passed**.
 Their default/reusable selection and complete product commands are retained.
+
+Pull requests only: registered `ci.yml` has a `Change scope` job (`changes`) that
+skips heavy lanes when every changed path is neutral for them. The rules are
+`scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
+`base...head` diff and needs no dependency installation. The lanes are journeys
+(the two journey roots; the shards and the aggregate skip through `needs`), Rust (shared crates and the C-query worker, which a pull request
+runs on Linux only: a `master` push runs macOS and Windows only for worker paths, and the nightly run runs them, see below), native,
+migration (Gate A2), windows, browser (Browser, WebGL, Storybook), LFM, security and
+frontend (`frontend-static`, the three `frontend-unit` shards and the `frontend` aggregate).
+Quality and Electron always run. Selection is deny by default: an
+unclassified path, a forced-all path (workflows, lockfiles, manifests,
+`electron/**`), an empty or incomplete diff, any failure, and every event other
+than `pull_request` (push, schedule, manual dispatch, reusable call) run every
+lane. A lane skipped this way was **not verified** by that pull request run: it
+is skipped, not passed. Its evidence comes from the master push run and the
+canonical Quick and Full runs. The job summary and the `ci-change-scope-*`
+artifact record each lane's reason.
+Two lanes were added in the second stage. The frontend lane skips for a docs-only
+change (the docs set: `docs/**`, root `*.md`, `public/RELEASE_NOTES/**`, `experiments/**`);
+`docs/lp/**`, `docs/screenshots/**` and `public/**` keep it running, because the
+frontend tests read the LP sources and assets, `captureManifest` names the
+screenshot directory, and vite copies `public/` into `dist/`, which the web
+editor artifact check scans. The Rust and migration lanes also skip when every
+changed path is renderer code (`src/**/*.ts`, `*.tsx`, `*.css`, the
+`renderer-code` set) besides docs and CI assets: no Rust crate reads those
+files. Anything else under `src` (JSON, SQL, Markdown, images) and the fixture
+directories (`src/**/fixtures/**`, `__fixtures__`, `parity`) keep Rust running,
+since the crates include `src/db/generated/schema-contract.json` and other
+fixtures; a test scans the `src-tauri` Rust sources for such reads. Native,
+windows, browser, journeys and security are **not** narrowed by renderer-only
+changes: native runs the renderer pipeline specs through the `@/` alias,
+windows builds the renderer, and `electron/**` stays forced for every lane (a
+change under `electron/` runs Rust and Gate A2 as before). The two JS commands of
+Gate A2 (the IPC contract test, and the workspace store and Recovery Shell tests) also run in the
+always-on Electron job and in `frontend-unit`, which a test pins. The `frontend`
+aggregate (check name `Frontend (type-check / lint / test)`) and
+`rust-aggregate` (`Shared Rust crates (check / clippy / test)`) are skipped with
+their lane; a skipped aggregate is not a pass. No branch protection or ruleset
+requires a check by name (checked 2026-11-21). Gate B2 accepts only `push` and
+`workflow_dispatch` runs of `ci.yml`, where every lane runs, so these skips never reach its required
+jobs.
+The decision is made with both the pull request's `scripts/ci-change-scope.json`
+and the base commit's copy of it (read from git, so no second checkout), and a
+lane is skipped only when both rules skip it: a pull request cannot skip a lane by
+editing the rules. If the base commit has no such file only the pull request's
+rules apply; if git fails or the base copy cannot be trusted every lane runs. The
+script itself still runs from the pull request's checkout. The Windows lane also
+keeps running for paths the installer packs (`public/**`, `LICENSING.md`,
+`experiments/lfm25-encoder-phase0/local/**`); a test derives them from
+`electron-builder.yml` and the vite config.
+When the shell falls back to running every lane, it appends a `Final outputs`
+section to the job summary (authoritative over any table above it) and rewrites
+the JSON artifact with the final values.
+`changes` is built not to fail (soft steps, a 3 minute step timeout on the
+checkout, a 10 minute job timeout; the step timeouts add up to 9 minutes): a skipped `changes` job leaves empty outputs,
+which run every lane, but if the `changes` job itself fails as a whole the shard
+and aggregate jobs (and, on a non-pull-request event, runtime performance) are
+skipped by their implicit `success()`
+and the journeys evidence of that run is lost.
+
+The C-query worker's macOS and Windows legs follow a separate decision, made
+only for a push to `master` (the `crossos` step of `changes`; the lane outputs
+above are not touched). The rules are `scripts/ci-cross-os-scope.json` (the
+grimodex-db and grimodex-core crates, Cargo manifests and locks, `.cargo`,
+`.gitattributes`, the worker script, this decision code and `.github/workflows`,
+and the repository files those crates include or address by a `../` path; a test
+derives the last group); `scripts/ci-cross-os-scope.mjs` decides from the
+`before..after` diff of the push. The legs are skipped only when the diff is
+complete, non-empty and safe, both commits resolve, and no changed path is a
+trigger in either the checked-out rules or the `before` commit's copy of them;
+any doubt (a force push, an unresolvable or all-zero `before`, a failure of the
+step) runs them, and a push that changes the decision code, its rules or a
+workflow is never judged by that code. Linux always runs. A skipped leg was
+**not verified** by that push: it is skipped, not passed. The nightly run and the
+release workflow's call (a tag push) cover them. A manual dispatch without
+inputs, with `canonical_profile=c-query-workers` or with `independent_gates`
+(where `changes` is skipped) runs all three; `c-query-practical` and
+`c-query-lifecycle` run Linux only. Known gaps that only the nightly run closes:
+a pull request that adds a new `../` external reference to a crate is not checked
+by the derivation test in the Quick of a Rust-only pull request, and a `master`
+push that creates no run (such as `[skip ci]`) and changes a worker path is not
+seen by the next push's decision, which diffs only its own `before..after`.
+The `electron-runtime-performance` job (the 50k-character / 20-Beat gate) is not a pull request
+check: its absolute-time thresholds are unstable on a shared hosted VM, so a pull request
+event never runs it (it is skipped, not passed). The `master` push, manual dispatch and reusable
+calls run it exactly as before, with the same thresholds, retry rule and measurement; the
+registered Full stage `electron-runtime-performance` is unchanged. The registered Quick profile
+(`impact` only) never had this stage, so nothing before the merge inspects runtime performance;
+its three deterministic contract tests (`runtime-performance-fixture`, `-retry`, `-io-settle`)
+run in the pull request through the `electron` job.
+After the merge, compare the time from the start of a run until each lane starts,
+before and after the introduction.
 
 For a separately reviewed real-worker lane, `canonical_profile=c-query-workers`
 selects **only the existing Linux/macOS/Windows `nir1-c-query-worker` matrix**.
@@ -462,14 +638,53 @@ acceptance, which comes from the executed cases. Exposing the profile neither wa
 B/Full, final acceptance or canonical gates nor changes any fixed value.
 
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
-selects **only the complete existing `rust` job**. This reuses the registered
+selects **only the complete existing `rust` job**: its three shards (`lib-graph`,
+`lib-rest`, `integration`) and `rust-aggregate`, which keeps the required check
+name `Shared Rust crates (check / clippy / test)`. This reuses the registered
 workflow and its existing string input; it adds no dispatch input or executor.
 Keep product mode `all`, all booleans false, and candidate tuple/options empty.
 The job's first literal shell guard rejects mixed inputs and nonliteral case
-before checkout/setup. Other malformed profiles still go to the canonical
-owner for rejection. Default/reusable CI, the ten-job independent selection,
-all six Cargo invocations, features, dependencies, build-profile environment,
-cache and 30-minute timeout are unchanged. The shared Rust job explicitly empties
+before checkout/setup in every shard. Other malformed profiles still go to the
+canonical owner for rejection. The features, dependencies and build-profile
+environment of the shared Rust job are unchanged: the profile selects the job
+as it is, so it includes the two `native-current-human-capture` steps of the
+`integration` shard (described below) as well. Default/reusable CI is
+not unchanged for this job and for `frontend` (split as described here and
+above); the other jobs keep their commands. The shards run the target kinds of the former single
+`cargo test --workspace --exclude grimodex --features
+grimodex-semantic/semantic-embedding`, with the same workspace build and
+therefore the same test cfg (except for the two `native-current-human-capture`
+steps of `integration`, below): `lib-graph` runs `--lib` with the filter
+`narrative_extraction::nir1_graph` and fails if that filter ran no test (so a
+renamed module cannot silently drop the parallelism), `lib-rest` runs `--lib`
+with the same string as `--skip` (so a new test module lands in `lib-rest`), and
+`integration` runs the targets `--lib` does not select (`--bins --test '*'` and
+`--doc`). The examples are **built, not run**, as the former `cargo test` did:
+`integration` runs `cargo build --workspace --exclude grimodex --features
+grimodex-semantic/semantic-embedding --profile test --examples`, which compiles
+them as plain executables under the test profile (verified against `cargo test
+-v`; `cargo test --examples --no-run` would compile a `--test` harness
+instead). Not covered by any shard: a bench or example declared with
+`test = true` (there is none; `scripts/ci-pause.test.mjs` fails when a
+`Cargo.toml` declares one). `cargo check` and `cargo clippy` run once, in
+`lib-graph`; the `test-failpoints`, `narrative_runtime_authority` and
+`licensing` reruns run in `integration`, and so do two steps that build
+`grimodex-db` alone with the product feature `native-current-human-capture`
+(the N-API crate always enables it, so these are the tests of the shipped
+build, which the feature-off steps do not compile): the library tests of the
+nine filters, with `--test-threads=1`, that the impact suite
+`nir1-entity-relation-review` runs with the feature (each filter fails the step
+if it matches no test, so a renamed module cannot silently drop its tests) and
+the integration binaries `chat_typed_writers`, `d2a_m_t_typed_writers` and
+`d2a_restricted_generic_sql_shapes`. The impact suite keeps those commands (the
+canonical Quick runs them before a merge when impact selects the suite). The nine filters include
+`nir1_graph::scene_disclosure`, `nir1_graph::related_scenes_requalification`
+and `scene_body_declaration`. The other feature-only tests of `grimodex-db`
+that no filter names run in no job. The Full registry builds without the
+feature. Each shard has its own `rust-cache` key
+and the 45-minute timeout. `rust-aggregate` succeeds only when every shard
+succeeded. The local `rust` stage still runs the whole suite. The shared Rust
+job explicitly empties
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPEN_ROUTER_API_KEY`,
 `ANTHROPIC_API_KEY` and `SAKANA_API_KEY`, overriding inherited credentials for
 both standalone and default/reusable callers. The unfiltered suite includes
@@ -671,20 +886,38 @@ apply original risk-derived applicable prerequisites before a distinct dispatch;
 selector/source-contract success is not Cargo, complete Gate A2, resource admission,
 B authority or Full evidence.
 
-For the remaining failpoint-enabled library command, `canonical_profile=migration-library`
-selects the same existing `migration-recovery-gate` owner and only its unchanged
-`Migration recovery failpoint library tests` step: `cargo test -p grimodex-db
---features test-failpoints --lib` in `src-tauri`. This is the original unfiltered
-library command, including restore/recovery failpoint units, not a complete Gate A2
-pass. The successful crash/Safe Mode steps and five other commands are skipped,
-not replayed or passed. Default/reusable callers retain all eight commands and
+For the failpoint-enabled library step, `canonical_profile=migration-library`
+selects the same existing `migration-recovery-gate` owner and only its
+`Migration recovery failpoint library tests` step. Since 2026-11-19 that step is
+filtered: `cargo test -p grimodex-db --features test-failpoints --lib --
+backup_restore:: recovery:: migration_supervisor::` in `src-tauri`, no longer the
+whole library (about 2,940 tests, 17-21 minutes). Basis: the Shared Rust job
+already runs the same library without the feature, and a name diff of the
+feature-on and feature-off `--list` shows the feature adds exactly eight tests, all in
+`backup_restore::tests` and `recovery::tests`. `test-failpoints` is referenced only
+by `backup_restore.rs`, `recovery.rs` and `migration_supervisor.rs` (the latter has
+no library tests; its failpoint suite is a separate integration-test step), so these
+three module filters cover every test that compiles only under the feature plus every
+production module whose behaviour the feature can change. The step is fail-closed: it
+requires each of those eight tests to be reported `ok` and at least 58 passed (the
+current count), so a renamed module or filter cannot pass with zero or few tests, and
+`scripts/ci-pause.test.mjs` pins the whole run block and scans `grimodex-db/src` so a
+new feature-gated file or test must be added to the filter and the required list.
+This is not a complete Gate A2 pass. The successful crash/Safe Mode steps and five other commands are
+skipped, not replayed or passed. Default/reusable callers retain all eight steps and
 the same bootstrap, frozen dependencies, cache, profiles and timeout. Keep product
 mode `all`, false booleans and empty canonical tuple/options; the first literal
 guard rejects mixed inputs, case variants and wrong events before checkout/setup.
-Unknown profiles reach canonical rejection. No input/job/executor or test suppression
-is added. Actual library consumers and original risk-derived applicable prerequisites
-must be reviewed before a distinct dispatch; source proof alone does not authorize
-Cargo, ignored real-worker/diagnostic cases, B or Full.
+Unknown profiles reach canonical rejection. No input, job or executor is added; the
+only narrowing is the module filter above. A standalone `canonical_profile=migration-library`
+dispatch runs only those 58 tests, so it is not a receipt for the registry's
+`migration.failpoints-lib` (Full / local, unfiltered). `release.yml` calls `ci.yml`
+(`uses: ./.github/workflows/ci.yml`), so the tag Release CI also runs this filtered step;
+the unfiltered `--features test-failpoints --lib` run remains in the hosted Full
+(registry `migration.failpoints-lib` in `scripts/local-ci-registry.json`) that a release
+PR requires as merge evidence and a release tag requires on the merged commit. Actual
+library consumers and original risk-derived applicable prerequisites must be reviewed
+before a distinct dispatch; source proof alone does not authorize Cargo, ignored real-worker/diagnostic cases, B or Full.
 
 For grouped remaining migration proof, `canonical_profile=migration-remaining`
 selects only four unchanged steps on the same existing `migration-recovery-gate`
@@ -708,7 +941,8 @@ applicable prerequisites before dispatch. Source contracts and this partial
 selection are not complete/current Gate A2, resource admission, native lifecycle,
 B authority or Full proof; native/runtime/3OS lanes are not implicitly selected.
 
-The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
+The twelve-job independent selection (the former ten plus `frontend-static` and
+`frontend-unit`) is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are
 rejected by the sole canonical owner before setup. Before dispatch, record the
@@ -733,6 +967,8 @@ before checkout/setup/install. There is no nonempty disabled sentinel: `none`,
 whitespace and unknown profiles are invalid. Contracts rejects candidate tuples;
 its artifact contains checkout identity and source TAP, not canonical receipts.
 The new manual inputs are absent from reusable release calls.
+On pull requests the `Change scope` job may skip lanes the diff cannot reach;
+a skipped lane is never reported as passed (see the lane skipping above).
 
 The earlier `source_focused=true`/`source_canonical_contracts=true` fallback still
 runs the same four suites in the Electron source owner, with new canonical inputs
@@ -1402,8 +1638,9 @@ operations escape ordinary process-group cleanup.
 The Web Editor Vite build writes directly to
 `.artifacts/local-ci/runs/<run-id>/web-editor`. The existing Web Editor artifact
 validator checks that directory independently of the Desktop build's normal
-`dist` output, so the builds may overlap. `ci:build:desktop` builds Electron and
-the renderer without repeating the earlier workspace build and typecheck.
+`dist` output, so the builds may overlap. `ci:build:desktop` builds Electron, checks that the product bundles carry no Mastra
+ee code (`mastra-ee-check.mjs --dist`), and builds the renderer without repeating the
+earlier workspace build and typecheck.
 
 The runner creates `.artifacts/local-ci/checkout.lock` with exclusive `wx`
 creation, resolves the candidate before and after execution, and releases the

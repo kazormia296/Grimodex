@@ -17,12 +17,12 @@ const repoRoot = path.resolve(
   "../..",
 );
 
-test("the checked-in light corpus contains 20-32 isolated, traceable cases", async () => {
+test("the checked-in light corpus contains 20-35 isolated, traceable cases", async () => {
   const model = await loadQualityModel({ repoRoot });
   const validation = await validateQualityModel(model, { repoRoot });
 
   assert.deepEqual(validation.errors, []);
-  assert.ok(model.cases.length >= 20 && model.cases.length <= 32);
+  assert.ok(model.cases.length >= 20 && model.cases.length <= 35);
   assert.equal(
     validation.coveredRequirementIds.length,
     model.requirements.length,

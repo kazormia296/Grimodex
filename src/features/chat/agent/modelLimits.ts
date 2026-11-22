@@ -4,7 +4,12 @@ import {
   AINOVERIST_V1_MODEL_CAPS,
   isAinoveristV1Model,
 } from "../aiNovelist";
-import { getDynamicModelMeta, type DynamicModelMeta } from "./dynamicModelCaps";
+import {
+  getDynamicModelMeta,
+  warnNoUsableEffortOnce,
+  type DynamicModelMeta,
+} from "./dynamicModelCaps";
+import { getRegistryModelCaps } from "./registryModelCaps";
 import { ollamaContextLengthSettingKeys, type AiProvider } from "../types";
 
 /** モデルの能力情報 */
@@ -14,6 +19,7 @@ export type ModelContextWindowSource =
   | "default"
   | "hardcoded"
   | "dynamic"
+  | "registry"
   | "runner"
   | "model-parameter"
   | "ollama-settings"
@@ -43,6 +49,11 @@ export interface ModelCapabilities {
   supportsAdaptiveThinking: boolean; // adaptive 方式 (4.6 系)
   supportsEffort: boolean;
   supportsMaxEffort: boolean; // Opus 4.6 限定
+  /**
+   * adaptive で送る effort を許された段階だけに丸めるための一覧。表に無い Anthropic の id が
+   * live の段階を持つときだけ入る（表の id は undefined で、request は変わらない）。
+   */
+  adaptiveEffortSteps?: readonly EffortLevel[];
   supportsReasoning: boolean; // Ollama/OpenRouter 推論モデル用
   /**
    * reasoning を OFF にできるか。absent ⇒ 無効化可（既存 qwen3/deepseek-r1 互換）。
@@ -155,7 +166,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context, effort low〜max)
   "claude-sonnet-4-6": {
     contextWindow: 1_000_000,
-    maxOutputTokens: 64_000,
+    maxOutputTokens: 128_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
@@ -170,6 +181,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Opus 4.5 (budget_tokens thinking, effort 非対応)
   "claude-opus-4-5": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
@@ -180,6 +192,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.5 (budget_tokens thinking, effort 非対応)
   "claude-sonnet-4-5-20250929": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
@@ -466,6 +479,107 @@ function resolveHardcoded(model: string): ModelCapabilityDefinition {
 }
 
 /**
+ * 表の key の後ろに付いてよいもの（日付サフィックスと `:variant`）。日付は Anthropic の `-20250929`
+ * と、OpenAI の `-2024-05-13` の 2 つの形を認める。
+ */
+const TABLE_KEY_SUFFIX = /^(?:-\d{8}|-\d{4}-\d{2}-\d{2})?(?::[a-z]+)?$/u;
+
+/**
+ * 能力表（MODEL_CAPABILITIES／OPENROUTER_PREFIXED）に載っている id か。
+ * `resolveHardcoded` の表を引く段のうち、完全一致・別名・正規化・「日付サフィックス付き」の
+ * 前方一致だけを見る。`claude-fable-5-2` が `claude-fable-5` に前方一致するような、
+ * 別のバージョンへの前方一致は載っているとみなさない（resolveHardcoded は能力の近似として
+ * 使うが、live の値は載っていない id のために取っておく）。将来世代の近似
+ * （resolveFutureAnthropicGeneration）や 200K の推定にも落とさない。
+ */
+export function isListedInCapabilityTable(model: string): boolean {
+  if (MODEL_CAPABILITIES[model]) return true;
+  const resolved = OPENROUTER_PREFIXED[model];
+  if (resolved && MODEL_CAPABILITIES[resolved]) return true;
+  const normalized = normalizeModelVersion(model);
+  if (normalized !== model && isListedInCapabilityTable(normalized)) {
+    return true;
+  }
+  const hasDatedKey = (key: string) =>
+    model.startsWith(key) && TABLE_KEY_SUFFIX.test(model.slice(key.length));
+  return (
+    Object.entries(OPENROUTER_PREFIXED).some(
+      ([prefixed, canonical]) =>
+        MODEL_CAPABILITIES[canonical] !== undefined && hasDatedKey(prefixed),
+    ) || Object.keys(MODEL_CAPABILITIES).some(hasDatedKey)
+  );
+}
+
+/** Test-only：能力表の key（MODEL_CAPABILITIES と OPENROUTER_PREFIXED の別名）を全て返す。 */
+export function __capabilityTableIdsForTests(): string[] {
+  return [
+    ...Object.keys(MODEL_CAPABILITIES),
+    ...Object.keys(OPENROUTER_PREFIXED),
+  ];
+}
+
+/**
+ * 共有 registry の値（main が取得・同梱するモデル能力の写し）を、能力表に載っていない id にだけ
+ * 重ねる（PR-C3、Q1）。
+ *
+ * - 表に載っている id（`isListedInCapabilityTable`：完全一致・別名・正規化・日付付き）は、
+ *   同じ object をそのまま返す。表に無い field を埋めることもしない。前方一致の近似
+ *   （`gpt-5-6` が `gpt-5` に当たる等）は「載っている」に数えないので、registry が近似より優先する。
+ * - 使うのは context と最大出力の 2 つだけ。`reasoning` の真偽値は使わない：thinking・
+ *   effort・reasoning の送り方は今のまま変えない（親文書 §3、precheck §7.1）。`toolCall` も使わない：
+ *   写しの元に誤りがあり（`openai/gpt-3.5-turbo` は false だが実際は対応）、OpenAI には live の
+ *   上書きが無いので、誤りで agent の tool が止まる。tool の可否は表・live・既定のまま。
+ * - field が無ければ下の層（近似・既定）の値のまま。
+ * - budget_tokens 方式の thinking（`supportsThinking`）を送る近似（表の Claude 4.5 系に前方一致する
+ *   id）には重ねない。予算は `contextWindow × 0.04`、request の `max_tokens` は 予算 ＋ 既定の応答の長さ
+ *   を context・最大出力で clamp した値で、registry の値で予算が動いたり、`max_tokens` が予算以下に
+ *   なって request が不正になったりしないようにする（thinking の送信を変えない）。
+ * - provider が写しの対象でなければ素通し。Sakana は provider 全体が製品の判断の分岐
+ *   （resolveModelCapabilities）で上書きされるので、この値は届かない。
+ *
+ * live（OpenRouter の動的 metadata、Anthropic の一覧）はこの後の merge で field 単位に上書きするので、
+ * 順序は 製品の判断 > live > registry > 表の近似・既定 になる。
+ */
+function applyRegistryCaps(
+  model: string,
+  provider: AiProvider,
+  base: ModelCapabilities,
+): ModelCapabilities {
+  const entry = getRegistryModelCaps(provider, model);
+  if (entry === null) return base;
+  // 写しの照合は、OpenRouter の旧い `openrouter/` prefix を外した id でも当たる。表の判定も、
+  // 外した後の id に掛ける（prefix の有無で表の保護が外れない）。
+  const unprefixed =
+    provider === "openrouter" && model.startsWith("openrouter/")
+      ? model.slice("openrouter/".length)
+      : null;
+  if (
+    isListedInCapabilityTable(model) ||
+    (unprefixed !== null && isListedInCapabilityTable(unprefixed))
+  ) {
+    return base;
+  }
+  const { contextWindow, maxOutputTokens } = entry;
+  // budget_tokens 方式の thinking を送る近似には重ねない（予算と max_tokens の clamp を動かさない）。
+  if (base.supportsThinking) return base;
+  if (contextWindow === undefined && maxOutputTokens === undefined) {
+    return base;
+  }
+  return {
+    ...base,
+    ...(contextWindow !== undefined
+      ? {
+          contextWindow,
+          modelContextWindow: contextWindow,
+          contextWindowIsEffective: true,
+          contextWindowSource: "registry" as const,
+        }
+      : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+  };
+}
+
+/**
  * 能力表に無い他の Claude（旧世代・限定提供など。GET /v1/models は契約で使える
  * 全モデルを返し、Anthropic は動的メタを使わないので能力表だけが頼り）。
  * 8k の DEFAULT に落とすと compaction と出力予約が壊れるため、context は 200K と
@@ -613,6 +727,82 @@ function mergeDynamicCaps(
 }
 
 /**
+ * Anthropic の live（`GET /v1/models` の `max_input_tokens`／`max_tokens`／`capabilities`）を
+ * 能力に足す。`mergeDynamicCaps` は通さない（あれは thinking／effort を false に固定する）。
+ *
+ * - 表に載っている id は表のまま返す（製品の判断を live に上書きさせない）。
+ * - 表に無い id だけ、context と最大出力を live で置き換える。
+ * - 表に無い id の thinking は live の方式で決める：adaptive を含めば adaptive、含まなければ
+ *   送らない（budget_tokens も effort 単独も送らない）。ただし adaptive は effort を伴うので、
+ *   live が effort 不可と明示するなら adaptive も送らない。effort は adaptive のときだけ
+ *   live の段階を使い、xhigh は製品に無いので無視する。live が一部の段階だけ許すときは、
+ *   adaptive で送る effort をその中へ丸める（buildThinkingParams）。段階の形が読めないときは今の推定。
+ *   対応でも製品の段階が 1 つも無い（xhigh だけ）なら adaptive を送らない。adaptive の request は effort の段階（max の有無）を見ない（元から同じ）。
+ *   方式が分からない（capabilities が無い）ときは今の推定のまま。
+ *   canDisable・image・pdf・lifecycle は使わない。
+ */
+function mergeAnthropicLive(
+  model: string,
+  dyn: DynamicModelMeta,
+  hardcoded: ModelCapabilities,
+): ModelCapabilities {
+  if (isListedInCapabilityTable(model)) return hardcoded;
+  let merged = hardcoded;
+  if (dyn.ctx !== undefined || dyn.out !== undefined) {
+    merged = {
+      ...merged,
+      contextWindow: dyn.ctx ?? merged.contextWindow,
+      modelContextWindow: dyn.ctx ?? merged.modelContextWindow,
+      contextWindowIsEffective:
+        dyn.ctx !== undefined || merged.contextWindowIsEffective,
+      contextWindowSource:
+        dyn.ctx !== undefined ? "dynamic" : merged.contextWindowSource,
+      maxOutputTokens: dyn.out ?? merged.maxOutputTokens,
+    };
+  }
+  const live = dyn.anthropicThinking;
+  if (live?.effortUnusable) {
+    // 対応だが製品の段階が無い（xhigh だけ）。この表に無い id では thinking を送らなくなるので、
+    // 黙って止めず一度だけ記録する（表の id はここへ来ない）。
+    warnNoUsableEffortOnce(model);
+  }
+  if (live) {
+    // adaptive の request は effort を必ず伴う（Rust の ThinkingConfig::Adaptive）ので、
+    // live が effort 不可と明示するモデルでは adaptive を送らない。effort の情報が無いときは
+    // 今の推定を使う。
+    const adaptive = live.adaptive && live.effortSteps?.length !== 0;
+    merged = {
+      ...merged,
+      supportsAdaptiveThinking: adaptive,
+      // 表に無い id には budget_tokens を送らない（近似で enabled になる id も、live の
+      // 判定があれば送らない）。
+      supportsThinking: false,
+      // effort は adaptive に伴うときだけ使う。adaptive を送らないモデルに effort 単独
+      // （`output_config.effort`）を新しく送らない（近い id で表の「effort 不可」を live が
+      // 上書きしない）。
+      supportsEffort:
+        adaptive &&
+        (live.effortSteps
+          ? live.effortSteps.length > 0
+          : merged.supportsEffort),
+      supportsMaxEffort:
+        adaptive &&
+        (live.effortSteps
+          ? live.effortSteps.includes("max")
+          : merged.supportsMaxEffort),
+      // 全段階を許すなら丸めは恒等なので持たない（既存の値を増やさない）。
+      ...(adaptive &&
+      live.effortSteps &&
+      live.effortSteps.length > 0 &&
+      live.effortSteps.length < 4
+        ? { adaptiveEffortSteps: live.effortSteps }
+        : {}),
+    };
+  }
+  return merged;
+}
+
+/**
  * モデルの能力情報を取得する。
  * provider が不明な呼び出しではハードコード表だけを参照する。
  * provider-scoped な動的 metadata は resolveModelCapabilities で解決し、
@@ -753,8 +943,12 @@ export function resolveModelCapabilities(
   } | null,
   apiVariant?: string | null,
 ): ModelCapabilities {
-  const hardcoded = getModelCapabilities(model);
   const provider = settings?.provider as AiProvider | undefined;
+  // 表の値。provider が分かれば、表に無い id にだけ共有 registry の値を重ねる（live はこの上に重なる）。
+  const tableCaps = getModelCapabilities(model);
+  const hardcoded = provider
+    ? applyRegistryCaps(model, provider, tableCaps)
+    : tableCaps;
   const dynamic = provider
     ? getDynamicModelMeta(
         provider,
@@ -766,7 +960,9 @@ export function resolveModelCapabilities(
     : null;
   const base =
     provider && dynamic
-      ? mergeDynamicCaps(dynamic, hardcoded, provider)
+      ? provider === "anthropic"
+        ? mergeAnthropicLive(model, dynamic, hardcoded)
+        : mergeDynamicCaps(dynamic, hardcoded, provider)
       : hardcoded;
   if (!settings) return base;
 
@@ -993,6 +1189,22 @@ export function clampReasoningEffort(
   return normalized;
 }
 
+const EFFORT_ORDER: readonly EffortLevel[] = ["low", "medium", "high", "max"];
+
+/** 許された段階のうち「要求以下で最も高いもの」。要求以下が無ければ許された最も低い段階。 */
+function roundEffortToAllowed(
+  requested: EffortLevel,
+  allowed: readonly EffortLevel[],
+): EffortLevel {
+  const rank = (level: EffortLevel) => EFFORT_ORDER.indexOf(level);
+  const sorted = [...allowed].sort((a, b) => rank(a) - rank(b));
+  let best: EffortLevel | undefined;
+  for (const level of sorted) {
+    if (rank(level) <= rank(requested)) best = level;
+  }
+  return best ?? sorted[0] ?? requested;
+}
+
 /** モデルとタスクに応じた thinking/effort パラメータを構築する（設計書 L627-647 準拠） */
 export function buildThinkingParams(
   model: string,
@@ -1027,8 +1239,12 @@ export function buildThinkingParams(
 
   if (caps.supportsAdaptiveThinking) {
     // Opus 4.6, Sonnet 4.6: adaptive thinking + effort
+    // 表に無い id が live で一部の段階だけ許すときは、許された段階へ丸める（表の id は無変更）。
+    const adaptiveEffort = caps.adaptiveEffortSteps
+      ? roundEffortToAllowed(taskEffort, caps.adaptiveEffortSteps)
+      : taskEffort;
     return enabled
-      ? { thinking: { type: "adaptive", effort: taskEffort, display } }
+      ? { thinking: { type: "adaptive", effort: adaptiveEffort, display } }
       : {};
   }
 

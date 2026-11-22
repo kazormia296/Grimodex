@@ -19,7 +19,7 @@ use super::c2zc_canonical_cutover::{
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
     journal_op_kind_wrote_nothing, AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind,
-    NarrativeChangeOrigin,
+    NarrativeChangeOrigin, JOURNAL_OP_KIND_BIND,
 };
 use super::chronicle_operations::{
     apply_chronicle_event_create, ensure_event_id_available, ensure_order_neighbor,
@@ -1232,7 +1232,7 @@ pub fn narrative_extraction_apply_commit_with_control(
                             version,
                             snapshot.clone(),
                             Some(snapshot),
-                            "bind",
+                            JOURNAL_OP_KIND_BIND,
                         )
                     }
                     OP_KIND_RELATION_CREATE => {

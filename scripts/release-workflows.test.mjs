@@ -617,6 +617,7 @@ describe("release workflow boundary", () => {
       "release-public-smoke.yml",
       "packaged-smoke.yml",
       "update-route-watch.yml",
+      "update-model-capabilities.yml",
     ]) {
       const workflow = await readWorkflow(name);
       for (const uses of collectUses(workflow)) {
@@ -698,8 +699,22 @@ describe("release workflow boundary", () => {
     assert.match(wrapper, /pnpm@11\.13\.0/);
     assert.match(wrapper, /--pm-on-fail=ignore/);
     assert.match(wrapper, /--audit-level/);
-    // http-cache-semantics 4.3.0 resolved GHSA-ch52-4w7c-c8xp, so the audit ignores no advisory.
-    assert.doesNotMatch(wrapper, /ignoreGhsas|--ignore\b|exception/);
+    // http-cache-semantics 4.3.0 resolved GHSA-ch52-4w7c-c8xp. The only ignored advisory is the
+    // temporary GHSA-fc5q-39xc-vjpf (picomatch, no published fix; user decision 2026-11-18), which must
+    // expire no later than 2026-12-18 00:00 JST and is never passed as `--ignore`.
+    assert.doesNotMatch(wrapper, /--ignore\b/);
+    assert.doesNotMatch(wrapper, /GHSA-ch52-4w7c-c8xp"/);
+    const ignored = [...wrapper.matchAll(/\{ id: "(GHSA-[a-z0-9-]+)", expiresAt: "([^"]+)" \}/g)];
+    assert.deepEqual(
+      ignored.map((match) => match[1]),
+      ["GHSA-fc5q-39xc-vjpf"],
+    );
+    for (const match of ignored) {
+      assert.ok(
+        Date.parse(match[2]) <= Date.parse("2026-12-18T00:00:00+09:00"),
+        `${match[1]} expires too late: ${match[2]}`,
+      );
+    }
     const lockfile = await readFile(
       path.join(repoRoot, "pnpm-lock.yaml"),
       "utf8",
@@ -776,8 +791,8 @@ describe("release workflow boundary", () => {
     const release = await readWorkflow("release.yml");
     const expectedNodeOptions = "--max-old-space-size=4096";
     const expectedGuardedSteps = [
-      ["ci.yml", "frontend", "型チェック"],
-      ["ci.yml", "frontend", "Web Editor-only production artifact"],
+      ["ci.yml", "frontend-static", "型チェック"],
+      ["ci.yml", "frontend-static", "Web Editor-only production artifact"],
       ["ci.yml", "electron", "Electron production build"],
       [
         "ci.yml",
@@ -1102,12 +1117,19 @@ describe("packaged smoke workflow (CP-2b P2)", () => {
   const workflowBody = async () => (await readFile(workflowFile, "utf8"))
     .split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
 
-  it("runs only on harness pull requests and explicit dispatch, never with pull_request_target", async () => {
+  it("runs only on harness, dependency and packaging pull requests and explicit dispatch, never with pull_request_target", async () => {
     const workflow = await readWorkflow("packaged-smoke.yml");
     assert.deepEqual(Object.keys(workflow.on).sort(), ["pull_request", "workflow_dispatch"]);
+    // harness の変更に加え、Mastra の ee の検査（app.asar に ee が無いこと。MP-1）のために、依存・配布の設定・検査の識別子の変更でも走る。
     assert.deepEqual(workflow.on.pull_request.paths, [
       ".github/workflows/packaged-smoke.yml",
       "electron/scripts/packaged-smoke/**",
+      "package.json",
+      "pnpm-lock.yaml",
+      "electron-builder.yml",
+      "electron/scripts/mastra-ee-*.mjs",
+      "electron/scripts/build.mjs",
+      "electron/main/mastra/**",
     ]);
     assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ["candidate_ref", "os"]);
     assert.deepEqual(workflow.on.workflow_dispatch.inputs.os.options, ["all", "linux", "windows", "mac"]);
@@ -1490,5 +1512,40 @@ describe("update route watch (CP-2b P3, H1)", () => {
       fetchImpl,
     });
     assert.equal(hops.length, MAX_REDIRECTS + 1);
+  });
+});
+
+// Mastra 移行 MP-3a（docs/plans/mastra-mp3-decisions.md の DR-MP3-20）:
+// release の 3 OS の build job が、packaging の後に app.asar の ee・harness の検査を走らせる。
+describe("release app.asar check (Mastra MP-3a)", () => {
+  it("runs the asar check on every host after packaging and before the upload, without the worker check", async () => {
+    const workflow = await readWorkflow("release.yml");
+    const steps = workflow.jobs.build.steps;
+    const index = steps.findIndex(
+      (step) =>
+        typeof step.run === "string" &&
+        step.run.includes("electron/scripts/mastra-ee-asar-check.mjs"),
+    );
+    assert.ok(index >= 0, "release.yml に asar の検査の step");
+    assert.equal(steps[index].run.trim(), "node electron/scripts/mastra-ee-asar-check.mjs release/electron");
+    // 3 OS 全部で走る（matrix の絞り込みや skip の条件を付けない）
+    assert.equal(steps[index].if, undefined);
+    assert.equal(steps[index]["continue-on-error"], undefined);
+    const upload = steps.findIndex((step) => String(step.uses ?? "").startsWith("actions/upload-artifact@"));
+    assert.ok(upload > index, "upload の前");
+    for (const needle of ["electron-builder --publish never", "electron:build"]) {
+      const built = steps.findIndex((step) => typeof step.run === "string" && step.run.includes(needle));
+      assert.ok(built >= 0 && built < index, `${needle} の後`);
+    }
+    // worker の検証は electron:native:release の中にある。asar の検査は worker を呼ばない（重複させない）。
+    const asarCheck = await readFile(
+      path.join(repoRoot, "electron", "scripts", "mastra-ee-asar-check.mjs"),
+      "utf8",
+    );
+    assert.doesNotMatch(asarCheck, /verifyReleaseGraphWorker|verify-release-graph-worker/);
+    assert.match(
+      steps.find((step) => String(step.run ?? "").includes("electron:native:release")).run,
+      /electron:native:release/,
+    );
   });
 });

@@ -1,7 +1,7 @@
 import type { Tiktoken } from "tiktoken/lite/init";
 import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { listScenesBeforeInReadingOrder } from "@/features/codex/context/sceneTimeIndex";
 import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
   AUTHOR_POLICY_TAG,
@@ -52,6 +52,7 @@ export interface SceneContext {
   intent?: string;
   /** Story-time label for the current scene (e.g. "第3話・夕方"). Injected into L3 when set. */
   storyTimeLabel?: string | null;
+  povName?: string | null; // POV character name, gated by Codex disclosure (prompts/shared/sceneL3Lines.ts)
 }
 
 export interface NoteContext {
@@ -66,6 +67,7 @@ export interface NoteContext {
 // Map (AI Branch) で共有。互換のためここから re-export する。
 export type { ProjectContext } from "@/features/project/contextAtoms";
 import type { ProjectContext } from "@/features/project/contextAtoms";
+import { renderSceneTimeAndPovLines } from "@/prompts/shared/sceneL3Lines";
 
 export interface CodexContext {
   id: string;
@@ -1294,9 +1296,7 @@ function buildSystemPromptWithActiveTokenMode(
   );
   if (hasRealScene) {
     l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}${labelSuffix}`;
-    if (input.scene.storyTimeLabel?.trim()) {
-      l3Text += `\n${s.labels.storyTimeLabel}: ${input.scene.storyTimeLabel.trim()}`;
-    }
+    l3Text += renderSceneTimeAndPovLines(s.labels, input.scene);
     if (input.scene.synopsis) {
       l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
     }
@@ -2352,21 +2352,15 @@ export function buildStorySoFar(
   tokenBudget: number,
   lang?: string,
 ): string {
-  // Find the current scene's sortOrder
   const currentScene = allNodes.find((n) => n.id === currentSceneId);
   if (!currentScene) return "";
 
-  // Find all scenes that come before the current scene in sortOrder
-  const precedingScenes = allNodes
-    .filter(
-      (n) =>
-        n.nodeType === "scene" &&
-        n.id !== currentSceneId &&
-        cmpKeys(n.sortOrder, currentScene.sortOrder) < 0 &&
-        n.synopsis != null &&
-        n.synopsis.trim() !== "",
-    )
-    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  // 読む順（木の DFS 順）で現在の場面より前の場面。sortOrder は親ごとの
+  // fractional index なので、章をまたぐ前後の判定には使わない。
+  const precedingScenes = listScenesBeforeInReadingOrder(
+    allNodes,
+    currentSceneId,
+  ).filter((n) => n.synopsis != null && n.synopsis.trim() !== "");
 
   if (precedingScenes.length === 0) return "";
 

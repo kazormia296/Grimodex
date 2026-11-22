@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
+import { stripScopeGate, unwrapIf } from "./ci-change-scope.test-support.mjs";
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
 import { FIXED_PRODUCT_JOURNEY_SHARDS } from "../electron/scripts/product-journey-shards.mjs";
 import {
@@ -717,6 +718,7 @@ test("package.json exposes the runner and canonical product journey contracts", 
     "scripts/chronicle-extraction-product-journey.test.mjs",
     "scripts/chronicle-edited-apply-product-journey.test.mjs",
     "scripts/chronicle-current-scene-product-journey.test.mjs",
+    "scripts/mastra-agent-turn-product-journey.test.mjs",
   ]) {
     assert.ok(
       packageJson.scripts["test:product-journey-contracts"]
@@ -1370,6 +1372,17 @@ function heldFreshnessReceipt(
 }
 
 const HELD_FRESHNESS_STUCK_LAUNCH_TIMEOUT_MS = 3_000;
+// before-request の再検証が終わった後の受領書の待ち（deadline）。実時間の待ちは
+// 受領書が見えた時点で終わるので、余裕を持たせても成功経路は遅くならない。
+const HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS = 3_000;
+// 受領書の検査が理由を述べて拒むことを確かめる試験の launch 待ち。短いと、遅い
+// runner で検査より先に electron-launch の timeout が切れ、拒む理由が
+// ProductJourneyOperationTimeoutError に化ける。拒む検査は即座に終わるので、
+// 余裕を持たせても試験は遅くならない。
+const RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS = 3_000;
+// 受領書が「無い」「書きかけ」の拒みは deadline（launchTimeoutMs）の満了で起きるため、
+// 長くすると試験が待つ。launch 自体の timeout は避けつつ、待ちを短く保つ。
+const RECEIPT_DEADLINE_REJECTION_LAUNCH_TIMEOUT_MS = 500;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_TIMEOUT_MS = 2_500;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_ITERATION_TIMEOUT_MS = 250;
 const HELD_FRESHNESS_BEFORE_REQUEST_BARRIER_POLL_INTERVAL_MS = 10;
@@ -1623,7 +1636,17 @@ test("held-Freshness receipt is exact, digest-bound, nonce-bound, and size-bound
   );
 });
 
-test("harness accepts a file held-Freshness sequence independently of stdout", async (t) => {
+// 受領書を temp に書いてから rename で公開する。product の writer と同じく、
+// harness は公開前の途中状態を最終ファイルとして見ない。
+async function publishHeldFreshnessReceiptAtomically(finalPath, receipt) {
+  const temporaryPath = `${finalPath}.tmp`;
+  await writeFile(temporaryPath, canonicalValueText(receipt), { mode: 0o600 });
+  await rename(temporaryPath, finalPath);
+}
+
+// 「file の held-Freshness」の試験が共有する launch 済みの harness。launch の
+// 予算は、遅い runner でも before-request の再検証の後の待ちが切れない余裕を持つ。
+async function launchHeldFreshnessFileHarness(t) {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   const previousNonce = process.env[NARRATIVE_MAINTENANCE_NONCE_ENV];
@@ -1645,7 +1668,7 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
-    launchTimeoutMs: 100,
+    launchTimeoutMs: HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS,
     electronLauncher: {
       launch: async ({ env }) => {
         const launchExpected = expectedNarrativeMaintenanceCiReceipt(env);
@@ -1721,6 +1744,11 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   );
   const launched = await harness.launch("held-freshness-file");
   assert.equal(launched.heldFreshnessArtifact.receipt.sequence, 1);
+  return { harness, launched };
+}
+
+test("harness accepts a file held-Freshness sequence independently of stdout", async (t) => {
+  const { harness, launched } = await launchHeldFreshnessFileHarness(t);
   const firstHeldFreshnessPath = path.join(
     harness.receiptRoot,
     RECEIPT_NONCE,
@@ -1804,38 +1832,11 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
     ),
     /previousSequence/i,
   );
-  const secondReceipt = (async () => {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const request = JSON.parse(
-      await readFile(
-        path.join(
-          harness.receiptRoot,
-          RECEIPT_NONCE,
-          NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
-        ),
-        "utf8",
-      ),
-    );
-    await writeFile(
-      path.join(
-        harness.receiptRoot,
-        RECEIPT_NONCE,
-        "held-freshness-0000000002.json",
-      ),
-      canonicalValueText(
-        heldFreshnessReceipt(
-          2,
-          RECEIPT_NONCE,
-          request.requestNonce,
-          request.phase,
-          request.requestedAt,
-          new Date().toISOString(),
-        ),
-      ),
-      { mode: 0o600 },
-    );
-  })();
-  const fresh = await harness.awaitHeldFreshness(
+  // harness が新しい request を公開し、before-request の再検証を終えるまで待つ。
+  // 固定時間の待ちの後に request を読むと、遅い runner では harness が書く前の
+  // 古い request（INITIAL の nonce）を読み、seq 1 と同じ requestNonce の
+  // 受領書を書いて replay の検出に当たる。
+  const freshWait = harness.awaitHeldFreshness(
     launched.app,
     "held-freshness-file/fresh",
     {
@@ -1846,6 +1847,45 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
       workspaceBinding: { authorityId: "authority-1", generation: 1 },
     },
   );
+  try {
+    await awaitHeldFreshnessBeforeRequestBarrier(harness, {
+      phase: "held-freshness-file/fresh",
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    });
+  } catch (error) {
+    await freshWait.catch(() => undefined);
+    throw error;
+  }
+  const secondReceipt = (async () => {
+    const request = JSON.parse(
+      await readFile(
+        path.join(
+          harness.receiptRoot,
+          RECEIPT_NONCE,
+          NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(request.requestNonce, HELD_FRESHNESS_REQUEST_NONCE);
+    await publishHeldFreshnessReceiptAtomically(
+      path.join(
+        harness.receiptRoot,
+        RECEIPT_NONCE,
+        "held-freshness-0000000002.json",
+      ),
+      heldFreshnessReceipt(
+        2,
+        RECEIPT_NONCE,
+        request.requestNonce,
+        request.phase,
+        request.requestedAt,
+        new Date().toISOString(),
+      ),
+    );
+  })();
+  const fresh = await freshWait;
   await secondReceipt;
   assert.equal(fresh.receipt.sequence, 2);
   assert.equal(
@@ -1914,6 +1954,60 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
   assert.deepEqual(await readdir(harness.receiptRoot), []);
 });
 
+test("harness rejects a held-Freshness sequence that replays an earlier request nonce", async (t) => {
+  const { harness, launched } = await launchHeldFreshnessFileHarness(t);
+  const replayWait = harness.awaitHeldFreshness(
+    launched.app,
+    "held-freshness-file/replay",
+    {
+      previousSequence: 1,
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+      authorityId: "authority-1",
+      generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    },
+  );
+  try {
+    await awaitHeldFreshnessBeforeRequestBarrier(harness, {
+      phase: "held-freshness-file/replay",
+      requestNonce: HELD_FRESHNESS_REQUEST_NONCE,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    });
+  } catch (error) {
+    await replayWait.catch(() => undefined);
+    throw error;
+  }
+  // seq 1 と同じ（古い）requestNonce を echo する seq 2。新しい request の公開後に
+  // 書くので、起動順の揺れに依存せず、duplicate/replay の検出だけで落ちる。
+  const request = JSON.parse(
+    await readFile(
+      path.join(
+        harness.receiptRoot,
+        RECEIPT_NONCE,
+        NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(request.requestNonce, HELD_FRESHNESS_REQUEST_NONCE);
+  await publishHeldFreshnessReceiptAtomically(
+    path.join(
+      harness.receiptRoot,
+      RECEIPT_NONCE,
+      "held-freshness-0000000002.json",
+    ),
+    heldFreshnessReceipt(
+      2,
+      RECEIPT_NONCE,
+      HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+      request.phase,
+      request.requestedAt,
+      new Date().toISOString(),
+    ),
+  );
+  await assert.rejects(replayWait, /duplicate\/replay/);
+});
+
 test("harness tolerates the current held-Freshness temp until atomic rename", async (t) => {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
@@ -1936,7 +2030,7 @@ test("harness tolerates the current held-Freshness temp until atomic rename", as
   const harness = createProductJourneyHarness({
     mainCjs: "/tmp/fake-main.cjs",
     electronBin: "/tmp/fake-electron",
-    launchTimeoutMs: 120,
+    launchTimeoutMs: HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS,
     electronLauncher: {
       launch: async ({ env }) => {
         const expected = expectedNarrativeMaintenanceCiReceipt(env);
@@ -2234,7 +2328,7 @@ test("file receipt is accepted even when Playwright consumed stdout before launc
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 100,
+      launchTimeoutMs: HELD_FRESHNESS_FILE_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           // Simulate Playwright consuming the old stdout event before launch
@@ -2317,12 +2411,14 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
       },
       {
         name: "missing",
+        launchTimeoutMs: RECEIPT_DEADLINE_REJECTION_LAUNCH_TIMEOUT_MS,
         writeAfterLaunch: true,
         write: async () => undefined,
         pattern: /missing|receipt/i,
       },
       {
         name: "partial",
+        launchTimeoutMs: RECEIPT_DEADLINE_REJECTION_LAUNCH_TIMEOUT_MS,
         writeAfterLaunch: true,
         write: async (root) => {
           const nonceDir = path.join(root, expected.nonce);
@@ -2401,7 +2497,8 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
       const harness = createProductJourneyHarness({
         mainCjs: "/tmp/fake-main.cjs",
         electronBin: "/tmp/fake-electron",
-        launchTimeoutMs: 20,
+        launchTimeoutMs:
+          testCase.launchTimeoutMs ?? RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
         electronLauncher: {
           launch: async ({ env }) => {
             if (testCase.writeAfterLaunch) {
@@ -2430,7 +2527,12 @@ test("receipt root rejects stale, wrong, partial, symlink, and duplicate artifac
       if (!testCase.writeAfterLaunch) {
         await testCase.write(harness.receiptRoot, harness);
       }
-      await assert.rejects(harness.launch(testCase.name), testCase.pattern);
+      await assert.rejects(harness.launch(testCase.name), (error) => {
+        assert.match(String(error?.message), testCase.pattern);
+        // 検査が拒んだことの確認。launch の timeout に化けた拒みは通さない。
+        assert.doesNotMatch(String(error?.message), /operation timed out/i);
+        return true;
+      });
       await harness.dispose({ success: false, name: testCase.name });
     }
   } finally {
@@ -4423,7 +4525,7 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
     const harness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 30,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async () => {
           stdout.emit(
@@ -4453,7 +4555,7 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
     const failingHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 30,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           const nonceDir = path.join(
@@ -4958,21 +5060,50 @@ test("paused CI keeps every product journey job definition available", async () 
       assert.equal(job.if, "${{ startsWith(inputs.canonical_profile, 'os-') }}");
       continue;
     }
-    if (productJourneyJobIds.includes(jobId)) {
+    // The pull-request change scope runs wherever the journeys run, so a
+    // failed or skipped `changes` can never be what skips a journey root.
+    if (jobId === "changes") {
       assert.equal(job.if, PRODUCT_JOURNEY_GUARD, jobId);
       continue;
     }
-    const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
+    // Only the two journey roots carry the change-scope gate; the shards, the
+    // aggregate and runtime-performance keep their guard and skip through needs.
+    const gate = stripScopeGate(job.if);
+    if (productJourneyJobIds.includes(jobId)) {
+      const isRoot = ["electron-product-journeys-build", "electron-product-journeys-c2zc"].includes(jobId);
+      assert.equal(gate.lane, isRoot ? "journeys" : undefined, jobId);
+      assert.equal(unwrapIf(gate.original), unwrapIf(PRODUCT_JOURNEY_GUARD), jobId);
+      continue;
+    }
+    const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "rust-aggregate", "migration-recovery-gate"].includes(jobId)
       ? " && !inputs.independent_gates" : "";
+    // The runtime-performance job is not a pull request check (thresholds are absolute times on a shared VM).
+    const eventCondition = jobId === "electron-runtime-performance"
+      ? "github.event_name != 'schedule' && github.event_name != 'pull_request'"
+      : "github.event_name != 'schedule'";
     // A job may additionally be selected by its own exact canonical profiles;
-    // its ordinary guard must still be the exact grouped alternative.
-    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(job.if ?? "");
-    const ordinaryGuard = selected ? selected[2] : job.if;
+    // its ordinary guard must still be the exact grouped alternative. The
+    // change-scope gate, when present, is peeled off first.
+    // `rust-aggregate` wraps the same expression in `!cancelled() && (...) && needs.rust.result != 'skipped'`.
+    const aggregateWrap = jobId === "rust-aggregate"
+      ? /^\$\{\{ !cancelled\(\) && \((.+)\) && needs\.rust\.result != 'skipped' \}\}$/su.exec(job.if ?? "")
+      : null;
+    if (jobId === "rust-aggregate") assert.ok(aggregateWrap, "rust-aggregate must wrap its guard in the shard-result gate");
+    const guardSource = aggregateWrap ? `\${{ ${aggregateWrap[1]} }}` : gate.gated ? `\${{ ${gate.original} }}` : job.if ?? "";
+    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(guardSource);
+    // The frontend aggregate adds `!cancelled()` so a failed split job turns the check red instead of skipped,
+    // and (like rust-aggregate) is skipped when its first child is; its admission is still the ordinary guard.
+    const aggregate = jobId === "frontend" ? /^!cancelled\(\) && \((.+)\) && needs\.frontend-static\.result != 'skipped'$/su.exec(unwrapIf(job.if)) : null;
+    if (jobId === "frontend") assert.ok(aggregate, "frontend aggregate must run after a failed split job");
+    const ordinaryGuard = aggregate ? aggregate[1] : selected ? selected[2] : unwrapIf(guardSource);
     assert.equal(
       ordinaryGuard,
       jobId === "electron"
         ? `github.event_name != 'schedule'${canonicalExclusion}`
-        : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
+        : jobId === "quality" || jobId === "nir1-c-query-worker"
+          ? // The Quality job and the C-query worker (macOS and Windows only) also run on the nightly schedule: they have no event condition.
+            `!inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`
+          : `${eventCondition} && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
       `${jobId} must retain its ordinary execution guard and exact canonical/independent exclusions`,
     );
   }
@@ -5084,7 +5215,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
     const bridgeHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 50,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           bridgeReceiptPath = path.join(
@@ -5124,7 +5255,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
     const closeHarness = createProductJourneyHarness({
       mainCjs: "/tmp/fake-main.cjs",
       electronBin: "/tmp/fake-electron",
-      launchTimeoutMs: 50,
+      launchTimeoutMs: RECEIPT_REJECTION_LAUNCH_TIMEOUT_MS,
       electronLauncher: {
         launch: async ({ env }) => {
           closeReceiptPath = path.join(
@@ -7814,7 +7945,7 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
     path.join(os.tmpdir(), "grimodex-product-lane-late-owned-"),
   );
   const child = new EventEmitter();
-  child.pid = 424251;
+  child.pid = 0x7ffffff3;
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
@@ -7978,7 +8109,7 @@ test("late Electron close rejection is retained as a fatal diagnostic", async (t
     path.join(os.tmpdir(), "grimodex-product-late-close-reject-"),
   );
   const child = new EventEmitter();
-  child.pid = 424252;
+  child.pid = 0x7ffffff4;
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
@@ -8070,7 +8201,7 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
     path.join(os.tmpdir(), "grimodex-product-late-close-hang-"),
   );
   const child = new EventEmitter();
-  child.pid = 424253;
+  child.pid = 0x7ffffff0;
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
@@ -8140,19 +8271,39 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
     ),
   );
   assert.equal(artifactDiagnostics.cleanPass, false);
-  assert.equal(artifactDiagnostics.closeDiagnostics.length, 2);
-  const closeDiagnostic = artifactDiagnostics.closeDiagnostics.find(
-    (issue) => issue.errorName === "ProductJourneyOperationTimeoutError",
+  // 負荷の高い runner では late cleanup の完了が awaitLateElectronLaunches の期限
+  // (failureCleanupBudget + 250ms) に競り負け、期限競合の fatal
+  // (ElectronChildProcessCaptureError "Late Electron cleanup did not settle") が
+  // 3 件目として入りうる。件数は固定せず、必須の 2 種が各 1 件、全件 fatal、
+  // 許す追加は期限競合の 1 種だけ、と確かめる。
+  const diagnosticsJson = JSON.stringify(artifactDiagnostics);
+  const closeDiagnostics = artifactDiagnostics.closeDiagnostics;
+  const watchdogDiagnostics = closeDiagnostics.filter(
+    (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
   );
-  assert.ok(closeDiagnostic, JSON.stringify(artifactDiagnostics));
-  assert.equal(closeDiagnostic.fatal, true);
-  assert.match(closeDiagnostic.message, /after 500ms/u);
+  const closeTimeoutDiagnostics = closeDiagnostics.filter(
+    (issue) =>
+      issue.errorName === "ProductJourneyOperationTimeoutError" &&
+      /after 500ms/u.test(issue.message),
+  );
+  assert.equal(watchdogDiagnostics.length, 1, diagnosticsJson);
+  assert.equal(closeTimeoutDiagnostics.length, 1, diagnosticsJson);
   assert.ok(
-    artifactDiagnostics.closeDiagnostics.some(
-      (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
-    ),
-    JSON.stringify(artifactDiagnostics),
+    closeDiagnostics.every((issue) => issue.fatal === true),
+    diagnosticsJson,
   );
+  const deadlineRaceDiagnostics = closeDiagnostics.filter(
+    (issue) =>
+      issue.errorName === "ElectronChildProcessCaptureError" &&
+      /Late Electron cleanup did not settle/u.test(issue.message),
+  );
+  assert.ok(deadlineRaceDiagnostics.length <= 1, diagnosticsJson);
+  assert.equal(
+    closeDiagnostics.length,
+    2 + deadlineRaceDiagnostics.length,
+    diagnosticsJson,
+  );
+  const closeDiagnostic = closeTimeoutDiagnostics[0];
   assert.match(closeDiagnostic.message, /timed out/u);
   assert.deepEqual(child.killSignals, ["SIGTERM"]);
 });
@@ -8171,7 +8322,7 @@ test("late Electron child kill false or throw is fatal and preserves tracking", 
       path.join(os.tmpdir(), `grimodex-product-late-kill-${label}-`),
     );
     const child = new EventEmitter();
-    child.pid = label === "false" ? 424254 : 424255;
+    child.pid = label === "false" ? 0x7ffffff1 : 0x7ffffff2;
     child.exitCode = null;
     child.signalCode = null;
     child.killSignals = [];

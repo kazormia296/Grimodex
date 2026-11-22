@@ -28,6 +28,11 @@ import {
   isNir1LocalGenerationCommand,
   toErrorString,
 } from "../shared/ipcContract.js";
+import {
+  hasMastraAgentTurnForbiddenKey,
+  isMastraAgentTurnCommand,
+  mastraAgentTurnRefusalValue,
+} from "../shared/mastraAgentTurnWire.js";
 import type {
   CanonicalAuthorityRoute,
   CommandArgs,
@@ -68,7 +73,18 @@ import {
   startNir1LocalGenerationCiSeam,
   type Nir1LocalGenerationLaunch,
 } from "./nir1LocalGeneration.js";
+import { chatAgentIrGateRefusal } from "./chatAgentIr.js";
+import {
+  createMastraAgentTurnRoute,
+  openMastraAgentTurnGate,
+  parseMastraAgentTurnCiSeam,
+} from "./mastraAgentTurnGate.js";
 import { defaultUserDataDirectoriesForApp } from "./userData.js";
+import { mastraOriginalEnv } from "./mastraEnv.js";
+import type {
+  MastraTurnOwner,
+  MastraTurnSwitchLease,
+} from "./mastraTurnOwner.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
   PROFILE_EGRESS_STATUS_COMMAND,
@@ -1025,6 +1041,26 @@ function pruneAgentAuthorityCapabilities(now = Date.now()): void {
   }
 }
 
+const UNREADABLE_POLICY_ROW = Symbol("unreadable-policy-row");
+
+/**
+ * Native `db_execute` returns each row as an object (column name -> value;
+ * `grimodex-db` `execute_impl`), so the object branch is the real path. The
+ * positional array branch is never produced by Native; it exists only for
+ * compatibility with test mocks (main does not receive array rows from
+ * Native). Anything else, or an object without the `ai_policy` column, is
+ * unreadable (fail closed by the caller).
+ */
+function aiPolicyColumn(row: unknown): unknown {
+  if (Array.isArray(row)) {
+    return row.length >= 1 ? row[0] : UNREADABLE_POLICY_ROW;
+  }
+  if (isRecord(row) && Object.hasOwn(row, "ai_policy")) {
+    return row.ai_policy;
+  }
+  return UNREADABLE_POLICY_ROW;
+}
+
 async function policyAllowsAgentTool(
   backend: NapiBackendLike,
   projectId: string,
@@ -1047,8 +1083,11 @@ async function policyAllowsAgentTool(
   const parsed = JSON.parse(raw) as { rows?: unknown };
   const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
   if (rows.length === 0) return false;
-  const first = Array.isArray(rows[0]) ? rows[0][0] : undefined;
-  return parsePolicyAllows(first, policy);
+  const column = aiPolicyColumn(rows[0]);
+  // A row whose shape cannot be read is never treated as a NULL policy: that
+  // would grant the default (full) to a project whose real policy is unknown.
+  if (column === UNREADABLE_POLICY_ROW) return false;
+  return parsePolicyAllows(column, policy);
 }
 
 function responseBlocks(response: unknown): Array<Record<string, unknown>> {
@@ -2091,7 +2130,7 @@ function releaseUnpublishedRelatedScenesOperation(
  * registered. Anything unreadable is a packaged (closed) launch; a packaged
  * launch reads no environment value (K5/3 必須防御 17).
  */
-function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
+export function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
   const closed: Nir1LocalGenerationLaunch = {
     isPackaged: true,
     env: {},
@@ -2102,7 +2141,7 @@ function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
     if (app.isPackaged !== false) return closed;
     return {
       isPackaged: false,
-      env: process.env,
+      env: mastraOriginalEnv(),
       userDataDir: app.getPath("userData"),
       defaultUserDataDirs: () => defaultUserDataDirectoriesForApp(app),
     };
@@ -2147,6 +2186,13 @@ export function registerIpcRouter(
    * omits it, and the router reads Electron's `app` once; tests pass it.
    */
   nir1LocalGenerationLaunch: Nir1LocalGenerationLaunch = nir1LocalGenerationLaunchFromApp(),
+  /**
+   * The Mastra agent turn owner (MP-3c). Optional so that the route alone can be
+   * registered (tests, and 3b's shape): without it an admitted start is
+   * `unsupported`. The owner holds the turns; this router holds the gate and
+   * the workspace switch's lease.
+   */
+  mastraTurnOwner?: MastraTurnOwner,
 ): void {
   // NIR-1 local generation (DD-1b): Main's gate is open only when the journey
   // seam opened Native's gate at this registration (DR-DD1B-3, DR-DD1B-4).
@@ -2159,6 +2205,21 @@ export function registerIpcRouter(
     backend,
     secrets,
     profileEgress,
+  });
+  // Mastra agent turn (MP-3b, gate L, DR-MP3-17): Main's gate is open only for
+  // the journey seam; it reads the same launch facts, once, as the seam above
+  // and has no Native entry to open.
+  const mastraAgentTurn = createMastraAgentTurnRoute({
+    // The owner's own flag when there is one (index.ts reads the seam once and
+    // the owner, the loader and this route share that answer).
+    open:
+      mastraTurnOwner?.open ??
+      openMastraAgentTurnGate({
+        seam: parseMastraAgentTurnCiSeam(nir1LocalGenerationLaunch),
+        isPackaged: nir1LocalGenerationLaunch.isPackaged,
+      }),
+    profileEgress,
+    owner: mastraTurnOwner,
   });
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async (periodic) => {
@@ -2187,7 +2248,9 @@ export function registerIpcRouter(
         : null;
       let workspaceOpenResult: "success" | "failure" = "failure";
       let workspaceSwitchLeases: Array<
-        NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+        | NarrativeMaintenanceQuiesceLease
+        | NarrativeFreshnessQuiesceLease
+        | MastraTurnSwitchLease
       > = [];
       try {
         if (typeof cmd !== "string") {
@@ -2201,6 +2264,13 @@ export function registerIpcRouter(
         // reached (K5/3 必須防御 16).
         const nir1LocalGateRefusal = nir1LocalGeneration.gateRefusal(cmd);
         if (nir1LocalGateRefusal) return nir1LocalGateRefusal;
+        // chat IR (DR-CHATIR-S1-27): closed in every launch, with no seam.
+        const chatAgentIrRefusal = chatAgentIrGateRefusal(cmd);
+        if (chatAgentIrRefusal) return chatAgentIrRefusal;
+        // Mastra agent turn (gate L): closed in every product launch; first for
+        // the same reason, nothing of the invoke is reached while it is closed.
+        const mastraAgentTurnRefusal = mastraAgentTurn.gateRefusal(cmd);
+        if (mastraAgentTurnRefusal) return mastraAgentTurnRefusal;
         if (
           cmd === "capture_current_chat_input" &&
           event.sender.isDestroyed()
@@ -2243,6 +2313,12 @@ export function registerIpcRouter(
                 return { ...boundArgs, payload };
               })()
             : boundArgs;
+        // The Mastra turn route refuses a renderer that sends a key that is
+        // Main's (the identity below replaces `callerIdentity`, so it is read
+        // here, before that).
+        const mastraForgedKey =
+          isMastraAgentTurnCommand(cmd) &&
+          hasMastraAgentTurnForbiddenKey(rendererSafeArgs);
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
         );
@@ -2317,6 +2393,20 @@ export function registerIpcRouter(
           );
           if (refusal) return refusal;
         }
+        if (isMastraAgentTurnCommand(cmd)) {
+          const refusal = mastraAgentTurn.admit(cmd, {
+            sender: event.sender,
+            win,
+            callerIdentity,
+          });
+          if (refusal) return refusal;
+          if (mastraForgedKey) {
+            return {
+              ok: true,
+              value: mastraAgentTurnRefusalValue(cmd, "invalid"),
+            };
+          }
+        }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
           // settles, so stage 2 can send it a typed terminal.
@@ -2325,7 +2415,17 @@ export function registerIpcRouter(
           try {
             return await dispatchInvoke(cmd, args, {
               backend,
-              shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+              shell: {
+                ...buildShellCommandHandlers(win),
+                ...injectedHandlers,
+                ...(isMastraAgentTurnCommand(cmd)
+                  ? mastraAgentTurn.handlersFor({
+                      sender: event.sender,
+                      win,
+                      callerIdentity,
+                    })
+                  : {}),
+              },
               secrets,
               broadcast,
               issueAgentAuthorityCapabilities: (agentArgs, response) =>
@@ -2360,9 +2460,19 @@ export function registerIpcRouter(
               );
             }
             const acquired: Array<
-              NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+              | NarrativeMaintenanceQuiesceLease
+              | NarrativeFreshnessQuiesceLease
+              | MastraTurnSwitchLease
             > = [];
             try {
+              // Mastra agent turns first (DR-MP3-12): admission closes and every
+              // turn is aborted synchronously, and each one's ambiguous terminal
+              // is written to the OLD workspace (bounded) before Native's open,
+              // which could not write to it afterwards. Native's send is not
+              // stopped; the open still waits for it as it does today.
+              const mastraLease =
+                await mastraTurnOwner?.quiesceForWorkspaceSwitch?.();
+              if (mastraLease) acquired.push(mastraLease);
               const maintenanceLease =
                 await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
               if (

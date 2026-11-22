@@ -23,6 +23,7 @@ import {
   GRAPH_EVAL_VARIANTS,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
 } from "./constants.mjs";
 import {
   DEFAULT_ROOT,
@@ -45,6 +46,10 @@ import {
   evaluateQualityVerdict,
   latestTypedRevisionOf,
 } from "./quality-verdict.mjs";
+import {
+  evaluateEvidenceItems,
+  textSha256,
+} from "./quality-evidence-items.mjs";
 import { H40, followUpRecord, k64Sample, k66Sample } from "./test-support.mjs";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -93,14 +98,27 @@ const S4 = git(PROC_REPO, "rev-parse", "HEAD");
 // (the same bytes, a synthetic freeze commit). The pinned default refuses a
 // receipt with that synthetic head (last test).
 const TEST_K66 = { ...K66_FREEZE, freezeCommit: "6".repeat(40) };
+// K6/7 変える点 8: and the /7 freeze, held the same way.
+const TEST_K67 = { ...K67_FREEZE, freezeCommit: "7".repeat(40) };
 const buildQualityVerdict = (options) =>
-  buildVerdict({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
+  buildVerdict({
+    procedureRoot: PROC_REPO,
+    freeze66: TEST_K66,
+    freeze67: TEST_K67,
+    ...options,
+  });
 const loadQualityInputs = (options) =>
-  loadInputs({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
+  loadInputs({
+    procedureRoot: PROC_REPO,
+    freeze66: TEST_K66,
+    freeze67: TEST_K67,
+    ...options,
+  });
 const verifyBindings = (output, options) =>
   verifyBindingsOf(output, {
     procedureRoot: PROC_REPO,
     freeze66: TEST_K66,
+    freeze67: TEST_K67,
     ...options,
   });
 const CANDIDATE = H40("c");
@@ -125,6 +143,10 @@ const K66_HEAD = {
   freezeCommit: TEST_K66.freezeCommit,
   sha256: TEST_K66.sha256,
 };
+const K67_HEAD = {
+  freezeCommit: TEST_K67.freezeCommit,
+  sha256: TEST_K67.sha256,
+};
 
 /** The predeclared R+IR and R+IR+Graph lists of each catalog variant. */
 function fixtureLists(variant) {
@@ -139,6 +161,126 @@ function fixtureLists(variant) {
   return {
     hybrid: arms.rPlusIr.sceneIds,
     graph: arms.rPlusIrPlusGraph.sceneIds,
+  };
+}
+
+/**
+ * Prereg v3: the four items' receipt fields for one variant, built from its
+ * frozen fixture's own expectations (never from a product): every displayed
+ * edge carries the Evidence rows of both endpoints' current summary
+ * (`[0, len)`), the Graph-only row carries the fixture's range and the body's
+ * hash, the R+IR rows are the paired list. `change.v3` (a function) mutates
+ * the returned data; `true` keeps it.
+ */
+function v3Base(variant, expectation) {
+  const fixture = readJson(variant.fixturePath);
+  const plan = expectation.evidence;
+  const ent = (id) => `e-${id}`;
+  const relations = new Map(
+    [
+      ...(fixture.relations ?? []),
+      ...(fixture.relation ? [fixture.relation] : []),
+    ].map((row) => [row.id, row]),
+  );
+  const summaryOf = (logical) => plan.entityTexts[logical][1];
+  const evidenceId = (edge, logical) => `ev-${edge}-${logical}`;
+  const edgeOf = (edgeId) => {
+    const row = relations.get(edgeId);
+    return {
+      from: ent(row.fromEntityId),
+      to: ent(row.toEntityId),
+      evidence: [row.fromEntityId, row.toEntityId].map((logical) => ({
+        evidenceId: evidenceId(edgeId, logical),
+        quoteSha256: textSha256(summaryOf(logical)),
+      })),
+    };
+  };
+  const contributions = expectation.expectedContributions;
+  const only = contributions.find((row) => row.kind === "graph-only");
+  const typedRevisions = new Map();
+  for (const row of contributions)
+    for (const edgeId of row.edgeIds) {
+      const rel = relations.get(edgeId);
+      typedRevisions.set(`rev-of-${edgeId}`, {
+        logicalRevisionId: `rev-of-${edgeId}`,
+        runtimeRevisionId: `runtime-rev-of-${edgeId}`,
+        evidence: [rel.fromEntityId, rel.toEntityId].map((logical) => ({
+          evidenceId: evidenceId(edgeId, logical),
+          sourceRef: `codex:${ent(logical)}`,
+          startUtf16: 0,
+          endUtf16: summaryOf(logical).length,
+          quoteSha256: textSha256(summaryOf(logical)),
+        })),
+      });
+    }
+  const seedLogical =
+    fixture.expectations?.graphPath?.seedEntityId ??
+    fixture.variants?.find((row) => row.id === variant.variantId)?.expectations
+      .pathAttachments?.[0]?.path.seedEntityId ??
+    fixture.variants?.find((row) => row.id === variant.variantId)?.expectations
+      .addedScene?.path.seedEntityId ??
+    null;
+  const rows = (list) =>
+    list.map((id) => ({
+      sceneId: `u-${id}`,
+      kind: "raw",
+      excerptSha256: textSha256(`excerpt of ${id}`),
+      excerptUtf16Length: 20 + id.length,
+    }));
+  const hybrid = fixtureLists(variant).hybrid;
+  const graphOnly =
+    plan.graphOnly && plan.sceneExcerpt
+      ? {
+          sceneId: `u-${plan.graphOnly.sceneId}`,
+          hop: plan.graphOnly.hop,
+          pinEntityId: ent(plan.graphOnly.pinEntityId),
+          canonicalRange: { ...plan.sceneExcerpt.range },
+          excerptSha256: textSha256(plan.sceneExcerpt.body),
+          excerptUtf16Length: plan.sceneExcerpt.body.length,
+          edges: only ? only.edgeIds.map(edgeOf) : [],
+        }
+      : null;
+  return {
+    entities: Object.fromEntries(
+      Object.keys(plan.entityTexts).map((id) => [id, ent(id)]),
+    ),
+    seed: seedLogical
+      ? { logical: seedLogical, runtime: ent(seedLogical) }
+      : null,
+    observation: {
+      typedRevisions: [...typedRevisions.values()],
+      readAfterSamples: true,
+    },
+    parent: { queryGeneration: 41, rowExcerpts: rows(hybrid) },
+    child: {
+      // A real run's follow-up is two generations after its parent.
+      queryGeneration: 43,
+      evidence: {
+        graphOnly,
+        pathAttachments: contributions
+          .filter((row) => row.kind === "path-attachment")
+          .map((row) => ({
+            sceneId: `u-${row.sceneId}`,
+            hop: plan.attachments.find((entry) => entry.sceneId === row.sceneId)
+              .hop,
+            edges: row.edgeIds.map(edgeOf),
+          })),
+      },
+      rowExcerpts: [
+        ...rows(hybrid),
+        ...(graphOnly
+          ? [
+              {
+                sceneId: graphOnly.sceneId,
+                kind: "graph-only",
+                excerptSha256: graphOnly.excerptSha256,
+                excerptUtf16Length: graphOnly.excerptUtf16Length,
+              },
+            ]
+          : []),
+      ],
+    },
+    edgeOf,
   };
 }
 
@@ -166,6 +308,11 @@ function buildReceipts(expectations, edit = () => ({})) {
     const runtime = (list) => list.map((id) => `u-${id}`);
     const unavailable = variant.expectedGraph === "unavailable";
     const contributions = expectations[key].expectedContributions;
+    const v3 = change.v3
+      ? (typeof change.v3 === "function" ? change.v3 : (data) => data)(
+          v3Base(variant, expectations[key]),
+        )
+      : null;
     const samples = [];
     for (let repeat = 0; repeat < 30; repeat += 1) {
       const latency = change.latency?.(repeat) ?? { hybrid: 30, graph: 30 };
@@ -211,6 +358,7 @@ function buildReceipts(expectations, edit = () => ({})) {
               parent: {
                 rSceneIds: runtime(hybridLogical),
                 irSceneIds: [],
+                ...(v3 ? clone(v3.parent) : {}),
                 ...change.parent,
               },
               child: {
@@ -222,6 +370,7 @@ function buildReceipts(expectations, edit = () => ({})) {
                 edgeCount: contributions.length,
                 materialRevision:
                   change.material?.(repeat, material) ?? material,
+                ...(v3 ? clone(v3.child) : {}),
                 ...change.child,
               },
             },
@@ -245,6 +394,7 @@ function buildReceipts(expectations, edit = () => ({})) {
         observationPrep: { commit: S4 },
         k65: K65_HEAD,
         k66: K66_HEAD,
+        k67: K67_HEAD,
       },
       candidate: { commit: CANDIDATE },
       environment: { windowSamples: WINDOW, ownPids: [] },
@@ -253,6 +403,7 @@ function buildReceipts(expectations, edit = () => ({})) {
         setupReceipt: {
           logicalToRuntime: {
             scenes,
+            ...(v3 ? { entities: v3.entities } : {}),
             // The setup record's typed Revisions in prepare order (D3 (d)).
             // `change.typedRevisions` replaces them; `null` leaves them out.
             ...(change.typedRevisions === null
@@ -280,7 +431,9 @@ function buildReceipts(expectations, edit = () => ({})) {
             : {}),
         },
         k64: { procedureFile: { sha256: PROCEDURE_SHA } },
+        ...(v3?.seed ? { seed: v3.seed } : {}),
       },
+      ...(v3 && v3.observation ? { evidenceObservation: v3.observation } : {}),
       samples,
       verdict: { outcome: "recorded" },
       ...change.receipt,
@@ -368,7 +521,26 @@ test("the baseline: five conditions on lists built from the fixtures' own predec
     output.conditions["evidence-validity"].components["edge-binding"].checked,
     270,
   );
-  assert.equal(statusOf(output, "evidence-validity"), "not-evaluable");
+  // Prereg v3: a receipt without the four items' fields (every receipt up to
+  // s7r2 and this synthetic one) holds them; it never passes and never
+  // leaves them `not-evaluable`. The variants a fixture's `requirements` do
+  // not apply an item to stay `n/a`.
+  assert.equal(statusOf(output, "evidence-validity"), "hold");
+  const items = output.conditions["evidence-validity"].components;
+  assert.deepEqual(
+    [
+      "utf16-range",
+      "explicit-pin-association",
+      "raw-excerpt-unchanged",
+      "added-scene-body-anchor",
+    ].map((id) => [id, items[id].status, items[id].applicableVariants]),
+    [
+      ["utf16-range", "hold", 9],
+      ["explicit-pin-association", "hold", 9],
+      ["raw-excerpt-unchanged", "hold", 6],
+      ["added-scene-body-anchor", "hold", 6],
+    ],
+  );
   const forbidden = output.conditions["forbidden-contribution"].components;
   assert.equal(
     forbidden["a-forbidden-scene-or-blocked-candidate"].status,
@@ -379,20 +551,16 @@ test("the baseline: five conditions on lists built from the fixtures' own predec
   // The whole is never a pass while an item is unverified.
   assert.deepEqual(output.verdict, {
     verdict: "hold",
-    reasons: ["unverified-required-items"],
+    reasons: ["held-required-items", "unverified-required-items"],
     failed: [],
-    held: [],
-    unverified: [
-      "macro-non-regression",
-      "evidence-validity",
-      "forbidden-contribution",
-    ],
+    held: ["evidence-validity"],
+    unverified: ["macro-non-regression", "forbidden-contribution"],
   });
   const listed = output.notEvaluable.map(
     (row) => `${row.condition}/${row.component}`,
   );
   assert.ok(listed.includes("macro-non-regression/existing-24-graph-arm"));
-  assert.ok(listed.includes("evidence-validity/utf16-range"));
+  assert.ok(!listed.some((row) => row.startsWith("evidence-validity/")));
   assert.ok(
     listed.includes(
       "forbidden-contribution/c-existing-24-graph-appearance-and-dto",
@@ -400,7 +568,7 @@ test("the baseline: five conditions on lists built from the fixtures' own predec
   );
   assert.match(
     renderSummary(output),
-    /全体：hold（unverified-required-items）/u,
+    /全体：hold（held-required-items、unverified-required-items）/u,
   );
 });
 
@@ -1006,6 +1174,52 @@ test("K6/5 変える点 7: 手順のファイルは正式の loader で S4 の c
       /\[precheck\].*head\.k66 is not the K6\/6 freeze/u,
       name,
     );
+  // K6/7-N9′: head.k67 が無い（s6r1・s7r1・s7r2 など /7 の凍結の前に始めた run）、別の commit、別の bytes、K6/6 の凍結は /7 の行で判定しない。
+  const withK67 = (k67) =>
+    buildReceipts(expectations, (key) =>
+      key === "G-03/base"
+        ? {
+            receipt: {
+              head: {
+                observationPrep: { commit: S4 },
+                k65: K65_HEAD,
+                k66: K66_HEAD,
+                ...k67,
+              },
+            },
+          }
+        : {},
+    );
+  for (const [name, head] of [
+    [
+      "head.k67 が無い（/7 の凍結の前に始めた run。s6r1・s7r1・s7r2 を含む）",
+      {},
+    ],
+    ["別の凍結の commit", { k67: { ...K67_HEAD, freezeCommit: H40("1") } }],
+    ["別の bytes", { k67: { ...K67_HEAD, sha256: "0".repeat(64) } }],
+    ["K6/6 の凍結", { k67: K66_HEAD }],
+  ])
+    assert.throws(
+      () => verdictOf(withK67(head)),
+      /\[precheck\].*head\.k67 is not the K6\/7 freeze/u,
+      name,
+    );
+  // 既定の K67_FREEZE は固定した /7 の凍結で、試験の合成の head.k67 の receipt は判定しない。
+  assert.throws(
+    () => verdictOf(buildReceipts(expectations), { freeze67: K67_FREEZE }),
+    new RegExp(
+      `\\[precheck\\].*head\\.k67 is not the K6/7 freeze \\(${K67_FREEZE.freezeCommit}\\)`,
+      "u",
+    ),
+  );
+  // descriptor の freezeCommit が null なら、どの receipt も判定しない（fail closed）。
+  assert.throws(
+    () =>
+      verdictOf(buildReceipts(expectations), {
+        freeze67: { ...K67_FREEZE, freezeCommit: null },
+      }),
+    /\[precheck\].*head\.k67 is not the K6\/7 freeze \(null\)/u,
+  );
   // 既定の K66_FREEZE は固定した /6 の凍結で、試験の合成の head.k66 の receipt は判定しない。
   assert.throws(
     () => verdictOf(buildReceipts(expectations), { freeze66: K66_FREEZE }),
@@ -1110,7 +1324,11 @@ test("K6/5 変える点 7: 手順のファイルは正式の loader で S4 の c
 });
 
 test("no threshold is written in the verdict code; the manifest and the K6/2 text decide", () => {
-  for (const file of ["quality-verdict.mjs", "quality-verdict-cli.mjs"]) {
+  for (const file of [
+    "quality-verdict.mjs",
+    "quality-evidence-items.mjs",
+    "quality-verdict-cli.mjs",
+  ]) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     const code = source
       .split("\n")
@@ -2327,4 +2545,1367 @@ test("P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR �
     }),
     [],
   );
+});
+
+// ---------------------------------------------------------------------------
+// Prereg v3: the four evidence items (quality-evidence-items.mjs). Synthetic
+// receipts only; every expectation is the frozen fixtures' own.
+
+const ITEM_IDS = [
+  "utf16-range",
+  "explicit-pin-association",
+  "raw-excerpt-unchanged",
+  "added-scene-body-anchor",
+];
+const itemsOf = (output) => output.conditions["evidence-validity"].components;
+const variantItems = (output, key) =>
+  keyOf(output, key).conditions["evidence-validity"].components;
+/** `edit` for `run`: every variant carries the v3 fields; `mutators` change some. */
+const v3 =
+  (mutators = {}, rest = () => ({})) =>
+  (key, ctx) => ({
+    ...rest(key, ctx),
+    v3: mutators[key] ?? true,
+  });
+
+test("品質 v3: 4 項目の fields を持つ受領書は、fixture の期待と一致すれば 4 項目とも pass（適用 9／9／6／6 variant）。全体は 24 件と (c) が残るので hold", () => {
+  const output = run(v3());
+  const items = itemsOf(output);
+  for (const id of ITEM_IDS) assert.equal(items[id].status, "pass", id);
+  assert.deepEqual(
+    ITEM_IDS.map((id) => [
+      items[id].variants,
+      items[id].checked,
+      items[id].skipped,
+    ]),
+    [
+      [9, 270, 0],
+      [9, 270, 0],
+      [6, 180, 0],
+      [6, 180, 0],
+    ],
+  );
+  assert.equal(statusOf(output, "evidence-validity"), "pass");
+  // Evidence disclosure: every row is the whole summary, none is 1 long.
+  const range = items["utf16-range"].disclosure;
+  assert.equal(range.notFullRange, 0);
+  assert.equal(range.lengthOne, 0);
+  assert.equal(range.fullRange, range.rows);
+  assert.ok(range.rows > 0);
+  assert.deepEqual(output.verdict.failed, []);
+  assert.deepEqual(output.verdict.held, []);
+  // 24 件と (c) are never passed by these four.
+  assert.equal(output.verdict.verdict, "hold");
+  assert.deepEqual(output.verdict.unverified, [
+    "macro-non-regression",
+    "forbidden-contribution",
+  ]);
+  // A variant whose fixture lists no `requirements` is n/a for all four.
+  for (const key of [
+    "G-03/frontier-exceeded",
+    "G-08/graph-index-unusable",
+    "G-08/chronicle-index-unusable",
+    "G-08/both-indexes-unusable",
+  ])
+    for (const id of ITEM_IDS)
+      assert.equal(variantItems(output, key)[id].status, "n/a", `${key} ${id}`);
+  // G-01 has no `requirements`: the user's answer A applies three items.
+  assert.equal(
+    variantItems(output, "G-01/v1")["raw-excerpt-unchanged"].status,
+    "n/a",
+  );
+  for (const id of ITEM_IDS.filter((id) => id !== "raw-excerpt-unchanged"))
+    assert.equal(variantItems(output, "G-01/v1")[id].status, "pass", id);
+  // G-04 v2 and G-08/graph-recovered have no path attachment.
+  assert.equal(
+    variantItems(output, "G-04/base")["raw-excerpt-unchanged"].status,
+    "n/a",
+  );
+  assert.equal(
+    variantItems(output, "G-08/graph-recovered")["raw-excerpt-unchanged"]
+      .status,
+    "n/a",
+  );
+  assert.match(renderSummary(output), /v3 の 4 項目/u);
+});
+
+test("品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の hash・端点に行が無い edge は fail、範囲が 1 文字でも hash が current に一致すれば pass（開示に数える）", () => {
+  const key = "G-05/base";
+  const copper = textSha256("Xan carries a copper lamp on night watch.");
+  const stale = run(
+    v3({
+      [key]: (data) => {
+        // The wire row and the read row both return the superseded text.
+        const row = data.observation.typedRevisions
+          .flatMap((revision) => revision.evidence)
+          .find((entry) => entry.evidenceId.endsWith("g05-xan"));
+        row.endUtf16 = "Xan carries a copper lamp on night watch.".length;
+        row.quoteSha256 = copper;
+        for (const edge of [
+          ...data.child.evidence.pathAttachments.flatMap((p) => p.edges),
+        ])
+          for (const shown of edge.evidence)
+            if (shown.evidenceId.endsWith("g05-xan"))
+              shown.quoteSha256 = copper;
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(stale, key)["utf16-range"].status, "fail");
+  assert.ok(
+    variantItems(stale, key)["utf16-range"].problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
+  assert.equal(statusOf(stale, "evidence-validity"), "fail");
+  assert.ok(stale.verdict.reasons.includes("failed-required-items"));
+  // Only the wire row differs from the read row: fail (both must equal).
+  const wireOnly = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].edges[0].evidence[0].quoteSha256 =
+          textSha256("another text");
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(wireOnly, key)["utf16-range"].status, "fail");
+  // An edge with no Evidence row at all is a fail (iii).
+  const none = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].edges[0].evidence = [];
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(none, key)["utf16-range"].status, "fail");
+  assert.ok(
+    variantItems(none, key)["utf16-range"].problems.some(
+      (entry) => entry.code === "endpoint-without-valid-evidence",
+    ),
+  );
+  // One endpoint without a valid row is a fail too.
+  const oneEnd = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].edges[0].evidence.pop();
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(oneEnd, key)["utf16-range"].status, "fail");
+  // A displayed evidenceId that the read Revision does not hold (ii).
+  const unknown = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].edges[0].evidence[0].evidenceId =
+          "ev-not-in-the-revision";
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(unknown, key)["utf16-range"].status, "fail");
+  assert.ok(
+    variantItems(unknown, key)["utf16-range"].problems.some(
+      (entry) => entry.code === "evidence-id-not-in-revision",
+    ),
+  );
+  // A 1-character range passes when its hash is the current text's (v3 §8 9).
+  const short = run(
+    v3({
+      [key]: (data) => {
+        const text = "Xan carries a silver lamp on night watch.";
+        for (const revision of data.observation.typedRevisions)
+          for (const row of revision.evidence)
+            if (row.evidenceId.endsWith("g05-xan")) {
+              row.startUtf16 = 0;
+              row.endUtf16 = 1;
+              row.quoteSha256 = textSha256(text.slice(0, 1));
+            }
+        for (const path of data.child.evidence.pathAttachments)
+          for (const edge of path.edges)
+            for (const shown of edge.evidence)
+              if (shown.evidenceId.endsWith("g05-xan"))
+                shown.quoteSha256 = textSha256(text.slice(0, 1));
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(short, key)["utf16-range"].status, "pass");
+  assert.ok(itemsOf(short)["utf16-range"].disclosure.notFullRange > 0);
+  assert.ok(itemsOf(short)["utf16-range"].disclosure.lengthOne > 0);
+  // A range past the end of the current text is never accepted.
+  const past = run(
+    v3({
+      [key]: (data) => {
+        for (const revision of data.observation.typedRevisions)
+          for (const row of revision.evidence) row.endUtf16 += 5;
+        return data;
+      },
+    }),
+  );
+  assert.equal(variantItems(past, key)["utf16-range"].status, "fail");
+});
+
+test("品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいない・Revision を読めない・field が無いのは hold（fail でも pass でもない）", () => {
+  const key = "G-06/base";
+  const hold = (mutate) =>
+    variantItems(run(v3({ [key]: mutate })), key)["utf16-range"];
+  const noObservation = hold((data) => {
+    delete data.observation;
+    return data;
+  });
+  assert.equal(noObservation.status, "hold");
+  assert.equal(noObservation.problems[0].code, "evidence-observation-missing");
+  assert.equal(
+    hold((data) => {
+      data.observation.readAfterSamples = false;
+      return data;
+    }).problems[0].code,
+    "evidence-observation-not-read-after-samples",
+  );
+  assert.equal(
+    hold((data) => {
+      data.observation.typedRevisions[0] = {
+        logicalRevisionId: data.observation.typedRevisions[0].logicalRevisionId,
+        runtimeRevisionId: "x",
+        unavailable: "not-found",
+      };
+      return data;
+    }).status,
+    "hold",
+  );
+  assert.equal(
+    hold((data) => {
+      delete data.child.evidence;
+      return data;
+    }).problems[0].code,
+    "evidence-field-missing",
+  );
+  assert.equal(
+    hold((data) => {
+      for (const path of data.child.evidence.pathAttachments)
+        for (const edge of path.edges) delete edge.evidence;
+      return data;
+    }).status,
+    "hold",
+  );
+  // A fail is stronger than a hold in one variant.
+  const mixed = hold((data) => {
+    data.child.evidence.pathAttachments[0].edges[0].evidence = [];
+    data.observation.readAfterSamples = true;
+    return data;
+  });
+  assert.equal(mixed.status, "fail");
+});
+
+test("品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、読めた Revision・行の (i) 違反は fail、読めない分だけなら hold（pass にならない）", () => {
+  // G-03 is a two-hop path: each displayed edge's rows are in its own typed
+  // Revision, so one path has a readable and an unreadable Revision.
+  const key = "G-03/base";
+  const item = (mutate) =>
+    variantItems(run(v3({ [key]: mutate })), key)["utf16-range"];
+  const wrongHash = textSha256("a hash that is no endpoint's text");
+  const idsOf = (revision) => revision.evidence.map((row) => row.evidenceId);
+  const unread = (data, index) => {
+    const row = data.observation.typedRevisions[index];
+    data.observation.typedRevisions[index] = {
+      logicalRevisionId: row.logicalRevisionId,
+      runtimeRevisionId: row.runtimeRevisionId,
+      unavailable: "not-found",
+    };
+    return idsOf(row);
+  };
+  const shownRows = (data) =>
+    data.child.evidence.pathAttachments.flatMap((path) =>
+      path.edges.flatMap((edge) => edge.evidence),
+    );
+  // (a) one Revision unread + a readable Revision's row whose hash differs: fail.
+  const a = item((data) => {
+    // The fixture's path has at least two edges in separate Revisions.
+    assert.ok(data.observation.typedRevisions.length >= 2);
+    unread(data, 0);
+    const readable = new Set(idsOf(data.observation.typedRevisions[1]));
+    for (const shown of shownRows(data))
+      if (readable.has(shown.evidenceId)) shown.quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(a.status, "fail");
+  assert.ok(
+    a.problems.some((entry) => entry.code === "typed-revision-not-read"),
+  );
+  assert.ok(
+    a.problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
+  // (a2) the same with the violation on the read side (a range past the end
+  // of the text in the readable Revision): a real receipt's displayed hash
+  // that differs would stop at the edge's resolution, this one does not.
+  const a2 = item((data) => {
+    unread(data, 0);
+    for (const row of data.observation.typedRevisions[1].evidence)
+      row.endUtf16 += 5;
+    return data;
+  });
+  assert.equal(a2.status, "fail");
+  assert.ok(
+    a2.problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
+  // (b) one Revision unread and nothing else wrong: hold.
+  const b = item((data) => {
+    unread(data, 0);
+    return data;
+  });
+  assert.equal(b.status, "hold");
+  assert.ok(!b.problems.some((entry) => entry.kind === "fail"));
+  // The unread Revision's own edge is not judged (no (iii) fail on it).
+  assert.ok(
+    b.problems.some((entry) => entry.code === "typed-revision-not-read"),
+  );
+  // (c) a row that could not be read + a readable row with a differing hash: fail.
+  const c = item((data) => {
+    const rows = shownRows(data);
+    rows[0].quoteSha256 = null;
+    rows[rows.length - 1].quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(c.status, "fail");
+  assert.ok(
+    c.problems.some((entry) => entry.code === "evidence-row-malformed"),
+  );
+  // (c2) a row that could not be read + a read-side violation in the other
+  // Revision: fail.
+  const c2 = item((data) => {
+    shownRows(data)[0].quoteSha256 = null;
+    for (const row of data.observation.typedRevisions[1].evidence)
+      row.endUtf16 += 5;
+    return data;
+  });
+  assert.equal(c2.status, "fail");
+  // (d) a row that could not be read and nothing else wrong: hold, never pass.
+  const d = item((data) => {
+    shownRows(data)[0].quoteSha256 = null;
+    return data;
+  });
+  assert.equal(d.status, "hold");
+  assert.ok(!d.problems.some((entry) => entry.kind === "fail"));
+  // With no Revision unread, a row in no Revision stays a fail (v3 §2.1 (ii)).
+  const known = item((data) => {
+    shownRows(data)[0].evidenceId = "ev-in-no-revision";
+    return data;
+  });
+  assert.equal(known.status, "fail");
+});
+
+test("品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Entity 単位で Revision をまたいで重なる製品の形でも、edge ごとに自分の Revision の行で判定する（fail→pass・fail→hold・hold→fail の 3 つの差を無くす）", () => {
+  // G-03/base's two-hop path: `has-sister` (wren→ivy) and `treated-by`
+  // (ivy→hollis) are in separate typed Revisions here, and the middle Entity
+  // `ivy` is an endpoint of both. The product's Evidence ID is per Entity
+  // (`nir1:evidence:codex:{entity}`), so the same ID is in both Revisions.
+  const key = "G-03/base";
+  const item = (mutate) =>
+    variantItems(
+      run(
+        v3({
+          [key]: (data) => {
+            const toEntityId = new Map();
+            for (const revision of data.observation.typedRevisions)
+              for (const row of revision.evidence)
+                toEntityId.set(
+                  row.evidenceId,
+                  `nir1:evidence:codex:${row.sourceRef.slice("codex:".length)}`,
+                );
+            for (const revision of data.observation.typedRevisions)
+              for (const row of revision.evidence)
+                row.evidenceId = toEntityId.get(row.evidenceId);
+            for (const path of data.child.evidence.pathAttachments)
+              for (const edge of path.edges)
+                for (const shown of edge.evidence)
+                  shown.evidenceId = toEntityId.get(shown.evidenceId);
+            return mutate(data);
+          },
+        }),
+      ),
+      key,
+    )["utf16-range"];
+  const ivy = "nir1:evidence:codex:e-g03-ivy";
+  const revisionOf = (data, relation) =>
+    data.observation.typedRevisions.find(
+      (row) => row.logicalRevisionId === `rev-of-${relation}`,
+    );
+  const unread = (data, relation) => {
+    const at = data.observation.typedRevisions.indexOf(
+      revisionOf(data, relation),
+    );
+    const row = data.observation.typedRevisions[at];
+    data.observation.typedRevisions[at] = {
+      logicalRevisionId: row.logicalRevisionId,
+      runtimeRevisionId: row.runtimeRevisionId,
+      unavailable: "not-found",
+    };
+  };
+  const wrongHash = textSha256("a hash that is no endpoint's text");
+  // The shape is the product's: the middle Entity's ID is in two Revisions.
+  const baseline = item((data) => {
+    const holders = data.observation.typedRevisions.filter((row) =>
+      row.evidence.some((entry) => entry.evidenceId === ivy),
+    );
+    assert.equal(holders.length, 2);
+    return data;
+  });
+  assert.equal(baseline.status, "pass");
+  // (i) fail→pass: every Revision is read and only the later Revision's row
+  // of the shared ID differs. The edge `treated-by` is judged on its own
+  // Revision's row (a first-wins merge by ID judged it on the earlier one).
+  const later = item((data) => {
+    const row = revisionOf(data, "g03-treated-by").evidence.find(
+      (entry) => entry.evidenceId === ivy,
+    );
+    row.endUtf16 += 5;
+    return data;
+  });
+  assert.equal(later.status, "fail");
+  assert.ok(
+    later.problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
+  // The earlier Revision's own row differs: the edge `has-sister` fails too.
+  const earlier = item((data) => {
+    revisionOf(data, "g03-has-sister").evidence.find(
+      (entry) => entry.evidenceId === ivy,
+    ).endUtf16 += 5;
+    return data;
+  });
+  assert.equal(earlier.status, "fail");
+  // (ii) fail→hold: the edge's own Revision is read and does not hold the
+  // displayed ID, while another Revision is unread: the ID is in no Revision
+  // of that edge, a fail (not a hold on the other Revision's account).
+  const missing = item((data) => {
+    unread(data, "g03-has-sister");
+    const own = revisionOf(data, "g03-treated-by");
+    own.evidence = own.evidence.filter((entry) => entry.evidenceId !== ivy);
+    return data;
+  });
+  assert.equal(missing.status, "fail");
+  assert.ok(
+    missing.problems.some(
+      (entry) => entry.code === "evidence-id-not-in-revision",
+    ),
+  );
+  assert.ok(
+    missing.problems.some((entry) => entry.code === "typed-revision-not-read"),
+  );
+  // (iii) hold→fail: the edge's own Revision is unread and its displayed row
+  // differs from the read row of the same ID in another Revision. The edge is
+  // not judged (a hold), never judged on the other Revision's row.
+  const unreadOwn = item((data) => {
+    unread(data, "g03-has-sister");
+    for (const edge of data.child.evidence.pathAttachments.flatMap(
+      (path) => path.edges,
+    ))
+      if (edge.to === "e-g03-ivy")
+        for (const shown of edge.evidence)
+          if (shown.evidenceId === ivy) shown.quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(unreadOwn.status, "hold");
+  assert.ok(!unreadOwn.problems.some((entry) => entry.kind === "fail"));
+  // An unread Revision with every other row fine is a hold, never a pass.
+  const onlyUnread = item((data) => {
+    unread(data, "g03-treated-by");
+    return data;
+  });
+  assert.equal(onlyUnread.status, "hold");
+  // An edge that no relation of the path runs between (a direction that the
+  // path's `pairs` cannot name) is not judged: a hold.
+  const reversed = item((data) => {
+    const edge = data.child.evidence.pathAttachments
+      .flatMap((path) => path.edges)
+      .find((row) => row.to === "e-g03-ivy");
+    [edge.from, edge.to] = [edge.to, edge.from];
+    return data;
+  });
+  assert.equal(reversed.status, "hold");
+  assert.ok(
+    reversed.problems.some(
+      (entry) => entry.code === "edge-revision-unresolved",
+    ),
+  );
+});
+
+test("品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-06 の名前の言及）・pin・終端・hop の食い違いは fail、field が無いのは hold、G-01 は attachment が付けば fail", () => {
+  const key = "G-06/base";
+  const fixture = readJson("evals/nir1-graph/g06-evidence-anchor-path.v1.json");
+  const pinOf = (output, k = key) =>
+    variantItems(output, k)["explicit-pin-association"];
+  // Name-inferred association: g06-c4 mentions Bram but has no pin.
+  const inferred = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments.push({
+          sceneId: "u-g06-c4",
+          hop: 1,
+          edges: [data.child.evidence.pathAttachments[1].edges[1]],
+        });
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(inferred).status, "fail");
+  assert.ok(
+    pinOf(inferred).problems.some(
+      (p) => p.code === "attachment-outside-expectation",
+    ),
+  );
+  assert.ok(fixture.variants[0].expectations.scenesWithoutPath.length > 0);
+  // The terminal Entity differs (the path ends at another Entity).
+  const terminal = run(
+    v3({
+      [key]: (data) => {
+        const edges = data.child.evidence.pathAttachments[0].edges;
+        edges[edges.length - 1].to = "e-g06-bram";
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(terminal).status, "fail");
+  // The hop differs.
+  const hop = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[1].hop = 3;
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(hop).status, "fail");
+  // `hop` missing is a hold.
+  const noHop = run(
+    v3({
+      [key]: (data) => {
+        delete data.child.evidence.pathAttachments[0].hop;
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(noHop).status, "hold");
+  // Graph-only: wrong pin Entity, wrong hop, missing pin field.
+  const g02 = "G-02/base";
+  assert.equal(
+    pinOf(
+      run(
+        v3({
+          [g02]: (data) => {
+            data.child.evidence.graphOnly.pinEntityId = "e-g02-other";
+            return data;
+          },
+        }),
+      ),
+      g02,
+    ).status,
+    "fail",
+  );
+  assert.equal(
+    pinOf(
+      run(
+        v3({
+          [g02]: (data) => {
+            data.child.evidence.graphOnly.hop = 2;
+            return data;
+          },
+        }),
+      ),
+      g02,
+    ).status,
+    "fail",
+  );
+  assert.equal(
+    pinOf(
+      run(
+        v3({
+          [g02]: (data) => {
+            delete data.child.evidence.graphOnly.pinEntityId;
+            return data;
+          },
+        }),
+      ),
+      g02,
+    ).status,
+    "hold",
+  );
+  // A Graph-only row on a Scene the fixture does not name.
+  assert.equal(
+    pinOf(
+      run(
+        v3({
+          [g02]: (data) => {
+            data.child.evidence.graphOnly.sceneId = `u-${fixtureLists(GRAPH_EVAL_VARIANTS.find((row) => row.key === g02)).hybrid[0]}`;
+            return data;
+          },
+        }),
+      ),
+      g02,
+    ).status,
+    "fail",
+  );
+  // G-01 has no path attachment: one that appears is a fail.
+  const g01 = "G-01/v1";
+  const attached = run(
+    v3({
+      [g01]: (data) => {
+        data.child.evidence.pathAttachments.push({
+          sceneId: "u-g01-question",
+          hop: 1,
+          edges: data.child.evidence.graphOnly.edges,
+        });
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(attached, g01).status, "fail");
+  // Nothing expected displayed at all: a hold (the edge binding fails it).
+  const nothing = run(
+    v3({
+      [g01]: (data) => {
+        data.child.evidence.graphOnly = null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(nothing, g01).status, "hold");
+});
+
+test("品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（membership・順序・excerpt の hash と長さ）が違えば fail、比べられない（IR 未完・世代の食い違い・field 無し）は hold、Graph-only 行は比べない", () => {
+  const key = "G-03/base";
+  const rawOf = (output, k = key) =>
+    variantItems(output, k)["raw-excerpt-unchanged"];
+  const changed = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts[0].excerptSha256 = textSha256("rewritten");
+        return data;
+      },
+    }),
+  );
+  assert.equal(rawOf(changed).status, "fail");
+  const reordered = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts.reverse();
+        return data;
+      },
+    }),
+  );
+  assert.equal(rawOf(reordered).status, "fail");
+  const shorter = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts[0].excerptUtf16Length += 1;
+        return data;
+      },
+    }),
+  );
+  assert.equal(rawOf(shorter).status, "fail");
+  const dropped = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts.pop();
+        return data;
+      },
+    }),
+  );
+  assert.equal(rawOf(dropped).status, "fail");
+  const added = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts.push({
+          sceneId: "u-extra",
+          kind: "ir",
+          excerptSha256: textSha256("ir"),
+          excerptUtf16Length: 2,
+        });
+        return data;
+      },
+    }),
+  );
+  assert.equal(rawOf(added).status, "fail");
+  // A Graph-only row on the child is not compared.
+  const g02 = "G-02/base";
+  assert.equal(rawOf(run(v3()), g02).status, "pass");
+  assert.equal(
+    rawOf(
+      run(
+        v3({
+          [g02]: (data) => {
+            const only = data.child.rowExcerpts.find(
+              (row) => row.kind === "graph-only",
+            );
+            only.excerptSha256 = textSha256("anything");
+            return data;
+          },
+        }),
+      ),
+      g02,
+    ).status,
+    "pass",
+  );
+  // Not comparable in the same sample: a hold, not a fail.
+  for (const mutate of [
+    (data) => {
+      // Not later than the parent's generation.
+      data.child.queryGeneration = data.parent.queryGeneration;
+    },
+    (data) => {
+      // Another query Scene (a different query), or a Raw recovery.
+      data.child.sceneId = "another-scene";
+    },
+    (data) => {
+      data.child.origin = "raw-recovery";
+    },
+    (data) => {
+      data.child.seed = "another-seed";
+    },
+  ]) {
+    const other = run(
+      v3({
+        [key]: (data) => {
+          mutate(data);
+          return data;
+        },
+      }),
+    );
+    assert.equal(rawOf(other).status, "hold");
+  }
+  const irNotComplete = run(
+    v3({ [key]: (data) => data }, (k) =>
+      k === key
+        ? { mapGraphSample: (sample) => ({ ...sample, irOutcome: "timeout" }) }
+        : {},
+    ),
+  );
+  assert.equal(rawOf(irNotComplete).status, "hold");
+  const missing = run(
+    v3({
+      [key]: (data) => {
+        delete data.parent.rowExcerpts;
+        return data;
+      },
+    }),
+  );
+  assert.equal(rawOf(missing).status, "hold");
+  // G-01, G-04 v2 and G-08/graph-recovered have no path attachment: n/a.
+  assert.equal(rawOf(run(v3()), "G-01/v1").status, "n/a");
+});
+
+test("品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・excerpt の hash と長さが fixture の期待（範囲と本文）と 1 つでも違えば fail、field が無い・期待の行が無いのは hold", () => {
+  const key = "G-07/base";
+  const anchor = (output, k = key) =>
+    variantItems(output, k)["added-scene-body-anchor"];
+  for (const [label, mutate, code] of [
+    [
+      "end is 1 too long (a canonical newline)",
+      (data) => {
+        data.child.evidence.graphOnly.canonicalRange.end += 1;
+      },
+      "anchor-range-differs",
+    ],
+    [
+      "start is not 0",
+      (data) => {
+        data.child.evidence.graphOnly.canonicalRange.start = 1;
+      },
+      "anchor-range-differs",
+    ],
+    [
+      "excerpt hash is not the body's",
+      (data) => {
+        data.child.evidence.graphOnly.excerptSha256 =
+          textSha256("a shorter excerpt");
+      },
+      "anchor-excerpt-hash-differs",
+    ],
+    [
+      "excerpt length is not the body's",
+      (data) => {
+        data.child.evidence.graphOnly.excerptUtf16Length -= 1;
+      },
+      "anchor-excerpt-length-differs",
+    ],
+    [
+      "another Scene",
+      (data) => {
+        data.child.evidence.graphOnly.sceneId = `u-${fixtureLists(GRAPH_EVAL_VARIANTS.find((row) => row.key === key)).hybrid[0]}`;
+      },
+      "anchor-scene-differs",
+    ],
+  ]) {
+    const output = run(
+      v3({
+        [key]: (data) => {
+          mutate(data);
+          return data;
+        },
+      }),
+    );
+    assert.equal(anchor(output).status, "fail", label);
+    assert.ok(
+      anchor(output).problems.some((entry) => entry.code === code),
+      label,
+    );
+  }
+  // An absent field, or a displayed child with no Graph-only row, is a hold.
+  assert.equal(
+    anchor(
+      run(
+        v3({
+          [key]: (data) => {
+            delete data.child.evidence.graphOnly.excerptSha256;
+            return data;
+          },
+        }),
+      ),
+    ).status,
+    "hold",
+  );
+  assert.equal(
+    anchor(
+      run(
+        v3({
+          [key]: (data) => {
+            data.child.evidence.graphOnly = null;
+            return data;
+          },
+        }),
+      ),
+    ).status,
+    "hold",
+  );
+  // No `evidence` field at all (an older receipt) holds; it never passes.
+  assert.equal(
+    anchor(
+      run(
+        v3({
+          [key]: (data) => {
+            delete data.child.evidence;
+            return data;
+          },
+        }),
+      ),
+    ).status,
+    "hold",
+  );
+});
+
+test("品質 v3 §2.0: 適用する variant がすべて blocked の項目は n/a でなく not-evaluable（条件 4 を pass にしない）。blocked でない variant の fail は blocked に隠れない", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "qv-ledger-"));
+  try {
+    const anchorKeys = [
+      "G-01/v1",
+      "G-02/base",
+      "G-04/base",
+      "G-07/base",
+      "G-08/base-usable",
+      "G-08/graph-recovered",
+    ];
+    const ledgerFor = (keys) => {
+      const file = path.join(dir, `ledger-${keys.length}.json`);
+      writeFileSync(
+        file,
+        JSON.stringify({
+          status: "completed",
+          s4Commit: S4,
+          candidate: { commit: CANDIDATE },
+          variants: Object.fromEntries(
+            keys.map((key) => [key, "blocked:cb4-inputs"]),
+          ),
+        }),
+      );
+      return file;
+    };
+    const blockedAll = run(v3(), { ledgerPath: ledgerFor(anchorKeys) });
+    const anchor = itemsOf(blockedAll)["added-scene-body-anchor"];
+    assert.equal(anchor.status, "not-evaluable");
+    assert.equal(anchor.reason, "every-applicable-variant-is-blocked");
+    // The other items still pass over their remaining variants, and the
+    // condition is not a pass while one item is unverified.
+    assert.equal(itemsOf(blockedAll)["utf16-range"].variants, 3);
+    assert.equal(statusOf(blockedAll, "evidence-validity"), "not-evaluable");
+    assert.ok(
+      blockedAll.notEvaluable.some(
+        (row) =>
+          row.condition === "evidence-validity" &&
+          row.component === "added-scene-body-anchor",
+      ),
+    );
+    // One live variant keeps the item evaluated.
+    const oneLive = run(v3(), { ledgerPath: ledgerFor(anchorKeys.slice(1)) });
+    assert.equal(itemsOf(oneLive)["added-scene-body-anchor"].status, "pass");
+    assert.equal(itemsOf(oneLive)["added-scene-body-anchor"].variants, 1);
+    // A fail of a live variant is not hidden by blocked ones.
+    const failing = run(
+      v3({
+        "G-01/v1": (data) => {
+          data.child.evidence.graphOnly.canonicalRange.end += 1;
+          return data;
+        },
+      }),
+      { ledgerPath: ledgerFor(anchorKeys.slice(1)) },
+    );
+    assert.equal(itemsOf(failing)["added-scene-body-anchor"].status, "fail");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("品質 v3 §2.0: 受領書に無い runtime ID（端点の Entity・Scene）は [precheck]、fixture の current の text が定まらない mutation も [precheck]", () => {
+  assert.throws(
+    () =>
+      run(
+        v3({
+          "G-06/base": (data) => {
+            data.child.evidence.pathAttachments[0].edges[0].from =
+              "e-not-in-the-map";
+            return data;
+          },
+        }),
+      ),
+    /\[precheck\].*no logical ID/u,
+  );
+  assert.throws(
+    () =>
+      run(
+        v3({
+          "G-06/base": (data) => {
+            data.child.evidence.pathAttachments[0].sceneId = "u-unknown-scene";
+            return data;
+          },
+        }),
+      ),
+    /\[precheck\]/u,
+  );
+  // logicalToRuntime that is not one to one.
+  assert.throws(
+    () =>
+      run(
+        v3({
+          "G-06/base": (data) => {
+            data.entities["g06-ines"] = data.entities["g06-maro"];
+            return data;
+          },
+        }),
+      ),
+    /\[precheck\].*not one to one/u,
+  );
+});
+
+test("品質 v3 §2.1: 期待の current の text は fixture の mutation を setupTimeline の順に当てる（onlyInVariants は variant ごと）。継がない mutation は [precheck]", () => {
+  const { expectations } = loadExpectations({
+    root: DEFAULT_ROOT,
+    graphManifest: readJson(GRAPH_MANIFEST),
+  });
+  const texts = (key) => expectations[key].evidence.entityTexts;
+  // G-05: the current text is the silver one (the assertion's currentText).
+  assert.deepEqual(texts("G-05/base")["g05-xan"], [
+    "Xan",
+    "Xan carries a silver lamp on night watch.",
+  ]);
+  // G-08: the Juno mutation applies to graph-recovered only, not base-usable.
+  assert.match(texts("G-08/base-usable")["g08-juno"][1], /parlor/u);
+  assert.doesNotMatch(texts("G-08/base-usable")["g08-juno"][1], /violin/u);
+  assert.match(texts("G-08/graph-recovered")["g08-juno"][1], /violin/u);
+  // Every applicable-variant expectation names both a label and a summary.
+  for (const [key, expectation] of Object.entries(expectations))
+    for (const row of Object.values(expectation.evidence.entityTexts))
+      assert.ok(
+        row.every((text) => typeof text === "string" && text.length > 0),
+        key,
+      );
+  // The exact set of applicable variants (prereg v3 §3).
+  const applies = (id) =>
+    Object.entries(expectations)
+      .filter(([, expectation]) => expectation.evidence.applies[id])
+      .map(([key]) => key);
+  assert.equal(applies("utf16-range").length, 9);
+  assert.equal(applies("explicit-pin-association").length, 9);
+  assert.equal(applies("raw-excerpt-unchanged").length, 6);
+  assert.equal(applies("added-scene-body-anchor").length, 6);
+});
+
+test("品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample は検査せず件数を開示する。親の合流が表示に寄与したのに first-render でない sample は raw-excerpt-unchanged では hold（他の 3 件は skip）。first-render は親の記録を表示側として読む", () => {
+  const { expectations } = loadExpectations({
+    root: DEFAULT_ROOT,
+    graphManifest: readJson(GRAPH_MANIFEST),
+  });
+  const variant = GRAPH_EVAL_VARIANTS.find((row) => row.key === "G-02/base");
+  const base = v3Base(variant, expectations[variant.key]);
+  const receipt = {
+    runId: "unit",
+    settings: {
+      seed: base.seed,
+      setupReceipt: {
+        logicalToRuntime: { entities: base.entities, scenes: {} },
+      },
+    },
+    evidenceObservation: base.observation,
+  };
+  // Scenes the unit reads: map the runtime Scene IDs the rows use.
+  const sceneIds = new Set([
+    ...base.child.rowExcerpts.map((row) => row.sceneId),
+    ...base.child.evidence.pathAttachments.map((row) => row.sceneId),
+  ]);
+  receipt.settings.setupReceipt.logicalToRuntime.scenes = Object.fromEntries(
+    [...sceneIds].map((id) => [id.replace(/^u-/u, ""), id]),
+  );
+  const material = {
+    observed: expectations[variant.key].expectedContributions.map((row) => ({
+      kind: row.kind,
+      sceneId: row.sceneId,
+      pairs: row.edgeIds.map((edge) => `rev-of-${edge}|${edge}`),
+      unresolved: 0,
+    })),
+  };
+  const followed = (repeat) => ({
+    repeat,
+    irOutcome: "ir-ready",
+    graph: { outcome: "graph-late" },
+    followUp: {
+      parent: { ...clone(base.parent), sceneId: "scene-q", seed: "seed-q" },
+      child: {
+        origin: "graph-ready",
+        sceneId: "scene-q",
+        seed: "seed-q",
+        outcome: "graph-ready",
+        materialRevision: material,
+        ...clone(base.child),
+      },
+    },
+  });
+  const follow = {
+    displayed: true,
+    firstRender: false,
+    parentContributed: false,
+  };
+  const evaluate = (inputs) =>
+    evaluateEvidenceItems({
+      variantKey: variant.key,
+      expectation: expectations[variant.key],
+      receipt,
+      inputs,
+    });
+  // follow-up: all four pass.
+  const ok = evaluate([{ sample: followed(0), result: follow }]);
+  for (const id of ITEM_IDS) assert.equal(ok[id].status, "pass", id);
+  // No child: skipped (counted), so no sample was checked: hold.
+  const noChild = followed(1);
+  delete noChild.followUp.child;
+  const skipped = evaluate([
+    {
+      sample: noChild,
+      result: {
+        displayed: false,
+        firstRender: false,
+        parentContributed: false,
+      },
+    },
+  ]);
+  for (const id of ITEM_IDS) {
+    assert.equal(skipped[id].skipped, 1, id);
+    assert.equal(skipped[id].status, "hold", id);
+  }
+  // D8: the parent's Graph reached the display but was not a first render.
+  const d8 = evaluate([
+    { sample: followed(2), result: follow },
+    {
+      sample: noChild,
+      result: { displayed: false, firstRender: false, parentContributed: true },
+    },
+  ]);
+  assert.equal(d8["raw-excerpt-unchanged"].status, "hold");
+  assert.ok(
+    d8["raw-excerpt-unchanged"].problems.some(
+      (entry) => entry.code === "d8-graph-contributed-without-a-first-render",
+    ),
+  );
+  for (const id of ITEM_IDS.filter((id) => id !== "raw-excerpt-unchanged")) {
+    assert.equal(d8[id].status, "pass", id);
+    assert.equal(d8[id].skipped, 1, id);
+  }
+  // first-render: the parent's record is the display side. Its Graph rows are
+  // checked (items 1, 2, 4); there is no child to compare (item 3: hold).
+  const first = followed(3);
+  first.followUp.parent = {
+    ...clone(base.child),
+    contribution: { materialRevision: material },
+  };
+  first.graph = { outcome: "graph-ready" };
+  delete first.followUp.child;
+  const firstRender = evaluate([
+    {
+      sample: first,
+      result: { displayed: true, firstRender: true, parentContributed: true },
+    },
+  ]);
+  for (const id of ITEM_IDS.filter((id) => id !== "raw-excerpt-unchanged"))
+    assert.equal(firstRender[id].status, "pass", id);
+  assert.equal(firstRender["raw-excerpt-unchanged"].status, "hold");
+});
+
+test("品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)(ii) に違反し、他の行が有効なら、違反は fail の problem のまま status は fail（hold に落とさない）。表示の hash が合っても読み取った行の hash が違えば fail", () => {
+  const key = "G-03/base";
+  const item = (mutate) =>
+    variantItems(run(v3({ [key]: mutate })), key)["utf16-range"];
+  const wrongHash = textSha256("a hash that is no endpoint's text");
+  const firstEdge = (data) =>
+    data.child.evidence.pathAttachments.flatMap((path) => path.edges)[0];
+  const kindOf = (result, code) => [
+    ...new Set(
+      result.problems
+        .filter((entry) => entry.code === code)
+        .map((entry) => entry.kind),
+    ),
+  ];
+  // (ii) one displayed row is in no Revision, the edge's other row is valid.
+  const inNoRevision = item((data) => {
+    const edge = firstEdge(data);
+    edge.evidence.push({
+      ...edge.evidence[0],
+      evidenceId: "ev-in-no-revision",
+    });
+    return data;
+  });
+  assert.equal(inNoRevision.status, "fail");
+  assert.deepEqual(kindOf(inNoRevision, "evidence-id-not-in-revision"), [
+    "fail",
+  ]);
+  assert.deepEqual(kindOf(inNoRevision, "endpoint-without-valid-evidence"), []);
+  // (i) one displayed row's hash is no endpoint's text, the other row is valid.
+  const matchesNone = item((data) => {
+    const edge = firstEdge(data);
+    edge.evidence.push({ ...edge.evidence[0], quoteSha256: wrongHash });
+    return data;
+  });
+  assert.equal(matchesNone.status, "fail");
+  assert.deepEqual(
+    kindOf(matchesNone, "evidence-row-matches-no-endpoint-text"),
+    ["fail"],
+  );
+  assert.deepEqual(kindOf(matchesNone, "endpoint-without-valid-evidence"), []);
+  // (i) the displayed hash is the text's, the read row's hash differs: the
+  // hash must hold on both sides.
+  const readSide = item((data) => {
+    for (const revision of data.observation.typedRevisions)
+      for (const row of revision.evidence) row.quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(readSide.status, "fail");
+  assert.ok(
+    readSide.problems.some(
+      (entry) =>
+        entry.code === "evidence-row-matches-no-endpoint-text" &&
+        entry.kind === "fail",
+    ),
+  );
+});
+
+test("品質 v3 §2.1 utf16-range（検出力の取り直し）: 同じ端点をつなぐ relation が path に 2 つ以上ある edge は Revision を名指せず hold（先頭の候補で判定して pass にしない）", () => {
+  const { expectations } = loadExpectations({
+    root: DEFAULT_ROOT,
+    graphManifest: readJson(GRAPH_MANIFEST),
+  });
+  const variant = GRAPH_EVAL_VARIANTS.find((row) => row.key === "G-02/base");
+  const base = v3Base(variant, expectations[variant.key]);
+  const receipt = {
+    runId: "unit",
+    settings: {
+      seed: base.seed,
+      setupReceipt: {
+        logicalToRuntime: { entities: base.entities, scenes: {} },
+      },
+    },
+    evidenceObservation: base.observation,
+  };
+  const sceneIds = new Set([
+    ...base.child.rowExcerpts.map((row) => row.sceneId),
+    ...base.child.evidence.pathAttachments.map((row) => row.sceneId),
+  ]);
+  receipt.settings.setupReceipt.logicalToRuntime.scenes = Object.fromEntries(
+    [...sceneIds].map((id) => [id.replace(/^u-/u, ""), id]),
+  );
+  const observed = () =>
+    expectations[variant.key].expectedContributions.map((row) => ({
+      kind: row.kind,
+      sceneId: row.sceneId,
+      pairs: row.edgeIds.map((edge) => `rev-of-${edge}|${edge}`),
+      unresolved: 0,
+    }));
+  const followed = (material) => ({
+    repeat: 0,
+    irOutcome: "ir-ready",
+    graph: { outcome: "graph-late" },
+    followUp: {
+      parent: { ...clone(base.parent), sceneId: "scene-q", seed: "seed-q" },
+      child: {
+        origin: "graph-ready",
+        sceneId: "scene-q",
+        seed: "seed-q",
+        outcome: "graph-ready",
+        materialRevision: material,
+        ...clone(base.child),
+      },
+    },
+  });
+  const follow = {
+    displayed: true,
+    firstRender: false,
+    parentContributed: false,
+  };
+  const evaluate = (expectation, material) =>
+    evaluateEvidenceItems({
+      variantKey: variant.key,
+      expectation,
+      receipt,
+      inputs: [{ sample: followed(material), result: follow }],
+    })["utf16-range"];
+  const one = evaluate(expectations[variant.key], { observed: observed() });
+  assert.equal(one.status, "pass");
+  // A second relation of the path that joins the same two Entities as the
+  // first one: the edge's own Revision cannot be named.
+  const [relation] = Object.keys(
+    expectations[variant.key].evidence.relationEndpoints,
+  );
+  assert.ok(relation, "the fixture names a relation's endpoints");
+  const twin = clone(expectations[variant.key]);
+  twin.evidence.relationEndpoints[`${relation}-twin`] = [
+    ...twin.evidence.relationEndpoints[relation],
+  ];
+  const material = { observed: observed() };
+  material.observed[0].pairs.push(`rev-of-${relation}-twin|${relation}-twin`);
+  const two = evaluate(twin, material);
+  assert.equal(two.status, "hold");
+  assert.ok(
+    two.problems.some(
+      (entry) =>
+        entry.code === "edge-revision-unresolved" && entry.candidates === 2,
+    ),
+    JSON.stringify(two.problems),
+  );
+  assert.ok(!two.problems.some((entry) => entry.kind === "fail"));
+});
+
+test("品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge の組・複数の終端は fail のまま", () => {
+  const key = "G-06/base";
+  const pinOf = (output) =>
+    variantItems(output, key)["explicit-pin-association"];
+  // The baseline attachment with two edges is read in the other order.
+  const reversed = run(
+    v3({
+      [key]: (data) => {
+        const rows = data.child.evidence.pathAttachments;
+        assert.ok(rows.some((row) => row.edges.length >= 2));
+        for (const row of rows) row.edges.reverse();
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(reversed).status, "pass");
+  // An edge that does not continue the walk is still a fail.
+  const broken = run(
+    v3({
+      [key]: (data) => {
+        const row = data.child.evidence.pathAttachments.find(
+          (entry) => entry.edges.length >= 2,
+        );
+        const used = new Set(row.edges.flatMap((edge) => [edge.from, edge.to]));
+        const [other, another] = Object.values(data.entities).filter(
+          (runtime) => !used.has(runtime),
+        );
+        row.edges[1] = { ...row.edges[1], from: other, to: another };
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(broken).status, "fail");
+});
+
+test("品質 v3 §2.2（レビュー推奨 7）: settings.seed.runtime が受領書に無いときは fail でなく hold（seed から終端をたどれない）", () => {
+  const key = "G-06/base";
+  const held = run(
+    v3({
+      [key]: (data) => {
+        data.seed = null;
+        return data;
+      },
+    }),
+  );
+  const pin = variantItems(held, key)["explicit-pin-association"];
+  assert.equal(pin.status, "hold");
+  assert.ok(
+    pin.problems.some((entry) => entry.code === "seed-runtime-missing"),
+  );
+  assert.ok(
+    pin.problems.every((entry) => entry.code !== "attachment-terminal-differs"),
+  );
+});
+
+test("品質 v3（レビュー推奨 4・5）: page が返さなかった値は null で来る。hash の欄が null の行は pass にならず hold（空文字の hash を仮の値にしない）", () => {
+  const key = "G-06/base";
+  const itemOf = (output, id) => variantItems(output, key)[id];
+  // An edge's displayed Evidence row without its quote hash.
+  const quote = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].edges[0].evidence[0].quoteSha256 =
+          null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(itemOf(quote, "utf16-range").status, "hold");
+  // A Graph-only anchor with null hash, null range, null Scene.
+  const key02 = "G-02/base";
+  for (const mutate of [
+    (only) => (only.excerptSha256 = null),
+    (only) => (only.excerptUtf16Length = null),
+    (only) => (only.canonicalRange.start = null),
+    (only) => (only.sceneId = null),
+  ]) {
+    const anchor = run(
+      v3({
+        [key02]: (data) => {
+          mutate(data.child.evidence.graphOnly);
+          return data;
+        },
+      }),
+    );
+    assert.equal(
+      variantItems(anchor, key02)["added-scene-body-anchor"].status,
+      "hold",
+    );
+  }
+  // A path row without its Scene is a hold (not a thrown [precheck]).
+  const noScene = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].sceneId = null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(itemOf(noScene, "explicit-pin-association").status, "hold");
+  assert.equal(itemOf(noScene, "utf16-range").status, "hold");
+  // A row excerpt without its hash.
+  const rowHash = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts[0].excerptSha256 = null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(itemOf(rowHash, "raw-excerpt-unchanged").status, "hold");
 });

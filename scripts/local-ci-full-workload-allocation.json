@@ -1,19 +1,19 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:2619958fa8877d1a43151511c4646163ea3692f35bbfb48ea17a42d94b72aa06",
+  "registryDigest": "sha256:4d7594c626640f164dc840cad20470fd87279bc248c98bcd3271537a0a316b2b",
   "maxParallelTasks": 1,
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
-      "sha256": "aa69deead673634799a4c0f12131429da3ef07b1ad8d40db9d76cbcae58f6fdc"
+      "sha256": "46dc0fda6ce9ff77ee4cf1535cbebf80de5ca56e26f9568cf55acfdd075db953"
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "8e606822849a97b6b964e3a6ea306f4082eda84ce7ce424919beb75c74a8cbb6"
+      "sha256": "466bb0483e84a7306736da8898c2c356523ea935f66497daef44e33260c97191"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
-      "sha256": "07cf838fa1a8be86a3339a5daae69846f4e4048b3dfb0fd2889cb29fe16b29f8"
+      "sha256": "e3aba8ccbd9ec8c6dec3e163540a3bb2e71fc9ab287eae5b7e14c12a62439895"
     },
     {
       "path": "scripts/local-ci-full-filesystems.py",
@@ -25,7 +25,7 @@
     },
     {
       "path": "scripts/local-ci.mjs",
-      "sha256": "a6e5780c6e1e77e874a7b585b4988176d8d1216e7c7eccb6333e7436781ebb81"
+      "sha256": "74dfba6db3cad1585638e571052d2e629f379a76bc92ee01162c3da01848cb4e"
     },
     {
       "path": "scripts/local-ci-runner.mjs",
@@ -41,11 +41,11 @@
     },
     {
       "path": "package.json",
-      "sha256": "b5e06b3ae93b80cdd0b78693dd833bf826d15cc906646162e919c4c661f0ae63"
+      "sha256": "a52fb37200e3e58b351999fec0306cb4950bdd8a065e4ae50d122c8ac340accc"
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "628e164415d3fab9dfa5b32fc2e0c47584b0a188e40076556829eef0dea49d15"
+      "sha256": "6186dd7ad06d3922b9e2fe714faddc94e00ffe960f16da601c0cc5fb63f8b61c"
     },
     {
       "path": "src-tauri/Cargo.toml",
@@ -53,7 +53,7 @@
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "6db97d2c332db26fe245728d9a29b391da4a9fc0988905bed3023903dbc15a43"
+      "sha256": "13ad4702cc37445591a621a7daee03f9abd5fe426df735d4e1f4860ee09fe137"
     },
     {
       "path": "electron/native/grimodex-node/Cargo.toml",
@@ -61,7 +61,7 @@
     },
     {
       "path": "electron/native/grimodex-node/Cargo.lock",
-      "sha256": "06a74d39871aa0b3efa9ad359d241f809e1baedf45a7584e725fddde541189fe"
+      "sha256": "3594c7c3028558dd0f5838cb299ba6f54b0208561a934da7a2a14ce01313b989"
     },
     {
       "path": "electron/native/grimodex-node/package.json",
@@ -101,11 +101,11 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "44621ea715bfe165e514b655ed7fd42c9480dc67c1be649bfae7347340d217d9"
+      "sha256": "7e00fa53fa79a8c45ab241385ffad80f0ee333b1cdb157b3612883621ee07873"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
-      "sha256": "c01acaad484f9c990c74b7e2bdade6ab64f99af609c8d4d628c84d7b7f42d248"
+      "sha256": "76ac71ceb1d0da3571b5a53a12489a9d012a46b9ef58e9f55bc77b8321020823"
     },
     {
       "path": "src/features/chat/chatScopeRegistry.json",
@@ -117,7 +117,7 @@
     },
     {
       "path": "src/db/generated/schema-contract.json",
-      "sha256": "effb7931e2e1c594ee969d37016d29297c9648684cd09a5ba9245af801117fb4"
+      "sha256": "709300a57da84ceaadab0d52b5672314f80df9b837b33e5b3539cef569681e80"
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
@@ -133,7 +133,7 @@
     },
     {
       "path": "electron/scripts/product-journey-shards.mjs",
-      "sha256": "4bc24ab28ed1127329002de3fd557ff718200d479d427838f789644bfcaf3b19"
+      "sha256": "7c71afce30d681ca68c266264292b6f560cbcf18db25c5120131c13259147827"
     }
   ],
   "fullMemoryRisk": {
@@ -1993,6 +1993,88 @@
     },
     {
       "id": "journey.agent-stream-workspace-switch.failure",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Official backup image and full receipt/diagnostic text snapshots plus1920x1080 RGBA/PNG scanlines/header image under source-selected Xvfb screen. Full-page/HiDPI screenshot growth remains covered by fixtures.uncertainty; no screenshot suppression. Producer separately charges original+whole artifact copy+renderer.png.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "backup",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "receipt-snapshot",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "diagnostics",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "screenshot",
+          "bytes": "8364032",
+          "inodes": "1"
+        }
+      ]
+    },
+    {
+      "id": "journey.mastra-agent-turn-gate-load-audit.runtime",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Entire mastra-agent-turn-gate-load-audit case/restart/workspace scenario: schema baseline plus Q512 mutation image per owned-tree aggregate, whole desktop/renderer/log image for profile settings/userData and full renderer assets plus RGBA surface image for browser disk/GPU caches, complete log/receipt text images. Cross-case no-sharing forecast, NOT app measurement. Extra workspace/restart image in other; no serial/fail-fast savings.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "db",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "wal",
+          "bytes": "18104320",
+          "inodes": "1"
+        },
+        {
+          "role": "shm",
+          "bytes": "65536",
+          "inodes": "1"
+        },
+        {
+          "role": "user-data",
+          "bytes": "177168384",
+          "inodes": "785"
+        },
+        {
+          "role": "cache",
+          "bytes": "55279616",
+          "inodes": "778"
+        },
+        {
+          "role": "logs",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "receipts",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "other",
+          "bytes": "17997824",
+          "inodes": "2"
+        }
+      ]
+    },
+    {
+      "id": "journey.mastra-agent-turn-gate-load-audit.failure",
       "sources": [
         2,
         29

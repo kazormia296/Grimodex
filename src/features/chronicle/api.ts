@@ -1,14 +1,35 @@
 import { db } from "@/db/client";
 import { invoke } from "@/lib/tauri";
-import {
-  events,
-  eventParticipants,
-  sceneEvents,
-  projectCalendar,
-  eventRelations,
-  treeNodes,
-} from "@/db/schema";
+import { events, eventParticipants, sceneEvents, treeNodes } from "@/db/schema";
 import type { EventPrecision, EventKind, EventGranularity } from "@/db/schema";
+import type {
+  CalendarRow,
+  EventRow,
+  ParticipantRow,
+  SceneEventRow,
+  EventRelationRow,
+} from "@/../electron/shared/readDomain/features/chronicle/eventRows";
+// 行の型の正本は shared module（MP-4b PR-3b-2。CalendarRow は PR-7a）。ここでは後方互換のため再エクスポートする。
+export type {
+  CalendarRow,
+  EventRow,
+  ParticipantRow,
+  SceneEventRow,
+  EventRelationRow,
+} from "@/../electron/shared/readDomain/features/chronicle/eventRows";
+// 読み取りの行の正規化と SQL は共有 core 側（MP-4b PR-7a）。read の 5 関数は reader への薄い委譲。
+import {
+  normalizeEvent,
+  normalizeParticipantRow,
+  normalizeSceneEventRow,
+} from "@/../electron/shared/readDomain/features/chronicle/readRows";
+import {
+  readEventParticipantsForProject,
+  readEventRelations,
+  readEvents,
+  readProjectCalendar,
+  readSceneEventsForProject,
+} from "@/../electron/shared/readDomain/core/chronicleReaders";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 // 暦復元の正本は chronicleTime（純粋モジュール）へ集約。ここでは後方互換の再エクスポート。
@@ -65,97 +86,15 @@ function rethrowEventVersionConflict(eventId: string, err: unknown): never {
   throw err;
 }
 
-export interface EventRow {
-  id: string;
-  projectId: string;
-  title: string;
-  note: string | null;
-  /** 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。null/空 = 未入力。 */
-  detail: string | null;
-  ordinal: string;
-  primaryCodexId: string | null;
-  /** 未割当の整理用サブレーン id（null=既定の未割当レーン）。 */
-  laneGroup: string | null;
-  locationCodexId: string | null;
-  startTime: number | null;
-  endTime: number | null;
-  startMinute: number | null;
-  endMinute: number | null;
-  startGranularity: EventGranularity;
-  endGranularity: EventGranularity;
-  precision: EventPrecision;
-  kind: EventKind;
-  /** AI 秘匿フラグ（reveal アンカー方式）。true=条件付きで AI 文脈から除外。 */
-  secret: boolean;
-  /** 読む順の開示アンカー（明示上書き専用）。null=自動導出 or 恒久秘匿。 */
-  revealSceneId: string | null;
-  /** Aggregate OCC version (event row + participant set). */
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-}
+export { normalizeEvent };
 
-function s(v: unknown, fallback = ""): string {
-  return v == null ? fallback : String(v);
-}
-function nullableStr(v: unknown): string | null {
-  return v == null ? null : String(v);
-}
-function nullableNum(v: unknown): number | null {
-  return v == null ? null : Number(v);
-}
-/** DB 整数(0/1)・boolean・文字列("1"/"true") いずれの secret 表現も真偽へ正規化。 */
-function boolFrom(v: unknown): boolean {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number") return v !== 0;
-  if (typeof v === "string") return v === "1" || v.toLowerCase() === "true";
-  return false;
-}
-
-/** DB 行（snake_case）/ invoke 戻り値（camelCase）双方を EventRow へ正規化。 */
-export function normalizeEvent(raw: unknown): EventRow {
-  const r = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: s(r.id),
-    projectId: s(r.projectId ?? r.project_id),
-    title: s(r.title),
-    note: nullableStr(r.note),
-    detail: nullableStr(r.detail),
-    ordinal: s(r.ordinal, "a0"),
-    primaryCodexId: nullableStr(r.primaryCodexId ?? r.primary_codex_id),
-    laneGroup: nullableStr(r.laneGroup ?? r.lane_group),
-    locationCodexId: nullableStr(r.locationCodexId ?? r.location_codex_id),
-    startTime: nullableNum(r.startTime ?? r.start_time),
-    endTime: nullableNum(r.endTime ?? r.end_time),
-    startMinute: nullableNum(r.startMinute ?? r.start_minute),
-    endMinute: nullableNum(r.endMinute ?? r.end_minute),
-    startGranularity: s(
-      r.startGranularity ?? r.start_granularity,
-      "none",
-    ) as EventGranularity,
-    endGranularity: s(
-      r.endGranularity ?? r.end_granularity,
-      "none",
-    ) as EventGranularity,
-    precision: s(r.precision, "exact") as EventPrecision,
-    kind: s(r.kind, "generic") as EventKind,
-    secret: boolFrom(r.secret),
-    revealSceneId: nullableStr(r.revealSceneId ?? r.reveal_scene_id),
-    version: Number(r.version ?? 0),
-    createdAt: s(r.createdAt ?? r.created_at),
-    updatedAt: s(r.updatedAt ?? r.updated_at),
-  };
-}
-
+/**
+ * project の全出来事（ordinal,id の二段ソート）。SQL は共有 core の reader
+ * （`readDomain/core/chronicleReaders.ts`）にあり、ここは renderer の `db` で呼ぶだけ
+ * （MP-4b PR-7a。Main の read core も同じ文を使う）。
+ */
 export async function listEvents(projectId: string): Promise<EventRow[]> {
-  // ordinal,id の二段ソートで決定論的な並び（ordinal 重複でもリロード間で順序が
-  // 揺れない）を保証する。年表 x 軸順の安定性が下流の座標算出に効く。
-  const rows = await db
-    .select()
-    .from(events)
-    .where(eq(events.projectId, projectId))
-    .orderBy(asc(events.ordinal), asc(events.id));
-  return rows.map(normalizeEvent);
+  return readEvents(db, projectId);
 }
 
 /** 単一の出来事を取得（fail-closed: projectId 一致のみ）。EditorPane の詳細ロード用。 */
@@ -294,11 +233,6 @@ export async function deleteEvent(
 }
 
 // ───────── participants ─────────
-export interface ParticipantRow {
-  eventId: string;
-  codexEntryId: string;
-  role: string | null;
-}
 
 export async function listEventParticipants(
   eventId: string,
@@ -307,14 +241,7 @@ export async function listEventParticipants(
     .select()
     .from(eventParticipants)
     .where(eq(eventParticipants.eventId, eventId));
-  return rows.map((raw) => {
-    const r = (raw ?? {}) as Record<string, unknown>;
-    return {
-      eventId: s(r.eventId ?? r.event_id),
-      codexEntryId: s(r.codexEntryId ?? r.codex_entry_id),
-      role: nullableStr(r.role),
-    };
-  });
+  return rows.map(normalizeParticipantRow);
 }
 
 /** 参加者集合を置き換える（全削除→再挿入）。role は当面 null 固定で良い。 */
@@ -352,33 +279,10 @@ export async function listEventParticipantsForProject(
   projectId: string,
   eventIds?: string[],
 ): Promise<ParticipantRow[]> {
-  if (eventIds && eventIds.length === 0) return [];
-  const conds = [eq(events.projectId, projectId)];
-  if (eventIds) conds.push(inArray(eventParticipants.eventId, eventIds));
-  const rows = await db
-    .select({
-      eventId: eventParticipants.eventId,
-      codexEntryId: eventParticipants.codexEntryId,
-      role: eventParticipants.role,
-    })
-    .from(eventParticipants)
-    .innerJoin(events, eq(eventParticipants.eventId, events.id))
-    .where(and(...conds));
-  return rows.map((raw) => {
-    const r = (raw ?? {}) as Record<string, unknown>;
-    return {
-      eventId: s(r.eventId ?? r.event_id),
-      codexEntryId: s(r.codexEntryId ?? r.codex_entry_id),
-      role: nullableStr(r.role),
-    };
-  });
+  return readEventParticipantsForProject(db, projectId, eventIds);
 }
 
 // ───────── scene_events 橋 ─────────
-export interface SceneEventRow {
-  sceneId: string;
-  eventId: string;
-}
 
 export async function listSceneEvents(
   eventIds: string[],
@@ -388,13 +292,7 @@ export async function listSceneEvents(
     .select()
     .from(sceneEvents)
     .where(inArray(sceneEvents.eventId, eventIds));
-  return rows.map((raw) => {
-    const r = (raw ?? {}) as Record<string, unknown>;
-    return {
-      sceneId: s(r.sceneId ?? r.scene_id),
-      eventId: s(r.eventId ?? r.event_id),
-    };
-  });
+  return rows.map(normalizeSceneEventRow);
 }
 
 /**
@@ -407,23 +305,7 @@ export async function listSceneEventsForProject(
   projectId: string,
   opts?: { eventIds?: string[]; sceneIds?: string[] },
 ): Promise<SceneEventRow[]> {
-  if (opts?.eventIds && opts.eventIds.length === 0) return [];
-  if (opts?.sceneIds && opts.sceneIds.length === 0) return [];
-  const conds = [eq(events.projectId, projectId)];
-  if (opts?.eventIds) conds.push(inArray(sceneEvents.eventId, opts.eventIds));
-  if (opts?.sceneIds) conds.push(inArray(sceneEvents.sceneId, opts.sceneIds));
-  const rows = await db
-    .select({ sceneId: sceneEvents.sceneId, eventId: sceneEvents.eventId })
-    .from(sceneEvents)
-    .innerJoin(events, eq(sceneEvents.eventId, events.id))
-    .where(and(...conds));
-  return rows.map((raw) => {
-    const r = (raw ?? {}) as Record<string, unknown>;
-    return {
-      sceneId: s(r.sceneId ?? r.scene_id),
-      eventId: s(r.eventId ?? r.event_id),
-    };
-  });
+  return readSceneEventsForProject(db, projectId, opts);
 }
 
 export async function linkSceneToEvent(
@@ -500,66 +382,10 @@ export async function unlinkSceneFromEvent(
 }
 
 // ───────── project_calendar ─────────
-export interface CalendarRow {
-  projectId: string;
-  daysPerYear: number;
-  /** 生 JSON 文字列（SeasonBoundary[]）。パースは chronicleTime 利用側で。 */
-  seasonBoundaries: string;
-  /** 暦の開始年ラベル。 */
-  startYear: number;
-  /** 生 JSON 文字列（MonthDef[]）。'[]'=月概念なし。 */
-  months: string;
-  /** 生 JSON 文字列（string[] 曜日名）。'[]'=曜日概念なし。 */
-  weekdayNames: string;
-  /** day番号0に対応する weekdayNames の index。 */
-  weekdayStartIndex: number;
-  /** 生 JSON 文字列（LeapRule）。'{"kind":"none"}'=閏年なし。 */
-  leapRule: string;
-  /** 年齢の数え方。'full'=満年齢 / 'counting'=数え年。 */
-  ageReckoning: string;
-  /** 生 JSON 文字列（EraDef[] 元号/年号）。'[]'=元号なし。 */
-  eras: string;
-  /** 生 JSON 文字列（CalendarReform | null 改暦）。'null'=改暦なし。 */
-  reform: string;
-  /** 生 JSON 文字列（TimeZoneDef | null タイムゾーン）。'null'=なし。 */
-  timezone: string;
-  /** 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。 */
-  lunarTzMinutes: number;
-  /** Calendar aggregate OCC generation. */
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export async function getProjectCalendar(
   projectId: string,
 ): Promise<CalendarRow | null> {
-  const [raw] = await db
-    .select()
-    .from(projectCalendar)
-    .where(eq(projectCalendar.projectId, projectId));
-  if (!raw) return null;
-  const r = raw as Record<string, unknown>;
-  return {
-    projectId: s(r.projectId ?? r.project_id),
-    daysPerYear: Number(r.daysPerYear ?? r.days_per_year ?? 360),
-    seasonBoundaries: s(r.seasonBoundaries ?? r.season_boundaries, "[]"),
-    startYear: Number(r.startYear ?? r.start_year ?? 0),
-    months: s(r.months, "[]"),
-    weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
-    weekdayStartIndex: Number(
-      r.weekdayStartIndex ?? r.weekday_start_index ?? 0,
-    ),
-    leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
-    ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
-    eras: s(r.eras, "[]"),
-    reform: s(r.reform, "null"),
-    timezone: s(r.timezone, "null"),
-    lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
-    version: Number(r.version ?? 0),
-    createdAt: s(r.createdAt ?? r.created_at),
-    updatedAt: s(r.updatedAt ?? r.updated_at),
-  };
+  return readProjectCalendar(db, projectId);
 }
 
 export async function upsertProjectCalendar(
@@ -632,25 +458,11 @@ export async function upsertProjectCalendar(
 }
 
 // ───────── event_relations（因果エッジ） ─────────
-export interface EventRelationRow {
-  causeId: string;
-  effectId: string;
-}
 
 export async function listEventRelations(
   projectId: string,
 ): Promise<EventRelationRow[]> {
-  const rows = await db
-    .select()
-    .from(eventRelations)
-    .where(eq(eventRelations.projectId, projectId));
-  return rows.map((raw) => {
-    const r = (raw ?? {}) as Record<string, unknown>;
-    return {
-      causeId: s(r.causeEventId ?? r.cause_event_id),
-      effectId: s(r.effectEventId ?? r.effect_event_id),
-    };
-  });
+  return readEventRelations(db, projectId);
 }
 
 export async function addEventRelation(

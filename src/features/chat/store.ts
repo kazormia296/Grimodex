@@ -30,8 +30,13 @@ import {
   activateDynamicProviderScope,
   invalidateDynamicEffectiveContext,
   registerDynamicModelCaps,
+  registerAnthropicModelCaps,
   isDynamicCapsStale,
 } from "./agent/dynamicModelCaps";
+import {
+  reloadRegistryModelCaps,
+  startRegistryModelCapsLoad,
+} from "./agent/registryModelCaps";
 
 export interface AiSettingsState {
   settings: AiSettings | null;
@@ -87,6 +92,11 @@ export interface AiSettingsState {
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AiSettings) => Promise<void>;
+  /**
+   * 「モデル情報の自動更新」の明示の切替。完全な設定の save では変わらず、この経路だけが変える。
+   * 保存に成功したら、store の settings の項目も合わせる。
+   */
+  setModelInfoAutoUpdate: (enabled: boolean) => Promise<void>;
   saveApiKey: (key: string) => Promise<void>;
   deleteApiKey: () => Promise<void>;
   testConnection: () => Promise<void>;
@@ -116,6 +126,18 @@ const DYNAMIC_CAPS_PROVIDERS = new Set<AiProvider>(["openrouter", "ollama"]);
 const capsRefreshInFlight = new Map<string, Promise<AiModel[] | null>>();
 let modelLoadRequestGeneration = 0;
 let settingsLoadGeneration = 0;
+/**
+ * 「モデル情報の自動更新」は明示の切替（`setModelInfoAutoUpdate`）だけが変える。完全な設定の save の結果を
+ * store に反映するときは、store が持つ現在の値を保つ（未設定なら save した設定のまま）。
+ */
+function keepModelInfoAutoUpdate(
+  next: AiSettings,
+  current: AiSettings | null,
+): AiSettings {
+  const kept = current?.modelInfoAutoUpdate;
+  return kept === undefined ? next : { ...next, modelInfoAutoUpdate: kept };
+}
+
 let settingsWriteGeneration = 0;
 let settingsSaveTail: Promise<void> = Promise.resolve();
 let ollamaObservationRequestGeneration = 0;
@@ -430,8 +452,14 @@ async function resolveCliBinaryAvailability(
   settings: AiSettings,
 ): Promise<boolean> {
   if (settings.cli?.binaryPath?.trim()) return true;
-  const path = await detectCliBinary(settings.cli?.kind ?? "claude");
-  return path !== null;
+  try {
+    const path = await detectCliBinary(settings.cli?.kind ?? "claude");
+    return path !== null;
+  } catch {
+    // 実行確認ダイアログの拒否や検出の失敗は「未検出」と同じ扱いにする。
+    // ここで投げると、設定の読込・保存ごと失敗してしまう。
+    return false;
+  }
 }
 
 /**
@@ -767,6 +795,11 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   chatEndpointIdOverride: null,
 
   loadSettings: async () => {
+    // 共有 registry（main が取得・同梱した能力の写し）を 1 回だけ読む。読めたら revision を上げ、
+    // 描画済みの能力表の解決を引き直させる。読めなければ registry の層が無いまま（今の挙動）。
+    void startRegistryModelCapsLoad(() => {
+      set((state) => ({ modelCapsRevision: state.modelCapsRevision + 1 }));
+    });
     // A read invoked while a save is pending must observe the post-save
     // backend snapshot, never commit the pre-save endpoint/model afterward.
     let saveBarrier: Promise<void>;
@@ -828,6 +861,26 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     }
   },
 
+  setModelInfoAutoUpdate: async (enabled: boolean) => {
+    // 完全な設定の save・読み直しと同じ直列化の中で行う（main の実際の値と store の値を食い違わせない）。
+    settingsWriteGeneration += 1;
+    const toggleTransaction = settingsSaveTail.then(async () => {
+      await api.setModelInfoAutoUpdate(enabled);
+      set((state) =>
+        state.settings
+          ? { settings: { ...state.settings, modelInfoAutoUpdate: enabled } }
+          : {},
+      );
+      // main は無効の間は同梱の写しだけを返す（cache も削除する）。この窓が持つ写しも読み直し、
+      // 「止めると同梱の情報だけを使う」の約束を、再起動を待たずに守る。待たない（切替を遅らせない）。
+      void reloadRegistryModelCaps(() => {
+        set((state) => ({ modelCapsRevision: state.modelCapsRevision + 1 }));
+      });
+    });
+    settingsSaveTail = toggleTransaction.catch(() => undefined);
+    await toggleTransaction;
+  },
+
   saveSettings: async (settings: AiSettings) => {
     settingsWriteGeneration += 1;
     const saveTransaction = settingsSaveTail.then(async () => {
@@ -866,7 +919,9 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         prev?.model !== settings.model ||
         prev?.modelApiVariant !== settings.modelApiVariant;
       set({
-        settings,
+        // 呼び出し側が古い設定から作った `modelInfoAutoUpdate` で、直前の明示の切替を上書きしない
+        // （main も完全な設定に載った値を無視する。store の表示を main の実際の値に合わせる）。
+        settings: keepModelInfoAutoUpdate(settings, get().settings),
         cliBinaryAvailable,
         ...(testInvalidated ? { connectionTestResult: null } : {}),
         ...(ollamaEndpointChanged
@@ -1021,7 +1076,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       // それ以外は Rust 側 fetch_models に委譲する。OpenRouter / Ollama は
       // capability 登録と送信前 refresh と同じ provider-scoped fetch を共有する。
       // (Anthropic は GET /v1/models（キー未登録・失敗時は固定の予備）、AiNovelist は静的リスト、
-      // OpenAI 互換は active endpoint を叩く。Anthropic は動的 caps に登録しない）
+      // OpenAI 互換は active endpoint を叩く。Anthropic は refreshDynamicCapsForProvider を通さず、
+      // 取得後に専用の登録 registerAnthropicModelCaps で context／最大出力だけを登録する）
       const models = isDynamicCapsProvider(requestedProvider)
         ? await refreshDynamicCapsForProvider(requestedProvider, {
             force: true,
@@ -1039,10 +1095,20 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         });
         return;
       }
+      // Anthropic は mergeDynamicCaps を通さない専用の登録（表に無い id の context／最大出力だけ）。
+      const anthropicCapsChanged =
+        requestedProvider === "anthropic" && registerAnthropicModelCaps(models);
       set(
         isDynamicCapsProvider(requestedProvider)
           ? { isLoadingModels: false, modelLoadError: null }
-          : { models, isLoadingModels: false, modelLoadError: null },
+          : {
+              models,
+              isLoadingModels: false,
+              modelLoadError: null,
+              ...(anthropicCapsChanged
+                ? { modelCapsRevision: get().modelCapsRevision + 1 }
+                : {}),
+            },
       );
     } catch (error) {
       if (!isCurrentRequest()) return;

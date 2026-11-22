@@ -692,12 +692,23 @@ export declare class Backend {
    * operation it created are discarded on failure).
    */
   relatedScenesBegin(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR (summary and
+   * quote) of Scenes before `currentSceneId`, for a query the chat agent
+   * wrote. Closed: while the Native gate is closed this is an error
+   * (`CHAT_IR_GATE_CLOSED`) before the payload is parsed, and nothing in the
+   * product opens it. A call that ends is always the five keys
+   * `{status, success, items, eventIds, excludedEventIds}` with a status of
+   * the closed set; only a gate or a request-shape refusal is an error.
+   */
+  chatAgentIrSelect(payload: any): Promise<string>
   relatedScenesContinue(ownerKey: string, operationTicket: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * `nir1-publication` (K3/2). One command carries both the wait for the
    * Graph and the renderer's settle declaration (CP-3a D5). The Graph is
-   * handed out only when it is restricted, stopped and published (PUB-G),
-   * and again here at return.
+   * handed out only when the product gate is open (PUB-G) and the profile is
+   * unrestricted or, if restricted, its stop barrier is confirmed; checked
+   * again here at return (and before a Graph-only click handle is kept).
    */
   relatedScenesGraphContinue(ownerKey: string, request: any, callerIdentity?: string | undefined | null): Promise<string>
   relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>
@@ -1048,8 +1059,19 @@ export declare class Backend {
    */
   narrativeExtractionCaptureWorkspaceBinding(expectedWorkspacePath: string): Promise<string>
   narrativeExtractionCreateRun(payload: any, workspaceBinding: any): Promise<string>
+  /**
+   * Read-only: the Native `codex-catalog` Source revision token, pinned to
+   * the captured extraction workspace authority (DR-CSX-1).
+   */
+  narrativeExtractionResolveCodexCatalogRevision(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
+  /**
+   * Read-only: the current revisions of the Chronicle Proposals that cite one
+   * Scene as evidence, one page (SRA/1 R1-R3). Native checks the project
+   * binding and caps the page size.
+   */
+  narrativeExtractionListSceneProposals(payload: any): Promise<string>
   narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
   narrativeExtractionListChronicleTaskResumeCandidates(payload: any): Promise<string>
   narrativeExtractionCancelRun(payload: any, workspaceBinding: any): Promise<string>

@@ -111,7 +111,9 @@ function showsGraph(fetch: Nir1RelatedScenesFetchResult | null): boolean {
     ((fetch.graphOutcome === "graph-ready" && fetch.graph) ||
       fetch.graphOutcome === "graph-unavailable:restart-required" ||
       // K3/2 T-1 guidance (NIR-1 DA-2 ST3, DR-DA2-33): only while the
-      // activation UI constant is on too.
+      // activation UI constant is on too. Native no longer answers
+      // `profile-not-restricted` (K3/2 Graph row, K32R-3), so this branch is
+      // not reached; it stays until its own removal.
       (PROFILE_ACTIVATION_UI_ENABLED &&
         fetch.graphOutcome === "graph-unavailable:profile-not-restricted")),
   );

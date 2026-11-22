@@ -14,6 +14,7 @@ import {
   type CliProcessRunner,
 } from "../cliAi.js";
 import { prepareIsolatedCodexHome } from "./isolatedHome.js";
+import { mastraOriginalEnv } from "../mastraEnv.js";
 import type { JsonRpcWire } from "./jsonRpcConnection.js";
 
 const CODEX_APP_SERVER_ARGS = [
@@ -94,7 +95,7 @@ async function defaultResolveExecutable(
     detectionResult = await detectCliBinaryMain("codex", {
       runner,
       platform,
-      env: process.env,
+      env: mastraOriginalEnv(),
       homeDir: os.homedir(),
       isFile: async (candidate) => {
         try {

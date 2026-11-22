@@ -23,6 +23,15 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+import {
+  containsAgentSettingKey,
+  findInvalidAgentSettingChanges,
+} from "./agentSettingCatalog.js";
+import { MODEL_CAPABILITY_SNAPSHOT_COMMAND } from "./modelCapabilitySnapshotWire.js";
+import {
+  MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  MASTRA_AGENT_TURN_START_COMMAND,
+} from "./mastraAgentTurnWire.js";
 import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
@@ -831,6 +840,14 @@ export interface NapiBackendLike {
     callerIdentity?: string,
   ): Promise<string>;
   /**
+   * chat IR S1-A (DR-CHATIR-S1-27). The approved Chronicle IR of the Scenes
+   * before `currentSceneId` for a query the chat agent wrote, one-shot. Closed:
+   * Main refuses it before this is called, and Native's gate refuses it before
+   * the payload is read. Answers the five keys `{ status, success, items, eventIds,
+   * excludedEventIds }` (S1-A2).
+   */
+  chatAgentIrSelect?(request: unknown): Promise<string>;
+  /**
    * One command for both the wait for the Graph and the renderer's settle
    * declaration (CP-3a D5): `{ operationTicket, rawSceneIds }` or
    * `{ operationTicket, settle }`, mutually exclusive.  `nir1-publication`.
@@ -1173,6 +1190,10 @@ export interface NapiBackendLike {
     workspaceBinding: unknown,
   ): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
+  narrativeExtractionResolveCodexCatalogRevision?(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
   narrativeExtractionIsRunResumableForReview?(
     payload: unknown,
@@ -1180,6 +1201,7 @@ export interface NapiBackendLike {
   narrativeExtractionListChronicleTaskResumeCandidates?(
     payload: unknown,
   ): Promise<string>;
+  narrativeExtractionListSceneProposals?(payload: unknown): Promise<string>;
   narrativeExtractionCancelRun(
     payload: unknown,
     workspaceBinding: unknown,
@@ -1487,6 +1509,61 @@ function requireChronicleTaskResumeCandidatesPayload(
   return { projectId, limit };
 }
 
+/**
+ * The page size cap lives in Native (SCENE_PROPOSALS_PAGE_MAX) and cuts a larger
+ * request down to it; Main only keeps the value a Rust `u32` can hold.
+ */
+const SCENE_PROPOSALS_LIMIT_WIRE_MAX = 0xffff_ffff;
+/**
+ * An identity or cursor longer than this cannot be one of ours. Native counts
+ * UTF-8 bytes (`IDENTITY_MAX_BYTES`) and is the final authority; Main counts the
+ * same unit so a multi-byte id is refused here with the same limit.
+ */
+const SCENE_PROPOSALS_ID_MAX_BYTES = 256;
+
+function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
+  const command = "narrative_extraction_list_scene_proposals";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "sceneId", "cursor", "limit"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (key: "projectId" | "sceneId" | "cursor") => {
+    const value = requireNonEmptyString(payload, key, command);
+    if (
+      value.trim().length === 0 ||
+      value.trim() !== value ||
+      new TextEncoder().encode(value).length > SCENE_PROPOSALS_ID_MAX_BYTES
+    ) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-empty exact string of at most ${SCENE_PROPOSALS_ID_MAX_BYTES} bytes`,
+      );
+    }
+    return value;
+  };
+  const validated: CommandArgs = {
+    projectId: exactString("projectId"),
+    sceneId: exactString("sceneId"),
+  };
+  if (Object.hasOwn(payload, "cursor") && payload.cursor !== undefined) {
+    validated.cursor = exactString("cursor");
+  }
+  if (Object.hasOwn(payload, "limit") && payload.limit !== undefined) {
+    const limit = requireSafeInteger(payload, "limit", command);
+    if (limit < 1 || limit > SCENE_PROPOSALS_LIMIT_WIRE_MAX) {
+      throw new Error(
+        `invalid args \`limit\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    validated.limit = limit;
+  }
+  return validated;
+}
+
 function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
   const command = "narrative_extraction_is_run_resumable_for_review";
   const payload = requireRecord(args, "payload", command);
@@ -1572,6 +1649,36 @@ function requireNarrativeExtractionBoundMutation(
     requirePresent(args, "payload", command),
     requireNarrativeExtractionWorkspaceBinding(args, command),
   ];
+}
+
+/**
+ * `narrative_extraction_resolve_codex_catalog_revision` (DR-CSX-1): read-only.
+ * The payload names only the Project; Native derives the Source key and the
+ * token itself, so the renderer cannot ask for any other Source.
+ */
+function requireResolveCodexCatalogRevisionArgs(
+  args: CommandArgs,
+): readonly [CommandArgs, CommandArgs] {
+  const command = "narrative_extraction_resolve_codex_catalog_revision";
+  const [, workspaceBinding] = requireNarrativeExtractionBoundMutation(
+    args,
+    command,
+  );
+  const payload = requireRecord(args, "payload", command);
+  for (const key of Object.keys(payload)) {
+    if (key !== "projectId") {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  if (projectId.trim() !== projectId) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  return [{ projectId }, workspaceBinding];
 }
 
 function requireNarrativeExtractionCaptureWorkspacePath(
@@ -3001,6 +3108,33 @@ function validateAiAuditRedactions(
       );
     }
   });
+}
+
+/**
+ * `ai_audit_append_batch` of the NAPI table, as a function: the checks of the
+ * arguments (the workspace path, the project, 1..256 events of the exact keys,
+ * the NIR-1 local namespace reservation) and the call into Native.
+ *
+ * Electron main's agent audit sink (MP-3b, DR-MP3-23) appends through this too,
+ * so a batch Main writes passes the same checks as one the renderer sends and
+ * the two cannot drift. It adds no command: the sink calls it with the backend
+ * Main holds, and no renderer reaches it except through the NAPI entry above.
+ */
+export async function runAiAuditAppendBatch(
+  backend: Pick<NapiBackendLike, "aiAuditAppendBatch">,
+  args: CommandArgs,
+): Promise<unknown> {
+  return parseWire(
+    await backend.aiAuditAppendBatch(
+      requireNonEmptyString(
+        args,
+        "expectedWorkspacePath",
+        "ai_audit_append_batch",
+      ),
+      requireAiAuditProjectId(args, "ai_audit_append_batch"),
+      requireAiAuditEvents(args),
+    ),
+  );
 }
 
 function requireAiAuditEvents(args: CommandArgs): CommandArgs[] {
@@ -6652,6 +6786,38 @@ function parseWire(json: string): unknown {
 }
 
 /**
+ * `save_global_settings` は GlobalSettings 全体の read-modify-write で、UI の設定変更も agent の
+ * 「設定変更の提案」の適用も同じ経路を通る。agent に変更を提案させてよい 15 キー
+ * （`agentSettingCatalog`）は、保存済みの値から**変わったもの**だけを、UI と同じ範囲・step・型で
+ * 再検証する。変わっていない値は見ない（旧版の範囲外の値や移行値が 1 つあっても、他の設定の保存を
+ * 妨げない）。font は main に選択肢が無いので、制御文字・200 字超でないかだけを見る。
+ */
+async function assertAgentSettingChangesValid(
+  b: NapiBackendLike,
+  settings: unknown,
+): Promise<void> {
+  const incoming =
+    typeof settings === "object" && settings !== null
+      ? (settings as { userPreferences?: unknown }).userPreferences
+      : undefined;
+  if (!containsAgentSettingKey(incoming)) return;
+  const current = parseWire(await b.getGlobalSettings()) as {
+    userPreferences?: unknown;
+  } | null;
+  const invalid = findInvalidAgentSettingChanges(
+    incoming,
+    current?.userPreferences,
+  );
+  if (invalid.length > 0) {
+    throw new Error(
+      `invalid settings for \`save_global_settings\`: ${invalid
+        .map((entry) => `${entry.key}: ${entry.message}`)
+        .join("; ")}`,
+    );
+  }
+}
+
+/**
  * `reply_to_annotation` commits a local DB row, but Native's read-back row
  * contains the reply body and other annotation plaintext.  Keep the local
  * mutation usable while returning only the opaque generated id over IPC.
@@ -6731,6 +6897,78 @@ export interface NapiCommandSpec {
     args: CommandArgs,
     deps: DispatchDeps,
   ): Promise<unknown>;
+}
+
+/**
+ * The query bound of `chat_agent_ir_select` in UTF-16 code units, the unit of
+ * the contract (§3.2), Related Scenes and `string.length`. Native checks it
+ * again and is the authority (DR-CHATIR-S1-14).
+ */
+export const CHAT_AGENT_IR_QUERY_UTF16_MAX = 500;
+
+/**
+ * The Chronicle event IDs one `chat_agent_ir_select` request carries as
+ * candidates (S1-A2): at most 30 (the year table's own over-fetch bound), each
+ * 1 to 200 UTF-16 code units, none twice. Native checks the same and is the
+ * authority; `chatAgentIrWire.ts` holds the same values for the renderer.
+ */
+export const CHAT_AGENT_IR_CHRONICLE_IDS_MAX = 30;
+export const CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX = 200;
+
+function requireChatAgentIrSelectRequest(args: CommandArgs) {
+  const command = "chat_agent_ir_select";
+  requireExactKeys(
+    args,
+    [
+      "query",
+      "projectId",
+      "expectedWorkspacePath",
+      "currentSceneId",
+      "chronicleEventIds",
+    ],
+    command,
+  );
+  const query = requireNonEmptyString(args, "query", command);
+  if (
+    query.trim().length === 0 ||
+    query.length > CHAT_AGENT_IR_QUERY_UTF16_MAX
+  ) {
+    throw new Error(
+      `IPC_INVALID_REQUEST: ${command} query is empty or exceeds ${CHAT_AGENT_IR_QUERY_UTF16_MAX} UTF-16 code units`,
+    );
+  }
+  // The key is required: a missing key is not "no candidate" (an empty array is).
+  const chronicleEventIds = args.chronicleEventIds;
+  // A hole (`[, "a"]`) is refused: `every` skips it, `Object.keys` does not.
+  // An ID of only white space is refused with U+0085 included: Native's Rust
+  // `trim` counts it as white space, JS `trim` does not (the stricter side).
+  if (
+    !Array.isArray(chronicleEventIds) ||
+    chronicleEventIds.length !== Object.keys(chronicleEventIds).length ||
+    chronicleEventIds.length > CHAT_AGENT_IR_CHRONICLE_IDS_MAX ||
+    !chronicleEventIds.every(
+      (id) =>
+        typeof id === "string" &&
+        !/^[\s\u0085]*$/u.test(id) &&
+        id.length <= CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX,
+    ) ||
+    new Set(chronicleEventIds).size !== chronicleEventIds.length
+  ) {
+    throw new Error(
+      `IPC_INVALID_REQUEST: ${command} chronicleEventIds is not up to ${CHAT_AGENT_IR_CHRONICLE_IDS_MAX} distinct IDs of 1 to ${CHAT_AGENT_IR_CHRONICLE_ID_UTF16_MAX} UTF-16 code units`,
+    );
+  }
+  return {
+    query,
+    projectId: requireNonEmptyString(args, "projectId", command),
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
+    chronicleEventIds: [...(chronicleEventIds as readonly string[])],
+  };
 }
 
 function requireRelatedScenesBeginRequest(args: CommandArgs) {
@@ -9351,9 +9589,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   save_global_settings: {
     // Tauri の unit 返りコマンドは null を resolve する（ワイヤ同形）
     run: async (b, a) => {
-      await b.saveGlobalSettings(
-        requirePresent(a, "settings", "save_global_settings"),
-      );
+      const settings = requirePresent(a, "settings", "save_global_settings");
+      await assertAgentSettingChangesValid(b, settings);
+      await b.saveGlobalSettings(settings);
       return null;
     },
   },
@@ -9467,18 +9705,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
   ai_audit_append_batch: {
-    run: async (b, a) =>
-      parseWire(
-        await b.aiAuditAppendBatch(
-          requireNonEmptyString(
-            a,
-            "expectedWorkspacePath",
-            "ai_audit_append_batch",
-          ),
-          requireAiAuditProjectId(a, "ai_audit_append_batch"),
-          requireAiAuditEvents(a),
-        ),
-      ),
+    run: (b, a) => runAiAuditAppendBatch(b, a),
   },
   ai_audit_read_snapshot: {
     run: async (b, a) =>
@@ -9818,6 +10045,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireRelatedScenesBeginRequest(a),
           callerIdentityWire(a),
         ),
+      ),
+  },
+  chat_agent_ir_select: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatAgentIrSelect,
+          "chatAgentIrSelect",
+        )(requireChatAgentIrSelectRequest(a)),
       ),
   },
   related_scenes_continue: {
@@ -11092,6 +11329,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
     },
   },
+  narrative_extraction_resolve_codex_catalog_revision: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireResolveCodexCatalogRevisionArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionResolveCodexCatalogRevision,
+          "narrativeExtractionResolveCodexCatalogRevision",
+        )(payload, workspaceBinding),
+      );
+    },
+  },
   narrative_extraction_get_run: {
     run: async (b, a) =>
       parseWire(
@@ -11130,6 +11380,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeExtractionListChronicleTaskResumeCandidates,
           "narrativeExtractionListChronicleTaskResumeCandidates",
         )(requireChronicleTaskResumeCandidatesPayload(a)),
+      ),
+  },
+  narrative_extraction_list_scene_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionListSceneProposals,
+          "narrativeExtractionListSceneProposals",
+        )(requireSceneProposalsPayload(a)),
       ),
   },
   narrative_extraction_cancel_run: {
@@ -12026,8 +12286,11 @@ async function resolvePostEffectAiSnapshot(
  * TOCTOU で「read#1 の provider のキーが read#2 の endpoint へ」流れる事故を防ぐ）。
  * secrets 不在は構成エラーとして明示。キー未設定時は resolveApiKeyForRequest が Tauri と
  * 同じ `No API key configured for <provider>` を throw する。
+ *
+ * MP-3b（DR-MP3-13）: Main の agent 送信も、この関数を共有する（再実装しない。
+ * 設定を 1 回だけ読む規則はここにしかない）。
  */
-async function resolveRequiredAiKeyAndSettings(
+export async function resolveRequiredAiKeyAndSettings(
   backend: NapiBackendLike,
   args: CommandArgs,
   deps: DispatchDeps,
@@ -12248,6 +12511,14 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // PUB-G #36 (DR-PUBG-36-1): the renderer's "has unsaved edits" flag for
   // the fatal-exit confirmation. Main-local; never reaches Native.
   REPORT_UNSAVED_EDITS_COMMAND,
+  // モデル能力の registry の写し（PR-C2、Q17）: 採用済みの写し（cache、無ければ同梱）を返す読み取り
+  // 専用の 1 本。main の常駐 manager が持ち、Native へは行かない。取得を始める command は無い。
+  MODEL_CAPABILITY_SNAPSHOT_COMMAND,
+  // Mastra agent turn (MP-3b, DR-MP3-4): a start that settles when the turn
+  // does, and its cancel. Both are Main-owned; the route is closed in every
+  // product launch (`mastraAgentTurnGate.ts`) and never reaches Native.
+  MASTRA_AGENT_TURN_START_COMMAND,
+  MASTRA_AGENT_TURN_CANCEL_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

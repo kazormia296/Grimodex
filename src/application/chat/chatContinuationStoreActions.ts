@@ -4,6 +4,7 @@ import {
   parseMentionedSceneIdsFromMetadata,
 } from "./chatStoreSupport";
 import type { SessionMutationAuthority } from "./chatSessionAuthority";
+import { regenerationSourceUser } from "@/features/chat/chatMessageRows";
 import { getPromptCatalog } from "@/prompts/index";
 
 interface ChatComposerAuthoritySnapshot {
@@ -69,16 +70,10 @@ export function createChatContinuationStoreActions(deps: {
       // answer intact until its replacement has been persisted.
       if (isStreaming || isLoadingSessions || isLoadingMessages) return;
       const authority = deps.captureAuthority();
-      const assistantIndex = messages.findIndex(
-        (message) => message.id === assistantMessageId,
-      );
-      if (assistantIndex === -1) return;
 
-      // 直前のユーザーメッセージを探す
-      const userMessage = [...messages]
-        .slice(0, assistantIndex)
-        .reverse()
-        .find((message) => message.role === "user");
+      // 直前（system・要約のマーカーを除く）のユーザーメッセージ。直前に user が無い
+      // assistant（失敗・停止した turn が残した行）では、前の turn の発話を再送しない。
+      const userMessage = regenerationSourceUser(messages, assistantMessageId);
       if (!userMessage) return;
 
       // @scene mention の per-message pin は user メッセージの metadata

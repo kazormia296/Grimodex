@@ -1,25 +1,14 @@
-import type { TemporalNodeId } from "../nodes";
-
-export type StoryCompare =
-  | { readonly kind: "before" }
-  | { readonly kind: "after" }
-  | { readonly kind: "equal" }
-  | { readonly kind: "incomparable" };
-
-export interface StoryRankLayer {
-  readonly rank: number;
-  readonly nodeIds: readonly TemporalNodeId[];
-}
-
-export interface StoryRankResult {
-  readonly layers: readonly StoryRankLayer[];
-  /** Pairwise relation; missing key ⇒ incomparable */
-  readonly compare: (
-    left: TemporalNodeId,
-    right: TemporalNodeId,
-  ) => StoryCompare;
-  readonly equalTimeGroups: ReadonlyMap<TemporalNodeId, string>;
-}
+import type {
+  StoryCompare,
+  StoryRankResult,
+  TemporalNodeId,
+} from "@/../electron/shared/readDomain/features/narrative-extraction/temporal/types";
+// 型の正本は shared module（MP-4b PR-3b-2）。ここでは後方互換のため再エクスポートする。
+export type {
+  StoryCompare,
+  StoryRankLayer,
+  StoryRankResult,
+} from "@/../electron/shared/readDomain/features/narrative-extraction/temporal/types";
 
 /**
  * Build partial order ranks from a before-or-equal adjacency.

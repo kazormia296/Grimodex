@@ -49,10 +49,6 @@ export const COUNTERS = Object.freeze([
   "preparesStarted",
   "preparesReady",
   "prepareFailures",
-  "stamp0Missing",
-  "stampFresh",
-  "stampStale",
-  "stampUnavailable",
   "driftAtQuery",
   "lateCached",
   "deferredReleased",
@@ -137,13 +133,7 @@ export function nativeRows(records) {
     startSlot: record.startSlot?.kind ?? null,
     outcome: record.ticket?.outcome ?? null,
     disposition: record.ticket?.disposition ?? null,
-    stamp: record.ticket?.freshnessStamp?.result ?? null,
-    // 受渡し（`begin_deferred` の probe）から、owner thread の query の時の
-    // 2 つ目の stamp の試み（release の後）と決着までの時間（eval の時計）。
-    handOverToStampMs:
-      record.ticket?.freshnessStamp?.attemptedAtNs != null
-        ? (record.ticket.freshnessStamp.attemptedAtNs - record.tBeginNs) / 1e6
-        : null,
+    // 受渡し（`begin_deferred` の probe）から決着までの時間（eval の時計）。
     handOverToSettledMs:
       record.ticket?.tSettledNs != null
         ? (record.ticket.tSettledNs - record.tBeginNs) / 1e6
@@ -336,11 +326,6 @@ function summarizeHeld(rows) {
       (row) => row.page.requery.graph?.status ?? "none",
     ),
     notQuietAtStart: seeded.filter((row) => !row.quiet.reachedQuiet).length,
-    handOverToStampMs: distribution(
-      seeded
-        .map((row) => firstBegin(row)?.handOverToStampMs)
-        .filter(Number.isFinite),
-    ),
     handOverToSettledMs: distribution(
       seeded
         .map((row) => firstBegin(row)?.handOverToSettledMs)

@@ -49,6 +49,9 @@ test("R7: hook の消費者の観測から、分類器が F1〜F7 を判定で�
     reason: null,
     disposition: "unused",
     busyCause: null,
+    // K6/7 (ii-b): the Native's observation, carried as recorded.
+    workerDrift: { result: "clear", cause: null },
+    requalification: { result: "passed", reason: null, returned: true },
   });
   // 子: 契機の印と窓は製品の timing、到着は wrapper の層の時刻、commit は React。
   assert.equal(child.generation, 2);
@@ -647,11 +650,6 @@ function firstRenderInput(overrides = {}) {
         ticket: {
           ...nativeRecord().ticket,
           disposition: "used",
-          freshnessStamp: {
-            attemptedAtNs: 15_000_000,
-            result: "stamp0-missing",
-            matched: null,
-          },
         },
       }),
     ],
@@ -753,6 +751,35 @@ test("K6/6 FR-7: 親の fetch が Graph を持たない sample（graph-late）�
   );
 });
 
+test("K6/7 N-g（検出力の取り直し）: 旧形の counters の stamp0Missing は dPrimeCounters に出さず、読まない（K6/7 で key の一覧から外した）", () => {
+  const row = k64GraphSampleRow(
+    input({
+      r1: null,
+      counters: {
+        before: {
+          begins: 10,
+          cacheHits: 3,
+          lateCached: 3,
+          deferredReleased: 0,
+          stamp0Missing: 0,
+        },
+        atEnd: {
+          begins: 12,
+          cacheHits: 4,
+          lateCached: 4,
+          deferredReleased: 1,
+          stamp0Missing: 3,
+        },
+      },
+    }),
+  );
+  assert.equal(
+    Object.hasOwn(row.followUp.dPrimeCounters, "stamp0Missing"),
+    false,
+  );
+  assert.equal(row.followUp.dPrimeCounters.deferredReleased, 1);
+});
+
 test("K6/6 FR-7（dev の予行）: dev の preview は parentMaterialContribution だけを渡し、子は Scene の単位のまま、親の寄与だけを Revision の単位で記録する", () => {
   const row = k64GraphSampleRow(
     firstRenderInput({
@@ -788,4 +815,47 @@ test("K6/6 FR-7（dev の予行）: dev の preview は parentMaterialContributi
     }),
   );
   assert.equal(formal.followUp.parent.contribution.expectedContribution, false);
+});
+
+test("品質 v3: 親と子の fetch の evidence・rowExcerpts（hash 済み）は followUp.parent・followUp.child の記録に載る。無い観測（trace の probe など）の記録の形は変えない", () => {
+  const evidence = {
+    graphOnly: {
+      sceneId: "u-1",
+      hop: 1,
+      pinEntityId: "e-1",
+      canonicalRange: { start: 0, end: 10 },
+      excerptSha256: "a".repeat(64),
+      excerptUtf16Length: 10,
+      edges: [],
+    },
+    pathAttachments: [],
+  };
+  const rows = [
+    {
+      sceneId: "u-1",
+      kind: "raw",
+      excerptSha256: "b".repeat(64),
+      excerptUtf16Length: 3,
+    },
+  ];
+  const plain = k64GraphSampleRow(input());
+  assert.equal("evidence" in plain.followUp.parent, false);
+  assert.equal("rowExcerpts" in plain.followUp.child, false);
+  const row = k64GraphSampleRow(
+    input({
+      observation: observation({
+        parent: { evidence: null, rowExcerpts: rows },
+        child: { evidence, rowExcerpts: [...rows, ...rows] },
+      }),
+    }),
+  );
+  assert.equal(row.followUp.parent.evidence, null);
+  assert.deepEqual(row.followUp.parent.rowExcerpts, rows);
+  assert.deepEqual(row.followUp.child.evidence, evidence);
+  assert.equal(row.followUp.child.rowExcerpts.length, 2);
+  // Everything else of the records is what it was.
+  const { evidence: _e, rowExcerpts: _r, ...parentRest } = row.followUp.parent;
+  assert.deepEqual(parentRest, plain.followUp.parent);
+  const { evidence: _ce, rowExcerpts: _cr, ...childRest } = row.followUp.child;
+  assert.deepEqual(childRest, plain.followUp.child);
 });

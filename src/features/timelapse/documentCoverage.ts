@@ -10,6 +10,7 @@ export {
   breakTimelapseDocumentCapture,
   isTimelapseReplacementFenceActive,
   isTimelapseReplacementFenceActiveForDocument,
+  openOwnSaveCapture,
   subscribeTimelapseReplacementFence,
 } from "./recorder";
 
@@ -20,6 +21,7 @@ export type {
   TimelapseDocStepCoverageClaim,
   TimelapseDocumentIdentity,
   TimelapseDocumentRef,
+  TimelapseOwnSaveCapture,
   TimelapseReplacementFence,
 } from "./recorder";
 

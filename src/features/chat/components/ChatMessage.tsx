@@ -12,6 +12,7 @@ import { formatCost } from "../modelPricing";
 import { looksLikeMissingInfo } from "../agentSuggestion";
 import { stripToolProtocol } from "../toolProtocol";
 import { useChatStore } from "../chatStore";
+import { regenerationSourceUser } from "../chatMessageRows";
 import { resolveModelCapabilities } from "../agent/modelLimits";
 import { useAiSettingsStore } from "../store";
 import {
@@ -23,6 +24,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
+import { SettingProposalCard } from "./SettingProposalCard";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { SummaryBlock } from "./SummaryBlock";
 import { CodexItemList } from "./CodexItemList";
@@ -112,6 +114,12 @@ function ChatMessageImpl({
       ? state.streamingDraft.content
       : null,
   );
+  // 直前に user の無い assistant（失敗・停止した turn が残した行）は再生成させない。
+  const canRegenerate = useChatStore(
+    (state) =>
+      msg.role !== "assistant" ||
+      regenerationSourceUser(state.messages, msg.id) !== null,
+  );
   const messageContent = streamingContent ?? msg.content;
   const parsedMeta = useMemo(() => parseMetadata(msg.metadata), [msg.metadata]);
   const isSummary = "summary_id" in parsedMeta;
@@ -190,6 +198,7 @@ function ChatMessageImpl({
     !agentMode &&
     toolCalls.length === 0 &&
     !!onRetryWithAgent &&
+    canRegenerate &&
     agentSupportsTools &&
     looksLikeMissingInfo(safeContent);
 
@@ -250,6 +259,12 @@ function ChatMessageImpl({
                 {toolCalls.map((record, i) =>
                   record.name === "ask_user" ? (
                     <AnsweredQuestionBlock key={i} record={record} />
+                  ) : record.name === "propose_setting_change" &&
+                    record.settingProposal ? (
+                    <div key={i}>
+                      <ToolCallBlock record={record} />
+                      <SettingProposalCard proposal={record.settingProposal} />
+                    </div>
                   ) : (
                     <ToolCallBlock key={i} record={record} />
                   ),
@@ -317,7 +332,7 @@ function ChatMessageImpl({
                 onSaveSnippetQuick={onSaveSnippetQuick}
                 onSaveSnippetDetailed={onSaveSnippetDetailed}
                 onCopy={handleCopy}
-                onRegenerate={onRegenerate}
+                onRegenerate={canRegenerate ? onRegenerate : undefined}
                 onDelete={onDelete}
               />
             )}

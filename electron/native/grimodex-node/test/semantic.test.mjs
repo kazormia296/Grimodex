@@ -50,7 +50,19 @@ function makeFixture(label) {
     root,
     backend,
     events,
-    cleanup: () => {
+    // A Backend that opened a workspace keeps workspace maintenance writing
+    // under it after the commands resolve (backups are off, the rest of the
+    // maintenance is not). A synchronous rmSync raced that writer and failed
+    // with ENOTEMPTY on the workspace directory; node's rimraf retries only the
+    // rmdir, not the listing, so maxRetries does not help. Prove Closed first,
+    // as the other Native tests do.
+    cleanup: async () => {
+      const wire = await backend.shutdownWorkspaceLifecycle();
+      assert.equal(
+        JSON.parse(wire).status,
+        "closed",
+        "Native cleanup must prove Closed",
+      );
       try {
         rmSync(root, {
           recursive: true,

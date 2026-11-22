@@ -1,0 +1,86 @@
+{
+  "tool": "list_open_foreshadows",
+  "cases": [
+    {
+      "case": "rows: secret=0・未回収・未放棄だけ（browser-mock では Drizzle 側の分岐）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_open_foreshadows",
+        "summary": "2 open foreshadowing items",
+        "tokensUsed": 167,
+        "content": [
+          {
+            "id": "fs-1",
+            "title": "老魔術師の杖",
+            "intent": "杖が後で鍵になる",
+            "loadBearing": "critical",
+            "setupCount": 2
+          },
+          {
+            "id": "fs-5",
+            "title": "軽い伏線",
+            "intent": "",
+            "loadBearing": null,
+            "setupCount": 0
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"fs-1\",\"title\":\"老魔術師の杖\",\"intent\":\"杖が後で鍵になる\",\"loadBearing\":\"critical\",\"setupCount\":2},{\"id\":\"fs-5\",\"title\":\"軽い伏線\",\"intent\":\"\",\"loadBearing\":null,\"setupCount\":0}]"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {},
+      "result": {
+        "name": "list_open_foreshadows",
+        "summary": "0 open foreshadowing items",
+        "tokensUsed": 2,
+        "content": []
+      },
+      "contentJson": "[]"
+    },
+    {
+      "case": "XPROJ: 他 project は他 project の行だけ",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {},
+      "result": {
+        "name": "list_open_foreshadows",
+        "summary": "1 open foreshadowing items",
+        "tokensUsed": 100,
+        "content": [
+          {
+            "id": "x-fs-1",
+            "title": "他作品の伏線",
+            "intent": "他作品の意図（secret）",
+            "loadBearing": "critical",
+            "setupCount": 1
+          }
+        ]
+      },
+      "contentJson": "[{\"id\":\"x-fs-1\",\"title\":\"他作品の伏線\",\"intent\":\"他作品の意図（secret）\",\"loadBearing\":\"critical\",\"setupCount\":1}]"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {},
+      "result": {
+        "name": "list_open_foreshadows",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": []
+      },
+      "contentJson": "[]"
+    }
+  ]
+}

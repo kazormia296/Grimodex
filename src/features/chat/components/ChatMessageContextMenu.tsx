@@ -35,6 +35,8 @@ interface ChatMessageContextMenuProps {
   onDelete: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
   mutationsDisabled?: boolean;
+  /** 直前に user の無い assistant（失敗・停止の残り行）は false。省略時は true。 */
+  canRegenerate?: boolean;
 }
 
 export function ChatMessageContextMenu({
@@ -55,6 +57,7 @@ export function ChatMessageContextMenu({
   onDelete,
   onRegenerate,
   mutationsDisabled = false,
+  canRegenerate = true,
 }: ChatMessageContextMenuProps) {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -231,6 +234,7 @@ export function ChatMessageContextMenu({
             handleCopy,
           )}
           {!mutationsDisabled &&
+            canRegenerate &&
             menuItem(
               "ctx-regenerate",
               <RefreshCw className="h-3 w-3" />,

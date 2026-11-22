@@ -33,15 +33,38 @@ vi.mock("@/lib/perfLog", () => ({ recordMark: vi.fn() }));
 // Surface onInsert as a clickable button so we can assert the inserted text is
 // stripped of pseudo tool markup (editor-insert leak matters for a writing tool).
 vi.mock("./ChatMessageActions", () => ({
-  ChatMessageActions: ({ onInsert }: { onInsert?: () => void }) =>
-    onInsert ? (
-      <button type="button" data-testid="insert-btn" onClick={onInsert}>
-        insert
-      </button>
-    ) : null,
+  ChatMessageActions: ({
+    onInsert,
+    onRegenerate,
+  }: {
+    onInsert?: () => void;
+    onRegenerate?: (messageId: string) => void;
+  }) => (
+    <>
+      {onInsert ? (
+        <button type="button" data-testid="insert-btn" onClick={onInsert}>
+          insert
+        </button>
+      ) : null}
+      {onRegenerate ? (
+        <button
+          type="button"
+          data-testid="regenerate-btn"
+          onClick={() => onRegenerate("m1")}
+        >
+          regenerate
+        </button>
+      ) : null}
+    </>
+  ),
 }));
 vi.mock("./MessageBadge", () => ({ MessageBadge: () => null }));
 vi.mock("./ToolCallBlock", () => ({ ToolCallBlock: () => null }));
+vi.mock("./SettingProposalCard", () => ({
+  SettingProposalCard: ({ proposal }: { proposal: { id: string } }) => (
+    <div data-testid={`proposal-card-${proposal.id}`} />
+  ),
+}));
 vi.mock("./ThinkingBlock", () => ({ ThinkingBlock: () => null }));
 vi.mock("./SummaryBlock", () => ({ SummaryBlock: () => null }));
 // Surface the SelectionToolbar's onCopy callback as a clickable button so we
@@ -69,9 +92,12 @@ vi.mock("@/features/editor/editorStore", () => ({
   useEditorStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({ showGhostPreview: vi.fn(), clearGhostPreview: vi.fn() }),
 }));
+const chatState = vi.hoisted(() => ({
+  messages: [] as Array<Record<string, unknown>>,
+}));
 vi.mock("../chatStore", () => ({
   useChatStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ agentMode: false }),
+    selector({ agentMode: false, messages: chatState.messages }),
 }));
 vi.mock("../store", () => ({
   useAiSettingsStore: (selector: (s: Record<string, unknown>) => unknown) =>
@@ -216,5 +242,134 @@ describe("ChatMessage — 擬似ツール記法の除去", () => {
     const bubble = screen.getByTestId("chat-message-m2");
     // user メッセージは加工せずそのまま（万一の貼り付け内容を壊さない）。
     expect(bubble.textContent).toContain("これは原文");
+  });
+});
+
+describe("ChatMessage — 設定変更の提案カード", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const record = (over: Record<string, unknown>) => ({
+    name: "propose_setting_change",
+    params: { key: "editor.fontSize", value: "20" },
+    resultSummary: "Proposed",
+    tokensUsed: 1,
+    ...over,
+  });
+
+  it("検証済みの提案（settingProposal）がある呼び出しだけカードを出す", () => {
+    renderMsg({
+      metadata: JSON.stringify({
+        tool_calls: [
+          record({
+            settingProposal: {
+              id: "ok-1",
+              key: "editor.fontSize",
+              value: "20",
+            },
+          }),
+        ],
+      }),
+    });
+    expect(screen.getByTestId("proposal-card-ok-1")).toBeInTheDocument();
+  });
+
+  it("提案の無い呼び出し（失敗・宣言外・params だけが同じ）にはカードを出さない", () => {
+    renderMsg({
+      metadata: JSON.stringify({
+        tool_calls: [
+          record({ resultSummary: "Invalid value: editor.fontSize must be" }),
+          record({ settingProposal: undefined }),
+        ],
+      }),
+    });
+    expect(screen.queryByTestId(/^proposal-card-/)).toBeNull();
+  });
+
+  it("別のツールの record に settingProposal が付いていてもカードを出さない", () => {
+    renderMsg({
+      metadata: JSON.stringify({
+        tool_calls: [
+          record({
+            name: "search_codex",
+            settingProposal: { id: "x", key: "editor.fontSize", value: "20" },
+          }),
+        ],
+      }),
+    });
+    expect(screen.queryByTestId(/^proposal-card-/)).toBeNull();
+  });
+});
+
+describe("ChatMessage regenerate action", () => {
+  const row = (id: string, role: "user" | "assistant", metadata?: string) => ({
+    id,
+    sessionId: "s1",
+    role,
+    content: `${id}-text`,
+    metadata: metadata ?? null,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+  const renderWithRegenerate = () =>
+    render(
+      <ChatMessage
+        msg={fakeMsg({ id: "m1" })}
+        isStreaming={false}
+        onInsert={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+  beforeEach(() => {
+    chatState.messages = [];
+  });
+
+  it("offers regeneration when the user message directly precedes", () => {
+    chatState.messages = [row("u0", "user"), row("m1", "assistant")];
+    renderWithRegenerate();
+    expect(screen.getByTestId("regenerate-btn")).toBeTruthy();
+  });
+
+  it("does not offer regeneration for a row a failed turn left without a user", () => {
+    chatState.messages = [
+      row("u0", "user"),
+      row("a0", "assistant"),
+      row("m1", "assistant", JSON.stringify({ runtime_error: "down" })),
+    ];
+    renderWithRegenerate();
+    expect(screen.queryByTestId("regenerate-btn")).toBeNull();
+  });
+
+  describe("「agent で再試行」", () => {
+    const missing = "その情報が見当たりません。";
+    const renderRetry = () =>
+      render(
+        <ChatMessage
+          msg={fakeMsg({ id: "m1", content: missing })}
+          isStreaming={false}
+          onInsert={vi.fn()}
+          onRetryWithAgent={vi.fn()}
+        />,
+      );
+
+    it("直前が user なら出す", () => {
+      chatState.messages = [
+        row("u0", "user"),
+        { ...row("m1", "assistant"), content: missing },
+      ];
+      renderRetry();
+      expect(screen.getByTestId("agent-retry-m1")).toBeTruthy();
+    });
+
+    it("直前に user の無い行（失敗・停止の残り）では出さない", () => {
+      chatState.messages = [
+        row("u0", "user"),
+        row("a0", "assistant"),
+        {
+          ...row("m1", "assistant", JSON.stringify({ stopped: true })),
+          content: missing,
+        },
+      ];
+      renderRetry();
+      expect(screen.queryByTestId("agent-retry-m1")).toBeNull();
+    });
   });
 });

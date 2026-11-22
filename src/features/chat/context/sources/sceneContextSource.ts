@@ -15,7 +15,11 @@ import type {
   SceneTimeIndex,
   TemporalAnchor,
 } from "@/features/codex/phaseResolver";
-import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
+import {
+  buildSceneTimeIndex,
+  listScenesBeforeInReadingOrder,
+} from "@/features/codex/context/sceneTimeIndex";
+import { isCodexContextModeHiddenFromAi } from "@/features/codex/context/codexVisibilityPolicy";
 import {
   canExposeResolvedCodexIdentity,
   canIncludeResolvedCodexContext,
@@ -1017,16 +1021,11 @@ export async function collectSceneContext(
     }
     chapterOutlines.push(...path.reverse());
   }
+  // 読む順（木の DFS 順）で直前の、あらすじのある場面。
   const previousReadingNode = currentScene
-    ? allNodes
-        .filter(
-          (node) =>
-            node.nodeType === "scene" &&
-            node.id !== scene.id &&
-            cmpKeys(node.sortOrder, currentScene.sortOrder) < 0 &&
-            Boolean(node.synopsis?.trim()),
-        )
-        .sort((left, right) => cmpKeys(right.sortOrder, left.sortOrder))[0]
+    ? listScenesBeforeInReadingOrder(allNodes, scene.id)
+        .filter((node) => Boolean(node.synopsis?.trim()))
+        .at(-1)
     : undefined;
   const previousScene = previousReadingNode?.synopsis
     ? {
@@ -1451,10 +1450,28 @@ export async function collectSceneContext(
     request.projectId,
     scene.id,
   );
+  // V1/V2 (CPL/1): name the scene's POV character. The rule is narrower than the
+  // pending-beat POV gate (contextEligibleIds) on purpose: only an id absent from
+  // the Codex index, or whose Phase-resolved mode is hidden (or unreadable, which
+  // fails closed), is withheld. suppress, an author auto-exclusion and a missing
+  // explicit pin do not matter: the author chose this character as the POV, and
+  // only the name is passed (never summary or content). Anything the snapshot
+  // scene carried is replaced, never trusted.
+  const scenePovId =
+    currentScene?.nodeType === "scene"
+      ? (currentScene.povCharacterId ?? null)
+      : null;
+  const scenePovEntry =
+    scenePovId !== null ? effectiveIndexById.get(scenePovId) : undefined;
+  const scenePovName =
+    scenePovEntry && !isCodexContextModeHiddenFromAi(scenePovEntry.contextMode)
+      ? scenePovEntry.name?.trim() || undefined
+      : undefined;
   const sceneWithSemanticLinks = {
     ...scene,
     semanticLinks:
       eligibleSemanticLinks.length > 0 ? eligibleSemanticLinks : undefined,
+    povName: scenePovName,
   };
 
   const promptInput: BuildSystemPromptInput = {

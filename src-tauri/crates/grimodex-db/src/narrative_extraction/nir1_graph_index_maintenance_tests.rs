@@ -4,6 +4,10 @@
 //! process-local and a newer authority retires older authorities' records.
 
 use super::*;
+use crate::narrative_extraction::discover_durable_maintenance_work_with_coordinates;
+use crate::narrative_extraction::maintenance_runtime::{
+    AutomaticRunKind, LEGACY_BACKFILL_WORK_KEY, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
 use crate::narrative_extraction::incremental_freshness::run_incremental_freshness_cycle;
 use crate::narrative_extraction::maintenance_lifecycle::create_maintenance_run_in_tx;
 use crate::narrative_extraction::maintenance_route_registry::{
@@ -50,6 +54,16 @@ use super::test_hooks::{install as install_hook, TestStage};
 const PROJECT: &str = "default-project";
 const CAPACITY_CODE: &str = "NIR1_GRAPH_CAPACITY_EXCEEDED";
 
+// GDV/1 acceptance (nir1-graph-dirty-binding-verify-proposal/1, section 8).
+#[path = "nir1_graph_index_maintenance_tests/gdv1_graph_binding_tests.rs"]
+mod gdv1_graph_binding_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_k2_byte_compat_tests.rs"]
+mod gdv1_k2_byte_compat_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_k2_stored_shape_tests.rs"]
+mod gdv1_k2_stored_shape_tests;
+#[path = "nir1_graph_index_maintenance_tests/gdv1_unchanged_behaviour_tests.rs"]
+mod gdv1_unchanged_behaviour_tests;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -89,6 +103,15 @@ fn qualified_scope(
 impl Fixture {
     /// One approved, qualified Entity/Relation Revision and no Graph binding.
     fn new() -> Result<Self> {
+        Self::new_with_marker(true)
+    }
+
+    /// `seed_run_and_catalog` (the shared A3 fixture) records the C2-ZC cutover
+    /// marker, so `new()` is a cutover-done workspace. `marker = false` deletes
+    /// that marker row at the end of construction, before any Graph publish: a
+    /// pre-cutover form made after the fact (the Revision and Freshness rows
+    /// were written after the marker).
+    fn new_with_marker(marker: bool) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-b-route-{}", uuid::Uuid::new_v4())),
         );
@@ -102,6 +125,16 @@ impl Fixture {
         qualified_scope(&db, &mut typed);
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
+        if !marker {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                    [Database::C2_ZC_CUTOVER_MIGRATION_ID],
+                )?;
+                Ok(())
+            })?;
+            assert_eq!(db.with_conn(Database::read_c2zc_cutover_marker)?, None);
+        }
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
         Ok(Self {
             authority,
@@ -112,7 +145,11 @@ impl Fixture {
 
     /// A fixture whose first gate-open cycle has published generation 1.
     fn published() -> Result<Self> {
-        let fixture = Self::new()?;
+        Self::published_with_marker(true)
+    }
+
+    fn published_with_marker(marker: bool) -> Result<Self> {
+        let fixture = Self::new_with_marker(marker)?;
         let recorder = Recorder::default();
         let result = run_cycle(&fixture, Some(&graph_seam()), &recorder)?;
         assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
@@ -122,6 +159,10 @@ impl Fixture {
 
     fn db(&self) -> &Database {
         self.authority.db()
+    }
+
+    fn marker(&self) -> Result<Option<i64>> {
+        self.db().with_conn(Database::read_c2zc_cutover_marker)
     }
 
     fn runtime(&self) -> &NirChronicleIndexRuntime {
@@ -170,11 +211,17 @@ impl Fixture {
 
     /// Judge the project exactly as the gate-open cycle would.
     fn judge(&self) -> Result<Nir1GraphIndexBuildDecision> {
+        self.judge_with_gate(Nir1GraphIndexBuildGate::open_for_test())
+    }
+
+    /// Judge the project behind a launch's own gate (the seam's or the
+    /// product token's).
+    fn judge_with_gate(
+        &self,
+        gate: Nir1GraphIndexBuildGate,
+    ) -> Result<Nir1GraphIndexBuildDecision> {
         let recorder = Recorder::default();
-        let context = Nir1GraphCycleContext::new(
-            Nir1GraphIndexBuildGate::open_for_test(),
-            Some(self.runtime()),
-        );
+        let context = Nir1GraphCycleContext::new(gate, Some(self.runtime()));
         with_control(&recorder, |control| {
             judge_graph_index_build(self.db(), PROJECT, "durable-wake", Some(control), &context)
                 .map(|(decision, _)| decision)
@@ -229,6 +276,9 @@ impl GraphWorkControl for RegistrationOwner {
 #[derive(Default)]
 struct Recorder {
     stop: Arc<AtomicBool>,
+    /// The cycle's `should_stop` ignores `stop` (only the `stop_signal` the
+    /// control carries is raised), to reach the branch that reads the signal.
+    should_stop_ignores_stop: AtomicBool,
     granted: Arc<AtomicBool>,
     lifecycle_stop: Arc<AtomicBool>,
     cancel_graph_before_grant: AtomicBool,
@@ -272,7 +322,9 @@ fn with_control<T>(
                 "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution"
             );
         }
-        if recorder.stop.load(Ordering::SeqCst) {
+        if recorder.stop.load(Ordering::SeqCst)
+            && !recorder.should_stop_ignores_stop.load(Ordering::SeqCst)
+        {
             bail!(
                 "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary"
             );
@@ -2191,9 +2243,15 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         Nir1GraphIndexBuildDecision::Build { .. }
     ));
 
-    // DR-BSEAM-1 (b): the uncontrolled durable planner cannot judge the
-    // sealed binding and fails as context-unavailable; the B-ROUTE turns
-    // exactly that into a wake.
+    // DR-BSEAM-1 (b) before GDV/1: the uncontrolled durable planner could not
+    // judge a sealed binding and failed as context-unavailable, which the
+    // B-ROUTE turned into a wake. GDV/1 (GDV-R3, DR-PUBG-5-16): this binding is
+    // coherent but not current (recognized `rebuildable-not-query-usable`), so
+    // the planner no longer reads the whole-project eligibility. It answers
+    // instead of failing and main receives the durable `Verify` work; the Graph
+    // producer's judgement then runs inside the cycle in front of that Verify
+    // (case C-2). The premise "a sealed binding is context-unavailable" still
+    // holds for a current binding (asserted below after the rebuild).
     let coordinates =
         crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(Some(
             &graph_seam(),
@@ -2204,12 +2262,9 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
             PROJECT,
             "workspace-opened",
             Some(&coordinates),
-        )
-        .expect_err("the uncontrolled planner cannot judge the sealed binding");
-    assert!(
-        error_text(&uncontrolled).contains("context-unavailable"),
-        "{uncontrolled:#}"
-    );
+        )?
+        .expect("the planner answers for a recognized not-current binding");
+    assert_eq!(uncontrolled.run_kind, AutomaticRunKind::Verify);
 
     let recorder = Recorder::default();
     let (discovered, result) = main_wake_cycle_with_discovery(
@@ -2218,9 +2273,13 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         "workspace-opened",
         &recorder,
     )?;
-    assert_eq!(
-        discovered,
-        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
+    assert!(
+        matches!(
+            &discovered,
+            crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::Work(work)
+                if work.run_kind == AutomaticRunKind::Verify
+        ),
+        "{discovered:?}"
     );
     assert_eq!(
         result.map(|result| result.status),
@@ -2232,6 +2291,31 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
     assert_eq!(
         fixture.judge()?,
         skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    // The DR-BSEAM-1 (b) premise is unchanged for a current sealed binding.
+    let current_uncontrolled =
+        crate::narrative_extraction::maintenance_runtime::discover_durable_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            "workspace-opened",
+            Some(&coordinates),
+        )
+        .expect_err("the uncontrolled planner cannot judge a current sealed binding");
+    assert!(
+        error_text(&current_uncontrolled).contains("context-unavailable"),
+        "{current_uncontrolled:#}"
+    );
+    // And the B-ROUTE still turns exactly that into the wake for the seam.
+    let recorder = Recorder::default();
+    let (discovered, _) = main_wake_cycle_with_discovery(
+        &fixture,
+        Some(&graph_seam()),
+        "workspace-opened",
+        &recorder,
+    )?;
+    assert_eq!(
+        discovered,
+        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
     );
     Ok(())
 }
@@ -2430,4 +2514,1210 @@ fn b_route_discovery_propagates_errors_other_than_context_unavailable() -> Resul
     .expect_err("a SQL failure is not a Graph Index wake");
     assert!(!is_context_unavailable_termination(&error), "{error:#}");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// DR-PUBG-5-13 (PR-1): the product gate, the discovery wake under it (W1, V4),
+// the release conditions of a refusal, and V0 (a stale binding over capacity).
+// ---------------------------------------------------------------------------
+
+use crate::narrative_extraction::maintenance_runtime::{
+    discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
+    is_context_unavailable_termination, is_project_local_discovery_failure,
+    nir1_graph_index_build_wakes_main_discovery_with_product,
+    run_system_work_cycle_with_nir1_graph_runtime_and_product, MaintenanceProjectDiscovery,
+};
+use crate::narrative_extraction::source_revision::{
+    validation_terminated, ValidationTerminationReason,
+};
+
+/// A token for tests. Product code builds it only from Native's constant.
+fn product_token() -> Option<Nir1GraphProductPublication> {
+    Nir1GraphProductPublication::from_const::<true>()
+}
+
+/// The three launches a wake can come from: a product launch with the gate
+/// closed (the constant is `false`), the journey seam, and the product token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Launch {
+    Closed,
+    Seam,
+    Product,
+}
+
+impl Launch {
+    const OPEN: [Launch; 2] = [Launch::Seam, Launch::Product];
+
+    fn seam(self) -> Option<NarrativeMaintenanceCiConfig> {
+        (self == Launch::Seam).then(graph_seam)
+    }
+
+    fn product(self) -> Option<Nir1GraphProductPublication> {
+        if self == Launch::Product {
+            product_token()
+        } else {
+            None
+        }
+    }
+}
+
+/// What one wake did: main's discovery, then (if it returned something) the
+/// cycle main starts for it.
+struct WakeStep {
+    discovery: Result<MaintenanceProjectDiscovery>,
+    cycle: Option<Result<MaintenanceCycleResult>>,
+}
+
+fn wake_step(fixture: &Fixture, launch: Launch) -> Result<WakeStep> {
+    let seam = launch.seam();
+    let product = launch.product();
+    let coordinates = effective_maintenance_coordinates(seam.as_ref())?;
+    let discovery = discover_maintenance_project_for_main_with_product(
+        fixture.db(),
+        PROJECT,
+        "workspace-opened",
+        Some(&coordinates),
+        seam.as_ref(),
+        product,
+    );
+    let request = match &discovery {
+        Err(_) | Ok(MaintenanceProjectDiscovery::Idle) => None,
+        Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake) => Some(wake_request()),
+        Ok(MaintenanceProjectDiscovery::Work(work)) => Some(MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: work.project_id.clone(),
+                run_kind: work.run_kind,
+                work_key: work.work_key.clone(),
+                semantic_epoch_id: work.semantic_epoch_id.clone(),
+                reasons: work.reasons.clone(),
+            }],
+            wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        }),
+    };
+    let cycle = request.map(|request| {
+        let recorder = Recorder::default();
+        with_control(&recorder, |control| {
+            run_system_work_cycle_with_nir1_graph_runtime_and_product(
+                fixture.db(),
+                &request,
+                |_| RecoveryMode::SameProcessLive,
+                seam.as_ref(),
+                None,
+                Some(control),
+                Some(fixture.runtime()),
+                product,
+            )
+        })
+    });
+    Ok(WakeStep { discovery, cycle })
+}
+
+/// (run kind, status) of every Run of the project, oldest first.
+fn run_ledger(db: &Database) -> Result<Vec<(String, String)>> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT run_kind, status FROM narrative_extraction_runs
+              WHERE project_id = ?1 ORDER BY rowid",
+        )?;
+        let rows = statement
+            .query_map([PROJECT], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })
+}
+
+/// The `report` of the project's latest completed Verify Run, as JSON.
+fn last_completed_verify_report(db: &Database) -> Result<Option<serde_json::Value>> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT outcome_summary_json FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'dependency-verify'
+                    AND status = 'completed' ORDER BY rowid DESC LIMIT 1",
+                [PROJECT],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    })?
+    .map(|summary| -> Result<serde_json::Value> {
+        Ok(serde_json::from_str::<serde_json::Value>(&summary)?["report"].clone())
+    })
+    .transpose()
+}
+
+/// Keys of the project's maintenance Findings.
+fn finding_keys(db: &Database) -> Result<Vec<String>> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT finding_key FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1 ORDER BY rowid",
+        )?;
+        let rows = statement
+            .query_map([PROJECT], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
+    })
+}
+
+#[test]
+fn product_publication_token_exists_only_for_a_true_constant() {
+    assert!(Nir1GraphProductPublication::from_const::<false>().is_none());
+    assert!(Nir1GraphProductPublication::from_const::<true>().is_some());
+}
+
+/// DR-PUBG-5-8: the gate's four generation paths, and the launch gate that
+/// only combines the seam's and the token's.
+#[test]
+fn launch_gate_opens_for_the_seam_or_the_product_token_and_nothing_else() {
+    let token = product_token().expect("a true constant");
+    assert!(Nir1GraphIndexBuildGate::from_product_publication(token).is_open());
+    assert!(!Nir1GraphIndexBuildGate::for_launch(None, None).is_open());
+    assert!(Nir1GraphIndexBuildGate::for_launch(Some(&graph_seam()), None).is_open());
+    assert!(Nir1GraphIndexBuildGate::for_launch(None, Some(token)).is_open());
+    // A seam that is not the validated Graph seam does not open it, and no
+    // other input exists.
+    for config in [
+        NarrativeMaintenanceCiConfig {
+            is_packaged: true,
+            ..graph_seam()
+        },
+        NarrativeMaintenanceCiConfig {
+            ci: "false".to_string(),
+            ..graph_seam()
+        },
+        NarrativeMaintenanceCiConfig {
+            trigger: Some(NarrativeMaintenanceCiTrigger::DependencyGap),
+            ..graph_seam()
+        },
+        NarrativeMaintenanceCiConfig {
+            trigger: None,
+            ..graph_seam()
+        },
+    ] {
+        assert!(
+            !Nir1GraphIndexBuildGate::for_launch(Some(&config), None).is_open(),
+            "{config:?}"
+        );
+    }
+}
+
+/// W1 and V4 use the seam's rule under the product gate: a wake for every
+/// reason except the BeforeCutover flow, and none while the gate is closed.
+#[test]
+fn product_gate_wake_follows_the_seams_rule() {
+    let token = product_token();
+    for reason in [
+        "workspace-opened",
+        "restore-completed",
+        "semantic-epoch-rotated",
+        "durable-wake",
+    ] {
+        assert!(nir1_graph_index_build_wakes_main_discovery_with_product(
+            None, token, reason
+        ));
+        assert!(nir1_graph_index_build_wakes_main_discovery_with_product(
+            Some(&graph_seam()),
+            None,
+            reason
+        ));
+        assert!(!nir1_graph_index_build_wakes_main_discovery_with_product(
+            None, None, reason
+        ));
+    }
+    for reason in ["before-cutover", BEFORE_CUTOVER_FOLLOW_UP_REASON] {
+        assert!(!nir1_graph_index_build_wakes_main_discovery_with_product(
+            Some(&graph_seam()),
+            token,
+            reason
+        ));
+        assert!(!nir1_graph_index_build_wakes_main_discovery_with_product(
+            None, token, reason
+        ));
+    }
+}
+
+/// With the gate closed (the product default) a launch reads no SQL for the
+/// Graph build and wakes nothing, however the project looks (A-1, A2).
+#[test]
+fn closed_launch_gate_reads_no_sql_and_wakes_nothing() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    let item = fixture.graph_item()?;
+    let statements = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&statements);
+    fixture.db().with_conn_mut(|conn| {
+        conn.authorizer(Some(move |_: rusqlite::hooks::AuthContext<'_>| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            rusqlite::hooks::Authorization::Allow
+        }))?;
+        Ok(())
+    })?;
+    let closed = Nir1GraphCycleContext::new(
+        Nir1GraphIndexBuildGate::for_launch(None, None),
+        Some(fixture.runtime()),
+    );
+    let recorder = Recorder::default();
+    let before = statements.load(Ordering::SeqCst);
+    let (decision, epoch) = with_control(&recorder, |control| {
+        judge_graph_index_build(
+            fixture.db(),
+            PROJECT,
+            "durable-wake",
+            Some(control),
+            &closed,
+        )
+    })?;
+    assert_eq!(decision, skip(Nir1GraphIndexSkipReason::GateClosed));
+    assert!(epoch.is_none());
+    assert_eq!(
+        with_control(&recorder, |control| {
+            dispatch_enabled_work(fixture.db(), &item, None, Some(control), &closed)
+        })?,
+        no_finalization(false)
+    );
+    assert_eq!(statements.load(Ordering::SeqCst), before);
+    fixture.db().with_conn_mut(|conn| {
+        conn.authorizer(
+            None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+        )?;
+        Ok(())
+    })?;
+    // Main's discovery under the closed launch: idle, no wake, and no cycle.
+    let step = wake_step(&fixture, Launch::Closed)?;
+    assert_eq!(step.discovery?, MaintenanceProjectDiscovery::Idle);
+    assert!(step.cycle.is_none());
+    assert_eq!(generation(fixture.db())?, None);
+    assert_eq!(graph_surface(fixture.db())?, (0, 0, 0, 0));
+    Ok(())
+}
+
+/// W1. Under the product gate an idle durable chain still leads to the cycle
+/// that builds a missing B, exactly as under the seam.
+#[test]
+fn product_gate_wake_builds_a_missing_graph_when_the_durable_chain_is_idle() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    assert_eq!(generation(fixture.db())?, None);
+
+    let step = wake_step(&fixture, Launch::Product)?;
+    assert_eq!(
+        step.discovery?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    assert_eq!(
+        step.cycle.expect("the wake starts a cycle")?,
+        MaintenanceCycleResult::accepted(false)
+    );
+    let (sealed_generation, dirty, ..) = sealed(fixture.db())?.expect("published binding");
+    assert_eq!((sealed_generation, dirty), (1, 0));
+    assert!(complete_registered(fixture.db())?);
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+
+    // The next wake judges the current binding and builds nothing.
+    let step = wake_step(&fixture, Launch::Product)?;
+    assert_eq!(
+        step.discovery?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    step.cycle.expect("the wake starts a cycle")?;
+    assert_eq!(generation(fixture.db())?, Some(1));
+    Ok(())
+}
+
+/// V4. A sealed binding that is current makes the uncontrolled discovery fail
+/// as `context-unavailable`; with the gate closed the error propagates
+/// unchanged. GDV/1 (GDV-R3, DR-PUBG-5-16): a sealed binding that is coherent
+/// but not current (dirty) no longer does. Discovery answers with the durable
+/// `Verify` work, the closed gate keeps the Graph unbuilt, and the product gate
+/// turns the remaining idle chain into the wake whose cycle rebuilds it.
+#[test]
+fn product_gate_turns_context_unavailable_into_a_wake_that_rebuilds() -> Result<()> {
+    let _serial = serial();
+    // A current sealed binding: the premise of DR-BSEAM-1 (b) is unchanged.
+    let current = Fixture::published()?;
+    let closed = wake_step(&current, Launch::Closed)?;
+    let error = closed.discovery.expect_err("uncontrolled discovery");
+    assert!(
+        is_context_unavailable_termination(&error),
+        "closed gate, current binding: {error:#}"
+    );
+    assert!(closed.cycle.is_none());
+    assert_eq!(generation(current.db())?, Some(1));
+    // Under the product gate that same `context-unavailable` is turned into the
+    // wake (DR-BSEAM-2), whose cycle judges the current binding and builds
+    // nothing.
+    let product = wake_step(&current, Launch::Product)?;
+    assert_eq!(
+        product.discovery?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    assert_eq!(
+        product.cycle.expect("the wake starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
+    assert_eq!(generation(current.db())?, Some(1));
+
+    // A dirty (recognized not-current) sealed binding.
+    let fixture = Fixture::published()?;
+    fixture.mark_dirty()?;
+
+    let closed = wake_step(&fixture, Launch::Closed)?;
+    assert!(
+        matches!(
+            &closed.discovery,
+            Ok(MaintenanceProjectDiscovery::Work(work)) if work.run_kind == AutomaticRunKind::Verify
+        ),
+        "closed gate, dirty binding: {:?}",
+        closed.discovery
+    );
+    assert_eq!(
+        closed.cycle.expect("the Verify work starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
+    // The closed gate never builds: the binding is still the dirty generation 1.
+    assert_eq!(
+        sealed(fixture.db())?.map(|(generation, dirty, ..)| (generation, dirty)),
+        Some((1, 1))
+    );
+    // Only the setup's publication is recorded; the closed gate judged nothing.
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+
+    let step = wake_step(&fixture, Launch::Product)?;
+    assert_eq!(
+        step.discovery?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    assert_eq!(
+        step.cycle.expect("the wake starts a cycle")?.status,
+        MaintenanceCycleStatus::Accepted
+    );
+    let (sealed_generation, dirty, ..) = sealed(fixture.db())?.expect("rebuilt binding");
+    assert_eq!((sealed_generation, dirty), (2, 0));
+    assert!(complete_registered(fixture.db())?);
+    assert_eq!(
+        fixture.judge()?,
+        skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    Ok(())
+}
+
+/// DR-BSEAM-2 under the product gate: only `context-unavailable` becomes a
+/// wake; any other failure of main's discovery stays an error.
+#[test]
+fn product_gate_discovery_propagates_errors_other_than_context_unavailable() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    fixture.db().with_conn(|conn| {
+        conn.execute_batch("ALTER TABLE narrative_extraction_runs RENAME TO pubg5_hidden_runs")?;
+        Ok(())
+    })?;
+    let coordinates = effective_maintenance_coordinates(None)?;
+    let error = discover_maintenance_project_for_main_with_product(
+        fixture.db(),
+        PROJECT,
+        "workspace-opened",
+        Some(&coordinates),
+        None,
+        product_token(),
+    )
+    .expect_err("a SQL failure is not a Graph Index wake");
+    assert!(!is_context_unavailable_termination(&error), "{error:#}");
+    assert!(!is_project_local_discovery_failure(&error), "{error:#}");
+    Ok(())
+}
+
+/// DR-PUBG-5-15: the allowlist of failures that a project's own state
+/// determines is the one typed termination main's discovery was observed to
+/// fail with. Everything else (a bound's `capacity-exceeded`, timing,
+/// lifecycle, retryable, unknown) is not project-local and stays an error.
+#[test]
+fn project_local_discovery_failure_is_an_allowlist_of_one_typed_termination() {
+    let error = validation_terminated(ValidationTerminationReason::ContextUnavailable, "test");
+    assert!(is_project_local_discovery_failure(&error));
+    // Added context does not hide the marker.
+    assert!(is_project_local_discovery_failure(&error.context("discovery")));
+    for reason in [
+        ValidationTerminationReason::CapacityExceeded,
+        ValidationTerminationReason::Cancelled,
+        ValidationTerminationReason::TimedOut,
+        ValidationTerminationReason::Closed,
+        ValidationTerminationReason::WorkspaceGenerationChanged,
+        ValidationTerminationReason::ForegroundPreempted,
+        ValidationTerminationReason::CleanupFailed,
+    ] {
+        assert!(
+            !is_project_local_discovery_failure(&validation_terminated(reason, "test")),
+            "{reason:?}"
+        );
+    }
+    for text in [
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: discovery could not acquire the connection",
+        "NEX_MAINTENANCE_SQLITE_LOCKED: database is locked",
+        "no such table: narrative_extraction_runs",
+        "NEX_VALIDATION_TERMINATED:capacity-exceeded in plain text is not the typed marker",
+        "context-unavailable in plain text is not the typed marker",
+    ] {
+        assert!(
+            !is_project_local_discovery_failure(&anyhow!("{text}")),
+            "{text}"
+        );
+    }
+}
+
+/// The release conditions of a refusal (DR-PUBG-5-6). A refusal recorded for
+/// the same inputs is answered by the judgement's cheap reads alone (primary
+/// key, `EXISTS`, `MAX`), never by a prepare or a validation, and each input
+/// change, a runtime epoch change and a process restart releases it.
+#[test]
+fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result<()> {
+    let _serial = serial();
+    for launch in Launch::OPEN {
+        let mut fixture = Fixture::published()?;
+        let set_id = er_proposal_set_id(fixture.db())?;
+        fixture.db().with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for index in 0..2_065 {
+                tx.execute(
+                    "INSERT INTO narrative_proposals
+                        (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                         current_revision_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?1, 'nir1.entity-relation@1', 'unreviewed', '{}', ?3,
+                             '2026-09-22T00:00:00.000Z', '2026-09-22T00:00:00.000Z')",
+                    params![
+                        format!("candidate-overflow-{index:04}"),
+                        set_id,
+                        format!("missing-revision-{index:04}")
+                    ],
+                )?;
+            }
+            suspend_project_in_tx(&tx, PROJECT)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        let before = sealed(fixture.db())?;
+        let gate = Nir1GraphIndexBuildGate::for_launch(launch.seam().as_ref(), launch.product());
+        assert!(gate.is_open(), "{launch:?}");
+        let dispatch = |fixture: &Fixture| -> Result<(MaintenanceDispatchOutcome, u64)> {
+            let item = fixture.graph_item()?;
+            let context = Nir1GraphCycleContext::new(gate, Some(fixture.runtime()));
+            let budget = CapacityBudget::supported();
+            let recorder = Recorder::default();
+            let outcome = with_attempt_budget_for_test(Arc::clone(&budget), || {
+                with_control(&recorder, |control| {
+                    dispatch_graph_index_build(fixture.db(), &item, Some(control), &context)
+                })
+            })?;
+            Ok((outcome, budget.sql_steps_used()))
+        };
+
+        // The first attempt prepares and is refused. It does real work (about
+        // 260,000 SQL steps here), so the comparison below cannot pass for
+        // lack of a measurement.
+        let (outcome, refused_steps) = dispatch(&fixture)?;
+        assert_eq!(outcome, no_finalization(false), "{launch:?}");
+        assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        assert!(
+            refused_steps >= 10_000,
+            "{launch:?}: the refused attempt used only {refused_steps} SQL steps"
+        );
+
+        // A repeated wake with the same inputs never prepares or validates.
+        let reached = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&reached);
+        let _hook = install_hook(move |stage, _| {
+            if matches!(
+                stage,
+                TestStage::BeforePrepare | TestStage::BeforeValidation
+            ) {
+                flag.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        });
+        for _ in 0..3 {
+            let (outcome, steps) = dispatch(&fixture)?;
+            assert_eq!(outcome, no_finalization(false), "{launch:?}");
+            assert!(
+                steps * 10 <= refused_steps,
+                "{launch:?}: judgement used {steps} SQL steps, the refused attempt {refused_steps}"
+            );
+        }
+        assert!(
+            !reached.load(Ordering::SeqCst),
+            "{launch:?}: a refusal for unchanged inputs reached prepare or validation"
+        );
+        assert_eq!(
+            fixture.judge_with_gate(gate)?,
+            skip(Nir1GraphIndexSkipReason::RefusedUnchanged)
+        );
+        assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        assert_eq!(sealed(fixture.db())?, before);
+        drop(_hook);
+
+        // An A2 input change releases it: the build is attempted again.
+        add_second_reviewed_revision(fixture.db(), "nir1:review:2")?;
+        assert_eq!(
+            fixture.judge_with_gate(gate)?,
+            build(
+                Nir1GraphIndexBuildMode::Rebuild,
+                Nir1GraphIndexBuildReason::BindingDirty
+            ),
+            "{launch:?}: A2 change"
+        );
+        let (outcome, _) = dispatch(&fixture)?;
+        assert_eq!(outcome, no_finalization(false));
+        assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        assert_eq!(
+            fixture.judge_with_gate(gate)?,
+            skip(Nir1GraphIndexSkipReason::RefusedUnchanged)
+        );
+
+        // A runtime epoch change releases it.
+        fixture
+            .runtime()
+            .bind_embedding_generation(1)
+            .map_err(|error| anyhow!("{error:#}"))?;
+        assert_eq!(
+            fixture.judge_with_gate(gate)?,
+            build(
+                Nir1GraphIndexBuildMode::Rebuild,
+                Nir1GraphIndexBuildReason::BindingDirty
+            ),
+            "{launch:?}: runtime epoch"
+        );
+
+        // So does a process restart: the new authority has no record.
+        let (outcome, _) = dispatch(&fixture)?;
+        assert_eq!(outcome, no_finalization(false));
+        assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        fixture.reopen()?;
+        assert_eq!(fixture.record(), None, "{launch:?}: restart");
+        assert_eq!(
+            fixture.judge_with_gate(gate)?,
+            build(
+                Nir1GraphIndexBuildMode::Rebuild,
+                Nir1GraphIndexBuildReason::BindingDirty
+            ),
+            "{launch:?}: restart"
+        );
+    }
+    Ok(())
+}
+
+fn overflow_stored_edges(fixture: &Fixture) -> Result<()> {
+    let (_, _, edges, _) = graph_surface(fixture.db())?;
+    fixture.db().with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for index in 0..(8_194 - edges) {
+            tx.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at)
+                 VALUES (?1, ?2, 'semantic-index', ?3, ?4, '[\"t\"]', '2026-09-22T00:00:00.000Z')",
+                params![
+                    format!("graph-overflow-{index}"),
+                    PROJECT,
+                    INDEX_KEY,
+                    format!("codex:overflow-{index}")
+                ],
+            )?;
+        }
+        suspend_project_in_tx(&tx, PROJECT)?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+fn overflow_candidates(fixture: &Fixture) -> Result<()> {
+    let set_id = er_proposal_set_id(fixture.db())?;
+    fixture.db().with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for index in 0..2_065 {
+            tx.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?1, 'nir1.entity-relation@1', 'unreviewed', '{}', ?3,
+                         '2026-09-22T00:00:00.000Z', '2026-09-22T00:00:00.000Z')",
+                params![
+                    format!("candidate-overflow-{index:04}"),
+                    set_id,
+                    format!("missing-revision-{index:04}")
+                ],
+            )?;
+        }
+        suspend_project_in_tx(&tx, PROJECT)?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// The error a wake ended with: main's discovery, or else the cycle.
+fn failure_text(step: &WakeStep) -> Option<String> {
+    match (&step.discovery, &step.cycle) {
+        (Err(error), _) | (_, Some(Err(error))) => Some(error_text(error)),
+        _ => None,
+    }
+}
+
+const VERIFY_FINDING_PREFIX: &str = "narrative-maintenance-failure:dependency-verify:";
+
+/// V0 (a), the state PUB-G would create: a project with a sealed Graph binding
+/// whose stored edges later exceed the B-close bound, so the binding is dirty
+/// and B's rebuild is refused. This pins today's behavior, which Q1 (i)
+/// accepts and discloses; a later binding-retraction contract (Q1 (iii))
+/// changes it on purpose.
+///
+/// * B refuses (`stored-edge-rows`) and records it; the sealed generation stays.
+/// * Verify itself fails by the same bound (`capacity-exceeded`). That failure
+///   is not retryable, so it leaves one failed Run and one durable Finding
+///   (`narrative-maintenance-failure:dependency-verify:…`).
+/// * From then on every wake is answered with the same Verify work and
+///   accepted, and nothing new is created: the project's automatic
+///   maintenance has stopped, and no wake count restarts it.
+///
+/// The three launches (a closed product launch, the seam, the product token)
+/// behave identically here.
+#[test]
+fn v0_stored_edge_overflow_stops_verify_for_a_bound_project() -> Result<()> {
+    let _serial = serial();
+    for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
+        let fixture = Fixture::published()?;
+        let runs_before = run_ledger(fixture.db())?.len();
+        overflow_stored_edges(&fixture)?;
+        let stale = sealed(fixture.db())?;
+        assert_eq!(
+            fixture.judge()?,
+            build(
+                Nir1GraphIndexBuildMode::Rebuild,
+                Nir1GraphIndexBuildReason::BindingDirty
+            )
+        );
+        let recorder = Recorder::default();
+        assert_eq!(fixture.dispatch(&recorder)?, no_finalization(false));
+        assert_eq!(fixture.record(), refused_capacity("stored-edge-rows"));
+        assert_eq!(sealed(fixture.db())?, stale, "{launch:?}");
+
+        let mut steps = Vec::new();
+        let mut run_counts = Vec::new();
+        for _ in 0..6 {
+            steps.push(wake_step(&fixture, launch)?);
+            run_counts.push(run_ledger(fixture.db())?.len());
+        }
+        let failures = steps.iter().filter_map(failure_text).collect::<Vec<_>>();
+        assert!(
+            failures
+                .iter()
+                .any(|text| text.contains("capacity-exceeded")
+                    && text.contains("stored-edge-rows exceeds 8193")),
+            "{launch:?}: {failures:?}"
+        );
+        for step in &steps {
+            if let Err(error) = &step.discovery {
+                assert!(is_project_local_discovery_failure(error), "{launch:?}");
+            }
+        }
+        let ledger = run_ledger(fixture.db())?;
+        assert_eq!(ledger.len(), runs_before + 1, "{launch:?}: {ledger:?}");
+        assert_eq!(
+            ledger.last(),
+            Some(&("dependency-verify".to_string(), "failed".to_string())),
+            "{launch:?}"
+        );
+        let findings = finding_keys(fixture.db())?;
+        assert_eq!(findings.len(), 1, "{launch:?}: {findings:?}");
+        assert!(findings[0].starts_with(VERIFY_FINDING_PREFIX), "{launch:?}");
+        // Stopped: after the failing wake no wake adds a Run or a Finding.
+        let failing = steps
+            .iter()
+            .position(|step| failure_text(step).is_some())
+            .expect("a wake reached Verify");
+        assert!(
+            run_counts[failing..]
+                .iter()
+                .all(|count| *count == runs_before + 1),
+            "{launch:?}: {run_counts:?}"
+        );
+        for step in &steps[failing + 1..] {
+            assert!(
+                matches!(&step.cycle, Some(Ok(result)) if result.status == MaintenanceCycleStatus::Accepted),
+                "{launch:?}"
+            );
+        }
+        // B stays refused for the unchanged inputs, and the dirty binding stays.
+        assert_eq!(fixture.record(), refused_capacity("stored-edge-rows"));
+        assert_eq!(sealed(fixture.db())?, stale, "{launch:?}");
+    }
+    Ok(())
+}
+
+/// V0 (b): the candidates exceed the bound instead, B refuses the rebuild and
+/// the binding stays dirty. Before GDV/1 main's (uncontrolled) discovery failed
+/// as `context-unavailable` on every wake with the gate closed, and under the
+/// seam and the product token the cycle's Verify failed by `capacity-exceeded`
+/// and the project stopped with a Finding. GDV/1 (consumer contract: a
+/// recognized dirty index is "rebuildable but not query usable"): Verify
+/// excludes the coherent but not-current Graph and the durable chain completes
+/// and reaches idle, for every launch.
+#[test]
+fn v0_candidate_overflow_does_not_stop_verify_for_a_bound_project() -> Result<()> {
+    let _serial = serial();
+    for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
+        let fixture = Fixture::published()?;
+        let runs_before = run_ledger(fixture.db())?.len();
+        overflow_candidates(&fixture)?;
+        let stale = sealed(fixture.db())?;
+        let recorder = Recorder::default();
+        assert_eq!(fixture.dispatch(&recorder)?, no_finalization(false));
+        assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+
+        let mut steps = Vec::new();
+        for _ in 0..6 {
+            steps.push(wake_step(&fixture, launch)?);
+        }
+        // No wake fails, whichever launch.
+        for (index, step) in steps.iter().enumerate() {
+            assert!(
+                step.discovery.is_ok(),
+                "{launch:?} wake#{index}: {:?}",
+                step.discovery
+            );
+            if let Some(cycle) = &step.cycle {
+                assert!(
+                    matches!(cycle, Ok(result) if result.status == MaintenanceCycleStatus::Accepted),
+                    "{launch:?} wake#{index}"
+                );
+            }
+        }
+        assert!(
+            steps.iter().all(|step| failure_text(step).is_none()),
+            "{launch:?}: no Verify failure"
+        );
+        // The first wake hands the durable Verify to a cycle.
+        assert!(
+            matches!(
+                &steps[0].discovery,
+                Ok(MaintenanceProjectDiscovery::Work(work)) if work.run_kind == AutomaticRunKind::Verify
+            ),
+            "{launch:?}: {:?}",
+            steps[0].discovery
+        );
+        // Exactly one new Run, the completed Verify; no Finding.
+        let ledger = run_ledger(fixture.db())?;
+        assert_eq!(ledger.len(), runs_before + 1, "{launch:?}: {ledger:?}");
+        assert_eq!(
+            ledger.last(),
+            Some(&("dependency-verify".to_string(), "completed".to_string())),
+            "{launch:?}"
+        );
+        assert!(finding_keys(fixture.db())?.is_empty(), "{launch:?}");
+        // The report excludes the Graph and keeps nothing else unresolved.
+        let report = last_completed_verify_report(fixture.db())?.expect("completed Verify");
+        assert_eq!(
+            report["consumersExcludedNotCurrent"][0]["consumerKey"],
+            INDEX_KEY,
+            "{launch:?}"
+        );
+        assert_eq!(report["edgeIdsWithUnresolvableConsumerScope"], json!([]));
+        assert_eq!(report["edgeIdsWithMissingSource"], json!([]));
+        // The chain is idle afterwards: no wake adds a Run. The closed gate
+        // discovers nothing; the seam and the product token only wake B, which
+        // stays refused for the unchanged inputs.
+        for step in &steps[1..] {
+            if launch == Launch::Closed {
+                assert!(
+                    matches!(step.discovery, Ok(MaintenanceProjectDiscovery::Idle)),
+                    "{launch:?}"
+                );
+                assert!(step.cycle.is_none());
+            } else {
+                assert!(
+                    matches!(
+                        step.discovery,
+                        Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake)
+                    ),
+                    "{launch:?}"
+                );
+            }
+        }
+        // B stays refused for the unchanged inputs, and the dirty binding stays.
+        assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        assert_eq!(sealed(fixture.db())?, stale, "{launch:?}");
+    }
+    Ok(())
+}
+
+/// DR-PUBG-5-15 (R6): a workspace of two real projects. The one with a current
+/// sealed Graph binding fails main's uncontrolled discovery with the real
+/// `context-unavailable` error (not an injected one), and that error is exactly
+/// what the containment allowlist admits. The other project's discovery still
+/// succeeds.
+///
+/// GDV/1 (DR-PUBG-5-16): the motive form of this test (a dirty sealed binding
+/// over the candidate bound, V0 (b)) no longer fails discovery, because a
+/// coherent but not-current binding is excluded from the full-eligibility read.
+/// A current sealed binding is the form that still ends in `context-unavailable`
+/// (it needs a cycle's validation context), so that is the form used here.
+#[test]
+fn a_real_sealed_binding_failure_is_project_local_and_the_other_project_still_discovers(
+) -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects(id, title) VALUES ('other-project', 'other')",
+            [],
+        )?;
+        Ok(())
+    })?;
+    let coordinates = effective_maintenance_coordinates(None)?;
+    let discover = |project: &str| {
+        discover_maintenance_project_for_main_with_product(
+            fixture.db(),
+            project,
+            "workspace-opened",
+            Some(&coordinates),
+            None,
+            None,
+        )
+    };
+    let failed = discover(PROJECT).expect_err("the bound project's discovery fails");
+    assert!(is_context_unavailable_termination(&failed), "{failed:#}");
+    assert!(is_project_local_discovery_failure(&failed), "{failed:#}");
+    // A new project has its legacy backfill to do: its discovery succeeds and
+    // returns that work.
+    assert!(
+        matches!(
+            discover("other-project")?,
+            MaintenanceProjectDiscovery::Work(work) if work.project_id == "other-project"
+        ),
+        "the other project is discovered"
+    );
+    Ok(())
+}
+
+/// V0 control: without a Graph binding the same excess starts nothing. The
+/// stop above is triggered by the binding's existence, and a project over the
+/// bound that was never built is not affected (today's product, and PUB-G's
+/// projects that B refused before it built anything).
+#[test]
+fn v0_candidate_overflow_without_a_binding_stops_nothing() -> Result<()> {
+    let _serial = serial();
+    for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
+        let fixture = Fixture::new()?;
+        drain_durable_chain(&fixture)?;
+        overflow_candidates(&fixture)?;
+        let runs_before = run_ledger(fixture.db())?.len();
+        for _ in 0..4 {
+            let step = wake_step(&fixture, launch)?;
+            if launch == Launch::Closed {
+                assert_eq!(step.discovery?, MaintenanceProjectDiscovery::Idle);
+                assert!(step.cycle.is_none());
+            } else {
+                assert_eq!(
+                    step.discovery?,
+                    MaintenanceProjectDiscovery::GraphIndexBuildWake,
+                    "{launch:?}"
+                );
+                assert_eq!(
+                    step.cycle.expect("the wake starts a cycle")?.status,
+                    MaintenanceCycleStatus::Accepted
+                );
+            }
+        }
+        assert_eq!(run_ledger(fixture.db())?.len(), runs_before, "{launch:?}");
+        assert!(finding_keys(fixture.db())?.is_empty(), "{launch:?}");
+        assert_eq!(generation(fixture.db())?, None, "{launch:?}");
+        if launch == Launch::Closed {
+            assert_eq!(fixture.record(), None);
+        } else {
+            assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// J. CP2a-D47 (DR-PUBG-5-14 (j)): the completion callback under the product gate
+// ---------------------------------------------------------------------------
+
+/// One wake cycle under a launch's gate with its own recorder. The recorder's
+/// `completed` list is what Native's hook sees: Native calls
+/// `note_maintenance_work_completed` (the Suspended Graph owner's only exit)
+/// from the cycle's `work_completed` callback alone.
+fn product_wake_cycle(
+    fixture: &Fixture,
+    product: Option<Nir1GraphProductPublication>,
+    recorder: &Recorder,
+) -> Result<MaintenanceCycleResult> {
+    with_control(recorder, |control| {
+        run_system_work_cycle_with_nir1_graph_runtime_and_product(
+            fixture.db(),
+            &wake_request(),
+            |_| RecoveryMode::SameProcessLive,
+            None,
+            None,
+            Some(control),
+            Some(fixture.runtime()),
+            product,
+        )
+    })
+}
+
+/// Under the product token the cycle calls `work_completed` for B's publish,
+/// once, with B's own item (so the hook leaves a Suspended Graph owner). A
+/// validation, a typed refusal, a current binding and a closed gate never reach
+/// it: they settle as a no-op (or are not planned), and a hook that fired for
+/// them would let a refused build wake the owner for nothing.
+#[test]
+fn product_gate_calls_the_completion_hook_for_a_publish_and_for_nothing_else() -> Result<()> {
+    let _serial = serial();
+
+    // A publish: one B work, finalized through its grant, completed once.
+    let fixture = Fixture::new()?;
+    let recorder = Recorder::default();
+    let result = product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(result, MaintenanceCycleResult::accepted(false));
+    let epoch = fixture.current_epoch()?;
+    let key = format!(
+        "narrative-maintenance:v1/nir1-graph-index-build/{PROJECT}/nir1-graph-index-build/epoch/{epoch}"
+    );
+    assert_eq!(Recorder::graph(&recorder.completed), vec![key.clone()]);
+    assert_eq!(Recorder::graph(&recorder.grants), vec![key.clone()]);
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+    assert_eq!(generation(fixture.db())?, Some(1));
+
+    // A current binding: nothing is planned, so no callback.
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert!(Recorder::graph(&recorder.registered).is_empty());
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+
+    // A cold-reopen validation publishes nothing: a no-op, not a completion.
+    let mut fixture = Fixture::published()?;
+    fixture.reopen()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(Recorder::graph(&recorder.noop).len(), 1);
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Validated));
+
+    // A typed refusal (an approved Revision over the limit): a no-op as well.
+    let fixture = Fixture::published()?;
+    let created =
+        add_revision_with_oversized_payload(fixture.db(), "nir1:review:oversized-approved")?;
+    approve_typed_revision(fixture.db(), "nir1-run", &created)?;
+    fixture.mark_dirty()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(Recorder::graph(&recorder.noop).len(), 1);
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert_eq!(
+        fixture.record(),
+        refused_capacity("persisted-revision-component-bytes")
+    );
+
+    // A closed gate (no seam, no token): B is never planned.
+    let fixture = Fixture::new()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, None, &recorder)?;
+    assert!(Recorder::graph(&recorder.registered).is_empty());
+    assert!(Recorder::graph(&recorder.started).is_empty());
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+    assert_eq!(generation(fixture.db())?, None);
+    Ok(())
+}
+
+/// DR-PUBG-5-19 (F-1). A wake for a project the workspace does not have (a
+/// stale Graph Index demand, a hasMore continuation or a completion wake of a
+/// project deleted meanwhile) is accepted with no work, in every launch. The
+/// cycle used to fail with `FOREIGN KEY constraint failed` (error 787) because
+/// discovery minted a Backfill for the missing project, which main retried and
+/// whose delivery-failure receipt was refused (see the vitest in
+/// `electron/main/narrativeMaintenance.test.ts`).
+///
+/// Collects every launch's outcome and asserts once, so a regression names all
+/// the launches that fail.
+fn missing_project_wake_problems(fixture: &Fixture, missing: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for launch in [Launch::Closed, Launch::Seam, Launch::Product] {
+        let recorder = Recorder::default();
+        let request = MaintenanceCycleRequest {
+            work: Vec::new(),
+            wake_project_ids: vec![missing.to_string()],
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        };
+        let result = with_control(&recorder, |control| {
+            run_system_work_cycle_with_nir1_graph_runtime_and_product(
+                fixture.db(),
+                &request,
+                |_| RecoveryMode::SameProcessLive,
+                launch.seam().as_ref(),
+                None,
+                Some(control),
+                Some(fixture.runtime()),
+                launch.product(),
+            )
+        });
+        match result {
+            Err(error) => problems.push(format!("{launch:?}: the cycle failed: {error:#}")),
+            Ok(result) => {
+                if result.status != MaintenanceCycleStatus::Accepted {
+                    problems.push(format!("{launch:?}: status {:?}", result.status));
+                }
+                if result.has_more {
+                    problems.push(format!("{launch:?}: has_more"));
+                }
+                for (name, list) in [
+                    ("registered", &recorder.registered),
+                    ("started", &recorder.started),
+                    ("completed", &recorder.completed),
+                    ("grants", &recorder.grants),
+                ] {
+                    if !list.lock().expect("recorder").is_empty() {
+                        problems.push(format!("{launch:?}: {name} is not empty"));
+                    }
+                }
+            }
+        }
+        // The discovery main runs for a workspace-opened wake never mints a
+        // Backfill for it (an Idle, or a Graph wake that the cycle above ends).
+        let seam = launch.seam();
+        let coordinates = effective_maintenance_coordinates(seam.as_ref()).expect("coordinates");
+        match discover_maintenance_project_for_main_with_product(
+            fixture.db(),
+            missing,
+            "workspace-opened",
+            Some(&coordinates),
+            seam.as_ref(),
+            launch.product(),
+        ) {
+            Ok(MaintenanceProjectDiscovery::Idle) => {}
+            // A gate-open launch may return a Graph wake, which the cycle above
+            // ends; a closed gate never does.
+            Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake) if launch != Launch::Closed => {}
+            other => problems.push(format!("{launch:?}: discovery {other:?}")),
+        }
+    }
+    problems
+}
+
+#[test]
+fn a_wake_for_a_project_the_workspace_does_not_have_is_accepted_with_no_work() {
+    const MISSING: &str = "project-the-workspace-does-not-have";
+    let _serial = serial();
+    let fixture = Fixture::new().expect("fixture");
+    let problems = missing_project_wake_problems(&fixture, MISSING);
+    assert!(problems.is_empty(), "a wake for a missing project is accepted with no work: {problems:#?}");
+}
+
+#[test]
+fn a_wake_for_a_project_deleted_meanwhile_is_accepted_with_no_work() {
+    let _serial = serial();
+    let fixture = Fixture::new().expect("fixture");
+    fixture
+        .db()
+        .with_conn(|conn| {
+            let deleted = conn.execute("DELETE FROM projects WHERE id = ?1", [PROJECT])?;
+            assert_eq!(deleted, 1, "the fixture's project existed");
+            Ok(())
+        })
+        .expect("delete the project");
+    let problems = missing_project_wake_problems(&fixture, PROJECT);
+    assert!(problems.is_empty(), "a wake for a deleted project is accepted with no work: {problems:#?}");
+}
+
+#[test]
+fn a_wake_for_a_project_the_workspace_has_still_discovers_its_backfill() {
+    // The existence check is only for a missing project: an existing project
+    // with no Semantic Epoch still gets its Backfill from a durable wake.
+    let _serial = serial();
+    let directory = TestDirectory(
+        std::env::temp_dir().join(format!("nir1-b-route-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir_all(&directory.0).expect("directory");
+    let db = Database::new(&directory.0.join("grimodex.db")).expect("db");
+    db.migrate().expect("migrate");
+    for reason in ["durable-wake", "workspace-opened"] {
+        let work = discover_durable_maintenance_work_with_coordinates(&db, "default-project", reason, None)
+            .expect("discover");
+        let work = work.unwrap_or_else(|| panic!("{reason}: an existing project gets its Backfill"));
+        assert_eq!(work.project_id, "default-project");
+        assert_eq!(work.run_kind, AutomaticRunKind::Backfill);
+    }
+    let missing = discover_durable_maintenance_work_with_coordinates(&db, "no-such-project", "durable-wake", None)
+        .expect("discover a missing project");
+    assert!(missing.is_none(), "{missing:?}");
+}
+
+#[test]
+fn a_named_work_item_for_a_project_the_workspace_does_not_have_ends_or_fails_on_the_foreign_key() {
+    // DR-PUBG-5-19: discovery's no-work for a missing project only ends a wake.
+    // A work item main already holds for a project deleted meanwhile still
+    // reaches the cycle. A named Verify or Rebuild is a stale item that the
+    // cycle accepts with nothing left; a named Backfill fails on the `projects`
+    // foreign key, so main's bounded retry and its terminal PROJECT_MISSING
+    // receipt (the main-side fix) are what end it.
+    const MISSING: &str = "project-the-workspace-does-not-have";
+    let _serial = serial();
+    let fixture = Fixture::new().expect("fixture");
+    let cases = [
+        (
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY.to_string(),
+            None,
+        ),
+        (
+            AutomaticRunKind::Verify,
+            format!("{VERIFY_WORK_KEY_PREFIX}epoch-1"),
+            Some("epoch-1".to_string()),
+        ),
+        (
+            AutomaticRunKind::RebuildDerived,
+            REBUILD_DERIVED_WORK_KEY.to_string(),
+            Some("epoch-1".to_string()),
+        ),
+    ];
+    for (run_kind, work_key, semantic_epoch_id) in cases {
+        let recorder = Recorder::default();
+        let request = MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: MISSING.to_string(),
+                run_kind,
+                work_key,
+                semantic_epoch_id,
+                reasons: vec!["open".to_string()],
+            }],
+            wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        };
+        let result = run_cycle_on(fixture.db(), Some(fixture.runtime()), &request, None, &recorder);
+        match run_kind {
+            AutomaticRunKind::Backfill => {
+                let error = result.expect_err("a named Backfill for a missing project fails");
+                assert!(format!("{error:#}").contains("FOREIGN KEY constraint failed"), "{error:#}");
+            }
+            _ => {
+                let result = result.unwrap_or_else(|error| {
+                    panic!("{run_kind:?}: a stale named item is accepted: {error:#}")
+                });
+                assert_eq!(result.status, MaintenanceCycleStatus::Accepted, "{run_kind:?}");
+                assert!(!result.has_more, "{run_kind:?}");
+            }
+        }
+    }
 }

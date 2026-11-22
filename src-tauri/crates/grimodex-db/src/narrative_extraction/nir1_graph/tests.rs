@@ -36,6 +36,7 @@ const PROJECT: &str = "default-project";
 const STARTUP_REFUSAL_PROJECT_ID: &str = "nir1-project-that-does-not-exist";
 
 mod cq_avail;
+mod a3_axes_fail_closed;
 mod cq_opt;
 mod registration_pinned;
 mod registration_shared_reads;

@@ -22,6 +22,8 @@ import {
   MAIN_GRANT_SIDECAR,
   NAPI_COMMANDS,
   RENDERER_EVENT_CHANNEL_ALLOWLIST,
+  resolveRequiredAiKeyAndSettings,
+  runAiAuditAppendBatch,
   SHELL_COMMAND_NAMES,
   toErrorString,
   unimplementedError,
@@ -709,6 +711,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '[{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","status":"completed","snapshotDigest":null,"createdAt":"2026-01-01T00:00:00.000Z","startedAt":null,"completedAt":null}]',
       ),
     ) as never,
+    narrativeExtractionResolveCodexCatalogRevision: record(
+      "narrativeExtractionResolveCodexCatalogRevision",
+      Promise.resolve(
+        '{"sourceKind":"codex-catalog","sourceKey":"project:codex-catalog:p1","revisionToken":"sha256:00"}',
+      ),
+    ) as never,
     narrativeExtractionIsRunResumableForReview: record(
       "narrativeExtractionIsRunResumableForReview",
       Promise.resolve(
@@ -718,6 +726,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     narrativeExtractionListChronicleTaskResumeCandidates: record(
       "narrativeExtractionListChronicleTaskResumeCandidates",
       Promise.resolve("[]"),
+    ) as never,
+    narrativeExtractionListSceneProposals: record(
+      "narrativeExtractionListSceneProposals",
+      Promise.resolve('{"items":[],"nextCursor":null,"limit":20}'),
     ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
@@ -771,7 +783,9 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     narrativeExtractionChronicleBulkApprove: record(
       "narrativeExtractionChronicleBulkApprove",
-      Promise.resolve('{"approved":[],"skipped":[],"failed":[],"stopped":false}'),
+      Promise.resolve(
+        '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+      ),
     ) as never,
     narrativeExtractionReviseAndDecide: record(
       "narrativeExtractionReviseAndDecide",
@@ -1179,6 +1193,86 @@ describe("dispatchInvoke", () => {
     ]);
   });
 
+  it("Codex catalog revision forwards only the Project and the workspace binding (DR-CSX-1)", async () => {
+    const { backend, calls } = fakeBackend();
+    const result = await dispatchInvoke(
+      "narrative_extraction_resolve_codex_catalog_revision",
+      {
+        payload: { projectId: "p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      { backend, shell: noShell },
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        sourceKind: "codex-catalog",
+        sourceKey: "project:codex-catalog:p1",
+        revisionToken: "sha256:00",
+      },
+    });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionResolveCodexCatalogRevision",
+        args: [{ projectId: "p1" }, extractionWorkspaceBinding],
+      },
+    ]);
+  });
+
+  it("Codex catalog revision rejects malformed payloads, bindings and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const args of [
+      { workspaceBinding: extractionWorkspaceBinding },
+      { payload: null, workspaceBinding: extractionWorkspaceBinding },
+      { payload: {}, workspaceBinding: extractionWorkspaceBinding },
+      {
+        payload: { projectId: "" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      {
+        payload: { projectId: " p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      {
+        payload: { projectId: "p1", sourceKey: "project:scene:s1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      { payload: { projectId: "p1" } },
+      {
+        payload: { projectId: "p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+        extra: true,
+      },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_resolve_codex_catalog_revision",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_resolve_codex_catalog_revision",
+      {
+        payload: { projectId: "p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionResolveCodexCatalogRevision: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionResolveCodexCatalogRevision`,
+    });
+  });
+
   it("exact Review resumability forwards all durable Run coordinates", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -1373,6 +1467,97 @@ describe("dispatchInvoke", () => {
     expect(missingMethod).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListChronicleTaskResumeCandidates`,
+    });
+  });
+
+  it("Scene proposals read forwards only the strict page query and leaves the cap to Native", async () => {
+    const { backend, calls } = fakeBackend();
+
+    const first = await dispatchInvoke(
+      "narrative_extraction_list_scene_proposals",
+      { payload: { projectId: "project-1", sceneId: "scene-1" } },
+      { backend, shell: noShell },
+    );
+    expect(first).toEqual({
+      ok: true,
+      value: { items: [], nextCursor: null, limit: 20 },
+    });
+
+    // A size above Native's cap is not Main's to refuse: Native cuts it.
+    const paged = {
+      projectId: "project-1",
+      sceneId: "scene-1",
+      cursor: "revision-9",
+      limit: 1000,
+    };
+    await dispatchInvoke(
+      "narrative_extraction_list_scene_proposals",
+      { payload: paged },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionListSceneProposals",
+        args: [{ projectId: "project-1", sceneId: "scene-1" }],
+      },
+      {
+        method: "narrativeExtractionListSceneProposals",
+        args: [paged],
+      },
+    ]);
+  });
+
+  it("Scene proposals read rejects malformed input and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    const base = { projectId: "project-1", sceneId: "scene-1" };
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { projectId: "project-1" },
+      { sceneId: "scene-1" },
+      { ...base, projectId: "" },
+      { ...base, projectId: " project-1" },
+      { ...base, sceneId: "scene-1 " },
+      { ...base, sceneId: "   " },
+      { ...base, sceneId: "s".repeat(257) },
+      // 86 x 3 bytes = 258 bytes, though only 86 UTF-16 units.
+      { ...base, sceneId: "場".repeat(86) },
+      { ...base, cursor: "" },
+      { ...base, cursor: " rev" },
+      { ...base, cursor: "c".repeat(257) },
+      { ...base, cursor: 7 },
+      { ...base, limit: 0 },
+      { ...base, limit: -1 },
+      { ...base, limit: 1.5 },
+      { ...base, limit: "5" },
+      { ...base, limit: 0x1_0000_0000 },
+      { ...base, unknown: true },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_list_scene_proposals",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok, JSON.stringify(payload)).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_list_scene_proposals",
+      { payload: base },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionListSceneProposals: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListSceneProposals`,
     });
   });
 
@@ -6471,6 +6656,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "authorship_replace_lane",
       "cancel_current_chat_input",
       "capture_current_chat_input",
+      "chat_agent_ir_select",
       "chat_index_message",
       "chat_index_status",
       "chat_message_metadata_record",
@@ -6591,8 +6777,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_is_run_resumable_for_review",
       "narrative_extraction_list_chronicle_task_resume_candidates",
       "narrative_extraction_list_resumable_runs",
+      "narrative_extraction_list_scene_proposals",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
+      "narrative_extraction_resolve_codex_catalog_revision",
       "narrative_extraction_revise_and_decide",
       "narrative_extraction_revise_and_decide_as_human",
       "narrative_extraction_save_proposal_set",
@@ -12201,6 +12389,41 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
   });
 });
 
+describe("model-capability snapshot contract (PR-C2, Q17)", () => {
+  it("is one read-only Main command, never a Native one, and starts no fetch", () => {
+    expect(SHELL_COMMAND_NAMES).toContain("get_model_capability_snapshot");
+    expect(Object.keys(NAPI_COMMANDS)).not.toContain(
+      "get_model_capability_snapshot",
+    );
+    // The renderer can read the adopted snapshot only: there is no command
+    // that starts, forces, or configures a fetch.
+    expect(
+      [...SHELL_COMMAND_NAMES, ...Object.keys(NAPI_COMMANDS)].filter((name) =>
+        /model_(capab|info|registry)/u.test(name),
+      ),
+    ).toEqual(["get_model_capability_snapshot"]);
+  });
+
+  it("dispatches to the Main handler and wraps the value in an Envelope", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const result = await dispatchInvoke(
+      "get_model_capability_snapshot",
+      {},
+      {
+        backend: null,
+        shell: {
+          get_model_capability_snapshot: async (args) => {
+            calls.push(args);
+            return { origin: "bundled" };
+          },
+        },
+      },
+    );
+    expect(result).toEqual({ ok: true, value: { origin: "bundled" } });
+    expect(calls).toEqual([{}]);
+  });
+});
+
 describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
   it("report_unsaved_edits is a Main-processed command, never a Native one", () => {
     expect(SHELL_COMMAND_NAMES).toContain("report_unsaved_edits");
@@ -12237,5 +12460,194 @@ describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
         "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
       )?.code,
     ).toBe("WORKSPACE_SWITCHING");
+  });
+});
+
+describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
+  it("the two commands are Main-processed, never Native ones, and no Main-only N-API was added", () => {
+    expect(SHELL_COMMAND_NAMES).toEqual(
+      expect.arrayContaining([
+        "mastra_agent_turn_start",
+        "mastra_agent_turn_cancel",
+      ]),
+    );
+    expect(
+      Object.keys(NAPI_COMMANDS).filter((name) => /mastra/iu.test(name)),
+    ).toEqual([]);
+    // Gate L is Main's only (DR-MP3-2): the backend contract has no member for it.
+    const source = readFileSync(
+      new URL("./ipcContract.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).not.toMatch(/mainMastra|mastraAgentTurn\w*\?\(/u);
+    // They are added at the end of the shell list and nowhere else.
+    expect(SHELL_COMMAND_NAMES.slice(-2)).toEqual([
+      "mastra_agent_turn_start",
+      "mastra_agent_turn_cancel",
+    ]);
+    expect(
+      SHELL_COMMAND_NAMES.filter((name) => name.startsWith("mastra_")),
+    ).toHaveLength(2);
+  });
+
+  it("dispatches to the Main handler and wraps its value; without a handler it is unimplemented", async () => {
+    const seen: unknown[] = [];
+    const result = await dispatchInvoke(
+      "mastra_agent_turn_start",
+      { turnId: "t" },
+      {
+        backend: null,
+        shell: {
+          mastra_agent_turn_start: async (args) => {
+            seen.push(args);
+            return {
+              status: "refused",
+              command: "start",
+              reason: "gate-closed",
+            };
+          },
+        },
+      },
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: { status: "refused", command: "start", reason: "gate-closed" },
+    });
+    expect(seen).toEqual([{ turnId: "t" }]);
+    const missing = await dispatchInvoke(
+      "mastra_agent_turn_cancel",
+      {},
+      { backend: null, shell: {} },
+    );
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain(IPC_UNIMPLEMENTED_MARKER);
+  });
+});
+
+describe("runAiAuditAppendBatch (the sink's way into ai_audit_append_batch, MP-3b)", () => {
+  const event = {
+    eventId: "e-1",
+    executionId: "x-1",
+    operationId: "o-1",
+    parentExecutionId: null,
+    pathId: "chat_agent_main",
+    eventType: "execution.started",
+    timestamp: 1,
+    payload: { captureState: "complete" },
+  };
+
+  function appendBackend() {
+    const calls: unknown[][] = [];
+    const backend = {
+      aiAuditAppendBatch: async (...args: unknown[]) => {
+        calls.push(args);
+        return JSON.stringify({
+          insertedCount: 1,
+          tailSequence: 1,
+          tailHash: "h",
+        });
+      },
+    } as unknown as NapiBackendLike;
+    return { backend, calls };
+  }
+
+  it("makes the same call as the NAPI entry for the same arguments", async () => {
+    const args = {
+      expectedWorkspacePath: "/ws",
+      projectId: "p",
+      events: [event],
+    };
+    const viaEntry = appendBackend();
+    const viaHelper = appendBackend();
+    const entry = await NAPI_COMMANDS.ai_audit_append_batch.run(
+      viaEntry.backend,
+      args,
+      { backend: viaEntry.backend, shell: {} },
+    );
+    const helper = await runAiAuditAppendBatch(viaHelper.backend, args);
+    expect(helper).toEqual(entry);
+    expect(viaHelper.calls).toEqual(viaEntry.calls);
+    expect(viaHelper.calls).toEqual([["/ws", "p", [event]]]);
+  });
+
+  it("refuses the same arguments before the backend is called", async () => {
+    for (const args of [
+      { projectId: "p", events: [event] },
+      { expectedWorkspacePath: "/ws", projectId: " p", events: [event] },
+      { expectedWorkspacePath: "/ws", projectId: "p", events: [] },
+      {
+        expectedWorkspacePath: "/ws",
+        projectId: "p",
+        events: [{ ...event, extra: 1 }],
+      },
+      {
+        expectedWorkspacePath: "/ws",
+        projectId: "p",
+        events: [{ ...event, eventType: "x" }],
+      },
+      {
+        expectedWorkspacePath: "/ws",
+        projectId: "p",
+        events: [{ ...event, pathId: "nir1_local_generation_writing" }],
+      },
+    ]) {
+      const viaHelper = appendBackend();
+      const viaEntry = appendBackend();
+      const helperError = await runAiAuditAppendBatch(
+        viaHelper.backend,
+        args,
+      ).then(
+        () => null,
+        (error: unknown) => String(error),
+      );
+      const entryError = await NAPI_COMMANDS.ai_audit_append_batch
+        .run(viaEntry.backend, args, { backend: viaEntry.backend, shell: {} })
+        .then(
+          () => null,
+          (error: unknown) => String(error),
+        );
+      expect(helperError).not.toBeNull();
+      expect(helperError).toBe(entryError);
+      expect(viaHelper.calls).toEqual([]);
+    }
+  });
+});
+
+describe("resolveRequiredAiKeyAndSettings is shared, not copied (MP-3b, DR-MP3-13)", () => {
+  it("reads the settings once and resolves the key from that same snapshot", async () => {
+    const settingsReads: number[] = [];
+    const backend = {
+      getAiSettings: async () => {
+        settingsReads.push(1);
+        return JSON.stringify({ provider: "anthropic" });
+      },
+    } as unknown as NapiBackendLike;
+    const resolved: unknown[][] = [];
+    const result = await resolveRequiredAiKeyAndSettings(
+      backend,
+      { provider: "anthropic", endpointId: null },
+      {
+        backend,
+        shell: {},
+        secrets: {
+          resolveApiKeyForRequest: (...args: unknown[]) => {
+            resolved.push(args);
+            return "k";
+          },
+        } as never,
+      },
+      "send_agent_message",
+    );
+    expect(result).toEqual({
+      settings: { provider: "anthropic" },
+      apiKey: "k",
+    });
+    expect(settingsReads).toHaveLength(1);
+    expect(resolved).toEqual([[{ provider: "anthropic" }, "anthropic", null]]);
+    // Without a secrets resolver it is a configuration error, not a read.
+    await expect(
+      resolveRequiredAiKeyAndSettings(backend, {}, { backend, shell: {} }, "c"),
+    ).rejects.toThrow("IPC_SECRETS_UNAVAILABLE");
+    expect(settingsReads).toHaveLength(1);
   });
 });

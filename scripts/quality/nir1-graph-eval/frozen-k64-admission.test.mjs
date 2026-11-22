@@ -24,6 +24,7 @@ import {
   K64_FREEZE,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -101,6 +102,7 @@ function repository({
   write(repo, K64_FREEZE.path, "K6/4 frozen text\n");
   write(repo, K65_FREEZE.path, "K6/5 frozen text\n");
   write(repo, K66_FREEZE.path, "K6/6 frozen text\n");
+  write(repo, K67_FREEZE.path, "K6/7 frozen text\n");
   write(repo, HARNESS, "export const pinned = 1;\n");
   for (const file of [GRAPH_CASE_FREEZE.path, G01_FIXTURE.path])
     write(repo, file, readFileSync(path.join(REPO_ROOT, file)));
@@ -108,6 +110,7 @@ function repository({
     K64_FREEZE.path,
     K65_FREEZE.path,
     K66_FREEZE.path,
+    K67_FREEZE.path,
     HARNESS,
     GRAPH_CASE_FREEZE.path,
     G01_FIXTURE.path,
@@ -181,7 +184,13 @@ function repository({
     sha256: sha256("K6/6 frozen text\n"),
     freezeCommit,
   };
-  return { repo, freezeCommit, prep, freeze, freeze65, freeze66 };
+  // K6/7: the same shape.
+  const freeze67 = {
+    ...K67_FREEZE,
+    sha256: sha256("K6/7 frozen text\n"),
+    freezeCommit,
+  };
+  return { repo, freezeCommit, prep, freeze, freeze65, freeze66, freeze67 };
 }
 
 function input(fixture, extra = {}) {
@@ -193,6 +202,7 @@ function input(fixture, extra = {}) {
     k64Commit: fixture.freezeCommit,
     k65Commit: fixture.freezeCommit,
     k66Commit: fixture.freezeCommit,
+    k67Commit: fixture.freezeCommit,
     buildReceipt: { kind: "eval" },
     productReceipt: { kind: "product" },
     defaultAddonSha256: "0".repeat(64),
@@ -219,6 +229,7 @@ test("DR-CP4-N-1 (1): 正式の admission は候補・K6/4（注入の descripto
       freeze: fixture.freeze,
       freeze65: fixture.freeze65,
       freeze66: fixture.freeze66,
+      freeze67: fixture.freeze67,
       admitGraphCase,
     });
     assert.equal(admitted.candidate.commit, fixture.prep);
@@ -261,6 +272,7 @@ test("DR-CP4-N-1 (1): 正式の admission は候補・K6/4（注入の descripto
           freeze: fixture.freeze,
           freeze65: fixture.freeze65,
           freeze66: fixture.freeze66,
+          freeze67: fixture.freeze67,
         }),
       /\[precheck\]/u,
     );
@@ -277,6 +289,7 @@ test("DR-CP4-N-1 (1): 候補が clean でない・HEAD が候補でない・K6/4
       freeze: fixture.freeze,
       freeze65: fixture.freeze65,
       freeze66: fixture.freeze66,
+      freeze67: fixture.freeze67,
       admitGraphCase,
     };
     assert.throws(
@@ -359,6 +372,33 @@ test("DR-CP4-N-1 (1): 候補が clean でない・HEAD が候補でない・K6/4
       () => admitFormalK64Run(input(fixture, { k66Commit: undefined }), deps),
       /K6\/6 freeze commit is not given/u,
     );
+    // K6/7 変える点 8 / N9′: and the /7 freeze head, read after the /6's,
+    // before S2. A run without it (started before the /7 freeze) is refused.
+    assert.throws(
+      () =>
+        admitFormalK64Run(input(fixture), {
+          ...deps,
+          freeze67: { ...fixture.freeze67, freezeCommit: null },
+        }),
+      /K6\/7 freeze commit is not pinned/u,
+    );
+    assert.throws(
+      () =>
+        admitFormalK64Run(input(fixture, { k67Commit: fixture.prep }), deps),
+      /K6\/7 freeze commit or bytes differ|K6\/7 cannot be read/u,
+    );
+    assert.throws(
+      () => admitFormalK64Run(input(fixture, { k67Commit: undefined }), deps),
+      /K6\/7 freeze commit is not given/u,
+    );
+    assert.throws(
+      () =>
+        admitFormalK64Run(input(fixture), {
+          ...deps,
+          freeze67: { ...fixture.freeze67, sha256: "0".repeat(64) },
+        }),
+      /K6\/7 freeze commit or bytes differ/u,
+    );
     assert.throws(
       () =>
         admitFormalK64Run(
@@ -390,6 +430,7 @@ test("S2 追補 #2／#3: bytes の pin の file が違う、ancestor の pin が
           freeze: fixture.freeze,
           freeze65: fixture.freeze65,
           freeze66: fixture.freeze66,
+          freeze67: fixture.freeze67,
           admitGraphCase,
         });
     };
@@ -444,6 +485,7 @@ test("DR-CP4-S4-1: A の S2 の file は S4 の freeze record が束縛した by
             freeze: fixture.freeze,
             freeze65: fixture.freeze65,
             freeze66: fixture.freeze66,
+            freeze67: fixture.freeze67,
             admitGraphCase,
           }),
         new RegExp(

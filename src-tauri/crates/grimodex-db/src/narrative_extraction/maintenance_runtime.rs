@@ -46,7 +46,8 @@ use super::nir1_entity_relation_index::{
     GraphProgressCallback, GraphWorkControl, GraphWorkStage,
 };
 use super::nir1_graph_index_maintenance::{
-    Nir1GraphCycleContext, Nir1GraphIndexBuildGate, NIR1_GRAPH_INDEX_BUILD_WORK_KEY,
+    Nir1GraphCycleContext, Nir1GraphIndexBuildGate, Nir1GraphProductPublication,
+    NIR1_GRAPH_INDEX_BUILD_WORK_KEY,
 };
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
@@ -2292,9 +2293,21 @@ pub fn nir1_graph_index_build_wakes_main_discovery(
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
     reason: &str,
 ) -> bool {
+    nir1_graph_index_build_wakes_main_discovery_with_product(ci_config, None, reason)
+}
+
+/// [`nir1_graph_index_build_wakes_main_discovery`] with the product
+/// publication token (DR-PUBG-5-13). The product gate follows the same rule as
+/// the seam: no wake for the BeforeCutover flow, a wake otherwise. With no
+/// token (the product constant is `false`) the answer is the seam's.
+pub fn nir1_graph_index_build_wakes_main_discovery_with_product(
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    product: Option<Nir1GraphProductPublication>,
+    reason: &str,
+) -> bool {
     reason != "before-cutover"
         && reason != BEFORE_CUTOVER_FOLLOW_UP_REASON
-        && Nir1GraphIndexBuildGate::from_journey_seam(ci_config).is_open()
+        && Nir1GraphIndexBuildGate::for_launch(ci_config, product).is_open()
 }
 
 pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool {
@@ -2306,6 +2319,85 @@ pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool 
                     == super::source_revision::ValidationTerminationReason::ContextUnavailable
             })
     })
+}
+
+/// Whether a project's own discovery failure is determined by that project's
+/// state alone, so that retrying cannot change it and it must not stop the
+/// discovery of the workspace's other projects (DR-PUBG-5-15).
+///
+/// An allowlist of exactly the one typed termination that main's discovery was
+/// observed to fail with: `context-unavailable` (an uncontrolled read of a
+/// sealed Graph or Chronicle binding; V0 (b), DR-BSEAM-5). `capacity-exceeded`
+/// is not admitted: it was observed only as a cycle's Verify failure, never as
+/// main's discovery failing. Cancellation, timeout, close, workspace-generation
+/// change, foreground preemption, cleanup failure, retryable busy or lock
+/// failures and every unknown failure stay errors: they are workspace or timing
+/// failures that main retries or reports.
+pub fn is_project_local_discovery_failure(error: &anyhow::Error) -> bool {
+    is_context_unavailable_termination(error)
+}
+
+/// Whether a failure of the Graph build judgement belongs to that one read
+/// alone, so that the cycle can go on without B for the project (GDV/1 case
+/// C-2, DR-PUBG-5-16). Local are: a SQL failure of the judgement's own reads
+/// (any `rusqlite::Error` except SQLITE_BUSY, SQLITE_LOCKED and a raw SQLite
+/// interruption), and the no-wait maintenance connection being refused
+/// (`NEX_MAINTENANCE_CONNECTION_PREEMPTED`, which the judgement raises as a
+/// plain, untyped error). A retryable busy or lock stays an `Err`, as in
+/// DR-PUBG-5-15 (it is a contention the cycle's caller retries, not a fact of
+/// this read). A typed validation termination of any reason (a typed
+/// foreground-preempted included), the attempt's own cancellation, a lifecycle
+/// stop and a connection cleanup failure are never local: they end the cycle
+/// and propagate.
+pub(crate) fn is_graph_judgement_local_failure(error: &anyhow::Error) -> bool {
+    if is_validation_terminated(error)
+        || is_maintenance_connection_cleanup_failure(error)
+        || error_chain_contains(error, "NEX_MAINTENANCE_ATTEMPT_CANCELLED")
+        || error_chain_contains(error, "NEX_MAINTENANCE_LIFECYCLE_STOP")
+        || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:")
+    {
+        return false;
+    }
+    // A raw SQLite interruption is the progress hook stopping the work (the
+    // connection scope turns it into a typed termination only when its latch
+    // names a reason): it is a stop, not a failure of this read. BUSY and
+    // LOCKED are retryable contention and propagate like in DR-PUBG-5-15.
+    let propagates = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|sqlite| {
+                matches!(
+                    sqlite,
+                    rusqlite::Error::SqliteFailure(code, _)
+                        if matches!(
+                            code.code,
+                            rusqlite::ErrorCode::OperationInterrupted
+                                | rusqlite::ErrorCode::DatabaseBusy
+                                | rusqlite::ErrorCode::DatabaseLocked
+                        )
+                )
+            })
+    });
+    if propagates {
+        return false;
+    }
+    error_chain_contains(error, MAINTENANCE_CONNECTION_PREEMPTED_CODE)
+        || error
+            .chain()
+            .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some())
+}
+
+/// The SQLite error code of a judgement failure that is a SQL failure (the
+/// first `rusqlite::Error` in the chain), for the warn log. Code only: the
+/// message may carry a path or a statement.
+fn graph_judgement_sql_failure_code(error: &anyhow::Error) -> Option<rusqlite::ErrorCode> {
+    error
+        .chain()
+        .find_map(|cause| match cause.downcast_ref::<rusqlite::Error>() {
+            Some(rusqlite::Error::SqliteFailure(code, _)) => Some(code.code),
+            Some(_) => Some(rusqlite::ErrorCode::Unknown),
+            None => None,
+        })
 }
 
 /// Main's (uncontrolled) discovery for one project.
@@ -2320,9 +2412,17 @@ pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool 
 ///   uncontrolled read refuses as `context-unavailable` (only a cycle owns a
 ///   full-eligibility validation context).
 ///
-/// In both cases the B-ROUTE asks main to wake the project instead. Without
-/// the seam the result is exactly the durable planner's answer, and its errors
-/// propagate unchanged.
+/// In both cases the B-ROUTE asks main to wake the project instead.
+///
+/// GDV/1 narrows the second state: a Graph binding that is coherent but not
+/// current (dirty, or Freshness/epoch not current) no longer makes the
+/// uncontrolled planner fail, so main then receives `Work(Verify)` (or the same
+/// wake when the durable chain has no work) and the Graph producer's judgement
+/// moves into the cycle (DR-PUBG-5-16). A current Graph binding and a
+/// Chronicle binding still end in `context-unavailable` and the wake.
+///
+/// Without the seam the result is exactly the durable planner's answer, and its
+/// errors propagate unchanged.
 pub fn discover_maintenance_project_for_main(
     db: &Database,
     project_id: &str,
@@ -2330,7 +2430,29 @@ pub fn discover_maintenance_project_for_main(
     coordinates: Option<&MaintenanceContractCoordinates>,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<MaintenanceProjectDiscovery> {
-    let graph_wake = nir1_graph_index_build_wakes_main_discovery(ci_config, reason);
+    discover_maintenance_project_for_main_with_product(
+        db,
+        project_id,
+        reason,
+        coordinates,
+        ci_config,
+        None,
+    )
+}
+
+/// [`discover_maintenance_project_for_main`] with the product publication
+/// token (DR-PUBG-5-13): the product gate wakes and re-judges exactly like the
+/// seam (W1, V4), and with no token the answer is the seam's.
+pub fn discover_maintenance_project_for_main_with_product(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    product: Option<Nir1GraphProductPublication>,
+) -> anyhow::Result<MaintenanceProjectDiscovery> {
+    let graph_wake =
+        nir1_graph_index_build_wakes_main_discovery_with_product(ci_config, product, reason);
     match discover_durable_maintenance_work_with_coordinates(db, project_id, reason, coordinates) {
         Ok(Some(work)) => Ok(MaintenanceProjectDiscovery::Work(work)),
         Ok(None) if graph_wake => Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake),
@@ -2352,7 +2474,8 @@ pub fn discover_maintenance_project_for_main(
 /// product default) leaves this function exactly as before. With the gate
 /// open, a stale existing Graph binding is repaired by its own producer before
 /// the durable Backfill -> Verify -> conditional Rebuild -> Verify chain runs
-/// (Verify treats a non-validated declared binding as a manual defect); a
+/// (GDV/1: Verify excludes a coherent but not-current binding instead of
+/// treating it as a manual defect; an incoherent one is still manual); a
 /// missing binding is built only after the durable chain has nothing to do.
 fn discover_cycle_work(
     db: &Database,
@@ -2395,6 +2518,18 @@ fn discover_cycle_work(
         return Ok(durable);
     }
     Ok(graph_plan.into_work())
+}
+
+/// Whether `projects` has the row. A missing project owns no durable
+/// maintenance state (the foreign keys cascade), so discovery has nothing to
+/// do for it.
+fn project_exists_in_tx(conn: &Connection, project_id: &str) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+        [project_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 pub(crate) fn is_scan_staging_project_in_tx(
@@ -2494,16 +2629,24 @@ pub(crate) fn discover_durable_maintenance_work_in_tx_with_control(
         // Backfill is the only phase allowed to create the initial Epoch.
         // Restore/Epoch wakes fail closed until the restore installer has
         // durably minted its restore Epoch.
-        return if is_backfill_wake(reason) {
-            Ok(Some(DesiredWork::new(
-                project_id.to_string(),
-                AutomaticRunKind::Backfill,
-                LEGACY_BACKFILL_WORK_KEY,
-                reason.to_string(),
-            )?))
-        } else {
-            Ok(None)
-        };
+        //
+        // DR-PUBG-5-19: a wake for a project the workspace does not have (a
+        // stale Graph Index demand, or a project deleted while its hasMore
+        // continuation or completion wake waited) has no durable state to
+        // discover. Minting a Backfill for it makes the cycle fail on the
+        // `projects` foreign key, which main retried without end. The read
+        // shares this transaction's snapshot, and a project row commits in one
+        // transaction, so a project that is being created is not a missing
+        // project here: no wake names it before it commits.
+        if !is_backfill_wake(reason) || !project_exists_in_tx(conn, project_id)? {
+            return Ok(None);
+        }
+        return Ok(Some(DesiredWork::new(
+            project_id.to_string(),
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            reason.to_string(),
+        )?));
     };
 
     // A restored image may already contain a current Epoch while carrying no
@@ -3027,9 +3170,36 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime(
     request: &MaintenanceCycleRequest,
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    foreground_owner: Option<&ForegroundSystemWorkRun>,
+    control: Option<&MaintenanceCycleControl<'_>>,
+    nir1_graph_runtime: Option<&NirChronicleIndexRuntime>,
+) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_nir1_graph_runtime_and_product(
+        db,
+        request,
+        mode_for,
+        ci_config,
+        foreground_owner,
+        control,
+        nir1_graph_runtime,
+        None,
+    )
+}
+
+/// [`run_system_work_cycle_with_nir1_graph_runtime`] with the product
+/// publication token (DR-PUBG-5-13): the gate opens for the validated journey
+/// seam or the token. With no token (the product constant is `false`) the
+/// cycle is the seam-only form above.
+#[allow(clippy::too_many_arguments)]
+pub fn run_system_work_cycle_with_nir1_graph_runtime_and_product(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
     _foreground_owner: Option<&ForegroundSystemWorkRun>,
     control: Option<&MaintenanceCycleControl<'_>>,
     nir1_graph_runtime: Option<&NirChronicleIndexRuntime>,
+    product: Option<Nir1GraphProductPublication>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
     if let Some(control) = control {
         (control.should_stop)()?;
@@ -3039,10 +3209,101 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime(
         binding.validate()?;
     }
     let graph = Nir1GraphCycleContext::new(
-        Nir1GraphIndexBuildGate::from_journey_seam(ci_config),
+        Nir1GraphIndexBuildGate::for_launch(ci_config, product),
         nir1_graph_runtime,
     );
     let mut work = preflight_maintenance_cycle_request(request)?;
+    // GDV/1 case C-2 (DR-PUBG-5-16): main-supplied durable work reaches the
+    // cycle without `discover_cycle_work`, so the Graph producer's judgement
+    // (B preempts the durable chain for a stale binding) would not run first.
+    // It is judged here, once per project, and only in front of a Verify item:
+    // Verify is the step that validates the repaired Graph in full. In front of
+    // a RebuildDerived item the judgement is not taken, because it left one
+    // extra Graph publish behind (measured; DR-PUBG-5-16). A closed gate
+    // returns before any SQL, so the product default is unchanged.
+    if !work.is_empty() {
+        // Revision 5 (section 7, binding): the gated route never judges the
+        // C2-ZC BeforeCutover flow. A project is skipped when ANY of its items
+        // carries `before-cutover` or the follow-up reason, not only the first.
+        let before_cutover_projects: BTreeSet<String> = work
+            .iter()
+            .filter(|item| {
+                item.reasons.iter().any(|reason| {
+                    reason == "before-cutover" || reason == BEFORE_CUTOVER_FOLLOW_UP_REASON
+                })
+            })
+            .map(|item| item.project_id.clone())
+            .collect();
+        let mut judged = BTreeSet::new();
+        let mut preempting: Vec<(usize, DesiredWork)> = Vec::new();
+        for (index, item) in work.iter().enumerate() {
+            if item.run_kind != AutomaticRunKind::Verify
+                || before_cutover_projects.contains(&item.project_id)
+                || !judged.insert(item.project_id.clone())
+            {
+                continue;
+            }
+            let plan = match super::nir1_graph_index_maintenance::plan_graph_index_build(
+                db,
+                &item.project_id,
+                "durable-wake",
+                control,
+                &graph,
+            ) {
+                Ok(plan) => plan,
+                // The judgement is an optimisation in front of the durable
+                // chain, not a step the chain needs: when it fails for a reason
+                // that belongs to this read alone (a SQL failure other than
+                // busy/locked/interrupted, or the no-wait connection being
+                // refused), the project keeps its Verify and no Graph build is
+                // put in front of it. The later rediscovery after the Verify
+                // (`discover_cycle_work`, unchanged) judges again: if that
+                // succeeds, B stands up behind the Verify in the same cycle; if
+                // it fails, that Err propagates as it always did. What ends the
+                // cycle itself propagates unchanged: cancel, timeout, close,
+                // lifecycle stop, a typed foreground-preempted termination and a
+                // cleanup failure. The plain NEX_MAINTENANCE_CONNECTION_PREEMPTED
+                // (the connection could not be taken) is swallowed here and the
+                // dispatch side yields.
+                Err(error) if is_graph_judgement_local_failure(&error) => {
+                    if let Some(control) = control {
+                        // A stop that arrived meanwhile still wins.
+                        (control.should_stop)()?;
+                        if control
+                            .stop_signal
+                            .as_ref()
+                            .is_some_and(|stop| stop.load(Ordering::Acquire))
+                        {
+                            return Err(error);
+                        }
+                    }
+                    if let Some(code) = graph_judgement_sql_failure_code(&error) {
+                        tracing::warn!(
+                            target: "narrative.nir1_graph_index_build",
+                            sqlite_code = ?code,
+                            "NIR1_GRAPH_INDEX_BUILD_JUDGEMENT_FAILED_LOCAL"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "narrative.nir1_graph_index_build",
+                            "NIR1_GRAPH_INDEX_BUILD_JUDGEMENT_FAILED_LOCAL"
+                        );
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if plan.preempts_durable_chain() {
+                if let Some(graph_work) = plan.into_work() {
+                    preempting.push((index, graph_work));
+                }
+            }
+        }
+        // Insert from the back so the earlier indices stay valid.
+        for (index, graph_work) in preempting.into_iter().rev() {
+            work.insert(index, graph_work);
+        }
+    }
     if work.is_empty() {
         for project_id in &request.wake_project_ids {
             if let Some(next) = discover_cycle_work(

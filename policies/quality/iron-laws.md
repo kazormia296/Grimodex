@@ -270,13 +270,58 @@ ordinary `ci.yml` checks automatically. Ordinary checks are not a canonical Quic
 the absence of hosted PR checks is not evidence of a passing gate; a pending or missing check,
 `no checks reported`, or a green ordinary run never replaces the canonical receipt. Canonical Quick
 and Full run as a hosted `canonical-ci.yml` `workflow_dispatch` with `profile`, `candidate_base`,
-and `candidate_head`; the dispatched ref's head must equal `candidate_head`. A hosted Quick runs its
-immediate verify in the same job. Full runs as independent part jobs plus the `full-aggregate` job,
+and `candidate_head`; the dispatched ref's head must equal `candidate_head`. A hosted Quick runs as
+three independent part jobs (`quick-1` to `quick-3`, each a serial subset of the selected Light
+commands on its own VM, with the same commands and `--test-threads` as the unsplit selection) plus
+the `quick-aggregate` job, which assembles the single receipt, checks that the parts together ran
+exactly the unsplit selection, and runs the immediate verify with the same tuple; only a run whose
+part jobs and aggregate all succeeded is a Quick receipt, and a re-run re-runs all jobs, never only
+failed ones. Full runs as independent part jobs plus the `full-aggregate` job,
 which assembles the single receipt and runs the immediate verify with the same tuple; a re-run
 re-runs all jobs, never only failed ones. Full admission refuses a local `pnpm ci:local:full`
 outside a standard GitHub-hosted job, so a local Full is never merge evidence. Windows NSIS final
 compilation remains a separate manual Full CI / tag-release obligation; an unavailable release-only
 check is never passed.
+
+What the ordinary `ci.yml` runs depends on the event. Its Quality job runs the impact-selected Light suites on the nightly
+schedule, on a manual dispatch and on the release workflow's call on a tag push, and not on a pull request or a `master`
+push (a reusable call inherits its caller's event and ref and follows them). The canonical Quick, which the merge needs on
+the same candidate, already runs that selection before the merge, and the Frontend, Shared Rust and Electron native jobs run
+most of the same tests in full; the Quality job keeps `pnpm verify:quality` as its contract check on every event. What only
+impact runs is therefore not checked by the `master` push: the tests of the eval-only features (`nir1-graph-eval`,
+`nir1-final-request-eval`, including its combination with `native-current-human-capture`), and many Node tests that no other job or
+registry entry names by path (the NIR-1 graph-eval, graph, packing and retrieval tests, the WebRTC block probes).
+The grimodex-db tests that the Shared Rust `integration` shard runs with `native-current-human-capture` (the N-API crate always enables
+that feature; the shard runs six filtered library test groups and three integration binaries with it, and the Full registry builds
+without it) are checked by the `master` push; the feature-only tests that those filters do not name run in no job, impact included.
+The nightly run (the `ci.yml` run of the schedule: the change scope, the product journeys in `all` mode, the Quality job and, on macOS and Windows only, the C-query worker)
+runs the whole impact selection on `master`, so a break that only the combination of merged changes shows is found by the
+nightly run, usually a day or so after the merge (GitHub's schedule delays or skips runs, so it can take longer), not by the
+merge or the `master` push. A nightly run that ends in anything other than success is handled as a red `master`; this includes a nightly C-query worker leg on macOS or Windows that was cancelled because no runner was obtained, which is red by the same rule and is cleared by a successful re-run of that job. A pull request's C-query worker matrix runs on Linux only. The `master` push always runs it on Linux, and on macOS and Windows only when the push changes a path the worker is built from or reads (the list is `scripts/ci-cross-os-scope.json`); any doubt (a force push, a `before` commit that cannot be resolved, an empty or incomplete diff, a failure of the deciding step) runs them. The nightly run runs macOS and Windows only, since Linux ran in the push. A manual dispatch without inputs, with `canonical_profile=c-query-workers` or with `independent_gates`, and the release workflow's call run all three (`c-query-practical` and `c-query-lifecycle` run Linux only). Gaps that only the nightly run closes: a new external `../` reference added by a Rust-only pull request, whose Quick does not run the derivation test, and a `master` push that creates no run (such as `[skip ci]`) and changes a worker path, which the next push's decision does not see. A `master` push that skipped the macOS and Windows legs did not verify them, and is not a pass for them. The Electron runtime performance job (absolute-time thresholds on a shared hosted VM) is not a pull request check: a pull request never runs it, and the `master` push, a manual dispatch and a reusable call run it unchanged. A green pull request check is therefore no runtime performance evidence: a failure of that job is found after the merge, in the `ci.yml` of the `master` push and in the `master` Full, and is handled as a red `master`. The `ci.yml` of a pull request measures the merge ref (`github.sha`), while the Quick measures the
+candidate head, so a combination with master changes that landed after the Quick is not checked by impact in the pull request
+run. A pull request run is therefore not evidence for the impact-selected suites, for the macOS and Windows workers or for the
+Electron runtime performance job: a failure that only those show is found, for the macOS and Windows workers, in the `ci.yml` of the `master` push when the push changed a worker path and otherwise in the next nightly run (or earlier by a manual dispatch), for the runtime performance job in
+the `ci.yml` of the `master` push, and for the impact-selected suites in the next nightly run (or earlier by a manual
+dispatch), and is handled as a red `master`. The merge condition itself is unchanged: the rebased candidate's complete Quick
+plus the `ci.yml` of the candidate head.
+A pull request's `ci.yml` also skips the lanes its diff cannot reach (the `Change scope` job; every other event runs every lane): the
+Frontend jobs and their aggregate for a docs-only change (not `docs/lp`, `docs/screenshots` or `public`), and the Shared Rust jobs with their aggregate, the C-query worker and Gate A2
+for a change whose paths are only renderer code (`src` TypeScript, TSX and CSS, not fixture, `__fixtures__` or `parity` directories), docs and CI assets. A skipped job is not a pass, a
+skipped aggregate check leaves the run's conclusion `success`, and the pull request run is no evidence for what it skipped; the `ci.yml`
+of the `master` push, which runs every lane, is.
+
+Docs-markdown-only selection (a rule of the impact selector, separate from the docs-only PR exception below, which
+decides merge conditions). When every changed path matches `^docs/.+\.md$`, work records included, the Light suites
+drop every cargo command and every other command that cannot read `docs/`; only the Node tests that read documents
+(`pnpm test:quality`, `pnpm test:narrative:*`, `node --test ...` and the one electron vitest file that reads `docs/`)
+remain. A suite left with no command is reported as `skipped`, which is not a failure and not a pass of those commands.
+The suite selection, requirements and Heavy reports are unchanged. This also reaches the Light run of Gate B2
+(`scripts/quality/certify-gate-b2.mjs`), which reads only the exit code, so it is harmless there. The impact step of `ci.yml`
+is not narrowed this way on the nightly schedule or a manual dispatch (neither has a comparison base), nor on a new tag push (its
+`before` does not resolve): each selects every suite. Only the nightly run checks that, and fails (fail-closed) unless the
+selector reports every suite selected, no docs-markdown-only narrowing, and every suite passed; a dispatch and a release tag
+call are judged by the selector's exit code alone (a moved tag, whose `before` resolves, selects by diff). The docs-only PR exception below is narrower (it excludes
+operational-rule documents and documents named by path) and is not implied by this selection.
 
 Before any canonical Quick/Full evidence, focused validation finishes first. If a completion commit is in scope,
 the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
@@ -307,7 +352,8 @@ on the branch, narrows the Quick's changed-path selection to part of the PR diff
 candidate is unchanged, and the Quick is taken again after the branch is brought up to date.
 
 The ordinary `ci.yml` PR checks must have succeeded on the same head with none pending or failing, and the review gate
-must hold (no requested changes, no unresolved thread, no P2+ finding). Merge with
+must hold (no requested changes, no unresolved thread, no P2+ finding). The same-head `ci.yml` requirement has two
+exceptions, stated after the merge rules of this path. Merge with
 `gh pr merge --squash --match-head-commit` and the candidate head. The current base is not required to equal a recorded
 base immediately before merge, and this path does not use `approved_merge_base`: if `origin/master` advanced after the
 Quick, GitHub reports the PR mergeable without conflict, and the PR HEAD still equals `candidate_head`, neither the
@@ -316,6 +362,87 @@ fetch and verify that the merge commit is included in `origin/master`; a squash 
 (`<merge-sha>^1`) differs from `candidate_base` may be recorded but is not a failure on this path. Canonical Full is not
 an ordinary PR merge condition, and no Full is dispatched for an ordinary PR.
 
+Two exceptions relax the same-head `ci.yml` requirement for an ordinary PR: the merge-in-only head exception and the
+docs-only PR exception. Neither applies to a release PR, which keeps the Full-based evidence below. Each is an explicit
+exception to the rule above that older receipts are invalid and are not reused, and to the reuse rule in the agent
+validation scope: the `ci.yml` success of an earlier head, or a merge before the candidate head's `ci.yml` finishes,
+counts only under the conditions stated here. Neither relaxes the complete Quick of the rebased candidate (including the
+`candidate_base` ancestry checks above and the immediate verify), the review gate, the required checks of the
+repository, the master-red rule below, or the `--match-head-commit` merge. If any condition does not hold, or the
+merge-in needed any change to the candidate, the exception is unavailable and the ordinary rule above applies:
+`ci.yml` is taken again on the candidate head.
+
+How the two exceptions read the `ci.yml` of a head. The runs are selected by the commit SHA, for example with
+`gh run list --workflow ci.yml --event pull_request --commit "$SHA" --json databaseId,status,conclusion,attempt`. A run
+that is not completed is pending.
+
+- Success: there is at least one run and every run is completed with the conclusion `success`. No run at all is not a
+  success (on a candidate head it is treated as pending).
+- Candidate head, merge-in-only head exception: the PR is not merged when a run has completed with a conclusion other
+  than `success`. When the runs are only pending, the PR may be merged without waiting.
+- Candidate head, docs-only PR exception: a run that has completed with the conclusion `failure` allows the merge only
+  when it is confirmed that the failure has nothing to do with the docs change. A run that has completed with any other
+  conclusion that is not `success` (cancelled, timed out, startup failure, action required, and the like) means that
+  `ci.yml` is taken again, and the new attempt is judged by these same rules. When the runs are only pending, the PR may
+  be merged without waiting.
+- A failure has nothing to do with the docs change when, from the logs, at least one of these holds: the same failure is
+  in the `ci.yml` of the latest `master` push, or a re-run passes. A `git grep` that finds no reader of the changed path is
+  not such evidence, because the docs-only definition already guarantees it. The material is written in the completion report, and a failure that cannot be
+  shown unrelated blocks the merge.
+
+The merge-in-only head exception. The candidate head `H2` (`candidate_head`) is a head `H1` of the PR plus
+`origin/master` merged in by merge commits and nothing else. `H1` is the last head before the merge-in that contains the
+PR's changes, and its `ci.yml` is a success as defined above. The exception holds only when all of the following are
+true.
+
+- `H1` is an ancestor of `H2` (`git merge-base --is-ancestor "$H1" "$H2"`) and
+  `git rev-list --no-merges "$H1..$H2" ^origin/master` is empty. A rebase with a force push never qualifies, because
+  `H1` is then no longer an ancestor, and neither does a PR commit made before or after the merge-in, or a merge of a
+  branch other than `origin/master`.
+- No merge commit that took `origin/master` in resolved a conflict or was edited by hand: for each commit `M` listed by
+  `git rev-list --merges "$H1..$H2" ^origin/master`, `git merge-tree --write-tree "$M^1" "$M^2"` exits 0 and the tree it
+  prints equals `git rev-parse "$M^{tree}"`.
+- The files the PR changes and the files `origin/master` changed since then are disjoint: with
+  `base0=$(git merge-base "$H1" origin/master)`, the names listed by
+  `git -c core.quotePath=false diff --name-only --no-renames "$base0" "$H1"` and by
+  `git -c core.quotePath=false diff --name-only --no-renames "$base0" origin/master` have nothing in common
+  (`--no-renames` makes both names of a rename count). Both lists are sorted and compared under `LC_ALL=C`.
+- The complete Quick of `H2` meets the ordinary conditions above, and a local `pnpm -s verify:quality` on Node 22
+  succeeds on `H2`: the Quick does not include `verify:quality`, so it cannot catch a digest, catalog, or lock that must
+  agree across files that the two sides changed separately.
+- The `ci.yml` of `H2` is handled as stated above (merge-in-only head exception). The `ci.yml` concurrency group of a PR
+  cancels its running `ci.yml` when a newer head is pushed, and a cancelled run is not a success, so the merge-in is
+  pushed only after the `ci.yml` of `H1` has completed successfully.
+
+The checks of the first three bullets fail closed: a command that fails (including the `git fetch origin master` that
+precedes the checks), an empty `base0`, or an empty output is a failed check and never a pass, and the check holds only
+when it prints its positive result (`merge-in-only: ok` in the ship-branch skill).
+
+The docs-only PR exception. A docs-only PR changes only Markdown under `docs/`, and neither an operational-rule document
+nor a document that code or a test outside `docs/` names by path. A PR is docs-only when the list printed by
+`git -c core.quotePath=false diff --name-only --no-renames origin/master...HEAD` is not empty and every path in it
+(`--no-renames` makes both names of a rename count) meets all three conditions: it matches `^docs/.+\.md$`; it is not an
+operational-rule document, which are these eight files: `docs/local-ci-runner.md`, `docs/DEVELOPMENT_SETUP.md`,
+`docs/communication-style-guide.md`, `docs/AI経路検証.md`, `docs/plans/nir1-continuation-2026-10.md`,
+`docs/plans/nir1-l6-l9-execution-plan.md`, `docs/plans/nir1-post-b-execution-plan.md`, and
+`docs/plans/narrative-ir-nir1-implementation-plan.md`; and neither the path nor any parent directory of it that has at
+least three components (`docs/a/b` for `docs/a/b/c.md`; a two-component directory such as `docs/plans` is not searched)
+appears as a string in any file outside `docs/`. That last condition is a fixed-string search, from the repository
+root, of the trees of both the candidate head and `origin/master` (for example
+`git grep -qF -e "$path" HEAD origin/master -- ':!docs/'`), because code or a test outside `docs/` that names a path, or
+names a directory and reads what is in it (a `README.md` beside a named record), reads that document, binds its
+wording, or hashes its content. An example is `docs/user-guide/ja/Install-and-update.md`, which the release workflow
+test reads and which runs only in the `ci.yml` release tests, not in the Quick or in `verify:quality`. A path that code
+builds from parts, or a two-component directory that code reads in bulk, never appears as a string and this search
+does not catch it, so a failure that follows is caught by the `ci.yml` of the `master` push described below. The check fails closed: a failing command (including the
+`git fetch origin master` that precedes the search) or an empty output is not a docs-only result, and the check holds
+only when it prints its positive result (`docs-only: ok` in the ship-branch skill). A PR that changes the `package.json` `version` is a release PR and is never docs-only. A docs-only PR merges on
+the complete Quick of its rebased candidate, a local `pnpm -s verify:quality` on Node 22 that succeeds on the candidate
+head, and the review gate; the `ci.yml` of the candidate head is handled as stated above (docs-only PR exception). This
+is not the release path's narrow editorial docs/ADR-only upstream-base exception, which has its own conditions and keeps
+the Full-based evidence.
+
+
 The party that merged an ordinary PR then dispatches a hosted canonical Full on the `origin/master` head (`--ref master`,
 `candidate_head` the master head, `candidate_base` the master commit that last passed a complete Full, or the merge
 commit's first parent when that is unknown), and the next merge does not wait for it. If a canonical Full for `master` is
@@ -323,7 +450,13 @@ already running, dispatch nothing now; after it finishes, dispatch one Full on t
 merges share one Full. A party that cannot wait for that one dispatch reports it as pending and hands it to its caller
 (the integrator, or the user who requested the work), who first checks that no Full already covers the latest master
 head. The party that dispatched a Full watches it to completion and starts the red handling below if it fails; a party
-that cannot wait reports the run id and hands the watching to its caller.
+that cannot wait reports the run id and hands the watching to its caller. After the merge of a docs-only PR (defined
+above) no Full is dispatched, because the `master` push runs `ci.yml`; the dispatch rule above is unchanged for every
+other ordinary PR. Instead, the party that merged a docs-only PR finds the `ci.yml` run that the `master` push of the
+merge commit started (for example `gh run list --workflow ci.yml --event push --branch master --commit "$MERGE_SHA"
+--json databaseId,status,conclusion,attempt`) and writes its run id in the completion report. It watches that run to
+completion, or, when it cannot wait, hands the watching to its caller (the integrator, or the user who requested the
+work), and a run that does not succeed (it failed, was cancelled, or timed out) is a red master, handled below.
 
 A master Full follows the same Full rules as any other Full: the resource-isolation preflight, all part jobs plus
 `full-aggregate`, re-running all jobs, and no local Full as evidence. A run that stopped at the dispatch's selection
@@ -341,7 +474,20 @@ successfully, or when the fix or the revert is on `origin/master`. The one excep
 unrelated flake and recorded where the merging party can read it: other merges are not blocked while all jobs are
 re-run, a red whose record cannot be found is not treated as a flake, and a failed re-run ends the exception. A party
 that only has merge authority and finds master red stops merging and reports to its caller, who decides whether to
-revert.
+revert. The `ci.yml` run of the `master` push of a docs-only merge that does not succeed is also a red master and is
+handled by the same rules: it clears when a re-run of it or the `ci.yml` run of a later `master` push succeeds, or when
+the fix or the revert is on `origin/master`, and the unrelated-flake exception and its record requirement are the same.
+When the cause is a C-query worker leg on macOS or Windows, a later `master` push clears it only if that push ran those legs and they succeeded; a push that skipped them does not.
+The newest nightly `ci.yml` run (event `schedule`, branch `master`) that does not succeed is also a red master, handled by the
+same rules; it is judged by its last concluded attempt, and a run still in progress is skipped in favour of the newest run with a
+concluded attempt. It clears when a re-run of it or a newer nightly run succeeds, or when the fix or the revert is on
+`origin/master`, and the unrelated-flake exception and its record requirement are the same. The nightly run is the only
+automatic run of the whole impact selection after a merge, so this red is not left for later: the rules above (merge only the
+fix or the revert while it is red) apply to it as they do to a master Full. A green nightly run whose `createdAt` is more than 36
+hours old is not evidence that the newest master is clean: dispatch `ci.yml` on `master` (no inputs; with no comparison base
+the impact step selects every suite) and treat its conclusion, impact step included, like the nightly run's, watching it as a
+master Full is watched and not holding the next merge for it; the dispatched run does not pass the nightly-only check that every
+suite was selected, so confirm that in its step summary.
 
 A release PR's initial merge Full first confirms the fetched current `origin/master` is an ancestor of the candidate
 HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the same expanded strings to
@@ -439,6 +585,7 @@ Choose validation from the requested work and the affected contracts before star
 - Commit only: Focused validation and the requested candidate commit; no Quick or merge-readiness claim
 - PR/release evidence with CI allowed: Clean candidate Quick plus immediate verify under GDX-TRACE-001
 - Ordinary PR merge with CI allowed: Rebased clean candidate Quick plus immediate verify, and success of the same-head PR checks, under GDX-TRACE-001; the canonical Full runs on master after the merge
+- Merge-in-only head or docs-only PR merge with CI allowed: The ordinary Quick conditions, plus a local `verify:quality` on Node 22 and the exception's own checks under GDX-TRACE-001; the candidate head's `ci.yml` is read as the exceptions state and need not be awaited, and a docs-only PR dispatches no master Full and has the `ci.yml` of its `master` push watched
 - Release PR merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight
 
 Instruction and policy changes are behavior changes, even when stored in Markdown. Reuse a successful

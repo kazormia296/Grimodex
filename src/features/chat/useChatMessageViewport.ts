@@ -8,10 +8,13 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
+import { visibleChatRows } from "./chatMessageRows";
 
 export interface ChatMessageViewportOptions {
   messages: readonly ChatMessageType[];
   isLoadingMessages: boolean;
+  /** 生成中は末尾の空の assistant 行（これから埋まる行）を隠さない。 */
+  isStreaming?: boolean;
   activeSessionId: string | null;
   isViewportActive: boolean;
 }
@@ -20,6 +23,7 @@ export interface ChatMessageViewportOptions {
 export function useChatMessageViewport({
   messages,
   isLoadingMessages,
+  isStreaming = false,
   activeSessionId,
   isViewportActive,
 }: ChatMessageViewportOptions) {
@@ -29,10 +33,10 @@ export function useChatMessageViewport({
   const lastScrollTopRef = useRef(0);
   const visibleMessages = useMemo(
     () =>
-      messages.filter(
-        (message) => message.role !== "system" && !message.isSummarized,
+      visibleChatRows(messages, isStreaming).filter(
+        (message) => !message.isSummarized,
       ),
-    [messages],
+    [messages, isStreaming],
   );
   const virtualizer = useVirtualizer({
     count: visibleMessages.length,

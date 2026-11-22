@@ -84,6 +84,33 @@ export function failPendingAiAuditPersistence(
 }
 
 /**
+ * True while an execution is still running: it has no durable terminal and no
+ * recorded persistence failure. Synchronous; never waits (see the audit export
+ * boundary). An entry with a persistence failure is not running: its terminal
+ * append already failed, so waiting for it would never end.
+ */
+export function hasRunningAiAuditExecutions(): boolean {
+  for (const entry of pendingExecutions.values()) {
+    if (entry.persistenceFailure === null) return true;
+  }
+  return false;
+}
+
+function persistenceFailureError(entry: PendingAiAuditExecution): Error {
+  return new Error(
+    `AI audit execution ${entry.executionId} did not persist required audit evidence`,
+    { cause: entry.persistenceFailure },
+  );
+}
+
+/** Synchronous; throws when an execution could not durably persist its evidence. */
+export function assertNoAiAuditPersistenceFailure(): void {
+  for (const entry of pendingExecutions.values()) {
+    if (entry.persistenceFailure !== null) throw persistenceFailureError(entry);
+  }
+}
+
+/**
  * Waits to a fixed point because completing one attempt may synchronously
  * reserve a retry/fallback child before the current waiter resumes.
  */
@@ -92,10 +119,7 @@ export async function awaitPendingAiAuditExecutions(): Promise<void> {
     const snapshot = [...pendingExecutions.values()];
     const failed = snapshot.find((entry) => entry.persistenceFailure !== null);
     if (failed) {
-      throw new Error(
-        `AI audit execution ${failed.executionId} did not persist required audit evidence`,
-        { cause: failed.persistenceFailure },
-      );
+      throw persistenceFailureError(failed);
     }
     await Promise.all(snapshot.map((entry) => entry.waitForTerminalAttempt));
   }

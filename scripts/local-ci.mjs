@@ -61,6 +61,16 @@ import {
   supportLogDirectory,
   validateFullParts,
 } from "./local-ci-full-parts.mjs";
+import {
+  QUICK_PART_REPORT_VERSION,
+  assembleQuickFromParts,
+  buildQuickPartTasks,
+  checkQuickPartCoverage,
+  quickPartReportPath,
+  quickParts,
+  quickPartsDigest,
+  summarizeQuickPartImpact,
+} from "./local-ci-quick-parts.mjs";
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
 const repoRoot = path.resolve(
@@ -346,6 +356,12 @@ export function validateLocalCiRegistry(registry) {
       ) {
         throw new Error(`${label} comparison must be boolean`);
       }
+      if (command.report !== undefined) {
+        requireString(command.report, `${label} report`);
+        if (!command.comparison || !/^\.artifacts\/local-ci\/[A-Za-z0-9._-]+\.json$/u.test(command.report)) {
+          throw new Error(`${label} report must be a .artifacts/local-ci JSON file of a comparison command`);
+        }
+      }
     }
     if (stageId === C2ZC_RESTORE_FIXTURE_STAGE) {
       validateC2ZcRestoreFixtureStage(stage);
@@ -432,7 +448,7 @@ function resolveCommand(command, stage, comparison) {
       comparison.head,
       "--run",
       "--report",
-      ".artifacts/local-ci/impact.json",
+      command.report ?? ".artifacts/local-ci/impact.json",
     );
   }
   return {
@@ -4387,6 +4403,9 @@ async function verifyLocalCiReportAtPath({
   );
   const receipt = JSON.parse(await readFile(reportPath, "utf8"));
   let partedJourneyEvidence;
+  if (plan.profile === "quick" && receipt.parts !== undefined) {
+    await verifyPartedQuickReceipt(receipt, { candidate, plan, root });
+  }
   if (plan.profile === "full" && receipt.parts !== undefined) {
     ({ productJourneyEvidence: partedJourneyEvidence } = await verifyPartedFullResources(receipt, { plan, root }));
   } else if (plan.profile === "full") {
@@ -4624,6 +4643,12 @@ async function aggregateFullInvocation({ args, plan, reportPath }) {
     partsDigest: fullPartsDigest(parts), parts: identities,
   };
   await verifyPartedFullResources(result, { plan });
+  await finalizeAssembledAggregate({ args, plan, reportPath, candidate, runId, result, assembled, invocationStarted });
+}
+
+// Shared tail of both aggregate roles: publish the assembled receipt through
+// the unchanged external verification and finalization.
+async function finalizeAssembledAggregate({ args, plan, reportPath, candidate, runId, result, assembled, invocationStarted }) {
   const stagingReceiptPath = path.join(path.dirname(reportPath), `.${path.basename(reportPath)}.${runId}.staging`);
   // The external verifier subprocess requires an abort signal, as in a direct run.
   const cliAbort = new AbortController();
@@ -4654,6 +4679,132 @@ async function aggregateFullInvocation({ args, plan, reportPath }) {
   });
   process.stdout.write(`[local-ci] report=${finalized.reportPath}\n[local-ci] status=${finalized.result.status}\n`);
   if (finalized.result.status !== "passed") process.exitCode = 1;
+}
+
+// One split canonical Quick part on its own hosted VM: the same checkout lock
+// and candidate binding as a direct run, scheduling only this part's task, then
+// a part report (task receipt plus the selector's coverage summary) for the
+// aggregate job.
+async function runQuickPartInvocation({ args, plan }) {
+  const { part, tasks, owned } = buildQuickPartTasks(plan, args.part);
+  const runId = canonicalGithubRunId(process.env, "quick");
+  const reportFile = path.resolve(repoRoot, quickPartReportPath(part.id));
+  const cliAbort = new AbortController();
+  const interrupt = (name) => { if (!cliAbort.signal.aborted) cliAbort.abort(new Error(`Local CI interrupted by ${name}.`)); };
+  const onSigint = () => interrupt("SIGINT"), onSigterm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  let checkoutLock = null, result = null, runStarted = false;
+  const report = { version: QUICK_PART_REPORT_VERSION, part: part.id, partsDigest: quickPartsDigest(plan),
+    registryDigest: plan.registryDigest, planDigest: digestJson(createLocalCiPlanDescriptor(plan)), runId, status: "failed" };
+  try {
+    checkoutLock = await acquireCheckoutLock(repoRoot, { runId });
+    const candidate = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
+    report.candidate = candidate;
+    await prepareLocalCiArtifacts(plan);
+    runStarted = true;
+    process.stdout.write(`[local-ci] quick part=${part.id} tasks=${tasks.length} run=${runId}\n`);
+    result = await runLocalCiInvocationTasks(plan, { candidate, notify: printCommandEvent, root: repoRoot, runId,
+      signal: cliAbort.signal, scheduleTasks: tasks });
+    const after = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
+    verifyCandidateBinding(candidate, after);
+    report.candidateAfter = after;
+    const commands = Object.fromEntries(result.stages.flatMap(({ commands }) => commands)
+      .filter(({ id }) => owned.has(id)).map((command) => [command.id, command]));
+    Object.assign(report, { startedAt: result.startedAt, finishedAt: result.finishedAt, durationMs: result.durationMs,
+      tasks: result.tasks.filter(({ id }) => owned.has(id)), commands });
+    const passed = result.status === "passed" && !result.deadlineExceeded && !result.interrupted;
+    if (passed) {
+      const reportArgs = tasks[0].command.args;
+      const impact = await resolveArtifactEvidence(reportArgs[reportArgs.indexOf("--report") + 1], { root: repoRoot });
+      report.impact = summarizeQuickPartImpact(JSON.parse(await readFile(impact.realPath, "utf8")));
+    }
+    report.status = passed ? "passed" : "failed";
+  } catch (error) {
+    report.error = boundedError(error);
+    throw error;
+  } finally {
+    try {
+      await writeReport(reportFile, report);
+      process.stdout.write(`[local-ci] part-report=${relativePath(repoRoot, reportFile)} status=${report.status}\n`);
+      const lock = await finalizeCheckoutLock(checkoutLock, { result, runId, runStarted });
+      if (lock.retained) process.stderr.write(`[local-ci] checkout lock retained for cleanup recovery: ${checkoutLock.path}\n`);
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+    }
+  }
+  if (report.status !== "passed") process.exitCode = 1;
+}
+
+// What the unsplit selector selects for this comparison (and which part runs
+// each command), recomputed from base/head independently of every part.
+async function computeQuickSelection(plan) {
+  const { stdout } = await execFileAsync(process.execPath, [
+    path.join(repoRoot, "scripts/quality/impact-map.mjs"),
+    "--base", plan.comparison.base, "--head", plan.comparison.head, "--format", "json", "--command-plan",
+  ], { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GITHUB_STEP_SUMMARY: "" } });
+  const { selection, commandPlan } = JSON.parse(stdout);
+  return { selection, commandPlan };
+}
+
+// Hash-bound check of a parted Quick receipt: every part report is the file the
+// receipt names, the receipt's task results come from those reports, and the
+// parts together ran exactly the selection that base/head selects.
+export async function verifyPartedQuickReceipt(receipt, { candidate, plan, root = repoRoot, computeSelection = computeQuickSelection }) {
+  const parts = quickParts(plan);
+  if (receipt.partsDigest !== quickPartsDigest(plan) ||
+      JSON.stringify(receipt.parts?.map(({ id }) => id)) !== JSON.stringify(parts.map(({ id }) => id))) {
+    throw new Error("Split Quick receipt does not match the current part partition");
+  }
+  const reports = new Map();
+  for (const entry of receipt.parts) {
+    const current = await resolveArtifactEvidence(entry.report?.path, { root });
+    if (entry.report.path !== quickPartReportPath(entry.id) || current.size !== entry.report.size || current.sha256 !== entry.report.sha256) {
+      throw new Error(`Split Quick part ${entry.id} report identity changed`);
+    }
+    reports.set(entry.id, JSON.parse(await readFile(current.realPath, "utf8")));
+  }
+  const assembled = assembleQuickFromParts({ plan, reports, candidate, runId: receipt.runId, planDescriptor: createLocalCiPlanDescriptor(plan) });
+  if (JSON.stringify(receipt.tasks) !== JSON.stringify(assembled.tasks)) {
+    throw new Error("Split Quick receipt tasks differ from its part reports");
+  }
+  checkQuickPartCoverage({ reports, ...(await computeSelection(plan)) });
+}
+
+async function readQuickPartReports(plan, { root = repoRoot } = {}) {
+  const reports = new Map();
+  const identities = [];
+  for (const { id } of quickParts(plan)) {
+    const evidence = await resolveArtifactEvidence(quickPartReportPath(id), { root });
+    reports.set(id, JSON.parse(await readFile(evidence.realPath, "utf8")));
+    identities.push({ id, report: { path: evidence.path, size: evidence.size, sha256: evidence.sha256 } });
+  }
+  return { reports, identities };
+}
+
+// The Quick aggregate job: same candidate on a clean checkout, every part
+// report downloaded, then the single Quick receipt finalized and verified.
+async function aggregateQuickInvocation({ args, plan, reportPath }) {
+  const aggregateStarted = performance.now();
+  const runId = canonicalGithubRunId(process.env, "quick");
+  const candidate = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
+  const { reports, identities } = await readQuickPartReports(plan);
+  const planDescriptor = createLocalCiPlanDescriptor(plan);
+  const assembled = assembleQuickFromParts({ plan, reports, candidate, runId, planDescriptor });
+  const invocationStarted = aggregateStarted - assembled.executionDurationMs;
+  const result = {
+    version: LOCAL_CI_RECEIPT_VERSION, profile: plan.profile, comparison: plan.comparison, coverage: plan.coverage,
+    candidate, runId, startedAt: assembled.startedAt, finishedAt: assembled.finishedAt,
+    durationMs: assembled.executionDurationMs, status: "passed", deadlineExceeded: false, interrupted: false,
+    registryDigest: plan.registryDigest, plan: planDescriptor, tasks: assembled.tasks,
+    c2zcRestoreFixture: null, c2zcRestoreFixtureDiagnostic: null,
+    productJourneyEvidence: null, releaseOnlyJobs: plan.releaseOnlyJobs, stages: assembled.stages,
+    candidateAfter: candidate, executionDurationMs: assembled.executionDurationMs,
+    partsDigest: quickPartsDigest(plan), parts: identities,
+  };
+  await verifyPartedQuickReceipt(result, { candidate, plan });
+  await finalizeAssembledAggregate({ args, plan, reportPath, candidate, runId, result, assembled, invocationStarted });
 }
 
 async function main() {
@@ -4709,11 +4860,14 @@ async function main() {
     args.report ?? `.artifacts/local-ci/${plan.profile}.json`,
   );
   if (args.part !== undefined || args.aggregate) {
-    if (plan.profile !== "full" || args.verify || args.dryRun || args.from !== null ||
+    if ((plan.profile !== "full" && plan.profile !== "quick") || args.verify || args.dryRun || args.from !== null ||
         (args.part !== undefined && args.aggregate)) {
-      throw new Error("--part and --aggregate select exactly one split Full role");
+      throw new Error("--part and --aggregate select exactly one split Full or Quick role");
     }
-    if (args.aggregate) await aggregateFullInvocation({ args, plan, reportPath });
+    if (plan.profile === "quick") {
+      if (args.aggregate) await aggregateQuickInvocation({ args, plan, reportPath });
+      else await runQuickPartInvocation({ args, plan });
+    } else if (args.aggregate) await aggregateFullInvocation({ args, plan, reportPath });
     else await runFullPartInvocation({ args, plan });
     return;
   }

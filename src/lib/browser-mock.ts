@@ -4099,6 +4099,35 @@ export async function createBrowserMock(
     );
   }
 
+  /** True when the project has a snapshot restore (origin restore, source
+   * domain project.snapshot.restore, carrying the project-restored marker)
+   * whose canonical sequence is newer than `sequence`. Mirrors Native. */
+  function browserRestoreMarkerNewerThan(
+    projectId: string,
+    sequence: number,
+  ): boolean {
+    return (
+      queryOne(
+        `SELECT 1 AS found
+           FROM narrative_change_transactions t
+          WHERE t.project_id = ?
+            AND t.source_change_event_sequence > ?
+            AND t.origin = 'restore'
+            AND t.source_domain = 'project.snapshot.restore'
+            AND EXISTS (
+              SELECT 1 FROM narrative_change_events m
+               WHERE m.project_id = t.project_id
+                 AND m.transaction_id = t.id
+                 AND m.canonical_sequence = t.source_change_event_sequence
+                 AND json_extract(m.object_key_json, '$.kind') = 'project'
+                 AND json_extract(m.structural_impact_json, '$.event')
+                     = 'project-restored')
+          LIMIT 1`,
+        [projectId, sequence],
+      ) !== null
+    );
+  }
+
   function insertBrowserNarrativeChange(input: {
     preparedEvent: PreparedBrowserTrackedChangeEvent;
     identity: BrowserCanonicalWriteIdentity;
@@ -4201,6 +4230,41 @@ export async function createBrowserMock(
       } else {
         throw new Error(
           "undo/redo lineage does not identify a replay or typed inverse",
+        );
+      }
+      // A replay older than a project snapshot restore is refused (Native,
+      // DR-SRC-9): the restore replaced rows without recording the change.
+      // Native compares the sequence of the lineage root (the forward
+      // transaction); this compares the named original transaction directly.
+      // A restore writes no undo/redo, so no replay chain can start after one
+      // and both compare the same forward transaction in every reachable state
+      // (edit, undo, restore, redo is refused either way). That equivalence is
+      // reasoned from the mock's own writers, not tested against a lineage
+      // root (DR-SRC-11).
+      //
+      // Known difference from Native (DR-SRC-11, DR-SRC-12): the mock has no
+      // AI-extraction commit, hence no `narrative_extraction_undo_commit` or
+      // `redo_commit` and no exemption for them. Native lets the undo and redo
+      // of a commit of a verified kind through this refusal after a restore
+      // (their own guard and the continuity check decide); the mock would
+      // refuse such a replay. No mock path reaches one today. A path that
+      // does must mirror `replays_an_apply_commit` and its table of verified
+      // kinds (`REPLAY_EXEMPT_ENTITIES`) before it is added.
+      const root = queryOne(
+        `SELECT source_change_event_sequence AS sequence
+           FROM narrative_change_transactions
+          WHERE project_id = ? AND id = ?`,
+        [input.identity.projectId, input.identity.originalTransactionId],
+      );
+      if (
+        root &&
+        browserRestoreMarkerNewerThan(
+          input.identity.projectId,
+          Number(root.sequence),
+        )
+      ) {
+        throw new Error(
+          "NARRATIVE_CHANGE_FEED_REPLAY_SUPERSEDED_BY_RESTORE: the change being replayed predates a project snapshot restore and can no longer be undone or redone",
         );
       }
     }
@@ -4307,12 +4371,15 @@ export async function createBrowserMock(
     type BrowserNarrativeHead = {
       afterVersion: number | null;
       afterDigest: string | null;
+      /** Set only for a head read from the database (not for one an earlier
+       * event of this batch just set). */
+      storedSequence: number | null;
     };
     const heads = new Map<string, BrowserNarrativeHead | null>();
     for (const row of eventRows) {
       if (!heads.has(row.objectIdentity)) {
         const existing = queryOne(
-          `SELECT after_version, after_digest
+          `SELECT after_version, after_digest, canonical_sequence
              FROM narrative_change_object_heads
             WHERE project_id = ? AND object_identity = ?`,
           [input.identity.projectId, row.objectIdentity],
@@ -4327,6 +4394,7 @@ export async function createBrowserMock(
                 existing.after_digest == null
                   ? null
                   : String(existing.after_digest),
+              storedSequence: Number(existing.canonical_sequence),
             }
           : null;
         heads.set(row.objectIdentity, previous);
@@ -4335,11 +4403,23 @@ export async function createBrowserMock(
       const isEpochReset =
         row.event.objectKey.kind === "project" &&
         row.event.structuralImpact?.event === "project-restored";
+      // A snapshot restore replaces rows and writes one project marker but no
+      // object head, so the first write to an object the snapshot changed
+      // cannot chain from its head. It records the row as it is and moves the
+      // head, which makes the next write strict again (mirrors Native,
+      // DR-SRC-6; not narrowed by restored scope, DR-SRC-7).
       if (
         !isEpochReset &&
         previous !== null &&
         (previous.afterVersion !== row.event.beforeVersion ||
-          previous.afterDigest !== row.beforeDigest)
+          previous.afterDigest !== row.beforeDigest) &&
+        !(
+          previous.storedSequence !== null &&
+          browserRestoreMarkerNewerThan(
+            input.identity.projectId,
+            previous.storedSequence,
+          )
+        )
       ) {
         throw new Error(
           `Narrative Change Feed continuity mismatch for ${row.objectIdentity} ` +
@@ -4350,6 +4430,7 @@ export async function createBrowserMock(
       heads.set(row.objectIdentity, {
         afterVersion: row.event.afterVersion,
         afterDigest: row.afterDigest,
+        storedSequence: null,
       });
     }
 

@@ -367,3 +367,10 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* The profile egress status display (DR-PUBG-35-1) sits above the AI
+   composer: only the visible surface's composer is an anchor, so a mounted but
+   hidden (inert) AI surface does not lift the display. */
+[data-mobile-surface]:not([inert]) [data-phone-chat-composer] {
+  anchor-name: --phone-chat-composer;
+}

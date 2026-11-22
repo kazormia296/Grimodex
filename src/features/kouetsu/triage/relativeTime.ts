@@ -4,7 +4,7 @@
  * 既存ユーティリティの調査結果（重複実装回避のための記録）:
  * - `src/features/trash-bin/TrashBinListView.tsx` の relativeTime は
  *   コンポーネントローカルで i18next 直結（seconds/hours/days 粒度）と仕様が異なる。
- * - `src/features/chronicle/chronicleTime.ts` の formatRelativeDays は
+ * - `electron/shared/readDomain/features/chronicle/chronicleTime.ts` の formatRelativeDays は
  *   作中暦（ChronicleCalendar）用で実時刻とは別物。
  * いずれも本用途（構造化した RelativeTime を返し、文言化は UI 層の t() に
  * 委譲する）とは互換しないため新規実装とした。

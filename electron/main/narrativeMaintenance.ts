@@ -74,6 +74,24 @@ interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding | null;
 }
 
+/**
+ * DR-PUBG-5-17. Where a durable empty-work wake came from. `"demand"` is only
+ * the main-side Graph Index demand timer (the Graph owner's registration
+ * refusal). Everything else, and every case where the origin is unknown, is
+ * `"discovery"`: it keeps today's behaviour. process-local; never serialized.
+ */
+export type NarrativeMaintenanceWakeOrigin = "demand" | "discovery";
+
+/** What `onCycleAccepted` is told about the accepted cycle (DR-PUBG-5-17). */
+export interface NarrativeMaintenanceAcceptedCycle {
+  /**
+   * True only when the cycle carried no work and every wake it sent was a
+   * Graph Index demand. Such a cycle must not spend the discovery chain's
+   * rediscovery budget.
+   */
+  readonly demandOnly: boolean;
+}
+
 interface RetryableDelivery {
   readonly kind: "capacity" | "uncertain";
   readonly sequence: number;
@@ -82,6 +100,7 @@ interface RetryableDelivery {
   readonly wakeEntries: readonly {
     readonly wakeKey: string;
     readonly projectId: string;
+    readonly origin: NarrativeMaintenanceWakeOrigin;
     readonly workspaceBinding:
       | NarrativeMaintenanceWorkspaceBinding
       | null
@@ -230,6 +249,12 @@ export interface NarrativeMaintenanceScheduler {
   requestGraphIndexBuildWakesWithBinding?(
     projectIds: readonly string[],
     binding: NarrativeMaintenanceWorkspaceBinding,
+    /**
+     * DR-PUBG-5-17. Defaults to `"discovery"` (a wake whose cycle spends the
+     * discovery chain's rediscovery budget, as every accepted cycle does).
+     * Only the Graph Index demand timer passes `"demand"`.
+     */
+    origin?: NarrativeMaintenanceWakeOrigin,
   ): void;
   /** Main-only synchronous state recheck for the CI quiescence writer. */
   getQuiescenceState?(): {
@@ -273,7 +298,9 @@ export interface NarrativeMaintenanceSchedulerOptions {
     currentBinding: NarrativeMaintenanceWorkspaceBinding,
   ) => void | Promise<void>;
   /** Let the main-only discovery owner advance Rust-owned durable phases. */
-  onCycleAccepted?: () => void | Promise<void>;
+  onCycleAccepted?: (
+    cycle: NarrativeMaintenanceAcceptedCycle,
+  ) => void | Promise<void>;
   /**
    * Publish one completed main scheduler observation to the CI-only
    * quiescence receipt owner. This never crosses the renderer boundary.
@@ -479,6 +506,26 @@ type CiProcessInterruptionExitScheduler = (callback: () => void) => unknown;
 type CiProcessExit = (code: number) => never | void;
 
 /**
+ * Electron main の `process.exit` は `app.exit` 相当で、呼び出し元に戻り、窓の破棄・
+ * quit・Node 環境の解放を通る。そこへ非同期 N-API 呼び出しの完了が重なると、
+ * napi-rs 2.16 が生成する resolver が env=null で呼ばれ、`failed to delete napi ref`
+ * の assert で SIGABRT になる（signal 終了で、exit code 86 にならない）。この seam は
+ * 「プロセス中断」を模すだけなので、Electron の app.exit（窓の破棄、quit、Node 環境の
+ * 解放）を通らず、JS に戻らない `process.reallyExit` を使う。inspector の切断待ちなど
+ * process の終了処理の一部は通りうる。取れない環境でだけ `process.exit` に退く。
+ */
+function exitWithoutEnvironmentTeardown(code: number): never | void {
+  const reallyExit = (
+    process as NodeJS.Process & { reallyExit?: (code: number) => never }
+  ).reallyExit;
+  if (typeof reallyExit === "function") {
+    reallyExit.call(process, code);
+    return;
+  }
+  process.exit(code);
+}
+
+/**
  * Main-only owner for the typed interruption ACK.  Native has already
  * committed the exact running lifecycle before returning the ACK; this
  * callback deliberately gives the product journey a bounded observation
@@ -495,7 +542,7 @@ export async function scheduleNarrativeMaintenanceProcessInterruption(
   schedule: CiProcessInterruptionExitScheduler = (callback) => {
     setTimeout(callback, NARRATIVE_MAINTENANCE_PROCESS_EXIT_DELAY_MS);
   },
-  exit: CiProcessExit = (code) => process.exit(code),
+  exit: CiProcessExit = exitWithoutEnvironmentTeardown,
 ): Promise<boolean> {
   if (
     ack.status !== "ci-process-interruption-pending" ||
@@ -738,6 +785,33 @@ function sameMaintenanceWorkShape(
     left.projectId === right.projectId &&
     left.runKind === right.runKind &&
     left.workKey === right.workKey
+  );
+}
+
+/**
+ * DR-PUBG-5-17 (addendum 1). A wake-only cycle is "demand-only" only when
+ * Native's terminal receipt proves it ran no durable chain work: no work at
+ * all, or the Graph Index build only. For an empty wire batch Native plans
+ * durable work per wake project itself, and a cycle that ran any other work
+ * (even one that failed: its re-pickup must not wait for the next wake) keeps
+ * its rediscovery, as at the base. No
+ * receipt (replayed delivery, an adapter without the lifecycle methods)
+ * proves nothing, so the answer is "no". This reads the receipt only; Main
+ * still never dispatches the build itself.
+ */
+const NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX =
+  "narrative-maintenance:v1/nir1-graph-index-build/";
+
+function receiptRanOnlyGraphIndexBuild(
+  receipt: NarrativeMaintenanceTerminalReceipt | null,
+): boolean {
+  return (
+    receipt !== null &&
+    receipt.works.every((work) =>
+      work.workKey.startsWith(
+        NARRATIVE_MAINTENANCE_GRAPH_INDEX_BUILD_KEY_PREFIX,
+      ),
+    )
   );
 }
 
@@ -1052,6 +1126,13 @@ function deliveryFenceResolution(raw: unknown): "fenced" | "out-of-order" {
 
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
+/**
+ * Native refuses a delivery-failure receipt for a project the live workspace
+ * does not have (DR-PUBG-5-19). The project's durable state is gone with it, so
+ * there is nothing to recover: the trigger ends instead of being queued again.
+ */
+const NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE =
+  "NEX_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING";
 const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
   "NEX_VERIFY_GRAPH_STATE_CHANGED";
 const NARRATIVE_MAINTENANCE_ATTEMPT_CANCELLED_CODE =
@@ -1291,6 +1372,8 @@ export function createNarrativeMaintenanceScheduler(
     completionRecoveryBinding?: NarrativeMaintenanceWorkspaceBinding | null;
     completionRediscoveryPending?: boolean;
     completionWakeProjects?: readonly string[];
+    /** DR-PUBG-5-17: origin of each project in `completionWakeProjects`; missing means `"discovery"`. */
+    completionWakeOrigins?: ReadonlyMap<string, NarrativeMaintenanceWakeOrigin>;
     delivery?: {
       fingerprint: string;
       sequence: number;
@@ -1349,8 +1432,29 @@ export function createNarrativeMaintenanceScheduler(
     {
       projectId: string;
       workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined;
+      origin: NarrativeMaintenanceWakeOrigin;
     }
   >();
+  // DR-PUBG-5-17. The single writer of `durableWakeProjects`. A key that is
+  // already a discovery wake stays one: a demand (or a requeue that only knows
+  // the cycle's demand origin) never demotes it, so a Graph Index demand can
+  // never suppress a rediscovery that its absence would have made.
+  const setDurableWake = (
+    wakeKey: string,
+    projectId: string,
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+    origin: NarrativeMaintenanceWakeOrigin,
+  ): void => {
+    const existing = durableWakeProjects.get(wakeKey);
+    durableWakeProjects.set(wakeKey, {
+      projectId,
+      workspaceBinding,
+      origin:
+        existing?.origin === "discovery" || origin === "discovery"
+          ? "discovery"
+          : "demand",
+    });
+  };
   const durableWakeRetryCounts = new Map<string, number>();
   // A deferred adapter must remain durable without creating an idle retry
   // loop.  Keep the canonical work identity parked, rather than the whole
@@ -1654,10 +1758,7 @@ export function createNarrativeMaintenanceScheduler(
       }
       const reboundKey = scopedWakeKey(entry.projectId, rebound);
       durableWakeProjects.delete(wakeKey);
-      durableWakeProjects.set(reboundKey, {
-        ...entry,
-        workspaceBinding: rebound,
-      });
+      setDurableWake(reboundKey, entry.projectId, rebound, entry.origin);
       const retryCount = durableWakeRetryCounts.get(wakeKey);
       durableWakeRetryCounts.delete(wakeKey);
       if (retryCount !== undefined) {
@@ -2022,26 +2123,42 @@ export function createNarrativeMaintenanceScheduler(
     noteMutation();
   };
 
+  /**
+   * "accepted": Native wrote the receipt and the durable recovery wake.
+   * "project-missing": Native refused the receipt because the live workspace
+   * has no such project (terminal; DR-PUBG-5-19). "retained": anything else,
+   * the trigger stays queued.
+   */
   const persistDeliveryFailure = async (
     failure: NarrativeMaintenanceDeliveryFailure,
-  ): Promise<boolean> => {
+  ): Promise<"accepted" | "project-missing" | "retained"> => {
     const recordFailure = backend?.recordNarrativeMaintenanceDeliveryFailure;
     if (typeof recordFailure !== "function") {
       warn(
         "[narrative-maintenance] Native failure receipt API is unavailable; retaining trigger",
       );
-      return false;
+      return "retained";
     }
     try {
       return deliveryFailureReceiptAccepted(
         await recordFailure.call(backend, failure),
-      );
+      )
+        ? "accepted"
+        : "retained";
     } catch (receiptError) {
+      if (
+        hasExactFailureCode(
+          errorMessage(receiptError),
+          NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE,
+        )
+      ) {
+        return "project-missing";
+      }
       warn(
         "[narrative-maintenance] failed to persist delivery failure receipt; retaining trigger:",
         receiptError,
       );
-      return false;
+      return "retained";
     }
   };
 
@@ -2654,10 +2771,13 @@ export function createNarrativeMaintenanceScheduler(
                 projectId,
                 completionOwner.binding,
               );
-              durableWakeProjects.set(wakeKey, {
+              setDurableWake(
+                wakeKey,
                 projectId,
-                workspaceBinding: completionOwner.binding,
-              });
+                completionOwner.binding,
+                completionOwner.completionWakeOrigins?.get(projectId) ??
+                  "discovery",
+              );
               if (completionBindingIsCurrent) {
                 deferredWakeProjects.delete(wakeKey);
               } else {
@@ -3216,6 +3336,30 @@ export function createNarrativeMaintenanceScheduler(
     const sendingWakeProjects = [
       ...new Set(sendingWakeEntries.map((entry) => entry.projectId)),
     ];
+    // DR-PUBG-5-17. A project sent under both origins counts as discovery.
+    const sendingWakeOrigins = new Map<string, NarrativeMaintenanceWakeOrigin>();
+    let demandOnlyCycle = false;
+    const recomputeSendingWakeOrigins = (): void => {
+      sendingWakeOrigins.clear();
+      for (const entry of sendingWakeEntries) {
+        sendingWakeOrigins.set(
+          entry.projectId,
+          sendingWakeOrigins.get(entry.projectId) === "discovery" ||
+            entry.origin === "discovery"
+            ? "discovery"
+            : "demand",
+        );
+      }
+      demandOnlyCycle =
+        backendBatch.length === 0 &&
+        sendingWakeEntries.length > 0 &&
+        sendingWakeEntries.every((entry) => entry.origin === "demand");
+    };
+    recomputeSendingWakeOrigins();
+    const sendingWakeOriginOf = (
+      projectId: string,
+    ): NarrativeMaintenanceWakeOrigin =>
+      sendingWakeOrigins.get(projectId) ?? "discovery";
     let cycleBinding =
       deliveryRetry?.workspaceBinding ??
       backendBatch[0]?.workspaceBinding ??
@@ -3417,6 +3561,27 @@ export function createNarrativeMaintenanceScheduler(
       deliverySequences.set(deliveryFingerprint, deliverySequence);
     }
     clearCoordinatorWait();
+    // DR-PUBG-5-17. The origins above were read before the awaits (descriptor
+    // recovery, ACK retry). A discovery wake that merged into the same key
+    // meanwhile is about to be absorbed by the delete below, so promote the
+    // snapshot from the live map first: otherwise the rediscovery that the
+    // absorbed wake asked for would be suppressed (and, for a retried
+    // delivery, so would the origin recorded in `wakeEntries`).
+    if (
+      sendingWakeEntries.some(
+        (entry) =>
+          entry.origin !== "discovery" &&
+          durableWakeProjects.get(entry.wakeKey)?.origin === "discovery",
+      )
+    ) {
+      sendingWakeEntries = sendingWakeEntries.map((entry) =>
+        entry.origin !== "discovery" &&
+        durableWakeProjects.get(entry.wakeKey)?.origin === "discovery"
+          ? { ...entry, origin: "discovery" as const }
+          : entry,
+      );
+      recomputeSendingWakeOrigins();
+    }
     for (const entry of sendingWakeEntries) {
       durableWakeProjects.delete(entry.wakeKey);
       deferredWakeProjects.delete(entry.wakeKey);
@@ -3512,10 +3677,12 @@ export function createNarrativeMaintenanceScheduler(
       } else {
         for (const projectId of wakeProjects) {
           const wakeKey = scopedWakeKey(projectId, cycleBinding);
-          durableWakeProjects.set(wakeKey, {
+          setDurableWake(
+            wakeKey,
             projectId,
-            workspaceBinding: cycleBinding,
-          });
+            cycleBinding,
+            sendingWakeOriginOf(projectId),
+          );
           deferredWakeProjects.delete(wakeKey);
         }
         shouldSchedule = true;
@@ -3759,7 +3926,11 @@ export function createNarrativeMaintenanceScheduler(
       }
       if (cycleResult.status === "accepted" && !disposed) {
         try {
-          const followup = options.onCycleAccepted?.();
+          const followup = options.onCycleAccepted?.({
+            demandOnly:
+              demandOnlyCycle &&
+              receiptRanOnlyGraphIndexBuild(nativeTerminalReceipt),
+          });
           void Promise.resolve(followup).catch((callbackError: unknown) => {
             warn(
               "[narrative-maintenance] accepted-cycle follow-up failed:",
@@ -4041,6 +4212,9 @@ export function createNarrativeMaintenanceScheduler(
               completionOwner.completionWakeProjects = [
                 ...sendingWakeProjects,
               ];
+              completionOwner.completionWakeOrigins = new Map(
+                sendingWakeOrigins,
+              );
             } else {
               if (
                 completionOwner.completionAttemptId === undefined &&
@@ -4119,10 +4293,12 @@ export function createNarrativeMaintenanceScheduler(
           }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
+            setDurableWake(
+              wakeKey,
               projectId,
-              workspaceBinding: cycleBinding,
-            });
+              cycleBinding,
+              sendingWakeOriginOf(projectId),
+            );
             deferredWakeProjects.add(wakeKey);
           }
           warn(
@@ -4163,10 +4339,12 @@ export function createNarrativeMaintenanceScheduler(
           }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
+            setDurableWake(
+              wakeKey,
               projectId,
-              workspaceBinding: cycleBinding,
-            });
+              cycleBinding,
+              sendingWakeOriginOf(projectId),
+            );
           }
           // The terminal interruption receipt has been consumed and its
           // unfinished work is now represented by fresh queue entries. Retire
@@ -4209,10 +4387,12 @@ export function createNarrativeMaintenanceScheduler(
           }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
+            setDurableWake(
+              wakeKey,
               projectId,
-              workspaceBinding: cycleBinding,
-            });
+              cycleBinding,
+              sendingWakeOriginOf(projectId),
+            );
             deferredWakeProjects.add(wakeKey);
           }
           warn(
@@ -4242,10 +4422,12 @@ export function createNarrativeMaintenanceScheduler(
           for (const work of backendBatch) requeueWork(work);
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
+            setDurableWake(
+              wakeKey,
               projectId,
-              workspaceBinding: cycleBinding,
-            });
+              cycleBinding,
+              sendingWakeOriginOf(projectId),
+            );
           }
           warn(
             "[narrative-maintenance] lifecycle request was not admitted; retaining maintenance trigger",
@@ -4273,10 +4455,12 @@ export function createNarrativeMaintenanceScheduler(
           }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
+            setDurableWake(
+              wakeKey,
               projectId,
-              workspaceBinding: cycleBinding,
-            });
+              cycleBinding,
+              sendingWakeOriginOf(projectId),
+            );
           }
           if (
             settledCycleResult?.status === "workspace-unavailable" &&
@@ -4316,7 +4500,7 @@ export function createNarrativeMaintenanceScheduler(
               // outbox is the durable recovery owner across restart, rather
               // than this process-local parked Map.
               retryCounts.set(key, retryCount);
-              const accepted = await persistDeliveryFailure({
+              const persisted = await persistDeliveryFailure({
                 schemaVersion: 1,
                 scope: "work",
                 projectId: work.projectId,
@@ -4327,10 +4511,18 @@ export function createNarrativeMaintenanceScheduler(
                 retryCount,
                 error: error instanceof Error ? error.message : String(error),
               });
-              if (accepted) {
+              if (persisted === "accepted") {
                 retryCounts.delete(key);
                 warn(
                   `[narrative-maintenance] retry exhausted for canonical key ${key}; native failure receipt and durable recovery wake persisted for project ${work.projectId}`,
+                  error,
+                );
+              } else if (persisted === "project-missing") {
+                // DR-PUBG-5-19: the live workspace has no such project, so
+                // there is no durable state to recover. End the work.
+                retryCounts.delete(key);
+                warn(
+                  `[narrative-maintenance] retry exhausted for canonical key ${key}; ${NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE}: project ${work.projectId} does not exist in the workspace, dropping the work`,
                   error,
                 );
               } else {
@@ -4349,14 +4541,16 @@ export function createNarrativeMaintenanceScheduler(
               const retryCount = (durableWakeRetryCounts.get(wakeKey) ?? 0) + 1;
               if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
                 durableWakeRetryCounts.set(wakeKey, retryCount);
-                durableWakeProjects.set(wakeKey, {
+                setDurableWake(
+                  wakeKey,
                   projectId,
-                  workspaceBinding: cycleBinding,
-                });
+                  cycleBinding,
+                  sendingWakeOriginOf(projectId),
+                );
                 requeuedCount += 1;
                 firstRetryCount ??= retryCount;
               } else {
-                const accepted = await persistDeliveryFailure({
+                const persisted = await persistDeliveryFailure({
                   schemaVersion: 1,
                   scope: "wake",
                   projectId,
@@ -4364,18 +4558,28 @@ export function createNarrativeMaintenanceScheduler(
                   retryCount,
                   error: error instanceof Error ? error.message : String(error),
                 });
-                if (accepted) {
+                if (persisted === "accepted") {
                   durableWakeRetryCounts.delete(wakeKey);
                   warn(
                     `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; native failure receipt and durable recovery wake persisted`,
                     error,
                   );
+                } else if (persisted === "project-missing") {
+                  // DR-PUBG-5-19: the live workspace has no such project, so
+                  // there is no durable state to recover. End the wake.
+                  durableWakeRetryCounts.delete(wakeKey);
+                  warn(
+                    `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; ${NARRATIVE_MAINTENANCE_DELIVERY_FAILURE_PROJECT_MISSING_CODE}: project ${projectId} does not exist in the workspace, dropping the wake`,
+                    error,
+                  );
                 } else {
                   durableWakeRetryCounts.set(wakeKey, retryCount);
-                  durableWakeProjects.set(wakeKey, {
+                  setDurableWake(
+                    wakeKey,
                     projectId,
-                    workspaceBinding: cycleBinding,
-                  });
+                    cycleBinding,
+                    sendingWakeOriginOf(projectId),
+                  );
                   requeuedCount += 1;
                   firstRetryCount ??= Math.min(
                     retryCount,
@@ -4786,7 +4990,11 @@ export function createNarrativeMaintenanceScheduler(
         enqueue(work, normalizedBinding);
       }
     },
-    requestGraphIndexBuildWakesWithBinding(projectIds, binding): void {
+    requestGraphIndexBuildWakesWithBinding(
+      projectIds,
+      binding,
+      origin = "discovery",
+    ): void {
       const normalizedBinding = normalizeWorkspaceBinding(binding);
       if (normalizedBinding === null) {
         throw new Error(
@@ -4805,10 +5013,12 @@ export function createNarrativeMaintenanceScheduler(
       noteMutation();
       for (const projectId of projectIds) {
         const wakeKey = scopedWakeKey(projectId, normalizedBinding);
-        durableWakeProjects.set(wakeKey, {
+        setDurableWake(
+          wakeKey,
           projectId,
-          workspaceBinding: normalizedBinding,
-        });
+          normalizedBinding,
+          origin === "demand" ? "demand" : "discovery",
+        );
         deferredWakeProjects.delete(wakeKey);
       }
       // Same wakeup rule as `enqueue`: a pending timer or the in-flight

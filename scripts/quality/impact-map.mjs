@@ -20,6 +20,12 @@ import {
   formatImpactMarkdown,
   resolveSafeAll,
 } from "../impact/core.mjs";
+import {
+  impactCommandKey,
+  parseImpactPart,
+  partitionImpactCommands,
+  planImpactCommands,
+} from "../local-ci-impact-parts.mjs";
 
 export {
   classifyChangedPaths,
@@ -88,8 +94,11 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/ai-policy",
         "src/features/chat/agent/agentLoop.test.ts",
         "src/features/chat/agent/agentPrivacy.test.ts",
+        "src/features/chat/agent/agentReadToolDefinitions.drift.test.ts",
         "src/features/chat/agent/agentTextBatcher.test.ts",
         "src/features/chat/agent/aiLiveHarness.test.ts",
+        "src/features/chat/agent/appHelpTools.test.ts",
+        "src/features/chat/agent/appUiTools.test.ts",
         "src/features/chat/agent/askUser.test.ts",
         "src/features/chat/agent/chronicleReadTools.test.ts",
         "src/features/chat/agent/chronicleToolCache.test.ts",
@@ -97,10 +106,42 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/agent/codexHybridSearch.test.ts",
         "src/features/chat/agent/dynamicModelCaps.test.ts",
         "src/features/chat/agent/modelLimits.test.ts",
+        "src/features/chat/agent/settingProposalTools.test.ts",
+        "src/features/chat/agent/toolDefinitions.chatIr.test.ts",
+        "src/features/chat/agent/toolDefinitions.legacyGolden.test.ts",
+        "src/features/chat/agent/readCore.mainAdapter.test.ts",
+        "src/features/chat/agent/readOpenForeshadowWire.test.ts",
+        "src/features/chat/agent/toolExecutors.chronicleCharacterization.test.ts",
         "src/features/chat/agent/toolDefinitions.test.ts",
+        "src/features/chat/agent/toolExecutors.legacyGolden.test.ts",
+        "src/features/chat/agent/toolExecutors.legacyNativePort.test.ts",
+        "src/features/chat/agent/toolExecutors.searchScenesArchived.test.ts",
         "src/features/chat/agent/toolExecutors.test.ts",
         "src/features/chat/agent/toolTurnCache.test.ts",
+        "src/features/chat/components/SettingProposalCard.test.tsx",
         "src/features/chat/toolProtocolParse.test.ts",
+        "src/features/commands/appCommandRegistry.test.ts",
+        "src/features/settings/agentSettingCatalog.test.ts",
+        "src/help/helpIndex.test.ts",
+        "src/help/uiState.test.ts",
+      ],
+      [
+        "pnpm",
+        "test:electron",
+        "--run",
+        "electron/shared/agentReadToolDefinitions.static.test.ts",
+        "electron/shared/agentSettingGlobalSettingsIpc.test.ts",
+        "electron/shared/mastraRead/tables.test.ts",
+        "electron/shared/readDomain/core/core.static.test.ts",
+        "electron/shared/readDomain/core/readExecutors.test.ts",
+        "electron/shared/readDomain/core/searchTools.test.ts",
+        "electron/shared/readDomain/core/foreshadowTools.test.ts",
+        "electron/shared/readDomain/features/foreshadow/readRows.test.ts",
+        "electron/shared/readDomain/core/chronicleTools.test.ts",
+        "electron/shared/readDomain/core/chronicleReaders.test.ts",
+        "electron/shared/readDomain/core/chronicleMainContext.test.ts",
+        "electron/shared/readDomain/features/chronicle/readRows.test.ts",
+        "electron/main/mastraRead/irClosure.static.test.ts",
       ],
       [
         "cargo",
@@ -870,6 +911,48 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--",
         "--test-threads=1",
       ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "native-current-human-capture",
+        "--lib",
+        "narrative_extraction::nir1_graph::scene_disclosure",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "native-current-human-capture",
+        "--lib",
+        "narrative_extraction::nir1_graph::related_scenes_requalification",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "native-current-human-capture",
+        "--lib",
+        "narrative_extraction::scene_body_declaration",
+        "--",
+        "--test-threads=1",
+      ],
       // DA-2b typed writers (DR-DA2-57): the CW tests compile only with the
       // feature, so the default `--test '*'` runs an empty binary.
       [
@@ -1269,6 +1352,60 @@ export function parseImpactMap(source, options = {}) {
   return map;
 }
 
+// A docs-markdown-only selection: every changed path is Markdown under docs/
+// (`^docs/.+\.md$`), work records included. This is NOT the docs-only PR
+// exception of GDX-TRACE-001 / ship-branch (a narrower merge-condition rule
+// that excludes operational-rule documents and documents named by path from
+// code); it only decides which Light commands run. No Rust code, build script
+// or manifest reads docs/, so such a selection gets no cargo command; of the
+// Node commands only the ones that can read docs/ are kept. The suite selection
+// itself (requirements, heavy and blocked reports) is unchanged. Keep
+// DOCS_READER_VITEST_FILES in step with the vitest files that read docs/
+// (impact-map.test.mjs scans for new ones).
+const DOCS_MARKDOWN_ONLY_PATH = /^docs\/.+\.md$/u;
+export const DOCS_READER_VITEST_FILES = Object.freeze([
+  "electron/main/rendererContainmentGOpenRecord.test.ts",
+]);
+
+export function isDocsMarkdownOnlyChange(changedPaths) {
+  return (
+    changedPaths.length > 0 &&
+    changedPaths.every((candidate) => DOCS_MARKDOWN_ONLY_PATH.test(candidate))
+  );
+}
+
+/**
+ * The commands of one Light suite that still run for a docs-markdown-only
+ * selection (a suite left with no command is reported as skipped, not failed).
+ * Kept: `pnpm test:quality`, `pnpm test:narrative:*` and `node --test ...`
+ * (Node-only readers of docs/), and the vitest run narrowed to the electron
+ * test that reads docs/. Dropped: every cargo command and every other command.
+ */
+export function docsMarkdownOnlyCommands(commands) {
+  const kept = [];
+  for (const command of commands) {
+    const [executable, script, flag, ...rest] = command;
+    if (executable === "node" && script === "--test") {
+      kept.push(command);
+    } else if (
+      executable === "pnpm" &&
+      (script === "test:quality" || script?.startsWith("test:narrative:"))
+    ) {
+      kept.push(command);
+    } else if (
+      executable === "pnpm" &&
+      script === "test:electron" &&
+      flag === "--run"
+    ) {
+      const files = rest.filter((file) =>
+        DOCS_READER_VITEST_FILES.includes(file),
+      );
+      if (files.length > 0) kept.push([executable, script, flag, ...files]);
+    }
+  }
+  return kept;
+}
+
 function isInvariantAllPath(candidate) {
   return (
     candidate === "AGENTS.md" ||
@@ -1312,6 +1449,7 @@ export function selectImpact(map, changedPaths, options = {}) {
   const requirementIds = allSelected
     ? allRequirementIds
     : unique(matchedRules.flatMap((rule) => rule.requirements));
+  const docsMarkdownOnly = !forcedReason && isDocsMarkdownOnlyChange(paths);
   const reason = forcedReason
     ? forcedReason
     : paths.length === 0
@@ -1337,7 +1475,10 @@ export function selectImpact(map, changedPaths, options = {}) {
     suiteIds,
     fallback,
     allSelected,
-    reason,
+    docsMarkdownOnly,
+    reason: docsMarkdownOnly
+      ? `${reason} Docs-markdown-only selection: cargo and commands that cannot read docs/ are not run.`
+      : reason,
   };
 }
 
@@ -1357,6 +1498,7 @@ export function formatImpactSummary(selection, execution = []) {
       if (entry.status === "not-run") {
         return `; classification=not-run; candidates=${entry.candidateFailureClasses.join(", ")}; reason=${entry.reason}`;
       }
+      if (entry.status === "skipped") return `; reason=${entry.reason}`;
       return "";
     })();
     return `${entry.suiteId}: ${entry.status}${timing}${classification}`;
@@ -1563,15 +1705,77 @@ function runCommand(command, args, cwd, { routeStdoutToStderr = false } = {}) {
   });
 }
 
+/**
+ * The suite definitions as they actually run for `selection`: a docs-only
+ * change narrows every suite's commands (docsMarkdownOnlyCommands). The single source
+ * for both runSelectedSuites and the Quick command plan, so part assignment,
+ * `stepIndex` and the coverage check all index the narrowed commands.
+ */
+export function effectiveSuiteDefinitions(selection, definitions) {
+  if (!selection.docsMarkdownOnly) return definitions;
+  const effective = {};
+  for (const suiteId of selection.suiteIds) {
+    const definition = definitions[suiteId];
+    if (definition) {
+      effective[suiteId] = {
+        ...definition,
+        commands: docsMarkdownOnlyCommands(definition.commands),
+      };
+    }
+  }
+  return effective;
+}
+
+/** Every command that runs for `selection`, with the Quick part that runs it. */
+export function planSelectedCommands(
+  selection,
+  definitions = LIGHT_SUITE_DEFINITIONS,
+) {
+  return planImpactCommands(
+    selection,
+    effectiveSuiteDefinitions(selection, definitions),
+  );
+}
+
+// `part` ({ index, count }, 1-based) runs only that part of the selected
+// commands (hosted Quick split); omitted, every selected command runs. In part
+// mode a suite with no command in this part is left out of the report: the
+// aggregate coverage check compares reports with the command plan, which lists
+// commands only, so a docs-only suite with nothing to run is not reported (it
+// would otherwise be a "skipped" entry that no part is assigned).
 export async function runSelectedSuites(
   selection,
-  { repoRoot = DEFAULT_REPO_ROOT, routeStdoutToStderr = false } = {},
+  {
+    repoRoot = DEFAULT_REPO_ROOT,
+    routeStdoutToStderr = false,
+    part = null,
+    definitions = LIGHT_SUITE_DEFINITIONS,
+    runner = runCommand,
+  } = {},
 ) {
   const results = [];
   let previousFailure = null;
+  const effective = effectiveSuiteDefinitions(selection, definitions);
+  const assigned = part
+    ? new Set(
+        partitionImpactCommands(selection, effective, part.count)[
+          part.index - 1
+        ].map(impactCommandKey),
+      )
+    : null;
   for (const suiteId of selection.suiteIds) {
-    const definition = LIGHT_SUITE_DEFINITIONS[suiteId];
-    if (!definition) throw new Error(`No static command for suite ${suiteId}`);
+    const fullDefinition = effective[suiteId];
+    if (!fullDefinition)
+      throw new Error(`No static command for suite ${suiteId}`);
+    const definition = assigned
+      ? {
+          ...fullDefinition,
+          commands: fullDefinition.commands.filter((_, stepIndex) =>
+            assigned.has(impactCommandKey({ suiteId, stepIndex })),
+          ),
+        }
+      : fullDefinition;
+    if (assigned && definition.commands.length === 0) continue;
     if (previousFailure) {
       results.push({
         suiteId,
@@ -1587,10 +1791,27 @@ export async function runSelectedSuites(
       });
       continue;
     }
+    const commands = definition.commands;
+    if (commands.length === 0) {
+      results.push({
+        suiteId,
+        failureClass: null,
+        candidateFailureClasses: definition.failureClasses,
+        classificationStatus: "not-applicable",
+        commands,
+        steps: [],
+        status: "skipped",
+        exitCode: null,
+        reason:
+          "Docs-markdown-only selection: no command of this suite can read docs/.",
+        durationMs: 0,
+      });
+      continue;
+    }
     const started = performance.now();
     const steps = [];
     let failedCommand = null;
-    for (const staticCommand of definition.commands) {
+    for (const staticCommand of commands) {
       if (failedCommand) {
         steps.push({
           command: staticCommand,
@@ -1602,7 +1823,7 @@ export async function runSelectedSuites(
         continue;
       }
       const [command, ...args] = staticCommand;
-      const step = await runCommand(command, args, repoRoot, {
+      const step = await runner(command, args, repoRoot, {
         routeStdoutToStderr,
       });
       steps.push({ command: staticCommand, ...step });
@@ -1621,7 +1842,7 @@ export async function runSelectedSuites(
           ? "classified"
           : "pending-triage"
         : "not-applicable",
-      commands: definition.commands,
+      commands,
       steps,
       status: failedStep ? "failed" : "passed",
       exitCode: failedStep ? failedStep.exitCode : 0,
@@ -1635,7 +1856,13 @@ export async function runSelectedSuites(
 }
 
 function parseArgs(argv) {
-  const result = { changedFiles: [], format: "markdown", run: false };
+  const result = {
+    changedFiles: [],
+    format: "markdown",
+    run: false,
+    part: null,
+    commandPlan: false,
+  };
   const readValue = (option, index) => {
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) {
@@ -1653,6 +1880,9 @@ function parseArgs(argv) {
       result.changedFiles.push(readValue(arg, index++));
     else if (arg === "--format") result.format = readValue(arg, index++);
     else if (arg === "--report") result.report = readValue(arg, index++);
+    else if (arg === "--part")
+      result.part = parseImpactPart(readValue(arg, index++));
+    else if (arg === "--command-plan") result.commandPlan = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!["markdown", "json"].includes(result.format))
@@ -1707,6 +1937,7 @@ async function main() {
   const execution = args.run
     ? await runSelectedSuites(selection, {
         routeStdoutToStderr: args.format === "json",
+        part: args.part,
       })
     : [];
   const report = {
@@ -1719,6 +1950,12 @@ async function main() {
       arch: process.arch,
     },
     selection,
+    ...(args.part ? { part: args.part } : {}),
+    // Every selected command with the Quick part that runs it (the aggregate
+    // job recomputes this independently of the parts).
+    ...(args.commandPlan
+      ? { commandPlan: planSelectedCommands(selection) }
+      : {}),
     execution,
     heavy: deferredHeavy(selection, heavyEvaluations),
     blocked: selectedBlockedEvaluations(selection, blockedEvaluations),
@@ -1741,7 +1978,11 @@ async function main() {
       `${JSON.stringify(report, null, 2)}\n`,
     );
   }
-  if (execution.some((entry) => entry.status !== "passed"))
+  if (
+    execution.some(
+      (entry) => entry.status !== "passed" && entry.status !== "skipped",
+    )
+  )
     process.exitCode = 1;
 }
 

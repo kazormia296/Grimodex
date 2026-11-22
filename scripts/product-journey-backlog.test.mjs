@@ -31,6 +31,7 @@ const EXPECTED_JOURNEY_IDS = [
   "agent-stream-project-switch",
   "chat-stream-workspace-switch",
   "agent-stream-workspace-switch",
+  "mastra-agent-turn-gate-load-audit",
   "editor-pending-project-switch",
   "mcp-external-write-conflict",
   "chronicle-native-roundtrip",

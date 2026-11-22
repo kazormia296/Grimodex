@@ -1,0 +1,451 @@
+{
+  "tool": "get_event_detail",
+  "cases": [
+    {
+      "case": "rows: S1（戦争は hidden なので relation は出ない）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "eventId": "ev-meet"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event '老魔術師との出会い'",
+        "tokensUsed": 467,
+        "content": {
+          "id": "ev-meet",
+          "title": "老魔術師との出会い",
+          "note": null,
+          "kind": "generic",
+          "ordinal": "a2",
+          "startTime": 5400,
+          "endTime": null,
+          "startMinute": null,
+          "endMinute": null,
+          "startGranularity": "day",
+          "endGranularity": "none",
+          "startDate": "1015年第1日",
+          "endDate": null,
+          "precision": "exact",
+          "primaryCharacter": "アリア",
+          "location": "古い塔",
+          "participants": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "role": "主役"
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "role": "助言者"
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "n-s1",
+              "title": "出会い"
+            }
+          ],
+          "relations": []
+        }
+      },
+      "contentJson": "{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"endTime\":null,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"day\",\"endGranularity\":\"none\",\"startDate\":\"1015年第1日\",\"endDate\":null,\"precision\":\"exact\",\"primaryCharacter\":\"アリア\",\"location\":\"古い塔\",\"participants\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"role\":\"主役\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"role\":\"助言者\"}],\"scenes\":[{\"sceneId\":\"n-s1\",\"title\":\"出会い\"}],\"relations\":[]}"
+    },
+    {
+      "case": "rows: S3（戦争が見えるので relation も出る）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": "ev-meet"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event '老魔術師との出会い'",
+        "tokensUsed": 504,
+        "content": {
+          "id": "ev-meet",
+          "title": "老魔術師との出会い",
+          "note": null,
+          "kind": "generic",
+          "ordinal": "a2",
+          "startTime": 5400,
+          "endTime": null,
+          "startMinute": null,
+          "endMinute": null,
+          "startGranularity": "day",
+          "endGranularity": "none",
+          "startDate": "1015年第1日",
+          "endDate": null,
+          "precision": "exact",
+          "primaryCharacter": "アリア",
+          "location": "古い塔",
+          "participants": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "role": "主役"
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "role": "助言者"
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "n-s1",
+              "title": "出会い"
+            }
+          ],
+          "relations": [
+            {
+              "cause": "魔術戦争",
+              "effect": "老魔術師との出会い"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"endTime\":null,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"day\",\"endGranularity\":\"none\",\"startDate\":\"1015年第1日\",\"endDate\":null,\"precision\":\"exact\",\"primaryCharacter\":\"アリア\",\"location\":\"古い塔\",\"participants\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"role\":\"主役\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"role\":\"助言者\"}],\"scenes\":[{\"sceneId\":\"n-s1\",\"title\":\"出会い\"}],\"relations\":[{\"cause\":\"魔術戦争\",\"effect\":\"老魔術師との出会い\"}]}"
+    },
+    {
+      "case": "rows: 場所・主役・暦整形済みの日付",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": "ev-birth"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event 'アリアの誕生'",
+        "tokensUsed": 370,
+        "content": {
+          "id": "ev-birth",
+          "title": "アリアの誕生",
+          "note": "春に生まれた",
+          "kind": "birth",
+          "ordinal": "a0",
+          "startTime": 0,
+          "endTime": null,
+          "startMinute": null,
+          "endMinute": null,
+          "startGranularity": "day",
+          "endGranularity": "none",
+          "startDate": "1000年第1日",
+          "endDate": null,
+          "precision": "exact",
+          "primaryCharacter": "アリア",
+          "location": null,
+          "participants": [],
+          "scenes": [
+            {
+              "sceneId": "n-s1",
+              "title": "出会い"
+            }
+          ],
+          "relations": []
+        }
+      },
+      "contentJson": "{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"note\":\"春に生まれた\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"endTime\":null,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"day\",\"endGranularity\":\"none\",\"startDate\":\"1000年第1日\",\"endDate\":null,\"precision\":\"exact\",\"primaryCharacter\":\"アリア\",\"location\":null,\"participants\":[],\"scenes\":[{\"sceneId\":\"n-s1\",\"title\":\"出会い\"}],\"relations\":[]}"
+    },
+    {
+      "case": "rows: UI 言語が en",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3",
+        "language": "en"
+      },
+      "params": {
+        "eventId": "ev-meet"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event '老魔術師との出会い'",
+        "tokensUsed": 503,
+        "content": {
+          "id": "ev-meet",
+          "title": "老魔術師との出会い",
+          "note": null,
+          "kind": "generic",
+          "ordinal": "a2",
+          "startTime": 5400,
+          "endTime": null,
+          "startMinute": null,
+          "endMinute": null,
+          "startGranularity": "day",
+          "endGranularity": "none",
+          "startDate": "1, 1015",
+          "endDate": null,
+          "precision": "exact",
+          "primaryCharacter": "アリア",
+          "location": "古い塔",
+          "participants": [
+            {
+              "codexId": "c-aria",
+              "name": "アリア",
+              "role": "主役"
+            },
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "role": "助言者"
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "n-s1",
+              "title": "出会い"
+            }
+          ],
+          "relations": [
+            {
+              "cause": "魔術戦争",
+              "effect": "老魔術師との出会い"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"endTime\":null,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"day\",\"endGranularity\":\"none\",\"startDate\":\"1, 1015\",\"endDate\":null,\"precision\":\"exact\",\"primaryCharacter\":\"アリア\",\"location\":\"古い塔\",\"participants\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"role\":\"主役\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"role\":\"助言者\"}],\"scenes\":[{\"sceneId\":\"n-s1\",\"title\":\"出会い\"}],\"relations\":[{\"cause\":\"魔術戦争\",\"effect\":\"老魔術師との出会い\"}]}"
+    },
+    {
+      "case": "hidden: S1 の secret（戦争）は存在しない扱い",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s1"
+      },
+      "params": {
+        "eventId": "ev-war"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "hidden: S3 では戦争が見える",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": "ev-war"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event '魔術戦争'",
+        "tokensUsed": 453,
+        "content": {
+          "id": "ev-war",
+          "title": "魔術戦争",
+          "note": "昔の戦争",
+          "kind": "generic",
+          "ordinal": "a1",
+          "startTime": 3600,
+          "endTime": 3700,
+          "startMinute": null,
+          "endMinute": null,
+          "startGranularity": "year",
+          "endGranularity": "year",
+          "startDate": "1010年",
+          "endDate": "1010年",
+          "precision": "exact",
+          "primaryCharacter": null,
+          "location": null,
+          "participants": [
+            {
+              "codexId": "c-mage",
+              "name": "老魔術師",
+              "role": "参戦者"
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "n-s3",
+              "title": "裏切り"
+            }
+          ],
+          "relations": [
+            {
+              "cause": "魔術戦争",
+              "effect": "老魔術師との出会い"
+            }
+          ]
+        }
+      },
+      "contentJson": "{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"endTime\":3700,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"year\",\"endGranularity\":\"year\",\"startDate\":\"1010年\",\"endDate\":\"1010年\",\"precision\":\"exact\",\"primaryCharacter\":null,\"location\":null,\"participants\":[{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"role\":\"参戦者\"}],\"scenes\":[{\"sceneId\":\"n-s3\",\"title\":\"裏切り\"}],\"relations\":[{\"cause\":\"魔術戦争\",\"effect\":\"老魔術師との出会い\"}]}"
+    },
+    {
+      "case": "hidden: 恒久秘匿の死はどの場面でも存在しない扱い",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": "ev-death"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 存在しない id",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": "ev-none"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "empty: 空の project",
+      "world": {
+        "projectId": "p-empty"
+      },
+      "params": {
+        "eventId": "ev-meet"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: main から他 project の出来事は Event not found",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": "x-ev-1"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event not found",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "XPROJ: 他 project では他 project の出来事",
+      "world": {
+        "projectId": "p-other",
+        "activeSceneId": "x-s1"
+      },
+      "params": {
+        "eventId": "x-ev-1"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "Event '他作品の出来事'",
+        "tokensUsed": 414,
+        "content": {
+          "id": "x-ev-1",
+          "title": "他作品の出来事",
+          "note": null,
+          "kind": "generic",
+          "ordinal": "a0",
+          "startTime": 100,
+          "endTime": null,
+          "startMinute": null,
+          "endMinute": null,
+          "startGranularity": "day",
+          "endGranularity": "none",
+          "startDate": null,
+          "endDate": null,
+          "precision": "exact",
+          "primaryCharacter": "アリア",
+          "location": null,
+          "participants": [
+            {
+              "codexId": "x-c-aria",
+              "name": "アリア",
+              "role": "他作品の主役"
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "x-s1",
+              "title": "出会い"
+            }
+          ],
+          "relations": []
+        }
+      },
+      "contentJson": "{\"id\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"note\":null,\"kind\":\"generic\",\"ordinal\":\"a0\",\"startTime\":100,\"endTime\":null,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"day\",\"endGranularity\":\"none\",\"startDate\":null,\"endDate\":null,\"precision\":\"exact\",\"primaryCharacter\":\"アリア\",\"location\":null,\"participants\":[{\"codexId\":\"x-c-aria\",\"name\":\"アリア\",\"role\":\"他作品の主役\"}],\"scenes\":[{\"sceneId\":\"x-s1\",\"title\":\"出会い\"}],\"relations\":[]}"
+    },
+    {
+      "case": "no-project",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "eventId": "ev-meet"
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: 引数の検査は no-project の後（空の eventId × no-project は No active project）",
+      "world": {
+        "projectId": ""
+      },
+      "params": {
+        "eventId": ""
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "No active project",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    },
+    {
+      "case": "order: project があれば空の eventId は eventId is required",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "eventId": ""
+      },
+      "result": {
+        "name": "get_event_detail",
+        "summary": "eventId is required",
+        "tokensUsed": 0,
+        "content": null
+      },
+      "contentJson": "null"
+    }
+  ]
+}

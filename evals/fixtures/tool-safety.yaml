@@ -194,3 +194,47 @@ cases:
       freshness: stable
       requiredEvidence: [clarification]
       outputValidators: [single-question]
+
+  - id: eval-tool-app-help-hermes
+    suiteId: tool-policy
+    requirementIds: [GDX-TOOL-001]
+    fixture:
+      runId: tool-app-help-hermes
+      locale: en-US
+      timeZone: UTC
+      currentTime: "2026-11-16T00:10:00Z"
+      channel: hermes
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: get_app_help_index,
+            schemaRef: "agent-tool-manifest.json#tool:get_app_help_index",
+          }
+        - {
+            name: get_app_help,
+            schemaRef: "agent-tool-manifest.json#tool:get_app_help",
+          }
+      state:
+        {
+          conversationId: tool-app-help-hermes-conversation,
+          workspaceId: tool-app-help-hermes-workspace,
+          artifactRoot: tool-app-help-hermes-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "How do I switch editor tabs?",
+        attemptedTools: [get_app_help_index, get_app_help],
+        executedTools: [get_app_help_index, get_app_help],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [get_app_help_index, get_app_help]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result, channel-policy]
+      outputValidators: [tool-result-linked]

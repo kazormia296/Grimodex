@@ -27,6 +27,8 @@ import {
 } from "./runtime-performance-io-settle.mjs";
 import {
   buildRuntimePerformanceAttemptPaths,
+  describeRecoveredPerformanceRetry,
+  describeStartedPerformanceRetry,
   runRuntimePerformanceWithRetry,
 } from "./runtime-performance-retry.mjs";
 import {
@@ -482,18 +484,29 @@ export function runPerformanceBenchmark(argv = process.argv) {
     retryTransientOnce: options.retryTransientOnce,
     executeAttempt,
     copyMetrics: copyFileSync,
+    onRetry: (decision) => {
+      console.warn(
+        `[electron:perf] WARNING ${describeStartedPerformanceRetry(decision)}`,
+      );
+    },
     onRecovered: (decision) => {
-      const message =
-        `Recovered after one transient performance retry: ` +
-        `${decision.interaction} ${decision.durationMs}ms Long Task, ` +
-        `${(decision.unattributedRatio * 100).toFixed(2)}% unattributed. ` +
-        `Both attempt artifacts were retained.`;
+      const message = describeRecoveredPerformanceRetry(decision);
       console.warn(`[electron:perf] WARNING ${message}`);
       if (process.env.GITHUB_ACTIONS === "true") {
         console.warn(`::warning title=Transient performance retry::${message}`);
       }
     },
   });
+  if (result.attemptCount === 2 && !result.recovered) {
+    console.error(
+      `[electron:perf] retry did not recover (${result.retryDecision.reason}); both attempt artifacts were retained`,
+    );
+  }
+  if (result.retryDecision && !result.retryDecision.eligible) {
+    console.error(
+      `[electron:perf] not retried: ${result.retryDecision.reason}`,
+    );
+  }
   if (
     process.env.GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY === "1" &&
     !captureRuntimePerformanceBuildIdentity(

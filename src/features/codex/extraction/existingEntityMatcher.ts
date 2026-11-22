@@ -1,5 +1,6 @@
 import { candidateKey } from "../codexCandidates";
 import { parseAliases } from "../codexMatcher";
+import { isRelationalTerm } from "./relationalTerms";
 import type {
   EntityBindingCandidate,
   EntityBindingMatchMethod,
@@ -40,7 +41,8 @@ export interface MatchExistingEntityInput {
   readonly explicitIdentityRefs?: readonly KnowledgeEntityRef[];
 }
 
-function stripHonorific(surface: string): string {
+/** 表記の末尾の敬称（さん・様・先生 等）を 1 つだけ外す。外せなければそのまま。 */
+export function stripHonorific(surface: string): string {
   let value = surface.trim();
   for (const suffix of HONORIFIC_SUFFIXES) {
     if (value.endsWith(suffix) && value.length > suffix.length) {
@@ -56,6 +58,7 @@ function scoreAgainstEntry(
   strippedKey: string,
   entryNameKey: string,
   aliasKeys: readonly string[],
+  exactOnly: boolean,
 ): { score: number; methods: EntityBindingMatchMethod[] } {
   const methods: EntityBindingMatchMethod[] = [];
   let score = 0;
@@ -68,6 +71,9 @@ function scoreAgainstEntry(
     methods.push("exact-alias");
     score = Math.max(score, 95);
   }
+  // 関係の呼び名（姉ちゃん・あなた 等）は話し手で指す人が変わる。作者が名前・別名に
+  // 入れた語の完全一致だけを残し、敬称除去・prefix・substring の候補は作らない。
+  if (exactOnly) return { score, methods };
   if (
     strippedKey.length > 0 &&
     strippedKey !== surfaceKey &&
@@ -180,6 +186,7 @@ export function matchExistingEntity(
   for (const surface of input.surfaces) {
     const surfaceKey = candidateKey(surface);
     if (!surfaceKey) continue;
+    const exactOnly = isRelationalTerm(surface);
     const strippedKey = candidateKey(stripHonorific(surface));
 
     for (const entry of catalog) {
@@ -194,6 +201,7 @@ export function matchExistingEntity(
         strippedKey,
         entryNameKey,
         aliasKeys,
+        exactOnly,
       );
       if (methods.length === 0) continue;
       const candidate: EntityBindingCandidate = {
@@ -261,4 +269,80 @@ export function matchExistingEntity(
   }
 
   return { status: "none" };
+}
+
+/** {@link inspectExactEntityMatch} の結果。resolved／ambiguous の判定は変えない別の見方。 */
+export interface ExactEntityMatchInspection {
+  /** 名前または別名が完全一致した Entry（名前と別名を通した重複なしの一覧）。 */
+  readonly exactRefs: readonly KnowledgeEntityRef[];
+  /**
+   * 完全一致していないが、語の一部だけが当たる他の Entry（敬称除去・prefix・substring）。
+   * 姓だけの Entry と姓名の Entry が両方ある名簿で、姓だけの表記が前者に完全一致しても、
+   * 後者がここに出る。呼び名の完全一致だけに狭める規則（{@link isRelationalTerm}）はかけず、
+   * 常に全部の当たり方を見る。
+   */
+  readonly partialOtherRefs: readonly KnowledgeEntityRef[];
+}
+
+const entryKeyCache = new WeakMap<
+  ExistingEntityCatalogRecord,
+  { readonly entryNameKey: string; readonly aliasKeys: readonly string[] }
+>();
+
+/**
+ * Entry の正規化済みの名前・別名キー。同じ record 参照では 1 回だけ作って使い回す
+ * （一括の再検査が提案ごとに全 Entry の別名を JSON.parse し直さないため）。
+ * 名前の無い Entry は、空文字列が全部の表記に prefix で当たってしまうので、名前側では
+ * 何にも当たらないようにする（別名は別に数える）。matchExistingEntity は変えていない。
+ */
+function entryKeysOf(entry: ExistingEntityCatalogRecord): {
+  readonly entryNameKey: string;
+  readonly aliasKeys: readonly string[];
+} {
+  const cached = entryKeyCache.get(entry);
+  if (cached) return cached;
+  const keys = {
+    entryNameKey: candidateKey(entry.name) || "\u0000",
+    aliasKeys: parseAliases(
+      entry.aliases as string[] | string | null | undefined,
+    )
+      .map(candidateKey)
+      .filter((key) => key.length > 0),
+  };
+  entryKeyCache.set(entry, keys);
+  return keys;
+}
+
+/**
+ * 表記 1 つが名簿のどの Entry に当たるかを、{@link matchExistingEntity} と同じ走査で数える。
+ * 一括承認の条件（完全一致が 1 Entry だけ・他に部分一致が無い）の判定に使う。
+ * {@link matchExistingEntity} は名前に 1 件当たると別名の当たりを見ないので、
+ * 「名前が A、別名が B」のような表記は resolved（A）のまま、ここでだけ該当 2 Entry になる。
+ */
+export function inspectExactEntityMatch(
+  surface: string,
+  catalog: readonly ExistingEntityCatalogRecord[],
+): ExactEntityMatchInspection {
+  const surfaceKey = candidateKey(surface);
+  if (!surfaceKey) return { exactRefs: [], partialOtherRefs: [] };
+  const strippedKey = candidateKey(stripHonorific(surface));
+  const exactRefs: KnowledgeEntityRef[] = [];
+  const partialOtherRefs: KnowledgeEntityRef[] = [];
+  for (const entry of catalog) {
+    const { entryNameKey, aliasKeys } = entryKeysOf(entry);
+    const { methods } = scoreAgainstEntry(
+      surfaceKey,
+      strippedKey,
+      entryNameKey,
+      aliasKeys,
+      false,
+    );
+    if (methods.length === 0) continue;
+    if (methods.includes("exact-name") || methods.includes("exact-alias")) {
+      if (!exactRefs.includes(entry.ref)) exactRefs.push(entry.ref);
+    } else if (!partialOtherRefs.includes(entry.ref)) {
+      partialOtherRefs.push(entry.ref);
+    }
+  }
+  return { exactRefs, partialOtherRefs };
 }

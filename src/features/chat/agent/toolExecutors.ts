@@ -1,6 +1,5 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent, loadSceneContents } from "@/features/tree/api";
-import { prosemirrorToText } from "@/lib/prosemirror";
 import { tokenizeFtsQuery as tokenizeQuery, codepointLength } from "@/lib/fts";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
@@ -10,30 +9,21 @@ import {
   codexTags,
   codexDetailDefinitions,
   codexDetailValues,
-  snippets,
-  treeNodes,
-  foreshadows,
-  foreshadowSetups,
-  plotThreads,
-  plotThreadSceneLinks,
-  plotThreadBranches,
-  PLOT_PHASE_TYPES,
-  type PlotPhaseType,
 } from "@/db/schema";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import {
-  and,
-  count,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  like,
-  ne,
-  or,
-  type AnyColumn,
-  type SQL,
-} from "drizzle-orm";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+  createReadExecutors,
+  type CoreReadToolName,
+} from "@/../electron/shared/readDomain/core/readExecutors";
+import {
+  buildLikeOrCondition,
+  orderByIds,
+  parseTagsCacheNames,
+} from "@/../electron/shared/readDomain/core/searchHelpers";
+import {
+  CoreProjectRequiredError,
+  type CoreReadContext,
+} from "@/../electron/shared/mastraRead/ports";
 import { countTokens } from "../contextBuilder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -41,8 +31,27 @@ import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
-import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
+import { readOpenForeshadowWire } from "@/features/foreshadow/api";
 import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
+import type {
+  ChatReadOnlyToolRunContext,
+  ChatToolRunContext,
+  ChatTurnToolScope,
+} from "./chatTurnToolScope";
+import {
+  CHAT_AGENT_IR_CHRONICLE_IDS_MAX,
+  isChronicleEventIdList,
+} from "@/../electron/shared/chatAgentIrWire";
+import { CHAT_AGENT_IR_ENABLED } from "./chatAgentIrAvailability";
+import {
+  CHAT_IR_MAX_CALLS_PER_TURN,
+  CHAT_IR_MAX_CHARS_PER_TURN,
+  capExceededResult,
+  fitChatIrContent,
+  precheckChatIrContent,
+  type ChatIrOutcomeShape,
+  type ChatIrToolContentResult,
+} from "./chatIrToolResult";
 import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
@@ -81,8 +90,17 @@ import {
   type EventSearchHit,
 } from "@/features/semantic-search/api";
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
+import {
+  dropCodexHiddenFromAi,
+  resolveCodexForAi,
+  type CodexTextForAi,
+} from "@/features/codex/context/codexHiddenFromAi";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
+import {
+  isEventBeforeOrAtScene,
+  passesIrExclusionApproximation,
+} from "@/features/chronicle/chronicleReadingPosition";
 import {
   getSharedEvents,
   getSharedSceneEvents,
@@ -93,79 +111,6 @@ import {
 interface SparseSearchHit {
   sourceType: string;
   id: string;
-}
-
-/**
- * codex_entries.tags_cache の JSON を tag 名の string[] に展開する。
- * 実態は `[{"name":"tag1","color":null}, ...]` という object 配列だが、
- * 旧スキーマ comment 通りの `["tag1", "tag2"]` 形式のレコードもあり得るため
- * 両形式を許容する。詳細は chatStore.ts の `parseTags` も参照。
- */
-function parseTagsCacheNames(json: string | null | undefined): string[] {
-  if (!json) return [];
-  try {
-    const arr = JSON.parse(json);
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map((v): string | undefined => {
-        if (typeof v === "string") return v;
-        if (v && typeof v === "object" && "name" in v) {
-          const name = (v as { name: unknown }).name;
-          return typeof name === "string" ? name : undefined;
-        }
-        return undefined;
-      })
-      .filter((s): s is string => typeof s === "string" && s.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-const EXCERPT_MAX_CHARS = 200;
-
-/**
- * ProseMirror JSON 本文から plain text の抜粋を作る。tree_nodes.content /
- * snippets.content は生 JSON なので、SQL 側の snippet()/SUBSTR では構造 JSON が
- * そのまま LLM に渡ってしまう（get_scene の prosemirrorToText と非対称だった）。
- * 最初に一致した検索トークンを中心に切り出し、切断した側へ "..." を付ける。
- * どのトークンも本文に無い場合は先頭からの抜粋になる。
- */
-function plainTextExcerpt(content: unknown, tokens: string[]): string {
-  const raw = typeof content === "string" ? content : "";
-  if (!raw) return "";
-  const plain = prosemirrorToText(raw).replace(/\s+/g, " ").trim();
-  if (plain.length <= EXCERPT_MAX_CHARS) return plain;
-  let hit = -1;
-  for (const t of tokens) {
-    const idx = plain.indexOf(t);
-    if (idx >= 0 && (hit < 0 || idx < hit)) hit = idx;
-  }
-  const start =
-    hit < 0 ? 0 : Math.max(0, hit - Math.floor(EXCERPT_MAX_CHARS / 2));
-  const end = Math.min(plain.length, start + EXCERPT_MAX_CHARS);
-  return (
-    (start > 0 ? "..." : "") +
-    plain.slice(start, end) +
-    (end < plain.length ? "..." : "")
-  );
-}
-
-/**
- * トークン群と LIKE 対象列に対し
- * `(col1 LIKE ? OR col2 LIKE ? OR ...) OR (col1 LIKE ? OR ...) OR ...`
- * 形の WHERE 断片と束縛パラメータ配列を組み立てる。
- * trigram で扱えない短いトークンが混じっている場合のフォールバックに使う。
- */
-function buildLikeOrCondition(tokens: string[], columns: AnyColumn[]): SQL {
-  const condition = or(
-    ...tokens.flatMap((token) =>
-      columns.map((column) => like(column, `%${token}%`)),
-    ),
-  );
-  if (!condition) {
-    throw new Error("search requires at least one token and column");
-  }
-  return condition;
 }
 
 async function sparseSearchIds(
@@ -187,20 +132,13 @@ async function sparseSearchIds(
     .map((row) => row.id);
 }
 
-function orderByIds<T extends { id: string }>(rows: T[], ids: string[]): T[] {
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  return ids.flatMap((id) => {
-    const row = byId.get(id);
-    return row ? [row] : [];
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Codex tools
 // ---------------------------------------------------------------------------
 
 async function searchCodex(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const query = String(params["query"] ?? "").trim();
   if (!query)
@@ -308,8 +246,16 @@ async function searchCodex(
     return [] as CodexSearchHit[];
   });
 
-  const content =
-    dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse;
+  // hidden は sparse・dense のどちらの arm からも落とす（dense の hit は DB を通らず
+  // name・summary を運ぶので、融合の後に id で判定する）。
+  // Phase 解決後の summary は null になりえるので、前と同じ形（空文字）に揃える。
+  const content = (
+    await dropHiddenCodex(
+      dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse,
+      projectId,
+      scope,
+    )
+  ).map((row) => ({ ...row, summary: row.summary ?? "" }));
   const json = JSON.stringify(content);
   return {
     name: "search_codex",
@@ -320,36 +266,56 @@ async function searchCodex(
 }
 
 /**
- * 作中年表 (Chronicle) 出来事の dense セマンティック検索 (Phase 3)。
- * `events_semantic_search` を叩く dense-only ツール (codex のような FTS 融合なし)。
- * feature 無効ビルド / 未 index / モデル不在では reject → 空配列にグレースフルに退避。
+ * search_events の年表の候補（秘匿の filter と位置の filter の後で、`slice(limit)` の前）。
+ * 空の query・project 無しは、そのまま返す応答（`empty`）。呼ぶ位置が挙動の一部なので、
+ * await の順は変えない（定数 false の間は今と byte 同一）。
  */
-async function searchEvents(
+type ChronicleCandidates =
+  | { readonly kind: "empty"; readonly result: Omit<ToolResult, "toolCallId"> }
+  | {
+      readonly kind: "ready";
+      readonly query: string;
+      readonly projectId: string;
+      readonly currentSceneId: string;
+      /** model の `limit`（年表の側の値。IR の枠の下限 1 は呼び手が決める）。 */
+      readonly limit: number;
+      /** 秘匿・位置の filter の後、`slice` の前（30 件以下）。 */
+      readonly visible: readonly EventSearchHit[];
+      /** △7 (4) の近似の規則（secret の event だけに掛かる）。 */
+      readonly passesApproximation: (hit: EventSearchHit) => boolean;
+    };
+
+async function chronicleCandidates(
   params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
+  scope?: ChatTurnToolScope,
+): Promise<ChronicleCandidates> {
   const query = String(params["query"] ?? "").trim();
   if (!query)
     return {
-      name: "search_events",
-      content: [],
-      summary: "0 events found",
-      tokensUsed: 0,
+      kind: "empty",
+      result: {
+        name: "search_events",
+        content: [],
+        summary: "0 events found",
+        tokensUsed: 0,
+      },
     };
 
-  const projectId = useTreeStore.getState().projectId;
+  // 基準の project・Scene は、秘匿の filter も位置の filter も同じ値を使う。
+  // turn の文脈（scope）があればその値、無ければ今の tree store。
+  const projectId = chronicleProjectId(scope);
   if (!projectId)
     return {
-      name: "search_events",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
+      kind: "empty",
+      result: {
+        name: "search_events",
+        content: [],
+        summary: "No active project",
+        tokensUsed: 0,
+      },
     };
 
-  const rawLimit = Number(params["limit"]);
-  const limit =
-    Number.isFinite(rawLimit) && rawLimit > 0
-      ? Math.min(Math.floor(rawLimit), 30)
-      : 10;
+  const limit = eventSearchLimit(params);
 
   // AI 秘匿: hidden な secret イベントは hit から除外するため over-fetch（≤30=backendMax）→
   // visible filter → slice(limit)。索引自体は全件のまま（title 漏洩を返却段で防ぐ）。
@@ -367,11 +333,12 @@ async function searchEvents(
     return [] as EventSearchHit[];
   });
 
-  // 現在シーン（activeSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
+  // 現在シーン（currentSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
   const allEvents = await getSharedEvents(projectId);
   const sceneEvents = await getSharedSceneEvents(projectId);
   const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
-  const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
+  // scope が無い呼び手は、従来どおり await の後で今の Scene を読む（定数 false の間は今と同一）。
+  const currentSceneId = chronicleSceneId(scope);
   const hidden = new Set(
     allEvents
       .filter((e) =>
@@ -380,15 +347,96 @@ async function searchEvents(
       .map((e) => e.id),
   );
 
-  const content = hits
+  const visible = hits
     .filter((h) => !hidden.has(h.eventId))
-    .slice(0, limit)
-    .map((h) => ({
-      eventId: h.eventId,
-      title: h.title,
-      kind: h.kind,
-      score: h.score,
-    }));
+    // 位置の filter（chat IR S1-B）。秘匿の filter の後、slice(limit) の前。
+    // 定数が false の間は掛けない（今の挙動のまま）。
+    .filter(
+      (h) =>
+        !CHAT_AGENT_IR_ENABLED ||
+        isEventBeforeOrAtScene({ id: h.eventId }, currentSceneId, {
+          readingOrder,
+          sceneEvents,
+        }),
+    );
+  const eventById = new Map(allEvents.map((e) => [e.id, e]));
+  return {
+    kind: "ready",
+    query,
+    projectId,
+    currentSceneId,
+    limit,
+    visible,
+    // 行が見つからない hit は、秘匿の filter と同じく secret でないものとして扱う。
+    passesApproximation: (h) =>
+      passesIrExclusionApproximation(
+        eventById.get(h.eventId) ?? { id: h.eventId, secret: false },
+        currentSceneId,
+        { readingOrder, sceneEvents },
+      ),
+  };
+}
+
+/** search_events が model に返す年表の 1 件（今の形のまま）。 */
+interface ChronicleEntry {
+  eventId: string;
+  title: string;
+  kind: string;
+  score: number;
+}
+
+/**
+ * Native へ渡す候補（DR-CHATIR-S1-41）：重複を除き、wire の 1 件の条件（空白だけでない・200 UTF-16
+ * 以下）に合わない ID と、30 件を超える分は送らない。送らなかった event は年表にそのまま残る。
+ * 条件に合わない ID が 1 つでも混じると wrapper が IPC の前に拒むので、ここで外す。
+ */
+function chronicleCandidateIds(hits: readonly EventSearchHit[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    if (seen.has(hit.eventId)) continue;
+    seen.add(hit.eventId);
+    if (!isChronicleEventIdList([hit.eventId])) continue;
+    ids.push(hit.eventId);
+    if (ids.length >= CHAT_AGENT_IR_CHRONICLE_IDS_MAX) break;
+  }
+  return ids;
+}
+
+function chronicleEntries(
+  hits: readonly EventSearchHit[],
+  limit: number,
+): ChronicleEntry[] {
+  return hits.slice(0, limit).map((h) => ({
+    eventId: h.eventId,
+    title: h.title,
+    kind: h.kind,
+    score: h.score,
+  }));
+}
+
+/**
+ * 作中年表 (Chronicle) 出来事の dense セマンティック検索 (Phase 3)。
+ * `events_semantic_search` を叩く dense-only ツール (codex のような FTS 融合なし)。
+ * feature 無効ビルド / 未 index / モデル不在では reject → 空配列にグレースフルに退避。
+ *
+ * IR を呼ばない呼び手（research sub-agent など）の経路でもある。定数が true で turn の
+ * scope があるときは、IR の除外の結果が得られないので、secret の event に近似の規則
+ * （結ばれた Scene がすべて今の Scene より前）を掛ける（chat IR S1-A2b、DR-CHATIR-S1-45）。
+ * 掛ける位置は (4) と同じで、`slice(limit)` の前（落とした分は後ろの候補で補う）。
+ * 定数が false の間は何も掛けない（今と byte 同一）。
+ */
+async function searchEvents(
+  params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const candidates = await chronicleCandidates(params, scope);
+  if (candidates.kind === "empty") return candidates.result;
+  const pool =
+    CHAT_AGENT_IR_ENABLED && scope
+      ? candidates.visible.filter(candidates.passesApproximation)
+      : candidates.visible;
+  const content = chronicleEntries(pool, candidates.limit);
   const json = JSON.stringify(content);
   return {
     name: "search_events",
@@ -398,8 +446,258 @@ async function searchEvents(
   };
 }
 
+/** search_events の基準の project。scope があればそれ、無ければ今の tree store。 */
+function chronicleProjectId(scope?: ChatTurnToolScope): string | null {
+  return scope ? scope.projectId || null : useTreeStore.getState().projectId;
+}
+
+/**
+ * search_events の基準の Scene。scope があればそれ、無ければ読んだ時点の tree store。
+ * 呼ぶ位置が挙動の一部なので、scope が無い呼び手では await の後で呼ぶ（DR-CHATIR-S1-34）。
+ */
+function chronicleSceneId(scope?: ChatTurnToolScope): string {
+  return scope
+    ? (scope.currentSceneId ?? "")
+    : (useTreeStore.getState().activeSceneId ?? "");
+}
+
+/**
+ * 作者が hidden（AI に秘匿）と印した Codex を、tool の結果から落とす。判定は chat の
+ * 通常の文脈と同じ正本（`listCodexIdsHiddenFromAi`）。現在の場面は年表の tool と同じ規則で、
+ * 呼ぶ位置が挙動の一部なので、結果を作り終えた後（await の後）で呼ぶ。
+ */
+function dropHiddenCodex<T extends { id: string }>(
+  rows: readonly T[],
+  projectId: string,
+  scope?: ChatTurnToolScope,
+): Promise<T[]> {
+  return dropCodexHiddenFromAi(rows, {
+    projectId,
+    sceneId: chronicleSceneId(scope),
+  });
+}
+
+/**
+ * id の Codex を AI へ渡してよい形で返す。hidden なら null（読めない・存在しない id と同じ
+ * 「見つからない」扱いにする）。summary と本文は Phase 解決後（現在の場面があればその場面）で、
+ * base が hidden で Phase が解除したものも base の文を返さない。
+ */
+async function resolveCodexTextForAi(
+  id: string,
+  projectId: string,
+  scope?: ChatTurnToolScope,
+  /** hidden でないのに解決結果が無いときの代わり（通常は起きない）。 */
+  fallback: CodexTextForAi = {
+    summary: null,
+    content: "",
+    released: false,
+    mode: "",
+  },
+  withDetails = false,
+): Promise<CodexTextForAi | null> {
+  const { hidden, texts } = await resolveCodexForAi({
+    entryIds: [id],
+    projectId,
+    sceneId: chronicleSceneId(scope),
+    withContent: true,
+    withDetails,
+  });
+  if (hidden.has(id)) return null;
+  return texts.get(id) ?? fallback;
+}
+
+/** hidden の Codex を指す id か。 */
+async function isCodexHiddenFromAi(
+  id: string,
+  projectId: string,
+  scope?: ChatTurnToolScope,
+): Promise<boolean> {
+  return (await resolveCodexTextForAi(id, projectId, scope)) === null;
+}
+
+function eventSearchLimit(params: Record<string, unknown>): number {
+  const rawLimit = Number(params["limit"]);
+  return Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(Math.floor(rawLimit), 30)
+    : 10;
+}
+
+/**
+ * turn の累積の文字数上限（DR-CHATIR-S1-38）は合計で守る：先頭から、残りの枠に収まる item
+ * だけを残す。item はあったのに 1 件も収まらなければ `turn-limit`。
+ */
+function withinTurnChars(
+  status: ChatIrOutcomeShape["status"],
+  items: ChatIrOutcomeShape["items"],
+  usedChars: number,
+): ChatIrOutcomeShape {
+  if (!items || items.length === 0) return { status, items };
+  let left = CHAT_IR_MAX_CHARS_PER_TURN - usedChars;
+  const kept: NonNullable<ChatIrOutcomeShape["items"]>[number][] = [];
+  for (const item of items) {
+    const chars = JSON.stringify(item).length;
+    if (chars > left) break;
+    kept.push(item);
+    left -= chars;
+  }
+  return kept.length > 0 ? { status, items: kept } : { status: "turn-limit" };
+}
+
+/** The renderer's own refusals before the IPC: not a call of Native, not counted. */
+const CHAT_IR_PREFLIGHT_STATUSES: ReadonlySet<string> = new Set([
+  "no-current-scene",
+  "query-invalid",
+  "no-workspace",
+]);
+
+/**
+ * search_events に承認済みの IR を合流する版（main agent の `EXECUTORS` だけ。
+ * chat IR S1-B・S1-A2b、定数が true で IR の capability がある呼び手のときだけ）。
+ *
+ * 順は直列：年表の候補（秘匿 → 位置、`slice` の前）→ 事前判定 → turn の累積上限 →
+ * Native を 1 回（候補の eventId を渡す）→ assertCurrent → 除外 → 切り → cap と統合 →
+ * noteUsedIds → content（B-T13）。IR の失敗は tool の失敗にせず、status を content に載せる。
+ * IR の capability が無い呼び手（sub-agent など）は共有の `searchEvents`（今の配列）。
+ *
+ * 年表から除くもの（DR-CHATIR-S1-44・45）：
+ * - Native が除外の配列を返したとき：本来の (4)。配列の event を `slice` の前に除き、後ろの候補で補う。
+ * - 配列が無く、model が起こせる不明（事前判定の `cap-exceeded`・呼ぶ前の `turn-limit`・
+ *   `query-invalid`・Native の `ledger-full`）のとき：Native の答えの代わりに、secret の event に
+ *   近似の規則を同じ位置で掛ける。`ledger-full` は、Native の ledger（4096 件、追い出し無し）を
+ *   model が query を変え続けて満たせるので、満ちた後は process の終わりまで続く（T20）。
+ * - それ以外の失敗（一時的・構造的）：何も除かない（今の年表のまま。U-a）。
+ */
+async function searchEventsWithIr(
+  params: Record<string, unknown>,
+  _requestId?: string,
+  _authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const ir = context?.ir;
+  if (!CHAT_AGENT_IR_ENABLED || !ir) {
+    return searchEvents(params, context?.scope);
+  }
+  const candidates = await chronicleCandidates(params, context.scope);
+  // 空の query・project 無しは、年表の側の応答（空の配列）のまま返す。
+  if (candidates.kind === "empty") return candidates.result;
+  const { query, projectId, currentSceneId, visible } = candidates;
+  // 0 < limit < 1 の小数は年表では 0 件になるが、IR には 1 件分の枠を残す（空の available を避ける）。
+  const yearLimit = candidates.limit;
+  const limit = Math.max(1, yearLimit);
+  const withoutApproximation = chronicleEntries(visible, yearLimit);
+  const approximated = () =>
+    chronicleEntries(visible.filter(candidates.passesApproximation), yearLimit);
+  const rest = { tokenCap: ir.tokenCap, countTokens };
+
+  let fitted: ChatIrToolContentResult<ChronicleEntry>;
+  // 暫定の年表（除去の前）で測る。除去で小さくなるとは限らない（後ろの候補で補充するので、
+  // 除去の後の年表が大きいこともある）。そのときも秘匿の漏れにはならず、失うのは Native の
+  // 1 回（回数と ledger の枠）だけ。
+  if (precheckChatIrContent({ events: withoutApproximation, ...rest })) {
+    // 呼ばなければ (4) は掛からないので、model が起こせる不明として近似の規則に進む。
+    fitted = capExceededResult(approximated(), ir.tokenCap, countTokens, false);
+  } else {
+    let outcome: ChatIrOutcomeShape;
+    let events: readonly ChronicleEntry[];
+    let eventIds: Readonly<Record<string, string>> = {};
+    if (
+      ir.counter.calls >= CHAT_IR_MAX_CALLS_PER_TURN ||
+      ir.counter.chars >= CHAT_IR_MAX_CHARS_PER_TURN
+    ) {
+      outcome = { status: "turn-limit" };
+      events = approximated();
+    } else {
+      // 定数の枝の中でだけ wrapper を読む（false の間は bundle に入らない）。
+      const { selectChatAgentIr } = await import("@/lib/chatIr");
+      const answer = await selectChatAgentIr({
+        query,
+        projectId,
+        expectedWorkspacePath: ir.workspacePath ?? "",
+        currentSceneId,
+        // 秘匿と位置の filter の後の年表の候補だけ（隠れた event の ID は送らない）。
+        chronicleEventIds: chronicleCandidateIds(visible),
+      });
+      if (
+        !(
+          answer.kind === "not-answered" &&
+          CHAT_IR_PREFLIGHT_STATUSES.has(answer.status)
+        )
+      ) {
+        ir.counter.calls += 1;
+      }
+      // project／workspace が turn のものでなくなっていれば、item を返さず tool を失敗にする。
+      ir.assertCurrent();
+      const excluded =
+        answer.kind === "answered" ? answer.excludedEventIds : null;
+      if (answer.kind === "answered") {
+        eventIds = answer.eventIds;
+        outcome = withinTurnChars(
+          answer.status,
+          answer.items,
+          ir.counter.chars,
+        );
+      } else {
+        outcome = { status: answer.status };
+      }
+      if (excluded !== null) {
+        // 本来の (4)。Native が答えたので、turn の文字数の枠で 0 件になったときも配列は手元にある。
+        const gone = new Set(excluded);
+        events = chronicleEntries(
+          visible.filter((hit) => !gone.has(hit.eventId)),
+          yearLimit,
+        );
+      } else if (
+        answer.status === "query-invalid" ||
+        answer.status === "ledger-full"
+      ) {
+        // 除外を返さなかった、model が起こせる不明（DR-CHATIR-S1-45）：renderer の検査か Native が
+        // query を拒んだ（query-invalid）、または model が query を変え続けて Native の ledger を
+        // 満たした（ledger-full。item の digest は query に依る score を含む。T20）。
+        events = approximated();
+      } else {
+        // 一時的・構造的な失敗：(4) も近似の規則も掛けない。
+        events = withoutApproximation;
+      }
+    }
+    const byRevision = new Map(Object.entries(eventIds));
+    fitted = fitChatIrContent({
+      outcome,
+      limit,
+      events,
+      ...rest,
+      merge: {
+        eventIdOfItem: (item) => byRevision.get(item.revisionId),
+        eventIdOfEvent: (event) => event.eventId,
+      },
+    });
+  }
+
+  const { items } = fitted;
+  if (items.length > 0) {
+    ir.counter.chars += items.reduce(
+      (sum, item) => sum + JSON.stringify(item).length,
+      0,
+    );
+    ir.noteUsedIds(
+      params,
+      items.map((item) => item.revisionId),
+      // model が見たものだけ：統合した item の event（重複は 1 つ）。
+      [...new Set(Object.values(fitted.eventIds))],
+    );
+  }
+  const json = JSON.stringify(fitted.content);
+  return {
+    name: "search_events",
+    content: fitted.content,
+    // 件数だけ。status・本文・題は入れない（契約 §3.5）。
+    summary: `manuscript ${items.length}, chronicle ${fitted.content.events.length}`,
+    tokensUsed: countTokens(json),
+  };
+}
+
 async function listCodexByType(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const projectId = useTreeStore.getState().projectId;
@@ -422,7 +720,7 @@ async function listCodexByType(
       and(eq(codexEntries.projectId, projectId), eq(codexEntries.type, type)),
     );
 
-  const content = rows.map((r) => ({
+  const content = (await dropHiddenCodex(rows, projectId, scope)).map((r) => ({
     id: r.id,
     name: r.name,
     summary: r.summary ?? "",
@@ -439,6 +737,7 @@ async function listCodexByType(
 
 async function getCodexEntry(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id)
@@ -462,7 +761,22 @@ async function getCodexEntry(
     .select()
     .from(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  if (!entry)
+  // hidden は存在しない id と同じ応答にする（存在を明かさない）。
+  const resolvedText = entry
+    ? await resolveCodexTextForAi(
+        id,
+        projectId,
+        scope,
+        {
+          summary: entry.summary,
+          content: entry.content,
+          released: false,
+          mode: entry.contextMode,
+        },
+        true,
+      )
+    : null;
+  if (!entry || !resolvedText)
     return {
       name: "get_codex_entry",
       content: null,
@@ -485,31 +799,43 @@ async function getCodexEntry(
   const details = defs
     .filter((d) => d.includeInContext)
     .map((d) => {
+      // Phase で hidden を解除された項目は、base（秘匿した状態）の詳細でなく Phase 解決後の
+      // 詳細（null は Phase による消去）を返す。ほかの項目は今までどおり base の値。
+      const resolvedDetails = resolvedText.detailValues;
+      if (resolvedText.released && resolvedDetails) {
+        return { field: d.name, value: resolvedDetails.get(d.id) ?? null };
+      }
       const val = vals.find((v) => v.definitionId === d.id);
       return { field: d.name, value: val?.value ?? null };
     });
 
   // Child entries (summaries only)
-  const children = await db
-    .select({
-      id: codexEntries.id,
-      name: codexEntries.name,
-      type: codexEntries.type,
-      summary: codexEntries.summary,
-    })
-    .from(codexEntries)
-    .where(eq(codexEntries.parentId, id));
+  const children = await dropHiddenCodex(
+    await db
+      .select({
+        id: codexEntries.id,
+        name: codexEntries.name,
+        type: codexEntries.type,
+        summary: codexEntries.summary,
+      })
+      .from(codexEntries)
+      .where(eq(codexEntries.parentId, id)),
+    projectId,
+    scope,
+  );
 
   // 本体テキスト (ProseMirror JSON → plain text)。Tool description が
   // "full content body" と謳う以上、ここで抜けてはいけない。
-  const body = entry.content ? extractPlainText(entry.content) : "";
+  const body = resolvedText.content
+    ? extractPlainText(resolvedText.content)
+    : "";
 
   const result = {
     id: entry.id,
     name: entry.name,
     type: entry.type,
     aliases: entry.aliases ? (JSON.parse(entry.aliases) as string[]) : [],
-    summary: entry.summary ?? "",
+    summary: resolvedText.summary ?? "",
     body,
     details,
     children: children.map((c) => ({
@@ -528,59 +854,9 @@ async function getCodexEntry(
   };
 }
 
-async function listCodexTags(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const typeFilter = params["type"] ? String(params["type"]) : undefined;
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "list_codex_tags",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const usageCount = count(codexEntryTags.entryId);
-  const rows = await db
-    .select({
-      id: codexTags.id,
-      name: codexTags.name,
-      usageCount,
-    })
-    .from(codexTags)
-    .leftJoin(codexEntryTags, eq(codexTags.id, codexEntryTags.tagId))
-    .where(
-      and(
-        eq(codexTags.projectId, projectId),
-        typeFilter
-          ? or(
-              isNull(codexTags.typeFilter),
-              like(codexTags.typeFilter, `%${typeFilter}%`),
-            )
-          : undefined,
-      ),
-    )
-    .groupBy(codexTags.id)
-    .orderBy(desc(usageCount));
-
-  const content = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    usageCount: row.usageCount,
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "list_codex_tags",
-    content,
-    summary: `${content.length} tags`,
-    tokensUsed: countTokens(json),
-  };
-}
-
 async function searchCodexByTags(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const tags = Array.isArray(params["tags"])
     ? (params["tags"] as unknown[]).map(String)
@@ -616,12 +892,14 @@ async function searchCodexByTags(
       and(eq(codexEntries.projectId, projectId), inArray(codexTags.name, tags)),
     );
 
-  const content = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    summary: row.summary ?? "",
-  }));
+  const content = (await dropHiddenCodex(rows, projectId, scope)).map(
+    (row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      summary: row.summary ?? "",
+    }),
+  );
   const json = JSON.stringify(content);
   return {
     name: "search_codex_by_tags",
@@ -638,6 +916,7 @@ async function searchCodexByTags(
  */
 async function findRelatedEntries(
   params: Record<string, unknown>,
+  scope?: ChatTurnToolScope,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id)
@@ -661,7 +940,8 @@ async function findRelatedEntries(
     .select()
     .from(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  if (!source)
+  // 起点が hidden なら存在しない id と同じ応答にする（存在を明かさない）。
+  if (!source || (await isCodexHiddenFromAi(id, projectId, scope)))
     return {
       name: "find_related_entries",
       content: [],
@@ -718,607 +998,19 @@ async function findRelatedEntries(
     )
     .limit(20);
 
-  const content = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    summary: row.summary ?? "",
-  }));
+  const content = (await dropHiddenCodex(rows, projectId, scope)).map(
+    (row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      summary: row.summary ?? "",
+    }),
+  );
   const json = JSON.stringify(content);
   return {
     name: "find_related_entries",
     content,
     summary: `${content.length} related to ${source.name}${typeFilter ? ` (type=${typeFilter})` : ""}`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Scene tools
-// ---------------------------------------------------------------------------
-
-async function listChapters(): Promise<Omit<ToolResult, "toolCallId">> {
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "list_chapters",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  const nodes = await db
-    .select({
-      id: treeNodes.id,
-      parentId: treeNodes.parentId,
-      nodeType: treeNodes.nodeType,
-      title: treeNodes.title,
-      status: treeNodes.status,
-      sortOrder: treeNodes.sortOrder,
-    })
-    .from(treeNodes)
-    .where(
-      and(
-        eq(treeNodes.projectId, projectId),
-        inArray(treeNodes.nodeType, ["part", "chapter", "scene"]),
-      ),
-    );
-
-  // Sort by sortOrder for consistent output
-  nodes.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-  const content = nodes.map((n) => ({
-    id: n.id,
-    parentId: n.parentId ?? null,
-    nodeType: n.nodeType,
-    title: n.title,
-    status: n.status ?? "outline",
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "list_chapters",
-    content,
-    summary: `${content.length} nodes (parts/chapters/scenes)`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function getScene(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const id = String(params["id"] ?? "").trim();
-  if (!id)
-    return {
-      name: "get_scene",
-      content: null,
-      summary: "No id provided",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "get_scene",
-      content: null,
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const [node] = await db
-    .select({
-      id: treeNodes.id,
-      title: treeNodes.title,
-      nodeType: treeNodes.nodeType,
-    })
-    .from(treeNodes)
-    .where(and(eq(treeNodes.id, id), eq(treeNodes.projectId, projectId)));
-
-  if (!node || node.nodeType !== "scene") {
-    return {
-      name: "get_scene",
-      content: null,
-      summary: "Scene not found",
-      tokensUsed: 0,
-    };
-  }
-
-  const rawContent = await loadSceneContent(id);
-  const markdown = prosemirrorToText(rawContent);
-  const content = { id, title: node.title, content: markdown };
-  const json = JSON.stringify(content);
-  return {
-    name: "get_scene",
-    content,
-    summary: `Scene '${node.title}' (${markdown.length} chars)`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function searchScenes(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const query = String(params["query"] ?? "").trim();
-  if (!query)
-    return {
-      name: "search_scenes",
-      content: [],
-      summary: "0 scenes found",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "search_scenes",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  // tree_nodes_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
-  const tokens = tokenizeQuery(query);
-  const allTrigramFriendly =
-    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
-
-  let rows: Array<{ id: string; title: string; content: string }>;
-  if (allTrigramFriendly) {
-    const hitIds = await sparseSearchIds(projectId, query, "scenes", 10);
-    if (hitIds.length === 0) {
-      rows = [];
-    } else {
-      rows = orderByIds(
-        await db
-          .select({
-            id: treeNodes.id,
-            title: treeNodes.title,
-            content: treeNodes.content,
-          })
-          .from(treeNodes)
-          .where(
-            and(
-              eq(treeNodes.projectId, projectId),
-              eq(treeNodes.nodeType, "scene"),
-              inArray(treeNodes.id, hitIds),
-            ),
-          ),
-        hitIds,
-      );
-    }
-  } else {
-    rows = await db
-      .select({
-        id: treeNodes.id,
-        title: treeNodes.title,
-        content: treeNodes.content,
-      })
-      .from(treeNodes)
-      .where(
-        and(
-          eq(treeNodes.projectId, projectId),
-          eq(treeNodes.nodeType, "scene"),
-          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
-            treeNodes.title,
-            treeNodes.content,
-          ]),
-        ),
-      )
-      .limit(10);
-  }
-
-  const content = rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    excerpt: plainTextExcerpt(row.content, tokens),
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "search_scenes",
-    content,
-    summary: `${content.length} scenes found`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Snippet tools
-// ---------------------------------------------------------------------------
-
-async function searchSnippets(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const query = String(params["query"] ?? "").trim();
-  if (!query)
-    return {
-      name: "search_snippets",
-      content: [],
-      summary: "0 snippets found",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "search_snippets",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  // snippets_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
-  const tokens = tokenizeQuery(query);
-  const allTrigramFriendly =
-    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
-
-  let rows: Array<{
-    id: string;
-    title: string;
-    tagsCache: string | null;
-    content: string;
-  }>;
-  if (allTrigramFriendly) {
-    const hitIds = await sparseSearchIds(projectId, query, "snippets", 10);
-    if (hitIds.length === 0) {
-      rows = [];
-    } else {
-      rows = orderByIds(
-        await db
-          .select({
-            id: snippets.id,
-            title: snippets.title,
-            tagsCache: snippets.tagsCache,
-            content: snippets.content,
-          })
-          .from(snippets)
-          .where(
-            and(
-              eq(snippets.projectId, projectId),
-              inArray(snippets.id, hitIds),
-            ),
-          ),
-        hitIds,
-      );
-    }
-  } else {
-    rows = await db
-      .select({
-        id: snippets.id,
-        title: snippets.title,
-        tagsCache: snippets.tagsCache,
-        content: snippets.content,
-      })
-      .from(snippets)
-      .where(
-        and(
-          eq(snippets.projectId, projectId),
-          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
-            snippets.title,
-            snippets.content,
-            snippets.tagsCache,
-          ]),
-        ),
-      )
-      .limit(10);
-  }
-
-  const content = rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    tags: parseTagsCacheNames(row.tagsCache),
-    preview: plainTextExcerpt(row.content, tokens),
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "search_snippets",
-    content,
-    summary: `${content.length} snippets found`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Summary tools
-// ---------------------------------------------------------------------------
-
-async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "get_chapter_summaries",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  const chapters = await db
-    .select({
-      id: treeNodes.id,
-      title: treeNodes.title,
-      sortOrder: treeNodes.sortOrder,
-    })
-    .from(treeNodes)
-    .where(
-      and(
-        eq(treeNodes.projectId, projectId),
-        eq(treeNodes.nodeType, "chapter"),
-      ),
-    );
-
-  chapters.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-  const scenes = await db
-    .select({
-      id: treeNodes.id,
-      parentId: treeNodes.parentId,
-      title: treeNodes.title,
-      synopsis: treeNodes.synopsis,
-      sortOrder: treeNodes.sortOrder,
-    })
-    .from(treeNodes)
-    .where(
-      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
-    );
-
-  const content = chapters.map((ch) => ({
-    id: ch.id,
-    title: ch.title,
-    scenes: scenes
-      .filter((s) => s.parentId === ch.id)
-      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder))
-      .map((s) => ({ id: s.id, title: s.title, synopsis: s.synopsis ?? "" }))
-      .filter((s) => s.synopsis),
-  }));
-
-  const json = JSON.stringify(content);
-  return {
-    name: "get_chapter_summaries",
-    content,
-    summary: `${chapters.length} chapters with scene summaries`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Foreshadow / Timeline tools (Phase 3)
-// ---------------------------------------------------------------------------
-
-async function listOpenForeshadows(): Promise<Omit<ToolResult, "toolCallId">> {
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId) {
-    return {
-      name: "list_open_foreshadows",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  }
-  const rows = await listOpenForeshadowsForContext(projectId);
-  const content = rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    intent: r.intent ?? "",
-    loadBearing: r.loadBearing,
-    setupCount: r.setupCount,
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "list_open_foreshadows",
-    content,
-    summary: `${content.length} open foreshadowing items`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function getForeshadowDetail(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const id = String(params["id"] ?? "").trim();
-  if (!id) {
-    return {
-      name: "get_foreshadow_detail",
-      content: null,
-      summary: "No id provided",
-      tokensUsed: 0,
-    };
-  }
-
-  // XPROJ defense: scope the read-by-id to the active project. Without this,
-  // an injected agent could pass another project's foreshadow UUID and read its
-  // (secret) plot intent/notes/setups. Mirrors getCodexEntry / getScene.
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId) {
-    return {
-      name: "get_foreshadow_detail",
-      content: null,
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  }
-
-  const [fs] = await db
-    .select()
-    .from(foreshadows)
-    .where(and(eq(foreshadows.id, id), eq(foreshadows.projectId, projectId)));
-  if (!fs) {
-    return {
-      name: "get_foreshadow_detail",
-      content: null,
-      summary: "Foreshadow not found",
-      tokensUsed: 0,
-    };
-  }
-
-  // Setups + scene title (innerJoin); orphan は別フィールドで載せる。
-  const setupRows = await db
-    .select({
-      sceneId: foreshadowSetups.sceneId,
-      kind: foreshadowSetups.kind,
-      strength: foreshadowSetups.strength,
-      aiStrength: foreshadowSetups.aiStrength,
-      attribution: foreshadowSetups.attribution,
-      aiRationale: foreshadowSetups.aiRationale,
-      isOrphan: foreshadowSetups.isOrphan,
-      sceneTitle: treeNodes.title,
-    })
-    .from(foreshadowSetups)
-    .innerJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
-    .where(eq(foreshadowSetups.foreshadowId, id));
-
-  // Payoff scene の title 取得（payoffSceneId が無ければ null）
-  let payoffScene: { id: string; title: string } | null = null;
-  if (fs.payoffSceneId) {
-    const [row] = await db
-      .select({ id: treeNodes.id, title: treeNodes.title })
-      .from(treeNodes)
-      .where(eq(treeNodes.id, fs.payoffSceneId));
-    if (row) payoffScene = { id: row.id, title: row.title };
-  }
-
-  const content = {
-    id: fs.id,
-    title: fs.title,
-    intent: fs.intent ?? "",
-    notes: fs.notes ?? "",
-    loadBearing: fs.loadBearing,
-    payoffConfirmed: fs.payoffConfirmed,
-    abandoned: fs.abandoned,
-    payoffScene,
-    setups: setupRows.map((s) => ({
-      sceneId: s.sceneId,
-      sceneTitle: s.sceneTitle,
-      kind: s.kind,
-      // 人手評価が無いとき AI 評価を露出（強度の参考情報）
-      strength: s.strength ?? s.aiStrength ?? null,
-      attribution: s.attribution,
-      aiRationale: s.aiRationale ?? "",
-      isOrphan: s.isOrphan,
-    })),
-  };
-  const json = JSON.stringify(content);
-  return {
-    name: "get_foreshadow_detail",
-    content,
-    summary: `${fs.title}: ${setupRows.length} setup(s), payoff ${
-      fs.payoffConfirmed ? "confirmed" : payoffScene ? "planned" : "unset"
-    }`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function getSceneTimelineNeighbors(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const sceneId = String(params["sceneId"] ?? "").trim();
-  if (!sceneId) {
-    return {
-      name: "get_scene_timeline_neighbors",
-      content: { previous: [], next: [], currentSceneStoryTimeLabel: null },
-      summary: "No sceneId provided",
-      tokensUsed: 0,
-    };
-  }
-
-  // XPROJ defense: scope the target lookup to the active project. The neighbor
-  // query below already filters by project, but an unscoped target lookup let a
-  // foreign sceneId read another project's storyTimeLabel + neighbor titles.
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId) {
-    return {
-      name: "get_scene_timeline_neighbors",
-      content: { previous: [], next: [], currentSceneStoryTimeLabel: null },
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  }
-
-  const [target] = await db
-    .select({
-      id: treeNodes.id,
-      projectId: treeNodes.projectId,
-      storyTimeOrder: treeNodes.storyTimeOrder,
-      storyTimeLabel: treeNodes.storyTimeLabel,
-    })
-    .from(treeNodes)
-    .where(and(eq(treeNodes.id, sceneId), eq(treeNodes.projectId, projectId)));
-
-  if (!target || !target.storyTimeOrder) {
-    return {
-      name: "get_scene_timeline_neighbors",
-      content: {
-        previous: [],
-        next: [],
-        currentSceneStoryTimeLabel: target?.storyTimeLabel ?? null,
-      },
-      summary: target
-        ? "Target scene has no storyTimeOrder set"
-        : "Scene not found",
-      tokensUsed: 0,
-    };
-  }
-
-  // 同 project 内の story-time キーを持つシーンだけ拾い、JS で fractional-index 比較。
-  // SQL の文字列順は base62 fractional key と一致するため、order by + limit が
-  // 使えるが、cmpKeys との挙動差分を避けるため全件読み JS でソート分割する
-  // (シーン数 << 数千件と想定)。
-  const candidates = await db
-    .select({
-      id: treeNodes.id,
-      title: treeNodes.title,
-      synopsis: treeNodes.synopsis,
-      storyTimeOrder: treeNodes.storyTimeOrder,
-      storyTimeLabel: treeNodes.storyTimeLabel,
-    })
-    .from(treeNodes)
-    .where(
-      and(
-        eq(treeNodes.projectId, target.projectId),
-        eq(treeNodes.nodeType, "scene"),
-      ),
-    );
-
-  const targetKey = target.storyTimeOrder;
-  const previous = candidates
-    .filter(
-      (n) =>
-        n.id !== sceneId &&
-        n.storyTimeOrder != null &&
-        cmpKeys(n.storyTimeOrder, targetKey) < 0,
-    )
-    .sort((a, b) =>
-      cmpKeys(b.storyTimeOrder as string, a.storyTimeOrder as string),
-    )
-    .slice(0, 3)
-    .map((n) => ({
-      id: n.id,
-      title: n.title,
-      storyTimeLabel: n.storyTimeLabel ?? null,
-      synopsis: n.synopsis ?? "",
-    }));
-  const next = candidates
-    .filter(
-      (n) =>
-        n.id !== sceneId &&
-        n.storyTimeOrder != null &&
-        cmpKeys(n.storyTimeOrder, targetKey) > 0,
-    )
-    .sort((a, b) =>
-      cmpKeys(a.storyTimeOrder as string, b.storyTimeOrder as string),
-    )
-    .slice(0, 3)
-    .map((n) => ({
-      id: n.id,
-      title: n.title,
-      storyTimeLabel: n.storyTimeLabel ?? null,
-      synopsis: n.synopsis ?? "",
-    }));
-
-  const content = {
-    currentSceneStoryTimeLabel: target.storyTimeLabel ?? null,
-    previous,
-    next,
-  };
-  const json = JSON.stringify(content);
-  return {
-    name: "get_scene_timeline_neighbors",
-    content,
-    summary: `previous: ${previous.length}, next: ${next.length}`,
     tokensUsed: countTokens(json),
   };
 }
@@ -1485,239 +1177,6 @@ async function updateCodexEntryTool(
 }
 
 // ---------------------------------------------------------------------------
-// Plot threads (read-only)
-// ---------------------------------------------------------------------------
-
-const THREAD_SCENE_MAX = 8;
-const THREAD_EXCERPT_MAX_CHARS = 800;
-
-/** phaseType の表示順 index（未知値は末尾）。 */
-function phaseRank(p: string): number {
-  const i = (PLOT_PHASE_TYPES as readonly string[]).indexOf(p);
-  return i < 0 ? PLOT_PHASE_TYPES.length : i;
-}
-
-/** 不正な phaseType 文字列を既定値に丸める（CHECK は SQL 側のみ＝混入し得る）。 */
-function normalizePhase(p: string): PlotPhaseType {
-  return (PLOT_PHASE_TYPES as readonly string[]).includes(p)
-    ? (p as PlotPhaseType)
-    : "develop";
-}
-
-async function listPlotThreads(): Promise<Omit<ToolResult, "toolCallId">> {
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      // 他の list_* ツールと揃えて空配列を返す（null だと「列挙失敗」に見える）。
-      name: "list_plot_threads",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const threads = await db
-    .select({
-      id: plotThreads.id,
-      name: plotThreads.name,
-      description: plotThreads.description,
-      sortOrder: plotThreads.sortOrder,
-    })
-    .from(plotThreads)
-    .where(eq(plotThreads.projectId, projectId));
-
-  const threadIds = threads.map((t) => t.id);
-  const links =
-    threadIds.length > 0
-      ? await db
-          .select({
-            threadId: plotThreadSceneLinks.threadId,
-            nodeId: plotThreadSceneLinks.nodeId,
-            phaseType: plotThreadSceneLinks.phaseType,
-          })
-          .from(plotThreadSceneLinks)
-          .where(inArray(plotThreadSceneLinks.threadId, threadIds))
-      : [];
-
-  // thread ごとの distinct scene 数 + 到達 phase 集合。
-  const sceneSets = new Map<string, Set<string>>();
-  const phaseSets = new Map<string, Set<string>>();
-  for (const l of links) {
-    let sc = sceneSets.get(l.threadId);
-    if (!sc) {
-      sc = new Set();
-      sceneSets.set(l.threadId, sc);
-    }
-    sc.add(l.nodeId);
-    let ph = phaseSets.get(l.threadId);
-    if (!ph) {
-      ph = new Set();
-      phaseSets.set(l.threadId, ph);
-    }
-    ph.add(l.phaseType);
-  }
-
-  const ordered = [...threads].sort((a, b) =>
-    cmpKeys(a.sortOrder, b.sortOrder),
-  );
-  const content = ordered.map((t) => ({
-    id: t.id,
-    name: t.name,
-    description: t.description ?? "",
-    sceneCount: sceneSets.get(t.id)?.size ?? 0,
-    phases: PLOT_PHASE_TYPES.filter((p) => phaseSets.get(t.id)?.has(p)),
-  }));
-
-  const json = JSON.stringify(content);
-  return {
-    name: "list_plot_threads",
-    content,
-    summary: `${content.length} plot thread(s)`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function getThreadScenes(
-  params: Record<string, unknown>,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const threadId = String(params["threadId"] ?? "").trim();
-  if (!threadId)
-    return {
-      name: "get_thread_scenes",
-      content: null,
-      summary: "No threadId provided",
-      tokensUsed: 0,
-    };
-
-  // XPROJ 1段目: thread_id → plot_threads.project_id を検証。別 project の
-  // スレッド UUID を渡しても、シーン/リンク/本文に触れる前にここで弾く
-  // （nodeId 単独 lookup 禁止＝plot_thread_scene_links は project_id を持たず
-  // 親スレッド経由でしか scope できないため）。
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "get_thread_scenes",
-      content: null,
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const [thread] = await db
-    .select({
-      id: plotThreads.id,
-      name: plotThreads.name,
-      description: plotThreads.description,
-    })
-    .from(plotThreads)
-    .where(
-      and(eq(plotThreads.id, threadId), eq(plotThreads.projectId, projectId)),
-    );
-
-  if (!thread)
-    return {
-      name: "get_thread_scenes",
-      content: null,
-      summary: "Thread not found",
-      tokensUsed: 0,
-    };
-
-  // 2段目: 親スレッド検証済みなので links を threadId で取得。
-  const links = await db
-    .select({
-      nodeId: plotThreadSceneLinks.nodeId,
-      phaseType: plotThreadSceneLinks.phaseType,
-      note: plotThreadSceneLinks.note,
-      sortOrder: plotThreadSceneLinks.sortOrder,
-    })
-    .from(plotThreadSceneLinks)
-    .where(eq(plotThreadSceneLinks.threadId, threadId));
-
-  // PLOT_PHASE_TYPES 順 → 同 phase 内は sortOrder。
-  const orderedLinks = [...links].sort((a, b) => {
-    const pr = phaseRank(a.phaseType) - phaseRank(b.phaseType);
-    if (pr !== 0) return pr;
-    return cmpKeys(a.sortOrder ?? "", b.sortOrder ?? "");
-  });
-
-  // scene title をまとめて解決（active project の treeNodes に限定）。
-  const nodeIds = [...new Set(orderedLinks.map((l) => l.nodeId))];
-  const titleRows =
-    nodeIds.length > 0
-      ? await db
-          .select({ id: treeNodes.id, title: treeNodes.title })
-          .from(treeNodes)
-          .where(
-            and(
-              inArray(treeNodes.id, nodeIds),
-              eq(treeNodes.projectId, projectId),
-            ),
-          )
-      : [];
-  const titleById = new Map(titleRows.map((r) => [r.id, r.title]));
-
-  // 1 シーンが複数 phase マーカーを持ち得るので nodeId で dedup（最初＝最も早い
-  // phase を採用）。list_plot_threads の distinct scene 数と一貫させ、同一シーンが
-  // 重複出力されるのを防ぐ。
-  const seenNodes = new Set<string>();
-  const dedupedLinks = orderedLinks.filter((l) => {
-    if (seenNodes.has(l.nodeId)) return false;
-    seenNodes.add(l.nodeId);
-    return true;
-  });
-
-  const capped = dedupedLinks.slice(0, THREAD_SCENE_MAX);
-  const scenes: Array<{
-    id: string;
-    title: string;
-    phaseType: PlotPhaseType;
-    note: string;
-    excerpt: string;
-  }> = [];
-  const contentMap = await loadSceneContents(capped.map((l) => l.nodeId)).catch(
-    () => new Map<string, string>(),
-  );
-  for (const l of capped) {
-    const text = prosemirrorToText(contentMap.get(l.nodeId) ?? "");
-    scenes.push({
-      id: l.nodeId,
-      title: titleById.get(l.nodeId) ?? "",
-      phaseType: normalizePhase(l.phaseType),
-      note: l.note ?? "",
-      excerpt: text.slice(0, THREAD_EXCERPT_MAX_CHARS),
-    });
-  }
-
-  // このスレッドに関わる branch（project でも絞る＝XPROJ）。
-  const branchRows = await db
-    .select({
-      fromThreadId: plotThreadBranches.fromThreadId,
-      toThreadId: plotThreadBranches.toThreadId,
-      atNodeId: plotThreadBranches.atNodeId,
-      kind: plotThreadBranches.kind,
-    })
-    .from(plotThreadBranches)
-    .where(eq(plotThreadBranches.projectId, projectId));
-  const branches = branchRows.filter(
-    (b) => b.fromThreadId === threadId || b.toThreadId === threadId,
-  );
-
-  const content = {
-    id: thread.id,
-    name: thread.name,
-    description: thread.description ?? "",
-    sceneCount: dedupedLinks.length,
-    scenes,
-    branches,
-  };
-  const json = JSON.stringify(content);
-  return {
-    name: "get_thread_scenes",
-    content,
-    summary: `Thread '${thread.name}': ${scenes.length}/${dedupedLinks.length} scene(s)`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Dispatch map
 // ---------------------------------------------------------------------------
 
@@ -1725,7 +1184,87 @@ type Executor = (
   params: Record<string, unknown>,
   requestId?: string,
   authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
+
+// ---------------------------------------------------------------------------
+// 共有 core の read tool（MP-4b PR-4。B1・B2 の 7 本、PR-5a で B3 の search_scenes・search_snippets、PR-5b で B4 の list_open_foreshadows・get_foreshadow_detail）
+// ---------------------------------------------------------------------------
+
+/**
+ * renderer の ports。getter は呼出しの時点で live な値を返す（store・`db`・本文の
+ * barrier 付き読取り）。import は arrow の中で読む：tool の実行時に束縛を引くので、
+ * 試験の `vi.mock`（`@/db/client` の chain、`@/features/tree/api` の部分 mock、
+ * `useTreeStore` の差し替え）が今までどおり効く。本文は renderer の
+ * `loadSceneContent(s)`（未着の書込みを待ってから SELECT する）のまま。
+ */
+const LEGACY_READ_CONTEXT: CoreReadContext = {
+  getDb: () => db,
+  getTreeState: () => useTreeStore.getState(),
+  body: {
+    barrier: "pending-writes-awaited",
+    readSceneBody: (sceneId) => loadSceneContent(sceneId),
+    // 一括読みの失敗は空の Map に握る（移す前の `loadSceneContents(...).catch(...)` と同じ。
+    // get_thread_scenes は空の excerpt で成功する）。握るのは legacy の port の側で、
+    // core は port の error をそのまま伝える（DR-MP4-32b。main の port は握らない）。
+    readSceneBodies: (sceneIds) =>
+      loadSceneContents([...sceneIds]).catch(() => new Map<string, string>()),
+  },
+  // fts は args を加工せずそのまま渡す（command・引数・scope・limit は core が決める）。
+  // invoke は arrow の中で読むので、試験の `vi.mock("@/lib/tauri")` が効く。
+  // foreshadowOpen は wire を返すだけ（組み立ては core。Native なら `{ projectId }` だけで 1 回の invoke、
+  // それ以外は Drizzle の 2 list）。`readOpenForeshadowWire` は arrow の中で読む（試験の mock が効く）。
+  native: {
+    fts: (args) => invoke("fts_search", args),
+    foreshadowOpen: (args) => readOpenForeshadowWire(args.projectId),
+  },
+  countTokens: (text) => countTokens(text),
+};
+
+const CORE_READ_EXECUTORS = createReadExecutors(LEGACY_READ_CONTEXT);
+
+/**
+ * project が無いときの結果（core は projectId を必須にして throw する。DR-MP4-3）。
+ * 引数の検査は core が先に行い、project の検査はその次なので、順序は移す前のまま。
+ * content は毎回新しく作る（呼び手が書き換えても次の結果に漏れない）。
+ */
+const LEGACY_NO_PROJECT_CONTENT: Record<CoreReadToolName, () => unknown> = {
+  list_codex_tags: () => [],
+  list_chapters: () => [],
+  get_chapter_summaries: () => [],
+  get_scene_timeline_neighbors: () => ({
+    previous: [],
+    next: [],
+    currentSceneStoryTimeLabel: null,
+  }),
+  // 他の list_* ツールと揃えて空配列を返す（null だと「列挙失敗」に見える）。
+  list_plot_threads: () => [],
+  get_thread_scenes: () => null,
+  get_scene: () => null,
+  search_scenes: () => [],
+  search_snippets: () => [],
+  list_open_foreshadows: () => [],
+  get_foreshadow_detail: () => null,
+};
+
+function coreReadExecutor(name: CoreReadToolName): Executor {
+  const run = CORE_READ_EXECUTORS[name];
+  return async (params) => {
+    try {
+      return await run(params);
+    } catch (e) {
+      if (e instanceof CoreProjectRequiredError) {
+        return {
+          name,
+          content: LEGACY_NO_PROJECT_CONTENT[name](),
+          summary: "No active project",
+          tokensUsed: 0,
+        };
+      }
+      throw e;
+    }
+  };
+}
 
 /**
  * ツール名 → executor の dispatch マップ。
@@ -1745,27 +1284,41 @@ type Executor = (
  */
 /** Read-only tools — frozen allowlist (security review F-2). */
 export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
-  search_codex: searchCodex,
-  list_codex_by_type: listCodexByType,
-  get_codex_entry: getCodexEntry,
-  list_codex_tags: listCodexTags,
-  search_codex_by_tags: searchCodexByTags,
-  find_related_entries: findRelatedEntries,
-  list_chapters: () => listChapters(),
-  get_scene: getScene,
-  search_scenes: searchScenes,
-  search_snippets: searchSnippets,
-  get_chapter_summaries: () => getChapterSummaries(),
-  list_open_foreshadows: () => listOpenForeshadows(),
-  get_foreshadow_detail: getForeshadowDetail,
-  get_scene_timeline_neighbors: getSceneTimelineNeighbors,
-  list_plot_threads: () => listPlotThreads(),
-  get_thread_scenes: getThreadScenes,
+  search_codex: (params, _requestId, _authorization, context) =>
+    searchCodex(params, context?.scope),
+  list_codex_by_type: (params, _requestId, _authorization, context) =>
+    listCodexByType(params, context?.scope),
+  get_codex_entry: (params, _requestId, _authorization, context) =>
+    getCodexEntry(params, context?.scope),
+  list_codex_tags: coreReadExecutor("list_codex_tags"),
+  search_codex_by_tags: (params, _requestId, _authorization, context) =>
+    searchCodexByTags(params, context?.scope),
+  find_related_entries: (params, _requestId, _authorization, context) =>
+    findRelatedEntries(params, context?.scope),
+  list_chapters: coreReadExecutor("list_chapters"),
+  get_scene: coreReadExecutor("get_scene"),
+  search_scenes: coreReadExecutor("search_scenes"),
+  search_snippets: coreReadExecutor("search_snippets"),
+  get_chapter_summaries: coreReadExecutor("get_chapter_summaries"),
+  list_open_foreshadows: coreReadExecutor("list_open_foreshadows"),
+  get_foreshadow_detail: coreReadExecutor("get_foreshadow_detail"),
+  get_scene_timeline_neighbors: coreReadExecutor(
+    "get_scene_timeline_neighbors",
+  ),
+  list_plot_threads: coreReadExecutor("list_plot_threads"),
+  get_thread_scenes: coreReadExecutor("get_thread_scenes"),
   list_events: listEventsTool,
   get_event_detail: getEventDetailTool,
   get_character_timeline: getCharacterTimelineTool,
   get_chronicle_state: getChronicleStateTool,
-  search_events: searchEvents,
+  search_events: (params, _requestId, _authorization, context) =>
+    searchEvents(params, context?.scope),
+  // アプリの使い方ヘルプ。実装（ヘルプ文書・locale の展開）は初回の呼び出しで読む。
+  get_app_help_index: async (params) =>
+    (await import("./appHelpTools")).getAppHelpIndexTool(params),
+  get_app_help: async (params) =>
+    (await import("./appHelpTools")).getAppHelpTool(params),
+  get_ui_state: async () => (await import("./appHelpTools")).getUiStateTool(),
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 
@@ -2113,12 +1666,24 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   set_event_participants: setEventParticipantsTool,
   add_event_relation: addEventRelationTool,
   remove_event_relation: removeEventRelationTool,
+  // アプリの UI 操作（view のみ）。実装（layout／tab の store）は初回の呼び出しで読む。
+  run_app_command: async (params) =>
+    (await import("./appUiTools")).runAppCommandTool(params),
+  apply_layout_preset: async (params) =>
+    (await import("./appUiTools")).applyLayoutPresetTool(params),
+  // 設定変更の提案。設定は変えず、検証済みの提案を返す（適用は利用者のカードのクリック）。
+  // 実装は初回の呼び出しまで読み込まない。DURABLE_MUTATION_TOOLS には入れない（DB を書かない）。
+  propose_setting_change: async (params) =>
+    (await import("./settingProposalTools")).proposeSettingChangeTool(params),
 };
 Object.freeze(MUTATING_EXECUTORS);
 
 export const EXECUTORS: Record<string, Executor> = {
   ...READ_ONLY_EXECUTORS,
   ...MUTATING_EXECUTORS,
+  // main agent の search_events だけ、承認済みの IR を合流する版で上書きする。
+  // sub-agent の `executeReadOnlyTool` は READ_ONLY_EXECUTORS だけを見るので、IR は出ない。
+  search_events: searchEventsWithIr,
 };
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);
@@ -2139,6 +1704,15 @@ const DURABLE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
   "remove_event_relation",
   "apply_ai_tree_plan",
   "propose_scene_body",
+]);
+
+/**
+ * 出典の会話（`source_chat_message_id`、`chat_messages` への検証／FK）に実行中の
+ * assistant message を使う書き込み tool。実行の前にその行が保存されている必要がある。
+ */
+export const SOURCE_CHAT_MESSAGE_TOOLS: ReadonlySet<string> = new Set([
+  "create_codex_entry",
+  "create_snippet",
 ]);
 
 async function toolMutationRequestId(
@@ -2162,6 +1736,7 @@ export async function executeTool(
   toolCallId: string,
   params: Record<string, unknown>,
   authorization?: AgentToolAuthorization,
+  context?: ChatToolRunContext,
 ): Promise<ToolResult> {
   const executor = EXECUTORS[name];
   if (!executor) {
@@ -2195,6 +1770,7 @@ export async function executeTool(
       params,
       requestId,
       authorization ? { ...authorization, toolCallId } : undefined,
+      context,
     );
     return { toolCallId, ...result };
   } catch (e) {
@@ -2222,6 +1798,7 @@ export async function executeReadOnlyTool(
   name: string,
   toolCallId: string,
   params: Record<string, unknown>,
+  context?: ChatReadOnlyToolRunContext,
 ): Promise<ToolResult> {
   const executor = READ_ONLY_EXECUTORS[name];
   if (!executor) {
@@ -2236,7 +1813,7 @@ export async function executeReadOnlyTool(
     };
   }
   try {
-    const result = await executor(params);
+    const result = await executor(params, undefined, undefined, context);
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

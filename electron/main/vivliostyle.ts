@@ -29,6 +29,7 @@ import {
   type CliProcessRunner,
   type RunningCliProcess,
 } from "./cliAi.js";
+import { mastraOriginalEnv } from "./mastraEnv.js";
 
 const VIVLIOSTYLE_BINARY = "vivliostyle";
 const INPUT_FILE_NAME = "book.html";
@@ -468,7 +469,9 @@ export function createVivliostyleManager(
   supplied: VivliostyleDependencies = {},
 ): VivliostyleManager {
   const platform = supplied.platform ?? process.platform;
-  const env = supplied.env ?? process.env;
+  // 使う時点で引く（構築時に写しを撮らない）。固定前の env の写し（MP-3a、DR-MP3-9）。
+  const currentEnv = (): NodeJS.ProcessEnv =>
+    supplied.env ?? mastraOriginalEnv();
   const runner = supplied.runner ?? createNodeCliProcessRunner(platform);
   const tempRoot =
     supplied.tempRoot ?? path.join(os.tmpdir(), "grimodex-vivliostyle");
@@ -476,7 +479,7 @@ export function createVivliostyleManager(
   const resolveRealPath = supplied.realPath ?? realpath;
   const detectBinary =
     supplied.detectBinary ??
-    (() => defaultDetectBinary(runner, platform, env, isFile));
+    (() => defaultDetectBinary(runner, platform, currentEnv(), isFile));
   const authorizeExecutable =
     supplied.authorizeExecutable ?? (async () => false);
   const pickSavePath =

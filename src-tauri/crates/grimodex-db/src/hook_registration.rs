@@ -124,7 +124,16 @@ where
     let Some(handler) = handler.filter(|_| interval > 0) else {
         return disable_progress_handler(conn);
     };
-    reserve_entry(conn, PROGRESS_HANDLER_ENTRY)?;
+    if let Err(error) = reserve_entry(conn, PROGRESS_HANDLER_ENTRY) {
+        // The reservation allocates only when there is no entry, i.e. when
+        // rusqlite never registered a handler here. A handler registered by raw
+        // FFI (the opt-in diagnostics' meter at open) may still be active; the
+        // registration would have replaced it, so clear it (with no entry,
+        // `disable_progress_handler` allocates nothing) and keep the promise
+        // above: after an `Err` no progress handler is enabled.
+        let _ = disable_progress_handler(conn);
+        return Err(error);
+    }
     let registered = conn.progress_handler(interval, Some(handler));
     if registered.is_err() {
         let _ = disable_progress_handler(conn);
