@@ -24,6 +24,7 @@ import {
   assessCandidateRegime,
   classifyFollowUp,
   followUpFailureCategory,
+  followUpLapses,
   missingR7,
 } from "./followup.mjs";
 import {
@@ -1857,4 +1858,118 @@ test("DR-CP4-V-4 (レビュー P3): 印の無い入力の分類は sample 側の
       assert.notEqual(inTrace(row).x.X12, "cancelled-before-begin");
     }
   }
+});
+
+// ---- DR-PUBG-5-21: 拒否された親は、あとで子が Graph を出しても失効のまま（番号なしの補足）----
+
+// DR-PUBG-5-21（#1006）: 製品の hook は、拒否された親（registration-unavailable）
+// のあとに B が publish すると、graph-ready の通知で取り直し、子が付きうる。
+// 「開始時に B が使えなかった」事実は、あとで子が Graph を出しても変わらないので、
+// 評価の分類は動かさない（失効に数える。数え直すと失効率・窓外率の緩和になる）。
+// 次の 2 本は番号を持たない補足（K6/4 の番号は足さない。題に N 番号を入れない）。
+test("DR-PUBG-5-21: 親の合流が registration-unavailable で、graph-ready の通知と子が付いても X12 のまま、失敗した段は parent、区分は失効（子の Graph で数え直さない）", () => {
+  const row = k64Sample(
+    {
+      ...late("registration-unavailable"),
+      finalSceneIds: ["dev-a", "dev-b", "dev-c"],
+    },
+    { parent: { ticket: null } },
+  );
+  // 子の記録が付いていて、子は Graph を出している（拒否の後に hook が取り直した形）。
+  assert.equal(row.followUp.child.outcome, "graph-ready");
+  assert.equal(row.followUp.notices.length > 0, true);
+  const result = steady(row);
+  missedWith(result, "X12", "graph-unavailable:registration-unavailable");
+  assert.equal(result.displayed, false);
+  assert.equal(result.display, null);
+  assert.equal(result.failedStage.stage, "parent");
+  assert.equal(
+    result.failedStage.codes.some(
+      (code) =>
+        code.code === "X12" &&
+        code.detail === "graph-unavailable:registration-unavailable",
+    ),
+    true,
+    JSON.stringify(result.failedStage),
+  );
+  assert.deepEqual(followUpFailureCategory(row, result), {
+    category: "lapse",
+    reason: "i-b-seal",
+  });
+  // trace の文脈でも同じ（子が付いても、親の失効を表示できた query に数えない）。
+  const inTraceResult = inTrace(row);
+  assert.equal(inTraceResult.displayed, false);
+  assert.equal(inTraceResult.failedStage.stage, "parent");
+  // warming は元から同じ形（失敗した段は parent、X12 だけ）。registration-unavailable も
+  // 失敗した段と X のコードは同じで、区分だけが失効になる。
+  const warming = steady(
+    k64Sample(
+      {
+        ...late("warming"),
+        finalSceneIds: ["dev-a", "dev-b", "dev-c"],
+      },
+      { parent: { ticket: null } },
+    ),
+  );
+  assert.equal(warming.failedStage.stage, result.failedStage.stage);
+  assert.deepEqual(Object.keys(warming.x), Object.keys(result.x));
+});
+
+test("DR-PUBG-5-21: 親が graph-late で ticket が registration-unavailable のあと、通知と子が付いても failedStage は parent（X1）、失効 i-b-seal に数え、子が Graph を出しても表示できた query にならない", () => {
+  const ticket = {
+    settled: true,
+    outcome: "unavailable",
+    reason: "registration-unavailable",
+    disposition: "unused",
+    busyCause: null,
+  };
+  // 既存の形（通知も子も出ない）と、新しい挙動の形（通知と子が付く）は同じ分類。
+  const refused = k64Sample(
+    {},
+    { parent: { ticket }, notices: [], child: null },
+  );
+  const recovered = k64Sample({}, { parent: { ticket } });
+  assert.equal(recovered.followUp.child.outcome, "graph-ready");
+  assert.equal(recovered.followUp.child.edgeCount > 0, true);
+  const [before, after] = [refused, recovered].map(steady);
+  for (const result of [before, after]) {
+    missedWith(result, "X1", "registration-unavailable");
+    assert.equal(result.failedStage.stage, "parent");
+    assert.equal(result.display, null);
+  }
+  // 失敗した段（parent）の符号は同じ。通知と子が付く分だけ、後の段（X3 no-notice、
+  // X6 no-child）が出なくなる。失敗した段は FOLLOW_UP_STAGES の先頭に当たる parent のまま。
+  assert.deepEqual(after.failedStage, before.failedStage);
+  assert.deepEqual(after.x, { X1: "registration-unavailable" });
+  assert.deepEqual(before.x, {
+    X1: "registration-unavailable",
+    X3: "no-notice",
+    X6: "no-child",
+  });
+  assert.equal(after.followUp, false);
+  assert.equal(
+    followUpFailureCategory(recovered, after).category,
+    followUpFailureCategory(refused, before).category,
+  );
+  assert.equal(followUpFailureCategory(recovered, after).category, "lapse");
+  assert.deepEqual(followUpLapses(after), {
+    questions: ["parent-ticket-registration-unavailable"],
+    kind: "i-b-seal",
+  });
+  // trace では親の query の失効として 1 回だけ数え、子が Graph を出していても
+  // 表示できた query にしない（窓外のまま）。
+  const trace = traceK64(
+    k64Trace("editing", 200, (at) =>
+      at === 5 ? [{}, { parent: { ticket } }] : [{}, {}],
+    ),
+  );
+  assert.equal(trace.status, "valid", trace.invalid?.join());
+  assert.equal(trace.lapse.total, 1);
+  assert.equal(trace.lapse["i-b-seal"], 1);
+  assert.deepEqual(trace.followUpLapse, {
+    "parent-ticket-registration-unavailable": 1,
+  });
+  assert.deepEqual(trace.categories, { lapse: 1, other: 0, freshness: 0 });
+  assert.equal(trace.displayed, 199);
+  assert.equal(trace.outOfWindow, 1);
 });
