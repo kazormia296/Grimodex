@@ -174,6 +174,14 @@ mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
 mod retrieval_admission;
+mod scene_proposals;
+pub use scene_proposals::{
+    effective_scene_proposals_limit, narrative_extraction_list_scene_proposals,
+    scene_proposal_reason_code, ListSceneProposalsPayload, SceneProposalChronicleState,
+    SceneProposalDuplicateSuspicion, SceneProposalEvidence, SceneProposalItem, SceneProposalPage,
+    SceneProposalRelatedUse, SceneProposalReviewState, SceneProposalSourceState,
+    SCENE_PROPOSALS_EVIDENCE_MAX, SCENE_PROPOSALS_PAGE_DEFAULT, SCENE_PROPOSALS_PAGE_MAX,
+};
 mod scene_scope;
 mod scene_scope_default;
 #[cfg(test)]

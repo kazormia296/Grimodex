@@ -722,6 +722,22 @@ fn evidence_corresponds(envelope: &Value, evidence_anchors: &EvidenceAnchors) ->
     true
 }
 
+/// The sealed duplicate judgement of extraction time for one proposal: `Some(true)`
+/// when the sealed Plan marked it a probable duplicate or its current title is not
+/// the title the Plan sealed (Native has no second title normalizer), `Some(false)`
+/// when it is neither, `None` when the Plan cannot be read. The one rule behind the
+/// bulk-approval reason (c) and the Scene read's duplicate flag.
+pub(crate) fn sealed_probable_duplicate(
+    conn: &Connection,
+    ctx: &BulkApprovalContext,
+    proposal_key: &str,
+    title: Option<&str>,
+) -> Option<bool> {
+    let plan = ctx.plan(conn).and_then(|plan| plan.get(proposal_key))?;
+    let status = plan.match_value.get("status").and_then(Value::as_str);
+    Some(status != Some("none") || title != Some(plan.planned_title.as_str()))
+}
+
 /// The one judgement. `conn` must be inside a transaction.
 pub(crate) fn evaluate(
     conn: &Connection,
@@ -808,24 +824,19 @@ pub(crate) fn evaluate(
     }
 
     // (c) the sealed duplicate judgement of extraction time.
-    match ctx
-        .plan(conn)
-        .and_then(|plan| plan.get(&facts.proposal_key))
-    {
+    let title = facts
+        .payload
+        .as_ref()
+        .and_then(|payload| payload.get("title"))
+        .and_then(Value::as_str);
+    match sealed_probable_duplicate(conn, ctx, &facts.proposal_key, title) {
         None => {
             reasons.insert(BulkApprovalReason::PlanUnavailable);
         }
-        Some(plan) => {
-            let status = plan.match_value.get("status").and_then(Value::as_str);
-            let title = facts
-                .payload
-                .as_ref()
-                .and_then(|payload| payload.get("title"))
-                .and_then(Value::as_str);
-            if status != Some("none") || title != Some(plan.planned_title.as_str()) {
-                reasons.insert(BulkApprovalReason::ProbableDuplicate);
-            }
+        Some(true) => {
+            reasons.insert(BulkApprovalReason::ProbableDuplicate);
         }
+        Some(false) => {}
     }
 
     // (g) can the unsealed child be created now? Only read-only prerequisites;

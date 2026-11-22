@@ -965,6 +965,104 @@ export async function narrativeExtractionIsRunResumableForReview(
   );
 }
 
+/**
+ * The Scene -> Proposals read (SRA/1 R1-R3). `limit` above Native's cap
+ * (`SCENE_PROPOSALS_PAGE_MAX`, 50) is cut to it; the applied size comes back
+ * as `limit` on the page.
+ */
+export interface ListSceneProposalsPayload {
+  readonly projectId: string;
+  readonly sceneId: string;
+  /** The previous page's `nextCursor`; absent for the first page. */
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export type SceneProposalReviewState =
+  | "unreviewed"
+  | "approved"
+  | "rejected"
+  | "held"
+  | "deferred"
+  | "other";
+
+/** The state of the Sources the revision was read from. */
+export type SceneProposalSourceState = "fresh" | "stale" | "unknown";
+
+/** Whether the proposal's current revision is in the Chronicle. */
+export type SceneProposalChronicleState = "not-applied" | "applied";
+
+/** The sealed duplicate judgement of extraction time (`unknown`: plan unreadable). */
+export type SceneProposalDuplicateSuspicion = "none" | "probable" | "unknown";
+
+/**
+ * Why a revision stays out of Related Scenes whatever Scene is being written.
+ * Native's wording, shown as is; never computed by the screen.
+ */
+export type SceneProposalReasonCode =
+  | "not-approved"
+  | "material-unavailable"
+  | "binding-invalid"
+  | "secret"
+  | "contract-unclassified"
+  | "scope-control-unclassified"
+  | "material-authority-unavailable"
+  | "scope-unresolved"
+  | "scope-unsupported"
+  | "evidence-mismatch"
+  | "source-stale"
+  | "source-unverified"
+  | "scene-dependent";
+
+export interface SceneProposalEvidence {
+  /** The Scene the quote is from (the requested Scene). */
+  readonly sceneId: string;
+  /** The quote the revision's sealed record holds; never the Scene body. */
+  readonly quote: string;
+}
+
+export interface SceneProposalRelatedUse {
+  /** No static reason keeps the revision out of Related Scenes. */
+  readonly likely: boolean;
+  readonly reasons: readonly SceneProposalReasonCode[];
+}
+
+export interface SceneProposalItem {
+  readonly proposalId: string;
+  /** The proposal's current revision. */
+  readonly revisionId: string;
+  readonly title: string | null;
+  /** This Scene's evidence quotes (at most 16). */
+  readonly evidence: readonly SceneProposalEvidence[];
+  readonly evidenceTruncated: boolean;
+  /** The other Scenes the evidence spans, sorted. */
+  readonly otherSceneIds: readonly string[];
+  readonly reviewState: SceneProposalReviewState;
+  readonly sourceState: SceneProposalSourceState;
+  readonly chronicleState: SceneProposalChronicleState;
+  readonly probableDuplicate: SceneProposalDuplicateSuspicion;
+  readonly relatedUse: SceneProposalRelatedUse;
+}
+
+export interface SceneProposalPage {
+  readonly items: readonly SceneProposalItem[];
+  /** Pass it back as `cursor`; null on the last page. */
+  readonly nextCursor: string | null;
+  /** The page size Native applied. */
+  readonly limit: number;
+}
+
+export async function narrativeExtractionListSceneProposals(
+  payload: ListSceneProposalsPayload,
+): Promise<SceneProposalPage> {
+  return invoke<SceneProposalPage>(
+    "narrative_extraction_list_scene_proposals",
+    {
+      payload,
+    },
+  );
+}
+
 export async function narrativeExtractionListChronicleTaskResumeCandidates(
   payload: ListChronicleTaskResumeCandidatesPayload,
 ): Promise<readonly ChronicleTaskResumeCandidate[]> {

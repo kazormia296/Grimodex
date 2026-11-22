@@ -727,6 +727,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "narrativeExtractionListChronicleTaskResumeCandidates",
       Promise.resolve("[]"),
     ) as never,
+    narrativeExtractionListSceneProposals: record(
+      "narrativeExtractionListSceneProposals",
+      Promise.resolve('{"items":[],"nextCursor":null,"limit":20}'),
+    ) as never,
     narrativeExtractionCancelRun: record(
       "narrativeExtractionCancelRun",
       Promise.resolve('{"runId":"r1","status":"cancelled"}'),
@@ -1463,6 +1467,97 @@ describe("dispatchInvoke", () => {
     expect(missingMethod).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListChronicleTaskResumeCandidates`,
+    });
+  });
+
+  it("Scene proposals read forwards only the strict page query and leaves the cap to Native", async () => {
+    const { backend, calls } = fakeBackend();
+
+    const first = await dispatchInvoke(
+      "narrative_extraction_list_scene_proposals",
+      { payload: { projectId: "project-1", sceneId: "scene-1" } },
+      { backend, shell: noShell },
+    );
+    expect(first).toEqual({
+      ok: true,
+      value: { items: [], nextCursor: null, limit: 20 },
+    });
+
+    // A size above Native's cap is not Main's to refuse: Native cuts it.
+    const paged = {
+      projectId: "project-1",
+      sceneId: "scene-1",
+      cursor: "revision-9",
+      limit: 1000,
+    };
+    await dispatchInvoke(
+      "narrative_extraction_list_scene_proposals",
+      { payload: paged },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionListSceneProposals",
+        args: [{ projectId: "project-1", sceneId: "scene-1" }],
+      },
+      {
+        method: "narrativeExtractionListSceneProposals",
+        args: [paged],
+      },
+    ]);
+  });
+
+  it("Scene proposals read rejects malformed input and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    const base = { projectId: "project-1", sceneId: "scene-1" };
+    for (const payload of [
+      null,
+      [],
+      "payload",
+      {},
+      { projectId: "project-1" },
+      { sceneId: "scene-1" },
+      { ...base, projectId: "" },
+      { ...base, projectId: " project-1" },
+      { ...base, sceneId: "scene-1 " },
+      { ...base, sceneId: "   " },
+      { ...base, sceneId: "s".repeat(257) },
+      // 86 x 3 bytes = 258 bytes, though only 86 UTF-16 units.
+      { ...base, sceneId: "場".repeat(86) },
+      { ...base, cursor: "" },
+      { ...base, cursor: " rev" },
+      { ...base, cursor: "c".repeat(257) },
+      { ...base, cursor: 7 },
+      { ...base, limit: 0 },
+      { ...base, limit: -1 },
+      { ...base, limit: 1.5 },
+      { ...base, limit: "5" },
+      { ...base, limit: 0x1_0000_0000 },
+      { ...base, unknown: true },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_list_scene_proposals",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok, JSON.stringify(payload)).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_list_scene_proposals",
+      { payload: base },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionListSceneProposals: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionListSceneProposals`,
     });
   });
 
@@ -6682,6 +6777,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_is_run_resumable_for_review",
       "narrative_extraction_list_chronicle_task_resume_candidates",
       "narrative_extraction_list_resumable_runs",
+      "narrative_extraction_list_scene_proposals",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
       "narrative_extraction_resolve_codex_catalog_revision",
