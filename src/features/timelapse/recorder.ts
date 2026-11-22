@@ -210,6 +210,38 @@ export interface TimelapseReplacementFence {
   release: () => void;
 }
 
+/**
+ * 自分の保存（editor の autosave）の capture hold（EAR-1、起案 §3.3b）。
+ * fence と違い editor を read-only にせず、lease も取らない。保存の窓
+ * （T0〜Native commit）の間に打たれた doc.step だけを queue ではなく
+ * `held` に預かり、Native の tx の後に元の順で queue へ放流する。
+ */
+export interface TimelapseOwnSaveCapture {
+  /** 本文の snapshot が commit されたあと。lost／墓標／release 済みなら何もしない。 */
+  commit: () => void;
+  /** 冪等。預かった step を放流（または破棄）して hold を閉じる。 */
+  release: () => void;
+}
+
+interface ActiveOwnSaveCapture {
+  readonly documentKey: string;
+  readonly scope: TimelapseDocumentScope;
+  readonly projectId: string;
+  /** 取得時の queueGeneration。 */
+  readonly generation: number;
+  /** 取得時の各 acceptedPrefix（fence と同じ取り方）。墓標では空にする。 */
+  cutoffs: Map<TimelapseDocumentCoverageState, number>;
+  /** 取得時にその文書の capture epoch が broken だった（commit だけが解く）。 */
+  readonly rebaseline: boolean;
+  held: PendingEvent[];
+  /** held に穴がある（受け取れなかった step がある）。 */
+  lost: boolean;
+  committed: boolean;
+  /** 世代が進んだ。release まで残り、同じ窓の step を捨てる。 */
+  tombstoned: boolean;
+  released: boolean;
+}
+
 interface TimelapseDocumentScope {
   readonly projectId: string;
   readonly domain: Extract<Domain, "editor" | "codex" | "snippet">;
@@ -267,6 +299,8 @@ const documentRefScopes = new WeakMap<
   TimelapseDocumentCoverageState
 >();
 const activeReplacementFences = new Set<ActiveReplacementFence>();
+/** 挿入順＝開いた順。同じ文書では最後の未 release の hold が step を受ける。 */
+const activeOwnSaveCaptures = new Set<ActiveOwnSaveCapture>();
 const activeCoverageClaims: ActiveCoverageClaim[] = [];
 const replacementFenceListeners = new Set<() => void>();
 
@@ -529,8 +563,16 @@ function createDocumentStepReceipt(
   return Object.freeze({ document }) as TimelapseDocStepCaptureReceipt;
 }
 
+/** 同じ文書に開いた hold（墓標を含む）の held に穴がある印を付ける。 */
+function markOwnSaveCapturesLost(documentKey: string): void {
+  for (const capture of activeOwnSaveCaptures) {
+    if (capture.documentKey === documentKey) capture.lost = true;
+  }
+}
+
 function markDocumentScopeBroken(scope: TimelapseDocumentScope): void {
   stateForDocumentScope(scope).broken = true;
+  markOwnSaveCapturesLost(documentScopeKey(scope));
 }
 
 function markDocumentInputBroken(input: RecordEventInput): void {
@@ -700,6 +742,29 @@ function invalidateCoverageAuthorities(): void {
   }
   documentCoverageStates.clear();
 
+  // 世代が進んだ hold は墓標にする（EAR-3）。set には release まで残し、
+  // 同じ窓の step は recordChangeEvent が捨てる。held の中身は出さず件数だけ警告。
+  for (const capture of activeOwnSaveCaptures) {
+    if (capture.tombstoned) continue;
+    capture.tombstoned = true;
+    capture.cutoffs = new Map();
+    if (capture.held.length > 0) {
+      debugLog.warn(
+        "timelapse",
+        `own-save capture: discarding ${capture.held.length} held step(s) at a lifecycle boundary`,
+        {
+          sensitivity: "safe",
+          fields: {
+            operation: "own-save-capture",
+            outcome: "tombstoned",
+            heldCount: capture.held.length,
+          },
+        },
+      );
+    }
+    capture.held = [];
+  }
+
   for (const fence of [...activeReplacementFences]) {
     fence.released = true;
     fence.coordinatorLease?.release();
@@ -715,6 +780,7 @@ export function breakTimelapseDocumentCapture(
   const refState = stateForDocumentRef(target as TimelapseDocumentRef);
   if (refState) {
     refState.broken = true;
+    markOwnSaveCapturesLost(refState.key);
     return;
   }
   const scope = scopeFromIdentity(target as TimelapseDocumentIdentity);
@@ -1031,6 +1097,155 @@ export function acquireTimelapseReplacementFence(options: {
       }
     },
   };
+}
+
+/** 録る側の現在の project（genesis 中は capture 対象を優先）。 */
+function currentCaptureProjectId(): string | null {
+  return getTimelapseGenesisCaptureTargetProjectId() ?? state.projectId;
+}
+
+/**
+ * 自分の保存の capture hold を、最初の await の前に同期で開く（EAR-1）。
+ * editor は read-only にならず、lease も取らない。常に実の hold を開く
+ * （記録可でなくても同じ。窓の途中で記録可に遷移しても世代は進まないため、
+ * inert にすると窓内の step が queue に直行して順序を壊す。EAR-2）。
+ * coverage state はここでは作らない（cutoff は既存の state だけから取る）。
+ */
+export function openOwnSaveCapture(options: {
+  projectId: string;
+  document: TimelapseDocumentIdentity;
+}): TimelapseOwnSaveCapture {
+  const projectId = options.projectId.trim();
+  if (!projectId) throw new Error("Timelapse own-save capture needs a project");
+  const scope = scopeFromIdentity(options.document);
+  if (!scope || scope.projectId !== projectId) {
+    throw new Error(
+      "Timelapse own-save capture has mismatched document authority",
+    );
+  }
+  const documentKey = documentScopeKey(scope);
+  const cutoffs = new Map<TimelapseDocumentCoverageState, number>();
+  const existing = documentCoverageStates.get(documentKey);
+  if (existing) cutoffs.set(existing, existing.acceptedPrefix);
+  const capture: ActiveOwnSaveCapture = {
+    documentKey,
+    scope,
+    projectId,
+    generation: state.queueGeneration,
+    cutoffs,
+    rebaseline: documentCaptureIsBroken(scope),
+    held: [],
+    lost: false,
+    committed: false,
+    tombstoned: false,
+    released: false,
+  };
+  activeOwnSaveCaptures.add(capture);
+
+  return {
+    commit() {
+      if (capture.released || capture.tombstoned || capture.lost) return;
+      capture.committed = true;
+      for (const [coverageState, cutoff] of capture.cutoffs) {
+        coverageState.broken = false;
+        coverageState.durablePrefix = Math.max(
+          coverageState.durablePrefix,
+          cutoff,
+        );
+        coverageState.committedPrefix = Math.max(
+          coverageState.committedPrefix,
+          cutoff,
+        );
+      }
+    },
+    release() {
+      releaseOwnSaveCapture(capture);
+    },
+  };
+}
+
+function releaseOwnSaveCapture(capture: ActiveOwnSaveCapture): void {
+  // (1) 冪等。
+  if (capture.released) return;
+  capture.released = true;
+  activeOwnSaveCaptures.delete(capture);
+  // (2) 墓標：held は世代が進んだ時点で捨て済み。broken にも触れない。
+  if (capture.tombstoned) return;
+  const held = capture.held;
+  capture.held = [];
+  // (3) 無効・project 不一致・世代不一致：捨てる。broken には触れない
+  // （OFF 後に古い editor の 1 打で epoch を作り直さない。不一致 project を
+  // queue に入れると flushNow が mixed Project authority で throw する）。
+  if (
+    !state.enabled ||
+    capture.projectId !== currentCaptureProjectId() ||
+    capture.generation !== state.queueGeneration
+  ) {
+    return;
+  }
+  // (4) 穴がある：放流せず、その文書の epoch を壊す。
+  if (capture.lost) {
+    stateForDocumentScope(capture.scope).broken = true;
+    return;
+  }
+  // (5) T0 で broken だった文書は commit の再基準化が無ければ捨てる。
+  if (capture.rebaseline && !capture.committed) return;
+  // (6) 元の順で queue 末尾へ。acceptedPrefix はここで初めて数える。
+  if (held.length === 0) return;
+  for (const event of held) {
+    state.queue.push(event);
+    acceptPendingDocumentStep(event);
+  }
+  scheduleFlush();
+}
+
+/**
+ * doc.step が自分の保存の窓に入ったときの分類（起案 §3.3b-2）。
+ * 対象外（hold が無い・外部 fence が一致）なら undefined を返し、
+ * 呼び手が従来の経路で処理する。
+ */
+function routeDocStepToOwnSaveCapture(
+  input: RecordEventInput,
+): { receipt: TimelapseAcceptedEnqueueReceipt | null } | undefined {
+  if (input.opType !== "doc.step" || activeOwnSaveCaptures.size === 0) {
+    return undefined;
+  }
+  const scope = documentScopeFromInput(
+    input,
+    input.projectId ?? currentCaptureProjectId(),
+  );
+  if (!scope) return undefined;
+  const key = documentScopeKey(scope);
+  let capture: ActiveOwnSaveCapture | undefined;
+  for (const candidate of activeOwnSaveCaptures) {
+    if (candidate.documentKey === key) capture = candidate;
+  }
+  if (!capture) return undefined;
+  // (i) 外部 fence が優先。admission denial なので lost にも broken にもしない。
+  if (replacementFenceMatchesScope(scope.projectId, scope)) return undefined;
+  // (ii) 墓標：捨てる。
+  if (capture.tombstoned) {
+    markDocumentInputBroken(input);
+    return { receipt: null };
+  }
+  // (iii) 記録可（broken 以外の判定）で project も一致：預かる。
+  const admission = admitChangeEventIgnoringBroken(input);
+  if (admission.admitted && capture.projectId === currentCaptureProjectId()) {
+    const event = createPendingEvent(input, "committed", null);
+    capture.held.push(event);
+    const coverageState = event.documentStateKey
+      ? documentCoverageStates.get(event.documentStateKey)
+      : undefined;
+    return {
+      receipt: coverageState
+        ? createDocumentStepReceipt(coverageState.ref)
+        : createAcceptedReceipt(undefined),
+    };
+  }
+  // (iv) それ以外：捨てる。理由を問わず held に穴がある。
+  markDocumentInputBroken(input);
+  capture.lost = true;
+  return { receipt: null };
 }
 
 function claimForQueueEvent(event: PendingEvent): ActiveCoverageClaim | null {
@@ -1411,6 +1626,8 @@ export function _resetRecorderForTests(): void {
   resolveLifecycleResumeWaiters();
   lifecyclePauseEpoch = null;
   abortTimelapseGenesisBarriers("recorder test reset");
+  // 試験では release されなかった hold を次の試験に残さない（墓標にもしない）。
+  activeOwnSaveCaptures.clear();
   invalidateCoverageAuthorities();
   state.enabled = false;
   state.projectId = null;
@@ -1431,12 +1648,60 @@ export function _resetRecorderForTests(): void {
 }
 
 /**
- * Queue an event for the current project. Cheap, non-blocking — the caller
- * never awaits the flush. If the recorder is disabled or no project bound
- * yet, the call is silently dropped.
+ * @internal 試験用。自分の保存の hold と文書の prefix を読むだけ（状態は作らない）。
  */
-function canCaptureChangeEvent(input: RecordEventInput): boolean {
-  if (!canCaptureTimelapseChangeEvent()) return false;
+export function _inspectOwnSaveCapturesForTests(
+  identity?: TimelapseDocumentIdentity,
+): {
+  activeCaptures: number;
+  heldCount: number;
+  queueLength: number;
+  document: {
+    accepted: number;
+    committed: number;
+    durable: number;
+    broken: boolean;
+  } | null;
+} {
+  const scope = identity ? scopeFromIdentity(identity) : null;
+  const coverage = scope
+    ? documentCoverageStates.get(documentScopeKey(scope))
+    : undefined;
+  let heldCount = 0;
+  for (const capture of activeOwnSaveCaptures) heldCount += capture.held.length;
+  return {
+    activeCaptures: activeOwnSaveCaptures.size,
+    heldCount,
+    queueLength: state.queue.length,
+    document: coverage
+      ? {
+          accepted: coverage.acceptedPrefix,
+          committed: coverage.committedPrefix,
+          durable: coverage.durablePrefix,
+          broken: coverage.broken,
+        }
+      : null,
+  };
+}
+
+type CaptureAdmission =
+  | { readonly admitted: false }
+  | { readonly admitted: true; readonly scope: TimelapseDocumentScope | null };
+
+const CAPTURE_NOT_ADMITTED: CaptureAdmission = Object.freeze({
+  admitted: false,
+});
+
+/**
+ * 「broken 以外」の記録可否の判定（canCaptureChangeEvent の本体）。文書の
+ * capture epoch が broken かどうかだけを見ない。自分の保存の hold は、T0 で
+ * 既に broken の文書の step も預かる（commit が再基準化する）ために使う。
+ * 束縛無効中の破棄カウントと warn はここに 1 回だけ含まれる。
+ */
+function admitChangeEventIgnoringBroken(
+  input: RecordEventInput,
+): CaptureAdmission {
+  if (!canCaptureTimelapseChangeEvent()) return CAPTURE_NOT_ADMITTED;
   const captureTarget = getTimelapseGenesisCaptureTargetProjectId();
   if (captureTarget) {
     if (
@@ -1444,18 +1709,19 @@ function canCaptureChangeEvent(input: RecordEventInput): boolean {
       state.switchInProgress ||
       (input.projectId !== undefined && input.projectId !== captureTarget)
     ) {
-      return false;
+      return CAPTURE_NOT_ADMITTED;
     }
     if (!state.queue.every((event) => event.projectId === captureTarget)) {
-      return false;
+      return CAPTURE_NOT_ADMITTED;
     }
     const scope = documentScopeFromInput(input, captureTarget);
-    return (
-      !documentCaptureIsBroken(scope) &&
-      !replacementFenceMatchesScope(captureTarget, scope)
-    );
+    return replacementFenceMatchesScope(captureTarget, scope)
+      ? CAPTURE_NOT_ADMITTED
+      : { admitted: true, scope };
   }
-  if (input.projectId && input.projectId !== state.projectId) return false;
+  if (input.projectId && input.projectId !== state.projectId) {
+    return CAPTURE_NOT_ADMITTED;
+  }
   if (state.switchInProgress || state.bindingInvalidated) {
     // 束縛が無効 (切替中 or 正規 rebind 未完了): 誤った束縛で新 workspace の
     // hash chain へ混入させるより破棄が正しい。ただし無警告にしない —
@@ -1467,14 +1733,18 @@ function canCaptureChangeEvent(input: RecordEventInput): boolean {
       );
     }
     state.droppedWhileInvalidated += 1;
-    return false;
+    return CAPTURE_NOT_ADMITTED;
   }
-  if (!state.enabled || state.projectId === null) return false;
+  if (!state.enabled || state.projectId === null) return CAPTURE_NOT_ADMITTED;
   const scope = documentScopeFromInput(input, state.projectId);
-  return (
-    !documentCaptureIsBroken(scope) &&
-    !replacementFenceMatchesScope(state.projectId, scope)
-  );
+  return replacementFenceMatchesScope(state.projectId, scope)
+    ? CAPTURE_NOT_ADMITTED
+    : { admitted: true, scope };
+}
+
+function canCaptureChangeEvent(input: RecordEventInput): boolean {
+  const admission = admitChangeEventIgnoringBroken(input);
+  return admission.admitted && !documentCaptureIsBroken(admission.scope);
 }
 
 function createPendingEvent(
@@ -1572,9 +1842,17 @@ export function reserveChangeEvents(
   };
 }
 
+/**
+ * Queue an event for the current project. Cheap, non-blocking — the caller
+ * never awaits the flush. If the recorder is disabled or no project bound
+ * yet, the call is silently dropped.
+ */
 export function recordChangeEvent(
   input: RecordEventInput,
 ): TimelapseAcceptedEnqueueReceipt | null {
+  // 自分の保存の窓に入った doc.step は queue に直行させない（EAR-1）。
+  const routed = routeDocStepToOwnSaveCapture(input);
+  if (routed) return routed.receipt;
   if (!canCaptureChangeEvent(input)) {
     markDocumentInputBroken(input);
     return null;
