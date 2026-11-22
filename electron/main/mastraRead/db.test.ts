@@ -93,7 +93,7 @@ describe("the statement of the real-addon spec's repeated-column join", () => {
   it("refuses a table that no core read names (the allowlist is the core's tables, not every table)", async () => {
     const { dbExecute, client } = fixture();
     await expect(
-      client('select "id" from "codex_entry_phases" limit 1', [], "all"),
+      client('select "id" from "codex_detail_values" limit 1', [], "all"),
     ).rejects.toMatchObject({ code: "table-not-allowed", beforeSend: true });
     expect(dbExecute).not.toHaveBeenCalled();
   });

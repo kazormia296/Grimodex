@@ -93,9 +93,29 @@ export type CorePhaseResolutionMode = "reading" | "story" | "auto";
 /** The moved `SceneTimeIndex` (`readDomain/features/codex/context/sceneTimeIndex.ts`): one definition, not a copy of its shape. */
 export type CoreSceneTimeIndex = SceneTimeIndex;
 
+/**
+ * The resolution mode as a value or an explicit "could not be resolved" (PR-8a,
+ * DR-MP4-39). No default: a caller that reads `unresolved` hides what it was
+ * asked about (DR-MP4-6 item 3, DR-MP4-8). `ReadInputMode`
+ * (`readDomain/core/readInputs.ts`) is assignable to it; the `reason` is for a
+ * log and is not read.
+ */
+export type CorePhaseResolutionState =
+  | { readonly kind: "resolved"; readonly mode: CorePhaseResolutionMode }
+  | { readonly kind: "unresolved"; readonly reason?: string };
+
 export interface CorePhaseState {
-  readonly resolutionMode: CorePhaseResolutionMode;
+  readonly resolutionMode: CorePhaseResolutionState;
   readonly sceneTimeIndex: CoreSceneTimeIndex;
+  /**
+   * The project the two values above belong to, when the implementation knows
+   * it. Main's are built from one project's rows at the start of a turn and carry
+   * it; the renderer's live store has no project and leaves it out. A reader that
+   * is given a project and finds a different one here refuses (PR-8a): a scene
+   * time index of another project would skip every phase, and a phase that hides a
+   * public entry would not apply.
+   */
+  readonly projectId?: string;
 }
 
 export interface CoreBodyReader {
@@ -179,6 +199,36 @@ export type CoreReadContext = Pick<
   "getDb" | "getTreeState" | "body" | "countTokens"
 > & {
   readonly native: Pick<CoreNativeReads, "fts" | "foreshadowOpen">;
+};
+
+/**
+ * What the Codex visibility decision loads besides the entries (PR-8a,
+ * DR-MP4-39). A loader port and not a database read: the renderer's
+ * implementation calls its own `listPhasesByEntryIds` (so the seam its tests mock
+ * stays the same), Main's reads `codex_entry_phases` with a Drizzle select
+ * (`readDomain/core/codexReaders.ts`).
+ */
+export interface CoreCodexData {
+  /**
+   * The phases of the given entries, in any order (the resolver orders them).
+   * The caller passes only ids of entries it read under a project condition:
+   * `codex_entry_phases` has no `project_id` column, so a reader cannot enforce
+   * the project, and an id of another project's entry would return that entry's
+   * phases.
+   */
+  listPhases(entryIds: readonly string[]): Promise<schema.CodexEntryPhase[]>;
+}
+
+/**
+ * The ports of the Codex visibility decision (`readDomain/core/codexVisibility.ts`).
+ * Its own type and not a widening of `CoreReadContext`: no tool takes it yet, and
+ * a literal of `CoreReadContext` in a test must not have to grow.
+ */
+export type CoreCodexVisibilityPorts = Pick<
+  CoreReadPorts,
+  "getDb" | "getPhaseState"
+> & {
+  readonly codex: CoreCodexData;
 };
 
 /**

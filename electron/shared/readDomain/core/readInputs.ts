@@ -63,9 +63,9 @@ export const READ_INPUT_PHASE_MODES: readonly PhaseResolutionMode[] =
  * default here: a caller that reads `resolved` gets a mode the database holds,
  * and a caller that gets `unresolved` has to treat it as unknown, which
  * DR-MP4-8 says hides (fail closed). Nothing here turns it into `reading` or
- * `auto`. How "hides" is carried out on the Codex side (and which anchor it
- * means) is PR-8's, with a fixture; this module only makes the case impossible
- * to miss.
+ * `auto`. On the Codex side it is carried out by `decideCodexAiVisibility`
+ * (PR-8a, DR-MP4-39): every entry it is given is hidden, with no anchor
+ * resolved at all; this module only makes the case impossible to miss.
  */
 export type ReadInputMode =
   | { readonly kind: "resolved"; readonly mode: PhaseResolutionMode }
@@ -116,8 +116,11 @@ export interface ReadInputs {
    * archived scene, a folder or a note, or a live scene whose ancestor is
    * archived (it is not in the reading order either). Null makes the chronicle
    * hide secret events (`isEventHiddenFromAi` fails closed on a scene that is
-   * not in the order). The Codex side's reading of null is DR-MP4-1; whether it
-   * equals a scene id that is not found is K-20 (1) and is not claimed here.
+   * not in the order). The Codex side reads null as the base anchor
+   * (`decideCodexAiVisibility`, DR-MP4-1), and a scene id that is not in the
+   * reading order resolves the same way: no phase applies in either case, and
+   * only the fallback reason differs, which the decision does not read (K-20 (1)
+   * for Codex, PR-8a, DR-MP4-39).
    */
   readonly currentSceneId: string | null;
 }

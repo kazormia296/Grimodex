@@ -8,28 +8,14 @@ import {
   listPhasesByEntryIds,
 } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
-import { isCodexContextModeHiddenFromAi } from "./codexVisibilityPolicy";
+import {
+  decideCodexAiVisibility,
+  type CodexTextForAi,
+} from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 import { resolveCodexContexts } from "./resolvedCodexContext";
-import type { TemporalAnchor } from "./sceneTimeIndex";
 
-/** Phase 解決後の、AI へ渡してよい Codex の文（hidden でないものだけ）。 */
-export interface CodexTextForAi {
-  summary: string | null;
-  content: string;
-  /**
-   * base の mode が hidden（または不明）で、Phase 解決後は hidden でないもの。
-   * true のときだけ summary・content・detailValues が Phase 解決後で、false なら base の文
-   * （hidden でない項目の文は今までどおり base のまま返す）。
-   */
-  released: boolean;
-  /** Phase 解決後の mode（解決結果が無ければ base）。 */
-  mode: string;
-  /**
-   * released で `withDetails` のときだけ。Phase 解決後の詳細値（definitionId → 値。null は
-   * Phase による消去）。base の詳細は作者が秘匿した状態の値なので、これを使う。
-   */
-  detailValues?: ReadonlyMap<string, string | null>;
-}
+// 判定の本体は共有の純関数（renderer と read core が同じ関数を呼ぶ）。型はそこへ移し、公開 API は変えない。
+export type { CodexTextForAi };
 
 export interface CodexAiResolution {
   /** hidden・不明な mode・DB に無い id。 */
@@ -106,37 +92,16 @@ export async function resolveCodexForAi(input: {
 
   const phases = await listPhasesByEntryIds(entries.map((entry) => entry.id));
   const { sceneTimeIndex, resolutionMode } = usePhaseStore.getState();
-  const sceneId = input.sceneId?.trim();
-  const anchor: TemporalAnchor = sceneId
-    ? { kind: "scene", sceneId }
-    : { kind: "base" };
-  const { resolvedById } = resolveCodexContexts({
+  const decision = decideCodexAiVisibility({
     entries,
     phases,
-    anchor,
+    sceneId: input.sceneId,
     sceneTimeIndex,
-    resolutionMode,
+    resolutionMode: { kind: "resolved", mode: resolutionMode },
   });
-  const released: typeof entries = [];
-  for (const entry of entries) {
-    const resolved = resolvedById.get(entry.id);
-    const mode = resolved?.contextMode ?? entry.contextMode;
-    if (isCodexContextModeHiddenFromAi(mode)) {
-      hidden.add(entry.id);
-      continue;
-    }
-    // 置き換えは「base が hidden（または不明）で、解決後が hidden でない」項目だけ。
-    const isReleased =
-      resolved !== undefined &&
-      isCodexContextModeHiddenFromAi(entry.contextMode);
-    if (isReleased) released.push(entry);
-    texts.set(entry.id, {
-      summary: isReleased ? resolved.summary : entry.summary,
-      content: isReleased ? resolved.content : entry.content,
-      released: isReleased,
-      mode,
-    });
-  }
+  for (const id of decision.hidden) hidden.add(id);
+  for (const [id, text] of decision.texts) texts.set(id, text);
+  const { released, anchor } = decision;
   if (input.withDetails && released.length > 0) {
     // 詳細は Phase の override と base の値から解決する（chat の sceneContextSource と同じ形）。
     const releasedIds = released.map((entry) => entry.id);

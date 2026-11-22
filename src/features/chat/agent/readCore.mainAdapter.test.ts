@@ -34,6 +34,11 @@ import { describe, expect, it, vi } from "vitest";
  * 現在の場面が読む順に無いときの `No sceneId and no active scene`（main は null にする）は対象外
  * （`chronicleMainContext.test.ts` が差として固定する）。
  *
+ * PR-8a の Codex の hidden 判定（tool はまだ動かさない）：`resolveCodexAiVisibility`・`listHiddenCodexIds`・
+ * `dropHiddenCodexRows` を main の ports（`createMainCodexVisibilityPorts`＝turn の入力＋`codex_entry_phases` の
+ * Drizzle select）の上で動かし、legacy の `resolveCodexForAi`（store・`listPhasesByEntryIds`）と、同じ seed の同じ
+ * 入力で hidden・texts が一致することを見る（`c-secret`・Phase `ph-released` で n-s3 に解除される `c-released`）。
+ *
  * 覆えない範囲：実 Native（実 addon）の行の返り順・型の返り方は見ない（sql.js の結果）。
  * 本文 2 本は main では barrier なし（renderer の未着の書込みを待たない。DR-MP4-9）ので、
  * ここは「待つべき書込みが無い」ときの同値だけを示す。project が空の case は core が
@@ -74,7 +79,17 @@ import {
   createChronicleReadExecutors,
 } from "@/../electron/shared/readDomain/core/chronicleReadExecutors";
 import { buildReadInputs } from "@/../electron/shared/readDomain/core/readInputs";
-import { readChronicleReadInputs } from "@/../electron/shared/readDomain/core/readInputsReader";
+import {
+  readChronicleReadInputs,
+  readReadInputs,
+} from "@/../electron/shared/readDomain/core/readInputsReader";
+import { createMainCodexVisibilityPorts } from "@/../electron/shared/readDomain/core/codexMainContext";
+import {
+  dropHiddenCodexRows,
+  listHiddenCodexIds,
+  resolveCodexAiVisibility,
+} from "@/../electron/shared/readDomain/core/codexVisibility";
+import { resolveCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { readCodexNames } from "@/../electron/shared/readDomain/core/chronicleReaders";
 import { listCodexMatchTargets } from "@/features/codex/api";
 import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
@@ -503,5 +518,220 @@ describe("共有 core の年表 4 本（main の DB adapter と turn の入力�
       named += main.size;
     }
     expect(named).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * PR-8a：Codex の hidden 判定。legacy は live の store（`setLegacyReadWorld` が seed の木から作る）と
+ * `listPhasesByEntryIds`、main は turn の開始時に DB から作る入力（`readReadInputs`：1 つの木の select と
+ * `projects.phase_resolution_mode`）と `codex_entry_phases` の select。同じ seed の同じ入力で同じ結果になる。
+ */
+describe("Codex の hidden 判定（main の DB adapter と turn の入力の上）が、legacy の resolveCodexForAi と同じ結果を返す", () => {
+  const setMode = (mode: "reading" | "story" | "auto") =>
+    invoke("db_execute", {
+      sql: "UPDATE projects SET phase_resolution_mode = ? WHERE id = ?",
+      params: [mode, "p-main"],
+      method: "run",
+    });
+
+  const codexIds = async (projectId: string): Promise<string[]> =>
+    (
+      (await invoke("db_execute", {
+        sql: "SELECT id FROM codex_entries WHERE project_id = ? ORDER BY id",
+        params: [projectId],
+        method: "all",
+      })) as { rows: Array<{ id: string }> }
+    ).rows.map((row) => row.id);
+
+  const mainPorts = async (sceneId: string | null) =>
+    createMainCodexVisibilityPorts({
+      db: mainDb,
+      inputs: await readReadInputs(mainDb, {
+        projectId: "p-main",
+        currentSceneId: sceneId,
+      }),
+    });
+
+  it("p-main の全 entry・他 project の entry・存在しない id を、場面 n-s1・n-s2・n-s3・場面なし・読む順に無い id、reading・story・auto で比べて、hidden・texts（挿入順まで）が一致する。hidden の c-secret は出ず、c-released は n-s3 から出る", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const own = await codexIds("p-main");
+    expect(own).toEqual(expect.arrayContaining(["c-secret", "c-released"]));
+    const ids = [...own, "x-c-aria", "gone", own[0]!];
+    let compared = 0;
+    try {
+      for (const mode of ["reading", "story", "auto"] as const) {
+        await setMode(mode);
+        for (const sceneId of [
+          "n-s1",
+          "n-s2",
+          "n-s3",
+          "n-s4",
+          "",
+          "no-such-scene",
+          "n-arch",
+        ]) {
+          await setLegacyReadWorld({
+            projectId: "p-main",
+            activeSceneId: sceneId,
+            resolutionMode: mode,
+          });
+          const label = `${mode} / ${sceneId || "(none)"}`;
+          for (const withContent of [false, true]) {
+            legacyReadInvokeBridge.reset();
+            const legacy = await resolveCodexForAi({
+              entryIds: ids,
+              projectId: "p-main",
+              sceneId,
+              withContent,
+            });
+            // main の入力は turn の開始時に DB から作る。wire の現在の場面は信用しない（読む順に無ければ null）。
+            const ports = await mainPorts(sceneId);
+            sent.length = 0;
+            const core = await resolveCodexAiVisibility(ports, {
+              entryIds: ids,
+              projectId: "p-main",
+              sceneId: ports
+                .getPhaseState()
+                .sceneTimeIndex.readingOrder.has(sceneId)
+                ? sceneId
+                : null,
+              withContent,
+            });
+            expect([...core.hidden], label).toEqual([...legacy.hidden]);
+            expect([...core.texts.entries()], label).toEqual([
+              ...legacy.texts.entries(),
+            ]);
+            for (const statement of sent) {
+              expect(statement.sql, label).toMatch(/^\s*select\b/iu);
+              expect(["all", "values"], label).toContain(statement.method);
+            }
+            expect(
+              sent.filter((s) => /codex_entry_phases/iu.test(s.sql)).length,
+              label,
+            ).toBe(1);
+            compared += 1;
+          }
+        }
+      }
+    } finally {
+      await setMode("reading");
+    }
+    expect(compared).toBe(3 * 7 * 2);
+
+    // seed の 2 件は、実際に判定が分かれる（自明な比較になっていない）。
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+    const atS1 = await resolveCodexAiVisibility(await mainPorts("n-s1"), {
+      entryIds: ["c-secret", "c-released", "c-aria"],
+      projectId: "p-main",
+      sceneId: "n-s1",
+    });
+    expect([...atS1.hidden].sort()).toEqual(["c-released", "c-secret"]);
+    const atS3 = await resolveCodexAiVisibility(await mainPorts("n-s3"), {
+      entryIds: ["c-secret", "c-released", "c-aria"],
+      projectId: "p-main",
+      sceneId: "n-s3",
+    });
+    expect([...atS3.hidden]).toEqual(["c-secret"]);
+    expect(atS3.texts.get("c-released")).toMatchObject({
+      released: true,
+      summary: "n-s3 で正体が明らかになる騎士。",
+    });
+  });
+
+  it("listHiddenCodexIds・dropHiddenCodexRows も legacy と同じ（hidden の行は落ち、解除された行の summary は Phase 解決後）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s3" });
+    const ports = await mainPorts("n-s3");
+    const rows = [
+      { id: "c-secret", summary: "s" },
+      { id: "c-released", summary: "base の summary（hidden）" },
+      { id: "c-aria", summary: "老魔術師を訪ねる旅の少女" },
+    ];
+    const kept = await dropHiddenCodexRows(ports, rows, {
+      projectId: "p-main",
+      sceneId: "n-s3",
+    });
+    expect(kept).toEqual([
+      { id: "c-released", summary: "n-s3 で正体が明らかになる騎士。" },
+      { id: "c-aria", summary: "老魔術師を訪ねる旅の少女" },
+    ]);
+    const hidden = await listHiddenCodexIds(ports, {
+      projectId: "p-main",
+      entryIds: rows.map((r) => r.id).concat("gone"),
+      sceneId: "n-s3",
+    });
+    expect([...hidden].sort()).toEqual(["c-secret", "gone"]);
+  });
+
+  it("別 project の入力で判定を求めると拒否する。別 project の entry の id は、project 条件のために DB に無い id と同じに hidden", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const other = createMainCodexVisibilityPorts({
+      db: mainDb,
+      inputs: await readReadInputs(mainDb, {
+        projectId: "p-other",
+        currentSceneId: null,
+      }),
+    });
+    await expect(
+      resolveCodexAiVisibility(other, {
+        entryIds: ["c-aria"],
+        projectId: "p-main",
+        sceneId: "n-s1",
+      }),
+    ).rejects.toThrow(/different project/u);
+    // p-other の入力で p-other の判定は通り、p-main の entry の id は hidden。
+    const own = await resolveCodexAiVisibility(other, {
+      entryIds: ["x-c-aria", "c-aria"],
+      projectId: "p-other",
+      sceneId: null,
+    });
+    expect([...own.hidden]).toEqual(["c-aria"]);
+    expect([...own.texts.keys()]).toEqual(["x-c-aria"]);
+    // project の条件は SQL に入っている。
+    sent.length = 0;
+    await resolveCodexAiVisibility(await mainPorts(null), {
+      entryIds: ["x-c-aria"],
+      projectId: "p-main",
+      sceneId: null,
+    });
+    expect(sent[0]!.sql).toMatch(/"project_id" = \?/u);
+  });
+
+  it("project 行が無い入力（unresolved）は、見つかった entry を全部 hidden にする。project が空なら何も読まずに止まる", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    // project 行が無い id に、entry を 1 つ持たせることはできない（FK）。DB の読みは entries 0 件で、unresolved の
+    // 分岐は入力の単体（core の試験）が覆う。ここでは「project 行が無い turn は全部 hidden」を結果で確かめる。
+    const ports = createMainCodexVisibilityPorts({
+      db: mainDb,
+      inputs: await readReadInputs(mainDb, {
+        projectId: "p-no-such-project",
+        currentSceneId: null,
+      }),
+    });
+    expect(ports.getPhaseState().resolutionMode).toMatchObject({
+      kind: "unresolved",
+      reason: "project-missing",
+    });
+    const r = await resolveCodexAiVisibility(ports, {
+      entryIds: ["c-aria", "c-secret"],
+      projectId: "p-no-such-project",
+      sceneId: null,
+    });
+    expect([...r.hidden]).toEqual(["c-aria", "c-secret"]);
+    expect(r.texts.size).toBe(0);
+
+    sent.length = 0;
+    await expect(
+      resolveCodexAiVisibility(ports, {
+        entryIds: ["c-aria"],
+        projectId: "",
+        sceneId: null,
+      }),
+    ).rejects.toBeInstanceOf(CoreProjectRequiredError);
+    expect(sent).toEqual([]);
   });
 });
