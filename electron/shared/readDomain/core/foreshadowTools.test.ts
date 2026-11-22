@@ -349,7 +349,8 @@ describe("get_foreshadow_detail", () => {
     expect(result.summary).toBe("老魔術師の杖: 2 setup(s), payoff planned");
     expect(result.tokensUsed).toBe(JSON.stringify(result.content).length);
     // Three statements in this order: the foreshadow, its setups joined to the scenes
-    // (where only the foreshadow id), the payoff scene (by id only).
+    // (where the foreshadow id and a scene that is not archived), the payoff scene
+    // (by id, and not archived).
     expect(captured.map((c) => /from "([a-z_]+)"/u.exec(c.sql)![1])).toEqual([
       "foreshadows",
       "foreshadow_setups",
