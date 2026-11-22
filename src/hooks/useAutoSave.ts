@@ -44,6 +44,14 @@ export interface AutoSaveSaveOptions extends QuiescenceProviderFlushOptions {
  */
 export const SAVE_DEFER_RETRY_MS = 300;
 
+/**
+ * 背景の保存の silent defer／silent retry（lease 拒否）が、この時間続いたら診断の
+ * warn を 1 回だけ出す（EAR-22）。止める上限ではない（EAR-13・EAR-15 の「上限なし」は
+ * 維持する）。以前は拒否のたびに toast が出て失敗に気付けたが、今は IPC が返らない
+ * 外部置換や IME の異常で背景の保存が黙って止まっても痕跡が無いため、観測だけ足す。
+ */
+export const SILENT_RETRY_WARN_MS = 10_000;
+
 export interface AutoSave {
   /**
    * Queues a new user mutation. Returns false while a destructive lifecycle
@@ -353,6 +361,12 @@ export function createAutoSave(
   let cancelEpoch = 0;
   /** 次に張る timer だけが使う間隔（延期の再試行）。使ったら null に戻す。 */
   let nextTimerDelayMs: number | null = null;
+  /** 連続した silent defer／retry の開始時刻と、診断を出したか（done・失敗・cancel で消す）。 */
+  let silentStreak: {
+    startedAt: number;
+    count: number;
+    warned: boolean;
+  } | null = null;
   /**
    * AutoSave instance ごとの単一 drain。saveFn 自体はこの loop からしか呼ばず、
    * 実行中の schedule は pending=true へ畳み込む。これにより古い save が新しい
@@ -363,6 +377,28 @@ export function createAutoSave(
   // 自動保存は数秒おきに発火するため、成功を毎回読み上げると SR 利用者の
   // 執筆を妨げる。失敗 → 成功の回復時のみ announce する (失敗時は Sonner の
   // toast が読み上げるので announce しない: 二重読み上げ防止)。
+  /** silent defer／retry を数え、閾値を超えたら診断を 1 回だけ残す（本文は出さない）。 */
+  function noteSilentOutcome(operation: "save-defer" | "lease-retry"): void {
+    const now = Date.now();
+    const streak = (silentStreak ??= {
+      startedAt: now,
+      count: 0,
+      warned: false,
+    });
+    streak.count += 1;
+    const elapsedMs = now - streak.startedAt;
+    if (streak.warned || elapsedMs < SILENT_RETRY_WARN_MS) return;
+    streak.warned = true;
+    debugLog.warn(
+      "AutoSave",
+      `background save has been silently retried for ${elapsedMs} ms`,
+      {
+        sensitivity: "safe",
+        fields: { operation, count: streak.count, elapsedMs },
+      },
+    );
+  }
+
   async function runSave(
     label: "save" | "flush",
   ): Promise<"done" | "retry" | "defer"> {
@@ -376,6 +412,7 @@ export function createAutoSave(
       } else {
         await saveFn();
       }
+      silentStreak = null;
       if (lastFailed) {
         lastFailed = false;
         announce(i18next.t("autoSave.recovered"));
@@ -386,11 +423,18 @@ export function createAutoSave(
       // dirty（pending）を維持して後で再試行する。flush は従来どおり失敗として伝える。
       if (label === "save") {
         // T0 より前に返る延期（伏線 mark の更新が変換中）。短い間隔で張り直す。
-        if (e instanceof SaveDeferredError) return "defer";
+        if (e instanceof SaveDeferredError) {
+          noteSilentOutcome("save-defer");
+          return "defer";
+        }
         // 保存中に打った分の追従保存が、外部置換の lease に当たった。
         // lease が外れるまで通常の debounce で再試行する（競合の案内が本文を守る）。
-        if (e instanceof DocumentMutationLeaseActiveError) return "retry";
+        if (e instanceof DocumentMutationLeaseActiveError) {
+          noteSilentOutcome("lease-retry");
+          return "retry";
+        }
       }
+      silentStreak = null;
       lastFailed = true;
       const detail = errorDetail(e);
       debugLog.error("AutoSave", `${label} failed`, detail);
@@ -524,6 +568,7 @@ export function createAutoSave(
     clearTimer();
     cancelEpoch++;
     nextTimerDelayMs = null;
+    silentStreak = null;
     pending = false;
     lastFailed = false;
     quarantineError = null;

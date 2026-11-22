@@ -232,7 +232,7 @@ interface ActiveOwnSaveCapture {
   /** 取得時の各 acceptedPrefix（fence と同じ取り方）。墓標では空にする。 */
   cutoffs: Map<TimelapseDocumentCoverageState, number>;
   /** 取得時にその文書の capture epoch が broken だった（commit だけが解く）。 */
-  readonly rebaseline: boolean;
+  rebaseline: boolean;
   held: PendingEvent[];
   /** held に穴がある（受け取れなかった step がある）。 */
   lost: boolean;
@@ -1074,6 +1074,7 @@ export function acquireTimelapseReplacementFence(options: {
       if (fence.released || fence.committed) return;
       fence.committed = true;
       fence.coordinatorLease?.commit();
+      supersedeOwnSaveCapturesByReplacement(fence);
       for (const [coverageState, cutoff] of fence.cutoffs) {
         coverageState.broken = false;
         coverageState.durablePrefix = Math.max(
@@ -1162,6 +1163,56 @@ export function openOwnSaveCapture(options: {
       releaseOwnSaveCapture(capture);
     },
   };
+}
+
+/**
+ * 外部置換の commit が成功した時点で、同じ文書（project 全体の fence なら同じ
+ * project）に開いたままの hold が預かっている step は、置換前の本文を土台にした
+ * ものになる（EAR-18）。置換の間 editor は read-only で step は来ないので、この
+ * 時点の held はすべて置換前の step。置換後の本文（snapshot M）の後ろに並べると
+ * 再生が食い違う・失敗するので捨てる。置換の release の後に打たれる step は
+ * そのまま hold が預かる。
+ *
+ * hold が置換より先に開く（呼び手が hold を開いてから writer が project tail に載る
+ * までに先行書込みを待つ codex／snippet）ときだけ起きる。scene は開く点と tail に載る
+ * 点が同期で、tail の FIFO が開いた順に一致するので、置換の commit の時点で hold は
+ * 既に release されている。
+ *
+ * lost／broken にはしない：置換の snapshot が本文を再基準化している。T0 で broken
+ * だった hold も、置換の commit が broken を解くので再基準化済みとして扱う
+ * （解いた後に打たれた step を own の失敗の release (5) が黙って捨てて穴にしない）。
+ */
+function supersedeOwnSaveCapturesByReplacement(
+  fence: ActiveReplacementFence,
+): void {
+  let dropped = 0;
+  for (const capture of activeOwnSaveCaptures) {
+    if (capture.released || capture.tombstoned) continue;
+    if (capture.projectId !== fence.projectId) continue;
+    if (
+      fence.documentKey !== null &&
+      !scopeMatchesDocumentKey(capture.scope, fence.documentKey)
+    ) {
+      continue;
+    }
+    dropped += capture.held.length;
+    capture.held = [];
+    capture.rebaseline = false;
+  }
+  if (dropped > 0) {
+    debugLog.warn(
+      "timelapse",
+      `own-save capture: dropping ${dropped} held step(s) superseded by a replacement commit`,
+      {
+        sensitivity: "safe",
+        fields: {
+          operation: "own-save-capture",
+          outcome: "superseded",
+          heldCount: dropped,
+        },
+      },
+    );
+  }
 }
 
 function releaseOwnSaveCapture(capture: ActiveOwnSaveCapture): void {

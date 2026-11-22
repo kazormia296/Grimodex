@@ -11,6 +11,8 @@ vi.mock("@/features/foreshadow/saveAnchors", () => ({
 }));
 
 import {
+  COMPOSITION_QUIET_MS,
+  COMPOSITION_STALE_MS,
   applyPendingForeshadowRefresh,
   applyPendingForeshadowRefreshForFlush,
   deferForeshadowRefresh,
@@ -20,20 +22,28 @@ import {
   isEditorComposing,
 } from "./pendingForeshadowRefresh";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
+import { debugLog } from "@/lib/debugLog";
 
 function row(id: string, version: number): ForeshadowRow {
   return { id, version } as unknown as ForeshadowRow;
 }
 
-function makeEditor(options: { composing?: boolean } = {}) {
+function makeEditor(options: { composing?: boolean; focused?: boolean } = {}) {
   const dom = document.createElement("div");
+  const state = { focused: options.focused ?? false };
   const view = {
     composing: options.composing ?? false,
     dom,
+    hasFocus: vi.fn(() => state.focused),
+    focus: vi.fn(() => {
+      state.focused = true;
+    }),
   };
-  const blur = vi.spyOn(dom, "blur");
+  const blur = vi.spyOn(dom, "blur").mockImplementation(() => {
+    state.focused = false;
+  });
   const editor = { isDestroyed: false, view } as unknown as Editor;
-  return { editor, view, dom, blur };
+  return { editor, view, dom, blur, state };
 }
 
 /** run は programmatic の囲みの代わり。apply をそのまま呼ぶ。 */
@@ -128,27 +138,166 @@ describe("pendingForeshadowRefresh", () => {
     expect(blur).not.toHaveBeenCalled();
     expect(h.refresh).toHaveBeenCalledTimes(1);
   });
+
+  it("EAR-20 flush：focus 中に変換を確定させるため blur したら、適用の後に focus を戻す（editor を閉じない flush で作者の focus を奪わない）", () => {
+    const { editor, view, blur, state } = makeEditor({
+      composing: true,
+      focused: true,
+    });
+    deferForeshadowRefresh(editor, [row("a", 2)]);
+    applyPendingForeshadowRefreshForFlush(editor, run);
+    expect(blur).toHaveBeenCalledTimes(1);
+    expect(view.focus).toHaveBeenCalledTimes(1);
+    expect(state.focused).toBe(true);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("EAR-20 flush：もともと focus が無ければ focus を足さない", () => {
+    const { editor, view } = makeEditor({ composing: true, focused: false });
+    deferForeshadowRefresh(editor, [row("a", 2)]);
+    applyPendingForeshadowRefreshForFlush(editor, run);
+    expect(view.focus).not.toHaveBeenCalled();
+  });
+
+  it("EAR-20 flush：適用の途中で editor が破棄されたら focus を戻さない", () => {
+    const { editor, view } = makeEditor({ composing: true, focused: true });
+    deferForeshadowRefresh(editor, [row("a", 2)]);
+    const destroyingRun = vi.fn((apply: () => void) => {
+      apply();
+      (editor as unknown as { isDestroyed: boolean }).isDestroyed = true;
+    });
+    applyPendingForeshadowRefreshForFlush(editor, destroyingRun);
+    expect(view.focus).not.toHaveBeenCalled();
+  });
+});
+
+describe("EAR-21 固着した変換（compositionend を取りこぼした）", () => {
+  it("listener 無しの editor は composing が真なら変換中のまま（従来どおり）", () => {
+    const { editor } = makeEditor({ composing: true });
+    vi.advanceTimersByTime(COMPOSITION_STALE_MS * 3);
+    expect(isEditorComposing(editor)).toBe(true);
+  });
+
+  it("最終活動から COMPOSITION_STALE_MS 以上経った composing は固着と見なし、診断を 1 回だけ残す", () => {
+    const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => undefined);
+    const { editor, dom } = makeEditor({ composing: true });
+    installCompositionIdleListener(editor, vi.fn());
+    dom.dispatchEvent(new Event("compositionstart"));
+
+    vi.advanceTimersByTime(COMPOSITION_STALE_MS - 1);
+    expect(isEditorComposing(editor)).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(isEditorComposing(editor)).toBe(false);
+    expect(isEditorComposing(editor)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // 本文は出さず、operation と経過だけ。
+    expect(warn.mock.calls[0]?.[2]).toMatchObject({
+      fields: { operation: "composition-stale" },
+    });
+    warn.mockRestore();
+  });
+
+  it("固着と見なした後は pending を適用できる。新しい活動があれば再び変換中として扱う", () => {
+    const { editor, dom } = makeEditor({ composing: true });
+    installCompositionIdleListener(editor, vi.fn());
+    dom.dispatchEvent(new Event("compositionstart"));
+    deferForeshadowRefresh(editor, [row("a", 2)]);
+    expect(applyPendingForeshadowRefresh(editor, run)).toBe(false);
+
+    vi.advanceTimersByTime(COMPOSITION_STALE_MS);
+    expect(applyPendingForeshadowRefresh(editor, run)).toBe(true);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+
+    dom.dispatchEvent(new Event("compositionupdate"));
+    expect(isEditorComposing(editor)).toBe(true);
+  });
+
+  it("composition の更新・打鍵の活動が続く間は固着と見なさない", () => {
+    const { editor, dom } = makeEditor({ composing: true });
+    installCompositionIdleListener(editor, vi.fn());
+    dom.dispatchEvent(new Event("compositionstart"));
+    for (let i = 0; i < 5; i += 1) {
+      vi.advanceTimersByTime(COMPOSITION_STALE_MS - 1000);
+      dom.dispatchEvent(new Event("keydown"));
+    }
+    expect(isEditorComposing(editor)).toBe(true);
+  });
 });
 
 describe("installCompositionIdleListener", () => {
-  it("compositionend の次の task で、変換が終わっていれば onIdle を呼ぶ（同じ stack では呼ばない）", () => {
+  it("EAR-19 compositionend の後、COMPOSITION_QUIET_MS 静止してから onIdle を呼ぶ（次の task では呼ばない）", () => {
     const { editor, dom } = makeEditor();
     const onIdle = vi.fn();
     installCompositionIdleListener(editor, onIdle);
     dom.dispatchEvent(new Event("compositionend"));
+    vi.advanceTimersByTime(0);
     expect(onIdle).not.toHaveBeenCalled();
-    vi.runAllTimers();
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS - 1);
+    expect(onIdle).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
     expect(onIdle).toHaveBeenCalledTimes(1);
   });
 
-  it("次の task の時点でまた変換中なら onIdle を呼ばない", () => {
+  it("EAR-19 連続入力：静止の間に次の compositionstart が来れば適用しない（変換の直前に doc を変えない）", () => {
+    const { editor, view, dom } = makeEditor();
+    const onIdle = vi.fn();
+    installCompositionIdleListener(editor, onIdle);
+    dom.dispatchEvent(new Event("compositionend"));
+    vi.advanceTimersByTime(20);
+    dom.dispatchEvent(new Event("compositionstart"));
+    view.composing = true;
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS * 2);
+    expect(onIdle).not.toHaveBeenCalled();
+    // 次の変換が終わって静止すれば適用する。
+    view.composing = false;
+    dom.dispatchEvent(new Event("compositionend"));
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("EAR-19 打鍵（keydown）があれば静止を数え直す", () => {
+    const { editor, dom } = makeEditor();
+    const onIdle = vi.fn();
+    installCompositionIdleListener(editor, onIdle);
+    dom.dispatchEvent(new Event("compositionend"));
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS - 10);
+    dom.dispatchEvent(new Event("keydown"));
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS - 1);
+    expect(onIdle).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("静止の時点でまた変換中なら onIdle を呼ばない（新しい変換が始まれば見張りは取り消される）", () => {
     const { editor, view, dom } = makeEditor();
     const onIdle = vi.fn();
     installCompositionIdleListener(editor, onIdle);
     dom.dispatchEvent(new Event("compositionend"));
     view.composing = true;
-    vi.runAllTimers();
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS * 4);
     expect(onIdle).not.toHaveBeenCalled();
+    dom.dispatchEvent(new Event("compositionstart"));
+    vi.advanceTimersByTime(COMPOSITION_STALE_MS * 2);
+    expect(onIdle).not.toHaveBeenCalled();
+  });
+
+  it("EAR-21 compositionend の後も composing が固着したままなら、固着と見なされた時点で onIdle を呼ぶ（peer の処理し直しが取り残されない）", () => {
+    const { editor, view, dom } = makeEditor({ composing: true });
+    const onIdle = vi.fn();
+    installCompositionIdleListener(editor, onIdle);
+    dom.dispatchEvent(new Event("compositionstart"));
+    dom.dispatchEvent(new Event("compositionend"));
+    // PM は compositionend を取りこぼしたので composing は真のまま。
+    expect(view.composing).toBe(true);
+    vi.advanceTimersByTime(COMPOSITION_STALE_MS - 1);
+    expect(onIdle).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(COMPOSITION_QUIET_MS);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+    // 呼んだ後は見張りを続けない。
+    vi.advanceTimersByTime(COMPOSITION_STALE_MS * 2);
+    expect(onIdle).toHaveBeenCalledTimes(1);
   });
 
   it("blur でも変換中でなければ onIdle を呼び、変換中なら呼ばない", () => {

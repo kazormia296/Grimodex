@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   SAVE_DEFER_RETRY_MS,
+  SILENT_RETRY_WARN_MS,
   createAutoSave,
   flushAllAutoSaves,
   registerAutoSaveForQuiesce,
@@ -574,6 +575,91 @@ describe("createAutoSave", () => {
       await vi.advanceTimersByTimeAsync(500);
       await vi.advanceTimersByTimeAsync(0);
       expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      unregister();
+    });
+
+    it("EAR-22 lease の silent retry が SILENT_RETRY_WARN_MS 続いたら診断を 1 回だけ出す（本文なし・止めない）。保存できたら数え直す", async () => {
+      let leased = true;
+      const saveFn = vi.fn(async () => {
+        if (leased) throw new DocumentMutationLeaseActiveError();
+      });
+      const warn = vi
+        .spyOn(debugLog, "warn")
+        .mockImplementation(() => undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS - 600);
+      expect(warn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS * 3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const detail = warn.mock.calls[0]?.[2] as {
+        fields: Record<string, unknown>;
+      };
+      expect(detail.fields.operation).toBe("lease-retry");
+      expect(Object.keys(detail.fields).sort()).toEqual([
+        "count",
+        "elapsedMs",
+        "operation",
+      ]);
+      expect(toast.error).not.toHaveBeenCalled();
+
+      // 保存できたら数え直す：次の連続でまた 1 回出る。
+      leased = false;
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      leased = true;
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS * 2);
+      expect(warn).toHaveBeenCalledTimes(2);
+      warn.mockRestore();
+      unregister();
+    });
+
+    it("EAR-22 延期（SaveDeferredError）が続いても同じ閾値で 1 回だけ診断を出し、延期は止めない", async () => {
+      let deferred = true;
+      const saveFn = vi.fn(async () => {
+        if (deferred) throw new SaveDeferredError();
+      });
+      const warn = vi
+        .spyOn(debugLog, "warn")
+        .mockImplementation(() => undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(SILENT_RETRY_WARN_MS + 5000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(
+        (warn.mock.calls[0]?.[2] as { fields: Record<string, unknown> }).fields
+          .operation,
+      ).toBe("save-defer");
+      expect(saveFn.mock.calls.length).toBeGreaterThan(30);
+
+      deferred = false;
+      await vi.advanceTimersByTimeAsync(SAVE_DEFER_RETRY_MS);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      warn.mockRestore();
+      unregister();
+    });
+
+    it("EAR-22 閾値に届かない短い延期は診断を出さない", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(new SaveDeferredError())
+        .mockResolvedValue(undefined);
+      const warn = vi
+        .spyOn(debugLog, "warn")
+        .mockImplementation(() => undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
       unregister();
     });
 

@@ -460,6 +460,152 @@ describe("recorder own-save capture hold", () => {
     });
   });
 
+  describe("EAR-18 外部置換の commit は、先に開いた hold の置換前の step を捨てる", () => {
+    it("同じ文書の置換が commit すると held を捨てる（lost にしない）。release 後に打った step は預かり、放流される", async () => {
+      const native = setupNative();
+      await initRecorderForProject(P);
+      const capture = openOwnSaveCapture({ projectId: P, document: ID });
+      step("pre1");
+      step("pre2");
+      const warn = vi.spyOn(debugLog, "warn");
+
+      const fence = acquireTimelapseReplacementFence({
+        projectId: P,
+        document: ID,
+      });
+      fence.commit();
+      expect(inspect().heldCount).toBe(0);
+      fence.release();
+      // 本文・step の中身は診断に出さず、件数だけ。
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls[0])).not.toContain("pre1");
+      expect(warn.mock.calls[0]?.[2]).toMatchObject({
+        fields: { outcome: "superseded", heldCount: 2 },
+      });
+
+      step("post");
+      expect(inspect().heldCount).toBe(1);
+      capture.release();
+      await flushStrict();
+      expect(native.labels).toEqual(["post"]);
+      expect(inspect().document).toMatchObject({ broken: false });
+    });
+
+    it("codex の identity でも照合される（fence の key と hold の key の符号化の違いを越えて同じ文書に当たる）。scene の同 id には当たらない", async () => {
+      const native = setupNative();
+      await initRecorderForProject(P);
+      const codexId = identity({
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "entry-1",
+      });
+      const codexStep = (label: string) =>
+        step(label, {
+          domain: "codex",
+          entityType: "codex_entry",
+          entityId: "entry-1",
+        });
+      const capture = openOwnSaveCapture({ projectId: P, document: codexId });
+      codexStep("pre");
+      const sceneCapture = openOwnSaveCapture({ projectId: P, document: ID });
+      step("scene-keep");
+      expect(_inspectOwnSaveCapturesForTests(codexId).heldCount).toBe(2);
+
+      const fence = acquireTimelapseReplacementFence({
+        projectId: P,
+        document: codexId,
+      });
+      fence.commit();
+      fence.release();
+
+      // codex の held だけが捨てられ、scene の held は残る。
+      expect(_inspectOwnSaveCapturesForTests(codexId).heldCount).toBe(1);
+      codexStep("post");
+      sceneCapture.release();
+      capture.release();
+      await flushStrict();
+      expect(native.labels).toEqual(["scene-keep", "post"]);
+    });
+
+    it("project 全体の置換でも同じ project の hold の held を捨てる。別 project の hold は触らない", async () => {
+      setupNative();
+      await initRecorderForProject(P);
+      const same = openOwnSaveCapture({ projectId: P, document: ID });
+      step("pre");
+      const other = openOwnSaveCapture({
+        projectId: Q,
+        document: identity({ projectId: Q, entityId: "scene-q" }),
+      });
+
+      const fence = acquireTimelapseReplacementFence({ projectId: P });
+      fence.commit();
+      fence.release();
+
+      expect(inspect().heldCount).toBe(0);
+      expect(_inspectOwnSaveCapturesForTests(ID).activeCaptures).toBe(2);
+      same.release();
+      other.release();
+    });
+
+    it("別の文書の置換が commit しても held は捨てない", async () => {
+      const native = setupNative();
+      await initRecorderForProject(P);
+      const capture = openOwnSaveCapture({ projectId: P, document: ID });
+      step("keep");
+
+      const fence = acquireTimelapseReplacementFence({
+        projectId: P,
+        document: identity({ entityId: "scene-2" }),
+      });
+      fence.commit();
+      fence.release();
+
+      expect(inspect().heldCount).toBe(1);
+      capture.commit();
+      capture.release();
+      await flushStrict();
+      expect(native.labels).toEqual(["keep"]);
+    });
+
+    it("commit されなかった置換（release のみ）は held を捨てない", async () => {
+      const native = setupNative();
+      await initRecorderForProject(P);
+      const capture = openOwnSaveCapture({ projectId: P, document: ID });
+      step("keep");
+
+      const fence = acquireTimelapseReplacementFence({
+        projectId: P,
+        document: ID,
+      });
+      fence.release();
+
+      expect(inspect().heldCount).toBe(1);
+      capture.release();
+      await flushStrict();
+      expect(native.labels).toEqual(["keep"]);
+    });
+
+    it("T0 で broken だった hold は、置換の commit が再基準化するので、置換の後の step は own が commit できなくても放流される", async () => {
+      const native = setupNative();
+      await initRecorderForProject(P);
+      step("seed");
+      breakTimelapseDocumentCapture(ID);
+      const capture = openOwnSaveCapture({ projectId: P, document: ID });
+
+      const fence = acquireTimelapseReplacementFence({
+        projectId: P,
+        document: ID,
+      });
+      fence.commit();
+      fence.release();
+      step("post");
+      capture.release();
+
+      await flushStrict();
+      expect(native.labels).toEqual(["seed", "post"]);
+    });
+  });
+
   describe("(m) recorder が窓の全体で無効", () => {
     it("hold は実の hold で、step は null。state・queue は増えず、ON にした後の記録も止まらない", async () => {
       const native = setupNative();

@@ -233,3 +233,24 @@ describe("autosave の fence の間の editor focus（実 Chromium）", () => {
     expect(editor.state.doc.textContent).toContain("ABCD");
   });
 });
+
+describe("変換中に read-only が挟まったときの view.composing（実 Chromium、EAR-21 の事実）", () => {
+  it("事実の固定：変換中に editable が false になり、その間に compositionend が来ても ProseMirror は無視し、view.composing が真のまま残る（desktop に時間切れは無い）", async () => {
+    const { editor, pm } = await mountFocused(false);
+    pm.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+    expect(editor.view.composing).toBe(true);
+
+    editor.setEditable(false, false);
+    await nextFrame();
+    pm.dispatchEvent(new CompositionEvent("compositionend", { data: "" }));
+    editor.setEditable(true, false);
+    await nextFrame();
+
+    // compositionend を取りこぼしたので、変換は終わっているのに composing が残る。
+    expect(editor.view.composing).toBe(true);
+    // blur でも解けない。
+    pm.blur();
+    await nextFrame();
+    expect(editor.view.composing).toBe(true);
+  });
+});

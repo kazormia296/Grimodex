@@ -49,7 +49,11 @@ import {
   runCoordinatedDocumentSave,
   runExclusiveDocumentMutation,
 } from "@/features/editor/document/documentSaveCoordinator";
-import { isTimelapseReplacementFenceActiveForDocument } from "./documentCoverage";
+import {
+  breakTimelapseDocumentCapture,
+  isTimelapseReplacementFenceActiveForDocument,
+  openOwnSaveCapture,
+} from "./documentCoverage";
 import { buildReplayStart } from "./replayStart";
 import { replayEditorSteps, type ReplayEvent } from "./replayEngine";
 import type { TimelapseDocumentIdentity } from "./documentCoverage";
@@ -657,5 +661,121 @@ describe("T-5 外部置換との順序", () => {
     // 置換の commit の時点で、own の窓の step（-a と +held）は Native に届いている。
     expect(replacementSaw).toBe(2);
     expect(_inspectOwnSaveCapturesForTests(ID).activeCaptures).toBe(0);
+  });
+});
+
+describe("EAR-18 hold を呼び手が先に開き、writer が tail に載る前に外部置換が commit する（codex／snippet の形）", () => {
+  /** 外部置換 F。commit の時点で snapshot M を置き、editor を M の本文に差し替える。 */
+  function replacementCommitting(replacedText: string): Promise<void> {
+    return runTimelapseBodyReplacement<string, void>(
+      { projectId: P, documentIdentity: ID },
+      {
+        commit: async () => {
+          native.snapshots.push({
+            anchorSequence: native.seq,
+            payload: schema
+              .node("doc", null, [
+                schema.node("paragraph", null, [schema.text(replacedText)]),
+              ])
+              .toJSON(),
+          });
+          return "ok";
+        },
+        project: async () => undefined,
+      },
+    );
+  }
+
+  /** F の commit の後、editor の doc は置換後の本文になる（setContent 相当）。 */
+  function adoptReplacedDoc(replacedText: string): void {
+    editor = EditorState.create({
+      schema,
+      doc: schema.node("doc", null, [
+        schema.node("paragraph", null, [schema.text(replacedText)]),
+      ]),
+    });
+  }
+
+  /** hold を先に開き、own の writer は後から tail に載り、OCC 失敗で終わる。 */
+  function ownWriterAfter(
+    capture: ReturnType<typeof openOwnSaveCapture>,
+  ): Promise<unknown> {
+    return runTimelapseEditorBodyWrite<string, void>(
+      { projectId: P, documentIdentity: ID, capture },
+      {
+        commit: async () => {
+          throw new Error("version mismatch (OCC)");
+        },
+        project: async () => undefined,
+      },
+    ).catch((error: unknown) => error);
+  }
+
+  beforeEach(async () => {
+    await initRecorderForProject(P);
+    createEditor("start");
+  });
+
+  it("置換の前に held した step は捨てられ、置換の後に打った step だけが M の後に並ぶ", async () => {
+    const replaced = "REPLACED-BODY-LONGER-THAN-START";
+    const capture = openOwnSaveCapture({ projectId: P, document: ID });
+    type("-pre1");
+    type("-pre2");
+
+    // writer が tail に載る前に、外部置換が同じ文書で fence を取って commit する。
+    await replacementCommitting(replaced);
+    adoptReplacedDoc(replaced);
+    type("+post");
+
+    expect(_inspectOwnSaveCapturesForTests(ID).heldCount).toBe(1);
+    const outcome = await ownWriterAfter(capture);
+    expect(outcome).toBeInstanceOf(Error);
+    await flushStrict();
+
+    // 最新 snapshot は M。M の後ろに並ぶ step は置換後の本文を土台にしたものだけ。
+    expect(native.snapshots[native.snapshots.length - 1]?.anchorSequence).toBe(
+      0,
+    );
+    expectReplayMatchesEditor();
+    expect(_inspectOwnSaveCapturesForTests(ID).activeCaptures).toBe(0);
+  });
+
+  it("T0 で broken だった文書でも、置換の commit が再基準化するので、置換の後に打った step は own の失敗で捨てられない", async () => {
+    type("-a");
+    breakTimelapseDocumentCapture(ID);
+    const capture = openOwnSaveCapture({ projectId: P, document: ID });
+    type("-pre");
+
+    const replaced = "REPLACED-BODY-LONGER-THAN-START";
+    await replacementCommitting(replaced);
+    adoptReplacedDoc(replaced);
+    type("+post");
+
+    await ownWriterAfter(capture);
+    await flushStrict();
+
+    expectReplayMatchesEditor();
+    expect(_inspectOwnSaveCapturesForTests(ID).heldCount).toBe(0);
+  });
+
+  it("置換が失敗して commit されなければ、置換の前に held した step は捨てない（doc は置換されていない）", async () => {
+    const capture = openOwnSaveCapture({ projectId: P, document: ID });
+    type("-pre");
+    await runTimelapseBodyReplacement<string, void>(
+      { projectId: P, documentIdentity: ID },
+      {
+        commit: async () => {
+          throw new Error("replacement failed");
+        },
+        project: async () => undefined,
+      },
+    ).catch(() => undefined);
+    type("+post");
+
+    expect(_inspectOwnSaveCapturesForTests(ID).heldCount).toBe(2);
+    capture.release();
+    await flushStrict();
+    // 置換されていないので seed（anchor 0）から全 step が連続して再生できる。
+    expectReplayMatchesEditor();
   });
 });

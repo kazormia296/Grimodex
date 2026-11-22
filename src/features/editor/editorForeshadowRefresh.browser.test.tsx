@@ -208,7 +208,10 @@ import { useTreeStore, type TreeNodeData } from "../tree/treeStore";
 import { useProjectStore } from "../project/projectStore";
 import { useEditorSessionStore } from "./editorSessionStore";
 import { announcePersistedBinding, saveScene } from "./editorSaveRegistry";
-import { hasPendingForeshadowRefresh } from "./pendingForeshadowRefresh";
+import {
+  COMPOSITION_STALE_MS,
+  hasPendingForeshadowRefresh,
+} from "./pendingForeshadowRefresh";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { discardAllAutoSaves } from "@/hooks/useAutoSave";
@@ -445,6 +448,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   discardAllAutoSaves();
   cleanup();
   await nextFrame();
@@ -613,6 +617,63 @@ describe.each<[string, Surface]>([
     await waitFor(() => expect(markBaseVersion(editor)).toBe(h.fs.version), {
       timeout: 3_000,
     });
+  });
+
+  it("EAR-20 (d2) editor を閉じない flush（外部の saveScene。手動保存も同じ saveLatestFn）が変換中に blur で composition を確定させても、focus は editor に戻り、続きの打鍵が本文に入る", async () => {
+    installBridge();
+    const toastError = vi.spyOn(toast, "error");
+    const { editor, pm } = await mountSurface(surface);
+    const release = await startHeldFirstSave(editor);
+    await userEvent.keyboard("XY");
+    expect(document.activeElement).toBe(pm);
+    startComposition(pm, editor);
+    release();
+    await waitFor(
+      () => expect(hasPendingForeshadowRefresh(editor)).toBe(true),
+      { timeout: 3_000 },
+    );
+
+    await saveScene(SCENE_ID);
+    expect(h.saves).toHaveLength(2);
+    expect(h.mismatches).toBe(0);
+    // blur して変換を確定させても、作者の focus は奪わない。
+    expect(document.activeElement).toBe(pm);
+    expect(editor.view.hasFocus()).toBe(true);
+
+    endComposition(pm);
+    await userEvent.keyboard("Z");
+    expect(editor.state.doc.textContent).toContain("Z");
+    expect(saveFailures(toastError)).toEqual([]);
+  });
+
+  it("EAR-21 変換が固着（compositionend を取りこぼし、view.composing が真のまま）しても、最終活動から COMPOSITION_STALE_MS を過ぎれば pending を適用して背景の保存が再開する", async () => {
+    installBridge();
+    const toastError = vi.spyOn(toast, "error");
+    const { editor, pm } = await mountSurface(surface);
+    const release = await startHeldFirstSave(editor);
+    await userEvent.keyboard("XY");
+    startComposition(pm, editor);
+    release();
+    await waitFor(
+      () => expect(hasPendingForeshadowRefresh(editor)).toBe(true),
+      { timeout: 3_000 },
+    );
+
+    // compositionend が来ない間は、従来どおり背景の保存は延期され続ける。
+    await sleep(1000);
+    expect(h.saves).toHaveLength(1);
+    expect(editor.view.composing).toBe(true);
+
+    // 時刻だけ進める（実 timer は動かす）。PM の composing は真のまま。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + COMPOSITION_STALE_MS + 1000);
+    await waitFor(() => expect(h.saves.length).toBeGreaterThanOrEqual(2), {
+      timeout: 5_000,
+    });
+    expect(editor.view.composing).toBe(true);
+    expect(h.mismatches).toBe(0);
+    expect(h.saves[1]!.fsBaseVersion).toBe(2);
+    expect(saveFailures(toastError)).toEqual([]);
   });
 
   it("(d) 閉じる（unmount の flush）も、変換中で pending が残っていても延期せず、古い baseVersion で FORESHADOW_VERSION_MISMATCH にならない", async () => {
