@@ -57,7 +57,7 @@
 ### DR-SRX-1　この修正がしないこと
 
 - schema の版を上げない。migration を足さない。新しい列・表・索引を足さない（`change_events(scene_id, timestamp)` の索引は既にある。DR-SRX-12）。
-- 閾値を変えない。保存の範囲と送信先を広げない。新しい契約・authority を足さない（`change_events` の書き手は、既に許可された `change_events.rs` のままで、新しい書き手の file を作らない）。
+- 閾値を変えない。保存の範囲と送信先を広げない。新しい契約を足さない。書き手の authority は、新しい書き手の file を作らない（`change_events` の書き手は、既に許可された `change_events.rs` のまま）という意味では足さない。ただし、`change_events.scene_id` の退避と戻しは、**新しい書き込みの権限**である（確認 115 の範囲。DR-SRX-9。委任の外）。
 - 復元が、object ごとの変更の記録を足す形にしない（DR-SRC-1・2 のまま。退避して戻した行は、復元の前後で値が同じなので、変更の記録に出さない）。
 - 確認 116・117・121・122 の範囲は、動きを変えない（DR-SRX-11・13）。
 - どれかが要ると分かったときは、実装せず、ユーザーに伺う。
@@ -87,15 +87,15 @@
 
 in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapshotId>__' || col` に書き換える。この値は外部キーの親のどの行とも一致しないので、根の DELETE の CASCADE／SET NULL が当たらず、行は物理的に残る（主キー・`rowid`・`created_at`・FTS・多段の子の行も無傷）。SET NULL の列も、元の値は列自身が持つので、`(表, 主キー, 列, 元の値)` を別に持つ必要が無い。退避中も、持ち主の行は残る（持ち主が選ばれていない範囲の表で、根の DELETE の連鎖に入らない）。
 
-### DR-SRX-3　退避する列は、導出する。固定の一覧との照合の試験で見張る
+### DR-SRX-3　退避する列は、固定の一覧で持ち、導出（スキーマと持ち主）との照合の試験で見張る
 
-- 退避の列は、手で書き並べない。範囲の集合 S ごとに、実行時に `PRAGMA foreign_key_list` と範囲の持ち主（`AUX_SPECS` の `owner` と、根の表）から導く。
+- 退避の列は、範囲の集合 S ごとに、`PRAGMA foreign_key_list` と範囲の持ち主（`AUX_SPECS` の `owner` と、根の表）から**導ける**。この文書の最初の版は、これを実行時に行うと書いたが、実装は、固定の定数 `PARK_COLUMNS` を持ち、同じ導出を**試験で**行って照合する（DR-SRX-15）。
   1. S の根の表の DELETE と、S が持つ表の CASCADE をたどって「消える表」の集合を作る。
   2. 消える表を親にする外部キーの列を `PRAGMA foreign_key_list` から取る。
   3. そのうち、子の表の持ち主が S に含まれないものだけを、退避の列とする。直接の外部キーと 2 段目を混同せず、親が消える表を全部拾う（反証で、`scene_lens_data.target_id` が `tree_nodes` への直接の CASCADE であることが分かり、run の列だけでなく `target_id` も退避の列に入れる形に直した）。
   4. 除外（DR-SRX-5）を除く。
 - `authorship_spans` だけは、列ごとに持ち主を決める（DR-SRX-7）：`node_id`→Body、`codex_entry_id`・`phase_id`・`detail_value_id`→Codex、`snippet_id`→Snippet、`sticky_id`→Map。
-- 表名・列名は、定数の一覧から静的な文を生成する。表名を変数にした動的 SQL は、`validate-native-writer-ownership` の検査をすり抜けるので使わない。一覧を定数にし、静的な文を作る関数の試験で固定する。
+- 表名・列名は、固定の定数の一覧から、文を `format!` で作る（実装は DR-SRX-15）。**これは動的な表名の SQL である**：`validate-native-writer-ownership` は `format!` の表名を読まず（単一空白の `UPDATE` も検出しない既存の隙。DR-SRX-9）、この file は許可された書き手の一覧に載っていない。この文書の最初の版は「動的 SQL は検査をすり抜けるので使わない」と書いたが、実装は使っている。守りは、固定の一覧と、スキーマとの照合の試験（DR-SRX-15）で、検証器ではない。許可の一覧を変えるのは台帳の変更なので、この PR ではしない（DR-SRX-21）。
 - **見張り**：導出した退避の列を、範囲ごとの固定の期待一覧と照合する試験を置く。schema が変わって導出が変わると、試験が失敗し、人間が分類し直す（親が消える表と持ち主の分類を決め直す）。`scene_lens_data.target_id` の漏れの再発を、この照合で防ぐ。設計の調査では、導出した列の数が、範囲ごとに Body 20、Codex 20、Snippet 5、Map 2、Foreshadow・Labels・Lint 0、Body＋Codex 31、全範囲 22 だった。ただし、設計と反証で数が食い違った（Codex 20／21、Body 20／21、全範囲 22／20）。持ち主の振り分けの違いと見られるが、導出が見えない。実装で、分類を人間が確定してから期待一覧に固定する。この食い違いの解消も、この試験で見張る。
 - 根の表への RESTRICT／NO ACTION は、`codex_types` を指す 4 列だけで、範囲内（設計の調査）。範囲外に増えたら、照合の試験が失敗する。
 
@@ -106,7 +106,7 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 - 選んだ範囲の親は、スナップショットの行が入れ直されるので、スナップショットに在る id だけが残る。選んでいない範囲の親は、触らないので全て残る。
 - 「同じ id なら同じもの」とみなす（場面の中身が別の版でも、つながりは戻す）。type が変わった項目の扱いは確認 122（DR-SRX-13）。
 - 選んだ範囲の表の行は、スナップショットの値が優先で、退避の対象にしない（退避した値で上書きしない）。Body と Codex を同時に選ぶ場合、Body 持ち・Codex 持ちの表は退避せず、今の canonical plan の入れ直し（Codex を選べば絞り込みなし、選ばなければ live の Codex を指す行だけ）がそのまま働く。退避は選ばなかった範囲の表だけなので、主キーは衝突しない。
-- 戻しの条件は、接頭辞の範囲検索（`col >= prefix AND col < prefix || '~'`）にして、索引を使う。`substr` 形は索引が効かず、全表走査になる（費用の実測で確かめた。DR-SRX-12）。**ただし、索引が在る列だけ**である。実スキーマの `EXPLAIN QUERY PLAN` では、退避の列 39 本のうち 10 本（`chat_sessions` の 3 列、`events` の 3 列、`lint_action_log.scene_id`、`map_node_positions` の 2 列）は索引が無く、子の表の全表走査になる（DR-SRX-22）。小さい表が大半で、`lint_action_log` は追記専用の記録のため、大きい作品では 1 回の復元で 6 回走査する。索引は schema の変更なので、この PR では足さない（DR-SRX-1）。
+- 戻しの条件は、接頭辞の範囲検索（`col >= prefix AND col < prefix || '~'`）にして、索引を使う。`substr` 形は索引が効かず、全表走査になる（費用の実測で確かめた。DR-SRX-12）。**ただし、索引が在る列だけ**である。実スキーマの `EXPLAIN QUERY PLAN` では、退避の列 40 本のうち 9 本（`chat_sessions` の 3 列、`events` の 3 列、`lint_action_log.scene_id`、`map_node_positions` の 2 列。後者の走査は被覆の部分索引）は索引が使えず、子の表の全表走査になる（DR-SRX-22）。小さい表が大半で、`lint_action_log` は追記専用の記録である。索引の無い列では、この PR の文（退避・戻し・片付け・残存・件数の読み）は、1 文につき子の表を 1 回走査する。**外部キーの CASCADE そのものも、索引の無い子の列では、削除・挿入する親の行ごとに子の表を走査する**（費用は「親の行数×子の表の行数」。以前からの費用で、この PR は増やさない。記録の最初の版の「1 回の復元で 6 回走査」は、この主な費用を言い落としていた）。索引は schema の変更なので、この PR では足さない（DR-SRX-1）。
 - 多段の子（`foreshadow_setup_payoff_links`、`map_edges` など）は、退避中も親の行が残るので、残る。指す先が無い親の行だけが DELETE され、その子が CASCADE で消える。
 - 件数の数え方（DR-SRX-10）は、この規則と同じ関数（消える親の id の計算）を共有する。
 
@@ -147,8 +147,8 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 
 `change_events` は append-only の保護表（`policies/narrative/protected-writers.json`、writer `narrative.authority`、enforcement `active`）で、書き手の許可は `scripts/quality/validate-native-writer-ownership.mjs` の `WRITER_TO_MODULES`（`grimodex-db/src/change_events.rs` を含む）で決まる。`project_snapshots.rs` は許可に入っていない。UPDATE を拒む trigger は無く、守りは静的な検査と hash の再計算だけである。
 
-- **置き場所**：`grimodex-db` の `change_events.rs` の中に、`pub(crate)` の関数を 2 つ置く。`project_snapshots.rs` は、この 2 つを呼ぶだけで、`change_events` に SQL を書かない。新しい書き手の file を作らない。保護表の台帳・許可の一覧は変えない。
-- **誰が呼べるか**：`pub(crate)` なので、同じ crate の code だけ。呼び手は `project_snapshots.rs` の復元だけ。呼び手が増えたら失敗する source scan の試験（DR-SRC-8 と同じ形。入口の名前を数え、`#[cfg(test)]` を除く）を置く。
+- **置き場所**：`grimodex-db` の `change_events.rs` の中に、`pub(crate)` の型 `RestoreSceneIdParking`（メソッドは `park`・`restore`・`remaining`〔読み取り〕）と、接頭辞の窓の型 `ParkWindow`、定数 `RESTORE_PARK_ROOT` を置く。`restore_links.rs` は、これを呼ぶだけで、`change_events` に SQL を書かない（`project_snapshots.rs` も書かない）。新しい書き手の file を作らない。保護表の台帳・許可の一覧は変えない。（この文書の最初の版は「関数を 2 つ」「呼び手は `project_snapshots.rs`」と書いたが、実装は上のとおり。）
+- **誰が呼べるか**：`pub(crate)` なので、同じ crate の code だけ。呼び手は `restore_links.rs` の復元だけ。呼び手が増えたら失敗する source scan の試験（`restore_links/tests.rs`。型の名前を持つ file と呼び出しの数を数え、`change_events` への `UPDATE` は、期待の 3 文と**完全一致**することを見る。大文字小文字・空白・引用符・`UPDATE OR` は正規化して読む。`#[cfg(test)]` の module は、属性行を飛ばして切り落とす）を置く。
 - **何ができるか（書けること）**：
   - 退避：`UPDATE change_events SET scene_id = <prefix> || scene_id WHERE project_id = ? AND scene_id IN (その作品の全場面の id)`。本文の復元は、その作品の全場面の行を DELETE して入れ直す（残る場面の行も、一度は `SET NULL` に当たる）ので、対象は**全場面**である（この文書の最初の版は「復元で消える場面の id」と書いたが、実装が正しい。DR-SRX-12 も同じ）。接頭辞は、関数が snapshot id から作る。呼び手は文字列を渡さない（型で包む）。
   - 戻し：接頭辞つきの値の行について、`tree_nodes` に元の id が在れば、元の値（接頭辞を外した値）に戻す。在らなければ NULL にする（外部キー本来の動きで、通常の場面削除と同じ）。
@@ -166,7 +166,8 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 - **確認 117 の件数**：本文の復元で、全場面の適用範囲の設定が作り直される件数を、`scene_scope_bindings_reset` として出す（件数の数え方は、実装で決める。作り直される束縛の数と一致させ、決めたら後の DR に書く）。設計は、これを件数に出さない形にしていたが、決定が優先する。
 - **確認 114 の件数**：本文が変わった場面の `prose_staging` の件数を、`ai_scene_proposals` として出す。
 - **復元の結果（`ApplyProjectSnapshotRestoreResult`）に、`dropped` の内訳**（同じ `kind` の配列）を足す。`#[serde(default)]` で、古い idempotency の応答（欄の無い保存済みの結果）も読める。**事前の件数と一致することを、実行時の検査と試験で固定する**（同じ入力・同じ状態なら一致する。確認を開いてから押すまでに作品が変わると、実際と食い違い得る。画面は「確認を開いたときの件数」と明記する。次の PR）。実行時の不一致は、復元を失敗させるのでなく、結果の内訳を実際の値にする（件数は参考の通知で、復元の成否の条件にしない）。
-- SRD/1 の RD6（`approvalLossCount`）は、別の欄にせず、`lossNotices` の 1 件（`kind: 'imported_event_approvals'`）にできる。起案者に伝える。
+- SRD/1 の RD6（`approvalLossCount`）は、別の欄にせず、`lossNotices` の 1 件（`kind: 'imported_event_approvals'`）にできる。起案者に伝える。**この PR では実装していない**（SRD/1 が未確定・未実装のため。決まったときに、`KIND_ORDER` に足す）。
+- **種類の確定一覧（実装。`restore_links.rs` の `KIND_ORDER`、この順）**：`event_participants`、`event_primary_or_location`、`event_reveal_scene`、`event_scene_links`、`scene_pov_or_location`、`scene_codex_links`、`foreshadow_codex_links`、`snippet_tags`、`snippet_scene_link`、`foreshadow_scene_links`、`scene_labels`、`phase_anchor`、`lint_ignores`、`map_placements`、`editor_stickies`、`chat_pins_or_anchors`、`trash_items`、`ai_scene_proposals`、`analysis_records`、`scene_scope_bindings_reset`。候補に書いた `imported_event_approvals` は無く、`event_reveal_scene`・`event_scene_links`・`editor_stickies` は候補に無かったものを足した。`dropped` の `ai_scene_proposals`・`scene_scope_bindings_reset` は、退避の前に控えた値で、実際の削除の数ではない（事前の件数と同じ値になるのは、そのため）。
 - 画面（`ProjectSnapshotModal`、locale、browser-mock の表示）は、この PR に含めない（次の PR-B）。型の契約（`electron/shared/ipcContract.ts`、N-API の d.ts、`src/lib` の wrapper の型）が Native の応答の型に追随する必要があるなら、通る最小限だけ直す。`#[napi]` の doc コメントや型を変えたら、d.ts を再生成する。
 
 ### DR-SRX-11　変えない動き（確認 116・117）
@@ -180,7 +181,7 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 - 設計の調査の測定（**debug build**・合成データ）：
   - :memory:、`scene_codex_mentions` 12 万行：退避 0.48 秒＋戻し 0.50 秒。`change_events` 20 万行：退避 0.67 秒＋戻し 0.72 秒。今の cascade は、`DELETE FROM codex_entries` 0.45 秒、`DELETE FROM tree_nodes` 1.25 秒で、同じ桁。
   - ファイル DB（WAL）：`change_events` 100 万行で、**退避 9.2 秒＋戻し 9.3 秒**（今の cascade の約 5 倍）。:memory: の値から延長した見込みより、約 2.6 倍悪い。戻しの条件が `substr` 形だと索引が効かず全表走査になる。
-- 対策：戻しの条件を、接頭辞の範囲検索にする（DR-SRX-4）。`change_events(scene_id, timestamp)` の索引が既にあるので、新しい索引は足さない（DR-SRX-1）。退避は、`project_id` と `scene_id IN (その作品の全場面の id)` で絞る（`scene_id` を持つ行だけ。この文書の最初の版は「消える場面だけ」と書いたが、残る場面の行も、場面の DELETE で `SET NULL` に当たるので、全場面が正しい。費用は、その分の測定を使う）。
+- 対策：戻しの条件を、接頭辞の範囲検索にする（DR-SRX-4）。`change_events(scene_id, timestamp)` の索引が既にあるので、新しい索引は足さない（DR-SRX-1）。退避は、`project_id` と `scene_id IN (その作品の全場面の id)` で絞る（`scene_id` を持つ行だけ。この文書の最初の版は「消える場面だけ」と書いたが、残る場面の行も、場面の DELETE で `SET NULL` に当たるので、全部が正しい。実装の述語は、その作品の `tree_nodes` の**全行**〔場面のほか、章・フォルダも〕の id である。費用は、その分の測定を使う）。
 - **release build・ファイル DB（WAL）で測り直す**。結果（形・行数・秒）は、PR 本文と、後の DR に書く。測り直しで時間が復元の許容を超えると分かったときは、実装を止めて、ユーザーに伺う（閾値は動かさない）。
 - 復元の transaction が長くなるので、書き込みの待ち（他の writer）への影響は、実装で確かめる（SQLite は書き手が 1 つ。復元は既に 1 transaction で、新しい待ちの種類を足さない）。
 
@@ -238,14 +239,15 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 
 ### DR-SRX-15　退避の列は固定の一覧で持ち、導出は試験で行う（DR-SRX-3 の実装）
 
-- 実装は、実行時に `PRAGMA foreign_key_list` から導出せず、`restore_links.rs` の `PARK_COLUMNS`（表・列・親・`ON DELETE`・表を持つ範囲・作者向けの種類）を固定の定数にした。SQL の文は、定数から作る（表名・列名を呼び手の値にしない）。理由：(1) `validate-native-writer-ownership` の静的な検査をすり抜ける動的な表名を避ける（DR-SRX-3 の第 3 項と同じ）、(2) 新しい外部キーが、分類されないまま退避の対象に入って動きを変えることを避ける、(3) 復元のたびに `PRAGMA` を読まない。
+- 実装は、実行時に `PRAGMA foreign_key_list` から導出せず、`restore_links.rs` の `PARK_COLUMNS`（表・列・親・`ON DELETE`・表を持つ範囲・作者向けの種類）を固定の定数にした。SQL の文は、定数から作る（表名・列名を呼び手の値にしない）。理由：(1) 文に入る表名・列名を、レビューできる固定の一覧に閉じる（**これは動的な表名の SQL を避けるものではない**：文は `format!` で作るので、静的な検査は読まない。DR-SRX-3・21）、(2) 新しい外部キーが、分類されないまま退避の対象に入って動きを変えることを避ける、(3) 復元のたびに `PRAGMA` を読まない。
 - 見張り：`restore_links/tests.rs` が、実スキーマの外部キーと表の持ち主（`AUX_SPECS` と根の表）から、**7 範囲の全 127 通りの組合せ**で退避の列を導出し、固定の一覧と照合する。新しい外部キー・列名の変更・`ON DELETE` の変更・持ち主の変更で試験が落ち、人が分類し直す。範囲の外から、復元で消える根の表を `RESTRICT`／`NO ACTION` で指す外部キーが現れたときも落ちる。固定の一覧に入れない外部キーは、理由つきの定数（`NOT_PARKED`）にする：`change_events.scene_id`（DR-SRX-9）、`prose_staging.scene_id`（DR-SRX-8）、派生の索引 3 表と場面の適用範囲の設定（DR-SRX-5）。`authorship_spans` は、行ごとに指す文書で決める（DR-SRX-7）ので、列では扱わない。
 - DR-SRX-3 が書いた、設計と反証の導出の列の数の食い違い（Codex 20／21、Body 20／21、全範囲 22／20）は、この導出で解消した。数は schema とともに変わるので、この文書には固定しない。照合の試験が正である。
 
 ### DR-SRX-16　外部キー違反の検査は「復元が増やしていないこと」を見る（DR-SRX-2 の 8 の実装）
 
 - `PRAGMA foreign_key_check` は、復元の前から在る違反まで数える。SQLite の commit 時の遅延検査（`defer_foreign_keys`）は、その transaction が足した違反だけを見る。復元を後者より厳しくすると、外部キーを切って作られた古い DB（取り込みなど）の復元が、これまで通っていたのに止まる。
-- そこで、退避の前に、触る表ごとの違反の数を控え、戻しの後に**増えていなければ**通す。増えたときは、理由つきで復元を失敗させる。接頭辞の残りの検査は、そのまま（1 つでも残れば失敗）。
+- そこで、退避の前に、触る表ごとの違反を**集合**（行の `rowid`・親の表・外部キーの番号）として控え、戻しの後に、**新しい違反が 1 つも無ければ**通す。増えたときは、理由つきで復元を失敗させる。接頭辞の残りの検査は、そのまま（1 つでも残れば失敗）。
+- **件数でなく集合にした理由（統合者の点検で、実測）**：最初の版は件数を比べたが、古い違反が 1 件直り、別の新しい違反が 1 件足されると、件数は同じで、見逃す。しかも、SQLite の commit 時の遅延検査（`defer_foreign_keys`）も、これを検出しなかった（統合者の実測。SQLite 3.54.1 で、前から違反 1 件＋退避 3 行の作品で、commit が通って違反が残った。退避が無ければ同じ操作は commit で失敗した。**仕組みは特定していない**。遅延検査が「違反の増減の和」で見る、という一般の性質による見込み）。したがって、この文書の最初の版にあった「SQLite の commit 時の検査は検出する」は、退避が在るときは成り立たない。集合の差が、この PR の唯一の検査である。
 - 試験：`a_dangling_reference_the_work_already_had_does_not_stop_a_restore`。
 
 ### DR-SRX-17　確認 122 の観測：type が変わった Codex 項目（決めていない。現在の動きの記録）
@@ -265,14 +267,14 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 - したがって、HSR/1 が入った後は、この PR の `RestoreSceneIdParking` の UPDATE も、同じ trigger を発火させる。退避（`scene_id` を接頭辞つきの値にする）は、`scene_id` が NULL にならないので写らない。**戻しの 2 本目**（復元の後に場面が無い行を NULL にする）は、`OLD.scene_id` が接頭辞つきの値なので、そのままでは**接頭辞つきの値が `scene_ref` に入る（黙った破損）**。
 - HSR/1 の PR は、(1) trigger に「接頭辞つきの値を写さない」条件（`NOT LIKE`）を足す、(2) 戻しの 2 本目を「接頭辞を外した値を `scene_ref` に書き、`scene_id` を NULL にする」1 文に直す、(3) 接頭辞（trigger の `LIKE` の文字列と `RESTORE_PARK_ROOT`）の二重管理を試験で固定する、(4) この PR の source scan の試験（`restore_links/tests.rs`。代入する列が `["scene_id"]` だけ）と `a_normal_scene_delete_still_breaks_the_hash_of_that_scenes_rows` を直す、必要がある。
 - (2) は `scene_id` 以外の列（`scene_ref`）を書く。DR-SRX-9（確認 115：`scene_id` だけを退避して戻す）の範囲を広げるので、**HSR/1 の確認で、ユーザーに伺う**（新しい書き込みの権限の拡大。委任の外）。
-- 注記：退避は、その作品の**全場面**の行を対象にする（復元で消える場面だけではない）。HSR/1 の下書きの §2.1 は、この点を直す。
+- 注記：退避は、その作品の `tree_nodes` の**全行**（場面・章・フォルダ。`change_events.scene_id` が指す id の全部）を対象にする（復元で消える場面だけではない）。HSR/1 の下書きの §2.1 は、この点を直す。
 
 ### DR-SRX-20　点検で見つかり、この PR で直したこと
 
 実装の点検（read-only の 4 観点＋確かめ直し。実行で再現したものだけ）で見つかり、直した。
 
 1. **events の aux が無い古いスナップショットで本文を復元すると、`scene_events`（場面と出来事の結び付き）が黙って全部消える。** `events` を DELETE しない分岐（`snapshot_has_aux("events")` が偽）では、出来事の表は置き換えられず、`scene_events.scene_id`（`tree_nodes` への `CASCADE`）だけが場面の DELETE で消え、入れ直す元の行も無い。`PARK_COLUMNS` に `scene_events.scene_id`（持ち主は Body。events の aux が有れば置き換えられるので退避しない。無ければ退避する）と、作者向けの種類 `event_scene_links` を足した。導出の見張りの試験を、events の aux が有る場合と無い場合の両方（7 範囲の 127 通り×2）にした。従来の動きと同じ取りこぼしで、この PR が悪化させたものではないが、この PR が直す不具合と同じ種類である。
-2. **残した AI の提案（確認 114）の `base_version` が、復元後の場面の版と食い違う。** 場面は、計画の版（0）で入れ直され、元の版を持ち越さない。提案は残るが、作った時の版を指したままで、今すぐ stale になり、のちに場面の版がその数に達すると、本文が別でも有効に見える。本文は同じと判定した場面の提案なので、復元後の場面の版に合わせる（`status = 'proposed'` の行だけ。`prose_staging.base_version` だけを書く）。DR-SRX-8 の補足である。
+2. **残した AI の提案（確認 114）の `base_version` が、復元後の場面の版と食い違う。** 場面は、計画の版（0）で入れ直され、元の版を持ち越さない。提案は残るが、作った時の版を指したままで、今すぐ stale になり、のちに場面の版がその数に達すると、本文が別でも有効に見える。本文は同じと判定した場面の提案なので、復元後の場面の版に合わせる（`status = 'proposed'` の行だけ。`prose_staging.base_version` だけを書く）。DR-SRX-8 の補足である。**ただし、DR-SRX-24 の 1 で、「復元の前に有効だったものだけ」に狭めた**（復元の前から stale だった提案は、stale のまま）。
 3. **親の id が退避の接頭辞で始まる行があると、戻した行が「退避中のまま」と誤認される。** 到達性はほぼ無い（製品が採番する id は UUID）が、IPC は任意の文字列を受ける。復元は、何かを書く前に、親の表のどれかに接頭辞の根で始まる id が在れば、理由つきで失敗する。
 4. **`no_op` の二重の守り（DR-SRX-2）。** 外れた行が有るのに Feed の対象が空（`no_op`）になる状態は、作れなかったが、実装が無かった。外れた行が有って Feed の対象が空のときは、「何も変わらなかった」と返さず、失敗にする。
 
@@ -284,7 +286,7 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 - **出所の記録の aux だけが無い構造スナップショットは、作れない**（構造つきの判定は aux が 1 行でも在るかで、作成は全 aux を書く。反証された）。aux が全く無い古いスナップショットは、構造つきの復元を拒否する（この PR より前から）。
 - **「本文が同じ」は、文字列の完全一致**。空文字と `'{}'`、空白だけの違いは「違う」と見なす（同じものを違うと見る向き＝安全側。違う本文を同じと見ることは起きない）。
 - **`restore_links.rs` の SQL は、固定の定数から作る動的な文で、保護表（`tree_nodes`・`events`・`snippets`・伏線系ほか）に書く。** `validate-native-writer-ownership` は、`format!` で組んだ表名を読まないので、この file は許可された書き手の一覧に載っていない。守りは、固定の一覧と、スキーマとの照合の試験（DR-SRX-15）である。許可の一覧を変えるのは台帳の変更になるので、この PR ではしない。以前の `park_map_reference`（`project_snapshots.rs`）も同じ形だった。
-- **外部キー違反の検査は、「増えていないこと」を、表ごとの件数で比べる**（DR-SRX-16）。1 件が直り、別の 1 件が増えたときは、検出できない（SQLite の commit 時の検査は検出する）。復元の前から違反が在る作品を止めないことを優先した。
+- **外部キー違反の検査は、触る表ごとの違反の集合の差で見る**（DR-SRX-16）。復元の前から在る違反では止めない。触らない表の違反は、見ない（この PR が書かない表）。`PRAGMA foreign_key_check` が返せないとき（エラー）は、復元を止める。
 
 ### DR-SRX-22　release での費用の測定（DR-SRX-12 の測り直し）
 
@@ -299,9 +301,9 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 | 確認（`context`）。本文 | 0.02〜0.03 | 0.36〜0.72 |
 
   `change_events` の退避と戻し（100 万行）は、それぞれ 5.6 秒（debug の 9.2 秒より速い）。`scene_codex_mentions` は 0.8 秒ずつ。WAL は、本文の復元で 138 MB → 207 MB（+50%）。
-- **この PR が足す費用は小さい**：本文の復元は誤差の範囲、Codex だけは +1.1 秒（`scene_codex_mentions` 12 万行を退避して戻すため。以前は CASCADE で消していた）、確認は +0.4〜0.6 秒（正準の計画を作って件数を数えるため。1 回の確認につき 1 回）。閾値は決めていない（DR-SRX-12 の「閾値は動かさない」のとおり）。測定者の意見は、「この PR の費用では、実装を止めない」。
-- **以前からの費用（この PR の責任ではない）**：この大きさの作品で、本文の復元は、書き込みを約 70〜80 秒止める（`scene_codex_mentions` が 0 行でも約 21 秒）。原因は、挿入のたびに行う `ensure_inserted_row_is_project_scoped`（場面数に比例する存在検査）で、1 行あたり 500 場面で 0.084 ms、1,000 場面で 0.17 ms、2,000 場面で 0.41 ms（場面数×言及の数に比例）。ほかに、行ごとの `sqlite_master`・`PRAGMA table_info` の再実行がある。この間、ほかの接続（MCP、worker）は `busy_timeout` 5 秒を超えると `SQLITE_BUSY` になる。**直すなら別の lane**（表ごとの集合検査に置き換える）。ユーザーに、時期を伺う。
-- 索引：39 列のうち 10 列が全表走査（DR-SRX-4）。ほかの 29 列、`change_events`、`prose_staging` は索引を使う。
+- **この PR が足す費用は小さい**（統合者の点検で、言い方を狭めた：「本文の復元は誤差の範囲」は、この測定の分解能〔壁時計 ±10〜25%、`change_events` の `payload` はほぼ空〕で言えるだけである。`change_events` の退避と戻しは、行全体〔`payload` を含む〕を 2 回書くので、`payload` が大きい作品では 1 行あたり約 2 倍かかる見込み。WAL の増分は、変更前の CASCADE の書き換えとほぼ重なる）：本文の復元は測定の範囲では差が見えない、Codex だけは +1.1 秒（`scene_codex_mentions` 12 万行を退避して戻すため。以前は CASCADE で消していた）、確認は +0.4〜0.6 秒（正準の計画を作って件数を数えるため。1 回の確認につき 1 回）。閾値は決めていない（DR-SRX-12 の「閾値は動かさない」のとおり）。測定者の意見は、「この PR の費用では、実装を止めない」。
+- **以前からの費用（この PR の責任ではない）**：この大きさの作品で、本文の復元は、書き込みを約 70〜80 秒止める（`scene_codex_mentions` が 0 行でも約 21 秒）。原因の見立ては、挿入のたびに行う `ensure_inserted_row_is_project_scoped`（場面数に比例する存在検査）で、1 行あたり 500 場面で 0.084 ms、1,000 場面で 0.17 ms、2,000 場面で 0.41 ms（場面数×言及の数に比例）。ほかに、行ごとの `sqlite_master`・`PRAGMA table_info` の再実行がある。この間、ほかの接続（MCP、worker）は `busy_timeout` 5 秒を超えると `SQLITE_BUSY` になる。**別の lane で直す**（確認 126。PR-A の後すぐ。DR-SRX-23）。**ただし、この見立てで説明できるのは約 20〜41 秒分**（`scene_codex_mentions` 12 万行分の約 20 秒と、言及 0 行でも残る約 21 秒を、それぞれ別の見立てで）で、70〜80 秒との差は**未特定**である。直す前に、関数ごとの内訳を測る。測定の harness は、この PR にも記録にも残していない（別 lane が作り直す。基準の `HEAD~1` は、この PR の最終の head では意味が変わるので、変更前は `b7f8fa336` の blob で固定する）。
+- 索引：40 列のうち 9 列が全表走査（DR-SRX-4）。ほかの 29 列、`change_events`、`prose_staging` は索引を使う。
 - 点検で直した細部：`prose_staging_plan` が本文の読みのエラーを握りつぶして「本文が違う」と見なしていたので、本当のエラー（busy・I/O）は復元を止める形にした（「その場面が無い」だけを「違う」とする）。場面ごとの `SELECT` 1 回（N+1）は、そのまま（確認と復元で 2 回）。
 - 測っていないこと：Windows・macOS・別のファイルシステム、実物の計画の作り手（renderer）、50 KB 以上の本文での `PlanFacts` のメモリ、大きい `lint_action_log`・`ai_usage`・`trash_items`・`post_effect_runs`・`scene_lens_data` の時間、`SQLITE_BUSY` の実際の衝突、`reshape_authorship_inserts` の大きい `authorship_spans` での費用。
 
@@ -314,3 +316,23 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 | 124（確認 122） | 復元で種類が変わった Codex 項目は、つながりを残す（今の動きのまま） | DR-SRX-17・13 の 3。試験で現在の動きを固定したまま |
 | 125（確認 116） | 復元で中間の改稿履歴が消える動きは、今のまま | DR-SRX-11 のまま。調査（ほかのスナップショットが指す版は、外部キー〔`RESTRICT`〕と trigger の `NOT IN` で守られ、実験でも消えない。消えるのはどのスナップショットも指さない中間の版だけ）は、contracts の記録に要旨を置いた |
 | 126 | 大きい作品（場面 1,000・Codex の言及 12 万）の本文の復元が書き込みを約 70〜80 秒止める件（DR-SRX-22）は、**この PR の後すぐ、別の lane で直す** | 別の PR。挿入のたびの `ensure_inserted_row_is_project_scoped`（場面数に比例する存在検査）と、行ごとの `sqlite_master`・`PRAGMA table_info` の再実行を、表ごとの集合検査に置き換える。プロジェクトの範囲の検査（別の作品の行を入れさせない）の意味は変えない |
+
+### DR-SRX-24　統合者の点検（#1029）で直したこと（merge の前）
+
+統合者の点検（`peer-review-integrator-pr1029-20261123.md`。6 観点×反証）は、データの損失を起こす経路を見つけなかった（`PARK_COLUMNS` は、外部キーを 2 体が独立に洗って漏れ無し、窓は範囲比較で snapshot id の `_`・`%`・日本語・空文字でも戻る、失敗時の rollback で接頭辞は残らない）。merge の前に、次を直した。
+
+1. **残した提案の `base_version` の付け直しを、復元の前に有効だったものだけにした**（DR-SRX-8 の補足）。最初の版は、残した提案をすべて復元後の場面の版に付け直したので、復元の前から stale だった提案（本文がその後に動いた）が、復元で有効に戻り、`ai.autoAcceptBodyProposals` が on なら、編集した後の本文へ、手動の review なしで適用されうる。復元の前に `base_version` が場面の版と一致していた提案の id だけを控え、その分だけ付け直す。**残る点**：stale だった提案の `base_version` が、たまたま復元後の場面の版（計画の版）と同じ数なら、有効に見える（まれ。stale だった時点の本文と、復元後の本文が同じとは限らない）。試験：`a_proposal_that_was_already_stale_stays_stale`。
+2. **外部キー違反を、件数でなく集合の差で比べる**（DR-SRX-16 を直した。同数の入れ替わりを見逃し、退避が commit 時の検査を弱める）。試験：`a_violation_mended_while_another_is_made_is_caught_as_a_set`。
+3. **source scan が、`UPDATE` の最初の代入列しか見ない穴を塞いだ**（DR-SRX-9）。`change_events` への `UPDATE` を、大文字小文字・空白・引用符・`UPDATE OR` を正規化して取り出し、期待の 3 文と**完全一致**することを見る。`SET` に別の列を足すと落ちる（変異で確かめた）。`#[cfg(test)]` の module の切り落としは、属性行を飛ばして読む。試験：`only_the_restore_calls_...`、`the_scan_reads_updates_however_they_are_written`。残る穴：module の後ろに置いた本番の code は読まない（module が最後の item である前提）、`format!` で組んだ SQL の `change_events` は読めない（`PARK_COLUMNS` に `change_events` が無いことは別の試験で固定している）。
+4. **Body の復元の失敗で、`change_events` が元のままであること**を試験にした（退避の後・戻しの前＝`tree_nodes` の挿入、戻しの後・commit の前＝`state_snapshots` の挿入のどちらで失敗させても、(`rowid`・`scene_id`・`hash`) がバイトで元のまま、接頭辞が残らず、同じ要求の再送が通る）。試験：`a_failed_body_restore_leaves_the_change_events_as_they_were`。
+5. **接頭辞の窓の計算を 1 か所にした**（`change_events.rs` の `ParkWindow`。以前は 3 か所に重複）。
+6. **記録を実態に合わせた**：DR-SRX-3・15（動的な表名）、DR-SRX-9（型・メソッド・呼び手）、DR-SRX-10（種類の確定一覧、`imported_event_approvals` は未実装）、DR-SRX-4・22（索引の無い列の費用の主な項、70〜80 秒の見立てで説明できるのは一部、測定の harness が無いこと、`payload` の大きさ）、DR-SRX-16・21（commit 時の検査の記述の訂正）、索引（README）と作業記録の範囲。
+7. **件数が画面に届かない点を、PR 本文に明記した**：`lossNotices`・`dropped` は Native の応答と TS の型までで、**merge の後も、作者には、外れたつながりが黙って外れたままに見える**（PR-B まで）。
+
+### DR-SRX-25　advisor（独立の read-only の意見。2026-11-23）の指摘と扱い
+
+結論：**設計（退避の窓）そのものに、データを壊す落とし穴は見つからなかった**（窓の中で動く code は、根の DELETE・`insert_record`・`ensure_inserted_row_is_project_scoped`・場面の適用範囲の 2 関数だけで、どれも退避した列を読まない。Feed の捕捉は、窓の外。UPDATE trigger は FTS〔`title`・`content` の `WHEN` つき〕と write clock だけ。`WITHOUT ROWID` は clock 表だけ。窓の範囲比較は正しい）。別の直し方（計画は変えず、適用を「計画に無い id の DELETE＋UPSERT」にする案）も検討され、今の形が妥当とされた（根の行を残すと、CASCADE に頼る契約〔束縛の作り直し、`content_versions` の整理、版 0 での入れ直し〕を、全部、明示の DELETE に書き直すことになる。退避するなら in place だけが、行・`rowid`・多段の子を動かさない。書ける値を型で 3 種に限れる）。
+
+1. **blocker（直した）**：#1026 の「範囲をまたぐ cascade でも免除が狭められない」試験 2 本が、つながりが残るようになったので、免除を通らなくなった（空洞化）。**親が実際に消えてつながりが外れる復元**の後に、出来事・Snippet が書けることを見る試験を足した（`codex_only_restore_that_removes_the_primary_character_leaves_the_event_writable`、`body_only_restore_that_removes_the_snippets_scene_leaves_the_snippet_writable`）。
+2. **記録の不正確（直した）**：DR-SRX-1 と DR-SRX-9 の authority の食い違い、DR-SRX-3・15 の「実行時に導出」「動的な表名を避ける」、列の数（`PARK_COLUMNS` は 40 列。索引の無い列は 9）、DR-SRX-9 の「全場面」（全 `tree_nodes` の行）、DR-SRX-16 の仕組みの記述（未特定と明記）、`restore_links.rs` のコメント。
+3. **follow-up（この PR では直さない）**：(a) `unchecked_transaction` は DEFERRED で、最初の書き込みの前の読み（外部キー違反の集合の取得）が増えたので、別プロセスの commit で `SQLITE_BUSY_SNAPSHOT` になる窓が広がるおそれ（推測）。70〜80 秒の lane で IMMEDIATE を検討する。(b) `change_events` の退避だけが、子の `project_id` の一致を要求し、ほかの列は要求しない（`PARK_COLUMNS` の列は、親の id の集合で絞るので、別の作品の行には触れない）。(c) 触らない表の新しい外部キー違反は、集合の差が見ない（この PR は触らない表に書かない）。

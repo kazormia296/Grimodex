@@ -35,7 +35,7 @@ use super::{
     maybe_aux_snapshot_rows, snapshot_has_aux, table_columns, table_exists, RawRow, RestoreScope,
     SnapshotInsertMode, SnapshotInsertPlan, SnapshotRestoreTable,
 };
-use crate::change_events::RestoreSceneIdParking;
+use crate::change_events::{ParkWindow, RestoreSceneIdParking};
 
 /// One kind of link a restore could not give back, as the author sees it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -607,29 +607,6 @@ pub(super) fn shape<'a>(
     })
 }
 
-struct Window {
-    prefix: String,
-    /// Smallest string above every string that starts with `prefix`.
-    upper: String,
-    /// `substr` start (1-based) of the original value.
-    original_from: i64,
-}
-
-impl Window {
-    fn for_snapshot(snapshot_id: &str) -> Self {
-        let prefix = format!("{}{snapshot_id}__", crate::change_events::RESTORE_PARK_ROOT);
-        let mut upper = prefix.clone();
-        upper.pop();
-        upper.push('`');
-        let original_from = prefix.chars().count() as i64 + 1;
-        Self {
-            prefix,
-            upper,
-            original_from,
-        }
-    }
-}
-
 // ----------------------------------------------------------------------
 // Statements. Every name below comes from the constants above.
 // ----------------------------------------------------------------------
@@ -885,13 +862,12 @@ pub(super) fn count_losses(
         if !column_is_present(conn, &tables, column)? {
             continue;
         }
-        if !vanished.contains_key(&column.parent) {
-            vanished.insert(
-                column.parent,
-                vanishing_ids(conn, shape, &facts, column.parent)?,
-            );
-        }
-        let ids = &vanished[&column.parent];
+        let ids = match vanished.entry(column.parent) {
+            std::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(vanishing_ids(conn, shape, &facts, column.parent)?)
+            }
+        };
         let entry = rows.entry((column.table, kind)).or_default();
         for chunk in ids.chunks(ID_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(",");
@@ -928,24 +904,56 @@ pub(super) fn count_losses(
 
 /// What `park` decided that `restore` reports at the end.
 pub(super) struct Parked {
-    window: Window,
+    window: ParkWindow,
     scene_ids: RestoreSceneIdParking,
     prose_dropped: i64,
     bindings_reset: i64,
-    /// Dangling references each touched table already had before the restore
-    /// wrote anything. SQLite's own check at commit counts only what the
-    /// transaction adds, so the restore must not be stricter than that: a work
-    /// whose old data already has one (a database imported with foreign keys
-    /// off) would otherwise stop being restorable.
-    dangling_before: HashMap<&'static str, usize>,
+    /// The dangling references each touched table already had before the
+    /// restore wrote anything, as a set. The restore must not add one, but a
+    /// work whose old data already has some (a database imported with foreign
+    /// keys off) must stay restorable. The set, not a count: one old violation
+    /// mended and one new one made is the same count, and SQLite's own check at
+    /// commit does not see it once rows are set aside.
+    dangling_before: HashMap<&'static str, HashSet<Dangling>>,
+    /// The ids of the AI proposals that were current when the restore began
+    /// (made against the scene's version as it was). Only these are made
+    /// against the scene's version after the restore; one that was already
+    /// stale stays stale.
+    current_proposals: Vec<String>,
 }
 
-/// Rows of `table` that name a parent which does not exist. `table` is always
-/// one of the constants above.
-fn dangling_references(conn: &Connection, table: &str) -> anyhow::Result<usize> {
+/// One violation `PRAGMA foreign_key_check` reports for a table:
+/// (rowid, parent table, foreign key id).
+type Dangling = (Option<i64>, String, i64);
+
+/// The rows of `table` that name a parent which does not exist. `table` is
+/// always one of the constants above.
+fn dangling_set(conn: &Connection, table: &str) -> anyhow::Result<HashSet<Dangling>> {
     let mut statement = conn.prepare(&format!("PRAGMA foreign_key_check(\"{table}\")"))?;
-    let count = statement.query_map([], |_| Ok(()))?.count();
-    Ok(count)
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<Result<HashSet<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The proposals of this project that were current when the restore began.
+fn current_proposal_ids(conn: &Connection, project_id: &str) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id FROM prose_staging
+          WHERE project_id = ?1 AND status = 'proposed' AND base_version IS NOT NULL
+            AND base_version = (SELECT version FROM tree_nodes
+                                 WHERE tree_nodes.id = prose_staging.scene_id)",
+    )?;
+    let ids = statement
+        .query_map(params![project_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
 }
 
 /// While links are set aside, "a value in the parking window" means "set
@@ -954,10 +962,7 @@ fn dangling_references(conn: &Connection, table: &str) -> anyhow::Result<usize> 
 /// back. No product code makes such an id (they are UUIDs), but the IPC takes
 /// any string, so the restore refuses before it writes anything.
 fn ensure_no_reserved_ids(conn: &Connection, tables: &HashSet<String>) -> anyhow::Result<()> {
-    let root = crate::change_events::RESTORE_PARK_ROOT;
-    let mut upper = root.to_string();
-    upper.pop();
-    upper.push('`');
+    let (root, upper) = ParkWindow::reserved_range();
     for parent in Parent::ALL {
         if !tables.contains(parent.table()) {
             continue;
@@ -1009,11 +1014,16 @@ pub(super) fn park(
     ensure_no_reserved_ids(conn, &existing_tables(conn)?)?;
     let facts = plan_facts(plan);
     let tables = existing_tables(conn)?;
-    let window = Window::for_snapshot(shape.snapshot_id);
+    let window = ParkWindow::for_snapshot(shape.snapshot_id);
     let mut dangling_before = HashMap::new();
     for table in touched_tables(conn, shape, &tables)? {
-        dangling_before.insert(table, dangling_references(conn, table)?);
+        dangling_before.insert(table, dangling_set(conn, table)?);
     }
+    let current_proposals = if shape.parks_prose_staging() && tables.contains("prose_staging") {
+        current_proposal_ids(conn, shape.project_id)?
+    } else {
+        Vec::new()
+    };
     for column in shape.active_columns() {
         if !column_is_present(conn, &tables, column)? {
             continue;
@@ -1050,6 +1060,7 @@ pub(super) fn park(
         prose_dropped,
         bindings_reset,
         dangling_before,
+        current_proposals,
     })
 }
 
@@ -1089,19 +1100,24 @@ pub(super) fn restore(
     // A proposal that stays belongs to a scene whose body is the snapshot's,
     // but the scene is inserted again at the version the plan gives it (not the
     // one it had), so the version the proposal was made against no longer
-    // names the scene. Left alone, the proposal would be stale now and would
-    // look current again when the scene's version happens to reach that
-    // number with a different body. It is the same body, so the proposal is
+    // names the scene. Left alone, a proposal that was current would be stale
+    // now and would look current again when the scene's version happens to
+    // reach that number with a different body. It is the same body, so it is
     // valid: it is made against the scene as it is after the restore.
-    if shape.parks_prose_staging() && tables.contains("prose_staging") {
-        conn.execute(
+    // Only the proposals that were current when the restore began are touched:
+    // one that was already stale (the body had moved on since) stays stale,
+    // and is not made current by the restore (an auto-accept would then apply
+    // it to a body it was not made for).
+    for chunk in parked.current_proposals.chunks(ID_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
             "UPDATE prose_staging
                 SET base_version = (SELECT version FROM tree_nodes
                                      WHERE tree_nodes.id = prose_staging.scene_id)
-              WHERE project_id = ?1 AND status = 'proposed' AND base_version IS NOT NULL
-                AND scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?1)",
-            params![shape.project_id],
-        )?;
+              WHERE id IN ({placeholders})
+                AND scene_id IN (SELECT id FROM tree_nodes)"
+        );
+        conn.execute(&sql, params_from_iter(chunk.iter()))?;
     }
     // ... then count and detach what is left.
     let mut rows: HashMap<(&'static str, &'static str), HashSet<i64>> = HashMap::new();
@@ -1147,10 +1163,12 @@ pub(super) fn restore(
 }
 
 /// Nothing parked may survive the restore, and the restore must not have added
-/// a dangling reference to a table it touched (the transaction's deferred
-/// foreign key check would also stop the commit; this stops it with a reason).
-/// A dangling reference the table already had before the restore is not the
-/// restore's doing and does not stop it, as it does not stop SQLite's check.
+/// a dangling reference to a table it touched. SQLite's own deferred check at
+/// commit is not relied on: with rows set aside it can let a swap through (an
+/// old violation mended while a new one is made, DR-SRX-16), so this check is
+/// the one that counts, and it stops the restore with a reason. A dangling
+/// reference the table already had before the restore is not the restore's
+/// doing and does not stop it.
 pub(super) fn ensure_nothing_left_parked(
     conn: &Connection,
     shape: &RestoreShape<'_>,
@@ -1184,13 +1202,27 @@ pub(super) fn ensure_nothing_left_parked(
             "project snapshot restore left a parked value in change_events.scene_id"
         );
     }
-    for (table, before) in &parked.dangling_before {
-        let after = dangling_references(conn, table)?;
-        anyhow::ensure!(
-            after <= *before,
-            "project snapshot restore left {} new dangling reference(s) in {table}",
-            after - before
-        );
+    ensure_no_new_dangling(conn, &parked.dangling_before)
+}
+
+/// Fails when a touched table has a dangling reference it did not have before
+/// the restore. Compared as sets, not counts: mending an old violation while
+/// making a new one keeps the count, and with rows set aside SQLite's own check
+/// at commit does not catch it (measured by the integrator on SQLite 3.54.1).
+fn ensure_no_new_dangling(
+    conn: &Connection,
+    before: &HashMap<&'static str, HashSet<Dangling>>,
+) -> anyhow::Result<()> {
+    for (table, old) in before {
+        let after = dangling_set(conn, table)?;
+        let new = after.difference(old).collect::<Vec<_>>();
+        if let Some((rowid, parent, _)) = new.first() {
+            anyhow::bail!(
+                "project snapshot restore left {} new dangling reference(s) in {table} \
+                 (for example rowid {rowid:?}, naming a row of {parent})",
+                new.len()
+            );
+        }
     }
     Ok(())
 }

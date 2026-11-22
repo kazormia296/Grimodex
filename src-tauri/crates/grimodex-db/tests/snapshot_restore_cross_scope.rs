@@ -2062,3 +2062,104 @@ fn an_id_that_starts_with_the_parking_prefix_stops_the_restore_before_it_writes(
     // (`parked_leftovers` would report the odd id itself.)
     assert_eq!(foreign_key_violations(&db), 0, "after the refused restore");
 }
+
+/// A proposal that was already stale before the restore (the scene's body had
+/// moved on since it was made) is not made current by the restore: an
+/// auto-accept would then apply it to a body it was not made for.
+#[test]
+fn a_proposal_that_was_already_stale_stays_stale() {
+    let db = new_db();
+    seed_rich(&db);
+    exec(
+        &db,
+        "UPDATE tree_nodes SET version = 5 WHERE id = 's1';
+         UPDATE prose_staging SET base_version = 3 WHERE id = 'ps1';",
+    );
+    snapshot(&db, "S1");
+    // s1 keeps its body (only its title changes), so ps1 stays.
+    change_after_snapshot(&db, RestoreScope::Body);
+    restore(&db, "r1", "S1", &[RestoreScope::Body]);
+    assert_eq!(
+        scalar_i64(&db, "SELECT COUNT(*) FROM prose_staging WHERE id = 'ps1'"),
+        1,
+        "the proposal stayed"
+    );
+    assert_eq!(
+        scalar_i64(
+            &db,
+            "SELECT base_version FROM prose_staging WHERE id = 'ps1'"
+        ),
+        3,
+        "and was not made against the scene as it is now"
+    );
+    let version = scalar_i64(&db, "SELECT version FROM tree_nodes WHERE id = 's1'");
+    assert_ne!(
+        version, 3,
+        "premise: it still does not name the scene's version"
+    );
+}
+
+/// Fails the first insert into `target` (so the restore aborts at that point)
+/// and says whether the restore failed.
+fn restore_fails_on_insert_into(
+    db: &Database,
+    target: &'static str,
+    scopes: &[RestoreScope],
+) -> bool {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    db.with_conn_mut(|conn| {
+        conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+            AuthAction::Insert { table_name, .. } if table_name == target => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))?;
+        Ok(())
+    })
+    .expect("install authorizer");
+    let failed = try_restore(db, "r1", "S1", scopes);
+    db.with_conn_mut(|conn| {
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+        Ok(())
+    })
+    .expect("remove authorizer");
+    failed.is_err()
+}
+
+/// The Body restore is the one that sets `change_events.scene_id` aside. It is
+/// made to fail after the links are parked and before they are put back
+/// (`tree_nodes` is inserted again), and after they are put back and before the
+/// commit (`state_snapshots`): either way every row is as it was, to the byte,
+/// nothing stays parked, and the same request then goes through.
+#[test]
+fn a_failed_body_restore_leaves_the_change_events_as_they_were() {
+    for target in ["tree_nodes", "state_snapshots"] {
+        let db = new_db();
+        seed_rich(&db);
+        snapshot(&db, "S1");
+        change_after_snapshot(&db, RestoreScope::Body);
+        let events = "SELECT rowid, event_uid, scene_id, hash FROM change_events";
+        let events_before = dump_sql(&db, events);
+        let before = snapshot_all(&db);
+        assert!(
+            restore_fails_on_insert_into(&db, target, &[RestoreScope::Body]),
+            "the denied insert into {target} aborts the restore"
+        );
+        assert_eq!(
+            parked_leftovers(&db),
+            Vec::<String>::new(),
+            "after a failure at {target}"
+        );
+        assert_eq!(
+            events_before,
+            dump_sql(&db, events),
+            "change_events (rowid, scene_id, hash) as they were after a failure at {target}"
+        );
+        assert_eq!(
+            before,
+            snapshot_all(&db),
+            "rolled back to the byte at {target}"
+        );
+        let r = restore(&db, "r1", "S1", &[RestoreScope::Body]);
+        assert!(!r.no_op, "the retry after a failure at {target}");
+        assert_clean(&db, "after the retry");
+    }
+}

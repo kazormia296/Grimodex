@@ -336,6 +336,48 @@ pub fn append_change_events(
 /// rest is the snapshot id (`__grimodex_restore_park_<snapshotId>__<value>`).
 pub(crate) const RESTORE_PARK_ROOT: &str = "__grimodex_restore_park_";
 
+/// The values a restore of one snapshot parks: a range of strings that all
+/// start with `prefix`. A parked value is `<prefix><original value>`; "is it
+/// parked" is a range test (`>= prefix AND < upper`, never LIKE), and
+/// `original_from` is where the original value starts (`substr`, 1-based,
+/// counted in characters like SQLite does). This is the one place that builds
+/// the window; the restore's other parked columns use it too.
+pub(crate) struct ParkWindow {
+    pub(crate) prefix: String,
+    /// Smallest string above every string that starts with `prefix`.
+    pub(crate) upper: String,
+    pub(crate) original_from: i64,
+}
+
+impl ParkWindow {
+    pub(crate) fn for_snapshot(snapshot_id: &str) -> Self {
+        let prefix = format!("{RESTORE_PARK_ROOT}{snapshot_id}__");
+        let upper = Self::upper_of(&prefix);
+        let original_from = prefix.chars().count() as i64 + 1;
+        Self {
+            prefix,
+            upper,
+            original_from,
+        }
+    }
+
+    /// The range of every value that starts with the root, for any snapshot:
+    /// an id in it would be taken for a parked value, so the restore refuses
+    /// such an id before it writes anything.
+    pub(crate) fn reserved_range() -> (&'static str, String) {
+        (RESTORE_PARK_ROOT, Self::upper_of(RESTORE_PARK_ROOT))
+    }
+
+    /// The prefix ends in `_` (0x5F); the next character, '`' (0x60), makes the
+    /// smallest string above every string that starts with the prefix.
+    fn upper_of(prefix: &str) -> String {
+        let mut upper = prefix.to_string();
+        upper.pop();
+        upper.push('`');
+        upper
+    }
+}
+
 /// The only write of `change_events` outside the append (DR-SRX-9, 確認 115).
 ///
 /// A project snapshot restore deletes the scenes of the Body scope and puts
@@ -357,24 +399,13 @@ pub(crate) const RESTORE_PARK_ROOT: &str = "__grimodex_restore_park_";
 /// never passes a string (the prefix is built here from the snapshot id).
 /// Rows are never inserted or deleted.
 pub(crate) struct RestoreSceneIdParking {
-    prefix: String,
-    /// Smallest string above every string that starts with `prefix`.
-    upper: String,
-    /// `substr` start (1-based) of the original value.
-    original_from: i64,
+    window: ParkWindow,
 }
 
 impl RestoreSceneIdParking {
     pub(crate) fn for_snapshot(snapshot_id: &str) -> Self {
-        let prefix = format!("{RESTORE_PARK_ROOT}{snapshot_id}__");
-        let mut upper = prefix.clone();
-        upper.pop();
-        upper.push('`');
-        let original_from = prefix.chars().count() as i64 + 1;
         Self {
-            prefix,
-            upper,
-            original_from,
+            window: ParkWindow::for_snapshot(snapshot_id),
         }
     }
 
@@ -384,7 +415,7 @@ impl RestoreSceneIdParking {
                 SET scene_id = ?1 || scene_id
               WHERE project_id = ?2
                 AND scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?2)",
-            params![self.prefix, project_id],
+            params![self.window.prefix, project_id],
         )?)
     }
 
@@ -399,13 +430,17 @@ impl RestoreSceneIdParking {
                     SELECT 1 FROM tree_nodes
                      WHERE tree_nodes.id = substr(change_events.scene_id, ?3)
                 )",
-            params![self.prefix, self.upper, self.original_from],
+            params![
+                self.window.prefix,
+                self.window.upper,
+                self.window.original_from
+            ],
         )?;
         Ok(conn.execute(
             "UPDATE change_events
                 SET scene_id = NULL
               WHERE scene_id >= ?1 AND scene_id < ?2",
-            params![self.prefix, self.upper],
+            params![self.window.prefix, self.window.upper],
         )?)
     }
 
@@ -414,7 +449,7 @@ impl RestoreSceneIdParking {
         Ok(conn.query_row(
             "SELECT COUNT(*) FROM change_events
               WHERE scene_id >= ?1 AND scene_id < ?2",
-            params![self.prefix, self.upper],
+            params![self.window.prefix, self.window.upper],
             |row| row.get::<_, i64>(0),
         )?)
     }
