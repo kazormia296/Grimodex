@@ -1985,11 +1985,17 @@ fn foreshadow_edit_after_a_restore_is_pinned_as_it_is_today() {
 // production writer of the restore transaction is project_snapshots.rs
 // =====================================================================
 
-/// Directories whose Rust is test, build output or vendored code, never part
-/// of a shipped binary.
-const NON_PRODUCTION_DIRS: &[&str] = &["target", "node_modules", "tests", "test", "test-support"];
+/// Build output and vendored code: never scanned.
+const SKIPPED_DIRS: &[&str] = &["target", "node_modules"];
+/// Cargo integration-test and test-support directories. They are skipped only
+/// when they sit directly under a crate root (a directory with a `Cargo.toml`),
+/// where they are never part of the shipped library or binary. A `tests`
+/// directory below `src` is decided by the `#[cfg(test)] mod` declaration that
+/// points at it, not by its name.
+const CRATE_TEST_DIRS: &[&str] = &["tests", "test", "test-support"];
 
-fn production_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+fn all_rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let is_crate_root = dir.join("Cargo.toml").is_file();
     for entry in std::fs::read_dir(dir).expect("read dir") {
         let path = entry.expect("entry").path();
         let name = path
@@ -1997,17 +2003,167 @@ fn production_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathB
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         if path.is_dir() {
-            if !NON_PRODUCTION_DIRS.contains(&name.as_str()) {
-                production_rust_sources(&path, out);
+            let skipped = SKIPPED_DIRS.contains(&name.as_str())
+                || (is_crate_root && CRATE_TEST_DIRS.contains(&name.as_str()));
+            if !skipped {
+                all_rust_files(&path, out);
             }
-        } else if path.extension().is_some_and(|e| e == "rs")
-            // In-crate test modules live in `*_tests.rs` / `tests.rs` files.
-            && !name.ends_with("_tests.rs")
-            && name != "tests.rs"
-        {
+        } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
     }
+}
+
+/// Paths (files and directories) that `file` declares as test-only modules:
+/// `#[cfg(test)] mod name;`, optionally with `#[path = "..."]` and a
+/// visibility. A `mod name;` without that exact `cfg(test)` attribute is not
+/// returned, so a production module is never excused by its file name. A
+/// compound cfg such as `cfg(all(test, ...))` is not read either; that leaves
+/// the file in the scan, which only makes the scan stricter.
+fn cfg_test_module_paths(file: &std::path::Path, text: &str) -> Vec<std::path::PathBuf> {
+    let dir = file.parent().expect("source file has a parent");
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let base = if matches!(stem.as_str(), "lib" | "main" | "mod") {
+        dir.to_path_buf()
+    } else {
+        dir.join(&stem)
+    };
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("#[cfg(test)]") {
+        rest = &rest[at + "#[cfg(test)]".len()..];
+        let mut cur = rest;
+        let mut path_attr: Option<String> = None;
+        loop {
+            cur = cur.trim_start();
+            if let Some(attr) = cur.strip_prefix("#[") {
+                let Some(end) = attr.find(']') else { break };
+                if let Some(value) = attr[..end].trim_start().strip_prefix("path") {
+                    let mut parts = value.split('"');
+                    if let (Some(_), Some(literal)) = (parts.next(), parts.next()) {
+                        path_attr = Some(literal.to_string());
+                    }
+                }
+                cur = &attr[end + 1..];
+            } else if cur.starts_with("//") {
+                cur = cur.find('\n').map_or("", |n| &cur[n..]);
+            } else {
+                break;
+            }
+        }
+        if let Some(after_pub) = cur.strip_prefix("pub") {
+            let after_pub = after_pub.trim_start();
+            cur = match after_pub
+                .strip_prefix('(')
+                .and_then(|r| r.find(')').map(|n| &r[n + 1..]))
+            {
+                Some(after_vis) => after_vis,
+                None => after_pub,
+            };
+        }
+        let Some(after_mod) = cur.trim_start().strip_prefix("mod ") else {
+            continue;
+        };
+        let after_mod = after_mod.trim_start();
+        let name_len = after_mod
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
+        if name_len == 0 || !after_mod[name_len..].trim_start().starts_with(';') {
+            continue; // an inline module: its body is dropped by `without_cfg_test_items`
+        }
+        let name = &after_mod[..name_len];
+        match &path_attr {
+            Some(literal) => found.push(dir.join(literal)),
+            None => {
+                found.push(base.join(format!("{name}.rs")));
+                found.push(base.join(name).join("mod.rs"));
+                found.push(base.join(name));
+            }
+        }
+    }
+    found
+}
+
+/// Every `.rs` file below `dir` except build output, the crate-level test
+/// directories, and the files that a `#[cfg(test)] mod x;` declaration names.
+/// A file's name never excuses it.
+fn production_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let mut all = Vec::new();
+    all_rust_files(dir, &mut all);
+    let mut test_only: Vec<std::path::PathBuf> = Vec::new();
+    for file in &all {
+        let text = std::fs::read_to_string(file).expect("read source");
+        test_only.extend(cfg_test_module_paths(file, &text));
+    }
+    out.extend(
+        all.into_iter()
+            .filter(|file| !test_only.iter().any(|t| file.starts_with(t))),
+    );
+}
+
+#[test]
+fn the_source_scan_excuses_test_files_only_by_cfg_test_declarations() {
+    let root = std::env::temp_dir().join(format!(
+        "grimodex-scan-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let write = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("krate/Cargo.toml", "");
+    write(
+        "krate/src/lib.rs",
+        "#[cfg(test)]\nmod tests;\n#[cfg(test)]\n#[path = \"custom_check.rs\"]\nmod renamed;\n\
+         mod sneaky_tests;\n#[cfg(all(test, unix))]\nmod compound;\nmod prod;\n",
+    );
+    write("krate/src/tests.rs", "");
+    write("krate/src/tests/deep.rs", "");
+    write("krate/src/custom_check.rs", "");
+    write("krate/src/sneaky_tests.rs", "");
+    write("krate/src/compound.rs", "");
+    write(
+        "krate/src/prod.rs",
+        "#[cfg(test)]\npub(crate) mod prod_tests;\n",
+    );
+    write("krate/src/prod/prod_tests.rs", "");
+    write("krate/src/prod/other_tests.rs", "");
+    write("krate/tests/integration.rs", "");
+    write("krate/test-support/support.rs", "");
+    write("krate/target/built.rs", "");
+    let mut found = Vec::new();
+    production_rust_sources(&root, &mut found);
+    let mut names: Vec<String> = found
+        .iter()
+        .map(|f| {
+            f.strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    names.sort();
+    std::fs::remove_dir_all(&root).ok();
+    assert_eq!(
+        names,
+        [
+            "krate/src/compound.rs",
+            "krate/src/lib.rs",
+            "krate/src/prod.rs",
+            "krate/src/prod/other_tests.rs",
+            "krate/src/sneaky_tests.rs",
+        ],
+        "only cfg(test)-declared modules and crate-level test directories are excused"
+    );
 }
 
 /// `text` without its `#[cfg(test)]` items. A braced item is skipped up to its
