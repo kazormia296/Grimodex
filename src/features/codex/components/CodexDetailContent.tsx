@@ -1118,7 +1118,10 @@ export function CodexDetailContent({
           <ForeshadowTab codexEntryId={entry.id} />
         )}
         {activeTab === "consistency" && (
-          <ConsistencyTab codexEntryId={entry.id} />
+          <ConsistencyTab
+            codexEntryId={entry.id}
+            impactRefreshKey={entry.updatedAt}
+          />
         )}
       </div>
     </div>

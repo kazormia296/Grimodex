@@ -68,6 +68,10 @@ describe("ImpactPendingTabMarker", () => {
     const tab = screen.getByTestId("detail-tab-consistency");
     expect(tab).toContainElement(dot);
     expect(tab).toHaveTextContent("影響チェックが未実施の変更があります");
+    // 「整合性」に語が連結されない（区切りの括弧つき）。
+    expect(tab).toHaveTextContent(
+      "整合性 (影響チェックが未実施の変更があります)",
+    );
     // 他のタブには出ない。
     expect(screen.getByTestId("detail-tab-details")).not.toContainElement(dot);
     // 計測用の隠し行には出ない（点は 1 つだけ）。
@@ -101,7 +105,9 @@ describe("ImpactPendingTabMarker", () => {
         onTabChange={() => {}}
       />,
     );
-    await act(async () => {});
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
     expect(readImpactPending).not.toHaveBeenCalled();
     expect(screen.queryByTestId(DOT)).toBeNull();
   });

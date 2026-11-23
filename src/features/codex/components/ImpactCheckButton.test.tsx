@@ -192,7 +192,10 @@ describe("ImpactCheckButton: 前回のチェック以降の変更の 1 行", () 
     arrange(twoChanges);
     gate.presentation = "disabled";
     const { rerender } = render(<ImpactCheckButton entryId="e1" />);
-    await act(async () => {});
+    // 読みの timer（0 ms）が走る時間を実時間で待つ。
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
     expect(screen.queryByTestId(LINE)).toBeNull();
     expect(screen.getByTestId("codex-impact-check")).toBeDisabled();
     // disabled の間は読みもしない。
@@ -223,9 +226,26 @@ describe("ImpactCheckButton: 前回のチェック以降の変更の 1 行", () 
     // 完走して baseline が現在へ進んだ想定。
     arrange(twoChanges, twoChanges);
     act(() => usePostEffectRunStore.getState().complete("r1", 0));
+    // 終了直後は読まず、ボタンの onDone の合図（baseline の前進の後）を待つ。
+    act(() => useImpactPendingEpochStore.getState().bump());
     await waitFor(() => expect(getBaseline).toHaveBeenCalledTimes(2));
     await act(async () => {});
     expect(screen.queryByTestId(LINE)).toBeNull();
+  });
+
+  it("開いたまま項目が更新された（refreshKey の変化）ら、1 行も再計算する", async () => {
+    arrange(twoChanges);
+    const { rerender } = render(
+      <ImpactCheckButton entryId="e1" refreshKey="t1" />,
+    );
+    await screen.findByTestId(LINE);
+    // 別の場所（header など）での編集が戻り、baseline と同じ状態になった想定。
+    arrange(baseline);
+    rerender(<ImpactCheckButton entryId="e1" refreshKey="t2" />);
+    await waitFor(() => expect(screen.queryByTestId(LINE)).toBeNull(), {
+      timeout: 3000,
+    });
+    expect(getBaseline).toHaveBeenCalledTimes(2);
   });
 
   it("読みが失敗しても表示なし（toast も出さない）", async () => {
@@ -365,15 +385,58 @@ describe("ImpactCheckButton: started の完走後に印が残らない", () => {
 
     // post-effect/api の順序: store の complete → （baseline の前進を待つ）→ onDone。
     // complete の時点の baseline はまだ古い。
+    const readsBefore = vi.mocked(getBaseline).mock.calls.length;
     act(() => usePostEffectRunStore.getState().complete("r1", 1));
-    await screen.findByTestId(LINE); // 古い baseline を読んで「変更あり」が一瞬戻る
+    // complete の後・onDone の前は、古い baseline を読んで「N 件」を戻さない（読みもしない）。
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
+    expect(screen.queryByTestId(LINE)).toBeNull();
+    expect(vi.mocked(getBaseline).mock.calls.length).toBe(readsBefore);
 
     // baseline が進み、runImpactReview の onDone が callbacks.onDone を呼ぶ。
     arrange(twoChanges, twoChanges);
     await act(async () => {
       captured.onDone?.({ summary: undefined } as never);
     });
-    await waitFor(() => expect(screen.queryByTestId(LINE)).toBeNull());
+    await waitFor(() =>
+      expect(vi.mocked(getBaseline).mock.calls.length).toBeGreaterThan(
+        readsBefore,
+      ),
+    );
+    expect(screen.queryByTestId(LINE)).toBeNull();
+  });
+
+  it("部分失敗（baseline を進めない）の onDone の後は、変更が残っているので 1 行が戻る", async () => {
+    arrange(twoChanges);
+    let captured: { onDone?: (e: never) => void } = {};
+    vi.mocked(runImpactReview).mockImplementation(async (_id, cb) => {
+      captured = cb as typeof captured;
+      usePostEffectRunStore.getState().begin({
+        runId: "r1",
+        projectId: "p1",
+        effectType: "impact_review",
+        scopeType: "project",
+        scopeTargetId: null,
+      });
+      return {
+        status: "started",
+        changeCount: 2,
+        changeSummary: "",
+        candidateSceneCount: 1,
+      };
+    });
+    render(<ImpactCheckButton entryId="e1" />);
+    await screen.findByTestId(LINE);
+    await act(async () => {
+      screen.getByTestId("codex-impact-check").click();
+    });
+    act(() => usePostEffectRunStore.getState().complete("r1", 0, "partial"));
+    expect(screen.queryByTestId(LINE)).toBeNull();
+    await act(async () => {
+      captured.onDone?.({ summary: "1 scene failed" } as never);
+    });
+    await screen.findByTestId(LINE);
   });
 
   it("onError でも再計算の合図を出す", async () => {

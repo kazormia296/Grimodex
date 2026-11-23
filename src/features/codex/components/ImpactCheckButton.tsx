@@ -18,6 +18,8 @@ import { useImpactPending } from "./useImpactPending";
 
 interface ImpactCheckButtonProps {
   entryId: string;
+  /** 項目の更新時刻など。変わると「前回のチェック以降の変更」を再計算する（debounce あり）。 */
+  refreshKey?: string;
 }
 
 /**
@@ -28,7 +30,10 @@ interface ImpactCheckButtonProps {
  * 整合性チェック (ProjectAnnotationsView 等) と同じ guard を踏襲:
  * AI ポリシー OFF はボタンを隠し、ライセンス未認証は実行時に弾く。
  */
-export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
+export function ImpactCheckButton({
+  entryId,
+  refreshKey,
+}: ImpactCheckButtonProps) {
   const { t } = useTranslation();
   // 起動準備中のみのローカル状態。実行中表示は runStore から導出する
   // （タブ移動＝unmount で消えないように）。
@@ -39,7 +44,7 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
   const analysisGate = useAiGate("analysis");
   // 前回のチェック以降の変更の件数（ローカルの読みだけ・AI 0 回。DR-INN-1）。
   // 整合性タブを開く（mount）たびに最新を読む。
-  const pending = useImpactPending(entryId);
+  const pending = useImpactPending(entryId, refreshKey);
 
   // analysis がポリシーで OFF のときはボタンを描画しない (整合性チェックと同じ方針)。
   if (analysisGate.presentation === "hidden") return null;

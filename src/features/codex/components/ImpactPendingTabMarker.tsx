@@ -26,7 +26,12 @@ export function ImpactPendingTabMarker({
         aria-hidden="true"
         className="pointer-events-none absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-primary"
       />
-      <span className="sr-only">{t("codex.impactCheck.pendingTab")}</span>
+      {/* タブの accessible name は「整合性」に続けて読まれる。区切りの括弧で連結を避ける。 */}
+      <span className="sr-only">
+        {" ("}
+        {t("codex.impactCheck.pendingTab")}
+        {")"}
+      </span>
     </>
   );
 }

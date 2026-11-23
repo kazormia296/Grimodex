@@ -33,13 +33,34 @@ export function useImpactPending(
   const active = aiEnabled && !running;
   // 押下完了の合図（epoch）が前回の読みから進んでいれば、debounce せずすぐ読む。
   const readEpoch = useRef(epoch);
+  // 影響チェックの実行が終わった（running が true → false）後は、baseline の前進を待つ
+  // ボタンの onDone／onError の合図（epoch の進み）が来るまで読まない。post-effect/api.ts は
+  // store の complete（running が落ちる）を callbacks.onDone（baseline の前進の後）より
+  // 先に走らせるので、すぐ読むと古い baseline を見て「N 件」が戻る。
+  const wasRunning = useRef(running);
+  const awaitingEpoch = useRef<{ entryId: string; epoch: number } | null>(null);
+  // 実行中に最後に見た epoch。実行の終了と合図が同じ描画にまとまっても、合図を取りこぼさない。
+  const epochWhileRunning = useRef(epoch);
 
   useEffect(() => {
+    const justFinishedRun = wasRunning.current && !running;
+    wasRunning.current = running;
+    if (running) epochWhileRunning.current = epoch;
+    if (justFinishedRun && aiEnabled) {
+      awaitingEpoch.current = { entryId, epoch: epochWhileRunning.current };
+    }
     if (!active) {
       // AI が使えない・実行中の間は読まず、前の結果も残さない（終了直後に古い件数を出さない）。
       setResult(null);
       return;
     }
+    const awaiting = awaitingEpoch.current;
+    if (awaiting && awaiting.entryId === entryId && awaiting.epoch === epoch) {
+      // 実行の終了直後で、まだ baseline の前進の合図が来ていない。結果は消したまま待つ。
+      setResult(null);
+      return;
+    }
+    awaitingEpoch.current = null;
     let cancelled = false;
     const epochAdvanced = readEpoch.current !== epoch;
     readEpoch.current = epoch;
