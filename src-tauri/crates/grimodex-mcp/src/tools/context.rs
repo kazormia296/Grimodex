@@ -160,7 +160,15 @@ pub(crate) fn build_writing_context(
         &TreeFilter::default(),
     )?);
 
-    let chapter_outlines = collect_chapter_outlines(&all_nodes, &scene_meta);
+    // 辿りの起点は、付け替えの後の行（`parent_id` が最も近い live の祖先）から取る。
+    // `scene_meta` の生の `parent_id` は archived の folder を指しうり、`all_nodes` に無いので
+    // そこで辿りが止まって上の live の章の概要まで消える。root から届かない場面は従来どおり
+    // `scene_meta` に落ちる。
+    let anchor = all_nodes
+        .iter()
+        .find(|n| n.id == scene_id)
+        .unwrap_or(&scene_meta);
+    let chapter_outlines = collect_chapter_outlines(&all_nodes, anchor);
     let (story_so_far, story_so_far_dropped) = collect_story_so_far(&all_nodes, scene_id);
 
     // Scene extras not carried by TreeNode (intent), plus the body.
@@ -1326,6 +1334,56 @@ mod tests {
             "{:?}",
             outline_titles(&ctx)
         );
+    }
+
+    #[test]
+    fn writing_context_outline_walk_continues_above_an_archived_folder() {
+        // live の folder L（概要あり）＞ archived の folder A（概要あり）＞ 場面 s。
+        // A の概要は出ず、L の概要は残る（辿りは上へ続ける）。
+        let conn = make_simple_db();
+        seed_project(&conn, "p1", "My Novel");
+        seed_node(
+            &conn,
+            "L",
+            "p1",
+            None,
+            "folder",
+            "Live L",
+            Some("L-outline"),
+            "a0",
+            "{}",
+        );
+        seed_node(
+            &conn,
+            "A",
+            "p1",
+            Some("L"),
+            "folder",
+            "Archived A",
+            Some("A-outline"),
+            "a0",
+            "{}",
+        );
+        seed_node(
+            &conn,
+            "s",
+            "p1",
+            Some("A"),
+            "scene",
+            "Scene s",
+            Some("s-syn"),
+            "a0",
+            "{}",
+        );
+        conn.execute("UPDATE tree_nodes SET archived_at = 'x' WHERE id = 'A'", [])
+            .unwrap();
+        let ctx = build_writing_context(&conn, "p1", "s").unwrap().unwrap();
+        assert_eq!(outline_titles(&ctx), ["Live L"]);
+        // archived が無ければ従来どおり 2 段。
+        conn.execute("UPDATE tree_nodes SET archived_at = NULL", [])
+            .unwrap();
+        let ctx = build_writing_context(&conn, "p1", "s").unwrap().unwrap();
+        assert_eq!(outline_titles(&ctx), ["Live L", "Archived A"]);
     }
 
     #[test]
