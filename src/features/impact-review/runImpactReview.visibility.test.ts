@@ -659,3 +659,24 @@ describe("影響確認が止める集合と DR-MP4-41 の hidden の集合の関
     },
   );
 });
+
+describe("contextMode の欠落を公開として補わない（型を必須にした後の runtime。DR-MP4-44）", () => {
+  // CodexSnapshotResult.contextMode は必須。producer（buildCodexSnapshot）は常に値を返すので
+  // 実害は無いが、将来の producer が省いたときに「公開」へ倒れない（今までの
+  // `?? "mentioned"` は fail-open だった）ことを固定する。型の検査は tsc の担当
+  // （この試験は runtime の形だけ）。hasRestrictedPhases の欠落は runtime では補わず、
+  // 型だけで止める（runtime の挙動は変えない。DR に記録）。
+  it("contextMode が欠けた source は、差分があっても AI にも候補絞りにも出さず no-candidates で止まる", async () => {
+    vi.mocked(getBaseline).mockResolvedValue(baselineAge12);
+    const source = built();
+    Reflect.deleteProperty(source, "contextMode");
+    vi.mocked(buildCodexSnapshot).mockResolvedValue(source);
+
+    const res = await runImpactReview("e1");
+
+    expect(res.status).toBe("no-candidates");
+    expect(res.changeCount).toBe(1);
+    expectNothingSentToAi();
+    expect(saveBaseline).not.toHaveBeenCalled();
+  });
+});
