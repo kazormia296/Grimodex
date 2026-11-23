@@ -874,7 +874,7 @@ describe("assembleChronicleSnapshotText", () => {
     expect(text).toContain("アリス");
   });
 
-  it("AI 秘匿: secret イベントは reveal シーン前で隠れ reveal シーン以降で出る", () => {
+  it("secret イベントは reveal シーンの位置に関係なく出る", () => {
     const events = [
       mkEvent({ id: "e1", title: "戴冠式", ordinal: "a2" }),
       mkEvent({
@@ -898,11 +898,11 @@ describe("assembleChronicleSnapshotText", () => {
       codexNames: new Map<string, string>(),
       lang: "ja",
     };
-    // s1（reveal s2 より前）: 秘匿イベントは出ない。
+    // s1（reveal s2 より前）でも出る。
     const before = assembleChronicleSnapshotText({ ...base, sceneId: "s1" });
     expect(before).toContain("戴冠式");
-    expect(before ?? "").not.toContain("毒殺");
-    // s2（reveal 以降）: 秘匿イベントが背景に出る。
+    expect(before).toContain("毒殺");
+    // s2（reveal 以降）も同様。
     const after = assembleChronicleSnapshotText({ ...base, sceneId: "s2" });
     expect(after).toContain("毒殺");
   });
