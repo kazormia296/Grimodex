@@ -44,7 +44,14 @@ export interface DeleteTreeSubtreePorts {
   pushHistory(command: HistoryCommand): void;
   closeTabs(id: string): void;
   captureTrash(input: TrashCapture): void;
-  cancelTrash(tempId: string): void;
+  /**
+   * Cancel a delayed Trash capture. Returns true when the capture was still
+   * pending (so it is now gone and an Undo that stops half way can give it
+   * back); false or nothing when it was no longer pending: already written to
+   * the Trash, or being written (a write in flight completes even when it is
+   * cancelled, so such a scene may be in the Trash twice, never in neither).
+   */
+  cancelTrash(tempId: string): boolean | void;
   makeTrashTempId(node: TreeNodeData): string;
   recordChange(input: {
     rootId: string;
@@ -82,6 +89,31 @@ function descendants(
     for (const child of nodes) {
       if (child.parentId === current) queue.push(child.id);
     }
+  }
+  return result;
+}
+
+/**
+ * The nodes of `nodes` that the delete's Undo Journal recorded, parents first,
+ * each one connected to the root through other recorded nodes. A node added
+ * to the folder after the Undo is not in the record (a Redo does not rewrite
+ * it), so the next Undo cannot re-create it, and neither can one whose parent
+ * is such a node.
+ */
+function recordedSubtree(
+  nodes: readonly TreeNodeData[],
+  recordedIds: ReadonlySet<string>,
+  rootId: string,
+): TreeNodeData[] {
+  const kept = new Set<string>();
+  const result: TreeNodeData[] = [];
+  for (const node of parentsFirst(nodes)) {
+    if (!recordedIds.has(node.id)) continue;
+    if (node.id !== rootId && !(node.parentId && kept.has(node.parentId))) {
+      continue;
+    }
+    kept.add(node.id);
+    result.push(node);
   }
   return result;
 }
@@ -198,13 +230,14 @@ async function deleteTreeSubtreeWithAuthority(
   });
   for (const deletedId of successfullyDeleted) ports.closeTabs(deletedId);
   const trashTempIds = new Map<string, string>();
+  const trashCaptures = new Map<string, Omit<TrashCapture, "tempId">>();
   if (trackHistory) {
     for (const node of deletedNodes) {
       if (!successfullyDeleted.has(node.id) || node.nodeType !== "scene")
         continue;
       const tempId = ports.makeTrashTempId(node);
       trashTempIds.set(node.id, tempId);
-      ports.captureTrash({
+      const capture = {
         projectId: node.projectId,
         node,
         content: contentSnapshots[node.id] ?? "",
@@ -213,8 +246,9 @@ async function deleteTreeSubtreeWithAuthority(
             ?.title ??
           nodes.find((candidate) => candidate.id === node.parentId)?.title ??
           null,
-        tempId,
-      });
+      };
+      trashCaptures.set(node.id, capture);
+      ports.captureTrash({ ...capture, tempId });
     }
   }
 
@@ -224,6 +258,34 @@ async function deleteTreeSubtreeWithAuthority(
   // The nodes an Undo puts back into the store. A Redo refreshes them, so an
   // edit made between the Undo and the Redo is not lost by the next Undo.
   let undoNodes: TreeNodeData[] = deletedNodes;
+  // Scenes whose delayed Trash capture an Undo cancelled in time.
+  const outOfTrash = new Set<string>();
+  // Put the restored nodes into the store. A complete Undo shows the active
+  // Scene it started from; one that stopped half way shows only what came
+  // back and leaves the active Scene alone unless that Scene is among them.
+  // A retry after an unknown outcome sees nodes it already showed, so the
+  // store's copy of a restored id is replaced and never duplicated.
+  function reflectRestored(complete: boolean): void {
+    const shown = undoNodes
+      .filter((node) => restoredIds.has(node.id))
+      .map((node) => {
+        const fields = restoredFields.get(node.id);
+        return fields ? { ...node, ...fields } : node;
+      });
+    if (shown.length === 0) return;
+    const shownIds = new Set(shown.map((node) => node.id));
+    const restored = [
+      ...ports.getNodes().filter((node) => !shownIds.has(node.id)),
+      ...shown,
+    ];
+    ports.applyNodes(
+      restored,
+      complete || shownIds.has(previousActiveSceneId)
+        ? previousActiveSceneId
+        : ports.getActiveSceneId(),
+    );
+    ports.recomputeSceneOrder(restored);
+  }
   ports.pushHistory({
     kind: "scenes",
     label: ports.deletedLabel,
@@ -236,27 +298,44 @@ async function deleteTreeSubtreeWithAuthority(
       const navigationAuthority = ports.tryAcquireNavigationAuthority();
       if (!navigationAuthority) return;
       try {
-        for (const tempId of trashTempIds.values()) ports.cancelTrash(tempId);
-        for (const node of parentsFirst(undoNodes)) {
-          if (restoredIds.has(node.id)) continue;
-          const content =
-            node.nodeType === "scene" ? contentSnapshots[node.id] : undefined;
-          const snapshot = restoreSnapshots[node.id];
-          const fields = snapshot
-            ? await ports.restorePersisted(node, content, snapshot)
-            : await ports.restorePersisted(node, content);
-          if (fields) restoredFields.set(node.id, fields);
-          restoredIds.add(node.id);
+        // The delayed Trash captures are cancelled up front, so a scene this
+        // Undo restores is not also written to the Trash. A scene whose
+        // capture was cancelled is in neither the Trash nor the database
+        // until it is restored (it stays so through a Redo, which does not
+        // capture again): if an Undo stops half way, those that were not
+        // restored are given back (below) instead of being lost.
+        for (const [nodeId, tempId] of trashTempIds) {
+          if (outOfTrash.has(nodeId)) continue;
+          if (ports.cancelTrash(tempId) === true) outOfTrash.add(nodeId);
         }
-        const restored = [
-          ...ports.getNodes(),
-          ...undoNodes.map((node) => {
-            const fields = restoredFields.get(node.id);
-            return fields ? { ...node, ...fields } : node;
-          }),
-        ];
-        ports.applyNodes(restored, previousActiveSceneId);
-        ports.recomputeSceneOrder(restored);
+        try {
+          for (const node of parentsFirst(undoNodes)) {
+            if (restoredIds.has(node.id)) continue;
+            const content =
+              node.nodeType === "scene" ? contentSnapshots[node.id] : undefined;
+            const snapshot = restoreSnapshots[node.id];
+            const fields = snapshot
+              ? await ports.restorePersisted(node, content, snapshot)
+              : await ports.restorePersisted(node, content);
+            if (fields) restoredFields.set(node.id, fields);
+            restoredIds.add(node.id);
+          }
+        } catch (error) {
+          // The database holds the nodes restored so far: show them, and put
+          // the scenes that did not come back into the Trash again.
+          reflectRestored(false);
+          for (const nodeId of [...outOfTrash]) {
+            if (restoredIds.has(nodeId)) continue;
+            const capture = trashCaptures.get(nodeId);
+            if (!capture) continue;
+            const tempId = ports.makeTrashTempId(capture.node);
+            trashTempIds.set(nodeId, tempId);
+            outOfTrash.delete(nodeId);
+            ports.captureTrash({ ...capture, tempId });
+          }
+          throw error;
+        }
+        reflectRestored(true);
       } finally {
         navigationAuthority.release();
       }
@@ -267,8 +346,22 @@ async function deleteTreeSubtreeWithAuthority(
       try {
         const current = [...ports.getNodes()];
         const currentIds = descendants(current, id);
-        const refreshed = current.filter((node) => currentIds.has(node.id));
+        const refreshed = recordedSubtree(
+          current.filter((node) => currentIds.has(node.id)),
+          targetIds,
+          id,
+        );
         await captureSnapshots(refreshed, true);
+        // What a later Undo gives back to the Trash is the body as of now.
+        for (const node of refreshed) {
+          const capture = trashCaptures.get(node.id);
+          if (!capture) continue;
+          trashCaptures.set(node.id, {
+            ...capture,
+            node,
+            content: contentSnapshots[node.id] ?? capture.content,
+          });
+        }
         await ports.deletePersisted(id);
         restoredIds.clear();
         restoredFields.clear();
