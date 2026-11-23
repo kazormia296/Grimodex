@@ -782,3 +782,38 @@ fn a_table_of_a_scope_that_is_not_restored_is_left_alone() {
     })
     .expect("resolve");
 }
+
+/// A parent the restore replaces is only what the plan gives back: a live row
+/// that the restore deletes (a scene made after the snapshot) is not a parent a
+/// snapshot row can keep, however it is reached. A scope that is not replaced
+/// keeps its live rows (DR-SRX-26).
+#[test]
+fn a_live_row_of_a_replaced_parent_is_not_a_parent_after_the_restore() {
+    let db = crate::test_support::current_schema_memory().expect("current schema");
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO projects (id, title) VALUES ('p1', 'One');
+             INSERT INTO tree_nodes (id, project_id, node_type, title, content, created_at, updated_at, version)
+               VALUES ('live-scene', 'p1', 'scene', 'S', '{}', 't', 't', 0);",
+        )?;
+        let plan = vec![insert(
+            SnapshotRestoreTable::MapNodePositions,
+            &[("id", "mp1"), ("tree_node_id", "live-scene")],
+        )];
+        // Body replaces the scenes and gives back none of them: the live scene
+        // is gone after the restore, so the placement goes with it.
+        let both: HashSet<RestoreScope> = [RestoreScope::Map, RestoreScope::Body]
+            .into_iter()
+            .collect();
+        let left_out = resolve(conn, &body_shape(&both), plan.clone())?;
+        assert_eq!(left_out.dropped.get("map_placements"), Some(&1));
+        assert!(left_out.plan.is_empty());
+        // A Map restore alone leaves the scenes as they are: the placement stays.
+        let map: HashSet<RestoreScope> = [RestoreScope::Map].into_iter().collect();
+        let kept = resolve(conn, &body_shape(&map), plan)?;
+        assert!(kept.dropped.is_empty());
+        assert_eq!(kept.plan.len(), 1);
+        Ok(())
+    })
+    .expect("resolve");
+}
