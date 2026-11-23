@@ -6570,10 +6570,28 @@
     "title": "Structure health",
     "shortLabel": "Health",
     "openPreview": "Structure health (preview)",
-    "previewNote": "Preview: live counts arrive after the dependency index is wired. Default mode is deterministic maintenance only — AI is never auto-applied.",
-    "foundationOnly": "Only the Change Feed foundation is active. Live health counts appear after the dependency index is wired.",
+    "previewNote": "Preview: counts what maintenance is watching, read once when you open this. Nothing is fixed automatically and AI is not used.",
     "modeLabel": "Mode",
-    "principles": "Detecting change, re-analyzing, and rewriting applied structure are separate stages. Reanchor candidates are computed deterministically but never auto-applied.",
+    "principles": "This screen only reads. It counts; it never changes, re-analyzes, or rewrites anything.",
+    "inbox": {
+      "loading": "Counting…",
+      "noProject": "No project is loaded, so nothing can be counted.",
+      "failed": "Could not load the counts. Close this and open it again to retry.",
+      "empty": "There is nothing to check yet.",
+      "countUnit": "{{value}}",
+      "proposalsChecked": "Proposals checked",
+      "proposalsStale": "Proposals whose evidence is out of date",
+      "staleBreakdown": {
+        "stale": "Evidence text changed",
+        "sourceMissing": "Evidence scene not found",
+        "anchorMismatch": "Evidence position no longer matches",
+        "readSetDrift": "The range that was read changed",
+        "unknown": "Could not be determined"
+      },
+      "maintenanceStopped": "Maintenance stopped partway",
+      "unrecognized": "Items that could not be read",
+      "partialNote": "Only some checks are counted for now (proposals with out-of-date evidence, and stopped maintenance). This does not mean nothing else is wrong."
+    },
     "health": {
       "fresh": "Fresh",
       "reanchorable": "Needs reanchor review",
