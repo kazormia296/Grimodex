@@ -8,6 +8,7 @@ use grimodex_core::chronicle_time::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 
 // ─── Schema types ────────────────────────────────────────────────────────────
@@ -2093,10 +2094,28 @@ pub fn chronicle_list_events(
     Ok(rows)
 }
 
+/// Codex entries the Chronicle tools must omit, scoped to the active project.
+pub fn chronicle_hidden_codex_ids(conn: &Connection, project_id: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id FROM codex_entries e
+         WHERE e.project_id = ?1
+           AND (e.context_mode = 'hidden' OR EXISTS (
+               SELECT 1 FROM codex_entry_phases p
+               WHERE p.entry_id = e.id AND p.context_mode_override = 'hidden'
+           ))",
+    )?;
+    let ids = stmt
+        .query_map(params![project_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<HashSet<String>>>()
+        .context("chronicle_hidden_codex_ids failed")?;
+    Ok(ids)
+}
+
 /// Project-scoped participants (INNER JOIN events for project gate).
 pub fn chronicle_list_participants(
     conn: &Connection,
     project_id: &str,
+    hidden_codex_ids: &HashSet<String>,
 ) -> Result<Vec<ChronicleParticipant>> {
     let mut stmt = conn.prepare(
         "SELECT ep.event_id, ep.codex_entry_id, ep.role
@@ -2115,7 +2134,10 @@ pub fn chronicle_list_participants(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("chronicle_list_participants failed")?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .filter(|p| !hidden_codex_ids.contains(&p.codex_entry_id))
+        .collect())
 }
 
 /// Project-scoped scene↔event bridge (INNER JOIN events for project gate).
@@ -2197,6 +2219,7 @@ pub fn chronicle_get_calendar(
 pub fn chronicle_codex_names(
     conn: &Connection,
     project_id: &str,
+    hidden_codex_ids: &HashSet<String>,
 ) -> Result<std::collections::HashMap<String, String>> {
     let mut stmt = conn.prepare("SELECT id, name FROM codex_entries WHERE project_id = ?1")?;
     let rows = stmt
@@ -2204,7 +2227,10 @@ pub fn chronicle_codex_names(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows.into_iter().collect())
+    Ok(rows
+        .into_iter()
+        .filter(|(id, _)| !hidden_codex_ids.contains(id))
+        .collect())
 }
 
 /// scene id → title for the project (used to label scene links in detail).
@@ -5482,6 +5508,40 @@ pub(crate) mod tests {
         assert!(find_related_entries(&conn, "p1", "e-hidden", None)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn chronicle_hidden_codex_ids_include_base_and_phase_hidden_in_project_only() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_project(&conn, "p2", "Other");
+        insert_codex_entry(&conn, "base-hidden", "p1", "Base hidden", "character");
+        insert_codex_entry(&conn, "phase-hidden", "p1", "Phase hidden", "character");
+        insert_codex_entry(&conn, "visible", "p1", "Visible", "character");
+        insert_codex_entry(&conn, "foreign-hidden", "p2", "Foreign hidden", "character");
+        conn.execute(
+            "UPDATE codex_entries SET context_mode = 'hidden' WHERE id IN ('base-hidden', 'foreign-hidden')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+             VALUES ('phase-1', 'phase-hidden', '', 'hidden'),
+                    ('phase-foreign', 'foreign-phase', '', 'hidden'),
+                    ('phase-orphan', 'orphan', '', 'hidden')",
+            [],
+        )
+        .unwrap();
+
+        let hidden = chronicle_hidden_codex_ids(&conn, "p1").unwrap();
+        assert_eq!(
+            hidden,
+            HashSet::from(["base-hidden".into(), "phase-hidden".into()])
+        );
+        assert!(!hidden.contains("visible"));
+        assert!(!hidden.contains("foreign-hidden"));
+        assert!(!hidden.contains("foreign-phase"));
+        assert!(!hidden.contains("orphan"));
     }
 
     // lane E2-c（DR-ARC-2）：archived の場面・folder を読み系 tool から外す試験群。

@@ -113,7 +113,10 @@ pub async fn list_events(
     let conn = server.conn.lock().map_err(internal_err)?;
     let project_id = server.project_id();
     let events = db::chronicle_list_events(&conn, &project_id).map_err(internal_err)?;
-    let names = db::chronicle_codex_names(&conn, &project_id).map_err(internal_err)?;
+    let hidden_codex_ids =
+        db::chronicle_hidden_codex_ids(&conn, &project_id).map_err(internal_err)?;
+    let names =
+        db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
     let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
     let cal_input = parse_calendar(calendar);
     let kind = params.kind.as_deref().map(str::trim).unwrap_or("");
@@ -221,8 +224,12 @@ pub async fn get_event_detail(
     let Some(ev) = events.iter().find(|e| e.id == event_id).cloned() else {
         return ok_null();
     };
-    let names = db::chronicle_codex_names(&conn, &project_id).map_err(internal_err)?;
-    let participants = db::chronicle_list_participants(&conn, &project_id).map_err(internal_err)?;
+    let hidden_codex_ids =
+        db::chronicle_hidden_codex_ids(&conn, &project_id).map_err(internal_err)?;
+    let names =
+        db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
+    let participants = db::chronicle_list_participants(&conn, &project_id, &hidden_codex_ids)
+        .map_err(internal_err)?;
     let scene_events = db::chronicle_list_scene_events(&conn, &project_id).map_err(internal_err)?;
     let relations = db::chronicle_list_relations(&conn, &project_id).map_err(internal_err)?;
     let scene_titles = db::chronicle_scene_titles(&conn, &project_id).map_err(internal_err)?;
@@ -325,18 +332,22 @@ pub async fn get_character_timeline(
 ) -> Result<CallToolResult, ErrorData> {
     let codex_id = params.codex_id.trim().to_string();
     if codex_id.is_empty() {
-        return ok_json(&CharacterTimeline {
-            character: String::new(),
-            events: Vec::new(),
-        });
+        return ok_null();
     }
     let conn = server.conn.lock().map_err(internal_err)?;
     let project_id = server.project_id();
 
+    let hidden_codex_ids =
+        db::chronicle_hidden_codex_ids(&conn, &project_id).map_err(internal_err)?;
+    let names =
+        db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
+    let Some(character) = names.get(&codex_id).cloned() else {
+        return ok_null();
+    };
     let events = db::chronicle_list_events(&conn, &project_id).map_err(internal_err)?;
-    let participants = db::chronicle_list_participants(&conn, &project_id).map_err(internal_err)?;
+    let participants = db::chronicle_list_participants(&conn, &project_id, &hidden_codex_ids)
+        .map_err(internal_err)?;
     let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
-    let names = db::chronicle_codex_names(&conn, &project_id).map_err(internal_err)?;
 
     let participant_event_ids: std::collections::HashSet<&str> = participants
         .iter()
@@ -381,7 +392,7 @@ pub async fn get_character_timeline(
         .collect();
 
     ok_json(&CharacterTimeline {
-        character: names.get(&codex_id).cloned().unwrap_or(codex_id),
+        character,
         events: involved,
     })
 }
@@ -452,11 +463,15 @@ pub async fn get_chronicle_state(
     if events.is_empty() {
         return ok_null();
     }
-    let participants = db::chronicle_list_participants(&conn, &project_id).map_err(internal_err)?;
+    let hidden_codex_ids =
+        db::chronicle_hidden_codex_ids(&conn, &project_id).map_err(internal_err)?;
+    let participants = db::chronicle_list_participants(&conn, &project_id, &hidden_codex_ids)
+        .map_err(internal_err)?;
     let scene_events = db::chronicle_list_scene_events(&conn, &project_id).map_err(internal_err)?;
     let relations = db::chronicle_list_relations(&conn, &project_id).map_err(internal_err)?;
     let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
-    let codex_names = db::chronicle_codex_names(&conn, &project_id).map_err(internal_err)?;
+    let codex_names =
+        db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
     let nodes = db::chronicle_scene_nodes(&conn, &project_id).map_err(internal_err)?;
 
     let input = snap::AssembleInput {
@@ -469,7 +484,9 @@ pub async fn get_chronicle_state(
                 title: e.title,
                 note: e.note,
                 ordinal: e.ordinal,
-                primary_codex_id: e.primary_codex_id,
+                primary_codex_id: e
+                    .primary_codex_id
+                    .filter(|id| !hidden_codex_ids.contains(id)),
                 location_codex_id: e.location_codex_id,
                 start_time: e.start_time,
                 start_minute: e.start_minute,
@@ -1524,6 +1541,7 @@ mod tests {
     #[tokio::test]
     async fn get_character_timeline_is_project_scoped() {
         let server = make_server(false);
+        seed_codex(&server, "p1", "hero");
         // p2 event with hero as primary must not leak into p1's timeline.
         {
             let conn = server.conn.lock().unwrap();
@@ -2589,6 +2607,251 @@ mod tests {
         assert!(chars
             .iter()
             .any(|c| c["codexId"] == "hero" && c["name"] == "Hero"));
+    }
+
+    #[tokio::test]
+    async fn chronicle_tools_omit_hidden_codex_ids_and_names() {
+        let server = make_server(false);
+        seed_scene(&server, "p1", "s1");
+        for id in [
+            "hidden-base",
+            "hidden-phase",
+            "hidden-place",
+            "hero",
+            "old-place",
+            "unrelated",
+        ] {
+            seed_codex(&server, "p1", id);
+        }
+        seed_codex(&server, "p2", "foreign-codex");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE codex_entries SET name = CASE id
+                    WHEN 'hidden-base' THEN 'Secret Base Person'
+                    WHEN 'hidden-phase' THEN 'Secret Phase Person'
+                    WHEN 'hidden-place' THEN 'Secret Place'
+                    WHEN 'hero' THEN 'Hero'
+                    WHEN 'old-place' THEN 'Old Place'
+                    WHEN 'unrelated' THEN 'Unrelated'
+                    WHEN 'foreign-codex' THEN 'Foreign Person'
+                 END
+                 WHERE id IN ('hidden-base', 'hidden-phase', 'hidden-place', 'hero',
+                              'old-place', 'unrelated', 'foreign-codex')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = 'hidden'
+                 WHERE id IN ('hidden-base', 'hidden-place', 'foreign-codex')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+                 VALUES ('hidden-phase-row', 'hidden-phase', '', 'hidden')",
+                [],
+            )
+            .unwrap();
+        }
+
+        seed_event(&server, "p1", "event-list", "Event", "a0");
+        seed_event(&server, "p1", "event-detail", "Event", "a1");
+        seed_event(&server, "p1", "event-hidden-death", "Event", "a2");
+        seed_event(&server, "p1", "event-old-location", "Event", "a3");
+        seed_event(&server, "p1", "event-hidden-location", "Event", "a4");
+        seed_event(&server, "p1", "event-anchor", "Event", "a5");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hidden-base'
+                 WHERE id IN ('event-list', 'event-detail')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET location_codex_id = 'hidden-place'
+                 WHERE id = 'event-detail'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hidden-phase', kind = 'death', start_time = 2
+                 WHERE id = 'event-hidden-death'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero', location_codex_id = 'old-place'
+                 WHERE id = 'event-old-location'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero', location_codex_id = 'hidden-place'
+                 WHERE id = 'event-hidden-location'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero' WHERE id = 'event-anchor'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_participants (event_id, codex_entry_id, role)
+                 VALUES ('event-detail', 'hidden-phase', 'supporting')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id) VALUES ('s1', 'event-anchor')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let list = result_json(
+            &list_events(&server, ListEventsParams { kind: None })
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            list["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["id"] == "event-list")
+                .unwrap()["primaryCharacter"],
+            serde_json::Value::Null
+        );
+
+        let detail = result_json(
+            &get_event_detail(
+                &server,
+                GetEventDetailParams {
+                    event_id: "event-detail".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(detail["primaryCharacter"], serde_json::Value::Null);
+        assert_eq!(detail["location"], serde_json::Value::Null);
+        assert!(detail["participants"].as_array().unwrap().is_empty());
+
+        let hidden_timeline = result_json(
+            &get_character_timeline(
+                &server,
+                GetCharacterTimelineParams {
+                    codex_id: "hidden-base".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let hidden_phase_timeline = result_json(
+            &get_character_timeline(
+                &server,
+                GetCharacterTimelineParams {
+                    codex_id: "hidden-phase".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let missing_timeline = result_json(
+            &get_character_timeline(
+                &server,
+                GetCharacterTimelineParams {
+                    codex_id: "missing-codex".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let foreign_timeline = result_json(
+            &get_character_timeline(
+                &server,
+                GetCharacterTimelineParams {
+                    codex_id: "foreign-codex".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        assert!(hidden_timeline.is_null());
+        assert_eq!(hidden_timeline, missing_timeline);
+        assert_eq!(hidden_phase_timeline, missing_timeline);
+        assert_eq!(foreign_timeline, missing_timeline);
+        let empty_timeline = result_json(
+            &get_character_timeline(
+                &server,
+                GetCharacterTimelineParams {
+                    codex_id: "".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(empty_timeline, missing_timeline);
+        let missing_detail = result_json(
+            &get_event_detail(
+                &server,
+                GetEventDetailParams {
+                    event_id: "missing-event".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(hidden_timeline, missing_detail);
+        let unrelated_timeline = result_json(
+            &get_character_timeline(
+                &server,
+                GetCharacterTimelineParams {
+                    codex_id: "unrelated".into(),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(unrelated_timeline["character"], "Unrelated");
+        assert!(unrelated_timeline["events"].as_array().unwrap().is_empty());
+
+        let state = result_json(
+            &get_chronicle_state(
+                &server,
+                GetChronicleStateParams {
+                    scene_id: Some("s1".into()),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let characters = state["characters"].as_array().unwrap();
+        assert_eq!(characters.len(), 1);
+        assert_eq!(characters[0]["codexId"], "hero");
+        assert_eq!(characters[0]["location"], serde_json::Value::Null);
+
+        for output in [
+            &list,
+            &detail,
+            &hidden_timeline,
+            &hidden_phase_timeline,
+            &state,
+        ] {
+            let json = output.to_string();
+            for hidden_id in ["hidden-base", "hidden-phase", "hidden-place"] {
+                assert!(!json.contains(hidden_id), "{hidden_id} leaked in {json}");
+            }
+            for hidden_name in ["Secret Base Person", "Secret Phase Person", "Secret Place"] {
+                assert!(
+                    !json.contains(hidden_name),
+                    "{hidden_name} leaked in {json}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
