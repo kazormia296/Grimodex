@@ -129,8 +129,14 @@ vi.mock("./DetailsTab", () => ({
     entry: CodexEntry;
     onSummaryChange: (value: string) => void;
     onContentChange: (content: string) => void;
+    onOpenTimeline?: () => void;
   }) => (
     <div>
+      <button
+        type="button"
+        data-testid="open-timeline"
+        onClick={() => props.onOpenTimeline?.()}
+      />
       <button
         type="button"
         data-testid="change-content"
@@ -230,6 +236,19 @@ describe("CodexDetailContent draft integrity", () => {
       updateText: vi.fn(async () => ({ persisted: true, version: 2 })),
     });
     mockGetCodexEntry.mockResolvedValue(INITIAL_ENTRY);
+  });
+
+  it("詳細タブの『タイムラインを開く』は timeline タブへの切り替えを通知する（DR-MP4-46、Q-G3）", () => {
+    const onTabChange = vi.fn();
+    render(
+      <CodexDetailContent
+        entry={INITIAL_ENTRY}
+        onDelete={vi.fn()}
+        onTabChange={onTabChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("open-timeline"));
+    expect(onTabChange).toHaveBeenCalledWith("timeline");
   });
 
   it("does not estimate readings automatically when a name is committed", async () => {

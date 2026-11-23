@@ -311,7 +311,8 @@ History ボタンクリックで **モーダルオーバーレイ** を表示す
    c-structural. 単一トランザクションのバッチで:
       ① PRAGMA defer_foreign_keys = ON（FK チェックを COMMIT 時に遅延）
       ② wipe されるスコープを跨ぐ CASCADE FK を事前 NULL 化
-         （例: body を wipe するが map 非選択のとき map_node_positions.tree_node_id）
+         （初版の設計。2026-11-23 以降は、選択されないスコープの行を退避して戻す
+          〔restore_links.rs、DR-SRX-3〕。map_node_positions の NULL 化は廃止）
       ③ 選択スコープの最上位テーブルを project_id で DELETE（子は CASCADE）
       ④ スナップショット行を INSERT で再構築。除外スコープへの FK は
          NULL 化または skip（後述）
@@ -338,9 +339,11 @@ History ボタンクリックで **モーダルオーバーレイ** を表示す
 | `labels` | ラベル | labels・tree_node_labels | `body`（tree_node_labels.node_id は NOT NULL） |
 | `lint` | 校閲設定 | lint_ignored_diagnostics・lint_term_dictionary | `body`（scene_id は NOT NULL） |
 
-**依存スコープ未選択時の FK 処理**（除外スコープへの参照をどう扱うか。`AUX_BODY_DEPENDENCY` / `AUX_CODEX_DEPENDENCY`）:
+**依存スコープ未選択時の FK 処理**（除外スコープへの参照をどう扱うか。renderer の計画 `projectSnapshotApi.ts` の手書きの filter と、canonical の計画 `build_canonical_restore_plan` が決める。2026-11-23 に、定数 `AUX_BODY_DEPENDENCY` / `AUX_CODEX_DEPENDENCY` と `map_node_positions` の NULL 化は削除した。下の追記を参照）:
 - **skip**: NOT NULL FK で参照先が live DB に存在しない行は丸ごと捨てる（tree_node_labels / lint_ignored_diagnostics / foreshadow_setups / foreshadow_codex_links / scene_codex_pins・mentions / scene_beat_pov_cache 等）
-- **NULL 化**: NULL 可の FK 列だけを NULL にして行は復元する（foreshadows.payoff_scene_id / map_node_positions.tree_node_id・codex_entry_id / tree_nodes.pov_character_id・location_id）
+- **NULL 化**: NULL 可の FK 列だけを NULL にして行は復元する（foreshadows.payoff_scene_id / tree_nodes.pov_character_id・location_id）
+
+**親が復元の後に無い行の扱い（2026-11-23 追記、確認 121・146、DR-SRX-26〜34）**: 上の手書きの filter が持たない列（`codex_entry_phases.anchor_node_id`、`map_node_positions` の 3 つの参照、`map_stickies`・`map_ai_branches`・`snippets` のチャット参照、分析注釈の `run_id`・`parent_id`・関係の相手）は、スナップショットの行が指す親が復元の後に無いと、外部キー違反で復元が失敗していた。今は、Native が renderer の計画を canonical と照合した後に、その親を復元の後で削除したときと同じ形（`SET NULL` の列は空に、`CASCADE` の行は行ごと外し、その行に連なる行も一緒に外す）で戻し、外した件数を確認の context（`lossNotices`）と結果（`dropped`）に出す（`restore_missing_parents.rs`）。**`map_node_positions` の参照の NULL 化はやめた**（この表は、参照がちょうど 1 つ非 NULL であることを CHECK で要求するので、NULL 化すると必ず CHECK に反する。親が無い位置は行ごと外す）。
 
 skip / NULL 化した件数は復元結果 `RestoreResult.skipped`（`SkipReport`）で返り、0 でなければ「{count} 件のアイテムは依存するデータ範囲が選択されていないため復元をスキップしました」の info トーストで通知する。`body` を OFF にすると伏線・マップ・校閲・ラベルなどの一部が復元されない旨をダイアログ内でも注意喚起する。
 
