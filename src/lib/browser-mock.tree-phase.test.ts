@@ -454,7 +454,10 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
   const COLUMNS = `parent_id, intent, story_time_order, story_time_label,
     pov_character_id, location_id, context_mode, aliases, excluded_aliases,
     content, unplaced_beats_doc, unplaced_beat_preview, placed_beat_preview,
-    source_uri, source_mtime, created_at, version`;
+    source_uri, source_mtime, created_at, version,
+    chronicle_start_time, chronicle_start_minute, chronicle_start_granularity,
+    chronicle_end_time, chronicle_end_minute, chronicle_end_granularity,
+    chronicle_precision`;
 
   async function seed(
     id: string,
@@ -502,6 +505,12 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
           sourceUri: "external-root://r/a.md",
           sourceMtime: "2026-01-01T00:00:00Z",
           content: '{"type":"doc"}',
+          chronicleStartTime: 100,
+          chronicleStartMinute: 540,
+          chronicleStartGranularity: "time",
+          chronicleEndTime: 101,
+          chronicleEndGranularity: "day",
+          chroniclePrecision: "approx",
         },
         baseVersion: 0,
         bumpVersion: false,
@@ -565,6 +574,13 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
       unplacedBeatPreview: before.unplaced_beat_preview,
       placedBeatPreview: before.placed_beat_preview,
       createdAt: before.created_at,
+      chronicleStartTime: before.chronicle_start_time,
+      chronicleStartMinute: before.chronicle_start_minute,
+      chronicleStartGranularity: before.chronicle_start_granularity,
+      chronicleEndTime: before.chronicle_end_time,
+      chronicleEndMinute: before.chronicle_end_minute,
+      chronicleEndGranularity: before.chronicle_end_granularity,
+      chroniclePrecision: before.chronicle_precision,
     };
   }
 
@@ -594,6 +610,12 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
       contextMode: "hidden",
       povCharacterId: "pov-1",
       version: 0,
+      chronicleStartTime: 100,
+      chronicleStartMinute: 540,
+      chronicleStartGranularity: "time",
+      chronicleEndTime: 101,
+      chronicleEndGranularity: "day",
+      chroniclePrecision: "approx",
     });
   });
 
@@ -690,7 +712,38 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
     ).rejects.toThrow("restoreState is only accepted for undo");
     for (const [name, state, message] of [
       ["unknown", { bogus: "x" }, "unknown field"],
-      ["held chronicle key", { chronicleStartTime: "5" }, "unknown field"],
+      ["chronicle key alone", { chronicleStartTime: 5 }, "one group"],
+      ["chronicle string day", { chronicleStartTime: "5" }, "safe integer"],
+      [
+        "chronicle bad granularity",
+        {
+          chronicleStartGranularity: "century",
+          chronicleEndGranularity: "none",
+          chroniclePrecision: "exact",
+        },
+        "granularity",
+      ],
+      [
+        "chronicle time without a minute",
+        {
+          chronicleStartTime: 5,
+          chronicleStartGranularity: "time",
+          chronicleEndGranularity: "none",
+          chroniclePrecision: "exact",
+        },
+        "needs a day and a minute",
+      ],
+      [
+        "chronicle end before start",
+        {
+          chronicleStartTime: 10,
+          chronicleStartGranularity: "day",
+          chronicleEndTime: 9,
+          chronicleEndGranularity: "day",
+          chroniclePrecision: "exact",
+        },
+        "end precedes start",
+      ],
       ["archivedAt", { archivedAt: "x" }, "unknown field"],
       ["mistyped", { intent: 5 }, "must be a string or null"],
       ["contextMode", { contextMode: "weird" }, "contextMode"],

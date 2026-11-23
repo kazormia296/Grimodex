@@ -32,6 +32,13 @@ describe("Tree delete Undo restores the database row", () => {
     "sourceUri",
     "sourceMtime",
     "createdAt",
+    "chronicleStartTime",
+    "chronicleStartMinute",
+    "chronicleStartGranularity",
+    "chronicleEndTime",
+    "chronicleEndMinute",
+    "chronicleEndGranularity",
+    "chroniclePrecision",
   ] as const;
 
   async function seeded(nodeType: "scene" | "note") {
@@ -48,6 +55,12 @@ describe("Tree delete Undo restores the database row", () => {
       await updateNode(id, {
         storyTimeOrder: "b3",
         storyTimeLabel: "night",
+        chronicleStartTime: 100,
+        chronicleStartMinute: 540,
+        chronicleStartGranularity: "time",
+        chronicleEndTime: 101,
+        chronicleEndGranularity: "day",
+        chroniclePrecision: "approx",
         content: '{"type":"doc","edited":true}',
       });
     } else {
@@ -118,6 +131,27 @@ describe("Tree delete Undo restores the database row", () => {
       expect(after!.contextMode).toBe(nodeType === "note" ? "hidden" : null);
     },
   );
+
+  it("sends the date range as one group, and only when it is not the default", async () => {
+    const scene = await seeded("scene");
+    const withRange = (await loadTreeNodeRestoreSnapshot(scene.id))!;
+    expect(withRange.restoreState).toMatchObject({
+      chronicleStartTime: 100,
+      chronicleStartMinute: 540,
+      chronicleStartGranularity: "time",
+      chronicleEndTime: 101,
+      chronicleEndGranularity: "day",
+      chroniclePrecision: "approx",
+    });
+    // NULL day or minute is left out (the INSERT's default is NULL).
+    expect(withRange.restoreState).not.toHaveProperty("chronicleEndMinute");
+
+    const note = await seeded("note");
+    const noRange = (await loadTreeNodeRestoreSnapshot(note.id))!;
+    for (const key of Object.keys(noRange.restoreState)) {
+      expect(key.startsWith("chronicle"), key).toBe(false);
+    }
+  });
 
   it("an ordinary create does not send restoreState", async () => {
     const id = `tree-plain-${crypto.randomUUID()}`;

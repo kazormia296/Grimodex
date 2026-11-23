@@ -1,6 +1,6 @@
 # 削除の undo で DB の行を削除前に戻す（DR-UND-1）
 
-作成：2026-11-24。lane E1。計画書は `fusion-eval-data/handoff/mastra-mp3-materials/plan-undo-ipc-20261124.md`（反証の記録が本文に優先）。
+作成：2026-11-23。lane E1。計画書は `fusion-eval-data/handoff/mastra-mp3-materials/plan-undo-ipc-20261124.md`（反証の記録が本文に優先）。
 
 ## DR-UND-1 削除の undo で DB の行を削除前の状態に戻す
 
@@ -10,10 +10,10 @@
 
 削除は `tree_nodes` の行を `DELETE` する。undo は `tree_node_create` を呼ぶが、INSERT は 14 列（id・project_id・parent_id・node_type・title・sort_order・synopsis・status・source_uri・source_mtime・content・char_count・created_at・updated_at）だけで、renderer は source の 2 列と note の本文も渡していなかった。store は削除前の値を全部持つので、store だけが元に戻り、DB は欠落した行のまま reload まで食い違っていた（DR-MP4-8、K-5 (8)、PR-6 の記録 11、Q5 (b)）。
 
-- 戻す（`restoreState` の 12 欄）：`intent`・`storyTimeOrder`・`storyTimeLabel`・`povCharacterId`・`locationId`・`contextMode`・`aliases`・`excludedAliases`・`unplacedBeatsDoc`・`unplacedBeatPreview`・`placedBeatPreview`・`createdAt`。
+- 戻す（`restoreState` の 19 欄）：`intent`・`storyTimeOrder`・`storyTimeLabel`・`povCharacterId`・`locationId`・`contextMode`・`aliases`・`excludedAliases`・`unplacedBeatsDoc`・`unplacedBeatPreview`・`placedBeatPreview`・`createdAt`、と年表の 7 列（下の「年表の 7 列」）。
 - 既存の欄で戻す：`sourceUri`・`sourceMtime`・note の `content`。note の本文は store の値でなく、削除の直前に DB から読んだ行の値（store の `content` は開いた時点の値で、編集の後は古い。反証 P1-2）。
 - 戻さない：`version`（0 のまま）・`updated_at`（作り直した時刻）・`char_count`（content から計算）。Source token `v{version}@{updated_at}` が前のどの値にも戻らないための選択。代わりに renderer が create の応答の `version`・`updatedAt` を store に反映する（Chronicle の一括操作は store の `updatedAt` を OCC の token に使う）。
-- 保留：年表の 7 列（`chronicle_start_time`・`chronicle_start_minute`・`chronicle_start_granularity`・`chronicle_end_time`・`chronicle_end_minute`・`chronicle_end_granularity`・`chronicle_precision`）。CED/1 の担当との調整が要るため、確認が済むまで戻さない。`restoreState` の key としても拒む（未知の key）。今は undo の後、これらは NULL・`'none'`・`'exact'` の既定に戻る。
+- 年表の 7 列（`chronicleStartTime`・`chronicleStartMinute`・`chronicleStartGranularity`・`chronicleEndTime`・`chronicleEndMinute`・`chronicleEndGranularity`・`chroniclePrecision`）：**1 組として戻す**（開始・終了・precision は組で意味を持つ。年表 lane の返事）。当初は CED/1 の担当との調整のため保留したが、ユーザー決定「全部戻す」（2026-11-23）と、書込みの検証が行の中だけで決まることを確かめて（c）、戻すことにした。
 - 除外：`archived_at`（tree store は archived でない行だけを持つので、戻す node は archived でない）。
 
 ### b. 契約
@@ -27,8 +27,10 @@
 ### c. 参照の扱い、整合の検査、temporal_scene_patch との差
 
 - `povCharacterId`・`locationId`：同じ project の Codex があればそのまま。undo の間に Codex が消えていれば NULL に倒す（FK の `ON DELETE SET NULL` と同じ結果。ここで失敗させると subtree の途中で undo が止まり半端になる）。別 project の id は拒む。renderer は応答の値を store に反映する（store と DB が食い違わない）。
+- **年表の 7 列の検査（組で受ける）**：3 つの NOT NULL の key（`chronicleStartGranularity`・`chronicleEndGranularity`・`chroniclePrecision`）は、7 つのどれかがあるなら 3 つとも必須（なければ 7 つとも無し）。day・minute は nullable の安全な整数（null と欠落は同じ。INSERT の既定が NULL）。granularity は `none`・`season`・`year`・`month`・`day`・`time`、precision は `exact`・`approx`・`unknown`。そのうえで**互換の範囲検査**（`validate_chronicle_date_range`：`time` は day と 0〜1439 の minute が要る、end は start より前でない）を Rust・Main・mock の 3 層で同じに掛ける。
+- **年表の書込みの検証を実際のコードで読んだ結果**：`temporal_scene_patch` の `validate_range` は `validate_canonical_chronicle_date_range`（互換検査＋厳密な persistence matrix：`none` は day・minute なし、`season`〜`day` は day のみ、`time` は day と minute、end があれば start が要る）で、どれも**その行の列だけ**で決まる。他の場面との整合（cross-row）はなく、`temporal_constraint_commit` の試験は commit・Freshness・Scope の経路の試験で、日付の整合を他の場面と照らす規則ではない。したがって、削除と undo の間に他の場面が変わっても、戻す値の整合は変わらない（試験 `restore_state_chronicle_does_not_depend_on_other_scenes`）。厳密な matrix は掛けない：`tree_node_patch`（検査なし）や matrix より前の行（粗い粒度に minute が付いた行、`none` に day が付いた行）も、undo は忠実に戻す必要があり、拒むと subtree の途中で undo が止まる（試験 `restore_state_puts_back_a_chronicle_range_the_strict_matrix_would_refuse`）。renderer は範囲が INSERT の既定（NULL・`none`・`none`・`exact`）と違うときだけ組で送る。
 - 値の形：`contextMode` は 4 値、`aliases`・`excludedAliases` は文字列の JSON 配列、`unplacedBeatsDoc` は JSON 配列、`createdAt` は RFC 3339 か SQLite 既定の `YYYY-MM-DD HH:MM:SS`（既存の行が持つ両方の形）。
-- 年表の整合（`validate_canonical_chronicle_date_range`）は検査しない。undo は「前にあった行」を忠実に戻す操作で、`tree_node_patch`（検査なし）で書かれた行も戻せる必要がある（年表の列は今は保留）。
+- 厳密な年表の整合（`validate_canonical_chronicle_date_range`）は掛けず、互換の範囲検査だけ（上の年表の 7 列の検査）。
 - `temporal_scene_patch` との差（反証 P2-4）：story order の専用 writer は version の加算・Scope の source token の更新・Freshness の伝播・human field の印・`order`／`calendar` の feed path を行う。undo の create は行が新しくできるので、全依存が再作成される前提で足りる。Scope の source token は registry と binding（incarnation・version・updatedAt 等）から作られ、story order を含まない（`narrative_scene_scope::source_token`）。binding は従来どおり `UnknownRepairOrRestore` で作り直す。human field の印は戻らない。UPDATE を feed の row 取得より後にすると応答・feed の `afterState` が復元前になるので、順序は試験（変異）で固定した。
 
 ### d. 退けた案
@@ -41,13 +43,12 @@
 ### e. 直らないもの（作者から見える残る制限）
 
 - **folder の下に子がある削除の undo は、今も子が戻らない。** folder 自身は戻るが、子の create が Undo Journal の束縛（`entity_id == node_id`。journal は削除の root 1 件だけ）で `tree replay target does not match the named Undo Journal` と拒まれる。既存の不具合で、実 DB の特性試験で確定した（`current_undo_of_a_folder_subtree_child_is_pinned`）。束縛を「delete の `before_json.nodes` に含まれる id」へ緩めるのは replay の authority 契約の変更なので、この lane では触らない（別の確認が要る）。renderer 経由（実 addon）の確認は未実行。したがって、この lane で DB が戻るのは削除の root 自身（scene・note・子の無い folder）。
-- 年表の日付（上の保留）。undo の後は未設定に戻る。
 - 削除で cascade 消去される子の表：label・pin・伏線の setup と回収・scene の年表イベントへの紐付け・map の位置・lint の無視・Scope の制約（作者が決めた制約は既定に戻る）。反証 P2-2 で数え直した追加分：付箋（`editor_stickies`）・スレッドの段階マーカー（`plot_thread_scene_links`）・スレッドの開始／終了（`plot_threads.start_node_id`・`end_node_id`）・`foreshadow_payoffs`・版履歴（`content_versions`）・post-effect の注釈・`scene_lens_data`・`events.reveal_scene_id`（年表の lane の表）。archived の子孫。これらは `restorePersisted` が `createNode` 1 回だけであることによる（読み取りで数えた。実行で全件は確かめていない）。DR-UND-2 の入力。
 - Trash 復元・redo of create の欄の欠落：別の lane。
 
 ### f. 画面・AI で見える変化
 
-- 戻る：scene の story order・POV・場所・意図・未配置ビート（Grid の preview も）・外部ファイルの紐付け・作成時刻、note の AI 注入モード・別名・本文。
+- 戻る：scene の story order・**作中暦の日付（年表の位置）**・POV・場所・意図・未配置ビート（Grid の preview も）・外部ファイルの紐付け・作成時刻、note の AI 注入モード・別名・本文。
 - AI に見える内容は**両方向**に動く：`hidden`・`suppress` の note は今より隠れ、`always` の note は今より多く入る。別名は mention の検出対象を戻す。story order は Phase の `auto` の判定を削除前に戻す。いずれも削除前の状態に戻るだけで、新しい公開はない。**今は、undo の後に hidden の note が `mentioned` 扱いで AI に出る**（ADR 013 の「hidden は守る」に反する側の欠陥）。これが直る。
 - 変わらない：上の e。
 
@@ -57,8 +58,8 @@
 
 ### h. drift guard
 
-`domain_writes.rs` の単体試験 `every_tree_nodes_column_is_classified_for_the_undo_restore`：`pragma table_info(tree_nodes)` の全列が「INSERT の列」「`TREE_NODE_RESTORE_COLUMNS`」「保留（`TREE_NODE_RESTORE_DEFERRED_COLUMNS`）」「除外（理由つき）」のどれかに入ることを固定する。別の lane が `tree_nodes` に列を足すと落ちて判断を強制する。key と列の対応は `TREE_NODE_PATCH_COLUMNS` と同じ（`createdAt` だけ undo 専用）であることも固定した。Main の key 集合は `electron/shared/ipcContract.ts` の `TREE_NODE_RESTORE_STATE_KEYS`、browser mock は `BROWSER_TREE_RESTORE_COLUMNS` で、Rust と同じ 12 key（年表なし）。
+`domain_writes.rs` の単体試験 `every_tree_nodes_column_is_classified_for_the_undo_restore`：`pragma table_info(tree_nodes)` の全列が「INSERT の列」「`TREE_NODE_RESTORE_COLUMNS`」「除外（理由つき）」のどれかに入ることを固定する（年表の 7 列は restore に移した。保留の区分は無くした）。別の lane が `tree_nodes` に列を足すと落ちて判断を強制する。key と列の対応は `TREE_NODE_PATCH_COLUMNS` と同じ（`createdAt` だけ undo 専用）であることも固定した。Main の key 集合は `electron/shared/ipcContract.ts` の `TREE_NODE_RESTORE_STATE_KEYS`、browser mock は `BROWSER_TREE_RESTORE_COLUMNS` で、Rust と同じ 19 key。
 
 ## DR-UND-2（候補）残りの欠落
 
-上の e の子の表・Scope binding・folder 下の子の undo（replay 束縛の緩和）・Trash 復元・redo of create・年表の 7 列の復元。年表の 7 列は、CED/1 の担当の確認の後に `restoreState` の key（3 層）と `TREE_NODE_RESTORE_COLUMNS` へ足し、deferred の一覧から外す。
+上の e の子の表・Scope binding・folder 下の子の undo（replay 束縛の緩和）・Trash 復元・redo of create。年表の 7 列は DR-UND-1 で戻すことにした（上）。

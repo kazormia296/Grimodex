@@ -405,8 +405,9 @@ export async function getNode(id: string): Promise<TreeNode | undefined> {
  * DR-UND-1: the columns of a deleted node that `tree_node_create` does not
  * write, passed only by the Undo of a delete (Main and Native refuse it for any
  * other origin). Same keys as `TREE_NODE_RESTORE_STATE_KEYS` in
- * `electron/shared/ipcContract.ts`. The Chronicle date range is not here yet:
- * it waits for the CED/1 owner's confirmation.
+ * `electron/shared/ipcContract.ts`. The seven `chronicle*` keys are one group
+ * (the Scene's date range): sent together, and only when the row's range is not
+ * the INSERT's default.
  */
 export interface TreeNodeRestoreState {
   intent?: string;
@@ -421,6 +422,13 @@ export interface TreeNodeRestoreState {
   unplacedBeatPreview?: string;
   placedBeatPreview?: string;
   createdAt?: string;
+  chronicleStartTime?: number;
+  chronicleStartMinute?: number;
+  chronicleStartGranularity?: string;
+  chronicleEndTime?: number;
+  chronicleEndMinute?: number;
+  chronicleEndGranularity?: string;
+  chroniclePrecision?: string;
 }
 
 /** A node's row as it was in the database just before a delete. */
@@ -458,6 +466,13 @@ export async function loadTreeNodeRestoreSnapshot(
       unplacedBeatPreview: treeNodes.unplacedBeatPreview,
       placedBeatPreview: treeNodes.placedBeatPreview,
       createdAt: treeNodes.createdAt,
+      chronicleStartTime: treeNodes.chronicleStartTime,
+      chronicleStartMinute: treeNodes.chronicleStartMinute,
+      chronicleStartGranularity: treeNodes.chronicleStartGranularity,
+      chronicleEndTime: treeNodes.chronicleEndTime,
+      chronicleEndMinute: treeNodes.chronicleEndMinute,
+      chronicleEndGranularity: treeNodes.chronicleEndGranularity,
+      chroniclePrecision: treeNodes.chroniclePrecision,
     })
     .from(treeNodes)
     .where(eq(treeNodes.id, nodeId));
@@ -480,6 +495,30 @@ export async function loadTreeNodeRestoreSnapshot(
   ] as const) {
     const value = row[key];
     if (typeof value === "string") restoreState[key] = value;
+  }
+  // The date range goes as one group, and only when it differs from what the
+  // create's INSERT leaves (NULL day and minute, `none`, `none`, `exact`).
+  const chronicleIsDefault =
+    row.chronicleStartTime === null &&
+    row.chronicleStartMinute === null &&
+    row.chronicleStartGranularity === "none" &&
+    row.chronicleEndTime === null &&
+    row.chronicleEndMinute === null &&
+    row.chronicleEndGranularity === "none" &&
+    row.chroniclePrecision === "exact";
+  if (!chronicleIsDefault) {
+    restoreState.chronicleStartGranularity = row.chronicleStartGranularity;
+    restoreState.chronicleEndGranularity = row.chronicleEndGranularity;
+    restoreState.chroniclePrecision = row.chroniclePrecision;
+    for (const key of [
+      "chronicleStartTime",
+      "chronicleStartMinute",
+      "chronicleEndTime",
+      "chronicleEndMinute",
+    ] as const) {
+      const value = row[key];
+      if (typeof value === "number") restoreState[key] = value;
+    }
   }
   return {
     content: row.content,

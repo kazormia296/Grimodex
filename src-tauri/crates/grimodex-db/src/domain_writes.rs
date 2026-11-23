@@ -2499,11 +2499,15 @@ pub struct TreeNodeCreatePayload {
 /// write, restored by a delete's Undo. Nested under `restoreState` so an
 /// ordinary create cannot pass them by mistake and an unknown key is rejected
 /// (`deny_unknown_fields`) instead of silently dropped. `null` and a missing
-/// key both mean "leave the column as the INSERT wrote it".
+/// key both mean "leave the column as the INSERT wrote it" (the INSERT's
+/// defaults are NULL, `'none'` and `'exact'`, so a NULL day or minute needs no
+/// write).
 ///
-/// Held back on purpose, not forgotten: the seven `chronicle_*` columns wait
-/// for the CED/1 owner's confirmation (see `TREE_NODE_RESTORE_DEFERRED_COLUMNS`).
-/// Until then a `chronicle*` key is an unknown key and is rejected.
+/// The seven `chronicle*` keys are one group (the Scene's date range, with
+/// start, end and precision meaning something only together): either none of
+/// them is present or all three NOT NULL ones (`chronicleStartGranularity`,
+/// `chronicleEndGranularity`, `chroniclePrecision`) are, and the group is
+/// checked as a range (see `validate_chronicle_group`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TreeNodeRestoreState {
@@ -2531,6 +2535,20 @@ pub struct TreeNodeRestoreState {
     pub placed_beat_preview: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
+    #[serde(default)]
+    pub chronicle_start_time: Option<i64>,
+    #[serde(default)]
+    pub chronicle_start_minute: Option<i64>,
+    #[serde(default)]
+    pub chronicle_start_granularity: Option<String>,
+    #[serde(default)]
+    pub chronicle_end_time: Option<i64>,
+    #[serde(default)]
+    pub chronicle_end_minute: Option<i64>,
+    #[serde(default)]
+    pub chronicle_end_granularity: Option<String>,
+    #[serde(default)]
+    pub chronicle_precision: Option<String>,
 }
 
 /// Wire shape of `tree_node_create`: the unchanged payload plus the optional
@@ -2550,7 +2568,7 @@ pub struct TreeNodeCreateWire {
 /// delete writes after the INSERT (`version`, `updated_at` and `char_count` are
 /// deliberately not restored: the Source token `v{version}@{updated_at}` must
 /// never return to an earlier value). Same names as `TREE_NODE_PATCH_COLUMNS`.
-pub(crate) const TREE_NODE_RESTORE_COLUMNS: [(&str, &str); 12] = [
+pub(crate) const TREE_NODE_RESTORE_COLUMNS: [(&str, &str); 19] = [
     ("intent", "intent"),
     ("storyTimeOrder", "story_time_order"),
     ("storyTimeLabel", "story_time_label"),
@@ -2563,44 +2581,128 @@ pub(crate) const TREE_NODE_RESTORE_COLUMNS: [(&str, &str); 12] = [
     ("unplacedBeatPreview", "unplaced_beat_preview"),
     ("placedBeatPreview", "placed_beat_preview"),
     ("createdAt", "created_at"),
+    ("chronicleStartTime", "chronicle_start_time"),
+    ("chronicleStartMinute", "chronicle_start_minute"),
+    ("chronicleStartGranularity", "chronicle_start_granularity"),
+    ("chronicleEndTime", "chronicle_end_time"),
+    ("chronicleEndMinute", "chronicle_end_minute"),
+    ("chronicleEndGranularity", "chronicle_end_granularity"),
+    ("chroniclePrecision", "chronicle_precision"),
 ];
 
-/// `tree_nodes` columns the Undo does not restore *yet*: the Chronicle date
-/// range, held for the CED/1 owner's confirmation. Listed so the drift guard
-/// shows them as a decision, not an oversight.
-#[cfg(test)]
-pub(crate) const TREE_NODE_RESTORE_DEFERRED_COLUMNS: [&str; 7] = [
-    "chronicle_start_time",
-    "chronicle_start_minute",
-    "chronicle_start_granularity",
-    "chronicle_end_time",
-    "chronicle_end_minute",
-    "chronicle_end_granularity",
-    "chronicle_precision",
-];
+/// Largest magnitude a JavaScript number carries exactly (Main's
+/// `Number.isSafeInteger`); a day or minute beyond it never came from a row.
+const RESTORE_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 impl TreeNodeRestoreState {
-    fn wire_values(&self) -> Vec<(&'static str, Option<&String>)> {
+    fn wire_values(&self) -> Vec<(&'static str, Option<Value>)> {
+        let text = |value: &Option<String>| value.clone().map(Value::String);
+        let number = |value: &Option<i64>| value.map(Value::from);
         vec![
-            ("intent", self.intent.as_ref()),
-            ("storyTimeOrder", self.story_time_order.as_ref()),
-            ("storyTimeLabel", self.story_time_label.as_ref()),
-            ("povCharacterId", self.pov_character_id.as_ref()),
-            ("locationId", self.location_id.as_ref()),
-            ("contextMode", self.context_mode.as_ref()),
-            ("aliases", self.aliases.as_ref()),
-            ("excludedAliases", self.excluded_aliases.as_ref()),
-            ("unplacedBeatsDoc", self.unplaced_beats_doc.as_ref()),
-            ("unplacedBeatPreview", self.unplaced_beat_preview.as_ref()),
-            ("placedBeatPreview", self.placed_beat_preview.as_ref()),
-            ("createdAt", self.created_at.as_ref()),
+            ("intent", text(&self.intent)),
+            ("storyTimeOrder", text(&self.story_time_order)),
+            ("storyTimeLabel", text(&self.story_time_label)),
+            ("povCharacterId", text(&self.pov_character_id)),
+            ("locationId", text(&self.location_id)),
+            ("contextMode", text(&self.context_mode)),
+            ("aliases", text(&self.aliases)),
+            ("excludedAliases", text(&self.excluded_aliases)),
+            ("unplacedBeatsDoc", text(&self.unplaced_beats_doc)),
+            ("unplacedBeatPreview", text(&self.unplaced_beat_preview)),
+            ("placedBeatPreview", text(&self.placed_beat_preview)),
+            ("createdAt", text(&self.created_at)),
+            ("chronicleStartTime", number(&self.chronicle_start_time)),
+            ("chronicleStartMinute", number(&self.chronicle_start_minute)),
+            (
+                "chronicleStartGranularity",
+                text(&self.chronicle_start_granularity),
+            ),
+            ("chronicleEndTime", number(&self.chronicle_end_time)),
+            ("chronicleEndMinute", number(&self.chronicle_end_minute)),
+            (
+                "chronicleEndGranularity",
+                text(&self.chronicle_end_granularity),
+            ),
+            ("chroniclePrecision", text(&self.chronicle_precision)),
         ]
     }
 
-    /// Shape checks that do not need the database. The Chronicle range is not
-    /// validated here (nor anywhere in this restore): an Undo puts back the
-    /// row that existed, including one written through `tree_node_patch`.
+    /// The Scene's date range as one group. An Undo puts back the row that
+    /// existed, so the check is the *compatibility* range check
+    /// (`validate_chronicle_date_range`: `time` needs a day and an in-range
+    /// minute, the end does not precede the start), not the strict persistence
+    /// matrix the date editors enforce (rows written through `tree_node_patch`
+    /// or older than the matrix must still come back). Nothing here looks at
+    /// another row: the check is about this row's own columns.
+    fn validate_chronicle_group(&self) -> anyhow::Result<()> {
+        let any = self.chronicle_start_time.is_some()
+            || self.chronicle_start_minute.is_some()
+            || self.chronicle_start_granularity.is_some()
+            || self.chronicle_end_time.is_some()
+            || self.chronicle_end_minute.is_some()
+            || self.chronicle_end_granularity.is_some()
+            || self.chronicle_precision.is_some();
+        if !any {
+            return Ok(());
+        }
+        let (Some(start_granularity), Some(end_granularity), Some(precision)) = (
+            self.chronicle_start_granularity.as_deref(),
+            self.chronicle_end_granularity.as_deref(),
+            self.chronicle_precision.as_deref(),
+        ) else {
+            anyhow::bail!(
+                "restoreState chronicle keys are one group: chronicleStartGranularity, chronicleEndGranularity and chroniclePrecision are required with any of them"
+            );
+        };
+        for (field, granularity) in [
+            ("chronicleStartGranularity", start_granularity),
+            ("chronicleEndGranularity", end_granularity),
+        ] {
+            anyhow::ensure!(
+                matches!(
+                    granularity,
+                    "none" | "season" | "year" | "month" | "day" | "time"
+                ),
+                "restoreState.{field} is not a supported granularity"
+            );
+        }
+        anyhow::ensure!(
+            matches!(precision, "exact" | "approx" | "unknown"),
+            "restoreState.chroniclePrecision must be exact, approx, or unknown"
+        );
+        for (field, value) in [
+            ("chronicleStartTime", self.chronicle_start_time),
+            ("chronicleStartMinute", self.chronicle_start_minute),
+            ("chronicleEndTime", self.chronicle_end_time),
+            ("chronicleEndMinute", self.chronicle_end_minute),
+        ] {
+            if let Some(value) = value {
+                anyhow::ensure!(
+                    value.unsigned_abs() <= RESTORE_MAX_SAFE_INTEGER as u64,
+                    "restoreState.{field} must be a safe integer"
+                );
+            }
+        }
+        grimodex_core::chronicle_time::validate_chronicle_date_range(
+            grimodex_core::chronicle_time::ChronicleDateRange {
+                start: grimodex_core::chronicle_time::ChronicleTimestamp {
+                    day: self.chronicle_start_time,
+                    minute: self.chronicle_start_minute,
+                    granularity: start_granularity,
+                },
+                end: grimodex_core::chronicle_time::ChronicleTimestamp {
+                    day: self.chronicle_end_time,
+                    minute: self.chronicle_end_minute,
+                    granularity: end_granularity,
+                },
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("restoreState chronicle range: {error}"))
+    }
+
+    /// Shape checks that do not need the database.
     fn validate_shape(&self) -> anyhow::Result<()> {
+        self.validate_chronicle_group()?;
         if let Some(mode) = self.context_mode.as_deref() {
             anyhow::ensure!(
                 matches!(mode, "hidden" | "suppress" | "mentioned" | "always"),
@@ -3406,11 +3508,11 @@ fn restore_tree_node_state_in_tx(
             .iter()
             .find(|(wire, _)| *wire == wire_name)
             .ok_or_else(|| anyhow::anyhow!("restoreState key '{wire_name}' has no column"))?;
-        let bound = match wire_name {
-            "povCharacterId" | "locationId" => {
-                restored_codex_reference(conn, project_id, wire_name, value)?
+        let bound = match (wire_name, value.as_str()) {
+            ("povCharacterId" | "locationId", Some(entry_id)) => {
+                restored_codex_reference(conn, project_id, wire_name, entry_id)?
             }
-            _ => Value::String(value.clone()),
+            _ => value,
         };
         assignments.push(format!("{column} = ?{}", params.len() + 1));
         params.push(bound);
@@ -9490,9 +9592,9 @@ mod tests {
     }
 
     /// DR-UND-1 drift guard. Every `tree_nodes` column is written by the
-    /// INSERT, restored by `restoreState`, deliberately held, or deliberately
-    /// excluded (with the reason). A new column (for example from the Chronicle
-    /// work) fails this test until someone decides which it is.
+    /// INSERT, restored by `restoreState`, or deliberately excluded (with the
+    /// reason). A new column (for example from the Chronicle work) fails this
+    /// test until someone decides which it is.
     #[test]
     fn every_tree_nodes_column_is_classified_for_the_undo_restore() {
         const INSERTED: [&str; 14] = [
@@ -9542,31 +9644,22 @@ mod tests {
             let classes = [
                 INSERTED.contains(&column),
                 restored.contains(&column),
-                TREE_NODE_RESTORE_DEFERRED_COLUMNS.contains(&column),
                 EXCLUDED.iter().any(|(excluded, _)| *excluded == column),
             ];
             assert!(
                 classes.iter().any(|class| *class),
-                "tree_nodes.{column} is not classified for the undo restore: add it to the INSERT, TREE_NODE_RESTORE_COLUMNS, the deferred list, or the excluded list with a reason"
+                "tree_nodes.{column} is not classified for the undo restore: add it to the INSERT, TREE_NODE_RESTORE_COLUMNS, or the excluded list with a reason"
             );
         }
-        // Nothing is listed that the table does not have, and a restored column
-        // is not also deferred.
+        // Nothing is listed that the table does not have.
         for column in INSERTED
             .iter()
             .chain(restored.iter())
-            .chain(TREE_NODE_RESTORE_DEFERRED_COLUMNS.iter())
             .chain(EXCLUDED.iter().map(|(column, _)| column))
         {
             assert!(
                 columns.iter().any(|name| name == column),
                 "classified column {column} does not exist in tree_nodes"
-            );
-        }
-        for column in TREE_NODE_RESTORE_DEFERRED_COLUMNS {
-            assert!(
-                !restored.contains(&column),
-                "{column} is both restored and deferred"
             );
         }
     }
@@ -9576,7 +9669,14 @@ mod tests {
         let all_keys: Value = serde_json::Value::Object(
             TREE_NODE_RESTORE_COLUMNS
                 .iter()
-                .map(|(wire, _)| ((*wire).to_string(), Value::String("x".to_string())))
+                .map(|(wire, _)| {
+                    let value = if wire.ends_with("Time") || wire.ends_with("Minute") {
+                        json!(1)
+                    } else {
+                        Value::String("x".to_string())
+                    };
+                    ((*wire).to_string(), value)
+                })
                 .collect(),
         );
         // Every restore key is accepted by the typed struct and is read back.

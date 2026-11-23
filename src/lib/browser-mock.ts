@@ -26730,8 +26730,8 @@ export async function createBrowserMock(
   }
 
   // DR-UND-1: the columns a delete's Undo writes after the INSERT (same keys and
-  // columns as Rust `TreeNodeRestoreState`). The Chronicle date range is held
-  // for the CED/1 owner's confirmation, so a `chronicle*` key is unknown here too.
+  // columns as Rust `TreeNodeRestoreState`). The seven `chronicle*` keys are one
+  // group (the Scene's date range): none of them, or all three NOT NULL ones.
   const BROWSER_TREE_RESTORE_COLUMNS: ReadonlyArray<readonly [string, string]> =
     [
       ["intent", "intent"],
@@ -26746,13 +26746,26 @@ export async function createBrowserMock(
       ["unplacedBeatPreview", "unplaced_beat_preview"],
       ["placedBeatPreview", "placed_beat_preview"],
       ["createdAt", "created_at"],
+      ["chronicleStartTime", "chronicle_start_time"],
+      ["chronicleStartMinute", "chronicle_start_minute"],
+      ["chronicleStartGranularity", "chronicle_start_granularity"],
+      ["chronicleEndTime", "chronicle_end_time"],
+      ["chronicleEndMinute", "chronicle_end_minute"],
+      ["chronicleEndGranularity", "chronicle_end_granularity"],
+      ["chroniclePrecision", "chronicle_precision"],
     ];
+  const BROWSER_TREE_RESTORE_INTEGER_KEYS = [
+    "chronicleStartTime",
+    "chronicleStartMinute",
+    "chronicleEndTime",
+    "chronicleEndMinute",
+  ];
 
   function browserTreeRestoreState(
     command: string,
     payload: Record<string, unknown>,
     origin: string,
-  ): Array<readonly [string, string, string]> | null {
+  ): Array<readonly [string, string, string | number]> | null {
     if (!Object.prototype.hasOwnProperty.call(payload, "restoreState")) {
       return null;
     }
@@ -26771,13 +26784,27 @@ export async function createBrowserMock(
         );
       }
     }
-    const assignments: Array<readonly [string, string, string]> = [];
+    const assignments: Array<readonly [string, string, string | number]> = [];
     for (const [wire, column] of BROWSER_TREE_RESTORE_COLUMNS) {
+      if (BROWSER_TREE_RESTORE_INTEGER_KEYS.includes(wire)) {
+        const raw = state[wire];
+        if (raw === null || raw === undefined) continue;
+        if (typeof raw !== "number" || !Number.isSafeInteger(raw)) {
+          throw new Error(
+            `${command}: restoreState.${wire} must be a safe integer or null`,
+          );
+        }
+        assignments.push([wire, column, raw]);
+        continue;
+      }
       const value = nullableBrowserString(command, state, wire);
       if (value === null) continue;
       assignments.push([wire, column, value]);
     }
-    for (const [wire, , value] of assignments) {
+    validateBrowserTreeRestoreChronicle(command, assignments);
+    for (const [wire, , rawValue] of assignments) {
+      if (typeof rawValue !== "string") continue;
+      const value = rawValue;
       if (
         wire === "contextMode" &&
         !["hidden", "suppress", "mentioned", "always"].includes(value)
@@ -26829,13 +26856,80 @@ export async function createBrowserMock(
     return assignments;
   }
 
+  // The compatibility range check of Rust `validate_chronicle_date_range`, on
+  // this row's own columns only (an Undo puts back a row that existed, so not the
+  // strict persistence matrix the date editors enforce).
+  function validateBrowserTreeRestoreChronicle(
+    command: string,
+    assignments: ReadonlyArray<readonly [string, string, string | number]>,
+  ): void {
+    const chronicle = new Map(
+      assignments
+        .filter(([wire]) => wire.startsWith("chronicle"))
+        .map(([wire, , value]) => [wire, value] as const),
+    );
+    if (chronicle.size === 0) return;
+    const fail = (message: string): never => {
+      throw new Error(`${command}: restoreState chronicle ${message}`);
+    };
+    if (
+      ![
+        "chronicleStartGranularity",
+        "chronicleEndGranularity",
+        "chroniclePrecision",
+      ].every((key) => typeof chronicle.get(key) === "string")
+    ) {
+      fail(
+        "keys are one group: chronicleStartGranularity, chronicleEndGranularity and chroniclePrecision are required with any of them",
+      );
+    }
+    if (
+      !["exact", "approx", "unknown"].includes(
+        chronicle.get("chroniclePrecision") as string,
+      )
+    ) {
+      fail("chroniclePrecision must be exact, approx, or unknown");
+    }
+    const endpoint = (prefix: "chronicleStart" | "chronicleEnd") => {
+      const granularity = chronicle.get(`${prefix}Granularity`) as string;
+      if (
+        !["none", "season", "year", "month", "day", "time"].includes(
+          granularity,
+        )
+      ) {
+        fail(`${prefix}Granularity is not a supported granularity`);
+      }
+      const day = (chronicle.get(`${prefix}Time`) ?? null) as number | null;
+      const minute = (chronicle.get(`${prefix}Minute`) ?? null) as
+        | number
+        | null;
+      if (granularity === "time") {
+        if (minute !== null && (minute < 0 || minute >= 1440)) {
+          fail(`range: ${prefix}Minute is out of range`);
+        }
+        if (day === null || minute === null) {
+          fail(`range: ${prefix} time needs a day and a minute`);
+        }
+      }
+      return { granularity, day, minute };
+    };
+    const start = endpoint("chronicleStart");
+    const end = endpoint("chronicleEnd");
+    if (start.day !== null && end.day !== null) {
+      const absolute = (point: typeof start): bigint =>
+        BigInt(point.day as number) * 1440n +
+        BigInt(point.granularity === "time" ? (point.minute ?? 0) : 0);
+      if (absolute(end) < absolute(start)) fail("range: end precedes start");
+    }
+  }
+
   function restoreBrowserTreeNodeState(
     nodeId: string,
     projectId: string,
-    assignments: ReadonlyArray<readonly [string, string, string]>,
+    assignments: ReadonlyArray<readonly [string, string, string | number]>,
   ): void {
     if (assignments.length === 0) return;
-    const values: Array<string | null> = [];
+    const values: Array<string | number | null> = [];
     for (const [wire, , value] of assignments) {
       if (wire === "povCharacterId" || wire === "locationId") {
         // Same project keeps it; a Codex entry deleted while the node was gone

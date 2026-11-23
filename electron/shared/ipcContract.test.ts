@@ -6013,6 +6013,82 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       });
     });
 
+    const chronicle = {
+      chronicleStartTime: 100,
+      chronicleStartMinute: 540,
+      chronicleStartGranularity: "time",
+      chronicleEndTime: 101,
+      chronicleEndGranularity: "day",
+      chroniclePrecision: "approx",
+    };
+
+    it("accepts the chronicle keys as one valid group, a coarse minute and an equal end", async () => {
+      const { backend } = fakeBackend();
+      for (const state of [
+        chronicle,
+        // a non-canonical row that existed (none with a day) comes back too
+        {
+          chronicleStartTime: 5,
+          chronicleStartGranularity: "none",
+          chronicleEndTime: 5,
+          chronicleEndGranularity: "none",
+          chroniclePrecision: "unknown",
+        },
+        {
+          chronicleStartTime: 5,
+          chronicleStartMinute: 30,
+          chronicleStartGranularity: "day",
+          chronicleEndTime: 5,
+          chronicleEndGranularity: "day",
+          chroniclePrecision: "exact",
+        },
+      ]) {
+        const ok = await dispatchInvoke(
+          "tree_node_create",
+          { payload: { ...undoIdentity, ...node, restoreState: state } },
+          { backend, shell: noShell },
+        );
+        expect(ok.ok).toBe(true);
+      }
+    });
+
+    it.each([
+      ["a day alone", { chronicleStartTime: 5 }],
+      [
+        "a group without precision",
+        {
+          chronicleStartGranularity: "none",
+          chronicleEndGranularity: "none",
+        },
+      ],
+      ["a string day", { ...chronicle, chronicleStartTime: "5" }],
+      ["a fractional day", { ...chronicle, chronicleStartTime: 1.5 }],
+      [
+        "an unsafe day",
+        { ...chronicle, chronicleStartTime: Number.MAX_SAFE_INTEGER + 1 },
+      ],
+      [
+        "an unknown granularity",
+        { ...chronicle, chronicleEndGranularity: "century" },
+      ],
+      ["an unknown precision", { ...chronicle, chroniclePrecision: "roughly" }],
+      ["a time without a minute", { ...chronicle, chronicleStartMinute: null }],
+      ["a minute out of range", { ...chronicle, chronicleStartMinute: 1440 }],
+      [
+        "an end before the start",
+        { ...chronicle, chronicleEndTime: 99, chronicleEndGranularity: "day" },
+      ],
+    ])("rejects a chronicle group with %s", async (_label, state) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "tree_node_create",
+        { payload: { ...undoIdentity, ...node, restoreState: state } },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(calls).toEqual([]);
+    });
+
     it("accepts every documented key and nothing else", async () => {
       const { backend } = fakeBackend();
       const all = Object.fromEntries(
@@ -6027,6 +6103,13 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       expect([...TREE_NODE_RESTORE_STATE_KEYS].sort()).toEqual(
         [
           "aliases",
+          "chronicleEndGranularity",
+          "chronicleEndMinute",
+          "chronicleEndTime",
+          "chroniclePrecision",
+          "chronicleStartGranularity",
+          "chronicleStartMinute",
+          "chronicleStartTime",
           "contextMode",
           "createdAt",
           "excludedAliases",
@@ -6051,10 +6134,6 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       [
         "an unknown key",
         { ...undoIdentity, ...node, restoreState: { bogus: "x" } },
-      ],
-      [
-        "a held Chronicle key",
-        { ...undoIdentity, ...node, restoreState: { chronicleStartTime: "5" } },
       ],
       [
         "archivedAt",

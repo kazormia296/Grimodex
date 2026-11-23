@@ -173,7 +173,9 @@ fn current_undo_of_a_scene_drops_non_create_columns() {
             "povCharacterId": "pov-1", "locationId": "place-1",
             "unplacedBeatsDoc": "[{\"id\":\"b1\"}]",
             "unplacedBeatPreview": "beat", "placedBeatPreview": "[\"p\"]",
-            "sourceUri": "external-root://r/a.md", "sourceMtime": "2026-01-01T00:00:00Z"
+            "sourceUri": "external-root://r/a.md", "sourceMtime": "2026-01-01T00:00:00Z",
+            "chronicleStartTime": 100, "chronicleStartGranularity": "day",
+            "chroniclePrecision": "approx"
         }),
     )
     .expect("patch");
@@ -266,7 +268,10 @@ fn seeded_scene(db: &Database, id: &str) -> (serde_json::Map<String, Value>, Val
             "unplacedBeatsDoc": "[{\"id\":\"b1\"}]",
             "unplacedBeatPreview": "beat", "placedBeatPreview": "[\"p\"]",
             "sourceUri": "external-root://r/a.md", "sourceMtime": "2026-01-01T00:00:00Z",
-            "content": "{\"type\":\"doc\"}"
+            "content": "{\"type\":\"doc\"}",
+            "chronicleStartTime": 100, "chronicleStartMinute": 540,
+            "chronicleStartGranularity": "time", "chronicleEndTime": 101,
+            "chronicleEndGranularity": "day", "chroniclePrecision": "approx"
         }),
     )
     .expect("patch");
@@ -290,6 +295,13 @@ fn restore_state_of(before: &serde_json::Map<String, Value>) -> Value {
         "unplacedBeatPreview",
         "placedBeatPreview",
         "createdAt",
+        "chronicleStartTime",
+        "chronicleStartMinute",
+        "chronicleStartGranularity",
+        "chronicleEndTime",
+        "chronicleEndMinute",
+        "chronicleEndGranularity",
+        "chroniclePrecision",
     ] {
         if !before[key].is_null() {
             state.insert(key.to_string(), before[key].clone());
@@ -354,8 +366,19 @@ fn undo_with_restore_state_returns_a_scene_row_to_its_state_before_the_delete() 
     ] {
         assert_eq!(response[key], expected, "response {key}");
     }
-    // 年表の列は保留（CED/1 の確認待ち）。今は既定のまま。
-    assert_eq!(after["chronicleStartGranularity"], json!("none"));
+    // 年表の 7 列も 1 組で戻る。
+    for (key, expected) in [
+        ("chronicleStartTime", json!(100)),
+        ("chronicleStartMinute", json!(540)),
+        ("chronicleStartGranularity", json!("time")),
+        ("chronicleEndTime", json!(101)),
+        ("chronicleEndGranularity", json!("day")),
+        ("chroniclePrecision", json!("approx")),
+    ] {
+        assert_eq!(response[key], expected, "response {key}");
+        assert_eq!(after[key], expected, "row {key}");
+    }
+    assert!(after["chronicleEndMinute"].is_null());
     // 復元した scene にも Scope の束縛が従来どおり作られる。
     assert_eq!(
         count(
@@ -463,7 +486,7 @@ fn restore_state_is_refused_for_every_origin_except_undo() {
 }
 
 #[test]
-fn restore_state_rejects_unknown_deferred_and_mistyped_keys() {
+fn restore_state_rejects_unknown_incomplete_and_mistyped_keys() {
     let db = new_db();
     let (before, receipt) = seeded_scene(&db, "scene-bad");
     let base = undo_payload_with_state("scene-bad", "scene", &before, &receipt, "undo-bad");
@@ -473,11 +496,86 @@ fn restore_state_rejects_unknown_deferred_and_mistyped_keys() {
             json!({ "bogus": "x" }),
             "unknown field `bogus`",
         ),
-        // 年表の列は CED/1 の確認まで未知の key として拒む（fail closed）。
+        // 年表の 7 列は 1 組：片方だけ・形違い・整合しない組は拒む。
         (
-            "chronicle key",
+            "chronicle key alone",
             json!({ "chronicleStartTime": 5 }),
-            "unknown field `chronicleStartTime`",
+            "one group",
+        ),
+        (
+            "chronicle without precision",
+            json!({ "chronicleStartGranularity": "none", "chronicleEndGranularity": "none" }),
+            "one group",
+        ),
+        (
+            "chronicle day as string",
+            json!({ "chronicleStartTime": "5" }),
+            "invalid type",
+        ),
+        (
+            "chronicle fractional day",
+            json!({ "chronicleStartTime": 1.5 }),
+            "invalid type",
+        ),
+        (
+            "chronicle unsafe day",
+            json!({
+                "chronicleStartTime": 9007199254740992_i64,
+                "chronicleStartGranularity": "day",
+                "chronicleEndGranularity": "none",
+                "chroniclePrecision": "exact"
+            }),
+            "safe integer",
+        ),
+        (
+            "chronicle bad granularity",
+            json!({
+                "chronicleStartGranularity": "century",
+                "chronicleEndGranularity": "none",
+                "chroniclePrecision": "exact"
+            }),
+            "granularity",
+        ),
+        (
+            "chronicle bad precision",
+            json!({
+                "chronicleStartGranularity": "none",
+                "chronicleEndGranularity": "none",
+                "chroniclePrecision": "roughly"
+            }),
+            "chroniclePrecision",
+        ),
+        (
+            "chronicle time without a minute",
+            json!({
+                "chronicleStartTime": 5,
+                "chronicleStartGranularity": "time",
+                "chronicleEndGranularity": "none",
+                "chroniclePrecision": "exact"
+            }),
+            "chronicle range",
+        ),
+        (
+            "chronicle minute out of range",
+            json!({
+                "chronicleStartTime": 5,
+                "chronicleStartMinute": 1440,
+                "chronicleStartGranularity": "time",
+                "chronicleEndGranularity": "none",
+                "chroniclePrecision": "exact"
+            }),
+            "chronicle range",
+        ),
+        (
+            "chronicle end before start",
+            json!({
+                "chronicleStartTime": 10,
+                "chronicleStartGranularity": "day",
+                "chronicleEndTime": 9,
+                "chronicleEndGranularity": "day",
+                "chroniclePrecision": "exact"
+            }),
+            "chronicle range",
         ),
         (
             "archivedAt",
@@ -630,4 +728,74 @@ fn restore_state_does_not_roll_back_updated_at_or_version() {
         .expect("updated_at");
     assert_ne!(updated_at, "2026-08-24T00:00:00.000Z");
     assert!(updated_at.as_str() > "2026-08-24T00:00:00.000Z");
+}
+
+fn chronicle_row(db: &Database, id: &str) -> Value {
+    let row = row(db, id).expect("row");
+    json!([
+        row["chronicleStartTime"],
+        row["chronicleStartMinute"],
+        row["chronicleStartGranularity"],
+        row["chronicleEndTime"],
+        row["chronicleEndMinute"],
+        row["chronicleEndGranularity"],
+        row["chroniclePrecision"]
+    ])
+}
+
+/// `tree_node_patch`（検査なし）や、制約の前から DB にある行も、undo は忠実に戻す
+/// （互換の検査を通る範囲。厳密な persistence matrix は求めない）。
+#[test]
+fn restore_state_puts_back_a_chronicle_range_the_strict_matrix_would_refuse() {
+    let db = new_db();
+    create(&db, create_payload("scene-legacy", "scene", None)).expect("create");
+    // none に day が付いた非 canonical な組と、粗い粒度に付いた minute。
+    patch(
+        &db,
+        "scene-legacy",
+        "patch-legacy",
+        json!({
+            "chronicleStartTime": 50, "chronicleStartMinute": 30,
+            "chronicleStartGranularity": "day",
+            "chronicleEndTime": 50, "chronicleEndGranularity": "none",
+            "chroniclePrecision": "unknown"
+        }),
+    )
+    .expect("patch");
+    let before = row(&db, "scene-legacy").expect("row");
+    let before_chronicle = chronicle_row(&db, "scene-legacy");
+    let receipt = delete(&db, "scene-legacy", "delete-legacy").expect("delete");
+    create_wire(
+        &db,
+        undo_payload_with_state("scene-legacy", "scene", &before, &receipt, "undo-legacy"),
+    )
+    .expect("a range that existed comes back");
+    assert_eq!(chronicle_row(&db, "scene-legacy"), before_chronicle);
+}
+
+/// 日付の整合は行の中だけで決まる：削除と undo の間に他の場面が変わっても、
+/// 戻す値は変わらず、他の場面の行にも触れない。
+#[test]
+fn restore_state_chronicle_does_not_depend_on_other_scenes() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-solo");
+    create(&db, create_payload("scene-other", "scene", None)).expect("other scene");
+    patch(
+        &db,
+        "scene-other",
+        "patch-other",
+        json!({
+            "chronicleStartTime": 1, "chronicleStartGranularity": "day",
+            "chronicleEndGranularity": "none", "chroniclePrecision": "exact"
+        }),
+    )
+    .expect("patch other");
+    let other_before = chronicle_row(&db, "scene-other");
+    create_wire(
+        &db,
+        undo_payload_with_state("scene-solo", "scene", &before, &receipt, "undo-solo"),
+    )
+    .expect("undo");
+    assert_eq!(chronicle_row(&db, "scene-solo")[0], json!(100));
+    assert_eq!(chronicle_row(&db, "scene-other"), other_before);
 }
