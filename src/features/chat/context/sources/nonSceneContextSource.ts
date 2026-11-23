@@ -24,7 +24,7 @@ import {
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import {
   closeResolvedCodexForUnresolvableScene,
-  listEntryIdsClosedWhenSceneUnresolvable,
+  listEntryIdsClosedForAi,
 } from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 import {
   collectBudgetedDescendantIds,
@@ -357,9 +357,12 @@ async function resolveEntriesForContext(
   });
   // DR-MP4-41: when the current scene cannot be resolved (no scene, or an id the
   // reading order does not have; the codex scope's latest is not one) the Phases
-  // were not applied, so an entry one of them hides is hidden. Every consumer of
-  // this function (the index and the full bodies) reads the mode set here.
-  const closedIds = listEntryIdsClosedWhenSceneUnresolvable({
+  // were not applied, so an entry one of them hides is hidden. DR-MP4-46: an entry
+  // that has a hiding Phase whose anchor scene the resolver cannot place (null,
+  // deleted, archived) is hidden for every anchor, the codex scope's latest
+  // included, because the resolver skips such a Phase. Every consumer of this
+  // function (the index and the full bodies) reads the mode set here.
+  const closedIds = listEntryIdsClosedForAi({
     anchor,
     sceneTimeIndex,
     phasesByEntry: resolved.phasesByEntry,

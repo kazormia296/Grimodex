@@ -7,9 +7,15 @@ import type { TreeNodeData } from "../../tree/types.js";
 import {
   closeResolvedCodexForUnresolvableScene,
   decideCodexAiVisibility,
+  isEntryClosedByOrphanedHidingPhase,
+  isPhaseAnchorOrphaned,
+  listEntryIdsClosedForAi,
   listEntryIdsClosedWhenSceneUnresolvable,
+  listEntryIdsWithOrphanedHiddenPhase,
+  listOrphanedHidingPhases,
   type CodexResolutionState,
 } from "./codexAiVisibility.js";
+import { resolveApplicablePhases } from "./resolveApplicablePhases.js";
 import { buildSceneTimeIndex, type TemporalAnchor } from "./sceneTimeIndex.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -423,16 +429,16 @@ describe("decideCodexAiVisibility", () => {
     });
 
     it("a phase whose anchor scene no longer exists (dangling) counts as a phase that hides", () => {
-      // The anchor scene is deleted, so the phase never applies; the entry is still
-      // hidden when the scene cannot be resolved (which phases would apply is unknown).
+      // The anchor scene is deleted, so the phase never applies; the entry is hidden when
+      // the scene cannot be resolved (which phases would apply is unknown), and, since
+      // DR-MP4-46, at a scene that is in the reading order too (the resolver skips the
+      // phase, so base alone must not be read as public). Before DR-MP4-46 "s1" was [].
       const dangling = phase("ph-dangling", "pub", "deleted-scene", {
         contextModeOverride: "hidden",
       });
       for (const sceneId of [MISSING, null, "s1"]) {
         const r = decide({ entries: [PUBLIC], phases: [dangling], sceneId });
-        expect([...r.hidden], String(sceneId)).toEqual(
-          sceneId === "s1" ? [] : ["pub"],
-        );
+        expect([...r.hidden], String(sceneId)).toEqual(["pub"]);
       }
     });
 
@@ -695,12 +701,15 @@ describe("listEntryIdsClosedWhenSceneUnresolvable (the rule chat's context share
     }
   });
 
-  it("is the rule decideCodexAiVisibility applies: for a base-public entry its hidden set is the named set", () => {
+  it("is the DR-MP4-41 half of the rule decideCodexAiVisibility applies: when the scene cannot be resolved, for a base-public entry its hidden set is the named set", () => {
     const entries = [
       ...new Set(KINDS.map((row) => row.entryId)),
       "no-phase",
     ].map((id) => entry(id, "mentioned"));
-    for (const sceneId of [null, "", "n-note", " s1 ", "s1"]) {
+    // A scene the reading order has ("s1", and " s1 ", which decide trims) is left out here: since
+    // DR-MP4-46 decide also hides the entries with a hiding Phase that lost its anchor there, which
+    // this half does not name. The whole rule is compared with listEntryIdsClosedForAi below.
+    for (const sceneId of [null, "", "n-note"]) {
       const decision = decideCodexAiVisibility({
         entries,
         phases: KINDS,
@@ -762,3 +771,603 @@ describe("closeResolvedCodexForUnresolvableScene", () => {
     ).toBe(input.get("a"));
   });
 });
+
+// DR-MP4-46: a Phase that hides an entry but whose anchor scene the resolver cannot place
+// (null, deleted, archived, under an archived folder) is skipped by `resolveApplicablePhases`
+// for every anchor, so base alone would be read as public. The AI visibility closes such an
+// entry (fail closed, over-hiding on purpose: where the Phase would have applied cannot be told).
+// Before DR-MP4-46 the first test below expected the entry to stay public (the known hole).
+describe("a hiding Phase that lost its anchor (DR-MP4-46)", () => {
+  const folderArchived = {
+    ...scene("f-arch", "a8"),
+    nodeType: "folder" as const,
+    archivedAt: NOW,
+  };
+  const NODES: TreeNodeData[] = [
+    ...FULL_STORY,
+    { ...scene("s-arch", "a9", "a9"), archivedAt: NOW },
+    folderArchived,
+    { ...scene("s-under", "a0", "a0"), parentId: "f-arch" },
+    { ...scene("n-note", "a7"), nodeType: "note" as const },
+  ];
+  const index = buildSceneTimeIndex(NODES);
+  const hide = { contextModeOverride: "hidden" } as const;
+  const ORPHANS: Array<[string, CodexEntryPhase]> = [
+    ["anchor is null", phase("ph-null", "pub", null, hide)],
+    ["anchor scene is deleted", phase("ph-gone", "pub", "deleted-scene", hide)],
+    ["anchor scene is archived", phase("ph-arch", "pub", "s-arch", hide)],
+    [
+      "anchor scene is under an archived folder",
+      phase("ph-under", "pub", "s-under", hide),
+    ],
+    ["anchor is a note", phase("ph-note", "pub", "n-note", hide)],
+    [
+      "an unknown mode",
+      phase("ph-odd", "pub", null, { contextModeOverride: "not-a-mode" }),
+    ],
+  ];
+  const MODES = ["reading", "story", "auto"] as const;
+  const byEntry = (rows: CodexEntryPhase[]) => {
+    const map = new Map<string, CodexEntryPhase[]>();
+    for (const row of rows) {
+      map.set(row.entryId, [...(map.get(row.entryId) ?? []), row]);
+    }
+    return map;
+  };
+
+  it.each(ORPHANS)(
+    "%s: the entry is hidden at every scene the reading order has, in every resolution mode",
+    (_label, orphan) => {
+      for (const mode of MODES) {
+        for (const sceneId of ["s1", "s2", "s3"]) {
+          const r = decide({
+            entries: [PUBLIC],
+            phases: [orphan],
+            sceneId,
+            nodes: NODES,
+            resolutionMode: resolved(mode),
+          });
+          expect([...r.hidden], `${mode} ${sceneId}`).toEqual(["pub"]);
+          expect(r.texts.size, `${mode} ${sceneId}`).toBe(0);
+          expect(r.released, `${mode} ${sceneId}`).toEqual([]);
+        }
+      }
+    },
+  );
+
+  it("closes an entry that has an orphaned hiding Phase and a placeable public Phase too (over-hide, fixed as the rule)", () => {
+    const r = decide({
+      entries: [PUBLIC],
+      phases: [
+        phase("ph-gone", "pub", "deleted-scene", hide),
+        phase("ph-ok", "pub", "s2", { contextModeOverride: "always" }),
+      ],
+      sceneId: "s3",
+      nodes: NODES,
+    });
+    expect([...r.hidden]).toEqual(["pub"]);
+  });
+
+  it("does not close an entry whose hiding Phases all have a placeable anchor (the resolver applies them), nor one whose orphaned Phase does not hide", () => {
+    const placeable = decide({
+      entries: [PUBLIC],
+      phases: [phase("ph-s2", "pub", "s2", hide)],
+      sceneId: "s1",
+      nodes: NODES,
+    });
+    expect([...placeable.hidden]).toEqual([]);
+    expect(placeable.texts.get("pub")).toBeDefined();
+    for (const contextModeOverride of [
+      "suppress",
+      "mentioned",
+      "always",
+      null,
+    ]) {
+      const r = decide({
+        entries: [PUBLIC],
+        phases: [
+          phase("ph-o", "pub", null, { contextModeOverride }),
+          phase("ph-d", "pub", "deleted-scene", {
+            contextModeOverride,
+            summaryOverride: "text only",
+          }),
+        ],
+        sceneId: "s1",
+        nodes: NODES,
+      });
+      expect([...r.hidden], String(contextModeOverride)).toEqual([]);
+    }
+  });
+
+  it("keeps a base-hidden entry hidden when an orphaned hiding Phase and a placeable Phase would release it (nothing is released)", () => {
+    const r = decide({
+      entries: [HIDDEN],
+      phases: [
+        phase("ph-gone", "hid", null, hide),
+        phase("ph-rel", "hid", "s1", { contextModeOverride: "mentioned" }),
+      ],
+      sceneId: "s2",
+      nodes: NODES,
+    });
+    expect([...r.hidden]).toEqual(["hid"]);
+    expect(r.released).toEqual([]);
+    expect(r.texts.size).toBe(0);
+  });
+
+  it("an empty reading order (the index was just reset) closes the entry for any scene id (also by DR-MP4-41)", () => {
+    const r = decide({
+      entries: [PUBLIC],
+      phases: [phase("ph-gone", "pub", "s2", hide)],
+      sceneId: "s1",
+      nodes: [],
+    });
+    expect([...r.hidden]).toEqual(["pub"]);
+  });
+
+  it("an unresolved resolution state hides everything, as before", () => {
+    const r = decide({
+      entries: [PUBLIC],
+      phases: [phase("ph-gone", "pub", null, hide)],
+      resolutionMode: { kind: "unresolved" },
+    });
+    expect([...r.hidden]).toEqual(["pub"]);
+  });
+
+  describe("isPhaseAnchorOrphaned", () => {
+    it("is true for a null anchor and for an id the reading order does not have, false for a placeable one", () => {
+      const at = (anchorNodeId: string | null) =>
+        isPhaseAnchorOrphaned({ anchorNodeId }, index);
+      expect(at(null)).toBe(true);
+      for (const id of [
+        "deleted-scene",
+        "s-arch",
+        "s-under",
+        "f-arch",
+        "n-note",
+        "",
+      ]) {
+        expect(at(id), id).toBe(true);
+      }
+      for (const id of ["s1", "s2", "s3"]) expect(at(id), id).toBe(false);
+    });
+
+    it("is the resolver's skip condition: it picks exactly the Phases resolveApplicablePhases puts in skippedPhaseIds, for every index, mode and anchor", () => {
+      const phases = [
+        ...ORPHANS.map(([, p]) => p),
+        phase("ph-gone-2", "pub", "", hide),
+        phase("ph-s1", "pub", "s1", hide),
+        phase("ph-s2", "pub", "s2", { contextModeOverride: "mentioned" }),
+        phase("ph-s3", "pub", "s3", { summaryOverride: "text" }),
+      ];
+      const indexes = [
+        buildSceneTimeIndex(NODES),
+        buildSceneTimeIndex(NO_STORY),
+        buildSceneTimeIndex(FULL_STORY),
+        buildSceneTimeIndex([]),
+      ];
+      const anchors: TemporalAnchor[] = [
+        { kind: "base" },
+        { kind: "latest" },
+        { kind: "scene", sceneId: "s1" },
+        { kind: "scene", sceneId: "s3" },
+        { kind: "scene", sceneId: "no-such-scene" },
+        { kind: "phase", phaseId: "ph-s1" },
+        { kind: "phase", phaseId: "ph-null" },
+        { kind: "phase", phaseId: "no-such-phase" },
+      ];
+      for (const [i, sceneIndex] of indexes.entries()) {
+        const picked = phases
+          .filter((p) => isPhaseAnchorOrphaned(p, sceneIndex))
+          .map((p) => p.id)
+          .sort();
+        for (const mode of MODES) {
+          for (const anchor of anchors) {
+            const out = resolveApplicablePhases({
+              phases,
+              index: sceneIndex,
+              mode,
+              anchor,
+            });
+            expect(
+              [...out.skippedPhaseIds].sort(),
+              `index ${i} ${mode} ${anchor.kind}`,
+            ).toEqual(picked);
+          }
+        }
+      }
+    });
+  });
+
+  describe("no hiding Phase is dropped silently", () => {
+    it("whenever decide does not hide an entry, none of its hiding Phases is in skippedPhaseIds (a new reason for the resolver to skip must reach the rule)", () => {
+      const phases = [
+        ...ORPHANS.map(([, p]) => p).map((p, i) => ({
+          ...p,
+          id: `${p.id}-${i}`,
+          entryId: `e-${i}`,
+        })),
+        phase("ph-ok-1", "e-ok-1", "s1", hide),
+        phase("ph-ok-2", "e-ok-2", "s3", hide),
+        phase("ph-ok-3", "e-ok-3", "s2", { contextModeOverride: "suppress" }),
+      ];
+      const entries = [...new Set(phases.map((p) => p.entryId))].map((id) =>
+        entry(id, "mentioned"),
+      );
+      for (const mode of MODES) {
+        for (const sceneId of ["s1", "s2", "s3"]) {
+          const decision = decideCodexAiVisibility({
+            entries,
+            phases,
+            sceneId,
+            sceneTimeIndex: index,
+            resolutionMode: resolved(mode),
+          });
+          const skipped = new Set(
+            resolveApplicablePhases({
+              phases,
+              index,
+              mode,
+              anchor: { kind: "scene", sceneId },
+            }).skippedPhaseIds,
+          );
+          for (const p of phases) {
+            if (decision.hidden.has(p.entryId)) continue;
+            const hides =
+              p.contextModeOverride !== null &&
+              p.contextModeOverride !== "mentioned" &&
+              p.contextModeOverride !== "always" &&
+              p.contextModeOverride !== "suppress";
+            expect(
+              hides && skipped.has(p.id),
+              `${mode} ${sceneId} ${p.id}`,
+            ).toBe(false);
+          }
+        }
+      }
+    });
+  });
+
+  describe("listEntryIdsWithOrphanedHiddenPhase", () => {
+    const rows: CodexEntryPhase[] = [
+      phase("a-null", "null-hide", null, hide),
+      phase("a-gone", "gone-hide", "deleted-scene", hide),
+      phase("a-arch", "arch-hide", "s-arch", hide),
+      phase("a-odd", "odd-mode", null, { contextModeOverride: "not-a-mode" }),
+      phase("a-sup", "suppress", null, { contextModeOverride: "suppress" }),
+      phase("a-men", "mentioned", "deleted-scene", {
+        contextModeOverride: "mentioned",
+      }),
+      phase("a-alw", "always", null, { contextModeOverride: "always" }),
+      phase("a-txt", "text-only", null, { summaryOverride: "t" }),
+      phase("a-ok", "placeable", "s2", hide),
+      phase("a-m1", "multi", "s1", { contextModeOverride: "mentioned" }),
+      phase("a-m2", "multi", "gone", hide),
+    ];
+    const named = (index_ = index, map = byEntry(rows)) =>
+      [
+        ...listEntryIdsWithOrphanedHiddenPhase({
+          sceneTimeIndex: index_,
+          phasesByEntry: map,
+        }),
+      ].sort();
+
+    it("names the entries with a hiding Phase (hidden or an unknown mode) whose anchor is null or not in the reading order", () => {
+      expect(named()).toEqual(
+        ["arch-hide", "gone-hide", "multi", "null-hide", "odd-mode"].sort(),
+      );
+    });
+
+    it("does not name suppress, mentioned, always, text-only or a placeable hiding Phase", () => {
+      const names = named();
+      for (const id of [
+        "suppress",
+        "mentioned",
+        "always",
+        "text-only",
+        "placeable",
+      ]) {
+        expect(names).not.toContain(id);
+      }
+    });
+
+    it("does not depend on any anchor or scene: an empty reading order names every entry with a hiding Phase", () => {
+      expect(named(buildSceneTimeIndex([]))).toEqual(
+        [
+          "arch-hide",
+          "gone-hide",
+          "multi",
+          "null-hide",
+          "odd-mode",
+          "placeable",
+        ].sort(),
+      );
+    });
+
+    it("names nothing for no Phases and for an entry with an empty list", () => {
+      expect(named(index, new Map())).toEqual([]);
+      expect(named(index, new Map([["x", []]]))).toEqual([]);
+    });
+  });
+
+  describe("listOrphanedHidingPhases", () => {
+    // The decision table: anchor kind x mode. `index` is the file's shared fixture
+    // (s1..s3 readable; s-arch, s-under, f-arch, n-note, deleted-scene are not).
+    const anchors: [string, string | null, boolean][] = [
+      ["null", null, true],
+      ["a deleted scene id", "deleted-scene", true],
+      ["an archived scene", "s-arch", true],
+      ["a scene under an archived folder", "s-under", true],
+      ["another project's id", "other-project-id", true],
+      ["a placeable scene", "s2", false],
+    ];
+    const modes: [string, string | null, boolean][] = [
+      ["hidden", "hidden", true],
+      ["an unknown mode", "not-a-mode", true],
+      ["suppress", "suppress", false],
+      ["mentioned", "mentioned", false],
+      ["always", "always", false],
+      ["null (text only)", null, false],
+    ];
+    for (const [anchorName, anchorNodeId, orphaned] of anchors) {
+      for (const [modeName, mode, hides] of modes) {
+        it(`${anchorName} x ${modeName}: ${orphaned && hides ? "listed" : "not listed"}`, () => {
+          const p = phase("ph", "e", anchorNodeId, {
+            contextModeOverride: mode,
+          });
+          const out = listOrphanedHidingPhases([p], index);
+          expect(out.length).toBe(orphaned && hides ? 1 : 0);
+          if (orphaned && hides) {
+            expect(out[0]).toEqual({
+              id: "ph",
+              label: "ph",
+              mode,
+              cause:
+                anchorNodeId === null
+                  ? "anchor-null"
+                  : "anchor-not-in-reading-order",
+            });
+          }
+        });
+      }
+    }
+
+    it("keeps the Phases' order and tells the two causes apart", () => {
+      const out = listOrphanedHidingPhases(
+        [
+          phase("b", "e", "deleted-scene", { contextModeOverride: "hidden" }),
+          phase("ok", "e", "s1", { contextModeOverride: "hidden" }),
+          phase("a", "e", null, { contextModeOverride: "hidden", label: "L" }),
+        ],
+        index,
+      );
+      expect(out.map((o) => [o.id, o.label, o.cause])).toEqual([
+        ["b", "b", "anchor-not-in-reading-order"],
+        ["a", "L", "anchor-null"],
+      ]);
+    });
+
+    it("is what the entry-level rule is made of: an entry is named exactly when its list is not empty, for every index", () => {
+      const rows = [
+        phase("a1", "x", null, { contextModeOverride: "hidden" }),
+        phase("a2", "y", "s1", { contextModeOverride: "hidden" }),
+        phase("a3", "z", "gone", { contextModeOverride: "suppress" }),
+        phase("a4", "w", "gone", { contextModeOverride: "odd" }),
+      ];
+      for (const idx of [index, buildSceneTimeIndex([])]) {
+        const map = byEntry(rows);
+        const named = listEntryIdsWithOrphanedHiddenPhase({
+          sceneTimeIndex: idx,
+          phasesByEntry: map,
+        });
+        for (const [entryId, phases] of map) {
+          expect(named.has(entryId), entryId).toBe(
+            listOrphanedHidingPhases(phases, idx).length > 0,
+          );
+        }
+      }
+    });
+  });
+
+  describe("isEntryClosedByOrphanedHidingPhase", () => {
+    const sets: Array<[string, CodexEntryPhase[]]> = [
+      ["only an orphaned hiding Phase", [phase("o", "e", null, hide)]],
+      [
+        "orphaned hiding + a placeable always",
+        [
+          phase("o", "e", null, hide),
+          phase("a", "e", "s2", { contextModeOverride: "always" }),
+        ],
+      ],
+      [
+        "orphaned hiding + placeable mentioned and suppress",
+        [
+          phase("o", "e", "deleted-scene", hide),
+          phase("m", "e", "s1", { contextModeOverride: "mentioned" }),
+          phase("s", "e", "s3", { contextModeOverride: "suppress" }),
+        ],
+      ],
+      [
+        "orphaned hiding + a placeable hiding Phase",
+        [phase("o", "e", null, hide), phase("h", "e", "s2", hide)],
+      ],
+      [
+        "orphaned hiding + a placeable text-only Phase",
+        [
+          phase("o", "e", null, hide),
+          phase("t", "e", "s1", { summaryOverride: "x" }),
+        ],
+      ],
+      [
+        "orphaned hiding + an always Phase that is itself orphaned",
+        [
+          phase("o", "e", null, hide),
+          phase("a", "e", "gone", { contextModeOverride: "always" }),
+        ],
+      ],
+      [
+        "orphaned unknown mode + a placeable always",
+        [
+          phase("o", "e", "s-arch", { contextModeOverride: "not-a-mode" }),
+          phase("a", "e", "s1", { contextModeOverride: "always" }),
+        ],
+      ],
+      [
+        "no orphaned hiding Phase, a placeable always",
+        [phase("a", "e", "s2", { contextModeOverride: "always" })],
+      ],
+      ["no Phase", []],
+    ];
+    const BASES = ["mentioned", "hidden", "not-a-mode"] as const;
+
+    for (const base of BASES) {
+      for (const [name, phases] of sets) {
+        // It is true exactly when the orphaned Phase is what closes the entry: there is one,
+        // and without them (the rule off: they are removed) the entry would be visible in some scene.
+        it(`base ${base}: ${name}`, () => {
+          const orphaned = listOrphanedHidingPhases(phases, index);
+          const withoutOrphans = phases.filter(
+            (p) => !orphaned.some((o) => o.id === p.id),
+          );
+          const visibleWithoutRule = ["s1", "s2", "s3"].some(
+            (sceneId) =>
+              !decide({
+                entries: [entry("e", base)],
+                phases: withoutOrphans,
+                sceneId,
+                nodes: NODES,
+              }).hidden.has("e"),
+          );
+          const closedWithRule = ["s1", "s2", "s3"].every((sceneId) =>
+            decide({
+              entries: [entry("e", base)],
+              phases,
+              sceneId,
+              nodes: NODES,
+            }).hidden.has("e"),
+          );
+          const result = isEntryClosedByOrphanedHidingPhase({
+            entryContextMode: base,
+            phases,
+            index,
+          });
+          expect(result).toBe(orphaned.length > 0 && visibleWithoutRule);
+          if (orphaned.length > 0) expect(closedWithRule).toBe(true);
+        });
+      }
+    }
+
+    it("a hidden base with a placeable public Phase and an orphaned hiding Phase is closed by the orphan rule", () => {
+      const phases = [
+        phase("o", "e", null, hide),
+        phase("a", "e", "s2", { contextModeOverride: "always" }),
+      ];
+      expect(
+        isEntryClosedByOrphanedHidingPhase({
+          entryContextMode: "hidden",
+          phases,
+          index,
+        }),
+      ).toBe(true);
+      // without the orphaned Phase the always Phase releases it at s2
+      expect(
+        decide({
+          entries: [entry("e", "hidden")],
+          phases: [phases[1]],
+          sceneId: "s2",
+          nodes: NODES,
+        }).hidden.has("e"),
+      ).toBe(false);
+    });
+  });
+
+  describe("listEntryIdsClosedForAi", () => {
+    const rows: CodexEntryPhase[] = [
+      phase("p-ok", "placeable", "s2", hide),
+      phase("p-gone", "orphaned", "deleted-scene", hide),
+      phase("p-null", "null-anchor", null, hide),
+      phase("p-pub", "orphan-public", null, {
+        contextModeOverride: "mentioned",
+      }),
+    ];
+    const closed = (anchor: TemporalAnchor) =>
+      [
+        ...listEntryIdsClosedForAi({
+          anchor,
+          sceneTimeIndex: index,
+          phasesByEntry: byEntry(rows),
+        }),
+      ].sort();
+
+    it("is the union of the two rules: base and a scene the reading order lacks close every entry with a hiding Phase", () => {
+      const all = ["null-anchor", "orphaned", "placeable"];
+      expect(closed({ kind: "base" })).toEqual(all);
+      expect(closed({ kind: "scene", sceneId: "no-such-scene" })).toEqual(all);
+      expect(closed({ kind: "scene", sceneId: "n-note" })).toEqual(all);
+    });
+
+    it("closes only the entries whose hiding Phase lost its anchor while the scene can be resolved", () => {
+      expect(closed({ kind: "scene", sceneId: "s1" })).toEqual([
+        "null-anchor",
+        "orphaned",
+      ]);
+      expect(closed({ kind: "scene", sceneId: "s3" })).toEqual([
+        "null-anchor",
+        "orphaned",
+      ]);
+    });
+
+    it("closes them for latest (the codex scope) and for a Phase preview too (Q-G1)", () => {
+      expect(closed({ kind: "latest" })).toEqual(["null-anchor", "orphaned"]);
+      expect(closed({ kind: "phase", phaseId: "p-ok" })).toEqual([
+        "null-anchor",
+        "orphaned",
+      ]);
+    });
+
+    it("is the rule decideCodexAiVisibility applies: for a base-public entry its hidden set is the named set (where no placeable Phase applies; the named set is always hidden)", () => {
+      const entries = [
+        ...new Set(KIND_ROWS.map((row) => row.entryId)),
+        "no-phase",
+      ].map((id) => entry(id, "mentioned"));
+      const kindIndex = buildSceneTimeIndex(NO_STORY);
+      for (const sceneId of [null, "", "n-note", " s1 ", "s1", "s2", "s3"]) {
+        const decision = decideCodexAiVisibility({
+          entries,
+          phases: KIND_ROWS,
+          sceneId,
+          sceneTimeIndex: kindIndex,
+          resolutionMode: resolved("reading"),
+        });
+        const named = listEntryIdsClosedForAi({
+          anchor: decision.anchor,
+          sceneTimeIndex: kindIndex,
+          phasesByEntry: byEntry(KIND_ROWS),
+        });
+        if (sceneId === "s2" || sceneId === "s3") {
+          // The placeable Phases (hide at s2, odd-mode at s2, hide at s3) apply here and hide
+          // more than the rule closes; what the rule closes is always hidden.
+          for (const id of named)
+            expect(decision.hidden.has(id), id).toBe(true);
+        } else {
+          expect([...decision.hidden].sort(), String(sceneId)).toEqual(
+            [...named].sort(),
+          );
+        }
+      }
+    });
+  });
+});
+
+/** The rows of the "listEntryIdsClosedWhenSceneUnresolvable" describe above, for the whole-rule comparison. */
+const KIND_ROWS: CodexEntryPhase[] = [
+  phase("p-hide", "hide", "s2", { contextModeOverride: "hidden" }),
+  phase("p-odd", "odd-mode", "s2", { contextModeOverride: "not-a-mode" }),
+  phase("p-pub", "pub-phase", "s2", { contextModeOverride: "mentioned" }),
+  phase("p-suppress", "suppress", "s2", { contextModeOverride: "suppress" }),
+  phase("p-always", "always", "s2", { contextModeOverride: "always" }),
+  phase("p-text", "text-only", "s2", { summaryOverride: "text" }),
+  phase("p-dangle", "dangling", "gone", { contextModeOverride: "hidden" }),
+  phase("p-null", "null-anchor", null, { contextModeOverride: "hidden" }),
+  phase("p-a", "multi", "s1", { contextModeOverride: "mentioned" }),
+  phase("p-b", "multi", "s3", { contextModeOverride: "hidden" }),
+];

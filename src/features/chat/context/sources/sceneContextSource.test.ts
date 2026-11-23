@@ -1895,3 +1895,116 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
     },
   );
 });
+
+// DR-MP4-46: a Phase that hides an entry but whose anchor scene the resolver cannot place (null,
+// deleted) is skipped, so the entry is closed even while the current scene is in the reading
+// order (before DR-MP4-46 it reached the AI as base).
+describe("collectSceneContext when a Phase that hides an entry lost its anchor (DR-MP4-46)", () => {
+  it("closes it on every path: always, a mention and an input pin, at a scene the reading order has", async () => {
+    const entries = [
+      entry({
+        id: "dangling",
+        name: "Dangling",
+        contextMode: "always",
+        summary: "DANGLING_SUM",
+      }),
+      entry({
+        id: "nullanc",
+        name: "Nullanc",
+        contextMode: "always",
+        summary: "NULLANC_SUM",
+      }),
+      entry({ id: "mentioned", name: "Mentionvane", summary: "MENTIONED_SUM" }),
+      entry({ id: "pinned", name: "Pinnedvane", summary: "PINNED_SUM" }),
+    ];
+    const phases = [
+      phase({
+        id: "p-dangling",
+        entryId: "dangling",
+        anchorNodeId: "deleted-scene",
+        contextModeOverride: "hidden",
+      }),
+      phase({
+        id: "p-nullanc",
+        entryId: "nullanc",
+        anchorNodeId: null,
+        contextModeOverride: "hidden",
+      }),
+      phase({
+        id: "p-mentioned",
+        entryId: "mentioned",
+        anchorNodeId: null,
+        contextModeOverride: "hidden",
+      }),
+      phase({
+        id: "p-pinned",
+        entryId: "pinned",
+        anchorNodeId: "deleted-scene",
+        contextModeOverride: "hidden",
+      }),
+    ];
+    const result = await collectSceneContext(
+      request({
+        sceneId: "scene-1",
+        entries,
+        sessionId: "session-1",
+        sceneContent: "Mentionvane walks in.",
+        mentionedCodexIds: ["mentioned"],
+        inputPinnedEntryIds: ["pinned"],
+      }),
+      phaseDeps(phases),
+    );
+    const haystack = `${JSON.stringify(result.promptInput)}\n${
+      buildSystemPrompt(result.promptInput).prompt
+    }`;
+    for (const token of [
+      "DANGLING_SUM",
+      "NULLANC_SUM",
+      "MENTIONED_SUM",
+      "PINNED_SUM",
+    ]) {
+      expect(haystack, token).not.toContain(token);
+    }
+    for (const body of ["DANGLING_BODY", "PINNED_BODY"]) {
+      expect(haystack, body).not.toContain(body);
+    }
+  });
+
+  it("leaves an entry whose hiding Phase has a placeable anchor as before (the Phase has not started)", async () => {
+    const result = await collectSceneContext(
+      request({
+        sceneId: "scene-1",
+        entries: [
+          entry({
+            id: "ok",
+            name: "Okvane",
+            contextMode: "always",
+            summary: "OK_SUM",
+          }),
+        ],
+        sessionId: "session-1",
+      }),
+      createSceneContextSourceDeps({
+        ...phaseDeps([
+          phase({
+            id: "p-ok",
+            entryId: "ok",
+            anchorNodeId: "scene-2",
+            contextModeOverride: "hidden",
+          }),
+        ]),
+        getTemporalResolution: () => ({
+          sceneTimeIndex: buildSceneTimeIndex([
+            sceneNode,
+            { ...sceneNode, id: "scene-2", sortOrder: "a1" },
+          ]),
+          resolutionMode: "reading" as const,
+        }),
+      }),
+    );
+    const haystack = `${JSON.stringify(result.promptInput)}\n${
+      buildSystemPrompt(result.promptInput).prompt
+    }`;
+    expect(haystack).toContain("OK_SUM");
+  });
+});
