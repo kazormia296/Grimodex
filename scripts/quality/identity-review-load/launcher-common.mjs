@@ -370,6 +370,8 @@ export async function runCell({
   let firstProvenance = null;
   let sampler;
   let app;
+  // 落ちた段の印（定型の token だけ。cell.failedPhase に残す。原因を後から読むため）。
+  let phase = "setup";
   const started = Date.now();
   // kill されたとき（finally が走らない）も、隔離 userData の key と workRoot を消す。
   assert.ok(
@@ -459,6 +461,7 @@ export async function runCell({
       blockDispatch,
     });
     assertNoFakeAiEnv(env);
+    phase = "launch";
     app = await d.launchElectron({
       args: [
         "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
@@ -511,6 +514,7 @@ export async function runCell({
     });
     sampler = setInterval(() => egressSampler.tick(), 250);
     const page = await app.firstWindow();
+    phase = "page-ready";
     await page.waitForFunction(
       () => window.identityLoad?.ready === true,
       null,
@@ -518,6 +522,7 @@ export async function runCell({
     );
     cell.electronVersion = await app.evaluate(() => process.versions.electron);
 
+    phase = "open-project";
     const projectId = `idl-${workKey}`;
     await page.evaluate((input) => window.identityLoad.openProject(input), {
       workspacePath: path.join(workspaceDir, "ws"),
@@ -525,6 +530,7 @@ export async function runCell({
       title: `IDL ${workKey}`,
       language: "ja",
     });
+    phase = "build-work";
     const build = await page.evaluate(
       (input) => window.identityLoad.buildNestedWork(input),
       {
@@ -555,6 +561,7 @@ export async function runCell({
       ruby: build.ruby,
     };
 
+    phase = "body";
     const value = await body({
       page,
       app,
@@ -575,6 +582,7 @@ export async function runCell({
       scenesTexts: loaded.scenesTexts,
     });
 
+    phase = "post-body";
     const ipc = await app.evaluate(() => globalThis.nir1IpcTrace.calls);
     const names = ipc.map((call) => call.command);
     const counts = {};
@@ -620,6 +628,7 @@ export async function runCell({
     return { cell, value, scenesTexts: loaded.scenesTexts };
   } catch (error) {
     cell.status = "failed";
+    cell.failedPhase = phase;
     cell.errors = [safeErrorSummary(error)];
     // 失敗した cell にも、そこまでの宛先の標本を残す（宛先が原因の失敗の宛先が記録から消えないように）。
     if (egressSampler) {

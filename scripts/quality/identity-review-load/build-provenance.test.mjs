@@ -1230,3 +1230,35 @@ test("F5 m-g：app.close() が返らなければ期限で諦め、Electron を S
     }
   });
 });
+
+test("runCell：失敗した cell に、落ちた段の印（failedPhase）を定型の token で残す（body の失敗は body、起動の失敗は launch、成功した cell には付けない）", async () => {
+  await withRoot(async (root) => {
+    // body が投げた：段は body。
+    const inBody = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () => fakeElectron(),
+      body: async () => {
+        throw new Error("page.evaluate: Execution context was destroyed");
+      },
+    });
+    assert.equal(inBody.cell.status, "failed");
+    assert.equal(inBody.cell.failedPhase, "body");
+    assert.ok(!JSON.stringify(inBody.cell).includes("Execution context"));
+    // 起動が投げた：段は launch。
+    const inLaunch = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () => {
+        throw new Error("launch failed");
+      },
+    });
+    assert.equal(inLaunch.cell.status, "failed");
+    assert.equal(inLaunch.cell.failedPhase, "launch");
+    // 成功した cell には付けない。
+    const ok = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () => fakeElectron(),
+    });
+    assert.equal(ok.cell.status, "completed");
+    assert.equal(ok.cell.failedPhase, undefined);
+  });
+});
