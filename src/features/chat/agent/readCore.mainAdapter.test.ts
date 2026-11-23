@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -104,9 +107,14 @@ import {
   readReadInputs,
 } from "@/../electron/shared/readDomain/core/readInputsReader";
 import {
+  createMainCodexEntryContext,
   createMainCodexReadContext,
   createMainCodexVisibilityPorts,
 } from "@/../electron/shared/readDomain/core/codexMainContext";
+import {
+  CODEX_ENTRY_TOOL_NAMES,
+  createCodexEntryExecutors,
+} from "@/../electron/shared/readDomain/core/codexEntryExecutors";
 import {
   CODEX_READ_TOOL_NAMES,
   createCodexReadExecutors,
@@ -118,6 +126,8 @@ import {
 } from "@/../electron/shared/readDomain/core/codexVisibility";
 import { resolveCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { executeTool } from "./toolExecutors";
+import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
+import { CODEX_ENTRY_SEED } from "./__fixtures__/codexEntrySeed";
 import { readCodexNames } from "@/../electron/shared/readDomain/core/chronicleReaders";
 import { listCodexMatchTargets } from "@/features/codex/api";
 import {
@@ -289,6 +299,77 @@ const goldenOf = (tool: string): LegacyReadGoldenCase[] => {
   if (raw === undefined) throw new Error(`no golden for ${tool}`);
   return (JSON.parse(raw) as { cases: LegacyReadGoldenCase[] }).cases;
 };
+
+interface CodexEntryGoldenCase {
+  readonly case: string;
+  readonly world: {
+    readonly projectId: string;
+    readonly activeSceneId: string;
+  };
+  readonly params: Record<string, unknown>;
+  readonly result: {
+    readonly name: string;
+    readonly summary: string;
+    readonly tokensUsed: number;
+    readonly content: unknown;
+  };
+  readonly contentJson: string;
+}
+
+const CODEX_ENTRY_GOLDEN = JSON.parse(
+  readFileSync(
+    resolve(
+      "src/features/chat/agent/__fixtures__/codexEntryGolden/get_codex_entry.golden.txt",
+    ),
+    "utf8",
+  ),
+) as { cases: CodexEntryGoldenCase[] };
+const CODEX_ENTRY_READS_GOLDEN = JSON.parse(
+  readFileSync(
+    resolve(
+      "src/features/chat/agent/__fixtures__/codexEntryGolden/get_codex_entry.reads.golden.txt",
+    ),
+    "utf8",
+  ),
+) as Record<string, Array<{ sql: string; params: unknown[] }>>;
+
+let codexEntryFixtureSeeded: Promise<void> | null = null;
+
+function seedCodexEntryFixture(): Promise<void> {
+  codexEntryFixtureSeeded ??= insertCodexEntryFixture();
+  return codexEntryFixtureSeeded;
+}
+
+async function insertCodexEntryFixture(): Promise<void> {
+  for (const { table, rows } of CODEX_ENTRY_SEED) {
+    for (const row of rows) {
+      const columns = Object.keys(row);
+      await invoke("db_execute", {
+        sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+        params: columns.map((column) => row[column]),
+        method: "run",
+      });
+    }
+  }
+}
+
+async function makeCodexEntryExecutors(world: {
+  readonly projectId: string;
+  readonly activeSceneId: string | null;
+}) {
+  const inputs = await readReadInputs(mainDb, {
+    projectId: world.projectId,
+    currentSceneId: world.activeSceneId,
+  });
+  return createCodexEntryExecutors(
+    createMainCodexEntryContext({
+      db: mainDb,
+      inputs,
+      countTokens: (text) => (text ? text.length : 0),
+      extractPlainText: (json) => extractPlainText(json),
+    }),
+  );
+}
 
 describe("共有 core（main の DB adapter の上）が、PR-0 の golden と同じ結果を返す", () => {
   it("B1・B2 の 7 本、B3 の 2 本、B4 の 2 本（いずれも golden を持つ）を対象にしている", () => {
@@ -1487,6 +1568,274 @@ describe("共有 core の Codex の 4 本（main の DB adapter・turn の入力
       expect(ids).toContain("c-aria");
     } finally {
       codexDenseAnswer = () => [];
+    }
+  });
+});
+
+describe("共有 core の get_codex_entry（10b）", () => {
+  it("5つの名前表は互いに素で合計21本。既存4表の合計20本はそのまま", () => {
+    const groups: readonly (readonly string[])[] = [
+      CORE_READ_TOOL_NAMES,
+      CHRONICLE_READ_TOOL_NAMES,
+      CHRONICLE_SEARCH_TOOL_NAMES,
+      CODEX_READ_TOOL_NAMES,
+      CODEX_ENTRY_TOOL_NAMES,
+    ];
+    const all = groups.flatMap((group) => [...group]);
+    expect(CODEX_ENTRY_TOOL_NAMES).toEqual(["get_codex_entry"]);
+    expect(all).toHaveLength(21);
+    expect(new Set(all).size).toBe(21);
+    for (let i = 0; i < groups.length; i += 1) {
+      for (let j = i + 1; j < groups.length; j += 1) {
+        expect(groups[i]!.some((name) => groups[j]!.includes(name))).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  it("commit ① の4 caseを main adapter 上で golden と byte 一致させる", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await seedCodexEntryFixture();
+
+    for (const golden of CODEX_ENTRY_GOLDEN.cases) {
+      const executors = await makeCodexEntryExecutors(golden.world);
+      callLog.length = 0;
+      sent.length = 0;
+      const actual = await executors.get_codex_entry(golden.params);
+      const label = `get_codex_entry / ${golden.case}`;
+      expect(
+        {
+          name: actual.name,
+          summary: actual.summary,
+          tokensUsed: actual.tokensUsed,
+          content: actual.content,
+        },
+        label,
+      ).toEqual(golden.result);
+      expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+    }
+  });
+
+  it("通常・released・hidden・missing の select 列と順序を legacy fixture と一致させる", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await seedCodexEntryFixture();
+    const cases = [
+      {
+        key: "normal",
+        world: { projectId: "p-main", activeSceneId: "n-s1" },
+        params: { id: "ge-normal" },
+      },
+      {
+        key: "released",
+        world: { projectId: "p-main", activeSceneId: "n-s2" },
+        params: { id: "ge-released-old" },
+      },
+      {
+        key: "hidden",
+        world: { projectId: "p-main", activeSceneId: "n-s2" },
+        params: { id: "ge-hidden" },
+      },
+      {
+        key: "missing",
+        world: { projectId: "p-main", activeSceneId: "n-s2" },
+        params: { id: "missing-entry" },
+      },
+    ] as const;
+
+    for (const scenario of cases) {
+      const executors = await makeCodexEntryExecutors(scenario.world);
+      callLog.length = 0;
+      sent.length = 0;
+      await executors.get_codex_entry(scenario.params);
+      expect(
+        callLog.map((call) => ({
+          sql: call["sql"],
+          params: call["params"],
+        })),
+        scenario.key,
+      ).toEqual(CODEX_ENTRY_READS_GOLDEN[scenario.key]);
+    }
+  });
+
+  it("commit ① と同じ入力行列で SECRET marker の公開境界を保つ", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await seedCodexEntryFixture();
+    const modes = ["reading", "story", "auto"] as const;
+    const treeRows = ["n-s1", "n-s2", "n-s3"].map((id, index) => ({
+      id,
+      parentId: null,
+      nodeType: "scene",
+      sortOrder: `a${index}`,
+      storyTimeOrder: null,
+      archivedAt: null,
+    }));
+    const matrix: Array<{
+      label: string;
+      id: string;
+      sceneId: string;
+      visible: boolean;
+      marker?: string;
+    }> = [
+      {
+        label: "base hidden・Phase なし",
+        id: "ge-no-phase",
+        sceneId: "n-s2",
+        visible: false,
+      },
+      { label: "場面なし", id: "ge-released-old", sceneId: "", visible: false },
+      {
+        label: "空白の場面",
+        id: "ge-released-old",
+        sceneId: "   ",
+        visible: false,
+      },
+      {
+        label: "読む順に無い場面",
+        id: "ge-released-old",
+        sceneId: "n-not-indexed",
+        visible: false,
+      },
+      {
+        label: "release 前",
+        id: "ge-released-old",
+        sceneId: "n-s1",
+        visible: false,
+      },
+      {
+        label: "released",
+        id: "ge-released-old",
+        sceneId: "n-s2",
+        visible: true,
+        marker: "SECRET-PHASE-OLD",
+      },
+      {
+        label: "released の現在 Phase",
+        id: "ge-released-current",
+        sceneId: "n-s2",
+        visible: true,
+        marker: "SECRET-PHASE",
+      },
+      {
+        label: "解除後に再 hidden",
+        id: "ge-released-old",
+        sceneId: "n-s3",
+        visible: false,
+      },
+      {
+        label: "NULL 起点の orphan hidden Phase",
+        id: "ge-orphan-null-release",
+        sceneId: "n-s3",
+        visible: false,
+      },
+      {
+        label: "読む順に無い orphan hidden Phase",
+        id: "ge-orphan-index-release",
+        sceneId: "n-s3",
+        visible: false,
+      },
+      {
+        label: "orphan の公開 Phase だけ",
+        id: "ge-orphan-public",
+        sceneId: "n-s3",
+        visible: false,
+      },
+      {
+        label: "別 project の id",
+        id: "x-c-aria",
+        sceneId: "n-s2",
+        visible: false,
+      },
+      {
+        label: "base 公開・Phase に本文上書き",
+        id: "ge-base-public-override",
+        sceneId: "n-s2",
+        visible: true,
+        marker: "PUBLIC-BASE",
+      },
+    ];
+
+    for (const mode of modes) {
+      for (const scenario of matrix) {
+        const inputs = buildReadInputs({
+          projectId: "p-main",
+          treeRows,
+          project: { phaseResolutionMode: mode },
+          currentSceneId: scenario.sceneId,
+        });
+        const executors = createCodexEntryExecutors(
+          createMainCodexEntryContext({
+            db: mainDb,
+            inputs,
+            countTokens: (text) => (text ? text.length : 0),
+            extractPlainText: (json) => extractPlainText(json),
+          }),
+        );
+        const result = await executors.get_codex_entry({ id: scenario.id });
+        const json = JSON.stringify(result);
+        expect(result.content !== null, `${mode}: ${scenario.label}`).toBe(
+          scenario.visible,
+        );
+        expect(
+          json.includes('"SECRET-BASE'),
+          `${mode}: ${scenario.label}`,
+        ).toBe(false);
+        expect(
+          json.includes('"SECRET-PHASE-OLD"'),
+          `${mode}: ${scenario.label}`,
+        ).toBe(scenario.marker === "SECRET-PHASE-OLD");
+        expect(
+          json.includes('"SECRET-PHASE"'),
+          `${mode}: ${scenario.label}`,
+        ).toBe(scenario.marker === "SECRET-PHASE");
+        expect(json, `${mode}: ${scenario.label}`).not.toContain(
+          "SECRET-PHASE-PUBLIC",
+        );
+        expect(json, `${mode}: ${scenario.label}`).not.toContain(
+          "SECRET-PHASE-ORPHAN",
+        );
+        if (scenario.marker)
+          expect(json, `${mode}: ${scenario.label}`).toContain(scenario.marker);
+      }
+    }
+  });
+
+  it("reading・story・auto の Phase 場面順の解釈を保つ", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await seedCodexEntryFixture();
+    const baseInputs = await readReadInputs(mainDb, {
+      projectId: "p-main",
+      currentSceneId: "n-s2",
+    });
+    const cases = [
+      { mode: "reading", summary: "Entry not found" },
+      { mode: "story", summary: "mode 判定 (character)" },
+      { mode: "auto", summary: "Entry not found" },
+    ] as const;
+    for (const { mode, summary } of cases) {
+      const inputs = {
+        ...baseInputs,
+        resolutionMode: { kind: "resolved" as const, mode },
+      };
+      const executors = createCodexEntryExecutors(
+        createMainCodexEntryContext({
+          db: mainDb,
+          inputs,
+          countTokens: (text) => (text ? text.length : 0),
+          extractPlainText: (json) => extractPlainText(json),
+        }),
+      );
+      const result = await executors.get_codex_entry({ id: "ge-mode" });
+      expect(result.summary, mode).toBe(summary);
+      if (mode === "story") {
+        const json = JSON.stringify(result);
+        expect(json).toContain("MODE-PHASE");
+        expect(json).not.toContain("SECRET-BASE-MODE");
+      }
     }
   });
 });

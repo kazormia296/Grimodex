@@ -58,12 +58,12 @@
  * for the hidden-entry rule). What a tool shows of them is that tool's own
  * condition, in the core.
  *
- * `codex_detail_definitions` は PR-10b 向けに先行許可し、全 project の定義の全行・全列
- * （`field_config` を含む）を読める。`codex_detail_values` は hidden 項目の値も含む全 project
- * の raw 値、`codex_phase_detail_overrides` は hidden text を含む全 project の Phase 詳細値を
- * 読める。SQL checker は選択列や条件を検査しない。reader には project 条件で読んだ項目・Phase
- * の id だけを渡す。renderer は既に generic な経路でこれらの表を読める。この PR では Main の
- * tool から reader を呼ばない。
+ * PR-10a で追加した `codex_detail_definitions`・`codex_detail_values`・
+ * `codex_phase_detail_overrides` は PR-10b の `get_codex_entry` core と可視性判定が読む。
+ * allowlist は全 project の全行・全列（定義の `field_config`、hidden 項目の raw 値・Phase 上書きも含む）
+ * を許し、SQL checker は選択列や条件を検査しない。reader には project 条件で読んだ項目・Phase の id
+ * だけを渡す。renderer は既に generic な経路でこれらの表を読める。この PR でも Main の tool から
+ * reader は呼ばない。
  *
  * `codex_entry_phases` (PR-8a, DR-MP4-39) is the same kind of entry: a statement
  * Main sends may read every phase of every entry of every project, every column

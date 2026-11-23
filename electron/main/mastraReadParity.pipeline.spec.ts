@@ -57,6 +57,7 @@ import {
   LEGACY_READ_PROJECTS,
   LEGACY_READ_SEED,
 } from "../../src/features/chat/agent/__fixtures__/legacyReadSeed.js";
+import { CODEX_ENTRY_SEED } from "../../src/features/chat/agent/__fixtures__/codexEntrySeed.js";
 import {
   CHRONICLE_CHARACTERIZATION_STATEMENTS,
   CHRONICLE_HIDDEN_NAME_EVENT,
@@ -73,9 +74,15 @@ import {
   createMainChronicleSearchContext,
 } from "../shared/readDomain/core/chronicleMainContext.js";
 import {
+  createMainCodexEntryContext,
   createMainCodexReadContext,
   createMainCodexVisibilityPorts,
 } from "../shared/readDomain/core/codexMainContext.js";
+import {
+  CODEX_ENTRY_TOOL_NAMES,
+  createCodexEntryExecutors,
+} from "../shared/readDomain/core/codexEntryExecutors.js";
+import { extractPlainText } from "../shared/readDomain/features/codex/prosemirrorTextExtractor.js";
 import {
   CODEX_READ_TOOL_NAMES,
   createCodexReadExecutors,
@@ -155,6 +162,15 @@ const GOLDEN_DIR = path.join(
   "agent",
   "__fixtures__",
   "legacyReadGolden",
+);
+const CODEX_ENTRY_GOLDEN_DIR = path.join(
+  ROOT,
+  "src",
+  "features",
+  "chat",
+  "agent",
+  "__fixtures__",
+  "codexEntryGolden",
 );
 /**
  * The calls the renderer's four Codex tools send for each golden case (PR-8b; made from the unchanged
@@ -353,6 +369,41 @@ interface GoldenCase {
 function goldenOf(tool: string): GoldenCase[] {
   const raw = readFileSync(path.join(GOLDEN_DIR, `${tool}.golden.txt`), "utf8");
   return (JSON.parse(raw) as { cases: GoldenCase[] }).cases;
+}
+
+function codexEntryGoldenOf(): GoldenCase[] {
+  const raw = readFileSync(
+    path.join(CODEX_ENTRY_GOLDEN_DIR, "get_codex_entry.golden.txt"),
+    "utf8",
+  );
+  return (JSON.parse(raw) as { cases: GoldenCase[] }).cases;
+}
+
+function codexEntryReadsGolden(): Record<
+  string,
+  Array<{ sql: string; params: unknown[] }>
+> {
+  return JSON.parse(
+    readFileSync(
+      path.join(CODEX_ENTRY_GOLDEN_DIR, "get_codex_entry.reads.golden.txt"),
+      "utf8",
+    ),
+  ) as Record<string, Array<{ sql: string; params: unknown[] }>>;
+}
+
+function codexEntrySeedStatements(): Array<{
+  sql: string;
+  params: Array<string | number | null>;
+}> {
+  return CODEX_ENTRY_SEED.flatMap(({ table, rows }) =>
+    rows.map((row) => {
+      const columns = Object.keys(row);
+      return {
+        sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+        params: columns.map((column) => row[column] as string | number | null),
+      };
+    }),
+  );
 }
 
 describe("the read core on Main's adapter over the real Native addon gives the renderer's results (PR-0 golden)", () => {
@@ -1505,6 +1556,33 @@ function normalizeInListParams(call: Record<string, unknown>) {
   return { ...call, params };
 }
 
+async function codexEntryTurn(ws: Workspace, world: GoldenCase["world"]) {
+  const db = createCoreReadDb(
+    createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+  );
+  const inputs =
+    world.projectId === ""
+      ? buildReadInputs({
+          projectId: "",
+          treeRows: [],
+          project: null,
+          currentSceneId: null,
+        })
+      : await readReadInputs(db, {
+          projectId: world.projectId,
+          currentSceneId: world.activeSceneId ?? null,
+        });
+  ws.dbExecute.mockClear();
+  return createCodexEntryExecutors(
+    createMainCodexEntryContext({
+      db,
+      inputs,
+      countTokens: (text) => (text ? text.length : 0),
+      extractPlainText,
+    }),
+  );
+}
+
 describe("the four Codex tools of the read core (PR-8b) on Main's adapter over the real Native addon", () => {
   const MAIN_PROJECT = LEGACY_READ_PROJECTS.main;
 
@@ -1931,5 +2009,140 @@ describe("the four Codex tools of the read core (PR-8b) on Main's adapter over t
     expect(atS3).toContain("c-released");
     expect(none).not.toContain("c-released");
     for (const ids of [atS1, atS3, none]) expect(ids).not.toContain("c-secret");
+  });
+});
+
+describe("Main adapter 上の5つ目の Codex entry tool", () => {
+  it("5つの名前表は互いに素で合計21本。既存の4表の20本は変えない", () => {
+    const groups: readonly (readonly string[])[] = [
+      CORE_READ_TOOL_NAMES,
+      CHRONICLE_READ_TOOL_NAMES,
+      CHRONICLE_SEARCH_TOOL_NAMES,
+      CODEX_READ_TOOL_NAMES,
+      CODEX_ENTRY_TOOL_NAMES,
+    ];
+    const all = groups.flatMap((group) => [...group]);
+    expect(CODEX_ENTRY_TOOL_NAMES).toEqual(["get_codex_entry"]);
+    expect(all).toHaveLength(21);
+    expect(new Set(all).size).toBe(21);
+    for (let i = 0; i < groups.length; i += 1) {
+      for (let j = i + 1; j < groups.length; j += 1) {
+        expect(groups[i]!.some((name) => groups[j]!.includes(name))).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  it("legacy golden の結果を保ち、details と children の順だけを各 select の返り順に合わせる", async () => {
+    const ws = await startSeededWorkspace(codexEntrySeedStatements());
+    const reads = codexEntryReadsGolden();
+    const orderCase = new Map([
+      ["通常", "normal"],
+      ["released", "released"],
+    ]);
+    for (const golden of codexEntryGoldenOf()) {
+      const executors = await codexEntryTurn(ws, golden.world);
+      const label = `get_codex_entry / ${golden.case}`;
+      const actual = await executors.get_codex_entry(golden.params);
+      const actualContent = actual.content as {
+        details: Array<{ field: string; value: string | null }>;
+        children: Array<{
+          id: string;
+          name: string;
+          type: string;
+          summary: string;
+        }>;
+      };
+      const goldenContent = golden.result.content as {
+        details: Array<{ field: string; value: string | null }>;
+        children: Array<{
+          id: string;
+          name: string;
+          type: string;
+          summary: string;
+        }>;
+      };
+      const definitionSelect = ws.dbExecute.mock.calls.findIndex((call) =>
+        /from "codex_detail_definitions"/u.test(String(call[0])),
+      );
+      const childSelect = ws.dbExecute.mock.calls.findIndex((call) =>
+        /where "codex_entries"\."parent_id" = \?/u.test(String(call[0])),
+      );
+      expect(definitionSelect, label).toBeGreaterThanOrEqual(0);
+      expect(childSelect, label).toBeGreaterThanOrEqual(0);
+      const definitionRows = JSON.parse(
+        (await ws.dbExecute.mock.results[definitionSelect]!.value) as string,
+      ).rows as Array<Record<string, unknown>>;
+      const childRows = JSON.parse(
+        (await ws.dbExecute.mock.results[childSelect]!.value) as string,
+      ).rows as Array<Record<string, unknown>>;
+      const detailsByField = new Map(
+        goldenContent.details.map((detail) => [detail.field, detail]),
+      );
+      const details = definitionRows
+        .filter((row) => Boolean(row["include_in_context"]))
+        .map((row) => {
+          // 実 Native の workspace には、アプリのサンプル project（default-project）の詳細定義
+          // （「役割」「アリバイ」など）も入っている。legacy の defs の select は type_slug だけで引き
+          // project 条件が無い（Q-C6-1）ので、golden（sql.js の seed）に無い定義も、値の無い項目として
+          // 混ざる。移設前と同じ現状の挙動を、そのまま期待にする。
+          return (
+            detailsByField.get(String(row["name"])) ?? {
+              field: String(row["name"]),
+              value: null,
+            }
+          );
+        });
+      const childrenById = new Map(
+        goldenContent.children.map((child) => [child.id, child]),
+      );
+      const children = childRows.flatMap((row) => {
+        const child = childrenById.get(String(row["id"]));
+        return child ? [child] : [];
+      });
+      const expectedContent = { ...goldenContent, details, children };
+
+      expect(actual.name, label).toBe(golden.result.name);
+      expect(actual.summary, label).toBe(golden.result.summary);
+      // main の countTokens は text.length。実 Native の余分な定義の分だけ content が長くなるので、
+      // token 数も期待の content から求める（golden と同一の content なら golden の値と一致する）。
+      expect(actual.tokensUsed, label).toBe(
+        JSON.stringify(expectedContent).length,
+      );
+      if (JSON.stringify(expectedContent) === JSON.stringify(goldenContent)) {
+        expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+      }
+      expect(JSON.stringify(actualContent), label).toBe(
+        JSON.stringify(expectedContent),
+      );
+      if (
+        JSON.stringify(details) === JSON.stringify(goldenContent.details) &&
+        JSON.stringify(children) === JSON.stringify(goldenContent.children)
+      ) {
+        expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+      }
+
+      const sentDb = ws.dbExecute.mock.calls.map((call) => ({
+        sql: call[0],
+        params: call[1],
+        method: call[2],
+      }));
+      for (const call of sentDb) {
+        expect(String(call.sql), label).toMatch(/^\s*select\b/iu);
+        expect(["all", "values"], label).toContain(call.method);
+      }
+      const fixtureCase = orderCase.get(golden.case);
+      if (fixtureCase) {
+        expect(
+          sentDb
+            .map((call) => normalizeInListParams(call))
+            .map(({ sql, params }) => ({ sql, params })),
+          label,
+        ).toEqual(
+          reads[fixtureCase]!.map((call) => normalizeInListParams(call)),
+        );
+      }
+    }
   });
 });
