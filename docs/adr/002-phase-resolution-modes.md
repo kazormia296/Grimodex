@@ -210,3 +210,11 @@ policy without wiring it into the Retrieval runtime.
 
 - `project_codex_phase_scene_context.md` — Scene context が Scene タブ専属である件
 - `project_codex_layer_semantics.md` — Codex の 4 層構造
+
+## 追補（2026-11-23）：伏線の secret（FSR/1）
+
+本 ADR の本文は書き換えない。「`foreshadows.secret` フラグ（boolean、新規作成時 default=true）が ON の伏線は `listOpenForeshadowsForContext` の L2 ブロックから除外される。」は、伏線の「AI にこの伏線を見せない（ネタバレ防止）」を AI への渡し方についてだけやめる起案（FSR/1。確認 136）により、廃止する。未回収・未放棄の伏線は、全部 AI に渡る。新しい伏線は、印なしで作る。列と既存の値は残り、関連する過去シーンの判定、本文の宣言の veto、Codex の目のアイコンだけが読む。
+
+- 起案：FSR/1（[nir1-foreshadow-secret-ai-side-retire-proposal-1-draft.md](../plans/nir1-foreshadow-secret-ai-side-retire-proposal-1-draft.md)。draftRef `nir1-foreshadow-secret-ai-side-retire-proposal/1`、下書きの SHA-256 `eab0567e8af6841590355e95d321e0252ac4e2b8e3681ba1a9cf3850ee552412`）。
+- 確認の記録：`claude/nir1-contracts` の commit `2778cf5abbbc25114b40c9ce8e1233543515ddc8` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md` の確認 136。
+- 規則と、ほかの文書への影響は、[ADR 013](013-ai-disclosure-policy.md) の同日の追補（FSR/1）が示す。

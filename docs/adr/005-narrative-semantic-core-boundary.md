@@ -1232,3 +1232,33 @@ C2 then implements only Dependency Edge, Edge State, Consumer Freshness,
 Application Contribution, Reverse Lookup, Incremental Evaluator, Cursor, and
 Backfill persistence/runtime. The workspace schema remains **22** throughout
 C1.5; no new C2 table or schema bump is part of this gate.
+
+## 追補（2026-11-23）：出来事の削除に連動する承認の撤回と、AI・MCP の書き込みの経路
+
+本 ADR の本文と、上の Amendment は書き換えない。次の 2 本の起案が確認されたので、本文の文に対する例外と、経路図への足し方を、ここに記す。規則の正本は各起案である。この追補は、本文のどの文がどう読み替わるかを示すだけで、規則を足さない。
+
+- 起案：SRD/1（[nir1-chronicle-scene-review-apply-delta-proposal-1-draft.md](../plans/nir1-chronicle-scene-review-apply-delta-proposal-1-draft.md)。draftRef `nir1-chronicle-scene-review-apply-delta/1`、下書きの SHA-256 `bb7bfbb90ca9dece6e409fc70c73ae7a378742f31b129da371419230b5518c4b`）と、AWA/1（[nir1-agent-event-write-approval-proposal-1-draft.md](../plans/nir1-agent-event-write-approval-proposal-1-draft.md)。draftRef `nir1-agent-event-write-approval-proposal/1`、下書きの SHA-256 `1dd0fdf64700393b0b8d6a9e5c7034f14edddf7be9dcf6dc87a4f8b31a650d0e`）。
+- 確認の記録：`claude/nir1-contracts` の commit `2778cf5abbbc25114b40c9ce8e1233543515ddc8` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。SRD/1-1 は確認 138、AWA/1-1 は確認 141、AWA/1-2 は確認 142。それぞれ、その行だけに掛かる。
+
+### 1. 出来事の削除に連動する承認の撤回（SRD/1 の X。SRD/1-1。確認 138）
+
+次の文に、例外を足す。
+
+- 「Dependencyが伝播してよいのはFreshnessだけである。Dependency処理がSemantic retractionやDomain mutationを直接行ってはならない。」
+- 禁止される伝播の一覧の「automatic retraction」「automatic Domain delete」。
+- Iron Laws の 9「Dependency propagationはfreshness-onlyであり、semantic retract、merge、split、delete、Applyを実行しない。」
+- Non-goals の「自動Semantic retraction」。
+- 「Semantic retractionはADR 004に従い、forwardなCompensating Proposal／Applicationとして行う。」
+
+**例外。** 年表の出来事が無くなったとき、本体（Domain Writer）が、同じ transaction の中で、その出来事を取り込んだ提案の承認を外す（却下の決定を 1 件追記する）。補償 Application は作らない。Dependency 処理が行うのではない。外すのは、解釈の真偽ではなく、出来事が無い解釈を関連に使う許可である（起案者の読み）。例外の内容と範囲は、ADR 004 の同日の追補（1）のとおりである。Application・版・過去の決定は書き換えない。
+
+「Undoをtruth correctionに使用しない。」（Projection Runtime の節）は、変えない。X は決定を書くだけで、Undo を使わない。
+
+### 2. Interactive Agent Command の経路（AWA/1。AWA/1-1 と AWA/1-2）
+
+「Canonical mutation paths」の経路図「Interactive Agent Command Path」（User Turn / Standing knowledgeWrite Authority → Agent Tool Policy → OCC / Field Authority → Typed Writer → Domain Data）に、次の 2 つの枝を足す。図の文字列は、この追補では書き換えない。
+
+- **承認つきの書き込み（AWA/1-1）。** 作者の出来事に触れる更新・削除は、Agent Tool Policy の後に、作者の承認（ApprovalRequest。main が握り、承認が確定するまで capability を発行しない）を挟む。承認は、Field Authority の「明示的な human-authorized override」として働く。
+- **MCP の免除（AWA/1-2）。** 設定で許した、1 つの作品に固定した接続だけ、承認を挟まず、型で渡す免除の引数で、Field Authority の人の持ち主の拒みを外す。ロックと、全部の作品を扱える接続は、免除しない。
+
+直後の「Interactive Agent Command is governed by ADR 006.」は、変えない。この 2 つの枝の control の置き方は、ADR 006 の同日の追補のとおりである。
