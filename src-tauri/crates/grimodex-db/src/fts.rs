@@ -526,6 +526,143 @@ mod tests {
         );
     }
 
+    /// 場面の検索の fixture。project `lp`（language は引数）に、archived の場面 3 件と
+    /// live の場面 2 件を同じ語で置く。archived を rank の上位（語が多く本文が短い）に、
+    /// live を下位（語が 1 回で本文が長い）にして、`LIMIT` が archived で埋まる形にする。
+    /// 別の project `other` にも同じ語の場面を 1 件置く（project の分離の確認）。
+    fn seed_scene_search(db: &Database, language: &str, word: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title, language, created_at, updated_at)
+                   VALUES ('lp', 'Live', ?1, '2025-01-01', '2025-01-01'),
+                          ('other', 'Other', ?1, '2025-01-01', '2025-01-01')",
+                [language],
+            )?;
+            let filler = "padding ".repeat(40);
+            for (id, project, content) in [
+                ("arch-1", "lp", format!("{word} {word} {word}")),
+                ("arch-2", "lp", format!("{word} {word}")),
+                ("arch-3", "lp", format!("{word} {word} {word} {word}")),
+                ("live-1", "lp", format!("{word} {filler}")),
+                ("live-2", "lp", format!("{filler} {word} {filler}")),
+                ("other-1", "other", format!("{word} {word} {word}")),
+            ] {
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+                       VALUES (?1, ?2, 'scene', ?1, ?3)",
+                    rusqlite::params![id, project, content],
+                )?;
+            }
+            conn.execute(
+                "UPDATE tree_nodes SET archived_at = '2026-01-01T00:00:00Z'
+                   WHERE id IN ('arch-1', 'arch-2', 'arch-3')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed scenes");
+    }
+
+    fn ids(rows: &[serde_json::Value]) -> Vec<String> {
+        rows.iter()
+            .map(|row| row["id"].as_str().expect("id").to_string())
+            .collect()
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    // 特性試験（scope = scenes・all は archived の場面も返す。この PR は変えない）。
+
+    #[test]
+    fn scenes_scope_returns_archived_scenes_on_the_fts_arm() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        seed_scene_search(&db, "ja", "lighthouse");
+        let rows = db
+            .search_fts("lp", "lighthouse", "scenes", 50)
+            .expect("search scenes");
+        assert_eq!(
+            sorted(ids(&rows)),
+            ["arch-1", "arch-2", "arch-3", "live-1", "live-2"],
+        );
+    }
+
+    #[test]
+    fn scenes_scope_returns_archived_scenes_on_the_like_arm() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        // 3 codepoint 未満の語は LIKE の arm に落ちる。
+        seed_scene_search(&db, "ja", "灯台");
+        let rows = db
+            .search_fts("lp", "灯台", "scenes", 50)
+            .expect("search scenes");
+        assert_eq!(
+            sorted(ids(&rows)),
+            ["arch-1", "arch-2", "arch-3", "live-1", "live-2"],
+        );
+    }
+
+    #[test]
+    fn scenes_scope_returns_archived_scenes_on_the_en_fts_arm() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        seed_scene_search(&db, "en", "lighthouse");
+        let rows = db
+            .search_fts("lp", "lighthouse", "scenes", 50)
+            .expect("search scenes");
+        assert_eq!(
+            sorted(ids(&rows)),
+            ["arch-1", "arch-2", "arch-3", "live-1", "live-2"],
+        );
+    }
+
+    #[test]
+    fn scenes_scope_limit_is_filled_by_archived_scenes_that_rank_above_live_ones() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        seed_scene_search(&db, "ja", "lighthouse");
+        let rows = db
+            .search_fts("lp", "lighthouse", "scenes", 2)
+            .expect("search scenes");
+        // archived の 3 件が rank の上位で、LIMIT 2 は archived だけで埋まる（live は 0 件）。
+        assert_eq!(rows.len(), 2);
+        assert!(
+            ids(&rows).iter().all(|id| id.starts_with("arch-")),
+            "{:?}",
+            ids(&rows),
+        );
+    }
+
+    #[test]
+    fn all_scope_returns_archived_scenes() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        seed_scene_search(&db, "ja", "lighthouse");
+        let rows = db
+            .search_fts("lp", "lighthouse", "all", 50)
+            .expect("search all");
+        assert_eq!(
+            sorted(ids(&rows)),
+            ["arch-1", "arch-2", "arch-3", "live-1", "live-2"],
+        );
+    }
+
+    #[test]
+    fn an_unknown_scope_answers_an_empty_list_not_an_error() {
+        // 不明な scope を拒む分岐は無い（他の呼び手の前提。scenes_live の綴りの違いは
+        // 空の結果になる）。この PR は変えない。
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        seed_scene_search(&db, "ja", "lighthouse");
+        let rows = db
+            .search_fts("lp", "lighthouse", "scenes_liv", 50)
+            .expect("search unknown scope");
+        assert!(rows.is_empty());
+    }
+
     #[test]
     fn short_codex_and_snippet_search_preserves_tags_cache_matches() {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
