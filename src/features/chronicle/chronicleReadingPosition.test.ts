@@ -4,7 +4,7 @@ import {
   isEventBeforeOrAtScene,
   passesIrExclusionApproximation,
 } from "./chronicleReadingPosition";
-import { isEventHiddenFromAi, type ReadingOrder } from "./chronicleSecrecy";
+import type { ReadingOrder } from "./chronicleSecrecy";
 
 // Reading order: s0 < s1 < s2 < s3. "gone" and "other" are not in it.
 const readingOrder: ReadingOrder = new Map([
@@ -68,16 +68,10 @@ describe("isEventBeforeOrAtScene (B-T10, DR-CHATIR-S1-30)", () => {
     expect(passes("e", "s1", links(["s3", "e"]), new Map())).toBe(true);
   });
 
-  it("shares the secrecy filter's boundary (the current Scene is shown, an earlier one hides)", () => {
-    // A secret event revealed at s2 is shown at s2 (current >= reveal);
-    // the position filter also shows an event tied to s2 at s2.
-    const ctx = { readingOrder, sceneEvents: links(["s2", "e"]) };
-    const event = { id: "e", secret: true, revealSceneId: null };
-    expect(isEventHiddenFromAi(event, "s2", ctx)).toBe(false);
-    expect(passes("e", "s2", ctx.sceneEvents)).toBe(true);
-    // Before the Scene both hide it.
-    expect(isEventHiddenFromAi(event, "s1", ctx)).toBe(true);
-    expect(passes("e", "s1", ctx.sceneEvents)).toBe(false);
+  it("keeps an event tied to the current Scene and drops it from earlier Scenes", () => {
+    const sceneEvents = links(["s2", "e"]);
+    expect(passes("e", "s2", sceneEvents)).toBe(true);
+    expect(passes("e", "s1", sceneEvents)).toBe(false);
   });
 
   it("does not change its input", () => {

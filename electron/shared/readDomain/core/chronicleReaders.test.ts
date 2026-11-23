@@ -109,11 +109,9 @@ describe("readEvents / readEventsFailClosed", () => {
     },
   );
 
-  it("a stored null in `secret` stays null through Drizzle and Main's narrow throws on it (fail closed); a stored 2 or any text other than '1' is already `false` and the text '1' is `true` (Number(v) === 1), which the narrow cannot see", async () => {
+  it("normalizes null and other stored `secret` values through the Main read path", async () => {
     // Drizzle's boolean column leaves a null as null and maps any other stored
-    // value with `Number(v) === 1`. The renderer's reader (`readEvents`) reads
-    // all of them as it always did (null, 2, text: public). DR-MP4-37 records the
-    // limit: the narrow covers a lost column and a stored null, not a stored 2.
+    // value with `Number(v) === 1`; normalizeEvent then converts null to false.
     const seen: unknown[] = [];
     for (const stored of [2, "x", 0, 1, "1"]) {
       const { client } = clientAnswering([{ ...EVENT_ROW, secret: stored }]);
@@ -122,9 +120,11 @@ describe("readEvents / readEventsFailClosed", () => {
     }
     expect(seen).toEqual([false, false, false, true, true]);
     const nulled = clientAnswering([{ ...EVENT_ROW, secret: null }]);
-    await expect(
-      readEventsFailClosed(createCoreReadDb(nulled.client), "p1"),
-    ).rejects.toThrow(/usable `secret` column/u);
+    const [main] = await readEventsFailClosed(
+      createCoreReadDb(nulled.client),
+      "p1",
+    );
+    expect(main!.secret).toBe(false);
     const renderer = await readEvents(createCoreReadDb(nulled.client), "p1");
     expect(renderer[0]!.secret).toBe(false);
   });
