@@ -1,8 +1,6 @@
 // @vitest-environment happy-dom
 //
-// AI Branch の確認（handleAiBranchConfirm）の最中に board を切り替えたときの「現状の挙動」を
-// 固定する特性試験。読みの見込み（board の検査は closure の boardId と authority.resourceId を
-// 比べるだけで、確認の開始後の切替を検出しない）を、実際に MapCanvas を描画して確かめる。
+// AI Branch の確認中に board を切り替えたときの保存先と画面反映を確認する。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -11,6 +9,7 @@ import { toast } from "sonner";
 import type { MapAiBranch, MapBoard, MapSticky } from "@/db/schema";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useMapStore } from "./mapStore";
 
 const h = vi.hoisted(() => ({
@@ -200,6 +199,7 @@ beforeEach(() => {
   h.createAiBranch.mockReset();
   h.getAiBranchSnapshot.mockReset().mockResolvedValue(null);
   h.runAiBranchGeneration.mockReset();
+  useGlobalHistoryStore.getState().clear();
   useMapStore.setState({ activeBoardId: null });
   useWorkspaceStore.setState({
     activeWorkspacePath: "/ws",
@@ -214,8 +214,8 @@ afterEach(() => {
   setCurrentWorkspaceIdentity(null);
 });
 
-describe("MapCanvas AI Branch — 確認中の board 切替（現状の挙動。残る制限。直したら期待を反転する）", () => {
-  it("生成の await の最中に board を切り替えると、枝は元の board に保存され、切替後の画面にも一時的に足される", async () => {
+describe("MapCanvas AI Branch — 確認中の board 切替", () => {
+  it("生成中に board を切り替えても元 board に保存し、切替後の画面と履歴には反映しない", async () => {
     const generation = deferred<{ title: string; body: string }[]>();
     h.runAiBranchGeneration.mockReturnValue(generation.promise);
     const created = deferred<ReturnType<typeof newBranchResult>>();
@@ -248,14 +248,10 @@ describe("MapCanvas AI Branch — 確認中の board 切替（現状の挙動。
     await act(async () => {
       created.resolve(newBranchResult("board-a"));
     });
-    // (2) 切替後の画面（board B）に、board A の枝と付箋が足される。
-    await waitFor(() =>
-      expect(renderedNodeIds().sort()).toEqual(
-        ["ai_branch:branch-new", "sticky:sb", "sticky:sticky-new"].sort(),
-      ),
-    );
+    expect(renderedNodeIds()).toEqual(["sticky:sb"]);
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
   });
-  it("(3) 足された枝は、切替後の board を読み直すと消える（保存先は board A なので board B には無い）", async () => {
+  it("board B の再読込後も board B に枝を表示しない", async () => {
     h.runAiBranchGeneration.mockResolvedValue([
       { title: "NEW-STICKY", body: "{}" },
     ]);
@@ -272,16 +268,14 @@ describe("MapCanvas AI Branch — 確認中の board 切替（現状の挙動。
     await act(async () => {
       created.resolve(newBranchResult("board-a"));
     });
-    await waitFor(() =>
-      expect(renderedNodeIds()).toContain("ai_branch:branch-new"),
-    );
+    expect(renderedNodeIds()).toEqual(["sticky:sb"]);
 
     // board B の読み直し（boardDataVersion の更新）で、DB の内容（board B のもの）に戻る。
     act(() => useMapStore.getState().bumpBoardDataVersion());
     await waitFor(() => expect(renderedNodeIds()).toEqual(["sticky:sb"]));
   });
 
-  it("切替後の board の読み込みが createAiBranch の後に終わる順序なら、上書きされて何も足されて見えない", async () => {
+  it("board B の読み込みが createAiBranch の完了より後でも画面に反映しない", async () => {
     h.runAiBranchGeneration.mockResolvedValue([
       { title: "NEW-STICKY", body: "{}" },
     ]);
@@ -299,16 +293,57 @@ describe("MapCanvas AI Branch — 確認中の board 切替（現状の挙動。
     await act(async () => {
       created.resolve(newBranchResult("board-a"));
     });
-    // board B の読み込み前なので、足された枝は board A の盤面（古い画面）に付く。
-    await waitFor(() =>
-      expect(renderedNodeIds()).toContain("ai_branch:branch-new"),
-    );
+    expect(renderedNodeIds()).toEqual(["sticky:sa"]);
     await act(async () => {
       gate.resolve();
     });
     // 読み込みが終わると board B の内容で置き換わり、枝は消える。
     await waitFor(() => expect(renderedNodeIds()).toEqual(["sticky:sb"]));
     expect(h.createAiBranch.mock.calls[0][0]).toBe("board-a");
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+  });
+
+  it("送信前に board を切り替えたら生成を止める", async () => {
+    const beforeSend = deferred<void>();
+    h.runAiBranchGeneration.mockImplementation(async (input) => {
+      await beforeSend.promise;
+      input.assertAuthority();
+      return [{ title: "NEW-STICKY", body: "{}" }];
+    });
+    const user = await renderOnBoardA();
+    await openDialogAndType(user);
+    await user.click(screen.getByRole("button", { name: "生成" }));
+    await waitFor(() =>
+      expect(h.runAiBranchGeneration).toHaveBeenCalledTimes(1),
+    );
+    act(() => useMapStore.getState().setActiveBoardId("board-b"));
+    await waitFor(() => expect(renderedNodeIds()).toEqual(["sticky:sb"]));
+    await act(async () => beforeSend.resolve());
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(h.createAiBranch).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "board changed before the confirmation completed",
+        ),
+      }),
+    );
+  });
+
+  it("同じ board のまま生成した枝と付箋は画面に反映する", async () => {
+    h.runAiBranchGeneration.mockResolvedValue([
+      { title: "NEW-STICKY", body: "{}" },
+    ]);
+    h.createAiBranch.mockResolvedValue(newBranchResult("board-a"));
+    const user = await renderOnBoardA();
+    await openDialogAndType(user);
+    await user.click(screen.getByRole("button", { name: "生成" }));
+    await waitFor(() =>
+      expect(renderedNodeIds().sort()).toEqual(
+        ["ai_branch:branch-new", "sticky:sa", "sticky:sticky-new"].sort(),
+      ),
+    );
   });
 
   it("(5) ダイアログを開いたまま board を切り替えてから確認すると、開始時の検査が拒み、送信も保存もしない", async () => {

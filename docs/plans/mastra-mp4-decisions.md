@@ -1249,6 +1249,17 @@ standalone MCP（`src-tauri/crates/grimodex-mcp`。外部の AI クライアン�
 10. **検証の要点。** main の 3 bundle の sha256 は、変更の前後で同じ（`main.cjs` 9efeca2b…、`preload.cjs` 46d054ca…、`mastra-agent.cjs` 041f5ac4…。renderer だけの変更。注記の追加の後も同じ）。golden の書き換えは無い（地図は agent tool の read を通らない）。実 addon の spec は不要（IPC・main・N-API・Rust を通らない）。impact-map・quality-manifest は追従なし（新しい試験 file は未分類の path で全 suite になる側で、足すと絞ることになるので足さない。`MapCanvas.tsx` は `d2a-profile-egress` の path に在るだけで、その rule は変わらない）。`mastra-mp4-decisions.md` の DR-MP4-41 の項 4 は書き換えない（「番号について」）。
 11. **計画との差。** (a) `assertDialogAuthority` は、context の取得の後と送信の直前の 2 回から、判定の後・送信の直前の 1 回（`runAiBranchGeneration` の中、callback で受ける）に束ねた。意味は同じ（非同期の読みの後・送信の前に必ず検査する）。(b) provider の読み（`vs` の組み立て、同期）は、await の前に移った。(c) id を持たない Codex の種は送らない（計画は「無条件に残る」。由来を確かめられない種を fail-closed に倒した）。(d) `aiBranchContext.codexHidden.test.ts` に `codexHiddenAnyPhase` の mock は足さなかった（足さなくても import が通り、期待も変わらない）。(e) 判定の失敗の toast は題名だけ（計画の案 B）。(f) 計画の「静的な守り」は補助に降ろし、`generateAiBranchCards` の呼びまでを 1 関数に閉じて、振る舞い（送信の境界）で固定した（反証 P2-4）。(g) 注記の追加（ユーザー決定 2026-11-23）：当初の計画は注記なし。注記の判定を送信時の判定と同じ部品に通し、ダイアログを開いたときの非同期の読み（L14）を足した。locale の key を 1 つ足した（当初は足さない方針）。
 
+
+### DR-MP4-47 地図の AI Branch：確認の開始後に board を切り替えても、枝を切替後の画面と履歴に足さない（DR-MP4-43 項 6 (f) の残る制限を直す。ユーザー決定 2026-11-23）
+
+DR-MP4-43 項 6 (f) の「生成を始めた後に別の board へ切り替えると、枝は元の board に保存されるが、切替後の画面に一時的に追加表示される」を、ユーザー決定（2026-11-23「別の小さな PR で直す」）どおり直す。送る内容・送信先・保存範囲・契約・IPC・schema は変えない（renderer の `MapCanvas.tsx` だけ。実装は Codex〔codex exec〕に委譲し、差分の範囲・試験の再実行・修正を外した変異は Claude 側で確認した）。
+
+1. **直し方。** (a) 送信の直前の board の検査を、確認の開始時に固定した closure の `boardId` でなく最新の board id（`latestBoardIdRef`。render ごとに更新）と `dialogState.authority.resourceId` の比較にする（生成の準備の最中に切り替えたら送信 0 回で止まる。既存の toast の経路）。確認の開始時の検査は同じ（ダイアログを開いたまま切り替えた場合は拒む。DR-MP4-43 の試験 (5)）。(b) 生成の後（`createAiBranch` の前）は project の切替だけ拒み、board の切替では拒まない（AI の呼び出しは完了済み。枝は元の board に保存する）。(c) 保存の後、元の board を今も表示していなければ、画面の state（`setAiBranches` ほか）と Ctrl+Z の履歴（`useGlobalHistoryStore.push`）に足さない。配置の計算（`computeAiBranchLayout`）には別の board の位置を使わない（空の配列）。
+2. **作者から見える変化。** 生成中に別の board へ切り替えても、切替後の画面に別の board の枝が一時的に出なくなる。枝は元の board に保存されるので、元の board に戻ると表示される。toast・新しい UI・locale は足さない。
+3. **残る制限。** (a) **切替後は Ctrl+Z の履歴にも積まないので、その枝は Ctrl+Z で消せない**（元の board に戻って手で消す）。(b) 切替の最中に生成が完了しても、完了の通知は出ない（toast を足さない）。(c) project の切替は従来どおり保存前に拒む（枝は保存されず、AI の呼び出しは無駄になる）。(d) 元の board を今も表示していても、生成後の undo／redo の履歴の経路は MapCanvas を描画した試験では `getAiBranchSnapshot` を null にして通していない（未確認。既存）。
+4. **試験。** `MapCanvas.aiBranchBoardSwitch.test.tsx`（6 件）：特性試験（DR-MP4-43 の PR で足した現状の固定）の期待を反転した（生成中に切り替えても `createAiBranch` は元の board〔board-a〕で呼ばれ、切替後の画面には枝・付箋が足されず、履歴にも積まれない。board B の読み込みが先に終わる順序・後に終わる順序の両方）。送信前の切替で生成が止まる試験、同じ board のままなら従来どおり画面に足される回帰の試験、ダイアログを開いたまま切り替えると開始時の検査が拒む試験（期待は不変）を足した。**修正を外す（`HEAD` の `MapCanvas.tsx` に戻す）と 4 件が落ちる**ことを確認し、戻した。
+5. **検証。** `CI=true vitest --run src/features/map` 399 件、tsc 0、eslint エラー 0（既存の警告 9）、prettier 通過。
+
 ## 5. PR の分け方
 
 旗 L は全 PR で閉のまま。各 PR は独立に merge でき、独立に戻せる。確認待ちの項目を後ろの PR に寄せる。

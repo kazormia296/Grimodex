@@ -321,6 +321,8 @@ export function MapCanvas() {
 
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
+  const latestBoardIdRef = useRef(boardId);
+  latestBoardIdRef.current = boardId;
 
   // Forward-declared so useMapNodes (which runs above the actual handler
   // definition) can still inject a stable closure into each node's data.
@@ -1649,7 +1651,7 @@ export function MapCanvas() {
             dialogState.authority,
             getCurrentProjectId(),
           );
-          if (boardId !== dialogState.authority.resourceId) {
+          if (latestBoardIdRef.current !== dialogState.authority.resourceId) {
             throw new Error(
               "AI Branch board changed before the confirmation completed",
             );
@@ -1689,9 +1691,15 @@ export function MapCanvas() {
           pos.x,
           pos.y,
           cards.length,
-          positionsRef.current.map((p) => ({ x: p.x, y: p.y })),
+          (latestBoardIdRef.current === dialogState.authority.resourceId
+            ? positionsRef.current
+            : []
+          ).map((p) => ({ x: p.x, y: p.y })),
         );
-        assertDialogAuthority();
+        assertAiOperationAuthorityCurrent(
+          dialogState.authority,
+          getCurrentProjectId(),
+        );
         const result = await createAiBranch(
           dialogState.authority.resourceId,
           prompt,
@@ -1703,6 +1711,9 @@ export function MapCanvas() {
             cardPositions: layout.cards,
           },
         );
+
+        if (latestBoardIdRef.current !== dialogState.authority.resourceId)
+          return;
 
         setAiBranches((prev) => [...prev, result.branch]);
         setStickies((prev) => [...prev, ...result.stickies]);
