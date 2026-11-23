@@ -2884,11 +2884,76 @@ fn validate_tree_replay_target_in_tx(
             undo_journal_id
         );
     };
+    // The journal names the root of a delete (`entity_id`). An Undo re-creates the
+    // root and then every other node that delete removed, all under that one
+    // journal, so only `("create", Undo)` may also name a node the delete
+    // recorded (DR-UND-2). Redo, delete and patch stay bound to `entity_id`. The
+    // root is checked first, so re-creating it never reads the (large) record.
+    let bound = entity_kind == "tree_node"
+        && op_kind == expected_op_kind
+        && (entity_id == node_id
+            || (operation == "create"
+                && origin == NarrativeChangeOrigin::Undo
+                && recorded_subtree_contains(
+                    conn,
+                    project_id,
+                    undo_journal_id,
+                    &entity_id,
+                    node_id,
+                )?));
     anyhow::ensure!(
-        entity_kind == "tree_node" && entity_id == node_id && op_kind == expected_op_kind,
+        bound,
         "tree replay target does not match the named Undo Journal"
     );
     Ok(())
+}
+
+/// What a tree delete wrote into `undo_journal.before_json`
+/// (`{"rootId": ..., "nodes": [<row>, ...]}`): only the keys the binding reads.
+/// The rows carry whole Scene bodies, so every other key is skipped, not kept.
+#[derive(Deserialize)]
+struct RecordedTreeDelete {
+    #[serde(rename = "rootId")]
+    root_id: String,
+    nodes: Vec<RecordedTreeNode>,
+}
+
+#[derive(Deserialize)]
+struct RecordedTreeNode {
+    id: String,
+    #[serde(rename = "projectId")]
+    project_id: String,
+}
+
+/// Whether the delete named by `undo_journal_id` recorded `node_id` as one of the
+/// nodes it removed. Fails closed: a record that is missing, not JSON, of another
+/// shape, for another root, or holding a node of another project names nothing.
+fn recorded_subtree_contains(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    undo_journal_id: &str,
+    root_id: &str,
+    node_id: &str,
+) -> anyhow::Result<bool> {
+    let record = conn
+        .query_row(
+            "SELECT before_json FROM undo_journal WHERE id = ?1 AND project_id = ?2",
+            params![undo_journal_id, project_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(record) = record else {
+        return Ok(false);
+    };
+    let Ok(record) = serde_json::from_str::<RecordedTreeDelete>(&record) else {
+        return Ok(false);
+    };
+    Ok(record.root_id == root_id
+        && record
+            .nodes
+            .iter()
+            .any(|node| node.id == node_id && node.project_id == project_id))
 }
 
 fn tree_write_response(
@@ -9738,6 +9803,139 @@ mod tests {
             .with_conn(|conn| select_tree_node(conn, "p1", "replay-target-a"))
             .expect("first target remains");
         assert_eq!(first_after["id"], "replay-target-a");
+    }
+
+    #[test]
+    fn recorded_subtree_contains_reads_only_what_a_tree_delete_recorded() {
+        let db = fixture();
+        let node = |id: &str, project: &str| json!({"id": id, "projectId": project});
+        let record = |root: &str, nodes: Vec<Value>| {
+            Some(json!({"rootId": root, "nodes": nodes}).to_string())
+        };
+        // (label, before_json, project of the lookup, root asked for, id asked for, expected)
+        let cases: Vec<(&str, Option<String>, &str, &str, &str, bool)> = vec![
+            (
+                "a recorded node",
+                record("root", vec![node("root", "p1"), node("kid", "p1")]),
+                "p1",
+                "root",
+                "kid",
+                true,
+            ),
+            (
+                "an id the record does not hold",
+                record("root", vec![node("root", "p1"), node("kid", "p1")]),
+                "p1",
+                "root",
+                "stranger",
+                false,
+            ),
+            (
+                "the id only inside another node's body, parent and title",
+                Some(
+                    json!({"rootId": "root", "nodes": [
+                        {"id": "root", "projectId": "p1", "content": "{\"id\":\"kid\"}",
+                         "title": "kid", "parentId": "kid"},
+                        {"id": "other", "projectId": "p1", "parentId": "kid"}
+                    ]})
+                    .to_string(),
+                ),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "a record for another root",
+                record("someone-else", vec![node("kid", "p1")]),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "a node of another project",
+                record("root", vec![node("kid", "p2")]),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "a node without a project",
+                Some(json!({"rootId": "root", "nodes": [{"id": "kid"}]}).to_string()),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "a node without an id",
+                Some(json!({"rootId": "root", "nodes": [{"projectId": "p1"}]}).to_string()),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "no nodes",
+                Some(json!({"rootId": "root"}).to_string()),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "not json",
+                Some("not json".to_string()),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            (
+                "an array",
+                Some("[]".to_string()),
+                "p1",
+                "root",
+                "kid",
+                false,
+            ),
+            ("a null column", None, "p1", "root", "kid", false),
+            (
+                "the lookup is made for another project",
+                record("root", vec![node("kid", "p1")]),
+                "p2",
+                "root",
+                "kid",
+                false,
+            ),
+        ];
+        for (label, before_json, project, root, id, expected) in cases {
+            let journal_id = format!("journal-{label}");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO undo_journal
+                       (id, project_id, surface, entity_kind, entity_id, op_kind,
+                        before_json, base_version, result_version)
+                     VALUES (?1, 'p1', 'tree', 'tree_node', 'root', 'delete', ?2, 0, 0)",
+                    params![journal_id, before_json],
+                )?;
+                Ok(())
+            })
+            .expect("insert journal");
+            let actual = db
+                .with_conn(|conn| recorded_subtree_contains(conn, project, &journal_id, root, id))
+                .expect("lookup");
+            assert_eq!(actual, expected, "{label}");
+        }
+        // A journal that does not exist names nothing.
+        let missing = db
+            .with_conn(|conn| {
+                recorded_subtree_contains(conn, "p1", "no-such-journal", "root", "kid")
+            })
+            .expect("lookup");
+        assert!(!missing);
     }
 
     #[test]
