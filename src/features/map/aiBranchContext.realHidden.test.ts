@@ -702,6 +702,17 @@ describe("L7 配線：generateAiBranchCards の呼び元は runAiBranchGeneratio
     expect(src).toMatch(/seedChipMeta = chips\.map\(\(c\) => c\.meta\)/);
     expect(src).toMatch(/seedChipMeta=\{aiBranchDialog\.seedChipMeta\}/);
   });
+
+  it("MapCanvas の assertAuthority は、実物の assertAiOperationAuthorityCurrent を live の project id で呼ぶ closure を渡す（L4・L10 の配線の静的照合）", () => {
+    const src = readFileSync(
+      join(SRC, "features", "map", "MapCanvas.tsx"),
+      "utf8",
+    );
+    expect(src).toMatch(/assertAuthority: assertDialogAuthority/);
+    expect(src).toMatch(
+      /assertAiOperationAuthorityCurrent\(\s*dialogState\.authority,\s*getCurrentProjectId\(\),?\s*\)/,
+    );
+  });
 });
 
 describe("L14 確認ダイアログの注記の判定：送信の直前の判定と同じ部品・同じ規則（実物の判定・実物の DB 層）", () => {
