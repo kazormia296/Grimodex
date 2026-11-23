@@ -1,0 +1,139 @@
+/**
+ * impact-review: 「前回のチェック以降に変更がある」を、ボタンを押す前に知らせるための
+ * 判定（純ロジック・IO なし・AI なし。DR-INN-1）。
+ *
+ * 規則は `runImpactReview`（`runImpactReview.ts`）の実行時の判定を字面どおり写す
+ * （押しても止まる項目を知らせないため）。`runImpactReview.ts` は import しない
+ * （AI 経路への依存と循環を避ける。規則が 2 か所になる点は parity 試験
+ * `impactPending.parity.test.ts` で固定する）。写すのは Phase の redact だけでなく門
+ * （contextMode・hasRestrictedPhases）の既定値も含む。run 側で既定値を外す・足す変更は、
+ * ここへも同時に写す（#1048 が run の `?? "mentioned"` を外したとき、この関数の既定値が
+ * 取り残されて parity 試験が落ちた。DR-INN-1 の取り込みの記録）。
+ *
+ * 出さない（`pending` 以外）理由:
+ *  - `unchecked`: baseline が無い／値が一度も確認されていない（制限の印だけの）baseline。
+ *    初回は run が全フィールドを「変更」と数えるため、そのまま出すと全項目が変更ありになる。
+ *  - `gated`: run が `no-candidates` で止める条件（base の contextMode が current-mention を
+ *    満たさない・Phase が制限的）。押しても baseline は進まない。
+ *
+ * 件数は run と同じく、`effectiveRestrictedPhaseIds` の Phase を baseline・現在の両方から
+ * 除いてから数える（`redactRestrictedPhases` の写し）。件数だけを返すので、除いた
+ * （非公開だった）Phase の内容は表示に出ない。
+ *  - `none`: 差分なし。
+ */
+
+import { canIncludeResolvedCodexContext } from "@/features/codex/context/codexVisibilityPolicy";
+import { computeCodexDiff, type CodexSnapshot } from "./diff";
+import type { CodexSnapshotResult } from "./snapshot";
+
+export type ImpactPendingGateReason =
+  | "restricted-phase" // 現在 Phase が 1 つでも制限的（run の currentHasRestrictedPhases）
+  | "context-mode"; // base の contextMode が current-mention を満たさない
+
+export type ImpactPending =
+  | { state: "unchecked" }
+  | { state: "gated"; reason: ImpactPendingGateReason }
+  | { state: "none" }
+  | { state: "pending"; changeCount: number };
+
+export const IMPACT_PENDING_NONE: ImpactPending = { state: "none" };
+
+/**
+ * 値が一度も確認されていない baseline か。run が制限の印だけを書く tombstone
+ * （`emptyBaselineWithRestrictionMetadata`）は、値がすべて空。
+ */
+function hasNoReviewedValues(baseline: CodexSnapshot): boolean {
+  return (
+    baseline.name === "" &&
+    baseline.aliases.length === 0 &&
+    baseline.summary === "" &&
+    baseline.contentPlain === "" &&
+    baseline.details.length === 0 &&
+    (baseline.phases ?? []).length === 0
+  );
+}
+
+function phaseIdSet(snapshot: CodexSnapshot): Set<string> {
+  return new Set(
+    snapshot.allPhaseIds ??
+      snapshot.phases?.map((phase) => phase.phaseId) ??
+      [],
+  );
+}
+
+/**
+ * run の `effectiveRestrictedPhaseIds` と同じ規則（現在制限中の Phase ∪ baseline の
+ * restrictedPhaseIds のうち現在無いもの ∪ baseline の phases のうち現在無く、
+ * 公開中の削除と証明されていないもの）。
+ */
+function effectiveRestrictedPhaseIds(
+  baseline: CodexSnapshot,
+  snapshot: CodexSnapshot,
+): Set<string> {
+  const current = new Set(snapshot.restrictedPhaseIds ?? []);
+  const currentPhaseIds = phaseIdSet(snapshot);
+  const visibleDeleted = new Set(baseline.visibleDeletedPhaseIds ?? []);
+  const effective = new Set(current);
+  for (const phaseId of baseline.restrictedPhaseIds ?? []) {
+    if (!currentPhaseIds.has(phaseId)) effective.add(phaseId);
+  }
+  for (const phase of baseline.phases ?? []) {
+    if (
+      !currentPhaseIds.has(phase.phaseId) &&
+      !visibleDeleted.has(phase.phaseId)
+    ) {
+      effective.add(phase.phaseId);
+    }
+  }
+  return effective;
+}
+
+/** run の `redactRestrictedPhases` の写し。 */
+function redactRestrictedPhases(
+  snapshot: CodexSnapshot,
+  restrictedPhaseIds: ReadonlySet<string>,
+): CodexSnapshot {
+  if (restrictedPhaseIds.size === 0) return snapshot;
+  return {
+    ...snapshot,
+    phases: (snapshot.phases ?? []).filter(
+      (phase) => !restrictedPhaseIds.has(phase.phaseId),
+    ),
+  };
+}
+
+export function deriveImpactPending(input: {
+  baseline: CodexSnapshot | null;
+  built: Pick<
+    CodexSnapshotResult,
+    "snapshot" | "contextMode" | "hasRestrictedPhases"
+  >;
+}): ImpactPending {
+  const { baseline, built } = input;
+  if (baseline === null || hasNoReviewedValues(baseline)) {
+    return { state: "unchecked" };
+  }
+  // run（`runImpactReview`）と同じく、contextMode の欠落を公開（"mentioned"）として補わない
+  // （DR-MP4-44）。欠落・不明な値は門が閉じる側（gated）に倒れる。hasRestrictedPhases も run と
+  // 同じく型で必須にしており、runtime の既定値は持たない（欠落は falsy のまま）。
+  const { snapshot, contextMode, hasRestrictedPhases } = built;
+
+  const currentHasRestrictedPhases =
+    hasRestrictedPhases || (snapshot.restrictedPhaseIds ?? []).length > 0;
+  if (currentHasRestrictedPhases) {
+    return { state: "gated", reason: "restricted-phase" };
+  }
+  if (!canIncludeResolvedCodexContext(contextMode, "current-mention")) {
+    return { state: "gated", reason: "context-mode" };
+  }
+  // run はこの集合の Phase（証明の無い削除・非公開だった Phase など）を baseline・現在の
+  // 両方から除いて差分を取り、そのまま候補絞りへ進む。同じ件数を数える。
+  const effective = effectiveRestrictedPhaseIds(baseline, snapshot);
+  const changes = computeCodexDiff(
+    redactRestrictedPhases(baseline, effective),
+    redactRestrictedPhases(snapshot, effective),
+  );
+  return changes.length === 0
+    ? IMPACT_PENDING_NONE
+    : { state: "pending", changeCount: changes.length };
+}
