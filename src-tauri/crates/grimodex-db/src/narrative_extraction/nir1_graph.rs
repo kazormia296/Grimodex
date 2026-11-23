@@ -40,12 +40,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Result};
+use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_nir1::{
     EntityInput, GraphEdgeInput, ScopeBinding, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
     MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_QUERY_RECORDS, MAX_GRAPH_SCENES,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::nir1_capacity::{self, CapacityBudget};
 use super::nir1_chronicle_index::read_identity::ReadIdentity;
@@ -96,6 +98,73 @@ use self::worker_frame::{
 pub(crate) const QUERY_SQL_STEPS: u64 = 600_000;
 pub(crate) const QUERY_DEADLINE: Duration = Duration::from_millis(100);
 const QUERY_MAX_PAGES: usize = 128;
+
+// ---- Body limits and title/archive identity shared by the Graph reader --------
+//
+// These were defined next to the declaration writer (`scene_body_declaration`
+// `display.rs`, `limits.rs`, `facts.rs`). The reader keeps using them after the
+// writer is removed (K2/5 PR-2), so they live here, in a module that is compiled
+// without the `native-current-human-capture` feature. Values and the title
+// digest's domain string are unchanged (K25P1-3, K25P2-2..4).
+
+/// Largest `octet_length` of the saved body (and of the canonical text) that
+/// the reader reads at all, checked before the body is read into memory. The
+/// shared canonical-text reader refuses a saved body above 32 KiB on its own
+/// (`CANONICAL_PARSE_INPUT_LIMIT`), so that smaller value is the effective
+/// limit; this one is the early, cheap check in front of it.
+pub const SCENE_BODY_READ_MAX_BYTES: usize = 64 * 1024;
+
+/// Largest conservative estimate of the working memory of one body read. The
+/// shared reader charges every JSON string twice the size of the saved body
+/// before it parses it, so the estimate grows with the number of strings; the
+/// real allocation stays small because the parse is a stream. The estimate is
+/// checked before the work it describes. 64 MiB is the existing approved scope
+/// of one Native query's working memory (K1's S); it is reused, not a new value
+/// (DR-CB2-7).
+pub const SCENE_BODY_READ_PEAK_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Largest `octet_length` of a Scene title that is read at all. It only bounds
+/// the title digest's input.
+pub const SCENE_BODY_TITLE_MAX_BYTES: usize = 8192;
+
+const TITLE_DIGEST_DOMAIN: &str = "grimodex/narrative-scene-body-title/1";
+
+/// Digest of a Scene title, domain separated, over the whole title (not a
+/// shortened one). The reader's click handle binds to this value.
+pub fn scene_body_title_digest(title: &str) -> Result<String> {
+    Ok(canonical_json_digest(&json!({
+        "domain": TITLE_DIGEST_DOMAIN,
+        "value": title,
+    }))?)
+}
+
+/// True when the Scene, or a folder above it, is archived. The chain is
+/// followed for 256 levels; a chain that is still going after that (or that
+/// loops) counts as archived, so a truncated walk can only refuse, never
+/// declare a Scene live. Every liveness judgement of a Scene body goes through
+/// this one function, so two readers cannot judge liveness differently.
+#[cfg(feature = "native-current-human-capture")]
+pub(in crate::narrative_extraction) fn archived_in_chain(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "WITH RECURSIVE chain(id, parent_id, archived, depth) AS (
+             SELECT id, parent_id, archived_at IS NOT NULL, 0
+               FROM tree_nodes WHERE id = ?1 AND project_id = ?2
+             UNION ALL
+             SELECT t.id, t.parent_id, t.archived_at IS NOT NULL, c.depth + 1
+               FROM tree_nodes t JOIN chain c ON t.id = c.parent_id
+              WHERE t.project_id = ?2 AND c.depth < 256
+         )
+         SELECT COALESCE(MAX(archived OR (depth >= 256 AND parent_id IS NOT NULL)), 0)
+           FROM chain",
+        params![scene_id, project_id],
+        |row| row.get(0),
+    )?)
+}
+
 // JSON/A2/A3 parsing allocates typed values and fixed per-record metadata
 // before the qualified material can be moved into the shared cache.  Reserve
 // a deliberately conservative amount before entering that Rust phase.  This

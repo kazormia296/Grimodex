@@ -19,6 +19,9 @@ use super::tests::{
     query_or_unavailable, raw_cells, restrict, unrestrict, workspace, Path, OPEN,
 };
 use super::*;
+use crate::narrative_extraction::nir1_graph::{
+    SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
+};
 use crate::narrative_extraction::retrieval_admission::{
     read_retrieval_scene_source, read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
 };
@@ -27,8 +30,7 @@ use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
 };
 use crate::narrative_extraction::scene_body_declaration::{
     clear_scene_body_declaration_workspace_quarantine_for_test,
-    quarantine_scene_body_declaration_workspace_for_test, SCENE_BODY_READ_MAX_BYTES,
-    SCENE_BODY_TITLE_MAX_BYTES,
+    quarantine_scene_body_declaration_workspace_for_test,
 };
 use crate::narrative_extraction::task_leases::with_immediate_transaction;
 

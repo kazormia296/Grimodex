@@ -607,8 +607,6 @@ pub use commit_outcome::{
     DeclarationTerminalEvidence, TerminalKind,
 };
 #[cfg(feature = "native-current-human-capture")]
-pub(in crate::narrative_extraction) use facts::archived_in_chain;
-#[cfg(feature = "native-current-human-capture")]
 pub use facts::{preview_scene_body_declaration, BodyDeclarationPreview};
 #[cfg(feature = "native-current-human-capture")]
 pub use revoke::{revoke_scene_body, RevokeOutcome};

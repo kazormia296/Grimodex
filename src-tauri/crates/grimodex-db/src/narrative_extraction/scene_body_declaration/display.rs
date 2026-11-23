@@ -20,13 +20,16 @@ use anyhow::Result;
 use grimodex_core::canonical_json_digest;
 use serde_json::json;
 
+// The title digest moved to `nir1_graph` (K25P2-2); re-exported here until the
+// declaration module is removed (PR-2, 2b2).
+pub use crate::narrative_extraction::nir1_graph::scene_body_title_digest;
+
 /// Most Unicode scalar values of the title that are shown.
 pub const DISPLAY_TITLE_MAX_SCALARS: usize = 64;
 
 const REPLACEMENT: char = '\u{FFFD}';
 const TRUNCATION_MARK: char = '…';
 const DISPLAY_DIGEST_DOMAIN: &str = "grimodex/body-declaration-display/1";
-const TITLE_DIGEST_DOMAIN: &str = "grimodex/narrative-scene-body-title/1";
 
 const LINE_HEADING: &str =
     "この Scene の本文全体を、関連シーン（Related Scenes）に表示してよいと宣言します。";
@@ -81,16 +84,6 @@ impl BodyDeclarationDisplay {
     pub fn digest(&self) -> &str {
         &self.digest
     }
-}
-
-/// Digest of a Scene title, domain separated, over the whole title (not the
-/// shortened one). The declaration's `titleDigest` is this value; CB-4's
-/// reader computes the same.
-pub fn scene_body_title_digest(title: &str) -> Result<String> {
-    Ok(canonical_json_digest(&json!({
-        "domain": TITLE_DIGEST_DOMAIN,
-        "value": title,
-    }))?)
 }
 
 /// Makes a title safe to show: replaces Cc, Cf, Zl and Zp characters with

@@ -8414,3 +8414,44 @@ fn native_worker_registers_multiple_payload_shaped_revisions() -> Result<()> {
         Ok(())
     })
 }
+
+/// K25P2（2-pre）の後、Graph の本番の reader は本文の宣言の module を参照しない。
+/// 2b2 が `scene_body_declaration` を消すとき、本番のコードに残る依存が無いことを固定する
+/// （試験の file は 2b2 で付け替えるので対象外）。参照を足すと、ここで落ちる。
+#[test]
+fn production_graph_sources_do_not_reference_the_body_declaration_module() {
+    use std::path::{Path, PathBuf};
+    fn is_test_file(path: &Path) -> bool {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+    }
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read nir1_graph dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                collect(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") && !is_test_file(&path) {
+                out.push(path);
+            }
+        }
+    }
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/narrative_extraction");
+    let mut files = vec![base.join("nir1_graph.rs")];
+    collect(&base.join("nir1_graph"), &mut files);
+    assert!(files.len() > 5, "scanned {} files", files.len());
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .expect("read source")
+                .contains("scene_body_declaration::")
+        })
+        .map(|path| path.strip_prefix(&base).unwrap_or(path).display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "production Graph sources reference scene_body_declaration: {offenders:?}"
+    );
+}
