@@ -410,7 +410,7 @@ kind は作者向けの固定 id で、表名にしない（`restore_links::KIND
 - 同値（規則そのもの）：辺ごとに、親を消してから復元した DB と、復元してから親を消した DB で、子の表の行が同じであること（`restoring_without_the_parent_equals_deleting_it_afterwards`。固定の時刻の既定値は伏せる）。
 - 変異で確かめた：辺を 1 本消す、`DEPENDENTS` を 1 本消す、不動点をやめて 1 周で止める、`ensure!` の分離を戻す、のそれぞれで、試験が落ちる。
 
-導出と実行時の網の費用：整形の分の表（`snippets`・`post_effect_annotations` など）の `foreign_key_check` が `park` の前後で増える。**大きい作品の復元での時間は測っていない**（PR #1043 の大規模 fixture での前後比較が要る。重ければ、整形で変えた行の id に絞る）。
+導出と実行時の網の費用：整形の分の表（`snippets`・`post_effect_annotations` など）の `foreign_key_check` が `park` の前後で増える。**測った**（2026-11-23。debug build の試験 binary〔release より遅い側。release はこれ以下の見込み、推測〕、ファイル DB、整形の分の 8 表に**表ごと 10 万行**＝合計 80 万行を入れて、`PRAGMA foreign_key_check(<表>)` の 1 パス）：`snippets` 15 ms・`post_effect_annotations` 26 ms・`post_effect_annotation_relations` 84 ms・`map_node_positions` 53 ms・`map_edges` 82 ms・`map_stickies` 13 ms・`map_ai_branches` 0.04 ms・`codex_entry_phases` 17 ms、合計 約 291 ms。復元は `park` の前後で 2 回回すので約 0.6 秒。PR #1043 の fixture の apply（release で約 19 秒、製品の経路で約 27 秒）に対し、実際の作品より大きい行数でも、数 % 以下である。費用は行数に比例し、親が無い行の数には依らない。**測っていないもの**：整形の `resolve` 自体（外す行を探す走査と、親の存在の照会〔200 件ごと〕）の時間、実際の復元の中での増分（上は検査だけを単独で測った）、表ごとに数百万行の作品。重ければ、整形で変えた行の id に絞る。
 
 ### DR-SRX-33　hidden の Phase の既存の穴（この PR は直さない）
 
