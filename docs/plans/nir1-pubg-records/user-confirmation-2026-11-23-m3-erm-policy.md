@@ -198,3 +198,15 @@
   - g-ja-2・m-ja-2 の matrix-L2 で、cell の steps・status・candidateFile・registration・runs と rows が、変更前の出力と完全一致した。
   - 差は observed の中だけ：build の出所、時刻、所要時間、egress の標本数、記録に足した ipc.tail、m-ja-2 の codex_index_entry の失敗回数。失敗回数は変更前にもあり、113〜165 で揺れる。成功した呼び出しは 639 で同じ。
   - master の取り込みの後の検証も済んだ：道具の試験 389 件、verify:quality、validate:architecture、混入走査 0 件。
+
+## 追記 19：#1063 の merge と、測定 A の本測定の結果（11-24 未明、c7 の報告。値だけで結論なし〔DR-ILM-38〕。統合者は直接見ておらず、c7 の報告をそのまま記録する）
+- #1063（測定 B の本測定と測定 A の凍結の記録。測定の道具・凍結・結果の記録だけで製品コードは触らない）を c7 が squash merge した（master `13282e2c0`）。hosted Quick と同じ head の ci.yml は成功。
+- 測定 A の本測定（ユーザー決定「ERM は保留のまま、測定 A を先に回す」）：01:28:10〜01:40:17。AI なし・送信 0。
+  - 35 cell すべて ok（g-ja-2・g-ja-3・g-ja-4 が各 8、m-ja-2 が 11）。候補の一覧の逸脱 0 件。候補の file は 4 作品とも verified。
+  - 製品 head は `13282e2c0`（dirty 0）。道具の sha256 28 件は凍結の表と一致。
+  - 集計は repo の外 `/home/grimodex/identity-review-load-2026-11/aggregate-main/`。
+- L0〜L3 の Ur・S5 の表は #1050 の実機の値と完全一致（Ur-all 126／127／66／66、S5-roster 11、S5_seen 2）。
+- 新しく埋まった列：
+  - 累積（L2・同じ workspace）。保存済みの未 review の件数：g-ja-2 29→63→100→140、g-ja-3 25→64→109→154、g-ja-4 33→77→124→175、m-ja-2 118→329→581→864。最新の run の提案は、全件が同じ表記で残る。
+  - empty 段、L2-1char 段。
+- 結論は出していない。c7 がこの後、値を並べてユーザーに報告する。
