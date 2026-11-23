@@ -11,8 +11,8 @@ import { MAIN_READ_TABLE_SET, MAIN_READ_TABLES } from "./tables.js";
  * the hidden and chronicle-secret inputs); PR-5a adds `snippets` (`search_snippets`); PR-5b adds `foreshadows` and
  * `foreshadow_setups` (`get_foreshadow_detail`); PR-7a adds `events`, `event_participants`,
  * `scene_events`, `event_relations`, `project_calendar` and `codex_entries` (the chronicle tools); PR-8a adds
- * `codex_entry_phases`（Codex の可視性判定）；PR-10a は詳細の3表を先行許可し、そのうち2表を
- * 可視性 core が読み、残る1表は PR-10b で移す entry tool 用にする。
+ * `codex_entry_phases`（Codex の可視性判定）；PR-10a で詳細の3表を追加し、可視性 core と
+ * PR-10b の `get_codex_entry` が読み取る。
  */
 const PINNED = [
   "codex_detail_definitions",

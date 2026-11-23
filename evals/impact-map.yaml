@@ -173,6 +173,8 @@ rules:
       - electron/shared/readDomain/core/chronicleReadExecutors.ts
       - electron/shared/readDomain/core/codexTools.ts
       - electron/shared/readDomain/core/codexReadExecutors.ts
+      - electron/shared/readDomain/core/codexEntryTools.ts
+      - electron/shared/readDomain/core/codexEntryExecutors.ts
       - electron/shared/readDomain/core/sharedLoader.ts
       - electron/shared/readDomain/core/readContext.ts
       - electron/shared/readDomain/core/toolResult.ts
@@ -183,6 +185,7 @@ rules:
       - electron/shared/readDomain/core/chronicleTools.test.ts
       - electron/shared/readDomain/core/chronicleSearchTools.test.ts
       - electron/shared/readDomain/core/codexTools.test.ts
+      - electron/shared/readDomain/core/codexEntryTools.test.ts
       - electron/shared/readDomain/core/chronicleMainContext.test.ts
       - electron/shared/readDomain/features/chronicle/readRows.test.ts
       - electron/shared/readDomain/core/core.static.test.ts

@@ -1,13 +1,6 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent, loadSceneContents } from "@/features/tree/api";
-import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
-import {
-  codexEntries,
-  codexDetailDefinitions,
-  codexDetailValues,
-} from "@/db/schema";
-import { and, eq } from "drizzle-orm";
 import {
   createReadExecutors,
   type CoreReadToolName,
@@ -17,6 +10,8 @@ import {
   type CodexReadToolName,
 } from "@/../electron/shared/readDomain/core/codexReadExecutors";
 import { LEGACY_CODEX_READ_CONTEXT } from "./codexReadContext";
+import { createCodexEntryExecutors } from "@/../electron/shared/readDomain/core/codexEntryExecutors";
+import { LEGACY_CODEX_ENTRY_CONTEXT } from "./codexEntryReadContext";
 import {
   CoreProjectRequiredError,
   type CoreReadContext,
@@ -89,11 +84,6 @@ import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
 import type { EventSearchHit } from "@/features/semantic-search/api";
-import {
-  dropCodexHiddenFromAi,
-  resolveCodexForAi,
-  type CodexTextForAi,
-} from "@/features/codex/context/codexHiddenFromAi";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
 import {
   isEventBeforeOrAtScene,
@@ -107,8 +97,7 @@ import {
 } from "./chronicleToolCache";
 
 // ---------------------------------------------------------------------------
-// Codex tools（search_codex・list_codex_by_type・search_codex_by_tags・find_related_entries は
-// MP-4b PR-8b で共有 core へ移した。ここに残るのは get_codex_entry と、hidden の判定の補助）
+// Codex の read tool は共有 core へ移した。
 // ---------------------------------------------------------------------------
 
 /**
@@ -294,59 +283,11 @@ function chronicleProjectId(scope?: ChatTurnToolScope): string | null {
   return scope ? scope.projectId || null : useTreeStore.getState().projectId;
 }
 
-/**
- * search_events の基準の Scene。scope があればそれ、無ければ読んだ時点の tree store。
- * 呼ぶ位置が挙動の一部なので、scope が無い呼び手では await の後で呼ぶ（DR-CHATIR-S1-34）。
- */
+/** search_events の基準の Scene。scope が無ければ読んだ時点の tree store を使う。 */
 function chronicleSceneId(scope?: ChatTurnToolScope): string {
   return scope
     ? (scope.currentSceneId ?? "")
     : (useTreeStore.getState().activeSceneId ?? "");
-}
-
-/**
- * 作者が hidden（AI に秘匿）と印した Codex を、tool の結果から落とす。判定は chat の
- * 通常の文脈と同じ正本（`listCodexIdsHiddenFromAi`）。現在の場面は年表の tool と同じ規則で、
- * 呼ぶ位置が挙動の一部なので、結果を作り終えた後（await の後）で呼ぶ。
- */
-function dropHiddenCodex<T extends { id: string }>(
-  rows: readonly T[],
-  projectId: string,
-  scope?: ChatTurnToolScope,
-): Promise<T[]> {
-  return dropCodexHiddenFromAi(rows, {
-    projectId,
-    sceneId: chronicleSceneId(scope),
-  });
-}
-
-/**
- * id の Codex を AI へ渡してよい形で返す。hidden なら null（読めない・存在しない id と同じ
- * 「見つからない」扱いにする）。summary と本文は Phase 解決後（現在の場面があればその場面）で、
- * base が hidden で Phase が解除したものも base の文を返さない。
- */
-async function resolveCodexTextForAi(
-  id: string,
-  projectId: string,
-  scope?: ChatTurnToolScope,
-  /** hidden でないのに解決結果が無いときの代わり（通常は起きない）。 */
-  fallback: CodexTextForAi = {
-    summary: null,
-    content: "",
-    released: false,
-    mode: "",
-  },
-  withDetails = false,
-): Promise<CodexTextForAi | null> {
-  const { hidden, texts } = await resolveCodexForAi({
-    entryIds: [id],
-    projectId,
-    sceneId: chronicleSceneId(scope),
-    withContent: true,
-    withDetails,
-  });
-  if (hidden.has(id)) return null;
-  return texts.get(id) ?? fallback;
 }
 
 /**
@@ -518,125 +459,6 @@ async function searchEventsWithIr(
     content: fitted.content,
     // 件数だけ。status・本文・題は入れない（契約 §3.5）。
     summary: `manuscript ${items.length}, chronicle ${fitted.content.events.length}`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function getCodexEntry(
-  params: Record<string, unknown>,
-  scope?: ChatTurnToolScope,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const id = String(params["id"] ?? "").trim();
-  if (!id)
-    return {
-      name: "get_codex_entry",
-      content: null,
-      summary: "No id provided",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "get_codex_entry",
-      content: null,
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const [entry] = await db
-    .select()
-    .from(codexEntries)
-    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  // hidden は存在しない id と同じ応答にする（存在を明かさない）。
-  const resolvedText = entry
-    ? await resolveCodexTextForAi(
-        id,
-        projectId,
-        scope,
-        {
-          summary: entry.summary,
-          content: entry.content,
-          released: false,
-          mode: entry.contextMode,
-        },
-        true,
-      )
-    : null;
-  if (!entry || !resolvedText)
-    return {
-      name: "get_codex_entry",
-      content: null,
-      summary: "Entry not found",
-      tokensUsed: 0,
-    };
-
-  // Detail definitions for this type
-  const defs = await db
-    .select()
-    .from(codexDetailDefinitions)
-    .where(eq(codexDetailDefinitions.typeSlug, entry.type));
-
-  // Detail values for this entry
-  const vals = await db
-    .select()
-    .from(codexDetailValues)
-    .where(eq(codexDetailValues.entryId, id));
-
-  const details = defs
-    .filter((d) => d.includeInContext)
-    .map((d) => {
-      // Phase で hidden を解除された項目は、base（秘匿した状態）の詳細でなく Phase 解決後の
-      // 詳細（null は Phase による消去）を返す。ほかの項目は今までどおり base の値。
-      const resolvedDetails = resolvedText.detailValues;
-      if (resolvedText.released && resolvedDetails) {
-        return { field: d.name, value: resolvedDetails.get(d.id) ?? null };
-      }
-      const val = vals.find((v) => v.definitionId === d.id);
-      return { field: d.name, value: val?.value ?? null };
-    });
-
-  // Child entries (summaries only)
-  const children = await dropHiddenCodex(
-    await db
-      .select({
-        id: codexEntries.id,
-        name: codexEntries.name,
-        type: codexEntries.type,
-        summary: codexEntries.summary,
-      })
-      .from(codexEntries)
-      .where(eq(codexEntries.parentId, id)),
-    projectId,
-    scope,
-  );
-
-  // 本体テキスト (ProseMirror JSON → plain text)。Tool description が
-  // "full content body" と謳う以上、ここで抜けてはいけない。
-  const body = resolvedText.content
-    ? extractPlainText(resolvedText.content)
-    : "";
-
-  const result = {
-    id: entry.id,
-    name: entry.name,
-    type: entry.type,
-    aliases: entry.aliases ? (JSON.parse(entry.aliases) as string[]) : [],
-    summary: resolvedText.summary ?? "",
-    body,
-    details,
-    children: children.map((c) => ({
-      id: c.id,
-      name: c.name,
-      type: c.type,
-      summary: c.summary ?? "",
-    })),
-  };
-  const json = JSON.stringify(result);
-  return {
-    name: "get_codex_entry",
-    content: result,
-    summary: `${entry.name} (${entry.type})`,
     tokensUsed: countTokens(json),
   };
 }
@@ -901,6 +723,9 @@ function coreReadExecutor(name: CoreReadToolName): Executor {
 const CORE_CODEX_EXECUTORS = createCodexReadExecutors(
   LEGACY_CODEX_READ_CONTEXT,
 );
+const CORE_CODEX_ENTRY_EXECUTORS = createCodexEntryExecutors(
+  LEGACY_CODEX_ENTRY_CONTEXT,
+);
 
 /**
  * project が無いときの結果の content（core は projectId を必須にして throw する。DR-MP4-3）。
@@ -951,6 +776,39 @@ function codexReadExecutor(name: CodexReadToolName): Executor {
   };
 }
 
+/** `get_codex_entry` は scope の場面と store の project を既存の読取規則のまま渡す。 */
+function codexEntryExecutor(): Executor {
+  return async (params, _requestId, _authorization, context) => {
+    const scope = context?.scope;
+    let scopedTreeState: ReturnType<typeof useTreeStore.getState> | undefined;
+    const run = scope
+      ? createCodexEntryExecutors({
+          ...LEGACY_CODEX_ENTRY_CONTEXT,
+          getTreeState: () => {
+            scopedTreeState ??= useTreeStore.getState();
+            return {
+              ...scopedTreeState,
+              activeSceneId: scope.currentSceneId,
+            };
+          },
+        }).get_codex_entry
+      : CORE_CODEX_ENTRY_EXECUTORS.get_codex_entry;
+    try {
+      return await run(params);
+    } catch (e) {
+      if (e instanceof CoreProjectRequiredError) {
+        return {
+          name: "get_codex_entry",
+          content: null,
+          summary: "No active project",
+          tokensUsed: 0,
+        };
+      }
+      throw e;
+    }
+  };
+}
+
 /**
  * ツール名 → executor の dispatch マップ。
  *
@@ -971,8 +829,7 @@ function codexReadExecutor(name: CodexReadToolName): Executor {
 export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   search_codex: codexReadExecutor("search_codex"),
   list_codex_by_type: codexReadExecutor("list_codex_by_type"),
-  get_codex_entry: (params, _requestId, _authorization, context) =>
-    getCodexEntry(params, context?.scope),
+  get_codex_entry: codexEntryExecutor(),
   list_codex_tags: coreReadExecutor("list_codex_tags"),
   search_codex_by_tags: codexReadExecutor("search_codex_by_tags"),
   find_related_entries: codexReadExecutor("find_related_entries"),

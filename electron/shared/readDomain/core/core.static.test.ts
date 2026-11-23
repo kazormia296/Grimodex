@@ -46,8 +46,21 @@ const SCAN_FILES = [path.join(sharedRoot, "mastraRead", "ports.ts")];
 const SOURCE = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const TEST = /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const DECLARATION = /\.d\.[cm]?ts$/u;
-/** `get_codex_entry` の reader を移す PR-10b より先に、PR-10a で許可する表。 */
-const PREAUTHORIZED_TABLES_NOT_READ_YET = ["codex_detail_definitions"] as const;
+const CODEX_ENTRY_FORBIDDEN_NAMES = [
+  "codex_entry_phases",
+  "readCodexPhases",
+  "contentOverride",
+  "summaryOverride",
+  "contextModeOverride",
+] as const;
+
+function codexEntryForbiddenNames(source: string): string[] {
+  return CODEX_ENTRY_FORBIDDEN_NAMES.filter((name) => source.includes(name));
+}
+
+function codexEntryBaseTextAccesses(source: string): string[] {
+  return source.match(/\bentry\.(?:summary|content)\b/gu) ?? [];
+}
 
 function* sourceFiles(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
@@ -553,15 +566,9 @@ describe("the core issues Drizzle selects only, over exactly the allowlisted tab
     expect(outsideCore.map(({ file }) => file)).toEqual([]);
   });
 
-  it("実際に読む表と、明示的に先行許可した表だけを allowlist に含める", () => {
+  it("実際に読む表だけを allowlist に含める", () => {
     const named = new Set(scans.flatMap(({ scan }) => [...scan.tables]));
-    for (const table of PREAUTHORIZED_TABLES_NOT_READ_YET) {
-      expect(MAIN_READ_TABLES).toContain(table);
-      expect(named).not.toContain(table);
-    }
-    expect(
-      [...new Set([...named, ...PREAUTHORIZED_TABLES_NOT_READ_YET])].sort(),
-    ).toEqual([...MAIN_READ_TABLES]);
+    expect([...named].sort()).toEqual([...MAIN_READ_TABLES]);
   });
 
   it("every allowlisted table is a table of the schema", () => {
@@ -572,6 +579,36 @@ describe("the core issues Drizzle selects only, over exactly the allowlisted tab
     );
     for (const table of MAIN_READ_TABLES) expect(real.has(table)).toBe(true);
   });
+});
+
+describe("get_codex_entry の組立ては判定済み text だけを使う", () => {
+  const source = readFileSync(path.join(coreDir, "codexEntryTools.ts"), "utf8");
+
+  it("Phase の保存列・reader・field 名を直接参照しない", () => {
+    expect(codexEntryForbiddenNames(source)).toEqual([]);
+  });
+
+  it.each(CODEX_ENTRY_FORBIDDEN_NAMES)(
+    "負の fixture は %s の参照を検出する",
+    (name) => {
+      expect(codexEntryForbiddenNames(`const forbidden = ${name};`)).toContain(
+        name,
+      );
+    },
+  );
+
+  it("entry の base summary・content に触れない", () => {
+    expect(codexEntryBaseTextAccesses(source)).toEqual([]);
+  });
+
+  it.each(["entry.summary", "entry.content"])(
+    "負の fixture は %s を検出する",
+    (access) => {
+      expect(codexEntryBaseTextAccesses(`const text = ${access};`)).toEqual([
+        access,
+      ]);
+    },
+  );
 });
 
 const fixtureTable = (binding: string): string | undefined =>
