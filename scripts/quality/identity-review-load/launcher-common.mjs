@@ -327,6 +327,31 @@ export function sameBuildProvenance(a, b) {
   );
 }
 
+/**
+ * main への読み取りの evaluate を、Playwright の一過性の失敗「Execution context was destroyed」（Electron は生きていて、
+ * window も開いたまま、本体の後の最初の評価が時々これで落ちた。乾いた実行の繰り返しで 約 3〜8％）に限り、数回やり直す。
+ * 読み取りだけの関数に使う（やり直しても送信・書き込みが重ならない）。他のエラー・回数超過は、そのまま投げる。
+ * onRetry は、やり直した回数を数える（records に残す）。
+ */
+export async function evaluateMain(
+  app,
+  fn,
+  { attempts = 3, delayMs = 300, onRetry = () => undefined } = {},
+) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await app.evaluate(fn);
+    } catch (error) {
+      const retryable =
+        error instanceof Error &&
+        /Execution context was destroyed/u.test(error.message);
+      if (!retryable || attempt >= attempts) throw error;
+      onRetry(attempt);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 export async function runCell({
   output,
   vite,
@@ -374,6 +399,9 @@ export async function runCell({
   // 落ちた段の印（定型の token だけ。cell.failedPhase に残す。原因を後から読むため）。
   let phase = "setup";
   let pageRef = null;
+  let evalRetries = 0;
+  const evalMain = (fn) =>
+    evaluateMain(app, fn, { onRetry: () => evalRetries++ });
   const started = Date.now();
   // kill されたとき（finally が走らない）も、隔離 userData の key と workRoot を消す。
   assert.ok(
@@ -477,7 +505,7 @@ export async function runCell({
       timeout: 60000,
     });
     // main の process.env にも偽 AI の env が無いこと（件数だけ）。
-    const mainEnv = await app.evaluate(() => ({
+    const mainEnv = await evalMain(() => ({
       names: Object.keys(process.env),
       rustLog: process.env.RUST_LOG ?? "",
       nodeOptions: process.env.NODE_OPTIONS ?? "",
@@ -492,7 +520,7 @@ export async function runCell({
         : {}),
     });
     // 拒否する層は、要求したときだけ有効で、有効でなければ page を動かす前に止める（fail-closed。要求しないときは無いこと）。
-    const dispatchBlockActive = await app.evaluate(
+    const dispatchBlockActive = await evalMain(
       () => globalThis.idlDispatchBlock?.active === true,
     );
     assert.equal(
@@ -523,7 +551,7 @@ export async function runCell({
       null,
       { timeout: 120000 },
     );
-    cell.electronVersion = await app.evaluate(() => process.versions.electron);
+    cell.electronVersion = await evalMain(() => process.versions.electron);
 
     phase = "open-project";
     const projectId = `idl-${workKey}`;
@@ -586,7 +614,7 @@ export async function runCell({
     });
 
     phase = "post-body";
-    const ipc = await app.evaluate(() => globalThis.nir1IpcTrace.calls);
+    const ipc = await evalMain(() => globalThis.nir1IpcTrace.calls);
     const names = ipc.map((call) => call.command);
     const counts = {};
     for (const name of names) counts[name] = (counts[name] ?? 0) + 1;
@@ -604,7 +632,7 @@ export async function runCell({
     // 止めた命令の件数（名前ごと）と、send_chat_message にリハーサルの応答で答えた件数。本物の handler に届いた AI の命令は
     // 上の ipc に出るので、ここは含まれない。
     if (blockDispatch)
-      cell.dispatchBlock = await app.evaluate(() => ({
+      cell.dispatchBlock = await evalMain(() => ({
         blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
         rehearsed: globalThis.idlDispatchBlock?.rehearsed ?? 0,
       }));
@@ -627,11 +655,13 @@ export async function runCell({
     cell.egress = egressSampler.snapshot();
     cell.elapsedMs = Date.now() - started;
     // 初期値の "blocked" を書き換える。採用の可否（ok など）は呼び出し側が最終の status として書き戻す。
+    if (evalRetries > 0) cell.mainEvalRetries = evalRetries;
     cell.status = "completed";
     return { cell, value, scenesTexts: loaded.scenesTexts };
   } catch (error) {
     cell.status = "failed";
     cell.failedPhase = phase;
+    if (evalRetries > 0) cell.mainEvalRetries = evalRetries;
     // 落ちたとき、Electron の process が生きているか（終了コード・シグナル）と window が閉じていたか。数と短い token だけ
     // （main の異常終了と、通信の一過性の失敗を分けるため。試走の調べで、本体の後の最初の evaluate が時々落ちた）。
     try {

@@ -66,6 +66,7 @@ import {
   assertNoFakeAiEnv,
   assertNoOverlappingJobs,
   ensurePrivateDir,
+  evaluateMain,
   runCell,
   withVite,
   withWatchdog,
@@ -456,7 +457,7 @@ export async function probeJudgePath({ page, app, workspaceDir = "" }) {
     app !== null && typeof app.evaluate === "function",
     "[precheck] PROBE_NEEDS_APP the probe needs the Electron app to verify the dispatch block",
   );
-  const active = await app.evaluate(
+  const active = await evaluateMain(app, 
     () => globalThis.idlDispatchBlock?.active === true,
   );
   assert.equal(
@@ -475,7 +476,7 @@ export async function probeJudgePath({ page, app, workspaceDir = "" }) {
   );
   const probe = await page.evaluate(() => window.identityLoad.bProbeJudge());
   // 探針の後に、止めた命令・リハーサルで答えた件数・命令の並び（最後の 12 件）を main から読む。
-  const after = await app.evaluate(() => ({
+  const after = await evaluateMain(app, () => ({
     blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
     rehearsed: globalThis.idlDispatchBlock?.rehearsed ?? 0,
     tail: (globalThis.nir1IpcTrace?.calls ?? []).slice(-12).map((call) => ({
