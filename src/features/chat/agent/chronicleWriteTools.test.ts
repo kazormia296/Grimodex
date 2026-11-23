@@ -12,34 +12,45 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock("@/features/agent-writes/event", () => m);
 
-// write-by-id ゲート(isEventVisibleForWrite)の依存をモック。対象 event は
-// 非 secret として可視扱いにし、既存の「対応関数を呼ぶ」契約を維持する。
+// write-by-id は現在 project の出来事を対象にする。
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
     getState: () => ({ projectId: "p1", nodes: [], activeSceneId: "s1" }),
   },
 }));
 const apiMock = vi.hoisted(() => ({
-  listEvents: vi.fn(async () => [
-    {
-      id: "e1",
-      secret: false,
-      revealSceneId: null as string | null,
-      version: 4,
-    },
-    {
-      id: "a",
-      secret: false,
-      revealSceneId: null as string | null,
-      version: 2,
-    },
-    {
-      id: "b",
-      secret: false,
-      revealSceneId: null as string | null,
-      version: 3,
-    },
-  ]),
+  listEvents: vi.fn(async (projectId: string) =>
+    [
+      {
+        id: "e1",
+        projectId: "p1",
+        secret: true,
+        revealSceneId: null as string | null,
+        version: 4,
+      },
+      {
+        id: "a",
+        projectId: "p1",
+        secret: true,
+        revealSceneId: null as string | null,
+        version: 2,
+      },
+      {
+        id: "b",
+        projectId: "p1",
+        secret: false,
+        revealSceneId: null as string | null,
+        version: 3,
+      },
+      {
+        id: "other-project-event",
+        projectId: "p2",
+        secret: true,
+        revealSceneId: null as string | null,
+        version: 9,
+      },
+    ].filter((event) => event.projectId === projectId),
+  ),
   listSceneEventsForProject: vi.fn(async () => []),
 }));
 vi.mock("@/features/chronicle/api", () => apiMock);
@@ -145,7 +156,7 @@ describe("update/delete", () => {
   it("update_event は eventId 必須", async () => {
     expect((await updateEventTool({})).error).toBe("eventId is required");
   });
-  it("update_event は可視性確認時の version を CAS base に渡す", async () => {
+  it("project 内 event lookup で得た version を CAS base に渡す", async () => {
     await updateEventTool(
       { eventId: "e1", title: "updated" },
       "event-update-request",
@@ -174,7 +185,7 @@ describe("scene stamp/unstamp", () => {
       "required",
     );
   });
-  it("stamp/unstamp が対応関数を呼ぶ", async () => {
+  it("stamp/unstamp allow a secret event by id", async () => {
     await stampSceneEventTool(
       { sceneId: "s1", eventId: "e1" },
       "event-stamp-request",
@@ -193,7 +204,7 @@ describe("scene stamp/unstamp", () => {
 });
 
 describe("participants / relations", () => {
-  it("set_event_participants は codex 配列を渡す", async () => {
+  it("set_event_participants allows a secret event by id", async () => {
     await setEventParticipantsTool(
       {
         eventId: "e1",
@@ -207,7 +218,7 @@ describe("participants / relations", () => {
       { baseVersion: 4, requestId: "event-participants-request" },
     );
   });
-  it("relation add/remove は cause+effect 必須＋呼び出し", async () => {
+  it("relation add/remove allow a secret event endpoint", async () => {
     expect((await addEventRelationTool({ causeEventId: "a" })).error).toContain(
       "required",
     );
@@ -229,7 +240,7 @@ describe("participants / relations", () => {
 });
 
 describe("ターン内共有キャッシュ", () => {
-  it("relation add は cause/effect 2 回の可視性チェックで listEvents を 1 回に畳む", async () => {
+  it("relation add は cause/effect の存在確認で listEvents を 1 回に畳む", async () => {
     await addEventRelationTool(
       { causeEventId: "a", effectEventId: "b" },
       "event-relation-cache-request",
@@ -254,22 +265,31 @@ describe("ターン内共有キャッシュ", () => {
   });
 });
 
-describe("AI 秘匿 write-by-id ゲート", () => {
-  it("hidden な secret event への update/delete は呼ばず generic not found", async () => {
-    apiMock.listEvents.mockResolvedValueOnce([
-      { id: "sec", secret: true, revealSceneId: null, version: 5 },
-    ]);
-    const r = await updateEventTool({ eventId: "sec", title: "leak" });
-    expect(r.error).toBe("Event not found");
-    expect(m.agentUpdateEvent).not.toHaveBeenCalled();
+describe("write-by-id project scope", () => {
+  it("allows secret project events and retains the event version for update/delete", async () => {
+    await updateEventTool(
+      { eventId: "e1", title: "updated" },
+      "secret-update-request",
+    );
+    expect(m.agentUpdateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: "e1", baseVersion: 4 }),
+      { requestId: "secret-update-request" },
+    );
 
-    // 次ターン相当としてキャッシュを破棄し、2 個目の mockResolvedValueOnce を使わせる。
-    invalidateChronicleToolCache();
-    apiMock.listEvents.mockResolvedValueOnce([
-      { id: "sec", secret: true, revealSceneId: null, version: 5 },
-    ]);
-    const d = await deleteEventTool({ eventId: "sec" });
-    expect(d.error).toBe("Event not found");
-    expect(m.agentDeleteEvent).not.toHaveBeenCalled();
+    await deleteEventTool({ eventId: "e1" }, "secret-delete-request");
+    expect(m.agentDeleteEvent).toHaveBeenCalledWith("e1", {
+      baseVersion: 4,
+      requestId: "secret-delete-request",
+    });
+    expect(apiMock.listSceneEventsForProject).not.toHaveBeenCalled();
+  });
+
+  it("does not find events outside the current project or absent ids", async () => {
+    for (const eventId of ["other-project-event", "missing-event"]) {
+      expect((await updateEventTool({ eventId, title: "updated" })).error).toBe(
+        "Event not found",
+      );
+    }
+    expect(m.agentUpdateEvent).not.toHaveBeenCalled();
   });
 });

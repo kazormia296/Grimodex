@@ -14,12 +14,9 @@ import {
 import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
 import type { EventKind, EventGranularity } from "@/db/schema";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
 import type { EventRow } from "@/features/chronicle/api";
 import {
   getSharedEvents,
-  getSharedSceneEvents,
-  getSharedReadingOrder,
   invalidateChronicleToolCache,
 } from "./chronicleToolCache";
 import type { ToolResult } from "./agentTypes";
@@ -65,28 +62,12 @@ function strArray(v: unknown): string[] {
 function optNum(v: unknown): number | null {
   return typeof v === "number" ? v : null;
 }
-/**
- * AI 秘匿: 既存 event への write-by-id ゲート（spec §2.4.4）。現在シーン(activeSceneId)
- * で hidden な secret event、または存在しない event を区別せず false にし、呼び出し側は
- * generic not found を返す（存在 oracle 化／秘匿内容の漏洩を防ぐ）。create は対象外。
- */
+/** 現在の project にある出来事なら対象。別 project・存在しない id は見つからない。 */
 async function visibleEventForWrite(eventId: string): Promise<EventRow | null> {
   const projectId = useTreeStore.getState().projectId;
   if (!projectId) return null;
   const events = await getSharedEvents(projectId);
-  const ev = events.find((e) => e.id === eventId);
-  if (!ev) return null;
-  if (!ev.secret) return ev;
-  const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
-  const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
-  // 全件共有キャッシュを使う（判定側が eventId で絞るため結果は filter 版と同一）。
-  const sceneEvents = await getSharedSceneEvents(projectId);
-  return isEventHiddenFromAi(ev, currentSceneId, {
-    readingOrder,
-    sceneEvents,
-  })
-    ? null
-    : ev;
+  return events.find((event) => event.id === eventId) ?? null;
 }
 
 async function isEventVisibleForWrite(eventId: string): Promise<boolean> {

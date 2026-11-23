@@ -11,9 +11,7 @@ import { SharedLoader, registerToolTurnReset } from "./toolTurnCache";
 
 /**
  * chronicle 系ツールが 1 ターン内で共有する lazy キャッシュ。
- * read 4 ツール + write 7 ツールの可視性チェック (isEventVisibleForWrite) が
- * それぞれ listEvents / listSceneEventsForProject / listCodexMatchTargets /
- * computeGlobalSceneOrder をフルロードし直していたのを、ターン内 1 回に畳む。
+ * 読みツールと write-by-id は出来事を、読みツールは scene-event・Codex 名・読む順も共有する。
  *
  * 返り値（配列 / Map）は共有インスタンスなので呼び出し側は読み取り専用で扱うこと。
  * write ツールがデータを変更したら invalidateChronicleToolCache() を必ず呼ぶ。

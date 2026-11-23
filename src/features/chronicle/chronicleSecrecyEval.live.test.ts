@@ -14,6 +14,13 @@
  *   （key 不要・常時実行）。LLM アームはその下流効果（hidden 時は AI がネタバレを
  *   書けない）を示す。
  *
+ * 【CSR/1 による変更】年表の「AI に秘匿」（reveal アンカー方式の隠し）は廃止した。出来事は
+ * 全部 AI に渡す（確認 98・101・135。守る印は Codex の hidden だけ）ので、secretHidden の
+ * 年表ブロックにも毒殺は**出る**（現在シーンの読む順位置では隠さない）。決定的な部分は、その
+ * 新しい事実を固定する。LLM アームの前提（reveal 前は AI がネタバレを書けない）は、もう成り立たない。
+ * 「まだ明かされていない」の印（CPL/1 の W6。印の PR 群）が入った後に、評価を作り直す。それまで
+ * live 部分は、key があっても比較の意味が無い（過去の記録として残す）。
+ *
  * 既定では live 部分は SKIP。実行するにはキーを渡す:
  *   OPENROUTER_API_KEY=sk-... pnpm test --run \
  *     src/features/chronicle/chronicleSecrecyEval.live.test.ts
@@ -258,8 +265,9 @@ function assertFixtureSanity(): void {
   // pastReveal は毒殺の真相を含む（reveal 以降で開示）。
   expect(BLOCKS.pastReveal).toContain("毒殺");
   expect(BLOCKS.pastReveal).toContain("バルド");
-  // secretHidden は毒殺の真相を含まない（reveal 前で秘匿）。
-  expect(BLOCKS.secretHidden).not.toContain("毒殺");
+  // CSR/1：reveal シーンより前でも、出来事は隠さない（守る印は Codex の hidden だけ）。
+  expect(BLOCKS.secretHidden).toContain("毒殺");
+  expect(BLOCKS.secretHidden).toContain("バルド");
   // off は空。
   expect(BLOCKS.off).toBe("");
   // secretHidden も空ではない（一般的な年表価値＝アリスの状況は出る）。
@@ -267,7 +275,7 @@ function assertFixtureSanity(): void {
 }
 
 describe("chronicle secrecy fixture (deterministic)", () => {
-  it("reveal シーン前は毒殺が隠れ、reveal シーン以降で開示される", () => {
+  it("reveal シーンの位置に関わらず、秘匿の印のある出来事も年表のまとめに出る（CSR/1）", () => {
     assertFixtureSanity();
   });
 });

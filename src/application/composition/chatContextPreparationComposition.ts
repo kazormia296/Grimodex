@@ -114,9 +114,14 @@ import {
   listSceneEventsForProject,
 } from "@/features/chronicle/api";
 import { assembleChronicleSnapshotText } from "@/features/chronicle/chronicleSnapshot";
+import {
+  collectChronicleCandidateCodexIds,
+  dropHiddenCodexFromChronicleInput,
+} from "@/../electron/shared/readDomain/features/chronicle/chronicleHiddenCodex";
 import type { SceneChronicle } from "@/features/chronicle/resolveSceneAnchor";
 import { calendarFromRow } from "@/features/chronicle/chronicleTime";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import { listCodexIdsHiddenFromAi } from "@/features/codex/context/codexHiddenFromAi";
 import {
   PLOT_PHASE_TYPES,
   type EventPrecision,
@@ -980,7 +985,7 @@ async function loadMapBoardMarkdown(
   }
 }
 
-async function buildChronicleSnapshotTextForScene(
+export async function buildChronicleSnapshotTextForScene(
   projectId: string,
   sceneId: string,
   treeNodes: readonly TreeNodeData[],
@@ -1017,7 +1022,7 @@ async function buildChronicleSnapshotTextForScene(
       listEventRelations(projectId),
     ],
   );
-  return assembleChronicleSnapshotText({
+  const args = {
     sceneId,
     events,
     participants,
@@ -1030,7 +1035,28 @@ async function buildChronicleSnapshotTextForScene(
     mentionedCodexIds,
     sceneChronicle,
     lang: language,
-  });
+  };
+  const entryIds = collectChronicleCandidateCodexIds(args);
+  let hidden = new Set<string>();
+  if (entryIds.length > 0) {
+    try {
+      hidden = await listCodexIdsHiddenFromAi({
+        entryIds,
+        projectId,
+        sceneId,
+      });
+    } catch (cause) {
+      debugLog.warn(
+        "ChatContextPreparation",
+        "Chronicle snapshot skipped because hidden Codex resolution failed",
+        errorDetail(cause),
+      );
+      return undefined;
+    }
+  }
+  return assembleChronicleSnapshotText(
+    dropHiddenCodexFromChronicleInput(args, hidden),
+  );
 }
 
 function snapshotPlotThreadScenes(

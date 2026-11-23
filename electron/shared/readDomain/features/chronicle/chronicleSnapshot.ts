@@ -12,7 +12,6 @@ import {
   type ChronicleAnchor,
   type SceneChronicle,
 } from "./resolveSceneAnchor.js";
-import { projectVisibleChronicle } from "./chronicleSecrecy.js";
 import type {
   EventRow,
   ParticipantRow,
@@ -395,36 +394,26 @@ export function assembleChronicleSnapshotText(args: {
   sceneChronicle?: Map<string, SceneChronicle>;
   lang: string;
 }): string | undefined {
-  // AI 秘匿: anchor/pick/derive の前段で secret イベントを除外（spec §2.4.1）。
-  // 二次漏洩（anchor 決定・participant 由来人物・因果タイトル）を一括で塞ぐ。
-  const visible = projectVisibleChronicle({
-    events: args.events,
-    sceneEvents: args.sceneEvents,
-    participants: args.participants,
-    relations: args.relations,
-    currentSceneId: args.sceneId,
-    readingOrder: args.readingOrder,
-  });
   const anchor = resolveSceneAnchor(args.sceneId, {
-    sceneEvents: visible.sceneEvents,
-    events: visible.events,
+    sceneEvents: args.sceneEvents,
+    events: args.events,
     readingOrder: args.readingOrder,
     sceneChronicle: args.sceneChronicle,
   });
   const characterIds = pickSnapshotCharacters({
     anchor,
-    events: visible.events,
-    participants: visible.participants,
+    events: args.events,
+    participants: args.participants,
     sceneCodexIds: args.sceneCodexIds,
     mentionedCodexIds: args.mentionedCodexIds,
   });
   const snapshot = deriveChronicleSnapshot(
     {
       anchor,
-      events: visible.events,
-      participants: visible.participants,
-      relations: visible.relations,
-      sceneEvents: visible.sceneEvents,
+      events: args.events,
+      participants: args.participants,
+      relations: args.relations,
+      sceneEvents: args.sceneEvents,
       calendar: args.calendar,
       characterIds,
       codexNames: args.codexNames,
