@@ -1368,6 +1368,62 @@ fn p9_body_relation_to_sceneless_annotation_deleted() {
     );
 }
 
+/// An annotation without a scene is not in the snapshot and a Body restore
+/// leaves it alone, so a snapshot relation that names one stays. One that has
+/// gained a scene since the snapshot is deleted by the restore like every
+/// annotation with a scene, so the relation to it must go (the live lookup of
+/// this parent is "the rows without a scene", DR-SRX-26).
+#[test]
+fn relation_to_an_annotation_that_gained_a_scene_is_left_out() {
+    let pre = format!(
+        "INSERT INTO post_effect_annotations (id, project_id, run_id, anchor_type, scene_id, category, content)
+           VALUES ('an-null', '{P}', NULL, 'codex_entry', NULL, 'review', 'no scene');
+         INSERT INTO post_effect_annotation_relations (id, project_id, annotation_a_id, annotation_b_id, relation_type)
+           VALUES ('rel1', '{P}', 'an1', 'an-null', 'theme_echo');"
+    );
+    let (db, r) = run(
+        "X-gained-scene",
+        &[RestoreScope::Body],
+        Setup {
+            pre_snapshot: &pre,
+            post_snapshot: "UPDATE post_effect_annotations SET scene_id = 's2' WHERE id = 'an-null';",
+            checks: vec![
+                (
+                    "an-null has a scene now",
+                    "SELECT COUNT(*) FROM post_effect_annotations WHERE id='an-null' AND scene_id='s2'"
+                        .into(),
+                    1,
+                ),
+                (
+                    "snapshot relation rel1 names an-null",
+                    aux_refs(
+                        "post_effect_annotation_relations",
+                        "annotation_b_id",
+                        "an-null",
+                    ),
+                    1,
+                ),
+            ],
+            change: true,
+        },
+    );
+    assert_eq!(
+        ids(&db, "SELECT id FROM post_effect_annotations"),
+        strs(&["an1"]),
+        "the annotation that gained a scene went with the Body restore"
+    );
+    assert_eq!(
+        ids(&db, "SELECT id FROM post_effect_annotation_relations"),
+        Vec::<String>::new(),
+        "the relation to it is left out"
+    );
+    assert_notices(
+        "X-gained-scene",
+        &r,
+        &[("ai_scene_proposals", 1), ("analysis_annotations", 1)],
+    );
+}
+
 /// A regression pin, not a new behaviour: a Snippet-only restore of a snippet
 /// whose scene is gone clears `snippets.scene_id` (the product builder does
 /// it, DR-SRX-5) and says nothing.

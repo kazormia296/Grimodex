@@ -524,7 +524,10 @@ fn the_kinds_are_fixed_ids_in_the_reported_order() {
     }
 }
 
-/// The trigger really does what DR-SRX-29 says, on the real schema.
+/// The trigger really does what DR-SRX-29 says, on the real schema: every
+/// snippet that names the deleted message loses its source (not only one), and
+/// a snippet that names another message keeps it. (The guard above only reads
+/// the trigger's SQL for the statement; this is what pins its meaning.)
 #[test]
 fn deleting_a_message_clears_a_snippets_source() {
     let db = crate::test_support::current_schema_memory().expect("current schema");
@@ -533,16 +536,27 @@ fn deleting_a_message_clears_a_snippets_source() {
             "INSERT INTO projects (id, title) VALUES ('p1', 'One');
              INSERT INTO chat_sessions (id, project_id, title) VALUES ('s1', 'p1', 'S');
              INSERT INTO chat_messages (id, session_id, role, content) VALUES ('m1', 's1', 'user', 'hi');
+             INSERT INTO chat_messages (id, session_id, role, content) VALUES ('m2', 's1', 'user', 'hello');
              INSERT INTO snippets (id, project_id, title, content, source_chat_message_id)
-               VALUES ('sn1', 'p1', 'T', '{}', 'm1');
+               VALUES ('sn1', 'p1', 'T', '{}', 'm1'),
+                      ('sn2', 'p1', 'T2', '{}', 'm1'),
+                      ('sn3', 'p1', 'T3', '{}', 'm2');
              DELETE FROM chat_messages WHERE id = 'm1';",
         )?;
-        let source: Option<String> = conn.query_row(
-            "SELECT source_chat_message_id FROM snippets WHERE id = 'sn1'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(source, None);
+        let source_of = |id: &str| -> rusqlite::Result<Option<String>> {
+            conn.query_row(
+                "SELECT source_chat_message_id FROM snippets WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+        };
+        assert_eq!(source_of("sn1")?, None);
+        assert_eq!(source_of("sn2")?, None, "every snippet of the message");
+        assert_eq!(
+            source_of("sn3")?.as_deref(),
+            Some("m2"),
+            "a snippet of another message keeps its source"
+        );
         Ok(())
     })
     .expect("trigger");
