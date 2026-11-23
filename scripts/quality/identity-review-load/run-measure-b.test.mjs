@@ -36,11 +36,14 @@ import {
   assertSafeStorageCondition,
   bindPageApi,
   assertSendAllowed,
+  APPLY_REHEARSAL_TARGET_ID,
   dryCellBody,
   dryCellStatus,
+  finalDryStatus,
   measureBBody,
   probeJudgePath,
   realCellStatus,
+  rehearseApply,
 } from "./run-measure-b.mjs";
 import {
   assertNoFakeAiEnv,
@@ -2333,4 +2336,158 @@ test("探針は乾いた実行の経路にだけ付く：mainDry は blockDispat
   assert.ok(!real.includes("blockDispatch"));
   assert.ok(!real.includes("probeJudge"));
   assert.ok(!real.includes("bProbeJudge"));
+});
+
+// ---- bApply のリハーサル（B2 が頼る反映の経路を、送信なしで確かめる） ------------------------------------------
+
+/** rehearseApply の fake：page の bPrepare・bApply。decisions は bApply に渡された決定を記録する。 */
+function fakeApplyPage({ candidates, visibleBefore, apply, throwOn = null }) {
+  const seen = { decisions: null, prepared: 0 };
+  globalThis.window = {
+    identityLoad: {
+      bPrepare: async (input) => {
+        seen.prepared++;
+        seen.rescan = input.rescan;
+        if (throwOn === "prepare") throw new TypeError("prepare failed");
+        return { visibleCount: visibleBefore, candidates };
+      },
+      bApply: async (input) => {
+        seen.decisions = input.decisions;
+        if (throwOn === "apply")
+          throw new Error("[artifact] APPLY_FAILED the apply path threw");
+        return apply;
+      },
+    },
+  };
+  return { page: { evaluate: async (fn, arg) => fn(arg) }, seen };
+}
+
+test("bApply のリハーサル：呼び名でない候補 2 件に、却下 1・別名 1（合成の Entry）を当て、件数と候補が減ることを確かめる", async () => {
+  const env = fakeApplyPage({
+    candidates: [
+      { keyHash: "h-rel", relationalTerm: true },
+      { keyHash: "h-b", relationalTerm: false },
+      { keyHash: "h-c", relationalTerm: false },
+      { keyHash: "h-d", relationalTerm: false },
+    ],
+    visibleBefore: 4,
+    apply: {
+      counts: { accept: 0, alias: 1, dismiss: 1, missing: 0 },
+      visibleCount: 2,
+    },
+  });
+  const out = await rehearseApply({ page: env.page });
+  assert.equal(out.ok, true);
+  assert.equal(out.reason, "ok");
+  assert.equal(out.drop, 2);
+  assert.deepEqual(out.counts, { accept: 0, alias: 1, dismiss: 1, missing: 0 });
+  // 呼び名は選ばず、先頭の 2 件に却下と別名（合成の Entry）を当てる。再走査はしない（page の状態をそのまま使う）。
+  assert.deepEqual(env.seen.decisions, [
+    { keyHash: "h-b", action: "dismiss" },
+    { keyHash: "h-c", action: "alias", targetId: APPLY_REHEARSAL_TARGET_ID },
+  ]);
+  assert.equal(env.seen.rescan, false);
+  assert.equal(APPLY_REHEARSAL_TARGET_ID, "synth-001");
+  // 記録は件数と真偽だけ（候補の hash を載せない）。
+  assert.ok(!JSON.stringify(out).includes("h-b"));
+  assert.doesNotThrow(() => assertOutputClean(out, []));
+});
+
+test("bApply のリハーサル：候補が足りない・件数が違う・進まない・例外のとき、ok:false と理由を返す（例外にしない）", async () => {
+  const few = fakeApplyPage({
+    candidates: [
+      { keyHash: "h-rel", relationalTerm: true },
+      { keyHash: "h-b", relationalTerm: false },
+    ],
+    visibleBefore: 2,
+    apply: { counts: {}, visibleCount: 2 },
+  });
+  const fewOut = await rehearseApply({ page: few.page });
+  assert.equal(fewOut.ok, false);
+  assert.equal(fewOut.reason, "too-few-candidates");
+  assert.equal(fewOut.usableCount, 1);
+  assert.equal(few.seen.decisions, null);
+  const base = {
+    candidates: [
+      { keyHash: "a", relationalTerm: false },
+      { keyHash: "b", relationalTerm: false },
+      { keyHash: "c", relationalTerm: false },
+    ],
+    visibleBefore: 3,
+  };
+  // 別名の対象が見つからないなどで missing が出た。
+  const missing = await rehearseApply({
+    page: fakeApplyPage({
+      ...base,
+      apply: {
+        counts: { accept: 0, alias: 0, dismiss: 1, missing: 1 },
+        visibleCount: 2,
+      },
+    }).page,
+  });
+  assert.deepEqual([missing.ok, missing.reason], [false, "counts-differ"]);
+  // 件数は合うが、候補が 1 件しか減らない（別名が効いていない。B2 なら進みが鈍い）。
+  const slow = await rehearseApply({
+    page: fakeApplyPage({
+      ...base,
+      apply: {
+        counts: { accept: 0, alias: 1, dismiss: 1, missing: 0 },
+        visibleCount: 2,
+      },
+    }).page,
+  });
+  assert.deepEqual([slow.ok, slow.reason, slow.drop], [false, "no-progress", 1]);
+  // 例外は、定型の要約だけを返す（自由文は載せない）。
+  const threw = await rehearseApply({
+    page: fakeApplyPage({ ...base, apply: {}, throwOn: "apply" }).page,
+  });
+  assert.equal(threw.ok, false);
+  assert.equal(threw.reason, "threw");
+  assert.equal(threw.diag.tag, "artifact");
+  assert.deepEqual(threw.diag.codes, ["APPLY_FAILED"]);
+  assert.ok(!JSON.stringify(threw).includes("the apply path threw"));
+  const prepThrew = await rehearseApply({
+    page: fakeApplyPage({ ...base, apply: {}, throwOn: "prepare" }).page,
+  });
+  assert.deepEqual([prepThrew.ok, prepThrew.reason], [false, "threw"]);
+});
+
+test("乾いた実行の最終の status：リハーサルのある cell は、リハーサルが ok でなければ不採用（無い cell は従来どおり）", () => {
+  assert.equal(finalDryStatus({ cellStatus: "ok", value: {} }), "ok");
+  assert.equal(finalDryStatus({ cellStatus: "ok", value: undefined }), "ok");
+  assert.equal(
+    finalDryStatus({ cellStatus: "ok", value: { applyRehearsal: { ok: true } } }),
+    "ok",
+  );
+  assert.equal(
+    finalDryStatus({ cellStatus: "ok", value: { applyRehearsal: { ok: false } } }),
+    "apply-rehearsal-failed",
+  );
+  // 先に不採用なら、その理由を保つ。
+  assert.equal(
+    finalDryStatus({
+      cellStatus: "ai-detected",
+      value: { applyRehearsal: { ok: false } },
+    }),
+    "ai-detected",
+  );
+});
+
+test("bApply のリハーサルは乾いた実行の経路だけ：dryCellBody が probeJudge のときだけ呼び、mainDry が最終の status に使う。本測定は呼ばない", () => {
+  const source = readFileSync(
+    new URL("./run-measure-b.mjs", import.meta.url),
+    "utf8",
+  );
+  const body = source.slice(
+    source.indexOf("export async function dryCellBody"),
+    source.indexOf("/** リハーサルで別名を足す先の Entry"),
+  );
+  assert.ok(body.includes("probeJudge ? await rehearseApply({ page })"));
+  const dry = source.slice(
+    source.indexOf("async function mainDry"),
+    source.indexOf("function readB2UpperByWork"),
+  );
+  assert.ok(dry.includes("finalDryStatus({ cellStatus: dryCellStatus(cell), value })"));
+  const real = source.slice(source.indexOf("async function mainReal"));
+  assert.ok(!real.includes("rehearseApply"));
 });

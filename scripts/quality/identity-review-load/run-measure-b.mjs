@@ -332,12 +332,88 @@ export async function dryCellBody({
   const judgePath = probeJudge
     ? await probeJudgePath({ page, app, workspaceDir })
     : null;
+  // B2 が使う bApply は、実機で一度も動かしていなかった（乾いた実行も試走も呼ばない）。送信なしで、合成の名簿に決定を当てて確かめる。
+  const applyRehearsal = probeJudge ? await rehearseApply({ page }) : null;
   return {
     levels: out,
     synthetic: { entityCount, aliasTotals, candidateCountN0: n0 },
     preconditions: { role, hidden },
     ...(judgePath ? { judgePath } : {}),
+    ...(applyRehearsal ? { applyRehearsal } : {}),
   };
+}
+
+/** リハーサルで別名を足す先の Entry（bSynthRoster が作る合成の名簿の 1 件目。乾いた実行の段で必ず在る）。 */
+export const APPLY_REHEARSAL_TARGET_ID = "synth-001";
+
+/**
+ * bApply のリハーサル（送信なし。B2 が頼る反映の経路）：呼び名でない候補を 2 件選び、1 件を却下・1 件を合成の Entry への別名として
+ * 当て、反映の件数と、候補が減ること（B2 の「進んだか」の判定と同じ）を確かめる。却下は設定の保存（saveDismissedCandidateKeys）、
+ * 別名は Codex の更新（updateCodexEntry）を通る。**失敗は例外にせず**、ok:false と定型の要約で返す（乾いた実行の他の結果を残す）。
+ * 返すのは件数と真偽だけ（候補の表記・hash は載せない）。
+ */
+export async function rehearseApply({ page }) {
+  try {
+    const before = await page.evaluate(() =>
+      window.identityLoad.bPrepare({ rescan: false }),
+    );
+    const usable = (before.candidates ?? []).filter(
+      (candidate) => candidate.relationalTerm !== true,
+    );
+    if (usable.length < 2)
+      return {
+        ok: false,
+        reason: "too-few-candidates",
+        visibleBefore: before.visibleCount,
+        usableCount: usable.length,
+      };
+    const decisions = [
+      { keyHash: usable[0].keyHash, action: "dismiss" },
+      {
+        keyHash: usable[1].keyHash,
+        action: "alias",
+        targetId: APPLY_REHEARSAL_TARGET_ID,
+      },
+    ];
+    const applied = await page.evaluate(
+      (input) => window.identityLoad.bApply({ decisions: input }),
+      decisions,
+    );
+    const counts = applied.counts ?? {};
+    const drop = before.visibleCount - applied.visibleCount;
+    const expected =
+      counts.dismiss === 1 &&
+      counts.alias === 1 &&
+      counts.accept === 0 &&
+      counts.missing === 0;
+    return {
+      ok: expected && drop >= 2,
+      reason: expected ? (drop >= 2 ? "ok" : "no-progress") : "counts-differ",
+      requested: decisions.length,
+      counts: {
+        accept: counts.accept ?? null,
+        alias: counts.alias ?? null,
+        dismiss: counts.dismiss ?? null,
+        missing: counts.missing ?? null,
+      },
+      visibleBefore: before.visibleCount,
+      visibleAfter: applied.visibleCount,
+      drop,
+    };
+  } catch (error) {
+    return { ok: false, reason: "threw", diag: safeErrorSummary(error) };
+  }
+}
+
+/**
+ * 乾いた実行の cell の最終の status：cell の採否（dryCellStatus）が ok でも、bApply のリハーサルが通らなければ不採用にする
+ * （リハーサルがあった cell だけ。無い cell は従来どおり）。
+ */
+export function finalDryStatus({ cellStatus, value }) {
+  if (cellStatus !== "ok") return cellStatus;
+  if (value?.applyRehearsal && value.applyRehearsal.ok !== true)
+    return "apply-rehearsal-failed";
+  return "ok";
 }
 
 /**
@@ -780,7 +856,10 @@ async function mainDry(options) {
             synth,
           }),
       });
-      const status = cell.status === "failed" ? "failed" : dryCellStatus(cell);
+      const status =
+        cell.status === "failed"
+          ? "failed"
+          : finalDryStatus({ cellStatus: dryCellStatus(cell), value });
       cell.status = status;
       const result = {
         schemaVersion: "identity-load-measure-b-dry/1",
