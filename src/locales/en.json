@@ -2678,6 +2678,9 @@
       "noCandidates": "No affected scenes were found",
       "sourceChanged": "Settings or scene text changed before launch. Please try again",
       "done": "Impact review complete",
+      "pending_one": "{{count}} change since the last check",
+      "pending_other": "{{count}} changes since the last check",
+      "pendingTab": "Changes not yet checked for impact",
       "error": "Impact check failed"
     },
     "phaseIndicator": {

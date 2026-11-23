@@ -13,6 +13,8 @@ import {
   postEffectErrorToast,
   postEffectPartialToast,
 } from "@/features/post-effect/errorToast";
+import { useImpactPendingEpochStore } from "@/features/impact-review/impactPendingEpoch";
+import { useImpactPending } from "./useImpactPending";
 
 interface ImpactCheckButtonProps {
   entryId: string;
@@ -35,6 +37,9 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
   const storeRunning = useIsPostEffectRunning("impact_review", "project");
   const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
+  // 前回のチェック以降の変更の件数（ローカルの読みだけ・AI 0 回。DR-INN-1）。
+  // 整合性タブを開く（mount）たびに最新を読む。
+  const pending = useImpactPending(entryId);
 
   // analysis がポリシーで OFF のときはボタンを描画しない (整合性チェックと同じ方針)。
   if (analysisGate.presentation === "hidden") return null;
@@ -82,30 +87,49 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
       );
     } finally {
       setLaunching(false);
+      // no-candidates／no-change は run を作らずに baseline を進めるので、
+      // 「前回のチェック以降の変更」の再計算を明示の合図で促す（メモリ内のみ）。
+      useImpactPendingEpochStore.getState().bump();
     }
   };
 
   const disabled = running || analysisGate.presentation !== "enabled";
 
   return (
-    <button
-      type="button"
-      data-testid="codex-impact-check"
-      disabled={disabled}
-      title={analysisGate.tooltip ?? t("codex.impactCheck.tooltip")}
-      onClick={() => void run()}
-      className={cn(
-        "flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1.5 text-xs",
-        "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-        "disabled:cursor-not-allowed disabled:opacity-50",
+    <div className="space-y-1">
+      {pending.state === "pending" && (
+        <p
+          data-testid="codex-impact-check-pending"
+          className="flex items-start gap-1.5 px-1 text-xs text-muted-foreground"
+        >
+          <span
+            aria-hidden="true"
+            className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+          />
+          <span className="min-w-0 break-words">
+            {t("codex.impactCheck.pending", { count: pending.changeCount })}
+          </span>
+        </p>
       )}
-    >
-      {running ? (
-        <Loader2 size={13} className="animate-spin" />
-      ) : (
-        <ShieldAlert size={13} />
-      )}
-      <span>{t("codex.impactCheck.button")}</span>
-    </button>
+      <button
+        type="button"
+        data-testid="codex-impact-check"
+        disabled={disabled}
+        title={analysisGate.tooltip ?? t("codex.impactCheck.tooltip")}
+        onClick={() => void run()}
+        className={cn(
+          "flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2 py-1.5 text-xs",
+          "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        {running ? (
+          <Loader2 size={13} className="animate-spin" />
+        ) : (
+          <ShieldAlert size={13} />
+        )}
+        <span>{t("codex.impactCheck.button")}</span>
+      </button>
+    </div>
   );
 }
