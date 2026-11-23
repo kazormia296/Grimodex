@@ -259,6 +259,8 @@ requirements:
       - src/features/chat/agent/toolExecutors.searchEventsCharacterization.test.ts
       - src/features/chat/agent/chronicleSearchPort.test.ts
       - src/features/chat/agent/toolExecutors.codexHidden.test.ts
+      - src/features/chat/agent/toolExecutors.codexCharacterization.test.ts
+      - src/features/chat/agent/toolExecutors.codexCalls.test.ts
       - src/features/codex/context/codexHiddenFromAi.test.ts
       - src/features/codex/context/codexHiddenFromAi.characterization.test.ts
       - src/features/codex/context/codexHiddenFromAi.coreParity.test.ts
@@ -269,6 +271,7 @@ requirements:
       - electron/shared/readDomain/features/foreshadow/readRows.test.ts
       - electron/shared/readDomain/core/chronicleTools.test.ts
       - electron/shared/readDomain/core/chronicleSearchTools.test.ts
+      - electron/shared/readDomain/core/codexTools.test.ts
       - electron/shared/readDomain/core/chronicleReaders.test.ts
       - electron/shared/readDomain/core/chronicleMainContext.test.ts
       - electron/shared/readDomain/features/chronicle/readRows.test.ts
@@ -313,6 +316,8 @@ requirements:
       - electron/shared/readDomain/core/chronicleTools.ts
       - electron/shared/readDomain/core/chronicleSearchTools.ts
       - electron/shared/readDomain/core/chronicleReadExecutors.ts
+      - electron/shared/readDomain/core/codexTools.ts
+      - electron/shared/readDomain/core/codexReadExecutors.ts
       - electron/shared/readDomain/core/sharedLoader.ts
       - electron/shared/readDomain/features/chronicle/readRows.ts
       - electron/shared/readDomain/core/sceneBody.ts
@@ -1027,6 +1032,8 @@ requirements:
       - electron/shared/readDomain/core/chronicleTools.ts
       - electron/shared/readDomain/core/chronicleSearchTools.ts
       - electron/shared/readDomain/core/chronicleReadExecutors.ts
+      - electron/shared/readDomain/core/codexTools.ts
+      - electron/shared/readDomain/core/codexReadExecutors.ts
       - electron/shared/readDomain/core/sharedLoader.ts
       - electron/shared/readDomain/features/chronicle/readRows.ts
       - electron/shared/readDomain/core/sceneBody.ts

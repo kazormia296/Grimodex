@@ -4,7 +4,10 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import type { CoreReadDbClient } from "../../mastraRead/ports.js";
-import { createMainCodexVisibilityPorts } from "./codexMainContext.js";
+import {
+  createMainCodexReadContext,
+  createMainCodexVisibilityPorts,
+} from "./codexMainContext.js";
 import { resolveCodexAiVisibility } from "./codexVisibility.js";
 import { buildReadInputs } from "./readInputs.js";
 import { createCoreReadDb } from "./readDb.js";
@@ -151,5 +154,80 @@ describe("createMainCodexVisibilityPorts", () => {
     ]);
     sqlite.exec("delete from codex_entry_phases");
     expect(await ports.codex.listPhases(["e1"])).toEqual([]);
+  });
+});
+
+describe("createMainCodexReadContext (PR-8b)", () => {
+  const native = {
+    fts: async () => [],
+    codexSemantic: async () => [],
+  };
+
+  it("takes the project, the current scene and the phase state from one turn's inputs; a scene the reading order lacks is null; it has no live store's epoch", () => {
+    const { client } = dbOver();
+    const db = createCoreReadDb(client);
+    const inputs = buildReadInputs({
+      projectId: "p-a",
+      treeRows: rowsOf(["s1", "s2"]),
+      project: { phaseResolutionMode: "reading" },
+      currentSceneId: "s2",
+    });
+    const ctx = createMainCodexReadContext({
+      db,
+      inputs,
+      countTokens: (text) => text.length,
+      native,
+    });
+    expect(ctx.getTreeState()).toEqual({
+      projectId: "p-a",
+      nodes: [],
+      activeSceneId: "s2",
+    });
+    expect(ctx.getTreeState()).toBe(ctx.getTreeState());
+    expect(ctx.getPhaseState().projectId).toBe("p-a");
+    expect(ctx.getProjectEpoch).toBeUndefined();
+    expect(ctx.native).toBe(native);
+    expect(ctx.countTokens("abc")).toBe(3);
+    const missing = createMainCodexReadContext({
+      db,
+      inputs: buildReadInputs({
+        projectId: "p-a",
+        treeRows: rowsOf(["s1"]),
+        project: { phaseResolutionMode: "reading" },
+        currentSceneId: "s-archived",
+      }),
+      countTokens: (text) => text.length,
+      native,
+    });
+    expect(missing.getTreeState().activeSceneId).toBeNull();
+  });
+
+  it("two turns do not see each other (module-level state is none)", () => {
+    const { client } = dbOver();
+    const db = createCoreReadDb(client);
+    const make = (projectId: string, scene: string) =>
+      createMainCodexReadContext({
+        db,
+        inputs: buildReadInputs({
+          projectId,
+          treeRows: rowsOf(["s1", "s2"]),
+          project: { phaseResolutionMode: "reading" },
+          currentSceneId: scene,
+        }),
+        countTokens: (text) => text.length,
+        native,
+      });
+    const a = make("p-a", "s1");
+    const b = make("p-b", "s2");
+    expect(a.getTreeState()).toMatchObject({
+      projectId: "p-a",
+      activeSceneId: "s1",
+    });
+    expect(b.getTreeState()).toMatchObject({
+      projectId: "p-b",
+      activeSceneId: "s2",
+    });
+    expect(a.getPhaseState().projectId).toBe("p-a");
+    expect(b.getPhaseState().projectId).toBe("p-b");
   });
 });

@@ -48,9 +48,11 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
+import { eq } from "drizzle-orm";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import {
+  LEGACY_READ_CANNED_CODEX_HITS,
   LEGACY_READ_CANNED_EVENT_HITS,
   LEGACY_READ_PROJECTS,
   LEGACY_READ_SEED,
@@ -70,7 +72,14 @@ import {
   createMainChronicleReadContext,
   createMainChronicleSearchContext,
 } from "../shared/readDomain/core/chronicleMainContext.js";
-import { createMainCodexVisibilityPorts } from "../shared/readDomain/core/codexMainContext.js";
+import {
+  createMainCodexReadContext,
+  createMainCodexVisibilityPorts,
+} from "../shared/readDomain/core/codexMainContext.js";
+import {
+  CODEX_READ_TOOL_NAMES,
+  createCodexReadExecutors,
+} from "../shared/readDomain/core/codexReadExecutors.js";
 import { readCodexPhases } from "../shared/readDomain/core/codexReaders.js";
 import {
   dropHiddenCodexRows,
@@ -90,11 +99,13 @@ import {
   readReadInputs,
 } from "../shared/readDomain/core/readInputsReader.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
+import { fuseCodexHybrid } from "../shared/readDomain/features/chat/agent/codexHybridSearch.js";
 import {
   CORE_READ_TOOL_NAMES,
   createReadExecutors,
 } from "../shared/readDomain/core/readExecutors.js";
 import { createDbSceneBodyReader } from "../shared/readDomain/core/sceneBody.js";
+import { codexEntries } from "../shared/readDomain/db/schema.js";
 import { createMainReadDb } from "./mastraRead/db.js";
 import { createMainTypedReads } from "./mastraRead/typed.js";
 import type { MainIssuedCallerIdentity } from "./profileEgress.js";
@@ -144,6 +155,20 @@ const GOLDEN_DIR = path.join(
   "agent",
   "__fixtures__",
   "legacyReadGolden",
+);
+/**
+ * The calls the renderer's four Codex tools send for each golden case (PR-8b; made from the unchanged
+ * renderer by `toolExecutors.codexCalls.test.ts`). `db_execute` entries are (sql, params, method).
+ */
+const CODEX_CALLS_FIXTURE = path.join(
+  ROOT,
+  "src",
+  "features",
+  "chat",
+  "agent",
+  "__fixtures__",
+  "codexReadCalls",
+  "codex-read-calls.golden.txt",
 );
 /** The seed's archived scenes: Native's `fts` returns them, the tool drops them. */
 const ARCHIVED_SCENE_IDS: ReadonlySet<string> = new Set(
@@ -831,6 +856,9 @@ describe("main's typed reads against the real Native addon: the shape the later 
         expect(Array.isArray(outcome.value), method).toBe(true);
       } else {
         expect(outcome.error, method).not.toMatch(/WORKSPACE_CHANGED/);
+        expect(outcome.error, method).not.toMatch(
+          /(?:codex|events)_semantic_search: /,
+        );
         expect(outcome.error, method).toMatch(
           /embedding model .* is not installed|semantic/i,
         );
@@ -1187,6 +1215,9 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
         expect(own.has(hit.eventId), hit.eventId).toBe(true);
     } else {
       expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED/);
+      // The core's own narrowing errors ("events_semantic_search: the result is not an array", ...) also
+      // contain "semantic": a wire that does not fit the narrowing must not pass as "no model here".
+      expect(outcome.error).not.toMatch(/events_semantic_search: /);
       expect(outcome.error).toMatch(
         /embedding model .* is not installed|semantic/i,
       );
@@ -1233,6 +1264,7 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
       expect(outcome.value.summary).toBe("0 events found");
     } else {
       expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED|unsigned|integer/i);
+      expect(outcome.error).not.toMatch(/events_semantic_search: /);
       expect(outcome.error).toMatch(
         /embedding model .* is not installed|semantic/i,
       );
@@ -1397,5 +1429,463 @@ describe("the Codex visibility decision of the read core (PR-8a) on Main's adapt
       sceneId: "n-s1",
     });
     expect([...atS1.hidden]).toEqual(["c-mage"]);
+  });
+});
+
+/**
+ * The comparison normalization of "the statements sent" (PR-8b): in a recorded or a sent `db_execute` call, the run of
+ * params that fills an `in (?, ?, ...)` list is sorted (compared as a set). Everything else is compared as it is:
+ * `cmd`, `sql`, `method`, the number and the order of the statements, and every param outside those runs (the project,
+ * the LIKE patterns, the limit) in order.
+ *
+ * Why: the recorded calls come from sql.js, and a select with no ORDER BY (the LIKE arm of `search_codex`,
+ * `list_codex_by_type`, ...) returns its rows in an order that real SQLite does not have to share. The ids of those
+ * rows go into the next statement's `in (...)` list in that order, and the order of an `in` list means nothing to SQL.
+ * It is the same for the core and the renderer (both receive the real SQLite order), so it is not a difference between
+ * them. The result (content, summary, tokensUsed, the JSON bytes) is still compared to the golden as it is.
+ */
+function normalizeInListParams(call: Record<string, unknown>) {
+  const sql = String(call.sql);
+  if (!Array.isArray(call.params)) return call;
+  const params = [...call.params];
+  for (const match of sql.matchAll(/\bin \(([?, ]*)\)/giu)) {
+    const start = (sql.slice(0, match.index).match(/\?/gu) ?? []).length;
+    const length = (match[1]!.match(/\?/gu) ?? []).length;
+    const sorted = params
+      .slice(start, start + length)
+      .sort((a, b) =>
+        String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0,
+      );
+    params.splice(start, length, ...sorted);
+  }
+  return { ...call, params };
+}
+
+describe("the four Codex tools of the read core (PR-8b) on Main's adapter over the real Native addon", () => {
+  const MAIN_PROJECT = LEGACY_READ_PROJECTS.main;
+
+  /**
+   * The golden's `search_codex` cases by what answers the dense read: the golden's own canned hits, a
+   * rejection (the legacy port's catch is the renderer's, so the case is not compared: the core's answer is
+   * the tool's failure), or nothing (browser-mock's `[]`). The real dense read depends on the machine and has
+   * its own test below.
+   */
+  type Dense = "canned" | "rejects" | "empty";
+  const denseOf = (caseName: string): Dense =>
+    caseName.startsWith("canned dense: dense が reject")
+      ? "rejects"
+      : caseName.startsWith("canned dense:")
+        ? "canned"
+        : "empty";
+
+  interface Turn {
+    readonly executors: ReturnType<typeof createCodexReadExecutors>;
+    readonly ftsCalls: Array<Parameters<CoreNativeReads["fts"]>[0]>;
+    readonly denseCalls: Array<Parameters<CoreNativeReads["codexSemantic"]>[0]>;
+    readonly realReads: CoreNativeReads;
+  }
+
+  /**
+   * One turn: the inputs are read from the real workspace when the turn starts (`readReadInputs`: the reading
+   * order, the mode, the current scene), `fts` is the real Native's behind a spy, and the dense read is the
+   * caller's.
+   */
+  async function codexTurn(
+    ws: Workspace,
+    world: GoldenCase["world"],
+    dense: CoreNativeReads["codexSemantic"],
+  ): Promise<Turn> {
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const inputs =
+      world.projectId === ""
+        ? buildReadInputs({
+            projectId: "",
+            treeRows: [],
+            project: null,
+            currentSceneId: null,
+          })
+        : await readReadInputs(db, {
+            projectId: world.projectId,
+            currentSceneId: world.activeSceneId ?? null,
+          });
+    const realReads = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const ftsCalls: Turn["ftsCalls"] = [];
+    const denseCalls: Turn["denseCalls"] = [];
+    ws.dbExecute.mockClear();
+    return {
+      executors: createCodexReadExecutors(
+        createMainCodexReadContext({
+          db,
+          inputs,
+          countTokens: (text) => (text ? text.length : 0),
+          native: {
+            fts: async (args) => {
+              ftsCalls.push(args);
+              return realReads.fts(args);
+            },
+            codexSemantic: async (args) => {
+              denseCalls.push(args);
+              return dense(args);
+            },
+          },
+        }),
+      ),
+      ftsCalls,
+      denseCalls,
+      realReads,
+    };
+  }
+
+  const answers =
+    (kind: Dense): CoreNativeReads["codexSemantic"] =>
+    async () => {
+      if (kind === "canned") return LEGACY_READ_CANNED_CODEX_HITS;
+      if (kind === "rejects") throw new Error("dense unavailable");
+      return [];
+    };
+
+  const byId = (a: { id: string }, b: { id: string }) =>
+    a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+
+  it("is the fourth table of names, disjoint from the other three (twenty tools), and each of the four has a golden and a recorded call sequence", () => {
+    expect([...CODEX_READ_TOOL_NAMES].sort()).toEqual(
+      [
+        "find_related_entries",
+        "list_codex_by_type",
+        "search_codex",
+        "search_codex_by_tags",
+      ].sort(),
+    );
+    const all = [
+      ...CORE_READ_TOOL_NAMES,
+      ...CHRONICLE_READ_TOOL_NAMES,
+      ...CHRONICLE_SEARCH_TOOL_NAMES,
+      ...CODEX_READ_TOOL_NAMES,
+    ];
+    expect(all).toHaveLength(20);
+    expect(new Set(all).size).toBe(20);
+    const calls = JSON.parse(
+      readFileSync(CODEX_CALLS_FIXTURE, "utf8"),
+    ) as Record<string, Record<string, unknown[]>>;
+    let cases = 0;
+    for (const tool of CODEX_READ_TOOL_NAMES) {
+      expect(Object.keys(calls[tool] ?? {}), tool).toEqual(
+        goldenOf(tool).map((c) => c.case),
+      );
+      cases += goldenOf(tool).length;
+    }
+    expect(cases).toBe(46);
+  });
+
+  it("every golden case of the four tools is the same on the real addon: to the byte where no `fts` is read, and for the full-text arm in the order of the real `fts` (the other fields and the rows by id are the golden's)", async () => {
+    const ws = await startSeededWorkspace();
+    const recorded = JSON.parse(
+      readFileSync(CODEX_CALLS_FIXTURE, "utf8"),
+    ) as Record<string, Record<string, Array<Record<string, unknown>>>>;
+    const compared: Record<string, number> = {};
+    const ftsCases: Record<string, number> = {};
+    for (const tool of CODEX_READ_TOOL_NAMES) {
+      const cases = goldenOf(tool);
+      let done = 0;
+      for (const golden of cases) {
+        const label = `${tool} / ${golden.case}`;
+        const dense = tool === "search_codex" ? denseOf(golden.case) : "empty";
+        const turn = await codexTurn(ws, golden.world, answers(dense));
+        if (dense === "rejects") {
+          // The golden's result is the renderer's port catching the failure and answering from the sparse
+          // arm. The core and Main do not catch it: the tool fails, and is never a success.
+          await expect(
+            turn.executors[tool](golden.params),
+            label,
+          ).rejects.toThrow(/dense unavailable/u);
+          expect(turn.denseCalls, label).toHaveLength(1);
+          continue;
+        }
+        let actual: Awaited<ReturnType<(typeof turn.executors)[typeof tool]>>;
+        try {
+          actual = await turn.executors[tool](golden.params);
+        } catch (error) {
+          // An empty project: the core stops before it reads anything.
+          expect(error, label).toBeInstanceOf(CoreProjectRequiredError);
+          expect(golden.world.projectId, label).toBe("");
+          expect(golden.result.summary, label).toBe("No active project");
+          expect(ws.dbExecute, label).not.toHaveBeenCalled();
+          expect(turn.ftsCalls, label).toEqual([]);
+          expect(turn.denseCalls, label).toEqual([]);
+          done += 1;
+          continue;
+        }
+        if (turn.ftsCalls.length === 0) {
+          // Not the full-text arm (a short word's LIKE-OR, an empty query, the other three tools): the golden
+          // is compared to the byte, and the statements sent are the renderer's, in the same order.
+          if (dense === "canned") {
+            // The dense hits are fused with the sparse rows by rank, so the golden's ORDER (sql.js's LIKE scan
+            // order for the sparse arm) is not the real database's. The order is required to be what the fusion
+            // gives for the sparse rows the real database returned (read from the first statement's answer, not
+            // written down), with the golden's visible ids kept; everything else is still the golden's to the
+            // byte: name, summary, tokensUsed, and each row (the rows sorted by id, as JSON).
+            const sparseWire = JSON.parse(
+              (await ws.dbExecute.mock.results[0]!.value) as string,
+            ) as { rows: Array<Record<string, unknown>> };
+            const fused = fuseCodexHybrid(
+              LEGACY_READ_CANNED_CODEX_HITS.map((hit) => ({ ...hit })),
+              sparseWire.rows.map((row) => ({
+                id: String(row["id"]),
+                name: String(row["name"]),
+                type: String(row["type"]),
+                summary: String(row["summary"] ?? ""),
+              })),
+              20,
+            );
+            const goldenRows = golden.result.content as Array<{ id: string }>;
+            const visible = new Set(goldenRows.map((row) => row.id));
+            const rows = actual.content as Array<{ id: string }>;
+            expect(
+              rows.map((row) => row.id),
+              `${label}: order of the fusion over the real sparse rows`,
+            ).toEqual(
+              fused.map((row) => row.id).filter((id) => visible.has(id)),
+            );
+            expect(actual.name, label).toBe(golden.result.name);
+            expect(actual.summary, label).toBe(golden.result.summary);
+            expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+            expect(JSON.stringify([...rows].sort(byId)), label).toBe(
+              JSON.stringify([...goldenRows].sort(byId)),
+            );
+          } else {
+            // A select with no ORDER BY (the LIKE arm of `search_codex`, `list_codex_by_type`,
+            // `search_codex_by_tags`, `find_related_entries`) returns its rows in an order that real SQLite does
+            // not share with sql.js (the golden's). The ORDER is required to be the order the real database
+            // returned for the tool's own select (read from that statement's answer, not written down), with
+            // the golden's visible ids kept; everything else is still the golden's to the byte: name, summary,
+            // tokensUsed, and each row (the rows sorted by id, as JSON).
+            const toolSelect = ws.dbExecute.mock.calls.findIndex((call) =>
+              tool === "find_related_entries"
+                ? /\blike\b/iu.test(String(call[0]))
+                : /from "codex_entries"/iu.test(String(call[0])),
+            );
+            const goldenRows = golden.result.content as Array<{ id: string }>;
+            const visible = new Set(goldenRows.map((row) => row.id));
+            const realOrder =
+              toolSelect < 0
+                ? []
+                : (
+                    JSON.parse(
+                      (await ws.dbExecute.mock.results[toolSelect]!
+                        .value) as string,
+                    ) as { rows: Array<Record<string, unknown>> }
+                  ).rows
+                    .map((row) => String(row["id"]))
+                    .filter((id) => visible.has(id));
+            const rows = actual.content as Array<{ id: string }>;
+            expect(
+              rows.map((row) => row.id),
+              `${label}: order of the real database's rows`,
+            ).toEqual(realOrder);
+            expect(actual.name, label).toBe(golden.result.name);
+            expect(actual.summary, label).toBe(golden.result.summary);
+            expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+            expect(JSON.stringify([...rows].sort(byId)), label).toBe(
+              JSON.stringify([...goldenRows].sort(byId)),
+            );
+          }
+          const sentDb = ws.dbExecute.mock.calls.map((call) => ({
+            cmd: "db_execute",
+            sql: call[0],
+            params: call[1],
+            method: call[2],
+          }));
+          // The same normalization on both sides (see `normalizeInListParams`).
+          expect(
+            sentDb.map(normalizeInListParams),
+            `${label}: the statements sent`,
+          ).toEqual(
+            (recorded[tool]![golden.case] ?? [])
+              .filter((call) => call["cmd"] === "db_execute")
+              .map(normalizeInListParams),
+          );
+        } else {
+          // The full-text arm. The golden's order is browser-mock's LIKE scan, which is not an order real
+          // FTS5 gives, and the renderer's own product path takes the order of Native's `fts` too. So the
+          // ORDER is required to be the order the real `fts` returned (hidden entries are dropped after the
+          // cut, so it is the real order with the golden's visible ids kept), computed from a direct call of
+          // the real `fts` with the same arguments (not written down); everything else is still the
+          // golden's, to the byte: the summary, tokensUsed, and each row (the rows sorted by id).
+          expect(tool, label).toBe("search_codex");
+          expect(turn.ftsCalls, label).toHaveLength(1);
+          const call = turn.ftsCalls[0]!;
+          const params = golden.params as { query?: unknown };
+          expect(call, `${label}: fts arguments`).toEqual({
+            projectId: golden.world.projectId,
+            query: String(params.query ?? "").trim(),
+            scope: "codex",
+            limit: 20,
+          });
+          const direct = (await turn.realReads.fts(call)) as Array<{
+            sourceType: string;
+            id: string;
+          }>;
+          const goldenRows = golden.result.content as Array<{ id: string }>;
+          const visible = new Set(goldenRows.map((row) => row.id));
+          const expectedIds = direct
+            .filter((hit) => hit.sourceType === "codex")
+            .map((hit) => hit.id)
+            .filter((id) => visible.has(id));
+          const rows = actual.content as Array<{ id: string }>;
+          expect(
+            rows.map((row) => row.id),
+            `${label}: order of the real fts`,
+          ).toEqual(expectedIds);
+          expect(actual.name, label).toBe(golden.result.name);
+          expect(actual.summary, label).toBe(golden.result.summary);
+          expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+          expect(JSON.stringify([...rows].sort(byId)), label).toBe(
+            JSON.stringify([...goldenRows].sort(byId)),
+          );
+          ftsCases[tool] = (ftsCases[tool] ?? 0) + 1;
+        }
+        // What went to Native is a SELECT by `all` or `values`, with the identity of the turn as the fourth
+        // argument and no fifth.
+        for (const call of ws.dbExecute.mock.calls) {
+          expect(String(call[0]), label).toMatch(/^\s*select\b/iu);
+          expect(["all", "values"], label).toContain(call[2]);
+          expect(call, label).toHaveLength(4);
+          expect(call[3], label).toBe(JSON.stringify(ws.identity));
+        }
+        done += 1;
+      }
+      compared[tool] = done;
+      expect(done, tool).toBeGreaterThan(0);
+    }
+    expect(Object.keys(compared).sort()).toEqual(
+      [...CODEX_READ_TOOL_NAMES].sort(),
+    );
+    // The full-text comparison is not vacuous: the golden's `search_codex` cases that reach `fts` (老魔術師,
+    // アリア trimmed, 存在しない語, 他作品 in the main project, アリア in the other project).
+    expect(ftsCases).toEqual({ search_codex: 5 });
+  });
+
+  it("a dense hit that is another project's entry or a hidden one is dropped by the decision, whatever the index answered", async () => {
+    const ws = await startSeededWorkspace();
+    const turn = await codexTurn(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s1" },
+      async () => [
+        {
+          entryId: "x-c-aria",
+          entryName: "他作品のアリア",
+          entryType: "character",
+          summary: "他作品の少女",
+          score: 0.99,
+        },
+        {
+          entryId: "c-secret",
+          entryName: "黒幕",
+          entryType: "character",
+          summary: "正体は秘密",
+          score: 0.98,
+        },
+        {
+          entryId: "c-aria",
+          entryName: "アリア",
+          entryType: "character",
+          summary: "老魔術師を訪ねる旅の少女",
+          score: 0.5,
+        },
+      ],
+    );
+    const result = await turn.executors.search_codex({ query: "魔法" });
+    const ids = (result.content as Array<{ id: string }>).map((row) => row.id);
+    expect(ids).not.toContain("x-c-aria");
+    expect(ids).not.toContain("c-secret");
+    expect(ids).toContain("c-aria");
+  });
+
+  it("the real dense read (what it answers depends on the machine): when it answers, every hit is an entry of the asked project; when it does not, the tool fails and is never a sparse-only success", async () => {
+    const ws = await startSeededWorkspace();
+    const real = createMainTypedReads({
+      backend: ws.backend,
+      identity: ws.identity,
+    });
+    const turn = await codexTurn(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s3" },
+      (args) => real.codexSemantic(args),
+    );
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: ws.readBackend, identity: ws.identity }),
+    );
+    const own = new Set(
+      (
+        await db
+          .select({ id: codexEntries.id })
+          .from(codexEntries)
+          .where(eq(codexEntries.projectId, MAIN_PROJECT))
+      ).map((row) => row.id),
+    );
+    expect(own.size).toBeGreaterThan(0);
+    const outcome = await turn.executors.search_codex({ query: "魔法" }).then(
+      (value) => ({ answered: true as const, value }),
+      (error: unknown) => ({ answered: false as const, error: String(error) }),
+    );
+    if (outcome.answered) {
+      for (const row of outcome.value.content as Array<{ id: string }>) {
+        expect(own.has(row.id), row.id).toBe(true);
+      }
+    } else {
+      expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED/);
+      // The core's own narrowing errors ("codex_semantic_search: the result is not an array", ...) also
+      // contain "semantic": a wire that does not fit the narrowing must not pass as "no model here".
+      expect(outcome.error).not.toMatch(/codex_semantic_search: /);
+      expect(outcome.error).toMatch(
+        /embedding model .* is not installed|semantic/i,
+      );
+    }
+  });
+
+  it("a workspace that is not the active one is refused and reaches the tool as its failure", async () => {
+    const ws = await startSeededWorkspace();
+    const wrong = createMainTypedReads({
+      backend: ws.backend,
+      identity: { ...ws.identity, workspaceId: ws.otherDirectory },
+    });
+    const turn = await codexTurn(
+      ws,
+      { projectId: MAIN_PROJECT, activeSceneId: "n-s3" },
+      (args) => wrong.codexSemantic(args),
+    );
+    await expect(
+      turn.executors.search_codex({ query: "魔法" }),
+    ).rejects.toThrow(/SEMANTIC_INDEX_WORKSPACE_CHANGED/);
+  });
+
+  it("the phase decision is the real database's: list_codex_by_type releases c-released only from n-s3 (not at n-s1 or with no scene), and the hidden c-secret never appears", async () => {
+    const ws = await startSeededWorkspace();
+    const idsAt = async (scene: string | null) => {
+      const turn = await codexTurn(
+        ws,
+        {
+          projectId: MAIN_PROJECT,
+          ...(scene === null ? {} : { activeSceneId: scene }),
+        },
+        answers("empty"),
+      );
+      const result = await turn.executors.list_codex_by_type({
+        type: "character",
+      });
+      return (result.content as Array<{ id: string }>).map((row) => row.id);
+    };
+    const atS1 = await idsAt("n-s1");
+    const atS3 = await idsAt("n-s3");
+    const none = await idsAt(null);
+    expect(atS1).not.toContain("c-released");
+    expect(atS3).toContain("c-released");
+    expect(none).not.toContain("c-released");
+    for (const ids of [atS1, atS3, none]) expect(ids).not.toContain("c-secret");
   });
 });

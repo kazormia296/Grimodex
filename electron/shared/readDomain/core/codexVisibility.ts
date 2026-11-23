@@ -27,6 +27,10 @@ import { readCodexVisibilityEntries } from "./codexReaders.js";
  * author turned hidden in the middle of the turn (Q5 (f); DR-MP4-39).
  *
  * A failure of a port is not caught: the tool fails, and nothing reaches the AI.
+ *
+ * A live store that can be reset in the middle (the renderer's) passes `getProjectEpoch`: the epoch is
+ * noted before the first read and compared after the phase state is read, and a difference hides every id
+ * (DR-MP4-41 (b), carried by PR-8b's four tools). Main passes none.
  */
 
 /** Ids per statement (the SQLite variable limit; the same as `sceneBody.ts`). */
@@ -72,6 +76,9 @@ export async function resolveCodexAiVisibility(
   const hidden = new Set<string>();
   const texts = new Map<string, CodexTextForAi>();
   if (ids.length === 0) return { hidden, texts };
+  // The epoch is noted here, before the first read, as the renderer's `resolveCodexForAi` does
+  // (DR-MP4-41 (b)); only a live store has one (`getProjectEpoch`, PR-8b).
+  const startEpoch = deps.getProjectEpoch?.();
 
   const found = new Set<string>();
   const entries: Array<{
@@ -105,6 +112,11 @@ export async function resolveCodexAiVisibility(
     phases.push(...(await deps.codex.listPhases(chunk)));
   }
   const state = deps.getPhaseState();
+  if (deps.getProjectEpoch?.() !== startEpoch) {
+    // A project switch in the middle of the reads: the index is empty and the mode is the previous
+    // project's, so every id asked about is hidden (the same answer as the renderer's).
+    return { hidden: new Set(ids), texts: new Map() };
+  }
   if (state.projectId !== undefined && state.projectId !== request.projectId) {
     throw new Error(
       "read core: the phase state belongs to a different project than the one asked about",

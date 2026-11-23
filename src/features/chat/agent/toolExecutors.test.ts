@@ -80,6 +80,14 @@ vi.mock("@/features/codex/context/codexHiddenFromAi", () => ({
   }),
 }));
 
+// 4 本の Codex tool（search_codex など）は MP-4b PR-8b で共有 core の判定を通る。core は Phase を
+// renderer の `listPhasesByEntryIds` から読む（loader port）ので、ここでは Phase 無しにする。
+// hidden の判定そのものは toolExecutors.codexHidden.test.ts が検証する。
+vi.mock("@/features/codex/phaseApi", () => ({
+  listPhasesByEntryIds: async () => [],
+  listDetailOverridesByPhaseIds: async () => [],
+}));
+
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
 vi.mock("@/features/foreshadow/api", () => ({
@@ -993,12 +1001,22 @@ describe("search_codex hybrid fusion (段階3)", () => {
   });
 
   it("fuses dense and sparse results", async () => {
+    // どの select にも同じ行が返る。core の判定（entries の select）が読む contextMode を持たせ、
+    // dense の hit（e-dense）も DB に在る行にする（DB に無い id は hidden に数えて落ちる）。
     mockDbRows.mockReturnValue([
       {
         id: "e-sparse",
         name: "SparseHit",
         type: "location",
         summary: "s",
+        contextMode: "mentioned",
+      },
+      {
+        id: "e-dense",
+        name: "DenseHit",
+        type: "character",
+        summary: "d",
+        contextMode: "mentioned",
       },
     ]);
     mockInvoke.mockImplementation((cmd: string) => {
@@ -1035,12 +1053,22 @@ describe("search_codex hybrid fusion (段階3)", () => {
   });
 
   it("falls back to sparse-only when dense search rejects", async () => {
+    // どの select にも同じ行が返る。core の判定（entries の select）が読む contextMode を持たせ、
+    // dense の hit（e-dense）も DB に在る行にする（DB に無い id は hidden に数えて落ちる）。
     mockDbRows.mockReturnValue([
       {
         id: "e-sparse",
         name: "SparseHit",
         type: "location",
         summary: "s",
+        contextMode: "mentioned",
+      },
+      {
+        id: "e-dense",
+        name: "DenseHit",
+        type: "character",
+        summary: "d",
+        contextMode: "mentioned",
       },
     ]);
     mockInvoke.mockImplementation((cmd: string) => {

@@ -8,9 +8,9 @@ import { prosemirrorToText } from "../lib/prosemirror.js";
  * bodies and the strings they make are unchanged (the PR-0 golden fixes them).
  *
  * `buildLikeOrCondition`, `orderByIds` and `parseTagsCacheNames` are shared
- * with the Codex tools that still live in the renderer (they move in PR-8), so
- * the renderer imports these three from here instead of keeping a copy
- * (DR-MP4-32a). `plainTextExcerpt` and `EXCERPT_MAX_CHARS` are used by the two
+ * with the Codex tools (PR-8b moved four of them to the core; the renderer's
+ * `get_codex_entry` stays), so the renderer imports what it still uses from
+ * here instead of keeping a copy (DR-MP4-32a). `plainTextExcerpt` and `EXCERPT_MAX_CHARS` are used by the two
  * search tools only and are not exported to the renderer.
  */
 
@@ -115,7 +115,7 @@ export function orderByIds<T extends { id: string }>(
  */
 export function ftsHitIds(
   raw: unknown,
-  sourceType: "scene" | "snippet",
+  sourceType: "scene" | "snippet" | "codex",
 ): string[] {
   if (!Array.isArray(raw)) {
     throw new Error("fts_search: the result is not an array");
