@@ -25,6 +25,9 @@ use crate::narrative_extraction::change_feed::{
 use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 mod restore_links;
+mod restore_missing_parents;
+#[cfg(test)]
+mod restore_test_support;
 
 pub use restore_links::LossNotice;
 
@@ -256,8 +259,9 @@ pub struct ApplyProjectSnapshotRestoreResult {
     pub maintenance_transaction_id: Option<String>,
     pub no_op: bool,
     /// Links of the scopes that were not selected whose target the restore
-    /// removed, by kind (DR-SRX-10). A result stored by an earlier version has
-    /// none.
+    /// removed, and rows of the snapshot the restore left out or cleared
+    /// because the parent they name is gone, by kind (DR-SRX-10, DR-SRX-26).
+    /// A result stored by an earlier version has none.
     #[serde(default)]
     pub dropped: Vec<LossNotice>,
 }
@@ -292,8 +296,9 @@ pub struct ProjectSnapshotRestoreContext {
     pub live_snippet_ids: Vec<String>,
     pub live_event_ids: Vec<String>,
     pub live_codex_tag_ids: Vec<String>,
-    /// What a restore of the requested scopes could not give back, counted
-    /// before anything is written (DR-SRX-10).
+    /// What a restore of the requested scopes could not give back (live links
+    /// of the other scopes and snapshot rows whose parent is gone), counted
+    /// before anything is written (DR-SRX-10, DR-SRX-26).
     pub loss_notices: Vec<LossNotice>,
 }
 
@@ -1846,29 +1851,16 @@ pub(crate) fn build_canonical_restore_plan(
             "map_frames",
             SnapshotInsertMode::Insert,
         )?;
-        let position_rows = take_aux_rows(&mut aux_rows, "map_node_positions")
-            .into_iter()
-            .map(|mut row| {
-                for (owner, field, live_ids) in [
-                    (RestoreScope::Body, "tree_node_id", &live_tree_node_ids),
-                    (RestoreScope::Codex, "codex_entry_id", &live_codex_ids),
-                ] {
-                    if !scopes.contains(&owner)
-                        && nullable_row_id(&row, field, "map_node_positions")?
-                            .as_ref()
-                            .is_some_and(|value| !live_ids.contains(value))
-                    {
-                        row.insert(field.to_string(), Value::Null);
-                    }
-                }
-                Ok(row)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        push_canonical_rows(
+        // A card is sent as the snapshot has it. A card whose scene, Codex
+        // entry or Snippet is gone after the restore cannot be given a NULL
+        // reference (a card names exactly one thing): the restore leaves it out
+        // with the edges that name it, after this plan has been checked
+        // (`restore_missing_parents`, DR-SRX-27).
+        push_aux_scope(
             conn,
             &mut inserts,
-            SnapshotRestoreTable::MapNodePositions,
-            position_rows,
+            &mut aux_rows,
+            "map_node_positions",
             SnapshotInsertMode::Insert,
         )?;
         push_aux_scope(
@@ -2606,7 +2598,11 @@ pub fn project_snapshot_restore_context(
                 plan,
             )?;
             let shape = restore_links::shape(conn, &project_id, &snapshot_id, &requested_scopes)?;
-            restore_links::count_losses(conn, &shape, &plan)?
+            // The snapshot's own rows whose parent is gone are counted with
+            // the links of the other scopes (DR-SRX-26, 確認 146): the same
+            // function the restore runs, on the same state.
+            let resolved = restore_missing_parents::resolve(conn, &shape, plan)?;
+            restore_links::count_losses(conn, &shape, &resolved.plan, &resolved.dropped)?
         } else {
             Vec::new()
         };
@@ -2827,6 +2823,20 @@ pub fn apply_project_snapshot_restore(
             transaction.commit()?;
             return Ok(result);
         }
+        // A snapshot row whose parent is gone after the restore is given the
+        // form it would have had if the parent had been deleted after it
+        // (DR-SRX-26). This runs only here, after the renderer's plan has been
+        // compared with the canonical one, so the renderer decides nothing.
+        let link_shape = restore_links::shape(
+            &transaction,
+            &payload.project_id,
+            &payload.snapshot_id,
+            &scopes,
+        )?;
+        let restore_missing_parents::Resolved {
+            plan: canonical_inserts,
+            dropped: plan_dropped,
+        } = restore_missing_parents::resolve(&transaction, &link_shape, canonical_inserts)?;
         if scopes.contains(&RestoreScope::Codex) {
             let target_entry_types = canonical_inserts
                 .iter()
@@ -2892,12 +2902,6 @@ pub fn apply_project_snapshot_restore(
         // Set aside, in place, every link of a scope this restore does not
         // replace to a row it deletes (DR-SRX-2). They come back, or fall away
         // as the foreign key would, once the snapshot's rows are in.
-        let link_shape = restore_links::shape(
-            &transaction,
-            &payload.project_id,
-            &payload.snapshot_id,
-            &scopes,
-        )?;
         let parked_links = restore_links::park(&transaction, &link_shape, &canonical_inserts)?;
 
         if scopes.contains(&RestoreScope::Body) {
@@ -3110,8 +3114,9 @@ pub fn apply_project_snapshot_restore(
             chunk_start = chunk_end;
         }
 
-        let dropped = restore_links::restore(&transaction, &link_shape, &parked_links)?;
+        let link_dropped = restore_links::restore(&transaction, &link_shape, &parked_links)?;
         restore_links::ensure_nothing_left_parked(&transaction, &link_shape, &parked_links)?;
+        let dropped = restore_links::merge_dropped(link_dropped.clone(), &plan_dropped);
 
         let feed_after = capture_snapshot_feed_state(
             &transaction,
@@ -3147,9 +3152,16 @@ pub fn apply_project_snapshot_restore(
             // Feed object. The two cannot disagree; if they ever do, stop
             // instead of reporting "nothing changed" over lost links
             // (DR-SRX-2, the second guard).
+            //
+            // Only the links of the other scopes are compared with the Feed.
+            // A snapshot row left out or cleared because its parent is gone
+            // (`plan_dropped`) says nothing about the live database: the
+            // live row may already be in that form (the parent was deleted
+            // after the snapshot), so the restore can be a net no-op and
+            // still report it (DR-SRX-28).
             anyhow::ensure!(
-                dropped.is_empty(),
-                "project snapshot restore dropped links ({dropped:?}) but changed no Feed object"
+                link_dropped.is_empty(),
+                "project snapshot restore dropped links ({link_dropped:?}) but changed no Feed object"
             );
             // A net no-op must not manufacture a project restore marker merely
             // to satisfy the non-empty Feed transaction contract.

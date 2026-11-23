@@ -73,7 +73,9 @@ export interface CodexAiVisibility<TEntry> {
   /**
    * Hidden and unknown modes; with `unresolved`, every entry. When the scene
    * cannot be resolved (no scene, or an id the reading order does not have), also
-   * every entry that has a phase one of which hides it (DR-MP4-41).
+   * every entry that has a phase one of which hides it (DR-MP4-41). An entry that
+   * has a hiding phase whose anchor scene the resolver cannot place (null, deleted,
+   * archived) is hidden whatever the scene is (DR-MP4-46).
    */
   readonly hidden: Set<string>;
   /** The entries that are not hidden, with their text after phase resolution. */
@@ -145,6 +147,8 @@ function isAnchorUnresolvable(
  * hide nothing, is unchanged; an entry that is hidden at base stays hidden. A
  * phase whose anchor scene no longer exists (dangling) counts like any other:
  * which phases would apply cannot be told, so it errs on the hiding side.
+ * (This reads no anchor. The other half, a hiding phase that lost its anchor while
+ * the scene can be resolved, is `listEntryIdsWithOrphanedHiddenPhase`, DR-MP4-46.)
  */
 function hasPhaseHiddenFromAi(
   phases: readonly CodexEntryPhase[] | undefined,
@@ -161,10 +165,13 @@ function hasPhaseHiddenFromAi(
 /**
  * The ids of the entries that are closed because the scene cannot be resolved
  * (DR-MP4-41): the entries one of whose phases hides them. Empty when the anchor
- * can be resolved. `decideCodexAiVisibility` and the chat context sources both
- * ask this one function, so the rule is written once. An entry that is already
+ * can be resolved. It is the DR-MP4-41 half of `listEntryIdsClosedForAi`, which
+ * `decideCodexAiVisibility` and the chat context sources ask (DR-MP4-46), so the
+ * rule is written once. An entry that is already
  * hidden at base may also be named here (closing it changes nothing); do not read
- * this set as "the entries the unresolvable scene is the reason for".
+ * this set as "the entries the unresolvable scene is the reason for". A hiding
+ * phase that lost its anchor while the scene can be resolved is not named here;
+ * see `listEntryIdsWithOrphanedHiddenPhase` and `listEntryIdsClosedForAi`.
  */
 export function listEntryIdsClosedWhenSceneUnresolvable(input: {
   readonly anchor: TemporalAnchor;
@@ -180,10 +187,159 @@ export function listEntryIdsClosedWhenSceneUnresolvable(input: {
 }
 
 /**
- * Hides the entries that `closedIds` names by replacing their resolved
- * `contextMode` with `hidden` (a copy; the input map is not changed). Only the
- * mode is replaced: every consumer reads the mode before it reads a summary, a
- * body or a detail value, so the rest stays as resolved and is never shown.
+ * DR-MP4-46: a Phase that the resolver cannot place. Its anchor scene is null (the
+ * anchor was deleted: the foreign key sets it to null; or it never had one), or
+ * the reading order does not have it (archived, a folder above it is archived,
+ * another project's id, the index was just reset). `resolveApplicablePhases`
+ * (`validRankedPhases`) skips exactly these Phases for every anchor kind, so such a
+ * Phase never applies. Same condition as there; a test pins the two together
+ * (`skippedPhaseIds`). The resolver is not changed.
+ */
+export function isPhaseAnchorOrphaned(
+  phase: Pick<CodexEntryPhase, "anchorNodeId">,
+  index: SceneTimeIndex,
+): boolean {
+  return (
+    phase.anchorNodeId === null || !index.readingOrder.has(phase.anchorNodeId)
+  );
+}
+
+/**
+ * Why a Phase cannot be placed: its anchor scene is null (deleted, or never set;
+ * restoring the scene does not bring the anchor back), or it is set but the
+ * reading order does not have it (archived, a folder above it is archived,
+ * another project's id, the index was just reset).
+ */
+export type OrphanedPhaseCause = "anchor-null" | "anchor-not-in-reading-order";
+
+/** A Phase that hides its entry from the AI and that the resolver cannot place. */
+export interface OrphanedHidingPhase {
+  readonly id: string;
+  readonly label: string;
+  /** The Phase's `contextModeOverride` (hidden, or a mode that is not known). */
+  readonly mode: string;
+  readonly cause: OrphanedPhaseCause;
+}
+
+/**
+ * DR-MP4-46 (fail closed): the Phases that hide their entry from the AI (hidden,
+ * or an unknown mode) and whose anchor the resolver cannot place
+ * (`isPhaseAnchorOrphaned`), with the reason. It is the single source of "a hiding
+ * Phase lost its anchor": `listEntryIdsWithOrphanedHiddenPhase` (the rule that
+ * closes the entry) and every screen that tells the author about it are derived
+ * from this function, so what is shown and what is excluded cannot drift apart.
+ * A Phase that does not hide (suppress, mentioned, always, text only) is not named,
+ * nor is a hiding Phase whose anchor the resolver can place.
+ */
+export function listOrphanedHidingPhases(
+  phases: readonly Pick<
+    CodexEntryPhase,
+    "id" | "label" | "anchorNodeId" | "contextModeOverride"
+  >[],
+  index: SceneTimeIndex,
+): OrphanedHidingPhase[] {
+  const out: OrphanedHidingPhase[] = [];
+  for (const phase of phases) {
+    const mode = phase.contextModeOverride;
+    if (mode === null || !isCodexContextModeHiddenFromAi(mode)) continue;
+    if (!isPhaseAnchorOrphaned(phase, index)) continue;
+    out.push({
+      id: phase.id,
+      label: phase.label,
+      mode,
+      cause:
+        phase.anchorNodeId === null
+          ? "anchor-null"
+          : "anchor-not-in-reading-order",
+    });
+  }
+  return out;
+}
+
+/**
+ * Whether the orphaned hiding Phases (`listOrphanedHidingPhases`) are what keeps the
+ * entry from the AI, which is what a screen may say "because of this Phase". False
+ * when the entry stays closed without them: its base mode is hidden (or unknown)
+ * and no Phase the resolver can place carries a mode that is not hidden, so
+ * nothing could release it. `decideCodexAiVisibility` closes an entry that has an
+ * orphaned hiding Phase before it looks at a release (`closedIds` first, then
+ * `isReleased`), so a hidden base with a placeable public Phase (always, mentioned,
+ * suppress) IS closed by the orphan rule: this returns true for it. Conservative on
+ * one side: a placeable public Phase that a later placeable hiding Phase on the same
+ * anchor shadows still counts as one that could release.
+ */
+export function isEntryClosedByOrphanedHidingPhase(input: {
+  readonly entryContextMode: string;
+  readonly phases: readonly Pick<
+    CodexEntryPhase,
+    "id" | "label" | "anchorNodeId" | "contextModeOverride"
+  >[];
+  readonly index: SceneTimeIndex;
+}): boolean {
+  if (listOrphanedHidingPhases(input.phases, input.index).length === 0) {
+    return false;
+  }
+  if (!isCodexContextModeHiddenFromAi(input.entryContextMode)) return true;
+  return input.phases.some(
+    (phase) =>
+      !isPhaseAnchorOrphaned(phase, input.index) &&
+      phase.contextModeOverride !== null &&
+      !isCodexContextModeHiddenFromAi(phase.contextModeOverride),
+  );
+}
+
+/**
+ * DR-MP4-46 (fail closed): the ids of the entries that have a Phase which hides
+ * them (hidden, or an unknown mode) and whose anchor the resolver cannot place
+ * (`listOrphanedHidingPhases`). That Phase is skipped, so even where the current
+ * scene can be resolved base alone would be read as "public". Whatever the anchor
+ * kind and mode, and whether or not the current scene can be resolved. A Phase
+ * that does not hide (suppress, mentioned, always, text only) is not named, and an
+ * entry whose hiding Phases all have a placeable anchor is not named (the resolver
+ * applies those).
+ */
+export function listEntryIdsWithOrphanedHiddenPhase(input: {
+  readonly sceneTimeIndex: SceneTimeIndex;
+  readonly phasesByEntry: ReadonlyMap<string, readonly CodexEntryPhase[]>;
+}): Set<string> {
+  const closed = new Set<string>();
+  for (const [entryId, phases] of input.phasesByEntry) {
+    if (listOrphanedHidingPhases(phases, input.sceneTimeIndex).length > 0) {
+      closed.add(entryId);
+    }
+  }
+  return closed;
+}
+
+/**
+ * Every entry that is closed to the AI by a Phase rule: the union of
+ * `listEntryIdsClosedWhenSceneUnresolvable` (DR-MP4-41: the current scene cannot
+ * be resolved) and `listEntryIdsWithOrphanedHiddenPhase` (DR-MP4-46: a hiding
+ * Phase lost its anchor scene). `decideCodexAiVisibility` and both chat context
+ * sources ask this one function. The codex scope's `latest` is included in the
+ * second rule (the user's answer Q-G1 of 2026-11-23): `latest` applies every
+ * Phase the resolver can place, but never an orphaned one.
+ */
+export function listEntryIdsClosedForAi(input: {
+  readonly anchor: TemporalAnchor;
+  readonly sceneTimeIndex: SceneTimeIndex;
+  readonly phasesByEntry: ReadonlyMap<string, readonly CodexEntryPhase[]>;
+}): Set<string> {
+  const closed = listEntryIdsClosedWhenSceneUnresolvable(input);
+  for (const entryId of listEntryIdsWithOrphanedHiddenPhase(input)) {
+    closed.add(entryId);
+  }
+  return closed;
+}
+
+/**
+ * Hides the entries that `closedIds` names (`listEntryIdsClosedForAi`: the scene
+ * cannot be resolved, DR-MP4-41, or a hiding phase lost its anchor, DR-MP4-46) by
+ * replacing their resolved `contextMode` with `hidden` (a copy; the input map is
+ * not changed). The name says "unresolvable scene" for the first reason only; it is
+ * kept so that the callers' diff stays small. Only the mode is replaced: every
+ * consumer reads the mode before it reads a summary, a body or a detail value, so
+ * the rest stays as resolved and is never shown.
  */
 export function closeResolvedCodexForUnresolvableScene<
   TResolved extends { readonly contextMode: string },
@@ -221,7 +377,7 @@ export function decideCodexAiVisibility<
     sceneTimeIndex: input.sceneTimeIndex,
     resolutionMode: input.resolutionMode.mode,
   });
-  const closedIds = listEntryIdsClosedWhenSceneUnresolvable({
+  const closedIds = listEntryIdsClosedForAi({
     anchor,
     sceneTimeIndex: input.sceneTimeIndex,
     phasesByEntry,
