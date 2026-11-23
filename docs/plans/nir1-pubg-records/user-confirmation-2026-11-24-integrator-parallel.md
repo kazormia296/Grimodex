@@ -20,3 +20,12 @@
 
 - この記録は、K25P2-1 の「PR-2 を公開の前に寄せる」（contracts `7a64b1cc`）の時期の決定を補う。S4 の枝の着手の時期は 11-22 の決定（`327b9b5f`）を置き換える。
 - 統合者の読み：「docs だけの PR」は Quick だけで済むもの。AI 指示（CLAUDE.md など）と作業記録（`nir1-continuation-2026-10.md`）を触る PR は含まない。
+
+## 3 回目（07:55 頃）：S4 の枝のための、今の freeze record の失効
+
+| 問い | 回答 |
+|---|---|
+| CP-4 の今の凍結の記録（9 回目の S4b の観測前の freeze record、`evals/nir1-graph/observation-prep-freeze.v1.json`）を失効させ、観測前の記録（S2、`observation-prep.v1.json`）を draft に戻してよいか。S4 の枝で harness を直した（本文の宣言の撤去、N2〜N4 の廃止、unrestricted の Graph の parity の追加）ので、今の記録とは合わなくなる。新しい凍結は最後の凍結で 1 回だけ行い、時期は改めて伺う。失効は S4 の枝の merge で master に入る。正式の測定は始めない | **失効して進める**（推奨どおり） |
+
+- 前例：11-16 の失効（contracts `7a03eaf9` の `user-confirmation-2026-11-16-refreeze-9th-and-r5.md`、DR-CP4-S4-11、commit `2a28e1a2`）と同じ方式（freeze record を削除し S2 を draft に戻す。後の S4b が同じ path に新しい record を導入する）。
+- この確認は、最後の凍結の開始と正式の run の開始を含まない（どちらも改めて伺う。1 回目の回答）。記録先の判断は S4 の枝の `cp4-decisions.md` の DR-CP4-S4F-13。
