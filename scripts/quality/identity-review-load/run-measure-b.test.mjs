@@ -395,8 +395,11 @@ test("偽 AI の env（GRIMODEX_PRODUCT_JOURNEY*）が立っていれば本測�
       !e.message.includes("deterministic-v1"),
   );
   assert.doesNotThrow(() => assertNoFakeAiEnv({ PATH: "/bin" }));
-  // この試験 process 自身にも立っていない。
-  assert.doesNotThrow(() => assertNoFakeAiEnv(process.env));
+  // この試験 process 自身にも、偽 AI・ログの env が立っていない。CI は job によって NODE_OPTIONS（メモリ上限）を
+  // 立てるので、それだけは除く。測定の起動の前提（NODE_OPTIONS は空）は、明示した env の別の試験で固定している。
+  const ambient = { ...process.env };
+  delete ambient.NODE_OPTIONS;
+  assert.doesNotThrow(() => assertNoFakeAiEnv(ambient));
 });
 
 test("乾いた実行：送信の関数（bJudge）を呼ばず、key の導入・AI 設定もしない", async () => {
@@ -784,7 +787,10 @@ test("本文の出る env（GRIMODEX_AI_WIRE_LOG・trace の RUST_LOG）も本�
     () => assertNoFakeAiEnv({ GRIMODEX_AI_WIRE_LOG: "1" }),
     /FORBIDDEN_ENV_SET/u,
   );
-  assert.doesNotThrow(() => assertNoFakeAiEnv(process.env));
+  // 試験 process 自身の env は、CI が立てる NODE_OPTIONS だけ除いて検査する（上の試験と同じ理由）。
+  const ambient = { ...process.env };
+  delete ambient.NODE_OPTIONS;
+  assert.doesNotThrow(() => assertNoFakeAiEnv(ambient));
 });
 
 test("他の job（cargo・rustc・Grimodex の electron）の重なりは測定を始めない。自分の子孫と利用者の desktop の electron は数えない", () => {
