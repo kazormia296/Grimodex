@@ -295,7 +295,7 @@ export const DRY_RUN_ASSUMPTIONS = Object.freeze({
  * 送らない（api.judge は呼ばない）。page は window.identityLoad を持つ（試験では fake）。
  */
 export async function dryCellBody(args) {
-  // 本体のどの段で落ちたかを、定型の token だけで残す（試走の 1 回目の調べで、plain な Error だけでは段が分からなかった）。
+  // 本体のどの段で落ちたかを、定型の token だけで残す（試走の 1 回目の調べでは、plain な Error だけでは段を特定できなかった）。
   // [precheck]／[artifact] の印のある失敗（意図した検査の失敗）は、そのまま通す。
   const stage = { name: "setup" };
   try {
