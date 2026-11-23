@@ -205,9 +205,61 @@ export function isPhaseAnchorOrphaned(
 }
 
 /**
+ * Why a Phase cannot be placed: its anchor scene is null (deleted, or never set;
+ * restoring the scene does not bring the anchor back), or it is set but the
+ * reading order does not have it (archived, a folder above it is archived,
+ * another project's id, the index was just reset).
+ */
+export type OrphanedPhaseCause = "anchor-null" | "anchor-not-in-reading-order";
+
+/** A Phase that hides its entry from the AI and that the resolver cannot place. */
+export interface OrphanedHidingPhase {
+  readonly id: string;
+  readonly label: string;
+  /** The Phase's `contextModeOverride` (hidden, or a mode that is not known). */
+  readonly mode: string;
+  readonly cause: OrphanedPhaseCause;
+}
+
+/**
+ * DR-MP4-46 (fail closed): the Phases that hide their entry from the AI (hidden,
+ * or an unknown mode) and whose anchor the resolver cannot place
+ * (`isPhaseAnchorOrphaned`), with the reason. It is the single source of "a hiding
+ * Phase lost its anchor": `listEntryIdsWithOrphanedHiddenPhase` (the rule that
+ * closes the entry) and every screen that tells the author about it are derived
+ * from this function, so what is shown and what is excluded cannot drift apart.
+ * A Phase that does not hide (suppress, mentioned, always, text only) is not named,
+ * nor is a hiding Phase whose anchor the resolver can place.
+ */
+export function listOrphanedHidingPhases(
+  phases: readonly Pick<
+    CodexEntryPhase,
+    "id" | "label" | "anchorNodeId" | "contextModeOverride"
+  >[],
+  index: SceneTimeIndex,
+): OrphanedHidingPhase[] {
+  const out: OrphanedHidingPhase[] = [];
+  for (const phase of phases) {
+    const mode = phase.contextModeOverride;
+    if (mode === null || !isCodexContextModeHiddenFromAi(mode)) continue;
+    if (!isPhaseAnchorOrphaned(phase, index)) continue;
+    out.push({
+      id: phase.id,
+      label: phase.label,
+      mode,
+      cause:
+        phase.anchorNodeId === null
+          ? "anchor-null"
+          : "anchor-not-in-reading-order",
+    });
+  }
+  return out;
+}
+
+/**
  * DR-MP4-46 (fail closed): the ids of the entries that have a Phase which hides
  * them (hidden, or an unknown mode) and whose anchor the resolver cannot place
- * (`isPhaseAnchorOrphaned`). That Phase is skipped, so even where the current
+ * (`listOrphanedHidingPhases`). That Phase is skipped, so even where the current
  * scene can be resolved base alone would be read as "public". Whatever the anchor
  * kind and mode, and whether or not the current scene can be resolved. A Phase
  * that does not hide (suppress, mentioned, always, text only) is not named, and an
@@ -220,14 +272,7 @@ export function listEntryIdsWithOrphanedHiddenPhase(input: {
 }): Set<string> {
   const closed = new Set<string>();
   for (const [entryId, phases] of input.phasesByEntry) {
-    if (
-      phases.some(
-        (phase) =>
-          phase.contextModeOverride !== null &&
-          isCodexContextModeHiddenFromAi(phase.contextModeOverride) &&
-          isPhaseAnchorOrphaned(phase, input.sceneTimeIndex),
-      )
-    ) {
+    if (listOrphanedHidingPhases(phases, input.sceneTimeIndex).length > 0) {
       closed.add(entryId);
     }
   }

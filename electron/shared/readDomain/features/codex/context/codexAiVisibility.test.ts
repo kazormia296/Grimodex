@@ -11,6 +11,7 @@ import {
   listEntryIdsClosedForAi,
   listEntryIdsClosedWhenSceneUnresolvable,
   listEntryIdsWithOrphanedHiddenPhase,
+  listOrphanedHidingPhases,
   type CodexResolutionState,
 } from "./codexAiVisibility.js";
 import { resolveApplicablePhases } from "./resolveApplicablePhases.js";
@@ -1084,6 +1085,85 @@ describe("a hiding Phase that lost its anchor (DR-MP4-46)", () => {
     it("names nothing for no Phases and for an entry with an empty list", () => {
       expect(named(index, new Map())).toEqual([]);
       expect(named(index, new Map([["x", []]]))).toEqual([]);
+    });
+  });
+
+  describe("listOrphanedHidingPhases", () => {
+    // The decision table: anchor kind x mode. `index` is the file's shared fixture
+    // (s1..s3 readable; s-arch, s-under, f-arch, n-note, deleted-scene are not).
+    const anchors: [string, string | null, boolean][] = [
+      ["null", null, true],
+      ["a deleted scene id", "deleted-scene", true],
+      ["an archived scene", "s-arch", true],
+      ["a scene under an archived folder", "s-under", true],
+      ["another project's id", "other-project-id", true],
+      ["a placeable scene", "s2", false],
+    ];
+    const modes: [string, string | null, boolean][] = [
+      ["hidden", "hidden", true],
+      ["an unknown mode", "not-a-mode", true],
+      ["suppress", "suppress", false],
+      ["mentioned", "mentioned", false],
+      ["always", "always", false],
+      ["null (text only)", null, false],
+    ];
+    for (const [anchorName, anchorNodeId, orphaned] of anchors) {
+      for (const [modeName, mode, hides] of modes) {
+        it(`${anchorName} x ${modeName}: ${orphaned && hides ? "listed" : "not listed"}`, () => {
+          const p = phase("ph", "e", anchorNodeId, {
+            contextModeOverride: mode,
+          });
+          const out = listOrphanedHidingPhases([p], index);
+          expect(out.length).toBe(orphaned && hides ? 1 : 0);
+          if (orphaned && hides) {
+            expect(out[0]).toEqual({
+              id: "ph",
+              label: "ph",
+              mode,
+              cause:
+                anchorNodeId === null
+                  ? "anchor-null"
+                  : "anchor-not-in-reading-order",
+            });
+          }
+        });
+      }
+    }
+
+    it("keeps the Phases' order and tells the two causes apart", () => {
+      const out = listOrphanedHidingPhases(
+        [
+          phase("b", "e", "deleted-scene", { contextModeOverride: "hidden" }),
+          phase("ok", "e", "s1", { contextModeOverride: "hidden" }),
+          phase("a", "e", null, { contextModeOverride: "hidden", label: "L" }),
+        ],
+        index,
+      );
+      expect(out.map((o) => [o.id, o.label, o.cause])).toEqual([
+        ["b", "b", "anchor-not-in-reading-order"],
+        ["a", "L", "anchor-null"],
+      ]);
+    });
+
+    it("is what the entry-level rule is made of: an entry is named exactly when its list is not empty, for every index", () => {
+      const rows = [
+        phase("a1", "x", null, { contextModeOverride: "hidden" }),
+        phase("a2", "y", "s1", { contextModeOverride: "hidden" }),
+        phase("a3", "z", "gone", { contextModeOverride: "suppress" }),
+        phase("a4", "w", "gone", { contextModeOverride: "odd" }),
+      ];
+      for (const idx of [index, buildSceneTimeIndex([])]) {
+        const map = byEntry(rows);
+        const named = listEntryIdsWithOrphanedHiddenPhase({
+          sceneTimeIndex: idx,
+          phasesByEntry: map,
+        });
+        for (const [entryId, phases] of map) {
+          expect(named.has(entryId), entryId).toBe(
+            listOrphanedHidingPhases(phases, idx).length > 0,
+          );
+        }
+      }
     });
   });
 
