@@ -2090,6 +2090,15 @@ fn judge_chunk_ownership(
     chunk: &[SnapshotInsertPlan],
 ) -> anyhow::Result<OwnershipVerdict> {
     let table_kind = chunk[0].table;
+    // The caller cuts the chunks. One that is longer than the limit would put
+    // more variables in the question than SQLite allows (and a restore of a
+    // large table would fail), and one that mixes tables would be judged
+    // against the first row's table: both are the caller's bug, not input.
+    debug_assert!(
+        chunk.len() <= OWNERSHIP_CHECK_CHUNK_ROWS
+            && chunk.iter().all(|insert| insert.table == table_kind),
+        "an ownership chunk is at most {OWNERSHIP_CHECK_CHUNK_ROWS} rows of one table"
+    );
     let table = table_kind.as_str();
     if !cache.exists(conn, table)? {
         return Ok(OwnershipVerdict {
@@ -5439,6 +5448,98 @@ mod tests {
             owned_seen > 20 && refused_seen > 20,
             "the probe must discriminate"
         );
+    }
+
+    /// The only ownership rule with five binds (`authorship_spans`: an OR over
+    /// five parents) gives, chunked, the answer the one-row question gave. A
+    /// row is owned when any one of its parents belongs to the project.
+    #[test]
+    fn a_five_bind_predicate_chunked_equals_per_row() {
+        let spec = AUX_SPECS
+            .iter()
+            .find(|spec| spec.table == "authorship_spans")
+            .expect("the authorship_spans rule");
+        assert_eq!(spec.binds, 5, "the rule this test is about");
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE snippets (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE codex_detail_values (id TEXT PRIMARY KEY, entry_id TEXT);
+             CREATE TABLE map_boards (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE map_stickies (id TEXT PRIMARY KEY, board_id TEXT);
+             CREATE TABLE authorship_spans (
+                 id TEXT PRIMARY KEY, node_id TEXT, codex_entry_id TEXT, snippet_id TEXT,
+                 detail_value_id TEXT, sticky_id TEXT);
+             INSERT INTO tree_nodes VALUES ('n1', 'p1'), ('n2', 'p2');
+             INSERT INTO codex_entries VALUES ('c1', 'p1'), ('c2', 'p2');
+             INSERT INTO snippets VALUES ('sn1', 'p1'), ('sn2', 'p2');
+             INSERT INTO codex_detail_values VALUES ('d1', 'c1'), ('d2', 'c2');
+             INSERT INTO map_boards VALUES ('b1', 'p1'), ('b2', 'p2');
+             INSERT INTO map_stickies VALUES ('st1', 'b1'), ('st2', 'b2');
+             INSERT INTO authorship_spans VALUES
+                 ('s1', 'n1', NULL, NULL, NULL, NULL),
+                 ('s2', 'n2', NULL, NULL, NULL, NULL),
+                 ('s3', NULL, 'c1', NULL, NULL, NULL),
+                 ('s4', NULL, 'c2', NULL, NULL, NULL),
+                 ('s5', NULL, NULL, 'sn1', NULL, NULL),
+                 ('s6', NULL, NULL, 'sn2', NULL, NULL),
+                 ('s7', NULL, NULL, NULL, 'd1', NULL),
+                 ('s8', NULL, NULL, NULL, 'd2', NULL),
+                 ('s9', NULL, NULL, NULL, NULL, 'st1'),
+                 ('s10', NULL, NULL, NULL, NULL, 'st2'),
+                 ('s11', NULL, NULL, NULL, NULL, NULL),
+                 ('s12', 'n1', 'c2', NULL, NULL, NULL),
+                 ('s13', 'n2', 'c2', 'sn2', 'd2', 'st2');",
+        )
+        .expect("schema");
+
+        let per_row = |key: &str| -> bool {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM \"authorship_spans\" WHERE \"id\" = ? AND ({}))",
+                spec.predicate
+            );
+            let mut values = vec![SqlValue::Text(key.to_string())];
+            values.extend((0..spec.binds).map(|_| SqlValue::Text("p1".to_string())));
+            conn.query_row(&sql, params_from_iter(values.iter()), |r| r.get(0))
+                .expect("per row")
+        };
+        let keys = [
+            "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s13",
+            "nope",
+        ];
+        let owned = keys.iter().map(|key| per_row(key)).collect::<Vec<_>>();
+        assert_eq!(
+            owned,
+            [
+                true, false, true, false, true, false, true, false, true, false, false, true,
+                false, false
+            ],
+            "each of the five parents decides, one that belongs is enough"
+        );
+        let chunked = |keys: &[&str]| {
+            let flat = keys
+                .iter()
+                .map(|key| SqlValue::Text(key.to_string()))
+                .collect::<Vec<_>>();
+            first_unowned_row(
+                &conn,
+                "authorship_spans",
+                &["id".to_string()],
+                spec.predicate,
+                spec.binds,
+                "p1",
+                &flat,
+            )
+            .expect("chunked")
+        };
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(chunked(&[key]).is_none(), owned[index], "{key} alone");
+        }
+        for start in 0..keys.len() {
+            let expected = owned[start..].iter().position(|owned| !*owned);
+            assert_eq!(chunked(&keys[start..]), expected, "from {start}");
+        }
     }
 
     fn label_plan(row: Value) -> SnapshotInsertPlan {

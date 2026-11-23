@@ -87,7 +87,7 @@
 ## DR-RIP-4　エラーの先後と失敗の扱い
 
 - 所有の検査は、挿入の後・scene binding のループの前に、全行ぶんまとめて行う。キー欠落・非スカラー・所有規則なし・主キーなしは、行位置つきのエラーにして、先後を従来と一致させる。
-- SQLite の実行時エラー（prepare 失敗など）は、その表の最初の行の位置つきの遅延エラーにして、先後を従来と一致させる（反証の low 指摘の対応）。正しい schema では起きない。
+- SQLite の実行時エラー（prepare 失敗など）は、塊の照会でそのまま返す（`first_unowned_row(...)?`）。表単位の失敗（prepare、列が無い）は、従来も塊の先頭行の位置で同じエラーになるので、先後は一致する。**残る制限**：行の内容に依る SQLite の実行時エラー（I/O・ページの破損）だけは、同じ塊の中で、前の行の scene binding の失敗と入れ替わりうる（どちらのエラーが先に出るか）。正しい schema と健全な DB では起きない。
 - binding が書く表（`narrative_scene_scope_bindings`・`narrative_scope_registries`・`grimodex_write_clock`）は、所有の predicate が読む表に影響しない（トリガーを確認済み）。
 
 - **前提（DR-SRX-25）**：退避の窓の中で動く code は、根の DELETE・`insert_record`・`ensure_inserted_row_is_project_scoped`・場面の適用範囲の 2 関数だけで、どれも退避した列を読まない。まとめ評価の新しい照会も、退避した列を読まない形にする（実装の段で確かめ、この節に足す）。
@@ -99,13 +99,14 @@
 - **先後の保ち方**：塊の判定は「先頭の `n` 行は所有されている」「行 `n` は所有されていない（`NotScoped`）、またはキー値が使えない（`BadKey`）」を返す。呼び出し側は、先頭の `n` 行の scene binding を plan 順に行ってから、行 `n` の同じ文言のエラーを返す。つまり、行 i の binding が失敗すれば、行 i+1 以降の検査の結果にかかわらず、その binding のエラーが先に出る（従来と同じ）。変わるのは、同じ塊の中で行 i の binding の前に行 i+1…の検査（読みだけ）が走ることだけで、binding が書く表（上記）は所有の predicate が読む表ではないので、検査の結果は変わらない。検査の中の順も従来どおり：表が無ければ通す → 主キーの列（`has no primary key`）→ 所有規則（`has no ownership rule`）→ 行ごと・列ごとに `is missing '<column>'`／`sql_value` のエラー → 照会。キー値のエラーは、その行より前の行がすべて所有されていると確かめて、binding した後に返す。
 - **キャッシュの置き場**：`RestoreTableCache`（`project_snapshots.rs` のモジュール内の private な型）を `apply_project_snapshot_restore` の中で 1 つ作り、plan の導出検査（`normalized_insert`）、`insert_record_cached`、所有の検査に `&mut` で渡す。グローバルな cache も復元をまたぐ cache も無い。表の存在・列の集合・主キーの列は、表ごとに初回だけ引く。主キーが無い表は、キャッシュした列が空でも、使うたびに同じ文言（`has no primary key`）で拒む。`insert_record` は、外部呼出し（snapshot 作成側 3 か所）向けに、呼出しごとに空のキャッシュを使う従来の形で残した。plan の組立て（`build_canonical_restore_plan`、`push_canonical_rows`、`capture_snapshot_feed_state` 側）は表ごとに 1 回の呼出しなので、この PR では触らない。
 - **DR-SRX-25 の前提が保たれること**：新しい照会（`first_unowned_row`）が読むのは、対象の表の主キーの列と所有 predicate（`AUX_SPECS`／`project_id`）が読む列だけで、`change_events` を含む退避した列は読まない。`insert_record_cached` は従来の `insert_record` と同じ列だけ（plan の行の列）を書く。表の情報の引き（`PRAGMA table_info`・`sqlite_master`）は退避した列の値を読まない。窓の中で動く code の集合は増えない。
-- **`unchecked_transaction` は変えない**（advisor の指摘）：`IMMEDIATE` にしない。DEFERRED のままだと、最初の書き込みの前の読み（所有・plan の検査）が長くなり、別プロセスの commit で `SQLITE_BUSY_SNAPSHOT` になる窓が、従来より広がるおそれがある。この PR では変えず、PR 本文に残る制限として書く。
+- **`unchecked_transaction` は変えない**（advisor の独立の点検〔2026-11-23。実装の commit `56f31f3a2` を read-only で点検〕）：この PR は `SQLITE_BUSY_SNAPSHOT` の窓を広げない。最初の書き込みは `restore_links::park` の UPDATE と根の DELETE で、新しい所有の照会は、挿入の後（write lock の下）で走る。最初の書き込みの前に走る読みで変わったのは、`normalized_insert` が行ごとに引いていた表の存在・列の照会が、表ごとに 1 回へ減ったことだけで、窓はむしろ狭まる。DEFERRED の transaction が最初の書き込みで昇格に失敗しうること（別プロセスの commit との競合）は、この PR より前からの制限で、`IMMEDIATE` にするかは別 lane の判断である（失敗の形と待ち方〔`busy_timeout`〕が変わり、worker・MCP の接続との相互作用を測ってから決める。`IMMEDIATE` は検査を弱めない）。PR 本文には、この説明を書く（窓は広げない、昇格の失敗は従来から、IMMEDIATE は別）。
+- **塊の上限と前提の置き場所**（advisor の点検）：`judge_chunk_ownership` の冒頭に、塊が上限（`OWNERSHIP_CHECK_CHUNK_ROWS`）以下で、全行が同じ表であることの `debug_assert` を置いた。上限を外す変異は、700 行の試験が debug で `debug_assert` に当たって赤くなる。release では何もしない（上限を外すと、12 万行の表で `too many SQL variables` になって復元が失敗する側に倒れ、行を通す側には倒れない）。
 
 ## DR-RIP-5　守りの試験を先に足す（この段）
 
 - 実装の前に、守りの試験（`tests/snapshot_restore_scope_guard.rs`）を足し、変更前の実装で合格することを確かめた（§2.2）。同じ PR の最初の commit にする（N3）。
 - 守りを弱める変異を一時的に入れ、新しい試験と既存の試験のどれが赤くなるかを記録した（§7）。赤くならなかった変異は、試験を足して赤くなるようにした（足した試験も、変更前の実装で合格する）。
-- 実装の段（2026-11-23）：守りの試験 29 件は、実装の後も全件合格した（`cargo test -p grimodex-db --test snapshot_restore_scope_guard`）。等値の意味の差分試験（`chunked_ownership_equals_per_row`、lib）を足した。守りの試験は直していない。
+- 実装の段（2026-11-23）：守りの試験 29 件〔前の commit〕は、実装の後も全件合格した（この後の変異の段で 2 件足して 31 件）（`cargo test -p grimodex-db --test snapshot_restore_scope_guard`）。等値の意味の差分試験（`chunked_ownership_equals_per_row`、lib）を足した。守りの試験は直していない。
 - 実装の後に、同じ変異を新しい実装の同じ意味の箇所へ入れ直した（所有の検査の無効化、キー条件を外す、最終塊を飛ばす、先頭行だけ検査、塊の境界の誤りほか 36 件）。結果は §7.2。PR 本文にも載せる。
 
 ## DR-RIP-6　性能の記録と閾値
@@ -205,4 +206,6 @@
 - 再生は、ワイプ（plan が置き換える行を主キーで消す）と挿入の近似である。本物のワイプ・退避（`change_events` の退避と戻し）・binding・feed は再生しない。「結果の全表の一致」は、22 の安定した表の中身の一致で確かめた。再生成する token・version と feed・binding の行は比べていない。一般の DB 状態の同等は主張しない。
 - 長い複合主キーの試験は、key の重複で 205 件が所有の検査の前に止まる（所有の検査に届いたのは 135 件）。
 - 変異のうち差分試験の一部（親列・複数表・長い表の 3 つ）だけを回した。最終の実行（全 6 件）は 1 回だけで、4,500 入力、不一致 0 件。差分試験で赤くならない変異は、守りの試験で赤くなった。
+- 差分試験の「後段の拒否」は、既知の文言（型の変換の失敗、feed の identity、伏線が無い、行が無い）の許可リストで見張る。リストに無い文言（新しい照会の SQL エラーなど）は不一致になる。`is_early`（挿入の前の拒否）の判定は、戸口の検査の文言に絞った（`has a foreign project_id`）。
+- 差分試験は `#[ignore]` で、CI では走らない。**`project_snapshots.rs` の復元・所有の検査を変える PR では、手で回す**（`cargo test -p grimodex-db --test snapshot_restore_scope_equivalence --jobs 3 -- --ignored`。約 350 秒）。夜間の全 suite に入れるかは未決。
 - 変更前の実装には、塊に関する変異を入れられない。変更前の実装には、守りの試験 31 件の合格だけを確かめた。

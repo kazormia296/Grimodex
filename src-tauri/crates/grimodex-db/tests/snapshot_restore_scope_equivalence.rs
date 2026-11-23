@@ -1430,8 +1430,20 @@ fn is_early(message: &str) -> bool {
         || message.contains("snapshot contains duplicate")
         || message.contains("missing primary key")
         || message.contains("must belong to the project")
-        || message.contains("project_id")
+        || message.contains("has a foreign project_id")
 }
+
+/// What a later stage of the restore (the feed, the links, the type
+/// conversions of a row) says when it refuses a hostile input. A refusal of
+/// the ownership check's own question (a SQL error: too many variables, no
+/// such column, a syntax error) is none of these, so it cannot hide among
+/// them: an unrecognised message is a mismatch, not a count.
+const KNOWN_LATER_REFUSALS: &[&str] = &[
+    "Invalid column type",
+    "has no identity",
+    "not found in project",
+    "Query returned no rows",
+];
 
 /// Run one hostile input through the real restore and through the replay of the
 /// old one, and compare them.
@@ -1539,6 +1551,14 @@ fn run_case(
                 // The ownership check is not what refused: a later stage of
                 // the restore (the feed, the links) did.
                 class = "both pass the ownership check, a later stage refuses".to_string();
+                if !KNOWN_LATER_REFUSALS
+                    .iter()
+                    .any(|known| new_message.contains(known))
+                {
+                    mismatch(format!(
+                        "old passed every row, new refused with a message no later stage is known to give: {new_message}"
+                    ));
+                }
                 *report
                     .later
                     .entry(new_message.chars().take(100).collect())
