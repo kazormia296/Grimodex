@@ -67,6 +67,8 @@ beforeEach(() => {
     entryType: "character",
     entryName: "アリス",
     sourceRevision,
+    contextMode: "mentioned",
+    hasRestrictedPhases: false,
   });
 });
 
@@ -208,6 +210,8 @@ describe("runImpactReview", () => {
       entryType: "character",
       entryName: "アリス",
       sourceRevision,
+      contextMode: "mentioned",
+      hasRestrictedPhases: false,
     };
     const changed = {
       ...initial,
@@ -255,6 +259,8 @@ describe("runImpactReview", () => {
       entryType: "character",
       entryName: "アリス",
       sourceRevision,
+      contextMode: "mentioned",
+      hasRestrictedPhases: false,
     };
     vi.mocked(buildCodexSnapshot)
       .mockResolvedValueOnce(initial)
