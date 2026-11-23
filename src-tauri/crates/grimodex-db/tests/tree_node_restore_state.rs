@@ -496,7 +496,7 @@ fn restore_state_rejects_unknown_incomplete_and_mistyped_keys() {
             json!({ "bogus": "x" }),
             "unknown field `bogus`",
         ),
-        // 年表の 7 列は 1 組：片方だけ・形違い・整合しない組は拒む。
+        // 年表の 7 列は 1 組：片方だけ・形違いの組は拒む（範囲の整合は見ない。下の忠実な復元の試験）。
         (
             "chronicle key alone",
             json!({ "chronicleStartTime": 5 }),

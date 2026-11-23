@@ -1597,7 +1597,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         const fields: TreeRestoredFields = {};
         // The link was left off: the store must not keep a `sourceUri` the
         // database row no longer has (two Scenes on one file in the store).
-        if (!restoreSource && (snapshot?.sourceUri ?? node.sourceUri) != null) {
+        if (restoreSource && snapshot) {
+          // What went into the row is the database's value read before the
+          // delete; the store's node may be older.
+          fields.sourceUri = snapshot.sourceUri;
+          fields.sourceMtime = snapshot.sourceMtime ?? null;
+        } else if ((snapshot?.sourceUri ?? node.sourceUri) != null) {
           fields.sourceUri = null;
           fields.sourceMtime = null;
         }

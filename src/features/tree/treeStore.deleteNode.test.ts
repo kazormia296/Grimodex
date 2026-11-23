@@ -441,6 +441,27 @@ describe("treeStore.deleteNode undo restores the row the database held (DR-UND-1
     vi.mocked(api.findNodeIdBySourceUri).mockResolvedValue(null);
   });
 
+  it("mirrors the link that went into the row, not an older one the store held", async () => {
+    // The store's node is behind the database (a file was renamed outside the
+    // store); the row gets the database's value, so the store must take it.
+    await deleteAndUndo([
+      {
+        ...sceneNode,
+        sourceUri: "external-root://r/older.md",
+        sourceMtime: "2025-01-01T00:00:00Z",
+      },
+    ]);
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).toMatchObject({
+      sourceUri: "external-root://r/a.md",
+    });
+    expect(
+      useTreeStore.getState().nodes.find((n) => n.id === "scene-a"),
+    ).toMatchObject({
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+    });
+  });
+
   it("falls back to the create fields when the snapshot cannot be read", async () => {
     vi.mocked(api.loadTreeNodeRestoreSnapshot).mockRejectedValue(
       new Error("db unavailable"),

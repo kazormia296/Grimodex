@@ -24,6 +24,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
+import type { MainIssuedCallerIdentity } from "./profileEgress.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
 import { readReadInputs } from "../shared/readDomain/core/readInputsReader.js";
 import { createMainReadDb } from "./mastraRead/db.js";
@@ -97,7 +98,14 @@ afterAll(async () => {
 interface Rig {
   route: (cmd: string, args?: Record<string, unknown>) => Promise<Envelope>;
   backend: NativeBackendInstance;
-  identity: unknown;
+  /**
+   * Issues Main's caller identity for the sender. It must be called after
+   * `open_workspace`: the identity names the open workspace, and opening one
+   * invalidates every identity issued before (`profileEgress.ts`), after which
+   * Native's `db_execute` refuses it. `mastraReadParity.pipeline.spec.ts` issues
+   * it the same way, after opening.
+   */
+  issueIdentity: () => MainIssuedCallerIdentity;
 }
 
 async function startMain(appData: string): Promise<Rig> {
@@ -129,7 +137,7 @@ async function startMain(appData: string): Promise<Rig> {
   };
   return {
     backend,
-    identity: gate.issueCallerIdentity(7),
+    issueIdentity: () => gate.issueCallerIdentity(7),
     route: (cmd, args) => handler(event, cmd, args ?? {}),
   };
 }
@@ -204,7 +212,7 @@ interface TreeApiShape {
     options?: Record<string, unknown>,
   ): Promise<unknown>;
   loadTreeNodeRestoreSnapshot(
-    id: string,
+    nodeId: string,
   ): Promise<TreeNodeRestoreSnapshotShape | null>;
   historyWriteContext(origin: "undo" | "redo", receipt: unknown): unknown;
 }
@@ -214,6 +222,10 @@ async function treeApi(): Promise<TreeApiShape> {
 
 interface Workspace {
   rig: Rig;
+  /** Issued after the workspace was opened (see `Rig.issueIdentity`). */
+  identity: MainIssuedCallerIdentity;
+  /** A read-only handle onto the real Backend, as Main's read adapter takes it. */
+  readBackend: Pick<NapiBackendLike, "dbExecute">;
   projectId: string;
   codexId: string;
   rows: <T = Record<string, unknown>>(
@@ -266,7 +278,17 @@ function workspace(): Promise<Workspace> {
       "@/application/project/currentProjectAuthority",
     );
     publishCurrentProjectId(seeded.projectId);
-    return { rig, projectId: seeded.projectId, codexId, rows };
+    return {
+      rig,
+      identity: rig.issueIdentity(),
+      readBackend: {
+        dbExecute: (...args: Parameters<NapiBackendLike["dbExecute"]>) =>
+          rig.backend.dbExecute(...args),
+      },
+      projectId: seeded.projectId,
+      codexId,
+      rows,
+    };
   })();
   return shared;
 }
@@ -514,13 +536,7 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
     await makeScene(w, "undo-scene-5");
     const read = async () => {
       const db = createCoreReadDb(
-        createMainReadDb({
-          backend: {
-            dbExecute: (...args: Parameters<NapiBackendLike["dbExecute"]>) =>
-              w.rig.backend.dbExecute(...args),
-          },
-          identity: w.rig.identity,
-        } as never),
+        createMainReadDb({ backend: w.readBackend, identity: w.identity }),
       );
       const inputs = await readReadInputs(db, {
         projectId: w.projectId,

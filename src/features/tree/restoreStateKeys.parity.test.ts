@@ -138,3 +138,80 @@ describe("restoreState key set", () => {
     });
   });
 });
+
+// The real-addon spec (electron/main/treeUndoRestore.pipeline.spec.ts) reaches
+// the renderer API through an untyped import, so it carries a hand-written
+// `TreeApiShape`. Its method names and parameter names (in order, a prefix of
+// the real list: the spec may leave out trailing options) are compared with the
+// declarations in api.ts, so a changed signature is caught here and not at the
+// real-addon run.
+describe("the real-addon spec's TreeApiShape matches api.ts", () => {
+  const spec = read("electron/main/treeUndoRestore.pipeline.spec.ts");
+  const api = read("src/features/tree/api.ts");
+
+  const paramNames = (list: string): string[] => {
+    const names: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const ch of list) {
+      if ("<([{".includes(ch)) depth += 1;
+      if (">)]}".includes(ch)) depth -= 1;
+      if (ch === "," && depth === 0) {
+        names.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim() !== "") names.push(current);
+    return names
+      .map((part) => /^\s*(\w+)\??\s*:/.exec(part)?.[1])
+      .filter((name): name is string => name !== undefined);
+  };
+
+  const shape = block(spec, /interface TreeApiShape \{/, "\n}");
+  const methods = [...shape.matchAll(/^ {2}(\w+)\(([\s\S]*?)\):\s*[^;]+;/gm)];
+
+  it("lists the methods it calls", () => {
+    expect(methods.map((m) => m[1]).sort()).toEqual(
+      [
+        "createNode",
+        "deleteNode",
+        "getNode",
+        "historyWriteContext",
+        "loadTreeNodeRestoreSnapshot",
+        "updateNode",
+        "updateTemporalScene",
+      ].sort(),
+    );
+  });
+
+  for (const name of [
+    "createNode",
+    "deleteNode",
+    "getNode",
+    "historyWriteContext",
+    "loadTreeNodeRestoreSnapshot",
+    "updateNode",
+    "updateTemporalScene",
+  ]) {
+    it(`${name}: same parameter names, in order`, () => {
+      const declared = new RegExp(
+        `export (?:async )?function ${name}\\(([\\s\\S]*?)\\)(?::|\\s*\\{)`,
+      ).exec(api);
+      expect(declared, `${name} in api.ts`).not.toBeNull();
+      const real = paramNames(declared![1]!);
+      const hand = methods.find((m) => m[1] === name);
+      expect(hand, `${name} in TreeApiShape`).toBeDefined();
+      const mine = paramNames(hand![2]!);
+      expect(real.slice(0, mine.length)).toEqual(mine);
+      // Every required parameter of the real function is in the spec's shape.
+      expect(mine.length).toBeGreaterThanOrEqual(
+        real.filter(
+          (_, index) =>
+            !/^\s*\w+\?/.test(declared![1]!.split(",")[index] ?? ""),
+        ).length,
+      );
+    });
+  }
+});
