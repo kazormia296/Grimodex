@@ -1,8 +1,6 @@
 // MP-4b PR-7a: the four chronicle tools of the read core, on in-memory ports.
-// What is fixed here is the behaviour moved from the renderer (the project is
-// checked before the arguments, the order of the reads, the secrecy rule, the
-// shape and key order of every result); the equality with the renderer is the
-// PR-0 golden (`readCore.mainAdapter.test.ts`, the real-addon spec). Relative
+// These tests fix the project gate, read order, CSR/1 Codex visibility rule,
+// and result shape. Renderer parity is updated separately in PR-3d. Relative
 // imports only (the electron vitest config has no `@` alias).
 import { describe, expect, it, vi } from "vitest";
 
@@ -119,7 +117,10 @@ function makeCtx(world: World = {}) {
       log.push("getCodexNames");
       return names;
     }),
-    listHiddenCodexIds: vi.fn(async () => new Set<string>()),
+    listHiddenCodexIds: vi.fn(async (_p: string, _ids: readonly string[]) => {
+      log.push("listHiddenCodexIds");
+      return new Set<string>();
+    }),
     getReadingOrder: vi.fn((ns: readonly CoreTreeNode[]) => {
       log.push("getReadingOrder");
       return (
@@ -129,9 +130,11 @@ function makeCtx(world: World = {}) {
         )
       );
     }),
-    listParticipants: vi.fn(async (_p: string, _ids?: string[]) => {
+    listParticipants: vi.fn(async (_p: string, ids?: string[]) => {
       log.push("listParticipants");
-      return world.participants ?? [];
+      return (world.participants ?? []).filter(
+        (participant) => !ids || ids.includes(participant.eventId),
+      );
     }),
     listRelations: vi.fn(async (_p: string) => {
       log.push("listRelations");
@@ -212,13 +215,11 @@ describe("the project is checked before the arguments and before any read", () =
     const c = makeCtx({ events: [event("e1")] });
     await c.executors.list_events({});
     expect(c.chronicle.getEvents).toHaveBeenCalledWith("p1");
-    for (const fn of [
-      c.chronicle.getCodexNames,
-      c.chronicle.getCalendar,
-      c.chronicle.getSceneEvents,
-    ]) {
+    for (const fn of [c.chronicle.getCodexNames, c.chronicle.getCalendar]) {
       expect(fn).toHaveBeenCalledWith("p1");
     }
+    expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
+    expect(c.chronicle.listHiddenCodexIds).not.toHaveBeenCalled();
   });
 });
 
@@ -269,6 +270,47 @@ describe("list_events", () => {
     ]);
   });
 
+  it("keeps an event whose primary character is hidden and replaces only the name with null", async () => {
+    const hiddenWorld: World = {
+      events: [
+        event("e-hidden-person", { primaryCodexId: "c1" }),
+        event("e-hidden-person-again", { primaryCodexId: "c1" }),
+      ],
+      names: { c1: "Alice" },
+    };
+    const baseline = await makeCtx(hiddenWorld).executors.list_events({});
+    expect(
+      (
+        baseline.content as {
+          events: Array<{ primaryCharacter: string | null }>;
+        }
+      ).events.map((e) => e.primaryCharacter),
+    ).toEqual(["Alice", "Alice"]);
+
+    const c = makeCtx(hiddenWorld);
+    c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+      c.log.push("listHiddenCodexIds");
+      return new Set(ids);
+    });
+    const r = await c.executors.list_events({});
+    const events = (
+      r.content as {
+        events: Array<{ id: string; primaryCharacter: string | null }>;
+      }
+    ).events;
+    expect(events).toMatchObject([
+      { id: "e-hidden-person", primaryCharacter: null },
+      { id: "e-hidden-person-again", primaryCharacter: null },
+    ]);
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
+  });
+
+  it("skips Codex visibility when no event has a primary Codex id", async () => {
+    const c = makeCtx({ events: [event("e1")] });
+    await c.executors.list_events({});
+    expect(c.chronicle.listHiddenCodexIds).not.toHaveBeenCalled();
+  });
+
   it("writes the date with the calendar, and null without a calendar or without a granularity", async () => {
     const withCal = await makeCtx(world).executors.list_events({});
     const dated = (
@@ -310,9 +352,15 @@ describe("list_events", () => {
     expect(await kinds("generic")).toEqual(["e3"]);
     expect(await kinds("other")).toEqual(["e1", "e2", "e3"]);
     expect(await kinds(undefined)).toEqual(["e1", "e2", "e3"]);
+
+    const birthOnly = makeCtx(world);
+    await birthOnly.executors.list_events({ kind: "birth" });
+    expect(birthOnly.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [
+      "c1",
+    ]);
   });
 
-  it("reads in the order getEvents, getCodexNames, getCalendar, then the tree state and getSceneEvents (the secrecy check)", async () => {
+  it("reads events, names, and calendar before Codex visibility, without a secrecy tree/order/scene read", async () => {
     const c = makeCtx(world);
     await c.executors.list_events({});
     expect(c.log).toEqual([
@@ -320,14 +368,18 @@ describe("list_events", () => {
       "getEvents",
       "getCodexNames",
       "getCalendar",
-      "getTreeState", // visibleEventIds: the state is read, then the bridges are awaited
-      "getReadingOrder",
-      "getSceneEvents",
+      "listHiddenCodexIds",
     ]);
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [
+      "c1",
+      "c-gone",
+    ]);
+    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+    expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
   });
 });
 
-describe("the secrecy rule of the chronicle (a secret event is hidden until the reading position reaches its reveal scene)", () => {
+describe("event secrecy is retired from the chronicle read tools", () => {
   const secretWorld = (over: World = {}): World => ({
     events: [
       event("open"),
@@ -344,90 +396,15 @@ describe("the secrecy rule of the chronicle (a secret event is hidden until the 
       }
     ).events.map((e) => e.id);
 
-  it("hides before the reveal scene, shows from it on, and keeps a secret with no reveal hidden for good", async () => {
-    expect(await ids(makeCtx(secretWorld({ activeSceneId: "s1" })))).toEqual([
-      "open",
-    ]);
-    expect(await ids(makeCtx(secretWorld({ activeSceneId: "s2" })))).toEqual([
-      "open",
-      "hid",
-    ]);
-    expect(await ids(makeCtx(secretWorld({ activeSceneId: "s3" })))).toEqual([
-      "open",
-      "hid",
-    ]);
-  });
-
-  it("fails closed when the position is unknown: no active scene, or a scene that is not in the reading order", async () => {
-    expect(await ids(makeCtx(secretWorld({ activeSceneId: null })))).toEqual([
-      "open",
-    ]);
-    expect(
-      await ids(makeCtx(secretWorld({ activeSceneId: "not-a-scene" }))),
-    ).toEqual(["open"]);
-  });
-
-  it("fails closed when the reading order is EMPTY: nothing the port does not know about reveals a secret", async () => {
-    // A reader that lost the reading order (an empty map) must hide every
-    // secret event, even for a scene that would otherwise have reached it.
-    expect(
-      await ids(
-        makeCtx(secretWorld({ activeSceneId: "s3", readingOrder: new Map() })),
-      ),
-    ).toEqual(["open"]);
-  });
-
-  it("derives the reveal from the first stamped scene in the reading order when there is no explicit one", async () => {
-    const w = secretWorld({
-      events: [event("auto", { secret: true, revealSceneId: null })],
-      sceneEvents: [
-        { sceneId: "s3", eventId: "auto" },
-        { sceneId: "s2", eventId: "auto" },
-      ],
-    });
-    expect(await ids(makeCtx({ ...w, activeSceneId: "s1" }))).toEqual([]);
-    expect(await ids(makeCtx({ ...w, activeSceneId: "s2" }))).toEqual(["auto"]);
-  });
-
-  it("copies the reading order of the port before it uses it (the port's answer is never the object the rule reads)", async () => {
-    // An object that can only be iterated: `new Map(it)` works on it, `.has`
-    // does not exist. A core that passed the port's answer on would throw.
-    const iterableOnly = {
-      [Symbol.iterator]: () =>
-        new Map([
-          ["s1", 0],
-          ["s2", 1],
-          ["s3", 2],
-        ])[Symbol.iterator](),
-    } as unknown as ReadonlyMap<string, number>;
-    const w = secretWorld({ activeSceneId: "s2", readingOrder: iterableOnly });
-    expect(await ids(makeCtx(w))).toEqual(["open", "hid"]);
-    const detail = makeCtx({ ...w, events: [event("e1")] });
-    await expect(
-      detail.executors.get_event_detail({ eventId: "e1" }),
-    ).resolves.toMatchObject({ summary: "Event 'title-e1'" });
-    const state = makeCtx({ ...w, events: [event("e1")] });
-    await expect(
-      state.executors.get_chronicle_state({ sceneId: "s2" }),
-    ).resolves.toMatchObject({ name: "get_chronicle_state" });
-  });
-
-  it("hands the SAME nodes array of the tree state to the reading-order port (the renderer memoizes by its reference)", async () => {
-    for (const run of [
-      (c: ReturnType<typeof makeCtx>) => c.executors.list_events({}),
-      (c: ReturnType<typeof makeCtx>) =>
-        c.executors.get_event_detail({ eventId: "e1" }),
-      (c: ReturnType<typeof makeCtx>) =>
-        c.executors.get_character_timeline({ codexId: "c1" }),
-      (c: ReturnType<typeof makeCtx>) => c.executors.get_chronicle_state({}),
-    ]) {
-      const c = makeCtx({ events: [event("e1")] });
-      await run(c);
-      expect(c.chronicle.getReadingOrder).toHaveBeenCalled();
-      for (const call of c.chronicle.getReadingOrder.mock.calls) {
-        expect(call[0]).toBe(c.nodes);
-      }
-    }
+  it("shows every secret event regardless of reveal, active scene, or reading order", async () => {
+    const c = makeCtx(
+      secretWorld({ activeSceneId: null, readingOrder: new Map() }),
+    );
+    expect(await ids(c)).toEqual(["open", "hid", "never"]);
+    expect(c.chronicle.listHiddenCodexIds).not.toHaveBeenCalled();
+    expect(c.getTreeState).toHaveBeenCalledTimes(1); // project id only
+    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+    expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
   });
 });
 
@@ -449,10 +426,7 @@ describe("get_event_detail", () => {
       event("hid", { title: "hidden", secret: true, revealSceneId: "s3" }),
     ],
     names: { c1: "Alice", c2: "Place", c3: "Bob" },
-    participants: [
-      { eventId: "e1", codexEntryId: "c3", role: "witness" },
-      { eventId: "e1", codexEntryId: "c-gone", role: null },
-    ],
+    participants: [{ eventId: "e1", codexEntryId: "c3", role: "witness" }],
     sceneEvents: [
       { sceneId: "s2", eventId: "e1" },
       { sceneId: "s-gone", eventId: "e1" },
@@ -480,28 +454,26 @@ describe("get_event_detail", () => {
     expect(c.chronicle.getEvents).not.toHaveBeenCalled();
   });
 
-  it("answers Event not found for an event that does not exist AND for one that is hidden (no oracle)", async () => {
+  it("answers Event not found only when the event does not exist, and reads a secret event", async () => {
     const missing = await makeCtx(detailWorld()).executors.get_event_detail({
       eventId: "nope",
     });
-    const hidden = await makeCtx(detailWorld()).executors.get_event_detail({
+    const secret = await makeCtx(detailWorld()).executors.get_event_detail({
       eventId: "hid",
     });
-    expect(hidden).toEqual(missing);
     expect(missing).toEqual({
       name: "get_event_detail",
       content: null,
       summary: "Event not found",
       tokensUsed: 0,
     });
-    // from its reveal scene on, the same event is found
-    const later = await makeCtx(
-      detailWorld({ activeSceneId: "s3" }),
-    ).executors.get_event_detail({ eventId: "hid" });
-    expect(later.summary).toBe("Event 'hidden'");
+    expect(secret.summary).toBe("Event 'hidden'");
+    expect(
+      (secret.content as { relations: unknown[] }).relations,
+    ).toContainEqual({ cause: "title-e1", effect: "hidden" });
   });
 
-  it("returns the detail with the key order, names, scene titles, and only the relations whose both ends are visible", async () => {
+  it("returns the detail with the key order, names, scene titles, and every causal title", async () => {
     const c = makeCtx(detailWorld());
     const r = await c.executors.get_event_detail({ eventId: " e1 " });
     expect(r.summary).toBe("Event 'title-e1'");
@@ -531,16 +503,16 @@ describe("get_event_detail", () => {
     expect(content.location).toBe("Place");
     expect(content.participants).toEqual([
       { codexId: "c3", name: "Bob", role: "witness" },
-      { codexId: "c-gone", name: null, role: null },
     ]);
     expect(content.scenes).toEqual([
       { sceneId: "s2", title: "scene-s2" },
       { sceneId: "s-gone", title: null },
     ]);
-    // e1->hid is dropped (the other end is hidden); both directions of e1<->e2 stay.
+    // Causal partners are titles only and are not filtered by event secrecy.
     expect(content.relations).toEqual([
       { cause: "title-e1", effect: "effect" },
       { cause: "effect", effect: "title-e1" },
+      { cause: "title-e1", effect: "hidden" },
     ]);
     expect(typeof content.startDate).toBe("string");
     expect(typeof content.endDate).toBe("string");
@@ -548,22 +520,57 @@ describe("get_event_detail", () => {
     expect(c.chronicle.listParticipants).toHaveBeenCalledWith("p1", ["e1"]);
   });
 
-  it("reads getEvents, then the secrecy check (tree state, getSceneEvents), then the five loads", async () => {
+  it("hides Codex names and participant rows while keeping the event and causal titles", async () => {
+    const world = detailWorld();
+    const baseline = await makeCtx(world).executors.get_event_detail({
+      eventId: "e1",
+    });
+    expect(baseline.content).toMatchObject({
+      primaryCharacter: "Alice",
+      location: "Place",
+      participants: [{ codexId: "c3", name: "Bob", role: "witness" }],
+    });
+
+    const c = makeCtx(world);
+    c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+      c.log.push("listHiddenCodexIds");
+      return new Set(ids);
+    });
+    const r = await c.executors.get_event_detail({ eventId: "e1" });
+    const content = r.content as Record<string, unknown>;
+    expect(content).toMatchObject({
+      id: "e1",
+      primaryCharacter: null,
+      location: null,
+      participants: [],
+      relations: [
+        { cause: "title-e1", effect: "effect" },
+        { cause: "effect", effect: "title-e1" },
+        { cause: "title-e1", effect: "hidden" },
+      ],
+    });
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [
+      "c1",
+      "c2",
+      "c3",
+    ]);
+  });
+
+  it("reads the five detail sources before Codex visibility and scene titles", async () => {
     const c = makeCtx(detailWorld());
     await c.executors.get_event_detail({ eventId: "e1" });
     expect(c.log).toEqual([
       "getTreeState",
       "getEvents",
-      "getTreeState",
-      "getReadingOrder",
-      "getSceneEvents",
       "getCodexNames",
       "listParticipants",
       "getSceneEvents",
       "listRelations",
       "getCalendar",
+      "listHiddenCodexIds",
       "getTreeState", // the nodes, for the scene titles
     ]);
+    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
   });
 });
 
@@ -609,17 +616,22 @@ describe("get_character_timeline", () => {
     expect(c.chronicle.getEvents).not.toHaveBeenCalled();
   });
 
-  it("lists the involved visible events by ordinal, with the age from the earliest visible birth (a hidden birth is no base)", async () => {
+  it("lists every involved event by ordinal and uses the earliest birth, including a secret birth", async () => {
     const r = await makeCtx(timelineWorld).executors.get_character_timeline({
       codexId: "c1",
     });
-    expect(r.summary).toBe("3 events for Alice");
+    expect(r.summary).toBe("4 events for Alice");
     const content = r.content as {
       character: string;
       events: Array<Record<string, unknown>>;
     };
     expect(Object.keys(content)).toEqual(["character", "events"]);
-    expect(content.events.map((e) => e.id)).toEqual(["birth", "with", "late"]);
+    expect(content.events.map((e) => e.id)).toEqual([
+      "hidden-birth",
+      "birth",
+      "with",
+      "late",
+    ]);
     expect(Object.keys(content.events[0]!)).toEqual([
       "id",
       "title",
@@ -628,32 +640,55 @@ describe("get_character_timeline", () => {
       "startTime",
       "ageAtEvent",
     ]);
-    // base: 360 (the hidden birth at 0 is not one), 360 days per year
-    expect(content.events.map((e) => e.ageAtEvent)).toEqual([0, 0, 1]);
-    // from its reveal scene on, the earlier birth is the base
-    const later = await makeCtx({
-      ...timelineWorld,
-      activeSceneId: "s3",
-    }).executors.get_character_timeline({ codexId: "c1" });
-    expect(
-      (later.content as { events: Array<{ ageAtEvent: unknown }> }).events.map(
-        (e) => e.ageAtEvent,
-      ),
-    ).toEqual([0, 1, 1, 2]);
+    // base: the secret birth at 0, 360 days per year
+    expect(content.events.map((e) => e.ageAtEvent)).toEqual([0, 1, 1, 2]);
   });
 
-  it("gives no age without a calendar, and names an unknown character by its id", async () => {
+  it("returns the same not-found result for a hidden id and an absent id", async () => {
+    const baseline = await makeCtx(
+      timelineWorld,
+    ).executors.get_character_timeline({
+      codexId: "c1",
+    });
+    expect(baseline.content).toMatchObject({ character: "Alice" });
+
+    for (const codexId of ["c1", "not-in-project"]) {
+      const c = makeCtx(timelineWorld);
+      c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+        c.log.push("listHiddenCodexIds");
+        return new Set(ids);
+      });
+      await expect(
+        c.executors.get_character_timeline({ codexId }),
+      ).resolves.toEqual({
+        name: "get_character_timeline",
+        content: null,
+        summary: "Character not found",
+        tokensUsed: 0,
+      });
+      expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [
+        codexId,
+      ]);
+      expect(c.chronicle.listHiddenCodexIds.mock.calls[0]).toHaveLength(2);
+    }
+  });
+
+  it("gives no age without a calendar", async () => {
     const r = await makeCtx({
       ...timelineWorld,
       calendar: null,
-      names: {},
     }).executors.get_character_timeline({ codexId: "c1" });
     const content = r.content as {
       character: string;
       events: Array<{ ageAtEvent: unknown }>;
     };
-    expect(content.character).toBe("c1");
-    expect(content.events.map((e) => e.ageAtEvent)).toEqual([null, null, null]);
+    expect(content.character).toBe("Alice");
+    expect(content.events.map((e) => e.ageAtEvent)).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
   });
 
   const timelineOf = async (world: World) => {
@@ -698,7 +733,7 @@ describe("get_character_timeline", () => {
     ]);
   });
 
-  it("takes the smallest start time of the visible births as the base, wherever it is in the list (not the first and not the last)", async () => {
+  it("takes the smallest start time of every birth as the base, wherever it is in the list", async () => {
     const birth = (id: string, ordinal: string, startTime: number) =>
       event(id, {
         ordinal,
@@ -735,7 +770,7 @@ describe("get_character_timeline", () => {
     expect(events.map((e) => e.ordinal)).toEqual(["Zz", "a0", "a10", "a2"]);
   });
 
-  it("loads the four sources together, then the secrecy check", async () => {
+  it("loads the four sources together, then checks only the requested Codex id", async () => {
     const c = makeCtx(timelineWorld);
     await c.executors.get_character_timeline({ codexId: "c1" });
     expect(c.log).toEqual([
@@ -744,11 +779,12 @@ describe("get_character_timeline", () => {
       "listParticipants",
       "getCalendar",
       "getCodexNames",
-      "getTreeState",
-      "getReadingOrder",
-      "getSceneEvents",
+      "listHiddenCodexIds",
     ]);
     expect(c.chronicle.listParticipants).toHaveBeenCalledWith("p1");
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
+    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+    expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
   });
 });
 
@@ -827,17 +863,137 @@ describe("get_chronicle_state", () => {
     expect(omitted.getTreeState).toHaveBeenCalledTimes(3);
   });
 
-  it("takes the model's sceneId as the position of the secrecy check, over the active scene (an existing behaviour, moved as it is)", async () => {
+  it("copies the anchor reading order and passes it the tree's nodes array", async () => {
+    const iterableOnly = {
+      [Symbol.iterator]: () =>
+        new Map([
+          ["s1", 0],
+          ["s2", 1],
+          ["s3", 2],
+        ])[Symbol.iterator](),
+    } as unknown as ReadonlyMap<string, number>;
+    const c = makeCtx({
+      events: [event("e1")],
+      sceneEvents: [{ sceneId: "s2", eventId: "e1" }],
+      readingOrder: iterableOnly,
+    });
+    const r = await c.executors.get_chronicle_state({ sceneId: "s3" });
+    expect(r.summary).toBe("Chronicle state at scene (proxy)");
+    expect(c.chronicle.getReadingOrder).toHaveBeenCalledWith(c.nodes);
+    expect(c.chronicle.listHiddenCodexIds).not.toHaveBeenCalled();
+  });
+
+  it("uses the model's sceneId for the anchor, while Codex visibility takes only project and ids", async () => {
     // active = s3 (the reveal scene s2 is behind it), the model asks for s1.
-    const asked = await makeCtx(stateWorld()).executors.get_chronicle_state({
+    const askedCtx = makeCtx(stateWorld());
+    const asked = await askedCtx.executors.get_chronicle_state({
       sceneId: "s1",
     });
     expect(JSON.stringify(asked.content)).not.toContain("SECRET-TITLE");
-    const active = await makeCtx(stateWorld()).executors.get_chronicle_state(
-      {},
-    );
+    const activeCtx = makeCtx(stateWorld());
+    const active = await activeCtx.executors.get_chronicle_state({});
     expect(JSON.stringify(active.content)).toContain("SECRET-TITLE");
     expect(active.name).toBe("get_chronicle_state");
+    for (const c of [askedCtx, activeCtx]) {
+      expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
+      expect(c.chronicle.listHiddenCodexIds.mock.calls[0]).toHaveLength(2);
+    }
+  });
+
+  it("removes hidden people before selecting snapshot characters", async () => {
+    const baseline = await makeCtx(stateWorld()).executors.get_chronicle_state({
+      sceneId: "s3",
+    });
+    expect(
+      (baseline.content as { characters: Array<Record<string, unknown>> })
+        .characters,
+    ).toContainEqual(expect.objectContaining({ codexId: "c1", name: "Alice" }));
+
+    const c = makeCtx(stateWorld());
+    c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+      c.log.push("listHiddenCodexIds");
+      return new Set(ids);
+    });
+    const r = await c.executors.get_chronicle_state({ sceneId: "s1" });
+    const characters = (
+      r.content as { characters: Array<Record<string, unknown>> }
+    ).characters;
+    expect(characters).toEqual([]);
+    expect(JSON.stringify(characters)).not.toContain("Alice");
+    expect(JSON.stringify(characters)).not.toContain("c1");
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
+    expect(c.chronicle.listHiddenCodexIds.mock.calls[0]).toHaveLength(2);
+  });
+
+  it("does not restore an older location when the latest location Codex is hidden", async () => {
+    const world: World = {
+      events: [
+        event("old-place", {
+          ordinal: "a0",
+          startTime: 100,
+          primaryCodexId: "c1",
+          locationCodexId: "old-place-id",
+        }),
+        event("hidden-place", {
+          ordinal: "a1",
+          startTime: 200,
+          primaryCodexId: "c1",
+          locationCodexId: "hidden-place-id",
+        }),
+      ],
+      sceneEvents: [{ sceneId: "s3", eventId: "hidden-place" }],
+      names: {
+        c1: "Alice",
+        "old-place-id": "Old Place",
+        "hidden-place-id": "Hidden Place",
+      },
+    };
+    const baseline = await makeCtx(world).executors.get_chronicle_state({
+      sceneId: "s3",
+    });
+    expect(
+      (baseline.content as { characters: Array<{ location: string | null }> })
+        .characters[0]?.location,
+    ).toBe("Hidden Place");
+
+    const c = makeCtx(world);
+    c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+      c.log.push("listHiddenCodexIds");
+      return new Set(ids.filter((id) => id === "hidden-place-id"));
+    });
+    const r = await c.executors.get_chronicle_state({ sceneId: "s3" });
+    const characters = (
+      r.content as {
+        characters: Array<{
+          codexId: string;
+          name: string;
+          location: string | null;
+        }>;
+      }
+    ).characters;
+    expect(characters).toEqual([
+      {
+        codexId: "c1",
+        name: "Alice",
+        status: "unknown",
+        age: null,
+        location: null,
+      },
+    ]);
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [
+      "c1",
+      "hidden-place-id",
+      "old-place-id",
+    ]);
+  });
+
+  it("skips Codex visibility when the snapshot has no Codex candidates", async () => {
+    const c = makeCtx({
+      events: [event("e1")],
+      sceneEvents: [{ sceneId: "s3", eventId: "e1" }],
+    });
+    await c.executors.get_chronicle_state({ sceneId: "s3" });
+    expect(c.chronicle.listHiddenCodexIds).not.toHaveBeenCalled();
   });
 
   it("anchors on the scene's own date when it has one (the nodes carry the chronicle columns), and on the stamped events otherwise", async () => {
@@ -916,7 +1072,7 @@ describe("get_chronicle_state", () => {
     expect(r.summary).toBe("Chronicle state at scene (none)");
   });
 
-  it("loads the five sources together after the events and the order, with the nodes read last", async () => {
+  it("keeps the tree and reading-order reads for the anchor, then checks Codex visibility", async () => {
     const c = makeCtx(stateWorld());
     await c.executors.get_chronicle_state({ sceneId: "s3" });
     expect(c.log).toEqual([
@@ -929,11 +1085,34 @@ describe("get_chronicle_state", () => {
       "getCodexNames",
       "getTreeState",
       "getReadingOrder",
+      "listHiddenCodexIds",
     ]);
   });
 
-  it("is the result of the renderer's own functions for the same data (token count of the content included)", async () => {
+  it("counts tokens from the structured snapshot", async () => {
     const r = await makeCtx(stateWorld()).executors.get_chronicle_state({});
     expect(r.tokensUsed).toBe(JSON.stringify(r.content).length);
+  });
+});
+
+describe("Codex visibility port failures", () => {
+  it("propagates a rejected visibility check from each chronicle read tool", async () => {
+    const run = [
+      (c: ReturnType<typeof makeCtx>) => c.executors.list_events({}),
+      (c: ReturnType<typeof makeCtx>) =>
+        c.executors.get_event_detail({ eventId: "e1" }),
+      (c: ReturnType<typeof makeCtx>) =>
+        c.executors.get_character_timeline({ codexId: "c1" }),
+      (c: ReturnType<typeof makeCtx>) => c.executors.get_chronicle_state({}),
+    ];
+    for (const invoke of run) {
+      const c = makeCtx({
+        events: [event("e1", { primaryCodexId: "c1" })],
+        names: { c1: "Alice" },
+      });
+      const failure = new Error("Codex visibility failed");
+      c.chronicle.listHiddenCodexIds.mockRejectedValue(failure);
+      await expect(invoke(c)).rejects.toBe(failure);
+    }
   });
 });
