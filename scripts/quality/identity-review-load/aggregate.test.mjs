@@ -1,6 +1,13 @@
 // 集計の試験（合成の cell・rows。実在の原稿・名簿は使わない）。
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
@@ -26,6 +33,8 @@ import {
   renderRecordsMarkdown,
   storedNotes,
   storedUnreviewedState,
+  loadInputs,
+  readBCellResults,
 } from "./aggregate.mjs";
 import {
   REVIEWED_WORKS,
@@ -1715,4 +1724,44 @@ test("DR-ILM-41：markdown の出所の説明は、各状態の意味と verifie
   assert.match(md, /absent＝無い・壊れている・空・文字列でない要素がある/u);
   assert.match(md, /stale は hash の欄が壊れている file も含む/u);
   assert.match(md, /verified は scenes の同一性だけを言い/u);
+});
+
+test("B の集計の入力：cell の結果（schemaVersion が identity-load-measure-b/）だけを読み、key-store-check.json・失敗の file を B の結果として数えない（版が混ざって止まる欠陥の再発防止）", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "idl-agg-"));
+  try {
+    const dir = path.join(root, "measure-b-b1");
+    mkdirSync(dir, { recursive: true });
+    const cell = (work) => ({
+      schemaVersion: "identity-load-measure-b/1",
+      metricDefinitionVersion: B_METRIC_DEFINITION_VERSION,
+      work,
+      level: "L0",
+      status: "ok",
+    });
+    writeFileSync(path.join(dir, "g-ja-2-L0.json"), JSON.stringify(cell("g-ja-2")));
+    writeFileSync(path.join(dir, "m-ja-2-L0.json"), JSON.stringify(cell("m-ja-2")));
+    // cell の結果ではない file：key store の前後比較、出力を出せなかった cell、版の欄の無い旧い記録。
+    writeFileSync(
+      path.join(dir, "key-store-check.json"),
+      JSON.stringify({ productKeyStoreUnchanged: true }),
+    );
+    writeFileSync(
+      path.join(dir, "g-ja-3-L0.failed.json"),
+      JSON.stringify({ status: "output-withheld" }),
+    );
+    writeFileSync(path.join(dir, "legacy.json"), JSON.stringify({ work: "x" }));
+    assert.deepEqual(
+      readBCellResults(dir).map((r) => r.work),
+      ["g-ja-2", "m-ja-2"],
+    );
+    // 無い dir は空。
+    assert.deepEqual(readBCellResults(path.join(root, "nothing")), []);
+    // loadInputs（B1 と B2 の読み取り）も cell の結果だけ。
+    const inputs = loadInputs(root);
+    assert.equal(inputs.b1.length, 2);
+    assert.equal(inputs.b2.length, 0);
+    assert.ok(inputs.b1.every((r) => r.metricDefinitionVersion === B_METRIC_DEFINITION_VERSION));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

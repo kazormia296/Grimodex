@@ -1033,9 +1033,21 @@ export function loadInputs(root) {
   return {
     cells,
     rowsByCell,
-    b1: readJsonDir(path.join(root, "measure-b-b1")),
-    b2: readJsonDir(path.join(root, "measure-b-b2")),
+    // B の dir には cell の結果のほかに、key store の前後比較の結果（key-store-check.json）が入る。cell の結果
+    // （schemaVersion が identity-load-measure-b/）だけを読む（そうしないと、版の欄が無い file が「旧」として混ざり、
+    // 集計が METRIC_DEFINITION_VERSIONS_MIXED で止まる。2026-11-23 の B1 の本測定の後に初めて実物で当たった）。
+    b1: readBCellResults(path.join(root, "measure-b-b1")),
+    b2: readBCellResults(path.join(root, "measure-b-b2")),
   };
+}
+
+/** 測定 B の出力 dir から、cell の結果（schemaVersion が identity-load-measure-b/ の file）だけを読む。 */
+export function readBCellResults(dir) {
+  return readJsonDir(dir).filter(
+    (result) =>
+      typeof result?.schemaVersion === "string" &&
+      result.schemaVersion.startsWith("identity-load-measure-b/"),
+  );
 }
 
 async function main() {
