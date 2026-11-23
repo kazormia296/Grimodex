@@ -2,6 +2,7 @@
 
 use rmcp::model::CallToolResult;
 use rmcp::ErrorData;
+use rusqlite::Connection;
 use schemars;
 use serde::{Deserialize, Serialize};
 
@@ -37,10 +38,7 @@ pub async fn list_tree(
         node_type: params.node_type,
         status: params.status,
     };
-    let nodes = db::list_tree_nodes(&conn, &server.project_id(), &filter).map_err(internal_err)?;
-
-    // Build hierarchy (only makes sense when not filtering by type/status)
-    let nested = build_tree(&nodes, None);
+    let nested = nested_tree(&conn, &server.project_id(), &filter).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&nested).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![
         rmcp::model::ContentBlock::text(json),
@@ -54,6 +52,16 @@ pub async fn get_chapter_summaries(server: &GrimodexServer) -> Result<CallToolRe
     Ok(CallToolResult::success(vec![
         rmcp::model::ContentBlock::text(json),
     ]))
+}
+
+/// Build hierarchy (only makes sense when not filtering by type/status).
+fn nested_tree(
+    conn: &Connection,
+    project_id: &str,
+    filter: &TreeFilter,
+) -> anyhow::Result<Vec<TreeNodeNested>> {
+    let nodes = db::list_tree_nodes(conn, project_id, filter)?;
+    Ok(build_tree(&nodes, None))
 }
 
 fn build_tree(nodes: &[TreeNode], parent_id: Option<&str>) -> Vec<TreeNodeNested> {
@@ -70,4 +78,54 @@ fn build_tree(nodes: &[TreeNode], parent_id: Option<&str>) -> Vec<TreeNodeNested
             children: build_tree(nodes, Some(&n.id)),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::tests::archived_reads::seed_archive_tree;
+    use crate::db::tests::make_simple_db;
+
+    /// `list_tree` の入れ子を (id, 子の id の列) の平らな写しにする。
+    fn shape(nodes: &[TreeNodeNested], out: &mut Vec<(String, Vec<String>)>) {
+        for n in nodes {
+            out.push((
+                n.id.clone(),
+                n.children.iter().map(|c| c.id.clone()).collect(),
+            ));
+            shape(&n.children, out);
+        }
+    }
+
+    fn tree_shape(conn: &Connection) -> Vec<(String, Vec<String>)> {
+        let nested = nested_tree(conn, "p1", &TreeFilter::default()).unwrap();
+        let mut out = Vec::new();
+        shape(&nested, &mut out);
+        out
+    }
+
+    fn row(id: &str, children: &[&str]) -> (String, Vec<String>) {
+        (
+            id.to_string(),
+            children.iter().map(|c| c.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn list_tree_shows_archived_rows_today() {
+        let conn = make_simple_db();
+        seed_archive_tree(&conn);
+        assert_eq!(
+            tree_shape(&conn),
+            vec![
+                row("f-live", &["s1", "a-s2", "s3"]),
+                row("s1", &[]),
+                row("a-s2", &[]),
+                row("s3", &[]),
+                row("a-fold", &["s4"]),
+                row("s4", &[]),
+                row("s5", &[]),
+            ]
+        );
+    }
 }

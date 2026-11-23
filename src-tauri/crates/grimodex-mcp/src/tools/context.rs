@@ -1276,4 +1276,41 @@ mod tests {
             "intent text participates in mention scan"
         );
     }
+
+    // ---------------- archived（lane E2-c / DR-ARC-2） ----------------
+
+    fn archive_world() -> Connection {
+        let conn = make_simple_db();
+        crate::db::tests::archived_reads::seed_archive_tree(&conn);
+        conn
+    }
+
+    fn story_ids(ctx: &WritingContext) -> Vec<&str> {
+        ctx.story_so_far
+            .iter()
+            .map(|s| s.scene_id.as_str())
+            .collect()
+    }
+
+    fn outline_titles(ctx: &WritingContext) -> Vec<&str> {
+        ctx.chapter_outlines
+            .iter()
+            .map(|o| o.title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn writing_context_shows_archived_rows_today() {
+        let conn = archive_world();
+        // 読む順：s1, a-s2（archived）, s3, s4（archived の folder の下）, s5。
+        let ctx = build_writing_context(&conn, "p1", "s5").unwrap().unwrap();
+        assert_eq!(story_ids(&ctx), ["s1", "a-s2", "s3", "s4"]);
+        // 祖先が archived の folder の場面の章の概要。
+        let ctx4 = build_writing_context(&conn, "p1", "s4").unwrap().unwrap();
+        assert_eq!(outline_titles(&ctx4), ["Archived Chapter"]);
+        // 対象の場面が archived でも今は読める。
+        assert!(build_writing_context(&conn, "p1", "a-s2")
+            .unwrap()
+            .is_some());
+    }
 }

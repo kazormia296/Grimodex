@@ -3346,6 +3346,7 @@ pub(crate) mod tests {
                 content TEXT NOT NULL DEFAULT '{}',
                 version INTEGER NOT NULL DEFAULT 1,
                 source_uri TEXT,
+                archived_at TEXT,
                 chronicle_start_time INTEGER,
                 chronicle_start_minute INTEGER,
                 chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
@@ -5386,4 +5387,7 @@ pub(crate) mod tests {
             .unwrap()
             .is_empty());
     }
+
+    // lane E2-c（DR-ARC-2）：archived の場面・folder を読み系 tool から外す試験群。
+    pub(crate) mod archived_reads;
 }
