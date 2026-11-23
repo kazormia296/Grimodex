@@ -85,7 +85,7 @@ use grimodex_db::domain_writes::{
     self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
     CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
     ProjectPatchPayload, ReplaceAuthorshipLanePayload, ScanStagingProjectPublishPayload,
-    SetEntityTagsPayload, TreeNodeCreatePayload, TreeNodeDeletePayload, TreeNodePatchPayload,
+    SetEntityTagsPayload, TreeNodeCreateWire, TreeNodeDeletePayload, TreeNodePatchPayload,
     UndoAiTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
@@ -11359,8 +11359,8 @@ impl Backend {
             Arc::clone(&self.state),
             "payload",
             payload,
-            |db, payload: TreeNodeCreatePayload, context| {
-                domain_writes::tree_node_create_with_authority(db, payload, Some(context))
+            |db, wire: TreeNodeCreateWire, context| {
+                domain_writes::tree_node_create_wire_with_authority(db, wire, Some(context))
             },
         )
         .await

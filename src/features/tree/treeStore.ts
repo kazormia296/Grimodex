@@ -33,7 +33,10 @@ import { getCurrentProjectId } from "@/application/project/currentProjectAuthori
 import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
 import { moveTreeNode } from "@/application/tree/moveTreeNode";
 import { createTreeNode } from "@/application/tree/createTreeNode";
-import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
+import {
+  deleteTreeSubtree,
+  type TreeRestoredFields,
+} from "@/application/tree/deleteTreeSubtree";
 import { requestOpenEditorDocument } from "@/application/editor/editorNavigationRegistry";
 import {
   getCurrentWorkspaceIdentity,
@@ -1532,6 +1535,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       getNodes: () => get().nodes,
       getActiveSceneId: () => get().activeSceneId,
       loadSceneContent: (nodeId) => api.loadSceneContent(nodeId),
+      loadRestoreSnapshot: (nodeId) => api.loadTreeNodeRestoreSnapshot(nodeId),
       deletePersisted: async (nodeId) => {
         const replaying = useGlobalHistoryStore.getState().isReplaying;
         const receipt = await api.deleteNode(nodeId, get().projectId, {
@@ -1541,8 +1545,26 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         });
         if (!replaying) forwardReceipt = receipt;
       },
-      restorePersisted: async (node, content) => {
-        await api.createNode(
+      restorePersisted: async (node, content, snapshot) => {
+        // The external-file link comes back only while no other node points at
+        // the same file: a reconcile between the delete and the Undo makes a
+        // node for a file that has none, and two Scenes on one file are refused
+        // by the mount's own check. When that cannot be determined the link is
+        // left off, which is what an Undo always did.
+        let restoreSource = false;
+        if (snapshot?.sourceUri != null) {
+          try {
+            restoreSource =
+              (await api.findNodeIdBySourceUri(
+                node.projectId,
+                snapshot.sourceUri,
+                node.id,
+              )) === null;
+          } catch {
+            restoreSource = false;
+          }
+        }
+        const created = await api.createNode(
           {
             id: node.id,
             projectId: node.projectId,
@@ -1552,12 +1574,53 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             synopsis: node.synopsis ?? undefined,
             sortOrder: node.sortOrder,
             status: node.status ?? undefined,
-            content,
+            // A note's body comes from the database row read before the
+            // delete; the store's copy is the value from when the note was
+            // opened and is stale after an edit.
+            content:
+              snapshot && node.nodeType === "note" ? snapshot.content : content,
+            ...(restoreSource && snapshot?.sourceUri != null
+              ? { sourceUri: snapshot.sourceUri }
+              : {}),
+            ...(restoreSource && snapshot?.sourceMtime != null
+              ? { sourceMtime: snapshot.sourceMtime }
+              : {}),
           },
           {
             writeContext: api.historyWriteContext("undo", forwardReceipt),
+            ...(snapshot ? { restoreState: snapshot.restoreState } : {}),
           },
         );
+        // The re-created row has a new OCC token, and a POV or place whose
+        // Codex entry was deleted in the meantime is NULL there. Mirror both
+        // in the store (only well-typed values).
+        const fields: TreeRestoredFields = {};
+        // The link was left off: the store must not keep a `sourceUri` the
+        // database row no longer has (two Scenes on one file in the store).
+        if (restoreSource && snapshot) {
+          // What went into the row is the database's value read before the
+          // delete; the store's node may be older.
+          fields.sourceUri = snapshot.sourceUri;
+          fields.sourceMtime = snapshot.sourceMtime ?? null;
+        } else if ((snapshot?.sourceUri ?? node.sourceUri) != null) {
+          fields.sourceUri = null;
+          fields.sourceMtime = null;
+        }
+        if (typeof created?.version === "number") {
+          fields.version = created.version;
+        }
+        if (typeof created?.updatedAt === "string") {
+          fields.updatedAt = created.updatedAt;
+        }
+        if (snapshot) {
+          if (created?.povCharacterId !== undefined) {
+            fields.povCharacterId = created.povCharacterId ?? null;
+          }
+          if (created?.locationId !== undefined) {
+            fields.locationId = created.locationId ?? null;
+          }
+        }
+        return fields;
       },
       applyNodes: (nodes, activeSceneId) =>
         set({ nodes, scenes: computeScenes(nodes), activeSceneId }),

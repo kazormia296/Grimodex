@@ -171,8 +171,9 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 
 1. **読む位置の正本**：上の節。
 2. **AI 向けの読み取り口をデータの種類ごとに 1 つ**：Codex＝`resolveCodexContextExposure`（`src/features/codex/context/codexVisibilityPolicy.ts:38`、棚卸し）、年表＝`projectVisibleChronicle`（`src/features/chronicle/chronicleSnapshot.ts:400`、棚卸し）、伏線＝`listOpenForeshadowsForContext`（`src/features/foreshadow/api.ts:644`、棚卸し）、場面本文・あらすじ＝位置の正本の上、recall の位置ラベル。迂回している読取（agent tool、MCP、beat／inline）をここへ寄せ、AI 経路の module が生の API を import しないことを architecture の検査で落とす。
-   - PR #981（merge 済み）は、agent tool の Codex 系、MCP、beat／inline、地図の AI Branch、伏線の提案と章の監査（`detectRelatedCodex`）を、hidden について正本の判定（TS は Phase 解決後の `canIncludeResolvedCodexContext(mode, "explicit-pin")`、MCP は base の `context_mode = 'hidden'`）に寄せる。ここでの「寄せる」は hidden だけで、suppress・mentioned・Phase による絞り込みは足さない（全部開示の方針のため）。
+   - PR #981（merge 済み）は、agent tool の Codex 系、MCP、beat／inline、地図の AI Branch（地図は base の mode だけだった。下の訂正）、伏線の提案と章の監査（`detectRelatedCodex`）を、hidden について正本の判定（TS は Phase 解決後の `canIncludeResolvedCodexContext(mode, "explicit-pin")`、MCP は base の `context_mode = 'hidden'`）に寄せる。ここでの「寄せる」は hidden だけで、suppress・mentioned・Phase による絞り込みは足さない（全部開示の方針のため）。
    - `detectRelatedCodex`（`foreshadow/api.ts:1357-1363`）の迂回も、#981 の対象に入っている。
+   - 地図の AI Branch（種・Spotlight）：#981 の記述は事実と違い、実装は Phase を解決せず base の mode だけで判定していた（訂正。方針・閾値・送信先は変えない）。DR-MP4-43 で、送信の直前に DB で、base が hidden またはどれかの Phase で hidden の Codex を除く（地図は場面を持たないので広く隠す側）。判定に失敗したら送らない。
    - 読み取り口へ寄せる残りの作業（architecture の検査、生 API の import 禁止）は、#981 の後に移行の段 2 で行う。
 3. **経路の宣言**：`AiPathEntry`（`src/features/ai-verification/aiPathRegistry.ts:76`）に「どの知識 profile か、位置を何から取るか、どの読み取り口を通るか」を足す。足し忘れを落とす完全性の試験の型はすでにある（同 `:1-6`、`aiPathRegistry.test.ts:221-`）。欄名と Gate B2 の digest は「実装前の確認事項」に置く。
 4. **ラベルの整形**：項目に「今の位置に対して既知か未開示か、どこで明かされるか」を付ける共通の整形。文面は `grimodex-author` の手順で決める。例：`〈この後・未開示〉第 15 場「回想」で判明：アリスは真犯人。いま書いている場面の読者はまだ知らない。`
@@ -188,7 +189,7 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 | 3 | beat／inline の文脈 | 7 | inline_ai_stream、ab_inline、beat_generation、beat_alternative、beats_from_synopsis、synopsis_from_beats、beat_role | TS | `buildBeatContext` は `generateBeatOnce.ts`、`useBeatGeneration.ts`、`generateBeatAlternative.ts` の 3 つだけ。inline は `inlineAiContext.ts` |
 | 4 | post-effect の payload | 10 | post_effect_* 10 件 | TS で組み Rust が送る | `src/features/post-effect/*PayloadBuilder.ts` が 7 つ＋ impact-review の `snapshot.ts` ＋ live reader |
 | 5 | 抽出の文脈 | 24 | narrative_* 18、generic_import_* 4、chronicle_extract、plot_thread_propose | TS | 作者視点でよいと決定済み（D2 の例外） |
-| 6 | 単発の補助（対象は作者が選ぶ） | 9 | synopsis、summarization、foreshadow_audit_chapter、foreshadow_propose_past_setups、foreshadow_evaluate_setup_strength、codex_judgment（候補画面の「AI で評価」。既存エントリの id・名前・別名は、base が hidden またはどれかの Phase で hidden のものを除いて送る。場面を持たないので広く隠す側。判定に失敗したら送らない。#998 と DR-CJH〔`nir1-lane-decisions/codex-judgment-hidden-decisions.md`〕）、codex_yomi、map_branch、tree_scaffold | TS | 伏線の AI 監査は全伏線（secret 含む）の title／intent を送る（`foreshadowStore.ts:1320-1324`、棚卸し）。codex_yomi は IME の読みの推定（確認 4 で hidden を一括推定の対象から外す。個別の「AIで推定」も不可） |
+| 6 | 単発の補助（対象は作者が選ぶ） | 9 | synopsis、summarization、foreshadow_audit_chapter、foreshadow_propose_past_setups、foreshadow_evaluate_setup_strength、codex_judgment（候補画面の「AI で評価」。既存エントリの id・名前・別名は、base が hidden またはどれかの Phase で hidden のものを除いて送る。場面を持たないので広く隠す側。判定に失敗したら送らない。#998 と DR-CJH〔`nir1-lane-decisions/codex-judgment-hidden-decisions.md`〕）、codex_yomi、map_branch（種・Spotlight の Codex は、base が hidden またはどれかの Phase で hidden のものを除いて送る。場面を持たないので広く隠す側。判定に失敗したら送らない。DR-MP4-43）、tree_scaffold | TS | 伏線の AI 監査は全伏線（secret 含む）の title／intent を送る（`foreshadowStore.ts:1320-1324`、棚卸し）。codex_yomi は IME の読みの推定（確認 4 で hidden を一括推定の対象から外す。個別の「AIで推定」も不可） |
 | 7 | local 生成の Packing | 2 | nir1_local_generation_writing、nir1_local_generation_review | Rust（閉） | D1 の対象外（IR／Graph 由来） |
 | 8 | 作品データを組まない／選別だけ | 9 | session_title、ai_connection_test、agent_call_limit、relation_injection（評価用）、semantic_search、semantic_embedding_index、semantic_reranker、semantic_reranker_shadow、fts_search | — | embedding・recall は #1 に入る候補の選別で、位置ラベルの対象（読む順の関門が無い。`sceneContextSource.ts:1286`） |
 | 外 | MCP | — | （registry の外） | Rust | `grimodex-mcp/src/tools/*.rs`、`db.rs`。位置は DFS |
@@ -421,4 +422,25 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 - 伏線の列 `secret` を読み続けるもの：関連する過去シーンの判定、本文の宣言の veto（確認 129。撤去は K2/5 の PR-2 で、FSR/1 は先取りしない）、Codex の目のアイコン（すでに印のある伏線にだけ出続ける。確認 105・120 (b)）。関連する過去シーンの判定の見直しは、公開の後（確認 102）。
 - 別の印：版の印（`disclosure.secret`）、Codex の hidden。年表は CSR/1 の範囲で、FSR/1 は変えない。
 - 伏線の列と列の DEFAULT、書き出しの `secret`（値を運ぶだけ。「AI に見えない」という意味ではなくなる）。評価の準備（G-07 など）。自動の文脈の枠（約 1000 token）。
+- 公開、閾値・Gold・凍結・評価の規則の変更、新しい送信先・保存先。
+
+## 追補（2026-11-23）：MCP の Codex の詳細読みは、hidden の Phase の分を返さない（DR-MP4-45）
+
+2026-11-23 に、ユーザーが、standalone MCP の Codex の詳細（`get_codex_entry`）から、どこかの Phase で hidden にしている Phase の分を返さないこと（案 (b)。返さない形は、行ごと除く〔Q-D1〕、同じ項目に hidden の Phase があるときは override が空の Phase も除く〔Q-D2 の B〕）を決め、本 ADR には末尾に追補を 1 項だけ足すこと（Q-D3）を確認した。本 ADR の本文と、これまでの追補は書き換えない。本 ADR が MCP の Codex の読み出しについて置いた記述のうち、この変更で読み替わるものを、ここに記す。
+
+- 記録：DR-MP4-45（[mastra-mp4-decisions.md](../plans/mastra-mp4-decisions.md)。lane D。決定は 45a、実装の判断は 45b〜45d、残る制限は 45f、この追補の確認は 45j）。実装は `src-tauri/crates/grimodex-mcp/src/db.rs` の `get_codex_entry_full` の Phase の SELECT 1 文だけである。
+- 規則の正本は、DR-MP4-45 である。この追補は、本 ADR のどこが読み替わるかを示すだけで、規則を足さない。
+- 方針（D1・D2。全部開示、作者が付けた hidden は守る）、閾値、送信先、保存先は変えない。MCP が返す範囲を狭める向きだけの変更である。
+
+### 読み替える点
+
+1. **MCP の Codex の詳細（`get_codex_entry`。`entry_id` 指定も `name` の部分一致も）。** `phases[]` から、`context_mode_override` が hidden または不明な値の Phase を、行ごと（名前・開始の場面・要約と本文の上書き・mode・anchor の全部）返さない。外した印は付けず、Phase が元から無い項目と同じ形になる。同じ項目に hidden（または不明な mode）の Phase が 1 つでもあるときは、override が空の Phase も返さない（アプリ内の Phase 解決は、空の override が前の mode を継承する。MCP は場面の位置を解決しないので、保守的に除く）。`always`・`mentioned`・`suppress` を明示した Phase と、hidden の Phase が無い項目の、本文だけを上書きする Phase は、今までどおり返す。項目そのもの（名前・要約・本文・タグ・子）と、一覧・検索・関連・書込み用の文脈（`get_writing_context`）は、今までどおり、もとの設定（base の `context_mode`）の判定のままで、Phase が hidden にする項目の名前・要約・本文も、外部の AI に見える（案 (b) の帰結）。
+2. **「MCP は Phase の override による hidden を見ない」（本文 `:124`）と、「閉じている：…MCP の writing context」（本文 `:60`）。** `:124` は、詳細の `phases[]` を除いて、今も当てはまる。`:60` の「閉じている：Codex の未来の Phase と contextMode（chat、MCP の writing context、post-effect）」は、MCP の writing context については実態より広い。実態は、もとの設定の contextMode（hidden・suppress）だけで、Phase は見ない。MCP で Phase による hidden が閉じているのは、この追補の詳細の `phases[]` だけである。
+3. **年表の MCP との食い違い（将来）。** この追補の時点（4d5304c09）の年表の MCP は、Phase も base の mode も見ない。2026-11-23 の追補（CSR/1）が置いた確認 109（年表の lane の予定。未 merge）が入った後は、年表の MCP は Phase を解決せずに、もとの設定が hidden またはどこかの Phase が hidden の人物を外す予定で、そのとき、同じ人物が年表では隠れ、Codex の MCP では人物そのものが読める。この食い違いは、案 (b) を選んだユーザーの決定の帰結として受容する。
+
+### 変えないもの
+
+- D1・D2（全部開示、作者が付けた hidden は守る）。Codex の hidden の意味。もとの設定が hidden の項目は、MCP でも今までどおり「見つからない」（存在しない id と同じ答え）。
+- MCP の件数・タグ名・`usageCount`・`update_codex_entry` の応答（既存の残る漏れ。項目が見えるので、この変更の影響を受けない）。
+- 本文の行（`:60`・`:124`・`:174`）。この追補は、読み替えを示すだけで、本文を直さない。
 - 公開、閾値・Gold・凍結・評価の規則の変更、新しい送信先・保存先。

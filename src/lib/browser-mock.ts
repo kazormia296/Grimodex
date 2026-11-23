@@ -26729,6 +26729,221 @@ export async function createBrowserMock(
     }
   }
 
+  // DR-UND-1: the columns a delete's Undo writes after the INSERT (same keys and
+  // columns as Rust `TreeNodeRestoreState`). The seven `chronicle*` keys are one
+  // group (the Scene's date range): none of them, or all three NOT NULL ones.
+  const BROWSER_TREE_RESTORE_COLUMNS: ReadonlyArray<readonly [string, string]> =
+    [
+      ["intent", "intent"],
+      ["storyTimeOrder", "story_time_order"],
+      ["storyTimeLabel", "story_time_label"],
+      ["povCharacterId", "pov_character_id"],
+      ["locationId", "location_id"],
+      ["contextMode", "context_mode"],
+      ["aliases", "aliases"],
+      ["excludedAliases", "excluded_aliases"],
+      ["unplacedBeatsDoc", "unplaced_beats_doc"],
+      ["unplacedBeatPreview", "unplaced_beat_preview"],
+      ["placedBeatPreview", "placed_beat_preview"],
+      ["createdAt", "created_at"],
+      ["chronicleStartTime", "chronicle_start_time"],
+      ["chronicleStartMinute", "chronicle_start_minute"],
+      ["chronicleStartGranularity", "chronicle_start_granularity"],
+      ["chronicleEndTime", "chronicle_end_time"],
+      ["chronicleEndMinute", "chronicle_end_minute"],
+      ["chronicleEndGranularity", "chronicle_end_granularity"],
+      ["chroniclePrecision", "chronicle_precision"],
+    ];
+  const BROWSER_TREE_RESTORE_INTEGER_KEYS = [
+    "chronicleStartTime",
+    "chronicleStartMinute",
+    "chronicleEndTime",
+    "chronicleEndMinute",
+  ];
+
+  function browserTreeRestoreState(
+    command: string,
+    payload: Record<string, unknown>,
+    origin: string,
+  ): Array<readonly [string, string, string | number]> | null {
+    if (!Object.prototype.hasOwnProperty.call(payload, "restoreState")) {
+      return null;
+    }
+    if (origin !== "undo") {
+      throw new Error(`${command}: restoreState is only accepted for undo`);
+    }
+    const raw = payload.restoreState;
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`${command}: restoreState must be an object`);
+    }
+    const state = raw as Record<string, unknown>;
+    for (const key of Object.keys(state)) {
+      if (!BROWSER_TREE_RESTORE_COLUMNS.some(([wire]) => wire === key)) {
+        throw new Error(
+          `${command}: restoreState has unknown field \`${key}\``,
+        );
+      }
+    }
+    const assignments: Array<readonly [string, string, string | number]> = [];
+    for (const [wire, column] of BROWSER_TREE_RESTORE_COLUMNS) {
+      if (BROWSER_TREE_RESTORE_INTEGER_KEYS.includes(wire)) {
+        const raw = state[wire];
+        if (raw === null || raw === undefined) continue;
+        if (typeof raw !== "number" || !Number.isSafeInteger(raw)) {
+          throw new Error(
+            `${command}: restoreState.${wire} must be a safe integer or null`,
+          );
+        }
+        assignments.push([wire, column, raw]);
+        continue;
+      }
+      const value = nullableBrowserString(command, state, wire);
+      if (value === null) continue;
+      assignments.push([wire, column, value]);
+    }
+    validateBrowserTreeRestoreChronicle(command, assignments);
+    for (const [wire, , rawValue] of assignments) {
+      if (typeof rawValue !== "string") continue;
+      const value = rawValue;
+      if (
+        wire === "contextMode" &&
+        !["hidden", "suppress", "mentioned", "always"].includes(value)
+      ) {
+        throw new Error(
+          `${command}: restoreState.contextMode is not supported`,
+        );
+      }
+      if (wire === "aliases" || wire === "excludedAliases") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(value);
+        } catch {
+          parsed = null;
+        }
+        if (
+          !Array.isArray(parsed) ||
+          !parsed.every((item) => typeof item === "string")
+        ) {
+          throw new Error(
+            `${command}: restoreState.${wire} must be a JSON array of strings`,
+          );
+        }
+      }
+      if (wire === "unplacedBeatsDoc") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(value);
+        } catch {
+          parsed = null;
+        }
+        if (!Array.isArray(parsed)) {
+          throw new Error(
+            `${command}: restoreState.unplacedBeatsDoc must be a JSON array`,
+          );
+        }
+      }
+      if (
+        wire === "createdAt" &&
+        // Same acceptance as Rust: RFC 3339 (with an offset), or SQLite's
+        // `YYYY-MM-DD HH:MM:SS` (space, no offset).
+        !(
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(
+            value,
+          ) || /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value)
+        )
+      ) {
+        throw new Error(
+          `${command}: restoreState.createdAt must be a timestamp`,
+        );
+      }
+    }
+    return assignments;
+  }
+
+  // The shape of the date range's words (Rust `validate_chronicle_group`): the
+  // three NOT NULL keys come together, with known granularities and precision.
+  // The range's *consistency* (an end before the start, a `time` without a day
+  // or a minute) is not checked: an Undo puts back a row that existed, and
+  // `tree_node_patch` writes those columns with no check, so a legacy row can
+  // hold such a range and its Undo must not stop.
+  function validateBrowserTreeRestoreChronicle(
+    command: string,
+    assignments: ReadonlyArray<readonly [string, string, string | number]>,
+  ): void {
+    const chronicle = new Map(
+      assignments
+        .filter(([wire]) => wire.startsWith("chronicle"))
+        .map(([wire, , value]) => [wire, value] as const),
+    );
+    if (chronicle.size === 0) return;
+    const fail = (message: string): never => {
+      throw new Error(`${command}: restoreState chronicle ${message}`);
+    };
+    if (
+      ![
+        "chronicleStartGranularity",
+        "chronicleEndGranularity",
+        "chroniclePrecision",
+      ].every((key) => typeof chronicle.get(key) === "string")
+    ) {
+      fail(
+        "keys are one group: chronicleStartGranularity, chronicleEndGranularity and chroniclePrecision are required with any of them",
+      );
+    }
+    for (const key of [
+      "chronicleStartGranularity",
+      "chronicleEndGranularity",
+    ]) {
+      if (
+        !["none", "season", "year", "month", "day", "time"].includes(
+          chronicle.get(key) as string,
+        )
+      ) {
+        fail(`${key} is not a supported granularity`);
+      }
+    }
+    if (
+      !["exact", "approx", "unknown"].includes(
+        chronicle.get("chroniclePrecision") as string,
+      )
+    ) {
+      fail("chroniclePrecision must be exact, approx, or unknown");
+    }
+  }
+
+  function restoreBrowserTreeNodeState(
+    nodeId: string,
+    projectId: string,
+    assignments: ReadonlyArray<readonly [string, string, string | number]>,
+  ): void {
+    if (assignments.length === 0) return;
+    const values: Array<string | number | null> = [];
+    for (const [wire, , value] of assignments) {
+      if (wire === "povCharacterId" || wire === "locationId") {
+        // Same project keeps it; a Codex entry deleted while the node was gone
+        // becomes NULL; another project's entry is refused.
+        const owner = queryOne(
+          "SELECT project_id AS projectId FROM codex_entries WHERE id = ?",
+          [value],
+        );
+        if (owner && owner.projectId !== projectId) {
+          throw new Error(
+            `restoreState.${wire} is not in project '${projectId}'`,
+          );
+        }
+        values.push(owner ? value : null);
+      } else {
+        values.push(value);
+      }
+    }
+    db.run(
+      `UPDATE tree_nodes SET ${assignments
+        .map(([, column]) => `${column} = ?`)
+        .join(", ")} WHERE id = ? AND project_id = ?`,
+      [...values, nodeId, projectId],
+    );
+  }
+
   async function handleCanonicalTreeNodeCreate(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -26748,6 +26963,11 @@ export async function createBrowserMock(
     const sourceUri = nullableBrowserString(command, payload, "sourceUri");
     const sourceMtime = nullableBrowserString(command, payload, "sourceMtime");
     const content = nullableBrowserString(command, payload, "content");
+    const restoreState = browserTreeRestoreState(
+      command,
+      payload,
+      identity.origin,
+    );
     const journalId = identity.undoJournalId ?? identity.requestId;
 
     return withAppendLedgerLock(async () => {
@@ -26827,6 +27047,9 @@ export async function createBrowserMock(
         );
         if (db.getRowsModified() !== 1) {
           throw new Error(`tree node '${id}' was not created`);
+        }
+        if (restoreState) {
+          restoreBrowserTreeNodeState(id, identity.projectId, restoreState);
         }
         const row = browserTreeNodeRow(id, identity.projectId);
         if (!row) throw new Error("tree node not found after create");
