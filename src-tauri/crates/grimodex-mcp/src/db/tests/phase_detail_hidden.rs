@@ -107,6 +107,30 @@ fn seed_phase_entries(conn: &Connection) {
         None,
         "2024-01-01",
     );
+    // always／suppress の Phase と同じ項目にある override NULL の Phase。hidden の Phase が無い
+    // ので返る（NOT EXISTS の内側の allowlist から always／suppress を落とす変異を守る）。
+    insert_phase(
+        conn,
+        "ph-always-null",
+        "e-always",
+        "a-null-label",
+        None,
+        Some("always-null-content"),
+        None,
+        None,
+        "2024-01-02",
+    );
+    insert_phase(
+        conn,
+        "ph-suppress-null",
+        "e-suppress",
+        "s-null-label",
+        None,
+        Some("suppress-null-content"),
+        None,
+        None,
+        "2024-01-02",
+    );
     // override が NULL（本文だけ上書き）。hidden の Phase が無い項目では今までどおり返る。
     insert_phase(
         conn,
@@ -258,8 +282,14 @@ fn only_public_phases_are_returned() {
     seed_phase_entries(&conn);
     assert!(phase_ids(&conn, "e-none").is_empty());
     assert_eq!(phase_ids(&conn, "e-mentioned"), vec!["ph-mentioned"]);
-    assert_eq!(phase_ids(&conn, "e-always"), vec!["ph-always"]);
-    assert_eq!(phase_ids(&conn, "e-suppress"), vec!["ph-suppress"]);
+    assert_eq!(
+        phase_ids(&conn, "e-always"),
+        vec!["ph-always", "ph-always-null"]
+    );
+    assert_eq!(
+        phase_ids(&conn, "e-suppress"),
+        vec!["ph-suppress", "ph-suppress-null"]
+    );
     // hidden の Phase が無い項目の、override が NULL の Phase（本文だけ上書き）は返る。
     // 別の項目（e-other）の hidden の Phase の影響を受けない。
     assert_eq!(phase_ids(&conn, "e-text-only"), vec!["ph-text-only"]);
