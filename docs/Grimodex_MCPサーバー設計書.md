@@ -1231,7 +1231,7 @@ DB スキーマの詳細は `docs/Grimodex_統合DBスキーマ.md` を参照。
   `get_chapter_summaries` は folder ごとの一覧なので、その場面は出ない。tool の description・
   schema は変えない。変えないもの：`get_project_stats`・`get_attribution_report`・チャット履歴の
   場面名・年表系・書き込み系。`archived_at` 列が無い古い DB では、列の有無を調べず、読みが
-  失敗する（archived の行は漏れない）。
+  失敗するか空・not found を返す（archived の行は漏れない）。
 
 ### ライセンスゲート (Phase 2 / 2026-06-11)
 
