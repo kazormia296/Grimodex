@@ -21,7 +21,9 @@ export const TRANSIENT_PERFORMANCE_RETRY_POLICY = Object.freeze({
  * these hold (measured values captured with coldStartMs; the informational
  * open evidence never gates):
  * - coldStartMs is the only failed check (so projectOpenMs and every other
- *   budget passed: the rest of the start is normal);
+ *   budget passed: the rest of the start is normal; since DR-PIS-10
+ *   projectOpenMs starts at the later of the open start and the first frame,
+ *   so the stall itself no longer fails it);
  * - bootstrap is normal and the time is the wait between bootstrap and the
  *   first frame (excludes bundle/bootstrap regressions);
  * - the first frame is most of the cold start.
@@ -76,6 +78,70 @@ export function createGpuChannelFailureScanner({ now = () => Date.now() } = {}) 
       if (!finite(firstFrameWallMs)) return null;
       return receivedAt.map((at) => at - firstFrameWallMs);
     },
+  });
+}
+
+/**
+ * Project-open metrics (DR-PIS-10, 2026-11-23 user decision; contracts
+ * 1f8ee8a9).
+ *
+ * `projectOpenMs` = editorReadyAt - max(workspaceOpen start, first frame).
+ * Why: the workspaceOpen start is JS driven and keeps going while the first
+ * frame (requestAnimationFrame) is stalled by a GPU process / compositor
+ * stall, so a stall of a few seconds fell inside the project-open interval too
+ * and `coldStartMs` and `projectOpenMs` failed together (ci.yml 45008551525,
+ * #921), which the cold start retry (DR-PIS-8/9) deliberately does not take.
+ * Starting the project-open interval at the first frame leaves the stall in
+ * `coldStartMs` only. The budgets (4,000 / 3,000 ms) are unchanged.
+ *
+ * Clocks: all three inputs are values of the SAME renderer `performance`
+ * clock, read in one `page.evaluate` in smoke.mjs:
+ * - `workspaceOpenStartMs`: `performance.mark("grimodex.workspaceOpen.start")`
+ *   (src/features/workspace/workspaceOpenLifecycle.ts);
+ * - `firstFrameMs`: the `grimodex:renderer-first-frame` mark taken inside
+ *   requestAnimationFrame (src/main.tsx);
+ * - `editorReadyAt`: `performance.now()` at the read, after the seed scene
+ *   Editor surface is visible.
+ * Never mix in the main process clock or the Node `performance.now()` of the
+ * smoke script (a different origin).
+ *
+ * `projectOpenTotalMs` is the previous definition (editorReadyAt - start). It
+ * is recorded only and never gates. It is always >= `projectOpenMs`.
+ *
+ * Fail-closed: a first frame mark that is missing, not finite, negative, or
+ * later than `editorReadyAt` cannot be trusted, so `projectOpenMs` falls back
+ * to the previous definition (a value that is never smaller). A missing start
+ * mark or an invalid `editorReadyAt` returns null for both so the caller
+ * fails the measurement instead of passing a negative or missing value.
+ */
+export function measureProjectOpen({
+  workspaceOpenStartMs,
+  firstFrameMs,
+  editorReadyAtMs,
+}) {
+  if (
+    !finite(workspaceOpenStartMs) ||
+    workspaceOpenStartMs < 0 ||
+    !finite(editorReadyAtMs) ||
+    editorReadyAtMs < workspaceOpenStartMs
+  ) {
+    return Object.freeze({
+      projectOpenMs: null,
+      projectOpenTotalMs: null,
+      startedAtFirstFrame: false,
+    });
+  }
+  const projectOpenTotalMs = editorReadyAtMs - workspaceOpenStartMs;
+  const firstFrameUsable =
+    finite(firstFrameMs) && firstFrameMs >= 0 && firstFrameMs <= editorReadyAtMs;
+  const startedAtFirstFrame =
+    firstFrameUsable && firstFrameMs > workspaceOpenStartMs;
+  return Object.freeze({
+    projectOpenMs: startedAtFirstFrame
+      ? editorReadyAtMs - firstFrameMs
+      : projectOpenTotalMs,
+    projectOpenTotalMs,
+    startedAtFirstFrame,
   });
 }
 
