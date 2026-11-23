@@ -12,6 +12,10 @@
  *    初回は run が全フィールドを「変更」と数えるため、そのまま出すと全項目が変更ありになる。
  *  - `gated`: run が `no-candidates` で止める条件（base の contextMode が current-mention を
  *    満たさない・Phase が制限的）。押しても baseline は進まない。
+ *
+ * 件数は run と同じく、`effectiveRestrictedPhaseIds` の Phase を baseline・現在の両方から
+ * 除いてから数える（`redactRestrictedPhases` の写し）。件数だけを返すので、除いた
+ * （非公開だった）Phase の内容は表示に出ない。
  *  - `none`: 差分なし。
  */
 
@@ -21,8 +25,7 @@ import type { CodexSnapshotResult } from "./snapshot";
 
 export type ImpactPendingGateReason =
   | "restricted-phase" // 現在 Phase が 1 つでも制限的（run の currentHasRestrictedPhases）
-  | "context-mode" // base の contextMode が current-mention を満たさない
-  | "unresolved-phase-restriction"; // run の redact が Phase を除外する（素の差分と食い違う）
+  | "context-mode"; // base の contextMode が current-mention を満たさない
 
 export type ImpactPending =
   | { state: "unchecked" }
@@ -82,6 +85,20 @@ function effectiveRestrictedPhaseIds(
   return effective;
 }
 
+/** run の `redactRestrictedPhases` の写し。 */
+function redactRestrictedPhases(
+  snapshot: CodexSnapshot,
+  restrictedPhaseIds: ReadonlySet<string>,
+): CodexSnapshot {
+  if (restrictedPhaseIds.size === 0) return snapshot;
+  return {
+    ...snapshot,
+    phases: (snapshot.phases ?? []).filter(
+      (phase) => !restrictedPhaseIds.has(phase.phaseId),
+    ),
+  };
+}
+
 export function deriveImpactPending(input: {
   baseline: CodexSnapshot | null;
   built: Pick<
@@ -107,13 +124,13 @@ export function deriveImpactPending(input: {
   if (!canIncludeResolvedCodexContext(contextMode, "current-mention")) {
     return { state: "gated", reason: "context-mode" };
   }
-  // run はこの集合の Phase を baseline・現在の両方から除いて差分を取る。空でなければ
-  // 素の差分は run の差分と食い違うので、知らせない（偽陽性を避ける。偽陰性は許容）。
-  if (effectiveRestrictedPhaseIds(baseline, snapshot).size > 0) {
-    return { state: "gated", reason: "unresolved-phase-restriction" };
-  }
-
-  const changes = computeCodexDiff(baseline, snapshot);
+  // run はこの集合の Phase（証明の無い削除・非公開だった Phase など）を baseline・現在の
+  // 両方から除いて差分を取り、そのまま候補絞りへ進む。同じ件数を数える。
+  const effective = effectiveRestrictedPhaseIds(baseline, snapshot);
+  const changes = computeCodexDiff(
+    redactRestrictedPhases(baseline, effective),
+    redactRestrictedPhases(snapshot, effective),
+  );
   return changes.length === 0
     ? IMPACT_PENDING_NONE
     : { state: "pending", changeCount: changes.length };

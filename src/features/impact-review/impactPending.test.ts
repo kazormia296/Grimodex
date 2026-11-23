@@ -196,13 +196,19 @@ describe("deriveImpactPending: Phase の削除・制限の解除（run の redac
     details: [{ name: "年齢", value: "17" }],
   });
 
-  it("証明の無い Phase の削除（visibleDeletedPhaseIds に無い）は出さない", () => {
+  it("証明の無い Phase の削除（visibleDeletedPhaseIds に無い）は、その Phase を除いた件数を数える（run と同じ）", () => {
     expect(
       deriveImpactPending({
         baseline: withPhase,
         built: built(aged(noPhase)),
       }),
-    ).toEqual({ state: "gated", reason: "unresolved-phase-restriction" });
+    ).toEqual({ state: "pending", changeCount: 1 });
+  });
+
+  it("証明の無い Phase の削除だけなら、その Phase を除くと差分なしで none（非公開 Phase の内容は数えない）", () => {
+    expect(
+      deriveImpactPending({ baseline: withPhase, built: built(noPhase) }),
+    ).toEqual({ state: "none" });
   });
 
   it("公開中の削除と証明済み（visibleDeletedPhaseIds にある）なら数える（Phase 分も含む）", () => {
@@ -215,7 +221,7 @@ describe("deriveImpactPending: Phase の削除・制限の解除（run の redac
     ).toEqual({ state: "pending", changeCount: 2 });
   });
 
-  it("legacy の baseline（allPhaseIds・来歴無し）の Phase 削除は出さない", () => {
+  it("legacy の baseline（allPhaseIds・来歴無し）の Phase 削除も、その Phase を除いた件数を数える", () => {
     const legacy: CodexSnapshot = {
       ...base,
       phases: [phase],
@@ -227,7 +233,7 @@ describe("deriveImpactPending: Phase の削除・制限の解除（run の redac
         baseline: legacy,
         built: built({ ...aged(base), phases: [] }),
       }),
-    ).toEqual({ state: "gated", reason: "unresolved-phase-restriction" });
+    ).toEqual({ state: "pending", changeCount: 1 });
   });
 
   it("baseline の restrictedPhaseIds の Phase が現在も存在・公開なら制限は解除され、数える", () => {
@@ -240,7 +246,7 @@ describe("deriveImpactPending: Phase の削除・制限の解除（run の redac
     ).toEqual({ state: "pending", changeCount: 1 });
   });
 
-  it("baseline の restrictedPhaseIds の Phase が現在無ければ出さない", () => {
+  it("baseline の restrictedPhaseIds の Phase が現在無ければ、その Phase を除いて数える", () => {
     const baseline: CodexSnapshot = {
       ...base,
       phases: [],
@@ -249,7 +255,7 @@ describe("deriveImpactPending: Phase の削除・制限の解除（run の redac
     };
     expect(
       deriveImpactPending({ baseline, built: built(aged(noPhase)) }),
-    ).toEqual({ state: "gated", reason: "unresolved-phase-restriction" });
+    ).toEqual({ state: "pending", changeCount: 1 });
   });
 
   it("undo で baseline と同じ状態に戻れば none", () => {

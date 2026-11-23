@@ -5,8 +5,8 @@
  *  - pending(n) ⇒ run は no-change でなく、changeCount === n、候補絞りまで進む。
  *  - none      ⇒ run は no-change。
  *  - gated（現在の制限・contextMode）⇒ run は候補絞りを呼ばない（押しても止まる）。
- *  - gated（unresolved-phase-restriction）⇒ run の差分は素の差分と食い違い得る。
- *    知らせない（偽陽性を避ける。偽陰性は許容）。
+ *  - Phase の削除・制限の解除: run は effectiveRestrictedPhaseIds の Phase を baseline・現在の
+ *    両方から除いた差分で候補絞りへ進む。知らせも同じ件数（素の差分とは食い違い得る）。
  *  - unchecked は逆向きの主張をしない（run は初回を全フィールド「変更」と数える）。
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -91,8 +91,6 @@ interface Case {
   hasRestrictedPhases?: boolean;
   expected: ImpactPending["state"];
   changeCount?: number;
-  /** gated（unresolved）のとき、run が実際に数える件数。 */
-  runChangeCount?: number;
 }
 
 const cases: Case[] = [
@@ -172,8 +170,14 @@ const cases: Case[] = [
     name: "証明の無い Phase の削除",
     baseline: withPhase,
     snapshot: aged({ ...base, phases: [], allPhaseIds: [] }),
-    expected: "gated",
-    runChangeCount: 1,
+    expected: "pending",
+    changeCount: 1,
+  },
+  {
+    name: "証明の無い Phase の削除だけ（Phase を除くと差分なし）",
+    baseline: withPhase,
+    snapshot: { ...base, phases: [], allPhaseIds: [] },
+    expected: "none",
   },
   {
     name: "公開中の削除と証明済みの Phase の削除",
@@ -186,8 +190,8 @@ const cases: Case[] = [
     name: "legacy の baseline（来歴無し）の Phase 削除",
     baseline: legacyWithPhase,
     snapshot: aged({ ...base, phases: [], allPhaseIds: [] }),
-    expected: "gated",
-    runChangeCount: 1,
+    expected: "pending",
+    changeCount: 1,
   },
   {
     name: "baseline の restrictedPhaseIds の Phase が現存・公開（解除）",
@@ -204,8 +208,8 @@ const cases: Case[] = [
       restrictedPhaseIds: ["p1"],
     },
     snapshot: aged(base),
-    expected: "gated",
-    runChangeCount: 1,
+    expected: "pending",
+    changeCount: 1,
   },
 ];
 
@@ -253,35 +257,33 @@ describe("deriveImpactPending は実物の runImpactReview と一致する", () 
         expect(res.status).toBe("no-change");
         break;
       case "gated":
-        if (
-          c.name.includes("証明の無い") ||
-          c.name.includes("legacy") ||
-          c.name.includes("現在無い")
-        ) {
-          // run の redact は Phase を除外して差分を取る＝素の差分と食い違い得る。
-          // 知らせは出さない（偽陰性は許容）。run 側の件数は素の差分以下で、
-          // 少なくとも 1 つは素の差分より少ない（下の「食い違いの実例」）。
-          expect(res.changeCount).toBeLessThanOrEqual(
-            computeCodexDiff(c.baseline, c.snapshot).length,
-          );
-          expect(res.changeCount).toBe(c.runChangeCount);
-        } else {
-          // 現在の制限・contextMode は、差分があっても候補絞りの前で止まる。
-          expect(res.status).toBe("no-candidates");
-          expect(narrowCandidateScenes).not.toHaveBeenCalled();
-        }
+        // 現在の制限・contextMode は、差分があっても候補絞りの前で止まる。
+        expect(res.status).toBe("no-candidates");
+        expect(narrowCandidateScenes).not.toHaveBeenCalled();
         break;
       default:
         throw new Error(`unexpected state ${pending.state}`);
     }
   });
 
-  it("証明の無い Phase 削除: 素の差分は 2 件だが run は Phase を除いて 1 件（食い違いの実例）", async () => {
-    const c = cases.find((x) => x.name === "証明の無い Phase の削除")!;
-    arrange(c);
-    const res = await runImpactReview("e1");
-    expect(res.changeCount).toBe(1);
-  });
+  it.each([
+    "証明の無い Phase の削除",
+    "legacy の baseline（来歴無し）の Phase 削除",
+  ])(
+    "%s: 素の差分は 2 件だが、run も知らせも Phase を除いた 1 件（食い違いの実例）",
+    async (name) => {
+      const c = cases.find((x) => x.name === name)!;
+      const built = arrange(c);
+      expect(computeCodexDiff(c.baseline, c.snapshot)).toHaveLength(2);
+      expect(deriveImpactPending({ baseline: c.baseline, built })).toEqual({
+        state: "pending",
+        changeCount: 1,
+      });
+      const res = await runImpactReview("e1");
+      expect(res.changeCount).toBe(1);
+      expect(narrowCandidateScenes).toHaveBeenCalled();
+    },
+  );
 
   it("baseline が無い／tombstone のみは unchecked（run は全フィールドを変更と数える）", async () => {
     for (const baseline of [
