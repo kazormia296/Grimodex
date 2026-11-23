@@ -1,5 +1,6 @@
 import type { HistoryCommand } from "@/store/globalHistoryStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { TreeNodeRestoreSnapshot } from "@/features/tree/api";
 
 interface TrashCapture {
   projectId: string;
@@ -19,8 +20,23 @@ export interface DeleteTreeSubtreePorts {
   getNodes(): readonly TreeNodeData[];
   getActiveSceneId(): string;
   loadSceneContent(id: string): Promise<string>;
+  /**
+   * Read the row as the database holds it, just before a delete (DR-UND-1), so
+   * an Undo puts back every column and not only the ones `create` writes.
+   * Optional: without it an Undo restores the create fields only.
+   */
+  loadRestoreSnapshot?(id: string): Promise<TreeNodeRestoreSnapshot | null>;
   deletePersisted(id: string): Promise<void>;
-  restorePersisted(node: TreeNodeData, content?: string): Promise<void>;
+  /**
+   * Re-create one node. Returns the fields the database set on the re-created
+   * row that the store must take over (OCC token, and references that no longer
+   * resolved).
+   */
+  restorePersisted(
+    node: TreeNodeData,
+    content?: string,
+    snapshot?: TreeNodeRestoreSnapshot,
+  ): Promise<TreeRestoredFields | void>;
   applyNodes(nodes: TreeNodeData[], activeSceneId: string): void;
   recomputeSceneOrder(nodes: readonly TreeNodeData[]): void;
   isReplaying(): boolean;
@@ -38,6 +54,11 @@ export interface DeleteTreeSubtreePorts {
   notifyDeleteFailure(error: unknown): void;
   deletedLabel: string;
 }
+
+/** What the database decided when it re-created a node; the store mirrors it. */
+export type TreeRestoredFields = Partial<
+  Pick<TreeNodeData, "version" | "updatedAt" | "povCharacterId" | "locationId">
+>;
 
 function descendants(
   nodes: readonly TreeNodeData[],
@@ -102,10 +123,30 @@ async function deleteTreeSubtreeWithAuthority(
   const previousActiveSceneId = ports.getActiveSceneId();
   const trackHistory = !ports.isReplaying();
   const contentSnapshots: Record<string, string> = {};
+  const restoreSnapshots: Record<string, TreeNodeRestoreSnapshot> = {};
 
-  if (trackHistory) {
-    for (const node of deletedNodes) {
+  // Read what an Undo must put back. A failed read keeps the older snapshot
+  // (the redo path) or, on the first delete, falls back to the create fields.
+  async function captureSnapshots(
+    targets: readonly TreeNodeData[],
+    keepOnFailure: boolean,
+  ): Promise<void> {
+    for (const node of targets) {
+      let snapshot: TreeNodeRestoreSnapshot | null = null;
+      if (ports.loadRestoreSnapshot) {
+        try {
+          snapshot = await ports.loadRestoreSnapshot(node.id);
+        } catch {
+          snapshot = null;
+        }
+      }
+      if (snapshot) restoreSnapshots[node.id] = snapshot;
       if (node.nodeType !== "scene") continue;
+      if (snapshot) {
+        contentSnapshots[node.id] = snapshot.content;
+        continue;
+      }
+      if (keepOnFailure && node.id in contentSnapshots) continue;
       try {
         contentSnapshots[node.id] = await ports.loadSceneContent(node.id);
       } catch {
@@ -113,6 +154,8 @@ async function deleteTreeSubtreeWithAuthority(
       }
     }
   }
+
+  if (trackHistory) await captureSnapshots(deletedNodes, false);
 
   try {
     await ports.deletePersisted(id);
@@ -160,6 +203,10 @@ async function deleteTreeSubtreeWithAuthority(
 
   if (!trackHistory) return;
   const restoredIds = new Set<string>();
+  const restoredFields = new Map<string, TreeRestoredFields>();
+  // The nodes an Undo puts back into the store. A Redo refreshes them, so an
+  // edit made between the Undo and the Redo is not lost by the next Undo.
+  let undoNodes: TreeNodeData[] = deletedNodes;
   ports.pushHistory({
     kind: "scenes",
     label: ports.deletedLabel,
@@ -173,15 +220,24 @@ async function deleteTreeSubtreeWithAuthority(
       if (!navigationAuthority) return;
       try {
         for (const tempId of trashTempIds.values()) ports.cancelTrash(tempId);
-        for (const node of parentsFirst(deletedNodes)) {
+        for (const node of parentsFirst(undoNodes)) {
           if (restoredIds.has(node.id)) continue;
-          await ports.restorePersisted(
-            node,
-            node.nodeType === "scene" ? contentSnapshots[node.id] : undefined,
-          );
+          const content =
+            node.nodeType === "scene" ? contentSnapshots[node.id] : undefined;
+          const snapshot = restoreSnapshots[node.id];
+          const fields = snapshot
+            ? await ports.restorePersisted(node, content, snapshot)
+            : await ports.restorePersisted(node, content);
+          if (fields) restoredFields.set(node.id, fields);
           restoredIds.add(node.id);
         }
-        const restored = [...ports.getNodes(), ...deletedNodes];
+        const restored = [
+          ...ports.getNodes(),
+          ...undoNodes.map((node) => {
+            const fields = restoredFields.get(node.id);
+            return fields ? { ...node, ...fields } : node;
+          }),
+        ];
         ports.applyNodes(restored, previousActiveSceneId);
         ports.recomputeSceneOrder(restored);
       } finally {
@@ -194,8 +250,12 @@ async function deleteTreeSubtreeWithAuthority(
       try {
         const current = [...ports.getNodes()];
         const currentIds = descendants(current, id);
+        const refreshed = current.filter((node) => currentIds.has(node.id));
+        await captureSnapshots(refreshed, true);
         await ports.deletePersisted(id);
         restoredIds.clear();
+        restoredFields.clear();
+        if (refreshed.length > 0) undoNodes = refreshed;
         const next = current.filter((node) => !currentIds.has(node.id));
         const active = currentIds.has(ports.getActiveSceneId())
           ? (next.find((node) => node.nodeType === "scene")?.id ?? "")

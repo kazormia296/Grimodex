@@ -5,8 +5,8 @@
 //! 実装の commit で、欠落を固定した期待は反転する。
 
 use grimodex_db::domain_writes::{
-    tree_node_create, tree_node_delete, tree_node_patch, TreeNodeCreatePayload,
-    TreeNodeDeletePayload, TreeNodePatchPayload,
+    tree_node_create, tree_node_create_wire_with_authority, tree_node_delete, tree_node_patch,
+    TreeNodeCreatePayload, TreeNodeCreateWire, TreeNodeDeletePayload, TreeNodePatchPayload,
 };
 use grimodex_db::Database;
 use rusqlite::OptionalExtension;
@@ -236,4 +236,398 @@ fn current_undo_of_a_folder_subtree_child_is_pinned() {
         Some("tree replay target does not match the named Undo Journal".to_string()),
         "outcome: {outcome:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// DR-UND-1: restoreState
+// ---------------------------------------------------------------------------
+
+const PLAIN_FINGERPRINT: &str = "68f8fa140cad30068231bdbd2d6d7f7ef3602d1e3e3dff6c7c45f0481cd45dc7";
+
+fn create_wire(db: &Database, payload: Value) -> anyhow::Result<Value> {
+    tree_node_create_wire_with_authority(db, de::<TreeNodeCreateWire>(payload)?, None)
+}
+
+fn with_restore_state(mut payload: Value, restore_state: Value) -> Value {
+    payload["restoreState"] = restore_state;
+    payload
+}
+
+/// 全欄を埋めた scene を作って削除し、削除前の行（DB から読んだもの）を返す。
+fn seeded_scene(db: &Database, id: &str) -> (serde_json::Map<String, Value>, Value) {
+    create(db, create_payload(id, "scene", None)).expect("create");
+    patch(
+        db,
+        id,
+        &format!("patch-{id}"),
+        json!({
+            "intent": "goal", "storyTimeOrder": "b3", "storyTimeLabel": "夜",
+            "povCharacterId": "pov-1", "locationId": "place-1",
+            "unplacedBeatsDoc": "[{\"id\":\"b1\"}]",
+            "unplacedBeatPreview": "beat", "placedBeatPreview": "[\"p\"]",
+            "sourceUri": "external-root://r/a.md", "sourceMtime": "2026-01-01T00:00:00Z",
+            "content": "{\"type\":\"doc\"}"
+        }),
+    )
+    .expect("patch");
+    let before = row(db, id).expect("row");
+    let receipt = delete(db, id, &format!("delete-{id}")).expect("delete");
+    (before, receipt)
+}
+
+fn restore_state_of(before: &serde_json::Map<String, Value>) -> Value {
+    let mut state = serde_json::Map::new();
+    for key in [
+        "intent",
+        "storyTimeOrder",
+        "storyTimeLabel",
+        "povCharacterId",
+        "locationId",
+        "contextMode",
+        "aliases",
+        "excludedAliases",
+        "unplacedBeatsDoc",
+        "unplacedBeatPreview",
+        "placedBeatPreview",
+        "createdAt",
+    ] {
+        if !before[key].is_null() {
+            state.insert(key.to_string(), before[key].clone());
+        }
+    }
+    Value::Object(state)
+}
+
+fn undo_payload_with_state(
+    id: &str,
+    node_type: &str,
+    before: &serde_json::Map<String, Value>,
+    receipt: &Value,
+    req: &str,
+) -> Value {
+    let node = json!({
+        "id": id, "parentId": before["parentId"], "nodeType": node_type,
+        "title": format!("Title {id}"), "sortOrder": "a0", "synopsis": "syn",
+        "status": "draft", "content": before["content"]
+    });
+    let mut payload = undo_create_payload(&node, receipt, req);
+    payload["sourceUri"] = before["sourceUri"].clone();
+    payload["sourceMtime"] = before["sourceMtime"].clone();
+    with_restore_state(payload, restore_state_of(before))
+}
+
+fn count(db: &Database, sql: &str) -> i64 {
+    db.with_conn(|conn| Ok(conn.query_row(sql, [], |r| r.get::<_, i64>(0))?))
+        .expect("count")
+}
+
+#[test]
+fn wire_without_restore_state_keeps_the_plain_fingerprint() {
+    let db = new_db();
+    create_wire(&db, create_payload("fp-scene", "scene", None)).expect("create");
+    assert_eq!(
+        payload_hash(&db, "tree_node_create", "create-fp-scene"),
+        PLAIN_FINGERPRINT
+    );
+}
+
+#[test]
+fn undo_with_restore_state_returns_a_scene_row_to_its_state_before_the_delete() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-r");
+    let journal_before = count(&db, "SELECT COUNT(*) FROM undo_journal");
+    let response = create_wire(
+        &db,
+        undo_payload_with_state("scene-r", "scene", &before, &receipt, "undo-r"),
+    )
+    .expect("undo create");
+    let after = row(&db, "scene-r").expect("restored row");
+    // version と updated_at 以外（createdAt を含む）が削除前と同じ。
+    assert_eq!(Value::Object(after.clone()), Value::Object(before.clone()));
+    assert_eq!(after["version"], json!(0));
+    for (key, expected) in [
+        ("intent", json!("goal")),
+        ("storyTimeOrder", json!("b3")),
+        ("povCharacterId", json!("pov-1")),
+        ("unplacedBeatsDoc", json!("[{\"id\":\"b1\"}]")),
+        ("sourceUri", json!("external-root://r/a.md")),
+    ] {
+        assert_eq!(response[key], expected, "response {key}");
+    }
+    // 年表の列は保留（CED/1 の確認待ち）。今は既定のまま。
+    assert_eq!(after["chronicleStartGranularity"], json!("none"));
+    // 復元した scene にも Scope の束縛が従来どおり作られる。
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM narrative_scene_scope_bindings WHERE scene_id = 'scene-r'"
+        ),
+        1
+    );
+    // undo の create は journal を増やさない（削除の 1 件のまま）。
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM undo_journal"),
+        journal_before
+    );
+    // FTS は 1 行（title・content を UPDATE が触らない）。
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM tree_nodes_fts"), 1);
+}
+
+#[test]
+fn undo_with_restore_state_returns_a_note_with_its_ai_context_settings() {
+    let db = new_db();
+    create(&db, create_payload("note-r", "note", None)).expect("create");
+    patch(
+        &db,
+        "note-r",
+        "patch-note",
+        json!({
+            "contextMode": "hidden", "aliases": "[\"a\",\"b\"]",
+            "excludedAliases": "[\"c\"]", "content": "{\"type\":\"doc\",\"n\":1}"
+        }),
+    )
+    .expect("patch note");
+    let before = row(&db, "note-r").expect("row");
+    let receipt = delete(&db, "note-r", "delete-note").expect("delete");
+    create_wire(
+        &db,
+        undo_payload_with_state("note-r", "note", &before, &receipt, "undo-note"),
+    )
+    .expect("undo note");
+    let after = row(&db, "note-r").expect("restored");
+    assert_eq!(Value::Object(after.clone()), Value::Object(before));
+    assert_eq!(after["contextMode"], json!("hidden"));
+    assert_eq!(after["aliases"], json!("[\"a\",\"b\"]"));
+}
+
+#[test]
+fn undo_with_restore_state_returns_a_folder() {
+    let db = new_db();
+    create(&db, create_payload("folder-r", "folder", None)).expect("create");
+    patch(
+        &db,
+        "folder-r",
+        "patch-f",
+        json!({ "intent": "i", "storyTimeLabel": "L" }),
+    )
+    .expect("patch");
+    let before = row(&db, "folder-r").expect("row");
+    let receipt = delete(&db, "folder-r", "delete-f").expect("delete");
+    create_wire(
+        &db,
+        undo_payload_with_state("folder-r", "folder", &before, &receipt, "undo-f"),
+    )
+    .expect("undo folder");
+    assert_eq!(
+        Value::Object(row(&db, "folder-r").unwrap()),
+        Value::Object(before)
+    );
+}
+
+#[test]
+fn restore_state_is_refused_for_every_origin_except_undo() {
+    let db = new_db();
+    for (origin, extra) in [
+        ("human", json!({})),
+        ("import", json!({})),
+        ("restore", json!({})),
+        ("migration", json!({})),
+        (
+            "redo",
+            json!({ "originalTransactionId": "t", "undoJournalId": "j" }),
+        ),
+    ] {
+        let mut payload = create_payload(&format!("gate-{origin}"), "scene", None);
+        payload["origin"] = json!(origin);
+        payload["requestId"] = json!(format!("gate-req-{origin}"));
+        for (k, v) in extra.as_object().unwrap() {
+            payload[k] = v.clone();
+        }
+        let error = create_wire(&db, with_restore_state(payload, json!({ "intent": "x" })))
+            .expect_err("restoreState must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("restoreState is only accepted for undo"),
+            "{origin}: {error}"
+        );
+        assert!(row(&db, &format!("gate-{origin}")).is_none());
+    }
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM idempotency_requests WHERE domain = 'tree_node_create'"
+        ),
+        0
+    );
+}
+
+#[test]
+fn restore_state_rejects_unknown_deferred_and_mistyped_keys() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-bad");
+    let base = undo_payload_with_state("scene-bad", "scene", &before, &receipt, "undo-bad");
+    let cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "unknown key",
+            json!({ "bogus": "x" }),
+            "unknown field `bogus`",
+        ),
+        // 年表の列は CED/1 の確認まで未知の key として拒む（fail closed）。
+        (
+            "chronicle key",
+            json!({ "chronicleStartTime": 5 }),
+            "unknown field `chronicleStartTime`",
+        ),
+        (
+            "archivedAt",
+            json!({ "archivedAt": "2026-01-01T00:00:00Z" }),
+            "unknown field `archivedAt`",
+        ),
+        (
+            "version",
+            json!({ "version": 3 }),
+            "unknown field `version`",
+        ),
+        ("string as number", json!({ "intent": 5 }), "invalid type"),
+        (
+            "number as string",
+            json!({ "storyTimeOrder": 7 }),
+            "invalid type",
+        ),
+        (
+            "bad contextMode",
+            json!({ "contextMode": "weird" }),
+            "restoreState.contextMode",
+        ),
+        (
+            "aliases not json",
+            json!({ "aliases": "not json" }),
+            "restoreState.aliases",
+        ),
+        (
+            "aliases not strings",
+            json!({ "aliases": "[1]" }),
+            "restoreState.aliases",
+        ),
+        (
+            "beats not array",
+            json!({ "unplacedBeatsDoc": "{}" }),
+            "restoreState.unplacedBeatsDoc",
+        ),
+        (
+            "bad createdAt",
+            json!({ "createdAt": "yesterday" }),
+            "restoreState.createdAt",
+        ),
+    ];
+    for (name, state, needle) in cases {
+        let error = create_wire(&db, with_restore_state(base.clone(), state)).expect_err(name);
+        assert!(error.to_string().contains(needle), "{name}: {error}");
+        assert!(row(&db, "scene-bad").is_none(), "{name} left a row behind");
+    }
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM idempotency_requests WHERE request_id = 'undo-bad'"
+        ),
+        0
+    );
+}
+
+#[test]
+fn restore_state_codex_references_are_nulled_when_gone_and_refused_across_projects() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-ref");
+    // undo の間に Codex を消した：NULL に倒して成功する。
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM codex_entries WHERE id = 'pov-1'", [])?;
+        Ok(())
+    })
+    .expect("delete codex");
+    let response = create_wire(
+        &db,
+        undo_payload_with_state("scene-ref", "scene", &before, &receipt, "undo-ref"),
+    )
+    .expect("undo with a vanished reference");
+    let after = row(&db, "scene-ref").expect("row");
+    assert!(after["povCharacterId"].is_null());
+    assert!(response["povCharacterId"].is_null());
+    assert_eq!(after["locationId"], json!("place-1"));
+
+    // 別 project の Codex は拒み、行も receipt も残さない（同じ transaction）。
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name) VALUES ('pov-1', 'undo-p1', 'character', 'Pov')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("recreate codex");
+    let (before2, receipt2) = seeded_scene(&db, "scene-ref2");
+    let mut payload =
+        undo_payload_with_state("scene-ref2", "scene", &before2, &receipt2, "undo-ref2");
+    payload["restoreState"]["locationId"] = json!("foreign-codex");
+    let error = create_wire(&db, payload).expect_err("another project's entry");
+    assert!(
+        error.to_string().contains("restoreState.locationId"),
+        "{error}"
+    );
+    assert!(row(&db, "scene-ref2").is_none());
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM idempotency_requests WHERE request_id = 'undo-ref2'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM narrative_scene_scope_bindings WHERE scene_id = 'scene-ref2'"
+        ),
+        0
+    );
+}
+
+#[test]
+fn restore_state_requests_replay_by_request_id_and_conflict_on_a_different_state() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-idem");
+    let payload = undo_payload_with_state("scene-idem", "scene", &before, &receipt, "undo-idem");
+    let first = create_wire(&db, payload.clone()).expect("first");
+    let second = create_wire(&db, payload.clone()).expect("same payload replays");
+    assert_eq!(first, second);
+    let mut changed = payload;
+    changed["restoreState"]["intent"] = json!("another goal");
+    let error = create_wire(&db, changed).expect_err("different restoreState");
+    assert!(
+        error
+            .to_string()
+            .contains("TREE_NODE_CREATE_REQUEST_CONFLICT"),
+        "{error}"
+    );
+}
+
+#[test]
+fn restore_state_does_not_roll_back_updated_at_or_version() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-tok");
+    create_wire(
+        &db,
+        undo_payload_with_state("scene-tok", "scene", &before, &receipt, "undo-tok"),
+    )
+    .expect("undo");
+    // updated_at は削除前の値（patch の 2026-08-24）に戻らず、作り直した時刻になる。
+    let updated_at: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT updated_at FROM tree_nodes WHERE id = 'scene-tok'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .expect("updated_at");
+    assert_ne!(updated_at, "2026-08-24T00:00:00.000Z");
+    assert!(updated_at.as_str() > "2026-08-24T00:00:00.000Z");
 }

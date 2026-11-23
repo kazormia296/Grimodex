@@ -4,6 +4,7 @@ import {
   type DeleteTreeSubtreePorts,
 } from "./deleteTreeSubtree";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { TreeNodeRestoreSnapshot } from "@/features/tree/api";
 import type { HistoryCommand } from "@/store/globalHistoryStore";
 
 function node(
@@ -112,5 +113,132 @@ describe("deleteTreeSubtree", () => {
 
     expect(testPorts.history).toHaveLength(0);
     expect(testPorts.notifyDeleteFailure).toHaveBeenCalledOnce();
+  });
+});
+
+describe("deleteTreeSubtree restore snapshots (DR-UND-1)", () => {
+  function snapshot(content: string): TreeNodeRestoreSnapshot {
+    return {
+      content,
+      sourceUri: null,
+      sourceMtime: null,
+      restoreState: { intent: content },
+    };
+  }
+
+  it("reads every node's row before the delete and hands it to the restore", async () => {
+    const testPorts = ports([
+      node("folder", null, "folder"),
+      node("scene", "folder"),
+    ]);
+    testPorts.loadRestoreSnapshot = vi.fn(async (id: string) =>
+      snapshot(`row-${id}`),
+    );
+    const order: string[] = [];
+    vi.mocked(testPorts.loadRestoreSnapshot).mockImplementation(async (id) => {
+      order.push(`load:${id}`);
+      return snapshot(`row-${id}`);
+    });
+    vi.mocked(testPorts.deletePersisted).mockImplementation(async () => {
+      order.push("delete");
+    });
+
+    await deleteTreeSubtree("folder", testPorts);
+    expect(order).toEqual(["load:folder", "load:scene", "delete"]);
+    await testPorts.history[0]!.undo();
+
+    expect(testPorts.restorePersisted).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: "folder" }),
+      undefined,
+      snapshot("row-folder"),
+    );
+    // A scene's content is the snapshot's (the database's), not a second read.
+    expect(testPorts.restorePersisted).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "scene" }),
+      "row-scene",
+      snapshot("row-scene"),
+    );
+    expect(testPorts.loadSceneContent).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the scene content read when the row cannot be read", async () => {
+    const testPorts = ports([node("scene", null)]);
+    testPorts.loadRestoreSnapshot = vi.fn().mockRejectedValue(new Error("x"));
+
+    await deleteTreeSubtree("scene", testPorts);
+    await testPorts.history[0]!.undo();
+
+    expect(testPorts.restorePersisted).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "scene" }),
+      "content",
+    );
+  });
+
+  it("puts the re-created row's token and references into the restored store nodes", async () => {
+    const testPorts = ports([node("scene", null)]);
+    testPorts.loadRestoreSnapshot = vi.fn(async () => snapshot("row"));
+    vi.mocked(testPorts.restorePersisted).mockResolvedValue({
+      version: 0,
+      updatedAt: "2026-11-24T00:00:00.000Z",
+      povCharacterId: null,
+    });
+
+    await deleteTreeSubtree("scene", testPorts);
+    await testPorts.history[0]!.undo();
+
+    expect(testPorts.current).toEqual([
+      expect.objectContaining({
+        id: "scene",
+        version: 0,
+        updatedAt: "2026-11-24T00:00:00.000Z",
+        povCharacterId: null,
+        title: "scene",
+      }),
+    ]);
+  });
+
+  it("reads the rows again before a redo and restores the newer ones on the next undo", async () => {
+    const testPorts = ports([node("scene", null)]);
+    let generation = 1;
+    testPorts.loadRestoreSnapshot = vi.fn(async () =>
+      snapshot(`generation-${generation}`),
+    );
+
+    await deleteTreeSubtree("scene", testPorts);
+    const command = testPorts.history[0]!;
+    await command.undo();
+    generation = 2;
+    await command.redo();
+    vi.mocked(testPorts.restorePersisted).mockClear();
+    await command.undo();
+
+    expect(testPorts.restorePersisted).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "scene" }),
+      "generation-2",
+      snapshot("generation-2"),
+    );
+  });
+
+  it("keeps the older snapshot when the redo's re-read fails", async () => {
+    const testPorts = ports([node("scene", null)]);
+    testPorts.loadRestoreSnapshot = vi
+      .fn<NonNullable<DeleteTreeSubtreePorts["loadRestoreSnapshot"]>>()
+      .mockResolvedValueOnce(snapshot("first"))
+      .mockRejectedValue(new Error("later read failed"));
+
+    await deleteTreeSubtree("scene", testPorts);
+    const command = testPorts.history[0]!;
+    await command.undo();
+    await command.redo();
+    vi.mocked(testPorts.restorePersisted).mockClear();
+    await command.undo();
+
+    expect(testPorts.restorePersisted).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "scene" }),
+      "first",
+      snapshot("first"),
+    );
   });
 });

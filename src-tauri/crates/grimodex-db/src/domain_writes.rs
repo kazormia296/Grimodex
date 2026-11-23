@@ -2495,6 +2495,156 @@ pub struct TreeNodeCreatePayload {
     pub canonical_payload: Option<Value>,
 }
 
+/// DR-UND-1: columns of a deleted tree node that `tree_node_create` does not
+/// write, restored by a delete's Undo. Nested under `restoreState` so an
+/// ordinary create cannot pass them by mistake and an unknown key is rejected
+/// (`deny_unknown_fields`) instead of silently dropped. `null` and a missing
+/// key both mean "leave the column as the INSERT wrote it".
+///
+/// Held back on purpose, not forgotten: the seven `chronicle_*` columns wait
+/// for the CED/1 owner's confirmation (see `TREE_NODE_RESTORE_DEFERRED_COLUMNS`).
+/// Until then a `chronicle*` key is an unknown key and is rejected.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TreeNodeRestoreState {
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub story_time_order: Option<String>,
+    #[serde(default)]
+    pub story_time_label: Option<String>,
+    #[serde(default)]
+    pub pov_character_id: Option<String>,
+    #[serde(default)]
+    pub location_id: Option<String>,
+    #[serde(default)]
+    pub context_mode: Option<String>,
+    #[serde(default)]
+    pub aliases: Option<String>,
+    #[serde(default)]
+    pub excluded_aliases: Option<String>,
+    #[serde(default)]
+    pub unplaced_beats_doc: Option<String>,
+    #[serde(default)]
+    pub unplaced_beat_preview: Option<String>,
+    #[serde(default)]
+    pub placed_beat_preview: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// Wire shape of `tree_node_create`: the unchanged payload plus the optional
+/// nested `restoreState`. The payload struct itself is not widened (it is built
+/// by name in many tests and lanes). `skip_serializing_if` keeps the request
+/// fingerprint of every create without `restoreState` byte-identical.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeNodeCreateWire {
+    #[serde(flatten)]
+    pub payload: TreeNodeCreatePayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_state: Option<TreeNodeRestoreState>,
+}
+
+/// `restoreState` wire key -> `tree_nodes` column, for the columns an Undo of a
+/// delete writes after the INSERT (`version`, `updated_at` and `char_count` are
+/// deliberately not restored: the Source token `v{version}@{updated_at}` must
+/// never return to an earlier value). Same names as `TREE_NODE_PATCH_COLUMNS`.
+pub(crate) const TREE_NODE_RESTORE_COLUMNS: [(&str, &str); 12] = [
+    ("intent", "intent"),
+    ("storyTimeOrder", "story_time_order"),
+    ("storyTimeLabel", "story_time_label"),
+    ("povCharacterId", "pov_character_id"),
+    ("locationId", "location_id"),
+    ("contextMode", "context_mode"),
+    ("aliases", "aliases"),
+    ("excludedAliases", "excluded_aliases"),
+    ("unplacedBeatsDoc", "unplaced_beats_doc"),
+    ("unplacedBeatPreview", "unplaced_beat_preview"),
+    ("placedBeatPreview", "placed_beat_preview"),
+    ("createdAt", "created_at"),
+];
+
+/// `tree_nodes` columns the Undo does not restore *yet*: the Chronicle date
+/// range, held for the CED/1 owner's confirmation. Listed so the drift guard
+/// shows them as a decision, not an oversight.
+#[cfg(test)]
+pub(crate) const TREE_NODE_RESTORE_DEFERRED_COLUMNS: [&str; 7] = [
+    "chronicle_start_time",
+    "chronicle_start_minute",
+    "chronicle_start_granularity",
+    "chronicle_end_time",
+    "chronicle_end_minute",
+    "chronicle_end_granularity",
+    "chronicle_precision",
+];
+
+impl TreeNodeRestoreState {
+    fn wire_values(&self) -> Vec<(&'static str, Option<&String>)> {
+        vec![
+            ("intent", self.intent.as_ref()),
+            ("storyTimeOrder", self.story_time_order.as_ref()),
+            ("storyTimeLabel", self.story_time_label.as_ref()),
+            ("povCharacterId", self.pov_character_id.as_ref()),
+            ("locationId", self.location_id.as_ref()),
+            ("contextMode", self.context_mode.as_ref()),
+            ("aliases", self.aliases.as_ref()),
+            ("excludedAliases", self.excluded_aliases.as_ref()),
+            ("unplacedBeatsDoc", self.unplaced_beats_doc.as_ref()),
+            ("unplacedBeatPreview", self.unplaced_beat_preview.as_ref()),
+            ("placedBeatPreview", self.placed_beat_preview.as_ref()),
+            ("createdAt", self.created_at.as_ref()),
+        ]
+    }
+
+    /// Shape checks that do not need the database. The Chronicle range is not
+    /// validated here (nor anywhere in this restore): an Undo puts back the
+    /// row that existed, including one written through `tree_node_patch`.
+    fn validate_shape(&self) -> anyhow::Result<()> {
+        if let Some(mode) = self.context_mode.as_deref() {
+            anyhow::ensure!(
+                matches!(mode, "hidden" | "suppress" | "mentioned" | "always"),
+                "restoreState.contextMode must be hidden, suppress, mentioned, or always"
+            );
+        }
+        for (field, value) in [
+            ("aliases", self.aliases.as_deref()),
+            ("excludedAliases", self.excluded_aliases.as_deref()),
+        ] {
+            if let Some(value) = value {
+                let parsed: Value = serde_json::from_str(value).map_err(|_| {
+                    anyhow::anyhow!("restoreState.{field} must be a JSON array of strings")
+                })?;
+                anyhow::ensure!(
+                    parsed
+                        .as_array()
+                        .is_some_and(|items| items.iter().all(Value::is_string)),
+                    "restoreState.{field} must be a JSON array of strings"
+                );
+            }
+        }
+        if let Some(value) = self.unplaced_beats_doc.as_deref() {
+            let parsed: Value = serde_json::from_str(value).map_err(|_| {
+                anyhow::anyhow!("restoreState.unplacedBeatsDoc must be a JSON array")
+            })?;
+            anyhow::ensure!(
+                parsed.is_array(),
+                "restoreState.unplacedBeatsDoc must be a JSON array"
+            );
+        }
+        if let Some(value) = self.created_at.as_deref() {
+            // The store keeps whatever the column holds: RFC 3339 for rows the
+            // writers made, `YYYY-MM-DD HH:MM:SS` for rows SQLite defaulted.
+            anyhow::ensure!(
+                chrono::DateTime::parse_from_rfc3339(value).is_ok()
+                    || chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").is_ok(),
+                "restoreState.createdAt must be a timestamp"
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeNodeDeletePayload {
@@ -3218,6 +3368,68 @@ fn ensure_tree_codex_reference_in_project(
     Ok(())
 }
 
+/// Resolve a restored Codex reference. The same project keeps it; a Codex entry
+/// deleted while the node was gone becomes NULL (what the foreign key's
+/// `ON DELETE SET NULL` would have produced, and it must not leave the subtree
+/// half restored); another project's entry is refused.
+fn restored_codex_reference(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    field: &str,
+    entry_id: &str,
+) -> anyhow::Result<Value> {
+    let owner = conn
+        .query_row(
+            "SELECT project_id FROM codex_entries WHERE id = ?1",
+            params![entry_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match owner {
+        None => Ok(Value::Null),
+        Some(owner) if owner == project_id => Ok(Value::String(entry_id.to_string())),
+        Some(_) => anyhow::bail!("restoreState.{field} is not in project '{project_id}'"),
+    }
+}
+
+fn restore_tree_node_state_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    node_id: &str,
+    restore_state: &TreeNodeRestoreState,
+) -> anyhow::Result<()> {
+    let mut assignments = Vec::new();
+    let mut params = Vec::new();
+    for (wire_name, value) in restore_state.wire_values() {
+        let Some(value) = value else { continue };
+        let (_, column) = TREE_NODE_RESTORE_COLUMNS
+            .iter()
+            .find(|(wire, _)| *wire == wire_name)
+            .ok_or_else(|| anyhow::anyhow!("restoreState key '{wire_name}' has no column"))?;
+        let bound = match wire_name {
+            "povCharacterId" | "locationId" => {
+                restored_codex_reference(conn, project_id, wire_name, value)?
+            }
+            _ => Value::String(value.clone()),
+        };
+        assignments.push(format!("{column} = ?{}", params.len() + 1));
+        params.push(bound);
+    }
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    let id_param = params.len() + 1;
+    params.push(Value::String(node_id.to_string()));
+    let project_param = params.len() + 1;
+    params.push(Value::String(project_id.to_string()));
+    let sql = format!(
+        "UPDATE tree_nodes SET {} WHERE id = ?{id_param} AND project_id = ?{project_param}",
+        assignments.join(", ")
+    );
+    Database::execute_with_conn(conn, &sql, &params, "run")?;
+    Ok(())
+}
+
 pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow::Result<Value> {
     tree_node_create_with_authority(db, payload, None)
 }
@@ -3227,6 +3439,38 @@ pub fn tree_node_create_with_authority(
     payload: TreeNodeCreatePayload,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
+    tree_node_create_wire_with_authority(
+        db,
+        TreeNodeCreateWire {
+            payload,
+            restore_state: None,
+        },
+        renderer_context,
+    )
+}
+
+/// `tree_node_create` including the optional `restoreState` of a delete's Undo
+/// (DR-UND-1). Without `restoreState` this is exactly the plain create.
+pub fn tree_node_create_wire_with_authority(
+    db: &Database,
+    wire: TreeNodeCreateWire,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    let request_hash = canonical_write_payload_fingerprint("tree_node_create", &wire)?;
+    let TreeNodeCreateWire {
+        payload,
+        restore_state,
+    } = wire;
+    if let Some(restore_state) = restore_state.as_ref() {
+        // Only the Undo of a delete may use it (that Undo Journal's op_kind is
+        // checked against the target below). Redo of a create, and every
+        // Human / Import / Restore / Migration create, cannot widen a create.
+        anyhow::ensure!(
+            payload.origin == NarrativeChangeOrigin::Undo,
+            "restoreState is only accepted for undo"
+        );
+        restore_state.validate_shape()?;
+    }
     for (value, field) in [
         (&payload.id, "id"),
         (&payload.project_id, "projectId"),
@@ -3279,7 +3523,6 @@ pub fn tree_node_create_with_authority(
             "tree node create undoJournalId does not match canonical authority context"
         );
     }
-    let request_hash = canonical_write_payload_fingerprint("tree_node_create", &payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: "tree_node_create",
         request_id: Some(&payload.request_id),
@@ -3363,6 +3606,11 @@ pub fn tree_node_create_with_authority(
             ],
             "run",
         )?;
+        // DR-UND-1: restore the columns the INSERT does not write, in this same
+        // transaction and before the Scope binding / Feed read the row.
+        if let Some(restore_state) = restore_state.as_ref() {
+            restore_tree_node_state_in_tx(&tx, &payload.project_id, &payload.id, restore_state)?;
+        }
         if payload.node_type == "scene" {
             crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
                 &tx,
@@ -9239,6 +9487,127 @@ mod tests {
             Ok(())
         })
         .expect("inspect atomic scene create");
+    }
+
+    /// DR-UND-1 drift guard. Every `tree_nodes` column is written by the
+    /// INSERT, restored by `restoreState`, deliberately held, or deliberately
+    /// excluded (with the reason). A new column (for example from the Chronicle
+    /// work) fails this test until someone decides which it is.
+    #[test]
+    fn every_tree_nodes_column_is_classified_for_the_undo_restore() {
+        const INSERTED: [&str; 14] = [
+            "id",
+            "project_id",
+            "parent_id",
+            "node_type",
+            "title",
+            "sort_order",
+            "synopsis",
+            "status",
+            "source_uri",
+            "source_mtime",
+            "content",
+            "char_count",
+            "created_at",
+            "updated_at",
+        ];
+        // (column, why the Undo does not write it)
+        const EXCLUDED: [(&str, &str); 2] = [
+            (
+                "version",
+                "stays 0 on re-creation so the Source token v{version}@{updated_at} never returns to an earlier value; the renderer takes version/updatedAt from the response",
+            ),
+            (
+                "archived_at",
+                "the tree store only carries rows with archived_at IS NULL, so a node it restores is never archived",
+            ),
+        ];
+        let db = fixture();
+        let columns: Vec<String> = db
+            .with_conn(|conn| {
+                let mut statement =
+                    conn.prepare("SELECT name FROM pragma_table_info('tree_nodes')")?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(names)
+            })
+            .expect("tree_nodes columns");
+        let restored: Vec<&str> = TREE_NODE_RESTORE_COLUMNS
+            .iter()
+            .map(|(_, column)| *column)
+            .collect();
+        for column in &columns {
+            let column = column.as_str();
+            let classes = [
+                INSERTED.contains(&column),
+                restored.contains(&column),
+                TREE_NODE_RESTORE_DEFERRED_COLUMNS.contains(&column),
+                EXCLUDED.iter().any(|(excluded, _)| *excluded == column),
+            ];
+            assert!(
+                classes.iter().any(|class| *class),
+                "tree_nodes.{column} is not classified for the undo restore: add it to the INSERT, TREE_NODE_RESTORE_COLUMNS, the deferred list, or the excluded list with a reason"
+            );
+        }
+        // Nothing is listed that the table does not have, and a restored column
+        // is not also deferred.
+        for column in INSERTED
+            .iter()
+            .chain(restored.iter())
+            .chain(TREE_NODE_RESTORE_DEFERRED_COLUMNS.iter())
+            .chain(EXCLUDED.iter().map(|(column, _)| column))
+        {
+            assert!(
+                columns.iter().any(|name| name == column),
+                "classified column {column} does not exist in tree_nodes"
+            );
+        }
+        for column in TREE_NODE_RESTORE_DEFERRED_COLUMNS {
+            assert!(
+                !restored.contains(&column),
+                "{column} is both restored and deferred"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_state_keys_match_the_restore_columns_and_the_patch_wire_names() {
+        let all_keys: Value = serde_json::Value::Object(
+            TREE_NODE_RESTORE_COLUMNS
+                .iter()
+                .map(|(wire, _)| ((*wire).to_string(), Value::String("x".to_string())))
+                .collect(),
+        );
+        // Every restore key is accepted by the typed struct and is read back.
+        let parsed: Result<TreeNodeRestoreState, _> = serde_json::from_value(all_keys);
+        let parsed = parsed.expect("all restore keys deserialize");
+        let read_back: Vec<&str> = parsed
+            .wire_values()
+            .into_iter()
+            .filter(|(_, value)| value.is_some())
+            .map(|(wire, _)| wire)
+            .collect();
+        let mut expected: Vec<&str> = TREE_NODE_RESTORE_COLUMNS
+            .iter()
+            .map(|(wire, _)| *wire)
+            .collect();
+        let mut actual = read_back.clone();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+        // Same wire name and column as tree_node_patch, except createdAt, which
+        // only an Undo may write.
+        for (wire, column) in TREE_NODE_RESTORE_COLUMNS {
+            if wire == "createdAt" {
+                assert_eq!(column, "created_at");
+                continue;
+            }
+            assert!(
+                TREE_NODE_PATCH_COLUMNS.contains(&(wire, column)),
+                "{wire} -> {column} differs from TREE_NODE_PATCH_COLUMNS"
+            );
+        }
     }
 
     #[test]

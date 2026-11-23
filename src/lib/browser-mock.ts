@@ -26729,6 +26729,139 @@ export async function createBrowserMock(
     }
   }
 
+  // DR-UND-1: the columns a delete's Undo writes after the INSERT (same keys and
+  // columns as Rust `TreeNodeRestoreState`). The Chronicle date range is held
+  // for the CED/1 owner's confirmation, so a `chronicle*` key is unknown here too.
+  const BROWSER_TREE_RESTORE_COLUMNS: ReadonlyArray<readonly [string, string]> =
+    [
+      ["intent", "intent"],
+      ["storyTimeOrder", "story_time_order"],
+      ["storyTimeLabel", "story_time_label"],
+      ["povCharacterId", "pov_character_id"],
+      ["locationId", "location_id"],
+      ["contextMode", "context_mode"],
+      ["aliases", "aliases"],
+      ["excludedAliases", "excluded_aliases"],
+      ["unplacedBeatsDoc", "unplaced_beats_doc"],
+      ["unplacedBeatPreview", "unplaced_beat_preview"],
+      ["placedBeatPreview", "placed_beat_preview"],
+      ["createdAt", "created_at"],
+    ];
+
+  function browserTreeRestoreState(
+    command: string,
+    payload: Record<string, unknown>,
+    origin: string,
+  ): Array<readonly [string, string, string]> | null {
+    if (!Object.prototype.hasOwnProperty.call(payload, "restoreState")) {
+      return null;
+    }
+    if (origin !== "undo") {
+      throw new Error(`${command}: restoreState is only accepted for undo`);
+    }
+    const raw = payload.restoreState;
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`${command}: restoreState must be an object`);
+    }
+    const state = raw as Record<string, unknown>;
+    for (const key of Object.keys(state)) {
+      if (!BROWSER_TREE_RESTORE_COLUMNS.some(([wire]) => wire === key)) {
+        throw new Error(
+          `${command}: restoreState has unknown field \`${key}\``,
+        );
+      }
+    }
+    const assignments: Array<readonly [string, string, string]> = [];
+    for (const [wire, column] of BROWSER_TREE_RESTORE_COLUMNS) {
+      const value = nullableBrowserString(command, state, wire);
+      if (value === null) continue;
+      assignments.push([wire, column, value]);
+    }
+    for (const [wire, , value] of assignments) {
+      if (
+        wire === "contextMode" &&
+        !["hidden", "suppress", "mentioned", "always"].includes(value)
+      ) {
+        throw new Error(
+          `${command}: restoreState.contextMode is not supported`,
+        );
+      }
+      if (wire === "aliases" || wire === "excludedAliases") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(value);
+        } catch {
+          parsed = null;
+        }
+        if (
+          !Array.isArray(parsed) ||
+          !parsed.every((item) => typeof item === "string")
+        ) {
+          throw new Error(
+            `${command}: restoreState.${wire} must be a JSON array of strings`,
+          );
+        }
+      }
+      if (wire === "unplacedBeatsDoc") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(value);
+        } catch {
+          parsed = null;
+        }
+        if (!Array.isArray(parsed)) {
+          throw new Error(
+            `${command}: restoreState.unplacedBeatsDoc must be a JSON array`,
+          );
+        }
+      }
+      if (
+        wire === "createdAt" &&
+        !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.test(
+          value,
+        )
+      ) {
+        throw new Error(
+          `${command}: restoreState.createdAt must be a timestamp`,
+        );
+      }
+    }
+    return assignments;
+  }
+
+  function restoreBrowserTreeNodeState(
+    nodeId: string,
+    projectId: string,
+    assignments: ReadonlyArray<readonly [string, string, string]>,
+  ): void {
+    if (assignments.length === 0) return;
+    const values: Array<string | null> = [];
+    for (const [wire, , value] of assignments) {
+      if (wire === "povCharacterId" || wire === "locationId") {
+        // Same project keeps it; a Codex entry deleted while the node was gone
+        // becomes NULL; another project's entry is refused.
+        const owner = queryOne(
+          "SELECT project_id AS projectId FROM codex_entries WHERE id = ?",
+          [value],
+        );
+        if (owner && owner.projectId !== projectId) {
+          throw new Error(
+            `restoreState.${wire} is not in project '${projectId}'`,
+          );
+        }
+        values.push(owner ? value : null);
+      } else {
+        values.push(value);
+      }
+    }
+    db.run(
+      `UPDATE tree_nodes SET ${assignments
+        .map(([, column]) => `${column} = ?`)
+        .join(", ")} WHERE id = ? AND project_id = ?`,
+      [...values, nodeId, projectId],
+    );
+  }
+
   async function handleCanonicalTreeNodeCreate(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -26748,6 +26881,11 @@ export async function createBrowserMock(
     const sourceUri = nullableBrowserString(command, payload, "sourceUri");
     const sourceMtime = nullableBrowserString(command, payload, "sourceMtime");
     const content = nullableBrowserString(command, payload, "content");
+    const restoreState = browserTreeRestoreState(
+      command,
+      payload,
+      identity.origin,
+    );
     const journalId = identity.undoJournalId ?? identity.requestId;
 
     return withAppendLedgerLock(async () => {
@@ -26827,6 +26965,9 @@ export async function createBrowserMock(
         );
         if (db.getRowsModified() !== 1) {
           throw new Error(`tree node '${id}' was not created`);
+        }
+        if (restoreState) {
+          restoreBrowserTreeNodeState(id, identity.projectId, restoreState);
         }
         const row = browserTreeNodeRow(id, identity.projectId);
         if (!row) throw new Error("tree node not found after create");

@@ -4420,6 +4420,50 @@ function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
+/**
+ * DR-UND-1: the columns a delete's Undo writes after the INSERT. Same keys as
+ * Rust `TreeNodeRestoreState`. The Chronicle date range (`chronicle*`) is held
+ * for the CED/1 owner's confirmation, so those keys are rejected here too.
+ */
+export const TREE_NODE_RESTORE_STATE_KEYS = [
+  "intent",
+  "storyTimeOrder",
+  "storyTimeLabel",
+  "povCharacterId",
+  "locationId",
+  "contextMode",
+  "aliases",
+  "excludedAliases",
+  "unplacedBeatsDoc",
+  "unplacedBeatPreview",
+  "placedBeatPreview",
+  "createdAt",
+] as const;
+
+function requireTreeNodeRestoreState(
+  payload: CommandArgs,
+  command: string,
+): void {
+  if (payload.origin !== "undo") {
+    throw new Error(
+      `invalid args \`restoreState\` for command \`${command}\`: only accepted for undo`,
+    );
+  }
+  const restoreState = requireRecord(payload, "restoreState", command);
+  for (const key of Object.keys(restoreState)) {
+    if (!(TREE_NODE_RESTORE_STATE_KEYS as readonly string[]).includes(key)) {
+      throw new Error(
+        `invalid args \`restoreState.${key}\` for command \`${command}\`: unknown key`,
+      );
+    }
+  }
+  for (const key of TREE_NODE_RESTORE_STATE_KEYS) {
+    if (Object.hasOwn(restoreState, key)) {
+      requireNullableStringField(restoreState, key, command);
+    }
+  }
+}
+
 function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_create";
   const payload = requireCanonicalWriterIdentity(args, command, [
@@ -4447,6 +4491,9 @@ function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   ]) {
     if (Object.hasOwn(payload, key))
       requireNullableStringField(payload, key, command);
+  }
+  if (Object.hasOwn(payload, "restoreState")) {
+    requireTreeNodeRestoreState(payload, command);
   }
   return payload;
 }

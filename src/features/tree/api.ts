@@ -401,6 +401,94 @@ export async function getNode(id: string): Promise<TreeNode | undefined> {
   return rows[0];
 }
 
+/**
+ * DR-UND-1: the columns of a deleted node that `tree_node_create` does not
+ * write, passed only by the Undo of a delete (Main and Native refuse it for any
+ * other origin). Same keys as `TREE_NODE_RESTORE_STATE_KEYS` in
+ * `electron/shared/ipcContract.ts`. The Chronicle date range is not here yet:
+ * it waits for the CED/1 owner's confirmation.
+ */
+export interface TreeNodeRestoreState {
+  intent?: string;
+  storyTimeOrder?: string;
+  storyTimeLabel?: string;
+  povCharacterId?: string;
+  locationId?: string;
+  contextMode?: string;
+  aliases?: string;
+  excludedAliases?: string;
+  unplacedBeatsDoc?: string;
+  unplacedBeatPreview?: string;
+  placedBeatPreview?: string;
+  createdAt?: string;
+}
+
+/** A node's row as it was in the database just before a delete. */
+export interface TreeNodeRestoreSnapshot {
+  content: string;
+  sourceUri: string | null;
+  sourceMtime: string | null;
+  restoreState: TreeNodeRestoreState;
+}
+
+/**
+ * Read the row an Undo of a delete must put back, from the database (not from
+ * the Tree store: a note's `content` there is the value loaded at open time,
+ * and the store lags writes made outside it). Waits for a pending scene body
+ * write first, like `loadSceneContent`. `null` when the row is gone.
+ */
+export async function loadTreeNodeRestoreSnapshot(
+  nodeId: string,
+): Promise<TreeNodeRestoreSnapshot | null> {
+  await awaitPendingSceneContentWrite(nodeId);
+  const rows = await db
+    .select({
+      content: treeNodes.content,
+      sourceUri: treeNodes.sourceUri,
+      sourceMtime: treeNodes.sourceMtime,
+      intent: treeNodes.intent,
+      storyTimeOrder: treeNodes.storyTimeOrder,
+      storyTimeLabel: treeNodes.storyTimeLabel,
+      povCharacterId: treeNodes.povCharacterId,
+      locationId: treeNodes.locationId,
+      contextMode: treeNodes.contextMode,
+      aliases: treeNodes.aliases,
+      excludedAliases: treeNodes.excludedAliases,
+      unplacedBeatsDoc: treeNodes.unplacedBeatsDoc,
+      unplacedBeatPreview: treeNodes.unplacedBeatPreview,
+      placedBeatPreview: treeNodes.placedBeatPreview,
+      createdAt: treeNodes.createdAt,
+    })
+    .from(treeNodes)
+    .where(eq(treeNodes.id, nodeId));
+  const row = rows[0];
+  if (!row) return null;
+  const restoreState: TreeNodeRestoreState = {};
+  for (const key of [
+    "intent",
+    "storyTimeOrder",
+    "storyTimeLabel",
+    "povCharacterId",
+    "locationId",
+    "contextMode",
+    "aliases",
+    "excludedAliases",
+    "unplacedBeatsDoc",
+    "unplacedBeatPreview",
+    "placedBeatPreview",
+    "createdAt",
+  ] as const) {
+    const value = row[key];
+    if (typeof value === "string") restoreState[key] = value;
+  }
+  return {
+    content: row.content,
+    sourceUri: row.sourceUri ?? null,
+    sourceMtime: row.sourceMtime ?? null,
+    restoreState,
+  };
+}
+
 export async function createNode(
   data: Pick<
     NewTreeNode,
@@ -421,6 +509,8 @@ export async function createNode(
     writeContext?: CanonicalWriteContext;
     /** Scene storage identity used by external-file replacement fences. */
     timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+    /** Only the Undo of a delete passes this (DR-UND-1). */
+    restoreState?: TreeNodeRestoreState;
   } = {},
 ): Promise<TreeNodeWriteResult> {
   const writeContext = options.writeContext ?? createCanonicalWriteContext();
@@ -435,6 +525,7 @@ export async function createNode(
             sortOrder: data.sortOrder,
             title: data.title,
           },
+          restoreState: options.restoreState,
         }).filter(([, value]) => value !== undefined),
       ),
     });
