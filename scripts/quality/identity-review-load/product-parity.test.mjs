@@ -1124,11 +1124,35 @@ test("送信の直前の guard：bJudge は guard を runGuardedJudge に渡し�
   assert.match(judge, /countHiddenInSentWindow: async \(\) =>/u);
   assert.match(judge, /countHiddenAmong\(/u);
   assert.match(judge, /b\.entries\s*\.slice\(0, JUDGMENT_MAX_ENTRIES\)/u);
-  // judgeCandidates を呼ぶのは renderer 全体で 1 か所（bJudge の judge の中）だけ。guard の関数の外で送れない。
-  assert.equal([...renderer.matchAll(/\bawait judgeCandidates\(/gu)].length, 1);
+  // judgeCandidates を呼ぶのは renderer 全体で 2 か所だけ：bJudge の judge の中（guard を通った後）と、探針 bProbeJudge。
+  // 探針は key の無いことの確認（hasApiKey）を済ませた後にだけ呼ぶ。外向きの命令は main の入口の拒否層（dispatch-block.mjs）が
+  // 止める。探針を呼ぶのは乾いた実行だけ（下の run-measure-b.mjs の確認）。guard の関数の外で送れない。
+  assert.equal([...renderer.matchAll(/\bawait judgeCandidates\(/gu)].length, 2);
   const judgeStart = judge.indexOf("judge: async () => {");
   assert.ok(
     judgeStart > 0 && judge.indexOf("await judgeCandidates(") > judgeStart,
+  );
+  const probe = functionBody(renderer, "bProbeJudge");
+  assert.equal([...probe.matchAll(/\bawait judgeCandidates\(/gu)].length, 1);
+  assert.ok(
+    probe.indexOf("await hasApiKey(") > 0 &&
+      probe.indexOf("await hasApiKey(") <
+        probe.indexOf("await judgeCandidates("),
+  );
+  assert.match(probe, /return \{ refused: "key-present" as const \}/u);
+  // 探針は定義のほかに renderer の中から呼ばない（page に出して node が呼ぶだけ）。
+  assert.equal([...renderer.matchAll(/\bbProbeJudge\(/gu)].length, 1);
+  const runnerSource = tool("run-measure-b.mjs");
+  assert.equal(
+    [...runnerSource.matchAll(/window\.identityLoad\.bProbeJudge\(\)/gu)].length,
+    1,
+  );
+  // 探針の呼び出し（probeJudgePath）は、拒否層の有効の確認の後にだけ進む。
+  const probePath = functionBody(runnerSource, "probeJudgePath");
+  assert.ok(
+    probePath.indexOf("DISPATCH_BLOCK_NOT_ACTIVE") > 0 &&
+      probePath.indexOf("DISPATCH_BLOCK_NOT_ACTIVE") <
+        probePath.indexOf("bProbeJudge()"),
   );
   // runGuardedJudge は lib.mjs から読む（page で動く純関数）。
   assert.match(renderer, /runGuardedJudge,\s*seedMissingFromCandidates/u);
@@ -1245,4 +1269,39 @@ test("F5 M-a：judgeCandidates は出力の上限を渡さず、native の既定
   assert.ok(/"sonnet-"/u.test(always) && /major >= 5/u.test(always));
   // 道具の測定の model は claude-sonnet-5-5。
   assert.match(tool("run-measure-b.mjs"), /MODEL = "claude-sonnet-5-5"/u);
+});
+
+test("試走の 1 回目の原因の直し：監査用の workspace の path は B の経路（bConfigureAi）だけが置き、測定 A・目録の経路（openProject）は変えない", () => {
+  const renderer = tool("renderer.ts");
+  const configure = functionBody(renderer, "bConfigureAi");
+  // 製品の監査の begin（snapshotAiAuditWorkspacePath）が読む useWorkspaceStore の activeWorkspacePath を、
+  // 道具が開いた workspace の identity から置く。identity が無ければ送る前に止まる。
+  assert.match(
+    configure,
+    /useWorkspaceStore\.setState\(\{\s*activeWorkspacePath: identity\.path,\s*workspaceOpenRevision: identity\.openRevision,\s*\}\)/u,
+  );
+  assert.match(configure, /AUDIT_WORKSPACE_IDENTITY_MISSING/u);
+  assert.ok(
+    configure.indexOf("useWorkspaceStore.setState") <
+      configure.indexOf("saveAiSettings("),
+  );
+  // 測定 A・目録が通る openProject は workspace の store に触れない。
+  assert.ok(!/useWorkspaceStore/u.test(functionBody(renderer, "openProject")));
+  assert.equal([...renderer.matchAll(/useWorkspaceStore\.setState/gu)].length, 1);
+});
+
+test("本測定で許す AI の command：設定・送信・局所の監査の追記だけ（製品の AI 送信は ai_audit_append_batch で監査の DB に書く）", async () => {
+  const { ALLOWED_REAL_AI_COMMANDS } = await import("./run-measure-b.mjs");
+  assert.deepEqual([...ALLOWED_REAL_AI_COMMANDS].sort(), [
+    "ai_audit_append_batch",
+    "get_ai_settings",
+    "save_ai_settings",
+    "send_chat_message",
+  ]);
+  // 製品の監査の追記が実際にこの命令であること（名前の取り違えを、製品の source で確かめる）。
+  const audit = readFileSync(
+    new URL("../../../src/features/ai-audit/api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(audit.includes('invoke<AiAuditAppendResult>("ai_audit_append_batch"'));
 });

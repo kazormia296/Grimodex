@@ -835,14 +835,15 @@ test("最悪値は、入力が TOKENS_OVER の線（試走で較正した段で�
     assert.ok(
       row.usd >= usdOf(PRICING, { input_tokens: 10_000, output_tokens: 5_000 }),
     );
-    // 最悪値を上げても TOKENS_OVER の線は緩まない：出力が較正した線（4000）を 1 でも超えれば停止する。
+    // 最悪値を上げても TOKENS_OVER の線は緩まない：出力は見積り（5,000）の 2 倍（10,000）を 1 でも超えれば停止する
+    // （出力の線は DR-ILM-49 で、試走の比でなく見積りの 2 倍にした）。
     const second = gate({ requireTrial: true, totalCapUsd: 15 });
     try {
       second.gate.preflight({ ...EST, stage: "trial" });
       send(second.gate, ok(8_000, 2_000), { stage: "trial" });
       second.gate.preflight(EST);
       assert.throws(
-        () => send(second.gate, ok(8_000, 4_001)),
+        () => send(second.gate, ok(8_000, 10_001)),
         (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
       );
     } finally {
@@ -1148,5 +1149,71 @@ test("F5 m-j：台帳の dir は自分の所有の 0700 でなければ止まる
     );
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("出力の停止線（DR-ILM-49）：試走の比・実測の最大値には依らず、見積りの 2 倍。入力の線は試走の比で補正したまま。B1 の L0 の実測（見積り 2,640 に対し 2,481）を例にする", () => {
+  const { dir, gate: g } = gate({ requireTrial: true, totalCapUsd: 15 });
+  try {
+    // 試走（L2 の 2 作品の形）：見積り 5,033／6,000 に対し実測 7,843／2,724（比 1.558／0.454）、見積り 1,049／800 に対し 1,734／286。
+    for (const [est, usage] of [
+      [{ in: 5_033, out: 6_000 }, ok(7_843, 2_724)],
+      [{ in: 1_049, out: 800 }, ok(1_734, 286)],
+    ]) {
+      g.preflight({
+        stage: "trial",
+        estInputTokens: est.in,
+        estOutputTokens: est.out,
+      });
+      g.afterRequest({
+        stage: "trial",
+        outcome: usage,
+        estInputTokens: est.in,
+        estOutputTokens: est.out,
+      });
+    }
+    // 以前の線（試走の比で補正）は 2×2,640×0.454＝2,397。実測 2,481（見積りの 0.94 倍）は、今は止めない。
+    const req = { stage: "B1", estInputTokens: 1_379, estOutputTokens: 2_640 };
+    g.preflight(req);
+    g.afterRequest({ ...req, outcome: ok(2_099, 2_481) });
+    assert.equal(g.state.stopped, null);
+    // 見積りの 2 倍（5,280）を 1 でも超えれば止める。ちょうど 2 倍は止めない。
+    g.preflight(req);
+    g.afterRequest({ ...req, outcome: ok(2_099, 5_280) });
+    assert.equal(g.state.stopped, null);
+    g.preflight(req);
+    assert.throws(
+      () => g.afterRequest({ ...req, outcome: ok(2_099, 5_281) }),
+      (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // 入力の線は試走の比で補正したまま：試走の比の最大 1.653 に対して、見積り×1.653×2 を超えたら止める。
+  const b = gate({ requireTrial: true, totalCapUsd: 15 });
+  try {
+    for (const [est, usage] of [
+      [{ in: 1_000, out: 800 }, ok(1_653, 286)],
+    ]) {
+      b.gate.preflight({
+        stage: "trial",
+        estInputTokens: est.in,
+        estOutputTokens: est.out,
+      });
+      b.gate.afterRequest({
+        stage: "trial",
+        outcome: usage,
+        estInputTokens: est.in,
+        estOutputTokens: est.out,
+      });
+    }
+    const req = { stage: "B1", estInputTokens: 1_000, estOutputTokens: 800 };
+    b.gate.preflight(req);
+    assert.throws(
+      () => b.gate.afterRequest({ ...req, outcome: ok(3_307, 100) }),
+      (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
+    );
+  } finally {
+    rmSync(b.dir, { recursive: true, force: true });
   }
 });
