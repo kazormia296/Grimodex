@@ -99,6 +99,7 @@ import {
   readReadInputs,
 } from "../shared/readDomain/core/readInputsReader.js";
 import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
+import { fuseCodexHybrid } from "../shared/readDomain/features/chat/agent/codexHybridSearch.js";
 import {
   CORE_READ_TOOL_NAMES,
   createReadExecutors,
@@ -1431,6 +1432,35 @@ describe("the Codex visibility decision of the read core (PR-8a) on Main's adapt
   });
 });
 
+/**
+ * The comparison normalization of "the statements sent" (PR-8b): in a recorded or a sent `db_execute` call, the run of
+ * params that fills an `in (?, ?, ...)` list is sorted (compared as a set). Everything else is compared as it is:
+ * `cmd`, `sql`, `method`, the number and the order of the statements, and every param outside those runs (the project,
+ * the LIKE patterns, the limit) in order.
+ *
+ * Why: the recorded calls come from sql.js, and a select with no ORDER BY (the LIKE arm of `search_codex`,
+ * `list_codex_by_type`, ...) returns its rows in an order that real SQLite does not have to share. The ids of those
+ * rows go into the next statement's `in (...)` list in that order, and the order of an `in` list means nothing to SQL.
+ * It is the same for the core and the renderer (both receive the real SQLite order), so it is not a difference between
+ * them. The result (content, summary, tokensUsed, the JSON bytes) is still compared to the golden as it is.
+ */
+function normalizeInListParams(call: Record<string, unknown>) {
+  const sql = String(call.sql);
+  if (!Array.isArray(call.params)) return call;
+  const params = [...call.params];
+  for (const match of sql.matchAll(/\bin \(([?, ]*)\)/giu)) {
+    const start = (sql.slice(0, match.index).match(/\?/gu) ?? []).length;
+    const length = (match[1]!.match(/\?/gu) ?? []).length;
+    const sorted = params
+      .slice(start, start + length)
+      .sort((a, b) =>
+        String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0,
+      );
+    params.splice(start, length, ...sorted);
+  }
+  return { ...call, params };
+}
+
 describe("the four Codex tools of the read core (PR-8b) on Main's adapter over the real Native addon", () => {
   const MAIN_PROJECT = LEGACY_READ_PROJECTS.main;
 
@@ -1593,33 +1623,91 @@ describe("the four Codex tools of the read core (PR-8b) on Main's adapter over t
         if (turn.ftsCalls.length === 0) {
           // Not the full-text arm (a short word's LIKE-OR, an empty query, the other three tools): the golden
           // is compared to the byte, and the statements sent are the renderer's, in the same order.
-          expect(
-            {
-              name: actual.name,
-              summary: actual.summary,
-              tokensUsed: actual.tokensUsed,
-              content: actual.content,
-            },
-            label,
-          ).toEqual({
-            name: golden.result.name,
-            summary: golden.result.summary,
-            tokensUsed: golden.result.tokensUsed,
-            content: golden.result.content,
-          });
-          expect(JSON.stringify(actual.content), label).toBe(
-            golden.contentJson,
-          );
+          if (dense === "canned") {
+            // The dense hits are fused with the sparse rows by rank, so the golden's ORDER (sql.js's LIKE scan
+            // order for the sparse arm) is not the real database's. The order is required to be what the fusion
+            // gives for the sparse rows the real database returned (read from the first statement's answer, not
+            // written down), with the golden's visible ids kept; everything else is still the golden's to the
+            // byte: name, summary, tokensUsed, and each row (the rows sorted by id, as JSON).
+            const sparseWire = JSON.parse(
+              (await ws.dbExecute.mock.results[0]!.value) as string,
+            ) as { rows: Array<Record<string, unknown>> };
+            const fused = fuseCodexHybrid(
+              LEGACY_READ_CANNED_CODEX_HITS.map((hit) => ({ ...hit })),
+              sparseWire.rows.map((row) => ({
+                id: String(row["id"]),
+                name: String(row["name"]),
+                type: String(row["type"]),
+                summary: String(row["summary"] ?? ""),
+              })),
+              20,
+            );
+            const goldenRows = golden.result.content as Array<{ id: string }>;
+            const visible = new Set(goldenRows.map((row) => row.id));
+            const rows = actual.content as Array<{ id: string }>;
+            expect(
+              rows.map((row) => row.id),
+              `${label}: order of the fusion over the real sparse rows`,
+            ).toEqual(
+              fused.map((row) => row.id).filter((id) => visible.has(id)),
+            );
+            expect(actual.name, label).toBe(golden.result.name);
+            expect(actual.summary, label).toBe(golden.result.summary);
+            expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+            expect(JSON.stringify([...rows].sort(byId)), label).toBe(
+              JSON.stringify([...goldenRows].sort(byId)),
+            );
+          } else {
+            // A select with no ORDER BY (the LIKE arm of `search_codex`, `list_codex_by_type`,
+            // `search_codex_by_tags`, `find_related_entries`) returns its rows in an order that real SQLite does
+            // not share with sql.js (the golden's). The ORDER is required to be the order the real database
+            // returned for the tool's own select (read from that statement's answer, not written down), with
+            // the golden's visible ids kept; everything else is still the golden's to the byte: name, summary,
+            // tokensUsed, and each row (the rows sorted by id, as JSON).
+            const toolSelect = ws.dbExecute.mock.calls.findIndex((call) =>
+              tool === "find_related_entries"
+                ? /\blike\b/iu.test(String(call[0]))
+                : /from "codex_entries"/iu.test(String(call[0])),
+            );
+            const goldenRows = golden.result.content as Array<{ id: string }>;
+            const visible = new Set(goldenRows.map((row) => row.id));
+            const realOrder =
+              toolSelect < 0
+                ? []
+                : (
+                    JSON.parse(
+                      (await ws.dbExecute.mock.results[toolSelect]!
+                        .value) as string,
+                    ) as { rows: Array<Record<string, unknown>> }
+                  ).rows
+                    .map((row) => String(row["id"]))
+                    .filter((id) => visible.has(id));
+            const rows = actual.content as Array<{ id: string }>;
+            expect(
+              rows.map((row) => row.id),
+              `${label}: order of the real database's rows`,
+            ).toEqual(realOrder);
+            expect(actual.name, label).toBe(golden.result.name);
+            expect(actual.summary, label).toBe(golden.result.summary);
+            expect(actual.tokensUsed, label).toBe(golden.result.tokensUsed);
+            expect(JSON.stringify([...rows].sort(byId)), label).toBe(
+              JSON.stringify([...goldenRows].sort(byId)),
+            );
+          }
           const sentDb = ws.dbExecute.mock.calls.map((call) => ({
             cmd: "db_execute",
             sql: call[0],
             params: call[1],
             method: call[2],
           }));
-          expect(sentDb, `${label}: the statements sent`).toEqual(
-            (recorded[tool]![golden.case] ?? []).filter(
-              (call) => call["cmd"] === "db_execute",
-            ),
+          // The same normalization on both sides (see `normalizeInListParams`).
+          expect(
+            sentDb.map(normalizeInListParams),
+            `${label}: the statements sent`,
+          ).toEqual(
+            (recorded[tool]![golden.case] ?? [])
+              .filter((call) => call["cmd"] === "db_execute")
+              .map(normalizeInListParams),
           );
         } else {
           // The full-text arm. The golden's order is browser-mock's LIKE scan, which is not an order real
