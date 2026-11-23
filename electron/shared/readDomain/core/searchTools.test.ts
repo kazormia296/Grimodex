@@ -77,15 +77,15 @@ function makeCtx(
 }
 
 describe("search_scenes", () => {
-  it("asks fts for scope scenes with Native's cap (50), trims the query, and passes the project", async () => {
+  it("asks fts for scope scenes_live with limit 10 (Native leaves archived scenes out), trims the query, and passes the project", async () => {
     const { executors, fts } = makeCtx();
     const result = await executors.search_scenes({ query: "  アリア  " });
     expect(fts).toHaveBeenCalledTimes(1);
     expect(fts).toHaveBeenCalledWith({
       projectId: "p1",
       query: "アリア",
-      scope: "scenes",
-      limit: 50,
+      scope: "scenes_live",
+      limit: 10,
     });
     expect(result).toEqual({
       name: "search_scenes",
@@ -102,8 +102,11 @@ describe("search_scenes", () => {
   });
 
   it("drops an archived scene in its own condition, keeps fts order and cuts to 10", async () => {
-    // fts answers 12 scenes, the first two archived: the statement carries the
-    // `archived_at is null` condition, and the rows come back in fts order.
+    // The tool keeps its own condition although `scenes_live` leaves archived
+    // scenes out (the in-browser mock answers every scope in one list and
+    // drops none). fts answers 12 scenes here, the first two archived: the
+    // statement carries the `archived_at is null` condition, and the rows come
+    // back in fts order.
     const ids = Array.from({ length: 12 }, (_, i) => `n${i}`);
     const live = ids.slice(2);
     const { executors, captured, fts } = makeCtx({
