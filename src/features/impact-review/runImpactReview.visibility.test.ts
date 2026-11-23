@@ -246,7 +246,7 @@ describe("Phase の制限の門（1 つでも非公開なら run 全体を止め
     });
     expect(JSON.stringify(args[2])).not.toContain(SECRET);
     // 現在の snapshot（Phase の本文入り）を baseline として前進させていない。
-    expect(args[2]).not.toBe(snapWithPhase(true));
+    expect(args[2]).not.toEqual(snapWithPhase(true));
   });
 
   it("baseline が無く tombstone が未済なら、空の baseline に制限の印だけを書く", async () => {
