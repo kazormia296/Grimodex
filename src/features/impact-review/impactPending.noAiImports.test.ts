@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 const FILES = [
   "../impact-review/impactPending.ts",
+  "../impact-review/impactGate.ts",
   "../impact-review/readImpactPending.ts",
   "../impact-review/impactPendingEpoch.ts",
   "../codex/components/useImpactPending.ts",
@@ -28,6 +29,8 @@ function specifiers(source: string): string[] {
 
 const FORBIDDEN_SPECIFIER =
   /runImpactReview|\/narrowing|post-effect\/api|semantic-search|modelRouting|chat\/store|\/lib\/api|\/db\/client/;
+const FORBIDDEN_GATE_SPECIFIER =
+  /runImpactReview|\/narrowing|post-effect\/|semantic-search|modelRouting|chat\/|\/store|(?:^|\/)db\/|electron|node:|\/ipc/;
 const FORBIDDEN_IDENTIFIER =
   /\b(runImpactReview|narrowCandidateScenes|semanticSearch|runPostEffectMulti|resolveRoleSendOverride|saveBaseline|fts_search)\b/;
 
@@ -37,6 +40,10 @@ describe("知らせの経路は AI・候補絞り・保存の module を import 
     const specs = specifiers(source);
     expect(specs.length).toBeGreaterThan(0);
     for (const spec of specs) expect(spec).not.toMatch(FORBIDDEN_SPECIFIER);
+    if (rel === "../impact-review/impactGate.ts") {
+      for (const spec of specs)
+        expect(spec).not.toMatch(FORBIDDEN_GATE_SPECIFIER);
+    }
     // コメントを除いて識別子も確かめる。
     const code = source
       .replace(/\/\*[\s\S]*?\*\//g, "")

@@ -27,7 +27,7 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 
 | 状態 | 条件 | 表示 | 押したとき（run） |
 | --- | --- | --- | --- |
-| `pending`（件数 N） | baseline があり値が確認済み、現在 Phase が制限的でない、base の contextMode が `current-mention` を満たす、`effectiveRestrictedPhaseIds` の Phase を baseline・現在の両方から除いた（run の `redactRestrictedPhases` の写し）`computeCodexDiff` が N>0 件、AI gate が `enabled`、影響チェックの実行中でない | 出す | `no-change` でなく、`changeCount === N`、候補絞りまで進む |
+| `pending`（件数 N） | baseline があり値が確認済み、現在 Phase が制限的でない、base の contextMode が `current-mention` を満たす、`effectiveRestrictedPhaseIds` の Phase を baseline・現在の両方から除いた `computeCodexDiff` が N>0 件、AI gate が `enabled`、影響チェックの実行中でない | 出す | `no-change` でなく、`changeCount === N`、候補絞りまで進む |
 | `unchecked` | baseline が無い（一度も押していない）／値がすべて空の tombstone だけの baseline | 出さない（初回に全項目が「変更あり」になるのを避ける） | 初回は全フィールドを「変更」と数える（従来どおり） |
 | `gated`（現在の制限・contextMode） | 現在 Phase が 1 つでも制限的／base の contextMode が `current-mention` を満たさない（hidden・suppress・不明な値） | 出さない。「確認できません」とも言わない（DR-MP4-44 の Q-C は現状維持） | 差分があっても `no-candidates` で止まり baseline は進まない |
 | `none` | 差分なし（空白・全半角・別名の順だけの違いは `cmp()` が無視）。証明の無い Phase 削除だけで、その Phase を除くと差分なしの場合も含む | 出さない | `no-change` |
@@ -35,7 +35,7 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 
 写し元：`runImpactReview.ts` の門の値（`contextMode`・`hasRestrictedPhases`。#1048 以降の run は既定値を持たず、欠落を公開として補わずに門で止める。第 11 節）、`snapshot.restrictedPhaseIds`、
 `effectiveRestrictedPhaseIds`（現在制限中の Phase ∪ baseline の restrictedPhaseIds のうち現在無いもの ∪ baseline の phases のうち現在無く `visibleDeletedPhaseIds` に無いもの）、
-`allPhaseIds ?? phases.map(...)` の fallback、`redactRestrictedPhases`、`canIncludeResolvedCodexContext(mode, "current-mention")`（同じ関数を import）。
+`allPhaseIds ?? phases.map(...)` の fallback、`redactRestrictedPhases`、`canIncludeResolvedCodexContext(mode, "current-mention")`（共有関数内で同じ正本を利用）。
 
 **Phase の削除・制限の解除**：run は門で止まらず、`effectiveRestrictedPhaseIds`（証明の無い Phase 削除、非公開だった Phase を消した後、来歴の無い legacy baseline での削除など）の Phase を baseline・現在の両方から除いて差分を取り、候補絞りへ進む。
 知らせも同じ除外をした件数を数える（以前の版は「素の差分と食い違う」として出さなかったが、押せば AI まで進む状態で知らせない偽陰性だったため、レビュー指摘で直した）。
@@ -55,13 +55,10 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 - 読みは renderer の Drizzle 経由（既存の `buildCodexSnapshot`・`getBaseline`。`impact_review_baselines` は D2a の台帳で read-open、ボタンの経路が既に同じ読みをしている）。
 - 表示するのは件数と locale の固定語だけ。old／new の値・`summarizeChanges` の文（日本語固定）は出さない。gated の項目には何も出さないので、hidden の項目の変更は表示しない。
 
-### 3.1 規則が 2 か所になる点
+### 3.1 規則の共有（恒久策）
 
-`effectiveRestrictedPhaseIds` の算出は `runImpactReview.ts` の inline で、外から呼べない。この lane は `runImpactReview.ts` を変えない（lane C と重ならないため）ので、
-**同じ規則を `impactPending.ts` に別に書き**、`impactPending.parity.test.ts` が**実物の `runImpactReview`** と突き合わせて一致を固定する。
-恒久策：#1048 の merge の後に、run の redact を純関数へ切り出して `runImpactReview.ts` と `impactPending.ts` で共有する（別 PR）。
-**共有する範囲は redact だけでは足りない**：#1048 の取り込みで実際にずれたのは redact の規則でなく、門の既定値（`contextMode`・`hasRestrictedPhases`）だった（第 11 節）。
-共有する純関数は、redact と `effectiveRestrictedPhaseIds` に加えて、門の判定（`contextMode` が `current-mention` を満たすか・`currentHasRestrictedPhases`）まで含める。
+`impactGate.ts` の純関数を `runImpactReview.ts` と `impactPending.ts` が共有し、`impactPending.parity.test.ts` は引き続き**実物の `runImpactReview`** と知らせの一致を固定する。
+恒久策は本枝で実装済み。共有する範囲は Phase ID 集合、redact と `effectiveRestrictedPhaseIds` に加え、門の判定（`contextMode` が `current-mention` を満たすか・`currentHasRestrictedPhases`）まで含む。
 
 ## 4. 検討書の伺う点（Q1〜Q8）の既定とした回答
 
@@ -134,8 +131,9 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 
 - `impactPending.test.ts`：判定の表（baseline なし・tombstone・差分なし・空白／全半角／別名の順・各フィールドの件数・contextMode・Phase 制限・Phase 削除の証明・制限の解除・undo）。
 - `impactPending.parity.test.ts`：**実物の `runImpactReview`** と一致（pending(n)⇒run の `changeCount===n` で候補絞りまで進む／none⇒`no-change`／gated⇒`no-candidates` で候補絞りを呼ばない／
-  Phase の削除（証明の無い削除・legacy・制限 id の Phase が現在無い）は run も知らせも Phase を除いた同じ件数で候補絞りへ進む／素の差分 2 件に対し 1 件の食い違いの実例／unchecked は run が全変更と数える）。16 ケース＋3。
-- `impactPending.noAiImports.test.ts`：知らせの経路の 5 file（`impactPending.ts`・`readImpactPending.ts`・`impactPendingEpoch.ts`・`useImpactPending.ts`・`ImpactPendingTabMarker.tsx`）が
+  Phase の削除（証明の無い削除・legacy・制限 id の Phase が現在無い）は run も知らせも Phase を除いた同じ件数で候補絞りへ進む／素の差分 2 件に対し 1 件の食い違いの実例／unchecked は run が全変更と数える）。17 ケース＋3。
+- `impactGate.test.ts`：Phase ID、null／tombstone／legacy／通常 baseline、削除証明、redact、contextMode、hasRestrictedPhases と停止理由を共有する純関数の単体試験。
+- `impactPending.noAiImports.test.ts`：知らせの経路の 6 file（`impactPending.ts`・`impactGate.ts`・`readImpactPending.ts`・`impactPendingEpoch.ts`・`useImpactPending.ts`・`ImpactPendingTabMarker.tsx`）が
   `runImpactReview`・`narrowing`・`post-effect/api`・`semantic-search`・`modelRouting` などを import（静的・動的）せず、AI／候補絞り／保存の識別子を持たないことを file の文字列で照合する
   （`semanticSearch` は試験で mock していないので spy の 0 回では落ちないため）。
 - `ImpactCheckButton.test.tsx`：出る・出ない条件（baseline なし・変更なし・空白のみ・hidden・suppress・Phase 制限・項目なし・gate disabled／hidden・実行中）、
@@ -229,5 +227,31 @@ fixture に値の無い case で run が `no-candidates` に止まっていた�
 
 **変異の確認**：`impactPending.ts` の既定値を一時的に戻すと、追加した 2 件（unit・parity）だけが赤になる。戻して `cmp` で一致を確認した。
 
-**残る（別 PR）**：run の redact と門を純関数に切り出して共有する恒久策（§3.1）。範囲は redact だけでなく門を含める。
+redact と門の共有は第 12 節のとおり実装済み（§3.1）。
+
+## 12. 恒久策の実装（2026-11-24）
+
+`src/features/impact-review/impactGate.ts` に IO・AI・DB・store・IPC を import しない純関数を置いた。
+
+- `phaseIds`：`allPhaseIds ?? phases.map(phaseId) ?? []` を ID 集合にする。
+- `effectiveRestrictedPhaseIds`：baseline が `null` の場合も受け、現在制限中の ID、現在存在しない baseline の `restrictedPhaseIds`、削除証明のない baseline Phase の ID をまとめる。
+- `redactRestrictedPhases`：指定集合にある Phase だけを snapshot から除く。
+- `currentHasRestrictedPhases` と `evaluateImpactGate`：`hasRestrictedPhases || snapshot.restrictedPhaseIds.length > 0` を評価し、`restricted-phase` を先に、続いて `context-mode` を返す。contextMode は `canIncludeResolvedCodexContext(contextMode, "current-mention")` に従う。
+
+`runImpactReview.ts` と `impactPending.ts` は同じ関数を使う。run は既存の tombstone 書き込み後に共有除外集合を作り、redact → diff → no-change 時の baseline 前進判定 → 最終 gate の順を保つ。知らせは同じ gate の理由で gated を返し、通過時に同じ除外集合と redact で件数を出す。`impactPending.noAiImports.test.ts` の対象に新 module を足し、知らせ経路の AI・DB・store・IO import がないことを固定した。
+
+dispatch 直前の `captureValidatedImpactInputs` は変更していない。そこは既存どおり source fingerprint の一致後に `latest.contextMode` と `latest.hasRestrictedPhases` を確認する。`snapshot.restrictedPhaseIds` を gate に直接足さないのは、初回の fingerprint に同 field が含まれており、一致確認の意味とその後の二条件を保つため。
+
+条件別 mutation は1つずつ適用し、毎回 helper を保存版へ戻して `cmp` で一致を確認した。全条件で run 側の `runImpactReview.visibility.test.ts` と知らせ側の `impactPending.test.ts` が失敗した。parity も壊れる条件では `impactPending.parity.test.ts` も失敗した。
+
+| mutation | 失敗した試験 | 結果 |
+| --- | --- | --- |
+| 現在の restricted ID の gate 条件を反転 | run visibility・pending unit・parity | 3 file、50 failed / 32 passed |
+| 有効集合から現在の restricted ID を除去 | run visibility・pending unit | 2 file、3 failed / 79 passed |
+| baseline の restricted ID loop を除去 | run visibility・pending unit | 2 file、3 failed / 79 passed |
+| 証明の無い削除の条件を反転 | run visibility・pending unit・parity | 3 file、12 failed / 70 passed |
+| contextMode の gate を反転 | run visibility・pending unit・parity | 3 file、59 failed / 23 passed |
+| `hasRestrictedPhases` の条件を除去 | run visibility・pending unit・parity | 3 file、3 failed / 79 passed |
+
+最終検証：`CI=true pnpm exec vitest --run src/features/impact-review src/features/codex` は 155 file・1,811 tests 成功（4 file・7 tests skip）。root と Electron の `tsc --noEmit` は成功。`pnpm -s lint` は 0 errors・43 warnings、`pnpm -s validate:architecture` は 1/1 pass、`git diff --check` も成功。実 Chromium の `ImpactNudge.browser.test.tsx` は UI 変更がないため未実行。
 
