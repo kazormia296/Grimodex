@@ -11,6 +11,7 @@ import { buildRosterIndex } from "./measure-a-metrics.mjs";
 import {
   MAX_CANDIDATES,
   MAX_ENTRIES,
+  normalizeDiag,
   assertAiGate,
   assertEntriesWithinWindow,
   assertEstimateMatches,
@@ -134,6 +135,7 @@ function fakeApi({ candidateCount = 120, script = null, entryCount = 3 } = {}) {
           ok: false,
           kind: step.kind,
           httpStatus: step.httpStatus ?? null,
+          ...(step.diag !== undefined ? { diag: step.diag } : {}),
           durationMs: 5,
         };
       }
@@ -1558,5 +1560,88 @@ test("F5 M-a：最悪値の予約が理由の拒否は、runB1 の stopped に�
     ]);
   } finally {
     rmSync(g.dir, { recursive: true, force: true });
+  }
+});
+
+test("失敗の要約（diag）：safeErrorSummary の形だけを通し、自由文・形の違う値は捨てる", () => {
+  assert.equal(normalizeDiag(undefined), null);
+  assert.equal(normalizeDiag(null), null);
+  assert.equal(normalizeDiag("free text"), null);
+  assert.equal(normalizeDiag(["a"]), null);
+  assert.deepEqual(
+    normalizeDiag({
+      name: "TypeError",
+      tag: "artifact",
+      codes: ["IDL_DISPATCH_BLOCKED", "lowercase_code", "HAS SPACE", 7],
+      pairs: ["count=3", "free text", "n=abc"],
+    }),
+    {
+      name: "TypeError",
+      tag: "artifact",
+      codes: ["IDL_DISPATCH_BLOCKED"],
+      pairs: ["count=3"],
+    },
+  );
+  // 名前が識別子でない・印が知らない値・配列でない欄は、既定に倒す。
+  assert.deepEqual(
+    normalizeDiag({ name: "a b c", tag: "zzz", codes: "x", pairs: null }),
+    { name: "Error", tag: "none", codes: [], pairs: [] },
+  );
+  // 件数の上限（codes は 5、pairs は 6）。
+  const many = normalizeDiag({
+    name: "Error",
+    tag: "none",
+    codes: Array.from({ length: 9 }, (_, i) => `A_${i}`),
+    pairs: Array.from({ length: 9 }, (_, i) => `n=${i}`),
+  });
+  assert.equal(many.codes.length, 5);
+  assert.equal(many.pairs.length, 6);
+});
+
+test("失敗の要約（diag）：other の失敗は停止するが、停止の経路の記録にも diag と page が測った所要時間が残る", async () => {
+  const g = tmpGate();
+  try {
+    const diag = {
+      name: "Error",
+      tag: "none",
+      codes: ["IDL_DISPATCH_BLOCKED"],
+      pairs: [],
+    };
+    const api = fakeApi({
+      script: () => ({ ok: false, kind: "other", diag }),
+    });
+    const index = await buildRosterIndex(roster, ident);
+    const result = await runB1({
+      api,
+      gate: g.gate,
+      index,
+      registeredKeyHashes: [],
+      usagePoll: FAST,
+    });
+    assert.equal(result.stopped.code, "UNCLASSIFIED_FAILURE");
+    assert.equal(result.requests.length, 1);
+    assert.equal(result.requests[0].failureKind, "other");
+    assert.deepEqual(result.requests[0].diag, diag);
+    // 以前は、停止の経路の記録の durationMs が常に 0 になっていた（page の値を通していなかった）。
+    assert.equal(result.requests[0].durationMs, 5);
+    assert.doesNotThrow(() => assertOutputClean(result, []));
+  } finally {
+    rmSync(g.dir, { recursive: true, force: true });
+  }
+  // diag が無い失敗（従来の page）でも壊れない：diag は null。
+  const g2 = tmpGate();
+  try {
+    const api = fakeApi({ script: () => ({ ok: false, kind: "other" }) });
+    const index = await buildRosterIndex(roster, ident);
+    const result = await runB1({
+      api,
+      gate: g2.gate,
+      index,
+      registeredKeyHashes: [],
+      usagePoll: FAST,
+    });
+    assert.equal(result.requests[0].diag, null);
+  } finally {
+    rmSync(g2.dir, { recursive: true, force: true });
   }
 });

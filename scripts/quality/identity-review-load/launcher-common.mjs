@@ -31,6 +31,7 @@ import { createEgressSampler } from "./egress-policy.mjs";
 import {
   WORKS,
   safeErrorSummary,
+  sanitizeError,
   scenesFromWork,
   scenesTextsForScan,
 } from "./lib.mjs";
@@ -176,6 +177,8 @@ export function assertNoOverlappingJobs(
  * 起動した人の本物の session の env（key の復号の helper にだけ渡す。real-env.mjs）は入れない。
  * plainTextRunRoot を渡したとき（本測定の B）に限り、safeStorage の basic_text を認める上書き
  * （electron-observer-b.mjs）の条件の env を立てる。
+ * blockDispatch（乾いた実行）のときは、AI の外向きの命令を main の入口で拒否する層（dispatch-block.mjs）の env を立てる。
+ * 2 つは同時に立てない（送る経路と送らない経路を 1 つの process で混ぜない）。
  */
 export function buildMeasureElectronEnv({
   rendererUrl,
@@ -186,7 +189,12 @@ export function buildMeasureElectronEnv({
   xdgDir,
   busAddress,
   plainTextRunRoot = "",
+  blockDispatch = false,
 }) {
+  assert.ok(
+    !(plainTextRunRoot && blockDispatch),
+    "[precheck] PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE",
+  );
   return electronEnv({
     ELECTRON_RENDERER_URL: rendererUrl,
     GRIMODEX_USER_DATA_DIR: userData,
@@ -201,6 +209,7 @@ export function buildMeasureElectronEnv({
           GRIMODEX_IDL_RUN_ROOT: plainTextRunRoot,
         }
       : {}),
+    ...(blockDispatch ? { GRIMODEX_IDL_BLOCK_DISPATCH: "1" } : {}),
   });
 }
 
@@ -318,6 +327,31 @@ export function sameBuildProvenance(a, b) {
   );
 }
 
+/**
+ * main への読み取りの evaluate を、Playwright の一過性の失敗「Execution context was destroyed」（Electron は生きていて、
+ * window も開いたまま、本体の後の最初の評価が時々これで落ちた。乾いた実行の繰り返しで 約 3〜8％）に限り、数回やり直す。
+ * 読み取りだけの関数に使う（やり直しても送信・書き込みが重ならない）。他のエラー・回数超過は、そのまま投げる。
+ * onRetry は、やり直した回数を数える（records に残す）。
+ */
+export async function evaluateMain(
+  app,
+  fn,
+  { attempts = 3, delayMs = 300, onRetry = () => undefined } = {},
+) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await app.evaluate(fn);
+    } catch (error) {
+      const retryable =
+        error instanceof Error &&
+        /Execution context was destroyed/u.test(error.message);
+      if (!retryable || attempt >= attempts) throw error;
+      onRetry(attempt);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 export async function runCell({
   output,
   vite,
@@ -327,11 +361,16 @@ export async function runCell({
   dataDir = "",
   passwordStoreBasic = true,
   plainTextKeyStore = false,
+  blockDispatch = false,
   egressPolicy = null,
   body,
   keep = false,
   deps = {},
 }) {
+  assert.ok(
+    !(plainTextKeyStore && blockDispatch),
+    "[precheck] PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE",
+  );
   const d = {
     assertBuildProvenance,
     loadWork,
@@ -357,6 +396,12 @@ export async function runCell({
   let firstProvenance = null;
   let sampler;
   let app;
+  // 落ちた段の印（定型の token だけ。cell.failedPhase に残す。原因を後から読むため）。
+  let phase = "setup";
+  let pageRef = null;
+  let evalRetries = 0;
+  const evalMain = (fn) =>
+    evaluateMain(app, fn, { onRetry: () => evalRetries++ });
   const started = Date.now();
   // kill されたとき（finally が走らない）も、隔離 userData の key と workRoot を消す。
   assert.ok(
@@ -414,8 +459,10 @@ export async function runCell({
       d.root,
       "electron/native/grimodex-node/grimodex-node.node",
     );
-    // 本測定の B（plainTextKeyStore）だけ、basic_text の safeStorage を認める上書き（§17.6）を包んだ起動 script を使う。
-    const observer = plainTextKeyStore
+    // 本測定の B（plainTextKeyStore）は、basic_text の safeStorage を認める上書き（§17.6）を包んだ起動 script を使う。
+    // 乾いた実行（blockDispatch）は、AI の外向きの命令を main の入口で拒否する層を包んだ同じ起動 script を使う。
+    const observer =
+      plainTextKeyStore || blockDispatch
       ? path.join(import.meta.dirname, "electron-observer-b.mjs")
       : path.join(
           d.root,
@@ -441,8 +488,10 @@ export async function runCell({
       xdgDir,
       busAddress,
       plainTextRunRoot: plainTextKeyStore ? runRoot : "",
+      blockDispatch,
     });
     assertNoFakeAiEnv(env);
+    phase = "launch";
     app = await d.launchElectron({
       args: [
         "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
@@ -456,7 +505,7 @@ export async function runCell({
       timeout: 60000,
     });
     // main の process.env にも偽 AI の env が無いこと（件数だけ）。
-    const mainEnv = await app.evaluate(() => ({
+    const mainEnv = await evalMain(() => ({
       names: Object.keys(process.env),
       rustLog: process.env.RUST_LOG ?? "",
       nodeOptions: process.env.NODE_OPTIONS ?? "",
@@ -470,6 +519,17 @@ export async function runCell({
         ? { NODE_OPTIONS: mainEnv.nodeOptions }
         : {}),
     });
+    // 拒否する層は、要求したときだけ有効で、有効でなければ page を動かす前に止める（fail-closed。要求しないときは無いこと）。
+    const dispatchBlockActive = await evalMain(
+      () => globalThis.idlDispatchBlock?.active === true,
+    );
+    assert.equal(
+      dispatchBlockActive,
+      blockDispatch,
+      blockDispatch
+        ? "[precheck] DISPATCH_BLOCK_NOT_ACTIVE the main process did not install the dispatch block"
+        : "[precheck] DISPATCH_BLOCK_UNEXPECTED the main process has a dispatch block that was not requested",
+    );
     const rootPid = app.process().pid;
     // rootPid が取れなければ標本を採れないので、採取の失敗として数える（採取 0 回＝未確認で不採用）。
     const sampleOf = rootPid
@@ -484,13 +544,16 @@ export async function runCell({
     });
     sampler = setInterval(() => egressSampler.tick(), 250);
     const page = await app.firstWindow();
+    pageRef = page;
+    phase = "page-ready";
     await page.waitForFunction(
       () => window.identityLoad?.ready === true,
       null,
       { timeout: 120000 },
     );
-    cell.electronVersion = await app.evaluate(() => process.versions.electron);
+    cell.electronVersion = await evalMain(() => process.versions.electron);
 
+    phase = "open-project";
     const projectId = `idl-${workKey}`;
     await page.evaluate((input) => window.identityLoad.openProject(input), {
       workspacePath: path.join(workspaceDir, "ws"),
@@ -498,6 +561,7 @@ export async function runCell({
       title: `IDL ${workKey}`,
       language: "ja",
     });
+    phase = "build-work";
     const build = await page.evaluate(
       (input) => window.identityLoad.buildNestedWork(input),
       {
@@ -528,6 +592,7 @@ export async function runCell({
       ruby: build.ruby,
     };
 
+    phase = "body";
     const value = await body({
       page,
       app,
@@ -548,7 +613,8 @@ export async function runCell({
       scenesTexts: loaded.scenesTexts,
     });
 
-    const ipc = await app.evaluate(() => globalThis.nir1IpcTrace.calls);
+    phase = "post-body";
+    const ipc = await evalMain(() => globalThis.nir1IpcTrace.calls);
     const names = ipc.map((call) => call.command);
     const counts = {};
     for (const name of names) counts[name] = (counts[name] ?? 0) + 1;
@@ -557,7 +623,19 @@ export async function runCell({
       failedCallCount: ipc.filter((call) => call.completed && !call.ok).length,
       commandNames: [...new Set(names)].sort(),
       commandCounts: counts,
+      // 最後の 12 件（順序つき。命令の名前と成否だけ）。失敗がどの段で起きたかを、自由文なしで読むための記録。
+      tail: ipc.slice(-12).map((call) => ({
+        command: call.command,
+        ok: call.completed === true && call.ok === true,
+      })),
     };
+    // 止めた命令の件数（名前ごと）と、send_chat_message にリハーサルの応答で答えた件数。本物の handler に届いた AI の命令は
+    // 上の ipc に出るので、ここは含まれない。
+    if (blockDispatch)
+      cell.dispatchBlock = await evalMain(() => ({
+        blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
+        rehearsed: globalThis.idlDispatchBlock?.rehearsed ?? 0,
+      }));
     // cell の後にも出所を照合する（cell の間に build 物・guard の file・入力が差し替わっていないか。F3a の m5）。
     // 例外にはせず、records に残す（realCellStatus が不採用にする）。
     let afterCell = null;
@@ -577,11 +655,36 @@ export async function runCell({
     cell.egress = egressSampler.snapshot();
     cell.elapsedMs = Date.now() - started;
     // 初期値の "blocked" を書き換える。採用の可否（ok など）は呼び出し側が最終の status として書き戻す。
+    if (evalRetries > 0) cell.mainEvalRetries = evalRetries;
     cell.status = "completed";
     return { cell, value, scenesTexts: loaded.scenesTexts };
   } catch (error) {
     cell.status = "failed";
+    cell.failedPhase = phase;
+    if (evalRetries > 0) cell.mainEvalRetries = evalRetries;
+    // 落ちたとき、Electron の process が生きているか（終了コード・シグナル）と window が閉じていたか。数と短い token だけ
+    // （main の異常終了と、通信の一過性の失敗を分けるため。試走の調べで、本体の後の最初の evaluate が時々落ちた）。
+    try {
+      const proc = app?.process?.();
+      cell.appProcess = {
+        exitCode: Number.isInteger(proc?.exitCode) ? proc.exitCode : null,
+        signalCode:
+          typeof proc?.signalCode === "string" &&
+          /^[A-Z0-9_]{1,16}$/u.test(proc.signalCode)
+            ? proc.signalCode
+            : null,
+        pageClosed:
+          typeof pageRef?.isClosed === "function" ? pageRef.isClosed() : null,
+      };
+    } catch {
+      cell.appProcess = null;
+    }
     cell.errors = [safeErrorSummary(error)];
+    // 送信も key も無い乾いた実行（blockDispatch）の、本体の後の処理（評価・DB の読み）の失敗に限り、メッセージの先頭を ASCII の
+    // 識別子の形に落として残す（要約の name・code では原因が読めなかった。本体の後は基盤の呼び出しで、原稿の文字列は入らない）。
+    // key のある本測定・目録・測定 A の cell には付けない。
+    if (blockDispatch && phase === "post-body" && error instanceof Error)
+      cell.errorHead = sanitizeError(error.message).slice(0, 200);
     // 失敗した cell にも、そこまでの宛先の標本を残す（宛先が原因の失敗の宛先が記録から消えないように）。
     if (egressSampler) {
       egressSampler.tick();
