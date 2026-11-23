@@ -59,6 +59,7 @@ const NO_DEPS: DispatchDeps = Object.freeze({
 const FTS_SCOPES: ReadonlySet<string> = new Set<FtsScope>([
   "codex",
   "scenes",
+  "scenes_live",
   "snippets",
 ]);
 
