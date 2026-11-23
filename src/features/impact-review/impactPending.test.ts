@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { CodexSnapshot } from "./diff";
 import { canIncludeResolvedCodexContext } from "@/features/codex/context/codexVisibilityPolicy";
 import { deriveImpactPending } from "./impactPending";
+import { effectiveRestrictedPhaseIds } from "./impactGate";
 
 const base: CodexSnapshot = {
   name: "アリス",
@@ -185,6 +186,38 @@ describe("deriveImpactPending: 門（run が no-candidates で止める条件）
         built: built({ ...changed, restrictedPhaseIds: ["p9"] }),
       }),
     ).toEqual({ state: "gated", reason: "restricted-phase" });
+  });
+});
+
+describe("知らせと run が共有する Phase の除外集合", () => {
+  it("現在の restrictedPhaseIds を必ず含める", () => {
+    expect(
+      effectiveRestrictedPhaseIds(base, {
+        ...base,
+        restrictedPhaseIds: ["p1"],
+      }),
+    ).toEqual(new Set(["p1"]));
+  });
+
+  it("現在無い baseline の restrictedPhaseIds も tombstone として残す", () => {
+    const baseline = {
+      ...base,
+      allPhaseIds: ["p1"],
+      restrictedPhaseIds: ["p1"],
+    };
+    const current = {
+      ...base,
+      details: [{ name: "年齢", value: "17" }],
+      allPhaseIds: [],
+      phases: [],
+    };
+    expect(deriveImpactPending({ baseline, built: built(current) })).toEqual({
+      state: "pending",
+      changeCount: 1,
+    });
+    expect(effectiveRestrictedPhaseIds(baseline, current)).toEqual(
+      new Set(["p1"]),
+    );
   });
 });
 

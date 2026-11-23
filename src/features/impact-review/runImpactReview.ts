@@ -37,6 +37,12 @@ import { buildCodexSnapshot, type CodexSnapshotResult } from "./snapshot";
 import { getBaseline, saveBaseline } from "./baseline";
 import { narrowCandidateScenes, type SceneCandidate } from "./narrowing";
 import { canIncludeResolvedCodexContext } from "@/features/codex/context/codexVisibilityPolicy";
+import {
+  currentHasRestrictedPhases as resolveCurrentHasRestrictedPhases,
+  effectiveRestrictedPhaseIds,
+  evaluateImpactGate,
+  redactRestrictedPhases,
+} from "./impactGate";
 
 /** Rust の process_impact_review_scene が読む per-scene 差分ペイロード（契約固定）。 */
 interface ImpactDiffPayload {
@@ -164,27 +170,6 @@ async function saveBaselineIfSourceCurrent(
   }
   await persistBaseline(entryId, projectId, snapshot, expectedContentHash);
   return true;
-}
-
-function phaseIds(snapshot: CodexSnapshot): Set<string> {
-  return new Set(
-    snapshot.allPhaseIds ??
-      snapshot.phases?.map((phase) => phase.phaseId) ??
-      [],
-  );
-}
-
-function redactRestrictedPhases(
-  snapshot: CodexSnapshot | null,
-  restrictedPhaseIds: ReadonlySet<string>,
-): CodexSnapshot | null {
-  if (!snapshot || restrictedPhaseIds.size === 0) return snapshot;
-  return {
-    ...snapshot,
-    phases: (snapshot.phases ?? []).filter(
-      (phase) => !restrictedPhaseIds.has(phase.phaseId),
-    ),
-  };
 }
 
 function emptyBaselineWithRestrictionMetadata(
@@ -364,8 +349,10 @@ export async function runImpactReview(
   let baseline = await getBaseline(entryId);
   let baselineExpectedContentHash = baselineHashExpectation(baseline);
   const currentRestrictedPhaseIds = new Set(snapshot.restrictedPhaseIds ?? []);
-  const currentHasRestrictedPhases =
-    hasRestrictedPhases || currentRestrictedPhaseIds.size > 0;
+  const currentHasRestrictedPhases = resolveCurrentHasRestrictedPhases(
+    snapshot,
+    hasRestrictedPhases,
+  );
 
   // Persist only restriction metadata while preserving the last reviewed
   // values. This tombstone prevents a later phase deletion from reconstructing
@@ -401,37 +388,12 @@ export async function runImpactReview(
   }
   const baselineFingerprint = stableStringify(baseline);
 
-  const currentPhaseIds = phaseIds(snapshot);
-  const visibleDeletedPhaseIds = new Set(
-    baseline?.visibleDeletedPhaseIds ?? [],
-  );
-  const effectiveRestrictedPhaseIds = new Set(currentRestrictedPhaseIds);
-  for (const phaseId of baseline?.restrictedPhaseIds ?? []) {
-    // A restriction is released only when the same phase still exists and is
-    // currently visible. Missing phases retain a deletion tombstone.
-    if (!currentPhaseIds.has(phaseId)) {
-      effectiveRestrictedPhaseIds.add(phaseId);
-    }
-  }
-  for (const phase of baseline?.phases ?? []) {
-    // Only the authoritative Phase write API can prove that a missing phase
-    // was visible when deleted. Legacy/unknown deletions remain fail-closed;
-    // otherwise a hidden -> delete transition could expose the old body.
-    if (
-      !currentPhaseIds.has(phase.phaseId) &&
-      !visibleDeletedPhaseIds.has(phase.phaseId)
-    ) {
-      effectiveRestrictedPhaseIds.add(phase.phaseId);
-    }
-  }
+  const restrictedPhaseIds = effectiveRestrictedPhaseIds(baseline, snapshot);
 
-  const safeBaseline = redactRestrictedPhases(
-    baseline,
-    effectiveRestrictedPhaseIds,
-  );
+  const safeBaseline = redactRestrictedPhases(baseline, restrictedPhaseIds);
   const safeSnapshot = redactRestrictedPhases(
     snapshot,
-    effectiveRestrictedPhaseIds,
+    restrictedPhaseIds,
   ) as CodexSnapshot;
   const changes = computeCodexDiff(safeBaseline, safeSnapshot);
   const changeSummary = summarizeChanges(changes);
@@ -440,11 +402,13 @@ export async function runImpactReview(
     // Once a restricted phase has been safely deleted, discard its redacted
     // baseline body and tombstone without involving an AI provider.
     if (
-      (effectiveRestrictedPhaseIds.size > 0 ||
+      (restrictedPhaseIds.size > 0 ||
         (baseline?.restrictedPhaseIds?.length ?? 0) > 0 ||
         (baseline?.visibleDeletedPhaseIds?.length ?? 0) > 0) &&
-      !currentHasRestrictedPhases &&
-      canIncludeResolvedCodexContext(contextMode, "current-mention")
+      evaluateImpactGate({
+        contextMode,
+        currentHasRestrictedPhases,
+      }).reason === null
     ) {
       await saveBaselineIfSourceCurrent(
         entryId,
@@ -468,10 +432,8 @@ export async function runImpactReview(
   // should still be reviewed.
   // Impact review is not yet phase-resolved per candidate scene, so the
   // presence of even one restricted phase also fails closed for the whole run.
-  if (
-    currentHasRestrictedPhases ||
-    !canIncludeResolvedCodexContext(contextMode, "current-mention")
-  ) {
+  const gate = evaluateImpactGate({ contextMode, currentHasRestrictedPhases });
+  if (gate.reason !== null) {
     return {
       status: "no-candidates",
       changeCount: changes.length,

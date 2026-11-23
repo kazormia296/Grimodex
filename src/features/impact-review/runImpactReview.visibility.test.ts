@@ -52,6 +52,7 @@ vi.mock("@/db/client", () => ({
 }));
 
 import { runImpactReview } from "./runImpactReview";
+import { effectiveRestrictedPhaseIds } from "./impactGate";
 import { buildCodexSnapshot } from "./snapshot";
 import { getBaseline, saveBaseline } from "./baseline";
 import { narrowCandidateScenes } from "./narrowing";
@@ -571,6 +572,28 @@ describe("baseline の前進", () => {
     await done({ run_id: "r1", annotation_count: 1, summary: "1 件失敗" });
 
     expect(saveBaseline).not.toHaveBeenCalled();
+  });
+});
+
+describe("run が使う共有 Phase 除外集合", () => {
+  it("現在無い baseline の restrictedPhaseIds を残す", async () => {
+    const baseline: CodexSnapshot = {
+      ...baseSnap,
+      allPhaseIds: ["p1"],
+      restrictedPhaseIds: ["p1"],
+    };
+    const snapshot: CodexSnapshot = {
+      ...baseSnap,
+      allPhaseIds: [],
+      phases: [],
+    };
+    vi.mocked(getBaseline).mockResolvedValue(baseline);
+    vi.mocked(buildCodexSnapshot).mockResolvedValue(built({ snapshot }));
+
+    expect((await runImpactReview("e1")).status).toBe("no-change");
+    expect(effectiveRestrictedPhaseIds(baseline, snapshot)).toEqual(
+      new Set(["p1"]),
+    );
   });
 });
 

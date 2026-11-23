@@ -220,6 +220,13 @@ const cases: Case[] = [
     expected: "pending",
     changeCount: 1,
   },
+  {
+    name: "baseline の restrictedPhaseIds がある削除 Phase の旧本文を除く",
+    baseline: { ...withPhase, restrictedPhaseIds: ["p1"] },
+    snapshot: aged(base),
+    expected: "pending",
+    changeCount: 1,
+  },
 ];
 
 beforeEach(() => {
