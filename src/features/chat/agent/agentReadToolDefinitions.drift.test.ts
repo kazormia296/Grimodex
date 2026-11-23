@@ -111,9 +111,7 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
     expect(JSON.stringify(codexEntry)).toBe(JSON.stringify(legacyCodexEntry));
     const deterministic = getDeterministicM4ReadTools();
     expect(
-      linesOf(
-        deterministic.filter((tool) => tool.name !== "get_codex_entry"),
-      ),
+      linesOf(deterministic.filter((tool) => tool.name !== "get_codex_entry")),
     ).toBe(golden("definitions.m4-deterministic.bytes"));
     expect(
       JSON.stringify(
