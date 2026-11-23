@@ -867,6 +867,94 @@ describe("buildMultiPayload", () => {
     ]);
   });
 
+  // DR-MP4-46: the multi-scene path (folder・project scope) builds each scene's payload with the
+  // same buildCodexPayload, so an entry closed by the rule goes into none of them. Its hash input
+  // has no `codex` (existing design), so unlike the scene scope the hash does not change.
+  it.each([
+    ["a hiding Phase with a null anchor", null],
+    ["a hiding Phase whose anchor the reading order does not have", "deleted"],
+  ])(
+    "multi consistency: %s closes the entry in every scene's codex_payload_json",
+    async (_label, anchorNodeId) => {
+      const nodes = [makeNode("s1", "scene"), makeNode("s2", "scene")];
+      mockGetState.mockReturnValue({ nodes });
+      mockPhaseGetState.mockReturnValue({
+        sceneTimeIndex: buildSceneTimeIndex(nodes),
+        resolutionMode: "reading",
+      });
+      mockListPhases.mockResolvedValue([
+        {
+          id: "phase-hide",
+          entryId: "entry-1",
+          anchorNodeId,
+          label: "hide",
+          summaryOverride: null,
+          contentOverride: null,
+          contextModeOverride: "hidden",
+          version: 0,
+          createdAt: "2026-01-01",
+          updatedAt: "2026-01-01",
+        },
+      ]);
+      mockResolveCodexState.mockReturnValue({
+        summary: "Base secret",
+        content: "Base secret body",
+        contextMode: "always",
+        detailValues: new Map(),
+      });
+      const sceneChain = () => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue([{ content: "{}" }]),
+      });
+      const entriesChain = () => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue([
+          {
+            id: "entry-1",
+            projectId: "proj-1",
+            type: "character",
+            name: "Alice",
+            summary: "Base secret",
+            content: "Base secret body",
+            contextMode: "always",
+          },
+        ]),
+      });
+      const detailsChain = () => ({
+        from: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        leftJoin: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue([]),
+      });
+      mockDb.select
+        .mockReturnValueOnce(sceneChain())
+        .mockReturnValueOnce(entriesChain())
+        .mockReturnValueOnce(detailsChain())
+        .mockReturnValueOnce(sceneChain())
+        .mockReturnValueOnce(entriesChain())
+        .mockReturnValueOnce(detailsChain());
+
+      const result = await buildMultiPayload(
+        "proj-1",
+        "project",
+        null,
+        "gpt-4o-mini",
+        "consistency",
+      );
+
+      expect(result.scenes.map((entry) => entry.scene_id)).toEqual([
+        "s1",
+        "s2",
+      ]);
+      for (const entry of result.scenes) {
+        expect(entry.codex_payload_json, entry.scene_id).toBe("[]");
+      }
+      expect(mockComputeInputHash.mock.calls[0]![0]).not.toHaveProperty(
+        "codex",
+      );
+    },
+  );
+
   it("intra_scene_consistency では codex_payload_json が '[]'", async () => {
     mockGetState.mockReturnValue({
       nodes: [makeNode("s1", "scene", null)],
