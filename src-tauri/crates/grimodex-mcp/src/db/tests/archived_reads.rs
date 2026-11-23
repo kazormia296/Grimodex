@@ -275,6 +275,14 @@ fn get_scene_meta_and_content_hide_archived_scene() {
     // live は読める。祖先だけ archived の s4 も（行単位）。別 project の id は元から読めない。
     assert_eq!(get_scene_meta(&conn, "p1", "s1").unwrap().id, "s1");
     assert_eq!(get_scene_meta(&conn, "p1", "s4").unwrap().id, "s4");
+    // 行単位の帰結：parent_id には archived の folder の id が残る（DR-ARC-2g の残る制限）。
+    assert_eq!(
+        get_scene_meta(&conn, "p1", "s4")
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some("a-fold")
+    );
     assert!(get_scene_content(&conn, "p1", "s4").is_ok());
     assert!(get_scene_meta(&conn, "p1", "x1").is_err());
 }
