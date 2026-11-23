@@ -20,7 +20,7 @@ import * as chatApi from "@/features/chat/chatApi";
 // 特性試験（実装の前に、今の挙動を固定する）。地図の AI Branch が AI へ送る種（seed）と
 // Spotlight の形、prompt に載るもの、そして「base が hidden でなく Phase でだけ hidden の Codex は、
 // 種にも pin にも入り、そのまま AI へ送られる」現状の穴を、送信の境界（invokeSingleShotChat）で固定する。
-// 実装の commit で、穴の期待だけを反転する（DR-MP4-43）。
+// 実装の commit（DR-MP4-43）で、穴の期待を反転した（呼び先も、旧来の合成から runAiBranchGeneration に替えた）。
 
 const h = vi.hoisted(() => ({ send: vi.fn() }));
 
@@ -44,11 +44,11 @@ vi.mock("@/features/ai-usage/recordAiUsage", () => ({
 import {
   collectAiBranchSeeds,
   fetchActiveSessionSpotlight,
+  runAiBranchGeneration,
 } from "./aiBranchContext";
 import {
   buildSystemPrompt,
   buildUserPrompt,
-  generateAiBranchCards,
   type AiBranchSeed,
 } from "./mapAiApi";
 
@@ -174,10 +174,20 @@ describe("collectAiBranchSeeds（同期の snapshot。今の形）", () => {
       [],
     );
     expect(seeds).toEqual([
-      { type: "codex", title: "name-a", body: "summary-a" },
-      { type: "codex", title: "name-b", body: "本文b" },
-      { type: "codex", title: "name-c", body: undefined },
-      { type: "codex", title: "(無題)", body: "summary-d" },
+      {
+        type: "codex",
+        title: "name-a",
+        body: "summary-a",
+        codexEntryId: "a",
+      },
+      { type: "codex", title: "name-b", body: "本文b", codexEntryId: "b" },
+      { type: "codex", title: "name-c", body: undefined, codexEntryId: "c" },
+      {
+        type: "codex",
+        title: "(無題)",
+        body: "summary-d",
+        codexEntryId: "d",
+      },
     ]);
   });
 
@@ -226,7 +236,12 @@ describe("fetchActiveSessionSpotlight（今の形）", () => {
     ] as never);
     const out = await fetchActiveSessionSpotlight();
     expect(out).toEqual([
-      { type: "codex", title: "name-s", body: "summary-s" },
+      {
+        type: "codex",
+        title: "name-s",
+        body: "summary-s",
+        codexEntryId: "s",
+      },
       { type: "snippet", title: "断片", body: "断片本文" },
       { type: "sticky", title: "(Sticky)", body: "付箋本文" },
     ]);
@@ -264,10 +279,10 @@ describe("prompt の組み立て（渡した seed の type・title・body だけ
   });
 });
 
-// 現状の穴：base が公開（mentioned）で、Phase の override が hidden の Codex は、種にも pin にも入り、
-// 旧来の合成（collect＋Spotlight＋generate）で AI への送信に載る。地図は場面を持たないので、
-// どの場面でも Phase で hidden になる項目は送らない側に揃える（DR-MP4-43。実装の commit で反転）。
-describe("現状の穴（実 DB）：Phase でだけ hidden の Codex が AI へ送られる", () => {
+// 穴（DR-MP4-43 で閉じた）：base が公開（mentioned）で、Phase の override が hidden の Codex は、
+// 同期の層（collectAiBranchSeeds・fetchActiveSessionSpotlight）では今も種・pin に入る（store の
+// base の mode しか見ない）。送信の直前の判定（runAiBranchGeneration）で除かれ、AI へ送られない。
+describe("Phase でだけ hidden の Codex（実 DB）：同期の層には残り、送信では除かれる", () => {
   const E = {
     phaseHidden: {
       id: "id-char-phase-hidden-9d2e",
@@ -355,7 +370,7 @@ describe("現状の穴（実 DB）：Phase でだけ hidden の Codex が AI へ
     });
   });
 
-  it("旧来の合成（collect＋Spotlight＋generate）では、Phase でだけ hidden の項目の名前・概要が送られる", async () => {
+  it("同期の層には残るが、runAiBranchGeneration の送信には Phase でだけ hidden の項目の名前・概要が載らない", async () => {
     const seeds = collectAiBranchSeeds(
       nodesOf(`codex:${E.phaseHidden.id}`, `codex:${E.open.id}`),
       [],
@@ -371,15 +386,14 @@ describe("現状の穴（実 DB）：Phase でだけ hidden の Codex が AI へ
       E.open.name,
     ]);
 
-    await generateAiBranchCards(
-      "依頼",
-      3,
+    await runAiBranchGeneration({
+      prompt: "依頼",
+      count: 3,
       seeds,
-      null,
-      spotlight,
-      null,
-      AUTHORITY,
-    );
+      vs: null,
+      authority: AUTHORITY,
+      assertAuthority: () => {},
+    });
 
     // 空振りの緑を避けるため、送信が実際に 1 回あることを先に確かめる。
     expect(h.send).toHaveBeenCalledTimes(1);
@@ -387,8 +401,9 @@ describe("現状の穴（実 DB）：Phase でだけ hidden の Codex が AI へ
       content: string;
     }>;
     const sent = messages.map((m) => m.content).join("\n");
-    expect(sent).toContain(E.phaseHidden.name);
-    expect(sent).toContain(E.phaseHidden.summary);
+    expect(sent).not.toContain(E.phaseHidden.name);
+    expect(sent).not.toContain(E.phaseHidden.summary);
     expect(sent).toContain(E.open.name);
+    expect(sent).toContain(E.open.summary);
   });
 });

@@ -98,16 +98,13 @@ import {
   pendingEdgeLabelEdits,
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
-import {
-  generateAiBranchCards,
-  AiBranchEmptyResponseError,
-  type AiBranchSeed,
-} from "./mapAiApi";
+import { AiBranchEmptyResponseError } from "./mapAiApi";
 import { useAiSettingsStore } from "@/features/chat/store";
 import {
   collectAiBranchSeeds,
-  fetchAiBranchProjectContext,
-  fetchActiveSessionSpotlight,
+  runAiBranchGeneration,
+  AiBranchHiddenCheckFailedError,
+  type AiBranchSeedSource,
 } from "./aiBranchContext";
 import { computeAiBranchLayout } from "./aiBranchLayout";
 import {
@@ -301,7 +298,7 @@ export function MapCanvas() {
     indicatorPosition: { x: number; y: number };
     seedNodeIds: string[];
     seedNodeTitles: string[];
-    seeds: AiBranchSeed[];
+    seeds: AiBranchSeedSource[];
     /** Authority captured together with the frozen seed snapshot. */
     authority: AiOperationAuthority;
   } | null>(null);
@@ -1654,16 +1651,6 @@ export function MapCanvas() {
           indicatorPosition: dialogState.indicatorPosition,
         });
 
-        // project info と Spotlight pins を並列 fetch。失敗時はそれぞれ
-        // null / [] にフォールバックして prompt のセクションが落ちるだけ。
-        const [projectCtx, spotlight] = await Promise.all([
-          fetchAiBranchProjectContext(dialogState.authority.projectId),
-          fetchActiveSessionSpotlight(),
-        ]);
-        // Context/spotlight are asynchronous and may have observed a stale
-        // store during a switch. The authority check must happen again before
-        // any provider call can consume them.
-        assertDialogAuthority();
         // Verbalized Sampling: 意外性ノブが標準 (null) のときは VS オフで従来挙動。
         // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
         const provider = useAiSettingsStore.getState().settings?.provider;
@@ -1671,16 +1658,17 @@ export function MapCanvas() {
           vsThreshold != null
             ? { threshold: vsThreshold, cot: provider !== "cli" }
             : null;
-        assertDialogAuthority();
-        const cards = await generateAiBranchCards(
+        // project info・Spotlight pins の取得、hidden の判定（DB。Phase で hidden の Codex を含む）、
+        // 送信までを 1 関数に閉じる。判定に失敗したら送らず中止する（DR-MP4-43）。
+        // 非同期の読みは switch をまたぎうるので、送信の直前に authority を検査させる。
+        const cards = await runAiBranchGeneration({
           prompt,
           count,
-          dialogState.seeds,
-          projectCtx,
-          spotlight,
+          seeds: dialogState.seeds,
           vs,
-          dialogState.authority,
-        );
+          authority: dialogState.authority,
+          assertAuthority: assertDialogAuthority,
+        });
 
         const pos = dialogState.spawnPosition;
         // Place the card cluster in the most open region around the spawn,
@@ -1774,6 +1762,9 @@ export function MapCanvas() {
         // それ以外は汎用文言で必ずトーストする。
         if (err instanceof AiBranchEmptyResponseError) {
           toast.error(t("map.toast.aiBranchEmptyResponse"));
+        } else if (err instanceof AiBranchHiddenCheckFailedError) {
+          // hidden の判定に失敗して何も送らなかった。原因の文は debugLog のみ（新しい文言を足さない）。
+          toast.error(t("map.toast.aiBranchGenerateFailed"));
         } else {
           toast.error(t("map.toast.aiBranchGenerateFailed"), {
             description:
