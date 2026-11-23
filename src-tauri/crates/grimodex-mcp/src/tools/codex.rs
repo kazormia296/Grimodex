@@ -780,4 +780,60 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0);
     }
+
+    /// get_codex_entry（entry_id・name の両方）が返す JSON の `phases`（案 (b)）。
+    /// 項目そのものは見え続け、hidden の Phase の中身だけが JSON に出ない。
+    fn seed_phase_entry(server: &GrimodexServer) {
+        let conn = server.conn.lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO codex_entries (id, project_id, name, type, summary)
+                 VALUES ('e-aria', 'p1', 'Aria', 'character', 'aria-base-summary');
+             INSERT INTO codex_entry_phases
+                 (id, entry_id, label, summary_override, content_override,
+                  context_mode_override, anchor_node_id, created_at, updated_at)
+             VALUES
+                 ('ph-ok', 'e-aria', 'visible-phase', NULL, NULL, 'mentioned', NULL,
+                  '2024-01-01', '2024-01-01'),
+                 ('ph-secret', 'e-aria', 'secret-phase-label', 'secret-phase-summary',
+                  'secret-phase-content', 'hidden', 'scene-secret-anchor',
+                  '2024-01-02', '2024-01-02'),
+                 ('ph-null', 'e-aria', 'null-phase-label', NULL, 'null-phase-content',
+                  NULL, NULL, '2024-01-03', '2024-01-03');",
+        )
+        .unwrap();
+    }
+
+    async fn get_codex_json(
+        server: &GrimodexServer,
+        id: Option<&str>,
+        name: Option<&str>,
+    ) -> String {
+        let res = get_codex_entry(
+            server,
+            GetCodexParams {
+                entry_id: id.map(str::to_string),
+                name: name.map(str::to_string),
+            },
+        )
+        .await
+        .unwrap();
+        serde_json::to_string(&res).unwrap()
+    }
+
+    #[tokio::test]
+    async fn characterization_get_codex_entry_returns_hidden_phase_today() {
+        let server = make_writable_server();
+        seed_phase_entry(&server);
+        for json in [
+            get_codex_json(&server, Some("e-aria"), None).await,
+            get_codex_json(&server, None, Some("Ari")).await,
+        ] {
+            assert!(json.contains("aria-base-summary"), "{json}");
+            assert!(json.contains("visible-phase"), "{json}");
+            assert!(json.contains("secret-phase-label"), "{json}");
+            assert!(json.contains("secret-phase-content"), "{json}");
+            assert!(json.contains("scene-secret-anchor"), "{json}");
+            assert!(json.contains("null-phase-content"), "{json}");
+        }
+    }
 }
