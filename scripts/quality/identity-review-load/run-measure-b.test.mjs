@@ -1961,7 +1961,7 @@ test("拒否層の許可リスト：重複が無く、製品の IPC の契約に
     findAiCommands(DISPATCH_LOCAL_ALLOW).sort(),
     [...DISPATCH_BLOCK_EXEMPT].sort(),
   );
-  // 乾いた実行で観測した命令（19:38・20:10・20:26 の 3 回）が、すべて許可リストに入っている。
+  // 乾いた実行で観測した命令（19:38・20:10・20:26 の 3 回）が、すべて許可リストに含まれること。
   const observed = [
     "ai_audit_append_batch",
     "codex_create",
