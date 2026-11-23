@@ -24,6 +24,9 @@ use grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1;
 use super::counters::{local_counts, reset_local_counts};
 use super::judge::reading_rank;
 use super::*;
+use crate::narrative_extraction::nir1_graph::{
+    scene_body_title_digest, SCENE_BODY_TITLE_MAX_BYTES,
+};
 use crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority;
 use crate::narrative_extraction::scene_body_declaration::test_support::{
     set_raw_declaration_cells_for_test, set_scene_body_declaration_for_test, test_digest,
@@ -34,8 +37,7 @@ use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
 };
 use crate::narrative_extraction::scene_body_declaration::{
     clear_scene_body_declaration_workspace_quarantine_for_test,
-    quarantine_scene_body_declaration_workspace_for_test, scene_body_title_digest, CONTENT_READS,
-    SCENE_BODY_TITLE_MAX_BYTES,
+    quarantine_scene_body_declaration_workspace_for_test, CONTENT_READS,
 };
 use crate::narrative_extraction::task_leases::with_immediate_transaction;
 use crate::narrative_extraction::{

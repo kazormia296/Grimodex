@@ -36,7 +36,7 @@ use super::tests::{
     Path, OPEN,
 };
 use super::*;
-use crate::narrative_extraction::scene_body_declaration::archived_in_chain;
+use crate::narrative_extraction::nir1_graph::archived_in_chain;
 use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
     body_json, set_a1, Env, PROJECT,
 };

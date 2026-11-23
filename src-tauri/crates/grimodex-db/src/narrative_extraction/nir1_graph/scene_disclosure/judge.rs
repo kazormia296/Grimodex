@@ -19,11 +19,9 @@ use crate::narrative_extraction::nir1_graph::scenes::{
     ScenePinLocator, SceneScopeExpectation,
 };
 use crate::narrative_extraction::nir1_graph::Nir1GraphSceneAssociation;
+use crate::narrative_extraction::nir1_graph::{archived_in_chain, SCENE_BODY_TITLE_MAX_BYTES};
 use crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority;
 use crate::narrative_extraction::read_narrative_scene_scope;
-use crate::narrative_extraction::scene_body_declaration::{
-    archived_in_chain, SCENE_BODY_TITLE_MAX_BYTES,
-};
 use crate::nir1_generation::{classify_store_error, error_chain_contains, Nir1StoreFailure};
 
 /// Rows the scan may charge to one `SceneJoinBudget` (frame tokens and pin
