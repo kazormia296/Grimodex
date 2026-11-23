@@ -367,53 +367,138 @@ describe("buildMultiPayload", () => {
     },
   );
 
-  // Known holes, fixed by DR-MP4-46 (the expectations are the behaviour before the fix). The
-  // mocked resolver returns what the real one returns for these inputs: a Phase that the resolver
-  // skips (no anchor, or an anchor the reading order does not have) and an unresolvable scene both
-  // apply no Phase, so the entry keeps its base mode.
-  describe("a Phase that hides the entry is not applied (known hole, DR-MP4-46)", () => {
-    const hidingPhase = (anchorNodeId: string | null) => ({
+  // DR-MP4-46 (and DR-MP4-41, which the consistency check did not have): the same rule as chat's
+  // context and the agent tools. The mocked resolver returns what the real one returns for these
+  // inputs: a Phase that the resolver skips (no anchor, or an anchor the reading order does not
+  // have) and an unresolvable scene both apply no Phase, so the entry keeps its base mode. The
+  // entry is then closed before the selection. Before DR-MP4-46 each of these still put the entry
+  // into the payload and the hash input (the known hole).
+  describe("a Phase that hides the entry, which the resolver does not apply (DR-MP4-46)", () => {
+    const hidingPhase = (
+      anchorNodeId: string | null,
+      contextModeOverride: string | null = "hidden",
+    ) => ({
       id: "phase-hide",
       entryId: "entry-1",
       anchorNodeId,
       label: "hide",
       summaryOverride: null,
       contentOverride: null,
-      contextModeOverride: "hidden",
+      contextModeOverride,
       version: 0,
       createdAt: "2026-01-01",
       updatedAt: "2026-01-01",
     });
-    const alwaysEntry = {
+    const baseEntry = (contextMode: string) => ({
       id: "entry-1",
       projectId: "proj-1",
       type: "character",
       name: "Alice",
       summary: "Base secret",
       content: "Base secret body",
-      contextMode: "always",
-    };
-    const resolvedAsBase = () =>
+      contextMode,
+    });
+    const resolvedAsBase = (contextMode: string) =>
       mockResolveCodexState.mockReturnValue({
         summary: "Base secret",
         content: "Base secret body",
-        contextMode: "always",
+        contextMode,
         detailValues: new Map(),
+      });
+    const oneSceneIndex = (id: string) =>
+      mockPhaseGetState.mockReturnValue({
+        sceneTimeIndex: buildSceneTimeIndex([makeNode(id, "scene")]),
+        resolutionMode: "reading",
       });
 
     it.each([
       ["a null anchor", null],
       ["an anchor the reading order does not have", "deleted-scene"],
     ])(
-      "%s: the entry still goes into the payload and the hash input at a scene the reading order has",
+      "%s: the entry goes into neither the payload nor the hash input at a scene the reading order has",
       async (_label, anchorNodeId) => {
+        oneSceneIndex("scene-1");
+        mockListPhases.mockResolvedValue([hidingPhase(anchorNodeId)]);
+        resolvedAsBase("always");
+        mockConsistencyDb(baseEntry("always"));
+
+        const result = await buildConsistencyPayload(
+          "proj-1",
+          "scene-1",
+          "gpt-4o-mini",
+        );
+
+        expect(result.codexPayload).toEqual([]);
+        expect(result.codexPayloadJson).toBe("[]");
+        expect(result.codexPayloadJson).not.toContain("Base secret");
+        expect(mockComputeInputHash.mock.calls[0]![0]).toMatchObject({
+          codex: [],
+        });
+      },
+    );
+
+    it("a mentioned entry does not reach the matcher either", async () => {
+      oneSceneIndex("scene-1");
+      mockListPhases.mockResolvedValue([hidingPhase(null)]);
+      resolvedAsBase("mentioned");
+      mockFindMentioned.mockImplementation(async (_text, entries) => entries);
+      mockConsistencyDb(baseEntry("mentioned"));
+
+      const result = await buildConsistencyPayload(
+        "proj-1",
+        "scene-1",
+        "gpt-4o-mini",
+      );
+
+      expect(mockFindMentioned).toHaveBeenCalledWith("", []);
+      expect(result.codexPayload).toEqual([]);
+    });
+
+    it("the scene is not in the reading order: the entry that a (placeable) Phase hides is closed too (DR-MP4-41)", async () => {
+      oneSceneIndex("scene-2");
+      mockListPhases.mockResolvedValue([hidingPhase("scene-2")]);
+      resolvedAsBase("always");
+      mockConsistencyDb(baseEntry("always"));
+
+      const result = await buildConsistencyPayload(
+        "proj-1",
+        "scene-archived",
+        "gpt-4o-mini",
+      );
+
+      expect(result.codexPayload).toEqual([]);
+      expect(mockComputeInputHash.mock.calls[0]![0]).toMatchObject({
+        codex: [],
+      });
+    });
+
+    it.each([
+      [
+        "a hiding Phase whose anchor the reading order has (it has not started)",
+        "scene-2",
+        "hidden",
+      ],
+      ["a Phase that does not hide, with a null anchor", null, "suppress"],
+      [
+        "a Phase that does not hide, with a deleted anchor",
+        "deleted-scene",
+        null,
+      ],
+    ])(
+      "%s: the entry still goes into the payload (the rule does not widen)",
+      async (_label, anchorNodeId, contextModeOverride) => {
         mockPhaseGetState.mockReturnValue({
-          sceneTimeIndex: buildSceneTimeIndex([makeNode("scene-1", "scene")]),
+          sceneTimeIndex: buildSceneTimeIndex([
+            makeNode("scene-1", "scene"),
+            { ...makeNode("scene-2", "scene"), sortOrder: "scene-2" },
+          ]),
           resolutionMode: "reading",
         });
-        mockListPhases.mockResolvedValue([hidingPhase(anchorNodeId)]);
-        resolvedAsBase();
-        mockConsistencyDb(alwaysEntry);
+        mockListPhases.mockResolvedValue([
+          hidingPhase(anchorNodeId, contextModeOverride),
+        ]);
+        resolvedAsBase("always");
+        mockConsistencyDb(baseEntry("always"));
 
         const result = await buildConsistencyPayload(
           "proj-1",
@@ -424,30 +509,8 @@ describe("buildMultiPayload", () => {
         expect(result.codexPayload.map((entry) => entry.id)).toEqual([
           "entry-1",
         ]);
-        expect(result.codexPayloadJson).toContain("Base secret");
-        expect(mockComputeInputHash.mock.calls[0]![0]).toMatchObject({
-          codex: result.codexPayload,
-        });
       },
     );
-
-    it("the scene is not in the reading order: the entry that a (placeable) Phase hides still goes into the payload", async () => {
-      mockPhaseGetState.mockReturnValue({
-        sceneTimeIndex: buildSceneTimeIndex([makeNode("scene-2", "scene")]),
-        resolutionMode: "reading",
-      });
-      mockListPhases.mockResolvedValue([hidingPhase("scene-2")]);
-      resolvedAsBase();
-      mockConsistencyDb(alwaysEntry);
-
-      const result = await buildConsistencyPayload(
-        "proj-1",
-        "scene-archived",
-        "gpt-4o-mini",
-      );
-
-      expect(result.codexPayload.map((entry) => entry.id)).toEqual(["entry-1"]);
-    });
   });
 
   it.each(["mentioned", "always"])(
