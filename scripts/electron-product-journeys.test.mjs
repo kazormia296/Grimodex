@@ -8746,6 +8746,7 @@ test("late old launch cleanup does not touch an active replacement app", async (
   const oldLaunch = new Promise((resolve) => {
     resolveOldLaunch = resolve;
   });
+  const oldLaunchStarted = createPromiseBarrier();
   let launchCount = 0;
   const closeCalls = [];
   const oldClosed = new Promise((resolve) => {
@@ -8757,7 +8758,11 @@ test("late old launch cleanup does not touch an active replacement app", async (
     operationTimeoutMs: 20,
     launchTimeoutMs: 30,
     electronLauncher: {
-      launch: async () => (launchCount++ === 0 ? replacementApp : oldLaunch),
+      launch: async () => {
+        if (launchCount++ === 0) return replacementApp;
+        oldLaunchStarted.resolve();
+        return oldLaunch;
+      },
     },
     closeApp: async (app) => {
       closeCalls.push(app);
@@ -8771,9 +8776,17 @@ test("late old launch cleanup does not touch an active replacement app", async (
     await rm(harness.tmpRoot, { recursive: true, force: true });
   });
 
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const replacement = await harness.launch("observability/replacement-active");
+  const oldLaunchAttempt = harness.launch("observability/old-launch");
+  await oldLaunchStarted.promise;
+  try {
+    t.mock.timers.tick(30);
+  } finally {
+    t.mock.timers.reset();
+  }
   await assert.rejects(
-    harness.launch("observability/old-launch"),
+    oldLaunchAttempt,
     /timed out.*observability\/old-launch/i,
   );
   assert.equal(replacementApp.closed, undefined);
