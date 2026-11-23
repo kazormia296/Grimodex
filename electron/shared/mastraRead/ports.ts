@@ -136,8 +136,13 @@ export interface CoreBodyReader {
   readSceneBodies(sceneIds: readonly string[]): Promise<Map<string, string>>;
 }
 
-/** `fts_search`'s scope. A union, not a string: `'all'` cannot be passed. */
-export type FtsScope = "codex" | "scenes" | "snippets";
+/**
+ * `fts_search`'s scope. A union, not a string: `'all'` cannot be passed.
+ * `scenes_live` is `scenes` without the archived scenes (Native drops them in
+ * its own WHERE, before the limit): a subset of `scenes`, so it reaches no row
+ * the other scope did not (DR-ARC-1, a value added to DR-MP4-6's union).
+ */
+export type FtsScope = "codex" | "scenes" | "scenes_live" | "snippets";
 
 /**
  * The four typed reads and nothing else (DR-MP4-6). Each is a named method,

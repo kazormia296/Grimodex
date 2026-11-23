@@ -45,6 +45,7 @@ import {
   planProductVisibleRuns,
   planStoredRead,
   planStoredRuns,
+  classifyS5Surfaces,
   reconcileSeedsWithProposals,
   safeErrorSummary,
   sanitizeError,
@@ -299,6 +300,64 @@ test("AI／外部の command の判定は DENIED_COMMANDS の全 key と license
   assert.deepEqual(
     findAiCommands(["codex_judgment", "ai_usage_record", "send_chat_message"]),
     ["ai_usage_record", "codex_judgment", "send_chat_message"],
+  );
+});
+
+test("S5 の分類：表記を集合の所属から 3 区分の 1 つに振り（和は S5 の件数）、候補は重なってよい別の数にする", () => {
+  // S5：a・b・c・d・e（e は S5 の入力に 2 回出ても 1 件）。seed：b・c・d・x。提案：c・d・x。候補：a・b・e・y。
+  const r = classifyS5Surfaces({
+    s5Hashes: ["a", "b", "c", "d", "e", "e"],
+    seedHashes: ["b", "c", "d", "x"],
+    proposalHashes: ["c", "d", "x"],
+    candidateHashes: ["a", "b", "e", "y"],
+  });
+  assert.equal(r.rosterSurfaces, 5);
+  // a・e：seed に無い／b：seed にあるが提案に無い／c・d：提案に出る。
+  assert.deepEqual(
+    [r.notSeed, r.seedNotProposed, r.proposed, r.proposedOutsideSeed],
+    [2, 1, 2, 0],
+  );
+  assert.equal(r.notSeed + r.seedNotProposed + r.proposed, r.rosterSurfaces);
+  // 候補：a・b・e が S5 に当たる（y は S5 でない）。うち seed にならないのは a・e（両方に当てはまらない表記は、この fixture には置いていない）。
+  assert.deepEqual(r.candidate, {
+    inCandidate: 3,
+    notSeedInCandidate: 2,
+    neitherSeedNorCandidate: 0,
+  });
+  // 候補が未計測（null）なら 0 でなく null。
+  assert.equal(
+    classifyS5Surfaces({
+      s5Hashes: ["a"],
+      seedHashes: [],
+      proposalHashes: [],
+    }).candidate,
+    null,
+  );
+  // 「seed にも候補にもならない」：seed に無く、候補にも無い。
+  assert.equal(
+    classifyS5Surfaces({
+      s5Hashes: ["a", "b", "c"],
+      seedHashes: ["c"],
+      proposalHashes: [],
+      candidateHashes: ["b"],
+    }).candidate.neitherSeedNorCandidate,
+    1,
+  );
+  // 提案に出るのに seed に無い表記は、提案に出る側に入れたうえで異常として数える（件数を引き算で作らない）。
+  const odd = classifyS5Surfaces({
+    s5Hashes: ["a"],
+    seedHashes: [],
+    proposalHashes: ["a"],
+  });
+  assert.deepEqual(
+    [odd.proposed, odd.proposedOutsideSeed, odd.notSeed],
+    [1, 1, 0],
+  );
+  // 出力は件数だけ（hash も持たない）。
+  assert.ok(
+    Object.values(r).every(
+      (v) => Number.isInteger(v) || v === null || typeof v === "object",
+    ),
   );
 });
 
