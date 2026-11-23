@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { URL } from "node:url";
+import { assertOutputClean } from "./lib.mjs";
 import { BudgetStop, createGate } from "./ledger.mjs";
 import { buildRosterIndex } from "./measure-a-metrics.mjs";
 import {
@@ -1349,6 +1350,7 @@ test("送る前の guard の判定（evaluateSendPreconditions）：通れば件
     sampleCount: 3,
     lastTickOk: true,
     lastSocketCount: 5,
+    lastTcpSocketCount: 3,
     ageMs: 20,
   };
   const ok = await evaluateSendPreconditions({
@@ -1362,6 +1364,7 @@ test("送る前の guard の判定（evaluateSendPreconditions）：通れば件
     disallowedDestinationCount: 0,
     sampleCount: 3,
     lastSocketCount: 5,
+    lastTcpSocketCount: 3,
   });
   assert.deepEqual(ok.record.hidden, {
     entryCount: 4,
@@ -1403,6 +1406,10 @@ test("送る前の guard の判定（evaluateSendPreconditions）：通れば件
     [
       { egressObservation: () => ({ ...egressOk, lastSocketCount: 0 }) },
       "EGRESS_NO_SOCKETS",
+    ],
+    [
+      { egressObservation: () => ({ ...egressOk, lastTcpSocketCount: 0 }) },
+      "EGRESS_NO_TCP_SOCKETS",
     ],
     [
       { egressObservation: () => ({ ...egressOk, ageMs: 60_000 }) },
@@ -1461,4 +1468,95 @@ test("送る前の guard の判定（evaluateSendPreconditions）：通れば件
     () => assertRoleOverridesDefault({ ...roleOk, nonDefaultRoleKeys: "0" }),
     /UNDECIDABLE/u,
   );
+});
+
+test("sendOne（F5 の m-a）：応答が返った後に usage の読みが throw しても、台帳に行を残し（最悪値の課金）、停止線を立てる。失敗側の読みの throw は再送しない", async () => {
+  const rows = (dir) =>
+    readFileSync(path.join(dir, "ledger.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((row) => row.type !== "STOP");
+  const run = async (script) => {
+    const g = tmpGate({ totalCapUsd: 15 });
+    try {
+      const api = fakeApi({ script });
+      api.usageRowsSince = async () => {
+        throw new Error("[artifact] USAGE_DB_UNREADABLE");
+      };
+      let thrown = null;
+      try {
+        await sendOne({
+          api,
+          gate: g.gate,
+          stage: "B1",
+          estimate: await api.estimate(),
+          usagePoll: FAST,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      return { api, thrown, rows: rows(g.dir), gate: g.gate };
+    } finally {
+      rmSync(g.dir, { recursive: true, force: true });
+    }
+  };
+  // 成功の応答の後に usage の読みが throw：行は 1 つ残り、最悪値（出力 32,000 を含む）で課金、予約は精算されて消える。
+  const ok = await run(() => ({ ok: true }));
+  assert.ok(ok.thrown instanceof BudgetStop);
+  assert.equal(ok.thrown.code, "USAGE_NOT_RECORDED");
+  assert.equal(ok.rows.length, 1);
+  assert.equal(ok.rows[0].failure_kind, "usage-read-error");
+  assert.equal(ok.rows[0].charge, "estimate");
+  assert.ok(ok.rows[0].usd >= 0.32, `usd=${ok.rows[0].usd}`);
+  assert.ok(ok.rows[0].reservation_id);
+  assert.equal(ok.gate.state.reserved, 0);
+  // 429 の後に読みが throw：行の有無が不明のため、再送せず（judge は 1 回）、同様に課金して停止する。
+  const rate = await run(() => ({
+    ok: false,
+    kind: "rate-limit",
+    httpStatus: 429,
+  }));
+  assert.equal(rate.api.state.judgeCalls, 1);
+  assert.ok(rate.thrown instanceof BudgetStop);
+  assert.equal(rate.thrown.code, "USAGE_NOT_RECORDED");
+  assert.equal(rate.rows.length, 1);
+  assert.equal(rate.rows[0].failure_kind, "usage-read-error");
+  assert.equal(rate.rows[0].http_status, 429);
+  // 429 の応答は課金対象外と判明しているため 0（台帳の規則）。停止と再送なしは共通。
+  assert.equal(rate.rows[0].charge, "none");
+  // 送信の後に例外を投げる経路（有効結果なし）は課金されうる：行が読めなければ最悪値で課金する。
+  const noResult = await run(() => ({ ok: false, kind: "no-valid-result" }));
+  assert.equal(noResult.api.state.judgeCalls, 1);
+  assert.equal(noResult.thrown.code, "USAGE_NOT_RECORDED");
+  assert.equal(noResult.rows[0].failure_kind, "usage-read-error");
+  assert.equal(noResult.rows[0].charge, "estimate");
+  assert.ok(noResult.rows[0].usd >= 0.32);
+});
+
+test("F5 M-a：最悪値の予約が理由の拒否は、runB1 の stopped に数値だけの detail で残り、英語の原稿でも結果の出力検査を通る", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  const g = tmpGate({ totalCapUsd: 0.2 });
+  try {
+    const api = fakeApi();
+    const result = await runB1({
+      api,
+      gate: g.gate,
+      index,
+      registeredKeyHashes: [],
+      usagePoll: FAST,
+    });
+    assert.equal(result.stopped.code, "TOTAL_CAP_WOULD_EXCEED");
+    assert.equal(api.state.judgeCalls, 0, "送らない");
+    // 理由（予約は出力 32,000 token の最悪値）は数値で残る。見積りと hold の差も読める。
+    assert.equal(result.stopped.detail.worstCaseOutputTokens, 32_000);
+    assert.ok(result.stopped.detail.hold > result.stopped.detail.estimate);
+    // 結果（cell の出力）の検査を通る：原稿が英語で、最悪・出力・token・basis の語を普通に含んでいても落ちない（語の文字列を載せていない。
+    // detail の key のうち estimate・hold・reserved・total・cap は F3a からあり、原稿が同じ語を含めば当たりうる：open）。
+    assertOutputClean({ result: { stopped: result.stopped } }, [
+      "The worst case for the budget was the output of many tokens, he said, and a basis for the case was never given.",
+    ]);
+  } finally {
+    rmSync(g.dir, { recursive: true, force: true });
+  }
 });

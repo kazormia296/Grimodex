@@ -208,6 +208,15 @@ export function assessEgressObservation(observation) {
     )
   )
     return "EGRESS_NO_SOCKETS";
+  // unix socket だけでは、TCP の宛先が見えている証拠にならない：直近の tick で、子孫の fd が /proc/net/tcp・tcp6 の行に
+  // 1 つ以上一致していること（F5 の m-c）。
+  if (
+    !(
+      Number.isInteger(observation.lastTcpSocketCount) &&
+      observation.lastTcpSocketCount >= 1
+    )
+  )
+    return "EGRESS_NO_TCP_SOCKETS";
   if (
     !(
       Number.isFinite(observation.ageMs) &&
@@ -243,6 +252,7 @@ export async function evaluateSendPreconditions({
       disallowedDestinationCount: 0,
       sampleCount: observation.sampleCount,
       lastSocketCount: observation.lastSocketCount,
+      lastTcpSocketCount: observation.lastTcpSocketCount,
     },
   };
   for (const [name, code, run, assertFn] of [
@@ -457,7 +467,14 @@ export async function sendOne({
     let judgments = null;
     let model = null;
     if (res.ok) {
-      const usage = await readUsageForRequest(api, before, usagePoll);
+      // usage の行の読みが throw しても（DB が読めないなど）、応答は返って課金されている。行を残さずに予約だけが残る窓を
+      // 作らない：応答が返ったのに usage が読めない失敗として台帳に行を残し（最悪値の課金）、停止線を立てる（F5 の m-a）。
+      let usage;
+      try {
+        usage = await readUsageForRequest(api, before, usagePoll);
+      } catch {
+        usage = { ok: false, kind: "usage-read-error" };
+      }
       if (usage.ok) {
         outcome = { ok: true, usage: usage.usage, responded: true };
         judgments = res.judgments;
@@ -490,7 +507,17 @@ export async function sendOne({
             ? { timeoutMs: usagePoll.failureTimeoutMs }
             : {}),
         };
-        const after = await readUsageAfterFailure(api, before, failedPoll);
+        // 読みが throw したら（DB が読めない）、行が残っているか分からない：応答が返ったのに usage が読めない失敗
+        // （usage-read-error）として、最悪値の課金と停止線にする。429・5xx でも再送に進まない（再送の分類は kind を見る。
+        // F5 の m-a）。
+        let after;
+        try {
+          after = await readUsageAfterFailure(api, before, failedPoll);
+        } catch {
+          outcome.failureKind = "usage-read-error";
+          outcome.responded = true;
+          after = null;
+        }
         if (after) {
           outcome.usage = after.usage;
           if (after.wrongSurface) outcome.failureKind = "wrong-surface";

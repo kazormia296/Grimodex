@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +14,7 @@ import {
 import os from "node:os";
 import process from "node:process";
 import path from "node:path";
+import { setImmediate } from "node:timers";
 import { test } from "node:test";
 import { URL } from "node:url";
 import { createEgressSampler } from "./egress-policy.mjs";
@@ -26,6 +28,7 @@ import {
 import {
   CONFIRM_SEND,
   DRY_RUN_ASSUMPTIONS,
+  assertLedgerReady,
   JUDGE_WATCHDOG_MS,
   KEY_REMOVAL_TIMEOUT_MS,
   withWatchdog,
@@ -53,6 +56,7 @@ const GOOD_EGRESS = {
   sampleCount: 3,
   lastTickOk: true,
   lastSocketCount: 5,
+  lastTcpSocketCount: 3,
   ageMs: 10,
 };
 const FAKE_KEY = `sk-ant-${"y".repeat(50)}`;
@@ -498,6 +502,7 @@ test("乾いた実行の採用条件：AI の command・send_chat_message・AI �
       nonLoopbackDestinationCount: 0,
       sampleCount: 4,
       socketCountMax: 6,
+      tcpSocketCountMax: 3,
     },
   };
   assert.equal(dryCellStatus(good), "ok");
@@ -505,6 +510,9 @@ test("乾いた実行の採用条件：AI の command・send_chat_message・AI �
   for (const egress of [
     { ...good.egress, sampleCount: 0 },
     { ...good.egress, socketCountMax: 0 },
+    // unix socket だけ（TCP の socket を 1 つも見ていない）も同じ（F5 の m-c）。
+    { ...good.egress, tcpSocketCountMax: 0 },
+    { ...good.egress, tcpSocketCountMax: undefined },
     { nonLoopbackDestinationCount: 0, sampleCount: 4 },
   ])
     assert.equal(dryCellStatus({ ...good, egress }), "egress-unverified");
@@ -543,6 +551,7 @@ test("乾いた実行の採用条件：AI の command・send_chat_message・AI �
         nonLoopbackDestinationCount: 1,
         sampleCount: 4,
         socketCountMax: 6,
+        tcpSocketCountMax: 3,
       },
     }),
     "egress-detected",
@@ -555,6 +564,7 @@ const OK_EGRESS = {
   sampleCount: 4,
   sampleFailures: 0,
   socketCountMax: 6,
+  tcpSocketCountMax: 3,
   disallowedDestinations: [],
   nonLoopbackDestinationCount: 1,
   nonLoopbackDestinations: ["tcp 160.79.104.10:443"],
@@ -1288,6 +1298,9 @@ test("実測定の採用条件：許可リストが適用され標本があり�
   for (const egress of [
     { ...OK_EGRESS, socketCountMax: 0 },
     { ...OK_EGRESS, socketCountMax: undefined },
+    // unix socket だけ（TCP の socket が 0・無い）は、TCP が見えている証拠にならない（F5 の m-c）。
+    { ...OK_EGRESS, tcpSocketCountMax: 0 },
+    { ...OK_EGRESS, tcpSocketCountMax: undefined },
   ])
     assert.equal(
       realCellStatus({ ...base, egress }, value),
@@ -1344,9 +1357,12 @@ function samplerObservation(sample, { now } = {}) {
 
 test("宛先の観測が成り立っていなければ（標本が採れない・socket が 0・古い tick）、cell の頭で key を読まず・設定せず・1 回も送らない（F3a の B1）", async () => {
   let clock = 0;
-  const stale = samplerObservation(() => ({ tablesRead: 4, socketCount: 3 }), {
-    now: () => clock,
-  });
+  const stale = samplerObservation(
+    () => ({ tablesRead: 4, socketCount: 3, tcpSocketCount: 2 }),
+    {
+      now: () => clock,
+    },
+  );
   stale.sampler.tick();
   clock = 60_000; // 直近の tick から 60 s（tick せずに観測だけ返す）
   for (const [name, observe, code] of [
@@ -1359,7 +1375,11 @@ test("宛先の観測が成り立っていなければ（標本が採れない�
     ],
     [
       "表が 1 つも読めない（tablesRead 0）",
-      samplerObservation(() => ({ tablesRead: 0, socketCount: 3 })).observe,
+      samplerObservation(() => ({
+        tablesRead: 0,
+        socketCount: 3,
+        tcpSocketCount: 2,
+      })).observe,
       "EGRESS_UNOBSERVED",
     ],
     [
@@ -1369,8 +1389,21 @@ test("宛先の観測が成り立っていなければ（標本が採れない�
     ],
     [
       "socket を 1 つも見ていない",
-      samplerObservation(() => ({ tablesRead: 4, socketCount: 0 })).observe,
+      samplerObservation(() => ({
+        tablesRead: 4,
+        socketCount: 0,
+        tcpSocketCount: 0,
+      })).observe,
       "EGRESS_NO_SOCKETS",
+    ],
+    [
+      "unix socket だけ（TCP の socket が 0。F5 の m-c）",
+      samplerObservation(() => ({
+        tablesRead: 4,
+        socketCount: 4,
+        tcpSocketCount: 0,
+      })).observe,
+      "EGRESS_NO_TCP_SOCKETS",
     ],
     ["古い tick", () => stale.sampler.observation(), "EGRESS_STALE"],
   ]) {
@@ -1398,13 +1431,18 @@ test("宛先の観測が送信の途中で成り立たなくなったら（標�
     ],
     [
       "tablesRead 0",
-      () => ({ tablesRead: 0, socketCount: 3 }),
+      () => ({ tablesRead: 0, socketCount: 3, tcpSocketCount: 2 }),
       "EGRESS_SAMPLE_FAILED",
     ],
     [
       "socket 0",
-      () => ({ tablesRead: 4, socketCount: 0 }),
+      () => ({ tablesRead: 4, socketCount: 0, tcpSocketCount: 0 }),
       "EGRESS_NO_SOCKETS",
+    ],
+    [
+      "unix socket だけ（F5 の m-c）",
+      () => ({ tablesRead: 4, socketCount: 4, tcpSocketCount: 0 }),
+      "EGRESS_NO_TCP_SOCKETS",
     ],
   ]) {
     await withTmp(async (dir) => {
@@ -1413,7 +1451,7 @@ test("宛先の観測が送信の途中で成り立たなくなったら（標�
       const { observe } = samplerObservation((pid, destinations) => {
         ticks++;
         return ticks <= 2
-          ? { tablesRead: 4, socketCount: 3 }
+          ? { tablesRead: 4, socketCount: 3, tcpSocketCount: 2 }
           : bad(destinations);
       });
       const { value, error, calls, gate } = await runGuarded(dir, {
@@ -1447,11 +1485,25 @@ test("key を出力しうる debug 系の env（DEBUG・PWDEBUG・NODE_DEBUG・E
     assert.deepEqual(findForbiddenEnv({ PATH: "/bin", ...env }), [name], name);
     assert.throws(() => assertNoFakeAiEnv(env), /FORBIDDEN_ENV_SET 1/u, name);
   }
-  // 無害な NODE_OPTIONS は止めない。値は表示しない（名前だけ数える）。
-  assert.deepEqual(
-    findForbiddenEnv({ NODE_OPTIONS: "--max-old-space-size=4096" }),
-    [],
-  );
+  // NODE_OPTIONS は空であること（F5 の m-d）：--require・--import・--heapsnapshot-*・--report-* ほか、どの項目でも立っていれば止まる。
+  // 空（立てていない・空文字）なら止めない。値は表示しない（名前だけ数える）。
+  for (const value of [
+    "--require /tmp/x.js",
+    "--import /tmp/x.mjs",
+    "--heapsnapshot-signal=SIGUSR2",
+    "--heapsnapshot-near-heap-limit=3",
+    "--report-on-signal",
+    "--report-uncaught-exception",
+    "--max-old-space-size=4096",
+    " ",
+  ])
+    assert.deepEqual(
+      findForbiddenEnv({ NODE_OPTIONS: value }),
+      ["NODE_OPTIONS"],
+      value,
+    );
+  assert.deepEqual(findForbiddenEnv({ NODE_OPTIONS: "" }), []);
+  assert.deepEqual(findForbiddenEnv({ PATH: "/bin" }), []);
   try {
     assertNoFakeAiEnv({ DEBUG: "pw:protocol-secret-marker" });
     assert.fail("not thrown");
@@ -1462,6 +1514,7 @@ test("key を出力しうる debug 系の env（DEBUG・PWDEBUG・NODE_DEBUG・E
   for (const env of [
     { DEBUG: "pw:protocol" },
     { NODE_OPTIONS: "--inspect=0" },
+    { NODE_OPTIONS: "--max-old-space-size=4096" },
   ]) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "idl-env-"));
     try {
@@ -1778,4 +1831,62 @@ test("judge が例外を投げても（page の crash）台帳に行が残り、
     assert.ok(gate.state.stopped);
     assert.ok(BudgetStop);
   });
+});
+
+test("F5 m-b：台帳の前検査（assertLedgerReady）：STOP・未精算の予約・試走の行が無いなら始めない。予約した process が動いている（同じ pid でも）ときも止める", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "idl-ready-"));
+  const file = path.join(dir, "ledger", "spend-ledger.jsonl");
+  const make = (overrides = {}) =>
+    createGate({
+      file,
+      model: "claude-sonnet-5-5",
+      pricing: PRICING,
+      requireTrial: false,
+      totalCapUsd: 15,
+      ...overrides,
+    });
+  try {
+    // 何も無い台帳：trial は始められる。b1 は試走の行が要る。
+    assertLedgerReady(make(), "trial");
+    assert.throws(() => assertLedgerReady(make(), "b1"), /TRIAL_REQUIRED/u);
+    // 予約が残っている。予約した pid は、この process（動いている）と同じでも止める（PID namespace・pid の再利用で pid は当てにならない）。
+    const first = make();
+    first.preflight({
+      stage: "trial",
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    assert.throws(
+      () => assertLedgerReady(make(), "trial"),
+      /\[precheck\] LEDGER_UNSETTLED_RESERVATIONS 1 unsettled reservations/u,
+    );
+    // 人が RELEASE 行を足すと、始められる。
+    const id = readFileSync(`${file}.reservations`, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))[0].id;
+    appendFileSync(
+      `${file}.reservations`,
+      `${JSON.stringify({ type: "RELEASE", id, ts: "t" })}\n`,
+    );
+    assertLedgerReady(make(), "trial");
+    // STOP 行が先に効く。
+    first.halt("CELL_NOT_OK", {});
+    assert.throws(
+      () => assertLedgerReady(make(), "trial"),
+      /LEDGER_STOPPED code=CELL_NOT_OK/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // 本測定の前検査の順：台帳の前検査は gate の後・cell（withVite）と key（makeKeyGetter）より前。
+  const source = readFileSync(
+    new URL("./run-measure-b.mjs", import.meta.url),
+    "utf8",
+  );
+  const main = source.slice(source.indexOf("async function mainReal"));
+  assert.ok(
+    main.indexOf("createGate({") < main.indexOf("assertLedgerReady(gate") &&
+      main.indexOf("assertLedgerReady(gate") < main.indexOf("withVite("),
+  );
 });

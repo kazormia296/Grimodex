@@ -309,7 +309,10 @@ function descendantPids(rootPid) {
 }
 /**
  * rootPid の子孫が持つ socket の、loopback 以外の接続先（"tcp ip:port" の形）を sample に足す。
- * 返り値：読めた /proc/net の表の数（tablesRead。0 なら採取が 1 度も成り立っていない）と、子孫が持つ socket の数。
+ * 返り値：読めた /proc/net の表の数（tablesRead。0 なら採取が 1 度も成り立っていない）、子孫が持つ socket の数
+ * （unix socket を含む）、子孫の fd の inode が /proc/net/tcp・tcp6 の行に一致した socket の数（tcpSocketCount）。
+ * tcpSocketCount は LISTEN・loopback も数える（除く前に数える）。「子孫の fd と TCP の表を突き合わせられている」証拠で、
+ * Electron の inspector の LISTEN や Vite への loopback 接続も含む（F5 の m-c。unix socket だけでは TCP が見えている証拠にならない）。
  */
 export function sampleEgress(rootPid, destinations) {
   const inodes = new Set();
@@ -325,6 +328,7 @@ export function sampleEgress(rootPid, destinations) {
     }
   }
   let tablesRead = 0;
+  const tcpInodes = new Set();
   for (const [proto, ipv6] of [
     ["tcp", false],
     ["tcp6", true],
@@ -341,13 +345,18 @@ export function sampleEgress(rootPid, destinations) {
     for (const line of table.split("\n").slice(1)) {
       const cols = line.trim().split(/\s+/u);
       if (cols.length < 10 || !inodes.has(cols[9])) continue;
+      if (proto.startsWith("tcp")) tcpInodes.add(cols[9]); // LISTEN・loopback も数える（下で除く前）
       if (proto.startsWith("tcp") && cols[3] === "0A") continue; // LISTEN
       const remote = parseHexAddress(cols[2], ipv6);
       if (remote.port === 0 || isLoopbackOrAny(remote.ip)) continue;
       destinations.add(`${proto.replace("6", "")} ${remote.ip}:${remote.port}`);
     }
   }
-  return { tablesRead, socketCount: inodes.size };
+  return {
+    tablesRead,
+    socketCount: inodes.size,
+    tcpSocketCount: tcpInodes.size,
+  };
 }
 
 /**

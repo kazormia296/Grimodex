@@ -14,7 +14,8 @@
 //   （-- の後ろは run-measure-b.mjs の引数。--output はこの script が run-measure-b.mjs にも渡す）
 // 本測定の前に、build の直後に record-build-provenance.mjs で出所の記録を取る（run-measure-b.mjs が照合する。F2）。
 // 測定の process の中で動く guard の file（renderer.ts など）を変えたら、記録を取り直す（F3a）。
-// key を出力しうる env（DEBUG・PWDEBUG・NODE_DEBUG・ELECTRON_ENABLE_LOGGING・NODE_OPTIONS の --inspect）が立っていると、
+// key を出力しうる env（DEBUG・PWDEBUG・NODE_DEBUG・ELECTRON_ENABLE_LOGGING・ELECTRON_ENABLE_STACK_DUMPING など）と、
+// 空でない NODE_OPTIONS（--require・--import・--heapsnapshot-*・--report-*・--inspect ほか、どの項目も。F5 の m-d）が立っていると、
 // run-measure-b.mjs が key の前に止まる。実行する shell で外しておく。
 // --egress-allow は人が明示する（この道具は Anthropic の IP 範囲を持たない）。無ければ本測定は始まらない。
 import console from "node:console";

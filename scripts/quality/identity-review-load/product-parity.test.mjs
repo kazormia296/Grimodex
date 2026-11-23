@@ -1202,3 +1202,47 @@ test("page の guard が呼ぶ IPC は AI・外部通信の command に当たら
   const codexApi = product("codex/api.ts");
   assert.ok(!/\binvoke\(/u.test(functionBody(codexApi, "listCodexEntries")));
 });
+
+test("F5 M-a：judgeCandidates は出力の上限を渡さず、native の既定の max_tokens（claude-sonnet-5-5 は 32,000）が費用の最悪値の元。製品の値が変われば落ちる", async () => {
+  const { NATIVE_DEFAULT_MAX_OUTPUT_TOKENS } = await import("./ledger.mjs");
+  // judgeCandidates の sendChatMessageWithThinking の呼び出しは、出力上限の引数（requestMaxOutputTokens）を渡さない：
+  // 引数は 9 個（messages・auditContext・thinkingParams・systemCacheSegments・apiVariant・systemVolatileTail・model・provider・endpointId）まで。
+  const judgment = product("codex/candidateJudgment.ts");
+  const call = judgment.indexOf(
+    "sendChatMessageWithThinking(",
+    judgment.indexOf("resolveRoleSendOverride"),
+  );
+  assert.ok(call > 0);
+  const args = inside(judgment, judgment.indexOf("(", call));
+  assert.ok(!/requestMaxOutputTokens|maxOutputTokens|max_tokens/iu.test(args));
+  assert.ok(args.includes("ov.endpointId"));
+  assert.ok(
+    !/ov\.endpointId,\s*[^\s)]/u.test(args),
+    "endpointId の後に引数が足されていない",
+  );
+  // 出力上限が未指定のとき、native は effective_request_max_output_tokens の既定を使う。Anthropic で thinking を常に有効にする世代
+  // （sonnet-5 以降）の既定は 32,000（それ以外は 4096）。
+  const rust = repoFile("src-tauri/crates/grimodex-ai/src/lib.rs");
+  const fn = rust.indexOf("pub fn effective_request_max_output_tokens(");
+  assert.ok(fn > 0);
+  const body = inside(rust, rust.indexOf("{", fn));
+  const anthropic = body.slice(body.indexOf("AiProvider::Anthropic"));
+  const match =
+    /anthropic_model_thinking_always_on\(params\.model\)\s*\{\s*([0-9_]+)\s*\}\s*else\s*\{\s*([0-9_]+)\s*\}/u.exec(
+      anthropic,
+    );
+  assert.ok(match, "Anthropic の既定の max_tokens の分岐が見つからない");
+  assert.equal(
+    Number(match[1].replaceAll("_", "")),
+    NATIVE_DEFAULT_MAX_OUTPUT_TOKENS,
+  );
+  assert.equal(Number(match[2].replaceAll("_", "")), 4096);
+  // 世代 5 以降の sonnet は thinking を常に有効にする世代。
+  const always = rust.slice(
+    rust.indexOf("fn anthropic_model_thinking_always_on("),
+    rust.indexOf("pub fn effective_request_max_output_tokens("),
+  );
+  assert.ok(/"sonnet-"/u.test(always) && /major >= 5/u.test(always));
+  // 道具の測定の model は claude-sonnet-5-5。
+  assert.match(tool("run-measure-b.mjs"), /MODEL = "claude-sonnet-5-5"/u);
+});

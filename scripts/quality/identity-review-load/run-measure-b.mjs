@@ -18,7 +18,7 @@ import console from "node:console";
 import process from "node:process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { clearTimeout, setTimeout } from "node:timers";
+import { setTimeout } from "node:timers";
 import { pathToFileURL } from "node:url";
 import {
   ROSTER_LEVELS,
@@ -65,8 +65,11 @@ import {
   ensurePrivateDir,
   runCell,
   withVite,
+  withWatchdog,
   writeJson0600,
 } from "./launcher-common.mjs";
+// 期限つきの待ち（定義は launcher-common.mjs。cell の app.close の期限と共用。試験はここから import する）。
+export { withWatchdog };
 import { findKeyResidue } from "./cleanup.mjs";
 import { assertRealBusEnv, receiveRealEnv } from "./real-env.mjs";
 import {
@@ -114,31 +117,6 @@ export const ALLOWED_REAL_AI_COMMANDS = Object.freeze([
 export const JUDGE_WATCHDOG_MS = 300_000;
 /** key を消す呼び出し（page の bDeleteKey）を待つ上限（ms）。超えたら諦めて cell の後始末（workRoot の削除と key の残りの検査）へ進む。 */
 export const KEY_REMOVAL_TIMEOUT_MS = 60_000;
-
-/**
- * promise に期限を付ける。期限が来たら onTimeout() の値で解決する（例外にしない）。期限前に reject したら、例外を変えずに reject。
- * timer は必ず止める。期限の後に遅れて reject する元の promise は握りつぶす（未処理の reject にしない）。
- */
-export function withWatchdog(
-  promise,
-  ms,
-  onTimeout,
-  { setTimer = setTimeout, clearTimer = clearTimeout } = {},
-) {
-  let timer;
-  const guarded = Promise.resolve(promise);
-  guarded.catch(() => undefined);
-  const timeout = new Promise((resolve, reject) => {
-    timer = setTimer(() => {
-      try {
-        resolve(onTimeout());
-      } catch (error) {
-        reject(error);
-      }
-    }, ms);
-  });
-  return Promise.race([guarded, timeout]).finally(() => clearTimer(timer));
-}
 
 /** 本測定に進んでよいか（明示の許可が無ければ始めない）。 */
 export function assertSendAllowed(options) {
@@ -366,7 +344,8 @@ export function dryCellStatus(cell) {
   // 乾いた実行が、本測定の観測の無料の事前確認になる。F3a の B1）。
   if (
     (cell.egress?.sampleCount ?? 0) === 0 ||
-    (cell.egress?.socketCountMax ?? 0) === 0
+    (cell.egress?.socketCountMax ?? 0) === 0 ||
+    (cell.egress?.tcpSocketCountMax ?? 0) === 0
   )
     return "egress-unverified";
   return "ok";
@@ -605,7 +584,8 @@ export function realCellStatus(cell, value) {
   if (
     egress?.policyApplied !== true ||
     (egress.sampleCount ?? 0) === 0 ||
-    (egress.socketCountMax ?? 0) === 0
+    (egress.socketCountMax ?? 0) === 0 ||
+    (egress.tcpSocketCountMax ?? 0) === 0
   )
     return "egress-unverified";
   if ((egress.disallowedDestinations ?? []).length > 0)
@@ -769,6 +749,30 @@ function readB2UpperByWork(outDirDry) {
   }
 }
 
+/**
+ * 台帳が本測定を始められる状態か（cell・key を使う前の前検査。止まれば STOP 行も書かない）。
+ * - STOP 行があれば、解除（人が STOP 行を消す）まで始めない。
+ * - 未精算の予約が 1 件でもあれば始めない（落ちた process の、届いたか分からない送信を、人が確かめないまま次の起動が進まない。
+ *   人が確かめて `<台帳>.reservations` の該当行の後ろに RELEASE 行を足す。予約した process が動いているかは見ない。F5 の m-b）。
+ * - b1／b2 は試走の実測の行が無ければ始めない。
+ */
+export function assertLedgerReady(gate, mode) {
+  assert.ok(
+    !gate.state.stopped,
+    `[precheck] LEDGER_STOPPED code=${String(gate.state.stopped?.code).replace(/[^A-Za-z0-9_]/gu, "_")}`,
+  );
+  const unsettled = gate.unsettledReservations();
+  assert.equal(
+    unsettled.length,
+    0,
+    `[precheck] LEDGER_UNSETTLED_RESERVATIONS ${unsettled.length} unsettled reservations remain from an earlier run. A person checks the sends and adds a RELEASE row for each`,
+  );
+  assert.ok(
+    mode === "trial" || gate.state.trial,
+    "[precheck] TRIAL_REQUIRED run --mode trial first and keep its ledger rows",
+  );
+}
+
 async function mainReal(options) {
   assertSendAllowed(options);
   const output = path.resolve(options.output);
@@ -820,16 +824,8 @@ async function mainReal(options) {
     file: path.join(output, "ledger", "spend-ledger.jsonl"),
     model: MODEL,
   });
-  // 台帳に STOP 行があれば、解除（人が STOP 行を消す）まで始めない。
-  assert.ok(
-    !gate.state.stopped,
-    `[precheck] LEDGER_STOPPED code=${String(gate.state.stopped?.code).replace(/[^A-Za-z0-9_]/gu, "_")}`,
-  );
-  // b1／b2 は試走の実測の行が台帳に無ければ始めない（cell も key も使わず、STOP 行も書かない）。
-  assert.ok(
-    options.mode === "trial" || gate.state.trial,
-    "[precheck] TRIAL_REQUIRED run --mode trial first and keep its ledger rows",
-  );
+  // 台帳の STOP 行・落ちた process の未精算の予約・試走の行を、cell も key も使う前に確かめる。
+  assertLedgerReady(gate, options.mode);
   const levels =
     options.mode === "b2"
       ? ["L2"]

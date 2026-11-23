@@ -1,5 +1,6 @@
 // build 物の出所の照合の試験（F2 の R2）。fake の dir・合成の file・fake の git だけを使う（build・git の変更・Electron は不要）。
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -47,6 +48,8 @@ const BLOB = "a".repeat(40);
 function fakeGit({
   head = HEAD,
   commitSec = COMMIT_SEC,
+  // build の入力に触れた最後の commit の時刻（git log -1 --first-parent HEAD -- <入力>）。既定は HEAD と同じ。
+  inputsCommitSec = commitSec,
   dirty = [],
   inputs = INPUT_FILES,
   // 例外の path（index.d.ts）の blob：HEAD の blob と作業 tree の内容の blob。違えば dirty（内容が HEAD と違う）。
@@ -62,7 +65,8 @@ function fakeGit({
     }
     if (args[0] === "hash-object") return `${workBlob}\n`;
     if (args[0] === "rev-parse") return `${head}\n`;
-    if (args[0] === "log") return `${commitSec}\n`;
+    if (args[0] === "log")
+      return `${args.includes("--") ? inputsCommitSec : commitSec}\n`;
     if (args[0] === "status") return dirty.map((d) => ` M ${d}`).join("\n");
     if (args[0] === "ls-files") return inputs.map((f) => `${f}\0`).join("");
     throw new Error(`unexpected git ${args[0]}`);
@@ -282,7 +286,7 @@ test("照合：build 物の過不足（記録に無い・記録にあるのに�
   });
 });
 
-test("照合：build 物が HEAD の commit より古い（dirty で build して commit した）なら止まる", async () => {
+test("照合：build 物が、build の入力に触れた最後の commit より古い（dirty で build して commit した）なら止まる", async () => {
   await withRoot((root) => {
     recordNow(root);
     touch(root, BUILD_ARTIFACTS[1], COMMIT_SEC - 5);
@@ -294,7 +298,7 @@ test("照合：build 物が HEAD の commit より古い（dirty で build し�
         return String(error.message);
       }
     })();
-    assert.match(problems, /BUILD_PROVENANCE_BUILD_OLDER_THAN_HEAD/u);
+    assert.match(problems, /BUILD_PROVENANCE_BUILD_OLDER_THAN_INPUT_COMMIT/u);
   });
 });
 
@@ -343,7 +347,7 @@ test("記録の script：source が dirty か、build 物が HEAD の commit よ
     touch(root, BUILD_ARTIFACTS[0], COMMIT_SEC - 1);
     assert.throws(
       () => buildProvenanceRecord(collectBuildState({ root, git: fakeGit() })),
-      /BUILD_PROVENANCE_BUILD_OLDER_THAN_HEAD/u,
+      /BUILD_PROVENANCE_BUILD_OLDER_THAN_INPUT_COMMIT/u,
     );
     assert.equal(readProvenanceRecord(recordPath), null);
   });
@@ -690,7 +694,13 @@ const PROV_A = {
 /** runCell を、fake の照合・作品・Electron で動かす。launch は呼ばれた回数だけ数え、既定は例外で終わる（cell は失敗）。 */
 async function runFakeCell(
   root,
-  { provenance, launch, cellId = "A-test", body = async () => ({}) },
+  {
+    provenance,
+    launch,
+    cellId = "A-test",
+    body = async () => ({}),
+    extraDeps = {},
+  },
 ) {
   const output = path.join(root, "out");
   mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -723,6 +733,7 @@ async function runFakeCell(
           events.push("launch");
           throw new Error("launch stub");
         }),
+      ...extraDeps,
     },
   });
   return { ...result, events };
@@ -872,6 +883,7 @@ test("runCell：cell の後にも出所を照合し、変わっていれば reco
       policyApplied: true,
       sampleCount: 3,
       socketCountMax: 4,
+      tcpSocketCountMax: 2,
       disallowedDestinations: [],
     };
     const adopt = (cell) =>
@@ -889,4 +901,328 @@ test("runCell：cell の後にも出所を照合し、変わっていれば reco
   });
   assert.equal(sameBuildProvenance(PROV_A, { ...PROV_A }), true);
   assert.equal(sameBuildProvenance(PROV_A, null), false);
+});
+
+// ---- F5：build し直しの条件（m-i）と、出所の対象の見直し（M-b） ---------------------------------------------------
+
+test("F5 m-i：build の入力に触れない commit（道具だけの変更）の後は、build し直さず出所の記録だけ取り直せば通る", async () => {
+  await withRoot((root) => {
+    // build 物の mtime は COMMIT_SEC + 100。入力に触れた最後の commit は COMMIT_SEC（build より古い）。
+    const before = fakeGit({ inputsCommitSec: COMMIT_SEC });
+    recordNow(root, before);
+    check(root, before);
+    // 道具だけの commit：HEAD の commit 時刻は build より新しく（COMMIT_SEC + 500）、HEAD も変わる。入力の commit は同じ。
+    const OTHER_HEAD = "2".repeat(40);
+    const tooled = fakeGit({
+      head: OTHER_HEAD,
+      commitSec: COMMIT_SEC + 500,
+      inputsCommitSec: COMMIT_SEC,
+    });
+    // 記録を取り直さなければ HEAD の不一致で止まる（記録と今の HEAD の対応は残す）。
+    assert.throws(() => check(root, tooled), /BUILD_PROVENANCE_HEAD_DIFFERS/u);
+    // build し直さず（build 物に触れず）、記録だけ取り直せば、記録も照合も通る。
+    const { record } = recordNow(root, tooled);
+    assert.equal(record.head, OTHER_HEAD);
+    assert.equal(record.inputsCommitTimeSec, COMMIT_SEC);
+    check(root, tooled);
+  });
+});
+
+test("F5 m-i：入力に触れた最後の commit が build より新しければ止まる（記録の値だけでなく、今の git の値でも比べる）", async () => {
+  await withRoot((root) => {
+    const git = fakeGit({ inputsCommitSec: COMMIT_SEC });
+    const { record } = recordNow(root, git);
+    // 同じ HEAD で、今の git が「入力に触れた最後の commit は build より新しい」と答える（記録は古い値のまま）。
+    const newer = collectBuildState({
+      root,
+      git: fakeGit({ inputsCommitSec: COMMIT_SEC + 200 }),
+    });
+    assert.ok(
+      findProvenanceProblems(record, newer, { nowMs: NOW_MS }).includes(
+        "BUILD_OLDER_THAN_INPUT_COMMIT",
+      ),
+    );
+    // 記録の値が新しい場合も止まる（記録を書き換えて入力の commit 時刻を古くする迂回の逆。両方の大きい方で比べる）。
+    const stale = collectBuildState({
+      root,
+      git: fakeGit({ inputsCommitSec: COMMIT_SEC }),
+    });
+    assert.ok(
+      findProvenanceProblems(
+        { ...record, inputsCommitTimeSec: COMMIT_SEC + 200 },
+        stale,
+        { nowMs: NOW_MS },
+      ).includes("BUILD_OLDER_THAN_INPUT_COMMIT"),
+    );
+    // build し直した（build 物が入力の commit より新しい）なら通る。
+    for (const relative of BUILD_ARTIFACTS)
+      touch(root, relative, COMMIT_SEC + 300);
+    assert.equal(
+      findProvenanceProblems(
+        record,
+        collectBuildState({
+          root,
+          git: fakeGit({ inputsCommitSec: COMMIT_SEC + 200 }),
+        }),
+        { nowMs: NOW_MS },
+      ).includes("BUILD_OLDER_THAN_INPUT_COMMIT"),
+      false,
+    );
+  });
+});
+
+test("F5 m-i：commit 時刻は安全性の根拠にしない。入力の commit が古くても、入力の mtime が build より新しければ止まる（merge で入った入力）", async () => {
+  await withRoot((root) => {
+    const git = fakeGit({ inputsCommitSec: COMMIT_SEC - 1000 });
+    recordNow(root, git);
+    touch(root, INPUT_FILES[1], COMMIT_SEC + 500); // build 物（COMMIT_SEC + 100）より新しい
+    assert.throws(
+      () => check(root, git),
+      /BUILD_PROVENANCE_INPUT_NEWER_THAN_BUILD/u,
+    );
+  });
+});
+
+test("F5 m-i：入力に触れた commit の時刻が読めなければ止まる（0 として通さない）。git には --first-parent と入力の path で聞く", async () => {
+  for (const answer of ["", "0", "not-a-number"])
+    assert.throws(
+      () =>
+        collectBuildState({
+          root: "/nonexistent-root",
+          git: (args) => {
+            if (args[0] === "log" && args.includes("--")) return `${answer}\n`;
+            return fakeGit()(args);
+          },
+        }),
+      /BUILD_PROVENANCE_INPUTS_COMMIT_UNREADABLE/u,
+      answer,
+    );
+  await withRoot((root) => {
+    const git = fakeGit();
+    collectBuildState({ root, git });
+    const log = git.calls.find((c) => c[0] === "log" && c.includes("--"));
+    assert.deepEqual(log.slice(0, 5), [
+      "log",
+      "-1",
+      "--format=%ct",
+      "--first-parent",
+      "HEAD",
+    ]);
+    assert.deepEqual(log.slice(-BUILD_SOURCE_PATHS.length), [
+      ...BUILD_SOURCE_PATHS,
+    ]);
+    // 記録の形：入力の commit 時刻を残し、旧い形（/3）の記録は読まない。
+    const { record } = recordNow(
+      root,
+      fakeGit({ inputsCommitSec: COMMIT_SEC - 7 }),
+    );
+    assert.equal(record.inputsCommitTimeSec, COMMIT_SEC - 7);
+    assert.equal(record.schemaVersion, "identity-load-build-provenance/4");
+    const recordPath = path.join(root, "provenance.json");
+    writeFileSync(
+      recordPath,
+      JSON.stringify({
+        ...record,
+        schemaVersion: "identity-load-build-provenance/3",
+      }),
+    );
+    assert.equal(readProvenanceRecord(recordPath), null);
+    const { inputsCommitTimeSec: _omitted, ...withoutInputs } = record;
+    writeFileSync(recordPath, JSON.stringify(withoutInputs));
+    assert.equal(readProvenanceRecord(recordPath), null);
+  });
+});
+
+test("F5 M-b：build・配信の設定（vite.config.ts・tsconfig・.cargo・.npmrc）は build の入力に、vite.config.ts・tsconfig は guard の file（sha256）にも入る", () => {
+  for (const relative of [
+    "vite.config.ts",
+    "tsconfig.json",
+    "tsconfig.node.json",
+    ".cargo",
+    ".npmrc",
+  ])
+    assert.ok(BUILD_SOURCE_PATHS.includes(relative), relative);
+  for (const relative of [
+    "vite.config.ts",
+    "tsconfig.json",
+    "tsconfig.node.json",
+  ])
+    assert.ok(GUARD_FILES.includes(relative), relative);
+  // Cargo.toml・Cargo.lock・esbuild の入口・patches は、入力の path（src-tauri・electron・patches）の下にある（辿った結果）。
+  const root = path.resolve(import.meta.dirname, "../../..");
+  for (const relative of [
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock",
+    "electron/native/grimodex-node/Cargo.toml",
+    "electron/native/grimodex-node/Cargo.lock",
+    "electron/scripts/build.mjs",
+    "electron/tsconfig.json",
+    ".cargo/config.toml",
+    "vite.config.ts",
+    "tsconfig.json",
+  ]) {
+    assert.ok(
+      BUILD_SOURCE_PATHS.some(
+        (entry) => relative === entry || relative.startsWith(`${entry}/`),
+      ),
+      relative,
+    );
+    assert.ok(statSync(path.join(root, relative)).isFile(), relative);
+  }
+  // vite.config.ts と esbuild の入口が相対 path で import する file も、入力か guard の file に含まれる（辿れる範囲の機械的な確認）。
+  const covered = (relative) =>
+    BUILD_SOURCE_PATHS.some(
+      (entry) => relative === entry || relative.startsWith(`${entry}/`),
+    ) || GUARD_FILES.includes(relative);
+  for (const entry of ["vite.config.ts", "electron/scripts/build.mjs"]) {
+    const text = readFileSync(path.join(root, entry), "utf8");
+    for (const match of text.matchAll(/from\s+["'](\.{1,2}\/[^"']+)["']/gu)) {
+      const resolved = path
+        .relative(root, path.resolve(root, path.dirname(entry), match[1]))
+        .split(path.sep)
+        .join("/");
+      assert.ok(covered(resolved), `${entry} imports ${resolved}`);
+    }
+  }
+});
+
+test("F5 M-b：vite.config.ts を（commit 済みでも）書き換えたら、記録の sha256 と合わず止まる。dirty なら build の入力の未 commit として止まる", async () => {
+  await withRoot((root) => {
+    recordNow(root);
+    writeFileSync(
+      path.join(root, "vite.config.ts"),
+      "export default { resolve: { alias: [] } };\n",
+    );
+    assert.throws(() => check(root), /BUILD_PROVENANCE_GUARD_HASH_DIFFERS/u);
+    // dirty（git status に出る）も build の入力として止まる。
+    const { record: _ } = recordNow(root);
+    assert.throws(
+      () => check(root, fakeGit({ dirty: ["vite.config.ts"] })),
+      /BUILD_PROVENANCE_SOURCE_DIRTY/u,
+    );
+    const git = fakeGit({ dirty: ["vite.config.ts"] });
+    collectBuildState({ root, git });
+    assert.ok(
+      git.calls.find((c) => c[0] === "status").includes("vite.config.ts"),
+    );
+    assert.ok(git.calls.find((c) => c[0] === "ls-files").includes(".cargo"));
+  });
+});
+
+// ---- F5：main の env の検査（M1c）と app.close の期限（m-g） ------------------------------------------------------
+
+/** runCell が使う面だけを持つ fake の Electron。mainEnv は main の process.env の写し、close は app.close() の挙動。 */
+function fakeElectron({
+  mainEnv = { names: [], rustLog: "", nodeOptions: "" },
+  close = async () => undefined,
+  kills = [],
+} = {}) {
+  let evaluated = 0;
+  return {
+    process: () => ({ pid: 0, kill: (signal) => kills.push(signal) }),
+    evaluate: async () => {
+      evaluated++;
+      if (evaluated === 1) return mainEnv;
+      if (evaluated === 2) return "0.0.0";
+      return [];
+    },
+    firstWindow: async () => ({
+      waitForFunction: async () => undefined,
+      evaluate: async (fn) =>
+        String(fn).includes("buildNestedWork")
+          ? {
+              text: { mismatched: 0 },
+              folderChecks: {},
+              sceneCount: 0,
+              paragraphCount: 0,
+              folderSceneCounts: {},
+              ruby: {},
+            }
+          : {},
+    }),
+    close,
+  };
+}
+
+test("F5 M1c：main の process.env に key を出しうる env（debug 系・NODE_OPTIONS）があれば、body（key を使う処理）に進まず cell を止める", async () => {
+  await withRoot(async (root) => {
+    for (const mainEnv of [
+      { names: ["PATH", "DEBUG"], rustLog: "", nodeOptions: "" },
+      { names: ["ELECTRON_ENABLE_LOGGING"], rustLog: "", nodeOptions: "" },
+      { names: ["RUST_LOG"], rustLog: "trace", nodeOptions: "" },
+      { names: ["NODE_OPTIONS"], rustLog: "", nodeOptions: "--require /x.js" },
+      {
+        names: ["NODE_OPTIONS"],
+        rustLog: "",
+        nodeOptions: "--max-old-space-size=4096",
+      },
+      { names: ["GRIMODEX_AI_WIRE_LOG"], rustLog: "", nodeOptions: "" },
+    ]) {
+      const result = await runFakeCell(root, {
+        provenance: () => PROV_A,
+        launch: async () => fakeElectron({ mainEnv }),
+        body: async () => {
+          throw new Error("body must not run");
+        },
+      });
+      assert.equal(result.cell.status, "failed", JSON.stringify(mainEnv));
+      assert.match(
+        JSON.stringify(result.cell.errors),
+        /FORBIDDEN_ENV_SET/u,
+        JSON.stringify(mainEnv),
+      );
+      assert.ok(!result.events.includes("body"), JSON.stringify(mainEnv));
+    }
+    // 立っていなければ（名前があっても NODE_OPTIONS が空・RUST_LOG が info）body に進む。
+    const clean = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () =>
+        fakeElectron({
+          mainEnv: {
+            names: ["PATH", "RUST_LOG", "NODE_OPTIONS"],
+            rustLog: "info",
+            nodeOptions: "",
+          },
+        }),
+    });
+    assert.ok(clean.events.includes("body"));
+    assert.equal(clean.cell.status, "completed");
+  });
+});
+
+test("F5 m-g：app.close() が返らなければ期限で諦め、Electron を SIGKILL して cell を failed にし、key の残りの検査と workRoot の削除へ進む", async () => {
+  await withRoot(async (root) => {
+    const kills = [];
+    const started = Date.now();
+    const hung = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () =>
+        fakeElectron({ close: () => new Promise(() => undefined), kills }),
+      extraDeps: { closeTimeoutMs: 30 },
+    });
+    assert.ok(Date.now() - started < 5_000, "期限で先へ進む");
+    assert.deepEqual(kills, ["SIGKILL"]);
+    assert.equal(hung.cell.status, "failed");
+    assert.match(JSON.stringify(hung.cell.errors), /APP_CLOSE_TIMEOUT/u);
+    // 後始末は進む（key の残りの検査・workRoot の削除）。
+    assert.equal(hung.cell.keyCleanup.workRootRemoved, true);
+    assert.equal(hung.cell.keyCleanup.keyFilesWithEntries, 0);
+    // close が throw しても、返っても、kill しない・cell は completed のまま。
+    for (const close of [
+      async () => undefined,
+      async () => {
+        throw new Error("close failed");
+      },
+    ]) {
+      const killed = [];
+      const normal = await runFakeCell(root, {
+        provenance: () => PROV_A,
+        launch: async () => fakeElectron({ close, kills: killed }),
+        extraDeps: { closeTimeoutMs: 1_000 },
+      });
+      assert.deepEqual(killed, []);
+      assert.equal(normal.cell.status, "completed");
+      assert.equal(normal.cell.keyCleanup.workRootRemoved, true);
+    }
+  });
 });

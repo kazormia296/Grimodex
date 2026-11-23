@@ -1,6 +1,11 @@
 // 実測定の cell の宛先の判定の試験（F2 の R3）。許可リストは試験用の文書用の範囲（RFC 5737・3849）を使い、
 // 実際の Anthropic の範囲はこの道具に持たない（人が --egress-allow で渡す）。
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 import {
   buildEgressPolicy,
@@ -12,7 +17,11 @@ import {
   splitList,
 } from "./egress-policy.mjs";
 import { realCellStatus } from "./run-measure-b.mjs";
-import { isLoopbackOrAny, parseHexAddress } from "./run-inventory.mjs";
+import {
+  isLoopbackOrAny,
+  parseHexAddress,
+  sampleEgress,
+} from "./run-inventory.mjs";
 import {
   EGRESS_OBSERVATION_MAX_AGE_MS,
   assessEgressObservation,
@@ -145,7 +154,11 @@ test("標本：許可リスト以外が出たら violations に残る。採取�
     policy,
     sample: (pid, destinations) => {
       for (const d of seen) destinations.add(d);
-      return { tablesRead: 4, socketCount: seen.length };
+      return {
+        tablesRead: 4,
+        socketCount: seen.length,
+        tcpSocketCount: seen.length,
+      };
     },
   });
   sampler.tick();
@@ -197,7 +210,7 @@ test("標本から cell の採否まで：Anthropic への接続だけなら採�
       policy,
       sample: (pid, set) => {
         for (const d of destinations) set.add(d);
-        return { tablesRead, socketCount: 1 };
+        return { tablesRead, socketCount: 1, tcpSocketCount: 1 };
       },
     });
     sampler.tick();
@@ -235,9 +248,10 @@ test("標本の観測（F3a の B1）：直近の tick の成否・時刻・sock
     sampleCount: 0,
     lastTickOk: false,
     lastSocketCount: null,
+    lastTcpSocketCount: null,
     ageMs: null,
   });
-  outcomes.push({ tablesRead: 4, socketCount: 7 });
+  outcomes.push({ tablesRead: 4, socketCount: 7, tcpSocketCount: 3 });
   sampler.tick();
   clock = 1_400;
   assert.deepEqual(sampler.observation(), {
@@ -245,6 +259,7 @@ test("標本の観測（F3a の B1）：直近の tick の成否・時刻・sock
     sampleCount: 1,
     lastTickOk: true,
     lastSocketCount: 7,
+    lastTcpSocketCount: 3,
     ageMs: 400,
   });
   // 結果が無い（undefined）・tablesRead が整数でない・形が違うものは、成功に数えない。
@@ -261,10 +276,24 @@ test("標本の観測（F3a の B1）：直近の tick の成否・時刻・sock
   assert.equal(sampler.snapshot().sampleCount, 1);
   assert.equal(sampler.snapshot().sampleFailures, 4);
   // 直近の tick が socket を 1 つも見ていない（成功でも 0）。cell 全体で見えた最大は snapshot に残る。
-  outcomes.push({ tablesRead: 4, socketCount: 0 });
+  outcomes.push({ tablesRead: 4, socketCount: 0, tcpSocketCount: 0 });
   sampler.tick();
   assert.equal(sampler.observation().lastSocketCount, 0);
   assert.equal(sampler.snapshot().socketCountMax, 7);
+  assert.equal(sampler.snapshot().tcpSocketCountMax, 3);
+  // unix socket だけ（socket は見えるが TCP は 0）：socket の数は増えるが、TCP の数は増えない（F5 の m-c）。
+  outcomes.push({ tablesRead: 4, socketCount: 9, tcpSocketCount: 0 });
+  sampler.tick();
+  assert.equal(sampler.observation().lastSocketCount, 9);
+  assert.equal(sampler.observation().lastTcpSocketCount, 0);
+  assert.equal(sampler.snapshot().socketCountMax, 9);
+  assert.equal(sampler.snapshot().tcpSocketCountMax, 3);
+  // tcpSocketCount が無い（古い形の sample）・整数でないものは null（TCP が見えている証拠にならない）。
+  for (const bad of [undefined, -1, "3", 1.5]) {
+    outcomes.push({ tablesRead: 4, socketCount: 9, tcpSocketCount: bad });
+    sampler.tick();
+    assert.equal(sampler.observation().lastTcpSocketCount, null, String(bad));
+  }
   // 例外は失敗。
   const thrown = createEgressSampler({
     rootPid: 1,
@@ -284,6 +313,7 @@ test("観測の評価（assessEgressObservation）：違反が無いだけでは
     sampleCount: 3,
     lastTickOk: true,
     lastSocketCount: 5,
+    lastTcpSocketCount: 2,
     ageMs: 10,
   };
   assert.equal(assessEgressObservation(good), null);
@@ -296,6 +326,10 @@ test("観測の評価（assessEgressObservation）：違反が無いだけでは
     [{ lastTickOk: undefined }, "EGRESS_SAMPLE_FAILED"],
     [{ lastSocketCount: 0 }, "EGRESS_NO_SOCKETS"],
     [{ lastSocketCount: null }, "EGRESS_NO_SOCKETS"],
+    // unix socket だけ（socket は見えるが TCP の socket が 0）は、TCP が見えている証拠にならない（F5 の m-c）。
+    [{ lastTcpSocketCount: 0 }, "EGRESS_NO_TCP_SOCKETS"],
+    [{ lastTcpSocketCount: null }, "EGRESS_NO_TCP_SOCKETS"],
+    [{ lastTcpSocketCount: undefined }, "EGRESS_NO_TCP_SOCKETS"],
     [{ ageMs: EGRESS_OBSERVATION_MAX_AGE_MS + 1 }, "EGRESS_STALE"],
     [{ ageMs: null }, "EGRESS_STALE"],
     [{ ageMs: -1 }, "EGRESS_STALE"],
@@ -354,4 +388,56 @@ test("loopback の判定は IP を解析する（前方一致で 0.127.x.x を l
     ip: "127.0.0.1",
     port: 443,
   });
+});
+
+// 実際の /proc で、子 process の socket を数える（F5 の m-c）：unix socket だけなら TCP の socket は 0、TCP を持てば 1 以上
+// （LISTEN・loopback も数える）。標本の「TCP が見えている」証拠は、socket の数でなく TCP の表と突き合わさった数。
+test("sampleEgress：unix socket だけの子 process は tcpSocketCount が 0、TCP の socket（loopback の LISTEN）を持てば 1 以上", async (t) => {
+  if (process.platform !== "linux") return t.skip("linux の /proc が要る");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "idl-sock-"));
+  const child = (script) =>
+    new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, ["-e", script], {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      proc.once("error", reject);
+      proc.stdout.once("data", () => resolve(proc));
+    });
+  const stop = (proc) =>
+    new Promise((resolve) => {
+      proc.once("exit", resolve);
+      proc.kill("SIGKILL");
+    });
+  try {
+    const unixOnly = await child(
+      `require("net").createServer().listen(${JSON.stringify(path.join(dir, "s.sock"))}, () => console.log("ready")); setInterval(() => {}, 1000);`,
+    );
+    try {
+      const seen = new Set();
+      const result = sampleEgress(unixOnly.pid, seen);
+      assert.ok(result.tablesRead >= 1);
+      assert.ok(result.socketCount >= 1, "unix socket は socket として数える");
+      assert.equal(result.tcpSocketCount, 0);
+      assert.equal(seen.size, 0);
+    } finally {
+      await stop(unixOnly);
+    }
+    const withTcp = await child(
+      `require("net").createServer().listen(0, "127.0.0.1", () => console.log("ready")); setInterval(() => {}, 1000);`,
+    );
+    try {
+      const seen = new Set();
+      const result = sampleEgress(withTcp.pid, seen);
+      assert.ok(
+        result.tcpSocketCount >= 1,
+        "loopback の LISTEN も TCP の socket として数える",
+      );
+      assert.ok(result.socketCount >= result.tcpSocketCount);
+      assert.equal(seen.size, 0, "loopback・LISTEN は宛先に数えない");
+    } finally {
+      await stop(withTcp);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

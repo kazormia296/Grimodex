@@ -9,6 +9,10 @@
 // 迂回の対策（F3a の M3）：追跡している build の入力 file の mtime の最大が build 物の mtime の最小以下であること、を記録と
 // 照合の両方で要る。checkout・revert・pull は書き換えた file の mtime を新しくするので、「dirty で build し、checkout で戻して
 // 記録を取る」「build の後に別の commit へ移る」を弾く。
+// build し直しが要る条件（F5 の m-i）：build 物は、build の入力（BUILD_SOURCE_PATHS）に触れた最後の commit
+// （git log -1 --first-parent -- <入力>）より新しいこと。入力に触れない commit（scripts/quality だけの変更など）の後は build し直さず、
+// 出所の記録だけ取り直せばよい（HEAD と guard の file の sha256 は別に記録・照合する）。commit 時刻は安全性の根拠ではない
+// （merge で入った入力の commit は古くても、書き換わった file の mtime が新しいので上の mtime の規則が止める）。
 // 限界（open）：記録の script は「build の直後に実行された」ことを証明できない。mtime を意図して書き換えられると通る。
 // 例外は 1 path だけ（F4）：napi が .node の数秒後に書く型宣言 electron/native/grimodex-node/index.d.ts は、HEAD と同一
 // （tracked・内容が HEAD の blob と同じ）である間だけ mtime の規則から外す（MTIME_EXEMPT_INPUT。定数 1 つ・option で増やせない）。
@@ -18,6 +22,7 @@
 // （electron/main/backend.ts）ので入れていない。gate を開けたら BUILD_ARTIFACTS に足す。
 // 出力は件数・ID・hash・path だけ。
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -30,7 +35,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-export const PROVENANCE_SCHEMA = "identity-load-build-provenance/3";
+export const PROVENANCE_SCHEMA = "identity-load-build-provenance/4";
 /** 測定の Electron が実際に読む build 物（root からの相対 path）。.map は含めない。過不足は不一致として止める。 */
 export const BUILD_ARTIFACTS = Object.freeze([
   "dist-electron/main.cjs",
@@ -42,7 +47,8 @@ export const BUILD_ARTIFACTS = Object.freeze([
  * 測定の process の中で動く guard の file（root からの相対 path。F3a の m5）。page で動く renderer.ts（Vite が配る）と
  * その import の lib.mjs、main で動く起動 script（safeStorage の上書きと共有の observer）。build 物ではないので sha256 だけ
  * 記録・照合する（mtime の規則は掛けない）。これらを変えたら記録を取り直す。
- * 対象外（限界）：node_modules（Vite・Playwright・Electron・mastra-agent.cjs が require する）、vite-cache、.env*・VITE_*。
+ * 対象外（限界）：node_modules（Vite・Playwright・Electron・mastra-agent.cjs が require する）、vite-cache、
+ * .env*・VITE_*（gitignore 済み）、repo の外の cargo の設定（~/.cargo/config.toml・親 dir の .cargo・RUSTFLAGS・CARGO_*）。
  */
 export const GUARD_FILES = Object.freeze([
   "scripts/quality/identity-review-load/renderer.ts",
@@ -51,11 +57,19 @@ export const GUARD_FILES = Object.freeze([
   "scripts/quality/identity-review-load/electron-observer-b.mjs",
   "scripts/quality/identity-review-load/plain-text-keystore.mjs",
   "scripts/quality/nir1-retrieval/electron-observer.mjs",
+  // Vite（測定の page を配る）が実行時に読む設定。resolve.alias で page の `@/…`（judgeCandidates を含む）を差し替えられるので、
+  // build の入力であるだけでなく sha256 も照合する（F5 の M-b）。esbuild の変換は tsconfig を読む。
+  "vite.config.ts",
+  "tsconfig.json",
+  "tsconfig.node.json",
 ]);
 /**
  * build の入力の source（root からの相対 path）。renderer は Vite が source から配る（build 物ではない）が、測定が
  * 動かす製品の一部なので入れる。scripts・docs・evals は build の入力でないので含めない（道具の変更だけが dirty でも
- * 測定は進める）。
+ * 測定は進める。道具の file のうち測定の process の中で動くものは GUARD_FILES で sha256 を見る）。
+ * 辿った範囲（F5 の M-b）：vite.config.ts が import するのは node 組み込みと node_modules の plugin だけ、
+ * electron/scripts/build.mjs の esbuild の入口は electron の下と mastra-ee-stub-plugin.mjs（electron の下）、
+ * pnpm の patches は patches の下。public（静的 file）は module の解決に効かないので対象に含めない。
  */
 export const BUILD_SOURCE_PATHS = Object.freeze([
   "src",
@@ -66,6 +80,15 @@ export const BUILD_SOURCE_PATHS = Object.freeze([
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
+  // build・配信の設定（F5 の M-b）。vite.config.ts は page の `@/…` の alias を、tsconfig は esbuild・tsc の解決と変換を、
+  // .cargo/config.toml は native の build（cargo）の env・flag を決める。Cargo.toml・Cargo.lock は src-tauri・electron の下
+  // （electron/native/grimodex-node/ を含む）、esbuild の入口 electron/scripts/build.mjs・electron/tsconfig.json は electron の下で、
+  // 上の path に含まれる。
+  "vite.config.ts",
+  "tsconfig.json",
+  "tsconfig.node.json",
+  ".cargo",
+  ".npmrc",
 ]);
 /**
  * build の入力のうち mtime の規則から外す唯一の path（F4）。napi が .node の約 4 秒後に書く生成物の型宣言で、実行時には読まれない。
@@ -106,7 +129,7 @@ export function sha256File(file) {
 }
 
 /**
- * 今の状態を集める：HEAD、HEAD の commit 時刻（秒）、build の入力の source の未 commit の数
+ * 今の状態を集める：HEAD、HEAD の commit 時刻（秒）、build の入力に触れた最後の commit の時刻（秒）、build の入力の source の未 commit の数
  * （untracked を含む。ignore 済みは含まない）、build 物の sha256・大きさ・mtime。build 物が無ければ止める。
  */
 export function collectBuildState({
@@ -129,6 +152,23 @@ export function collectBuildState({
   assert.ok(
     Number.isSafeInteger(headCommitTimeSec) && headCommitTimeSec > 0,
     "[precheck] BUILD_PROVENANCE_HEAD_UNREADABLE git commit time is not readable",
+  );
+  // build の入力に触れた最後の commit の時刻（秒。F5 の m-i）。--first-parent なので、merge で入った入力の変更は merge の commit の
+  // 時刻になる。読めない（空・0）なら止める（0 として通さない）。
+  const inputsCommitTimeSec = Number(
+    git([
+      "log",
+      "-1",
+      "--format=%ct",
+      "--first-parent",
+      "HEAD",
+      "--",
+      ...sourcePaths,
+    ]).trim(),
+  );
+  assert.ok(
+    Number.isSafeInteger(inputsCommitTimeSec) && inputsCommitTimeSec > 0,
+    "[precheck] BUILD_PROVENANCE_INPUTS_COMMIT_UNREADABLE no commit time for the build input paths is readable",
   );
   const sourceDirtyFileCount = git([
     "status",
@@ -208,6 +248,7 @@ export function collectBuildState({
   return {
     head,
     headCommitTimeSec,
+    inputsCommitTimeSec,
     sourceDirtyFileCount,
     inputFileCount: tracked.length,
     inputNewestMtimeMs,
@@ -240,7 +281,7 @@ export function inputsNewerThanBuild(state) {
 }
 
 /**
- * 記録を作る（書く前の検査つき）：source が dirty なら、build 物が HEAD の commit より古ければ作らない。
+ * 記録を作る（書く前の検査つき）：source が dirty なら、build 物が build の入力に触れた最後の commit より古ければ作らない。
  * dirty の build の記録は launcher が拒むので、早く止める。
  */
 export function buildProvenanceRecord(state, { now = new Date() } = {}) {
@@ -251,8 +292,8 @@ export function buildProvenanceRecord(state, { now = new Date() } = {}) {
   );
   for (const file of state.files)
     assert.ok(
-      Math.floor(file.mtimeMs / 1000) >= state.headCommitTimeSec,
-      `[precheck] BUILD_PROVENANCE_BUILD_OLDER_THAN_HEAD ${file.path} is older than the HEAD commit`,
+      Math.floor(file.mtimeMs / 1000) >= state.inputsCommitTimeSec,
+      `[precheck] BUILD_PROVENANCE_BUILD_OLDER_THAN_INPUT_COMMIT ${file.path} is older than the last commit that touched a build input. Build again`,
     );
   assert.ok(
     !inputsNewerThanBuild(state),
@@ -262,6 +303,7 @@ export function buildProvenanceRecord(state, { now = new Date() } = {}) {
     schemaVersion: PROVENANCE_SCHEMA,
     head: state.head,
     headCommitTimeSec: state.headCommitTimeSec,
+    inputsCommitTimeSec: state.inputsCommitTimeSec,
     sourcePaths: [...BUILD_SOURCE_PATHS],
     sourceDirtyFileCount: 0,
     inputFileCount: state.inputFileCount,
@@ -305,6 +347,8 @@ export function readProvenanceRecord(recordPath) {
       !Array.isArray(record.guardFiles) ||
       !validExemptedInputs(record.exemptedInputs) ||
       !Number.isSafeInteger(record.headCommitTimeSec) ||
+      !Number.isSafeInteger(record.inputsCommitTimeSec) ||
+      record.inputsCommitTimeSec <= 0 ||
       !Number.isSafeInteger(record.sourceDirtyFileCount) ||
       Number.isNaN(Date.parse(record.recordedAt))
     )
@@ -318,7 +362,7 @@ export function readProvenanceRecord(recordPath) {
 /**
  * 記録と今の状態を照合する。問題の code の配列（空なら一致）。
  * MISSING／FILE_SET_DIFFERS／HEAD_DIFFERS／SOURCE_DIRTY_AT_RECORD／SOURCE_DIRTY／HASH_DIFFERS／
- * BUILD_OLDER_THAN_HEAD／INPUT_NEWER_THAN_BUILD／GUARD_FILE_SET_DIFFERS／GUARD_HASH_DIFFERS／RECORD_TIME_INVALID
+ * BUILD_OLDER_THAN_INPUT_COMMIT／INPUT_NEWER_THAN_BUILD／GUARD_FILE_SET_DIFFERS／GUARD_HASH_DIFFERS／RECORD_TIME_INVALID
  */
 export function findProvenanceProblems(
   record,
@@ -347,12 +391,15 @@ export function findProvenanceProblems(
     )
   )
     problems.push("HASH_DIFFERS");
+  // build 物は、build の入力に触れた最後の commit より新しいこと（記録の値と今の値の大きい方。F5 の m-i）。
+  const inputsCommitTimeSec = Math.max(
+    record.inputsCommitTimeSec,
+    state.inputsCommitTimeSec,
+  );
   if (
-    state.files.some(
-      (f) => Math.floor(f.mtimeMs / 1000) < record.headCommitTimeSec,
-    )
+    state.files.some((f) => Math.floor(f.mtimeMs / 1000) < inputsCommitTimeSec)
   )
-    problems.push("BUILD_OLDER_THAN_HEAD");
+    problems.push("BUILD_OLDER_THAN_INPUT_COMMIT");
   if (inputsNewerThanBuild(state)) problems.push("INPUT_NEWER_THAN_BUILD");
   const recordedGuards = record.guardFiles.map((f) => f?.path);
   if (

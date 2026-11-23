@@ -17,7 +17,12 @@ import {
 } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { clearInterval, setInterval } from "node:timers";
+import {
+  clearInterval,
+  clearTimeout,
+  setInterval,
+  setTimeout,
+} from "node:timers";
 import {
   assertBuildProvenance,
   provenanceForRecord,
@@ -43,15 +48,42 @@ import {
 } from "./run-inventory.mjs";
 
 export const ROOT = path.resolve(import.meta.dirname, "../../..");
+/** cell の Electron（app.close）が閉じるのを待つ上限（ms）。超えたら SIGKILL して後始末へ進む（F5 の m-g）。 */
+export const APP_CLOSE_TIMEOUT_MS = 30_000;
 export const DEFAULT_OUTPUT = "/home/grimodex/identity-review-load-2026-11";
 const require = createRequire(import.meta.url);
+
+/**
+ * promise に期限を付ける。期限が来たら onTimeout() の値で解決する（例外にしない）。期限前に reject したら、例外を変えずに reject。
+ * timer は必ず止める。期限の後に遅れて reject する元の promise は握りつぶす（未処理の reject にしない）。
+ */
+export function withWatchdog(
+  promise,
+  ms,
+  onTimeout,
+  { setTimer = setTimeout, clearTimer = clearTimeout } = {},
+) {
+  let timer;
+  const guarded = Promise.resolve(promise);
+  guarded.catch(() => undefined);
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimer(() => {
+      try {
+        resolve(onTimeout());
+      } catch (error) {
+        reject(error);
+      }
+    }, ms);
+  });
+  return Promise.race([guarded, timeout]).finally(() => clearTimer(timer));
+}
 
 /**
  * 本測定の process に持ち込まない env：偽 AI の env（GRIMODEX_PRODUCT_JOURNEY_*）、Rust 側の
  * 送受信の本文を tracing に出す GRIMODEX_AI_WIRE_LOG、trace／debug の RUST_LOG（本文が出うる）。
  * さらに、key を出力しうる debug 系（F3a の M1）：key は page.evaluate の引数で渡るので、Playwright の protocol log
  * （DEBUG=pw:protocol など。PWDEBUG も）・node の内部 log（NODE_DEBUG）・Electron の log／stack dump
- * （ELECTRON_ENABLE_LOGGING・ELECTRON_ENABLE_STACK_DUMPING）・inspector（NODE_OPTIONS の --inspect／--debug）が立っていると、
+ * （ELECTRON_ENABLE_LOGGING・ELECTRON_ENABLE_STACK_DUMPING）・inspector・heap snapshot・report・--require／--import（NODE_OPTIONS が空でない）が立っていると、
  * stderr（stdio inherit）などに key が出うる。立っていれば（空でも）止める。
  * 検査は node の process.env と、main の process.env（名前と、値が要るものの値）の両方に同じ集合を使う。
  */
@@ -73,8 +105,9 @@ export function findForbiddenEnv(env) {
         FORBIDDEN_ENV_NAMES.includes(name) ||
         (name === "RUST_LOG" &&
           /\b(trace|debug)\b/iu.test(String(env[name]))) ||
-        (name === "NODE_OPTIONS" &&
-          /--inspect|--debug/iu.test(String(env[name]))),
+        // NODE_OPTIONS は空であること（F5 の m-d）。--require・--import（任意の code を読む）、--heapsnapshot-*・--report-*
+        // （heap・report に key が載る）、--inspect 以外の項目も通さない。
+        (name === "NODE_OPTIONS" && String(env[name]) !== ""),
     )
     .sort();
 }
@@ -305,6 +338,7 @@ export async function runCell({
     launchElectron: defaultLaunchElectron,
     root: ROOT,
     productVersion,
+    closeTimeoutMs: APP_CLOSE_TIMEOUT_MS,
     ...deps,
   };
   const runRoot = path.join(output, "run");
@@ -556,7 +590,36 @@ export async function runCell({
     return { cell, value: null, scenesTexts: loaded.scenesTexts };
   } finally {
     if (sampler) clearInterval(sampler);
-    if (app) await app.close().catch(() => undefined);
+    if (app) {
+      // app.close() に期限を付ける（止まると userData の削除まで進まない。F5 の m-g）。期限が来たら Electron を SIGKILL し、
+      // cell を failed にして（以後の送信を止める）、key の残りの検査と workRoot の削除へ進む。
+      const closed = await withWatchdog(
+        Promise.resolve()
+          .then(() => app.close())
+          .then(
+            () => true,
+            () => true,
+          ),
+        d.closeTimeoutMs,
+        () => false,
+      );
+      if (!closed) {
+        try {
+          app.process().kill("SIGKILL");
+        } catch {
+          // 既に終わっている。
+        }
+        cell.status = "failed";
+        cell.errors = [
+          ...(cell.errors ?? []),
+          safeErrorSummary(
+            new Error(
+              "[artifact] APP_CLOSE_TIMEOUT the Electron app did not close in time and was killed",
+            ),
+          ),
+        ];
+      }
+    }
     if (!keep) finishCellCleanup(cell, { userData, workRoot });
     unregisterCleanup();
   }

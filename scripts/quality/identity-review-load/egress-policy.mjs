@@ -221,6 +221,8 @@ export function createEgressSampler({
   let lastTickAtMs = null;
   let lastSocketCount = null;
   let socketCountMax = 0;
+  let lastTcpSocketCount = null;
+  let tcpSocketCountMax = 0;
   const judgeNew = () => {
     for (const destination of destinations)
       if (!classes.has(destination))
@@ -235,6 +237,7 @@ export function createEgressSampler({
     tick() {
       lastTickAtMs = now();
       lastSocketCount = null;
+      lastTcpSocketCount = null;
       lastTickOk = false;
       try {
         const result = sample(rootPid, destinations);
@@ -246,6 +249,17 @@ export function createEgressSampler({
         if (Number.isInteger(result?.socketCount) && result.socketCount >= 0) {
           lastSocketCount = result.socketCount;
           socketCountMax = Math.max(socketCountMax, result.socketCount);
+        }
+        // TCP の socket の数（unix socket を含まない。F5 の m-c）。
+        if (
+          Number.isInteger(result?.tcpSocketCount) &&
+          result.tcpSocketCount >= 0
+        ) {
+          lastTcpSocketCount = result.tcpSocketCount;
+          tcpSocketCountMax = Math.max(
+            tcpSocketCountMax,
+            result.tcpSocketCount,
+          );
         }
         if (read) {
           sampleCount++;
@@ -268,6 +282,7 @@ export function createEgressSampler({
         sampleCount,
         lastTickOk,
         lastSocketCount,
+        lastTcpSocketCount,
         ageMs: lastTickAtMs === null ? null : Math.max(0, now() - lastTickAtMs),
       };
     },
@@ -276,6 +291,7 @@ export function createEgressSampler({
         sampleCount,
         sampleFailures,
         socketCountMax,
+        tcpSocketCountMax,
         nonLoopbackDestinationCount: destinations.size,
         nonLoopbackDestinations: [...destinations].sort(),
         anthropicDestinationCount: [...classes.values()].filter(

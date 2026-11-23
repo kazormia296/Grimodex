@@ -10,8 +10,10 @@
 //   （reservation_id 付き）で精算する（release は送らなかったときの取り消し）。予約は未精算の間、累計と段の費用に足して上限と
 //   比べる（並行の launcher の送信が重なっても上限を超えない・最後の 1 回の超過を抑える。F3a の m3）。送信の後に精算されなかった
 //   予約（process が落ちた）は残り、累計に数える（届いたか分からない送信を 0 円と見ない）。
-// - 届いたか分からない失敗（network・timeout・judge の例外・usage の行が無い応答）は、usage が無ければ最大の見積り
-//   （maxPlausibleUsd＝TOKENS_OVER の線の token での費用）で課金する（charge: "estimate"）。実費を下回らないように。
+// - 届いたか分からない失敗（network・timeout・judge の例外・usage の行が無い応答）は、usage が無ければ最悪値
+//   （maxPlausibleUsd＝入力は TOKENS_OVER の線、出力は native の既定の max_tokens〔32,000。thinking の token を含む〕の費用）で
+//   課金する（charge: "estimate"）。実費を下回らないように。予約（hold）も同じ最悪値（F5 の M-a。judgeCandidates は
+//   requestMaxOutputTokens を渡さないので、claude-sonnet-5-5 の出力は 32,000 まで課金されうる）。TOKENS_OVER の線（tokenLimits）は変えない。
 // - 上限・停止線は凍結の値で、緩めない（§9）。
 // - 停止（STOP 行）は台帳に追記し、次に createGate が読み込んだときも停止のまま始める（解除は人が行う）。
 // - ai_usage の token の 2 倍超の線は、試走の実測の比（実測 token ÷ 見積り）で較正した値に対する 2 倍。
@@ -21,6 +23,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -28,6 +31,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import process from "node:process";
 import path from "node:path";
 import { Buffer } from "node:buffer";
@@ -67,6 +71,17 @@ export const MAY_HAVE_BEEN_BILLED_FAILURE_KINDS = Object.freeze([
   "empty-map",
   "other",
 ]);
+/**
+ * judgeCandidates が出力の上限（requestMaxOutputTokens）を渡さないとき、native が request に書く max_tokens（F5 の M-a）。
+ * claude-sonnet-5-5 は thinking を常に有効にする世代で、thinking の token も出力として課金されるので、32,000 まで使われうる
+ * （grimodex-ai の effective_request_max_output_tokens。試験が製品の source とこの値の一致を確かめる）。
+ * 予約・届いたか分からない失敗の課金は、出力をこの値として計算する。
+ */
+export const NATIVE_DEFAULT_MAX_OUTPUT_TOKENS = 32_000;
+/** lock が残っていて、これより古いなら、奪わずに止める（人が確かめて消す。F5 の m-e）。 */
+export const LOCK_STALE_MS = 60_000;
+export const LOCK_WAIT_MS = 120_000;
+
 /** 試走の実測で較正する段（比の元になる段）と、較正が要る段。 */
 export const CALIBRATION_STAGE = "trial";
 export const CALIBRATED_STAGES = Object.freeze(["B1", "B2"]);
@@ -126,7 +141,13 @@ export function estimateOutputTokens(
 
 export class BudgetStop extends Error {
   constructor(code, detail = {}) {
-    super(`[budget] ${code}`);
+    // 最悪値の予約が理由の拒否は、止まった理由（hold が見積りより大きく、出力を worstCaseOutputTokens とした最悪値）が
+    // message で分かるようにする（F5 の M-a）。detail は数値だけ（結果の出力検査に、原稿の英単語に当たる語を足さない）。
+    super(
+      detail.worstCaseOutputTokens !== undefined
+        ? `[budget] ${code} hold=${Number(detail.hold).toFixed(4)} estimate=${Number(detail.estimate).toFixed(4)} worstCaseOutputTokens=${detail.worstCaseOutputTokens}`
+        : `[budget] ${code}`,
+    );
     this.name = "BudgetStop";
     this.code = code;
     this.detail = detail;
@@ -141,26 +162,40 @@ const sleepSync = (ms) =>
     ms,
   );
 
-function withLock(lockFile, fn) {
+/**
+ * lock（`wx` で作る file）の中で fn を実行する。lock には自分の token を書き、解放は自分の token のときだけ消す。
+ * 古い lock（LOCK_STALE_MS 超）は奪わずに止める（stat→unlink の間に他の process が作り直した lock を消す競合を作らない。
+ * 臨界区間は数 ms なので、古い lock は落ちた process の残り。人が確かめて消す。F5 の m-e）。待つ上限は LOCK_WAIT_MS。
+ * 再入できない：fn の中で withLock を呼ばない（lock の中で読む関数と、lock を取って読む関数を分ける）。
+ */
+export function withLock(
+  lockFile,
+  fn,
+  { staleMs = LOCK_STALE_MS, waitMs = LOCK_WAIT_MS } = {},
+) {
   const started = Date.now();
+  const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
   for (;;) {
     try {
       const fd = openSync(lockFile, "wx", 0o600);
       try {
-        writeSync(fd, Buffer.from(String(process.pid)));
+        writeSync(fd, Buffer.from(token));
       } finally {
         closeSync(fd);
       }
       break;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
+      let age;
       try {
-        if (Date.now() - statSync(lockFile).mtimeMs > 60_000)
-          unlinkSync(lockFile);
+        age = Date.now() - statSync(lockFile).mtimeMs;
       } catch {
-        // 競合して消えた。
+        // 競合して消えた。取り直す。
+        continue;
       }
-      if (Date.now() - started > 120_000)
+      if (age > staleMs)
+        throw new Error("[precheck] LEDGER_LOCK_STALE", { cause: error });
+      if (Date.now() - started > waitMs)
         throw new Error("[ledger] LOCK_TIMEOUT", { cause: error });
       sleepSync(20 + Math.floor(Math.random() * 40));
     }
@@ -169,11 +204,50 @@ function withLock(lockFile, fn) {
     return fn();
   } finally {
     try {
-      unlinkSync(lockFile);
+      // 自分の lock のときだけ消す（他の process の lock を消さない）。
+      if (readFileSync(lockFile, "utf8") === token) unlinkSync(lockFile);
     } catch {
       // 既に無い。
     }
   }
+}
+
+/** dir が自分の所有の 0700（symlink でない）であること。満たさなければ止める（chmod で直さない。F5 の m-j）。 */
+export function assertPrivateDirectory(dir) {
+  let info;
+  try {
+    info = lstatSync(dir);
+  } catch {
+    throw new Error(
+      "[precheck] LEDGER_DIR_NOT_PRIVATE the ledger directory cannot be read",
+    );
+  }
+  if (
+    !info.isDirectory() ||
+    info.uid !== process.getuid() ||
+    (info.mode & 0o077) !== 0
+  )
+    throw new Error(
+      "[precheck] LEDGER_DIR_NOT_PRIVATE the ledger directory must be an own 0700 directory",
+    );
+}
+
+/** file が（あれば）自分の所有の通常 file で group・other の権限が無いこと。chmod で直さない。 */
+function assertPrivateFileIfExists(file) {
+  let info;
+  try {
+    info = lstatSync(file);
+  } catch {
+    return;
+  }
+  if (
+    !info.isFile() ||
+    info.uid !== process.getuid() ||
+    (info.mode & 0o077) !== 0
+  )
+    throw new Error(
+      "[precheck] LEDGER_FILE_NOT_PRIVATE a reservation file must be an own regular file with mode 0600",
+    );
 }
 
 /** STOP 行の detail は数値・ASCII の識別子だけ残す（本文・表記を載せない）。 */
@@ -201,21 +275,28 @@ export function createGate({
   totalCapUsd = TOTAL_CAP_USD,
   stageCapsUsd = STAGE_CAPS_USD,
   requireTrial = true,
+  worstCaseOutputTokens = NATIVE_DEFAULT_MAX_OUTPUT_TOKENS,
+  lockOptions = {},
   now = () => new Date().toISOString(),
 }) {
+  const lockedRun = (fn) => withLock(lockFile, fn, lockOptions);
+  const lockFile = file ? `${file}.lock` : null;
+  const reservationFile = file ? `${file}.reservations` : null;
   if (file) {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    // 既存の dir は chmod しない：自分の所有の 0700 でなければ止める（F5 の m-j）。
+    assertPrivateDirectory(path.dirname(file));
+    assertPrivateFileIfExists(reservationFile);
     if (!existsSync(file)) {
       appendFileSync(file, "", { mode: 0o600 });
     }
     chmodSync(file, 0o600);
   }
-  const lockFile = file ? `${file}.lock` : null;
-  const reservationFile = file ? `${file}.reservations` : null;
   const state = {
     total: 0,
     byStage: {},
     reserved: 0, // 未精算の予約の合計 USD（loadFromFile。file が無いときは process 内）
+    unsettled: [], // 未精算の予約の一覧（id・stage・usd。loadFromFile。落ちた process の残りを前検査が見つける）
     reservedByStage: {},
     pendingReservation: null, // この gate が今持つ予約（preflight で取り、afterRequest／release で閉じる）
     trial: null, // 試走の実測の比（loadFromFile）
@@ -228,6 +309,7 @@ export function createGate({
   };
   // 台帳が単一の真実。累計・段の費用・試走の較正・STOP は、読み込みのたびにファイルから取り直す
   // （並列の launcher の累計も見える。連続失敗・窓の成否は process 内）。
+  // loadFromFile は lock の中で呼ぶ（追記の途中の行を読まない。lock の外から読むときは loadWithLock。F5 の m-e）。
   function loadFromFile() {
     if (!file || !existsSync(file)) return;
     let total = 0;
@@ -278,8 +360,10 @@ export function createGate({
     state.byStage = byStage;
     state.reserved = 0;
     state.reservedByStage = {};
+    state.unsettled = [];
     for (const [id, r] of reservations) {
       if (settled.has(id)) continue;
+      state.unsettled.push({ id, stage: r.stage, usd: r.usd });
       state.reserved += r.usd;
       state.reservedByStage[r.stage] =
         (state.reservedByStage[r.stage] ?? 0) + r.usd;
@@ -291,11 +375,15 @@ export function createGate({
         : null;
     if (stopped && !state.stopped) state.stopped = stopped;
   }
-  loadFromFile();
+  /** lock を取って読む（lock の外から呼ぶ。lock の中では loadFromFile を呼ぶ）。 */
+  const loadWithLock = () => {
+    if (file) lockedRun(loadFromFile);
+  };
+  loadWithLock();
 
   const persistStop = (code, detail) => {
     if (!file) return;
-    withLock(lockFile, () =>
+    lockedRun(() =>
       appendFileSync(
         file,
         `${JSON.stringify({ type: "STOP", ts: now(), code, detail: safeDetail(detail) })}\n`,
@@ -341,7 +429,12 @@ export function createGate({
       ),
     };
   }
-  /** 1 要求が（停止線を超えない範囲で）かかりうる最大の USD。予約と、届いたか分からない失敗の課金に使う。見積り以上。 */
+  /**
+   * 1 要求のかかりうる最悪の USD（予約と、届いたか分からない失敗の課金に使う。見積り以上）。入力は停止線（TOKENS_OVER の
+   * 線。実際の入力は max_tokens で縛られないので、線を超えた分は送信の後に停止線が止める）、出力は停止線と
+   * worstCaseOutputTokens（native の既定の max_tokens。thinking を含む）の大きい方（F5 の M-a）。
+   * tokenLimits（TOKENS_OVER の判定）は変えない。
+   */
   function maxPlausibleUsd(stage, estInputTokens, estOutputTokens) {
     const { inputLimit, outputLimit } = tokenLimits(
       stage,
@@ -353,25 +446,33 @@ export function createGate({
         input_tokens: estInputTokens,
         output_tokens: estOutputTokens,
       }),
-      usdOf(pricing, { input_tokens: inputLimit, output_tokens: outputLimit }),
+      usdOf(pricing, {
+        input_tokens: inputLimit,
+        output_tokens: Math.max(outputLimit, worstCaseOutputTokens),
+      }),
     );
   }
   /**
-   * 送信の前に予約する額：見積り（今の上限の判定と同じ）と、試走の実測の比で較正した見積り（較正が要る段だけ。最大の比）の大きい方。
-   * 較正した見積りが見積りより小さくても、見積りより小さくしない（上限の判定を緩めない）。
+   * 送信の前に予約する額：見積りと、試走の実測の比で較正した見積り（較正が要る段だけ。最大の比）と、最悪値
+   * （maxPlausibleUsd）の大きい方。見積りより小さくしない（上限の判定を緩めない）。最悪値で予約するので、並行の
+   * launcher の予約を足しても、出力が max_tokens まで使われた要求の合計が上限を超えない（F5 の M-a）。
    */
   function reservationUsd(stage, estInputTokens, estOutputTokens) {
     const estimate = usdOf(pricing, {
       input_tokens: estInputTokens,
       output_tokens: estOutputTokens,
     });
-    if (!CALIBRATED_STAGES.includes(stage) || !state.trial) return estimate;
+    const calibrated =
+      CALIBRATED_STAGES.includes(stage) && state.trial
+        ? usdOf(pricing, {
+            input_tokens: estInputTokens * state.trial.maxIn,
+            output_tokens: estOutputTokens * state.trial.maxOut,
+          })
+        : 0;
     return Math.max(
       estimate,
-      usdOf(pricing, {
-        input_tokens: estInputTokens * state.trial.maxIn,
-        output_tokens: estOutputTokens * state.trial.maxOut,
-      }),
+      calibrated,
+      maxPlausibleUsd(stage, estInputTokens, estOutputTokens),
     );
   }
   /** lock の中で呼ぶ。この gate の予約を台帳に書く（file が無ければ process 内だけ）。 */
@@ -393,14 +494,14 @@ export function createGate({
     if (!reservation) return;
     state.pendingReservation = null;
     if (file) {
-      withLock(lockFile, () =>
+      lockedRun(() => {
         appendFileSync(
           reservationFile,
           `${JSON.stringify({ type: "RELEASE", id: reservation.id, ts: now() })}\n`,
           { mode: 0o600 },
-        ),
-      );
-      loadFromFile();
+        );
+        loadFromFile();
+      });
     } else {
       state.reserved = Math.max(0, state.reserved - reservation.usd);
       state.reservedByStage[reservation.stage] = Math.max(
@@ -430,6 +531,17 @@ export function createGate({
         persistStop(code, detail);
       }
       return state.stopped;
+    },
+    /** 1 要求の最悪の USD（予約と、届いたか分からない失敗の課金と同じ式）。 */
+    maxPlausibleUsd,
+    /**
+     * 未精算の予約（gate を作った時点で台帳に残っているもの）。1 件でもあれば、届いたか分からない送信が人に確かめられて
+     * いないので、前検査が止める（人が確かめて `<台帳>.reservations` の該当行の後ろに RELEASE 行を足す）。
+     * 予約した process が動いているかは見ない（pid は PID namespace や再利用で当てにならない。本測定は 1 launcher の想定で、
+     * 別の launcher が送信の途中の間は、その予約があるので前検査が止まる。fail-closed）。
+     */
+    unsettledReservations() {
+      return state.unsettled.map((r) => ({ ...r }));
     },
     /** 見積り USD。 */
     estimateUsd(estInputTokens, estOutputTokens) {
@@ -463,6 +575,12 @@ export function createGate({
           output_tokens: estOutputTokens,
         });
         const hold = reservationUsd(stage, estInputTokens, estOutputTokens);
+        // 予約が最悪値（見積りより大きい）で取られていることを、止まった理由として detail と message に残す（F5 の M-a）。
+        // 数値だけ（出力 token の仮定）。語の文字列は、結果の出力検査で原稿の英単語に当たりうるので載せない。
+        const holdBasis =
+          hold > estimate
+            ? { worstCaseOutputTokens: worstCaseOutputTokens }
+            : {};
         if (state.total + state.reserved + hold > totalCapUsd)
           return {
             kind: "refuse",
@@ -473,6 +591,7 @@ export function createGate({
               estimate,
               hold,
               cap: totalCapUsd,
+              ...holdBasis,
             },
           };
         const stageSpent =
@@ -487,6 +606,7 @@ export function createGate({
               estimate,
               hold,
               cap: stageCapsUsd[stage],
+              ...holdBasis,
             },
           };
         if (extrapolationExceeds(remainingAfterThis + 1))
@@ -501,7 +621,7 @@ export function createGate({
         writeReservation(stage, hold);
         return { kind: "ok", estimate };
       };
-      const decision = file ? withLock(lockFile, decide) : decide();
+      const decision = file ? lockedRun(decide) : decide();
       if (decision.kind === "stopped")
         throw new BudgetStop(state.stopped.code, state.stopped.detail);
       if (decision.kind === "refuse") refuse(decision.code, decision.detail);
@@ -571,8 +691,11 @@ export function createGate({
       const append = () =>
         appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
       if (file) {
-        withLock(lockFile, append);
-        loadFromFile(); // 他の launcher の行も含めた累計に取り直す
+        // 追記と読み直しを同じ lock の中で行う（他の launcher の行も含めた累計に取り直す。追記の途中の行を読まない）。
+        lockedRun(() => {
+          append();
+          loadFromFile();
+        });
       } else {
         state.total += row.usd;
         state.byStage[stage] = (state.byStage[stage] ?? 0) + row.usd;
@@ -624,9 +747,12 @@ export function createGate({
         });
       if (
         outcome.responded === true &&
-        ["no-usage-row", "tokens-null", "tokens-zero"].includes(
-          outcome.failureKind,
-        )
+        [
+          "no-usage-row",
+          "tokens-null",
+          "tokens-zero",
+          "usage-read-error",
+        ].includes(outcome.failureKind)
       )
         stop("USAGE_NOT_RECORDED", { kind: outcome.failureKind });
       if (state.consecutiveRateLimits >= STOP_LINES.rateLimitStreak)
