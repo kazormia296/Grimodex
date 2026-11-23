@@ -1663,7 +1663,7 @@ test("DR-ILM-41：候補の file の出所（verified／unverified／stale／abs
   assert.equal(none.identityColumns.candidateFiles["g-ja-2"], null);
   assert.match(
     renderRecordsMarkdown(buildRecords({ measureA: none })),
-    /g-ja-2=-。/u,
+    /g-ja-2=-、g-ja-3=-、g-ja-4=-、m-ja-2=-。/u,
   );
   // 同じ作品の cell で出所が違えば止める。
   const [first, ...rest] = await cellsOf("g-ja-2", "verified");
@@ -1681,4 +1681,38 @@ test("DR-ILM-41：候補の file の出所（verified／unverified／stale／abs
     () => buildMeasureA({ cells: unknown, rowsByCell: {} }),
     /CANDIDATE_FILE_STATE_UNKNOWN/u,
   );
+});
+
+test("DR-ILM-41：欄のある cell と無い cell が同じ作品で混ざったら止める。cell の無い作品も candidateFiles に null で出す", async () => {
+  const cells = await identityWorkCells("g-ja-2", WORK_SPECS["g-ja-2"]);
+  const [first, ...rest] = cells;
+  assert.throws(
+    () =>
+      buildMeasureA({
+        cells: [{ ...first, candidateFile: "verified" }, ...rest],
+        rowsByCell: {},
+      }),
+    /CANDIDATE_FILE_FIELD_MIXED work=g-ja-2/u,
+  );
+  // 全 cell に欄があるか、全 cell に無ければ止まらない。cell の無い作品は null。
+  const all = buildMeasureA({
+    cells: cells.map((c) => ({ ...c, candidateFile: "verified" })),
+    rowsByCell: {},
+  });
+  assert.deepEqual(all.identityColumns.candidateFiles, {
+    "g-ja-2": "verified",
+    "g-ja-3": null,
+    "g-ja-4": null,
+    "m-ja-2": null,
+  });
+});
+
+test("DR-ILM-41：markdown の出所の説明は、各状態の意味と verified の範囲（scenes の同一性だけ）を言う", async () => {
+  const md = renderRecordsMarkdown(
+    buildRecords({ measureA: await identityMeasureA() }),
+  );
+  assert.match(md, /verified＝inventory が使った scenes と今の scenes が同じ/u);
+  assert.match(md, /absent＝無い・壊れている・空・文字列でない要素がある/u);
+  assert.match(md, /stale は hash の欄が壊れている file も含む/u);
+  assert.match(md, /verified は scenes の同一性だけを言い/u);
 });

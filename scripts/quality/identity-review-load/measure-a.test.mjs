@@ -1,6 +1,12 @@
 // 測定 A の駆動の試験（fake の page。Electron・AI は使わない）。
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -11,7 +17,12 @@ import {
   summarizeStoredProposals,
 } from "./lib.mjs";
 import { buildRosterIndex } from "./measure-a-metrics.mjs";
-import { sha256Text, surfacesFileWithProvenance } from "./sources.mjs";
+import {
+  clearPreviousInventoryOutputs,
+  readWorkSource,
+  sha256Text,
+  surfacesFileWithProvenance,
+} from "./sources.mjs";
 import {
   cellStatus,
   candidateFileState,
@@ -937,4 +948,102 @@ test("loadCandidates：stale は候補があっても使わず（hashes は null
     await loadCandidates(path.join(dir, "none.json"), scenes, hash),
     { state: "absent", hashes: null },
   );
+});
+
+test("candidateFileState：hash の欄があるのに形が壊れている（null・数値・短い文字列）file は stale（unverified にしない）", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-bad-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const scenes = path.join(dir, "scenes.json");
+  writeFileSync(scenes, "scenes");
+  const file = path.join(dir, "c.json");
+  for (const bad of [null, 0, 12345, "", "abc", "G".repeat(64)]) {
+    writeFileSync(
+      file,
+      JSON.stringify({ candidate: ["c"], scenesSha256: bad }),
+    );
+    assert.equal(candidateFileState(file, scenes), "stale", String(bad));
+  }
+  // 欄が無いのは unverified（古い file）。
+  writeFileSync(file, JSON.stringify({ candidate: ["c"] }));
+  assert.equal(candidateFileState(file, scenes), "unverified");
+});
+
+test("readWorkSource：scenes の生の本文（JSON.parse の前の utf8）から hash を取る。inventory が書いた hash を測定 A が同じ値で照合できる", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-raw-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // 整形が不揃いな JSON（再直列化すると別の文字列になる）。BOM・CRLF も含める。
+  const raw = '\ufeff{ "scenes" :[ 1 ,\r\n 2 ] }\r\n';
+  const scenes = path.join(dir, "scenes.json");
+  writeFileSync(scenes, raw);
+  const read = readWorkSource(scenes);
+  assert.equal(read.text, raw);
+  assert.equal(read.sha256, sha256Text(raw));
+  assert.notEqual(
+    read.sha256,
+    sha256Text(JSON.stringify(JSON.parse(raw.replace(/^\ufeff/u, "")))),
+  );
+  // inventory 側（readWorkSource の hash を surfaces に添える）→ 測定 A 側（candidateFileState）で verified になる。
+  const file = path.join(dir, "surfaces.json");
+  writeFileSync(
+    file,
+    JSON.stringify(
+      surfacesFileWithProvenance(
+        { seed: ["s"], candidate: ["c"] },
+        read.sha256,
+      ),
+    ),
+  );
+  assert.equal(candidateFileState(file, scenes), "verified");
+  // scenes を 1 文字変えれば stale。
+  writeFileSync(scenes, raw + " ");
+  assert.equal(candidateFileState(file, scenes), "stale");
+});
+
+test("clearPreviousInventoryOutputs：inventory の mode は前の surfaces も消す。extract-empty は消さない。他の作品の file は消さない", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ilm-clear-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, "inventory");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(path.join(root, "surfaces"), { recursive: true });
+  const seed = () => {
+    for (const name of [
+      "w1.json",
+      "w1.rows.json",
+      "w1.rejected.json",
+      "w1.failed.json",
+      "w2.json",
+    ])
+      writeFileSync(path.join(dir, name), "{}");
+    for (const name of ["w1.json", "w2.json"])
+      writeFileSync(path.join(root, "surfaces", name), "{}");
+  };
+  const exists = (...parts) => existsSync(path.join(root, ...parts));
+  seed();
+  clearPreviousInventoryOutputs({
+    dir,
+    output: root,
+    workKey: "w1",
+    mode: "extract-empty",
+  });
+  assert.equal(exists("inventory", "w1.json"), false);
+  assert.equal(exists("inventory", "w1.failed.json"), false);
+  assert.equal(
+    exists("surfaces", "w1.json"),
+    true,
+    "extract-empty は surfaces を消さない",
+  );
+  seed();
+  clearPreviousInventoryOutputs({
+    dir,
+    output: root,
+    workKey: "w1",
+    mode: "inventory",
+  });
+  assert.equal(
+    exists("surfaces", "w1.json"),
+    false,
+    "inventory は前の surfaces を消す",
+  );
+  assert.equal(exists("surfaces", "w2.json"), true, "他の作品は消さない");
+  assert.equal(exists("inventory", "w2.json"), true);
 });

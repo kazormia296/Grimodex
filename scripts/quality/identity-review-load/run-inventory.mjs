@@ -39,8 +39,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseIp } from "./egress-policy.mjs";
 import {
+  clearPreviousInventoryOutputs,
+  readWorkSource,
   resolveWorkSource,
-  sha256Text,
   surfacesFileWithProvenance,
 } from "./sources.mjs";
 import {
@@ -420,14 +421,13 @@ async function runWork(workKey, options, vite, busAddress) {
     ensurePrivateDir(dir);
   const dir = outputDir(output, options.mode);
   ensurePrivateDir(dir);
-  // 前の run の採用済みの出力を残さない（不採用の run が古い値を残さないように）。
-  for (const name of [
-    `${workKey}.json`,
-    `${workKey}.rows.json`,
-    `${workKey}.rejected.json`,
-    `${workKey}.failed.json`,
-  ])
-    rmSync(path.join(dir, name), { force: true });
+  // 前の run の出力（候補の file を含む）を残さない。
+  clearPreviousInventoryOutputs({
+    dir,
+    output,
+    workKey,
+    mode: options.mode,
+  });
 
   const result = {
     schemaVersion: "identity-load-inventory/3",
@@ -445,12 +445,11 @@ async function runWork(workKey, options, vite, busAddress) {
   let sampleCount = 0;
   const started = Date.now();
   try {
-    const workText = readFileSync(
+    const source = readWorkSource(
       resolveWorkSource(workKey, options["data-dir"] || null),
-      "utf8",
     );
-    scenesSha256 = sha256Text(workText); // 候補の file の出所（測定 A が今の scenes と照合する。DR-ILM-41）
-    const work = JSON.parse(workText);
+    scenesSha256 = source.sha256; // 候補の file の出所（測定 A が今の scenes と照合する。DR-ILM-41）
+    const work = JSON.parse(source.text);
     const scenes = scenesFromWork(work);
     assert.equal(
       scenes.length,
@@ -691,15 +690,19 @@ async function runWork(workKey, options, vite, busAddress) {
     assertOutputClean(result, scenesTexts);
     assertOutputClean(rows, scenesTexts);
     if (result.status === "ok") {
+      // 出所つきの surfaces は、ok の file を書く前に作る（作れずに throw したとき、ok の file を残したまま failed にしない）。
+      const surfacesFile = surfaces
+        ? surfacesFileWithProvenance(surfaces, scenesSha256)
+        : null;
       writePrivateJson(path.join(dir, `${workKey}.json`), result);
       writePrivateJson(path.join(dir, `${workKey}.rows.json`), rows);
-      if (surfaces) {
+      if (surfacesFile) {
         // 走査用（scan-repo-diff.mjs）。repo 外の 0600 の file にだけ置く。検査対象の出力には入れない。
         const surfaceDir = path.join(output, "surfaces");
         ensurePrivateDir(surfaceDir);
         writePrivateJson(
           path.join(surfaceDir, `${workKey}.json`),
-          surfacesFileWithProvenance(surfaces, scenesSha256),
+          surfacesFile,
         );
       }
     } else {

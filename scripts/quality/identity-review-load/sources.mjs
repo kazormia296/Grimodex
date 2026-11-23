@@ -1,6 +1,7 @@
 // 作品の入力元（scenes JSON）の所在。新しい 3 本は repo 外の測定 dir、m-ja-2 は評価データ
 // （読むだけ。変えない）。--data-dir を渡したときは dir/<key>.json（試験用）。
 import { createHash } from "node:crypto";
+import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { REVIEWED_WORKS, WORKS } from "./lib.mjs";
 
@@ -22,6 +23,15 @@ export function sha256Text(text) {
 }
 
 /**
+ * 作品の入力元（scenes JSON）の生の本文（utf8 の文字列。JSON.parse の前）と、その sha256。inventory と測定 A が同じ関数で読み、
+ * 同じ入力・同じ hash になるようにする（再直列化した JSON から hash を取らない。DR-ILM-41）。
+ */
+export function readWorkSource(file) {
+  const text = readFileSync(file, "utf8");
+  return { text, sha256: sha256Text(text) };
+}
+
+/**
  * inventory が書く surfaces file に、使った scenes の sha256 を添える。surfaces は {seed, candidate}（repo 外の 0600 の file）。
  * 測定 A は、この hash が今の scenes の hash と違えば候補を使わない（stale）。
  */
@@ -35,4 +45,22 @@ export function surfacesFileWithProvenance(surfaces, scenesSha256) {
   if (!/^[0-9a-f]{64}$/u.test(scenesSha256 ?? ""))
     throw new TypeError("[artifact] SCENES_SHA256_INVALID");
   return { ...surfaces, scenesSha256 };
+}
+
+/**
+ * inventory の run の開始時に、前の run の出力を残さない（不採用の run が古い値を残さないように）。候補の file（surfaces）も、
+ * inventory の mode なら消す：rejected・failed の run の後に、前の ok の run の file が「scenes が同じ」で verified になるのを防ぐ
+ * （DR-ILM-41）。extract-empty は surfaces を書かないので消さない。消した path の相対名を返す。
+ */
+export function clearPreviousInventoryOutputs({ dir, output, workKey, mode }) {
+  const targets = [
+    `${workKey}.json`,
+    `${workKey}.rows.json`,
+    `${workKey}.rejected.json`,
+    `${workKey}.failed.json`,
+  ].map((name) => path.join(dir, name));
+  if (mode === "inventory")
+    targets.push(path.join(output, "surfaces", `${workKey}.json`));
+  for (const target of targets) rmSync(target, { force: true });
+  return targets;
 }

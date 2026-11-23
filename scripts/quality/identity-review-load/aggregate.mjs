@@ -419,10 +419,7 @@ export function buildIdentityColumns(byWork) {
   });
   return {
     candidateFiles: Object.fromEntries(
-      Object.entries(byWork).map(([work, w]) => [
-        work,
-        w.candidateFile ?? null,
-      ]),
+      expectedAll.map((work) => [work, byWork[work]?.candidateFile ?? null]),
     ),
     unconfirmedRosterMark: UNCONFIRMED_ROSTER_MARK,
     unconfirmedRosterWorks: [...UNCONFIRMED_ROSTER_WORKS],
@@ -443,7 +440,11 @@ export function buildMeasureA({ cells, rowsByCell }) {
   // 指標の定義の版が混ざった入力（旧 records と新しい records）は集計しない。
   const definitionVersion = assertSingleMetricDefinition(cells);
   const byWork = {};
+  const candidateFieldCells = {}; // 作品ごとの { 欄のある cell, cell 全体 }（混在の検査。records には入れない）
   for (const cell of cells) {
+    const fc = (candidateFieldCells[cell.work] ??= { withField: 0, total: 0 });
+    fc.total += 1;
+    if (cell.candidateFile !== undefined) fc.withField += 1;
     const w = (byWork[cell.work] ??= {
       matrix: {},
       cumulative: [],
@@ -485,6 +486,9 @@ export function buildMeasureA({ cells, rowsByCell }) {
     else if (cell.kind === "solo")
       w.solo.push({ label: runs[0].label, ...flattenRunA(runs[0]) });
   }
+  for (const [work, fc] of Object.entries(candidateFieldCells))
+    if (fc.withField > 0 && fc.withField < fc.total)
+      throw new Error(`[artifact] CANDIDATE_FILE_FIELD_MIXED work=${work}`);
   // 一致の検査（表記×提案の種類の集合。提案 id・scene id は run ごとに変わるので比べない）。
   for (const [work, w] of Object.entries(byWork)) {
     const rows = (id) => rowsByCell[id] ?? null;
@@ -863,7 +867,7 @@ export function renderIdentityColumns(columns) {
       .map(([work, state]) => `${work}=${state ?? "-"}`)
       .join(
         "、",
-      )}。verified＝inventory が使った scenes と今の scenes が同じ／unverified＝照合用の hash が無い古い file（使うが、今の scenes と照合できていない）／stale＝scenes と食い違う（使わず、候補は未計測）／absent＝無い・空（候補は未計測）／-＝この cell の records に欄が無い（a-defs/3 など）。`,
+      )}。verified＝inventory が使った scenes と今の scenes が同じ／unverified＝照合用の hash が無い古い file（使うが、今の scenes と照合できていない）／stale＝scenes と食い違う（使わず、候補は未計測）／absent＝無い・壊れている・空・文字列でない要素がある（候補は未計測）／-＝この作品の cell の records に欄が無い（a-defs/3 など）、または cell が無い。stale は hash の欄が壊れている file も含む。verified は scenes の同一性だけを言い、今回の inventory の run のものかは inventory が run の開始時に前の file を消すことで担保する。`,
     "",
   );
   for (const [level, l] of Object.entries(columns.levels)) {
@@ -886,8 +890,13 @@ export function renderIdentityColumns(columns) {
     ]) {
       const t = l[key];
       const c = t.columns;
+      const missingNote = t.works.filter(
+        (work) =>
+          t.missingAny.includes(work) ||
+          columns.s5Roster[s5Key].missingWorks.includes(work),
+      );
       const note =
-        t.missingAny.length > 0 ? `（欠け: ${t.missingAny.join("・")}）` : "";
+        missingNote.length > 0 ? `（欠け: ${missingNote.join("・")}）` : "";
       lines.push(
         `| ${label}（${t.workCount} 作品）${note} | - | - | ${dash(c.urAll)} | ${dash(c.urRosterTarget)} | ${dash(columns.s5Roster[s5Key].value)} | ${dash(c.s5Seen)} | ${dash(c.s5NotSeed)} | ${dash(c.s5SeedNotProposed)} | ${dash(c.s5Proposed)} | ${dash(c.s5InCandidate)} | ${dash(c.s5NotSeedInCandidate)} | ${dash(c.s5NeitherSeedNorCandidate)} |`,
       );
