@@ -66,6 +66,13 @@ pub(super) const KIND_ORDER: &[&str] = &[
     "trash_items",
     "ai_scene_proposals",
     "analysis_records",
+    // The snapshot's own rows a restore leaves out because their parent is
+    // gone (`restore_missing_parents`, DR-SRX-31).
+    "map_edges",
+    "map_source_links",
+    "snippet_source_message",
+    "analysis_run_links",
+    "analysis_annotations",
     "scene_scope_bindings_reset",
 ];
 
@@ -73,7 +80,7 @@ const KIND_AI_SCENE_PROPOSALS: &str = "ai_scene_proposals";
 const KIND_SCENE_SCOPE_BINDINGS_RESET: &str = "scene_scope_bindings_reset";
 
 /// SQLite's default limit on bound variables is 32,766; stay far below it.
-const ID_CHUNK: usize = 500;
+pub(super) const ID_CHUNK: usize = 500;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum Parent {
@@ -844,13 +851,35 @@ fn ordered_notices(counts: BTreeMap<&'static str, i64>) -> Vec<LossNotice> {
         .collect()
 }
 
+/// The live links a restore lost and the snapshot rows it left out because
+/// their parent is gone (`restore_missing_parents`), by kind, in the order of
+/// [`KIND_ORDER`].
+pub(super) fn merge_dropped(
+    live: Vec<LossNotice>,
+    plan: &BTreeMap<&'static str, i64>,
+) -> Vec<LossNotice> {
+    let mut counts: BTreeMap<&'static str, i64> = BTreeMap::new();
+    for notice in live {
+        if let Some(kind) = KIND_ORDER.iter().find(|kind| **kind == notice.kind) {
+            *counts.entry(kind).or_default() += notice.count;
+        }
+    }
+    for (kind, count) in plan {
+        *counts.entry(kind).or_default() += count;
+    }
+    ordered_notices(counts)
+}
+
 /// How many links a restore of the shape's scopes would not give back,
 /// decided on ids before anything is written. `apply` decides the same thing
-/// on the rows it parked, so the two agree for the same state.
+/// on the rows it parked, so the two agree for the same state. `plan` is the
+/// plan after `restore_missing_parents::resolve`, and `plan_dropped` what that
+/// step left out or cleared; the latter is added to the count.
 pub(super) fn count_losses(
     conn: &Connection,
     shape: &RestoreShape<'_>,
     plan: &[SnapshotInsertPlan],
+    plan_dropped: &BTreeMap<&'static str, i64>,
 ) -> anyhow::Result<Vec<LossNotice>> {
     let facts = plan_facts(plan);
     let tables = existing_tables(conn)?;
@@ -894,6 +923,9 @@ pub(super) fn count_losses(
     if shape.scopes.contains(&RestoreScope::Body) {
         *counts.entry(KIND_SCENE_SCOPE_BINDINGS_RESET).or_default() +=
             scene_bindings_reset(conn, shape.project_id, &facts)?;
+    }
+    for (kind, count) in plan_dropped {
+        *counts.entry(kind).or_default() += count;
     }
     Ok(ordered_notices(counts))
 }
@@ -999,6 +1031,13 @@ fn touched_tables(
     for column in columns {
         if column_is_present(conn, tables, column)? && !touched.contains(&column.table) {
             touched.push(column.table);
+        }
+    }
+    // The tables whose references the missing-parent step may change are
+    // checked as well: this is the run-time safety net for them (DR-SRX-32).
+    for table in super::restore_missing_parents::touched_tables(shape.scopes) {
+        if tables.contains(table) && !touched.contains(&table) {
+            touched.push(table);
         }
     }
     Ok(touched)

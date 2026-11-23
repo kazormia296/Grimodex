@@ -1,14 +1,33 @@
 // 測定 A の駆動の試験（fake の page。Electron・AI は使わない）。
 import assert from "node:assert/strict";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import {
   assertOutputClean,
+  classifyS5Surfaces,
   planStoredRuns,
   summarizeStoredProposals,
 } from "./lib.mjs";
 import { buildRosterIndex } from "./measure-a-metrics.mjs";
 import {
+  clearPreviousInventoryOutputs,
+  readWorkSource,
+  sha256Text,
+  surfacesFileWithProvenance,
+} from "./sources.mjs";
+import {
   cellStatus,
+  candidateFileState,
+  loadCandidates,
+  loadCandidateHashes,
   measureABody,
   planCells,
   registrationEntries,
@@ -620,4 +639,411 @@ test("cellStatus：保存済みの提案を読む command が IPC に載って�
     runs: [{ completed: true, persistAttempt: { status: "ok" } }],
   };
   assert.equal(cellStatus(good, value), "ok");
+});
+
+// ---- DR-ILM-38：S5 の hash を renderer へ渡し、内訳（件数だけ）を metrics に載せる -------------------------------------
+
+const s5Roster = {
+  entities: [
+    {
+      id: "e1",
+      type: "character",
+      name: "alpha",
+      aliases: [],
+      ambiguousSurfaces: [
+        { surface: "swap", sceneRanges: [[1, 3]] },
+        { surface: "move", sceneRanges: [[1, 3]] },
+      ],
+    },
+    {
+      id: "e2",
+      type: "character",
+      name: "beta",
+      aliases: [],
+      ambiguousSurfaces: [
+        { surface: "swap", sceneRanges: [[4, 9]] },
+        { surface: "third", sceneRanges: [[1, 9]] },
+      ],
+    },
+  ],
+};
+
+function s5Page(inputs) {
+  const rows = [
+    {
+      surfaceHash: "swap",
+      keyHash: "swap",
+      bindingKind: "create-new",
+      scenes: [],
+      coarseClass: "person",
+      candidates: [],
+      typeStatus: "resolved",
+      status: "unreviewed",
+      bulkApprovable: false,
+    },
+  ];
+  globalThis.window = {
+    identityLoad: {
+      registerRoster: async (input) => ({ created: input.entries.length }),
+      // renderer の代わり：host が渡した S5 の hash と、seed の集合（move・swap）から、件数だけ返す。
+      extractStructure: async (input) => {
+        inputs.push(input);
+        return {
+          observed: { prepass: { status: "complete" } },
+          entityProposalCount: 1,
+          counts: { bulkApprovable: 0 },
+          s5Breakdown: classifyS5Surfaces({
+            s5Hashes: input.s5Hashes,
+            seedHashes: ["swap", "move"],
+            proposalHashes: ["swap"],
+            candidateHashes: input.s5CandidateHashes,
+          }),
+          rows,
+        };
+      },
+    },
+  };
+  return { evaluate: async (fn, arg) => fn(arg) };
+}
+
+test("measureABody：S5 の hash（名簿の全体から。水準で削らない）と候補の照合を renderer へ渡し、返った内訳を metrics に載せる", async () => {
+  const index = await buildRosterIndex(s5Roster, async (s) => s);
+  const inputs = [];
+  const out = await measureABody({
+    page: s5Page(inputs),
+    projectId: "p",
+    roster: s5Roster,
+    index,
+    cell: { level: "L0", steps: [100] },
+    // 候補の hash（S5 でない other も含む）。renderer へは S5 に当たるものだけを渡す。
+    candidateHashes: ["third", "other", "swap"],
+  });
+  // L0 でも S5 は 3 件（swap の重複は 1 件）。
+  assert.deepEqual(inputs[0].s5Hashes, ["move", "swap", "third"]);
+  assert.deepEqual(inputs[0].s5CandidateHashes.sort(), ["swap", "third"]);
+  const columns = out.runs[0].metrics.identityColumns;
+  assert.equal(columns.s5.roster, 3);
+  assert.equal(columns.s5.seen, 1);
+  assert.deepEqual(
+    [
+      columns.s5.breakdown.notSeed,
+      columns.s5.breakdown.seedNotProposed,
+      columns.s5.breakdown.proposed,
+    ],
+    [1, 1, 1],
+  );
+  assert.deepEqual(columns.s5.breakdown.candidate, {
+    inCandidate: 2,
+    notSeedInCandidate: 1,
+    neitherSeedNorCandidate: 0,
+  });
+  // 候補が未計測（null）なら、候補の数は 0 でなく null。
+  const inputs2 = [];
+  const out2 = await measureABody({
+    page: s5Page(inputs2),
+    projectId: "p",
+    roster: s5Roster,
+    index,
+    cell: { level: "L3", steps: [100] },
+    candidateHashes: null,
+  });
+  assert.equal(inputs2[0].s5CandidateHashes, null);
+  assert.equal(
+    out2.runs[0].metrics.identityColumns.s5.breakdown.candidate,
+    null,
+  );
+  // 出力に表記の文字列（この合成では hash が表記そのまま）の欄を作らない：内訳は件数だけ。
+  assert.deepEqual(
+    Object.keys(out2.runs[0].metrics.identityColumns.s5.breakdown).sort(),
+    ["candidate", "notSeed", "proposed", "seedNotProposed"],
+  );
+});
+
+test("measureABody：renderer が内訳を返さない run（seed が読めない・欄の無い renderer）は、内訳を 0 でなく null（未計測）にする", async () => {
+  const index = await buildRosterIndex(s5Roster, async (s) => s);
+  const page = fakePage([]);
+  const out = await measureABody({
+    page,
+    projectId: "p",
+    roster: s5Roster,
+    index,
+    cell: { level: null, steps: [100] },
+  });
+  assert.equal(out.runs[0].metrics.identityColumns.s5.breakdown, null);
+  assert.equal(out.runs[0].metrics.identityColumns.s5.roster, 3);
+});
+
+test("loadCandidateHashes：候補の一覧を host 側で hash にする。file が無い・壊れている・空は 0 でなく null（未計測）", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, "surfaces"), { recursive: true });
+  const write = (name, body) => {
+    const file = path.join(dir, "surfaces", name);
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+    return file;
+  };
+  const hash = async (surface) => `h:${surface.length}:${surface}`;
+  // 重複は 1 件に畳む。seed の側（surfaces.seed）は読まない。
+  assert.deepEqual(
+    await loadCandidateHashes(
+      write("a.json", { seed: ["s1"], candidate: ["c1", "c2", "c1"] }),
+      hash,
+    ),
+    ["h:2:c1", "h:2:c2"],
+  );
+  assert.equal(
+    await loadCandidateHashes(path.join(dir, "surfaces", "none.json"), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("b.json", "{not json"), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("c.json", { candidate: [] }), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("d.json", { seed: ["s"] }), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("e.json", { candidate: ["x", 1] }), hash),
+    null,
+  );
+  // 既定の hash は表記を返さない（16 桁の hex）。
+  const [real] = await loadCandidateHashes(
+    write("f.json", { candidate: ["swap"] }),
+  );
+  assert.match(real, /^[0-9a-f]{16}$/u);
+});
+
+// ---- DR-ILM-41：候補の file の出所の照合 --------------------------------------------------------------------------
+
+test("surfacesFileWithProvenance：surfaces に使った scenes の sha256 を添える（元の object は変えない。形が違えば止める）", () => {
+  const surfaces = { seed: ["s"], candidate: ["c"] };
+  const sha = sha256Text("scenes-body");
+  assert.match(sha, /^[0-9a-f]{64}$/u);
+  const out = surfacesFileWithProvenance(surfaces, sha);
+  assert.deepEqual(out, { seed: ["s"], candidate: ["c"], scenesSha256: sha });
+  assert.equal("scenesSha256" in surfaces, false);
+  assert.throws(
+    () => surfacesFileWithProvenance(null, sha),
+    /SURFACES_NOT_OBJECT/u,
+  );
+  assert.throws(
+    () => surfacesFileWithProvenance([], sha),
+    /SURFACES_NOT_OBJECT/u,
+  );
+  assert.throws(
+    () => surfacesFileWithProvenance(surfaces, null),
+    /SCENES_SHA256_INVALID/u,
+  );
+  assert.throws(
+    () => surfacesFileWithProvenance(surfaces, "zz"),
+    /SCENES_SHA256_INVALID/u,
+  );
+});
+
+test("candidateFileState：verified／unverified／stale／absent を分ける（stale は照合できないものを verified にしない）", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-state-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const put = (name, body) => {
+    const file = path.join(dir, name);
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+    return file;
+  };
+  const scenes = put("scenes.json", "scenes-body-v1");
+  const sha = sha256Text("scenes-body-v1");
+  const cand = ["c1", "c2"];
+  // verified：inventory が使った scenes と今の scenes が同じ。
+  assert.equal(
+    candidateFileState(
+      put("v.json", { candidate: cand, scenesSha256: sha }),
+      scenes,
+    ),
+    "verified",
+  );
+  // unverified：照合用の hash が無い古い file（使うが、照合できていない）。
+  assert.equal(
+    candidateFileState(put("u.json", { candidate: cand }), scenes),
+    "unverified",
+  );
+  // stale：scenes が変わった（hash が違う）。scenes が読めないときも stale。
+  assert.equal(
+    candidateFileState(
+      put("s.json", {
+        candidate: cand,
+        scenesSha256: sha256Text("scenes-body-v0"),
+      }),
+      scenes,
+    ),
+    "stale",
+  );
+  assert.equal(
+    candidateFileState(
+      put("s2.json", { candidate: cand, scenesSha256: sha }),
+      path.join(dir, "no-scenes.json"),
+    ),
+    "stale",
+  );
+  // absent：無い・壊れている・空・文字列でない要素。hash があっても、候補が使えなければ absent（stale にしない）。
+  assert.equal(
+    candidateFileState(path.join(dir, "none.json"), scenes),
+    "absent",
+  );
+  assert.equal(
+    candidateFileState(put("b.json", "{not json"), scenes),
+    "absent",
+  );
+  assert.equal(
+    candidateFileState(
+      put("e.json", { candidate: [], scenesSha256: sha }),
+      scenes,
+    ),
+    "absent",
+  );
+  assert.equal(
+    candidateFileState(
+      put("n.json", { candidate: ["x", 1], scenesSha256: sha }),
+      scenes,
+    ),
+    "absent",
+  );
+});
+
+test("loadCandidates：stale は候補があっても使わず（hashes は null）、unverified・verified は使う。absent も null", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-load-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const put = (name, body) => {
+    const file = path.join(dir, name);
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+    return file;
+  };
+  const scenes = put("scenes.json", "scenes-v1");
+  const sha = sha256Text("scenes-v1");
+  const hash = async (surface) => `h:${surface}`;
+  const cand = ["c1", "c2"];
+  assert.deepEqual(
+    await loadCandidates(
+      put("v.json", { candidate: cand, scenesSha256: sha }),
+      scenes,
+      hash,
+    ),
+    { state: "verified", hashes: ["h:c1", "h:c2"] },
+  );
+  assert.deepEqual(
+    await loadCandidates(put("u.json", { candidate: cand }), scenes, hash),
+    { state: "unverified", hashes: ["h:c1", "h:c2"] },
+  );
+  assert.deepEqual(
+    await loadCandidates(
+      put("s.json", { candidate: cand, scenesSha256: sha256Text("scenes-v0") }),
+      scenes,
+      hash,
+    ),
+    { state: "stale", hashes: null },
+  );
+  assert.deepEqual(
+    await loadCandidates(path.join(dir, "none.json"), scenes, hash),
+    { state: "absent", hashes: null },
+  );
+});
+
+test("candidateFileState：hash の欄があるのに形が壊れている（null・数値・短い文字列）file は stale（unverified にしない）", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-bad-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const scenes = path.join(dir, "scenes.json");
+  writeFileSync(scenes, "scenes");
+  const file = path.join(dir, "c.json");
+  for (const bad of [null, 0, 12345, "", "abc", "G".repeat(64)]) {
+    writeFileSync(
+      file,
+      JSON.stringify({ candidate: ["c"], scenesSha256: bad }),
+    );
+    assert.equal(candidateFileState(file, scenes), "stale", String(bad));
+  }
+  // 欄が無いのは unverified（古い file）。
+  writeFileSync(file, JSON.stringify({ candidate: ["c"] }));
+  assert.equal(candidateFileState(file, scenes), "unverified");
+});
+
+test("readWorkSource：scenes の生の本文（JSON.parse の前の utf8）から hash を取る。inventory が書いた hash を測定 A が同じ値で照合できる", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-raw-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // 整形が不揃いな JSON（再直列化すると別の文字列になる）。BOM・CRLF も含める。
+  const raw = '\ufeff{ "scenes" :[ 1 ,\r\n 2 ] }\r\n';
+  const scenes = path.join(dir, "scenes.json");
+  writeFileSync(scenes, raw);
+  const read = readWorkSource(scenes);
+  assert.equal(read.text, raw);
+  assert.equal(read.sha256, sha256Text(raw));
+  assert.notEqual(
+    read.sha256,
+    sha256Text(JSON.stringify(JSON.parse(raw.replace(/^\ufeff/u, "")))),
+  );
+  // inventory 側（readWorkSource の hash を surfaces に添える）→ 測定 A 側（candidateFileState）で verified になる。
+  const file = path.join(dir, "surfaces.json");
+  writeFileSync(
+    file,
+    JSON.stringify(
+      surfacesFileWithProvenance(
+        { seed: ["s"], candidate: ["c"] },
+        read.sha256,
+      ),
+    ),
+  );
+  assert.equal(candidateFileState(file, scenes), "verified");
+  // scenes を 1 文字変えれば stale。
+  writeFileSync(scenes, raw + " ");
+  assert.equal(candidateFileState(file, scenes), "stale");
+});
+
+test("clearPreviousInventoryOutputs：inventory の mode は前の surfaces も消す。extract-empty は消さない。他の作品の file は消さない", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ilm-clear-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, "inventory");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(path.join(root, "surfaces"), { recursive: true });
+  const seed = () => {
+    for (const name of [
+      "w1.json",
+      "w1.rows.json",
+      "w1.rejected.json",
+      "w1.failed.json",
+      "w2.json",
+    ])
+      writeFileSync(path.join(dir, name), "{}");
+    for (const name of ["w1.json", "w2.json"])
+      writeFileSync(path.join(root, "surfaces", name), "{}");
+  };
+  const exists = (...parts) => existsSync(path.join(root, ...parts));
+  seed();
+  clearPreviousInventoryOutputs({
+    dir,
+    output: root,
+    workKey: "w1",
+    mode: "extract-empty",
+  });
+  assert.equal(exists("inventory", "w1.json"), false);
+  assert.equal(exists("inventory", "w1.failed.json"), false);
+  assert.equal(
+    exists("surfaces", "w1.json"),
+    true,
+    "extract-empty は surfaces を消さない",
+  );
+  seed();
+  clearPreviousInventoryOutputs({
+    dir,
+    output: root,
+    workKey: "w1",
+    mode: "inventory",
+  });
+  assert.equal(
+    exists("surfaces", "w1.json"),
+    false,
+    "inventory は前の surfaces を消す",
+  );
+  assert.equal(exists("surfaces", "w2.json"), true, "他の作品は消さない");
+  assert.equal(exists("inventory", "w2.json"), true);
 });

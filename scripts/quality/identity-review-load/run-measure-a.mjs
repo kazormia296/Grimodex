@@ -23,7 +23,7 @@
 import assert from "node:assert/strict";
 import console from "node:console";
 import process from "node:process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -32,6 +32,7 @@ import {
   assertOutputClean,
   compareStoredWithProjection,
   findAiCommands,
+  hashSurface,
   planStoredRead,
   rosterAtLevel,
   safeErrorSummary,
@@ -50,6 +51,7 @@ import {
   withVite,
   writeJson0600,
 } from "./launcher-common.mjs";
+import { readWorkSource, resolveWorkSource } from "./sources.mjs";
 
 export const FOLDER_STEPS = Object.freeze([25, 50, 75, 100]);
 export const DEFAULT_SOLO_WORKS = Object.freeze(["m-ja-2"]);
@@ -120,6 +122,78 @@ export function registrationEntries(roster, level) {
   }));
 }
 
+/**
+ * 候補の file（run-inventory が repo 外に書く ${output}/surfaces/<作品>.json）を 1 回だけ読む（状態と hash が同じ読みから出るように）。
+ * 無い・読めない・candidate が配列でない・空・文字列でない要素があるときは null。
+ */
+function readCandidateFile(file) {
+  if (!existsSync(file)) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  const list = parsed?.candidate;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  if (!list.every((item) => typeof item === "string")) return null;
+  return {
+    list,
+    hasSha: Object.hasOwn(parsed, "scenesSha256"),
+    scenesSha256: parsed.scenesSha256,
+  };
+}
+
+/** 読んだ candidate file の出所。`candidateFileState` の説明を参照。 */
+function candidateStateOf(candidate, scenesFile) {
+  if (candidate === null) return "absent";
+  if (!candidate.hasSha) return "unverified";
+  // 欄があるのに今の scenes の hash と合わない（null・数値・壊れた文字列を含む）のは stale。
+  let current;
+  try {
+    current = readWorkSource(scenesFile).sha256;
+  } catch {
+    return "stale";
+  }
+  return candidate.scenesSha256 === current ? "verified" : "stale";
+}
+
+const hashList = async (list, hash) => [
+  ...new Set(await Promise.all(list.map((item) => hash(item)))),
+];
+
+/**
+ * 候補画面の候補（surfaces file の candidate 配列〔文字列〕）を、host 側で表記そのままの hash（hashSurface）にする。file が無い・
+ * 読めない・candidate が配列でない・空のときは null（0 でなく未計測。inventory の候補の取得が失敗すると空の配列が書かれるので、
+ * 空は「候補が 0 件」と区別できず未計測に倒す）。表記は返さない。
+ */
+export async function loadCandidateHashes(file, hash = hashSurface) {
+  const candidate = readCandidateFile(file);
+  return candidate === null ? null : hashList(candidate.list, hash);
+}
+
+/**
+ * 候補の file の出所（DR-ILM-41）：absent＝無い・壊れている・空・文字列でない要素がある（候補は未計測）／unverified＝照合用の
+ * scenesSha256 の欄が無い古い file（使うが、今の scenes と照合できていない）／verified＝inventory が使った scenes の本文と今の
+ * scenes の本文が同じ／stale＝食い違う、または hash の欄が壊れている（使わず、候補は未計測）。scenes が読めないときも stale
+ * （照合できないものを verified にしない）。verified が言うのは scenes の同一性だけで、file が今回の inventory の run のものかは
+ * inventory が run の開始時に前の file を消すことで担保する。
+ */
+export function candidateFileState(file, scenesFile) {
+  return candidateStateOf(readCandidateFile(file), scenesFile);
+}
+
+/** 候補の file を、出所の照合つきで 1 回の読みから返す。stale・absent なら hashes は null（未計測）。unverified は使う。 */
+export async function loadCandidates(file, scenesFile, hash = hashSurface) {
+  const candidate = readCandidateFile(file);
+  const state = candidateStateOf(candidate, scenesFile);
+  const hashes =
+    candidate === null || state === "stale"
+      ? null
+      : await hashList(candidate.list, hash);
+  return { state, hashes };
+}
+
 /** cell の run の完了条件（§8-2）：prepass complete・提案あり・AI なし。 */
 export function runCompleted(extract) {
   return (
@@ -139,7 +213,15 @@ export async function measureABody({
   index,
   cell,
   persist = "skip",
+  candidateHashes = null,
 }) {
+  // renderer へ渡す S5-roster の hash（名簿の全体から。水準で削らない）と、そのうち候補画面の候補に出るもの。
+  // renderer は件数だけを返す（候補の一覧・seed の集合は host へ戻さない）。候補が未計測なら null。
+  const s5Hashes = [...(index.s5Hashes ?? [])].sort();
+  const s5Set = new Set(s5Hashes);
+  const s5CandidateHashes = candidateHashes
+    ? candidateHashes.filter((hash) => s5Set.has(hash))
+    : null;
   const entries = registrationEntries(roster, cell.level);
   let registration = { created: 0 };
   if (entries.length > 0)
@@ -160,7 +242,12 @@ export async function measureABody({
       try {
         persisted = await page.evaluate(
           (input) => window.identityLoad.extractStructure(input),
-          { folderPercent: percent, persist: true },
+          {
+            folderPercent: percent,
+            persist: true,
+            s5Hashes,
+            s5CandidateHashes,
+          },
         );
         persistAttempt = { status: "ok" };
       } catch (error) {
@@ -171,13 +258,14 @@ export async function measureABody({
       persisted ??
       (await page.evaluate(
         (input) => window.identityLoad.extractStructure(input),
-        { folderPercent: percent, persist: false },
+        { folderPercent: percent, persist: false, s5Hashes, s5CandidateHashes },
       ));
     const rows = extract.rows;
     const metrics = computeMeasureA({
       index,
       rows,
       seedDrops: extract.seedDrops ?? null,
+      s5Breakdown: extract.s5Breakdown ?? null,
     });
     // 一括承認可の数は、renderer（製品の旗を全行で数えたもの）と metrics（分類の内訳の合計）が同じ run で一致する。
     // 一致しないのは、分類が製品の一括承認の対象を取りこぼしているか、行の旗が欠けている。
@@ -307,12 +395,25 @@ async function main() {
       check.ok,
       `[precheck] ROSTER_INVALID ${work} errors=${check.errors.length}`,
     );
-    rosters.set(work, { roster, index: await buildRosterIndex(roster) });
+    // 候補画面の候補（作品単位。水準に依らない）。inventory が書いた file が無い・scenes と食い違う（stale）なら null（未計測）。
+    const { state: candidateFile, hashes: candidateHashes } =
+      await loadCandidates(
+        path.join(output, "surfaces", `${work}.json`),
+        resolveWorkSource(work, options["data-dir"] || null),
+      );
+    rosters.set(work, {
+      roster,
+      index: await buildRosterIndex(roster),
+      candidateFile,
+      candidateHashes,
+    });
   }
   const summary = [];
   await withVite(output, async ({ vite, busAddress }) => {
     for (const cell of cells) {
-      const { roster, index } = rosters.get(cell.work);
+      const { roster, index, candidateHashes, candidateFile } = rosters.get(
+        cell.work,
+      );
       const {
         cell: observed,
         value,
@@ -332,6 +433,7 @@ async function main() {
             index,
             cell,
             persist: options.persist,
+            candidateHashes,
           }),
       });
       const status =
@@ -345,6 +447,7 @@ async function main() {
         steps: cell.steps,
         status,
         observed,
+        candidateFile,
         registration: value?.registration ?? null,
       };
       let rowsFile = null;

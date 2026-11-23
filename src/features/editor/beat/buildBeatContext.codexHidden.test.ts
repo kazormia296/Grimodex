@@ -291,4 +291,58 @@ describe("buildBeatContextForGeneration — hidden の Codex", () => {
     }
     editor.destroy();
   });
+
+  it("起点の場面を失った（NULL）hidden の Phase を持つ項目は、場面が読む順に有っても要約を渡さない（DR-MP4-46。直す前は渡した）", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        {
+          id: "scene-1",
+          projectId: "p1",
+          parentId: null,
+          nodeType: "scene" as const,
+          title: "scene-1",
+          synopsis: null,
+          intent: null,
+          sortOrder: "a0",
+          status: null,
+          storyTimeOrder: null,
+          storyTimeLabel: null,
+          povCharacterId: null,
+          locationId: null,
+          charCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]),
+      resolutionMode: "reading",
+    });
+    h.phases = [
+      {
+        id: "ph-akane",
+        entryId: "char-akane",
+        anchorNodeId: null,
+        label: "起点なし",
+        summaryOverride: null,
+        contentOverride: null,
+        contextModeOverride: "hidden",
+        version: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    const editor = createEditorWithBeat([{ type: "text", text: "雨の夜" }]);
+    useCodexHighlightStore.setState({ matchedEntryIds: ["char-akane"] });
+    const result = await buildBeatContextForGeneration(
+      editor,
+      "b1",
+      "scene-1",
+      "p1",
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ctx.codexSummaries).toBe("");
+    }
+    editor.destroy();
+  });
 });

@@ -407,47 +407,6 @@ export const AUX_PROJECT_FILTER: Record<
   },
 };
 
-/**
- * For aux scopes whose owning scope is **not** `body` but whose rows
- * reference body entities (tree_nodes), how should restore handle a row
- * when body is excluded?
- *
- * - `"skip"` — drop the row entirely (NOT NULL FK or row makes no sense
- *   without the body)
- * - `"null"` — restore the row but NULL the listed column(s)
- *
- * Maps scope → { skip: true } | { nullColumns: string[] }. Scopes not
- * listed have no body-dependent columns or are themselves body-owned.
- */
-export const AUX_BODY_DEPENDENCY: Partial<
-  Record<AuxScope, { skip: true } | { nullColumns: string[] }>
-> = {
-  tree_node_labels: { skip: true },
-  lint_ignored_diagnostics: { skip: true },
-  foreshadow_setups: { skip: true },
-  foreshadow_payoffs: { skip: true },
-  foreshadows: { nullColumns: ["payoff_scene_id"] },
-  map_node_positions: { nullColumns: ["tree_node_id"] },
-};
-
-/**
- * Likewise for codex-dependent columns on rows whose owner scope is not
- * `codex`. Used when codex scope is excluded.
- */
-export const AUX_CODEX_DEPENDENCY: Partial<
-  Record<AuxScope, { skip: true } | { nullColumns: string[] }>
-> = {
-  foreshadow_codex_links: { skip: true },
-  map_node_positions: { nullColumns: ["codex_entry_id"] },
-  // events.primary_codex_id / location_codex_id are nullable FKs (ON DELETE SET
-  // NULL); when codex is excluded and the referenced entry is gone, keep the
-  // event but NULL its codex refs.
-  events: { nullColumns: ["primary_codex_id", "location_codex_id"] },
-  // event_participants.codex_entry_id is NOT NULL — it cannot be NULLed, so a
-  // participant whose codex is absent is dropped entirely.
-  event_participants: { skip: true },
-};
-
 // ---- payload wire format --------------------------------------------------
 
 /** A raw row as serialised by SQLite. Values are JSON-safe primitives. */
@@ -491,7 +450,6 @@ export interface SkipReport {
   sceneBeatPovCache: number;
   eventParticipants: number;
   foreshadowPayoffSceneCleared: number;
-  mapNodePositionsLinkCleared: number;
   eventCodexRefCleared: number;
   eventRevealSceneCleared: number;
   editorStickies: number;
@@ -512,7 +470,6 @@ export function emptySkipReport(): SkipReport {
     sceneBeatPovCache: 0,
     eventParticipants: 0,
     foreshadowPayoffSceneCleared: 0,
-    mapNodePositionsLinkCleared: 0,
     eventCodexRefCleared: 0,
     eventRevealSceneCleared: 0,
     editorStickies: 0,
@@ -534,7 +491,6 @@ export function skipReportIsEmpty(r: SkipReport): boolean {
       r.sceneBeatPovCache +
       r.eventParticipants +
       r.foreshadowPayoffSceneCleared +
-      r.mapNodePositionsLinkCleared +
       r.eventCodexRefCleared +
       r.eventRevealSceneCleared +
       r.editorStickies ===

@@ -101,6 +101,7 @@ import type {
 import {
   assertEntryTypesInCatalog,
   candidateKey,
+  classifyS5Surfaces,
   comparePersistedScene,
   compareHashSets,
   countBulkApprovable,
@@ -539,6 +540,10 @@ async function extractStructure(input: {
   folderPercent: number;
   /** false：Native への Run/ProposalSet の保存を飛ばす（製品の test seam。live の projection だけ読む）。 */
   persist: boolean;
+  /** 名簿の「場面で指す人が変わる表記」の hash（hashSurface。host が全体の名簿から作る）。無ければ内訳を返さない。 */
+  s5Hashes?: string[];
+  /** s5Hashes のうち候補画面の候補に出るものの hash（host が候補の一覧から照合）。null は候補が未計測。 */
+  s5CandidateHashes?: string[] | null;
 }) {
   const started: { runId?: string } = {};
   try {
@@ -557,6 +562,8 @@ async function extractStructureBody(
   input: {
     folderPercent: number;
     persist: boolean;
+    s5Hashes?: string[];
+    s5CandidateHashes?: string[] | null;
   },
   started: { runId?: string },
 ) {
@@ -665,6 +672,8 @@ async function extractStructureBody(
   // seed の hash 集合と提案の hash 集合の突合。期待は「提案 ＝ seed − 製品が落とした表記」。
   // prepass が complete なのに成り立たなければ失敗（planner が seed を飛ばした、または prepass の読みが製品と違う）。
   let observed: Record<string, unknown>;
+  // S5-roster の内訳（件数だけ。seed が complete で読めた run と、host が S5 の hash を渡した run だけ。無ければ null＝未計測）。
+  let s5Breakdown: ReturnType<typeof classifyS5Surfaces> | null = null;
   if (observedSeeds.ok) {
     const seedVsProposal = compareHashSets(
       await Promise.all(
@@ -672,6 +681,19 @@ async function extractStructureBody(
       ),
       rows.map((r) => r.surfaceHash),
     );
+    // S5 の内訳は、同じ seed を別に hash して集合の所属から数える（上の突合の入力は変えない）。
+    if (
+      observedSeeds.prepass.status === "complete" &&
+      Array.isArray(input.s5Hashes)
+    )
+      s5Breakdown = classifyS5Surfaces({
+        s5Hashes: input.s5Hashes,
+        seedHashes: await Promise.all(
+          observedSeeds.mapped.map((m) => hashSurface(m.surface)),
+        ),
+        proposalHashes: rows.map((r) => r.surfaceHash),
+        candidateHashes: input.s5CandidateHashes ?? null,
+      });
     const seedReconciliation = reconcileSeedsWithProposals({
       seedHashes: await Promise.all(
         observedSeeds.mapped.map((m) => hashSurface(m.surface)),
@@ -712,6 +734,7 @@ async function extractStructureBody(
     ],
     observed,
     seedDrops,
+    s5Breakdown,
     runStatus: projection.status,
     entryCountInCatalog: catalog.entryCount,
     typeCountInCatalog: catalog.typeCount,

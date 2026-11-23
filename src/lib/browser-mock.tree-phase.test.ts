@@ -440,6 +440,428 @@ describe("browser mock typed Tree writes", () => {
   });
 });
 
+describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
+  let mock: PersistentBrowserMock;
+
+  beforeEach(async () => {
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({ allowProtectedWriterTestFixtures: true }),
+    );
+  });
+
+  afterEach(() => mock.close());
+
+  const COLUMNS = `parent_id, intent, story_time_order, story_time_label,
+    pov_character_id, location_id, context_mode, aliases, excluded_aliases,
+    content, unplaced_beats_doc, unplaced_beat_preview, placed_beat_preview,
+    source_uri, source_mtime, created_at, version,
+    chronicle_start_time, chronicle_start_minute, chronicle_start_granularity,
+    chronicle_end_time, chronicle_end_minute, chronicle_end_granularity,
+    chronicle_precision`;
+
+  async function seed(
+    id: string,
+    nodeType: "scene" | "note",
+  ): Promise<{
+    before: Record<string, unknown>;
+    receipt: { maintenanceTransactionId: string; undoJournalId: string };
+  }> {
+    await mock.invoke("db_execute", {
+      sql: `INSERT INTO codex_entries (id, project_id, type, name, content, version, created_at, updated_at)
+        VALUES ('pov-1', 'default-project', 'character', 'Pov', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+        ON CONFLICT(id) DO NOTHING`,
+      params: [],
+      method: "run",
+    });
+    await mock.invoke("tree_node_create", {
+      payload: {
+        id,
+        projectId: "default-project",
+        parentId: null,
+        nodeType,
+        title: "T",
+        sortOrder: "a0",
+        origin: "human",
+        requestId: `create-${id}`,
+      },
+    });
+    await mock.invoke("tree_node_patch", {
+      payload: {
+        projectId: "default-project",
+        nodeId: id,
+        requestId: `patch-${id}`,
+        origin: "human",
+        patch: {
+          intent: "goal",
+          storyTimeOrder: "b3",
+          storyTimeLabel: "night",
+          povCharacterId: "pov-1",
+          contextMode: "hidden",
+          aliases: '["a"]',
+          excludedAliases: '["b"]',
+          unplacedBeatsDoc: '[{"id":"b1"}]',
+          unplacedBeatPreview: "beat",
+          placedBeatPreview: '["p"]',
+          sourceUri: "external-root://r/a.md",
+          sourceMtime: "2026-01-01T00:00:00Z",
+          content: '{"type":"doc"}',
+          chronicleStartTime: 100,
+          chronicleStartMinute: 540,
+          chronicleStartGranularity: "time",
+          chronicleEndTime: 101,
+          chronicleEndGranularity: "day",
+          chroniclePrecision: "approx",
+        },
+        baseVersion: 0,
+        bumpVersion: false,
+        updatedAt: "2026-08-24T00:00:00.000Z",
+      },
+    });
+    const before = (
+      await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [id])
+    )[0]!;
+    const receipt = await mock.invoke<{
+      maintenanceTransactionId: string;
+      undoJournalId: string;
+    }>("tree_node_delete", {
+      payload: {
+        projectId: "default-project",
+        nodeId: id,
+        requestId: `delete-${id}`,
+        origin: "human",
+      },
+    });
+    return { before, receipt };
+  }
+
+  function undoPayload(
+    id: string,
+    nodeType: string,
+    receipt: { maintenanceTransactionId: string; undoJournalId: string },
+    before: Record<string, unknown>,
+    restoreState: unknown,
+    requestId = `undo-${id}`,
+  ): Record<string, unknown> {
+    return {
+      id,
+      projectId: "default-project",
+      parentId: null,
+      nodeType,
+      title: "T",
+      sortOrder: "a0",
+      sourceUri: before.source_uri,
+      sourceMtime: before.source_mtime,
+      content: before.content,
+      origin: "undo",
+      requestId,
+      originalTransactionId: receipt.maintenanceTransactionId,
+      undoJournalId: receipt.undoJournalId,
+      restoreState,
+    };
+  }
+
+  function stateOf(before: Record<string, unknown>): Record<string, unknown> {
+    return {
+      intent: before.intent,
+      storyTimeOrder: before.story_time_order,
+      storyTimeLabel: before.story_time_label,
+      povCharacterId: before.pov_character_id,
+      locationId: before.location_id,
+      contextMode: before.context_mode,
+      aliases: before.aliases,
+      excludedAliases: before.excluded_aliases,
+      unplacedBeatsDoc: before.unplaced_beats_doc,
+      unplacedBeatPreview: before.unplaced_beat_preview,
+      placedBeatPreview: before.placed_beat_preview,
+      createdAt: before.created_at,
+      chronicleStartTime: before.chronicle_start_time,
+      chronicleStartMinute: before.chronicle_start_minute,
+      chronicleStartGranularity: before.chronicle_start_granularity,
+      chronicleEndTime: before.chronicle_end_time,
+      chronicleEndMinute: before.chronicle_end_minute,
+      chronicleEndGranularity: before.chronicle_end_granularity,
+      chroniclePrecision: before.chronicle_precision,
+    };
+  }
+
+  it("returns a scene row to its state before the delete (same as Rust)", async () => {
+    const { before, receipt } = await seed("restore-scene", "scene");
+    const response = await mock.invoke<Record<string, unknown>>(
+      "tree_node_create",
+      {
+        payload: undoPayload(
+          "restore-scene",
+          "scene",
+          receipt,
+          before,
+          stateOf(before),
+        ),
+      },
+    );
+    expect(
+      (
+        await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [
+          "restore-scene",
+        ])
+      )[0],
+    ).toEqual(before);
+    expect(response).toMatchObject({
+      storyTimeOrder: "b3",
+      contextMode: "hidden",
+      povCharacterId: "pov-1",
+      version: 0,
+      chronicleStartTime: 100,
+      chronicleStartMinute: 540,
+      chronicleStartGranularity: "time",
+      chronicleEndTime: 101,
+      chronicleEndGranularity: "day",
+      chroniclePrecision: "approx",
+    });
+  });
+
+  it("does not restore updated_at", async () => {
+    const { before, receipt } = await seed("restore-updated", "note");
+    await mock.invoke("tree_node_create", {
+      payload: undoPayload(
+        "restore-updated",
+        "note",
+        receipt,
+        before,
+        stateOf(before),
+      ),
+    });
+    const [after] = await rows(
+      mock,
+      "SELECT updated_at FROM tree_nodes WHERE id = 'restore-updated'",
+    );
+    expect(after!.updated_at).not.toBe("2026-08-24T00:00:00.000Z");
+  });
+
+  it("nulls a reference to a Codex entry that vanished and refuses another project's", async () => {
+    const { before, receipt } = await seed("restore-ref", "scene");
+    await mock.invoke("db_execute", {
+      sql: "DELETE FROM codex_entries WHERE id = 'pov-1'",
+      params: [],
+      method: "run",
+    });
+    await mock.invoke("tree_node_create", {
+      payload: undoPayload(
+        "restore-ref",
+        "scene",
+        receipt,
+        before,
+        stateOf(before),
+      ),
+    });
+    expect(
+      (
+        await rows(
+          mock,
+          "SELECT pov_character_id FROM tree_nodes WHERE id = 'restore-ref'",
+        )
+      )[0],
+    ).toEqual({ pov_character_id: null });
+
+    await mock.invoke("db_execute", {
+      sql: `INSERT INTO projects (id, title) VALUES ('other-project', 'Other')`,
+      params: [],
+      method: "run",
+    });
+    await mock.invoke("db_execute", {
+      sql: `INSERT INTO codex_entries (id, project_id, type, name, content, version, created_at, updated_at)
+        VALUES ('foreign-codex', 'other-project', 'character', 'F', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+      params: [],
+      method: "run",
+    });
+    const second = await seed("restore-ref2", "scene");
+    await expect(
+      mock.invoke("tree_node_create", {
+        payload: undoPayload(
+          "restore-ref2",
+          "scene",
+          second.receipt,
+          second.before,
+          { ...stateOf(second.before), locationId: "foreign-codex" },
+        ),
+      }),
+    ).rejects.toThrow("restoreState.locationId");
+    expect(
+      await rows(mock, "SELECT id FROM tree_nodes WHERE id = 'restore-ref2'"),
+    ).toEqual([]);
+    // Nothing is left behind by the refused request: no receipt, no scope binding.
+    expect(
+      await rows(
+        mock,
+        "SELECT COUNT(*) AS n FROM idempotency_requests WHERE request_id = 'undo-restore-ref2'",
+      ),
+    ).toEqual([{ n: 0 }]);
+    expect(
+      await rows(
+        mock,
+        "SELECT COUNT(*) AS n FROM narrative_scene_scope_bindings WHERE scene_id = 'restore-ref2'",
+      ),
+    ).toEqual([{ n: 0 }]);
+  });
+
+  it("refuses restoreState unless the origin is undo, and unknown or held keys", async () => {
+    const { before, receipt } = await seed("restore-gate", "scene");
+    const base = undoPayload(
+      "restore-gate",
+      "scene",
+      receipt,
+      before,
+      stateOf(before),
+    );
+    await expect(
+      mock.invoke("tree_node_create", {
+        payload: {
+          ...base,
+          origin: "human",
+          originalTransactionId: null,
+          undoJournalId: null,
+          requestId: "gate-human",
+        },
+      }),
+    ).rejects.toThrow("restoreState is only accepted for undo");
+    for (const [name, state, message] of [
+      ["unknown", { bogus: "x" }, "unknown field"],
+      ["chronicle key alone", { chronicleStartTime: 5 }, "one group"],
+      ["chronicle string day", { chronicleStartTime: "5" }, "safe integer"],
+      [
+        "chronicle bad granularity",
+        {
+          chronicleStartGranularity: "century",
+          chronicleEndGranularity: "none",
+          chroniclePrecision: "exact",
+        },
+        "granularity",
+      ],
+      ["archivedAt", { archivedAt: "x" }, "unknown field"],
+      ["mistyped", { intent: 5 }, "must be a string or null"],
+      ["contextMode", { contextMode: "weird" }, "contextMode"],
+      ["aliases", { aliases: "nope" }, "aliases"],
+      ["beats", { unplacedBeatsDoc: "{}" }, "unplacedBeatsDoc"],
+      ["createdAt", { createdAt: "yesterday" }, "createdAt"],
+      // Rust takes RFC 3339 with an offset or SQLite's space form, not a naive T form.
+      [
+        "createdAt naive T form",
+        { createdAt: "2026-01-01T00:00:00" },
+        "createdAt",
+      ],
+    ] as const) {
+      await expect(
+        mock.invoke("tree_node_create", {
+          payload: { ...base, restoreState: state, requestId: `gate-${name}` },
+        }),
+        name,
+      ).rejects.toThrow(message);
+    }
+    expect(
+      await rows(mock, "SELECT id FROM tree_nodes WHERE id = 'restore-gate'"),
+    ).toEqual([]);
+  });
+
+  it("puts back an inconsistent legacy date range as it was (tree_node_patch writes it unchecked)", async () => {
+    const ranges = [
+      // end before start
+      {
+        chronicleStartTime: 10,
+        chronicleStartGranularity: "day",
+        chronicleEndTime: 9,
+        chronicleEndGranularity: "day",
+        chroniclePrecision: "exact",
+      },
+      // time without a minute
+      {
+        chronicleStartTime: 5,
+        chronicleStartGranularity: "time",
+        chronicleEndGranularity: "none",
+        chroniclePrecision: "approx",
+      },
+      // minute out of range
+      {
+        chronicleStartTime: 5,
+        chronicleStartMinute: 1440,
+        chronicleStartGranularity: "time",
+        chronicleEndGranularity: "none",
+        chroniclePrecision: "exact",
+      },
+    ];
+    for (const [index, range] of ranges.entries()) {
+      const id = `restore-incons-${index}`;
+      await mock.invoke("tree_node_create", {
+        payload: {
+          id,
+          projectId: "default-project",
+          parentId: null,
+          nodeType: "scene",
+          title: "T",
+          sortOrder: "a0",
+          origin: "human",
+          requestId: `create-${id}`,
+        },
+      });
+      await mock.invoke("tree_node_patch", {
+        payload: {
+          projectId: "default-project",
+          nodeId: id,
+          requestId: `patch-${id}`,
+          origin: "human",
+          patch: range,
+          baseVersion: 0,
+          bumpVersion: false,
+          updatedAt: "2026-08-24T00:00:00.000Z",
+        },
+      });
+      const before = (
+        await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [id])
+      )[0]!;
+      const receipt = await mock.invoke<{
+        maintenanceTransactionId: string;
+        undoJournalId: string;
+      }>("tree_node_delete", {
+        payload: {
+          projectId: "default-project",
+          nodeId: id,
+          requestId: `delete-${id}`,
+          origin: "human",
+        },
+      });
+      await mock.invoke("tree_node_create", {
+        payload: undoPayload(id, "scene", receipt, before, stateOf(before)),
+      });
+      expect(
+        (
+          await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [
+            id,
+          ])
+        )[0],
+      ).toEqual(before);
+    }
+  });
+
+  it("replays the same request and conflicts when restoreState differs", async () => {
+    const { before, receipt } = await seed("restore-idem", "scene");
+    const payload = undoPayload(
+      "restore-idem",
+      "scene",
+      receipt,
+      before,
+      stateOf(before),
+    );
+    const first = await mock.invoke("tree_node_create", { payload });
+    expect(await mock.invoke("tree_node_create", { payload })).toEqual(first);
+    await expect(
+      mock.invoke("tree_node_create", {
+        payload: {
+          ...payload,
+          restoreState: { ...stateOf(before), intent: "another" },
+        },
+      }),
+    ).rejects.toThrow("TREE_NODE_CREATE_REQUEST_CONFLICT");
+  });
+});
+
 describe("browser mock Phase aggregate CAS and undo journal", () => {
   let mock: PersistentBrowserMock;
   let onDatabaseDirty: ReturnType<typeof vi.fn<() => void>>;

@@ -1076,6 +1076,7 @@ export function CodexDetailContent({
             }}
             contentReloadToken={contentReloadToken}
             readOnly={readOnly}
+            onOpenTimeline={() => handleTabChange("timeline")}
           />
         )}
         {activeTab === "relations" && (

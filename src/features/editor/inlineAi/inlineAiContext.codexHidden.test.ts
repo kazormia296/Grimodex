@@ -238,6 +238,65 @@ describe("Phase が hidden を解除した Codex", () => {
   });
 });
 
+describe("起点の場面を失った hidden の Phase（DR-MP4-46。直す前は公開のまま渡った）", () => {
+  it("NULL の起点の hidden の Phase を持つ項目は、場面が読む順に有っても要約を渡さない", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        {
+          id: "scene-1",
+          projectId: "p1",
+          parentId: null,
+          nodeType: "scene" as const,
+          title: "scene-1",
+          synopsis: null,
+          intent: null,
+          sortOrder: "a0",
+          status: null,
+          storyTimeOrder: null,
+          storyTimeLabel: null,
+          povCharacterId: null,
+          locationId: null,
+          charCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]),
+      resolutionMode: "reading",
+    });
+    h.rows = ENTRIES.map(({ id, summary, contextMode }) => ({
+      id,
+      summary,
+      contextMode,
+    }));
+    h.phases = [
+      {
+        id: "ph-a",
+        entryId: "a",
+        anchorNodeId: null,
+        label: "起点なし",
+        summaryOverride: null,
+        contentOverride: null,
+        contextModeOverride: "hidden",
+        version: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    const ctx = await buildInlineAiContextForSend({
+      editor: editorLike("x"),
+      projectTitle: "P",
+      sceneTitle: "S",
+      matchedCodexIds: ["a"],
+      codexEntries: ENTRIES,
+      projectId: "p1",
+      sceneId: "scene-1",
+    });
+    expect(ctx.codexSummaries).toBe("");
+    h.phases = [];
+  });
+});
+
 describe("インライン AI の送信経路は hidden 判定を通る", () => {
   const root = resolve(__dirname, "../..");
   for (const file of ["editor/EditorPane.tsx", "editor/useLinearInlineAi.ts"]) {

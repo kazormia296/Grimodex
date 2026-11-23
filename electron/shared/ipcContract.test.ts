@@ -26,6 +26,7 @@ import {
   runAiAuditAppendBatch,
   SHELL_COMMAND_NAMES,
   toErrorString,
+  TREE_NODE_RESTORE_STATE_KEYS,
   unimplementedError,
 } from "./ipcContract.js";
 import type { NapiBackendLike } from "./ipcContract.js";
@@ -5960,6 +5961,222 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       );
       expect(rejected.ok).toBe(false);
     }
+  });
+
+  describe("tree_node_create restoreState (DR-UND-1)", () => {
+    const undoIdentity = {
+      ...mutationIdentity("tree-undo-create-1"),
+      origin: "undo",
+      authorityRoute: "history-replay",
+      caller: "undo-redo-command",
+      controls: [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      originalTransactionId: "transaction-1",
+      undoJournalId: "journal-1",
+    };
+    const node = {
+      id: "scene-1",
+      nodeType: "scene",
+      title: "Scene",
+      sortOrder: "a0",
+      parentId: null,
+      content: "{}",
+    };
+    const restoreState = {
+      intent: "goal",
+      storyTimeOrder: "b3",
+      storyTimeLabel: null,
+      povCharacterId: "pov-1",
+      contextMode: "hidden",
+      unplacedBeatsDoc: "[]",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    it("passes a valid restoreState of an undo to the native writer unchanged", async () => {
+      const { backend, calls } = fakeBackend();
+      const payload = { ...undoIdentity, ...node, restoreState };
+      const env = await dispatchInvoke(
+        "tree_node_create",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(true);
+      expect(calls).toContainEqual({
+        method: "treeNodeCreate",
+        args: [payload],
+      });
+    });
+
+    const chronicle = {
+      chronicleStartTime: 100,
+      chronicleStartMinute: 540,
+      chronicleStartGranularity: "time",
+      chronicleEndTime: 101,
+      chronicleEndGranularity: "day",
+      chroniclePrecision: "approx",
+    };
+
+    it("accepts the chronicle keys as one valid group, a coarse minute and an equal end", async () => {
+      const { backend } = fakeBackend();
+      for (const state of [
+        chronicle,
+        // a non-canonical row that existed (none with a day) comes back too
+        {
+          chronicleStartTime: 5,
+          chronicleStartGranularity: "none",
+          chronicleEndTime: 5,
+          chronicleEndGranularity: "none",
+          chroniclePrecision: "unknown",
+        },
+        {
+          chronicleStartTime: 5,
+          chronicleStartMinute: 30,
+          chronicleStartGranularity: "day",
+          chronicleEndTime: 5,
+          chronicleEndGranularity: "day",
+          chroniclePrecision: "exact",
+        },
+      ]) {
+        const ok = await dispatchInvoke(
+          "tree_node_create",
+          { payload: { ...undoIdentity, ...node, restoreState: state } },
+          { backend, shell: noShell },
+        );
+        expect(ok.ok).toBe(true);
+      }
+    });
+
+    it.each([
+      ["a time without a minute", { ...chronicle, chronicleStartMinute: null }],
+      ["a minute out of range", { ...chronicle, chronicleStartMinute: 1440 }],
+      [
+        "an end before the start",
+        { ...chronicle, chronicleEndTime: 99, chronicleEndGranularity: "day" },
+      ],
+    ])(
+      "accepts an inconsistent legacy range (%s): the Undo puts back the row that existed",
+      async (_label, state) => {
+        const { backend } = fakeBackend();
+        const ok = await dispatchInvoke(
+          "tree_node_create",
+          { payload: { ...undoIdentity, ...node, restoreState: state } },
+          { backend, shell: noShell },
+        );
+        expect(ok.ok).toBe(true);
+      },
+    );
+
+    it.each([
+      ["a day alone", { chronicleStartTime: 5 }],
+      [
+        "a group without precision",
+        {
+          chronicleStartGranularity: "none",
+          chronicleEndGranularity: "none",
+        },
+      ],
+      ["a string day", { ...chronicle, chronicleStartTime: "5" }],
+      ["a fractional day", { ...chronicle, chronicleStartTime: 1.5 }],
+      [
+        "an unsafe day",
+        { ...chronicle, chronicleStartTime: Number.MAX_SAFE_INTEGER + 1 },
+      ],
+      [
+        "an unknown granularity",
+        { ...chronicle, chronicleEndGranularity: "century" },
+      ],
+      ["an unknown precision", { ...chronicle, chroniclePrecision: "roughly" }],
+    ])("rejects a chronicle group with %s", async (_label, state) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "tree_node_create",
+        { payload: { ...undoIdentity, ...node, restoreState: state } },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(calls).toEqual([]);
+    });
+
+    it("accepts every documented key and nothing else", async () => {
+      const { backend } = fakeBackend();
+      const all = Object.fromEntries(
+        TREE_NODE_RESTORE_STATE_KEYS.map((key) => [key, null]),
+      );
+      const ok = await dispatchInvoke(
+        "tree_node_create",
+        { payload: { ...undoIdentity, ...node, restoreState: all } },
+        { backend, shell: noShell },
+      );
+      expect(ok.ok).toBe(true);
+      expect([...TREE_NODE_RESTORE_STATE_KEYS].sort()).toEqual(
+        [
+          "aliases",
+          "chronicleEndGranularity",
+          "chronicleEndMinute",
+          "chronicleEndTime",
+          "chroniclePrecision",
+          "chronicleStartGranularity",
+          "chronicleStartMinute",
+          "chronicleStartTime",
+          "contextMode",
+          "createdAt",
+          "excludedAliases",
+          "intent",
+          "locationId",
+          "placedBeatPreview",
+          "povCharacterId",
+          "storyTimeLabel",
+          "storyTimeOrder",
+          "unplacedBeatPreview",
+          "unplacedBeatsDoc",
+        ].sort(),
+      );
+    });
+
+    it.each([
+      [
+        "a human create",
+        { ...mutationIdentity("tree-human-1"), ...node, restoreState },
+      ],
+      ["a redo", { ...undoIdentity, ...node, origin: "redo", restoreState }],
+      [
+        "an unknown key",
+        { ...undoIdentity, ...node, restoreState: { bogus: "x" } },
+      ],
+      [
+        "archivedAt",
+        { ...undoIdentity, ...node, restoreState: { archivedAt: null } },
+      ],
+      [
+        "a number for a string key",
+        { ...undoIdentity, ...node, restoreState: { intent: 5 } },
+      ],
+      [
+        "an undefined value",
+        { ...undoIdentity, ...node, restoreState: { intent: undefined } },
+      ],
+      [
+        "a non-object restoreState",
+        { ...undoIdentity, ...node, restoreState: "x" },
+      ],
+      ["an array restoreState", { ...undoIdentity, ...node, restoreState: [] }],
+      ["a null restoreState", { ...undoIdentity, ...node, restoreState: null }],
+    ])("rejects %s before the native writer", async (_label, payload) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "tree_node_create",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(calls).toEqual([]);
+    });
   });
 
   it("AI audit commands: workspace identityと型検証済みイベントをnativeへ写像する", async () => {
