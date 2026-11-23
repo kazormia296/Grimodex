@@ -22,6 +22,7 @@
 //   5 manualCreate       残りの create-new
 // 一括承認（ボタン 1 回）で通るのは bulk と bulkBind の合計（bulkTotal）。bulk は create-new 専用のまま
 // （mismatch.cleanupBulkOfKnownEntity などが create-new を前提にする）。
+import assert from "node:assert/strict";
 import { candidateKey, hashSurface } from "./lib.mjs";
 
 /**
@@ -34,8 +35,12 @@ import { candidateKey, hashSurface } from "./lib.mjs";
  *              一括の create-new の件数を合わせた「一括 1 回で誤った Entry ができる件数」（mismatch.bulkCreateWrongEntry）を足し、
  *              関係の呼び名の unresolved のうち部分一致の候補があるもの（作者に unresolved の提案として出る）を別に数える
  *              （relational.unresolvedWithPartialCandidate）。操作の下限（承認の下限・表記を残す下限）の定義は a-defs/2 から変えない。
+ *   "a-defs/4" 事前登録 DR-ILM-38 の列（identityColumns）を足す：Ur-all（bindingKind が unresolved の提案の数）・Ur-rosterTarget
+ *              （その分類 1 の unresolvedCandidateIn と unresolvedCandidateOut の和）・S5-roster（名簿の場面で指す人が変わる表記の、
+ *              重複を除いた数）・S5_seen（その表記のうち提案に出たもの）・S5 の内訳（seed に出ない／seed に出るが提案に出ない／提案に出る、
+ *              と候補画面の候補）。a-defs/3 の records には無いので混ぜない。既存の指標の定義は a-defs/3 から変えない。
  */
-export const METRIC_DEFINITION_VERSION = "a-defs/3";
+export const METRIC_DEFINITION_VERSION = "a-defs/4";
 
 export const CATEGORIES = Object.freeze([
   "notInRoster",
@@ -73,6 +78,9 @@ export async function buildRosterIndex(roster, hash = hashSurface) {
   const honorific = new Map();
   const relational = new Map(); // 関係の呼び名（登録しない。keyHash → Set(entityId)）
   const ambiguous = new Map(); // keyHash → Map(entityId → ranges)
+  // 名簿の「場面で指す人が変わる表記」の、重複を除いた hash 集合（S5-roster。DR-ILM-38）。表記そのままの hash
+  // （renderer の提案の surfaceHash・seed の hash と同じ式。candidateKey で正規化しない）。実体ごとの配列の重複は 1 件に畳む。
+  const s5Hashes = new Set();
   const push = (map, key, id) => {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(id);
@@ -92,12 +100,23 @@ export async function buildRosterIndex(roster, hash = hashSurface) {
         push(relational, await hashKey(surface), entity.id);
     for (const item of entity.ambiguousSurfaces ?? []) {
       if (typeof item.surface !== "string") continue;
+      // S5 の hash は「表記そのまま」の空間（rows の surfaceHash・renderer の seed と同じ）。候補キー（NFC・小文字・trim）では畳まない：
+      // 大文字小文字・NFC だけ違う別の形は 2 件に数え、S5_seen でも一致しない（日本語の作品では起きにくい。試験で固定）。
+      s5Hashes.add(await hash(item.surface));
       const key = await hashKey(item.surface);
       if (!ambiguous.has(key)) ambiguous.set(key, new Map());
       ambiguous.get(key).set(entity.id, item.sceneRanges ?? []);
     }
   }
-  return { entities, names, aliases, honorific, relational, ambiguous };
+  return {
+    entities,
+    names,
+    aliases,
+    honorific,
+    relational,
+    ambiguous,
+    s5Hashes,
+  };
 }
 
 function inRanges(ranges, scene) {
@@ -217,9 +236,16 @@ function bump(map, key, by = 1) {
  * rows：renderer の extractStructure の rows（bulkApprovable を含む）。
  * seedDrops：renderer が返す、製品が planner の前段で seed を落とした件数（件数だけ。表記は持たない）。
  * 受け取った値を加工せず metrics.seedDrops に記録する（無ければ null）。
+ * s5Breakdown：renderer が classifyS5Surfaces で数えた S5-roster の内訳（件数だけ。無ければ null＝未計測。
+ * seed が読めない run・欄の無い renderer）。ここでは rows から数えた S5_seen と突き合わせ、食い違えば止める。
  * 返り値は件数・ID・割合だけ。
  */
-export function computeMeasureA({ index, rows, seedDrops = null }) {
+export function computeMeasureA({
+  index,
+  rows,
+  seedDrops = null,
+  s5Breakdown = null,
+}) {
   const categoryCounts = Object.fromEntries(CATEGORIES.map((c) => [c, 0]));
   const notInRosterByKind = {};
   const reasons = {};
@@ -490,8 +516,73 @@ export function computeMeasureA({ index, rows, seedDrops = null }) {
       unit.manualCreate * 1,
   });
 
+  // DR-ILM-38 の列。Ur-all は名簿の外・関係の呼び名も含む全行の unresolved（proposalByBinding。listedByBinding は
+  // 名簿の外を抜いた後なので使わない）。Ur-rosterTarget は分類 1 の 2 つの和（categoryCounts をそのまま使い、数え直さない）。
+  const urAll = proposalByBinding.unresolved ?? 0;
+  const urRosterTarget =
+    categoryCounts.unresolvedCandidateIn +
+    categoryCounts.unresolvedCandidateOut;
+  // S5_seen：S5-roster の表記のうち、提案（rows の surfaceHash）に出たもの。分類の枝（sceneRangeRows など）に依らず
+  // 全行の表記の hash の一致で数える（表記単位。同じ表記の行が複数あっても 1 件）。
+  const proposalSurfaceHashes = new Set(
+    rows.map((r) => r.surfaceHash).filter((h) => typeof h === "string"),
+  );
+  let s5Seen = 0;
+  for (const hash of index.s5Hashes ?? [])
+    if (proposalSurfaceHashes.has(hash)) s5Seen++;
+  const s5Roster = index.s5Hashes?.size ?? 0;
+  if (s5Breakdown) {
+    // renderer の内訳（seed・提案の集合から 1 つずつ分類した件数）と、host が rows から数えた値が合わなければ、
+    // 表記の hash の空間か S5 の渡し方がずれている。黙って出さず止める。
+    const { notSeed, seedNotProposed, proposed } = s5Breakdown;
+    assert.equal(
+      s5Breakdown.rosterSurfaces,
+      s5Roster,
+      `[artifact] S5_ROSTER_COUNT_DIFFERS renderer=${s5Breakdown.rosterSurfaces} host=${s5Roster}`,
+    );
+    assert.equal(
+      proposed,
+      s5Seen,
+      `[artifact] S5_SEEN_COUNT_DIFFERS renderer=${proposed} host=${s5Seen}`,
+    );
+    assert.equal(
+      notSeed + seedNotProposed + proposed,
+      s5Roster,
+      "[artifact] S5_BREAKDOWN_NOT_PARTITION",
+    );
+    assert.equal(
+      s5Breakdown.proposedOutsideSeed,
+      0,
+      "[artifact] S5_PROPOSED_OUTSIDE_SEED a roster surface is proposed but is not in the seed set",
+    );
+  }
+  const identityColumns = {
+    ur: { all: urAll, rosterTarget: urRosterTarget },
+    s5: {
+      roster: s5Roster,
+      seen: s5Seen,
+      // 内訳（seed が読めた run だけ。null は 0 でなく未計測）。
+      breakdown: s5Breakdown
+        ? {
+            notSeed: s5Breakdown.notSeed,
+            seedNotProposed: s5Breakdown.seedNotProposed,
+            proposed: s5Breakdown.proposed,
+            candidate: s5Breakdown.candidate
+              ? {
+                  inCandidate: s5Breakdown.candidate.inCandidate,
+                  notSeedInCandidate: s5Breakdown.candidate.notSeedInCandidate,
+                  neitherSeedNorCandidate:
+                    s5Breakdown.candidate.neitherSeedNorCandidate,
+                }
+              : null,
+          }
+        : null,
+    },
+  };
+
   return {
     definitionVersion: METRIC_DEFINITION_VERSION,
+    identityColumns,
     proposalCount: rows.length,
     proposalByBinding,
     listedByBinding,

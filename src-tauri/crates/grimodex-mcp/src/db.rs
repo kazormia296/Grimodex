@@ -491,11 +491,30 @@ pub fn get_codex_entry_full(
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("detail_values query failed")?;
 
-    // Phases
+    // Phases — 項目そのもの（base が公開）は見えるが、「どこかの Phase で hidden」にした
+    // Phase の分は返さない（DR-MP4-45）。外した印は付けない（Phase が元から無い項目と同形）。
+    // - hidden の Phase は行ごと除く。allowlist 形：mode が always／mentioned／suppress の
+    //   Phase だけが公開で、hidden と不明な値は除く（`isCodexContextModeHiddenFromAi` と一致）。
+    // - アプリ内の Phase 解決は「後の Phase の override が NULL なら前の mode を継承」する
+    //   ので、同じ項目に hidden の Phase が 1 つでもあるときは、override が NULL の Phase も
+    //   除く（場面の位置は解決しない保守的な近似。順序は見ない）。
+    // - override が NULL の Phase（本文だけを上書き）は、hidden の Phase が無い項目では返す
+    //   ので `IS NULL` の枝が要る（`IN (…)` だけでは NULL の行が全部落ちる）。
     let mut stmt = conn.prepare(
-        "SELECT id, label, summary_override, content_override, context_mode_override,
-                anchor_node_id, created_at, updated_at
-         FROM codex_entry_phases WHERE entry_id = ?1 ORDER BY created_at",
+        "SELECT p.id, p.label, p.summary_override, p.content_override, p.context_mode_override,
+                p.anchor_node_id, p.created_at, p.updated_at
+         FROM codex_entry_phases p
+         WHERE p.entry_id = ?1
+           AND (
+             p.context_mode_override IN ('always', 'mentioned', 'suppress')
+             OR (p.context_mode_override IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM codex_entry_phases h
+                   WHERE h.entry_id = p.entry_id
+                     AND h.context_mode_override IS NOT NULL
+                     AND h.context_mode_override NOT IN ('always', 'mentioned', 'suppress')))
+           )
+         ORDER BY p.created_at",
     )?;
     let phases: Vec<CodexPhase> = stmt
         .query_map(params![entry_id], |row| {
@@ -3361,6 +3380,8 @@ pub fn chronicle_event_relation(
 pub(crate) mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    mod phase_detail_hidden;
 
     /// Simpler in-memory DB with just enough tables for our tests.
     /// pub(crate): tools/context.rs のテストも同じ fixture を使う（DDL 二重化を避ける）。

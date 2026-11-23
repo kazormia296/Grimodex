@@ -380,7 +380,7 @@ describe("共有 core の search 2 本が main の typed read（fts）へ送る�
     await executors.search_scenes({ query: "アリア" });
     await executors.search_snippets({ query: "老魔術師" });
     expect(ftsSent).toEqual([
-      { projectId: "p-main", scope: "scenes", limit: 50 },
+      { projectId: "p-main", scope: "scenes_live", limit: 10 },
       { projectId: "p-main", scope: "snippets", limit: 10 },
     ]);
 

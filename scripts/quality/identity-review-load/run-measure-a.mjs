@@ -23,7 +23,7 @@
 import assert from "node:assert/strict";
 import console from "node:console";
 import process from "node:process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -32,6 +32,7 @@ import {
   assertOutputClean,
   compareStoredWithProjection,
   findAiCommands,
+  hashSurface,
   planStoredRead,
   rosterAtLevel,
   safeErrorSummary,
@@ -120,6 +121,25 @@ export function registrationEntries(roster, level) {
   }));
 }
 
+/**
+ * 候補画面の候補（run-inventory が repo 外に書く ${output}/surfaces/<作品>.json の candidate 配列〔文字列〕）を、host 側で
+ * 表記そのままの hash（hashSurface）にする。file が無い・読めない・candidate が配列でない・空のときは null（0 でなく未計測。
+ * inventory の候補の取得が失敗すると空の配列が書かれるので、空は「候補が 0 件」と区別できず未計測に倒す）。表記は返さない。
+ */
+export async function loadCandidateHashes(file, hash = hashSurface) {
+  if (!existsSync(file)) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  const list = parsed?.candidate;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  if (!list.every((item) => typeof item === "string")) return null;
+  return [...new Set(await Promise.all(list.map((item) => hash(item))))];
+}
+
 /** cell の run の完了条件（§8-2）：prepass complete・提案あり・AI なし。 */
 export function runCompleted(extract) {
   return (
@@ -139,7 +159,15 @@ export async function measureABody({
   index,
   cell,
   persist = "skip",
+  candidateHashes = null,
 }) {
+  // renderer へ渡す S5-roster の hash（名簿の全体から。水準で削らない）と、そのうち候補画面の候補に出るもの。
+  // renderer は件数だけを返す（候補の一覧・seed の集合は host へ戻さない）。候補が未計測なら null。
+  const s5Hashes = [...(index.s5Hashes ?? [])].sort();
+  const s5Set = new Set(s5Hashes);
+  const s5CandidateHashes = candidateHashes
+    ? candidateHashes.filter((hash) => s5Set.has(hash))
+    : null;
   const entries = registrationEntries(roster, cell.level);
   let registration = { created: 0 };
   if (entries.length > 0)
@@ -160,7 +188,12 @@ export async function measureABody({
       try {
         persisted = await page.evaluate(
           (input) => window.identityLoad.extractStructure(input),
-          { folderPercent: percent, persist: true },
+          {
+            folderPercent: percent,
+            persist: true,
+            s5Hashes,
+            s5CandidateHashes,
+          },
         );
         persistAttempt = { status: "ok" };
       } catch (error) {
@@ -171,13 +204,14 @@ export async function measureABody({
       persisted ??
       (await page.evaluate(
         (input) => window.identityLoad.extractStructure(input),
-        { folderPercent: percent, persist: false },
+        { folderPercent: percent, persist: false, s5Hashes, s5CandidateHashes },
       ));
     const rows = extract.rows;
     const metrics = computeMeasureA({
       index,
       rows,
       seedDrops: extract.seedDrops ?? null,
+      s5Breakdown: extract.s5Breakdown ?? null,
     });
     // 一括承認可の数は、renderer（製品の旗を全行で数えたもの）と metrics（分類の内訳の合計）が同じ run で一致する。
     // 一致しないのは、分類が製品の一括承認の対象を取りこぼしているか、行の旗が欠けている。
@@ -307,12 +341,19 @@ async function main() {
       check.ok,
       `[precheck] ROSTER_INVALID ${work} errors=${check.errors.length}`,
     );
-    rosters.set(work, { roster, index: await buildRosterIndex(roster) });
+    rosters.set(work, {
+      roster,
+      index: await buildRosterIndex(roster),
+      // 候補画面の候補（作品単位。水準に依らない）。inventory が書いた file が無ければ null（未計測）。
+      candidateHashes: await loadCandidateHashes(
+        path.join(output, "surfaces", `${work}.json`),
+      ),
+    });
   }
   const summary = [];
   await withVite(output, async ({ vite, busAddress }) => {
     for (const cell of cells) {
-      const { roster, index } = rosters.get(cell.work);
+      const { roster, index, candidateHashes } = rosters.get(cell.work);
       const {
         cell: observed,
         value,
@@ -332,6 +373,7 @@ async function main() {
             index,
             cell,
             persist: options.persist,
+            candidateHashes,
           }),
       });
       const status =

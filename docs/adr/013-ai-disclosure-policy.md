@@ -422,3 +422,24 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 - 別の印：版の印（`disclosure.secret`）、Codex の hidden。年表は CSR/1 の範囲で、FSR/1 は変えない。
 - 伏線の列と列の DEFAULT、書き出しの `secret`（値を運ぶだけ。「AI に見えない」という意味ではなくなる）。評価の準備（G-07 など）。自動の文脈の枠（約 1000 token）。
 - 公開、閾値・Gold・凍結・評価の規則の変更、新しい送信先・保存先。
+
+## 追補（2026-11-23）：MCP の Codex の詳細読みは、hidden の Phase の分を返さない（DR-MP4-45）
+
+2026-11-23 に、ユーザーが、standalone MCP の Codex の詳細（`get_codex_entry`）から、どこかの Phase で hidden にしている Phase の分を返さないこと（案 (b)。返さない形は、行ごと除く〔Q-D1〕、同じ項目に hidden の Phase があるときは override が空の Phase も除く〔Q-D2 の B〕）を決め、本 ADR には末尾に追補を 1 項だけ足すこと（Q-D3）を確認した。本 ADR の本文と、これまでの追補は書き換えない。本 ADR が MCP の Codex の読み出しについて置いた記述のうち、この変更で読み替わるものを、ここに記す。
+
+- 記録：DR-MP4-45（[mastra-mp4-decisions.md](../plans/mastra-mp4-decisions.md)。lane D。決定は 45a、実装の判断は 45b〜45d、残る制限は 45f、この追補の確認は 45j）。実装は `src-tauri/crates/grimodex-mcp/src/db.rs` の `get_codex_entry_full` の Phase の SELECT 1 文だけである。
+- 規則の正本は、DR-MP4-45 である。この追補は、本 ADR のどこが読み替わるかを示すだけで、規則を足さない。
+- 方針（D1・D2。全部開示、作者が付けた hidden は守る）、閾値、送信先、保存先は変えない。MCP が返す範囲を狭める向きだけの変更である。
+
+### 読み替える点
+
+1. **MCP の Codex の詳細（`get_codex_entry`。`entry_id` 指定も `name` の部分一致も）。** `phases[]` から、`context_mode_override` が hidden または不明な値の Phase を、行ごと（名前・開始の場面・要約と本文の上書き・mode・anchor の全部）返さない。外した印は付けず、Phase が元から無い項目と同じ形になる。同じ項目に hidden（または不明な mode）の Phase が 1 つでもあるときは、override が空の Phase も返さない（アプリ内の Phase 解決は、空の override が前の mode を継承する。MCP は場面の位置を解決しないので、保守的に除く）。`always`・`mentioned`・`suppress` を明示した Phase と、hidden の Phase が無い項目の、本文だけを上書きする Phase は、今までどおり返す。項目そのもの（名前・要約・本文・タグ・子）と、一覧・検索・関連・書込み用の文脈（`get_writing_context`）は、今までどおり、もとの設定（base の `context_mode`）の判定のままで、Phase が hidden にする項目の名前・要約・本文も、外部の AI に見える（案 (b) の帰結）。
+2. **「MCP は Phase の override による hidden を見ない」（本文 `:124`）と、「閉じている：…MCP の writing context」（本文 `:60`）。** `:124` は、詳細の `phases[]` を除いて、今も当てはまる。`:60` の「閉じている：Codex の未来の Phase と contextMode（chat、MCP の writing context、post-effect）」は、MCP の writing context については実態より広い。実態は、もとの設定の contextMode（hidden・suppress）だけで、Phase は見ない。MCP で Phase による hidden が閉じているのは、この追補の詳細の `phases[]` だけである。
+3. **年表の MCP との食い違い（将来）。** この追補の時点（4d5304c09）の年表の MCP は、Phase も base の mode も見ない。2026-11-23 の追補（CSR/1）が置いた確認 109（年表の lane の予定。未 merge）が入った後は、年表の MCP は Phase を解決せずに、もとの設定が hidden またはどこかの Phase が hidden の人物を外す予定で、そのとき、同じ人物が年表では隠れ、Codex の MCP では人物そのものが読める。この食い違いは、案 (b) を選んだユーザーの決定の帰結として受容する。
+
+### 変えないもの
+
+- D1・D2（全部開示、作者が付けた hidden は守る）。Codex の hidden の意味。もとの設定が hidden の項目は、MCP でも今までどおり「見つからない」（存在しない id と同じ答え）。
+- MCP の件数・タグ名・`usageCount`・`update_codex_entry` の応答（既存の残る漏れ。項目が見えるので、この変更の影響を受けない）。
+- 本文の行（`:60`・`:124`・`:174`）。この追補は、読み替えを示すだけで、本文を直さない。
+- 公開、閾値・Gold・凍結・評価の規則の変更、新しい送信先・保存先。

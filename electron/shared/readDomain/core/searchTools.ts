@@ -28,14 +28,12 @@ import type { CoreToolResult } from "./toolResult.js";
  * its `No active project` result.
  */
 
-/** The most scenes `search_scenes` returns. */
-const SEARCH_SCENES_LIMIT = 10;
 /**
- * What `search_scenes` asks `fts` for: Native's own cap (50). Archived scenes are
- * dropped after the fetch and the rest cut to `SEARCH_SCENES_LIMIT`, so the
- * ones an archived duplicate ranks above must still be in the answer.
+ * The most scenes `search_scenes` returns, and what it asks `fts` for: Native's
+ * `scenes_live` scope leaves the archived scenes out in its own WHERE (before
+ * its limit), so the top ten it answers are already live ones.
  */
-const SEARCH_SCENES_FTS_FETCH_LIMIT = 50;
+const SEARCH_SCENES_LIMIT = 10;
 /** What `search_snippets` asks `fts` for, and the most it returns. */
 const SEARCH_SNIPPETS_LIMIT = 10;
 
@@ -62,15 +60,17 @@ export async function searchScenes(
 
   let rows: Array<{ id: string; title: string; content: string }>;
   if (allTrigramFriendly) {
-    // The archived-scene condition is this tool's (Native's fts answers
-    // archived scenes too): the rows are fetched with it and put back in the
-    // fts order, and only then cut.
+    // Native's `scenes_live` scope already leaves archived scenes out. The
+    // condition stays in the statement below as well: the in-browser mock's
+    // `fts` answers every scope in one list and drops nothing, the LIKE-OR arm
+    // does not go through `fts`, and a scene archived between the two reads
+    // must not come back. The rows are put back in the fts order, then cut.
     const hitIds = ftsHitIds(
       await ctx.native.fts({
         projectId,
         query,
-        scope: "scenes",
-        limit: SEARCH_SCENES_FTS_FETCH_LIMIT,
+        scope: "scenes_live",
+        limit: SEARCH_SCENES_LIMIT,
       }),
       "scene",
     );

@@ -110,8 +110,10 @@ export function orderByIds<T extends { id: string }>(
  * string `sourceType`, throws. Dropping such a row would turn a wire that
  * changed shape into "0 found", a success the model would believe. A row of
  * another source type is dropped (the in-browser mock answers every scope in one
- * list); an archived scene or a hidden entry is not Native's to drop either, and
- * the tool does that with its own condition.
+ * list); a hidden entry is not Native's to drop (its `codex` scope returns it),
+ * and nor is an archived scene in the `scenes` and `all` scopes: the tool does
+ * that with its own condition. Only the `scenes_live` scope leaves archived
+ * scenes out, and `search_scenes` still keeps its own condition (DR-ARC-1).
  */
 export function ftsHitIds(
   raw: unknown,

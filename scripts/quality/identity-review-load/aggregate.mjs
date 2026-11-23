@@ -22,6 +22,8 @@ import {
   assertOutputClean,
   findUnsafeStrings,
   safeErrorSummary,
+  REVIEWED_WORKS,
+  WORKS,
 } from "./lib.mjs";
 import { B_METRIC_DEFINITION_VERSION } from "./measure-b-core.mjs";
 import {
@@ -45,6 +47,52 @@ export const DECLARATIONS = Object.freeze(["not-quality-claim", "not-gold"]);
 export const FORBIDDEN_KEY =
   /authorization|api[-_]?key|credential|password|bearer|secret/iu;
 export const AMBIGUOUS_MATERIAL_MINIMUM = 5; // §8-5：4 作の合計が 5 未満なら「材料なし」
+/**
+ * 名簿を AI が作り、作者が確認していない作品（§16。事前登録 DR-ILM-38 (vi)）。この作品の値には印を付け、合計は
+ * 「全作品」と「この作品を除く」の両方を出す。§8 の 1（作者の確認が未了の作品は判断不能）の判定は変えない。
+ */
+export const UNCONFIRMED_ROSTER_WORKS = Object.freeze(
+  Object.keys(WORKS).filter((work) => !REVIEWED_WORKS.includes(work)),
+);
+export const UNCONFIRMED_ROSTER_MARK = "roster-ai-made-author-unconfirmed";
+
+/**
+ * DR-ILM-38 の「各列の読みの文」（測る前に固定。markdown の先頭に出す。records には入れない：records は ASCII の語だけ）。
+ * key は列の名前。言えること・言えないことは DR-ILM-38 の文をそのまま短くしたもの。
+ */
+export const IDENTITY_COLUMN_READINGS = Object.freeze([
+  {
+    column: "Ur-all",
+    canSay: "作者が結び先を決める手間の大きさ",
+    cannotSay: "規則で減らせる量（新しい項目になるものも含む）",
+  },
+  {
+    column: "Ur-rosterTarget",
+    canSay: "名簿に正解の結び先があるのに未解決の提案の数",
+    cannotSay:
+      "実際に規則が効く数（名簿は AI が作り、作者の確認は一部の行だけ）",
+  },
+  {
+    column: "S5-roster",
+    canSay: "名簿を作った AI が、場面で指す人が変わる表記として見つけた数",
+    cannotSay:
+      "作品の実態の数（見つけ方に依存し、少なくても「見つけていない」のか「少ない」のか区別できない）",
+  },
+  {
+    column: "S5_seen",
+    canSay: "そのうち今の抽出が提案に出した数（review に実際に現れる数）",
+    cannotSay:
+      "抽出が拾わない分（seed にならない表記は数えられない。内訳で別に見る）",
+  },
+  {
+    column: "S5 の内訳",
+    canSay: "「抽出が拾わない」のか「提案に出る」のか",
+    cannotSay: "拾わない理由",
+  },
+]);
+/** m-ja-2 の印の文（markdown 用）。 */
+export const UNCONFIRMED_ROSTER_TEXT = "名簿は AI が作り、作者が確認していない";
+
 /** 指標の定義の版の欄が無い records（旧）。新しい版と混ぜて集計しない。 */
 export const LEGACY_METRIC_DEFINITION = "legacy";
 
@@ -215,6 +263,24 @@ export function flattenRunA(run) {
     bulkCreateRelational: m.mismatch.bulkCreateWrongEntry?.relational ?? null,
     bulkCreateAmbiguous: m.mismatch.bulkCreateWrongEntry?.ambiguous ?? null,
     bulkCreateKnownEntity: m.mismatch.bulkCreateWrongEntry?.knownEntity ?? null,
+    // DR-ILM-38 の列（版 a-defs/4 から。旧 records は null）。件数だけ。Ur：bindingKind が unresolved の提案（全体／名簿に
+    // 結び先がある分）。S5：名簿の場面で指す人が変わる表記（重複を除く）／そのうち提案に出たもの／内訳（seed に出ない・seed に
+    // 出るが提案に出ない・提案に出る。候補画面の候補に出る数と、seed にも候補にもならない数は別に。未計測は null）。
+    urAll: m.identityColumns?.ur?.all ?? null,
+    urRosterTarget: m.identityColumns?.ur?.rosterTarget ?? null,
+    s5Roster: m.identityColumns?.s5?.roster ?? null,
+    s5Seen: m.identityColumns?.s5?.seen ?? null,
+    s5NotSeed: m.identityColumns?.s5?.breakdown?.notSeed ?? null,
+    s5SeedNotProposed:
+      m.identityColumns?.s5?.breakdown?.seedNotProposed ?? null,
+    s5Proposed: m.identityColumns?.s5?.breakdown?.proposed ?? null,
+    s5InCandidate:
+      m.identityColumns?.s5?.breakdown?.candidate?.inCandidate ?? null,
+    s5NotSeedInCandidate:
+      m.identityColumns?.s5?.breakdown?.candidate?.notSeedInCandidate ?? null,
+    s5NeitherSeedNorCandidate:
+      m.identityColumns?.s5?.breakdown?.candidate?.neitherSeedNorCandidate ??
+      null,
     // 製品が planner の前段で seed を落とした件数（呼び名・候補画面で却下済みの表記）。件数だけ。
     seedDroppedRelational: m.seedDrops?.relationalTerms ?? null,
     seedDroppedFoldedDismissed: m.seedDrops?.foldedDismissed ?? null,
@@ -240,6 +306,110 @@ export function rangeOf(values) {
 }
 
 const MATRIX_LEVELS = ["empty", "L0", "L1", "L2", "L3", "L2-1char"];
+
+// ---- DR-ILM-38 の列（名簿の水準 L0〜L3 の matrix cell・F100 ごと。作品間の合計）------------------------------
+
+/** 水準 L0〜L3（L2・F100 に絞らない）。 */
+export const IDENTITY_LEVELS = Object.freeze(["L0", "L1", "L2", "L3"]);
+/** 水準ごとに値が変わる列（S5-roster は名簿から数えるので水準に依らず、別に持つ）。 */
+export const IDENTITY_LEVEL_COLUMNS = Object.freeze([
+  "urAll",
+  "urRosterTarget",
+  "s5Seen",
+  "s5NotSeed",
+  "s5SeedNotProposed",
+  "s5Proposed",
+  "s5InCandidate",
+  "s5NotSeedInCandidate",
+  "s5NeitherSeedNorCandidate",
+]);
+
+/** 合計：全ての作品が数値のときだけ足す。1 作品でも欠け・未計測（null）なら、合計と名乗らず null。 */
+function totalOf(works, pick) {
+  const values = works.map(pick);
+  return values.every((v) => Number.isFinite(v))
+    ? values.reduce((n, v) => n + v, 0)
+    : null;
+}
+
+/**
+ * DR-ILM-38：Ur・S5 の列を水準ごと・作品ごとに並べ、4 作品の合計と、名簿が未確認の作品（m-ja-2）を除く 3 作品の合計の
+ * 両方を出す。期待する作品は WORKS（4 作品）と byWork の作品の和：その水準の cell が欠けた作品があれば、その合計は
+ * 作品数を名乗らず null にして、欠けた作品を missingWorks に出す。§8 の 1 の判定には触れない（completed を並べるだけ）。
+ */
+export function buildIdentityColumns(byWork) {
+  const expectedAll = [
+    ...new Set([...Object.keys(WORKS), ...Object.keys(byWork)]),
+  ];
+  const expectedConfirmed = expectedAll.filter(
+    (work) => !UNCONFIRMED_ROSTER_WORKS.includes(work),
+  );
+  const markOf = (work) =>
+    UNCONFIRMED_ROSTER_WORKS.includes(work) ? UNCONFIRMED_ROSTER_MARK : null;
+  // S5-roster：名簿から数えた値で、水準に依らない。同じ作品の cell で値が違えば止める。
+  const s5PerWork = {};
+  for (const [work, w] of Object.entries(byWork)) {
+    const values = new Set(
+      MATRIX_LEVELS.map((level) => w.matrix[level]?.s5Roster).filter((v) =>
+        Number.isFinite(v),
+      ),
+    );
+    if (values.size > 1)
+      throw new Error(`[artifact] S5_ROSTER_VARIES_BY_LEVEL work=${work}`);
+    s5PerWork[work] = values.size === 1 ? [...values][0] : null;
+  }
+  const missingOf = (works, pick) =>
+    works.filter((work) => !Number.isFinite(pick(work)));
+  const totals = (works, pickFor) => {
+    const columns = {};
+    for (const key of IDENTITY_LEVEL_COLUMNS)
+      columns[key] = totalOf(works, (work) => pickFor(work, key));
+    return {
+      works: [...works],
+      workCount: works.length,
+      missingWorks: missingOf(works, (work) => pickFor(work, "urAll")),
+      columns,
+    };
+  };
+  const levels = {};
+  for (const level of IDENTITY_LEVELS) {
+    const cellOf = (work) => byWork[work]?.matrix?.[level] ?? null;
+    const perWork = {};
+    for (const [work] of Object.entries(byWork)) {
+      const cell = cellOf(work);
+      perWork[work] = {
+        rosterMark: markOf(work),
+        completed: cell?.completed ?? null,
+        s5Roster: cell?.s5Roster ?? null,
+        ...Object.fromEntries(
+          IDENTITY_LEVEL_COLUMNS.map((key) => [key, cell?.[key] ?? null]),
+        ),
+      };
+    }
+    const pickFor = (work, key) => cellOf(work)?.[key];
+    levels[level] = {
+      perWork,
+      totalAll: totals(expectedAll, pickFor),
+      totalWithoutUnconfirmedRoster: totals(expectedConfirmed, pickFor),
+    };
+  }
+  const s5Total = (works) => ({
+    works: [...works],
+    workCount: works.length,
+    missingWorks: missingOf(works, (work) => s5PerWork[work]),
+    value: totalOf(works, (work) => s5PerWork[work]),
+  });
+  return {
+    unconfirmedRosterMark: UNCONFIRMED_ROSTER_MARK,
+    unconfirmedRosterWorks: [...UNCONFIRMED_ROSTER_WORKS],
+    levels,
+    s5Roster: {
+      perWork: s5PerWork,
+      totalAll: s5Total(expectedAll),
+      totalWithoutUnconfirmedRoster: s5Total(expectedConfirmed),
+    },
+  };
+}
 
 /**
  * cells：run-measure-a の採用済みの cell の JSON。rowsByCell：cell id → [{ label, rows }]。
@@ -315,7 +485,12 @@ export function buildMeasureA({ cells, rowsByCell }) {
     for (const column of Object.keys(perWork[0]))
       ranges[level][column] = rangeOf(perWork.map((row) => row[column]));
   }
-  return { definitionVersion, byWork, ranges };
+  return {
+    definitionVersion,
+    byWork,
+    ranges,
+    identityColumns: buildIdentityColumns(byWork),
+  };
 }
 
 // ---- 測定 B ------------------------------------------------------------------
@@ -420,9 +595,11 @@ export function buildMeasureB2(results) {
 /**
  * どの値でも、どの選択肢を支持するかは決めない（decided は常に false）。材料は件数だけ、言えないことは
  * コードで持つ（本文は renderRecordsMarkdown の表の注に出す）。
- * ambiguousSurfaceCounts：作品ごとの、名簿の「場面で指す人が変わる表記」の数（名簿から数えた件数）。
+ * ★5 の「材料なし」の印（§8-5。事前登録 DR-ILM-40）：名簿の「場面で指す人が変わる表記」の**重複を除いた数**（S5-roster。
+ * 配列の要素数ではない）の 4 作品の合計が AMBIGUOUS_MATERIAL_MINIMUM 未満なら true。cell や作品が欠けて合計が出ないとき（a-defs/3 の
+ * records を含む）は null（未評価）で、欠けた作品を 0 として足さない。m-ja-2 を除く 3 作品の値は参考で、判定には使わない。
  */
-export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
+export function buildStarMapping({ measureA }) {
   const perWork = {};
   for (const [work, w] of Object.entries(measureA.byWork)) {
     const l2 = w.matrix.L2 ?? null;
@@ -465,9 +642,9 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
           : null,
     };
   }
-  const ambiguousTotal = ambiguousSurfaceCounts
-    ? Object.values(ambiguousSurfaceCounts).reduce((n, v) => n + v, 0)
-    : null;
+  const s5Roster = measureA.identityColumns?.s5Roster ?? null;
+  const ambiguousTotal = s5Roster?.totalAll?.value ?? null;
+  const referenceTotal = s5Roster?.totalWithoutUnconfirmedRoster?.value ?? null;
   return {
     star4: {
       decided: false,
@@ -487,8 +664,19 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
       decided: false,
       materials: ["sceneRangeRows", "sceneRangeUnresolved"],
       ambiguousSurfaceTotal: ambiguousTotal,
+      // null＝未評価（合計が出ない）。false は「5 未満でない」（材料なしの印は立たない）。
       noMaterial:
-        ambiguousTotal !== null && ambiguousTotal < AMBIGUOUS_MATERIAL_MINIMUM,
+        ambiguousTotal === null
+          ? null
+          : ambiguousTotal < AMBIGUOUS_MATERIAL_MINIMUM,
+      // 参考（判定に使わない）：名簿が未確認の作品を除く 3 作品の合計と、5 未満かどうか（null＝未評価）。
+      referenceWithoutUnconfirmedRoster: {
+        total: referenceTotal,
+        belowMinimum:
+          referenceTotal === null
+            ? null
+            : referenceTotal < AMBIGUOUS_MATERIAL_MINIMUM,
+      },
       cannotSay: [
         "surfaces-were-found-by-the-roster-author-not-the-human",
         "few-cannot-be-told-from-missed",
@@ -514,12 +702,7 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
 
 // ---- records -------------------------------------------------------------------
 
-export function buildRecords({
-  measureA,
-  b1 = [],
-  b2 = [],
-  ambiguousSurfaceCounts = null,
-}) {
+export function buildRecords({ measureA, b1 = [], b2 = [] }) {
   return {
     schemaVersion: RECORDS_SCHEMA,
     evidenceScope: EVIDENCE_SCOPE,
@@ -534,9 +717,7 @@ export function buildRecords({
       b1: buildMeasureB1(b1),
       b2: buildMeasureB2(b2),
     },
-    starMapping: measureA
-      ? buildStarMapping({ measureA, ambiguousSurfaceCounts })
-      : null,
+    starMapping: measureA ? buildStarMapping({ measureA }) : null,
   };
 }
 
@@ -604,6 +785,78 @@ function rangeText(range) {
     : `${range.min}–${range.max}`;
 }
 
+const dash = (value) =>
+  value === null || value === undefined ? "-" : String(value);
+
+/** DR-ILM-38 の列（読みの文を先頭に、水準ごとの表）。件数と定数の文だけ。null は「-」（0 と区別する）。 */
+/** ★5 の「材料なし」の印（§8-5。DR-ILM-40）。判定は 4 作品の合計、3 作品は参考。null は未評価（0 とは違う）。 */
+export function renderStar5Material(star5) {
+  const mark = (below) =>
+    below === null
+      ? "未評価（合計が出ない）"
+      : below
+        ? "立つ（5 未満）"
+        : "立たない（5 未満でない）";
+  const count = (n) => (n === null ? "-" : String(n));
+  return [
+    "",
+    `- ★5（§8-5）の材料なしの印：名簿の「場面で指す人が変わる表記」の重複を除いた数（S5-roster）の 4 作品の合計 = ${count(star5.ambiguousSurfaceTotal)}、印は${mark(star5.noMaterial)}。`,
+    `  - 参考（判定に使わない）：名簿が未確認の作品を除く 3 作品の合計 = ${count(star5.referenceWithoutUnconfirmedRoster.total)}、${mark(star5.referenceWithoutUnconfirmedRoster.belowMinimum)}。`,
+    "  - この印は、名簿を作った AI が見つけた数に基づく。提案に出た数（S5_seen）と内訳は「Ur・S5 の列」の表で併せて読む（S5_seen に新しい線は引かない）。",
+  ];
+}
+
+export function renderIdentityColumns(columns) {
+  const lines = [];
+  lines.push(
+    "## Ur・S5 の列の読み（DR-ILM-38。測る前に固定。件数を並べるだけで、作る／作らない／保留の結論は出さない）",
+    "",
+    "| 列 | 言えること | 言えないこと |",
+    "|---|---|---|",
+  );
+  for (const r of IDENTITY_COLUMN_READINGS)
+    lines.push(`| ${r.column} | ${r.canSay} | ${r.cannotSay} |`);
+  lines.push(
+    "",
+    `- 合計は「全作品」と「名簿が未確認の作品（${columns.unconfirmedRosterWorks.join("・")}）を除く」の両方を並べる。${columns.unconfirmedRosterWorks.join("・")} には「${UNCONFIRMED_ROSTER_TEXT}」の印を付ける。§8 の 1（作者の確認が未了の作品は判断不能）の判定は変えない。`,
+    "- 全作品の合計は、その水準の cell が全作品に揃っているときだけ出す（欠けた作品があれば「-」と書き、欠けた作品を添える）。",
+    "- S5-roster は名簿から数えるので水準に依らない（作品ごと。同じ表記が複数の実体に載っていれば 1 件）。",
+    "- S5 の内訳の「候補画面の候補に出る」は、inventory の既定の閾値の候補（作品単位）で、水準に依らない。登録済みの Entry や却下で絞った後の、その水準の候補画面とは一致しない。候補が未計測の作品があれば、候補の合計は「-」。",
+    "",
+  );
+  for (const [level, l] of Object.entries(columns.levels)) {
+    lines.push(`### 名簿の水準 ${level}（F100）`, "");
+    lines.push(
+      "| 作品 | 名簿の印 | 完了 | Ur-all | Ur-rosterTarget | S5-roster | S5_seen | seed に出ない | seed に出るが提案に出ない | 提案に出る | 候補画面の候補に出る | うち seed にならない | seed にも候補にもならない |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    );
+    for (const [work, r] of Object.entries(l.perWork))
+      lines.push(
+        `| ${work} | ${r.rosterMark ? UNCONFIRMED_ROSTER_TEXT : "-"} | ${dash(r.completed)} | ${dash(r.urAll)} | ${dash(r.urRosterTarget)} | ${dash(r.s5Roster)} | ${dash(r.s5Seen)} | ${dash(r.s5NotSeed)} | ${dash(r.s5SeedNotProposed)} | ${dash(r.s5Proposed)} | ${dash(r.s5InCandidate)} | ${dash(r.s5NotSeedInCandidate)} | ${dash(r.s5NeitherSeedNorCandidate)} |`,
+      );
+    for (const [label, key, s5Key] of [
+      ["合計（全作品）", "totalAll", "totalAll"],
+      [
+        `合計（${columns.unconfirmedRosterWorks.join("・")} を除く）`,
+        "totalWithoutUnconfirmedRoster",
+        "totalWithoutUnconfirmedRoster",
+      ],
+    ]) {
+      const t = l[key];
+      const c = t.columns;
+      const note =
+        t.missingWorks.length > 0
+          ? `（欠け: ${t.missingWorks.join("・")}）`
+          : "";
+      lines.push(
+        `| ${label}（${t.workCount} 作品）${note} | - | - | ${dash(c.urAll)} | ${dash(c.urRosterTarget)} | ${dash(columns.s5Roster[s5Key].value)} | ${dash(c.s5Seen)} | ${dash(c.s5NotSeed)} | ${dash(c.s5SeedNotProposed)} | ${dash(c.s5Proposed)} | ${dash(c.s5InCandidate)} | ${dash(c.s5NotSeedInCandidate)} | ${dash(c.s5NeitherSeedNorCandidate)} |`,
+      );
+    }
+    lines.push("");
+  }
+  return lines;
+}
+
 export function renderRecordsMarkdown(records) {
   const lines = [];
   lines.push(
@@ -618,6 +871,8 @@ export function renderRecordsMarkdown(records) {
     `- 指標の定義の版: 測定 A ${records.measureA?.definitionVersion ?? "-"}／測定 B ${records.measureB?.definitionVersion ?? "-"}（${LEGACY_METRIC_DEFINITION} は版の欄が無い旧 records。A・B それぞれ、版が混ざった入力は集計しない）`,
   );
   lines.push("");
+  if (records.measureA?.identityColumns)
+    lines.push(...renderIdentityColumns(records.measureA.identityColumns));
   if (records.measureA) {
     lines.push("## 測定 A（構造抽出。AI なし）", "");
     lines.push(
@@ -699,6 +954,7 @@ export function renderRecordsMarkdown(records) {
         `| ${key} | いいえ（参考値） | ${s.materials.join(", ") || "-"} | ${s.cannotSay.join(", ")} |`,
       );
     }
+    lines.push(...renderStar5Material(records.starMapping.star5));
   }
   lines.push("");
   return lines.join("\n");

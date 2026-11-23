@@ -780,4 +780,109 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0);
     }
+
+    /// get_codex_entry（entry_id・name の両方）が返す JSON の `phases`（案 (b)）。
+    /// 項目そのものは見え続け、hidden の Phase の中身だけが JSON に出ない。
+    fn seed_phase_entry(server: &GrimodexServer) {
+        let conn = server.conn.lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO codex_entries (id, project_id, name, type, summary)
+                 VALUES ('e-aria', 'p1', 'Aria', 'character', 'aria-base-summary');
+             INSERT INTO codex_entry_phases
+                 (id, entry_id, label, summary_override, content_override,
+                  context_mode_override, anchor_node_id, created_at, updated_at)
+             VALUES
+                 ('ph-ok', 'e-aria', 'visible-phase', NULL, NULL, 'mentioned', NULL,
+                  '2024-01-01', '2024-01-01'),
+                 ('ph-secret', 'e-aria', 'secret-phase-label', 'secret-phase-summary',
+                  'secret-phase-content', 'hidden', 'scene-secret-anchor',
+                  '2024-01-02', '2024-01-02'),
+                 ('ph-null', 'e-aria', 'null-phase-label', NULL, 'null-phase-content',
+                  NULL, NULL, '2024-01-03', '2024-01-03');",
+        )
+        .unwrap();
+    }
+
+    /// get_codex_entry の返す JSON の本文（CallToolResult.content[0].text）。
+    async fn get_codex_json(
+        server: &GrimodexServer,
+        id: Option<&str>,
+        name: Option<&str>,
+    ) -> String {
+        let res = get_codex_entry(
+            server,
+            GetCodexParams {
+                entry_id: id.map(str::to_string),
+                name: name.map(str::to_string),
+            },
+        )
+        .await
+        .unwrap();
+        let v = serde_json::to_value(&res).unwrap();
+        v["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn get_codex_entry_omits_hidden_phases_by_id_and_by_name() {
+        let server = make_writable_server();
+        seed_phase_entry(&server);
+        for json in [
+            get_codex_json(&server, Some("e-aria"), None).await,
+            get_codex_json(&server, None, Some("Ari")).await,
+        ] {
+            // 項目そのもの（base）は今までどおり見える。
+            assert!(json.contains("aria-base-summary"), "{json}");
+            // 公開の Phase は返り、hidden の Phase と、hidden を継承しうる NULL の Phase は返らない。
+            assert!(json.contains("visible-phase"), "{json}");
+            for leaked in [
+                "secret-phase-label",
+                "secret-phase-summary",
+                "secret-phase-content",
+                "scene-secret-anchor",
+                "null-phase-label",
+                "null-phase-content",
+            ] {
+                assert!(!json.contains(leaked), "{leaked} leaked: {json}");
+            }
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let ids: Vec<&str> = v[0]["phases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, vec!["ph-ok"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn get_codex_entry_with_only_hidden_phase_has_the_same_shape_as_no_phase() {
+        let server = make_writable_server();
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO codex_entries (id, project_id, name, type)
+                     VALUES ('e-only-hidden', 'p1', 'OnlyHidden', 'character'),
+                            ('e-no-phase', 'p1', 'NoPhase', 'character');
+                 INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+                     VALUES ('ph-h', 'e-only-hidden', 'secret-phase-label', 'hidden');",
+            )
+            .unwrap();
+        }
+        let hidden: serde_json::Value =
+            serde_json::from_str(&get_codex_json(&server, Some("e-only-hidden"), None).await)
+                .unwrap();
+        let none: serde_json::Value =
+            serde_json::from_str(&get_codex_json(&server, Some("e-no-phase"), None).await).unwrap();
+        assert_eq!(hidden[0]["phases"], serde_json::json!([]));
+        assert_eq!(hidden[0]["phases"], none[0]["phases"]);
+        // 外した印の key を足していない（key の集合が同じ）。
+        let keys = |v: &serde_json::Value| -> Vec<String> {
+            v[0].as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&hidden), keys(&none));
+    }
 }
