@@ -66,12 +66,49 @@ export class YomiNoValidResultError extends Error {
   }
 }
 
+/** `listYomiHiddenIds` が 1 回の判定に渡す id の上限。 */
+const HIDDEN_CHECK_CHUNK = 500;
+
+/**
+ * 読みの推定で AI へ送れない（hidden に倒れる）項目の id を返す。`inferReadings` の送信直前の
+ * 判定と同じ（`listCodexIdsHiddenFromAi`。場面は渡さないので、Phase が hidden にする項目も
+ * hidden に倒れる：DR-MP4-41）。呼び側が AI を呼ぶ前に「推定できない項目」を利用者へ伝える
+ * ために使う（単体推定の表示、一括の対象の事前除外）。判定に失敗したときは fail-closed で
+ * `YomiHiddenCheckFailedError`。`projectId` を省くと tree store の現在の project。
+ */
+export async function listYomiHiddenIds(
+  entryIds: readonly string[],
+  projectId: string | null = useTreeStore.getState().projectId,
+): Promise<Set<string>> {
+  try {
+    // `resolveCodexForAi` は entries・phases を `inArray` の 1 文で読み、分割しない。一括の
+    // 対象が多いと SQLite の変数の上限を超えうるので、500 件ずつに分けて判定する
+    // （`tree/api.ts` の `loadScenesFull` と同じ先例）。上限を超える失敗は fail-closed（下）。
+    const hidden = new Set<string>();
+    for (let i = 0; i < entryIds.length; i += HIDDEN_CHECK_CHUNK) {
+      const part = await listCodexIdsHiddenFromAi({
+        entryIds: entryIds.slice(i, i + HIDDEN_CHECK_CHUNK),
+        projectId,
+      });
+      for (const id of part) hidden.add(id);
+    }
+    return hidden;
+  } catch (error) {
+    debugLog.warn(
+      "codex-hidden",
+      "hidden 判定に失敗したので読みの推定を送らない",
+      errorDetail(error),
+    );
+    throw new YomiHiddenCheckFailedError();
+  }
+}
+
 /**
  * エントリ群の漢字表記の読みを一括推定する。
  * 作者が hidden（AI に秘匿）と印した Codex は、一括・単体のどちらの経路でも送らない
  * （送信の直前に再判定して落とす。呼び側が先に除いていても、list 後に hidden へ変わった
- * 項目を含めて守る）。判定は base の mode（`listCodexIdsHiddenFromAi`、DB に無い id も
- * hidden 扱い）。判定に失敗したときは fail-closed で何も送らず reject する。
+ * 項目を含めて守る）。判定は `listCodexIdsHiddenFromAi`（場面は渡さない。DB に無い id も
+ * hidden 扱い。場面を解決できないので、Phase が hidden にする項目も hidden に倒す：DR-MP4-41）。判定に失敗したときは fail-closed で何も送らず reject する。
  * policy off / 入力なし / 全件 hidden は空 Map。送信失敗・有効結果なしは reject し、ユーザー操作の
  * 呼び出し側が理由を通知する（既存 readings は常に保持）。
  * 返り値: entry id → [{surface, yomi}]。
@@ -104,21 +141,8 @@ export async function inferReadings(
 
   // 送信の直前に hidden を再判定する。chunk を逐次送る実行の途中で作者が hidden に
   // 変えた項目も、ここで落ちる。
-  let sendable: typeof targets;
-  try {
-    const hidden = await listCodexIdsHiddenFromAi({
-      entryIds: targets.map((e) => e.id),
-      projectId: useTreeStore.getState().projectId,
-    });
-    sendable = targets.filter((e) => !hidden.has(e.id));
-  } catch (error) {
-    debugLog.warn(
-      "codex-hidden",
-      "hidden 判定に失敗したので読みの推定を送らない",
-      errorDetail(error),
-    );
-    throw new YomiHiddenCheckFailedError();
-  }
+  const hidden = await listYomiHiddenIds(targets.map((e) => e.id));
+  const sendable = targets.filter((e) => !hidden.has(e.id));
   if (sendable.length === 0) return result;
 
   // hallucination 照合先: id → その id で許可された surface 集合。

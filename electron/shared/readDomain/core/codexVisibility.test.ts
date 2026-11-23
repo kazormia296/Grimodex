@@ -173,6 +173,54 @@ describe("resolveCodexAiVisibility", () => {
     });
   });
 
+  it("a scene id that the reading order does not have, and no scene, hide an entry that a phase hides (DR-MP4-41, Q1)", async () => {
+    const { ports } = setup();
+    const ids = ["pub", "hid", "rel", "hide-later"];
+
+    // Archived, in the trash, deleted, or another project's scene: given, but not in the reading order.
+    for (const sceneId of ["s-archived", "  s-archived  "]) {
+      const missing = await ask(ports, ids, sceneId);
+      expect([...missing.hidden].sort(), sceneId).toEqual([
+        "hid",
+        "hide-later",
+        "rel",
+      ]);
+      expect([...missing.texts.keys()], sceneId).toEqual(["pub"]);
+    }
+
+    // No scene cannot be resolved either (DR-MP4-41 Q1): the phase that hides `hide-later` is not
+    // applied, so `hide-later` is hidden too. (Before Q1: hidden = [hid, rel], texts = [hide-later, pub].)
+    // (`ask` defaults an undefined scene to "s1", so undefined goes through the function directly.)
+    for (const sceneId of [null, undefined, "", "   "]) {
+      const none = await resolveCodexAiVisibility(ports, {
+        projectId: "p-a",
+        entryIds: ids,
+        sceneId,
+        withContent: false,
+      });
+      expect([...none.hidden].sort(), String(sceneId)).toEqual([
+        "hid",
+        "hide-later",
+        "rel",
+      ]);
+      expect([...none.texts.keys()], String(sceneId)).toEqual(["pub"]);
+    }
+
+    // `listHiddenCodexIds` is the same decision.
+    const hiddenIds = await listHiddenCodexIds(ports, {
+      projectId: "p-a",
+      entryIds: ids,
+      sceneId: "s-archived",
+    });
+    expect(hiddenIds.has("hide-later")).toBe(true);
+    const hiddenIdsNoScene = await listHiddenCodexIds(ports, {
+      projectId: "p-a",
+      entryIds: ids,
+      sceneId: null,
+    });
+    expect([...hiddenIdsNoScene].sort()).toEqual(["hid", "hide-later", "rel"]);
+  });
+
   it("reads the body only when asked, and a released entry then has the phase's text", async () => {
     const { ports, sent } = setup();
     const without = await ask(ports, ["pub"], "s1");

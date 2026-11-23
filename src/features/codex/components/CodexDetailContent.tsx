@@ -30,7 +30,7 @@ import {
   needsAiReading,
   type ReadingMap,
 } from "../reading";
-import { inferReadings } from "../codexYomi";
+import { inferReadings, listYomiHiddenIds } from "../codexYomi";
 import { isCodexContextModeHiddenFromAi } from "../context/codexVisibilityPolicy";
 import { prepareRenamePropagation } from "../rename/renameEngine";
 import { useRenamePropagationStore } from "../rename/renamePropagationStore";
@@ -839,6 +839,14 @@ export function CodexDetailContent({
       setEstimatingReadings(true);
       let m: Awaited<ReturnType<typeof inferReadings>>;
       try {
+        // base は公開でも、Phase が hidden にする項目は `inferReadings` が送信前に落とす
+        // （DR-MP4-41）。落ちた空の結果を「モデル設定の不具合」と誤って伝えないよう、AI を
+        // 呼ぶ前に同じ判定で確かめ、hidden なら秘匿の案内を出して終える。
+        const hiddenIds = await listYomiHiddenIds([entry.id], entry.projectId);
+        if (hiddenIds.has(entry.id)) {
+          toast.info(i18next.t("codex.readings.estimateHidden"));
+          return;
+        }
         m = await inferReadings([
           { id: entry.id, category: resolveCategoryLabel(), surfaces: need },
         ]);
@@ -884,6 +892,7 @@ export function CodexDetailContent({
     },
     [
       entry.id,
+      entry.projectId,
       estimateBlockedHidden,
       persistStructuralPatch,
       resolveCategoryLabel,

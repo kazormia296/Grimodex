@@ -17,6 +17,10 @@ import {
   measureRuntimeEditorSerializedBytesAfterInput,
 } from "../electron/scripts/runtime-performance-fixture.mjs";
 import { appMemoryMeasurement } from "../electron/scripts/process-memory.mjs";
+import {
+  classifyTransientPerformanceRetry,
+  measureProjectOpen,
+} from "../electron/scripts/runtime-performance-retry.mjs";
 
 function passingLongTaskSample() {
   return {
@@ -946,5 +950,179 @@ test("open evidence is recorded alongside metrics without affecting budget verdi
   assert.deepEqual(
     evaluateRuntimePerformance(slowWithEvidence).checks,
     evaluateRuntimePerformance(slow).checks,
+  );
+});
+
+// DR-PIS-10 (2026-11-23): projectOpenMs starts at the later of the workspace
+// open start and the first frame. All values below are one renderer
+// `performance` clock; they are observed values from ci.yml run 45008551525
+// (AWS runner, attempt 1: a first frame stall) and its healthy re-run on the
+// same VM (attempt 2).
+function observedColdStartMetrics({
+  boot,
+  frame,
+  open,
+  coldStartMs,
+  editorReadyAt,
+}) {
+  const projectOpen = measureProjectOpen({
+    workspaceOpenStartMs: open,
+    firstFrameMs: frame,
+    editorReadyAtMs: editorReadyAt,
+  });
+  return {
+    ...passingMetrics(),
+    coldStartMs,
+    coldStartBootstrapMs: boot,
+    coldStartFirstFrameMs: frame,
+    coldStartGpuChannelFailureOffsetsMs: null,
+    projectOpenMs: projectOpen.projectOpenMs,
+    projectOpenTotalMs: projectOpen.projectOpenTotalMs,
+  };
+}
+
+function failedCheckNames(metrics) {
+  return evaluateRuntimePerformance(metrics)
+    .checks.filter((check) => !check.ok)
+    .map((check) => check.name);
+}
+
+test("a first frame stall now fails coldStartMs only, which the cold start retry takes (DR-PIS-10)", () => {
+  // boot 297.3, frame 4650.2, open start 335, ready mark 4654.1; the Editor
+  // surface was read at open start + 4476.8 = 4811.8 (the previous definition).
+  const stalled = observedColdStartMetrics({
+    boot: 297.3,
+    frame: 4_650.2,
+    open: 335,
+    coldStartMs: 4_654.1,
+    editorReadyAt: 335 + 4_476.8,
+  });
+  assert.ok(Math.abs(stalled.projectOpenMs - (4_811.8 - 4_650.2)) < 1e-9);
+  assert.ok(Math.abs(stalled.projectOpenMs - 161.6) < 1e-6);
+  // The previous definition is kept as a record and never gates.
+  assert.ok(Math.abs(stalled.projectOpenTotalMs - 4_476.8) < 1e-9);
+  assert.deepEqual(failedCheckNames(stalled), ["coldStartMs"]);
+  const decision = classifyTransientPerformanceRetry(
+    stalled,
+    evaluateRuntimePerformance(stalled),
+  );
+  assert.equal(decision.eligible, true);
+  assert.equal(decision.reason, "coldstart-first-frame-stall");
+
+  // Under the previous definition the same run failed both checks and was not
+  // retried (the failure of 45008551525).
+  const previous = { ...stalled, projectOpenMs: stalled.projectOpenTotalMs };
+  assert.deepEqual(failedCheckNames(previous), ["coldStartMs", "projectOpenMs"]);
+  const previousDecision = classifyTransientPerformanceRetry(
+    previous,
+    evaluateRuntimePerformance(previous),
+  );
+  assert.equal(previousDecision.eligible, false);
+  assert.equal(previousDecision.reason, "non-longtask-budget-failure");
+});
+
+test("a healthy run whose open starts after the first frame keeps its value (DR-PIS-10)", () => {
+  // Attempt 2 of the same run: boot 266.7, frame 269.5, open start 309.6,
+  // ready mark 1222.2; the Editor surface was read at 309.6 + 1044.3.
+  const healthy = observedColdStartMetrics({
+    boot: 266.7,
+    frame: 269.5,
+    open: 309.6,
+    coldStartMs: 1_222.2,
+    editorReadyAt: 309.6 + 1_044.3,
+  });
+  assert.ok(Math.abs(healthy.projectOpenMs - 1_044.3) < 1e-9);
+  assert.equal(healthy.projectOpenMs, healthy.projectOpenTotalMs);
+  assert.deepEqual(failedCheckNames(healthy), []);
+});
+
+test("a slow open itself still fails projectOpenMs and is not retried (DR-PIS-10)", () => {
+  // The open starts after the first frame (no stall) and takes 3,500 ms.
+  const slowOpen = observedColdStartMetrics({
+    boot: 266.7,
+    frame: 269.5,
+    open: 309.6,
+    coldStartMs: 309.6 + 3_500,
+    editorReadyAt: 309.6 + 3_500,
+  });
+  assert.equal(slowOpen.projectOpenMs, 3_500);
+  // coldStartMs (3,809.6 ms) is still under its budget; only the open fails.
+  assert.deepEqual(failedCheckNames(slowOpen), ["projectOpenMs"]);
+  // The part after the first frame is slow even though the open started
+  // before a first frame stall: both stay failed, and nothing hides it.
+  const slowAfterFrame = observedColdStartMetrics({
+    boot: 297.3,
+    frame: 4_650.2,
+    open: 335,
+    coldStartMs: 4_650.2 + 3_500,
+    editorReadyAt: 4_650.2 + 3_500,
+  });
+  assert.equal(slowAfterFrame.projectOpenMs, 3_500);
+  assert.ok(failedCheckNames(slowAfterFrame).includes("projectOpenMs"));
+  for (const metrics of [slowOpen, slowAfterFrame]) {
+    const decision = classifyTransientPerformanceRetry(
+      metrics,
+      evaluateRuntimePerformance(metrics),
+    );
+    assert.equal(decision.eligible, false);
+    assert.equal(decision.reason, "non-longtask-budget-failure");
+  }
+});
+
+test("an open that blocks JS before the first frame (open start < first frame) is accepted below coldStartMs 4,000 ms (DR-PIS-10, accepted constraint)", () => {
+  // Accepted constraint, not a detection: when the first frame is late, the
+  // measure cannot tell an open handler that blocked the main thread (JS)
+  // from a GPU / compositor stall. Both look like open 310 < frame 2800.
+  // Under the previous definition this input failed projectOpenMs (total
+  // 3,490 ms > 3,000); now only coldStartMs (about 3,800 ms, budget 4,000 ms)
+  // guards the band, so the effective bound on the whole open moves from about
+  // 3.0 s to about 3.7 s (4,000 minus boot). Pinned here so a change of this
+  // behavior in either direction is a decision, not an accident.
+  const blocked = observedColdStartMetrics({
+    boot: 300,
+    frame: 2_800,
+    open: 310,
+    coldStartMs: 3_800,
+    editorReadyAt: 3_800,
+  });
+  assert.equal(blocked.projectOpenTotalMs, 3_490);
+  assert.equal(blocked.projectOpenMs, 1_000);
+  assert.deepEqual(failedCheckNames(blocked), []);
+  // coldStartMs stays the sole gate in this band: past 4,000 ms it fails.
+  const overBudget = observedColdStartMetrics({
+    boot: 300,
+    frame: 3_200,
+    open: 310,
+    coldStartMs: 4_100,
+    editorReadyAt: 4_100,
+  });
+  assert.deepEqual(failedCheckNames(overBudget), ["coldStartMs"]);
+  // With the first frame at 90% or more of coldStartMs it is retried once like
+  // any first frame stall (DR-PIS-9); a deterministic regression fails again
+  // on the second attempt.
+  const retried = observedColdStartMetrics({
+    boot: 300,
+    frame: 3_700,
+    open: 310,
+    coldStartMs: 4_100,
+    editorReadyAt: 4_100,
+  });
+  const decision = classifyTransientPerformanceRetry(
+    retried,
+    evaluateRuntimePerformance(retried),
+  );
+  assert.equal(decision.eligible, true);
+  assert.equal(decision.reason, "coldstart-first-frame-stall");
+});
+
+test("projectOpenTotalMs is recorded but never a budget check, and the budgets are unchanged (DR-PIS-10)", () => {
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.coldStartMs, 4_000);
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.projectOpenMs, 3_000);
+  const metrics = { ...passingMetrics(), projectOpenTotalMs: 9_999_999 };
+  const result = evaluateRuntimePerformance(metrics);
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.checks.some((check) => /projectOpenTotal/u.test(check.name)),
+    false,
   );
 });

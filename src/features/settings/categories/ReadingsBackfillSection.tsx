@@ -20,7 +20,11 @@ import {
   needsAiReading,
   type ReadingMap,
 } from "@/features/codex/reading";
-import { inferReadings, YOMI_MAX_ENTRIES } from "@/features/codex/codexYomi";
+import {
+  inferReadings,
+  listYomiHiddenIds,
+  YOMI_MAX_ENTRIES,
+} from "@/features/codex/codexYomi";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { isCodexContextModeHiddenFromAi } from "@/features/codex/context/codexVisibilityPolicy";
@@ -90,6 +94,21 @@ export function ReadingsBackfillSection() {
             surfaces: need,
             readings,
           });
+        }
+      }
+
+      // base は公開でも、Phase が hidden にする項目は `inferReadings` が送信前に黙って落とす
+      // （DR-MP4-41）。件数（total）が合わず、残りが全部該当だと毎回 0 件で終わって同じ項目が
+      // 対象に戻るので、送信前と同じ判定で、先に work から除く。
+      if (work.length > 0) {
+        const hiddenIds = await listYomiHiddenIds(
+          work.map((w) => w.id),
+          projectId,
+        );
+        if (hiddenIds.size > 0) {
+          for (let i = work.length - 1; i >= 0; i--) {
+            if (hiddenIds.has(work[i].id)) work.splice(i, 1);
+          }
         }
       }
 
