@@ -17,6 +17,7 @@ import {
   collectNonSceneContext,
   createNonSceneContextSourceDeps,
   type AggregatedSceneInput,
+  type NonSceneContextSourceDeps,
 } from "./nonSceneContextSource";
 
 function doc(text: string): string {
@@ -1440,8 +1441,8 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
     });
   const ENTRIES = {
     aria: phaseHidden("aria"),
-    borin: phaseHidden("borin", { contextMode: "always" }),
-    cael: phaseHidden("cael", { contextMode: "suppress" }),
+    borin: phaseHidden("borin", { name: "Borinvane", contextMode: "always" }),
+    cael: phaseHidden("cael", { name: "Caelvane", contextMode: "suppress" }),
     dara: phaseHidden("dara", { contextMode: "suppress" }),
     eli: phaseHidden("eli", { name: "Elivane", parentId: "dara" }),
     fenn: phaseHidden("fenn", { contextMode: "always" }),
@@ -1493,6 +1494,10 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
   async function collect(
     activeSceneId: string,
     options: {
+      loadMapBoardMarkdown?: NonSceneContextSourceDeps["loadMapBoardMarkdown"];
+      contextDetails?: Awaited<
+        ReturnType<NonSceneContextSourceDeps["listContextDetails"]>
+      >;
       index?: ReturnType<typeof buildSceneTimeIndex>;
       scope?: CreateNonSceneTurnContextRequestInput["scope"];
       phases?: CodexEntryPhase[];
@@ -1541,6 +1546,12 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
           relation("relation-1", "fenn", "gale", "ally"),
         ],
         buildAggregatedScene,
+        ...(options.loadMapBoardMarkdown
+          ? { loadMapBoardMarkdown: options.loadMapBoardMarkdown }
+          : {}),
+        ...(options.contextDetails
+          ? { listContextDetails: async () => options.contextDetails! }
+          : {}),
       }),
     );
     const haystack = `${JSON.stringify(result.promptInput)}\n${
@@ -1568,6 +1579,10 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
         // Neither the summary nor the body of a closed entry is in anything the AI gets.
         expect(haystack, id).not.toContain(`${id.toUpperCase()}_SUM`);
         expect(haystack, id).not.toContain(`${id.toUpperCase()}_BODY`);
+        // The name is shown where nothing but the entry shows it (the message names aria, calm, soft and lift).
+        if (id !== "aria") {
+          expect(haystack, id).not.toContain(ENTRIES[id].name);
+        }
       }
     },
   );
@@ -1635,6 +1650,62 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
       }
       expect(detectable).toEqual(expect.arrayContaining(["calm", "soft"]));
       expect(identities).toEqual(expect.arrayContaining(["calm", "soft"]));
+    },
+  );
+
+  it.each(["", "n-note"])(
+    "keeps a closed entry out of the map reference and a codex_reference detail when activeSceneId is %j",
+    async (activeSceneId) => {
+      const loadMapBoardMarkdown = vi.fn<
+        NonSceneContextSourceDeps["loadMapBoardMarkdown"]
+      >(async () => undefined);
+      const options = {
+        loadMapBoardMarkdown,
+        contextDetails: [
+          {
+            entryId: "calm",
+            definitionId: "friend",
+            fieldName: "Friend",
+            fieldType: "codex_reference",
+            value: "borin",
+          },
+        ],
+      };
+      const closed = await collect(activeSceneId, options);
+      const mapIds = loadMapBoardMarkdown.mock.calls[0]![1].map(
+        (entry) => entry.id,
+      );
+      expect(mapIds).toEqual(expect.arrayContaining(["calm", "soft"]));
+      for (const id of PHASE_HIDDEN) expect(mapIds, id).not.toContain(id);
+      expect(closed.haystack).not.toContain("Friend");
+      expect(closed.haystack).not.toContain("Borinvane");
+
+      // The control: in the reading order the same input shows both.
+      loadMapBoardMarkdown.mockClear();
+      const open = await collect("scene-1", options);
+      expect(
+        loadMapBoardMarkdown.mock.calls[0]![1].map((entry) => entry.id),
+      ).toEqual(expect.arrayContaining(["gale", "borin"]));
+      expect(open.haystack).toContain("Friend");
+    },
+  );
+
+  it.each(["", "n-note"])(
+    "names what an excluded pin, input pin and structured mention were dropped for as policy-hidden in the decisions (activeSceneId %j)",
+    async (activeSceneId) => {
+      const { result } = await collect(activeSceneId);
+      const decisions = result.promptInput.contextDecisions ?? [];
+      expect(decisions.map((decision) => decision.key).sort()).toEqual([
+        "codex:cael",
+        "codex:iris",
+        "codex:jay",
+      ]);
+      for (const decision of decisions) {
+        expect(decision).toMatchObject({
+          status: "excluded",
+          reason: "policy-hidden",
+        });
+      }
     },
   );
 

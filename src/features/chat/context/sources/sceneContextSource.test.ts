@@ -1698,6 +1698,9 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
     sceneId: string,
     options: {
       chronicle?: SceneContextSourceDeps["buildChronicleSnapshot"];
+      loadMapBoardMarkdown?: SceneContextSourceDeps["loadMapBoardMarkdown"];
+      sceneContentJson?: string;
+      contextDetails?: PhaseDepsOptions["contextDetails"];
     } = {},
   ) {
     const entries = Object.values(ENTRIES);
@@ -1714,7 +1717,7 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
         povCharacterId: "ivor",
       },
     ];
-    const base = phaseDeps(PHASES);
+    const base = phaseDeps(PHASES, { contextDetails: options.contextDetails });
     const deps = {
       ...base,
       listTreeNodes: () => currentNodes,
@@ -1730,6 +1733,9 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
       ...(options.chronicle
         ? { buildChronicleSnapshot: options.chronicle }
         : {}),
+      ...(options.loadMapBoardMarkdown
+        ? { loadMapBoardMarkdown: options.loadMapBoardMarkdown }
+        : {}),
     };
     const result = await collectSceneContext(
       request({
@@ -1739,6 +1745,9 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
         sceneContent: "Aria appears with Calm, Soft and Lift.",
         activeTabId: "hana",
         chronicleEnabled: options.chronicle !== undefined,
+        ...(options.sceneContentJson
+          ? { sceneContentJson: options.sceneContentJson }
+          : {}),
       }),
       deps,
     );
@@ -1768,6 +1777,10 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
         // Neither the summary nor the body of a closed entry is in anything the AI gets.
         expect(haystack, id).not.toContain(`${id.toUpperCase()}_SUM`);
         expect(haystack, id).not.toContain(`${id.toUpperCase()}_BODY`);
+        // The name is shown where nothing but the entry shows it (Aria is also in the scene's own text).
+        if (id !== "aria") {
+          expect(haystack, id).not.toContain(ENTRIES[id].name);
+        }
       }
     },
   );
@@ -1802,6 +1815,63 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
       expect.arrayContaining(["calm", "soft"]),
     );
   });
+
+  it.each(["n-note", "no-such-scene", "scene-archived"])(
+    "keeps a closed entry out of the map reference, a codex_reference detail and a declared semantic link when the scene is %s",
+    async (sceneId) => {
+      const loadMapBoardMarkdown = vi.fn<
+        SceneContextSourceDeps["loadMapBoardMarkdown"]
+      >(async () => undefined);
+      const options = {
+        loadMapBoardMarkdown,
+        sceneContentJson: semanticDoc("The silver witch", "gale", "Old name"),
+        contextDetails: [
+          {
+            entryId: "calm",
+            definitionId: "friend",
+            fieldName: "Friend",
+            fieldType: "codex_reference",
+            value: "borin",
+          },
+        ],
+      };
+      const closed = await collect(sceneId, options);
+      const mapIds = loadMapBoardMarkdown.mock.calls[0]![1].map(
+        (entry) => entry.id,
+      );
+      expect(mapIds).toEqual(expect.arrayContaining(["calm", "soft"]));
+      for (const id of PHASE_HIDDEN) expect(mapIds, id).not.toContain(id);
+      expect(semanticLinksFrom(closed.result)).toEqual([]);
+      // The reference's name is looked up among the entries that may be named, so the detail is dropped.
+      expect(closed.haystack).not.toContain("Friend");
+      expect(closed.haystack).not.toContain("Borin");
+
+      // The control: in the reading order the same input shows all three.
+      loadMapBoardMarkdown.mockClear();
+      const open = await collect("scene-1", options);
+      expect(
+        loadMapBoardMarkdown.mock.calls[0]![1].map((entry) => entry.id),
+      ).toEqual(expect.arrayContaining(["gale", "borin"]));
+      expect(
+        semanticLinksFrom(open.result).map((link) => link.entryId),
+      ).toEqual(["gale"]);
+      expect(open.haystack).toContain("Friend");
+    },
+  );
+
+  it.each(["n-note", "no-such-scene"])(
+    "names what an excluded pin was dropped for as policy-hidden in the decisions (scene %s)",
+    async (sceneId) => {
+      const { result } = await collect(sceneId);
+      expect(result.promptInput.contextDecisions).toEqual([
+        expect.objectContaining({
+          key: "codex:cael",
+          status: "excluded",
+          reason: "policy-hidden",
+        }),
+      ]);
+    },
+  );
 
   it.each(["scene-1", "n-note", "no-such-scene", "scene-archived"])(
     "shows an entry that is public at base to the AI exactly when the agent tool's rule (decideCodexAiVisibility) does not hide it (scene %s)",
