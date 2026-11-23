@@ -6053,6 +6053,26 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
 
     it.each([
+      ["a time without a minute", { ...chronicle, chronicleStartMinute: null }],
+      ["a minute out of range", { ...chronicle, chronicleStartMinute: 1440 }],
+      [
+        "an end before the start",
+        { ...chronicle, chronicleEndTime: 99, chronicleEndGranularity: "day" },
+      ],
+    ])(
+      "accepts an inconsistent legacy range (%s): the Undo puts back the row that existed",
+      async (_label, state) => {
+        const { backend } = fakeBackend();
+        const ok = await dispatchInvoke(
+          "tree_node_create",
+          { payload: { ...undoIdentity, ...node, restoreState: state } },
+          { backend, shell: noShell },
+        );
+        expect(ok.ok).toBe(true);
+      },
+    );
+
+    it.each([
       ["a day alone", { chronicleStartTime: 5 }],
       [
         "a group without precision",
@@ -6072,12 +6092,6 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         { ...chronicle, chronicleEndGranularity: "century" },
       ],
       ["an unknown precision", { ...chronicle, chroniclePrecision: "roughly" }],
-      ["a time without a minute", { ...chronicle, chronicleStartMinute: null }],
-      ["a minute out of range", { ...chronicle, chronicleStartMinute: 1440 }],
-      [
-        "an end before the start",
-        { ...chronicle, chronicleEndTime: 99, chronicleEndGranularity: "day" },
-      ],
     ])("rejects a chronicle group with %s", async (_label, state) => {
       const { backend, calls } = fakeBackend();
       const env = await dispatchInvoke(

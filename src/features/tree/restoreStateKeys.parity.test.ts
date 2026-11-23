@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { TREE_NODE_RESTORE_STATE_KEYS } from "../../../electron/shared/ipcContract";
+import {
+  TREE_NODE_RESTORE_STATE_INTEGER_KEYS,
+  TREE_NODE_RESTORE_STATE_KEYS,
+} from "../../../electron/shared/ipcContract";
 
 // DR-UND-1: the `restoreState` key set is written out four times (Rust
 // `TREE_NODE_RESTORE_COLUMNS`, Main `TREE_NODE_RESTORE_STATE_KEYS`, the browser
@@ -70,13 +73,68 @@ describe("restoreState key set", () => {
     expect(sorted(keys)).toEqual(main);
   });
 
-  it("the renderer reads every key from the row (loadTreeNodeRestoreSnapshot)", () => {
+  it("the renderer reads every key from the row and sends it (loadTreeNodeRestoreSnapshot)", () => {
     const text = read("src/features/tree/api.ts");
-    const fn = text.slice(
-      text.indexOf("export async function loadTreeNodeRestoreSnapshot"),
+    const start = text.indexOf(
+      "export async function loadTreeNodeRestoreSnapshot",
     );
+    // The function body only (up to its closing brace at column 0), not the
+    // code after it, which also names some of these keys.
+    const body = text.slice(start, text.indexOf("\n}\n", start));
+    const select = block(body, /\.select\(\{/, "})");
     for (const key of main) {
-      expect(fn.includes(`${key}:`) || fn.includes(`"${key}"`), key).toBe(true);
+      expect(
+        select.includes(`${key}: treeNodes.${key},`),
+        `select ${key}`,
+      ).toBe(true);
+      expect(
+        body.includes(`"${key}"`) || body.includes(`restoreState.${key} =`),
+        `send ${key}`,
+      ).toBe(true);
     }
+  });
+
+  describe("the keys that carry an integer (the rest are strings)", () => {
+    const integers = sorted(TREE_NODE_RESTORE_STATE_INTEGER_KEYS);
+
+    it("Rust types exactly those keys as i64", () => {
+      const text = block(
+        read("src-tauri/crates/grimodex-db/src/domain_writes.rs"),
+        /pub struct TreeNodeRestoreState \{/,
+        "\n}",
+      );
+      const camel = (snake: string): string =>
+        snake.replace(/_(\w)/g, (_, c: string) => c.toUpperCase());
+      const keys = [...text.matchAll(/pub (\w+): Option<i64>/g)].map((m) =>
+        camel(m[1]!),
+      );
+      expect(sorted(keys)).toEqual(integers);
+    });
+
+    it("the browser mock lists exactly those keys", () => {
+      const text = block(
+        read("src/lib/browser-mock.ts"),
+        /const BROWSER_TREE_RESTORE_INTEGER_KEYS\s*=\s*\[/,
+        "];",
+      );
+      const keys = [...text.matchAll(/"(\w+)"/g)].map((m) => m[1]!);
+      expect(sorted(keys)).toEqual(integers);
+    });
+
+    it("the renderer types exactly those keys as number", () => {
+      const text = block(
+        read("src/features/tree/api.ts"),
+        /export interface TreeNodeRestoreState \{/,
+        "\n}",
+      );
+      const keys = [...text.matchAll(/^\s+(\w+)\?: number;/gm)].map(
+        (m) => m[1]!,
+      );
+      expect(sorted(keys)).toEqual(integers);
+    });
+
+    it("every integer key is a restoreState key", () => {
+      for (const key of integers) expect(main).toContain(key);
+    });
   });
 });

@@ -736,27 +736,6 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
         },
         "granularity",
       ],
-      [
-        "chronicle time without a minute",
-        {
-          chronicleStartTime: 5,
-          chronicleStartGranularity: "time",
-          chronicleEndGranularity: "none",
-          chroniclePrecision: "exact",
-        },
-        "needs a day and a minute",
-      ],
-      [
-        "chronicle end before start",
-        {
-          chronicleStartTime: 10,
-          chronicleStartGranularity: "day",
-          chronicleEndTime: 9,
-          chronicleEndGranularity: "day",
-          chroniclePrecision: "exact",
-        },
-        "end precedes start",
-      ],
       ["archivedAt", { archivedAt: "x" }, "unknown field"],
       ["mistyped", { intent: 5 }, "must be a string or null"],
       ["contextMode", { contextMode: "weird" }, "contextMode"],
@@ -780,6 +759,85 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
     expect(
       await rows(mock, "SELECT id FROM tree_nodes WHERE id = 'restore-gate'"),
     ).toEqual([]);
+  });
+
+  it("puts back an inconsistent legacy date range as it was (tree_node_patch writes it unchecked)", async () => {
+    const ranges = [
+      // end before start
+      {
+        chronicleStartTime: 10,
+        chronicleStartGranularity: "day",
+        chronicleEndTime: 9,
+        chronicleEndGranularity: "day",
+        chroniclePrecision: "exact",
+      },
+      // time without a minute
+      {
+        chronicleStartTime: 5,
+        chronicleStartGranularity: "time",
+        chronicleEndGranularity: "none",
+        chroniclePrecision: "approx",
+      },
+      // minute out of range
+      {
+        chronicleStartTime: 5,
+        chronicleStartMinute: 1440,
+        chronicleStartGranularity: "time",
+        chronicleEndGranularity: "none",
+        chroniclePrecision: "exact",
+      },
+    ];
+    for (const [index, range] of ranges.entries()) {
+      const id = `restore-incons-${index}`;
+      await mock.invoke("tree_node_create", {
+        payload: {
+          id,
+          projectId: "default-project",
+          parentId: null,
+          nodeType: "scene",
+          title: "T",
+          sortOrder: "a0",
+          origin: "human",
+          requestId: `create-${id}`,
+        },
+      });
+      await mock.invoke("tree_node_patch", {
+        payload: {
+          projectId: "default-project",
+          nodeId: id,
+          requestId: `patch-${id}`,
+          origin: "human",
+          patch: range,
+          baseVersion: 0,
+          bumpVersion: false,
+          updatedAt: "2026-08-24T00:00:00.000Z",
+        },
+      });
+      const before = (
+        await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [id])
+      )[0]!;
+      const receipt = await mock.invoke<{
+        maintenanceTransactionId: string;
+        undoJournalId: string;
+      }>("tree_node_delete", {
+        payload: {
+          projectId: "default-project",
+          nodeId: id,
+          requestId: `delete-${id}`,
+          origin: "human",
+        },
+      });
+      await mock.invoke("tree_node_create", {
+        payload: undoPayload(id, "scene", receipt, before, stateOf(before)),
+      });
+      expect(
+        (
+          await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [
+            id,
+          ])
+        )[0],
+      ).toEqual(before);
+    }
   });
 
   it("replays the same request and conflicts when restoreState differs", async () => {

@@ -26860,9 +26860,12 @@ export async function createBrowserMock(
     return assignments;
   }
 
-  // The compatibility range check of Rust `validate_chronicle_date_range`, on
-  // this row's own columns only (an Undo puts back a row that existed, so not the
-  // strict persistence matrix the date editors enforce).
+  // The shape of the date range's words (Rust `validate_chronicle_group`): the
+  // three NOT NULL keys come together, with known granularities and precision.
+  // The range's *consistency* (an end before the start, a `time` without a day
+  // or a minute) is not checked: an Undo puts back a row that existed, and
+  // `tree_node_patch` writes those columns with no check, so a legacy row can
+  // hold such a range and its Undo must not stop.
   function validateBrowserTreeRestoreChronicle(
     command: string,
     assignments: ReadonlyArray<readonly [string, string, string | number]>,
@@ -26887,43 +26890,24 @@ export async function createBrowserMock(
         "keys are one group: chronicleStartGranularity, chronicleEndGranularity and chroniclePrecision are required with any of them",
       );
     }
+    for (const key of [
+      "chronicleStartGranularity",
+      "chronicleEndGranularity",
+    ]) {
+      if (
+        !["none", "season", "year", "month", "day", "time"].includes(
+          chronicle.get(key) as string,
+        )
+      ) {
+        fail(`${key} is not a supported granularity`);
+      }
+    }
     if (
       !["exact", "approx", "unknown"].includes(
         chronicle.get("chroniclePrecision") as string,
       )
     ) {
       fail("chroniclePrecision must be exact, approx, or unknown");
-    }
-    const endpoint = (prefix: "chronicleStart" | "chronicleEnd") => {
-      const granularity = chronicle.get(`${prefix}Granularity`) as string;
-      if (
-        !["none", "season", "year", "month", "day", "time"].includes(
-          granularity,
-        )
-      ) {
-        fail(`${prefix}Granularity is not a supported granularity`);
-      }
-      const day = (chronicle.get(`${prefix}Time`) ?? null) as number | null;
-      const minute = (chronicle.get(`${prefix}Minute`) ?? null) as
-        | number
-        | null;
-      if (granularity === "time") {
-        if (minute !== null && (minute < 0 || minute >= 1440)) {
-          fail(`range: ${prefix}Minute is out of range`);
-        }
-        if (day === null || minute === null) {
-          fail(`range: ${prefix} time needs a day and a minute`);
-        }
-      }
-      return { granularity, day, minute };
-    };
-    const start = endpoint("chronicleStart");
-    const end = endpoint("chronicleEnd");
-    if (start.day !== null && end.day !== null) {
-      const absolute = (point: typeof start): bigint =>
-        BigInt(point.day as number) * 1440n +
-        BigInt(point.granularity === "time" ? (point.minute ?? 0) : 0);
-      if (absolute(end) < absolute(start)) fail("range: end precedes start");
     }
   }
 

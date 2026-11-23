@@ -431,6 +431,45 @@ export interface TreeNodeRestoreState {
   chroniclePrecision?: string;
 }
 
+const RESTORE_GRANULARITIES: readonly string[] = [
+  "none",
+  "season",
+  "year",
+  "month",
+  "day",
+  "time",
+];
+const RESTORE_PRECISIONS: readonly string[] = ["exact", "approx", "unknown"];
+
+/**
+ * The same shape check Main and Native apply to the `chronicle*` group of a
+ * `restoreState` (safe integers, known words; the range's consistency is not
+ * checked there, so a reversed or incomplete legacy range is sent as it is).
+ * A row that fails it would make the whole Undo throw, so it is not sent.
+ */
+function chronicleGroupIsRestorable(row: {
+  chronicleStartTime: number | null;
+  chronicleStartMinute: number | null;
+  chronicleStartGranularity: string;
+  chronicleEndTime: number | null;
+  chronicleEndMinute: number | null;
+  chronicleEndGranularity: string;
+  chroniclePrecision: string;
+}): boolean {
+  const integerOrNull = (value: unknown): boolean =>
+    value === null ||
+    (typeof value === "number" && Number.isSafeInteger(value));
+  return (
+    integerOrNull(row.chronicleStartTime) &&
+    integerOrNull(row.chronicleStartMinute) &&
+    integerOrNull(row.chronicleEndTime) &&
+    integerOrNull(row.chronicleEndMinute) &&
+    RESTORE_GRANULARITIES.includes(row.chronicleStartGranularity) &&
+    RESTORE_GRANULARITIES.includes(row.chronicleEndGranularity) &&
+    RESTORE_PRECISIONS.includes(row.chroniclePrecision)
+  );
+}
+
 /** A node's row as it was in the database just before a delete. */
 export interface TreeNodeRestoreSnapshot {
   content: string;
@@ -506,7 +545,17 @@ export async function loadTreeNodeRestoreSnapshot(
     row.chronicleEndMinute === null &&
     row.chronicleEndGranularity === "none" &&
     row.chroniclePrecision === "exact";
-  if (!chronicleIsDefault) {
+  if (!chronicleIsDefault && !chronicleGroupIsRestorable(row)) {
+    // A legacy row whose date range cannot be sent in the shape Main and Native
+    // accept (a REAL day or minute, a granularity outside the known words).
+    // The Undo must still succeed: the date alone is left out (it comes back
+    // unset, as an Undo always did), and the reason is logged.
+    debugLog.warn(
+      "tree",
+      "undo date range not restorable",
+      `${nodeId}: the stored date range has a value of an unexpected shape`,
+    );
+  } else if (!chronicleIsDefault) {
     restoreState.chronicleStartGranularity = row.chronicleStartGranularity;
     restoreState.chronicleEndGranularity = row.chronicleEndGranularity;
     restoreState.chroniclePrecision = row.chroniclePrecision;

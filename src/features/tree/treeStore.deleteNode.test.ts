@@ -325,6 +325,8 @@ describe("treeStore.deleteNode undo restores the row the database held (DR-UND-1
     nodeType: "scene" as const,
     storyTimeOrder: "stale-in-store",
     povCharacterId: null as string | null,
+    sourceUri: "external-root://r/a.md" as string | null,
+    sourceMtime: "2026-01-02T00:00:00Z" as string | null,
     updatedAt: "2026-01-01T00:00:00Z",
   };
   const noteNode = {
@@ -408,6 +410,10 @@ describe("treeStore.deleteNode undo restores the row the database held (DR-UND-1
       sourceUri: "external-root://r/a.md",
       sourceMtime: "2026-01-02T00:00:00Z",
     });
+    // restored: the store keeps the link it had
+    expect(
+      useTreeStore.getState().nodes.find((n) => n.id === "scene-a"),
+    ).toMatchObject({ sourceUri: "external-root://r/a.md" });
 
     // (2) a reconcile made a node for the same file in between: not restored.
     useGlobalHistoryStore.getState().clear();
@@ -420,6 +426,10 @@ describe("treeStore.deleteNode undo restores the row the database held (DR-UND-1
     expect(call[1]).toMatchObject({
       restoreState: snapshots["scene-a"]!.restoreState,
     });
+    // and the store drops the link too: it must match the database row
+    expect(
+      useTreeStore.getState().nodes.find((n) => n.id === "scene-a"),
+    ).toMatchObject({ sourceUri: null, sourceMtime: null });
 
     // (3) it cannot be determined: left off, as an Undo always did.
     useGlobalHistoryStore.getState().clear();

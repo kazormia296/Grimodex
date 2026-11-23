@@ -1595,6 +1595,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         // Codex entry was deleted in the meantime is NULL there. Mirror both
         // in the store (only well-typed values).
         const fields: TreeRestoredFields = {};
+        // The link was left off: the store must not keep a `sourceUri` the
+        // database row no longer has (two Scenes on one file in the store).
+        if (!restoreSource && (snapshot?.sourceUri ?? node.sourceUri) != null) {
+          fields.sourceUri = null;
+          fields.sourceMtime = null;
+        }
         if (typeof created?.version === "number") {
           fields.version = created.version;
         }

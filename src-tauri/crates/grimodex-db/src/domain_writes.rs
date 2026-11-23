@@ -2507,7 +2507,7 @@ pub struct TreeNodeCreatePayload {
 /// start, end and precision meaning something only together): either none of
 /// them is present or all three NOT NULL ones (`chronicleStartGranularity`,
 /// `chronicleEndGranularity`, `chroniclePrecision`) are, and the group is
-/// checked as a range (see `validate_chronicle_group`).
+/// checked for shape (see `validate_chronicle_group`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TreeNodeRestoreState {
@@ -2627,13 +2627,16 @@ impl TreeNodeRestoreState {
         ]
     }
 
-    /// The Scene's date range as one group. An Undo puts back the row that
-    /// existed, so the check is the *compatibility* range check
-    /// (`validate_chronicle_date_range`: `time` needs a day and an in-range
-    /// minute, the end does not precede the start), not the strict persistence
-    /// matrix the date editors enforce (rows written through `tree_node_patch`
-    /// or older than the matrix must still come back). Nothing here looks at
-    /// another row: the check is about this row's own columns.
+    /// The Scene's date range as one group, checked for **shape** only: a day
+    /// or minute is a safe integer, a granularity and the precision are one of
+    /// the known words, and the three NOT NULL keys come together. The range's
+    /// *consistency* (an end before the start, a `time` without a day or a
+    /// minute) is deliberately not checked: an Undo puts back the row that
+    /// existed, and `tree_node_patch` writes those columns with no check at all
+    /// (so a legacy row can hold such a range); refusing it would stop the
+    /// Undo half way through a subtree. This is narrower than `tree_node_patch`
+    /// (which also takes any string as a granularity), so it widens nothing.
+    /// Nothing here looks at another row.
     fn validate_chronicle_group(&self) -> anyhow::Result<()> {
         let any = self.chronicle_start_time.is_some()
             || self.chronicle_start_minute.is_some()
@@ -2683,21 +2686,7 @@ impl TreeNodeRestoreState {
                 );
             }
         }
-        grimodex_core::chronicle_time::validate_chronicle_date_range(
-            grimodex_core::chronicle_time::ChronicleDateRange {
-                start: grimodex_core::chronicle_time::ChronicleTimestamp {
-                    day: self.chronicle_start_time,
-                    minute: self.chronicle_start_minute,
-                    granularity: start_granularity,
-                },
-                end: grimodex_core::chronicle_time::ChronicleTimestamp {
-                    day: self.chronicle_end_time,
-                    minute: self.chronicle_end_minute,
-                    granularity: end_granularity,
-                },
-            },
-        )
-        .map_err(|error| anyhow::anyhow!("restoreState chronicle range: {error}"))
+        Ok(())
     }
 
     /// Shape checks that do not need the database.

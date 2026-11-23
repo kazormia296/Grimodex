@@ -1,5 +1,9 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { debugLog } from "@/lib/debugLog";
+import { invoke } from "@/lib/tauri";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 import {
   createNode,
@@ -261,6 +265,121 @@ describe("Tree delete Undo restores the database row", () => {
       await undoCreate(id, snapshot, receipt, true);
       expect((await getNode(id))!.sourceUri).toBe(uri);
       expect((await getNode(reconciledId))!.sourceUri).toBe(uri);
+    });
+  });
+
+  // A legacy row: tree_node_patch writes the date columns unchecked, so a row can
+  // hold a reversed range or values of an unexpected shape. Its Undo must still
+  // succeed.
+  describe("a legacy date range", () => {
+    // `tree_node_patch` writes the date columns with no check (the date editors
+    // validate before they call `temporal_scene_patch`), exactly as a legacy row
+    // came to hold them.
+    async function legacyScene(patch: Record<string, unknown>) {
+      const id = `tree-legacy-${crypto.randomUUID()}`;
+      await createNode({
+        id,
+        projectId: "default-project",
+        parentId: null,
+        nodeType: "scene",
+        title: "Legacy",
+        sortOrder: "z9",
+      });
+      await invoke("tree_node_patch", {
+        payload: {
+          ...createCanonicalWriteContext(),
+          projectId: "default-project",
+          nodeId: id,
+          patch,
+          baseVersion: 0,
+          bumpVersion: false,
+          updatedAt: "2026-08-24T00:00:00.000Z",
+        },
+      });
+      return id;
+    }
+
+    async function undoWith(id: string) {
+      const before = (await getNode(id))!;
+      const snapshot = (await loadTreeNodeRestoreSnapshot(id))!;
+      const receipt = treeWriteReceipt(
+        await deleteNode(id, "default-project", {}),
+      )!;
+      await createNode(
+        {
+          id,
+          projectId: "default-project",
+          parentId: undefined,
+          nodeType: "scene",
+          title: "Legacy",
+          sortOrder: "z9",
+          content: snapshot.content,
+        },
+        {
+          writeContext: historyWriteContext("undo", receipt),
+          restoreState: snapshot.restoreState,
+        },
+      );
+      return { before, snapshot, after: (await getNode(id))! };
+    }
+
+    it("a reversed range and a time without a minute are sent as they are, and the Undo restores them", async () => {
+      const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
+      const id = await legacyScene({
+        chronicleStartTime: 10,
+        chronicleStartGranularity: "day",
+        chronicleEndTime: 9,
+        chronicleEndGranularity: "day",
+        chroniclePrecision: "approx",
+      });
+      const { snapshot, after } = await undoWith(id);
+      expect(snapshot.restoreState).toMatchObject({
+        chronicleStartTime: 10,
+        chronicleEndTime: 9,
+      });
+      expect(after).toMatchObject({
+        chronicleStartTime: 10,
+        chronicleEndTime: 9,
+        chronicleStartGranularity: "day",
+        chroniclePrecision: "approx",
+      });
+
+      const timeId = await legacyScene({
+        chronicleStartTime: 5,
+        chronicleStartGranularity: "time",
+      });
+      const timeRun = await undoWith(timeId);
+      expect(timeRun.after).toMatchObject({
+        chronicleStartTime: 5,
+        chronicleStartMinute: null,
+        chronicleStartGranularity: "time",
+      });
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("an unknown granularity is not sent: the Undo succeeds, the date alone is left unset, and it is logged", async () => {
+      for (const patch of [
+        { chronicleStartTime: 5, chronicleStartGranularity: "century" },
+      ]) {
+        const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
+        const id = await legacyScene(patch);
+        const { snapshot, after } = await undoWith(id);
+        for (const key of Object.keys(snapshot.restoreState)) {
+          expect(key.startsWith("chronicle"), key).toBe(false);
+        }
+        expect(after).toMatchObject({
+          chronicleStartTime: null,
+          chronicleStartGranularity: "none",
+          chroniclePrecision: "exact",
+        });
+        expect(warn).toHaveBeenCalledWith(
+          "tree",
+          "undo date range not restorable",
+          expect.stringContaining(id),
+        );
+        warn.mockRestore();
+      }
     });
   });
 

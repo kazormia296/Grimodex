@@ -151,6 +151,67 @@ function renderer(specifier: string): Promise<RendererModule> {
   return import(/* @vite-ignore */ specifier) as Promise<RendererModule>;
 }
 
+/**
+ * The part of the renderer's `src/features/tree/api.ts` this spec calls, with
+ * the signatures that file declares (`renderer()` returns an untyped record, so
+ * a wrong argument list is otherwise not caught by tsc and fails only at run
+ * time). Keep it in step with the file: createNode(data, options),
+ * updateNode(id, data, options), updateTemporalScene(projectId, sceneId, patch,
+ * options), getNode(id), deleteNode(id, projectId, options),
+ * loadTreeNodeRestoreSnapshot(id), historyWriteContext(origin, receipt).
+ */
+interface TreeNodeRestoreSnapshotShape {
+  content: string;
+  sourceUri: string | null;
+  sourceMtime: string | null;
+  restoreState: Record<string, unknown>;
+}
+interface TemporalScenePatchShape {
+  storyTimeOrder: string | null;
+  storyTimeLabel: string | null;
+  chronicleStartTime: number | null;
+  chronicleStartMinute: number | null;
+  chronicleStartGranularity: string;
+  chronicleEndTime: number | null;
+  chronicleEndMinute: number | null;
+  chronicleEndGranularity: string;
+  chroniclePrecision: string;
+  baseVersion: number;
+}
+interface TreeApiShape {
+  createNode(
+    data: Record<string, unknown>,
+    options?: {
+      writeContext?: unknown;
+      restoreState?: Record<string, unknown>;
+    },
+  ): Promise<Record<string, unknown>>;
+  updateNode(
+    id: string,
+    data: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<unknown>;
+  updateTemporalScene(
+    projectId: string,
+    sceneId: string,
+    patch: TemporalScenePatchShape,
+    options?: Record<string, unknown>,
+  ): Promise<unknown>;
+  getNode(id: string): Promise<{ version: number } | undefined>;
+  deleteNode(
+    id: string,
+    projectId?: string,
+    options?: Record<string, unknown>,
+  ): Promise<unknown>;
+  loadTreeNodeRestoreSnapshot(
+    id: string,
+  ): Promise<TreeNodeRestoreSnapshotShape | null>;
+  historyWriteContext(origin: "undo" | "redo", receipt: unknown): unknown;
+}
+async function treeApi(): Promise<TreeApiShape> {
+  return (await renderer("@/features/tree/api")) as unknown as TreeApiShape;
+}
+
 interface Workspace {
   rig: Rig;
   projectId: string;
@@ -235,13 +296,13 @@ const withoutToken = (r: Record<string, unknown>): Record<string, unknown> => {
 
 interface Deleted {
   before: Record<string, unknown>;
-  snapshot: Record<string, unknown>;
+  snapshot: TreeNodeRestoreSnapshotShape | null;
   receipt: unknown;
 }
 
 /** What `treeStore.deleteNode` does before and during a delete. */
 async function deleteLikeTheStore(w: Workspace, id: string): Promise<Deleted> {
-  const api = await renderer("@/features/tree/api");
+  const api = await treeApi();
   const before = await row(w, id);
   const snapshot = await api.loadTreeNodeRestoreSnapshot(id);
   const receipt = await api.deleteNode(id, w.projectId);
@@ -258,14 +319,9 @@ async function undoLikeTheStore(
   deleted: Deleted,
   overrides: { restoreState?: Record<string, unknown> } = {},
 ): Promise<Record<string, unknown>> {
-  const api = await renderer("@/features/tree/api");
+  const api = await treeApi();
   const b = deleted.before;
-  const snapshot = deleted.snapshot as {
-    content: string;
-    sourceUri: string | null;
-    sourceMtime: string | null;
-    restoreState: Record<string, unknown>;
-  };
+  const snapshot = deleted.snapshot!;
   return api.createNode(
     {
       id,
@@ -292,7 +348,7 @@ async function makeScene(
   id: string,
   parentId?: string,
 ): Promise<void> {
-  const api = await renderer("@/features/tree/api");
+  const api = await treeApi();
   await api.createNode({
     id,
     projectId: w.projectId,
@@ -307,7 +363,7 @@ async function makeScene(
   await api.updateNode(id, { intent: "goal", locationId: w.codexId });
   await api.updateNode(id, { povCharacterId: w.codexId });
   const current = await api.getNode(id);
-  await api.updateTemporalScene(id, {
+  await api.updateTemporalScene(w.projectId, id, {
     storyTimeOrder: "b3",
     storyTimeLabel: "night",
     chronicleStartTime: 100,
@@ -317,7 +373,7 @@ async function makeScene(
     chronicleEndMinute: null,
     chronicleEndGranularity: "day",
     chroniclePrecision: "approx",
-    baseVersion: current.version,
+    baseVersion: current!.version,
   });
   await api.updateNode(id, { content: '{"type":"doc","content":[]}' });
 }
@@ -351,7 +407,7 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
 
   it("(1) a note comes back with its AI context settings and its edited body", async () => {
     const w = await workspace();
-    const api = await renderer("@/features/tree/api");
+    const api = await treeApi();
     await api.createNode({
       id: "undo-note-1",
       projectId: w.projectId,
@@ -379,7 +435,7 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
     const deleted = await deleteLikeTheStore(w, "undo-scene-3");
     const created = await undoLikeTheStore(w, "undo-scene-3", deleted, {
       restoreState: {
-        ...(deleted.snapshot.restoreState as Record<string, unknown>),
+        ...(deleted.snapshot!.restoreState as Record<string, unknown>),
         povCharacterId: "codex-that-never-existed",
       },
     });
@@ -389,7 +445,7 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
 
   it("(3) Main refuses restoreState for a human create and an unknown key", async () => {
     const w = await workspace();
-    const api = await renderer("@/features/tree/api");
+    const api = await treeApi();
     await expect(
       api.createNode(
         {
@@ -420,7 +476,7 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
 
   it("(4) a folder with a child: the folder comes back, the child's create is still refused (existing defect)", async () => {
     const w = await workspace();
-    const api = await renderer("@/features/tree/api");
+    const api = await treeApi();
     await api.createNode({
       id: "undo-folder-1",
       projectId: w.projectId,

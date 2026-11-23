@@ -58,7 +58,15 @@ export interface DeleteTreeSubtreePorts {
 
 /** What the database decided when it re-created a node; the store mirrors it. */
 export type TreeRestoredFields = Partial<
-  Pick<TreeNodeData, "version" | "updatedAt" | "povCharacterId" | "locationId">
+  Pick<
+    TreeNodeData,
+    | "version"
+    | "updatedAt"
+    | "povCharacterId"
+    | "locationId"
+    | "sourceUri"
+    | "sourceMtime"
+  >
 >;
 
 function descendants(

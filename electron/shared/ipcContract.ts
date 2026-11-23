@@ -4448,7 +4448,7 @@ export const TREE_NODE_RESTORE_STATE_KEYS = [
   "chroniclePrecision",
 ] as const;
 
-const TREE_NODE_RESTORE_STATE_INTEGER_KEYS: readonly string[] = [
+export const TREE_NODE_RESTORE_STATE_INTEGER_KEYS: readonly string[] = [
   "chronicleStartTime",
   "chronicleStartMinute",
   "chronicleEndTime",
@@ -4509,59 +4509,41 @@ function requireTreeNodeRestoreState(
     );
   }
   if (chronicleKeys.length > 0) {
-    requireTreeNodeRestoreChronicleRange(restoreState, command);
+    requireTreeNodeRestoreChronicleWords(restoreState, command);
   }
 }
 
 /**
- * The compatibility range check of Rust `validate_chronicle_date_range` (an
- * Undo puts back a row that existed, so not the strict persistence matrix):
- * `time` needs a day and an in-range minute, and the end does not precede the
- * start. It looks at this row's own columns only.
+ * The shape of the date range's words (Rust `validate_chronicle_group`): the
+ * known granularities and precision. The range's *consistency* (an end before
+ * the start, a `time` without a day or a minute) is not checked: an Undo puts
+ * back a row that existed, and `tree_node_patch` writes those columns with no
+ * check, so a legacy row can hold such a range and its Undo must not stop.
  */
-function requireTreeNodeRestoreChronicleRange(
+function requireTreeNodeRestoreChronicleWords(
   restoreState: CommandArgs,
   command: string,
 ): void {
   const invalid = (message: string): never => {
     throw new Error(
-      `invalid args \`restoreState\` for command \`${command}\`: chronicle range ${message}`,
+      `invalid args \`restoreState\` for command \`${command}\`: chronicle ${message}`,
     );
   };
   const granularities = ["none", "season", "year", "month", "day", "time"];
-  const endpoint = (prefix: "chronicleStart" | "chronicleEnd") => {
-    const granularity = restoreState[`${prefix}Granularity`] as string;
-    if (!granularities.includes(granularity)) {
-      invalid(`${prefix}Granularity is not a supported granularity`);
+  for (const key of [
+    "chronicleStartGranularity",
+    "chronicleEndGranularity",
+  ] as const) {
+    if (!granularities.includes(restoreState[key] as string)) {
+      invalid(`${key} is not a supported granularity`);
     }
-    const day = (restoreState[`${prefix}Time`] ?? null) as number | null;
-    const minute = (restoreState[`${prefix}Minute`] ?? null) as number | null;
-    if (granularity === "time") {
-      if (minute !== null && (minute < 0 || minute >= 1440)) {
-        invalid(`${prefix}Minute is out of range`);
-      }
-      if (day === null || minute === null) {
-        invalid(`${prefix} time needs a day and a minute`);
-      }
-    }
-    return { granularity, day, minute };
-  };
+  }
   if (
     !["exact", "approx", "unknown"].includes(
       restoreState.chroniclePrecision as string,
     )
   ) {
     invalid("chroniclePrecision must be exact, approx, or unknown");
-  }
-  const start = endpoint("chronicleStart");
-  const end = endpoint("chronicleEnd");
-  if (start.day !== null && end.day !== null) {
-    const absolute = (point: typeof start): bigint =>
-      BigInt(point.day as number) * 1440n +
-      BigInt(point.granularity === "time" ? (point.minute ?? 0) : 0);
-    if (absolute(end) < absolute(start)) {
-      invalid("end precedes start");
-    }
   }
 }
 

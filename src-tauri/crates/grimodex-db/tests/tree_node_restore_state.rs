@@ -546,38 +546,6 @@ fn restore_state_rejects_unknown_incomplete_and_mistyped_keys() {
             "chroniclePrecision",
         ),
         (
-            "chronicle time without a minute",
-            json!({
-                "chronicleStartTime": 5,
-                "chronicleStartGranularity": "time",
-                "chronicleEndGranularity": "none",
-                "chroniclePrecision": "exact"
-            }),
-            "chronicle range",
-        ),
-        (
-            "chronicle minute out of range",
-            json!({
-                "chronicleStartTime": 5,
-                "chronicleStartMinute": 1440,
-                "chronicleStartGranularity": "time",
-                "chronicleEndGranularity": "none",
-                "chroniclePrecision": "exact"
-            }),
-            "chronicle range",
-        ),
-        (
-            "chronicle end before start",
-            json!({
-                "chronicleStartTime": 10,
-                "chronicleStartGranularity": "day",
-                "chronicleEndTime": 9,
-                "chronicleEndGranularity": "day",
-                "chroniclePrecision": "exact"
-            }),
-            "chronicle range",
-        ),
-        (
             "archivedAt",
             json!({ "archivedAt": "2026-01-01T00:00:00Z" }),
             "unknown field `archivedAt`",
@@ -749,7 +717,7 @@ fn chronicle_row(db: &Database, id: &str) -> Value {
 }
 
 /// `tree_node_patch`（検査なし）や、制約の前から DB にある行も、undo は忠実に戻す
-/// （互換の検査を通る範囲。厳密な persistence matrix は求めない）。
+/// （形の検査だけ。厳密な persistence matrix も範囲の整合も求めない）。
 #[test]
 fn restore_state_puts_back_a_chronicle_range_the_strict_matrix_would_refuse() {
     let db = new_db();
@@ -818,4 +786,70 @@ fn a_null_restore_state_is_a_plain_create_in_rust() {
     create_wire(&db, payload).expect("null restoreState is absent");
     let after = row(&db, "scene-null").expect("row");
     assert!(after["intent"].is_null(), "nothing was restored");
+}
+
+/// 範囲の不整合（end が start より前、`time` で day か minute が無い、範囲外の minute）は
+/// 拒まずに書き戻す：`tree_node_patch` は検査なしでこれらを書けるので、そういう行の undo が
+/// subtree の途中で止まってはならない（形の検査は残る）。
+#[test]
+fn restore_state_puts_back_an_inconsistent_legacy_range_faithfully() {
+    let cases: [(&str, Value); 4] = [
+        (
+            "end before start",
+            json!({
+                "chronicleStartTime": 10, "chronicleStartGranularity": "day",
+                "chronicleEndTime": 9, "chronicleEndGranularity": "day",
+                "chroniclePrecision": "exact"
+            }),
+        ),
+        (
+            "time without a minute",
+            json!({
+                "chronicleStartTime": 5, "chronicleStartGranularity": "time",
+                "chronicleEndGranularity": "none", "chroniclePrecision": "exact"
+            }),
+        ),
+        (
+            "time without a day",
+            json!({
+                "chronicleStartMinute": 30, "chronicleStartGranularity": "time",
+                "chronicleEndGranularity": "none", "chroniclePrecision": "approx"
+            }),
+        ),
+        (
+            "minute out of range",
+            json!({
+                "chronicleStartTime": 5, "chronicleStartMinute": 1440,
+                "chronicleStartGranularity": "time",
+                "chronicleEndGranularity": "none", "chroniclePrecision": "exact"
+            }),
+        ),
+    ];
+    for (index, (name, range)) in cases.into_iter().enumerate() {
+        let db = new_db();
+        let id = format!("scene-incons-{index}");
+        create(&db, create_payload(&id, "scene", None)).expect("create");
+        patch(&db, &id, &format!("patch-incons-{index}"), range)
+            .expect("tree_node_patch writes it unchecked");
+        let before = row(&db, &id).expect("row");
+        let before_chronicle = chronicle_row(&db, &id);
+        let receipt = delete(&db, &id, &format!("delete-incons-{index}")).expect("delete");
+        create_wire(
+            &db,
+            undo_payload_with_state(
+                &id,
+                "scene",
+                &before,
+                &receipt,
+                &format!("undo-incons-{index}"),
+            ),
+        )
+        .unwrap_or_else(|error| panic!("{name}: the undo must succeed: {error}"));
+        assert_eq!(chronicle_row(&db, &id), before_chronicle, "{name}");
+        assert_eq!(
+            Value::Object(row(&db, &id).unwrap()),
+            Value::Object(before),
+            "{name}"
+        );
+    }
 }
