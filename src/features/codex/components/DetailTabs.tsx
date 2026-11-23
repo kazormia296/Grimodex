@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useFitsInline } from "@/hooks/useFitsInline";
 
@@ -6,6 +7,8 @@ interface Tab {
   label: string;
   testId: string;
   icon: LucideIcon;
+  /** 表示用の列のボタン内に重ねる印（absolute 配置で幅を変えないこと）。計測用の行には出さない。 */
+  marker?: ReactNode;
 }
 
 interface DetailTabsProps {
@@ -60,7 +63,7 @@ export function DetailTabs({ tabs, activeTab, onTabChange }: DetailTabsProps) {
               data-testid={tab.testId}
               onClick={() => onTabChange(tab.id)}
               title={tab.label}
-              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2 text-xs font-medium transition-colors ${
+              className={`relative flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2 text-xs font-medium transition-colors ${
                 isActive
                   ? "border-b-2 border-primary text-foreground"
                   : "text-muted-foreground hover:text-foreground"
@@ -69,6 +72,7 @@ export function DetailTabs({ tabs, activeTab, onTabChange }: DetailTabsProps) {
               <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               {/* 隠す時も sr-only で a11y ツリーにはラベルを残す */}
               <span className={showLabel ? "" : "sr-only"}>{tab.label}</span>
+              {tab.marker}
             </button>
           );
         })}

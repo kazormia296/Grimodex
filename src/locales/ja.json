@@ -2673,6 +2673,9 @@
       "noCandidates": "影響しそうなシーンは見つかりませんでした",
       "sourceChanged": "実行直前に設定または本文が更新されました。もう一度お試しください",
       "done": "影響レビュー完了",
+      "pending_one": "前回のチェック以降に {{count}} 件の変更があります",
+      "pending_other": "前回のチェック以降に {{count}} 件の変更があります",
+      "pendingTab": "影響チェックが未実施の変更があります",
       "error": "影響チェックに失敗しました"
     },
     "phaseIndicator": {
