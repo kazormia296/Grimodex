@@ -142,6 +142,18 @@ fn seed_phase_entries(conn: &Connection) {
         None,
         "2024-01-01",
     );
+    // 不明な mode の Phase がある項目では、override NULL の Phase も除く（不明も hidden 扱い）。
+    insert_phase(
+        conn,
+        "ph-unknown-null",
+        "e-unknown",
+        "u-null-label",
+        None,
+        Some("unknown-null-content"),
+        None,
+        None,
+        "2024-01-02",
+    );
     // hidden の Phase（早い）→ override NULL の Phase（遅い）→ mentioned の Phase（最後）。
     insert_phase(
         conn,
@@ -223,18 +235,16 @@ fn phase_ids(conn: &Connection, entry_id: &str) -> Vec<String> {
 }
 
 #[test]
-fn characterization_hidden_phase_row_is_returned_today() {
+fn hidden_phase_row_is_not_returned_but_the_entry_itself_is() {
     let conn = make_simple_db();
     seed_phase_entries(&conn);
     let full = get_codex_entry_full(&conn, "p1", "e-hidden-phase").unwrap();
-    assert_eq!(full.phases.len(), 1);
-    let p = &full.phases[0];
-    assert_eq!(p.id, "ph-hidden");
-    assert_eq!(p.label, SECRET_LABEL);
-    assert_eq!(p.summary_override.as_deref(), Some(SECRET_SUMMARY));
-    assert_eq!(p.content_override.as_deref(), Some(SECRET_CONTENT));
-    assert_eq!(p.context_mode_override.as_deref(), Some("hidden"));
-    assert_eq!(p.anchor_node_id.as_deref(), Some(SECRET_ANCHOR));
+    // 行ごと除く（label・要約・本文・mode・anchor の全部）。外した印は付けない。
+    assert!(full.phases.is_empty());
+    let json = serde_json::to_string(&full).unwrap();
+    for leaked in [SECRET_LABEL, SECRET_SUMMARY, SECRET_CONTENT, SECRET_ANCHOR] {
+        assert!(!json.contains(leaked), "{leaked} leaked: {json}");
+    }
     // 項目そのもの（base）は今までどおり返る。
     assert_eq!(full.summary.summary.as_deref(), Some("base-summary"));
     assert_eq!(full.content, "base-content");
@@ -243,24 +253,51 @@ fn characterization_hidden_phase_row_is_returned_today() {
 }
 
 #[test]
-fn characterization_all_phases_are_returned_today() {
+fn only_public_phases_are_returned() {
     let conn = make_simple_db();
     seed_phase_entries(&conn);
     assert!(phase_ids(&conn, "e-none").is_empty());
     assert_eq!(phase_ids(&conn, "e-mentioned"), vec!["ph-mentioned"]);
     assert_eq!(phase_ids(&conn, "e-always"), vec!["ph-always"]);
     assert_eq!(phase_ids(&conn, "e-suppress"), vec!["ph-suppress"]);
+    // hidden の Phase が無い項目の、override が NULL の Phase（本文だけ上書き）は返る。
+    // 別の項目（e-other）の hidden の Phase の影響を受けない。
     assert_eq!(phase_ids(&conn, "e-text-only"), vec!["ph-text-only"]);
-    assert_eq!(phase_ids(&conn, "e-unknown"), vec!["ph-unknown"]);
-    assert_eq!(
-        phase_ids(&conn, "e-inherit"),
-        vec!["ph-inh-hidden", "ph-inh-null", "ph-inh-mentioned"]
+    // 不明な mode は hidden 扱い（allowlist。fail-closed）。
+    assert!(phase_ids(&conn, "e-unknown").is_empty());
+    assert!(phase_ids(&conn, "e-other").is_empty());
+}
+
+#[test]
+fn null_phase_is_dropped_when_the_entry_has_a_hidden_phase() {
+    let conn = make_simple_db();
+    seed_phase_entries(&conn);
+    // hidden（早い）・NULL（遅い）・mentioned（最後）：hidden と、継承しうる NULL を除き、
+    // 明示的に mentioned を指定した Phase は返す（順序は見ない）。
+    assert_eq!(phase_ids(&conn, "e-inherit"), vec!["ph-inh-mentioned"]);
+    // hidden の Phase より前にある NULL の Phase も除く（保守的）。
+    insert_phase(
+        &conn,
+        "ph-inh-null-early",
+        "e-inherit",
+        "i-null-early",
+        None,
+        Some("early-null-content"),
+        None,
+        None,
+        "2023-12-31",
     );
+    assert_eq!(phase_ids(&conn, "e-inherit"), vec!["ph-inh-mentioned"]);
+}
+
+#[test]
+fn returned_phases_keep_created_at_order() {
+    let conn = make_simple_db();
+    seed_phase_entries(&conn);
     assert_eq!(
         phase_ids(&conn, "e-order"),
         vec!["ph-order-early", "ph-order-late"]
     );
-    assert_eq!(phase_ids(&conn, "e-other"), vec!["ph-other-hidden"]);
 }
 
 #[test]
@@ -290,7 +327,7 @@ fn base_hidden_entry_stays_not_found_even_with_a_public_phase() {
 /// 本番 schema（`migrate()` 済みの DB。CHECK・外部キー・`version` あり）でも同じ結果になること。
 /// `make_simple_db` は手書きの DDL なので、列名や制約の drift をここで拾う。
 #[test]
-fn production_schema_phases_of_a_public_entry() {
+fn production_schema_omits_hidden_phases() {
     let database = grimodex_db::Database::new(std::path::Path::new(":memory:"))
         .expect("open production schema fixture");
     database.migrate().expect("create current schema");
@@ -372,11 +409,19 @@ fn production_schema_phases_of_a_public_entry() {
                 phase_ids(conn, "e-plain"),
                 vec!["ph-plain-mentioned", "ph-plain-null"]
             );
-            // 今の挙動：hidden の Phase も返る。
-            assert_eq!(
-                phase_ids(conn, "e-secret"),
-                vec!["ph-secret-mentioned", "ph-secret-null", "ph-secret-hidden"]
-            );
+            // hidden の Phase と、継承しうる NULL の Phase は返らず、mentioned の Phase は返る。
+            assert_eq!(phase_ids(conn, "e-secret"), vec!["ph-secret-mentioned"]);
+            // 別の項目の hidden の Phase は、他の項目に効かない。
+            assert!(phase_ids(conn, "e-other").is_empty());
+            let json = serde_json::to_string(&get_codex_entry_full(conn, "p1", "e-secret")?)?;
+            for leaked in [
+                SECRET_LABEL,
+                SECRET_SUMMARY,
+                SECRET_CONTENT,
+                "secret-null-content",
+            ] {
+                assert!(!json.contains(leaked), "{leaked} leaked: {json}");
+            }
             Ok(())
         })
         .expect("production schema read");
