@@ -41,11 +41,20 @@
 - B：undo が create のあとに `temporal_scene_patch`／`tree_node_patch` で戻す。2 回の書込みで atomic でなく、journal・feed が増え、途中失敗で半分戻った行が残る。patch は `baseVersion` が要り、note の欄・`createdAt` を覆えない。
 - C：Rust が undo の create で delete の journal の `before_json` を読む。store に無い子孫も戻せる唯一の案だが、承認は payload の拡張で、journal の内容を create の復元の入力にする新しい結合になる。DR-UND-2 の候補として再検討する。
 - D：INSERT を全 34 列にする。通常の create の SQL と試験の全面更新が要り、得るものが無い。
-- A のうち入力：計画書の本文は store の `deletedNodes` から組む案だった。反証 P2-3 に従い、削除の直前に DB から読んだ行（`loadTreeNodeRestoreSnapshot`。scene の本文書込みの barrier を通る）にした。redo の前にも読み直し、undo→編集→redo→再 undo で編集が失われない。
+- A のうち入力：計画書の本文は store の `deletedNodes` から組む案だった。反証 P2-3 に従い、削除の直前に DB から読んだ行（`loadTreeNodeRestoreSnapshot`。scene の本文書込みの barrier を通る）にした。redo の前にも読み直し、undo→編集→redo→再 undo で編集が失われない（journal に載る root だけ。子のある folder の子は undo が通らない。e）。
 
 ### e. 直らないもの（作者から見える残る制限）
 
-- **folder の下に子がある削除の undo は、今も子が戻らない。** folder 自身は戻るが、子の create が Undo Journal の束縛（`entity_id == node_id`。journal は削除の root 1 件だけ）で `tree replay target does not match the named Undo Journal` と拒まれる。既存の不具合で、実 DB の特性試験で確定した（`current_undo_of_a_folder_subtree_child_is_pinned`）。束縛を「delete の `before_json.nodes` に含まれる id」へ緩めるのは replay の authority 契約の変更なので、この lane では触らない（別の確認が要る）。renderer 経由（実 addon）の確認は未実行。したがって、この lane で DB が戻るのは削除の root 自身（scene・note・子の無い folder）。
+- **中身のある章（子のある folder）を削除して Ctrl+Z すると、データベースには章だけが戻り、画面には何も戻らず、Ctrl+Z の履歴が消える。削除から 1.5 秒以内だと、中の場面が元に戻せなくなり、ゴミ箱にも無い。** 既存の不具合で、この lane では直らない（別 PR＝lane H。ユーザー決定済み。計画書：`/home/grimodex/fusion-eval-data/handoff/mastra-mp3-materials/plan-folder-undo-20261123.md`）。コードで確かめた流れ：
+  - 削除の Undo Journal は root（章）1 件だけ（`tree_node_delete`）。undo は `deleteTreeSubtree.ts` の undo が親→子の順に各 node の `tree_node_create`（origin undo）を**同じ journal で**呼ぶ。章の create は通り、DB に章が戻る（この lane で、章自身の欄も戻る）。
+  - 最初の子の create は `validate_tree_replay_target_in_tx`（`domain_writes.rs`）の束縛（journal の `entity_id == node_id`）で `tree replay target does not match the named Undo Journal` と拒まれ、renderer が throw する。実 DB の特性試験で確定した（`current_undo_of_a_folder_subtree_child_is_pinned`）。
+  - store に戻すのは loop の**後ろ**（`applyNodes`）なので、throw すると store には章も子も何も戻らない。画面は削除後のまま、reload すると DB の章だけが（子の無い空の章として）現れる。
+  - Ctrl+Z の履歴は、`globalHistoryStore` が undo の失敗（version の衝突・結果不明以外）で `clear()` するので消える。
+  - ゴミ箱への捕捉（scene の削除ごとの保留）は、undo の loop の**前**に `cancelTrash` で取り消される。削除から 1.5 秒以内（`UNDO_ABSORB_WINDOW_MS`）の undo だと、中の場面は保留ごと取り消されたあと、DB にも戻らないので、DB にもゴミ箱にも無くなる。1.5 秒を過ぎていれば、中の場面はゴミ箱に入っているのでそこから戻せる（ゴミ箱の復元は新しい id で、この lane の欄は戻らない）。
+  - 「undo→編集→redo→再 undo で編集が失われない」（上の d）は、journal に載る root（scene・note・子の無い folder）にだけ成り立つ。章の子は undo 自体が通らない。
+  - したがって、この lane で DB が戻るのは削除の root 自身（scene・note・子の無い folder）。子のある folder は上のとおりの状態で、この lane の前と変わらない（章だけが DB に戻る点は従来から同じ）。renderer 経由（実 addon）の確認は未実行（`treeUndoRestore.pipeline.spec.ts` の (4) が通しで固定する）。
+  - 直し方の候補（束縛を delete の `before_json.nodes` に含まれる id へ緩める等）は replay の authority 契約の変更なので、別の確認が要る。lane H の計画書で扱う。
+- **PR 本文用（作者から見える言葉）**：削除して Ctrl+Z で元に戻るのは、場面・メモ・子の無い章。中身のある章は、Ctrl+Z をしてもデータベースに章だけが戻り、画面には何も戻らず、Ctrl+Z の履歴が消える（削除から 1.5 秒以内だと中の場面が戻せなくなり、ゴミ箱にも無い）。これは前から同じで、別の PR で直す。
 - 削除で cascade 消去される子の表：label・pin・伏線の setup と回収・scene の年表イベントへの紐付け・map の位置・lint の無視・Scope の制約（作者が決めた制約は既定に戻る）。反証 P2-2 で数え直した追加分：付箋（`editor_stickies`）・スレッドの段階マーカー（`plot_thread_scene_links`）・スレッドの開始／終了（`plot_threads.start_node_id`・`end_node_id`）・`foreshadow_payoffs`・版履歴（`content_versions`）・post-effect の注釈・`scene_lens_data`・`events.reveal_scene_id`（年表の lane の表）。archived の子孫。これらは `restorePersisted` が `createNode` 1 回だけであることによる（読み取りで数えた。実行で全件は確かめていない）。DR-UND-2 の入力。
 - Trash 復元・redo of create の欄の欠落：別の lane。
 - **fail-open の限界（レビュー P2-3）**：snapshot（削除の直前の DB の行）が読めないと、`deleteTreeSubtree.ts` は黙って従来の経路（create の欄だけ）に落ちる。undo は止まらない（可用性のため妥当）が、その undo では欠落が残り、reload の後に hidden の note は `mentioned` に戻る（秘匿が弱い向き）。読めなかったことは `debugLog.warn("tree", "undo snapshot unreadable", …)` に残す（診断用。AI に渡る内容と UI は変えない）。
@@ -73,7 +82,7 @@
 
 ## DR-UND-2（候補）残りの欠落
 
-上の e の子の表・Scope binding・folder 下の子の undo（replay 束縛の緩和）・Trash 復元・redo of create。年表の 7 列は DR-UND-1 で戻すことにした（上）。
+上の e の子の表・Scope binding・子のある folder の undo（replay 束縛の緩和。lane H の計画書 `plan-folder-undo-20261123.md`）・Trash 復元・redo of create。年表の 7 列は DR-UND-1 で戻すことにした（上）。
 
 ## 変異試験の記録
 
