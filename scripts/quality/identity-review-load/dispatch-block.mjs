@@ -2,12 +2,12 @@
 // electron を import しない（試験できるように、electron-observer-b.mjs から分けた。plain-text-keystore.mjs と同じ形）。
 //
 // 目的：乾いた実行が、送信の直前の経路（製品の judgeCandidates）から、応答の処理・監査の完了・usage の記録まで通っても、
-// 外へは何も出ないことを main の入口で保証する。外向きの命令は本物の handler に届かない。
+// 外へは何も出ないことを main の入口で保証する。**許可リスト方式**：局所の既知の命令（DISPATCH_LOCAL_ALLOW）だけを本物の
+// handler に届け、それ以外はすべて届けない。
 //   - send_chat_message：外へ出さず、定型の偽の応答（REHEARSAL_RESPONSE。判定は空）で答える（リハーサル）。
-//   - それ以外の外向きの命令：renderer には固定の token（IDL_DISPATCH_BLOCKED）の例外として返る。
+//   - それ以外の許可リストに無い命令：renderer には固定の token（IDL_DISPATCH_BLOCKED）の例外として返る。
 // 数えるのは命令の名前ごとの件数だけ（引数・本文・エラーの自由文は持たない）。
 import assert from "node:assert/strict";
-import { findAiCommands } from "./lib.mjs";
 
 export const DISPATCH_BLOCK_ENV = "GRIMODEX_IDL_BLOCK_DISPATCH";
 /** 拒否したとき renderer に返る例外の token（safeErrorSummary の codes に載る形）。 */
@@ -35,14 +35,37 @@ export const REHEARSAL_RESPONSE = Object.freeze({
 });
 
 /**
- * 外へ出る可能性のある命令か（純関数）。lib.mjs の findAiCommands（AI の command と外部へ出る command）に当たる名前は、
- * 局所の命令（DISPATCH_BLOCK_EXEMPT）以外すべて、本物の handler に届けない（乾いた実行で AI の command が本物の handler に
- * 届けば dryCellStatus が不採用にする）。
+ * 乾いた実行の page が呼ぶ、局所の命令の許可リスト。**許可リスト方式**（ここに無い命令は、AI の名前に当たらなくても本物の
+ * handler に届けない）：拒否リスト（findAiCommands）だけでは、updater・インストーラ・外部の process を起こす命令など、AI の
+ * 名前を持たない外向きの命令を取りこぼす（独立レビューの P1）。集合は、乾いた実行を拒否リストの方式で 3 回
+ * （2026-11-23 19:38・20:10・20:26。4 作品ずつ）回したときに、page が本物の handler に届けた命令の和集合そのもの
+ * （挙動は変わらない）。page が新しい命令を呼ぶようになれば、止まって dispatchBlock.blocked に名前が出るので、
+ * 局所の命令だと確かめてからここに足す。
+ */
+export const DISPATCH_LOCAL_ALLOW = Object.freeze([
+  ...DISPATCH_BLOCK_EXEMPT,
+  "codex_create",
+  "codex_match_text",
+  "codex_rebuild_matcher",
+  "codex_update",
+  "db_execute",
+  "extract_codex_candidates",
+  "get_global_settings",
+  "get_model_capability_snapshot",
+  "has_api_key",
+  "open_workspace",
+  "project_create",
+  "tree_node_create",
+]);
+
+/**
+ * 本物の handler に届けない命令か（純関数）。許可リスト（DISPATCH_LOCAL_ALLOW）に無い命令はすべて届けない
+ * （send_chat_message を含む。乾いた実行で AI の command が本物の handler に届けば dryCellStatus が不採用にする）。
+ * 命令でない値（文字列でない）は本物の handler が拒否するので、ここでは止めない。
  */
 export function isBlockedDispatchCommand(command) {
-  if (typeof command !== "string") return false; // 命令でない値は本物の handler が拒否する
-  if (DISPATCH_BLOCK_EXEMPT.includes(command)) return false;
-  return findAiCommands([command]).length > 0;
+  if (typeof command !== "string") return false;
+  return !DISPATCH_LOCAL_ALLOW.includes(command);
 }
 
 /**

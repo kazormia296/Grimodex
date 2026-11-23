@@ -22,6 +22,7 @@ import { BudgetStop, createGate } from "./ledger.mjs";
 import {
   assertOutputClean,
   candidateKey,
+  findAiCommands,
   hashSurface,
   safeErrorSummary,
 } from "./lib.mjs";
@@ -50,7 +51,9 @@ import {
 } from "./launcher-common.mjs";
 import {
   DISPATCH_BLOCK_ENV,
+  DISPATCH_BLOCK_EXEMPT,
   DISPATCH_BLOCK_TOKEN,
+  DISPATCH_LOCAL_ALLOW,
   installDispatchBlock,
   isBlockedDispatchCommand,
 } from "./dispatch-block.mjs";
@@ -1907,8 +1910,9 @@ test("F5 m-b：台帳の前検査（assertLedgerReady）：STOP・未精算の�
 
 // ---- 乾いた実行の拒否層（dispatch-block）と探針（bProbeJudge） ------------------------------------------------
 
-test("拒否層：外向きの AI の命令（送信・CLI・ライセンス・外部へ出る命令）は拒否し、設定の読み書き・DB・Codex の局所の命令は通す", () => {
+test("拒否層（許可リスト方式）：許可リストの局所の命令だけを本物の handler に届け、AI の名前を持たない外向きの命令（updater・インストーラ・外部 process）を含め、それ以外はすべて届けない", () => {
   for (const command of [
+    // AI の名前を持つ命令
     "send_chat_message",
     "send_chat_message_stream",
     "list_ai_models",
@@ -1918,25 +1922,64 @@ test("拒否層：外向きの AI の命令（送信・CLI・ライセンス・�
     "activate_license",
     "semantic_download_model",
     "narrative_extraction_claim_task",
+    // AI の名前を持たない外向きの命令（独立レビューの P1。拒否リストでは取りこぼした）
+    "updater_check",
+    "updater_download",
+    "updater_install",
+    "mozkey_download_and_install",
+    "open_log_dir",
+    // 許可リストに無い局所の命令も、確かめて足すまで止める（fail-closed）
+    "codex_index_entry",
+    "save_api_key",
+    "delete_api_key",
+    "ai_audit_read_snapshot",
+    "no_such_command",
   ])
     assert.equal(isBlockedDispatchCommand(command), true, command);
-  for (const command of [
-    "get_ai_settings",
-    "save_ai_settings",
-    "db_execute",
-    "codex_create",
-    "codex_index_entry",
-    "extract_codex_candidates",
-    "has_api_key",
-    "get_model_capability_snapshot",
-    "ai_audit_read_snapshot",
-    // 製品の AI 送信が局所の監査の DB に書く命令（外へ出ない）。
-    "ai_audit_append_batch",
-  ])
+  for (const command of DISPATCH_LOCAL_ALLOW)
     assert.equal(isBlockedDispatchCommand(command), false, command);
-  // 命令でない値は本物の handler が拒否する（ここでは拒否しない）。
+  // 命令でない値は本物の handler が拒否する（ここでは止めない）。
   assert.equal(isBlockedDispatchCommand(undefined), false);
   assert.equal(isBlockedDispatchCommand(42), false);
+});
+
+test("拒否層の許可リスト：重複が無く、製品の IPC の契約に実在し、AI・外部へ出る名前は局所の 3 命令（設定の読み書き・監査の追記）だけ", () => {
+  assert.equal(new Set(DISPATCH_LOCAL_ALLOW).size, DISPATCH_LOCAL_ALLOW.length);
+  const contract = [
+    "../../../electron/shared/ipcContract.ts",
+    "../../../electron/shared/modelCapabilitySnapshotWire.ts",
+  ]
+    .map((file) => readFileSync(new URL(file, import.meta.url), "utf8"))
+    .join("\n");
+  for (const command of DISPATCH_LOCAL_ALLOW)
+    assert.ok(
+      new RegExp(`\\b${command}\\b`, "u").test(contract),
+      `${command} が IPC の契約に無い`,
+    );
+  // AI の名前・外部へ出る名前に当たる命令は、局所の 3 命令だけ。
+  assert.deepEqual(
+    findAiCommands(DISPATCH_LOCAL_ALLOW).sort(),
+    [...DISPATCH_BLOCK_EXEMPT].sort(),
+  );
+  // 乾いた実行で観測した命令（19:38・20:10・20:26 の 3 回）が、すべて許可リストに入っている。
+  const observed = [
+    "ai_audit_append_batch",
+    "codex_create",
+    "codex_match_text",
+    "codex_rebuild_matcher",
+    "codex_update",
+    "db_execute",
+    "extract_codex_candidates",
+    "get_ai_settings",
+    "get_global_settings",
+    "get_model_capability_snapshot",
+    "has_api_key",
+    "open_workspace",
+    "project_create",
+    "save_ai_settings",
+    "tree_node_create",
+  ];
+  assert.deepEqual([...DISPATCH_LOCAL_ALLOW].sort(), observed);
 });
 
 /** electron の ipcMain の代わり：handle の登録を記録し、登録された listener を channel で呼べる。 */
