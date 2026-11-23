@@ -170,7 +170,10 @@ const CODEX_CALLS_FIXTURE = path.join(
   "codexReadCalls",
   "codex-read-calls.golden.txt",
 );
-/** The seed's archived scenes: Native's `fts` returns them, the tool drops them. */
+/**
+ * The seed's archived scenes: Native's `fts` returns them in the `scenes` scope
+ * and leaves them out in `scenes_live` (the scope `search_scenes` asks for).
+ */
 const ARCHIVED_SCENE_IDS: ReadonlySet<string> = new Set(
   LEGACY_READ_SEED.filter((t) => t.table === "tree_nodes").flatMap((t) =>
     t.rows
@@ -475,34 +478,36 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           // required to be the order the real `fts` returned (with the archived
           // scenes dropped, and cut to the tool's 10), computed here from a
           // direct call of the real `fts` with the same arguments (not written
-          // down); everything else is still the golden's, to the byte: the
+          // down; Native's own `scenes_live` already leaves archived scenes
+          // out, so nothing is dropped from it here); everything else is still the golden's, to the byte: the
           // summary, tokensUsed, and each row (the rows sorted by id, as JSON).
           expect(ftsCalls, label).toHaveLength(1);
           const call = ftsCalls[0]!;
           // The arguments are fixed here too, not taken on trust from the core:
           // the project of the case, the trimmed query, the tool's scope, and
-          // the limit (scenes take Rust's 50 to drop archived rows before the
-          // cut to 10; snippets take 10).
+          // the limit (both tools take 10; scenes ask for the `scenes_live`
+          // scope, which leaves archived scenes out before its limit).
           const params = golden.params as { query?: unknown };
           expect(call, `${label}: fts arguments`).toEqual({
             projectId: golden.world.projectId,
             query: String(params.query ?? "").trim(),
-            scope: tool === "search_scenes" ? "scenes" : "snippets",
-            limit: tool === "search_scenes" ? 50 : 10,
+            scope: tool === "search_scenes" ? "scenes_live" : "snippets",
+            limit: 10,
           });
-          const sourceType = call.scope === "scenes" ? "scene" : "snippet";
+          const sourceType = call.scope === "snippets" ? "snippet" : "scene";
           const direct = (await realReads.fts(call)) as Array<{
             sourceType: string;
             id: string;
           }>;
+          // Native's own answer is the order, as it is: no archived scene is in
+          // it (the `scenes_live` scope), and no cut is needed (limit 10).
+          expect(
+            direct.filter((hit) => ARCHIVED_SCENE_IDS.has(hit.id)),
+            `${label}: Native's scenes_live leaves archived scenes out`,
+          ).toEqual([]);
           const expectedIds = direct
-            .filter(
-              (hit) =>
-                hit.sourceType === sourceType &&
-                !(sourceType === "scene" && ARCHIVED_SCENE_IDS.has(hit.id)),
-            )
-            .map((hit) => hit.id)
-            .slice(0, 10);
+            .filter((hit) => hit.sourceType === sourceType)
+            .map((hit) => hit.id);
           const rows = actual.content as Array<{ id: string }>;
           const goldenRows = golden.result.content as Array<{ id: string }>;
           expect(
@@ -654,15 +659,46 @@ describe("main's typed reads against the real Native addon: the shape the later 
     // and the other project's own search gives its own scene.
     expect(mainScenes.some((id) => id.startsWith("x-"))).toBe(false);
     expect(await ids(OTHER, "scenes", "魔法")).toEqual(["x-s1"]);
-    // Native's fts answers an archived scene (`n-arch`) and a hidden entry
-    // (`c-secret`): the filtering the renderer's search tools do is the TOOL
-    // layer's, so a tool that moves into the core (PR-5, PR-8) must do it
-    // itself. This pins today's Native; a change here is a finding.
+    // Native's fts answers an archived scene (`n-arch`) in the `scenes` scope
+    // and a hidden entry (`c-secret`) in the `codex` scope: the `scenes` scope
+    // is not changed by the `scenes_live` scope (DR-ARC-1; the command center,
+    // the chat recall and the related scenes still read it), and the hidden
+    // entry's condition is the tool layer's (DR-MP4-40). This pins today's
+    // Native; a change here is a finding.
     expect(mainScenes).toContain("n-arch");
     expect(await ids(MAIN, "codex", "魔法")).toContain("c-secret");
   });
 
-  it("search_scenes drops the archived scene that the real fts returns (the condition is the tool's), search_snippets follows the real fts order", async () => {
+  it("fts scenes_live is scenes without the archived scenes: it finds the live ones (not an empty answer) and keeps projects apart", async () => {
+    const { reads } = await typedReads();
+    const ids = async (
+      projectId: string,
+      scope: "scenes" | "scenes_live",
+      query: string,
+    ) =>
+      (
+        (await reads.fts({ projectId, query, scope, limit: 10 })) as Array<{
+          id: string;
+        }>
+      ).map((r) => r.id);
+    // The positive control: an addon that does not know `scenes_live` answers
+    // an empty list (an unknown scope is not an error), and fails these.
+    expect(await ids(MAIN, "scenes_live", "裏切り")).toEqual(["n-s3"]);
+    const live = await ids(MAIN, "scenes_live", "魔法");
+    expect(live).toContain("n-s3");
+    expect(live).not.toContain("n-arch");
+    expect(live.some((id) => id.startsWith("x-"))).toBe(false);
+    expect(await ids(OTHER, "scenes_live", "魔法")).toEqual(["x-s1"]);
+    // The word is only in the archived scene: `scenes` finds it, `scenes_live`
+    // does not.
+    expect(await ids(MAIN, "scenes", "外部ファイル")).toEqual(["n-arch"]);
+    expect(await ids(MAIN, "scenes_live", "外部ファイル")).toEqual([]);
+    // A subset of `scenes`, in `scenes`' order.
+    const scenes = await ids(MAIN, "scenes", "魔法");
+    expect(live).toEqual(scenes.filter((id) => id !== "n-arch"));
+  });
+
+  it("search_scenes does not show the archived scene (Native's scenes_live leaves it out, and the tool keeps its own condition), search_snippets follows the real fts order", async () => {
     const ws = await startSeededWorkspace();
     const reads = createMainTypedReads({
       backend: ws.backend,
@@ -682,15 +718,23 @@ describe("main's typed reads against the real Native addon: the shape the later 
       native: reads,
       countTokens: (text) => (text ? text.length : 0),
     });
-    // The word is only in the archived scene `n-arch`: Native's fts finds it ...
+    // The word is only in the archived scene `n-arch`: Native's `scenes` scope
+    // finds it, its `scenes_live` scope (the one the tool asks for) does not ...
     const raw = (await reads.fts({
       projectId: MAIN,
       query: "外部ファイル",
       scope: "scenes",
-      limit: 50,
+      limit: 10,
     })) as Array<{ id: string }>;
     expect(raw.map((r) => r.id)).toContain("n-arch");
-    // ... and the tool, which owns the archived condition, does not show it.
+    const live = (await reads.fts({
+      projectId: MAIN,
+      query: "外部ファイル",
+      scope: "scenes_live",
+      limit: 10,
+    })) as Array<{ id: string }>;
+    expect(live).toEqual([]);
+    // ... and the tool does not show it.
     const scenes = await executors.search_scenes({ query: "外部ファイル" });
     expect(scenes.content).toEqual([]);
     expect(scenes.summary).toBe("0 scenes found");

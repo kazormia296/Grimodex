@@ -102,8 +102,8 @@ function impactSourceFingerprint(source: CodexSnapshotResult): string {
     projectId: source.projectId,
     entryType: source.entryType,
     entryName: source.entryName,
-    contextMode: source.contextMode ?? "mentioned",
-    hasRestrictedPhases: source.hasRestrictedPhases ?? false,
+    contextMode: source.contextMode,
+    hasRestrictedPhases: source.hasRestrictedPhases,
     snapshot: {
       ...snapshot,
       aliases: [...snapshot.aliases].sort(compareText),
@@ -301,10 +301,7 @@ async function captureValidatedImpactInputs({
   if (
     !latest ||
     impactSourceFingerprint(latest) !== sourceFingerprint ||
-    !canIncludeResolvedCodexContext(
-      latest.contextMode ?? "mentioned",
-      "current-mention",
-    ) ||
+    !canIncludeResolvedCodexContext(latest.contextMode, "current-mention") ||
     latest.hasRestrictedPhases
   ) {
     return null;
@@ -359,8 +356,8 @@ export async function runImpactReview(
     projectId,
     entryType,
     entryName,
-    contextMode = "mentioned",
-    hasRestrictedPhases = false,
+    contextMode,
+    hasRestrictedPhases,
   } = built;
   const sourceFingerprint = impactSourceFingerprint(built);
 

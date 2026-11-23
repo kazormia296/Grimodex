@@ -1,7 +1,14 @@
 // 測定 A の指標の試験（合成の名簿と提案。実在の原稿・名簿は使わない）。
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countBulkApprovable, isBulkApprovableRow } from "./lib.mjs";
+import {
+  assertOutputClean,
+  classifyS5Surfaces,
+  countBulkApprovable,
+  findUnsafeStrings,
+  hashSurface,
+  isBulkApprovableRow,
+} from "./lib.mjs";
 import {
   buildRosterIndex,
   candidateRank,
@@ -696,4 +703,259 @@ test("computeMeasureA：関係の呼び名の unresolved のうち部分一致�
   assert.equal(m.operations.surfaceUnit.approval, 0);
   assert.equal(m.operations.surfaceUnit.keepSurface, 0);
   assert.equal(m.operations.entityUnit.approval, 0);
+});
+
+// ---- DR-ILM-38 の列（a-defs/4）：Ur・S5 -------------------------------------------------------------------------
+
+// 場面で指す人が変わる表記 swap・move は 2 つの実体に載る（配列の要素は 4 だが、表記は 2 件）。名簿には敬称・関係の呼び名もある。
+const columnsRoster = {
+  entities: [
+    {
+      id: "e1",
+      type: "character",
+      name: "alpha",
+      aliases: [],
+      relationalSurfaces: ["kin-call"],
+      ambiguousSurfaces: [
+        { surface: "swap", sceneRanges: [[1, 3]] },
+        { surface: "move", sceneRanges: [[1, 3]] },
+      ],
+    },
+    {
+      id: "e2",
+      type: "character",
+      name: "beta",
+      aliases: [],
+      ambiguousSurfaces: [
+        { surface: "swap", sceneRanges: [[4, 9]] },
+        { surface: "move", sceneRanges: [[4, 9]] },
+        { surface: "third", sceneRanges: [[1, 9]] },
+      ],
+    },
+  ],
+};
+const surfaceRow = (surface, bindingKind, extra = {}) =>
+  row(surface, bindingKind, { surfaceHash: surface, ...extra });
+
+test("buildRosterIndex：S5-roster は名簿の場面で指す人が変わる表記の、重複を除いた件数（実体ごとの配列の重複は 1 件。水準に依らない全体から）", async () => {
+  const index = await buildRosterIndex(columnsRoster, ident);
+  const arrayElements = columnsRoster.entities.reduce(
+    (n, e) => n + (e.ambiguousSurfaces?.length ?? 0),
+    0,
+  );
+  assert.equal(arrayElements, 5);
+  assert.deepEqual([...index.s5Hashes].sort(), ["move", "swap", "third"]);
+  assert.equal(index.s5Hashes.size, 3);
+  // ambiguousSurfaces の無い名簿は 0 件。
+  const none = await buildRosterIndex(
+    { entities: [roster.entities[0]] },
+    ident,
+  );
+  assert.equal(none.s5Hashes.size, 0);
+});
+
+test("buildRosterIndex：S5 の hash は表記そのままの空間（大文字小文字・NFC だけ違う別の形は畳まず 2 件に数える。候補キーの空間に替えない）", async () => {
+  const index = await buildRosterIndex(
+    {
+      entities: [
+        {
+          id: "e1",
+          type: "character",
+          name: "alpha",
+          aliases: [],
+          ambiguousSurfaces: [
+            { surface: "Swap", sceneRanges: [[1, 3]] },
+            { surface: "swap", sceneRanges: [[4, 9]] },
+            { surface: "é", sceneRanges: [[1, 3]] }, // NFC
+            { surface: "é", sceneRanges: [[1, 3]] }, // NFD
+          ],
+        },
+      ],
+    },
+    ident,
+  );
+  assert.equal(index.s5Hashes.size, 4);
+  assert.ok(index.s5Hashes.has("Swap") && index.s5Hashes.has("swap"));
+});
+
+test("computeMeasureA：Ur-all は名簿の外・関係の呼び名を含む全行の unresolved、Ur-rosterTarget は categoryCounts の 2 つの和（重複して数えない）", async () => {
+  const index = await buildRosterIndex(columnsRoster, ident);
+  const cand = (id) => [{ id, score: 100, methods: ["exact-name"] }];
+  const rows = [
+    row("alpha", "unresolved", { candidates: cand("e1") }), // 候補内
+    row("alpha", "unresolved", { candidates: cand("e2") }), // 候補外
+    row("beta", "unresolved", { candidates: [] }), // 候補外
+    row("noise-1", "unresolved"), // 名簿の外
+    row("noise-2", "unresolved"), // 名簿の外
+    row("kin-call", "unresolved"), // 関係の呼び名
+    row("alpha", "create-new"), // unresolved でない
+    row("noise-3", "create-new"), // unresolved でない
+  ];
+  const m = computeMeasureA({ index, rows });
+  const ur = m.identityColumns.ur;
+  assert.equal(ur.all, 6);
+  assert.equal(ur.rosterTarget, 3);
+  assert.equal(
+    ur.rosterTarget,
+    m.categoryCounts.unresolvedCandidateIn +
+      m.categoryCounts.unresolvedCandidateOut,
+  );
+  // 全体と名簿に結び先がある分の差は、名簿の外と関係の呼び名の unresolved（新しい項目になるものも含む）。
+  assert.equal(
+    ur.all - ur.rosterTarget,
+    m.notInRosterByKind.unresolved + m.relational.byBinding.unresolved,
+  );
+  // listedByBinding（名簿の外を抜いた後）では 3 件になる＝ Ur-all を取り違えると落ちる。
+  assert.equal(m.listedByBinding.unresolved, 3);
+  // unresolved の無い run は 0。
+  assert.deepEqual(
+    computeMeasureA({ index, rows: [row("alpha", "create-new")] })
+      .identityColumns.ur,
+    { all: 0, rosterTarget: 0 },
+  );
+});
+
+test("computeMeasureA：S5_seen は提案の surfaceHash と S5 の表記の hash の一致で数える（分類の枝・同じ表記の複数行に依らず表記単位）", async () => {
+  const index = await buildRosterIndex(columnsRoster, ident);
+  const rows = [
+    // swap：場面の範囲の行（sceneRangeRows の枝）。move：scenes が空で notInRoster の枝。third：create-new。
+    surfaceRow("swap", "create-new", { scenes: [[2, 1]] }),
+    surfaceRow("swap", "unresolved", { scenes: [[5, 1]] }), // 同じ表記の 2 行目は 1 件
+    surfaceRow("move", "unresolved", { scenes: [] }),
+    surfaceRow("third", "unresolved", { scenes: [] }),
+    surfaceRow("alpha", "create-new"), // S5 でない
+  ];
+  const m = computeMeasureA({ index, rows });
+  assert.equal(m.identityColumns.s5.roster, 3);
+  assert.equal(m.identityColumns.s5.seen, 3);
+  // sceneRangeRows からは導かない（move・third は場面の範囲の枝にいない。範囲の枝は swap の 2 行）。
+  assert.equal(m.collision.sceneRangeRows, 2);
+  // 提案に S5 の表記が 1 つも無ければ 0（roster は残る）。
+  const zero = computeMeasureA({
+    index,
+    rows: [surfaceRow("alpha", "create-new")],
+  });
+  assert.equal(zero.identityColumns.s5.seen, 0);
+  assert.equal(zero.identityColumns.s5.roster, 3);
+  // 一致は surfaceHash（提案の表記そのままの hash）で見る。keyHash（名簿照合用）が S5 の表記でも、surfaceHash が違えば数えない。
+  const apart = computeMeasureA({
+    index,
+    rows: [
+      surfaceRow("swap", "create-new", { keyHash: "unrelated" }), // surfaceHash だけ一致 → 数える
+      surfaceRow("third", "create-new", { keyHash: "unrelated" }), // 同上
+      surfaceRow("unrelated2", "create-new", { keyHash: "move" }), // keyHash だけ一致 → 数えない
+    ],
+  });
+  assert.equal(apart.identityColumns.s5.seen, 2);
+  // seed が読めない run（内訳なし）は、内訳が 0 でなく null（未計測）。
+  assert.equal(m.identityColumns.s5.breakdown, null);
+});
+
+test("computeMeasureA：S5 の内訳は 3 区分の和が S5-roster の件数で、提案に出る数が rows から数えた S5_seen と一致する（食い違えば止める）", async () => {
+  const index = await buildRosterIndex(columnsRoster, ident);
+  const rows = [
+    surfaceRow("swap", "create-new"),
+    surfaceRow("alpha", "create-new"),
+  ];
+  const breakdown = classifyS5Surfaces({
+    s5Hashes: index.s5Hashes,
+    seedHashes: ["swap", "move", "alpha"],
+    proposalHashes: rows.map((r) => r.surfaceHash),
+    candidateHashes: ["third", "other"],
+  });
+  const m = computeMeasureA({ index, rows, s5Breakdown: breakdown });
+  const b = m.identityColumns.s5.breakdown;
+  // swap は提案、move は seed にあるが提案に無い、third は seed に無い（候補に出る）。
+  assert.deepEqual([b.notSeed, b.seedNotProposed, b.proposed], [1, 1, 1]);
+  assert.equal(
+    b.notSeed + b.seedNotProposed + b.proposed,
+    m.identityColumns.s5.roster,
+  );
+  assert.equal(b.proposed, m.identityColumns.s5.seen);
+  assert.deepEqual(b.candidate, {
+    inCandidate: 1,
+    notSeedInCandidate: 1,
+    neitherSeedNorCandidate: 0,
+  });
+  // renderer の「提案に出る」が rows の S5_seen と違えば（hash の空間のずれ）止める。
+  assert.throws(
+    () =>
+      computeMeasureA({
+        index,
+        rows,
+        s5Breakdown: { ...breakdown, proposed: 0, seedNotProposed: 2 },
+      }),
+    /S5_SEEN_COUNT_DIFFERS/u,
+  );
+  // 3 区分の和が S5-roster の件数と合わなければ止める。
+  assert.throws(
+    () =>
+      computeMeasureA({
+        index,
+        rows,
+        s5Breakdown: { ...breakdown, notSeed: 0 },
+      }),
+    /S5_BREAKDOWN_NOT_PARTITION/u,
+  );
+  // renderer が数えた S5 の件数が host の名簿と違えば止める（S5 の渡し方のずれ）。
+  assert.throws(
+    () =>
+      computeMeasureA({
+        index,
+        rows,
+        s5Breakdown: { ...breakdown, rosterSurfaces: 9 },
+      }),
+    /S5_ROSTER_COUNT_DIFFERS/u,
+  );
+  // 提案に出るのに seed に無い表記があれば止める。
+  assert.throws(
+    () =>
+      computeMeasureA({
+        index,
+        rows,
+        s5Breakdown: classifyS5Surfaces({
+          s5Hashes: index.s5Hashes,
+          seedHashes: ["move"],
+          proposalHashes: ["swap"],
+        }),
+      }),
+    /S5_PROPOSED_OUTSIDE_SEED/u,
+  );
+});
+
+test("computeMeasureA：Ur・S5 の列の出力は件数だけで、表記の文字列も名簿の名前も持たない（実際の hash で）", async () => {
+  const index = await buildRosterIndex(columnsRoster);
+  const hashes = {
+    swap: await hashSurface("swap"),
+    alpha: await hashSurface("alpha"),
+  };
+  assert.ok(index.s5Hashes.has(hashes.swap));
+  const rows = [
+    {
+      ...surfaceRow("swap", "unresolved"),
+      surfaceHash: hashes.swap,
+      keyHash: await hashSurface("swap"),
+    },
+  ];
+  const breakdown = classifyS5Surfaces({
+    s5Hashes: index.s5Hashes,
+    seedHashes: [hashes.swap],
+    proposalHashes: [hashes.swap],
+    candidateHashes: [hashes.swap],
+  });
+  const m = computeMeasureA({ index, rows, s5Breakdown: breakdown });
+  assert.equal(m.identityColumns.s5.seen, 1);
+  const json = JSON.stringify(m.identityColumns);
+  for (const word of ["swap", "move", "third", "alpha", "beta", hashes.swap])
+    assert.ok(!json.includes(word), word);
+  assert.deepEqual(findUnsafeStrings(m.identityColumns), []);
+  assert.doesNotThrow(() =>
+    assertOutputClean(m.identityColumns, [
+      "a scene mentions swap and move and third here",
+    ]),
+  );
+});
+
+test("指標の定義の版：a-defs/4（DR-ILM-38 の列を足した）", () => {
+  assert.equal(METRIC_DEFINITION_VERSION, "a-defs/4");
 });

@@ -111,8 +111,9 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 - 帰属（Attribution）スパン
 - ゴミ箱の内容
 - 他チャットセッションのタイトル
-- effective `hidden` の summary / content（注入だけでなく、chat の agent tool の Codex 読み出し、beat・インライン AI の Codex 要約、MCP の Codex 読み出しにも同じく渡さない。agent tool と MCP で hidden の id を指定した応答は、存在しない id と同じ「見つからない」。地図の AI Branch の種・Spotlight は、場面を持たないので、base が hidden、またはどれかの Phase で hidden のものを除く〔Phase が解除するものも送らない。判定に失敗したら送らない。確認ダイアログでは、送られない Codex の種の chip に「AI には送られません」の注記を出す〕。地図以外では、base が hidden でも現在の場面の Phase が解除したものは、base の文でなく Phase 解決後の summary・content を返す）
+- effective `hidden` の summary / content（注入だけでなく、chat の agent tool の Codex 読み出し、beat・インライン AI の Codex 要約、MCP の Codex 読み出しにも同じく渡さない。agent tool と MCP で hidden の id を指定した応答は、存在しない id と同じ「見つからない」。MCP の `get_codex_entry` の詳細は、hidden の Phase の行（と、同じ項目に hidden の Phase があるときの override が空の Phase）を `phases` に含めない（DR-MP4-45）。地図の AI Branch の種・Spotlight は、場面を持たないので、base が hidden、またはどれかの Phase で hidden のものを除く〔Phase が解除するものも送らない。判定に失敗したら送らない。確認ダイアログでは、送られない Codex の種の chip に「AI には送られません」の注記を出す〕。地図以外では、base が hidden でも現在の場面の Phase が解除したものは、base の文でなく Phase 解決後の summary・content を返す）
 - effective `suppress` の自動注入（Spotlight / Codex スコープ、または `Pin with children` 直下子の明示選択時だけ許可）
+- 現在の場面を Phase が解決できないとき（場面なし、または場面が読む順に無い id。note・folder の選択中、archived・trash・削除済みの場面、index が空の間）は、Phase を適用できないので、いずれかの Phase が hidden にする項目（base が公開でも）を hidden として扱い、chat の通常の文脈（mention・pin・入力 pin・always・child・relation・active tab・POV 名）、agent tool、beat、インライン AI で渡さない（`docs/plans/mastra-mp4-decisions.md` の DR-MP4-41。判定は `codexAiVisibility.ts` の 1 か所）。base が hidden の項目は今までどおり hidden。Codex scope（`latest`＝全 Phase を適用した最終状態）はこの規則の対象外
 
 ---
 

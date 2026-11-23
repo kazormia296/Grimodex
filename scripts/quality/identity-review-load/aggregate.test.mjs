@@ -5,7 +5,13 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   FORBIDDEN_KEY,
+  IDENTITY_COLUMN_READINGS,
+  IDENTITY_LEVEL_COLUMNS,
+  IDENTITY_LEVELS,
   LEGACY_METRIC_DEFINITION,
+  UNCONFIRMED_ROSTER_MARK,
+  UNCONFIRMED_ROSTER_TEXT,
+  UNCONFIRMED_ROSTER_WORKS,
   assertRecordsClean,
   assertSingleBMetricDefinition,
   buildMeasureA,
@@ -21,7 +27,13 @@ import {
   storedNotes,
   storedUnreviewedState,
 } from "./aggregate.mjs";
-import { storedNotMeasured, summarizeStoredProposals } from "./lib.mjs";
+import {
+  REVIEWED_WORKS,
+  WORKS,
+  classifyS5Surfaces,
+  storedNotMeasured,
+  summarizeStoredProposals,
+} from "./lib.mjs";
 import { B_METRIC_DEFINITION_VERSION } from "./measure-b-core.mjs";
 import {
   METRIC_DEFINITION_VERSION,
@@ -225,24 +237,14 @@ test("B1・B2 の表：3 回の範囲・判断不能・停止・B2 の合計", (
   assert.equal(b2[0].metricTotals.aliasMatchRoster, 5);
 });
 
-test("★ の対応表：常に決めない。場面で指す人が変わる表記が 5 未満なら「材料なし」", async () => {
+test("★ の対応表：常に決めない（材料なしの印の数え方は DR-ILM-40 の試験）", async () => {
   const a = await fixtureCells("w1");
   const measureA = buildMeasureA({ cells: a.cells, rowsByCell: a.rowsByCell });
-  const few = buildStarMapping({
-    measureA,
-    ambiguousSurfaceCounts: { w1: 2, w2: 2 },
-  });
-  assert.equal(few.star5.noMaterial, true);
-  assert.equal(
-    buildStarMapping({ measureA, ambiguousSurfaceCounts: { w1: 3, w2: 2 } })
-      .star5.noMaterial,
-    false,
-  );
-  assert.equal(buildStarMapping({ measureA }).star5.noMaterial, false);
+  const stars = buildStarMapping({ measureA });
   for (const key of ["star4", "star5", "star8", "star1_2_3_6_7"])
-    assert.equal(few[key].decided, false);
-  assert.ok(few.star4.cannotSay.length > 0);
-  assert.equal(few.perWork.w1.star4.unresolvedCandidateIn, 0);
+    assert.equal(stars[key].decided, false);
+  assert.ok(stars.star4.cannotSay.length > 0);
+  assert.equal(stars.perWork.w1.star4.unresolvedCandidateIn, 0);
 });
 
 test("records：本文・credential の欄が無いことを検査する（欄の拒否・文字列の拒否・shingle）", async () => {
@@ -468,7 +470,7 @@ test("指標の定義の版：records に版を載せ、旧 records（版なし�
   const mixed = [...strip([first]), ...rest];
   assert.throws(
     () => buildMeasureA({ cells: mixed, rowsByCell: a.rowsByCell }),
-    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/3,legacy/u,
+    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/4,legacy/u,
   );
   assert.throws(
     () =>
@@ -492,11 +494,11 @@ test("指標の定義の版：records に版を載せ、旧 records（版なし�
   );
   assert.throws(
     () => buildMeasureA({ cells: other, rowsByCell: a.rowsByCell }),
-    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/3,a-defs\/9/u,
+    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/4,a-defs\/9/u,
   );
 });
 
-test("指標の定義の版：a-defs/2 の records（一括 1 回で誤った Entry ができる件数の欄が無い）と a-defs/3 は混ぜて集計しない", async () => {
+test("指標の定義の版：a-defs/2 の records（一括 1 回で誤った Entry ができる件数の欄が無い）と a-defs/4 は混ぜて集計しない", async () => {
   const a = await fixtureCells("w1");
   const [first, ...rest] = a.cells;
   const asV2 = (cell) => ({
@@ -509,14 +511,14 @@ test("指標の定義の版：a-defs/2 の records（一括 1 回で誤った En
       };
     }),
   });
-  assert.equal(METRIC_DEFINITION_VERSION, "a-defs/3");
+  assert.equal(METRIC_DEFINITION_VERSION, "a-defs/4");
   assert.throws(
     () =>
       buildMeasureA({
         cells: [asV2(first), ...rest],
         rowsByCell: a.rowsByCell,
       }),
-    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/2,a-defs\/3/u,
+    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/2,a-defs\/4/u,
   );
   // 全部が a-defs/2 なら、その版として集計でき、新しい欄は 0 でなく null（範囲は n=0 で「-」）。
   const allV2 = buildMeasureA({
@@ -1031,4 +1033,567 @@ test("関係の呼び名の unresolved（部分一致の候補あり）は列と
   assert.match(note, /folder 不明の run 2/u);
   assert.match(note, /製品はどの folder にも当てる/u);
   assert.doesNotMatch(note, /過少/u);
+});
+
+// ---- DR-ILM-38 の列：水準ごと・作品ごとの並びと、4 作品／3 作品の合計 ----------------------------------------------------
+
+// 作品ごとの合成の名簿：場面で指す人が変わる表記 amb 個（2 つの実体に重複して載せる＝配列の要素は 2 倍）。
+function ambRoster(ambCount) {
+  const surfaces = Array.from({ length: ambCount }, (_, i) => `amb${i}`);
+  const items = (ranges) =>
+    surfaces.map((surface) => ({ surface, sceneRanges: ranges }));
+  return {
+    entities: [
+      {
+        id: "e1",
+        type: "character",
+        name: "alpha",
+        aliases: [],
+        ambiguousSurfaces: items([[1, 3]]),
+      },
+      {
+        id: "e2",
+        type: "character",
+        name: "beta",
+        aliases: [],
+        ambiguousSurfaces: items([[4, 9]]),
+      },
+    ],
+  };
+}
+
+/**
+ * 1 作品の matrix cell（L0〜L3・F100）。spec：{ amb（S5 の表記数）, byLevel: { L0: { urIn, urOut, urNoise, seen, seedExtra } ... } }。
+ * seen 個の S5 の表記が提案に出て、seedExtra 個が seed にあるが提案に出ない。
+ */
+async function identityWorkCells(work, spec) {
+  const roster = ambRoster(spec.amb);
+  const index = await buildRosterIndex(roster, ident);
+  const surfaces = [...index.s5Hashes].sort();
+  const cells = [];
+  for (const level of IDENTITY_LEVELS) {
+    const v = spec.byLevel[level];
+    const cand = (id) => [{ id, score: 100, methods: ["exact-name"] }];
+    const rows = [
+      ...Array.from({ length: v.urIn }, () =>
+        mkRow("alpha", "unresolved", { candidates: cand("e1") }),
+      ),
+      ...Array.from({ length: v.urOut }, () =>
+        mkRow("alpha", "unresolved", { candidates: [] }),
+      ),
+      ...Array.from({ length: v.urNoise }, (_, i) =>
+        mkRow(`noise-${i}`, "unresolved"),
+      ),
+      ...surfaces
+        .slice(0, v.seen)
+        .map((surface) =>
+          mkRow(surface, "create-new", { surfaceHash: surface, scenes: [] }),
+        ),
+    ];
+    const proposalHashes = rows.map((r) => r.surfaceHash).filter(Boolean);
+    const seedHashes = [
+      ...proposalHashes,
+      ...surfaces.slice(v.seen, v.seen + v.seedExtra),
+    ];
+    const s5Breakdown = classifyS5Surfaces({
+      s5Hashes: index.s5Hashes,
+      seedHashes,
+      proposalHashes,
+      candidateHashes: spec.candidates ?? null,
+    });
+    const metrics = computeMeasureA({ index, rows, s5Breakdown });
+    cells.push({
+      cell: `${work}-matrix-${level}`,
+      work,
+      kind: "matrix",
+      level,
+      status: "ok",
+      runs: [
+        {
+          label: "F100",
+          completed: true,
+          extract: { sceneCount: 60, entryCountInCatalog: 2 },
+          metrics,
+        },
+      ],
+    });
+  }
+  return cells;
+}
+
+const lv = (urIn, urOut, urNoise, seen, seedExtra) => ({
+  urIn,
+  urOut,
+  urNoise,
+  seen,
+  seedExtra,
+});
+// 4 作品の任意の合成値（実測・試走の値とは無関係）。S5-roster は 3・4・0・5、水準ごとに Ur・S5_seen が違う
+// （水準で変わる列を取り違えると合計が合わない）。
+const WORK_SPECS = {
+  "g-ja-2": {
+    amb: 3,
+    candidates: ["amb0", "x"],
+    byLevel: {
+      L0: lv(1, 0, 2, 1, 1),
+      L1: lv(1, 1, 2, 1, 0),
+      L2: lv(0, 0, 7, 2, 0),
+      L3: lv(2, 1, 0, 0, 1),
+    },
+  },
+  "g-ja-3": {
+    amb: 4,
+    candidates: null,
+    byLevel: {
+      L0: lv(0, 0, 3, 0, 2),
+      L1: lv(0, 0, 4, 0, 0),
+      L2: lv(0, 0, 8, 0, 1),
+      L3: lv(1, 0, 3, 1, 0),
+    },
+  },
+  "g-ja-4": {
+    amb: 0,
+    candidates: ["y"],
+    byLevel: {
+      L0: lv(0, 0, 5, 0, 0),
+      L1: lv(0, 0, 5, 0, 0),
+      L2: lv(0, 0, 11, 0, 0),
+      L3: lv(0, 0, 6, 0, 0),
+    },
+  },
+  "m-ja-2": {
+    amb: 5,
+    candidates: ["amb1", "amb2", "amb3"],
+    byLevel: {
+      L0: lv(0, 0, 20, 1, 2),
+      L1: lv(0, 1, 20, 1, 2),
+      L2: lv(1, 0, 28, 1, 3),
+      L3: lv(2, 2, 25, 2, 1),
+    },
+  },
+};
+
+async function identityMeasureA(works = Object.keys(WORK_SPECS)) {
+  const cells = [];
+  for (const work of works)
+    cells.push(...(await identityWorkCells(work, WORK_SPECS[work])));
+  return buildMeasureA({ cells, rowsByCell: {} });
+}
+
+test("DR-ILM-38：Ur・S5 の列を水準 L0〜L3 ごと・作品ごとに並べ、各 cell の値が flatten に出る", async () => {
+  const m = await identityMeasureA();
+  assert.deepEqual(Object.keys(m.identityColumns.levels), [
+    "L0",
+    "L1",
+    "L2",
+    "L3",
+  ]);
+  const l2 = m.identityColumns.levels.L2.perWork;
+  // L2：Ur-all は名簿の外も含む（g-ja-2 は 7、g-ja-3 は 8、g-ja-4 は 11、m-ja-2 は 29）、Ur-rosterTarget は In＋Out。
+  assert.deepEqual(
+    Object.entries(l2).map(([w, r]) => [w, r.urAll, r.urRosterTarget]),
+    [
+      ["g-ja-2", 7, 0],
+      ["g-ja-3", 8, 0],
+      ["g-ja-4", 11, 0],
+      ["m-ja-2", 29, 1],
+    ],
+  );
+  // S5-roster は水準に依らず作品ごと（重複を除く）：3・4・0・5。S5_seen は水準ごと。
+  assert.deepEqual(
+    Object.entries(l2).map(([w, r]) => [w, r.s5Roster, r.s5Seen]),
+    [
+      ["g-ja-2", 3, 2],
+      ["g-ja-3", 4, 0],
+      ["g-ja-4", 0, 0],
+      ["m-ja-2", 5, 1],
+    ],
+  );
+  assert.deepEqual(m.identityColumns.s5Roster.perWork, {
+    "g-ja-2": 3,
+    "g-ja-3": 4,
+    "g-ja-4": 0,
+    "m-ja-2": 5,
+  });
+  // 内訳の 3 区分の和は、どの水準・作品でも S5-roster の件数。
+  for (const level of IDENTITY_LEVELS)
+    for (const r of Object.values(m.identityColumns.levels[level].perWork))
+      assert.equal(
+        r.s5NotSeed + r.s5SeedNotProposed + r.s5Proposed,
+        r.s5Roster,
+      );
+  // 提案に出る数は S5_seen と一致。
+  for (const r of Object.values(m.identityColumns.levels.L0.perWork))
+    assert.equal(r.s5Proposed, r.s5Seen);
+});
+
+test("DR-ILM-38：4 作品の合計と、m-ja-2 を除く 3 作品の合計の両方を出し、m-ja-2 に名簿の未確認の印を付ける（§8 の 1 の判定は変えない）", async () => {
+  const m = await identityMeasureA();
+  const ic = m.identityColumns;
+  // 印の定数：m-ja-2 だけ。REVIEWED_WORKS の外の作品と一致する。
+  assert.deepEqual(
+    [...UNCONFIRMED_ROSTER_WORKS],
+    Object.keys(WORKS).filter((w) => !REVIEWED_WORKS.includes(w)),
+  );
+  assert.equal(ic.unconfirmedRosterMark, UNCONFIRMED_ROSTER_MARK);
+  const l2 = ic.levels.L2;
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(l2.perWork).map(([w, r]) => [w, r.rosterMark]),
+    ),
+    {
+      "g-ja-2": null,
+      "g-ja-3": null,
+      "g-ja-4": null,
+      "m-ja-2": UNCONFIRMED_ROSTER_MARK,
+    },
+  );
+  // L2：Ur-all は 7+8+11+29＝55（3 作品は 26）、Ur-rosterTarget は 0+0+0+1＝1（3 作品は 0）。
+  assert.equal(l2.totalAll.columns.urAll, 55);
+  assert.equal(l2.totalWithoutUnconfirmedRoster.columns.urAll, 26);
+  assert.equal(l2.totalAll.columns.urRosterTarget, 1);
+  assert.equal(l2.totalWithoutUnconfirmedRoster.columns.urRosterTarget, 0);
+  assert.equal(l2.totalAll.columns.s5Seen, 3);
+  assert.equal(l2.totalWithoutUnconfirmedRoster.columns.s5Seen, 2);
+  assert.equal(l2.totalAll.workCount, 4);
+  assert.equal(l2.totalWithoutUnconfirmedRoster.workCount, 3);
+  assert.ok(!l2.totalWithoutUnconfirmedRoster.works.includes("m-ja-2"));
+  assert.deepEqual(l2.totalAll.missingWorks, []);
+  // S5-roster の合計：3+4+0+5＝12、3 作品は 7。
+  assert.equal(ic.s5Roster.totalAll.value, 12);
+  assert.equal(ic.s5Roster.totalWithoutUnconfirmedRoster.value, 7);
+  // 水準で変わる列の合計は、水準ごとに別の値（L0：3+3+5+20、L3：3+4+6+29。L2 の 55 とも違う）。
+  assert.equal(ic.levels.L0.totalAll.columns.urAll, 31);
+  assert.equal(ic.levels.L3.totalAll.columns.urAll, 42);
+  // 内訳の合計：3 区分の和は S5-roster の合計に等しい（候補が未計測の作品があっても 3 区分は出る）。
+  for (const level of IDENTITY_LEVELS)
+    for (const key of ["totalAll", "totalWithoutUnconfirmedRoster"]) {
+      const t = ic.levels[level][key];
+      const s5 = ic.s5Roster[key].value;
+      assert.equal(
+        t.columns.s5NotSeed +
+          t.columns.s5SeedNotProposed +
+          t.columns.s5Proposed,
+        s5,
+        `${level} ${key}`,
+      );
+    }
+  // 候補は g-ja-3 が未計測（null）なので、候補の合計は 0 と名乗らず null。
+  assert.equal(l2.totalAll.columns.s5InCandidate, null);
+  assert.equal(l2.perWork["g-ja-3"].s5InCandidate, null);
+  assert.equal(l2.perWork["g-ja-2"].s5InCandidate, 1);
+  // 既存の判断不能の判定（completed）は並べるだけで、列の値で書き換えない。
+  assert.equal(l2.perWork["m-ja-2"].completed, 1);
+});
+
+test("DR-ILM-38：その水準の cell が欠けた作品があれば、合計は作品数を名乗らず null にし、欠けた作品を添える", async () => {
+  const cells = [];
+  for (const work of ["g-ja-2", "g-ja-3", "g-ja-4"])
+    cells.push(...(await identityWorkCells(work, WORK_SPECS[work])));
+  // m-ja-2 は L2 だけ（L0・L1・L3 が無い）。
+  const mja = (await identityWorkCells("m-ja-2", WORK_SPECS["m-ja-2"])).filter(
+    (c) => c.level === "L2",
+  );
+  const m = buildMeasureA({ cells: [...cells, ...mja], rowsByCell: {} });
+  const l0 = m.identityColumns.levels.L0;
+  assert.equal(l0.totalAll.columns.urAll, null);
+  assert.deepEqual(l0.totalAll.missingWorks, ["m-ja-2"]);
+  // m-ja-2 を除く 3 作品の合計は出る。
+  assert.equal(l0.totalWithoutUnconfirmedRoster.columns.urAll, 3 + 3 + 5);
+  assert.deepEqual(l0.totalWithoutUnconfirmedRoster.missingWorks, []);
+  assert.equal(m.identityColumns.levels.L2.totalAll.columns.urAll, 55);
+  // 作品が 1 つも無い（g-ja-4 を含めない）集計では、4 作品の合計を名乗らない。
+  const three = await identityMeasureA(["g-ja-2", "g-ja-3", "m-ja-2"]);
+  assert.equal(three.identityColumns.levels.L2.totalAll.columns.urAll, null);
+  assert.deepEqual(three.identityColumns.levels.L2.totalAll.missingWorks, [
+    "g-ja-4",
+  ]);
+});
+
+test("DR-ILM-38：S5-roster が同じ作品の水準で違えば止める（名簿から数えるので水準に依らない）", async () => {
+  const cells = await identityWorkCells("g-ja-2", WORK_SPECS["g-ja-2"]);
+  const broken = cells.map((c) =>
+    c.level === "L3"
+      ? {
+          ...c,
+          runs: c.runs.map((r) => ({
+            ...r,
+            metrics: {
+              ...r.metrics,
+              identityColumns: {
+                ...r.metrics.identityColumns,
+                s5: { ...r.metrics.identityColumns.s5, roster: 7 },
+              },
+            },
+          })),
+        }
+      : c,
+  );
+  assert.throws(
+    () => buildMeasureA({ cells: broken, rowsByCell: {} }),
+    /S5_ROSTER_VARIES_BY_LEVEL work=g-ja-2/u,
+  );
+});
+
+test("DR-ILM-38：a-defs/3 の records（Ur・S5 の列が無い）と a-defs/4 は混ぜず、全部が a-defs/3 なら列は 0 でなく null", async () => {
+  const cells = await identityWorkCells("g-ja-2", WORK_SPECS["g-ja-2"]);
+  const asV3 = (cell) => ({
+    ...cell,
+    runs: cell.runs.map((r) => {
+      const { identityColumns: _c, ...metrics } = r.metrics;
+      return { ...r, metrics: { ...metrics, definitionVersion: "a-defs/3" } };
+    }),
+  });
+  const [first, ...rest] = cells;
+  assert.throws(
+    () => buildMeasureA({ cells: [asV3(first), ...rest], rowsByCell: {} }),
+    /METRIC_DEFINITION_VERSIONS_MIXED versions=a-defs\/3,a-defs\/4/u,
+  );
+  assert.throws(
+    () => buildMeasureA({ cells: [first, ...rest.map(asV3)], rowsByCell: {} }),
+    /METRIC_DEFINITION_VERSIONS_MIXED/u,
+  );
+  const allV3 = buildMeasureA({ cells: cells.map(asV3), rowsByCell: {} });
+  assert.equal(allV3.definitionVersion, "a-defs/3");
+  const l2 = allV3.identityColumns.levels.L2;
+  assert.equal(l2.perWork["g-ja-2"].urAll, null);
+  assert.equal(l2.perWork["g-ja-2"].s5Roster, null);
+  assert.equal(l2.totalAll.columns.urAll, null);
+  assert.equal(allV3.identityColumns.s5Roster.perWork["g-ja-2"], null);
+  // markdown に null・undefined・NaN は出ない（「-」）。
+  const md = renderRecordsMarkdown(buildRecords({ measureA: allV3 }));
+  assert.deepEqual(
+    md
+      .split("## 測定 B")[0]
+      .split("\n")
+      .filter((line) => /\bnull\b|undefined|NaN/u.test(line)),
+    [],
+  );
+});
+
+test("DR-ILM-38：markdown の先頭に各列の読みの文（言えること・言えないこと）を出し、合計 2 種と m-ja-2 の印を表にする", async () => {
+  const measureA = await identityMeasureA();
+  const records = buildRecords({ measureA });
+  const md = renderRecordsMarkdown(records);
+  // 読みの文は測定 A の表より前。
+  const first = md.indexOf("## Ur・S5 の列の読み");
+  assert.ok(first >= 0 && first < md.indexOf("## 測定 A"));
+  assert.match(md, /\| 列 \| 言えること \| 言えないこと \|/u);
+  for (const r of IDENTITY_COLUMN_READINGS) {
+    assert.ok(r.canSay.length > 0 && r.cannotSay.length > 0);
+    assert.ok(
+      md.includes(`| ${r.column} | ${r.canSay} | ${r.cannotSay} |`),
+      r.column,
+    );
+  }
+  assert.deepEqual(
+    IDENTITY_COLUMN_READINGS.map((r) => r.column),
+    ["Ur-all", "Ur-rosterTarget", "S5-roster", "S5_seen", "S5 の内訳"],
+  );
+  // 読みの文は、測る前に固定した（DR-ILM-38）。文の変更は事前登録の改訂なので、この試験を同時に直す。
+  assert.deepEqual(
+    IDENTITY_COLUMN_READINGS.map((r) => [r.canSay, r.cannotSay]),
+    [
+      [
+        "作者が結び先を決める手間の大きさ",
+        "規則で減らせる量（新しい項目になるものも含む）",
+      ],
+      [
+        "名簿に正解の結び先があるのに未解決の提案の数",
+        "実際に規則が効く数（名簿は AI が作り、作者の確認は一部の行だけ）",
+      ],
+      [
+        "名簿を作った AI が、場面で指す人が変わる表記として見つけた数",
+        "作品の実態の数（見つけ方に依存し、少なくても「見つけていない」のか「少ない」のか区別できない）",
+      ],
+      [
+        "そのうち今の抽出が提案に出した数（review に実際に現れる数）",
+        "抽出が拾わない分（seed にならない表記は数えられない。内訳で別に見る）",
+      ],
+      ["「抽出が拾わない」のか「提案に出る」のか", "拾わない理由"],
+    ],
+  );
+  // 未確認の作品は、作者が名簿を確認する作品（REVIEWED_WORKS）以外の作品から導く（一覧を二重に持たない）。
+  assert.deepEqual(
+    [...UNCONFIRMED_ROSTER_WORKS].sort(),
+    Object.keys(WORKS)
+      .filter((w) => !REVIEWED_WORKS.includes(w))
+      .sort(),
+  );
+  // 合成の表記・名簿の名前は markdown にも出ない（件数と定数の文だけ）。
+  for (const word of ["amb0", "amb1", "alpha", "beta"])
+    assert.ok(!md.includes(word), word);
+  // 水準ごとの表、4 作品と 3 作品の合計、m-ja-2 の印。
+  for (const level of IDENTITY_LEVELS)
+    assert.match(md, new RegExp(`### 名簿の水準 ${level}（F100）`, "u"));
+  assert.match(md, /合計（全作品）（4 作品）/u);
+  assert.match(md, /合計（m-ja-2 を除く）（3 作品）/u);
+  const mjaLine = md
+    .split("\n")
+    .find(
+      (line) =>
+        line.startsWith("| m-ja-2 |") && line.includes(UNCONFIRMED_ROSTER_TEXT),
+    );
+  assert.ok(mjaLine, "m-ja-2 の行に印");
+  assert.ok(
+    !md
+      .split("\n")
+      .some(
+        (line) =>
+          line.startsWith("| g-ja-2 |") &&
+          line.includes(UNCONFIRMED_ROSTER_TEXT),
+      ),
+  );
+});
+
+test("DR-ILM-38：records は ASCII の語と件数だけ（読みの文・表記・名簿の名前を持たず、欄名は credential に当たらない）", async () => {
+  const measureA = await identityMeasureA();
+  const records = buildRecords({ measureA });
+  assert.doesNotThrow(() => assertRecordsClean(records));
+  const json = JSON.stringify(records);
+  for (const word of ["amb0", "amb1", "alpha", "beta"])
+    assert.ok(!json.includes(word), word);
+  for (const r of IDENTITY_COLUMN_READINGS) assert.ok(!json.includes(r.canSay));
+  assert.equal(records.metricDefinitionVersion, "a-defs/4");
+  assert.equal(
+    records.measureA.identityColumns.unconfirmedRosterMark,
+    UNCONFIRMED_ROSTER_MARK,
+  );
+  // 新しい欄名は credential を示さない。
+  for (const key of [...IDENTITY_LEVEL_COLUMNS, "s5Roster", "rosterMark"])
+    assert.ok(!FORBIDDEN_KEY.test(key), key);
+  // 原稿に出る語（合成）が混ざっていれば、既存の混入検査が拒む。
+  assert.throws(
+    () => assertRecordsClean({ ...records, leak: "amb0" }, ["x amb0 y"]),
+    /unclean|UNCLEAN/u,
+  );
+});
+
+// ---- DR-ILM-40：★5 の「材料なし」の印（§8-5）-----------------------------------------------------------------------
+
+/** 作品ごとの S5-roster（重複を除く表記数）だけを指定した、4 作品の測定 A（Ur・S5_seen は一定）。 */
+async function starMeasureA(ambByWork, works = Object.keys(ambByWork)) {
+  const cells = [];
+  for (const work of works)
+    cells.push(
+      ...(await identityWorkCells(work, {
+        amb: ambByWork[work],
+        candidates: null,
+        byLevel: Object.fromEntries(
+          IDENTITY_LEVELS.map((level) => [level, lv(0, 0, 1, 0, 0)]),
+        ),
+      })),
+    );
+  return buildMeasureA({ cells, rowsByCell: {} });
+}
+const AMB = (g2, g3, g4, m2) => ({
+  "g-ja-2": g2,
+  "g-ja-3": g3,
+  "g-ja-4": g4,
+  "m-ja-2": m2,
+});
+
+test("DR-ILM-40：材料なしの印は、S5-roster（重複を除く）の 4 作品の合計が 5 未満のときだけ立つ（5 ちょうどは立たない）", async () => {
+  const four = buildStarMapping({
+    measureA: await starMeasureA(AMB(1, 1, 1, 1)),
+  });
+  assert.equal(four.star5.ambiguousSurfaceTotal, 4);
+  assert.equal(four.star5.noMaterial, true);
+  const five = buildStarMapping({
+    measureA: await starMeasureA(AMB(2, 1, 1, 1)),
+  });
+  assert.equal(five.star5.ambiguousSurfaceTotal, 5);
+  assert.equal(five.star5.noMaterial, false);
+  const zero = buildStarMapping({
+    measureA: await starMeasureA(AMB(0, 0, 0, 0)),
+  });
+  assert.equal(zero.star5.noMaterial, true);
+  assert.equal(zero.star5.decided, false);
+});
+
+test("DR-ILM-40：判定は 4 作品の合計。m-ja-2 を除く 3 作品の値は参考で、判定に使わない", async () => {
+  // 4 作品では 5 以上（立たない）、m-ja-2 を除く 3 作品では 4（参考では 5 未満）。判定は 4 作品のまま。
+  const m = buildStarMapping({ measureA: await starMeasureA(AMB(1, 2, 1, 3)) });
+  assert.equal(m.star5.ambiguousSurfaceTotal, 7);
+  assert.equal(m.star5.noMaterial, false);
+  assert.deepEqual(m.star5.referenceWithoutUnconfirmedRoster, {
+    total: 4,
+    belowMinimum: true,
+  });
+  // 見た値（合成）：3 作品がちょうど 5＝「未満」ではない。
+  const edge = buildStarMapping({
+    measureA: await starMeasureA(AMB(2, 2, 1, 4)),
+  });
+  assert.deepEqual(edge.star5.referenceWithoutUnconfirmedRoster, {
+    total: 5,
+    belowMinimum: false,
+  });
+  assert.equal(edge.star5.noMaterial, false);
+});
+
+test("DR-ILM-40：作品や cell が欠けて合計が出ないときは null（未評価）。欠けた作品を 0 として足して材料なしを立てない", async () => {
+  // m-ja-2 の cell が無い：3 作品の合計は 2（5 未満）だが、4 作品の合計は出ないので判定は null。
+  const m = buildStarMapping({
+    measureA: await starMeasureA(AMB(1, 1, 0, 0), [
+      "g-ja-2",
+      "g-ja-3",
+      "g-ja-4",
+    ]),
+  });
+  assert.equal(m.star5.ambiguousSurfaceTotal, null);
+  assert.equal(m.star5.noMaterial, null);
+  assert.notEqual(m.star5.noMaterial, true);
+  assert.notEqual(m.star5.noMaterial, false);
+  // 参考の 3 作品（m-ja-2 を除く）は 3 作品が揃っているので出る。
+  assert.equal(m.star5.referenceWithoutUnconfirmedRoster.total, 2);
+});
+
+test("DR-ILM-40：a-defs/3 の records（新しい列が無い）は null（未評価）で、材料あり・なしのどちらにも倒さない", async () => {
+  const cells = [];
+  for (const work of Object.keys(AMB(1, 1, 1, 1)))
+    cells.push(
+      ...(await identityWorkCells(work, {
+        amb: 1,
+        candidates: null,
+        byLevel: Object.fromEntries(
+          IDENTITY_LEVELS.map((level) => [level, lv(0, 0, 1, 0, 0)]),
+        ),
+      })),
+    );
+  const asV3 = (cell) => ({
+    ...cell,
+    runs: cell.runs.map((r) => {
+      const { identityColumns: _c, ...metrics } = r.metrics;
+      return { ...r, metrics: { ...metrics, definitionVersion: "a-defs/3" } };
+    }),
+  });
+  const measureA = buildMeasureA({ cells: cells.map(asV3), rowsByCell: {} });
+  const m = buildStarMapping({ measureA });
+  assert.equal(m.star5.noMaterial, null);
+  assert.equal(m.star5.ambiguousSurfaceTotal, null);
+  assert.equal(m.star5.referenceWithoutUnconfirmedRoster.belowMinimum, null);
+});
+
+test("DR-ILM-40：markdown に印・3 作品の参考・「S5_seen に線を引かない」注記が出る（未評価は「-」と書く）", async () => {
+  const stars = async (amb, works) => {
+    const measureA = await starMeasureA(amb, works);
+    return renderRecordsMarkdown(buildRecords({ measureA }));
+  };
+  const md = await stars(AMB(1, 1, 1, 1));
+  assert.match(md, /4 作品の合計 = 4、印は立つ（5 未満）/u);
+  assert.match(
+    md,
+    /参考（判定に使わない）：.*3 作品の合計 = 3、立つ（5 未満）/u,
+  );
+  assert.match(md, /S5_seen に新しい線は引かない/u);
+  const missing = await stars(AMB(1, 1, 1, 0), ["g-ja-2", "g-ja-3", "g-ja-4"]);
+  assert.match(missing, /4 作品の合計 = -、印は未評価/u);
+  assert.ok(
+    !/undefined|NaN|null/u.test(
+      missing
+        .split("\n")
+        .filter((l) => l.includes("★5（§8-5）"))
+        .join(""),
+    ),
+  );
 });

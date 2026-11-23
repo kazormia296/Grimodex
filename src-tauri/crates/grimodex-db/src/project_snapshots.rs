@@ -1012,7 +1012,7 @@ fn table_columns(conn: &Connection, table: &str) -> anyhow::Result<HashSet<Strin
     Ok(columns.collect::<Result<HashSet<_>, _>>()?)
 }
 
-fn table_primary_key_columns(conn: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
+fn load_primary_key_columns(conn: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
     let sql = format!("PRAGMA table_info(\"{table}\")");
     let mut statement = conn.prepare(&sql)?;
     let mut columns = statement
@@ -1022,11 +1022,98 @@ fn table_primary_key_columns(conn: &Connection, table: &str) -> anyhow::Result<V
         .collect::<Result<Vec<_>, _>>()?;
     columns.retain(|(_, ordinal)| *ordinal > 0);
     columns.sort_by_key(|(_, ordinal)| *ordinal);
+    Ok(columns.into_iter().map(|(name, _)| name).collect())
+}
+
+fn ensure_has_primary_key(table: &str, columns: &[String]) -> anyhow::Result<()> {
     anyhow::ensure!(
         !columns.is_empty(),
         "project snapshot restore table '{table}' has no primary key"
     );
-    Ok(columns.into_iter().map(|(name, _)| name).collect())
+    Ok(())
+}
+
+fn table_primary_key_columns(conn: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
+    let columns = load_primary_key_columns(conn, table)?;
+    ensure_has_primary_key(table, &columns)?;
+    Ok(columns)
+}
+
+/// What one restore needs to know about the shape of a table: whether it
+/// exists, its column set and its primary-key columns. Each is read at most
+/// once per table, on first use, and kept for the rest of that one restore.
+///
+/// The cache is made inside `apply_project_snapshot_restore` and handed down;
+/// it is never global and never outlives the restore, because a restore does
+/// no DDL, so the shape of a table cannot change inside it. Each accessor
+/// fails exactly where, and in the words in which, the uncached function it
+/// replaces fails (a table without a primary key is refused on every use, not
+/// only the first).
+#[derive(Default)]
+struct RestoreTableCache {
+    tables: HashMap<String, CachedTable>,
+}
+
+#[derive(Default)]
+struct CachedTable {
+    exists: Option<bool>,
+    columns: Option<std::rc::Rc<HashSet<String>>>,
+    primary_keys: Option<std::rc::Rc<Vec<String>>>,
+}
+
+impl RestoreTableCache {
+    fn entry(&mut self, table: &str) -> &mut CachedTable {
+        // `HashMap::entry` would allocate a `String` on every call, including every
+        // hit. This is called once per restored row, so look up first and insert
+        // (allocating) only on the first use of a table.
+        if !self.tables.contains_key(table) {
+            self.tables
+                .insert(table.to_string(), CachedTable::default());
+        }
+        self.tables
+            .get_mut(table)
+            .expect("the entry was inserted just above")
+    }
+
+    fn exists(&mut self, conn: &Connection, table: &str) -> anyhow::Result<bool> {
+        let entry = self.entry(table);
+        if let Some(exists) = entry.exists {
+            return Ok(exists);
+        }
+        let exists = table_exists(conn, table)?;
+        entry.exists = Some(exists);
+        Ok(exists)
+    }
+
+    fn columns(
+        &mut self,
+        conn: &Connection,
+        table: &str,
+    ) -> anyhow::Result<std::rc::Rc<HashSet<String>>> {
+        let entry = self.entry(table);
+        if let Some(columns) = &entry.columns {
+            return Ok(columns.clone());
+        }
+        let columns = std::rc::Rc::new(table_columns(conn, table)?);
+        entry.columns = Some(columns.clone());
+        Ok(columns)
+    }
+
+    fn primary_key_columns(
+        &mut self,
+        conn: &Connection,
+        table: &str,
+    ) -> anyhow::Result<std::rc::Rc<Vec<String>>> {
+        let entry = self.entry(table);
+        if let Some(columns) = &entry.primary_keys {
+            ensure_has_primary_key(table, columns)?;
+            return Ok(columns.clone());
+        }
+        let columns = std::rc::Rc::new(load_primary_key_columns(conn, table)?);
+        entry.primary_keys = Some(columns.clone());
+        ensure_has_primary_key(table, &columns)?;
+        Ok(columns)
+    }
 }
 
 fn row_primary_key(row: &RawRow, columns: &[String], table: &str) -> anyhow::Result<String> {
@@ -1866,19 +1953,21 @@ fn ensure_restore_plan_is_snapshot_derived(
     snapshot_id: &str,
     scopes: &HashSet<RestoreScope>,
     inserts: &[SnapshotInsertPlan],
+    cache: &mut RestoreTableCache,
 ) -> anyhow::Result<Vec<SnapshotInsertPlan>> {
     let canonical = build_canonical_restore_plan(conn, project_id, snapshot_id, scopes)?;
 
     fn normalized_insert(
         conn: &Connection,
+        cache: &mut RestoreTableCache,
         insert: &SnapshotInsertPlan,
     ) -> anyhow::Result<((SnapshotRestoreTable, String), Value)> {
         anyhow::ensure!(
-            table_exists(conn, insert.table.as_str())?,
+            cache.exists(conn, insert.table.as_str())?,
             "project snapshot restore plan contains unavailable table '{}'",
             insert.table.as_str()
         );
-        let primary_keys = table_primary_key_columns(conn, insert.table.as_str())?;
+        let primary_keys = cache.primary_key_columns(conn, insert.table.as_str())?;
         let mut row = insert.row.clone();
         match insert.table {
             SnapshotRestoreTable::SceneEvents => {
@@ -1900,7 +1989,7 @@ fn ensure_restore_plan_is_snapshot_derived(
             _ => {}
         }
         normalize_restore_plan_row(&mut row);
-        let key = row_primary_key(&row, &primary_keys, insert.table.as_str())?;
+        let key = row_primary_key(&row, primary_keys.as_slice(), insert.table.as_str())?;
         Ok((
             (insert.table, key),
             json!({ "mode": insert.mode, "row": row }),
@@ -1909,7 +1998,7 @@ fn ensure_restore_plan_is_snapshot_derived(
 
     let mut expected = HashMap::<(SnapshotRestoreTable, String), Value>::new();
     for insert in &canonical {
-        let (key, value) = normalized_insert(conn, insert)?;
+        let (key, value) = normalized_insert(conn, cache, insert)?;
         anyhow::ensure!(
             expected.insert(key, value).is_none(),
             "owned project snapshot contains duplicate canonical rows"
@@ -1917,7 +2006,7 @@ fn ensure_restore_plan_is_snapshot_derived(
     }
     let mut incoming = HashMap::<(SnapshotRestoreTable, String), Value>::new();
     for insert in inserts {
-        let (key, value) = normalized_insert(conn, insert)?;
+        let (key, value) = normalized_insert(conn, cache, insert)?;
         anyhow::ensure!(
             incoming.insert(key, value).is_none(),
             "project snapshot restore plan contains a duplicate '{}' row",
@@ -1956,17 +2045,69 @@ fn ensure_restore_plan_is_snapshot_derived(
     Ok(canonical)
 }
 
-fn ensure_inserted_row_is_project_scoped(
+/// The most rows of one table whose ownership is judged by a single query.
+/// A bound on the size of the statement (each row binds its key columns), not
+/// on time: a longer table is judged chunk after chunk.
+const OWNERSHIP_CHECK_CHUNK_ROWS: usize = 200;
+
+/// Why the ownership check of a chunk stopped before its end.
+enum OwnershipStop {
+    /// The row at `checked` is not in this project's chain of ownership.
+    NotScoped,
+    /// The row at `checked` has no usable key value (`is missing '<column>'`,
+    /// or a value that is not a SQLite scalar).
+    BadKey(anyhow::Error),
+}
+
+/// The outcome of judging the rows of one chunk. Rows `0..checked` are owned;
+/// `stop` says why the row at `checked` is not, or is `None` when every row of
+/// the chunk is owned.
+struct OwnershipVerdict {
+    checked: usize,
+    stop: Option<OwnershipStop>,
+}
+
+/// The same question the single-row check asked of each row -- "is a row with
+/// this primary key in this project's chain of ownership" -- asked once for a
+/// chunk of consecutive rows of one table, answered with the position of the
+/// first row for which it is no.
+///
+/// The key columns are compared as `"<table>"."<column>" = v.<key>` where `v`
+/// lists the chunk's values as bound parameters. A bound parameter and a
+/// column of such a list both carry no affinity, so the comparison applies
+/// exactly the affinity, NULL and type rules that the earlier
+/// `"<column>" = ?` did (the unit test `chunked_ownership_equals_per_row`
+/// holds the two forms to the same answers on every storage class).
+///
+/// What is evaluated before a row's verdict is the same as before: the table
+/// existing, its primary key, the ownership rule, then the key values of each
+/// row in plan order. Whatever fails fails at the same row; rows before it are
+/// returned as owned so the caller can finish them first.
+fn judge_chunk_ownership(
     conn: &Connection,
+    cache: &mut RestoreTableCache,
     project_id: &str,
-    insert: &SnapshotInsertPlan,
-) -> anyhow::Result<()> {
-    let table = insert.table.as_str();
-    if !table_exists(conn, table)? {
-        return Ok(());
+    chunk: &[SnapshotInsertPlan],
+) -> anyhow::Result<OwnershipVerdict> {
+    let table_kind = chunk[0].table;
+    // The caller cuts the chunks. One that is longer than the limit would put
+    // more variables in the question than SQLite allows (and a restore of a
+    // large table would fail), and one that mixes tables would be judged
+    // against the first row's table: both are the caller's bug, not input.
+    debug_assert!(
+        chunk.len() <= OWNERSHIP_CHECK_CHUNK_ROWS
+            && chunk.iter().all(|insert| insert.table == table_kind),
+        "an ownership chunk is at most {OWNERSHIP_CHECK_CHUNK_ROWS} rows of one table"
+    );
+    let table = table_kind.as_str();
+    if !cache.exists(conn, table)? {
+        return Ok(OwnershipVerdict {
+            checked: chunk.len(),
+            stop: None,
+        });
     }
-    let primary_keys = table_primary_key_columns(conn, table)?;
-    let (predicate, project_binds) = match insert.table {
+    let primary_keys = cache.primary_key_columns(conn, table)?;
+    let (predicate, project_binds) = match table_kind {
         SnapshotRestoreTable::TreeNodes
         | SnapshotRestoreTable::CodexEntries
         | SnapshotRestoreTable::Snippets => ("project_id = ?", 1),
@@ -1980,33 +2121,104 @@ fn ensure_inserted_row_is_project_scoped(
             (spec.predicate, spec.binds)
         }
     };
+
+    // Key values, row by row in plan order, up to the first row without a
+    // usable key.
+    let mut key_values = Vec::with_capacity(chunk.len() * primary_keys.len());
+    let mut usable = 0;
+    let mut bad_key = None;
+    'rows: for insert in chunk {
+        let mut row_values = Vec::with_capacity(primary_keys.len());
+        for column in primary_keys.iter() {
+            let value = match insert.row.get(column) {
+                Some(value) => value,
+                None => {
+                    bad_key = Some(anyhow::anyhow!(
+                        "project snapshot insert for '{table}' is missing '{column}'"
+                    ));
+                    break 'rows;
+                }
+            };
+            match sql_value(value, column) {
+                Ok(value) => row_values.push(value),
+                Err(error) => {
+                    bad_key = Some(error);
+                    break 'rows;
+                }
+            }
+        }
+        key_values.extend(row_values);
+        usable += 1;
+    }
+
+    let mut checked = usable;
+    let mut stop = bad_key.map(OwnershipStop::BadKey);
+    if usable > 0 {
+        let first_unowned = first_unowned_row(
+            conn,
+            table,
+            &primary_keys,
+            predicate,
+            project_binds,
+            project_id,
+            &key_values,
+        )?;
+        if let Some(index) = first_unowned {
+            checked = index;
+            stop = Some(OwnershipStop::NotScoped);
+        }
+    }
+    Ok(OwnershipVerdict { checked, stop })
+}
+
+/// The position of the first row among `key_values` (the key columns of each
+/// row, `primary_keys.len()` values per row, in row order) whose key is not in
+/// `table` under the ownership `predicate`; `None` when all are.
+fn first_unowned_row(
+    conn: &Connection,
+    table: &str,
+    primary_keys: &[String],
+    predicate: &str,
+    project_binds: usize,
+    project_id: &str,
+    key_values: &[SqlValue],
+) -> anyhow::Result<Option<usize>> {
+    let key_count = primary_keys.len();
+    let rows = key_values.len() / key_count;
+    let value_columns = (0..key_count)
+        .map(|index| format!("\"__rv_k{index}\""))
+        .collect::<Vec<_>>();
+    let list_columns = std::iter::once("\"__rv_i\"".to_string())
+        .chain(value_columns.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let row_placeholders = format!("({})", vec!["?"; key_count + 1].join(", "));
+    let list_rows = vec![row_placeholders; rows].join(", ");
     let key_predicate = primary_keys
         .iter()
-        .map(|column| format!("\"{column}\" = ?"))
+        .zip(&value_columns)
+        .map(|(column, value_column)| {
+            format!("\"{table}\".\"{column}\" = \"__rv_v\".{value_column}")
+        })
         .collect::<Vec<_>>()
         .join(" AND ");
     let sql = format!(
-        "SELECT EXISTS(
-            SELECT 1 FROM \"{table}\"
-             WHERE {key_predicate} AND ({predicate})
-         )"
+        "WITH \"__rv_v\"({list_columns}) AS (VALUES {list_rows})
+         SELECT MIN(\"__rv_v\".\"__rv_i\") FROM \"__rv_v\"
+          WHERE NOT EXISTS(
+              SELECT 1 FROM \"{table}\"
+               WHERE {key_predicate} AND ({predicate})
+          )"
     );
-    let mut values = primary_keys
-        .iter()
-        .map(|column| {
-            let value = insert.row.get(column).ok_or_else(|| {
-                anyhow::anyhow!("project snapshot insert for '{table}' is missing '{column}'")
-            })?;
-            sql_value(value, column)
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut values = Vec::with_capacity(rows * (key_count + 1) + project_binds);
+    for (index, row_values) in key_values.chunks(key_count).enumerate() {
+        values.push(SqlValue::Integer(index as i64));
+        values.extend(row_values.iter().cloned());
+    }
     values.extend((0..project_binds).map(|_| SqlValue::Text(project_id.to_string())));
-    let owned: bool = conn.query_row(&sql, params_from_iter(values.iter()), |row| row.get(0))?;
-    anyhow::ensure!(
-        owned,
-        "project snapshot insert for '{table}' is not scoped to project '{project_id}'"
-    );
-    Ok(())
+    let first_unowned: Option<i64> =
+        conn.query_row(&sql, params_from_iter(values.iter()), |row| row.get(0))?;
+    Ok(first_unowned.map(|index| index as usize))
 }
 
 fn insert_record(
@@ -2015,13 +2227,27 @@ fn insert_record(
     row: &RawRow,
     replace: bool,
 ) -> anyhow::Result<()> {
+    insert_record_cached(conn, &mut RestoreTableCache::default(), table, row, replace)
+}
+
+/// `insert_record` for a caller that inserts many rows in one restore and
+/// shares the table shapes between them. The order of the refusals is the
+/// same: an empty row, a table that does not exist (skipped), a column the
+/// table does not have, a value that is not a SQLite scalar, then the insert.
+fn insert_record_cached(
+    conn: &Connection,
+    cache: &mut RestoreTableCache,
+    table: &str,
+    row: &RawRow,
+    replace: bool,
+) -> anyhow::Result<()> {
     if row.is_empty() {
         anyhow::bail!("project snapshot insert for '{table}' must not be empty");
     }
-    if !table_exists(conn, table)? {
+    if !cache.exists(conn, table)? {
         return Ok(());
     }
-    let actual_columns = table_columns(conn, table)?;
+    let actual_columns = cache.columns(conn, table)?;
     let mut columns: Vec<&String> = row.keys().collect();
     columns.sort_unstable();
     for column in &columns {
@@ -2578,12 +2804,14 @@ pub fn apply_project_snapshot_restore(
         if !structural {
             anyhow::bail!("legacy project snapshots cannot use structural restore");
         }
+        let mut table_cache = RestoreTableCache::default();
         let canonical_inserts = ensure_restore_plan_is_snapshot_derived(
             &transaction,
             &payload.project_id,
             &payload.snapshot_id,
             &scopes,
             &payload.inserts,
+            &mut table_cache,
         )?;
         // The provenance of a document belongs to the scope that owns the
         // document (DR-SRX-7). The plan carries every row of the snapshot, the
@@ -2800,8 +3028,9 @@ pub fn apply_project_snapshot_restore(
                     Value::from(uuid::Uuid::new_v4().to_string()),
                 );
             }
-            insert_record(
+            insert_record_cached(
                 &transaction,
+                &mut table_cache,
                 insert.table.as_str(),
                 &row,
                 insert.mode == SnapshotInsertMode::Replace,
@@ -2812,40 +3041,73 @@ pub fn apply_project_snapshot_restore(
                 mode: insert.mode,
             });
         }
-        for insert in &applied_inserts {
-            ensure_inserted_row_is_project_scoped(&transaction, &payload.project_id, insert)?;
-            if insert.table == SnapshotRestoreTable::TreeNodes
-                && insert.row.get("node_type").and_then(Value::as_str) == Some("scene")
+        // Ownership is judged a chunk of consecutive rows of one table at a
+        // time, and each row's scene binding follows the judgement of the
+        // chunk it is in. The order of refusals is the per-row order: rows
+        // before the first row that is not owned (or has no usable key) are
+        // bound first, in plan order, and only then is that row refused. A
+        // binding writes only the scene-scope tables, none of which is read by
+        // an ownership rule, so judging the rest of a chunk before binding its
+        // earlier rows cannot change a verdict.
+        let mut chunk_start = 0;
+        while chunk_start < applied_inserts.len() {
+            let table = applied_inserts[chunk_start].table;
+            let mut chunk_end = chunk_start + 1;
+            while chunk_end < applied_inserts.len()
+                && chunk_end - chunk_start < OWNERSHIP_CHECK_CHUNK_ROWS
+                && applied_inserts[chunk_end].table == table
             {
-                let scene_id = insert
-                    .row
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("restored scene row has no id"))?;
-                let updated_at = insert
-                    .row
-                    .get("updated_at")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("restored scene row has no updated_at"))?;
-                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
-                    &transaction,
-                    &payload.project_id,
-                    scene_id,
-                    updated_at,
-                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
-                )?;
-                // A snapshot may replace an existing scene row. Preserve its
-                // Native incarnation, but bind the restored source timestamp
-                // so the prior eligibility token cannot survive the restore.
-                scene_scope_refresh_events.push(
-                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                chunk_end += 1;
+            }
+            let chunk = &applied_inserts[chunk_start..chunk_end];
+            let verdict =
+                judge_chunk_ownership(&transaction, &mut table_cache, &payload.project_id, chunk)?;
+            for insert in &chunk[..verdict.checked] {
+                if insert.table == SnapshotRestoreTable::TreeNodes
+                    && insert.row.get("node_type").and_then(Value::as_str) == Some("scene")
+                {
+                    let scene_id = insert
+                        .row
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("restored scene row has no id"))?;
+                    let updated_at = insert
+                        .row
+                        .get("updated_at")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("restored scene row has no updated_at"))?;
+                    crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
                         &transaction,
                         &payload.project_id,
                         scene_id,
                         updated_at,
-                    )?,
-                );
+                        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+                    )?;
+                    // A snapshot may replace an existing scene row. Preserve its
+                    // Native incarnation, but bind the restored source timestamp
+                    // so the prior eligibility token cannot survive the restore.
+                    scene_scope_refresh_events.push(
+                        crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                            &transaction,
+                            &payload.project_id,
+                            scene_id,
+                            updated_at,
+                        )?,
+                    );
+                }
             }
+            match verdict.stop {
+                None => {}
+                Some(OwnershipStop::NotScoped) => {
+                    anyhow::bail!(
+                        "project snapshot insert for '{}' is not scoped to project '{}'",
+                        chunk[verdict.checked].table.as_str(),
+                        payload.project_id
+                    );
+                }
+                Some(OwnershipStop::BadKey(error)) => return Err(error),
+            }
+            chunk_start = chunk_end;
         }
 
         let dropped = restore_links::restore(&transaction, &link_shape, &parked_links)?;
@@ -5064,5 +5326,324 @@ mod tests {
             })
             .expect("read default");
         assert_eq!(default.version, 1, "the restore keeps the current default");
+    }
+
+    /// The chunked ownership question must give, for every key, the answer
+    /// the earlier one-row `"<column>" = ?` gave: affinity, NULL and storage
+    /// class included. Keys of every storage class are tried against columns
+    /// of every affinity, one at a time and in one chunk.
+    #[test]
+    fn chunked_ownership_equals_per_row() {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE t_int (id INTEGER PRIMARY KEY, project_id TEXT);
+             CREATE TABLE t_text (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE t_num (id NUMERIC PRIMARY KEY, project_id TEXT);
+             CREATE TABLE t_real (id REAL PRIMARY KEY, project_id TEXT);
+             CREATE TABLE t_none (id PRIMARY KEY, project_id TEXT);
+             CREATE TABLE t_blob (id BLOB PRIMARY KEY, project_id TEXT);
+             CREATE TABLE t_comp (a TEXT, b INTEGER, project_id TEXT, PRIMARY KEY (a, b));
+             CREATE TABLE t_child (id TEXT PRIMARY KEY, parent TEXT);
+             INSERT INTO t_int VALUES (1, 'p1'), (2, 'p2'), (3, 'p1');
+             INSERT INTO t_text VALUES ('1', 'p1'), ('2', 'p2'), ('a', 'p1'), ('1.0', 'p1'), (' 1', 'p1'), (NULL, 'p1');
+             INSERT INTO t_num VALUES (1, 'p1'), (2, 'p2'), (1.5, 'p1');
+             INSERT INTO t_real VALUES (1.0, 'p1'), (2.0, 'p2'), (1.5, 'p1');
+             INSERT INTO t_none VALUES (1, 'p1'), ('1', 'p1'), (2, 'p2'), (x'31', 'p1'), (1.5, 'p1'), (NULL, 'p1');
+             INSERT INTO t_blob VALUES (x'31', 'p1'), (x'32', 'p2'), (1, 'p1'), ('1', 'p1');
+             INSERT INTO t_comp VALUES ('a', 1, 'p1'), ('a', 2, 'p2'), ('1', 1, 'p1'), (NULL, 1, 'p1'), ('a', NULL, 'p1');
+             INSERT INTO t_child VALUES ('c1', '1'), ('c2', '2'), ('c3', '3');",
+        )
+        .expect("schema");
+        let probes = vec![
+            SqlValue::Integer(1),
+            SqlValue::Integer(2),
+            SqlValue::Integer(3),
+            SqlValue::Integer(99),
+            SqlValue::Text("1".to_string()),
+            SqlValue::Text("2".to_string()),
+            SqlValue::Text("3".to_string()),
+            SqlValue::Text("1.0".to_string()),
+            SqlValue::Text(" 1".to_string()),
+            SqlValue::Text("01".to_string()),
+            SqlValue::Text("a".to_string()),
+            SqlValue::Text("c1".to_string()),
+            SqlValue::Text("c2".to_string()),
+            SqlValue::Real(1.0),
+            SqlValue::Real(1.5),
+            SqlValue::Real(2.0),
+            SqlValue::Null,
+            SqlValue::Blob(b"1".to_vec()),
+            SqlValue::Blob(b"2".to_vec()),
+        ];
+
+        fn per_row(
+            conn: &Connection,
+            table: &str,
+            keys: &[&str],
+            predicate: &str,
+            row: &[SqlValue],
+        ) -> bool {
+            let key_predicate = keys
+                .iter()
+                .map(|column| format!("\"{column}\" = ?"))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE {key_predicate} AND ({predicate}))"
+            );
+            let mut values = row.to_vec();
+            values.push(SqlValue::Text("p1".to_string()));
+            conn.query_row(&sql, params_from_iter(values.iter()), |r| r.get(0))
+                .expect("per row")
+        }
+
+        let mut owned_seen = 0;
+        let mut refused_seen = 0;
+        let mut check = |table: &str, keys: &[&str], predicate: &str, rows: Vec<Vec<SqlValue>>| {
+            let owned = rows
+                .iter()
+                .map(|row| per_row(&conn, table, keys, predicate, row))
+                .collect::<Vec<_>>();
+            owned_seen += owned.iter().filter(|owned| **owned).count();
+            refused_seen += owned.iter().filter(|owned| !**owned).count();
+            let key_names = keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
+            let chunked = |rows: &[Vec<SqlValue>]| {
+                let flat = rows.iter().flatten().cloned().collect::<Vec<_>>();
+                first_unowned_row(&conn, table, &key_names, predicate, 1, "p1", &flat)
+                    .expect("chunked")
+            };
+            for (index, row) in rows.iter().enumerate() {
+                let alone = chunked(std::slice::from_ref(row));
+                assert_eq!(alone.is_none(), owned[index], "{table} {row:?} alone");
+            }
+            for start in 0..rows.len() {
+                let expected = owned[start..].iter().position(|owned| !*owned);
+                assert_eq!(chunked(&rows[start..]), expected, "{table} from {start}");
+            }
+        };
+
+        let single = |probes: &[SqlValue]| {
+            probes
+                .iter()
+                .map(|value| vec![value.clone()])
+                .collect::<Vec<_>>()
+        };
+        for table in ["t_int", "t_text", "t_num", "t_real", "t_none", "t_blob"] {
+            check(table, &["id"], "project_id = ?", single(&probes));
+        }
+        check(
+            "t_child",
+            &["id"],
+            "parent IN (SELECT id FROM t_int WHERE project_id = ?)",
+            single(&probes),
+        );
+        let mut pairs = Vec::new();
+        for a in &probes {
+            for b in &probes {
+                pairs.push(vec![a.clone(), b.clone()]);
+            }
+        }
+        check("t_comp", &["a", "b"], "project_id = ?", pairs);
+        assert!(
+            owned_seen > 20 && refused_seen > 20,
+            "the probe must discriminate"
+        );
+    }
+
+    /// The only ownership rule with five binds (`authorship_spans`: an OR over
+    /// five parents) gives, chunked, the answer the one-row question gave. A
+    /// row is owned when any one of its parents belongs to the project.
+    #[test]
+    fn a_five_bind_predicate_chunked_equals_per_row() {
+        let spec = AUX_SPECS
+            .iter()
+            .find(|spec| spec.table == "authorship_spans")
+            .expect("the authorship_spans rule");
+        assert_eq!(spec.binds, 5, "the rule this test is about");
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE snippets (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE codex_detail_values (id TEXT PRIMARY KEY, entry_id TEXT);
+             CREATE TABLE map_boards (id TEXT PRIMARY KEY, project_id TEXT);
+             CREATE TABLE map_stickies (id TEXT PRIMARY KEY, board_id TEXT);
+             CREATE TABLE authorship_spans (
+                 id TEXT PRIMARY KEY, node_id TEXT, codex_entry_id TEXT, snippet_id TEXT,
+                 detail_value_id TEXT, sticky_id TEXT);
+             INSERT INTO tree_nodes VALUES ('n1', 'p1'), ('n2', 'p2');
+             INSERT INTO codex_entries VALUES ('c1', 'p1'), ('c2', 'p2');
+             INSERT INTO snippets VALUES ('sn1', 'p1'), ('sn2', 'p2');
+             INSERT INTO codex_detail_values VALUES ('d1', 'c1'), ('d2', 'c2');
+             INSERT INTO map_boards VALUES ('b1', 'p1'), ('b2', 'p2');
+             INSERT INTO map_stickies VALUES ('st1', 'b1'), ('st2', 'b2');
+             INSERT INTO authorship_spans VALUES
+                 ('s1', 'n1', NULL, NULL, NULL, NULL),
+                 ('s2', 'n2', NULL, NULL, NULL, NULL),
+                 ('s3', NULL, 'c1', NULL, NULL, NULL),
+                 ('s4', NULL, 'c2', NULL, NULL, NULL),
+                 ('s5', NULL, NULL, 'sn1', NULL, NULL),
+                 ('s6', NULL, NULL, 'sn2', NULL, NULL),
+                 ('s7', NULL, NULL, NULL, 'd1', NULL),
+                 ('s8', NULL, NULL, NULL, 'd2', NULL),
+                 ('s9', NULL, NULL, NULL, NULL, 'st1'),
+                 ('s10', NULL, NULL, NULL, NULL, 'st2'),
+                 ('s11', NULL, NULL, NULL, NULL, NULL),
+                 ('s12', 'n1', 'c2', NULL, NULL, NULL),
+                 ('s13', 'n2', 'c2', 'sn2', 'd2', 'st2');",
+        )
+        .expect("schema");
+
+        let per_row = |key: &str| -> bool {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM \"authorship_spans\" WHERE \"id\" = ? AND ({}))",
+                spec.predicate
+            );
+            let mut values = vec![SqlValue::Text(key.to_string())];
+            values.extend((0..spec.binds).map(|_| SqlValue::Text("p1".to_string())));
+            conn.query_row(&sql, params_from_iter(values.iter()), |r| r.get(0))
+                .expect("per row")
+        };
+        let keys = [
+            "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s13",
+            "nope",
+        ];
+        let owned = keys.iter().map(|key| per_row(key)).collect::<Vec<_>>();
+        assert_eq!(
+            owned,
+            [
+                true, false, true, false, true, false, true, false, true, false, false, true,
+                false, false
+            ],
+            "each of the five parents decides, one that belongs is enough"
+        );
+        let chunked = |keys: &[&str]| {
+            let flat = keys
+                .iter()
+                .map(|key| SqlValue::Text(key.to_string()))
+                .collect::<Vec<_>>();
+            first_unowned_row(
+                &conn,
+                "authorship_spans",
+                &["id".to_string()],
+                spec.predicate,
+                spec.binds,
+                "p1",
+                &flat,
+            )
+            .expect("chunked")
+        };
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(chunked(&[key]).is_none(), owned[index], "{key} alone");
+        }
+        for start in 0..keys.len() {
+            let expected = owned[start..].iter().position(|owned| !*owned);
+            assert_eq!(chunked(&keys[start..]), expected, "from {start}");
+        }
+    }
+
+    fn label_plan(row: Value) -> SnapshotInsertPlan {
+        SnapshotInsertPlan {
+            table: SnapshotRestoreTable::Labels,
+            row: raw(row),
+            mode: SnapshotInsertMode::Insert,
+        }
+    }
+
+    /// What a chunk's verdict says: how many rows are owned and why it stops.
+    fn verdict_of(chunk: &[SnapshotInsertPlan]) -> (usize, String) {
+        let db = fixture();
+        db.with_conn(|conn| {
+            let mut cache = RestoreTableCache::default();
+            let verdict = judge_chunk_ownership(conn, &mut cache, "p1", chunk)?;
+            let stop = match verdict.stop {
+                None => "none".to_string(),
+                Some(OwnershipStop::NotScoped) => "not scoped".to_string(),
+                Some(OwnershipStop::BadKey(error)) => format!("bad key: {error}"),
+            };
+            Ok((verdict.checked, stop))
+        })
+        .expect("judge a chunk")
+    }
+
+    /// A chunk is judged up to its first row that is not owned, or has no
+    /// usable key, and says which of the two it is; the rows before it are
+    /// owned. The earlier of two faults is the one named.
+    #[test]
+    fn a_chunk_stops_at_its_first_fault_and_names_it() {
+        let owned = || label_plan(json!({"id": "l1"}));
+        let foreign = || label_plan(json!({"id": "l2"}));
+        let keyless = || label_plan(json!({"name": "no key"}));
+        let scalar = || label_plan(json!({"id": ["l1"]}));
+        assert_eq!(verdict_of(&[owned(), owned()]), (2, "none".to_string()));
+        assert_eq!(
+            verdict_of(&[owned(), foreign(), owned()]),
+            (1, "not scoped".to_string())
+        );
+        assert_eq!(verdict_of(&[foreign()]), (0, "not scoped".to_string()));
+        assert_eq!(
+            verdict_of(&[owned(), keyless(), owned()]),
+            (
+                1,
+                "bad key: project snapshot insert for 'labels' is missing 'id'".to_string()
+            )
+        );
+        assert_eq!(
+            verdict_of(&[owned(), owned(), scalar()]),
+            (
+                2,
+                "bad key: project snapshot row field 'id' is not a SQLite scalar".to_string()
+            )
+        );
+        // An owned-or-not fault in a row before the keyless one comes first,
+        // and one after it does not matter.
+        assert_eq!(
+            verdict_of(&[owned(), foreign(), keyless()]),
+            (1, "not scoped".to_string())
+        );
+        assert_eq!(
+            verdict_of(&[keyless(), foreign()]),
+            (
+                0,
+                "bad key: project snapshot insert for 'labels' is missing 'id'".to_string()
+            )
+        );
+        // Several rows that are not owned: the first is the one named.
+        assert_eq!(
+            verdict_of(&[owned(), owned(), foreign(), owned(), foreign()]),
+            (2, "not scoped".to_string())
+        );
+    }
+
+    /// `insert_record` (which the snapshot builders still call row by row) says
+    /// no to an empty row before it looks at the table, skips a table that is
+    /// not there, and says no to a column the table does not have.
+    #[test]
+    fn insert_record_refuses_an_empty_row_and_skips_a_missing_table() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            let empty = insert_record(conn, "labels", &raw(json!({})), false)
+                .expect_err("an empty row is refused");
+            assert_eq!(
+                empty.to_string(),
+                "project snapshot insert for 'labels' must not be empty"
+            );
+            let empty_for_missing = insert_record(conn, "no_such_table", &raw(json!({})), false)
+                .expect_err("an empty row is refused before the table is looked at");
+            assert_eq!(
+                empty_for_missing.to_string(),
+                "project snapshot insert for 'no_such_table' must not be empty"
+            );
+            insert_record(conn, "no_such_table", &raw(json!({"id": "x"})), false)
+                .expect("a table that does not exist is skipped");
+            let invalid = insert_record(conn, "labels", &raw(json!({"nope": "x"})), false)
+                .expect_err("a column the table lacks is refused");
+            assert_eq!(
+                invalid.to_string(),
+                "project snapshot insert has invalid labels column 'nope'"
+            );
+            Ok(())
+        })
+        .expect("insert_record cases");
     }
 }

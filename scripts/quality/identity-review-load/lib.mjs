@@ -543,6 +543,59 @@ export function reconcileSeedsWithProposals({
   };
 }
 
+/**
+ * 名簿の「場面で指す人が変わる表記」（S5-roster。重複を除いた hash 集合）を、集合の所属から 1 つずつ分類して件数だけ返す
+ * （事前登録 DR-ILM-38 の (iv)(v)。表記の文字列は持たない）。hash は 4 つの集合とも hashSurface（表記そのまま。candidateKey で
+ * 正規化しない）。S5 の各表記は次の 3 区分のどれか 1 つに入る（重ならない。件数の引き算で作らない）：
+ * - notSeed：seed に無く、提案にも無い（抽出が拾わない）
+ * - seedNotProposed：seed にあるが、提案に無い（製品が落とした表記など）
+ * - proposed：提案に出る（S5_seen）。seed に無いのに提案にあれば proposedOutsideSeed に数える（0 のはず。道具の読みの検査）
+ * candidateHashes（候補画面の候補の hash。null なら未計測）は重なってよい別の数：inCandidate（候補に出る）、
+ * notSeedInCandidate（seed にならないが候補に出る）、neitherSeedNorCandidate（seed にも候補にもならない）。
+ */
+export function classifyS5Surfaces({
+  s5Hashes,
+  seedHashes,
+  proposalHashes,
+  candidateHashes = null,
+}) {
+  const s5 = new Set(s5Hashes);
+  const seeds = new Set(seedHashes);
+  const proposals = new Set(proposalHashes);
+  const candidates = candidateHashes === null ? null : new Set(candidateHashes);
+  let notSeed = 0;
+  let seedNotProposed = 0;
+  let proposed = 0;
+  let proposedOutsideSeed = 0;
+  let inCandidate = 0;
+  let notSeedInCandidate = 0;
+  let neitherSeedNorCandidate = 0;
+  for (const hash of s5) {
+    const inSeed = seeds.has(hash);
+    if (proposals.has(hash)) {
+      proposed++;
+      if (!inSeed) proposedOutsideSeed++;
+    } else if (inSeed) seedNotProposed++;
+    else notSeed++;
+    if (candidates) {
+      const inCand = candidates.has(hash);
+      if (inCand) inCandidate++;
+      if (!inSeed && inCand) notSeedInCandidate++;
+      if (!inSeed && !inCand) neitherSeedNorCandidate++;
+    }
+  }
+  return {
+    rosterSurfaces: s5.size,
+    notSeed,
+    seedNotProposed,
+    proposed,
+    proposedOutsideSeed,
+    candidate: candidates
+      ? { inCandidate, notSeedInCandidate, neitherSeedNorCandidate }
+      : null,
+  };
+}
+
 // ---- 保存済みの未 review の提案の件数（事前登録の問い 4。DB から件数だけ）------------------
 
 /**

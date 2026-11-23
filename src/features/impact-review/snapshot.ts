@@ -1,6 +1,10 @@
 /**
  * impact-review: Codex エントリの現在状態を CodexSnapshot へ取り出す。
- * MVP では base 状態（phase 未解決）で比較する。phase 別 impact は将来拡張。
+ * base（name・aliases・summary・content・includeInContext な detail）に加えて、各 Phase の
+ * override（summary・content・detail）も 1 つの snapshot に載せる。Phase が支配する時点
+ * （場面）は解決しない。AI に渡さない設定の判定は run 側の門が行う：Phase の
+ * contextModeOverride が current-mention を満たさないものは restrictedPhaseIds に入れ、
+ * base の contextMode とともに返す（DR-MP4-44）。
  */
 
 import { db } from "@/db/client";
@@ -26,9 +30,10 @@ export interface CodexSnapshotResult {
   entryType: string;
   entryName: string;
   sourceRevision: SqliteSourceRevisionGuard;
-  contextMode?: string;
+  /** base の contextMode。run の門が current-mention を満たすかを判定する（欠落を公開として補わない）。 */
+  contextMode: string;
   /** Any explicit phase visibility restriction makes phase diff AI payloads unsafe. */
-  hasRestrictedPhases?: boolean;
+  hasRestrictedPhases: boolean;
 }
 
 type SnapshotRowKind = "entry" | "detail" | "phase" | "phase-detail";
