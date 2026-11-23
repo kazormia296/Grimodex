@@ -950,9 +950,10 @@ test("出力の混入検査：名簿の表記を標準出力に出す要約は�
 test(
   "4 作品の chunk：場面をまたがず、A と B の切れ目が重ならない（原稿があれば）",
   {
-    skip:
-      !existsSync(resolveWorkSource("g-ja-2")) ||
-      !existsSync(resolveWorkSource("m-ja-2")),
+    // この試験は 4 作品すべてを読むので、4 作品が揃うときだけ実行する（一部だけの環境で失敗させない）。
+    skip: Object.keys(WORKS).every((key) => existsSync(resolveWorkSource(key)))
+      ? false
+      : "実データ（4 作品の scenes）が揃わない環境では実行しない",
   },
   () => {
     for (const key of Object.keys(WORKS)) {
