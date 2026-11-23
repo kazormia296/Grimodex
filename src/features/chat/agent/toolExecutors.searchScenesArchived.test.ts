@@ -5,9 +5,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  * search_scenes の FTS の arm：archived の行が上位の枠を使わないこと。
  *
  * 外部 Markdown の重複で archived になった行は、生きている行と同じ本文を持つので FTS の上位に並ぶ。
- * fts_search を Rust の上限（50）まで多めに取り、archived を Drizzle で落として元の FTS の順に並べ、
- * その後に 10 件へ切る。`fts_search` は canned の hit（archived が上位）を返し、
- * Native に渡す limit が 50 であることも固定する。
+ * Native の fts は scope `scenes_live` で archived を SQL の側で除くので、渡す limit は 10 でよい
+ * （DR-ARC-1）。それでも tool は自分の archived の条件を Drizzle に残す（browser-mock の fts は scope を
+ * 見ず archived も返す／fts を通らない LIKE の arm／fts と読みの間の race）。ここの `fts_search` は
+ * archived が上位に並ぶ canned の hit を返す（scope を見ない mock の形）。その場合も archived を
+ * Drizzle で落として元の FTS の順に並べ、10 件へ切ること、Native に渡す scope と limit も固定する。
  */
 vi.mock("@/lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tauri")>();
@@ -77,7 +79,7 @@ async function search() {
 
 let ftsHits: Array<{ sourceType: string; id: string }> = [];
 
-describe("search_scenes：FTS の arm は archived を落とした後に 10 件へ切る", () => {
+describe("search_scenes：FTS の arm は自分の archived の条件を残し、落とした後に 10 件へ切る", () => {
   beforeAll(async () => {
     await seedLegacyReadFixture();
     // 12 件の archived（FTS の上位）と、その後ろの 3 件の live。
@@ -94,7 +96,7 @@ describe("search_scenes：FTS の arm は archived を落とした後に 10 件�
     legacyReadInvokeBridge.reset();
   });
 
-  it("archived が上位 10 件を占めても、live の 3 件が FTS の順で出る（Native に渡す limit は 50）", async () => {
+  it("scope を見ない fts が archived を上位に返しても、live の 3 件が FTS の順で出る（Native に渡すのは scenes_live・limit 10）", async () => {
     ftsHits = [
       ...Array.from({ length: 12 }, (_, i) => hit(`dup-a${i + 1}`)),
       ...Array.from({ length: 3 }, (_, i) => hit(`dup-l${i + 1}`)),
@@ -112,8 +114,8 @@ describe("search_scenes：FTS の arm は archived を落とした後に 10 件�
         args: {
           projectId: "p-main",
           query: QUERY,
-          scope: "scenes",
-          limit: 50,
+          scope: "scenes_live",
+          limit: 10,
         },
       },
     ]);

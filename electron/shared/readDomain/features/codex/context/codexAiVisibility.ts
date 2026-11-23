@@ -112,13 +112,30 @@ function anchorOf(sceneId: string | null | undefined): TemporalAnchor {
  *   the first case (a scene that the reading order does not have).
  * `anchorOf` still reads "no scene" as the base anchor (unchanged); only the
  * visibility decision treats it as unresolvable.
+ *
+ * The scene id of a `scene` anchor is compared as it is (the resolver does not
+ * trim it either): `anchorOf` trims before it builds the anchor, and a caller
+ * that builds the anchor itself gets the resolver's reading of the id.
+ * `latest` (every phase applied, whatever the scene) and `phase` (a preview of
+ * one phase) do not depend on a current scene and are not unresolvable here.
  */
-function isSceneUnresolvable(
-  sceneId: string | null | undefined,
+function isAnchorUnresolvable(
+  anchor: TemporalAnchor,
   index: SceneTimeIndex,
 ): boolean {
-  const trimmed = sceneId?.trim();
-  return !trimmed || !index.readingOrder.has(trimmed);
+  switch (anchor.kind) {
+    case "base":
+      return true;
+    case "scene":
+      return !index.readingOrder.has(anchor.sceneId);
+    case "latest":
+    case "phase":
+      return false;
+    default: {
+      const unreachable: never = anchor;
+      return unreachable;
+    }
+  }
 }
 
 /**
@@ -141,6 +158,51 @@ function hasPhaseHiddenFromAi(
   );
 }
 
+/**
+ * The ids of the entries that are closed because the scene cannot be resolved
+ * (DR-MP4-41): the entries one of whose phases hides them. Empty when the anchor
+ * can be resolved. `decideCodexAiVisibility` and the chat context sources both
+ * ask this one function, so the rule is written once. An entry that is already
+ * hidden at base may also be named here (closing it changes nothing); do not read
+ * this set as "the entries the unresolvable scene is the reason for".
+ */
+export function listEntryIdsClosedWhenSceneUnresolvable(input: {
+  readonly anchor: TemporalAnchor;
+  readonly sceneTimeIndex: SceneTimeIndex;
+  readonly phasesByEntry: ReadonlyMap<string, readonly CodexEntryPhase[]>;
+}): Set<string> {
+  const closed = new Set<string>();
+  if (!isAnchorUnresolvable(input.anchor, input.sceneTimeIndex)) return closed;
+  for (const [entryId, phases] of input.phasesByEntry) {
+    if (hasPhaseHiddenFromAi(phases)) closed.add(entryId);
+  }
+  return closed;
+}
+
+/**
+ * Hides the entries that `closedIds` names by replacing their resolved
+ * `contextMode` with `hidden` (a copy; the input map is not changed). Only the
+ * mode is replaced: every consumer reads the mode before it reads a summary, a
+ * body or a detail value, so the rest stays as resolved and is never shown.
+ */
+export function closeResolvedCodexForUnresolvableScene<
+  TResolved extends { readonly contextMode: string },
+>(
+  resolvedById: ReadonlyMap<string, TResolved>,
+  closedIds: ReadonlySet<string>,
+): Map<string, TResolved> {
+  const closed = new Map<string, TResolved>();
+  for (const [entryId, resolved] of resolvedById) {
+    closed.set(
+      entryId,
+      closedIds.has(entryId)
+        ? { ...resolved, contextMode: "hidden" }
+        : resolved,
+    );
+  }
+  return closed;
+}
+
 export function decideCodexAiVisibility<
   TEntry extends ResolvableCodexContextEntry,
 >(input: CodexAiVisibilityInput<TEntry>): CodexAiVisibility<TEntry> {
@@ -159,15 +221,13 @@ export function decideCodexAiVisibility<
     sceneTimeIndex: input.sceneTimeIndex,
     resolutionMode: input.resolutionMode.mode,
   });
-  const sceneUnresolvable = isSceneUnresolvable(
-    input.sceneId,
-    input.sceneTimeIndex,
-  );
+  const closedIds = listEntryIdsClosedWhenSceneUnresolvable({
+    anchor,
+    sceneTimeIndex: input.sceneTimeIndex,
+    phasesByEntry,
+  });
   for (const entry of input.entries) {
-    if (
-      sceneUnresolvable &&
-      hasPhaseHiddenFromAi(phasesByEntry.get(entry.id))
-    ) {
+    if (closedIds.has(entry.id)) {
       hidden.add(entry.id);
       continue;
     }

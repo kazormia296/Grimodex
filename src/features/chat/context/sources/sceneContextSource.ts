@@ -27,6 +27,10 @@ import {
   resolveCodexContexts,
 } from "@/features/codex/context/resolvedCodexContext";
 import {
+  closeResolvedCodexForUnresolvableScene,
+  listEntryIdsClosedWhenSceneUnresolvable,
+} from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
+import {
   getDescendantsBFS,
   getChildrenFromArray,
   computeChildrenTokenBudget,
@@ -362,7 +366,22 @@ async function resolveEntriesForContext(
     sceneTimeIndex,
     resolutionMode,
   });
-  return { resolved: result.resolvedById, phases: result.phasesByEntry };
+  // DR-MP4-41: a scene the reading order does not have (a note, an archived or
+  // deleted scene) applies no Phase, so an entry one of them hides is hidden.
+  // Every consumer of this function (the index and the full bodies) reads the
+  // mode set here.
+  const closedIds = listEntryIdsClosedWhenSceneUnresolvable({
+    anchor,
+    sceneTimeIndex,
+    phasesByEntry: result.phasesByEntry,
+  });
+  return {
+    resolved: closeResolvedCodexForUnresolvableScene(
+      result.resolvedById,
+      closedIds,
+    ),
+    phases: result.phasesByEntry,
+  };
 }
 
 async function enrichWithCustomDetails<T extends CodexContext>(
