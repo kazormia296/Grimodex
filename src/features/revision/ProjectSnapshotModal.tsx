@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { cn } from "@/lib/utils";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
@@ -74,6 +75,29 @@ function formatTimestamp(iso: string): string {
  * 背景を伸ばすために、下の余白を負の margin で打ち消す。
  */
 const STICKY_DIALOG_FOOTER = "sticky bottom-0 -mb-4 bg-popover pb-4 pt-2";
+
+/**
+ * 復元の前に、保留中の自動保存を保存する待ちの上限。保存が resolve も reject もしないと、
+ * 「復元中」のまま確認の画面が固まるので、上限を超えたら失敗として扱う（復元を中止する）。
+ */
+const FLUSH_BEFORE_RESTORE_TIMEOUT_MS = 30_000;
+
+async function flushAutoSavesBeforeRestore(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      flushAllAutoSaves(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("flush before restore timed out")),
+          FLUSH_BEFORE_RESTORE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 export function ProjectSnapshotModal({
   open,
@@ -197,6 +221,17 @@ export function ProjectSnapshotModal({
     if (!snap) return;
     setIsRestoring(true);
     try {
+      try {
+        await flushAutoSavesBeforeRestore();
+      } catch (err) {
+        debugLog.error(
+          "ProjectSnapshot",
+          "flush before restore failed",
+          errorDetail(err),
+        );
+        toast.error(t("snapshot.restoreFlushFailed"));
+        return;
+      }
       const result = await restoreProjectSnapshot(snap.id, snap.name, {
         scopes: snap.isStructural ? restoreScopes : undefined,
       });

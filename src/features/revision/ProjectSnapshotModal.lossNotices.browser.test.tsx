@@ -20,6 +20,10 @@ const mocks = vi.hoisted(() => ({
   reload: vi.fn(),
 }));
 
+vi.mock("@/hooks/useAutoSave", () => ({
+  flushAllAutoSaves: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));

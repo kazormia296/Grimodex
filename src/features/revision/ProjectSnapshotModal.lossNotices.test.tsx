@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   restore: vi.fn(),
   remove: vi.fn(),
   reload: vi.fn(),
+  flush: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -28,7 +30,10 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+  toast: { success: vi.fn(), error: mocks.toastError, info: vi.fn() },
+}));
+vi.mock("@/hooks/useAutoSave", () => ({
+  flushAllAutoSaves: mocks.flush,
 }));
 vi.mock("@/features/editor/inlineAi/pendingGuard", () => ({
   guardInlineAiPending: () => false,
@@ -111,6 +116,7 @@ beforeEach(() => {
   mocks.preview.mockResolvedValue({ structural: true, lossNotices: [] });
   mocks.restore.mockResolvedValue(restoreResult());
   mocks.reload.mockResolvedValue(undefined);
+  mocks.flush.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -119,6 +125,84 @@ afterEach(() => {
 });
 
 describe("ProjectSnapshotModal restore loss notices", () => {
+  it("flushes pending autosaves before restoring", async () => {
+    await openRestoreConfirm();
+    fireEvent.click(
+      screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+    );
+
+    await waitFor(() => expect(mocks.restore).toHaveBeenCalledOnce());
+    expect(mocks.flush).toHaveBeenCalledOnce();
+    expect(mocks.flush.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.restore.mock.invocationCallOrder[0],
+    );
+    await waitFor(() => expect(mocks.reload).toHaveBeenCalledOnce());
+  });
+
+  it("keeps the confirmation open after a flush failure and allows retry", async () => {
+    mocks.flush
+      .mockRejectedValueOnce(new Error("autosave failed"))
+      .mockResolvedValueOnce(undefined);
+    await openRestoreConfirm();
+    const confirmButton = screen.getByRole("button", {
+      name: "snapshot.restoreConfirm",
+    });
+
+    fireEvent.click(confirmButton);
+    await waitFor(() =>
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "snapshot.restoreFlushFailed",
+      ),
+    );
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("alertdialog", { name: "snapshot.restoreTitle" }),
+    ).toBeInTheDocument();
+    expect(confirmButton).toBeEnabled();
+
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(mocks.restore).toHaveBeenCalledOnce());
+    expect(mocks.flush).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a flush that never settles as a failure after the time limit, and allows retry", async () => {
+    // 保存が resolve も reject もしないと、「復元中」のまま確認の画面が固まる。上限（30 秒）を
+    // 超えたら失敗として扱い、復元を中止して、確認を開いたまま再試行できるようにする。
+    mocks.flush
+      .mockReturnValueOnce(new Promise<void>(() => {}))
+      .mockResolvedValueOnce(undefined);
+    await openRestoreConfirm();
+    const confirmButton = screen.getByRole("button", {
+      name: "snapshot.restoreConfirm",
+    });
+
+    vi.useFakeTimers();
+    fireEvent.click(confirmButton);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_999);
+    });
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(confirmButton).toBeDisabled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "snapshot.restoreFlushFailed",
+    );
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("alertdialog", { name: "snapshot.restoreTitle" }),
+    ).toBeInTheDocument();
+    expect(confirmButton).toBeEnabled();
+    vi.useRealTimers();
+
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(mocks.restore).toHaveBeenCalledOnce());
+    expect(mocks.flush).toHaveBeenCalledTimes(2);
+  });
+
   it("counts on open, debounces changed scopes, and reuses cached scope results", async () => {
     mocks.preview
       .mockResolvedValueOnce({ structural: true, lossNotices: [] })
