@@ -238,8 +238,8 @@ describe("Phase が hidden を解除した Codex", () => {
   });
 });
 
-describe("起点の場面を失った hidden の Phase（既知の穴。DR-MP4-46 が閉じる。直す前の挙動）", () => {
-  it("NULL の起点の hidden の Phase は効かず、場面が読む順に有れば要約を渡す", async () => {
+describe("起点の場面を失った hidden の Phase（DR-MP4-46。直す前は公開のまま渡った）", () => {
+  it("NULL の起点の hidden の Phase を持つ項目は、場面が読む順に有っても要約を渡さない", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     usePhaseStore.setState({
       sceneTimeIndex: buildSceneTimeIndex([
@@ -292,7 +292,7 @@ describe("起点の場面を失った hidden の Phase（既知の穴。DR-MP4-4
       projectId: "p1",
       sceneId: "scene-1",
     });
-    expect(ctx.codexSummaries).toBe("- Alice: 勇敢な騎士");
+    expect(ctx.codexSummaries).toBe("");
     h.phases = [];
   });
 });

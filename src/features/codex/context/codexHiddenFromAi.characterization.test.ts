@@ -600,8 +600,8 @@ describe("resolveCodexForAi の Phase の解決", () => {
   });
 });
 
-describe("既知の穴（DR-MP4-46 が閉じる。以下は直す前の挙動）：起点の場面を失った hidden の Phase", () => {
-  it("n-s2・n-s3 が読む順に無い（archived）と、それらを起点にした hidden の Phase は skip され、c-aria・c-mage は n-s1 でも n-s4 でも公開のまま", async () => {
+describe("起点の場面を失った hidden の Phase（DR-MP4-46。直す前は公開のままだった）", () => {
+  it("n-s2・n-s3 が読む順に無い（archived）と、それらを起点にした hidden の Phase は resolver が skip する。c-aria・c-mage は n-s1 でも n-s4 でも hidden に倒す", async () => {
     setPhaseStore(
       [
         sceneNode("n-s1", "a0", "a1"),
@@ -617,8 +617,8 @@ describe("既知の穴（DR-MP4-46 が閉じる。以下は直す前の挙動）
         projectId: "p-main",
         sceneId,
       });
-      expect([...r.hidden], sceneId).toEqual([]);
-      expect(sorted(r.texts.keys()), sceneId).toEqual(["c-aria", "c-mage"]);
+      expect(sorted(r.hidden), sceneId).toEqual(["c-aria", "c-mage"]);
+      expect(r.texts.size, sceneId).toBe(0);
     }
   });
 });

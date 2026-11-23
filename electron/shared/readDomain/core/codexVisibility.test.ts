@@ -443,10 +443,10 @@ describe("resolveCodexAiVisibility", () => {
   });
 });
 
-// Characterization of a known hole (DR-MP4-46 closes it in the next commit): a Phase that hides
-// an entry but whose anchor the resolver cannot place (null, or a scene the reading order does
-// not have) is skipped, so at a scene the reading order has the entry is read as base: public.
-describe("a hiding Phase that lost its anchor (known hole, fixed by DR-MP4-46)", () => {
+// DR-MP4-46: a Phase that hides an entry but whose anchor the resolver cannot place (null, or a
+// scene the reading order does not have) is skipped, so the entry is closed at every scene
+// (before DR-MP4-46 it was read as base, public, at a scene the reading order has).
+describe("a hiding Phase that lost its anchor (DR-MP4-46)", () => {
   const withOrphans = (sqlite: DatabaseSync) => {
     sqlite.exec(`
       insert into codex_entries values
@@ -459,28 +459,25 @@ describe("a hiding Phase that lost its anchor (known hole, fixed by DR-MP4-46)",
     `);
   };
 
-  it("leaves both entries public at every scene the reading order has, in resolveCodexAiVisibility, listHiddenCodexIds and dropHiddenCodexRows", async () => {
+  it("hides both entries at every scene the reading order has, in resolveCodexAiVisibility, listHiddenCodexIds and dropHiddenCodexRows", async () => {
     const { ports } = setup("p-a", undefined, withOrphans);
     const ids = ["orph-gone", "orph-null"];
     for (const sceneId of ["s1", "s2", "s3"]) {
       const r = await ask(ports, ids, sceneId);
-      expect([...r.hidden], sceneId).toEqual([]);
-      expect([...r.texts.keys()].sort(), sceneId).toEqual(ids);
+      expect([...r.hidden].sort(), sceneId).toEqual(ids);
+      expect([...r.texts.keys()], sceneId).toEqual([]);
       const hidden = await listHiddenCodexIds(ports, {
         projectId: "p-a",
         entryIds: ids,
         sceneId,
       });
-      expect([...hidden], sceneId).toEqual([]);
+      expect([...hidden].sort(), sceneId).toEqual(ids);
       const rows = await dropHiddenCodexRows(
         ports,
         ids.map((id) => ({ id })),
         { projectId: "p-a", sceneId },
       );
-      expect(
-        rows.map((row) => row.id),
-        sceneId,
-      ).toEqual(ids);
+      expect(rows, sceneId).toEqual([]);
     }
   });
 });

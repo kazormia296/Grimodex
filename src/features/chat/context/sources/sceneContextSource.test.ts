@@ -1896,11 +1896,11 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
   );
 });
 
-// Known hole, fixed by DR-MP4-46 (the expectations are the behaviour before the fix): a Phase
-// that hides an entry but whose anchor scene the resolver cannot place (null, deleted) is
-// skipped, so while the current scene is in the reading order the entry reaches the AI as base.
-describe("collectSceneContext when a Phase that hides an entry lost its anchor (known hole, DR-MP4-46)", () => {
-  it("still reaches the AI: always, a mention and an input pin, at a scene the reading order has", async () => {
+// DR-MP4-46: a Phase that hides an entry but whose anchor scene the resolver cannot place (null,
+// deleted) is skipped, so the entry is closed even while the current scene is in the reading
+// order (before DR-MP4-46 it reached the AI as base).
+describe("collectSceneContext when a Phase that hides an entry lost its anchor (DR-MP4-46)", () => {
+  it("closes it on every path: always, a mention and an input pin, at a scene the reading order has", async () => {
     const entries = [
       entry({
         id: "dangling",
@@ -1963,7 +1963,48 @@ describe("collectSceneContext when a Phase that hides an entry lost its anchor (
       "MENTIONED_SUM",
       "PINNED_SUM",
     ]) {
-      expect(haystack, token).toContain(token);
+      expect(haystack, token).not.toContain(token);
     }
+    for (const body of ["DANGLING_BODY", "PINNED_BODY"]) {
+      expect(haystack, body).not.toContain(body);
+    }
+  });
+
+  it("leaves an entry whose hiding Phase has a placeable anchor as before (the Phase has not started)", async () => {
+    const result = await collectSceneContext(
+      request({
+        sceneId: "scene-1",
+        entries: [
+          entry({
+            id: "ok",
+            name: "Okvane",
+            contextMode: "always",
+            summary: "OK_SUM",
+          }),
+        ],
+        sessionId: "session-1",
+      }),
+      createSceneContextSourceDeps({
+        ...phaseDeps([
+          phase({
+            id: "p-ok",
+            entryId: "ok",
+            anchorNodeId: "scene-2",
+            contextModeOverride: "hidden",
+          }),
+        ]),
+        getTemporalResolution: () => ({
+          sceneTimeIndex: buildSceneTimeIndex([
+            sceneNode,
+            { ...sceneNode, id: "scene-2", sortOrder: "a1" },
+          ]),
+          resolutionMode: "reading" as const,
+        }),
+      }),
+    );
+    const haystack = `${JSON.stringify(result.promptInput)}\n${
+      buildSystemPrompt(result.promptInput).prompt
+    }`;
+    expect(haystack).toContain("OK_SUM");
   });
 });

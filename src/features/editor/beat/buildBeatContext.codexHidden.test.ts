@@ -292,7 +292,7 @@ describe("buildBeatContextForGeneration — hidden の Codex", () => {
     editor.destroy();
   });
 
-  it("既知の穴（DR-MP4-46 が閉じる。直す前の挙動）：起点の場面を失った（NULL）hidden の Phase は効かず、場面が読む順に有れば要約を渡す", async () => {
+  it("起点の場面を失った（NULL）hidden の Phase を持つ項目は、場面が読む順に有っても要約を渡さない（DR-MP4-46。直す前は渡した）", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     usePhaseStore.setState({
       sceneTimeIndex: buildSceneTimeIndex([
@@ -341,7 +341,7 @@ describe("buildBeatContextForGeneration — hidden の Codex", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.ctx.codexSummaries).toBe("- 朱音: 主人公。雨を嫌う。");
+      expect(result.ctx.codexSummaries).toBe("");
     }
     editor.destroy();
   });

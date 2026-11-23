@@ -354,7 +354,7 @@ describe("agent tool は hidden の Codex を model に渡さない", () => {
     expect(ids(after.content)).toEqual([]);
   });
 
-  it("既知の穴（DR-MP4-46 が閉じる。直す前の挙動）：起点の場面を失った（NULL・読む順に無い）hidden の Phase は効かず、場面が解決できても公開のまま渡る", async () => {
+  it("起点の場面を失った（NULL・読む順に無い）hidden の Phase を持つ Codex は、場面が解決できても落とす（DR-MP4-46。直す前は公開のまま渡った）", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const node = (id: string, sortOrder: string) => ({
       id,
@@ -408,8 +408,9 @@ describe("agent tool は hidden の Codex を model に渡さない", () => {
     const res = await executeTool("list_codex_by_type", "c", {
       type: "character",
     });
-    // e-valid の Phase は scene-1 で効いて hidden。起点を失った 2 つは skip され公開のまま。
-    expect(ids(res.content)).toEqual(["e-null", "e-gone"]);
+    // e-valid の Phase は scene-1 で効いて hidden。起点を失った 2 つは resolver が skip するので
+    // 規則（DR-MP4-46）で落とす。
+    expect(ids(res.content)).toEqual([]);
   });
 
   it("Phase が hidden を解除した Codex は base の hidden の文でなく Phase 解決後の文を返す", async () => {
