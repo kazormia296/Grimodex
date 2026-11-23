@@ -40,7 +40,6 @@ function countSkipped(r: SkipReport): number {
     r.sceneBeatPovCache +
     r.eventParticipants +
     r.foreshadowPayoffSceneCleared +
-    r.mapNodePositionsLinkCleared +
     r.eventCodexRefCleared +
     r.eventRevealSceneCleared +
     r.editorStickies
