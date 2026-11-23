@@ -32,9 +32,10 @@ export interface CodexAiResolution {
  * 文脈と同じ判定で hidden を落とすための共通の入口。判定は chat と同じく、候補を
  * Phase 解決してから `codexVisibilityPolicy` の正本で行う。anchor は現在の場面があれば
  * その場面、なければ base。場面を解決できないときに Phase が hidden にする項目を hidden に
- * 倒す規則（下の fail-closed）は、chat の通常の文脈（`nonSceneContextSource`・
- * `sceneContextSource`。codex scope の latest を除く）も同じ関数
- * （`codexAiVisibility.ts` の `listEntryIdsClosedWhenSceneUnresolvable`）で適用する。
+ * 倒す規則（下の fail-closed）と、起点の場面を失った（NULL・削除・archived）hidden の Phase を
+ * 持つ項目を hidden に倒す規則（DR-MP4-46）は、chat の通常の文脈（`nonSceneContextSource`・
+ * `sceneContextSource`。後者の規則は codex scope の latest も対象）も同じ関数
+ * （`codexAiVisibility.ts` の `listEntryIdsClosedForAi`）で適用する。
  *
  * base が hidden でも現在の場面の Phase で mentioned 等に解除されたものは通すが、
  * その文は base ではなく Phase 解決後（chat の通常の文脈と同じ）を返す（`released`）。
@@ -43,7 +44,8 @@ export interface CodexAiResolution {
  *
  * fail-closed：DB に無い id・不明な mode も hidden に数える。現在の場面が `sceneTimeIndex` に
  * 無い・場面なし（Phase が解決できない）ときは、Phase が hidden にする項目も hidden に倒す（DR-MP4-41 (a)、
- * 判定は `decideCodexAiVisibility`）。判定の途中で project が切り替わったときは、渡された id を
+ * 判定は `decideCodexAiVisibility`）。hidden にする Phase の起点の場面を失った項目も、場面が解決できても
+ * hidden に倒す（DR-MP4-46。resolver はその Phase を skip するため）。判定の途中で project が切り替わったときは、渡された id を
  * 全部 hidden にする（(b)）。suppress・mentioned・
  * Phase による絞り込みは足さない（全部開示、hidden だけを守る）。
  * `withContent` が false なら本文は DB から読まず空文字で返す（要約だけの経路用）。

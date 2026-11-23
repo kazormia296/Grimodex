@@ -6,6 +6,8 @@ import type { CodexEntry } from "../api";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { DetailsSection } from "./DetailsSection";
 import { PhaseIndicator } from "./PhaseIndicator";
+import { OrphanedHidingPhaseNotice } from "./OrphanedHidingPhaseNotice";
+import { getOrphanedHidingPhaseDisplay } from "../orphanedHidingPhase";
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -55,6 +57,8 @@ interface DetailsTabProps {
   contentReloadToken?: number;
   /** 別窓が同一 entry を編集中なら本文エディタを read-only にする。 */
   readOnly?: boolean;
+  /** Switches to the Timeline tab (the notice about a lost Phase anchor links there). */
+  onOpenTimeline?: () => void;
 }
 
 export function DetailsTab({
@@ -65,6 +69,7 @@ export function DetailsTab({
   onExternalSync,
   contentReloadToken = 0,
   readOnly = false,
+  onOpenTimeline,
 }: DetailsTabProps) {
   const { t } = useTranslation();
   const emptyContent = !entry.content || entry.content === "{}";
@@ -86,6 +91,16 @@ export function DetailsTab({
   const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const updatePhase = usePhaseStore((s) => s.updatePhase);
   const loadPhasesForEntry = usePhaseStore((s) => s.loadPhasesForEntry);
+  // Same judgement as the Timeline tab's banner (DR-MP4-46, Q-G3).
+  const orphanedHiding = useMemo(
+    () =>
+      getOrphanedHidingPhaseDisplay({
+        entryContextMode: entry.contextMode,
+        phases: phases ?? [],
+        index: sceneTimeIndex,
+      }).warned,
+    [entry.contextMode, phases, sceneTimeIndex],
+  );
 
   // アクティブシーン変更時にプレビューをリセット
   useEffect(() => {
@@ -701,6 +716,11 @@ export function DetailsTab({
           onReload={handlePhaseReload}
         />
       )}
+      <OrphanedHidingPhaseNotice
+        phases={orphanedHiding}
+        variant="details"
+        onOpenTimeline={onOpenTimeline}
+      />
       <PhaseIndicator
         entry={entry}
         previewPhaseId={previewPhaseId}

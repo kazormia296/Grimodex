@@ -28,7 +28,7 @@ import {
 } from "@/features/codex/context/resolvedCodexContext";
 import {
   closeResolvedCodexForUnresolvableScene,
-  listEntryIdsClosedWhenSceneUnresolvable,
+  listEntryIdsClosedForAi,
 } from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 import {
   getDescendantsBFS,
@@ -368,9 +368,11 @@ async function resolveEntriesForContext(
   });
   // DR-MP4-41: a scene the reading order does not have (a note, an archived or
   // deleted scene) applies no Phase, so an entry one of them hides is hidden.
-  // Every consumer of this function (the index and the full bodies) reads the
-  // mode set here.
-  const closedIds = listEntryIdsClosedWhenSceneUnresolvable({
+  // DR-MP4-46: so is an entry that has a hiding Phase whose anchor scene the
+  // resolver cannot place (null, deleted, archived), even at a scene the reading
+  // order has. Every consumer of this function (the index and the full bodies)
+  // reads the mode set here.
+  const closedIds = listEntryIdsClosedForAi({
     anchor,
     sceneTimeIndex,
     phasesByEntry: result.phasesByEntry,

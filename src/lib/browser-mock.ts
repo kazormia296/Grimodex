@@ -15553,24 +15553,10 @@ export async function createBrowserMock(
         }),
       );
       push("map_frames", take("map_frames"));
-      push(
-        "map_node_positions",
-        take("map_node_positions").map((row) => ({
-          ...row,
-          tree_node_id:
-            !scopes.has("body") &&
-            typeof row.tree_node_id === "string" &&
-            !liveTreeNodeIds.has(row.tree_node_id)
-              ? null
-              : row.tree_node_id,
-          codex_entry_id:
-            !scopes.has("codex") &&
-            typeof row.codex_entry_id === "string" &&
-            !liveCodexIds.has(row.codex_entry_id)
-              ? null
-              : row.codex_entry_id,
-        })),
-      );
+      // A card is sent as the snapshot has it (the Rust canonical plan does the
+      // same, DR-SRX-27). The mock has no step that leaves out a card whose
+      // scene or Codex entry is gone, so such a restore still fails here.
+      push("map_node_positions", take("map_node_positions"));
       push("map_edges", take("map_edges"));
     }
 

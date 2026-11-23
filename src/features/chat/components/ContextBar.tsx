@@ -631,6 +631,16 @@ export function ContextBar({
                       </li>
                     ))}
                   </ul>
+                  {omittedDecisions.some(
+                    (decision) => decision.reason === "policy-hidden",
+                  ) && (
+                    <div
+                      data-testid="context-decision-policy-hidden-hint"
+                      className="mt-2 text-[11px] leading-relaxed text-muted-foreground"
+                    >
+                      {t("chat.context.policyHiddenHint")}
+                    </div>
+                  )}
                   {omittedDecisions.length > 8 && (
                     <div className="mt-2 text-[11px] text-muted-foreground">
                       {t("chat.context.decisionMore", {

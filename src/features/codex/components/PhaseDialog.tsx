@@ -5,6 +5,7 @@ import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
 import { SceneSelector } from "./SceneSelector";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 interface PhaseDialogProps {
   entryId: string;
@@ -20,6 +21,11 @@ interface PhaseDialogProps {
    * Allows saving a Detail-only Phase that has no summary/content/AI override.
    */
   existingDetailOverrideCount?: number;
+  /**
+   * Which scenes can be chosen as the anchor (the ones in the reading order: the
+   * resolver only places a Phase on those). Without it every scene is listed.
+   */
+  isSelectableAnchor?: (nodeId: string) => boolean;
 }
 
 export function PhaseDialog({
@@ -28,6 +34,7 @@ export function PhaseDialog({
   onClose,
   resolveCurrentContent,
   existingDetailOverrideCount = 0,
+  isSelectableAnchor,
 }: PhaseDialogProps) {
   const { t } = useTranslation();
   const createPhase = usePhaseStore((s) => s.createPhase);
@@ -36,8 +43,23 @@ export function PhaseDialog({
   const isEditing = phase != null;
 
   const [label, setLabel] = useState(phase?.label ?? "");
+  const nodes = useTreeStore((s) => s.nodes);
+  // The saved anchor may no longer be a choice (the scene was deleted or archived,
+  // or it is not in the reading order). Keeping it would let the Phase be saved
+  // without choosing a scene again, with the anchor still lost (DR-MP4-46).
+  const savedAnchorId = phase?.anchorNodeId ?? null;
+  // `nodes.length > 0`: while the tree is not loaded nothing can be told missing.
+  const savedAnchorMissing =
+    savedAnchorId !== null &&
+    nodes.length > 0 &&
+    !nodes.some(
+      (n) =>
+        n.id === savedAnchorId &&
+        n.nodeType === "scene" &&
+        (isSelectableAnchor ? isSelectableAnchor(n.id) : true),
+    );
   const [anchorNodeId, setAnchorNodeId] = useState<string | null>(
-    phase?.anchorNodeId ?? null,
+    savedAnchorMissing ? null : savedAnchorId,
   );
 
   // AI 露出設定: 空文字は「デフォルト維持」(override しない)
@@ -137,7 +159,21 @@ export function PhaseDialog({
               {t("phase.anchorScene")}{" "}
               <span className="text-destructive">*</span>
             </label>
-            <SceneSelector value={anchorNodeId} onChange={setAnchorNodeId} />
+            <SceneSelector
+              value={anchorNodeId}
+              onChange={setAnchorNodeId}
+              filter={
+                isSelectableAnchor ? (n) => isSelectableAnchor(n.id) : undefined
+              }
+            />
+            {savedAnchorMissing && anchorNodeId === null && (
+              <p
+                data-testid="phase-dialog-anchor-missing"
+                className="mt-1 text-[11px] text-destructive"
+              >
+                {t("phase.anchorSceneMissing")}
+              </p>
+            )}
             <p className="mt-1 text-[11px] text-muted-foreground">
               {t("phase.anchorSceneDesc")}
             </p>

@@ -119,7 +119,9 @@ export interface ReadInputs {
    * not in the order). The Codex side decides the same way for null and for
    * an id the reading order does not have: no phase applies, and
    * `decideCodexAiVisibility` hides an entry that one of its phases hides (fail
-   * closed; DR-MP4-41, which also covers "no scene"). So passing the normalized
+   * closed; DR-MP4-41, which also covers "no scene"; DR-MP4-46 additionally
+   * hides an entry whose hiding phase lost its anchor scene, whatever the scene
+   * is). So passing the normalized
    * null or the raw id gives the same Codex result; only the fallback reason
    * differs, which the decision does not read (K-20 (1) for Codex, PR-8a,
    * DR-MP4-39).

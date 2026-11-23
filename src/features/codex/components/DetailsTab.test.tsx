@@ -646,3 +646,91 @@ describe("DetailsTab Phase preview", () => {
     expect(phaseState.updatePhase).not.toHaveBeenCalled();
   });
 });
+
+describe("DetailsTab: 起点を失った「AI に見せない」Phase のお知らせ（DR-MP4-46、Q-G3）", () => {
+  const orphan = {
+    ...phase,
+    id: "phase-orphan",
+    label: "正体の露見",
+    anchorNodeId: null,
+    contextModeOverride: "hidden",
+  };
+  const setPhases = (...rows: object[]) => {
+    phaseState.phasesByEntry = { "entry-1": rows } as never;
+  };
+  const renderTab = (
+    props: Partial<React.ComponentProps<typeof DetailsTab>> = {},
+    codexEntry: CodexEntry = entry,
+  ) =>
+    render(
+      <DetailsTab
+        entry={codexEntry}
+        summary={codexEntry.summary ?? ""}
+        onSummaryChange={vi.fn()}
+        onContentChange={vi.fn()}
+        {...props}
+      />,
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    codexState.previewPhaseByEntry = {};
+    setPhases({ ...orphan });
+    phaseState.loadPhasesForEntry.mockResolvedValue(undefined);
+    useEditorSessionStore.getState().resetForProject();
+    useExternalWriteStore.getState().clear();
+  });
+
+  afterEach(async () => {
+    setPhases({ ...phase });
+    useExternalWriteStore.getState().clear();
+    await flushAllAutoSaves().catch(() => {});
+    useEditorSessionStore.getState().resetForProject();
+  });
+
+  it("お知らせが role=status で出て、ボタンでタイムラインタブへ切り替えられる", () => {
+    const onOpenTimeline = vi.fn();
+    renderTab({ onOpenTimeline });
+    const notice = screen.getByTestId("orphaned-hiding-phase-notice-details");
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice).toHaveTextContent("「正体の露見」");
+    expect(notice).toHaveTextContent(
+      "『タイムライン』タブで起点の場面を選び直すか、Phase を削除してください。",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "タイムラインを開く" }));
+    expect(onOpenTimeline).toHaveBeenCalledOnce();
+  });
+
+  it("起点が読む順にある hidden Phase、起点を失った suppress Phase、Codex 自身が hidden のときは出ない", () => {
+    setPhases({ ...orphan, anchorNodeId: "scene-1" });
+    const first = renderTab();
+    expect(
+      screen.queryByTestId("orphaned-hiding-phase-notice-details"),
+    ).not.toBeInTheDocument();
+    first.unmount();
+
+    setPhases({ ...orphan, contextModeOverride: "suppress" });
+    const second = renderTab();
+    expect(
+      screen.queryByTestId("orphaned-hiding-phase-notice-details"),
+    ).not.toBeInTheDocument();
+    second.unmount();
+
+    setPhases({ ...orphan });
+    renderTab({}, { ...entry, contextMode: "hidden" });
+    expect(
+      screen.queryByTestId("orphaned-hiding-phase-notice-details"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Codex 自身が hidden でも、有効な場面に公開（always）の Phase があれば、孤児の hidden の Phase がそれを止めているのでお知らせが出る", () => {
+    setPhases(
+      { ...phase, id: "phase-open", contextModeOverride: "always" },
+      { ...orphan },
+    );
+    renderTab({}, { ...entry, contextMode: "hidden" });
+    expect(
+      screen.getByTestId("orphaned-hiding-phase-notice-details"),
+    ).toHaveTextContent("「正体の露見」");
+  });
+});

@@ -247,3 +247,137 @@ describe("PhaseDialog: AI 露出設定が主役化されている", () => {
     expect(select.value).toBe("hidden");
   });
 });
+
+describe("PhaseDialog: 起点の場面を失った Phase の編集（DR-MP4-46、回復の穴）", () => {
+  const orphan = {
+    id: "p-orphan",
+    entryId: "entry-1",
+    label: "孤児",
+    anchorNodeId: "scene-gone",
+    summaryOverride: null,
+    contentOverride: null,
+    contextModeOverride: "hidden",
+    version: 0,
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const renderDialog = (
+    props: Partial<React.ComponentProps<typeof PhaseDialog>> = {},
+  ) =>
+    render(
+      <PhaseDialog
+        entryId="entry-1"
+        phase={orphan}
+        onClose={() => {}}
+        resolveCurrentContent={() => "{}"}
+        {...props}
+      />,
+    );
+  const anchorSelect = () =>
+    document.querySelectorAll("select")[0] as HTMLSelectElement;
+
+  // 直す前は、この Phase を場面を選び直さないまま保存でき（updatePhase が
+  // anchorNodeId: "scene-gone" で呼ばれ）、起点が失われたまま残った（実行で確認済み）。
+  it("起点が選択肢に無い Phase は、場面を選び直すまで保存できず、理由が欄の下に出る", () => {
+    renderDialog();
+    expect(screen.getByRole("button", { name: /保存|Save/ })).toBeDisabled();
+    expect(anchorSelect().value).toBe("");
+    expect(screen.getByTestId("phase-dialog-anchor-missing")).toHaveTextContent(
+      "この Phase の起点の場面は見つかりません。場面を選び直してください（アーカイブ中の場面なら、先にアーカイブを解除すると元の起点が使えます。ここで保存すると、元の起点は置き換わります）。",
+    );
+  });
+
+  it("場面を選び直すと保存でき、その場面で更新される。理由は消える", async () => {
+    renderDialog();
+    fireEvent.change(anchorSelect(), { target: { value: "scene-1" } });
+    expect(
+      screen.queryByTestId("phase-dialog-anchor-missing"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /保存|Save/ }));
+    await waitFor(() => {
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "p-orphan",
+        expect.objectContaining({ anchorNodeId: "scene-1" }),
+      );
+    });
+  });
+
+  it("起点が今も選べる Phase は今までどおり（初期値のまま保存でき、理由は出ない）", async () => {
+    renderDialog({ phase: { ...orphan, anchorNodeId: "scene-1" } });
+    expect(anchorSelect().value).toBe("scene-1");
+    expect(
+      screen.queryByTestId("phase-dialog-anchor-missing"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /保存|Save/ }));
+    await waitFor(() => {
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "p-orphan",
+        expect.objectContaining({ anchorNodeId: "scene-1" }),
+      );
+    });
+  });
+
+  it("tree の nodes がまだ空のあいだは、起点が無いとは判断せず、保存済みの起点を初期値のままにする", () => {
+    mockTreeState.nodes = [];
+    try {
+      renderDialog();
+      expect(
+        screen.queryByTestId("phase-dialog-anchor-missing"),
+      ).not.toBeInTheDocument();
+    } finally {
+      mockTreeState.nodes = [
+        { id: "scene-1", title: "シーン1", nodeType: "scene" },
+      ];
+    }
+  });
+
+  it("isSelectableAnchor を渡すと、選べる場面を読む順にあるものだけに絞り、絞りから外れた起点は初期値にしない", () => {
+    mockTreeState.nodes = [
+      { id: "scene-1", title: "シーン1", nodeType: "scene" },
+      { id: "scene-arch", title: "しまった場面", nodeType: "scene" },
+    ];
+    try {
+      renderDialog({
+        phase: { ...orphan, anchorNodeId: "scene-arch" },
+        isSelectableAnchor: (id) => id === "scene-1",
+      });
+      const options = [...anchorSelect().querySelectorAll("option")].map(
+        (o) => o.value,
+      );
+      expect(options).toEqual(["", "scene-1"]);
+      expect(anchorSelect().value).toBe("");
+      expect(screen.getByRole("button", { name: /保存|Save/ })).toBeDisabled();
+      expect(
+        screen.getByTestId("phase-dialog-anchor-missing"),
+      ).toBeInTheDocument();
+    } finally {
+      mockTreeState.nodes = [
+        { id: "scene-1", title: "シーン1", nodeType: "scene" },
+      ];
+    }
+  });
+
+  it("isSelectableAnchor が無ければ全ての場面が並ぶ（既定の挙動）", () => {
+    mockTreeState.nodes = [
+      { id: "scene-1", title: "シーン1", nodeType: "scene" },
+      { id: "scene-2", title: "シーン2", nodeType: "scene" },
+      { id: "folder-1", title: "章", nodeType: "folder" },
+    ];
+    try {
+      renderDialog({ phase: null });
+      const options = [...anchorSelect().querySelectorAll("option")].map(
+        (o) => o.value,
+      );
+      expect(options).toEqual(["", "scene-1", "scene-2"]);
+    } finally {
+      mockTreeState.nodes = [
+        { id: "scene-1", title: "シーン1", nodeType: "scene" },
+      ];
+    }
+  });
+});
