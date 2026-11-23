@@ -8,6 +8,7 @@ import {
   createGpuChannelFailureScanner,
   describeRecoveredPerformanceRetry,
   describeStartedPerformanceRetry,
+  measureProjectOpen,
   TRANSIENT_PERFORMANCE_RETRY_POLICY,
   runRuntimePerformanceWithRetry,
 } from "../electron/scripts/runtime-performance-retry.mjs";
@@ -542,8 +543,10 @@ test("a slow start in another segment is not retried even when the first frame d
     assert.equal(decision.eligible, false, reason);
     assert.equal(decision.reason, reason);
   }
-  // ci.yml 43889839188 (#921): projectOpenMs failed with coldStartMs, so the
-  // rest of the start was not normal.
+  // ci.yml 43889839188 (#921): projectOpenMs failed with coldStartMs. Since
+  // DR-PIS-10 a first frame stall alone no longer fails projectOpenMs (it
+  // starts at the first frame), so a projectOpenMs failure that is still
+  // reported means the rest of the start was not normal: keep rejecting it.
   for (const extra of ["projectOpenMs", "frameP95Ms"]) {
     const decision = classifyTransientPerformanceRetry(
       buildColdStartMetrics({ coldStartMs: 7_167, firstFrameMs: 7_163, bootstrapMs: 280, offsets: [] }),
@@ -769,4 +772,118 @@ test("smoke wires the GPU channel evidence into the measured cold start read", a
     const at = source.indexOf(assignment);
     assert.ok(at > coldStart && at < evidence, assignment);
   }
+});
+
+test("measureProjectOpen starts at the later of the open start and the first frame (DR-PIS-10)", () => {
+  const near = (actual, expected) =>
+    assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} vs ${expected}`);
+  // A first frame stall (ci.yml 45008551525 attempt 1): the first frame is
+  // later than the open start, so the interval starts at the first frame.
+  const stalled = measureProjectOpen({
+    workspaceOpenStartMs: 335,
+    firstFrameMs: 4_650.2,
+    editorReadyAtMs: 335 + 4_476.8,
+  });
+  near(stalled.projectOpenMs, 4_811.8 - 4_650.2);
+  near(stalled.projectOpenTotalMs, 4_476.8);
+  assert.equal(stalled.startedAtFirstFrame, true);
+  // Healthy (attempt 2): the open starts after the first frame, no change.
+  const healthy = measureProjectOpen({
+    workspaceOpenStartMs: 309.6,
+    firstFrameMs: 269.5,
+    editorReadyAtMs: 309.6 + 1_044.3,
+  });
+  near(healthy.projectOpenMs, 1_044.3);
+  near(healthy.projectOpenTotalMs, 1_044.3);
+  assert.equal(healthy.startedAtFirstFrame, false);
+  // A first frame exactly at the open start changes nothing.
+  const same = measureProjectOpen({
+    workspaceOpenStartMs: 300,
+    firstFrameMs: 300,
+    editorReadyAtMs: 1_300,
+  });
+  assert.equal(same.projectOpenMs, 1_000);
+  assert.equal(same.startedAtFirstFrame, false);
+});
+
+test("measureProjectOpen is fail-closed on a missing or invalid first frame and on invalid inputs (DR-PIS-10)", () => {
+  // The first frame cannot be trusted: fall back to the previous definition
+  // (never smaller), never to a smaller value that would pass the gate.
+  for (const firstFrameMs of [null, undefined, Number.NaN, Infinity, -1, "4650", 1_300.1]) {
+    const measured = measureProjectOpen({
+      workspaceOpenStartMs: 300,
+      firstFrameMs,
+      editorReadyAtMs: 1_300,
+    });
+    assert.equal(measured.projectOpenMs, 1_000, String(firstFrameMs));
+    assert.equal(measured.projectOpenTotalMs, 1_000, String(firstFrameMs));
+    assert.equal(measured.startedAtFirstFrame, false, String(firstFrameMs));
+  }
+  // A missing start, or an end before the start, yields no value at all (the
+  // smoke run fails instead of passing a missing or negative number).
+  for (const input of [
+    { workspaceOpenStartMs: null, firstFrameMs: 10, editorReadyAtMs: 1_300 },
+    { workspaceOpenStartMs: Number.NaN, firstFrameMs: 10, editorReadyAtMs: 1_300 },
+    { workspaceOpenStartMs: -5, firstFrameMs: 10, editorReadyAtMs: 1_300 },
+    { workspaceOpenStartMs: 300, firstFrameMs: 10, editorReadyAtMs: null },
+    { workspaceOpenStartMs: 300, firstFrameMs: 10, editorReadyAtMs: Number.NaN },
+    { workspaceOpenStartMs: 300, firstFrameMs: 10, editorReadyAtMs: 299 },
+  ]) {
+    const measured = measureProjectOpen(input);
+    assert.equal(measured.projectOpenMs, null, JSON.stringify(input));
+    assert.equal(measured.projectOpenTotalMs, null, JSON.stringify(input));
+  }
+  // The result is never negative and never above the previous definition.
+  for (const firstFrameMs of [0, 100, 300, 800, 1_300, 5_000]) {
+    const measured = measureProjectOpen({
+      workspaceOpenStartMs: 300,
+      firstFrameMs,
+      editorReadyAtMs: 1_300,
+    });
+    assert.ok(measured.projectOpenMs >= 0);
+    assert.ok(measured.projectOpenMs <= measured.projectOpenTotalMs);
+  }
+});
+
+test("smoke reads the three project open values in one renderer read and records the total without gating (DR-PIS-10)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(
+    new URL("../electron/scripts/smoke.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const projectOpenTiming = await page.evaluate(");
+  const end = source.indexOf("performanceMetrics.projectOpenTotalMs =", start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /grimodex:renderer-first-frame/);
+  assert.match(block, /editorReadyAt: performance\.now\(\)/);
+  assert.match(block, /measureProjectOpen\(\{/);
+  assert.match(block, /performanceMetrics\.projectOpenMs = projectOpen\.projectOpenMs;/);
+  // The argument mapping is pinned so a swap (for example firstFrameMs taken
+  // from startedAt) cannot pass, and a missing start mark still throws before
+  // the measure (it must not fail open).
+  assert.match(block, /startedAt: lastStart\(markName\)/);
+  assert.match(block, /firstFrameAt: lastStart\("grimodex:renderer-first-frame"\)/);
+  assert.match(block, /workspaceOpenStartMs: projectOpenTiming\.startedAt,/);
+  assert.match(block, /firstFrameMs: projectOpenTiming\.firstFrameAt,/);
+  assert.match(block, /editorReadyAtMs: projectOpenTiming\.editorReadyAt,/);
+  assert.match(
+    block,
+    /projectOpenTiming\.startedAt == null[\s\S]*throw new Error[\s\S]*measureProjectOpen\(\{/,
+  );
+  assert.match(
+    block,
+    /projectOpen\.projectOpenMs == null[\s\S]*throw new Error[\s\S]*performanceMetrics\.projectOpenMs =/,
+  );
+  // Whether the first frame was usable (false = fell back to the total) is
+  // recorded, so a first frame mark taken after the read is visible.
+  assert.match(
+    source,
+    /performanceMetrics\.projectOpenStartedAtFirstFrame =\s*projectOpen\.startedAtFirstFrame;/,
+  );
+  const budget = await readFile(
+    new URL("./runtime-performance-budget.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(budget, /metrics\.projectOpenTotalMs/);
 });

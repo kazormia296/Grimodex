@@ -12,6 +12,21 @@ import {
 } from "../electron/scripts/runtime-performance-fixture.mjs";
 import { APP_MEMORY_MEASUREMENT_BY_PLATFORM } from "../electron/scripts/process-memory.mjs";
 
+// coldStartMs / projectOpenMs (4,000 / 3,000 ms): this gate is a barrier for
+// LARGE regressions only, i.e. more than about 2-3x the healthy value
+// (healthy coldStartMs is ~1.2-1.9 s, and the same code varies 1.19-8.37 s on
+// hosted runners, so the noise is larger than a 30% signal). A regression of
+// roughly 30% passes; detecting it is a separate design (DR-PIS-10, 2026-11-23).
+// projectOpenMs starts at the later of the workspace open start and the first
+// frame (DR-PIS-10), so a first frame stall shows only in coldStartMs.
+// projectOpenTotalMs (the previous definition) is recorded but never gated.
+// Accepted constraint: when the open start is before a late first frame, an
+// open handler that blocks JS before the first frame cannot be told from a GPU
+// / compositor stall, so projectOpenMs does not see it and only coldStartMs
+// (4,000 ms) guards that band. The effective bound on the whole open there moves
+// from about 3.0 s to about 3.7 s (4,000 minus boot, about +0.7 s). Detecting it
+// (a renderer long task signal) is a separate design. Pinned by a test.
+// The values below are unchanged by DR-PIS-10.
 const BASE_RUNTIME_BUDGETS = Object.freeze({
   coldStartMs: 4_000,
   projectOpenMs: 3_000,
