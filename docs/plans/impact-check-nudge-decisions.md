@@ -33,7 +33,7 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 | `none` | 差分なし（空白・全半角・別名の順だけの違いは `cmp()` が無視）。証明の無い Phase 削除だけで、その Phase を除くと差分なしの場合も含む | 出さない | `no-change` |
 | （hook の条件） | AI gate が `enabled` でない／影響チェックの実行中／読みの失敗／項目が無い | 出さない（表示なし。toast も出さない）。gate が `hidden` ならボタンごと出ない（従来どおり） | — |
 
-写し元：`runImpactReview.ts` の `contextMode ?? "mentioned"`、`hasRestrictedPhases ?? false`、`snapshot.restrictedPhaseIds`、
+写し元：`runImpactReview.ts` の門の値（`contextMode`・`hasRestrictedPhases`。#1048 以降の run は既定値を持たず、欠落を公開として補わずに門で止める。第 11 節）、`snapshot.restrictedPhaseIds`、
 `effectiveRestrictedPhaseIds`（現在制限中の Phase ∪ baseline の restrictedPhaseIds のうち現在無いもの ∪ baseline の phases のうち現在無く `visibleDeletedPhaseIds` に無いもの）、
 `allPhaseIds ?? phases.map(...)` の fallback、`redactRestrictedPhases`、`canIncludeResolvedCodexContext(mode, "current-mention")`（同じ関数を import）。
 
