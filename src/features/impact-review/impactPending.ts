@@ -5,7 +5,10 @@
  * 規則は `runImpactReview`（`runImpactReview.ts`）の実行時の判定を字面どおり写す
  * （押しても止まる項目を知らせないため）。`runImpactReview.ts` は import しない
  * （AI 経路への依存と循環を避ける。規則が 2 か所になる点は parity 試験
- * `impactPending.parity.test.ts` で固定する）。
+ * `impactPending.parity.test.ts` で固定する）。写すのは Phase の redact だけでなく門
+ * （contextMode・hasRestrictedPhases）の既定値も含む。run 側で既定値を外す・足す変更は、
+ * ここへも同時に写す（#1048 が run の `?? "mentioned"` を外したとき、この関数の既定値が
+ * 取り残されて parity 試験が落ちた。DR-INN-1 の取り込みの記録）。
  *
  * 出さない（`pending` 以外）理由:
  *  - `unchecked`: baseline が無い／値が一度も確認されていない（制限の印だけの）baseline。
@@ -110,11 +113,10 @@ export function deriveImpactPending(input: {
   if (baseline === null || hasNoReviewedValues(baseline)) {
     return { state: "unchecked" };
   }
-  const {
-    snapshot,
-    contextMode = "mentioned",
-    hasRestrictedPhases = false,
-  } = built;
+  // run（`runImpactReview`）と同じく、contextMode の欠落を公開（"mentioned"）として補わない
+  // （DR-MP4-44）。欠落・不明な値は門が閉じる側（gated）に倒れる。hasRestrictedPhases も run と
+  // 同じく型で必須にしており、runtime の既定値は持たない（欠落は falsy のまま）。
+  const { snapshot, contextMode, hasRestrictedPhases } = built;
 
   const currentHasRestrictedPhases =
     hasRestrictedPhases || (snapshot.restrictedPhaseIds ?? []).length > 0;

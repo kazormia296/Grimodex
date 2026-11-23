@@ -91,6 +91,9 @@ function built(
       expected_lineage: "l",
       expected_seq: "1",
     },
+    // CodexSnapshotResult は contextMode・hasRestrictedPhases が必須（#1048）。既定は公開・制限なし。
+    contextMode: "mentioned",
+    hasRestrictedPhases: false,
     ...extra,
   };
 }

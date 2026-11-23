@@ -88,6 +88,8 @@ interface Case {
   baseline: CodexSnapshot | null;
   snapshot: CodexSnapshot;
   contextMode?: string;
+  /** true なら built から contextMode のキー自体を外す（型を越えた runtime の欠落。DR-MP4-44）。 */
+  omitContextMode?: boolean;
   hasRestrictedPhases?: boolean;
   expected: ImpactPending["state"];
   changeCount?: number;
@@ -151,6 +153,13 @@ const cases: Case[] = [
     baseline: base,
     snapshot: aged(base),
     contextMode: "weird",
+    expected: "gated",
+  },
+  {
+    name: "contextMode が欠落（公開として補わない。差分あり）",
+    baseline: base,
+    snapshot: aged(base),
+    omitContextMode: true,
     expected: "gated",
   },
   {
@@ -226,9 +235,12 @@ function arrange(c: Case) {
     entryType: "character",
     entryName: "アリス",
     sourceRevision,
-    ...(c.contextMode !== undefined ? { contextMode: c.contextMode } : {}),
-    ...(c.hasRestrictedPhases ? { hasRestrictedPhases: true } : {}),
+    contextMode: c.contextMode ?? "mentioned",
+    hasRestrictedPhases: c.hasRestrictedPhases ?? false,
   };
+  // contextMode・hasRestrictedPhases は #1048 で必須（run は欠落を公開として補わず門で止める）。
+  // 既定の fixture は公開・制限なしで揃え、欠落は omitContextMode の case だけが作る。
+  if (c.omitContextMode) delete (built as Partial<typeof built>).contextMode;
   vi.mocked(buildCodexSnapshot).mockResolvedValue(built);
   vi.mocked(getBaseline).mockResolvedValue(c.baseline);
   return built;

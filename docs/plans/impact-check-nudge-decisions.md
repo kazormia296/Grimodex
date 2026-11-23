@@ -60,6 +60,8 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 `effectiveRestrictedPhaseIds` の算出は `runImpactReview.ts` の inline で、外から呼べない。この lane は `runImpactReview.ts` を変えない（lane C と重ならないため）ので、
 **同じ規則を `impactPending.ts` に別に書き**、`impactPending.parity.test.ts` が**実物の `runImpactReview`** と突き合わせて一致を固定する。
 恒久策：#1048 の merge の後に、run の redact を純関数へ切り出して `runImpactReview.ts` と `impactPending.ts` で共有する（別 PR）。
+**共有する範囲は redact だけでは足りない**：#1048 の取り込みで実際にずれたのは redact の規則でなく、門の既定値（`contextMode`・`hasRestrictedPhases`）だった（第 11 節）。
+共有する純関数は、redact と `effectiveRestrictedPhaseIds` に加えて、門の判定（`contextMode` が `current-mention` を満たすか・`currentHasRestrictedPhases`）まで含める。
 
 ## 4. 検討書の伺う点（Q1〜Q8）の既定とした回答
 
@@ -202,3 +204,27 @@ P1 なし。次を直した（コミットは枝の最後）。
   `redactRestrictedPhases` を写して同じ件数を数える（第 2 節）。parity 試験の 3 ケースの期待を `gated` から `pending`（run の件数と一致）へ反転した（自分の追加分）。
 - **P2-b**：store の `complete` と `onDone` の間に古い baseline を読んで「N 件」が出続ける問題を、実行終了直後は読まずに `onDone`／`onError` の合図を待つ形で直した（5.2、6 の 9）。
 - **P3**：1 行にも `refreshKey`（`entry.updatedAt`）を渡す／sr-only に括弧／5.1 の一文／§1 の参照／残る制限の数／静的 import の試験／`unchecked` の注意。
+
+## 11. #1048（DR-MP4-44）の取り込みで割れたこと（2026-11-24）
+
+この枝は #1048 より前の master を基点にしていた。master（`dd4c95330`）を取り込む（衝突なし）と、次の 2 つが落ちた。
+
+1. `tsc --noEmit`：`CodexSnapshotResult.contextMode`・`hasRestrictedPhases` が必須になった（#1048）のに、`ImpactCheckButton.test.tsx` の `built` fixture が省略していた。
+2. `impactPending.parity.test.ts` の 10 件：pending を期待する case で「`narrowCandidateScenes` が呼ばれていない」。
+
+**診断（訂正）**：当初は「`deriveImpactPending` と #1048 後の `runImpactReview` の restricted Phase の扱いが食い違う」と読んだが、**誤り**だった。
+parity 試験の `arrange` は `contextMode` を明示した case にしか値を載せず、#1048 が run の `?? "mentioned"`・`?? false` を外した（欠落を公開として補わず、門で止める）ので、
+fixture に値の無い case で run が `no-candidates` に止まっていた。`changeCount` の一致（redact の規則）は通っていた。
+同時に、`deriveImpactPending` 側には同じ既定値（`contextMode = "mentioned"`・`hasRestrictedPhases = false`）が残っていた。**run が外した fail-open の既定値の取り残し**である。
+
+**直し**（`runImpactReview.ts` は触らない。AI に渡る内容・止まる条件は変わらない）：
+
+- `impactPending.ts`：2 つの既定値を外す（#1048 ② の写し）。`contextMode` の欠落は `gated`（context-mode）に倒れ、run と同じ fail-closed になる。header に「門の既定値も写す」と明記した。
+- parity 試験：`arrange` が公開・制限なしの値を載せる。「contextMode が runtime で欠落」の case（run も知らせも `gated`）を足した。
+- `impactPending.test.ts`：fail-open を固定していた「contextMode 未指定は mentioned として pending」を、「欠落は `gated`（context-mode）」に反転した。`built` helper は既定値を持つ。
+- `ImpactCheckButton.test.tsx`：`built` fixture に公開・制限なしの既定値を足した。
+
+**変異の確認**：`impactPending.ts` の既定値を一時的に戻すと、追加した 2 件（unit・parity）だけが赤になる。戻して `cmp` で一致を確認した。
+
+**残る（別 PR）**：run の redact と門を純関数に切り出して共有する恒久策（§3.1）。範囲は redact だけでなく門を含める。
+

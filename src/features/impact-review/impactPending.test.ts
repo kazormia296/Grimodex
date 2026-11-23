@@ -15,11 +15,17 @@ const base: CodexSnapshot = {
   restrictedPhaseIds: [],
 };
 
+// CodexSnapshotResult は contextMode・hasRestrictedPhases が必須（#1048）。既定は公開・制限なし。
 function built(
   snapshot: CodexSnapshot,
   extra: { contextMode?: string; hasRestrictedPhases?: boolean } = {},
 ) {
-  return { snapshot, ...extra };
+  return {
+    snapshot,
+    contextMode: "mentioned",
+    hasRestrictedPhases: false,
+    ...extra,
+  };
 }
 
 describe("deriveImpactPending: baseline の有無", () => {
@@ -152,10 +158,15 @@ describe("deriveImpactPending: 門（run が no-candidates で止める条件）
     },
   );
 
-  it("contextMode 未指定は mentioned として pending", () => {
+  it("contextMode が欠落（型を越えた runtime の値）は公開として補わず gated（run と同じ fail-closed。DR-MP4-44）", () => {
+    const missing = built(changed) as Partial<ReturnType<typeof built>>;
+    delete missing.contextMode;
     expect(
-      deriveImpactPending({ baseline: base, built: built(changed) }),
-    ).toEqual({ state: "pending", changeCount: 1 });
+      deriveImpactPending({
+        baseline: base,
+        built: missing as ReturnType<typeof built>,
+      }),
+    ).toEqual({ state: "gated", reason: "context-mode" });
   });
 
   it("hasRestrictedPhases は gated", () => {
