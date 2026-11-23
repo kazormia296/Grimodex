@@ -9,10 +9,11 @@
  * read core name in `from` and in joins (PR-4: the tools of groups B1 and B2; PR-6: the rows of the hidden and
  * chronicle-secret inputs; PR-5a: the search tools of group B3; PR-5b: the
  * foreshadow tools of group B4; PR-7a: the chronicle tools of group B6; PR-8a:
- * the Codex visibility decision).
+ * the Codex visibility decision; PR-10a/10b: the Codex detail tables of the visibility decision and of
+ * `get_codex_entry`).
  * `readDomain/core/core.static.test.ts` は core の source を走査し、実際の参照表がこの一覧と
- * 一致することを検査する。`codex_detail_definitions` だけは、PR-10b で移す entry tool 用に
- * PR-10a で先行許可する。
+ * 厳密に一致することを検査する（例外は無い。PR-10a が先行許可した `codex_detail_definitions` は、
+ * PR-10b で `get_codex_entry` の core が実際に読むようになったので、例外を外した）。
  *   - the manuscript tree: `tree_nodes` (the chapter and scene tools, and the
  *     scene bodies);
  *   - the codex tags: `codex_tags`, `codex_entry_tags` (`list_codex_tags`);
