@@ -9,6 +9,7 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { cn } from "@/lib/utils";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
@@ -16,7 +17,11 @@ import {
   deleteProjectSnapshot,
   type ProjectSnapshotMeta,
 } from "./projectSnapshotApi";
+import type { RestoreLossNotice } from "./projectSnapshotNative";
 import { RevisionRowSkeletonList } from "@/components/ui/skeleton-patterns";
+import { RestoreLossSummary } from "./RestoreLossSummary";
+import { describeRestoreLoss } from "./restoreLossNotices";
+import { useRestoreLossPreview } from "./useRestoreLossPreview";
 import {
   RESTORE_SCOPES,
   fullRestoreScopeSet,
@@ -62,6 +67,14 @@ function formatTimestamp(iso: string): string {
   });
 }
 
+/**
+ * 確認・結果のダイアログは、外れる件数が増えると縦にスクロールする。デスクトップ幅では
+ * 操作の行を下に固定し、件数が多くても「復元する」・「OK」が最初から見えるようにする
+ * （phone は全画面で、操作の行はスクロールで届く）。`DialogContent` の `p-4` の下端まで
+ * 背景を伸ばすために、下の余白を負の margin で打ち消す。
+ */
+const STICKY_DIALOG_FOOTER = "sticky bottom-0 -mb-4 bg-popover pb-4 pt-2";
+
 export function ProjectSnapshotModal({
   open,
   onClose,
@@ -83,9 +96,14 @@ export function ProjectSnapshotModal({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [restoreResult, setRestoreResult] = useState<{
+    dropped: RestoreLossNotice[];
+    noOp: boolean;
+  } | null>(null);
   const [restoreScopes, setRestoreScopes] = useState<Set<RestoreScope>>(() =>
     fullRestoreScopeSet(),
   );
+  const restoreResultHandledRef = useRef(false);
   const restoreActionRef = useRef<HTMLButtonElement>(null);
   const deleteActionRef = useRef<HTMLButtonElement>(null);
 
@@ -97,22 +115,39 @@ export function ProjectSnapshotModal({
       setCreateDesc("");
       setConfirmRestoreId(null);
       setConfirmDeleteId(null);
+      setRestoreResult(null);
       setRestoreScopes(fullRestoreScopeSet());
       return;
     }
+    restoreResultHandledRef.current = false;
     loadSnapshots();
     // loadSnapshots は同コンポーネント内のローカル関数で
     // open が立ち上がる初回ロードでのみ呼びたい。再実行不要。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Reset the scope selection each time a different snapshot's confirm
-  // dialog opens, so prior choices don't bleed across snapshots.
+  // 結果の画面が出ている間に、親が閉じた（`open` が false）・外した（unmount）ときも、
+  // 再読み込みを 1 回だけ行う。復元で DB は書き換わっているので、再読み込みせずに
+  // 編集へ戻してはいけない。本番の親は条件付き render で、閉じるのは unmount。
+  const restoreResultRef = useRef(restoreResult);
   useEffect(() => {
-    if (confirmRestoreId) {
-      setRestoreScopes(fullRestoreScopeSet());
-    }
-  }, [confirmRestoreId]);
+    restoreResultRef.current = restoreResult;
+  }, [restoreResult]);
+
+  useEffect(() => {
+    if (open || !restoreResult || restoreResultHandledRef.current) return;
+    restoreResultHandledRef.current = true;
+    void reloadRendererAfterReleasingGpuSurfaces();
+  }, [open, restoreResult]);
+
+  useEffect(() => {
+    return () => {
+      if (restoreResultRef.current && !restoreResultHandledRef.current) {
+        restoreResultHandledRef.current = true;
+        void reloadRendererAfterReleasingGpuSurfaces();
+      }
+    };
+  }, []);
 
   async function loadSnapshots() {
     setIsLoading(true);
@@ -165,6 +200,9 @@ export function ProjectSnapshotModal({
       const result = await restoreProjectSnapshot(snap.id, snap.name, {
         scopes: snap.isStructural ? restoreScopes : undefined,
       });
+      // 復元で DB が置き換わった。復元前の履歴（Ctrl+Z・Ctrl+Y）を、復元後の DB へ
+      // 再生させない。結果の画面は OK まで再読み込みを遅らせるので、その間も効く。
+      useGlobalHistoryStore.getState().clear();
       toast.success(
         t("snapshot.restoreSuccess", {
           name: snap.name,
@@ -177,6 +215,13 @@ export function ProjectSnapshotModal({
             count: countSkipped(result.skipped),
           }),
         );
+      }
+      if (describeRestoreLoss(result.dropped).total > 0) {
+        restoreResultHandledRef.current = false;
+        setRestoreResult({ dropped: result.dropped, noOp: result.noOp });
+        setConfirmRestoreId(null);
+        setSelectedId(null);
+        return;
       }
       setConfirmRestoreId(null);
       setSelectedId(null);
@@ -198,6 +243,11 @@ export function ProjectSnapshotModal({
       else next.add(scope);
       return next;
     });
+  }
+
+  function openRestoreConfirm(snapshotId: string): void {
+    setRestoreScopes(fullRestoreScopeSet());
+    setConfirmRestoreId(snapshotId);
   }
 
   async function handleDeleteConfirm() {
@@ -224,11 +274,31 @@ export function ProjectSnapshotModal({
   const confirmDeleteSnap = confirmDeleteId
     ? snapshots.find((s) => s.id === confirmDeleteId)
     : null;
+  const lossPreview = useRestoreLossPreview(
+    confirmRestoreId,
+    confirmRestoreSnap?.isStructural === true,
+    restoreScopes,
+    open && confirmRestoreId !== null && !isRestoring && restoreResult === null,
+  );
+  const lossPreviewSummary = describeRestoreLoss(lossPreview.notices);
+  const restoreResultSummary = restoreResult
+    ? describeRestoreLoss(restoreResult.dropped)
+    : null;
+
+  function finishRestoreResult(): void {
+    if (!restoreResult || restoreResultHandledRef.current) return;
+    restoreResultHandledRef.current = true;
+    setRestoreResult(null);
+    setConfirmRestoreId(null);
+    setSelectedId(null);
+    onClose();
+    void reloadRendererAfterReleasingGpuSurfaces();
+  }
 
   return (
     <>
       <ResponsiveAlertDialog
-        open={open && confirmRestoreId !== null}
+        open={open && confirmRestoreId !== null && restoreResult === null}
         onClose={() => {
           if (!isRestoring) setConfirmRestoreId(null);
         }}
@@ -288,10 +358,27 @@ export function ProjectSnapshotModal({
                 ℹ {t("snapshot.restoreScopeHint")}
               </p>
             )}
+            <RestoreLossSummary
+              mode="preview"
+              notices={lossPreview.notices}
+              status={lossPreview.status}
+              heading={t(
+                lossPreview.status === "ready" &&
+                  lossPreviewSummary.lostCount === 0 &&
+                  lossPreviewSummary.resetCount > 0
+                  ? "snapshot.loss.previewResetHeading"
+                  : "snapshot.loss.previewHeading",
+              )}
+              note={t("snapshot.loss.previewNote")}
+            />
           </div>
         )}
 
-        <DialogFooter className={cn(phoneWorkspace && "grid grid-cols-1")}>
+        <DialogFooter
+          className={cn(
+            phoneWorkspace ? "grid grid-cols-1" : STICKY_DIALOG_FOOTER,
+          )}
+        >
           <button
             type="button"
             className={cn(
@@ -321,6 +408,41 @@ export function ProjectSnapshotModal({
               : t("snapshot.restoreConfirm")}
           </button>
         </DialogFooter>
+      </ResponsiveAlertDialog>
+      <ResponsiveAlertDialog
+        open={open && restoreResult !== null}
+        onClose={finishRestoreResult}
+        title={t("snapshot.loss.resultHeading")}
+        description={
+          restoreResultSummary?.lostCount === 0
+            ? t("snapshot.loss.resultResetOnlyDescription")
+            : restoreResult?.noOp
+              ? t("snapshot.loss.resultNoOp")
+              : t("snapshot.loss.resultDescription")
+        }
+        className="w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto"
+      >
+        {restoreResult && (
+          <>
+            <RestoreLossSummary mode="result" notices={restoreResult.dropped} />
+            <DialogFooter
+              className={cn(
+                phoneWorkspace ? "grid grid-cols-1" : STICKY_DIALOG_FOOTER,
+              )}
+            >
+              <button
+                type="button"
+                className={cn(
+                  "rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-colors hover:bg-primary/90",
+                  phoneWorkspace && "min-h-11 w-full",
+                )}
+                onClick={finishRestoreResult}
+              >
+                {t("snapshot.loss.resultOk")}
+              </button>
+            </DialogFooter>
+          </>
+        )}
       </ResponsiveAlertDialog>
       <ResponsiveAlertDialog
         open={open && confirmDeleteId !== null}
@@ -360,7 +482,13 @@ export function ProjectSnapshotModal({
         </DialogFooter>
       </ResponsiveAlertDialog>
       <AnimatedOverlay
-        open={open && !confirmRestoreId && !confirmDeleteId}
+        open={
+          open &&
+          !confirmRestoreId &&
+          !confirmDeleteId &&
+          restoreResult === null &&
+          !restoreResultHandledRef.current
+        }
         onClose={onClose}
         className="bg-background rounded-lg border border-border shadow-xl w-[580px] max-w-[95vw] flex flex-col max-h-[80vh]"
       >
@@ -506,7 +634,7 @@ export function ProjectSnapshotModal({
               ref={restoreActionRef}
               type="button"
               className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => selectedId && setConfirmRestoreId(selectedId)}
+              onClick={() => selectedId && openRestoreConfirm(selectedId)}
               disabled={!selectedId}
             >
               {t("snapshot.restore")}

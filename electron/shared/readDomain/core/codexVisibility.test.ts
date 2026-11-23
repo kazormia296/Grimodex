@@ -8,17 +8,23 @@ import { describe, expect, it } from "vitest";
 
 import {
   CoreProjectRequiredError,
+  type CoreCodexDetailData,
   type CoreCodexVisibilityPorts,
   type CoreReadDbClient,
 } from "../../mastraRead/ports.js";
 import { checkReadSql } from "../../mastraRead/sql.js";
 import { MAIN_READ_TABLE_SET } from "../../mastraRead/tables.js";
 import { createMainCodexVisibilityPorts } from "./codexMainContext.js";
-import { readCodexPhases } from "./codexReaders.js";
+import {
+  readCodexDetailValues,
+  readCodexPhaseDetailOverrides,
+  readCodexPhases,
+} from "./codexReaders.js";
 import {
   dropHiddenCodexRows,
   listHiddenCodexIds,
   resolveCodexAiVisibility,
+  resolveCodexAiVisibilityWithDetails,
 } from "./codexVisibility.js";
 import { buildReadInputs, type ReadInputs } from "./readInputs.js";
 import { createCoreReadDb } from "./readDb.js";
@@ -42,6 +48,14 @@ function makeDb(extra?: (sqlite: DatabaseSync) => void): Seeded {
       content_override text, context_mode_override text,
       created_at text not null, updated_at text not null,
       version integer not null default 0
+    );
+    create table codex_detail_values (
+      id text primary key, entry_id text not null, definition_id text not null,
+      value text, version integer not null default 0,
+      created_at text, updated_at text
+    );
+    create table codex_phase_detail_overrides (
+      phase_id text not null, definition_id text not null, value text
     );
     insert into codex_entries values
       ('pub', 'p-a', 'pub summary', 'mentioned', 'pub content'),
@@ -131,6 +145,52 @@ function logged(
       listPhases: (ids) => {
         log.push(`listPhases(${ids.join(",")})`);
         return ports.codex.listPhases(ids);
+      },
+    },
+  };
+}
+
+function withDetailData(
+  ports: CoreCodexVisibilityPorts,
+  calls: { overrides: string[][]; values: string[][] } = {
+    overrides: [],
+    values: [],
+  },
+): {
+  readonly deps: CoreCodexVisibilityPorts & {
+    readonly codex: CoreCodexDetailData;
+  };
+  readonly calls: { overrides: string[][]; values: string[][] };
+} {
+  return {
+    calls,
+    deps: {
+      ...ports,
+      codex: {
+        ...ports.codex,
+        listPhaseDetailOverrides: async (phaseIds) => {
+          calls.overrides.push([...phaseIds]);
+          return phaseIds.flatMap((phaseId) =>
+            phaseId === "ph-rel"
+              ? [
+                  { phaseId, definitionId: "d-value", value: "Phase の値" },
+                  { phaseId, definitionId: "d-clear", value: null },
+                ]
+              : [],
+          );
+        },
+        listRawDetailValues: async (entryIds) => {
+          calls.values.push([...entryIds]);
+          return entryIds.flatMap((entryId) =>
+            entryId === "rel"
+              ? [
+                  { entryId, definitionId: "d-value", value: "base の値" },
+                  { entryId, definitionId: "d-clear", value: "消去される値" },
+                  { entryId, definitionId: "d-base", value: "base のみの値" },
+                ]
+              : [],
+          );
+        },
       },
     },
   };
@@ -235,6 +295,29 @@ describe("resolveCodexAiVisibility", () => {
       released: true,
       content: "phase content",
     });
+  });
+
+  it("details を足すのは released の項目だけで、Phase の null は base の値を消す", async () => {
+    const { ports } = setup();
+    const { deps, calls } = withDetailData(ports);
+    const result = await resolveCodexAiVisibilityWithDetails(deps, {
+      projectId: "p-a",
+      entryIds: ["pub", "hid", "rel", "hide-later"],
+      sceneId: "s3",
+      withContent: true,
+    });
+
+    expect([...result.hidden].sort()).toEqual(["hid", "hide-later"]);
+    expect(calls.overrides).toEqual([["ph-rel"]]);
+    expect(calls.values).toEqual([["rel"]]);
+    expect(result.texts.get("rel")?.detailValues?.get("d-value")).toBe(
+      "Phase の値",
+    );
+    expect(result.texts.get("rel")?.detailValues?.get("d-clear")).toBeNull();
+    expect(result.texts.get("rel")?.detailValues?.get("d-base")).toBe(
+      "base のみの値",
+    );
+    expect(result.texts.get("pub")?.detailValues).toBeUndefined();
   });
 
   it("awaits in the renderer's order: the entries, then the phases, and only then the phase state", async () => {
@@ -343,6 +426,33 @@ describe("resolveCodexAiVisibility", () => {
     expect(log[log.length - 1]).toBe("state");
   });
 
+  it("details の phase ids と entry ids も 500 件ずつに分ける", async () => {
+    const { ports } = setup("p-a", undefined, (sqlite) => {
+      const insertEntry = sqlite.prepare(
+        "insert into codex_entries values (?, 'p-a', 's', 'hidden', '')",
+      );
+      const insertPhase = sqlite.prepare(
+        "insert into codex_entry_phases (id, entry_id, anchor_node_id, context_mode_override, created_at, updated_at) values (?, ?, 's1', 'mentioned', ?, ?)",
+      );
+      for (let i = 0; i < 501; i += 1) {
+        const id = `detail-${i}`;
+        insertEntry.run(id);
+        insertPhase.run(`ph-${id}`, id, T, T);
+      }
+    });
+    const { deps, calls } = withDetailData(ports);
+    const ids = Array.from({ length: 501 }, (_, i) => `detail-${i}`);
+    const result = await resolveCodexAiVisibilityWithDetails(deps, {
+      projectId: "p-a",
+      entryIds: ids,
+      sceneId: "s1",
+    });
+
+    expect(result.texts.size).toBe(501);
+    expect(calls.overrides.map((chunk) => chunk.length)).toEqual([500, 1]);
+    expect(calls.values.map((chunk) => chunk.length)).toEqual([500, 1]);
+  });
+
   it("propagates a failure of a port (it is not caught, so nothing reaches the AI)", async () => {
     const { ports } = setup();
     await expect(
@@ -388,6 +498,15 @@ describe("resolveCodexAiVisibility", () => {
           sceneId: "s2",
         }),
       ).rejects.toThrow(/different project/u);
+      const { deps, calls } = withDetailData(ports);
+      await expect(
+        resolveCodexAiVisibilityWithDetails(deps, {
+          projectId: "p-a",
+          entryIds: ["pub"],
+          sceneId: "s1",
+        }),
+      ).rejects.toThrow(/different project/u);
+      expect(calls).toEqual({ overrides: [], values: [] });
     });
 
     it("accepts a phase state of the same project, and one that names no project (the renderer's)", async () => {
@@ -428,6 +547,19 @@ describe("resolveCodexAiVisibility", () => {
         "sql:codex_entry_phases",
         "state",
       ]);
+    });
+
+    it("details を読まず、見つかった項目を hidden にする", async () => {
+      const { ports } = setup("p-a", null);
+      const { deps, calls } = withDetailData(ports);
+      const r = await resolveCodexAiVisibilityWithDetails(deps, {
+        projectId: "p-a",
+        entryIds: ["rel"],
+        sceneId: "s3",
+      });
+      expect([...r.hidden]).toEqual(["rel"]);
+      expect(r.texts.size).toBe(0);
+      expect(calls).toEqual({ overrides: [], values: [] });
     });
 
     it.each([
@@ -585,6 +717,37 @@ describe("readCodexPhases", () => {
   });
 });
 
+describe("readCodexPhaseDetailOverrides と readCodexDetailValues", () => {
+  it("空の id では読まず、指定された Phase／entry の行だけを読む", async () => {
+    const { db, sent, sqlite } = setup();
+    sqlite.exec(`
+      insert into codex_phase_detail_overrides values ('ph-rel', 'd-rel', 'Phase 値');
+      insert into codex_phase_detail_overrides values ('ph-b', 'd-other', '別 project');
+      insert into codex_detail_values
+        (id, entry_id, definition_id, value) values
+        ('v-rel', 'rel', 'd-rel', 'base 値'),
+        ('v-b', 'b-hid', 'd-other', '別 project');
+    `);
+    expect(await readCodexPhaseDetailOverrides(db, [])).toEqual([]);
+    expect(await readCodexDetailValues(db, [])).toEqual([]);
+    expect(sent).toEqual([]);
+
+    expect(await readCodexPhaseDetailOverrides(db, ["ph-rel"])).toEqual([
+      { phaseId: "ph-rel", definitionId: "d-rel", value: "Phase 値" },
+    ]);
+    expect(await readCodexDetailValues(db, ["rel"])).toEqual([
+      { entryId: "rel", definitionId: "d-rel", value: "base 値" },
+    ]);
+    expect(
+      sent.map((statement) => statement.sql.match(/from "(\w+)"/u)?.[1]),
+    ).toEqual(["codex_phase_detail_overrides", "codex_detail_values"]);
+    expect(sent.map((statement) => statement.params)).toEqual([
+      ["ph-rel"],
+      ["rel"],
+    ]);
+  });
+});
+
 describe("a live store's project epoch (PR-8b, DR-MP4-41 (b) carried into the core)", () => {
   const withEpoch = (
     ports: CoreCodexVisibilityPorts,
@@ -650,6 +813,34 @@ describe("a live store's project epoch (PR-8b, DR-MP4-41 (b) carried into the co
         sceneId: "s1",
       })),
     ]).toEqual(["pub"]);
+  });
+
+  it("withDetails でも epoch が変わったら追加の detail reader を呼ばない", async () => {
+    const { ports } = setup();
+    let epoch = 0;
+    const log: Log = [];
+    const epochPorts = withEpoch(ports, () => epoch, log);
+    const { deps, calls } = withDetailData(epochPorts);
+    const switching = {
+      ...deps,
+      codex: {
+        ...deps.codex,
+        listPhases: async (ids: readonly string[]) => {
+          const phases = await deps.codex.listPhases(ids);
+          epoch += 1;
+          return phases;
+        },
+      },
+    };
+    const result = await resolveCodexAiVisibilityWithDetails(switching, {
+      projectId: "p-a",
+      entryIds: ["pub", "hid", "gone"],
+      sceneId: "s1",
+      withContent: true,
+    });
+    expect([...result.hidden].sort()).toEqual(["gone", "hid", "pub"]);
+    expect(result.texts.size).toBe(0);
+    expect(calls).toEqual({ overrides: [], values: [] });
   });
 
   it("reads no epoch when there is nothing to ask about, and does not compare one when no entry was found (nothing was read that a switch could spoil)", async () => {

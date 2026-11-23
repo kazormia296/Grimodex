@@ -5,10 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import type { CoreReadDbClient } from "../../mastraRead/ports.js";
 import {
+  createMainCodexEntryContext,
   createMainCodexReadContext,
   createMainCodexVisibilityPorts,
 } from "./codexMainContext.js";
-import { resolveCodexAiVisibility } from "./codexVisibility.js";
+import {
+  resolveCodexAiVisibility,
+  resolveCodexAiVisibilityWithDetails,
+} from "./codexVisibility.js";
 import { buildReadInputs } from "./readInputs.js";
 import { createCoreReadDb } from "./readDb.js";
 
@@ -27,6 +31,14 @@ function dbOver(): { client: CoreReadDbClient; sqlite: DatabaseSync } {
       content_override text, context_mode_override text,
       created_at text not null, updated_at text not null,
       version integer not null default 0
+    );
+    create table codex_detail_values (
+      id text primary key, entry_id text not null, definition_id text not null,
+      value text, version integer not null default 0,
+      created_at text, updated_at text
+    );
+    create table codex_phase_detail_overrides (
+      phase_id text not null, definition_id text not null, value text
     );
     insert into codex_entries values ('e1', 'p-a', 's', 'mentioned', '');
     insert into codex_entry_phases
@@ -229,5 +241,63 @@ describe("createMainCodexReadContext (PR-8b)", () => {
     });
     expect(a.getPhaseState().projectId).toBe("p-a");
     expect(b.getPhaseState().projectId).toBe("p-b");
+  });
+});
+
+describe("createMainCodexEntryContext", () => {
+  it("turn の入力と main reader から詳細を解決し、live epoch は持たない", async () => {
+    const { client, sqlite } = dbOver();
+    sqlite.exec(`
+      insert into codex_entries values ('rel', 'p-a', 'base summary', 'hidden', 'base body');
+      insert into codex_entry_phases
+        (id, entry_id, anchor_node_id, summary_override, content_override, context_mode_override, created_at, updated_at)
+        values ('ph-rel', 'rel', 's1', 'phase summary', 'phase body', 'mentioned', '${T}', '${T}');
+      insert into codex_detail_values (id, entry_id, definition_id, value)
+        values ('v1', 'rel', 'd-value', 'base detail'), ('v2', 'rel', 'd-clear', 'base clear'),
+          ('v3', 'rel', 'd-base', 'base only');
+      insert into codex_phase_detail_overrides (phase_id, definition_id, value)
+        values ('ph-rel', 'd-value', 'phase detail'), ('ph-rel', 'd-clear', null);
+    `);
+    const db = createCoreReadDb(client);
+    const inputs = buildReadInputs({
+      projectId: "p-a",
+      treeRows: rowsOf(["s1", "s2"]),
+      project: { phaseResolutionMode: "reading" },
+      currentSceneId: "s2",
+    });
+    const ctx = createMainCodexEntryContext({
+      db,
+      inputs,
+      countTokens: (text) => text.length,
+      extractPlainText: (json) => `text:${json}`,
+    });
+    expect(ctx.getTreeState()).toEqual({
+      projectId: "p-a",
+      nodes: [],
+      activeSceneId: "s2",
+    });
+    expect(ctx.getProjectEpoch).toBeUndefined();
+    expect(ctx.countTokens("本文")).toBe(2);
+    expect(ctx.extractPlainText("{}")).toBe("text:{}");
+
+    const result = await resolveCodexAiVisibilityWithDetails(ctx, {
+      projectId: "p-a",
+      entryIds: ["rel"],
+      sceneId: ctx.getTreeState().activeSceneId,
+      withContent: true,
+    });
+    expect([...result.hidden]).toEqual([]);
+    expect(result.texts.get("rel")).toMatchObject({
+      summary: "phase summary",
+      content: "phase body",
+      released: true,
+    });
+    expect(result.texts.get("rel")?.detailValues?.get("d-value")).toBe(
+      "phase detail",
+    );
+    expect(result.texts.get("rel")?.detailValues?.get("d-clear")).toBeNull();
+    expect(result.texts.get("rel")?.detailValues?.get("d-base")).toBe(
+      "base only",
+    );
   });
 });

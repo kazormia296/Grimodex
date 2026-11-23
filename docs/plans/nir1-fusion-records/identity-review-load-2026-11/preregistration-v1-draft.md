@@ -939,3 +939,121 @@ g-ja-3 の試しで、読み手の名簿の検査の指摘の大半が、規則�
   - **値（件数だけ。結論は出さない）**：模擬作者の決定は、g-ja-2・g-ja-3・g-ja-4 が却下 5・6・5（別名・受理 0。いずれも 1 要求）、m-ja-2 が別名 1・却下 77・受理 0（N＝78、2 要求）。却下の理由はすべて「名簿に無い候補（未登録）」。
   - **測定 B（B1・B2）の送信は完了**。測定 B の合計：試走 2 要求・B1 49 要求（採用 48）・B2 5 要求、実費は全体で約 $1.68（上限 $15 の内）。
   - **未了**：測定 B の結果の作者への報告（値を並べるだけ。済み：B1 の表は報告した。B2 の表は本 DR の値）。その後に master の取り込み・PR・測定 A の本測定（D5：B が終わったので取り込める）。
+
+- **DR-ILM-52　測定 A の本測定の結果（AI なし・送信 0。ユーザー決定「ERM は保留のまま、測定 A を先に回す」〔contracts 追記 19。訂正後 `96f744e98`〕）**（2026-11-24 01:28〜01:40 JST。M3 の lane の技術判断と、凍結 A の記録 §4 の手順のとおり）。事実：
+  - **結果**：35 cell すべて ok（g-ja-2・g-ja-3・g-ja-4 が各 8、m-ja-2 が 11）。逸脱 0 件（候補の一覧の照合・道具の sha256 28 件・名簿と scenes の sha256・候補の file の出所 verified）。製品 head は `13282e2c0`（dirty 0）。determinism は 4 作品とも matrix L2 と表記×種類の集合が完全一致。送信は 0（35 cell の記録で、AI の command は 0 回・非 loopback の宛先は 0）。
+  - **値（件数だけ。結論は出さない）**：L0〜L3 の Ur・S5 は #1050 の実機の確認（DR-ILM-39）の値と完全一致（Ur-all 126／127／66／66、S5-roster 11、S5_seen 2）。新しく埋まった累積の列：保存済みの未 review は各 run の提案の累計で、g-ja-2 29→63→100→140、g-ja-3 25→64→109→154、g-ja-4 33→77→124→175、m-ja-2 118→329→581→864。前の run の未 review は全件が最新の run にも同じ表記で出る（seed の安定性で、作者が決めた後の再抽出での繰り返しではない）。件数・sha256 は `freeze-v1-a-2026-11-23.md` §7。
+  - **実データの削除**：集計の確定から 14 日以内（2026-12-08 まで）。削除の前に、件数と 35 cell の sha256 を凍結 A §7 に残した。
+  - **未了**：ERM v1 を作るかの判断（保留のまま）。★4・★5・★8 の回答。
+
+## 17.11 探索：一括承認に入らない結び付けの理由（**測定に含めない**。2026-11-24。DR-ILM-53）
+
+位置づけ：測定 A の本測定（§7、凍結 A の記録 §7）の後の探索であって、測定ではない。事前登録の約束には何も足さず、凍結 A の結果（採用した 35 cell）も変えない。**AI なし・送信 0**。ユーザーの許可（「探索を取って良いです」。contracts 追記 21 `349e21dc0`。問い：L2 の 1 件ずつの結び付け確認の理由の分解を、探索として取ってよいか。測定に含めず件数だけ記録）の範囲。値を並べるだけで、結論は出さない（DR-ILM-38）。
+
+- **目的**：L2（名簿の別名がすべて登録済み）に残る「1 件ずつの結び付け確認」（bind-existing のうち製品の一括承認に入らないもの。測定 A の列では 6・5・7・62 件）が、**何の理由で止まっているか**を分ける。測定 A の行（`.rows.json`）には安全の旗の合成値（`safe`・`bulkApprovable`）しか無く、理由を分ける材料は行に無い状態だった。
+- **方法**：測定 A の道具の `renderer.ts` に、読み取り専用の項目 `exploreBind`（製品の `evaluateExactBindFromCatalog` の判定理由と、安全の旗 3 つ〔`existingExactBind`・`evidenceExact`・`existingBindNoDependents`〕）を行へ足す差分（下に全文）で、`matrix-L0`・`matrix-L2` の 8 cell（4 作品）を、**別の出力先**（repo の外。採用済みの `measure-a/` は触らない）に回した。基点は `13282e2c0`（本測定と同じ製品）、差分の commit は `384c0f038`（枝 `claude/ilm-explore-bindcheck`。**merge しない・未 push**。測定 A の凍結の道具ではない）。`--persist try`、AI なし。実行は 2026-11-24 02:50:42〜02:52:33 JST。
+- **逸脱（探索の実行の前段。cell は 1 つも回っていない）**：1 回目は build の出所の guard が `BUILD_PROVENANCE_INPUT_NEWER_THAN_BUILD`（枝の切替で入力の更新時刻が build より新しくなった）で止めた。迂回せず、再 build（`napi:build`・Electron build）の後に出所を記録し直した。2 回目は出力先から作る socket のパスの見積りが長く `OUTPUT_PATH_TOO_LONG`（上限 95 字）で止まり、出力先を短くして 3 回目で 8 cell が回った。1 回目・2 回目の停止の出力は、3 回目の実行で `explore.log`・`explore.status` が上書きされて残っていない（この記述は実行時の出力による。採用済みの `measure-a/` に変更が無いことは、更新時刻と sha256 で確かめた）。
+- **整合確認（値を読む前。すべて一致）**：(1) `exploreBind` を除いた行が、採用済みの L0・L2 の行と**全行一致**（40/40・45/45・51/51・283/283、L0・L2 とも）。(2) `staticVerdict` が ok であることと `existingExactBind` が true であることの食い違いは 0。(3) 一括不可の件数が測定 A の表（L2：6・5・7・62、L0：0・1・1・55）と一致。(4) 全 8 cell の status が ok。
+- **読み方の注意**：`staticVerdict` は製品の判定の**最初に当たった 1 つ**だけで、理由は重なりうる。判定の順序は 別名・要約の追加あり（enrichment）→ 呼び名 → 単字 → 結び先の欠落 → 完全一致なし → 複数の完全一致 → 部分一致 → **型（最後）**。したがって「型」と出た行は他の条件を全部通った純粋な型の問題だが、「部分一致」「単字」と出た行には型の問題が重なっている場合がある。重なりは、結び先の名簿の実体の型（repo の外の名簿）を引いて確かめた（型が `character` でなければ型の判定にも当たる）。単字の行は結び先を引く前に判定が返るので、後ろの判定（結び先の欠落・完全一致なし・複数の完全一致・部分一致・型）は評価されていない。重なりの 10 件（L0 は 7 件）は全て部分一致で、単字の結び先はすべて名簿の `character` だった。なお、下の「静的の判定理由」の 部分一致 20・単字 10 と、表の「同定側の理由のみ」20・「同定側＋型も重なる」10 は**別の分け方**で、合計が同じなのは偶然である（m-ja-2 では、判定理由が 部分一致 12・単字 1、表が 4・9）。
+- **結果（件数だけ）**：
+
+L2（F100）：
+
+| 作品 | 提案 | bind-existing | 一括可（結び付け） | 一括不可 | 型だけ（他は全部通る） | 同定側の理由のみ（部分一致・単字。型は問題なし） | 同定側＋型も重なる | 根拠が完全一致でない | 依存する提案あり |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| g-ja-2 | 40 | 19 | 13 | 6 | 0 | 6 | 0 | 0 | 0 |
+| g-ja-3 | 45 | 26 | 21 | 5 | 0 | 4 | 1 | 0 | 0 |
+| g-ja-4 | 51 | 26 | 19 | 7 | 1 | 6 | 0 | 0 | 0 |
+| m-ja-2 | 283 | 77 | 15 | 62 | 49 | 4 | 9 | 0 | 0 |
+| **合計** | 419 | 148 | 68 | 80 | 50 | 20 | 10 | 0 | 0 |
+
+L0（F100。参考）：
+
+| 作品 | 提案 | bind-existing | 一括可（結び付け） | 一括不可 | 型だけ（他は全部通る） | 同定側の理由のみ（部分一致・単字。型は問題なし） | 同定側＋型も重なる | 根拠が完全一致でない | 依存する提案あり |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| g-ja-2 | 40 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| g-ja-3 | 45 | 5 | 4 | 1 | 0 | 1 | 0 | 0 | 0 |
+| g-ja-4 | 51 | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 0 |
+| m-ja-2 | 283 | 62 | 7 | 55 | 46 | 2 | 7 | 0 | 0 |
+| **合計** | 419 | 68 | 11 | 57 | 47 | 3 | 7 | 0 | 0 |
+
+  - 静的の判定理由（最初に当たった 1 つ。L2 の 80 件）：結び先の型が人物でない 50（m-ja-2 49・g-ja-4 1。結び先は全件が名簿の `location`）、部分一致 20、単字 10。`multiple-exact`・`no-exact-match`・`target-missing`・`enrichment`・`relational-term` は 0 件。
+  - 根拠が完全一致でないものと、依存する関係・Phase・Base Detail の提案があるものは、L0・L2 とも 0 件。
+- **読めないこと（限界）**：(1) 名簿は AI が作り、m-ja-2 の名簿は作者が確認していない。「型だけ」の 50 件（m-ja-2 が 49）が、名簿の型の誤りか、抽出の分類（提案は人物、結び先は場所）の問題かは、この探索では分けていない。(2) L2 の 1 回の抽出で、作者の操作を run の間に挟んでいない。次の抽出でも同じ提案が出ることは、コード調査（2026-11-24）で読んだ事実であって、この探索の値ではない。(3) 「同定側の理由のみ」は、**型の判定を変えない前提での**、規則がその確認を通せる**上限の見積り**であって、規則が通すという意味ではない（規則が安全の判定を上書きするかは設計の問い）。(4) 数は名簿との一致であって、品質の証拠ではない。日本語 4 作品だけ。(5) 型の重なりは、製品の catalog の型ではなく**名簿の実体の型での代理判定**である（整合は確かめた：判定が ok の結び先は全件が名簿の `character`〔L2 68・L0 11〕、型で止まった結び先は全件が `location`〔L2 50・L0 47〕）。(6) F100 だけで、L1・L3・L2-1char は取っていない（測定 A では L2-1char の結び付け確認は 3・2・5・62）。判定は run 時点の catalog（`evaluateExactBindFromCatalog`）で、承認時の再検査（`recheckExactBindAgainstEntries`）ではない。
+- **採用しない値**：この探索の値は測定 A の結果に数えない。凍結 A の記録 §7 は変えない。
+- **差分（`renderer.ts`。commit `384c0f038`、基点 `13282e2c0`）**：
+
+```diff
+diff --git a/scripts/quality/identity-review-load/renderer.ts b/scripts/quality/identity-review-load/renderer.ts
+index 2017b97c6..3eaf40b47 100644
+--- a/scripts/quality/identity-review-load/renderer.ts
++++ b/scripts/quality/identity-review-load/renderer.ts
+@@ -52,6 +52,11 @@ import {
+   narrativeExtractionListResumableRuns,
+ } from "@/application/narrative-extraction/nativeApi";
+ import { isSafeForCodexEntityBulkApprove } from "@/features/codex/codexStructureExtractionStore";
++// 探索（測定に含めない）：一括承認に入らない結び付けの理由を、行に読み取り専用で足すための import。
++import {
++  entitiesWithDependents,
++  evaluateExactBindFromCatalog,
++} from "@/features/codex/extraction/entityBulkSafety";
+ import {
+   activeCandidates,
+   candidateKey as productCandidateKey,
+@@ -624,11 +629,27 @@ async function extractStructureBody(
+       );
+     }
+   }
++  // 探索：この実体を端点・依存に持つ関係・Phase・Base Detail の提案がある実体（製品の refreshEntityBindSafety と同じ関数）。
++  const exploreDependents = entitiesWithDependents(projection);
+   const rows = [];
+   for (const proposal of projection.proposals) {
+     const payload = proposal.proposal.payload;
+     const binding = payload.binding;
++    // 探索：結び付けの一括承認に入らない理由（製品の判定関数をそのまま呼ぶ。値は旗と語彙だけで、表記・本文は入らない）。
++    const exploreVerdict =
++      binding.kind === "bind-existing"
++        ? evaluateExactBindFromCatalog(payload, projection.catalog)
++        : null;
+     rows.push({
++      exploreBind: exploreVerdict
++        ? {
++            staticVerdict: exploreVerdict.ok ? "ok" : exploreVerdict.reason,
++            existingExactBind: proposal.safety.existingExactBind,
++            evidenceExact: proposal.safety.evidenceExact,
++            existingBindNoDependents: proposal.safety.existingBindNoDependents,
++            hasDependentsNow: exploreDependents.has(payload.narrativeEntityId),
++          }
++        : null,
+       surfaceHash: await hashSurface(proposal.displayTitle),
+       // 名簿との照合用：製品の candidateKey で正規化した表記の hash（名簿側も同じ式で作る）。
+       keyHash: await hashSurface(candidateKey(proposal.displayTitle)),
+```
+
+- **探索の cell の sha256（repo の外 `/home/grimodex/ilm-x/measure-a/`。8 件）**：
+
+| cell | sha256 |
+| --- | --- |
+| g-ja-2-matrix-L0 | 245c19beb74cc75597ab3f5c112de0a53322f5a2e81276dd724e1669b2a6c8bf |
+| g-ja-2-matrix-L2 | f00eeb7dd833d0ed5c8155c3d950ee6217afe6814f8b3ac7006567bee9ad3e53 |
+| g-ja-3-matrix-L0 | 8dde766e331e2b94e065d9c2051a241a228870993cdb98cfb58ec524311aa5e0 |
+| g-ja-3-matrix-L2 | b6e4c8461a6532e6b61c72af67617708e33b22fb979070691b8bcd28f3a66651 |
+| g-ja-4-matrix-L0 | d2dff4454f9462d6445106472a9bdd1511290edb78f211b54942a67abbe6cb8c |
+| g-ja-4-matrix-L2 | a4e08e4652af2e6d23975d1fac301127c80af576d80f8ea61213912d828cabfa |
+| m-ja-2-matrix-L0 | 101a5688a4e3209f574d1a7f4b764392029f03df2de175cd1107b2d46056e8db |
+| m-ja-2-matrix-L2 | 768839f29f03364f218497beeea70f4debbec35085a24bc4ffbc52bc82d9b798 |
+
+- **同 `.rows.json`（表の元の行。`exploreBind` はここにだけ有る。8 件）**：
+
+| file | sha256 |
+| --- | --- |
+| g-ja-2-matrix-L0.rows | 22196d5973f72b4851df0f1c84dd0ddf4c67b9adfcba892bd221fe9dca62bc4f |
+| g-ja-2-matrix-L2.rows | 5bd6f8f9df71d3da03f303dde3d66bd93e70ca1de6dccd9428b66a62bc6eb347 |
+| g-ja-3-matrix-L0.rows | be4c3dfd0f1b3715e4edfd375e37d4d26ffb9a9d6560f20d295e87defbbcddcf |
+| g-ja-3-matrix-L2.rows | d076fb5ea149798bbd5effaa32674ffbfd8a0383dfb73630bc18ac7ce7dc52ff |
+| g-ja-4-matrix-L0.rows | 1b6587ecaa4c3587bf4eb0b93f0831f5fce640173d92c983d00ffe8bf2ae25ec |
+| g-ja-4-matrix-L2.rows | 3fb20cdd33953f36959ec0a42c041b96c04943b6310f1951a0eaf784a4be25e4 |
+| m-ja-2-matrix-L0.rows | 879ad757ce975d3f289d05d36a25802a48fc42898e2b7f7a42f1f969b1a5ea70 |
+| m-ja-2-matrix-L2.rows | 0984647be5435911ef6f122b4b9ef2319e7b8e92625cdb47304e74966b1b4592 |
+
+- **実データの扱い**：探索の出力先（`/home/grimodex/ilm-x/`）も、測定 A と同じく 2026-12-08 までに削除する。

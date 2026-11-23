@@ -46,6 +46,8 @@ const SCAN_FILES = [path.join(sharedRoot, "mastraRead", "ports.ts")];
 const SOURCE = /\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const TEST = /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const DECLARATION = /\.d\.[cm]?ts$/u;
+/** `get_codex_entry` の reader を移す PR-10b より先に、PR-10a で許可する表。 */
+const PREAUTHORIZED_TABLES_NOT_READ_YET = ["codex_detail_definitions"] as const;
 
 function* sourceFiles(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
@@ -551,9 +553,15 @@ describe("the core issues Drizzle selects only, over exactly the allowlisted tab
     expect(outsideCore.map(({ file }) => file)).toEqual([]);
   });
 
-  it("names the tables of MAIN_READ_TABLES and no other", () => {
+  it("実際に読む表と、明示的に先行許可した表だけを allowlist に含める", () => {
     const named = new Set(scans.flatMap(({ scan }) => [...scan.tables]));
-    expect([...named].sort()).toEqual([...MAIN_READ_TABLES]);
+    for (const table of PREAUTHORIZED_TABLES_NOT_READ_YET) {
+      expect(MAIN_READ_TABLES).toContain(table);
+      expect(named).not.toContain(table);
+    }
+    expect(
+      [...new Set([...named, ...PREAUTHORIZED_TABLES_NOT_READ_YET])].sort(),
+    ).toEqual([...MAIN_READ_TABLES]);
   });
 
   it("every allowlisted table is a table of the schema", () => {
