@@ -46,7 +46,7 @@
 ### e. 直らないもの（作者から見える残る制限）
 
 - **中身のある章（子のある folder）の undo は DR-UND-2 で直った。** E1 の時点では、章だけが DB に戻り、画面には何も戻らず、Ctrl+Z の履歴が消える既存の不具合だった（削除から 1.5 秒以内だと中の場面が DB にもゴミ箱にも無くなる恐れがあった）。原因・直し方・残る制限は下の DR-UND-2。
-- **PR 本文用（作者から見える言葉）**：削除して Ctrl+Z で元に戻るのは、場面・メモ・章（中身のある章も、入れ子の章・場面・メモごと）。
+- **PR 本文用（作者から見える言葉）**：削除して Ctrl+Z で元に戻るのは、場面・メモ・章（中身のある章も、入れ子の章・場面・メモごと）。Ctrl+Z が途中で止まったときは、戻った分だけが画面に出て、戻らなかった場面はゴミ箱に入る（今までは、削除から 1.5 秒以内だと DB にもゴミ箱にも無くなった）。
 - 削除で cascade 消去される子の表：label・pin・伏線の setup と回収・scene の年表イベントへの紐付け・map の位置・lint の無視・Scope の制約（作者が決めた制約は既定に戻る）。反証 P2-2 で数え直した追加分：付箋（`editor_stickies`）・スレッドの段階マーカー（`plot_thread_scene_links`）・スレッドの開始／終了（`plot_threads.start_node_id`・`end_node_id`）・`foreshadow_payoffs`・版履歴（`content_versions`）・post-effect の注釈・`scene_lens_data`・`events.reveal_scene_id`（年表の lane の表）。archived の子孫。これらは `restorePersisted` が `createNode` 1 回だけであることによる（読み取りで数えた。実行で全件は確かめていない）。DR-UND-3 の入力。
 - Trash 復元・redo of create の欄の欠落：別の lane。
 - **fail-open の限界（レビュー P2-3）**：snapshot（削除の直前の DB の行）が読めないと、`deleteTreeSubtree.ts` は黙って従来の経路（create の欄だけ）に落ちる。undo は止まらない（可用性のため妥当）が、その undo では欠落が残り、reload の後に hidden の note は `mentioned` に戻る（秘匿が弱い向き）。読めなかったことは `debugLog.warn("tree", "undo snapshot unreadable", …)` に残す（診断用。AI に渡る内容と UI は変えない）。
@@ -93,7 +93,7 @@
 
 作成：2026-11-23。lane H（E1 の枝の上の stacked branch）。計画書は `fusion-eval-data/handoff/mastra-mp3-materials/plan-folder-undo-20261123.md`。
 
-ユーザー承認：2026-11-23「中身のある章の削除の undo が、章だけ戻り中の場面が戻らない既存の不具合を、別の PR で直す」。範囲は「undo の journal の束縛を、削除の記録 `before_json.nodes` に含まれる id まで緩める。書ける範囲は増やさない（削除された子孫の id だけ）。設計と試験を示してから実装」。新しい command・schema・migration・送信先・保存範囲の拡大は無い。IPC の契約（`ipcContract.ts`）・Main・N-API・d.ts は変更しない。Q の既定（推奨どおり）：Q0＝undo 経路の id 集合の拡大を PR 本文に明記する、Q1＝undo の後・redo の前に章へ入った node は再 undo では戻さない、Q2＝途中で止まったら戻せた node だけ store に反映する。
+ユーザー承認：2026-11-23「中身のある章の削除の undo が、章だけ戻り中の場面が戻らない既存の不具合を、別の PR で直す」。範囲は「undo の journal の束縛を、削除の記録 `before_json.nodes` に含まれる id まで緩める。書ける範囲は増やさない（削除された子孫の id だけ）。設計と試験を示してから実装」。新しい command・schema・migration・送信先・保存範囲の拡大は無い。IPC の契約（`ipcContract.ts`）・Main・N-API・d.ts は変更しない。Q の既定（推奨どおり）：Q0＝undo 経路の id 集合の拡大を PR 本文に明記する、Q1＝undo の後・redo の前に章へ入った node は再 undo では戻さない、Q2＝途中で止まったら戻せた node だけ store に反映する（推奨 (b)）。**加えて、計画書が採らないとした (c)「戻せなかった場面をゴミ箱に積み直す」の変形を採った**（レビュー P2-2）。計画書の懸念（`cancelTrash` が void で、1.5 秒を過ぎた undo の保留が書込み済みかどうか分からず、積み直すと重複する）は、`cancelPending` が取り消せたかを返すようにして、取り消せた保留だけを積み直すことで避けた。ゴミ箱の実装の意味（保留・書込み・取消し）は変えていない。
 
 ### a. 不具合の経路（直す前）
 
@@ -123,20 +123,22 @@
 | Redo の create・delete・patch、Undo の delete・patch を descendant の id で | 拒む（緩めていない） | `only_an_undo_create_may_name_a_recorded_descendant` |
 | `restoreState` を記録外の id に付ける | 束縛で先に拒まれる | `restore_state_does_not_open_a_create_that_the_journal_did_not_record` |
 
-あえて足さない検査：子の `parentId`・`nodeType` を記録と一致させる。store は DB より最大 750 ms 古いことがあり、一致を要求すると読みの食い違いで undo が途中で止まる新しい失敗になる。一方で足しても書ける id の範囲は変わらない（既存の行は PK 衝突で守られ、親は既存の folder 検査で守られる）。残る穴（今と同じ）：記録にある id が後で別の操作で消された場合、同じ journal でその id を作り直せる（root も今そう）。history の stack は利便で、security の境界ではない。確定文書：ADR 006 と `change-feed-writers.json` の `history-replay` は original-transaction と journal-lineage を要求するだけで、tree の create の entity 束縛を書いていないので、文面の改訂は不要と読んだ。`narrative_scope_storage_authority.rs` の静的走査は `tree_nodes` 等の INSERT／UPDATE を持つ関数名を分類する。この変更は SELECT だけの新しい関数と既存関数の条件で、書込みの関数は増えない（全件 `cargo test -p grimodex-db` で確かめる。親が回す）。
+あえて足さない検査：子の `parentId`・`nodeType` を記録と一致させる。store は DB より最大 750 ms 古いことがあり、一致を要求すると読みの食い違いで undo が途中で止まる新しい失敗になる。一方で足しても書ける id の範囲は変わらない（既存の行は PK 衝突で守られ、親は既存の folder 検査で守られる）。残る穴（今と同じ）：記録にある id が後で別の操作で消された場合、同じ journal でその id を作り直せる（root も今そう）。history の stack は利便で、security の境界ではない。確定文書：ADR 006 と `change-feed-writers.json` の `history-replay` は original-transaction と journal-lineage を要求するだけで、tree の create の entity 束縛を書いていないので、文面の改訂は不要と読んだ。scope の決定記録 `docs/plans/nir1-lane-decisions/scope-default-decisions.md` の DR-SDEF-18 は「配下の node を 1 つずつ別の Undo Journal で消し、undo は各 node の journal で作り直す」と古い仕組みを述べている。現在は root 1 件の journal で、子の create は記録の id で通る（この DR）。復元した場面の束縛が `unknown`（`UnknownRepairOrRestore`）で作られる結論は変わらず、T1（`undo_of_a_folder_subtree_returns_every_node_as_it_was`）が `compatibility_marker = 'unknown'` で固定する。DR-SDEF-18 には追記だけした（既存の記述は消していない）。`narrative_scope_storage_authority.rs` の静的走査は `tree_nodes` 等の INSERT／UPDATE を持つ関数名を分類する。この変更は SELECT だけの新しい関数と既存関数の条件で、書込みの関数は増えない（全件 `cargo test -p grimodex-db` で確かめる。親が回す）。
 
 ### d. renderer（`deleteTreeSubtree.ts`）
 
 - **Q1（再 undo の対象）**：redo は journal を書き直さないので、記録は最初の削除のまま。redo の後の再 undo は、最初の削除の id に含まれ、かつ root まで記録された node でつながる node だけを送る（`recordedSubtree`）。undo の後・redo の前に足した node（redo の cascade で既に失われている）と、その子を持つ記録の node（親が作れない）は送らない。送ると、Native が拒んで undo がまた途中で止まる。
 - **Q2（途中で止まったとき）**：loop が throw したら、戻せた node だけを store に反映して（`reflectRestored`）から rethrow する。何も戻せていなければ store は変えない。active scene は、前の active scene が戻った node に含まれるときだけ戻す。結果不明で保持された undo の再実行は、store に既にある同じ id を入れ替えるので重複しない。history の `clear()` は今までどおり（`globalHistoryStore`）。
 - **ゴミ箱（`cancelTrash`）**：結論は「loop の前の一括取消しを残し、**止まったら、取り消せた保留のうち戻っていない scene をゴミ箱へ積み直す**」。`cancelPending` が戻り値（保留を 1 件でも取り消したら true）を返すようにした。loop の後に取り消す・node ごとに取り消す案は、長い undo で保留が loop の途中で 1.5 秒を過ぎると、戻した scene がゴミ箱にも重複して残る（今は一括取消しで起きない）ので採らない。積み直しは、取り消せた（まだ保留だった）scene だけ・戻っていない scene だけ・新しい tempId で行う。すでにゴミ箱へ書かれていた（false）scene は積み直さない（重複を作らない。1.5 秒より後の undo が元々ゴミ箱に残る挙動は変えない）。保持された undo の再実行は積み直した tempId を取り消す。変更は `deleteTreeSubtree.ts` と `cancelPending`／`cancelPendingTrash` の戻り値（ゴミ箱の実装の意味は変えない）。
+  - **redo → 再 undo が止まった場合（レビュー P2-1）**：redo は保留を作り直さない。最初の undo が保留を取り消した scene は、redo の後はゴミ箱にも DB にも無い。そこで、取り消せた scene の集合（`outOfTrash`）を持ち、再 undo は取り消し済みの scene の取消しを繰り返さず、止まったらこの集合のうち戻っていない scene を、redo の時点の本文で積み直す。最初の undo で取り消せなかった（すでにゴミ箱にある）scene は積み直さない。成功する再 undo は何も積まない。redo の挙動は変えていない。
+  - **重複する場合（失わない）**：書込みの処理中（`createTrashItem` が返る前。保留はキューに残る）に取り消すと true が返るが書込みは完了するので、その undo が止まって積み直すと同じ scene がゴミ箱に 2 件になる。結果不明で保持された undo を 1.5 秒より後に再実行すると、積み直した scene が書かれた後に DB へも戻り、重複する。
 - 子の create にも各 node の `restoreState` を付ける（E1 の流れのまま。`restorePersisted` は node ごとに snapshot を渡す）。
 
 ### e. 画面で見える変化と、残る制限
 
 - **変わる**：中身のある章（folder の下に場面・note・入れ子の章がある）を消して Ctrl+Z すると、章と中身が全部戻る（以前は DB に章だけが戻り、画面には何も戻らず、Ctrl+Z の履歴が消えた）。各 node の列は E1 の `restoreState` の範囲で戻る。削除から 1.5 秒以内でも、成功すれば中の場面は戻り、ゴミ箱に重複しない。
-- **途中で止まったとき**：束縛が原因で止まることは無くなった。ほかの原因（親が消えた・source の衝突など）で止まったら、戻せた node は画面にも出て、戻らなかった場面はゴミ箱に入る（削除から 1.5 秒以内の undo の場合。それ以降はすでにゴミ箱に入っている）。undo の履歴は消える。戻らなかった **note と folder はゴミ箱に入らない**（ゴミ箱に積むのは場面だけ。今までも同じ）。
-- **redo**：章と中身がまとめて消える（root の delete 1 回の cascade）。redo → 再 undo は、記録にある node が全部戻る。**undo の後・redo の前に章へ足した node は、再 undo で戻らない**（redo の時点で既に失われている。まれな手順。「戻す」には redo が journal を書き直す契約変更が要り、別の承認）。
+- **途中で止まったとき**：束縛が原因で止まることは無くなった。ほかの原因（親が消えた・source の衝突など）で止まったら、戻せた node は画面にも出て、戻らなかった場面はゴミ箱に入る（削除から 1.5 秒以内の undo の場合。それ以降はすでにゴミ箱に入っている。redo の後の再 undo が止まった場合も同じ。ゴミ箱に 2 件になる場合は上の d の「重複する場合」）。**画面で見える挙動の追加**：以前は、削除から 1.5 秒以内の undo が止まると、中の場面が DB にもゴミ箱にも無くなった。undo の履歴は消える。戻らなかった **note と folder はゴミ箱に入らない**（ゴミ箱に積むのは場面だけ。今までも同じ）。
+- **redo**：章と中身がまとめて消える（root の delete 1 回の cascade）。redo → 再 undo は、記録にある node が全部戻る。**undo の後・redo の前に章へ足した node は、再 undo で戻らない**（redo の時点で既に失われている。まれな手順。「戻す」には redo が journal を書き直す契約変更が要り、別の承認）。**取りこぼし**：記録にある node を、undo の後に作った folder へ移した場合、その node も再 undo では戻らない（親が記録に無く作れないので、送らない）。**未確認**：完全に戻った後、`reflectRestored(true)` が前の active scene を指すが、その node が戻っていない（記録外・再 undo で送らなかった）ことがあり得る。影響（active scene が store に無いときの画面）は確かめていない。
 - 変わらない（E1 の残る制限）：cascade で消える子の表（label・pin・伏線・map の位置・版履歴など）、archived の子孫（store に無く、renderer は送らない）、ゴミ箱の復元の欄、redo of create。1.5 秒より後の undo でゴミ箱に場面が重複して残る挙動も同じ。
 - 子のない folder・scene・note、redo、undo→redo→undo の root だけの経路は、挙動も DB の結果も同値（root は `entity_id == node_id` で、記録を読まない）。
 
@@ -150,7 +152,15 @@
 | 300 場面 × 1 KiB | 約 0.3 MB | 15.4 ms | 4.6 s |
 | 100 場面 × 5 KiB | 約 0.25 MB | 12.0 ms | 1.2 s |
 
-記録の読みと parse の追加分は debug で 1 MB あたり約 9 ms。通常の章（数十場面・数百 KB）では誤差で、極端な 6 MB の記録でも 1 件 55 ms ほど。release build は未測定（debug より数倍速い見込みだが、測っていない）。事前の弾き（`instr`）と process 内の memo は、必要が測れていないので入れていない（記録の読みは typed の parse で、本文は確保しない）。release で数秒を超えると測れたら、同じ契約のまま memo を足す。数千場面の章の undo は、場面ごとに 1 IPC で元々遅い（別の問題）。
+**release build の測定（レビュー P2-3。同じ測定試験を `cargo test --release` で 1 回）**：
+
+| 章 | 記録 | 子の create 1 件 | undo 全体 |
+|---|---|---|---|
+| 300 場面 × 20 KiB | 約 6.4 MB | 14.9 ms | 4.46 s |
+| 300 場面 × 1 KiB | 約 0.3 MB | 4.6 ms | 1.38 s |
+| 100 場面 × 5 KiB | 約 0.25 MB | 4.8 ms | 0.48 s |
+
+記録の読みと parse の追加分は、release で 1 MB あたり約 1.6 ms（debug は約 9 ms）。通常の章（数十場面・数百 KB）では 1 件 1 ms 未満で誤差。極端な 6.4 MB の記録（300 場面 × 20 KiB）で、子 1 件が約 10 ms（基準の 4.6 ms との差）、undo 全体で約 3.1 s の上乗せ（全体 4.5 s）。**memo は入れなかった**：(1) 数秒に届くのは本文 6 MB 超という極端な章だけで、場面ごとに 1 IPC の undo は renderer 側でも元々その規模では遅い（別の問題）。(2) process 内の memo は、journal の id が試験や別 DB で再利用されうるため、鍵に DB の同一性を持てず、古い記録を読む危険が増える（状態を持つ）。(3) 追加分は O(N × 記録の大きさ) で、閾値が超えると測れたときに、同じ契約のまま足せる（`(project_id, journal_id, 記録の長さ)` を鍵にした記録の id 集合の memo。DB の同一性の扱いを先に決める）。親の判断で足す場合の設計の注：memo の鍵に connection の同一性を含める。事前の弾き（`instr`）は、含まれる id（通常の経路）では効かないので入れていない。数千場面の章の undo は、場面ごとに 1 IPC で元々遅い（別の問題）。
 
 ### g. 採らない案
 
@@ -160,7 +170,7 @@ bulk 復元 command の新設（承認の範囲外）、node ごとに別の jou
 
 反転した試験：Rust `current_undo_of_a_folder_subtree_child_is_pinned`（拒否を固定）→ `undo_of_a_folder_subtree_child_is_bound_to_the_delete_record`（通る）。実 addon の spec `(4)`（子の create が拒まれる）→ 子のある章が全部戻る・redo→再 undo・記録外の拒否の 4 case（親の順の拒否を含む）に置き換え。
 
-追加：Rust 実 DB の T1（3 階層 5 node の往復）・T3（親より先の子）・T4（途中の再開と同じ requestId の再送）・T5（redo → 再 undo と記録外）・T6（feed）・root が記録を読まない試験・信頼境界 8 本・測定 1 本、単体 1 本。renderer `deleteTreeSubtree.test.ts` に 10 本、`cancelPending` の戻り値 1 本、browser mock の往復 1 本。
+追加：Rust 実 DB の T1（3 階層 5 node の往復）・T3（親より先の子）・T4（途中の再開と同じ requestId の再送）・T5（redo → 再 undo と記録外）・T6（feed）・root が記録を読まない試験・信頼境界 8 本・測定 1 本、単体 1 本。renderer `deleteTreeSubtree.test.ts` に 13 本、`cancelPending` の戻り値 1 本、browser mock の往復 1 本。
 
 変異を 1 つ入れて落ちた件数（終わったら戻した）：
 
@@ -176,23 +186,26 @@ bulk 復元 command の新設（承認の範囲外）、node ごとに別の jou
 | M7a `op_kind` の検査を外す | 1 |
 | M7b `entity_kind` の検査を外す | 1 |
 | M8 parse できない記録を通す | 1 |
-| M10 root の短絡を外す（root も記録を読む） | 未実行（c7 の測定の窓のため。期待は root が記録を読まない試験 1 件が落ちること） |
+| M10 root の短絡を外す（root も記録を読む） | 2（`the_root_is_put_back_without_reading_the_record`。もう 1 件 `redo_then_undo_again_restores_the_recorded_nodes_only` は、この変異が root の delete の Redo の通過も外すため） |
 | renderer R1 redo が記録外の node も送る | 2 |
 | R2 記録の node への連結を要求しない | 1 |
 | R3 途中で止まったとき store に反映しない | 1 |
 | R4 再実行で store の node を入れ替えず重複させる | 1 |
-| R5 戻らなかった scene をゴミ箱に積み直さない | 2 |
-| R6 保留でなかった（すでに書かれた）scene も積み直す | 1 |
-| R7 戻った scene も積み直す | 1 |
+| R5 戻らなかった scene をゴミ箱に積み直さない | 3 |
+| R6 取り消せなかった（すでに書かれた）scene も「ゴミ箱に無い」とみなす | 2 |
+| R7 戻った scene も積み直す | 2 |
 | R8 止まったときも active scene を前の値にする | 1 |
 | R9 積み直した tempId を保持しない | 1 |
-| R10 取消しを loop の前でなくす | 3 |
+| R10 取消しを loop の前でなくす | 4 |
+| P1 redo の後の再 undo で取り消し済みの保留をまた取り消す | 1 |
+| P2 積み直す本文を redo の時点の本文にしない | 1 |
+| P3 積み直した scene を「ゴミ箱に無い」集合から外さない | 1 |
 
-M2・M3・M8 は単体の表の試験でも落ちる（integration と合わせた件数の内訳は未集計）。M4 の「1」は、部分一致の近道が壊れた記録の拒否（形の検査）を迂回するため。
+Rust の件数はすべて integration（`tests/tree_node_restore_state.rs` の binary）の数。M2・M3・M8 は単体（`domain_writes` の lib の `recorded_subtree_contains_reads_only_what_a_tree_delete_recorded`）でも落ちる見込みだが、単体の件数は測っていない。renderer の件数は `deleteTreeSubtree.test.ts`（20 本）の数。
 
 ### i. 試験していない経路
 
-実 addon の spec（`electron/main/treeUndoRestore.pipeline.spec.ts`）は書いたが、この lane では実行していない（`pnpm napi:build` が要る。親が回す）。`treeStore.deleteNode` に実 api を繋いだ通し（loop の順序を store 経由で）は書いていない（port 経由の単体と、api を node ごとに呼ぶ spec で代える）。結果不明（unknown outcome）の再実行は port の mock で確かめ、実 IPC では確かめていない。release build の性能は未測定。全件の `cargo test -p grimodex-db`・clippy・fmt の最終確認は、この commit の時点で未実行（親が回す）。
+実 addon の spec（`electron/main/treeUndoRestore.pipeline.spec.ts`）は書いたが、この lane では実行していない（`pnpm napi:build` が要る。親が回す）。`treeStore.deleteNode` に実 api を繋いだ通し（loop の順序を store 経由で）は書いていない（port 経由の単体と、api を node ごとに呼ぶ spec で代える）。結果不明（unknown outcome）の再実行は port の mock で確かめ、実 IPC では確かめていない。全件の `cargo test -p grimodex-db` は、この lane の枝では回していない（`narrative_scope_storage_authority` の 3 本が E1 の分類の未反映で赤い：E1 の `restore_tree_node_state_in_tx`・`tree_node_create_wire_with_authority` が分類に無いため。H の関数は SELECT だけの `recorded_subtree_contains` で、この試験に載らない）。親が回す。
 
 ## DR-UND-3（候補）残りの欠落
 
