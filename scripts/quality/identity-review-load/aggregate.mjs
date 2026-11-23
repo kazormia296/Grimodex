@@ -595,9 +595,11 @@ export function buildMeasureB2(results) {
 /**
  * どの値でも、どの選択肢を支持するかは決めない（decided は常に false）。材料は件数だけ、言えないことは
  * コードで持つ（本文は renderRecordsMarkdown の表の注に出す）。
- * ambiguousSurfaceCounts：作品ごとの、名簿の「場面で指す人が変わる表記」の数（名簿から数えた件数）。
+ * ★5 の「材料なし」の印（§8-5。事前登録 DR-ILM-40）：名簿の「場面で指す人が変わる表記」の**重複を除いた数**（S5-roster。
+ * 配列の要素数ではない）の 4 作品の合計が AMBIGUOUS_MATERIAL_MINIMUM 未満なら true。cell や作品が欠けて合計が出ないとき（a-defs/3 の
+ * records を含む）は null（未評価）で、欠けた作品を 0 として足さない。m-ja-2 を除く 3 作品の値は参考で、判定には使わない。
  */
-export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
+export function buildStarMapping({ measureA }) {
   const perWork = {};
   for (const [work, w] of Object.entries(measureA.byWork)) {
     const l2 = w.matrix.L2 ?? null;
@@ -640,9 +642,9 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
           : null,
     };
   }
-  const ambiguousTotal = ambiguousSurfaceCounts
-    ? Object.values(ambiguousSurfaceCounts).reduce((n, v) => n + v, 0)
-    : null;
+  const s5Roster = measureA.identityColumns?.s5Roster ?? null;
+  const ambiguousTotal = s5Roster?.totalAll?.value ?? null;
+  const referenceTotal = s5Roster?.totalWithoutUnconfirmedRoster?.value ?? null;
   return {
     star4: {
       decided: false,
@@ -662,8 +664,19 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
       decided: false,
       materials: ["sceneRangeRows", "sceneRangeUnresolved"],
       ambiguousSurfaceTotal: ambiguousTotal,
+      // null＝未評価（合計が出ない）。false は「5 未満でない」（材料なしの印は立たない）。
       noMaterial:
-        ambiguousTotal !== null && ambiguousTotal < AMBIGUOUS_MATERIAL_MINIMUM,
+        ambiguousTotal === null
+          ? null
+          : ambiguousTotal < AMBIGUOUS_MATERIAL_MINIMUM,
+      // 参考（判定に使わない）：名簿が未確認の作品を除く 3 作品の合計と、5 未満かどうか（null＝未評価）。
+      referenceWithoutUnconfirmedRoster: {
+        total: referenceTotal,
+        belowMinimum:
+          referenceTotal === null
+            ? null
+            : referenceTotal < AMBIGUOUS_MATERIAL_MINIMUM,
+      },
       cannotSay: [
         "surfaces-were-found-by-the-roster-author-not-the-human",
         "few-cannot-be-told-from-missed",
@@ -689,12 +702,7 @@ export function buildStarMapping({ measureA, ambiguousSurfaceCounts = null }) {
 
 // ---- records -------------------------------------------------------------------
 
-export function buildRecords({
-  measureA,
-  b1 = [],
-  b2 = [],
-  ambiguousSurfaceCounts = null,
-}) {
+export function buildRecords({ measureA, b1 = [], b2 = [] }) {
   return {
     schemaVersion: RECORDS_SCHEMA,
     evidenceScope: EVIDENCE_SCOPE,
@@ -709,9 +717,7 @@ export function buildRecords({
       b1: buildMeasureB1(b1),
       b2: buildMeasureB2(b2),
     },
-    starMapping: measureA
-      ? buildStarMapping({ measureA, ambiguousSurfaceCounts })
-      : null,
+    starMapping: measureA ? buildStarMapping({ measureA }) : null,
   };
 }
 
@@ -783,6 +789,23 @@ const dash = (value) =>
   value === null || value === undefined ? "-" : String(value);
 
 /** DR-ILM-38 の列（読みの文を先頭に、水準ごとの表）。件数と定数の文だけ。null は「-」（0 と区別する）。 */
+/** ★5 の「材料なし」の印（§8-5。DR-ILM-40）。判定は 4 作品の合計、3 作品は参考。null は未評価（0 とは違う）。 */
+export function renderStar5Material(star5) {
+  const mark = (below) =>
+    below === null
+      ? "未評価（合計が出ない）"
+      : below
+        ? "立つ（5 未満）"
+        : "立たない（5 未満でない）";
+  const count = (n) => (n === null ? "-" : String(n));
+  return [
+    "",
+    `- ★5（§8-5）の材料なしの印：名簿の「場面で指す人が変わる表記」の重複を除いた数（S5-roster）の 4 作品の合計 = ${count(star5.ambiguousSurfaceTotal)}、印は${mark(star5.noMaterial)}。`,
+    `  - 参考（判定に使わない）：名簿が未確認の作品を除く 3 作品の合計 = ${count(star5.referenceWithoutUnconfirmedRoster.total)}、${mark(star5.referenceWithoutUnconfirmedRoster.belowMinimum)}。`,
+    "  - この印は、名簿を作った AI が見つけた数に基づく。提案に出た数（S5_seen）と内訳は「Ur・S5 の列」の表で併せて読む（S5_seen に新しい線は引かない）。",
+  ];
+}
+
 export function renderIdentityColumns(columns) {
   const lines = [];
   lines.push(
@@ -931,6 +954,7 @@ export function renderRecordsMarkdown(records) {
         `| ${key} | いいえ（参考値） | ${s.materials.join(", ") || "-"} | ${s.cannotSay.join(", ")} |`,
       );
     }
+    lines.push(...renderStar5Material(records.starMapping.star5));
   }
   lines.push("");
   return lines.join("\n");
