@@ -15,7 +15,7 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 
 | 場所 | 見え方 | ja | en |
 | --- | --- | --- | --- |
-| 整合性タブ | タブの右上に小さな点（主色）。タブのアイコンと文字の幅・位置は変わらない（absolute で重ね、ボタンの padding の内側）。狭幅でアイコンだけになっても同じ。スクリーンリーダーには sr-only の語を足す | 影響チェックが未実施の変更があります | Changes not yet checked for impact |
+| 整合性タブ | タブの右上に小さな点（主色）。タブのアイコンと文字の幅・位置は変わらない（absolute で重ね、ボタンの padding の内側）。狭幅でアイコンだけになっても同じ（8 タブ・詳細がアクティブ・整合性が非アクティブの状態を実 Chromium で確認）。スクリーンリーダーには sr-only の語を足す | 影響チェックが未実施の変更があります | Changes not yet checked for impact |
 | ボタン上の 1 行 | 整合性タブの中、「この変更の影響をチェック」ボタンの上に 1 行。小さな点＋文言（`text-xs`、muted の文字色）。折り返しても親の幅の内側 | 前回のチェック以降に N 件の変更があります | 1 change since the last check ／ N changes since the last check |
 
 - 押したときの挙動・toast（no-change／no-candidates／source-changed／started）・既存の locale 文言は**変えない**。
@@ -97,7 +97,9 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 | `refreshKey` の変化（アクティブなタブ・項目の `updatedAt`） | 500 ms の debounce 後に再読込 | 前の effect の cleanup が `cancelled=true` にするので、遅れて返った読みは state を書かない | 同上（試験：同じ項目で再計算が重なったとき古い読みが上書きしない） |
 | `entryId` の変化（詳細パネルは項目間で共有され再 mount されない） | 待たずに読む | 描画時に `result.entryId !== entryId` なら出さない（前の項目の結果を一瞬も出さない）＋ cancelled | 試験：古い項目の遅れた結果を捨てる |
 | 影響チェックの実行中（`running`）／AI gate が `enabled` でない | 読まない・前の結果も消す | 終了直後に古い件数を出さない | — |
-| 実行の終了（`running` が落ちる）／押下の終わり（ボタンの `finally` が `bump`） | 再読込（`no-candidates`／`no-change` は run を作らず baseline を進めるので、`running` の変化だけに頼らない） | 同上 | 試験：押下後に再計算して印が消える |
+| 実行の終了（`running` が落ちる） | 再読込。ただし `post-effect/api.ts` は store の `complete`（`running` が落ちる）を `callbacks.onDone`（`runImpactReview` が baseline を進めた後に呼ぶ）より**先**に走らせるので、この読みは古い baseline を見て「N 件」が一瞬戻りうる | 同上 | 下の 2 行で収束 |
+| ボタンの `onDone`／`onError`（baseline の前進の後） | `epoch` を `bump`。**debounce せず**すぐ再読込（タブを離れて unmount していても global store なので効く） | 同上 | 試験：complete が baseline の前進より先でも、onDone の合図で印が消える／onError でも再読込 |
+| 押下の終わり（ボタンの `finally` が `bump`） | 再読込（`no-candidates`／`no-change` は run を作らずに baseline を進めるので、`running` の変化に頼らない） | 同上 | 試験：押下後に再計算して印が消える |
 | 読みの失敗 | 結果を消して表示なし（toast も出さない） | — | 試験：失敗は表示なし・前の結果を残さない |
 | unmount | 読みは止められないが、結果は捨てる（state を書かない） | `cancelled` | 試験：unmount 後に返った読みで警告なし |
 
@@ -112,19 +114,24 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 5. **1 行が遅れて現れる**：整合性タブを開いた直後、読みが終わるとボタンの上に 1 行が現れ、ボタンが 1 行ぶん下がる（レイアウトシフト）。高さの予約はしていない。
 6. **点と 1 行は別々に読む**（同じ項目で DB 読み 2 回×2）。整合性タブを開いた瞬間は重なって読む。件数は純関数で同じ判定。
 7. **ライセンス未認証でも印は出る**（押すと従来どおり弾く）。**別窓で開きっぱなし**の項目は次の契機まで更新されない。
-8. ja の `pending_one`／`pending_other` は同じ文（ja に単複は無い。既存の `consistencyTab.count_*` に揃えた）。
+8. **狭い幅（例 240px）では整合性タブは行の右端に隠れ、点が見えない**：8 タブの行はアイコンに畳んでも入り切らないと横スクロールになる（既存の挙動）。整合性は最後のタブなので、
+   スクロールするまで点が見えない。そのときもボタン上の 1 行は整合性タブを開けば見える。点を先頭側へ寄せる・タブの順を変えることはしていない（既存のタブ構成を変えない）。
+9. **完走の直後、一瞬「N 件」が戻ることがある**：store の `complete`（実行中でなくなる）が baseline の前進より先に走るため、その時点の読みは古い baseline を見る。
+   baseline の前進の後の `onDone` の合図ですぐ再読込して消える（短い残像）。部分失敗（baseline を進めない）では残り続ける（再実行すべきなので正しい）。
+10. ja の `pending_one`／`pending_other` は同じ文（ja に単複は無い。既存の `consistencyTab.count_*` に揃えた）。
 
 ## 7. 試験
 
 - `impactPending.test.ts`：判定の表（baseline なし・tombstone・差分なし・空白／全半角／別名の順・各フィールドの件数・contextMode・Phase 制限・Phase 削除の証明・制限の解除・undo）。
 - `impactPending.parity.test.ts`：**実物の `runImpactReview`** と一致（pending(n)⇒run の `changeCount===n` で候補絞りまで進む／none⇒`no-change`／gated⇒`no-candidates` で候補絞りを呼ばない／
-  unresolved-phase-restriction は run の差分が素の差分と食い違う実例／unchecked は run が全変更と数える）。15 ケース＋2。
+  unresolved-phase-restriction は run の差分が素の差分と食い違う実例／unchecked は run が全変更と数える）。15 ケース＋2（gated のうち unresolved な 3 ケースは、run が実際に数える件数 `runChangeCount` を固定する）。
 - `ImpactCheckButton.test.tsx`：出る・出ない条件（baseline なし・変更なし・空白のみ・hidden・suppress・Phase 制限・項目なし・gate disabled／hidden・実行中）、
   AI 経路・候補絞り・保存・`runImpactReview` が 0 回、古い結果の破棄（項目切替・同じ項目の再計算の重なり）、失敗は表示なし、unmount、en の単複、
   4 つの status の toast が不変、押下後に再計算。
+- `ImpactCheckButton.test.tsx` の「started の完走後」：`runImpactReview` の mock で callbacks を捕まえ、store の `complete` → まだ古い baseline → baseline を進める → 捕まえた `onDone` を呼ぶ、の順で印が消えること。
 - `ImpactPendingTabMarker.test.tsx`：点（aria-hidden＋sr-only）、計測行に出ない、出ない状態、gate、失敗、タブ切替・epoch での再計算、entryId 切替。
 - `ImpactNudge.browser.test.tsx`（実 Chromium、1 file）：ja・en × 幅 1100／320／220 で、1 行が親からはみ出さず折り返しても崩れない・点がタブの内側でアイコンに重ならない、
-  点を足してもタブの幅・位置が変わらない、light／dark のコントラスト（文字 4.5 以上・点 3 以上）。`VITE_IMPACT_NUDGE_SHOT` を付けると見た目の PNG を保存する（CI では保存しない）。
+  点を足してもタブの幅・位置が変わらない、**8 タブ・詳細がアクティブ・幅 240／1100 で、非アクティブの整合性タブ（アイコンのみに畳まれる幅）の点がタブの内側に収まり、marker の有無で各タブの畳み込みと幅が変わらない**、light／dark のコントラスト（文字 4.5 以上・点 3 以上）。`VITE_IMPACT_NUDGE_SHOT` を付けると見た目の PNG を保存する（CI では保存しない）。
 
 ### 7.1 変異試験（1 つずつ入れて試験が落ちることを確認し、戻した）
 
@@ -141,12 +148,16 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 | 古い結果を捨てない（cancelled を無視）※ | 1 |
 | AI gate を見ない | 1 |
 | 実行中でも出す | 1 |
+| `onDone` の合図を出さない（started の完走後に印が残る）※ | 1 |
+| `onError` の合図を出さない ※ | 1 |
 | entryId 不一致でも前の結果を出す | 1 |
 | 失敗で前の結果を残す ※ | 1 |
 | ボタンが pending 以外でも 1 行を出す | 4 |
 | タブの点を unchecked でも出す | 2 |
 | `DetailTabs` が marker を描画しない | 8 |
 | 読みで候補絞りを呼ぶ（AI 経路の起動） | 1 |
+
+※の `onDone`／`onError` は 74 件中。epoch 起点の再計算を debounce しない変更は、試験が時間を測らないので落ちない（挙動は即時だが、試験は固定していない）。
 
 最初の走行で「古い結果を捨てない」と「失敗で前の結果を残す」が生き残ったため、試験（同じ項目で再計算が重なる・再計算の失敗）を足して落ちることを確認した。
 
