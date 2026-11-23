@@ -480,6 +480,87 @@ describe("deleteTreeSubtree: a folder with a subtree (DR-UND-2)", () => {
     });
   });
 
+  describe("a second Undo, after an Undo and a Redo", () => {
+    function rig() {
+      const testPorts = ports(chapter());
+      let made = 0;
+      testPorts.makeTrashTempId = (entry) => `trash-${entry.id}-${++made}`;
+      let generation = 1;
+      testPorts.loadRestoreSnapshot = vi.fn(async (nodeId: string) => ({
+        content: `body-${generation}-${nodeId}`,
+        sourceUri: null,
+        sourceMtime: null,
+        restoreState: {},
+      }));
+      return {
+        testPorts,
+        nextGeneration: () => {
+          generation += 1;
+        },
+      };
+    }
+
+    it("gives a scene that never reached the Trash back to it, with the body as of the Redo, when the second Undo stops", async () => {
+      const { testPorts, nextGeneration } = rig();
+      // The first Undo is in time: the captures are pending and get cancelled.
+      vi.mocked(testPorts.cancelTrash).mockReturnValue(true);
+      await deleteTreeSubtree("folder", testPorts);
+      const command = testPorts.history[0]!;
+      await command.undo();
+      nextGeneration();
+      await command.redo();
+      vi.mocked(testPorts.captureTrash).mockClear();
+      vi.mocked(testPorts.cancelTrash).mockClear();
+      vi.mocked(testPorts.restorePersisted).mockImplementation(
+        async (entry) => {
+          if (entry.id === "scene-2") throw new Error("stopped");
+        },
+      );
+
+      await expect(command.undo()).rejects.toThrow("stopped");
+
+      // Their captures were cancelled by the first Undo and are not asked
+      // again; the scene that did not come back goes to the Trash.
+      expect(testPorts.cancelTrash).not.toHaveBeenCalled();
+      const given = vi
+        .mocked(testPorts.captureTrash)
+        .mock.calls.map(([capture]) => capture);
+      expect(given.map((capture) => capture.node.id)).toEqual(["scene-2"]);
+      expect(given[0]).toMatchObject({ content: "body-2-scene-2" });
+    });
+
+    it("gives nothing back for a scene the first Undo found already in the Trash", async () => {
+      const { testPorts } = rig();
+      vi.mocked(testPorts.cancelTrash).mockReturnValue(false);
+      await deleteTreeSubtree("folder", testPorts);
+      const command = testPorts.history[0]!;
+      await command.undo();
+      await command.redo();
+      vi.mocked(testPorts.captureTrash).mockClear();
+      vi.mocked(testPorts.restorePersisted).mockRejectedValue(
+        new Error("stopped"),
+      );
+
+      await expect(command.undo()).rejects.toThrow("stopped");
+
+      expect(testPorts.captureTrash).not.toHaveBeenCalled();
+    });
+
+    it("captures nothing when the second Undo completes", async () => {
+      const { testPorts } = rig();
+      vi.mocked(testPorts.cancelTrash).mockReturnValue(true);
+      await deleteTreeSubtree("folder", testPorts);
+      const command = testPorts.history[0]!;
+      await command.undo();
+      await command.redo();
+      vi.mocked(testPorts.captureTrash).mockClear();
+
+      await command.undo();
+
+      expect(testPorts.captureTrash).not.toHaveBeenCalled();
+    });
+  });
+
   it("cancels the delayed Trash captures before the first node is restored, and gives none back on success", async () => {
     const testPorts = ports(chapter());
     const order: string[] = [];

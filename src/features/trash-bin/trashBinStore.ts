@@ -81,6 +81,8 @@ interface TrashBinStore {
   /**
    * Undo 1500ms 内吸収。エディタ単位で全保留を破棄するときも使う。
    * 保留を 1 件でも取り消したら true（すでに DB へ書き込まれた後なら false）。
+   * 書込みの処理中（保留がまだキューにある間）に呼ぶと true になるが、その書込みは
+   * 完了する（取り消しても止まらない）。
    */
   cancelPending(filter: {
     tempId?: string;

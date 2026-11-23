@@ -47,7 +47,9 @@ export interface DeleteTreeSubtreePorts {
   /**
    * Cancel a delayed Trash capture. Returns true when the capture was still
    * pending (so it is now gone and an Undo that stops half way can give it
-   * back); false or nothing when it had already been written to the Trash.
+   * back); false or nothing when it was no longer pending: already written to
+   * the Trash, or being written (a write in flight completes even when it is
+   * cancelled, so such a scene may be in the Trash twice, never in neither).
    */
   cancelTrash(tempId: string): boolean | void;
   makeTrashTempId(node: TreeNodeData): string;
@@ -256,6 +258,8 @@ async function deleteTreeSubtreeWithAuthority(
   // The nodes an Undo puts back into the store. A Redo refreshes them, so an
   // edit made between the Undo and the Redo is not lost by the next Undo.
   let undoNodes: TreeNodeData[] = deletedNodes;
+  // Scenes whose delayed Trash capture an Undo cancelled in time.
+  const outOfTrash = new Set<string>();
   // Put the restored nodes into the store. A complete Undo shows the active
   // Scene it started from; one that stopped half way shows only what came
   // back and leaves the active Scene alone unless that Scene is among them.
@@ -295,12 +299,14 @@ async function deleteTreeSubtreeWithAuthority(
       if (!navigationAuthority) return;
       try {
         // The delayed Trash captures are cancelled up front, so a scene this
-        // Undo restores is not also written to the Trash. Remember which were
-        // still pending: if the Undo stops half way, those that were not
+        // Undo restores is not also written to the Trash. A scene whose
+        // capture was cancelled is in neither the Trash nor the database
+        // until it is restored (it stays so through a Redo, which does not
+        // capture again): if an Undo stops half way, those that were not
         // restored are given back (below) instead of being lost.
-        const cancelled = new Set<string>();
         for (const [nodeId, tempId] of trashTempIds) {
-          if (ports.cancelTrash(tempId) === true) cancelled.add(nodeId);
+          if (outOfTrash.has(nodeId)) continue;
+          if (ports.cancelTrash(tempId) === true) outOfTrash.add(nodeId);
         }
         try {
           for (const node of parentsFirst(undoNodes)) {
@@ -318,12 +324,13 @@ async function deleteTreeSubtreeWithAuthority(
           // The database holds the nodes restored so far: show them, and put
           // the scenes that did not come back into the Trash again.
           reflectRestored(false);
-          for (const nodeId of cancelled) {
+          for (const nodeId of [...outOfTrash]) {
             if (restoredIds.has(nodeId)) continue;
             const capture = trashCaptures.get(nodeId);
             if (!capture) continue;
             const tempId = ports.makeTrashTempId(capture.node);
             trashTempIds.set(nodeId, tempId);
+            outOfTrash.delete(nodeId);
             ports.captureTrash({ ...capture, tempId });
           }
           throw error;
@@ -345,6 +352,16 @@ async function deleteTreeSubtreeWithAuthority(
           id,
         );
         await captureSnapshots(refreshed, true);
+        // What a later Undo gives back to the Trash is the body as of now.
+        for (const node of refreshed) {
+          const capture = trashCaptures.get(node.id);
+          if (!capture) continue;
+          trashCaptures.set(node.id, {
+            ...capture,
+            node,
+            content: contentSnapshots[node.id] ?? capture.content,
+          });
+        }
         await ports.deletePersisted(id);
         restoredIds.clear();
         restoredFields.clear();
