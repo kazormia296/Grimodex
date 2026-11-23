@@ -78,12 +78,15 @@ interface TrashBinStore {
    * callers retaining a pre-store draft must keep it retryable in that case.
    */
   enqueuePending(data: TrashItemInput, options: EnqueueOptions): boolean;
-  /** Undo 1500ms 内吸収。エディタ単位で全保留を破棄するときも使う。 */
+  /**
+   * Undo 1500ms 内吸収。エディタ単位で全保留を破棄するときも使う。
+   * 保留を 1 件でも取り消したら true（すでに DB へ書き込まれた後なら false）。
+   */
   cancelPending(filter: {
     tempId?: string;
     originSceneId?: string | null;
     originCodexId?: string | null;
-  }): void;
+  }): boolean;
   removeItem(id: string): Promise<void>;
   clearAll(projectId: string): Promise<void>;
   setSelectedItem(id: string | null): void;
@@ -244,6 +247,7 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
   },
 
   cancelPending: ({ tempId, originSceneId, originCodexId }) => {
+    let cancelled = false;
     set((s) => {
       const remaining: PendingTrashItem[] = [];
       for (const p of s.pendingQueue) {
@@ -254,6 +258,7 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
           originCodexId !== undefined && p.originCodexId === originCodexId;
         const shouldCancel = matchTemp || matchScene || matchCodex;
         if (shouldCancel) {
+          cancelled = true;
           clearFlushTimer(p.tempId);
           pendingAuthorities.delete(p.tempId);
         } else {
@@ -262,6 +267,7 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
       }
       return { pendingQueue: remaining };
     });
+    return cancelled;
   },
 
   removeItem: async (id) => {
