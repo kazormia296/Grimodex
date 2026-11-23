@@ -372,6 +372,7 @@ export async function runCell({
   let app;
   // 落ちた段の印（定型の token だけ。cell.failedPhase に残す。原因を後から読むため）。
   let phase = "setup";
+  let pageRef = null;
   const started = Date.now();
   // kill されたとき（finally が走らない）も、隔離 userData の key と workRoot を消す。
   assert.ok(
@@ -514,6 +515,7 @@ export async function runCell({
     });
     sampler = setInterval(() => egressSampler.tick(), 250);
     const page = await app.firstWindow();
+    pageRef = page;
     phase = "page-ready";
     await page.waitForFunction(
       () => window.identityLoad?.ready === true,
@@ -629,6 +631,23 @@ export async function runCell({
   } catch (error) {
     cell.status = "failed";
     cell.failedPhase = phase;
+    // 落ちたとき、Electron の process が生きているか（終了コード・シグナル）と window が閉じていたか。数と短い token だけ
+    // （main の異常終了と、通信の一過性の失敗を分けるため。試走の調べで、本体の後の最初の evaluate が時々落ちた）。
+    try {
+      const proc = app?.process?.();
+      cell.appProcess = {
+        exitCode: Number.isInteger(proc?.exitCode) ? proc.exitCode : null,
+        signalCode:
+          typeof proc?.signalCode === "string" &&
+          /^[A-Z0-9_]{1,16}$/u.test(proc.signalCode)
+            ? proc.signalCode
+            : null,
+        pageClosed:
+          typeof pageRef?.isClosed === "function" ? pageRef.isClosed() : null,
+      };
+    } catch {
+      cell.appProcess = null;
+    }
     cell.errors = [safeErrorSummary(error)];
     // 失敗した cell にも、そこまでの宛先の標本を残す（宛先が原因の失敗の宛先が記録から消えないように）。
     if (egressSampler) {

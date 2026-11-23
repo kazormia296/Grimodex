@@ -1244,6 +1244,12 @@ test("runCell：失敗した cell に、落ちた段の印（failedPhase）を�
     assert.equal(inBody.cell.status, "failed");
     assert.equal(inBody.cell.failedPhase, "body");
     assert.ok(!JSON.stringify(inBody.cell).includes("Execution context"));
+    // 落ちたときの Electron の process の状態（数と短い token だけ）。fake は終了コード・シグナルを持たないので null。
+    assert.deepEqual(inBody.cell.appProcess, {
+      exitCode: null,
+      signalCode: null,
+      pageClosed: null,
+    });
     // 起動が投げた：段は launch。
     const inLaunch = await runFakeCell(root, {
       provenance: () => PROV_A,
