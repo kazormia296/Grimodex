@@ -128,6 +128,24 @@ describe("trashBinStore Project authority and delayed persistence", () => {
     expect(useTrashBinStore.getState().items).toEqual(new Map());
   });
 
+  it("cancelPending says whether the capture was still pending", async () => {
+    vi.mocked(trashApi.createTrashItem).mockResolvedValue(deletedReplay());
+    const store = useTrashBinStore.getState();
+
+    store.enqueuePending(input, { tempId: "trash-cancel-1" });
+    expect(store.cancelPending({ tempId: "trash-cancel-1" })).toBe(true);
+    // Nothing is left to cancel the second time, nor for an id never queued.
+    expect(store.cancelPending({ tempId: "trash-cancel-1" })).toBe(false);
+    expect(store.cancelPending({ tempId: "never-queued" })).toBe(false);
+    expect(trashApi.createTrashItem).not.toHaveBeenCalled();
+
+    // Once the delay has passed the capture is written, so it cannot be cancelled.
+    store.enqueuePending(input, { tempId: "trash-cancel-2" });
+    await vi.advanceTimersByTimeAsync(UNDO_ABSORB_WINDOW_MS);
+    expect(trashApi.createTrashItem).toHaveBeenCalledTimes(1);
+    expect(store.cancelPending({ tempId: "trash-cancel-2" })).toBe(false);
+  });
+
   it("strict quiescence flushes a delayed capture before its timer expires", async () => {
     const create = deferred<TrashItemData>();
     vi.mocked(trashApi.createTrashItem).mockReturnValueOnce(create.promise);

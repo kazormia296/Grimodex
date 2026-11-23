@@ -213,10 +213,11 @@ fn current_undo_of_a_scene_drops_non_create_columns() {
     assert_ne!(after["createdAt"], before["createdAt"]);
 }
 
-/// folder と子の undo：子の create が journal の束縛（`entity_id == node_id`）で
-/// 拒まれるかを今の実 DB で確かめる（反証 P1-1）。結果を固定する。
+/// folder と子の undo：子の create は、journal（delete の記録）に含まれる id なので通る
+/// （反証 P1-1 の不具合。DR-UND-2 で直した。以前は
+/// `tree replay target does not match the named Undo Journal` で拒まれていた）。
 #[test]
-fn current_undo_of_a_folder_subtree_child_is_pinned() {
+fn undo_of_a_folder_subtree_child_is_bound_to_the_delete_record() {
     let db = new_db();
     create(&db, create_payload("folder-a", "folder", None)).expect("create folder");
     create(&db, create_payload("child-a", "scene", Some("folder-a"))).expect("create child");
@@ -232,11 +233,10 @@ fn current_undo_of_a_folder_subtree_child_is_pinned() {
         "status": "draft", "content": null
     });
     create(&db, undo_create_payload(&folder, &receipt, "undo-folder")).expect("undo folder");
-    let outcome = create(&db, undo_create_payload(&child, &receipt, "undo-child"));
+    create(&db, undo_create_payload(&child, &receipt, "undo-child")).expect("undo child");
     assert_eq!(
-        outcome.as_ref().err().map(|e| e.to_string()),
-        Some("tree replay target does not match the named Undo Journal".to_string()),
-        "outcome: {outcome:?}"
+        row(&db, "child-a").expect("child is back")["parentId"],
+        json!("folder-a")
     );
 }
 
@@ -852,4 +852,693 @@ fn restore_state_puts_back_an_inconsistent_legacy_range_faithfully() {
             "{name}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// DR-UND-2: 中身のある folder の undo。journal の束縛は「delete の記録
+// （`before_json.nodes`）に含まれる id」までで、それ以外は拒む。
+//
+// この節の拒否の試験は、束縛を緩める前（`entity_id == node_id` だけ）でも後でも
+// 同じ結果になる。緩和が広がりすぎたとき（記録の外・別の journal・別 project・壊れた記録・
+// Redo／delete／patch）に落ちることを、変異試験で確かめる。
+// ---------------------------------------------------------------------------
+
+const BINDING: &str = "tree replay target does not match the named Undo Journal";
+
+type Before = std::collections::BTreeMap<String, serde_json::Map<String, Value>>;
+
+/// 1 つの delete で消える subtree（親が先）。`(id, nodeType, parentId)`。
+const TREE_NODES: [(&str, &str, Option<&str>); 5] = [
+    ("folder-a", "folder", None),
+    ("scene-a1", "scene", Some("folder-a")),
+    ("folder-b", "folder", Some("folder-a")),
+    ("scene-b1", "scene", Some("folder-b")),
+    ("note-b2", "note", Some("folder-b")),
+];
+
+struct Tree {
+    db: Database,
+    receipt: Value,
+    before: Before,
+}
+
+/// `nodes` の各 node を作り、欄を埋め、root を delete する。
+fn seed_tree(db: &Database, nodes: &[(&str, &str, Option<&str>)]) -> (Before, Value) {
+    for (id, kind, parent) in nodes {
+        create(db, create_payload(id, kind, *parent)).expect("create tree node");
+    }
+    for (id, kind, _) in nodes {
+        let fields = match *kind {
+            "scene" => json!({
+                "intent": format!("intent-{id}"), "storyTimeOrder": "b3",
+                "povCharacterId": "pov-1",
+                "content": format!("{{\"type\":\"doc\",\"of\":\"{id}\"}}"),
+                "chronicleStartTime": 7, "chronicleStartGranularity": "day",
+                "chroniclePrecision": "approx"
+            }),
+            "note" => json!({
+                "contextMode": "hidden", "aliases": "[\"n\"]",
+                "content": format!("{{\"type\":\"doc\",\"of\":\"{id}\"}}")
+            }),
+            _ => json!({ "intent": format!("intent-{id}") }),
+        };
+        patch(db, id, &format!("patch-{id}"), fields).expect("patch tree node");
+    }
+    let before = nodes
+        .iter()
+        .map(|(id, _, _)| (id.to_string(), row(db, id).expect("row before delete")))
+        .collect::<Before>();
+    let receipt = delete(db, nodes[0].0, &format!("delete-{}", nodes[0].0)).expect("delete root");
+    (before, receipt)
+}
+
+fn build_tree() -> Tree {
+    let db = new_db();
+    let (before, receipt) = seed_tree(&db, &TREE_NODES);
+    Tree {
+        db,
+        receipt,
+        before,
+    }
+}
+
+fn kind_of(id: &str) -> &'static str {
+    TREE_NODES
+        .iter()
+        .find(|(candidate, _, _)| *candidate == id)
+        .map(|(_, kind, _)| *kind)
+        .expect("known node")
+}
+
+/// 実際の renderer と同じ形：削除前の行の列を `restoreState` に入れた undo の create。
+fn undo_node(tree: &Tree, id: &str, req: &str) -> Value {
+    undo_payload_with_state(id, kind_of(id), &tree.before[id], &tree.receipt, req)
+}
+
+fn row_counts(db: &Database) -> (i64, i64, i64) {
+    (
+        count(db, "SELECT COUNT(*) FROM tree_nodes"),
+        count(db, "SELECT COUNT(*) FROM narrative_change_transactions"),
+        count(db, "SELECT COUNT(*) FROM narrative_change_events"),
+    )
+}
+
+/// 拒まれ、行も feed も増えないこと。
+fn assert_refused(db: &Database, payload: Value, message: &str, label: &str) {
+    let before = row_counts(db);
+    let error = create_wire(db, payload).expect_err(label);
+    assert!(error.to_string().contains(message), "{label}: {error}");
+    assert_eq!(row_counts(db), before, "{label}: nothing is written");
+}
+
+fn journal_id(receipt: &Value) -> String {
+    receipt["undoJournalId"]
+        .as_str()
+        .expect("journal id")
+        .to_string()
+}
+
+fn journal_record(db: &Database, receipt: &Value) -> Value {
+    let text: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT before_json FROM undo_journal WHERE id = ?1",
+                [journal_id(receipt)],
+                |r| r.get(0),
+            )?)
+        })
+        .expect("journal before_json");
+    serde_json::from_str(&text).expect("journal json")
+}
+
+/// 実際の journal の行を直接書き換えて、壊れた記録・偽の記録を作る（lineage は有効なまま）。
+fn forge_record(db: &Database, receipt: &Value, before_json: Option<&str>) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE undo_journal SET before_json = ?1 WHERE id = ?2",
+            rusqlite::params![before_json, journal_id(receipt)],
+        )?;
+        Ok(())
+    })
+    .expect("forge before_json");
+}
+
+fn forge_op_kind(db: &Database, receipt: &Value, op_kind: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE undo_journal SET op_kind = ?1 WHERE id = ?2",
+            rusqlite::params![op_kind, journal_id(receipt)],
+        )?;
+        Ok(())
+    })
+    .expect("forge op_kind");
+}
+
+fn replay_delete(
+    db: &Database,
+    id: &str,
+    origin: &str,
+    receipt: &Value,
+    req: &str,
+) -> anyhow::Result<Value> {
+    tree_node_delete(
+        db,
+        de::<TreeNodeDeletePayload>(json!({
+            "projectId": P, "requestId": req, "sessionId": SESSION,
+            "eventUid": format!("uid-{req}"), "origin": origin, "nodeId": id,
+            "originalTransactionId": receipt["maintenanceTransactionId"],
+            "undoJournalId": receipt["undoJournalId"]
+        }))?,
+    )
+}
+
+fn replay_patch(
+    db: &Database,
+    id: &str,
+    origin: &str,
+    receipt: &Value,
+    req: &str,
+) -> anyhow::Result<Value> {
+    tree_node_patch(
+        db,
+        de::<TreeNodePatchPayload>(json!({
+            "projectId": P, "requestId": req, "sessionId": SESSION,
+            "eventUid": format!("uid-{req}"), "nodeId": id,
+            "patch": { "intent": "replayed" }, "baseVersion": null, "bumpVersion": false,
+            "updatedAt": "2026-08-25T00:00:00.000Z", "changeEvent": null,
+            "origin": origin,
+            "originalTransactionId": receipt["maintenanceTransactionId"],
+            "undoJournalId": receipt["undoJournalId"]
+        }))?,
+    )
+}
+
+/// 記録にある id と同じ id の生きた node（削除の後に人が作り直したもの）。
+fn live_node(db: &Database, id: &str) {
+    let mut payload = create_payload(id, "scene", None);
+    payload["requestId"] = json!(format!("live-{id}"));
+    payload["eventUid"] = json!(format!("uid-live-{id}"));
+    create(db, payload).expect("a live node of that id");
+}
+
+/// T2a：記録に無い id（未使用の id・別の経路で作って消した id）は、journal が有効でも作れない。
+#[test]
+fn a_replay_journal_does_not_create_an_id_that_it_did_not_record() {
+    let tree = build_tree();
+    let mut ghost = undo_node(&tree, "scene-a1", "undo-ghost");
+    ghost["id"] = json!("ghost-1");
+    ghost["parentId"] = Value::Null;
+    assert_refused(&tree.db, ghost, BINDING, "unused id");
+    assert!(row(&tree.db, "ghost-1").is_none());
+
+    // 別の場所で作って消した id も、この journal の記録には無い。
+    create(&tree.db, create_payload("other-1", "scene", None)).expect("create other");
+    delete(&tree.db, "other-1", "delete-other-1").expect("delete other");
+    let mut other = undo_node(&tree, "scene-a1", "undo-other");
+    other["id"] = json!("other-1");
+    other["parentId"] = Value::Null;
+    assert_refused(&tree.db, other, BINDING, "id deleted elsewhere");
+}
+
+/// T2b：別の delete（J2）の子の id は、J1 の journal では作れない。
+#[test]
+fn one_deletes_journal_does_not_create_another_deletes_nodes() {
+    let tree = build_tree();
+    let (before_z, receipt_z) = seed_tree(
+        &tree.db,
+        &[
+            ("folder-z", "folder", None),
+            ("scene-z1", "scene", Some("folder-z")),
+        ],
+    );
+    assert_ne!(tree.receipt["undoJournalId"], receipt_z["undoJournalId"]);
+    // folder-a は戻っている（J1 の root）。J2 の子 scene-z1 を J1 の名で作る。
+    create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+    let mut foreign = undo_payload_with_state(
+        "scene-z1",
+        "scene",
+        &before_z["scene-z1"],
+        &tree.receipt,
+        "undo-z1-under-j1",
+    );
+    foreign["parentId"] = json!("folder-a");
+    assert_refused(&tree.db, foreign, BINDING, "another delete's child");
+    // J2 の名なら J2 自身の root から戻る。
+    create_wire(
+        &tree.db,
+        undo_payload_with_state(
+            "folder-z",
+            "folder",
+            &before_z["folder-z"],
+            &receipt_z,
+            "undo-z-root",
+        ),
+    )
+    .expect("J2 restores its own root");
+}
+
+/// T2c：root は戻っていても、同じ journal の root をもう 1 度 create しても行は変わらない
+/// （`restoreState` で既存の行を書き換えられない）。
+#[test]
+fn a_replay_create_cannot_overwrite_a_row_that_already_exists() {
+    let tree = build_tree();
+    create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+    let existing = row(&tree.db, "folder-a").expect("restored root");
+    let mut again = undo_node(&tree, "folder-a", "undo-a-root-again");
+    again["restoreState"]["intent"] = json!("overwritten");
+    again["title"] = json!("overwritten");
+    let before = row_counts(&tree.db);
+    create_wire(&tree.db, again).expect_err("the id already exists");
+    assert_eq!(row_counts(&tree.db), before);
+    assert_eq!(row(&tree.db, "folder-a").expect("row"), existing);
+}
+
+/// T2d：別 project の payload では、project の journal を名指ししても作れない。
+#[test]
+fn a_replay_journal_of_another_project_creates_nothing() {
+    let tree = build_tree();
+    create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+    let mut foreign = undo_node(&tree, "scene-a1", "undo-a1-foreign");
+    foreign["projectId"] = json!("undo-p2");
+    foreign["parentId"] = Value::Null;
+    let before = row_counts(&tree.db);
+    let error = create_wire(&tree.db, foreign).expect_err("journal belongs to another project");
+    // Refused by the lineage check (the forward transaction is not in that project),
+    // before the binding is looked at.
+    assert!(
+        error.to_string().contains("not in the active project"),
+        "{error}"
+    );
+    assert_eq!(row_counts(&tree.db), before);
+    assert!(row(&tree.db, "scene-a1").is_none());
+}
+
+/// T2e／T2e'／T2h：壊れた・偽の記録、project の違う記録、id が別の欄に現れるだけの記録は、
+/// 子の create を通さない（fail closed。文言は束縛の拒否と同じ）。
+#[test]
+fn a_damaged_or_forged_delete_record_does_not_bind_a_child() {
+    let forged: Vec<(&str, Option<String>)> = vec![
+        ("sql null", None),
+        ("not json", Some("not json".to_string())),
+        ("an array", Some("[]".to_string())),
+        ("no nodes", Some(json!({"rootId": "folder-a"}).to_string())),
+        ("empty nodes", Some(json!({"rootId": "folder-a", "nodes": []}).to_string())),
+        ("nodes is not an array", Some(json!({"rootId": "folder-a", "nodes": {"id": "scene-a1", "projectId": P}}).to_string())),
+        ("root id differs", Some(json!({"rootId": "folder-x", "nodes": [{"id": "scene-a1", "projectId": P}]}).to_string())),
+        ("no root id", Some(json!({"nodes": [{"id": "scene-a1", "projectId": P}]}).to_string())),
+        ("the node has no project", Some(json!({"rootId": "folder-a", "nodes": [{"id": "scene-a1"}]}).to_string())),
+        ("the node is of another project", Some(json!({"rootId": "folder-a", "nodes": [{"id": "scene-a1", "projectId": "undo-p2"}]}).to_string())),
+        ("the id is not a string", Some(json!({"rootId": "folder-a", "nodes": [{"id": 7, "projectId": P}]}).to_string())),
+        (
+            // id が別の node の parentId・本文・title にだけ現れる（部分一致で通してはならない）。
+            "the id only appears in other fields",
+            Some(json!({"rootId": "folder-a", "nodes": [
+                {"id": "folder-a", "projectId": P, "content": "scene-a1", "title": "scene-a1"},
+                {"id": "x-1", "projectId": P, "parentId": "scene-a1", "content": "{\"id\":\"scene-a1\"}"}
+            ]}).to_string()),
+        ),
+    ];
+    for (label, record) in forged {
+        let tree = build_tree();
+        create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+        forge_record(&tree.db, &tree.receipt, record.as_deref());
+        assert_refused(
+            &tree.db,
+            undo_node(&tree, "scene-a1", "undo-a1"),
+            BINDING,
+            label,
+        );
+        assert!(row(&tree.db, "scene-a1").is_none(), "{label}");
+    }
+}
+
+/// root（journal の entity_id）の create は記録を読まない：記録が壊れていても、これまでどおり戻る
+/// （子の create だけが記録に頼る）。
+#[test]
+fn the_root_is_put_back_without_reading_the_record() {
+    let tree = build_tree();
+    forge_record(&tree.db, &tree.receipt, None);
+    create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+    assert_eq!(
+        Value::Object(row(&tree.db, "folder-a").expect("restored")),
+        Value::Object(tree.before["folder-a"].clone())
+    );
+}
+
+/// T2f：journal が delete のものでなければ（op_kind／entity_kind の違い）、記録に id があっても通さない。
+#[test]
+fn a_journal_that_is_not_a_delete_does_not_bind_a_child() {
+    for op_kind in ["create", "update"] {
+        let tree = build_tree();
+        create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+        forge_op_kind(&tree.db, &tree.receipt, op_kind);
+        assert_refused(
+            &tree.db,
+            undo_node(&tree, "scene-a1", "undo-a1"),
+            BINDING,
+            op_kind,
+        );
+    }
+    let tree = build_tree();
+    create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+    tree.db
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE undo_journal SET entity_kind = 'codex_entry' WHERE id = ?1",
+                [journal_id(&tree.receipt)],
+            )?;
+            Ok(())
+        })
+        .expect("forge entity_kind");
+    assert_refused(
+        &tree.db,
+        undo_node(&tree, "scene-a1", "undo-a1"),
+        BINDING,
+        "entity_kind",
+    );
+}
+
+/// T2g：緩むのは `("create", Undo)` だけ。Redo の create・delete・patch は、記録にある id でも
+/// `entity_id == node_id` を要求する（descendant の id では通らない）。
+#[test]
+fn only_an_undo_create_may_name_a_recorded_descendant() {
+    // ("create", Redo)：journal を create のものに偽る（実際の redo of create の形）。
+    let tree = build_tree();
+    forge_op_kind(&tree.db, &tree.receipt, "create");
+    let mut redo_create = undo_node(&tree, "scene-a1", "redo-a1");
+    redo_create["origin"] = json!("redo");
+    redo_create["parentId"] = Value::Null;
+    redo_create
+        .as_object_mut()
+        .expect("object")
+        .remove("restoreState");
+    assert_refused(&tree.db, redo_create, BINDING, "create/redo");
+    assert!(row(&tree.db, "scene-a1").is_none());
+
+    // ("delete", Redo)：journal は delete のまま。descendant が生きていても消せない。
+    let tree = build_tree();
+    live_node(&tree.db, "scene-a1");
+    let before = row_counts(&tree.db);
+    let error = replay_delete(&tree.db, "scene-a1", "redo", &tree.receipt, "redo-del-a1")
+        .expect_err("delete/redo");
+    assert!(error.to_string().contains(BINDING), "{error}");
+    assert_eq!(row_counts(&tree.db), before);
+    assert!(row(&tree.db, "scene-a1").is_some());
+
+    // ("delete", Undo)：journal を create のものに偽る。
+    let tree = build_tree();
+    forge_op_kind(&tree.db, &tree.receipt, "create");
+    live_node(&tree.db, "scene-a1");
+    let error = replay_delete(&tree.db, "scene-a1", "undo", &tree.receipt, "undo-del-a1")
+        .expect_err("delete/undo");
+    assert!(error.to_string().contains(BINDING), "{error}");
+    assert!(row(&tree.db, "scene-a1").is_some());
+
+    // ("patch", Undo／Redo)：journal を update のものに偽る。
+    for origin in ["undo", "redo"] {
+        let tree = build_tree();
+        forge_op_kind(&tree.db, &tree.receipt, "update");
+        live_node(&tree.db, "scene-a1");
+        let error = replay_patch(
+            &tree.db,
+            "scene-a1",
+            origin,
+            &tree.receipt,
+            &format!("{origin}-patch-a1"),
+        )
+        .expect_err("patch");
+        assert!(error.to_string().contains(BINDING), "{origin}: {error}");
+        assert!(row(&tree.db, "scene-a1").expect("row")["intent"].is_null());
+    }
+}
+
+/// T2i：`restoreState` を付けても、記録に無い id の create は束縛で先に拒まれる。
+#[test]
+fn restore_state_does_not_open_a_create_that_the_journal_did_not_record() {
+    let tree = build_tree();
+    let mut ghost = undo_node(&tree, "scene-a1", "undo-ghost-state");
+    ghost["id"] = json!("ghost-2");
+    ghost["parentId"] = Value::Null;
+    ghost["restoreState"]["intent"] = json!("planted");
+    assert_refused(&tree.db, ghost, BINDING, "ghost with restoreState");
+    assert!(row(&tree.db, "ghost-2").is_none());
+}
+
+/// T1：中身のある章（入れ子の folder・場面・note）を消して、親が先の順に各 node を
+/// undo すると、全 node が削除前の行に戻る。
+#[test]
+fn undo_of_a_folder_subtree_returns_every_node_as_it_was() {
+    let tree = build_tree();
+    let journals = count(&tree.db, "SELECT COUNT(*) FROM undo_journal");
+    let transactions = count(
+        &tree.db,
+        "SELECT COUNT(*) FROM narrative_change_transactions",
+    );
+    assert_eq!(count(&tree.db, "SELECT COUNT(*) FROM tree_nodes"), 0);
+    for (id, _, _) in TREE_NODES {
+        create_wire(&tree.db, undo_node(&tree, id, &format!("undo-{id}")))
+            .unwrap_or_else(|error| panic!("undo {id}: {error}"));
+    }
+    for (id, _, _) in TREE_NODES {
+        assert_eq!(
+            Value::Object(row(&tree.db, id).expect("restored")),
+            Value::Object(tree.before[id].clone()),
+            "{id}"
+        );
+    }
+    // 復元した場面には Scope の束縛が従来どおり付く。
+    assert_eq!(
+        count(
+            &tree.db,
+            "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+              WHERE scene_id IN ('scene-a1', 'scene-b1')"
+        ),
+        2
+    );
+    assert_eq!(count(&tree.db, "SELECT COUNT(*) FROM tree_nodes_fts"), 5);
+    // 復元した場面の束縛は、履歴の再生なので既定を受け継がず `unknown`（UnknownRepairOrRestore）で作られる。
+    assert_eq!(
+        count(
+            &tree.db,
+            "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+              WHERE scene_id IN ('scene-a1', 'scene-b1') AND compatibility_marker = 'unknown'"
+        ),
+        2
+    );
+    // undo の create は journal を増やさず、node ごとに forward の delete を指す undo の
+    // transaction が 1 件ずつ付く。
+    assert_eq!(
+        count(&tree.db, "SELECT COUNT(*) FROM undo_journal"),
+        journals
+    );
+    assert_eq!(
+        count(
+            &tree.db,
+            "SELECT COUNT(*) FROM narrative_change_transactions"
+        ),
+        transactions + 5
+    );
+    let forward = tree.receipt["maintenanceTransactionId"]
+        .as_str()
+        .expect("forward transaction");
+    assert_eq!(
+        count(
+            &tree.db,
+            &format!(
+                "SELECT COUNT(*) FROM narrative_change_transactions
+                  WHERE cause_kind = 'undo' AND original_transaction_id = '{forward}'
+                    AND undo_journal_id = '{}'",
+                journal_id(&tree.receipt)
+            )
+        ),
+        5
+    );
+}
+
+/// T3：親より先の子は、journal の束縛を通っても親の検査で拒まれ、何も書かれない。
+/// 親を作ってから、同じ requestId の同じ子が通る。
+#[test]
+fn a_child_is_refused_until_its_parent_is_back() {
+    let tree = build_tree();
+    let child = undo_node(&tree, "scene-a1", "undo-a1");
+    let error = create_wire(&tree.db, child.clone()).expect_err("parent is not there");
+    assert!(error.to_string().contains("parent"), "{error}");
+    assert!(
+        !error.to_string().contains(BINDING),
+        "the binding passes; the parent check refuses: {error}"
+    );
+    assert_eq!(count(&tree.db, "SELECT COUNT(*) FROM tree_nodes"), 0);
+    create_wire(&tree.db, undo_node(&tree, "folder-a", "undo-a-root")).expect("root");
+    create_wire(&tree.db, child).expect("same child after its parent");
+    assert!(row(&tree.db, "scene-a1").is_some());
+}
+
+/// T4：途中で止まっても、残りを別の requestId で続けられる。同じ requestId の再送は
+/// 記録済みの応答を返し、行は増えない。
+#[test]
+fn an_interrupted_subtree_undo_resumes_and_replays_idempotently() {
+    let tree = build_tree();
+    let root = undo_node(&tree, "folder-a", "undo-a-root");
+    let first = create_wire(&tree.db, root.clone()).expect("root");
+    create_wire(&tree.db, undo_node(&tree, "scene-a1", "undo-a1")).expect("first child");
+    // ここで止まったとする。root の再送は記録済みの応答で、行は増えない。
+    let nodes = count(&tree.db, "SELECT COUNT(*) FROM tree_nodes");
+    assert_eq!(create_wire(&tree.db, root).expect("replay"), first);
+    assert_eq!(count(&tree.db, "SELECT COUNT(*) FROM tree_nodes"), nodes);
+    // 残りを続ける（親が先）。
+    for id in ["folder-b", "scene-b1", "note-b2"] {
+        create_wire(&tree.db, undo_node(&tree, id, &format!("undo-{id}")))
+            .unwrap_or_else(|error| panic!("resume {id}: {error}"));
+    }
+    for (id, _, _) in TREE_NODES {
+        assert_eq!(
+            Value::Object(row(&tree.db, id).expect("restored")),
+            Value::Object(tree.before[id].clone()),
+            "{id}"
+        );
+    }
+    // 別の requestId で同じ id をもう 1 度作っても、行は 1 つのまま変わらない（二重適用）。
+    let before = row_counts(&tree.db);
+    let mut again = undo_node(&tree, "scene-a1", "undo-a1-again");
+    again["restoreState"]["intent"] = json!("overwritten");
+    create_wire(&tree.db, again).expect_err("the id already exists");
+    assert_eq!(row_counts(&tree.db), before);
+    assert_eq!(
+        row(&tree.db, "scene-a1").expect("row")["intent"],
+        json!("intent-scene-a1")
+    );
+}
+
+fn replay_delete_all(tree: &Tree, origin: &str, req: &str) -> Value {
+    replay_delete(&tree.db, "folder-a", origin, &tree.receipt, req)
+        .unwrap_or_else(|error| panic!("{origin} delete: {error}"))
+}
+
+/// T5：全部戻した後に redo（root の delete。journal は書き直されない）、再 undo。
+/// 記録にある node はすべて戻る。undo の後に足した node（記録の外）は戻せない。
+#[test]
+fn redo_then_undo_again_restores_the_recorded_nodes_only() {
+    let tree = build_tree();
+    for (id, _, _) in TREE_NODES {
+        create_wire(&tree.db, undo_node(&tree, id, &format!("undo-{id}"))).expect("undo");
+    }
+    // undo の後に章へ足した node（記録に無い）。
+    let mut added = create_payload("added-later", "scene", Some("folder-b"));
+    added["requestId"] = json!("create-added-later");
+    create(&tree.db, added).expect("added after the undo");
+    let record_before = journal_record(&tree.db, &tree.receipt);
+
+    replay_delete_all(&tree, "redo", "redo-delete-tree");
+    assert_eq!(count(&tree.db, "SELECT COUNT(*) FROM tree_nodes"), 0);
+    // redo は journal を書き直さない：記録は最初の削除のまま。
+    assert_eq!(journal_record(&tree.db, &tree.receipt), record_before);
+
+    for (id, _, _) in TREE_NODES {
+        create_wire(&tree.db, undo_node(&tree, id, &format!("reundo-{id}")))
+            .unwrap_or_else(|error| panic!("second undo {id}: {error}"));
+    }
+    for (id, _, _) in TREE_NODES {
+        assert_eq!(
+            Value::Object(row(&tree.db, id).expect("restored")),
+            Value::Object(tree.before[id].clone()),
+            "{id}"
+        );
+    }
+    let mut late = undo_node(&tree, "scene-b1", "reundo-added-later");
+    late["id"] = json!("added-later");
+    late["parentId"] = json!("folder-b");
+    assert_refused(&tree.db, late, BINDING, "a node the record does not hold");
+    assert!(row(&tree.db, "added-later").is_none());
+}
+
+/// T6：子の create の feed event は `create`・before 無しで、delete の event に連なる
+/// （continuity の拒否が出ない）。
+#[test]
+fn a_child_undo_continues_the_feed_the_delete_wrote() {
+    let tree = build_tree();
+    for (id, _, _) in TREE_NODES {
+        create_wire(&tree.db, undo_node(&tree, id, &format!("undo-{id}"))).expect("undo");
+    }
+    let undo_creates = count(
+        &tree.db,
+        "SELECT COUNT(*)
+           FROM narrative_change_transactions feed_tx
+           JOIN narrative_change_events event ON event.transaction_id = feed_tx.id
+          WHERE feed_tx.cause_kind = 'undo'
+            AND event.mutation_kind = 'create'
+            AND event.before_version IS NULL
+            AND event.after_version IS NOT NULL",
+    );
+    assert_eq!(undo_creates, 5, "an event per node, none with a before");
+    let deleted_events = count(
+        &tree.db,
+        "SELECT COUNT(*)
+           FROM narrative_change_transactions feed_tx
+           JOIN narrative_change_events event ON event.transaction_id = feed_tx.id
+          WHERE feed_tx.cause_kind = 'forward' AND feed_tx.request_id = 'delete-folder-a'",
+    );
+    assert_eq!(deleted_events, 5, "the delete wrote an event per node");
+}
+
+/// T7（測定。通常は走らせない）：大きい章の undo の時間。debug build の値で、閾値の assert は置かない。
+/// `cargo test -p grimodex-db --test tree_node_restore_state -- --ignored --nocapture`
+#[test]
+#[ignore = "measurement"]
+fn measure_a_large_folder_undo() {
+    let scenes: usize = std::env::var("UNDO_SCENES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let body_kib: usize = std::env::var("UNDO_BODY_KIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let db = new_db();
+    create(&db, create_payload("big-folder", "folder", None)).expect("folder");
+    let body = "あ".repeat(body_kib * 1024 / 3);
+    for index in 0..scenes {
+        let id = format!("big-{index}");
+        create(&db, create_payload(&id, "scene", Some("big-folder"))).expect("scene");
+        patch(
+            &db,
+            &id,
+            &format!("patch-{id}"),
+            json!({ "content": format!("{{\"t\":\"{body}\"}}") }),
+        )
+        .expect("body");
+    }
+    let before = row(&db, "big-folder").expect("folder row");
+    let receipt = delete(&db, "big-folder", "delete-big").expect("delete");
+    let journal_bytes = count(
+        &db,
+        "SELECT length(before_json) FROM undo_journal WHERE entity_id = 'big-folder' AND op_kind = 'delete'",
+    );
+    let started = std::time::Instant::now();
+    create_wire(
+        &db,
+        undo_payload_with_state("big-folder", "folder", &before, &receipt, "undo-big-folder"),
+    )
+    .expect("root");
+    let root = started.elapsed();
+    let children_started = std::time::Instant::now();
+    for index in 0..scenes {
+        let id = format!("big-{index}");
+        let node = json!({
+            "id": id, "parentId": "big-folder", "nodeType": "scene",
+            "title": format!("Title {id}"), "sortOrder": "a0", "synopsis": "syn",
+            "status": "draft", "content": "{}"
+        });
+        create_wire(
+            &db,
+            undo_create_payload(&node, &receipt, &format!("undo-{id}")),
+        )
+        .unwrap_or_else(|error| panic!("undo {id}: {error}"));
+    }
+    let children = children_started.elapsed();
+    eprintln!(
+        "undo of {scenes} scenes x {body_kib} KiB: journal {journal_bytes} bytes, \
+         root {root:?}, children {children:?} ({:?} each), total {:?}",
+        children / scenes as u32,
+        started.elapsed()
+    );
 }

@@ -840,6 +840,78 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
     }
   });
 
+  it("puts a folder, its scenes and its nested folder back, parent first (renderer order)", async () => {
+    const tree: Array<[string, "folder" | "scene", string | null]> = [
+      ["sub-folder", "folder", null],
+      ["sub-scene", "scene", "sub-folder"],
+      ["sub-inner", "folder", "sub-folder"],
+      ["sub-deep", "scene", "sub-inner"],
+    ];
+    for (const [id, nodeType, parentId] of tree) {
+      await mock.invoke("tree_node_create", {
+        payload: {
+          id,
+          projectId: "default-project",
+          parentId,
+          nodeType,
+          title: `T ${id}`,
+          sortOrder: "a0",
+          origin: "human",
+          requestId: `create-${id}`,
+        },
+      });
+    }
+    const before = new Map<string, Record<string, unknown>>();
+    for (const [id] of tree) {
+      before.set(
+        id,
+        (
+          await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [
+            id,
+          ])
+        )[0]!,
+      );
+    }
+    const receipt = await mock.invoke<{
+      maintenanceTransactionId: string;
+      undoJournalId: string;
+    }>("tree_node_delete", {
+      payload: {
+        projectId: "default-project",
+        nodeId: "sub-folder",
+        requestId: "delete-sub-folder",
+        origin: "human",
+      },
+    });
+    expect(
+      await rows(mock, "SELECT id FROM tree_nodes WHERE id LIKE 'sub-%'", []),
+    ).toEqual([]);
+    for (const [id, nodeType, parentId] of tree) {
+      await mock.invoke("tree_node_create", {
+        payload: {
+          ...undoPayload(
+            id,
+            nodeType,
+            receipt,
+            before.get(id)!,
+            stateOf(before.get(id)!),
+          ),
+          parentId,
+          title: `T ${id}`,
+        },
+      });
+    }
+    for (const [id] of tree) {
+      expect(
+        (
+          await rows(mock, `SELECT ${COLUMNS} FROM tree_nodes WHERE id = ?`, [
+            id,
+          ])
+        )[0],
+      ).toEqual(before.get(id));
+    }
+  });
+
   it("replays the same request and conflicts when restoreState differs", async () => {
     const { before, receipt } = await seed("restore-idem", "scene");
     const payload = undoPayload(
