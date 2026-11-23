@@ -375,8 +375,13 @@ export function pickSnapshotCharacters(args: {
 
 /**
  * フェッチ済みデータからアンカー解決→人物選定→derive→render までを一括（純粋）。
- * buildSceneContextPrompt（push）と get_chronicle_state ツール（pull）で共用する。
+ * 自動のまとめ（push。chatContextPreparationComposition の buildChronicleSnapshotTextForScene）が使う。
  * 空文字になる場合は undefined（注入スキップ）。
+ *
+ * **この関数は、出来事の秘匿も、Codex の hidden の人物も判定しない**（CSR/1：出来事は全部渡す。
+ * 守る印は Codex の hidden だけ）。hidden の人物は、呼び出し側が、人物を選ぶ前に
+ * `dropHiddenCodexFromChronicleInput`（chronicleHiddenCodex.ts）で入力から除くこと。除かずに呼ぶと、
+ * hidden の人物の名前・id が出る（人物は `codexNames.get(cid) ?? cid` で、名前が無ければ id で出る）。
  */
 export function assembleChronicleSnapshotText(args: {
   sceneId: string;

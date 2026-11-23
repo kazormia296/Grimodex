@@ -1,18 +1,19 @@
 /**
- * 作中年表 AI 秘匿（reveal アンカー方式）の **ライブ** eval。
+ * 作中年表 AI 秘匿（reveal アンカー方式）の **ライブ** eval。（以下の 3 アームの説明は、
+ * **CSR/1 以前**の仕様。下の【CSR/1 による変更】を先に読むこと。）
  *
  * chronicleInjectionEval.live.test.ts と同型。3 アームの差分は「同じ秘匿イベントが
  * 現在シーンの読む順位置によって注入されるか否か」だけ:
  *   - off         : 年表ブロック無し。
- *   - secretHidden: reveal シーンより**前**を書く（secret イベントは隠れる）。
+ *   - secretHidden: reveal シーンより**前**を書く（CSR/1 以前は secret イベントが隠れた）。
  *   - pastReveal  : reveal シーン**以降**を書く（secret イベントが開示される）。
  *
- * 検証する不変条件（= reveal アンカー方式の核心）:
+ * 検証していた不変条件（CSR/1 以前。= reveal アンカー方式の核心）:
  *   秘匿イベント「宰相バルドが先王を毒殺した」は、secretHidden の年表ブロックに
- *   現れず、pastReveal の年表ブロックには現れる。これを実プロダクション builder
- *   （assembleChronicleSnapshotText）で組んだブロックに対して決定的に assert する
- *   （key 不要・常時実行）。LLM アームはその下流効果（hidden 時は AI がネタバレを
- *   書けない）を示す。
+ *   現れず、pastReveal の年表ブロックには現れる。これを、年表のまとめの builder
+ *   （assembleChronicleSnapshotText。本番の経路は、この前に hidden の人物を除く）で組んだ
+ *   ブロックに対して決定的に assert していた（key 不要・常時実行）。LLM アームはその下流効果
+ *   （hidden 時は AI がネタバレを書けない）を示していた。
  *
  * 【CSR/1 による変更】年表の「AI に秘匿」（reveal アンカー方式の隠し）は廃止した。出来事は
  * 全部 AI に渡す（確認 98・101・135。守る印は Codex の hidden だけ）ので、secretHidden の
