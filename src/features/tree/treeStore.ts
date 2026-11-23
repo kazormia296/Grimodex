@@ -1546,6 +1546,24 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         if (!replaying) forwardReceipt = receipt;
       },
       restorePersisted: async (node, content, snapshot) => {
+        // The external-file link comes back only while no other node points at
+        // the same file: a reconcile between the delete and the Undo makes a
+        // node for a file that has none, and two Scenes on one file are refused
+        // by the mount's own check. When that cannot be determined the link is
+        // left off, which is what an Undo always did.
+        let restoreSource = false;
+        if (snapshot?.sourceUri != null) {
+          try {
+            restoreSource =
+              (await api.findNodeIdBySourceUri(
+                node.projectId,
+                snapshot.sourceUri,
+                node.id,
+              )) === null;
+          } catch {
+            restoreSource = false;
+          }
+        }
         const created = await api.createNode(
           {
             id: node.id,
@@ -1561,10 +1579,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             // opened and is stale after an edit.
             content:
               snapshot && node.nodeType === "note" ? snapshot.content : content,
-            ...(snapshot?.sourceUri != null
+            ...(restoreSource && snapshot?.sourceUri != null
               ? { sourceUri: snapshot.sourceUri }
               : {}),
-            ...(snapshot?.sourceMtime != null
+            ...(restoreSource && snapshot?.sourceMtime != null
               ? { sourceMtime: snapshot.sourceMtime }
               : {}),
           },

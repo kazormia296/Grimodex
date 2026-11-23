@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createNode,
   deleteNode,
+  findNodeIdBySourceUri,
   getNode,
   historyWriteContext,
   loadTreeNodeRestoreSnapshot,
@@ -151,6 +152,116 @@ describe("Tree delete Undo restores the database row", () => {
     for (const key of Object.keys(noRange.restoreState)) {
       expect(key.startsWith("chronicle"), key).toBe(false);
     }
+  });
+
+  // The external-file link (P2-1 of the review): what actually happens in the
+  // two orders, against the real create/delete writers.
+  describe("an external-file Scene", () => {
+    async function mountScene(uri: string) {
+      const id = `tree-mount-${crypto.randomUUID()}`;
+      await createNode({
+        id,
+        projectId: "default-project",
+        parentId: null,
+        nodeType: "scene",
+        title: "Chapter",
+        sortOrder: "z9",
+        sourceUri: uri,
+        sourceMtime: "2026-01-01T00:00:00Z",
+      });
+      const snapshot = (await loadTreeNodeRestoreSnapshot(id))!;
+      const receipt = treeWriteReceipt(
+        await deleteNode(id, "default-project", {}),
+      )!;
+      return { id, snapshot, receipt };
+    }
+
+    function undoCreate(
+      id: string,
+      snapshot: NonNullable<
+        Awaited<ReturnType<typeof loadTreeNodeRestoreSnapshot>>
+      >,
+      receipt: NonNullable<ReturnType<typeof treeWriteReceipt>>,
+      withSource: boolean,
+    ) {
+      return createNode(
+        {
+          id,
+          projectId: "default-project",
+          parentId: undefined,
+          nodeType: "scene",
+          title: "Chapter",
+          sortOrder: "z9",
+          content: snapshot.content,
+          ...(withSource
+            ? {
+                sourceUri: snapshot.sourceUri,
+                sourceMtime: snapshot.sourceMtime,
+              }
+            : {}),
+        },
+        {
+          writeContext: historyWriteContext("undo", receipt),
+          restoreState: snapshot.restoreState,
+        },
+      );
+    }
+
+    it("(1) delete, then undo at once: nothing else holds the file, so the link comes back", async () => {
+      const uri = `external-root://mount/${crypto.randomUUID()}.md`;
+      const { id, snapshot, receipt } = await mountScene(uri);
+      expect(
+        await findNodeIdBySourceUri("default-project", uri, id),
+      ).toBeNull();
+      await undoCreate(id, snapshot, receipt, true);
+      expect((await getNode(id))!.sourceUri).toBe(uri);
+      expect(await findNodeIdBySourceUri("default-project", uri, "other")).toBe(
+        id,
+      );
+    });
+
+    it("(2) delete, a reconcile makes a node for the file, then undo: the lookup sees it, and restoring the link anyway would leave two Scenes on one file", async () => {
+      const uri = `external-root://mount/${crypto.randomUUID()}.md`;
+      const { id, snapshot, receipt } = await mountScene(uri);
+      const reconciledId = `tree-reconciled-${crypto.randomUUID()}`;
+      await createNode({
+        id: reconciledId,
+        projectId: "default-project",
+        parentId: null,
+        nodeType: "scene",
+        title: "Chapter",
+        sortOrder: "z9",
+        sourceUri: uri,
+        sourceMtime: "2026-01-02T00:00:00Z",
+      });
+      expect(await findNodeIdBySourceUri("default-project", uri, id)).toBe(
+        reconciledId,
+      );
+      // The store leaves the link off in this case: one Scene on the file.
+      await undoCreate(id, snapshot, receipt, false);
+      expect((await getNode(id))!.sourceUri).toBeNull();
+      expect(
+        await findNodeIdBySourceUri("default-project", uri, reconciledId),
+      ).toBeNull();
+    });
+
+    it("the hazard the rule avoids: without it two rows share the source (no unique constraint)", async () => {
+      const uri = `external-root://mount/${crypto.randomUUID()}.md`;
+      const { id, snapshot, receipt } = await mountScene(uri);
+      const reconciledId = `tree-reconciled-${crypto.randomUUID()}`;
+      await createNode({
+        id: reconciledId,
+        projectId: "default-project",
+        parentId: null,
+        nodeType: "scene",
+        title: "Chapter",
+        sortOrder: "z9",
+        sourceUri: uri,
+      });
+      await undoCreate(id, snapshot, receipt, true);
+      expect((await getNode(id))!.sourceUri).toBe(uri);
+      expect((await getNode(reconciledId))!.sourceUri).toBe(uri);
+    });
   });
 
   it("an ordinary create does not send restoreState", async () => {

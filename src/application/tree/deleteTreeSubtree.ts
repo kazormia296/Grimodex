@@ -1,6 +1,7 @@
 import type { HistoryCommand } from "@/store/globalHistoryStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { TreeNodeRestoreSnapshot } from "@/features/tree/api";
+import { debugLog } from "@/lib/debugLog";
 
 interface TrashCapture {
   projectId: string;
@@ -136,8 +137,16 @@ async function deleteTreeSubtreeWithAuthority(
       if (ports.loadRestoreSnapshot) {
         try {
           snapshot = await ports.loadRestoreSnapshot(node.id);
-        } catch {
+        } catch (error) {
           snapshot = null;
+          // Fail open on purpose (an Undo must stay possible), but say so: this
+          // Undo restores the create fields only, so after a reload the node's
+          // other columns (including a note's context mode) are the defaults.
+          debugLog.warn(
+            "tree",
+            "undo snapshot unreadable",
+            `${node.id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
       if (snapshot) restoreSnapshots[node.id] = snapshot;

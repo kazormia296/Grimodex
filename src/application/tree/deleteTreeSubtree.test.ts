@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { debugLog } from "@/lib/debugLog";
 import {
   deleteTreeSubtree,
   type DeleteTreeSubtreePorts,
@@ -163,9 +164,10 @@ describe("deleteTreeSubtree restore snapshots (DR-UND-1)", () => {
     expect(testPorts.loadSceneContent).not.toHaveBeenCalled();
   });
 
-  it("falls back to the scene content read when the row cannot be read", async () => {
+  it("falls back to the scene content read when the row cannot be read, and logs it", async () => {
     const testPorts = ports([node("scene", null)]);
     testPorts.loadRestoreSnapshot = vi.fn().mockRejectedValue(new Error("x"));
+    const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
 
     await deleteTreeSubtree("scene", testPorts);
     await testPorts.history[0]!.undo();
@@ -174,6 +176,12 @@ describe("deleteTreeSubtree restore snapshots (DR-UND-1)", () => {
       expect.objectContaining({ id: "scene" }),
       "content",
     );
+    expect(warn).toHaveBeenCalledWith(
+      "tree",
+      "undo snapshot unreadable",
+      "scene: x",
+    );
+    warn.mockRestore();
   });
 
   it("puts the re-created row's token and references into the restored store nodes", async () => {

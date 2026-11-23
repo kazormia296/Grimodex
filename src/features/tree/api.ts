@@ -528,6 +528,30 @@ export async function loadTreeNodeRestoreSnapshot(
   };
 }
 
+/**
+ * The id of another row of the Project that already points at `sourceUri`
+ * (the external-file link), or `null`. `source_uri` has no unique constraint,
+ * and the mount reconcile makes a new node for a file that has none, so an Undo
+ * that restored the link while a reconcile had made a node for the same file
+ * would leave two Scenes on one file.
+ */
+export async function findNodeIdBySourceUri(
+  projectId: string,
+  sourceUri: string,
+  exceptId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: treeNodes.id })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.sourceUri, sourceUri),
+      ),
+    );
+  return rows.find((row) => row.id !== exceptId)?.id ?? null;
+}
+
 export async function createNode(
   data: Pick<
     NewTreeNode,

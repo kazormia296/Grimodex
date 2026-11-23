@@ -688,6 +688,19 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
     expect(
       await rows(mock, "SELECT id FROM tree_nodes WHERE id = 'restore-ref2'"),
     ).toEqual([]);
+    // Nothing is left behind by the refused request: no receipt, no scope binding.
+    expect(
+      await rows(
+        mock,
+        "SELECT COUNT(*) AS n FROM idempotency_requests WHERE request_id = 'undo-restore-ref2'",
+      ),
+    ).toEqual([{ n: 0 }]);
+    expect(
+      await rows(
+        mock,
+        "SELECT COUNT(*) AS n FROM narrative_scene_scope_bindings WHERE scene_id = 'restore-ref2'",
+      ),
+    ).toEqual([{ n: 0 }]);
   });
 
   it("refuses restoreState unless the origin is undo, and unknown or held keys", async () => {
@@ -750,6 +763,12 @@ describe("browser mock tree_node_create restoreState (DR-UND-1 parity)", () => {
       ["aliases", { aliases: "nope" }, "aliases"],
       ["beats", { unplacedBeatsDoc: "{}" }, "unplacedBeatsDoc"],
       ["createdAt", { createdAt: "yesterday" }, "createdAt"],
+      // Rust takes RFC 3339 with an offset or SQLite's space form, not a naive T form.
+      [
+        "createdAt naive T form",
+        { createdAt: "2026-01-01T00:00:00" },
+        "createdAt",
+      ],
     ] as const) {
       await expect(
         mock.invoke("tree_node_create", {

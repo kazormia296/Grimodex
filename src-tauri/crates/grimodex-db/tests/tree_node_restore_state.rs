@@ -618,6 +618,11 @@ fn restore_state_rejects_unknown_incomplete_and_mistyped_keys() {
             json!({ "createdAt": "yesterday" }),
             "restoreState.createdAt",
         ),
+        (
+            "createdAt naive T form",
+            json!({ "createdAt": "2026-01-01T00:00:00" }),
+            "restoreState.createdAt",
+        ),
     ];
     for (name, state, needle) in cases {
         let error = create_wire(&db, with_restore_state(base.clone(), state)).expect_err(name);
@@ -798,4 +803,19 @@ fn restore_state_chronicle_does_not_depend_on_other_scenes() {
     .expect("undo");
     assert_eq!(chronicle_row(&db, "scene-solo")[0], json!(100));
     assert_eq!(chronicle_row(&db, "scene-other"), other_before);
+}
+
+/// `"restoreState": null` is "absent" to Rust (an `Option`), so it is a plain
+/// create. Main and the browser mock refuse it first (a non-object
+/// `restoreState`), so production never reaches Rust with it.
+#[test]
+fn a_null_restore_state_is_a_plain_create_in_rust() {
+    let db = new_db();
+    let (before, receipt) = seeded_scene(&db, "scene-null");
+    let mut payload =
+        undo_payload_with_state("scene-null", "scene", &before, &receipt, "undo-null");
+    payload["restoreState"] = Value::Null;
+    create_wire(&db, payload).expect("null restoreState is absent");
+    let after = row(&db, "scene-null").expect("row");
+    assert!(after["intent"].is_null(), "nothing was restored");
 }

@@ -26844,8 +26844,12 @@ export async function createBrowserMock(
       }
       if (
         wire === "createdAt" &&
-        !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.test(
-          value,
+        // Same acceptance as Rust: RFC 3339 (with an offset), or SQLite's
+        // `YYYY-MM-DD HH:MM:SS` (space, no offset).
+        !(
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(
+            value,
+          ) || /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value)
         )
       ) {
         throw new Error(

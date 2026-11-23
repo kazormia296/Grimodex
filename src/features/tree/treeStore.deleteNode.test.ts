@@ -36,6 +36,7 @@ vi.mock("./api", () => ({
   })),
   loadSceneContent: vi.fn().mockResolvedValue(""),
   loadTreeNodeRestoreSnapshot: vi.fn().mockResolvedValue(null),
+  findNodeIdBySourceUri: vi.fn().mockResolvedValue(null),
   saveSceneContent: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -393,6 +394,41 @@ describe("treeStore.deleteNode undo restores the row the database held (DR-UND-1
     expect(noteCall[1]).toMatchObject({
       restoreState: snapshots["note-a"]!.restoreState,
     });
+  });
+
+  it("restores the external-file link only while no other node points at the file", async () => {
+    // (1) delete, then undo with nothing in between: the link comes back.
+    await deleteAndUndo([sceneNode]);
+    expect(api.findNodeIdBySourceUri).toHaveBeenCalledWith(
+      "proj-1",
+      "external-root://r/a.md",
+      "scene-a",
+    );
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).toMatchObject({
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+    });
+
+    // (2) a reconcile made a node for the same file in between: not restored.
+    useGlobalHistoryStore.getState().clear();
+    vi.mocked(api.findNodeIdBySourceUri).mockResolvedValue("reconciled-node");
+    await deleteAndUndo([sceneNode]);
+    const call = vi.mocked(api.createNode).mock.calls[0]!;
+    expect(call[0]).not.toHaveProperty("sourceUri");
+    expect(call[0]).not.toHaveProperty("sourceMtime");
+    // the rest of the row still comes back
+    expect(call[1]).toMatchObject({
+      restoreState: snapshots["scene-a"]!.restoreState,
+    });
+
+    // (3) it cannot be determined: left off, as an Undo always did.
+    useGlobalHistoryStore.getState().clear();
+    vi.mocked(api.findNodeIdBySourceUri).mockRejectedValue(new Error("db"));
+    await deleteAndUndo([sceneNode]);
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).not.toHaveProperty(
+      "sourceUri",
+    );
+    vi.mocked(api.findNodeIdBySourceUri).mockResolvedValue(null);
   });
 
   it("falls back to the create fields when the snapshot cannot be read", async () => {
