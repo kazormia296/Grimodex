@@ -1227,6 +1227,19 @@ DB スキーマの詳細は `docs/Grimodex_統合DBスキーマ.md` を参照。
   全作品にアクセスし得るため **ローカル/信頼クライアント専用**。なおピン留めが守るのは
   「どの作品を見せるか」であり、見せた作品の本文がクラウドへ exfil されること自体は
   防げない（秘匿原稿はクラウド MCP に繋がない/ローカルモデルを使う）。
+- **archived の場面・folder は読み系 tool の結果から外す（lane E2-c、DR-ARC-2）**:
+  外部 Markdown のマウントがファイルの消失・重複で自動 archive した行（`tree_nodes.archived_at`）は、
+  外部の AI クライアントに出さない。規則は**行単位**で、場面または folder 自身の `archived_at` だけを
+  見る（祖先は見ない。アプリ内の agent tool と同じ）。対象は `list_tree`・`read_scene`・
+  `read_scenes_batch`・`get_chapter_summaries`・`get_scene_timeline_neighbors`・
+  `get_writing_context`（これまでのあらすじ・章の概要・前後の場面）・`search_project`（場面）・
+  `get_foreshadow_detail`（payoff の場面・setups）・`list_open_foreshadows`（setup の数え方）。
+  `list_tree` と `get_writing_context` では、archived の folder の下にある live の場面は
+  archived の行の位置へ繰り上げて出す（読む順を保つ。archived の folder の章の概要は出さない）。
+  `get_chapter_summaries` は folder ごとの一覧なので、その場面は出ない。tool の description・
+  schema は変えない。変えないもの：`get_project_stats`・`get_attribution_report`・チャット履歴の
+  場面名・年表系・書き込み系。`archived_at` 列が無い古い DB では、列の有無を調べず、読みが
+  失敗するか空・not found を返す（archived の行は漏れない）。
 
 ### ライセンスゲート (Phase 2 / 2026-06-11)
 
