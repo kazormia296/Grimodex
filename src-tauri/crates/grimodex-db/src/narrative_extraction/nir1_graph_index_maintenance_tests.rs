@@ -136,6 +136,11 @@ impl Fixture {
             assert_eq!(db.with_conn(Database::read_c2zc_cutover_marker)?, None);
         }
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
+        assert_eq!(
+            authority.db().stop_background_checkpoint(),
+            crate::background_checkpoint::StopOutcome::Joined,
+            "test fixture must stop its background WAL checkpoint"
+        );
         Ok(Self {
             authority,
             lifecycle: WorkspaceLifecycleCore::new(),
@@ -175,6 +180,11 @@ impl Fixture {
         let db = Database::new(&self.directory.0.join("grimodex.db"))?;
         db.migrate()?;
         self.authority = WorkspaceAuthority::from_database_for_test(db, self.directory.0.clone())?;
+        assert_eq!(
+            self.db().stop_background_checkpoint(),
+            crate::background_checkpoint::StopOutcome::Joined,
+            "reopened test fixture must stop its background WAL checkpoint"
+        );
         Ok(())
     }
 
