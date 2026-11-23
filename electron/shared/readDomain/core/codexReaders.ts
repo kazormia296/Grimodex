@@ -2,9 +2,12 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import type { CoreReadDb } from "../../mastraRead/ports.js";
 import {
+  codexDetailValues,
   codexEntries,
   codexEntryPhases,
+  codexPhaseDetailOverrides,
   type CodexEntryPhase,
+  type CodexPhaseDetailOverride,
 } from "../db/schema.js";
 
 /**
@@ -80,4 +83,37 @@ export async function readCodexPhases(
     .from(codexEntryPhases)
     .where(inArray(codexEntryPhases.entryId, [...entryIds]))
     .orderBy(codexEntryPhases.createdAt);
+}
+
+/**
+ * 公開された項目の Phase 詳細上書き。両値テーブルに project 列はないため、呼び手は
+ * project 条件で読んだ項目に属する Phase id だけを渡す。
+ */
+export async function readCodexPhaseDetailOverrides(
+  db: CoreReadDb,
+  phaseIds: readonly string[],
+): Promise<CodexPhaseDetailOverride[]> {
+  if (phaseIds.length === 0) return [];
+  return db
+    .select()
+    .from(codexPhaseDetailOverrides)
+    .where(inArray(codexPhaseDetailOverrides.phaseId, [...phaseIds]));
+}
+
+/** project 条件で読んだ項目の raw 詳細値。`codex_detail_values` に `project_id` 列はない。 */
+export async function readCodexDetailValues(
+  db: CoreReadDb,
+  entryIds: readonly string[],
+): Promise<
+  Array<{ entryId: string; definitionId: string; value: string | null }>
+> {
+  if (entryIds.length === 0) return [];
+  return db
+    .select({
+      entryId: codexDetailValues.entryId,
+      definitionId: codexDetailValues.definitionId,
+      value: codexDetailValues.value,
+    })
+    .from(codexDetailValues)
+    .where(inArray(codexDetailValues.entryId, [...entryIds]));
 }

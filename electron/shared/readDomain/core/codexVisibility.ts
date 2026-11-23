@@ -1,12 +1,22 @@
 import {
   assertCoreProjectId,
+  type CoreCodexDetailData,
   type CoreCodexVisibilityPorts,
+  type CorePhaseState,
 } from "../../mastraRead/ports.js";
-import type { CodexEntryPhase } from "../db/schema.js";
+import type {
+  CodexEntryPhase,
+  CodexPhaseDetailOverride,
+} from "../db/schema.js";
 import {
   decideCodexAiVisibility,
+  type CodexAiVisibility,
   type CodexTextForAi,
 } from "../features/codex/context/codexAiVisibility.js";
+import {
+  resolveCodexContexts,
+  type ResolvableCodexContextEntry,
+} from "../features/codex/context/resolvedCodexContext.js";
 import { readCodexVisibilityEntries } from "./codexReaders.js";
 
 /**
@@ -60,6 +70,14 @@ export interface CodexAiVisibilityResult {
   readonly texts: Map<string, CodexTextForAi>;
 }
 
+type VisibilityEntry = ResolvableCodexContextEntry;
+
+interface CoreResolution extends CodexAiVisibilityResult {
+  readonly phases: CodexEntryPhase[];
+  readonly state?: CorePhaseState;
+  readonly decision?: CodexAiVisibility<VisibilityEntry>;
+}
+
 /**
  * The project is required (`CoreProjectRequiredError`): an empty one would drop
  * the project condition. An id the project has no entry for is hidden (fail
@@ -67,26 +85,22 @@ export interface CodexAiVisibilityResult {
  * and it is not the one asked about, this throws: it is another project's reading
  * order and mode.
  */
-export async function resolveCodexAiVisibility(
+async function resolveCore(
   deps: CoreCodexVisibilityPorts,
   request: CodexAiVisibilityRequest,
-): Promise<CodexAiVisibilityResult> {
+): Promise<CoreResolution> {
   assertCoreProjectId(request.projectId);
   const ids = [...new Set(request.entryIds)];
   const hidden = new Set<string>();
   const texts = new Map<string, CodexTextForAi>();
-  if (ids.length === 0) return { hidden, texts };
+  const phases: CodexEntryPhase[] = [];
+  if (ids.length === 0) return { hidden, texts, phases };
   // The epoch is noted here, before the first read, as the renderer's `resolveCodexForAi` does
   // (DR-MP4-41 (b)); only a live store has one (`getProjectEpoch`, PR-8b).
   const startEpoch = deps.getProjectEpoch?.();
 
   const found = new Set<string>();
-  const entries: Array<{
-    id: string;
-    summary: string | null;
-    contextMode: string;
-    content: string;
-  }> = [];
+  const entries: VisibilityEntry[] = [];
   for (const chunk of chunks(ids)) {
     const rows = await readCodexVisibilityEntries(
       deps.getDb(),
@@ -105,9 +119,8 @@ export async function resolveCodexAiVisibility(
     }
   }
   for (const id of ids) if (!found.has(id)) hidden.add(id);
-  if (entries.length === 0) return { hidden, texts };
+  if (entries.length === 0) return { hidden, texts, phases };
 
-  const phases: CodexEntryPhase[] = [];
   for (const chunk of chunks(entries.map((entry) => entry.id))) {
     phases.push(...(await deps.codex.listPhases(chunk)));
   }
@@ -115,7 +128,7 @@ export async function resolveCodexAiVisibility(
   if (deps.getProjectEpoch?.() !== startEpoch) {
     // A project switch in the middle of the reads: the index is empty and the mode is the previous
     // project's, so every id asked about is hidden (the same answer as the renderer's).
-    return { hidden: new Set(ids), texts: new Map() };
+    return { hidden: new Set(ids), texts: new Map(), phases };
   }
   if (state.projectId !== undefined && state.projectId !== request.projectId) {
     throw new Error(
@@ -131,7 +144,74 @@ export async function resolveCodexAiVisibility(
   });
   for (const id of decision.hidden) hidden.add(id);
   for (const [id, text] of decision.texts) texts.set(id, text);
+  return { hidden, texts, phases, state, decision };
+}
+
+/** Codex の可視性を共有 core で解決する。既存 caller の結果と順序は変えない。 */
+export async function resolveCodexAiVisibility(
+  deps: CoreCodexVisibilityPorts,
+  request: CodexAiVisibilityRequest,
+): Promise<CodexAiVisibilityResult> {
+  const { hidden, texts } = await resolveCore(deps, request);
   return { hidden, texts };
+}
+
+/** 公開判定を通った項目だけに Phase 解決後の詳細値を付ける。 */
+export async function resolveCodexAiVisibilityWithDetails(
+  deps: CoreCodexVisibilityPorts & { readonly codex: CoreCodexDetailData },
+  request: CodexAiVisibilityRequest,
+): Promise<CodexAiVisibilityResult> {
+  const resolved = await resolveCore(deps, request);
+  const { decision, state, phases } = resolved;
+  if (
+    !decision ||
+    !state ||
+    state.resolutionMode.kind !== "resolved" ||
+    decision.released.length === 0
+  ) {
+    return { hidden: resolved.hidden, texts: resolved.texts };
+  }
+
+  const releasedIds = new Set(decision.released.map((entry) => entry.id));
+  const releasedPhases = phases.filter((phase) =>
+    releasedIds.has(phase.entryId),
+  );
+  const overrides: CodexPhaseDetailOverride[] = [];
+  for (const chunk of chunks(releasedPhases.map((phase) => phase.id))) {
+    overrides.push(...(await deps.codex.listPhaseDetailOverrides(chunk)));
+  }
+  const rawValues: Array<{
+    entryId: string;
+    definitionId: string;
+    value: string | null;
+  }> = [];
+  for (const chunk of chunks([...releasedIds])) {
+    rawValues.push(...(await deps.codex.listRawDetailValues(chunk)));
+  }
+
+  const baseDetailsByEntry = new Map<string, Map<string, string | null>>();
+  for (const value of rawValues) {
+    const details = baseDetailsByEntry.get(value.entryId) ?? new Map();
+    details.set(value.definitionId, value.value);
+    baseDetailsByEntry.set(value.entryId, details);
+  }
+  const detailResolved = resolveCodexContexts({
+    entries: decision.released,
+    phases: releasedPhases,
+    phaseDetailOverrides: overrides,
+    baseDetailsByEntry,
+    anchor: decision.anchor,
+    sceneTimeIndex: state.sceneTimeIndex,
+    resolutionMode: state.resolutionMode.mode,
+  }).resolvedById;
+  for (const entry of decision.released) {
+    const text = resolved.texts.get(entry.id);
+    const detailValues = detailResolved.get(entry.id)?.detailValues;
+    if (text && detailValues) {
+      resolved.texts.set(entry.id, { ...text, detailValues });
+    }
+  }
+  return { hidden: resolved.hidden, texts: resolved.texts };
 }
 
 /**
