@@ -38,7 +38,11 @@ import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseIp } from "./egress-policy.mjs";
-import { resolveWorkSource } from "./sources.mjs";
+import {
+  resolveWorkSource,
+  sha256Text,
+  surfacesFileWithProvenance,
+} from "./sources.mjs";
 import {
   WORKS,
   assertOutputClean,
@@ -434,18 +438,19 @@ async function runWork(workKey, options, vite, busAddress) {
     product: productVersion(),
   };
   let scenesTexts = [];
+  let scenesSha256;
   let app;
   let sampler;
   const destinations = new Set();
   let sampleCount = 0;
   const started = Date.now();
   try {
-    const work = JSON.parse(
-      readFileSync(
-        resolveWorkSource(workKey, options["data-dir"] || null),
-        "utf8",
-      ),
+    const workText = readFileSync(
+      resolveWorkSource(workKey, options["data-dir"] || null),
+      "utf8",
     );
+    scenesSha256 = sha256Text(workText); // 候補の file の出所（測定 A が今の scenes と照合する。DR-ILM-41）
+    const work = JSON.parse(workText);
     const scenes = scenesFromWork(work);
     assert.equal(
       scenes.length,
@@ -692,7 +697,10 @@ async function runWork(workKey, options, vite, busAddress) {
         // 走査用（scan-repo-diff.mjs）。repo 外の 0600 の file にだけ置く。検査対象の出力には入れない。
         const surfaceDir = path.join(output, "surfaces");
         ensurePrivateDir(surfaceDir);
-        writePrivateJson(path.join(surfaceDir, `${workKey}.json`), surfaces);
+        writePrivateJson(
+          path.join(surfaceDir, `${workKey}.json`),
+          surfacesFileWithProvenance(surfaces, scenesSha256),
+        );
       }
     } else {
       // 不採用：状態の要約だけ。rows は書かない。

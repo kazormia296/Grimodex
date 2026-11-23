@@ -11,8 +11,11 @@ import {
   summarizeStoredProposals,
 } from "./lib.mjs";
 import { buildRosterIndex } from "./measure-a-metrics.mjs";
+import { sha256Text, surfacesFileWithProvenance } from "./sources.mjs";
 import {
   cellStatus,
+  candidateFileState,
+  loadCandidates,
   loadCandidateHashes,
   measureABody,
   planCells,
@@ -802,4 +805,136 @@ test("loadCandidateHashes：候補の一覧を host 側で hash にする。file
     write("f.json", { candidate: ["swap"] }),
   );
   assert.match(real, /^[0-9a-f]{16}$/u);
+});
+
+// ---- DR-ILM-41：候補の file の出所の照合 --------------------------------------------------------------------------
+
+test("surfacesFileWithProvenance：surfaces に使った scenes の sha256 を添える（元の object は変えない。形が違えば止める）", () => {
+  const surfaces = { seed: ["s"], candidate: ["c"] };
+  const sha = sha256Text("scenes-body");
+  assert.match(sha, /^[0-9a-f]{64}$/u);
+  const out = surfacesFileWithProvenance(surfaces, sha);
+  assert.deepEqual(out, { seed: ["s"], candidate: ["c"], scenesSha256: sha });
+  assert.equal("scenesSha256" in surfaces, false);
+  assert.throws(
+    () => surfacesFileWithProvenance(null, sha),
+    /SURFACES_NOT_OBJECT/u,
+  );
+  assert.throws(
+    () => surfacesFileWithProvenance([], sha),
+    /SURFACES_NOT_OBJECT/u,
+  );
+  assert.throws(
+    () => surfacesFileWithProvenance(surfaces, null),
+    /SCENES_SHA256_INVALID/u,
+  );
+  assert.throws(
+    () => surfacesFileWithProvenance(surfaces, "zz"),
+    /SCENES_SHA256_INVALID/u,
+  );
+});
+
+test("candidateFileState：verified／unverified／stale／absent を分ける（stale は照合できないものを verified にしない）", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-state-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const put = (name, body) => {
+    const file = path.join(dir, name);
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+    return file;
+  };
+  const scenes = put("scenes.json", "scenes-body-v1");
+  const sha = sha256Text("scenes-body-v1");
+  const cand = ["c1", "c2"];
+  // verified：inventory が使った scenes と今の scenes が同じ。
+  assert.equal(
+    candidateFileState(
+      put("v.json", { candidate: cand, scenesSha256: sha }),
+      scenes,
+    ),
+    "verified",
+  );
+  // unverified：照合用の hash が無い古い file（使うが、照合できていない）。
+  assert.equal(
+    candidateFileState(put("u.json", { candidate: cand }), scenes),
+    "unverified",
+  );
+  // stale：scenes が変わった（hash が違う）。scenes が読めないときも stale。
+  assert.equal(
+    candidateFileState(
+      put("s.json", {
+        candidate: cand,
+        scenesSha256: sha256Text("scenes-body-v0"),
+      }),
+      scenes,
+    ),
+    "stale",
+  );
+  assert.equal(
+    candidateFileState(
+      put("s2.json", { candidate: cand, scenesSha256: sha }),
+      path.join(dir, "no-scenes.json"),
+    ),
+    "stale",
+  );
+  // absent：無い・壊れている・空・文字列でない要素。hash があっても、候補が使えなければ absent（stale にしない）。
+  assert.equal(
+    candidateFileState(path.join(dir, "none.json"), scenes),
+    "absent",
+  );
+  assert.equal(
+    candidateFileState(put("b.json", "{not json"), scenes),
+    "absent",
+  );
+  assert.equal(
+    candidateFileState(
+      put("e.json", { candidate: [], scenesSha256: sha }),
+      scenes,
+    ),
+    "absent",
+  );
+  assert.equal(
+    candidateFileState(
+      put("n.json", { candidate: ["x", 1], scenesSha256: sha }),
+      scenes,
+    ),
+    "absent",
+  );
+});
+
+test("loadCandidates：stale は候補があっても使わず（hashes は null）、unverified・verified は使う。absent も null", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-load-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const put = (name, body) => {
+    const file = path.join(dir, name);
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+    return file;
+  };
+  const scenes = put("scenes.json", "scenes-v1");
+  const sha = sha256Text("scenes-v1");
+  const hash = async (surface) => `h:${surface}`;
+  const cand = ["c1", "c2"];
+  assert.deepEqual(
+    await loadCandidates(
+      put("v.json", { candidate: cand, scenesSha256: sha }),
+      scenes,
+      hash,
+    ),
+    { state: "verified", hashes: ["h:c1", "h:c2"] },
+  );
+  assert.deepEqual(
+    await loadCandidates(put("u.json", { candidate: cand }), scenes, hash),
+    { state: "unverified", hashes: ["h:c1", "h:c2"] },
+  );
+  assert.deepEqual(
+    await loadCandidates(
+      put("s.json", { candidate: cand, scenesSha256: sha256Text("scenes-v0") }),
+      scenes,
+      hash,
+    ),
+    { state: "stale", hashes: null },
+  );
+  assert.deepEqual(
+    await loadCandidates(path.join(dir, "none.json"), scenes, hash),
+    { state: "absent", hashes: null },
+  );
 });

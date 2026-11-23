@@ -51,6 +51,7 @@ import {
   withVite,
   writeJson0600,
 } from "./launcher-common.mjs";
+import { resolveWorkSource, sha256Text } from "./sources.mjs";
 
 export const FOLDER_STEPS = Object.freeze([25, 50, 75, 100]);
 export const DEFAULT_SOLO_WORKS = Object.freeze(["m-ja-2"]);
@@ -138,6 +139,42 @@ export async function loadCandidateHashes(file, hash = hashSurface) {
   if (!Array.isArray(list) || list.length === 0) return null;
   if (!list.every((item) => typeof item === "string")) return null;
   return [...new Set(await Promise.all(list.map((item) => hash(item))))];
+}
+
+/**
+ * 候補の file の出所（DR-ILM-41）：absent＝無い・壊れている・空（候補は未計測）／unverified＝照合用の scenesSha256 が無い古い file
+ * （使うが、今の scenes と照合できていない）／verified＝inventory が使った scenes と今の scenes が同じ／stale＝食い違う
+ * （使わず、候補は未計測）。scenes が読めないときも stale（照合できないものを verified にしない）。
+ */
+export function candidateFileState(file, scenesFile) {
+  if (!existsSync(file)) return "absent";
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return "absent";
+  }
+  const list = parsed?.candidate;
+  if (!Array.isArray(list) || list.length === 0) return "absent";
+  if (!list.every((item) => typeof item === "string")) return "absent";
+  if (typeof parsed.scenesSha256 !== "string") return "unverified";
+  let current;
+  try {
+    current = sha256Text(readFileSync(scenesFile, "utf8"));
+  } catch {
+    return "stale";
+  }
+  return parsed.scenesSha256 === current ? "verified" : "stale";
+}
+
+/**
+ * 候補の file を出所の照合つきで読む。stale（scenes と食い違う）・absent なら hashes は null（未計測）。unverified は使う。
+ */
+export async function loadCandidates(file, scenesFile, hash = hashSurface) {
+  const state = candidateFileState(file, scenesFile);
+  const hashes =
+    state === "stale" ? null : await loadCandidateHashes(file, hash);
+  return { state, hashes };
 }
 
 /** cell の run の完了条件（§8-2）：prepass complete・提案あり・AI なし。 */
@@ -341,19 +378,25 @@ async function main() {
       check.ok,
       `[precheck] ROSTER_INVALID ${work} errors=${check.errors.length}`,
     );
+    // 候補画面の候補（作品単位。水準に依らない）。inventory が書いた file が無い・scenes と食い違う（stale）なら null（未計測）。
+    const { state: candidateFile, hashes: candidateHashes } =
+      await loadCandidates(
+        path.join(output, "surfaces", `${work}.json`),
+        resolveWorkSource(work, options["data-dir"] || null),
+      );
     rosters.set(work, {
       roster,
       index: await buildRosterIndex(roster),
-      // 候補画面の候補（作品単位。水準に依らない）。inventory が書いた file が無ければ null（未計測）。
-      candidateHashes: await loadCandidateHashes(
-        path.join(output, "surfaces", `${work}.json`),
-      ),
+      candidateFile,
+      candidateHashes,
     });
   }
   const summary = [];
   await withVite(output, async ({ vite, busAddress }) => {
     for (const cell of cells) {
-      const { roster, index, candidateHashes } = rosters.get(cell.work);
+      const { roster, index, candidateHashes, candidateFile } = rosters.get(
+        cell.work,
+      );
       const {
         cell: observed,
         value,
@@ -387,6 +430,7 @@ async function main() {
         steps: cell.steps,
         status,
         observed,
+        candidateFile,
         registration: value?.registration ?? null,
       };
       let rowsFile = null;

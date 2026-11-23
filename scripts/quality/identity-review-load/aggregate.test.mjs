@@ -1597,3 +1597,88 @@ test("DR-ILM-40：markdown に印・3 作品の参考・「S5_seen に線を引�
     ),
   );
 });
+
+// ---- DR-ILM-41：合計の欠けを列ごとに判定する／候補の file の出所を載せる ----------------------------------------------
+
+test("DR-ILM-41：合計の「欠け」は、どれかの列が欠けた作品を示す（Ur-all が揃っていても、候補が未計測の作品を出す）", async () => {
+  // WORK_SPECS の g-ja-3 は候補が未計測（null）：Ur-all は数値だが、候補の列は欠け。
+  const m = await identityMeasureA();
+  const total = m.identityColumns.levels.L2.totalAll;
+  assert.deepEqual(total.missingWorks, []);
+  assert.deepEqual(total.missingByColumn.s5InCandidate, ["g-ja-3"]);
+  assert.deepEqual(total.missingByColumn.urAll, []);
+  assert.deepEqual(total.missingAny, ["g-ja-3"]);
+  assert.equal(total.columns.s5InCandidate, null);
+  const md = renderRecordsMarkdown(buildRecords({ measureA: m }));
+  assert.match(md, /合計（全作品）（4 作品）（欠け: g-ja-3）/u);
+  // 3 作品の合計にも、候補が欠けた作品（g-ja-3）が出る。
+  assert.match(md, /を除く）（3 作品）（欠け: g-ja-3）/u);
+  // 候補が全作品で揃えば、欠けの注記は出ない（どの列も欠けない）。
+  const full = [];
+  for (const work of Object.keys(WORK_SPECS))
+    full.push(
+      ...(await identityWorkCells(work, {
+        ...WORK_SPECS[work],
+        candidates: ["amb0"],
+      })),
+    );
+  const complete = buildMeasureA({ cells: full, rowsByCell: {} });
+  assert.deepEqual(complete.identityColumns.levels.L2.totalAll.missingAny, []);
+  assert.ok(
+    !/（欠け:/u.test(
+      renderRecordsMarkdown(buildRecords({ measureA: complete })),
+    ),
+  );
+});
+
+test("DR-ILM-41：候補の file の出所（verified／unverified／stale／absent）を作品ごとに載せ、cell で違う・未知の値は止める", async () => {
+  const cellsOf = async (work, state) =>
+    (await identityWorkCells(work, WORK_SPECS[work])).map((c) => ({
+      ...c,
+      ...(state === undefined ? {} : { candidateFile: state }),
+    }));
+  const cells = [
+    ...(await cellsOf("g-ja-2", "verified")),
+    ...(await cellsOf("g-ja-3", "stale")),
+    ...(await cellsOf("g-ja-4", "unverified")),
+    ...(await cellsOf("m-ja-2", "absent")),
+  ];
+  const m = buildMeasureA({ cells, rowsByCell: {} });
+  assert.deepEqual(m.identityColumns.candidateFiles, {
+    "g-ja-2": "verified",
+    "g-ja-3": "stale",
+    "g-ja-4": "unverified",
+    "m-ja-2": "absent",
+  });
+  const md = renderRecordsMarkdown(buildRecords({ measureA: m }));
+  assert.match(
+    md,
+    /候補の file の出所（作品ごと）：g-ja-2=verified、g-ja-3=stale、g-ja-4=unverified、m-ja-2=absent。/u,
+  );
+  // 出所の欄が無い旧 records は null（「-」と書く）。
+  const none = buildMeasureA({
+    cells: await cellsOf("g-ja-2"),
+    rowsByCell: {},
+  });
+  assert.equal(none.identityColumns.candidateFiles["g-ja-2"], null);
+  assert.match(
+    renderRecordsMarkdown(buildRecords({ measureA: none })),
+    /g-ja-2=-。/u,
+  );
+  // 同じ作品の cell で出所が違えば止める。
+  const [first, ...rest] = await cellsOf("g-ja-2", "verified");
+  assert.throws(
+    () =>
+      buildMeasureA({
+        cells: [first, ...rest.map((c) => ({ ...c, candidateFile: "stale" }))],
+        rowsByCell: {},
+      }),
+    /CANDIDATE_FILE_STATE_VARIES work=g-ja-2/u,
+  );
+  // 未知の値は止める。
+  const unknown = await cellsOf("g-ja-2", "fresh");
+  assert.throws(
+    () => buildMeasureA({ cells: unknown, rowsByCell: {} }),
+    /CANDIDATE_FILE_STATE_UNKNOWN/u,
+  );
+});

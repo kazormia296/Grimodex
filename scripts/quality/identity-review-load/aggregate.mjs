@@ -324,6 +324,14 @@ export const IDENTITY_LEVEL_COLUMNS = Object.freeze([
   "s5NeitherSeedNorCandidate",
 ]);
 
+/** 候補の file の出所（run-measure-a の candidateFileState）。 */
+export const CANDIDATE_FILE_STATES = Object.freeze([
+  "verified",
+  "unverified",
+  "stale",
+  "absent",
+]);
+
 /** 合計：全ての作品が数値のときだけ足す。1 作品でも欠け・未計測（null）なら、合計と名乗らず null。 */
 function totalOf(works, pick) {
   const values = works.map(pick);
@@ -364,10 +372,20 @@ export function buildIdentityColumns(byWork) {
     const columns = {};
     for (const key of IDENTITY_LEVEL_COLUMNS)
       columns[key] = totalOf(works, (work) => pickFor(work, key));
+    // 欠け（数値でない作品）を列ごとに数える。表の「欠け」の注記は、どれかの列が欠けた作品の和（DR-ILM-41）。
+    const missingByColumn = {};
+    for (const key of IDENTITY_LEVEL_COLUMNS)
+      missingByColumn[key] = missingOf(works, (work) => pickFor(work, key));
     return {
       works: [...works],
       workCount: works.length,
       missingWorks: missingOf(works, (work) => pickFor(work, "urAll")),
+      missingByColumn,
+      missingAny: works.filter((work) =>
+        IDENTITY_LEVEL_COLUMNS.some((key) =>
+          missingByColumn[key].includes(work),
+        ),
+      ),
       columns,
     };
   };
@@ -400,6 +418,12 @@ export function buildIdentityColumns(byWork) {
     value: totalOf(works, (work) => s5PerWork[work]),
   });
   return {
+    candidateFiles: Object.fromEntries(
+      Object.entries(byWork).map(([work, w]) => [
+        work,
+        w.candidateFile ?? null,
+      ]),
+    ),
     unconfirmedRosterMark: UNCONFIRMED_ROSTER_MARK,
     unconfirmedRosterWorks: [...UNCONFIRMED_ROSTER_WORKS],
     levels,
@@ -428,7 +452,20 @@ export function buildMeasureA({ cells, rowsByCell }) {
       checks: {},
       // 保存済みの未 review の件数の状態（段ごと）。measured 以外は件数が null（未計測）。
       storedStates: {},
+      // 候補の file の出所（DR-ILM-41）。作品ごとに同じ（cell で違えば止める）。欄が無い旧 records は null。
+      candidateFile: null,
     });
+    if (cell.candidateFile !== undefined) {
+      if (!CANDIDATE_FILE_STATES.includes(cell.candidateFile))
+        throw new Error(
+          `[artifact] CANDIDATE_FILE_STATE_UNKNOWN cell=${cell.cell}`,
+        );
+      if (w.candidateFile !== null && w.candidateFile !== cell.candidateFile)
+        throw new Error(
+          `[artifact] CANDIDATE_FILE_STATE_VARIES work=${cell.work}`,
+        );
+      w.candidateFile = cell.candidateFile;
+    }
     const runs = cell.runs ?? [];
     for (const run of runs)
       w.storedStates[
@@ -822,6 +859,11 @@ export function renderIdentityColumns(columns) {
     "- 全作品の合計は、その水準の cell が全作品に揃っているときだけ出す（欠けた作品があれば「-」と書き、欠けた作品を添える）。",
     "- S5-roster は名簿から数えるので水準に依らない（作品ごと。同じ表記が複数の実体に載っていれば 1 件）。",
     "- S5 の内訳の「候補画面の候補に出る」は、inventory の既定の閾値の候補（作品単位）で、水準に依らない。登録済みの Entry や却下で絞った後の、その水準の候補画面とは一致しない。候補が未計測の作品があれば、候補の合計は「-」。",
+    `- 候補の file の出所（作品ごと）：${Object.entries(columns.candidateFiles)
+      .map(([work, state]) => `${work}=${state ?? "-"}`)
+      .join(
+        "、",
+      )}。verified＝inventory が使った scenes と今の scenes が同じ／unverified＝照合用の hash が無い古い file（使うが、今の scenes と照合できていない）／stale＝scenes と食い違う（使わず、候補は未計測）／absent＝無い・空（候補は未計測）／-＝この cell の records に欄が無い（a-defs/3 など）。`,
     "",
   );
   for (const [level, l] of Object.entries(columns.levels)) {
@@ -845,9 +887,7 @@ export function renderIdentityColumns(columns) {
       const t = l[key];
       const c = t.columns;
       const note =
-        t.missingWorks.length > 0
-          ? `（欠け: ${t.missingWorks.join("・")}）`
-          : "";
+        t.missingAny.length > 0 ? `（欠け: ${t.missingAny.join("・")}）` : "";
       lines.push(
         `| ${label}（${t.workCount} 作品）${note} | - | - | ${dash(c.urAll)} | ${dash(c.urRosterTarget)} | ${dash(columns.s5Roster[s5Key].value)} | ${dash(c.s5Seen)} | ${dash(c.s5NotSeed)} | ${dash(c.s5SeedNotProposed)} | ${dash(c.s5Proposed)} | ${dash(c.s5InCandidate)} | ${dash(c.s5NotSeedInCandidate)} | ${dash(c.s5NeitherSeedNorCandidate)} |`,
       );
