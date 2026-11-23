@@ -845,32 +845,14 @@ async function restoreStructural(
     for (const row of auxByScope.get("map_frames") ?? []) {
       pushStmt(buildInsert("map_frames", row));
     }
+    // A card is sent as the snapshot has it. The references of a card are never
+    // cleared here: a card names exactly one thing (a CHECK), so a card whose
+    // scene, Codex entry or Snippet is gone cannot be NULLed. Native decides
+    // what falls away, after it has checked this plan against its own
+    // (restore_missing_parents.rs, DR-SRX-27); a plan that already left it out
+    // would not match.
     for (const row of auxByScope.get("map_node_positions") ?? []) {
-      let treeNodeId = (row.tree_node_id as string | null) ?? null;
-      let codexEntryId = (row.codex_entry_id as string | null) ?? null;
-      if (
-        !scopes.has("body") &&
-        typeof treeNodeId === "string" &&
-        !liveTreeNodeIds.has(treeNodeId)
-      ) {
-        treeNodeId = null;
-        skipped.mapNodePositionsLinkCleared++;
-      }
-      if (
-        !scopes.has("codex") &&
-        typeof codexEntryId === "string" &&
-        !liveCodexIds.has(codexEntryId)
-      ) {
-        codexEntryId = null;
-        skipped.mapNodePositionsLinkCleared++;
-      }
-      pushStmt(
-        buildInsert("map_node_positions", {
-          ...row,
-          tree_node_id: treeNodeId,
-          codex_entry_id: codexEntryId,
-        }),
-      );
+      pushStmt(buildInsert("map_node_positions", row));
     }
     for (const row of auxByScope.get("map_edges") ?? []) {
       pushStmt(buildInsert("map_edges", row));

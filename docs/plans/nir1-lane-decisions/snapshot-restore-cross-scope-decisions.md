@@ -336,3 +336,101 @@ in place の退避は、子の参照の列を `'__grimodex_restore_park_<snapsho
 1. **blocker（直した）**：#1026 の「範囲をまたぐ cascade でも免除が狭められない」試験 2 本が、つながりが残るようになったので、免除を通らなくなった（空洞化）。**親が実際に消えてつながりが外れる復元**の後に、出来事・Snippet が書けることを見る試験を足した（`codex_only_restore_that_removes_the_primary_character_leaves_the_event_writable`、`body_only_restore_that_removes_the_snippets_scene_leaves_the_snippet_writable`）。
 2. **記録の不正確（直した）**：DR-SRX-1 と DR-SRX-9 の authority の食い違い、DR-SRX-3・15 の「実行時に導出」「動的な表名を避ける」、列の数（`PARK_COLUMNS` は 40 列。索引の無い列は 9）、DR-SRX-9 の「全場面」（全 `tree_nodes` の行）、DR-SRX-16 の仕組みの記述（未特定と明記）、`restore_links.rs` のコメント。
 3. **follow-up（この PR では直さない）**：(a) `unchecked_transaction` は DEFERRED で、最初の書き込みの前の読み（外部キー違反の集合の取得）が増えたので、別プロセスの commit で `SQLITE_BUSY_SNAPSHOT` になる窓が広がるおそれ（推測）。70〜80 秒の lane で IMMEDIATE を検討する。(b) `change_events` の退避だけが、子の `project_id` の一致を要求し、ほかの列は要求しない（`PARK_COLUMNS` の列は、親の id の集合で絞るので、別の作品の行には触れない）。(c) 触らない表の新しい外部キー違反は、集合の差が見ない（この PR は触らない表に書かない）。
+
+## 8. スナップショットの行が指す親が、復元の後に無いとき（DR-SRX-26〜）
+
+きっかけは、スナップショットを撮った後に親（場面・Codex 項目・Snippet・チャットのメッセージ・チャットのセッション・分析の run・場面なしの注釈）を削除してから、その親を指す行を持つスナップショットを復元すると、復元が外部キー違反で失敗する（または、確認 146 の以前は、地図の位置を NULL にして CHECK に反する）件である。実行で確かめた探りの試験（commit しない手本。実装の後、受入れの試験 `tests/snapshot_restore_missing_parents.rs` に置き換えて消した）は、9 件（P1〜P9）で復元が失敗し、1 件（P10：Snippet だけの復元で、消えた場面を指す `snippets.scene_id`）は成功することを記録した。この節は、その 9 件を 1 つの規則・1 つの PR で直す判断を残す。**画面への表示は別の PR（PR-B）**で、この PR は Native の応答（`dropped`）と確認の context（`lossNotices`）までを変える。
+
+### DR-SRX-26　規則（確認 121・146）
+
+スナップショットの行が指す親が、復元の後に無いときは、**その親を復元の後で削除したときと同じ形**で戻す。外部キーの `ON DELETE` の定義どおり、
+
+- `SET NULL` の列は、参照だけを空にする（行は残す）。
+- `CASCADE` の行は、行ごと外す。その行を `CASCADE` で指す、計画の中の行（地図の辺、注釈の返信・関係）も一緒に外す（不動点まで）。
+
+親が復元の後にあるかは、次で決める。
+
+1. 親の表を選んだ scope が置き換えるなら、計画の行の id。外した行は引かない：親が外れうるのは注釈だけで、注釈を指す 2 列（`parent_id`・`annotation_b_id`）は両方 `DEPENDENTS` にあり、外した親を指す行は不動点が外すので、結果は同じである。
+2. 置き換えないなら、live の表を**この作品（project）の行だけ**で引く。チャットのメッセージ・セッション、`post_effect_runs` はどの scope にも属さないので常に live。メッセージは、セッションの `project_id` がこの作品のものだけを「ある」とする。**別の作品の行を指す参照は「親が無い」と同じに扱う**（`integrity.rs` の孤児の判定と同じ形。外部キー自体より厳しい。変更前は、そのまま戻していた。DR-SRX-34 の 5）。
+3. 置き換える表でも、スナップショットが全行を持たない親（場面なしの注釈）は、「計画の id、または live に残る行」で決める。Body の復元は場面のある注釈だけを消す（その注釈に `parent_id` で連なる場面なしの返信も、`CASCADE` で一緒に消える。DR-SRX-34 の 6）。
+
+この規則は、`MISSING_PARENT_EDGES`（11 辺）と `DEPENDENTS`（5 本）の固定の一覧に書かれている（`src-tauri/crates/grimodex-db/src/project_snapshots/restore_missing_parents.rs`）。
+
+| 表.列 | 親 | 動き | kind |
+|---|---|---|---|
+| `codex_entry_phases.anchor_node_id` | `tree_nodes` | 空にする | `phase_anchor`（既存を流用） |
+| `map_node_positions.snippet_id`／`tree_node_id`／`codex_entry_id` | `snippets`／`tree_nodes`／`codex_entries` | 行を外す（辺 `map_edges` も） | `map_placements`（既存を流用）、辺は `map_edges`（新設） |
+| `map_stickies.source_chat_message_id`、`map_ai_branches.session_id` | `chat_messages`、`chat_sessions` | 空にする | `map_source_links`（新設） |
+| `snippets.source_chat_message_id` | `chat_messages` | 空にする（DR-SRX-29） | `snippet_source_message`（新設） |
+| `post_effect_annotations.run_id`、`post_effect_annotation_relations.run_id` | `post_effect_runs` | 空にする | `analysis_run_links`（新設） |
+| `post_effect_annotation_relations.annotation_b_id`、`post_effect_annotations.parent_id` | `post_effect_annotations` | 行を外す（返信・関係も） | `analysis_annotations`（新設） |
+
+最後の 2 行のうち `relations.run_id` と `annotations.parent_id` は、スキーマからの導出で見つかった 9 件の外の辺である。`parent_id` は、書き手が返信を作るとき親の `scene_id` を継承するので（`post_effect.rs` の `reply_to_annotation_inner`）、製品の経路では「場面なしの親を指す場面ありの子」はまず作られない見込み（推測）で、構築した計画の単体試験で確かめた。
+
+### DR-SRX-27　地図の位置の「参照を NULL にする」処理をやめる
+
+`map_node_positions` は、参照列がちょうど 1 つ非 NULL であることを CHECK で要求する。親が無いときに `tree_node_id`／`codex_entry_id` を NULL にすると、CHECK に必ず反する（以前は、そのままだと復元が失敗した）。そこで、canonical の計画（`build_canonical_restore_plan`）と renderer の計画（`projectSnapshotApi.ts`）の両方から NULL 化を消し、位置はスナップショットのまま送る。親が無い位置を外すのは、照合の後に Native が行う（DR-SRX-28）。
+
+- canonical と TS は**同じ PR で**変える。片方だけだと、すべての地図の復元が `does not match the owned snapshot` で拒まれる（閉じる側の失敗。renderer と native は同じ版で配られる前提。推測）。**3 つ目の写しが browser-mock にある**（`src/lib/browser-mock.ts` の `browserSnapshotCanonicalPlan`。mock の復元が renderer の計画を、この写しと完全一致で照合する）。そこも同じ変更で NULL 化を消した（点検の指摘）。mock には、親が無い札を外す段も、`lossNotices`・`dropped` も無いので、**mock の経路では、親が無い復元は失敗のまま**（変更前も、NULL 化が CHECK に反して失敗していた見込み。mock の INSERT 側は未確認）。`projectSnapshotApi.mapPositions.test.ts` が、地図の計画が元の参照のまま送られることを固定する（変更前の TS では落ちることを確かめた）。
+- 参照 0 件になった死んだ定数・欄を消した：`SkipReport.mapNodePositionsLinkCleared`（と `ProjectSnapshotModal.tsx` の合算）、`AUX_BODY_DEPENDENCY`・`AUX_CODEX_DEPENDENCY`（どこからも参照されておらず、`map_node_positions` の `nullColumns` という誤った記述も持っていた）。
+
+### DR-SRX-28　どこで、どの順に整形するか
+
+**Rust だけで、renderer の計画を canonical と照合した後に整形する**。`reshape_authorship_inserts`（DR-SRX-7）と同じ型（canonical の計画から canonical の計画）である。位置は、照合と `reshape_authorship_inserts` の後、冪等の応答の確認の**後**（`resolve` は応答の確認の後に呼ぶ）。
+
+- 信頼境界の正本は Rust。照合（`ensure_restore_plan_is_snapshot_derived`）は変えない。renderer が整形済みの計画（行を外した、参照を空にした）を送っても、canonical と一致せず拒まれる。余計な行を足しても拒まれる（試験：`renderer_cannot_pre_shape_the_plan`）。整形は（スナップショット、live の DB、scopes）だけから決まる関数で、renderer は件数にも、外す行にも影響できない。
+- 流れ：`apply` は、照合 → `reshape_authorship_inserts` → 冪等の応答の確認 → `resolve` → 以降（`park`・削除・挿入）の入力を、整形済みの計画にする。`context` は、canonical → `reshape_authorship_inserts` → `resolve` → `count_losses`（整形で外した件数を、他の scope の live のつながりの件数に足す）。同じ関数を同じ状態で呼ぶので、確認と結果は、同じ状態で一致する（DR-SRX-10：確認を開いてから押すまでに状態が動けば、結果は実際の値になる）。
+- 実行：外す行（`CASCADE`）を先に決め、不動点まで `DEPENDENTS` を辿り、残った行にだけ参照を空にする列を適用する。件数は（行、kind）の集合で数える（1 行が 2 列で当たっても 1 件、外した行は「空にした」件に入れない）。
+- **no-op の確認の分離**：`dropped` が空でないなら Feed の object が変わったはず、という `ensure!`（「dropped links … but changed no Feed object」）は、`restore` が返す live のつながりの分（`link_dropped`）だけを見る。整形で外した分を含めると、live が既に同じ形（親が削除されたとき DB 自身が空にした）で、スナップショットの参照だけを戻せなかった復元が、「dropped があるのに Feed 変更なし」で失敗する。結果は `no_op: true` のまま、整形の分を含めた `dropped` を持つ（試験：`net_no_op_restore_still_reports_what_it_left_out`、`ensure!` を元に戻す変異で落ちることを確かめた）。冪等で保存する結果は合算後の値で、`serde(default)` により古い保存結果と互換（型は変えない）。
+- 比べた案：(A) renderer と canonical に手書きの filter を足す（TS との完全一致が 2 重管理になり、context の `live*Ids` が大きくなる）、(B) 固定の辺の一覧＋共通の実行関数＋スキーマ照合の試験（採用）、(C) 実行時に `PRAGMA foreign_key_list` から導出（新しい外部キーに自動で追随するが、通知の種類・生き残る親の例外・`RESTRICT` の扱いは人が決めることで、`restore_links.rs` の「文は定数から作る」方針〔DR-SRX-3・15〕に反し、分類されない辺の挙動が黙って変わる）。
+- **整形の分の `touched_tables` への追加**：`MISSING_PARENT_EDGES` と `DEPENDENTS` の表を、`restore_links::touched_tables` に足す。`ensure_no_new_dangling` が、`park` の前後でこれらの表の外部キー違反の集合を比べる（DR-SRX-16）。
+
+### DR-SRX-29　`snippets.source_chat_message_id` は `RESTRICT` だが、削除したときの形は NULL と一意に決まる
+
+宣言は `ON DELETE RESTRICT` だが、`chat_messages` の `BEFORE DELETE` trigger（`chat_message_source_provenance_delete`。`schema-contract.json` と `migrate.rs`）が、メッセージを消すと `codex_entries.source_chat_message_id` と `snippets.source_chat_message_id` を NULL にする。したがって「削除したときと同じ形」は NULL で、ユーザーに伺う点ではない。guard（`restore_missing_parents/tests.rs`）は、この列を `TRIGGER_BACKED` に載せ、trigger が存在し、その SQL が `UPDATE snippets SET source_chat_message_id = NULL` を含み、列が nullable であることを確かめる。trigger が無くなる（または別の動きに変わる）と、この列を黙って `SET NULL` 扱いにしないよう、guard が落ちる。実スキーマで、メッセージを消すと Snippet の出所が空になることも試験にした（`deleting_a_message_clears_a_snippets_source`）。`codex_entries.source_chat_message_id` は、canonical の計画が常に NULL で入れるので、この辺の対象ではない（既存。Snippet は元の値を残すので、2 表の扱いは非対称のまま。この PR の範囲外）。
+
+### DR-SRX-30　既存の手書きの filter は、通知しないまま変えない
+
+canonical の計画（と reshape）には、次の列を、親が無いときに外す・空にする既存の手書きの filter がある。これらは通知を出さず、この PR も通知を足さず、挙動も変えない。新しく足す辺だけを通知する。一覧（`CANONICAL_FILTERED`。guard が、スキーマの導出と一致することを見る）：`authorship_spans`（`codex_entry_id`・`detail_value_id`・`phase_id`・`snippet_id`・`sticky_id`。`reshape_authorship_inserts` が行ごとに判定）、`codex_entries.source_chat_message_id`（常に NULL）、`editor_stickies`（`chronicle_event_id`・`codex_entry_id`・`phase_id`・`snippet_id`・`tree_node_id`）、`event_participants.codex_entry_id`、`events.location_codex_id`・`primary_codex_id`、`foreshadow_codex_links.codex_entry_id`、`foreshadow_payoffs.scene_id`、`foreshadow_setups.scene_id`、`foreshadows.payoff_scene_id`、`lint_ignored_diagnostics.scene_id`、`scene_beat_pov_cache.pov_character_id`、`scene_codex_mentions.codex_entry_id`、`scene_codex_pins.entry_id`、`snippet_entry_tags.tag_id`、`snippets.scene_id`（P10）、`tree_node_labels.node_id`、`tree_nodes.location_id`・`pov_character_id`。renderer 側の `SkipReport` が数えているのは、このうち `editorStickies` などの一部だけである。**通知が出るものと出ないものが、同じ型の欠落の中に混在する**（残る制限。PR 本文に載せる。通知を揃えるなら、canonical の filter を「外した id の一覧を返す形」に直し、TS との完全一致に触れるので別の PR）。
+
+### DR-SRX-31　通知の kind
+
+kind は作者向けの固定 id で、表名にしない（`restore_links::KIND_ORDER`）。新設は `map_edges`・`map_source_links`・`snippet_source_message`・`analysis_run_links`・`analysis_annotations` の 5 つで、`analysis_records` の後、`scene_scope_bindings_reset` の前に足した（既存の相対順は変えない）。`phase_anchor` と `map_placements` は流用する。live の行が外れる件（`PARK_COLUMNS`。その scope を選んでいない）とスナップショットの行を外す件（その scope を選んでいる）は、表ごとに排他で、意味も同じ（起点なしの Phase、置き場の無い札）なので、同じ kind に合算する。`analysis_run_links`・`analysis_annotations` は、live の分の `analysis_records`（場面向けの run が消える件）とは、同じ復元で両方が起こりうるので、別の kind にした。画面の文面（PR-B）で「live の外れ」と「スナップショットの行の落とし」を区別する必要が出たら、新設に切り替える（推測。この PR では区別しない）。
+
+### DR-SRX-32　「壊れたデータは残らない」とは書かない。網は 2 つ
+
+実行時の網は、`touched_tables` に載せた表の `PRAGMA foreign_key_check` の前後比較（`ensure_no_new_dangling`）だけである。SQLite の commit 時の検査は、退避した行があると swap を通しうる（DR-SRX-16）ので、頼らない。**一覧の漏れを止めるのは guard である**（CI）。
+
+- 導出：7 つの scope の全 127 通り×スナップショットの `events` の有無で、復元が入れ直す表の外部キーを `PRAGMA foreign_key_list` から全部引き、親が復元で全行は戻らない辺（親の scope を選んでいない、どの scope にも属さない、または、スナップショットが全行を持たない親〔場面なしの注釈〕）を 39 本導く。
+- 分類：導いた各辺は、`MISSING_PARENT_EDGES`（11）・`CANONICAL_FILTERED`（27）・`EXEMPT`（理由つき 1。`relations.annotation_a_id`：注釈 A は場面の注釈でスナップショットに入っており、外れたときは `DEPENDENTS` が関係を外す）の**ちょうど 1 つ**に入る。どれにも入らなければ「classify it」で落ち、一覧にあるが導出に無い辺（古い項目）も落ちる。
+- 実在：各辺が実スキーマの外部キーで、親・持ち主の scope・`ON DELETE`（`SET NULL` は nullable、`CASCADE` は行を外す辺、`RESTRICT` は `TRIGGER_BACKED` のみ）が合うこと、kind が `KIND_ORDER` にあって表名でないこと。
+- 連鎖：外せる行の表を指す、復元が入れ直す表の外部キーは、すべて `DEPENDENTS` にあり、`CASCADE` であること（`SET NULL` の子は自分の規則が要るので落ちる）。
+- 不変条件：外せる行の表は、`restore_links::Parent` の表（`plan_facts` の surviving が壊れる）を含まない。
+- 動作：7 つの scope のそれぞれを単独で、親の削除 7 種（場面・Codex 項目・Snippet・メッセージ・セッション・run・場面なしの注釈）の後に復元して、成功し、`foreign_key_check` が 0 件、退避した値の残りが 0 件であること（7 本）。
+- 同値（規則そのもの）：辺ごとに、親を消してから復元した DB と、復元してから親を消した DB で、子の表の行が同じであること（`restoring_without_the_parent_equals_deleting_it_afterwards`。固定の時刻の既定値は伏せる）。
+- 変異で確かめた：辺を 1 本消す、`DEPENDENTS` を 1 本消す、不動点をやめて 1 周で止める、`ensure!` の分離を戻す、のそれぞれで、試験が落ちる。
+
+導出と実行時の網の費用：整形の分の表（`snippets`・`post_effect_annotations` など）の `foreign_key_check` が `park` の前後で増える。**大きい作品の復元での時間は測っていない**（PR #1043 の大規模 fixture での前後比較が要る。重ければ、整形で変えた行の id に絞る）。
+
+### DR-SRX-33　hidden の Phase の既存の穴（この PR は直さない）
+
+P1 の復元で `codex_entry_phases.anchor_node_id` が NULL になった Phase は、場面を削除して `SET NULL` になった行と、DB の上で区別できない（`version`・`updated_at` を変えず、他の列は元のスナップショットのまま）。読み手は、Rust も TS も、起点が NULL の Phase を一貫して飛ばす。したがって、この PR は hidden を弱める**新しい性質を足さない**。ただし、既存の穴として、**hidden の Phase の起点の場面を消すと、場面を解決できる状況では、その Phase の hidden が効かなくなる**（`resolveApplicablePhases.ts` の `validRankedPhases` が `skippedPhaseIds` に入れる。場面を解決できないときだけ、`hasPhaseHiddenFromAi` が起点を見ずに hiding 側へ倒す〔DR-MP4-41〕）。復元は、場面削除と同じ経路に、もう 1 つ入口を足すだけである。この穴は、閉じる側の変更だが AI への開示契約に触れるので、この PR では直さない（resolver に触らない）。Mastra の lane が別件として扱う（DR-MP4-46、枝 `claude/hidden-orphan-phase`。この PR の時点では未 merge。merge の順は問わず、どちらが先でも、この PR の挙動・試験は変わらない。後から merge された側で、上の「入口が 1 つ増える」記述が古くなるので、その PR で読み直す）。PR-B の確認画面の文面で、`phase_anchor` のうち hidden の Phase を区別して示すかは、画面の起案のときに伺う（この PR の通知は kind 単位で、hidden かどうかを持たない）。推測：作者が起点の場面を消したときの意図は見ていない。
+
+### DR-SRX-34　残る制限（直さない・確かめていないもの）
+
+1. 既存の手書きの filter の通知なし（DR-SRX-30）。
+2. この PR の導出で見つけたが、直していない取りこぼし：`post_effect_annotation_relations` のうち注釈 A が場面なしの行は、`AUX_SPECS` の捕捉条件（A が場面ありの注釈）に入らず、スナップショットに載らない。Body の復元で、相手 B の場面ありの注釈が `CASCADE` で消えると、live のその関係も黙って消える（P9 の鏡像。失敗はせず、通知にも出ない）。`authorship_spans` の捕捉条件が `phase_id` を見ない（`phase_id` だけを持つ行はスナップショットに載らない）。外部キーでない参照（`codex_relations.source_map_edge_id` は意図的に FK なし、`map_ai_branches.seed_node_ids`〔id の JSON 配列〕、`authorship_spans.chat_msg_id`、`foreshadow_setups`・`foreshadow_payoffs` の `evidence_anchor_id`）は、復元で検査されず、親が消えていれば黙って dangling になる。`editor_stickies.chronicle_event_id` は、Body を選び、スナップショットに `events` の aux が無いとき、canonical の filter が「events は入れ直される」と見なすが、実際は入れ直されないので、live の events が消えていれば挿入が失敗しうる（まれ）。
+3. 過少計上：Body の復元で、場面向けの run が復元の `detach` で後から `CASCADE` で消えるときの注釈の `run_id` は、挿入の後に DB 自身が NULL にするので、`analysis_run_links` に数えない。
+4. `no_op: true` と、空でない `dropped` が同居しうる（live が既に同じ形で、スナップショットの参照だけを戻せなかった復元）。PR-B の文面で、「変更はなかったが、スナップショットにあった参照 n 件は戻せなかった」と読める表現が前提になる。
+5. **別の作品の行を指す参照は、親が無いのと同じに扱う（変更前は、そのまま戻っていた）**。親の存在を、live の表の project で絞って引くので（全 7 種：`tree_nodes`・`codex_entries`・`snippets`・チャットのメッセージ〔セッションの project〕・セッション・`post_effect_runs`・場面なしの注釈）、外部キーの上では有効な、別の作品の親を指す行も、空にする（`SET NULL` の列）か外す（`CASCADE` の行）。件数は通知に入る。`integrity.rs` の孤児の判定と同じ形で、所有の検査（#1043）が見る列ではないので、この PR が足した動きである。そのような行が実際の経路で作られるか（作品の複製・取込み）は確かめていない（推測。通常は起きない見込み）。点検（独立の read-only）が、親が生きている行を変える点として指摘し、確認 146 の解釈として扱う。試験が 4 本で固定する（`cross_project_*`。それぞれの live の照会から project の絞りを外す変異で赤くなる）。別の作品の行を、外部キーと同じ「ある」とするなら、7 つの照会から project の絞りを外し、この試験の期待を変える（1 行ずつ）。
+6. 場面なしの注釈の生き残りは、「`parent_id` の書き手が親の `scene_id` を継承する」現状に依る（別の書き手が増えると前提が崩れる）。
+7. TS と Rust は同じ版で配る必要がある（DR-SRX-27）。
+8. 未測定：大きい作品での時間（DR-SRX-32）、Windows・macOS。
+9. `snapshot_restore_scope_equivalence`（`#[ignore]`、数千回の復元）は、この PR では実行していない（所有の検査は変えていない）。
+10. **PR-B の前は、外れたことが画面に出ない**（独立の点検の指摘。確認 146 で、画面は別の PR と決めた）。変更前は、親が無い復元は丸ごと失敗して DB は変わらなかった。変更後は成功し、地図の札・辺、注釈・関係が外れ、Phase の起点・出所の参照が空になる。件数は `dropped`・`lossNotices` に入るが、`src/features/revision` に表示する箇所は無い（型として受けるだけ）。PR-A（選んでいない範囲のつながり）も同じ形で入っている。hidden の Phase では、スナップショットの後に起点を別の場面へ付け替え、元の場面を消した live の Phase が、Codex の復元 1 回で起点なしになり、hidden が効かない側へ倒れる（DR-SRX-33 の入口。変更前はこの復元が失敗して live が保たれた）。PR-B を、この PR と同じ release に入れる条件にするかは、merge の前にユーザーに見せる。
+11. browser-mock の経路では、親が無い復元は失敗のまま（DR-SRX-27）。
+12. `ensure_no_new_dangling` は違反を `rowid` で同定する。`touched_tables` に足した表（`codex_entry_phases`・`map_node_positions`・`map_edges`・`map_stickies`・`map_ai_branches`・`snippets`・`post_effect_annotations`・`post_effect_annotation_relations`）は、選んだ scope が全行を消して入れ直すので rowid が振り直され、「元からの違反の免除」が成り立たない。外部キーを切って取り込んだデータで、live とスナップショットの両方に、この step が扱わない列（例：`map_node_positions.sticky_id` が元から無い札を指す）の違反が有ると、同じ行でも「新しい違反」と判定されて復元が止まりうる（偽陽性。閉じる側）。変更前も、commit 時の外部キーの検査が同じ違反で止めた見込み（SQLite の遅延カウンタの挙動次第で、断定はしていない）。主キーで同定する形への変更は、`restore_links` の同定を変えるので、この PR ではしない。
+
+### 実施した検証（この節の時点）
+
+`cargo test -p grimodex-db`：`--test snapshot_restore_missing_parents`（26）、`--lib restore_missing_parents`（9）・`--lib project_snapshots`（48、`restore_links` を含む）、`--test snapshot_restore_cross_scope`（34）・`snapshot_restore_feed_continuity`（38）・`snapshot_restore_scope_guard`（31）・`narrative_scope_storage_authority`（6）が緑。実装の前は、受入れの試験で P1〜P9 が赤（P1・P2・P5〜P9 は `FOREIGN KEY constraint failed`、P3・P4 は canonical との照合が `does not match the owned snapshot`）、P10 は緑だった。`pnpm exec tsc --noEmit`、`vitest run src/features/revision`（11 ファイル 57 件）が緑。`cargo clippy -p grimodex-db --all-targets` は、手本の探りの試験の未使用 import だけを警告する（統合者が探りの試験を消す）。
