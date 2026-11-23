@@ -100,7 +100,7 @@ export interface ProjectSnapshotApplyRestoreResult {
   canonicalSequence: number;
   changeEventUid?: string;
   maintenanceTransactionId?: string;
-  noOp: boolean;
+  noOp?: boolean;
   /**
    * What the restore did not give back, by kind. Absent from a result an
    * older version stored for an exact retry.

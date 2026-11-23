@@ -6,6 +6,7 @@ import { ProjectSnapshotModal } from "./ProjectSnapshotModal";
 
 const mocks = vi.hoisted(() => ({
   listProjectSnapshots: vi.fn(),
+  previewProjectSnapshotRestoreLoss: vi.fn(),
   restoreProjectSnapshot: vi.fn(),
   deleteProjectSnapshot: vi.fn(),
 }));
@@ -39,6 +40,7 @@ vi.mock("@/components/ui/animated-overlay", () => ({
 vi.mock("./projectSnapshotApi", () => ({
   createProjectSnapshot: vi.fn(),
   listProjectSnapshots: mocks.listProjectSnapshots,
+  previewProjectSnapshotRestoreLoss: mocks.previewProjectSnapshotRestoreLoss,
   restoreProjectSnapshot: mocks.restoreProjectSnapshot,
   deleteProjectSnapshot: mocks.deleteProjectSnapshot,
 }));
@@ -46,6 +48,10 @@ vi.mock("./projectSnapshotApi", () => ({
 describe("ProjectSnapshotModal phone confirms", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.previewProjectSnapshotRestoreLoss.mockResolvedValue({
+      structural: true,
+      lossNotices: [],
+    });
     mocks.listProjectSnapshots.mockResolvedValue([
       {
         id: "snapshot-1",

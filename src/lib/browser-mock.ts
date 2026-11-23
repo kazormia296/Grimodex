@@ -61,6 +61,7 @@ import {
   type RawRow,
   type RestoreScope,
 } from "@/features/revision/projectSnapshotScopes";
+import type { RestoreLossNotice } from "@/features/revision/projectSnapshotNative";
 import sampleProjectJa from "../../src-tauri/resources/sample_project/v1.json";
 import sampleProjectEn from "../../src-tauri/resources/sample_project/v1_en.json";
 import {
@@ -841,6 +842,11 @@ export interface BrowserMockOptions {
   allowProtectedWriterTestFixtures?: boolean;
   /** Test-only observation point for the single genesis change-event probe. */
   onTimelapseGenesisLedgerReadForTest?: () => void;
+  /** Test-only restore notices; absent injection keeps the mock loss-free. */
+  projectSnapshotRestoreLossNoticesForTest?: {
+    lossNotices?: RestoreLossNotice[];
+    dropped?: RestoreLossNotice[];
+  };
 }
 
 export interface BrowserAiAuthorizationRequest {
@@ -16171,6 +16177,8 @@ export async function createBrowserMock(
       }));
     return {
       structural,
+      lossNotices:
+        options.projectSnapshotRestoreLossNoticesForTest?.lossNotices ?? [],
       liveTables: queryAll(
         "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
         [],
@@ -16884,6 +16892,7 @@ export async function createBrowserMock(
     changeEventUid: string | null;
     maintenanceTransactionId: string | null;
     noOp: boolean;
+    dropped: RestoreLossNotice[];
   }> {
     const command = "project_snapshot_apply_restore";
     const payload = browserSnapshotPayload(args, command);
@@ -16987,6 +16996,7 @@ export async function createBrowserMock(
       changeEventUid: string | null;
       maintenanceTransactionId: string | null;
       noOp: boolean;
+      dropped: RestoreLossNotice[];
     } | null => {
       const ledger = queryOne(
         `SELECT project_id, payload_hash, tombstone_json
@@ -17044,6 +17054,9 @@ export async function createBrowserMock(
         changeEventUid,
         maintenanceTransactionId,
         noOp,
+        dropped: Array.isArray(response.dropped)
+          ? (response.dropped as RestoreLossNotice[])
+          : [],
       };
     };
     const replay = loadReplay();
@@ -17376,6 +17389,7 @@ export async function createBrowserMock(
           changeEventUid: string | null;
           maintenanceTransactionId: string | null;
           noOp: boolean;
+          dropped: RestoreLossNotice[];
         };
         if (feedEvents.length === 0) {
           const tail = readTimelapseTail(projectId);
@@ -17384,6 +17398,8 @@ export async function createBrowserMock(
             changeEventUid: null,
             maintenanceTransactionId: null,
             noOp: true,
+            dropped:
+              options.projectSnapshotRestoreLossNoticesForTest?.dropped ?? [],
           };
         } else {
           const identity: BrowserCanonicalWriteIdentity = {
@@ -17408,6 +17424,8 @@ export async function createBrowserMock(
             changeEventUid,
             maintenanceTransactionId,
             noOp: false,
+            dropped:
+              options.projectSnapshotRestoreLossNoticesForTest?.dropped ?? [],
           };
         }
         db.run(
