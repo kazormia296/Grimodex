@@ -4581,6 +4581,7 @@
     "labelPlaceholder": "例: 追放後 / 死亡 / 仲間入り...",
     "anchorScene": "アンカーシーン",
     "anchorSceneDesc": "このフェーズが開始するシーン",
+    "anchorSceneMissing": "この Phase の起点の場面は見つかりません。場面を選び直してください。",
     "overrideFields": "コンテンツ上書き (任意)",
     "summary": "概要",
     "summaryPlaceholder": "このフェーズ以降の概要...",

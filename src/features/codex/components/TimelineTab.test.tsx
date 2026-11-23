@@ -682,6 +682,35 @@ describe("TimelineTab", () => {
       }
     });
 
+    it("鉛筆で開く PhaseDialog は、読む順にある場面だけを選べ、起点を失った Phase は場面の選び直しまで保存できない", async () => {
+      mockTreeState.nodes = [
+        { id: "scene-1", title: "第1場", nodeType: "scene" } as never,
+        {
+          id: "scene-archived",
+          title: "しまった場面",
+          nodeType: "scene",
+        } as never,
+      ];
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [makePhase("p1", "古い起点", "scene-archived")],
+      };
+      Object.assign(mockPhaseState, { detailOverrides: {} });
+      render(<TimelineTab entry={mockEntry} />);
+      await screen.findByText("古い起点");
+      const pencil = screen
+        .getAllByRole("button")
+        .find((b) => b.querySelector(".lucide-pencil"));
+      fireEvent.click(pencil!);
+      const select = document.querySelectorAll("select")[0];
+      expect(
+        [...select.querySelectorAll("option")].map((o) => o.value),
+      ).toEqual(["", "scene-1"]);
+      expect(
+        screen.getByTestId("phase-dialog-anchor-missing"),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /保存|Save/ })).toBeDisabled();
+    });
+
     it("削除確認の括弧に、見つからない場面の生の id を出さない", async () => {
       mockPhaseState.phasesByEntry = {
         "entry-1": [makePhase("p1", "古い起点", "scene-secret-id")],

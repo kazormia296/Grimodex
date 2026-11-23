@@ -220,6 +220,12 @@ export function TimelineTab({ entry }: TimelineTabProps) {
   const findSceneTitle = (nodeId: string): string | null =>
     nodes.find((n) => n.id === nodeId)?.title ?? null;
 
+  // Only scenes in the reading order can anchor a Phase (the resolver skips the
+  // rest). Not narrowed while the scene order cannot be resolved (no choice left).
+  const isSelectableAnchor = orphanDisplay.sceneResolvable
+    ? (nodeId: string) => sceneTimeIndex.readingOrder.has(nodeId)
+    : undefined;
+
   // The row text of a Phase the resolver skipped. Claims "not sent to the AI" only
   // for a Phase that hides the entry; nothing is claimed while the scene order
   // cannot be resolved (then the old neutral text stays).
@@ -308,6 +314,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
             phase={null}
             onClose={handleClose}
             resolveCurrentContent={resolveContentAtAnchor}
+            isSelectableAnchor={isSelectableAnchor}
             existingDetailOverrideCount={0}
           />
         )}
@@ -643,6 +650,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           phase={editingPhase}
           onClose={handleClose}
           resolveCurrentContent={resolveContentAtAnchor}
+          isSelectableAnchor={isSelectableAnchor}
           existingDetailOverrideCount={
             editingPhase ? (detailOverrides[editingPhase.id]?.length ?? 0) : 0
           }
