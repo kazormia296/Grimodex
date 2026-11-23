@@ -1195,7 +1195,7 @@ test("the Drizzle schema moved to electron/shared keeps its narrative selection 
 test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never select less than editing them at the old path", async () => {
   const source = await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8");
   const map = parseImpactMap(source);
-  // 21 files moved from src/ (the old path is now a one-line re-export) and 3 modules split out of
+  // 22 files moved from src/ (the old path is now a one-line re-export) and 3 modules split out of
   // api.ts, nodes.ts, resolveStoryRanks.ts and semanticRecall.ts. None of them is added to a rule on purpose
   // (DR-MP4-3e): adding one would narrow the selection from every suite to a few, so they stay fail-open.
   const moved = [
@@ -1220,6 +1220,10 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     "features/foreshadow/deriveLabel",
     "features/foreshadow/normalizeForeshadowRow",
     "features/foreshadow/types",
+    // MP-4b PR-8b: the dense+sparse fusion of search_codex (one file moved from src/features/chat/agent/
+    // codexHybridSearch.ts, the old path now a one-line re-export). Not listed in a rule on purpose: the
+    // canonical path matches no rule (every suite), which is never narrower than the old tool-policy selection.
+    "features/chat/agent/codexHybridSearch",
   ];
   const created = [
     "features/chronicle/eventRows",
@@ -1247,7 +1251,7 @@ test("the pure modules moved to electron/shared/readDomain (MP-4b PR-3b-2) never
     "src/features/foreshadow/api.ts",
     "src/features/codex/context/codexHiddenFromAi.ts",
   ];
-  assert.equal(moved.length, 21);
+  assert.equal(moved.length, 22);
   for (const name of moved) {
     const legacy = selectImpact(map, [`src/${name}.ts`]);
     const canonical = selectImpact(map, [`electron/shared/readDomain/${name}.ts`]);
@@ -1301,6 +1305,9 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     "chronicleTools",
     "chronicleSearchTools",
     "chronicleReadExecutors",
+    // MP-4b PR-8b: the four Codex tools moved out of toolExecutors.ts, listed one by one like the others.
+    "codexTools",
+    "codexReadExecutors",
     "sharedLoader",
     "readContext",
     "toolResult",
@@ -1368,6 +1375,8 @@ test("the tool-policy light suite runs the executors' golden and the shared core
     "src/features/chat/agent/toolExecutors.searchEventsCharacterization.test.ts",
     "src/features/chat/agent/chronicleSearchPort.test.ts",
     "src/features/chat/agent/toolExecutors.codexHidden.test.ts",
+    "src/features/chat/agent/toolExecutors.codexCharacterization.test.ts",
+    "src/features/chat/agent/toolExecutors.codexCalls.test.ts",
     "src/features/codex/context/codexHiddenFromAi.test.ts",
     "src/features/codex/context/codexHiddenFromAi.characterization.test.ts",
     "src/features/codex/context/codexHiddenFromAi.coreParity.test.ts",
@@ -1378,6 +1387,7 @@ test("the tool-policy light suite runs the executors' golden and the shared core
     "electron/shared/readDomain/features/foreshadow/readRows.test.ts",
     "electron/shared/readDomain/core/chronicleTools.test.ts",
     "electron/shared/readDomain/core/chronicleSearchTools.test.ts",
+    "electron/shared/readDomain/core/codexTools.test.ts",
     "electron/shared/readDomain/core/chronicleReaders.test.ts",
     "electron/shared/readDomain/core/chronicleMainContext.test.ts",
     "electron/shared/readDomain/features/chronicle/readRows.test.ts",

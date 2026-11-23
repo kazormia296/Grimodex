@@ -229,7 +229,34 @@ export type CoreCodexVisibilityPorts = Pick<
   "getDb" | "getPhaseState"
 > & {
   readonly codex: CoreCodexData;
+  /**
+   * The project epoch of a live store that can be reset in the middle of a decision
+   * (PR-8b, DR-MP4-40). Optional, and the renderer's only: its `resolveCodexForAi` notes the epoch
+   * before it reads and refuses (every id hidden) when the epoch differs after the reads, because a
+   * project switch in between leaves the scene time index empty and the mode of the previous project
+   * (DR-MP4-41 (b)). The renderer's four Codex tools now go through the core, and this carries the check
+   * with them. Main leaves it out: its phase state is the turn's inputs, bound to the project, and there
+   * is no live store to switch.
+   */
+  readonly getProjectEpoch?: () => number;
 };
+
+/**
+ * The ports of the four Codex read tools (`search_codex`, `list_codex_by_type`, `search_codex_by_tags`,
+ * `find_related_entries`; PR-8b, DR-MP4-40): the visibility decision's ports (the database for the entries
+ * and the phase loader), the tree state (the project and the current scene), the token counter, and the two
+ * typed reads the search needs (`fts`, and the dense read of the Codex index). Its own type and not a
+ * widening of `CoreReadContext`, for the reason the chronicle tools have theirs: a literal of
+ * `CoreReadContext` in a test must not have to grow.
+ *
+ * `native.codexSemantic` answers the wire as it is, not narrowed. A failure of it is not turned into an
+ * empty answer by the core: the renderer's port answers an empty list (a missing model reads as "sparse
+ * only"), Main lets the error out, so a cancel or a timeout never reads as "no entry found" (DR-MP4-40).
+ */
+export type CoreCodexReadContext = CoreCodexVisibilityPorts &
+  Pick<CoreReadPorts, "getTreeState" | "countTokens"> & {
+    readonly native: Pick<CoreNativeReads, "fts" | "codexSemantic">;
+  };
 
 /**
  * What the chronicle read tools (`list_events`, `get_event_detail`,

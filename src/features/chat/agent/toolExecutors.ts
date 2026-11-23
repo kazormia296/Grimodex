@@ -1,25 +1,22 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent, loadSceneContents } from "@/features/tree/api";
-import { tokenizeFtsQuery as tokenizeQuery, codepointLength } from "@/lib/fts";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
 import {
   codexEntries,
-  codexEntryTags,
-  codexTags,
   codexDetailDefinitions,
   codexDetailValues,
 } from "@/db/schema";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   createReadExecutors,
   type CoreReadToolName,
 } from "@/../electron/shared/readDomain/core/readExecutors";
 import {
-  buildLikeOrCondition,
-  orderByIds,
-  parseTagsCacheNames,
-} from "@/../electron/shared/readDomain/core/searchHelpers";
+  createCodexReadExecutors,
+  type CodexReadToolName,
+} from "@/../electron/shared/readDomain/core/codexReadExecutors";
+import { LEGACY_CODEX_READ_CONTEXT } from "./codexReadContext";
 import {
   CoreProjectRequiredError,
   type CoreReadContext,
@@ -91,18 +88,12 @@ import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
-import {
-  codexSemanticSearch,
-  type CodexSearchHit,
-  type EventSearchHit,
-} from "@/features/semantic-search/api";
-import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
+import type { EventSearchHit } from "@/features/semantic-search/api";
 import {
   dropCodexHiddenFromAi,
   resolveCodexForAi,
   type CodexTextForAi,
 } from "@/features/codex/context/codexHiddenFromAi";
-import { debugLog, errorDetail } from "@/lib/debugLog";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
 import {
   isEventBeforeOrAtScene,
@@ -115,162 +106,10 @@ import {
   invalidateChronicleToolCache,
 } from "./chronicleToolCache";
 
-interface SparseSearchHit {
-  sourceType: string;
-  id: string;
-}
-
-async function sparseSearchIds(
-  projectId: string,
-  query: string,
-  scope: "codex" | "scenes" | "snippets",
-  limit: number,
-): Promise<string[]> {
-  const rows = await invoke<SparseSearchHit[]>("fts_search", {
-    projectId,
-    query,
-    scope,
-    limit,
-  });
-  const sourceType =
-    scope === "scenes" ? "scene" : scope === "snippets" ? "snippet" : "codex";
-  return rows
-    .filter((row) => row.sourceType === sourceType)
-    .map((row) => row.id);
-}
-
 // ---------------------------------------------------------------------------
-// Codex tools
+// Codex tools（search_codex・list_codex_by_type・search_codex_by_tags・find_related_entries は
+// MP-4b PR-8b で共有 core へ移した。ここに残るのは get_codex_entry と、hidden の判定の補助）
 // ---------------------------------------------------------------------------
-
-async function searchCodex(
-  params: Record<string, unknown>,
-  scope?: ChatTurnToolScope,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const query = String(params["query"] ?? "").trim();
-  if (!query)
-    return {
-      name: "search_codex",
-      content: [],
-      summary: "0 entries found",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "search_codex",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  // codex_fts は trigram tokenizer なので 3 codepoint 未満のトークンは
-  // FTS で match できない。短いトークンが 1 つでも混じっていたら
-  // LIKE-OR fallback に倒す。Agent が日本語の 2-3 文字語を渡す前提では
-  // この経路が事実上のメインになる。
-  const tokens = tokenizeQuery(query);
-  const allTrigramFriendly =
-    tokens.length > 0 && tokens.every((t) => codepointLength(t) >= 3);
-
-  let rows: Array<{
-    id: string;
-    name: string;
-    type: string;
-    summary: string | null;
-  }>;
-  if (allTrigramFriendly) {
-    const hitIds = await sparseSearchIds(projectId, query, "codex", 20);
-    if (hitIds.length === 0) {
-      rows = [];
-    } else {
-      rows = orderByIds(
-        await db
-          .select({
-            id: codexEntries.id,
-            name: codexEntries.name,
-            type: codexEntries.type,
-            summary: codexEntries.summary,
-          })
-          .from(codexEntries)
-          .where(
-            and(
-              eq(codexEntries.projectId, projectId),
-              inArray(codexEntries.id, hitIds),
-            ),
-          ),
-        hitIds,
-      );
-    }
-  } else {
-    // `content` (ProseMirror body) is matched too so short (1-2 codepoint)
-    // tokens — the LIKE-fallback case, common for Japanese — can hit body text,
-    // not just metadata. The FTS path already covers content via codex_fts.
-    rows = await db
-      .select({
-        id: codexEntries.id,
-        name: codexEntries.name,
-        type: codexEntries.type,
-        summary: codexEntries.summary,
-      })
-      .from(codexEntries)
-      .where(
-        and(
-          eq(codexEntries.projectId, projectId),
-          buildLikeOrCondition(tokens.length > 0 ? tokens : [query], [
-            codexEntries.name,
-            codexEntries.summary,
-            codexEntries.tagsCache,
-            codexEntries.aliases,
-            codexEntries.content,
-          ]),
-        ),
-      )
-      .limit(20);
-  }
-
-  const sparse: CodexHybridResult[] = rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    type: r.type,
-    summary: r.summary ?? "",
-  }));
-
-  // dense arm (段階3): codex_semantic_search を sparse(FTS/LIKE) と RRF 融合する。
-  // feature 無効ビルド / 未 index / モデル不在では reject → sparse 単独へグレース
-  // フルに退避 (= 段階1までの挙動)。search ツールなので注入用の precision ゲートは
-  // かけず、順位融合した上位 20 件を返す (関連性判断は LLM 側)。
-  const dense = await codexSemanticSearch({
-    projectId,
-    query,
-    limit: 30,
-  }).catch((e) => {
-    debugLog.warn(
-      "search_codex",
-      "dense codex search failed (sparse-only fallback)",
-      errorDetail(e),
-    );
-    return [] as CodexSearchHit[];
-  });
-
-  // hidden は sparse・dense のどちらの arm からも落とす（dense の hit は DB を通らず
-  // name・summary を運ぶので、融合の後に id で判定する）。
-  // Phase 解決後の summary は null になりえるので、前と同じ形（空文字）に揃える。
-  const content = (
-    await dropHiddenCodex(
-      dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse,
-      projectId,
-      scope,
-    )
-  ).map((row) => ({ ...row, summary: row.summary ?? "" }));
-  const json = JSON.stringify(content);
-  return {
-    name: "search_codex",
-    content,
-    summary: `${content.length} entries found`,
-    tokensUsed: countTokens(json),
-  };
-}
 
 /**
  * search_events の年表の候補（秘匿の filter と位置の filter の後で、`slice(limit)` の前）。
@@ -510,15 +349,6 @@ async function resolveCodexTextForAi(
   return texts.get(id) ?? fallback;
 }
 
-/** hidden の Codex を指す id か。 */
-async function isCodexHiddenFromAi(
-  id: string,
-  projectId: string,
-  scope?: ChatTurnToolScope,
-): Promise<boolean> {
-  return (await resolveCodexTextForAi(id, projectId, scope)) === null;
-}
-
 /**
  * turn の累積の文字数上限（DR-CHATIR-S1-38）は合計で守る：先頭から、残りの枠に収まる item
  * だけを残す。item はあったのに 1 件も収まらなければ `turn-limit`。
@@ -692,46 +522,6 @@ async function searchEventsWithIr(
   };
 }
 
-async function listCodexByType(
-  params: Record<string, unknown>,
-  scope?: ChatTurnToolScope,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const type = String(params["type"] ?? "").trim();
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "list_codex_by_type",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-  const rows = await db
-    .select({
-      id: codexEntries.id,
-      name: codexEntries.name,
-      summary: codexEntries.summary,
-      tagsCache: codexEntries.tagsCache,
-    })
-    .from(codexEntries)
-    .where(
-      and(eq(codexEntries.projectId, projectId), eq(codexEntries.type, type)),
-    );
-
-  const content = (await dropHiddenCodex(rows, projectId, scope)).map((r) => ({
-    id: r.id,
-    name: r.name,
-    summary: r.summary ?? "",
-    tags: parseTagsCacheNames(r.tagsCache),
-  }));
-  const json = JSON.stringify(content);
-  return {
-    name: "list_codex_by_type",
-    content,
-    summary: `${content.length} entries of type '${type}'`,
-    tokensUsed: countTokens(json),
-  };
-}
-
 async function getCodexEntry(
   params: Record<string, unknown>,
   scope?: ChatTurnToolScope,
@@ -847,167 +637,6 @@ async function getCodexEntry(
     name: "get_codex_entry",
     content: result,
     summary: `${entry.name} (${entry.type})`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-async function searchCodexByTags(
-  params: Record<string, unknown>,
-  scope?: ChatTurnToolScope,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const tags = Array.isArray(params["tags"])
-    ? (params["tags"] as unknown[]).map(String)
-    : [];
-  if (tags.length === 0)
-    return {
-      name: "search_codex_by_tags",
-      content: [],
-      summary: "No tags provided",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "search_codex_by_tags",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const rows = await db
-    .selectDistinct({
-      id: codexEntries.id,
-      name: codexEntries.name,
-      type: codexEntries.type,
-      summary: codexEntries.summary,
-    })
-    .from(codexEntries)
-    .innerJoin(codexEntryTags, eq(codexEntries.id, codexEntryTags.entryId))
-    .innerJoin(codexTags, eq(codexEntryTags.tagId, codexTags.id))
-    .where(
-      and(eq(codexEntries.projectId, projectId), inArray(codexTags.name, tags)),
-    );
-
-  const content = (await dropHiddenCodex(rows, projectId, scope)).map(
-    (row) => ({
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      summary: row.summary ?? "",
-    }),
-  );
-  const json = JSON.stringify(content);
-  return {
-    name: "search_codex_by_tags",
-    content,
-    summary: `${content.length} entries found`,
-    tokensUsed: countTokens(json),
-  };
-}
-
-/**
- * 起点エントリの name + aliases を、他エントリの name / summary / aliases /
- * tags_cache に対して LIKE-OR 検索する。"〇〇に関連するエントリ" という
- * Agent の自然な意図に応える関係探索ツール。type で絞り込み可能。
- */
-async function findRelatedEntries(
-  params: Record<string, unknown>,
-  scope?: ChatTurnToolScope,
-): Promise<Omit<ToolResult, "toolCallId">> {
-  const id = String(params["id"] ?? "").trim();
-  if (!id)
-    return {
-      name: "find_related_entries",
-      content: [],
-      summary: "No id provided",
-      tokensUsed: 0,
-    };
-
-  const projectId = useTreeStore.getState().projectId;
-  if (!projectId)
-    return {
-      name: "find_related_entries",
-      content: [],
-      summary: "No active project",
-      tokensUsed: 0,
-    };
-
-  const [source] = await db
-    .select()
-    .from(codexEntries)
-    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
-  // 起点が hidden なら存在しない id と同じ応答にする（存在を明かさない）。
-  if (!source || (await isCodexHiddenFromAi(id, projectId, scope)))
-    return {
-      name: "find_related_entries",
-      content: [],
-      summary: "Entry not found",
-      tokensUsed: 0,
-    };
-
-  // 起点エントリの name と aliases を検索語として集める。
-  const aliasArr = source.aliases
-    ? (() => {
-        try {
-          const parsed = JSON.parse(source.aliases as string);
-          return Array.isArray(parsed)
-            ? parsed.filter((s): s is string => typeof s === "string")
-            : [];
-        } catch {
-          return [];
-        }
-      })()
-    : [];
-  const terms = [source.name, ...aliasArr].filter(
-    (t) => typeof t === "string" && t.trim().length > 0,
-  );
-  if (terms.length === 0)
-    return {
-      name: "find_related_entries",
-      content: [],
-      summary: "Source entry has no searchable name",
-      tokensUsed: 0,
-    };
-
-  const typeFilter = params["type"] ? String(params["type"]).trim() : undefined;
-
-  const rows = await db
-    .select({
-      id: codexEntries.id,
-      name: codexEntries.name,
-      type: codexEntries.type,
-      summary: codexEntries.summary,
-    })
-    .from(codexEntries)
-    .where(
-      and(
-        eq(codexEntries.projectId, projectId),
-        ne(codexEntries.id, id),
-        buildLikeOrCondition(terms, [
-          codexEntries.name,
-          codexEntries.summary,
-          codexEntries.aliases,
-          codexEntries.tagsCache,
-        ]),
-        typeFilter ? eq(codexEntries.type, typeFilter) : undefined,
-      ),
-    )
-    .limit(20);
-
-  const content = (await dropHiddenCodex(rows, projectId, scope)).map(
-    (row) => ({
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      summary: row.summary ?? "",
-    }),
-  );
-  const json = JSON.stringify(content);
-  return {
-    name: "find_related_entries",
-    content,
-    summary: `${content.length} related to ${source.name}${typeFilter ? ` (type=${typeFilter})` : ""}`,
     tokensUsed: countTokens(json),
   };
 }
@@ -1263,6 +892,65 @@ function coreReadExecutor(name: CoreReadToolName): Executor {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Codex の hidden を通る read tool 4 本（MP-4b PR-8b、DR-MP4-40）。本体は共有 core
+// （`electron/shared/readDomain/core/codexTools.ts`）。renderer の ports は `codexReadContext.ts`。
+// ---------------------------------------------------------------------------
+
+/** scope が無いときの 4 本（load 時に 1 度作る。作るだけでは何も読まない）。 */
+const CORE_CODEX_EXECUTORS = createCodexReadExecutors(
+  LEGACY_CODEX_READ_CONTEXT,
+);
+
+/**
+ * project が無いときの結果の content（core は projectId を必須にして throw する。DR-MP4-3）。
+ * 引数の検査は core が先に行い、project の検査はその次なので、順序は移す前のまま。
+ */
+const CODEX_NO_PROJECT_CONTENT: Record<CodexReadToolName, () => unknown> = {
+  search_codex: () => [],
+  list_codex_by_type: () => [],
+  search_codex_by_tags: () => [],
+  find_related_entries: () => [],
+};
+
+/**
+ * 4 本の executor。scope があるときは、現在の場面を scope の値にした ctx を**呼出しごとに**作る
+ * （作るだけでは何も読まない）。**projectId は scope でなく今までどおり store**（legacy の非対称を保つ。
+ * scope の `currentSceneId`（null がありうる）はそのまま `activeSceneId` に渡す：null・空・空白だけは、
+ * core の判定が「場面を解決できない」として同じに扱う）。scope は `CHAT_AGENT_IR_ENABLED` が false の間
+ * 作られない（`chatAgentToolHandlers.ts` の生成の手前の分岐）ので到達しないが、特性試験が固定している
+ * （DR-MP4-21：閉じた経路は renderer の薄い層が自分の分岐を持つ）。
+ */
+function codexReadExecutor(name: CodexReadToolName): Executor {
+  return async (params, _requestId, _authorization, context) => {
+    const scope = context?.scope;
+    const run = (
+      scope
+        ? createCodexReadExecutors({
+            ...LEGACY_CODEX_READ_CONTEXT,
+            getTreeState: () => ({
+              ...useTreeStore.getState(),
+              activeSceneId: scope.currentSceneId,
+            }),
+          })
+        : CORE_CODEX_EXECUTORS
+    )[name];
+    try {
+      return await run(params);
+    } catch (e) {
+      if (e instanceof CoreProjectRequiredError) {
+        return {
+          name,
+          content: CODEX_NO_PROJECT_CONTENT[name](),
+          summary: "No active project",
+          tokensUsed: 0,
+        };
+      }
+      throw e;
+    }
+  };
+}
+
 /**
  * ツール名 → executor の dispatch マップ。
  *
@@ -1281,17 +969,13 @@ function coreReadExecutor(name: CoreReadToolName): Executor {
  */
 /** Read-only tools — frozen allowlist (security review F-2). */
 export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
-  search_codex: (params, _requestId, _authorization, context) =>
-    searchCodex(params, context?.scope),
-  list_codex_by_type: (params, _requestId, _authorization, context) =>
-    listCodexByType(params, context?.scope),
+  search_codex: codexReadExecutor("search_codex"),
+  list_codex_by_type: codexReadExecutor("list_codex_by_type"),
   get_codex_entry: (params, _requestId, _authorization, context) =>
     getCodexEntry(params, context?.scope),
   list_codex_tags: coreReadExecutor("list_codex_tags"),
-  search_codex_by_tags: (params, _requestId, _authorization, context) =>
-    searchCodexByTags(params, context?.scope),
-  find_related_entries: (params, _requestId, _authorization, context) =>
-    findRelatedEntries(params, context?.scope),
+  search_codex_by_tags: codexReadExecutor("search_codex_by_tags"),
+  find_related_entries: codexReadExecutor("find_related_entries"),
   list_chapters: coreReadExecutor("list_chapters"),
   get_scene: coreReadExecutor("get_scene"),
   search_scenes: coreReadExecutor("search_scenes"),

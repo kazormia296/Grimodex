@@ -1,5 +1,7 @@
 import type {
+  CoreCodexReadContext,
   CoreCodexVisibilityPorts,
+  CoreNativeReads,
   CoreReadDb,
 } from "../../mastraRead/ports.js";
 import { readCodexPhases } from "./codexReaders.js";
@@ -40,5 +42,43 @@ export function createMainCodexVisibilityPorts(
     getDb: () => db,
     getPhaseState: () => phaseState,
     codex: { listPhases: (entryIds) => readCodexPhases(db, entryIds) },
+  };
+}
+
+/**
+ * The ports of the four Codex read tools for Electron main (PR-8b, DR-MP4-40): the visibility ports above,
+ * plus the tree state and the two typed reads. Nothing calls this yet (flag L is closed);
+ * `readCore.mainAdapter.test.ts` and the real-addon spec run the four tools over it.
+ *
+ * The project, the current scene and the phase state all come from ONE `ReadInputs`, so they cannot name
+ * different projects or scenes: the tree state is `inputs.projectId` and `inputs.currentSceneId` (null when
+ * the scene is not in the reading order, which the decision reads as a scene it cannot resolve), and the
+ * phase state names the same project (a request for another project is refused). The tree state carries no
+ * nodes: the four tools never read them. Nothing is module-level state, so two turns that run at once
+ * cannot see each other.
+ *
+ * `native.codexSemantic` is Main's typed read and does not catch: a missing model, a timeout, a workspace
+ * change or a cancelled turn is an error and not "no entry found" (DR-MP4-40). Main has no live store, so
+ * the context sets no `getProjectEpoch`.
+ */
+export interface MainCodexReadContextArgs extends MainCodexVisibilityPortsArgs {
+  readonly countTokens: (text: string) => number;
+  /** `createMainTypedReads(...)`. */
+  readonly native: Pick<CoreNativeReads, "fts" | "codexSemantic">;
+}
+
+export function createMainCodexReadContext(
+  args: MainCodexReadContextArgs,
+): CoreCodexReadContext {
+  const treeState = {
+    projectId: args.inputs.projectId,
+    nodes: [],
+    activeSceneId: args.inputs.currentSceneId,
+  };
+  return {
+    ...createMainCodexVisibilityPorts({ db: args.db, inputs: args.inputs }),
+    getTreeState: () => treeState,
+    countTokens: args.countTokens,
+    native: args.native,
   };
 }

@@ -545,3 +545,87 @@ describe("readCodexPhases", () => {
     expect(rows.map((r) => r.id)).toEqual(["ph-b"]);
   });
 });
+
+describe("a live store's project epoch (PR-8b, DR-MP4-41 (b) carried into the core)", () => {
+  const withEpoch = (
+    ports: CoreCodexVisibilityPorts,
+    epoch: () => number,
+    log: Log,
+  ): CoreCodexVisibilityPorts => ({
+    ...logged(ports, log),
+    getProjectEpoch: () => {
+      log.push("epoch");
+      return epoch();
+    },
+  });
+
+  it("notes the epoch before the first read and compares it after the phase state is read: an unchanged epoch changes nothing", async () => {
+    const { ports, log } = setup();
+    const result = await ask(
+      withEpoch(ports, () => 7, log),
+      ["pub", "hid"],
+    );
+    expect([...result.hidden]).toEqual(["hid"]);
+    expect([...result.texts.keys()]).toEqual(["pub"]);
+    expect(log).toEqual([
+      "epoch",
+      "sql:codex_entries",
+      "listPhases(hid,pub)",
+      "sql:codex_entry_phases",
+      "state",
+      "epoch",
+    ]);
+  });
+
+  it("a different epoch after the reads hides every id that was asked about (the ones the database lacks and the public ones too) and returns no text", async () => {
+    const { ports } = setup();
+    let epoch = 0;
+    const log: Log = [];
+    const deps = withEpoch(ports, () => epoch, log);
+    const switching: CoreCodexVisibilityPorts = {
+      ...deps,
+      codex: {
+        listPhases: async (ids) => {
+          const phases = await deps.codex.listPhases(ids);
+          epoch += 1; // the project was switched during the phases read
+          return phases;
+        },
+      },
+    };
+    const result = await ask(switching, ["pub", "hid", "gone", "pub"]);
+    expect([...result.hidden].sort()).toEqual(["gone", "hid", "pub"]);
+    expect(result.texts.size).toBe(0);
+    // dropHiddenCodexRows and listHiddenCodexIds go through the same decision.
+    epoch = 0;
+    expect(
+      await dropHiddenCodexRows(switching, [{ id: "pub" }], {
+        projectId: "p-a",
+        sceneId: "s1",
+      }),
+    ).toEqual([]);
+    epoch = 0;
+    expect([
+      ...(await listHiddenCodexIds(switching, {
+        projectId: "p-a",
+        entryIds: ["pub"],
+        sceneId: "s1",
+      })),
+    ]).toEqual(["pub"]);
+  });
+
+  it("reads no epoch when there is nothing to ask about, and does not compare one when no entry was found (nothing was read that a switch could spoil)", async () => {
+    const { ports, log } = setup();
+    const deps = withEpoch(ports, () => 0, log);
+    await ask(deps, []);
+    expect(log).toEqual([]);
+    await ask(deps, ["gone"]);
+    expect(log).toEqual(["epoch", "sql:codex_entries"]);
+  });
+
+  it("ports with no getProjectEpoch (Main's) are decided as before", async () => {
+    const { ports } = setup();
+    expect(ports.getProjectEpoch).toBeUndefined();
+    const result = await ask(ports, ["pub", "hid"]);
+    expect([...result.hidden]).toEqual(["hid"]);
+  });
+});
