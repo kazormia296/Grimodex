@@ -2078,14 +2078,12 @@ pub fn chronicle_list_events(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<ChronicleEventRow>> {
-    // AI 秘匿(fail-closed): MCP は現在シーン(読む順)を持てないため secret=1 を一律除外。
-    // 全 read ツール(list/detail/timeline/state)はこの list を唯一のソースにするので、
-    // ここで除外すれば全経路が塞がる(伏線 list_open_foreshadows と同型)。
+    // The shared source for all Chronicle read tools; scope rows to the active project.
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
                 start_time, end_time, start_minute, end_minute,
                 start_granularity, end_granularity, precision, kind, version
-         FROM events WHERE project_id = ?1 AND secret = 0
+         FROM events WHERE project_id = ?1
          ORDER BY ordinal ASC, id ASC",
     )?;
     let rows = stmt
@@ -2405,9 +2403,7 @@ fn collect_participants_json(
     }))
 }
 
-/// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
-/// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
-/// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
+/// Return the active-project event version, or `None` if the id is not in the project.
 #[allow(dead_code)]
 fn visible_event_version(
     conn: &Connection,
@@ -2416,7 +2412,7 @@ fn visible_event_version(
 ) -> anyhow::Result<Option<i64>> {
     use rusqlite::OptionalExtension;
     conn.query_row(
-        "SELECT version FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+        "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
         params![event_id, project_id],
         |r| r.get(0),
     )
@@ -2446,7 +2442,7 @@ fn visible_event_date_state(
         "SELECT version, start_time, end_time, start_minute, end_minute,
                 start_granularity, end_granularity
          FROM events
-         WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+         WHERE id = ?1 AND project_id = ?2",
         params![event_id, project_id],
         |row| {
             Ok(VisibleEventDateState {

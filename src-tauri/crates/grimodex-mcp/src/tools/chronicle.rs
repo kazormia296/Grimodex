@@ -52,8 +52,7 @@ fn ensure_write_allowed(server: &GrimodexServer) -> Result<(), ErrorData> {
     Ok(())
 }
 
-/// MCP has no current-scene disclosure context, so secret events must remain
-/// indistinguishable from missing/cross-project events for every write-by-id.
+/// Require an event id in the active project for write-by-id tools.
 fn ensure_event_visible_for_write(
     server: &GrimodexServer,
     event_id: &str,
@@ -63,7 +62,7 @@ fn ensure_event_visible_for_write(
         .query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM events
-                 WHERE id = ?1 AND project_id = ?2 AND secret = 0
+                 WHERE id = ?1 AND project_id = ?2
              )",
             rusqlite::params![event_id, server.project_id()],
             |row| row.get(0),
@@ -548,12 +547,9 @@ pub struct CreateEventParams {
     pub start_granularity: Option<String>,
     /// How precise the end date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
     pub end_granularity: Option<String>,
-    /// Hide this event from AI context (spoiler protection; default false).
-    /// Like a foreshadow's secret flag — a secret event is excluded from MCP
-    /// reads until disclosed in-story. From MCP it is always hidden once set.
+    /// Stored event flag; it does not exclude the event from MCP Chronicle reads.
     pub secret: Option<bool>,
-    /// Reading-order disclosure anchor scene id (optional override). Empty/None
-    /// auto-derives from the earliest stamped scene, or stays permanently hidden.
+    /// Reading-order disclosure anchor scene id (optional override).
     pub reveal_scene_id: Option<String>,
     /// Participant codex ids to attach (optional).
     pub participant_codex_ids: Option<Vec<String>>,
@@ -659,10 +655,9 @@ pub struct UpdateEventParams {
     pub start_granularity: Option<String>,
     /// End date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
     pub end_granularity: Option<String>,
-    /// Hide/unhide this event from AI context (spoiler protection).
+    /// Stored event flag; it does not exclude the event from MCP Chronicle reads.
     pub secret: Option<bool>,
-    /// Reading-order disclosure anchor scene id. Empty string clears the
-    /// override (back to auto-derive from the earliest stamped scene).
+    /// Reading-order disclosure anchor scene id.
     pub reveal_scene_id: Option<String>,
 }
 
@@ -1125,6 +1120,98 @@ mod tests {
             .unwrap();
     }
 
+    async fn assert_event_write_tools_reject_id(server: &GrimodexServer, event_id: &str) {
+        let request_id = || uuid::Uuid::new_v4().to_string();
+        assert!(
+            update_event(
+                server,
+                UpdateEventParams {
+                    request_id: request_id(),
+                    event_id: event_id.to_string(),
+                    base_version: 0,
+                    title: Some("invalid".into()),
+                    note: None,
+                    kind: None,
+                    primary_codex_id: None,
+                    location_codex_id: None,
+                    start_time: None,
+                    end_time: None,
+                    start_minute: None,
+                    end_minute: None,
+                    start_granularity: None,
+                    end_granularity: None,
+                    secret: None,
+                    reveal_scene_id: None,
+                }
+            )
+            .await
+            .is_err(),
+            "update must reject {event_id}"
+        );
+        assert!(
+            delete_event(
+                server,
+                EventIdParams {
+                    request_id: request_id(),
+                    event_id: event_id.to_string(),
+                    base_version: 0,
+                }
+            )
+            .await
+            .is_err(),
+            "delete must reject {event_id}"
+        );
+        assert!(
+            stamp_scene_event(
+                server,
+                SceneEventParams {
+                    request_id: request_id(),
+                    scene_id: "s1".into(),
+                    event_id: event_id.to_string(),
+                }
+            )
+            .await
+            .is_err(),
+            "stamp must reject {event_id}"
+        );
+        assert!(
+            unstamp_scene_event(
+                server,
+                SceneEventParams {
+                    request_id: request_id(),
+                    scene_id: "s1".into(),
+                    event_id: event_id.to_string(),
+                }
+            )
+            .await
+            .is_err(),
+            "unstamp must reject {event_id}"
+        );
+        assert!(
+            set_event_participants(
+                server,
+                SetParticipantsParams {
+                    request_id: request_id(),
+                    event_id: event_id.to_string(),
+                    base_version: 0,
+                    codex_entry_ids: Vec::new(),
+                }
+            )
+            .await
+            .is_err(),
+            "participant replacement must reject {event_id}"
+        );
+        for (cause_event_id, effect_event_id) in [(event_id, "valid"), ("valid", event_id)] {
+            let relation = || EventRelationParams {
+                request_id: request_id(),
+                cause_event_id: cause_event_id.to_string(),
+                effect_event_id: effect_event_id.to_string(),
+            };
+            assert!(add_event_relation(server, relation()).await.is_err());
+            assert!(remove_event_relation(server, relation()).await.is_err());
+        }
+    }
+
     #[test]
     fn event_mutation_params_require_base_version() {
         assert!(
@@ -1151,16 +1238,31 @@ mod tests {
         );
     }
 
-    // ── AI secrecy (fail-closed: MCP has no current-scene context) ────────────
+    // ── Secret-flagged Chronicle events remain visible and writable ───────────
 
     #[tokio::test]
-    async fn secret_event_hidden_from_reads_and_writes() {
+    async fn secret_event_visible_in_reads_and_writable() {
         let server = make_server(false);
+        seed_scene(&server, "p1", "s1");
+        seed_codex(&server, "p1", "a1");
         seed_event(&server, "p1", "pub", "Public", "a0");
-        seed_event(&server, "p1", "sec", "Secret poisoning", "a1");
+        seed_event(&server, "p1", "sec", "Secret event", "a1");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'a1', start_time = 5 WHERE id = 'sec'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id) VALUES ('s1', 'sec')",
+                [],
+            )
+            .unwrap();
+        }
         set_secret(&server, "sec");
 
-        // read: list_events excludes the secret event.
+        // All four read tools include the event despite its stored secret flag.
         let listed = list_events(&server, ListEventsParams { kind: None })
             .await
             .unwrap();
@@ -1172,11 +1274,10 @@ mod tests {
             .collect();
         assert!(ids.contains(&"pub".to_string()));
         assert!(
-            !ids.contains(&"sec".to_string()),
-            "secret event must not be listed"
+            ids.contains(&"sec".to_string()),
+            "secret event must be listed"
         );
 
-        // read: get_event_detail on the secret event → null (not found).
         let detail = get_event_detail(
             &server,
             GetEventDetailParams {
@@ -1185,19 +1286,43 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            result_json(&detail).is_null(),
-            "secret detail must be null (generic not found)"
-        );
+        assert_eq!(result_json(&detail)["id"], "sec");
 
-        // write-by-id: update / delete on the secret event → error (fail-closed).
+        let timeline = get_character_timeline(
+            &server,
+            GetCharacterTimelineParams {
+                codex_id: "a1".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result_json(&timeline)["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["id"] == "sec"));
+
+        let state = get_chronicle_state(
+            &server,
+            GetChronicleStateParams {
+                scene_id: Some("s1".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result_json(&state)["recentEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["eventId"] == "sec"));
+
         let upd = update_event(
             &server,
             UpdateEventParams {
                 request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "sec".into(),
                 base_version: 0,
-                title: Some("leaked".into()),
+                title: Some("Updated secret event".into()),
                 note: None,
                 kind: None,
                 primary_codex_id: None,
@@ -1213,26 +1338,35 @@ mod tests {
             },
         )
         .await;
-        assert!(upd.is_err(), "update on a secret event must fail-closed");
+        let updated_version = result_json(&upd.unwrap())["version"]
+            .as_i64()
+            .expect("update returns the next baseVersion");
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND title = 'Updated secret event'",
+                "sec"
+            ),
+            1
+        );
+        assert_eq!(
+            scalar(&server, "SELECT secret FROM events WHERE id = ?1", "sec"),
+            1
+        );
+
         let del = delete_event(
             &server,
             EventIdParams {
                 request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "sec".into(),
-                base_version: 0,
+                base_version: updated_version,
             },
         )
         .await;
-        assert!(del.is_err(), "delete on a secret event must fail-closed");
-
-        // the secret row is untouched (title not leaked-overwritten, not deleted).
+        assert!(del.is_ok(), "delete on a secret event must succeed");
         assert_eq!(
-            scalar(
-                &server,
-                "SELECT COUNT(*) FROM events WHERE id = ?1 AND title = 'Secret poisoning'",
-                "sec",
-            ),
-            1
+            scalar(&server, "SELECT COUNT(*) FROM events WHERE id = ?1", "sec"),
+            0
         );
     }
 
@@ -1357,18 +1491,34 @@ mod tests {
     async fn get_event_detail_returns_null_for_foreign_event() {
         let server = make_server(false);
         seed_event(&server, "p2", "theirs", "Theirs", "a0");
-        let res = get_event_detail(
-            &server,
-            GetEventDetailParams {
-                event_id: "theirs".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(
-            result_json(&res).is_null(),
-            "cross-project id reads as null"
-        );
+        seed_event(&server, "p1", "deleted", "Deleted", "a1");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM narrative_field_authority WHERE entity_kind = 'event' AND entity_id = 'deleted'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM events WHERE id = 'deleted' AND project_id = 'p1'",
+                [],
+            )
+            .unwrap();
+        }
+        for event_id in ["theirs", "deleted", "missing"] {
+            let res = get_event_detail(
+                &server,
+                GetEventDetailParams {
+                    event_id: event_id.to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                result_json(&res).is_null(),
+                "{event_id} must read as not found"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2327,32 +2477,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_foreign_event_errors_and_writes_nothing() {
+    async fn all_event_write_tools_reject_foreign_deleted_and_missing_ids() {
         let server = make_server(false);
         seed_event(&server, "p2", "theirs", "Theirs", "a0");
-        let res = update_event(
-            &server,
-            UpdateEventParams {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                event_id: "theirs".to_string(),
-                base_version: 0,
-                title: Some("hijack".to_string()),
-                note: None,
-                kind: None,
-                primary_codex_id: None,
-                location_codex_id: None,
-                start_time: None,
-                end_time: None,
-                start_minute: None,
-                end_minute: None,
-                start_granularity: None,
-                end_granularity: None,
-                secret: None,
-                reveal_scene_id: None,
-            },
-        )
-        .await;
-        assert!(res.is_err());
+        seed_event(&server, "p1", "deleted", "Deleted", "a1");
+        seed_event(&server, "p1", "valid", "Valid", "a2");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM narrative_field_authority WHERE entity_kind = 'event' AND entity_id = 'deleted'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM events WHERE id = 'deleted' AND project_id = 'p1'",
+                [],
+            )
+            .unwrap();
+        }
+        for event_id in ["theirs", "deleted", "missing"] {
+            assert_event_write_tools_reject_id(&server, event_id).await;
+        }
         let conn = server.conn.lock().unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM change_events", [], |r| r.get(0))

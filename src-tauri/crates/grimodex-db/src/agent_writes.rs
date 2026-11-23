@@ -6070,9 +6070,9 @@ pub struct AgentEventCreatePayload {
     pub end_granularity: Option<String>,
     pub precision: Option<String>,
     pub kind: Option<String>,
-    /// AI 秘匿（reveal アンカー方式）。省略時 false=表示。
+    /// Stored event flag; it does not gate MCP reads or MCP/Native write-by-id access.
     pub secret: Option<bool>,
-    /// 読む順の開示アンカー（明示上書き・空/None=自動導出 or 恒久秘匿）。
+    /// Reading-order disclosure anchor (explicit override).
     pub reveal_scene_id: Option<String>,
     pub participant_codex_ids: Option<Vec<String>>,
     pub scene_ids: Option<Vec<String>>,
@@ -6108,7 +6108,7 @@ pub struct AgentEventUpdatePayload {
     pub end_granularity: Option<String>,
     pub precision: Option<String>,
     pub kind: Option<String>,
-    /// AI 秘匿（reveal アンカー方式）。set-if-present。
+    /// Stored event flag; it does not gate MCP reads or MCP/Native write-by-id access.
     pub secret: Option<bool>,
     /// 読む順の開示アンカー（set-if-present・空文字は NULL=自動導出へ戻す）。
     pub reveal_scene_id: Option<String>,
@@ -7698,10 +7698,8 @@ fn ensure_scene_in_project(
     Ok(())
 }
 
-/// MCP has no current-scene disclosure context. Its write-by-id tools must
-/// therefore treat secret Chronicle events exactly like missing or
-/// cross-project rows. Keep this check inside the Native transaction so a
-/// concurrent disclosure-state change cannot race the tool-layer preflight.
+/// Keep the MCP project-scope check inside the Native transaction so a
+/// concurrent row change cannot race the tool-layer preflight.
 fn ensure_event_writable_for_surface(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -7712,8 +7710,7 @@ fn ensure_event_writable_for_surface(
         return Ok(());
     }
     let visible: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events
-          WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
         rusqlite::params![event_id, project_id],
         |row| row.get(0),
     )?;
@@ -14261,38 +14258,75 @@ mod tests {
     }
 
     #[test]
-    fn mcp_event_writer_rechecks_secret_visibility_inside_native_transaction() {
+    fn mcp_event_writer_allows_secret_events_inside_native_transaction() {
         let db = test_db();
         let project_id = insert_project(&db);
-        let (event_id, _) = create_event(&db, &project_id, "secret", vec![], vec![]);
-        db.execute(
-            "UPDATE events SET secret = 1 WHERE id = ? AND project_id = ?",
-            &[
-                Value::String(event_id.clone()),
-                Value::String(project_id.clone()),
-            ],
-            "run",
+        let created = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                request_id: "mcp-secret-event-create".to_string(),
+                event_id: None,
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("mcp".to_string()),
+                title: Some("secret".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: Some(true),
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
         )
-        .expect("hide event");
-        let change_count = table_count(&db, "change_events");
-        let feed_count = table_count(&db, "narrative_change_transactions");
-        let journal_count = table_count(&db, "undo_journal");
-
+        .expect("create a secret event through the existing MCP writer");
+        let event_id = created["entityId"].as_str().expect("entity id").to_string();
+        db.with_conn(|conn| {
+            let updated = conn.execute(
+                "UPDATE narrative_field_authority
+                    SET owner_kind = 'ai', explicit_lock = 0, updated_at = 'fixture'
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id = ?2 AND field_path = '/title'",
+                rusqlite::params![project_id, event_id],
+            )?;
+            assert_eq!(updated, 1, "the created event has one title authority row");
+            Ok(())
+        })
+        .expect("authorize the title update for this AI-write fixture");
         let mut update = empty_update(&project_id, &event_id);
         update.surface = Some("mcp".to_string());
-        update.title = Some("must not apply".to_string());
-        let error =
-            agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
-                .expect_err("MCP cannot mutate a secret event");
-
-        assert!(error.to_string().contains("not found in project"));
-        assert_eq!(event_title(&db, &event_id).as_deref(), Some("secret"));
-        assert_eq!(table_count(&db, "change_events"), change_count);
+        update.title = Some("updated secret".to_string());
+        agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
+            .expect("MCP can update a secret event");
         assert_eq!(
-            table_count(&db, "narrative_change_transactions"),
-            feed_count
+            event_title(&db, &event_id).as_deref(),
+            Some("updated secret")
         );
-        assert_eq!(table_count(&db, "undo_journal"), journal_count);
+
+        agent_event_delete_with_request_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("mcp".to_string()),
+                event_id: event_id.clone(),
+                base_version: event_version(&db, &event_id),
+            },
+            Some("mcp-secret-event-delete"),
+        )
+        .expect("MCP can delete a secret event");
+        assert_eq!(table_count(&db, "events"), 0);
     }
 
     #[test]
