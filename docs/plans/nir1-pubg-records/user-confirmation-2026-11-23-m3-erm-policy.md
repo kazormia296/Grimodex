@@ -207,6 +207,13 @@
   - 集計は repo の外 `/home/grimodex/identity-review-load-2026-11/aggregate-main/`。
 - L0〜L3 の Ur・S5 の表は #1050 の実機の値と完全一致（Ur-all 126／127／66／66、S5-roster 11、S5_seen 2）。
 - 新しく埋まった列：
-  - 累積（L2・同じ workspace）。保存済みの未 review の件数：g-ja-2 29→63→100→140、g-ja-3 25→64→109→154、g-ja-4 33→77→124→175、m-ja-2 118→329→581→864。最新の run の提案は、全件が同じ表記で残る。
+  - 累積（L2・同じ workspace）。保存済みの未 review の件数：g-ja-2 29→63→100→140、g-ja-3 25→64→109→154、g-ja-4 33→77→124→175、m-ja-2 118→329→581→864。
+    - 累計は各 run の提案の合計で、何も置き換わらない（g-ja-2 は 29＋34＋37＋40＝140。4 作品とも同じ関係）。
+    - 前の run（F25・F50・F75）の未 review は、全件が最新の run（F100）にも同じ表記で出る（`remainingInLatestSameSurface`。g-ja-2 29・34・37、g-ja-3 25・39・45、g-ja-4 33・44・47、m-ja-2 118・211・252。定義は `measure-a-metrics.mjs` の carryOverStability）。これは seed の安定性で、作者が一度決めた後の再抽出での繰り返しではない。
+    - 訂正（同日、c7 の申し出）：最初の記録は、この点を「最新の run の提案は、全件が同じ表記で残る」と逆向きに書いていた。c7 の報告の表現の誤りで、上の 2 行に置き換えた。
   - empty 段、L2-1char 段。
+- 本測定の採用の前提の追加の検証（すべて一致）：
+  - 凍結 A §3.1 の名簿 4 件の sha256 は実体と一致。scenes は g-ja-2・g-ja-3・g-ja-4 が実体と一致、m-ja-2 は候補の file の scenesSha256 が凍結の値と一致。
+  - determinism の cell は 4 作品とも、表記×種類の集合が matrix L2 と完全一致（`determinismVsMatrixL2.equal=true`。件数 40・45・51・283）。
+  - 累積の最終段も matrix L2 と一致。m-ja-2 の solo F25・F50・F75 も累積の段と一致。
 - 結論は出していない。c7 がこの後、値を並べてユーザーに報告する。
