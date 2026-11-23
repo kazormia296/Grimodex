@@ -8917,7 +8917,14 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     base_version
                 );
             }
-            let hidden_participants = {
+            // AI は、hidden を抜いた参加者の一覧を受け取り、それに足して返す。置き換えで、AI に
+            // 見えていない base が hidden の参加者（役割つき）が黙って消えないよう、残す。
+            // 作者自身の操作（surface = manual〔画面の手動編集〕・import）は、hidden の参加者も含めて
+            // 要求のとおりに置き換える（残すと、作者が hidden の参加者を外せない）。AI の surface
+            // （in-app-agent・mcp・省略時の旧経路の互換）と、未知の surface は、hidden を守る側に倒す。
+            let retains_hidden_participants =
+                !matches!(payload.surface.as_deref(), Some("manual" | "import"));
+            let hidden_participants = if retains_hidden_participants {
                 let mut statement = conn.prepare(
                     "SELECT ep.codex_entry_id, ep.role
                      FROM event_participants ep
@@ -8930,6 +8937,8 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
                 )?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
+            } else {
+                Vec::new()
             };
             conn.execute(
                 "DELETE FROM event_participants WHERE event_id = ?1",
@@ -8998,6 +9007,7 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                 entity_id: Some(payload.event_id.clone()),
                 payload: json!({
                     "eventId": payload.event_id,
+                    // 要求のまま（残した hidden の参加者の id は、change event・feed に出さない）。
                     "codexEntryIds": payload.codex_entry_ids,
                 })
                 .to_string(),
@@ -15827,6 +15837,80 @@ mod tests {
             participant_role(&db, &event_id, &hidden).as_deref(),
             Some("enemy")
         );
+    }
+
+    /// 作者自身の操作（画面の手動編集 = manual、import）は、hidden の参加者も含めて、要求のとおりに
+    /// 置き換える（残すと、作者が hidden の参加者を外せない）。省略時（旧経路の in-app-agent 互換）は
+    /// AI の書き込みとして、hidden の参加者を残す。
+    #[test]
+    fn event_participants_author_surfaces_replace_exactly_and_default_surface_preserves() {
+        for (surface, hidden_remains) in [
+            (Some("manual"), false),
+            (Some("import"), false),
+            (None, true),
+        ] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let codex_a = insert_codex(&db, &project_id, "A");
+            let codex_b = insert_codex(&db, &project_id, "B");
+            let hidden = insert_codex(&db, &project_id, "Hidden");
+            let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = ?1",
+                    rusqlite::params![hidden],
+                )?;
+                Ok(())
+            })
+            .expect("set base hidden mode");
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: Some("in-app-agent".to_string()),
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                    codex_entry_ids: vec![codex_a.clone(), hidden.clone()],
+                    participant_roles: Some(vec![None, Some("ally".to_string())]),
+                },
+            )
+            .expect("seed participants through the writer");
+
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: surface.map(str::to_string),
+                    event_id: event_id.clone(),
+                    base_version: 2,
+                    codex_entry_ids: vec![codex_b.clone()],
+                    participant_roles: None,
+                },
+            )
+            .expect("replace participants");
+
+            assert!(
+                participant_has(&db, &event_id, &codex_b),
+                "surface {surface:?}"
+            );
+            assert!(
+                !participant_has(&db, &event_id, &codex_a),
+                "surface {surface:?}"
+            );
+            assert_eq!(
+                participant_has(&db, &event_id, &hidden),
+                hidden_remains,
+                "surface {surface:?}: the author's own edit must be able to remove a hidden participant; \
+                 the default (AI-compatible) surface must keep it"
+            );
+            assert_eq!(
+                participant_count(&db, &event_id),
+                if hidden_remains { 2 } else { 1 },
+                "surface {surface:?}"
+            );
+        }
     }
 
     #[test]

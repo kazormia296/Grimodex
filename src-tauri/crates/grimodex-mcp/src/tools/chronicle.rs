@@ -674,7 +674,7 @@ pub struct UpdateEventParams {
     pub end_granularity: Option<String>,
     /// Stored event flag; it does not exclude the event from MCP Chronicle reads.
     pub secret: Option<bool>,
-    /// Reading-order disclosure anchor scene id.
+    /// Reading-order disclosure anchor scene id. Empty string clears the override.
     pub reveal_scene_id: Option<String>,
 }
 

@@ -792,7 +792,7 @@ Codex エントリの詳細を取得する。
 | `get_writing_context` | R | o | curated context 一発集約（project / 章outline / storySoFar / シーン本文MD+intent / timeline近傍 / シーン伏線+未回収伏線(secret除外) / codex mention+always。cap超過はdropped数で報告） |
 | `list_events` | R | o | 作中年表イベント一覧（作中順・`events.secret` による除外なし・kind フィルタ可・primaryCharacter は codex 名解決） |
 | `get_event_detail` | R | o | 単一イベント詳細（`events.secret` にかかわらず project 内の出来事を返す。参加者 / 紐づきシーン / 因果） |
-| `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent） |
+| `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent。存在しない・使えない codex_id は null） |
 | `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（全イベントを入力。resolveSceneAnchor→pick→derive を Rust 移植。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
 | `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'） |
 | `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found） |
