@@ -165,8 +165,9 @@ function hasPhaseHiddenFromAi(
 /**
  * The ids of the entries that are closed because the scene cannot be resolved
  * (DR-MP4-41): the entries one of whose phases hides them. Empty when the anchor
- * can be resolved. `decideCodexAiVisibility` and the chat context sources both
- * ask this one function, so the rule is written once. An entry that is already
+ * can be resolved. It is the DR-MP4-41 half of `listEntryIdsClosedForAi`, which
+ * `decideCodexAiVisibility` and the chat context sources ask (DR-MP4-46), so the
+ * rule is written once. An entry that is already
  * hidden at base may also be named here (closing it changes nothing); do not read
  * this set as "the entries the unresolvable scene is the reason for". A hiding
  * phase that lost its anchor while the scene can be resolved is not named here;
