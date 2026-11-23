@@ -504,6 +504,14 @@ Codex エントリの詳細を取得する。
 }
 ```
 
+> **`phases` は、hidden の Phase の分を返さない。** `context_mode_override` が `hidden`（または不明な値）の Phase は、
+> 行ごと（id・label・要約／本文の上書き・mode・anchor）除き、外した印は付けない（Phase が元から無い項目と同じ形になる）。
+> 同じ項目に hidden の Phase が 1 つでもあるときは、`context_mode_override` が空（NULL）の Phase も返さない
+> （アプリ内の Phase 解決は、空の override が前の mode を継承するため。MCP は場面の位置を解決しないので、保守的に除く）。
+> `always`・`mentioned`・`suppress` を明示した Phase は返す。項目そのもの（名前・要約・本文・タグ・子）と、
+> 一覧・検索・関連・`get_writing_context` は、従来どおり base の `context_mode` の判定のまま。
+> tool の `description` と入出力の形は変えない（DR-MP4-45）。
+
 #### `create_codex_entry`
 
 新しい Codex エントリを作成する。
