@@ -688,6 +688,20 @@ describe("L7 配線：generateAiBranchCards の呼び元は runAiBranchGeneratio
     // 判定の失敗は専用の枝で、画面には原因の文を出さず既存の題名だけ。
     expect(src).toMatch(/instanceof AiBranchHiddenCheckFailedError/);
   });
+
+  it("MapCanvas は注記の判定に dialog の authority の projectId を渡し、chip の題と meta を同じ chips から作って dialog に渡す（補助の静的照合）", () => {
+    const src = readFileSync(
+      join(SRC, "features", "map", "MapCanvas.tsx"),
+      "utf8",
+    );
+    expect(src).toMatch(
+      /listAiBranchCodexIdsNotSent\(\{\s*projectId: aiBranchDialog\.authority\.projectId,\s*entryIds,?\s*\}\)/,
+    );
+    expect(src).toMatch(/meta: buildAiBranchSeedChipMeta\(n\.id, seeds\)/);
+    expect(src).toMatch(/seedNodeTitles = chips\.map\(\(c\) => c\.title\)/);
+    expect(src).toMatch(/seedChipMeta = chips\.map\(\(c\) => c\.meta\)/);
+    expect(src).toMatch(/seedChipMeta=\{aiBranchDialog\.seedChipMeta\}/);
+  });
 });
 
 describe("L14 確認ダイアログの注記の判定：送信の直前の判定と同じ部品・同じ規則（実物の判定・実物の DB 層）", () => {

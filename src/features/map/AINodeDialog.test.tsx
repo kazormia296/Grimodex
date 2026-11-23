@@ -148,16 +148,57 @@ describe("AINodeDialog — 「AI には送られません」の注記", () => {
     expect(screen.queryAllByText(NOTE)).toHaveLength(0);
   });
 
-  it("ダイアログを閉じた（unmount）後に返った結果では state を更新せず、警告も出ない", async () => {
-    let release: (v: ReadonlySet<string>) => void = () => {};
-    const pending = new Promise<ReadonlySet<string>>((r) => (release = r));
-    const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    const view = renderDialog(() => pending);
-    view.unmount();
-    await act(async () => release(new Set(["phase"])));
-    expect(err).not.toHaveBeenCalled();
-    err.mockRestore();
-    expect(screen.queryAllByText(NOTE)).toHaveLength(0);
+  // 結果の取り込みは「cleanup の flag」と「結果に付けた key の照合」の二重の守りで、片方ずつが別の事象を防ぐ。
+  // 次の 2 件は、それぞれ片方だけを外したときに落ちる（DR-MP4-43 項 9 ⑳）。
+  const SOLO = (): [string[], { codexEntryId: string }[]] => [
+    ["沈黙の司祭"],
+    [{ codexEntryId: "phase" }],
+  ];
+  const OVERLAP = (): [string[], { codexEntryId: string }[]] => [
+    ["沈黙の司祭", "別の Codex"],
+    [{ codexEntryId: "phase" }, { codexEntryId: "x" }],
+  ];
+
+  it("一覧 A の結果が返った後、重なる一覧 B に変わって B の判定が保留中の間は、A の結果を使わず注記なし（key の照合）", async () => {
+    const releases: ((v: ReadonlySet<string>) => void)[] = [];
+    const resolve = vi.fn(
+      () =>
+        new Promise<ReadonlySet<string>>((r) => {
+          releases.push(r);
+        }),
+    );
+    const [titlesA, metaA] = SOLO();
+    const view = renderDialog(resolve, { titles: titlesA, meta: metaA });
+    await act(async () => releases[0]?.(new Set(["phase"])));
+    expect(noteIn("沈黙の司祭")).toBe(true);
+    const [titlesB, metaB] = OVERLAP();
+    view.update(titlesB, metaB);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    // B の判定は保留中。A の結果（phase が送られない）が残って見えてはいけない。
+    expect(noteIn("沈黙の司祭")).toBe(false);
+    await act(async () => releases[1]?.(new Set(["phase"])));
+    expect(noteIn("沈黙の司祭")).toBe(true);
+  });
+
+  it("一覧 A を保留 → B に変更 → B が返る → A が返る、の順でも、B の注記は消えない（cleanup の flag）", async () => {
+    const releases: ((v: ReadonlySet<string>) => void)[] = [];
+    const resolve = vi.fn(
+      () =>
+        new Promise<ReadonlySet<string>>((r) => {
+          releases.push(r);
+        }),
+    );
+    const [titlesA, metaA] = SOLO();
+    const view = renderDialog(resolve, { titles: titlesA, meta: metaA });
+    const [titlesB, metaB] = OVERLAP();
+    view.update(titlesB, metaB);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    await act(async () => releases[1]?.(new Set(["phase"])));
+    expect(noteIn("沈黙の司祭")).toBe(true);
+    // A の古い結果が後から返っても、B の結果を上書きしない（注記は戻らないままにならない）。
+    await act(async () => releases[0]?.(new Set(["phase"])));
+    expect(noteIn("沈黙の司祭")).toBe(true);
+    expect(screen.getAllByText(NOTE)).toHaveLength(1);
   });
 
   it("種の一覧が変わった後に返った古い結果は捨てる（新しい一覧に古い判定を当てない）", async () => {

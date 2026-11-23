@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { AiBranchSeedChipMeta } from "./aiBranchContext";
 
 interface AIBranchDialogProps {
@@ -83,8 +84,13 @@ export function AINodeDialog({
         const result = await resolve(ids);
         // 閉じた後・種の一覧が変わった後に返った古い結果は捨てる。
         if (!cancelled) setDbNotSent({ key: dbCheckKey, ids: result });
-      } catch {
-        // 判定に失敗したら注記なし。送信の判定は別に効く。
+      } catch (error) {
+        // 判定に失敗したら注記なし（画面には出さない）。送信の判定は別に効く。診断のため debugLog に残す。
+        debugLog.warn(
+          "codex-hidden",
+          "AI Branch の注記の判定に失敗したので注記を出さない",
+          errorDetail(error),
+        );
       }
     })();
     return () => {
@@ -178,6 +184,8 @@ export function AINodeDialog({
                         data-testid="ai-branch-chip-not-sent"
                         style={{ marginLeft: 6, opacity: 0.7 }}
                       >
+                        {/* 読み上げで題と注記が続かないよう、視覚には出ない区切りを置く。 */}
+                        <span className="sr-only">{", "}</span>
                         {t("map.aiNodeDialog.notSentToAi")}
                       </span>
                     )}
