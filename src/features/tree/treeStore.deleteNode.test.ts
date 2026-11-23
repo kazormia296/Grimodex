@@ -315,3 +315,47 @@ describe("treeStore.deleteNode atomic failure", () => {
     expect(callCount).toBe(1);
   });
 });
+
+describe("treeStore.deleteNode undo persists only the create fields (DR-UND-1 characterisation)", () => {
+  it("passes no source link, no note body and no restoreState to createNode today", async () => {
+    const scene = {
+      ...baseNode,
+      id: "scene-a",
+      nodeType: "scene" as const,
+      storyTimeOrder: "b3",
+      intent: "goal",
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+    };
+    const note = {
+      ...baseNode,
+      id: "note-a",
+      nodeType: "note" as const,
+      contextMode: "hidden",
+      aliases: '["x"]',
+      content: '{"type":"doc"}',
+    };
+    useTreeStore.setState({ nodes: [scene, note] });
+    vi.mocked(api.loadSceneContent).mockResolvedValue("scene-body");
+    await useTreeStore.getState().deleteNode(scene.id);
+    await useTreeStore.getState().deleteNode(note.id);
+    const [undoNote, undoScene] = useGlobalHistoryStore
+      .getState()
+      .past.slice(-2)
+      .reverse();
+    vi.mocked(api.createNode).mockClear();
+    await undoScene!.undo();
+    await undoNote!.undo();
+
+    const calls = vi.mocked(api.createNode).mock.calls;
+    const sceneCall = calls[0]![0] as unknown as Record<string, unknown>;
+    expect(sceneCall.content).toBe("scene-body");
+    expect(sceneCall).not.toHaveProperty("sourceUri");
+    expect(sceneCall).not.toHaveProperty("storyTimeOrder");
+    expect(calls[0]![1]).not.toHaveProperty("restoreState");
+    const noteCall = calls[1]![0] as unknown as Record<string, unknown>;
+    expect(noteCall.content).toBeUndefined();
+    expect(noteCall).not.toHaveProperty("contextMode");
+    expect(calls[1]![1]).not.toHaveProperty("restoreState");
+  });
+});
