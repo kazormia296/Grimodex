@@ -47,6 +47,13 @@ import { describe, expect, it, vi } from "vitest";
  * Drizzle select）の上で動かし、legacy の `resolveCodexForAi`（store・`listPhasesByEntryIds`）と、同じ seed の同じ
  * 入力で hidden・texts が一致することを見る（`c-secret`・Phase `ph-released` で n-s3 に解除される `c-released`）。
  *
+ * PR-8b の Codex の 4 本（search_codex・list_codex_by_type・search_codex_by_tags・find_related_entries）：4 つ目の
+ * 表（`CODEX_READ_TOOL_NAMES`）と専用の ctx（`createMainCodexReadContext`＝turn の入力 1 つから project・現在の場面・
+ * phase state を束ねる）。golden の 46 case を byte 一致で流し、**送った呼出しの列（db_execute の sql・params・method、
+ * fts・dense の引数、その順）が legacy の fixture（`toolExecutors.codexCalls.test.ts`）と一致する**ことを見る。dense は
+ * main の typed read（`codexSemantic`）に fake の `codexSemanticSearch` を繋ぎ、reject する case は throw を確かめて
+ * byte 比較から外す（握りは renderer の port にだけ置く。DR-MP4-40）。
+ *
  * 覆えない範囲：実 Native（実 addon）の行の返り順・型の返り方は見ない（sql.js の結果）。
  * 本文 2 本は main では barrier なし（renderer の未着の書込みを待たない。DR-MP4-9）ので、
  * ここは「待つべき書込みが無い」ときの同値だけを示す。project が空の case は core が
@@ -96,16 +103,27 @@ import {
   readChronicleReadInputs,
   readReadInputs,
 } from "@/../electron/shared/readDomain/core/readInputsReader";
-import { createMainCodexVisibilityPorts } from "@/../electron/shared/readDomain/core/codexMainContext";
+import {
+  createMainCodexReadContext,
+  createMainCodexVisibilityPorts,
+} from "@/../electron/shared/readDomain/core/codexMainContext";
+import {
+  CODEX_READ_TOOL_NAMES,
+  createCodexReadExecutors,
+} from "@/../electron/shared/readDomain/core/codexReadExecutors";
 import {
   dropHiddenCodexRows,
   listHiddenCodexIds,
   resolveCodexAiVisibility,
 } from "@/../electron/shared/readDomain/core/codexVisibility";
 import { resolveCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
+import { executeTool } from "./toolExecutors";
 import { readCodexNames } from "@/../electron/shared/readDomain/core/chronicleReaders";
 import { listCodexMatchTargets } from "@/features/codex/api";
-import { LEGACY_READ_CANNED_EVENT_HITS } from "./__fixtures__/legacyReadSeed";
+import {
+  LEGACY_READ_CANNED_CODEX_HITS,
+  LEGACY_READ_CANNED_EVENT_HITS,
+} from "./__fixtures__/legacyReadSeed";
 import { legacyReadInvokeBridge } from "./legacyReadInvokeBridge.testSupport";
 import {
   bindLegacyReadHarnessPorts,
@@ -135,9 +153,16 @@ const IDENTITY: MainIssuedCallerIdentity = {
 
 /** sql.js の `db_execute` を、Native と同じ wire（object の行＋marker）で返す backend。 */
 const sent: Array<{ sql: string; method: string }> = [];
+/**
+ * PR-8b：db・fts・Codex の dense に送ったものを、送った順に 1 本の列にする（Codex の 4 本が送る呼出しの列を
+ * `toolExecutors.codexCalls.test.ts` の fixture と比べるため。db_execute は（sql・params・method）、
+ * fts・dense は Native へ渡る引数）。
+ */
+const callLog: Array<Record<string, unknown>> = [];
 const backend: Pick<NapiBackendLike, "dbExecute"> = {
   dbExecute: async (sql, params, method) => {
     sent.push({ sql, method });
+    callLog.push({ cmd: "db_execute", sql, params, method });
     const result = (await invoke("db_execute", { sql, params, method })) as {
       rows: Record<string, unknown>[];
     };
@@ -150,7 +175,7 @@ const backend: Pick<NapiBackendLike, "dbExecute"> = {
 
 /**
  * typed read の backend：`ftsSearch`・`foreshadowListOpenForContext`・`eventsSemanticSearch`（PR-7b）を持つ fake
- * （`codexSemanticSearch` は無い＝呼べば fail closed）。
+ * （PR-8b：`codexSemanticSearch` は Codex の dense。答えは `codexDenseAnswer`）。
  * golden を作った browser-mock の `fts_search` handler の結果を JSON 文字列で返す
  * （Native の wire と同じ。実 FTS5 の順は PR-9 の実 addon spec が見る）。
  */
@@ -164,6 +189,14 @@ const denseSent: Array<{
   limit: number;
 }> = [];
 let denseAnswer: (projectId: string) => unknown = () => [];
+/** Codex の dense（PR-8b）。 */
+const codexDenseSent: Array<{
+  workspace: string;
+  projectId: string;
+  query: string;
+  limit: number;
+}> = [];
+let codexDenseAnswer: (projectId: string) => unknown = () => [];
 const typedBackend = {
   eventsSemanticSearch: async (
     workspace: string,
@@ -174,6 +207,20 @@ const typedBackend = {
     denseSent.push({ workspace, projectId, query, limit });
     return JSON.stringify(denseAnswer(projectId));
   },
+  // Codex の dense（PR-8b）。引数の並びは Native のまま（workspace・projectId・query・limit）。答えは試験が差し替える。
+  codexSemanticSearch: async (
+    workspace: string,
+    projectId: string,
+    query: string,
+    limit: number,
+  ) => {
+    codexDenseSent.push({ workspace, projectId, query, limit });
+    callLog.push({
+      cmd: "codex_semantic_search",
+      args: { expectedWorkspacePath: workspace, projectId, query, limit },
+    });
+    return JSON.stringify(codexDenseAnswer(projectId));
+  },
   ftsSearch: async (
     projectId: string,
     query: string,
@@ -181,6 +228,10 @@ const typedBackend = {
     limit: number,
   ) => {
     ftsSent.push({ projectId, scope, limit });
+    callLog.push({
+      cmd: "fts_search",
+      args: { projectId, query, scope, limit },
+    });
     return JSON.stringify(
       await invoke("fts_search", { projectId, query, scope, limit }),
     );
@@ -1071,5 +1122,371 @@ describe("Codex の hidden 判定（main の DB adapter と turn の入力の上
       }),
     ).rejects.toBeInstanceOf(CoreProjectRequiredError);
     expect(sent).toEqual([]);
+  });
+});
+
+/**
+ * PR-8b：Codex の 4 本。golden の case を、**search_codex の dense の種類**（case 名→kind の明示の表。表に無い case が
+ * 来たら試験が落ちる）で結ぶ。canned：dense が canned の hit／empty：[]（browser-mock の既定）／rejects：reject
+ * （main では throw）／none：dense に届く前に止まる（no-project・空の query）。他の 3 本は dense を呼ばない。
+ */
+const SEARCH_CODEX_DENSE: Record<string, DenseKind> = {
+  "rows: 短い語 2 字（LIKE-OR の arm）。hidden の黒幕と幻の騎士は落ちる":
+    "empty",
+  "rows: 3 字以上（fts_search の arm → id で Drizzle）": "empty",
+  "rows: 前後の空白は trim される": "empty",
+  "hidden: base が hidden の c-secret は結果に出ない": "empty",
+  "hidden: Phase 解除前（n-s1）は幻の騎士が出ない": "empty",
+  "hidden: Phase 解除後（n-s3）は幻の騎士が Phase 解決後の summary で出る":
+    "empty",
+  "canned dense: sparse と RRF 融合し、融合の後に hidden を落とす（S1）":
+    "canned",
+  "canned dense: Phase 解除後（S3）は幻の騎士が Phase 解決後の summary で残る":
+    "canned",
+  "canned dense: dense が reject しても sparse だけに退避する": "rejects",
+  "empty: 一致なし": "empty",
+  "empty: 空の project": "empty",
+  "XPROJ: 他 project では他 project の行だけ": "empty",
+  "XPROJ: main から他 project にしかない語は出ない": "empty",
+  "no-project: 引数が有効でも No active project": "none",
+  "order: 空の query は no-project より先（0 entries found）": "none",
+  "order: 空白だけの query も先に弾く": "none",
+  "order: query 欠落（undefined）も先に弾く": "none",
+};
+
+const CALLS_RAW = import.meta.glob<string>(
+  "./__fixtures__/codexReadCalls/*.golden.txt",
+  {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  },
+)["./__fixtures__/codexReadCalls/codex-read-calls.golden.txt"];
+const CODEX_CALLS = JSON.parse(CALLS_RAW ?? "{}") as Record<
+  string,
+  Record<string, Array<Record<string, unknown>>>
+>;
+
+/** golden の world から、main の turn の入力（読む順・mode・現在の場面）を作る。project が空なら project 行なし。 */
+async function codexInputs(world: LegacyReadGoldenCase["world"]) {
+  return world.projectId === ""
+    ? buildReadInputs({
+        projectId: "",
+        treeRows: [],
+        project: null,
+        currentSceneId: null,
+      })
+    : await readReadInputs(mainDb, {
+        projectId: world.projectId,
+        currentSceneId: world.activeSceneId ?? null,
+      });
+}
+
+async function makeCodexExecutors(world: LegacyReadGoldenCase["world"]) {
+  return createCodexReadExecutors(
+    createMainCodexReadContext({
+      db: mainDb,
+      inputs: await codexInputs(world),
+      countTokens: (text) => (text ? text.length : 0),
+      native: createMainTypedReads({
+        backend: typedBackend,
+        identity: IDENTITY,
+      }),
+    }),
+  );
+}
+
+describe("共有 core の Codex の 4 本（main の DB adapter・turn の入力・typed read の上）が、PR-0 の golden と同じ結果を返す（PR-8b）", () => {
+  it("対象は golden を持つ 4 本で、CORE_READ_TOOL_NAMES・CHRONICLE_READ_TOOL_NAMES・CHRONICLE_SEARCH_TOOL_NAMES とは別の表（4 つの表は互いに素で合計 20）", () => {
+    expect([...CODEX_READ_TOOL_NAMES].sort()).toEqual(
+      [
+        "find_related_entries",
+        "list_codex_by_type",
+        "search_codex",
+        "search_codex_by_tags",
+      ].sort(),
+    );
+    const all = [
+      ...CORE_READ_TOOL_NAMES,
+      ...CHRONICLE_READ_TOOL_NAMES,
+      ...CHRONICLE_SEARCH_TOOL_NAMES,
+      ...CODEX_READ_TOOL_NAMES,
+    ];
+    expect(all).toHaveLength(20);
+    expect(new Set(all).size).toBe(20);
+    let goldenCases = 0;
+    for (const tool of CODEX_READ_TOOL_NAMES) {
+      expect(goldenOf(tool).length, tool).toBeGreaterThan(0);
+      expect(Object.keys(CODEX_CALLS[tool] ?? {}), tool).toEqual(
+        goldenOf(tool).map((c) => c.case),
+      );
+      goldenCases += goldenOf(tool).length;
+    }
+    expect(goldenCases).toBe(46);
+  });
+
+  it("case 名→dense の表は search_codex の golden の 17 case と過不足なく一致する", () => {
+    expect(goldenOf("search_codex").map((c) => c.case)).toEqual(
+      Object.keys(SEARCH_CODEX_DENSE),
+    );
+  });
+
+  for (const tool of CODEX_READ_TOOL_NAMES) {
+    it(`${tool}：golden の全 case で結果が byte 一致し、送った呼出しの列（db_execute の sql・params・method、fts・dense の引数、その順）が legacy の fixture と一致する`, async () => {
+      setLegacyReadWorkspaceIdentity();
+      await seedLegacyReadFixture();
+      const cases = goldenOf(tool);
+      const done: Record<DenseKind, number> = {
+        canned: 0,
+        empty: 0,
+        rejects: 0,
+        none: 0,
+      };
+      for (const golden of cases) {
+        const kind: DenseKind =
+          tool === "search_codex"
+            ? (SEARCH_CODEX_DENSE[golden.case] ?? "none")
+            : "none";
+        if (tool === "search_codex" && !(golden.case in SEARCH_CODEX_DENSE)) {
+          throw new Error(`no dense kind: ${golden.case}`);
+        }
+        await setLegacyReadWorld(golden.world);
+        legacyReadInvokeBridge.reset();
+        const label = `${tool} / ${golden.case}`;
+        const executors = await makeCodexExecutors(golden.world);
+        codexDenseAnswer = () => {
+          if (kind === "canned") return LEGACY_READ_CANNED_CODEX_HITS;
+          if (kind === "rejects") throw new Error("dense unavailable");
+          return [];
+        };
+        callLog.length = 0;
+        codexDenseSent.length = 0;
+        const expectedCalls = CODEX_CALLS[tool]?.[golden.case] ?? [];
+
+        if (kind === "rejects") {
+          // main は握らない：tool error（throw）で、sparse だけの成功にならない。golden の結果は
+          // legacy の port の握りの結果（renderer の結果は変わらない）。
+          await expect(executors[tool](golden.params), label).rejects.toThrow();
+          expect(codexDenseSent, label).toHaveLength(1);
+          // throw までに送ったものは、legacy が dense まで送ったものと同じ（判定の読みは dense の後なので含まない）。
+          expect(callLog, label).toEqual(
+            expectedCalls.slice(0, callLog.length),
+          );
+          done.rejects += 1;
+          continue;
+        }
+
+        let actual: Awaited<ReturnType<(typeof executors)[typeof tool]>>;
+        try {
+          actual = await executors[tool](golden.params);
+        } catch (e) {
+          expect(e, label).toBeInstanceOf(CoreProjectRequiredError);
+          expect(golden.world.projectId, label).toBe("");
+          expect(golden.result.summary, label).toBe("No active project");
+          expect(callLog, label).toEqual([]);
+          expect(expectedCalls, label).toEqual([]);
+          done.none += 1;
+          continue;
+        }
+        expect(
+          {
+            name: actual.name,
+            summary: actual.summary,
+            tokensUsed: actual.tokensUsed,
+            content: actual.content,
+          },
+          label,
+        ).toEqual({
+          name: golden.result.name,
+          summary: golden.result.summary,
+          tokensUsed: golden.result.tokensUsed,
+          content: golden.result.content,
+        });
+        expect(JSON.stringify(actual.content), label).toBe(golden.contentJson);
+        // 送った呼出しの列：legacy の fixture と同じ（sql・params・method・順）。dense の workspace は turn の identity。
+        expect(callLog, label).toEqual(
+          expectedCalls.map((call) =>
+            call["cmd"] === "codex_semantic_search"
+              ? {
+                  ...call,
+                  args: {
+                    ...(call["args"] as object),
+                    expectedWorkspacePath: IDENTITY.workspaceId,
+                  },
+                }
+              : call,
+          ),
+        );
+        // 送った文は全部 SELECT（method は all か values）。
+        for (const statement of sent) {
+          expect(statement.sql, label).toMatch(/^\s*select\b/iu);
+          expect(["all", "values"], label).toContain(statement.method);
+        }
+        done[kind] += 1;
+      }
+      if (tool === "search_codex") {
+        expect(done).toEqual({ canned: 2, empty: 10, rejects: 1, none: 4 });
+      } else {
+        expect(done.canned + done.empty + done.rejects).toBe(0);
+        expect(done.none).toBe(cases.length);
+      }
+    });
+  }
+
+  it("renderer の 4 本（executeTool）と main の core が、golden に無い world でも同じ結果を返す：場面 n-s1・n-s2・n-s3・場面なし・読む順に無い id、reading・story・auto（content と summary。tokensUsed は renderer が実 tokenizer なので除く）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const setMode = (mode: "reading" | "story" | "auto") =>
+      invoke("db_execute", {
+        sql: "UPDATE projects SET phase_resolution_mode = ? WHERE id = ?",
+        params: [mode, "p-main"],
+        method: "run",
+      });
+    const calls: Array<
+      [(typeof CODEX_READ_TOOL_NAMES)[number], Record<string, unknown>]
+    > = [
+      ["search_codex", { query: "魔法" }],
+      ["search_codex", { query: "老魔術師" }],
+      ["list_codex_by_type", { type: "character" }],
+      ["search_codex_by_tags", { tags: ["魔法", "主人公"] }],
+      ["find_related_entries", { id: "c-mage" }],
+      ["find_related_entries", { id: "c-released" }],
+    ];
+    let compared = 0;
+    let released = 0;
+    try {
+      for (const mode of ["reading", "story", "auto"] as const) {
+        await setMode(mode);
+        for (const sceneId of ["n-s1", "n-s2", "n-s3", "", "no-such-scene"]) {
+          const world = {
+            projectId: "p-main",
+            activeSceneId: sceneId,
+            resolutionMode: mode,
+          };
+          const executors = await makeCodexExecutors(world);
+          for (const [tool, params] of calls) {
+            await setLegacyReadWorld(world);
+            legacyReadInvokeBridge.reset();
+            codexDenseAnswer = () => LEGACY_READ_CANNED_CODEX_HITS;
+            legacyReadInvokeBridge.override(
+              "codex_semantic_search",
+              () => LEGACY_READ_CANNED_CODEX_HITS,
+            );
+            const label = `${tool} ${JSON.stringify(params)} / ${mode} / ${sceneId || "(none)"}`;
+            const legacy = await executeTool(tool, "c", params);
+            const main = await executors[tool](params);
+            expect(main.summary, label).toBe(legacy.summary);
+            expect(main.content, label).toEqual(legacy.content);
+            if (
+              (main.content as Array<{ id: string }>).some(
+                (row) => row.id === "c-released",
+              )
+            ) {
+              released += 1;
+            }
+            compared += 1;
+          }
+        }
+      }
+    } finally {
+      await setMode("reading");
+      codexDenseAnswer = () => [];
+    }
+    expect(compared).toBe(3 * 5 * 6);
+    // 自明な比較になっていない：Phase で解除された c-released が出る組がある（reading の n-s3 など）。
+    expect(released).toBeGreaterThan(0);
+  });
+
+  it("dense の失敗（workspace の不一致・backend の欠落・wire の不正）は tool error で、sparse だけの成功にならない。score が null の hit は通る", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const world = { projectId: "p-main", activeSceneId: "n-s1" };
+    await setLegacyReadWorld(world);
+    const inputs = await codexInputs(world);
+    const make = (
+      backendLike: unknown,
+      identity: MainIssuedCallerIdentity = IDENTITY,
+    ) =>
+      createCodexReadExecutors(
+        createMainCodexReadContext({
+          db: mainDb,
+          inputs,
+          countTokens: (text) => text.length,
+          native: createMainTypedReads({
+            backend: backendLike as MainTypedReadsBackend,
+            identity,
+          }),
+        }),
+      );
+    await expect(
+      make({ ftsSearch: typedBackend.ftsSearch }).search_codex({
+        query: "魔法",
+      }),
+    ).rejects.toThrow(/backend has no such method/u);
+    codexDenseSent.length = 0;
+    await expect(
+      make(typedBackend, { ...IDENTITY, workspaceId: "" }).search_codex({
+        query: "魔法",
+      }),
+    ).rejects.toThrow(/no workspace/u);
+    expect(codexDenseSent).toEqual([]);
+    codexDenseAnswer = () => [{ entryId: "c-mage", score: "high" }];
+    await expect(
+      make(typedBackend).search_codex({ query: "魔法" }),
+    ).rejects.toThrow(/codex_semantic_search/u);
+    codexDenseAnswer = () => [
+      {
+        entryId: "c-mage",
+        entryName: "老魔術師",
+        entryType: "character",
+        summary: "塔に住む魔術師",
+        score: null,
+      },
+    ];
+    const ok = await make(typedBackend).search_codex({ query: "魔法" });
+    expect(
+      (ok.content as Array<{ id: string }>).map((row) => row.id),
+    ).toContain("c-mage");
+    codexDenseAnswer = () => [];
+  });
+
+  it("dense が他 project の entry や hidden の entry の id を返しても、project 条件つきの判定で落ちる（XPROJ・hidden。実 Native が索引を project で絞ることとは独立の防御）", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    const world = { projectId: "p-main", activeSceneId: "n-s1" };
+    await setLegacyReadWorld(world);
+    const executors = await makeCodexExecutors(world);
+    codexDenseAnswer = () => [
+      {
+        entryId: "x-c-aria",
+        entryName: "他作品のアリア",
+        entryType: "character",
+        summary: "他作品の少女",
+        score: 0.99,
+      },
+      {
+        entryId: "c-secret",
+        entryName: "黒幕",
+        entryType: "character",
+        summary: "正体は秘密",
+        score: 0.98,
+      },
+      {
+        entryId: "c-aria",
+        entryName: "アリア",
+        entryType: "character",
+        summary: "老魔術師を訪ねる旅の少女",
+        score: 0.5,
+      },
+    ];
+    try {
+      const result = await executors.search_codex({ query: "魔法" });
+      const ids = (result.content as Array<{ id: string }>).map((r) => r.id);
+      expect(ids).not.toContain("x-c-aria");
+      expect(ids).not.toContain("c-secret");
+      expect(ids).toContain("c-aria");
+    } finally {
+      codexDenseAnswer = () => [];
+    }
   });
 });
