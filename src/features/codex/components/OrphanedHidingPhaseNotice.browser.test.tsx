@@ -10,6 +10,7 @@ import type { CodexEntry } from "@/features/codex/api";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import { TimelineTab } from "./TimelineTab";
+import { OrphanedHidingPhaseNotice } from "./OrphanedHidingPhaseNotice";
 
 const phaseState = {
   phasesByEntry: {} as Record<string, CodexEntryPhase[]>,
@@ -211,6 +212,76 @@ describe("起点を失った Phase の表示（実 Chromium、狭いサイドペ
 
         // 「AI 露出: n」バッジは出ない。
         expect(screen.queryByTestId("phase-exposure-ai")).toBeNull();
+      });
+    }
+  }
+});
+
+describe("詳細タブのお知らせ（ボタン付き。実 Chromium、狭いサイドペイン幅）", () => {
+  for (const [lang, width] of [
+    ["ja", 280],
+    ["en", 280],
+  ] as const) {
+    for (const dark of [false, true]) {
+      it(`${lang} / ${width}px / ${dark ? "dark" : "light"}: 折り返してもはみ出さず、ボタンが帯の中にあり、コントラストが 4.5 以上`, async () => {
+        await i18n.changeLanguage(lang);
+        if (dark) document.documentElement.classList.add("dark");
+        render(
+          <div
+            data-testid="pane"
+            style={{ width, padding: 12, boxSizing: "border-box" }}
+            className="bg-background text-foreground"
+          >
+            <OrphanedHidingPhaseNotice
+              variant="details"
+              onOpenTimeline={() => {}}
+              phases={[
+                {
+                  id: "a",
+                  label: "正体の露見（長い名前の Phase でも折り返すこと）",
+                  mode: "hidden",
+                  cause: "anchor-null",
+                },
+                {
+                  id: "b",
+                  label: "二つ目",
+                  mode: "hidden",
+                  cause: "anchor-not-in-reading-order",
+                },
+              ]}
+            />
+          </div>,
+        );
+        const notice = await screen.findByTestId(
+          "orphaned-hiding-phase-notice-details",
+        );
+        const pane = screen.getByTestId("pane");
+        const paneRect = pane.getBoundingClientRect();
+        const rect = notice.getBoundingClientRect();
+        expect(notice.scrollWidth).toBeLessThanOrEqual(notice.clientWidth);
+        expect(rect.right).toBeLessThanOrEqual(paneRect.right + 0.5);
+        expect(rect.left).toBeGreaterThanOrEqual(paneRect.left - 0.5);
+        expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+          document.documentElement.clientWidth,
+        );
+        const button = notice.querySelector("button") as HTMLElement;
+        const b = button.getBoundingClientRect();
+        expect(b.right).toBeLessThanOrEqual(rect.right + 0.5);
+        expect(b.left).toBeGreaterThanOrEqual(rect.left - 0.5);
+        expect(b.height).toBeGreaterThanOrEqual(18);
+        const text = notice.querySelector("p:last-of-type") as HTMLElement;
+        expect(
+          contrast(
+            rgba(getComputedStyle(text).color),
+            backgroundBehind(notice),
+          ),
+        ).toBeGreaterThanOrEqual(4.5);
+        expect(
+          contrast(
+            rgba(getComputedStyle(button).color),
+            rgba(getComputedStyle(button).backgroundColor),
+          ),
+        ).toBeGreaterThanOrEqual(4.5);
       });
     }
   }

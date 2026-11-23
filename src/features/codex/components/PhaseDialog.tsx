@@ -48,8 +48,10 @@ export function PhaseDialog({
   // or it is not in the reading order). Keeping it would let the Phase be saved
   // without choosing a scene again, with the anchor still lost (DR-MP4-46).
   const savedAnchorId = phase?.anchorNodeId ?? null;
+  // `nodes.length > 0`: while the tree is not loaded nothing can be told missing.
   const savedAnchorMissing =
     savedAnchorId !== null &&
+    nodes.length > 0 &&
     !nodes.some(
       (n) =>
         n.id === savedAnchorId &&

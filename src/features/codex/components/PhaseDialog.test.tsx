@@ -322,6 +322,20 @@ describe("PhaseDialog: 起点の場面を失った Phase の編集（DR-MP4-46�
     });
   });
 
+  it("tree の nodes がまだ空のあいだは、起点が無いとは判断せず、保存済みの起点を初期値のままにする", () => {
+    mockTreeState.nodes = [];
+    try {
+      renderDialog();
+      expect(
+        screen.queryByTestId("phase-dialog-anchor-missing"),
+      ).not.toBeInTheDocument();
+    } finally {
+      mockTreeState.nodes = [
+        { id: "scene-1", title: "シーン1", nodeType: "scene" },
+      ];
+    }
+  });
+
   it("isSelectableAnchor を渡すと、選べる場面を読む順にあるものだけに絞り、絞りから外れた起点は初期値にしない", () => {
     mockTreeState.nodes = [
       { id: "scene-1", title: "シーン1", nodeType: "scene" },
