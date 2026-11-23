@@ -23,6 +23,10 @@ import {
 } from "@/features/codex/context/resolvedCodexContext";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import {
+  closeResolvedCodexForUnresolvableScene,
+  listEntryIdsClosedWhenSceneUnresolvable,
+} from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
+import {
   collectBudgetedDescendantIds,
   computeChildrenTokenBudget,
   getChildrenFromArray,
@@ -342,16 +346,30 @@ async function resolveEntriesForContext(
   const { sceneTimeIndex, resolutionMode } = deps.getTemporalResolution(
     request.projectId,
   );
+  const resolved = resolveCodexContexts({
+    entries,
+    phases,
+    phaseDetailOverrides: overrides,
+    baseDetailsByEntry,
+    anchor,
+    sceneTimeIndex,
+    resolutionMode,
+  });
+  // DR-MP4-41: when the current scene cannot be resolved (no scene, or an id the
+  // reading order does not have; the codex scope's latest is not one) the Phases
+  // were not applied, so an entry one of them hides is hidden. Every consumer of
+  // this function (the index and the full bodies) reads the mode set here.
+  const closedIds = listEntryIdsClosedWhenSceneUnresolvable({
+    anchor,
+    sceneTimeIndex,
+    phasesByEntry: resolved.phasesByEntry,
+  });
   return {
-    ...resolveCodexContexts({
-      entries,
-      phases,
-      phaseDetailOverrides: overrides,
-      baseDetailsByEntry,
-      anchor,
-      sceneTimeIndex,
-      resolutionMode,
-    }),
+    ...resolved,
+    resolvedById: closeResolvedCodexForUnresolvableScene(
+      resolved.resolvedById,
+      closedIds,
+    ),
     resolutionMode,
   };
 }

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
 import type { CodexContextEntry } from "@/features/codex/api";
+import { decideCodexAiVisibility } from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { PinnedCodexEntryWithData } from "../../chatApi";
@@ -1744,7 +1745,11 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
     const haystack = `${JSON.stringify(result.promptInput)}\n${
       buildSystemPrompt(result.promptInput).prompt
     }`;
-    return { result, haystack };
+    return {
+      result,
+      haystack,
+      sceneTimeIndex: buildSceneTimeIndex(currentNodes),
+    };
   }
 
   it("keeps every path public while the scene is in the reading order (the control: the Phase has not started)", async () => {
@@ -1755,13 +1760,14 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
   });
 
   it.each(["n-note", "no-such-scene", "scene-archived"])(
-    "lets an entry that a later Phase hides through on every path today when the scene is %s (fail-open, 今のまま)",
+    "closes an entry that a later Phase hides on every path (mention, always, pin, child, relation, active tab, POV name) when the scene is %s",
     async (sceneId) => {
       const { haystack } = await collect(sceneId);
       for (const id of PHASE_HIDDEN) {
-        // The POV name comes from the current scene's node; a note or a missing id has none.
-        if (id === "ivor" && sceneId !== "scene-archived") continue;
-        expect(haystack, id).toContain(TOKEN[id]);
+        expect(haystack, id).not.toContain(TOKEN[id]);
+        // Neither the summary nor the body of a closed entry is in anything the AI gets.
+        expect(haystack, id).not.toContain(`${id.toUpperCase()}_SUM`);
+        expect(haystack, id).not.toContain(`${id.toUpperCase()}_BODY`);
       }
     },
   );
@@ -1777,18 +1783,45 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
     },
   );
 
-  it("feeds the chronicle snapshot the entries that are still public (the input of the chronicle block)", async () => {
+  it("keeps the closed entries out of the chronicle snapshot's names and seeds (the input of the chronicle block)", async () => {
     const chronicle = vi.fn<SceneContextSourceDeps["buildChronicleSnapshot"]>(
       async () => undefined,
     );
     await collect("n-note", { chronicle });
     const input = chronicle.mock.calls[0]![0];
-    expect([...input.codexNames.keys()]).toEqual(
-      expect.arrayContaining(["aria", "borin", "gale"]),
-    );
+    // A closed entry's name is not in the lookup (the snapshot then shows its id) and it is no seed.
+    const names = [...input.codexNames.keys()];
+    for (const id of PHASE_HIDDEN) {
+      expect(names, id).not.toContain(id);
+      expect(input.sceneCodexIds, id).not.toContain(id);
+      expect(input.mentionedCodexIds, id).not.toContain(id);
+    }
+    // The entries no Phase hides stay.
+    expect(names).toEqual(expect.arrayContaining(["calm", "soft"]));
     expect(input.sceneCodexIds).toEqual(
-      expect.arrayContaining(["aria", "borin"]),
+      expect.arrayContaining(["calm", "soft"]),
     );
-    expect(input.mentionedCodexIds).toEqual(expect.arrayContaining(["cael"]));
   });
+
+  it.each(["scene-1", "n-note", "no-such-scene", "scene-archived"])(
+    "shows an entry that is public at base to the AI exactly when the agent tool's rule (decideCodexAiVisibility) does not hide it (scene %s)",
+    async (sceneId) => {
+      const { haystack, sceneTimeIndex } = await collect(sceneId);
+      const decision = decideCodexAiVisibility({
+        entries: Object.values(ENTRIES),
+        phases: PHASES,
+        sceneId,
+        sceneTimeIndex,
+        resolutionMode: { kind: "resolved", mode: "reading" },
+      });
+      // Base-public entries only: the tool also hides base-hidden and unknown modes (lift is not compared).
+      for (const id of [...PHASE_HIDDEN, "calm", "soft"] as const) {
+        // The POV name is read from the current scene's node; a note or a missing id has none.
+        if (id === "ivor" && ["n-note", "no-such-scene"].includes(sceneId)) {
+          continue;
+        }
+        expect(haystack.includes(TOKEN[id]), id).toBe(!decision.hidden.has(id));
+      }
+    },
+  );
 });

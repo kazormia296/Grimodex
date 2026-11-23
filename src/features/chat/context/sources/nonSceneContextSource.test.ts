@@ -3,6 +3,7 @@ import type { CodexContextEntry } from "@/features/codex/api";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 import type { CodexRelationRow } from "@/features/codex/codexRelationApi";
+import { decideCodexAiVisibility } from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import type { Snippet } from "@/features/snippets/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -1557,16 +1558,35 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
     }
   });
 
-  it.each(["", "   ", "n-note", "no-such-scene", " scene-1 "])(
-    "lets an entry that a later Phase hides through on every path today when activeSceneId is %j (fail-open, 今のまま)",
+  it.each(["", "   ", "n-note", "no-such-scene"])(
+    "closes an entry that a later Phase hides on every path (mention, input pin, always, pin, child, active tab) when activeSceneId is %j",
     async (activeSceneId) => {
       const { haystack } = await collect(activeSceneId);
       for (const id of PHASE_HIDDEN) {
         if (id === "gale") continue;
-        expect(haystack, id).toContain(TOKEN[id]!);
+        expect(haystack, id).not.toContain(TOKEN[id]!);
+        // Neither the summary nor the body of a closed entry is in anything the AI gets.
+        expect(haystack, id).not.toContain(`${id.toUpperCase()}_SUM`);
+        expect(haystack, id).not.toContain(`${id.toUpperCase()}_BODY`);
       }
     },
   );
+
+  it("reads an id with spaces around it as the resolver does (not in the reading order, so closed), while the agent tool trims it and resolves (a known difference)", async () => {
+    const { haystack } = await collect(" scene-1 ");
+    for (const id of PHASE_HIDDEN) {
+      if (id === "gale") continue;
+      expect(haystack, id).not.toContain(TOKEN[id]!);
+    }
+    const decision = decideCodexAiVisibility({
+      entries: Object.values(ENTRIES),
+      phases: PHASES,
+      sceneId: " scene-1 ",
+      sceneTimeIndex: sceneIndex,
+      resolutionMode: { kind: "resolved", mode: "reading" },
+    });
+    expect([...decision.hidden]).not.toContain("aria");
+  });
 
   it.each(["", "n-note", "no-such-scene"])(
     "keeps entries no Phase hides, a suppress-only Phase and a base-hidden entry the same when activeSceneId is %j",
@@ -1580,17 +1600,65 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
   );
 
   it.each(["", "n-note"])(
-    "hands the aggregated scene the entries a later Phase hides, today (activeSceneId %j)",
+    "counts a Phase whose anchor scene is gone and a Phase with an unknown mode as hiding when activeSceneId is %j",
+    async (activeSceneId) => {
+      const dangling = phaseHidden("dangling", { contextMode: "always" });
+      const odd = phaseHidden("odd", { contextMode: "always" });
+      const { haystack } = await collect(activeSceneId, {
+        entries: [dangling, odd, ENTRIES.calm],
+        phases: [
+          phase("p-dangling", "dangling", "deleted-scene", {
+            contextModeOverride: "hidden",
+          }),
+          phase("p-odd", "odd", "scene-2", {
+            contextModeOverride: "a-mode-from-the-future",
+          }),
+        ],
+      });
+      expect(haystack).not.toContain("DANGLING_SUM");
+      expect(haystack).not.toContain("ODD_SUM");
+      expect(haystack).toContain("CALM_SUM");
+    },
+  );
+
+  it.each(["", "n-note"])(
+    "keeps the entries a later Phase hides out of what the aggregated scene gets (activeSceneId %j)",
     async (activeSceneId) => {
       const { buildAggregatedScene } = await collect(activeSceneId);
       const input = buildAggregatedScene.mock.calls[0]![0];
-      expect(input.detectableEntries.map((entry) => entry.id)).toEqual(
-        expect.arrayContaining(["aria", "calm", "soft"]),
-      );
-      // The identity lookup (relation / map reference / child) keeps gale as well.
-      expect(input.allEntries.map((entry) => entry.id)).toEqual(
-        expect.arrayContaining(["aria", "gale", "calm"]),
-      );
+      const detectable = input.detectableEntries.map((entry) => entry.id);
+      const identities = input.allEntries.map((entry) => entry.id);
+      for (const id of PHASE_HIDDEN) {
+        expect(detectable, id).not.toContain(id);
+        // The identity lookup (relation / map reference / child) is closed too (gale, borin, ...).
+        expect(identities, id).not.toContain(id);
+      }
+      expect(detectable).toEqual(expect.arrayContaining(["calm", "soft"]));
+      expect(identities).toEqual(expect.arrayContaining(["calm", "soft"]));
+    },
+  );
+
+  it.each(["scene-1", "", "   ", "n-note", "no-such-scene"])(
+    "shows an entry that is public at base to the AI exactly when the agent tool's rule (decideCodexAiVisibility) does not hide it (activeSceneId %j)",
+    async (activeSceneId) => {
+      const { haystack, buildAggregatedScene } = await collect(activeSceneId);
+      const decision = decideCodexAiVisibility({
+        entries: Object.values(ENTRIES),
+        phases: PHASES,
+        sceneId: activeSceneId,
+        sceneTimeIndex: sceneIndex,
+        resolutionMode: { kind: "resolved", mode: "reading" },
+      });
+      // Base-public entries only: the tool also hides base-hidden and unknown modes (lift is not compared).
+      for (const id of [...PHASE_HIDDEN, "calm", "soft"] as const) {
+        const reached =
+          id === "gale"
+            ? buildAggregatedScene.mock.calls[0]![0].allEntries.some(
+                (entry) => entry.id === id,
+              )
+            : haystack.includes(TOKEN[id]!);
+        expect(reached, id).toBe(!decision.hidden.has(id));
+      }
     },
   );
 
