@@ -293,14 +293,37 @@ export const DRY_RUN_ASSUMPTIONS = Object.freeze({
  * 1 作品の乾いた実行：空の名簿→合成の名簿の段ごとに、送信の直前まで進めて件数を測る。
  * 送らない（api.judge は呼ばない）。page は window.identityLoad を持つ（試験では fake）。
  */
-export async function dryCellBody({
-  page,
-  app = null,
-  workspaceDir = "",
-  probeJudge = false,
-  synth = DEFAULT_SYNTH,
-  levels = B1_LEVELS,
-}) {
+export async function dryCellBody(args) {
+  // 本体のどの段で落ちたかを、定型の token だけで残す（試走の 1 回目の調べで、plain な Error だけでは段が分からなかった）。
+  // [precheck]／[artifact] の印のある失敗（意図した検査の失敗）は、そのまま通す。
+  const stage = { name: "setup" };
+  try {
+    return await dryCellBodyStages(args, stage);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/\[(precheck|artifact)\]/u.test(message)) throw error;
+    const name = (error instanceof Error ? error.name : "NonError")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/gu, "_")
+      .slice(0, 40);
+    throw new Error(
+      `[artifact] DRY_BODY_FAILED_AT_${stage.name.toUpperCase().replace(/[^A-Z0-9]/gu, "_")} ERR_${name}`,
+      { cause: error },
+    );
+  }
+}
+
+async function dryCellBodyStages(
+  {
+    page,
+    app = null,
+    workspaceDir = "",
+    probeJudge = false,
+    synth = DEFAULT_SYNTH,
+    levels = B1_LEVELS,
+  },
+  stage,
+) {
   const api = bindPageApi({
     page,
     workspaceDir: "unused",
@@ -308,31 +331,37 @@ export async function dryCellBody({
     allowSend: false,
   });
   const out = [];
+  stage.name = "measure-empty";
   const empty = await dryMeasure({ api });
   out.push({ level: "empty", ...empty });
   const n0 = empty.candidates.visibleCount;
   const entityCount = Math.max(1, Math.floor(synth.entityFraction * n0));
   const aliasTotals = {};
   for (const level of levels) {
+    stage.name = `synth-roster-${level}`;
     aliasTotals[level] = Math.floor(synth.aliasFractions[level] * n0);
     await page.evaluate((input) => window.identityLoad.bSynthRoster(input), {
       entityCount,
       aliasTotal: aliasTotals[level],
     });
+    stage.name = `measure-${level}`;
     out.push({ level, ...(await dryMeasure({ api })) });
   }
   // 送らずに、本測定の guard（役割の上書き・名簿の hidden。F2）を合成の名簿に対して読み取りだけで確かめる。
   // 本測定の cell の頭と同じ page 関数を呼ぶので、課金の前に、設定・DB の読みが測定ページで動くかが分かる。
+  stage.name = "guards";
   const role = assertRoleOverridesDefault(
     await page.evaluate(() => window.identityLoad.bAssertRoleDefaults()),
   );
   const hidden = assertRosterNotHidden(
     await page.evaluate(() => window.identityLoad.bAssertRosterNotHidden()),
   );
+  stage.name = "probe";
   const judgePath = probeJudge
     ? await probeJudgePath({ page, app, workspaceDir })
     : null;
   // B2 が使う bApply は、実機で一度も動かしていなかった（乾いた実行も試走も呼ばない）。送信なしで、合成の名簿に決定を当てて確かめる。
+  stage.name = "apply-rehearsal";
   const applyRehearsal = probeJudge ? await rehearseApply({ page }) : null;
   return {
     levels: out,

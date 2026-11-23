@@ -2491,3 +2491,78 @@ test("bApply のリハーサルは乾いた実行の経路だけ：dryCellBody �
   const real = source.slice(source.indexOf("async function mainReal"));
   assert.ok(!real.includes("rehearseApply"));
 });
+
+test("乾いた実行の本体の失敗：タグの無い例外は、落ちた段と例外の名前の token に包み、[precheck]／[artifact] の印のある失敗はそのまま通す", async () => {
+  const base = {
+    bSynthRoster: async () => ({ created: 1 }),
+    bAiGate: async () => ({
+      policyBlocked: false,
+      licenseRestricted: false,
+      language: "ja",
+    }),
+    bPrepare: async () => ({
+      rawCount: 150,
+      activeCount: 150,
+      visibleCount: 150,
+      dismissedCount: 0,
+      entryCount: 5,
+      candidates: [],
+    }),
+    bEstimate: async () => ({
+      judgedSlots: 50,
+      entrySlots: 5,
+      entryAliasCount: 0,
+      contextChars: 3000,
+      promptChars: 9000,
+      promptNonAsciiChars: 6000,
+    }),
+    bAssertRoleDefaults: async () => ({
+      checked: true,
+      roleKeysChecked: 7,
+      nonDefaultRoleKeys: 0,
+      roleProvidersNonDefault: false,
+      sendOverrideClear: true,
+    }),
+    bAssertRosterNotHidden: async () => ({
+      checked: true,
+      entryCount: 45,
+      checkedCount: 45,
+      hiddenCount: 0,
+    }),
+  };
+  const page = { evaluate: async (fn, arg) => fn(arg) };
+  // 合成の名簿の段（L0）で、タグの無い plain な例外。
+  globalThis.window = {
+    identityLoad: {
+      ...base,
+      bSynthRoster: async () => {
+        throw new TypeError("page.evaluate: Execution context was destroyed");
+      },
+    },
+  };
+  await assert.rejects(dryCellBody({ page }), (error) => {
+    const summary = safeErrorSummary(error);
+    assert.deepEqual(summary.codes, [
+      "DRY_BODY_FAILED_AT_SYNTH_ROSTER_L0",
+      "ERR_TYPEERROR",
+    ]);
+    assert.equal(summary.tag, "artifact");
+    // 元の例外は cause に残るが、要約には自由文を載せない。
+    assert.ok(error.cause instanceof TypeError);
+    assert.ok(!JSON.stringify(summary).includes("Execution context"));
+    return true;
+  });
+  // 守りの段（guards）で、[precheck] の印のある失敗はそのまま通る。
+  globalThis.window = {
+    identityLoad: {
+      ...base,
+      bAssertRosterNotHidden: async () => ({
+        checked: true,
+        entryCount: 45,
+        checkedCount: 45,
+        hiddenCount: 1,
+      }),
+    },
+  };
+  await assert.rejects(dryCellBody({ page }), /ROSTER_HAS_HIDDEN/u);
+});
