@@ -119,6 +119,7 @@ function makeCtx(world: World = {}) {
       log.push("getCodexNames");
       return names;
     }),
+    listHiddenCodexIds: vi.fn(async () => new Set<string>()),
     getReadingOrder: vi.fn((ns: readonly CoreTreeNode[]) => {
       log.push("getReadingOrder");
       return (

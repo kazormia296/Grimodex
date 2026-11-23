@@ -14,6 +14,8 @@ import {
   readProjectCalendar,
   readSceneEventsForProject,
 } from "./chronicleReaders.js";
+import { createMainCodexVisibilityPorts } from "./codexMainContext.js";
+import { listHiddenCodexIds as listHiddenCodexIdsFromPorts } from "./codexVisibility.js";
 import type { ChronicleReadInputs } from "./readInputsReader.js";
 import { SharedLoader } from "./sharedLoader.js";
 
@@ -83,6 +85,15 @@ export function createMainChronicleReadContext(
       getEvents: (projectId) => events.get(projectId),
       getSceneEvents: (projectId) => sceneEvents.get(projectId),
       getCodexNames: (projectId) => codexNames.get(projectId),
+      listHiddenCodexIds: (projectId, ids) =>
+        listHiddenCodexIdsFromPorts(
+          createMainCodexVisibilityPorts({ db, inputs: turn.inputs }),
+          {
+            projectId,
+            entryIds: ids,
+            sceneId: turn.inputs.currentSceneId,
+          },
+        ),
       // The turn's reading order, whatever nodes are passed (they are the turn's).
       getReadingOrder: () => turn.inputs.readingOrder,
       listParticipants: (projectId, eventIds) =>

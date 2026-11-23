@@ -305,6 +305,15 @@ export interface CoreChronicleData {
   /** The codex id to name. Hidden entries are in it (DR-MP4-37: moved as it is). */
   getCodexNames(projectId: string): Promise<Map<string, string>>;
   /**
+   * Of these Codex entry ids, the ones the Chronicle tools must not show the AI: hidden at the context's
+   * current scene, or not in the project (DR-MP4-39f). The scene is not an argument: it is the context's
+   * current scene (`getTreeState().activeSceneId`), read at call time. No cache; a failure is thrown.
+   */
+  listHiddenCodexIds(
+    projectId: string,
+    ids: readonly string[],
+  ): Promise<ReadonlySet<string>>;
+  /**
    * The reading order of the nodes the core was just given. The core passes the
    * array it got from `getTreeState().nodes` as it is (the renderer memoizes by
    * that reference) and copies the answer before it hands it to a function that

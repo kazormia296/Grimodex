@@ -126,6 +126,7 @@ import {
 } from "@/../electron/shared/readDomain/core/codexVisibility";
 import { resolveCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
 import { executeTool } from "./toolExecutors";
+import { LEGACY_CHRONICLE_READ_CONTEXT } from "./chronicleReadContext";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { CODEX_ENTRY_SEED } from "./__fixtures__/codexEntrySeed";
 import { readCodexNames } from "@/../electron/shared/readDomain/core/chronicleReaders";
@@ -1133,6 +1134,107 @@ describe("Codex の hidden 判定（main の DB adapter と turn の入力の上
       sceneId: "n-s3",
     });
     expect([...hidden].sort()).toEqual(["c-secret", "gone"]);
+  });
+
+  it("年表の read ctx は live scene の hidden id を legacy と同じく返し、main は呼ぶたび DB を読む", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s3" });
+    const phaseId = "ph-csr1-hidden";
+    await invoke("db_execute", {
+      sql: "INSERT INTO codex_entry_phases (id, entry_id, anchor_node_id, label, context_mode_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      params: [
+        phaseId,
+        "c-aria",
+        "n-s3",
+        "CSR/1 hidden",
+        "hidden",
+        "2026-11-24T00:00:00.000Z",
+        "2026-11-24T00:00:00.000Z",
+      ],
+      method: "run",
+    });
+    try {
+      const ids = [
+        "c-secret",
+        "c-released",
+        "c-aria",
+        "c-mage",
+        "gone",
+        "x-c-aria",
+      ];
+      const turn = await readChronicleReadInputs(mainDb, {
+        projectId: "p-main",
+        currentSceneId: "n-s3",
+      });
+      const read = createMainChronicleReadContext({
+        db: mainDb,
+        turn,
+        countTokens: (text) => text.length,
+        getUiLanguage: () => "ja",
+      }).ctx;
+
+      const legacy =
+        await LEGACY_CHRONICLE_READ_CONTEXT.chronicle.listHiddenCodexIds(
+          "p-main",
+          ids,
+        );
+      const main = await read.chronicle.listHiddenCodexIds("p-main", ids);
+      expect([...main].sort()).toEqual([...legacy].sort());
+      expect([...main].sort()).toEqual([
+        "c-aria",
+        "c-secret",
+        "gone",
+        "x-c-aria",
+      ]);
+      expect(main.has("c-released")).toBe(false);
+      expect(main.has("c-mage")).toBe(false);
+
+      sent.length = 0;
+      await read.chronicle.listHiddenCodexIds("p-main", ids);
+      await read.chronicle.listHiddenCodexIds("p-main", ids);
+      expect(
+        sent.filter((statement) =>
+          /from\s+"codex_entries"/iu.test(statement.sql),
+        ),
+      ).toHaveLength(2);
+      expect(
+        sent.filter((statement) =>
+          /from\s+"codex_entry_phases"/iu.test(statement.sql),
+        ),
+      ).toHaveLength(2);
+    } finally {
+      await invoke("db_execute", {
+        sql: "DELETE FROM codex_entry_phases WHERE id = ?",
+        params: [phaseId],
+        method: "run",
+      });
+      sent.length = 0;
+    }
+  });
+
+  it("unresolved な read inputs では候補 id 全てを hidden として返す", async () => {
+    const turn = {
+      inputs: buildReadInputs({
+        projectId: "p-missing",
+        treeRows: [],
+        project: null,
+        currentSceneId: null,
+      }),
+      nodes: [],
+    };
+    const { ctx } = createMainChronicleReadContext({
+      db: mainDb,
+      turn,
+      countTokens: (text) => text.length,
+      getUiLanguage: () => "ja",
+    });
+    expect([
+      ...(await ctx.chronicle.listHiddenCodexIds("p-missing", [
+        "candidate-a",
+        "candidate-b",
+      ])),
+    ]).toEqual(["candidate-a", "candidate-b"]);
   });
 
   it("別 project の入力で判定を求めると拒否する。別 project の entry の id は、project 条件のために DB に無い id と同じに hidden", async () => {
