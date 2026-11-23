@@ -18,7 +18,7 @@ import {
 } from "./toolDefinitions";
 
 /**
- * MP-4b PR-3（DR-MP4-30）：main が組む M4 の 20 本の定義（IR を含まない共有 module）と、
+ * MP-4b PR-3（DR-MP4-30）：main が組む M4 の 21 本の定義（IR を含まない共有 module）と、
  * renderer の session の snapshot（`chatTurnPreflight.ts` が `snapshotAgentTools()` で作る）の
  * M4 の部分が、`JSON.stringify` の bytes と並びで一致することの drift 試験。
  *
@@ -32,6 +32,11 @@ const golden = (name: string) =>
     new URL(`./__fixtures__/legacyReadGolden/${name}.txt`, import.meta.url),
     "utf8",
   );
+const goldenTool = (name: string) =>
+  golden("definitions.agent-tools.bytes")
+    .trimEnd()
+    .split("\n")
+    .find((line) => (JSON.parse(line) as { name: string }).name === name);
 
 /** 1 tool 1 行。PR-0 の golden（`definitions.*.bytes.txt`）と同じ形。 */
 function linesOf(tools: readonly unknown[]): string {
@@ -81,9 +86,9 @@ void _toolDefinitionTypesAreMutuallyAssignable;
 void _parameterSchemaTypesAreMutuallyAssignable;
 
 describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）", () => {
-  it("M4 の名前は 20 本で重複せず、AGENT_TOOLS の宣言順の部分集合と同じ並び", () => {
-    expect(M4_READ_TOOL_NAMES).toHaveLength(20);
-    expect(M4.size).toBe(20);
+  it("M4 の名前は 21 本で重複せず、AGENT_TOOLS の宣言順の部分集合と同じ並び", () => {
+    expect(M4_READ_TOOL_NAMES).toHaveLength(21);
+    expect(M4.size).toBe(21);
     expect(
       AGENT_TOOLS.filter((t) => M4.has(t.name)).map((t) => t.name),
     ).toEqual([...M4_READ_TOOL_NAMES]);
@@ -92,12 +97,30 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
     ]);
   });
 
-  it("main の定義（宣言順・決定的な並び）は、flag に依らず PR-0 の golden と bytes で一致する", () => {
-    expect(linesOf(createM4ReadToolDefinitions())).toBe(
-      golden("definitions.m4.bytes"),
+  it("main の定義は、従来20本の golden と get_codex_entry の legacy golden に bytes で一致する", () => {
+    const definitions = createM4ReadToolDefinitions();
+    const codexEntry = definitions.find(
+      (tool) => tool.name === "get_codex_entry",
     );
-    expect(linesOf(getDeterministicM4ReadTools())).toBe(
-      golden("definitions.m4-deterministic.bytes"),
+    const legacyCodexEntry = JSON.parse(
+      goldenTool("get_codex_entry")!,
+    ) as AgentReadToolDefinition;
+    expect(
+      linesOf(definitions.filter((tool) => tool.name !== "get_codex_entry")),
+    ).toBe(golden("definitions.m4.bytes"));
+    expect(JSON.stringify(codexEntry)).toBe(JSON.stringify(legacyCodexEntry));
+    const deterministic = getDeterministicM4ReadTools();
+    expect(
+      linesOf(
+        deterministic.filter((tool) => tool.name !== "get_codex_entry"),
+      ),
+    ).toBe(golden("definitions.m4-deterministic.bytes"));
+    expect(
+      JSON.stringify(
+        deterministic.find((tool) => tool.name === "get_codex_entry"),
+      ),
+    ).toBe(
+      JSON.stringify(sortToolDefinitionsDeterministic([legacyCodexEntry])[0]),
     );
   });
 
@@ -156,7 +179,7 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
       return import("./toolDefinitions");
     }
 
-    it("宣言順：AGENT_TOOLS の M4 の部分は main の 20 本と一致する（IR が開なら search_events の説明だけ後ろに足される）", async () => {
+    it("宣言順：AGENT_TOOLS の M4 の部分は main の 21 本と一致する（IR が開なら search_events の説明だけ後ろに足される）", async () => {
       expect.hasAssertions();
       const renderer = await loadRenderer();
       const main = createM4ReadToolDefinitions();
@@ -172,7 +195,7 @@ describe("M4 の定義 module と renderer の snapshot の drift（DR-MP4-30）
       const snapshotM4 = renderer
         .snapshotAgentTools()
         .filter((t) => M4.has(t.name));
-      expect(main).toHaveLength(20);
+      expect(main).toHaveLength(21);
       expect(snapshotM4.map((t) => t.name)).toEqual(main.map((t) => t.name));
       expectSameExceptIrSuffix(main, snapshotM4, irOpen);
     });

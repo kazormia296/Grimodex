@@ -1846,3 +1846,11 @@ PR-10b は、agent tool `get_codex_entry` を renderer 専用の実装（`toolEx
    **独立レビュー**（別の Codex セッション、read-only、`28efcfba8..3823d3262` に固定）：指摘は P2 が 1 件のみ（`tables.ts` 冒頭のコメントに、10a の「`codex_detail_definitions` を先行許可」の説明が残っていた→実態に直した）。legacy との同値（引数検査・entry の select・判定・defs／vals／children の順序と文・場面の読み 2 回・scope と store の取り方・`No active project`・`tokensUsed`）、信頼境界（hidden の値がどこからも出ない・children の判定）、試験が空振りしていないこと（main adapter が sql.js 上で commit ① の golden と byte 一致を見ていること・実 addon の spec の期待の組み立てがバグを隠さないこと）、allowlist の厳密な一致を確認した。
 
 9. **画面で見える残る制限（ユーザーに見せる）。** この PR は画面・AI に渡る内容を変えない。移設前から残る挙動：複数 project のワークスペースで、`get_codex_entry` の `details` に別 project の項目名が値なしで混ざる（Q-C6-1。判断待ち）。released の本文が hidden の期間の Phase の文を含みうる（累積適用）。`details`・`children` の並びは DB の返り順に依る。
+
+### DR-MP4-51 `get_codex_entry` の tool 定義を shared に移す（MP-4b PR-10c。2026-11-24）
+
+10c は `get_codex_entry` の tool 定義（description・parameters）を renderer の `toolDefinitions.ts` から `electron/shared/agentReadToolDefinitions.ts` へ移す。オブジェクトの内容・parameters の順序・required・AI に渡る bytes は変更せず、renderer は従来の宣言位置で shared 定義を参照する。drift 試験が shared と renderer の M4 定義21本の JSON bytes と順序を比較し、移設前からある legacy golden は無変更で通ることを確認する。
+
+M4 の定義名表は20本から21本になる。core executor の4名前表は合計20本のままで、`CODEX_ENTRY_TOOL_NAMES` は5つ目の専用表として `get_codex_entry` を持つ。5表は互いに素で、合計は21本。tool の実装・結果・executor 登録は10cで変更しない。
+
+Q4 のユーザー決定（2026-11-24）は4c-1で実装する。C-6 は渡し済み ID を wire に含める。10c は定義の移設だけを行う。
