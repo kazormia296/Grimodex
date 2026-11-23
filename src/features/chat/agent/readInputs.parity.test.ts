@@ -18,8 +18,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
  * `TreeNodeData` へ型変換して `buildSceneTimeIndex` に渡すだけで、実際の store の経路（`toNodeData`・
  * `applyTreeHydration`・`recomputeSceneOrder`）は通らない。つまりこの試験は実質「同じ DB を同じ条件で 2 回読む」
  * 比較で、行の段（条件・6 列の写し）のずれは見えるが、**store だけが持つ差は見えない**。例：削除の undo
- * （`restorePersisted`）は store にメモリの `storyTimeOrder` を戻すが DB の行は NULL で作り直される（DR-MP4-8、
- * `docs/plans/mastra-mp4-decisions.md` の PR-6 の判断の 6・8）。この差は parity の範囲外で、PR-8 への申し送り。
+ * （`restorePersisted`）は store にメモリの `storyTimeOrder` を戻すが DB の行は NULL で作り直されていた（DR-MP4-8、
+ * `docs/plans/mastra-mp4-decisions.md` の PR-6 の判断の 6・8）。DR-UND-1（`docs/plans/tree-undo-restore-decisions.md`）で
+ * 削除の root の undo は DB の行も戻る（folder と子の undo は子が拒まれる別の不具合が残る）。この試験は store の経路を通らない。
  *
  * 覆わない範囲：Chromium と Electron main の `localeCompare` の一致（K-4。ここは Node の既定 locale だけ）、
  * 実 addon（Native）での同値（PR-9）、DB が古いときの store とのずれ（Q5）。

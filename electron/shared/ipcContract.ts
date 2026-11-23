@@ -4420,6 +4420,133 @@ function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
+/**
+ * DR-UND-1: the columns a delete's Undo writes after the INSERT. Same keys as
+ * Rust `TreeNodeRestoreState`. The seven `chronicle*` keys are one group (the
+ * Scene's date range): none of them, or all three NOT NULL ones (the two
+ * granularities and the precision).
+ */
+export const TREE_NODE_RESTORE_STATE_KEYS = [
+  "intent",
+  "storyTimeOrder",
+  "storyTimeLabel",
+  "povCharacterId",
+  "locationId",
+  "contextMode",
+  "aliases",
+  "excludedAliases",
+  "unplacedBeatsDoc",
+  "unplacedBeatPreview",
+  "placedBeatPreview",
+  "createdAt",
+  "chronicleStartTime",
+  "chronicleStartMinute",
+  "chronicleStartGranularity",
+  "chronicleEndTime",
+  "chronicleEndMinute",
+  "chronicleEndGranularity",
+  "chroniclePrecision",
+] as const;
+
+export const TREE_NODE_RESTORE_STATE_INTEGER_KEYS: readonly string[] = [
+  "chronicleStartTime",
+  "chronicleStartMinute",
+  "chronicleEndTime",
+  "chronicleEndMinute",
+];
+const TREE_NODE_RESTORE_STATE_CHRONICLE_REQUIRED_KEYS = [
+  "chronicleStartGranularity",
+  "chronicleEndGranularity",
+  "chroniclePrecision",
+] as const;
+
+function requireTreeNodeRestoreState(
+  payload: CommandArgs,
+  command: string,
+): void {
+  if (payload.origin !== "undo") {
+    throw new Error(
+      `invalid args \`restoreState\` for command \`${command}\`: only accepted for undo`,
+    );
+  }
+  const restoreState = requireRecord(payload, "restoreState", command);
+  for (const key of Object.keys(restoreState)) {
+    if (!(TREE_NODE_RESTORE_STATE_KEYS as readonly string[]).includes(key)) {
+      throw new Error(
+        `invalid args \`restoreState.${key}\` for command \`${command}\`: unknown key`,
+      );
+    }
+  }
+  for (const key of TREE_NODE_RESTORE_STATE_KEYS) {
+    if (!Object.hasOwn(restoreState, key)) continue;
+    if (TREE_NODE_RESTORE_STATE_INTEGER_KEYS.includes(key)) {
+      const value = requirePresent(restoreState, key, command);
+      if (value !== null && !Number.isSafeInteger(value)) {
+        throw new Error(
+          `invalid args \`restoreState.${key}\` for command \`${command}\`: expected a safe integer or null`,
+        );
+      }
+    } else {
+      requireNullableStringField(restoreState, key, command);
+    }
+  }
+  // The date range is one group: a range with only some of its parts present
+  // would restore an inconsistent date.
+  const chronicleKeys = TREE_NODE_RESTORE_STATE_KEYS.filter(
+    (key) =>
+      key.startsWith("chronicle") &&
+      restoreState[key] !== undefined &&
+      restoreState[key] !== null,
+  );
+  if (
+    chronicleKeys.length > 0 &&
+    !TREE_NODE_RESTORE_STATE_CHRONICLE_REQUIRED_KEYS.every(
+      (key) => typeof restoreState[key] === "string",
+    )
+  ) {
+    throw new Error(
+      `invalid args \`restoreState\` for command \`${command}\`: the chronicle keys are one group (chronicleStartGranularity, chronicleEndGranularity and chroniclePrecision are required with any of them)`,
+    );
+  }
+  if (chronicleKeys.length > 0) {
+    requireTreeNodeRestoreChronicleWords(restoreState, command);
+  }
+}
+
+/**
+ * The shape of the date range's words (Rust `validate_chronicle_group`): the
+ * known granularities and precision. The range's *consistency* (an end before
+ * the start, a `time` without a day or a minute) is not checked: an Undo puts
+ * back a row that existed, and `tree_node_patch` writes those columns with no
+ * check, so a legacy row can hold such a range and its Undo must not stop.
+ */
+function requireTreeNodeRestoreChronicleWords(
+  restoreState: CommandArgs,
+  command: string,
+): void {
+  const invalid = (message: string): never => {
+    throw new Error(
+      `invalid args \`restoreState\` for command \`${command}\`: chronicle ${message}`,
+    );
+  };
+  const granularities = ["none", "season", "year", "month", "day", "time"];
+  for (const key of [
+    "chronicleStartGranularity",
+    "chronicleEndGranularity",
+  ] as const) {
+    if (!granularities.includes(restoreState[key] as string)) {
+      invalid(`${key} is not a supported granularity`);
+    }
+  }
+  if (
+    !["exact", "approx", "unknown"].includes(
+      restoreState.chroniclePrecision as string,
+    )
+  ) {
+    invalid("chroniclePrecision must be exact, approx, or unknown");
+  }
+}
+
 function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_create";
   const payload = requireCanonicalWriterIdentity(args, command, [
@@ -4447,6 +4574,9 @@ function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   ]) {
     if (Object.hasOwn(payload, key))
       requireNullableStringField(payload, key, command);
+  }
+  if (Object.hasOwn(payload, "restoreState")) {
+    requireTreeNodeRestoreState(payload, command);
   }
   return payload;
 }
