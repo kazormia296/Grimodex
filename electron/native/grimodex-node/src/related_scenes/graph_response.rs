@@ -24,7 +24,7 @@ use super::graph::{graph_gate_reason, GraphState};
 use super::*;
 use crate::nir1_graph_product::GraphUnavailable;
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
-use grimodex_db::narrative_extraction::scene_body_declaration::{
+use grimodex_db::narrative_extraction::nir1_graph::{
     SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
 };
 use grimodex_db::narrative_extraction::{

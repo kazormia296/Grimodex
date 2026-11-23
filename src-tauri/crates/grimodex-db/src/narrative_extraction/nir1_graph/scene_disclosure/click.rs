@@ -21,7 +21,7 @@ use super::{
     AppendSlot, GraphDisclosureQuery, GraphDisclosureWorkspace, GraphOnlyScan, GraphOnlyScanInput,
     GraphPathRevalidator, GraphSceneRevalidationRefused,
 };
-use crate::narrative_extraction::scene_body_declaration::scene_body_title_digest;
+use crate::narrative_extraction::nir1_graph::scene_body_title_digest;
 
 fn refused(count: Count) -> GraphOnlyClick {
     record(count);

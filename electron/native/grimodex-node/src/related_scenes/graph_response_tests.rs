@@ -12,7 +12,7 @@ use crate::related_scenes::graph_response::{
     GraphStop, Requalify, RowFields, Stopper, GRAPH_ONLY_DEADLINE, VERIFY_SQL_TIMEOUT,
 };
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
-use grimodex_db::narrative_extraction::scene_body_declaration::{
+use grimodex_db::narrative_extraction::nir1_graph::{
     SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
 };
 use grimodex_db::narrative_extraction::{

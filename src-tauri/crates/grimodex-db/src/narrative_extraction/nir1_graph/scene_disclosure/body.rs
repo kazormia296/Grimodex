@@ -23,12 +23,12 @@ use super::{
     QueryParts,
 };
 use crate::narrative_extraction::nir1_graph::scenes::first_non_empty_anchor;
+use crate::narrative_extraction::nir1_graph::{
+    scene_body_title_digest, SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES,
+};
 use crate::narrative_extraction::read_narrative_scene_scope;
 use crate::narrative_extraction::retrieval_admission::{
     read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
-};
-use crate::narrative_extraction::scene_body_declaration::{
-    scene_body_title_digest, SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES,
 };
 use crate::nir1_generation::error_chain_contains;
 
