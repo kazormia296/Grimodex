@@ -2245,3 +2245,113 @@ fn the_context_of_a_restore_is_unchanged_by_the_hostile_rows() {
         not_scoped("map_stickies")
     );
 }
+
+// =====================================================================
+// 8. The binding of every scene of a long table, and its order against the
+//    ownership check
+// =====================================================================
+
+#[test]
+fn every_scene_of_a_table_longer_than_one_chunk_gets_its_scene_binding() {
+    // 450 scenes (more than two chunks of 200) restored with a changed
+    // `updated_at` each: every restored scene is bound again, and carries the
+    // restored `updated_at`, wherever it sits in the table (the first and last
+    // row of every chunk included).
+    let db = new_db();
+    seed_rich(&db);
+    exec(
+        &db,
+        &format!(
+            "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 449)
+             INSERT INTO tree_nodes (id, project_id, node_type, title, content, created_at, updated_at, version)
+             SELECT 'b-s-' || printf('%03d', i), '{P}', 'scene', 'B ' || i, '{{}}', 't',
+                    'u-' || printf('%03d', i), 0 FROM n;"
+        ),
+    );
+    snapshot(&db, "S1");
+    let scenes = scalar_i64(
+        &db,
+        &format!(
+            "SELECT COUNT(*) FROM tree_nodes WHERE project_id = '{P}' AND node_type = 'scene'"
+        ),
+    );
+    assert_eq!(scenes, 452, "premise: 450 new scenes and the 2 of the seed");
+    // The work moves on: half of the scenes are gone, the others changed.
+    exec(
+        &db,
+        "DELETE FROM tree_nodes WHERE id LIKE 'b-s-1%' OR id LIKE 'b-s-3%';
+         UPDATE tree_nodes SET updated_at = 'moved-on' WHERE id LIKE 'b-s-%';",
+    );
+    let r = restore(&db, "r1", "S1", &[RestoreScope::Body]);
+    assert!(!r.no_op);
+    assert_clean(&db, "after restoring 450 scenes");
+    assert_eq!(
+        scalar_i64(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM tree_nodes WHERE project_id = '{P}' AND node_type = 'scene'"
+            )
+        ),
+        scenes,
+        "every scene is back"
+    );
+    let unbound: Vec<String> = dump_sql(
+        &db,
+        &format!(
+            "SELECT t.id FROM tree_nodes t
+              WHERE t.project_id = '{P}' AND t.node_type = 'scene'
+                AND NOT EXISTS (
+                    SELECT 1 FROM narrative_scene_scope_bindings b
+                     WHERE b.project_id = t.project_id AND b.scene_id = t.id
+                       AND b.updated_at = t.updated_at AND b.source_token <> '')"
+        ),
+    );
+    assert_eq!(
+        unbound,
+        Vec::<String>::new(),
+        "every restored scene is bound, with the restored updated_at"
+    );
+    // The same version for all of them: each binding was made once and its
+    // source refreshed once.
+    assert_eq!(
+        scalar_i64(
+            &db,
+            &format!(
+                "SELECT COUNT(DISTINCT version) FROM narrative_scene_scope_bindings WHERE project_id = '{P}'"
+            )
+        ),
+        1,
+        "every binding went through the same steps"
+    );
+}
+
+#[test]
+fn a_scene_binding_that_cannot_be_made_is_refused_before_a_later_tables_bad_row() {
+    // Rows are checked and bound table by table in plan order, a scene's
+    // binding after its own check and before the next table is looked at. With
+    // the binding table gone, the first scene's binding fails: that is the
+    // refusal, though `map_stickies` (a later table) also holds a bad row.
+    let db = rich_with_foreign();
+    snapshot(&db, "S1");
+    let (_, changed) = rewrite_aux(
+        &db,
+        "S1",
+        "map_stickies",
+        "board_id",
+        Some(BOARD),
+        None,
+        json!(foreign_id(BOARD)),
+    );
+    assert!(changed > 0, "premise: a sticky is rewritten");
+    // Control: with the binding table in place, the bad row is what is refused.
+    assert_eq!(
+        refused(&db, "r0", &[RestoreScope::Body, RestoreScope::Map]),
+        not_scoped("map_stickies")
+    );
+    exec(&db, "DROP TABLE narrative_scene_scope_bindings");
+    let message = refused(&db, "r1", &[RestoreScope::Body, RestoreScope::Map]);
+    assert_eq!(
+        message, "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: scene scope storage tables are missing",
+        "the scene binding fails before the later table is judged"
+    );
+}

@@ -68,7 +68,7 @@
 
 ## DR-RIP-1　やること・やらないこと
 
-- やる（実装の段）：所有の確かめ方を、行ごとから、表ごとに 200 行の塊でまとめる。表の情報を復元ごとに 1 回だけ引く。`insert_record` は `prepare_cached` にする。
+- やる（実装の段）：所有の確かめ方を、行ごとから、表ごとに 200 行の塊でまとめる。表の情報を復元ごとに 1 回だけ引く。`insert_record` は `prepare_cached` にする（実装の段では、列の一覧を引き直さないところまでにして、`prepare_cached` は入れていない。理由は DR-RIP-3）。
 - やらない：拒む行・拒む理由・エラーの種類と文言・エラーの先後を変えない。schema の版、migration、列、索引、閾値、保存の範囲、送信先、書き手の authority を変えない。`change_events` の退避と戻し（DR-SRX-9）、feed、digest、binding は触らない。新しい契約・authority を足さない。
 
 ## DR-RIP-2　所有の確かめ方（案 1）
@@ -81,7 +81,8 @@
 ## DR-RIP-3　表の情報のキャッシュ
 
 - 表の存在、主キーの列、列の一覧を、復元ごとに 1 回だけ引く。`normalized_insert`（expected と incoming の 2 回）、`insert_record`、所有の検査が使う。
-- 復元をまたいで持たない。復元の transaction 内で DDL が走らない前提を、コメントと試験で固定する（実装の段）。`insert_record` の外部呼出し（snapshot 作成側 3 か所）は、呼出しごとに空のキャッシュを使い、従来と同じ挙動。
+- 復元をまたいで持たない。復元の transaction 内で DDL が走らない前提は、コメントで固定した（固定する試験は無い。復元の中に DDL が入る変更をするときに見直す）。`entry()` は `HashMap::entry` にしない（行ごとに呼ぶので、hit のたびの `String` の確保を避ける）。`insert_record` の外部呼出し（snapshot 作成側 3 か所）は、呼出しごとに空のキャッシュを使い、従来と同じ挙動。
+- 実装の段：キャッシュは DR-RIP-4 の「実装の段で決めたこと」のとおり。`prepare_cached` は、この段の指示（表の情報を引き直さない）の範囲に入れず、保留にした。入れるなら、行の列の形ごとに文が変わる影響（既定 16 件の枠）を測ってから、別に判断する。
 
 ## DR-RIP-4　エラーの先後と失敗の扱い
 
@@ -92,11 +93,20 @@
 - **前提（DR-SRX-25）**：退避の窓の中で動く code は、根の DELETE・`insert_record`・`ensure_inserted_row_is_project_scoped`・場面の適用範囲の 2 関数だけで、どれも退避した列を読まない。まとめ評価の新しい照会も、退避した列を読まない形にする（実装の段で確かめ、この節に足す）。
 - **先後で固定していないもの**：所有の検査の失敗と scene binding の失敗の先後（今は行ごとに、行 i の検査、行 i の binding、行 i+1 の検査の順。まとめ評価では全行の検査が先に走るので入れ替わりうる）。binding の失敗を作る入力が作りにくく、試験は無い。実装の段で、試験を足すか、PR 本文に残る制限として書く。
 
+### DR-RIP-4 実装の段で決めたこと（2026-11-23）
+
+- **塊の単位**：`OWNERSHIP_CHECK_CHUNK_ROWS = 200`（定数）。塊は「plan 順で連続する、同じ表の行」の最大 200 行（表が飛び飛びに現れても、plan の全体の順で最初の不正行を変えないため。表ごとに全行を集める形にはしない）。新しい照会は 1 塊につき 1 回で、`WITH v(i, k0, k1…) AS (VALUES (?,?,…),…) SELECT MIN(v.i) FROM v WHERE NOT EXISTS (SELECT 1 FROM "<表>" WHERE "<表>"."<列>" = v.k<n> AND … AND (<predicate>))`。主キーの値と project の束縛は、従来と同じく bind 値で、IN のリスト・row value は使わない。bind 値も VALUES の列も affinity を持たないので、`"col" = ?` と同じ affinity・NULL・型の規則で比べる。これは lib の試験 `chunked_ownership_equals_per_row` で確かめた（INTEGER／TEXT／NUMERIC／REAL／型なし／BLOB／複合の列に、整数・文字列・実数・NULL・BLOB のキーを 1 件ずつと塊で当て、従来の 1 行の照会と同じ答え・同じ最初の位置になる）。
+- **先後の保ち方**：塊の判定は「先頭の `n` 行は所有されている」「行 `n` は所有されていない（`NotScoped`）、またはキー値が使えない（`BadKey`）」を返す。呼び出し側は、先頭の `n` 行の scene binding を plan 順に行ってから、行 `n` の同じ文言のエラーを返す。つまり、行 i の binding が失敗すれば、行 i+1 以降の検査の結果にかかわらず、その binding のエラーが先に出る（従来と同じ）。変わるのは、同じ塊の中で行 i の binding の前に行 i+1…の検査（読みだけ）が走ることだけで、binding が書く表（上記）は所有の predicate が読む表ではないので、検査の結果は変わらない。検査の中の順も従来どおり：表が無ければ通す → 主キーの列（`has no primary key`）→ 所有規則（`has no ownership rule`）→ 行ごと・列ごとに `is missing '<column>'`／`sql_value` のエラー → 照会。キー値のエラーは、その行より前の行がすべて所有されていると確かめて、binding した後に返す。
+- **キャッシュの置き場**：`RestoreTableCache`（`project_snapshots.rs` のモジュール内の private な型）を `apply_project_snapshot_restore` の中で 1 つ作り、plan の導出検査（`normalized_insert`）、`insert_record_cached`、所有の検査に `&mut` で渡す。グローバルな cache も復元をまたぐ cache も無い。表の存在・列の集合・主キーの列は、表ごとに初回だけ引く。主キーが無い表は、キャッシュした列が空でも、使うたびに同じ文言（`has no primary key`）で拒む。`insert_record` は、外部呼出し（snapshot 作成側 3 か所）向けに、呼出しごとに空のキャッシュを使う従来の形で残した。plan の組立て（`build_canonical_restore_plan`、`push_canonical_rows`、`capture_snapshot_feed_state` 側）は表ごとに 1 回の呼出しなので、この PR では触らない。
+- **DR-SRX-25 の前提が保たれること**：新しい照会（`first_unowned_row`）が読むのは、対象の表の主キーの列と所有 predicate（`AUX_SPECS`／`project_id`）が読む列だけで、`change_events` を含む退避した列は読まない。`insert_record_cached` は従来の `insert_record` と同じ列だけ（plan の行の列）を書く。表の情報の引き（`PRAGMA table_info`・`sqlite_master`）は退避した列の値を読まない。窓の中で動く code の集合は増えない。
+- **`unchecked_transaction` は変えない**（advisor の指摘）：`IMMEDIATE` にしない。DEFERRED のままだと、最初の書き込みの前の読み（所有・plan の検査）が長くなり、別プロセスの commit で `SQLITE_BUSY_SNAPSHOT` になる窓が、従来より広がるおそれがある。この PR では変えず、PR 本文に残る制限として書く。
+
 ## DR-RIP-5　守りの試験を先に足す（この段）
 
 - 実装の前に、守りの試験（`tests/snapshot_restore_scope_guard.rs`）を足し、変更前の実装で合格することを確かめた（§2.2）。同じ PR の最初の commit にする（N3）。
 - 守りを弱める変異を一時的に入れ、新しい試験と既存の試験のどれが赤くなるかを記録した（§7）。赤くならなかった変異は、試験を足して赤くなるようにした（足した試験も、変更前の実装で合格する）。
-- 実装の後に、同じ変異を、新しい実装の同じ意味の箇所へ入れ直す（所有の検査の無効化、キー条件を外す、最終塊を飛ばす、先頭行だけ検査、塊の境界の誤り）。結果を PR 本文に載せる。
+- 実装の段（2026-11-23）：守りの試験 29 件は、実装の後も全件合格した（`cargo test -p grimodex-db --test snapshot_restore_scope_guard`）。等値の意味の差分試験（`chunked_ownership_equals_per_row`、lib）を足した。守りの試験は直していない。
+- 実装の後に、同じ変異を新しい実装の同じ意味の箇所へ入れ直した（所有の検査の無効化、キー条件を外す、最終塊を飛ばす、先頭行だけ検査、塊の境界の誤りほか 36 件）。結果は §7.2。PR 本文にも載せる。
 
 ## DR-RIP-6　性能の記録と閾値
 
@@ -126,15 +136,17 @@
 
 ## 5. 未実施・範囲外
 
-- 実装（所有の検査の置き換え、表の情報のキャッシュ）。次の段。
-- 性能の測定（この段では測らない）。
-- 差分試験（変更前後の復元結果のハッシュの一致。実装の段で、ignored の試験として足す）。
+- 実装（所有の検査の置き換え、表の情報のキャッシュ）は終えた（DR-RIP-4 の「実装の段で決めたこと」）。
+- 性能の測定（実装の commit の後に、low load で before/after を測る。DR-RIP-6）。
+- 差分試験は足した（`tests/snapshot_restore_scope_equivalence.rs`、`#[ignore]`。変更前の関数を複製して再生し、公開の復元と比べる。§7.2）。変更前の apply 全体を実行して全表のハッシュを比べる形ではない（§7.2 の範囲）。
 - `change_events` の退避・戻し、同期 checkpoint、feed の capture（DR-RIP-7）。
 - 複合主キー表の別列の所有の検査（DR-RIP-8。N4：直さず記録だけ〔確認 134〕。別 lane にするかは未決）。
 
 ## 6. 試験の置き場所
 
 - `src-tauri/crates/grimodex-db/tests/snapshot_restore_scope_guard.rs`（`cargo test -p grimodex-db --test snapshot_restore_scope_guard`）。`snapshot_restore_cross_scope.rs` の `new_db`・`seed_rich`・`snapshot`・`plan`・`restore` の作り方を複製した（別の試験 file の helper は import できない）。
+
+- `src-tauri/crates/grimodex-db/tests/snapshot_restore_scope_equivalence.rs`（`#[ignore]`。`cargo test -p grimodex-db --test snapshot_restore_scope_equivalence --jobs 3 -- --ignored`。約 350 秒）。変更前の `ensure_inserted_row_is_project_scoped`・`insert_record`・`sql_value`・主キー列取得を、`7a0b64976` の file から複製し、同じ入力を再生して、公開の `apply_project_snapshot_restore` と比べる。
 
 ## 7. 結果（変異の実験）
 
@@ -160,3 +172,37 @@
 - **今まで守られていなかったもの**（既存の 4 つが、どの変異でも赤くならなかった）：所有の検査の全部（a〜d）、plan の検査の余分・plan 内の重複・存在しない表・スナップショット内の重複（e）、`insert_record` の列・値の検査（f）。欠落と不一致は、lib の試験が既に固定していた。
 - 赤くならなかった変異（c1）は、試験を足して赤くした（足した試験も、変更前の実装で合格する）。変異の入れ方は、新しい実装（塊でまとめる形）では、同じ意味の箇所に入れ直す（DR-RIP-5）。塊の境界の誤りは、塊の大きさ（200）をまたぐ位置（199・200・399・400）の試験が検出する（現在の 1 行ずつの実装では、塊が無いので、この種の変異は新しい実装でしか入れられない）。
 - 試験の所要時間：変更前の実装で約 46 秒（debug、並列、他のセッションと同居の負荷のもとで）。
+
+### 7.2 新しい実装（200 行の塊でまとめる形）への変異と差分試験（2026-11-23）
+
+**差分試験**：4,500 入力で不一致 0 件。内訳は、親列の書き換え 432（実在の兄弟 id を含み、通る入力 16）、全表の全列の書き換え 2,916、複数表が同時に不正 510、701 行の `map_stickies` 294（塊の境界 199・200・399・400・599・600 の前後、先頭・末尾、全行、1 行おき、乱数の組）、700 行の複合主キーの `scene_codex_mentions` 340、不正行なしの復元 8（全 scope・各 scope）。所有の検査の拒否が新旧で同じ表・同じ文言だった入力は、親列 322、複数表 344、長い表 294、複合キーの長い表 135、全列 227。通る入力で復元後の 22 表の中身が再生と一致したのは 1,347（親列 16、不正行なし 8、全列 1,323）。
+
+**変異**：新しい実装に 36 件を一時的に入れた。33 件は、守りの試験・差分試験・lib の試験のどれかで赤くなった。変異のたびに原本から戻し、`cmp` で元と同一であることを確かめた。
+
+| 変異 | 赤くなった試験 |
+|---|---|
+| (a) 所有の検査を常に Ok／(b') 所有 predicate を OR 1 に／(l) NotScoped の拒否を無視 | 守り 8・差分 3 |
+| (b) 主キーの条件を外す | 守り 3・差分 1 |
+| (c1) plan 全体の最後の塊を検査しない／(c2) 各表の最後の塊を検査しない | 守り 2・差分 0／守り 7・差分 3 |
+| (d1) 塊の最初の行だけ検査／(d2) 各表の最初の塊だけ検査 | 守り 3・差分 1 |
+| (e1) 塊の境界で次の塊の最初の行を飛ばす／(e2) 各塊の 200 行目を外す／(e3) 199 行目を外す／(e4) 1 行目を外す | 守り 1・差分 1／同／同／守り 6・差分 3 |
+| (n) 塊の位置の番号を 1 ずらす | 守り 8・差分 3（範囲外の添字で panic） |
+| (h1〜h4) 表の情報のキャッシュを、全表で別の表（`snippets`／`tree_nodes`）のものにする | 守り 1〜19・差分 0〜3（h3 は守り 1・差分 0） |
+| (i1〜i6) plan の導出検査（欠落・余分・不一致・plan 内の重複・スナップショット内の重複・存在しない表）の無効化 | 守り 1〜2 |
+| (j1) `insert_record` の列の検査を無効／(j2) スカラー値の検査を無効 | 守り 4・差分 0／守り 1・差分 1 |
+
+**守りの試験 29 件では赤くならなかった 8 件**：(f) 塊の最初でなく最後の失敗を報告（`MIN` を `MAX`）と (g) NULL の key を所有扱い、は、実装の段で足した lib の `chunked_ownership_equals_per_row` が赤くした。残りの 6 件は、試験を足して赤くなるようにした：(g2) NULL の key が保存済みの NULL と一致（`=` を `IS` に）、(j3) `insert_record` の空行の検査を無効、(j4) 表が無いときの skip の検査を無効、(k1) 塊の最後の行の scene binding を落とす、(k2) 塊の最初の行の binding を落とす、(o) 全塊の所有の検査を先に済ませてから binding する（先後の入れ替え）。足した試験は、変更前の実装でも合格する（守りの試験 2 件で確かめた。lib の 2 件は新しい内部の関数を使うので、新しい実装でだけ確かめた）。
+- lib `chunked_ownership_equals_per_row`：NULL の key の行を足した（g2）。
+- lib `insert_record_refuses_an_empty_row_and_skips_a_missing_table`（j3・j4）。
+- lib `a_chunk_stops_at_its_first_fault_and_names_it`：`judge_chunk_ownership` の `checked` と停止理由（key 欠落・非スカラー・先に出る失敗の勝ち）。
+- 守り `every_scene_of_a_table_longer_than_one_chunk_gets_its_scene_binding`：場面 450 件の復元で、塊の端の binding と更新日時・version が合う（k1・k2）。
+- 守り `a_scene_binding_that_cannot_be_made_is_refused_before_a_later_tables_bad_row`：`narrative_scene_scope_bindings` を DROP した DB で、後の表に不正行があっても `NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE` が先に出る（o。DR-RIP-4 の「所有の失敗と binding の失敗の先後」を固定した）。
+
+**赤くならなかった 3 件**：(m) caller の `BadKey` の分岐を無視する変異。plan の導出検査が key の欠落・非スカラーを先に止めるので、公開の復元の経路から届かない防御コードである。判定側（`judge_chunk_ownership` の `BadKey`）は lib の試験で固定した。plan の導出検査を緩める変更をするときに、caller の試験を足す。塊の大きさを 1 変えるだけの 2 件は、挙動が変わらない等価な変異である。
+
+**差分試験の範囲（残る制限）**：
+- `authorship_spans` の行は再生しない。復元は、この表を、復元する文書だけに絞って（`reshape_authorship_inserts`）plan の最後に足してから入れるので、保存済みの生の行の再生と一致しない。この表の所有の検査の新旧の差分は、差分試験の範囲外である。
+- 再生は、ワイプ（plan が置き換える行を主キーで消す）と挿入の近似である。本物のワイプ・退避（`change_events` の退避と戻し）・binding・feed は再生しない。「結果の全表の一致」は、22 の安定した表の中身の一致で確かめた。再生成する token・version と feed・binding の行は比べていない。一般の DB 状態の同等は主張しない。
+- 長い複合主キーの試験は、key の重複で 205 件が所有の検査の前に止まる（所有の検査に届いたのは 135 件）。
+- 変異のうち差分試験の一部（親列・複数表・長い表の 3 つ）だけを回した。最終の実行（全 6 件）は 1 回だけで、4,500 入力、不一致 0 件。差分試験で赤くならない変異は、守りの試験で赤くなった。
+- 変更前の実装には、塊に関する変異を入れられない。変更前の実装には、守りの試験 31 件の合格だけを確かめた。
