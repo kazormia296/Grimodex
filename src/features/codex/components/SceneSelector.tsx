@@ -1,15 +1,22 @@
 import { useTranslation } from "react-i18next";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 
 interface SceneSelectorProps {
   value: string | null;
   onChange: (nodeId: string | null) => void;
+  /**
+   * Narrows the scenes that can be chosen (after the "scene" node type check).
+   * Without it every scene is listed, as before.
+   */
+  filter?: (node: TreeNodeData) => boolean;
 }
 
-export function SceneSelector({ value, onChange }: SceneSelectorProps) {
+export function SceneSelector({ value, onChange, filter }: SceneSelectorProps) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
-  const scenes = nodes.filter((n) => n.nodeType === "scene");
+  const scenes = nodes.filter(
+    (n) => n.nodeType === "scene" && (filter ? filter(n) : true),
+  );
 
   return (
     <select

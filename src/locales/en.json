@@ -2326,6 +2326,7 @@
       "decisionTrimmed": "Trimmed by budget",
       "decisionExcluded": "Excluded by policy",
       "decisionMore": "and {{count}} more",
+      "policyHiddenHint": "An entry may not be sent to the AI because the entry itself is set to hidden, because a hiding Phase has lost its anchor scene, or because it is closed while the scene can't be resolved. Phases that lost their anchor scene can be checked in the Codex Timeline tab.",
       "heading": "Context"
     },
     "conversationSummary": "Conversation summary",
@@ -2707,7 +2708,27 @@
       "summaryQuoted": "\"{{value}}\"",
       "noAnchorScene": "No anchor scene set",
       "addPhase": "Add phase",
-      "baseState": "Base state"
+      "baseState": "Base state",
+      "orphanNotice": {
+        "title": "This Codex entry is not sent to the in-app AI (chat, agents, beats, etc.).",
+        "phaseName": "\"{{label}}\"",
+        "unnamedPhase": "Unnamed",
+        "join": ", ",
+        "more_one": " and {{count}} more",
+        "more_other": " and {{count}} more",
+        "bannerBody_one": "The Phase {{phases}} is set to hide it from the AI, but its anchor scene can't be found. Choose an anchor scene again and the hiding will apply from that scene on. Delete the Phase to go back to how it was without it.",
+        "bannerBody_other": "The Phases {{phases}} are set to hide it from the AI, but their anchor scenes can't be found. Choose an anchor scene again and the hiding will apply from that scene on. Delete the Phases to go back to how it was without them.",
+        "detailsBody_one": "The Phase {{phases}} is set to hide it from the AI, but its anchor scene can't be found. Choose an anchor scene again in the Timeline tab, or delete the Phase.",
+        "detailsBody_other": "The Phases {{phases}} are set to hide it from the AI, but their anchor scenes can't be found. Choose an anchor scene again in the Timeline tab, or delete the Phases.",
+        "openTimeline": "Open Timeline"
+      },
+      "orphanRow": {
+        "nullHiding": "The anchor scene was cleared (for example, the scene was deleted; restoring the scene does not bring it back). Because this Phase hides the entry from the AI, the entry is not sent to the in-app AI.",
+        "nullOther": "The anchor scene was cleared (restoring the scene does not bring it back). This Phase is not applied.",
+        "missingHiding": "The anchor scene can't be found (it may be archived; if so, unarchiving it brings the anchor scene back). Because this Phase hides the entry from the AI, the entry is not sent to the in-app AI.",
+        "missingOther": "The anchor scene can't be found (it may be archived; if so, unarchiving it brings the anchor scene back). This Phase is not applied.",
+        "recovery": "Pick a new anchor scene with the pencil, or delete the Phase with the trash button."
+      }
     },
     "store": {
       "loadFailed": "Failed to load Codex",
@@ -2754,6 +2775,7 @@
       "deleteTitle": "Delete this phase?",
       "deleteName": "\"{{label}}\"",
       "deleteNameWithScene": "\"{{label}}\" ({{scene}})",
+      "deleteNameSceneMissing": "\"{{label}}\" (scene not found)",
       "deleteDesc": "Deleting {{name}} will lose all of this phase's overrides. This action cannot be undone."
     },
     "rename": {
@@ -4572,6 +4594,7 @@
     "labelPlaceholder": "e.g. After exile / Death / Joined party...",
     "anchorScene": "Anchor scene",
     "anchorSceneDesc": "The scene where this phase begins",
+    "anchorSceneMissing": "This Phase's anchor scene can't be found. Please choose a scene again (if the scene is archived, unarchive it first to keep the original anchor; saving here replaces it).",
     "overrideFields": "Content overrides (optional)",
     "summary": "Summary",
     "summaryPlaceholder": "Overview from this phase onward...",
