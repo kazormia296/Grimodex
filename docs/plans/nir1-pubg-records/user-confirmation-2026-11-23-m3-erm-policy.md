@@ -194,3 +194,7 @@
 - 4 つの raw の cell の sha256 は freeze-b §7 に固定（raw は repo の外）。
 - 測定 B の合計：試走 2 要求、B1 49 要求（採用 48。止まった最初の 1 要求は不採用）、B2 5 要求。累計は約 $1.68（上限 $15、STOP なし）。宛先は Anthropic の許可範囲だけ。key は cell ごとに削除し、製品の key store は変わっていない。
 - 続報（送信なし）：測定 A の cell の抜き取り（g-ja-2・m-ja-2 の matrix-L2）を、master を取り込む前の HEAD（839bf0ba7）で、AI なし・送信 0 で回した。変更前の出力と値・rows が一致した。差は、記録に足した項目（ipc.tail）と、時間に依存する観測の回数だけ。その後、master の 5 commit（#1057〜#1061）を競合なしで取り込んだ（merge commit 43e77a732、未 push）。次は走査と verify:quality。
+- 補足（11-24 未明、c7 の報告。統合者は直接見ておらず、報告をそのまま記録する）：上の「測定 A の抜き取り」の最初の比較は、揺れる項目を除く指定が部分一致で広すぎた（counts・results なども外れる恐れ）。**除外なしで取り直した**。結論は同じ。
+  - g-ja-2・m-ja-2 の matrix-L2 で、cell の steps・status・candidateFile・registration・runs と rows が、変更前の出力と完全一致した。
+  - 差は observed の中だけ：build の出所、時刻、所要時間、egress の標本数、記録に足した ipc.tail、m-ja-2 の codex_index_entry の失敗回数。失敗回数は変更前にもあり、113〜165 で揺れる。成功した呼び出しは 639 で同じ。
+  - master の取り込みの後の検証も済んだ：道具の試験 389 件、verify:quality、validate:architecture、混入走査 0 件。
