@@ -38,7 +38,10 @@ export interface CodexAiResolution {
  * base の文は作者が秘匿と印した内容そのものだからである。base が hidden でない項目の
  * 文は置き換えない（`released` が false で base の文のまま）。
  *
- * fail-closed：DB に無い id・不明な mode も hidden に数える。suppress・mentioned・
+ * fail-closed：DB に無い id・不明な mode も hidden に数える。現在の場面が `sceneTimeIndex` に
+ * 無い・場面なし（Phase が解決できない）ときは、Phase が hidden にする項目も hidden に倒す（DR-MP4-41 (a)、
+ * 判定は `decideCodexAiVisibility`）。判定の途中で project が切り替わったときは、渡された id を
+ * 全部 hidden にする（(b)）。suppress・mentioned・
  * Phase による絞り込みは足さない（全部開示、hidden だけを守る）。
  * `withContent` が false なら本文は DB から読まず空文字で返す（要約だけの経路用）。
  */
@@ -55,6 +58,10 @@ export async function resolveCodexForAi(input: {
   const hidden = new Set<string>();
   const texts = new Map<string, CodexTextForAi>();
   if (ids.length === 0) return { hidden, texts };
+  // DR-MP4-41 (b)：判定は DB の await をまたいで store（index・mode）を読む。その間に project が
+  // 切り替わる（resetForProject で projectEpoch が進む）と、index は空・mode は前の値で、別の
+  // project の判定になる。切替をまたいだら、渡された id を全部 hidden にして返す（fail-closed）。
+  const startEpoch = usePhaseStore.getState().projectEpoch;
 
   const baseColumns = {
     id: codexEntries.id,
@@ -91,7 +98,11 @@ export async function resolveCodexForAi(input: {
   if (entries.length === 0) return { hidden, texts };
 
   const phases = await listPhasesByEntryIds(entries.map((entry) => entry.id));
-  const { sceneTimeIndex, resolutionMode } = usePhaseStore.getState();
+  const phaseState = usePhaseStore.getState();
+  if (phaseState.projectEpoch !== startEpoch) {
+    return { hidden: new Set(ids), texts: new Map() };
+  }
+  const { sceneTimeIndex, resolutionMode } = phaseState;
   const decision = decideCodexAiVisibility({
     entries,
     phases,

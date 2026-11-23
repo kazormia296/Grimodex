@@ -30,7 +30,7 @@ vi.mock("./context/codexHiddenFromAi", () => ({
   listCodexIdsHiddenFromAi: h.listHidden,
 }));
 
-import { inferReadings } from "./codexYomi";
+import { inferReadings, listYomiHiddenIds } from "./codexYomi";
 
 const entry = (id: string, surface: string) => ({
   id,
@@ -132,5 +132,55 @@ describe("inferReadings と hidden の Codex", () => {
 
     expect(h.send).toHaveBeenCalledTimes(1);
     expect(result.get("ok")).toEqual([{ surface: "刹那", yomi: "せつな" }]);
+  });
+});
+
+describe("listYomiHiddenIds（判定を 500 件ずつに分ける）", () => {
+  beforeEach(() => {
+    h.listHidden.mockReset();
+  });
+
+  it("1,001 件は 3 回（500・500・1）に分け、hidden を合わせて返す。projectId は渡したものを使う", async () => {
+    const ids = Array.from({ length: 1001 }, (_, i) => `e${i}`);
+    h.listHidden.mockImplementation(
+      async ({ entryIds }: { entryIds: string[] }) =>
+        new Set(entryIds.filter((id) => id === "e0" || id === "e1000")),
+    );
+
+    const hidden = await listYomiHiddenIds(ids, "p-explicit");
+
+    expect(h.listHidden).toHaveBeenCalledTimes(3);
+    expect(
+      h.listHidden.mock.calls.map(
+        ([arg]) => (arg as { entryIds: string[] }).entryIds.length,
+      ),
+    ).toEqual([500, 500, 1]);
+    for (const [arg] of h.listHidden.mock.calls) {
+      expect((arg as { projectId: string }).projectId).toBe("p-explicit");
+    }
+    expect([...hidden].sort()).toEqual(["e0", "e1000"]);
+  });
+
+  it("500 件以下は 1 回で、projectId を省くと tree store の project を使う", async () => {
+    h.listHidden.mockResolvedValue(new Set(["x"]));
+
+    const hidden = await listYomiHiddenIds(["x", "y"]);
+
+    expect(h.listHidden).toHaveBeenCalledTimes(1);
+    expect(h.listHidden).toHaveBeenCalledWith({
+      entryIds: ["x", "y"],
+      projectId: "p1",
+    });
+    expect([...hidden]).toEqual(["x"]);
+  });
+
+  it("途中の判定が失敗したら、全体が fail-closed で reject する", async () => {
+    h.listHidden
+      .mockResolvedValueOnce(new Set())
+      .mockRejectedValueOnce(new Error("too many SQL variables"));
+
+    await expect(
+      listYomiHiddenIds(Array.from({ length: 600 }, (_, i) => `e${i}`)),
+    ).rejects.toMatchObject({ code: "CODEX_YOMI_HIDDEN_CHECK_FAILED" });
   });
 });

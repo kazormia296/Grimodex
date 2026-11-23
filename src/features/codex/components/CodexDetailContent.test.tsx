@@ -9,7 +9,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexEntry } from "../api";
 import { getCodexEntry } from "../api";
-import { inferReadings } from "../codexYomi";
+import { inferReadings, listYomiHiddenIds } from "../codexYomi";
 import { useCodexStore } from "../codexStore";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
@@ -32,6 +32,7 @@ vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
     warning: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -42,6 +43,7 @@ vi.mock("../api", async (importOriginal) => {
 
 vi.mock("../codexYomi", () => ({
   inferReadings: vi.fn(() => Promise.resolve(new Map())),
+  listYomiHiddenIds: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 
 vi.mock("../tagApi", async (importOriginal) => {
@@ -153,9 +155,11 @@ vi.mock("./TrackingTab", () => ({
   TrackingTab: (props: {
     onEstimateReadings: () => void;
     estimateBlockedHidden?: boolean;
+    estimatingReadings?: boolean;
   }) => (
     <button
       data-testid="estimate-readings"
+      data-estimating={String(props.estimatingReadings ?? false)}
       data-blocked-hidden={String(props.estimateBlockedHidden ?? false)}
       onClick={props.onEstimateReadings}
     >
@@ -211,6 +215,7 @@ const originalUpdate = useCodexStore.getState().update;
 const originalUpdateText = useCodexStore.getState().updateText;
 const mockGetCodexEntry = vi.mocked(getCodexEntry);
 const mockInferReadings = vi.mocked(inferReadings);
+const mockListYomiHiddenIds = vi.mocked(listYomiHiddenIds);
 
 describe("CodexDetailContent draft integrity", () => {
   beforeEach(() => {
@@ -291,6 +296,68 @@ describe("CodexDetailContent draft integrity", () => {
     });
 
     expect(mockInferReadings).not.toHaveBeenCalled();
+  });
+
+  it("shows the hidden notice and does not call the AI when only a phase hides the entry (DR-MP4-41)", async () => {
+    // base は mentioned でボタンは有効。Phase だけが hidden にする項目は、送信前の判定で hidden に倒れる。
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockListYomiHiddenIds.mockResolvedValueOnce(new Set([entry.id]));
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    const button = screen.getByTestId("estimate-readings");
+    expect(button).toHaveAttribute("data-blocked-hidden", "false");
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith(
+        "AI に秘匿（hidden）の項目は推定できません。読みは手で入力してください。",
+      ),
+    );
+    // 手元の項目の projectId を明示して渡す（既定の tree store の projectId に頼らない）。
+    expect(mockListYomiHiddenIds).toHaveBeenCalledWith(
+      [entry.id],
+      entry.projectId,
+    );
+    expect(mockInferReadings).not.toHaveBeenCalled();
+    // 「モデル設定を確認して再試行」の警告は出さない。
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed hidden check, sends nothing to the AI and does not stay busy (fail closed)", async () => {
+    const entry: CodexEntry = { ...INITIAL_ENTRY, name: "刹那" };
+    useCodexStore.setState({ entries: [entry], selectedEntry: entry });
+    mockListYomiHiddenIds.mockRejectedValueOnce(new Error("hidden check down"));
+
+    render(
+      <CodexDetailContent
+        entry={entry}
+        onDelete={vi.fn()}
+        initialTab="tracking"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("estimate-readings"));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "読みの推定に失敗しました",
+        expect.objectContaining({ description: "hidden check down" }),
+      ),
+    );
+    expect(mockInferReadings).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("estimate-readings")).toHaveAttribute(
+        "data-estimating",
+        "false",
+      ),
+    );
   });
 
   it("warns instead of ending silently when the estimate returns no readings", async () => {

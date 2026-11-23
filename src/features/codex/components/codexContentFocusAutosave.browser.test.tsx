@@ -57,6 +57,7 @@ vi.mock("@tiptap/react", async (importOriginal) => {
 
 vi.mock("../codexYomi", () => ({
   inferReadings: vi.fn(() => Promise.resolve(new Map())),
+  listYomiHiddenIds: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
 vi.mock("../tagApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tagApi")>();

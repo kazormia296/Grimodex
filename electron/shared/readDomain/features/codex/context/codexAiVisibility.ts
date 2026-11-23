@@ -59,14 +59,22 @@ export interface CodexAiVisibilityInput<
   readonly entries: readonly TEntry[];
   /** Every phase of every entry in `entries` (the `story` fallback looks at all of an entry's phases). */
   readonly phases: readonly CodexEntryPhase[];
-  /** The current scene. Empty after trimming (or null, or undefined) means the base anchor. */
+  /**
+   * The current scene. Empty after trimming (or null, or undefined) means the base
+   * anchor, and the scene cannot be resolved: an entry that one of its phases
+   * hides is hidden (DR-MP4-41). Same for an id the reading order does not have.
+   */
   readonly sceneId: string | null | undefined;
   readonly sceneTimeIndex: SceneTimeIndex;
   readonly resolutionMode: CodexResolutionState;
 }
 
 export interface CodexAiVisibility<TEntry> {
-  /** Hidden and unknown modes; with `unresolved`, every entry. */
+  /**
+   * Hidden and unknown modes; with `unresolved`, every entry. When the scene
+   * cannot be resolved (no scene, or an id the reading order does not have), also
+   * every entry that has a phase one of which hides it (DR-MP4-41).
+   */
   readonly hidden: Set<string>;
   /** The entries that are not hidden, with their text after phase resolution. */
   readonly texts: Map<string, CodexTextForAi>;
@@ -79,11 +87,58 @@ export interface CodexAiVisibility<TEntry> {
 /**
  * The anchor is the current scene when there is one, else base. A scene that is
  * not in the reading order resolves like base (no phase applies; DR-MP4-1 for
- * Codex), and the base anchor applies none either.
+ * Codex), and the base anchor applies none either. `decideCodexAiVisibility`
+ * does not leave it at that for the visibility decision (DR-MP4-41, below):
+ * neither "no scene" nor an unknown scene is read as "public".
  */
 function anchorOf(sceneId: string | null | undefined): TemporalAnchor {
   const trimmed = sceneId?.trim();
   return trimmed ? { kind: "scene", sceneId: trimmed } : { kind: "base" };
+}
+
+/**
+ * The scene cannot be resolved (DR-MP4-41): no phase can be applied for it. Two
+ * cases, both fail closed below:
+ * - A scene id was given (non-empty after trimming) but the reading order does
+ *   not have it. The id is archived, in the trash or deleted, the index was just
+ *   reset, the id is another project's, or it is a note or a folder: selecting a
+ *   note or a folder in the tree makes `activeSceneId` that id (the most common
+ *   case in practice; agent tools and the inline AI then see it).
+ * - No scene (null, undefined, empty, whitespace; Q1 of the 2026-11-23
+ *   decision). The base anchor applies no phase either. This is the case of the
+ *   inline AI while a Codex entry, a snippet or a chronicle event is edited,
+ *   `codexYomi`, and the agent tools (right after start-up, or a project with no
+ *   scene). Beats and foreshadowing need a scene id, so they reach this only as
+ *   the first case (a scene that the reading order does not have).
+ * `anchorOf` still reads "no scene" as the base anchor (unchanged); only the
+ * visibility decision treats it as unresolvable.
+ */
+function isSceneUnresolvable(
+  sceneId: string | null | undefined,
+  index: SceneTimeIndex,
+): boolean {
+  const trimmed = sceneId?.trim();
+  return !trimmed || !index.readingOrder.has(trimmed);
+}
+
+/**
+ * DR-MP4-41 (fail closed): when the scene cannot be resolved, an entry that one
+ * of its phases would hide is hidden. The phases were not applied, so base alone
+ * must not be taken as "public" for it. An entry with no phase, or whose phases
+ * hide nothing, is unchanged; an entry that is hidden at base stays hidden. A
+ * phase whose anchor scene no longer exists (dangling) counts like any other:
+ * which phases would apply cannot be told, so it errs on the hiding side.
+ */
+function hasPhaseHiddenFromAi(
+  phases: readonly CodexEntryPhase[] | undefined,
+): boolean {
+  return (
+    phases?.some(
+      (phase) =>
+        phase.contextModeOverride !== null &&
+        isCodexContextModeHiddenFromAi(phase.contextModeOverride),
+    ) ?? false
+  );
 }
 
 export function decideCodexAiVisibility<
@@ -97,14 +152,25 @@ export function decideCodexAiVisibility<
     for (const entry of input.entries) hidden.add(entry.id);
     return { hidden, texts, released, anchor };
   }
-  const { resolvedById } = resolveCodexContexts({
+  const { resolvedById, phasesByEntry } = resolveCodexContexts({
     entries: input.entries,
     phases: input.phases,
     anchor,
     sceneTimeIndex: input.sceneTimeIndex,
     resolutionMode: input.resolutionMode.mode,
   });
+  const sceneUnresolvable = isSceneUnresolvable(
+    input.sceneId,
+    input.sceneTimeIndex,
+  );
   for (const entry of input.entries) {
+    if (
+      sceneUnresolvable &&
+      hasPhaseHiddenFromAi(phasesByEntry.get(entry.id))
+    ) {
+      hidden.add(entry.id);
+      continue;
+    }
     const resolved = resolvedById.get(entry.id);
     const mode = resolved?.contextMode ?? entry.contextMode;
     if (isCodexContextModeHiddenFromAi(mode)) {
