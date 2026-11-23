@@ -56,6 +56,7 @@ export const GUARD_FILES = Object.freeze([
   "scripts/quality/identity-review-load/lib.mjs",
   "scripts/quality/identity-review-load/electron-observer-b.mjs",
   "scripts/quality/identity-review-load/plain-text-keystore.mjs",
+  "scripts/quality/identity-review-load/dispatch-block.mjs",
   "scripts/quality/nir1-retrieval/electron-observer.mjs",
   // Vite（測定の page を配る）が実行時に読む設定。resolve.alias で page の `@/…`（judgeCandidates を含む）を差し替えられるので、
   // build の入力であるだけでなく sha256 も照合する（F5 の M-b）。esbuild の変換は tsconfig を読む。

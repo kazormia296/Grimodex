@@ -493,6 +493,9 @@ export async function sendOne({
         ok: false,
         failureKind: res.kind,
         httpStatus: res.httpStatus ?? null,
+        // 失敗の原因を読むための定型の要約（page の safeErrorSummary。自由文は通さない）と、page が測った所要時間。
+        diag: normalizeDiag(res.diag),
+        durationMs: Number.isFinite(res.durationMs) ? res.durationMs : null,
       };
       if (!NO_COMMUNICATION_KINDS.includes(res.kind)) {
         // 送信の後に例外を投げる経路（有効結果なしなど）は、課金済みで行が残る。台帳が実費を見るため読む。
@@ -556,10 +559,33 @@ export async function sendOne({
       attempts,
       retried,
       durationMs: res.durationMs ?? 0,
+      diag: outcome.diag ?? null,
       estInputTokens,
       estOutputTokens,
     };
   }
+}
+
+/**
+ * page が返した失敗の要約（safeErrorSummary の形）を、記録に載せてよい定型だけに絞る。形が違う値・自由文は捨てて null にする
+ * （DR-ILM-20：エラーの自由文は記録しない）。name は識別子、tag は none／precheck／artifact、codes は大文字の token、
+ * pairs は key=数値。
+ */
+export function normalizeDiag(diag) {
+  if (diag === null || typeof diag !== "object" || Array.isArray(diag))
+    return null;
+  const strings = (list, pattern, limit) =>
+    (Array.isArray(list) ? list : [])
+      .filter((item) => typeof item === "string" && pattern.test(item))
+      .slice(0, limit);
+  return {
+    name: /^[A-Za-z0-9_]{1,60}$/u.test(diag.name) ? diag.name : "Error",
+    tag: ["none", "precheck", "artifact"].includes(diag.tag)
+      ? diag.tag
+      : "none",
+    codes: strings(diag.codes, /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/u, 5),
+    pairs: strings(diag.pairs, /^[A-Za-z]{1,30}=\d{1,9}$/u, 6),
+  };
 }
 
 // ---- 指標 ---------------------------------------------------------------------
@@ -796,6 +822,9 @@ export async function runB1({
               judgments,
               attempts: 1,
               retried: false,
+              // 停止の経路でも、page が測った所要時間と失敗の要約を残す（以前は durationMs が常に 0 になっていた）。
+              durationMs: outcome.durationMs ?? 0,
+              diag: outcome.diag ?? null,
             },
             prepared,
             index,
@@ -841,6 +870,7 @@ function buildRequestRecord(result, prepared, index) {
     usage: result.usage ?? null,
     model: result.model ?? null,
     durationMs: result.durationMs ?? 0,
+    diag: result.diag ?? null,
     metrics: result.ok
       ? judgmentMetrics({
           index,

@@ -22,6 +22,7 @@ import { BudgetStop, createGate } from "./ledger.mjs";
 import {
   assertOutputClean,
   candidateKey,
+  findAiCommands,
   hashSurface,
   safeErrorSummary,
 } from "./lib.mjs";
@@ -35,17 +36,30 @@ import {
   assertSafeStorageCondition,
   bindPageApi,
   assertSendAllowed,
+  APPLY_REHEARSAL_TARGET_ID,
   dryCellBody,
   dryCellStatus,
+  finalDryStatus,
   measureBBody,
+  probeJudgePath,
   realCellStatus,
+  rehearseApply,
 } from "./run-measure-b.mjs";
 import {
   assertNoFakeAiEnv,
   assertNoOverlappingJobs,
+  buildMeasureElectronEnv,
   findForbiddenEnv,
   findOverlappingJobs,
 } from "./launcher-common.mjs";
+import {
+  DISPATCH_BLOCK_ENV,
+  DISPATCH_BLOCK_EXEMPT,
+  DISPATCH_BLOCK_TOKEN,
+  DISPATCH_LOCAL_ALLOW,
+  installDispatchBlock,
+  isBlockedDispatchCommand,
+} from "./dispatch-block.mjs";
 import { findKeyResidue, registerCleanup, runCleanups } from "./cleanup.mjs";
 import { assertRecordsClean } from "./aggregate.mjs";
 import { findUnsafeStrings } from "./lib.mjs";
@@ -1895,4 +1909,660 @@ test("F5 m-b：台帳の前検査（assertLedgerReady）：STOP・未精算の�
     main.indexOf("createGate({") < main.indexOf("assertLedgerReady(gate") &&
       main.indexOf("assertLedgerReady(gate") < main.indexOf("withVite("),
   );
+});
+
+// ---- 乾いた実行の拒否層（dispatch-block）と探針（bProbeJudge） ------------------------------------------------
+
+test("拒否層（許可リスト方式）：許可リストの局所の命令だけを本物の handler に届け、AI の名前を持たない外向きの命令（updater・インストーラ・外部 process）を含め、それ以外はすべて届けない", () => {
+  for (const command of [
+    // AI の名前を持つ命令
+    "send_chat_message",
+    "send_chat_message_stream",
+    "list_ai_models",
+    "test_ai_connection",
+    "nir1_local_generation_start",
+    "mastra_agent_start",
+    "activate_license",
+    "semantic_download_model",
+    "narrative_extraction_claim_task",
+    // AI の名前を持たない外向きの命令（独立レビューの P1。拒否リストでは取りこぼした）
+    "updater_check",
+    "updater_download",
+    "updater_install",
+    "mozkey_download_and_install",
+    "open_log_dir",
+    // 許可リストに無い局所の命令も、確かめて足すまで止める（fail-closed）
+    "codex_index_entry",
+    "save_api_key",
+    "delete_api_key",
+    "ai_audit_read_snapshot",
+    "no_such_command",
+  ])
+    assert.equal(isBlockedDispatchCommand(command), true, command);
+  for (const command of DISPATCH_LOCAL_ALLOW)
+    assert.equal(isBlockedDispatchCommand(command), false, command);
+  // 命令でない値は本物の handler が拒否する（ここでは止めない）。
+  assert.equal(isBlockedDispatchCommand(undefined), false);
+  assert.equal(isBlockedDispatchCommand(42), false);
+});
+
+test("拒否層の許可リスト：重複が無く、製品の IPC の契約に実在し、AI・外部へ出る名前は局所の 3 命令（設定の読み書き・監査の追記）だけ", () => {
+  assert.equal(new Set(DISPATCH_LOCAL_ALLOW).size, DISPATCH_LOCAL_ALLOW.length);
+  const contract = [
+    "../../../electron/shared/ipcContract.ts",
+    "../../../electron/shared/modelCapabilitySnapshotWire.ts",
+  ]
+    .map((file) => readFileSync(new URL(file, import.meta.url), "utf8"))
+    .join("\n");
+  for (const command of DISPATCH_LOCAL_ALLOW)
+    assert.ok(
+      new RegExp(`\\b${command}\\b`, "u").test(contract),
+      `${command} が IPC の契約に無い`,
+    );
+  // AI の名前・外部へ出る名前に当たる命令は、局所の 3 命令だけ。
+  assert.deepEqual(
+    findAiCommands(DISPATCH_LOCAL_ALLOW).sort(),
+    [...DISPATCH_BLOCK_EXEMPT].sort(),
+  );
+  // 乾いた実行で観測した命令（19:38・20:10・20:26 の 3 回）が、すべて許可リストに含まれること。
+  const observed = [
+    "ai_audit_append_batch",
+    "codex_create",
+    "codex_match_text",
+    "codex_rebuild_matcher",
+    "codex_update",
+    "db_execute",
+    "extract_codex_candidates",
+    "get_ai_settings",
+    "get_global_settings",
+    "get_model_capability_snapshot",
+    "has_api_key",
+    "open_workspace",
+    "project_create",
+    "save_ai_settings",
+    "tree_node_create",
+  ];
+  assert.deepEqual([...DISPATCH_LOCAL_ALLOW].sort(), observed);
+});
+
+/** electron の ipcMain の代わり：handle の登録を記録し、登録された listener を channel で呼べる。 */
+function fakeIpcMain() {
+  const handlers = new Map();
+  return {
+    handlers,
+    handle(channel, listener) {
+      handlers.set(channel, listener);
+    },
+  };
+}
+
+test("拒否層：要求がなければ入れず、入れたら grim:invoke の外向きの命令だけを本物の handler の前で拒否して件数を数える", async () => {
+  assert.throws(
+    () => installDispatchBlock(fakeIpcMain(), {}),
+    /DISPATCH_BLOCK_NOT_REQUESTED/u,
+  );
+  assert.throws(
+    () => installDispatchBlock(fakeIpcMain(), { [DISPATCH_BLOCK_ENV]: "0" }),
+    /DISPATCH_BLOCK_NOT_REQUESTED/u,
+  );
+  const ipcMain = fakeIpcMain();
+  const state = installDispatchBlock(ipcMain, { [DISPATCH_BLOCK_ENV]: "1" });
+  assert.equal(state.active, true);
+  // 共有の observer（trace の層）は後から包む。拒否の層はその外側になる（拒否した命令は trace に出ない）。
+  const trace = [];
+  const wrapped = ipcMain.handle;
+  ipcMain.handle = (channel, listener) =>
+    wrapped.call(
+      ipcMain,
+      channel,
+      channel === "grim:invoke"
+        ? async (event, ...args) => {
+            trace.push(args[0]);
+            return listener(event, ...args);
+          }
+        : listener,
+    );
+  const reached = [];
+  ipcMain.handle("grim:invoke", async (_event, command) => {
+    reached.push(command);
+    return { ok: true };
+  });
+  ipcMain.handle("other:channel", async (_event, command) => {
+    reached.push(`other:${command}`);
+    return { ok: true };
+  });
+  const invoke = ipcMain.handlers.get("grim:invoke");
+  // 外向きの命令（send_chat_message 以外）は、本物の handler の前で固定の token の例外にする。
+  await assert.rejects(
+    invoke({}, "list_ai_models", {}),
+    (error) => error.message === DISPATCH_BLOCK_TOKEN,
+  );
+  await assert.rejects(invoke({}, "activate_license", {}), /IDL_DISPATCH_BLOCKED/u);
+  assert.deepEqual(await invoke({}, "db_execute", {}), { ok: true });
+  assert.deepEqual(await invoke({}, "save_ai_settings", {}), { ok: true });
+  assert.deepEqual(await invoke({}, "ai_audit_append_batch", {}), { ok: true });
+  // send_chat_message は外へ出さず、本物の handler も呼ばずに、リハーサルの応答（判定は空・token は固定）で答える。
+  const rehearsal = await invoke({}, "send_chat_message", { messages: [] });
+  assert.equal(rehearsal.ok, true);
+  assert.deepEqual(rehearsal.value, {
+    blocks: [{ type: "text", content: '{"judgments":[]}' }],
+    stopReason: "end_turn",
+    inputTokens: 1000,
+    outputTokens: 100,
+  });
+  // 応答は毎回新しい object（呼び出し側が書き換えても次に影響しない）。
+  rehearsal.value.blocks[0].content = "changed";
+  assert.equal(
+    (await invoke({}, "send_chat_message", {})).value.blocks[0].content,
+    '{"judgments":[]}',
+  );
+  // 本物の handler に届いたのは通した命令だけ。止めた命令・リハーサルで答えた命令は handler にも trace にも出ない。
+  assert.deepEqual(reached, [
+    "db_execute",
+    "save_ai_settings",
+    "ai_audit_append_batch",
+  ]);
+  assert.deepEqual(trace, [
+    "db_execute",
+    "save_ai_settings",
+    "ai_audit_append_batch",
+  ]);
+  assert.deepEqual(state.blocked, { list_ai_models: 1, activate_license: 1 });
+  assert.equal(state.rehearsed, 2);
+  // grim:invoke 以外の channel は包まない。
+  assert.deepEqual(await ipcMain.handlers.get("other:channel")({}, "send_chat_message"), {
+    ok: true,
+  });
+  assert.equal(reached.at(-1), "other:send_chat_message");
+});
+
+test("拒否層：env の組み立て。blockDispatch だけ拒否層の env を立て、送る経路（plain text keystore）と同時には立てない", () => {
+  const base = {
+    rendererUrl: "http://127.0.0.1:1/x",
+    userData: "/u",
+    native: "/n",
+    main: "/m",
+    tmpDir: "/t",
+    xdgDir: "/x",
+    busAddress: "unix:path=/b",
+  };
+  const plain = buildMeasureElectronEnv(base);
+  assert.equal(plain.GRIMODEX_IDL_BLOCK_DISPATCH, undefined);
+  const blocked = buildMeasureElectronEnv({ ...base, blockDispatch: true });
+  assert.equal(blocked.GRIMODEX_IDL_BLOCK_DISPATCH, "1");
+  assert.equal(blocked.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE, undefined);
+  const keystore = buildMeasureElectronEnv({ ...base, plainTextRunRoot: "/r" });
+  assert.equal(keystore.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE, "1");
+  assert.equal(keystore.GRIMODEX_IDL_BLOCK_DISPATCH, undefined);
+  assert.throws(
+    () =>
+      buildMeasureElectronEnv({
+        ...base,
+        plainTextRunRoot: "/r",
+        blockDispatch: true,
+      }),
+    /PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE/u,
+  );
+});
+
+/** 探針の fake：page の bConfigureAi・bProbeJudge と、main の拒否層・trace を持つ app。 */
+function fakeProbeEnv({
+  active = true,
+  keyPresent = false,
+  probe = {
+    refused: null,
+    gate: { policyBlocked: false, licenseRestricted: false, language: "ja" },
+    stages: {
+      treeProjectMatchesActive: true,
+      hiddenAnyPhase: { ok: true },
+      transportImport: { ok: true },
+      route: { ok: true },
+    },
+    judge: {
+      threw: true,
+      kind: "other",
+      diag: { name: "Error", tag: "none", codes: ["IDL_DISPATCH_BLOCKED"], pairs: [] },
+    },
+  },
+} = {}) {
+  const calls = [];
+  const bridge = {
+    idlDispatchBlock: active
+      ? { active: true, blocked: {}, rehearsed: 1 }
+      : undefined,
+    nir1IpcTrace: {
+      calls: [
+        { command: "db_execute", completed: true, ok: true },
+        { command: "get_ai_settings", completed: true, ok: true },
+      ],
+    },
+  };
+  globalThis.window = {
+    identityLoad: {
+      bConfigureAi: async (input) => {
+        calls.push(["configure", input.provider, input.model, input.key]);
+        return { provider: input.provider, model: input.model, keyPresent };
+      },
+      bProbeJudge: async () => {
+        calls.push(["probe"]);
+        return probe;
+      },
+    },
+  };
+  const page = { evaluate: async (fn, arg) => fn(arg) };
+  const app = {
+    evaluate: async (fn) => {
+      const saved = globalThis.idlDispatchBlock;
+      const savedTrace = globalThis.nir1IpcTrace;
+      globalThis.idlDispatchBlock = bridge.idlDispatchBlock;
+      globalThis.nir1IpcTrace = bridge.nir1IpcTrace;
+      try {
+        return await fn();
+      } finally {
+        globalThis.idlDispatchBlock = saved;
+        globalThis.nir1IpcTrace = savedTrace;
+      }
+    },
+  };
+  return { page, app, calls };
+}
+
+test("探針：拒否層が有効なときだけ、key なしで provider・model を入れて探針を呼び、拒否した命令と命令の並びを読む", async () => {
+  const env = fakeProbeEnv();
+  const out = await probeJudgePath({ page: env.page, app: env.app });
+  assert.deepEqual(env.calls, [
+    ["configure", "anthropic", "claude-sonnet-5-5", null],
+    ["probe"],
+  ]);
+  assert.equal(out.judge.threw, true);
+  assert.deepEqual(out.blocked, {});
+  assert.equal(out.rehearsed, 1);
+  // workspaceDir を渡さなければ、局所の DB は読まない。
+  assert.equal(out.surfaces, null);
+  assert.deepEqual(out.tail, [
+    { command: "db_execute", ok: true },
+    { command: "get_ai_settings", ok: true },
+  ]);
+  assert.deepEqual(out.configured, { provider: "anthropic" });
+  assert.doesNotThrow(() => assertOutputClean(out, []));
+});
+
+test("探針：拒否層が無効・app が無い・key が入っている場合は、探針を呼ばずに止まる（fail-closed）", async () => {
+  const inactive = fakeProbeEnv({ active: false });
+  await assert.rejects(
+    probeJudgePath({ page: inactive.page, app: inactive.app }),
+    /DISPATCH_BLOCK_NOT_ACTIVE/u,
+  );
+  assert.deepEqual(inactive.calls, []);
+  const noApp = fakeProbeEnv();
+  await assert.rejects(
+    probeJudgePath({ page: noApp.page, app: null }),
+    /PROBE_NEEDS_APP/u,
+  );
+  assert.deepEqual(noApp.calls, []);
+  const withKey = fakeProbeEnv({ keyPresent: true });
+  await assert.rejects(
+    probeJudgePath({ page: withKey.page, app: withKey.app }),
+    /PROBE_KEY_PRESENT/u,
+  );
+  assert.deepEqual(withKey.calls, [
+    ["configure", "anthropic", "claude-sonnet-5-5", null],
+  ]);
+});
+
+test("探針：リハーサルの応答に対して製品が局所の DB に残した行（usage の token・監査の pathId）を、本測定と同じ関数で読んで surface を確かめる", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "idl-probe-"));
+  try {
+    const db = path.join(dir, "ws.db");
+    execFileSync("sqlite3", [
+      db,
+      `CREATE TABLE ai_usage (id TEXT, surface TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, created_at TEXT);
+       CREATE TABLE ai_audit_events (id INTEGER, path_id TEXT);
+       INSERT INTO ai_usage VALUES ('1','codex_judgment','claude-sonnet-5-5',1000,100,'2026-01-01T00:00:00Z');
+       INSERT INTO ai_audit_events VALUES (1,'codex_judgment');
+       INSERT INTO ai_audit_events VALUES (2,'codex_judgment');`,
+    ]);
+    const env = fakeProbeEnv();
+    const out = await probeJudgePath({
+      page: env.page,
+      app: env.app,
+      workspaceDir: dir,
+    });
+    assert.equal(out.surfaces.readable, true);
+    assert.equal(out.surfaces.usageRows, 1);
+    assert.deepEqual(out.surfaces.usageTokens, [{ in: 1000, out: 100 }]);
+    assert.deepEqual(out.surfaces.auditPathIds, ["codex_judgment"]);
+    assert.equal(out.surfaces.surfaceCheck.ok, true);
+    assert.doesNotThrow(() => assertOutputClean(out, []));
+    // 別の surface の usage 行があれば、surface の確認は通らない（本測定の cell と同じ判定）。
+    execFileSync("sqlite3", [
+      db,
+      `INSERT INTO ai_usage VALUES ('2','chat','claude-sonnet-5-5',5,5,'2026-01-01T00:00:01Z');`,
+    ]);
+    const other = await probeJudgePath({
+      page: env.page,
+      app: env.app,
+      workspaceDir: dir,
+    });
+    assert.equal(other.surfaces.surfaceCheck.ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("乾いた実行の採用条件：探針つき cell は、リハーサルで答えた件数までの ai_usage の行を許す（超える行・リハーサルの無い行は許さない）", () => {
+  const cell = (usage, rehearsed) => ({
+    ipc: {
+      commandNames: ["codex_create", "ai_audit_append_batch"],
+      commandCounts: { codex_create: 3, ai_audit_append_batch: 3 },
+    },
+    aiRows: { verified: true, tables: { ai_usage: usage, ai_audit_events: 3 } },
+    egress: {
+      nonLoopbackDestinationCount: 0,
+      sampleCount: 4,
+      socketCountMax: 6,
+      tcpSocketCountMax: 3,
+    },
+    dispatchBlock: { blocked: {}, rehearsed },
+  });
+  assert.equal(dryCellStatus(cell(1, 1)), "ok");
+  assert.equal(dryCellStatus(cell(0, 1)), "ok");
+  assert.equal(dryCellStatus(cell(2, 1)), "ai-detected");
+  assert.equal(dryCellStatus(cell(1, 0)), "ai-detected");
+  // 探針でない従来の cell では、監査の追記の命令も許さない。
+  const { dispatchBlock: _dropped, ...plain } = cell(0, 0);
+  assert.equal(dryCellStatus(plain), "ai-detected");
+});
+
+test("乾いた実行の採用条件：探針つき（拒否層が有効だった）cell だけ、AI の設定の読み書きと監査の行を許し、外向きの命令・ai_usage の行は許さない", () => {
+  const base = {
+    ipc: {
+      commandNames: ["codex_create", "get_ai_settings", "save_ai_settings"],
+      commandCounts: { codex_create: 3, get_ai_settings: 3, save_ai_settings: 1 },
+    },
+    aiRows: { verified: true, tables: { ai_usage: 0, ai_audit_events: 2 } },
+    egress: {
+      nonLoopbackDestinationCount: 0,
+      sampleCount: 4,
+      socketCountMax: 6,
+      tcpSocketCountMax: 3,
+    },
+  };
+  // 探針なし（拒否層なしの従来の cell）は、AI の設定の命令も監査の行も許さない。
+  assert.equal(dryCellStatus(base), "ai-detected");
+  const probed = { ...base, dispatchBlock: { blocked: { send_chat_message: 1 } } };
+  assert.equal(dryCellStatus(probed), "ok");
+  // 外向きの命令が本物の handler に届いた（trace に send_chat_message が出た）なら不採用。
+  assert.equal(
+    dryCellStatus({
+      ...probed,
+      ipc: {
+        commandNames: [...probed.ipc.commandNames, "send_chat_message"],
+        commandCounts: { ...probed.ipc.commandCounts, send_chat_message: 1 },
+      },
+    }),
+    "ai-detected",
+  );
+  // 設定以外の AI の command（例：判定の別経路）が届いても不採用。
+  assert.equal(
+    dryCellStatus({
+      ...probed,
+      ipc: { ...probed.ipc, commandNames: [...probed.ipc.commandNames, "list_ai_models"] },
+    }),
+    "ai-detected",
+  );
+  // ai_usage の行は、探針つきでも許さない。
+  assert.equal(
+    dryCellStatus({
+      ...probed,
+      aiRows: { verified: true, tables: { ai_usage: 1, ai_audit_events: 2 } },
+    }),
+    "ai-detected",
+  );
+});
+
+test("探針は乾いた実行の経路にだけ付く：mainDry は blockDispatch と probeJudge を有効にし、本測定（mainReal）は付けない", () => {
+  const source = readFileSync(
+    new URL("./run-measure-b.mjs", import.meta.url),
+    "utf8",
+  );
+  const dry = source.slice(
+    source.indexOf("async function mainDry"),
+    source.indexOf("function readB2UpperByWork"),
+  );
+  assert.ok(dry.includes("blockDispatch: true"));
+  assert.ok(dry.includes("probeJudge: true"));
+  const real = source.slice(source.indexOf("async function mainReal"));
+  assert.ok(!real.includes("blockDispatch"));
+  assert.ok(!real.includes("probeJudge"));
+  assert.ok(!real.includes("bProbeJudge"));
+});
+
+// ---- bApply のリハーサル（B2 が頼る反映の経路を、送信なしで確かめる） ------------------------------------------
+
+/** rehearseApply の fake：page の bPrepare・bApply。decisions は bApply に渡された決定を記録する。 */
+function fakeApplyPage({ candidates, visibleBefore, apply, throwOn = null }) {
+  const seen = { decisions: null, prepared: 0 };
+  globalThis.window = {
+    identityLoad: {
+      bPrepare: async (input) => {
+        seen.prepared++;
+        seen.rescan = input.rescan;
+        if (throwOn === "prepare") throw new TypeError("prepare failed");
+        return { visibleCount: visibleBefore, candidates };
+      },
+      bApply: async (input) => {
+        seen.decisions = input.decisions;
+        if (throwOn === "apply")
+          throw new Error("[artifact] APPLY_FAILED the apply path threw");
+        return apply;
+      },
+    },
+  };
+  return { page: { evaluate: async (fn, arg) => fn(arg) }, seen };
+}
+
+test("bApply のリハーサル：呼び名でない候補 2 件に、却下 1・別名 1（合成の Entry）を当て、件数と候補が減ることを確かめる", async () => {
+  const env = fakeApplyPage({
+    candidates: [
+      { keyHash: "h-rel", relationalTerm: true },
+      { keyHash: "h-b", relationalTerm: false },
+      { keyHash: "h-c", relationalTerm: false },
+      { keyHash: "h-d", relationalTerm: false },
+    ],
+    visibleBefore: 4,
+    apply: {
+      counts: { accept: 0, alias: 1, dismiss: 1, missing: 0 },
+      visibleCount: 2,
+    },
+  });
+  const out = await rehearseApply({ page: env.page });
+  assert.equal(out.ok, true);
+  assert.equal(out.reason, "ok");
+  assert.equal(out.drop, 2);
+  assert.deepEqual(out.counts, { accept: 0, alias: 1, dismiss: 1, missing: 0 });
+  // 呼び名は選ばず、先頭の 2 件に却下と別名（合成の Entry）を当てる。再走査はしない（page の状態をそのまま使う）。
+  assert.deepEqual(env.seen.decisions, [
+    { keyHash: "h-b", action: "dismiss" },
+    { keyHash: "h-c", action: "alias", targetId: APPLY_REHEARSAL_TARGET_ID },
+  ]);
+  assert.equal(env.seen.rescan, false);
+  assert.equal(APPLY_REHEARSAL_TARGET_ID, "synth-001");
+  // 記録は件数と真偽だけ（候補の hash を載せない）。
+  assert.ok(!JSON.stringify(out).includes("h-b"));
+  assert.doesNotThrow(() => assertOutputClean(out, []));
+});
+
+test("bApply のリハーサル：候補が足りない・件数が違う・進まない・例外のとき、ok:false と理由を返す（例外にしない）", async () => {
+  const few = fakeApplyPage({
+    candidates: [
+      { keyHash: "h-rel", relationalTerm: true },
+      { keyHash: "h-b", relationalTerm: false },
+    ],
+    visibleBefore: 2,
+    apply: { counts: {}, visibleCount: 2 },
+  });
+  const fewOut = await rehearseApply({ page: few.page });
+  assert.equal(fewOut.ok, false);
+  assert.equal(fewOut.reason, "too-few-candidates");
+  assert.equal(fewOut.usableCount, 1);
+  assert.equal(few.seen.decisions, null);
+  const base = {
+    candidates: [
+      { keyHash: "a", relationalTerm: false },
+      { keyHash: "b", relationalTerm: false },
+      { keyHash: "c", relationalTerm: false },
+    ],
+    visibleBefore: 3,
+  };
+  // 別名の対象が見つからないなどで missing が出た。
+  const missing = await rehearseApply({
+    page: fakeApplyPage({
+      ...base,
+      apply: {
+        counts: { accept: 0, alias: 0, dismiss: 1, missing: 1 },
+        visibleCount: 2,
+      },
+    }).page,
+  });
+  assert.deepEqual([missing.ok, missing.reason], [false, "counts-differ"]);
+  // 件数は合うが、候補が 1 件しか減らない（別名が効いていない。B2 なら進みが鈍い）。
+  const slow = await rehearseApply({
+    page: fakeApplyPage({
+      ...base,
+      apply: {
+        counts: { accept: 0, alias: 1, dismiss: 1, missing: 0 },
+        visibleCount: 2,
+      },
+    }).page,
+  });
+  assert.deepEqual([slow.ok, slow.reason, slow.drop], [false, "no-progress", 1]);
+  // 例外は、定型の要約だけを返す（自由文は載せない）。
+  const threw = await rehearseApply({
+    page: fakeApplyPage({ ...base, apply: {}, throwOn: "apply" }).page,
+  });
+  assert.equal(threw.ok, false);
+  assert.equal(threw.reason, "threw");
+  assert.equal(threw.diag.tag, "artifact");
+  assert.deepEqual(threw.diag.codes, ["APPLY_FAILED"]);
+  assert.ok(!JSON.stringify(threw).includes("the apply path threw"));
+  const prepThrew = await rehearseApply({
+    page: fakeApplyPage({ ...base, apply: {}, throwOn: "prepare" }).page,
+  });
+  assert.deepEqual([prepThrew.ok, prepThrew.reason], [false, "threw"]);
+});
+
+test("乾いた実行の最終の status：リハーサルのある cell は、リハーサルが ok でなければ不採用（無い cell は従来どおり）", () => {
+  assert.equal(finalDryStatus({ cellStatus: "ok", value: {} }), "ok");
+  assert.equal(finalDryStatus({ cellStatus: "ok", value: undefined }), "ok");
+  assert.equal(
+    finalDryStatus({ cellStatus: "ok", value: { applyRehearsal: { ok: true } } }),
+    "ok",
+  );
+  assert.equal(
+    finalDryStatus({ cellStatus: "ok", value: { applyRehearsal: { ok: false } } }),
+    "apply-rehearsal-failed",
+  );
+  // 先に不採用なら、その理由を保つ。
+  assert.equal(
+    finalDryStatus({
+      cellStatus: "ai-detected",
+      value: { applyRehearsal: { ok: false } },
+    }),
+    "ai-detected",
+  );
+});
+
+test("bApply のリハーサルは乾いた実行の経路だけ：dryCellBody が probeJudge のときだけ呼び、mainDry が最終の status に使う。本測定は呼ばない", () => {
+  const source = readFileSync(
+    new URL("./run-measure-b.mjs", import.meta.url),
+    "utf8",
+  );
+  const body = source.slice(
+    source.indexOf("export async function dryCellBody"),
+    source.indexOf("/** リハーサルで別名を足す先の Entry"),
+  );
+  assert.ok(body.includes("probeJudge ? await rehearseApply({ page })"));
+  const dry = source.slice(
+    source.indexOf("async function mainDry"),
+    source.indexOf("function readB2UpperByWork"),
+  );
+  assert.ok(dry.includes("finalDryStatus({ cellStatus: dryCellStatus(cell), value })"));
+  const real = source.slice(source.indexOf("async function mainReal"));
+  assert.ok(!real.includes("rehearseApply"));
+});
+
+test("乾いた実行の本体の失敗：タグの無い例外は、落ちた段と例外の名前の token に包み、[precheck]／[artifact] の印のある失敗はそのまま通す", async () => {
+  const base = {
+    bSynthRoster: async () => ({ created: 1 }),
+    bAiGate: async () => ({
+      policyBlocked: false,
+      licenseRestricted: false,
+      language: "ja",
+    }),
+    bPrepare: async () => ({
+      rawCount: 150,
+      activeCount: 150,
+      visibleCount: 150,
+      dismissedCount: 0,
+      entryCount: 5,
+      candidates: [],
+    }),
+    bEstimate: async () => ({
+      judgedSlots: 50,
+      entrySlots: 5,
+      entryAliasCount: 0,
+      contextChars: 3000,
+      promptChars: 9000,
+      promptNonAsciiChars: 6000,
+    }),
+    bAssertRoleDefaults: async () => ({
+      checked: true,
+      roleKeysChecked: 7,
+      nonDefaultRoleKeys: 0,
+      roleProvidersNonDefault: false,
+      sendOverrideClear: true,
+    }),
+    bAssertRosterNotHidden: async () => ({
+      checked: true,
+      entryCount: 45,
+      checkedCount: 45,
+      hiddenCount: 0,
+    }),
+  };
+  const page = { evaluate: async (fn, arg) => fn(arg) };
+  // 合成の名簿の段（L0）で、タグの無い plain な例外。
+  globalThis.window = {
+    identityLoad: {
+      ...base,
+      bSynthRoster: async () => {
+        throw new TypeError("page.evaluate: Execution context was destroyed");
+      },
+    },
+  };
+  await assert.rejects(dryCellBody({ page }), (error) => {
+    const summary = safeErrorSummary(error);
+    assert.deepEqual(summary.codes, [
+      "DRY_BODY_FAILED_AT_SYNTH_ROSTER_L0",
+      "ERR_TYPEERROR",
+    ]);
+    assert.equal(summary.tag, "artifact");
+    // 元の例外は cause に残るが、要約には自由文を載せない。
+    assert.ok(error.cause instanceof TypeError);
+    assert.ok(!JSON.stringify(summary).includes("Execution context"));
+    return true;
+  });
+  // 守りの段（guards）で、[precheck] の印のある失敗はそのまま通る。
+  globalThis.window = {
+    identityLoad: {
+      ...base,
+      bAssertRosterNotHidden: async () => ({
+        checked: true,
+        entryCount: 45,
+        checkedCount: 45,
+        hiddenCount: 1,
+      }),
+    },
+  };
+  await assert.rejects(dryCellBody({ page }), /ROSTER_HAS_HIDDEN/u);
 });
