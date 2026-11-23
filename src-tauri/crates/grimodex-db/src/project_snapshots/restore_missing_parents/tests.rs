@@ -726,3 +726,59 @@ fn a_plan_without_edge_tables_is_untouched() {
     })
     .expect("resolve");
 }
+
+/// The run-time safety net (the dangling check of `restore_links`) looks at the
+/// tables this step can change, for the scopes the restore replaces and for no
+/// others, each once. A table dropped from the list lets a row this step left
+/// dangling pass (DR-SRX-32).
+#[test]
+fn the_dangling_check_lists_the_tables_of_the_selected_scopes() {
+    use SnapshotRestoreTable as T;
+    for scope in ALL_SCOPES {
+        let scopes: HashSet<RestoreScope> = [scope].into_iter().collect();
+        let have = touched_tables(&scopes);
+        let distinct: BTreeSet<&str> = have.iter().copied().collect();
+        assert_eq!(have.len(), distinct.len(), "{scope:?}: each table once");
+        let want: BTreeSet<&str> = match scope {
+            RestoreScope::Codex => [T::CodexEntryPhases].map(|t| t.as_str()).into(),
+            RestoreScope::Map => [
+                T::MapNodePositions,
+                T::MapEdges,
+                T::MapStickies,
+                T::MapAiBranches,
+            ]
+            .map(|t| t.as_str())
+            .into(),
+            RestoreScope::Snippet => [T::Snippets].map(|t| t.as_str()).into(),
+            RestoreScope::Body => [T::PostEffectAnnotations, T::PostEffectAnnotationRelations]
+                .map(|t| t.as_str())
+                .into(),
+            _ => BTreeSet::new(),
+        };
+        assert_eq!(distinct, want, "{scope:?}");
+    }
+}
+
+/// A table of a scope the restore does not replace is not reshaped, even when a
+/// plan names it: the edges apply by their owner's scope (DR-SRX-26). The same
+/// row, with its scope selected, is left out.
+#[test]
+fn a_table_of_a_scope_that_is_not_restored_is_left_alone() {
+    let db = crate::test_support::current_schema_memory().expect("current schema");
+    db.with_conn(|conn| {
+        let plan = vec![insert(
+            SnapshotRestoreTable::MapNodePositions,
+            &[("id", "mp1"), ("snippet_id", "no-such-snippet")],
+        )];
+        let body: HashSet<RestoreScope> = [RestoreScope::Body].into_iter().collect();
+        let left = resolve(conn, &body_shape(&body), plan.clone())?;
+        assert!(left.dropped.is_empty(), "Map is not restored");
+        assert_eq!(left.plan.len(), 1, "the row is kept as it is");
+        let map: HashSet<RestoreScope> = [RestoreScope::Map].into_iter().collect();
+        let dropped = resolve(conn, &body_shape(&map), plan)?;
+        assert_eq!(dropped.dropped.get("map_placements"), Some(&1));
+        assert!(dropped.plan.is_empty(), "a Map restore leaves the row out");
+        Ok(())
+    })
+    .expect("resolve");
+}

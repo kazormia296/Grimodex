@@ -479,3 +479,32 @@ fn a_violation_mended_while_another_is_made_is_caught_as_a_set() {
     })
     .expect("the checks run");
 }
+
+/// The dangling check covers the tables the missing-parent step can change
+/// (DR-SRX-32): with that list ignored, a row the step left dangling would pass
+/// the run-time safety net. Every one of them that exists is in the set.
+#[test]
+fn the_dangling_check_covers_the_tables_of_the_missing_parent_step() {
+    let db = crate::test_support::current_schema_memory().expect("current schema");
+    db.with_conn(|conn| {
+        let tables = existing_tables(conn)?;
+        for scope in ALL_SCOPES {
+            let scopes: HashSet<RestoreScope> = [scope].into_iter().collect();
+            let shape = RestoreShape {
+                project_id: "p",
+                snapshot_id: "s",
+                scopes: &scopes,
+                events_aux: true,
+            };
+            let touched = touched_tables(conn, &shape, &tables)?;
+            for table in super::super::restore_missing_parents::touched_tables(&scopes) {
+                assert!(
+                    touched.contains(&table),
+                    "{scope:?}: {table} is checked for new dangling references"
+                );
+            }
+        }
+        Ok(())
+    })
+    .expect("touched tables");
+}
