@@ -612,7 +612,7 @@ export async function measureBBody({
   let safeStorageRecord = null;
   if (expectedSafeStorageCheck) {
     // 上書きが有効なら本物の backend（idlRealStorageBackend）を読む。上書きの無い経路では safeStorage の値を読む。
-    const seen = await app.evaluate(({ safeStorage }) => ({
+    const seen = await evaluateMain(app, ({ safeStorage }) => ({
       backend:
         globalThis.idlRealStorageBackend?.() ??
         safeStorage.getSelectedStorageBackend?.() ??
