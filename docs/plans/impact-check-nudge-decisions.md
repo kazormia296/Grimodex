@@ -255,3 +255,13 @@ dispatch 直前の `captureValidatedImpactInputs` は変更していない。そ
 
 最終検証：`CI=true pnpm exec vitest --run src/features/impact-review src/features/codex` は 155 file・1,811 tests 成功（4 file・7 tests skip）。root と Electron の `tsc --noEmit` は成功。`pnpm -s lint` は 0 errors・43 warnings、`pnpm -s validate:architecture` は 1/1 pass、`git diff --check` も成功。実 Chromium の `ImpactNudge.browser.test.tsx` は UI 変更がないため未実行。
 
+### 12.1 独立レビュー（別の Codex セッション、read-only。`2e4fdec33..392f11532`）の反映
+
+verdict は REVISE（P1 が 1 件。P0 なし）。**等価性は全入力の類で確認された**：`currentHasRestrictedPhases`（旧 `Set(...).size > 0` と新 `length > 0` は、欠落・空・非空・重複あり配列で同じ真偽値）、
+tombstone 処理の後に除外集合を作る順序、null・空集合の redact、差分 0 件のときの掃除の条件、最終の `no-candidates` の status・件数・summary・candidateSceneCount、知らせの旧実装との同値。
+dispatch 直前の再検査（`captureValidatedImpactInputs`）は差分に含まれず、共有の門も当てていない。
+
+- **P1（反映）**：`impactPending.noAiImports.test.ts` の `impactGate.ts` の検査は禁止リスト方式で、DB を import する `./snapshot`（`@/db/client` と Drizzle を import）などを足しても落ちなかった。
+  **許可リスト方式**（`@/features/codex/context/codexVisibilityPolicy`・`./diff` だけ）に直し、「`./snapshot` を足すと許可リストが拒む」ことを空振り防止の試験で固定した。
+  変異（`impactGate.ts` に `import "./snapshot"` を一時的に足す）で 2 件が赤になり、戻して差分が空であることを確かめた。
+

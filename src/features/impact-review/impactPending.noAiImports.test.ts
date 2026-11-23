@@ -29,8 +29,15 @@ function specifiers(source: string): string[] {
 
 const FORBIDDEN_SPECIFIER =
   /runImpactReview|\/narrowing|post-effect\/api|semantic-search|modelRouting|chat\/store|\/lib\/api|\/db\/client/;
-const FORBIDDEN_GATE_SPECIFIER =
-  /runImpactReview|\/narrowing|post-effect\/|semantic-search|modelRouting|chat\/|\/store|(?:^|\/)db\/|electron|node:|\/ipc/;
+/**
+ * 共有の純関数 `impactGate.ts` が import してよい指定子の許可リスト。禁止リスト方式では、
+ * DB を import する `./snapshot` などの将来の追加を検出できない（独立レビューの指摘）ので、
+ * 許可したもの以外はすべて失敗にする。
+ */
+const GATE_ALLOWED_SPECIFIERS: readonly string[] = [
+  "@/features/codex/context/codexVisibilityPolicy",
+  "./diff",
+];
 const FORBIDDEN_IDENTIFIER =
   /\b(runImpactReview|narrowCandidateScenes|semanticSearch|runPostEffectMulti|resolveRoleSendOverride|saveBaseline|fts_search)\b/;
 
@@ -41,14 +48,31 @@ describe("知らせの経路は AI・候補絞り・保存の module を import 
     expect(specs.length).toBeGreaterThan(0);
     for (const spec of specs) expect(spec).not.toMatch(FORBIDDEN_SPECIFIER);
     if (rel === "../impact-review/impactGate.ts") {
-      for (const spec of specs)
-        expect(spec).not.toMatch(FORBIDDEN_GATE_SPECIFIER);
+      for (const spec of specs) expect(GATE_ALLOWED_SPECIFIERS).toContain(spec);
     }
     // コメントを除いて識別子も確かめる。
     const code = source
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");
     expect(code).not.toMatch(FORBIDDEN_IDENTIFIER);
+  });
+
+  it("impactGate.ts の許可リストは、DB を import する module（./snapshot・./baseline など）を通さない（空振り防止）", () => {
+    const gateSource = readFileSync(
+      new URL("../impact-review/impactGate.ts", import.meta.url),
+      "utf8",
+    );
+    const withSnapshot = `${gateSource}\nimport { buildCodexSnapshot } from "./snapshot";\n`;
+    const offenders = specifiers(withSnapshot).filter(
+      (spec) => !GATE_ALLOWED_SPECIFIERS.includes(spec),
+    );
+    expect(offenders).toEqual(["./snapshot"]);
+    // 実際の impactGate.ts は許可リストの中だけ。
+    expect(
+      specifiers(gateSource).filter(
+        (spec) => !GATE_ALLOWED_SPECIFIERS.includes(spec),
+      ),
+    ).toEqual([]);
   });
 
   it("照合の正規表現が実際に import を拾える（空振り防止）", () => {
