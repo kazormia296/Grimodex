@@ -8,8 +8,11 @@
 //   (2) the response carries the new OCC token and the resolved references
 //   (3) Main refuses `restoreState` for any origin but undo and an unknown key;
 //       a Codex entry that vanished becomes NULL
-//   (4) a folder with a child: the folder comes back, the child's create is
-//       still refused by the Undo Journal binding (an existing defect, pinned)
+//   (4) a folder with a child scene, a nested folder, its scene and a note
+//       (DR-UND-2): one delete, then each node's `tree_node_create` (parents
+//       first, all under the one Undo Journal) -> every row equals the row
+//       before the delete; a Redo then a second Undo brings back the recorded
+//       nodes only; a node the delete did not record is refused by Native
 //   (5) the reading-order input the AI reads (`readReadInputs`) is what it was
 //       before the delete (the store/DB divergence of DR-MP4-8 is closed)
 //
@@ -496,39 +499,173 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
     ).toEqual([]);
   });
 
-  it("(4) a folder with a child: the folder comes back, the child's create is still refused (existing defect)", async () => {
-    const w = await workspace();
+  /** The folder, a scene, a nested folder with a scene and a note, as seeded. */
+  async function makeChapter(
+    w: Workspace,
+    prefix: string,
+  ): Promise<Array<[id: string, parentId: string | undefined]>> {
     const api = await treeApi();
+    const root = `${prefix}-folder`;
+    const inner = `${prefix}-inner`;
     await api.createNode({
-      id: "undo-folder-1",
+      id: root,
       projectId: w.projectId,
       nodeType: "folder",
       title: "Folder",
-      sortOrder: "n2",
+      sortOrder: `n2${prefix}`,
     });
-    await makeScene(w, "undo-child-1", "undo-folder-1");
-    const folderBefore = await row(w, "undo-folder-1");
-    const childBefore = await row(w, "undo-child-1");
-    const childSnapshot = await api.loadTreeNodeRestoreSnapshot("undo-child-1");
-    const folderSnapshot =
-      await api.loadTreeNodeRestoreSnapshot("undo-folder-1");
-    const receipt = await api.deleteNode("undo-folder-1", w.projectId);
+    await api.createNode({
+      id: inner,
+      projectId: w.projectId,
+      parentId: root,
+      nodeType: "folder",
+      title: "Inner",
+      sortOrder: `n3${prefix}`,
+    });
+    await makeScene(w, `${prefix}-scene`, root);
+    await makeScene(w, `${prefix}-deep`, inner);
+    await api.createNode({
+      id: `${prefix}-note`,
+      projectId: w.projectId,
+      parentId: inner,
+      nodeType: "note",
+      title: "Note",
+      sortOrder: `n4${prefix}`,
+    });
+    await api.updateNode(`${prefix}-note`, {
+      contextMode: "hidden",
+      aliases: '["a"]',
+      content: '{"type":"doc","edited":true}',
+    });
+    return [
+      [root, undefined],
+      [`${prefix}-scene`, root],
+      [inner, root],
+      [`${prefix}-deep`, inner],
+      [`${prefix}-note`, inner],
+    ];
+  }
 
-    await undoLikeTheStore(w, "undo-folder-1", {
-      before: folderBefore,
-      snapshot: folderSnapshot,
-      receipt,
-    });
-    expect(withoutToken(await row(w, "undo-folder-1"))).toEqual(
-      withoutToken(folderBefore),
-    );
+  /** What the store reads for one node before the delete (the Undo's input). */
+  async function captureBefore(
+    w: Workspace,
+    id: string,
+  ): Promise<Omit<Deleted, "receipt">> {
+    const api = await treeApi();
+    return {
+      before: await row(w, id),
+      snapshot: await api.loadTreeNodeRestoreSnapshot(id),
+    };
+  }
+
+  it("(4) a folder with a subtree: one delete, then every node comes back as it was, parents first (DR-UND-2)", async () => {
+    const w = await workspace();
+    const api = await treeApi();
+    const chapter = await makeChapter(w, "undo-ch1");
+    const captured = new Map<string, Omit<Deleted, "receipt">>();
+    for (const [id] of chapter) captured.set(id, await captureBefore(w, id));
+    const receipt = await api.deleteNode("undo-ch1-folder", w.projectId);
+    expect(
+      await w.rows("SELECT id FROM tree_nodes WHERE id LIKE 'undo-ch1-%'"),
+    ).toEqual([]);
+
+    for (const [id] of chapter) {
+      await undoLikeTheStore(w, id, { ...captured.get(id)!, receipt });
+    }
+    for (const [id] of chapter) {
+      expect(withoutToken(await row(w, id)), id).toEqual(
+        withoutToken(captured.get(id)!.before),
+      );
+    }
+  });
+
+  it("(4) a child cannot be put back before its parent, and nothing is written", async () => {
+    const w = await workspace();
+    const api = await treeApi();
+    const chapter = await makeChapter(w, "undo-ch2");
+    const captured = new Map<string, Omit<Deleted, "receipt">>();
+    for (const [id] of chapter) captured.set(id, await captureBefore(w, id));
+    const receipt = await api.deleteNode("undo-ch2-folder", w.projectId);
+
     await expect(
-      undoLikeTheStore(w, "undo-child-1", {
-        before: childBefore,
-        snapshot: childSnapshot,
+      undoLikeTheStore(w, "undo-ch2-scene", {
+        ...captured.get("undo-ch2-scene")!,
         receipt,
       }),
+    ).rejects.toThrow();
+    expect(
+      await w.rows("SELECT id FROM tree_nodes WHERE id LIKE 'undo-ch2-%'"),
+    ).toEqual([]);
+  });
+
+  it("(4) a Redo then a second Undo brings back the recorded nodes, not one added after the first Undo", async () => {
+    const w = await workspace();
+    const api = await treeApi();
+    const chapter = await makeChapter(w, "undo-ch3");
+    const captured = new Map<string, Omit<Deleted, "receipt">>();
+    for (const [id] of chapter) captured.set(id, await captureBefore(w, id));
+    const receipt = await api.deleteNode("undo-ch3-folder", w.projectId);
+    for (const [id] of chapter) {
+      await undoLikeTheStore(w, id, { ...captured.get(id)!, receipt });
+    }
+    // Added to the nested folder after the Undo: the delete's record has no such id.
+    await makeScene(w, "undo-ch3-late", "undo-ch3-inner");
+    const late = await captureBefore(w, "undo-ch3-late");
+
+    await api.deleteNode("undo-ch3-folder", w.projectId, {
+      writeContext: api.historyWriteContext("redo", receipt),
+    });
+    expect(
+      await w.rows("SELECT id FROM tree_nodes WHERE id LIKE 'undo-ch3-%'"),
+    ).toEqual([]);
+
+    for (const [id] of chapter) {
+      await undoLikeTheStore(w, id, { ...captured.get(id)!, receipt });
+    }
+    for (const [id] of chapter) {
+      expect(withoutToken(await row(w, id)), id).toEqual(
+        withoutToken(captured.get(id)!.before),
+      );
+    }
+    await expect(
+      undoLikeTheStore(w, "undo-ch3-late", { ...late, receipt }),
     ).rejects.toThrow(/replay target|Undo Journal/);
+    expect(
+      await w.rows("SELECT id FROM tree_nodes WHERE id = 'undo-ch3-late'"),
+    ).toEqual([]);
+  });
+
+  it("(4) another delete's journal does not bring back a node it did not record", async () => {
+    const w = await workspace();
+    const api = await treeApi();
+    const chapter = await makeChapter(w, "undo-ch4");
+    const captured = new Map<string, Omit<Deleted, "receipt">>();
+    for (const [id] of chapter) captured.set(id, await captureBefore(w, id));
+    const receipt = await api.deleteNode("undo-ch4-folder", w.projectId);
+    await undoLikeTheStore(w, "undo-ch4-folder", {
+      ...captured.get("undo-ch4-folder")!,
+      receipt,
+    });
+
+    // A scene deleted on its own has its own journal; this journal names it
+    // nowhere, so the chapter's journal cannot create it.
+    await makeScene(w, "undo-ch4-other");
+    const other = await captureBefore(w, "undo-ch4-other");
+    const otherReceipt = await api.deleteNode("undo-ch4-other", w.projectId);
+    await expect(
+      undoLikeTheStore(w, "undo-ch4-other", { ...other, receipt }),
+    ).rejects.toThrow(/replay target|Undo Journal/);
+    expect(
+      await w.rows("SELECT id FROM tree_nodes WHERE id = 'undo-ch4-other'"),
+    ).toEqual([]);
+    // Its own journal does.
+    await undoLikeTheStore(w, "undo-ch4-other", {
+      ...other,
+      receipt: otherReceipt,
+    });
+    expect(withoutToken(await row(w, "undo-ch4-other"))).toEqual(
+      withoutToken(other.before),
+    );
   });
 
   it("(5) the reading-order input the AI reads is what it was before the delete", async () => {
