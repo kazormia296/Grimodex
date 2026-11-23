@@ -401,6 +401,206 @@ export async function getNode(id: string): Promise<TreeNode | undefined> {
   return rows[0];
 }
 
+/**
+ * DR-UND-1: the columns of a deleted node that `tree_node_create` does not
+ * write, passed only by the Undo of a delete (Main and Native refuse it for any
+ * other origin). Same keys as `TREE_NODE_RESTORE_STATE_KEYS` in
+ * `electron/shared/ipcContract.ts`. The seven `chronicle*` keys are one group
+ * (the Scene's date range): sent together, and only when the row's range is not
+ * the INSERT's default.
+ */
+export interface TreeNodeRestoreState {
+  intent?: string;
+  storyTimeOrder?: string;
+  storyTimeLabel?: string;
+  povCharacterId?: string;
+  locationId?: string;
+  contextMode?: string;
+  aliases?: string;
+  excludedAliases?: string;
+  unplacedBeatsDoc?: string;
+  unplacedBeatPreview?: string;
+  placedBeatPreview?: string;
+  createdAt?: string;
+  chronicleStartTime?: number;
+  chronicleStartMinute?: number;
+  chronicleStartGranularity?: string;
+  chronicleEndTime?: number;
+  chronicleEndMinute?: number;
+  chronicleEndGranularity?: string;
+  chroniclePrecision?: string;
+}
+
+const RESTORE_GRANULARITIES: readonly string[] = [
+  "none",
+  "season",
+  "year",
+  "month",
+  "day",
+  "time",
+];
+const RESTORE_PRECISIONS: readonly string[] = ["exact", "approx", "unknown"];
+
+/**
+ * The same shape check Main and Native apply to the `chronicle*` group of a
+ * `restoreState` (safe integers, known words; the range's consistency is not
+ * checked there, so a reversed or incomplete legacy range is sent as it is).
+ * A row that fails it would make the whole Undo throw, so it is not sent.
+ */
+function chronicleGroupIsRestorable(row: {
+  chronicleStartTime: number | null;
+  chronicleStartMinute: number | null;
+  chronicleStartGranularity: string;
+  chronicleEndTime: number | null;
+  chronicleEndMinute: number | null;
+  chronicleEndGranularity: string;
+  chroniclePrecision: string;
+}): boolean {
+  const integerOrNull = (value: unknown): boolean =>
+    value === null ||
+    (typeof value === "number" && Number.isSafeInteger(value));
+  return (
+    integerOrNull(row.chronicleStartTime) &&
+    integerOrNull(row.chronicleStartMinute) &&
+    integerOrNull(row.chronicleEndTime) &&
+    integerOrNull(row.chronicleEndMinute) &&
+    RESTORE_GRANULARITIES.includes(row.chronicleStartGranularity) &&
+    RESTORE_GRANULARITIES.includes(row.chronicleEndGranularity) &&
+    RESTORE_PRECISIONS.includes(row.chroniclePrecision)
+  );
+}
+
+/** A node's row as it was in the database just before a delete. */
+export interface TreeNodeRestoreSnapshot {
+  content: string;
+  sourceUri: string | null;
+  sourceMtime: string | null;
+  restoreState: TreeNodeRestoreState;
+}
+
+/**
+ * Read the row an Undo of a delete must put back, from the database (not from
+ * the Tree store: a note's `content` there is the value loaded at open time,
+ * and the store lags writes made outside it). Waits for a pending scene body
+ * write first, like `loadSceneContent`. `null` when the row is gone.
+ */
+export async function loadTreeNodeRestoreSnapshot(
+  nodeId: string,
+): Promise<TreeNodeRestoreSnapshot | null> {
+  await awaitPendingSceneContentWrite(nodeId);
+  const rows = await db
+    .select({
+      content: treeNodes.content,
+      sourceUri: treeNodes.sourceUri,
+      sourceMtime: treeNodes.sourceMtime,
+      intent: treeNodes.intent,
+      storyTimeOrder: treeNodes.storyTimeOrder,
+      storyTimeLabel: treeNodes.storyTimeLabel,
+      povCharacterId: treeNodes.povCharacterId,
+      locationId: treeNodes.locationId,
+      contextMode: treeNodes.contextMode,
+      aliases: treeNodes.aliases,
+      excludedAliases: treeNodes.excludedAliases,
+      unplacedBeatsDoc: treeNodes.unplacedBeatsDoc,
+      unplacedBeatPreview: treeNodes.unplacedBeatPreview,
+      placedBeatPreview: treeNodes.placedBeatPreview,
+      createdAt: treeNodes.createdAt,
+      chronicleStartTime: treeNodes.chronicleStartTime,
+      chronicleStartMinute: treeNodes.chronicleStartMinute,
+      chronicleStartGranularity: treeNodes.chronicleStartGranularity,
+      chronicleEndTime: treeNodes.chronicleEndTime,
+      chronicleEndMinute: treeNodes.chronicleEndMinute,
+      chronicleEndGranularity: treeNodes.chronicleEndGranularity,
+      chroniclePrecision: treeNodes.chroniclePrecision,
+    })
+    .from(treeNodes)
+    .where(eq(treeNodes.id, nodeId));
+  const row = rows[0];
+  if (!row) return null;
+  const restoreState: TreeNodeRestoreState = {};
+  for (const key of [
+    "intent",
+    "storyTimeOrder",
+    "storyTimeLabel",
+    "povCharacterId",
+    "locationId",
+    "contextMode",
+    "aliases",
+    "excludedAliases",
+    "unplacedBeatsDoc",
+    "unplacedBeatPreview",
+    "placedBeatPreview",
+    "createdAt",
+  ] as const) {
+    const value = row[key];
+    if (typeof value === "string") restoreState[key] = value;
+  }
+  // The date range goes as one group, and only when it differs from what the
+  // create's INSERT leaves (NULL day and minute, `none`, `none`, `exact`).
+  const chronicleIsDefault =
+    row.chronicleStartTime === null &&
+    row.chronicleStartMinute === null &&
+    row.chronicleStartGranularity === "none" &&
+    row.chronicleEndTime === null &&
+    row.chronicleEndMinute === null &&
+    row.chronicleEndGranularity === "none" &&
+    row.chroniclePrecision === "exact";
+  if (!chronicleIsDefault && !chronicleGroupIsRestorable(row)) {
+    // A legacy row whose date range cannot be sent in the shape Main and Native
+    // accept (a REAL day or minute, a granularity outside the known words).
+    // The Undo must still succeed: the date alone is left out (it comes back
+    // unset, as an Undo always did), and the reason is logged.
+    debugLog.warn(
+      "tree",
+      "undo date range not restorable",
+      `${nodeId}: the stored date range has a value of an unexpected shape`,
+    );
+  } else if (!chronicleIsDefault) {
+    restoreState.chronicleStartGranularity = row.chronicleStartGranularity;
+    restoreState.chronicleEndGranularity = row.chronicleEndGranularity;
+    restoreState.chroniclePrecision = row.chroniclePrecision;
+    for (const key of [
+      "chronicleStartTime",
+      "chronicleStartMinute",
+      "chronicleEndTime",
+      "chronicleEndMinute",
+    ] as const) {
+      const value = row[key];
+      if (typeof value === "number") restoreState[key] = value;
+    }
+  }
+  return {
+    content: row.content,
+    sourceUri: row.sourceUri ?? null,
+    sourceMtime: row.sourceMtime ?? null,
+    restoreState,
+  };
+}
+
+/**
+ * The id of another row of the Project that already points at `sourceUri`
+ * (the external-file link), or `null`. `source_uri` has no unique constraint,
+ * and the mount reconcile makes a new node for a file that has none, so an Undo
+ * that restored the link while a reconcile had made a node for the same file
+ * would leave two Scenes on one file.
+ */
+export async function findNodeIdBySourceUri(
+  projectId: string,
+  sourceUri: string,
+  exceptId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: treeNodes.id })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.sourceUri, sourceUri),
+      ),
+    );
+  return rows.find((row) => row.id !== exceptId)?.id ?? null;
+}
+
 export async function createNode(
   data: Pick<
     NewTreeNode,
@@ -421,6 +621,8 @@ export async function createNode(
     writeContext?: CanonicalWriteContext;
     /** Scene storage identity used by external-file replacement fences. */
     timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+    /** Only the Undo of a delete passes this (DR-UND-1). */
+    restoreState?: TreeNodeRestoreState;
   } = {},
 ): Promise<TreeNodeWriteResult> {
   const writeContext = options.writeContext ?? createCanonicalWriteContext();
@@ -435,6 +637,7 @@ export async function createNode(
             sortOrder: data.sortOrder,
             title: data.title,
           },
+          restoreState: options.restoreState,
         }).filter(([, value]) => value !== undefined),
       ),
     });
