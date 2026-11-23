@@ -700,12 +700,14 @@ async function runFakeCell(
     cellId = "A-test",
     body = async () => ({}),
     extraDeps = {},
+    runOptions = {},
   },
 ) {
   const output = path.join(root, "out");
   mkdirSync(output, { recursive: true, mode: 0o700 });
   const events = [];
   const result = await runCell({
+    ...runOptions,
     output,
     vite: { httpServer: { address: () => ({ port: 1 }) } },
     busAddress: "unix:path=/nonexistent",
@@ -1266,5 +1268,84 @@ test("runCell：失敗した cell に、落ちた段の印（failedPhase）を�
     });
     assert.equal(ok.cell.status, "completed");
     assert.equal(ok.cell.failedPhase, undefined);
+  });
+});
+
+test("runCell：乾いた実行（blockDispatch）の、本体の後の処理の失敗に限り、メッセージの先頭を ASCII の識別子の形に落として残す（key のある cell・他の段・他の cell には付けない）", async () => {
+  await withRoot(async (root) => {
+    // post-body の最初の処理（main への evaluate）が、非 ASCII を含むメッセージで落ちる fake。
+    const failingElectron = ({ failIpc = true } = {}) => ({
+      process: () => ({ pid: 0 }),
+      evaluate: async (fn) => {
+        const text = String(fn);
+        if (text.includes("idlDispatchBlock")) return true;
+        if (text.includes("nir1IpcTrace") && failIpc)
+          throw new Error(
+            "electronApplication.evaluate: Target closed \u7269\u8a9e with /tmp/x and 'quotes'",
+          );
+        if (text.includes("Object.keys(process.env)"))
+          return { names: [], rustLog: "", nodeOptions: "" };
+        if (text.includes("process.versions.electron")) return "0.0.0";
+        return [];
+      },
+      firstWindow: async () => ({
+        isClosed: () => false,
+        waitForFunction: async () => undefined,
+        evaluate: async (fn) =>
+          String(fn).includes("buildNestedWork")
+            ? {
+                text: { mismatched: 0 },
+                folderChecks: {},
+                sceneCount: 0,
+                paragraphCount: 0,
+                folderSceneCounts: {},
+                ruby: {},
+              }
+            : {},
+      }),
+      close: async () => undefined,
+    });
+    const dry = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () => failingElectron(),
+      runOptions: { blockDispatch: true },
+    });
+    assert.equal(dry.cell.status, "failed");
+    assert.equal(dry.cell.failedPhase, "post-body");
+    // 非 ASCII は _ に落ち、記号は識別子の形だけが残る。200 字まで。
+    assert.match(dry.cell.errorHead, /^electronApplication\.evaluate: Target closed __ with \/tmp\/x and _quotes_$/u);
+    assert.ok(dry.cell.errorHead.length <= 200);
+    assert.equal(dry.cell.appProcess.pageClosed, false);
+    // blockDispatch でない cell（測定 A・目録・本測定。key がありうる）には付けない。
+    const plain = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () => ({
+        ...failingElectron(),
+        evaluate: async (fn) => {
+          const text = String(fn);
+          if (text.includes("idlDispatchBlock")) return false;
+          if (text.includes("nir1IpcTrace"))
+            throw new Error("electronApplication.evaluate: Target closed");
+          if (text.includes("Object.keys(process.env)"))
+            return { names: [], rustLog: "", nodeOptions: "" };
+          if (text.includes("process.versions.electron")) return "0.0.0";
+          return [];
+        },
+      }),
+    });
+    assert.equal(plain.cell.status, "failed");
+    assert.equal(plain.cell.failedPhase, "post-body");
+    assert.equal(plain.cell.errorHead, undefined);
+    // 乾いた実行でも、本体（body）の中の失敗には付けない（製品の例外に、原稿の文字列が入りうる）。
+    const inBody = await runFakeCell(root, {
+      provenance: () => PROV_A,
+      launch: async () => failingElectron({ failIpc: false }),
+      body: async () => {
+        throw new Error("product said \u7269\u8a9e");
+      },
+      runOptions: { blockDispatch: true },
+    });
+    assert.equal(inBody.cell.failedPhase, "body");
+    assert.equal(inBody.cell.errorHead, undefined);
   });
 });

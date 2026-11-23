@@ -31,6 +31,7 @@ import { createEgressSampler } from "./egress-policy.mjs";
 import {
   WORKS,
   safeErrorSummary,
+  sanitizeError,
   scenesFromWork,
   scenesTextsForScan,
 } from "./lib.mjs";
@@ -649,6 +650,11 @@ export async function runCell({
       cell.appProcess = null;
     }
     cell.errors = [safeErrorSummary(error)];
+    // 送信も key も無い乾いた実行（blockDispatch）の、本体の後の処理（評価・DB の読み）の失敗に限り、メッセージの先頭を ASCII の
+    // 識別子の形に落として残す（要約の name・code では原因が読めなかった。本体の後は基盤の呼び出しで、原稿の文字列は入らない）。
+    // key のある本測定・目録・測定 A の cell には付けない。
+    if (blockDispatch && phase === "post-body" && error instanceof Error)
+      cell.errorHead = sanitizeError(error.message).slice(0, 200);
     // 失敗した cell にも、そこまでの宛先の標本を残す（宛先が原因の失敗の宛先が記録から消えないように）。
     if (egressSampler) {
       egressSampler.tick();
