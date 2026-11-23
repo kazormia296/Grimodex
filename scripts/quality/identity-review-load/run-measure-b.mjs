@@ -4,7 +4,9 @@
 // モード：
 //   --mode dry-run  乾いた実行。送信の直前まで進め（候補・visible・entries を作り、要求の本文を製品と同じ式で
 //                   組んで文字数から token を見積もる）、作品×段ごとの要求数と見積りの費用だけを出す。
-//                   AI の設定・key・要求は一切しない。名簿が無いので、空の名簿と合成の名簿（候補の表記から作る）で行う。
+//                   key・要求は一切しない（main の入口で AI の外向きの命令を拒否する層〔dispatch-block.mjs〕を入れて動かす）。
+//                   名簿が無いので、空の名簿と合成の名簿（候補の表記から作る）で行う。最後に探針（page の bProbeJudge）で、
+//                   送信の直前の経路が測定ページで最後まで通るかを、AI の設定（provider・model。key なし）だけを入れて調べる。
 //   --mode trial|b1|b2  本測定（Anthropic へ送る）。--confirm-send yes-send-to-anthropic が無ければ始めない。
 //                   この作業（道具づくり）では実行しない。
 //
@@ -56,6 +58,7 @@ import {
   truncateRosterForB,
 } from "./measure-b-core.mjs";
 import { assertBuildProvenance } from "./build-provenance.mjs";
+import { DISPATCH_BLOCK_EXEMPT } from "./dispatch-block.mjs";
 import { buildEgressPolicy, splitList } from "./egress-policy.mjs";
 import {
   DEFAULT_OUTPUT,
@@ -63,6 +66,7 @@ import {
   assertNoFakeAiEnv,
   assertNoOverlappingJobs,
   ensurePrivateDir,
+  evaluateMain,
   runCell,
   withVite,
   withWatchdog,
@@ -107,6 +111,9 @@ export const ALLOWED_REAL_AI_COMMANDS = Object.freeze([
   "get_ai_settings",
   "save_ai_settings",
   "send_chat_message",
+  // 製品の AI 送信が、begin・dispatched・終端の事象を局所の監査の DB に書く命令（外へ出ない）。試走の 1 回目の調べで、
+  // 許可の一覧に無かったと分かった（本測定の cell が unexpected-ai-command で不採用になるはずだった）。
+  "ai_audit_append_batch",
 ]);
 
 /**
@@ -287,11 +294,37 @@ export const DRY_RUN_ASSUMPTIONS = Object.freeze({
  * 1 作品の乾いた実行：空の名簿→合成の名簿の段ごとに、送信の直前まで進めて件数を測る。
  * 送らない（api.judge は呼ばない）。page は window.identityLoad を持つ（試験では fake）。
  */
-export async function dryCellBody({
-  page,
-  synth = DEFAULT_SYNTH,
-  levels = B1_LEVELS,
-}) {
+export async function dryCellBody(args) {
+  // 本体のどの段で落ちたかを、定型の token だけで残す（試走の 1 回目の調べでは、plain な Error だけでは段を特定できなかった）。
+  // [precheck]／[artifact] の印のある失敗（意図した検査の失敗）は、そのまま通す。
+  const stage = { name: "setup" };
+  try {
+    return await dryCellBodyStages(args, stage);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/\[(precheck|artifact)\]/u.test(message)) throw error;
+    const name = (error instanceof Error ? error.name : "NonError")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/gu, "_")
+      .slice(0, 40);
+    throw new Error(
+      `[artifact] DRY_BODY_FAILED_AT_${stage.name.toUpperCase().replace(/[^A-Z0-9]/gu, "_")} ERR_${name}`,
+      { cause: error },
+    );
+  }
+}
+
+async function dryCellBodyStages(
+  {
+    page,
+    app = null,
+    workspaceDir = "",
+    probeJudge = false,
+    synth = DEFAULT_SYNTH,
+    levels = B1_LEVELS,
+  },
+  stage,
+) {
   const api = bindPageApi({
     page,
     workspaceDir: "unused",
@@ -299,45 +332,214 @@ export async function dryCellBody({
     allowSend: false,
   });
   const out = [];
+  stage.name = "measure-empty";
   const empty = await dryMeasure({ api });
   out.push({ level: "empty", ...empty });
   const n0 = empty.candidates.visibleCount;
   const entityCount = Math.max(1, Math.floor(synth.entityFraction * n0));
   const aliasTotals = {};
   for (const level of levels) {
+    stage.name = `synth-roster-${level}`;
     aliasTotals[level] = Math.floor(synth.aliasFractions[level] * n0);
     await page.evaluate((input) => window.identityLoad.bSynthRoster(input), {
       entityCount,
       aliasTotal: aliasTotals[level],
     });
+    stage.name = `measure-${level}`;
     out.push({ level, ...(await dryMeasure({ api })) });
   }
   // 送らずに、本測定の guard（役割の上書き・名簿の hidden。F2）を合成の名簿に対して読み取りだけで確かめる。
   // 本測定の cell の頭と同じ page 関数を呼ぶので、課金の前に、設定・DB の読みが測定ページで動くかが分かる。
+  stage.name = "guards";
   const role = assertRoleOverridesDefault(
     await page.evaluate(() => window.identityLoad.bAssertRoleDefaults()),
   );
   const hidden = assertRosterNotHidden(
     await page.evaluate(() => window.identityLoad.bAssertRosterNotHidden()),
   );
+  stage.name = "probe";
+  const judgePath = probeJudge
+    ? await probeJudgePath({ page, app, workspaceDir })
+    : null;
+  // B2 が使う bApply は、実機で一度も動かしていなかった（乾いた実行も試走も呼ばない）。送信なしで、合成の名簿に決定を当てて確かめる。
+  stage.name = "apply-rehearsal";
+  const applyRehearsal = probeJudge ? await rehearseApply({ page }) : null;
   return {
     levels: out,
     synthetic: { entityCount, aliasTotals, candidateCountN0: n0 },
     preconditions: { role, hidden },
+    ...(judgePath ? { judgePath } : {}),
+    ...(applyRehearsal ? { applyRehearsal } : {}),
+  };
+}
+
+/** リハーサルで別名を足す先の Entry（bSynthRoster が作る合成の名簿の 1 件目。乾いた実行の段で必ず在る）。 */
+export const APPLY_REHEARSAL_TARGET_ID = "synth-001";
+
+/**
+ * bApply のリハーサル（送信なし。B2 が頼る反映の経路）：呼び名でない候補を 2 件選び、1 件を却下・1 件を合成の Entry への別名として
+ * 当て、反映の件数と、候補が減ること（B2 の「進んだか」の判定と同じ）を確かめる。却下は設定の保存（saveDismissedCandidateKeys）、
+ * 別名は Codex の更新（updateCodexEntry）を通る。**失敗は例外にせず**、ok:false と定型の要約で返す（乾いた実行の他の結果を残す）。
+ * 返すのは件数と真偽だけ（候補の表記・hash は載せない）。
+ */
+export async function rehearseApply({ page }) {
+  try {
+    const before = await page.evaluate(() =>
+      window.identityLoad.bPrepare({ rescan: false }),
+    );
+    const usable = (before.candidates ?? []).filter(
+      (candidate) => candidate.relationalTerm !== true,
+    );
+    if (usable.length < 2)
+      return {
+        ok: false,
+        reason: "too-few-candidates",
+        visibleBefore: before.visibleCount,
+        usableCount: usable.length,
+      };
+    const decisions = [
+      { keyHash: usable[0].keyHash, action: "dismiss" },
+      {
+        keyHash: usable[1].keyHash,
+        action: "alias",
+        targetId: APPLY_REHEARSAL_TARGET_ID,
+      },
+    ];
+    const applied = await page.evaluate(
+      (input) => window.identityLoad.bApply({ decisions: input }),
+      decisions,
+    );
+    const counts = applied.counts ?? {};
+    const drop = before.visibleCount - applied.visibleCount;
+    const expected =
+      counts.dismiss === 1 &&
+      counts.alias === 1 &&
+      counts.accept === 0 &&
+      counts.missing === 0;
+    return {
+      ok: expected && drop >= 2,
+      reason: expected ? (drop >= 2 ? "ok" : "no-progress") : "counts-differ",
+      requested: decisions.length,
+      counts: {
+        accept: counts.accept ?? null,
+        alias: counts.alias ?? null,
+        dismiss: counts.dismiss ?? null,
+        missing: counts.missing ?? null,
+      },
+      visibleBefore: before.visibleCount,
+      visibleAfter: applied.visibleCount,
+      drop,
+    };
+  } catch (error) {
+    return { ok: false, reason: "threw", diag: safeErrorSummary(error) };
+  }
+}
+
+/**
+ * 乾いた実行の cell の最終の status：cell の採否（dryCellStatus）が ok でも、bApply のリハーサルが通らなければ不採用にする
+ * （リハーサルがあった cell だけ。無い cell は従来どおり）。
+ */
+export function finalDryStatus({ cellStatus, value }) {
+  if (cellStatus !== "ok") return cellStatus;
+  if (value?.applyRehearsal && value.applyRehearsal.ok !== true)
+    return "apply-rehearsal-failed";
+  return "ok";
+}
+
+/**
+ * 探針：送信の直前の経路（製品の judgeCandidates）が測定ページで最後まで通るかを、外へ出さずに調べる。
+ * 外へ出ない保証は、main の入口で AI の外向きの命令を拒否する層（dispatch-block.mjs）が有効なこと（無ければ止まる）と、
+ * page の bProbeJudge が key の無いことを確かめて始めること。AI の設定（provider・model）は入れるが key は入れない。
+ * 返すのは真偽・件数・定型の要約・命令の名前の並びだけ（自由文なし）。
+ */
+export async function probeJudgePath({ page, app, workspaceDir = "" }) {
+  assert.ok(
+    app !== null && typeof app.evaluate === "function",
+    "[precheck] PROBE_NEEDS_APP the probe needs the Electron app to verify the dispatch block",
+  );
+  const active = await evaluateMain(app, 
+    () => globalThis.idlDispatchBlock?.active === true,
+  );
+  assert.equal(
+    active,
+    true,
+    "[precheck] DISPATCH_BLOCK_NOT_ACTIVE the probe does not run without the dispatch block",
+  );
+  const configured = await page.evaluate(
+    (input) => window.identityLoad.bConfigureAi(input),
+    { provider: PROVIDER, model: MODEL, key: null },
+  );
+  assert.equal(
+    configured.keyPresent,
+    false,
+    "[precheck] PROBE_KEY_PRESENT the probe runs only without a key",
+  );
+  const probe = await page.evaluate(() => window.identityLoad.bProbeJudge());
+  // 探針の後に、止めた命令・リハーサルで答えた件数・命令の並び（最後の 12 件）を main から読む。
+  const after = await evaluateMain(app, () => ({
+    blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
+    rehearsed: globalThis.idlDispatchBlock?.rehearsed ?? 0,
+    tail: (globalThis.nir1IpcTrace?.calls ?? []).slice(-12).map((call) => ({
+      command: call.command,
+      ok: call.completed === true && call.ok === true,
+    })),
+  }));
+  // リハーサルの応答に対し、製品の経路が局所の DB に残した行（本測定の cell が終わりに読むものと同じ関数）を読む。
+  // usage の記録は送信の後に非同期で書かれるので、リハーサルの件数に届くまで少し待つ。
+  let surfaces = null;
+  if (workspaceDir) {
+    let usage = readAiUsageRows(workspaceDir);
+    for (let i = 0; i < 20 && usage.rows.length < after.rehearsed; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      usage = readAiUsageRows(workspaceDir);
+    }
+    const audit = readAuditPathIds(workspaceDir);
+    surfaces = {
+      readable: usage.readable > 0 && audit.readable > 0,
+      usageRows: usage.rows.length,
+      usageTokens: usage.rows.map((row) => ({
+        in: row.tokens_in,
+        out: row.tokens_out,
+      })),
+      auditPathIds: audit.pathIds,
+      surfaceCheck: checkOnlyCodexJudgment({
+        usageSurfaces: usage.rows.map((row) => row.surface),
+        auditPathIds: audit.pathIds,
+        requestsSent: after.rehearsed,
+      }),
+    };
+  }
+  return {
+    ...probe,
+    configured: { provider: configured.provider },
+    ...after,
+    surfaces,
   };
 }
 
 /** 乾いた実行の cell の採用条件：AI の command・AI の行・要求の送信が 0。 */
 export function dryCellStatus(cell) {
   const names = cell.ipc?.commandNames ?? [];
+  // 探針つきの cell（拒否する層が有効だった cell。cell.dispatchBlock がある）だけ、次を許す：
+  //   - 局所の AI の命令（設定の読み書き・監査の DB への追記。DISPATCH_BLOCK_EXEMPT。外向きでない）
+  //   - 監査の行（送信の直前の経路が、begin・dispatched・終端の事象を局所の DB に書く）
+  //   - ai_usage の行は、main がリハーサルの応答で答えた件数まで（製品が応答の token を記録する。超える行は許さない）
+  // 外向きの命令は main の入口で止まり、本物の handler に届かないので、ipc に出る send_chat_message は 0 のまま。
+  const probed = cell.dispatchBlock !== undefined;
+  const allowedAi = probed ? DISPATCH_BLOCK_EXEMPT : [];
+  const rehearsed = probed ? (cell.dispatchBlock.rehearsed ?? 0) : 0;
   if (
-    findAiCommands(names).length > 0 ||
+    findAiCommands(names).filter((name) => !allowedAi.includes(name)).length >
+      0 ||
     (cell.ipc?.commandCounts?.send_chat_message ?? 0) > 0
   )
     return "ai-detected";
   if (!cell.aiRows?.verified) return "ai-unverified";
-  if (Object.values(cell.aiRows.tables ?? {}).some((n) => n !== 0))
-    return "ai-detected";
+  for (const [table, n] of Object.entries(cell.aiRows.tables ?? {})) {
+    if (probed && table === "ai_audit_events") continue;
+    if (probed && table === "ai_usage" && n <= rehearsed) continue;
+    if (n !== 0) return "ai-detected";
+  }
   if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0)
     return "egress-detected";
   // 標本が成り立たない・socket を 1 つも見ていない標本は、何も見ていないのと同じ（実測定の realCellStatus と同じ基準。
@@ -410,7 +612,7 @@ export async function measureBBody({
   let safeStorageRecord = null;
   if (expectedSafeStorageCheck) {
     // 上書きが有効なら本物の backend（idlRealStorageBackend）を読む。上書きの無い経路では safeStorage の値を読む。
-    const seen = await app.evaluate(({ safeStorage }) => ({
+    const seen = await evaluateMain(app, ({ safeStorage }) => ({
       backend:
         globalThis.idlRealStorageBackend?.() ??
         safeStorage.getSelectedStorageBackend?.() ??
@@ -673,9 +875,21 @@ async function mainDry(options) {
         workKey: work,
         dataDir: options["data-dir"],
         keep: options.keep === "true",
-        body: (ctx) => dryCellBody({ page: ctx.page, synth }),
+        // 乾いた実行は、main の入口で AI の外向きの命令を拒否する層を入れて動かし、探針で送信の直前の経路を通す。
+        blockDispatch: true,
+        body: (ctx) =>
+          dryCellBody({
+            page: ctx.page,
+            app: ctx.app,
+            workspaceDir: ctx.workspaceDir,
+            probeJudge: true,
+            synth,
+          }),
       });
-      const status = cell.status === "failed" ? "failed" : dryCellStatus(cell);
+      const status =
+        cell.status === "failed"
+          ? "failed"
+          : finalDryStatus({ cellStatus: dryCellStatus(cell), value });
       cell.status = status;
       const result = {
         schemaVersion: "identity-load-measure-b-dry/1",

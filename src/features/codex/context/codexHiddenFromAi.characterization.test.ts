@@ -294,7 +294,7 @@ describe("resolveCodexForAi が送る SQL", () => {
 
   it("withDetails は released があるときだけ、Phase の detail override と raw の detail 値を 1 文ずつ足す", async () => {
     // released なし（c-aria は base 公開）：追加の文は無い。
-    await resolveCodexForAi({
+    const unreleased = await resolveCodexForAi({
       entryIds: ["c-aria"],
       projectId: "p-main",
       sceneId: "n-s1",
@@ -304,6 +304,7 @@ describe("resolveCodexForAi が送る SQL", () => {
       "codex_entries",
       "codex_entry_phases",
     ]);
+    expect(unreleased.texts.get("c-aria")?.detailValues).toBeUndefined();
 
     legacyReadInvokeBridge.reset();
     const released = await resolveCodexForAi({
@@ -322,6 +323,75 @@ describe("resolveCodexForAi が送る SQL", () => {
     expect(text?.released).toBe(true);
     expect(text?.detailValues).toBeInstanceOf(Map);
     expect(text?.detailValues?.size).toBe(0);
+
+    for (const definition of [
+      { id: "d-released-value", name: "通常の詳細" },
+      { id: "d-released-clear", name: "消去する詳細" },
+      { id: "d-released-base", name: "base の詳細" },
+    ]) {
+      await runSql(
+        "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order, include_in_context, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          definition.id,
+          "p-main",
+          "character",
+          definition.name,
+          "text",
+          0,
+          1,
+          0,
+          T1,
+          T1,
+        ],
+      );
+    }
+    for (const detail of [
+      {
+        id: "v-released-value",
+        definition: "d-released-value",
+        value: "base の値",
+      },
+      {
+        id: "v-released-clear",
+        definition: "d-released-clear",
+        value: "消去される値",
+      },
+      {
+        id: "v-released-base",
+        definition: "d-released-base",
+        value: "base のまま",
+      },
+    ]) {
+      await runSql(
+        "INSERT INTO codex_detail_values (id, entry_id, definition_id, value, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [detail.id, "c-released", detail.definition, detail.value, 1, T1, T1],
+      );
+    }
+    for (const detail of [
+      { definition: "d-released-value", value: "Phase の値" },
+      { definition: "d-released-clear", value: null },
+    ]) {
+      await runSql(
+        "INSERT INTO codex_phase_detail_overrides (phase_id, definition_id, value) VALUES (?, ?, ?)",
+        ["ph-released", detail.definition, detail.value],
+      );
+    }
+    legacyReadInvokeBridge.reset();
+    const resolved = await resolveCodexForAi({
+      entryIds: ["c-released"],
+      projectId: "p-main",
+      sceneId: "n-s3",
+      withDetails: true,
+    });
+    expect(
+      resolved.texts.get("c-released")?.detailValues?.get("d-released-value"),
+    ).toBe("Phase の値");
+    expect(
+      resolved.texts.get("c-released")?.detailValues?.get("d-released-clear"),
+    ).toBeNull();
+    expect(
+      resolved.texts.get("c-released")?.detailValues?.get("d-released-base"),
+    ).toBe("base のまま");
 
     // withDetails でなければ detailValues は付かない。
     const plain = await resolveCodexForAi({
@@ -392,6 +462,34 @@ describe("resolveCodexForAi が usePhaseStore を読む位置", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("Phase の読みの間に projectEpoch が変わると、withDetails でも全 id を hidden にして詳細を読まない", async () => {
+    let fired = false;
+    legacyReadInvokeBridge.setOnCall(({ cmd, args }) => {
+      if (
+        !fired &&
+        cmd === "db_execute" &&
+        String(args?.["sql"]).includes('from "codex_entry_phases"')
+      ) {
+        fired = true;
+        usePhaseStore.getState().resetForProject();
+      }
+    });
+    const result = await resolveCodexForAi({
+      entryIds: ["c-released"],
+      projectId: "p-main",
+      sceneId: "n-s3",
+      withContent: true,
+      withDetails: true,
+    });
+    expect(fired).toBe(true);
+    expect([...result.hidden]).toEqual(["c-released"]);
+    expect(result.texts.size).toBe(0);
+    expect(statements().map((s) => s.sql.match(/from "(\w+)"/u)?.[1])).toEqual([
+      "codex_entries",
+      "codex_entry_phases",
+    ]);
   });
 });
 

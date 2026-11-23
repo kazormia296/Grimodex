@@ -1,10 +1,17 @@
 import type {
+  CoreCodexData,
+  CoreCodexDetailData,
+  CoreCodexEntryContext,
   CoreCodexReadContext,
   CoreCodexVisibilityPorts,
   CoreNativeReads,
   CoreReadDb,
 } from "../../mastraRead/ports.js";
-import { readCodexPhases } from "./codexReaders.js";
+import {
+  readCodexDetailValues,
+  readCodexPhaseDetailOverrides,
+  readCodexPhases,
+} from "./codexReaders.js";
 import type { ReadInputs } from "./readInputs.js";
 
 /**
@@ -30,7 +37,9 @@ export interface MainCodexVisibilityPortsArgs {
 
 export function createMainCodexVisibilityPorts(
   args: MainCodexVisibilityPortsArgs,
-): CoreCodexVisibilityPorts {
+): CoreCodexVisibilityPorts & {
+  readonly codex: CoreCodexData & CoreCodexDetailData;
+} {
   const { db, inputs } = args;
   // One fixed state, the same object each time.
   const phaseState = {
@@ -41,7 +50,34 @@ export function createMainCodexVisibilityPorts(
   return {
     getDb: () => db,
     getPhaseState: () => phaseState,
-    codex: { listPhases: (entryIds) => readCodexPhases(db, entryIds) },
+    codex: {
+      listPhases: (entryIds) => readCodexPhases(db, entryIds),
+      listPhaseDetailOverrides: (phaseIds) =>
+        readCodexPhaseDetailOverrides(db, phaseIds),
+      listRawDetailValues: (entryIds) => readCodexDetailValues(db, entryIds),
+    },
+  };
+}
+
+export interface MainCodexEntryContextArgs extends MainCodexVisibilityPortsArgs {
+  readonly countTokens: (text: string) => number;
+  readonly extractPlainText: (json: string) => string;
+}
+
+/** `get_codex_entry` の read path が使う、Main の turn 単位の context。 */
+export function createMainCodexEntryContext(
+  args: MainCodexEntryContextArgs,
+): CoreCodexEntryContext {
+  const treeState = {
+    projectId: args.inputs.projectId,
+    nodes: [],
+    activeSceneId: args.inputs.currentSceneId,
+  };
+  return {
+    ...createMainCodexVisibilityPorts(args),
+    getTreeState: () => treeState,
+    countTokens: args.countTokens,
+    extractPlainText: args.extractPlainText,
   };
 }
 

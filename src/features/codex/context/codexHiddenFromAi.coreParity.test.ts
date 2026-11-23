@@ -21,12 +21,27 @@ interface FakeEntry {
 const h = vi.hoisted(() => ({
   entries: [] as FakeEntry[],
   phases: [] as Array<Record<string, unknown>>,
+  overrides: [] as Array<{
+    phaseId: string;
+    definitionId: string;
+    value: string | null;
+  }>,
+  details: [] as Array<{
+    entryId: string;
+    definitionId: string;
+    value: string | null;
+  }>,
 }));
 
 vi.mock("@/features/codex/phaseApi", () => ({
   listPhasesByEntryIds: async (ids: string[]) =>
     h.phases.filter((p) => ids.includes(String(p["entryId"]))),
-  listDetailOverridesByPhaseIds: async () => [],
+  listDetailOverridesByPhaseIds: async (ids: string[]) =>
+    h.overrides.filter((p) => ids.includes(String(p["phaseId"]))),
+}));
+vi.mock("@/features/codex/detailApi", () => ({
+  listRawDetailValuesByEntryIds: async (ids: string[]) =>
+    h.details.filter((detail) => ids.includes(String(detail["entryId"]))),
 }));
 vi.mock("@/db/client", async () => {
   const { codexEntries } = await import("@/db/schema");
@@ -64,11 +79,15 @@ import { db } from "@/db/client";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { listPhasesByEntryIds } from "@/features/codex/phaseApi";
 import type { TreeNodeData } from "@/features/tree/types";
-import type { CoreReadDb } from "@/../electron/shared/mastraRead/ports";
-import type { CoreCodexVisibilityPorts } from "@/../electron/shared/mastraRead/ports";
+import type {
+  CoreCodexDetailData,
+  CoreCodexVisibilityPorts,
+  CoreReadDb,
+} from "@/../electron/shared/mastraRead/ports";
 import {
   listHiddenCodexIds,
   resolveCodexAiVisibility,
+  resolveCodexAiVisibilityWithDetails,
 } from "@/../electron/shared/readDomain/core/codexVisibility";
 import { buildSceneTimeIndex } from "./sceneTimeIndex";
 import { resolveCodexForAi } from "./codexHiddenFromAi";
@@ -128,8 +147,11 @@ const phase = (
 });
 
 /** renderer の ctx と同じ形の port（`getPhaseState` は live の store を呼出し時に読む）。 */
-const RENDERER_PORTS: CoreCodexVisibilityPorts = {
+const RENDERER_PORTS: CoreCodexVisibilityPorts & {
+  readonly codex: CoreCodexDetailData;
+} = {
   getDb: () => db as unknown as CoreReadDb,
+  getProjectEpoch: () => usePhaseStore.getState().projectEpoch,
   getPhaseState: () => {
     const { sceneTimeIndex, resolutionMode } = usePhaseStore.getState();
     return {
@@ -137,7 +159,13 @@ const RENDERER_PORTS: CoreCodexVisibilityPorts = {
       resolutionMode: { kind: "resolved", mode: resolutionMode },
     };
   },
-  codex: { listPhases: (ids) => listPhasesByEntryIds([...ids]) },
+  codex: {
+    listPhases: (ids) => listPhasesByEntryIds([...ids]),
+    listPhaseDetailOverrides: async (ids) =>
+      h.overrides.filter((over) => ids.includes(over.phaseId)),
+    listRawDetailValues: async (ids) =>
+      h.details.filter((detail) => ids.includes(detail.entryId)),
+  },
 };
 
 const IDS = [
@@ -183,6 +211,15 @@ beforeEach(() => {
     }),
     phase("ph-orph-null", "orph-null", null, "hidden"),
     phase("ph-orph-gone", "orph-gone", "deleted-scene", "hidden"),
+  ];
+  h.overrides = [
+    { phaseId: "ph-rel", definitionId: "d-detail", value: "Phase の詳細" },
+    { phaseId: "ph-rel", definitionId: "d-clear", value: null },
+  ];
+  h.details = [
+    { entryId: "rel", definitionId: "d-detail", value: "base の詳細" },
+    { entryId: "rel", definitionId: "d-clear", value: "消去される詳細" },
+    { entryId: "rel", definitionId: "d-base", value: "base のみ" },
   ];
 });
 
@@ -255,6 +292,38 @@ describe("renderer の resolveCodexForAi と read core の判定が一致する"
       });
     }
   }
+
+  it("released の detailValues と null の消去も legacy と一致する", async () => {
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([
+        scene("s1", "a0", "a1"),
+        scene("s2", "a1", "a3"),
+        scene("s3", "a2", "a2"),
+      ]),
+      resolutionMode: "reading",
+    });
+    const options = {
+      entryIds: ["rel"],
+      projectId: "p",
+      sceneId: "s2",
+      withContent: true,
+      withDetails: true,
+    } as const;
+    const legacy = await resolveCodexForAi(options);
+    const core = await resolveCodexAiVisibilityWithDetails(
+      RENDERER_PORTS,
+      options,
+    );
+
+    expect([...core.texts.entries()]).toEqual([...legacy.texts.entries()]);
+    expect(core.texts.get("rel")?.detailValues?.get("d-detail")).toBe(
+      "Phase の詳細",
+    );
+    expect(core.texts.get("rel")?.detailValues?.get("d-clear")).toBeNull();
+    expect(core.texts.get("rel")?.detailValues?.get("d-base")).toBe(
+      "base のみ",
+    );
+  });
 
   it("fixture が判定を区別している（全 sceneId で同じ結果の自明な比較になっていない）", async () => {
     usePhaseStore.setState({

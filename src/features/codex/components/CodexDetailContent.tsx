@@ -52,6 +52,7 @@ import { ResearchTab } from "./ResearchTab";
 import { TimelineTab } from "./TimelineTab";
 import { ForeshadowTab } from "./ForeshadowTab";
 import { ConsistencyTab } from "./ConsistencyTab";
+import { ImpactPendingTabMarker } from "./ImpactPendingTabMarker";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 import { saveOutcomeCause, type VersionedSaveOutcome } from "@/lib/saveOutcome";
@@ -1044,7 +1045,19 @@ export function CodexDetailContent({
       {/* Tab bar */}
       <div className="mt-[22px] px-7">
         <DetailTabs
-          tabs={getTabs()}
+          tabs={getTabs().map((tab) =>
+            tab.id === "consistency"
+              ? {
+                  ...tab,
+                  marker: (
+                    <ImpactPendingTabMarker
+                      entryId={entry.id}
+                      refreshKey={`${activeTab}:${entry.updatedAt}`}
+                    />
+                  ),
+                }
+              : tab,
+          )}
           activeTab={activeTab}
           onTabChange={handleTabChange}
         />
@@ -1106,7 +1119,10 @@ export function CodexDetailContent({
           <ForeshadowTab codexEntryId={entry.id} />
         )}
         {activeTab === "consistency" && (
-          <ConsistencyTab codexEntryId={entry.id} />
+          <ConsistencyTab
+            codexEntryId={entry.id}
+            impactRefreshKey={entry.updatedAt}
+          />
         )}
       </div>
     </div>

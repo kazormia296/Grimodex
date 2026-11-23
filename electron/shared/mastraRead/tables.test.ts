@@ -11,12 +11,16 @@ import { MAIN_READ_TABLE_SET, MAIN_READ_TABLES } from "./tables.js";
  * the hidden and chronicle-secret inputs); PR-5a adds `snippets` (`search_snippets`); PR-5b adds `foreshadows` and
  * `foreshadow_setups` (`get_foreshadow_detail`); PR-7a adds `events`, `event_participants`,
  * `scene_events`, `event_relations`, `project_calendar` and `codex_entries` (the chronicle tools); PR-8a adds
- * `codex_entry_phases` (the Codex visibility decision).
+ * `codex_entry_phases`（Codex の可視性判定）；PR-10a は詳細の3表を先行許可し、そのうち2表を
+ * 可視性 core が読み、残る1表は PR-10b で移す entry tool 用にする。
  */
 const PINNED = [
+  "codex_detail_definitions",
+  "codex_detail_values",
   "codex_entries",
   "codex_entry_phases",
   "codex_entry_tags",
+  "codex_phase_detail_overrides",
   "codex_tags",
   "event_participants",
   "event_relations",
@@ -34,16 +38,10 @@ const PINNED = [
 ];
 
 /**
- * Tables a later PR adds when a tool that reads them moves into the core. A
- * statement that names one is refused today (the negative control of the
- * allowlist: it is a closed set, not "every table of the schema").
+ * どの lane も core への許可を出していない表。これを含む文は拒否される（schema 全表ではなく
+ * 閉じた allowlist であることを示す negative control）。
  */
-const NOT_YET = [
-  "codex_detail_definitions",
-  "codex_detail_values",
-  "codex_phase_detail_overrides",
-  "foreshadow_codex_links",
-];
+const NOT_YET = ["foreshadow_codex_links"];
 
 describe("the read allowlist of tables", () => {
   it("is the pinned list, sorted, in lower case, without a duplicate", () => {

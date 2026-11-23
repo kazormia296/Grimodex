@@ -1338,10 +1338,11 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     assert.equal(selected.fallback, true, `${name}.ts stays fail-open (every suite)`);
     covers(selected, chronicleApi, `${name} vs chronicle/api.ts`);
   }
-  // PR-8a: the Codex visibility decision. codexVisibility.ts and codexReaders.ts are the asynchronous entry and
-  // the Drizzle selects of the renderer's resolveCodexForAi / listPhasesByEntryIds (src/features/codex/context/
-  // codexHiddenFromAi.ts, src/features/codex/phaseApi.ts), and codexMainContext.ts is main's counterpart of the
-  // renderer's live phase store. None is listed on a rule, so each falls back to every suite; the pure
+  // PR-8a/10a: the Codex visibility decision and its detail readers. codexVisibility.ts and codexReaders.ts are
+  // the asynchronous entry and Drizzle selects of the renderer's resolveCodexForAi / listPhasesByEntryIds /
+  // detail readers (src/features/codex/context/codexHiddenFromAi.ts, src/features/codex/phaseApi.ts and
+  // src/features/codex/detailApi.ts), and codexMainContext.ts is main's counterpart of the renderer's live
+  // phase store. None is listed on a rule, so each falls back to every suite; the pure
   // features/codex/context/codexAiVisibility.ts does too.
   const hiddenFromAi = selectImpact(map, ["src/features/codex/context/codexHiddenFromAi.ts"]);
   const phaseApi = selectImpact(map, ["src/features/codex/phaseApi.ts"]);
@@ -1351,6 +1352,17 @@ test("the shared read core (MP-4b PR-4) selects at least what editing the file i
     "electron/shared/readDomain/core/codexReaders.ts",
     "electron/shared/readDomain/core/codexMainContext.ts",
     "electron/shared/readDomain/features/codex/context/codexAiVisibility.ts",
+  ]) {
+    const selected = selectImpact(map, [file]);
+    assert.equal(selected.fallback, true, `${file} stays fail-open (every suite)`);
+    covers(selected, hiddenFromAi, `${file} vs codexHiddenFromAi.ts`);
+    covers(selected, phaseApi, `${file} vs phaseApi.ts`);
+  }
+  // PR-10a also changes the shared read ports and Main's table allowlist. They intentionally stay out of
+  // tool-policy paths: the default selects every suite, while a rule here would narrow those edits.
+  for (const file of [
+    "electron/shared/mastraRead/ports.ts",
+    "electron/shared/mastraRead/tables.ts",
   ]) {
     const selected = selectImpact(map, [file]);
     assert.equal(selected.fallback, true, `${file} stays fail-open (every suite)`);

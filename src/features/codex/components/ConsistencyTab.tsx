@@ -23,6 +23,8 @@ const SEVERITY_DOT: Record<string, string> = {
 
 interface ConsistencyTabProps {
   codexEntryId: string;
+  /** 項目の更新時刻。影響チェックの「前回以降の変更」の再計算の契機。 */
+  impactRefreshKey?: string;
 }
 
 /**
@@ -30,7 +32,10 @@ interface ConsistencyTabProps {
  * Tier A-1 — 既存 annotation データを entry_id で読み替えるだけ (生成側不変)。
  * 件数は client 側集計。校閲パネル (ProjectAnnotationsView) と逆向きの導線。
  */
-export function ConsistencyTab({ codexEntryId }: ConsistencyTabProps) {
+export function ConsistencyTab({
+  codexEntryId,
+  impactRefreshKey,
+}: ConsistencyTabProps) {
   const { t } = useTranslation();
   const projectId = useTreeStore((s) => s.projectId);
   const nodes = useTreeStore((s) => s.nodes);
@@ -71,7 +76,10 @@ export function ConsistencyTab({ codexEntryId }: ConsistencyTabProps) {
   if (findings.length === 0) {
     return (
       <div className="space-y-3">
-        <ImpactCheckButton entryId={codexEntryId} />
+        <ImpactCheckButton
+          entryId={codexEntryId}
+          refreshKey={impactRefreshKey}
+        />
         <div
           data-testid="consistency-tab-empty"
           className="py-8 text-center text-xs text-muted-foreground"
@@ -94,7 +102,7 @@ export function ConsistencyTab({ codexEntryId }: ConsistencyTabProps) {
 
   return (
     <div className="space-y-2">
-      <ImpactCheckButton entryId={codexEntryId} />
+      <ImpactCheckButton entryId={codexEntryId} refreshKey={impactRefreshKey} />
       <p
         data-testid="consistency-tab-count"
         className="px-1 text-xs text-muted-foreground"
