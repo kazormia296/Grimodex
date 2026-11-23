@@ -45,6 +45,16 @@ describe("the four typed reads call their own Native method", () => {
     expect(methods.ftsSearch).toHaveBeenCalledWith("p", "灯", "scenes", 5);
   });
 
+  it.each(["codex", "scenes", "scenes_live", "snippets"] as const)(
+    "fts_search passes the scope %s to Native as it is",
+    async (scope) => {
+      const { methods, backend } = backendWith();
+      const reads = createMainTypedReads({ backend, identity: IDENTITY });
+      await reads.fts({ projectId: "p", query: "灯", scope, limit: 10 });
+      expect(methods.ftsSearch).toHaveBeenCalledWith("p", "灯", scope, 10);
+    },
+  );
+
   it("the semantic reads take the workspace path from the identity", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
@@ -73,22 +83,30 @@ describe("the four typed reads call their own Native method", () => {
 });
 
 describe("a read that cannot be made safely is not sent (fail closed)", () => {
-  it.each(["all", "", "Codex", "events", undefined, 1])(
-    "fts scope %j is not read",
-    async (scope) => {
-      const { methods, backend } = backendWith();
-      const reads = createMainTypedReads({ backend, identity: IDENTITY });
-      await expect(
-        reads.fts({
-          projectId: "p",
-          query: "q",
-          scope: scope as FtsScope,
-          limit: 1,
-        }),
-      ).rejects.toMatchObject({ code: "scope" });
-      expect(methods.ftsSearch).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    "all",
+    "",
+    "Codex",
+    "events",
+    "scenes_live2",
+    "scenes_liv",
+    "Scenes_Live",
+    "scenes-live",
+    undefined,
+    1,
+  ])("fts scope %j is not read", async (scope) => {
+    const { methods, backend } = backendWith();
+    const reads = createMainTypedReads({ backend, identity: IDENTITY });
+    await expect(
+      reads.fts({
+        projectId: "p",
+        query: "q",
+        scope: scope as FtsScope,
+        limit: 1,
+      }),
+    ).rejects.toMatchObject({ code: "scope" });
+    expect(methods.ftsSearch).not.toHaveBeenCalled();
+  });
 
   it("an empty project id is refused for all four", async () => {
     const { methods, backend } = backendWith();
