@@ -288,3 +288,57 @@ The distinction is intentionally about mutation authority, not semantic truth:
 `freshness` remains deterministic source-basis state. Semantic retraction is
 still a forward compensating Application, never an Undo or an automatic
 Dependency propagation.
+
+## 追補（2026-11-23）：出来事の削除に連動する承認の撤回、作品の削除、AI・MCP による作者の出来事の更新・削除
+
+本 ADR の本文と、上の Amendment は書き換えない。次の 2 本の起案が確認されたので、本文の文に対する例外と読みを、ここに記す。規則の正本は各起案である。この追補は、本文のどの文がどう読み替わるかを示すだけで、規則を足さない。実装の順番と公開の条件は、各起案による。
+
+- 起案：SRD/1（[nir1-chronicle-scene-review-apply-delta-proposal-1-draft.md](../plans/nir1-chronicle-scene-review-apply-delta-proposal-1-draft.md)。draftRef `nir1-chronicle-scene-review-apply-delta/1`、下書きの SHA-256 `bb7bfbb90ca9dece6e409fc70c73ae7a378742f31b129da371419230b5518c4b`）と、AWA/1（[nir1-agent-event-write-approval-proposal-1-draft.md](../plans/nir1-agent-event-write-approval-proposal-1-draft.md)。draftRef `nir1-agent-event-write-approval-proposal/1`、下書きの SHA-256 `1dd0fdf64700393b0b8d6a9e5c7034f14edddf7be9dcf6dc87a4f8b31a650d0e`）。
+- 確認の記録：`claude/nir1-contracts` の commit `2778cf5abbbc25114b40c9ce8e1233543515ddc8` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-22-chronicle-scene-review-apply.md`。SRD/1-1（`#chronicle-event-existence-sync`）は確認 138、SRD/1-2（`#chronicle-applied-proposal-redecide`）は確認 139、SRD/1-3（`#chronicle-project-delete-with-applications`）は確認 140、AWA/1-1（`#agent-event-write-approval`）は確認 141、AWA/1-2（`#mcp-author-event-write`）は確認 142。確認 138 は、設計の記録（ADR 004・005・006、Gate B2）に例外・追補を足す文の置き場を、起案者の読みとして挙げている。どの文に足すかは、起案者の読みである。
+- 確認 138〜142 は、それぞれの行だけに掛かる（ほかの行の確認にはならない）。この追補は、行ごとに、どの確認の範囲かを示す。
+
+### 1. 出来事の削除に連動する承認の撤回（SRD/1 の X。SRD/1-1。確認 138）
+
+本文の次の文に、例外を足す。
+
+- 「Change Feed／Dependency Index が伝播してよいのは dirty／needs-reconciliation までである。semantic retract、Domain delete、merge、split の自動伝播は禁止する。」（「Provenance／依存伝播」の節）と、Iron Law 4。
+- 末尾の Amendment の「Semantic retraction is still a forward compensating Application, never an Undo or an automatic Dependency propagation.」。
+
+**例外。** 年表の出来事（Domain）が無くなったとき、本体（Domain Writer）が、同じ transaction の中で、その出来事を取り込んだ提案の承認を外す（却下の決定を 1 件追記する）。補償 Application は作らない。Dependency Index と Change Feed が行うのではなく、Domain Writer が行う。効果は、禁じる向きと同じ（Domain の削除が、承認の撤回に伝わる）ので、「読み」でなく、例外として明記する。
+
+- 出来事を消す入口は、画面の削除・まとめ削除、元に戻す・やり直す、スナップショットの復元、取り込みの取り消しである。AI・MCP は、今は取り込んだ出来事を消せない見込みで、消せるようになっても、同じ規則が働く。
+- 承認を外す記録が書けなければ、その操作を失敗させる。元に戻す・やり直すが失敗しても、履歴は保つ。
+- Application・版・過去の決定は書き換えない。決定を追記するだけである。出来事が戻っても、承認は自動では戻らない（作者が承認し直す。SRD/1 の RA）。
+- 外すのは、解釈の真偽ではなく、出来事が無い解釈を関連に使う許可である（Iron Law 3 と、本文の「`accepted` and `applied` remain authorization/projection states」と同じ向き）。この読みは起案者のものである。
+- これは、作者・AI・MCP が呼べる撤回の入口ではなく、出来事の削除に連動して本体が書く内部の却下である。作者が呼べる却下の入口は作らない。
+- 変えない：Iron Law 8（X の actor は `ai` で、override を付けられない）。「Undo を semantic truth correction として使用しない」（X は決定を書くだけで、Undo の部分の例外は要らない）。ADR 011 の Existing-Projection revision（X は retract を製品に繋がない）。
+
+### 2. 作品の削除（SRD/1 の Z。SRD/1-3。確認 140）
+
+本文の「適用済み Proposal Revision／Application は **監査履歴として不変**である」（「Semantic retraction と Undo の分離」の節。Iron Law 6 の前半）に、**作品の削除（「プロジェクトを削除」）に限る例外**を足す。取り込みの記録がある作品も削除でき、取り込みの記録（Application・版・決定）も作品ごと消え、戻せない。
+
+- 例外は、個別の記録の削除、場面や根拠の削除に連動する削除、取り込みの取り消しに連動する削除には広げない。
+- Source／Evidence の失効・削除から Domain への cascade delete を禁じる文（Iron Law 11 と、「Provenance／依存伝播」の節）は、変えない。作品の削除は、Source／Evidence の削除に連動しない。
+- 削除の後も残るもの：AI の監査の記録（ハッシュ鎖を壊さないため）、送信の鍵の表、古いバックアップ。削除の記録は作らない。残る AI の監査の記録に、削除した作品の年表・取り込みの何が入りうるかは、実データで未確認である（実装の前の検査で確かめる）。
+- 削除の所要時間、検索の cache の削除、実行中の検索・保守・別プロセスの MCP との競合は、未確認（実装の前に確かめる）。
+
+### 3. Gate B2 への適用
+
+「Gate B2 への適用」と「Gate B2 追加検証」は、次のように読む。
+
+- B2-X04（「Provenance/Dependency は needs-reconciliation のみ伝播し、Domain delete/retract を伝播しない」）と、「Dirty-only propagation」「Immutable history」の gate、`004-narrative-reconciliation-boundary-checklist.md` の横断 Gate の対応する行は、上の 1・2 の例外を除いて読む。`gateB2Negatives.test.ts` は Reconciler の出力だけを検査するので、試験は落ちない。契約の文言には当たるので、この追補で例外として明記する。
+- B2-X05 と「Cascade protection」（Source／Evidence の削除から Domain への FK cascade が存在しない）は、変えない。B2-X05 の証跡には、新しい試験を足す（既にある試験は改造しない。SRD/1-3 の実装の PR）。
+- policy の JSON と試験（`gate-b2-adr-checklist.json`、`schema_contract.rs` の `immutable_history_contract_contains_retraction_guards` など）は、この追補では変えない。
+
+### 4. 承認し直しの入口（SRD/1 の RA。SRD/1-2。確認 139）
+
+NIR0-CERT の「the typed C2B Human writer is the only V2 review route」との間に、緊張が 1 つある。承認し直し（RA）は、人の review の入口を、もう 1 つ足す（型付きで、3 つの id だけを受け、内容は本体が組み立てる）。BAO/1 が既に足した入口と、同じ種類である。RA は、撤回の入口ではなく、承認し直す入口である。
+
+### 5. AI・MCP が作者の出来事を更新・削除する（AWA/1。AWA/1-1 は確認 141、AWA/1-2 は確認 142）
+
+本文の「Locked／user-authored **Domain projection または field** の、明示的 human-authorized override なしの AI／Reconciler 上書き禁止」（境界の節）と、Iron Law 8 の前半に、次を足す。Iron Law 8 の対象は、Reconciler 由来の plan のままで、その文は変えない。「Lock enforcement」の gate も、変えない。
+
+- **アプリ内の AI（AWA/1-1）。** Interactive Agent Command の経路にも、この override の文を使う。作者の出来事に触れる更新・削除を、チャットのカードで 1 回ずつ承認することが、「明示的な human-authorized override」に当たる。AI が自分で作った出来事の更新は、承認なしである。
+- **MCP（AWA/1-2）。** MCP の免除は、「AI／Reconciler の上書き禁止」の字義に反する（MCP の外部の AI は「AI」である）。そこで、この文に、ユーザーの選択による**例外**を書き足す。MCP は、設定で許した、1 つの作品に固定した接続だけ、作者の出来事を承認なしで更新・削除できる（全部の作品を扱える接続は、今までどおり拒む）。開示の場面を、承認なしで置いたり変えたりできる（秘密の印そのものは変えられない）。MCP が書いた項目の持ち主は、作者のままで、変更の記録に MCP の印を残す。
+- Iron Law 8 の後半「Authority は caller metadata ではなく Decision／Runtime Policy／actor context から検証する」とは、免除の根拠を payload の `surface` の文字列にせず、型で渡す引数にして合わせる。ただし、根拠は、その引数を作る側のコード（MCP の `GrimodexServer`）で、Decision や actor context ではない。接続の固定の判定は MCP 側の 1 か所だけが持ち、Native は検証しない（残るリスク。AWA/1 の M2・§3）。
+- 順番：文書の追補と policy の JSON の変更が、Native の PR より先である。MCP の削除は、SRD/1 の X（上の 1）が入ってから開ける（間に合わなければ、閉じたまま公開する。確認 74・77）。
