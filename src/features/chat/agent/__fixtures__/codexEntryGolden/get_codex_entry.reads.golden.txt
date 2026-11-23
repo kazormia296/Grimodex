@@ -1,0 +1,155 @@
+{
+  "normal": [
+    {
+      "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+      "params": [
+        "ge-normal",
+        "p-main"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+      "params": [
+        "p-main",
+        "ge-normal"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+      "params": [
+        "ge-normal"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"project_id\", \"type_slug\", \"name\", \"field_type\", \"field_config\", \"sort_order\", \"include_in_context\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_definitions\" where \"codex_detail_definitions\".\"type_slug\" = ?",
+      "params": [
+        "character"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"definition_id\", \"value\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_values\" where \"codex_detail_values\".\"entry_id\" = ?",
+      "params": [
+        "ge-normal"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where \"codex_entries\".\"parent_id\" = ?",
+      "params": [
+        "ge-normal"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?, ?))",
+      "params": [
+        "p-main",
+        "ge-normal-child",
+        "ge-hidden-child"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?, ?) order by \"codex_entry_phases\".\"created_at\"",
+      "params": [
+        "ge-hidden-child",
+        "ge-normal-child"
+      ]
+    }
+  ],
+  "released": [
+    {
+      "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+      "params": [
+        "ge-released-old",
+        "p-main"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+      "params": [
+        "p-main",
+        "ge-released-old"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+      "params": [
+        "ge-released-old"
+      ]
+    },
+    {
+      "sql": "select \"phase_id\", \"definition_id\", \"value\" from \"codex_phase_detail_overrides\" where \"codex_phase_detail_overrides\".\"phase_id\" in (?, ?, ?)",
+      "params": [
+        "ge-phase-old",
+        "ge-phase-release",
+        "ge-phase-rehide"
+      ]
+    },
+    {
+      "sql": "select \"entry_id\", \"definition_id\", \"value\" from \"codex_detail_values\" where \"codex_detail_values\".\"entry_id\" in (?)",
+      "params": [
+        "ge-released-old"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"project_id\", \"type_slug\", \"name\", \"field_type\", \"field_config\", \"sort_order\", \"include_in_context\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_definitions\" where \"codex_detail_definitions\".\"type_slug\" = ?",
+      "params": [
+        "character"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"definition_id\", \"value\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_values\" where \"codex_detail_values\".\"entry_id\" = ?",
+      "params": [
+        "ge-released-old"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"name\", \"type\", \"summary\" from \"codex_entries\" where \"codex_entries\".\"parent_id\" = ?",
+      "params": [
+        "ge-released-old"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"summary\", \"context_mode\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+      "params": [
+        "p-main",
+        "ge-release-child"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+      "params": [
+        "ge-release-child"
+      ]
+    }
+  ],
+  "hidden": [
+    {
+      "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+      "params": [
+        "ge-hidden",
+        "p-main"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"summary\", \"context_mode\", \"content\" from \"codex_entries\" where (\"codex_entries\".\"project_id\" = ? and \"codex_entries\".\"id\" in (?))",
+      "params": [
+        "p-main",
+        "ge-hidden"
+      ]
+    },
+    {
+      "sql": "select \"id\", \"entry_id\", \"anchor_node_id\", \"label\", \"summary_override\", \"content_override\", \"context_mode_override\", \"created_at\", \"updated_at\", \"version\" from \"codex_entry_phases\" where \"codex_entry_phases\".\"entry_id\" in (?) order by \"codex_entry_phases\".\"created_at\"",
+      "params": [
+        "ge-hidden"
+      ]
+    }
+  ],
+  "missing": [
+    {
+      "sql": "select \"id\", \"project_id\", \"parent_id\", \"type\", \"name\", \"aliases\", \"excluded_aliases\", \"readings\", \"summary\", \"content\", \"icon\", \"tags_cache\", \"context_mode\", \"children_budget\", \"source_chat_message_id\", \"notes\", \"created_at\", \"updated_at\", \"version\" from \"codex_entries\" where (\"codex_entries\".\"id\" = ? and \"codex_entries\".\"project_id\" = ?)",
+      "params": [
+        "missing-entry",
+        "p-main"
+      ]
+    }
+  ]
+}
