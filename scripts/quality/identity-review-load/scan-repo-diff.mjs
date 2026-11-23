@@ -12,6 +12,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  REVIEW_VERDICTS,
   WORKS,
   buildShingleSet,
   expectedSceneText,
@@ -82,6 +83,25 @@ function addedLines(diff) {
     .join("\n");
 }
 
+/**
+ * 名簿（repo 外）の JSON の値から、原稿由来の表記を集める（非 ASCII を含む 2 字以上の文字列を全部。欄は問わない）。
+ * 例外は、作者の確認の表の「判定」欄（key が verdict）の値のうち、道具自身の閉じた語彙（REVIEW_VERDICTS）に
+ * 一致するものだけ。これらは原稿由来の表記でなく、道具のコードが同じ語を持つので、外さないと偽陽性になる。
+ * 語彙に無い値や、別の欄にある同じ語は外さない（fail-closed）。
+ */
+export function collectRosterSurfaces(value, surfaces, key = "") {
+  if (typeof value === "string") {
+    if (key === "verdict" && REVIEW_VERDICTS.includes(value)) return;
+    // eslint-disable-next-line no-control-regex
+    if (/[^\x00-\x7F]/u.test(value) && [...value].length >= 2)
+      surfaces.add(value);
+  } else if (Array.isArray(value))
+    for (const item of value) collectRosterSurfaces(item, surfaces, key);
+  else if (value && typeof value === "object")
+    for (const [k, item] of Object.entries(value))
+      collectRosterSurfaces(item, surfaces, k);
+}
+
 function loadMaterial(output, dataDir) {
   const texts = [];
   for (const key of Object.keys(WORKS)) {
@@ -112,15 +132,7 @@ function loadMaterial(output, dataDir) {
   // 最頻形・メモなど欄を問わない）。読めない JSON は黙って捨てず、件数だけ数える。
   let unreadableJson = 0;
   const rosterRoot = path.join(output, "roster");
-  const collect = (value) => {
-    if (typeof value === "string") {
-      // eslint-disable-next-line no-control-regex
-      if (/[^\x00-\x7F]/u.test(value) && [...value].length >= 2)
-        surfaces.add(value);
-    } else if (Array.isArray(value)) for (const item of value) collect(item);
-    else if (value && typeof value === "object")
-      for (const item of Object.values(value)) collect(item);
-  };
+  const collect = (value) => collectRosterSurfaces(value, surfaces);
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const file = path.join(dir, entry.name);
