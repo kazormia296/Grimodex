@@ -1,6 +1,7 @@
 # 影響チェックの「要りそう」の知らせ（レベル 0）の判断の記録
 
-- 状態：**実装済み・試作の確認待ち**（2026-11-23。枝 `claude/impact-check-nudge`、`origin/master` `fa6f1af26` から。未 push）。
+- 状態：**実装済み・試作の確認待ち**（2026-11-23。枝 `claude/impact-check-nudge`、`origin/master` `fa6f1af26` から。未 push）。独立レビュー（P1 なし）の P2・P3 を反映済み（第 10 節）。
+- 順序：この文書は**実装の後**に書いた（実装→試験→文書の順。編集前の matrix は 5.1 の読みで不要と判断した）。
 - ID：`DR-INN-1`。PR 本文にも同じ ID を載せる。
 - 親の検討書：`design-impact-nudge-20261123.md`（read-only の検討。Codex の変更を契機に「影響チェックが要りそう」と知らせる案。
   fusion-eval-data の handoff 配下にあり、リポジトリには入れていない）。
@@ -15,7 +16,7 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 
 | 場所 | 見え方 | ja | en |
 | --- | --- | --- | --- |
-| 整合性タブ | タブの右上に小さな点（主色）。タブのアイコンと文字の幅・位置は変わらない（absolute で重ね、ボタンの padding の内側）。狭幅でアイコンだけになっても同じ（8 タブ・詳細がアクティブ・整合性が非アクティブの状態を実 Chromium で確認）。スクリーンリーダーには sr-only の語を足す | 影響チェックが未実施の変更があります | Changes not yet checked for impact |
+| 整合性タブ | タブの右上に小さな点（主色）。タブのアイコンと文字の幅・位置は変わらない（absolute で重ね、ボタンの padding の内側）。狭幅でアイコンだけになっても同じ（8 タブ・詳細がアクティブ・整合性が非アクティブの状態で、点がタブの内側に収まり幅・畳み込みが変わらないことだけを実 Chromium で確認した。8 タブ・240px では整合性タブ自体が右端に隠れて点が見えない。§6 の 8）。スクリーンリーダーには sr-only の語を足す（「整合性 (影響チェックが未実施の変更があります)」と括弧で区切り、名前が連結しない） | 影響チェックが未実施の変更があります | Changes not yet checked for impact |
 | ボタン上の 1 行 | 整合性タブの中、「この変更の影響をチェック」ボタンの上に 1 行。小さな点＋文言（`text-xs`、muted の文字色）。折り返しても親の幅の内側 | 前回のチェック以降に N 件の変更があります | 1 change since the last check ／ N changes since the last check |
 
 - 押したときの挙動・toast（no-change／no-candidates／source-changed／started）・既存の locale 文言は**変えない**。
@@ -26,16 +27,21 @@ Codex の項目の詳細で、**影響チェックのボタンを押す前に**�
 
 | 状態 | 条件 | 表示 | 押したとき（run） |
 | --- | --- | --- | --- |
-| `pending`（件数 N） | baseline があり値が確認済み、現在 Phase が制限的でない、base の contextMode が `current-mention` を満たす、`effectiveRestrictedPhaseIds` が空、`computeCodexDiff` が N>0 件、AI gate が `enabled`、影響チェックの実行中でない | 出す | `no-change` でなく、`changeCount === N`、候補絞りまで進む |
+| `pending`（件数 N） | baseline があり値が確認済み、現在 Phase が制限的でない、base の contextMode が `current-mention` を満たす、`effectiveRestrictedPhaseIds` の Phase を baseline・現在の両方から除いた（run の `redactRestrictedPhases` の写し）`computeCodexDiff` が N>0 件、AI gate が `enabled`、影響チェックの実行中でない | 出す | `no-change` でなく、`changeCount === N`、候補絞りまで進む |
 | `unchecked` | baseline が無い（一度も押していない）／値がすべて空の tombstone だけの baseline | 出さない（初回に全項目が「変更あり」になるのを避ける） | 初回は全フィールドを「変更」と数える（従来どおり） |
 | `gated`（現在の制限・contextMode） | 現在 Phase が 1 つでも制限的／base の contextMode が `current-mention` を満たさない（hidden・suppress・不明な値） | 出さない。「確認できません」とも言わない（DR-MP4-44 の Q-C は現状維持） | 差分があっても `no-candidates` で止まり baseline は進まない |
-| `gated`（unresolved-phase-restriction） | run の redact が Phase を除外する（証明の無い Phase の削除、baseline の restrictedPhaseIds の Phase が現在無い、など） | 出さない（素の差分は run の差分と食い違うため。偽陽性を避け、偽陰性は許容） | Phase を除いた差分で動く |
-| `none` | 差分なし（空白・全半角・別名の順だけの違いは `cmp()` が無視） | 出さない | `no-change` |
+| `none` | 差分なし（空白・全半角・別名の順だけの違いは `cmp()` が無視）。証明の無い Phase 削除だけで、その Phase を除くと差分なしの場合も含む | 出さない | `no-change` |
 | （hook の条件） | AI gate が `enabled` でない／影響チェックの実行中／読みの失敗／項目が無い | 出さない（表示なし。toast も出さない）。gate が `hidden` ならボタンごと出ない（従来どおり） | — |
 
 写し元：`runImpactReview.ts` の `contextMode ?? "mentioned"`、`hasRestrictedPhases ?? false`、`snapshot.restrictedPhaseIds`、
 `effectiveRestrictedPhaseIds`（現在制限中の Phase ∪ baseline の restrictedPhaseIds のうち現在無いもの ∪ baseline の phases のうち現在無く `visibleDeletedPhaseIds` に無いもの）、
-`allPhaseIds ?? phases.map(...)` の fallback、`canIncludeResolvedCodexContext(mode, "current-mention")`（同じ関数を import）。
+`allPhaseIds ?? phases.map(...)` の fallback、`redactRestrictedPhases`、`canIncludeResolvedCodexContext(mode, "current-mention")`（同じ関数を import）。
+
+**Phase の削除・制限の解除**：run は門で止まらず、`effectiveRestrictedPhaseIds`（証明の無い Phase 削除、非公開だった Phase を消した後、来歴の無い legacy baseline での削除など）の Phase を baseline・現在の両方から除いて差分を取り、候補絞りへ進む。
+知らせも同じ除外をした件数を数える（以前の版は「素の差分と食い違う」として出さなかったが、押せば AI まで進む状態で知らせない偽陰性だったため、レビュー指摘で直した）。
+件数だけを出すので、除いた（非公開だった）Phase の内容は表示に出ない。
+
+**`unchecked` の注意**：値がすべて空の baseline（確認済みで名前も本文も空だった項目）も、tombstone と区別できないため `unchecked` として出さない（保守的な側。名前が空の項目はほぼ無い）。
 
 ## 3. 構成と信頼境界
 
@@ -78,7 +84,8 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 
 `policies/quality/iron-laws.md` の GDX-PRECHECK-001 は、**外部送信・subprocess・background work・async lifecycle** を足す変更に、編集前の owner／lifecycle matrix を要求する
 （entry／start／retry／reentrant・admission closure・active handle の所有・cancellation・実際の終了の証拠・persisted restart state を網羅）。
-この変更は次のとおり、いずれの資源も新しく持たない。
+この変更は次のとおり、いずれの資源も新しく持たない（外部送信・subprocess・background・所有する handle・終了の証拠・restart state を持たない。1 回きりの DB 読みと `cancelled` flag、cleanup で必ず clear される debounce timer だけ）。
+§5.2 の表は参考の matrix。bounded wait：読みが返らなければ表示なしのままになるだけで実害は無い（待ちを所有しない）。
 
 - **外部送信なし**：AI・network を呼ばない。ローカルの SQLite 読み 2 回だけ。
 - **subprocess なし**。
@@ -97,17 +104,17 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 | `refreshKey` の変化（アクティブなタブ・項目の `updatedAt`） | 500 ms の debounce 後に再読込 | 前の effect の cleanup が `cancelled=true` にするので、遅れて返った読みは state を書かない | 同上（試験：同じ項目で再計算が重なったとき古い読みが上書きしない） |
 | `entryId` の変化（詳細パネルは項目間で共有され再 mount されない） | 待たずに読む | 描画時に `result.entryId !== entryId` なら出さない（前の項目の結果を一瞬も出さない）＋ cancelled | 試験：古い項目の遅れた結果を捨てる |
 | 影響チェックの実行中（`running`）／AI gate が `enabled` でない | 読まない・前の結果も消す | 終了直後に古い件数を出さない | — |
-| 実行の終了（`running` が落ちる） | 再読込。ただし `post-effect/api.ts` は store の `complete`（`running` が落ちる）を `callbacks.onDone`（`runImpactReview` が baseline を進めた後に呼ぶ）より**先**に走らせるので、この読みは古い baseline を見て「N 件」が一瞬戻りうる | 同上 | 下の 2 行で収束 |
-| ボタンの `onDone`／`onError`（baseline の前進の後） | `epoch` を `bump`。**debounce せず**すぐ再読込（タブを離れて unmount していても global store なので効く） | 同上 | 試験：complete が baseline の前進より先でも、onDone の合図で印が消える／onError でも再読込 |
+| 実行の終了（`running` が落ちる） | **読まない**。`post-effect/api.ts` は store の `complete`（`running` が落ちる）を `callbacks.onDone`（`runImpactReview` が baseline を進めた後に呼ぶ）より**先**に走らせ、`onDone` の前に候補絞りのやり直しなどで時間がかかる。すぐ読むと古い baseline を見て「N 件」が出続けるため、結果を消したまま、`epoch` の進み（次の行）を待つ | — | 試験：complete の後・onDone の前は 1 行が出ず、読みもしない |
+| ボタンの `onDone`／`onError`（baseline の前進の後） | `epoch` を `bump`。**debounce せず**すぐ再読込（タブを離れて unmount していても global store なので効く）。部分失敗（baseline を進めない）の onDone でも `bump` し、変更が残っていれば 1 行が戻る | 同上 | 試験：onDone の合図で再読込・消える／部分失敗では戻る／onError でも再読込 |
 | 押下の終わり（ボタンの `finally` が `bump`） | 再読込（`no-candidates`／`no-change` は run を作らずに baseline を進めるので、`running` の変化に頼らない） | 同上 | 試験：押下後に再計算して印が消える |
 | 読みの失敗 | 結果を消して表示なし（toast も出さない） | — | 試験：失敗は表示なし・前の結果を残さない |
 | unmount | 読みは止められないが、結果は捨てる（state を書かない） | `cancelled` | 試験：unmount 後に返った読みで警告なし |
 
-## 6. 残る制限（画面で見える。作者に見せる）
+## 6. 残る制限（画面で見える。作者に見せる。10 項目）
 
 1. **詳細タブで編集した直後、タブの点はすぐには出ないことがある**。点の再計算の契機は mount・アクティブなタブの切替・項目の `updatedAt` の変化・実行の終了・押下の終わりだけ。
    detail 値や Phase の編集は `codexStore` を通らず、`codex_entries` の `updatedAt` を上げるか未確認。タブを切り替えれば出る。
-   整合性タブを開けば、ボタン上の 1 行は常に最新（mount で読む）。書込み経路ごとの配線（検出点が増える）は、この PR では行わない。
+   整合性タブを開けば、ボタン上の 1 行は mount で最新を読み、開いたまま項目が更新された場合も `entry.updatedAt` を `refreshKey` として受けて再計算する（debounce 500 ms。ただし detail・Phase の編集が `updatedAt` を上げない場合は次の契機まで）。書込み経路ごとの配線（検出点が増える）は、この PR では行わない。
 2. **制限中（hidden・suppress・Phase 制限）の項目には何も出ない**。「システムは変更を見ていない」ように読めるが、「変更なし」ではなく「確認できない」の場合がある（DR-MP4-44 の Q-C の現状維持）。
 3. **候補シーンが 0 件のときの空振り**：知らせが出た後に押すと「影響しそうなシーンは見つかりませんでした」になり、baseline が進んで印が消える。知らせの段で候補絞りは呼ばない（AI 0 回・低コストを保つため）。
 4. **非公開 Phase の変更だけでは何も出ない**（押しても「変更がありません」。現状どおり）。
@@ -116,50 +123,62 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 7. **ライセンス未認証でも印は出る**（押すと従来どおり弾く）。**別窓で開きっぱなし**の項目は次の契機まで更新されない。
 8. **狭い幅（例 240px）では整合性タブは行の右端に隠れ、点が見えない**：8 タブの行はアイコンに畳んでも入り切らないと横スクロールになる（既存の挙動）。整合性は最後のタブなので、
    スクロールするまで点が見えない。そのときもボタン上の 1 行は整合性タブを開けば見える。点を先頭側へ寄せる・タブの順を変えることはしていない（既存のタブ構成を変えない）。
-9. **完走の直後、一瞬「N 件」が戻ることがある**：store の `complete`（実行中でなくなる）が baseline の前進より先に走るため、その時点の読みは古い baseline を見る。
-   baseline の前進の後の `onDone` の合図ですぐ再読込して消える（短い残像）。部分失敗（baseline を進めない）では残り続ける（再実行すべきなので正しい）。
+9. **完走の直後、`onDone`（baseline の前進と完了の確認）が終わるまで 1 行・点は出ない**：store の `complete` から `onDone` の合図までは読まずに隠す（古い baseline を読んで「N 件」が戻らないため）。
+   部分失敗（baseline を進めない）では `onDone` の後に再読込して、変更が残っていれば 1 行が戻る（再実行すべきなので正しい）。`onDone`／`onError`／`finally` のどの合図も来なかった場合（例：callbacks を経ずに run が閉じた）は、
+   次の契機（タブの切替・項目の更新・別の合図）まで表示なしのまま（偽りの「N 件」ではなく、表示なしの側に倒れる）。
 10. ja の `pending_one`／`pending_other` は同じ文（ja に単複は無い。既存の `consistencyTab.count_*` に揃えた）。
 
 ## 7. 試験
 
 - `impactPending.test.ts`：判定の表（baseline なし・tombstone・差分なし・空白／全半角／別名の順・各フィールドの件数・contextMode・Phase 制限・Phase 削除の証明・制限の解除・undo）。
 - `impactPending.parity.test.ts`：**実物の `runImpactReview`** と一致（pending(n)⇒run の `changeCount===n` で候補絞りまで進む／none⇒`no-change`／gated⇒`no-candidates` で候補絞りを呼ばない／
-  unresolved-phase-restriction は run の差分が素の差分と食い違う実例／unchecked は run が全変更と数える）。15 ケース＋2（gated のうち unresolved な 3 ケースは、run が実際に数える件数 `runChangeCount` を固定する）。
+  Phase の削除（証明の無い削除・legacy・制限 id の Phase が現在無い）は run も知らせも Phase を除いた同じ件数で候補絞りへ進む／素の差分 2 件に対し 1 件の食い違いの実例／unchecked は run が全変更と数える）。16 ケース＋3。
+- `impactPending.noAiImports.test.ts`：知らせの経路の 5 file（`impactPending.ts`・`readImpactPending.ts`・`impactPendingEpoch.ts`・`useImpactPending.ts`・`ImpactPendingTabMarker.tsx`）が
+  `runImpactReview`・`narrowing`・`post-effect/api`・`semantic-search`・`modelRouting` などを import（静的・動的）せず、AI／候補絞り／保存の識別子を持たないことを file の文字列で照合する
+  （`semanticSearch` は試験で mock していないので spy の 0 回では落ちないため）。
 - `ImpactCheckButton.test.tsx`：出る・出ない条件（baseline なし・変更なし・空白のみ・hidden・suppress・Phase 制限・項目なし・gate disabled／hidden・実行中）、
   AI 経路・候補絞り・保存・`runImpactReview` が 0 回、古い結果の破棄（項目切替・同じ項目の再計算の重なり）、失敗は表示なし、unmount、en の単複、
-  4 つの status の toast が不変、押下後に再計算。
-- `ImpactCheckButton.test.tsx` の「started の完走後」：`runImpactReview` の mock で callbacks を捕まえ、store の `complete` → まだ古い baseline → baseline を進める → 捕まえた `onDone` を呼ぶ、の順で印が消えること。
+  4 つの status の toast が不変、押下後に再計算、開いたまま項目が更新された（`refreshKey`）ときの再計算。
+- `ImpactCheckButton.test.tsx` の「started の完走後」：`runImpactReview` の mock で callbacks を捕まえ、store の `complete` → （まだ古い baseline のまま）**1 行が出ず読みもしない** → baseline を進める → 捕まえた `onDone` で再読込して消えること。部分失敗の `onDone` では 1 行が戻ること。
 - `ImpactPendingTabMarker.test.tsx`：点（aria-hidden＋sr-only）、計測行に出ない、出ない状態、gate、失敗、タブ切替・epoch での再計算、entryId 切替。
 - `ImpactNudge.browser.test.tsx`（実 Chromium、1 file）：ja・en × 幅 1100／320／220 で、1 行が親からはみ出さず折り返しても崩れない・点がタブの内側でアイコンに重ならない、
   点を足してもタブの幅・位置が変わらない、**8 タブ・詳細がアクティブ・幅 240／1100 で、非アクティブの整合性タブ（アイコンのみに畳まれる幅）の点がタブの内側に収まり、marker の有無で各タブの畳み込みと幅が変わらない**、light／dark のコントラスト（文字 4.5 以上・点 3 以上）。`VITE_IMPACT_NUDGE_SHOT` を付けると見た目の PNG を保存する（CI では保存しない）。
 
 ### 7.1 変異試験（1 つずつ入れて試験が落ちることを確認し、戻した）
 
-| 変異 | 落ちた件数（対象 4 file。※以外は 70 件中、※は試験を足した後の 72 件中） |
+対象 5 file（`impactPending.test.ts`・`impactPending.parity.test.ts`・`impactPending.noAiImports.test.ts`・`ImpactCheckButton.test.tsx`・`ImpactPendingTabMarker.test.tsx`、85 件）。
+
+| 変異 | 落ちた件数 |
 | --- | --- |
 | baseline null を unchecked にしない | 2 |
 | tombstone を unchecked にしない | 2 |
 | contextMode の門を外す | 11 |
-| 現在の Phase 制限の門を外す | 4 |
-| effective 制限（Phase 削除）の門を外す | 6 |
+| 現在の Phase 制限の門を外す | 5 |
+| redact（baseline 側）を外す（Phase の削除・制限の解除の件数） | 8 |
 | `visibleDeletedPhaseIds` を無視 | 2 |
-| 件数を +1 | 14 |
-| 押下完了の合図を出さない | 4 |
-| 古い結果を捨てない（cancelled を無視）※ | 1 |
-| AI gate を見ない | 1 |
-| 実行中でも出す | 1 |
-| `onDone` の合図を出さない（started の完走後に印が残る）※ | 1 |
-| `onError` の合図を出さない ※ | 1 |
+| 件数を +1 | 22 |
+| 押下完了の合図を出さない（`finally`） | 2 |
+| 古い結果を捨てない（cancelled を無視） | 1 |
+| AI gate を見ない | 2 |
+| 実行中でも出す | 3 |
 | entryId 不一致でも前の結果を出す | 1 |
-| 失敗で前の結果を残す ※ | 1 |
+| 失敗で前の結果を残す | 1 |
 | ボタンが pending 以外でも 1 行を出す | 4 |
 | タブの点を unchecked でも出す | 2 |
 | `DetailTabs` が marker を描画しない | 8 |
-| 読みで候補絞りを呼ぶ（AI 経路の起動） | 1 |
+| 読みで候補絞りを呼ぶ（動的 import） | 2 |
+| 読みで `semanticSearch` を直接呼ぶ（動的 import） | 1 |
+| `onDone` の合図を出さない | 2 |
+| `onError` の合図を出さない | 1 |
+| 終了直後に epoch の合図を待たない（P2-b） | 1 |
+| ボタンが `refreshKey` を渡さない（P3-1） | 1 |
+| sr-only に区切りの括弧が無い（P3-2） | 1 |
 
-※の `onDone`／`onError` は 74 件中。epoch 起点の再計算を debounce しない変更は、試験が時間を測らないので落ちない（挙動は即時だが、試験は固定していない）。
-
-最初の走行で「古い結果を捨てない」と「失敗で前の結果を残す」が生き残ったため、試験（同じ項目で再計算が重なる・再計算の失敗）を足して落ちることを確認した。
+- redact（現在側）を外す変異は落ちない。**等価変異**：除外の対象は「baseline の制限 id のうち現在の Phase 集合に無いもの」などで、現在の snapshot の Phase には元から含まれない
+  （現在制限的な Phase は先の門で止まる）。run の写しとして残している。
+- epoch 起点の再計算を debounce しない変更は、試験が時間を測らないので落ちない（挙動は即時だが、試験は固定していない）。
+- AI gate を見ない変異は、最初は 0 件で生き残った（読みの timer が走る前に assert していた）。実時間で待つようにして落ちることを確認した。
+- 最初の走行で「古い結果を捨てない」と「失敗で前の結果を残す」が生き残ったため、試験（同じ項目で再計算が重なる・再計算の失敗）を足して落ちることを確認した。
 
 ## 8. 検証
 
@@ -174,3 +193,12 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
 ## 9. 影響を受けないこと
 
 IPC・契約・authority・schema・Rust・送信先・保存範囲・閾値・AI に渡る内容・`runImpactReview` の挙動・toast・既存の locale 文言・既存の試験の期待。
+
+## 10. 独立レビュー（Opus、`fa6f1af26..21cee0867`）の反映
+
+P1 なし。次を直した（コミットは枝の最後）。
+
+- **P2-a（偽陰性）**：Phase の削除・制限の解除で、run は `effectiveRestrictedPhaseIds` の Phase を除いて差分を取り候補絞りまで進むのに、知らせは `gated` で出さなかった。
+  `redactRestrictedPhases` を写して同じ件数を数える（第 2 節）。parity 試験の 3 ケースの期待を `gated` から `pending`（run の件数と一致）へ反転した（自分の追加分）。
+- **P2-b**：store の `complete` と `onDone` の間に古い baseline を読んで「N 件」が出続ける問題を、実行終了直後は読まずに `onDone`／`onError` の合図を待つ形で直した（5.2、6 の 9）。
+- **P3**：1 行にも `refreshKey`（`entry.updatedAt`）を渡す／sr-only に括弧／5.1 の一文／§1 の参照／残る制限の数／静的 import の試験／`unchecked` の注意。
