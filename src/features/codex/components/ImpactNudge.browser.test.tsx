@@ -10,7 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { page } from "vitest/browser";
 import i18next from "i18next";
-import { AlertTriangle, FileText } from "lucide-react";
+import {
+  AlertTriangle,
+  AtSign,
+  CalendarClock,
+  Crosshair,
+  FileText,
+  LineSquiggle,
+  Microscope,
+  Network,
+} from "lucide-react";
 
 vi.mock("@/features/ai-policy/useAiGate", () => ({
   useAiGate: () => ({ presentation: "enabled", tooltip: null }),
@@ -41,32 +50,77 @@ import { ImpactPendingTabMarker } from "./ImpactPendingTabMarker";
 
 const SHOT_DIR = import.meta.env.VITE_IMPACT_NUDGE_SHOT as string | undefined;
 
-function tabs(withMarker: boolean) {
+function tabs(withMarker: boolean, full = false) {
+  const marker = withMarker ? (
+    <ImpactPendingTabMarker entryId="e1" refreshKey="k" />
+  ) : undefined;
+  const consistency = {
+    id: "consistency",
+    label: "整合性",
+    testId: "detail-tab-consistency",
+    icon: AlertTriangle,
+    marker,
+  };
+  const details = {
+    id: "details",
+    label: "詳細",
+    testId: "detail-tab-details",
+    icon: FileText,
+  };
+  if (!full) return [details, consistency];
+  // CodexDetailContent.getTabs() と同じ 8 タブ構成（狭幅では非アクティブがアイコンのみに畳まれる）。
   return [
+    details,
     {
-      id: "details",
-      label: "詳細",
-      testId: "detail-tab-details",
-      icon: FileText,
+      id: "relations",
+      label: "リレーション",
+      testId: "detail-tab-relations",
+      icon: Network,
     },
     {
-      id: "consistency",
-      label: "整合性",
-      testId: "detail-tab-consistency",
-      icon: AlertTriangle,
-      marker: withMarker ? (
-        <ImpactPendingTabMarker entryId="e1" refreshKey="k" />
-      ) : undefined,
+      id: "tracking",
+      label: "トラッキング",
+      testId: "detail-tab-tracking",
+      icon: Crosshair,
     },
+    {
+      id: "mentions",
+      label: "言及",
+      testId: "detail-tab-mentions",
+      icon: AtSign,
+    },
+    {
+      id: "research",
+      label: "リサーチ",
+      testId: "detail-tab-research",
+      icon: Microscope,
+    },
+    {
+      id: "timeline",
+      label: "タイムライン",
+      testId: "detail-tab-timeline",
+      icon: CalendarClock,
+    },
+    {
+      id: "foreshadow",
+      label: "伏線",
+      testId: "detail-tab-foreshadow",
+      icon: LineSquiggle,
+    },
+    consistency,
   ];
 }
 
 function Panel({
   width,
   withMarker = true,
+  full = false,
+  activeTab = "consistency",
 }: {
   width: number;
   withMarker?: boolean;
+  full?: boolean;
+  activeTab?: string;
 }) {
   return (
     <div
@@ -75,8 +129,8 @@ function Panel({
       className="bg-background p-3 text-foreground"
     >
       <DetailTabs
-        tabs={tabs(withMarker)}
-        activeTab="consistency"
+        tabs={tabs(withMarker, full)}
+        activeTab={activeTab}
         onTabChange={() => {}}
       />
       <div className="space-y-3 py-3">
@@ -213,6 +267,59 @@ describe("ImpactNudge の見た目（実 Chromium）", () => {
     },
   );
 
+  it.each([1100, 240])(
+    "8 タブ・詳細がアクティブ・幅 %i: 非アクティブの整合性タブ（アイコンのみに畳まれる幅でも）の点がタブの内側に収まり、marker の有無で各タブの畳み込みと幅が変わらない",
+    async (width) => {
+      const withDot = render(<Panel width={width} full activeTab="details" />);
+      await waitFor(() => withDot.getByTestId("detail-tab-pending-dot"));
+      const ids = [
+        "detail-tab-details",
+        "detail-tab-relations",
+        "detail-tab-tracking",
+        "detail-tab-mentions",
+        "detail-tab-research",
+        "detail-tab-timeline",
+        "detail-tab-foreshadow",
+        "detail-tab-consistency",
+      ];
+      const labelCollapsed = (id: string) =>
+        withDot
+          .getByTestId(id)
+          .querySelector("button > span:not([aria-hidden])")
+          ?.classList.contains("sr-only") ?? false;
+      const snap = (r: typeof withDot) =>
+        ids.map((id) => {
+          const rect = r.getByTestId(id).getBoundingClientRect();
+          return [id, rect.left, rect.width];
+        });
+      const a = snap(withDot);
+      const collapsedA = ids.map(labelCollapsed);
+      if (width === 240) {
+        // 畳み込みが起きている幅であること（詳細だけラベルが残る）。
+        expect(collapsedA[ids.length - 1]).toBe(true);
+        expect(collapsedA[0]).toBe(false);
+      }
+      const tab = withDot
+        .getByTestId("detail-tab-consistency")
+        .getBoundingClientRect();
+      const dot = withDot
+        .getByTestId("detail-tab-pending-dot")
+        .getBoundingClientRect();
+      expect(dot.left).toBeGreaterThanOrEqual(tab.left);
+      expect(dot.right).toBeLessThanOrEqual(tab.right);
+      expect(dot.top).toBeGreaterThanOrEqual(tab.top);
+      expect(dot.bottom).toBeLessThanOrEqual(tab.bottom);
+      withDot.unmount();
+
+      const without = render(
+        <Panel width={width} full activeTab="details" withMarker={false} />,
+      );
+      await waitFor(() => without.getByTestId("detail-tab-consistency"));
+      expect(snap(without)).toEqual(a);
+      expect(ids.map(labelCollapsed)).toEqual(collapsedA);
+    },
+  );
+
   it("変更が無ければ 1 行も点も出ない（ボタンだけ）", async () => {
     readMock.value = { state: "none" };
     const { getByTestId, queryByTestId } = render(<Panel width={320} />);
@@ -236,6 +343,21 @@ describe("ImpactNudge の見た目（実 Chromium）", () => {
         });
         unmount();
       }
+    }
+    // 作者が最もよく見る状態: 詳細タブにいて、整合性タブは非アクティブ（8 タブ）。
+    await page.viewport(1000, 400);
+    for (const width of [900, 240]) {
+      await i18next.changeLanguage("ja");
+      document.documentElement.classList.remove("dark");
+      const { getByTestId, unmount } = render(
+        <Panel width={width} full activeTab="details" />,
+      );
+      await waitFor(() => getByTestId("detail-tab-pending-dot"));
+      await page.screenshot({
+        element: getByTestId("panel"),
+        path: `${SHOT_DIR}/impact-nudge-8tabs-details-active-${width}.png`,
+      });
+      unmount();
     }
   });
 });

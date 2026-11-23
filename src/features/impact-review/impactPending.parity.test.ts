@@ -10,7 +10,7 @@
  *  - unchecked は逆向きの主張をしない（run は初回を全フィールド「変更」と数える）。
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { CodexSnapshot } from "./diff";
+import { computeCodexDiff, type CodexSnapshot } from "./diff";
 
 vi.mock("./snapshot", () => ({ buildCodexSnapshot: vi.fn() }));
 vi.mock("./baseline", () => ({ getBaseline: vi.fn(), saveBaseline: vi.fn() }));
@@ -91,6 +91,8 @@ interface Case {
   hasRestrictedPhases?: boolean;
   expected: ImpactPending["state"];
   changeCount?: number;
+  /** gated（unresolved）のとき、run が実際に数える件数。 */
+  runChangeCount?: number;
 }
 
 const cases: Case[] = [
@@ -171,6 +173,7 @@ const cases: Case[] = [
     baseline: withPhase,
     snapshot: aged({ ...base, phases: [], allPhaseIds: [] }),
     expected: "gated",
+    runChangeCount: 1,
   },
   {
     name: "公開中の削除と証明済みの Phase の削除",
@@ -184,6 +187,7 @@ const cases: Case[] = [
     baseline: legacyWithPhase,
     snapshot: aged({ ...base, phases: [], allPhaseIds: [] }),
     expected: "gated",
+    runChangeCount: 1,
   },
   {
     name: "baseline の restrictedPhaseIds の Phase が現存・公開（解除）",
@@ -201,6 +205,7 @@ const cases: Case[] = [
     },
     snapshot: aged(base),
     expected: "gated",
+    runChangeCount: 1,
   },
 ];
 
@@ -254,8 +259,12 @@ describe("deriveImpactPending は実物の runImpactReview と一致する", () 
           c.name.includes("現在無い")
         ) {
           // run の redact は Phase を除外して差分を取る＝素の差分と食い違い得る。
-          // 知らせは出さない（偽陰性は許容）。run 側の件数は素の差分より少ない。
-          expect(res.status).not.toBe("started");
+          // 知らせは出さない（偽陰性は許容）。run 側の件数は素の差分以下で、
+          // 少なくとも 1 つは素の差分より少ない（下の「食い違いの実例」）。
+          expect(res.changeCount).toBeLessThanOrEqual(
+            computeCodexDiff(c.baseline, c.snapshot).length,
+          );
+          expect(res.changeCount).toBe(c.runChangeCount);
         } else {
           // 現在の制限・contextMode は、差分があっても候補絞りの前で止まる。
           expect(res.status).toBe("no-candidates");

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import {
@@ -31,6 +31,8 @@ export function useImpactPending(
     pending: ImpactPending;
   } | null>(null);
   const active = aiEnabled && !running;
+  // 押下完了の合図（epoch）が前回の読みから進んでいれば、debounce せずすぐ読む。
+  const readEpoch = useRef(epoch);
 
   useEffect(() => {
     if (!active) {
@@ -39,6 +41,8 @@ export function useImpactPending(
       return;
     }
     let cancelled = false;
+    const epochAdvanced = readEpoch.current !== epoch;
+    readEpoch.current = epoch;
     const timer = setTimeout(
       () => {
         readImpactPending(entryId)
@@ -50,7 +54,7 @@ export function useImpactPending(
             if (!cancelled) setResult(null);
           });
       },
-      result?.entryId === entryId ? RECOMPUTE_DEBOUNCE_MS : 0,
+      result?.entryId === entryId && !epochAdvanced ? RECOMPUTE_DEBOUNCE_MS : 0,
     );
     return () => {
       cancelled = true;

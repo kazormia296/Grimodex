@@ -54,11 +54,15 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
       await flushPendingSceneSaves();
       const result = await runImpactReview(entryId, {
         onDone: (e) => {
+          // store の complete は runImpactReview の onDone（baseline の前進）より先に
+          // 走る。baseline が進んだ後のこの時点で再計算を促す（タブを離れていても効く）。
+          useImpactPendingEpochStore.getState().bump();
           // 部分失敗 (一部シーンのみ解析失敗) は warning に集約 (成功分は保存済み)。
           if (postEffectPartialToast(e.summary)) return;
           toast.success(t("codex.impactCheck.done"));
         },
         onError: (e) => {
+          useImpactPendingEpochStore.getState().bump();
           postEffectErrorToast(t("codex.impactCheck.error"), e.error);
         },
       });

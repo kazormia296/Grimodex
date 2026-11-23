@@ -333,6 +333,77 @@ describe("ImpactCheckButton: AI を呼ばない", () => {
   });
 });
 
+describe("ImpactCheckButton: started の完走後に印が残らない", () => {
+  it("store の complete が baseline の前進より先でも、onDone の合図で再計算して消える", async () => {
+    arrange(twoChanges);
+    let captured: {
+      onDone?: (e: never) => void;
+      onError?: (e: never) => void;
+    } = {};
+    vi.mocked(runImpactReview).mockImplementation(async (_id, cb) => {
+      captured = cb as typeof captured;
+      usePostEffectRunStore.getState().begin({
+        runId: "r1",
+        projectId: "p1",
+        effectType: "impact_review",
+        scopeType: "project",
+        scopeTargetId: null,
+      });
+      return {
+        status: "started",
+        changeCount: 2,
+        changeSummary: "",
+        candidateSceneCount: 1,
+      };
+    });
+    render(<ImpactCheckButton entryId="e1" />);
+    await screen.findByTestId(LINE);
+    await act(async () => {
+      screen.getByTestId("codex-impact-check").click();
+    });
+    expect(screen.queryByTestId(LINE)).toBeNull(); // 実行中は出さない
+
+    // post-effect/api の順序: store の complete → （baseline の前進を待つ）→ onDone。
+    // complete の時点の baseline はまだ古い。
+    act(() => usePostEffectRunStore.getState().complete("r1", 1));
+    await screen.findByTestId(LINE); // 古い baseline を読んで「変更あり」が一瞬戻る
+
+    // baseline が進み、runImpactReview の onDone が callbacks.onDone を呼ぶ。
+    arrange(twoChanges, twoChanges);
+    await act(async () => {
+      captured.onDone?.({ summary: undefined } as never);
+    });
+    await waitFor(() => expect(screen.queryByTestId(LINE)).toBeNull());
+  });
+
+  it("onError でも再計算の合図を出す", async () => {
+    arrange(twoChanges);
+    let captured: { onError?: (e: never) => void } = {};
+    vi.mocked(runImpactReview).mockImplementation(async (_id, cb) => {
+      captured = cb as typeof captured;
+      return {
+        status: "started",
+        changeCount: 2,
+        changeSummary: "",
+        candidateSceneCount: 1,
+      };
+    });
+    render(<ImpactCheckButton entryId="e1" />);
+    await screen.findByTestId(LINE);
+    await act(async () => {
+      screen.getByTestId("codex-impact-check").click();
+    });
+    await screen.findByTestId(LINE);
+    const before = vi.mocked(getBaseline).mock.calls.length;
+    await act(async () => {
+      captured.onError?.({ error: "boom" } as never);
+    });
+    await waitFor(() =>
+      expect(vi.mocked(getBaseline).mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+});
+
 describe("ImpactCheckButton: 押下の挙動は不変", () => {
   const statuses = [
     ["no-change", "info", "変更がありません"],
