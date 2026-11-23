@@ -51,6 +51,7 @@ import {
   withVite,
   writeJson0600,
 } from "./launcher-common.mjs";
+import { readWorkSource, resolveWorkSource } from "./sources.mjs";
 
 export const FOLDER_STEPS = Object.freeze([25, 50, 75, 100]);
 export const DEFAULT_SOLO_WORKS = Object.freeze(["m-ja-2"]);
@@ -122,11 +123,10 @@ export function registrationEntries(roster, level) {
 }
 
 /**
- * 候補画面の候補（run-inventory が repo 外に書く ${output}/surfaces/<作品>.json の candidate 配列〔文字列〕）を、host 側で
- * 表記そのままの hash（hashSurface）にする。file が無い・読めない・candidate が配列でない・空のときは null（0 でなく未計測。
- * inventory の候補の取得が失敗すると空の配列が書かれるので、空は「候補が 0 件」と区別できず未計測に倒す）。表記は返さない。
+ * 候補の file（run-inventory が repo 外に書く ${output}/surfaces/<作品>.json）を 1 回だけ読む（状態と hash が同じ読みから出るように）。
+ * 無い・読めない・candidate が配列でない・空・文字列でない要素があるときは null。
  */
-export async function loadCandidateHashes(file, hash = hashSurface) {
+function readCandidateFile(file) {
   if (!existsSync(file)) return null;
   let parsed;
   try {
@@ -137,7 +137,61 @@ export async function loadCandidateHashes(file, hash = hashSurface) {
   const list = parsed?.candidate;
   if (!Array.isArray(list) || list.length === 0) return null;
   if (!list.every((item) => typeof item === "string")) return null;
-  return [...new Set(await Promise.all(list.map((item) => hash(item))))];
+  return {
+    list,
+    hasSha: Object.hasOwn(parsed, "scenesSha256"),
+    scenesSha256: parsed.scenesSha256,
+  };
+}
+
+/** 読んだ candidate file の出所。`candidateFileState` の説明を参照。 */
+function candidateStateOf(candidate, scenesFile) {
+  if (candidate === null) return "absent";
+  if (!candidate.hasSha) return "unverified";
+  // 欄があるのに今の scenes の hash と合わない（null・数値・壊れた文字列を含む）のは stale。
+  let current;
+  try {
+    current = readWorkSource(scenesFile).sha256;
+  } catch {
+    return "stale";
+  }
+  return candidate.scenesSha256 === current ? "verified" : "stale";
+}
+
+const hashList = async (list, hash) => [
+  ...new Set(await Promise.all(list.map((item) => hash(item)))),
+];
+
+/**
+ * 候補画面の候補（surfaces file の candidate 配列〔文字列〕）を、host 側で表記そのままの hash（hashSurface）にする。file が無い・
+ * 読めない・candidate が配列でない・空のときは null（0 でなく未計測。inventory の候補の取得が失敗すると空の配列が書かれるので、
+ * 空は「候補が 0 件」と区別できず未計測に倒す）。表記は返さない。
+ */
+export async function loadCandidateHashes(file, hash = hashSurface) {
+  const candidate = readCandidateFile(file);
+  return candidate === null ? null : hashList(candidate.list, hash);
+}
+
+/**
+ * 候補の file の出所（DR-ILM-41）：absent＝無い・壊れている・空・文字列でない要素がある（候補は未計測）／unverified＝照合用の
+ * scenesSha256 の欄が無い古い file（使うが、今の scenes と照合できていない）／verified＝inventory が使った scenes の本文と今の
+ * scenes の本文が同じ／stale＝食い違う、または hash の欄が壊れている（使わず、候補は未計測）。scenes が読めないときも stale
+ * （照合できないものを verified にしない）。verified が言うのは scenes の同一性だけで、file が今回の inventory の run のものかは
+ * inventory が run の開始時に前の file を消すことで担保する。
+ */
+export function candidateFileState(file, scenesFile) {
+  return candidateStateOf(readCandidateFile(file), scenesFile);
+}
+
+/** 候補の file を、出所の照合つきで 1 回の読みから返す。stale・absent なら hashes は null（未計測）。unverified は使う。 */
+export async function loadCandidates(file, scenesFile, hash = hashSurface) {
+  const candidate = readCandidateFile(file);
+  const state = candidateStateOf(candidate, scenesFile);
+  const hashes =
+    candidate === null || state === "stale"
+      ? null
+      : await hashList(candidate.list, hash);
+  return { state, hashes };
 }
 
 /** cell の run の完了条件（§8-2）：prepass complete・提案あり・AI なし。 */
@@ -341,19 +395,25 @@ async function main() {
       check.ok,
       `[precheck] ROSTER_INVALID ${work} errors=${check.errors.length}`,
     );
+    // 候補画面の候補（作品単位。水準に依らない）。inventory が書いた file が無い・scenes と食い違う（stale）なら null（未計測）。
+    const { state: candidateFile, hashes: candidateHashes } =
+      await loadCandidates(
+        path.join(output, "surfaces", `${work}.json`),
+        resolveWorkSource(work, options["data-dir"] || null),
+      );
     rosters.set(work, {
       roster,
       index: await buildRosterIndex(roster),
-      // 候補画面の候補（作品単位。水準に依らない）。inventory が書いた file が無ければ null（未計測）。
-      candidateHashes: await loadCandidateHashes(
-        path.join(output, "surfaces", `${work}.json`),
-      ),
+      candidateFile,
+      candidateHashes,
     });
   }
   const summary = [];
   await withVite(output, async ({ vite, busAddress }) => {
     for (const cell of cells) {
-      const { roster, index, candidateHashes } = rosters.get(cell.work);
+      const { roster, index, candidateHashes, candidateFile } = rosters.get(
+        cell.work,
+      );
       const {
         cell: observed,
         value,
@@ -387,6 +447,7 @@ async function main() {
         steps: cell.steps,
         status,
         observed,
+        candidateFile,
         registration: value?.registration ?? null,
       };
       let rowsFile = null;
