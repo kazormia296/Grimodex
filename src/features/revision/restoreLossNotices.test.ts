@@ -91,11 +91,14 @@ describe("describeRestoreLoss", () => {
       expect(loss.previewResetHeading).toBeTruthy();
       expect(loss.resultResetOnlyDescription).toBeTruthy();
     }
+    // `trash_items` は、Rust の `restore_links.rs` で `origin_scene_id`（場面）と
+    // `origin_codex_id`（コーデックス）の両方が CASCADE で、ごみ箱の項目そのものが
+    // 外れる。名前が、片方だけ・参照だけの意味にならないことを固定する。
     expect(ja.snapshot.loss.kind.trash_items).toBe(
-      "ごみ箱の項目の元の場面・コーデックス",
+      "ごみ箱の項目（元の場面・コーデックスがなくなるもの）",
     );
     expect(en.snapshot.loss.kind.trash_items).toBe(
-      "Trash item source scenes and Codex entries",
+      "Trash items whose source scene or Codex entry is removed",
     );
   });
 });

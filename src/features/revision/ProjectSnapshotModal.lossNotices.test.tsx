@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { emptySkipReport } from "./projectSnapshotScopes";
 import { ProjectSnapshotModal } from "./ProjectSnapshotModal";
 
@@ -105,6 +106,7 @@ async function openRestoreConfirm(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useGlobalHistoryStore.getState().clear();
   mocks.list.mockResolvedValue([snapshot]);
   mocks.preview.mockResolvedValue({ structural: true, lossNotices: [] });
   mocks.restore.mockResolvedValue(restoreResult());
@@ -468,6 +470,114 @@ describe("ProjectSnapshotModal restore loss notices", () => {
     );
 
     expect(await screen.findByTestId("snapshot-list")).toBeInTheDocument();
+  });
+
+  it("reloads exactly once when the parent closes or unmounts while the result is shown", async () => {
+    for (const how of ["open-false", "unmount"] as const) {
+      cleanup();
+      mocks.reload.mockClear();
+      mocks.restore.mockResolvedValueOnce(
+        restoreResult({ dropped: [{ kind: "phase_anchor", count: 1 }] }),
+      );
+      const onClose = vi.fn();
+      const view = render(
+        <WorkspaceViewportProvider profile="phone">
+          <ProjectSnapshotModal open onClose={onClose} />
+        </WorkspaceViewportProvider>,
+      );
+      const row = await screen.findByText(snapshot.name);
+      fireEvent.click(row.closest("button")!);
+      fireEvent.click(screen.getByRole("button", { name: "snapshot.restore" }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "snapshot.restoreConfirm" }),
+      );
+      await screen.findByRole("alertdialog", {
+        name: "snapshot.loss.resultHeading",
+      });
+      expect(mocks.reload).not.toHaveBeenCalled();
+
+      if (how === "open-false") {
+        view.rerender(
+          <WorkspaceViewportProvider profile="phone">
+            <ProjectSnapshotModal open={false} onClose={onClose} />
+          </WorkspaceViewportProvider>,
+        );
+      } else {
+        // 本番の親は条件付き render で、閉じるのは unmount。
+        view.unmount();
+      }
+      await waitFor(() => expect(mocks.reload, how).toHaveBeenCalledOnce());
+      await act(async () => Promise.resolve());
+      expect(mocks.reload, how).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("does not reload a second time when the parent unmounts after OK", async () => {
+    mocks.restore.mockResolvedValueOnce(
+      restoreResult({ dropped: [{ kind: "phase_anchor", count: 1 }] }),
+    );
+    const onClose = vi.fn();
+    const view = render(
+      <WorkspaceViewportProvider profile="phone">
+        <ProjectSnapshotModal open onClose={onClose} />
+      </WorkspaceViewportProvider>,
+    );
+    const row = await screen.findByText(snapshot.name);
+    fireEvent.click(row.closest("button")!);
+    fireEvent.click(screen.getByRole("button", { name: "snapshot.restore" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "snapshot.restoreConfirm" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "snapshot.loss.resultOk" }),
+    );
+    await waitFor(() => expect(mocks.reload).toHaveBeenCalledOnce());
+    view.unmount();
+    await act(async () => Promise.resolve());
+    expect(mocks.reload).toHaveBeenCalledOnce();
+  });
+
+  it("drops the pre-restore undo history once a restore succeeds, so Ctrl+Z cannot replay it while the result is shown", async () => {
+    const undo = vi.fn().mockResolvedValue(undefined);
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "Edit scene",
+      undo,
+      redo: vi.fn().mockResolvedValue(undefined),
+    });
+    expect(useGlobalHistoryStore.getState().canUndo).toBe(true);
+    mocks.restore.mockResolvedValueOnce(
+      restoreResult({ dropped: [{ kind: "phase_anchor", count: 1 }] }),
+    );
+    await openRestoreConfirm();
+    fireEvent.click(
+      screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+    );
+    await screen.findByRole("alertdialog", {
+      name: "snapshot.loss.resultHeading",
+    });
+
+    // 結果の画面が出ている間に Ctrl+Z が来ても、復元前の履歴は再生されない。
+    await useGlobalHistoryStore.getState().undo();
+    expect(undo).not.toHaveBeenCalled();
+    expect(useGlobalHistoryStore.getState().canUndo).toBe(false);
+  });
+
+  it("keeps the undo history when the restore fails", async () => {
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "Edit scene",
+      undo: vi.fn().mockResolvedValue(undefined),
+      redo: vi.fn().mockResolvedValue(undefined),
+    });
+    mocks.restore.mockRejectedValueOnce(new Error("restore failed"));
+    await openRestoreConfirm();
+    fireEvent.click(
+      screen.getByRole("button", { name: "snapshot.restoreConfirm" }),
+    );
+    await waitFor(() => expect(mocks.restore).toHaveBeenCalledOnce());
+    await act(async () => Promise.resolve());
+    expect(useGlobalHistoryStore.getState().canUndo).toBe(true);
   });
 
   it("does not recount while restore is running", async () => {

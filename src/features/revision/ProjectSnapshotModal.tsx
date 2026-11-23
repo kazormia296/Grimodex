@@ -9,6 +9,7 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { cn } from "@/lib/utils";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
@@ -125,11 +126,28 @@ export function ProjectSnapshotModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // 結果の画面が出ている間に、親が閉じた（`open` が false）・外した（unmount）ときも、
+  // 再読み込みを 1 回だけ行う。復元で DB は書き換わっているので、再読み込みせずに
+  // 編集へ戻してはいけない。本番の親は条件付き render で、閉じるのは unmount。
+  const restoreResultRef = useRef(restoreResult);
+  useEffect(() => {
+    restoreResultRef.current = restoreResult;
+  }, [restoreResult]);
+
   useEffect(() => {
     if (open || !restoreResult || restoreResultHandledRef.current) return;
     restoreResultHandledRef.current = true;
     void reloadRendererAfterReleasingGpuSurfaces();
   }, [open, restoreResult]);
+
+  useEffect(() => {
+    return () => {
+      if (restoreResultRef.current && !restoreResultHandledRef.current) {
+        restoreResultHandledRef.current = true;
+        void reloadRendererAfterReleasingGpuSurfaces();
+      }
+    };
+  }, []);
 
   async function loadSnapshots() {
     setIsLoading(true);
@@ -182,6 +200,9 @@ export function ProjectSnapshotModal({
       const result = await restoreProjectSnapshot(snap.id, snap.name, {
         scopes: snap.isStructural ? restoreScopes : undefined,
       });
+      // 復元で DB が置き換わった。復元前の履歴（Ctrl+Z・Ctrl+Y）を、復元後の DB へ
+      // 再生させない。結果の画面は OK まで再読み込みを遅らせるので、その間も効く。
+      useGlobalHistoryStore.getState().clear();
       toast.success(
         t("snapshot.restoreSuccess", {
           name: snap.name,
