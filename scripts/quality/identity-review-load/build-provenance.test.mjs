@@ -789,7 +789,9 @@ test("runCell：cell の後にも出所を照合し、変わっていれば reco
     let evaluated = 0;
     return {
       process: () => ({ pid: 0 }),
-      evaluate: async () => {
+      evaluate: async (fn) => {
+        // 拒否する層の有効の確認（要求しない cell では無いこと）は、呼出し順に数えない。
+        if (String(fn).includes("idlDispatchBlock")) return false;
         evaluated++;
         if (evaluated === 1) return { names: [], rustLog: "", nodeOptions: "" };
         if (evaluated === 2) return "0.0.0";
@@ -1120,7 +1122,9 @@ function fakeElectron({
   let evaluated = 0;
   return {
     process: () => ({ pid: 0, kill: (signal) => kills.push(signal) }),
-    evaluate: async () => {
+    evaluate: async (fn) => {
+      // 拒否する層の有効の確認（要求しない cell では無いこと）は、呼出し順に数えない。
+      if (String(fn).includes("idlDispatchBlock")) return false;
       evaluated++;
       if (evaluated === 1) return mainEnv;
       if (evaluated === 2) return "0.0.0";

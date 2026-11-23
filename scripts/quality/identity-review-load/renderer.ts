@@ -60,6 +60,7 @@ import {
   saveDismissedCandidateKeys,
 } from "@/features/codex/codexCandidateDismissals";
 import { judgeCandidates } from "@/features/codex/candidateJudgment";
+import { listCodexIdsHiddenFromAiInAnyPhase } from "@/features/codex/context/codexHiddenAnyPhase";
 import { listCodexIdsHiddenFromAi } from "@/features/codex/context/codexHiddenFromAi";
 import {
   MODEL_ROLES,
@@ -117,6 +118,7 @@ import {
   rubySurfaceRelation,
   runGuardedJudge,
   seedMissingFromCandidates,
+  safeErrorSummary,
   scenesFromWork,
   planProductVisibleRuns,
   planStoredRuns,
@@ -1349,11 +1351,81 @@ async function bJudge() {
         return {
           ok: false as const,
           ...classifyJudgmentFailure(error),
+          // 失敗の種類が other のとき、原因を読むための定型の要約（名前・[precheck]の印・大文字の code・数値の対。自由文は載せない）。
+          diag: safeErrorSummary(error),
           durationMs: Date.now() - started,
         };
       }
     },
   });
+}
+
+/**
+ * 乾いた実行の探針：送信の直前の経路（製品の judgeCandidates）が測定ページで最後まで通るかを、外へ出さずに調べる。
+ * 外へ出ない理由は二重：(1) この関数が key の無いこと（hasApiKey が false）を確かめ、あれば呼ばない。
+ * (2) main の入口の拒否層（dispatch-block.mjs。node 側が有効を確かめてから呼ぶ）が、外向きの命令を本物の handler の前で止める。
+ * 返すのは真偽・件数・定型の要約（safeErrorSummary）だけ。段ごとの結果は、judgeCandidates が投げた例外の段を切り分けるための
+ * 読み取りだけの呼び出し（hidden の判定・動的 import・route の解決）。
+ */
+async function bProbeJudge() {
+  const b = requireB();
+  const a = requireActive();
+  const settings = await getAiSettings();
+  if (await hasApiKey(settings.provider))
+    return { refused: "key-present" as const };
+  const stage = async (run: () => unknown) => {
+    try {
+      await run();
+      return { ok: true as const };
+    } catch (error) {
+      return { ok: false as const, diag: safeErrorSummary(error) };
+    }
+  };
+  const stages = {
+    // 製品の judgeCandidates は、tree store の projectId を入口で読む（requireAuditProjectId）。
+    treeProjectMatchesActive:
+      useTreeStore.getState().projectId?.trim() === a.projectId,
+    // 製品が送信の直前に使う hidden の判定（道具の guard が使う listCodexIdsHiddenFromAi とは別の関数）。
+    hiddenAnyPhase: await stage(() =>
+      listCodexIdsHiddenFromAiInAnyPhase({
+        entryIds: b.entries.map((entry) => entry.id),
+        projectId: a.projectId,
+      }),
+    ),
+    // 製品の送信は動的 import（lazyTransportApi）で読む。測定ページで解決するか。
+    transportImport: await stage(
+      () => import("@/features/chat/singleShotTransport"),
+    ),
+    // judgeCandidates と同じ引数（役割の上書きが空）で route を解決する。
+    route: await stage(async () => {
+      const transport = await import("@/features/chat/singleShotTransport");
+      transport.resolveChatAuditRoute({
+        apiVariant: null,
+        model: null,
+        provider: null,
+        endpointId: null,
+      });
+    }),
+  };
+  const gate = await bAiGate();
+  let judge:
+    | { threw: false; mapSize: number }
+    | {
+        threw: true;
+        kind: string;
+        diag: ReturnType<typeof safeErrorSummary>;
+      };
+  try {
+    const map = await judgeCandidates(b.visible, b.entries);
+    judge = { threw: false, mapSize: map.size };
+  } catch (error) {
+    judge = {
+      threw: true,
+      kind: classifyJudgmentFailure(error).kind,
+      diag: safeErrorSummary(error),
+    };
+  }
+  return { refused: null, gate, stages, judge };
 }
 
 /**
@@ -1580,6 +1652,7 @@ Object.assign(window, {
     bAssertRoleDefaults,
     bAssertRosterNotHidden,
     bJudge,
+    bProbeJudge,
     bApply,
     ready: true,
   },

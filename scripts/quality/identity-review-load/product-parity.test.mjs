@@ -1124,11 +1124,35 @@ test("送信の直前の guard：bJudge は guard を runGuardedJudge に渡し�
   assert.match(judge, /countHiddenInSentWindow: async \(\) =>/u);
   assert.match(judge, /countHiddenAmong\(/u);
   assert.match(judge, /b\.entries\s*\.slice\(0, JUDGMENT_MAX_ENTRIES\)/u);
-  // judgeCandidates を呼ぶのは renderer 全体で 1 か所（bJudge の judge の中）だけ。guard の関数の外で送れない。
-  assert.equal([...renderer.matchAll(/\bawait judgeCandidates\(/gu)].length, 1);
+  // judgeCandidates を呼ぶのは renderer 全体で 2 か所だけ：bJudge の judge の中（guard を通った後）と、探針 bProbeJudge。
+  // 探針は key の無いことの確認（hasApiKey）を済ませた後にだけ呼ぶ。外向きの命令は main の入口の拒否層（dispatch-block.mjs）が
+  // 止める。探針を呼ぶのは乾いた実行だけ（下の run-measure-b.mjs の確認）。guard の関数の外で送れない。
+  assert.equal([...renderer.matchAll(/\bawait judgeCandidates\(/gu)].length, 2);
   const judgeStart = judge.indexOf("judge: async () => {");
   assert.ok(
     judgeStart > 0 && judge.indexOf("await judgeCandidates(") > judgeStart,
+  );
+  const probe = functionBody(renderer, "bProbeJudge");
+  assert.equal([...probe.matchAll(/\bawait judgeCandidates\(/gu)].length, 1);
+  assert.ok(
+    probe.indexOf("await hasApiKey(") > 0 &&
+      probe.indexOf("await hasApiKey(") <
+        probe.indexOf("await judgeCandidates("),
+  );
+  assert.match(probe, /return \{ refused: "key-present" as const \}/u);
+  // 探針は定義のほかに renderer の中から呼ばない（page に出して node が呼ぶだけ）。
+  assert.equal([...renderer.matchAll(/\bbProbeJudge\(/gu)].length, 1);
+  const runnerSource = tool("run-measure-b.mjs");
+  assert.equal(
+    [...runnerSource.matchAll(/window\.identityLoad\.bProbeJudge\(\)/gu)].length,
+    1,
+  );
+  // 探針の呼び出し（probeJudgePath）は、拒否層の有効の確認の後にだけ進む。
+  const probePath = functionBody(runnerSource, "probeJudgePath");
+  assert.ok(
+    probePath.indexOf("DISPATCH_BLOCK_NOT_ACTIVE") > 0 &&
+      probePath.indexOf("DISPATCH_BLOCK_NOT_ACTIVE") <
+        probePath.indexOf("bProbeJudge()"),
   );
   // runGuardedJudge は lib.mjs から読む（page で動く純関数）。
   assert.match(renderer, /runGuardedJudge,\s*seedMissingFromCandidates/u);

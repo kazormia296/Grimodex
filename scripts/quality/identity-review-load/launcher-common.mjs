@@ -176,6 +176,8 @@ export function assertNoOverlappingJobs(
  * 起動した人の本物の session の env（key の復号の helper にだけ渡す。real-env.mjs）は入れない。
  * plainTextRunRoot を渡したとき（本測定の B）に限り、safeStorage の basic_text を認める上書き
  * （electron-observer-b.mjs）の条件の env を立てる。
+ * blockDispatch（乾いた実行）のときは、AI の外向きの命令を main の入口で拒否する層（dispatch-block.mjs）の env を立てる。
+ * 2 つは同時に立てない（送る経路と送らない経路を 1 つの process で混ぜない）。
  */
 export function buildMeasureElectronEnv({
   rendererUrl,
@@ -186,7 +188,12 @@ export function buildMeasureElectronEnv({
   xdgDir,
   busAddress,
   plainTextRunRoot = "",
+  blockDispatch = false,
 }) {
+  assert.ok(
+    !(plainTextRunRoot && blockDispatch),
+    "[precheck] PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE",
+  );
   return electronEnv({
     ELECTRON_RENDERER_URL: rendererUrl,
     GRIMODEX_USER_DATA_DIR: userData,
@@ -201,6 +208,7 @@ export function buildMeasureElectronEnv({
           GRIMODEX_IDL_RUN_ROOT: plainTextRunRoot,
         }
       : {}),
+    ...(blockDispatch ? { GRIMODEX_IDL_BLOCK_DISPATCH: "1" } : {}),
   });
 }
 
@@ -327,11 +335,16 @@ export async function runCell({
   dataDir = "",
   passwordStoreBasic = true,
   plainTextKeyStore = false,
+  blockDispatch = false,
   egressPolicy = null,
   body,
   keep = false,
   deps = {},
 }) {
+  assert.ok(
+    !(plainTextKeyStore && blockDispatch),
+    "[precheck] PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE",
+  );
   const d = {
     assertBuildProvenance,
     loadWork,
@@ -414,8 +427,10 @@ export async function runCell({
       d.root,
       "electron/native/grimodex-node/grimodex-node.node",
     );
-    // 本測定の B（plainTextKeyStore）だけ、basic_text の safeStorage を認める上書き（§17.6）を包んだ起動 script を使う。
-    const observer = plainTextKeyStore
+    // 本測定の B（plainTextKeyStore）は、basic_text の safeStorage を認める上書き（§17.6）を包んだ起動 script を使う。
+    // 乾いた実行（blockDispatch）は、AI の外向きの命令を main の入口で拒否する層を包んだ同じ起動 script を使う。
+    const observer =
+      plainTextKeyStore || blockDispatch
       ? path.join(import.meta.dirname, "electron-observer-b.mjs")
       : path.join(
           d.root,
@@ -441,6 +456,7 @@ export async function runCell({
       xdgDir,
       busAddress,
       plainTextRunRoot: plainTextKeyStore ? runRoot : "",
+      blockDispatch,
     });
     assertNoFakeAiEnv(env);
     app = await d.launchElectron({
@@ -470,6 +486,17 @@ export async function runCell({
         ? { NODE_OPTIONS: mainEnv.nodeOptions }
         : {}),
     });
+    // 拒否する層は、要求したときだけ有効で、有効でなければ page を動かす前に止める（fail-closed。要求しないときは無いこと）。
+    const dispatchBlockActive = await app.evaluate(
+      () => globalThis.idlDispatchBlock?.active === true,
+    );
+    assert.equal(
+      dispatchBlockActive,
+      blockDispatch,
+      blockDispatch
+        ? "[precheck] DISPATCH_BLOCK_NOT_ACTIVE the main process did not install the dispatch block"
+        : "[precheck] DISPATCH_BLOCK_UNEXPECTED the main process has a dispatch block that was not requested",
+    );
     const rootPid = app.process().pid;
     // rootPid が取れなければ標本を採れないので、採取の失敗として数える（採取 0 回＝未確認で不採用）。
     const sampleOf = rootPid
@@ -557,7 +584,17 @@ export async function runCell({
       failedCallCount: ipc.filter((call) => call.completed && !call.ok).length,
       commandNames: [...new Set(names)].sort(),
       commandCounts: counts,
+      // 最後の 12 件（順序つき。命令の名前と成否だけ）。失敗がどの段で起きたかを、自由文なしで読むための記録。
+      tail: ipc.slice(-12).map((call) => ({
+        command: call.command,
+        ok: call.completed === true && call.ok === true,
+      })),
     };
+    // 拒否した命令の件数（名前ごと）。本物の handler に届いた AI の命令は上の ipc に出るので、ここは含まれない。
+    if (blockDispatch)
+      cell.dispatchBlock = await app.evaluate(() => ({
+        blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
+      }));
     // cell の後にも出所を照合する（cell の間に build 物・guard の file・入力が差し替わっていないか。F3a の m5）。
     // 例外にはせず、records に残す（realCellStatus が不採用にする）。
     let afterCell = null;

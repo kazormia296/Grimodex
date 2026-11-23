@@ -38,14 +38,22 @@ import {
   dryCellBody,
   dryCellStatus,
   measureBBody,
+  probeJudgePath,
   realCellStatus,
 } from "./run-measure-b.mjs";
 import {
   assertNoFakeAiEnv,
   assertNoOverlappingJobs,
+  buildMeasureElectronEnv,
   findForbiddenEnv,
   findOverlappingJobs,
 } from "./launcher-common.mjs";
+import {
+  DISPATCH_BLOCK_ENV,
+  DISPATCH_BLOCK_TOKEN,
+  installDispatchBlock,
+  isBlockedDispatchCommand,
+} from "./dispatch-block.mjs";
 import { findKeyResidue, registerCleanup, runCleanups } from "./cleanup.mjs";
 import { assertRecordsClean } from "./aggregate.mjs";
 import { findUnsafeStrings } from "./lib.mjs";
@@ -1895,4 +1903,294 @@ test("F5 m-b：台帳の前検査（assertLedgerReady）：STOP・未精算の�
     main.indexOf("createGate({") < main.indexOf("assertLedgerReady(gate") &&
       main.indexOf("assertLedgerReady(gate") < main.indexOf("withVite("),
   );
+});
+
+// ---- 乾いた実行の拒否層（dispatch-block）と探針（bProbeJudge） ------------------------------------------------
+
+test("拒否層：外向きの AI の命令（送信・CLI・ライセンス・外部へ出る命令）は拒否し、設定の読み書き・DB・Codex の局所の命令は通す", () => {
+  for (const command of [
+    "send_chat_message",
+    "send_chat_message_stream",
+    "list_ai_models",
+    "test_ai_connection",
+    "nir1_local_generation_start",
+    "mastra_agent_start",
+    "activate_license",
+    "semantic_download_model",
+    "narrative_extraction_claim_task",
+  ])
+    assert.equal(isBlockedDispatchCommand(command), true, command);
+  for (const command of [
+    "get_ai_settings",
+    "save_ai_settings",
+    "db_execute",
+    "codex_create",
+    "codex_index_entry",
+    "extract_codex_candidates",
+    "has_api_key",
+    "get_model_capability_snapshot",
+    "ai_audit_read_snapshot",
+  ])
+    assert.equal(isBlockedDispatchCommand(command), false, command);
+  // 命令でない値は本物の handler が拒否する（ここでは拒否しない）。
+  assert.equal(isBlockedDispatchCommand(undefined), false);
+  assert.equal(isBlockedDispatchCommand(42), false);
+});
+
+/** electron の ipcMain の代わり：handle の登録を記録し、登録された listener を channel で呼べる。 */
+function fakeIpcMain() {
+  const handlers = new Map();
+  return {
+    handlers,
+    handle(channel, listener) {
+      handlers.set(channel, listener);
+    },
+  };
+}
+
+test("拒否層：要求がなければ入れず、入れたら grim:invoke の外向きの命令だけを本物の handler の前で拒否して件数を数える", async () => {
+  assert.throws(
+    () => installDispatchBlock(fakeIpcMain(), {}),
+    /DISPATCH_BLOCK_NOT_REQUESTED/u,
+  );
+  assert.throws(
+    () => installDispatchBlock(fakeIpcMain(), { [DISPATCH_BLOCK_ENV]: "0" }),
+    /DISPATCH_BLOCK_NOT_REQUESTED/u,
+  );
+  const ipcMain = fakeIpcMain();
+  const state = installDispatchBlock(ipcMain, { [DISPATCH_BLOCK_ENV]: "1" });
+  assert.equal(state.active, true);
+  // 共有の observer（trace の層）は後から包む。拒否の層はその外側になる（拒否した命令は trace に出ない）。
+  const trace = [];
+  const wrapped = ipcMain.handle;
+  ipcMain.handle = (channel, listener) =>
+    wrapped.call(
+      ipcMain,
+      channel,
+      channel === "grim:invoke"
+        ? async (event, ...args) => {
+            trace.push(args[0]);
+            return listener(event, ...args);
+          }
+        : listener,
+    );
+  const reached = [];
+  ipcMain.handle("grim:invoke", async (_event, command) => {
+    reached.push(command);
+    return { ok: true };
+  });
+  ipcMain.handle("other:channel", async (_event, command) => {
+    reached.push(`other:${command}`);
+    return { ok: true };
+  });
+  const invoke = ipcMain.handlers.get("grim:invoke");
+  await assert.rejects(
+    invoke({}, "send_chat_message", { messages: [] }),
+    (error) => error.message === DISPATCH_BLOCK_TOKEN,
+  );
+  await assert.rejects(invoke({}, "send_chat_message", {}), /IDL_DISPATCH_BLOCKED/u);
+  assert.deepEqual(await invoke({}, "db_execute", {}), { ok: true });
+  assert.deepEqual(await invoke({}, "save_ai_settings", {}), { ok: true });
+  // 本物の handler に届いたのは通した命令だけ。拒否した命令は handler にも trace にも出ない。
+  assert.deepEqual(reached, ["db_execute", "save_ai_settings"]);
+  assert.deepEqual(trace, ["db_execute", "save_ai_settings"]);
+  assert.deepEqual(state.blocked, { send_chat_message: 2 });
+  // grim:invoke 以外の channel は包まない。
+  assert.deepEqual(await ipcMain.handlers.get("other:channel")({}, "send_chat_message"), {
+    ok: true,
+  });
+  assert.equal(reached.at(-1), "other:send_chat_message");
+});
+
+test("拒否層：env の組み立て。blockDispatch だけ拒否層の env を立て、送る経路（plain text keystore）と同時には立てない", () => {
+  const base = {
+    rendererUrl: "http://127.0.0.1:1/x",
+    userData: "/u",
+    native: "/n",
+    main: "/m",
+    tmpDir: "/t",
+    xdgDir: "/x",
+    busAddress: "unix:path=/b",
+  };
+  const plain = buildMeasureElectronEnv(base);
+  assert.equal(plain.GRIMODEX_IDL_BLOCK_DISPATCH, undefined);
+  const blocked = buildMeasureElectronEnv({ ...base, blockDispatch: true });
+  assert.equal(blocked.GRIMODEX_IDL_BLOCK_DISPATCH, "1");
+  assert.equal(blocked.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE, undefined);
+  const keystore = buildMeasureElectronEnv({ ...base, plainTextRunRoot: "/r" });
+  assert.equal(keystore.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE, "1");
+  assert.equal(keystore.GRIMODEX_IDL_BLOCK_DISPATCH, undefined);
+  assert.throws(
+    () =>
+      buildMeasureElectronEnv({
+        ...base,
+        plainTextRunRoot: "/r",
+        blockDispatch: true,
+      }),
+    /PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE/u,
+  );
+});
+
+/** 探針の fake：page の bConfigureAi・bProbeJudge と、main の拒否層・trace を持つ app。 */
+function fakeProbeEnv({
+  active = true,
+  keyPresent = false,
+  probe = {
+    refused: null,
+    gate: { policyBlocked: false, licenseRestricted: false, language: "ja" },
+    stages: {
+      treeProjectMatchesActive: true,
+      hiddenAnyPhase: { ok: true },
+      transportImport: { ok: true },
+      route: { ok: true },
+    },
+    judge: {
+      threw: true,
+      kind: "other",
+      diag: { name: "Error", tag: "none", codes: ["IDL_DISPATCH_BLOCKED"], pairs: [] },
+    },
+  },
+} = {}) {
+  const calls = [];
+  const bridge = {
+    idlDispatchBlock: active ? { active: true, blocked: { send_chat_message: 1 } } : undefined,
+    nir1IpcTrace: {
+      calls: [
+        { command: "db_execute", completed: true, ok: true },
+        { command: "get_ai_settings", completed: true, ok: true },
+      ],
+    },
+  };
+  globalThis.window = {
+    identityLoad: {
+      bConfigureAi: async (input) => {
+        calls.push(["configure", input.provider, input.model, input.key]);
+        return { provider: input.provider, model: input.model, keyPresent };
+      },
+      bProbeJudge: async () => {
+        calls.push(["probe"]);
+        return probe;
+      },
+    },
+  };
+  const page = { evaluate: async (fn, arg) => fn(arg) };
+  const app = {
+    evaluate: async (fn) => {
+      const saved = globalThis.idlDispatchBlock;
+      const savedTrace = globalThis.nir1IpcTrace;
+      globalThis.idlDispatchBlock = bridge.idlDispatchBlock;
+      globalThis.nir1IpcTrace = bridge.nir1IpcTrace;
+      try {
+        return await fn();
+      } finally {
+        globalThis.idlDispatchBlock = saved;
+        globalThis.nir1IpcTrace = savedTrace;
+      }
+    },
+  };
+  return { page, app, calls };
+}
+
+test("探針：拒否層が有効なときだけ、key なしで provider・model を入れて探針を呼び、拒否した命令と命令の並びを読む", async () => {
+  const env = fakeProbeEnv();
+  const out = await probeJudgePath({ page: env.page, app: env.app });
+  assert.deepEqual(env.calls, [
+    ["configure", "anthropic", "claude-sonnet-5-5", null],
+    ["probe"],
+  ]);
+  assert.equal(out.judge.threw, true);
+  assert.deepEqual(out.blocked, { send_chat_message: 1 });
+  assert.deepEqual(out.tail, [
+    { command: "db_execute", ok: true },
+    { command: "get_ai_settings", ok: true },
+  ]);
+  assert.deepEqual(out.configured, { provider: "anthropic" });
+  assert.doesNotThrow(() => assertOutputClean(out, []));
+});
+
+test("探針：拒否層が無効・app が無い・key が入っている場合は、探針を呼ばずに止まる（fail-closed）", async () => {
+  const inactive = fakeProbeEnv({ active: false });
+  await assert.rejects(
+    probeJudgePath({ page: inactive.page, app: inactive.app }),
+    /DISPATCH_BLOCK_NOT_ACTIVE/u,
+  );
+  assert.deepEqual(inactive.calls, []);
+  const noApp = fakeProbeEnv();
+  await assert.rejects(
+    probeJudgePath({ page: noApp.page, app: null }),
+    /PROBE_NEEDS_APP/u,
+  );
+  assert.deepEqual(noApp.calls, []);
+  const withKey = fakeProbeEnv({ keyPresent: true });
+  await assert.rejects(
+    probeJudgePath({ page: withKey.page, app: withKey.app }),
+    /PROBE_KEY_PRESENT/u,
+  );
+  assert.deepEqual(withKey.calls, [
+    ["configure", "anthropic", "claude-sonnet-5-5", null],
+  ]);
+});
+
+test("乾いた実行の採用条件：探針つき（拒否層が有効だった）cell だけ、AI の設定の読み書きと監査の行を許し、外向きの命令・ai_usage の行は許さない", () => {
+  const base = {
+    ipc: {
+      commandNames: ["codex_create", "get_ai_settings", "save_ai_settings"],
+      commandCounts: { codex_create: 3, get_ai_settings: 3, save_ai_settings: 1 },
+    },
+    aiRows: { verified: true, tables: { ai_usage: 0, ai_audit_events: 2 } },
+    egress: {
+      nonLoopbackDestinationCount: 0,
+      sampleCount: 4,
+      socketCountMax: 6,
+      tcpSocketCountMax: 3,
+    },
+  };
+  // 探針なし（拒否層なしの従来の cell）は、AI の設定の命令も監査の行も許さない。
+  assert.equal(dryCellStatus(base), "ai-detected");
+  const probed = { ...base, dispatchBlock: { blocked: { send_chat_message: 1 } } };
+  assert.equal(dryCellStatus(probed), "ok");
+  // 外向きの命令が本物の handler に届いた（trace に send_chat_message が出た）なら不採用。
+  assert.equal(
+    dryCellStatus({
+      ...probed,
+      ipc: {
+        commandNames: [...probed.ipc.commandNames, "send_chat_message"],
+        commandCounts: { ...probed.ipc.commandCounts, send_chat_message: 1 },
+      },
+    }),
+    "ai-detected",
+  );
+  // 設定以外の AI の command（例：判定の別経路）が届いても不採用。
+  assert.equal(
+    dryCellStatus({
+      ...probed,
+      ipc: { ...probed.ipc, commandNames: [...probed.ipc.commandNames, "list_ai_models"] },
+    }),
+    "ai-detected",
+  );
+  // ai_usage の行は、探針つきでも許さない。
+  assert.equal(
+    dryCellStatus({
+      ...probed,
+      aiRows: { verified: true, tables: { ai_usage: 1, ai_audit_events: 2 } },
+    }),
+    "ai-detected",
+  );
+});
+
+test("探針は乾いた実行の経路にだけ付く：mainDry は blockDispatch と probeJudge を有効にし、本測定（mainReal）は付けない", () => {
+  const source = readFileSync(
+    new URL("./run-measure-b.mjs", import.meta.url),
+    "utf8",
+  );
+  const dry = source.slice(
+    source.indexOf("async function mainDry"),
+    source.indexOf("function readB2UpperByWork"),
+  );
+  assert.ok(dry.includes("blockDispatch: true"));
+  assert.ok(dry.includes("probeJudge: true"));
+  const real = source.slice(source.indexOf("async function mainReal"));
+  assert.ok(!real.includes("blockDispatch"));
+  assert.ok(!real.includes("probeJudge"));
+  assert.ok(!real.includes("bProbeJudge"));
 });
