@@ -6,12 +6,22 @@ const treeState = {
   nodes: [{ id: "s1", title: "シーン1" }] as { id: string; title: string }[],
   activeSceneId: "s1" as string,
 };
+const hiddenCodex = vi.hoisted(() => ({
+  listCodexIdsHiddenFromAi: vi.fn(
+    async (_input: {
+      entryIds: readonly string[];
+      projectId?: string | null;
+      sceneId?: string | null;
+    }) => new Set<string>(),
+  ),
+}));
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => treeState },
 }));
 vi.mock("@/features/codex/phaseResolver", () => ({
   computeGlobalSceneOrder: () => new Map([["s1", 0]]),
 }));
+vi.mock("@/features/codex/context/codexHiddenFromAi", () => hiddenCodex);
 
 const events: unknown[] = [];
 const participants: unknown[] = [];
@@ -33,6 +43,7 @@ vi.mock("@/features/codex/api", () => ({
 
 import * as chronicleApi from "@/features/chronicle/api";
 import { listCodexMatchTargets } from "@/features/codex/api";
+import { LEGACY_CHRONICLE_READ_CONTEXT } from "./chronicleReadContext";
 import {
   listEventsTool,
   getEventDetailTool,
@@ -100,6 +111,48 @@ beforeEach(() => {
   vi.mocked(chronicleApi.listEvents).mockClear();
   vi.mocked(chronicleApi.listSceneEventsForProject).mockClear();
   vi.mocked(listCodexMatchTargets).mockClear();
+  hiddenCodex.listCodexIdsHiddenFromAi.mockClear();
+});
+
+describe("the chronicle hidden-id port", () => {
+  it("reads the live scene for every call and returns the resolver's set unchanged", async () => {
+    const hidden = new Set(["c-hidden"]);
+    hiddenCodex.listCodexIdsHiddenFromAi.mockResolvedValue(hidden);
+
+    const first =
+      await LEGACY_CHRONICLE_READ_CONTEXT.chronicle.listHiddenCodexIds("p1", [
+        "c-hidden",
+        "c-visible",
+      ]);
+    treeState.activeSceneId = "s2";
+    const second =
+      await LEGACY_CHRONICLE_READ_CONTEXT.chronicle.listHiddenCodexIds("p1", [
+        "c-hidden",
+      ]);
+
+    expect(first).toBe(hidden);
+    expect(second).toBe(hidden);
+    expect(hiddenCodex.listCodexIdsHiddenFromAi).toHaveBeenCalledTimes(2);
+    expect(hiddenCodex.listCodexIdsHiddenFromAi).toHaveBeenNthCalledWith(1, {
+      entryIds: ["c-hidden", "c-visible"],
+      projectId: "p1",
+      sceneId: "s1",
+    });
+    expect(hiddenCodex.listCodexIdsHiddenFromAi).toHaveBeenNthCalledWith(2, {
+      entryIds: ["c-hidden"],
+      projectId: "p1",
+      sceneId: "s2",
+    });
+  });
+
+  it("propagates resolver failures", async () => {
+    const error = new Error("resolver failed");
+    hiddenCodex.listCodexIdsHiddenFromAi.mockRejectedValueOnce(error);
+
+    await expect(
+      LEGACY_CHRONICLE_READ_CONTEXT.chronicle.listHiddenCodexIds("p1", ["id"]),
+    ).rejects.toBe(error);
+  });
 });
 
 describe("listEventsTool", () => {

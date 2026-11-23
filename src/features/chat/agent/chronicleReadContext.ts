@@ -35,6 +35,15 @@ export const LEGACY_CHRONICLE_READ_CONTEXT: CoreChronicleReadContext = {
     getEvents: (projectId) => getSharedEvents(projectId),
     getSceneEvents: (projectId) => getSharedSceneEvents(projectId),
     getCodexNames: (projectId) => getSharedCodexNames(projectId),
+    listHiddenCodexIds: async (projectId, ids) => {
+      const { listCodexIdsHiddenFromAi } =
+        await import("@/features/codex/context/codexHiddenFromAi");
+      return listCodexIdsHiddenFromAi({
+        entryIds: ids,
+        projectId,
+        sceneId: useTreeStore.getState().activeSceneId,
+      });
+    },
     // core は getTreeState().nodes の参照をそのまま渡す（memo が外れない）。
     getReadingOrder: (nodes) => getSharedReadingOrder(nodes as TreeNodeData[]),
     // 引数の個数も今までどおり（全件のときは projectId だけで呼ぶ）。
