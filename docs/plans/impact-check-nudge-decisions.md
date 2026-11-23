@@ -191,6 +191,9 @@ NIR の語（「変更レビュー」「Attention」「Finding」「Freshness」
   `CodexDetailContent.test.tsx` と `codexContentFocusAutosave.browser.test.tsx` だけ。点の hook は `DetailTabs` 経由でだけ mount されるので、この 2 つで DB 読みや `useAiGate` が走らない。
 - `evals/quality-manifest.yaml` の `CodexDetailContent.tsx`（`GDX-POLICY-001` の `implementedBy` の一覧）は、file を追加・削除していないので追従は不要。
 - 初期 graph の size（locale の key 追加による数十 byte の見込み）は未実測。CI の perf:budget に委ねる。
+- **CI の Browser job が落ちた（2026-11-24。PR の ci.yml）**：`ImpactNudge.browser.test.tsx` の目視用スクリーンショットの試験を `it.skipIf(!SHOT_DIR)` にしていたため、CI（env なし）で skip（pending）1 件になった。
+  browser CI の benchmark（`scripts/browser-ci-benchmark.mjs`）は `allTestsPassed`（pending 0 件・全 assertion が passed）を要求するので、vitest の要約は全件成功（81 file・657 件）でも run が失敗と判定された。
+  `if (SHOT_DIR) it(...)`（env を付けたときだけ試験を登録）に直し、env なしで skip 0 件になることと、同じ benchmark script の local 実行が `passedRuns:1` になることを確かめた。master の browser 試験に skip が無いのは、この要求のため。
 
 ## 9. 影響を受けないこと
 
