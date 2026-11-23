@@ -166,13 +166,13 @@ describe("get_codex_entry の共有 core", () => {
         aliases: ["別名"],
         summary: "公開要約",
         body: "公開本文",
-        details: [
-          { field: "年齢", value: "18" },
-        ],
+        details: [{ field: "年齢", value: "18" }],
         children: [],
       },
     });
-    expect(result.content?.details).not.toContainEqual({
+    expect(
+      (result.content as { details: unknown[] }).details,
+    ).not.toContainEqual({
       field: "別 project の項目名",
       value: null,
     });
@@ -209,7 +209,9 @@ describe("get_codex_entry の共有 core", () => {
       body: "SECRET-PHASE-OLD",
       details: [{ field: "年齢", value: "Phase 解決後の年齢" }],
     });
-    expect(result.content?.details).not.toContainEqual({
+    expect(
+      (result.content as { details: unknown[] }).details,
+    ).not.toContainEqual({
       field: "別 project の項目名",
       value: null,
     });
