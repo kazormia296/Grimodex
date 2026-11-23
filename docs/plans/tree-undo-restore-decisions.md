@@ -80,6 +80,21 @@
 
 `domain_writes.rs` の単体試験 `every_tree_nodes_column_is_classified_for_the_undo_restore`：`pragma table_info(tree_nodes)` の全列が「INSERT の列」「`TREE_NODE_RESTORE_COLUMNS`」「除外（理由つき）」のどれかに入ることを固定する（年表の 7 列は restore に移した。保留の区分は無くした）。別の lane が `tree_nodes` に列を足すと落ちて判断を強制する。key と列の対応は `TREE_NODE_PATCH_COLUMNS` と同じ（`createdAt` だけ undo 専用）であることも固定した。Main の key 集合は `electron/shared/ipcContract.ts` の `TREE_NODE_RESTORE_STATE_KEYS`、browser mock は `BROWSER_TREE_RESTORE_COLUMNS` で、Rust と同じ 19 key。4 か所の一致は `restoreStateKeys.parity.test.ts` が固定する（上の b）。
 
+### i. Scope の writer の分類（`narrative_scope_storage_authority.rs`）
+
+`crates/grimodex-db/tests/narrative_scope_storage_authority.rs` は、Scope の世代と本文の Source token `v{version}@{updated_at}` が成り立つように、`narrative_scene_scope_bindings`・`tree_nodes`・`codex_entries` の production の SQL writer を閉じた manifest と照合する。restoreState の UPDATE（`restore_tree_node_state_in_tx`）と、create の wire 化（関数名が `tree_node_create_wire_with_authority` になった）が、この静的走査の網羅に載っていなかった（PR #1051 の ci.yml で 3 本が赤。不具合でなく、分類の求め）。次のように分類した。
+
+- **manifest**：INSERT の行は `tree_node_create_wire_with_authority`（class `SceneCreate`。従来どおり binding を作る）に付け替え、restore の UPDATE を新しい class `TreeRestoreInCreateTx` として 1 件登録した。
+- **「version を進めない Scene の書換え」の集合**（T method）：restore の UPDATE を足した。足すだけでなく、試験は class の契約を機械的に確かめる（`assert_restore_runs_inside_the_create_transaction`）：(a) UPDATE を持つ関数の本体が `version`・`updated_at` を一切書かない、(b) 呼び手が create の writer 1 つだけ、(c) その writer の中の順序が「undo の gate → INSERT → restore → binding の作成」。
+- **3 つの creation writer の限定**：名前を `tree_node_create_wire_with_authority` に追従しただけ。呼ぶ writer は同じ 3 つ（`tree_node_create`〔wire〕・`apply_ai_tree_plan`・`promote_sticky`）のまま。
+- **保証の根拠（コードで確かめた）**：
+  - restore の UPDATE は Scope の列（`story_time_order`・`pov_character_id`）を書く動的な SET で、`version` を進めない。だが **Scope の世代を進める相手も、守る token の履歴も無い**。undo の create の行と binding は新しく、delete が binding を消している（`tree_node_delete`）。create は UPDATE の**後**に `ensure_scene_scope_binding_in_tx` で binding を新しく作る（新しい incarnation、version 1、token は完成した行から計算。`UnknownRepairOrRestore`）。
+  - UPDATE は INSERT と同じ transaction の中にあるので、restore 前の値を持つ commit 済みの状態・読み手・Source token は存在しない。
+  - UPDATE は `version` も `updated_at` も書かないので、token は INSERT が作った `v0@now` のまま（restore が無かった従来と同じ。試験 `restore_state_does_not_roll_back_updated_at_or_version`）。単調性は壊れない。
+  - Scope の source token は registry と binding（incarnation・version・updatedAt 等）から作られ、story order を含まない。POV は新しい binding の holder・audience（Reader の既定）に影響しない。したがって、§c・§g の記述（binding は従来どおり作り直す、Scope は戻らない、脅威モデルは変わらない）と食い違わない。
+  - 到達は create の writer の `origin == Undo` の gate の後だけ。Undo Journal の束縛は `validate_tree_replay_target_in_tx` が見る。
+- 他の走査：`graph_index_dirty_tests.rs` の feed append の呼び手の数（domain_writes.rs は 7、変更なし）、`scripts/quality/validate-native-writer-ownership.mjs`・`validate-change-feed-writers.mjs`・`scripts/c2zc-product-journeys.test.mjs`（create の関数の範囲を切り出して `let now = chrono::Utc::now()` を見る）は、名前の変更・新しい UPDATE で影響を受けなかった（node の試験と validate を実行して通った）。
+
 ## DR-UND-2（候補）残りの欠落
 
 上の e の子の表・Scope binding・子のある folder の undo（replay 束縛の緩和。lane H の計画書 `plan-folder-undo-20261123.md`）・Trash 復元・redo of create。年表の 7 列は DR-UND-1 で戻すことにした（上）。
