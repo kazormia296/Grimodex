@@ -126,6 +126,24 @@ export function reconcileSeedsWithProposals(input: {
   ok: boolean;
 };
 
+export function classifyS5Surfaces(input: {
+  s5Hashes: Iterable<string>;
+  seedHashes: Iterable<string>;
+  proposalHashes: Iterable<string>;
+  candidateHashes?: Iterable<string> | null;
+}): {
+  rosterSurfaces: number;
+  notSeed: number;
+  seedNotProposed: number;
+  proposed: number;
+  proposedOutsideSeed: number;
+  candidate: {
+    inCandidate: number;
+    notSeedInCandidate: number;
+    neitherSeedNorCandidate: number;
+  } | null;
+};
+
 export const STORED_PROPOSAL_KIND_FIELDS: Readonly<Record<string, string>>;
 export const STORED_PROPOSAL_KINDS: readonly string[];
 export const STORED_PROPOSAL_STATUSES: readonly string[];

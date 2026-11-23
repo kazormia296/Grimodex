@@ -1,14 +1,19 @@
 // 測定 A の駆動の試験（fake の page。Electron・AI は使わない）。
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import {
   assertOutputClean,
+  classifyS5Surfaces,
   planStoredRuns,
   summarizeStoredProposals,
 } from "./lib.mjs";
 import { buildRosterIndex } from "./measure-a-metrics.mjs";
 import {
   cellStatus,
+  loadCandidateHashes,
   measureABody,
   planCells,
   registrationEntries,
@@ -620,4 +625,181 @@ test("cellStatus：保存済みの提案を読む command が IPC に載って�
     runs: [{ completed: true, persistAttempt: { status: "ok" } }],
   };
   assert.equal(cellStatus(good, value), "ok");
+});
+
+// ---- DR-ILM-38：S5 の hash を renderer へ渡し、内訳（件数だけ）を metrics に載せる -------------------------------------
+
+const s5Roster = {
+  entities: [
+    {
+      id: "e1",
+      type: "character",
+      name: "alpha",
+      aliases: [],
+      ambiguousSurfaces: [
+        { surface: "swap", sceneRanges: [[1, 3]] },
+        { surface: "move", sceneRanges: [[1, 3]] },
+      ],
+    },
+    {
+      id: "e2",
+      type: "character",
+      name: "beta",
+      aliases: [],
+      ambiguousSurfaces: [
+        { surface: "swap", sceneRanges: [[4, 9]] },
+        { surface: "third", sceneRanges: [[1, 9]] },
+      ],
+    },
+  ],
+};
+
+function s5Page(inputs) {
+  const rows = [
+    {
+      surfaceHash: "swap",
+      keyHash: "swap",
+      bindingKind: "create-new",
+      scenes: [],
+      coarseClass: "person",
+      candidates: [],
+      typeStatus: "resolved",
+      status: "unreviewed",
+      bulkApprovable: false,
+    },
+  ];
+  globalThis.window = {
+    identityLoad: {
+      registerRoster: async (input) => ({ created: input.entries.length }),
+      // renderer の代わり：host が渡した S5 の hash と、seed の集合（move・swap）から、件数だけ返す。
+      extractStructure: async (input) => {
+        inputs.push(input);
+        return {
+          observed: { prepass: { status: "complete" } },
+          entityProposalCount: 1,
+          counts: { bulkApprovable: 0 },
+          s5Breakdown: classifyS5Surfaces({
+            s5Hashes: input.s5Hashes,
+            seedHashes: ["swap", "move"],
+            proposalHashes: ["swap"],
+            candidateHashes: input.s5CandidateHashes,
+          }),
+          rows,
+        };
+      },
+    },
+  };
+  return { evaluate: async (fn, arg) => fn(arg) };
+}
+
+test("measureABody：S5 の hash（名簿の全体から。水準で削らない）と候補の照合を renderer へ渡し、返った内訳を metrics に載せる", async () => {
+  const index = await buildRosterIndex(s5Roster, async (s) => s);
+  const inputs = [];
+  const out = await measureABody({
+    page: s5Page(inputs),
+    projectId: "p",
+    roster: s5Roster,
+    index,
+    cell: { level: "L0", steps: [100] },
+    // 候補の hash（S5 でない other も含む）。renderer へは S5 に当たるものだけを渡す。
+    candidateHashes: ["third", "other", "swap"],
+  });
+  // L0 でも S5 は 3 件（swap の重複は 1 件）。
+  assert.deepEqual(inputs[0].s5Hashes, ["move", "swap", "third"]);
+  assert.deepEqual(inputs[0].s5CandidateHashes.sort(), ["swap", "third"]);
+  const columns = out.runs[0].metrics.identityColumns;
+  assert.equal(columns.s5.roster, 3);
+  assert.equal(columns.s5.seen, 1);
+  assert.deepEqual(
+    [
+      columns.s5.breakdown.notSeed,
+      columns.s5.breakdown.seedNotProposed,
+      columns.s5.breakdown.proposed,
+    ],
+    [1, 1, 1],
+  );
+  assert.deepEqual(columns.s5.breakdown.candidate, {
+    inCandidate: 2,
+    notSeedInCandidate: 1,
+    neitherSeedNorCandidate: 0,
+  });
+  // 候補が未計測（null）なら、候補の数は 0 でなく null。
+  const inputs2 = [];
+  const out2 = await measureABody({
+    page: s5Page(inputs2),
+    projectId: "p",
+    roster: s5Roster,
+    index,
+    cell: { level: "L3", steps: [100] },
+    candidateHashes: null,
+  });
+  assert.equal(inputs2[0].s5CandidateHashes, null);
+  assert.equal(
+    out2.runs[0].metrics.identityColumns.s5.breakdown.candidate,
+    null,
+  );
+  // 出力に表記の文字列（この合成では hash が表記そのまま）の欄を作らない：内訳は件数だけ。
+  assert.deepEqual(
+    Object.keys(out2.runs[0].metrics.identityColumns.s5.breakdown).sort(),
+    ["candidate", "notSeed", "proposed", "seedNotProposed"],
+  );
+});
+
+test("measureABody：renderer が内訳を返さない run（seed が読めない・欄の無い renderer）は、内訳を 0 でなく null（未計測）にする", async () => {
+  const index = await buildRosterIndex(s5Roster, async (s) => s);
+  const page = fakePage([]);
+  const out = await measureABody({
+    page,
+    projectId: "p",
+    roster: s5Roster,
+    index,
+    cell: { level: null, steps: [100] },
+  });
+  assert.equal(out.runs[0].metrics.identityColumns.s5.breakdown, null);
+  assert.equal(out.runs[0].metrics.identityColumns.s5.roster, 3);
+});
+
+test("loadCandidateHashes：候補の一覧を host 側で hash にする。file が無い・壊れている・空は 0 でなく null（未計測）", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ilm-cand-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, "surfaces"), { recursive: true });
+  const write = (name, body) => {
+    const file = path.join(dir, "surfaces", name);
+    writeFileSync(file, typeof body === "string" ? body : JSON.stringify(body));
+    return file;
+  };
+  const hash = async (surface) => `h:${surface.length}:${surface}`;
+  // 重複は 1 件に畳む。seed の側（surfaces.seed）は読まない。
+  assert.deepEqual(
+    await loadCandidateHashes(
+      write("a.json", { seed: ["s1"], candidate: ["c1", "c2", "c1"] }),
+      hash,
+    ),
+    ["h:2:c1", "h:2:c2"],
+  );
+  assert.equal(
+    await loadCandidateHashes(path.join(dir, "surfaces", "none.json"), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("b.json", "{not json"), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("c.json", { candidate: [] }), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("d.json", { seed: ["s"] }), hash),
+    null,
+  );
+  assert.equal(
+    await loadCandidateHashes(write("e.json", { candidate: ["x", 1] }), hash),
+    null,
+  );
+  // 既定の hash は表記を返さない（16 桁の hex）。
+  const [real] = await loadCandidateHashes(
+    write("f.json", { candidate: ["swap"] }),
+  );
+  assert.match(real, /^[0-9a-f]{16}$/u);
 });
