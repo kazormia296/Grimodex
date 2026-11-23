@@ -1,11 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import type { AiBranchSeedChipMeta } from "./aiBranchContext";
 
 interface AIBranchDialogProps {
   boardId: string;
   spawnPosition: { x: number; y: number };
   seedNodeTitles: string[];
+  /**
+   * `seedNodeTitles` と同じ添字の、Codex 由来の情報（Codex 以外は undefined）。無ければ注記は出ない。
+   * 注記は表示の補助で、AI に送るかどうかは送信の直前の判定だけが決める（DR-MP4-43）。
+   */
+  seedChipMeta?: readonly (AiBranchSeedChipMeta | undefined)[];
+  /**
+   * 「AI に送られない」Codex の id を DB で判定する。ダイアログを開いたとき（種の一覧が確定したとき）に
+   * 1 回だけ呼ぶ。reject したら注記なし（ダイアログは普通に使える）。
+   */
+  resolveNotSentCodexIds?: (entryIds: string[]) => Promise<ReadonlySet<string>>;
   onConfirm: (
     prompt: string,
     count: 3 | 5 | 8,
@@ -28,6 +39,8 @@ const NOVELTY_OPTIONS: { key: string; value: number | null }[] = [
 
 export function AINodeDialog({
   seedNodeTitles,
+  seedChipMeta,
+  resolveNotSentCodexIds,
   onConfirm,
   onCancel,
 }: AIBranchDialogProps) {
@@ -41,6 +54,44 @@ export function AINodeDialog({
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  // 注記の判定（DB の読み）の対象は、同期の層で外れていない Codex の id。種の一覧が変わると key が変わる。
+  const dbCheckKey = JSON.stringify([
+    ...new Set(
+      (seedChipMeta ?? []).flatMap((m) =>
+        m?.codexEntryId && !m.notSentLocally ? [m.codexEntryId] : [],
+      ),
+    ),
+  ]);
+  const resolveRef = useRef(resolveNotSentCodexIds);
+  useEffect(() => {
+    resolveRef.current = resolveNotSentCodexIds;
+  }, [resolveNotSentCodexIds]);
+  // 結果は、判定した種の一覧の key と組で持つ。別の一覧の結果は使わない。
+  const [dbNotSent, setDbNotSent] = useState<{
+    key: string;
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  useEffect(() => {
+    const ids = JSON.parse(dbCheckKey) as string[];
+    if (ids.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const resolve = resolveRef.current;
+        if (!resolve) return;
+        const result = await resolve(ids);
+        // 閉じた後・種の一覧が変わった後に返った古い結果は捨てる。
+        if (!cancelled) setDbNotSent({ key: dbCheckKey, ids: result });
+      } catch {
+        // 判定に失敗したら注記なし。送信の判定は別に効く。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dbCheckKey]);
+  const notSentIds = dbNotSent?.key === dbCheckKey ? dbNotSent.ids : null;
 
   // Escape でどこにフォーカスがあっても閉じられるようにする (WCAG 2.1.1)。
   // capture で先取りし、Map 側など後続の Escape 処理へ流さない。
@@ -104,20 +155,35 @@ export function AINodeDialog({
               {t("map.aiNodeDialog.context")}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {seedNodeTitles.map((title, i) => (
-                <span
-                  key={i}
-                  style={{
-                    fontSize: 11,
-                    padding: "2px 8px",
-                    borderRadius: 12,
-                    background: "var(--accent)",
-                    color: "var(--accent-foreground)",
-                  }}
-                >
-                  {title}
-                </span>
-              ))}
+              {seedNodeTitles.map((title, i) => {
+                const meta = seedChipMeta?.[i];
+                const notSent =
+                  !!meta?.codexEntryId &&
+                  (!!meta.notSentLocally ||
+                    !!notSentIds?.has(meta.codexEntryId));
+                return (
+                  <span
+                    key={i}
+                    style={{
+                      fontSize: 11,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--accent)",
+                      color: "var(--accent-foreground)",
+                    }}
+                  >
+                    {title}
+                    {notSent && (
+                      <span
+                        data-testid="ai-branch-chip-not-sent"
+                        style={{ marginLeft: 6, opacity: 0.7 }}
+                      >
+                        {t("map.aiNodeDialog.notSentToAi")}
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
             </div>
           </div>
         )}

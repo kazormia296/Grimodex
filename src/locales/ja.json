@@ -5555,7 +5555,8 @@
       "novelty": "意外性",
       "noveltyStandard": "標準",
       "noveltyNovel": "意外",
-      "noveltyBold": "大胆"
+      "noveltyBold": "大胆",
+      "notSentToAi": "AI には送られません"
     },
     "nodeType": {
       "scene": "シーン",

@@ -103,6 +103,9 @@ import { useAiSettingsStore } from "@/features/chat/store";
 import {
   collectAiBranchSeeds,
   runAiBranchGeneration,
+  buildAiBranchSeedChipMeta,
+  listAiBranchCodexIdsNotSent,
+  type AiBranchSeedChipMeta,
   AiBranchHiddenCheckFailedError,
   type AiBranchSeedSource,
 } from "./aiBranchContext";
@@ -298,6 +301,8 @@ export function MapCanvas() {
     indicatorPosition: { x: number; y: number };
     seedNodeIds: string[];
     seedNodeTitles: string[];
+    /** `seedNodeTitles` と同じ添字。確認ダイアログの注記（AI に送られない Codex）の元。 */
+    seedChipMeta: (AiBranchSeedChipMeta | undefined)[];
     seeds: AiBranchSeedSource[];
     /** Authority captured together with the frozen seed snapshot. */
     authority: AiOperationAuthority;
@@ -1583,15 +1588,21 @@ export function MapCanvas() {
           )
         : allNodes.filter((n) => n.selected && n.type !== "frame");
       const seedNodeIds = seedNodes.map((n) => n.id);
-      const seedNodeTitles = seedNodes
-        .map((n) => {
-          const data = n.data as { title?: string; name?: string };
-          return data.title ?? data.name ?? n.id;
-        })
-        .filter(Boolean) as string[];
       // store にある最新 entity から body を抜き出して seed payload を構築。
       // 確認ダイアログ表示時点で確定させ、生成リクエスト時に再 fetch しない。
       const seeds = collectAiBranchSeeds(seedNodes, stickies, aiBranches);
+      // chip の題と Codex 由来の情報は同じ添字で運ぶ（題が空のノードを外しても揃う）。
+      const chips = seedNodes
+        .map((n) => {
+          const data = n.data as { title?: string; name?: string };
+          return {
+            title: (data.title ?? data.name ?? n.id) as string,
+            meta: buildAiBranchSeedChipMeta(n.id, seeds),
+          };
+        })
+        .filter((c) => Boolean(c.title));
+      const seedNodeTitles = chips.map((c) => c.title);
+      const seedChipMeta = chips.map((c) => c.meta);
       const spawnPosition = getSpawnPosition();
       // 進行中スピナーは seed ノードの bounding box の下端中央に
       // 出して「どのノードから派生中か」を視覚的に紐付ける。
@@ -1617,6 +1628,7 @@ export function MapCanvas() {
         indicatorPosition,
         seedNodeIds,
         seedNodeTitles,
+        seedChipMeta,
         seeds,
         authority,
       });
@@ -2069,6 +2081,13 @@ export function MapCanvas() {
           boardId={boardId}
           spawnPosition={aiBranchDialog.spawnPosition}
           seedNodeTitles={aiBranchDialog.seedNodeTitles}
+          seedChipMeta={aiBranchDialog.seedChipMeta}
+          resolveNotSentCodexIds={(entryIds) =>
+            listAiBranchCodexIdsNotSent({
+              projectId: aiBranchDialog.authority.projectId,
+              entryIds,
+            })
+          }
           onConfirm={handleAiBranchConfirm}
           onCancel={() => setAiBranchDialog(null)}
         />

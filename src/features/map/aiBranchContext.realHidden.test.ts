@@ -59,7 +59,9 @@ vi.mock("@/features/ai-usage/recordAiUsage", () => ({
 
 import {
   AiBranchHiddenCheckFailedError,
+  buildAiBranchSeedChipMeta,
   collectAiBranchSeeds,
+  listAiBranchCodexIdsNotSent,
   runAiBranchGeneration,
   type AiBranchSeedSource,
 } from "./aiBranchContext";
@@ -685,5 +687,120 @@ describe("L7 配線：generateAiBranchCards の呼び元は runAiBranchGeneratio
     expect(src).not.toMatch(/fetchAiBranchProjectContext/);
     // 判定の失敗は専用の枝で、画面には原因の文を出さず既存の題名だけ。
     expect(src).toMatch(/instanceof AiBranchHiddenCheckFailedError/);
+  });
+});
+
+describe("L14 確認ダイアログの注記の判定：送信の直前の判定と同じ部品・同じ規則（実物の判定・実物の DB 層）", () => {
+  const GHOST_ID = "id-ghost-notsent-12ab";
+
+  async function putFixtures(): Promise<void> {
+    await putAll();
+  }
+
+  const ALL_IDS = () => [
+    ...(Object.values(E) as Fx[]).map((e) => e.id),
+    GHOST_ID,
+  ];
+
+  it("Phase でだけ hidden・base が hidden・解除の Phase・DB に無い id・別 project は「送られない」、公開と suppress だけの Phase の項目は含まない", async () => {
+    await putFixtures();
+    const notSent = await listAiBranchCodexIdsNotSent({
+      projectId: P1,
+      entryIds: ALL_IDS(),
+    });
+    expect([...notSent].sort()).toEqual(
+      [
+        E.baseHidden.id,
+        E.phaseHidden.id,
+        E.phaseHiddenBody.id,
+        E.phaseReleased.id,
+        E.otherProject.id,
+        GHOST_ID,
+      ].sort(),
+    );
+    expect(notSent.has(E.open.id)).toBe(false);
+    expect(notSent.has(E.suppressOnly.id)).toBe(false);
+  });
+
+  it("注記の判定と、送信の直前の判定は同じ結果になる（注記の対象 = 実際に送信から落ちる Codex）", async () => {
+    await putFixtures();
+    const fx = (Object.values(E) as Fx[]).filter((e) => !e.project);
+    setCodexStore(fx.map((e) => storeEntry(e)));
+    // store の mode は DB と同じにして、同期の層で落ちる項目（base hidden）も同じ集合に入ることを見る。
+    const nodes = codexNodes(...fx);
+    const seeds = collectAiBranchSeeds(nodes, [], []);
+    const notSent = await listAiBranchCodexIdsNotSent({
+      projectId: P1,
+      entryIds: fx.map((e) => e.id),
+    });
+
+    await run(seeds);
+
+    const sent = sentText();
+    for (const e of fx) {
+      // 名前が送信に載らない Codex だけが、注記の対象。
+      expect(sent.includes(e.name)).toBe(!notSent.has(e.id));
+    }
+    // chip の情報：同期の層で外れた Codex（base が hidden）は notSentLocally、他は DB の判定に任せる。
+    const metas = nodes.map((n) => buildAiBranchSeedChipMeta(n.id, seeds));
+    const locally = fx
+      .filter((_, i) => metas[i]?.notSentLocally)
+      .map((e) => e.id);
+    // base が hidden の 2 件（解除の Phase を持つ項目も、base は hidden）。
+    expect(locally).toEqual([E.baseHidden.id, E.phaseReleased.id]);
+  });
+
+  it("Codex 以外のノードは chip の情報が無く、種に載らない Codex（store に無い）は notSentLocally", () => {
+    expect(buildAiBranchSeedChipMeta("sticky:s1", [])).toBeUndefined();
+    expect(buildAiBranchSeedChipMeta("scene:x", [])).toBeUndefined();
+    expect(buildAiBranchSeedChipMeta("codex:c1", [])).toEqual({
+      codexEntryId: "c1",
+      notSentLocally: true,
+    });
+    expect(
+      buildAiBranchSeedChipMeta("codex:c1", [
+        { type: "codex", title: "t", codexEntryId: "c1" },
+      ]),
+    ).toEqual({ codexEntryId: "c1", notSentLocally: false });
+  });
+
+  it("id が 0 件なら DB を読まず空、projectId が空なら reject、DB の読みの失敗は reject する", async () => {
+    const spy = vi.spyOn(anyPhase, "listCodexIdsHiddenFromAiInAnyPhase");
+    expect(
+      (await listAiBranchCodexIdsNotSent({ projectId: P1, entryIds: [] })).size,
+    ).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+    await expect(
+      listAiBranchCodexIdsNotSent({ projectId: " ", entryIds: ["x"] }),
+    ).rejects.toBeInstanceOf(AiBranchHiddenCheckFailedError);
+    spy.mockRejectedValueOnce(new Error("db down"));
+    await expect(
+      listAiBranchCodexIdsNotSent({ projectId: P1, entryIds: ["x"] }),
+    ).rejects.toThrow("db down");
+  });
+
+  it("注記の判定が失敗しても、送信の判定は独立に効く（hidden は送られない）", async () => {
+    await putFixtures();
+    setCodexStore([storeEntry(E.phaseHidden), storeEntry(E.open)]);
+    const seeds = collectAiBranchSeeds(
+      codexNodes(E.phaseHidden, E.open),
+      [],
+      [],
+    );
+    // 注記の判定だけが 1 回失敗する。
+    vi.spyOn(
+      anyPhase,
+      "listCodexIdsHiddenFromAiInAnyPhase",
+    ).mockRejectedValueOnce(new Error("db down"));
+    await expect(
+      listAiBranchCodexIdsNotSent({
+        projectId: P1,
+        entryIds: [E.phaseHidden.id],
+      }),
+    ).rejects.toThrow("db down");
+    await run(seeds);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(sentText()).not.toContain(E.phaseHidden.name);
+    expect(sentText()).toContain(E.open.name);
   });
 });

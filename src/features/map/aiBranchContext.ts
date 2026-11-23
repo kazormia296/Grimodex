@@ -234,6 +234,61 @@ function stripSource(seed: AiBranchSeedSource): AiBranchSeed {
 }
 
 /**
+ * 「AI に送られない Codex」の判定の部品。送信の直前の判定（`prepareAiBranchSendContext`）と、
+ * 確認ダイアログの注記（`listAiBranchCodexIdsNotSent`）が同じここを通る（規則を 2 か所に書かない）。
+ * 規則の正本は `listCodexIdsHiddenFromAiInAnyPhase`（base が hidden、どれかの Phase で hidden、
+ * DB に無い・この project でない）。id が 1 件も無ければ DB を読まない。DB の読みの失敗は reject する。
+ */
+async function findHiddenCodexIds(
+  projectId: string,
+  entryIds: ReadonlySet<string>,
+): Promise<Set<string>> {
+  if (entryIds.size === 0) return new Set<string>();
+  return listCodexIdsHiddenFromAiInAnyPhase({
+    entryIds: [...entryIds],
+    projectId,
+  });
+}
+
+/**
+ * 確認ダイアログの種の一覧（chip）に「AI には送られません」の注記を出す対象を、DB で求める
+ * （DR-MP4-43、ユーザー決定 2026-11-23）。送信の直前の判定と同じ部品（`findHiddenCodexIds`）を通る。
+ * これは表示の補助で、送信を許可・拒否するのは `runAiBranchGeneration` の判定だけ。
+ * 失敗したら reject する（呼び側は注記なしにするだけで、ダイアログを開けなくしない）。
+ */
+export async function listAiBranchCodexIdsNotSent(input: {
+  projectId: string;
+  entryIds: readonly string[];
+}): Promise<Set<string>> {
+  const projectId = input.projectId?.trim();
+  if (!projectId) throw new AiBranchHiddenCheckFailedError();
+  return findHiddenCodexIds(projectId, new Set(input.entryIds));
+}
+
+/**
+ * ダイアログの chip 1 件ぶんの、Codex 由来の情報。`codexEntryId` は Codex のノードだけが持つ。
+ * `notSentLocally` は、同期の層（`collectAiBranchSeeds`）がすでに種から外した Codex（base が hidden、
+ * store に無い）で、DB を読まなくても送られないと分かる。
+ */
+export interface AiBranchSeedChipMeta {
+  codexEntryId?: string;
+  notSentLocally?: boolean;
+}
+
+/** React Flow のノード id と収集済みの種から、chip の Codex 由来の情報を作る。Codex 以外は undefined。 */
+export function buildAiBranchSeedChipMeta(
+  nodeId: string,
+  seeds: readonly AiBranchSeedSource[],
+): AiBranchSeedChipMeta | undefined {
+  if (!nodeId.startsWith("codex:")) return undefined;
+  const codexEntryId = nodeId.slice("codex:".length);
+  const collected = seeds.some(
+    (s) => s.type === "codex" && s.codexEntryId === codexEntryId,
+  );
+  return { codexEntryId, notSentLocally: !collected };
+}
+
+/**
  * 送信の直前に、種・Spotlight の Codex を DB で判定して hidden を除く。
  *
  * 地図は場面を持たないので、base が hidden、またはどれかの Phase で hidden（不明な mode を含む）、
@@ -267,21 +322,16 @@ export async function prepareAiBranchSendContext(input: {
     if (isCodex(s) && s.codexEntryId) entryIds.add(s.codexEntryId);
   }
 
-  let hidden = new Set<string>();
-  if (entryIds.size > 0) {
-    try {
-      hidden = await listCodexIdsHiddenFromAiInAnyPhase({
-        entryIds: [...entryIds],
-        projectId,
-      });
-    } catch (error) {
-      debugLog.warn(
-        "codex-hidden",
-        "hidden 判定に失敗したので AI Branch を送らない",
-        errorDetail(error),
-      );
-      throw new AiBranchHiddenCheckFailedError();
-    }
+  let hidden: Set<string>;
+  try {
+    hidden = await findHiddenCodexIds(projectId, entryIds);
+  } catch (error) {
+    debugLog.warn(
+      "codex-hidden",
+      "hidden 判定に失敗したので AI Branch を送らない",
+      errorDetail(error),
+    );
+    throw new AiBranchHiddenCheckFailedError();
   }
 
   // id を持たない Codex の種は、由来を確かめられないので送らない。
