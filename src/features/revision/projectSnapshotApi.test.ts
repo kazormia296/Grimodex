@@ -1,11 +1,15 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
+  previewProjectSnapshotRestoreLoss,
   restoreProjectSnapshot,
 } from "./projectSnapshotApi";
 import { RESTORE_SCOPES } from "./projectSnapshotScopes";
 import { saveSceneContent } from "@/features/tree/api";
+import * as bodyWriteMode from "@/features/timelapse/bodyWriteMode";
+import * as treeTopologyMutation from "@/application/tree/treeTopologyMutationRegistry";
+import * as snapshotNative from "./projectSnapshotNative";
 
 // Uses the browser-mock DB (in-memory SQLite via sql.js).
 
@@ -111,6 +115,85 @@ async function seedFolder(id: string, title: string) {
 describe("projectSnapshotApi", () => {
   beforeEach(async () => {
     await resetSnapshotTables();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("previews losses through the read-only context and defaults missing notices to empty", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const snapshot = await createProjectSnapshot({ name: "preview-only" });
+    const context =
+      await snapshotNative.loadNativeProjectSnapshotRestoreContext(
+        PROJECT_ID,
+        snapshot.id,
+        new Set(RESTORE_SCOPES),
+      );
+    const oldContext = { ...context };
+    delete oldContext.lossNotices;
+    const loadContext = vi
+      .spyOn(snapshotNative, "loadNativeProjectSnapshotRestoreContext")
+      .mockResolvedValueOnce(oldContext);
+    const createSpy = vi.spyOn(snapshotNative, "createNativeProjectSnapshot");
+    const applySpy = vi.spyOn(
+      snapshotNative,
+      "applyNativeProjectSnapshotRestore",
+    );
+    const bodyReplacementSpy = vi.spyOn(
+      bodyWriteMode,
+      "runTimelapseBodyReplacement",
+    );
+    const topologyMutationSpy = vi.spyOn(
+      treeTopologyMutation,
+      "runTreeTopologyMutation",
+    );
+
+    await expect(
+      previewProjectSnapshotRestoreLoss(snapshot.id, new Set(RESTORE_SCOPES)),
+    ).resolves.toEqual({ structural: true, lossNotices: [] });
+    expect(loadContext).toHaveBeenCalledOnce();
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(applySpy).not.toHaveBeenCalled();
+    expect(bodyReplacementSpy).not.toHaveBeenCalled();
+    expect(topologyMutationSpy).not.toHaveBeenCalled();
+  });
+
+  it("carries Native dropped notices and noOp through the restore result", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const snapshot = await createProjectSnapshot({ name: "loss-result" });
+    vi.spyOn(
+      snapshotNative,
+      "applyNativeProjectSnapshotRestore",
+    ).mockResolvedValue({
+      canonicalSequence: 0,
+      noOp: true,
+      dropped: [{ kind: "phase_anchor", count: 2 }],
+    });
+
+    const result = await restoreProjectSnapshot(snapshot.id, "loss-result");
+
+    expect(result.dropped).toEqual([{ kind: "phase_anchor", count: 2 }]);
+    expect(result.noOp).toBe(true);
+  });
+
+  it("defaults optional Native result fields for older restore receipts", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const snapshot = await createProjectSnapshot({
+      name: "legacy-result-shape",
+    });
+    vi.spyOn(
+      snapshotNative,
+      "applyNativeProjectSnapshotRestore",
+    ).mockResolvedValue({
+      canonicalSequence: 0,
+    });
+
+    const result = await restoreProjectSnapshot(
+      snapshot.id,
+      "legacy-result-shape",
+    );
+
+    expect(result.dropped).toEqual([]);
+    expect(result.noOp).toBe(false);
   });
 
   it("creates a snapshot capturing the current scene content", async () => {
