@@ -600,6 +600,29 @@ describe("resolveCodexForAi の Phase の解決", () => {
   });
 });
 
+describe("既知の穴（DR-MP4-46 が閉じる。以下は直す前の挙動）：起点の場面を失った hidden の Phase", () => {
+  it("n-s2・n-s3 が読む順に無い（archived）と、それらを起点にした hidden の Phase は skip され、c-aria・c-mage は n-s1 でも n-s4 でも公開のまま", async () => {
+    setPhaseStore(
+      [
+        sceneNode("n-s1", "a0", "a1"),
+        { ...sceneNode("n-s2", "a1", "a3"), archivedAt: T1 },
+        { ...sceneNode("n-s3", "a2", "a2"), archivedAt: T1 },
+        sceneNode("n-s4", "a3", "a4"),
+      ] as TreeNodeData[],
+      "reading",
+    );
+    for (const sceneId of ["n-s1", "n-s4"]) {
+      const r = await resolveCodexForAi({
+        entryIds: ["c-aria", "c-mage"],
+        projectId: "p-main",
+        sceneId,
+      });
+      expect([...r.hidden], sceneId).toEqual([]);
+      expect(sorted(r.texts.keys()), sceneId).toEqual(["c-aria", "c-mage"]);
+    }
+  });
+});
+
 describe("resolveCodexForAi の hidden・texts の挿入順", () => {
   it("hidden は DB に無い id が先（渡した順）、次に entry。texts は DB が返した entry のうち公開のもの", async () => {
     const r = await resolveCodexForAi({

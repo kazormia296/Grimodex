@@ -110,7 +110,7 @@ const entry = (id: string, contextMode: string): FakeEntry => ({
 const phase = (
   id: string,
   entryId: string,
-  anchorNodeId: string,
+  anchorNodeId: string | null,
   contextModeOverride: string | null,
   over: Record<string, unknown> = {},
 ) => ({
@@ -148,6 +148,8 @@ const IDS = [
   "story-hide",
   "tie",
   "plain-text",
+  "orph-null",
+  "orph-gone",
   "gone",
   "pub",
 ];
@@ -161,6 +163,9 @@ beforeEach(() => {
     entry("story-hide", "mentioned"),
     entry("tie", "hidden"),
     entry("plain-text", "mentioned"),
+    // 起点を失った hidden の Phase を持つ公開項目（DR-MP4-46）。
+    entry("orph-null", "mentioned"),
+    entry("orph-gone", "mentioned"),
   ];
   h.phases = [
     phase("ph-rel", "rel", "s2", "mentioned", {
@@ -176,6 +181,8 @@ beforeEach(() => {
     phase("ph-text", "plain-text", "s1", null, {
       summaryOverride: "文だけ変える",
     }),
+    phase("ph-orph-null", "orph-null", null, "hidden"),
+    phase("ph-orph-gone", "orph-gone", "deleted-scene", "hidden"),
   ];
 });
 

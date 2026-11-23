@@ -74,7 +74,7 @@ function codexEntry(
 function phase(
   id: string,
   entryId: string,
-  anchorNodeId: string,
+  anchorNodeId: string | null,
   overrides: Partial<CodexEntryPhase> = {},
 ): CodexEntryPhase {
   return {
@@ -1732,6 +1732,76 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
       }
     },
   );
+
+  // Known hole, fixed by DR-MP4-46 (the expectations are the behaviour before the fix): a
+  // Phase that hides an entry but whose anchor scene the resolver cannot place (deleted, null,
+  // archived) is skipped, so while the current scene is in the reading order the entry reaches
+  // the AI as base: through always, a mention and an input pin.
+  describe("a hiding Phase that lost its anchor (known hole, DR-MP4-46)", () => {
+    const entries = [
+      phaseHidden("dangling", { contextMode: "always" }),
+      phaseHidden("nullanc", { contextMode: "always" }),
+      phaseHidden("archivd", { contextMode: "always" }),
+      phaseHidden("mentioned", { name: "Mentionvane" }),
+      phaseHidden("pinned", { name: "Pinnedvane" }),
+    ];
+    const phases = [
+      phase("p-dangling", "dangling", "deleted-scene", {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-nullanc", "nullanc", null, { contextModeOverride: "hidden" }),
+      phase("p-archivd", "archivd", "scene-2", {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-mentioned", "mentioned", null, {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-pinned", "pinned", "deleted-scene", {
+        contextModeOverride: "hidden",
+      }),
+    ];
+    const sceneTwoArchived = {
+      ...scene("scene-2", "a1"),
+      archivedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const index = buildSceneTimeIndex([
+      scene("scene-1", "a0"),
+      sceneTwoArchived,
+    ]);
+
+    it("still reaches the AI at a scene the reading order has: always, a mention and an input pin", async () => {
+      const { haystack } = await collect("scene-1", {
+        entries,
+        phases,
+        index,
+        overrides: {
+          outgoingUserMessage: "Tell me about Mentionvane.",
+          mentionedCodexIds: ["mentioned"],
+          inputPinnedEntryIds: ["pinned"],
+          activeTab: null,
+        },
+      });
+      for (const token of [
+        "DANGLING_SUM",
+        "NULLANC_SUM",
+        "ARCHIVD_SUM",
+        "MENTIONED_SUM",
+        "PINNED_SUM",
+      ]) {
+        expect(haystack, token).toContain(token);
+      }
+    });
+
+    it("the codex scope: a selected entry that has such a Phase is still built (its base text reaches the AI)", async () => {
+      const { haystack } = await collect("scene-1", {
+        scope: { kind: "codex", entryId: "dangling" },
+        entries,
+        phases,
+        index,
+      });
+      expect(haystack).toContain("DANGLING_SUM");
+    });
+  });
 
   describe("the codex scope resolves at the latest state and does not depend on the scene (not changed)", () => {
     // A Phase whose anchor scene is not in the reading order is skipped by the resolver, even at latest.

@@ -10,6 +10,7 @@ import {
   listEntryIdsClosedWhenSceneUnresolvable,
   type CodexResolutionState,
 } from "./codexAiVisibility.js";
+import { resolveApplicablePhases } from "./resolveApplicablePhases.js";
 import { buildSceneTimeIndex, type TemporalAnchor } from "./sceneTimeIndex.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -760,5 +761,80 @@ describe("closeResolvedCodexForUnresolvableScene", () => {
     expect(
       closeResolvedCodexForUnresolvableScene(input, new Set()).get("a"),
     ).toBe(input.get("a"));
+  });
+});
+
+// Characterization of a known hole (DR-MP4-46 closes it in the next commit; the
+// expectations here are the behaviour of the code before the fix). A Phase that
+// hides an entry but whose anchor scene the resolver cannot place (null, deleted,
+// archived, under an archived folder) is skipped by `resolveApplicablePhases` for
+// every anchor, so while the current scene can be resolved the entry is read as
+// base alone: public.
+describe("known hole (fixed by DR-MP4-46): a hiding Phase that lost its anchor is skipped, so the entry stays public", () => {
+  const folderArchived = {
+    ...scene("f-arch", "a8"),
+    nodeType: "folder" as const,
+    archivedAt: NOW,
+  };
+  const NODES: TreeNodeData[] = [
+    ...FULL_STORY,
+    { ...scene("s-arch", "a9", "a9"), archivedAt: NOW },
+    folderArchived,
+    { ...scene("s-under", "a0", "a0"), parentId: "f-arch" },
+  ];
+  const hide = { contextModeOverride: "hidden" } as const;
+  const ORPHANS: Array<[string, CodexEntryPhase]> = [
+    ["anchor is null", phase("ph-null", "pub", null, hide)],
+    ["anchor scene is deleted", phase("ph-gone", "pub", "deleted-scene", hide)],
+    ["anchor scene is archived", phase("ph-arch", "pub", "s-arch", hide)],
+    [
+      "anchor scene is under an archived folder",
+      phase("ph-under", "pub", "s-under", hide),
+    ],
+  ];
+
+  it.each(ORPHANS)(
+    "%s: the entry is not hidden at any scene the reading order has, in every resolution mode",
+    (_label, orphan) => {
+      for (const mode of ["reading", "story", "auto"] as const) {
+        for (const sceneId of ["s1", "s2", "s3"]) {
+          const r = decide({
+            entries: [PUBLIC],
+            phases: [orphan],
+            sceneId,
+            nodes: NODES,
+            resolutionMode: resolved(mode),
+          });
+          expect([...r.hidden], `${mode} ${sceneId}`).toEqual([]);
+          expect(r.texts.get("pub"), `${mode} ${sceneId}`).toMatchObject({
+            summary: "pub summary",
+            mode: "mentioned",
+          });
+        }
+      }
+    },
+  );
+
+  it("the resolver skips exactly these Phases for every anchor kind (the condition the fix mirrors)", () => {
+    const valid = phase("ph-valid", "pub", "s2", hide);
+    const phases = [...ORPHANS.map(([, p]) => p), valid];
+    const index = buildSceneTimeIndex(NODES);
+    const anchors: TemporalAnchor[] = [
+      { kind: "base" },
+      { kind: "latest" },
+      { kind: "scene", sceneId: "s1" },
+      { kind: "scene", sceneId: "no-such-scene" },
+      { kind: "phase", phaseId: "ph-valid" },
+      { kind: "phase", phaseId: "no-such-phase" },
+    ];
+    for (const mode of ["reading", "story", "auto"] as const) {
+      for (const anchor of anchors) {
+        const out = resolveApplicablePhases({ phases, index, mode, anchor });
+        expect(
+          [...out.skippedPhaseIds].sort(),
+          `${mode} ${anchor.kind}`,
+        ).toEqual(["ph-arch", "ph-gone", "ph-null", "ph-under"]);
+      }
+    }
   });
 });

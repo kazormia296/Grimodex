@@ -1895,3 +1895,75 @@ describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-
     },
   );
 });
+
+// Known hole, fixed by DR-MP4-46 (the expectations are the behaviour before the fix): a Phase
+// that hides an entry but whose anchor scene the resolver cannot place (null, deleted) is
+// skipped, so while the current scene is in the reading order the entry reaches the AI as base.
+describe("collectSceneContext when a Phase that hides an entry lost its anchor (known hole, DR-MP4-46)", () => {
+  it("still reaches the AI: always, a mention and an input pin, at a scene the reading order has", async () => {
+    const entries = [
+      entry({
+        id: "dangling",
+        name: "Dangling",
+        contextMode: "always",
+        summary: "DANGLING_SUM",
+      }),
+      entry({
+        id: "nullanc",
+        name: "Nullanc",
+        contextMode: "always",
+        summary: "NULLANC_SUM",
+      }),
+      entry({ id: "mentioned", name: "Mentionvane", summary: "MENTIONED_SUM" }),
+      entry({ id: "pinned", name: "Pinnedvane", summary: "PINNED_SUM" }),
+    ];
+    const phases = [
+      phase({
+        id: "p-dangling",
+        entryId: "dangling",
+        anchorNodeId: "deleted-scene",
+        contextModeOverride: "hidden",
+      }),
+      phase({
+        id: "p-nullanc",
+        entryId: "nullanc",
+        anchorNodeId: null,
+        contextModeOverride: "hidden",
+      }),
+      phase({
+        id: "p-mentioned",
+        entryId: "mentioned",
+        anchorNodeId: null,
+        contextModeOverride: "hidden",
+      }),
+      phase({
+        id: "p-pinned",
+        entryId: "pinned",
+        anchorNodeId: "deleted-scene",
+        contextModeOverride: "hidden",
+      }),
+    ];
+    const result = await collectSceneContext(
+      request({
+        sceneId: "scene-1",
+        entries,
+        sessionId: "session-1",
+        sceneContent: "Mentionvane walks in.",
+        mentionedCodexIds: ["mentioned"],
+        inputPinnedEntryIds: ["pinned"],
+      }),
+      phaseDeps(phases),
+    );
+    const haystack = `${JSON.stringify(result.promptInput)}\n${
+      buildSystemPrompt(result.promptInput).prompt
+    }`;
+    for (const token of [
+      "DANGLING_SUM",
+      "NULLANC_SUM",
+      "MENTIONED_SUM",
+      "PINNED_SUM",
+    ]) {
+      expect(haystack, token).toContain(token);
+    }
+  });
+});

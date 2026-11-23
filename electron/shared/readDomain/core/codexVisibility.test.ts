@@ -443,6 +443,48 @@ describe("resolveCodexAiVisibility", () => {
   });
 });
 
+// Characterization of a known hole (DR-MP4-46 closes it in the next commit): a Phase that hides
+// an entry but whose anchor the resolver cannot place (null, or a scene the reading order does
+// not have) is skipped, so at a scene the reading order has the entry is read as base: public.
+describe("a hiding Phase that lost its anchor (known hole, fixed by DR-MP4-46)", () => {
+  const withOrphans = (sqlite: DatabaseSync) => {
+    sqlite.exec(`
+      insert into codex_entries values
+        ('orph-null', 'p-a', 'on summary', 'mentioned', 'on content'),
+        ('orph-gone', 'p-a', 'og summary', 'mentioned', 'og content');
+      insert into codex_entry_phases
+        (id, entry_id, anchor_node_id, label, summary_override, content_override, context_mode_override, created_at, updated_at) values
+        ('ph-on', 'orph-null', null, 'null anchor', null, null, 'hidden', '${T}', '${T}'),
+        ('ph-og', 'orph-gone', 's-deleted', 'deleted anchor', null, null, 'hidden', '${T}', '${T}');
+    `);
+  };
+
+  it("leaves both entries public at every scene the reading order has, in resolveCodexAiVisibility, listHiddenCodexIds and dropHiddenCodexRows", async () => {
+    const { ports } = setup("p-a", undefined, withOrphans);
+    const ids = ["orph-gone", "orph-null"];
+    for (const sceneId of ["s1", "s2", "s3"]) {
+      const r = await ask(ports, ids, sceneId);
+      expect([...r.hidden], sceneId).toEqual([]);
+      expect([...r.texts.keys()].sort(), sceneId).toEqual(ids);
+      const hidden = await listHiddenCodexIds(ports, {
+        projectId: "p-a",
+        entryIds: ids,
+        sceneId,
+      });
+      expect([...hidden], sceneId).toEqual([]);
+      const rows = await dropHiddenCodexRows(
+        ports,
+        ids.map((id) => ({ id })),
+        { projectId: "p-a", sceneId },
+      );
+      expect(
+        rows.map((row) => row.id),
+        sceneId,
+      ).toEqual(ids);
+    }
+  });
+});
+
 describe("listHiddenCodexIds", () => {
   it("is the hidden set of the same decision, and does not tell a hidden id from one the project has no entry for", async () => {
     const { ports } = setup();
