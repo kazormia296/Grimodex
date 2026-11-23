@@ -74,7 +74,7 @@ function codexEntry(
 function phase(
   id: string,
   entryId: string,
-  anchorNodeId: string,
+  anchorNodeId: string | null,
   overrides: Partial<CodexEntryPhase> = {},
 ): CodexEntryPhase {
   return {
@@ -1733,8 +1733,119 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
     },
   );
 
-  describe("the codex scope resolves at the latest state and does not depend on the scene (not changed)", () => {
+  // DR-MP4-46: a Phase that hides an entry but whose anchor scene the resolver cannot place
+  // (deleted, null, archived) is skipped by the resolver. The entry is closed for every anchor
+  // (before DR-MP4-46 it reached the AI as base while the current scene was in the reading order).
+  describe("a hiding Phase that lost its anchor (DR-MP4-46)", () => {
+    const entries = [
+      phaseHidden("dangling", { contextMode: "always" }),
+      phaseHidden("nullanc", { contextMode: "always" }),
+      phaseHidden("archivd", { contextMode: "always" }),
+      phaseHidden("mentioned", { name: "Mentionvane" }),
+      phaseHidden("pinned", { name: "Pinnedvane" }),
+    ];
+    const phases = [
+      phase("p-dangling", "dangling", "deleted-scene", {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-nullanc", "nullanc", null, { contextModeOverride: "hidden" }),
+      phase("p-archivd", "archivd", "scene-2", {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-mentioned", "mentioned", null, {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-pinned", "pinned", "deleted-scene", {
+        contextModeOverride: "hidden",
+      }),
+    ];
+    const sceneTwoArchived = {
+      ...scene("scene-2", "a1"),
+      archivedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const index = buildSceneTimeIndex([
+      scene("scene-1", "a0"),
+      sceneTwoArchived,
+    ]);
+    const TOKENS = [
+      "DANGLING_SUM",
+      "NULLANC_SUM",
+      "ARCHIVD_SUM",
+      "MENTIONED_SUM",
+      "PINNED_SUM",
+    ];
+
+    it("closes it at a scene the reading order has, on every path: always, a mention and an input pin", async () => {
+      const { haystack, result } = await collect("scene-1", {
+        entries,
+        phases,
+        index,
+        overrides: {
+          outgoingUserMessage: "Tell me about Mentionvane.",
+          mentionedCodexIds: ["mentioned"],
+          inputPinnedEntryIds: ["pinned"],
+          activeTab: null,
+        },
+      });
+      for (const token of TOKENS) expect(haystack, token).not.toContain(token);
+      for (const body of ["DANGLING_BODY", "PINNED_BODY", "MENTIONED_BODY"]) {
+        expect(haystack, body).not.toContain(body);
+      }
+      expect(
+        (result.promptInput.contextDecisions ?? [])
+          .filter((decision) => decision.status === "excluded")
+          .map((decision) => decision.reason),
+      ).toEqual(expect.arrayContaining(["policy-hidden"]));
+    });
+
+    it("leaves an entry whose hiding Phase has a placeable anchor as before (the Phase has not started at scene-1)", async () => {
+      const { haystack } = await collect("scene-1", {
+        entries: [phaseHidden("ok", { contextMode: "always" })],
+        phases: [
+          phase("p-ok", "ok", "scene-2", { contextModeOverride: "hidden" }),
+        ],
+        index: buildSceneTimeIndex([
+          scene("scene-1", "a0"),
+          scene("scene-2", "a1"),
+        ]),
+      });
+      expect(haystack).toContain("OK_SUM");
+    });
+
+    it("the codex scope: a selected entry that has such a Phase cannot be built, like a hidden one (latest is closed too)", async () => {
+      for (const entryId of ["dangling", "nullanc", "archivd"]) {
+        await expect(
+          collect("scene-1", {
+            scope: { kind: "codex", entryId },
+            entries,
+            phases,
+            index,
+          }),
+        ).rejects.toThrow(
+          "required codex context anchor is unavailable or hidden",
+        );
+      }
+    });
+
+    it("the codex scope: an unrelated selected entry is built, and the closed ones stay out of what the AI gets", async () => {
+      const { haystack } = await collect("scene-1", {
+        scope: { kind: "codex", entryId: "ctl" },
+        entries: [...entries, phaseHidden("ctl")],
+        phases,
+        index,
+        overrides: {
+          mentionedCodexIds: ["mentioned"],
+          inputPinnedEntryIds: [],
+        },
+      });
+      expect(haystack).toContain("CTL_SUM");
+      for (const token of TOKENS) expect(haystack, token).not.toContain(token);
+    });
+  });
+
+  describe("the codex scope resolves at the latest state and does not depend on the scene (DR-MP4-46: a Phase the resolver skips closes its entry at latest too)", () => {
     // A Phase whose anchor scene is not in the reading order is skipped by the resolver, even at latest.
+    // Before DR-MP4-46 the entry it hides (ghosty) stayed public here; now it is closed (Q-G1).
     const dangling = phaseHidden("ghosty", { contextMode: "always" });
     const applied = phaseHidden("applied", { contextMode: "always" });
     const selected = phaseHidden("selected");
@@ -1761,13 +1872,14 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
           phases: extraPhases,
         });
         expect(haystack).toContain("SELECTED_SUM");
-        // The Phase that does apply at latest hides it; the skipped (dangling) one does not.
+        // The Phase that does apply at latest hides its entry, and so does the skipped (dangling)
+        // one (DR-MP4-46; before, GHOSTY_SUM was in the haystack).
         expect(haystack).not.toContain("APPLIED_SUM");
-        expect(haystack).toContain("GHOSTY_SUM");
+        expect(haystack).not.toContain("GHOSTY_SUM");
       },
     );
 
-    it("applies no Phase at latest while the reading order is empty (an existing fail-open, not changed)", async () => {
+    it("while the reading order is empty every Phase is one the resolver skips, so every entry with a hiding Phase is closed (DR-MP4-46; before, both were public)", async () => {
       const { haystack } = await collect("scene-1", {
         scope: { kind: "codex", entryId: "selected" },
         entries: extra,
@@ -1775,8 +1887,8 @@ describe("collectNonSceneContext when the current scene cannot be resolved (DR-M
         index: buildSceneTimeIndex([]),
       });
       expect(haystack).toContain("SELECTED_SUM");
-      expect(haystack).toContain("APPLIED_SUM");
-      expect(haystack).toContain("GHOSTY_SUM");
+      expect(haystack).not.toContain("APPLIED_SUM");
+      expect(haystack).not.toContain("GHOSTY_SUM");
     });
   });
 });

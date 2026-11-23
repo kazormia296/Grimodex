@@ -2325,6 +2325,7 @@
       "decisionTrimmed": "予算により除外",
       "decisionExcluded": "ポリシーにより対象外",
       "decisionMore": "他 {{count}} 件",
+      "policyHiddenHint": "AI に渡らない Codex は、Codex 自身が『AI に見せない』設定のもの、起点の場面を失った『AI に見せない』Phase を持つもの、場面を解決できない間に閉じているものがあります。起点を失った Phase は、Codex の『タイムライン』タブで確認できます。",
       "heading": "コンテキスト"
     },
     "conversationSummary": "会話要約",
@@ -2701,7 +2702,24 @@
       "summaryQuoted": "「{{value}}」",
       "noAnchorScene": "アンカーシーン未設定",
       "addPhase": "フェーズを追加",
-      "baseState": "基本状態"
+      "baseState": "基本状態",
+      "orphanNotice": {
+        "title": "この Codex は、アプリ内の AI（チャット・エージェント・ビートなど）に渡りません。",
+        "phaseName": "「{{label}}」",
+        "unnamedPhase": "名称なし",
+        "join": "、",
+        "more_other": " ほか {{count}} 件",
+        "bannerBody_other": "『AI に見せない』設定の Phase {{phases}} の起点の場面が見つからないためです。起点の場面を選び直すと、その場面から『AI に見せない』が適用されます。Phase を削除すると、この Phase が無い状態に戻ります。",
+        "detailsBody_other": "『AI に見せない』設定の Phase {{phases}} の起点の場面が見つかりません。『タイムライン』タブで起点の場面を選び直すか、Phase を削除してください。",
+        "openTimeline": "タイムラインを開く"
+      },
+      "orphanRow": {
+        "nullHiding": "起点の場面が外れています（場面の削除など。場面を戻しても自動では戻りません）。『AI に見せない』設定のため、この Codex はアプリ内の AI に渡りません。",
+        "nullOther": "起点の場面が外れています（場面を戻しても自動では戻りません）。この Phase は適用されていません。",
+        "missingHiding": "起点の場面が見つかりません（アーカイブ中の可能性があります。アーカイブ中なら、解除すると起点の場面が戻ります）。『AI に見せない』設定のため、この Codex はアプリ内の AI に渡りません。",
+        "missingOther": "起点の場面が見つかりません（アーカイブ中の可能性があります。アーカイブ中なら、解除すると起点の場面が戻ります）。この Phase は適用されていません。",
+        "recovery": "鉛筆で起点の場面を選び直すか、ごみ箱で Phase を削除してください。"
+      }
     },
     "store": {
       "loadFailed": "Codexの読み込みに失敗しました",
@@ -2748,6 +2766,7 @@
       "deleteTitle": "このフェーズを削除しますか？",
       "deleteName": "「{{label}}」",
       "deleteNameWithScene": "「{{label}}」（{{scene}}）",
+      "deleteNameSceneMissing": "「{{label}}」（場面が見つかりません）",
       "deleteDesc": "{{name}}を削除すると、このフェーズの上書き内容がすべて失われます。この操作は元に戻せません。"
     },
     "rename": {
@@ -4563,6 +4582,7 @@
     "labelPlaceholder": "例: 追放後 / 死亡 / 仲間入り...",
     "anchorScene": "アンカーシーン",
     "anchorSceneDesc": "このフェーズが開始するシーン",
+    "anchorSceneMissing": "この Phase の起点の場面は見つかりません。場面を選び直してください（アーカイブ中の場面なら、先にアーカイブを解除すると元の起点が使えます。ここで保存すると、元の起点は置き換わります）。",
     "overrideFields": "コンテンツ上書き (任意)",
     "summary": "概要",
     "summaryPlaceholder": "このフェーズ以降の概要...",

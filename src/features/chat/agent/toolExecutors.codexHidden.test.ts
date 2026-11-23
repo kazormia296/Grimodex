@@ -354,6 +354,65 @@ describe("agent tool は hidden の Codex を model に渡さない", () => {
     expect(ids(after.content)).toEqual([]);
   });
 
+  it("起点の場面を失った（NULL・読む順に無い）hidden の Phase を持つ Codex は、場面が解決できても落とす（DR-MP4-46。直す前は公開のまま渡った）", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const node = (id: string, sortOrder: string) => ({
+      id,
+      projectId: "proj-A",
+      parentId: null,
+      nodeType: "scene" as const,
+      title: id,
+      synopsis: null,
+      intent: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    usePhaseStore.setState({
+      sceneTimeIndex: buildSceneTimeIndex([node("scene-1", "a0")]),
+      resolutionMode: "reading",
+    });
+    const orphan = (
+      id: string,
+      entryId: string,
+      anchorNodeId: string | null,
+    ) => ({
+      id,
+      entryId,
+      anchorNodeId,
+      label: id,
+      summaryOverride: null,
+      contentOverride: null,
+      contextModeOverride: "hidden",
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    h.entries = [
+      entry({ id: "e-null" }),
+      entry({ id: "e-gone" }),
+      entry({ id: "e-valid" }),
+    ];
+    h.phases = [
+      orphan("ph-null", "e-null", null),
+      orphan("ph-gone", "e-gone", "deleted-scene"),
+      orphan("ph-valid", "e-valid", "scene-1"),
+    ];
+    h.activeSceneId = "scene-1";
+    const res = await executeTool("list_codex_by_type", "c", {
+      type: "character",
+    });
+    // e-valid の Phase は scene-1 で効いて hidden。起点を失った 2 つは resolver が skip するので
+    // 規則（DR-MP4-46）で落とす。
+    expect(ids(res.content)).toEqual([]);
+  });
+
   it("Phase が hidden を解除した Codex は base の hidden の文でなく Phase 解決後の文を返す", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const node = (id: string, sortOrder: string) => ({

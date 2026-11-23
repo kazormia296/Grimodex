@@ -22,6 +22,10 @@ import {
   materializeResolvedCodexContext,
   resolveCodexContexts,
 } from "@/features/codex/context/resolvedCodexContext";
+import {
+  closeResolvedCodexForUnresolvableScene,
+  listEntryIdsClosedForAi,
+} from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type {
   PhaseResolutionMode,
@@ -271,15 +275,33 @@ async function buildCodexPayload(
     baseDetailValuesById.set(entryId, m);
   }
 
-  const resolvedContexts = resolveCodexContexts({
+  const anchor = { kind: "scene" as const, sceneId };
+  const resolvedRaw = resolveCodexContexts({
     entries: allEntries,
     phases: allPhases,
     phaseDetailOverrides: allOverrides,
     baseDetailsByEntry: baseDetailValuesById,
-    anchor: { kind: "scene", sceneId },
+    anchor,
     sceneTimeIndex: temporal.sceneTimeIndex,
     resolutionMode: temporal.resolutionMode,
   });
+  // DR-MP4-41 / DR-MP4-46: the same rule as chat's context and the agent tools. When the
+  // scene is not in the reading order the Phases were not applied, and a hiding Phase whose
+  // anchor scene the resolver cannot place (null, deleted, archived) is skipped, so base alone
+  // must not be read as public for an entry one of them hides. The closed entry's mode becomes
+  // hidden here, before the selection below, so it reaches neither the matcher nor the payload
+  // (summary, content_plain and detail_values), nor the hash input that is built from it.
+  const resolvedContexts = {
+    ...resolvedRaw,
+    resolvedById: closeResolvedCodexForUnresolvableScene(
+      resolvedRaw.resolvedById,
+      listEntryIdsClosedForAi({
+        anchor,
+        sceneTimeIndex: temporal.sceneTimeIndex,
+        phasesByEntry: resolvedRaw.phasesByEntry,
+      }),
+    ),
+  };
   const effectiveEntries = allEntries.map((entry) => {
     const resolved = resolvedContexts.resolvedById.get(entry.id);
     return resolved ? materializeResolvedCodexContext(entry, resolved) : entry;

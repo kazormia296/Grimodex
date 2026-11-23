@@ -35,6 +35,8 @@ vi.mock("./api", () => ({
     undoJournalId: "tree-delete-test-journal",
   })),
   loadSceneContent: vi.fn().mockResolvedValue(""),
+  loadTreeNodeRestoreSnapshot: vi.fn().mockResolvedValue(null),
+  findNodeIdBySourceUri: vi.fn().mockResolvedValue(null),
   saveSceneContent: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -313,5 +315,215 @@ describe("treeStore.deleteNode atomic failure", () => {
 
     expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
     expect(callCount).toBe(1);
+  });
+});
+
+describe("treeStore.deleteNode undo restores the row the database held (DR-UND-1)", () => {
+  const sceneNode = {
+    ...baseNode,
+    id: "scene-a",
+    nodeType: "scene" as const,
+    storyTimeOrder: "stale-in-store",
+    povCharacterId: null as string | null,
+    sourceUri: "external-root://r/a.md" as string | null,
+    sourceMtime: "2026-01-02T00:00:00Z" as string | null,
+    updatedAt: "2026-01-01T00:00:00Z",
+  };
+  const noteNode = {
+    ...baseNode,
+    id: "note-a",
+    nodeType: "note" as const,
+    content: '{"stale":true}',
+  };
+  const snapshots: Record<string, api.TreeNodeRestoreSnapshot> = {
+    "scene-a": {
+      content: "scene-body",
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+      restoreState: {
+        intent: "goal",
+        storyTimeOrder: "b3",
+        unplacedBeatsDoc: '[{"id":"b1"}]',
+        createdAt: "2025-12-01T00:00:00Z",
+      },
+    },
+    "note-a": {
+      content: '{"type":"doc","edited":true}',
+      sourceUri: null,
+      sourceMtime: null,
+      restoreState: { contextMode: "hidden", aliases: '["x"]' },
+    },
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.createNode).mockImplementation((node) =>
+      Promise.resolve(node as never),
+    );
+    vi.mocked(api.loadTreeNodeRestoreSnapshot).mockImplementation(
+      async (id: string) => snapshots[id] ?? null,
+    );
+  });
+
+  async function deleteAndUndo(nodes: (typeof sceneNode | typeof noteNode)[]) {
+    useTreeStore.setState({ nodes });
+    for (const node of nodes) await useTreeStore.getState().deleteNode(node.id);
+    const commands = useGlobalHistoryStore.getState().past.slice(-nodes.length);
+    vi.mocked(api.createNode).mockClear();
+    for (const command of commands.reverse()) await command.undo();
+  }
+
+  it("passes the database row's columns, the source link and the note body to createNode", async () => {
+    await deleteAndUndo([sceneNode, noteNode]);
+    const calls = vi.mocked(api.createNode).mock.calls;
+    const byId = Object.fromEntries(
+      calls.map((call) => [(call[0] as { id: string }).id, call]),
+    );
+    const sceneCall = byId["scene-a"]!;
+    expect(sceneCall[0]).toMatchObject({
+      content: "scene-body",
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+    });
+    expect(sceneCall[1]).toMatchObject({
+      restoreState: snapshots["scene-a"]!.restoreState,
+    });
+    const noteCall = byId["note-a"]!;
+    // The note body is the database's (edited) one, not the store's stale copy.
+    expect(noteCall[0]).toMatchObject({
+      content: '{"type":"doc","edited":true}',
+    });
+    expect(noteCall[0]).not.toHaveProperty("sourceUri");
+    expect(noteCall[1]).toMatchObject({
+      restoreState: snapshots["note-a"]!.restoreState,
+    });
+  });
+
+  it("restores the external-file link only while no other node points at the file", async () => {
+    // (1) delete, then undo with nothing in between: the link comes back.
+    await deleteAndUndo([sceneNode]);
+    expect(api.findNodeIdBySourceUri).toHaveBeenCalledWith(
+      "proj-1",
+      "external-root://r/a.md",
+      "scene-a",
+    );
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).toMatchObject({
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+    });
+    // restored: the store keeps the link it had
+    expect(
+      useTreeStore.getState().nodes.find((n) => n.id === "scene-a"),
+    ).toMatchObject({ sourceUri: "external-root://r/a.md" });
+
+    // (2) a reconcile made a node for the same file in between: not restored.
+    useGlobalHistoryStore.getState().clear();
+    vi.mocked(api.findNodeIdBySourceUri).mockResolvedValue("reconciled-node");
+    await deleteAndUndo([sceneNode]);
+    const call = vi.mocked(api.createNode).mock.calls[0]!;
+    expect(call[0]).not.toHaveProperty("sourceUri");
+    expect(call[0]).not.toHaveProperty("sourceMtime");
+    // the rest of the row still comes back
+    expect(call[1]).toMatchObject({
+      restoreState: snapshots["scene-a"]!.restoreState,
+    });
+    // and the store drops the link too: it must match the database row
+    expect(
+      useTreeStore.getState().nodes.find((n) => n.id === "scene-a"),
+    ).toMatchObject({ sourceUri: null, sourceMtime: null });
+
+    // (3) it cannot be determined: left off, as an Undo always did.
+    useGlobalHistoryStore.getState().clear();
+    vi.mocked(api.findNodeIdBySourceUri).mockRejectedValue(new Error("db"));
+    await deleteAndUndo([sceneNode]);
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).not.toHaveProperty(
+      "sourceUri",
+    );
+    vi.mocked(api.findNodeIdBySourceUri).mockResolvedValue(null);
+  });
+
+  it("mirrors the link that went into the row, not an older one the store held", async () => {
+    // The store's node is behind the database (a file was renamed outside the
+    // store); the row gets the database's value, so the store must take it.
+    await deleteAndUndo([
+      {
+        ...sceneNode,
+        sourceUri: "external-root://r/older.md",
+        sourceMtime: "2025-01-01T00:00:00Z",
+      },
+    ]);
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).toMatchObject({
+      sourceUri: "external-root://r/a.md",
+    });
+    expect(
+      useTreeStore.getState().nodes.find((n) => n.id === "scene-a"),
+    ).toMatchObject({
+      sourceUri: "external-root://r/a.md",
+      sourceMtime: "2026-01-02T00:00:00Z",
+    });
+  });
+
+  it("falls back to the create fields when the snapshot cannot be read", async () => {
+    vi.mocked(api.loadTreeNodeRestoreSnapshot).mockRejectedValue(
+      new Error("db unavailable"),
+    );
+    vi.mocked(api.loadSceneContent).mockResolvedValue("scene-body");
+    await deleteAndUndo([sceneNode, noteNode]);
+    const calls = vi.mocked(api.createNode).mock.calls;
+    for (const call of calls) {
+      expect(call[1]).not.toHaveProperty("restoreState");
+    }
+    const sceneCall = calls.find(
+      (c) => (c[0] as { id: string }).id === "scene-a",
+    )!;
+    expect(sceneCall[0]).toMatchObject({ content: "scene-body" });
+  });
+
+  it("takes version, updatedAt and a nulled Codex reference from the re-created row", async () => {
+    vi.mocked(api.createNode).mockImplementation((node) =>
+      Promise.resolve({
+        ...node,
+        version: 0,
+        updatedAt: "2026-11-24T00:00:00Z",
+        povCharacterId: null,
+        locationId: "place-1",
+      } as never),
+    );
+    await deleteAndUndo([{ ...sceneNode, povCharacterId: "pov-gone" }]);
+    expect(useTreeStore.getState().nodes).toContainEqual(
+      expect.objectContaining({
+        id: "scene-a",
+        version: 0,
+        updatedAt: "2026-11-24T00:00:00Z",
+        povCharacterId: null,
+        locationId: "place-1",
+        // everything else is the store's node
+        storyTimeOrder: "stale-in-store",
+      }),
+    );
+  });
+
+  it("does not put undefined into the store when the response lacks a token", async () => {
+    await deleteAndUndo([sceneNode]);
+    const restored = useTreeStore
+      .getState()
+      .nodes.find((node) => node.id === "scene-a")!;
+    expect(restored.updatedAt).toBe("2026-01-01T00:00:00Z");
+  });
+
+  it("reads the row again before a redo, so an edit between undo and redo survives the next undo", async () => {
+    useTreeStore.setState({ nodes: [noteNode] });
+    await useTreeStore.getState().deleteNode(noteNode.id);
+    const command = useGlobalHistoryStore.getState().past.at(-1)!;
+    await command.undo();
+    snapshots["note-a"] = {
+      ...snapshots["note-a"]!,
+      content: '{"type":"doc","edited":"again"}',
+    };
+    await command.redo();
+    vi.mocked(api.createNode).mockClear();
+    await command.undo();
+    expect(vi.mocked(api.createNode).mock.calls[0]![0]).toMatchObject({
+      content: '{"type":"doc","edited":"again"}',
+    });
   });
 });

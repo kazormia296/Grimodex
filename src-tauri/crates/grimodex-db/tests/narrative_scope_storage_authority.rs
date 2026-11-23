@@ -26,7 +26,10 @@
 //! 5. the Scene rewrites that do not advance `version`: only W1
 //!    (`tree_node_patch_with_authority`, `bumpVersion=false`) and W2
 //!    (`update_scene_to_state`, Chronicle bulk) may exist, and both keep
-//!    `updated_at` strictly later as an instant.
+//!    `updated_at` strictly later as an instant. A sixth, DR-UND-1, is not a rewrite
+//!    of an existing row: `restore_tree_node_state_in_tx` finishes the row that
+//!    the Undo of a delete just INSERTed, in the same transaction (class
+//!    `TreeRestoreInCreateTx`; see its contract below).
 //!
 //! Scope of the guarantee (proposal Delta 1, (i)-(iii)): only rewrites inside one
 //! restore epoch are counted. INSERTs, whole-project restores and the FK
@@ -74,6 +77,25 @@ enum Class {
     TreeScopeWriter,
     /// UPDATE of `tree_nodes` that writes no Scope column.
     TreeNoScope,
+    /// UPDATE of `tree_nodes` that finishes the row an Undo of a delete has just
+    /// INSERTed (`restoreState`, DR-UND-1: story order, POV, location, intent,
+    /// context mode, aliases, beats, preview, created_at, the Chronicle range).
+    /// It writes Scope columns (`story_time_order`, `pov_character_id`) and does
+    /// not advance `version`, and is not a `TreeScopeWriter`, because there is no
+    /// Scope generation to advance and no Source token to keep monotonic:
+    /// - the row and its binding are *new*: the delete removed the old binding
+    ///   with the Scene, and the create calls `ensure_scene_scope_binding_in_tx`
+    ///   *after* this UPDATE, building a fresh binding (new incarnation, version
+    ///   1, token computed from the finished row);
+    /// - the UPDATE runs in the INSERT's own transaction, so no committed state,
+    ///   reader or Source token `v{version}@{updated_at}` ever exists with the
+    ///   pre-UPDATE values;
+    /// - it never writes `version` or `updated_at`, so the token is exactly the
+    ///   INSERT's (`v0@now`, the same as before the restore existed);
+    /// - it is reachable only from the create writer, after the INSERT, behind
+    ///   the `origin == Undo` gate (the Undo Journal's `op_kind == delete` and
+    ///   `entity_id` binding are checked by `validate_tree_replay_target_in_tx`).
+    TreeRestoreInCreateTx,
     /// INSERT of a Scene row; the function must create the binding.
     SceneCreate,
     /// INSERT of a folder row only (no binding).
@@ -254,10 +276,17 @@ const MANIFEST: &[ManifestRow] = &[
     ),
     (
         "src-tauri/crates/grimodex-db/src/domain_writes.rs",
-        "tree_node_create_with_authority",
+        "tree_node_create_wire_with_authority",
         "INSERT tree_nodes",
         1,
         SceneCreate,
+    ),
+    (
+        "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "restore_tree_node_state_in_tx",
+        "UPDATE tree_nodes",
+        1,
+        TreeRestoreInCreateTx,
     ),
     (
         "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -913,6 +942,64 @@ fn assert_body_contains(hit: &Hit, needles: &[&str]) {
     }
 }
 
+/// Contract of `TreeRestoreInCreateTx` (DR-UND-1): see the class. The UPDATE
+/// never names `version` or `updated_at`; its only caller is the create writer,
+/// which INSERTs the row first, restores second and creates the binding last, and
+/// only for an Undo.
+fn assert_restore_runs_inside_the_create_transaction(hit: &Hit, sources: &[Source]) {
+    assert!(
+        !hit.body.contains("version") && !hit.body.contains("updated_at"),
+        "{} :: {}: the restore UPDATE must not write `version` or `updated_at` \
+         (the Source token `v{{version}}@{{updated_at}}` stays the INSERT's)",
+        hit.file,
+        hit.function
+    );
+    let mut callers = BTreeSet::new();
+    for source in sources {
+        let owners = function_of_each_line(&source.lines);
+        for (index, line) in source.lines.iter().enumerate() {
+            if line.contains("restore_tree_node_state_in_tx(") && function_name(line).is_none() {
+                callers.insert((
+                    source.path.clone(),
+                    owners[index].clone().unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    let expected = BTreeSet::from([(
+        "src-tauri/crates/grimodex-db/src/domain_writes.rs".to_string(),
+        "tree_node_create_wire_with_authority".to_string(),
+    )]);
+    assert_eq!(
+        callers, expected,
+        "the restore UPDATE is reachable only from the create writer"
+    );
+    let create = sources
+        .iter()
+        .find(|source| source.path.ends_with("grimodex-db/src/domain_writes.rs"))
+        .expect("domain_writes.rs");
+    let def_index = create
+        .lines
+        .iter()
+        .position(|line| {
+            function_name(line).as_deref() == Some("tree_node_create_wire_with_authority")
+        })
+        .expect("tree_node_create_wire_with_authority");
+    let body = function_body(&create.lines, def_index);
+    let at = |needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("the create writer must contain `{needle}`"))
+    };
+    let gate = at("payload.origin == NarrativeChangeOrigin::Undo");
+    let insert = at("INSERT INTO tree_nodes");
+    let restore = at("restore_tree_node_state_in_tx(");
+    let binding = at("ensure_scene_scope_binding_in_tx(");
+    assert!(
+        gate < insert && insert < restore && restore < binding,
+        "order in the create writer: the Undo gate, the INSERT, the restore, then the binding"
+    );
+}
+
 #[test]
 fn scope_writer_coverage_manifest_is_complete() {
     let root = repo_root();
@@ -970,6 +1057,7 @@ fn scope_writer_coverage_manifest_is_complete() {
             BindingDelete => assert_body_contains(hit, &["DELETE FROM tree_nodes"]),
             TreeDelete => {}
             TreeScopeWriter => assert_body_contains(hit, &["refresh_scene_scope_source_token"]),
+            TreeRestoreInCreateTx => assert_restore_runs_inside_the_create_transaction(hit, &sources),
             TreeNoScope => assert!(
                 !writes_scope_column(&hit.set_text),
                 "{} :: {}: a Scope column was added to a writer that does not refresh the Scope generation",
@@ -1019,10 +1107,11 @@ fn scope_writer_coverage_manifest_is_complete() {
             && (writes_scope_column(&hit.set_text)
                 || (is_dynamic(&hit.set_text) && !writes_version(&hit.set_text)))
         {
-            assert_eq!(
-                class, TreeScopeWriter,
+            assert!(
+                matches!(class, TreeScopeWriter | TreeRestoreInCreateTx),
                 "{} :: {} writes a Scope column without refreshing the Scope generation",
-                hit.file, hit.function
+                hit.file,
+                hit.function
             );
         }
         if hit.verb_table == "DELETE codex_entries" {
@@ -1069,6 +1158,13 @@ fn only_w1_and_w2_rewrite_a_scene_without_advancing_version() {
         (
             "src-tauri/crates/grimodex-db/src/domain_writes.rs",
             "tree_node_patch_with_authority",
+        ),
+        // DR-UND-1: finishes the row the Undo's INSERT created, in the same
+        // transaction, never writing version or updated_at (class
+        // TreeRestoreInCreateTx; `assert_restore_runs_inside_the_create_transaction`).
+        (
+            "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+            "restore_tree_node_state_in_tx",
         ),
         (
             "src-tauri/crates/grimodex-db/src/chronicle_bulk.rs",
@@ -1390,7 +1486,7 @@ fn scene_scope_default_inheritance_is_reachable_only_from_the_three_creation_wri
     const ALLOWED: &[(&str, &str)] = &[
         (
             "src-tauri/crates/grimodex-db/src/domain_writes.rs",
-            "tree_node_create_with_authority",
+            "tree_node_create_wire_with_authority",
         ),
         (
             "src-tauri/crates/grimodex-db/src/domain_writes.rs",
