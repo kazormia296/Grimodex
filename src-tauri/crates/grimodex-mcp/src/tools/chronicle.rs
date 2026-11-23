@@ -2135,6 +2135,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_participants_preserves_base_hidden_existing_participant() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "E1", "a0");
+        for id in ["a", "b", "hidden"] {
+            seed_codex(&server, "p1", id);
+        }
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = 'hidden'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_participants (event_id, codex_entry_id, role)
+                 VALUES ('e1', 'a', NULL), ('e1', 'hidden', 'ally')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let result = set_event_participants(
+            &server,
+            SetParticipantsParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                event_id: "e1".to_string(),
+                base_version: 0,
+                codex_entry_ids: vec!["b".to_string()],
+            },
+        )
+        .await
+        .expect("replace participants");
+        assert!(!result_json(&result).to_string().contains("hidden"));
+
+        let conn = server.conn.lock().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT codex_entry_id, role FROM event_participants
+                 WHERE event_id = 'e1' ORDER BY codex_entry_id",
+            )
+            .unwrap();
+        let participants: Vec<(String, Option<String>)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            participants,
+            vec![
+                ("b".to_string(), None),
+                ("hidden".to_string(), Some("ally".to_string()))
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn set_participants_rejects_stale_aggregate_version() {
         let server = make_server(false);
         seed_event(&server, "p1", "e1", "E1", "a0");

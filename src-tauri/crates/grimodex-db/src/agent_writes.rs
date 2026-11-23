@@ -8917,6 +8917,20 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     base_version
                 );
             }
+            let hidden_participants = {
+                let mut statement = conn.prepare(
+                    "SELECT ep.codex_entry_id, ep.role
+                     FROM event_participants ep
+                     JOIN codex_entries c ON c.id = ep.codex_entry_id
+                     WHERE ep.event_id = ?1 AND c.project_id = ?2
+                       AND c.context_mode = 'hidden'",
+                )?;
+                let rows = statement.query_map(
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
             conn.execute(
                 "DELETE FROM event_participants WHERE event_id = ?1",
                 rusqlite::params![payload.event_id],
@@ -8933,7 +8947,7 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                 // could be linked to a P2 codex entry. Bail rolls back the tx.
                 ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
             }
-            let participant_rows: Vec<(&str, Option<&str>)> = payload
+            let mut participant_rows: Vec<(&str, Option<&str>)> = payload
                 .codex_entry_ids
                 .iter()
                 .enumerate()
@@ -8948,6 +8962,11 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     )
                 })
                 .collect();
+            for (codex_id, role) in &hidden_participants {
+                if !payload.codex_entry_ids.contains(codex_id) {
+                    participant_rows.push((codex_id, role.as_deref()));
+                }
+            }
             batch_insert_event_participants(conn, &payload.event_id, &participant_rows)?;
 
             let after = collect_participants_json(conn, &payload.event_id)?.to_string();
@@ -15646,6 +15665,246 @@ mod tests {
         assert!(participant_has(&db, &event_id, &codex_a));
         assert!(!participant_has(&db, &event_id, &codex_b));
         assert_eq!(event_version(&db, &event_id), 2);
+    }
+
+    #[test]
+    fn event_participants_preserve_base_hidden_for_both_agent_surfaces_and_journal() {
+        for surface in ["in-app-agent", "mcp"] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let codex_a = insert_codex(&db, &project_id, "A");
+            let codex_b = insert_codex(&db, &project_id, "B");
+            let hidden = insert_codex(&db, &project_id, "Hidden");
+            let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = ?1 WHERE id = ?2",
+                    rusqlite::params!["hidden", hidden],
+                )?;
+                Ok(())
+            })
+            .expect("set base hidden mode");
+
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: Some(surface.to_string()),
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                    codex_entry_ids: vec![codex_a.clone(), hidden.clone()],
+                    participant_roles: Some(vec![None, Some("ally".to_string())]),
+                },
+            )
+            .expect("seed participants through the writer");
+
+            let request_id = format!("set-hidden-{surface}");
+            let result = agent_event_set_participants_with_request_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: Some(surface.to_string()),
+                    event_id: event_id.clone(),
+                    base_version: 2,
+                    codex_entry_ids: vec![codex_b.clone()],
+                    participant_roles: None,
+                },
+                Some(&request_id),
+            )
+            .expect("replace participants");
+
+            assert_eq!(participant_count(&db, &event_id), 2, "surface {surface}");
+            assert!(
+                !participant_has(&db, &event_id, &codex_a),
+                "surface {surface}"
+            );
+            assert!(
+                participant_has(&db, &event_id, &codex_b),
+                "surface {surface}"
+            );
+            assert!(
+                participant_has(&db, &event_id, &hidden),
+                "surface {surface}"
+            );
+            assert_eq!(
+                participant_role(&db, &event_id, &hidden).as_deref(),
+                Some("ally"),
+                "surface {surface}"
+            );
+            assert!(
+                !result.to_string().contains(&hidden),
+                "the write result must not expose the hidden id"
+            );
+
+            let journal_id = result["undoJournalId"]
+                .as_str()
+                .expect("undo journal id")
+                .to_string();
+            let (before, after): (String, String) = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT before_json, after_json FROM undo_journal WHERE id = ?1",
+                        rusqlite::params![journal_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                })
+                .expect("read undo journal");
+            let before: Value = serde_json::from_str(&before).expect("before snapshot");
+            let after: Value = serde_json::from_str(&after).expect("after snapshot");
+            for (snapshot, expected_ids) in [
+                (&before, [&codex_a, &hidden]),
+                (&after, [&codex_b, &hidden]),
+            ] {
+                let participants = snapshot["participants"]
+                    .as_array()
+                    .expect("participant snapshot");
+                assert_eq!(participants.len(), 2, "surface {surface}");
+                for expected_id in expected_ids {
+                    assert!(participants
+                        .iter()
+                        .any(|participant| participant["codexEntryId"].as_str()
+                            == Some(expected_id.as_str())));
+                }
+            }
+            assert!(after["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|participant| {
+                    participant["codexEntryId"].as_str() == Some(hidden.as_str())
+                        && participant["role"].as_str() == Some("ally")
+                }));
+        }
+    }
+
+    #[test]
+    fn event_participants_request_role_overrides_hidden_role() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let hidden = insert_codex(&db, &project_id, "Hidden");
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = ?1 WHERE id = ?2",
+                rusqlite::params!["hidden", hidden],
+            )?;
+            Ok(())
+        })
+        .expect("set base hidden mode");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 1,
+                codex_entry_ids: vec![hidden.clone()],
+                participant_roles: Some(vec![Some("ally".to_string())]),
+            },
+        )
+        .expect("seed base hidden participant through the writer");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id,
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 2,
+                codex_entry_ids: vec![hidden.clone()],
+                participant_roles: Some(vec![Some("enemy".to_string())]),
+            },
+        )
+        .expect("replace hidden participant role");
+
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert_eq!(
+            participant_role(&db, &event_id, &hidden).as_deref(),
+            Some("enemy")
+        );
+    }
+
+    #[test]
+    fn event_participants_do_not_preserve_phase_only_hidden_entries() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let phase_hidden = insert_codex(&db, &project_id, "Phase hidden");
+        let requested = insert_codex(&db, &project_id, "Requested");
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = 'mentioned' WHERE id = ?1",
+                rusqlite::params![phase_hidden],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+                 VALUES ('phase-hidden', ?1, 'Hidden phase', 'hidden')",
+                rusqlite::params![phase_hidden],
+            )?;
+            Ok(())
+        })
+        .expect("seed phase-only hidden mode");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 1,
+                codex_entry_ids: vec![phase_hidden.clone()],
+                participant_roles: Some(vec![Some("ally".to_string())]),
+            },
+        )
+        .expect("seed phase-only hidden participant through the writer");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id,
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 2,
+                codex_entry_ids: vec![requested.clone()],
+                participant_roles: None,
+            },
+        )
+        .expect("replace participants");
+
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert!(participant_has(&db, &event_id, &requested));
+        assert!(!participant_has(&db, &event_id, &phase_hidden));
+    }
+
+    #[test]
+    fn event_participants_schema_rejects_missing_codex_foreign_key() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        db.with_conn(|conn| {
+            let foreign_keys: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+            assert_eq!(foreign_keys, 1, "test_db must enforce schema foreign keys");
+            let error = conn
+                .execute(
+                    "INSERT INTO event_participants (event_id, codex_entry_id)
+                     VALUES (?1, 'missing-codex-entry')",
+                    rusqlite::params![event_id],
+                )
+                .expect_err("missing codex entry must violate the foreign key");
+            assert!(
+                error.to_string().contains("FOREIGN KEY constraint failed"),
+                "{error}"
+            );
+            Ok(())
+        })
+        .expect("verify event_participants foreign key");
     }
 
     #[test]
