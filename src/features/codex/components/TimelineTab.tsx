@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/popover";
 import { TimelineItemSkeletonList } from "@/components/ui/skeleton-patterns";
 import { resolveApplicablePhases } from "../context/resolveApplicablePhases";
+import { getOrphanedHidingPhaseDisplay } from "../orphanedHidingPhase";
+import { OrphanedHidingPhaseNotice } from "./OrphanedHidingPhaseNotice";
 
 interface TimelineTabProps {
   entry: CodexEntry;
@@ -179,6 +181,22 @@ export function TimelineTab({ entry }: TimelineTabProps) {
     };
   }, [activeSceneId, currentPhaseResolution, sortedPhases]);
 
+  // A hiding Phase that lost its anchor scene: the entry is closed to the AI
+  // (DR-MP4-46). Derived from the same function as that rule, never re-derived here.
+  const orphanDisplay = useMemo(
+    () =>
+      getOrphanedHidingPhaseDisplay({
+        entryContextMode: entry.contextMode,
+        phases,
+        index: sceneTimeIndex,
+      }),
+    [entry.contextMode, phases, sceneTimeIndex],
+  );
+  const orphanedHidingById = useMemo(
+    () => new Map(orphanDisplay.orphaned.map((o) => [o.id, o])),
+    [orphanDisplay],
+  );
+
   const exposure = useMemo(
     () =>
       computePhaseExposureBreakdown({
@@ -196,6 +214,27 @@ export function TimelineTab({ entry }: TimelineTabProps) {
   const getSceneTitle = (nodeId: string | null): string => {
     if (!nodeId) return "─";
     return nodes.find((n) => n.id === nodeId)?.title ?? nodeId;
+  };
+
+  // 削除確認用。場面が見つからないときに生の id を見せない。
+  const findSceneTitle = (nodeId: string): string | null =>
+    nodes.find((n) => n.id === nodeId)?.title ?? null;
+
+  // The row text of a Phase the resolver skipped. Claims "not sent to the AI" only
+  // for a Phase that hides the entry; nothing is claimed while the scene order
+  // cannot be resolved (then the old neutral text stays).
+  const orphanRowKey = (phase: CodexEntryPhase): string | null => {
+    if (!orphanDisplay.sceneResolvable) return null;
+    const hiding = orphanedHidingById.get(phase.id);
+    const nullAnchor = phase.anchorNodeId === null;
+    if (hiding) {
+      return hiding.cause === "anchor-null"
+        ? "codex.timeline.orphanRow.nullHiding"
+        : "codex.timeline.orphanRow.missingHiding";
+    }
+    return nullAnchor
+      ? "codex.timeline.orphanRow.nullOther"
+      : "codex.timeline.orphanRow.missingOther";
   };
 
   const handleEdit = (phase: CodexEntryPhase) => {
@@ -220,6 +259,20 @@ export function TimelineTab({ entry }: TimelineTabProps) {
   };
 
   const confirmPhase = phases.find((p) => p.id === confirmDeleteId);
+
+  const confirmSceneTitle = confirmPhase?.anchorNodeId
+    ? findSceneTitle(confirmPhase.anchorNodeId)
+    : null;
+  const confirmDeleteName = !confirmPhase
+    ? ""
+    : !confirmPhase.anchorNodeId
+      ? t("codex.phase.deleteName", { label: confirmPhase.label })
+      : confirmSceneTitle === null
+        ? t("codex.phase.deleteNameSceneMissing", { label: confirmPhase.label })
+        : t("codex.phase.deleteNameWithScene", {
+            label: confirmPhase.label,
+            scene: confirmSceneTitle,
+          });
 
   if (rawPhases === undefined) {
     return (
@@ -276,8 +329,9 @@ export function TimelineTab({ entry }: TimelineTabProps) {
         : "codex.timeline.orderModeAutoDesc";
 
   const COST_WARN_THRESHOLD = 600;
+  // The warning says the entry is closed; "AI 露出: n" next to it would contradict it.
   const exposureBadge =
-    exposure.total > 0 ? (
+    exposure.total > 0 && orphanDisplay.warned.length === 0 ? (
       <Popover>
         <PopoverTrigger asChild>
           <button
@@ -387,6 +441,11 @@ export function TimelineTab({ entry }: TimelineTabProps) {
 
   return (
     <div className="space-y-0">
+      <OrphanedHidingPhaseNotice
+        phases={orphanDisplay.warned}
+        variant="timeline"
+      />
+
       {/* Exposure breakdown + Order mode badge + Scene 文脈なし pill */}
       <div className="mb-2 flex flex-wrap items-center gap-1">
         {exposureBadge}
@@ -520,11 +579,25 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           </div>
           <div className="flex-1 pb-3 pt-0.5">
             <div className="flex items-start justify-between gap-2">
-              <div>
+              <div className="min-w-0">
                 <p className="text-xs font-semibold">{phase.label}</p>
-                <p className="text-[10px] text-muted-foreground">
-                  {t("codex.timeline.noAnchorScene")}
-                </p>
+                {orphanRowKey(phase) === null ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    {t("codex.timeline.noAnchorScene")}
+                  </p>
+                ) : (
+                  <>
+                    <p
+                      className="text-[10px] leading-relaxed text-muted-foreground"
+                      data-testid="orphaned-phase-row-reason"
+                    >
+                      {t(orphanRowKey(phase) ?? "")}
+                    </p>
+                    <p className="text-[10px] leading-relaxed text-muted-foreground">
+                      {t("codex.timeline.orphanRow.recovery")}
+                    </p>
+                  </>
+                )}
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
                 <button
@@ -585,12 +658,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
             </p>
             <p className="mt-2 text-xs text-muted-foreground">
               {t("codex.phase.deleteDesc", {
-                name: confirmPhase.anchorNodeId
-                  ? t("codex.phase.deleteNameWithScene", {
-                      label: confirmPhase.label,
-                      scene: getSceneTitle(confirmPhase.anchorNodeId),
-                    })
-                  : t("codex.phase.deleteName", { label: confirmPhase.label }),
+                name: confirmDeleteName,
               })}
             </p>
             <div className="mt-4 flex justify-end gap-2">
