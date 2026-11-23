@@ -60,7 +60,10 @@ fn nested_tree(
     project_id: &str,
     filter: &TreeFilter,
 ) -> anyhow::Result<Vec<TreeNodeNested>> {
-    let nodes = db::list_tree_nodes(conn, project_id, filter)?;
+    // archived の行は出さず、その下の live の行は archived の行の位置へ繰り上げる
+    // （`db::collapse_archived_nodes`。Q-E1）。archived が無い project では結果は変わらない。
+    let rows = db::list_tree_nodes_with_archived(conn, project_id, filter)?;
+    let nodes = db::collapse_archived_nodes(rows);
     Ok(build_tree(&nodes, None))
 }
 
@@ -112,9 +115,31 @@ mod tests {
     }
 
     #[test]
-    fn list_tree_shows_archived_rows_today() {
+    fn list_tree_drops_archived_rows_and_promotes_live_children_in_place() {
         let conn = make_simple_db();
         seed_archive_tree(&conn);
+        // s4 は archived の folder の下の live の場面。a-fold の位置（f-live と s5 の間）に出る。
+        assert_eq!(
+            tree_shape(&conn),
+            vec![
+                row("f-live", &["s1", "s3"]),
+                row("s1", &[]),
+                row("s3", &[]),
+                row("s4", &[]),
+                row("s5", &[]),
+            ]
+        );
+        let nested = nested_tree(&conn, "p1", &TreeFilter::default()).unwrap();
+        let roots: Vec<&str> = nested.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(roots, ["f-live", "s4", "s5"]);
+    }
+
+    #[test]
+    fn list_tree_is_unchanged_when_nothing_is_archived() {
+        let conn = make_simple_db();
+        seed_archive_tree(&conn);
+        conn.execute("UPDATE tree_nodes SET archived_at = NULL", [])
+            .unwrap();
         assert_eq!(
             tree_shape(&conn),
             vec![

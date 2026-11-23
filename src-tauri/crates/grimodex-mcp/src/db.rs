@@ -195,16 +195,88 @@ pub fn get_project(conn: &Connection, project_id: &str) -> Result<Project> {
     .with_context(|| format!("Project '{project_id}' not found"))
 }
 
+/// archived（`archived_at IS NOT NULL`。外部 Markdown のマウントが消失・重複で自動 archive した行）を
+/// 除いた一覧。行単位の規則で、祖先は見ない（DR-ARC-2）。木の構造が要る呼び手は
+/// `list_tree_nodes_with_archived` と `collapse_archived_nodes` を使う。
 pub fn list_tree_nodes(
     conn: &Connection,
     project_id: &str,
     filter: &TreeFilter,
 ) -> Result<Vec<TreeNode>> {
+    Ok(list_tree_rows(conn, project_id, filter, false)?
+        .into_iter()
+        .map(|(node, _archived)| node)
+        .collect())
+}
+
+/// archived の行も含めた一覧。bool が archived。木を root から辿る呼び手
+/// （`list_tree`・`get_writing_context`）が、archived の folder の下の live の場面を
+/// 見失わないための入力（`collapse_archived_nodes` に渡す）。
+pub fn list_tree_nodes_with_archived(
+    conn: &Connection,
+    project_id: &str,
+    filter: &TreeFilter,
+) -> Result<Vec<(TreeNode, bool)>> {
+    list_tree_rows(conn, project_id, filter, true)
+}
+
+/// archived の行を出さず、その下にある live の行を木から見失わないようにした一覧に畳む。
+///
+/// **Q-E1（ユーザー決定 2026-11-24）：繰り上げる。** archived の行だけ出さず、その下の live の行は
+/// archived の行の位置に出す（`parent_id` を最も近い live の祖先に付け替え、並びは木の先行順のまま）。
+/// 従来の読む順を保つ。archived の folder の章の概要は出ない。この規則はこの関数 1 つに閉じる。
+/// 別の案に切り替えるときはここだけを変える：木の末尾に並べる（アプリ内の `list_chapters` と同じ。
+/// 読む順が変わる）なら live の子孫を `parent_id = None` で末尾に足し、消すなら子孫ごと落とす。
+///
+/// 返す行は先行順（root から、兄弟は入力の順）で、`TreeNode` の他の欄は変えない。
+/// root から届かない行（親が無い・別 project の親）は、従来どおり返さない。
+pub fn collapse_archived_nodes(rows: Vec<(TreeNode, bool)>) -> Vec<TreeNode> {
+    let mut children: std::collections::HashMap<Option<String>, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, (node, _)) in rows.iter().enumerate() {
+        children.entry(node.parent_id.clone()).or_default().push(i);
+    }
+    let mut slots: Vec<Option<(TreeNode, bool)>> = rows.into_iter().map(Some).collect();
+    // (行の添字, 付け替え先の live の祖先)。スタックなので兄弟を逆順に積む。
+    let mut stack: Vec<(usize, Option<String>)> = children
+        .get(&None)
+        .map(|roots| roots.iter().rev().map(|&i| (i, None)).collect())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    while let Some((i, live_parent)) = stack.pop() {
+        let Some((mut node, archived)) = slots[i].take() else {
+            continue;
+        };
+        let kids = children.get(&Some(node.id.clone()));
+        if archived {
+            if let Some(kids) = kids {
+                stack.extend(kids.iter().rev().map(|&k| (k, live_parent.clone())));
+            }
+        } else {
+            if let Some(kids) = kids {
+                stack.extend(kids.iter().rev().map(|&k| (k, Some(node.id.clone()))));
+            }
+            node.parent_id = live_parent;
+            out.push(node);
+        }
+    }
+    out
+}
+
+fn list_tree_rows(
+    conn: &Connection,
+    project_id: &str,
+    filter: &TreeFilter,
+    include_archived: bool,
+) -> Result<Vec<(TreeNode, bool)>> {
     let mut sql = String::from(
         "SELECT id, project_id, parent_id, node_type, title, synopsis,
-                sort_order, status, created_at, updated_at
+                sort_order, status, created_at, updated_at, archived_at IS NOT NULL
          FROM tree_nodes WHERE project_id = ?1",
     );
+    if !include_archived {
+        sql.push_str(" AND archived_at IS NULL");
+    }
     if filter.node_type.is_some() {
         sql.push_str(" AND node_type = ?2");
     }
@@ -218,11 +290,12 @@ pub fn list_tree_nodes(
     sql.push_str(" ORDER BY sort_order");
 
     let mut stmt = conn.prepare(&sql)?;
+    let map_row = |row: &rusqlite::Row<'_>| Ok((map_tree_node(row)?, row.get::<_, bool>(10)?));
     let rows = match (&filter.node_type, &filter.status) {
-        (Some(nt), Some(st)) => stmt.query_map(params![project_id, nt, st], map_tree_node)?,
-        (Some(nt), None) => stmt.query_map(params![project_id, nt], map_tree_node)?,
-        (None, Some(st)) => stmt.query_map(params![project_id, st], map_tree_node)?,
-        (None, None) => stmt.query_map(params![project_id], map_tree_node)?,
+        (Some(nt), Some(st)) => stmt.query_map(params![project_id, nt, st], map_row)?,
+        (Some(nt), None) => stmt.query_map(params![project_id, nt], map_row)?,
+        (None, Some(st)) => stmt.query_map(params![project_id, st], map_row)?,
+        (None, None) => stmt.query_map(params![project_id], map_row)?,
     };
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("list_tree_nodes query failed")
@@ -249,7 +322,7 @@ pub fn get_scene_meta(conn: &Connection, project_id: &str, scene_id: &str) -> Re
     conn.query_row(
         "SELECT id, project_id, parent_id, node_type, title, synopsis,
                 sort_order, status, created_at, updated_at
-         FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+         FROM tree_nodes WHERE id = ?1 AND project_id = ?2 AND archived_at IS NULL",
         params![scene_id, project_id],
         map_tree_node,
     )
@@ -259,7 +332,7 @@ pub fn get_scene_meta(conn: &Connection, project_id: &str, scene_id: &str) -> Re
 /// Fetch the raw `content` column (ProseMirror JSON) for a scene.
 pub fn get_scene_content(conn: &Connection, project_id: &str, scene_id: &str) -> Result<String> {
     conn.query_row(
-        "SELECT content FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        "SELECT content FROM tree_nodes WHERE id = ?1 AND project_id = ?2 AND archived_at IS NULL",
         params![scene_id, project_id],
         |row| row.get(0),
     )
@@ -276,7 +349,7 @@ pub fn find_scene_by_title(
         "SELECT id, project_id, parent_id, node_type, title, synopsis,
                 sort_order, status, created_at, updated_at
          FROM tree_nodes
-         WHERE project_id = ?1 AND title LIKE ?2
+         WHERE project_id = ?1 AND title LIKE ?2 AND archived_at IS NULL
          ORDER BY sort_order",
     )?;
     let rows = stmt.query_map(params![project_id, pattern], map_tree_node)?;
@@ -619,7 +692,7 @@ pub fn search_fts(
             let mut stmt = conn.prepare(
                 "SELECT id, title, COALESCE(synopsis, '')
                  FROM tree_nodes
-                 WHERE project_id = ?1 AND node_type = 'scene'
+                 WHERE project_id = ?1 AND node_type = 'scene' AND archived_at IS NULL
                    AND (title LIKE ?2 OR content LIKE ?2)
                  LIMIT ?3",
             )?;
@@ -640,6 +713,7 @@ pub fn search_fts(
                  FROM tree_nodes_fts
                  JOIN tree_nodes tn ON tn.rowid = tree_nodes_fts.rowid
                  WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
+                   AND tn.archived_at IS NULL
                  ORDER BY rank LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![match_expr, project_id, lim], |row| {
@@ -1300,7 +1374,7 @@ type SceneSummaryRow = (String, Option<String>, String, Option<String>, String);
 pub fn get_chapter_summaries(conn: &Connection, project_id: &str) -> Result<Vec<ChapterSummary>> {
     let mut folder_stmt = conn.prepare(
         "SELECT id, title, sort_order FROM tree_nodes
-         WHERE project_id = ?1 AND node_type = 'folder'
+         WHERE project_id = ?1 AND node_type = 'folder' AND archived_at IS NULL
          ORDER BY sort_order",
     )?;
     let folders: Vec<(String, String, String)> = folder_stmt
@@ -1311,7 +1385,7 @@ pub fn get_chapter_summaries(conn: &Connection, project_id: &str) -> Result<Vec<
 
     let mut scene_stmt = conn.prepare(
         "SELECT id, parent_id, title, synopsis, sort_order FROM tree_nodes
-         WHERE project_id = ?1 AND node_type = 'scene'
+         WHERE project_id = ?1 AND node_type = 'scene' AND archived_at IS NULL
          ORDER BY sort_order",
     )?;
     let scenes: Vec<SceneSummaryRow> = scene_stmt
@@ -1379,7 +1453,7 @@ pub fn get_scene_timeline_neighbors(
     // 他プロジェクトの scene_id を渡してタイムラインを読まれないようにする (XPROJ 防御)。
     let target = conn.query_row(
         "SELECT story_time_order, story_time_label FROM tree_nodes
-         WHERE id = ?1 AND node_type = 'scene' AND project_id = ?2",
+         WHERE id = ?1 AND node_type = 'scene' AND project_id = ?2 AND archived_at IS NULL",
         params![scene_id, project_id],
         |row| {
             Ok((
@@ -1420,7 +1494,7 @@ pub fn get_scene_timeline_neighbors(
 
     let mut prev_stmt = conn.prepare(
         "SELECT id, title, story_time_label, synopsis FROM tree_nodes
-         WHERE project_id = ?1 AND node_type = 'scene' AND id != ?2
+         WHERE project_id = ?1 AND node_type = 'scene' AND id != ?2 AND archived_at IS NULL
            AND story_time_order IS NOT NULL AND story_time_order < ?3
          ORDER BY story_time_order COLLATE BINARY DESC
          LIMIT 3",
@@ -1431,7 +1505,7 @@ pub fn get_scene_timeline_neighbors(
 
     let mut next_stmt = conn.prepare(
         "SELECT id, title, story_time_label, synopsis FROM tree_nodes
-         WHERE project_id = ?1 AND node_type = 'scene' AND id != ?2
+         WHERE project_id = ?1 AND node_type = 'scene' AND id != ?2 AND archived_at IS NULL
            AND story_time_order IS NOT NULL AND story_time_order > ?3
          ORDER BY story_time_order COLLATE BINARY ASC
          LIMIT 3",
@@ -1607,7 +1681,11 @@ pub fn list_open_foreshadows(
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let setup_sql = format!(
         "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning
-         FROM foreshadow_setups WHERE foreshadow_id IN ({placeholders})"
+         FROM foreshadow_setups
+         WHERE foreshadow_id IN ({placeholders})
+           AND NOT EXISTS (
+             SELECT 1 FROM tree_nodes tn
+             WHERE tn.id = foreshadow_setups.scene_id AND tn.archived_at IS NOT NULL)"
     );
     let setup_params: Vec<rusqlite::types::Value> = ids
         .iter()
@@ -1771,7 +1849,8 @@ pub fn get_foreshadow_detail(
     // / import bug) cannot leak a foreign scene's title via this gated tool.
     let payoff_scene = if let Some(psid) = payoff_scene_id {
         conn.query_row(
-            "SELECT id, title FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+            "SELECT id, title FROM tree_nodes
+             WHERE id = ?1 AND project_id = ?2 AND archived_at IS NULL",
             params![psid, project_id],
             |row| {
                 Ok(ForeshadowPayoffScene {
@@ -1790,7 +1869,7 @@ pub fn get_foreshadow_detail(
                 fs.ai_rationale, fs.is_orphan, tn.title
          FROM foreshadow_setups fs
          INNER JOIN tree_nodes tn ON fs.scene_id = tn.id
-         WHERE fs.foreshadow_id = ?1 AND tn.project_id = ?2",
+         WHERE fs.foreshadow_id = ?1 AND tn.project_id = ?2 AND tn.archived_at IS NULL",
     )?;
     let setups: Vec<ForeshadowSetupDetail> = setup_stmt
         .query_map(params![foreshadow_id, project_id], |row| {

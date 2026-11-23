@@ -152,7 +152,13 @@ pub(crate) fn build_writing_context(
     };
 
     let project = db::get_project(conn, project_id)?;
-    let all_nodes = db::list_tree_nodes(conn, project_id, &TreeFilter::default())?;
+    // archived の行は出さず、その下の live の場面は archived の行の位置へ繰り上げる
+    // （`db::collapse_archived_nodes`。Q-E1）。読む順と章の概要の祖先の辿りが途切れない。
+    let all_nodes = db::collapse_archived_nodes(db::list_tree_nodes_with_archived(
+        conn,
+        project_id,
+        &TreeFilter::default(),
+    )?);
 
     let chapter_outlines = collect_chapter_outlines(&all_nodes, &scene_meta);
     let (story_so_far, story_so_far_dropped) = collect_story_so_far(&all_nodes, scene_id);
@@ -1300,17 +1306,68 @@ mod tests {
     }
 
     #[test]
-    fn writing_context_shows_archived_rows_today() {
+    fn writing_context_drops_archived_scenes_but_keeps_reading_order() {
         let conn = archive_world();
-        // 読む順：s1, a-s2（archived）, s3, s4（archived の folder の下）, s5。
+        // 読む順：s1, a-s2（archived。出ない）, s3, s4（archived の folder の下。繰り上げで残る）, s5。
         let ctx = build_writing_context(&conn, "p1", "s5").unwrap().unwrap();
-        assert_eq!(story_ids(&ctx), ["s1", "a-s2", "s3", "s4"]);
-        // 祖先が archived の folder の場面の章の概要。
-        let ctx4 = build_writing_context(&conn, "p1", "s4").unwrap().unwrap();
-        assert_eq!(outline_titles(&ctx4), ["Archived Chapter"]);
-        // 対象の場面が archived でも今は読める。
+        assert_eq!(story_ids(&ctx), ["s1", "s3", "s4"]);
+        assert_eq!(ctx.story_so_far_dropped, 0);
+    }
+
+    #[test]
+    fn writing_context_for_scene_under_archived_folder_keeps_story_so_far() {
+        let conn = archive_world();
+        // 対象が archived の folder の下の live の場面でも、あらすじは空にならない。
+        let ctx = build_writing_context(&conn, "p1", "s4").unwrap().unwrap();
+        assert_eq!(story_ids(&ctx), ["s1", "s3"]);
+        // archived の folder の章の概要は出ない（祖先を辿るのは途切れない）。
+        assert!(
+            outline_titles(&ctx).is_empty(),
+            "{:?}",
+            outline_titles(&ctx)
+        );
+    }
+
+    #[test]
+    fn writing_context_keeps_live_chapter_outline_and_skips_archived_siblings() {
+        let conn = archive_world();
+        let ctx = build_writing_context(&conn, "p1", "s3").unwrap().unwrap();
+        assert_eq!(outline_titles(&ctx), ["Live Chapter"]);
+        assert_eq!(story_ids(&ctx), ["s1"]);
+        assert_eq!(
+            ctx.timeline_neighbors
+                .previous
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            ["s1"]
+        );
+    }
+
+    #[test]
+    fn writing_context_for_archived_scene_is_not_found() {
+        let conn = archive_world();
         assert!(build_writing_context(&conn, "p1", "a-s2")
             .unwrap()
-            .is_some());
+            .is_none());
+        // archived の folder の id も、場面でないので not found。
+        assert!(build_writing_context(&conn, "p1", "a-fold")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn writing_context_open_foreshadows_do_not_count_archived_setups() {
+        let conn = archive_world();
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, intent, secret, created_at, updated_at)
+             VALUES ('f1', 'p1', 'Gun', 'hint', 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        seed_setup(&conn, "su1", "f1", "s1");
+        seed_setup(&conn, "su2", "f1", "a-s2");
+        let ctx = build_writing_context(&conn, "p1", "s5").unwrap().unwrap();
+        assert_eq!(ctx.open_foreshadows[0].setup_count, 1);
     }
 }
