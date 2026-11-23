@@ -1071,3 +1071,131 @@ export async function narrativeExtractionListChronicleTaskResumeCandidates(
     { payload },
   );
 }
+
+/**
+ * Closed vocabularies the maintenance Inbox wire is read against. A value
+ * outside them becomes `"unrecognized"` instead of being guessed at
+ * (fail-closed): the structure-health counts never fold an unknown value into
+ * a known bucket.
+ */
+export const MAINTENANCE_INBOX_ENTRY_KINDS = [
+  "consumer-freshness",
+  "terminal-failure",
+] as const;
+/**
+ * Known `consumer_kind` strings. Copied from `consumerKinds` in
+ * policies/narrative/narrative-consumer-contract.json (declared, reserved and
+ * not-yet-modelled alike, 11 kinds) plus the synthetic
+ * `narrative-maintenance-failure` of terminal-failure rows. Native does not
+ * validate the vocabulary, so a string outside this set becomes
+ * `"unrecognized"` and is counted as an unreadable item, never dropped.
+ * nativeApi.maintenanceInbox.test.ts pins this list against the contract.
+ */
+export const MAINTENANCE_INBOX_CONSUMER_KINDS = [
+  "narrative-extraction-run",
+  "proposal-revision",
+  "extraction-artifact",
+  "application",
+  "application-contribution",
+  "derived-projection",
+  "semantic-index",
+  "narrative-ir-revision",
+  "related-scenes-materialization",
+  "chat-context-materialization",
+  "structure-health-diagnostic",
+  "narrative-maintenance-failure",
+] as const;
+export const MAINTENANCE_INBOX_EVIDENCE_FRESHNESS = [
+  "fresh",
+  "stale",
+  "source-missing",
+  "anchor-mismatch",
+  "read-set-drift",
+  "unknown",
+] as const;
+
+export type MaintenanceInboxEntryKind =
+  | (typeof MAINTENANCE_INBOX_ENTRY_KINDS)[number]
+  | "unrecognized";
+export type MaintenanceInboxConsumerKind =
+  | (typeof MAINTENANCE_INBOX_CONSUMER_KINDS)[number]
+  | "unrecognized";
+/** `null`: the row carries no freshness (a terminal-failure row). */
+export type MaintenanceInboxEvidenceFreshness =
+  | (typeof MAINTENANCE_INBOX_EVIDENCE_FRESHNESS)[number]
+  | "unrecognized"
+  | null;
+
+/**
+ * The only fields of an Inbox row that the structure-health counts need.
+ * Free text (`attention.reason`), actor / request identities, payload digests
+ * and observation rows ride on the wire but are deliberately never read here.
+ */
+export interface MaintenanceInboxEntry {
+  readonly entryKind: MaintenanceInboxEntryKind;
+  readonly consumerKind: MaintenanceInboxConsumerKind;
+  readonly evidenceFreshness: MaintenanceInboxEvidenceFreshness;
+}
+
+function pickKnown<const T extends readonly string[]>(
+  value: unknown,
+  known: T,
+): T[number] | "unrecognized" {
+  return typeof value === "string" &&
+    (known as readonly string[]).includes(value)
+    ? (value as T[number])
+    : "unrecognized";
+}
+
+/**
+ * Validate the snake_case Inbox wire and project it onto the allow-listed
+ * camelCase shape. Throws when the wire is not an array; an element that is
+ * not an object, or a field that is missing or unknown, becomes
+ * `"unrecognized"` rather than an error.
+ */
+export function parseMaintenanceInbox(
+  raw: unknown,
+): readonly MaintenanceInboxEntry[] {
+  if (!Array.isArray(raw)) {
+    throw new Error("narrative_maintenance_inbox_list: expected an array");
+  }
+  return raw.map((row: unknown): MaintenanceInboxEntry => {
+    const record =
+      typeof row === "object" && row !== null
+        ? (row as Readonly<Record<string, unknown>>)
+        : {};
+    const entryKind = pickKnown(
+      record["entry_kind"],
+      MAINTENANCE_INBOX_ENTRY_KINDS,
+    );
+    return {
+      entryKind,
+      consumerKind: pickKnown(
+        record["consumer_kind"],
+        MAINTENANCE_INBOX_CONSUMER_KINDS,
+      ),
+      // A terminal-failure row has no freshness by construction; ignore
+      // whatever the wire carries for it.
+      evidenceFreshness:
+        entryKind === "terminal-failure"
+          ? null
+          : pickKnown(
+              record["evidence_freshness"],
+              MAINTENANCE_INBOX_EVIDENCE_FRESHNESS,
+            ),
+    };
+  });
+}
+
+/**
+ * Read-only list of what maintenance is watching, for the structure-health
+ * counts. Sends only `{ projectId }`; Native stamps the clock itself.
+ */
+export async function narrativeMaintenanceInboxList(payload: {
+  readonly projectId: string;
+}): Promise<readonly MaintenanceInboxEntry[]> {
+  const raw = await invoke<unknown>("narrative_maintenance_inbox_list", {
+    payload: { projectId: payload.projectId },
+  });
+  return parseMaintenanceInbox(raw);
+}
