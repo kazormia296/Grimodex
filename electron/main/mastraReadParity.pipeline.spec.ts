@@ -855,6 +855,9 @@ describe("main's typed reads against the real Native addon: the shape the later 
         expect(Array.isArray(outcome.value), method).toBe(true);
       } else {
         expect(outcome.error, method).not.toMatch(/WORKSPACE_CHANGED/);
+        expect(outcome.error, method).not.toMatch(
+          /(?:codex|events)_semantic_search: /,
+        );
         expect(outcome.error, method).toMatch(
           /embedding model .* is not installed|semantic/i,
         );
@@ -1211,6 +1214,9 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
         expect(own.has(hit.eventId), hit.eventId).toBe(true);
     } else {
       expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED/);
+      // The core's own narrowing errors ("events_semantic_search: the result is not an array", ...) also
+      // contain "semantic": a wire that does not fit the narrowing must not pass as "no model here".
+      expect(outcome.error).not.toMatch(/events_semantic_search: /);
       expect(outcome.error).toMatch(
         /embedding model .* is not installed|semantic/i,
       );
@@ -1257,6 +1263,7 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
       expect(outcome.value.summary).toBe("0 events found");
     } else {
       expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED|unsigned|integer/i);
+      expect(outcome.error).not.toMatch(/events_semantic_search: /);
       expect(outcome.error).toMatch(
         /embedding model .* is not installed|semantic/i,
       );
@@ -1744,6 +1751,9 @@ describe("the four Codex tools of the read core (PR-8b) on Main's adapter over t
       }
     } else {
       expect(outcome.error).not.toMatch(/WORKSPACE_CHANGED/);
+      // The core's own narrowing errors ("codex_semantic_search: the result is not an array", ...) also
+      // contain "semantic": a wire that does not fit the narrowing must not pass as "no model here".
+      expect(outcome.error).not.toMatch(/codex_semantic_search: /);
       expect(outcome.error).toMatch(
         /embedding model .* is not installed|semantic/i,
       );

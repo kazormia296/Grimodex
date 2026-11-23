@@ -916,9 +916,10 @@ const CODEX_NO_PROJECT_CONTENT: Record<CodexReadToolName, () => unknown> = {
 /**
  * 4 本の executor。scope があるときは、現在の場面を scope の値にした ctx を**呼出しごとに**作る
  * （作るだけでは何も読まない）。**projectId は scope でなく今までどおり store**（legacy の非対称を保つ。
- * `scope.currentSceneId ?? ""` は core の `trim()` 後の空と同じく base）。scope は旗 L が false の間
- * 作られないので到達しないが、特性試験が固定している（DR-MP4-21：閉じた経路は renderer の薄い層が
- * 自分の分岐を持つ）。
+ * scope の `currentSceneId`（null がありうる）はそのまま `activeSceneId` に渡す：null・空・空白だけは、
+ * core の判定が「場面を解決できない」として同じに扱う）。scope は `CHAT_AGENT_IR_ENABLED` が false の間
+ * 作られない（`chatAgentToolHandlers.ts` の生成の手前の分岐）ので到達しないが、特性試験が固定している
+ * （DR-MP4-21：閉じた経路は renderer の薄い層が自分の分岐を持つ）。
  */
 function codexReadExecutor(name: CodexReadToolName): Executor {
   return async (params, _requestId, _authorization, context) => {
