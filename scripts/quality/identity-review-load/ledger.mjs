@@ -423,10 +423,12 @@ export function createGate({
         STOP_LINES.tokenOverFactor * estInputTokens * calibrated.maxIn,
         STOP_LINES.tokenOverFactor * calibrated.maxInTokens,
       ),
-      outputLimit: Math.min(
-        STOP_LINES.tokenOverFactor * estOutputTokens * calibrated.maxOut,
-        STOP_LINES.tokenOverFactor * calibrated.maxOutTokens,
-      ),
+      // 出力の線は、試走の比・実測の最大値では補正せず、見積り（候補 1 件 120 token。下限 800）の 2 倍にする。
+      // 作者の決定（2026-11-23 22:35。DR-ILM-49）：測定 B の最初の 1 要求（g-ja-2 の L0）が、試走の最大値から作る出力の線
+      // （2,397 token）を約 3％ 超えて止まった。試走は L2 の 2 作品だけで、L2 は候補 1 件あたり約 55 token、L0 は約 113 token。
+      // 見積りの式は L0 では合っている（実測は見積りの 0.94 倍）。閾値の緩和（現在の約 2.2 倍）で、入力の線・試走の段・最悪値の予約
+      // （出力 32,000）は変えない。
+      outputLimit: STOP_LINES.tokenOverFactor * estOutputTokens,
     };
   }
   /**
