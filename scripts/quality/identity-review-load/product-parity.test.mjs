@@ -1270,3 +1270,38 @@ test("F5 M-a：judgeCandidates は出力の上限を渡さず、native の既定
   // 道具の測定の model は claude-sonnet-5-5。
   assert.match(tool("run-measure-b.mjs"), /MODEL = "claude-sonnet-5-5"/u);
 });
+
+test("試走の 1 回目の原因の直し：監査用の workspace の path は B の経路（bConfigureAi）だけが置き、測定 A・目録の経路（openProject）は変えない", () => {
+  const renderer = tool("renderer.ts");
+  const configure = functionBody(renderer, "bConfigureAi");
+  // 製品の監査の begin（snapshotAiAuditWorkspacePath）が読む useWorkspaceStore の activeWorkspacePath を、
+  // 道具が開いた workspace の identity から置く。identity が無ければ送る前に止まる。
+  assert.match(
+    configure,
+    /useWorkspaceStore\.setState\(\{\s*activeWorkspacePath: identity\.path,\s*workspaceOpenRevision: identity\.openRevision,\s*\}\)/u,
+  );
+  assert.match(configure, /AUDIT_WORKSPACE_IDENTITY_MISSING/u);
+  assert.ok(
+    configure.indexOf("useWorkspaceStore.setState") <
+      configure.indexOf("saveAiSettings("),
+  );
+  // 測定 A・目録が通る openProject は workspace の store に触れない。
+  assert.ok(!/useWorkspaceStore/u.test(functionBody(renderer, "openProject")));
+  assert.equal([...renderer.matchAll(/useWorkspaceStore\.setState/gu)].length, 1);
+});
+
+test("本測定で許す AI の command：設定・送信・局所の監査の追記だけ（製品の AI 送信は ai_audit_append_batch で監査の DB に書く）", async () => {
+  const { ALLOWED_REAL_AI_COMMANDS } = await import("./run-measure-b.mjs");
+  assert.deepEqual([...ALLOWED_REAL_AI_COMMANDS].sort(), [
+    "ai_audit_append_batch",
+    "get_ai_settings",
+    "save_ai_settings",
+    "send_chat_message",
+  ]);
+  // 製品の監査の追記が実際にこの命令であること（名前の取り違えを、製品の source で確かめる）。
+  const audit = readFileSync(
+    new URL("../../../src/features/ai-audit/api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(audit.includes('invoke<AiAuditAppendResult>("ai_audit_append_batch"'));
+});

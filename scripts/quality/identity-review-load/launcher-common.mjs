@@ -590,10 +590,12 @@ export async function runCell({
         ok: call.completed === true && call.ok === true,
       })),
     };
-    // 拒否した命令の件数（名前ごと）。本物の handler に届いた AI の命令は上の ipc に出るので、ここは含まれない。
+    // 止めた命令の件数（名前ごと）と、send_chat_message にリハーサルの応答で答えた件数。本物の handler に届いた AI の命令は
+    // 上の ipc に出るので、ここは含まれない。
     if (blockDispatch)
       cell.dispatchBlock = await app.evaluate(() => ({
         blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
+        rehearsed: globalThis.idlDispatchBlock?.rehearsed ?? 0,
       }));
     // cell の後にも出所を照合する（cell の間に build 物・guard の file・入力が差し替わっていないか。F3a の m5）。
     // 例外にはせず、records に残す（realCellStatus が不採用にする）。

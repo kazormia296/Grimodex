@@ -110,6 +110,9 @@ export const ALLOWED_REAL_AI_COMMANDS = Object.freeze([
   "get_ai_settings",
   "save_ai_settings",
   "send_chat_message",
+  // 製品の AI 送信が、begin・dispatched・終端の事象を局所の監査の DB に書く命令（外へ出ない）。試走の 1 回目の調べで、
+  // 許可の一覧に無かったと分かった（本測定の cell が unexpected-ai-command で不採用になるはずだった）。
+  "ai_audit_append_batch",
 ]);
 
 /**
@@ -293,6 +296,7 @@ export const DRY_RUN_ASSUMPTIONS = Object.freeze({
 export async function dryCellBody({
   page,
   app = null,
+  workspaceDir = "",
   probeJudge = false,
   synth = DEFAULT_SYNTH,
   levels = B1_LEVELS,
@@ -325,7 +329,9 @@ export async function dryCellBody({
   const hidden = assertRosterNotHidden(
     await page.evaluate(() => window.identityLoad.bAssertRosterNotHidden()),
   );
-  const judgePath = probeJudge ? await probeJudgePath({ page, app }) : null;
+  const judgePath = probeJudge
+    ? await probeJudgePath({ page, app, workspaceDir })
+    : null;
   return {
     levels: out,
     synthetic: { entityCount, aliasTotals, candidateCountN0: n0 },
@@ -340,7 +346,7 @@ export async function dryCellBody({
  * page の bProbeJudge が key の無いことを確かめて始めること。AI の設定（provider・model）は入れるが key は入れない。
  * 返すのは真偽・件数・定型の要約・命令の名前の並びだけ（自由文なし）。
  */
-export async function probeJudgePath({ page, app }) {
+export async function probeJudgePath({ page, app, workspaceDir = "" }) {
   assert.ok(
     app !== null && typeof app.evaluate === "function",
     "[precheck] PROBE_NEEDS_APP the probe needs the Electron app to verify the dispatch block",
@@ -363,26 +369,59 @@ export async function probeJudgePath({ page, app }) {
     "[precheck] PROBE_KEY_PRESENT the probe runs only without a key",
   );
   const probe = await page.evaluate(() => window.identityLoad.bProbeJudge());
-  // 探針の後に、拒否した命令と命令の並び（最後の 12 件）を main から読む。
+  // 探針の後に、止めた命令・リハーサルで答えた件数・命令の並び（最後の 12 件）を main から読む。
   const after = await app.evaluate(() => ({
     blocked: { ...(globalThis.idlDispatchBlock?.blocked ?? {}) },
+    rehearsed: globalThis.idlDispatchBlock?.rehearsed ?? 0,
     tail: (globalThis.nir1IpcTrace?.calls ?? []).slice(-12).map((call) => ({
       command: call.command,
       ok: call.completed === true && call.ok === true,
     })),
   }));
-  return { ...probe, configured: { provider: configured.provider }, ...after };
+  // リハーサルの応答に対し、製品の経路が局所の DB に残した行（本測定の cell が終わりに読むものと同じ関数）を読む。
+  // usage の記録は送信の後に非同期で書かれるので、リハーサルの件数に届くまで少し待つ。
+  let surfaces = null;
+  if (workspaceDir) {
+    let usage = readAiUsageRows(workspaceDir);
+    for (let i = 0; i < 20 && usage.rows.length < after.rehearsed; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      usage = readAiUsageRows(workspaceDir);
+    }
+    const audit = readAuditPathIds(workspaceDir);
+    surfaces = {
+      readable: usage.readable > 0 && audit.readable > 0,
+      usageRows: usage.rows.length,
+      usageTokens: usage.rows.map((row) => ({
+        in: row.tokens_in,
+        out: row.tokens_out,
+      })),
+      auditPathIds: audit.pathIds,
+      surfaceCheck: checkOnlyCodexJudgment({
+        usageSurfaces: usage.rows.map((row) => row.surface),
+        auditPathIds: audit.pathIds,
+        requestsSent: after.rehearsed,
+      }),
+    };
+  }
+  return {
+    ...probe,
+    configured: { provider: configured.provider },
+    ...after,
+    surfaces,
+  };
 }
 
 /** 乾いた実行の cell の採用条件：AI の command・AI の行・要求の送信が 0。 */
 export function dryCellStatus(cell) {
   const names = cell.ipc?.commandNames ?? [];
   // 探針つきの cell（拒否する層が有効だった cell。cell.dispatchBlock がある）だけ、次を許す：
-  //   - AI の設定の読み書き（探針が provider・model を入れる。外向きでない）
-  //   - 監査の行（送信の直前の経路が、begin と失敗の終端を局所の DB に書く）。ai_usage の行は許さない。
-  // 外向きの命令は main の入口で拒否され、本物の handler に届かないので、ipc に出る send_chat_message は 0 のまま。
+  //   - 局所の AI の命令（設定の読み書き・監査の DB への追記。DISPATCH_BLOCK_EXEMPT。外向きでない）
+  //   - 監査の行（送信の直前の経路が、begin・dispatched・終端の事象を局所の DB に書く）
+  //   - ai_usage の行は、main がリハーサルの応答で答えた件数まで（製品が応答の token を記録する。超える行は許さない）
+  // 外向きの命令は main の入口で止まり、本物の handler に届かないので、ipc に出る send_chat_message は 0 のまま。
   const probed = cell.dispatchBlock !== undefined;
   const allowedAi = probed ? DISPATCH_BLOCK_EXEMPT : [];
+  const rehearsed = probed ? (cell.dispatchBlock.rehearsed ?? 0) : 0;
   if (
     findAiCommands(names).filter((name) => !allowedAi.includes(name)).length >
       0 ||
@@ -390,10 +429,11 @@ export function dryCellStatus(cell) {
   )
     return "ai-detected";
   if (!cell.aiRows?.verified) return "ai-unverified";
-  const tables = Object.entries(cell.aiRows.tables ?? {}).filter(
-    ([table]) => !(probed && table === "ai_audit_events"),
-  );
-  if (tables.some(([, n]) => n !== 0)) return "ai-detected";
+  for (const [table, n] of Object.entries(cell.aiRows.tables ?? {})) {
+    if (probed && table === "ai_audit_events") continue;
+    if (probed && table === "ai_usage" && n <= rehearsed) continue;
+    if (n !== 0) return "ai-detected";
+  }
   if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0)
     return "egress-detected";
   // 標本が成り立たない・socket を 1 つも見ていない標本は、何も見ていないのと同じ（実測定の realCellStatus と同じ基準。
@@ -735,6 +775,7 @@ async function mainDry(options) {
           dryCellBody({
             page: ctx.page,
             app: ctx.app,
+            workspaceDir: ctx.workspaceDir,
             probeJudge: true,
             synth,
           }),

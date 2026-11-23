@@ -1930,6 +1930,8 @@ test("拒否層：外向きの AI の命令（送信・CLI・ライセンス・�
     "has_api_key",
     "get_model_capability_snapshot",
     "ai_audit_read_snapshot",
+    // 製品の AI 送信が局所の監査の DB に書く命令（外へ出ない）。
+    "ai_audit_append_batch",
   ])
     assert.equal(isBlockedDispatchCommand(command), false, command);
   // 命令でない値は本物の handler が拒否する（ここでは拒否しない）。
@@ -1984,17 +1986,43 @@ test("拒否層：要求がなければ入れず、入れたら grim:invoke の�
     return { ok: true };
   });
   const invoke = ipcMain.handlers.get("grim:invoke");
+  // 外向きの命令（send_chat_message 以外）は、本物の handler の前で固定の token の例外にする。
   await assert.rejects(
-    invoke({}, "send_chat_message", { messages: [] }),
+    invoke({}, "list_ai_models", {}),
     (error) => error.message === DISPATCH_BLOCK_TOKEN,
   );
-  await assert.rejects(invoke({}, "send_chat_message", {}), /IDL_DISPATCH_BLOCKED/u);
+  await assert.rejects(invoke({}, "activate_license", {}), /IDL_DISPATCH_BLOCKED/u);
   assert.deepEqual(await invoke({}, "db_execute", {}), { ok: true });
   assert.deepEqual(await invoke({}, "save_ai_settings", {}), { ok: true });
-  // 本物の handler に届いたのは通した命令だけ。拒否した命令は handler にも trace にも出ない。
-  assert.deepEqual(reached, ["db_execute", "save_ai_settings"]);
-  assert.deepEqual(trace, ["db_execute", "save_ai_settings"]);
-  assert.deepEqual(state.blocked, { send_chat_message: 2 });
+  assert.deepEqual(await invoke({}, "ai_audit_append_batch", {}), { ok: true });
+  // send_chat_message は外へ出さず、本物の handler も呼ばずに、リハーサルの応答（判定は空・token は固定）で答える。
+  const rehearsal = await invoke({}, "send_chat_message", { messages: [] });
+  assert.equal(rehearsal.ok, true);
+  assert.deepEqual(rehearsal.value, {
+    blocks: [{ type: "text", content: '{"judgments":[]}' }],
+    stopReason: "end_turn",
+    inputTokens: 1000,
+    outputTokens: 100,
+  });
+  // 応答は毎回新しい object（呼び出し側が書き換えても次に影響しない）。
+  rehearsal.value.blocks[0].content = "changed";
+  assert.equal(
+    (await invoke({}, "send_chat_message", {})).value.blocks[0].content,
+    '{"judgments":[]}',
+  );
+  // 本物の handler に届いたのは通した命令だけ。止めた命令・リハーサルで答えた命令は handler にも trace にも出ない。
+  assert.deepEqual(reached, [
+    "db_execute",
+    "save_ai_settings",
+    "ai_audit_append_batch",
+  ]);
+  assert.deepEqual(trace, [
+    "db_execute",
+    "save_ai_settings",
+    "ai_audit_append_batch",
+  ]);
+  assert.deepEqual(state.blocked, { list_ai_models: 1, activate_license: 1 });
+  assert.equal(state.rehearsed, 2);
   // grim:invoke 以外の channel は包まない。
   assert.deepEqual(await ipcMain.handlers.get("other:channel")({}, "send_chat_message"), {
     ok: true,
@@ -2053,7 +2081,9 @@ function fakeProbeEnv({
 } = {}) {
   const calls = [];
   const bridge = {
-    idlDispatchBlock: active ? { active: true, blocked: { send_chat_message: 1 } } : undefined,
+    idlDispatchBlock: active
+      ? { active: true, blocked: {}, rehearsed: 1 }
+      : undefined,
     nir1IpcTrace: {
       calls: [
         { command: "db_execute", completed: true, ok: true },
@@ -2099,7 +2129,10 @@ test("探針：拒否層が有効なときだけ、key なしで provider・mode
     ["probe"],
   ]);
   assert.equal(out.judge.threw, true);
-  assert.deepEqual(out.blocked, { send_chat_message: 1 });
+  assert.deepEqual(out.blocked, {});
+  assert.equal(out.rehearsed, 1);
+  // workspaceDir を渡さなければ、局所の DB は読まない。
+  assert.equal(out.surfaces, null);
   assert.deepEqual(out.tail, [
     { command: "db_execute", ok: true },
     { command: "get_ai_settings", ok: true },
@@ -2129,6 +2162,70 @@ test("探針：拒否層が無効・app が無い・key が入っている場合
   assert.deepEqual(withKey.calls, [
     ["configure", "anthropic", "claude-sonnet-5-5", null],
   ]);
+});
+
+test("探針：リハーサルの応答に対して製品が局所の DB に残した行（usage の token・監査の pathId）を、本測定と同じ関数で読んで surface を確かめる", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "idl-probe-"));
+  try {
+    const db = path.join(dir, "ws.db");
+    execFileSync("sqlite3", [
+      db,
+      `CREATE TABLE ai_usage (id TEXT, surface TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, created_at TEXT);
+       CREATE TABLE ai_audit_events (id INTEGER, path_id TEXT);
+       INSERT INTO ai_usage VALUES ('1','codex_judgment','claude-sonnet-5-5',1000,100,'2026-01-01T00:00:00Z');
+       INSERT INTO ai_audit_events VALUES (1,'codex_judgment');
+       INSERT INTO ai_audit_events VALUES (2,'codex_judgment');`,
+    ]);
+    const env = fakeProbeEnv();
+    const out = await probeJudgePath({
+      page: env.page,
+      app: env.app,
+      workspaceDir: dir,
+    });
+    assert.equal(out.surfaces.readable, true);
+    assert.equal(out.surfaces.usageRows, 1);
+    assert.deepEqual(out.surfaces.usageTokens, [{ in: 1000, out: 100 }]);
+    assert.deepEqual(out.surfaces.auditPathIds, ["codex_judgment"]);
+    assert.equal(out.surfaces.surfaceCheck.ok, true);
+    assert.doesNotThrow(() => assertOutputClean(out, []));
+    // 別の surface の usage 行があれば、surface の確認は通らない（本測定の cell と同じ判定）。
+    execFileSync("sqlite3", [
+      db,
+      `INSERT INTO ai_usage VALUES ('2','chat','claude-sonnet-5-5',5,5,'2026-01-01T00:00:01Z');`,
+    ]);
+    const other = await probeJudgePath({
+      page: env.page,
+      app: env.app,
+      workspaceDir: dir,
+    });
+    assert.equal(other.surfaces.surfaceCheck.ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("乾いた実行の採用条件：探針つき cell は、リハーサルで答えた件数までの ai_usage の行を許す（超える行・リハーサルの無い行は許さない）", () => {
+  const cell = (usage, rehearsed) => ({
+    ipc: {
+      commandNames: ["codex_create", "ai_audit_append_batch"],
+      commandCounts: { codex_create: 3, ai_audit_append_batch: 3 },
+    },
+    aiRows: { verified: true, tables: { ai_usage: usage, ai_audit_events: 3 } },
+    egress: {
+      nonLoopbackDestinationCount: 0,
+      sampleCount: 4,
+      socketCountMax: 6,
+      tcpSocketCountMax: 3,
+    },
+    dispatchBlock: { blocked: {}, rehearsed },
+  });
+  assert.equal(dryCellStatus(cell(1, 1)), "ok");
+  assert.equal(dryCellStatus(cell(0, 1)), "ok");
+  assert.equal(dryCellStatus(cell(2, 1)), "ai-detected");
+  assert.equal(dryCellStatus(cell(1, 0)), "ai-detected");
+  // 探針でない従来の cell では、監査の追記の命令も許さない。
+  const { dispatchBlock: _dropped, ...plain } = cell(0, 0);
+  assert.equal(dryCellStatus(plain), "ai-detected");
 });
 
 test("乾いた実行の採用条件：探針つき（拒否層が有効だった）cell だけ、AI の設定の読み書きと監査の行を許し、外向きの命令・ai_usage の行は許さない", () => {

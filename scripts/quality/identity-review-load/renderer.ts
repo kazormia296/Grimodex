@@ -30,6 +30,7 @@ import {
   useTreeStore,
 } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { kakuyomuBodyToProseMirror } from "@/features/import/kakuyomuMarkup";
 import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
 import {
@@ -1195,6 +1196,20 @@ async function bConfigureAi(input: {
   model: string;
   key: string | null;
 }) {
+  // 製品の AI 送信は、監査の begin で useWorkspaceStore の activeWorkspacePath を読む（snapshotAiAuditWorkspacePath）。
+  // 製品はこれを workspace の open lifecycle が置くが、道具は lifecycle を通らない（openProject は identity を直接置く）ので、
+  // 空のままだと judgeCandidates が送信の前に "AI audit requires a stable active workspace" で止まる（試走の 1 回目の原因）。
+  // AI を使う B の経路（この関数）だけ、道具が開いた workspace の path と open revision を置く。openProject は変えない
+  // （測定 A・目録の経路に影響させない）。
+  const identity = getCurrentWorkspaceIdentity();
+  if (!identity)
+    throw new Error(
+      "[artifact] AUDIT_WORKSPACE_IDENTITY_MISSING the workspace identity is not set",
+    );
+  useWorkspaceStore.setState({
+    activeWorkspacePath: identity.path,
+    workspaceOpenRevision: identity.openRevision,
+  });
   const settings = await getAiSettings();
   await saveAiSettings({
     ...settings,
@@ -1396,6 +1411,11 @@ async function bProbeJudge() {
     transportImport: await stage(
       () => import("@/features/chat/singleShotTransport"),
     ),
+    // 製品の監査の begin が読む workspace の path（snapshotAiAuditWorkspacePath）。bConfigureAi が置く。
+    auditWorkspace: await stage(async () => {
+      const audit = await import("@/features/ai-audit/api");
+      audit.snapshotAiAuditWorkspacePath();
+    }),
     // judgeCandidates と同じ引数（役割の上書きが空）で route を解決する。
     route: await stage(async () => {
       const transport = await import("@/features/chat/singleShotTransport");
