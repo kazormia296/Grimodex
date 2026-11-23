@@ -346,6 +346,51 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn read_scenes_batch_by_parent_id_returns_live_children_of_an_archived_folder() {
+        // 行単位の規則：archived の folder の下の live の場面 s4 は読める（a-s2 は archived で出ない）。
+        let conn = make_simple_db();
+        crate::db::tests::archived_reads::seed_archive_tree(&conn);
+        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let server = GrimodexServer::new(
+            conn,
+            "p1".to_string(),
+            false,
+            false,
+            "sess-mcp".to_string(),
+            policy,
+        );
+        let ids_for = |parent: &str| {
+            let parent = parent.to_string();
+            let server = &server;
+            async move {
+                let result = read_scenes_batch(
+                    server,
+                    ReadScenesBatchParams {
+                        scene_ids: None,
+                        parent_id: Some(parent),
+                        status: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let value = serde_json::to_value(&result).unwrap();
+                let text = value["content"][0]["text"].as_str().unwrap().to_string();
+                let scenes: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let mut ids: Vec<String> = scenes
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s["id"].as_str().unwrap().to_string())
+                    .collect();
+                ids.sort();
+                ids
+            }
+        };
+        assert_eq!(ids_for("a-fold").await, ["s4"]);
+        assert_eq!(ids_for("f-live").await, ["s1", "s3"]);
+    }
+
     fn json_keys(v: &serde_json::Value) -> Vec<String> {
         let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
         keys.sort();
