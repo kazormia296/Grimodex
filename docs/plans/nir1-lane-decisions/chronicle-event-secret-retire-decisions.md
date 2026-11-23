@@ -52,3 +52,33 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 - 変異：hidden の 3 つのフィルタ、参加者を残す処理、base hidden の条件、作者の surface の条件を、それぞれ外して、対応する試験が落ちることを確かめた。
 - 独立レビュー：Claude（Opus）・Codex（read-only）。漏れの経路（MCP の全道具と Native の返り値）は、2 系統とも問題なし。P0／P1（作者の操作で hidden の参加者が残る）は直した。P2（説明の不足）は直した。
 - **していない**：実アプリ（Electron）での確認、`verify:quality` のローカル実行（hosted の Quick に任せる）、Windows・macOS。
+
+## 4. 2 本目の PR-1：アプリ内の自動のまとめと書く道具（2026-11-24）
+
+起案の §5 の 2（読む側と hidden。N1・N8 (a)）を、3 本に分けて出す：**PR-1（この節。renderer の自動のまとめと、書く道具の存在の確認）**、PR-2（port の型と、renderer・main の 2 実装。動作は変わらない加算）、PR-3（core の読む道具 4 本・検索の判定の削除、golden と試験の反転、`isEventHiddenFromAi` などの削除）。分け方の根拠は、範囲の調査（file:line つき。read-only）：renderer と core が `electron/shared/readDomain/features/chronicle/` の純関数を共有するので、純関数は先の PR に置き、関数の削除は最後の PR に置く。**起案の「port は `getHiddenCodexIds(projectId, sceneId, entryIds)`」は採らない**：Mastra の DR-MP4-39f が `listHiddenCodexIds(projectId, ids)`（場面は引数に取らず、呼び出し時に ctx の現在地から読む）と決めている（PR-2・PR-3 で使う）。`codex_entry_phases` の allowlist は PR-8a が足し済みで、この lane は変更しない。
+
+### DR-CSR-6　自動のまとめ：出来事の秘匿の判定を外し、hidden の人物を入力の段で除く（N1・N8 (a)）
+
+- `assembleChronicleSnapshotText`（`chronicleSnapshot.ts`）から、`projectVisibleChronicle`（出来事の `secret` を、現在の場面の読む順で隠す判定）の呼び出しを外した。secret の出来事も、まとめに出る。`projectVisibleChronicle`・`isEventHiddenFromAi`・`chronicleSecrecy.ts` の関数は、core がまだ使うので、PR-3 まで消さない。
+- **hidden の人物は、選ぶ前の入力から除く**（選んだ後に消すと、hidden が枠を取ったまま消える）。新しい純関数 `chronicleHiddenCodex.ts`：候補（出来事の主な人物・場所、参加者、名前の表の key、シーンの人物、@mention）を集め、`listCodexIdsHiddenFromAi({ entryIds, projectId, sceneId })`（今の場面で Phase を解決する。DB に無い id も hidden に数える）の結果で、主な人物は **null にしたコピー**、参加者は行ごと除き、名前の表・シーンの人物・@mention から落とす。**出来事の `locationCodexId` は残す**（名前の表から落ちるので、名前は出ない。id を落とすと、より前の出来事の古い場所が「最後の所在」に戻る）。MCP の入力の段の除外（DR-CSR-3）と同じ形。
+- **fail-closed**：`listCodexIdsHiddenFromAi` が失敗したら、hidden を除けないまま渡さず、年表のまとめを出さない（`undefined`＝注入スキップ）。`debugLog.warn` で記録する。候補が空なら、判定を呼ばない。
+- 呼び出し元（`sceneContextSource.ts`）が渡す名前・シーンの人物・@mention は、既に閉じた項目を除いている。そこは変えない（二重に除いても害は無い）。
+
+### DR-CSR-7　書く道具の存在の確認（N1）
+
+`chronicleWriteTools.ts` の `visibleEventForWrite` は、現在の作品の出来事を id で探すだけにした（`secret`・読む順・scene events を読まない。`baseVersion` の供給は今のまま）。別の作品・存在しない id は「見つからない」のまま。secret の出来事を、更新・削除・場面との紐づけ・参加者の設定・関連の追加と削除で、id から扱える。
+
+### DR-CSR-8　reveal の位置で隠すライブ評価の決定的な部分を、新しい事実に直す
+
+`chronicleSecrecyEval.live.test.ts` の決定的な部分（key 不要・常時実行）は、「reveal シーンより前を書くとき、秘匿の出来事は年表に出ない」を固定していた。CSR/1 で、reveal の位置では隠さなくなる（確認 98・101・135）ので、「どちらにも出る」に直した。LLM のアーム（reveal 前は AI がネタバレを書けない、という比較）の前提は成り立たなくなった。「まだ明かされていない」の印（CPL/1 の W6。印の PR 群）が入った後に、評価を作り直す（ヘッダに明記した）。
+
+### 残る制限（PR-1）
+
+- 題・メモの文中に埋め込まれた hidden の人物の名前・id は、構造化された Codex id の除去の対象外（起案の残る制限）。
+- アプリ内の読む道具 4 本・検索・golden・`normalizeEventFailClosed` は、PR-3 まで、secret の出来事を隠したまま（アプリ内の読む道具と、自動のまとめ・書く道具で、一時的に見え方が違う）。公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
+
+### 検証（PR-1。2026-11-24。自分で実行した）
+
+- `tsc`・eslint・prettier（変えた 10 file）・`validate:architecture`：指摘なし。renderer の広域（`src/application/composition`・`src/features/chat/agent`・`src/features/chronicle`）：143 files・2,422 tests が通過（5 skipped は既存）。`electron/shared/readDomain`：16 files・573 tests が通過。
+- **変異**：組み立ての除去の素通し、fail-closed の無効化、純関数の参加者フィルタの除去、書く道具への secret の遮断の復活を、それぞれかけて、対応する試験が落ちることを確かめた。**このとき、組み立ての試験が、除去を素通しにしても通ってしまう（空虚）ことを見つけた**：fixture に場面の日付と人物が出る構造が無く、hidden の除去が無くても、名前がもともと出力に出なかった。「hidden が無ければ名前が出る」基準の assertion を足し、同じ入力で hidden ありのとき出ないことを確かめる形に直した。直した後は、素通しの変異で落ちる。
+- していない：実アプリでの確認、canonical Light selector・`verify:quality` のローカル実行（hosted の Quick に任せる）。
