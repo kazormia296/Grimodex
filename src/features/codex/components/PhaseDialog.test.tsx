@@ -288,7 +288,7 @@ describe("PhaseDialog: 起点の場面を失った Phase の編集（DR-MP4-46�
     expect(screen.getByRole("button", { name: /保存|Save/ })).toBeDisabled();
     expect(anchorSelect().value).toBe("");
     expect(screen.getByTestId("phase-dialog-anchor-missing")).toHaveTextContent(
-      "この Phase の起点の場面は見つかりません。場面を選び直してください。",
+      "この Phase の起点の場面は見つかりません。場面を選び直してください（アーカイブ中の場面なら、先にアーカイブを解除すると元の起点が使えます。ここで保存すると、元の起点は置き換わります）。",
     );
   });
 

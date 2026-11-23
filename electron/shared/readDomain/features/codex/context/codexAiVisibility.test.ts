@@ -7,6 +7,7 @@ import type { TreeNodeData } from "../../tree/types.js";
 import {
   closeResolvedCodexForUnresolvableScene,
   decideCodexAiVisibility,
+  isEntryClosedByOrphanedHidingPhase,
   isPhaseAnchorOrphaned,
   listEntryIdsClosedForAi,
   listEntryIdsClosedWhenSceneUnresolvable,
@@ -1164,6 +1165,118 @@ describe("a hiding Phase that lost its anchor (DR-MP4-46)", () => {
           );
         }
       }
+    });
+  });
+
+  describe("isEntryClosedByOrphanedHidingPhase", () => {
+    const sets: Array<[string, CodexEntryPhase[]]> = [
+      ["only an orphaned hiding Phase", [phase("o", "e", null, hide)]],
+      [
+        "orphaned hiding + a placeable always",
+        [
+          phase("o", "e", null, hide),
+          phase("a", "e", "s2", { contextModeOverride: "always" }),
+        ],
+      ],
+      [
+        "orphaned hiding + placeable mentioned and suppress",
+        [
+          phase("o", "e", "deleted-scene", hide),
+          phase("m", "e", "s1", { contextModeOverride: "mentioned" }),
+          phase("s", "e", "s3", { contextModeOverride: "suppress" }),
+        ],
+      ],
+      [
+        "orphaned hiding + a placeable hiding Phase",
+        [phase("o", "e", null, hide), phase("h", "e", "s2", hide)],
+      ],
+      [
+        "orphaned hiding + a placeable text-only Phase",
+        [
+          phase("o", "e", null, hide),
+          phase("t", "e", "s1", { summaryOverride: "x" }),
+        ],
+      ],
+      [
+        "orphaned hiding + an always Phase that is itself orphaned",
+        [
+          phase("o", "e", null, hide),
+          phase("a", "e", "gone", { contextModeOverride: "always" }),
+        ],
+      ],
+      [
+        "orphaned unknown mode + a placeable always",
+        [
+          phase("o", "e", "s-arch", { contextModeOverride: "not-a-mode" }),
+          phase("a", "e", "s1", { contextModeOverride: "always" }),
+        ],
+      ],
+      [
+        "no orphaned hiding Phase, a placeable always",
+        [phase("a", "e", "s2", { contextModeOverride: "always" })],
+      ],
+      ["no Phase", []],
+    ];
+    const BASES = ["mentioned", "hidden", "not-a-mode"] as const;
+
+    for (const base of BASES) {
+      for (const [name, phases] of sets) {
+        // It is true exactly when the orphaned Phase is what closes the entry: there is one,
+        // and without them (the rule off: they are removed) the entry would be visible in some scene.
+        it(`base ${base}: ${name}`, () => {
+          const orphaned = listOrphanedHidingPhases(phases, index);
+          const withoutOrphans = phases.filter(
+            (p) => !orphaned.some((o) => o.id === p.id),
+          );
+          const visibleWithoutRule = ["s1", "s2", "s3"].some(
+            (sceneId) =>
+              !decide({
+                entries: [entry("e", base)],
+                phases: withoutOrphans,
+                sceneId,
+                nodes: NODES,
+              }).hidden.has("e"),
+          );
+          const closedWithRule = ["s1", "s2", "s3"].every((sceneId) =>
+            decide({
+              entries: [entry("e", base)],
+              phases,
+              sceneId,
+              nodes: NODES,
+            }).hidden.has("e"),
+          );
+          const result = isEntryClosedByOrphanedHidingPhase({
+            entryContextMode: base,
+            phases,
+            index,
+          });
+          expect(result).toBe(orphaned.length > 0 && visibleWithoutRule);
+          if (orphaned.length > 0) expect(closedWithRule).toBe(true);
+        });
+      }
+    }
+
+    it("a hidden base with a placeable public Phase and an orphaned hiding Phase is closed by the orphan rule", () => {
+      const phases = [
+        phase("o", "e", null, hide),
+        phase("a", "e", "s2", { contextModeOverride: "always" }),
+      ];
+      expect(
+        isEntryClosedByOrphanedHidingPhase({
+          entryContextMode: "hidden",
+          phases,
+          index,
+        }),
+      ).toBe(true);
+      // without the orphaned Phase the always Phase releases it at s2
+      expect(
+        decide({
+          entries: [entry("e", "hidden")],
+          phases: [phases[1]],
+          sceneId: "s2",
+          nodes: NODES,
+        }).hidden.has("e"),
+      ).toBe(false);
     });
   });
 

@@ -722,4 +722,15 @@ describe("DetailsTab: 起点を失った「AI に見せない」Phase のお知�
       screen.queryByTestId("orphaned-hiding-phase-notice-details"),
     ).not.toBeInTheDocument();
   });
+
+  it("Codex 自身が hidden でも、有効な場面に公開（always）の Phase があれば、孤児の hidden の Phase がそれを止めているのでお知らせが出る", () => {
+    setPhases(
+      { ...phase, id: "phase-open", contextModeOverride: "always" },
+      { ...orphan },
+    );
+    renderTab({}, { ...entry, contextMode: "hidden" });
+    expect(
+      screen.getByTestId("orphaned-hiding-phase-notice-details"),
+    ).toHaveTextContent("「正体の露見」");
+  });
 });

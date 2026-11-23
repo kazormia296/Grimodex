@@ -59,4 +59,13 @@ describe("getOrphanedHidingPhaseDisplay", () => {
     expect(d.warned).toEqual([]);
     expect(d.orphaned.map((p) => p.id)).toEqual(["o"]);
   });
+
+  it("warns when the entry is hidden at base but a placeable public Phase could release it (the orphaned Phase is what closes it)", () => {
+    const d = getOrphanedHidingPhaseDisplay({
+      entryContextMode: "hidden",
+      phases: [phase("o", null, "hidden"), phase("open", "s1", "always")],
+      index,
+    });
+    expect(d.warned.map((p) => p.id)).toEqual(["o"]);
+  });
 });

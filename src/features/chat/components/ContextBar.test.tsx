@@ -790,7 +790,7 @@ describe("ContextBar グループ化", () => {
         "context-decision-policy-hidden-hint",
       );
       expect(hint).toHaveTextContent(
-        "AI に渡らない Codex は、Codex 自身が『AI に見せない』設定のもの、起点の場面を失った『AI に見せない』Phase を持つもの、場面を解決できない間に閉じているものがあります。Codex の『タイムライン』タブで確認できます。",
+        "AI に渡らない Codex は、Codex 自身が『AI に見せない』設定のもの、起点の場面を失った『AI に見せない』Phase を持つもの、場面を解決できない間に閉じているものがあります。起点を失った Phase は、Codex の『タイムライン』タブで確認できます。",
       );
     });
 

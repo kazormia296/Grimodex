@@ -257,6 +257,38 @@ export function listOrphanedHidingPhases(
 }
 
 /**
+ * Whether the orphaned hiding Phases (`listOrphanedHidingPhases`) are what keeps the
+ * entry from the AI, which is what a screen may say "because of this Phase". False
+ * when the entry stays closed without them: its base mode is hidden (or unknown)
+ * and no Phase the resolver can place carries a mode that is not hidden, so
+ * nothing could release it. `decideCodexAiVisibility` closes an entry that has an
+ * orphaned hiding Phase before it looks at a release (`closedIds` first, then
+ * `isReleased`), so a hidden base with a placeable public Phase (always, mentioned,
+ * suppress) IS closed by the orphan rule: this returns true for it. Conservative on
+ * one side: a placeable public Phase that a later placeable hiding Phase on the same
+ * anchor shadows still counts as one that could release.
+ */
+export function isEntryClosedByOrphanedHidingPhase(input: {
+  readonly entryContextMode: string;
+  readonly phases: readonly Pick<
+    CodexEntryPhase,
+    "id" | "label" | "anchorNodeId" | "contextModeOverride"
+  >[];
+  readonly index: SceneTimeIndex;
+}): boolean {
+  if (listOrphanedHidingPhases(input.phases, input.index).length === 0) {
+    return false;
+  }
+  if (!isCodexContextModeHiddenFromAi(input.entryContextMode)) return true;
+  return input.phases.some(
+    (phase) =>
+      !isPhaseAnchorOrphaned(phase, input.index) &&
+      phase.contextModeOverride !== null &&
+      !isCodexContextModeHiddenFromAi(phase.contextModeOverride),
+  );
+}
+
+/**
  * DR-MP4-46 (fail closed): the ids of the entries that have a Phase which hides
  * them (hidden, or an unknown mode) and whose anchor the resolver cannot place
  * (`listOrphanedHidingPhases`). That Phase is skipped, so even where the current

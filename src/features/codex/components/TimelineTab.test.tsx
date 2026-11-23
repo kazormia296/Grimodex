@@ -6,7 +6,10 @@ import type { CodexEntry } from "@/features/codex/api";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import { listEntryIdsWithOrphanedHiddenPhase } from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
+import {
+  decideCodexAiVisibility,
+  listEntryIdsWithOrphanedHiddenPhase,
+} from "@/../electron/shared/readDomain/features/codex/context/codexAiVisibility";
 
 function scene(
   id: string,
@@ -510,7 +513,7 @@ describe("TimelineTab", () => {
       );
       expect(banner).toHaveTextContent("「正体の露見」");
       expect(banner).toHaveTextContent(
-        "起点の場面を選び直すと、その場面から『AI に見せない』が適用されます。Phase を削除すると、基本の設定に戻ります。",
+        "起点の場面を選び直すと、その場面から『AI に見せない』が適用されます。Phase を削除すると、この Phase が無い状態に戻ります。",
       );
       // 閉じる・あとで・無視は付けない。
       expect(banner.querySelector("button")).toBeNull();
@@ -575,7 +578,7 @@ describe("TimelineTab", () => {
         "起点の場面が外れています（場面を戻しても自動では戻りません）。この Phase は適用されていません。",
       );
       expect(reasons[1]).toHaveTextContent(
-        "起点の場面が見つかりません（アーカイブ中の可能性があります）。この Phase は適用されていません。",
+        "起点の場面が見つかりません（アーカイブ中の可能性があります。アーカイブ中なら、解除すると起点の場面が戻ります）。この Phase は適用されていません。",
       );
       for (const r of reasons)
         expect(r).not.toHaveTextContent("AI に渡りません");
@@ -598,8 +601,8 @@ describe("TimelineTab", () => {
       expect(reasons).toEqual([
         "起点の場面が外れています（場面の削除など。場面を戻しても自動では戻りません）。『AI に見せない』設定のため、この Codex はアプリ内の AI に渡りません。",
         "起点の場面が外れています（場面を戻しても自動では戻りません）。この Phase は適用されていません。",
-        "起点の場面が見つかりません（アーカイブ中の可能性があります）。『AI に見せない』設定のため、この Codex はアプリ内の AI に渡りません。",
-        "起点の場面が見つかりません（アーカイブ中の可能性があります）。この Phase は適用されていません。",
+        "起点の場面が見つかりません（アーカイブ中の可能性があります。アーカイブ中なら、解除すると起点の場面が戻ります）。『AI に見せない』設定のため、この Codex はアプリ内の AI に渡りません。",
+        "起点の場面が見つかりません（アーカイブ中の可能性があります。アーカイブ中なら、解除すると起点の場面が戻ります）。この Phase は適用されていません。",
       ]);
       expect(
         screen.getAllByText(
@@ -643,16 +646,32 @@ describe("TimelineTab", () => {
       expect(screen.getByText("アンカーシーン未設定")).toBeInTheDocument();
     });
 
-    it("Codex 自身がすでに『AI に見せない』なら、Phase が理由でないので警告帯を出さない", async () => {
+    it("Codex 自身が『AI に見せない』で、解除しうる公開の Phase が無ければ、孤児の Phase が理由でないので警告帯を出さない", async () => {
       mockPhaseState.phasesByEntry = {
-        "entry-1": [makePhase("p1", "孤児", null)],
+        "entry-1": [
+          makePhase("p1", "孤児", null),
+          makePhase("p2", "有効な hidden", "scene-1"),
+        ],
       };
       render(<TimelineTab entry={{ ...mockEntry, contextMode: "hidden" }} />);
       await screen.findByText("孤児");
       expect(screen.queryByTestId(BANNER)).not.toBeInTheDocument();
     });
 
-    it("警告帯の有無は AI から閉じる規則（listEntryIdsWithOrphanedHiddenPhase）と常に一致する", async () => {
+    it("Codex 自身が『AI に見せない』でも、有効な場面に公開（always）の Phase があれば、孤児の hidden の Phase がそれを止めているので警告帯を出し、『AI 露出: n』バッジは出さない", async () => {
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [
+          makePhase("p1", "公開", "scene-1", "always"),
+          makePhase("p2", "孤児", null),
+        ],
+      };
+      render(<TimelineTab entry={{ ...mockEntry, contextMode: "hidden" }} />);
+      const banner = await screen.findByTestId(BANNER);
+      expect(banner).toHaveTextContent("「孤児」");
+      expect(screen.queryByTestId("phase-exposure-ai")).not.toBeInTheDocument();
+    });
+
+    it("警告帯の有無は、Codex の base が公開のとき、AI から閉じる規則（listEntryIdsWithOrphanedHiddenPhase）が項目を名指すかと一致する（8 通りの Phase の組）", async () => {
       const cases: Array<[string, CodexEntryPhase[]]> = [
         ["null×hidden", [makePhase("a", "a", null, "hidden")]],
         ["null×不明な mode", [makePhase("a", "a", null, "wat")]],
@@ -679,6 +698,94 @@ describe("TimelineTab", () => {
         }).has("entry-1");
         expect(screen.queryByTestId(BANNER) !== null, name).toBe(closed);
         unmount();
+      }
+    });
+
+    it("警告帯の有無は、base が公開でも hidden でも、実際の decideCodexAiVisibility で『孤児の hidden の Phase が閉じている（外せば見える場面がある）』かと一致する", async () => {
+      const cases: Array<[string, CodexEntryPhase[]]> = [
+        ["孤児だけ", [makePhase("o", "o", null, "hidden")]],
+        [
+          "孤児＋有効な always",
+          [
+            makePhase("o", "o", null, "hidden"),
+            makePhase("a", "a", "scene-2", "always"),
+          ],
+        ],
+        [
+          "孤児＋有効な suppress",
+          [
+            makePhase("o", "o", "gone", "hidden"),
+            makePhase("a", "a", "scene-1", "suppress"),
+          ],
+        ],
+        [
+          "孤児＋有効な hidden",
+          [
+            makePhase("o", "o", null, "hidden"),
+            makePhase("a", "a", "scene-2", "hidden"),
+          ],
+        ],
+        [
+          "孤児＋それ自身も孤児の always",
+          [
+            makePhase("o", "o", null, "hidden"),
+            makePhase("a", "a", "gone", "always"),
+          ],
+        ],
+        ["孤児の always だけ", [makePhase("a", "a", null, "always")]],
+        ["有効な always だけ", [makePhase("a", "a", "scene-1", "always")]],
+      ];
+      const scenes = ["scene-1", "scene-2", "scene-3"];
+      const decide = (contextMode: string, phases: CodexEntryPhase[]) =>
+        scenes.map((sceneId) =>
+          decideCodexAiVisibility({
+            entries: [
+              { id: "entry-1", summary: "s", content: "{}", contextMode },
+            ],
+            phases,
+            sceneId,
+            sceneTimeIndex: mockPhaseState.sceneTimeIndex,
+            resolutionMode: { kind: "resolved", mode: "auto" },
+          }).hidden.has("entry-1"),
+        );
+      for (const base of ["mentioned", "hidden"]) {
+        for (const [name, phases] of cases) {
+          const orphanIds = new Set(
+            listEntryIdsWithOrphanedHiddenPhase({
+              sceneTimeIndex: mockPhaseState.sceneTimeIndex,
+              phasesByEntry: new Map([["entry-1", phases]]),
+            }).has("entry-1")
+              ? phases
+                  .filter(
+                    (p) =>
+                      p.contextModeOverride === "hidden" &&
+                      !mockPhaseState.sceneTimeIndex.readingOrder.has(
+                        p.anchorNodeId ?? "",
+                      ),
+                  )
+                  .map((p) => p.id)
+              : [],
+          );
+          const withRule = decide(base, phases);
+          const withoutRule = decide(
+            base,
+            phases.filter((p) => !orphanIds.has(p.id)),
+          );
+          const expectBanner =
+            orphanIds.size > 0 &&
+            withRule.every(Boolean) &&
+            withoutRule.some((hidden) => !hidden);
+          mockPhaseState.phasesByEntry = { "entry-1": phases };
+          const { unmount } = render(
+            <TimelineTab entry={{ ...mockEntry, contextMode: base }} />,
+          );
+          await screen.findByText(phases[0].label);
+          expect(
+            screen.queryByTestId(BANNER) !== null,
+            `${base}: ${name}`,
+          ).toBe(expectBanner);
+          unmount();
+        }
       }
     });
 
