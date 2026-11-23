@@ -1122,7 +1122,13 @@ fn a_replay_journal_of_another_project_creates_nothing() {
     foreign["projectId"] = json!("undo-p2");
     foreign["parentId"] = Value::Null;
     let before = row_counts(&tree.db);
-    create_wire(&tree.db, foreign).expect_err("journal belongs to another project");
+    let error = create_wire(&tree.db, foreign).expect_err("journal belongs to another project");
+    // Refused by the lineage check (the forward transaction is not in that project),
+    // before the binding is looked at.
+    assert!(
+        error.to_string().contains("not in the active project"),
+        "{error}"
+    );
     assert_eq!(row_counts(&tree.db), before);
     assert!(row(&tree.db, "scene-a1").is_none());
 }
@@ -1310,6 +1316,15 @@ fn undo_of_a_folder_subtree_returns_every_node_as_it_was() {
         2
     );
     assert_eq!(count(&tree.db, "SELECT COUNT(*) FROM tree_nodes_fts"), 5);
+    // 復元した場面の束縛は、履歴の再生なので既定を受け継がず `unknown`（UnknownRepairOrRestore）で作られる。
+    assert_eq!(
+        count(
+            &tree.db,
+            "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+              WHERE scene_id IN ('scene-a1', 'scene-b1') AND compatibility_marker = 'unknown'"
+        ),
+        2
+    );
     // undo の create は journal を増やさず、node ごとに forward の delete を指す undo の
     // transaction が 1 件ずつ付く。
     assert_eq!(

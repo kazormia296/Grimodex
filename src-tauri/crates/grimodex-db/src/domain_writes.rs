@@ -9813,7 +9813,8 @@ mod tests {
             Some(json!({"rootId": root, "nodes": nodes}).to_string())
         };
         // (label, before_json, project of the lookup, root asked for, id asked for, expected)
-        let cases: Vec<(&str, Option<String>, &str, &str, &str, bool)> = vec![
+        type Case<'a> = (&'a str, Option<String>, &'a str, &'a str, &'a str, bool);
+        let cases: Vec<Case> = vec![
             (
                 "a recorded node",
                 record("root", vec![node("root", "p1"), node("kid", "p1")]),

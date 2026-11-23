@@ -592,7 +592,7 @@ describe("DR-UND-1: the Undo of a delete restores the row (real router, real Nat
         ...captured.get("undo-ch2-scene")!,
         receipt,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/parent/);
     expect(
       await w.rows("SELECT id FROM tree_nodes WHERE id LIKE 'undo-ch2-%'"),
     ).toEqual([]);
