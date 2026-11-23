@@ -5564,7 +5564,8 @@
       "novelty": "Novelty",
       "noveltyStandard": "Standard",
       "noveltyNovel": "Novel",
-      "noveltyBold": "Bold"
+      "noveltyBold": "Bold",
+      "notSentToAi": "Not sent to the AI"
     },
     "nodeType": {
       "scene": "Scene",
