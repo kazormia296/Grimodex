@@ -171,7 +171,7 @@ AI 経路と画面が「場面の前後」をどこから取るかには、**4 �
 
 1. **読む位置の正本**：上の節。
 2. **AI 向けの読み取り口をデータの種類ごとに 1 つ**：Codex＝`resolveCodexContextExposure`（`src/features/codex/context/codexVisibilityPolicy.ts:38`、棚卸し）、年表＝`projectVisibleChronicle`（`src/features/chronicle/chronicleSnapshot.ts:400`、棚卸し）、伏線＝`listOpenForeshadowsForContext`（`src/features/foreshadow/api.ts:644`、棚卸し）、場面本文・あらすじ＝位置の正本の上、recall の位置ラベル。迂回している読取（agent tool、MCP、beat／inline）をここへ寄せ、AI 経路の module が生の API を import しないことを architecture の検査で落とす。
-   - PR #981（merge 済み）は、agent tool の Codex 系、MCP、beat／inline、伏線の提案と章の監査（`detectRelatedCodex`）を、hidden について正本の判定（TS は Phase 解決後の `canIncludeResolvedCodexContext(mode, "explicit-pin")`、MCP は base の `context_mode = 'hidden'`）に寄せる。ここでの「寄せる」は hidden だけで、suppress・mentioned・Phase による絞り込みは足さない（全部開示の方針のため）。
+   - PR #981（merge 済み）は、agent tool の Codex 系、MCP、beat／inline、地図の AI Branch（地図は base の mode だけだった。下の訂正）、伏線の提案と章の監査（`detectRelatedCodex`）を、hidden について正本の判定（TS は Phase 解決後の `canIncludeResolvedCodexContext(mode, "explicit-pin")`、MCP は base の `context_mode = 'hidden'`）に寄せる。ここでの「寄せる」は hidden だけで、suppress・mentioned・Phase による絞り込みは足さない（全部開示の方針のため）。
    - `detectRelatedCodex`（`foreshadow/api.ts:1357-1363`）の迂回も、#981 の対象に入っている。
    - 地図の AI Branch（種・Spotlight）：#981 の記述は事実と違い、実装は Phase を解決せず base の mode だけで判定していた（訂正。方針・閾値・送信先は変えない）。DR-MP4-43 で、送信の直前に DB で、base が hidden またはどれかの Phase で hidden の Codex を除く（地図は場面を持たないので広く隠す側）。判定に失敗したら送らない。
    - 読み取り口へ寄せる残りの作業（architecture の検査、生 API の import 禁止）は、#981 の後に移行の段 2 で行う。

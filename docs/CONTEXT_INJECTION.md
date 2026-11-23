@@ -111,7 +111,7 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 - 帰属（Attribution）スパン
 - ゴミ箱の内容
 - 他チャットセッションのタイトル
-- effective `hidden` の summary / content（注入だけでなく、chat の agent tool の Codex 読み出し、beat・インライン AI の Codex 要約、MCP の Codex 読み出しにも同じく渡さない。agent tool と MCP で hidden の id を指定した応答は、存在しない id と同じ「見つからない」。地図の AI Branch の種・Spotlight は、場面を持たないので、base が hidden、またはどれかの Phase で hidden のものを除く〔Phase が解除するものも送らない。判定に失敗したら送らない〕。地図以外では、base が hidden でも現在の場面の Phase が解除したものは、base の文でなく Phase 解決後の summary・content を返す）
+- effective `hidden` の summary / content（注入だけでなく、chat の agent tool の Codex 読み出し、beat・インライン AI の Codex 要約、MCP の Codex 読み出しにも同じく渡さない。agent tool と MCP で hidden の id を指定した応答は、存在しない id と同じ「見つからない」。地図の AI Branch の種・Spotlight は、場面を持たないので、base が hidden、またはどれかの Phase で hidden のものを除く〔Phase が解除するものも送らない。判定に失敗したら送らない。確認ダイアログでは、送られない Codex の種の chip に「AI には送られません」の注記を出す〕。地図以外では、base が hidden でも現在の場面の Phase が解除したものは、base の文でなく Phase 解決後の summary・content を返す）
 - effective `suppress` の自動注入（Spotlight / Codex スコープ、または `Pin with children` 直下子の明示選択時だけ許可）
 
 ---
