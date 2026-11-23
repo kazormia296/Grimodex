@@ -6070,9 +6070,9 @@ pub struct AgentEventCreatePayload {
     pub end_granularity: Option<String>,
     pub precision: Option<String>,
     pub kind: Option<String>,
-    /// AI 秘匿（reveal アンカー方式）。省略時 false=表示。
+    /// Stored event flag; it does not gate MCP reads or MCP/Native write-by-id access.
     pub secret: Option<bool>,
-    /// 読む順の開示アンカー（明示上書き・空/None=自動導出 or 恒久秘匿）。
+    /// Reading-order disclosure anchor (explicit override).
     pub reveal_scene_id: Option<String>,
     pub participant_codex_ids: Option<Vec<String>>,
     pub scene_ids: Option<Vec<String>>,
@@ -6108,7 +6108,7 @@ pub struct AgentEventUpdatePayload {
     pub end_granularity: Option<String>,
     pub precision: Option<String>,
     pub kind: Option<String>,
-    /// AI 秘匿（reveal アンカー方式）。set-if-present。
+    /// Stored event flag; it does not gate MCP reads or MCP/Native write-by-id access.
     pub secret: Option<bool>,
     /// 読む順の開示アンカー（set-if-present・空文字は NULL=自動導出へ戻す）。
     pub reveal_scene_id: Option<String>,
@@ -7698,10 +7698,8 @@ fn ensure_scene_in_project(
     Ok(())
 }
 
-/// MCP has no current-scene disclosure context. Its write-by-id tools must
-/// therefore treat secret Chronicle events exactly like missing or
-/// cross-project rows. Keep this check inside the Native transaction so a
-/// concurrent disclosure-state change cannot race the tool-layer preflight.
+/// Keep the MCP project-scope check inside the Native transaction so a
+/// concurrent row change cannot race the tool-layer preflight.
 fn ensure_event_writable_for_surface(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -7712,8 +7710,7 @@ fn ensure_event_writable_for_surface(
         return Ok(());
     }
     let visible: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events
-          WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
         rusqlite::params![event_id, project_id],
         |row| row.get(0),
     )?;
@@ -8920,6 +8917,29 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     base_version
                 );
             }
+            // AI は、hidden を抜いた参加者の一覧を受け取り、それに足して返す。置き換えで、AI に
+            // 見えていない base が hidden の参加者（役割つき）が黙って消えないよう、残す。
+            // 作者自身の操作（surface = manual〔画面の手動編集〕・import）は、hidden の参加者も含めて
+            // 要求のとおりに置き換える（残すと、作者が hidden の参加者を外せない）。AI の surface
+            // （in-app-agent・mcp・省略時の旧経路の互換）と、未知の surface は、hidden を守る側に倒す。
+            let retains_hidden_participants =
+                !matches!(payload.surface.as_deref(), Some("manual" | "import"));
+            let hidden_participants = if retains_hidden_participants {
+                let mut statement = conn.prepare(
+                    "SELECT ep.codex_entry_id, ep.role
+                     FROM event_participants ep
+                     JOIN codex_entries c ON c.id = ep.codex_entry_id
+                     WHERE ep.event_id = ?1 AND c.project_id = ?2
+                       AND c.context_mode = 'hidden'",
+                )?;
+                let rows = statement.query_map(
+                    rusqlite::params![payload.event_id, payload.project_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            };
             conn.execute(
                 "DELETE FROM event_participants WHERE event_id = ?1",
                 rusqlite::params![payload.event_id],
@@ -8936,7 +8956,7 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                 // could be linked to a P2 codex entry. Bail rolls back the tx.
                 ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
             }
-            let participant_rows: Vec<(&str, Option<&str>)> = payload
+            let mut participant_rows: Vec<(&str, Option<&str>)> = payload
                 .codex_entry_ids
                 .iter()
                 .enumerate()
@@ -8951,6 +8971,11 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     )
                 })
                 .collect();
+            for (codex_id, role) in &hidden_participants {
+                if !payload.codex_entry_ids.contains(codex_id) {
+                    participant_rows.push((codex_id, role.as_deref()));
+                }
+            }
             batch_insert_event_participants(conn, &payload.event_id, &participant_rows)?;
 
             let after = collect_participants_json(conn, &payload.event_id)?.to_string();
@@ -8982,6 +9007,7 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                 entity_id: Some(payload.event_id.clone()),
                 payload: json!({
                     "eventId": payload.event_id,
+                    // 要求のまま（残した hidden の参加者の id は、change event・feed に出さない）。
                     "codexEntryIds": payload.codex_entry_ids,
                 })
                 .to_string(),
@@ -14261,38 +14287,75 @@ mod tests {
     }
 
     #[test]
-    fn mcp_event_writer_rechecks_secret_visibility_inside_native_transaction() {
+    fn mcp_event_writer_allows_secret_events_inside_native_transaction() {
         let db = test_db();
         let project_id = insert_project(&db);
-        let (event_id, _) = create_event(&db, &project_id, "secret", vec![], vec![]);
-        db.execute(
-            "UPDATE events SET secret = 1 WHERE id = ? AND project_id = ?",
-            &[
-                Value::String(event_id.clone()),
-                Value::String(project_id.clone()),
-            ],
-            "run",
+        let created = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                request_id: "mcp-secret-event-create".to_string(),
+                event_id: None,
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("mcp".to_string()),
+                title: Some("secret".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: Some(true),
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
         )
-        .expect("hide event");
-        let change_count = table_count(&db, "change_events");
-        let feed_count = table_count(&db, "narrative_change_transactions");
-        let journal_count = table_count(&db, "undo_journal");
-
+        .expect("create a secret event through the existing MCP writer");
+        let event_id = created["entityId"].as_str().expect("entity id").to_string();
+        db.with_conn(|conn| {
+            let updated = conn.execute(
+                "UPDATE narrative_field_authority
+                    SET owner_kind = 'ai', explicit_lock = 0, updated_at = 'fixture'
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id = ?2 AND field_path = '/title'",
+                rusqlite::params![project_id, event_id],
+            )?;
+            assert_eq!(updated, 1, "the created event has one title authority row");
+            Ok(())
+        })
+        .expect("authorize the title update for this AI-write fixture");
         let mut update = empty_update(&project_id, &event_id);
         update.surface = Some("mcp".to_string());
-        update.title = Some("must not apply".to_string());
-        let error =
-            agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
-                .expect_err("MCP cannot mutate a secret event");
-
-        assert!(error.to_string().contains("not found in project"));
-        assert_eq!(event_title(&db, &event_id).as_deref(), Some("secret"));
-        assert_eq!(table_count(&db, "change_events"), change_count);
+        update.title = Some("updated secret".to_string());
+        agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
+            .expect("MCP can update a secret event");
         assert_eq!(
-            table_count(&db, "narrative_change_transactions"),
-            feed_count
+            event_title(&db, &event_id).as_deref(),
+            Some("updated secret")
         );
-        assert_eq!(table_count(&db, "undo_journal"), journal_count);
+
+        agent_event_delete_with_request_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("mcp".to_string()),
+                event_id: event_id.clone(),
+                base_version: event_version(&db, &event_id),
+            },
+            Some("mcp-secret-event-delete"),
+        )
+        .expect("MCP can delete a secret event");
+        assert_eq!(table_count(&db, "events"), 0);
     }
 
     #[test]
@@ -15612,6 +15675,320 @@ mod tests {
         assert!(participant_has(&db, &event_id, &codex_a));
         assert!(!participant_has(&db, &event_id, &codex_b));
         assert_eq!(event_version(&db, &event_id), 2);
+    }
+
+    #[test]
+    fn event_participants_preserve_base_hidden_for_both_agent_surfaces_and_journal() {
+        for surface in ["in-app-agent", "mcp"] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let codex_a = insert_codex(&db, &project_id, "A");
+            let codex_b = insert_codex(&db, &project_id, "B");
+            let hidden = insert_codex(&db, &project_id, "Hidden");
+            let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = ?1 WHERE id = ?2",
+                    rusqlite::params!["hidden", hidden],
+                )?;
+                Ok(())
+            })
+            .expect("set base hidden mode");
+
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: Some(surface.to_string()),
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                    codex_entry_ids: vec![codex_a.clone(), hidden.clone()],
+                    participant_roles: Some(vec![None, Some("ally".to_string())]),
+                },
+            )
+            .expect("seed participants through the writer");
+
+            let request_id = format!("set-hidden-{surface}");
+            let result = agent_event_set_participants_with_request_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: Some(surface.to_string()),
+                    event_id: event_id.clone(),
+                    base_version: 2,
+                    codex_entry_ids: vec![codex_b.clone()],
+                    participant_roles: None,
+                },
+                Some(&request_id),
+            )
+            .expect("replace participants");
+
+            assert_eq!(participant_count(&db, &event_id), 2, "surface {surface}");
+            assert!(
+                !participant_has(&db, &event_id, &codex_a),
+                "surface {surface}"
+            );
+            assert!(
+                participant_has(&db, &event_id, &codex_b),
+                "surface {surface}"
+            );
+            assert!(
+                participant_has(&db, &event_id, &hidden),
+                "surface {surface}"
+            );
+            assert_eq!(
+                participant_role(&db, &event_id, &hidden).as_deref(),
+                Some("ally"),
+                "surface {surface}"
+            );
+            assert!(
+                !result.to_string().contains(&hidden),
+                "the write result must not expose the hidden id"
+            );
+
+            let journal_id = result["undoJournalId"]
+                .as_str()
+                .expect("undo journal id")
+                .to_string();
+            let (before, after): (String, String) = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT before_json, after_json FROM undo_journal WHERE id = ?1",
+                        rusqlite::params![journal_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                })
+                .expect("read undo journal");
+            let before: Value = serde_json::from_str(&before).expect("before snapshot");
+            let after: Value = serde_json::from_str(&after).expect("after snapshot");
+            for (snapshot, expected_ids) in [
+                (&before, [&codex_a, &hidden]),
+                (&after, [&codex_b, &hidden]),
+            ] {
+                let participants = snapshot["participants"]
+                    .as_array()
+                    .expect("participant snapshot");
+                assert_eq!(participants.len(), 2, "surface {surface}");
+                for expected_id in expected_ids {
+                    assert!(participants
+                        .iter()
+                        .any(|participant| participant["codexEntryId"].as_str()
+                            == Some(expected_id.as_str())));
+                }
+            }
+            assert!(after["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|participant| {
+                    participant["codexEntryId"].as_str() == Some(hidden.as_str())
+                        && participant["role"].as_str() == Some("ally")
+                }));
+        }
+    }
+
+    #[test]
+    fn event_participants_request_role_overrides_hidden_role() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let hidden = insert_codex(&db, &project_id, "Hidden");
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = ?1 WHERE id = ?2",
+                rusqlite::params!["hidden", hidden],
+            )?;
+            Ok(())
+        })
+        .expect("set base hidden mode");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 1,
+                codex_entry_ids: vec![hidden.clone()],
+                participant_roles: Some(vec![Some("ally".to_string())]),
+            },
+        )
+        .expect("seed base hidden participant through the writer");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id,
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 2,
+                codex_entry_ids: vec![hidden.clone()],
+                participant_roles: Some(vec![Some("enemy".to_string())]),
+            },
+        )
+        .expect("replace hidden participant role");
+
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert_eq!(
+            participant_role(&db, &event_id, &hidden).as_deref(),
+            Some("enemy")
+        );
+    }
+
+    /// 作者自身の操作（画面の手動編集 = manual、import）は、hidden の参加者も含めて、要求のとおりに
+    /// 置き換える（残すと、作者が hidden の参加者を外せない）。省略時（旧経路の in-app-agent 互換）は
+    /// AI の書き込みとして、hidden の参加者を残す。
+    #[test]
+    fn event_participants_author_surfaces_replace_exactly_and_default_surface_preserves() {
+        for (surface, hidden_remains) in [
+            (Some("manual"), false),
+            (Some("import"), false),
+            (None, true),
+        ] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let codex_a = insert_codex(&db, &project_id, "A");
+            let codex_b = insert_codex(&db, &project_id, "B");
+            let hidden = insert_codex(&db, &project_id, "Hidden");
+            let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = ?1",
+                    rusqlite::params![hidden],
+                )?;
+                Ok(())
+            })
+            .expect("set base hidden mode");
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: Some("in-app-agent".to_string()),
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                    codex_entry_ids: vec![codex_a.clone(), hidden.clone()],
+                    participant_roles: Some(vec![None, Some("ally".to_string())]),
+                },
+            )
+            .expect("seed participants through the writer");
+
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: surface.map(str::to_string),
+                    event_id: event_id.clone(),
+                    base_version: 2,
+                    codex_entry_ids: vec![codex_b.clone()],
+                    participant_roles: None,
+                },
+            )
+            .expect("replace participants");
+
+            assert!(
+                participant_has(&db, &event_id, &codex_b),
+                "surface {surface:?}"
+            );
+            assert!(
+                !participant_has(&db, &event_id, &codex_a),
+                "surface {surface:?}"
+            );
+            assert_eq!(
+                participant_has(&db, &event_id, &hidden),
+                hidden_remains,
+                "surface {surface:?}: the author's own edit must be able to remove a hidden participant; \
+                 the default (AI-compatible) surface must keep it"
+            );
+            assert_eq!(
+                participant_count(&db, &event_id),
+                if hidden_remains { 2 } else { 1 },
+                "surface {surface:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_participants_do_not_preserve_phase_only_hidden_entries() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let phase_hidden = insert_codex(&db, &project_id, "Phase hidden");
+        let requested = insert_codex(&db, &project_id, "Requested");
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = 'mentioned' WHERE id = ?1",
+                rusqlite::params![phase_hidden],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+                 VALUES ('phase-hidden', ?1, 'Hidden phase', 'hidden')",
+                rusqlite::params![phase_hidden],
+            )?;
+            Ok(())
+        })
+        .expect("seed phase-only hidden mode");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 1,
+                codex_entry_ids: vec![phase_hidden.clone()],
+                participant_roles: Some(vec![Some("ally".to_string())]),
+            },
+        )
+        .expect("seed phase-only hidden participant through the writer");
+
+        agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id,
+                session_id: "sess".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: 2,
+                codex_entry_ids: vec![requested.clone()],
+                participant_roles: None,
+            },
+        )
+        .expect("replace participants");
+
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert!(participant_has(&db, &event_id, &requested));
+        assert!(!participant_has(&db, &event_id, &phase_hidden));
+    }
+
+    #[test]
+    fn event_participants_schema_rejects_missing_codex_foreign_key() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+        db.with_conn(|conn| {
+            let foreign_keys: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+            assert_eq!(foreign_keys, 1, "test_db must enforce schema foreign keys");
+            let error = conn
+                .execute(
+                    "INSERT INTO event_participants (event_id, codex_entry_id)
+                     VALUES (?1, 'missing-codex-entry')",
+                    rusqlite::params![event_id],
+                )
+                .expect_err("missing codex entry must violate the foreign key");
+            assert!(
+                error.to_string().contains("FOREIGN KEY constraint failed"),
+                "{error}"
+            );
+            Ok(())
+        })
+        .expect("verify event_participants foreign key");
     }
 
     #[test]

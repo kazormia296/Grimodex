@@ -8,6 +8,7 @@ use grimodex_core::chronicle_time::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 
 // ─── Schema types ────────────────────────────────────────────────────────────
@@ -2078,14 +2079,12 @@ pub fn chronicle_list_events(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<ChronicleEventRow>> {
-    // AI 秘匿(fail-closed): MCP は現在シーン(読む順)を持てないため secret=1 を一律除外。
-    // 全 read ツール(list/detail/timeline/state)はこの list を唯一のソースにするので、
-    // ここで除外すれば全経路が塞がる(伏線 list_open_foreshadows と同型)。
+    // The shared source for all Chronicle read tools; scope rows to the active project.
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
                 start_time, end_time, start_minute, end_minute,
                 start_granularity, end_granularity, precision, kind, version
-         FROM events WHERE project_id = ?1 AND secret = 0
+         FROM events WHERE project_id = ?1
          ORDER BY ordinal ASC, id ASC",
     )?;
     let rows = stmt
@@ -2095,10 +2094,28 @@ pub fn chronicle_list_events(
     Ok(rows)
 }
 
+/// Codex entries the Chronicle tools must omit, scoped to the active project.
+pub fn chronicle_hidden_codex_ids(conn: &Connection, project_id: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id FROM codex_entries e
+         WHERE e.project_id = ?1
+           AND (e.context_mode = 'hidden' OR EXISTS (
+               SELECT 1 FROM codex_entry_phases p
+               WHERE p.entry_id = e.id AND p.context_mode_override = 'hidden'
+           ))",
+    )?;
+    let ids = stmt
+        .query_map(params![project_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<HashSet<String>>>()
+        .context("chronicle_hidden_codex_ids failed")?;
+    Ok(ids)
+}
+
 /// Project-scoped participants (INNER JOIN events for project gate).
 pub fn chronicle_list_participants(
     conn: &Connection,
     project_id: &str,
+    hidden_codex_ids: &HashSet<String>,
 ) -> Result<Vec<ChronicleParticipant>> {
     let mut stmt = conn.prepare(
         "SELECT ep.event_id, ep.codex_entry_id, ep.role
@@ -2117,7 +2134,10 @@ pub fn chronicle_list_participants(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("chronicle_list_participants failed")?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .filter(|p| !hidden_codex_ids.contains(&p.codex_entry_id))
+        .collect())
 }
 
 /// Project-scoped scene↔event bridge (INNER JOIN events for project gate).
@@ -2199,6 +2219,7 @@ pub fn chronicle_get_calendar(
 pub fn chronicle_codex_names(
     conn: &Connection,
     project_id: &str,
+    hidden_codex_ids: &HashSet<String>,
 ) -> Result<std::collections::HashMap<String, String>> {
     let mut stmt = conn.prepare("SELECT id, name FROM codex_entries WHERE project_id = ?1")?;
     let rows = stmt
@@ -2206,7 +2227,10 @@ pub fn chronicle_codex_names(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows.into_iter().collect())
+    Ok(rows
+        .into_iter()
+        .filter(|(id, _)| !hidden_codex_ids.contains(id))
+        .collect())
 }
 
 /// scene id → title for the project (used to label scene links in detail).
@@ -2405,9 +2429,7 @@ fn collect_participants_json(
     }))
 }
 
-/// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
-/// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
-/// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
+/// Return the active-project event version, or `None` if the id is not in the project.
 #[allow(dead_code)]
 fn visible_event_version(
     conn: &Connection,
@@ -2416,7 +2438,7 @@ fn visible_event_version(
 ) -> anyhow::Result<Option<i64>> {
     use rusqlite::OptionalExtension;
     conn.query_row(
-        "SELECT version FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+        "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
         params![event_id, project_id],
         |r| r.get(0),
     )
@@ -2446,7 +2468,7 @@ fn visible_event_date_state(
         "SELECT version, start_time, end_time, start_minute, end_minute,
                 start_granularity, end_granularity
          FROM events
-         WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+         WHERE id = ?1 AND project_id = ?2",
         params![event_id, project_id],
         |row| {
             Ok(VisibleEventDateState {
@@ -5486,6 +5508,40 @@ pub(crate) mod tests {
         assert!(find_related_entries(&conn, "p1", "e-hidden", None)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn chronicle_hidden_codex_ids_include_base_and_phase_hidden_in_project_only() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_project(&conn, "p2", "Other");
+        insert_codex_entry(&conn, "base-hidden", "p1", "Base hidden", "character");
+        insert_codex_entry(&conn, "phase-hidden", "p1", "Phase hidden", "character");
+        insert_codex_entry(&conn, "visible", "p1", "Visible", "character");
+        insert_codex_entry(&conn, "foreign-hidden", "p2", "Foreign hidden", "character");
+        conn.execute(
+            "UPDATE codex_entries SET context_mode = 'hidden' WHERE id IN ('base-hidden', 'foreign-hidden')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+             VALUES ('phase-1', 'phase-hidden', '', 'hidden'),
+                    ('phase-foreign', 'foreign-phase', '', 'hidden'),
+                    ('phase-orphan', 'orphan', '', 'hidden')",
+            [],
+        )
+        .unwrap();
+
+        let hidden = chronicle_hidden_codex_ids(&conn, "p1").unwrap();
+        assert_eq!(
+            hidden,
+            HashSet::from(["base-hidden".into(), "phase-hidden".into()])
+        );
+        assert!(!hidden.contains("visible"));
+        assert!(!hidden.contains("foreign-hidden"));
+        assert!(!hidden.contains("foreign-phase"));
+        assert!(!hidden.contains("orphan"));
     }
 
     // lane E2-c（DR-ARC-2）：archived の場面・folder を読み系 tool から外す試験群。

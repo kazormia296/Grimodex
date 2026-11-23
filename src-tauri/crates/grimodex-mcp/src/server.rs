@@ -513,7 +513,7 @@ impl GrimodexServer {
 
     /// Get a character's in-story career: involved events in order, with ages.
     #[tool(
-        description = "Get a character's chronicle timeline by codex_id: the events they are primary in or participate in, in story order, each with ageAtEvent (computed from their birth event and the project calendar when both are known)."
+        description = "Get a character's chronicle timeline by codex_id: the events they are primary in or participate in, in story order, each with ageAtEvent (computed from their birth event and the project calendar when both are known). Returns null if the codex entry is not found in this project."
     )]
     async fn get_character_timeline(
         &self,
