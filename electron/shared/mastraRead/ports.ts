@@ -224,6 +224,16 @@ export interface CoreCodexData {
   listPhases(entryIds: readonly string[]): Promise<schema.CodexEntryPhase[]>;
 }
 
+/** 共有の可視性判定で公開された項目に限って読む詳細行。 */
+export interface CoreCodexDetailData {
+  listPhaseDetailOverrides(
+    phaseIds: readonly string[],
+  ): Promise<schema.CodexPhaseDetailOverride[]>;
+  listRawDetailValues(
+    entryIds: readonly string[],
+  ): Promise<Array<{ entryId: string; definitionId: string; value: string | null }>>;
+}
+
 /**
  * The ports of the Codex visibility decision (`readDomain/core/codexVisibility.ts`).
  * Its own type and not a widening of `CoreReadContext`: no tool takes it yet, and
@@ -245,6 +255,19 @@ export type CoreCodexVisibilityPorts = Pick<
    */
   readonly getProjectEpoch?: () => number;
 };
+
+/**
+ * `get_codex_entry` の read path が使う context。renderer は読込中に live phase store が
+ * 切り替わりうるため `getProjectEpoch` を渡す。Main は turn の入力から組み立て、epoch を持たない。
+ */
+export type CoreCodexEntryContext = Omit<
+  CoreCodexVisibilityPorts,
+  "codex"
+> &
+  Pick<CoreReadPorts, "getTreeState" | "countTokens"> & {
+    readonly codex: CoreCodexData & CoreCodexDetailData;
+    readonly extractPlainText: (json: string) => string;
+  };
 
 /**
  * The ports of the four Codex read tools (`search_codex`, `list_codex_by_type`, `search_codex_by_tags`,
