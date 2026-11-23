@@ -157,6 +157,34 @@ describe("projectSnapshotApi", () => {
     expect(topologyMutationSpy).not.toHaveBeenCalled();
   });
 
+  it("returns the Native context's lossNotices unchanged and passes the chosen scopes", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const snapshot = await createProjectSnapshot({ name: "preview-notices" });
+    const context =
+      await snapshotNative.loadNativeProjectSnapshotRestoreContext(
+        PROJECT_ID,
+        snapshot.id,
+        new Set(RESTORE_SCOPES),
+      );
+    const notices = [
+      { kind: "map_edges", count: 2 },
+      { kind: "scene_scope_bindings_reset", count: 1 },
+    ];
+    const loadContext = vi
+      .spyOn(snapshotNative, "loadNativeProjectSnapshotRestoreContext")
+      .mockResolvedValueOnce({ ...context, lossNotices: notices });
+    const chosenScopes = new Set([RESTORE_SCOPES[0]]);
+
+    await expect(
+      previewProjectSnapshotRestoreLoss(snapshot.id, chosenScopes),
+    ).resolves.toEqual({ structural: true, lossNotices: notices });
+    expect(loadContext).toHaveBeenCalledWith(
+      PROJECT_ID,
+      snapshot.id,
+      chosenScopes,
+    );
+  });
+
   it("carries Native dropped notices and noOp through the restore result", async () => {
     await seedScene('{"type":"doc","content":[]}');
     const snapshot = await createProjectSnapshot({ name: "loss-result" });

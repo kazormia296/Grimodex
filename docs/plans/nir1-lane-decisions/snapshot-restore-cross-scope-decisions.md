@@ -427,16 +427,66 @@ P1 の復元で `codex_entry_phases.anchor_node_id` が NULL になった Phase 
 1. 既存の手書きの filter の通知なし（DR-SRX-30）。
 2. この PR の導出で見つけたが、直していない取りこぼし：`post_effect_annotation_relations` のうち注釈 A が場面なしの行は、`AUX_SPECS` の捕捉条件（A が場面ありの注釈）に入らず、スナップショットに載らない。Body の復元で、相手 B の場面ありの注釈が `CASCADE` で消えると、live のその関係も黙って消える（P9 の鏡像。失敗はせず、通知にも出ない）。`authorship_spans` の捕捉条件が `phase_id` を見ない（`phase_id` だけを持つ行はスナップショットに載らない）。外部キーでない参照（`codex_relations.source_map_edge_id` は意図的に FK なし、`map_ai_branches.seed_node_ids`〔id の JSON 配列〕、`authorship_spans.chat_msg_id`、`foreshadow_setups`・`foreshadow_payoffs` の `evidence_anchor_id`）は、復元で検査されず、親が消えていれば黙って dangling になる。`editor_stickies.chronicle_event_id` は、Body を選び、スナップショットに `events` の aux が無いとき、canonical の filter が「events は入れ直される」と見なすが、実際は入れ直されないので、live の events が消えていれば挿入が失敗しうる（まれ）。
 3. 過少計上：Body の復元で、場面向けの run が復元の `detach` で後から `CASCADE` で消えるときの注釈の `run_id` は、挿入の後に DB 自身が NULL にするので、`analysis_run_links` に数えない。別系統の点検（Codex、read-only）が、この入力を P1（件数が誤る）として再現の入力つきで指摘した（run の `scope_target_id` が、スナップショットの後に作った場面へ付け替えられ、Body の復元がその場面を消すとき）。通常の経路では、その run の注釈はスナップショットに入らないので起きにくい（推測）が、起きれば、結果と確認の件数は実際より少ない。直すなら、`restore_links::restore` が run を消す時点の `ON DELETE SET NULL` の件数を、`analysis_run_links` に足す（`restore_links` の変更を伴うので、この PR ではしない）。
-4. `no_op: true` と、空でない `dropped` が同居しうる（live が既に同じ形で、スナップショットの参照だけを戻せなかった復元）。PR-B の文面で、「変更はなかったが、スナップショットにあった参照 n 件は戻せなかった」と読める表現が前提になる。
+4. `no_op: true` と、空でない `dropped` が同居しうる（live が既に同じ形で、スナップショットの参照だけを戻せなかった復元）。PR-B の文面で、「変更はなかったが、スナップショットにあった参照 n 件は戻せなかった」と読める表現が前提になる。 → **PR-B で、この読みの文にした**（DR-SRX-37。`noOp` のときは「変更はありませんでしたが、スナップショットにあった参照のうち、次の分は戻せませんでした。」）。
 5. **別の作品の行を指す参照は、親が無いのと同じに扱う（変更前は、そのまま戻っていた）**。親の存在を、live の表の project で絞って引くので（全 7 種：`tree_nodes`・`codex_entries`・`snippets`・チャットのメッセージ〔セッションの project〕・セッション・`post_effect_runs`・場面なしの注釈）、外部キーの上では有効な、別の作品の親を指す行も、空にする（`SET NULL` の列）か外す（`CASCADE` の行）。件数は通知に入る。`integrity.rs` の孤児の判定と同じ形で、所有の検査（#1043）が見る列ではないので、この PR が足した動きである。そのような行が実際の経路で作られるか（作品の複製・取込み）は確かめていない（推測。通常は起きない見込み）。点検（独立の read-only）が、親が生きている行を変える点として指摘し、確認 146 の解釈として扱う。試験が 4 本で固定する（`cross_project_*`。それぞれの live の照会から project の絞りを外す変異で赤くなる）。別の作品の行を、外部キーと同じ「ある」とするなら、7 つの照会から project の絞りを外し、この試験の期待を変える（1 行ずつ）。**ユーザーが確認した（確認 148、2026-11-23 20:03 JST。親が無いのと同じに扱う）。**
 6. 場面なしの注釈の生き残りは、「`parent_id` の書き手が親の `scene_id` を継承する」現状に依る（別の書き手が増えると前提が崩れる）。別系統の点検（Codex）の反証の入力：場面ありの注釈 A に `parent_id` で連なる、場面なしの注釈 B（スキーマ上は有効。旧データ・取込みの状態）を、関係 R〔a=A、b=B〕が指すとき、Body の復元は A を消し、B も `CASCADE` で消える。`resolve` は B を「場面なしの生きている行」と見て R を残すので、R の挿入が外部キー違反で止まる（閉じる側。変更前も同じ状態で失敗していた見込み）。
 7. TS と Rust は同じ版で配る必要がある（DR-SRX-27）。
 8. 未測定：大きい作品での時間（DR-SRX-32）、Windows・macOS。
 9. `snapshot_restore_scope_equivalence`（`#[ignore]`、数千回の復元）は、この PR では実行していない（所有の検査は変えていない）。
-10. **PR-B の前は、外れたことが画面に出ない**（独立の点検の指摘。確認 146 で、画面は別の PR と決めた）。変更前は、親が無い復元は丸ごと失敗して DB は変わらなかった。変更後は成功し、地図の札・辺、注釈・関係が外れ、Phase の起点・出所の参照が空になる。件数は `dropped`・`lossNotices` に入るが、`src/features/revision` に表示する箇所は無い（型として受けるだけ）。PR-A（選んでいない範囲のつながり）も同じ形で入っている。hidden の Phase では、スナップショットの後に起点を別の場面へ付け替え、元の場面を消した live の Phase が、Codex の復元 1 回で起点なしになり、hidden が効かない側へ倒れる（DR-SRX-33 の入口。変更前はこの復元が失敗して live が保たれた）。**ユーザーが決めた（確認 149、2026-11-23 20:03 JST）：PR-B を、次の公開（release）の前に入れることを公開の条件にする**（PR-A〔#1029〕と、この PR の両方が対象。この PR の merge は止めない）。hidden の Phase の入口は、32 の #1057（DR-MP4-46）が別に直すと、問いの中で知らせた。
+10. **PR-B の前は、外れたことが画面に出ない**（独立の点検の指摘。確認 146 で、画面は別の PR と決めた）。変更前は、親が無い復元は丸ごと失敗して DB は変わらなかった。変更後は成功し、地図の札・辺、注釈・関係が外れ、Phase の起点・出所の参照が空になる。件数は `dropped`・`lossNotices` に入るが、`src/features/revision` に表示する箇所は無い（型として受けるだけ）。PR-A（選んでいない範囲のつながり）も同じ形で入っている。hidden の Phase では、スナップショットの後に起点を別の場面へ付け替え、元の場面を消した live の Phase が、Codex の復元 1 回で起点なしになり、hidden が効かない側へ倒れる（DR-SRX-33 の入口。変更前はこの復元が失敗して live が保たれた）。**ユーザーが決めた（確認 149、2026-11-23 20:03 JST）：PR-B を、次の公開（release）の前に入れることを公開の条件にする**（PR-A〔#1029〕と、この PR の両方が対象。この PR の merge は止めない）。hidden の Phase の入口は、32 の #1057（DR-MP4-46）が別に直すと、問いの中で知らせた。 → **PR-B で、確認の画面と結果の画面に件数を出した**（確認 150〜152、DR-SRX-35〜40）。**公開の条件（確認 149）は、PR-B の merge で満たされる。**
 11. browser-mock の経路では、親が無い復元は失敗のまま（DR-SRX-27）。
 12. `ensure_no_new_dangling` は違反を `rowid` で同定する。`touched_tables` に足した表（`codex_entry_phases`・`map_node_positions`・`map_edges`・`map_stickies`・`map_ai_branches`・`snippets`・`post_effect_annotations`・`post_effect_annotation_relations`）は、選んだ scope が全行を消して入れ直すので rowid が振り直され、「元からの違反の免除」が成り立たない。外部キーを切って取り込んだデータで、live とスナップショットの両方に、この step が扱わない列（例：`map_node_positions.sticky_id` が元から無い札を指す）の違反が有ると、同じ行でも「新しい違反」と判定されて復元が止まりうる（偽陽性。閉じる側）。変更前も、commit 時の外部キーの検査が同じ違反で止めた見込み（SQLite の遅延カウンタの挙動次第で、断定はしていない）。主キーで同定する形への変更は、`restore_links` の同定を変えるので、この PR ではしない。
+
+### DR-SRX-35　PR-B：画面の方針（確認 150〜152）
+
+ユーザーが 2026-11-24 00:03〜00:08 JST に、3 問とも推奨どおりに決めた（contracts `3c9242619`、確認 150〜152。問い・選択肢・回答の原文は会話記録から機械的に取った）。確認 149 で公開の条件にした PR-B で、**この PR の merge で、その条件は満たされる**（PR-A〔#1029〕・#1058 の両方が対象）。
+
+1. **確認画面**（確認 150）：「復元する」の前に、外れるつながりの件数を出す。確認を開いたとき 1 回、範囲の ON/OFF を変えたら 300 ms 待ってから数え直す。0 件なら何も出さない。数えている間・数えられなかったときも「復元する」は押せる。画面に「確認を開いたときの件数です」と明記する。
+2. **結果**（確認 151）：外れが 1 件以上のときだけ「復元の結果」の画面を出し、OK まで再読み込みを遅らせる。0 件は今までどおり（通知を出してすぐ再読み込み）。`noOp` で参照だけ戻せなかったときは「変更はありませんでしたが、…」と読める文にする。
+3. **hidden の Phase**（確認 152）：DR-SRX-39。
+
+**信頼境界**：件数は Native が数える（`lossNotices`・`dropped`）。renderer は表示するだけで、復元の意味（何を外すか・戻すか）は変えない。読み取りは既存の `project_snapshot_restore_context` だけで、**新しい IPC 命令・送信先・保存・契約を足さない**。この PR は TS・locale・試験だけで、Rust・N-API・`electron/shared/ipcContract.ts`・main の検査・`profileEgress.ts` は変えない。独立レビュー（Codex、read-only）が、`project_snapshot_restore_context` が `with_conn` の中で計画と数えだけを行い、`count_losses`・`shape`・`reshape_authorship_inserts`・`restore_missing_parents` に書き込み（`execute`）が無いことを、コードで確かめた（`restore_links.rs` の `park`／`restore` だけが書く）。
+
+### DR-SRX-36　確認の件数の取り方
+
+- `previewProjectSnapshotRestoreLoss(snapshotId, scopes)`（`projectSnapshotApi.ts`）：`getCurrentProjectId()` で作品を決め、`loadNativeProjectSnapshotRestoreContext` を呼び、`structural` と `lossNotices ?? []` だけを返す。書き込み・safety snapshot・`runTimelapseBodyReplacement`・`runTreeTopologyMutation` は使わない（試験が spy で固定する）。通知がある場合の値が、そのまま返ること・選んだ範囲を渡すことも固定した（独立レビューの指摘）。
+- `useRestoreLossPreview`：確認を開いたときは待たずに 1 回、範囲を変えたら 300 ms 後。応答に番号を付けて古い応答を捨て、timer と応答はダイアログを閉じる・別のスナップショットに変える・unmount で捨てる。同じ `(snapshotId, 並べ替えた範囲)` の結果は、その確認が開いている間だけ覚える。失敗は `debugLog.error` に残し、画面には「数えられませんでした。復元は続けられます。」だけを出して、復元の条件にしない。旧形式（`isStructural === false`）と復元中は数えない。
+- **代償**：確認ごと・範囲を変えるたびに、本文などを含む復元の下調べを読む。debounce と覚えておくことで緩和したが、**大きい作品での時間は未測定**（DR-SRX-40 の 2）。
+
+### DR-SRX-37　結果の画面と、再読み込みの遅らせ方
+
+- `dropped` の合計が 1 以上のときだけ結果のダイアログを出し、OK・Escape・外側クリックのどれでも、再読み込みは**ちょうど 1 回**（`restoreResultHandledRef`）。親が `open` を false にしたときと、**本番の親〔`EditorWorkspaceDialogs` の条件付き render〕が unmount したとき**も、1 回だけ再読み込みする（独立レビューの指摘で、unmount を足した）。0 件は今までどおり。
+- 見出し・説明：外れたつながりがあるときは「この復元で、次のつながりが外れました。」（`noOp` は「変更はありませんでしたが、スナップショットにあった参照のうち、次の分は戻せませんでした。」。`noOp` のときの `dropped` は、スナップショットの行で親が無くて外したものだけ）。設定の初期化だけのときは「復元は完了しました。」。**「場面の適用範囲（Scope）の設定が初期値に戻る」は、外れたものと別の段落**にする（同じリストに「戻せませんでした」と「戻しました」を並べると、読み違えやすい）。
+- **P0（独立レビュー〔Claude・Opus〕が見つけた。コードで確かめた）**：再読み込みを OK まで遅らせたので、その間に **Ctrl+Z が、復元前の global undo の履歴を復元後の DB へ再生しうる**。`GlobalCommandHost` の keydown は、除外が入力欄・contenteditable だけで、ダイアログのボタンから届く。`undo()` の門（`canScheduleQuiescenceMutation`・`replayGuard`・chat）は、復元の後を止めない。復元の経路は履歴を消さず、`beginWorkspaceSwitch()` も呼ばない（エディタ・ストアは、自分の session の change event を捨てるので、再読み込みまで復元前のまま）。以前は再読み込みまで約 3 フレーム〜最大 2 秒で、実質この窓は無かった。**直した：復元の成功の直後に `useGlobalHistoryStore.getState().clear()`（失敗では残す）。** 試験は、直しを外すと落ちることを確かめた（変異）。
+
+### DR-SRX-38　kind の名前と、Rust との一致
+
+- `KNOWN_RESTORE_LOSS_KINDS` は、Rust の `KIND_ORDER`（`restore_links.rs`）の **25 個**（24 個＋末尾の `scene_scope_bindings_reset`）と同じ並び。試験が Rust のソースから `KIND_ORDER` を読み取って一致を固定し、全 kind に ja・en の名前があることを固定する（Rust に kind が増えたとき、画面が「そのほか」に黙って落とさないための番）。知らない kind は「そのほか n 件」。引き継ぎの「26 個」は誤りだった。
+- `trash_items` は、`origin_scene_id`（場面）と `origin_codex_id`（コーデックス）の**両方が `CASCADE`** で、ごみ箱の項目そのものが外れる。名前は「ごみ箱の項目（元の場面・コーデックスがなくなるもの）」。最初の下書き（元の場面）も、実装の訂正（元のコーデックス）も、片方だけだった。独立レビューの指摘で、試験が名前を固定する。
+- `describeRestoreLoss` は、外れたもの（`lostCount`）と、初期値に戻る設定（`resetCount`）を分けて数え、表示の見出し・説明・段落の切り替えに使う。
+
+### DR-SRX-39　`phase_anchor` は、hidden を区別しない（確認 152）
+
+「Phase の起点」として、他の行と同じ形で出す。理由：(1) Native の通知は `phase_anchor` の 1 つの kind で数え、hidden かどうかを持たない。区別するには、通知の形を足す Rust の別の PR が先に要る。(2) hidden の Phase の起点が空になる入口は、32 の #1057（DR-MP4-46）が閉じた：起点を失った hidden の Phase を持つ Codex は AI に渡らず、作者向けの表示もある。画面は、作者に外れたことを知らせるだけで、AI への開示の判定には関わらない。
+
+### DR-SRX-40　残る制限（PR-B）
+
+1. **復元は、編集中のエディタの保留中の自動保存を、止めない・flush しない**（以前から）。arm 済みの自動保存が、復元の後に発火しうる。復元の `tree_nodes` の行は version を渡さず、DB の既定値 0 に戻るので、**エディタが version 0 を持つ場面**（保存前の新しい場面）で、復元の直前に編集した古い本文が、OCC を通って復元内容を置き換えうる（独立レビュー〔Codex〕が、`LinearSceneBlock.tsx` の保存・`scene_body.rs` の version の条件・復元の tree 行まで経路を指摘した。**実行では再現していない**。version が 1 以上の場面は、古い保存が OCC で止まる見込みで、これも未確認）。結果の画面は OK まで再読み込みを遅らせるので、timer が発火する確率は、以前（約 2 秒）より少し上がる（ダイアログは modal で、新しい打鍵は届かない）。**この PR では直さない**：復元の経路に `flushAllAutoSaves`（`useAutoSave.ts`。quiescence provider `mounted-auto-saves` として登録されている）を足すと、保存が終わらないときに復元の画面が止まりうるので、実アプリで確かめずに足さない。直すなら別の PR で、復元の前に flush し、flush が失敗したときの扱い（止めるか進めるか）を決める。
+2. 大きい作品での、確認の件数の読み込みの時間は未測定（DR-SRX-36）。
+3. 画面の見た目は、実 Chromium で確かめた（試験環境はテーマの変数が無いので、撮影では最小の明るいテーマを当てた）。**実アプリの色・角丸・影、Windows・macOS は未確認**。
+4. Native の応答の `noOp` を省略できる型にした（古い Native・保存済みの再送の結果には無いことがあるため。Native は今は常に返す）。
+5. デスクトップ幅では、確認・結果の操作の行を下に固定した（`sticky`）。件数が 4〜5 行出るだけで、「復元する」が最初の表示で画面外に押し出される退行を、撮影で見つけて直した。phone は全画面で、固定しない（スクロールで届く）。試験は、固定を外すと落ちることを確かめた（変異）。
+6. 確認の件数は、確認を開いたときの値で、結果の件数と違うことがある（画面に明記）。過少計上（DR-SRX-34 の 3）は、そのまま残る。
 
 ### 実施した検証（この節の時点）
 
 `cargo test -p grimodex-db`：`--test snapshot_restore_missing_parents`（26）、`--lib restore_missing_parents`（9）・`--lib project_snapshots`（48、`restore_links` を含む）、`--test snapshot_restore_cross_scope`（34）・`snapshot_restore_feed_continuity`（38）・`snapshot_restore_scope_guard`（31）・`narrative_scope_storage_authority`（6）が緑。実装の前は、受入れの試験で P1〜P9 が赤（P1・P2・P5〜P9 は `FOREIGN KEY constraint failed`、P3・P4 は canonical との照合が `does not match the owned snapshot`）、P10 は緑だった。`pnpm exec tsc --noEmit`、`vitest run src/features/revision`（11 ファイル 57 件）が緑。`cargo clippy -p grimodex-db --all-targets` は、手本の探りの試験の未使用 import だけを警告する（統合者が探りの試験を消す）。
+
+### PR-B の検証（DR-SRX-35〜40。2026-11-24。どれも自分で実行した）
+
+- `pnpm exec tsc --noEmit`、変えた 13 file の eslint、prettier --check（変えた TS・locale）：指摘なし。`pnpm validate:architecture`：通過。locale の `snapshot.loss` は ja・en とも 42 キーで一致し、`i18n.localeOrder` の試験も通過。
+- `vitest run src/features/revision src/lib/browser-mock.snapshot src/lib/i18n.localeOrder.test.ts`：17 files・92 tests が通過。**実 Chromium**（`pnpm test:browser`、`ProjectSnapshotModal.lossNotices.browser.test.tsx`）：2 tests が通過（phone 幅 320×640 で、確認・結果の両方が縦にスクロールでき、横にはみ出さず、操作の行へスクロールで届く。デスクトップ幅 900×600 で、操作の行がスクロールしなくても見える）。
+- **変異で、試験が直しの欠落を検出することを確かめた**：操作の行の固定を外す→ Chromium の試験が落ちる（ボタンの bottom が 1236 px）。履歴の消去と unmount の後始末を外す→ 対応する 2 本が落ち、ほかの 11 本は通る。
+- 独立レビュー 2 系統（Codex〔read-only、新しい session〕・Claude〔Opus〕）。どちらも REVISE：Opus の P0（結果の画面の間の undo の再生）・P1（結果の説明）・P2（unmount の再読み込み、`trash_items` の名前）は、コードで確かめて**直した**。Codex の P0（自動保存の上書き）は、経路は成立するが、以前からあり、条件が重なるので、**直さずに DR-SRX-40 の 1 に残した**。Codex の P2（親が閉じるときの試験、preview API の正の経路の試験）は、試験を足した。
+- **していない**：`verify:quality`（hosted の Quick に任せる）、実アプリ（Electron）での目視、cargo、Windows・macOS。画面の見た目は、実 Chromium で、簡易テーマ（最小の明るい配色）で確かめた。
+
