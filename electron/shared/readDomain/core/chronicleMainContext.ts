@@ -125,24 +125,7 @@ function turnTreeState(turn: ChronicleReadInputs): CoreTreeState {
   };
 }
 
-/**
- * The ports of `search_events` for Electron main (PR-7b, DR-MP4-38). Nothing
- * calls this yet (flag L is closed).
- *
- * Unlike the cached context above, **this one reads the events and the
- * scene-event bridges again for every call**: no `SharedLoader`, no cache of
- * the turn. The tool drops a hit by the events it knows; a hit whose id is not
- * among them passes (moved as the renderer has it). A cached list that is older
- * than the index (an event created or made secret since the turn began) would
- * turn that into a leak of a secret event's title, which the renderer's batch
- * cache and its write tools' invalidation never allow. Reading again for each
- * call keeps the window closed without a wiring of `clear()` (4c-1's). The
- * dense read, the tree state (one fixed state of the turn, as above) and the
- * reading order are the turn's. The events are read fail closed
- * (`readEventsFailClosed`).
- *
- * No state outside the arguments: two turns that run at once share nothing.
- */
+/** The main search context uses the turn's project, token counter and dense read; it loads no chronicle rows. */
 export interface MainChronicleSearchContextArgs {
   /** `createCoreReadDb(checkedClient)`. */
   readonly db: CoreReadDb;
@@ -156,17 +139,11 @@ export interface MainChronicleSearchContextArgs {
 export function createMainChronicleSearchContext(
   args: MainChronicleSearchContextArgs,
 ): CoreChronicleSearchContext {
-  const { db, turn } = args;
+  const { turn } = args;
   const treeState = turnTreeState(turn);
   return {
     getTreeState: () => treeState,
     countTokens: args.countTokens,
     native: args.native,
-    chronicle: {
-      getEvents: (projectId) => readEventsFailClosed(db, projectId),
-      getSceneEvents: (projectId) => readSceneEventsForProject(db, projectId),
-      // The turn's reading order, whatever nodes are passed (they are the turn's).
-      getReadingOrder: () => turn.inputs.readingOrder,
-    },
   };
 }

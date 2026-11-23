@@ -3,11 +3,6 @@ import type {
   CoreTreeNode,
 } from "../../mastraRead/ports.js";
 import type { EventPrecision } from "../db/schema.js";
-import type {
-  EventRow,
-  SceneEventRow,
-} from "../features/chronicle/eventRows.js";
-import { isEventHiddenFromAi } from "../features/chronicle/chronicleSecrecy.js";
 import {
   collectChronicleCandidateCodexIds,
   dropHiddenCodexFromChronicleInput,
@@ -76,23 +71,6 @@ function result(
     summary,
     tokensUsed: ctx.countTokens(JSON.stringify(content)),
   };
-}
-
-/**
- * AI 秘匿: 現在シーン文脈で「hidden」なイベント id 集合（spec §2.5）。
- * `search_events` が使う（CSR/1 PR-3b で削除予定）。4 本の core 読み道具は、
- * 出来事の秘匿を判定しない。
- */
-export function hiddenEventIds(
-  events: readonly EventRow[],
-  currentSceneId: string,
-  deps: { readingOrder: Map<string, number>; sceneEvents: SceneEventRow[] },
-): Set<string> {
-  return new Set(
-    events
-      .filter((e) => isEventHiddenFromAi(e, currentSceneId, deps))
-      .map((e) => e.id),
-  );
 }
 
 /** 作中順イベント一覧（kind フィルタ可）。XPROJ=events の reader が project gate。 */

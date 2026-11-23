@@ -492,161 +492,40 @@ describe("the active scene (NOT equal to the renderer)", () => {
   });
 });
 
-describe("search_events' context reads the events again for every call (DR-MP4-38; the cached context above does not)", () => {
-  const wireHit = (eventId: string) => ({
-    eventId,
-    title: `title-${eventId}`,
-    kind: "generic",
-    score: 0.5,
-  });
-
-  function makeSearch(
-    client: CoreReadDbClient,
-    turn: ChronicleReadInputs,
-    wire: () => unknown[],
-  ) {
-    const eventsSemantic = vi.fn(
-      async (_args: { projectId: string; query: string; limit: number }) =>
-        wire(),
-    );
+describe("search_events' main context does not load chronicle rows", () => {
+  it("uses only the turn project and dense read", async () => {
+    const { client, statements } = makeClient({});
+    const eventsSemantic = vi.fn(async () => [
+      {
+        eventId: "e1",
+        title: "title-e1",
+        kind: "generic",
+        score: 0.5,
+      },
+    ]);
     const ctx = createMainChronicleSearchContext({
       db: createCoreReadDb(client),
-      turn,
+      turn: turnOf("p1", ROWS, "s3"),
       countTokens: (text) => text.length,
       native: { eventsSemantic },
     });
-    return {
-      ctx,
-      eventsSemantic,
-      executors: createChronicleSearchExecutors(ctx),
-    };
-  }
+    const executors = createChronicleSearchExecutors(ctx);
 
-  const found = async (s: ReturnType<typeof makeSearch>) =>
-    (
-      (await s.executors.search_events({ query: "q" })).content as Array<{
-        eventId: string;
-      }>
-    ).map((e) => e.eventId);
-
-  it("reads `events` and `scene_events` once for each call, however many calls the turn makes, and no cache is kept", async () => {
-    const { client, count } = makeClient({
-      p1: { events: [eventRow("e1")] },
+    expect(ctx).not.toHaveProperty("chronicle");
+    expect((await executors.search_events({ query: "q" })).content).toEqual([
+      {
+        eventId: "e1",
+        title: "title-e1",
+        kind: "generic",
+        score: 0.5,
+      },
+    ]);
+    expect(eventsSemantic).toHaveBeenCalledWith({
+      projectId: "p1",
+      query: "q",
+      limit: 30,
     });
-    const s = makeSearch(client, turnOf("p1", ROWS, "s3"), () => [
-      wireHit("e1"),
-    ]);
-    for (let i = 1; i <= 3; i += 1) {
-      expect(await found(s)).toEqual(["e1"]);
-      expect(count("events", "p1")).toBe(i);
-      expect(count("scene_events", "p1")).toBe(i);
-    }
-  });
-
-  it("does not use the cache of the cached context: events warmed by list_events in the same turn are read again by search_events", async () => {
-    const data = {
-      p1: { events: [eventRow("e1", { secret: 0 })] },
-    };
-    const { client, count } = makeClient(data);
-    const turn = turnOf("p1", ROWS, "s1");
-    const cached = makeMain(client, turn);
-    expect(await listIds(cached)).toEqual(["e1"]);
-    expect(count("events", "p1")).toBe(1);
-    const s = makeSearch(client, turn, () => [wireHit("e1")]);
-    expect(await found(s)).toEqual(["e1"]);
-    expect(count("events", "p1")).toBe(2);
-  });
-
-  it("a secret event created after the turn began, or made secret since, is dropped from the hits at the next call (the window a cached list would leave open is closed)", async () => {
-    const data = {
-      p1: { events: [eventRow("old")] } as ProjectData,
-    };
-    const { client } = makeClient(data);
-    const turn = turnOf("p1", ROWS, "s1");
-    const s = makeSearch(client, turn, () => [
-      wireHit("old"),
-      wireHit("created-later"),
-    ]);
-    // the first call: `created-later` is not an event of the project yet, so it passes
-    // (moved as it is); nothing is held.
-    expect(await found(s)).toEqual(["old", "created-later"]);
-    // the author creates a secret event and makes `old` secret
-    data.p1.events = [
-      eventRow("old", { secret: 1, reveal_scene_id: "s3" }),
-      eventRow("created-later", { secret: 1, reveal_scene_id: "s3" }),
-    ];
-    expect(await found(s)).toEqual([]);
-    // and the same on the cached context, for contrast: it is a cache of the turn
-    const cached = makeMain(client, turn);
-    data.p1.events = [eventRow("old"), eventRow("created-later")];
-    expect(await listIds(cached)).toEqual(["old", "created-later"]);
-    data.p1.events = [
-      eventRow("old", { secret: 1, reveal_scene_id: "s3" }),
-      eventRow("created-later", { secret: 1, reveal_scene_id: "s3" }),
-    ];
-    expect(await listIds(cached)).toEqual(["old", "created-later"]);
-    expect(await found(s)).toEqual([]);
-  });
-
-  it("is one fixed tree state of the turn (same object, the turn's nodes and current scene) and the turn's reading order, and reads nothing when made", () => {
-    const { client, statements } = makeClient({});
-    const turn = turnOf("p1", ROWS, "s2");
-    const s = makeSearch(client, turn, () => []);
-    const a = s.ctx.getTreeState();
-    expect(a).toBe(s.ctx.getTreeState());
-    expect(a.projectId).toBe("p1");
-    expect(a.nodes).toBe(turn.nodes);
-    expect(a.activeSceneId).toBe("s2");
-    expect(s.ctx.chronicle.getReadingOrder([])).toBe(turn.inputs.readingOrder);
     expect(statements).toEqual([]);
-    expect(s.eventsSemantic).not.toHaveBeenCalled();
-  });
-
-  it("two turns that run at once, of different projects, do not meet (each asks its own project)", async () => {
-    const { client, count } = makeClient({
-      pA: { events: [eventRow("a-e", { project_id: "pA" })] },
-      pB: { events: [eventRow("b-e", { project_id: "pB" })] },
-    });
-    const a = makeSearch(client, turnOf("pA", ROWS, "s3"), () => [
-      wireHit("a-e"),
-    ]);
-    const b = makeSearch(client, turnOf("pB", ROWS, "s3"), () => [
-      wireHit("b-e"),
-    ]);
-    const [fa, fb] = await Promise.all([found(a), found(b)]);
-    expect(fa).toEqual(["a-e"]);
-    expect(fb).toEqual(["b-e"]);
-    expect(a.eventsSemantic.mock.calls[0]![0].projectId).toBe("pA");
-    expect(b.eventsSemantic.mock.calls[0]![0].projectId).toBe("pB");
-    expect(count("events", "pA")).toBe(1);
-    expect(count("events", "pB")).toBe(1);
-  });
-
-  it("reads the events fail closed: a row whose `secret` is null is an error, never a public event", async () => {
-    const { client } = makeClient({
-      p1: { events: [eventRow("e1", { secret: null })] },
-    });
-    const s = makeSearch(client, turnOf("p1", ROWS, "s3"), () => [
-      wireHit("e1"),
-    ]);
-    await expect(s.executors.search_events({ query: "q" })).rejects.toThrow(
-      /usable .secret. column/u,
-    );
-  });
-
-  it("a failed read of the events is not turned into an empty result and is retried by the next call", async () => {
-    const { client, failNext } = makeClient({
-      p1: { events: [eventRow("e1")] },
-    });
-    const s = makeSearch(client, turnOf("p1", ROWS, "s3"), () => [
-      wireHit("e1"),
-    ]);
-    failNext.events = new Error("db is down");
-    // (Drizzle wraps the driver's error: it is an error, not an empty result.)
-    await expect(s.executors.search_events({ query: "q" })).rejects.toThrow(
-      /Failed query/u,
-    );
-    expect(await found(s)).toEqual(["e1"]);
   });
 });
 
