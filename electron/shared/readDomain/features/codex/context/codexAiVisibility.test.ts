@@ -5,10 +5,12 @@ import { describe, expect, it } from "vitest";
 import type { CodexEntryPhase } from "../../../db/schema.js";
 import type { TreeNodeData } from "../../tree/types.js";
 import {
+  closeResolvedCodexForUnresolvableScene,
   decideCodexAiVisibility,
+  listEntryIdsClosedWhenSceneUnresolvable,
   type CodexResolutionState,
 } from "./codexAiVisibility.js";
-import { buildSceneTimeIndex } from "./sceneTimeIndex.js";
+import { buildSceneTimeIndex, type TemporalAnchor } from "./sceneTimeIndex.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
@@ -620,5 +622,143 @@ describe("decideCodexAiVisibility", () => {
     const r = decide({ entries: [] });
     expect(r.hidden.size).toBe(0);
     expect(r.texts.size).toBe(0);
+  });
+});
+
+describe("listEntryIdsClosedWhenSceneUnresolvable (the rule chat's context shares with the agent tool)", () => {
+  const index = buildSceneTimeIndex(NO_STORY);
+  const phasesByEntry = (rows: CodexEntryPhase[]) => {
+    const map = new Map<string, CodexEntryPhase[]>();
+    for (const row of rows) {
+      map.set(row.entryId, [...(map.get(row.entryId) ?? []), row]);
+    }
+    return map;
+  };
+  const KINDS: CodexEntryPhase[] = [
+    phase("p-hide", "hide", "s2", { contextModeOverride: "hidden" }),
+    phase("p-odd", "odd-mode", "s2", { contextModeOverride: "not-a-mode" }),
+    phase("p-pub", "pub-phase", "s2", { contextModeOverride: "mentioned" }),
+    phase("p-suppress", "suppress", "s2", { contextModeOverride: "suppress" }),
+    phase("p-always", "always", "s2", { contextModeOverride: "always" }),
+    phase("p-text", "text-only", "s2", { summaryOverride: "text" }),
+    phase("p-dangle", "dangling", "gone", { contextModeOverride: "hidden" }),
+    phase("p-null", "null-anchor", null, { contextModeOverride: "hidden" }),
+    phase("p-a", "multi", "s1", { contextModeOverride: "mentioned" }),
+    phase("p-b", "multi", "s3", { contextModeOverride: "hidden" }),
+  ];
+  const CLOSED = ["hide", "odd-mode", "dangling", "null-anchor", "multi"];
+  const closed = (anchor: TemporalAnchor, rows = KINDS) =>
+    [
+      ...listEntryIdsClosedWhenSceneUnresolvable({
+        anchor,
+        sceneTimeIndex: index,
+        phasesByEntry: phasesByEntry(rows),
+      }),
+    ].sort();
+
+  it("names the entries one of whose Phases hides them (hidden, an unknown mode, a dangling or null anchor) when the anchor is base", () => {
+    expect(closed({ kind: "base" })).toEqual([...CLOSED].sort());
+  });
+
+  it("names the same when the scene is not in the reading order (a note, a deleted id, a padded id)", () => {
+    for (const sceneId of ["n-note", "no-such-scene", " s1 ", ""]) {
+      expect(closed({ kind: "scene", sceneId }), sceneId).toEqual(
+        [...CLOSED].sort(),
+      );
+    }
+  });
+
+  it("names nothing while the scene is in the reading order", () => {
+    expect(closed({ kind: "scene", sceneId: "s1" })).toEqual([]);
+    expect(closed({ kind: "scene", sceneId: "s3" })).toEqual([]);
+  });
+
+  it("names nothing for latest and for a Phase preview (they do not depend on a current scene)", () => {
+    expect(closed({ kind: "latest" })).toEqual([]);
+    expect(closed({ kind: "phase", phaseId: "p-hide" })).toEqual([]);
+  });
+
+  it("names every entry of an empty reading order the same way (the index was just reset)", () => {
+    const empty = buildSceneTimeIndex([]);
+    const ids = listEntryIdsClosedWhenSceneUnresolvable({
+      anchor: { kind: "scene", sceneId: "s1" },
+      sceneTimeIndex: empty,
+      phasesByEntry: phasesByEntry(KINDS),
+    });
+    expect([...ids].sort()).toEqual([...CLOSED].sort());
+  });
+
+  it("does not name an entry with no Phase, only visible or text-only Phases, or only suppress and always", () => {
+    const names = closed({ kind: "base" });
+    for (const id of ["pub-phase", "suppress", "always", "text-only"]) {
+      expect(names).not.toContain(id);
+    }
+  });
+
+  it("is the rule decideCodexAiVisibility applies: for a base-public entry its hidden set is the named set", () => {
+    const entries = [
+      ...new Set(KINDS.map((row) => row.entryId)),
+      "no-phase",
+    ].map((id) => entry(id, "mentioned"));
+    for (const sceneId of [null, "", "n-note", " s1 ", "s1"]) {
+      const decision = decideCodexAiVisibility({
+        entries,
+        phases: KINDS,
+        sceneId,
+        sceneTimeIndex: index,
+        resolutionMode: resolved("reading"),
+      });
+      const named = listEntryIdsClosedWhenSceneUnresolvable({
+        anchor: decision.anchor,
+        sceneTimeIndex: index,
+        phasesByEntry: phasesByEntry(KINDS),
+      });
+      expect([...decision.hidden].sort(), String(sceneId)).toEqual(
+        [...named].sort(),
+      );
+    }
+  });
+});
+
+describe("closeResolvedCodexForUnresolvableScene", () => {
+  const resolvedState = (id: string, contextMode: string) => ({
+    id,
+    summary: `${id} summary`,
+    content: `${id} content`,
+    contextMode,
+    detailValues: new Map([["d", `${id} detail`]]),
+  });
+
+  it("replaces only the mode of the named entries and leaves their text, details and the other entries as they are", () => {
+    const input = new Map([
+      ["a", resolvedState("a", "mentioned")],
+      ["b", resolvedState("b", "always")],
+      ["c", resolvedState("c", "suppress")],
+    ]);
+    const out = closeResolvedCodexForUnresolvableScene(
+      input,
+      new Set(["a", "c"]),
+    );
+    expect(out.get("a")).toEqual({ ...input.get("a"), contextMode: "hidden" });
+    expect(out.get("c")).toEqual({ ...input.get("c"), contextMode: "hidden" });
+    expect(out.get("b")).toBe(input.get("b"));
+    expect([...out.keys()]).toEqual(["a", "b", "c"]);
+  });
+
+  it("returns a copy and does not change the input", () => {
+    const input = new Map([["a", resolvedState("a", "mentioned")]]);
+    const out = closeResolvedCodexForUnresolvableScene(input, new Set(["a"]));
+    expect(out).not.toBe(input);
+    expect(input.get("a")?.contextMode).toBe("mentioned");
+  });
+
+  it("ignores a named id the map does not have, and changes nothing for an empty set", () => {
+    const input = new Map([["a", resolvedState("a", "mentioned")]]);
+    expect(
+      closeResolvedCodexForUnresolvableScene(input, new Set(["x"])).get("a"),
+    ).toBe(input.get("a"));
+    expect(
+      closeResolvedCodexForUnresolvableScene(input, new Set()).get("a"),
+    ).toBe(input.get("a"));
   });
 });

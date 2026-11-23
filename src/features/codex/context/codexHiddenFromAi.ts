@@ -30,8 +30,11 @@ export interface CodexAiResolution {
  *
  * 契機を持たない AI 経路（chat の agent tool、beat、インライン AI）が、chat の通常の
  * 文脈と同じ判定で hidden を落とすための共通の入口。判定は chat と同じく、候補を
- * Phase 解決してから `codexVisibilityPolicy` の正本で行う。anchor は
- * `nonSceneContextSource` と同じ規則で、現在の場面があればその場面、なければ base。
+ * Phase 解決してから `codexVisibilityPolicy` の正本で行う。anchor は現在の場面があれば
+ * その場面、なければ base。場面を解決できないときに Phase が hidden にする項目を hidden に
+ * 倒す規則（下の fail-closed）は、chat の通常の文脈（`nonSceneContextSource`・
+ * `sceneContextSource`。codex scope の latest を除く）も同じ関数
+ * （`codexAiVisibility.ts` の `listEntryIdsClosedWhenSceneUnresolvable`）で適用する。
  *
  * base が hidden でも現在の場面の Phase で mentioned 等に解除されたものは通すが、
  * その文は base ではなく Phase 解決後（chat の通常の文脈と同じ）を返す（`released`）。
