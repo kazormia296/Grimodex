@@ -2326,6 +2326,7 @@
       "decisionTrimmed": "Trimmed by budget",
       "decisionExcluded": "Excluded by policy",
       "decisionMore": "and {{count}} more",
+      "policyHiddenHint": "An entry may not be sent to the AI because the entry itself is set to hidden, because a hiding Phase has lost its anchor scene, or because it is closed while the scene can't be resolved. Check the Codex Timeline tab.",
       "heading": "Context"
     },
     "conversationSummary": "Conversation summary",

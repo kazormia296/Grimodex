@@ -47,7 +47,7 @@ export function OrphanedHidingPhaseNotice({
     <div
       role="status"
       data-testid={`orphaned-hiding-phase-notice-${variant}`}
-      className="mb-3 flex gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-[11px] leading-relaxed text-foreground"
+      className={`${variant === "timeline" ? "mb-3 " : ""}flex gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-[11px] leading-relaxed text-foreground`}
     >
       <AlertTriangle
         className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive"

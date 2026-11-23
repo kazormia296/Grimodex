@@ -2325,6 +2325,7 @@
       "decisionTrimmed": "予算により除外",
       "decisionExcluded": "ポリシーにより対象外",
       "decisionMore": "他 {{count}} 件",
+      "policyHiddenHint": "AI に渡らない Codex は、Codex 自身が『AI に見せない』設定のもの、起点の場面を失った『AI に見せない』Phase を持つもの、場面を解決できない間に閉じているものがあります。Codex の『タイムライン』タブで確認できます。",
       "heading": "コンテキスト"
     },
     "conversationSummary": "会話要約",

@@ -749,6 +749,67 @@ describe("ContextBar グループ化", () => {
     expect(within(popover).getByText(/42 → 0 tokens/)).toBeInTheDocument();
   });
 
+  describe("policy-hidden の補足（DR-MP4-46、Q-G3）", () => {
+    const planWith = (reason: string) =>
+      ({
+        requestId: "request-policy",
+        items: [],
+        decisions: [
+          {
+            key: "codex:entry-1",
+            status: "excluded",
+            reason,
+            tokensBefore: 0,
+            tokensAfter: 0,
+          },
+        ],
+        usage: {
+          candidateTokens: 0,
+          selectedTokens: 0,
+          trimmedTokens: 0,
+          budgetTokens: 0,
+        },
+        digest: "ctx-policy",
+      }) as never;
+
+    it("policy-hidden の行があるとき、原因 3 つを言う静的な補足が出る。reason の文字列は変えない", async () => {
+      const user = userEvent.setup();
+      render(
+        <ContextBar
+          {...defaultProps}
+          pinnedEntries={[]}
+          contextPlan={planWith("policy-hidden")}
+        />,
+      );
+      await user.click(screen.getByTestId("context-decision-summary"));
+      const popover = screen.getByTestId("context-decision-popover");
+      expect(
+        within(popover).getByText(/policy-hidden · 0/),
+      ).toBeInTheDocument();
+      const hint = within(popover).getByTestId(
+        "context-decision-policy-hidden-hint",
+      );
+      expect(hint).toHaveTextContent(
+        "AI に渡らない Codex は、Codex 自身が『AI に見せない』設定のもの、起点の場面を失った『AI に見せない』Phase を持つもの、場面を解決できない間に閉じているものがあります。Codex の『タイムライン』タブで確認できます。",
+      );
+    });
+
+    it("policy-hidden 以外の理由だけなら補足は出ない", async () => {
+      const user = userEvent.setup();
+      render(
+        <ContextBar
+          {...defaultProps}
+          pinnedEntries={[]}
+          contextPlan={planWith("policy-suppress")}
+        />,
+      );
+      await user.click(screen.getByTestId("context-decision-summary"));
+      expect(
+        screen.queryByTestId("context-decision-policy-hidden-hint"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   it("keeps header actions independent from the collapse button", async () => {
     const user = userEvent.setup();
     const onCreateLinkedSession = vi.fn();
