@@ -619,7 +619,11 @@ test("launcher：precheck の失敗は固定形式の 1 行で止まる", () => 
 
 test(
   "原稿 4 作品：scenes JSON の場面数・段落が計画と一致し、出力に原稿の連続 8 文字が出ない",
-  { skip: !existsSync(DATA_DIR) },
+  {
+    skip: existsSync(DATA_DIR)
+      ? false
+      : "実データ（repo 外の 0700 の dir）が無い環境では実行しない",
+  },
   async () => {
     for (const [key, count] of Object.entries(WORKS)) {
       const work = JSON.parse(readFileSync(resolveWorkSource(key), "utf8"));
