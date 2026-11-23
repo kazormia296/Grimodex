@@ -16,7 +16,8 @@
 //   requestMaxOutputTokens を渡さないので、claude-sonnet-5-5 の出力は 32,000 まで課金されうる）。TOKENS_OVER の線（tokenLimits）は変えない。
 // - 上限・停止線は凍結の値で、緩めない（§9）。
 // - 停止（STOP 行）は台帳に追記し、次に createGate が読み込んだときも停止のまま始める（解除は人が行う）。
-// - ai_usage の token の 2 倍超の線は、試走の実測の比（実測 token ÷ 見積り）で較正した値に対する 2 倍。
+// - ai_usage の token の 2 倍超の線：入力は、試走の実測の比（実測 token ÷ 見積り）で較正した値に対する 2 倍（実測の最大の 2 倍が上限）。
+//   出力は、見積りの 2 倍（試走の比では補正しない。作者の決定、DR-ILM-49）。
 //   試走の行が無ければ B1／B2 は始めない（preflight が拒否する）。
 import {
   appendFileSync,
@@ -404,9 +405,9 @@ export function createGate({
   };
 
   /**
-   * 1 要求の token の上限の線（§9：試走の実測の 2 倍超で停止する線。afterRequest の TOKENS_OVER と同じ式）。
-   * 試走（較正の元の段）は見積りの 2 倍。較正が要る段は、試走の実測の比で較正した見積りの 2 倍と、試走の実測 token の
-   * 2 倍の小さい方。
+   * 1 要求の token の上限の線（§9：2 倍超で停止する線。afterRequest の TOKENS_OVER と同じ式）。
+   * 入力：試走（較正の元の段）は見積りの 2 倍。較正が要る段は、試走の実測の比で較正した見積りの 2 倍と、試走の実測 token の
+   * 2 倍の小さい方。出力：段に依らず見積りの 2 倍（試走の比・実測の最大値では補正しない。DR-ILM-49）。
    */
   function tokenLimits(stage, estInputTokens, estOutputTokens) {
     const calibrated =
@@ -770,9 +771,9 @@ export function createGate({
           failures: state.window.filter((ok) => !ok).length,
         });
       if (billed) {
-        // §9：試走の実測値の 2 倍超。(1) 試走の実測の比で較正した見積りの 2 倍（要求が試走より小さいときに
-        // 効く）と、(2) 試走の実測 token そのものの 2 倍（試走より大きい要求で §9 より緩くならない）の
-        // 先に当たった方で止める。試走自身は見積りの 2 倍。
+        // §9：2 倍超。入力は、(1) 試走の実測の比で較正した見積りの 2 倍（要求が試走より小さいときに効く）と、
+        // (2) 試走の実測 token そのものの 2 倍（試走より大きい要求で §9 より緩くならない）の先に当たった方で止める。
+        // 試走自身は見積りの 2 倍。出力は、段に依らず見積りの 2 倍（DR-ILM-49）。
         const { inputLimit, outputLimit } = tokenLimits(
           stage,
           estInputTokens,
