@@ -26,9 +26,14 @@ import type {
 const PREVIEW_TEXT_MAX = 500;
 const BODY_PREVIEW_MAX = 60;
 
-/** Cancel a deferred trash capture when the owning feature undo wins. */
-export function cancelPendingTrash(tempId: string): void {
-  useTrashBinStore.getState().cancelPending({ tempId });
+/**
+ * Cancel a deferred trash capture when the owning feature undo wins. Returns
+ * true when the capture was still pending, false when it had already been
+ * written to the Trash. A write already in flight is still pending until it
+ * returns: cancelling then returns true but the write completes.
+ */
+export function cancelPendingTrash(tempId: string): boolean {
+  return useTrashBinStore.getState().cancelPending({ tempId });
 }
 
 /**

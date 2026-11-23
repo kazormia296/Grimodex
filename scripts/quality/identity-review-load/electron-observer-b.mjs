@@ -13,11 +13,25 @@
 //   - GRIMODEX_USER_DATA_DIR が絶対 path で 0700 の dir
 //   - GRIMODEX_IDL_RUN_ROOT（launcher の一時 root＝<output>/run）の下にあること
 // backend の名前の上書きは、本物の backend が basic_text のときだけ（それ以外の backend の名前は変えずに返す）。
+//
+// 乾いた実行（送信しない）では、もう 1 つの条件で AI の外向きの命令を main の入口で拒否する層（dispatch-block.mjs）を入れる：
+//   - 環境変数 GRIMODEX_IDL_BLOCK_DISPATCH=1（乾いた実行の launcher が立てる。本測定の B では立てない）
+// 拒否した命令は本物の handler に届かない。globalThis.idlDispatchBlock（有効であること・拒否した件数）を launcher が読む。
+// 2 つの条件は同時に立たない（送る経路と送らない経路を 1 つの process で混ぜない）。
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { safeStorage } from "electron";
+import { ipcMain, safeStorage } from "electron";
+import { installDispatchBlock } from "./dispatch-block.mjs";
 import { installPlainTextKeystore } from "./plain-text-keystore.mjs";
+
+if (
+  process.env.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE === "1" &&
+  process.env.GRIMODEX_IDL_BLOCK_DISPATCH === "1"
+)
+  throw new Error(
+    "[precheck] PLAIN_TEXT_KEYSTORE_AND_DISPATCH_BLOCK_EXCLUSIVE",
+  );
 
 if (process.env.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE === "1") {
   globalThis.idlRealStorageBackend = installPlainTextKeystore(
@@ -25,6 +39,10 @@ if (process.env.GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE === "1") {
     process.env,
   );
 }
+
+// 共有の observer（trace の層）より先に入れる：後から包まれる trace の層より外側になる。
+if (process.env.GRIMODEX_IDL_BLOCK_DISPATCH === "1")
+  globalThis.idlDispatchBlock = installDispatchBlock(ipcMain, process.env);
 
 const observer = path.resolve(
   import.meta.dirname,

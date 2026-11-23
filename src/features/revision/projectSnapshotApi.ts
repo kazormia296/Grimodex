@@ -34,6 +34,7 @@ import {
   createNativeProjectSnapshot,
   loadNativeProjectSnapshotRestoreContext,
   type ProjectSnapshotRestoreContext,
+  type RestoreLossNotice,
   type SnapshotInsertPlan,
   type SnapshotRestoreTable,
 } from "./projectSnapshotNative";
@@ -54,6 +55,23 @@ export interface RestoreResult {
   safetySnapshotId: string;
   format: RestoreFormat;
   skipped: SkipReport;
+  dropped: RestoreLossNotice[];
+  noOp: boolean;
+}
+
+export async function previewProjectSnapshotRestoreLoss(
+  snapshotId: string,
+  scopes: ReadonlySet<RestoreScope>,
+): Promise<{ structural: boolean; lossNotices: RestoreLossNotice[] }> {
+  const context = await loadNativeProjectSnapshotRestoreContext(
+    getCurrentProjectId(),
+    snapshotId,
+    scopes,
+  );
+  return {
+    structural: context.structural,
+    lossNotices: context.lossNotices ?? [],
+  };
 }
 
 /**
@@ -362,6 +380,8 @@ async function restoreStructural(
   restoredCount: number;
   skipped: SkipReport;
   canonicalSequence: number;
+  dropped: RestoreLossNotice[];
+  noOp: boolean;
 }> {
   const skipped = emptySkipReport();
   const inserts: SnapshotInsertPlan[] = [];
@@ -895,6 +915,8 @@ async function restoreStructural(
     restoredCount,
     skipped,
     canonicalSequence: applyResult.canonicalSequence,
+    dropped: applyResult.dropped ?? [],
+    noOp: applyResult.noOp ?? false,
   };
 }
 
@@ -974,7 +996,7 @@ async function restoreProjectSnapshotWithAuthority(
     projectId,
   );
 
-  const { restoredCount, skipped } = await restoreStructural(
+  const { restoredCount, skipped, dropped, noOp } = await restoreStructural(
     projectId,
     snapshotId,
     scopes,
@@ -989,5 +1011,7 @@ async function restoreProjectSnapshotWithAuthority(
     safetySnapshotId: safety.id,
     format: "structural",
     skipped,
+    dropped,
+    noOp,
   };
 }
