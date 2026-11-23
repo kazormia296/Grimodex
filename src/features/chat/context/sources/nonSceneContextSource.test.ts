@@ -1425,3 +1425,219 @@ describe("collectNonSceneContext", () => {
     expect(finalPrompt).not.toContain("RELATED_MATCH_SECRET_BODY");
   });
 });
+
+describe("collectNonSceneContext when the current scene cannot be resolved (DR-MP4-41 の向き)", () => {
+  const phaseHidden = (
+    id: string,
+    overrides: Partial<CodexContextEntry> = {},
+  ) =>
+    codexEntry(id, {
+      name: id,
+      summary: `${id.toUpperCase()}_SUM`,
+      content: doc(`${id.toUpperCase()}_BODY`),
+      ...overrides,
+    });
+  const ENTRIES = {
+    aria: phaseHidden("aria"),
+    borin: phaseHidden("borin", { contextMode: "always" }),
+    cael: phaseHidden("cael", { contextMode: "suppress" }),
+    dara: phaseHidden("dara", { contextMode: "suppress" }),
+    eli: phaseHidden("eli", { name: "Elivane", parentId: "dara" }),
+    fenn: phaseHidden("fenn", { contextMode: "always" }),
+    gale: phaseHidden("gale"),
+    hana: phaseHidden("hana", { name: "Hanavane" }),
+    iris: phaseHidden("iris", { name: "Irisvane" }),
+    jay: phaseHidden("jay", { name: "Jayvane" }),
+    calm: phaseHidden("calm"),
+    soft: phaseHidden("soft"),
+    lift: phaseHidden("lift", { contextMode: "hidden" }),
+  };
+  const PHASE_HIDDEN = [
+    "aria",
+    "borin",
+    "cael",
+    "eli",
+    "gale",
+    "hana",
+    "iris",
+    "jay",
+  ] as const;
+  /** What proves each entry reached the AI (a name only where nothing else shows it). */
+  const TOKEN: Partial<Record<keyof typeof ENTRIES, string>> = {
+    aria: "ARIA_SUM",
+    borin: "BORIN_SUM",
+    cael: "CAEL_SUM",
+    dara: "DARA_SUM",
+    eli: "ELI_SUM",
+    fenn: "FENN_SUM",
+    hana: "HANA_BODY",
+    iris: "IRIS_SUM",
+    jay: "JAY_SUM",
+    calm: "CALM_SUM",
+    soft: "SOFT_SUM",
+    lift: "LIFT_SUM",
+  };
+  const PHASES: CodexEntryPhase[] = [
+    ...PHASE_HIDDEN.map((id) =>
+      phase(`p-${id}`, id, "scene-2", { contextModeOverride: "hidden" }),
+    ),
+    phase("p-soft", "soft", "scene-2", { contextModeOverride: "suppress" }),
+    phase("p-lift", "lift", "scene-1", { contextModeOverride: "mentioned" }),
+  ];
+  const sceneIndex = buildSceneTimeIndex([
+    scene("scene-1", "a0"),
+    scene("scene-2", "a1"),
+  ]);
+
+  async function collect(
+    activeSceneId: string,
+    options: {
+      index?: ReturnType<typeof buildSceneTimeIndex>;
+      scope?: CreateNonSceneTurnContextRequestInput["scope"];
+      phases?: CodexEntryPhase[];
+      entries?: CodexContextEntry[];
+      overrides?: Partial<CreateNonSceneTurnContextRequestInput>;
+    } = {},
+  ) {
+    const entries = options.entries ?? Object.values(ENTRIES);
+    const phases = options.phases ?? PHASES;
+    const buildAggregatedScene = vi.fn(
+      async (_input: AggregatedSceneInput) => ({
+        aggregatedScene: { id: "project-1", title: "Project", content: "body" },
+        aggregatedDetected: [] as AggregatedSceneInput["detectableEntries"],
+      }),
+    );
+    const scope = options.scope ?? { kind: "project" as const };
+    const result = await collectNonSceneContext(
+      request({
+        sessionId: "session-1",
+        scope,
+        containerScope: scope.kind === "codex" ? "codex" : "project",
+        scopeAnchorId: scope.kind === "codex" ? scope.entryId : null,
+        activeSceneId,
+        outgoingUserMessage: "Tell me about aria, calm, soft and lift.",
+        mentionedCodexIds: ["jay"],
+        inputPinnedEntryIds: ["iris"],
+        activeTab: { nodeId: "hana", contentType: "codex" },
+        ...options.overrides,
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        getTemporalResolution: () => ({
+          sceneTimeIndex: options.index ?? sceneIndex,
+          resolutionMode: "reading",
+        }),
+        listPhases: async (ids) =>
+          phases.filter((candidate) => ids.includes(candidate.entryId)),
+        findMentionedEntries: async (text, targets) =>
+          targets.filter((target) => text.includes(target.name)),
+        listPinnedCodex: async () => [
+          pinnedCodex(ENTRIES.cael, "manual"),
+          pinnedCodex(ENTRIES.dara, "manual", true),
+        ],
+        listCodexRelations: async () => [
+          relation("relation-1", "fenn", "gale", "ally"),
+        ],
+        buildAggregatedScene,
+      }),
+    );
+    const haystack = `${JSON.stringify(result.promptInput)}\n${
+      buildSystemPrompt(result.promptInput).prompt
+    }`;
+    return { result, haystack, buildAggregatedScene };
+  }
+
+  it("keeps every path public while the scene is in the reading order (the control: the Phase has not started)", async () => {
+    const { haystack } = await collect("scene-1");
+    for (const id of [...PHASE_HIDDEN, "calm", "soft", "lift"] as const) {
+      // gale reaches the AI only as an identity (the aggregated scene's name lookup), not as text.
+      if (id === "gale") continue;
+      expect(haystack, id).toContain(TOKEN[id]!);
+    }
+  });
+
+  it.each(["", "   ", "n-note", "no-such-scene", " scene-1 "])(
+    "lets an entry that a later Phase hides through on every path today when activeSceneId is %j (fail-open, 今のまま)",
+    async (activeSceneId) => {
+      const { haystack } = await collect(activeSceneId);
+      for (const id of PHASE_HIDDEN) {
+        if (id === "gale") continue;
+        expect(haystack, id).toContain(TOKEN[id]!);
+      }
+    },
+  );
+
+  it.each(["", "n-note", "no-such-scene"])(
+    "keeps entries no Phase hides, a suppress-only Phase and a base-hidden entry the same when activeSceneId is %j",
+    async (activeSceneId) => {
+      const { haystack } = await collect(activeSceneId);
+      expect(haystack).toContain(TOKEN.calm!);
+      expect(haystack).toContain(TOKEN.soft!);
+      expect(haystack).toContain(TOKEN.dara!);
+      expect(haystack).not.toContain(TOKEN.lift!);
+    },
+  );
+
+  it.each(["", "n-note"])(
+    "hands the aggregated scene the entries a later Phase hides, today (activeSceneId %j)",
+    async (activeSceneId) => {
+      const { buildAggregatedScene } = await collect(activeSceneId);
+      const input = buildAggregatedScene.mock.calls[0]![0];
+      expect(input.detectableEntries.map((entry) => entry.id)).toEqual(
+        expect.arrayContaining(["aria", "calm", "soft"]),
+      );
+      // The identity lookup (relation / map reference / child) keeps gale as well.
+      expect(input.allEntries.map((entry) => entry.id)).toEqual(
+        expect.arrayContaining(["aria", "gale", "calm"]),
+      );
+    },
+  );
+
+  describe("the codex scope resolves at the latest state and does not depend on the scene (not changed)", () => {
+    // A Phase whose anchor scene is not in the reading order is skipped by the resolver, even at latest.
+    const dangling = phaseHidden("ghosty", { contextMode: "always" });
+    const applied = phaseHidden("applied", { contextMode: "always" });
+    const selected = phaseHidden("selected");
+    const extra = [dangling, applied, selected];
+    const extraPhases = [
+      phase("p-ghosty", "ghosty", "deleted-scene", {
+        contextModeOverride: "hidden",
+      }),
+      phase("p-applied", "applied", "scene-2", {
+        contextModeOverride: "hidden",
+      }),
+    ];
+
+    it.each([
+      ["a scene id", "scene-1"],
+      ["no scene", ""],
+      ["a note", "n-note"],
+    ])(
+      "keeps the result the same whether the current scene is %s",
+      async (_label, activeSceneId) => {
+        const { haystack } = await collect(activeSceneId, {
+          scope: { kind: "codex", entryId: "selected" },
+          entries: extra,
+          phases: extraPhases,
+        });
+        expect(haystack).toContain("SELECTED_SUM");
+        // The Phase that does apply at latest hides it; the skipped (dangling) one does not.
+        expect(haystack).not.toContain("APPLIED_SUM");
+        expect(haystack).toContain("GHOSTY_SUM");
+      },
+    );
+
+    it("applies no Phase at latest while the reading order is empty (an existing fail-open, not changed)", async () => {
+      const { haystack } = await collect("scene-1", {
+        scope: { kind: "codex", entryId: "selected" },
+        entries: extra,
+        phases: extraPhases,
+        index: buildSceneTimeIndex([]),
+      });
+      expect(haystack).toContain("SELECTED_SUM");
+      expect(haystack).toContain("APPLIED_SUM");
+      expect(haystack).toContain("GHOSTY_SUM");
+    });
+  });
+});

@@ -13,6 +13,7 @@ import { DEFAULT_AI_SETTINGS, type AiSettings } from "../../types";
 import {
   collectSceneContext,
   createSceneContextSourceDeps,
+  type SceneContextSourceDeps,
 } from "./sceneContextSource";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -128,6 +129,9 @@ interface RequestOverrides {
   semanticRecallEnabled?: boolean;
   hybridRecallEnabled?: boolean;
   semanticRerankerMode?: "off" | "shadow" | "apply";
+  /** The current scene id of the request (default "scene-1"). */
+  sceneId?: string;
+  chronicleEnabled?: boolean;
   route?: ReturnType<typeof resolveChatTurnRoute> | null;
   workspaceIdentity?: {
     workspaceKey: string;
@@ -144,7 +148,7 @@ function request(overrides: RequestOverrides = {}) {
       ? { workspaceIdentity: overrides.workspaceIdentity }
       : {}),
     sessionId: overrides.sessionId ?? null,
-    sceneId: "scene-1",
+    sceneId: overrides.sceneId ?? "scene-1",
     mode: "chat",
     route: overrides.route ?? null,
     budget: { contextWindow: 16_384, deliveryMode: "plain" },
@@ -162,7 +166,7 @@ function request(overrides: RequestOverrides = {}) {
       : null,
     settings: {
       injectBeats: false,
-      chronicleEnabled: false,
+      chronicleEnabled: overrides.chronicleEnabled ?? false,
       semanticRecallEnabled: overrides.semanticRecallEnabled ?? false,
       episodicRecallEnabled: false,
       hybridRecallEnabled: overrides.hybridRecallEnabled ?? false,
@@ -172,7 +176,7 @@ function request(overrides: RequestOverrides = {}) {
     trackRecallPromote: false,
     sourceSnapshot: {
       scene: {
-        id: "scene-1",
+        id: overrides.sceneId ?? "scene-1",
         title: "Scene",
         content: overrides.sceneContent ?? "Body",
         ...(overrides.snapshotPovName !== undefined
@@ -1526,5 +1530,265 @@ describe("collectSceneContext previousScene reading order", () => {
 
     expect(result.promptInput.previousScene).toBeUndefined();
     expect(result.promptInput.storySoFar).toBeUndefined();
+  });
+});
+
+describe("collectSceneContext when the current scene cannot be resolved (DR-MP4-41 の向き)", () => {
+  const SCENE_2 = "scene-2";
+  const sceneTwo: TreeNodeData = {
+    ...sceneNode,
+    id: SCENE_2,
+    title: "Scene 2",
+    sortOrder: "a1",
+  };
+  const noteNode: TreeNodeData = {
+    ...sceneNode,
+    id: "n-note",
+    title: "Note",
+    nodeType: "note",
+  };
+
+  /** Each entry that a Phase hides from scene 2 on. `token` is what leaks when it is public. */
+  const ENTRIES = {
+    aria: entry({
+      id: "aria",
+      name: "Aria",
+      summary: "ARIA_SUM",
+      content: doc("ARIA_BODY"),
+    }),
+    borin: entry({
+      id: "borin",
+      name: "Borin",
+      contextMode: "always",
+      summary: "BORIN_SUM",
+      content: doc("BORIN_BODY"),
+    }),
+    cael: entry({
+      id: "cael",
+      name: "Cael",
+      contextMode: "suppress",
+      summary: "CAEL_SUM",
+      content: doc("CAEL_BODY"),
+    }),
+    dara: entry({
+      id: "dara",
+      name: "Dara",
+      contextMode: "suppress",
+      summary: "DARA_SUM",
+      content: doc("DARA_BODY"),
+    }),
+    eli: entry({
+      id: "eli",
+      name: "Elivane",
+      parentId: "dara",
+      summary: "ELI_SUM",
+      content: doc("ELI_BODY"),
+    }),
+    fenn: entry({
+      id: "fenn",
+      name: "Fenn",
+      contextMode: "always",
+      summary: "FENN_SUM",
+    }),
+    gale: entry({
+      id: "gale",
+      name: "Galevane",
+      summary: "GALE_SUM",
+      content: doc("GALE_BODY"),
+    }),
+    hana: entry({
+      id: "hana",
+      name: "Hanavane",
+      summary: "HANA_SUM",
+      content: doc("HANA_BODY"),
+    }),
+    ivor: entry({
+      id: "ivor",
+      name: "Ivorvane",
+      summary: "IVOR_SUM",
+      content: doc("IVOR_BODY"),
+    }),
+    calm: entry({
+      id: "calm",
+      name: "Calm",
+      summary: "CALM_SUM",
+      content: doc("CALM_BODY"),
+    }),
+    soft: entry({
+      id: "soft",
+      name: "Soft",
+      summary: "SOFT_SUM",
+      content: doc("SOFT_BODY"),
+    }),
+    lift: entry({
+      id: "lift",
+      name: "Lift",
+      contextMode: "hidden",
+      summary: "LIFT_SUM",
+      content: doc("LIFT_BODY"),
+    }),
+  };
+  /** The text that proves each entry reached the AI (a name only where the body never shows it). */
+  const TOKEN: Record<keyof typeof ENTRIES, string> = {
+    aria: "ARIA_SUM",
+    borin: "BORIN_SUM",
+    cael: "CAEL_SUM",
+    eli: "ELI_SUM",
+    gale: "Galevane",
+    hana: "HANA_BODY",
+    ivor: "POV of this scene: Ivorvane",
+    calm: "CALM_SUM",
+    soft: "SOFT_SUM",
+    // the next two only carry a parent or a base-hidden state, not a Phase that hides them
+    dara: "DARA_SUM",
+    fenn: "FENN_SUM",
+    lift: "LIFT_SUM",
+  };
+  /** Public at base, hidden by a Phase from scene 2 on. */
+  const PHASE_HIDDEN = [
+    "aria",
+    "borin",
+    "cael",
+    "eli",
+    "gale",
+    "hana",
+    "ivor",
+  ] as const;
+  const PHASES: CodexEntryPhase[] = [
+    ...PHASE_HIDDEN.map((id) =>
+      phase({
+        id: `p-${id}`,
+        entryId: id,
+        anchorNodeId: SCENE_2,
+        contextModeOverride: "hidden",
+      }),
+    ),
+    phase({
+      id: "p-soft",
+      entryId: "soft",
+      anchorNodeId: SCENE_2,
+      contextModeOverride: "suppress",
+    }),
+    phase({
+      id: "p-lift",
+      entryId: "lift",
+      anchorNodeId: "scene-1",
+      contextModeOverride: "mentioned",
+    }),
+  ];
+  const RELATION = {
+    id: "relation-1",
+    projectId: "project-1",
+    fromCodexId: "fenn",
+    toCodexId: "gale",
+    relationType: "ally",
+    label: "ally",
+    directionality: "directed" as const,
+    inverseLabel: null,
+    semanticKey: "project-1|fenn|gale|ally|ally|directed",
+    version: 1,
+    depthHint: null,
+    sourceMapEdgeId: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  async function collect(
+    sceneId: string,
+    options: {
+      chronicle?: SceneContextSourceDeps["buildChronicleSnapshot"];
+    } = {},
+  ) {
+    const entries = Object.values(ENTRIES);
+    // The POV is read from the current scene's node, so the scenes that can be current name ivor.
+    const currentNodes: TreeNodeData[] = [
+      { ...sceneNode, povCharacterId: "ivor" },
+      sceneTwo,
+      noteNode,
+      {
+        ...sceneNode,
+        id: "scene-archived",
+        sortOrder: "a2",
+        archivedAt: NOW,
+        povCharacterId: "ivor",
+      },
+    ];
+    const base = phaseDeps(PHASES);
+    const deps = {
+      ...base,
+      listTreeNodes: () => currentNodes,
+      getTemporalResolution: () => ({
+        sceneTimeIndex: buildSceneTimeIndex(currentNodes),
+        resolutionMode: "reading" as const,
+      }),
+      listPinnedCodex: async () => [
+        pinnedCodex(ENTRIES.cael),
+        pinnedCodex(ENTRIES.dara, "manual", true),
+      ],
+      listCodexRelations: async () => [RELATION],
+      ...(options.chronicle
+        ? { buildChronicleSnapshot: options.chronicle }
+        : {}),
+    };
+    const result = await collectSceneContext(
+      request({
+        sceneId,
+        entries,
+        sessionId: "session-1",
+        sceneContent: "Aria appears with Calm, Soft and Lift.",
+        activeTabId: "hana",
+        chronicleEnabled: options.chronicle !== undefined,
+      }),
+      deps,
+    );
+    const haystack = `${JSON.stringify(result.promptInput)}\n${
+      buildSystemPrompt(result.promptInput).prompt
+    }`;
+    return { result, haystack };
+  }
+
+  it("keeps every path public while the scene is in the reading order (the control: the Phase has not started)", async () => {
+    const { haystack } = await collect("scene-1");
+    for (const id of [...PHASE_HIDDEN, "calm", "soft", "lift"] as const) {
+      expect(haystack, id).toContain(TOKEN[id]);
+    }
+  });
+
+  it.each(["n-note", "no-such-scene", "scene-archived"])(
+    "lets an entry that a later Phase hides through on every path today when the scene is %s (fail-open, 今のまま)",
+    async (sceneId) => {
+      const { haystack } = await collect(sceneId);
+      for (const id of PHASE_HIDDEN) {
+        // The POV name comes from the current scene's node; a note or a missing id has none.
+        if (id === "ivor" && sceneId !== "scene-archived") continue;
+        expect(haystack, id).toContain(TOKEN[id]);
+      }
+    },
+  );
+
+  it.each(["n-note", "no-such-scene", "scene-archived"])(
+    "keeps entries no Phase hides, a suppress-only Phase and a base-hidden entry the same when the scene is %s",
+    async (sceneId) => {
+      const { haystack } = await collect(sceneId);
+      expect(haystack).toContain(TOKEN.calm);
+      expect(haystack).toContain(TOKEN.soft);
+      expect(haystack).toContain(TOKEN.dara);
+      expect(haystack).not.toContain(TOKEN.lift);
+    },
+  );
+
+  it("feeds the chronicle snapshot the entries that are still public (the input of the chronicle block)", async () => {
+    const chronicle = vi.fn<SceneContextSourceDeps["buildChronicleSnapshot"]>(
+      async () => undefined,
+    );
+    await collect("n-note", { chronicle });
+    const input = chronicle.mock.calls[0]![0];
+    expect([...input.codexNames.keys()]).toEqual(
+      expect.arrayContaining(["aria", "borin", "gale"]),
+    );
+    expect(input.sceneCodexIds).toEqual(
+      expect.arrayContaining(["aria", "borin"]),
+    );
+    expect(input.mentionedCodexIds).toEqual(expect.arrayContaining(["cael"]));
   });
 });
