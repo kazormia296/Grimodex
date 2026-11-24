@@ -44,14 +44,14 @@ c7 は §2 の線引きを「c7 側の実装と食い違わない」と回答し
 
 ロードマップの表示項目を、実際に取れるものに対応づける（**起案者の読み**）：
 
-| 表示                                   | 取れる元                                                                                                                                                                                                                   |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 変更の種類                             | `IdentityDiffChange`：Added＝追加、Removed＝消失、ContentChanged＝改訂、Unchanged＝影響なし。Evidence の移動・喪失は Evidence 行（`evidence_id`、`source_ref`、`start_utf16`／`end_utf16`、`quote`）の比較で決定的に取れる |
-| 前の承認／保留の値、新しい提案         | 直前の reviewed revision と新しい revision の同じ object                                                                                                                                                                   |
-| 原因の本文                             | 新しい Evidence の `quote` と本文の範囲                                                                                                                                                                                    |
-| Review・Freshness・Projection の状態   | Decision（revision 単位）、Freshness／Build Action（保存済み）、Projection の状態                                                                                                                                          |
-| 影響する下流                           | 逆引きの依存辺（`narrative_dependency_edges`）                                                                                                                                                                             |
-| 適用／却下／保留／編集／この根拠は無視 | revision 単位の Decision で実現できる範囲だけ（§4）                                                                                                                                                                        |
+| 表示                                   | 取れる元                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 変更の種類                             | 今の bundle の object ごとに、その identity を含む直前の承認済み revision と比べる（Added＝追加、ContentChanged＝改訂、Unchanged＝影響なし、Unresolved＝走査の上限で前が見つからず判定できない）。**Removed は出さない**（選択に含まれなかっただけの object を消失と誤報しないため。元の Codex の項目の消失は Freshness の `source-missing` が扱う）。Evidence の移動・喪失は `(source_ref, quote)` の完全一致で取り、Relation は `evidence_ids` のみで本文が無いので比べない |
+| 前の承認／保留の値、新しい提案         | object ごとの直前の承認済み revision（履歴 reader で承認時点の姿を読む）と、今の revision の同じ object                                                                                                                                                                                                                                                                                                                                                                       |
+| 原因の本文                             | 新しい Evidence の `quote` と本文の範囲                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Review・Freshness・Projection の状態   | Decision（revision 単位）、Freshness／Build Action（保存済み）、Projection の状態                                                                                                                                                                                                                                                                                                                                                                                             |
+| 影響する下流                           | 逆引きの依存辺（`narrative_dependency_edges`）                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 適用／却下／保留／編集／この根拠は無視 | revision 単位の Decision で実現できる範囲だけ（§4）                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 最初の版で扱う種類：追加・消失・改訂・影響なし、Evidence の移動・喪失。**後に回す**：Scope の変更、矛盾の導入、置換、撤回の提案
 （それぞれ別の材料が要る。無理に最初の版に入れない）。「作者が起こす再解釈の結果」だけを扱う（送信の経路が閉じている間は手動）。
@@ -66,20 +66,23 @@ c7 は §2 の線引きを「c7 側の実装と食い違わない」と回答し
 
 ## 5. 実装の段（旗は閉じたまま、小さい commit、依存順）
 
-1. Rust：直前と今の reviewed revision の object 一覧から `IdentityDiffObject` を作る読み取り（純粋な変換）と、Evidence の移動・喪失の比較（純粋な計算）。呼び手なし。
+1. Rust：今の bundle の object 一覧と、object ごとの直前の承認済み revision の一覧から `IdentityDiffObject` を作る読み取り（純粋な変換）と、Evidence の移動・喪失の比較（純粋な計算）。呼び手なし。
 2. Rust：`ChangeReviewReader` の read（DB を読む。Decision・Freshness・Build Action・下流の逆引きを付ける）。読み取りだけで、保存しない。
 3. IPC：読み取り専用の typed command（`electron/shared/ipcContract.ts` が正本。[add-electron-command](../../.agents/skills/add-electron-command/SKILL.md)）。旗が閉じている間は renderer から呼ばれない。
 4. renderer：`ChangeReviewItem` を受け取る live 経路を `ChangeReview.tsx` に足す（見本の経路は残す。印の出し分けは c7 の設計に合わせる）。**UI の実装は Claude が持つ**（ユーザー 11-24、c7 経由の伝聞）。
 5. 公開の時に旗を開ける（別の明示の指示）。
 
-### 5.1 段 2 で分かった制約（実装済み `read_nir1_change_review` から）
+### 5.1 段 2 で分かったことと、独立レビューでの修正（2026-11-25）
 
-- 既存の typed revision の reader は、revision の source token を live の source と照合する。**前の承認済み revision の元の Codex の項目が変わると、前の revision は
-  「古い」として読めなくなる**（`revision-not-current` とは別の理由。Codex の報告）。このため、DB 経由では `content-changed`（token が変わった object）に到達できない。
-  変更レビューが一番見せたい場面（承認した後に元が変わった）を、今の reader では出せない。
-- 対応の案（技術判断）：前の revision を、live の source と照合しない**履歴の reader**で読む（承認済みの payload は不変で、比べるのは「承認した時点の姿」と「今の提案」）。
-  新しい reader は読み取りだけで、保存は変えない。Freshness は別に付ける。この reader の足し方（既存の core に引数を足すか、別の関数か）は、次の段で決める。
-- 「直前」の特定（`find_previous_approved_typed_revision_id`）は、project・typed lane・承認済み・時系列で決定的（実装・試験済み）。
+- 既存の typed revision の reader は、revision の source token を live の source と照合する。承認後に元の Codex の項目が変わると前の revision は読めなくなる。
+  対応として、live の Scope・source token・Freshness を照合しない**履歴の reader**を足した（`e6d727719`、DR-M4PF-8）。
+- 独立レビュー（Fable、read-only）の指摘 H1：typed revision は場面と選択ごとに別々に作られ、project に承認済みが複数並ぶ。
+  「直前の承認済み revision」を project の typed lane から 1 つ選ぶ定義は、別の場面の承認を「消えた」と誤報する。
+  **今の bundle の object ごとに、その identity を含む直前の承認済み revision と比べる**定義に改め、`removed` は出さない（DR-M4PF-9）。
+  走査は上限つきで、上限で打ち切って前が見つからない object は `Unresolved` とし、「無い」と推測しない（有界の lookup の契約）。
+- 読めない理由は enum にして区別する（今の revision が読めない／前の revision の破損）。復元の後の最初の revision は、旧 epoch の承認済みを SQL で除外して「初回」として読む。
+- 後から hidden／suppress にした Codex の項目は、変更の種類だけ返し、Evidence の引用は返さない（DR-M4PF-8 の追補。AI の経路につなぐ前の守り）。
+- 実装の現状：Decision は `review_status` のみ、Freshness は consumer の点引き、下流の逆引きは別関数（`nir1_change_review_downstream.rs`）で未接続（選んだ項目ごとにカーソルで引く）。
 
 ## 6. ユーザーに伺うこと（束ねて）
 

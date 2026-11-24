@@ -4,7 +4,7 @@
 前提の契約：[assertionId の契約案](m4-assertion-identity-contract-draft.md)（Assertion の任意の `identityDeclaration`、`38c7ca63b`）。
 
 **確認済みと起案者の読み：** ユーザーが確認済みなのは契約案 §4.2 の 3 点（Assertion への任意の `identityDeclaration`、最初の slice が M2-D1、送信の形の方向）だけ。
-§2 の判断（bundle は `none`、object 単位の key、registry への宣言）は起案者の技術判断で、registry の宣言は新しい契約面として次の伺いに束ねる。
+§2 の判断（bundle は `none`、object 単位の key）は起案者の技術判断。**宣言を policy に置くこと（§2.3）は、ユーザーが 2026-11-24 に「registry の宣言は推奨どおりでいいです」と確認済み**（contracts の追記 2）。置き場を別 file にした点は、その後の起案者の技術判断。
 
 ## 1. 事実（read-only の調査、file:line は 2026-11-24 の origin/master `373c8d4b5` 基点）
 
@@ -39,21 +39,16 @@
 - 限界（diff で扱う）：Codex Entry が削除・統合されると id が変わる。Core は同一視しない。diff は「消えた」と「現れた」の対として出し、
   「同一性が失われた」と表示する（作者が統合を宣言する経路は ERM 側。M2-D1 の範囲外）。
 
-### 2.3 Producer の宣言（2026-11-24 にユーザーが「registry の宣言は推奨どおり」と確認）
+### 2.3 Producer の宣言（ユーザー確認済み：「registry の宣言は推奨どおり」）
 
-- 語：Codex の id 由来の同一性を契約の `content-keyed`（内容由来）と呼ばない。registry では `producer-declared-object-key` とする
+- 語：Codex の id 由来の同一性を契約の `content-keyed`（内容由来）と呼ばない。policy では `producer-declared-object-key` とする
   （抽出 Artifact 契約 §4.1 の内容キーと混ざるのを避ける）。
 - 置き場（実装済み、`6f7395e44`）：宣言は producer registry の隣の別 file `policies/narrative/narrative-object-identity-declarations.json`（schema 付き）に置き、producerId で registry の entry と紐づける。
   registry の entry に足すと、registry 全体が入る maintenance の `producer_generation_set_digest`（`maintenance_contracts.rs:543`）が変わり、完了済み run の skip evidence が全部無効になるため。
   registry の SHA-256 は不変、`narrative_maintenance_contracts` の試験は変わらず通る。
-- 置き場の検討の記録（元の問い）：ロードマップは「Codex の抽出 Producer の宣言は無い」としている。既存の `nir1-reviewed-entity-relation-v1`（index の writer）に足しても、
-  抽出側の宣言にはならない可能性がある。実装前に、同じ entry に `identity` を足す案と、抽出側の writer の entry を新設する案を比べて決める。
 - key の定義：変更レビューの「今」の側は未 review の revision で、roster の行が無いことがある。その場合の key は bundle の `entity_id`／`edge_id`（同じ `codex:`／`codex-relation:` の接頭辞）で定義する。
-
-- producer registry の `nir1-reviewed-entity-relation-v1` に、同一性の宣言を足す：粒度＝object、key＝`source_object_identity`、kind＝`content-keyed` 相当
-  （Codex id 由来。内容 digest ではない点を明記し、名称は実装時に `producer-keyed` へ改める余地を残す。契約側の kind の語は §3 の問いで決める）。
-- registry の schema は `additionalProperties: false` で厳密（semantic-index の entry は 2 つの const に完全一致）。
-  宣言を足すには schema、Rust の `maintenance_contracts.rs`、TS の `validate-semantic-core-boundary.mjs` の 3 か所を揃える。
+- 限界（独立レビューの指摘）：この宣言は、今は**挙動を駆動しない**（policy・index・`narrative_change_review.rs`・`nir1_change_review_read.rs` が同じ接頭辞を別々に持ち、試験が結ぶのは policy と index だけ）。
+  diff 側が宣言を読む形にするのは、Producer が複数になる段（M2-D2 以降）で扱う。
 
 ### 2.4 互換 adapter
 
@@ -65,21 +60,21 @@
 - Decision は bundle 単位のまま。semantic diff の各項目は「どの revision の、どの object」を指し、Decision は revision の Decision を継承する。
 - 項目ごとの Decision は M4 の変更レビューの画面の設計で決める（M2-D1 では足さない）。
 
-### 2.6 Structure Health の規則（2026-11-24 に改訂）
+### 2.6 Structure Health の規則（2026-11-24 に改訂、2026-11-25 に変更レビューの比較の定義を直した）
 
 - revision の内側の規則は既存の検証が守っているので、新しく足さない：
   - 同じ Entity／Relation の重複：bundle の検証（`narrative_nir1.rs` の「duplicate entity／relation」）と、roster の `NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL`（`nir1_entity_relation_index.rs:551`）。
   - Relation の端点が同じ bundle に無い：`narrative_nir1.rs` の「endpoint is not present in the same project bundle」。
-- 新しく要るのは revision をまたぐ規則だけで、M4 の semantic diff の段（identity を使う側）に置く：
-  - 前の reviewed revision にあった object が、Codex に Entry がまだあるのに次の revision から消えた → 「説明のない消失」として変更レビューに出す。
-  - Entry が Codex から無くなった（削除・統合）→ §2.2 のとおり「同一性が失われた」として出す。
-- したがって M2-D1 の Structure Health は、コードの追加なし（既存の検証を、この wave の規則として registry の declaration に参照する記述を足すだけ。schema 変更は伺う後）。
+- revision をまたぐ比較（変更レビュー）：typed revision は場面と選択ごとに別々に作られ、project に承認済みが複数並ぶ（独立レビューの指摘 H1）。
+  したがって「直前の承認済み revision」を 1 つ選んで集合の差を取る定義は採らない。**今の bundle の object ごとに、その identity を含む直前の承認済み revision と比べる**（DR-M4PF-9）。
+  bundle にあって前に無い object は added、あっても token が違えば content-changed、同じなら unchanged。**`removed` はこの比較では出さない**（選択に含まれなかっただけの object を消失と誤報しないため）。
+  元の Codex の項目が無くなった場合は、Freshness の `source-missing` が扱う。
+- したがって M2-D1 の Structure Health は、コードの追加なし。
 
-## 3. 次に確かめる／伺うこと
+## 3. 決まったこと（旧「次に確かめる／伺うこと」）
 
-1. §2.3 の kind の語：契約の `content-keyed`（内容由来）と、Codex id 由来の同一性を同じ語で呼ぶか。呼ぶなら契約側の定義を「Producer が宣言した key」に広げる。
-   技術判断の範囲内なので、実装時に契約案へ反映し、PR 本文に残す。
-2. registry の宣言を足す作業は 3 か所に跨るため、実装は 1 commit で揃えて検証する。
+1. kind の語は、契約の `content-keyed`（内容由来）と分け、policy では `producer-declared-object-key` とする（技術判断、DR-M4PF-3）。
+2. 宣言は別 file に置いた（§2.3）。registry は変えない。
 
 ## 4. やらないこと
 

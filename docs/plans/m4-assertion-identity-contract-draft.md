@@ -39,7 +39,7 @@
 - D1 の bundle の Assertion は「ある時点の抽出結果の束」で、run をまたいで続く概念ではない。宣言は `none`（`assertionId` は null のまま）。
   先の版が書いた「D1 の Producer は `content-keyed`」は撤回する（bundle に内容キーを付けると、1 項目の変更で束の ID が変わる）。
 - semantic diff の粒度は Entity／Relation の 1 件ごと。key は Producer（Codex の抽出）が宣言する Codex の id（`codex:{entity_id}`／`codex-relation:{edge_id}`）で、
-  Core の推測ではない。この宣言を producer registry に置く点は、§4 の問い 1 の回答（Assertion の `identityDeclaration`）の外にある新しい契約面なので、次の伺いに束ねる。
+  Core の推測ではない。この宣言を policy に置く点は、§4 の問い 1 の回答の外にある新しい契約面だったが、ユーザーが「registry の宣言は推奨どおりでいいです」と確認済み（2026-11-24、contracts の追記 2）。置き場は producer registry の隣の別 file（registry の digest を動かさないため、[M2-D1 の設計](m2-d1-identity-design-draft.md) §2.3）。
 - 互換 adapter は、released workspace の保存済み Artifact を `none` として読み、書き換えない。
 - Review／Projection の対応と Structure Health の規則は、設計文書に従って別の commit で起案する。
 
