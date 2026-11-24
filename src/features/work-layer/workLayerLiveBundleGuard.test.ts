@@ -29,7 +29,8 @@ function containsReturn(node: ts.Node): boolean {
 }
 
 /**
- * The conditions that stand between a function's start and `node`: `if (c) { ...node... }`
+ * The conditions that stand between the start of the enclosing component or hook and `node`
+ * (nested callbacks such as `lazy(() => import(...))` and effects are looked through): `if (c) { ...node... }`
  * encloses it, and an earlier `if (c) { ...; return; }` in an enclosing block rules out
  * every path that does not satisfy `!c`.
  */
@@ -54,13 +55,6 @@ function guardsOf(node: ts.Node): string[] {
           guards.push(statement.expression.getText());
         }
       }
-    }
-    if (
-      ts.isArrowFunction(parent) ||
-      ts.isFunctionExpression(parent) ||
-      ts.isFunctionDeclaration(parent)
-    ) {
-      break;
     }
   }
   return guards;
@@ -101,6 +95,7 @@ const guardedModules = [
   "workLayerLivePort",
   "workLayerLiveReaders",
   "workLayerFixture",
+  "CodexStructureReviewHostBody",
 ];
 
 /** The only places allowed to import a guarded module, and the guards each must sit behind. */
@@ -114,6 +109,11 @@ const allowedDynamicImports = [
     file: "features/work-layer/useWorkLayerPreviewPort.ts",
     modules: ["workLayerFixture"],
     requiredGuards: [/import\.meta\.env\.DEV/, /shouldEnableWorkLayerPreview/],
+  },
+  {
+    file: "features/codex/CodexStructureReviewHost.tsx",
+    modules: ["CodexStructureReviewHostBody"],
+    requiredGuards: [/isCodexStructureExtractionReviewEnabled/],
   },
   {
     file: "features/work-layer/WorkLayerPrototypePreview.tsx",
@@ -183,18 +183,39 @@ describe("Work Layer live bundle boundaries", () => {
     },
   );
 
-  it("opens the live port only when active, enabled, a real project exists, and the fixture is not preferred", () => {
+  it("opens the live port only when active, a real project exists, and the fixture is not preferred", () => {
     const liveHook = readFileSync(
       resolve(sourceRoot, "features/editor/useWorkLayerLivePort.ts"),
       "utf8",
     );
     expect(liveHook).toMatch(
-      /const eligible =\s*activeWorkLayer && liveEnabled && !fixturePreferred && projectId != null;/,
+      /const eligible = activeWorkLayer && !fixturePreferred && projectId != null;/,
     );
     expect(liveHook).toMatch(
       /import\.meta\.env\.DEV && import\.meta\.env\.VITE_WORK_LAYER_FIXTURE === "true"/,
     );
-    expect(liveHook).toMatch(/const liveEnabled = isWorkLayerLiveEnabled\(\)/);
+  });
+
+  it("removes the live hook and the review host from a closed-flag build (the flag is a build-time constant in the same module)", () => {
+    const read = (file: string) =>
+      readFileSync(resolve(sourceRoot, file), "utf8");
+    const liveHook = read("features/editor/useWorkLayerLivePort.ts");
+    // "true"／"1" だけ開く。`import.meta.env.*` は build が値に置き換える。
+    expect(liveHook).toMatch(
+      /const LIVE_BUILD =\s*import\.meta\.env\.VITE_WORK_LAYER_LIVE === "true" \|\|\s*import\.meta\.env\.VITE_WORK_LAYER_LIVE === "1";/,
+    );
+    expect(liveHook).toMatch(
+      /useWorkLayerLivePort:[\s\S]*?=\s*LIVE_BUILD\s*\?\s*useLiveWorkLayerPort\s*:\s*useNoLiveWorkLayerPort/,
+    );
+
+    const reviewHost = read("features/codex/CodexStructureReviewHost.tsx");
+    // 意味は isCodexStructureExtractionReviewEnabled と同じ：true／1 で開き、false／0 で閉じ、未指定は DEV。
+    expect(reviewHost).toMatch(
+      /const REVIEW_BUILD =[\s\S]*?=== "true"[\s\S]*?=== "1"[\s\S]*?!== "false"[\s\S]*?!== "0"[\s\S]*?import\.meta\.env\.DEV/,
+    );
+    expect(reviewHost).toMatch(
+      /CodexStructureReviewHost: ComponentType = REVIEW_BUILD\s*\?\s*ReviewHost\s*:\s*NoReviewHost/,
+    );
   });
 
   it("keeps feature and IPC imports outside the pure Work Layer folder", () => {
