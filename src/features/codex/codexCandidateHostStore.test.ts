@@ -98,6 +98,31 @@ describe("syncProject", () => {
     await vi.waitFor(() => expect(store().dismissedLoaded).toBe(true));
     expect(store().dismissed).toEqual(new Set(["雨"]));
   });
+
+  it("retries a failed dismissal read on the next sync of the same project, but not while one is running", async () => {
+    const running = deferred<Set<string>>();
+    loadMock
+      .mockRejectedValueOnce(new Error("read failed"))
+      .mockReturnValueOnce(running.promise);
+
+    store().syncProject("p1");
+    await vi.waitFor(() => expect(loadMock).toHaveBeenCalledTimes(1));
+    // 失敗の後始末（catch → finally）が終わるのを待つ。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(store().dismissedLoaded).toBe(false);
+
+    store().syncProject("p1");
+    expect(loadMock).toHaveBeenCalledTimes(2);
+    store().syncProject("p1");
+    expect(loadMock).toHaveBeenCalledTimes(2);
+
+    running.resolve(new Set(["雨"]));
+    await vi.waitFor(() => expect(store().dismissedLoaded).toBe(true));
+    expect(store().dismissed).toEqual(new Set(["雨"]));
+
+    store().syncProject("p1");
+    expect(loadMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("structure review state", () => {
@@ -215,6 +240,26 @@ describe("requestScan", () => {
       status: "done",
       candidates: [candidate("雨")],
     });
+  });
+
+  it("settles a discarded queued request at once, even while the running scan never finishes", async () => {
+    store().syncProject("p1");
+    const neverFinishes = deferred<CodexCandidateScanResult>();
+    extractMock.mockReturnValue(neverFinishes.promise);
+    void store().requestScan();
+    await vi.waitFor(() => expect(extractMock).toHaveBeenCalledTimes(1));
+
+    // 走査中に別の作品の要求が来て、待ちの task ができる。
+    store().syncProject("p2");
+    const queued = store().requestScan();
+    expect(extractMock).toHaveBeenCalledTimes(1);
+
+    // さらに作品が替わると、待ちの task は捨てられ、待っていた側が解決する。
+    store().syncProject("p3");
+    await expect(queued).resolves.toBeUndefined();
+    expect(extractMock).toHaveBeenCalledTimes(1);
+    expect(store().projectId).toBe("p3");
+    expect(store().scan).toEqual({ status: "idle", candidates: [] });
   });
 
   it("drops a stale result and scans the newly selected project", async () => {
