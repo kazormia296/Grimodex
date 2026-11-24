@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const m = vi.hoisted(() => ({
-  agentCreateEvent: vi.fn(async () => ({ id: "e-new", title: "戴冠" })),
-  agentUpdateEvent: vi.fn(async () => undefined),
+  agentCreateEvent: vi.fn(async (_input: Record<string, unknown>) => ({
+    id: "e-new",
+    title: "戴冠",
+  })),
+  agentUpdateEvent: vi.fn(async (_input: Record<string, unknown>) => undefined),
   agentDeleteEvent: vi.fn(async () => undefined),
   agentSetEventParticipants: vi.fn(async () => undefined),
   agentLinkSceneEvent: vi.fn(async () => undefined),
@@ -109,7 +112,30 @@ describe("createEventTool", () => {
         sceneIds: ["s1"],
       }),
     );
+    expect(m.agentCreateEvent.mock.calls[0]?.[0]).not.toHaveProperty("secret");
     expect((r.content as { id: string }).id).toBe("e-new");
+  });
+
+  it.each([true, "true", 1, null])(
+    "secret=%j は Native writer を呼ばずに拒否する",
+    async (secret) => {
+      const r = await createEventTool(
+        { title: "x", secret },
+        "event-secret-rejected-request",
+      );
+      expect(r.error).toBe(
+        "secret is no longer supported: events cannot be hidden from the AI. Omit it.",
+      );
+      expect(m.agentCreateEvent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("secret=false は捨てて Native writer に渡さない", async () => {
+    await createEventTool(
+      { title: "x", secret: false },
+      "event-secret-false-request",
+    );
+    expect(m.agentCreateEvent.mock.calls[0]?.[0]).not.toHaveProperty("secret");
   });
 
   it("不正 kind は generic に丸める", async () => {
@@ -169,6 +195,29 @@ describe("update/delete", () => {
       }),
       { requestId: "event-update-request" },
     );
+    expect(m.agentUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty("secret");
+  });
+
+  it.each([true, "true", 1, null])(
+    "update_event の secret=%j は Native writer を呼ばずに拒否する",
+    async (secret) => {
+      const r = await updateEventTool(
+        { eventId: "e1", secret },
+        "event-update-secret-rejected-request",
+      );
+      expect(r.error).toBe(
+        "secret is no longer supported: events cannot be hidden from the AI. Omit it.",
+      );
+      expect(m.agentUpdateEvent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("update_event の secret=false は捨てて Native writer に渡さない", async () => {
+    await updateEventTool(
+      { eventId: "e1", secret: false },
+      "event-update-secret-false-request",
+    );
+    expect(m.agentUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty("secret");
   });
   it("delete_event は agentDeleteEvent を呼ぶ", async () => {
     await deleteEventTool({ eventId: "e1" }, "event-delete-request");

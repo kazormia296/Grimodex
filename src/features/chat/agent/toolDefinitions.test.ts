@@ -16,6 +16,36 @@ import {
 } from "./toolManifest";
 
 describe("toolDefinitions", () => {
+  it("event tools retire secret while keeping neutral disclosure metadata; foreshadow secret remains", () => {
+    const tools = new Map(AGENT_TOOLS.map((tool) => [tool.name, tool]));
+    const disclosurePrefix =
+      "Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI.";
+    const disclosureDescriptions: Record<string, string> = {
+      create_event: `${disclosurePrefix} Omit or pass empty for none.`,
+      update_event: `${disclosurePrefix} Omit to leave unchanged; pass an empty string to clear.`,
+    };
+
+    for (const name of ["create_event", "update_event"]) {
+      const tool = tools.get(name)!;
+      expect(tool.inputSchema.properties).not.toHaveProperty("secret");
+      const description =
+        tool.inputSchema.properties.revealSceneId?.description ?? "";
+      expect(description).toBe(disclosureDescriptions[name]);
+      expect(
+        description
+          .replace("does not hide the event from the AI", "")
+          .toLowerCase(),
+      ).not.toMatch(/\b(?:hide|invisible)\b/u);
+    }
+
+    expect(
+      tools.get("create_foreshadow")!.inputSchema.properties,
+    ).toHaveProperty("secret");
+    expect(
+      tools.get("update_foreshadow")!.inputSchema.properties,
+    ).toHaveProperty("secret");
+  });
+
   it("sorts tools by name deterministically", () => {
     const tools = getDeterministicAgentTools();
     const names = tools.map((t) => t.name);

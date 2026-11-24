@@ -97,6 +97,12 @@ export async function createEventTool(
   requestId?: string,
   authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
+  if (Object.hasOwn(params, "secret") && params["secret"] !== false) {
+    return fail(
+      "create_event",
+      "secret is no longer supported: events cannot be hidden from the AI. Omit it.",
+    );
+  }
   const title = str(params["title"]);
   if (!title) return fail("create_event", "title is required");
   if (!requestId?.trim()) {
@@ -121,7 +127,6 @@ export async function createEventTool(
       endMinute: optNum(params["endMinute"]),
       startGranularity: coerceGranularity(params["startGranularity"]),
       endGranularity: coerceGranularity(params["endGranularity"]),
-      secret: params["secret"] === true,
       // 空白のみ入力も null（自動導出）へ正規化（TS 層で契約を明示）。
       revealSceneId: str(params["revealSceneId"]) || null,
       participantCodexIds: strArray(params["participantCodexIds"]),
@@ -152,6 +157,12 @@ export async function updateEventTool(
   requestId?: string,
   authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
+  if (Object.hasOwn(params, "secret") && params["secret"] !== false) {
+    return fail(
+      "update_event",
+      "secret is no longer supported: events cannot be hidden from the AI. Omit it.",
+    );
+  }
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("update_event", "eventId is required");
   const visibleEvent = await visibleEventForWrite(eventId);
@@ -197,10 +208,6 @@ export async function updateEventTool(
         endGranularity:
           params["endGranularity"] !== undefined
             ? coerceGranularity(params["endGranularity"])
-            : undefined,
-        secret:
-          params["secret"] !== undefined
-            ? params["secret"] === true
             : undefined,
         revealSceneId:
           params["revealSceneId"] !== undefined
