@@ -114,6 +114,21 @@ function startRequest(
     },
     systemCacheSegments: null,
     systemVolatileTail: null,
+    fullyInjectedIds: [],
+    loop: {
+      tokenBudget: 2000,
+      maxToolCalls: 10,
+      maxUserQuestions: 8,
+      contextWindow: 8000,
+      requestMaxOutputTokens: 4096,
+      language: "ja",
+      controlMessages: {
+        callLimitMessage: "calls",
+        tokenBudgetMessage: "tokens",
+        userQuestionLimitMessage: "questions",
+      },
+      fallbackSystem: "system",
+    },
     tools: [],
     ...extra,
   };
