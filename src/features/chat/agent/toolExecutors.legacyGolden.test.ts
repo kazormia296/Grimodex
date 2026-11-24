@@ -796,14 +796,16 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     expect(ids).toContain("ev-war");
   });
 
-  it("search_events：読む順（store の nodes）も dense の await の後で読む（最中に nodes を空にすると secret は全部 hidden）", async () => {
+  it("search_events：dense の最中に nodes が空になっても secret な出来事を返す", async () => {
     await setLegacyReadWorld(MAIN_S3);
     legacyReadInvokeBridge.override(
       "events_semantic_search",
       () => LEGACY_READ_CANNED_EVENT_HITS,
     );
+    let emptied = false;
     legacyReadInvokeBridge.setOnCall(({ cmd }) => {
       if (cmd === "events_semantic_search") {
+        emptied = true;
         useTreeStore.setState({ nodes: [] });
       }
     });
@@ -811,7 +813,9 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     const ids = (result.content as Array<{ eventId: string }>).map(
       (e) => e.eventId,
     );
-    expect(ids).not.toContain("ev-war");
+    expect(emptied).toBe(true);
+    expect(ids).toContain("ev-war");
+    expect(ids).toContain("ev-death");
     expect(ids).toContain("ev-meet");
   });
 
@@ -869,25 +873,27 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     expect(ids).toContain("ev-war");
   });
 
-  it("list_events：現在の場面は scene_events の読みの前に読み終える（その最中の切替は反映されない）", async () => {
+  it("list_events：nodes が空でも secret な出来事を返し、scene_events は読まない", async () => {
     await setLegacyReadWorld(MAIN_S1);
-    let switched = false;
+    let eventsRead = false;
+    let sceneEventsRead = false;
     legacyReadInvokeBridge.setOnCall(({ cmd, args }) => {
-      if (
-        !switched &&
-        cmd === "db_execute" &&
-        /from "scene_events"/iu.test(String(args?.sql))
-      ) {
-        switched = true;
-        useTreeStore.setState({ activeSceneId: "n-s3" });
+      if (cmd !== "db_execute") return;
+      if (/from "events"/iu.test(String(args?.sql))) {
+        eventsRead = true;
+        useTreeStore.setState({ nodes: [] });
       }
+      if (/from "scene_events"/iu.test(String(args?.sql)))
+        sceneEventsRead = true;
     });
     const result = await executeTool("list_events", "c", {});
     const ids = (
       result.content as { events: Array<{ id: string }> }
     ).events.map((e) => e.id);
-    expect(switched).toBe(true);
-    expect(ids).not.toContain("ev-war");
+    expect(eventsRead).toBe(true);
+    expect(sceneEventsRead).toBe(false);
+    expect(ids).toContain("ev-war");
+    expect(ids).toContain("ev-death");
   });
 
   it("projectId は呼出しの冒頭で 1 回だけ読む（最初の invoke で store の project を他 project に切り替えても、結果は変わらない）", async () => {
