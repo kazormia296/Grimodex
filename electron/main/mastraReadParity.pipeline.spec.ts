@@ -805,7 +805,7 @@ describe("main's typed reads against the real Native addon: the shape the later 
     const main = (await reads.foreshadowOpen({ projectId: MAIN })) as Wire;
     // snake_case keys, integer 0/1 for booleans, epoch milliseconds for the time.
     expect(Object.keys(main).sort()).toEqual(["foreshadows", "setups"]);
-    expect(main.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-5"]);
+    expect(main.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-2", "fs-5"]);
     expect(Object.keys(main.foreshadows[0]!).sort()).toEqual(
       [
         "abandoned",
@@ -833,7 +833,7 @@ describe("main's typed reads against the real Native addon: the shape the later 
         "strength",
       ].sort(),
     );
-    expect(main.setups.every((s) => s.foreshadow_id === "fs-1")).toBe(true);
+    expect(main.setups.map((s) => s.foreshadow_id)).toContain("fs-2");
     // The other project's foreshadow is not in the main project's answer.
     expect(main.foreshadows.some((f) => String(f.id).startsWith("x-"))).toBe(
       false,
@@ -846,12 +846,9 @@ describe("main's typed reads against the real Native addon: the shape the later 
     ).toEqual({ foreshadows: [], setups: [] });
   });
 
-  it("a secret foreshadow is not in list_open_foreshadows built from the real Native wire, and get_foreshadow_detail still returns it (DR-MP4-24)", async () => {
-    // The condition `secret = 0` lives in Native's SQL only: the wire has no
-    // secret column, so the core cannot filter again. If Native's SQL changed,
-    // a secret foreshadow's intent would reach the model; this case is what
-    // would show it. It must not be vacuous: the seed's `fs-2` is secret, not
-    // paid off and not abandoned (what would otherwise be listed).
+  it("a secret foreshadow is in list_open_foreshadows built from the real Native wire, and get_foreshadow_detail still returns it", async () => {
+    // The wire has no secret column, so the core forwards the Native read.
+    // `fs-2` is secret, not paid off and not abandoned, so it must appear.
     const seedRows = LEGACY_READ_SEED.find((t) => t.table === "foreshadows")!
       .rows as Array<Record<string, unknown>>;
     const fs2 = seedRows.find((r) => r.id === "fs-2")!;
@@ -882,21 +879,22 @@ describe("main's typed reads against the real Native addon: the shape the later 
       countTokens: (text) => (text ? text.length : 0),
     });
 
-    // The raw wire has neither fs-2 nor a setup of it (fsu-4).
+    // The raw wire includes fs-2 and its setup (fsu-4).
     const wire = (await reads.foreshadowOpen({ projectId: MAIN })) as {
       foreshadows: Array<{ id: string }>;
       setups: Array<{ foreshadow_id: string }>;
     };
-    expect(wire.foreshadows.map((f) => f.id)).not.toContain("fs-2");
-    expect(wire.setups.map((x) => x.foreshadow_id)).not.toContain("fs-2");
+    expect(wire.foreshadows.map((f) => f.id)).toContain("fs-2");
+    expect(wire.setups.map((x) => x.foreshadow_id)).toContain("fs-2");
 
-    // The tool's answer is the golden's first case, to the byte, without fs-2.
+    // The tool's answer is the golden's first case, to the byte, with fs-2.
     const golden = goldenOf("list_open_foreshadows")[0]!;
     expect(golden.world.projectId).toBe(MAIN);
     ws.dbExecute.mockClear();
     const listed = await executors.list_open_foreshadows({});
     expect((listed.content as Array<{ id: string }>).map((r) => r.id)).toEqual([
       "fs-1",
+      "fs-2",
       "fs-5",
     ]);
     expect(JSON.stringify(listed.content)).toBe(golden.contentJson);

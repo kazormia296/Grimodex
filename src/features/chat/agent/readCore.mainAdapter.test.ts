@@ -24,7 +24,7 @@ import { describe, expect, it, vi } from "vitest";
  *
  * PR-5b の foreshadowOpen：同じく main の typed read（`createMainTypedReads`）に、fake の
  * `foreshadowListOpenForContext` を繋ぐ。browser-mock に handler が無いので、Native の SQL
- * （`foreshadow.rs` の `list_open_for_context`：`secret = 0`・未回収・未放棄、setups は別の IN の 1 文）と
+ * （`foreshadow.rs` の `list_open_for_context`：未回収・未放棄、setups は別の IN の 1 文）と
  * 同じ SELECT を sql.js に打ち、Native の wire（snake_case・真偽は 0/1・epoch ms・setups に scene_id なし）の
  * JSON 文字列にして返す。get_foreshadow_detail は Drizzle なので main の DB adapter（`foreshadows`・
  * `foreshadow_setups` が allowlist にある）を通る。
@@ -259,7 +259,7 @@ const typedBackend = {
     const foreshadows = await read(
       "SELECT id, title, intent, load_bearing, version, payoff_confirmed, abandoned, updated_at " +
         "FROM foreshadows " +
-        "WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
+        "WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0",
       [projectId],
     );
     const ids = foreshadows.map((row) => String(row.id));
@@ -501,7 +501,7 @@ describe("共有 core の search 2 本が main の typed read（fts）へ送る�
 });
 
 describe("共有 core の伏線 2 本が main の経路で読むもの（PR-5b）", () => {
-  it("list_open_foreshadows は typed read の foreshadowOpen を { projectId } で 1 回だけ呼び、DB の文は送らず、Native の wire（snake_case・0/1・epoch ms・setups に scene_id なし）から組んだ結果が golden と同じ。secret の伏線は出ない", async () => {
+  it("list_open_foreshadows は typed read の foreshadowOpen を { projectId } で 1 回だけ呼び、DB の文は送らず、Native の wire（snake_case・0/1・epoch ms・setups に scene_id なし）から組んだ結果が golden と同じ。secret の伏線も出る", async () => {
     setLegacyReadWorkspaceIdentity();
     await seedLegacyReadFixture();
     await setLegacyReadWorld({
@@ -519,7 +519,7 @@ describe("共有 core の伏線 2 本が main の経路で読むもの（PR-5b�
       foreshadows: Array<Record<string, unknown>>;
       setups: Array<Record<string, unknown>>;
     };
-    expect(wire.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-5"]);
+    expect(wire.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-2", "fs-5"]);
     expect(Object.keys(wire.foreshadows[0]!).sort()).toEqual(
       [
         "abandoned",
@@ -545,9 +545,9 @@ describe("共有 core の伏線 2 本が main の経路で読むもの（PR-5b�
     expect(foreshadowSent).toEqual(["p-main"]);
     expect(sent).toEqual([]);
     const ids = (result.content as Array<{ id: string }>).map((r) => r.id);
-    expect(ids).toEqual(["fs-1", "fs-5"]);
-    // fs-2 は secret=1・未回収・未放棄（seed）：list には出ないが、detail は返す（DR-MP4-24）。
-    expect(ids).not.toContain("fs-2");
+    expect(ids).toEqual(["fs-1", "fs-2", "fs-5"]);
+    // fs-2 は secret=1・未回収・未放棄（seed）なので list と detail の両方に出る。
+    expect(ids).toContain("fs-2");
     const detail = await executors.get_foreshadow_detail({ id: "fs-2" });
     expect(detail.summary).toBe("黒幕の伏線: 1 setup(s), payoff unset");
     expect((detail.content as { id: string }).id).toBe("fs-2");

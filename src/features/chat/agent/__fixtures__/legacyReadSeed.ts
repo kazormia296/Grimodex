@@ -605,7 +605,7 @@ export const LEGACY_READ_SEED: readonly SeedTable[] = [
     ],
   },
   {
-    // secret は既定が 1。list_open_foreshadows は secret=0・未回収・未放棄だけを返す。
+    // secret の既定は 1。list_open_foreshadows は未回収・未放棄なら secret 値にかかわらず返す。
     table: "foreshadows",
     rows: [
       {

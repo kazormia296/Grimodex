@@ -119,8 +119,8 @@ foreshadows = sqliteTable("foreshadows", {
   payoffConfirmed: integer("payoff_confirmed", { mode: "boolean" }).notNull().default(false),
   abandoned: integer("abandoned", { mode: "boolean" }).notNull().default(false),
 
-  // AI コンテキスト注入から除外するかのフラグ（新規作成時の既定は true / 秘匿）
-  // 詳細は「AI コンテキスト注入と secret フラグ」セクション参照
+  // 秘匿状態の記録（AI の未回収伏線一覧・writing context の除外には使わない）
+  // 詳細は「AI コンテキストと secret フラグ」セクション参照
   secret: integer("secret", { mode: "boolean" }).notNull().default(true),
 
   // 構造的重要度（Phase 6）。null は未設定で既存伏線の挙動を維持
@@ -496,11 +496,9 @@ orphan 行は読み込まない。orphan UI で別途リスト化される。
 
 ---
 
-## AI コンテキスト注入と secret フラグ
+## AI コンテキストと secret フラグ
 
-伏線レジスタは「未回収伏線一覧を AI コンテキストに確定的に注入する」ことを目標に掲げる（→ 「目標」セクション）。一方、ネタバレ回避のために**この伏線は AI に見せたくない**ケース（未明かしの真相を AI に執筆させる場面など）が存在する。
-
-そのため `foreshadows.secret: boolean` を導入する。
+`foreshadows.secret: boolean` は既存の値を保持する。FSR/1 により、未回収・未放棄伏線の一覧と MCP の writing context は `secret` 値にかかわらず AI に渡す。別の伏線判定・作者向け表示がこの列を参照する既存動作は変えない。
 
 | 観点 | 値 |
 |---|---|
@@ -509,25 +507,24 @@ orphan 行は読み込まない。orphan UI で別途リスト化される。
 | 編集経路 | `EditForeshadowDialog` のチェックボックスで作者が切替（Phase 5 で実装） |
 | Create dialog での編集 | **なし**（DB default に委ねる。作成時の dialog 肥大化を避ける） |
 
-### `listOpenForeshadowsForContext`：AI コンテキスト用フィルタ
+### `listOpenForeshadowsForContext`：AI コンテキスト用一覧
 
 `src/features/foreshadow/api.ts` の純 TS 関数。シーン補完／チャットの context-injection 時にこれを呼ぶ。
 
 ```ts
-// 概念: projectId 内の「生きている未回収」かつ「秘匿でない」伏線を返す
+// 概念: projectId 内の「生きている未回収」伏線を secret 値にかかわらず返す
 where (
   projectId = ? AND
   payoffConfirmed = false AND
-  abandoned = false AND
-  secret = false
+  abandoned = false
 )
 ```
 
-呼び出し元: `src/features/chat/chatStore.ts`、`src/features/chat/agent/toolExecutors.ts`。AI に渡るのは `secret = false` のもののみ。
+呼び出し元: `src/features/chat/chatStore.ts`、`src/features/chat/agent/toolExecutors.ts`。`secret` は一覧条件に使わない。
 
 ### 設計判断
 
-- **既定が秘匿（true）であるべき理由**: 「うっかり書いた伏線が AI に漏れる」より「明示的に開示した伏線のみ AI が知る」方が事故が少ない。執筆ワークフローでは、開示判断は意識的に行うべき作業。
+- **新規 INSERT 時の既定が true**: 既定値は維持するが、未回収伏線一覧・writing context の AI 向け出力を制限しない。
 - **migration 既定が `false` であるべき理由**: 既存伏線は既に「AI に渡るもの」として作者が判断済み（Phase 1〜4 はそもそも secret フラグが無かった）。後付けで全件秘匿化すると挙動が変わるため、後方互換で `false` を採用。
 - **Create dialog から外す理由**: 新規作成時の UI を肥大化させない。`secret = true`（新規 INSERT 既定）→ 開示したくなったら EditForeshadowDialog で切替、という流れにする。実利用で「作成直後に開示したい」頻度が高ければ Phase 7+ で再検討。
 
@@ -546,7 +543,7 @@ Chat Agent から伏線本体を**作成 / 更新**できる。読み取り（`l
 | `create_foreshadow` | `title` | `intent` / `notes` / `loadBearing`（critical/supporting/optional）/ `secret`（既定 true） |
 | `update_foreshadow` | `id` | `title` / `intent` / `notes` / `loadBearing` / `payoffConfirmed` / `abandoned` / `secret`（与えた項目のみ変更） |
 
-`create_foreshadow` の `secret` 既定は `true`（MCP parity）。description に「同会話内で読み返すなら `secret=false`」を明記し、`secret=true` の plant は `list_open_foreshadows` / AI コンテキストから隠れる（→「AI コンテキスト注入と secret フラグ」）。
+`create_foreshadow` の `secret` 既定は `true`（MCP parity）。ツール description の secret 説明は F3 で扱うためこの変更では維持する。FSR/1 後は `secret=true` でも、未回収・未放棄の伏線は `list_open_foreshadows` / writing context に含まれる。
 
 ### 実行経路
 
@@ -914,8 +911,8 @@ foreshadow_list_with_labels(project_id: String) -> Result<ForeshadowListWithLabe
 
 #[tauri::command]
 foreshadow_list_open_for_context(project_id: String) -> Result<ForeshadowListWithLabelsResponse>
-// AI コンテキスト注入用フィルタ（payoffConfirmed=false かつ abandoned=false かつ secret=false）。
-// TS wrapper は listOpenForeshadowsForContext。→ 「AI コンテキスト注入と secret フラグ」参照。
+// AI コンテキスト注入用一覧（payoffConfirmed=false かつ abandoned=false。secret は問わない）。
+// TS wrapper は listOpenForeshadowsForContext。→ 「AI コンテキストと secret フラグ」参照。
 
 #[tauri::command]
 foreshadow_get_scene_info(scene_id: String) -> Result<ForeshadowSceneInfoResponse>

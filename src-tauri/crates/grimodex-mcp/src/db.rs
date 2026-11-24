@@ -1667,7 +1667,7 @@ type OpenForeshadowRow = (
     i64,
 );
 
-/// Open foreshadows excluding secret/abandoned/payoff_confirmed.
+/// Open foreshadows that are neither abandoned nor payoff-confirmed.
 /// derivedLabel はチャット出力では落ちるが、MCP では宣言契約どおり返す (意図的差分)。
 pub fn list_open_foreshadows(
     conn: &Connection,
@@ -1676,7 +1676,7 @@ pub fn list_open_foreshadows(
     let mut stmt = conn.prepare(
         "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at, version
          FROM foreshadows
-         WHERE project_id = ?1 AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
+         WHERE project_id = ?1 AND payoff_confirmed = 0 AND abandoned = 0",
     )?;
     let rows: Vec<OpenForeshadowRow> = stmt
         .query_map(params![project_id], |row| {
@@ -4584,9 +4584,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_list_open_foreshadows_filters_and_setup_count() {
+    fn test_list_open_foreshadows_includes_secret_and_filters_closed_rows() {
         let conn = make_simple_db();
         insert_project(&conn, "p1", "Novel");
+        insert_project(&conn, "p2", "Other");
         insert_scene(&conn, "sc1", "p1", "Scene 1", "draft");
         let now = 1_700_000_000_000_i64;
         conn.execute(
@@ -4613,6 +4614,18 @@ pub(crate) mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, secret, abandoned, created_at, updated_at)
+             VALUES ('f-abandoned', 'p1', 'Abandoned', 0, 1, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, secret, abandoned, created_at, updated_at)
+             VALUES ('f-other', 'p2', 'Other project', 0, 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, kind, is_orphan, created_at, updated_at)
              VALUES ('su1', 'f-open', 'sc1', 'designated_existing', 0, ?1, ?1)",
             params![now],
@@ -4625,11 +4638,15 @@ pub(crate) mod tests {
         )
         .unwrap();
         let open = list_open_foreshadows(&conn, "p1").unwrap();
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].id, "f-open");
-        assert_eq!(open[0].setup_count, 1);
+        assert_eq!(open.len(), 2);
+        let ordinary = open.iter().find(|item| item.id == "f-open").unwrap();
+        assert_eq!(ordinary.setup_count, 1);
+        assert!(open.iter().any(|item| item.id == "f-secret"));
+        assert!(!open.iter().any(|item| item.id == "f-done"));
+        assert!(!open.iter().any(|item| item.id == "f-abandoned"));
+        assert!(!open.iter().any(|item| item.id == "f-other"));
         // derivedLabel を出力に載せる (critical / setup=1 / 非weak → "seeded")。
-        assert_eq!(open[0].derived_label, "seeded");
+        assert_eq!(ordinary.derived_label, "seeded");
     }
 
     #[test]
@@ -4779,7 +4796,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_tracked_create_secret_hidden_from_open_list() {
+    fn test_tracked_create_secret_is_in_open_list() {
         let conn = make_simple_db();
         insert_project(&conn, "p1", "Novel");
         grimodex_core::writes::foreshadow::tracked_foreshadow_create(
@@ -4801,8 +4818,9 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(fs_row(&conn, "f1").unwrap().1, 1); // secret
-                                                       // Secret items are excluded from the open list, but still readable by id.
-        assert!(list_open_foreshadows(&conn, "p1").unwrap().is_empty());
+        let open = list_open_foreshadows(&conn, "p1").unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "f1");
         assert!(get_foreshadow_detail(&conn, "p1", "f1").unwrap().is_some());
     }
 

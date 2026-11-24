@@ -106,9 +106,9 @@ export function buildForeshadowsWithLabels(
 }
 
 /**
- * The open foreshadows of a project for a chat context: not yet paid off, not
- * abandoned, not secret (the caller's read leaves the secret ones out), sorted
- * by `loadBearing` priority (critical > supporting > optional > none) and then
+ * The open foreshadows of a project for a chat context: not yet paid off and
+ * not abandoned. The secret flag does not filter them. They are sorted by
+ * `loadBearing` priority (critical > supporting > optional > none) and then
  * by `updatedAt`, newest first. A tie keeps the input order. `setupCount` does
  * not count an orphaned setup. A light shape for the bulk display: no `notes`.
  */
@@ -223,9 +223,8 @@ const OPEN_WIRE = "foreshadow_list_open_for_context";
  * turn a wire that changed shape into "0 open foreshadows" (or into a
  * `setupCount` of 0 for every item), a success the model would believe, and a
  * row that is not an object would become a phantom foreshadow with an empty id
- * and title. Whether a row is secret is the read's condition (Native's SQL, or
- * the in-browser branch's `secret = 0`); the wire has no secret column, so it
- * cannot be filtered here.
+ * and title. The read returns open rows regardless of `secret`; the wire has no
+ * secret column, so it cannot be filtered here.
  */
 export function openForeshadowsFromWire(
   wire: unknown,
