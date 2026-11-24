@@ -889,6 +889,11 @@ export interface NapiBackendLike {
     payload: unknown,
     callerIdentity?: string,
   ): Promise<string>;
+  /** Read-only typed change review; unavailable results retain their reason. */
+  nir1ChangeReviewRead?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /** Dedicated typed current-by-review-Run reader for cold reopen. */
   nir1EntityRelationRevisionReadCurrent?(
     payload: unknown,
@@ -7233,6 +7238,20 @@ function requireNir1EntityRelationRevisionCreateRequest(
   return [payload, workspaceBinding];
 }
 
+function requireNir1ChangeReviewReadRequest(args: CommandArgs): CommandArgs {
+  const command = "nir1_change_review_read";
+  requireExactKeys(args, ["projectId", "revisionId"], command);
+  for (const key of ["projectId", "revisionId"] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value || value.length > 512) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+  }
+  return { projectId: args.projectId, revisionId: args.revisionId };
+}
+
 function requireNir1EntityRelationRevisionReadRequest(
   args: CommandArgs,
 ): CommandArgs {
@@ -10290,6 +10309,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(payload, workspaceBinding),
       );
     },
+  },
+  nir1_change_review_read: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(b, b.nir1ChangeReviewRead, "nir1ChangeReviewRead"),
+          requireNir1ChangeReviewReadRequest(a),
+          callerIdentityWire(a),
+        ),
+      ),
   },
   nir1_entity_relation_revision_read: {
     run: async (b, a) =>

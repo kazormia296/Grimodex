@@ -1929,6 +1929,73 @@ describe("dispatchInvoke", () => {
 // 引数アダプタ（camelCase → napi シグネチャの明示写像、§5.2）
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe("nir1_change_review_read contract", () => {
+  const request = { projectId: "project-1", revisionId: "revision-1" };
+
+  it("passes a valid request to the read-only N-API command and parses Unavailable", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"status":"unavailable","reason":"current-revision-unavailable"}',
+      );
+    const { backend } = fakeBackend({ nir1ChangeReviewRead: method });
+
+    const env = await dispatchInvoke("nir1_change_review_read", request, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        status: "unavailable",
+        reason: "current-revision-unavailable",
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(request);
+  });
+
+  it.each([
+    [{ projectId: "", revisionId: "revision-1" }],
+    [{ revisionId: "revision-1" }],
+    [{ projectId: 42, revisionId: "revision-1" }],
+    [{ projectId: "project-1", revisionId: "" }],
+    [{ projectId: "project-1" }],
+    [{ projectId: "project-1", revisionId: 42 }],
+    [{ ...request, extra: true }],
+    [{ projectId: "p".repeat(513), revisionId: "revision-1" }],
+    [{ projectId: "project-1", revisionId: "r".repeat(513) }],
+  ])("rejects invalid request before N-API: %j", async (args) => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({ nir1ChangeReviewRead: method });
+
+    const env = await dispatchInvoke("nir1_change_review_read", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing native backend as IPC_BACKEND_UNAVAILABLE", async () => {
+    const env = await dispatchInvoke("nir1_change_review_read", request, {
+      backend: null,
+      shell: noShell,
+    });
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} nir1_change_review_read`,
+      errorInfo: {
+        code: "IPC_BACKEND_UNAVAILABLE",
+        outcome: "failed",
+        retryable: false,
+      },
+    });
+  });
+});
+
 describe("NAPI_COMMANDS 引数アダプタ", () => {
   it("C2B Human writer は typed payload を専用N-APIへ一度だけ渡す", async () => {
     const method = vi
@@ -7030,6 +7097,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_scene_scope_update",
       "narrative_scope_project_default_read",
       "narrative_scope_project_default_update",
+      "nir1_change_review_read",
       "nir1_entity_relation_revision_create",
       "nir1_entity_relation_revision_prepare",
       "nir1_entity_relation_revision_read",

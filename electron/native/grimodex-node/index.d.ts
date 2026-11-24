@@ -750,6 +750,8 @@ export declare class Backend {
    * Revision identities are rechecked inside the same read transaction.
    */
   nir1EntityRelationRevisionRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /** Read the project-scoped typed change review without changing stored state. */
+  nir1ChangeReviewRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Read the current draft or explicitly human-approved typed Revision for
    * one dedicated review Run after a cold reopen.  Generic review bundle
