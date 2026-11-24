@@ -656,8 +656,12 @@ test("bApply：別名の重複の条件・追記の形・却下の保存は、�
   assert.ok(alias.includes("constaliases=parseAliases(target.aliases);"));
   assert.ok(apply.includes("constaliases=parseAliases(target.aliases);"));
   // 却下：却下キー集合に candidateKey(surface) を足し、集合ごと保存する。
+  // 候補の走査結果と却下は、共有 host の store（codexCandidateHostStore.ts）に持ち上げた。
+  // 却下の操作（handleDismiss）は共有 hook に、保存（write chain）は store にある。
+  const dismissActions = product("codex/useCodexCandidateDismissalActions.ts");
+  const hostStore = product("codex/codexCandidateHostStore.ts");
   const dismiss = flat(
-    insideAfter(report, /const handleDismiss = useCallback\(/u, "("),
+    insideAfter(dismissActions, /const handleDismiss = useCallback\(/u, "("),
   );
   assert.ok(dismiss.includes("next.add(candidateKey(surface));"));
   assert.ok(apply.includes("dismissed.add(productCandidateKey(surface));"));
@@ -665,7 +669,7 @@ test("bApply：別名の重複の条件・追記の形・却下の保存は、�
     apply.includes("saveDismissedCandidateKeys(a.projectId,dismissed)"),
   );
   assert.ok(
-    flat(report).includes("saveDismissedCandidateKeys(pid,value)"),
+    flat(hostStore).includes("saveDismissedCandidateKeys(projectId,value)"),
     "product persists dismissals with saveDismissedCandidateKeys",
   );
 });
