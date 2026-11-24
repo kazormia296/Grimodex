@@ -792,11 +792,30 @@ export interface AgentLanguageModelStats {
   doStreamCalls: number;
 }
 
+export interface AgentPreviousSendObservation {
+  readonly stopReason: string;
+  readonly toolNames: readonly string[];
+}
+
+export interface AgentPrepareSendContext {
+  readonly sendIndex: number;
+  readonly previous: AgentPreviousSendObservation | null;
+}
+
+export type AgentPrepareSend = (
+  request: AgentAuditRequest,
+  ctx: AgentPrepareSendContext,
+) => AgentAuditRequest;
+
+export type AgentObserveResponse = (response: AgentWireResponse) => void;
+
 export interface CreateAgentLanguageModelOptions<H extends AgentAuditHandle> {
   readonly send: AgentSend;
   readonly audit: AgentAuditSink<H>;
   /** main が持つ turn 開始時の tool 定義（`snapshotAgentTools` の結果）。名前で引いて元の定義へ戻す。 */
   readonly originalTools: readonly AgentWireToolDefinition[];
+  readonly prepareSend?: AgentPrepareSend;
+  readonly observeResponse?: AgentObserveResponse;
 }
 
 /**
@@ -818,6 +837,8 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
     doGenerateCalls: 0,
     doStreamCalls: 0,
   };
+  let sendIndex = 0;
+  let previous: AgentPreviousSendObservation | null = null;
   const capabilities: AgentCapabilityStore = {
     get: (toolCallId) => {
       const grant = capabilityMap.get(toolCallId);
@@ -843,14 +864,18 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
       tools,
       options: grimodex,
     });
+    const preparedRequest = options.prepareSend
+      ? options.prepareSend(auditRequest, { sendIndex, previous })
+      : auditRequest;
+    sendIndex += 1;
 
     let handle: H;
     try {
-      handle = await options.audit.begin(auditRequest);
+      handle = await options.audit.begin(preparedRequest);
     } catch (error) {
       throw new AgentModelError("audit-failed", "audit begin failed", error);
     }
-    const args = buildWireArgs(auditRequest, handle);
+    const args = buildWireArgs(preparedRequest, handle);
 
     let raw: AgentWireResponse;
     try {
@@ -894,6 +919,14 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
     } catch (error) {
       throw new AgentModelError("audit-failed", "audit complete failed", error);
     }
+
+    previous = {
+      stopReason: raw.stopReason,
+      toolNames: raw.blocks.flatMap((block) =>
+        block.type === "tool_use" ? [block.name] : [],
+      ),
+    };
+    options.observeResponse?.(raw);
 
     // tool-call を出すのは stopReason が tool_use のときだけ（responseToContent）。出さない応答の値は保持しない。
     if (raw.stopReason === "tool_use") {
