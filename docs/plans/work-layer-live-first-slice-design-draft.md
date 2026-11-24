@@ -6,7 +6,7 @@
 | Status | draft。**問い W1〜W7（一枚目）は 2026-11-24 に構造化質問で個別に回答済み（すべて起案者の推奨どおり。各問いの「回答」に選んだ選択肢を記録）**。この草稿は docs だけで、コードは 1 行も書いていない。**`[precheck]` は、W1〜W7 の範囲では解けた**（W2 は「足さない」なので、新しい契約・保存・送信先は無い）。**残るのは、作者に見える文言と表示の形**（部分合計の「＋」・行の文言・入口の表示。P5 の前に別に伺う）と、**出す時期**（W6 の回答どおり、旗を開ける PR の前に別に伺う）。旗は閉じたまま（作者には何も見えない）を前提にする |
 | 基点 | worktree `claude-work-layer-design`（枝 `claude/work-layer-live-design`、基点 `origin/master` `373c8d4b5`）。行番号はこの基点のもの |
 | 由来 | ADR 014 D6（`docs/adr/014-scene-information-in-editor.md:78-83`）と :136（Consequences「Work Layer を実データにつなぐとき、件数の数え方と、場面へ飛ぶ入口を、統合ペインと共通にする」）。ADR 012（Work Layer の表示。Status は「実装・公開の承認ではない」）。`m3-live-structure-health-design-draft.md` の「Work Layer への移設は、実データへの配線の設計ができてから」 |
-| ユーザーの決定 | 2026-11-24：「Work Layer って実装始められますか？」→「**次のセッションで始めましょう**」。範囲は、**件数と入口に絞った最初の版（Task を含めない）を、設計草稿から始める**ことまで。contracts の M3 確認記録の追記 25（`4542ac6ac`）に、「着手の了承であって、範囲の細目は個別に確認していない」と記録済み。**この草稿の「推奨」は起案者の意見で、ユーザーの決定ではない**。M3 の技術判断（作り方・PR の分け方・試験）は、NIR-1 の残レーンと同じ範囲で委任済み（memory `m3-pullforward-decisions-2026-11-23`）。作者に見える挙動・新しい契約・保存・出す時期は、委任の外 |
+| ユーザーの決定 | 2026-11-24：「Work Layer って実装始められますか？」→「**次のセッションで始めましょう**」。範囲は、**件数と入口に絞った最初の版（Task を含めない）を、設計草稿から始める**ことまで。contracts の M3 確認記録の追記 25（`4542ac6ac`）に、「着手の了承であって、範囲の細目は個別に確認していない」と記録済み。**この草稿の「推奨」は起案者の意見で、ユーザーの決定ではない**。M3 の技術判断（作り方・PR の分け方・試験）は、**ユーザーの 2026-11-23 の決定②で、NIR-1 の残レーンと同じ範囲を事前に委任済み**（記録の正本は contracts 枝の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-23-m3-pullforward.md`、commit `71e45bb4`）。これは `AGENTS.md` が列挙する NIR-1 の残レーンの委任とは**別の、M3 についての明示の委任**で、`AGENTS.md` の列挙を M3 に広げるものではない。作者に見える挙動・新しい契約・保存・出す時期は、委任の外 |
 | 表記 | 【確認済み】は今の worktree で読んだもの。【実測】は今日実行した結果。【報告】は調査 agent（Codex、read-only）の報告で、本文で再読していないもの。【未確認】は確かめていないもの。【起案者の技術判断】は M3 の委任の範囲内で起案者が決めたもの。【起案者の読み／意見】はユーザーの確認が要るもの |
 | 独立レビュー | 2026-11-24、別系統（Codex、read-only、結論を伏せた依頼）の 3 本：事実の裏取り 2 本（work-layer 側・実データ側）と設計レビュー 1 本。裏取りの指摘（`source-missing` は 8 行・5 ファイル、保守 preview の許可を見ないのは route と N-API だけで main の共通 gate は通る、旗は環境変数で製品 build でも開く、ほか）と、設計の指摘 6 件（ライフサイクル表、作品切替時の前の件数、候補の件数の定義、Pulse の部分合計、PR の順序、ADR 014 との整合）を本文に反映した |
 
@@ -102,7 +102,7 @@
 
 ### 2.1 live port：何を・いつ・どう読むか【起案者の技術判断。W4 は意見】
 - **形**：`WorkLayerPort` に `kind: "fixture" | "live"` と `scopeKey` を足し、`load(request)` に理由（`"mount"`／`"tray-open"`）を渡せるようにする。fixture は理由を無視し、`scopeKey` は固定。live の port は**作品ごとに作る**（`useWorkLayerLivePort(projectId, active)`。作品の切替で作り直す）。作品が無いとき（`useCurrentProjectId` の代わりの id）は、port を作らない。
-- **作品が変わったとき**は、Provider が `scopeKey` の変化を見て、**前の model を空に戻してから**読む（前の作品の件数を出さない。§1.2 のとおり今は残る）。**同じ作品の再読込（`tray-open`）の失敗では、前の model を残す**。今の「reject で全部消える」は、live では使わない。preview の挙動は変えない。
+- **作品が変わったとき**は、前の作品の件数を**1 フレームも描かない**（§1.2 のとおり今は、新しい `load` が終わるまで前の model が残る）。effect の後に model を空に戻すだけでは、再描画から effect が動くまでの間に前の model が描かれうるので、**描画の時点で同期的に外す**：live の model の `scopeId` を作品の id とし、Provider が描画ごとに `port.scopeKey` と `model.scopeId` を比べ、違えば `visibleModel` を null にする（既存の `visibleModel`〔`WorkLayerContext.tsx:91-96` で導出し、:123 で null なら context を null にする〕の導出に条件を足す）。あわせて、effect でも model を空に戻す。**同じ作品の再読込（`tray-open`）の失敗では、前の model を残す**。今の「reject で全部消える」は、live では使わない。preview の挙動は変えない（fixture の `scopeKey` は固定）。
 - **読み口は注入**する。live の port は、`readMaintenancePolicy`（既存の `getNarrativeRuntimePolicy`）、`readMaintenanceInbox`（既存の `narrativeMaintenanceInboxList`。集計は既存の `structureHealthModel` を再利用）、`readCandidateCount`（C1。下）を引数に取る。work-layer の中に IPC・store の import が入らず、試験は fake の読み口で書ける。
 - **C1 の件数の定義**：Codex 画面が出す数と同じ、**抽出 − 登録済み − 却下**（§1.5 (b)）。そのため、共有するのは生の走査結果だけでなく、**走査結果・却下キー・却下の読込済みの印・世代番号**を持つ、作品ごとの共有 host である。**却下の読込が済むまで C1 は `not-counted`** とする（多い数を一瞬出さない）。**手動の再スキャンは世代番号を進め、前の結果を捨てて新しく走査する**。作品の言語が日本語以外のときは、C1 の行を出さない（作品の言語を project の値で判定できるかは【未確認】）。
 - **いつ読むか**：`mount`（ヘッダーが出たとき。作品の切替を含む）では**安い読み取りだけ**（policy と Inbox。保存済みの値を読むだけ）。`tray-open` では、それに加えて C1 の件数（W4 A）。**ヘッダーは候補の走査を自動では起こさない**。Codex 画面で数えた結果が共有 host にあれば、それを使う。
@@ -165,8 +165,9 @@
 経路ごとの開始と再入：
 | 経路 | 開始する者 | 同じ経路が走っている間の扱い |
 | ---- | ---------- | ---------------------------- |
-| mount（初回・作品の切替） | Provider の effect（port ごと） | port が変われば、前の port の結果を捨てる。同じ port の `load` は single-flight（走っている間の呼び出しは同じ promise を返す） |
-| tray-open | Provider（トレイを開いたとき）。開閉の連打は single-flight | 走査が走っていれば、新しい走査を始めず待つ |
+| mount（初回・作品の切替） | Provider の effect（port ごと） | port が変われば、前の port の結果を捨てる。`mount` は安い読み取りだけで、候補を数えない。重なりの扱いは下の `tray-open` の行 |
+| tray-open | Provider（トレイを開いたとき）。開閉の連打は single-flight | **同じ port の `load` は、理由ごとに single-flight にする。走っているのが `mount` のとき、`tray-open` は `mount` の完了を待ってから、候補を含む自分の読み取りを走らせる**（`mount` の結果で代用しない。候補の要求は失われない）。走っているのが `tray-open` のときは、`mount` も新しい `tray-open` も、その結果を使う。候補の走査が走っていれば、新しい走査を始めず、その結果を待つ |
+| Codex 画面の mount・作品の切替（既存の経路。今は `CodexCandidatesReport` の effect） | 共有 host（P3 で持ち上げた後）。それまでは今のまま | 同じ作品の走査が走っていれば、新しい走査を始めず、その結果を共有する。作品が変われば世代番号を進め、前の結果を捨てる |
 | 手動の再スキャン（既存。Codex 画面のボタン） | 共有 host | 世代番号を進め、前の結果を捨てて新しく走査する |
 
 共通の規則（GDX-PRECHECK-001 の項目に沿う）：
@@ -176,7 +177,7 @@
 | 待ちの開始（pending-start） | 走査が走っている間の新しい要求は、**最新の 1 つだけ**を待たせる（積み上げない）。作品が変われば待ちも捨てる |
 | 走っているものの所有者 | policy・Inbox の読み取りは port、候補の走査は共有 host。renderer が持つ handle は promise だけで、subprocess も timer も無い |
 | 取消 | 読み取りは途中で止められない（N-API の blocking task。Inbox も同じ）。取消＝結果を捨てること。**止めた証拠は取れないので、「同時に走る走査は 1 つ」「待ちは最新の 1 つ」が破れないことを、試験で固定する** |
-| 待ちの上限（bounded wait） | renderer に時間の上限は置かない。代わりに、UI は `not-counted`（数え中）のまま固定され、トレイ・Pulse の開閉とほかの操作を塞がない。走査が長すぎる作品が測定で見つかったら、main 側の期限（新しい契約）が要る（§4） |
+| 待ちの上限（bounded wait） | **表示上の待ちには上限を置く**：`not-counted`（数え中）が上限を超えたら、その行を `unavailable`（「数えるのに時間がかかっています」）に切り替える。**走査そのものは止められず続く**ので、世代が合う結果が後から届けば、その行を `ready` に直す。上限の値は P4 の測定の後に決める（【起案者の技術判断】。案：60 秒）。UI の待ちはトレイ・Pulse の開閉とほかの操作を塞がない。**走査を止める main 側の期限は置かない**（新しい契約になる。長すぎる作品が測定で見つかったら、その時に伺う。§4） |
 | 終了の証拠 | promise の解決（成功・失敗）。この経路には kill も error event も無く、「止めた」と見なす経路を作らない |
 | error・timeout の所有者 | policy・Inbox は port が種類ごとに `unavailable` にする。走査の失敗は host が保持し、Codex 画面と Work Layer に同じ失敗を見せる |
 | 永続する再起動の状態 | なし（保存しない。アプリを再起動したら読み直す） |
@@ -200,13 +201,13 @@
 | P5 | **live の行の表示**：Attention の面の種類ごとの行、Pulse の部分表示、`onOpenSurface`（構造抽出の入口）、live で出さない面の制御 | 文言・表示の形は作者に見える（P5 の前に別に伺う） |
 | P6 | **旗を開ける PR（Work Layer）**。実 Chromium の geometry 試験。review 画面の旗を開ける PR とは**別**で、実 Electron の確認 A〜F を取り直す | 出す時期は W6 |
 
-各コード PR は、実装を Codex（workspace-write）に委譲し、PR の前に別系統・結論を伏せた独立レビューを 1 回入れる。**header を直す PR（P6。P2 で header に触れるなら P2 も）は、editor の journey が選ばれる**（§1.6）。catalog を触るなら digest を直し、push 前に `verify:quality`（Node 22）と、electron の tsc・eslint を回す。
+**実装の分担**（ユーザー指示 2026-11-24「UIはclaudeが実装して下さい。Codexはデザインが苦手なので」）：**UI（見た目・レイアウト・文言・表示の形・画面部品。P5 の行と Pulse の部分表示、P2 の `provenance` による印の出し分けの見た目、P6 の geometry と旗を開ける変更）は Claude が実装する**。UI の外（型・port・共有 host・読み口・試験・bundle guard。P2 の型と selector、P3、P4）は、Codex（workspace-write）に委譲してよい。1 つの PR に両方が混ざるときは commit を分ける。各コード PR は、PR の前に別系統・結論を伏せた独立レビューを 1 回入れる（Codex には、UI の見た目の良し悪しは判断材料にしてもらわず、挙動・アクセシビリティ・規則への適合だけを見てもらう）。**header を直す PR（P6。P2 で header に触れるなら P2 も）は、editor の journey が選ばれる**（§1.6）。catalog を触るなら digest を直し、push 前に `verify:quality`（Node 22）と、electron の tsc・eslint を回す。
 
 ## 4. 残る制限・未確認・整理する点
 - **最初の版は、作者が見ても、判断する材料が少ない**：項目の題も場面も出さず、場面へ飛べない。件数と入口だけである。項目の行と場面への飛びは、読み取りが場面を返す版（W2 B・C）で足す。
 - **既定の作者に見えるのは C1 だけ**（W3 A の場合）。C2 は、保守機能の許可を入れる画面ができるまで、実際には出ない。
 - **Pulse の数字は種類の和**で、種類によって「作者の判断を待つ量」の意味が違う。部分合計のときは、そのことが分かる形で出す（§2.4）。二重数えの規則は、提案の件数を足す版で決める。
-- **走査の待ちに main 側の期限が無い**：N-API の走査は途中で止められず、長い作品では blocking pool を占める。single-flight で積み上がらないようにするが、期限は設けない。測定で長すぎる作品が見つかったら、main 側の期限（新しい契約）を、その時に伺う。
+- **走査を止める main 側の期限が無い**：N-API の走査は途中で止められず、長い作品では blocking pool を占める。single-flight で積み上がらないようにし、**表示上の待ちには上限を置く**（§2.9。超えたら `unavailable`、後から結果が届けば直す）が、走査そのものの期限は設けない。測定で長すぎる作品が見つかったら、main 側の期限（新しい契約）を、その時に伺う。
 - 【未確認】大きな作品での、Inbox の全行読み取りと候補の走査の時間（§2.1。P4 の前に測る）。
 - 【未確認】作品の切替で `WorkLayerProvider` が作り直されるか（§1.1）。port を作品ごとに作り、`scopeKey` で model を空に戻す設計なので、どちらでも動くはずだが、試験で確かめる。
 - 【未確認】Pulse が `focus: null`・`system: idle` の model で何を描くか。到着・解消の欄が live で空になるか（§2.2）。
