@@ -35,6 +35,7 @@ mod maintenance_lifecycle;
 pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
+mod nir1_change_review_downstream;
 mod nir1_change_review_read;
 pub mod nir1_chronicle_index;
 mod nir1_entity_relation;
@@ -67,6 +68,10 @@ pub use maintenance_skip_evidence::{
 };
 #[cfg(test)]
 pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
+pub use nir1_change_review_downstream::{
+    read_all_downstream_consumers, read_downstream_consumers_page, DownstreamConsumer,
+    DownstreamCursor, DownstreamPage, DOWNSTREAM_PAGE_MAX,
+};
 pub use nir1_change_review_read::{
     find_previous_approved_typed_revision_id, read_nir1_change_review, EvidenceChange,
     Nir1ChangeReviewFreshness, Nir1ChangeReviewRead, ObjectChange,
