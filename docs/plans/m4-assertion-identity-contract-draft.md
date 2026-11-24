@@ -34,12 +34,14 @@
 - すべての Assertion に `assertionId` を要求する。保存済み Proposal への割当てが要り、
   信頼できない割当ては ADR 005 に反する。移行の範囲が大きい。**非推奨**。
 
-## 3. M2-D1 への適用
+## 3. M2-D1 への適用（2026-11-24 に改訂。[M2-D1 の設計](m2-d1-identity-design-draft.md) が正本）
 
-- Codex Entity／Relation の Producer の宣言は `content-keyed`。キーは Entry の id と関係の種別と端点で、
-  表記の言い回し（`predicate`、`quote`）を含めない。
+- D1 の bundle の Assertion は「ある時点の抽出結果の束」で、run をまたいで続く概念ではない。宣言は `none`（`assertionId` は null のまま）。
+  先の版が書いた「D1 の Producer は `content-keyed`」は撤回する（bundle に内容キーを付けると、1 項目の変更で束の ID が変わる）。
+- semantic diff の粒度は Entity／Relation の 1 件ごと。key は Producer（Codex の抽出）が宣言する Codex の id（`codex:{entity_id}`／`codex-relation:{edge_id}`）で、
+  Core の推測ではない。この宣言を producer registry に置く点は、§4 の問い 1 の回答（Assertion の `identityDeclaration`）の外にある新しい契約面なので、次の伺いに束ねる。
 - 互換 adapter は、released workspace の保存済み Artifact を `none` として読み、書き換えない。
-- Review／Projection の対応と Structure Health の規則は、この契約が確認された後に別の PR で起案する。
+- Review／Projection の対応と Structure Health の規則は、設計文書に従って別の commit で起案する。
 
 ## 4. 伺うこと（個別確認が要るもの）
 
