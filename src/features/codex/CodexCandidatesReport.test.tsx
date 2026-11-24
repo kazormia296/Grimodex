@@ -10,7 +10,7 @@ vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectLanguage: () => "ja",
 }));
 vi.mock("./candidateExtractor", () => ({
-  extractCodexCandidates: vi.fn(),
+  extractCodexCandidatesResult: vi.fn(),
 }));
 vi.mock("./candidateJudgment", () => ({
   judgeCandidates: vi.fn(),
@@ -28,7 +28,8 @@ vi.mock("sonner", () => ({
 
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCodexStore } from "./codexStore";
-import { extractCodexCandidates } from "./candidateExtractor";
+import { extractCodexCandidatesResult } from "./candidateExtractor";
+import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import {
   loadDismissedCandidateKeys,
@@ -36,7 +37,7 @@ import {
 } from "./codexCandidateDismissals";
 import { CodexCandidatesReport } from "./CodexCandidatesReport";
 
-const mockExtract = vi.mocked(extractCodexCandidates);
+const mockExtract = vi.mocked(extractCodexCandidatesResult);
 const mockJudge = vi.mocked(judgeCandidates);
 const mockLoadDismissed = vi.mocked(loadDismissedCandidateKeys);
 const mockSaveDismissed = vi.mocked(saveDismissedCandidateKeys);
@@ -65,6 +66,7 @@ function judgment(surface: string): [string, CandidateJudgment] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useCodexCandidateHostStore.getState().reset();
   projectIdRef.current = "p1";
   mockLoadDismissed.mockResolvedValue(new Set());
   mockSaveDismissed.mockResolvedValue(undefined);
@@ -79,10 +81,10 @@ afterEach(() => cleanup());
 
 describe("CodexCandidatesReport relational terms", () => {
   it("shows the alias button for an alias hint on a non-relational term but not on a relational one", async () => {
-    mockExtract.mockResolvedValue([
-      candidate("ライカ嬢"),
-      candidate("姉ちゃん"),
-    ]);
+    mockExtract.mockResolvedValue({
+      ok: true,
+      candidates: [candidate("ライカ嬢"), candidate("姉ちゃん")],
+    });
     mockJudge.mockResolvedValue(
       new Map([judgment("ライカ嬢"), judgment("姉ちゃん")]),
     );
@@ -136,5 +138,31 @@ describe("CodexCandidatesReport relational terms", () => {
         '[data-testid="codex-candidates-relational-note"]',
       ),
     ).toBeNull();
+  });
+});
+
+describe("CodexCandidatesReport: 開き直すたびの走査", () => {
+  it("開き直すと走査し直し、本文の変更で増えた候補を拾う", async () => {
+    mockExtract.mockResolvedValueOnce({
+      ok: true,
+      candidates: [candidate("ライカ嬢")],
+    });
+    const first = render(<CodexCandidatesReport />);
+    await screen.findByTestId("codex-candidates-toggle");
+    expect(mockExtract).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    mockExtract.mockResolvedValueOnce({
+      ok: true,
+      candidates: [candidate("ライカ嬢"), candidate("姉ちゃん")],
+    });
+    render(<CodexCandidatesReport />);
+    await waitFor(() => expect(mockExtract).toHaveBeenCalledTimes(2));
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("codex-candidates-toggle"));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("listitem")).toHaveLength(2),
+    );
   });
 });

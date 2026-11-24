@@ -10,7 +10,7 @@ vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectLanguage: () => "ja",
 }));
 vi.mock("./candidateExtractor", () => ({
-  extractCodexCandidates: vi.fn(),
+  extractCodexCandidatesResult: vi.fn(),
 }));
 vi.mock("./candidateJudgment", () => ({
   judgeCandidates: vi.fn(),
@@ -55,14 +55,15 @@ vi.mock("sonner", () => ({
 
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCodexStore } from "./codexStore";
-import { extractCodexCandidates } from "./candidateExtractor";
+import { extractCodexCandidatesResult } from "./candidateExtractor";
+import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
 import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
 } from "./codexCandidateDismissals";
 import { CodexCandidatesReport } from "./CodexCandidatesReport";
 
-const mockExtract = vi.mocked(extractCodexCandidates);
+const mockExtract = vi.mocked(extractCodexCandidatesResult);
 const mockLoadDismissed = vi.mocked(loadDismissedCandidateKeys);
 const mockSaveDismissed = vi.mocked(saveDismissedCandidateKeys);
 
@@ -83,14 +84,14 @@ const lastSaved = () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useCodexCandidateHostStore.getState().reset();
   projectIdRef.current = "p1";
   mockLoadDismissed.mockResolvedValue(new Set(["かんな", "ふみ"]));
   mockSaveDismissed.mockResolvedValue(undefined);
-  mockExtract.mockResolvedValue([
-    candidate("かんな"),
-    candidate("ふみ"),
-    candidate("ゆう"),
-  ]);
+  mockExtract.mockResolvedValue({
+    ok: true,
+    candidates: [candidate("かんな"), candidate("ふみ"), candidate("ゆう")],
+  });
   useCodexStore.setState({ entries: [] } as never);
   useGlobalHistoryStore.getState().clear();
 });
