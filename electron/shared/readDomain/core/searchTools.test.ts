@@ -70,6 +70,7 @@ function makeCtx(
     native: {
       fts,
       foreshadowOpen: async () => ({ foreshadows: [], setups: [] }),
+      foreshadowListWithLabels: async () => ({ foreshadows: [], setups: [] }),
     },
     countTokens: (text) => text.length,
   };

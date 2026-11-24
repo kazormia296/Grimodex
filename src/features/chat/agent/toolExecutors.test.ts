@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   mockInvoke,
   mockReadOpenForeshadowWire,
+  mockReadForeshadowListWithLabelsWire,
   mockTreeProjectId,
   mockAgentCreateForeshadow,
   mockAgentUpdateForeshadow,
@@ -23,6 +24,7 @@ const {
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockReadOpenForeshadowWire: vi.fn(),
+  mockReadForeshadowListWithLabelsWire: vi.fn(),
   mockTreeProjectId: vi.fn<() => string | null>(),
   mockAgentCreateForeshadow: vi.fn(),
   mockAgentUpdateForeshadow: vi.fn(),
@@ -92,6 +94,7 @@ vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
 vi.mock("@/features/foreshadow/api", () => ({
   readOpenForeshadowWire: mockReadOpenForeshadowWire,
+  readForeshadowListWithLabelsWire: mockReadForeshadowListWithLabelsWire,
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({
@@ -317,6 +320,7 @@ describe("executeTool — Phase 3 dispatch", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     mockReadOpenForeshadowWire.mockReset();
+    mockReadForeshadowListWithLabelsWire.mockReset();
     mockTreeProjectId.mockReset();
   });
 
@@ -359,6 +363,64 @@ describe("executeTool — Phase 3 dispatch", () => {
     ]);
     expect(result.summary).toBe("1 open foreshadowing items");
     expect(mockReadOpenForeshadowWire).toHaveBeenCalledWith("p1");
+  });
+
+  it("list_open_foreshadows uses the settled-list port for includeSettled", async () => {
+    mockTreeProjectId.mockReturnValue("p1");
+    mockReadForeshadowListWithLabelsWire.mockResolvedValue({
+      foreshadows: [
+        {
+          id: "open",
+          title: "未回収",
+          intent: null,
+          load_bearing: "critical",
+          payoff_confirmed: 0,
+          abandoned: 0,
+          updated_at: 1_767_225_600_000,
+        },
+        {
+          id: "settled",
+          title: "回収済み",
+          intent: "回収した",
+          load_bearing: "optional",
+          payoff_confirmed: 1,
+          abandoned: 0,
+          updated_at: 1_767_225_600_001,
+        },
+        {
+          id: "abandoned",
+          title: "放棄",
+          payoff_confirmed: 1,
+          abandoned: 1,
+          updated_at: 1_767_225_600_002,
+        },
+      ],
+      setups: [],
+    });
+
+    const result = await executeTool("list_open_foreshadows", "call-settled", {
+      includeSettled: true,
+    });
+    expect(result.content).toEqual([
+      {
+        id: "open",
+        title: "未回収",
+        intent: "",
+        loadBearing: "critical",
+        setupCount: 0,
+      },
+      {
+        id: "settled",
+        title: "回収済み",
+        intent: "回収した",
+        loadBearing: "optional",
+        setupCount: 0,
+        settled: true,
+      },
+    ]);
+    expect(result.summary).toBe("2 foreshadowing items (1 settled)");
+    expect(mockReadForeshadowListWithLabelsWire).toHaveBeenCalledWith("p1");
+    expect(mockReadOpenForeshadowWire).not.toHaveBeenCalled();
   });
 
   it("list_open_foreshadows returns empty when no project is active", async () => {

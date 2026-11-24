@@ -27,6 +27,9 @@ function backendWith(overrides: Record<string, unknown> = {}) {
     ftsSearch: vi.fn(async () => wire({ hits: [] })),
     codexSemanticSearch: vi.fn(async () => wire({ hits: ["c"] })),
     eventsSemanticSearch: vi.fn(async () => wire({ hits: ["e"] })),
+    foreshadowListWithLabels: vi.fn(async () =>
+      wire({ foreshadows: [], setups: [] }),
+    ),
     foreshadowListOpenForContext: vi.fn(async () => wire([])),
     ...overrides,
   };
@@ -35,7 +38,7 @@ function backendWith(overrides: Record<string, unknown> = {}) {
 
 afterEach(() => vi.useRealTimers());
 
-describe("the four typed reads call their own Native method", () => {
+describe("the five typed reads call their own Native method", () => {
   it("fts_search: project, query, scope and limit in Native's order", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
@@ -74,11 +77,23 @@ describe("the four typed reads call their own Native method", () => {
     );
   });
 
-  it("foreshadow_list_open_for_context takes the project only", async () => {
+  it("foreshadowOpen always calls foreshadow_list_open_for_context", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
+    const extraArgs = { projectId: "p", includeSettled: true };
     await reads.foreshadowOpen({ projectId: "p" });
+    await reads.foreshadowOpen(extraArgs);
     expect(methods.foreshadowListOpenForContext).toHaveBeenCalledWith("p");
+    expect(methods.foreshadowListOpenForContext).toHaveBeenCalledTimes(2);
+    expect(methods.foreshadowListWithLabels).not.toHaveBeenCalled();
+  });
+
+  it("foreshadowListWithLabels calls foreshadow_list_with_labels with the project", async () => {
+    const { methods, backend } = backendWith();
+    const reads = createMainTypedReads({ backend, identity: IDENTITY });
+    await reads.foreshadowListWithLabels({ projectId: "p" });
+    expect(methods.foreshadowListWithLabels).toHaveBeenCalledWith("p");
+    expect(methods.foreshadowListOpenForContext).not.toHaveBeenCalled();
   });
 });
 
@@ -108,7 +123,7 @@ describe("a read that cannot be made safely is not sent (fail closed)", () => {
     expect(methods.ftsSearch).not.toHaveBeenCalled();
   });
 
-  it("an empty project id is refused for all four", async () => {
+  it("an empty project id is refused for all five", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
     for (const call of [
@@ -116,6 +131,7 @@ describe("a read that cannot be made safely is not sent (fail closed)", () => {
       () => reads.codexSemantic({ projectId: " ", query: "q", limit: 1 }),
       () => reads.eventsSemantic({ projectId: "", query: "q", limit: 1 }),
       () => reads.foreshadowOpen({ projectId: "" }),
+      () => reads.foreshadowListWithLabels({ projectId: "" }),
     ]) {
       await expect(call()).rejects.toMatchObject({ code: "argument" });
     }
@@ -245,6 +261,7 @@ describe("the four commands do not use `deps` (DR-MP4-6)", () => {
     "fts_search",
     "codex_semantic_search",
     "events_semantic_search",
+    "foreshadow_list_with_labels",
     "foreshadow_list_open_for_context",
   ] as const;
   const ARGS: Record<(typeof KEYS)[number], Record<string, unknown>> = {
@@ -261,6 +278,7 @@ describe("the four commands do not use `deps` (DR-MP4-6)", () => {
       query: "q",
       limit: 1,
     },
+    foreshadow_list_with_labels: { projectId: "p" },
     foreshadow_list_open_for_context: { projectId: "p" },
   };
 

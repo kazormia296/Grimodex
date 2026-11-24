@@ -4,6 +4,7 @@ import { toBool, toDate, toNullableDate } from "./coerce.js";
 import {
   buildForeshadowsWithLabels,
   buildOpenForeshadowsForContext,
+  foreshadowsForListFromWire,
   normalizeSetupLabelInput,
   normalizeSetupRow,
   openForeshadowsFromWire,
@@ -442,5 +443,116 @@ describe("openForeshadowsFromWire", () => {
       setups: [],
     });
     expect(out.map((o) => o.id)).toEqual(["timed", "no-time"]);
+  });
+});
+
+describe("foreshadowsForListFromWire", () => {
+  it("keeps only non-abandoned rows, orders open before settled, and projects the shared tool shape", () => {
+    const out = foreshadowsForListFromWire({
+      foreshadows: [
+        nativeForeshadow({
+          id: "open-light",
+          load_bearing: "optional",
+          updated_at: T + 100,
+          notes: "private note",
+          secret: 1,
+          payoff_scene_id: "n-open",
+        }),
+        nativeForeshadow({
+          id: "settled-critical",
+          payoff_confirmed: 1,
+          notes: "private note",
+          secret: 1,
+          payoff_scene_id: "n-payoff",
+        }),
+        nativeForeshadow({
+          id: "abandoned",
+          abandoned: 1,
+          notes: "private note",
+          secret: 1,
+          payoff_scene_id: "n-abandoned",
+        }),
+      ],
+      setups: [
+        nativeSetup({
+          foreshadow_id: "settled-critical",
+          scene_id: "n-setup",
+        }),
+        nativeSetup({
+          foreshadow_id: "settled-critical",
+          scene_id: "n-orphan",
+          is_orphan: 1,
+        }),
+      ],
+    });
+
+    expect(out).toEqual([
+      {
+        id: "open-light",
+        title: "杖",
+        intent: "意図",
+        loadBearing: "optional",
+        setupCount: 0,
+      },
+      {
+        id: "settled-critical",
+        title: "杖",
+        intent: "意図",
+        loadBearing: "critical",
+        setupCount: 1,
+        settled: true,
+      },
+    ]);
+    expect(out.map((row) => Object.keys(row))).toEqual([
+      ["id", "title", "intent", "loadBearing", "setupCount"],
+      ["id", "title", "intent", "loadBearing", "setupCount", "settled"],
+    ]);
+    expect(JSON.stringify(out)).not.toMatch(
+      /notes|secret|payoff_scene_id|scene_id/u,
+    );
+  });
+
+  it("reads the same row fields from the renderer's camelCase wire", () => {
+    expect(
+      foreshadowsForListFromWire({
+        foreshadows: [
+          {
+            id: "open",
+            title: "未回収",
+            intent: null,
+            loadBearing: "supporting",
+            payoffConfirmed: false,
+            abandoned: false,
+            updatedAt: new Date(T),
+          },
+          {
+            id: "settled",
+            title: "回収済み",
+            intent: "回収",
+            loadBearing: "critical",
+            payoffConfirmed: true,
+            abandoned: false,
+            updatedAt: new Date(T + 1),
+          },
+        ],
+        setups: [],
+      }),
+    ).toEqual([
+      {
+        id: "open",
+        title: "未回収",
+        intent: null,
+        loadBearing: "supporting",
+        setupCount: 0,
+      },
+      {
+        id: "settled",
+        title: "回収済み",
+        intent: "回収",
+        loadBearing: "critical",
+        setupCount: 0,
+        settled: true,
+      },
+    ]);
   });
 });
