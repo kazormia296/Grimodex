@@ -55,7 +55,10 @@ export function WorkLayerProvider({
       setPreviewFindingSession(createPreviewFindingSessionState(null));
       return;
     }
-    if (initialModel != null) {
+    if (
+      initialModel != null &&
+      (port == null || port.scopeKey === initialModel.scopeId)
+    ) {
       setModel(initialModel);
       return;
     }
@@ -65,8 +68,11 @@ export function WorkLayerProvider({
     }
 
     let cancelled = false;
+    setModel((current) =>
+      current != null && current.scopeId !== port.scopeKey ? null : current,
+    );
     void port
-      .load()
+      .load({ reason: "mount" })
       .then((nextModel) => {
         if (!cancelled) setModel(nextModel);
       })
@@ -89,11 +95,13 @@ export function WorkLayerProvider({
     (navigationController.navigation.mode !== "ambient" ||
       consumedArrivalScope === modelScopeId);
   const visibleModel =
-    previewModel != null && arrivalSuppressed
-      ? { ...previewModel, attentionDelta: 0 }
-      : previewModel != null
-        ? previewModel
-        : null;
+    port != null && model != null && port.scopeKey !== model.scopeId
+      ? null
+      : previewModel == null
+        ? null
+        : arrivalSuppressed
+          ? { ...previewModel, attentionDelta: 0 }
+          : previewModel;
 
   useEffect(() => {
     if (modelScopeId == null) return;
@@ -124,6 +132,7 @@ export function WorkLayerProvider({
       ? null
       : {
           model: visibleModel,
+          provenance: port?.kind === "live" ? "live" : "preview",
           ...navigationController,
           switchFocusPreview: (targetId) => {
             setModel((current) =>
@@ -189,4 +198,8 @@ export function WorkLayerProvider({
 
 export function useWorkLayer(): WorkLayerContextValue | null {
   return useContext(WorkLayerContext);
+}
+
+export function useWorkLayerProvenance(): "preview" | "live" {
+  return useContext(WorkLayerContext)?.provenance ?? "preview";
 }

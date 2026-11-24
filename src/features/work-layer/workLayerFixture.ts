@@ -252,7 +252,9 @@ export const WORK_LAYER_FIXTURE: WorkLayerModel = {
 
 export function createWorkLayerFixturePort(): WorkLayerPort {
   return {
-    async load() {
+    kind: "fixture",
+    scopeKey: WORK_LAYER_FIXTURE.scopeId,
+    async load(_request) {
       return WORK_LAYER_FIXTURE;
     },
   };
