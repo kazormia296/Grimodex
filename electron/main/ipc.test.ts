@@ -1169,6 +1169,74 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(bound.payload).not.toHaveProperty("secret");
   });
 
+  it.each([
+    { label: "omitted", input: { title: "Visible plant" } },
+    {
+      label: "false",
+      input: { title: "Visible plant", secret: false },
+    },
+  ])(
+    "projects create_foreshadow secret $label through the main default",
+    async ({ input }) => {
+      const grant = await issueAgentCapability("create_foreshadow", input, 715);
+      expect(grant.capability).toEqual(expect.any(String));
+
+      const bound = bindRendererAuthorityForIpc(
+        "agent_foreshadow_create",
+        {
+          payload: agentCapabilityPayload(grant, {
+            title: "Visible plant",
+            foreshadowId: grant.expectedEntityId,
+            secret: false,
+          }),
+        },
+        715,
+      );
+
+      expect(
+        (bound.payload as { authorityRoute?: string }).authorityRoute,
+      ).toBe("interactive-agent-command");
+    },
+  );
+
+  it.each([
+    ["create_foreshadow", { title: "Hidden plant", secret: true }],
+    ["update_foreshadow", { id: "f1", baseVersion: 0, secret: true }],
+    ["update_foreshadow", { id: "f1", baseVersion: 0, secret: false }],
+  ] as const)(
+    "does not issue a capability for %s with a retired secret input",
+    async (toolName, input) => {
+      const grant = await issueAgentCapability(toolName, input, 716);
+      expect(grant.capability).toBeUndefined();
+    },
+  );
+
+  it("allows update_foreshadow when secret is omitted", async () => {
+    const grant = await issueAgentCapability(
+      "update_foreshadow",
+      { id: "f1", baseVersion: 0, title: "Visible plant" },
+      717,
+    );
+    expect(grant.capability).toEqual(expect.any(String));
+
+    const bound = bindRendererAuthorityForIpc(
+      "agent_foreshadow_update",
+      {
+        payload: agentCapabilityPayload(grant, {
+          foreshadowId: "f1",
+          baseVersion: 0,
+          title: "Visible plant",
+          secret: null,
+        }),
+      },
+      717,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
+  });
+
   it("denies a capability when the renderer adds an unrequested Native field", async () => {
     const grant = await issueAgentCapability(
       "update_codex_entry",

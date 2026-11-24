@@ -340,7 +340,7 @@ fn restore_foreshadow_fields(
                 snap["payoffToPos"].as_i64(),
                 snap["payoffConfirmed"].as_i64().unwrap_or(0),
                 snap["abandoned"].as_i64().unwrap_or(0),
-                snap["secret"].as_i64().unwrap_or(1),
+                snap["secret"].as_i64().unwrap_or(0),
                 snap["loadBearing"].as_str(),
                 snap["mechanism"].as_str(),
                 snap["codexLinkDirtyAt"].as_i64(),
@@ -377,7 +377,7 @@ fn restore_foreshadow_fields(
             snap["payoffToPos"].as_i64(),
             snap["payoffConfirmed"].as_i64().unwrap_or(0),
             snap["abandoned"].as_i64().unwrap_or(0),
-            snap["secret"].as_i64().unwrap_or(1),
+            snap["secret"].as_i64().unwrap_or(0),
             snap["loadBearing"].as_str(),
             target_state_token,
             entity_id,
@@ -423,7 +423,7 @@ fn insert_foreshadow_from_snap(
                 snap["payoffToPos"].as_i64(),
                 snap["payoffConfirmed"].as_i64().unwrap_or(0),
                 snap["abandoned"].as_i64().unwrap_or(0),
-                snap["secret"].as_i64().unwrap_or(1),
+                snap["secret"].as_i64().unwrap_or(0),
                 snap["loadBearing"].as_str(),
                 snap["mechanism"].as_str(),
                 version,
@@ -452,7 +452,7 @@ fn insert_foreshadow_from_snap(
             snap["payoffToPos"].as_i64(),
             snap["payoffConfirmed"].as_i64().unwrap_or(0),
             snap["abandoned"].as_i64().unwrap_or(0),
-            snap["secret"].as_i64().unwrap_or(1),
+            snap["secret"].as_i64().unwrap_or(0),
             snap["loadBearing"].as_str(),
             snap["createdAt"].as_i64().unwrap_or(0),
             snap["updatedAt"].as_i64().unwrap_or(0),
@@ -1384,5 +1384,98 @@ mod tests {
             )
             .unwrap();
         assert_eq!(span_count, 1);
+    }
+
+    fn foreshadow_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE foreshadows (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                intent TEXT,
+                notes TEXT,
+                payoff_scene_id TEXT,
+                payoff_from_pos INTEGER,
+                payoff_to_pos INTEGER,
+                payoff_confirmed INTEGER NOT NULL DEFAULT 0,
+                abandoned INTEGER NOT NULL DEFAULT 0,
+                secret INTEGER NOT NULL DEFAULT 1,
+                load_bearing TEXT,
+                mechanism TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                codex_link_dirty_at INTEGER,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn foreshadow_secret(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT secret FROM foreshadows WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn foreshadow_journal_restore_defaults_missing_secret_to_visible() {
+        // A snapshot without a "secret" key is a pre-retirement value: the
+        // retired flag must not turn it back on.
+        for (versioned, secret_key) in [
+            (true, None),
+            (false, None),
+            (true, Some(1)),
+            (false, Some(1)),
+            (true, Some(0)),
+            (false, Some(0)),
+        ] {
+            let expected = secret_key.unwrap_or(0);
+            let mut snap = json!({
+                "id": "f-insert",
+                "projectId": "p1",
+                "title": "Planted",
+                "createdAt": 10,
+                "updatedAt": 20,
+            });
+            let mut update_snap = json!({ "title": "Restored" });
+            if versioned {
+                snap["version"] = json!(3);
+                update_snap["version"] = json!(3);
+            }
+            if let Some(value) = secret_key {
+                snap["secret"] = json!(value);
+                update_snap["secret"] = json!(value);
+            }
+
+            // INSERT side (a deleted foreshadow is restored).
+            let conn = foreshadow_conn();
+            insert_foreshadow_from_snap(&conn, &snap, versioned.then_some(4)).unwrap();
+            assert_eq!(
+                foreshadow_secret(&conn, "f-insert"),
+                expected,
+                "insert versioned={versioned} secret={secret_key:?}"
+            );
+
+            // UPDATE side (an edited foreshadow is rolled back). The existing
+            // row is stored as secret = 1 so that a wrong default is visible.
+            conn.execute(
+                "INSERT INTO foreshadows (id, project_id, title, secret, version, updated_at)
+                 VALUES ('f-update', 'p1', 'Edited', 1, 4, 30)",
+                [],
+            )
+            .unwrap();
+            let token = if versioned { 4 } else { 30 };
+            restore_foreshadow_fields(&conn, &update_snap, "f-update", "p1", 31, token).unwrap();
+            assert_eq!(
+                foreshadow_secret(&conn, "f-update"),
+                expected,
+                "update versioned={versioned} secret={secret_key:?}"
+            );
+        }
     }
 }

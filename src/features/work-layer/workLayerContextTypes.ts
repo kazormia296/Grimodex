@@ -3,6 +3,7 @@ import type { WorkLayerNavigationState } from "./workLayerReducer";
 
 export interface WorkLayerContextValue {
   readonly model: WorkLayerModel;
+  readonly provenance: "preview" | "live";
   readonly navigation: WorkLayerNavigationState;
   readonly openFocus: () => void;
   readonly openAttention: () => void;

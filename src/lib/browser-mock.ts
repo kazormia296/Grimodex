@@ -21015,7 +21015,7 @@ export async function createBrowserMock(
       false,
     );
     const abandoned = browserBoolean(command, payload, "abandoned", false);
-    const secret = browserBoolean(command, payload, "secret", true);
+    const secret = browserBoolean(command, payload, "secret", false);
     const loadBearing = nullableBrowserString(command, payload, "loadBearing");
     const codexLinkDirtyAt = nullableBrowserInteger(
       command,
@@ -23614,7 +23614,7 @@ export async function createBrowserMock(
     ) {
       throw new Error(`invalid load_bearing value: ${loadBearing}`);
     }
-    const secret = browserBoolean(command, p, "secret", true);
+    const secret = browserBoolean(command, p, "secret", false);
     const fingerprintPayload = {
       projectId,
       foreshadowId,

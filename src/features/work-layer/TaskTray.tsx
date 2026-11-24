@@ -6,6 +6,7 @@ import { FocusTrayBody } from "./FocusTrayBody";
 import { TaskTrayFooter } from "./TaskTrayFooter";
 import { useWorkLayer } from "./WorkLayerContext";
 import { useWorkLayerInitialFocus } from "./useWorkLayerInitialFocus";
+import { selectAttentionCount } from "./workLayerLiveEntries";
 
 interface TaskTrayProps {
   readonly door: "attention" | "focus";
@@ -19,9 +20,10 @@ export function TaskTray({ door }: TaskTrayProps) {
   );
   if (workLayer == null) return null;
 
-  const { model, close } = workLayer;
+  const { model, close, provenance } = workLayer;
   const isAttention = door === "attention";
-  const isEmptyAttention = isAttention && model.attention.length === 0;
+  const attentionTotal = selectAttentionCount(model).total;
+  const isEmptyAttention = isAttention && attentionTotal === 0;
   const title = isAttention
     ? t("workLayer.tray.attentionAria", "Attentionの作業トレイ")
     : t("workLayer.tray.focusAria", "Focusの作業トレイ");
@@ -46,12 +48,14 @@ export function TaskTray({ door }: TaskTrayProps) {
       ) : (
         <header className="flex items-center border-b border-foreground/30 px-3 py-2 font-mono text-[9px] tracking-[0.16em]">
           <span>{isAttention ? "ATTENTION" : "NOW"}</span>
-          <span className="ml-2 rounded-sm border border-foreground/30 px-1.5 py-0.5 text-[8px] text-muted-foreground">
-            UI PREVIEW
-          </span>
+          {provenance === "preview" && (
+            <span className="ml-2 rounded-sm border border-foreground/30 px-1.5 py-0.5 text-[8px] text-muted-foreground">
+              UI PREVIEW
+            </span>
+          )}
           <span className="ml-auto text-muted-foreground">
             {isAttention
-              ? model.attention.length
+              ? attentionTotal
               : (model.focus?.authorTasks.length ?? 0)}
           </span>
           <button

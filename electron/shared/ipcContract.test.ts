@@ -961,10 +961,24 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     // napi Phase 2 実証チャネル
     "backend:ready",
     "workspace:opened",
+    "mastra:agent-turn-progress",
     // CP-3a: Graph owner の通知（backend 発のみ）
     "related-scenes:graph-ready",
   ])("allows %s", (channel) => {
     expect(isAllowedEventChannel(channel)).toBe(true);
+  });
+
+  it("registers Mastra progress as a main-only event", () => {
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain(
+      "mastra:agent-turn-progress",
+    );
+    expect(isAllowedMainEventChannel("mastra:agent-turn-progress")).toBe(true);
+    expect(isAllowedBackendEventChannel("mastra:agent-turn-progress")).toBe(
+      false,
+    );
+    expect(isAllowedRendererEventChannel("mastra:agent-turn-progress")).toBe(
+      false,
+    );
   });
 
   it.each([
