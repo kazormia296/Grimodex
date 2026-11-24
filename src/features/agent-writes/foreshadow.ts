@@ -39,7 +39,7 @@ export interface AgentForeshadowCreateInput {
   intent?: string;
   notes?: string;
   loadBearing?: AgentForeshadowLoadBearing;
-  /** Defaults to true (MCP parity): secret plants stay out of AI context. */
+  /** Defaults to false: new plants are visible to the AI. */
   secret?: boolean;
 }
 
@@ -154,7 +154,7 @@ export async function agentCreateForeshadow(
       intent: input.intent ?? null,
       notes: input.notes ?? null,
       loadBearing: input.loadBearing ?? null,
-      secret: input.secret ?? true,
+      secret: input.secret ?? false,
     },
   });
 

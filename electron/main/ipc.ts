@@ -29,6 +29,7 @@ import {
   toErrorString,
 } from "../shared/ipcContract.js";
 import { isAgentEventSecretInputSupported } from "../shared/agentEventSecretWritePolicy.js";
+import { isAgentForeshadowSecretInputSupported } from "../shared/agentForeshadowSecretWritePolicy.js";
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
@@ -630,7 +631,7 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
     intent: null,
     notes: null,
     loadBearing: null,
-    secret: true,
+    secret: false,
   },
   update_foreshadow: {
     title: null,
@@ -1193,6 +1194,7 @@ function agentMutationProjectionMatches(
   if (
     !spec ||
     !isAgentEventSecretInputSupported(toolName, modelInput) ||
+    !isAgentForeshadowSecretInputSupported(toolName, modelInput) ||
     canonicalAgentToolInput(toolName, modelInput, true, "model", "model") ===
       null
   ) {
@@ -1654,6 +1656,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
     }
     if (!isRecord(block.input)) continue;
     if (!isAgentEventSecretInputSupported(toolName, block.input)) continue;
+    if (!isAgentForeshadowSecretInputSupported(toolName, block.input)) continue;
     const canonicalInputDigest = canonicalAgentToolInputDigest(
       toolName,
       block.input,

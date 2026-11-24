@@ -398,7 +398,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     intent: null,
     notes: null,
     loadBearing: "critical",
-    secret: true,
+    secret: false,
   };
   const invalidForeshadowCaller = {
     ...foreshadow,
@@ -420,6 +420,11 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   assert.equal(foreshadowFirst.undoJournalId, foreshadow.requestId);
   assert.equal(foreshadowFirst.changeEventUid, foreshadow.eventUid);
   assert.notEqual(foreshadowFirst.entityId, foreshadow.requestId);
+  const foreshadowRow = await rows(
+    "SELECT secret FROM foreshadows WHERE id = ?",
+    [foreshadowFirst.entityId],
+  );
+  assert.equal(foreshadowRow[0].secret, 0);
   const foreshadowEvent = await rows(
     "SELECT payload FROM change_events WHERE event_uid = ?",
     [foreshadowFirst.changeEventUid],
@@ -444,7 +449,6 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     loadBearing: "critical",
     payoffConfirmed: null,
     abandoned: null,
-    secret: true,
   };
   const foreshadowUpdateResult = JSON.parse(
     await backend.agentForeshadowUpdate(foreshadowUpdate),
@@ -465,6 +469,21 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     "interactive-agent-command",
   );
   assert.equal(foreshadowUpdateEventPayload.authorityEvidence.validated, true);
+  const beforeSecretUpdate = await writeCounts();
+  await assert.rejects(
+    backend.agentForeshadowUpdate({
+      ...foreshadowUpdate,
+      ...canonical("agent-tool:foreshadow-update-napi-secret", "ai-apply"),
+      projectId: PROJECT,
+      sessionId: "sess-update-secret",
+      baseVersion: 1,
+      requestId: "agent-tool:foreshadow-update-napi-secret",
+      eventUid: "agent-tool:foreshadow-update-napi-secret:event",
+      secret: true,
+    }),
+    /secret is no longer supported: foreshadows cannot be hidden from the AI/,
+  );
+  assert.deepEqual(await writeCounts(), beforeSecretUpdate);
   await assert.rejects(
     backend.agentForeshadowUpdate({
       ...foreshadowUpdate,

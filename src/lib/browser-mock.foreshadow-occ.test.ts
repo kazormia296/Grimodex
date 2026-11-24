@@ -55,6 +55,19 @@ describe("Browser Foreshadow aggregate OCC", () => {
 
   afterEach(() => mock.close());
 
+  it("defaults a new foreshadow to visible when secret is omitted", async () => {
+    await mock.invoke("foreshadow_create", {
+      payload: { id: "visible-by-default", title: "Visible" },
+    });
+
+    expect(
+      await query(
+        mock,
+        "SELECT secret FROM foreshadows WHERE id = 'visible-by-default'",
+      ),
+    ).toEqual([{ secret: 0 }]);
+  });
+
   it("rejects two-window stale root update and delete without mutation", async () => {
     await seedRoot(mock, "stale-root");
     onDatabaseDirty.mockClear();

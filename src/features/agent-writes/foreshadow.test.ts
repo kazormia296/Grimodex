@@ -53,7 +53,7 @@ const storedItem = {
   notes: null,
   payoffConfirmed: false,
   abandoned: false,
-  secret: true,
+  secret: false,
   loadBearing: null,
   version: 1,
 };
@@ -122,7 +122,7 @@ describe("agentCreateForeshadow", () => {
         intent: null,
         notes: null,
         loadBearing: null,
-        secret: true,
+        secret: false,
       },
     });
     expect(h.load).toHaveBeenCalledWith("p1");
@@ -135,7 +135,7 @@ describe("agentCreateForeshadow", () => {
     expect(result.id).toBe("f1");
   });
 
-  it("defaults secret to true (MCP parity) but passes an explicit false through", async () => {
+  it("defaults secret to false and passes an explicit false through", async () => {
     await agentCreateForeshadow({
       requestId: "agent-tool:create-open",
       title: "open plant",

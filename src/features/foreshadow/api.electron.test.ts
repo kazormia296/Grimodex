@@ -73,7 +73,6 @@ describe("foreshadow api は Electron でネイティブ backend (napi) へ invo
       payoffToPos: 9,
       payoffConfirmed: true,
       abandoned: true,
-      secret: false,
       loadBearing: "critical",
       codexLinkDirtyAt: new Date(1713999999000),
     });
