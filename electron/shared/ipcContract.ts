@@ -352,7 +352,7 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
 ] as const;
 
 /** Electron main 専用のイベント。renderer / backend callback からは送れない。 */
-export const MASTRA_AGENT_TURN_PROGRESS_EVENT = "mastra-agent:turn-progress";
+export const MASTRA_AGENT_TURN_PROGRESS_EVENT = "mastra:agent-turn-progress";
 
 export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
   // Mastra agent turn progress is a numeric / identifier-only main event.

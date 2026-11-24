@@ -371,11 +371,11 @@ describe("イベント多重化（§7.2 — grim:event 1 本）", () => {
     const progressCb = vi.fn();
     bridge.listen("chat:stream-done", backendCb);
     bridge.listen("updater:download-progress", mainCb);
-    bridge.listen("mastra-agent:turn-progress", progressCb);
+    bridge.listen("mastra:agent-turn-progress", progressCb);
 
     fire(IPC.event, "chat:stream-done", { messageId: "m1" });
     fire(IPC.event, "updater:download-progress", { downloaded: 1 });
-    fire(IPC.event, "mastra-agent:turn-progress", {
+    fire(IPC.event, "mastra:agent-turn-progress", {
       turnId: "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
       sequence: 1,
       event: { kind: "stopped", reason: "user-stop" },

@@ -774,13 +774,13 @@ describe("Mastra agent turn progress sender", () => {
     expect(owner.webContents.send).toHaveBeenNthCalledWith(
       1,
       IPC.event,
-      "mastra-agent:turn-progress",
+      "mastra:agent-turn-progress",
       { turnId: PROGRESS_TURN_ID, sequence: 1, event: STOPPED_PROGRESS },
     );
     expect(owner.webContents.send).toHaveBeenNthCalledWith(
       2,
       IPC.event,
-      "mastra-agent:turn-progress",
+      "mastra:agent-turn-progress",
       { turnId: PROGRESS_TURN_ID, sequence: 2, event: STOPPED_PROGRESS },
     );
     expect(other.webContents.send).not.toHaveBeenCalled();
@@ -798,7 +798,7 @@ describe("Mastra agent turn progress sender", () => {
 
     expect(owner.webContents.send).toHaveBeenCalledExactlyOnceWith(
       IPC.event,
-      "mastra-agent:turn-progress",
+      "mastra:agent-turn-progress",
       { turnId: PROGRESS_TURN_ID, sequence: 1, event: STOPPED_PROGRESS },
     );
   });
