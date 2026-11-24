@@ -1720,6 +1720,35 @@ describe("共有 core の get_codex_entry（10b）", () => {
     }
   });
 
+  it("Q-C6-1 を直し、通常・released の details から別 project の定義を除く", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await seedCodexEntryFixture();
+    for (const [id, sceneId] of [
+      ["ge-normal", "n-s1"],
+      ["ge-released-old", "n-s2"],
+    ]) {
+      const inputs = await readReadInputs(mainDb, {
+        projectId: "p-main",
+        currentSceneId: sceneId,
+      });
+      const executors = createCodexEntryExecutors(
+        createMainCodexEntryContext({
+          db: mainDb,
+          inputs,
+          countTokens: (text) => text.length,
+          extractPlainText: (json) => extractPlainText(json),
+        }),
+      );
+      const result = await executors.get_codex_entry({ id });
+      expect(
+        (result.content as { details: Array<{ field: string }> }).details.map(
+          (detail) => detail.field,
+        ),
+      ).not.toContain("別 project の項目名");
+    }
+  });
+
   it("通常・released・hidden・missing の select 列と順序を legacy fixture と一致させる", async () => {
     setLegacyReadWorkspaceIdentity();
     await seedLegacyReadFixture();

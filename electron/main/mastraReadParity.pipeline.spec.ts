@@ -2090,6 +2090,12 @@ describe("Main adapter 上の5つ目の Codex entry tool", () => {
       const definitionRows = JSON.parse(
         (await ws.dbExecute.mock.results[definitionSelect]!.value) as string,
       ).rows as Array<Record<string, unknown>>;
+      expect(
+        definitionRows.every(
+          (row) => row["project_id"] === golden.world.projectId,
+        ),
+        label,
+      ).toBe(true);
       const childRows = JSON.parse(
         (await ws.dbExecute.mock.results[childSelect]!.value) as string,
       ).rows as Array<Record<string, unknown>>;
@@ -2099,10 +2105,7 @@ describe("Main adapter 上の5つ目の Codex entry tool", () => {
       const details = definitionRows
         .filter((row) => Boolean(row["include_in_context"]))
         .map((row) => {
-          // 実 Native の workspace には、アプリのサンプル project（default-project）の詳細定義
-          // （「役割」「アリバイ」など）も入っている。legacy の defs の select は type_slug だけで引き
-          // project 条件が無い（Q-C6-1）ので、golden（sql.js の seed）に無い定義も、値の無い項目として
-          // 混ざる。移設前と同じ現状の挙動を、そのまま期待にする。
+          // Q-C6-1 修正後は defs の select が current project に限定される。
           return (
             detailsByField.get(String(row["name"])) ?? {
               field: String(row["name"]),

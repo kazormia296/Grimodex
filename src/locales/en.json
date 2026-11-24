@@ -4655,6 +4655,7 @@
     "loadError": "Failed to load snapshots",
     "createError": "Failed to create snapshot",
     "restoreError": "Restore failed",
+    "restoreFlushFailed": "Restore was cancelled because saving your unsaved edits did not complete.",
     "deleteError": "Delete failed",
     "restoreScopeHeading": "What to restore",
     "restoreScopeLegacyNote": "This snapshot is in the legacy format. Only content will be restored.",
