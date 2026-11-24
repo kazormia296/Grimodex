@@ -9,6 +9,7 @@ import {
 } from "@/lib/animation";
 
 import { useWorkLayer } from "./WorkLayerContext";
+import { selectAttentionCount } from "./workLayerLiveEntries";
 
 export function WorkPulse() {
   const workLayer = useWorkLayer();
@@ -18,7 +19,7 @@ export function WorkPulse() {
   if (workLayer == null) return null;
 
   const { model, navigation, openAttention, openFocus, openSystem } = workLayer;
-  const attentionCount = model.attention.length;
+  const attentionCount = selectAttentionCount(model).total;
   const attentionDelta = model.attentionDelta ?? 0;
   const resolutionDelta = navigation.mode === "resolved" ? -1 : 0;
   const showArrivalMotion = attentionDelta > 0 && !reducedMotion;

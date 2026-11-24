@@ -90,10 +90,14 @@ export function WorkLayerProvider({
     model == null
       ? null
       : derivePreviewFindingModel(model, previewFindingSession);
+  const isLive = port?.kind === "live";
+  // Live counts never announce or highlight arrivals (ADR 014: a count
+  // change must not notify, open a pane, or move focus).
   const arrivalSuppressed =
-    hasPendingArrival &&
-    (navigationController.navigation.mode !== "ambient" ||
-      consumedArrivalScope === modelScopeId);
+    isLive ||
+    (hasPendingArrival &&
+      (navigationController.navigation.mode !== "ambient" ||
+        consumedArrivalScope === modelScopeId));
   const visibleModel =
     port != null && model != null && port.scopeKey !== model.scopeId
       ? null
@@ -132,7 +136,7 @@ export function WorkLayerProvider({
       ? null
       : {
           model: visibleModel,
-          provenance: port?.kind === "live" ? "live" : "preview",
+          provenance: isLive ? "live" : "preview",
           ...navigationController,
           switchFocusPreview: (targetId) => {
             setModel((current) =>
@@ -178,6 +182,7 @@ export function WorkLayerProvider({
           },
         };
   const resolutionDelta =
+    !isLive &&
     navigationController.navigation.mode === "resolved" &&
     (model?.attention.length ?? 0) > 0
       ? -1

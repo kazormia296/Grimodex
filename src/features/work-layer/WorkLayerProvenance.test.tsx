@@ -167,6 +167,7 @@ describe("Work Layer provenance", () => {
       </WorkLayerProvider>,
     );
 
-    expect(received.at(-1)?.model).toEqual(model);
+    // A live model never carries an arrival hint into the context.
+    expect(received.at(-1)?.model).toEqual({ ...model, attentionDelta: 0 });
   });
 });
