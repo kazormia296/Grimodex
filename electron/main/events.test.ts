@@ -57,6 +57,10 @@ const {
   sendMainEventToWindow,
   setBackendEventEgressGate,
 } = await import("./events.js");
+const { createMastraAgentTurnProgressSender } =
+  await import("./mastraAgentTurnEvents.js");
+const PROGRESS_TURN_ID = "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
+const STOPPED_PROGRESS = { kind: "stopped", reason: "user-stop" } as const;
 
 function makeBackend(): NapiBackendLike & {
   capturedCallback: ((...args: unknown[]) => unknown) | null;
@@ -749,5 +753,87 @@ describe("NIR-1 Graph readiness notification (CP-3a)", () => {
       projectId: "project",
     });
     expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("Mastra agent turn progress sender", () => {
+  it("binds the captured sender and emits consecutive sequences to that window only", () => {
+    const owner = makeWindow(21);
+    const other = makeWindow(22);
+    allWindows.push(owner, other);
+    const sender = { id: 21 };
+    const progress = createMastraAgentTurnProgressSender(
+      sender,
+      PROGRESS_TURN_ID,
+    );
+    sender.id = 22;
+
+    progress.send(STOPPED_PROGRESS);
+    progress.send(STOPPED_PROGRESS);
+
+    expect(owner.webContents.send).toHaveBeenNthCalledWith(
+      1,
+      IPC.event,
+      "mastra-agent:turn-progress",
+      { turnId: PROGRESS_TURN_ID, sequence: 1, event: STOPPED_PROGRESS },
+    );
+    expect(owner.webContents.send).toHaveBeenNthCalledWith(
+      2,
+      IPC.event,
+      "mastra-agent:turn-progress",
+      { turnId: PROGRESS_TURN_ID, sequence: 2, event: STOPPED_PROGRESS },
+    );
+    expect(other.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("drops invalid events and does not consume a sequence number", () => {
+    const owner = makeWindow(31);
+    allWindows.push(owner);
+    const progress = createMastraAgentTurnProgressSender(
+      owner.webContents,
+      PROGRESS_TURN_ID,
+    );
+    progress.send({ kind: "tool", toolName: "unlisted" } as never);
+    progress.send(STOPPED_PROGRESS);
+
+    expect(owner.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "mastra-agent:turn-progress",
+      { turnId: PROGRESS_TURN_ID, sequence: 1, event: STOPPED_PROGRESS },
+    );
+  });
+
+  it("swallows a missing or disappearing target window", () => {
+    const gone = makeWindow(41);
+    gone.destroyed = true;
+    allWindows.push(gone);
+    const progress = createMastraAgentTurnProgressSender(
+      gone.webContents,
+      PROGRESS_TURN_ID,
+    );
+
+    expect(() => progress.send(STOPPED_PROGRESS)).not.toThrow();
+    expect(gone.webContents.send).not.toHaveBeenCalled();
+
+    const missing = createMastraAgentTurnProgressSender(
+      { id: 42 },
+      PROGRESS_TURN_ID,
+    );
+    expect(() => missing.send(STOPPED_PROGRESS)).not.toThrow();
+  });
+
+  it("swallows a target that disappears during send", () => {
+    const target = makeWindow(51);
+    allWindows.push(target);
+    target.webContents.send.mockImplementation(() => {
+      throw new Error("destroyed");
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const progress = createMastraAgentTurnProgressSender(
+      target.webContents,
+      PROGRESS_TURN_ID,
+    );
+
+    expect(() => progress.send(STOPPED_PROGRESS)).not.toThrow();
   });
 });

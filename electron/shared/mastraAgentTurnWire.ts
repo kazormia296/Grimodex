@@ -406,7 +406,9 @@ export type MastraAgentTurnWireIssue =
   | "volatile-tail"
   | "tools"
   | "fully-injected-ids"
-  | "loop";
+  | "loop"
+  | "progress-sequence"
+  | "progress-event";
 
 export type MastraAgentTurnParse<T> =
   | { readonly ok: true; readonly value: T }
@@ -1120,4 +1122,212 @@ export function parseMastraAgentTurnCancelResult(
       : null;
   }
   return null;
+}
+
+/** Numeric-only ContextWindowUsage projection sent during a turn. */
+export interface MastraAgentTurnProgressUsage {
+  readonly contextTokens: number;
+  readonly toolTokens: number;
+  readonly envelopeTokens: number;
+  readonly safetyMarginTokens: number;
+  readonly inputTokens: number;
+  readonly outputReservedTokens: number;
+  readonly reservedTotalTokens: number;
+  readonly contextWindow: number;
+  readonly remainingTokens: number;
+  readonly overflowTokens: number;
+}
+
+export type MastraAgentTurnProgressEvent =
+  | {
+      readonly kind: "send-accepted";
+      readonly sendIndex: number;
+      readonly usage: MastraAgentTurnProgressUsage;
+      readonly cacheDowngradeReason: "budget" | "too-many-blocks" | null;
+    }
+  | {
+      readonly kind: "tool";
+      readonly phase: "started" | "finished";
+      readonly toolCallId: string;
+      readonly toolName: M4ReadToolName;
+      readonly totalCalls: number;
+      readonly maxCalls: number;
+      readonly tokensUsed: number;
+      readonly tokenBudget: number;
+    }
+  | {
+      readonly kind: "context-overflow";
+      readonly usage: MastraAgentTurnProgressUsage;
+      readonly overflowTokens: number;
+    }
+  | { readonly kind: "stopped"; readonly reason: "user-stop" };
+
+export interface MastraAgentTurnProgressPayload {
+  readonly turnId: string;
+  readonly sequence: number;
+  readonly event: MastraAgentTurnProgressEvent;
+}
+
+const PROGRESS_USAGE_KEYS = [
+  "contextTokens",
+  "toolTokens",
+  "envelopeTokens",
+  "safetyMarginTokens",
+  "inputTokens",
+  "outputReservedTokens",
+  "reservedTotalTokens",
+  "contextWindow",
+  "remainingTokens",
+  "overflowTokens",
+] as const;
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function parseProgressUsage(
+  value: unknown,
+): MastraAgentTurnProgressUsage | null {
+  const entries = plainEntries(value);
+  if (
+    entries === null ||
+    keyIssue(entries, PROGRESS_USAGE_KEYS, []) !== null ||
+    !PROGRESS_USAGE_KEYS.every(
+      (key) =>
+        key === "remainingTokens" || isNonNegativeSafeInteger(entries.get(key)),
+    )
+  ) {
+    return null;
+  }
+  const remainingTokens = entries.get("remainingTokens");
+  if (!Number.isSafeInteger(remainingTokens)) return null;
+  const contextTokens = entries.get("contextTokens") as number;
+  const toolTokens = entries.get("toolTokens") as number;
+  const envelopeTokens = entries.get("envelopeTokens") as number;
+  const safetyMarginTokens = entries.get("safetyMarginTokens") as number;
+  const inputTokens = entries.get("inputTokens") as number;
+  const outputReservedTokens = entries.get("outputReservedTokens") as number;
+  const reservedTotalTokens = entries.get("reservedTotalTokens") as number;
+  const contextWindow = entries.get("contextWindow") as number;
+  const overflowTokens = entries.get("overflowTokens") as number;
+  if (
+    contextTokens + toolTokens + envelopeTokens !== inputTokens ||
+    inputTokens + outputReservedTokens + safetyMarginTokens !==
+      reservedTotalTokens ||
+    reservedTotalTokens + (remainingTokens as number) !== contextWindow ||
+    Math.max(0, -(remainingTokens as number)) !== overflowTokens
+  ) {
+    return null;
+  }
+  return value as MastraAgentTurnProgressUsage;
+}
+
+function parseProgressEvent(
+  value: unknown,
+): MastraAgentTurnProgressEvent | null {
+  const entries = plainEntries(value);
+  if (entries === null) return null;
+  const kind = entries.get("kind");
+  if (kind === "send-accepted") {
+    if (
+      keyIssue(
+        entries,
+        ["kind", "sendIndex", "usage", "cacheDowngradeReason"],
+        [],
+      ) !== null
+    ) {
+      return null;
+    }
+    const sendIndex = entries.get("sendIndex");
+    const cacheDowngradeReason = entries.get("cacheDowngradeReason");
+    const usage = parseProgressUsage(entries.get("usage"));
+    return isNonNegativeSafeInteger(sendIndex) &&
+      sendIndex > 0 &&
+      sendIndex <= MASTRA_AGENT_TURN_LOOP_NUMBER_MAX &&
+      (cacheDowngradeReason === null ||
+        cacheDowngradeReason === "budget" ||
+        cacheDowngradeReason === "too-many-blocks") &&
+      usage !== null
+      ? (value as MastraAgentTurnProgressEvent)
+      : null;
+  }
+  if (kind === "tool") {
+    if (
+      keyIssue(
+        entries,
+        [
+          "kind",
+          "phase",
+          "toolCallId",
+          "toolName",
+          "totalCalls",
+          "maxCalls",
+          "tokensUsed",
+          "tokenBudget",
+        ],
+        [],
+      ) !== null
+    ) {
+      return null;
+    }
+    const totalCalls = entries.get("totalCalls");
+    const maxCalls = entries.get("maxCalls");
+    const tokensUsed = entries.get("tokensUsed");
+    const tokenBudget = entries.get("tokenBudget");
+    const toolCallId = entries.get("toolCallId");
+    return (entries.get("phase") === "started" ||
+      entries.get("phase") === "finished") &&
+      isTrimmedId(toolCallId) &&
+      (M4_READ_TOOL_NAMES as readonly unknown[]).includes(
+        entries.get("toolName"),
+      ) &&
+      isNonNegativeSafeInteger(totalCalls) &&
+      totalCalls <= MASTRA_AGENT_TURN_LOOP_NUMBER_MAX &&
+      isNonNegativeSafeInteger(maxCalls) &&
+      maxCalls > 0 &&
+      maxCalls <= MASTRA_AGENT_TURN_LOOP_NUMBER_MAX &&
+      isNonNegativeSafeInteger(tokensUsed) &&
+      isNonNegativeSafeInteger(tokenBudget) &&
+      tokenBudget > 0
+      ? (value as MastraAgentTurnProgressEvent)
+      : null;
+  }
+  if (kind === "context-overflow") {
+    if (keyIssue(entries, ["kind", "usage", "overflowTokens"], []) !== null) {
+      return null;
+    }
+    const usage = parseProgressUsage(entries.get("usage"));
+    const overflowTokens = entries.get("overflowTokens");
+    return usage !== null &&
+      isNonNegativeSafeInteger(overflowTokens) &&
+      overflowTokens > 0 &&
+      overflowTokens === usage.overflowTokens
+      ? (value as MastraAgentTurnProgressEvent)
+      : null;
+  }
+  if (kind === "stopped") {
+    return keyIssue(entries, ["kind", "reason"], []) === null &&
+      entries.get("reason") === "user-stop"
+      ? (value as MastraAgentTurnProgressEvent)
+      : null;
+  }
+  return null;
+}
+
+/** Checks the exact main-to-renderer progress envelope and its numeric-only event. */
+export function parseMastraAgentTurnProgressPayload(
+  value: unknown,
+): MastraAgentTurnParse<MastraAgentTurnProgressPayload> {
+  const entries = plainEntries(value);
+  if (entries === null) return fail("not-object");
+  const issue = keyIssue(entries, ["turnId", "sequence", "event"], []);
+  if (issue !== null) return fail(issue);
+  if (!isMastraAgentTurnId(entries.get("turnId"))) return fail("turn-id");
+  const sequence = entries.get("sequence");
+  if (!isNonNegativeSafeInteger(sequence) || sequence === 0) {
+    return fail("progress-sequence");
+  }
+  const event = parseProgressEvent(entries.get("event"));
+  if (event === null) return fail("progress-event");
+  return { ok: true, value: value as MastraAgentTurnProgressPayload };
 }

@@ -150,6 +150,18 @@ function fire(channel: string, ...args: unknown[]): void {
   listener({}, ...args);
 }
 
+function publicSurfacePaths(value: unknown, prefix = ""): string[] {
+  if (typeof value !== "object" || value === null) {
+    return prefix ? [prefix] : [];
+  }
+  return Object.entries(value).flatMap(([key, member]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    return typeof member === "object" && member !== null
+      ? [path, ...publicSurfacePaths(member, path)]
+      : [path];
+  });
+}
+
 beforeEach(() => {
   vi.resetModules();
   delete process.env[runtimePerformanceOwnerTokenEnv];
@@ -356,14 +368,61 @@ describe("イベント多重化（§7.2 — grim:event 1 本）", () => {
     const bridge = await loadPreload();
     const backendCb = vi.fn();
     const mainCb = vi.fn();
+    const progressCb = vi.fn();
     bridge.listen("chat:stream-done", backendCb);
     bridge.listen("updater:download-progress", mainCb);
+    bridge.listen("mastra-agent:turn-progress", progressCb);
 
     fire(IPC.event, "chat:stream-done", { messageId: "m1" });
     fire(IPC.event, "updater:download-progress", { downloaded: 1 });
+    fire(IPC.event, "mastra-agent:turn-progress", {
+      turnId: "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
+      sequence: 1,
+      event: { kind: "stopped", reason: "user-stop" },
+    });
 
     expect(backendCb).toHaveBeenCalledWith({ messageId: "m1" });
     expect(mainCb).toHaveBeenCalledWith({ downloaded: 1 });
+    expect(progressCb).toHaveBeenCalledWith(
+      expect.objectContaining({ sequence: 1 }),
+    );
+  });
+
+  it("keeps event reception on the existing preload methods", async () => {
+    await loadPreload();
+    const bridge = mocks.exposed.bridge;
+    expect(publicSurfacePaths(bridge).sort()).toEqual(
+      [
+        "dialog",
+        "dialog.openFile",
+        "dialog.openFolder",
+        "dialog.openWebEditorHandoff",
+        "emit",
+        "fs",
+        "fs.readDir",
+        "fs.readTextFile",
+        "getVersion",
+        "getWebGl2GpuBlocked",
+        "invoke",
+        "listen",
+        "openExternal",
+        "panelWindow.existsByLabel",
+        "panelWindow.focusByLabel",
+        "panelWindow.open",
+        "panelWindow",
+        "setZoomFactor",
+        "shell",
+        "windowControls",
+        "windowControls.close",
+        "windowControls.isFullscreen",
+        "windowControls.isMaximized",
+        "windowControls.minimize",
+        "windowControls.onCloseRequested",
+        "windowControls.onResized",
+        "windowControls.toggleFullscreen",
+        "windowControls.toggleMaximize",
+      ].sort(),
+    );
   });
 });
 

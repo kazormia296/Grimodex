@@ -42,11 +42,32 @@ import {
   mastraAgentTurnRefusalValue,
   parseMastraAgentTurnCancelRequest,
   parseMastraAgentTurnCancelResult,
+  parseMastraAgentTurnProgressPayload,
   parseMastraAgentTurnStartRequest,
   parseMastraAgentTurnStartResult,
 } from "./mastraAgentTurnWire.js";
 
 const TURN_ID = "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
+
+const PROGRESS_USAGE = {
+  contextTokens: 6,
+  toolTokens: 2,
+  envelopeTokens: 1,
+  safetyMarginTokens: 1,
+  inputTokens: 9,
+  outputReservedTokens: 2,
+  reservedTotalTokens: 12,
+  contextWindow: 14,
+  remainingTokens: 2,
+  overflowTokens: 0,
+};
+
+function progress(
+  event: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+) {
+  return { turnId: TURN_ID, sequence: 1, event, ...overrides };
+}
 
 function route(overrides: Record<string, unknown> = {}) {
   return {
@@ -1491,5 +1512,137 @@ describe("parseMastraAgentTurnLoopResult", () => {
     expect(
       parseMastraAgentTurnLoopResult(loopResult({ stoppedReason: "nope" })),
     ).toBeNull();
+  });
+});
+
+describe("parseMastraAgentTurnProgressPayload", () => {
+  it("accepts the four numeric / identifier-only event variants", () => {
+    const events = [
+      {
+        kind: "send-accepted",
+        sendIndex: 1,
+        usage: PROGRESS_USAGE,
+        cacheDowngradeReason: null,
+      },
+      {
+        kind: "tool",
+        phase: "started",
+        toolCallId: "call-1",
+        toolName: M4_READ_TOOL_NAMES[0],
+        totalCalls: 0,
+        maxCalls: 25,
+        tokensUsed: 0,
+        tokenBudget: 1000,
+      },
+      {
+        kind: "context-overflow",
+        usage: {
+          ...PROGRESS_USAGE,
+          reservedTotalTokens: 12,
+          contextWindow: 9,
+          remainingTokens: -3,
+          overflowTokens: 3,
+        },
+        overflowTokens: 3,
+      },
+      { kind: "stopped", reason: "user-stop" },
+    ];
+    for (const event of events) {
+      expect(
+        parseMastraAgentTurnProgressPayload(progress(event)),
+        String(event.kind),
+      ).toMatchObject({
+        ok: true,
+      });
+    }
+  });
+
+  it("rejects unknown / missing keys and wrong types", () => {
+    const stopped = { kind: "stopped", reason: "user-stop" };
+    expect(
+      parseMastraAgentTurnProgressPayload(progress(stopped, { extra: 1 })),
+    ).toMatchObject({ ok: false, issue: "unknown-key" });
+    expect(
+      parseMastraAgentTurnProgressPayload({ turnId: TURN_ID, event: stopped }),
+    ).toMatchObject({ ok: false, issue: "missing-key" });
+    expect(
+      parseMastraAgentTurnProgressPayload(progress({ ...stopped, reason: 1 })),
+    ).toMatchObject({ ok: false, issue: "progress-event" });
+  });
+
+  it("enforces sequence, count and string bounds, including safe-integer edges", () => {
+    const stopped = { kind: "stopped", reason: "user-stop" };
+    expect(
+      parseMastraAgentTurnProgressPayload(progress(stopped, { sequence: 0 })),
+    ).toMatchObject({ ok: false, issue: "progress-sequence" });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress(stopped, { sequence: Number.MAX_SAFE_INTEGER + 1 }),
+      ),
+    ).toMatchObject({ ok: false, issue: "progress-sequence" });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress(stopped, { sequence: Number.MAX_SAFE_INTEGER }),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress({
+          kind: "send-accepted",
+          sendIndex: MASTRA_AGENT_TURN_LOOP_NUMBER_MAX + 1,
+          usage: PROGRESS_USAGE,
+          cacheDowngradeReason: "budget",
+        }),
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress({
+          kind: "tool",
+          phase: "finished",
+          toolCallId: "c".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX + 1),
+          toolName: M4_READ_TOOL_NAMES[0],
+          totalCalls: 0,
+          maxCalls: 1,
+          tokensUsed: 0,
+          tokenBudget: 1,
+        }),
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("rejects prototype keys and inconsistent overflow usage", () => {
+    const polluted = JSON.parse(
+      `{"turnId":"${TURN_ID}","sequence":1,"event":{"kind":"stopped","reason":"user-stop","__proto__":{}}}`,
+    );
+    expect(parseMastraAgentTurnProgressPayload(polluted)).toMatchObject({
+      ok: false,
+      issue: "progress-event",
+    });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress({
+          kind: "context-overflow",
+          usage: {
+            ...PROGRESS_USAGE,
+            reservedTotalTokens: 12,
+            contextWindow: 9,
+            remainingTokens: -3,
+            overflowTokens: 3,
+          },
+          overflowTokens: 2,
+        }),
+      ),
+    ).toMatchObject({ ok: false, issue: "progress-event" });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress({
+          kind: "send-accepted",
+          sendIndex: 1,
+          usage: { ...PROGRESS_USAGE, inputTokens: 10 },
+          cacheDowngradeReason: "too-many-blocks",
+        }),
+      ),
+    ).toMatchObject({ ok: false, issue: "progress-event" });
   });
 });
