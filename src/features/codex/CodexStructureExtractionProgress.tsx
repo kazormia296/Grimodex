@@ -1,4 +1,5 @@
 import { Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type {
   CodexStructureExtractionCoverage,
   CodexStructureSkippedRelationalTerm,
@@ -30,6 +31,7 @@ export function CodexStructureExtractionProgress({
   unresolvedCount = 0,
   skippedRelationalTerms = [],
 }: CodexStructureExtractionProgressProps) {
+  const { t } = useTranslation();
   // 表記の種類の数（出現数ではない）。同じ表記は 1 件にまとめ、表示は先頭だけにする。
   const skippedSurfaces = [
     ...new Set(skippedRelationalTerms.map((term) => term.surface)),
@@ -60,20 +62,34 @@ export function CodexStructureExtractionProgress({
           />
         )}
         <span>
-          解析 {completedWindows}/{windowCount || "—"} Window
+          {t("codex.structureReview.progress.windows", {
+            completed: completedWindows,
+            total: windowCount || "—",
+          })}
         </span>
         {gaps.length > 0 && (
           <span className="text-amber-700 dark:text-amber-400">
-            {gaps.length}件の範囲欠落
+            {t("codex.structureReview.progress.gaps", {
+              count: gaps.length,
+            })}
           </span>
         )}
         <span>
-          Entity {entityCount} / Relation {relationCount}
-          {unresolvedCount > 0 ? ` / 未解決 ${unresolvedCount}` : ""}
+          {t("codex.structureReview.progress.proposalCounts", {
+            entityCount,
+            relationCount,
+          })}
+          {unresolvedCount > 0 &&
+            t("codex.structureReview.progress.unresolvedCount", {
+              count: unresolvedCount,
+            })}
         </span>
         {totalTasks > 0 && (
           <span className="text-[10px] opacity-80">
-            Task {completedTasks}/{totalTasks}
+            {t("codex.structureReview.progress.tasks", {
+              completed: completedTasks,
+              total: totalTasks,
+            })}
           </span>
         )}
       </div>
@@ -85,7 +101,11 @@ export function CodexStructureExtractionProgress({
           {gaps.map((gap, index) => (
             <li key={`${gap.sourceRef ?? gap.windowId ?? "gap"}-${index}`}>
               {gap.reason}
-              {gap.sourceRef ? `（${gap.sourceRef}）` : ""}
+              {gap.sourceRef
+                ? t("codex.structureReview.progress.sourceRef", {
+                    sourceRef: gap.sourceRef,
+                  })
+                : ""}
             </li>
           ))}
         </ul>
@@ -95,16 +115,20 @@ export function CodexStructureExtractionProgress({
           className="text-[11px]"
           data-testid="codex-structure-extraction-skipped-relational"
         >
-          {skippedSurfaces
-            .slice(0, SKIPPED_SURFACE_DISPLAY_LIMIT)
-            .map((surface) => `「${surface}」`)
-            .join("")}
-          {skippedSurfaces.length > SKIPPED_SURFACE_DISPLAY_LIMIT
-            ? `ほか${skippedSurfaces.length - SKIPPED_SURFACE_DISPLAY_LIMIT}件`
-            : ""}
-          など、話し手で指す人が変わる呼び方 {skippedSurfaces.length}
-          種は、新しい人物として提案していません（Codex
-          の名前・別名に入れた語は結びます）
+          {t("codex.structureReview.progress.skippedRelationalTerms", {
+            surfaces: skippedSurfaces
+              .slice(0, SKIPPED_SURFACE_DISPLAY_LIMIT)
+              .map((surface) => `「${surface}」`)
+              .join(""),
+            more:
+              skippedSurfaces.length > SKIPPED_SURFACE_DISPLAY_LIMIT
+                ? t("codex.structureReview.progress.moreSkipped", {
+                    count:
+                      skippedSurfaces.length - SKIPPED_SURFACE_DISPLAY_LIMIT,
+                  })
+                : "",
+            count: skippedSurfaces.length,
+          })}
         </p>
       )}
     </div>

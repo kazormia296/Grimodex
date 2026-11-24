@@ -2371,6 +2371,7 @@
       "show": "Show"
     },
     "structureReview": {
+      "unsupportedLanguage": "Structure extraction currently supports Japanese manuscripts only.",
       "bindingExisting": "Existing · {{name}}",
       "safeHintCreate": "Eligible for safe bulk approval",
       "safeHintBind": "Exact-match binding to an existing entry (expected to be eligible for bulk approval; re-checked against the current Codex just before approving)",
@@ -2404,7 +2405,7 @@
       "applyBlocked": {
         "sameEntryPatch": "Several approvals write aliases or a summary to the same entry, so they cannot be imported ({{names}}). Keep only one and defer or reject the others",
         "surfaceAlias": "An alias to add is no longer allowed with the current Codex ({{names}}). Uncheck \"also add as an alias\" on the card, then import again",
-        "reviewOnly": "Importing into the Codex is not available for this workspace yet. Your approve/reject decisions are kept.",
+        "reviewOnly": "Importing into the Codex is not available for this workspace yet. Approve/reject decisions are still recorded.",
         "engineDisabled": "Structure extraction is turned off by the app settings."
       },
       "foldedDismissed": {
@@ -2416,10 +2417,100 @@
         "more": "Show {{count}} more",
         "less": "Collapse",
         "unavailable": "Could not read your dismissed candidates, so dismissed surfaces are shown as well"
+      },
+      "dialog": {
+        "title": "Codex structure extraction",
+        "targetFolder": "Target folder",
+        "selectFolder": "Select a folder",
+        "projectOrFolderRequired": "Select a project and folder",
+        "noScenes": "There are no scenes under this folder",
+        "applied": "Imported {{count}} Codex structure item(s)",
+        "entityTab": "Entity ({{count}})",
+        "relationTab": "Relation ({{count}})",
+        "statesTab": "States & Phases ({{count}})",
+        "close": "Close",
+        "analyze": "Analyze",
+        "applying": "Applying…",
+        "apply": "Apply ({{count}})"
+      },
+      "progress": {
+        "windows": "Analysis {{completed}}/{{total}} Window(s)",
+        "gaps": "{{count}} coverage gap(s)",
+        "proposalCounts": "Entity {{entityCount}} / Relation {{relationCount}}",
+        "unresolvedCount": " / Unresolved {{count}}",
+        "tasks": "Task {{completed}}/{{total}}",
+        "sourceRef": "({{sourceRef}})",
+        "moreSkipped": " and {{count}} more",
+        "skippedRelationalTerms": "{{surfaces}}{{more}} are speaker-dependent names and were not proposed as new people (terms already in Codex names or aliases are bound)"
+      },
+      "entityReview": {
+        "approveFailed": "Could not approve {{count}} proposal(s)",
+        "bulkApproveFailed": "Bulk approval failed",
+        "bulkApproveSafe": "Approve all safe proposals",
+        "noEntities": "No extractable Entities were found.",
+        "details": "Details",
+        "selectProposal": "Select a proposal",
+        "appliedReadonly": "Cannot edit because this was already applied",
+        "saveNameFailed": "Could not save the Entity name",
+        "saveSummaryFailed": "Could not save the Summary",
+        "saveTypeFailed": "Could not save the Type",
+        "selectType": "Select a Type",
+        "resolveBindingFailed": "Could not resolve the Binding"
+      },
+      "entityCard": {
+        "createNew": "Create new",
+        "unresolved": "Unresolved",
+        "needsResolution": "Needs resolution",
+        "appliedReadonly": "Applied (read-only)",
+        "approve": "Approve",
+        "reject": "Reject",
+        "defer": "Defer"
+      },
+      "relationReview": {
+        "title": "Relation proposals",
+        "bulkApproveTitle": "Bulk approval for Relations is disabled in v1",
+        "noBulkApprove": "No bulk approval",
+        "noRelations": "No extractable Relations were found.",
+        "details": "Details",
+        "selectProposal": "Select a proposal",
+        "appliedReadonly": "Cannot edit because this was already applied",
+        "alreadySatisfiedReadonly": "Cannot edit because this matches an existing Relation"
+      },
+      "relationCard": {
+        "directionality": { "directed": "Directed", "symmetric": "Symmetric" },
+        "unresolvedEndpoints": "Both endpoint Bindings are unresolved",
+        "appliedReadonly": "Applied (read-only)",
+        "approve": "Approve",
+        "reject": "Reject",
+        "defer": "Defer"
+      },
+      "relationEditor": {
+        "title": "Edit Relation",
+        "swapEndpoints": "Swap Subject / Object"
+      },
+      "evidence": {
+        "title": "Evidence quotes",
+        "empty": "No evidence is available",
+        "scene": "Scene",
+        "fragmentBlocked": "Fragment (cannot be applied)",
+        "binding": "Binding",
+        "createNew": "Create new",
+        "existingEntry": "Existing Entry ({{ref}})",
+        "unresolved": "Unresolved",
+        "type": "Type",
+        "alias": "Alias"
+      },
+      "blockedReason": {
+        "evidenceUnresolved": "Evidence is unresolved. Extract again to review the evidence.",
+        "relationExists": "The same Relation is already registered (no import needed)",
+        "entryAmbiguous": "Multiple existing Entry candidates were found, and the Binding is unresolved.",
+        "detailUnmapped": "No Detail definition is assigned.",
+        "phaseAmbiguous": "Multiple existing Phase candidates were found."
       }
     },
     "candidates": {
       "title": "Proper-noun candidates",
+      "openStructureExtract": "Review with structure extraction",
       "occurrences": "{{count}}×",
       "accept": "Add to Codex (type editable later)",
       "dismiss": "Dismiss this candidate",
