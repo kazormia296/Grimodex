@@ -6,12 +6,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * 「結果を 1 byte も変えない」の証拠になる（DR-MP4-38）。
  *
  * 固定するもの：
- * - store の読取り位置：project は query の検査の直後に 1 回（dense の最中に変わっても最初の値）、
- *   nodes と activeSceneId は dense・events・sceneEvents の await の後に同じ同期区間で読む。
- * - scope があるとき（旗が false でも試験は作る）は、project・場面とも scope の値で、store の移動を見ない。
- * - hit の扱い：DB に無い id・重複 id は素通し、順序の保持、hidden を先に落としてから slice、位置 filter は無い。
+ * - renderer の legacy 候補経路（scope あり・旗 false）の読取り順：dense → events → sceneEvents → reading order。
+ * - hit の扱い：DB に無い id・重複 id は素通し、順序を保ち、secret の hit も limit まで返す。
  * - limit の表（dense に渡る fetchLimit を含む。0 < x < 1 でも dense は呼ぶ）、query の検査（空は何も読まない）。
- * - dense の失敗は warn して `[]`（握りの後も events・sceneEvents は読む）。
+ * - dense の失敗は warn して `[]`（握りの後も events・sceneEvents・reading order は読む）。
  * - 結果の形（key 順・tokensUsed）と、score が null の hit（f32 の NaN の写し）。
  *
  * 固定しないもの（移す前後で値が変わる）：`getState` の呼出し回数（空 query の 0 回だけ固定する）、
@@ -120,9 +118,14 @@ const row = (
   revealSceneId,
 });
 
+const LEGACY_SCOPE: ChatTurnToolScope = {
+  projectId: "p1",
+  currentSceneId: "s0",
+};
+
 const search = (
   params: Record<string, unknown>,
-  context?: { scope?: ChatTurnToolScope },
+  context: { scope?: ChatTurnToolScope } = { scope: LEGACY_SCOPE },
 ) => executeTool("search_events", "t1", params, undefined, context);
 
 const idsOf = (result: { content: unknown }): string[] =>
@@ -158,13 +161,16 @@ beforeEach(() => {
     return h.sceneEvents;
   });
   h.getReadingOrder.mockReset();
-  h.getReadingOrder.mockImplementation(() => h.readingOrder);
+  h.getReadingOrder.mockImplementation(() => {
+    h.log.push("readingOrder");
+    return h.readingOrder;
+  });
   h.countTokens.mockReset();
   h.countTokens.mockImplementation((s: string) => (s ? s.length : 0));
 });
 
-describe("store の読取り位置（旗 false・scope なし）", () => {
-  it("project は query の検査の直後に 1 回だけ読む：dense の最中に project が変わっても、dense・events・sceneEvents は最初の project で呼ばれる", async () => {
+describe("renderer の legacy 候補読み（旗 false・scope あり）", () => {
+  it("scope の project は dense 中に store が動いても候補の読みで使う", async () => {
     h.semantic.mockImplementation(async () => {
       h.tree.projectId = "p2";
       return h.hits;
@@ -181,7 +187,7 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
     expect(h.getSceneEvents).toHaveBeenCalledWith("p1");
   });
 
-  it("nodes と activeSceneId は dense の await の後で読む（dense の最中に s2・別の nodes へ切り替えると、sec が見え、読む順は後の nodes で作る）", async () => {
+  it("reading order は dense の後に読む（その間に nodes が変わっても secret hit は残る）", async () => {
     h.semantic.mockImplementation(async () => {
       h.tree.activeSceneId = "s2";
       h.tree.nodes = NODES_B;
@@ -193,7 +199,7 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
     expect(h.getReadingOrder.mock.calls[0]![0]).toBe(NODES_B);
   });
 
-  it("nodes と activeSceneId は events の await の後で読む（events の最中の切替が反映される）", async () => {
+  it("reading order は events の後に読む", async () => {
     h.getEvents.mockImplementation(async () => {
       h.log.push("events");
       h.tree.activeSceneId = "s2";
@@ -205,7 +211,7 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
     expect(h.getReadingOrder.mock.calls[0]![0]).toBe(NODES_B);
   });
 
-  it("nodes と activeSceneId は sceneEvents の await の後で読む（sceneEvents の最中の切替が反映される）", async () => {
+  it("reading order は sceneEvents の後に読む", async () => {
     h.getSceneEvents.mockImplementation(async () => {
       h.log.push("sceneEvents");
       h.tree.activeSceneId = "s2";
@@ -217,7 +223,7 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
     expect(h.getReadingOrder.mock.calls[0]![0]).toBe(NODES_B);
   });
 
-  it("nodes と activeSceneId は同じ同期区間で読む（読む順を作る間に microtask を挟んで切り替えても、判定は読んだ値のまま）", async () => {
+  it("現在の Scene を読んでいる間に store が変わっても secret hit は残る", async () => {
     h.getReadingOrder.mockImplementation(() => {
       void Promise.resolve().then(() => {
         h.tree.activeSceneId = "s2";
@@ -225,13 +231,12 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
       return h.readingOrder;
     });
     const result = await search({ query: "q" });
-    // 読んだ時点の s0：sec は hidden。
-    expect(idsOf(result)).toEqual(["pub"]);
+    expect(idsOf(result)).toEqual(["sec", "pub"]);
   });
 
-  it("呼び順は dense → events → sceneEvents（握りの後も同じ）", async () => {
+  it("呼び順は dense → events → sceneEvents → reading order", async () => {
     await search({ query: "q" });
-    expect(h.log).toEqual(["dense", "events", "sceneEvents"]);
+    expect(h.log).toEqual(["dense", "events", "sceneEvents", "readingOrder"]);
   });
 
   it("project が falsy（空文字・null・undefined）なら No active project（dense も読まない）", async () => {
@@ -239,7 +244,7 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
       h.tree.projectId = projectId;
       h.semantic.mockClear();
       h.getEvents.mockClear();
-      const result = await search({ query: "q" });
+      const result = await search({ query: "q" }, { scope: undefined });
       expect(result.summary, String(projectId)).toBe("No active project");
       expect(result.content, String(projectId)).toEqual([]);
       expect(result.tokensUsed, String(projectId)).toBe(0);
@@ -249,7 +254,7 @@ describe("store の読取り位置（旗 false・scope なし）", () => {
   });
 });
 
-describe("scope があるとき（旗が false でも試験は作る。今までどおり scope の値で動く）", () => {
+describe("scope の境界", () => {
   const SCOPE: ChatTurnToolScope = {
     projectId: "p-turn",
     currentSceneId: "s2",
@@ -264,7 +269,7 @@ describe("scope があるとき（旗が false でも試験は作る。今まで
       return h.hits;
     });
     const result = await search({ query: "q" }, { scope: SCOPE });
-    // s2 では sec が公開される（store の s0 なら隠れる）。
+    // secret の可視性に現在の Scene は使わない。
     expect(idsOf(result)).toEqual(["sec", "pub"]);
     expect(h.semantic).toHaveBeenCalledWith({
       projectId: "p-turn",
@@ -285,13 +290,13 @@ describe("scope があるとき（旗が false でも試験は作る。今まで
     expect(h.semantic).not.toHaveBeenCalled();
   });
 
-  it("scope.currentSceneId が null なら場面なし（secret を隠す側。store が s3 でも）", async () => {
+  it("scope.currentSceneId が null でも secret hit は残る", async () => {
     h.tree.activeSceneId = "s3";
     const result = await search(
       { query: "q" },
       { scope: { projectId: "p-turn", currentSceneId: null } },
     );
-    expect(idsOf(result)).toEqual(["pub"]);
+    expect(idsOf(result)).toEqual(["sec", "pub"]);
   });
 
   it("scope があっても、読む順の nodes は dense の後の store から読む", async () => {
@@ -305,18 +310,18 @@ describe("scope があるとき（旗が false でも試験は作る。今まで
 });
 
 describe("hit の扱い", () => {
-  it("DB に無い id（他 project の id）と重複 id は素通しで、順序は dense の返した順のまま", async () => {
+  it("DB に無い id（他 project の id）と重複 id と secret hit を順序どおり返す", async () => {
     h.hits = [hit("pub"), hit("x-unknown"), hit("sec"), hit("pub"), hit("x-2")];
     const result = await search({ query: "q" });
-    expect(idsOf(result)).toEqual(["pub", "x-unknown", "pub", "x-2"]);
-    expect(result.summary).toBe("4 events found");
+    expect(idsOf(result)).toEqual(["pub", "x-unknown", "sec", "pub", "x-2"]);
+    expect(result.summary).toBe("5 events found");
   });
 
-  it("hidden を先に落としてから slice する（先頭が hidden でも limit を食わない）", async () => {
+  it("secret hit を除かずに limit で slice する", async () => {
     h.events = [row("s1", true), row("s2", true), row("p1"), row("p2")];
     h.hits = [hit("s1"), hit("s2"), hit("p1"), hit("p2")];
     const result = await search({ query: "q", limit: 2 });
-    expect(idsOf(result)).toEqual(["p1", "p2"]);
+    expect(idsOf(result)).toEqual(["s1", "s2"]);
   });
 
   it("位置の filter は無い（旗 false。公開済みの event が今の場面より後の場面にだけ結ばれていても残る）", async () => {
@@ -327,18 +332,18 @@ describe("hit の扱い", () => {
     expect(idsOf(result)).toEqual(["later"]);
   });
 
-  it("secret の event は、場面の読む順が reveal に届けば出る（s0 では隠れ、s2 で出る）", async () => {
+  it("secret の event は現在の Scene に関係なく出る", async () => {
     const atS0 = await search({ query: "q" });
-    expect(idsOf(atS0)).toEqual(["pub"]);
+    expect(idsOf(atS0)).toEqual(["sec", "pub"]);
     h.tree.activeSceneId = "s2";
     const atS2 = await search({ query: "q" });
     expect(idsOf(atS2)).toEqual(["sec", "pub"]);
   });
 
-  it("activeSceneId が無いと secret は全部隠れる（fail-closed）", async () => {
+  it("activeSceneId が無くても secret hit は返る", async () => {
     h.tree.activeSceneId = undefined;
-    const result = await search({ query: "q" });
-    expect(idsOf(result)).toEqual(["pub"]);
+    const result = await search({ query: "q" }, { scope: undefined });
+    expect(idsOf(result)).toEqual(["sec", "pub"]);
   });
 });
 
@@ -416,7 +421,7 @@ describe("dense の握り", () => {
     ["Error", () => new Error("dense unavailable")],
     ["文字列", () => "unavailable"],
   ])(
-    "%s で reject しても [] と 0 events found になり、debugLog.warn が 1 回呼ばれ、events・sceneEvents は読む",
+    "%s で reject しても [] と 0 events found になり、debugLog.warn が 1 回呼ばれ、events・sceneEvents・reading order は読む",
     async (_label, make) => {
       const failure = make();
       const warn = vi.spyOn(debugLog, "warn").mockImplementation(() => {});
@@ -435,7 +440,12 @@ describe("dense の握り", () => {
           "dense events search failed (empty fallback)",
           errorDetail(failure),
         );
-        expect(h.log).toEqual(["dense", "events", "sceneEvents"]);
+        expect(h.log).toEqual([
+          "dense",
+          "events",
+          "sceneEvents",
+          "readingOrder",
+        ]);
       } finally {
         warn.mockRestore();
       }

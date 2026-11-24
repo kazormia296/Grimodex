@@ -79,7 +79,12 @@ const eventRow = (id: string, over: Record<string, unknown> = {}) => ({
 interface ProjectData {
   events: Array<Record<string, unknown>>;
   sceneEvents?: Array<{ scene_id: string; event_id: string }>;
-  codex?: Array<{ id: string; name: string }>;
+  codex?: Array<{
+    id: string;
+    name: string;
+    summary?: string | null;
+    context_mode?: string;
+  }>;
 }
 
 /**
@@ -214,19 +219,16 @@ describe("the turn's tree state", () => {
     expect([...turn.inputs.readingOrder.keys()]).toEqual(["s1", "s2", "s3"]);
   });
 
-  it("uses that reading order for the secrecy rule: a secret event is shown from its reveal scene on, hidden before it, and for a position outside the order", async () => {
+  it("uses the turn's reading order to find the prior anchor for get_chronicle_state", async () => {
     const { client } = makeClient({
       p1: {
-        events: [eventRow("sec", { secret: 1, reveal_scene_id: "s2" })],
+        events: [eventRow("e1", { start_time: 10 })],
+        sceneEvents: [{ scene_id: "s2", event_id: "e1" }],
       },
     });
-    const at = async (current: string | null) =>
-      listIds(makeMain(client, turnOf("p1", ROWS, current)));
-    expect(await at("s1")).toEqual([]);
-    expect(await at("s2")).toEqual(["sec"]);
-    expect(await at("s3")).toEqual(["sec"]);
-    expect(await at("not-a-scene")).toEqual([]);
-    expect(await at(null)).toEqual([]);
+    const m = makeMain(client, turnOf("p1", ROWS, null));
+    const result = await m.executors.get_chronicle_state({ sceneId: "s3" });
+    expect(result.summary).toBe("Chronicle state at scene (proxy)");
   });
 
   it("reads nothing when the context is made, and the language only when a tool asks for it", async () => {
@@ -280,7 +282,12 @@ describe("one cache per turn", () => {
 
   it("two tools that run at the same time in one turn share ONE in-flight load", async () => {
     const { client, hold, count } = makeClient({
-      p1: { events: [eventRow("e1")] },
+      p1: {
+        events: [eventRow("e1", { primary_codex_id: "c1" })],
+        codex: [
+          { id: "c1", name: "Alice", summary: null, context_mode: "always" },
+        ],
+      },
     });
     hold.events = deferred();
     const m = makeMain(client, turnOf("p1", ROWS, "s3"));
@@ -291,7 +298,8 @@ describe("one cache per turn", () => {
     await Promise.all([first, second, third]);
     expect(count("events")).toBe(1);
     expect(count("scene_events")).toBe(1);
-    expect(count("codex_entries")).toBe(1);
+    expect(count("codex_entries")).toBe(4); // one names load and three uncached visibility reads
+    expect(count("codex_entry_phases")).toBe(3);
   });
 
   it("does not keep a failed load: the next call asks again", async () => {
@@ -322,9 +330,18 @@ describe("one cache per turn", () => {
   });
 
   it("clear() drops events, bridges and names together, and a second clear() is harmless", async () => {
-    const { client, count } = makeClient({ p1: { events: [eventRow("e1")] } });
+    const { client, count } = makeClient({
+      p1: {
+        events: [eventRow("e1")],
+        sceneEvents: [{ scene_id: "s2", event_id: "e1" }],
+      },
+    });
     const m = makeMain(client, turnOf("p1", ROWS, "s3"));
-    await listIds(m);
+    const readWithBridgeAndNames = async () => {
+      await m.executors.get_event_detail({ eventId: "e1" });
+      await m.executors.get_chronicle_state({ sceneId: "s3" });
+    };
+    await readWithBridgeAndNames();
     expect([
       count("events"),
       count("scene_events"),
@@ -332,7 +349,7 @@ describe("one cache per turn", () => {
     ]).toEqual([1, 1, 1]);
     m.clear();
     m.clear();
-    await listIds(m);
+    await readWithBridgeAndNames();
     expect([
       count("events"),
       count("scene_events"),
@@ -354,56 +371,57 @@ describe("one cache per turn", () => {
   });
 });
 
-describe("a change in the middle of a turn (NOT equal to the renderer: held for Q5, DR-MP4-37)", () => {
-  // The renderer drops its cache for every batch of tools, so an event's `secret`
-  // changed between two batches of one turn is seen by the second batch. Main's
-  // cache lives as long as the turn's context, so the second call below does NOT
-  // see the change until `clear()`. This is a characterization of the Main side
-  // (what it does today), written down so that Q5 changes it on purpose; it is not
-  // an equivalence and no equivalence test claims it.
-  it("a secret event that becomes public in the database stays hidden for the rest of the turn, and a later turn or clear() sees it", async () => {
-    const data = {
-      p1: { events: [eventRow("sec", { secret: 1, reveal_scene_id: "s3" })] },
-    };
+describe("event row changes during a turn", () => {
+  // Main holds the first events read for the context lifetime; clear() reloads it.
+  it("a title changed after list_events first reads remains held until clear()", async () => {
+    const data = { p1: { events: [eventRow("e1", { title: "Before" })] } };
     const { client } = makeClient(data);
-    const m = makeMain(client, turnOf("p1", ROWS, "s1"));
-    expect(await listIds(m)).toEqual([]);
-    data.p1.events = [eventRow("sec", { secret: 0 })];
-    expect(await listIds(m)).toEqual([]); // the cache: the change does not reach the next call
+    const m = makeMain(client, turnOf("p1", ROWS, "s3"));
+    const titles = async () =>
+      (
+        (await m.executors.list_events({})).content as {
+          events: Array<{ title: string }>;
+        }
+      ).events.map((event) => event.title);
+    expect(await titles()).toEqual(["Before"]);
+    data.p1.events = [eventRow("e1", { title: "After" })];
+    expect(await titles()).toEqual(["Before"]);
     m.clear();
-    expect(await listIds(m)).toEqual(["sec"]);
-    // a new turn (a new context) starts from the database
-    const next = makeMain(client, turnOf("p1", ROWS, "s1"));
-    expect(await listIds(next)).toEqual(["sec"]);
+    expect(await titles()).toEqual(["After"]);
   });
 
-  it("and the other way: a public event that becomes secret stays visible until the cache is dropped (the safe direction is not the one that is held)", async () => {
-    const data = { p1: { events: [eventRow("e", { secret: 0 })] } };
+  it("a title changed after get_event_detail first reads remains held across tools until clear()", async () => {
+    const data = { p1: { events: [eventRow("e1", { title: "Before" })] } };
     const { client } = makeClient(data);
-    const m = makeMain(client, turnOf("p1", ROWS, "s1"));
-    expect(await listIds(m)).toEqual(["e"]);
-    data.p1.events = [eventRow("e", { secret: 1, reveal_scene_id: "s3" })];
-    expect(await listIds(m)).toEqual(["e"]);
+    const m = makeMain(client, turnOf("p1", ROWS, "s3"));
+    const detail = await m.executors.get_event_detail({ eventId: "e1" });
+    expect((detail.content as { title: string }).title).toBe("Before");
+    data.p1.events = [eventRow("e1", { title: "After" })];
+    const listed = await m.executors.list_events({});
+    expect(
+      (listed.content as { events: Array<{ title: string }> }).events[0]!.title,
+    ).toBe("Before");
     m.clear();
-    expect(await listIds(m)).toEqual([]);
+    const reloaded = await m.executors.get_event_detail({ eventId: "e1" });
+    expect((reloaded.content as { title: string }).title).toBe("After");
   });
 });
 
 describe("the Codex names", () => {
-  it("are every entry of the project by id, hidden ones included, from a two-column select", async () => {
+  it("returns every project's entry name by id, including hidden ones, from a two-column select", async () => {
     const codex = [
       { id: "c1", name: "Alice" },
-      { id: "c-hidden", name: "Hidden Person" },
+      {
+        id: "c-hidden",
+        name: "Hidden Person",
+        summary: null,
+        context_mode: "hidden",
+      },
       { id: "c3", name: "" },
     ];
     const { client, statements } = makeClient({
       p1: {
-        events: [
-          eventRow("e1", {
-            primary_codex_id: "c-hidden",
-            location_codex_id: "c1",
-          }),
-        ],
+        events: [eventRow("e1")],
         codex,
       },
     });
@@ -413,43 +431,71 @@ describe("the Codex names", () => {
     const select = statements.find((s) => s.table === "codex_entries")!;
     expect(selectColumns(select.sql).sort()).toEqual(["id", "name"]);
     expect(select.projectId).toBe("p1");
-    // and the tools return a hidden entry's name as it is
-    const r = await m.executors.list_events({});
-    expect(
-      (r.content as { events: Array<{ primaryCharacter: unknown }> }).events[0]!
-        .primaryCharacter,
-    ).toBe("Hidden Person");
   });
 });
 
-describe("Main's events read fails closed on the columns that decide what the AI may see (DR-MP4-37)", () => {
+it("list_events hides a base-hidden primary Codex name after a visible-name baseline", async () => {
+  const data = {
+    p1: {
+      events: [eventRow("e1", { primary_codex_id: "c-hidden" })],
+      codex: [
+        {
+          id: "c-hidden",
+          name: "Hidden Person",
+          summary: null,
+          context_mode: "always",
+        },
+      ],
+    },
+  };
+  const { client } = makeClient(data);
+  const visible = makeMain(client, turnOf("p1", ROWS, "s3"));
+  const baseline = await visible.executors.list_events({});
+  expect(
+    (baseline.content as { events: Array<{ primaryCharacter: unknown }> })
+      .events[0]!.primaryCharacter,
+  ).toBe("Hidden Person");
+
+  data.p1.codex[0]!.context_mode = "hidden";
+  const hidden = makeMain(client, turnOf("p1", ROWS, "s3"));
+  expect([
+    ...(await hidden.ctx.chronicle.getCodexNames("p1")).entries(),
+  ]).toContainEqual(["c-hidden", "Hidden Person"]);
+  const result = await hidden.executors.list_events({});
+  expect(
+    (result.content as { events: Array<{ primaryCharacter: unknown }> })
+      .events[0]!.primaryCharacter,
+  ).toBeNull();
+});
+
+describe("Main's event read ignores secret and still fails closed on a missing revealSceneId", () => {
   // `readEventsFailClosed` (not `readEvents`) is what Main's context loads
   // events with. The rows below are what a reader that lost a column would
   // return; `normalizeEvent` would turn each of them into a public event.
-  // An absent `secret` key is not a case: Drizzle maps the undefined to `false`
-  // before the narrow sees it (checked), so only a null `secret` reaches it.
-  const cases: Array<[string, Record<string, unknown>, RegExp]> = [
-    ["a null secret", { secret: null }, /usable .secret. column/u],
-    [
-      "a missing revealSceneId (undefined)",
-      { reveal_scene_id: undefined },
-      /usable .revealSceneId. column/u,
-    ],
-  ];
+  // `secret` is no longer a visibility gate, but a missing revealSceneId column
+  // remains an invalid row on Main's read path.
+  it("does not hide an event when its secret value is null", async () => {
+    const { client } = makeClient({
+      p1: { events: [eventRow("e1", { secret: null })] },
+    });
+    const m = makeMain(client, turnOf("p1", ROWS, "s3"));
+    expect(await listIds(m)).toEqual(["e1"]);
+    const detail = await m.executors.get_event_detail({ eventId: "e1" });
+    expect((detail.content as { id: string }).id).toBe("e1");
+  });
 
-  it.each(cases)(
-    "%s: list_events and get_event_detail reject (the event is not read as public)",
-    async (_name, over, message) => {
-      const { client } = makeClient({
-        p1: { events: [eventRow("e1", over)] },
-      });
-      const m = makeMain(client, turnOf("p1", ROWS, "s3"));
-      await expect(m.executors.list_events({})).rejects.toThrow(message);
-      await expect(
-        m.executors.get_event_detail({ eventId: "e1" }),
-      ).rejects.toThrow(message);
-    },
-  );
+  it("rejects list_events and get_event_detail when revealSceneId is missing", async () => {
+    const { client } = makeClient({
+      p1: { events: [eventRow("e1", { reveal_scene_id: undefined })] },
+    });
+    const m = makeMain(client, turnOf("p1", ROWS, "s3"));
+    await expect(m.executors.list_events({})).rejects.toThrow(
+      /usable .revealSceneId. column/u,
+    );
+    await expect(
+      m.executors.get_event_detail({ eventId: "e1" }),
+    ).rejects.toThrow(/usable .revealSceneId. column/u);
+  });
 });
 
 describe("the active scene (NOT equal to the renderer)", () => {
@@ -492,161 +538,40 @@ describe("the active scene (NOT equal to the renderer)", () => {
   });
 });
 
-describe("search_events' context reads the events again for every call (DR-MP4-38; the cached context above does not)", () => {
-  const wireHit = (eventId: string) => ({
-    eventId,
-    title: `title-${eventId}`,
-    kind: "generic",
-    score: 0.5,
-  });
-
-  function makeSearch(
-    client: CoreReadDbClient,
-    turn: ChronicleReadInputs,
-    wire: () => unknown[],
-  ) {
-    const eventsSemantic = vi.fn(
-      async (_args: { projectId: string; query: string; limit: number }) =>
-        wire(),
-    );
+describe("search_events' main context does not load chronicle rows", () => {
+  it("uses only the turn project and dense read", async () => {
+    const { client, statements } = makeClient({});
+    const eventsSemantic = vi.fn(async () => [
+      {
+        eventId: "e1",
+        title: "title-e1",
+        kind: "generic",
+        score: 0.5,
+      },
+    ]);
     const ctx = createMainChronicleSearchContext({
       db: createCoreReadDb(client),
-      turn,
+      turn: turnOf("p1", ROWS, "s3"),
       countTokens: (text) => text.length,
       native: { eventsSemantic },
     });
-    return {
-      ctx,
-      eventsSemantic,
-      executors: createChronicleSearchExecutors(ctx),
-    };
-  }
+    const executors = createChronicleSearchExecutors(ctx);
 
-  const found = async (s: ReturnType<typeof makeSearch>) =>
-    (
-      (await s.executors.search_events({ query: "q" })).content as Array<{
-        eventId: string;
-      }>
-    ).map((e) => e.eventId);
-
-  it("reads `events` and `scene_events` once for each call, however many calls the turn makes, and no cache is kept", async () => {
-    const { client, count } = makeClient({
-      p1: { events: [eventRow("e1")] },
+    expect(ctx).not.toHaveProperty("chronicle");
+    expect((await executors.search_events({ query: "q" })).content).toEqual([
+      {
+        eventId: "e1",
+        title: "title-e1",
+        kind: "generic",
+        score: 0.5,
+      },
+    ]);
+    expect(eventsSemantic).toHaveBeenCalledWith({
+      projectId: "p1",
+      query: "q",
+      limit: 30,
     });
-    const s = makeSearch(client, turnOf("p1", ROWS, "s3"), () => [
-      wireHit("e1"),
-    ]);
-    for (let i = 1; i <= 3; i += 1) {
-      expect(await found(s)).toEqual(["e1"]);
-      expect(count("events", "p1")).toBe(i);
-      expect(count("scene_events", "p1")).toBe(i);
-    }
-  });
-
-  it("does not use the cache of the cached context: events warmed by list_events in the same turn are read again by search_events", async () => {
-    const data = {
-      p1: { events: [eventRow("e1", { secret: 0 })] },
-    };
-    const { client, count } = makeClient(data);
-    const turn = turnOf("p1", ROWS, "s1");
-    const cached = makeMain(client, turn);
-    expect(await listIds(cached)).toEqual(["e1"]);
-    expect(count("events", "p1")).toBe(1);
-    const s = makeSearch(client, turn, () => [wireHit("e1")]);
-    expect(await found(s)).toEqual(["e1"]);
-    expect(count("events", "p1")).toBe(2);
-  });
-
-  it("a secret event created after the turn began, or made secret since, is dropped from the hits at the next call (the window a cached list would leave open is closed)", async () => {
-    const data = {
-      p1: { events: [eventRow("old")] } as ProjectData,
-    };
-    const { client } = makeClient(data);
-    const turn = turnOf("p1", ROWS, "s1");
-    const s = makeSearch(client, turn, () => [
-      wireHit("old"),
-      wireHit("created-later"),
-    ]);
-    // the first call: `created-later` is not an event of the project yet, so it passes
-    // (moved as it is); nothing is held.
-    expect(await found(s)).toEqual(["old", "created-later"]);
-    // the author creates a secret event and makes `old` secret
-    data.p1.events = [
-      eventRow("old", { secret: 1, reveal_scene_id: "s3" }),
-      eventRow("created-later", { secret: 1, reveal_scene_id: "s3" }),
-    ];
-    expect(await found(s)).toEqual([]);
-    // and the same on the cached context, for contrast: it is a cache of the turn
-    const cached = makeMain(client, turn);
-    data.p1.events = [eventRow("old"), eventRow("created-later")];
-    expect(await listIds(cached)).toEqual(["old", "created-later"]);
-    data.p1.events = [
-      eventRow("old", { secret: 1, reveal_scene_id: "s3" }),
-      eventRow("created-later", { secret: 1, reveal_scene_id: "s3" }),
-    ];
-    expect(await listIds(cached)).toEqual(["old", "created-later"]);
-    expect(await found(s)).toEqual([]);
-  });
-
-  it("is one fixed tree state of the turn (same object, the turn's nodes and current scene) and the turn's reading order, and reads nothing when made", () => {
-    const { client, statements } = makeClient({});
-    const turn = turnOf("p1", ROWS, "s2");
-    const s = makeSearch(client, turn, () => []);
-    const a = s.ctx.getTreeState();
-    expect(a).toBe(s.ctx.getTreeState());
-    expect(a.projectId).toBe("p1");
-    expect(a.nodes).toBe(turn.nodes);
-    expect(a.activeSceneId).toBe("s2");
-    expect(s.ctx.chronicle.getReadingOrder([])).toBe(turn.inputs.readingOrder);
     expect(statements).toEqual([]);
-    expect(s.eventsSemantic).not.toHaveBeenCalled();
-  });
-
-  it("two turns that run at once, of different projects, do not meet (each asks its own project)", async () => {
-    const { client, count } = makeClient({
-      pA: { events: [eventRow("a-e", { project_id: "pA" })] },
-      pB: { events: [eventRow("b-e", { project_id: "pB" })] },
-    });
-    const a = makeSearch(client, turnOf("pA", ROWS, "s3"), () => [
-      wireHit("a-e"),
-    ]);
-    const b = makeSearch(client, turnOf("pB", ROWS, "s3"), () => [
-      wireHit("b-e"),
-    ]);
-    const [fa, fb] = await Promise.all([found(a), found(b)]);
-    expect(fa).toEqual(["a-e"]);
-    expect(fb).toEqual(["b-e"]);
-    expect(a.eventsSemantic.mock.calls[0]![0].projectId).toBe("pA");
-    expect(b.eventsSemantic.mock.calls[0]![0].projectId).toBe("pB");
-    expect(count("events", "pA")).toBe(1);
-    expect(count("events", "pB")).toBe(1);
-  });
-
-  it("reads the events fail closed: a row whose `secret` is null is an error, never a public event", async () => {
-    const { client } = makeClient({
-      p1: { events: [eventRow("e1", { secret: null })] },
-    });
-    const s = makeSearch(client, turnOf("p1", ROWS, "s3"), () => [
-      wireHit("e1"),
-    ]);
-    await expect(s.executors.search_events({ query: "q" })).rejects.toThrow(
-      /usable .secret. column/u,
-    );
-  });
-
-  it("a failed read of the events is not turned into an empty result and is retried by the next call", async () => {
-    const { client, failNext } = makeClient({
-      p1: { events: [eventRow("e1")] },
-    });
-    const s = makeSearch(client, turnOf("p1", ROWS, "s3"), () => [
-      wireHit("e1"),
-    ]);
-    failNext.events = new Error("db is down");
-    // (Drizzle wraps the driver's error: it is an error, not an empty result.)
-    await expect(s.executors.search_events({ query: "q" })).rejects.toThrow(
-      /Failed query/u,
-    );
-    expect(await found(s)).toEqual(["e1"]);
   });
 });
 

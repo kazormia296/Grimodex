@@ -342,16 +342,11 @@ export type CoreChronicleReadContext = Pick<
 };
 
 /**
- * The ports of `search_events` (PR-7b, DR-MP4-38): the tree state (the project,
- * the nodes and the active scene), the token counter, the three chronicle
- * loaders the secrecy check needs, and the dense read of the events index. Its
- * own type, not a widening of `CoreChronicleReadContext` (which stays as it is:
- * the four chronicle tools need no dense read) and not of `CoreReadContext`
- * (`native` there lacks `eventsSemantic`). A `CoreChronicleReadContext` that has
- * a `native` satisfies this type structurally, but Main does not pass its cached
- * context: a hit that the cached events do not know would pass the secrecy check
- * (DR-MP4-38), so Main's context loads the events and the scene-event bridges
- * again for each call (`createMainChronicleSearchContext`).
+ * The ports of `search_events`: project state, token counter, and dense event
+ * search. It does not load chronicle rows or apply event-secrecy filtering.
+ * This stays separate from `CoreChronicleReadContext` (the four chronicle tools
+ * do not need a dense read) and `CoreReadContext` (`native` there lacks
+ * `eventsSemantic`).
  *
  * `native.eventsSemantic` answers the wire as it is, not narrowed. A failure of
  * it is not turned into an empty answer by the core: what a caller does with it
@@ -362,10 +357,6 @@ export type CoreChronicleSearchContext = Pick<
   CoreReadPorts,
   "getTreeState" | "countTokens"
 > & {
-  readonly chronicle: Pick<
-    CoreChronicleData,
-    "getEvents" | "getSceneEvents" | "getReadingOrder"
-  >;
   readonly native: Pick<CoreNativeReads, "eventsSemantic">;
 };
 

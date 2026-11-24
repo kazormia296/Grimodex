@@ -699,7 +699,7 @@ const SEARCH_EVENTS_DENSE: Record<string, DenseKind> = {
   "canned: S1 では secret の戦争（n-s3 で公開）と恒久秘匿の死が落ちる。DB に無い他 project の id は素通し":
     "canned",
   "canned: S3 では戦争が出る（恒久秘匿の死は出ない）": "canned",
-  "canned: 場面なしでは secret を全部隠す（fail-closed）": "canned",
+  "canned: 場面なしでも secret の出来事を返す": "canned",
   "canned: limit=2 で slice": "canned",
   "canned: limit が数でなければ 10": "canned",
   "canned: dense が reject したら空配列に退避する": "rejects",
@@ -875,12 +875,12 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     ]);
   });
 
-  it("先頭が hidden で limit が可視の件数より小さい hit 列：hidden を先に落としてから slice する。dense には fetchLimit（limit×3）を送る（golden の canned dense は limit を無視するので、golden ではこの 2 点は見えない）", async () => {
+  it("limit が hit の件数より小さいとき：秘匿の出来事も落とさず、dense の並びの先頭から slice する（CSR/1）。dense には fetchLimit（limit×3）を送る（golden の canned dense は limit を無視するので、golden ではこの 2 点は見えない）", async () => {
     setLegacyReadWorkspaceIdentity();
     await seedLegacyReadFixture();
     await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
     legacyReadInvokeBridge.reset();
-    // S1：ev-war（n-s3 で公開）と ev-death（恒久秘匿）は hidden、ev-meet・ev-birth は可視。
+    // CSR/1：ev-war（n-s3 で公開）と ev-death（恒久秘匿）も、秘匿を理由には落とさない。
     denseAnswer = () => [
       LEGACY_READ_CANNED_EVENT_HITS[0],
       LEGACY_READ_CANNED_EVENT_HITS[2],
@@ -894,7 +894,7 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     const result = await executors.search_events({ query: "魔術", limit: 1 });
     expect(
       (result.content as Array<{ eventId: string }>).map((e) => e.eventId),
-    ).toEqual(["ev-meet"]);
+    ).toEqual(["ev-war"]);
     expect(denseSent.map((d) => d.limit)).toEqual([3]);
   });
 
@@ -940,7 +940,7 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     expect(denseSent).toEqual([]);
   });
 
-  it("events の読みは呼出しごとに取り直す：list_events（cache つきの ctx）が events を読んだ後でも、search_events は 2 回呼べば 2 回読む。cache の後に secret にした event の hit は次の呼出しで落ちる（PR-7a の ctx の cache とは逆）", async () => {
+  it("search_events は events・scene_events を読まない（CSR/1）：list_events（cache つきの ctx）が events を読んだ後でも、search_events は 2 回呼んで 0 回。turn の途中で secret にした event の hit も、落ちない", async () => {
     setLegacyReadWorkspaceIdentity();
     await seedLegacyReadFixture();
     await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
@@ -973,8 +973,8 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     const first = await executors.search_events({ query: "魔術" });
     expect(idsOf(first)).toContain("ev-meet");
     await executors.search_events({ query: "魔術" });
-    expect(countFrom("events")).toBe(2); // search_events: once per call
-    expect(countFrom("scene_events")).toBe(2);
+    expect(countFrom("events")).toBe(0); // search_events は DB を読まない（秘匿の判定が無いため）
+    expect(countFrom("scene_events")).toBe(0);
 
     const update = (secret: number, reveal: string | null) =>
       invoke("db_execute", {
@@ -985,7 +985,7 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     try {
       await update(1, "n-s3"); // 公開の ev-meet が、turn の途中で n-s3 公開の secret になる（今は n-s1）
       const after = await executors.search_events({ query: "魔術" });
-      expect(idsOf(after)).not.toContain("ev-meet");
+      expect(idsOf(after)).toContain("ev-meet"); // secret は、検索の判定に使われない
     } finally {
       await update(0, null);
     }

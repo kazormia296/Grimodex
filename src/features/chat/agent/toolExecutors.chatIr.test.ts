@@ -331,20 +331,20 @@ describe("B-T10: the position filter lives in the shared searchEvents", () => {
     ).toEqual(["before"]);
   });
 
-  it("hides a secret event that reveals later than the bound Scene", async () => {
+  it("returns a secret event even when its reveal Scene is later than the bound Scene", async () => {
     h.events = [
       { id: "before", secret: true, revealSceneId: "s3" as never },
       { id: "after", secret: false, revealSceneId: null },
     ];
     const { ir } = makeIr();
     const out = contentOf(await runSearch(ir));
-    expect(out.events).toEqual([]);
+    expect(out.events.map((event) => event.eventId)).toEqual(["before"]);
   });
 
-  it("decides the secrecy by the bound Scene, not the store's (main and sub-agent)", async () => {
-    // Revealed at s1: visible at the bound s2, hidden at the store's s0.
+  it("does not filter secret events by the bound or store Scene (main and sub-agent)", async () => {
+    // The event is tied before s2, but its reveal Scene is later.
     h.events = [
-      { id: "before", secret: true, revealSceneId: "s1" as never },
+      { id: "before", secret: true, revealSceneId: "s3" as never },
       { id: "after", secret: false, revealSceneId: null },
     ];
     h.tree.activeSceneId = "s0";
@@ -362,15 +362,15 @@ describe("B-T10: the position filter lives in the shared searchEvents", () => {
     ).toEqual(["before"]);
   });
 
-  it("reads the store's Scene after the awaits for a caller without a scope (constant false)", async () => {
+  it("does not hide secret hits based on the store's Scene when the constant is false", async () => {
     h.gate.enabled = false;
     h.events = [
       { id: "before", secret: true, revealSceneId: "s1" as never },
       { id: "after", secret: false, revealSceneId: null },
     ];
     h.tree.activeSceneId = "s0";
-    // The Scene changes while the semantic search is awaited: today's code
-    // judges the secrecy by the Scene read after the awaits (s2: visible).
+    // The Scene changes during search, but the constant-false path does not
+    // use it to hide secret events.
     h.semantic.mockImplementation(async () => {
       h.tree.activeSceneId = "s2";
       return h.hits;
@@ -946,11 +946,11 @@ function sentCandidates(): string[] {
     .chronicleEventIds;
 }
 
-describe("E1: the candidates are the year table after the secrecy and position filters", () => {
-  it("sends only what the model could see, never a hidden or later event's ID", async () => {
+describe("E1: the candidates are the year table after the position filter", () => {
+  it("sends secret candidates but excludes later-position event IDs", async () => {
     setChronicle([
       { id: "a", ties: ["s1"] },
-      // secret, revealed at s3: hidden at s2 (secrecy filter).
+      // Secret with a later reveal Scene: retained because secret is not filtered.
       { id: "hidden", secret: true, reveal: "s3", ties: ["s1"] },
       // tied to s3 only: dropped by the position filter.
       { id: "later", ties: ["s3"] },
@@ -960,7 +960,7 @@ describe("E1: the candidates are the year table after the secrecy and position f
     h.hits = [hit("a"), hit("hidden"), hit("later"), hit("d"), hit("a")];
     await runSearch(makeIr().ir);
     expect(h.invoke).toHaveBeenCalledTimes(1);
-    expect(sentCandidates()).toEqual(["a", "d"]);
+    expect(sentCandidates()).toEqual(["a", "hidden", "d"]);
   });
 
   it("sends an empty list when nothing is visible (Native is still asked)", async () => {
@@ -1139,7 +1139,7 @@ describe("E3〜E7: the merge", () => {
     expect(out.events.map((e) => e.eventId)).toEqual(["e3"]);
   });
 
-  it("E6: shows an eventId only for a merged item, never a hidden event's", async () => {
+  it("E6: shows an eventId for a merged secret event that remains in the candidates", async () => {
     setChronicle([
       { id: "e1", ties: ["s1"] },
       { id: "hidden", secret: true, reveal: "s3", ties: ["s1"] },
@@ -1153,9 +1153,12 @@ describe("E3〜E7: the merge", () => {
     const { ir, noted } = makeIr();
     const out = contentOf(await runSearch(ir));
     expect(out.chronicleIr.items).toHaveLength(2);
-    expect(out.chronicleIr.eventIds).toEqual({ "rev-1": "e1" });
-    expect(noted[0]!.eventIds).toEqual(["e1"]);
-    expect(JSON.stringify(out)).not.toContain("hidden");
+    expect(out.chronicleIr.eventIds).toEqual({
+      "rev-1": "e1",
+      "rev-2": "hidden",
+    });
+    expect(noted[0]!.eventIds).toEqual(["e1", "hidden"]);
+    expect(JSON.stringify(out)).toContain('"hidden"');
     expect(Object.keys(out.chronicleIr)).toEqual([
       "status",
       "items",
@@ -1451,8 +1454,7 @@ describe("E8: when the exclusion is not at hand", () => {
   });
 
   it("the renderer's own refusals other than query-invalid apply neither", async () => {
-    // No current Scene: the secrecy filter has already hidden every secret
-    // event, and nothing more is taken away.
+    // No current Scene: the secret events remain in the year table candidates.
     expect(
       eventIdsOf(
         await runSearch(makeIr().ir, undefined, {
@@ -1460,7 +1462,7 @@ describe("E8: when the exclusion is not at hand", () => {
           currentSceneId: null,
         }),
       ),
-    ).toEqual(["pub", "plain"]);
+    ).toEqual(ALL);
     expect(
       eventIdsOf(await runSearch(makeIr({ workspacePath: null }).ir)),
     ).toEqual(ALL);
