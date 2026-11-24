@@ -63,10 +63,19 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // やめるためで、広げても実効の上限（baseline＋allowance）は旧上限よりずっと低い。
   absoluteMax: { rawBytes: 3_903_000, gzipBytes: 1_232_000 },
 };
-const INITIAL_CSS_MAX_BYTES = 240_000;
-const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;
-const INITIAL_FONT_MAX_BYTES = 4_250_000;
-const TOTAL_FONT_MAX_BYTES = 18_500_000;
+// 既定フォント (Noto Serif JP / M PLUS 1) の CSS を含む。可変フォントに移行したため、
+// 従来の「japanese 全体を 1 face」から「約 120 の unicode-range slice」になり CSS は
+// 大きくなった（raw 約 +200 KB）。代わりにフォント本体は使う slice だけを取得する。
+const INITIAL_CSS_MAX_BYTES = 440_000;
+const INITIAL_CSS_MAX_GZIP_BYTES = 115_000;
+// 起動時の CSS が参照するフォント file の合計（実際に取得するのは unicode-range で
+// 必要な slice だけなので、これは取得量の上限ではなく参照の上限）。可変フォント
+// (Noto Serif JP 7.5 MB + M PLUS 1 2.7 MB の全 slice) への移行で参照が増えた。
+const INITIAL_FONT_MAX_BYTES = 10_500_000;
+// 可変フォントへの移行 (Noto Serif JP / M PLUS 1 / Literata) で配布サイズは
+// 約 +6.3 MB（従来の「japanese」subset より収録字種が広い全字種の可変版）。
+// 実行時に取得するのは使う slice だけで、起動時の取得量 (INITIAL_FONT_MAX_BYTES) は別に守る。
+const TOTAL_FONT_MAX_BYTES = 24_000_000;
 const DEFAULT_FONT_CSS_PATTERNS = [
   /^notoSerifJp-[^/]+\.css$/,
   /^mPlus1-[^/]+\.css$/,

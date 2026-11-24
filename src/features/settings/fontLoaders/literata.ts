@@ -1,6 +1,6 @@
-import "@fontsource/literata/latin-400.css";
-import "@fontsource/literata/latin-700.css";
-import "@fontsource/literata/latin-400-italic.css";
-import "@fontsource/literata/latin-700-italic.css";
+// 可変フォント (wght 200–900、upright と italic)。family 名は vite の
+// strip-woff-fontsource が 'Literata Variable' → 'Literata' に直す。
+import "@fontsource-variable/literata/wght.css";
+import "@fontsource-variable/literata/wght-italic.css";
 
 export const bundledFontFamily = "Literata";
