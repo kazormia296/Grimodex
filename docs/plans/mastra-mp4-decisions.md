@@ -1856,3 +1856,11 @@ DR-MP4-49d の「直していない」はこの決定と実装で解消した。
 **golden の更新（意図した変更）。** DR-MP4-49 の commit ①の golden（`__fixtures__/codexEntryGolden/get_codex_entry.golden.txt`・`.reads.golden.txt`）は、移設前の挙動（Q-C6-1 を含む）を固定していた。この修正は挙動を意図して狭めるので、golden を更新した。差分は 3 種類だけで、(1) 4 件すべての `details` から `別 project の項目名`（値なし）が消える、(2) それに伴う `contentJson` と `tokensUsed` の減少（`tokensUsed` は `contentJson` の文字数）、(3) defs の select の SQL が `project_id = ? and type_slug = ?` になり、params が `["p-main", "character"]` になる。他の項目（自 project の定義・値・children・本文・要約・並び）は 1 byte も変わらない。
 
 **確かめたこと。** core 単体・renderer の特性試験・main adapter（sql.js）は更新後の golden と byte 一致。実 Native の DB の spec（`mastraReadParity.pipeline.spec.ts`）は 33 件成功し、defs の行がすべて current project のものであることを新たに確かめる。変異として defs の project 条件を外すと、core 単体・main adapter・実 Native の spec のいずれも落ちる。
+
+### DR-MP4-51 `get_codex_entry` の tool 定義を shared に移す（MP-4b PR-10c。2026-11-24）
+
+10c は `get_codex_entry` の tool 定義（description・parameters）を renderer の `toolDefinitions.ts` から `electron/shared/agentReadToolDefinitions.ts` へ移す。オブジェクトの内容・parameters の順序・required・AI に渡る bytes は変更せず、renderer は従来の宣言位置で shared 定義を参照する。drift 試験が shared と renderer の M4 定義21本の JSON bytes と順序を比較し、移設前からある legacy golden は無変更で通ることを確認する。
+
+M4 の定義名表は20本から21本になる。core executor の4名前表は合計20本のままで、`CODEX_ENTRY_TOOL_NAMES` は5つ目の専用表として `get_codex_entry` を持つ。5表は互いに素で、合計は21本。tool の実装・結果・executor 登録は10cで変更しない。
+
+Q4 のユーザー決定（2026-11-24）は4c-1で実装する。C-6 は渡し済み ID を wire に含める。10c は定義の移設だけを行う。
