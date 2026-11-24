@@ -10,8 +10,14 @@ vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => projectIdRef.current,
   getCurrentProjectLanguage: () => "ja",
 }));
+// 試験は候補の配列を返す形のまま書き、結果の判別型（ok）には、ここで包む。
+const extractList = vi.hoisted(() => vi.fn());
 vi.mock("./candidateExtractor", () => ({
-  extractCodexCandidatesResult: vi.fn(),
+  extractCodexCandidatesResult: (...args: unknown[]) =>
+    Promise.resolve(extractList(...args)).then((candidates) => ({
+      ok: true,
+      candidates,
+    })),
 }));
 vi.mock("./candidateJudgment", () => ({
   judgeCandidates: vi.fn(),
@@ -34,7 +40,6 @@ vi.mock("sonner", () => ({
 
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCodexStore } from "./codexStore";
-import { extractCodexCandidatesResult } from "./candidateExtractor";
 import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
 import { CodexStructureReviewHost } from "./CodexStructureReviewHost";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
@@ -44,7 +49,7 @@ import {
 } from "./codexCandidateDismissals";
 import { CodexCandidatesReport } from "./CodexCandidatesReport";
 
-const mockExtract = vi.mocked(extractCodexCandidatesResult);
+const mockExtract = extractList;
 const mockJudge = vi.mocked(judgeCandidates);
 const mockLoadDismissed = vi.mocked(loadDismissedCandidateKeys);
 const mockSaveDismissed = vi.mocked(saveDismissedCandidateKeys);
@@ -89,10 +94,10 @@ afterEach(() => cleanup());
 
 describe("CodexCandidatesReport relational terms", () => {
   it("shows the alias button for an alias hint on a non-relational term but not on a relational one", async () => {
-    mockExtract.mockResolvedValue({
-      ok: true,
-      candidates: [candidate("ライカ嬢"), candidate("姉ちゃん")],
-    });
+    mockExtract.mockResolvedValue([
+      candidate("ライカ嬢"),
+      candidate("姉ちゃん"),
+    ]);
     mockJudge.mockResolvedValue(
       new Map([judgment("ライカ嬢"), judgment("姉ちゃん")]),
     );
@@ -151,19 +156,16 @@ describe("CodexCandidatesReport relational terms", () => {
 
 describe("CodexCandidatesReport: 開き直すたびの走査", () => {
   it("開き直すと走査し直し、本文の変更で増えた候補を拾う", async () => {
-    mockExtract.mockResolvedValueOnce({
-      ok: true,
-      candidates: [candidate("ライカ嬢")],
-    });
+    mockExtract.mockResolvedValueOnce([candidate("試験語A")]);
     const first = render(<CodexCandidatesReport />);
     await screen.findByTestId("codex-candidates-toggle");
     expect(mockExtract).toHaveBeenCalledTimes(1);
     first.unmount();
 
-    mockExtract.mockResolvedValueOnce({
-      ok: true,
-      candidates: [candidate("ライカ嬢"), candidate("姉ちゃん")],
-    });
+    mockExtract.mockResolvedValueOnce([
+      candidate("試験語A"),
+      candidate("試験語B"),
+    ]);
     render(<CodexCandidatesReport />);
     await waitFor(() => expect(mockExtract).toHaveBeenCalledTimes(2));
     const user = userEvent.setup();
@@ -177,10 +179,7 @@ describe("CodexCandidatesReport: 開き直すたびの走査", () => {
 
 describe("CodexCandidatesReport structure review entry", () => {
   it("opens the shared host dialog from the Report button", async () => {
-    mockExtract.mockResolvedValue({
-      ok: true,
-      candidates: [candidate("test-candidate")],
-    });
+    mockExtract.mockResolvedValue([candidate("test-candidate")]);
     const user = userEvent.setup();
     render(
       <>

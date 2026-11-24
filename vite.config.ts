@@ -32,10 +32,20 @@ function stripWoffFromFontsource() {
     enforce: "pre" as const,
     transform(code: string, id: string) {
       if (!id.includes("@fontsource") || !/\.css(\?|$)/.test(id)) return null;
-      const stripped = code.replace(
+      let stripped = code.replace(
         /,\s*url\([^)]*\.woff\)\s*format\((['"])woff\1\)/g,
         "",
       );
+      // 可変フォント (@fontsource-variable) は family 名が 'X Variable' になる。
+      // 設定に保存済みの CSS 値 ("Noto Serif JP" 等) をそのまま使うため、
+      // 末尾の ' Variable' を外して従来の family 名で登録する。
+      // vitest.browser.config.ts にも同じ変換がある。
+      if (id.includes("@fontsource-variable")) {
+        stripped = stripped.replace(
+          /font-family:\s*(['"])([^'"]+?) Variable\1/g,
+          "font-family: $1$2$1",
+        );
+      }
       return stripped === code ? null : { code: stripped, map: null };
     },
   };
