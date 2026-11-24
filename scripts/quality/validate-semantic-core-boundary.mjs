@@ -1557,6 +1557,25 @@ export function validateSemanticIndexDeclaredBindings(matrix, consumerContract, 
   }
 }
 
+export function validateObjectIdentityDeclarations(declarations, producerRegistry, errors) {
+  if (!Array.isArray(declarations?.entries)) return;
+  const producerIds = new Set(
+    producerRegistry?.entries?.map((entry) => entry?.id).filter(isNonEmptyString) ?? [],
+  );
+  const declaredProducerIds = new Set();
+  for (const entry of declarations.entries) {
+    const producerId = entry?.producerId;
+    if (!isNonEmptyString(producerId)) continue;
+    if (declaredProducerIds.has(producerId)) {
+      errors.push(`narrative object identity declarations duplicate producerId: ${producerId}`);
+    }
+    declaredProducerIds.add(producerId);
+    if (!producerIds.has(producerId)) {
+      errors.push(`narrative object identity declarations reference unknown producerId: ${producerId}`);
+    }
+  }
+}
+
 export function validateSemanticIndexRuntimeQueryAlignment(
   repoRoot,
   matrix,
@@ -7927,6 +7946,10 @@ function validatePolicySchemas(repoRoot, errors) {
       "narrative-dependency-producer-registry.schema.json",
       "narrative-dependency-producer-registry.json",
     ],
+    [
+      "narrative-object-identity-declarations.schema.json",
+      "narrative-object-identity-declarations.json",
+    ],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   for (const [schemaName, contractName] of schemaContracts) {
@@ -8062,6 +8085,13 @@ export function validateSemanticCoreBoundary({
   validateConsumerContract(repoRoot, consumerContract, errors);
   const producerRegistry = readJson(repoRoot, "policies/narrative/narrative-dependency-producer-registry.json", errors, "narrative dependency producer registry");
   validateSemanticIndexDeclaredBindings(authorityMatrix, consumerContract, producerRegistry, errors);
+  const objectIdentityDeclarations = readJson(
+    repoRoot,
+    "policies/narrative/narrative-object-identity-declarations.json",
+    errors,
+    "narrative object identity declarations",
+  );
+  validateObjectIdentityDeclarations(objectIdentityDeclarations, producerRegistry, errors);
   const findingContract = readJson(
     repoRoot,
     findingContractPath,
