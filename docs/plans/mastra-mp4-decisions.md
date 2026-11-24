@@ -1884,3 +1884,33 @@ Q4 のユーザー決定（2026-11-24）は4c-1で実装する。C-6 は渡し�
 **この回答で開くもの。** 第 7 節の「Q4・Q5 が未了の間は、該当する PR の編集に入らない」は、Q4・C-6 については解けた（4c-1 の wire・規則・adapter の PR は編集に入れる）。Q5 は、緩和と特性試験の編集に入れる。脅威モデルの確定文書への追記だけは、4c-2 のときの確認まで書かない。
 
 **変えないもの。** 旗 L（main が core をまだ呼ばない）は閉じたまま。MP-13 の C-19〜C-24 は確認の要らない「確かめる点」のまま。4b・4c の PR の分け方（第 5 節）は変えない。
+
+### DR-MP4-53 4c-1 の残りの実装の設計（技術判断。2026-11-24）
+
+Q4・C-6（DR-MP4-52）の回答を受けて、4c-1 を次の PR 列に分ける。いずれも旗 L を開けず、製品の挙動を変えない。各 PR の本文に ID と信頼境界を載せる。
+
+| 順 | PR | 内容 | 前提 |
+|---|---|---|---|
+| 1 | 4c-1a | K-1・K-18 の特性試験（試験だけ）。結果は第 8.3 節の K-1・K-18 の行 | なし |
+| 2 | W1 | wire の型と parser（`tools`・`fullyInjectedIds`・`loop`・別型の結果）。呼び手なし | なし |
+| 3 | R3 | loop 規則の pure module（`agentLoopRules.ts`）と legacy との二 engine の特性試験 | なし |
+| 4 | R2-a | adapter の継ぎ目：begin の前の `prepareSend`、応答の観測 `observeResponse` | 4c-1a |
+| 5 | F1 | `finalizeTurnPayload` を `electron/shared/turnPayloadFinalizer.ts` へ移し、元の path は再 export（golden で挙動を固定。移設だけ） | なし |
+| 6 | T0 | main の `o200k_base` の tokenizer（下の (5)） | 既存 budget の実測 |
+| 7 | R2-b | wire に窓・出力予約・fallback の欄、main の `prepareSend` から F1・R3 を呼ぶ、集約結果、複数 send の terminal | W1・R3・R2-a・F1・T0 |
+| 8 | W2 | 進捗の新しい typed main→renderer event channel（新しい IPC。`ipcContract.ts`・preload・renderer の受信口。呼び手なし） | W1 |
+| 9 | T | `agentToolAdapter.ts` と `agentRuntime.ts` の結線（allowlist を M4 の 21 名へ、実行時の名前照合、導出した `maxSteps`） | R2-b・W2 |
+
+**(1) `parentExecutionId` は `null` のまま。** 計画書の「sink の `begin` に親 `executionId`」は採らない。sink は turn 内で 1 つの `operationId` を持ち、send ごとに新しい `executionId` を作るので、複数 send は同じ operation の複数 execution として記録できる。親子の意味を audit に足すと保存の意味の変更に当たり（Rust 側の reader は未確認）、確認が要る。要らないので足さない。
+
+**(2) 継ぎ目の形（R2-a。DR-MP4-28 の案 A の実装）。** 順序は `buildAuditRequest → prepareSend → audit.begin → buildWireArgs（同じ prepared request）→ dispatched → send → audit.complete → observeResponse → Mastra へ返す`。`request.prepared` と wire は全 send で bytes 一致する（4c-1a で実測した send の位置での変形のずれを避ける）。`prepareSend` が throw した send は audit の行を残さない。closure は runTurn の引数で渡し、runtime の生成時には持たせない（DR-MP3-28）。両 closure は**同期専用**で、戻りが Promise なら `TypeError`（fail-closed）。`observeResponse` には複製を deep readonly で渡す（audit 済みの応答を書き換えさせない）。`observeResponse` の同期の throw は turn を失敗にする（audit の complete は残る。規則側の失敗を成功扱いにしない）。
+
+**(3) send の間の user-stop。** 既存の cancel エラーでなく、**`stoppedReason: "aborted"` と途中の text を持つ集約結果**として返す。legacy の `runAgentLoop` が同じ形を返し、Q4 (d)（結果と進捗の wire。Stop 時の途中 text）に含まれるため。進行中の Native send は切らない。
+
+**(4) 窓超過の型付きエラーの運び方（Q4 (d) の解釈。ユーザーが異議を述べたら変える）。** main が `ContextWindowExceededError` を throw すると、今の経路は `message` だけが renderer へ届く（`usage`・`overflowTokens` が落ちる）ので、renderer が legacy と同じ ContextBar の更新を出せない。新しい IPC は足さず、R2-b の結果 wire の終端 variant と W2 の進捗 event に `usage`・`overflowTokens`・`cacheDowngradeReason` を載せる。新しい authority・保存範囲は無い。
+
+**(5) tokenizer（T0。DR-MP4-18 の配置案 (c)）。** 既存の production 依存 `tiktoken` を main から使い、ranks と WASM を `extraResources` に置いて `process.resourcesPath` から遅延読込する。新しい npm 依存・ライセンスの追加は無い（`THIRD_PARTY_LICENSES.md` に tiktoken 1.0.22 の MIT の記載がある）。`ensureReady()` は turn の受付の前に await し、失敗したら heuristic に落とさず turn の開始を拒否して legacy へ戻す（fail-closed）。module の import 時には初期化しない。**既存の budget（`perf:budget` の renderer graph、`coldStartMs`）への影響を先に実測し、超えるなら止めて C-8 でユーザーに確認する**（既存の budget は緩めない）。配布サイズ（約 3.4 MB の追加）と packaged app での実読込は未測定。renderer の数と main の数が一致することは、同じ入力（空・日本語・英語・JSON・長文・サロゲートペア・特殊 token 文字列）を両方で数える試験で固定する（特殊 token は結果か例外の一致）。
+
+**(6) `finalizeTurnPayload` の共有（F1。DR-MP4-25 の (i)）。** 本体は `src/features/ai-context/finalizeTurnPayload.ts` にあり、import は型だけなので移せる。F1 は移設だけで、移設前に golden（窓内・cache あり／なし・budget の降格・窓超過・境界・provider 別）を固定し、旧 path は全 export の再 export にする（例外 class は 1 つ）。main の `prepareSend` が renderer と同じ token 数を得るには、provider 別の会話 payload の変換（`renderAgentPayload.ts`、約 330 行）も共有が要る。F1 の後、R2-b の前に別の移設 PR（F2）にするか、R2-b の中で扱うかは、R2-b の設計で決める。
+
+**(7) 確認が要りうる点。** 新しい契約（結果・進捗・窓の欄の wire）は Q4 で承認済み。閾値：wire の値域は legacy が取りうる値を狭めない（W1 の PR 本文に表）。tokenizer が既存の budget を超える場合だけ C-8。
