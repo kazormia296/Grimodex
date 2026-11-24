@@ -95,6 +95,11 @@ import {
 import { planBindCodexEntityProposals } from "./extraction/proposalPlanner";
 import { planPhaseAndDetailProposals } from "./extraction/phaseProposalPlanner";
 import {
+  BLOCKED_REASON_DETAIL_UNMAPPED,
+  BLOCKED_REASON_EVIDENCE_UNRESOLVED,
+  BLOCKED_REASON_RELATION_EXISTS,
+} from "./extraction/blockedReasons";
+import {
   compileBindExistingCodexEntityOperation,
   compileCreateCodexEntryOperation,
   compileCreateCodexRelationOperation,
@@ -306,6 +311,8 @@ export interface CodexStructureExtractionRelationSeed {
     readonly quote: string;
     readonly documentRef: string;
     readonly anchorId: string;
+    readonly sceneId?: string;
+    readonly sceneTitle?: string;
   }[];
 }
 
@@ -441,6 +448,10 @@ export function buildRelationCoMentionRange(occurrence: {
 export function buildRelationEvidenceFromOccurrences(
   occurrences: readonly EntityCandidateOccurrence[],
   documentTexts?: ReadonlyMap<string, string>,
+  documentScenes?: ReadonlyMap<
+    string,
+    { readonly sceneId: string; readonly sceneTitle: string }
+  >,
 ): CodexReviewEvidenceQuote[] {
   return occurrences.map((occurrence) => {
     const range = buildRelationCoMentionRange(occurrence);
@@ -455,6 +466,7 @@ export function buildRelationEvidenceFromOccurrences(
       anchorId: occurrence.evidence.id,
       quote,
       documentRef: occurrence.documentRef,
+      ...documentScenes?.get(occurrence.documentRef),
       method: "exact-with-context" as const,
       blocked: false,
       canonicalRange: range,
@@ -515,6 +527,8 @@ export function deriveRelationSeedsFromCoMentions(input: {
 
   type Mention = {
     readonly documentRef: string;
+    readonly sceneId?: string;
+    readonly sceneTitle?: string;
     readonly anchorId: string;
     readonly quote: string;
     readonly range: CanonicalRange | null;
@@ -523,6 +537,8 @@ export function deriveRelationSeedsFromCoMentions(input: {
 
   type AnchorWindow = {
     documentRef: string;
+    sceneId?: string;
+    sceneTitle?: string;
     anchorId: string;
     quote: string;
     range: CanonicalRange | null;
@@ -536,6 +552,8 @@ export function deriveRelationSeedsFromCoMentions(input: {
       if (!row.quote.includes(proposal.displayTitle)) continue;
       mentions.push({
         documentRef: row.documentRef,
+        sceneId: row.sceneId,
+        sceneTitle: row.sceneTitle,
         anchorId: row.anchorId,
         quote: row.quote,
         range: row.canonicalRange ?? null,
@@ -569,6 +587,8 @@ export function deriveRelationSeedsFromCoMentions(input: {
     if (!mergedInto) {
       windows.push({
         documentRef: mention.documentRef,
+        sceneId: mention.sceneId,
+        sceneTitle: mention.sceneTitle,
         anchorId: mention.anchorId,
         quote: mention.quote,
         range: mention.range,
@@ -667,6 +687,12 @@ export function deriveRelationSeedsFromCoMentions(input: {
           const evidenceRow = {
             quote,
             documentRef: window.documentRef,
+            ...(window.sceneId && window.sceneTitle
+              ? {
+                  sceneId: window.sceneId,
+                  sceneTitle: window.sceneTitle,
+                }
+              : {}),
             anchorId: window.anchorId,
           };
           const existing = seedByKey.get(key);
@@ -1316,7 +1342,7 @@ function buildPhaseDetailReviewProposals(input: {
         facetKey: item.proposal.payload.facetKey,
         existingValue,
         blockedReason: !evidenceResolved
-          ? "根拠が未解決です。再抽出して根拠を確認してください"
+          ? BLOCKED_REASON_EVIDENCE_UNRESOLVED
           : undefined,
       };
     });
@@ -1362,7 +1388,7 @@ function buildPhaseDetailReviewProposals(input: {
         facetKey: seed.facetKey,
         existingValue: seed.existingValue ?? null,
         unbound: true,
-        blockedReason: "Detail 定義が未割当です",
+        blockedReason: BLOCKED_REASON_DETAIL_UNMAPPED,
       };
     });
   return {
@@ -1542,6 +1568,10 @@ export async function startCodexStructureExtraction(
     CodexReviewEvidenceQuote[]
   >();
   const documentTextsByRef = new Map<string, string>();
+  const documentScenesByRef = new Map<
+    string,
+    { readonly sceneId: string; readonly sceneTitle: string }
+  >();
   const skippedRelationalTerms: CodexStructureSkippedRelationalTerm[] = [];
   const foldedDismissedSurfaces: CodexStructureFoldedDismissedSurface[] = [];
   let dismissalsUnavailable = false;
@@ -1611,6 +1641,10 @@ export async function startCodexStructureExtraction(
     coverageWindowCount = Math.max(1, windowPlan.windows.length);
     for (const document of snapshot.documents) {
       documentTextsByRef.set(document.ref, document.canonical.text);
+      documentScenesByRef.set(document.ref, {
+        sceneId: document.origin.nodeId,
+        sceneTitle: document.title,
+      });
     }
 
     // 打ち手 3：候補画面で見送った表記は、名簿に当たらなければ構造抽出でも提案にしない。
@@ -1673,6 +1707,7 @@ export async function startCodexStructureExtraction(
             anchorId: occurrence.evidence.id,
             quote: occurrence.evidence.quote,
             documentRef: occurrence.evidence.documentRef,
+            ...documentScenesByRef.get(occurrence.evidence.documentRef),
             method: occurrence.evidence.method,
             blocked: false,
           })),
@@ -1682,6 +1717,7 @@ export async function startCodexStructureExtraction(
           buildRelationEvidenceFromOccurrences(
             seed.occurrences,
             documentTextsByRef,
+            documentScenesByRef,
           ),
         );
         seeds.push({
@@ -1930,12 +1966,13 @@ export async function startCodexStructureExtraction(
               anchorId: row.anchorId,
               quote: row.quote,
               documentRef: row.documentRef,
+              ...documentScenesByRef.get(row.documentRef),
               method: "exact" as const,
               blocked: false,
             })),
             subjectLabel,
             objectLabel,
-            blockedReason: "既に同じ関係が登録されています（適用不要）",
+            blockedReason: BLOCKED_REASON_RELATION_EXISTS,
             existingRelationRef: existingMatch.existingRef,
             hypothesisId: hypothesis.hypothesisId,
           },
@@ -1988,6 +2025,7 @@ export async function startCodexStructureExtraction(
               anchorId: row.anchorId,
               quote: row.quote,
               documentRef: row.documentRef,
+              ...documentScenesByRef.get(row.documentRef),
               method: "exact" as const,
               blocked: false,
             }));
@@ -2936,7 +2974,7 @@ function rebuildEntityFromNative(args: {
     blockedReason:
       applicability === "blocked"
         ? !evidenceResolved
-          ? "根拠が未解決です。再抽出して根拠を確認してください"
+          ? BLOCKED_REASON_EVIDENCE_UNRESOLVED
           : proposal.payload.binding.kind === "unresolved"
             ? "Binding が未解決です"
             : "Codex Type が未解決です"
@@ -3046,10 +3084,10 @@ function rebuildRelationFromNative(args: {
     objectLabel,
     existingRelationRef: satisfied?.existingRelationRef,
     blockedReason: satisfied
-      ? "既に同じ関係が登録されています（適用不要）"
+      ? BLOCKED_REASON_RELATION_EXISTS
       : evidenceResolved
         ? undefined
-        : "根拠が未解決です。再抽出して根拠を確認してください",
+        : BLOCKED_REASON_EVIDENCE_UNRESOLVED,
     compiledOperation,
     application: applicationFromNative(args.native),
   };
@@ -3109,7 +3147,7 @@ function rebuildBaseDetailFromNative(args: {
     applicability: evidenceResolved ? args.metadata.applicability : "blocked",
     blockedReason: evidenceResolved
       ? args.metadata.blockedReason
-      : "根拠が未解決です。再抽出して根拠を確認してください",
+      : BLOCKED_REASON_EVIDENCE_UNRESOLVED,
     proposal: {
       ...args.metadata.proposal,
       proposalId: args.native.proposalId,
@@ -3142,7 +3180,7 @@ function rebuildPhaseFromNative(args: {
     applicability: evidenceResolved ? args.metadata.applicability : "blocked",
     blockedReason: evidenceResolved
       ? args.metadata.blockedReason
-      : "根拠が未解決です。再抽出して根拠を確認してください",
+      : BLOCKED_REASON_EVIDENCE_UNRESOLVED,
     proposal: {
       ...args.metadata.proposal,
       proposalId: args.native.proposalId,
@@ -3370,7 +3408,7 @@ export async function getCodexStructureExtractionReview(
       return {
         ...relation,
         applicability: "blocked" as const,
-        blockedReason: "根拠が未解決です。再抽出して根拠を確認してください",
+        blockedReason: BLOCKED_REASON_EVIDENCE_UNRESOLVED,
         status:
           relation.status === "approved"
             ? ("unreviewed" as const)
@@ -3390,7 +3428,7 @@ export async function getCodexStructureExtractionReview(
       existingRelationRef: nativeAlreadySatisfiedRefById.get(
         relation.proposalId,
       ),
-      blockedReason: "既に同じ関係が登録されています（適用不要）",
+      blockedReason: BLOCKED_REASON_RELATION_EXISTS,
       status: "unreviewed" as const,
       compiledOperation: null,
     };

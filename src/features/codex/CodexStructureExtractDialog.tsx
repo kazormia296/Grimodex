@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -13,7 +13,13 @@ import {
   useTreeStore,
   getDescendantScenesInOrder,
 } from "@/features/tree/treeStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
+import { isJapaneseProjectLanguage } from "@/features/ime/language";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
 import { CodexStructureFoldedDismissals } from "./CodexStructureFoldedDismissals";
@@ -34,6 +40,12 @@ import { useCodexStore } from "./codexStore";
 import { listCodexRelations } from "./codexRelationApi";
 import { listCodexTypes } from "./typeApi";
 import { buildExistingRelationCatalog } from "./extraction/existingRelationMatcher";
+import { getNarrativeRuntimePolicy } from "@/features/narrative-extraction/runtime/narrativeRuntimePolicyApi";
+import {
+  narrativeDomainApplyAllowed,
+  narrativeExtractionAllowed,
+} from "@/features/narrative-extraction/runtime/narrativeRuntimePolicy";
+import type { NativeNarrativeRuntimePolicy } from "@/features/narrative-extraction/runtime/narrativeRuntimePolicyApi";
 
 /** toast に出す提案名。先頭の数件と「+N」に切る（数百件が同時に古くなりうる）。 */
 function summarizeNames(names: readonly string[], limit = 5): string {
@@ -85,7 +97,83 @@ export function CodexStructureExtractDialog({
   const [reviewTab, setReviewTab] = useState<"entity" | "relation" | "states">(
     "entity",
   );
+  const [runtimePolicy, setRuntimePolicy] =
+    useState<NativeNarrativeRuntimePolicy | null>(null);
   const generationRef = useRef(0);
+  // 解析ごとの通し番号。結果の公開は generationRef（閉じる・フォルダの選び直しで進む）で守り、
+  // 「解析中」の解除は、より新しい解析が走っていない限り、世代が進んでいても必ず行う
+  // （閉じる・フォルダの選び直しの後に古い解析が終わっても、解析の操作が止まったままにならない）。
+  const analysisSeqRef = useRef(0);
+  const japaneseProject = isJapaneseProjectLanguage(
+    getCurrentProjectLanguage(),
+  );
+
+  const restoreForFolder = useCallback(
+    (targetFolderId: string) => {
+      if (!targetFolderId) return;
+      const workspace = useWorkspaceStore.getState();
+      const projectId = getCurrentProjectId();
+      if (!projectId || !workspace.activeWorkspacePath) return;
+      const scope = {
+        projectId,
+        workspacePath: workspace.activeWorkspacePath,
+        openRevision: workspace.workspaceOpenRevision,
+        folderId: targetFolderId,
+      };
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
+      void restoreCodexStructureExtractionReview(scope)
+        .then((restored) => {
+          if (!restored || generationRef.current !== generation) return;
+          const workspaceNow = useWorkspaceStore.getState();
+          if (
+            getCurrentProjectId() !== scope.projectId ||
+            workspaceNow.activeWorkspacePath !== scope.workspacePath ||
+            workspaceNow.workspaceOpenRevision !== scope.openRevision ||
+            (restored.folderId && restored.folderId !== scope.folderId)
+          ) {
+            return;
+          }
+          setProjection(restored);
+          setReviewTab("entity");
+        })
+        .catch(() => {
+          // Soft-fail: empty review until the user runs analyze.
+        });
+    },
+    [setProjection],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setRuntimePolicy(null);
+    void getNarrativeRuntimePolicy()
+      .then((policy) => {
+        if (!cancelled) setRuntimePolicy(policy);
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimePolicy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const effectivePolicy = runtimePolicy
+    ? { ...runtimePolicy, runtimeMode: runtimePolicy.effectiveMode }
+    : null;
+  const applyAllowed =
+    !effectivePolicy || narrativeDomainApplyAllowed(effectivePolicy);
+  const extractionAllowed =
+    !effectivePolicy || narrativeExtractionAllowed(effectivePolicy);
+  const applyBlockedMessage = runtimePolicy
+    ? runtimePolicy.effectiveMode === "disabled"
+      ? "codex.structureReview.applyBlocked.engineDisabled"
+      : !applyAllowed
+        ? "codex.structureReview.applyBlocked.reviewOnly"
+        : null
+    : null;
 
   useEffect(() => {
     if (!open) return;
@@ -112,35 +200,10 @@ export function CodexStructureExtractDialog({
       return;
     }
     if (!scope.folderId) return;
-    const generation = generationRef.current + 1;
-    generationRef.current = generation;
-    void restoreCodexStructureExtractionReview({
-      projectId: scope.projectId,
-      workspacePath: scope.workspacePath,
-      openRevision: scope.openRevision,
-      folderId: scope.folderId,
-    })
-      .then((restored) => {
-        if (!restored) return;
-        if (generationRef.current !== generation) return;
-        const workspaceNow = useWorkspaceStore.getState();
-        if (
-          workspaceNow.activeWorkspacePath !== scope.workspacePath ||
-          workspaceNow.workspaceOpenRevision !== scope.openRevision
-        ) {
-          return;
-        }
-        if (restored.folderId && restored.folderId !== scope.folderId) return;
-        setProjection(restored);
-        if (restored.folderId) setFolderId(restored.folderId);
-        setReviewTab("entity");
-      })
-      .catch(() => {
-        // Soft-fail: empty review until the user runs analyze.
-      });
+    restoreForFolder(scope.folderId);
     // folderId intentionally omitted: open/initialFolder drive restore; user folder changes bump generation separately
     // eslint-disable-next-line react-hooks/exhaustive-deps -- folder changes are handled by the select onChange
-  }, [open, initialFolderId, clearIfScopeMismatch, setProjection]);
+  }, [open, initialFolderId, clearIfScopeMismatch, restoreForFolder]);
 
   const approvedCount = projection?.approvedCount ?? 0;
 
@@ -148,7 +211,7 @@ export function CodexStructureExtractDialog({
     const projectId = getCurrentProjectId();
     const workspace = useWorkspaceStore.getState();
     if (!projectId || !workspace.activeWorkspacePath || !folderId) {
-      setError("プロジェクトまたはフォルダが未選択です");
+      setError(t("codex.structureReview.dialog.projectOrFolderRequired"));
       return;
     }
     const sceneNodes = getDescendantScenesInOrder(
@@ -156,12 +219,14 @@ export function CodexStructureExtractDialog({
       folderId,
     );
     if (sceneNodes.length === 0) {
-      setError("フォルダ配下に Scene がありません");
+      setError(t("codex.structureReview.dialog.noScenes"));
       return;
     }
 
     const generation = generationRef.current + 1;
     generationRef.current = generation;
+    const analysisSeq = analysisSeqRef.current + 1;
+    analysisSeqRef.current = analysisSeq;
     setAnalyzing(true);
     setError(null);
     clearProjection();
@@ -218,7 +283,7 @@ export function CodexStructureExtractDialog({
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
-      if (generationRef.current === generation) {
+      if (analysisSeqRef.current === analysisSeq) {
         setAnalyzing(false);
       }
     }
@@ -251,7 +316,9 @@ export function CodexStructureExtractDialog({
       });
       // 全部が外れて何も取り込まなかったときは、承認し直せるように review を残す。
       if (applied === 0 && excludedCount > 0) return;
-      toast.success(`Codex 構造を ${applied} 件取り込みました`);
+      toast.success(
+        t("codex.structureReview.dialog.applied", { count: applied }),
+      );
       void useCodexStore
         .getState()
         .loadEntries()
@@ -294,6 +361,31 @@ export function CodexStructureExtractDialog({
     onOpenChange(next);
   };
 
+  const handleEvidenceClick = (evidence: { sceneId?: string | null }) => {
+    if (!evidence.sceneId) return;
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: evidence.sceneId },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
+    handleClose(false);
+  };
+
+  const statesCount =
+    (projection?.baseDetailCount ?? 0) + (projection?.phaseCount ?? 0);
+  const visibleReviewTab =
+    reviewTab === "states" && statesCount === 0 ? "entity" : reviewTab;
+  useEffect(() => {
+    if (reviewTab === "states" && statesCount === 0) {
+      setReviewTab("entity");
+    }
+  }, [reviewTab, statesCount]);
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent
@@ -301,23 +393,29 @@ export function CodexStructureExtractDialog({
         data-testid="codex-structure-extract-dialog"
       >
         <DialogHeader>
-          <DialogTitle>Codex 構造抽出</DialogTitle>
+          <DialogTitle>{t("codex.structureReview.dialog.title")}</DialogTitle>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
           <label className="flex flex-col gap-1 text-xs">
-            <span className="text-muted-foreground">対象フォルダ</span>
+            <span className="text-muted-foreground">
+              {t("codex.structureReview.dialog.targetFolder")}
+            </span>
             <select
               className="rounded border border-input bg-background px-2 py-1.5 text-sm"
               value={folderId}
               onChange={(event) => {
                 generationRef.current += 1;
-                setFolderId(event.target.value);
+                const nextFolderId = event.target.value;
+                setFolderId(nextFolderId);
                 clearProjection();
+                restoreForFolder(nextFolderId);
               }}
               data-testid="codex-structure-folder-select"
             >
-              <option value="">選択してください</option>
+              <option value="">
+                {t("codex.structureReview.dialog.selectFolder")}
+              </option>
               {folders.map((folder) => (
                 <option key={folder.id} value={folder.id}>
                   {folder.title}
@@ -325,10 +423,26 @@ export function CodexStructureExtractDialog({
               ))}
             </select>
           </label>
+          {!japaneseProject && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="codex-structure-unsupported-language"
+            >
+              {t("codex.structureReview.unsupportedLanguage")}
+            </p>
+          )}
 
           {error && (
             <p className="text-xs text-destructive" role="alert">
               {error}
+            </p>
+          )}
+          {applyBlockedMessage && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="codex-structure-apply-blocked"
+            >
+              {t(applyBlockedMessage)}
             </p>
           )}
 
@@ -367,7 +481,9 @@ export function CodexStructureExtractDialog({
                   onClick={() => setReviewTab("entity")}
                   data-testid="codex-structure-tab-entity"
                 >
-                  Entity ({projection.entityCount})
+                  {t("codex.structureReview.dialog.entityTab", {
+                    count: projection.entityCount,
+                  })}
                 </button>
                 <button
                   type="button"
@@ -379,28 +495,37 @@ export function CodexStructureExtractDialog({
                   onClick={() => setReviewTab("relation")}
                   data-testid="codex-structure-tab-relation"
                 >
-                  Relation ({projection.relationCount})
+                  {t("codex.structureReview.dialog.relationTab", {
+                    count: projection.relationCount,
+                  })}
                 </button>
-                <button
-                  type="button"
-                  className={`rounded px-2 py-1 text-xs ${
-                    reviewTab === "states"
-                      ? "bg-accent font-medium"
-                      : "text-muted-foreground hover:bg-accent/50"
-                  }`}
-                  onClick={() => setReviewTab("states")}
-                  data-testid="codex-structure-tab-states"
-                >
-                  States & Phases (
-                  {(projection.baseDetailCount ?? 0) +
-                    (projection.phaseCount ?? 0)}
-                  )
-                </button>
+                {statesCount > 0 && (
+                  <button
+                    type="button"
+                    className={`rounded px-2 py-1 text-xs ${
+                      reviewTab === "states"
+                        ? "bg-accent font-medium"
+                        : "text-muted-foreground hover:bg-accent/50"
+                    }`}
+                    onClick={() => setReviewTab("states")}
+                    data-testid="codex-structure-tab-states"
+                  >
+                    {t("codex.structureReview.dialog.statesTab", {
+                      count: statesCount,
+                    })}
+                  </button>
+                )}
               </div>
-              {reviewTab === "entity" ? (
-                <CodexEntityProposalReview boundToStore />
-              ) : reviewTab === "relation" ? (
-                <CodexRelationProposalReview boundToStore />
+              {visibleReviewTab === "entity" ? (
+                <CodexEntityProposalReview
+                  boundToStore
+                  onEvidenceClick={handleEvidenceClick}
+                />
+              ) : visibleReviewTab === "relation" ? (
+                <CodexRelationProposalReview
+                  boundToStore
+                  onEvidenceClick={handleEvidenceClick}
+                />
               ) : (
                 <CodexStatePhaseReview boundToStore />
               )}
@@ -415,13 +540,19 @@ export function CodexStructureExtractDialog({
             onClick={() => handleClose(false)}
             disabled={analyzing || applying}
           >
-            閉じる
+            {t("codex.structureReview.dialog.close")}
           </button>
           <button
             type="button"
             className="inline-flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             onClick={() => void handleAnalyze()}
-            disabled={!folderId || analyzing || applying}
+            disabled={
+              !folderId ||
+              !japaneseProject ||
+              !extractionAllowed ||
+              analyzing ||
+              applying
+            }
             data-testid="codex-structure-analyze"
           >
             {analyzing ? (
@@ -429,16 +560,22 @@ export function CodexStructureExtractDialog({
             ) : (
               <Sparkles className="h-3.5 w-3.5" />
             )}
-            解析
+            {t("codex.structureReview.dialog.analyze")}
           </button>
           <button
             type="button"
             className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             onClick={() => void handleApply()}
-            disabled={approvedCount === 0 || analyzing || applying}
+            disabled={
+              approvedCount === 0 || !applyAllowed || analyzing || applying
+            }
             data-testid="codex-structure-apply"
           >
-            {applying ? "適用中…" : `適用 (${approvedCount})`}
+            {applying
+              ? t("codex.structureReview.dialog.applying")
+              : t("codex.structureReview.dialog.apply", {
+                  count: approvedCount,
+                })}
           </button>
         </DialogFooter>
       </DialogContent>

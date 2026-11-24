@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { CodexRelationReviewProposal } from "./codexStructureExtractionStore";
 
 export interface CodexRelationEditorProps {
@@ -20,6 +21,7 @@ export function CodexRelationEditor({
   onSwapEndpoints,
   disabled = false,
 }: CodexRelationEditorProps) {
+  const { t } = useTranslation();
   const relation = proposal.proposal.payload.relation;
   const symmetric = relation.directionality === "symmetric";
 
@@ -28,7 +30,9 @@ export function CodexRelationEditor({
       className="flex flex-col gap-2 rounded border border-border px-2 py-2"
       data-testid="codex-relation-editor"
     >
-      <span className="text-xs font-medium text-foreground">Relation 編集</span>
+      <span className="text-xs font-medium text-foreground">
+        {t("codex.structureReview.relationEditor.title")}
+      </span>
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div>
           <span className="text-muted-foreground">Subject</span>
@@ -46,7 +50,7 @@ export function CodexRelationEditor({
         onClick={() => onSwapEndpoints?.()}
         data-testid="codex-relation-swap-endpoints"
       >
-        Subject / Object を入れ替え
+        {t("codex.structureReview.relationEditor.swapEndpoints")}
       </button>
 
       <label className="flex flex-col gap-1 text-xs">
@@ -62,8 +66,12 @@ export function CodexRelationEditor({
           }
           data-testid="codex-relation-directionality"
         >
-          <option value="directed">directed</option>
-          <option value="symmetric">symmetric</option>
+          <option value="directed">
+            {t("codex.structureReview.relationCard.directionality.directed")}
+          </option>
+          <option value="symmetric">
+            {t("codex.structureReview.relationCard.directionality.symmetric")}
+          </option>
         </select>
       </label>
 
