@@ -21,6 +21,10 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+vi.mock("@/hooks/useAutoSave", () => ({
+  flushAllAutoSaves: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/features/editor/inlineAi/pendingGuard", () => ({
   guardInlineAiPending: () => false,
 }));

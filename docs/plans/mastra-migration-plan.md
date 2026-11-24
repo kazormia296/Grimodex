@@ -382,7 +382,7 @@
   - read tool の結果が legacy と同値（fixture 比較）。
   - 長い履歴・大きい tool 結果（S6 の未測定）。
 - 旗：L 閉。
-- 確認：U-7 は決定済み（2026-11-21）。残る確認は [MP-4 の判断](mastra-mp4-decisions.md)の第 8.1 節：Q4（4c の wire の契約一式）と Q5（legacy より弱い窓の受容）。条件つきは C-8・C-9・C-10・C-16・C-17・C-18、MP-13 の前は C-6・U-8。回答済みと技術判断へ移した旧確認は第 8.2 節。
+- 確認：U-7 は決定済み（2026-11-21）。Q4（4c の wire の契約一式）・Q5（legacy より弱い窓の受容）・C-6・U-8 は 2026-11-24 に回答済み（[DR-MP4-52](mastra-mp4-decisions.md)。Q5 の脅威モデルの確定文書への追記だけは 4c-2 のときに別に確認）。条件つきは [MP-4 の判断](mastra-mp4-decisions.md)の第 8.1 節の C-8・C-9・C-10・C-16・C-17・C-18。回答済みと技術判断へ移した旧確認は第 8.2 節。
 
 ### MP-5 main→renderer の RPC と UI tool
 
@@ -397,8 +397,8 @@
   - lifecycle 試験：`ask_user` の保留中に window close しても turn が有限の時間で閉じる。
   - IPC の新 contract の試験。`rendererIsolation.static.test.ts`。
 - 旗：L 閉。
-- 確認：U-8。
-- 代案（U-8）：RPC ではなく、loop を一度終えて再開する形。
+- 確認：U-8（決定済み 2026-11-24：run の最中に main→renderer へ問い合わせる方式）。
+- 代案（U-8。採らない）：RPC ではなく、loop を一度終えて再開する形。
 
 ### MP-6 write tool、capability、write 後処理
 
@@ -418,7 +418,7 @@
   - `agentAuthorityCapabilities` が落ちて write が通らなくなる回帰が無い（MP-2 の継ぎ目の結合試験）。
   - この MP の後に、**L の journey が全部緑**になること（L 単独で出荷できる地点）。
 - 旗：L 閉。
-- 確認：U-9。
+- 確認：U-9（決定済み 2026-11-24：前倒ししない）。
 
 ### MP-7 schema と Rust の memory 書込み
 
@@ -586,8 +586,8 @@
 | U-1  | 1       | 脅威モデルの確認と凍結（**確定 2026-11-19**）         | contract            | -                |
 | U-4  | 3       | loop 移動の未決一式                                   | authority、contract | 内訳に           |
 | U-7  | 4       | read tool の main 化の方式（**決定 2026-11-21：(D) 混合**） | contract            | -                |
-| U-8  | 5       | UI tool を RPC にするか                               | contract、authority | なし             |
-| U-9  | 6       | write 後処理の書き手の移動                            | 保存、authority     | 前倒しはしない   |
+| U-8  | 5       | UI tool を RPC にするか（**決定 2026-11-24：run の最中に main→renderer へ問い合わせる方式**） | contract、authority | なし             |
+| U-9  | 6       | write 後処理の書き手の移動（**決定 2026-11-24：確認は前倒ししない**） | 保存、authority     | 前倒しはしない   |
 | U-10 | 7       | `SCHEMA_VERSION` の bump                              | 保存、contract      | 13a の後に載せる |
 | U-11 | 7       | D2a の class の適用範囲                               | authority           | なし             |
 | U-12 | 9       | P14 の既存機能の行方                                  | 挙動、contract      | なし             |
@@ -642,8 +642,8 @@
   - (j) 文脈の組立（`refreshContextLayers`、`contextBuilder`）を renderer に残すか。残すなら、新しい IPC で何を main に渡すか。
   - (k) agent 経路を stream にするか、非 stream のままか（今は非 stream の invoke。abort の IPC が無い）。
 - **U-7**：read tool の main 化の方式。**決定済み（2026-11-21）**：(D) 混合。共有 core＋既存の `dbExecute` と typed 呼出しで、新しい N-API は不要。`get_ui_state`・`ask_user` は MP-5 の RPC、help 2 本は RPC（技術判断。[DR-MP4-11](mastra-mp4-decisions.md)。2026-11-21）。tokenizer の置き場は [DR-MP4-18](mastra-mp4-decisions.md)（測定の後に確定。既存の budget を超えるときだけ C-8）。
-- **U-8**：UI tool（8 本。help 2 本を含む）を、main→renderer の RPC にするか、loop を一度終えて再開する形にするか。renderer 喪失時の扱い。
-- **U-9**：write 後処理（undo、timelapse、index の予約）の書き手と永続先が main に移ること。`requiresUserConfirmation` を前倒しするか（推奨：しない）。
+- **U-8**：UI tool（8 本。help 2 本を含む）を、main→renderer の RPC にするか、loop を一度終えて再開する形にするか。renderer 喪失時の扱い。**決定済み（2026-11-24）**：run の最中に main から renderer へ問い合わせる方式。renderer が閉じたときは有限の時間で終わらせる（[DR-MP4-52](mastra-mp4-decisions.md)）。
+- **U-9**：write 後処理（undo、timelapse、index の予約）の書き手と永続先が main に移ること。`requiresUserConfirmation` を前倒しするか（推奨：しない）。**決定済み（2026-11-24）**：前倒ししない（[DR-MP4-52](mastra-mp4-decisions.md)）。
 - **U-10**：`SCHEMA_VERSION` の bump。旧版では DB を開けなくなる一方向の変更。どの release に載せるか。推奨：L の単独出荷（13a）の後。
 - **U-11**：
   - D2a の class の適用範囲。P18＝`closed` は決定済み。

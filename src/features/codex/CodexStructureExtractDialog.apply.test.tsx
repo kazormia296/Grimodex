@@ -12,6 +12,7 @@ vi.mock("sonner", () => ({ toast: toastMocks }));
 
 const applyMock = vi.hoisted(() => vi.fn());
 const readEntriesMock = vi.hoisted(() => vi.fn());
+const loadEntriesMock = vi.hoisted(() => vi.fn());
 vi.mock("./codexStructureExtractionApi", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("./codexStructureExtractionApi")>();
@@ -108,6 +109,7 @@ describe("CodexStructureExtractDialog の適用", () => {
     resetCodexStructureExtractionStoreForTests();
     applyMock.mockReset();
     readEntriesMock.mockReset();
+    loadEntriesMock.mockReset().mockResolvedValue(undefined);
     // 画面の store は絞り込まれうるので、Apply には DB から読んだ全体を渡す。
     readEntriesMock.mockResolvedValue([
       {
@@ -128,6 +130,7 @@ describe("CodexStructureExtractDialog の適用", () => {
     toastMocks.warning.mockClear();
     toastMocks.success.mockClear();
     useCodexStore.setState({
+      loadEntries: loadEntriesMock,
       entries: [
         {
           id: "entry-riku",
@@ -221,6 +224,94 @@ describe("CodexStructureExtractDialog の適用", () => {
     expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("リク");
     expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("開き直す");
     expect(toastMocks.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("成功後に一覧を再読込し、再読込失敗でも閉じる", async () => {
+    publishApprovedProjection();
+    applyMock.mockResolvedValue(1);
+    loadEntriesMock.mockRejectedValue(new Error("reload failed"));
+    const onOpenChange = vi.fn();
+    render(
+      <CodexStructureExtractDialog
+        open
+        onOpenChange={onOpenChange}
+        folderId="f1"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("codex-structure-apply"));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(loadEntriesMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("policy の拒否を作者向けに表示し、review を残す", async () => {
+    publishApprovedProjection();
+    applyMock.mockRejectedValue(
+      new Error(
+        "NARRATIVE_REVIEW_ONLY: domain apply requires manual-apply or automatic runtime mode",
+      ),
+    );
+    render(
+      <CodexStructureExtractDialog open onOpenChange={vi.fn()} folderId="f1" />,
+    );
+    fireEvent.click(screen.getByTestId("codex-structure-apply"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "この作品では、Codex への取り込みはまだ使えません。承認・拒否の記録は残っています。",
+    );
+    expect(screen.getByTestId("codex-structure-apply")).toBeEnabled();
+    expect(
+      useCodexStructureExtractionStore.getState().projection,
+    ).not.toBeNull();
+  });
+
+  it("engine disabled と通常エラーは個別の文または元の文を表示する", async () => {
+    publishApprovedProjection();
+    const onOpenChange = vi.fn();
+    render(
+      <CodexStructureExtractDialog
+        open
+        onOpenChange={onOpenChange}
+        folderId="f1"
+      />,
+    );
+    applyMock.mockRejectedValueOnce(
+      new Error("NARRATIVE_ENGINE_DISABLED: narrative engine hard-disabled"),
+    );
+    fireEvent.click(screen.getByTestId("codex-structure-apply"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "構造抽出は、アプリの設定で止められています。",
+    );
+    applyMock.mockRejectedValueOnce(new Error("unexpected failure"));
+    fireEvent.click(screen.getByTestId("codex-structure-apply"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "unexpected failure",
+    );
+  });
+
+  it("全件が除外されたときは一覧を再読込しない", async () => {
+    publishApprovedProjection();
+    applyMock.mockImplementation(
+      async (input: {
+        onEntityApprovalsExcluded?: (
+          excluded: readonly {
+            proposalId: string;
+            displayTitle: string;
+            reason: string;
+          }[],
+        ) => void;
+      }) => {
+        input.onEntityApprovalsExcluded?.([
+          { proposalId: "b1", displayTitle: "リク", reason: "stale-version" },
+        ]);
+        return 0;
+      },
+    );
+    render(
+      <CodexStructureExtractDialog open onOpenChange={vi.fn()} folderId="f1" />,
+    );
+    fireEvent.click(screen.getByTestId("codex-structure-apply"));
+    await waitFor(() => expect(toastMocks.warning).toHaveBeenCalled());
+    expect(loadEntriesMock).not.toHaveBeenCalled();
   });
   it("外れた提案が多いときは、toast に先頭の数件と +N だけを出す", async () => {
     publishApprovedProjection();
