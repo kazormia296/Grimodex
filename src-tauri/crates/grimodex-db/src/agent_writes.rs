@@ -8056,6 +8056,17 @@ pub fn agent_event_create_with_authority_impl(
     })
 }
 
+fn codex_entry_hidden_for_surface_sql(surface: Option<&str>) -> &'static str {
+    if surface == Some("mcp") {
+        "c.context_mode = 'hidden' OR EXISTS (
+            SELECT 1 FROM codex_entry_phases p
+            WHERE p.entry_id = c.id AND p.context_mode_override = 'hidden'
+        )"
+    } else {
+        "c.context_mode = 'hidden'"
+    }
+}
+
 pub fn agent_event_update_impl(
     db: &Database,
     payload: AgentEventUpdatePayload,
@@ -8249,6 +8260,50 @@ fn agent_event_update_with_request_and_authority_impl(
             if let Some(scene_id) = payload.reveal_scene_id.as_deref() {
                 if !scene_id.is_empty() {
                     ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
+                }
+            }
+
+            if !matches!(payload.surface.as_deref(), Some("manual" | "import"))
+                && (payload.primary_codex_id.is_some() || payload.location_codex_id.is_some())
+            {
+                let (current_primary, current_location): (Option<String>, Option<String>) = conn
+                    .query_row(
+                        "SELECT primary_codex_id, location_codex_id
+                         FROM events WHERE id = ?1 AND project_id = ?2",
+                        rusqlite::params![payload.event_id, payload.project_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                let hidden_sql = codex_entry_hidden_for_surface_sql(payload.surface.as_deref());
+                let is_hidden = |codex_id: &str| -> anyhow::Result<bool> {
+                    let sql = format!(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM codex_entries c
+                            WHERE c.id = ?1 AND c.project_id = ?2 AND ({hidden_sql})
+                        )"
+                    );
+                    Ok(conn.query_row(
+                        &sql,
+                        rusqlite::params![codex_id, payload.project_id],
+                        |row| row.get(0),
+                    )?)
+                };
+                if let (Some(requested), Some(current)) = (
+                    payload.primary_codex_id.as_deref(),
+                    current_primary.as_deref(),
+                ) {
+                    let requested = (!requested.is_empty()).then_some(requested);
+                    if requested != Some(current) && is_hidden(current)? {
+                        anyhow::bail!("primaryCodexId cannot be changed on this event");
+                    }
+                }
+                if let (Some(requested), Some(current)) = (
+                    payload.location_codex_id.as_deref(),
+                    current_location.as_deref(),
+                ) {
+                    let requested = (!requested.is_empty()).then_some(requested);
+                    if requested != Some(current) && is_hidden(current)? {
+                        anyhow::bail!("locationCodexId cannot be changed on this event");
+                    }
                 }
             }
 
@@ -8917,21 +8972,22 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                     base_version
                 );
             }
-            // AI は、hidden を抜いた参加者の一覧を受け取り、それに足して返す。置き換えで、AI に
-            // 見えていない base が hidden の参加者（役割つき）が黙って消えないよう、残す。
+            // AI は、hidden を抜いた参加者の一覧を受け取る。MCP は Phase だけの hidden も読みで隠すため、
+            // 参加者の置き換えでも残す。in-app は base が hidden の参加者だけを今までどおり残す。
             // 作者自身の操作（surface = manual〔画面の手動編集〕・import）は、hidden の参加者も含めて
             // 要求のとおりに置き換える（残すと、作者が hidden の参加者を外せない）。AI の surface
             // （in-app-agent・mcp・省略時の旧経路の互換）と、未知の surface は、hidden を守る側に倒す。
             let retains_hidden_participants =
                 !matches!(payload.surface.as_deref(), Some("manual" | "import"));
             let hidden_participants = if retains_hidden_participants {
-                let mut statement = conn.prepare(
+                let hidden_sql = codex_entry_hidden_for_surface_sql(payload.surface.as_deref());
+                let sql = format!(
                     "SELECT ep.codex_entry_id, ep.role
                      FROM event_participants ep
                      JOIN codex_entries c ON c.id = ep.codex_entry_id
-                     WHERE ep.event_id = ?1 AND c.project_id = ?2
-                       AND c.context_mode = 'hidden'",
-                )?;
+                     WHERE ep.event_id = ?1 AND c.project_id = ?2 AND ({hidden_sql})"
+                );
+                let mut statement = conn.prepare(&sql)?;
                 let rows = statement.query_map(
                     rusqlite::params![payload.event_id, payload.project_id],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
@@ -15277,6 +15333,47 @@ mod tests {
         .expect("event_scalar_references")
     }
 
+    fn seed_mcp_event_authority(db: &Database, project_id: &str, event_id: &str, fields: &[&str]) {
+        db.with_conn(|conn| {
+            for field in fields {
+                conn.execute(
+                    "INSERT INTO narrative_field_authority
+                        (project_id, entity_kind, entity_id, field_path, owner_kind,
+                         explicit_lock, version, updated_at)
+                     VALUES (?1, 'event', ?2, ?3, 'ai', 0, 0, 'fixture')",
+                    rusqlite::params![project_id, event_id, field],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed MCP AI field authority");
+    }
+
+    fn set_event_codex_patch(
+        payload: &mut AgentEventUpdatePayload,
+        field: &str,
+        value: Option<String>,
+    ) {
+        match field {
+            "primaryCodexId" => payload.primary_codex_id = value,
+            "locationCodexId" => payload.location_codex_id = value,
+            _ => panic!("unknown event Codex field: {field}"),
+        }
+    }
+
+    fn seed_event_codex_reference(
+        db: &Database,
+        project_id: &str,
+        event_id: &str,
+        field: &str,
+        value: &str,
+    ) {
+        let mut update = empty_update(project_id, event_id);
+        update.surface = Some("in-app-agent".to_string());
+        set_event_codex_patch(&mut update, field, Some(value.to_string()));
+        agent_event_update_impl(db, update).expect("seed event Codex reference through writer");
+    }
+
     fn event_detail(db: &Database, event_id: &str) -> Option<String> {
         db.with_conn(|conn| {
             Ok(conn.query_row(
@@ -15914,57 +16011,77 @@ mod tests {
     }
 
     #[test]
-    fn event_participants_do_not_preserve_phase_only_hidden_entries() {
-        let db = test_db();
-        let project_id = insert_project(&db);
-        let phase_hidden = insert_codex(&db, &project_id, "Phase hidden");
-        let requested = insert_codex(&db, &project_id, "Requested");
-        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE codex_entries SET context_mode = 'mentioned' WHERE id = ?1",
-                rusqlite::params![phase_hidden],
-            )?;
-            conn.execute(
-                "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
-                 VALUES ('phase-hidden', ?1, 'Hidden phase', 'hidden')",
-                rusqlite::params![phase_hidden],
-            )?;
-            Ok(())
-        })
-        .expect("seed phase-only hidden mode");
+    fn event_participants_preserve_phase_only_hidden_entries_only_for_mcp() {
+        for (surface, hidden_remains) in [
+            (Some("mcp"), true),
+            (Some("in-app-agent"), false),
+            (None, false),
+        ] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let phase_hidden = insert_codex(&db, &project_id, "Phase hidden");
+            let requested = insert_codex(&db, &project_id, "Requested");
+            let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = 'mentioned' WHERE id = ?1",
+                    rusqlite::params![phase_hidden],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+                     VALUES ('phase-hidden', ?1, 'Hidden phase', 'hidden')",
+                    rusqlite::params![phase_hidden],
+                )?;
+                Ok(())
+            })
+            .expect("seed phase-only hidden mode");
 
-        agent_event_set_participants_impl(
-            &db,
-            AgentEventParticipantsPayload {
-                project_id: project_id.clone(),
-                session_id: "sess".to_string(),
-                surface: Some("in-app-agent".to_string()),
-                event_id: event_id.clone(),
-                base_version: 1,
-                codex_entry_ids: vec![phase_hidden.clone()],
-                participant_roles: Some(vec![Some("ally".to_string())]),
-            },
-        )
-        .expect("seed phase-only hidden participant through the writer");
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id: project_id.clone(),
+                    session_id: "sess".to_string(),
+                    surface: surface.map(str::to_string),
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                    codex_entry_ids: vec![phase_hidden.clone()],
+                    participant_roles: Some(vec![Some("ally".to_string())]),
+                },
+            )
+            .expect("seed phase-only hidden participant through the writer");
 
-        agent_event_set_participants_impl(
-            &db,
-            AgentEventParticipantsPayload {
-                project_id,
-                session_id: "sess".to_string(),
-                surface: Some("in-app-agent".to_string()),
-                event_id: event_id.clone(),
-                base_version: 2,
-                codex_entry_ids: vec![requested.clone()],
-                participant_roles: None,
-            },
-        )
-        .expect("replace participants");
+            agent_event_set_participants_impl(
+                &db,
+                AgentEventParticipantsPayload {
+                    project_id,
+                    session_id: "sess".to_string(),
+                    surface: surface.map(str::to_string),
+                    event_id: event_id.clone(),
+                    base_version: 2,
+                    codex_entry_ids: vec![requested.clone()],
+                    participant_roles: None,
+                },
+            )
+            .expect("replace participants");
 
-        assert_eq!(participant_count(&db, &event_id), 1);
-        assert!(participant_has(&db, &event_id, &requested));
-        assert!(!participant_has(&db, &event_id, &phase_hidden));
+            assert_eq!(
+                participant_count(&db, &event_id),
+                if hidden_remains { 2 } else { 1 }
+            );
+            assert!(participant_has(&db, &event_id, &requested));
+            assert_eq!(
+                participant_has(&db, &event_id, &phase_hidden),
+                hidden_remains,
+                "surface {surface:?}"
+            );
+            if hidden_remains {
+                assert_eq!(
+                    participant_role(&db, &event_id, &phase_hidden).as_deref(),
+                    Some("ally"),
+                    "surface {surface:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -16105,6 +16222,348 @@ mod tests {
                 .expect("null references");
         let null_id = null_result["entityId"].as_str().expect("entityId");
         assert_eq!(event_scalar_references(&db, null_id), (None, None, None));
+    }
+
+    fn assert_ai_cannot_change_base_hidden_event_reference(field: &str, field_path: &str) {
+        for surface in ["mcp", "in-app-agent"] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let hidden = insert_codex(&db, &project_id, "Hidden");
+            let replacement = insert_codex(&db, &project_id, "Replacement");
+            let (event_id, _) = create_event(&db, &project_id, "Unchanged", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = ?1",
+                    rusqlite::params![hidden],
+                )?;
+                Ok(())
+            })
+            .expect("seed base hidden event reference");
+            seed_event_codex_reference(&db, &project_id, &event_id, field, &hidden);
+            if surface == "mcp" {
+                seed_mcp_event_authority(&db, &project_id, &event_id, &[field_path, "/title"]);
+            }
+
+            for requested in [replacement.clone(), String::new()] {
+                let mut update = empty_update(&project_id, &event_id);
+                update.surface = Some(surface.to_string());
+                update.base_version = 2;
+                set_event_codex_patch(&mut update, field, Some(requested));
+                let before = db
+                    .with_conn(|conn| collect_event_snapshot(conn, &event_id))
+                    .expect("snapshot before protected update");
+                let journals_before = scalar_count(
+                    &db,
+                    "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                    &event_id,
+                    None,
+                );
+                let changes_before = scalar_count(
+                    &db,
+                    "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+                    &event_id,
+                    None,
+                );
+
+                let error = agent_event_update_impl(&db, update)
+                    .expect_err("AI cannot change a base-hidden event reference");
+                assert_eq!(
+                    error.to_string(),
+                    [field, "cannot", "be changed", "on this event"].join(" "),
+                    "surface {surface}, field {field}"
+                );
+                assert_eq!(
+                    db.with_conn(|conn| collect_event_snapshot(conn, &event_id))
+                        .expect("snapshot after protected update"),
+                    before,
+                    "surface {surface}, field {field}: event row and links stay unchanged"
+                );
+                assert_eq!(
+                    scalar_count(
+                        &db,
+                        "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                        &event_id,
+                        None,
+                    ),
+                    journals_before,
+                    "surface {surface}, field {field}: no undo journal"
+                );
+                assert_eq!(
+                    scalar_count(
+                        &db,
+                        "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+                        &event_id,
+                        None,
+                    ),
+                    changes_before,
+                    "surface {surface}, field {field}: no change event"
+                );
+            }
+
+            let mut same_value = empty_update(&project_id, &event_id);
+            same_value.surface = Some(surface.to_string());
+            same_value.base_version = 2;
+            set_event_codex_patch(&mut same_value, field, Some(hidden.clone()));
+            let unchanged = agent_event_update_impl(&db, same_value)
+                .expect("same hidden reference is not a change");
+            assert_eq!(unchanged["version"], 3, "surface {surface}, field {field}");
+
+            let mut title_only = empty_update(&project_id, &event_id);
+            title_only.surface = Some(surface.to_string());
+            title_only.base_version = 3;
+            title_only.title = Some("Title updated".to_string());
+            agent_event_update_impl(&db, title_only)
+                .expect("title-only update leaves hidden reference untouched");
+            assert_eq!(
+                event_title(&db, &event_id).as_deref(),
+                Some("Title updated")
+            );
+            assert_eq!(event_version(&db, &event_id), 4);
+            assert_eq!(
+                if field == "primaryCodexId" {
+                    event_primary_codex(&db, &event_id)
+                } else {
+                    event_scalar_references(&db, &event_id).1
+                },
+                Some(hidden)
+            );
+        }
+    }
+
+    #[test]
+    fn event_update_rejects_ai_changes_to_base_hidden_primary() {
+        assert_ai_cannot_change_base_hidden_event_reference("primaryCodexId", "/primaryCodexId");
+    }
+
+    #[test]
+    fn event_update_rejects_ai_changes_to_base_hidden_location() {
+        assert_ai_cannot_change_base_hidden_event_reference("locationCodexId", "/locationCodexId");
+    }
+
+    #[test]
+    fn event_update_applies_surface_specific_phase_hidden_guard() {
+        for (surface, rejects) in [
+            (Some("mcp"), true),
+            (Some("in-app-agent"), false),
+            (None, false),
+            (Some("future-ai-surface"), false),
+        ] {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let phase_hidden = insert_codex(&db, &project_id, "Phase hidden");
+            let replacement = insert_codex(&db, &project_id, "Replacement");
+            let (event_id, _) = create_event(&db, &project_id, "Unchanged", vec![], vec![]);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET context_mode = 'mentioned' WHERE id = ?1",
+                    rusqlite::params![phase_hidden],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_entry_phases (id, entry_id, label, context_mode_override)
+                     VALUES ('event-phase-hidden', ?1, 'Hidden phase', 'hidden')",
+                    rusqlite::params![phase_hidden],
+                )?;
+                Ok(())
+            })
+            .expect("seed phase-only hidden primary reference");
+            seed_event_codex_reference(
+                &db,
+                &project_id,
+                &event_id,
+                "primaryCodexId",
+                &phase_hidden,
+            );
+            if surface == Some("mcp") {
+                seed_mcp_event_authority(&db, &project_id, &event_id, &["/primaryCodexId"]);
+            }
+
+            let mut update = empty_update(&project_id, &event_id);
+            update.surface = surface.map(str::to_string);
+            update.base_version = 2;
+            update.primary_codex_id = Some(replacement.clone());
+            let before = db
+                .with_conn(|conn| collect_event_snapshot(conn, &event_id))
+                .expect("snapshot before phase-only hidden update");
+            let journals_before = scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                &event_id,
+                None,
+            );
+            let changes_before = scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+                &event_id,
+                None,
+            );
+
+            let result = agent_event_update_impl(&db, update);
+            assert_eq!(result.is_err(), rejects, "surface {surface:?}");
+            if rejects {
+                let error = result.expect_err("MCP must protect a phase-only hidden reference");
+                assert_eq!(
+                    error.to_string(),
+                    ["primaryCodexId", "cannot", "be changed", "on this event"].join(" ")
+                );
+                assert_eq!(
+                    db.with_conn(|conn| collect_event_snapshot(conn, &event_id))
+                        .expect("snapshot after blocked phase-only update"),
+                    before
+                );
+                assert_eq!(
+                    scalar_count(
+                        &db,
+                        "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                        &event_id,
+                        None,
+                    ),
+                    journals_before
+                );
+                assert_eq!(
+                    scalar_count(
+                        &db,
+                        "SELECT COUNT(*) FROM change_events WHERE entity_id = ?1",
+                        &event_id,
+                        None,
+                    ),
+                    changes_before
+                );
+            } else {
+                assert_eq!(result.unwrap()["version"], 3, "surface {surface:?}");
+                assert_eq!(event_primary_codex(&db, &event_id), Some(replacement));
+            }
+        }
+    }
+
+    #[test]
+    fn event_update_author_surfaces_can_change_base_hidden_primary_and_location() {
+        for surface in ["manual", "import"] {
+            for field in ["primaryCodexId", "locationCodexId"] {
+                let db = test_db();
+                let project_id = insert_project(&db);
+                let hidden = insert_codex(&db, &project_id, "Hidden");
+                let replacement = insert_codex(&db, &project_id, "Replacement");
+                let (event_id, _) = create_event(&db, &project_id, "Unchanged", vec![], vec![]);
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = ?1",
+                        rusqlite::params![hidden],
+                    )?;
+                    Ok(())
+                })
+                .expect("seed base hidden author reference");
+                seed_event_codex_reference(&db, &project_id, &event_id, field, &hidden);
+
+                let mut update = empty_update(&project_id, &event_id);
+                update.surface = Some(surface.to_string());
+                update.base_version = 2;
+                set_event_codex_patch(&mut update, field, Some(replacement.clone()));
+                agent_event_update_impl(&db, update)
+                    .expect("author surfaces can replace a base-hidden reference");
+                assert_eq!(
+                    event_version(&db, &event_id),
+                    3,
+                    "surface {surface}, field {field}"
+                );
+                assert_eq!(
+                    if field == "primaryCodexId" {
+                        event_primary_codex(&db, &event_id)
+                    } else {
+                        event_scalar_references(&db, &event_id).1
+                    },
+                    Some(replacement),
+                    "surface {surface}, field {field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn event_update_ai_can_change_visible_and_null_primary_and_location() {
+        for surface in ["mcp", "in-app-agent"] {
+            for field in ["primaryCodexId", "locationCodexId"] {
+                for current_is_visible in [true, false] {
+                    let db = test_db();
+                    let project_id = insert_project(&db);
+                    let visible = insert_codex(&db, &project_id, "Visible");
+                    let replacement = insert_codex(&db, &project_id, "Replacement");
+                    let (event_id, _) = create_event(&db, &project_id, "Seed", vec![], vec![]);
+                    if current_is_visible {
+                        seed_event_codex_reference(&db, &project_id, &event_id, field, &visible);
+                    }
+                    if surface == "mcp" {
+                        let field_path = if field == "primaryCodexId" {
+                            "/primaryCodexId"
+                        } else {
+                            "/locationCodexId"
+                        };
+                        seed_mcp_event_authority(&db, &project_id, &event_id, &[field_path]);
+                    }
+
+                    let mut update = empty_update(&project_id, &event_id);
+                    update.surface = Some(surface.to_string());
+                    if current_is_visible {
+                        update.base_version = 2;
+                    }
+                    set_event_codex_patch(&mut update, field, Some(replacement.clone()));
+                    let result = agent_event_update_impl(&db, update)
+                        .expect("AI can change a visible or unassigned reference");
+                    assert_eq!(
+                        result["version"],
+                        if current_is_visible { 3 } else { 2 },
+                        "surface {surface}, field {field}"
+                    );
+                    assert_eq!(
+                        if field == "primaryCodexId" {
+                            event_primary_codex(&db, &event_id)
+                        } else {
+                            event_scalar_references(&db, &event_id).1
+                        },
+                        Some(replacement),
+                        "surface {surface}, field {field}, current visible={current_is_visible}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn event_update_idempotent_retry_precedes_hidden_reference_guard() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let initial = insert_codex(&db, &project_id, "Initial");
+        let requested = insert_codex(&db, &project_id, "Requested");
+        let (event_id, _) = create_event(&db, &project_id, "Seed", vec![], vec![]);
+        seed_event_codex_reference(&db, &project_id, &event_id, "primaryCodexId", &initial);
+        seed_mcp_event_authority(&db, &project_id, &event_id, &["/primaryCodexId"]);
+
+        let mut update = empty_update(&project_id, &event_id);
+        update.surface = Some("mcp".to_string());
+        update.base_version = 2;
+        update.primary_codex_id = Some(requested.clone());
+        let first = agent_event_update_with_request_impl(&db, update.clone(), Some("hidden-retry"))
+            .expect("first update");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = ?1",
+                rusqlite::params![initial],
+            )?;
+            Ok(())
+        })
+        .expect("make the initial reference hidden before retry");
+        let mut restore = empty_update(&project_id, &event_id);
+        restore.surface = Some("manual".to_string());
+        restore.base_version = 3;
+        restore.primary_codex_id = Some(initial.clone());
+        agent_event_update_impl(&db, restore)
+            .expect("make a different hidden reference current before retry");
+
+        let retry = agent_event_update_with_request_impl(&db, update, Some("hidden-retry"))
+            .expect("successful request retry replays before the hidden-reference check");
+        assert_eq!(retry, first);
+        assert_eq!(event_primary_codex(&db, &event_id), Some(initial));
+        assert_eq!(event_version(&db, &event_id), 4);
+        assert_ne!(requested, event_primary_codex(&db, &event_id).unwrap());
     }
 
     #[test]

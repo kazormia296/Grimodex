@@ -33,13 +33,13 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 ### DR-CSR-4　参加者の置き換えで、base が hidden の既存の参加者を残す（N8 (b)）
 
 - Native の共通の本体で、DELETE の前に、base が hidden（`codex_entries.context_mode = 'hidden'`、同じ作品）の既存の参加者を役割ごと読み、要求の集合に無いものを足す（要求にあるときは要求の役割）。AI は hidden を抜いた一覧を受け取るので、そのまま置き換えると、見えていない参加が黙って消えるため。返り値（`AgentWriteResult`。参加者の一覧を含まない）、冪等性の hash、undo journal（実際の行から作る）は変えない。変更 event の `codexEntryIds` は要求のまま（残した hidden の id を feed に出さない）。
-- **保持の条件は base の hidden だけ**（起案どおり）。Phase だけで hidden の人物は残さない（DR-CSR-5 の 1）。
+- **保持の条件は、アプリ内（`in-app-agent`・省略時）では base の hidden だけ**（起案どおり）。**MCP は、読みと同じ「base または hidden の Phase」に改めた**（確認 154。DR-CSR-9）。
 - **surface の条件（独立レビューの P0 の直し）**：**作者自身の操作（surface = `manual`・`import`）は、hidden の参加者も含めて、要求のとおりに置き換える。** 残すと、作者が画面で hidden の参加者を外しても、黙って戻される。作者は全員を見ているので、残す必要が無い。AI の surface（`in-app-agent`・`mcp`）、省略時（旧経路の AI 互換）、未知の surface は、hidden を守る側に倒して残す。最初の実装は、surface を見ずに全部で残していた（「`agent_*` は AI だけ」という誤った前提。DR 1 の 2 つ目）。2 系統の独立レビュー（Claude・Opus と Codex、read-only）が、同じ指摘をした（重さは P0 と P1）。直しを外す変異で、新しい試験が落ちる。
 
 ### DR-CSR-5　残る制限と、ユーザーに伺う点
 
-1. **【伺う】Phase だけで hidden の参加者は、MCP の置き換えで黙って消える。** MCP の読みは、「base が hidden」か「hidden の Phase がある」人物を伏せる（確認 109）。しかし、置き換えで残すのは base が hidden の人物だけ（起案の N8 (b) は「base だけで足りる」と明記）。Phase だけで hidden の人物は、MCP の AI から見えないまま、置き換えで消える。起案の規則どおりに実装した（試験が「消える」を固定している）。**案：MCP の surface に限り、残す条件を読みと同じ「base か Phase」に揃える**（推奨。MCP の AI は、Phase だけで hidden の参加者を外せない）。アプリ内は、Phase が場面ごとに解決されるので、base だけのまま。規則の変更なので、ユーザーの確認が要る。
-2. **【伺う】`update_event` で、AI が hidden の主な人物・場所を上書きできる。** MCP では hidden の主な人物・場所が null に見えるので、AI が空いていると思って値を入れると、hidden の値を黙って置き換える。N8 (b) は参加者だけが対象で、この欄は守られていない。意図した範囲かどうかの確認が要る。
+1. **【解決：確認 154。DR-CSR-9】Phase だけで hidden の参加者は、MCP の置き換えで黙って消える。** MCP の読みは、「base が hidden」か「hidden の Phase がある」人物を伏せる（確認 109）。しかし、置き換えで残すのは base が hidden の人物だけ（起案の N8 (b) は「base だけで足りる」と明記）。Phase だけで hidden の人物は、MCP の AI から見えないまま、置き換えで消える。起案の規則どおりに実装した（試験が「消える」を固定している）。**案：MCP の surface に限り、残す条件を読みと同じ「base か Phase」に揃える**（推奨。MCP の AI は、Phase だけで hidden の参加者を外せない）。アプリ内は、Phase が場面ごとに解決されるので、base だけのまま。規則の変更なので、ユーザーの確認が要る。
+2. **【解決：確認 155。DR-CSR-10】`update_event` で、AI が hidden の主な人物・場所を上書きできる。** MCP では hidden の主な人物・場所が null に見えるので、AI が空いていると思って値を入れると、hidden の値を黙って置き換える。N8 (b) は参加者だけが対象で、この欄は守られていない。意図した範囲かどうかの確認が要る。
 3. 書き込みの検査（`ensure_codex_in_project`）は `context_mode` を見ない。hidden の id を参加者・主な人物に渡すと成功し、存在しない id は失敗する（外に出るのは汎用の internal error だけ）。AI が hidden の UUID を当てる必要があり、MCP の読みから hidden の id を得る経路は見つからなかった。
 4. `secret` の引数（`create_event`・`update_event`）は、まだ受け付ける（N4 で消す）。説明は「保存されるフラグで、MCP の読み・書きを制限しない」にした。値は、どこでも判定に使われない。
 5. 題・メモの文中の名前は、hidden かどうかを判定しない（起案の残る制限）。
@@ -82,3 +82,25 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 - `tsc`・eslint・prettier（変えた 10 file）・`validate:architecture`：指摘なし。renderer の広域（`src/application/composition`・`src/features/chat/agent`・`src/features/chronicle`）：143 files・2,422 tests が通過（5 skipped は既存）。`electron/shared/readDomain`：16 files・573 tests が通過。
 - **変異**：組み立ての除去の素通し、fail-closed の無効化、純関数の参加者フィルタの除去、書く道具への secret の遮断の復活を、それぞれかけて、対応する試験が落ちることを確かめた。**このとき、組み立ての試験が、除去を素通しにしても通ってしまう（空虚）ことを見つけた**：fixture に場面の日付と人物が出る構造が無く、hidden の除去が無くても、名前がもともと出力に出なかった。「hidden が無ければ名前が出る」基準の assertion を足し、同じ入力で hidden ありのとき出ないことを確かめる形に直した。直した後は、素通しの変異で落ちる。
 - していない：実アプリでの確認、canonical Light selector・`verify:quality` のローカル実行（hosted の Quick に任せる）。
+
+## 5. 追加の 1 本（C2）：MCP の保持の条件と、AI の更新の保護（2026-11-24。確認 154・155）
+
+2 本目の独立レビューが指摘した 2 つの穴を、ユーザーが「塞ぐ」と決めた（DR-CSR-5 の 1・2）。Native の `agent_writes.rs` と、MCP の道具の試験だけを変える。
+
+### DR-CSR-9　MCP の参加者の保持：読みと同じ「base または Phase」に揃える（確認 154）
+
+- hidden の判定を、**surface ごとに 1 つの関数**（`codex_entry_hidden_for_surface_sql`。`agent_writes.rs`）にまとめた。`mcp`：`context_mode = 'hidden'`、または `context_mode_override = 'hidden'` の Phase がある（MCP の読み `chronicle_hidden_codex_ids` と同じ。MCP は Phase を場面ごとに解決しない）。それ以外の AI の surface（`in-app-agent`・省略時・未知）：base の `hidden` だけ（Phase は場面ごとに解決されるので、これまでどおり）。作者の surface（`manual`・`import`）は、保持しない（これまでどおり）。
+- 参加者の置き換えの「残す」処理（DR-CSR-4）は、この関数を使う。返り値・冪等性・undo journal・変更 event の `codexEntryIds`（要求のまま）は変えない。
+- 試験：Phase だけで hidden の参加者が、`mcp` では役割ごと残り、`in-app-agent`・省略時では消える。
+
+### DR-CSR-10　AI の `update_event` は、現在の主な人物・場所が hidden の出来事で、その欄を変えられない（確認 155）
+
+- **対象**：surface が `manual`・`import` でない更新（`mcp`・`in-app-agent`・省略時・未知。画面の手動編集は `manual`）。`primaryCodexId` または `locationCodexId` を渡したとき、その出来事の**現在の**値が、DR-CSR-9 の関数の意味で hidden の人物なら、**要求の値が現在と違うとき**（空文字＝解除も違うものとして）拒否する。同じ値を渡す（変更なし）・現在が NULL か hidden でない人物・他の欄だけの更新は、これまでどおり成功する。
+- **拒否は、行・journal・change event を書く前**（検証の直後）。拒否のとき、`events` の行・`version`・`change_events`・`undo_journal` は変わらない。成功済みの同じ `request_id` の再送は、冪等性の検査が先なので、保存された返り値を返す。
+- **文言は仕組みを明かさない**：`primaryCodexId cannot be changed on this event`（`locationCodexId` も同様）。「hidden」「secret」を含まない。MCP の道具を通すと、既存の `internal_err` により、AI に見えるのは汎用の `internal error` だけになる（理由は伝わらない。MCP 全体の既存の挙動）。
+- **範囲外（残る制限）**：現在の値が hidden でない（または NULL の）ときに、AI が hidden の人物を新しく設定すること（`ensure_codex_in_project` は hidden を区別しない。DR-CSR-5 の 3 のまま）。作成（`create_event`）の経路。
+
+### 検証（C2。2026-11-24。自分で実行した）
+
+- `cargo test -p grimodex-db --lib agent_writes`：125 件、`cargo test -p grimodex-mcp`：229 件が通過。
+- **変異**（それぞれ、狙った試験が落ちる）：R3 の保護を外す、`mcp` の分岐を base だけにする、参加者の保持の SQL を base だけに戻す、作者の surface でも保護する。
