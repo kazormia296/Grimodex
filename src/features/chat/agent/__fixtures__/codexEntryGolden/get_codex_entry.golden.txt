@@ -13,7 +13,7 @@
       "result": {
         "name": "get_codex_entry",
         "summary": "通常項目 (character)",
-        "tokensUsed": 308,
+        "tokensUsed": 268,
         "content": {
           "id": "ge-normal",
           "name": "通常項目",
@@ -32,10 +32,6 @@
             {
               "field": "秘密の詳細",
               "value": null
-            },
-            {
-              "field": "別 project の項目名",
-              "value": null
             }
           ],
           "children": [
@@ -48,7 +44,7 @@
           ]
         }
       },
-      "contentJson": "{\"id\":\"ge-normal\",\"name\":\"通常項目\",\"type\":\"character\",\"aliases\":[\"通常名\",\"別名\"],\"summary\":\"通常の要約\",\"body\":\"通常の本文\",\"details\":[{\"field\":\"年齢\",\"value\":\"18\"},{\"field\":\"秘密の詳細\",\"value\":null},{\"field\":\"別 project の項目名\",\"value\":null}],\"children\":[{\"id\":\"ge-normal-child\",\"name\":\"通常の子\",\"type\":\"character\",\"summary\":\"通常の子要約\"}]}"
+      "contentJson": "{\"id\":\"ge-normal\",\"name\":\"通常項目\",\"type\":\"character\",\"aliases\":[\"通常名\",\"別名\"],\"summary\":\"通常の要約\",\"body\":\"通常の本文\",\"details\":[{\"field\":\"年齢\",\"value\":\"18\"},{\"field\":\"秘密の詳細\",\"value\":null}],\"children\":[{\"id\":\"ge-normal-child\",\"name\":\"通常の子\",\"type\":\"character\",\"summary\":\"通常の子要約\"}]}"
     },
     {
       "case": "released",
@@ -62,7 +58,7 @@
       "result": {
         "name": "get_codex_entry",
         "summary": "解除される項目 (character)",
-        "tokensUsed": 345,
+        "tokensUsed": 305,
         "content": {
           "id": "ge-released-old",
           "name": "解除される項目",
@@ -78,10 +74,6 @@
             {
               "field": "秘密の詳細",
               "value": null
-            },
-            {
-              "field": "別 project の項目名",
-              "value": null
             }
           ],
           "children": [
@@ -94,7 +86,7 @@
           ]
         }
       },
-      "contentJson": "{\"id\":\"ge-released-old\",\"name\":\"解除される項目\",\"type\":\"character\",\"aliases\":[],\"summary\":\"解除後の要約\",\"body\":\"SECRET-PHASE-OLD\",\"details\":[{\"field\":\"年齢\",\"value\":\"Phase 解決後の年齢\"},{\"field\":\"秘密の詳細\",\"value\":null},{\"field\":\"別 project の項目名\",\"value\":null}],\"children\":[{\"id\":\"ge-release-child\",\"name\":\"解除される子\",\"type\":\"character\",\"summary\":\"CHILD-PHASE-SUMMARY\"}]}"
+      "contentJson": "{\"id\":\"ge-released-old\",\"name\":\"解除される項目\",\"type\":\"character\",\"aliases\":[],\"summary\":\"解除後の要約\",\"body\":\"SECRET-PHASE-OLD\",\"details\":[{\"field\":\"年齢\",\"value\":\"Phase 解決後の年齢\"},{\"field\":\"秘密の詳細\",\"value\":null}],\"children\":[{\"id\":\"ge-release-child\",\"name\":\"解除される子\",\"type\":\"character\",\"summary\":\"CHILD-PHASE-SUMMARY\"}]}"
     },
     {
       "case": "released の現在 Phase",
@@ -108,7 +100,7 @@
       "result": {
         "name": "get_codex_entry",
         "summary": "現在の Phase で解除 (character)",
-        "tokensUsed": 263,
+        "tokensUsed": 223,
         "content": {
           "id": "ge-released-current",
           "name": "現在の Phase で解除",
@@ -124,16 +116,12 @@
             {
               "field": "秘密の詳細",
               "value": null
-            },
-            {
-              "field": "別 project の項目名",
-              "value": null
             }
           ],
           "children": []
         }
       },
-      "contentJson": "{\"id\":\"ge-released-current\",\"name\":\"現在の Phase で解除\",\"type\":\"character\",\"aliases\":[],\"summary\":\"SECRET-PHASE-SUMMARY\",\"body\":\"SECRET-PHASE\",\"details\":[{\"field\":\"年齢\",\"value\":null},{\"field\":\"秘密の詳細\",\"value\":null},{\"field\":\"別 project の項目名\",\"value\":null}],\"children\":[]}"
+      "contentJson": "{\"id\":\"ge-released-current\",\"name\":\"現在の Phase で解除\",\"type\":\"character\",\"aliases\":[],\"summary\":\"SECRET-PHASE-SUMMARY\",\"body\":\"SECRET-PHASE\",\"details\":[{\"field\":\"年齢\",\"value\":null},{\"field\":\"秘密の詳細\",\"value\":null}],\"children\":[]}"
     },
     {
       "case": "非配列 aliases",
@@ -147,7 +135,7 @@
       "result": {
         "name": "get_codex_entry",
         "summary": "非配列 aliases (character)",
-        "tokensUsed": 257,
+        "tokensUsed": 217,
         "content": {
           "id": "ge-alias-object",
           "name": "非配列 aliases",
@@ -165,16 +153,12 @@
             {
               "field": "秘密の詳細",
               "value": null
-            },
-            {
-              "field": "別 project の項目名",
-              "value": null
             }
           ],
           "children": []
         }
       },
-      "contentJson": "{\"id\":\"ge-alias-object\",\"name\":\"非配列 aliases\",\"type\":\"character\",\"aliases\":{\"alias\":\"オブジェクト\"},\"summary\":\"\",\"body\":\"非配列 aliases の本文。\",\"details\":[{\"field\":\"年齢\",\"value\":null},{\"field\":\"秘密の詳細\",\"value\":null},{\"field\":\"別 project の項目名\",\"value\":null}],\"children\":[]}"
+      "contentJson": "{\"id\":\"ge-alias-object\",\"name\":\"非配列 aliases\",\"type\":\"character\",\"aliases\":{\"alias\":\"オブジェクト\"},\"summary\":\"\",\"body\":\"非配列 aliases の本文。\",\"details\":[{\"field\":\"年齢\",\"value\":null},{\"field\":\"秘密の詳細\",\"value\":null}],\"children\":[]}"
     }
   ]
 }
