@@ -34,11 +34,18 @@ import {
   mastraAgentTurnRefusalValue,
   MASTRA_AGENT_TURN_START_COMMAND,
   type MastraAgentTurnProgressUsage,
+  type MastraAgentTurnProgressEvent,
   type MastraAgentTurnCancelRequest,
   type MastraAgentTurnCancelResult,
   type MastraAgentTurnRefusalReason,
   type MastraAgentTurnStartRequest,
   type MastraAgentTurnStartResult,
+} from "../shared/mastraAgentTurnWire.js";
+import type {
+  MastraAgentTurnCitation,
+  MastraAgentTurnLoopResult,
+  MastraAgentTurnThinkingBlock,
+  MastraAgentTurnToolCallRecord,
 } from "../shared/mastraAgentTurnWire.js";
 import {
   ContextWindowExceededError,
@@ -52,6 +59,16 @@ import {
 import { createM4ReadToolDefinitions } from "../shared/agentReadToolDefinitions.js";
 import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
+import {
+  createAgentLoopRuleState,
+  getAgentLimitReason,
+  insertLimitMessage,
+  markAgentLoopAborted,
+  recordToolResultTokens,
+  recordToolUsesForResponse,
+  resolveAgentStoppedReason,
+  selectAgentControlMessage,
+} from "./mastra/agentLoopRules.js";
 import {
   createMainAgentAuditSink,
   type MainAgentAmbiguousCause,
@@ -116,6 +133,14 @@ class MastraTurnCancelled extends Error {
   constructor() {
     super("MASTRA_AGENT_TURN_CANCELLED: the turn was stopped before dispatch");
     this.name = "MastraTurnCancelled";
+  }
+}
+
+/** Stop a later loop send without creating a second audit execution. */
+export class MastraAgentLoopStopped extends Error {
+  constructor() {
+    super("MASTRA_AGENT_LOOP_STOPPED: user-stop before the next send");
+    this.name = "MastraAgentLoopStopped";
   }
 }
 
@@ -344,6 +369,26 @@ function findContextWindowExceeded(
     }
   }
   return null;
+}
+
+export function findAgentLoopStopped(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current = error;
+  while (
+    typeof current === "object" &&
+    current !== null &&
+    !seen.has(current)
+  ) {
+    if (current instanceof MastraAgentLoopStopped) return true;
+    seen.add(current);
+    if (isAgentModelError(current)) {
+      current = current.origin;
+    } else {
+      const wrapper = current as { cause?: unknown; origin?: unknown };
+      current = wrapper.origin ?? wrapper.cause;
+    }
+  }
+  return false;
 }
 
 export function createMastraTurnOwner(
@@ -877,6 +922,44 @@ export function createMastraTurnOwner(
     slots.add(turn);
     attachListeners(turn, context);
     const progress = createMastraAgentTurnProgressSender(sender, turn.turnId);
+    let loopState = createAgentLoopRuleState({
+      tokenBudget: request.loop.tokenBudget,
+      maxToolCalls: request.loop.maxToolCalls,
+      maxUserQuestions: request.loop.maxUserQuestions,
+    });
+    let finalText = "";
+    let tokensIn: number | null = null;
+    let tokensOut: number | null = null;
+    let cost: number | null = null;
+    const toolCallRecords: MastraAgentTurnToolCallRecord[] = [];
+    const citations: MastraAgentTurnCitation[] = [];
+    let finalThinkingBlocks: MastraAgentTurnThinkingBlock[] = [];
+    let terminalSent = false;
+    const makeLoopResult = (
+      stoppedReason = loopState.aborted
+        ? "aborted"
+        : (getAgentLimitReason(loopState) ??
+          resolveAgentStoppedReason(loopState)),
+    ): MastraAgentTurnLoopResult => ({
+      finalText,
+      toolCallRecords,
+      stoppedReason,
+      usage: { totalTokens: loopState.tokensUsed, tokensIn, tokensOut, cost },
+      citations,
+      finalThinkingBlocks,
+    });
+    const sendTerminalProgress = (
+      event: MastraAgentTurnProgressEvent,
+    ): boolean => {
+      if (terminalSent) return false;
+      terminalSent = true;
+      progress.send(event);
+      return true;
+    };
+    const controlMessages = {
+      uiLanguage: request.loop.language,
+      ...request.loop.controlMessages,
+    };
 
     try {
       // The tokenizer is made ready AFTER the turn is registered: a Stop, a
@@ -935,11 +1018,37 @@ export function createMastraTurnOwner(
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
         prepareSend: (auditRequest, ctx) => {
+          if (ctx.sendIndex > 0 && turn.userStop)
+            throw new MastraAgentLoopStopped();
+
+          let messages = auditRequest.messages;
+          const limitReason = getAgentLimitReason(loopState);
+          if (limitReason !== null && !loopState.limitMessageInserted) {
+            loopState = insertLimitMessage(loopState);
+            messages = [
+              ...messages,
+              {
+                role: "user",
+                content: selectAgentControlMessage(
+                  limitReason,
+                  controlMessages,
+                ),
+              },
+            ];
+          }
+          const tools = loopState.limitMessageInserted
+            ? []
+            : auditRequest.tools;
+          const requestToFinalize: AgentAuditRequest = {
+            ...auditRequest,
+            messages,
+            tools,
+          };
           const payloadRoute = {
             provider: request.route.provider,
             apiVariant: request.route.apiVariant,
             toolProtocol:
-              auditRequest.resolvedToolProtocol ??
+              requestToFinalize.resolvedToolProtocol ??
               request.route.resolvedToolProtocol ??
               "native",
           };
@@ -957,15 +1066,15 @@ export function createMastraTurnOwner(
               system: {
                 fallback: request.loop.fallbackSystem,
                 cacheSegments:
-                  auditRequest.systemCacheSegments === null
+                  requestToFinalize.systemCacheSegments === null
                     ? undefined
-                    : [...auditRequest.systemCacheSegments],
-                volatileTail: auditRequest.systemVolatileTail ?? undefined,
+                    : [...requestToFinalize.systemCacheSegments],
+                volatileTail: requestToFinalize.systemVolatileTail ?? undefined,
               },
-              messages: auditRequest.messages,
+              messages: requestToFinalize.messages,
               renderedConversationPayloads: renderAgentConversationPayloads(
                 payloadRoute,
-                auditRequest.messages,
+                requestToFinalize.messages,
               ),
               // The declared tools are counted as the legacy path counts them.
               // The runtime does not hand them to the Agent yet (the tool
@@ -973,8 +1082,8 @@ export function createMastraTurnOwner(
               // makes this count higher than what is sent.
               renderedToolPayloads: renderAgentToolPayloads(
                 payloadRoute,
-                toolDefinitions,
-                auditRequest.webSearch as Parameters<
+                loopState.limitMessageInserted ? [] : toolDefinitions,
+                requestToFinalize.webSearch as Parameters<
                   typeof renderAgentToolPayloads
                 >[2],
               ),
@@ -986,7 +1095,7 @@ export function createMastraTurnOwner(
             (text) => tokenizer.countTokens(text),
           );
           const preparedRequest: AgentAuditRequest = {
-            ...auditRequest,
+            ...requestToFinalize,
             systemCacheSegments:
               finalized.transport.systemCacheSegments ?? null,
             systemVolatileTail: finalized.transport.systemVolatileTail ?? null,
@@ -998,6 +1107,57 @@ export function createMastraTurnOwner(
             cacheDowngradeReason: finalized.cacheDowngradeReason ?? null,
           });
           return preparedRequest;
+        },
+        observeResponse: (response) => {
+          const responseText = response.blocks
+            .filter((block) => block.type === "text")
+            .map((block) => block.content)
+            .join("\n");
+          finalText += responseText;
+
+          const toolUses =
+            response.stopReason === "tool_use"
+              ? response.blocks.filter((block) => block.type === "tool_use")
+              : [];
+          loopState = recordToolUsesForResponse(
+            loopState,
+            response.stopReason,
+            toolUses.map((block) => block.name),
+          );
+          if (!loopState.limitMessageInserted) {
+            toolCallRecords.push(
+              ...toolUses.map((block) => ({
+                name: block.name,
+                params: block.input,
+                resultSummary: "",
+                tokensUsed: 0,
+              })),
+            );
+          }
+
+          if (response.inputTokens != null)
+            tokensIn = (tokensIn ?? 0) + response.inputTokens;
+          if (response.outputTokens != null)
+            tokensOut = (tokensOut ?? 0) + response.outputTokens;
+          if (response.cost != null) cost = (cost ?? 0) + response.cost;
+          for (const citation of response.citations ?? []) {
+            if (!citations.some((item) => item.url === citation.url))
+              citations.push(citation);
+          }
+          finalThinkingBlocks = response.blocks.flatMap((block) =>
+            block.type === "thinking" &&
+            typeof block.signature === "string" &&
+            block.signature.length > 0
+              ? [{ thinking: block.content, signature: block.signature }]
+              : [],
+          );
+        },
+        // T connects this callback; without that wrapper, token limits are not end-to-end.
+        onToolResult: ({ tokens }) => {
+          if (!Number.isSafeInteger(tokens) || tokens < 0) {
+            throw new Error("MASTRA_AGENT_TOOL_RESULT_TOKENS_INVALID");
+          }
+          loopState = recordToolResultTokens(loopState, tokens);
         },
         signal: turn.controller.signal,
       });
@@ -1018,13 +1178,40 @@ export function createMastraTurnOwner(
         turnId: turn.turnId,
         executionId: handle.executionId,
         response,
+        loopResult: makeLoopResult(),
       };
     } catch (error) {
       const overflow = findContextWindowExceeded(error);
+      const loopStopped =
+        findAgentLoopStopped(error) ||
+        (overflow !== null &&
+          turn.userStop &&
+          turn.handle !== null &&
+          turn.response !== null);
+      if (loopStopped && turn.forcedCause === null) {
+        const { handle, response } = turn;
+        if (handle === null || response === null) throw endError(turn, error);
+        loopState = markAgentLoopAborted(loopState);
+        if (sendTerminalProgress({ kind: "stopped", reason: "user-stop" })) {
+          return {
+            status: "completed",
+            turnId: turn.turnId,
+            executionId: handle.executionId,
+            response,
+            loopResult: makeLoopResult("aborted"),
+          };
+        }
+      }
       // A Stop wins over an overflow found in the same send's `prepareSend`
       // (it runs before `audit.begin`, so the runtime has not observed the
-      // stop yet): the stop is what the caller is told.
-      if (overflow && turn.forcedCause === null && turn.userStop) {
+      // stop yet): it keeps the pre-first-send cancellation, or aggregates a
+      // loop that already has a completed response above.
+      if (
+        overflow &&
+        turn.forcedCause === null &&
+        turn.userStop &&
+        (turn.handle === null || turn.response === null)
+      ) {
         turn.cancelObserved = true;
       }
       if (overflow && turn.forcedCause === null && !turn.cancelObserved) {
@@ -1033,12 +1220,16 @@ export function createMastraTurnOwner(
           request.loop.contextWindow,
           overflow.overflowTokens,
         );
-        progress.send({
-          kind: "context-overflow",
-          usage,
-          overflowTokens: overflow.overflowTokens,
-          cacheDowngradeReason: overflow.cacheDowngradeReason,
-        });
+        if (
+          !sendTerminalProgress({
+            kind: "context-overflow",
+            usage,
+            overflowTokens: overflow.overflowTokens,
+            cacheDowngradeReason: overflow.cacheDowngradeReason,
+          })
+        ) {
+          throw endError(turn, error);
+        }
         return {
           status: "context-window-exceeded",
           turnId: turn.turnId,
