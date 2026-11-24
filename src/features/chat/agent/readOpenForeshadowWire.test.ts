@@ -22,6 +22,7 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
 
 import {
   listOpenForeshadowsForContext,
+  readForeshadowListWithLabelsWire,
   readOpenForeshadowWire,
 } from "@/features/foreshadow/api";
 import { foreshadowsForListFromWire } from "../../../../electron/shared/readDomain/features/foreshadow/readRows.js";
@@ -121,10 +122,10 @@ describe("readOpenForeshadowWire", () => {
       expect(wire.setups[0]).toHaveProperty("sceneId");
     });
 
-    it("includeSettled は同 project の未放棄全件を foreshadow_list_with_labels 形式で返す", async () => {
+    it("settled-list wire は同 project の未放棄全件を返す", async () => {
       await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
       legacyReadInvokeBridge.reset();
-      const wire = (await readOpenForeshadowWire("p-main", true)) as Wire;
+      const wire = (await readForeshadowListWithLabelsWire("p-main")) as Wire;
       expect(wire.foreshadows.map((row) => row.id)).toEqual([
         "fs-1",
         "fs-2",
@@ -146,7 +147,7 @@ describe("readOpenForeshadowWire", () => {
 
     it("the Native and Drizzle settled wires produce the same list from the existing seed", async () => {
       await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
-      const drizzle = await readOpenForeshadowWire("p-main", true);
+      const drizzle = await readForeshadowListWithLabelsWire("p-main");
       const drizzleRows = foreshadowsForListFromWire(drizzle);
       expect(drizzleRows.map((row) => row.id)).toEqual([
         "fs-1",
@@ -168,7 +169,7 @@ describe("readOpenForeshadowWire", () => {
           "foreshadow_list_with_labels",
           () => native,
         );
-        const wire = await readOpenForeshadowWire("p-main", true);
+        const wire = await readForeshadowListWithLabelsWire("p-main");
         expect(wire).toBe(native);
         expect(
           legacyReadInvokeBridge.calls("foreshadow_list_with_labels"),

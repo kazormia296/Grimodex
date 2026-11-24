@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   mockInvoke,
   mockReadOpenForeshadowWire,
+  mockReadForeshadowListWithLabelsWire,
   mockTreeProjectId,
   mockAgentCreateForeshadow,
   mockAgentUpdateForeshadow,
@@ -23,6 +24,7 @@ const {
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockReadOpenForeshadowWire: vi.fn(),
+  mockReadForeshadowListWithLabelsWire: vi.fn(),
   mockTreeProjectId: vi.fn<() => string | null>(),
   mockAgentCreateForeshadow: vi.fn(),
   mockAgentUpdateForeshadow: vi.fn(),
@@ -92,6 +94,7 @@ vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
 vi.mock("@/features/foreshadow/api", () => ({
   readOpenForeshadowWire: mockReadOpenForeshadowWire,
+  readForeshadowListWithLabelsWire: mockReadForeshadowListWithLabelsWire,
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({
@@ -317,6 +320,7 @@ describe("executeTool — Phase 3 dispatch", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     mockReadOpenForeshadowWire.mockReset();
+    mockReadForeshadowListWithLabelsWire.mockReset();
     mockTreeProjectId.mockReset();
   });
 
@@ -361,9 +365,9 @@ describe("executeTool — Phase 3 dispatch", () => {
     expect(mockReadOpenForeshadowWire).toHaveBeenCalledWith("p1");
   });
 
-  it("list_open_foreshadows passes includeSettled through the legacy executor", async () => {
+  it("list_open_foreshadows uses the settled-list port for includeSettled", async () => {
     mockTreeProjectId.mockReturnValue("p1");
-    mockReadOpenForeshadowWire.mockResolvedValue({
+    mockReadForeshadowListWithLabelsWire.mockResolvedValue({
       foreshadows: [
         {
           id: "open",
@@ -415,7 +419,8 @@ describe("executeTool — Phase 3 dispatch", () => {
       },
     ]);
     expect(result.summary).toBe("2 foreshadowing items (1 settled)");
-    expect(mockReadOpenForeshadowWire).toHaveBeenCalledWith("p1", true);
+    expect(mockReadForeshadowListWithLabelsWire).toHaveBeenCalledWith("p1");
+    expect(mockReadOpenForeshadowWire).not.toHaveBeenCalled();
   });
 
   it("list_open_foreshadows returns empty when no project is active", async () => {

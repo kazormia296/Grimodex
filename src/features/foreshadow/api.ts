@@ -423,8 +423,8 @@ export interface SceneForeshadowInfo {
 }
 
 /**
- * 未回収伏線を読む wire（`{foreshadows, setups}`）。MP-4b PR-5b：read 専用 module（共有 core）が
- * この wire から tool の結果を組むので、ここは「wire を取る」だけ（組み立てはしない）。
+ * 未回収伏線を読む wire（`{foreshadows, setups}`）。共有 core がこの wire から tool の結果を組むので、
+ * ここは「wire を取る」だけ（組み立てはしない）。
  *
  * - Native（Tauri / Electron）：`foreshadow_list_open_for_context` を `{ projectId }` だけで 1 回 invoke し、
  *   戻りをそのまま返す（snake_case・真偽は 0/1・時刻は epoch ms。secret 値では絞らない）。
@@ -434,44 +434,9 @@ export interface SceneForeshadowInfo {
  */
 export async function readOpenForeshadowWire(
   projectId: string,
-  includeSettled = false,
 ): Promise<unknown> {
   if (isTauriRuntime()) {
-    if (includeSettled === true) {
-      return invoke("foreshadow_list_with_labels", { projectId });
-    }
     return invoke("foreshadow_list_open_for_context", { projectId });
-  }
-
-  if (includeSettled === true) {
-    const rows = await db
-      .select()
-      .from(foreshadows)
-      .where(
-        and(
-          eq(foreshadows.projectId, projectId),
-          eq(foreshadows.abandoned, false),
-        ),
-      );
-    if (rows.length === 0) return { foreshadows: [], setups: [] };
-
-    const setups = await db
-      .select({
-        foreshadowId: foreshadowSetups.foreshadowId,
-        sceneId: foreshadowSetups.sceneId,
-        isOrphan: foreshadowSetups.isOrphan,
-        strength: foreshadowSetups.strength,
-        aiStrength: foreshadowSetups.aiStrength,
-        aiReasoning: foreshadowSetups.aiReasoning,
-      })
-      .from(foreshadowSetups)
-      .where(
-        inArray(
-          foreshadowSetups.foreshadowId,
-          rows.map((r) => r.id),
-        ),
-      );
-    return { foreshadows: rows, setups };
   }
 
   const rows = await db
@@ -509,6 +474,44 @@ export async function readOpenForeshadowWire(
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, ids));
 
+  return { foreshadows: rows, setups };
+}
+
+/** 回収済みを含む全件の伏線 wire（`{foreshadows, setups}`）。共有 core が tool の結果を組み立てる。 */
+export async function readForeshadowListWithLabelsWire(
+  projectId: string,
+): Promise<unknown> {
+  if (isTauriRuntime()) {
+    return invoke("foreshadow_list_with_labels", { projectId });
+  }
+
+  const rows = await db
+    .select()
+    .from(foreshadows)
+    .where(
+      and(
+        eq(foreshadows.projectId, projectId),
+        eq(foreshadows.abandoned, false),
+      ),
+    );
+  if (rows.length === 0) return { foreshadows: [], setups: [] };
+
+  const setups = await db
+    .select({
+      foreshadowId: foreshadowSetups.foreshadowId,
+      sceneId: foreshadowSetups.sceneId,
+      isOrphan: foreshadowSetups.isOrphan,
+      strength: foreshadowSetups.strength,
+      aiStrength: foreshadowSetups.aiStrength,
+      aiReasoning: foreshadowSetups.aiReasoning,
+    })
+    .from(foreshadowSetups)
+    .where(
+      inArray(
+        foreshadowSetups.foreshadowId,
+        rows.map((r) => r.id),
+      ),
+    );
   return { foreshadows: rows, setups };
 }
 

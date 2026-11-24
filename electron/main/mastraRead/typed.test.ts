@@ -38,7 +38,7 @@ function backendWith(overrides: Record<string, unknown> = {}) {
 
 afterEach(() => vi.useRealTimers());
 
-describe("the four typed reads call their own Native method", () => {
+describe("the five typed reads call their own Native method", () => {
   it("fts_search: project, query, scope and limit in Native's order", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
@@ -77,20 +77,21 @@ describe("the four typed reads call their own Native method", () => {
     );
   });
 
-  it("foreshadow_list_open_for_context takes the project only", async () => {
+  it("foreshadowOpen always calls foreshadow_list_open_for_context", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
+    const extraArgs = { projectId: "p", includeSettled: true };
     await reads.foreshadowOpen({ projectId: "p" });
-    await reads.foreshadowOpen({ projectId: "p", includeSettled: false });
+    await reads.foreshadowOpen(extraArgs);
     expect(methods.foreshadowListOpenForContext).toHaveBeenCalledWith("p");
     expect(methods.foreshadowListOpenForContext).toHaveBeenCalledTimes(2);
     expect(methods.foreshadowListWithLabels).not.toHaveBeenCalled();
   });
 
-  it("includeSettled selects the existing foreshadow_list_with_labels read", async () => {
+  it("foreshadowListWithLabels calls foreshadow_list_with_labels with the project", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
-    await reads.foreshadowOpen({ projectId: "p", includeSettled: true });
+    await reads.foreshadowListWithLabels({ projectId: "p" });
     expect(methods.foreshadowListWithLabels).toHaveBeenCalledWith("p");
     expect(methods.foreshadowListOpenForContext).not.toHaveBeenCalled();
   });
@@ -122,7 +123,7 @@ describe("a read that cannot be made safely is not sent (fail closed)", () => {
     expect(methods.ftsSearch).not.toHaveBeenCalled();
   });
 
-  it("an empty project id is refused for all four", async () => {
+  it("an empty project id is refused for all five", async () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
     for (const call of [
@@ -130,6 +131,7 @@ describe("a read that cannot be made safely is not sent (fail closed)", () => {
       () => reads.codexSemantic({ projectId: " ", query: "q", limit: 1 }),
       () => reads.eventsSemantic({ projectId: "", query: "q", limit: 1 }),
       () => reads.foreshadowOpen({ projectId: "" }),
+      () => reads.foreshadowListWithLabels({ projectId: "" }),
     ]) {
       await expect(call()).rejects.toMatchObject({ code: "argument" });
     }

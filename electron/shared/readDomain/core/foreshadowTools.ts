@@ -26,11 +26,10 @@ import type { CoreToolResult } from "./toolResult.js";
  */
 
 /**
- * The open foreshadows of the project. The list is fetched by `native.foreshadowOpen`
- * (Native's `foreshadow_list_open_for_context`, which filters to unpaid,
- * non-abandoned rows; the renderer's in-browser branch does the same) and built
- * here from its wire. The wire has no secret column, so this layer forwards
- * every row returned by the read.
+ * The foreshadows of the project are fetched by `native.foreshadowOpen` for
+ * open rows or `native.foreshadowListWithLabels` when settled rows are requested,
+ * then built here from their wires. The wires have no secret column, so this
+ * layer forwards every row returned by the read.
  */
 export async function listOpenForeshadows(
   ctx: CoreReadContext,
@@ -45,7 +44,7 @@ export async function listOpenForeshadows(
   const projectId = requireCoreProjectId(ctx);
   if (params["includeSettled"] === true) {
     const rows = foreshadowsForListFromWire(
-      await ctx.native.foreshadowOpen({ projectId, includeSettled: true }),
+      await ctx.native.foreshadowListWithLabels({ projectId }),
     );
     const content = rows.map(
       ({ id, title, intent, loadBearing, setupCount, settled }) => {
