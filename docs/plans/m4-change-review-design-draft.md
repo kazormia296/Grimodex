@@ -72,6 +72,15 @@ c7 は §2 の線引きを「c7 側の実装と食い違わない」と回答し
 4. renderer：`ChangeReviewItem` を受け取る live 経路を `ChangeReview.tsx` に足す（見本の経路は残す。印の出し分けは c7 の設計に合わせる）。**UI の実装は Claude が持つ**（ユーザー 11-24、c7 経由の伝聞）。
 5. 公開の時に旗を開ける（別の明示の指示）。
 
+### 5.1 段 2 で分かった制約（実装済み `read_nir1_change_review` から）
+
+- 既存の typed revision の reader は、revision の source token を live の source と照合する。**前の承認済み revision の元の Codex の項目が変わると、前の revision は
+  「古い」として読めなくなる**（`revision-not-current` とは別の理由。Codex の報告）。このため、DB 経由では `content-changed`（token が変わった object）に到達できない。
+  変更レビューが一番見せたい場面（承認した後に元が変わった）を、今の reader では出せない。
+- 対応の案（技術判断）：前の revision を、live の source と照合しない**履歴の reader**で読む（承認済みの payload は不変で、比べるのは「承認した時点の姿」と「今の提案」）。
+  新しい reader は読み取りだけで、保存は変えない。Freshness は別に付ける。この reader の足し方（既存の core に引数を足すか、別の関数か）は、次の段で決める。
+- 「直前」の特定（`find_previous_approved_typed_revision_id`）は、project・typed lane・承認済み・時系列で決定的（実装・試験済み）。
+
 ## 6. ユーザーに伺うこと（束ねて）
 
 1. 項目ごとの適用・却下を最初の版に入れるか（新しい契約＝revision の分割、または Decision の粒度の拡張が要る）。推奨：入れない（revision 単位で始める）。
