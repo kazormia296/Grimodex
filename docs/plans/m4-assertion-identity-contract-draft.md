@@ -55,6 +55,11 @@
 - **送る中身**：同じ domain の既存の手動抽出と同じ request（同じ provider・同じ単位）を使う。新しいのは「きっかけ」だけ。
   送信先は増やさず、抽出用の provider が未設定なら何もしない。「変わった範囲だけ」の payload を新設する場合は、既存の抽出の単位を確かめて合わせる。
 - **秘匿**：守る印は Codex の hidden だけ（hidden の読みはボタンでも送らない、#998）。先の版にあった「年表の秘匿」は CSR/1 で廃止方針に変わったため外す（23 に最新を確かめる）。
+- **送る対象の絞り込み（2026-11-24 にユーザーが「それでいきましょう」と確認）**：きっかけの後に AI へ送るのは、保存済みの Build Action（ADR 005 の Semantic Build Graph、
+  `evaluator.rs` の `evaluate_edge` が決め、`publish_runtime.rs` が辺と Consumer の state に保存する）が **`rebuild-required`** の項目だけ。
+  `revalidate-exact`・`reanchor-candidate`・`resolve-only`・`recompile-only`・`refresh-available`・`none`・`manual` は AI へ送らない（決定的な再確認・再計算か、作者の手動の入口）。
+  `rebuild-required` は、token も digest も合わず Read Set が Source と重なり、安い回復の道が無い場合だけ付く（`evaluator.rs:404-418`）。
+  これで「内容が前回と同じなら送らない」の条件は、Build Action の判定に含まれる。同じ判定は ADR 005 の「伝播の禁止」（自動の撤回・merge・Apply をしない）とも矛盾しない。
 - **きっかけ**：作者による本文の編集だけ。変更レビューの適用・取り込み・スナップショットの復元で付いた古い印では送らない（連鎖と一斉送信の防止）。
 - **上限（起点の提案。実測の前の値）**：
   - 場面の内容 token が前回の送信時と同じなら送らない（必須）。
