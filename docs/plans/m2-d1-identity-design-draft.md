@@ -56,11 +56,15 @@
 - Decision は bundle 単位のまま。semantic diff の各項目は「どの revision の、どの object」を指し、Decision は revision の Decision を継承する。
 - 項目ごとの Decision は M4 の変更レビューの画面の設計で決める（M2-D1 では足さない）。
 
-### 2.6 Structure Health の規則（最初の版）
+### 2.6 Structure Health の規則（2026-11-24 に改訂）
 
-- 同じ `source_object_identity` が 1 つの revision の roster に 2 回出たら異常。
-- Relation の端点（`from_entity_id`／`to_entity_id`）が同じ revision の Entity に無ければ異常。
-- いずれも既存の検証と重ならないかを実装前に確かめる。
+- revision の内側の規則は既存の検証が守っているので、新しく足さない：
+  - 同じ Entity／Relation の重複：bundle の検証（`narrative_nir1.rs` の「duplicate entity／relation」）と、roster の `NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL`（`nir1_entity_relation_index.rs:551`）。
+  - Relation の端点が同じ bundle に無い：`narrative_nir1.rs` の「endpoint is not present in the same project bundle」。
+- 新しく要るのは revision をまたぐ規則だけで、M4 の semantic diff の段（identity を使う側）に置く：
+  - 前の reviewed revision にあった object が、Codex に Entry がまだあるのに次の revision から消えた → 「説明のない消失」として変更レビューに出す。
+  - Entry が Codex から無くなった（削除・統合）→ §2.2 のとおり「同一性が失われた」として出す。
+- したがって M2-D1 の Structure Health は、コードの追加なし（既存の検証を、この wave の規則として registry の declaration に参照する記述を足すだけ。schema 変更は伺う後）。
 
 ## 3. 次に確かめる／伺うこと
 
