@@ -1,6 +1,7 @@
 # MP-4（tool 基盤、loop 規則、read tool）の設計と判断の記録
 
 - 状態：**起案（draft）・改訂 2**（2026-11-21 午後。ユーザーの回答 1〜3 と、Opus の独立レビュー〔precheck〕の指摘を反映。第 10 節）。第 8.1 節の「確認要」（Q4・Q5 と条件つき）が未了の間は、該当する PR の編集に入らない（第 7 節）。
+  **2026-11-24 にユーザーが Q4・Q5・C-6・U-8・U-9 などに回答した。回答の内容と、各回答が開く PR は DR-MP4-52 にある（第 8.1 節の表は回答前の記録）。**
   判断を変える場合は、その PR でこの文書を改訂する。
 - 親の文書：[Mastra 移行の実装計画](mastra-migration-plan.md)の第 6 節 MP-4、第 7 節 U-4・U-7、第 9 節 R 表。
   [MP-3 の判断](mastra-mp3-decisions.md)（特に DR-MP3-3、24、27、28）、[脅威モデル](mastra-migration-threat-model.md)（T1〜T13、D1〜D16、W1〜W11。T13・D16・W11 は回答 3 で足した）。
@@ -1568,6 +1569,8 @@ PR-0 の試験を実際に走らせて確かめた。意図しない挙動に見
 
 ### 8.1 確認要（委任の外。残るもの）
 
+**2026-11-24 の回答（DR-MP4-52）：Q4・Q5・C-6・U-8・U-9 は回答済み。** 下の表は回答前の記録で、現在の状態は DR-MP4-52 に従う。MP-13 の C-19〜C-24 は確認不要の「確かめる点」のまま。
+
 | ID | 内容 | 推奨 | 止まる点 |
 |---|---|---|---|
 | **Q4** | **4c-1 の wire の契約一式**（C-2＋C-3(a)＋C-13＋C-6(1)。回答 2 の「設計がそろってから 1 回にまとめて」）。含むもの：(a) tools の wire の形、(b) 予算（`tokenBudget`・`maxToolCalls`）と制御 message 3 本・UI 言語、(c) step ごとの payload 確定の入力（窓・出力予約・fallback の system）、(d) 結果と進捗の wire（`toolCallRecords`、`stoppedReason`、累計 usage、`citations`、`finalThinkingBlocks`、連結 text、`onProgress`、send ごとの accepted／finalize の通知、Stop 時の途中 text）、(e) C-6(1) を採るなら `fullyInjectedIds`。main が値を検査するときの値域は既存の関数・定数から導き、導けない欄だけ追加で伺う | (a) 名前の list だけ（定義は main が持つ。DR-MP4-30）、(b)(c) renderer が計算した値を渡す（現行の関数を共有。新設・変更しない）、(d) 結果と進捗の wire を新設、(e) 含める（契約を 2 回に保つ） | 4c-1 |
@@ -1864,3 +1867,20 @@ DR-MP4-49d の「直していない」はこの決定と実装で解消した。
 M4 の定義名表は20本から21本になる。core executor の4名前表は合計20本のままで、`CODEX_ENTRY_TOOL_NAMES` は5つ目の専用表として `get_codex_entry` を持つ。5表は互いに素で、合計は21本。tool の実装・結果・executor 登録は10cで変更しない。
 
 Q4 のユーザー決定（2026-11-24）は4c-1で実装する。C-6 は渡し済み ID を wire に含める。10c は定義の移設だけを行う。
+
+### DR-MP4-52 ユーザーの回答の記録（Q4・C-6・U-8・Q5・U-9・`localeCompare`。2026-11-24）
+
+ユーザーは 2026-11-24 に、実装側の推奨どおり次のとおり回答した。Q-C6-1（直す）は別の小さな PR で実装し、DR-MP4-50 に記録した。この回答は新しい送信先・保存範囲・閾値の変更を含まない。
+
+| ID | 回答 | 開く PR と、残る手続き |
+|---|---|---|
+| **Q4** | 推奨案で進める。(a) tools の wire は名前の list だけ（定義は main が持つ。DR-MP4-30）、(b)(c) 予算・上限・制御 message 3 本・UI 言語・窓・出力予約・fallback の system は renderer が計算した値を渡し、現行の関数を共有する（新設・変更しない）、(d) 結果と進捗の wire を新設する、(e) C-6 の `fullyInjectedIds` を含める。main が値を検査する値域は既存の関数・定数から導く。導けない欄だけ、追加で伺う | 4c-1 の wire の PR と、進捗を運ぶ新しい typed の main→renderer の event channel（`ipcContract.ts`）。契約の変更は 2 回に保つ（第 1.3 節の回答 2） |
+| **C-6** | 渡し済み ID（`fullyInjectedIds`）を wire に含め、同じ本文を AI に重ねて返さない。guard なしで全文を返す案と、main の集合から外す案は採らない | Q4 (e) と同じ PR。MP-13 の C-6 の欄は、この回答で解消した |
+| **U-8** | UI tool（help 2 本を含む 8 本）は、run の最中に main から renderer へ問い合わせる方式にする。renderer が閉じたときは、有限の時間で終わらせる。loop を一度終えて再開する形は採らない | MP-5。`ports.ts` を触りうるので、着手の前に grimodex-23 へ知らせる |
+| **Q5** | legacy より弱い、開始後の時間差（第 8.1 節の (a)〜(f)）を受容する。緩和（turn 開始前の flush、watcher による cancel、send の直前の main の policy 判定。DR-MP4-26）は入れ、特性試験に期待を明記する | **脅威モデルの確定文書（`mastra-migration-threat-model.md`）への追記は、この回答では書かない。4c-2 の PR のときに、改めてユーザーに確認する** |
+| **U-9** | `requiresUserConfirmation` の確認を早めない（前倒ししない） | MP-6 |
+| **`localeCompare`（K-4）** | 現状維持。`buildReadingOrder` の `localeCompare` は変えない | main と renderer の並びが違いうる場合は、locale の差の試験で固定して記録する |
+
+**この回答で開くもの。** 第 7 節の「Q4・Q5 が未了の間は、該当する PR の編集に入らない」は、Q4・C-6 については解けた（4c-1 の wire・規則・adapter の PR は編集に入れる）。Q5 は、緩和と特性試験の編集に入れる。脅威モデルの確定文書への追記だけは、4c-2 のときの確認まで書かない。
+
+**変えないもの。** 旗 L（main が core をまだ呼ばない）は閉じたまま。MP-13 の C-19〜C-24 は確認の要らない「確かめる点」のまま。4b・4c の PR の分け方（第 5 節）は変えない。
