@@ -533,7 +533,7 @@ pub struct ForeshadowCreatePayload {
     payoff_confirmed: bool,
     #[serde(default)]
     abandoned: bool,
-    #[serde(default = "default_secret")]
+    #[serde(default)]
     secret: bool,
     #[serde(default)]
     load_bearing: Option<String>,
@@ -751,10 +751,6 @@ fn validate_load_bearing(value: Option<&str>) -> anyhow::Result<()> {
             other
         )),
     }
-}
-
-fn default_secret() -> bool {
-    true
 }
 
 pub(crate) fn record_manual_foreshadow_fields(
@@ -4403,6 +4399,39 @@ mod tests {
         };
         let row = create(&db, payload).unwrap();
         assert_eq!(row["load_bearing"], Value::String("critical".to_string()));
+        assert_eq!(row["secret"], Value::Number(1.into()));
+    }
+
+    #[test]
+    fn create_defaults_missing_secret_to_false() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = ForeshadowCreatePayload {
+            context: test_write_context(),
+            id: None,
+            project_id,
+            title: "Visible by default".to_string(),
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: false,
+            abandoned: false,
+            secret: true,
+            load_bearing: None,
+            codex_link_dirty_at: None,
+        };
+        let mut value = serde_json::to_value(payload).expect("serialize create payload");
+        value
+            .as_object_mut()
+            .expect("payload object")
+            .remove("secret");
+        let payload: ForeshadowCreatePayload =
+            serde_json::from_value(value).expect("missing secret uses false default");
+
+        let row = create(&db, payload).expect("create with omitted secret");
+        assert_eq!(row["secret"], Value::Number(0.into()));
     }
 
     #[test]

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::db;
 use crate::server::{internal_err, GrimodexServer};
 
+const SECRET_ERROR: &str =
+    "secret is no longer supported: foreshadows cannot be hidden from the AI";
+
 /// Allowed `load_bearing` values, identical to the canonical Tauri command and
 /// `deriveLabel.ts`. An unknown value would silently degrade in the app, so it
 /// is rejected at the MCP boundary. `None` (omitted) is allowed.
@@ -72,9 +75,10 @@ pub struct CreateForeshadowParams {
     pub notes: Option<String>,
     /// Load-bearing weight: "critical" | "supporting" | "optional" (optional).
     pub load_bearing: Option<String>,
-    /// Whether the item is secret (hidden from the open/unresolved list, like a
-    /// concealed plant). Defaults to true to match the app; pass false to make
-    /// it immediately visible via list_open_foreshadows.
+    /// Retired compatibility input. `true` is rejected; `false` and omission
+    /// create a visible item. This field is not published in the JSON schema.
+    #[serde(default)]
+    #[schemars(skip)]
     pub secret: Option<bool>,
 }
 
@@ -82,7 +86,6 @@ pub struct CreateForeshadowParams {
 struct CreateForeshadowResult {
     id: String,
     version: i64,
-    secret: bool,
     message: String,
 }
 
@@ -90,6 +93,9 @@ pub async fn create_foreshadow(
     server: &GrimodexServer,
     params: CreateForeshadowParams,
 ) -> Result<CallToolResult, ErrorData> {
+    if params.secret == Some(true) {
+        return Err(ErrorData::invalid_params(SECRET_ERROR, None));
+    }
     if server.readonly {
         return Err(ErrorData::invalid_params(
             "Server is running in readonly mode; write tools are disabled",
@@ -123,7 +129,6 @@ pub async fn create_foreshadow(
         .transpose()
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
     validate_load_bearing(params.load_bearing.as_deref())?;
-    let secret = params.secret.unwrap_or(true);
 
     // Tracked write: one tx = entity row + undo_journal(surface='mcp') +
     // change_event(domain 'foreshadow'), closing the last untracked AI write.
@@ -145,7 +150,7 @@ pub async fn create_foreshadow(
             intent,
             notes,
             load_bearing: params.load_bearing,
-            secret,
+            secret: false,
         },
         "mcp",
     )
@@ -160,7 +165,6 @@ pub async fn create_foreshadow(
         version: write["version"]
             .as_i64()
             .ok_or_else(|| internal_err("Foreshadow writer returned no version"))?,
-        secret,
         message: format!("Foreshadow '{title}' created with id {id}"),
     };
     let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
@@ -189,7 +193,10 @@ pub struct UpdateForeshadowParams {
     pub payoff_confirmed: Option<bool>,
     /// Mark the item as abandoned (optional).
     pub abandoned: Option<bool>,
-    /// Toggle the secret flag (optional).
+    /// Retired compatibility input. Any provided value is rejected and this
+    /// field is not published in the JSON schema.
+    #[serde(default)]
+    #[schemars(skip)]
     pub secret: Option<bool>,
 }
 
@@ -205,6 +212,9 @@ pub async fn update_foreshadow(
     server: &GrimodexServer,
     params: UpdateForeshadowParams,
 ) -> Result<CallToolResult, ErrorData> {
+    if params.secret.is_some() {
+        return Err(ErrorData::invalid_params(SECRET_ERROR, None));
+    }
     if server.readonly {
         return Err(ErrorData::invalid_params(
             "Server is running in readonly mode; write tools are disabled",
@@ -286,7 +296,7 @@ pub async fn update_foreshadow(
             load_bearing: params.load_bearing,
             payoff_confirmed: params.payoff_confirmed,
             abandoned: params.abandoned,
-            secret: params.secret,
+            secret: None,
         },
         request_id,
         "mcp",
@@ -313,6 +323,20 @@ mod tests {
     use crate::db::tests::make_simple_db;
     use crate::server::GrimodexServer;
     use rusqlite::params;
+
+    #[test]
+    fn secret_compatibility_inputs_are_hidden_from_param_schemas() {
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(CreateForeshadowParams)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(UpdateForeshadowParams)).unwrap(),
+        ] {
+            let properties = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .expect("parameter schema properties");
+            assert!(!properties.contains_key("secret"));
+        }
+    }
 
     #[test]
     fn validate_load_bearing_accepts_known_and_none() {
@@ -399,6 +423,10 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM foreshadows", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+        let secret: i64 = conn
+            .query_row("SELECT secret FROM foreshadows", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secret, 0);
         // Tracked: change_event with the MCP session, journal with surface=mcp.
         let (domain, op_type, session_id): (String, String, String) = conn
             .query_row(
@@ -414,6 +442,57 @@ mod tests {
             .query_row("SELECT surface FROM undo_journal", [], |r| r.get(0))
             .unwrap();
         assert_eq!(surface, "mcp");
+    }
+
+    #[tokio::test]
+    async fn create_foreshadow_defaults_secret_to_false() {
+        let server = make_writable_server();
+        create_foreshadow(
+            &server,
+            CreateForeshadowParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                title: "Visible by default".to_string(),
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                secret: None,
+            },
+        )
+        .await
+        .expect("secret-free create succeeds");
+
+        let conn = server.conn.lock().unwrap();
+        let secret: i64 = conn
+            .query_row("SELECT secret FROM foreshadows", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secret, 0);
+    }
+
+    #[tokio::test]
+    async fn create_foreshadow_rejects_secret_true_without_writes() {
+        let server = make_writable_server();
+        let error = create_foreshadow(
+            &server,
+            CreateForeshadowParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                title: "Rejected secret".to_string(),
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                secret: Some(true),
+            },
+        )
+        .await
+        .expect_err("MCP cannot create a secret foreshadow");
+        assert_eq!(error.message, SECRET_ERROR);
+
+        let conn = server.conn.lock().unwrap();
+        for table in ["foreshadows", "change_events", "undo_journal"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} must not be written");
+        }
     }
 
     #[tokio::test]
@@ -520,5 +599,51 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM change_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn update_foreshadow_rejects_secret_only_before_empty_patch_validation() {
+        for secret in [Some(true), Some(false)] {
+            let server = make_writable_server();
+            seed_foreshadow(&server, "f-secret", "Original");
+
+            let error = update_foreshadow(
+                &server,
+                UpdateForeshadowParams {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    id: "f-secret".to_string(),
+                    base_version: 0,
+                    title: None,
+                    intent: None,
+                    notes: None,
+                    load_bearing: None,
+                    payoff_confirmed: None,
+                    abandoned: None,
+                    secret,
+                },
+            )
+            .await
+            .expect_err("MCP cannot update the retired secret field");
+            assert_eq!(error.message, SECRET_ERROR);
+
+            let conn = server.conn.lock().unwrap();
+            let (version, secret): (i64, i64) = conn
+                .query_row(
+                    "SELECT version, secret FROM foreshadows WHERE id = 'f-secret'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(version, 0);
+            assert_eq!(secret, 1);
+            let changes: i64 = conn
+                .query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))
+                .unwrap();
+            let journals: i64 = conn
+                .query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(changes, 0);
+            assert_eq!(journals, 0);
+        }
     }
 }
