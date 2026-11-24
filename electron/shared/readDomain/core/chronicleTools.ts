@@ -3,14 +3,10 @@ import type {
   CoreTreeNode,
 } from "../../mastraRead/ports.js";
 import type { EventPrecision } from "../db/schema.js";
-import type {
-  EventRow,
-  SceneEventRow,
-} from "../features/chronicle/eventRows.js";
 import {
-  isEventHiddenFromAi,
-  projectVisibleChronicle,
-} from "../features/chronicle/chronicleSecrecy.js";
+  collectChronicleCandidateCodexIds,
+  dropHiddenCodexFromChronicleInput,
+} from "../features/chronicle/chronicleHiddenCodex.js";
 import {
   deriveChronicleSnapshot,
   pickSnapshotCharacters,
@@ -32,10 +28,9 @@ import type { CoreToolResult } from "./toolResult.js";
 /**
  * The chronicle tools of the shared core (Mastra migration MP-4b, PR-7a, group
  * B6): `list_events`, `get_event_detail`, `get_character_timeline` and
- * `get_chronicle_state`. The order of the awaits, the point at which each tool
- * reads the tree state, the strings and the key order of every result are those
- * of the renderer's executors they were moved from (the PR-0 golden and
- * `toolExecutors.chronicleCharacterization.test.ts` fix them).
+ * `get_chronicle_state`. The renderer migration fixed their read order,
+ * tree-state reads, strings, and result key order. CSR/1 removes the event-
+ * secrecy reads and checks Codex visibility before producing each result.
  *
  * Every tool checks the project first (`requireCoreProjectId`, before it
  * reads anything) and its arguments after it: the renderer answered `No active
@@ -44,14 +39,9 @@ import type { CoreToolResult } from "./toolResult.js";
  * DR-MP4-37. The renderer's thin layer turns the empty-project throw back into
  * its `No active project` result.
  *
- * What the tools may show is the chronicle's own secrecy rule
- * (`isEventHiddenFromAi`: a `secret` event is hidden until the reading
- * position reaches its reveal scene, and a position that is not in the reading
- * order hides it). Codex names are not filtered: a hidden Codex entry's name is
- * returned as it is, in `primaryCharacter`, `location`, `participants`,
- * `character` and the snapshot (DR-MP4-37, an existing asymmetry that is moved
- * and not decided here). The model's `sceneId` of `get_chronicle_state` is also the
- * position of the secrecy check (moved as it is).
+ * Every event is readable. The Codex port removes entries hidden at the
+ * context's current scene. The model's `sceneId` argument selects the
+ * `get_chronicle_state` anchor; it does not affect the hidden-Codex check.
  */
 
 /**
@@ -83,55 +73,6 @@ function result(
   };
 }
 
-/**
- * AI 秘匿: 現在シーン文脈で「hidden」なイベント id 集合を算出（spec §2.5）。
- * The one place of the core that applies the chronicle's secrecy rule
- * (`isEventHiddenFromAi`) to a list of events: `visibleEventIds` (the four tools)
- * is its complement and `search_events` drops its hits by it (DR-MP4-38). A pure
- * function: where the tree state is read, and when, stays with the caller (the
- * four tools read it before the scene-event bridges are awaited, `search_events`
- * after, as the renderer's executors did; the two orders are not interchangeable).
- * `projectVisibleChronicle` (`get_chronicle_state`) is a separate use of the rule.
- */
-export function hiddenEventIds(
-  events: readonly EventRow[],
-  currentSceneId: string,
-  deps: { readingOrder: Map<string, number>; sceneEvents: SceneEventRow[] },
-): Set<string> {
-  return new Set(
-    events
-      .filter((e) => isEventHiddenFromAi(e, currentSceneId, deps))
-      .map((e) => e.id),
-  );
-}
-
-/**
- * AI 秘匿: 現在シーン文脈で「可視」イベント id 集合を算出（spec §2.5）。
- * read ツールには chat の scene 文脈が無いため activeSceneId を現在シーンとする
- * （get_chronicle_state と同じ fallback）。activeSceneId 空 → 現在位置不明として
- * isEventHiddenFromAi 側で fail-closed（secret=true を一律隠す）。
- *
- * The tree state (the nodes, hence the reading order, and the active scene) is
- * read before the scene-event bridges are awaited, in one synchronous step, as
- * the renderer did. The nodes array goes to the reading-order port as it is (the
- * renderer memoizes by its reference) and the answer is copied.
- */
-async function visibleEventIds(
-  ctx: CoreChronicleReadContext,
-  projectId: string,
-  events: EventRow[],
-): Promise<Set<string>> {
-  const state = ctx.getTreeState();
-  const readingOrder = new Map(ctx.chronicle.getReadingOrder(state.nodes));
-  const currentSceneId = state.activeSceneId ?? "";
-  const sceneEvents = await ctx.chronicle.getSceneEvents(projectId);
-  const hidden = hiddenEventIds(events, currentSceneId, {
-    readingOrder,
-    sceneEvents,
-  });
-  return new Set(events.filter((e) => !hidden.has(e.id)).map((e) => e.id));
-}
-
 /** 作中順イベント一覧（kind フィルタ可）。XPROJ=events の reader が project gate。 */
 export async function listEvents(
   ctx: CoreChronicleReadContext,
@@ -144,13 +85,20 @@ export async function listEvents(
   const calendarRow = await ctx.chronicle.getCalendar(projectId);
   const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
   const lang: DateLang = ctx.getUiLanguage();
-  // AI 秘匿: 現在シーンで hidden な secret イベントを除外。
-  const visible = await visibleEventIds(ctx, projectId, events);
-  const shown = events.filter((e) => visible.has(e.id));
   const filtered =
     kind === "birth" || kind === "death" || kind === "generic"
-      ? shown.filter((e) => e.kind === kind)
-      : shown;
+      ? events.filter((e) => e.kind === kind)
+      : events;
+  const ids = [
+    ...new Set(
+      filtered.flatMap((e) =>
+        e.primaryCodexId != null ? [e.primaryCodexId] : [],
+      ),
+    ),
+  ];
+  const hidden = ids.length
+    ? await ctx.chronicle.listHiddenCodexIds(projectId, ids)
+    : new Set<string>();
   const content = {
     events: filtered.map((e) => ({
       id: e.id,
@@ -165,9 +113,10 @@ export async function listEvents(
         e.startGranularity,
         lang,
       ),
-      primaryCharacter: e.primaryCodexId
-        ? (names.get(e.primaryCodexId) ?? null)
-        : null,
+      primaryCharacter:
+        e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
+          ? (names.get(e.primaryCodexId) ?? null)
+          : null,
     })),
   };
   return result(ctx, "list_events", content, `${content.events.length} events`);
@@ -189,10 +138,8 @@ export async function getEventDetail(
     };
 
   const events = await ctx.chronicle.getEvents(projectId);
-  // AI 秘匿: hidden な event は「存在しない」扱い（generic not found・存在 oracle 化を防ぐ）。
-  const visible = await visibleEventIds(ctx, projectId, events);
   const ev = events.find((e) => e.id === eventId);
-  if (!ev || !visible.has(eventId))
+  if (!ev)
     return {
       name: "get_event_detail",
       content: null,
@@ -208,6 +155,18 @@ export async function getEventDetail(
       ctx.chronicle.listRelations(projectId),
       ctx.chronicle.getCalendar(projectId),
     ]);
+  const ids = [
+    ...new Set(
+      [
+        ev.primaryCodexId,
+        ev.locationCodexId,
+        ...participants.map((p) => p.codexEntryId),
+      ].filter((id): id is string => id != null),
+    ),
+  ];
+  const hidden = ids.length
+    ? await ctx.chronicle.listHiddenCodexIds(projectId, ids)
+    : new Set<string>();
   const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
   const lang: DateLang = ctx.getUiLanguage();
   const sceneLinks = allSceneEvents.filter((s) => s.eventId === eventId);
@@ -243,28 +202,27 @@ export async function getEventDetail(
       lang,
     ),
     precision: ev.precision,
-    primaryCharacter: ev.primaryCodexId
-      ? (names.get(ev.primaryCodexId) ?? null)
-      : null,
-    location: ev.locationCodexId
-      ? (names.get(ev.locationCodexId) ?? null)
-      : null,
-    participants: participants.map((p) => ({
-      codexId: p.codexEntryId,
-      name: names.get(p.codexEntryId) ?? null,
-      role: p.role,
-    })),
+    primaryCharacter:
+      ev.primaryCodexId != null && !hidden.has(ev.primaryCodexId)
+        ? (names.get(ev.primaryCodexId) ?? null)
+        : null,
+    location:
+      ev.locationCodexId != null && !hidden.has(ev.locationCodexId)
+        ? (names.get(ev.locationCodexId) ?? null)
+        : null,
+    participants: participants
+      .filter((p) => !hidden.has(p.codexEntryId))
+      .map((p) => ({
+        codexId: p.codexEntryId,
+        name: names.get(p.codexEntryId) ?? null,
+        role: p.role,
+      })),
     scenes: sceneLinks.map((s) => ({
       sceneId: s.sceneId,
       title: titleByScene.get(s.sceneId) ?? null,
     })),
     relations: allRelations
-      .filter(
-        (r) =>
-          (r.causeId === eventId || r.effectId === eventId) &&
-          visible.has(r.causeId) &&
-          visible.has(r.effectId),
-      )
+      .filter((r) => r.causeId === eventId || r.effectId === eventId)
       .map((r) => ({
         cause: titleByEvent.get(r.causeId) ?? null,
         effect: titleByEvent.get(r.effectId) ?? null,
@@ -294,24 +252,29 @@ export async function getCharacterTimeline(
     ctx.chronicle.getCalendar(projectId),
     ctx.chronicle.getCodexNames(projectId),
   ]);
+  const hidden = await ctx.chronicle.listHiddenCodexIds(projectId, [codexId]);
+  if (hidden.has(codexId))
+    return {
+      name: "get_character_timeline",
+      content: null,
+      summary: "Character not found",
+      tokensUsed: 0,
+    };
   const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
-  // AI 秘匿: hidden な secret イベントを除外（秘匿された生年・死亡・経歴の漏洩防止）。
-  const visible = await visibleEventIds(ctx, projectId, events);
-  const visibleEvents = events.filter((e) => visible.has(e.id));
   const participantEventIds = new Set(
     participants
       .filter((p) => p.codexEntryId === codexId)
       .map((p) => p.eventId),
   );
-  const involved = visibleEvents
+  const involved = events
     .filter(
       (e) => e.primaryCodexId === codexId || participantEventIds.has(e.id),
     )
     .sort((a, b) => cmpKeys(a.ordinal, b.ordinal));
 
-  // 誕生時刻（年齢算出基準）。秘匿された birth は基準に含めない。
+  // 誕生時刻（年齢算出基準）。出来事はすべて対象。
   let birthTime: number | null = null;
-  for (const e of visibleEvents)
+  for (const e of events)
     if (
       e.primaryCodexId === codexId &&
       e.kind === "birth" &&
@@ -349,9 +312,8 @@ export async function getChronicleState(
   params: Record<string, unknown>,
 ): Promise<CoreToolResult> {
   const projectId = requireCoreProjectId(ctx);
-  // The model's sceneId wins over the active scene, and it is also the position
-  // of the secrecy check below (moved as it is; DR-MP4-37). The tree state is
-  // read only when no sceneId was given.
+  // The model's sceneId wins over the active scene for the snapshot anchor.
+  // The tree state is read only when no sceneId was given.
   const sceneId =
     String(params["sceneId"] ?? "").trim() || ctx.getTreeState().activeSceneId;
   if (!sceneId)
@@ -393,36 +355,39 @@ export async function getChronicleState(
       precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
     });
   }
-  // AI 秘匿: anchor/pick/derive の前段で hidden な secret イベントを除外（spec §2.4.1）。
-  const vis = projectVisibleChronicle({
+  const ids = collectChronicleCandidateCodexIds({
     events,
-    sceneEvents,
     participants,
-    relations,
-    currentSceneId: sceneId,
-    readingOrder,
+    codexNames: names,
   });
+  const hidden = ids.length
+    ? await ctx.chronicle.listHiddenCodexIds(projectId, ids)
+    : new Set<string>();
+  const input = dropHiddenCodexFromChronicleInput(
+    { events, participants, codexNames: names },
+    hidden,
+  );
   const anchor = resolveSceneAnchor(sceneId, {
-    sceneEvents: vis.sceneEvents,
-    events: vis.events,
+    sceneEvents,
+    events: input.events,
     readingOrder,
     sceneChronicle,
   });
   const characterIds = pickSnapshotCharacters({
     anchor,
-    events: vis.events,
-    participants: vis.participants,
+    events: input.events,
+    participants: input.participants,
   });
   const snapshot = deriveChronicleSnapshot(
     {
       anchor,
-      events: vis.events,
-      participants: vis.participants,
-      relations: vis.relations,
-      sceneEvents: vis.sceneEvents,
+      events: input.events,
+      participants: input.participants,
+      relations,
+      sceneEvents,
       calendar: calendarRow ? calendarFromRow(calendarRow) : null,
       characterIds,
-      codexNames: names,
+      codexNames: input.codexNames,
     },
     ctx.getUiLanguage(),
   );

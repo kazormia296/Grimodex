@@ -4,8 +4,8 @@ import { readingPos, type ReadingOrder } from "./chronicleSecrecy";
 /**
  * The position filter of the Chronicle tool for the chat agent (chat IR S1-B,
  * DR-CHATIR-S1-30): an event that is placed after the Scene being written is
- * not given to the model. It is applied after the secrecy filter
- * (`isEventHiddenFromAi`) and takes the same input shape.
+ * not given to the model. The IR secrecy approximation below is dormant, and
+ * event-secrecy decisions have been retired.
  *
  * The rule (confirmed △7 plan B, plan X):
  *  - an event no Scene is tied to passes (the filter says nothing about it);
@@ -15,11 +15,9 @@ import { readingPos, type ReadingOrder } from "./chronicleSecrecy";
  *  - an event tied only to Scenes outside the reading order is dropped
  *    (fail-closed: its position is unknown);
  *  - when the current Scene is not in the reading order the filter is not
- *    applied and everything passes (plan X; the IR side returns nothing then,
- *    and the secrecy filter has already hidden what it hides).
+ *    applied and everything passes (plan X; the IR side returns nothing then).
  *
- * The reading order is used whatever the project's phase axis is, as the
- * secrecy filter does. This is the opposite boundary of the IR's own rule
+ * The reading order is used whatever the project's phase axis is. This is the opposite boundary of the IR's own rule
  * (Native drops the current Scene and later ones); the asymmetry is by design.
  *
  * Returns `true` when the event may be given to the model.
@@ -56,13 +54,11 @@ export function isEventBeforeOrAtScene(
  * current Scene's own events, and those that span past it, do not pass.
  *
  *  - a tied Scene outside the reading order: position unknown, does not pass;
- *  - the current Scene empty or outside the reading order: does not pass
- *    (the secrecy filter has hidden every secret event then);
+ *  - the current Scene empty or outside the reading order: does not pass;
  *  - a secret event no Scene is tied to: nothing places it at or after the
  *    current Scene, so it passes (an event the IR made always has a tie).
  *
- * It is applied after the secrecy and the position filter and before
- * `slice(limit)`, as (4) is. Returns `true` when the event may be given.
+ * This approximation is dormant. Returns `true` when the event may be given.
  */
 export function passesIrExclusionApproximation(
   event: Pick<EventRow, "id" | "secret">,
