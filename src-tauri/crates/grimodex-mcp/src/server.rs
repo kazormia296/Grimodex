@@ -808,4 +808,28 @@ mod tool_route_tests {
         );
         assert!(ledger_names.contains("select_project"));
     }
+
+    #[test]
+    fn registered_event_write_tools_do_not_publish_secret() {
+        let tools = GrimodexServer::tool_router().list_all();
+        for name in ["create_event", "update_event"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            let properties = tool
+                .input_schema
+                .get("properties")
+                .and_then(|value| value.as_object())
+                .unwrap_or_else(|| panic!("{name} publishes input properties"));
+            assert!(
+                !properties.contains_key("secret"),
+                "{name} must not publish the retired secret input"
+            );
+            assert!(
+                properties.contains_key("reveal_scene_id"),
+                "{name} still publishes the disclosure scene input"
+            );
+        }
+    }
 }

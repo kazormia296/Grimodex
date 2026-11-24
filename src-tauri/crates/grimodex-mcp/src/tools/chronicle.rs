@@ -564,9 +564,11 @@ pub struct CreateEventParams {
     pub start_granularity: Option<String>,
     /// How precise the end date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
     pub end_granularity: Option<String>,
-    /// Stored event flag; it does not exclude the event from MCP Chronicle reads.
+    /// Deprecated: `true` is rejected; `false` is ignored.
+    #[serde(default)]
+    #[schemars(skip)]
     pub secret: Option<bool>,
-    /// Reading-order disclosure anchor scene id (optional override).
+    /// Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI. Omit or pass empty for none.
     pub reveal_scene_id: Option<String>,
     /// Participant codex ids to attach (optional).
     pub participant_codex_ids: Option<Vec<String>>,
@@ -587,6 +589,12 @@ pub async fn create_event(
     server: &GrimodexServer,
     params: CreateEventParams,
 ) -> Result<CallToolResult, ErrorData> {
+    if params.secret == Some(true) {
+        return Err(ErrorData::invalid_params(
+            "secret is no longer supported: events cannot be hidden from the AI",
+            None,
+        ));
+    }
     ensure_write_allowed(server)?;
     let title = crate::sanitize::sanitize_name(&params.title)
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
@@ -630,7 +638,7 @@ pub async fn create_event(
             end_granularity: params.end_granularity,
             precision: None,
             kind: kind.map(str::to_string),
-            secret: params.secret,
+            secret: None,
             reveal_scene_id: params.reveal_scene_id,
             participant_codex_ids: Some(participants),
             scene_ids: Some(scene_ids),
@@ -672,9 +680,11 @@ pub struct UpdateEventParams {
     pub start_granularity: Option<String>,
     /// End date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
     pub end_granularity: Option<String>,
-    /// Stored event flag; it does not exclude the event from MCP Chronicle reads.
+    /// Deprecated: `true` is rejected; `false` is ignored.
+    #[serde(default)]
+    #[schemars(skip)]
     pub secret: Option<bool>,
-    /// Reading-order disclosure anchor scene id. Empty string clears the override.
+    /// Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI. Omit to leave unchanged; pass an empty string to clear.
     pub reveal_scene_id: Option<String>,
 }
 
@@ -682,6 +692,12 @@ pub async fn update_event(
     server: &GrimodexServer,
     params: UpdateEventParams,
 ) -> Result<CallToolResult, ErrorData> {
+    if params.secret == Some(true) {
+        return Err(ErrorData::invalid_params(
+            "secret is no longer supported: events cannot be hidden from the AI",
+            None,
+        ));
+    }
     ensure_write_allowed(server)?;
     let event_id = params.event_id.trim().to_string();
     if event_id.is_empty() {
@@ -742,7 +758,7 @@ pub async fn update_event(
             end_granularity: params.end_granularity,
             precision: None,
             kind: params.kind,
-            secret: params.secret,
+            secret: None,
             reveal_scene_id: params.reveal_scene_id,
         },
         Some(request_id),
@@ -1131,6 +1147,18 @@ mod tests {
         conn.query_row(sql, params![p], |r| r.get(0)).unwrap()
     }
 
+    fn event_write_counts(server: &GrimodexServer) -> (i64, i64, i64) {
+        let conn = server.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM events),
+                    (SELECT COUNT(*) FROM undo_journal),
+                    (SELECT COUNT(*) FROM change_events)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+    }
+
     fn set_secret(server: &GrimodexServer, id: &str) {
         let conn = server.conn.lock().unwrap();
         conn.execute("UPDATE events SET secret = 1 WHERE id = ?1", params![id])
@@ -1252,6 +1280,188 @@ mod tests {
             }))
             .is_err(),
             "set_event_participants must reject a missing base_version"
+        );
+    }
+
+    #[test]
+    fn event_write_schema_hides_secret_and_exposes_reveal_scene_id() {
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(CreateEventParams)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(UpdateEventParams)).unwrap(),
+        ] {
+            let properties = schema["properties"]
+                .as_object()
+                .expect("generated JSON schema properties");
+            assert!(!properties.contains_key("secret"));
+            assert!(properties.contains_key("reveal_scene_id"));
+            assert!(!properties.contains_key("revealSceneId"));
+        }
+
+        let parsed: CreateEventParams = serde_json::from_value(serde_json::json!({
+            "request_id": "legacy-secret",
+            "title": "Event",
+            "secret": true,
+            "reveal_scene_id": "scene"
+        }))
+        .expect("deprecated secret input remains readable");
+        assert_eq!(parsed.secret, Some(true));
+        assert_eq!(parsed.reveal_scene_id.as_deref(), Some("scene"));
+    }
+
+    #[tokio::test]
+    async fn create_event_rejects_secret_true_without_writing() {
+        let server = make_server(false);
+        let before = event_write_counts(&server);
+        let error = create_event(
+            &server,
+            CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                title: "Rejected secret".into(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: Some(true),
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .expect_err("secret=true must be an explicit input error");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.message,
+            "secret is no longer supported: events cannot be hidden from the AI"
+        );
+        assert_eq!(event_write_counts(&server), before);
+    }
+
+    #[tokio::test]
+    async fn create_event_ignores_secret_false() {
+        let server = make_server(false);
+        let res = create_event(
+            &server,
+            CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                title: "Visible".into(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: Some(false),
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .expect("secret=false is ignored");
+        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            scalar(&server, "SELECT secret FROM events WHERE id = ?1", &id),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn update_event_rejects_secret_true_without_writing() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "secret-rejected", "Before", "a0");
+        let before = event_write_counts(&server);
+        let error = update_event(
+            &server,
+            UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                event_id: "secret-rejected".into(),
+                base_version: 0,
+                title: Some("Rejected update".into()),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: Some(true),
+                reveal_scene_id: None,
+            },
+        )
+        .await
+        .expect_err("secret=true must be an explicit input error");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.message,
+            "secret is no longer supported: events cannot be hidden from the AI"
+        );
+        assert_eq!(event_write_counts(&server), before);
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT version FROM events WHERE id = ?1",
+                "secret-rejected"
+            ),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn update_event_ignores_secret_false() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "secret-false", "Before", "a0");
+        update_event(
+            &server,
+            UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                event_id: "secret-false".into(),
+                base_version: 0,
+                title: Some("After".into()),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: Some(false),
+                reveal_scene_id: None,
+            },
+        )
+        .await
+        .expect("secret=false is ignored");
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT secret FROM events WHERE id = ?1",
+                "secret-false"
+            ),
+            0
+        );
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT version FROM events WHERE id = ?1",
+                "secret-false"
+            ),
+            1
         );
     }
 
@@ -1388,7 +1598,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_event_persists_secret_and_reveal() {
+    async fn create_event_persists_reveal_scene_id() {
         let server = make_server(false);
         seed_scene(&server, "p1", "s1");
         let res = create_event(
@@ -1406,7 +1616,7 @@ mod tests {
                 end_minute: None,
                 start_granularity: None,
                 end_granularity: None,
-                secret: Some(true),
+                secret: None,
                 reveal_scene_id: Some("s1".into()),
                 participant_codex_ids: None,
                 scene_ids: None,
@@ -1428,7 +1638,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(secret, 1, "create must persist secret flag");
+        assert_eq!(secret, 0, "event secret defaults to visible");
         assert_eq!(reveal.as_deref(), Some("s1"), "create must persist reveal");
     }
 
