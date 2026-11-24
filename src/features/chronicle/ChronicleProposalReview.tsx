@@ -149,7 +149,6 @@ export function ChronicleProposalReview({
       title?: string;
       note?: string | null;
       secret?: boolean;
-      revealDocumentRef?: string;
     },
   ) => {
     if (!boundToStore) return;
@@ -388,22 +387,6 @@ export function ChronicleProposalReview({
                     data-testid="chronicle-proposal-secret-input"
                   />
                   <span className="text-muted-foreground">secret</span>
-                </label>
-                <label className="inline-flex min-w-0 flex-1 items-center gap-1.5">
-                  <span className="shrink-0 text-muted-foreground">
-                    reveal Scene
-                  </span>
-                  <input
-                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] focus:outline-none"
-                    value={selected.payload.disclosure.revealDocumentRef}
-                    disabled={!boundToStore || reviewControlsDisabled}
-                    onChange={(event) =>
-                      handleRevise(selected.proposalId, {
-                        revealDocumentRef: event.target.value,
-                      })
-                    }
-                    data-testid="chronicle-proposal-reveal-input"
-                  />
                 </label>
               </div>
             )}

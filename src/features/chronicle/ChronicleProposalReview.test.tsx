@@ -227,6 +227,10 @@ describe("ChronicleProposalReview", () => {
     render(<ChronicleProposalReview />);
 
     expect(screen.getByTestId("chronicle-proposal-review")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-proposal-reveal-input"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("chronicle-proposal-secret-input")).toBeChecked();
     expect(screen.getByText("Proposal一覧")).toBeInTheDocument();
     expect(screen.getByText("詳細")).toBeInTheDocument();
     expect(screen.getByDisplayValue("教会への砲撃")).toBeInTheDocument();
