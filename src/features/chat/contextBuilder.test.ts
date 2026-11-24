@@ -1508,6 +1508,22 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("- 「古い友人」（重要度: supporting）");
     });
 
+    it("secret の未回収伏線も『未回収の伏線』節に注入される", () => {
+      const result = buildSystemPrompt({
+        scene,
+        openForeshadows: [
+          {
+            title: "secret=1 の黒幕",
+            intent: "黒幕は最初から出ている",
+            loadBearing: "critical",
+            setupCount: 1,
+          },
+        ],
+      });
+      expect(result.prompt).toContain("### 未回収の伏線");
+      expect(result.prompt).toContain("- 「secret=1 の黒幕」");
+    });
+
     it("storySoFar が空でも openForeshadows のみで物語ヘッダ付き L2 が出る", () => {
       const result = buildSystemPrompt({
         scene,

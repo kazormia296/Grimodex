@@ -6,9 +6,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  * 返すだけで、組み立ては共有 core）の固定。
  *
  * - Native 分岐（`window.grimodex` あり）：`foreshadow_list_open_for_context` を `{ projectId }` だけで 1 回
- *   invoke し、戻りをそのまま返す（DB は読まない）。
- * - Drizzle 分岐（browser-mock・試験）：従来の文と順のまま。foreshadows は `secret = false`・未回収・
- *   未放棄・project で絞る（**secret の伏線を list に出さない条件はここにも在る**）。0 件なら setups の
+ *   invoke し、戻りをそのまま返す（DB は読まない）。secret は条件に使わない。
+ * - Drizzle 分岐（browser-mock・試験）：従来の文と順のまま。foreshadows は未回収・未放棄・
+ *   project で絞る。secret=1 の伏線も含む。0 件なら setups の
  *   select を打たず空の 2 list を返す。
  * - `listOpenForeshadowsForContext`（chat の context 構築が使う）は同じ wire を通り、結果の形は不変。
  */
@@ -63,7 +63,7 @@ describe("readOpenForeshadowWire", () => {
   });
 
   describe("Drizzle 分岐（browser-mock）", () => {
-    it("seed の前提：fs-2 は secret=1 で未回収・未放棄（secret の絞りが効かなければ list に出る伏線）", () => {
+    it("seed の前提：fs-2 は secret=1 でも未回収・未放棄なので list に出る", () => {
       const rows = LEGACY_READ_SEED.find((t) => t.table === "foreshadows")!
         .rows as Array<Record<string, unknown>>;
       const fs2 = rows.find((r) => r.id === "fs-2")!;
@@ -75,12 +75,12 @@ describe("readOpenForeshadowWire", () => {
       });
     });
 
-    it("secret・回収済み・放棄済み・他 project の行を返さず、setups は残った伏線の分だけ。行は camelCase・boolean・Date のまま", async () => {
+    it("secret の値にかかわらず未回収・未放棄・同 project の行を返し、closed と他 project は返さない", async () => {
       await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
       legacyReadInvokeBridge.reset();
       const wire = (await readOpenForeshadowWire("p-main")) as Wire;
-      expect(wire.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-5"]);
-      expect(wire.foreshadows.map((f) => f.id)).not.toContain("fs-2");
+      expect(wire.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-2", "fs-5"]);
+      expect(wire.foreshadows.map((f) => f.id)).toContain("fs-2");
       expect(wire.foreshadows[0]).toMatchObject({
         id: "fs-1",
         loadBearing: "critical",
@@ -88,18 +88,18 @@ describe("readOpenForeshadowWire", () => {
         abandoned: false,
       });
       expect(wire.foreshadows[0]!.updatedAt).toBeInstanceOf(Date);
-      // fs-2 の setup（fsu-4）は残った伏線の setup ではない（fs-1 の setup は fsu-1・2・3・6 の 4 件。
-      // この wire は archived の場面の setup も含む。archived を外すのは get_foreshadow_detail の read）。
-      expect(wire.setups.map((s) => s.foreshadowId)).toEqual([
+      // fs-1 has four setups and secret fs-2 has fsu-4. Archived setups remain in this wire.
+      expect(wire.setups.map((s) => s.foreshadowId).sort()).toEqual([
         "fs-1",
         "fs-1",
         "fs-1",
         "fs-1",
+        "fs-2",
       ]);
       expect(wire.setups[0]).toHaveProperty("sceneId");
     });
 
-    it("foreshadows の文は project・未回収・未放棄・secret=false で絞り、setups は IN の 1 文（計 2 文）。Native は呼ばない", async () => {
+    it("foreshadows の文は project・未回収・未放棄で絞り、setups は IN の 1 文（計 2 文）。Native は呼ばない", async () => {
       await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
       legacyReadInvokeBridge.reset();
       await readOpenForeshadowWire("p-main");
@@ -107,17 +107,13 @@ describe("readOpenForeshadowWire", () => {
       expect(statements).toHaveLength(2);
       const first = String(statements[0]!.args?.sql);
       expect(first).toMatch(/from "foreshadows"/iu);
-      for (const column of [
-        "project_id",
-        "payoff_confirmed",
-        "abandoned",
-        "secret",
-      ]) {
+      for (const column of ["project_id", "payoff_confirmed", "abandoned"]) {
         expect(first, column).toMatch(
           new RegExp(`"foreshadows"\\."${column}" = \\?`, "u"),
         );
       }
-      expect(statements[0]!.args?.params).toEqual(["p-main", 0, 0, 0]);
+      expect(first).not.toContain('"secret"');
+      expect(statements[0]!.args?.params).toEqual(["p-main", 0, 0]);
       expect(String(statements[1]!.args?.sql)).toMatch(
         /from "foreshadow_setups"[\s\S]*"foreshadow_id" in \(/iu,
       );
@@ -141,6 +137,7 @@ describe("readOpenForeshadowWire", () => {
       const rows = await listOpenForeshadowsForContext("p-main");
       expect(rows.map((r) => [r.id, r.setupCount, r.derivedLabel])).toEqual([
         ["fs-1", 2, "critical_weak"],
+        ["fs-2", 1, "needs_strengthening"],
         ["fs-5", 0, "planned"],
       ]);
       expect(rows[0]).toMatchObject({ version: 0, loadBearing: "critical" });

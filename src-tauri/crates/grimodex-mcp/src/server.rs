@@ -327,9 +327,10 @@ impl GrimodexServer {
         tools::tree::get_chapter_summaries(self).await
     }
 
-    /// List unresolved foreshadowing items (excludes secret, abandoned, payoff-confirmed).
+    /// List unresolved foreshadowing items regardless of secret status.
+    /// Abandoned and payoff-confirmed items are excluded.
     #[tool(
-        description = "List open (unresolved) foreshadowing items: id, title, intent, loadBearing, setupCount, and version. Pass version unchanged as base_version to update_foreshadow. Sorted by loadBearing priority then updatedAt."
+        description = "List open (unresolved) foreshadowing items regardless of secret status: id, title, intent, loadBearing, setupCount, and version. Abandoned and payoff-confirmed items are excluded. Pass version unchanged as base_version to update_foreshadow. Sorted by loadBearing priority then updatedAt."
     )]
     async fn list_open_foreshadows(&self) -> Result<CallToolResult, ErrorData> {
         tools::foreshadow::list_open_foreshadows(self).await
@@ -467,7 +468,7 @@ impl GrimodexServer {
 
     /// One-shot curated writing context for a scene (read-only aggregate).
     #[tool(
-        description = "Get a one-shot curated writing context for a scene: project info, chapter outlines, story-so-far synopses (reading order), the scene itself as Markdown (with synopsis/status/intent), story-time neighbors, foreshadows planted or resolved in the scene, project-wide open foreshadows, and Codex entries mentioned in the scene plus always-include entries. Call this FIRST before drafting or analyzing prose for a scene — it replaces a dozen individual read calls. Read-only; secret foreshadows are excluded; hard caps report dropped counts."
+        description = "Get a one-shot curated writing context for a scene: project info, chapter outlines, story-so-far synopses (reading order), the scene itself as Markdown (with synopsis/status/intent), story-time neighbors, foreshadows planted or resolved in the scene, project-wide open foreshadows, and Codex entries mentioned in the scene plus always-include entries. Both foreshadow sections include secret-marked items. Call this FIRST before drafting or analyzing prose for a scene — it replaces a dozen individual read calls. Read-only; hard caps report dropped counts."
     )]
     async fn get_writing_context(
         &self,
