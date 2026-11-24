@@ -486,6 +486,18 @@ function keyIssue(
   return null;
 }
 
+/**
+ * A provider's tool call id is an opaque identifier. The progress event is
+ * "numbers and identifiers only", so the id is limited to the characters the
+ * providers actually use (letters, digits, `_`, `-`, `.`, `:`); free text such
+ * as `secret=abc` is refused instead of being sent to the renderer.
+ */
+const PROGRESS_TOOL_CALL_ID = /^[A-Za-z0-9_.:-]+$/u;
+
+function isProgressToolCallId(value: unknown): value is string {
+  return isTrimmedId(value) && PROGRESS_TOOL_CALL_ID.test(value);
+}
+
 function isTrimmedId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -1277,7 +1289,7 @@ function parseProgressEvent(
     const toolCallId = entries.get("toolCallId");
     return (entries.get("phase") === "started" ||
       entries.get("phase") === "finished") &&
-      isTrimmedId(toolCallId) &&
+      isProgressToolCallId(toolCallId) &&
       (M4_READ_TOOL_NAMES as readonly unknown[]).includes(
         entries.get("toolName"),
       ) &&

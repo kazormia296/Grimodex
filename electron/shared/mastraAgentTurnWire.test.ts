@@ -1609,6 +1609,46 @@ describe("parseMastraAgentTurnProgressPayload", () => {
         }),
       ),
     ).toMatchObject({ ok: false });
+    // 識別子だけの契約：自由な文字列（本文・秘密になりうる）は parser が拒否する。
+    for (const bad of [
+      "secret=abc",
+      "a b",
+      "line\nbreak",
+      "日本語",
+      "a/b",
+      "a|b",
+    ]) {
+      expect(
+        parseMastraAgentTurnProgressPayload(
+          progress({
+            kind: "tool",
+            phase: "finished",
+            toolCallId: bad,
+            toolName: M4_READ_TOOL_NAMES[0],
+            totalCalls: 0,
+            maxCalls: 1,
+            tokensUsed: 0,
+            tokenBudget: 1,
+          }),
+        ),
+      ).toMatchObject({ ok: false });
+    }
+    for (const good of ["call-1", "toolu_01A9bC", "call_abc.123:x"]) {
+      expect(
+        parseMastraAgentTurnProgressPayload(
+          progress({
+            kind: "tool",
+            phase: "finished",
+            toolCallId: good,
+            toolName: M4_READ_TOOL_NAMES[0],
+            totalCalls: 0,
+            maxCalls: 1,
+            tokensUsed: 0,
+            tokenBudget: 1,
+          }),
+        ),
+      ).toMatchObject({ ok: true });
+    }
   });
 
   it("rejects prototype keys and inconsistent overflow usage", () => {
