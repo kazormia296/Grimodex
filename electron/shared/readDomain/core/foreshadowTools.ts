@@ -35,8 +35,9 @@ export async function listOpenForeshadows(
   ctx: CoreReadContext,
   params: Record<string, unknown> = {},
 ): Promise<CoreToolResult> {
+  // An absent or undefined value is omission; any other non-boolean is rejected.
   if (
-    Object.prototype.hasOwnProperty.call(params, "includeSettled") &&
+    params["includeSettled"] !== undefined &&
     typeof params["includeSettled"] !== "boolean"
   ) {
     throw new Error("includeSettled must be a boolean");

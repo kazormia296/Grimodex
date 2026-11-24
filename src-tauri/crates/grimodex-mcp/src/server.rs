@@ -329,7 +329,7 @@ impl GrimodexServer {
 
     /// List unresolved foreshadowing items regardless of secret status. Optionally include settled items.
     #[tool(
-        description = "List unresolved foreshadowing items regardless of secret status: id, title, intent, loadBearing, setupCount, version, and derivedLabel. Pass include_settled=true to also include payoff-confirmed items marked settled: true; abandoned items are always excluded. Omitted or false returns unresolved items only. Pass version unchanged as base_version to update_foreshadow. Unresolved items are sorted by loadBearing priority then updatedAt, followed by settled items."
+        description = "List unresolved foreshadowing items regardless of secret status: id, title, intent, loadBearing, setupCount, version, and derivedLabel. Pass include_settled=true to also include payoff-confirmed items after the unresolved ones, each marked settled: true; abandoned items are always excluded. Omitted or false returns unresolved items only. Pass version unchanged as base_version to update_foreshadow. Unresolved items are sorted by loadBearing priority then updatedAt, followed by settled items."
     )]
     async fn list_open_foreshadows(
         &self,

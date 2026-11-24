@@ -353,7 +353,7 @@ describe("list_open_foreshadows", () => {
     ["string", "true"],
     ["number", 1],
     ["null", null],
-    ["undefined", undefined],
+    ["array", []],
   ])(
     "rejects includeSettled with a %s value before reading",
     async (_label, includeSettled) => {
@@ -371,6 +371,21 @@ describe("list_open_foreshadows", () => {
       expect(foreshadowListWithLabels).not.toHaveBeenCalled();
     },
   );
+
+  it("treats includeSettled: undefined as omission (open-only port call)", async () => {
+    const { executors, foreshadowOpen, foreshadowListWithLabels } = makeCtx({
+      foreshadowOpen: async () => ({
+        foreshadows: [nativeForeshadow()],
+        setups: [],
+      }),
+    });
+    const result = await executors.list_open_foreshadows({
+      includeSettled: undefined,
+    });
+    expect(result.summary).toBe("1 open foreshadowing items");
+    expect(foreshadowOpen).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(foreshadowListWithLabels).not.toHaveBeenCalled();
+  });
 
   it("false and unknown input keys preserve the open-only result and port call", async () => {
     const { executors, foreshadowOpen, foreshadowListWithLabels } = makeCtx({
