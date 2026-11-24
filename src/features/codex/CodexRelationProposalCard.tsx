@@ -1,5 +1,7 @@
+import { useTranslation } from "react-i18next";
 import type { CodexRelationReviewProposal } from "./codexStructureExtractionStore";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
+import { localizeBlockedReason } from "./extraction/blockedReasons";
 
 export interface CodexRelationProposalCardProps {
   readonly proposal: CodexRelationReviewProposal;
@@ -29,6 +31,7 @@ export function CodexRelationProposalCard({
   onSelect,
   onDecide,
 }: CodexRelationProposalCardProps) {
+  const { t } = useTranslation();
   const blocked = proposal.applicability === "blocked";
   const alreadySatisfied = proposal.applicability === "already-satisfied";
   const applied = Boolean(proposal.application);
@@ -57,19 +60,24 @@ export function CodexRelationProposalCard({
           </span>
           <span className="block text-[10px] text-muted-foreground">
             {proposal.subjectLabel} · {relation.forwardLabel} ·{" "}
-            {proposal.objectLabel} · {relation.directionality}
+            {proposal.objectLabel} ·{" "}
+            {t(
+              `codex.structureReview.relationCard.directionality.${relation.directionality}`,
+            )}
           </span>
           {(blocked || alreadySatisfied) && (
             <span className="block text-[10px] text-amber-700 dark:text-amber-400">
-              {proposal.blockedReason ??
+              {localizeBlockedReason(proposal.blockedReason, t) ??
                 (alreadySatisfied
-                  ? "既に同じ関係が登録されています（適用不要）"
-                  : "両端 Binding 未解決")}
+                  ? t("codex.structureReview.blockedReason.relationExists")
+                  : t(
+                      "codex.structureReview.relationCard.unresolvedEndpoints",
+                    ))}
             </span>
           )}
           {applied && (
             <span className="block text-[10px] text-muted-foreground">
-              適用済み（編集不可）
+              {t("codex.structureReview.relationCard.appliedReadonly")}
             </span>
           )}
         </span>
@@ -84,7 +92,7 @@ export function CodexRelationProposalCard({
             onClick={() => onDecide?.("approved")}
             data-testid={`codex-relation-approve-${proposal.proposalId}`}
           >
-            承認
+            {t("codex.structureReview.relationCard.approve")}
           </button>
           <button
             type="button"
@@ -92,7 +100,7 @@ export function CodexRelationProposalCard({
             disabled={proposal.status === "rejected"}
             onClick={() => onDecide?.("rejected")}
           >
-            拒否
+            {t("codex.structureReview.relationCard.reject")}
           </button>
           <button
             type="button"
@@ -102,7 +110,7 @@ export function CodexRelationProposalCard({
             }
             onClick={() => onDecide?.("deferred")}
           >
-            保留
+            {t("codex.structureReview.relationCard.defer")}
           </button>
         </div>
       )}
