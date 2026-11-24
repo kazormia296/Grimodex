@@ -35,13 +35,15 @@ import { SharedLoader } from "./sharedLoader.js";
  *
  * The cache lives as long as the context, i.e. the turn, unless `clear()` is
  * called (wiring it to each send is 4c-1's). The renderer's cache is dropped for
- * every batch, so a change made in the middle of a turn (an event's `secret` or
- * reveal scene) reaches the renderer's next batch and not this context: a
- * difference that is not decided here and is held for Q5 (DR-MP4-37). It is not
- * claimed equal and the equivalence tests leave it out.
+ * every batch, so a change made in the middle of a turn (an event's title, say)
+ * reaches the renderer's next batch and not this context: a difference that is
+ * not decided here and is held for Q5 (DR-MP4-37). It is not claimed equal and
+ * the equivalence tests leave it out. (The event's `secret` no longer decides
+ * what the AI may read, CSR/1; a hidden Codex entry is judged per call by the
+ * port `listHiddenCodexIds`, which is not cached.)
  *
- * The events are read with every column and with `secret` and `revealSceneId`
- * checked (a row that lost either is an error, never a public event).
+ * The events are read with every column and with `revealSceneId` checked (a row
+ * that lost it is an error, never an event with no disclosure scene).
  * `listParticipants`, `listRelations` and `getCalendar` read every call, as the
  * renderer's do.
  *
@@ -127,7 +129,11 @@ function turnTreeState(turn: ChronicleReadInputs): CoreTreeState {
 
 /** The main search context uses the turn's project, token counter and dense read; it loads no chronicle rows. */
 export interface MainChronicleSearchContextArgs {
-  /** `createCoreReadDb(checkedClient)`. */
+  /**
+   * `createCoreReadDb(checkedClient)`. Not read any more (CSR/1: the search has no
+   * secrecy decision, so it loads no events); kept so that the callers and the
+   * context of the chronicle read tools are built from the same arguments.
+   */
   readonly db: CoreReadDb;
   /** The turn's inputs: from `readChronicleReadInputs`, at the start of the turn. */
   readonly turn: ChronicleReadInputs;

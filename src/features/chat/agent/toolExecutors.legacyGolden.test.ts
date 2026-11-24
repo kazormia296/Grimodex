@@ -179,7 +179,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
       { native: cannedEvents },
     ),
     sc(
-      "canned: 場面なしでは secret を全部隠す（fail-closed）",
+      "canned: 場面なしでも secret の出来事を返す",
       MAIN_NO_SCENE,
       { query: "魔術" },
       { native: cannedEvents },
@@ -530,12 +530,12 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   list_events: [
     sc(
-      "rows: S1（secret の戦争と恒久秘匿の死は出ない。日付は暦で整形）",
+      "rows: S1（secret の戦争と恒久秘匿の死も出る。日付は暦で整形）",
       MAIN_S1,
       {},
     ),
     sc("rows: S3（戦争が出る）", MAIN_S3, {}),
-    sc("rows: 場面なし（secret を全部隠す）", MAIN_NO_SCENE, {}),
+    sc("rows: 場面なし（場面に依らず出来事が出る）", MAIN_NO_SCENE, {}),
     sc("rows: kind=birth", MAIN_S3, { kind: "birth" }),
     sc("rows: 知らない kind は絞らない", MAIN_S3, { kind: "bogus" }),
     sc("rows: UI 言語が en", { ...MAIN_S3, language: "en" }, {}),
@@ -547,7 +547,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
     }),
   ],
   get_event_detail: [
-    sc("rows: S1（戦争は hidden なので relation は出ない）", MAIN_S1, {
+    sc("rows: S1（戦争は secret でも relation が出る）", MAIN_S1, {
       eventId: "ev-meet",
     }),
     sc("rows: S3（戦争が見えるので relation も出る）", MAIN_S3, {
@@ -559,11 +559,11 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
       { ...MAIN_S3, language: "en" },
       { eventId: "ev-meet" },
     ),
-    sc("hidden: S1 の secret（戦争）は存在しない扱い", MAIN_S1, {
+    sc("secret: S1 でも secret の戦争は読める", MAIN_S1, {
       eventId: "ev-war",
     }),
     sc("hidden: S3 では戦争が見える", MAIN_S3, { eventId: "ev-war" }),
-    sc("hidden: 恒久秘匿の死はどの場面でも存在しない扱い", MAIN_S3, {
+    sc("secret: 恒久秘匿の死もどの場面でも読める", MAIN_S3, {
       eventId: "ev-death",
     }),
     sc("empty: 存在しない id", MAIN_S3, { eventId: "ev-none" }),
@@ -615,11 +615,9 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
     }),
   ],
   get_chronicle_state: [
-    sc(
-      "rows: sceneId 指定（S1。hidden の secret は snapshot に入らない）",
-      MAIN_S1,
-      { sceneId: "n-s1" },
-    ),
+    sc("rows: sceneId 指定（S1。secret の出来事も snapshot に入る）", MAIN_S1, {
+      sceneId: "n-s1",
+    }),
     sc("rows: sceneId 省略は activeSceneId（S3）", MAIN_S3, {}),
     sc("rows: sceneId 指定は activeSceneId より優先", MAIN_S3, {
       sceneId: "n-s1",

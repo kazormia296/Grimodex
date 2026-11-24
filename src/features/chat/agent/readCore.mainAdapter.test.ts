@@ -699,7 +699,7 @@ const SEARCH_EVENTS_DENSE: Record<string, DenseKind> = {
   "canned: S1 では secret の戦争（n-s3 で公開）と恒久秘匿の死が落ちる。DB に無い他 project の id は素通し":
     "canned",
   "canned: S3 では戦争が出る（恒久秘匿の死は出ない）": "canned",
-  "canned: 場面なしでは secret を全部隠す（fail-closed）": "canned",
+  "canned: 場面なしでも secret の出来事を返す": "canned",
   "canned: limit=2 で slice": "canned",
   "canned: limit が数でなければ 10": "canned",
   "canned: dense が reject したら空配列に退避する": "rejects",

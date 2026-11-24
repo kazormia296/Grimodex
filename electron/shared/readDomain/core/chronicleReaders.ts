@@ -66,8 +66,9 @@ export async function readEvents(
 }
 
 /**
- * Main's read: every column (no projection), and a row that lost `secret` or
- * `revealSceneId` is an error (`normalizeEventFailClosed`, DR-MP4-37).
+ * Main's read: every column (no projection), and a row that lost `revealSceneId`
+ * is an error (`normalizeEventFailClosed`, DR-MP4-37). The `secret` check was
+ * retired with the event secrecy decision (CSR/1).
  */
 export async function readEventsFailClosed(
   db: CoreReadDb,

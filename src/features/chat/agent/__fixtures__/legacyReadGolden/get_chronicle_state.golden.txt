@@ -2,7 +2,7 @@
   "tool": "get_chronicle_state",
   "cases": [
     {
-      "case": "rows: sceneId 指定（S1。hidden の secret は snapshot に入らない）",
+      "case": "rows: sceneId 指定（S1。secret の出来事も snapshot に入る）",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"

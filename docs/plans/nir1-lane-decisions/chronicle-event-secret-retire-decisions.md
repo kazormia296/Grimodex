@@ -94,7 +94,7 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 ### DR-CSR-12　core の読む道具 4 本：出来事の秘匿の判定を外し、hidden の人物だけを伏せる（PR-3a）
 
 - 4 本（`list_events`・`get_event_detail`・`get_character_timeline`・`get_chronicle_state`）は、出来事の `secret`・reveal の位置・読む順で隠さない。そのための `getTreeState`・`getReadingOrder`・`getSceneEvents` の読みが、`get_chronicle_state` の anchor のためだけに残った。
-- hidden の人物は、port で判定する：`list_events`・`get_event_detail` は、主な人物・場所の名前を `null`、参加者を行ごと除く。`get_chronicle_state` は、人物を選ぶ**前**の入力（候補 id の収集 → `dropHiddenCodexFromChronicleInput`）から除く（選んだ後に消すと、hidden が枠を取ったまま消える）。出来事の `locationCodexId` は残す（名前の表から落ちるので、名前は出ない。`deriveLastKnownLocation` が古い場所へ落ちないため）。**モデルの `sceneId` は anchor の位置にだけ使い、hidden の判定の場面には使わない**。
+- hidden の人物は、port で判定する：`list_events`・`get_event_detail` は、主な人物・場所の名前を `null`、参加者を行ごと除く。`get_chronicle_state` は、人物を選ぶ**前**の入力（候補 id の収集 → `dropHiddenCodexFromChronicleInput`）から除く（選んだ後に消すと、hidden が枠を取ったまま消える）。出来事の `locationCodexId` は残す（名前の表から落ちるので、名前は出ない。`deriveLastKnownLocation` が古い場所へ落ちないため）。**モデルの `sceneId` は anchor の位置にだけ使い、hidden の判定の場面には使わない**。**候補 id には、空文字も入れる**（port は DB に無い id を hidden に数えるので、空文字の id の行が hidden でも取りこぼさない。独立レビュー〔Codex〕の指摘。PR-1 の `collectChronicleCandidateCodexIds` の「空文字は入れない」期待も、これに直した）。
 - **画面で見える変化（ユーザーに見せる）**：`get_character_timeline` は、hidden の id と、**存在しない id（別の作品・空の作品の id を含む）で、「Character not found」（content `null`、tokensUsed 0）**を返す。以前は、存在しない id に `0 events for <id>`（空の年表）を返していた。MCP の読み（DR-CSR-3）と同じ規則になった。`tokensUsed` は、出る出来事・人物の変化に追随して変わる。
 
 ### DR-CSR-13　検索（`search_events`）：秘匿の判定を外す（PR-3b）
@@ -104,12 +104,14 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 
 ### DR-CSR-14　削除したもの（PR-3c）
 
-`isEventHiddenFromAi`・`projectVisibleChronicle`・`VisibleChronicle`（`chronicleSecrecy.ts`。`readingPos`・`ReadingOrder`・`effectiveRevealSceneId` は残す）と、`normalizeEventFailClosed` の `secret` の検査（`secret` は core が判定に使わない。`revealSceneId` の検査は、キーが落ちると開示シーンの印が黙って消える向きなので残す）。
+`isEventHiddenFromAi`・`projectVisibleChronicle`・`VisibleChronicle`（`chronicleSecrecy.ts`。`readingPos`・`ReadingOrder`・`effectiveRevealSceneId` は残す）と、`normalizeEventFailClosed` の `secret` の検査（`secret` は core が判定に使わない）。`revealSceneId` の検査は残すが、**この PR の後、製品コードで `effectiveRevealSceneId` を呼ぶ所は無い**（試験と休眠の IR の近似だけ）ので、Main の読みで開示シーンの印を使う所は今は無く、保守的な残置である。N9 で整理するときに、まとめて外すか決める。
 
 ### 残る制限（PR-2・PR-3）
 
 - 題・メモの文中に埋め込まれた hidden の人物の名前・id は、構造化された Codex id の除去の対象外（DR-CSR-6 と同じ）。
 - hidden の判定は、呼び出しごとに DB を読む（cache しない）。1 つの道具の呼び出しで、`codex_entries`・`codex_entry_phases` の select が増える。大きい作品での負荷は、測っていない（N11 の測定の範囲）。
+- **アプリ内の AI 向けの道具の説明が、まだ「secret の出来事は読みから除かれる」と言っている**（`toolDefinitions.ts` の `create_event`・`update_event` の `secret`・`revealSceneId` の説明と、`definitions.*.bytes.txt`）。この PR の後は事実でなく、モデルが「secret を付ければ自分から隠せる」と思い込みうる（hidden の人物が漏れる話ではない）。AI 指示の資産の変更なので、品質ゲート（`grimodex-author`）を通す別の PR にする。MCP の説明は、1 本目で「保存されるフラグで、読み・書きを制限しない」に直した。`secret` の引数を消す N4 で、まとめて直す。
+- 空文字の id の Codex 行が hidden のとき、候補に入れない旧い実装では漏れうる、という指摘は、候補に入れて直した（アプリは空文字の id を作らないが、DB は禁じていない）。
 - 公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
 
 ### 検証（PR-3。2026-11-24。自分で実行した）
@@ -118,4 +120,5 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 - **変異**：renderer の `listHiddenCodexIds` を常に空にすると、特性試験と `get_character_timeline` の golden が落ちる。`revealSceneId` の検査を外すと、`readRows` の試験が落ちる。
 - 実 addon の spec（`mastraReadParity.pipeline.spec.ts`）：年表・検索の部分は、2026-11-22 に作った addon でも通過（`search_scenes` の `scenes_live` の 2 件は、古い addon のため落ちる。この PR と無関係）。**最新の addon での確認は、hosted の `electron-native` に任せる。**
 - golden は、差分の要点（secret の出来事が現れる・hidden の名前が `null`・存在しない id が not found・tokensUsed の追随）を読んでから再生成した。hidden の名前・id が golden に出ないことを grep で確かめた。
+- **独立レビュー**：Claude（Opus）・Codex（read-only）の 2 系統。漏れの経路（5 本の道具の出力、renderer と main の両経路）、fail-closed、判定の場面、削除の取りこぼし、golden の差分の範囲、試験が空虚でないこと、`get_character_timeline` の変化の呼び出し元は、2 系統とも問題なし（P0・P1 なし）。直した指摘：golden の場面名が古い契約のままだった（名前を直して再生成。差分は `case` の行だけ）、古いコメント 3 か所、`db` 引数の説明、空文字の id（上）。残る制限として記録した指摘：AI 向けの道具の説明（上）、`effectiveRevealSceneId` の呼び出し元が無いこと（DR-CSR-14）。
 - していない：実アプリでの確認、`verify:quality` のローカル実行（hosted の Quick に任せる）。

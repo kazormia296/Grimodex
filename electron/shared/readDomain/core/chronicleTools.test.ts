@@ -305,6 +305,34 @@ describe("list_events", () => {
     expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
   });
 
+  it("asks the port about an empty-string Codex id too (a row whose id is empty and hidden must not slip through)", async () => {
+    const emptyIdWorld: World = {
+      events: [event("e-empty", { primaryCodexId: "" })],
+      names: { "": "Ghost" },
+    };
+    // 基準：判定が hidden にしなければ、空文字の id の人物の名前も出る。
+    const baseline = await makeCtx(emptyIdWorld).executors.list_events({});
+    expect(
+      (
+        baseline.content as {
+          events: Array<{ primaryCharacter: string | null }>;
+        }
+      ).events[0]?.primaryCharacter,
+    ).toBe("Ghost");
+
+    const c = makeCtx(emptyIdWorld);
+    c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+      c.log.push("listHiddenCodexIds");
+      return new Set(ids);
+    });
+    const r = await c.executors.list_events({});
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [""]);
+    expect(
+      (r.content as { events: Array<{ primaryCharacter: string | null }> })
+        .events[0]?.primaryCharacter,
+    ).toBeNull();
+  });
+
   it("skips Codex visibility when no event has a primary Codex id", async () => {
     const c = makeCtx({ events: [event("e1")] });
     await c.executors.list_events({});
@@ -440,6 +468,35 @@ describe("get_event_detail", () => {
     ],
     activeSceneId: "s2",
     ...over,
+  });
+
+  it("drops a participant whose Codex id is the empty string when the port says it is hidden", async () => {
+    const emptyIdWorld = detailWorld({
+      events: [event("e1", { primaryCodexId: "", locationCodexId: "" })],
+      names: { "": "Ghost" },
+      participants: [{ eventId: "e1", codexEntryId: "", role: "witness" }],
+    });
+    // 基準：hidden にしなければ、名前・参加者が出る。
+    const baseline = await makeCtx(emptyIdWorld).executors.get_event_detail({
+      eventId: "e1",
+    });
+    expect(baseline.content).toMatchObject({
+      primaryCharacter: "Ghost",
+      participants: [{ codexId: "", name: "Ghost" }],
+    });
+
+    const c = makeCtx(emptyIdWorld);
+    c.chronicle.listHiddenCodexIds.mockImplementation(async (_p, ids) => {
+      c.log.push("listHiddenCodexIds");
+      return new Set(ids);
+    });
+    const r = await c.executors.get_event_detail({ eventId: "e1" });
+    expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", [""]);
+    expect(r.content).toMatchObject({
+      primaryCharacter: null,
+      location: null,
+      participants: [],
+    });
   });
 
   it("answers eventId is required AFTER the project check, with no read", async () => {

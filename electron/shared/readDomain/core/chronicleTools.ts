@@ -91,7 +91,9 @@ export async function listEvents(
       : events;
   const ids = [
     ...new Set(
-      filtered.flatMap((e) => (e.primaryCodexId ? [e.primaryCodexId] : [])),
+      filtered.flatMap((e) =>
+        e.primaryCodexId != null ? [e.primaryCodexId] : [],
+      ),
     ),
   ];
   const hidden = ids.length
@@ -112,7 +114,7 @@ export async function listEvents(
         lang,
       ),
       primaryCharacter:
-        e.primaryCodexId && !hidden.has(e.primaryCodexId)
+        e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
           ? (names.get(e.primaryCodexId) ?? null)
           : null,
     })),
@@ -159,7 +161,7 @@ export async function getEventDetail(
         ev.primaryCodexId,
         ev.locationCodexId,
         ...participants.map((p) => p.codexEntryId),
-      ].filter((id): id is string => Boolean(id)),
+      ].filter((id): id is string => id != null),
     ),
   ];
   const hidden = ids.length
@@ -201,11 +203,11 @@ export async function getEventDetail(
     ),
     precision: ev.precision,
     primaryCharacter:
-      ev.primaryCodexId && !hidden.has(ev.primaryCodexId)
+      ev.primaryCodexId != null && !hidden.has(ev.primaryCodexId)
         ? (names.get(ev.primaryCodexId) ?? null)
         : null,
     location:
-      ev.locationCodexId && !hidden.has(ev.locationCodexId)
+      ev.locationCodexId != null && !hidden.has(ev.locationCodexId)
         ? (names.get(ev.locationCodexId) ?? null)
         : null,
     participants: participants

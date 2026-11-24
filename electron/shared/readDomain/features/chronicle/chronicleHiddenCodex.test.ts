@@ -34,7 +34,7 @@ function event(overrides: Partial<EventRow> = {}): EventRow {
 }
 
 describe("chronicleHiddenCodex", () => {
-  it("collects unique non-empty candidate ids in ascending order", () => {
+  it("collects unique candidate ids in ascending order (null and undefined are no reference; an empty string is a candidate)", () => {
     expect(
       collectChronicleCandidateCodexIds({
         events: [
@@ -49,7 +49,7 @@ describe("chronicleHiddenCodex", () => {
         sceneCodexIds: ["e", "b", null],
         mentionedCodexIds: ["f", "c", ""],
       }),
-    ).toEqual(["a", "b", "c", "d", "e", "f"]);
+    ).toEqual(["", "a", "b", "c", "d", "e", "f"]);
   });
 
   it("drops hidden people while preserving hidden location ids without mutating input", () => {
@@ -118,5 +118,15 @@ describe("chronicleHiddenCodex", () => {
 
     expect(result).toEqual(args);
     expect(result).not.toBe(args);
+  });
+
+  it("keeps an empty-string id among the candidates (the port counts an id the database lacks as hidden)", () => {
+    expect(
+      collectChronicleCandidateCodexIds({
+        events: [event({ primaryCodexId: "", locationCodexId: null })],
+        participants: [],
+        codexNames: new Map([["", "Ghost"]]),
+      }),
+    ).toEqual([""]);
   });
 });

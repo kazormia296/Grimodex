@@ -2,7 +2,7 @@
   "tool": "get_event_detail",
   "cases": [
     {
-      "case": "rows: S1（戦争は hidden なので relation は出ない）",
+      "case": "rows: S1（戦争は secret でも relation が出る）",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -231,7 +231,7 @@
       "contentJson": "{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"note\":null,\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"endTime\":null,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"day\",\"endGranularity\":\"none\",\"startDate\":\"1, 1015\",\"endDate\":null,\"precision\":\"exact\",\"primaryCharacter\":\"アリア\",\"location\":\"古い塔\",\"participants\":[{\"codexId\":\"c-aria\",\"name\":\"アリア\",\"role\":\"主役\"},{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"role\":\"助言者\"}],\"scenes\":[{\"sceneId\":\"n-s1\",\"title\":\"出会い\"}],\"relations\":[{\"cause\":\"魔術戦争\",\"effect\":\"老魔術師との出会い\"},{\"cause\":\"老魔術師との出会い\",\"effect\":\"老魔術師の死\"}]}"
     },
     {
-      "case": "hidden: S1 の secret（戦争）は存在しない扱い",
+      "case": "secret: S1 でも secret の戦争は読める",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -337,7 +337,7 @@
       "contentJson": "{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"note\":\"昔の戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"endTime\":3700,\"startMinute\":null,\"endMinute\":null,\"startGranularity\":\"year\",\"endGranularity\":\"year\",\"startDate\":\"1010年\",\"endDate\":\"1010年\",\"precision\":\"exact\",\"primaryCharacter\":null,\"location\":null,\"participants\":[{\"codexId\":\"c-mage\",\"name\":\"老魔術師\",\"role\":\"参戦者\"}],\"scenes\":[{\"sceneId\":\"n-s3\",\"title\":\"裏切り\"}],\"relations\":[{\"cause\":\"魔術戦争\",\"effect\":\"老魔術師との出会い\"}]}"
     },
     {
-      "case": "hidden: 恒久秘匿の死はどの場面でも存在しない扱い",
+      "case": "secret: 恒久秘匿の死もどの場面でも読める",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s3"

@@ -98,7 +98,7 @@
       "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"score\":0.7},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
     },
     {
-      "case": "canned: 場面なしでは secret を全部隠す（fail-closed）",
+      "case": "canned: 場面なしでも secret の出来事を返す",
       "world": {
         "projectId": "p-main"
       },
