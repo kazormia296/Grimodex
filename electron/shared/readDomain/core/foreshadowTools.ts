@@ -17,21 +17,17 @@ import type { CoreToolResult } from "./toolResult.js";
  * then reads. The renderer's thin layer turns the empty-project throw back into
  * its `No active project` result.
  *
- * The two tools are not alike in what they may show (DR-MP4-24):
- * `list_open_foreshadows` never shows a secret foreshadow (the read that
- * fetches the list leaves it out), while `get_foreshadow_detail` answers any
- * foreshadow of the project by id, secret ones and their `notes` included.
- * That asymmetry is moved as it is. It is not decided here; C-11 is its own
- * issue.
+ * The tools differ in scope and detail: `list_open_foreshadows` returns the
+ * project's open rows, while `get_foreshadow_detail` returns one project's
+ * full foreshadow by id, including its `notes`.
  */
 
 /**
  * The open foreshadows of the project. The list is fetched by `native.foreshadowOpen`
- * (Native's `foreshadow_list_open_for_context`, whose SQL has the `secret = 0`,
- * unpaid and not-abandoned conditions; the renderer's in-browser branch has the
- * same) and built here from its wire. The wire has no secret column, so this
- * cannot filter it again: a secret foreshadow that the read returned would be
- * shown, and `mastraReadParity.pipeline.spec.ts` fixes that Native leaves it out.
+ * (Native's `foreshadow_list_open_for_context`, which filters to unpaid,
+ * non-abandoned rows; the renderer's in-browser branch does the same) and built
+ * here from its wire. The wire has no secret column, so this layer forwards
+ * every row returned by the read.
  */
 export async function listOpenForeshadows(
   ctx: CoreReadContext,

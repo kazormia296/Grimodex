@@ -4,7 +4,7 @@
 //! chapter outlines / L3 current scene / L4 codex) as structured JSON so an
 //! external MCP client gets in one call what would otherwise take a dozen
 //! orchestrated read tools. Read-only; every query is scoped to the active
-//! project (XPROJ defense). Secret foreshadows are excluded everywhere.
+//! project (XPROJ defense). Secret foreshadows are included in AI context.
 //!
 //! Deliberate v1 cuts (documented, not oversights): no token budgeting/trim
 //! (the caller sees char counts and can trim), no codex relation BFS /
@@ -129,9 +129,9 @@ pub struct WritingContext {
     pub story_so_far_dropped: usize,
     pub scene: SceneContext,
     pub timeline_neighbors: SceneTimelineNeighbors,
-    /// Foreshadows planted or resolved in this scene (secret excluded).
+    /// Foreshadows planted or resolved in this scene (abandoned excluded).
     pub scene_foreshadows: Vec<SceneForeshadowRef>,
-    /// Project-wide unresolved foreshadows (secret excluded).
+    /// Project-wide unresolved foreshadows, including secret ones.
     pub open_foreshadows: Vec<OpenForeshadowSummary>,
     pub codex: CodexContextLayer,
 }
@@ -316,8 +316,7 @@ fn collect_story_so_far(all_nodes: &[TreeNode], scene_id: &str) -> (Vec<StorySyn
 }
 
 /// Foreshadows planted (setup rows) or resolved (payoff_scene_id) in this
-/// scene. Secret and abandoned foreshadows are excluded — this payload goes to
-/// an external AI, and `secret` exists precisely to keep a twist out of AI
+/// scene. Abandoned foreshadows are excluded; secret ones remain in the AI
 /// context. Scoping runs through foreshadows.project_id (XPROJ).
 fn collect_scene_foreshadows(
     conn: &Connection,
@@ -335,7 +334,7 @@ fn collect_scene_foreshadows(
          FROM foreshadow_setups s
          JOIN foreshadows f ON f.id = s.foreshadow_id
          WHERE s.scene_id = ?1 AND f.project_id = ?2
-           AND f.secret = 0 AND f.abandoned = 0 AND s.is_orphan = 0
+           AND f.abandoned = 0 AND s.is_orphan = 0
          ORDER BY s.created_at",
     )?;
     let setups = setup_stmt.query_map(rusqlite::params![scene_id, project_id], |row| {
@@ -360,7 +359,7 @@ fn collect_scene_foreshadows(
         "SELECT id, title, intent, load_bearing
          FROM foreshadows
          WHERE payoff_scene_id = ?1 AND project_id = ?2
-           AND secret = 0 AND abandoned = 0",
+           AND abandoned = 0",
     )?;
     let payoffs = payoff_stmt.query_map(rusqlite::params![scene_id, project_id], |row| {
         Ok(SceneForeshadowRef {
@@ -1105,20 +1104,37 @@ mod tests {
     // ---------------- foreshadows ----------------
 
     #[test]
-    fn scene_foreshadows_setup_payoff_and_secret_exclusion() {
+    fn scene_foreshadows_include_secret_and_open_list_filters_closed_rows() {
         let conn = make_simple_db();
         seed_project(&conn, "p1", "N");
         seed_node(&conn, "s1", "p1", None, "scene", "S1", None, "a0", "{}");
-        // non-secret with a setup in this scene
+        // Non-secret with a setup in this scene.
         seed_foreshadow(&conn, "f1", "p1", "刻印の謎", false);
         seed_setup(&conn, "su1", "f1", "s1");
-        // secret with a setup in this scene → must be invisible
+        // Secret with a setup in this scene remains in AI context.
         seed_foreshadow(&conn, "f2", "p1", "黒幕の正体", true);
         seed_setup(&conn, "su2", "f2", "s1");
         // non-secret paid off in this scene
         seed_foreshadow(&conn, "f3", "p1", "古い約束", false);
         conn.execute(
             "UPDATE foreshadows SET payoff_scene_id = 's1' WHERE id = 'f3'",
+            [],
+        )
+        .unwrap();
+        // Secret foreshadow planned for payoff in this scene also remains.
+        seed_foreshadow(&conn, "f4", "p1", "古い誓い", true);
+        conn.execute(
+            "UPDATE foreshadows SET payoff_scene_id = 's1' WHERE id = 'f4'",
+            [],
+        )
+        .unwrap();
+        seed_foreshadow(&conn, "f5", "p1", "放棄された謎", false);
+        conn.execute("UPDATE foreshadows SET abandoned = 1 WHERE id = 'f5'", [])
+            .unwrap();
+        seed_setup(&conn, "su5", "f5", "s1");
+        seed_foreshadow(&conn, "f6", "p1", "回収済みの謎", false);
+        conn.execute(
+            "UPDATE foreshadows SET payoff_confirmed = 1 WHERE id = 'f6'",
             [],
         )
         .unwrap();
@@ -1130,15 +1146,18 @@ mod tests {
             .map(|f| (f.foreshadow_id.as_str(), f.role.as_str()))
             .collect();
         assert!(roles.contains(&("f1", "setup")), "got: {roles:?}");
+        assert!(roles.contains(&("f2", "setup")), "got: {roles:?}");
         assert!(roles.contains(&("f3", "payoff")), "got: {roles:?}");
-        assert!(
-            !roles.iter().any(|(id, _)| *id == "f2"),
-            "secret foreshadow leaked: {roles:?}"
-        );
-        // open_foreshadows integration: f1/f3 open & non-secret; f2 excluded.
+        assert!(roles.contains(&("f4", "payoff")), "got: {roles:?}");
+        assert!(!roles.iter().any(|(id, _)| *id == "f5"));
+        // Secret open rows are included; resolved and abandoned rows stay out.
         let open_ids: Vec<&str> = ctx.open_foreshadows.iter().map(|f| f.id.as_str()).collect();
         assert!(open_ids.contains(&"f1"));
-        assert!(!open_ids.contains(&"f2"), "secret leaked into open list");
+        assert!(open_ids.contains(&"f2"));
+        assert!(open_ids.contains(&"f3"));
+        assert!(open_ids.contains(&"f4"));
+        assert!(!open_ids.contains(&"f5"));
+        assert!(!open_ids.contains(&"f6"));
     }
 
     #[test]

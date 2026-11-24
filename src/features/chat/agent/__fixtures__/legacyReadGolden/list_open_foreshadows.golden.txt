@@ -2,7 +2,7 @@
   "tool": "list_open_foreshadows",
   "cases": [
     {
-      "case": "rows: secret=0・未回収・未放棄だけ（browser-mock では Drizzle 側の分岐）",
+      "case": "rows: 未回収・未放棄（secret 値にかかわらず。browser-mock の Drizzle 分岐）",
       "world": {
         "projectId": "p-main",
         "activeSceneId": "n-s1"
@@ -10,8 +10,8 @@
       "params": {},
       "result": {
         "name": "list_open_foreshadows",
-        "summary": "2 open foreshadowing items",
-        "tokensUsed": 167,
+        "summary": "3 open foreshadowing items",
+        "tokensUsed": 262,
         "content": [
           {
             "id": "fs-1",
@@ -19,6 +19,13 @@
             "intent": "杖が後で鍵になる",
             "loadBearing": "critical",
             "setupCount": 2
+          },
+          {
+            "id": "fs-2",
+            "title": "黒幕の伏線",
+            "intent": "黒幕は最初から出ている",
+            "loadBearing": "supporting",
+            "setupCount": 1
           },
           {
             "id": "fs-5",
@@ -29,7 +36,7 @@
           }
         ]
       },
-      "contentJson": "[{\"id\":\"fs-1\",\"title\":\"老魔術師の杖\",\"intent\":\"杖が後で鍵になる\",\"loadBearing\":\"critical\",\"setupCount\":2},{\"id\":\"fs-5\",\"title\":\"軽い伏線\",\"intent\":\"\",\"loadBearing\":null,\"setupCount\":0}]"
+      "contentJson": "[{\"id\":\"fs-1\",\"title\":\"老魔術師の杖\",\"intent\":\"杖が後で鍵になる\",\"loadBearing\":\"critical\",\"setupCount\":2},{\"id\":\"fs-2\",\"title\":\"黒幕の伏線\",\"intent\":\"黒幕は最初から出ている\",\"loadBearing\":\"supporting\",\"setupCount\":1},{\"id\":\"fs-5\",\"title\":\"軽い伏線\",\"intent\":\"\",\"loadBearing\":null,\"setupCount\":0}]"
     },
     {
       "case": "empty: 空の project",

@@ -202,10 +202,8 @@ describe("list_open_foreshadows", () => {
     expect(result.tokensUsed).toBe(JSON.stringify(result.content).length);
   });
 
-  it("shows exactly the foreshadows the read returned: the wire has no secret column, so the secret condition is the read's", async () => {
-    // A read that returned a secret foreshadow would be shown. `mastraReadParity.pipeline.spec.ts`
-    // fixes that Native's own read leaves secret ones out; this fixes that the core does not
-    // pretend to filter what it cannot see.
+  it("shows a secret foreshadow when the read returns it", async () => {
+    // The wire has no secret column; the core forwards the read result unchanged.
     const { executors } = makeCtx({
       foreshadowOpen: async () => ({
         foreshadows: [nativeForeshadow({ id: "returned", secret: 1 })],
@@ -438,7 +436,7 @@ describe("get_foreshadow_detail", () => {
     expect(result.summary).toBe("老魔術師の杖: 2 setup(s), payoff planned");
   });
 
-  it("returns a secret foreshadow and its notes (DR-MP4-24: moved as it is, not decided here)", async () => {
+  it("returns an explicitly requested secret foreshadow and its notes", async () => {
     const { executors } = makeCtx({
       answers: {
         foreshadows: [
