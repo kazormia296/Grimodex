@@ -39,7 +39,13 @@
 - 限界（diff で扱う）：Codex Entry が削除・統合されると id が変わる。Core は同一視しない。diff は「消えた」と「現れた」の対として出し、
   「同一性が失われた」と表示する（作者が統合を宣言する経路は ERM 側。M2-D1 の範囲外）。
 
-### 2.3 Producer の宣言
+### 2.3 Producer の宣言（2026-11-24 にユーザーが「registry の宣言は推奨どおり」と確認）
+
+- 語：Codex の id 由来の同一性を契約の `content-keyed`（内容由来）と呼ばない。registry では `producer-declared-object-key` とする
+  （抽出 Artifact 契約 §4.1 の内容キーと混ざるのを避ける）。
+- 置き場：ロードマップは「Codex の抽出 Producer の宣言は無い」としている。既存の `nir1-reviewed-entity-relation-v1`（index の writer）に足しても、
+  抽出側の宣言にはならない可能性がある。実装前に、同じ entry に `identity` を足す案と、抽出側の writer の entry を新設する案を比べて決める。
+- key の定義：変更レビューの「今」の側は未 review の revision で、roster の行が無いことがある。その場合の key は bundle の `entity_id`／`edge_id`（同じ `codex:`／`codex-relation:` の接頭辞）で定義する。
 
 - producer registry の `nir1-reviewed-entity-relation-v1` に、同一性の宣言を足す：粒度＝object、key＝`source_object_identity`、kind＝`content-keyed` 相当
   （Codex id 由来。内容 digest ではない点を明記し、名称は実装時に `producer-keyed` へ改める余地を残す。契約側の kind の語は §3 の問いで決める）。
