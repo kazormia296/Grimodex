@@ -122,6 +122,33 @@ describe("startMastraAgentTurn", () => {
     });
   });
 
+  it("returns the typed context-window terminal unchanged", async () => {
+    const result = {
+      status: "context-window-exceeded",
+      turnId: TURN_ID,
+      usage: {
+        contextTokens: 6,
+        toolTokens: 2,
+        envelopeTokens: 1,
+        safetyMarginTokens: 1,
+        inputTokens: 9,
+        outputReservedTokens: 2,
+        reservedTotalTokens: 12,
+        contextWindow: 9,
+        remainingTokens: -3,
+        overflowTokens: 3,
+      },
+      overflowTokens: 3,
+    };
+    invokeMock.mockResolvedValue(result);
+    await expect(startMastraAgentTurn(REQUEST)).resolves.toEqual({
+      kind: "context-window-exceeded",
+      turnId: TURN_ID,
+      usage: result.usage,
+      overflowTokens: 3,
+    });
+  });
+
   it("folds a restricted profile's denial into the restricted refusal", async () => {
     invokeMock.mockRejectedValue(
       new IpcInvokeError(MASTRA_AGENT_TURN_START_COMMAND, {
