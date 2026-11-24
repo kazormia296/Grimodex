@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { extractMock, loadMock, saveMock, toastErrorMock } = vi.hoisted(() => ({
-  extractMock: vi.fn(),
-  loadMock: vi.fn(),
-  saveMock: vi.fn(),
-  toastErrorMock: vi.fn(),
-}));
+const { extractMock, loadMock, saveMock, toastErrorMock, structureReviewFlag } =
+  vi.hoisted(() => ({
+    extractMock: vi.fn(),
+    loadMock: vi.fn(),
+    saveMock: vi.fn(),
+    toastErrorMock: vi.fn(),
+    structureReviewFlag: { enabled: true },
+  }));
 
 vi.mock("./candidateExtractor", () => ({
   extractCodexCandidatesResult: extractMock,
@@ -15,6 +17,9 @@ vi.mock("./codexCandidateDismissals", () => ({
   saveDismissedCandidateKeys: saveMock,
 }));
 vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
+vi.mock("./codexStructureExtractionFlag", () => ({
+  isCodexStructureExtractionReviewEnabled: () => structureReviewFlag.enabled,
+}));
 
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
@@ -53,6 +58,7 @@ const store = () => useCodexCandidateHostStore.getState();
 beforeEach(() => {
   vi.resetAllMocks();
   store().reset();
+  structureReviewFlag.enabled = true;
   useGlobalHistoryStore.getState().clear();
   loadMock.mockResolvedValue(new Set());
   saveMock.mockResolvedValue(undefined);
@@ -78,16 +84,47 @@ describe("syncProject", () => {
       dismissed: new Set(["空"]),
       dismissedLoaded: true,
     });
+    store().openStructureReview();
     store().syncProject("p2");
     expect(extractMock).not.toHaveBeenCalled();
     expect(store().generation).toBe(firstGeneration + 1);
     expect(store().scan).toEqual({ status: "idle", candidates: [] });
     expect(store().dismissed).toEqual(new Set());
     expect(store().dismissedLoaded).toBe(false);
+    expect(store().structureOpen).toBe(false);
+    expect(store().structureEverOpened).toBe(true);
 
     oldRead.resolve(new Set(["雲"]));
     await vi.waitFor(() => expect(store().dismissedLoaded).toBe(true));
     expect(store().dismissed).toEqual(new Set(["雨"]));
+  });
+});
+
+describe("structure review state", () => {
+  it("opens, closes without losing everOpened, and resets with the store", () => {
+    store().setStructureOpen(true);
+    expect(store().structureOpen).toBe(true);
+    expect(store().structureEverOpened).toBe(true);
+
+    store().setStructureOpen(false);
+    expect(store().structureOpen).toBe(false);
+    expect(store().structureEverOpened).toBe(true);
+
+    store().reset();
+    expect(store().structureOpen).toBe(false);
+    expect(store().structureEverOpened).toBe(false);
+  });
+
+  it("ignores open requests while the review flag is disabled", () => {
+    structureReviewFlag.enabled = false;
+
+    store().setStructureOpen(true);
+    expect(store().structureOpen).toBe(false);
+    expect(store().structureEverOpened).toBe(false);
+
+    store().openStructureReview();
+    expect(store().structureOpen).toBe(false);
+    expect(store().structureEverOpened).toBe(false);
   });
 });
 

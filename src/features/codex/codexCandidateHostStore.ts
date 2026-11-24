@@ -10,6 +10,7 @@ import {
   saveDismissedCandidateKeys,
 } from "./codexCandidateDismissals";
 import { activeCandidates, candidateKey } from "./codexCandidates";
+import { isCodexStructureExtractionReviewEnabled } from "./codexStructureExtractionFlag";
 
 export type CodexCandidateScan = {
   status: "idle" | "scanning" | "done" | "failed";
@@ -22,7 +23,11 @@ export interface CodexCandidateHostState {
   scan: CodexCandidateScan;
   dismissed: Set<string>;
   dismissedLoaded: boolean;
+  structureOpen: boolean;
+  structureEverOpened: boolean;
   syncProject: (projectId: string | null) => void;
+  setStructureOpen: (open: boolean) => void;
+  openStructureReview: () => void;
   /**
    * 走査を要求する（同時に走る走査は 1 つ、待ちは最新の 1 つ）。
    * - 既定：走査中なら合流し、`done` ならその結果を再利用する（件数の読み取り用）。
@@ -58,6 +63,8 @@ function emptyHostState() {
     scan: { status: "idle", candidates: [] } as CodexCandidateScan,
     dismissed: new Set<string>(),
     dismissedLoaded: false,
+    structureOpen: false,
+    structureEverOpened: false,
   };
 }
 
@@ -213,6 +220,7 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
         scan: { status: "idle", candidates: [] },
         dismissed: new Set(),
         dismissedLoaded: false,
+        structureOpen: false,
       });
       if (!projectId) return;
       const token = projectToken;
@@ -227,6 +235,18 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
           }
         })
         .catch(() => {});
+    },
+
+    setStructureOpen(open) {
+      if (open && !isCodexStructureExtractionReviewEnabled()) return;
+      set((state) => ({
+        structureOpen: open,
+        structureEverOpened: state.structureEverOpened || open,
+      }));
+    },
+
+    openStructureReview() {
+      get().setStructureOpen(true);
     },
 
     requestScan(options) {

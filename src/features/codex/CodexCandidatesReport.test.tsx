@@ -4,6 +4,7 @@ import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const projectIdRef = vi.hoisted(() => ({ current: "p1" }));
+const structureReviewFlag = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/features/project/projectStore", () => ({
   useCurrentProjectId: () => projectIdRef.current,
   getCurrentProjectId: () => projectIdRef.current,
@@ -19,8 +20,13 @@ vi.mock("./codexCandidateDismissals", () => ({
   loadDismissedCandidateKeys: vi.fn(),
   saveDismissedCandidateKeys: vi.fn(),
 }));
+vi.mock("./codexStructureExtractionFlag", () => ({
+  isCodexStructureExtractionReviewEnabled: () => structureReviewFlag.enabled,
+}));
 vi.mock("./CodexStructureExtractDialog", () => ({
-  CodexStructureExtractDialog: () => null,
+  CodexStructureExtractDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="structure-dialog" data-open={String(open)} />
+  ),
 }));
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
@@ -30,6 +36,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCodexStore } from "./codexStore";
 import { extractCodexCandidatesResult } from "./candidateExtractor";
 import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
+import { CodexStructureReviewHost } from "./CodexStructureReviewHost";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import {
   loadDismissedCandidateKeys,
@@ -68,6 +75,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   useCodexCandidateHostStore.getState().reset();
   projectIdRef.current = "p1";
+  structureReviewFlag.enabled = true;
   mockLoadDismissed.mockResolvedValue(new Set());
   mockSaveDismissed.mockResolvedValue(undefined);
   useCodexStore.setState({
@@ -163,6 +171,34 @@ describe("CodexCandidatesReport: 開き直すたびの走査", () => {
 
     await waitFor(() =>
       expect(screen.getAllByRole("listitem")).toHaveLength(2),
+    );
+  });
+});
+
+describe("CodexCandidatesReport structure review entry", () => {
+  it("opens the shared host dialog from the Report button", async () => {
+    mockExtract.mockResolvedValue({
+      ok: true,
+      candidates: [candidate("test-candidate")],
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <CodexCandidatesReport />
+        <CodexStructureReviewHost />
+      </>,
+    );
+
+    await user.click(await screen.findByTestId("codex-candidates-toggle"));
+    await user.click(
+      await screen.findByTestId("codex-candidates-open-structure"),
+    );
+
+    expect(
+      (await screen.findByTestId("structure-dialog")).getAttribute("data-open"),
+    ).toBe("true");
+    expect(useCodexCandidateHostStore.getState().structureEverOpened).toBe(
+      true,
     );
   });
 });

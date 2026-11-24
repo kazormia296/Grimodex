@@ -24,8 +24,8 @@ import { parseAliases } from "./codexMatcher";
 import { isRelationalTerm } from "./extraction/relationalTerms";
 import { rootCause } from "@/lib/debugLog";
 import { isCodexStructureExtractionReviewEnabled } from "./codexStructureExtractionFlag";
-import { CodexStructureExtractDialog } from "./CodexStructureExtractDialog";
 import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
+import { useCodexCandidateDismissalActions } from "./useCodexCandidateDismissalActions";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -51,18 +51,20 @@ export function CodexCandidatesReport() {
   const candidates = scan.candidates;
   const loading = scan.status === "scanning";
   const dismissed = useCodexCandidateHostStore((s) => s.dismissed);
-  const dismissedLoaded = useCodexCandidateHostStore((s) => s.dismissedLoaded);
   const generation = useCodexCandidateHostStore((s) => s.generation);
   const syncProject = useCodexCandidateHostStore((s) => s.syncProject);
   const requestScan = useCodexCandidateHostStore((s) => s.requestScan);
-  const mutateDismissed = useCodexCandidateHostStore((s) => s.mutateDismissed);
+  const openStructureReview = useCodexCandidateHostStore(
+    (s) => s.openStructureReview,
+  );
+  const { handleDismiss, handleRestoreAll } =
+    useCodexCandidateDismissalActions();
 
   const [judging, setJudging] = useState(false);
   const [judgments, setJudgments] = useState<Map<string, CandidateJudgment>>(
     new Map(),
   );
   const [expanded, setExpanded] = useState(false);
-  const [structureOpen, setStructureOpen] = useState(false);
   const structureReviewEnabled = isCodexStructureExtractionReviewEnabled();
 
   useEffect(() => {
@@ -102,42 +104,6 @@ export function CodexCandidatesReport() {
       setJudging(false);
     }
   }, [judging, visible, entries, t]);
-
-  const handleDismiss = useCallback(
-    (surface: string) => {
-      const prev = useCodexCandidateHostStore.getState().dismissed;
-      const next = new Set(prev);
-      next.add(candidateKey(surface));
-      mutateDismissed(next, prev, t("codex.candidates.historyDismiss"), () =>
-        t("codex.candidates.dismissFailed"),
-      );
-    },
-    [mutateDismissed, t],
-  );
-
-  // 構造抽出で畳んだ表記を戻す（打ち手 3）。候補画面と同じ入口（mutate）を通し、
-  // 候補画面の state が古いまま残らないようにする。
-  const handleRestoreDismissedKeys = useCallback(
-    (keys: readonly string[]) => {
-      const prev = useCodexCandidateHostStore.getState().dismissed;
-      const next = new Set(prev);
-      for (const key of keys) next.delete(key);
-      if (next.size === prev.size) return;
-      mutateDismissed(next, prev, t("codex.candidates.historyRestore"), () =>
-        t("codex.candidates.dismissFailed"),
-      );
-    },
-    [mutateDismissed, t],
-  );
-
-  const handleRestoreAll = useCallback(() => {
-    mutateDismissed(
-      new Set(),
-      useCodexCandidateHostStore.getState().dismissed,
-      t("codex.candidates.historyRestore"),
-      () => t("codex.candidates.dismissFailed"),
-    );
-  }, [mutateDismissed, t]);
 
   // 受理 (新規作成): AI 判定があれば種別/要約を使って作成 (無ければ character 既定)。
   // AI が「別名」と判定していても、このボタンはあえて**新規エントリ**を作る
@@ -204,15 +170,6 @@ export function CodexCandidatesReport() {
 
   if (visible.length === 0 && hiddenActiveCount === 0) return null;
 
-  const structureDialog = structureReviewEnabled ? (
-    <CodexStructureExtractDialog
-      open={structureOpen}
-      onOpenChange={setStructureOpen}
-      onRestoreDismissedCandidates={handleRestoreDismissedKeys}
-      dismissedCandidateKeys={dismissedLoaded ? dismissed : undefined}
-    />
-  ) : null;
-
   // 全件却下: 控えめなバーで件数と再表示導線だけ残す。
   if (visible.length === 0) {
     return (
@@ -238,7 +195,6 @@ export function CodexCandidatesReport() {
             {t("codex.candidates.show")}
           </button>
         </div>
-        {structureDialog}
       </>
     );
   }
@@ -388,7 +344,7 @@ export function CodexCandidatesReport() {
               {structureReviewEnabled && (
                 <button
                   type="button"
-                  onClick={() => setStructureOpen(true)}
+                  onClick={openStructureReview}
                   data-testid="codex-candidates-open-structure"
                   className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-sky-700/90 hover:bg-sky-500/20 dark:text-sky-200 ${FOCUS_RING}`}
                 >
@@ -427,7 +383,6 @@ export function CodexCandidatesReport() {
           </div>
         )}
       </div>
-      {structureDialog}
     </>
   );
 }

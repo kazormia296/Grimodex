@@ -19,6 +19,9 @@ vi.mock("./codexCandidateDismissals", () => ({
   loadDismissedCandidateKeys: vi.fn(),
   saveDismissedCandidateKeys: vi.fn(),
 }));
+vi.mock("./codexStructureExtractionFlag", () => ({
+  isCodexStructureExtractionReviewEnabled: () => true,
+}));
 // 構造抽出のダイアログは、戻す入口（onRestoreDismissedCandidates）を呼ぶ最小の代役にする。
 vi.mock("./CodexStructureExtractDialog", () => ({
   CodexStructureExtractDialog: ({
@@ -57,6 +60,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCodexStore } from "./codexStore";
 import { extractCodexCandidatesResult } from "./candidateExtractor";
 import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
+import { CodexStructureReviewHost } from "./CodexStructureReviewHost";
 import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
@@ -100,10 +104,17 @@ afterEach(() => cleanup());
 
 async function openReport() {
   const user = userEvent.setup();
-  render(<CodexCandidatesReport />);
+  render(
+    <>
+      <CodexCandidatesReport />
+      <CodexStructureReviewHost />
+    </>,
+  );
   await user.click(await screen.findByTestId("codex-candidates-toggle"));
   // 見送り済みの 2 件は隠れ、残りの 1 件だけが行になる。
   await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+  await user.click(screen.getByTestId("codex-candidates-open-structure"));
+  await screen.findByTestId("fake-dialog");
   return user;
 }
 
@@ -165,11 +176,18 @@ describe("CodexCandidatesReport: 構造抽出から却下を戻す（打ち手 3
   it("却下の記録を読めなかったときは、空集合を渡さない（全部外したように見せない）", async () => {
     mockLoadDismissed.mockRejectedValue(new Error("read failed"));
     const user = userEvent.setup();
-    render(<CodexCandidatesReport />);
+    render(
+      <>
+        <CodexCandidatesReport />
+        <CodexStructureReviewHost />
+      </>,
+    );
     await user.click(await screen.findByTestId("codex-candidates-toggle"));
     await waitFor(() =>
       expect(screen.getAllByRole("listitem")).toHaveLength(3),
     );
+    await user.click(screen.getByTestId("codex-candidates-open-structure"));
+    await screen.findByTestId("fake-dialog");
     expect(screen.getAllByTestId("fake-dialog")[0]!.dataset.keys).toBe("none");
   });
 });
