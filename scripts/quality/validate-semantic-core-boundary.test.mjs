@@ -184,6 +184,19 @@ describe("narrative object identity declarations", () => {
 
     assert.ok(errors.some((error) => error.includes("duplicate producerId")));
   });
+
+  it("rejects a materialKind declared twice for one producer", () => {
+    const { declarations, producerRegistry } = documents();
+    declarations.entries[0].objects.push({
+      ...declarations.entries[0].objects[0],
+      keyTemplate: "codex:{other_id}",
+    });
+    const errors = [];
+
+    validateObjectIdentityDeclarations(declarations, producerRegistry, errors);
+
+    assert.ok(errors.some((error) => error.includes("duplicate materialKind")));
+  });
 });
 
 function writeJson(root, relativePath, value) {

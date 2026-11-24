@@ -1414,6 +1414,7 @@ requirements:
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
       - policies/narrative/narrative-dependency-producer-registry.json
+      - policies/narrative/narrative-object-identity-declarations.json
       - policies/narrative/fixtures/dependency-role-contract.json
       - policies/narrative/fixtures/canonical-json-number-parity.json
       - policies/narrative/fixtures/narrative-ir/scope-authority-basis-v2.json
@@ -1427,6 +1428,7 @@ requirements:
       - policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - policies/narrative/schemas/narrative-dependency-producer-registry.schema.json
+      - policies/narrative/schemas/narrative-object-identity-declarations.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - policies/narrative/schemas/narrative-ir-contract.schema.json
       - policies/narrative/schemas/narrative-finding-contract.schema.json

@@ -1573,6 +1573,17 @@ export function validateObjectIdentityDeclarations(declarations, producerRegistr
     if (!producerIds.has(producerId)) {
       errors.push(`narrative object identity declarations reference unknown producerId: ${producerId}`);
     }
+    const materialKinds = new Set();
+    for (const object of Array.isArray(entry.objects) ? entry.objects : []) {
+      const materialKind = object?.materialKind;
+      if (!isNonEmptyString(materialKind)) continue;
+      if (materialKinds.has(materialKind)) {
+        errors.push(
+          `narrative object identity declarations duplicate materialKind ${materialKind} for producerId: ${producerId}`,
+        );
+      }
+      materialKinds.add(materialKind);
+    }
   }
 }
 
