@@ -143,14 +143,14 @@ describe("get_codex_entry の legacy 特性", () => {
     expect(actual).toBe(readFileSync(GOLDEN, "utf8"));
   });
 
-  it("通常の details に include_in_context=0 を含めず、別 project の同 slug の項目名は含める（Q-C6-1）", async () => {
+  it("Q-C6-1 を直し、自 project の詳細だけを通常・released の details に含める", async () => {
     await setWorld(MAIN_S1);
     const result = await run("ge-normal");
     const content = result.content as {
       details: Array<{ field: string; value: string | null }>;
     };
     expect(content.details).toContainEqual({ field: "年齢", value: "18" });
-    expect(content.details).toContainEqual({
+    expect(content.details).not.toContainEqual({
       field: "別 project の項目名",
       value: null,
     });
@@ -161,8 +161,10 @@ describe("get_codex_entry の legacy 特性", () => {
     expect(content.details.map((detail) => detail.field)).toEqual([
       "年齢",
       "秘密の詳細",
-      "別 project の項目名",
     ]);
+    expect(content.details.map((detail) => detail.field)).not.toContain(
+      "別 project の項目名",
+    );
   });
 
   it("released は Phase 解決後の本文・要約・詳細を使い、null と非公開詳細を出さない", async () => {
@@ -178,7 +180,6 @@ describe("get_codex_entry の legacy 特性", () => {
     expect(content.details).toEqual([
       { field: "年齢", value: "Phase 解決後の年齢" },
       { field: "秘密の詳細", value: null },
-      { field: "別 project の項目名", value: null },
     ]);
     expect(resultJson(result)).not.toContain("SECRET-BASE");
     expect(resultJson(result)).not.toContain("SECRET-PHASE-OLD-DETAIL");
