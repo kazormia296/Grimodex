@@ -193,8 +193,9 @@ pub struct UpdateForeshadowParams {
     pub payoff_confirmed: Option<bool>,
     /// Mark the item as abandoned (optional).
     pub abandoned: Option<bool>,
-    /// Retired compatibility input. Any provided value is rejected and this
-    /// field is not published in the JSON schema.
+    /// Retired compatibility input. Any provided boolean (`true` or `false`)
+    /// is rejected; JSON `null` is read as omission. This field is not
+    /// published in the JSON schema.
     #[serde(default)]
     #[schemars(skip)]
     pub secret: Option<bool>,
