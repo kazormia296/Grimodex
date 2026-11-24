@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { WorkLayerPrototypePreview } from "./WorkLayerPrototypePreview";
+import { WORK_LAYER_FIXTURE } from "./workLayerFixture";
 import { deriveAllWork } from "./workLedgerItems";
 import { modelForPrototypeMode } from "./workLayerPrototype";
 
@@ -19,7 +20,7 @@ describe("Work Layer acceptance contracts", () => {
   });
 
   it("gives EMPTY a self-consistent quiet ledger without active or disposed work", () => {
-    const empty = modelForPrototypeMode("empty");
+    const empty = modelForPrototypeMode("empty", WORK_LAYER_FIXTURE);
 
     expect(empty.focus).toBeNull();
     expect(empty.attention).toEqual([]);

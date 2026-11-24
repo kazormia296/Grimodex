@@ -157,12 +157,30 @@ export interface WorkLayerLoadRequest {
   readonly reason: WorkLayerLoadReason;
 }
 
-/**
- * UI-only read boundary. Fixture previews use this port; the live adapter is
- * outside this slice.
- */
+/** UI-only read boundary for fixture previews and read-only live data. */
 export interface WorkLayerPort {
   readonly kind: WorkLayerPortKind;
   readonly scopeKey: string;
   load(request: WorkLayerLoadRequest): Promise<WorkLayerModel>;
+  subscribe?(listener: (model: WorkLayerModel) => void): () => void;
+  dispose?(): void;
+}
+
+export type CandidateCountSnapshot =
+  | { readonly status: "ready"; readonly count: number }
+  | { readonly status: "not-counted" }
+  | { readonly status: "unavailable" };
+
+export interface WorkLayerLivePortDependencies {
+  readonly projectId: string;
+  readonly readStaleProposalCount: () => Promise<
+    | { readonly allowed: false }
+    | { readonly allowed: true; readonly count: number }
+  >;
+  readonly readCandidateCount: () => CandidateCountSnapshot;
+  readonly ensureCandidateScan: () => Promise<void>;
+  readonly subscribeCandidateCount: (listener: () => void) => () => void;
+  readonly isCandidateExtractionApplicable: () => boolean;
+  readonly structureReviewAvailable: () => boolean;
+  readonly displayWaitLimitMs?: number;
 }
