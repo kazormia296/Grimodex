@@ -155,7 +155,10 @@ test("assertRefusal accepts exactly the typed refusal", () => {
 test("the journey drives Main's IPC directly (no renderer branch) and sends nothing", () => {
   const source = read("electron/scripts/mastra-agent-turn-product-journey.mjs");
   assert.match(source, /harness\.invokeOk\(page, "db_execute"/);
-  assert.match(source, /No API key configured for anthropic/);
+  // Until the tokenizer is wired into Main's owner (4c-1, after T0), a valid start is
+  // refused `unsupported` (fail closed) before the runtime loads or a key is resolved.
+  assert.match(source, /no-tokenizer-no-rows/);
+  assert.match(source, /"unsupported"/);
   const journey = createMastraAgentTurnJourney({
     configureWorkspace: async () => {},
   });

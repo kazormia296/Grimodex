@@ -460,6 +460,8 @@ describe("the read core on Main's adapter over the real Native addon gives the r
           ftsCalls.push(args);
           return realReads.fts(args);
         },
+        foreshadowListWithLabels: (args) =>
+          realReads.foreshadowListWithLabels(args),
         // The real Native's open-foreshadow read, through Main's typed read
         // (PR-5b), behind a spy: its answer is a wire and the core builds the
         // tool's result from it (the golden is compared to the byte).

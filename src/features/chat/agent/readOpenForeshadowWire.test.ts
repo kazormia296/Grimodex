@@ -22,8 +22,10 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
 
 import {
   listOpenForeshadowsForContext,
+  readForeshadowListWithLabelsWire,
   readOpenForeshadowWire,
 } from "@/features/foreshadow/api";
+import { foreshadowsForListFromWire } from "../../../../electron/shared/readDomain/features/foreshadow/readRows.js";
 import { invoke } from "@/lib/tauri";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
@@ -51,6 +53,23 @@ type Wire = {
 };
 
 const dbStatements = () => legacyReadInvokeBridge.calls("db_execute");
+
+function settledListSeedWire(): Wire {
+  const rows = (table: string) =>
+    LEGACY_READ_SEED.find((entry) => entry.table === table)!.rows as Array<
+      Record<string, unknown>
+    >;
+  const foreshadows = rows("foreshadows").filter(
+    (row) => row.project_id === "p-main" && row.abandoned === 0,
+  );
+  const ids = new Set(foreshadows.map((row) => row.id));
+  return {
+    foreshadows,
+    setups: rows("foreshadow_setups").filter((row) =>
+      ids.has(row.foreshadow_id),
+    ),
+  };
+}
 
 describe("readOpenForeshadowWire", () => {
   beforeAll(async () => {
@@ -101,6 +120,70 @@ describe("readOpenForeshadowWire", () => {
         "fs-2",
       ]);
       expect(wire.setups[0]).toHaveProperty("sceneId");
+    });
+
+    it("settled-list wire は同 project の未放棄全件を返す", async () => {
+      await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+      legacyReadInvokeBridge.reset();
+      const wire = (await readForeshadowListWithLabelsWire("p-main")) as Wire;
+      expect(wire.foreshadows.map((row) => row.id)).toEqual([
+        "fs-1",
+        "fs-2",
+        "fs-3",
+        "fs-5",
+        "fs-7",
+      ]);
+      expect(wire.foreshadows.find((row) => row.id === "fs-7")).toMatchObject({
+        payoffConfirmed: true,
+        payoffSceneId: "n-arch",
+      });
+      expect(wire.setups.some((row) => row.sceneId)).toBe(true);
+      const select = String(dbStatements()[0]!.args?.sql);
+      expect(select).toMatch(/from "foreshadows"/iu);
+      expect(select).toContain('"foreshadows"."abandoned" = ?');
+      expect(select).not.toContain('"foreshadows"."payoff_confirmed"');
+      expect(select).not.toContain('"foreshadows"."secret"');
+    });
+
+    it("the Native and Drizzle settled wires produce the same list from the existing seed", async () => {
+      await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+      const drizzle = await readForeshadowListWithLabelsWire("p-main");
+      const drizzleRows = foreshadowsForListFromWire(drizzle);
+      expect(drizzleRows.map((row) => row.id)).toEqual([
+        "fs-1",
+        "fs-2",
+        "fs-5",
+        "fs-3",
+        "fs-7",
+      ]);
+      expect(drizzleRows.slice(-2).every((row) => row.settled === true)).toBe(
+        true,
+      );
+
+      const holder = window as unknown as { grimodex?: unknown };
+      holder.grimodex = {};
+      try {
+        const native = settledListSeedWire();
+        legacyReadInvokeBridge.reset();
+        legacyReadInvokeBridge.override(
+          "foreshadow_list_with_labels",
+          () => native,
+        );
+        const wire = await readForeshadowListWithLabelsWire("p-main");
+        expect(wire).toBe(native);
+        expect(
+          legacyReadInvokeBridge.calls("foreshadow_list_with_labels"),
+        ).toEqual([
+          {
+            cmd: "foreshadow_list_with_labels",
+            args: { projectId: "p-main" },
+          },
+        ]);
+        expect(dbStatements()).toEqual([]);
+        expect(foreshadowsForListFromWire(wire)).toEqual(drizzleRows);
+      } finally {
+        delete holder.grimodex;
+      }
     });
 
     it("foreshadows の文は project・未回収・未放棄で絞り、setups は IN の 1 文（計 2 文）。Native は呼ばない", async () => {

@@ -61,3 +61,46 @@ F1 の PR の本文（#1093）に書いた。
 - 画面の編集ダイアログのチェックは、F2 まで残る（ON にしても、AI への渡し方には効かない）。**公開版（release）には、F1・F2・F3・F9・F10 が全部入った後に、F7 の測定の結果をユーザーに見せてから出す。**
 - 既存の `secret = 1` の伏線は、値が残り、A3 と本文の宣言の veto だけが読み続ける（確認 129）。画面から外せない（F2 の後）。
 - 実 addon の spec・`electron/native/grimodex-node/test/agent-writes.test.mjs` は、hosted の `electron-native` が最終の確認。
+
+## 5. F2 と F10（2026-11-25）
+
+### F2（画面。#1098 で merge 済み）
+
+伏線の編集ダイアログの「AI にこの伏線を見せない（ネタバレ防止）」のチェックと説明（`foreshadow.edit.secretLabel`・`secretDesc`）を消した。作者は、編集で `secret` を変えられなくなる（既存の値は残る）。人間の書き口 `foreshadow_update` の `secret` の欄（`ForeshadowPatch` の型。評価の書き口）は残す。実 Chromium で変更前後を比べ、崩れがないことを確かめた（ダイアログは約 50px 縮む）。**F3 の「残る制限」の「F2 まで残る」は、これで解消した。**
+
+### DR-FSR-4　自動の「未回収の伏線」が枠を超えて省いたとき、AI に残りの件数の 1 行を足す（F10。確認 123・130）
+
+- **何を足すか**：チャットの自動の文脈「### 未回収の伏線」は、約 1000 token の枠（`OPEN_FS_TOKEN_BUDGET`）を超えると critical だけに絞る（この仕組みと枠は変えない）。**絞って省いたとき、省いた件数 `n`（全件 − 表示した件数）の 1 行を、伏線の節の中（同じ `\n\n` の単位）に足す**。`trimL2Text` は L2 を `\n\n` 区切りで先頭から削るので、別の単位にすると 1 行だけが残る／消える。critical が 0 件でも、見出しとこの 1 行が残り、AI には「未回収の伏線は無い」と見えない。枠に収まるとき（`n = 0`）は、どちらのモードでも足さない。
+- **文言**（`src/prompts/ja|en/chatSystem.ts` の `fsOmittedLines`）：
+  - 道具を呼べるチャット（`agentMode === true`）：ja「ほかに n 件あります。一覧の道具で取れます」（確認 123 の文のとおり。末尾の句点なし）、en `{n} more open foreshadows are not shown. Fetch them with the list tool.`
+  - 道具を呼べないチャット（`agentMode` が `false`・未指定）：ja「ほかに n 件あります。」まで（確認 130。存在しない道具を指さない）、en `{n} more open foreshadows are not shown.`
+  - **日本語の 2 文は、ユーザーが選んだ文。英語の 2 文は、意味を日本語と同じにした実装の技術判断**（ユーザーの確認の範囲の外。PR の本文でユーザーに見せる）。単数形（`1 more open foreshadows`）は、既存の prompt に単数・複数の慣習が無いので、複数形のまま。
+- 「一覧の道具」は、枠を持たず全件を返す `list_open_foreshadows`（指定なし）を指す。F9 の `includeSettled` の回収済みは数えない（1 行は未回収の省略だけ）。
+- 変えないもの：枠の値・critical だけに絞る仕組み・伏線の形（題・意図・状態の印・重要度・仕込みの件数）・`list_open_foreshadows`・Native・MCP。
+
+### 残る制限（F10）
+
+- 伏線の `intent`（複数行の入力）に空行があると、L2 の trim（`\n\n` 区切り）が伏線ブロックの途中で切れうる。そのとき、件数の行は残り、trim で消えた伏線は `n` に数えられない（件数が少なく出る）。伏線ブロックの中の空行は trim の単位を割る既存の性質で、独立レビューの P2。この PR では直さない。
+- 全件が critical で、critical だけでも枠を超える場合は、さらに絞らない（既存）。そのとき `n = 0` で 1 行は付かない。
+- AI 指示の資産（prompt）の変更なので、品質ゲート（`grimodex-author`・`pnpm eval:impact`）は hosted で取る。F7 の測定の対象の文脈には、この 1 行が入る。
+
+## 6. この PR の範囲：F9（回収済みの一覧。2026-11-24）
+
+**入れる**：アプリ内と MCP の `list_open_foreshadows` に、回収済みを求めたときだけ返す指定を足す（確認 119）。**入れない**：自動の一覧（チャットの文脈。未回収だけのまま）、省いたときの 1 行（F10）、Native の SQL・IPC の契約・napi・`profileEgress.ts`、`secret`（F1・F3 で済み）。
+
+### DR-FSR-3　`list_open_foreshadows` に `includeSettled`（MCP は `include_settled`）を足す（F9）
+
+- **形**：新しい道具は足さず、今ある道具に任意の引数を足す（確認 119 の (1)(2)）。省略・`false`・`undefined` は今までどおり（未回収・未放棄だけ。結果の形・summary・`tokensUsed`・golden を変えない）。`true` のとき、未回収・未放棄に加えて、**未放棄の回収済み**（`payoff_confirmed = 1`）を返し、回収済みの行だけ `settled: true` を付ける。**放棄は含めない**（確認 119 の (3)）。`secret` では絞らない。`"true"`・`1`・`null`・配列は、説明つきで拒む（アプリ内）。
+- **Native の契約を足さない（B 案。技術判断）**：回収済みを返す読みを新しく作らず、既存の `foreshadow_list_with_labels`（人間用の全件の読み。`OWN_DATA_READ_COMMANDS` に登録済み）の wire を使い、**core で放棄を落とし、最小の射影**（`id, title, intent, loadBearing, setupCount`＋`settled`）にする。wire は `notes`・`secret`・`payoff_scene_id`・setup の `scene_id` を持つので、結果に出さない（試験で固定）。A 案（`foreshadow_list_open_for_context` に引数を足す）は、IPC・napi・生成される d.ts・Rust・凍結中の Tauri shell を 1 PR で変える（Tauri shell は新機能の置き場にしない）ので採らない。
+- **port は別メソッド**（Mastra の担当〔grimodex-32〕の推奨）：`CoreNativeReads.foreshadowOpen` に引数を足さず、`foreshadowListWithLabels` を足す。`foreshadowOpen` が 2 つの Native command・2 つの wire・2 つの timeout 方針を持つと、`mastraReadParity.pipeline.spec.ts` が `foreshadowOpen` の wire を Native と byte で固定している意味が濁る。`foreshadowOpen` とその wire・golden は 1 byte も変えない。`typed.ts` の adapter は `foreshadow_list_with_labels` を `{ projectId }` で、`timeoutMs: null`（`foreshadowOpen` と同じ DR-MP4-4 の方針）で呼ぶ。DR-MP4-24 の非対称の解消（DR-FSR-1）の続き。
+- **並び**：未回収の行は今までどおりの順（loadBearing の優先度 → updatedAt の新しい順）で先に、回収済みの行はその後に（同じ比較）。summary：`N foreshadowing items (M settled)`（指定なしは `N open foreshadowing items` のまま）。
+- **二 engine の同値**：renderer の legacy executor と main の core が、同じ固定入力で同じ結果（content・summary・`settled`）を返すことを試験で固定した（`readCore.mainAdapter.test.ts`）。renderer の in-browser（Drizzle）の枝は、Native の wire と同じ形を返す。
+- **MCP**：`include_settled: Option<bool>`（snake_case。省略・`false` は今までどおり）。`settled: Option<bool>` は `skip_serializing_if` で、`true` のときの回収済みの行にだけ出る。`version`・`derivedLabel` は維持する。`get_writing_context` の結果は変えない（`false` で呼ぶ）。登録された道具の `inputSchema` に `include_settled` が出ることを試験で固定した。
+- **JSON の `null`**：MCP の `include_settled: null` は省略と同じに読まれる（`Option<bool>`）。アプリ内は `null` を拒む（`typeof` の検査）。
+
+### 残る制限（F9）
+
+- **`setupCount` の数え方が、アプリ内と MCP で違う**（F9 の前からの差）：アプリ内は orphan でない setup を数え、archived の場面の setup も含む（Native の wire に `scene_id` が無く、core で絞れない）。MCP は archived の場面の setup を除く。回収済みの行でも同じ差が見える。AI には「同じ伏線の件数が道具によって違う」と見えうる。
+- アプリ内の `includeSettled: true` の結果には、派生ラベル（`derivedLabel`）が無い（指定なしのアプリ内の結果にも無い。道具の定義文が「derived lifecycle labels」と言う既存の不一致は、この PR では直さない）。MCP は `derivedLabel` を返す（意図的な差）。
+- 実 addon の spec（`mastraReadParity.pipeline.spec.ts`）は、hosted の `electron-native` が最終の確認。
+- **公開版（release）には、F2・F10 が入った後に、F7 の測定の結果をユーザーに見せてから出す。**

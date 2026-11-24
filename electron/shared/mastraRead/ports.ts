@@ -168,6 +168,8 @@ export interface CoreNativeReads {
     readonly limit: number;
   }): Promise<unknown>;
   foreshadowOpen(args: { readonly projectId: string }): Promise<unknown>;
+  /** 全件（回収済みを含む）を返す伏線 wire。`includeSettled` の道具だけが使う。 */
+  foreshadowListWithLabels(args: { readonly projectId: string }): Promise<unknown>;
 }
 
 export interface CoreLogger {
@@ -203,7 +205,7 @@ export type CoreReadContext = Pick<
   CoreReadPorts,
   "getDb" | "getTreeState" | "body" | "countTokens"
 > & {
-  readonly native: Pick<CoreNativeReads, "fts" | "foreshadowOpen">;
+  readonly native: Pick<CoreNativeReads, "fts" | "foreshadowOpen" | "foreshadowListWithLabels">;
 };
 
 /**

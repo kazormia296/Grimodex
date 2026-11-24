@@ -40,6 +40,7 @@ import {
 const CONTENT_SETTINGS = {
   fontFamily: "serif",
   fontSize: 16,
+  fontWeight: 400,
   lineHeight: 2,
   maxContentWidth: 720,
   wordBreak: "normal",

@@ -313,6 +313,12 @@ export type MastraAgentTurnStartResult =
       readonly executionId: string;
       /** The adapter's raw `AgentWireResponse`, never Mastra's concatenated text (DR-MP3-13). */
       readonly response: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly status: "context-window-exceeded";
+      readonly turnId: string;
+      readonly usage: MastraAgentTurnProgressUsage;
+      readonly overflowTokens: number;
     };
 
 export type MastraAgentTurnCancelResult =
@@ -819,6 +825,13 @@ export function parseMastraAgentTurnStartRequest(
   }
   const loop = parseLoop(entries.get("loop"));
   if (!loop.ok) return loop;
+  if (
+    route.value.requestMaxOutputTokens !== undefined &&
+    route.value.requestMaxOutputTokens !==
+      loop.value.value.requestMaxOutputTokens
+  ) {
+    return fail("route-value");
+  }
   total += idTextLength + loop.value.textLength;
   if (total > MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX) {
     return fail("text-too-long");
@@ -1030,6 +1043,18 @@ export function parseMastraAgentTurnStartResult(
       ? (value as MastraAgentTurnStartResult)
       : null;
   }
+  if (entries.get("status") === "context-window-exceeded") {
+    const usage = parseProgressUsage(entries.get("usage"));
+    const overflowTokens = entries.get("overflowTokens");
+    return sameKeys(entries, ["status", "turnId", "usage", "overflowTokens"]) &&
+      isMastraAgentTurnId(entries.get("turnId")) &&
+      usage !== null &&
+      isNonNegativeSafeInteger(overflowTokens) &&
+      overflowTokens > 0 &&
+      overflowTokens === usage.overflowTokens
+      ? (value as MastraAgentTurnStartResult)
+      : null;
+  }
   return null;
 }
 
@@ -1171,6 +1196,7 @@ export type MastraAgentTurnProgressEvent =
       readonly kind: "context-overflow";
       readonly usage: MastraAgentTurnProgressUsage;
       readonly overflowTokens: number;
+      readonly cacheDowngradeReason: "budget" | "too-many-blocks" | null;
     }
   | { readonly kind: "stopped"; readonly reason: "user-stop" };
 
@@ -1305,15 +1331,25 @@ function parseProgressEvent(
       : null;
   }
   if (kind === "context-overflow") {
-    if (keyIssue(entries, ["kind", "usage", "overflowTokens"], []) !== null) {
+    if (
+      keyIssue(
+        entries,
+        ["kind", "usage", "overflowTokens", "cacheDowngradeReason"],
+        [],
+      ) !== null
+    ) {
       return null;
     }
     const usage = parseProgressUsage(entries.get("usage"));
     const overflowTokens = entries.get("overflowTokens");
+    const cacheDowngradeReason = entries.get("cacheDowngradeReason");
     return usage !== null &&
       isNonNegativeSafeInteger(overflowTokens) &&
       overflowTokens > 0 &&
-      overflowTokens === usage.overflowTokens
+      overflowTokens === usage.overflowTokens &&
+      (cacheDowngradeReason === null ||
+        cacheDowngradeReason === "budget" ||
+        cacheDowngradeReason === "too-many-blocks")
       ? (value as MastraAgentTurnProgressEvent)
       : null;
   }

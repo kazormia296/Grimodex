@@ -981,6 +981,19 @@ describe("parseMastraAgentTurnStartRequest", () => {
     }
   });
 
+  it("requires the optional route output limit to match the loop limit", () => {
+    expect(
+      parseMastraAgentTurnStartRequest(
+        start({ route: route({ requestMaxOutputTokens: 4096 }) }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      parseMastraAgentTurnStartRequest(
+        start({ route: route({ requestMaxOutputTokens: 4095 }) }),
+      ),
+    ).toMatchObject({ ok: false, issue: "route-value" });
+  });
+
   it("bounds the route's JSON (depth, nodes, non-JSON values)", () => {
     let nested: Record<string, unknown> = { leaf: true };
     for (
@@ -1207,6 +1220,18 @@ describe("the results", () => {
       response: { blocks: [], stopReason: "end_turn" },
     };
     expect(parseMastraAgentTurnStartResult(completed)).toBe(completed);
+    const overflow = {
+      status: "context-window-exceeded",
+      turnId: TURN_ID,
+      usage: {
+        ...PROGRESS_USAGE,
+        contextWindow: 9,
+        remainingTokens: -3,
+        overflowTokens: 3,
+      },
+      overflowTokens: 3,
+    };
+    expect(parseMastraAgentTurnStartResult(overflow)).toBe(overflow);
     const ok = { status: "ok", turnId: TURN_ID, found: false };
     expect(parseMastraAgentTurnCancelResult(ok)).toBe(ok);
   });
@@ -1228,6 +1253,28 @@ describe("the results", () => {
         executionId: "e",
         response: {},
         extra: 1,
+      },
+      {
+        status: "context-window-exceeded",
+        turnId: TURN_ID,
+        usage: {
+          ...PROGRESS_USAGE,
+          contextWindow: 9,
+          remainingTokens: -3,
+          overflowTokens: 3,
+        },
+        overflowTokens: 2,
+      },
+      {
+        status: "context-window-exceeded",
+        turnId: "bad-id",
+        usage: {
+          ...PROGRESS_USAGE,
+          contextWindow: 9,
+          remainingTokens: -3,
+          overflowTokens: 3,
+        },
+        overflowTokens: 3,
       },
     ]) {
       expect(
@@ -1544,6 +1591,7 @@ describe("parseMastraAgentTurnProgressPayload", () => {
           overflowTokens: 3,
         },
         overflowTokens: 3,
+        cacheDowngradeReason: null,
       },
       { kind: "stopped", reason: "user-stop" },
     ];
@@ -1671,6 +1719,23 @@ describe("parseMastraAgentTurnProgressPayload", () => {
             overflowTokens: 3,
           },
           overflowTokens: 2,
+          cacheDowngradeReason: null,
+        }),
+      ),
+    ).toMatchObject({ ok: false, issue: "progress-event" });
+    expect(
+      parseMastraAgentTurnProgressPayload(
+        progress({
+          kind: "context-overflow",
+          usage: {
+            ...PROGRESS_USAGE,
+            reservedTotalTokens: 12,
+            contextWindow: 9,
+            remainingTokens: -3,
+            overflowTokens: 3,
+          },
+          overflowTokens: 3,
+          cacheDowngradeReason: "secret",
         }),
       ),
     ).toMatchObject({ ok: false, issue: "progress-event" });

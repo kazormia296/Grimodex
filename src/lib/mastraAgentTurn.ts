@@ -22,6 +22,7 @@ import {
   parseMastraAgentTurnStartResult,
   type MastraAgentTurnCancelRequest,
   type MastraAgentTurnProgressPayload,
+  type MastraAgentTurnProgressUsage,
   type MastraAgentTurnRefusalReason,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
@@ -35,6 +36,12 @@ export type MastraAgentTurnStartOutcome =
       readonly executionId: string;
       /** The adapter's raw `AgentWireResponse`; the caller checks it (MP-4). */
       readonly response: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly kind: "context-window-exceeded";
+      readonly turnId: string;
+      readonly usage: MastraAgentTurnProgressUsage;
+      readonly overflowTokens: number;
     }
   | { readonly kind: "refused"; readonly reason: MastraAgentTurnRefusalReason }
   /** Main's answer is not an answer of this route. */
@@ -92,6 +99,14 @@ export async function startMastraAgentTurn(
   if (answer === null) return { kind: "invalid-response" };
   if (answer.status === "refused") {
     return { kind: "refused", reason: answer.reason };
+  }
+  if (answer.status === "context-window-exceeded") {
+    return {
+      kind: "context-window-exceeded",
+      turnId: answer.turnId,
+      usage: answer.usage,
+      overflowTokens: answer.overflowTokens,
+    };
   }
   return {
     kind: "completed",
