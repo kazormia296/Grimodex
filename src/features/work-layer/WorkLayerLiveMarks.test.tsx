@@ -12,6 +12,12 @@ import type {
 } from "./types";
 import { WORK_LAYER_FIXTURE } from "./workLayerFixture";
 
+// Full motion, so a leaked arrival or resolution beat would actually render.
+vi.mock("@/lib/animation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/animation")>();
+  return { ...actual, useReducedMotion: vi.fn(() => false) };
+});
+
 function liveModel(
   liveEntries: readonly WorkLayerLiveEntry[],
   extra: Partial<WorkLayerModel> = {},
@@ -86,6 +92,8 @@ describe("Work Layer live provenance in the Pulse and Attention tray", () => {
     renderLive(
       liveModel([{ id: "codex-candidates", status: "ready", count: 2 }], {
         attentionDelta: 2,
+        attentionAnchorVisible: true,
+        attentionAnchorPosition: { xPercent: 10, yPercent: 20, heightPx: 24 },
       }),
     );
 
@@ -94,6 +102,47 @@ describe("Work Layer live provenance in the Pulse and Attention tray", () => {
     expect(
       screen.queryByTestId("work-layer-arrival-charge"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("work-layer-arrival-gutter"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not keep a preview resolution beat when the same work switches to a live port", async () => {
+    const user = userEvent.setup();
+    const live = liveModel(
+      [{ id: "codex-candidates", status: "ready", count: 2 }],
+      { scopeId: WORK_LAYER_FIXTURE.scopeId },
+    );
+    const view = render(
+      <WorkLayerProvider initialModel={WORK_LAYER_FIXTURE}>
+        <WorkPulse />
+        <WorkLayerSurface />
+      </WorkLayerProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Attention/ }));
+    await user.click(
+      screen.getByRole("button", { name: "『アリス』の参照先が曖昧を開く" }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "アリス・レインへBindingをプレビュー",
+      }),
+    );
+    expect(screen.getByText("✓ −1")).toBeInTheDocument();
+
+    view.rerender(
+      <WorkLayerProvider port={livePort(live)}>
+        <WorkPulse />
+        <WorkLayerSurface />
+      </WorkLayerProvider>,
+    );
+    const attention = await screen.findByRole("button", {
+      name: "Attention 2件",
+    });
+
+    expect(attention).not.toHaveAttribute("data-work-layer-resolution-beat");
+    expect(screen.queryByText("✓ −1")).not.toBeInTheDocument();
   });
 
   it("keeps the preview marks in a preview model", async () => {

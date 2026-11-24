@@ -35,7 +35,7 @@ export function WorkLayerProvider({
   onPreviewDecision,
 }: WorkLayerProviderProps) {
   const [model, setModel] = useState<WorkLayerModel | null>(
-    active ? initialModel : null,
+    active && port?.kind !== "live" ? initialModel : null,
   );
   const [consumedArrivalScope, setConsumedArrivalScope] = useState<
     string | null
@@ -55,10 +55,9 @@ export function WorkLayerProvider({
       setPreviewFindingSession(createPreviewFindingSessionState(null));
       return;
     }
-    if (
-      initialModel != null &&
-      (port == null || port.scopeKey === initialModel.scopeId)
-    ) {
+    // A live port is the only source of a live model: `initialModel` is a
+    // preview/test seam and never stands in for live data.
+    if (initialModel != null && port?.kind !== "live") {
       setModel(initialModel);
       return;
     }
@@ -68,9 +67,12 @@ export function WorkLayerProvider({
     }
 
     let cancelled = false;
-    setModel((current) =>
-      current != null && current.scopeId !== port.scopeKey ? null : current,
-    );
+    if (port.kind === "live") {
+      // A different work's counts must not survive into the new work.
+      setModel((current) =>
+        current != null && current.scopeId !== port.scopeKey ? null : current,
+      );
+    }
     void port
       .load({ reason: "mount" })
       .then((nextModel) => {
@@ -98,14 +100,18 @@ export function WorkLayerProvider({
     (hasPendingArrival &&
       (navigationController.navigation.mode !== "ambient" ||
         consumedArrivalScope === modelScopeId));
+  // Hide synchronously, without waiting for the effect above, a model that no
+  // longer has a source (the port went away) or that belongs to another work
+  // than the live port's. Otherwise one frame of the old counts would render.
+  const modelOrphaned = port == null && initialModel == null;
+  const modelOutOfScope =
+    port?.kind === "live" && model != null && port.scopeKey !== model.scopeId;
   const visibleModel =
-    port != null && model != null && port.scopeKey !== model.scopeId
+    modelOrphaned || modelOutOfScope || previewModel == null
       ? null
-      : previewModel == null
-        ? null
-        : arrivalSuppressed
-          ? { ...previewModel, attentionDelta: 0 }
-          : previewModel;
+      : arrivalSuppressed
+        ? { ...previewModel, attentionDelta: 0 }
+        : previewModel;
 
   useEffect(() => {
     if (modelScopeId == null) return;
