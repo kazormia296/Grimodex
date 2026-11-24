@@ -40,6 +40,7 @@ pub mod codex_matching;
 pub mod contract_string;
 pub mod license;
 pub mod narrative_dependency;
+pub mod narrative_identity_diff;
 pub mod narrative_ir;
 pub mod narrative_nir1;
 pub mod narrative_nir1_receipt;
