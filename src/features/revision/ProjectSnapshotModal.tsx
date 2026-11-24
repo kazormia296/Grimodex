@@ -79,6 +79,11 @@ const STICKY_DIALOG_FOOTER = "sticky bottom-0 -mb-4 bg-popover pb-4 pt-2";
 /**
  * 復元の前に、保留中の自動保存を保存する待ちの上限。保存が resolve も reject もしないと、
  * 「復元中」のまま確認の画面が固まるので、上限を超えたら失敗として扱う（復元を中止する）。
+ *
+ * 待つのは `flushAllAutoSaves`（エディタの本文などの AutoSave の登録簿）だけで、場面の概要・題名・
+ * file-backed の write-back の debounce などの別の保存は待たない（設定のバックアップの復元は、
+ * lease と `flushStrictQuiescence` で全段を待つが、AI の実行も待つので重い。ここは、本文の古い
+ * 内容が復元を置き換える経路を閉じる小さな直し）。復元の最中に、新しい自動保存が走る穴も残る。
  */
 const FLUSH_BEFORE_RESTORE_TIMEOUT_MS = 30_000;
 

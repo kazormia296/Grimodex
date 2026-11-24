@@ -168,6 +168,8 @@ describe("ProjectSnapshotModal restore loss notices", () => {
   it("treats a flush that never settles as a failure after the time limit, and allows retry", async () => {
     // 保存が resolve も reject もしないと、「復元中」のまま確認の画面が固まる。上限（30 秒）を
     // 超えたら失敗として扱い、復元を中止して、確認を開いたまま再試行できるようにする。
+    // 2 回目の flush を即時に resolve させるのは、「1 回目の後に保存が回復した」場合の表現である
+    // （止まったままなら、実物の 2 回目も同じ drain を待ち、また上限で中止する）。
     mocks.flush
       .mockReturnValueOnce(new Promise<void>(() => {}))
       .mockResolvedValueOnce(undefined);

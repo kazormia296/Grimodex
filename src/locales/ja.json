@@ -4643,7 +4643,7 @@
     "loadError": "スナップショットの読み込みに失敗しました",
     "createError": "スナップショットの作成に失敗しました",
     "restoreError": "復元に失敗しました",
-    "restoreFlushFailed": "未保存の編集を保存できなかったため、復元を中止しました。",
+    "restoreFlushFailed": "未保存の編集の保存を完了できなかったため、復元を中止しました。",
     "deleteError": "削除に失敗しました",
     "restoreScopeHeading": "復元する範囲",
     "restoreScopeLegacyNote": "このスナップショットは旧形式です。本文のみが復元されます。",
