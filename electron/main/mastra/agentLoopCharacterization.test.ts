@@ -99,11 +99,13 @@ async function runTwoSendToolTurn(
   const sent: AgentWireArgs[] = [];
   const preparedCountAtSend: number[] = [];
   const observerCompleteCountAtObserve: number[] = [];
+  let generated: unknown;
+  let toolCapability: unknown;
   const preparedRows = () =>
     events.filter((event) =>
       JSON.stringify(event).includes('"eventType":"request.prepared"'),
     );
-  const { model } = createAgentLanguageModel({
+  const { model, capabilities } = createAgentLanguageModel({
     originalTools: [
       {
         name: "probe",
@@ -121,7 +123,7 @@ async function runTwoSendToolTurn(
             "execution.succeeded",
         ).length,
       );
-      hooks.observeResponse?.(observed);
+      return hooks.observeResponse?.(observed);
     },
     send: async (args) => {
       if (divergeAtSend) {
@@ -140,6 +142,14 @@ async function runTwoSendToolTurn(
             cacheReadTokens: 3,
             cacheWriteTokens: 4,
             cost: 5,
+            agentAuthorityCapabilities: {
+              "call-k1": {
+                capability: "CAP",
+                executionId: "e",
+                chatMessageId: "m",
+                mainOwnedProvenanceId: "p",
+              },
+            },
           }
         : {
             ...response("end_turn"),
@@ -167,13 +177,16 @@ async function runTwoSendToolTurn(
           type: "object",
           properties: {},
         }),
-        execute: async () => "tool result",
+        execute: async () => {
+          toolCapability = capabilities.get("call-k1");
+          return "tool result";
+        },
       }),
     },
   });
   let error: unknown;
   try {
-    await agent.generate([{ role: "user", content: "start" }], {
+    generated = await agent.generate([{ role: "user", content: "start" }], {
       ...AGENT_CALL_OPTIONS,
       maxSteps: 2,
       providerOptions: grimodexProviderOptions({
@@ -192,6 +205,8 @@ async function runTwoSendToolTurn(
     preparedRows: preparedRows(),
     preparedCountAtSend,
     observerCompleteCountAtObserve,
+    generated,
+    toolCapability,
   };
 }
 
@@ -245,7 +260,7 @@ describe("4c-1 loop characterization", () => {
   it("runTurn forwards the per-turn request preparation and response tap", async () => {
     const { audit, events } = auditHarness(true);
     const sent: AgentWireArgs[] = [];
-    const observed: AgentWireResponse[] = [];
+    const observed: Parameters<AgentObserveResponse>[0][] = [];
     await createMastraAgentRuntime().runTurn({
       instructions: "system",
       messages: [{ role: "user", content: "start" }],
@@ -504,7 +519,7 @@ describe("4c-1 loop characterization", () => {
       sendIndex: number;
       previous: { stopReason: string; toolNames: readonly string[] } | null;
     }[] = [];
-    const observed: AgentWireResponse[] = [];
+    const observed: Parameters<AgentObserveResponse>[0][] = [];
     const result = await runTwoSendToolTurn(false, {
       prepareSend: (request, ctx) => {
         contexts.push(ctx);
@@ -610,6 +625,20 @@ describe("4c-1 loop characterization", () => {
     expect(second.sent).toHaveLength(1);
   });
 
+  it("prepareSend rejects thenables before audit begin", async () => {
+    const asyncPrepare = (async (request: Parameters<AgentPrepareSend>[0]) =>
+      request) as unknown as AgentPrepareSend;
+    const result = await runTwoSendToolTurn(false, {
+      prepareSend: asyncPrepare,
+    });
+
+    expect(result.error).toBeInstanceOf(TypeError);
+    expect((result.error as Error).message).toContain("prepareSend");
+    expect((result.error as Error).message).toContain("must be synchronous");
+    expect(result.events).toHaveLength(0);
+    expect(result.sent).toHaveLength(0);
+  });
+
   it("observeResponse throws after complete and fails the Mastra turn", async () => {
     const observerError = new Error("observer failed");
     const result = await runTwoSendToolTurn(false, {
@@ -625,6 +654,51 @@ describe("4c-1 loop characterization", () => {
     expect(eventCount(result.events, "request.dispatched")).toBe(1);
     expect(eventCount(result.events, "execution.succeeded")).toBe(1);
     expect(eventCount(result.events, "execution.failed")).toBe(0);
+  });
+
+  it("observeResponse can mutate only its clone", async () => {
+    const result = await runTwoSendToolTurn(false, {
+      observeResponse: (observed) => {
+        const mutable = observed as AgentWireResponse;
+        mutable.stopReason = "end_turn";
+        mutable.blocks.push({ type: "text", content: "mutated" });
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.sent).toHaveLength(2);
+    expect(result.toolCapability).toEqual({
+      capability: "CAP",
+      executionId: "e",
+      chatMessageId: "m",
+      mainOwnedProvenanceId: "p",
+    });
+    expect(JSON.stringify(result.events)).toContain('"stopReason":"tool_use"');
+    expect(JSON.stringify(result.generated)).toContain("tool result");
+    expect(JSON.stringify(result.generated)).toContain("done");
+    expect(JSON.stringify(result.generated)).not.toContain("mutated");
+  });
+
+  it("async observeResponse fails closed without an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const result = await runTwoSendToolTurn(false, {
+        observeResponse: async () => {
+          throw new Error("async observer failed");
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(result.error).toBeInstanceOf(TypeError);
+      expect((result.error as Error).message).toContain("observeResponse");
+      expect((result.error as Error).message).toContain("must be synchronous");
+      expect(eventCount(result.events, "execution.succeeded")).toBe(1);
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("K-1 send-tap divergence: mutating messages in send leaves request.prepared unchanged", async () => {

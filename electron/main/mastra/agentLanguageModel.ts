@@ -807,7 +807,26 @@ export type AgentPrepareSend = (
   ctx: AgentPrepareSendContext,
 ) => AgentAuditRequest;
 
-export type AgentObserveResponse = (response: AgentWireResponse) => void;
+type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+/** 同期例外は turn を失敗させる（audit は complete のまま）。呼び手の失敗を成功扱いしない。 */
+export type AgentObserveResponse = (
+  response: DeepReadonly<AgentWireResponse>,
+) => void;
+
+function assertSynchronousClosureResult(value: unknown, name: string): void {
+  if (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  ) {
+    void Promise.resolve(value).catch(() => {});
+    throw new TypeError(`${name} must be synchronous`);
+  }
+}
 
 export interface CreateAgentLanguageModelOptions<H extends AgentAuditHandle> {
   readonly send: AgentSend;
@@ -867,6 +886,8 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
     const preparedRequest = options.prepareSend
       ? options.prepareSend(auditRequest, { sendIndex, previous })
       : auditRequest;
+    if (options.prepareSend)
+      assertSynchronousClosureResult(preparedRequest, "prepareSend");
     sendIndex += 1;
 
     let handle: H;
@@ -926,7 +947,10 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
         block.type === "tool_use" ? [block.name] : [],
       ),
     };
-    options.observeResponse?.(raw);
+    if (options.observeResponse) {
+      const observed = options.observeResponse(structuredClone(raw));
+      assertSynchronousClosureResult(observed, "observeResponse");
+    }
 
     // tool-call を出すのは stopReason が tool_use のときだけ（responseToContent）。出さない応答の値は保持しない。
     if (raw.stopReason === "tool_use") {
