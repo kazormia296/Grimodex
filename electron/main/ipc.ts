@@ -28,6 +28,7 @@ import {
   isNir1LocalGenerationCommand,
   toErrorString,
 } from "../shared/ipcContract.js";
+import { isAgentEventSecretInputSupported } from "../shared/agentEventSecretWritePolicy.js";
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
@@ -446,6 +447,7 @@ const MODEL_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
       "endMinute",
       "startGranularity",
       "endGranularity",
+      // Retired; keep for replayed history so the renderer can explain rejection.
       "secret",
       "revealSceneId",
       "participantCodexIds",
@@ -466,6 +468,7 @@ const MODEL_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
       "endMinute",
       "startGranularity",
       "endGranularity",
+      // Retired; keep for replayed history so the renderer can explain rejection.
       "secret",
       "revealSceneId",
     ],
@@ -562,7 +565,6 @@ const EFFECTIVE_NATIVE_MUTATION_SPECS: Readonly<
       "endMinute",
       "startGranularity",
       "endGranularity",
-      "secret",
       "revealSceneId",
       "participantCodexIds",
       "sceneIds",
@@ -586,7 +588,6 @@ const EFFECTIVE_NATIVE_MUTATION_SPECS: Readonly<
       "endMinute",
       "startGranularity",
       "endGranularity",
-      "secret",
       "revealSceneId",
     ],
   },
@@ -653,7 +654,6 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
     endTime: null,
     startMinute: null,
     endMinute: null,
-    secret: false,
     revealSceneId: null,
     participantCodexIds: [],
     sceneIds: [],
@@ -955,6 +955,14 @@ function canonicalAgentToolInput(
       ? source[field]
       : source[wireField];
     const value = raw === undefined ? defaults[field] : raw;
+    if (
+      (toolName === "create_event" || toolName === "update_event") &&
+      field === "secret" &&
+      value === false
+    ) {
+      // Legacy false is equivalent to omission because event secrecy is retired.
+      continue;
+    }
     if (value !== undefined) {
       normalized[field] = canonicalAgentInputValue(
         field,
@@ -1184,6 +1192,7 @@ function agentMutationProjectionMatches(
   const spec = EFFECTIVE_NATIVE_MUTATION_SPECS[toolName];
   if (
     !spec ||
+    !isAgentEventSecretInputSupported(toolName, modelInput) ||
     canonicalAgentToolInput(toolName, modelInput, true, "model", "model") ===
       null
   ) {
@@ -1510,6 +1519,12 @@ function bindMainOwnedAgentMutation(
     model: capability.model,
   };
   if (
+    capability.toolName === "create_event" ||
+    capability.toolName === "update_event"
+  ) {
+    delete bound.secret;
+  }
+  if (
     capability.toolName === "create_codex_entry" ||
     capability.toolName === "update_codex_entry" ||
     capability.toolName === "create_event" ||
@@ -1637,13 +1652,14 @@ async function issueAgentAuthorityCapabilitiesForSender(
     ) {
       continue;
     }
+    if (!isRecord(block.input)) continue;
+    if (!isAgentEventSecretInputSupported(toolName, block.input)) continue;
     const canonicalInputDigest = canonicalAgentToolInputDigest(
       toolName,
       block.input,
       true,
     );
     if (!canonicalInputDigest) continue;
-    if (!isRecord(block.input)) continue;
     const now = Date.now();
     const token = randomUUID();
     const mainOwnedProvenanceId = randomUUID();
