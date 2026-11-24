@@ -1846,3 +1846,13 @@ PR-10b は、agent tool `get_codex_entry` を renderer 専用の実装（`toolEx
    **独立レビュー**（別の Codex セッション、read-only、`28efcfba8..3823d3262` に固定）：指摘は P2 が 1 件のみ（`tables.ts` 冒頭のコメントに、10a の「`codex_detail_definitions` を先行許可」の説明が残っていた→実態に直した）。legacy との同値（引数検査・entry の select・判定・defs／vals／children の順序と文・場面の読み 2 回・scope と store の取り方・`No active project`・`tokensUsed`）、信頼境界（hidden の値がどこからも出ない・children の判定）、試験が空振りしていないこと（main adapter が sql.js 上で commit ① の golden と byte 一致を見ていること・実 addon の spec の期待の組み立てがバグを隠さないこと）、allowlist の厳密な一致を確認した。
 
 9. **画面で見える残る制限（ユーザーに見せる）。** この PR は画面・AI に渡る内容を変えない。移設前から残る挙動：複数 project のワークスペースで、`get_codex_entry` の `details` に別 project の項目名が値なしで混ざる（Q-C6-1。判断待ち）。released の本文が hidden の期間の Phase の文を含みうる（累積適用）。`details`・`children` の並びは DB の返り順に依る。
+
+### DR-MP4-50 `get_codex_entry` の詳細定義を project で絞る（Q-C6-1。ユーザー決定：直す。2026-11-24）
+
+ユーザーは Q-C6-1 を「直す」と決定した。`get_codex_entry` の `codex_detail_definitions` select に、entry の `projectId` と `typeSlug` の両方の条件を付けた。変更は結果を狭める向きだけで、別 project の定義から来ていた項目名が `details` から消える。単一 project のワークスペースでは出力 bytes は変わらない。ORDER BY は追加していない（DR-MP4-49e）。
+
+DR-MP4-49d の「直していない」はこの決定と実装で解消した。DR-MP4-49 本文は当時の記録として変更せず、旗 L の前の確認点から Q-C6-1 を外す判断もここに記録する。
+
+**golden の更新（意図した変更）。** DR-MP4-49 の commit ①の golden（`__fixtures__/codexEntryGolden/get_codex_entry.golden.txt`・`.reads.golden.txt`）は、移設前の挙動（Q-C6-1 を含む）を固定していた。この修正は挙動を意図して狭めるので、golden を更新した。差分は 3 種類だけで、(1) 4 件すべての `details` から `別 project の項目名`（値なし）が消える、(2) それに伴う `contentJson` と `tokensUsed` の減少（`tokensUsed` は `contentJson` の文字数）、(3) defs の select の SQL が `project_id = ? and type_slug = ?` になり、params が `["p-main", "character"]` になる。他の項目（自 project の定義・値・children・本文・要約・並び）は 1 byte も変わらない。
+
+**確かめたこと。** core 単体・renderer の特性試験・main adapter（sql.js）は更新後の golden と byte 一致。実 Native の DB の spec（`mastraReadParity.pipeline.spec.ts`）は 33 件成功し、defs の行がすべて current project のものであることを新たに確かめる。変異として defs の project 条件を外すと、core 単体・main adapter・実 Native の spec のいずれも落ちる。
