@@ -55,18 +55,18 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.7)
+      '@fontsource-variable/literata':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource-variable/m-plus-1':
+        specifier: ^5.3.1
+        version: 5.3.1
+      '@fontsource-variable/noto-serif-jp':
+        specifier: ^5.3.1
+        version: 5.3.1
       '@fontsource/line-seed-jp':
         specifier: ^5.2.2
         version: 5.2.2
-      '@fontsource/literata':
-        specifier: ^5.2.8
-        version: 5.2.8
-      '@fontsource/m-plus-1':
-        specifier: ^5.2.9
-        version: 5.2.9
-      '@fontsource/noto-serif-jp':
-        specifier: ^5.2.8
-        version: 5.2.8
       '@grimodex/scan-contract':
         specifier: workspace:*
         version: link:packages/scan-contract
@@ -1072,17 +1072,17 @@ packages:
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
 
+  '@fontsource-variable/literata@5.3.0':
+    resolution: {integrity: sha512-1Jw7xvOcoGyB83lxB2nG4bfNbqtX2/TTbdh9sHAOmU064SvmSdulDtA5RBu5JYWf64fdaKX7xU+z3GO1T2bCHA==}
+
+  '@fontsource-variable/m-plus-1@5.3.1':
+    resolution: {integrity: sha512-PWa0cJ5X/gnwkVhMgRXSpi2+I8kRIb7gRHL2lld4TuxumNbZ+9Ef6lUnX+P51ixSl8MEUD5HHp7E62dmGML1wA==}
+
+  '@fontsource-variable/noto-serif-jp@5.3.1':
+    resolution: {integrity: sha512-quU5uIezSqZFgPaDDI2C3hQfIJHzyXVYuvMZsDDF++og8yechsAwcmCkLLdofPboUB1xHOWV3xohJyIVBi3b4g==}
+
   '@fontsource/line-seed-jp@5.2.2':
     resolution: {integrity: sha512-uuwnt3JJWlbUsBbP97dEKvQSVP6RpXnTDAYjG9f4SO9aHVCap96Rz8RpMcYbz58PXkYBldWfXP5VhOHdvNZWcA==}
-
-  '@fontsource/literata@5.2.8':
-    resolution: {integrity: sha512-Rj3eEQeu7+yBw9ZjXxcRiKDDrhbhpCyb0b79VJVCjDF1fdgJ8gDr9C1SRFLwfi+VaHEkhJDnRGm25fq1Yk+wNg==}
-
-  '@fontsource/m-plus-1@5.2.9':
-    resolution: {integrity: sha512-/QhKBcdfpfCPwlDVY4dBXQgQwlTGT5Un0HDFRMFcOJ7ZcV/X4cTjAlxl2LO8VyRyP6qJ8itoOU0czlCSUj9djQ==}
-
-  '@fontsource/noto-serif-jp@5.2.8':
-    resolution: {integrity: sha512-x+tGrrK+4t/hoHLxAl7Ry5nN8CVPermqz0fD7HtCXzBJSxzFKxNH9y+cuOD3gZW0tyKZ2CD7WvuAfHbISvjL5Q==}
 
   '@gsap/react@2.1.2':
     resolution: {integrity: sha512-JqliybO1837UcgH2hVOM4VO+38APk3ECNrsuSM4MuXp+rbf+/2IG2K1YJiqfTcXQHH7XlA0m3ykniFYstfq0Iw==}
@@ -7580,13 +7580,13 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
+  '@fontsource-variable/literata@5.3.0': {}
+
+  '@fontsource-variable/m-plus-1@5.3.1': {}
+
+  '@fontsource-variable/noto-serif-jp@5.3.1': {}
+
   '@fontsource/line-seed-jp@5.2.2': {}
-
-  '@fontsource/literata@5.2.8': {}
-
-  '@fontsource/m-plus-1@5.2.9': {}
-
-  '@fontsource/noto-serif-jp@5.2.8': {}
 
   '@gsap/react@2.1.2(gsap@3.15.0)(react@19.2.7)':
     dependencies:

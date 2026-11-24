@@ -321,6 +321,8 @@ button[role="switch"][aria-checked="true"] {
       var(--ui-font, "M PLUS 1"), ui-sans-serif, system-ui, sans-serif,
       "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
       "Noto Color Emoji";
+    /* UI の基準ウェイト (display.uiFontWeight)。個別に太さを指定した部品は変わらない。 */
+    font-weight: var(--ui-font-weight, 400);
   }
 }
 

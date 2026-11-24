@@ -100,6 +100,7 @@ function makeSettings(spellCheck: boolean): EditorSettings {
   return {
     fontFamily: "serif",
     fontSize: 16,
+    fontWeight: 400,
     lineHeight: 1.8,
     maxContentWidth: 800,
     paragraphSpacing: 8,
