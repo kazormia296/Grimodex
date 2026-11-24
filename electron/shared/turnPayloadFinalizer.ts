@@ -12,6 +12,8 @@ export type TurnSurface = "chat" | "agent";
 export type TurnToolProtocol = "native" | "hermes";
 export type ChatTransport = "http" | "cli-exec" | "codex-app-server";
 
+export const TURN_PAYLOAD_SAFETY_MARGIN_TOKENS = 32;
+
 export interface ResolvedTurnRoute {
   surface: TurnSurface;
   provider: TurnPayloadProvider;
@@ -103,8 +105,12 @@ export class ContextWindowExceededError extends Error {
   readonly code = "AI_CONTEXT_WINDOW_EXCEEDED" as const;
   readonly overflowTokens: number;
   readonly usage: TurnPayloadUsage;
+  readonly cacheDowngradeReason: "budget" | "too-many-blocks" | null;
 
-  constructor(usage: TurnPayloadUsage) {
+  constructor(
+    usage: TurnPayloadUsage,
+    cacheDowngradeReason: "budget" | "too-many-blocks" | null = null,
+  ) {
     const overflowTokens = Math.max(0, -usage.remainingTokens);
     super(
       `AI context window exceeded by ${overflowTokens.toLocaleString()} tokens`,
@@ -112,6 +118,7 @@ export class ContextWindowExceededError extends Error {
     this.name = "ContextWindowExceededError";
     this.overflowTokens = overflowTokens;
     this.usage = usage;
+    this.cacheDowngradeReason = cacheDowngradeReason;
   }
 }
 
@@ -378,7 +385,7 @@ export function finalizeTurnPayload(
   }
 
   if (usage.remainingTokens < 0) {
-    throw new ContextWindowExceededError(usage);
+    throw new ContextWindowExceededError(usage, cacheDowngradeReason ?? null);
   }
 
   const cacheBlocks =

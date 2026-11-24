@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AiAuditEventInput } from "../../shared/aiAuditEvents.js";
 import type { NapiBackendLike } from "../../shared/ipcContract.js";
 import type { MastraAgentTurnStartRequest } from "../../shared/mastraAgentTurnWire.js";
+import { createPerCodePointTokenizer } from "../../shared/mastraRead/tokenizer.testSupport.js";
 import { createMastraAgentLoader } from "../mastraAgentLoader.js";
 import { createMastraEnvPin } from "../mastraEnv.js";
 import { createMastraTurnOwner } from "../mastraTurnOwner.js";
@@ -102,6 +103,7 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
   const owner = createMastraTurnOwner({
     open: true,
     backend,
+    tokenizer: createPerCodePointTokenizer(),
     secrets: { resolveApiKeyForRequest: () => "k" },
     profile: {
       restricted: false,
@@ -177,7 +179,7 @@ const request = (
       tokenBudgetMessage: "tokens",
       userQuestionLimitMessage: "questions",
     },
-    fallbackSystem: "system",
+    fallbackSystem: "You write.",
   },
   tools: [],
   ...extra,
