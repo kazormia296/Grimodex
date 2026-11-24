@@ -39,6 +39,7 @@ pub mod chronicle_time;
 pub mod codex_matching;
 pub mod contract_string;
 pub mod license;
+pub mod narrative_change_review;
 pub mod narrative_dependency;
 pub mod narrative_identity_diff;
 pub mod narrative_ir;
