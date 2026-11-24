@@ -1619,6 +1619,32 @@ describe("contextBuilder", () => {
       },
     );
 
+    it.each([true, false])(
+      "英語でも枠に収まる非空の伏線には省いた件数を足さない (agentMode=%s)",
+      (agentMode) => {
+        const result = buildSystemPrompt({
+          scene,
+          lang: "en",
+          contextWindow: 100_000,
+          agentMode,
+          openForeshadows: [
+            {
+              title: "Fits in the frame",
+              intent: null,
+              loadBearing: "supporting",
+              setupCount: 0,
+            },
+          ],
+        });
+
+        expect(result.prompt).toContain("Fits in the frame");
+        expect(result.prompt).not.toContain(
+          "more open foreshadows are not shown",
+        );
+        expect(result.prompt).not.toContain("ほかに");
+      },
+    );
+
     it("secret の未回収伏線も『未回収の伏線』節に注入される", () => {
       const result = buildSystemPrompt({
         scene,
