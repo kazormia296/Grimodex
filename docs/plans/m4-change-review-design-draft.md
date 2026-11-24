@@ -22,6 +22,24 @@
   見本の印（`ChangeReview.test.tsx:102` が assert する印）を live の時だけ外す（c7 の設計 §2.2 の出し分けと同じ形）。
 - **提案の読み取りの共通化**（23 の RD3・W2 B）は、両者が読む形が固まってから。M4 側は共通化を待たず、reader の中で閉じる。
 
+### 2.1 接続点（c7 の連絡、2026-11-25。c7 の実装の事実で、起案者は未確認）
+
+c7 は §2 の線引きを「c7 側の実装と食い違わない」と回答した。M4 の live 接続が入る時に触れる点（c7 の言）：
+
+1. **見本の印の出し分け**：merge 済みの `useWorkLayerProvenance()`（`"preview"|"live"`、#1097）。出所の唯一の判定は `WorkLayerContext` の `port.kind === "live"`。
+2. **入口と guard**：c7 の P3〜P5 は live の面を「トレイの Attention の行だけ」にしており、`WorkLayerSurface` は live で `tray-attention` 以外の mode を描かない。
+   変更レビューを live に出す時は、この guard を `change-review`（とそこへ入る経路）で緩める。入口は live の行の `open`（`WorkLayerOpenSurface`、今は `"structure-extract-review"` だけ）に
+   新しい surface 名を足し、live の port の `openSurface` に結ぶ。work-layer は features/codex 等を import しない（外の画面は port が持つ）。
+3. **件数**：live の行は `WorkLayerLiveEntry`（id は今 `"codex-candidates" | "stale-proposals"`）。変更レビューの件数を足すなら id を足す。
+   C2（根拠が古くなった提案）と二重に数える可能性は、#1091 §2.4 のとおり、足す版で規則が要る（数え方の正本は 23 と相談）。
+4. **起動時の graph の予算**：`perf:budget` の余裕は raw 約 1.5 KB（P3〜P5 の合計で約 +4.6 KB）。live の code は動的 import の内側に置き（`workLayerLiveBundleGuard.test.ts` が静的 import と旗の guard の外の動的 import を落とす）、
+   `ja.json` への文字列の追加は最小限にする（起動 graph に入る）。
+5. **土台**：P5 は `WorkPulse`・`TaskTray`・`AttentionTrayBody`・`TaskTrayFooter`・`WorkLayerSurface`・`WorkLayerContext`・`types.ts` を触り、`ChangeReview.tsx` は触らない。
+   M4 の renderer の実装は、P3〜P5 が merge された後の master を土台にする（c7 が merge を知らせる）。
+6. **文言**：Pulse の「＋」・行の文言・出さない面はユーザー確認済み（contracts の M3 確認記録の追記 26・27）。変更レビューの作者に見える文言は M4 側で別に伺う。
+
+これにより、実装の段（§5）の 4（renderer）は **P3〜P5 の merge の後**に回す。段 1〜3（Rust と IPC）は待たずに進められる。
+
 ## 3. ChangeReviewItem（画面が受け取る 1 件）
 
 ロードマップの表示項目を、実際に取れるものに対応づける（**起案者の読み**）：
