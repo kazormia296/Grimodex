@@ -18,6 +18,7 @@ import { EditorWorkspaceHeader } from "@/features/editor/EditorWorkspaceHeader";
 import { EditorWorkspaceProviders } from "@/features/editor/EditorWorkspaceProviders";
 import { isWorkLayerAvailable } from "@/features/editor/workLayerAvailability";
 import { WorkLayerSurfaceHost } from "@/features/work-layer/WorkLayerSurfaceHost";
+import { CodexStructureReviewHost } from "@/features/codex/CodexStructureReviewHost";
 
 const ZenAmbientBackdrop = lazy(() =>
   import("@/features/editor/ZenAmbientBackdrop").then((module) => ({
@@ -100,133 +101,136 @@ export function EditorWorkspaceShell({
   });
 
   return (
-    <EditorWorkspaceProviders
-      activeWorkLayer={workLayerActive}
-      profile={workspaceProfile}
-    >
-      <div
-        className="app-shell flex h-screen flex-col"
-        inert={lifecycleLocked ? true : undefined}
-        aria-busy={lifecycleLocked || undefined}
-        data-platform-mac={mac ? "true" : undefined}
-        data-viewport-profile={workspaceProfile}
-        data-mobile-workspace={phoneWorkspace ? "true" : undefined}
-        data-zen-mode={editorZenMode ? "true" : undefined}
+    <>
+      <CodexStructureReviewHost />
+      <EditorWorkspaceProviders
+        activeWorkLayer={workLayerActive}
+        profile={workspaceProfile}
       >
-        {!editorZenMode && (
-          <a
-            href="#main-content"
-            className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {t("a11y.skipToContent")}
-          </a>
-        )}
-        <EditorWorkspaceHeader
-          runtimeCapabilities={runtimeCapabilities}
-          screenshotPanelId={screenshotPanelId}
-          panelWindow={panelWindow}
-          phoneWorkspace={phoneWorkspace}
-          editorZenMode={editorZenMode}
-          mac={mac}
-          onOpenTransfer={onOpenTransfer}
-          onOpenSnapshot={onOpenSnapshot}
-          onToggleExport={onToggleExport}
-          onOpenSettings={() => onOpenSettings("project")}
-        />
-        <EditorWorkspaceDialogs
-          runtimeCapabilities={runtimeCapabilities}
-          phoneWorkspace={phoneWorkspace}
-          showSettings={showSettings}
-          settingsInitialCategory={settingsInitialCategory}
-          showExport={showExport}
-          exportModeRequest={exportModeRequest}
-          showSnapshotModal={showSnapshotModal}
-          showTransferDialog={showTransferDialog}
-          transferTab={transferTab}
-          showHostedHandoff={showHostedHandoff}
-          showSampleTour={showSampleTour}
-          onCloseSettings={onCloseSettings}
-          onCloseExport={onCloseExport}
-          onCloseSnapshot={onCloseSnapshot}
-          onChangeTransferTab={onChangeTransferTab}
-          onCloseTransfer={onCloseTransfer}
-          onSetHostedHandoff={onSetHostedHandoff}
-        />
-        <main
-          id="main-content"
-          tabIndex={-1}
-          className="relative isolate flex min-h-0 flex-1 overflow-hidden outline-none"
+        <div
+          className="app-shell flex h-screen flex-col"
+          inert={lifecycleLocked ? true : undefined}
+          aria-busy={lifecycleLocked || undefined}
+          data-platform-mac={mac ? "true" : undefined}
+          data-viewport-profile={workspaceProfile}
+          data-mobile-workspace={phoneWorkspace ? "true" : undefined}
+          data-zen-mode={editorZenMode ? "true" : undefined}
         >
-          {mountZenAmbientBackdrop && (
-            <Suspense fallback={null}>
-              <ZenAmbientBackdrop active={editorZenMode} />
-            </Suspense>
+          {!editorZenMode && (
+            <a
+              href="#main-content"
+              className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {t("a11y.skipToContent")}
+            </a>
           )}
-          {adaptiveWorkspaceEnabled ? (
-            <AdaptiveWorkspaceShell
-              profile={workspaceProfile}
-              zenMode={editorZenMode}
-              editor={
-                <LayoutShell
-                  hidden={false}
-                  soloPanelId={null}
-                  zenMode={editorZenMode}
-                  editorOnly={phoneWorkspace}
-                />
-              }
-              renderMobileSurface={(surface) => (
-                <ConnectedMobileWorkspaceSurface
-                  surface={surface}
-                  onOpenSettings={() => onOpenSettings("project")}
-                  onOpenAiSettings={() => onOpenSettings("ai")}
-                  onOpenImport={
-                    runtimeCapabilities.localFileImport
-                      ? () => onOpenTransfer("import")
-                      : undefined
-                  }
-                  onOpenExport={
-                    runtimeCapabilities.genericProjectTransfer
-                      ? onToggleExport
-                      : undefined
-                  }
-                  onContinueInGrimodex={
-                    !runtimeCapabilities.genericProjectTransfer &&
-                    runtimeCapabilities.browserDirectAi
-                      ? () => onSetHostedHandoff(true)
-                      : undefined
-                  }
-                  workspaceControls={
-                    <div data-phone-workspace-controls className="grid gap-2">
-                      <WorkspaceMenu
-                        onOpenImport={
-                          runtimeCapabilities.localFileImport
-                            ? () => onOpenTransfer("import")
-                            : undefined
-                        }
-                        onOpenExport={
-                          runtimeCapabilities.genericProjectTransfer
-                            ? () => onOpenTransfer("zip")
-                            : undefined
-                        }
-                        onOpenSnapshot={onOpenSnapshot}
-                      />
-                    </div>
-                  }
-                />
-              )}
-            />
-          ) : (
-            <LayoutShell
-              hidden={Boolean(screenshotPanelId) || panelWindow}
-              soloPanelId={soloPanelId}
-              zenMode={editorZenMode}
-            />
-          )}
-          <WorkLayerSurfaceHost />
-        </main>
-        <ZenModeController />
-        <BackgroundStudioHost zenMode={editorZenMode} />
-      </div>
-    </EditorWorkspaceProviders>
+          <EditorWorkspaceHeader
+            runtimeCapabilities={runtimeCapabilities}
+            screenshotPanelId={screenshotPanelId}
+            panelWindow={panelWindow}
+            phoneWorkspace={phoneWorkspace}
+            editorZenMode={editorZenMode}
+            mac={mac}
+            onOpenTransfer={onOpenTransfer}
+            onOpenSnapshot={onOpenSnapshot}
+            onToggleExport={onToggleExport}
+            onOpenSettings={() => onOpenSettings("project")}
+          />
+          <EditorWorkspaceDialogs
+            runtimeCapabilities={runtimeCapabilities}
+            phoneWorkspace={phoneWorkspace}
+            showSettings={showSettings}
+            settingsInitialCategory={settingsInitialCategory}
+            showExport={showExport}
+            exportModeRequest={exportModeRequest}
+            showSnapshotModal={showSnapshotModal}
+            showTransferDialog={showTransferDialog}
+            transferTab={transferTab}
+            showHostedHandoff={showHostedHandoff}
+            showSampleTour={showSampleTour}
+            onCloseSettings={onCloseSettings}
+            onCloseExport={onCloseExport}
+            onCloseSnapshot={onCloseSnapshot}
+            onChangeTransferTab={onChangeTransferTab}
+            onCloseTransfer={onCloseTransfer}
+            onSetHostedHandoff={onSetHostedHandoff}
+          />
+          <main
+            id="main-content"
+            tabIndex={-1}
+            className="relative isolate flex min-h-0 flex-1 overflow-hidden outline-none"
+          >
+            {mountZenAmbientBackdrop && (
+              <Suspense fallback={null}>
+                <ZenAmbientBackdrop active={editorZenMode} />
+              </Suspense>
+            )}
+            {adaptiveWorkspaceEnabled ? (
+              <AdaptiveWorkspaceShell
+                profile={workspaceProfile}
+                zenMode={editorZenMode}
+                editor={
+                  <LayoutShell
+                    hidden={false}
+                    soloPanelId={null}
+                    zenMode={editorZenMode}
+                    editorOnly={phoneWorkspace}
+                  />
+                }
+                renderMobileSurface={(surface) => (
+                  <ConnectedMobileWorkspaceSurface
+                    surface={surface}
+                    onOpenSettings={() => onOpenSettings("project")}
+                    onOpenAiSettings={() => onOpenSettings("ai")}
+                    onOpenImport={
+                      runtimeCapabilities.localFileImport
+                        ? () => onOpenTransfer("import")
+                        : undefined
+                    }
+                    onOpenExport={
+                      runtimeCapabilities.genericProjectTransfer
+                        ? onToggleExport
+                        : undefined
+                    }
+                    onContinueInGrimodex={
+                      !runtimeCapabilities.genericProjectTransfer &&
+                      runtimeCapabilities.browserDirectAi
+                        ? () => onSetHostedHandoff(true)
+                        : undefined
+                    }
+                    workspaceControls={
+                      <div data-phone-workspace-controls className="grid gap-2">
+                        <WorkspaceMenu
+                          onOpenImport={
+                            runtimeCapabilities.localFileImport
+                              ? () => onOpenTransfer("import")
+                              : undefined
+                          }
+                          onOpenExport={
+                            runtimeCapabilities.genericProjectTransfer
+                              ? () => onOpenTransfer("zip")
+                              : undefined
+                          }
+                          onOpenSnapshot={onOpenSnapshot}
+                        />
+                      </div>
+                    }
+                  />
+                )}
+              />
+            ) : (
+              <LayoutShell
+                hidden={Boolean(screenshotPanelId) || panelWindow}
+                soloPanelId={soloPanelId}
+                zenMode={editorZenMode}
+              />
+            )}
+            <WorkLayerSurfaceHost />
+          </main>
+          <ZenModeController />
+          <BackgroundStudioHost zenMode={editorZenMode} />
+        </div>
+      </EditorWorkspaceProviders>
+    </>
   );
 }

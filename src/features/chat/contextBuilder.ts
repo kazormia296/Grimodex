@@ -1230,6 +1230,8 @@ function buildSystemPromptWithActiveTokenMode(
         const metaSuffix = meta.length > 0 ? fsParen(meta.join(", ")) : "";
         fsLines.push(`- ${fsQuote(fs.title)}${intentSuffix}${metaSuffix}`);
       }
+      const omittedCount = (input.openForeshadows?.length ?? 0) - items.length;
+      fsLines.push(...s.fsOmittedLines(omittedCount, input.agentMode === true));
       return fsLines.join("\n");
     };
     let fsBlock = formatOpenFs(openFs);
@@ -1242,9 +1244,7 @@ function buildSystemPromptWithActiveTokenMode(
       // storySoFar が存在する場合は \n\n 区切りで追記（trim 単位として独立）
       l2Text = `${l2Text}\n\n${fsBlock}`;
     } else {
-      // storySoFar が空でも openForeshadows のみ表示する。L2 ヘッダをここでは
-      // 付与しない（storySoFar 側が `## これまでの物語` を含むため）。代わりに
-      // 物語全体セクションヘッダを fsBlock の前に付ける。
+      // storySoFar が空でも openForeshadows を表示するため、代わりにヘッダを付ける。
       l2Text = `\n${s.headers.storySoFar}${fsBlock}`;
     }
   }

@@ -16,6 +16,7 @@ export type EditorContentStyleSettings = Pick<
   EditorSettings,
   | "fontFamily"
   | "fontSize"
+  | "fontWeight"
   | "lineHeight"
   | "maxContentWidth"
   | "wordBreak"
@@ -44,6 +45,7 @@ export function buildEditorContentStyle(
     ...buildEditorMeasureStyle(s.maxContentWidth),
     fontFamily: s.fontFamily,
     fontSize: `${s.fontSize}px`,
+    fontWeight: s.fontWeight,
     lineHeight: s.lineHeight,
     wordBreak: s.wordBreak as React.CSSProperties["wordBreak"],
     lineBreak: s.lineBreak as React.CSSProperties["lineBreak"],
