@@ -3,6 +3,7 @@ use grimodex_core::narrative_ir::{
     derive_chronicle_scene_event_scope, validate_chronicle_scene_event_proposal_payload,
     validate_chronicle_scene_event_v2, validate_narrative_revision_envelope_v2,
     validate_narrative_scope_v2, ChronicleChangeDisposition, ChronicleScopeDerivation,
+    NarrativeIrValidationError,
 };
 use serde_json::{json, Value};
 
@@ -131,6 +132,26 @@ fn valid_envelope() -> Value {
             "adapterContractVersion": "1"
         }
     })
+}
+
+fn assert_identity_declaration_error(
+    assertion_id: Value,
+    declaration: Value,
+    expected_reason: &str,
+    expected_path: &str,
+) {
+    let mut envelope = valid_envelope();
+    envelope["assertion"]["assertionId"] = assertion_id;
+    envelope["assertion"]["identityDeclaration"] = declaration;
+
+    match validate_narrative_revision_envelope_v2(&envelope) {
+        Err(NarrativeIrValidationError::Validation { reason, path }) => {
+            assert_eq!(reason, expected_reason);
+            assert_eq!(path, expected_path);
+        }
+        Err(error) => panic!("unexpected validation error: {error}"),
+        Ok(()) => panic!("identity declaration should have been rejected"),
+    }
 }
 
 fn human_derived_envelope() -> Value {
@@ -323,6 +344,105 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
     candidate["assertion"]["payload"]["observationSummaries"][0]["durationKind"] =
         json!("unbounded");
     assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
+}
+
+#[test]
+fn accepts_optional_assertion_identity_declarations_and_legacy_omission() {
+    assert!(validate_narrative_revision_envelope_v2(&valid_envelope()).is_ok());
+
+    let mut none = valid_envelope();
+    none["assertion"]["identityDeclaration"] = json!({"kind": "none"});
+    assert!(validate_narrative_revision_envelope_v2(&none).is_ok());
+
+    let mut content_keyed = valid_envelope();
+    content_keyed["assertion"]["assertionId"] = json!("assertion:1");
+    content_keyed["assertion"]["identityDeclaration"] =
+        json!({"kind": "content-keyed"});
+    assert!(validate_narrative_revision_envelope_v2(&content_keyed).is_ok());
+
+    let mut carried_forward = valid_envelope();
+    carried_forward["assertion"]["assertionId"] = json!("assertion:2");
+    carried_forward["assertion"]["identityDeclaration"] = json!({
+        "kind": "carried-forward",
+        "carriedFrom": "revision:1"
+    });
+    assert!(validate_narrative_revision_envelope_v2(&carried_forward).is_ok());
+}
+
+#[test]
+fn rejects_invalid_assertion_identity_declarations_with_matching_codes_and_paths() {
+    assert_identity_declaration_error(
+        json!("assertion:1"),
+        json!({"kind": "none"}),
+        "invalid-identifier",
+        "assertion.identityDeclaration.kind",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        json!({"kind": "content-keyed"}),
+        "invalid-identifier",
+        "assertion.identityDeclaration.kind",
+    );
+    assert_identity_declaration_error(
+        json!(""),
+        json!({"kind": "content-keyed"}),
+        "invalid-identifier",
+        "assertion.identityDeclaration.kind",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        json!({"kind": "carried-forward", "carriedFrom": "revision:1"}),
+        "invalid-identifier",
+        "assertion.identityDeclaration.kind",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        json!({"kind": "none", "carriedFrom": "revision:1"}),
+        "unknown-field",
+        "assertion.identityDeclaration.carriedFrom",
+    );
+    assert_identity_declaration_error(
+        json!("assertion:1"),
+        json!({"kind": "content-keyed", "carriedFrom": "revision:1"}),
+        "unknown-field",
+        "assertion.identityDeclaration.carriedFrom",
+    );
+    assert_identity_declaration_error(
+        json!("assertion:1"),
+        json!({"kind": "carried-forward"}),
+        "missing-field",
+        "assertion.identityDeclaration.carriedFrom",
+    );
+    assert_identity_declaration_error(
+        json!("assertion:1"),
+        json!({"kind": "carried-forward", "carriedFrom": " "}),
+        "invalid-identifier",
+        "assertion.identityDeclaration.carriedFrom",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        json!({"kind": "none", "future": true}),
+        "unknown-field",
+        "assertion.identityDeclaration.future",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        json!({"kind": "future"}),
+        "invalid-identifier",
+        "assertion.identityDeclaration.kind",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        json!({}),
+        "missing-field",
+        "assertion.identityDeclaration.kind",
+    );
+    assert_identity_declaration_error(
+        Value::Null,
+        Value::Null,
+        "invalid-identifier",
+        "assertion.identityDeclaration",
+    );
 }
 
 #[test]
