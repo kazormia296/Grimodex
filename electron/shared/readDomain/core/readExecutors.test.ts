@@ -70,7 +70,11 @@ function makeCtx(
     getDb,
     getTreeState,
     body: { barrier: "none", readSceneBody, readSceneBodies },
-    native: { fts, foreshadowOpen },
+    native: {
+      fts,
+      foreshadowOpen,
+      foreshadowListWithLabels: async () => ({ foreshadows: [], setups: [] }),
+    },
     countTokens,
   };
   return {

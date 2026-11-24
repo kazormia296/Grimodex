@@ -125,6 +125,7 @@ import {
   resolveCodexAiVisibility,
 } from "@/../electron/shared/readDomain/core/codexVisibility";
 import { resolveCodexForAi } from "@/features/codex/context/codexHiddenFromAi";
+import { readForeshadowListWithLabelsWire } from "@/features/foreshadow/api";
 import { executeTool } from "./toolExecutors";
 import { LEGACY_CHRONICLE_READ_CONTEXT } from "./chronicleReadContext";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
@@ -260,6 +261,31 @@ const typedBackend = {
       "SELECT id, title, intent, load_bearing, version, payoff_confirmed, abandoned, updated_at " +
         "FROM foreshadows " +
         "WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0",
+      [projectId],
+    );
+    const ids = foreshadows.map((row) => String(row.id));
+    const setups =
+      ids.length === 0
+        ? []
+        : await read(
+            "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning " +
+              `FROM foreshadow_setups WHERE foreshadow_id IN (${ids.map(() => "?").join(", ")})`,
+            ids,
+          );
+    return JSON.stringify({ foreshadows, setups });
+  },
+  foreshadowListWithLabels: async (projectId: string) => {
+    foreshadowSent.push(projectId);
+    const read = async (sql: string, params: string[]) =>
+      (
+        (await invoke("db_execute", { sql, params, method: "all" })) as {
+          rows: Record<string, unknown>[];
+        }
+      ).rows;
+    const foreshadows = await read(
+      "SELECT id, title, intent, load_bearing, version, payoff_confirmed, abandoned, updated_at " +
+        "FROM foreshadows " +
+        "WHERE project_id = ? AND abandoned = 0",
       [projectId],
     );
     const ids = foreshadows.map((row) => String(row.id));
@@ -554,6 +580,57 @@ describe("共有 core の伏線 2 本が main の経路で読むもの（PR-5b�
     for (const statement of sent) {
       expect(statement.sql).toMatch(/^\s*select\b/iu);
     }
+  });
+
+  it("settled list は renderer legacy executor と main adapter で同じ seed の content・summary を返す", async () => {
+    setLegacyReadWorkspaceIdentity();
+    await seedLegacyReadFixture();
+    await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
+    legacyReadInvokeBridge.reset();
+    sent.length = 0;
+    foreshadowSent.length = 0;
+
+    const main = await executors.list_open_foreshadows({
+      includeSettled: true,
+    });
+    expect(foreshadowSent).toEqual(["p-main"]);
+    expect(sent).toEqual([]);
+
+    const rendererWire = (await readForeshadowListWithLabelsWire("p-main")) as {
+      foreshadows: Array<{ id: string }>;
+    };
+    expect(rendererWire.foreshadows.map((row) => row.id)).toEqual([
+      "fs-1",
+      "fs-2",
+      "fs-3",
+      "fs-5",
+      "fs-7",
+    ]);
+
+    const renderer = await executeTool(
+      "list_open_foreshadows",
+      "call-settled-parity",
+      { includeSettled: true },
+    );
+    expect(renderer.error).toBeUndefined();
+    expect(renderer.content).toEqual(main.content);
+    expect(renderer.summary).toBe(main.summary);
+
+    const rows = main.content as Array<{ id: string; settled?: boolean }>;
+    expect(rows.map((row) => row.id)).toEqual([
+      "fs-1",
+      "fs-2",
+      "fs-5",
+      "fs-3",
+      "fs-7",
+    ]);
+    expect(rows.filter((row) => row.settled).map((row) => row.id)).toEqual([
+      "fs-3",
+      "fs-7",
+    ]);
+    expect(rows.some((row) => row.id === "fs-4" || row.id === "fs-6")).toBe(
+      false,
+    );
   });
 
   it("project が空なら foreshadowOpen を呼ばずに止まる", async () => {

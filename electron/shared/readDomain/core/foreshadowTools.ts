@@ -2,7 +2,10 @@ import { and, eq, isNull } from "drizzle-orm";
 
 import type { CoreReadContext } from "../../mastraRead/ports.js";
 import { foreshadows, foreshadowSetups, treeNodes } from "../db/schema.js";
-import { openForeshadowsFromWire } from "../features/foreshadow/readRows.js";
+import {
+  foreshadowsForListFromWire,
+  openForeshadowsFromWire,
+} from "../features/foreshadow/readRows.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
 
@@ -23,16 +26,50 @@ import type { CoreToolResult } from "./toolResult.js";
  */
 
 /**
- * The open foreshadows of the project. The list is fetched by `native.foreshadowOpen`
- * (Native's `foreshadow_list_open_for_context`, which filters to unpaid,
- * non-abandoned rows; the renderer's in-browser branch does the same) and built
- * here from its wire. The wire has no secret column, so this layer forwards
- * every row returned by the read.
+ * The foreshadows of the project are fetched by `native.foreshadowOpen` for
+ * open rows or `native.foreshadowListWithLabels` when settled rows are requested,
+ * then built here from their wires. The wires have no secret column, so this
+ * layer forwards every row returned by the read.
  */
 export async function listOpenForeshadows(
   ctx: CoreReadContext,
+  params: Record<string, unknown> = {},
 ): Promise<CoreToolResult> {
+  // An absent or undefined value is omission; any other non-boolean is rejected.
+  if (
+    params["includeSettled"] !== undefined &&
+    typeof params["includeSettled"] !== "boolean"
+  ) {
+    throw new Error("includeSettled must be a boolean");
+  }
   const projectId = requireCoreProjectId(ctx);
+  if (params["includeSettled"] === true) {
+    const rows = foreshadowsForListFromWire(
+      await ctx.native.foreshadowListWithLabels({ projectId }),
+    );
+    const content = rows.map(
+      ({ id, title, intent, loadBearing, setupCount, settled }) => {
+        const row = {
+          id,
+          title,
+          intent: intent ?? "",
+          loadBearing,
+          setupCount,
+        };
+        return settled ? { ...row, settled: true } : row;
+      },
+    );
+    const json = JSON.stringify(content);
+    const settledCount = rows.filter((row) => row.settled).length;
+    return {
+      name: "list_open_foreshadows",
+      content,
+      summary:
+        content.length + " foreshadowing items (" + settledCount + " settled)",
+      tokensUsed: ctx.countTokens(json),
+    };
+  }
+
   const rows = openForeshadowsFromWire(
     await ctx.native.foreshadowOpen({ projectId }),
   );
