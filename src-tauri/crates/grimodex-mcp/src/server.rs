@@ -327,9 +327,10 @@ impl GrimodexServer {
         tools::tree::get_chapter_summaries(self).await
     }
 
-    /// List unresolved foreshadowing items (excludes secret, abandoned, payoff-confirmed).
+    /// List unresolved foreshadowing items regardless of secret status.
+    /// Abandoned and payoff-confirmed items are excluded.
     #[tool(
-        description = "List open (unresolved) foreshadowing items: id, title, intent, loadBearing, setupCount, and version. Pass version unchanged as base_version to update_foreshadow. Sorted by loadBearing priority then updatedAt."
+        description = "List open (unresolved) foreshadowing items regardless of secret status: id, title, intent, loadBearing, setupCount, and version. Abandoned and payoff-confirmed items are excluded. Pass version unchanged as base_version to update_foreshadow. Sorted by loadBearing priority then updatedAt."
     )]
     async fn list_open_foreshadows(&self) -> Result<CallToolResult, ErrorData> {
         tools::foreshadow::list_open_foreshadows(self).await
@@ -346,9 +347,9 @@ impl GrimodexServer {
         tools::foreshadow::get_foreshadow_detail(self, params.0).await
     }
 
-    /// Create a new foreshadowing item. Disabled in readonly mode. knowledgeWrite gate.
+    /// Create a visible foreshadowing item. The retired `secret` input is omitted from the schema; `true` is rejected, while `false` or omission stores `false`.
     #[tool(
-        description = "Create a new foreshadowing (plant/payoff) item: title, optional intent, notes, load_bearing ('critical'|'supporting'|'optional'), and secret flag (defaults true). Returns the initial version for the next update. Disabled in readonly mode."
+        description = "Create a new visible foreshadowing (plant/payoff) item: title, optional intent, notes, and load_bearing ('critical'|'supporting'|'optional'). The retired secret input is omitted from the schema; if supplied, true is rejected and false is accepted as false. Returns the initial version for the next update. Disabled in readonly mode."
     )]
     async fn create_foreshadow(
         &self,
@@ -357,9 +358,9 @@ impl GrimodexServer {
         tools::foreshadow::create_foreshadow(self, params.0).await
     }
 
-    /// Update fields of an existing foreshadowing item. Only provided fields change. Disabled in readonly mode. knowledgeWrite gate.
+    /// Update fields of an existing foreshadowing item. The retired `secret` input is omitted from the schema and any supplied value is rejected.
     #[tool(
-        description = "Update an existing foreshadowing item (title, intent, notes, load_bearing, payoff_confirmed, abandoned, secret). base_version is required and must equal the version returned by create/list/detail/the previous update; stale versions fail without mutation. Returns the incremented version. Scoped to the active project. Disabled in readonly mode."
+        description = "Update an existing foreshadowing item (title, intent, notes, load_bearing, payoff_confirmed, abandoned). The retired secret input is omitted from the schema; if supplied, true or false is rejected. base_version is required and must equal the version returned by create/list/detail/the previous update; stale versions fail without mutation. Returns the incremented version. Scoped to the active project. Disabled in readonly mode."
     )]
     async fn update_foreshadow(
         &self,
@@ -467,7 +468,7 @@ impl GrimodexServer {
 
     /// One-shot curated writing context for a scene (read-only aggregate).
     #[tool(
-        description = "Get a one-shot curated writing context for a scene: project info, chapter outlines, story-so-far synopses (reading order), the scene itself as Markdown (with synopsis/status/intent), story-time neighbors, foreshadows planted or resolved in the scene, project-wide open foreshadows, and Codex entries mentioned in the scene plus always-include entries. Call this FIRST before drafting or analyzing prose for a scene — it replaces a dozen individual read calls. Read-only; secret foreshadows are excluded; hard caps report dropped counts."
+        description = "Get a one-shot curated writing context for a scene: project info, chapter outlines, story-so-far synopses (reading order), the scene itself as Markdown (with synopsis/status/intent), story-time neighbors, foreshadows planted or resolved in the scene, project-wide open foreshadows, and Codex entries mentioned in the scene plus always-include entries. Both foreshadow sections include secret-marked items. Call this FIRST before drafting or analyzing prose for a scene — it replaces a dozen individual read calls. Read-only; hard caps report dropped counts."
     )]
     async fn get_writing_context(
         &self,
@@ -828,6 +829,26 @@ mod tool_route_tests {
             assert!(
                 properties.contains_key("reveal_scene_id"),
                 "{name} still publishes the disclosure scene input"
+            );
+        }
+    }
+
+    #[test]
+    fn registered_foreshadow_write_tools_do_not_publish_secret() {
+        let tools = GrimodexServer::tool_router().list_all();
+        for name in ["create_foreshadow", "update_foreshadow"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            let properties = tool
+                .input_schema
+                .get("properties")
+                .and_then(|value| value.as_object())
+                .unwrap_or_else(|| panic!("{name} publishes input properties"));
+            assert!(
+                !properties.contains_key("secret"),
+                "{name} must not publish the retired secret input"
             );
         }
     }

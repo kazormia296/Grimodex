@@ -533,7 +533,7 @@ pub struct ForeshadowCreatePayload {
     payoff_confirmed: bool,
     #[serde(default)]
     abandoned: bool,
-    #[serde(default = "default_secret")]
+    #[serde(default)]
     secret: bool,
     #[serde(default)]
     load_bearing: Option<String>,
@@ -751,10 +751,6 @@ fn validate_load_bearing(value: Option<&str>) -> anyhow::Result<()> {
             other
         )),
     }
-}
-
-fn default_secret() -> bool {
-    true
 }
 
 pub(crate) fn record_manual_foreshadow_fields(
@@ -1648,7 +1644,7 @@ pub fn list_open_for_context(
     let foreshadow_rows = db.execute(
         "SELECT id, title, intent, load_bearing, version, payoff_confirmed, abandoned, updated_at \
          FROM foreshadows \
-         WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
+         WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0",
         &[Value::String(project_id)],
         "all",
     )?;
@@ -3553,6 +3549,49 @@ mod tests {
         id
     }
 
+    #[test]
+    fn list_open_for_context_includes_secret_but_filters_resolved_and_abandoned() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let ordinary_id = insert_foreshadow(&db, &project_id);
+        let secret_id = insert_foreshadow(&db, &project_id);
+        db.execute(
+            "UPDATE foreshadows SET secret = 1 WHERE id = ?",
+            &[Value::String(secret_id.clone())],
+            "run",
+        )
+        .expect("mark foreshadow secret");
+        let resolved_id = insert_foreshadow(&db, &project_id);
+        db.execute(
+            "UPDATE foreshadows SET payoff_confirmed = 1 WHERE id = ?",
+            &[Value::String(resolved_id.clone())],
+            "run",
+        )
+        .expect("mark foreshadow resolved");
+        let abandoned_id = insert_foreshadow(&db, &project_id);
+        db.execute(
+            "UPDATE foreshadows SET abandoned = 1 WHERE id = ?",
+            &[Value::String(abandoned_id.clone())],
+            "run",
+        )
+        .expect("mark foreshadow abandoned");
+        let foreign_project_id = insert_project(&db);
+        let foreign_id = insert_foreshadow(&db, &foreign_project_id);
+
+        let result = list_open_for_context(&db, project_id).expect("list open foreshadows");
+        let ids: Vec<String> = result
+            .foreshadows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&ordinary_id));
+        assert!(ids.contains(&secret_id));
+        assert!(!ids.contains(&resolved_id));
+        assert!(!ids.contains(&abandoned_id));
+        assert!(!ids.contains(&foreign_id));
+    }
+
     fn foreshadow_version(db: &Database, id: &str) -> i64 {
         db.execute(
             "SELECT version FROM foreshadows WHERE id = ?",
@@ -4403,6 +4442,39 @@ mod tests {
         };
         let row = create(&db, payload).unwrap();
         assert_eq!(row["load_bearing"], Value::String("critical".to_string()));
+        assert_eq!(row["secret"], Value::Number(1.into()));
+    }
+
+    #[test]
+    fn create_defaults_missing_secret_to_false() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = ForeshadowCreatePayload {
+            context: test_write_context(),
+            id: None,
+            project_id,
+            title: "Visible by default".to_string(),
+            intent: None,
+            notes: None,
+            payoff_scene_id: None,
+            payoff_from_pos: None,
+            payoff_to_pos: None,
+            payoff_confirmed: false,
+            abandoned: false,
+            secret: true,
+            load_bearing: None,
+            codex_link_dirty_at: None,
+        };
+        let mut value = serde_json::to_value(payload).expect("serialize create payload");
+        value
+            .as_object_mut()
+            .expect("payload object")
+            .remove("secret");
+        let payload: ForeshadowCreatePayload =
+            serde_json::from_value(value).expect("missing secret uses false default");
+
+        let row = create(&db, payload).expect("create with omitted secret");
+        assert_eq!(row["secret"], Value::Number(0.into()));
     }
 
     #[test]

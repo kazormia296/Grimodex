@@ -415,7 +415,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   list_open_foreshadows: [
     sc(
-      "rows: secret=0・未回収・未放棄だけ（browser-mock では Drizzle 側の分岐）",
+      "rows: 未回収・未放棄（secret 値にかかわらず。browser-mock の Drizzle 分岐）",
       MAIN_S1,
       {},
     ),

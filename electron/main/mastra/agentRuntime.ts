@@ -17,6 +17,8 @@
 import { Agent } from "@mastra/core/agent";
 
 import {
+  type AgentObserveResponse,
+  type AgentPrepareSend,
   createAgentLanguageModel,
   grimodexProviderOptions,
 } from "./agentLanguageModel.js";
@@ -71,6 +73,10 @@ export interface MastraAgentTurnInput {
   readonly send: AgentSend;
   /** audit の書き手（main の sink。turn ごとの包みを含む）。 */
   readonly audit: AgentAuditSink;
+  /** audit.begin の前に各 send の request を同期的に確定する。 */
+  readonly prepareSend?: AgentPrepareSend;
+  /** audit.complete 後、Mastra に応答を返す前に同期的に観測する。 */
+  readonly observeResponse?: AgentObserveResponse;
   /** forced の切り離し（restricted、workspace 切替、quit、sender 消失）で abort する。 */
   readonly signal: AbortSignal;
 }
@@ -164,6 +170,8 @@ export function createMastraAgentRuntime(
         send: input.send,
         audit: input.audit,
         originalTools: [],
+        prepareSend: input.prepareSend,
+        observeResponse: input.observeResponse,
       });
       const agent = createAgent(model, input.instructions, logger);
       assertAgentToolsAllowed(Object.keys(await agent.listTools()));

@@ -166,7 +166,7 @@ export async function createForeshadow(
       payoffToPos: data.payoffToPos ?? null,
       payoffConfirmed: data.payoffConfirmed ?? false,
       abandoned: data.abandoned ?? false,
-      secret: data.secret ?? true,
+      secret: data.secret ?? false,
       loadBearing: data.loadBearing ?? null,
       codexLinkDirtyAt: data.codexLinkDirtyAt?.getTime() ?? null,
     },
@@ -427,9 +427,9 @@ export interface SceneForeshadowInfo {
  * この wire から tool の結果を組むので、ここは「wire を取る」だけ（組み立てはしない）。
  *
  * - Native（Tauri / Electron）：`foreshadow_list_open_for_context` を `{ projectId }` だけで 1 回 invoke し、
- *   戻りをそのまま返す（snake_case・真偽は 0/1・時刻は epoch ms。`secret = 0` の絞りは Native の SQL）。
+ *   戻りをそのまま返す（snake_case・真偽は 0/1・時刻は epoch ms。secret 値では絞らない）。
  * - それ以外（browser-mock・試験）：Drizzle で同じ 2 つの list を camelCase・boolean・Date のまま返す。
- *   文と順は従来のまま（foreshadows を `secret = false` つきで select し、0 件なら setups の select を
+ *   文と順は従来のまま（foreshadows を未回収・未放棄・project で select し、0 件なら setups の select を
  *   打たずに空の 2 list を返す）。
  */
 export async function readOpenForeshadowWire(
@@ -456,7 +456,6 @@ export async function readOpenForeshadowWire(
         eq(foreshadows.projectId, projectId),
         eq(foreshadows.payoffConfirmed, false),
         eq(foreshadows.abandoned, false),
-        eq(foreshadows.secret, false),
       ),
     );
 
@@ -480,7 +479,7 @@ export async function readOpenForeshadowWire(
 
 /**
  * Phase 2 (chat context): プロジェクト全体の未回収伏線（payoffConfirmed=false
- * かつ abandoned=false、secret を除く）を loadBearing 優先度（critical > supporting >
+ * かつ abandoned=false、secret 値にかかわらず）を loadBearing 優先度（critical > supporting >
  * optional > null）→ updatedAt DESC でソートして返す。setupCount は orphan を除いた件数。
  * L2 にバルク表示するための軽量フォーマットで、内容(notes)等は含めない。
  * wire の取得は `readOpenForeshadowWire`、組み立ては read 専用 module
