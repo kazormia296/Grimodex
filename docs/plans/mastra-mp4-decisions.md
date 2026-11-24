@@ -1932,3 +1932,22 @@ DR-MP4-53 の PR 列のうち、次の 4 本が master に入った（いずれ�
 **運用の学び（記録）：** wire・IPC・契約の file を変えるときは、`pnpm test:electron --run`（全件）と、`electron/scripts` の journey の start request の組み立て、静的試験（`rendererIsolation.static.test.ts`・`mastraWorkspaceDisabled.static.test.ts`。後者は文字列 `mastra-agent` を bundle 名として検出するので、event の channel 名に使わない）を push の前に確かめる。Packaged smoke (linux) は、同じ head で 2 回続けて「packaged の net log が終了の途中で切れて読めない」で失敗した後、3 回目は成功した（計測道具の偶発。01 が flake として記録）。
 
 **残り（DR-MP4-53 の表のうち）：** W2（進捗 event。`mastra:agent-turn-progress`）・F2（`renderAgentPayload` の共有化）・T0（main の tokenizer）・R2-b・T。
+
+### DR-MP4-55 4c-1 の部品の実装の記録（W2・F2・R2-b1。2026-11-25）
+
+DR-MP4-53 の PR 列のうち、DR-MP4-54 に続く 3 本が master に入った。いずれも呼び手なし（旗 L は閉じたまま、製品の挙動は不変）。各 PR は、実装（Codex）の後に別の Codex セッション（read-only）の独立レビューを受け、指摘を直してから出した。
+
+**W2（#1094）：進捗の event channel。** `mastra:agent-turn-progress`（main→renderer、`MAIN_EVENT_CHANNEL_ALLOWLIST`。channel 名に `mastra-agent` を含めない）。event は `send-accepted`・`tool`・`context-overflow`・`stopped` の 4 種で、数値と識別子だけ（本文・tool 引数・tool 結果・秘密を含めず、保存しない）。main の送出口は turn の元の sender だけに送り、sequence（1 始まり）を付与して parser で再検証する。renderer の受信口は購読単位で turnId を照合し、sequence の重複・飛びを desync として以後の event を適用しない。
+
+**F2（#1099）：`renderAgentPayload` の共有化。** 本体を `electron/shared/agentPayloadRenderer.ts`・`hermesToolsPreamble.ts` へ移し、元の path は facade。golden で移設前後の同一を固定。main の `prepareSend` が renderer と同じ payload を作れるようにするための移設だけ。
+
+**R2-b1（#1103）：send ごとの finalize と窓超過の型付き結果。**
+- tokenizer は owner に**注入**し、turn の登録の後（runtime の読込の前）に `ensureReady()` を待つ。準備できなければ `refused: unsupported`（fail closed、heuristic は使わない）。注入が無い owner も `unsupported`。
+- 先頭 system と `loop.fallbackSystem` の一致、tool 名の M4 限定は **owner が登録前に強制**する（parser は形だけ。parser に入れると fixture と境界試験の多くが壊れ、値の整合は trusted な main の責務なので）。
+- 窓超過は結果 wire の終端 variant `context-window-exceeded`＋progress の `context-overflow`（`cacheDowngradeReason` 付き）で運ぶ（Q4 (d) の解釈。ユーザーが別の運び方を望めば差し替える）。Stop が先に観測されていれば cancelled を優先する。
+- `TURN_PAYLOAD_SAFETY_MARGIN_TOKENS = 32` を shared へ移した（renderer は re-export）。`route.requestMaxOutputTokens` と `loop.requestMaxOutputTokens` の不一致は parse 失敗。
+- **journey の期待の変更**：tokenizer 未接続の owner は有効な start も `unsupported` で拒むので、`mastra-agent-turn-gate-load-audit` の「有効な start は key 解決（No API key）まで進む」前提が変わった（実 Electron の shard が「Missing expected rejection」で落ちて判明。`startRequest` の fixture と journey の洗い出しは、wire を変える PR の受け入れ条件に入れる）。tokenizer の接続の PR で元の assertion に戻す。ユーザーに見える変化ではない（旗 L の後ろ、renderer の呼び出し口は製品から未使用）。
+
+**運用の学び（記録）：** (1) 実 Electron の journey は Codex の sandbox でも手元の単体試験でも回らず、ci.yml の shard で初めて落ちる。wire・owner の入口の振る舞い（refusal の種類・順序）を変える PR では、`electron/scripts` の journey の期待を洗い出して同じ PR で直す。(2) `canonical-ci.yml` の dispatch の `candidate_base` は、head の祖先であること（head に取り込んだ master の commit 以降）。祖先でないと setup の検査で 0.2 秒で落ち、製品の失敗と見分けにくい（#1099 の最初の Quick）。(3) Codex の長い実装は、文脈の圧縮で依頼を見失って止まることがある。途中の差分は commit して残し、短い継続の依頼文（元の依頼文への参照つき）で再開すると完走できた。
+
+**残り（DR-MP4-53 の表のうち）：** T0（main の tokenizer。実装・独立レビュー済み、push の順番待ち）・R2-b2（loop 規則の結線と集約結果。同）は次の記録（DR-MP4-56）に残す。その後に、tokenizer の owner への接続（journey の元の assertion に戻す。packaged の実読込の確認）・T（`agentToolAdapter.ts`、runtime の allowlist、`maxSteps`、`onToolResult` の接続）、MP-5／MP-6、4c-2（renderer の engine 分岐。Q5 の threat model の確認）。
