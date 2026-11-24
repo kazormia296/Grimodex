@@ -69,6 +69,7 @@ function makeCtx(
   opts: {
     answers?: Record<string, unknown[][]>;
     foreshadowOpen?: CoreNativeReads["foreshadowOpen"];
+    foreshadowListWithLabels?: CoreNativeReads["foreshadowListWithLabels"];
     projectId?: string | (() => string);
   } = {},
 ) {
@@ -80,6 +81,10 @@ function makeCtx(
   };
   const foreshadowOpen = vi.fn(
     opts.foreshadowOpen ?? (async () => ({ foreshadows: [], setups: [] })),
+  );
+  const foreshadowListWithLabels = vi.fn(
+    opts.foreshadowListWithLabels ??
+      (async () => ({ foreshadows: [], setups: [] })),
   );
   const fts = vi.fn(async () => []);
   const getTreeState = vi.fn(
@@ -101,13 +106,14 @@ function makeCtx(
       readSceneBody: async () => "",
       readSceneBodies: async () => new Map<string, string>(),
     },
-    native: { fts, foreshadowOpen },
+    native: { fts, foreshadowOpen, foreshadowListWithLabels },
     countTokens: (text) => text.length,
   };
   return {
     executors: createReadExecutors(ctx),
     captured,
     foreshadowOpen,
+    foreshadowListWithLabels,
     fts,
     getTreeState,
   };
@@ -135,10 +141,17 @@ const nativeSetup = (over: Record<string, unknown> = {}) => ({
 
 describe("list_open_foreshadows", () => {
   it("asks foreshadowOpen for the project only (once), reads no database and does not use fts", async () => {
-    const { executors, foreshadowOpen, captured, fts } = makeCtx();
+    const {
+      executors,
+      foreshadowOpen,
+      foreshadowListWithLabels,
+      captured,
+      fts,
+    } = makeCtx();
     const result = await executors.list_open_foreshadows({});
     expect(foreshadowOpen).toHaveBeenCalledTimes(1);
     expect(foreshadowOpen).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(foreshadowListWithLabels).not.toHaveBeenCalled();
     expect(captured).toEqual([]);
     expect(fts).not.toHaveBeenCalled();
     expect(result).toEqual({
@@ -214,6 +227,189 @@ describe("list_open_foreshadows", () => {
     expect((result.content as Array<{ id: string }>).map((r) => r.id)).toEqual([
       "returned",
     ]);
+  });
+
+  it("includeSettled projects only active rows, puts settled rows last, and marks them", async () => {
+    const { executors, foreshadowOpen, foreshadowListWithLabels, captured } =
+      makeCtx({
+        foreshadowListWithLabels: async () => ({
+          foreshadows: [
+            nativeForeshadow({
+              id: "open-light",
+              load_bearing: "optional",
+              updated_at: T + 100,
+              notes: "private notes",
+              secret: 1,
+              payoff_scene_id: "n-open",
+            }),
+            nativeForeshadow({
+              id: "settled-light",
+              load_bearing: "optional",
+              payoff_confirmed: 1,
+              updated_at: T + 200,
+              notes: "settled notes",
+              secret: 1,
+              payoff_scene_id: "n-settled",
+            }),
+            nativeForeshadow({
+              id: "open-critical-old",
+              updated_at: T,
+            }),
+            nativeForeshadow({
+              id: "settled-critical",
+              payoff_confirmed: 1,
+              updated_at: T + 10,
+              notes: "must not escape",
+              secret: 1,
+              payoff_scene_id: "n-secret",
+            }),
+            nativeForeshadow({
+              id: "abandoned",
+              payoff_confirmed: 1,
+              abandoned: 1,
+              notes: "must not escape",
+              secret: 1,
+              payoff_scene_id: "n-abandoned",
+            }),
+            nativeForeshadow({
+              id: "open-critical-new",
+              updated_at: T + 20,
+            }),
+          ],
+          setups: [
+            nativeSetup({ foreshadow_id: "settled-critical", scene_id: "n1" }),
+            nativeSetup({
+              foreshadow_id: "settled-critical",
+              scene_id: "n2",
+              is_orphan: 1,
+            }),
+          ],
+        }),
+      });
+    const result = await executors.list_open_foreshadows({
+      includeSettled: true,
+    });
+
+    expect(foreshadowListWithLabels).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(foreshadowListWithLabels).toHaveBeenCalledTimes(1);
+    expect(foreshadowOpen).not.toHaveBeenCalled();
+    expect(captured).toEqual([]);
+    expect(result.content).toEqual([
+      {
+        id: "open-critical-new",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "critical",
+        setupCount: 0,
+      },
+      {
+        id: "open-critical-old",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "critical",
+        setupCount: 0,
+      },
+      {
+        id: "open-light",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "optional",
+        setupCount: 0,
+      },
+      {
+        id: "settled-critical",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "critical",
+        setupCount: 1,
+        settled: true,
+      },
+      {
+        id: "settled-light",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "optional",
+        setupCount: 0,
+        settled: true,
+      },
+    ]);
+    expect(
+      (result.content as Array<Record<string, unknown>>).map(Object.keys),
+    ).toEqual([
+      ["id", "title", "intent", "loadBearing", "setupCount"],
+      ["id", "title", "intent", "loadBearing", "setupCount"],
+      ["id", "title", "intent", "loadBearing", "setupCount"],
+      ["id", "title", "intent", "loadBearing", "setupCount", "settled"],
+      ["id", "title", "intent", "loadBearing", "setupCount", "settled"],
+    ]);
+    expect(JSON.stringify(result.content)).not.toMatch(
+      /notes|secret|payoff_scene_id|scene_id/u,
+    );
+    expect(result.summary).toBe("5 foreshadowing items (2 settled)");
+    expect(result.tokensUsed).toBe(JSON.stringify(result.content).length);
+  });
+
+  it.each([
+    ["string", "true"],
+    ["number", 1],
+    ["null", null],
+    ["array", []],
+  ])(
+    "rejects includeSettled with a %s value before reading",
+    async (_label, includeSettled) => {
+      const {
+        executors,
+        foreshadowOpen,
+        foreshadowListWithLabels,
+        getTreeState,
+      } = makeCtx();
+      await expect(
+        executors.list_open_foreshadows({ includeSettled }),
+      ).rejects.toThrow("includeSettled must be a boolean");
+      expect(getTreeState).not.toHaveBeenCalled();
+      expect(foreshadowOpen).not.toHaveBeenCalled();
+      expect(foreshadowListWithLabels).not.toHaveBeenCalled();
+    },
+  );
+
+  it("treats includeSettled: undefined as omission (open-only port call)", async () => {
+    const { executors, foreshadowOpen, foreshadowListWithLabels } = makeCtx({
+      foreshadowOpen: async () => ({
+        foreshadows: [nativeForeshadow()],
+        setups: [],
+      }),
+    });
+    const result = await executors.list_open_foreshadows({
+      includeSettled: undefined,
+    });
+    expect(result.summary).toBe("1 open foreshadowing items");
+    expect(foreshadowOpen).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(foreshadowListWithLabels).not.toHaveBeenCalled();
+  });
+
+  it("false and unknown input keys preserve the open-only result and port call", async () => {
+    const { executors, foreshadowOpen, foreshadowListWithLabels } = makeCtx({
+      foreshadowOpen: async () => ({
+        foreshadows: [nativeForeshadow()],
+        setups: [],
+      }),
+    });
+    const result = await executors.list_open_foreshadows({
+      includeSettled: false,
+      futureOption: "ignored",
+    });
+    expect(result.content).toEqual([
+      {
+        id: "f1",
+        title: "老魔術師の杖",
+        intent: "杖が後で鍵になる",
+        loadBearing: "critical",
+        setupCount: 0,
+      },
+    ]);
+    expect(result.summary).toBe("1 open foreshadowing items");
+    expect(foreshadowOpen).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(foreshadowListWithLabels).not.toHaveBeenCalled();
   });
 
   it("fails closed on a malformed wire instead of answering '0 open foreshadowing items'", async () => {

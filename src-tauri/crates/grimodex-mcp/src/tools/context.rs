@@ -183,7 +183,7 @@ pub(crate) fn build_writing_context(
 
     let timeline_neighbors = db::get_scene_timeline_neighbors(conn, project_id, scene_id)?;
     let scene_foreshadows = collect_scene_foreshadows(conn, project_id, scene_id)?;
-    let open_foreshadows = db::list_open_foreshadows(conn, project_id)?;
+    let open_foreshadows = db::list_open_foreshadows(conn, project_id, false)?;
 
     // Mention scan covers title + synopsis + intent + body so codex resolves
     // even while the scene body is still an empty draft.

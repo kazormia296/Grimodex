@@ -1653,6 +1653,8 @@ pub struct OpenForeshadowSummary {
     /// チャット executor は出力から落とすが、宣言済みツール契約 (toolDefinitions の説明) と
     /// 伏線整理ユースケースに合わせ MCP では返す (意図的な差分・docs に明記)。
     pub derived_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled: Option<bool>,
 }
 
 /// (id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at, version) for a foreshadow row.
@@ -1667,19 +1669,20 @@ type OpenForeshadowRow = (
     i64,
 );
 
-/// Open foreshadows that are neither abandoned nor payoff-confirmed.
+/// Unabandoned foreshadows, optionally including payoff-confirmed rows.
 /// derivedLabel はチャット出力では落ちるが、MCP では宣言契約どおり返す (意図的差分)。
 pub fn list_open_foreshadows(
     conn: &Connection,
     project_id: &str,
+    include_settled: bool,
 ) -> Result<Vec<OpenForeshadowSummary>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at, version
          FROM foreshadows
-         WHERE project_id = ?1 AND payoff_confirmed = 0 AND abandoned = 0",
+         WHERE project_id = ?1 AND abandoned = 0 AND (payoff_confirmed = 0 OR ?2 = 1)",
     )?;
     let rows: Vec<OpenForeshadowRow> = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params![project_id, include_settled], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -1745,7 +1748,7 @@ pub fn list_open_foreshadows(
         }
     };
 
-    let mut summaries: Vec<(OpenForeshadowSummary, i32, i64)> = rows
+    let mut summaries: Vec<(OpenForeshadowSummary, bool, i32, i64)> = rows
         .into_iter()
         .map(
             |(
@@ -1778,15 +1781,24 @@ pub fn list_open_foreshadows(
                     setup_count,
                     version,
                     derived_label: derived.to_string(),
+                    settled: if include_settled && payoff_confirmed {
+                        Some(true)
+                    } else {
+                        None
+                    },
                 };
-                (summary, priority, updated_at)
+                (summary, payoff_confirmed, priority, updated_at)
             },
         )
         .collect();
 
-    summaries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)));
+    summaries.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| b.3.cmp(&a.3))
+    });
 
-    Ok(summaries.into_iter().map(|(s, _, _)| s).collect())
+    Ok(summaries.into_iter().map(|(s, _, _, _)| s).collect())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -4614,6 +4626,11 @@ pub(crate) mod tests {
         )
         .unwrap();
         conn.execute(
+            "UPDATE foreshadows SET load_bearing = 'critical', updated_at = ?1 WHERE id = 'f-done'",
+            params![now + 1],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO foreshadows (id, project_id, title, secret, abandoned, created_at, updated_at)
              VALUES ('f-abandoned', 'p1', 'Abandoned', 0, 1, ?1, ?1)",
             params![now],
@@ -4637,16 +4654,49 @@ pub(crate) mod tests {
             params![now],
         )
         .unwrap();
-        let open = list_open_foreshadows(&conn, "p1").unwrap();
+        conn.execute(
+            "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, kind, is_orphan, created_at, updated_at)
+             VALUES ('su3', 'f-done', 'sc1', 'designated_existing', 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        let open = list_open_foreshadows(&conn, "p1", false).unwrap();
         assert_eq!(open.len(), 2);
+        assert_eq!(
+            open.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["f-open", "f-secret"]
+        );
         let ordinary = open.iter().find(|item| item.id == "f-open").unwrap();
         assert_eq!(ordinary.setup_count, 1);
         assert!(open.iter().any(|item| item.id == "f-secret"));
         assert!(!open.iter().any(|item| item.id == "f-done"));
         assert!(!open.iter().any(|item| item.id == "f-abandoned"));
         assert!(!open.iter().any(|item| item.id == "f-other"));
+        let open_json = serde_json::to_value(&open).unwrap();
+        assert!(open_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item.get("settled").is_none()));
         // derivedLabel を出力に載せる (critical / setup=1 / 非weak → "seeded")。
         assert_eq!(ordinary.derived_label, "seeded");
+
+        let all = list_open_foreshadows(&conn, "p1", true).unwrap();
+        assert_eq!(
+            all.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["f-open", "f-secret", "f-done"]
+        );
+        assert_eq!(all.last().unwrap().settled, Some(true));
+        assert_eq!(all.last().unwrap().setup_count, 1);
+        assert_eq!(all.last().unwrap().derived_label, "paid");
+        assert!(all[..2].iter().all(|item| item.settled.is_none()));
+        let all_json = serde_json::to_value(&all).unwrap();
+        assert!(all_json.as_array().unwrap()[..2]
+            .iter()
+            .all(|item| item.get("settled").is_none()));
+        assert!(!all.iter().any(|item| item.id == "f-abandoned"));
+        assert!(!all.iter().any(|item| item.id == "f-other"));
+        assert!(all.iter().any(|item| item.id == "f-secret"));
     }
 
     #[test]
@@ -4790,7 +4840,7 @@ pub(crate) mod tests {
         assert_eq!(abandoned, 0);
         assert_eq!(lb.as_deref(), Some("critical"));
         // Non-secret + unresolved → appears in the open list (coherent round-trip).
-        let open = list_open_foreshadows(&conn, "p1").unwrap();
+        let open = list_open_foreshadows(&conn, "p1", false).unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, res.entity_id);
     }
@@ -4818,7 +4868,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(fs_row(&conn, "f1").unwrap().1, 1); // secret
-        let open = list_open_foreshadows(&conn, "p1").unwrap();
+        let open = list_open_foreshadows(&conn, "p1", false).unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, "f1");
         assert!(get_foreshadow_detail(&conn, "p1", "f1").unwrap().is_some());
