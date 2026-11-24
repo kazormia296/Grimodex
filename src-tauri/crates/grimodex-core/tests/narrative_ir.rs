@@ -356,8 +356,7 @@ fn accepts_optional_assertion_identity_declarations_and_legacy_omission() {
 
     let mut content_keyed = valid_envelope();
     content_keyed["assertion"]["assertionId"] = json!("assertion:1");
-    content_keyed["assertion"]["identityDeclaration"] =
-        json!({"kind": "content-keyed"});
+    content_keyed["assertion"]["identityDeclaration"] = json!({"kind": "content-keyed"});
     assert!(validate_narrative_revision_envelope_v2(&content_keyed).is_ok());
 
     let mut carried_forward = valid_envelope();
