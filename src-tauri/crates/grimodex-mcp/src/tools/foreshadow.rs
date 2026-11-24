@@ -12,6 +12,12 @@ use crate::server::{internal_err, GrimodexServer};
 const SECRET_ERROR: &str =
     "secret is no longer supported: foreshadows cannot be hidden from the AI";
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListOpenForeshadowsParams {
+    /// Include settled (payoff-confirmed) foreshadowing items, each marked `settled: true`. Abandoned items are never included. Omitted or false returns unresolved items only.
+    pub include_settled: Option<bool>,
+}
+
 /// Allowed `load_bearing` values, identical to the canonical Tauri command and
 /// `deriveLabel.ts`. An unknown value would silently degrade in the app, so it
 /// is rejected at the MCP boundary. `None` (omitted) is allowed.
@@ -27,9 +33,17 @@ fn validate_load_bearing(value: Option<&str>) -> Result<(), ErrorData> {
     }
 }
 
-pub async fn list_open_foreshadows(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
+pub async fn list_open_foreshadows(
+    server: &GrimodexServer,
+    params: ListOpenForeshadowsParams,
+) -> Result<CallToolResult, ErrorData> {
     let conn = server.conn.lock().map_err(internal_err)?;
-    let rows = db::list_open_foreshadows(&conn, &server.project_id()).map_err(internal_err)?;
+    let rows = db::list_open_foreshadows(
+        &conn,
+        &server.project_id(),
+        params.include_settled.unwrap_or(false),
+    )
+    .map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&rows).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![
         rmcp::model::ContentBlock::text(json),
@@ -324,6 +338,86 @@ mod tests {
     use crate::db::tests::make_simple_db;
     use crate::server::GrimodexServer;
     use rusqlite::params;
+
+    fn result_json(res: &CallToolResult) -> serde_json::Value {
+        let value = serde_json::to_value(res).unwrap();
+        let text = value["content"][0]["text"].as_str().expect("text content");
+        serde_json::from_str(text).expect("valid JSON payload")
+    }
+
+    #[test]
+    fn list_open_foreshadows_params_schema_publishes_include_settled() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(ListOpenForeshadowsParams)).unwrap();
+        assert!(schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("include_settled"));
+    }
+
+    #[tokio::test]
+    async fn list_open_foreshadows_accepts_omitted_false_and_true_arguments() {
+        let server = make_writable_server();
+        {
+            let conn = server.conn.lock().unwrap();
+            for (id, title, payoff_confirmed, abandoned) in [
+                ("f-open", "Open", 0, 0),
+                ("f-settled", "Settled", 1, 0),
+                ("f-abandoned", "Abandoned", 0, 1),
+            ] {
+                conn.execute(
+                    "INSERT INTO foreshadows
+                     (id, project_id, title, payoff_confirmed, abandoned, secret, created_at, updated_at)
+                     VALUES (?1, 'p1', ?2, ?3, ?4, 1, 1000, 1000)",
+                    params![id, title, payoff_confirmed, abandoned],
+                )
+                .unwrap();
+            }
+        }
+
+        let omitted: ListOpenForeshadowsParams =
+            serde_json::from_value(serde_json::json!({})).expect("empty arguments are valid");
+        let omitted = list_open_foreshadows(&server, omitted).await.unwrap();
+        let omitted = result_json(&omitted);
+        assert_eq!(omitted.as_array().unwrap().len(), 1);
+        assert_eq!(omitted[0]["id"], "f-open");
+        assert!(omitted[0].get("settled").is_none());
+
+        let unresolved = list_open_foreshadows(
+            &server,
+            ListOpenForeshadowsParams {
+                include_settled: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+        let unresolved = result_json(&unresolved);
+        assert_eq!(unresolved.as_array().unwrap().len(), 1);
+        assert_eq!(unresolved[0]["id"], "f-open");
+
+        let included = list_open_foreshadows(
+            &server,
+            ListOpenForeshadowsParams {
+                include_settled: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        let included = result_json(&included);
+        assert_eq!(included.as_array().unwrap().len(), 2);
+        let settled = included
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "f-settled")
+            .expect("settled row is included");
+        assert_eq!(settled["settled"], true);
+        assert!(!included
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "f-abandoned"));
+    }
 
     #[test]
     fn secret_compatibility_inputs_are_hidden_from_param_schemas() {
