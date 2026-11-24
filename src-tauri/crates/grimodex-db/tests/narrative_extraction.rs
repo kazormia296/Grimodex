@@ -2904,6 +2904,11 @@ fn current_chronicle_native_compiler_rejects_renderer_field_tampering() {
     title["title"] = json!("Renderer forged title");
     let mut reveal = payload.clone();
     reveal["revealSceneId"] = json!("scene-forged");
+    let mut reveal_omitted = payload.clone();
+    reveal_omitted
+        .as_object_mut()
+        .expect("payload object")
+        .remove("revealSceneId");
     let mut evidence_version = payload.clone();
     evidence_version["evidenceSceneLinks"][0]["expectedSceneVersion"] = json!(99);
     let mut anchors = payload.clone();
@@ -2916,7 +2921,18 @@ fn current_chronicle_native_compiler_rejects_renderer_field_tampering() {
     for (case, tampered, expected_code) in [
         ("event-id", event_id, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         ("title", title, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
-        ("reveal-scene", reveal, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        // 取り込みは開示シーンを入れない：非 null の書き換えは、組み立て直しの照合より前の
+        // 共通の検査（SECRET_FORBIDDEN）が拒む。キーの欠落（null との差）は、照合が拒む。
+        (
+            "reveal-scene",
+            reveal,
+            "NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN",
+        ),
+        (
+            "reveal-omitted",
+            reveal_omitted,
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH",
+        ),
         (
             "evidence-version",
             evidence_version,
@@ -2981,7 +2997,7 @@ fn current_chronicle_shared_snapshot_authority_rejects_later_proposal_tampering(
     enable_manual_apply(&db);
 
     let mut tampered_second = payloads[1].clone();
-    tampered_second["revealSceneId"] = json!("scene-renderer-forged");
+    tampered_second["detail"] = json!("renderer-forged-detail");
     let error = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
         build_prepare(
@@ -5683,6 +5699,44 @@ fn current_chronicle_apply_rejects_secret_operation_even_for_nonsecret_revision(
             .to_string()
             .contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN"),
         "unexpected secret operation error: {error:#}"
+    );
+    assert_eq!(count_apply_commits(&db), 0);
+    assert_eq!(count_events(&db), 0);
+}
+
+#[test]
+fn legacy_chronicle_apply_rejects_reveal_scene_operation() {
+    // 旧形式は operation の payload をそのまま比較する。secret: false でも、非 null の
+    // 開示シーンを持つ操作は、共通の検査で拒む（取り込みは開示シーンを入れない。確認 104）。
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let mut payload = event_create_payload("event-cas-legacy-reveal", "Legacy", "scene-1", 0);
+    payload["secret"] = json!(false);
+    payload["revealSceneId"] = json!("scene-1");
+    let pairs = seed_approved_proposals(
+        &db,
+        "run-cas-legacy-reveal",
+        "set-cas-legacy-reveal",
+        std::slice::from_ref(&payload),
+    );
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-cas-legacy-reveal",
+            "ignored",
+            "set-cas-legacy-reveal",
+            "run-cas-legacy-reveal",
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+        ),
+    )
+    .expect_err("the legacy branch must not create a Chronicle Event with a reveal scene");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN"),
+        "unexpected legacy reveal operation error: {error:#}"
     );
     assert_eq!(count_apply_commits(&db), 0);
     assert_eq!(count_events(&db), 0);

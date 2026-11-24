@@ -2289,6 +2289,12 @@ fn validate_commit_plan(
                     !payload.secret,
                     "NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN: chronicle events must not be created secret"
                 );
+                // 開示シーンも取り込みは入れない（確認 104）。旧形式は operation の payload を
+                // そのまま比較するので、組み立て直しの照合には頼らず、共通の検査で拒む。
+                anyhow::ensure!(
+                    payload.reveal_scene_id.as_deref().is_none_or(str::is_empty),
+                    "NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN: chronicle events must not be created with a reveal scene"
+                );
                 ensure_event_id_available(conn, ctx.project_id, &payload.event_id)?;
                 ensure_scene_versions(conn, ctx.project_id, &payload.evidence_scene_links)?;
             }
