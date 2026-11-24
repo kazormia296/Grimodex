@@ -40,7 +40,6 @@ export function EditForeshadowDialog({
   const [notes, setNotes] = useState("");
   const [payoffConfirmed, setPayoffConfirmed] = useState(false);
   const [abandoned, setAbandoned] = useState(false);
-  const [secret, setSecret] = useState(true);
   const [loadBearing, setLoadBearing] = useState<ForeshadowLoadBearing | null>(
     null,
   );
@@ -72,7 +71,6 @@ export function EditForeshadowDialog({
       setNotes(item.notes ?? "");
       setPayoffConfirmed(item.payoffConfirmed);
       setAbandoned(item.abandoned);
-      setSecret(item.secret);
       setLoadBearing(item.loadBearing ?? null);
       setShowUnsetConfirm(false);
       setWillUnsetAnchor(false);
@@ -133,7 +131,6 @@ export function EditForeshadowDialog({
       if (payoffConfirmed !== item.payoffConfirmed)
         patch.payoffConfirmed = payoffConfirmed;
       if (abandoned !== item.abandoned) patch.abandoned = abandoned;
-      if (secret !== item.secret) patch.secret = secret;
       if (loadBearing !== (item.loadBearing ?? null))
         patch.loadBearing = loadBearing;
 
@@ -354,22 +351,6 @@ export function EditForeshadowDialog({
               />
               <span className="text-xs text-foreground">
                 {t("foreshadow.edit.abandonedLabel")}
-              </span>
-            </label>
-
-            <label className="flex items-start gap-2">
-              <input
-                data-testid="edit-foreshadow-secret"
-                type="checkbox"
-                checked={secret}
-                onChange={(e) => setSecret(e.target.checked)}
-                className="mt-0.5 rounded border-input"
-              />
-              <span className="text-xs text-foreground">
-                {t("foreshadow.edit.secretLabel")}
-                <span className="block text-[10px] text-muted-foreground">
-                  {t("foreshadow.edit.secretDesc")}
-                </span>
               </span>
             </label>
           </div>
