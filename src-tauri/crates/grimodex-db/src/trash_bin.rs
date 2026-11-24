@@ -750,7 +750,7 @@ fn restore_foreshadow_in_tx(
             optional_i64(payload, "payoffToPos"),
             optional_bool(payload, "payoffConfirmed", false),
             optional_bool(payload, "abandoned", false),
-            optional_bool(payload, "secret", true),
+            optional_bool(payload, "secret", false),
             optional_string(payload, "loadBearing"),
             optional_i64(payload, "codexLinkDirtyAt"),
             now,
@@ -1448,5 +1448,36 @@ mod tests {
         let restored = restore(&db, restore_request("trash-sdef")).expect("restore Scene");
         let markers = crate::narrative_extraction::scene_scope_default_tests::markers(&db, PROJECT);
         assert_eq!(markers, vec![(restored.new_id, "unknown".to_string())]);
+    }
+
+    #[test]
+    fn foreshadow_trash_restore_defaults_missing_secret_to_false() {
+        let db = test_db();
+        for (item_id, payload, expected_secret) in [
+            (
+                "trash-foreshadow-no-secret",
+                json!({"title": "Visible by default"}),
+                0,
+            ),
+            (
+                "trash-foreshadow-secret",
+                json!({"title": "Explicit secret", "secret": true}),
+                1,
+            ),
+        ] {
+            create(&db, structure_payload(item_id, "foreshadow", payload))
+                .expect("create Foreshadow Trash row");
+            let restored = restore(&db, restore_request(item_id)).expect("restore Foreshadow");
+            let secret: i64 = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT secret FROM foreshadows WHERE id = ?1",
+                        [&restored.new_id],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("read restored secret");
+            assert_eq!(secret, expected_secret);
+        }
     }
 }
