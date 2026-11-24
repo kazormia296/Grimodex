@@ -350,4 +350,30 @@ describe("agentLoopRules legacy parity", () => {
     expect(legacyResult?.isError).toBe(rulesResult.isError);
     expect(rulesResult.content).toBe('"a...[truncated: 元 10 tokens]');
   });
+
+  it("matches legacy when JSON.stringify returns undefined for content", async () => {
+    const content = { toJSON: () => undefined };
+    const scenario: Scenario = {
+      toolName: "read_scene",
+      tokenBudget: 100,
+      resultContent: content,
+    };
+    const legacyError = await runLegacy(scenario).catch(
+      (error: unknown) => error,
+    );
+    let rulesError: unknown;
+    try {
+      formatToolResult(
+        { content, summary: "summary" },
+        100,
+        (text) => text.length,
+      );
+    } catch (error) {
+      rulesError = error;
+    }
+
+    expect(legacyError).toBeInstanceOf(TypeError);
+    expect(rulesError).toBeInstanceOf(TypeError);
+    expect((rulesError as Error).message).toBe((legacyError as Error).message);
+  });
 });

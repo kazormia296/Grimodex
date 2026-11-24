@@ -51,7 +51,12 @@ export function createAgentLoopRuleState(input: {
   };
 }
 
-/** Call only for the observed tool_use blocks; a post-limit response is ignored. */
+/**
+ * Call only for the observed tool_use blocks; a post-limit response is ignored.
+ * Legacy counts each execution; this module counts the whole batch when observed,
+ * so counters can exceed legacy after a mid-batch abort (the stop reason matches).
+ * Pass one item at a time when the caller needs execution-by-execution counts.
+ */
 export function recordToolUsesForResponse(
   state: AgentLoopRuleState,
   stopReason: string,
@@ -173,5 +178,11 @@ export function deriveAgentMaxSteps(
   maxToolCalls = DEFAULT_MAX_TOOL_CALLS,
   maxUserQuestions = DEFAULT_MAX_USER_QUESTIONS,
 ): number {
+  if (!Number.isInteger(maxToolCalls) || maxToolCalls < 0) {
+    throw new RangeError("maxToolCalls must be a non-negative integer");
+  }
+  if (!Number.isInteger(maxUserQuestions) || maxUserQuestions < 0) {
+    throw new RangeError("maxUserQuestions must be a non-negative integer");
+  }
   return Math.max(2, maxToolCalls + maxUserQuestions);
 }

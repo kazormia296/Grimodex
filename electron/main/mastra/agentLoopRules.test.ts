@@ -186,6 +186,17 @@ describe("agent loop rules", () => {
     expect(insertLimitMessage(aborted)).toBe(aborted);
   });
 
+  it("counts the observed batch before a mid-batch abort", () => {
+    const batch = recordToolUsesForResponse(
+      createAgentLoopRuleState({ tokenBudget: 100 }),
+      "tool_use",
+      [ASK_USER_TOOL_NAME, "read_scene"],
+    );
+    const aborted = markAgentLoopAborted(batch);
+    expect(aborted).toMatchObject({ userQuestionCalls: 1, totalCalls: 1 });
+    expect(resolveAgentStoppedReason(aborted)).toBe("aborted");
+  });
+
   it("formats tool results at the exact cap and truncates cap plus one", () => {
     const exact = formatToolResult(
       { content: "", summary: "unused" },
@@ -253,5 +264,15 @@ describe("agent loop rules", () => {
     expect(deriveAgentMaxSteps(1, 1)).toBe(2);
     expect(deriveAgentMaxSteps(0, 0)).toBe(2);
     expect(deriveAgentMaxSteps(0, 1)).toBe(2);
+    expect(() => deriveAgentMaxSteps(1.1, 1)).toThrow(
+      "maxToolCalls must be a non-negative integer",
+    );
+    expect(() => deriveAgentMaxSteps(1, 1.1)).toThrow(
+      "maxUserQuestions must be a non-negative integer",
+    );
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(() => deriveAgentMaxSteps(invalid, 1)).toThrow(RangeError);
+      expect(() => deriveAgentMaxSteps(1, invalid)).toThrow(RangeError);
+    }
   });
 });
