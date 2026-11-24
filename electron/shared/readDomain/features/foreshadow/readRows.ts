@@ -267,3 +267,36 @@ export function openForeshadowsFromWire(
     (setups as unknown[]).map(normalizeSetupLabelInput),
   );
 }
+
+export type ForeshadowListRow = Pick<
+  OpenForeshadowForContext,
+  "id" | "title" | "intent" | "loadBearing" | "setupCount"
+> & { settled?: true };
+
+/** Builds the agent's minimal list from the project-wide foreshadow wire. */
+export function foreshadowsForListFromWire(wire: unknown): ForeshadowListRow[] {
+  const sorted = openForeshadowsFromWire(wire);
+  const rows = (wire as { foreshadows: unknown[] }).foreshadows.map(
+    normalizeForeshadowRow,
+  );
+  const states = new Map(
+    rows.map((row) => [
+      row.id,
+      { abandoned: row.abandoned, settled: row.payoffConfirmed },
+    ]),
+  );
+  const active = sorted.filter((row) => !states.get(row.id)?.abandoned);
+  const project = (row: OpenForeshadowForContext): ForeshadowListRow => ({
+    id: row.id,
+    title: row.title,
+    intent: row.intent,
+    loadBearing: row.loadBearing,
+    setupCount: row.setupCount,
+  });
+  return [
+    ...active.filter((row) => !states.get(row.id)?.settled).map(project),
+    ...active
+      .filter((row) => states.get(row.id)?.settled)
+      .map((row) => ({ ...project(row), settled: true as const })),
+  ];
+}

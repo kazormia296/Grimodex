@@ -2,7 +2,10 @@ import { and, eq, isNull } from "drizzle-orm";
 
 import type { CoreReadContext } from "../../mastraRead/ports.js";
 import { foreshadows, foreshadowSetups, treeNodes } from "../db/schema.js";
-import { openForeshadowsFromWire } from "../features/foreshadow/readRows.js";
+import {
+  foreshadowsForListFromWire,
+  openForeshadowsFromWire,
+} from "../features/foreshadow/readRows.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
 
@@ -31,8 +34,42 @@ import type { CoreToolResult } from "./toolResult.js";
  */
 export async function listOpenForeshadows(
   ctx: CoreReadContext,
+  params: Record<string, unknown> = {},
 ): Promise<CoreToolResult> {
+  if (
+    Object.prototype.hasOwnProperty.call(params, "includeSettled") &&
+    typeof params["includeSettled"] !== "boolean"
+  ) {
+    throw new Error("includeSettled must be a boolean");
+  }
   const projectId = requireCoreProjectId(ctx);
+  if (params["includeSettled"] === true) {
+    const rows = foreshadowsForListFromWire(
+      await ctx.native.foreshadowOpen({ projectId, includeSettled: true }),
+    );
+    const content = rows.map(
+      ({ id, title, intent, loadBearing, setupCount, settled }) => {
+        const row = {
+          id,
+          title,
+          intent: intent ?? "",
+          loadBearing,
+          setupCount,
+        };
+        return settled ? { ...row, settled: true } : row;
+      },
+    );
+    const json = JSON.stringify(content);
+    const settledCount = rows.filter((row) => row.settled).length;
+    return {
+      name: "list_open_foreshadows",
+      content,
+      summary:
+        content.length + " foreshadowing items (" + settledCount + " settled)",
+      tokensUsed: ctx.countTokens(json),
+    };
+  }
+
   const rows = openForeshadowsFromWire(
     await ctx.native.foreshadowOpen({ projectId }),
   );

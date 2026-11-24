@@ -27,6 +27,9 @@ function backendWith(overrides: Record<string, unknown> = {}) {
     ftsSearch: vi.fn(async () => wire({ hits: [] })),
     codexSemanticSearch: vi.fn(async () => wire({ hits: ["c"] })),
     eventsSemanticSearch: vi.fn(async () => wire({ hits: ["e"] })),
+    foreshadowListWithLabels: vi.fn(async () =>
+      wire({ foreshadows: [], setups: [] }),
+    ),
     foreshadowListOpenForContext: vi.fn(async () => wire([])),
     ...overrides,
   };
@@ -78,7 +81,18 @@ describe("the four typed reads call their own Native method", () => {
     const { methods, backend } = backendWith();
     const reads = createMainTypedReads({ backend, identity: IDENTITY });
     await reads.foreshadowOpen({ projectId: "p" });
+    await reads.foreshadowOpen({ projectId: "p", includeSettled: false });
     expect(methods.foreshadowListOpenForContext).toHaveBeenCalledWith("p");
+    expect(methods.foreshadowListOpenForContext).toHaveBeenCalledTimes(2);
+    expect(methods.foreshadowListWithLabels).not.toHaveBeenCalled();
+  });
+
+  it("includeSettled selects the existing foreshadow_list_with_labels read", async () => {
+    const { methods, backend } = backendWith();
+    const reads = createMainTypedReads({ backend, identity: IDENTITY });
+    await reads.foreshadowOpen({ projectId: "p", includeSettled: true });
+    expect(methods.foreshadowListWithLabels).toHaveBeenCalledWith("p");
+    expect(methods.foreshadowListOpenForContext).not.toHaveBeenCalled();
   });
 });
 
@@ -245,6 +259,7 @@ describe("the four commands do not use `deps` (DR-MP4-6)", () => {
     "fts_search",
     "codex_semantic_search",
     "events_semantic_search",
+    "foreshadow_list_with_labels",
     "foreshadow_list_open_for_context",
   ] as const;
   const ARGS: Record<(typeof KEYS)[number], Record<string, unknown>> = {
@@ -261,6 +276,7 @@ describe("the four commands do not use `deps` (DR-MP4-6)", () => {
       query: "q",
       limit: 1,
     },
+    foreshadow_list_with_labels: { projectId: "p" },
     foreshadow_list_open_for_context: { projectId: "p" },
   };
 

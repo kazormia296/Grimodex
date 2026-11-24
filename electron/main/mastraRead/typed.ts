@@ -42,6 +42,7 @@ export type MainTypedReadsBackend = Pick<
   | "ftsSearch"
   | "codexSemanticSearch"
   | "eventsSemanticSearch"
+  | "foreshadowListWithLabels"
   | "foreshadowListOpenForContext"
 >;
 
@@ -79,6 +80,8 @@ function narrowBackend(source: MainTypedReadsBackend): MainTypedReadsBackend {
   if (codex) narrowed.codexSemanticSearch = codex;
   const events = bound(source, source.eventsSemanticSearch);
   if (events) narrowed.eventsSemanticSearch = events;
+  const foreshadowLabels = bound(source, source.foreshadowListWithLabels);
+  if (foreshadowLabels) narrowed.foreshadowListWithLabels = foreshadowLabels;
   const foreshadow = bound(source, source.foreshadowListOpenForContext);
   if (foreshadow) narrowed.foreshadowListOpenForContext = foreshadow;
   return Object.freeze(narrowed) as unknown as MainTypedReadsBackend;
@@ -207,10 +210,26 @@ export function createMainTypedReads(
       );
     },
     foreshadowOpen: async (args) => {
-      const projectId = projectIdOf(
-        "foreshadow_list_open_for_context",
-        args.projectId,
-      );
+      const command =
+        args.includeSettled === true
+          ? "foreshadow_list_with_labels"
+          : "foreshadow_list_open_for_context";
+      const projectId = projectIdOf(command, args.projectId);
+      if (args.includeSettled === true) {
+        return runNativeRead(
+          () =>
+            NAPI_COMMANDS.foreshadow_list_with_labels.run(
+              nativeBackend,
+              { projectId },
+              NO_DEPS,
+            ),
+          {
+            command: "foreshadow_list_with_labels",
+            timeoutMs: null,
+            hooks: options,
+          },
+        );
+      }
       return runNativeRead(
         () =>
           NAPI_COMMANDS.foreshadow_list_open_for_context.run(

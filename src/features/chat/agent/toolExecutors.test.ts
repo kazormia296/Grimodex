@@ -361,6 +361,63 @@ describe("executeTool — Phase 3 dispatch", () => {
     expect(mockReadOpenForeshadowWire).toHaveBeenCalledWith("p1");
   });
 
+  it("list_open_foreshadows passes includeSettled through the legacy executor", async () => {
+    mockTreeProjectId.mockReturnValue("p1");
+    mockReadOpenForeshadowWire.mockResolvedValue({
+      foreshadows: [
+        {
+          id: "open",
+          title: "未回収",
+          intent: null,
+          load_bearing: "critical",
+          payoff_confirmed: 0,
+          abandoned: 0,
+          updated_at: 1_767_225_600_000,
+        },
+        {
+          id: "settled",
+          title: "回収済み",
+          intent: "回収した",
+          load_bearing: "optional",
+          payoff_confirmed: 1,
+          abandoned: 0,
+          updated_at: 1_767_225_600_001,
+        },
+        {
+          id: "abandoned",
+          title: "放棄",
+          payoff_confirmed: 1,
+          abandoned: 1,
+          updated_at: 1_767_225_600_002,
+        },
+      ],
+      setups: [],
+    });
+
+    const result = await executeTool("list_open_foreshadows", "call-settled", {
+      includeSettled: true,
+    });
+    expect(result.content).toEqual([
+      {
+        id: "open",
+        title: "未回収",
+        intent: "",
+        loadBearing: "critical",
+        setupCount: 0,
+      },
+      {
+        id: "settled",
+        title: "回収済み",
+        intent: "回収した",
+        loadBearing: "optional",
+        setupCount: 0,
+        settled: true,
+      },
+    ]);
+    expect(result.summary).toBe("2 foreshadowing items (1 settled)");
+    expect(mockReadOpenForeshadowWire).toHaveBeenCalledWith("p1", true);
+  });
+
   it("list_open_foreshadows returns empty when no project is active", async () => {
     mockTreeProjectId.mockReturnValue(null);
     const result = await executeTool("list_open_foreshadows", "call-2", {});

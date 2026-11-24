@@ -651,7 +651,10 @@ const LEGACY_READ_CONTEXT: CoreReadContext = {
   // それ以外は Drizzle の 2 list）。`readOpenForeshadowWire` は arrow の中で読む（試験の mock が効く）。
   native: {
     fts: (args) => invoke("fts_search", args),
-    foreshadowOpen: (args) => readOpenForeshadowWire(args.projectId),
+    foreshadowOpen: (args) =>
+      args.includeSettled === true
+        ? readOpenForeshadowWire(args.projectId, true)
+        : readOpenForeshadowWire(args.projectId),
   },
   countTokens: (text) => countTokens(text),
 };

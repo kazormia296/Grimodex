@@ -1,6 +1,6 @@
 /**
  * Main's read port keeps the chat IR closed, and names a Native command only
- * as one of four literal keys (Mastra migration MP-4b, DR-MP4-21 rules 1 and 5,
+ * as one of five literal keys (Mastra migration MP-4b, DR-MP4-21 rules 1 and 5,
  * DR-MP4-6).
  *
  * `chatAgentIr.test.ts` already fixes that no product source in `electron/`,
@@ -16,7 +16,7 @@
  *   - no source imports from `src/` (`@/...`), the tool definitions or the tool
  *     executors;
  *   - `NAPI_COMMANDS` appears only as an import of the name itself and as
- *     `NAPI_COMMANDS.<one of the four literal keys>`: no bracket access, no
+ *     `NAPI_COMMANDS.<one of the five literal keys>`: no bracket access, no
  *     alias, no destructuring, no `Object.keys`, no string of its name;
  *   - from `ipcContract` a source imports `NAPI_COMMANDS` and types, nothing
  *     else (`dispatchInvoke` and the rest of the file's values are the router);
@@ -68,6 +68,7 @@ const ALLOWED_COMMAND_KEYS: ReadonlySet<string> = new Set([
   "fts_search",
   "codex_semantic_search",
   "events_semantic_search",
+  "foreshadow_list_with_labels",
   "foreshadow_list_open_for_context",
 ]);
 
@@ -286,7 +287,7 @@ export function scanSource(name: string, text: string): string[] {
         ALLOWED_COMMAND_KEYS.has(parent.name.text);
       if (!isImportOfTheName && !isLiteralKeyAccess) {
         violations.push(
-          `${name}: NAPI_COMMANDS is used other than as a literal key of the four commands (${parent.getText(file).slice(0, 60)})`,
+          `${name}: NAPI_COMMANDS is used other than as a literal key of the five commands (${parent.getText(file).slice(0, 60)})`,
         );
       }
     }
@@ -340,7 +341,7 @@ describe("main's read port: the chat IR stays closed and commands are named lite
     expect(violations).toEqual([]);
   });
 
-  it("names NAPI_COMMANDS only in the typed reads, with the four literal keys", () => {
+  it("names NAPI_COMMANDS only in the typed reads, with the five literal keys", () => {
     const users = files.filter((file) =>
       readFileSync(file, "utf8").includes("NAPI_COMMANDS"),
     );

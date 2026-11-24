@@ -285,10 +285,15 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
     {
       name: "list_open_foreshadows",
       description:
-        "List all unresolved foreshadowing items in the project (payoff not yet confirmed and not abandoned). Returns id, title, intent, loadBearing (critical/supporting/optional/null), setupCount (non-orphan), and derived lifecycle labels (e.g. critical_weak, needs_strengthening). Sorted by loadBearing priority then most recently updated. Note: a priority-sorted slice with derived labels is already injected into the system prompt under '### 未回収の伏線' and scene-specific labels under '### このシーンの伏線' — use this tool when you need the full list or id-based follow-up via get_foreshadow_detail.",
+        "List all unresolved foreshadowing items in the project (payoff not yet confirmed and not abandoned). Returns id, title, intent, loadBearing (critical/supporting/optional/null), setupCount (non-orphan), and derived lifecycle labels (e.g. critical_weak, needs_strengthening). Sorted by loadBearing priority then most recently updated. Set includeSettled=true to also include paid-off items, marked settled: true; abandoned items are never included. Omit it or pass false to list only unresolved items. Note: a priority-sorted slice with derived labels is already injected into the system prompt under '### 未回収の伏線' and scene-specific labels under '### このシーンの伏線' — use this tool when you need the full list or id-based follow-up via get_foreshadow_detail.",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          includeSettled: {
+            type: "boolean",
+            description: "Include paid-off items with settled: true",
+          },
+        },
         required: [],
       },
     },

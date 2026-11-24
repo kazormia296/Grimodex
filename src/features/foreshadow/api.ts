@@ -434,9 +434,44 @@ export interface SceneForeshadowInfo {
  */
 export async function readOpenForeshadowWire(
   projectId: string,
+  includeSettled = false,
 ): Promise<unknown> {
   if (isTauriRuntime()) {
+    if (includeSettled === true) {
+      return invoke("foreshadow_list_with_labels", { projectId });
+    }
     return invoke("foreshadow_list_open_for_context", { projectId });
+  }
+
+  if (includeSettled === true) {
+    const rows = await db
+      .select()
+      .from(foreshadows)
+      .where(
+        and(
+          eq(foreshadows.projectId, projectId),
+          eq(foreshadows.abandoned, false),
+        ),
+      );
+    if (rows.length === 0) return { foreshadows: [], setups: [] };
+
+    const setups = await db
+      .select({
+        foreshadowId: foreshadowSetups.foreshadowId,
+        sceneId: foreshadowSetups.sceneId,
+        isOrphan: foreshadowSetups.isOrphan,
+        strength: foreshadowSetups.strength,
+        aiStrength: foreshadowSetups.aiStrength,
+        aiReasoning: foreshadowSetups.aiReasoning,
+      })
+      .from(foreshadowSetups)
+      .where(
+        inArray(
+          foreshadowSetups.foreshadowId,
+          rows.map((r) => r.id),
+        ),
+      );
+    return { foreshadows: rows, setups };
   }
 
   const rows = await db

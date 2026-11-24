@@ -167,7 +167,10 @@ export interface CoreNativeReads {
     readonly query: string;
     readonly limit: number;
   }): Promise<unknown>;
-  foreshadowOpen(args: { readonly projectId: string }): Promise<unknown>;
+  foreshadowOpen(args: {
+    readonly projectId: string;
+    readonly includeSettled?: boolean;
+  }): Promise<unknown>;
 }
 
 export interface CoreLogger {
@@ -231,7 +234,9 @@ export interface CoreCodexDetailData {
   ): Promise<schema.CodexPhaseDetailOverride[]>;
   listRawDetailValues(
     entryIds: readonly string[],
-  ): Promise<Array<{ entryId: string; definitionId: string; value: string | null }>>;
+  ): Promise<
+    Array<{ entryId: string; definitionId: string; value: string | null }>
+  >;
 }
 
 /**
@@ -260,10 +265,7 @@ export type CoreCodexVisibilityPorts = Pick<
  * `get_codex_entry` の read path が使う context。renderer は読込中に live phase store が
  * 切り替わりうるため `getProjectEpoch` を渡す。Main は turn の入力から組み立て、epoch を持たない。
  */
-export type CoreCodexEntryContext = Omit<
-  CoreCodexVisibilityPorts,
-  "codex"
-> &
+export type CoreCodexEntryContext = Omit<CoreCodexVisibilityPorts, "codex"> &
   Pick<CoreReadPorts, "getTreeState" | "countTokens"> & {
     readonly codex: CoreCodexData & CoreCodexDetailData;
     readonly extractPlainText: (json: string) => string;
