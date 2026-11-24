@@ -183,6 +183,38 @@ describe("EditForeshadowDialog", () => {
     expect(Object.keys(patch)).toEqual(["title"]);
   });
 
+  it("secret チェックを表示しない", () => {
+    render(
+      <EditForeshadowDialog open={true} item={makeItem()} onClose={vi.fn()} />,
+    );
+    expect(
+      screen.queryByTestId("edit-foreshadow-secret"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("他の欄を編集して保存しても secret を patch に含めない", async () => {
+    const item = makeItem({ title: "旧タイトル", secret: false });
+    render(<EditForeshadowDialog open={true} item={item} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("edit-foreshadow-title-input"), {
+      target: { value: "新タイトル" },
+    });
+    fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty("secret");
+  });
+
+  it("既存の secret=true は開いて保存しても変わらない", async () => {
+    const item = makeItem({ title: "旧タイトル", secret: true });
+    render(<EditForeshadowDialog open={true} item={item} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("edit-foreshadow-title-input"), {
+      target: { value: "新タイトル" },
+    });
+    fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty("secret");
+    expect(item.secret).toBe(true);
+  });
+
   it("abandoned チェックが差分として含まれる", async () => {
     const onClose = vi.fn();
     const item = makeItem({ abandoned: false });
