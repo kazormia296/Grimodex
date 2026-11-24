@@ -4,7 +4,7 @@
 | ---- | ---- |
 | draftRef | `work-layer-live-first-slice/1`（草稿） |
 | Status | draft。**問い W1〜W7（一枚目）は 2026-11-24 に構造化質問で個別に回答済み（すべて起案者の推奨どおり。各問いの「回答」に選んだ選択肢を記録）**。この草稿は docs だけで、コードは 1 行も書いていない。**`[precheck]` は、W1〜W7 の範囲では解けた**（W2 は「足さない」なので、新しい契約・保存・送信先は無い）。**残るのは、作者に見える文言と表示の形**（部分合計の「＋」・行の文言・入口の表示。P5 の前に別に伺う）と、**出す時期**（W6 の回答どおり、旗を開ける PR の前に別に伺う）。旗は閉じたまま（作者には何も見えない）を前提にする |
-| 基点 | worktree `claude-work-layer-design`（枝 `claude/work-layer-live-design`、基点 `origin/master` `373c8d4b5`）。行番号はこの基点のもの |
+| 基点 | worktree `claude-work-layer-design`（枝 `claude/work-layer-live-design`）。**調べた基点は `origin/master` `373c8d4b5`**で、行番号はこの基点のもの。出荷のときに `accab2860`（#1087。Mastra の変更で、work-layer・editor・narrative-extraction・codex のどの pathにも差分は無い）へ rebase した |
 | 由来 | ADR 014 D6（`docs/adr/014-scene-information-in-editor.md:78-83`）と :136（Consequences「Work Layer を実データにつなぐとき、件数の数え方と、場面へ飛ぶ入口を、統合ペインと共通にする」）。ADR 012（Work Layer の表示。Status は「実装・公開の承認ではない」）。`m3-live-structure-health-design-draft.md` の「Work Layer への移設は、実データへの配線の設計ができてから」 |
 | ユーザーの決定 | 2026-11-24：「Work Layer って実装始められますか？」→「**次のセッションで始めましょう**」。範囲は、**件数と入口に絞った最初の版（Task を含めない）を、設計草稿から始める**ことまで。contracts の M3 確認記録の追記 25（`4542ac6ac`）に、「着手の了承であって、範囲の細目は個別に確認していない」と記録済み。**この草稿の「推奨」は起案者の意見で、ユーザーの決定ではない**。M3 の技術判断（作り方・PR の分け方・試験）は、**ユーザーの 2026-11-23 の決定②で、NIR-1 の残レーンと同じ範囲を事前に委任済み**（記録の正本は contracts 枝の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-23-m3-pullforward.md`、commit `71e45bb4`）。これは `AGENTS.md` が列挙する NIR-1 の残レーンの委任とは**別の、M3 についての明示の委任**で、`AGENTS.md` の列挙を M3 に広げるものではない。作者に見える挙動・新しい契約・保存・出す時期は、委任の外 |
 | 表記 | 【確認済み】は今の worktree で読んだもの。【実測】は今日実行した結果。【報告】は調査 agent（Codex、read-only）の報告で、本文で再読していないもの。【未確認】は確かめていないもの。【起案者の技術判断】は M3 の委任の範囲内で起案者が決めたもの。【起案者の読み／意見】はユーザーの確認が要るもの |
