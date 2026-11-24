@@ -75,10 +75,47 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 ### 残る制限（PR-1）
 
 - 題・メモの文中に埋め込まれた hidden の人物の名前・id は、構造化された Codex id の除去の対象外（起案の残る制限）。
-- アプリ内の読む道具 4 本・検索・golden・`normalizeEventFailClosed` は、PR-3 まで、secret の出来事を隠したまま（アプリ内の読む道具と、自動のまとめ・書く道具で、一時的に見え方が違う）。公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
+- （PR-3 で解消。DR-CSR-12〜14）アプリ内の読む道具 4 本・検索・golden・`normalizeEventFailClosed` は、PR-3 まで、secret の出来事を隠したまま（アプリ内の読む道具と、自動のまとめ・書く道具で、一時的に見え方が違う）。公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
 
 ### 検証（PR-1。2026-11-24。自分で実行した）
 
 - `tsc`・eslint・prettier（変えた 10 file）・`validate:architecture`：指摘なし。renderer の広域（`src/application/composition`・`src/features/chat/agent`・`src/features/chronicle`）：143 files・2,422 tests が通過（5 skipped は既存）。`electron/shared/readDomain`：16 files・573 tests が通過。
 - **変異**：組み立ての除去の素通し、fail-closed の無効化、純関数の参加者フィルタの除去、書く道具への secret の遮断の復活を、それぞれかけて、対応する試験が落ちることを確かめた。**このとき、組み立ての試験が、除去を素通しにしても通ってしまう（空虚）ことを見つけた**：fixture に場面の日付と人物が出る構造が無く、hidden の除去が無くても、名前がもともと出力に出なかった。「hidden が無ければ名前が出る」基準の assertion を足し、同じ入力で hidden ありのとき出ないことを確かめる形に直した。直した後は、素通しの変異で落ちる。
 - していない：実アプリでの確認、canonical Light selector・`verify:quality` のローカル実行（hosted の Quick に任せる）。
+
+## 6. 2 本目の PR-2・PR-3：アプリ内の読む道具と検索（2026-11-24）
+
+DR-CSR-9・10 は、別の PR（C2。MCP の保持の条件と AI の更新の保護。確認 154・155）が使う。この節は 11 から続ける。
+
+### DR-CSR-11　port `listHiddenCodexIds`（PR-2。動作は変えない加算。DR-MP4-39f）
+
+core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, ids): Promise<ReadonlySet<string>>` を足した（renderer と main の 2 実装）。**場面は引数でなく、呼び出しの時点の現在の場面**（renderer は `useTreeStore`、main は turn の入力）から読む。**cache しない。失敗は投げる**（fail-closed。道具が失敗として返す）。**DB に無い id・別の作品の id も、hidden に数える**（存在しないと伏せるを区別させない）。renderer と main で同じ結果になることを、parity の試験で固定した。
+
+### DR-CSR-12　core の読む道具 4 本：出来事の秘匿の判定を外し、hidden の人物だけを伏せる（PR-3a）
+
+- 4 本（`list_events`・`get_event_detail`・`get_character_timeline`・`get_chronicle_state`）は、出来事の `secret`・reveal の位置・読む順で隠さない。そのための `getTreeState`・`getReadingOrder`・`getSceneEvents` の読みが、`get_chronicle_state` の anchor のためだけに残った。
+- hidden の人物は、port で判定する：`list_events`・`get_event_detail` は、主な人物・場所の名前を `null`、参加者を行ごと除く。`get_chronicle_state` は、人物を選ぶ**前**の入力（候補 id の収集 → `dropHiddenCodexFromChronicleInput`）から除く（選んだ後に消すと、hidden が枠を取ったまま消える）。出来事の `locationCodexId` は残す（名前の表から落ちるので、名前は出ない。`deriveLastKnownLocation` が古い場所へ落ちないため）。**モデルの `sceneId` は anchor の位置にだけ使い、hidden の判定の場面には使わない**。
+- **画面で見える変化（ユーザーに見せる）**：`get_character_timeline` は、hidden の id と、**存在しない id（別の作品・空の作品の id を含む）で、「Character not found」（content `null`、tokensUsed 0）**を返す。以前は、存在しない id に `0 events for <id>`（空の年表）を返していた。MCP の読み（DR-CSR-3）と同じ規則になった。`tokensUsed` は、出る出来事・人物の変化に追随して変わる。
+
+### DR-CSR-13　検索（`search_events`）：秘匿の判定を外す（PR-3b）
+
+- core の検索の ctx から `chronicle`（events・scene events・読む順）を外した。main の `createMainChronicleSearchContext` は、DB を読まない。dense の fetchLimit（limit × 3）は、そのまま残した（hit が減らなくなったので、必要なら別に見直す）。
+- renderer の legacy 検索（`toolExecutors.ts` の `chronicleCandidates`）は、秘匿の filter だけを外した。**IR の位置の filter と近似、そのための events・scene events・読む順の読みは残す**（IR は `CHAT_AGENT_IR_ENABLED` が false の間は休眠。`passesIrExclusionApproximation` は `event.secret` を今も読む。N9 で整理する）。
+
+### DR-CSR-14　削除したもの（PR-3c）
+
+`isEventHiddenFromAi`・`projectVisibleChronicle`・`VisibleChronicle`（`chronicleSecrecy.ts`。`readingPos`・`ReadingOrder`・`effectiveRevealSceneId` は残す）と、`normalizeEventFailClosed` の `secret` の検査（`secret` は core が判定に使わない。`revealSceneId` の検査は、キーが落ちると開示シーンの印が黙って消える向きなので残す）。
+
+### 残る制限（PR-2・PR-3）
+
+- 題・メモの文中に埋め込まれた hidden の人物の名前・id は、構造化された Codex id の除去の対象外（DR-CSR-6 と同じ）。
+- hidden の判定は、呼び出しごとに DB を読む（cache しない）。1 つの道具の呼び出しで、`codex_entries`・`codex_entry_phases` の select が増える。大きい作品での負荷は、測っていない（N11 の測定の範囲）。
+- 公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
+
+### 検証（PR-3。2026-11-24。自分で実行した）
+
+- `tsc`・eslint・prettier（変えた `.ts`）・`validate:architecture`：指摘なし。renderer の広域（`src/application`・`src/features/chat`・`src/features/chronicle`）：327 files・5,320 tests が通過（8 skipped は既存）。`electron/shared/readDomain`：17 files・581 tests が通過。
+- **変異**：renderer の `listHiddenCodexIds` を常に空にすると、特性試験と `get_character_timeline` の golden が落ちる。`revealSceneId` の検査を外すと、`readRows` の試験が落ちる。
+- 実 addon の spec（`mastraReadParity.pipeline.spec.ts`）：年表・検索の部分は、2026-11-22 に作った addon でも通過（`search_scenes` の `scenes_live` の 2 件は、古い addon のため落ちる。この PR と無関係）。**最新の addon での確認は、hosted の `electron-native` に任せる。**
+- golden は、差分の要点（secret の出来事が現れる・hidden の名前が `null`・存在しない id が not found・tokensUsed の追随）を読んでから再生成した。hidden の名前・id が golden に出ないことを grep で確かめた。
+- していない：実アプリでの確認、`verify:quality` のローカル実行（hosted の Quick に任せる）。
