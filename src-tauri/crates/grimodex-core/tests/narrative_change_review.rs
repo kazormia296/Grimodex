@@ -101,21 +101,29 @@ fn classifies_unchanged_relocated_lost_and_gained_evidence() {
                 source_ref: "a".to_owned(),
                 quote: "relocated".to_owned(),
                 change: EvidenceChangeKind::Relocated,
+                start_utf16: 5,
+                end_utf16: 11,
             },
             EvidenceChange {
                 source_ref: "b".to_owned(),
                 quote: "lost".to_owned(),
                 change: EvidenceChangeKind::Lost,
+                start_utf16: 1,
+                end_utf16: 4,
             },
             EvidenceChange {
                 source_ref: "c".to_owned(),
                 quote: "unchanged".to_owned(),
                 change: EvidenceChangeKind::Unchanged,
+                start_utf16: 3,
+                end_utf16: 9,
             },
             EvidenceChange {
                 source_ref: "d".to_owned(),
                 quote: "gained".to_owned(),
                 change: EvidenceChangeKind::Gained,
+                start_utf16: 0,
+                end_utf16: 6,
             },
         ]
     );
@@ -135,31 +143,80 @@ fn evidence_diff_is_independent_of_input_order() {
 }
 
 #[test]
-fn rejects_duplicate_evidence_and_empty_keys() {
-    let duplicate = EvidenceChangeError::DuplicateEvidence {
-        source_ref: "source".to_owned(),
-        quote: "quote".to_owned(),
-    };
+fn repeated_evidence_is_matched_as_a_positioned_multiset() {
+    let previous = [
+        evidence("source", "Alice", 0, 5),
+        evidence("source", "Alice", 6, 11),
+    ];
+    let current = [
+        evidence("source", "Alice", 14, 19),
+        evidence("source", "Alice", 0, 5),
+        evidence("source", "Alice", 8, 13),
+    ];
+    let changes = diff_evidence_records(&previous, &current).unwrap();
     assert_eq!(
-        diff_evidence_records(
-            &[
-                evidence("source", "quote", 0, 1),
-                evidence("source", "quote", 2, 3)
-            ],
-            &[]
-        ),
-        Err(duplicate.clone())
+        changes,
+        vec![
+            EvidenceChange {
+                source_ref: "source".into(),
+                quote: "Alice".into(),
+                change: EvidenceChangeKind::Unchanged,
+                start_utf16: 0,
+                end_utf16: 5,
+            },
+            EvidenceChange {
+                source_ref: "source".into(),
+                quote: "Alice".into(),
+                change: EvidenceChangeKind::Relocated,
+                start_utf16: 8,
+                end_utf16: 13,
+            },
+            EvidenceChange {
+                source_ref: "source".into(),
+                quote: "Alice".into(),
+                change: EvidenceChangeKind::Gained,
+                start_utf16: 14,
+                end_utf16: 19,
+            },
+        ]
     );
+    let previous_reversed: Vec<_> = previous.iter().rev().cloned().collect();
+    let current_reversed: Vec<_> = current.iter().rev().cloned().collect();
     assert_eq!(
-        diff_evidence_records(
-            &[],
-            &[
-                evidence("source", "quote", 0, 1),
-                evidence("source", "quote", 2, 3)
-            ]
-        ),
-        Err(duplicate)
+        diff_evidence_records(&previous, &current),
+        diff_evidence_records(&previous_reversed, &current_reversed)
     );
+}
+
+#[test]
+fn repeated_quote_at_both_summary_offsets_is_unchanged_twice() {
+    let evidence = [
+        evidence("codex:alice", "Alice", 0, 5),
+        evidence("codex:alice", "Alice", 6, 11),
+    ];
+    assert_eq!(
+        diff_evidence_records(&evidence, &evidence).unwrap(),
+        vec![
+            EvidenceChange {
+                source_ref: "codex:alice".into(),
+                quote: "Alice".into(),
+                change: EvidenceChangeKind::Unchanged,
+                start_utf16: 0,
+                end_utf16: 5,
+            },
+            EvidenceChange {
+                source_ref: "codex:alice".into(),
+                quote: "Alice".into(),
+                change: EvidenceChangeKind::Unchanged,
+                start_utf16: 6,
+                end_utf16: 11,
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_empty_evidence_keys() {
     assert_eq!(
         diff_evidence_records(&[evidence("", "quote", 0, 1)], &[]),
         Err(EvidenceChangeError::EmptySourceRef)

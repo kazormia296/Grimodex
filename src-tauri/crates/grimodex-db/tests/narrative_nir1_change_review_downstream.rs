@@ -2,7 +2,17 @@ use grimodex_db::narrative_extraction::{
     read_all_downstream_consumers, read_downstream_consumers_page, DownstreamConsumer,
     DownstreamCursor, DOWNSTREAM_PAGE_MAX,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
+
+fn read_in_transaction<T>(
+    conn: &mut Connection,
+    read: impl FnOnce(&Transaction<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let transaction = conn.transaction()?;
+    let result = read(&transaction)?;
+    transaction.commit()?;
+    Ok(result)
+}
 
 fn connection() -> rusqlite::Result<Connection> {
     let conn = Connection::open_in_memory()?;
@@ -54,12 +64,14 @@ fn edge_count(conn: &Connection) -> rusqlite::Result<i64> {
 
 #[test]
 fn downstream_page_handles_empty_exact_limit_and_invalid_limits() -> anyhow::Result<()> {
-    let conn = connection()?;
-    assert!(
-        read_downstream_consumers_page(&conn, "project-a", "codex:entity-1", None, 2)?
-            .items
-            .is_empty()
-    );
+    let mut conn = connection()?;
+    assert!(read_in_transaction(&mut conn, |tx| {
+        Ok(
+            read_downstream_consumers_page(tx, "project-a", "codex:entity-1", None, 2)?
+                .items
+                .is_empty(),
+        )
+    })?);
 
     insert_edge(
         &conn,
@@ -77,38 +89,43 @@ fn downstream_page_handles_empty_exact_limit_and_invalid_limits() -> anyhow::Res
         "beta",
         "codex:entity-1",
     )?;
-    let page = read_downstream_consumers_page(&conn, "project-a", "codex:entity-1", None, 2)?;
-    assert_eq!(
-        page.items,
-        vec![
-            DownstreamConsumer {
-                consumer_kind: "application".into(),
-                consumer_key: "alpha".into(),
-            },
-            DownstreamConsumer {
-                consumer_kind: "run".into(),
-                consumer_key: "beta".into(),
-            },
-        ]
-    );
-    assert_eq!(page.next_cursor, None);
-    assert!(read_downstream_consumers_page(&conn, "project-a", "codex:entity-1", None, 0).is_err());
-    assert!(read_downstream_consumers_page(
-        &conn,
-        "project-a",
-        "codex:entity-1",
-        None,
-        DOWNSTREAM_PAGE_MAX + 1
-    )
-    .is_err());
-    assert!(read_downstream_consumers_page(&conn, "", "codex:entity-1", None, 1).is_err());
-    assert!(read_downstream_consumers_page(&conn, "project-a", "", None, 1).is_err());
+    read_in_transaction(&mut conn, |tx| {
+        let page = read_downstream_consumers_page(tx, "project-a", "codex:entity-1", None, 2)?;
+        assert_eq!(
+            page.items,
+            vec![
+                DownstreamConsumer {
+                    consumer_kind: "application".into(),
+                    consumer_key: "alpha".into(),
+                },
+                DownstreamConsumer {
+                    consumer_kind: "run".into(),
+                    consumer_key: "beta".into(),
+                },
+            ]
+        );
+        assert_eq!(page.next_cursor, None);
+        assert!(
+            read_downstream_consumers_page(tx, "project-a", "codex:entity-1", None, 0).is_err()
+        );
+        assert!(read_downstream_consumers_page(
+            tx,
+            "project-a",
+            "codex:entity-1",
+            None,
+            DOWNSTREAM_PAGE_MAX + 1
+        )
+        .is_err());
+        assert!(read_downstream_consumers_page(tx, "", "codex:entity-1", None, 1).is_err());
+        assert!(read_downstream_consumers_page(tx, "project-a", "", None, 1).is_err());
+        Ok(())
+    })?;
     Ok(())
 }
 
 #[test]
 fn downstream_pages_are_ordered_scoped_and_cursor_complete() -> anyhow::Result<()> {
-    let conn = connection()?;
+    let mut conn = connection()?;
     let source = "codex-relation:edge-1";
     for (id, kind, key) in [
         ("edge-1", "run", "beta"),
@@ -129,48 +146,51 @@ fn downstream_pages_are_ordered_scoped_and_cursor_complete() -> anyhow::Result<(
     )?;
 
     let before = edge_count(&conn)?;
-    let first = read_downstream_consumers_page(&conn, "project-a", source, None, 3)?;
-    assert_eq!(
-        first.items,
-        vec![
-            DownstreamConsumer {
-                consumer_kind: "application".into(),
-                consumer_key: "alpha".into(),
-            },
-            DownstreamConsumer {
-                consumer_kind: "application".into(),
-                consumer_key: "zeta".into(),
-            },
-            DownstreamConsumer {
+    read_in_transaction(&mut conn, |tx| {
+        let first = read_downstream_consumers_page(tx, "project-a", source, None, 3)?;
+        assert_eq!(
+            first.items,
+            vec![
+                DownstreamConsumer {
+                    consumer_kind: "application".into(),
+                    consumer_key: "alpha".into(),
+                },
+                DownstreamConsumer {
+                    consumer_kind: "application".into(),
+                    consumer_key: "zeta".into(),
+                },
+                DownstreamConsumer {
+                    consumer_kind: "run".into(),
+                    consumer_key: "alpha".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            first.next_cursor,
+            Some(DownstreamCursor {
                 consumer_kind: "run".into(),
                 consumer_key: "alpha".into(),
-            },
-        ]
-    );
-    assert_eq!(
-        first.next_cursor,
-        Some(DownstreamCursor {
-            consumer_kind: "run".into(),
-            consumer_key: "alpha".into(),
-        })
-    );
-    let second =
-        read_downstream_consumers_page(&conn, "project-a", source, first.next_cursor.as_ref(), 3)?;
-    assert_eq!(
-        second.items,
-        vec![DownstreamConsumer {
-            consumer_kind: "run".into(),
-            consumer_key: "beta".into(),
-        }]
-    );
-    assert_eq!(second.next_cursor, None);
+            })
+        );
+        let second =
+            read_downstream_consumers_page(tx, "project-a", source, first.next_cursor.as_ref(), 3)?;
+        assert_eq!(
+            second.items,
+            vec![DownstreamConsumer {
+                consumer_kind: "run".into(),
+                consumer_key: "beta".into(),
+            }]
+        );
+        assert_eq!(second.next_cursor, None);
+        Ok(())
+    })?;
     assert_eq!(edge_count(&conn)?, before);
     Ok(())
 }
 
 #[test]
 fn read_all_downstream_consumers_fails_on_page_budget() -> anyhow::Result<()> {
-    let conn = connection()?;
+    let mut conn = connection()?;
     for index in 0..=DOWNSTREAM_PAGE_MAX {
         let key = format!("consumer-{index:03}");
         let id = format!("edge-{index:03}");
@@ -178,11 +198,30 @@ fn read_all_downstream_consumers_fails_on_page_budget() -> anyhow::Result<()> {
     }
 
     let before = edge_count(&conn)?;
-    assert!(read_all_downstream_consumers(&conn, "project-a", "codex:entity-1", 1).is_err());
-    assert_eq!(
-        read_all_downstream_consumers(&conn, "project-a", "codex:entity-1", 2)?.len(),
-        DOWNSTREAM_PAGE_MAX + 1
-    );
+    read_in_transaction(&mut conn, |tx| {
+        assert!(read_all_downstream_consumers(tx, "project-a", "codex:entity-1", 1).is_err());
+        assert_eq!(
+            read_all_downstream_consumers(tx, "project-a", "codex:entity-1", 2)?.len(),
+            DOWNSTREAM_PAGE_MAX + 1
+        );
+        Ok(())
+    })?;
     assert_eq!(edge_count(&conn)?, before);
+    Ok(())
+}
+
+#[test]
+fn downstream_readers_reject_autocommit_connections() -> anyhow::Result<()> {
+    let conn = connection()?;
+    let page_error = read_downstream_consumers_page(&conn, "project-a", "codex:entity-1", None, 1)
+        .expect_err("page reads require a transaction");
+    let all_error = read_all_downstream_consumers(&conn, "project-a", "codex:entity-1", 1)
+        .expect_err("all-consumer reads require a transaction");
+    assert!(page_error
+        .to_string()
+        .contains("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION"));
+    assert!(all_error
+        .to_string()
+        .contains("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION"));
     Ok(())
 }

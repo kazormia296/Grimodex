@@ -33,6 +33,9 @@ pub fn read_downstream_consumers_page(
     after: Option<&DownstreamCursor>,
     limit: usize,
 ) -> anyhow::Result<DownstreamPage> {
+    if conn.is_autocommit() {
+        bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
+    }
     if project_id.is_empty() {
         bail!("project_id must not be empty");
     }
@@ -49,6 +52,7 @@ pub fn read_downstream_consumers_page(
         ""
     };
     let limit_parameter = if after.is_some() { "?5" } else { "?3" };
+    // Keyset order sorts the edges for this source; the page is bounded but SQLite may read every matching edge.
     let sql = format!(
         "SELECT consumer_kind, consumer_key
            FROM narrative_dependency_edges INDEXED BY idx_narrative_dependency_edges_source
@@ -98,6 +102,9 @@ pub fn read_all_downstream_consumers(
     source_object_identity: &str,
     max_pages: usize,
 ) -> anyhow::Result<Vec<DownstreamConsumer>> {
+    if conn.is_autocommit() {
+        bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
+    }
     if max_pages == 0 {
         bail!("max_pages must be greater than zero");
     }

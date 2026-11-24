@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::narrative_identity_diff::IdentityDiffObject;
@@ -27,7 +28,7 @@ pub struct EvidenceRecord {
     pub end_utf16: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EvidenceChangeKind {
     Unchanged,
     Relocated,
@@ -40,6 +41,8 @@ pub struct EvidenceChange {
     pub source_ref: String,
     pub quote: String,
     pub change: EvidenceChangeKind,
+    pub start_utf16: usize,
+    pub end_utf16: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -48,13 +51,13 @@ pub enum EvidenceChangeError {
     EmptySourceRef,
     #[error("evidence quote must not be empty")]
     EmptyQuote,
-    #[error("evidence with source_ref `{source_ref}` and quote `{quote}` appears more than once")]
-    DuplicateEvidence { source_ref: String, quote: String },
 }
+
+type EvidencePositionIndex<'a> = HashMap<(&'a str, &'a str), Vec<(usize, usize)>>;
 
 fn index_evidence(
     evidence: &[EvidenceRecord],
-) -> Result<HashMap<(&str, &str), &EvidenceRecord>, EvidenceChangeError> {
+) -> Result<EvidencePositionIndex<'_>, EvidenceChangeError> {
     if evidence.iter().any(|item| item.source_ref.is_empty()) {
         return Err(EvidenceChangeError::EmptySourceRef);
     }
@@ -63,23 +66,16 @@ fn index_evidence(
     }
 
     let mut indexed = HashMap::with_capacity(evidence.len());
-    let mut duplicates = Vec::new();
     for item in evidence {
         let key = (item.source_ref.as_str(), item.quote.as_str());
-        if indexed.insert(key, item).is_some() {
-            duplicates.push(key);
-        }
+        indexed
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push((item.start_utf16, item.end_utf16));
     }
-    if !duplicates.is_empty() {
-        duplicates.sort_unstable_by(|left, right| {
-            compare_utf16(left.0, right.0).then_with(|| compare_utf16(left.1, right.1))
-        });
-        let (source_ref, quote) = duplicates[0];
-        return Err(EvidenceChangeError::DuplicateEvidence {
-            source_ref: source_ref.to_owned(),
-            quote: quote.to_owned(),
-        });
-    }
+    indexed
+        .values_mut()
+        .for_each(|positions| positions.sort_unstable());
     Ok(indexed)
 }
 
@@ -95,29 +91,82 @@ pub fn diff_evidence_records(
     });
     keys.dedup();
 
-    Ok(keys
-        .into_iter()
-        .map(|(source_ref, quote)| {
-            let change = match (
-                previous.get(&(source_ref, quote)),
-                current.get(&(source_ref, quote)),
-            ) {
-                (None, Some(_)) => EvidenceChangeKind::Gained,
-                (Some(_), None) => EvidenceChangeKind::Lost,
-                (Some(previous), Some(current))
-                    if previous.start_utf16 == current.start_utf16
-                        && previous.end_utf16 == current.end_utf16 =>
-                {
-                    EvidenceChangeKind::Unchanged
+    let mut changes = Vec::new();
+    for (source_ref, quote) in keys {
+        let previous_positions = previous
+            .get(&(source_ref, quote))
+            .cloned()
+            .unwrap_or_default();
+        let current_positions = current
+            .get(&(source_ref, quote))
+            .cloned()
+            .unwrap_or_default();
+        let (mut previous_remaining, mut current_remaining) = (Vec::new(), Vec::new());
+        let (mut previous_index, mut current_index) = (0, 0);
+
+        while previous_index < previous_positions.len() && current_index < current_positions.len() {
+            match previous_positions[previous_index].cmp(&current_positions[current_index]) {
+                Ordering::Equal => {
+                    changes.push(evidence_change(
+                        source_ref,
+                        quote,
+                        EvidenceChangeKind::Unchanged,
+                        current_positions[current_index],
+                    ));
+                    previous_index += 1;
+                    current_index += 1;
                 }
-                (Some(_), Some(_)) => EvidenceChangeKind::Relocated,
-                (None, None) => unreachable!("key came from one of the evidence indexes"),
-            };
-            EvidenceChange {
-                source_ref: source_ref.to_owned(),
-                quote: quote.to_owned(),
-                change,
+                Ordering::Less => {
+                    previous_remaining.push(previous_positions[previous_index]);
+                    previous_index += 1;
+                }
+                Ordering::Greater => {
+                    current_remaining.push(current_positions[current_index]);
+                    current_index += 1;
+                }
             }
-        })
-        .collect())
+        }
+        previous_remaining.extend_from_slice(&previous_positions[previous_index..]);
+        current_remaining.extend_from_slice(&current_positions[current_index..]);
+
+        let paired = previous_remaining.len().min(current_remaining.len());
+        for &position in current_remaining.iter().take(paired) {
+            changes.push(evidence_change(
+                source_ref,
+                quote,
+                EvidenceChangeKind::Relocated,
+                position,
+            ));
+        }
+        changes.extend(previous_remaining[paired..].iter().map(|position| {
+            evidence_change(source_ref, quote, EvidenceChangeKind::Lost, *position)
+        }));
+        changes.extend(current_remaining[paired..].iter().map(|position| {
+            evidence_change(source_ref, quote, EvidenceChangeKind::Gained, *position)
+        }));
+    }
+
+    changes.sort_unstable_by(|left, right| {
+        compare_utf16(&left.source_ref, &right.source_ref)
+            .then_with(|| compare_utf16(&left.quote, &right.quote))
+            .then_with(|| left.start_utf16.cmp(&right.start_utf16))
+            .then_with(|| left.end_utf16.cmp(&right.end_utf16))
+            .then_with(|| left.change.cmp(&right.change))
+    });
+    Ok(changes)
+}
+
+fn evidence_change(
+    source_ref: &str,
+    quote: &str,
+    change: EvidenceChangeKind,
+    (start_utf16, end_utf16): (usize, usize),
+) -> EvidenceChange {
+    EvidenceChange {
+        source_ref: source_ref.to_owned(),
+        quote: quote.to_owned(),
+        change,
+        start_utf16,
+        end_utf16,
+    }
 }

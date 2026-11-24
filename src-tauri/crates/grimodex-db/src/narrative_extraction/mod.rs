@@ -73,8 +73,9 @@ pub use nir1_change_review_downstream::{
     DownstreamCursor, DownstreamPage, DOWNSTREAM_PAGE_MAX,
 };
 pub use nir1_change_review_read::{
-    find_previous_approved_typed_revision_id, read_nir1_change_review, EvidenceChange,
-    Nir1ChangeReviewFreshness, Nir1ChangeReviewRead, ObjectChange,
+    read_nir1_change_review, EvidenceChange, Nir1ChangeReviewFreshness,
+    Nir1ChangeReviewObjectChange, Nir1ChangeReviewRead, Nir1ChangeReviewResult, ObjectChange,
+    CHANGE_REVIEW_PRIOR_SCAN_MAX,
 };
 pub use nir1_entity_relation::{
     evaluate_nir1_entity_relation_disclosure, find_nir1_entity_relation_revision_run,
