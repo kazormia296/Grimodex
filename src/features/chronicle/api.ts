@@ -127,7 +127,6 @@ export async function createEvent(
     endGranularity?: EventGranularity;
     precision?: EventPrecision;
     kind?: EventKind;
-    secret?: boolean;
     revealSceneId?: string | null;
   },
   opts: ChronicleApiWriteOptions = {},
@@ -165,7 +164,6 @@ export async function createEvent(
         : {}),
       precision: data.precision ?? "exact",
       kind: data.kind ?? "generic",
-      secret: data.secret ?? false,
       revealSceneId: data.revealSceneId ?? null,
     },
     writeOpts,
@@ -199,7 +197,6 @@ export async function updateEvent(
       | "endGranularity"
       | "precision"
       | "kind"
-      | "secret"
       | "revealSceneId"
     >
   >,

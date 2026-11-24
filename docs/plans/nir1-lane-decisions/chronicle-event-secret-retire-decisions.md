@@ -147,3 +147,31 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 - golden は、差分の要点（secret の出来事が現れる・hidden の名前が `null`・存在しない id が not found・tokensUsed の追随）を読んでから再生成した。hidden の名前・id が golden に出ないことを grep で確かめた。
 - **独立レビュー**：Claude（Opus）・Codex（read-only）の 2 系統。漏れの経路（5 本の道具の出力、renderer と main の両経路）、fail-closed、判定の場面、削除の取りこぼし、golden の差分の範囲、試験が空虚でないこと、`get_character_timeline` の変化の呼び出し元は、2 系統とも問題なし（P0・P1 なし）。直した指摘：golden の場面名が古い契約のままだった（名前を直して再生成。差分は `case` の行だけ）、古いコメント 3 か所、`db` 引数の説明、空文字の id（上）。残る制限として記録した指摘：AI 向けの道具の説明（上）、`effectiveRevealSceneId` の呼び出し元が無いこと（DR-CSR-14）。
 - していない：実アプリでの確認、`verify:quality` のローカル実行（hosted の Quick に任せる）。
+
+## 7. 書き込み側（N4）：AI・MCP から出来事の `secret` を書けなくする（2026-11-24）
+
+起案の §5 の N4 のうち、**AI の surface（`in-app-agent`・`mcp`・省略・未知）の書き込み**だけを、この PR で入れる。画面（`manual`。「AI に秘匿」のチェック。N2）と取り込み（`import`・`narrative_extraction` の commit。N6）は、別の PR が直すので、**今のまま**にする。`events.secret` の列・既存の値・Field Authority の `/secret`・伏線の `secret`（FSR/1）には触れない。技術判断（AGENTS の委任の範囲。CSR/1 の確認 94・104・105 の帰結の実装）。
+
+### DR-CSR-15　AI の surface は `secret` を書けない：`true` は拒む、`false` は黙って捨てる
+
+- 「AI の surface」は、`payload.surface` が `manual`・`import` 以外（C2 の R1 と同じ判定。大文字小文字・空文字・未知は AI 側）。
+- **拒むのは `true`**：受けて無視すると、`secret: true` を渡した AI が「守られた」と誤解するため。文言は `secret is no longer supported: events cannot be hidden from the AI`。**捨てるのは `false`**：既存の会話の履歴の模倣と、外部の利用者の互換のため。効果は同じ（出来事は隠れない）。
+- アプリ内：renderer の実行側（`chronicleWriteTools.ts`）が、鍵が `false` でないとき（`true`・`"true"`・`1`・`null`）を、Native に届く前に説明つきで拒む。`false` は payload に入れない。main の検査（`agentMutationProjectionMatches` の近く）は背後の防御で、capability の発行側は不正な入力を黙って `continue` するので説明つきのエラーを返せない。モデルの入力の欄（`MODEL_TOOL_INPUT_SPECS`）には `secret` を**受ける欄として残し**、provider に見せる定義（`toolDefinitions.ts`）から消す（履歴の模倣が「欄に無い鍵」で説明のない失敗にならない）。
+- MCP：schema から隠し（serde は読み続ける）、`true` は明示のエラー（`internal error` にしない）、`false` は捨てる。
+- Native：AI の surface の create で `secret: Some(true)`、update で `secret: Some(_)` は、書く前に拒む（行・journal・change event を書かない）。update の検査は入力の検査なので、冪等の再送の検査・`base_version` の検査・`ensure_codex_in_project` の前に置く。作成の冪等ハッシュは変えない（未指定は false に正規化する今のまま）。
+
+### DR-CSR-16　`revealSceneId` の説明を、効果を言わない中立の文にする
+
+今の文（アプリ内・MCP とも）は「その場面で AI に見えるようになる／スタンプが無ければ永久に隠す」と言っており、CSR/1 の後は偽り。AI が「付ければ隠せる」と信じて使うのを防ぐ。新しい文は「読む順の場面 id を、この出来事の開示の場面として保存する。保存だけで、AI から隠さない」。**「選んだ出来事にだけ『読者にはまだ明かされていない』の印が付く」という N3 の効果は、印の PR 群（CPL/1 の W6〜W8・N7 の `revealScene`）が入る PR で、アプリ内の道具と MCP の両方を一緒に差し替える**（1 つの道具の中で、返り値と説明が食い違う期間を作らない）。`revealSceneId` 自体は残す（AI は付けられる。確認 69・73・110）。
+
+### DR-CSR-17　この PR に入れないもの（順序の根拠）
+
+- 画面の「AI に秘匿」のチェック（`ChronicleInspector` → `ChroniclePanel` の `uiUpdateEvent`。`surface = "manual"`）を Native が拒むと、N2 の前は保存が失敗するので、Native の拒否は AI の surface に限る。`api.ts` の `updateEvent` の `secret` 欄は、本番の呼び出し元が見つからなければ外す（実画面の経路ではない）。
+- 取り込み（`narrative_extraction` の commit）は `apply_event_create_in_tx` を共有し、agent writer の entry を通らない。`secret = true` を必須とする検査（`commit.rs`）は N6 で直す。N4 は agent writer の entry だけを変える。
+- undo／redo は journal の snapshot の replay で、update を通らない。既存の `secret` の値を運ぶので、変えない。
+
+### 残る制限（N4）
+
+- 画面の「AI に秘匿」のチェックと、取り込みが `secret = true` で作る動きは、N2・N6 まで残る（公開版には、全部が入った後に出す）。
+- 過去に `secret: true` で作った出来事は、そのまま `secret = 1` で残る（読みでは使わない。既存の値は変えない）。
+- AI の指示の資産（定義文・golden）の変更なので、品質ゲート（`grimodex-author`・`pnpm eval:impact`）は hosted で取る。

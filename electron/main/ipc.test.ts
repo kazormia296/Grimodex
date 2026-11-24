@@ -113,11 +113,11 @@ async function issueAgentCapability(
   input: Record<string, unknown>,
   senderId: number,
 ): Promise<{
-  capability: string;
+  capability?: string;
   requestId: string;
-  chatMessageId: string;
-  executionId: string;
-  mainOwnedProvenanceId: string;
+  chatMessageId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
   expectedEntityId?: string;
 }> {
   const sendAgentMessage = vi.fn(async () =>
@@ -167,7 +167,7 @@ async function issueAgentCapability(
   if (!envelope.ok) throw new Error(envelope.error);
   const grant = (
     envelope.value as {
-      agentAuthorityCapabilities: Record<
+      agentAuthorityCapabilities?: Record<
         string,
         {
           capability: string;
@@ -178,7 +178,7 @@ async function issueAgentCapability(
         }
       >;
     }
-  ).agentAuthorityCapabilities["call-1"];
+  ).agentAuthorityCapabilities?.["call-1"];
   const requestId = `agent-tool:${createHash("sha256")
     .update(`${toolName}\0p1\0call-1`)
     .digest("hex")}`;
@@ -1086,6 +1086,87 @@ describe("registerIpcRouter fail-soft logging", () => {
       authorityRoute: "interactive-agent-command",
       eventId: grant.expectedEntityId,
     });
+  });
+
+  it("matches legacy create_event secret=false when the payload omits the retired field", async () => {
+    const grant = await issueAgentCapability(
+      "create_event",
+      { title: "Arrival", secret: false },
+      711,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_event_create",
+      {
+        payload: agentCapabilityPayload(grant, {
+          title: "Arrival",
+          eventId: grant.expectedEntityId,
+        }),
+      },
+      711,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
+    expect(bound.payload).not.toHaveProperty("secret");
+  });
+
+  it("matches legacy update_event secret=false when the payload omits the retired field", async () => {
+    const grant = await issueAgentCapability(
+      "update_event",
+      { eventId: "event-1", title: "Updated", secret: false },
+      712,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_event_update",
+      {
+        payload: agentCapabilityPayload(grant, {
+          eventId: "event-1",
+          title: "Updated",
+        }),
+      },
+      712,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
+    expect(bound.payload).not.toHaveProperty("secret");
+  });
+
+  it.each([
+    ["create_event", { title: "Arrival", secret: true }],
+    ["update_event", { eventId: "event-1", secret: true }],
+  ] as const)(
+    "does not issue a capability for %s secret=true",
+    async (toolName, input) => {
+      const grant = await issueAgentCapability(toolName, input, 713);
+      expect(grant.capability).toBeUndefined();
+    },
+  );
+
+  it("strips a legacy create_event secret=false before the Native payload", async () => {
+    const grant = await issueAgentCapability(
+      "create_event",
+      { title: "Arrival" },
+      714,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_event_create",
+      {
+        payload: agentCapabilityPayload(grant, {
+          title: "Arrival",
+          eventId: grant.expectedEntityId,
+          secret: false,
+        }),
+      },
+      714,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
+    expect(bound.payload).not.toHaveProperty("secret");
   });
 
   it("denies a capability when the renderer adds an unrequested Native field", async () => {
