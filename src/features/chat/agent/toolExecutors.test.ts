@@ -410,31 +410,49 @@ describe("foreshadow write executors", () => {
     expect(mockAgentCreateForeshadow).not.toHaveBeenCalled();
   });
 
-  it("create_foreshadow returns id/title/secret on success", async () => {
-    mockAgentCreateForeshadow.mockResolvedValue({
-      id: "f1",
-      title: "刻印の謎",
-      secret: true,
-    });
-    const result = await executeTool("create_foreshadow", "call-f2", {
-      title: "刻印の謎",
-      intent: "後で回収",
-      loadBearing: "critical",
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.content).toMatchObject({
-      id: "f1",
-      title: "刻印の謎",
-      secret: true,
-    });
-    expect(mockAgentCreateForeshadow).toHaveBeenCalledWith(
-      expect.objectContaining({
+  it("create_foreshadow rejects secret=true, string, number, and null without writing", async () => {
+    for (const secret of [true, "true", 1, null]) {
+      const result = await executeTool("create_foreshadow", "call-f2", {
+        title: "刻印の謎",
+        secret,
+      });
+      expect(result.error).toBe(
+        "secret is no longer supported: foreshadows cannot be hidden from the AI. Omit it.",
+      );
+      expect(mockAgentCreateForeshadow).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([{}, { secret: false }])(
+    "create_foreshadow returns id/title and always writes secret=false (%#)",
+    async (secretInput) => {
+      mockAgentCreateForeshadow.mockResolvedValue({
+        id: "f1",
+        title: "刻印の謎",
+        secret: false,
+      });
+      const result = await executeTool("create_foreshadow", "call-f2", {
         title: "刻印の謎",
         intent: "後で回収",
         loadBearing: "critical",
-      }),
-    );
-  });
+        ...secretInput,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.content).toEqual({
+        id: "f1",
+        title: "刻印の謎",
+      });
+      expect(result.summary).toBe("Created foreshadow '刻印の謎'");
+      expect(mockAgentCreateForeshadow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "刻印の謎",
+          intent: "後で回収",
+          loadBearing: "critical",
+          secret: false,
+        }),
+      );
+    },
+  );
 
   it("create_foreshadow wraps agent-write failures as error results", async () => {
     mockAgentCreateForeshadow.mockRejectedValue(
@@ -475,7 +493,25 @@ describe("foreshadow write executors", () => {
         payoffConfirmed: true,
       }),
     );
+    expect(mockAgentUpdateForeshadow.mock.calls[0]?.[0]).not.toHaveProperty(
+      "secret",
+    );
   });
+
+  it.each([true, false])(
+    "update_foreshadow rejects the secret key with value %s without writing",
+    async (secret) => {
+      const result = await executeTool("update_foreshadow", "call-f6", {
+        id: "f1",
+        baseVersion: 3,
+        secret,
+      });
+      expect(result.error).toBe(
+        "secret is no longer supported: foreshadows cannot be hidden from the AI. Omit it.",
+      );
+      expect(mockAgentUpdateForeshadow).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Codex and Snippet rich-text write executors", () => {

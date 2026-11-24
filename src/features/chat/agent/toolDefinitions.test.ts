@@ -16,7 +16,7 @@ import {
 } from "./toolManifest";
 
 describe("toolDefinitions", () => {
-  it("event tools retire secret while keeping neutral disclosure metadata; foreshadow secret remains", () => {
+  it("retires secret from event and foreshadow write tools while keeping disclosure metadata", () => {
     const tools = new Map(AGENT_TOOLS.map((tool) => [tool.name, tool]));
     const disclosurePrefix =
       "Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI.";
@@ -38,12 +38,20 @@ describe("toolDefinitions", () => {
       ).not.toMatch(/\b(?:hide|invisible)\b/u);
     }
 
-    expect(
-      tools.get("create_foreshadow")!.inputSchema.properties,
-    ).toHaveProperty("secret");
-    expect(
-      tools.get("update_foreshadow")!.inputSchema.properties,
-    ).toHaveProperty("secret");
+    const createForeshadow = tools.get("create_foreshadow")!;
+    const updateForeshadow = tools.get("update_foreshadow")!;
+    expect(createForeshadow.inputSchema.properties).not.toHaveProperty(
+      "secret",
+    );
+    expect(updateForeshadow.inputSchema.properties).not.toHaveProperty(
+      "secret",
+    );
+    expect(createForeshadow.description).toBe(
+      "Create a new foreshadowing (plant/payoff) item. Requires knowledgeWrite policy.",
+    );
+    expect(createForeshadow.description).not.toContain(
+      "hidden from list_open_foreshadows",
+    );
   });
 
   it("sorts tools by name deterministically", () => {

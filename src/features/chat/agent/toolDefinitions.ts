@@ -143,7 +143,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "create_foreshadow",
     description:
-      "Create a new foreshadowing (plant/payoff) item. Requires knowledgeWrite policy. secret defaults to true — secret items are hidden from list_open_foreshadows and AI context until the author reveals them; pass secret=false if you need to read it back later in this conversation.",
+      "Create a new foreshadowing (plant/payoff) item. Requires knowledgeWrite policy.",
     inputSchema: {
       type: "object",
       properties: {
@@ -157,10 +157,6 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
           type: "string",
           enum: ["critical", "supporting", "optional"],
           description: "How load-bearing the plant is for the plot",
-        },
-        secret: {
-          type: "boolean",
-          description: "Hide from AI context (default true)",
         },
       },
       required: ["title"],
@@ -194,7 +190,6 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
           type: "boolean",
           description: "Mark the plant as abandoned",
         },
-        secret: { type: "boolean" },
       },
       required: ["id", "baseVersion"],
     },

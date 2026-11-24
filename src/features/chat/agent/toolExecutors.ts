@@ -1022,11 +1022,23 @@ async function proposeSceneBodyTool(
   }
 }
 
+const UNSUPPORTED_FORESHADOW_SECRET_ERROR =
+  "secret is no longer supported: foreshadows cannot be hidden from the AI. Omit it.";
+
 async function createForeshadowTool(
   params: Record<string, unknown>,
   requestId?: string,
   authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
+  if (Object.hasOwn(params, "secret") && params["secret"] !== false) {
+    return {
+      name: "create_foreshadow",
+      content: null,
+      summary: UNSUPPORTED_FORESHADOW_SECRET_ERROR,
+      tokensUsed: 0,
+      error: UNSUPPORTED_FORESHADOW_SECRET_ERROR,
+    };
+  }
   const title = String(params["title"] ?? "").trim();
   if (!title) {
     return {
@@ -1050,8 +1062,7 @@ async function createForeshadowTool(
       loadBearing: params["loadBearing"]
         ? (String(params["loadBearing"]) as AgentForeshadowLoadBearing)
         : undefined,
-      secret:
-        typeof params["secret"] === "boolean" ? params["secret"] : undefined,
+      secret: false,
     };
     const item = authorization
       ? await agentCreateForeshadow(input, {
@@ -1062,12 +1073,12 @@ async function createForeshadowTool(
           mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
         })
       : await agentCreateForeshadow(input);
-    const content = { id: item.id, title: item.title, secret: item.secret };
+    const content = { id: item.id, title: item.title };
     const json = JSON.stringify(content);
     return {
       name: "create_foreshadow",
       content,
-      summary: `Created foreshadow '${item.title}'${item.secret ? " (secret)" : ""}`,
+      summary: `Created foreshadow '${item.title}'`,
       tokensUsed: countTokens(json),
     };
   } catch (e) {
@@ -1087,6 +1098,15 @@ async function updateForeshadowTool(
   requestId?: string,
   authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
+  if (Object.hasOwn(params, "secret")) {
+    return {
+      name: "update_foreshadow",
+      content: null,
+      summary: UNSUPPORTED_FORESHADOW_SECRET_ERROR,
+      tokensUsed: 0,
+      error: UNSUPPORTED_FORESHADOW_SECRET_ERROR,
+    };
+  }
   const id = String(params["id"] ?? "").trim();
   if (!id) {
     return {
@@ -1137,8 +1157,6 @@ async function updateForeshadowTool(
         typeof params["abandoned"] === "boolean"
           ? params["abandoned"]
           : undefined,
-      secret:
-        typeof params["secret"] === "boolean" ? params["secret"] : undefined,
     };
     const item = authorization
       ? await agentUpdateForeshadow(input, {

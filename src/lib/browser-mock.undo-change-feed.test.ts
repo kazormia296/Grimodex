@@ -62,6 +62,28 @@ describe("BrowserMock canonical Undo/Redo Change Feed", () => {
 
   afterEach(() => mock.close());
 
+  it("defaults an agent-created foreshadow to visible when secret is omitted", async () => {
+    await mock.invoke("agent_foreshadow_create", {
+      payload: {
+        requestId: "agent-visible-default-request",
+        foreshadowId: "agent-visible-default",
+        projectId: "default-project",
+        sessionId: "agent-visible-default-session",
+        title: "Visible agent foreshadow",
+        intent: null,
+        notes: null,
+        loadBearing: null,
+      },
+    });
+
+    expect(
+      await rows(
+        mock,
+        "SELECT secret FROM foreshadows WHERE id = 'agent-visible-default'",
+      ),
+    ).toEqual([{ secret: 0 }]);
+  });
+
   it("stores complete renderer Foreshadow create/update receipts and validates retries", async () => {
     const createSemantic = {
       id: "renderer-foreshadow-retry",
