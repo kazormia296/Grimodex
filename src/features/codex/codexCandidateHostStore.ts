@@ -54,6 +54,8 @@ interface ScanTask {
   generation: number;
   projectToken: number;
   promise: Promise<void>;
+  /** 待ちの task だけが持つ。捨てられたとき、待っている側を解決する。 */
+  settle?: () => void;
 }
 
 function emptyHostState() {
@@ -75,7 +77,38 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
   let activeScan: ScanTask | null = null;
   let pendingScan: ScanTask | null = null;
   let projectToken = 0;
+  // 却下の読込が走っている作品の token（走っていなければ null）。同じ作品での再試行の重複を防ぐ。
+  let dismissalLoadingToken: number | null = null;
   let writeChain: Promise<unknown> = Promise.resolve();
+
+  const discardPendingScan = () => {
+    const task = pendingScan;
+    pendingScan = null;
+    // 走査そのものは止められないので、待っている側だけを先に解決する。
+    task?.settle?.();
+  };
+
+  const loadDismissals = (
+    projectId: string,
+    generation: number,
+    token: number,
+  ) => {
+    dismissalLoadingToken = token;
+    void loadDismissedCandidateKeys(projectId)
+      .then((keys) => {
+        if (
+          projectToken === token &&
+          get().projectId === projectId &&
+          get().generation === generation
+        ) {
+          set({ dismissed: keys, dismissedLoaded: true });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (dismissalLoadingToken === token) dismissalLoadingToken = null;
+      });
+  };
 
   const persistValue = (
     projectId: string,
@@ -180,15 +213,21 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
     }
     if (!activeScan) return startScan(projectId, generation, token);
 
+    let settle!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
     const task: ScanTask = {
       projectId,
       generation,
       projectToken: token,
-      promise: Promise.resolve(),
+      promise,
+      settle,
     };
-    task.promise = activeScan.promise
+    void activeScan.promise
       .catch(() => {})
       .then(() => {
+        // 作品の切替で捨てられていたら、すでに settle 済み。
         if (pendingScan !== task) return;
         pendingScan = null;
         const current = get();
@@ -200,7 +239,8 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
           return;
         }
         return startScan(task.projectId, task.generation, task.projectToken);
-      });
+      })
+      .finally(() => settle());
     pendingScan = task;
     return task.promise;
   };
@@ -210,10 +250,22 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
 
     syncProject(projectId) {
       const current = get();
-      if (current.projectId === projectId) return;
+      if (current.projectId === projectId) {
+        // 同じ作品。却下の読込が失敗して未完了のままなら、呼ばれるたびに 1 回だけ再試行する
+        // （以前は Report を開くたびに読み直していた）。読込中なら何もしない。
+        if (
+          projectId &&
+          !current.dismissedLoaded &&
+          dismissalLoadingToken !== projectToken
+        ) {
+          loadDismissals(projectId, current.generation, projectToken);
+        }
+        return;
+      }
       const generation = current.generation + 1;
       projectToken += 1;
-      pendingScan = null;
+      discardPendingScan();
+      dismissalLoadingToken = null;
       set({
         projectId,
         generation,
@@ -223,18 +275,7 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
         structureOpen: false,
       });
       if (!projectId) return;
-      const token = projectToken;
-      void loadDismissedCandidateKeys(projectId)
-        .then((keys) => {
-          if (
-            projectToken === token &&
-            get().projectId === projectId &&
-            get().generation === generation
-          ) {
-            set({ dismissed: keys, dismissedLoaded: true });
-          }
-        })
-        .catch(() => {});
+      loadDismissals(projectId, generation, projectToken);
     },
 
     setStructureOpen(open) {
@@ -316,7 +357,8 @@ export const useCodexCandidateHostStore = create<CodexCandidateHostState>()((
     reset() {
       projectToken += 1;
       activeScan = null;
-      pendingScan = null;
+      discardPendingScan();
+      dismissalLoadingToken = null;
       set((state) => ({ ...state, ...emptyHostState() }));
     },
   };
