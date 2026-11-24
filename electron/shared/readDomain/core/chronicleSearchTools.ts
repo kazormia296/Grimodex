@@ -1,34 +1,26 @@
 import type { CoreChronicleSearchContext } from "../../mastraRead/ports.js";
-import { hiddenEventIds } from "./chronicleTools.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
 
 /**
  * `search_events` of the shared core (Mastra migration MP-4b, PR-7b, DR-MP4-38):
- * the dense search of the events index, then the chronicle's secrecy rule
- * applied to what it found. The order of the awaits, the point at which the tree
- * state is read, the strings and the key order of the result are those of the
- * renderer's executor it was moved from (the PR-0 golden and
- * `toolExecutors.searchEventsCharacterization.test.ts` fix them).
+ * a dense search of all chronicle events. Event secrecy does not exclude a hit.
+ * The query, project, dense read and token-count order, strings and result key
+ * order are fixed by the renderer's executor it was moved from (the PR-0 golden
+ * and `toolExecutors.searchEventsCharacterization.test.ts` fix them).
  *
- * The flow, in the renderer's order (query first: the reverse of the four
- * chronicle tools, which check the project first):
+ * The flow (query first: the reverse of the four chronicle tools, which check
+ * the project first):
  *
  *   1. an empty query answers `0 events found` and reads nothing;
- *   2. the project is taken once (`requireCoreProjectId`), before any read;
- *   3. the dense read, with `limit` raised to `fetchLimit` (the hidden hits are
- *      dropped afterwards, so more than `limit` are asked for);
- *   4. the events, then the scene-event bridges;
- *   5. the tree state, read once and synchronously after the awaits (the nodes
- *      and the active scene are the ones of that moment, not of the start);
- *   6. the hits whose event is hidden are dropped, then the first `limit` stay.
+ *   2. the project is taken once (`requireCoreProjectId`);
+ *   3. the dense read, with `limit` raised to `fetchLimit`;
+ *   4. the dense hits are narrowed and the first `limit` are returned.
+ *   5. the JSON result is counted by `countTokens`.
  *
- * What the tool may show is the chronicle's own rule (`hiddenEventIds`). The
- * index holds every event, a secret one's title included, so this drop is the
- * only exit-side defence (DR-MP4-38). A hit whose id is not among the project's
- * events is NOT dropped (moved as it is, DR-MP4-38): the safety of that rests on
- * the index being read by project (Native's `WHERE project_id = ?`) and on the
- * events the caller hands in being current when the call is made.
+ * Every event is eligible for search, including events marked secret. Hits are
+ * not checked against the events table; the native dense read is scoped to the
+ * project.
  *
  * A failure of the dense read is not caught here: the renderer's port answers an
  * empty list (`chronicleSearchPort.ts`) and Main's lets it out.
@@ -51,7 +43,7 @@ export function eventSearchLimit(params: Record<string, unknown>): number {
     : 10;
 }
 
-/** What the dense read is asked for: three times `limit` (hidden hits are dropped afterwards), at most 30 (the backend's maximum). */
+/** What the dense read is asked for: three times `limit`, at most 30 (the backend's maximum). */
 export function eventSearchFetchLimit(limit: number): number {
   return Math.min(limit * 3, 30);
 }
@@ -122,29 +114,12 @@ export async function searchEvents(
     }),
   );
 
-  // 現在シーン文脈で hidden な event id 集合を算出（spec §2.5）。
-  const allEvents = await ctx.chronicle.getEvents(projectId);
-  const sceneEvents = await ctx.chronicle.getSceneEvents(projectId);
-  // The state is read once, synchronously, after the awaits (the renderer read
-  // the nodes and the active scene at this point too). The nodes array goes to
-  // the reading-order port as it is and the answer is copied.
-  const state = ctx.getTreeState();
-  const readingOrder = new Map(ctx.chronicle.getReadingOrder(state.nodes));
-  const currentSceneId = state.activeSceneId ?? "";
-  const hidden = hiddenEventIds(allEvents, currentSceneId, {
-    readingOrder,
-    sceneEvents,
-  });
-
-  const content = hits
-    .filter((h) => !hidden.has(h.eventId))
-    .slice(0, limit)
-    .map((h) => ({
-      eventId: h.eventId,
-      title: h.title,
-      kind: h.kind,
-      score: h.score,
-    }));
+  const content = hits.slice(0, limit).map((h) => ({
+    eventId: h.eventId,
+    title: h.title,
+    kind: h.kind,
+    score: h.score,
+  }));
   return {
     name: "search_events",
     content,

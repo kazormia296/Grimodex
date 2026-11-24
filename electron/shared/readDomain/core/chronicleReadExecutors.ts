@@ -48,8 +48,8 @@ export function createChronicleReadExecutors(
 
 /**
  * `search_events` (PR-7b, DR-MP4-38): a third table, with its own context type
- * (`CoreChronicleSearchContext`, which adds the dense read to the chronicle
- * loaders) and its own factory. The three tables (`CORE_READ_TOOL_NAMES`,
+ * (`CoreChronicleSearchContext`, which carries the project, token counter and
+ * dense read) and its own factory. The three tables (`CORE_READ_TOOL_NAMES`,
  * `CHRONICLE_READ_TOOL_NAMES` and this one) share no name. A caller that walks
  * "every core tool" walks all three.
  */

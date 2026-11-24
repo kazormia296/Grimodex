@@ -131,6 +131,8 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
         anchorId: "a1",
         quote: "ライカは友人だ",
         documentRef: "doc:scene-1",
+        sceneId: "s1",
+        sceneTitle: "Scene 1",
         method: "exact" as const,
       },
     ];
@@ -299,6 +301,10 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
       "codex.entry.create",
     );
     expect(restored.proposals[0]?.evidence[0]?.quote).toBe("ライカは友人だ");
+    expect(restored.proposals[0]?.evidence[0]).toMatchObject({
+      sceneId: "s1",
+      sceneTitle: "Scene 1",
+    });
     expect(restored.relationProposals[0]?.proposal.dependencies).toEqual([
       { kind: "requires-resolution", proposalId: "prop-entity-cold" },
     ]);

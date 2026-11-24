@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import type { CodexEntityReviewProposal } from "./codexStructureExtractionStore";
 import { isSafeForCodexEntityBulkApprove } from "./codexStructureExtractionStore";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
+import { localizeBlockedReason } from "./extraction/blockedReasons";
 
 export interface CodexEntityProposalCardProps {
   readonly proposal: CodexEntityReviewProposal;
@@ -26,13 +27,15 @@ function bindingLabel(
   proposal: CodexEntityReviewProposal,
   targetName: string | undefined,
   existingLabel: (name: string) => string,
+  createNewLabel: string,
+  unresolvedLabel: string,
 ): string {
   const binding = proposal.proposal.payload.binding;
-  if (binding.kind === "create-new") return "新規作成";
+  if (binding.kind === "create-new") return createNewLabel;
   if (binding.kind === "bind-existing") {
     return existingLabel(targetName ?? binding.entityRef);
   }
-  return "未解決";
+  return unresolvedLabel;
 }
 
 /**
@@ -75,18 +78,23 @@ export function CodexEntityProposalCard({
             {proposal.displayTitle}
           </span>
           <span className="block text-[10px] text-muted-foreground">
-            {bindingLabel(proposal, targetName, (name) =>
-              t("codex.structureReview.bindingExisting", { name }),
+            {bindingLabel(
+              proposal,
+              targetName,
+              (name) => t("codex.structureReview.bindingExisting", { name }),
+              t("codex.structureReview.entityCard.createNew"),
+              t("codex.structureReview.entityCard.unresolved"),
             )}
           </span>
           {blocked && (
             <span className="block text-[10px] text-amber-700 dark:text-amber-400">
-              {proposal.blockedReason ?? "要解決"}
+              {localizeBlockedReason(proposal.blockedReason, t) ??
+                t("codex.structureReview.entityCard.needsResolution")}
             </span>
           )}
           {applied && (
             <span className="block text-[10px] text-muted-foreground">
-              適用済み（編集不可）
+              {t("codex.structureReview.entityCard.appliedReadonly")}
             </span>
           )}
           {proposal.staleBind && (
@@ -117,7 +125,7 @@ export function CodexEntityProposalCard({
             disabled={proposal.status === "approved"}
             onClick={() => onDecide?.("approved")}
           >
-            承認
+            {t("codex.structureReview.entityCard.approve")}
           </button>
           <button
             type="button"
@@ -125,7 +133,7 @@ export function CodexEntityProposalCard({
             disabled={proposal.status === "rejected"}
             onClick={() => onDecide?.("rejected")}
           >
-            拒否
+            {t("codex.structureReview.entityCard.reject")}
           </button>
           <button
             type="button"
@@ -135,7 +143,7 @@ export function CodexEntityProposalCard({
             }
             onClick={() => onDecide?.("deferred")}
           >
-            保留
+            {t("codex.structureReview.entityCard.defer")}
           </button>
         </div>
       )}

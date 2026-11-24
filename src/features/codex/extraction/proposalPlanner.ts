@@ -1,4 +1,5 @@
 import type { CodexEntityHypothesis } from "@/features/narrative-extraction/ir/inferences/codexEntityHypothesis";
+import { BLOCKED_REASON_ENTRY_AMBIGUOUS } from "./blockedReasons";
 import type { EntityMentionForm } from "@/features/narrative-extraction/ir/observations/entityIdentity";
 import {
   bindExistingCodexEntityProposal,
@@ -143,7 +144,7 @@ export function planBindCodexEntityProposals(
       planned.push({
         hypothesisId: hypothesis.hypothesisId,
         blocked: true,
-        blockedReason: "既存 Entry 候補が複数あり、Binding が未解決です",
+        blockedReason: BLOCKED_REASON_ENTRY_AMBIGUOUS,
         proposal: unresolvedBindCodexEntityProposal(
           {
             ...basePayload,

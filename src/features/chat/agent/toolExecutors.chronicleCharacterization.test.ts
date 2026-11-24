@@ -12,7 +12,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  *   あるかを見る（PR-0 の試験は list_events と search_events だけを固定していた）。
  * - 場面自身の暦日付（scene-own anchor）。
  * - UI 言語の正規化（`"en"` の完全一致だけが en。`"en-US"` は ja）。
- * - Codex の hidden な entry の名前を、4 本ともそのまま返すこと（既存の非対称。直さない）。
+ * - secret な出来事は場面に関係なく読み、hidden な Codex の個人情報は出さないこと。
  * 実 sql.js の golden と同じ harness を使い、足す行は `__fixtures__/chronicleCharacterizationSeed.ts`。
  */
 vi.mock("@/lib/tauri", async (importOriginal) => {
@@ -58,14 +58,18 @@ vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const MAIN_S1: LegacyReadWorld = { projectId: "p-main", activeSceneId: "n-s1" };
 const MAIN_S3: LegacyReadWorld = { projectId: "p-main", activeSceneId: "n-s3" };
 
-type Content<T> = { content: T; summary: string };
+type Content<T> = { content: T; summary: string; tokensUsed: number };
 const run = async <T = unknown>(
   tool: string,
   params: Record<string, unknown>,
 ): Promise<Content<T>> => {
   const result = await executeTool(tool, "c", params);
   expect(result.error).toBeUndefined();
-  return { content: result.content as T, summary: result.summary };
+  return {
+    content: result.content as T,
+    summary: result.summary,
+    tokensUsed: result.tokensUsed,
+  };
 };
 
 /** 最初に `fromTable` を読む `db_execute` が呼ばれた瞬間に、store を書き換える。 */
@@ -125,15 +129,16 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       expect(found.content?.id).toBe("ev-war");
     });
 
-    it("get_event_detail：現在の場面は scene_events の読みの前に読み終える（その最中の切替は反映されない）", async () => {
+    it("get_event_detail：scene_events 読みの最中に場面が切り替わっても secret な出来事を返す", async () => {
       await setLegacyReadWorld(MAIN_S1);
       const hook = onFirstRead("scene_events", () =>
         useTreeStore.setState({ activeSceneId: "n-s3" }),
       );
-      const found = await run("get_event_detail", { eventId: "ev-war" });
+      const found = await run<{ id: string } | null>("get_event_detail", {
+        eventId: "ev-war",
+      });
       expect(hook.fired()).toBe(true);
-      expect(found.content).toBeNull();
-      expect(found.summary).toBe("Event not found");
+      expect(found.content?.id).toBe("ev-war");
     });
 
     it("get_event_detail：場面の題は await（Promise.all）の後の store の nodes から作る（最中に題を書き換えると反映される）", async () => {
@@ -156,13 +161,13 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       ]);
     });
 
-    it("get_character_timeline：現在の場面は events・participants・calendar・名前の await の後で読む（最中に n-s3 へ切り替えると戦争が見える）", async () => {
+    it("get_character_timeline：secret な戦争は現在の場面を問わず見える", async () => {
       await setLegacyReadWorld(MAIN_S1);
       const baseline = await run<{ events: Array<{ id: string }> }>(
         "get_character_timeline",
         { codexId: "c-mage" },
       );
-      expect(baseline.content.events.map((e) => e.id)).not.toContain("ev-war");
+      expect(baseline.content.events.map((e) => e.id)).toContain("ev-war");
 
       await setLegacyReadWorld(MAIN_S1);
       const hook = onFirstRead("project_calendar", () =>
@@ -176,7 +181,7 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       expect(switched.content.events.map((e) => e.id)).toContain("ev-war");
     });
 
-    it("get_character_timeline：現在の場面は scene_events の読みの前に読み終える（その最中の切替は反映されない）", async () => {
+    it("get_character_timeline：scene_events を読まず secret な出来事を返す", async () => {
       await setLegacyReadWorld(MAIN_S1);
       const hook = onFirstRead("scene_events", () =>
         useTreeStore.setState({ activeSceneId: "n-s3" }),
@@ -185,8 +190,8 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
         "get_character_timeline",
         { codexId: "c-mage" },
       );
-      expect(hook.fired()).toBe(true);
-      expect(found.content.events.map((e) => e.id)).not.toContain("ev-war");
+      expect(hook.fired()).toBe(false);
+      expect(found.content.events.map((e) => e.id)).toContain("ev-war");
     });
 
     it("get_chronicle_state：sceneId は最初の await の前に決める（activeSceneId を最初の読みの最中に変えても結果は変わらない）", async () => {
@@ -213,19 +218,26 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       expect(JSON.stringify(explicit)).toBe(JSON.stringify(baseline));
     });
 
-    it("get_chronicle_state：nodes（と読む順）は Promise.all の後で読む（最中に nodes を空にすると anchor は none で secret は隠れる）", async () => {
+    it("get_chronicle_state：nodes が空でも secret な出来事は hidden にならない", async () => {
       await setLegacyReadWorld(MAIN_S3);
-      const baseline = await run("get_chronicle_state", {});
-      expect(baseline.summary).toBe("Chronicle state at scene (stamped)");
+      const baseline = await run<{
+        recentEvents: Array<{ eventId: string }>;
+      }>("get_chronicle_state", {});
+      expect(baseline.content.recentEvents.map((e) => e.eventId)).toContain(
+        "ev-war",
+      );
 
       await setLegacyReadWorld(MAIN_S3);
       const hook = onFirstRead("project_calendar", () =>
         useTreeStore.setState({ nodes: [] }),
       );
-      const emptied = await run("get_chronicle_state", {});
+      const emptied = await run<{
+        recentEvents: Array<{ eventId: string }>;
+      }>("get_chronicle_state", {});
       expect(hook.fired()).toBe(true);
-      expect(emptied.summary).toBe("Chronicle state at scene (none)");
-      expect(JSON.stringify(emptied.content)).not.toContain("魔術戦争");
+      expect(emptied.content.recentEvents.map((e) => e.eventId)).toContain(
+        "ev-war",
+      );
     });
   });
 
@@ -245,9 +257,60 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       });
       expect(state.summary).toBe("Chronicle state at scene (scene)");
       // scene-own の暦日付（startTime 7000・approx）が anchor の time になる。
-      expect(JSON.stringify(state.content)).toBe(
-        '{"time":{"source":"scene","startTime":7000,"season":null,"precision":"approx","formattedDate":"1019年第161日"},"characters":[{"codexId":"c-secret","name":"黒幕","status":"unknown","age":null,"location":"黒幕"},{"codexId":"c-aria","name":"アリア","status":"alive","age":19,"location":"古い塔"},{"codexId":"c-mage","name":"老魔術師","status":"unknown","age":null,"location":"古い塔"}],"recentEvents":[{"eventId":"ev-hidden-name","title":"黒幕の登場","note":null,"relTime":"約3年前"},{"eventId":"ev-meet","title":"老魔術師との出会い","note":null,"relTime":"約4年前"}],"unresolvedCausal":[],"offpage":[]}',
-      );
+      expect(state.content).toEqual({
+        time: {
+          source: "scene",
+          startTime: 7000,
+          season: null,
+          precision: "approx",
+          formattedDate: "1019年第161日",
+        },
+        characters: [
+          {
+            codexId: "c-mage",
+            name: "老魔術師",
+            status: "unknown",
+            age: null,
+            location: "古い塔",
+          },
+          {
+            codexId: "c-aria",
+            name: "アリア",
+            status: "alive",
+            age: 19,
+            location: "古い塔",
+          },
+        ],
+        recentEvents: [
+          {
+            eventId: "ev-hidden-name",
+            title: "黒幕の登場",
+            note: null,
+            relTime: "約3年前",
+          },
+          {
+            eventId: "ev-meet",
+            title: "老魔術師との出会い",
+            note: null,
+            relTime: "約4年前",
+          },
+          {
+            eventId: "ev-war",
+            title: "魔術戦争",
+            note: "昔の戦争",
+            relTime: "約9年前",
+          },
+        ],
+        unresolvedCausal: [],
+        offpage: [
+          {
+            eventId: "ev-death",
+            title: "老魔術師の死",
+            note: "恒久的に秘匿",
+            relTime: null,
+          },
+        ],
+      });
     });
 
     it("日付を持たない場面は今までどおり stamped（n-s3）、紐づきも日付も無い場面は直前の anchor を proxy で借りる", async () => {
@@ -311,8 +374,8 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
     });
   });
 
-  describe("Codex の hidden な entry の名前（既存の非対称。直さない。DR-MP4-37）", () => {
-    it("c-secret は context_mode=hidden だが、4 本とも名前（黒幕）をそのまま返す", async () => {
+  describe("hidden な Codex を読む道具から除外する", () => {
+    it("c-secret の名前・人物行は出さず、表示可能な Codex は引き続き返す", async () => {
       await setLegacyReadWorld(MAIN_S3);
       const list = await run<{
         events: Array<{ id: string; primaryCharacter: string | null }>;
@@ -320,30 +383,50 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       expect(
         list.content.events.find((e) => e.id === CHRONICLE_HIDDEN_NAME_EVENT)
           ?.primaryCharacter,
-      ).toBe("黒幕");
+      ).toBeNull();
+      expect(
+        list.content.events.find((e) => e.id === "ev-birth")?.primaryCharacter,
+      ).toBe("アリア");
 
       const detail = await run<{
         primaryCharacter: string | null;
         location: string | null;
         participants: Array<{ codexId: string; name: string | null }>;
       }>("get_event_detail", { eventId: CHRONICLE_HIDDEN_NAME_EVENT });
-      expect(detail.content.primaryCharacter).toBe("黒幕");
-      expect(detail.content.location).toBe("黒幕");
-      expect(detail.content.participants).toEqual([
-        { codexId: "c-secret", name: "黒幕", role: "黒幕役" },
-      ]);
+      expect(detail.content.primaryCharacter).toBeNull();
+      expect(detail.content.location).toBeNull();
+      expect(detail.content.participants).toEqual([]);
+      const visibleDetail = await run<{
+        primaryCharacter: string | null;
+        location: string | null;
+      }>("get_event_detail", { eventId: "ev-meet" });
+      expect(visibleDetail.content.primaryCharacter).toBe("アリア");
+      expect(visibleDetail.content.location).toBe("古い塔");
 
       const timeline = await run<{
         character: string;
         events: Array<{ id: string }>;
-      }>("get_character_timeline", { codexId: "c-secret" });
-      expect(timeline.content.character).toBe("黒幕");
-      expect(timeline.content.events.map((e) => e.id)).toContain(
-        CHRONICLE_HIDDEN_NAME_EVENT,
-      );
+      } | null>("get_character_timeline", { codexId: "c-secret" });
+      expect(timeline.content).toBeNull();
+      expect(timeline.summary).toBe("Character not found");
+      expect(timeline.tokensUsed).toBe(0);
+      const visibleTimeline = await run<{
+        character: string;
+        events: Array<{ id: string }>;
+      }>("get_character_timeline", { codexId: "c-mage" });
+      expect(visibleTimeline.content.character).toBe("老魔術師");
+      expect(visibleTimeline.content.events.length).toBeGreaterThan(0);
 
-      const state = await run("get_chronicle_state", { sceneId: "n-s1" });
-      expect(JSON.stringify(state.content)).toContain("黒幕");
+      const state = await run<{
+        characters: Array<{ codexId: string; name: string }>;
+      }>("get_chronicle_state", { sceneId: "n-s1" });
+      expect(state.content.characters.map((c) => c.codexId)).not.toContain(
+        "c-secret",
+      );
+      expect(state.content.characters.map((c) => c.name)).not.toContain("黒幕");
+      expect(state.content.characters.map((c) => c.codexId)).toContain(
+        "c-aria",
+      );
     });
   });
 });

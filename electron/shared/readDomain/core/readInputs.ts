@@ -114,10 +114,9 @@ export interface ReadInputs {
    * The wire's current scene, or null when it is not a live scene of this
    * project's reading order: empty, another project's id, a nonexistent id, an
    * archived scene, a folder or a note, or a live scene whose ancestor is
-   * archived (it is not in the reading order either). Null makes the chronicle
-   * hide secret events (`isEventHiddenFromAi` fails closed on a scene that is
-   * not in the order). The Codex side decides the same way for null and for
-   * an id the reading order does not have: no phase applies, and
+   * archived (it is not in the reading order either). The Codex side decides
+   * the same way for null and for an id the reading order does not have: no
+   * phase applies, and
    * `decideCodexAiVisibility` hides an entry that one of its phases hides (fail
    * closed; DR-MP4-41, which also covers "no scene"; DR-MP4-46 additionally
    * hides an entry whose hiding phase lost its anchor scene, whatever the scene

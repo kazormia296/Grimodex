@@ -2370,6 +2370,7 @@
       "show": "再表示"
     },
     "structureReview": {
+      "unsupportedLanguage": "構造抽出は、日本語の作品にだけ対応しています。",
       "bindingExisting": "既存 · {{name}}",
       "safeHintCreate": "安全一括承認の対象",
       "safeHintBind": "完全一致の既存への結び付け（一括承認の対象の見込み。承認の直前に今の Codex で確かめ直します）",
@@ -2402,7 +2403,9 @@
       },
       "applyBlocked": {
         "sameEntryPatch": "同じ項目に別名や要約を書く承認が重なっているため、取り込めません（{{names}}）。どれか 1 件だけを残し、他は保留か拒否にしてください",
-        "surfaceAlias": "別名に足す表記が、今の Codex では足せなくなりました（{{names}}）。カードで「別名にも足す」を外してから取り込んでください"
+        "surfaceAlias": "別名に足す表記が、今の Codex では足せなくなりました（{{names}}）。カードで「別名にも足す」を外してから取り込んでください",
+        "reviewOnly": "この作品では、Codex への取り込みはまだ使えません。承認・拒否は記録されます。",
+        "engineDisabled": "構造抽出は、アプリの設定で止められています。"
       },
       "foldedDismissed": {
         "summary": "候補の一覧で却下した {{count}} 種の表記は、新しい項目として提案していません（Codex の名前・別名に当たる表記は出しています）",
@@ -2413,10 +2416,100 @@
         "more": "ほか {{count}} 種を表示",
         "less": "折りたたむ",
         "unavailable": "却下の記録を読めなかったため、却下した表記も畳まずに出しています"
+      },
+      "dialog": {
+        "title": "Codex 構造抽出",
+        "targetFolder": "対象フォルダ",
+        "selectFolder": "選択してください",
+        "projectOrFolderRequired": "プロジェクトまたはフォルダが未選択です",
+        "noScenes": "フォルダ配下に Scene がありません",
+        "applied": "Codex 構造を {{count}} 件取り込みました",
+        "entityTab": "Entity ({{count}})",
+        "relationTab": "Relation ({{count}})",
+        "statesTab": "States & Phases ({{count}})",
+        "close": "閉じる",
+        "analyze": "解析",
+        "applying": "適用中…",
+        "apply": "適用 ({{count}})"
+      },
+      "progress": {
+        "windows": "解析 {{completed}}/{{total}} Window",
+        "gaps": "{{count}}件の範囲欠落",
+        "proposalCounts": "Entity {{entityCount}} / Relation {{relationCount}}",
+        "unresolvedCount": " / 未解決 {{count}}",
+        "tasks": "Task {{completed}}/{{total}}",
+        "sourceRef": "（{{sourceRef}}）",
+        "moreSkipped": "ほか{{count}}件",
+        "skippedRelationalTerms": "{{surfaces}}{{more}}など、話し手で指す人が変わる呼び方 {{count}}種は、新しい人物として提案していません（Codex の名前・別名に入れた語は結びます）"
+      },
+      "entityReview": {
+        "approveFailed": "承認に失敗した提案が {{count}} 件あります",
+        "bulkApproveFailed": "まとめて承認に失敗しました",
+        "bulkApproveSafe": "安全な提案をまとめて承認",
+        "noEntities": "抽出できる Entity は 0 件でした。",
+        "details": "詳細",
+        "selectProposal": "提案を選択してください",
+        "appliedReadonly": "適用済みのため編集できません",
+        "saveNameFailed": "Entity 名の保存に失敗しました",
+        "saveSummaryFailed": "Summary の保存に失敗しました",
+        "saveTypeFailed": "Type の保存に失敗しました",
+        "selectType": "選択してください",
+        "resolveBindingFailed": "Binding 解決に失敗しました"
+      },
+      "entityCard": {
+        "createNew": "新規作成",
+        "unresolved": "未解決",
+        "needsResolution": "要解決",
+        "appliedReadonly": "適用済み（編集不可）",
+        "approve": "承認",
+        "reject": "拒否",
+        "defer": "保留"
+      },
+      "relationReview": {
+        "title": "Relation Proposal",
+        "bulkApproveTitle": "v1 では Relation の一括承認は無効です",
+        "noBulkApprove": "一括承認なし",
+        "noRelations": "抽出できる Relation は 0 件でした。",
+        "details": "詳細",
+        "selectProposal": "提案を選択してください",
+        "appliedReadonly": "適用済みのため編集できません",
+        "alreadySatisfiedReadonly": "既存Relationと一致するため編集できません"
+      },
+      "relationCard": {
+        "directionality": { "directed": "一方向", "symmetric": "双方向" },
+        "unresolvedEndpoints": "両端 Binding 未解決",
+        "appliedReadonly": "適用済み（編集不可）",
+        "approve": "承認",
+        "reject": "拒否",
+        "defer": "保留"
+      },
+      "relationEditor": {
+        "title": "Relation 編集",
+        "swapEndpoints": "Subject / Object を入れ替え"
+      },
+      "evidence": {
+        "title": "根拠引用",
+        "empty": "根拠がありません",
+        "scene": "Scene",
+        "fragmentBlocked": "断片（適用不可）",
+        "binding": "Binding",
+        "createNew": "新規作成",
+        "existingEntry": "既存 Entry（{{ref}}）",
+        "unresolved": "未解決",
+        "type": "Type",
+        "alias": "Alias"
+      },
+      "blockedReason": {
+        "evidenceUnresolved": "根拠が未解決です。再抽出して根拠を確認してください",
+        "relationExists": "既に同じ関係が登録されています（適用不要）",
+        "entryAmbiguous": "既存 Entry 候補が複数あり、Binding が未解決です",
+        "detailUnmapped": "Detail 定義が未割当です",
+        "phaseAmbiguous": "既存 Phase 候補が複数あります"
       }
     },
     "candidates": {
       "title": "未確定の固有名詞候補",
+      "openStructureExtract": "構造抽出でレビュー",
       "occurrences": "{{count}} 回",
       "accept": "Codex エントリ化 (種別は後で変更可)",
       "dismiss": "この候補を却下",
@@ -4643,6 +4736,7 @@
     "loadError": "スナップショットの読み込みに失敗しました",
     "createError": "スナップショットの作成に失敗しました",
     "restoreError": "復元に失敗しました",
+    "restoreFlushFailed": "未保存の編集の保存を完了できなかったため、復元を中止しました。",
     "deleteError": "削除に失敗しました",
     "restoreScopeHeading": "復元する範囲",
     "restoreScopeLegacyNote": "このスナップショットは旧形式です。本文のみが復元されます。",
