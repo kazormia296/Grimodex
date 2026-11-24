@@ -10,14 +10,16 @@ export function TaskTrayFooter() {
 
   return (
     <footer className="flex items-center gap-3 border-t border-foreground/30 px-4 py-2 text-[11px] text-muted-foreground">
-      <button
-        type="button"
-        disabled
-        className="flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        <Plus className="h-3 w-3" />
-        {t("workLayer.tray.capture", "作業を捕捉")}
-      </button>
+      {workLayer.provenance === "preview" && (
+        <button
+          type="button"
+          disabled
+          className="flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Plus className="h-3 w-3" />
+          {t("workLayer.tray.capture", "作業を捕捉")}
+        </button>
+      )}
       <button
         id="work-layer-open-ledger"
         type="button"

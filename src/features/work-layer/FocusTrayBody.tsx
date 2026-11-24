@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import { TaskDraftComposer } from "./TaskDraftComposer";
 import { useWorkLayer } from "./WorkLayerContext";
+import { selectAttentionCount } from "./workLayerLiveEntries";
 import { deriveAllWork } from "./workLedgerItems";
 
 export function FocusTrayBody() {
@@ -9,9 +10,10 @@ export function FocusTrayBody() {
   const { t } = useTranslation();
   if (workLayer == null) return null;
 
-  const { model, openAttention, switchFocusPreview } = workLayer;
+  const { model, provenance, openAttention, switchFocusPreview } = workLayer;
   const { focus } = model;
   const firstAttention = model.attention[0];
+  const attentionTotal = selectAttentionCount(model).total;
   const allWork = deriveAllWork(model);
   const laterTargets =
     focus?.later ??
@@ -56,7 +58,7 @@ export function FocusTrayBody() {
         {focus != null && <TaskDraftComposer focusId={focus.id} />}
       </div>
 
-      {model.attention.length > 0 && (
+      {attentionTotal > 0 && (
         <button
           id="work-layer-switch-attention"
           type="button"
@@ -64,7 +66,7 @@ export function FocusTrayBody() {
           aria-label={t(
             "workLayer.tray.expandAttention",
             "Attention {{count}}件を展開",
-            { count: model.attention.length },
+            { count: attentionTotal },
           )}
           className="flex w-full items-center gap-2 bg-foreground px-4 py-2 text-left text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         >
@@ -78,7 +80,7 @@ export function FocusTrayBody() {
               : ""}
           </span>
           <span className="font-mono text-xs font-bold tabular-nums">
-            {model.attention.length}
+            {attentionTotal}
           </span>
           <span aria-hidden="true" className="opacity-75">
             →
@@ -86,29 +88,31 @@ export function FocusTrayBody() {
         </button>
       )}
 
-      <div className="border-t border-border p-3">
-        <div className="font-mono text-[9px] tracking-[0.16em] text-muted-foreground">
-          LATER
+      {provenance === "preview" && (
+        <div className="border-t border-border p-3">
+          <div className="font-mono text-[9px] tracking-[0.16em] text-muted-foreground">
+            LATER
+          </div>
+          {laterTargets.map((target) => (
+            <button
+              key={target.id}
+              type="button"
+              onClick={() => switchFocusPreview(target.id)}
+              aria-label={t(
+                "workLayer.tray.switchFocusTarget",
+                "{{title}}へFocusを切り替える",
+                { title: target.title },
+              )}
+              className="mt-1 flex w-full items-center rounded-sm px-2 py-2 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="min-w-0 flex-1 truncate">{target.title}</span>
+              <span className="ml-3 shrink-0 text-[10px] text-muted-foreground">
+                {t("workLayer.tray.switchFocus", "Focusへ切り替える")}
+              </span>
+            </button>
+          ))}
         </div>
-        {laterTargets.map((target) => (
-          <button
-            key={target.id}
-            type="button"
-            onClick={() => switchFocusPreview(target.id)}
-            aria-label={t(
-              "workLayer.tray.switchFocusTarget",
-              "{{title}}へFocusを切り替える",
-              { title: target.title },
-            )}
-            className="mt-1 flex w-full items-center rounded-sm px-2 py-2 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <span className="min-w-0 flex-1 truncate">{target.title}</span>
-            <span className="ml-3 shrink-0 text-[10px] text-muted-foreground">
-              {t("workLayer.tray.switchFocus", "Focusへ切り替える")}
-            </span>
-          </button>
-        ))}
-      </div>
+      )}
     </div>
   );
 }
