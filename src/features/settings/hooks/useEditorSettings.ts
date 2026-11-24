@@ -3,6 +3,7 @@ import { useSettingsStore } from "../settingsStore";
 export interface EditorSettings {
   fontFamily: string;
   fontSize: number;
+  fontWeight: number;
   lineHeight: number;
   maxContentWidth: number;
   paragraphSpacing: number;
@@ -39,6 +40,7 @@ export function useEditorSettings(): EditorSettings {
   return {
     fontFamily: store.get("editor.fontFamily", '"Noto Serif JP"'),
     fontSize: store.getNumber("editor.fontSize", 18),
+    fontWeight: store.getNumber("editor.fontWeight", 400),
     lineHeight: store.getNumber("editor.lineHeight", 2.0),
     maxContentWidth: store.getNumber("editor.maxContentWidth", 720),
     paragraphSpacing: store.getNumber("editor.paragraphSpacing", 8),

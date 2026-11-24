@@ -24,21 +24,37 @@ export interface CodexCandidate {
   context: string;
 }
 
+export type CodexCandidateScanResult =
+  | { readonly ok: true; readonly candidates: CodexCandidate[] }
+  | { readonly ok: false };
+
 /**
  * 未知の固有名詞候補を抽出する。`minCount` 未満の出現は除外 (既定 2)。
  * 日本語以外のプロジェクトでは空が返る (Rust 側でゲート)。
  */
+export async function extractCodexCandidatesResult(
+  projectId: string,
+  minCount?: number,
+): Promise<CodexCandidateScanResult> {
+  if (!supportsNativeCandidateExtraction()) return { ok: false };
+  try {
+    return {
+      ok: true,
+      candidates: await invoke<CodexCandidate[]>("extract_codex_candidates", {
+        projectId,
+        minCount: minCount ?? null,
+      }),
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** 既存呼び手向けの互換 API。失敗時はこれまでどおり空配列を返す。 */
 export async function extractCodexCandidates(
   projectId: string,
   minCount?: number,
 ): Promise<CodexCandidate[]> {
-  if (!supportsNativeCandidateExtraction()) return [];
-  try {
-    return await invoke<CodexCandidate[]>("extract_codex_candidates", {
-      projectId,
-      minCount: minCount ?? null,
-    });
-  } catch {
-    return [];
-  }
+  const result = await extractCodexCandidatesResult(projectId, minCount);
+  return result.ok ? result.candidates : [];
 }

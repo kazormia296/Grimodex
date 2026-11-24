@@ -40,6 +40,7 @@ describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
   const settings = {
     fontFamily: '"Noto Serif JP"',
     fontSize: 18,
+    fontWeight: 400,
     lineHeight: 2,
     maxContentWidth: 720,
     wordBreak: "normal",
@@ -63,6 +64,7 @@ describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
     const style = buildEditorContentStyle(settings) as Record<string, unknown>;
     expect(style.fontFamily).toBe('"Noto Serif JP"');
     expect(style.fontSize).toBe("18px");
+    expect(style.fontWeight).toBe(400);
     expect(style.lineHeight).toBe(2);
     expect(style.wordBreak).toBe("normal");
     expect(style.lineBreak).toBe("strict");

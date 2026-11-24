@@ -109,6 +109,19 @@ export function EditorCategory() {
             defaultValue={'"Noto Serif JP"'}
           />
         </SettingRow>
+        <SettingRow
+          label={t("settings.editor.fontWeight")}
+          description={t("settings.editor.fontWeightDesc")}
+        >
+          <SettingSlider
+            settingKey="editor.fontWeight"
+            min={100}
+            max={900}
+            step={100}
+            defaultValue={400}
+            format={(v) => String(v)}
+          />
+        </SettingRow>
         <SettingRow label={t("settings.editor.fontSize")}>
           <SettingSlider
             settingKey="editor.fontSize"

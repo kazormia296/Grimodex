@@ -15,7 +15,10 @@ vi.mock("@/lib/shell", () => ({
   isElectron: isElectronMock,
 }));
 
-import { extractCodexCandidates } from "./candidateExtractor";
+import {
+  extractCodexCandidates,
+  extractCodexCandidatesResult,
+} from "./candidateExtractor";
 
 describe("extractCodexCandidates native shell gate", () => {
   beforeEach(() => {
@@ -36,6 +39,12 @@ describe("extractCodexCandidates native shell gate", () => {
       },
     ]);
 
+    await expect(extractCodexCandidatesResult("project-1", 3)).resolves.toEqual(
+      {
+        ok: true,
+        candidates: [expect.objectContaining({ surface: "円明", count: 2 })],
+      },
+    );
     await expect(extractCodexCandidates("project-1", 3)).resolves.toEqual([
       expect.objectContaining({ surface: "円明", count: 2 }),
     ]);
@@ -45,8 +54,21 @@ describe("extractCodexCandidates native shell gate", () => {
     });
   });
 
+  it("成功結果は空配列も含めて成功として区別する", async () => {
+    isElectronMock.mockReturnValue(true);
+    invokeMock.mockResolvedValue([]);
+
+    await expect(extractCodexCandidatesResult("project-1")).resolves.toEqual({
+      ok: true,
+      candidates: [],
+    });
+  });
+
   it("ブラウザでは空配列を返して invoke しない", async () => {
     await expect(extractCodexCandidates("project-1")).resolves.toEqual([]);
+    await expect(extractCodexCandidatesResult("project-1")).resolves.toEqual({
+      ok: false,
+    });
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
@@ -54,6 +76,9 @@ describe("extractCodexCandidates native shell gate", () => {
     isElectronMock.mockReturnValue(true);
     invokeMock.mockRejectedValue("No workspace is open");
 
+    await expect(extractCodexCandidatesResult("project-1")).resolves.toEqual({
+      ok: false,
+    });
     await expect(extractCodexCandidates("project-1")).resolves.toEqual([]);
   });
 });
