@@ -43,7 +43,10 @@
 
 - 語：Codex の id 由来の同一性を契約の `content-keyed`（内容由来）と呼ばない。registry では `producer-declared-object-key` とする
   （抽出 Artifact 契約 §4.1 の内容キーと混ざるのを避ける）。
-- 置き場：ロードマップは「Codex の抽出 Producer の宣言は無い」としている。既存の `nir1-reviewed-entity-relation-v1`（index の writer）に足しても、
+- 置き場（実装済み、`6f7395e44`）：宣言は producer registry の隣の別 file `policies/narrative/narrative-object-identity-declarations.json`（schema 付き）に置き、producerId で registry の entry と紐づける。
+  registry の entry に足すと、registry 全体が入る maintenance の `producer_generation_set_digest`（`maintenance_contracts.rs:543`）が変わり、完了済み run の skip evidence が全部無効になるため。
+  registry の SHA-256 は不変、`narrative_maintenance_contracts` の試験は変わらず通る。
+- 置き場の検討の記録（元の問い）：ロードマップは「Codex の抽出 Producer の宣言は無い」としている。既存の `nir1-reviewed-entity-relation-v1`（index の writer）に足しても、
   抽出側の宣言にはならない可能性がある。実装前に、同じ entry に `identity` を足す案と、抽出側の writer の entry を新設する案を比べて決める。
 - key の定義：変更レビューの「今」の側は未 review の revision で、roster の行が無いことがある。その場合の key は bundle の `entity_id`／`edge_id`（同じ `codex:`／`codex-relation:` の接頭辞）で定義する。
 
