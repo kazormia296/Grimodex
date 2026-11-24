@@ -1,0 +1,2358 @@
+{
+  "inputs": {
+    "histories": {
+      "textOnly": [
+        {
+          "role": "system",
+          "content": "system text"
+        },
+        {
+          "role": "user",
+          "content": "question"
+        },
+        {
+          "role": "assistant",
+          "content": "answer"
+        }
+      ],
+      "toolUseAndResult": [
+        {
+          "role": "user",
+          "content": "run lookup"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "toolUses": [
+            {
+              "id": "call-1",
+              "name": "lookup",
+              "input": {
+                "query": "term"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool_result",
+          "toolUseId": "call-1",
+          "content": "found"
+        }
+      ],
+      "thinkingWithSignature": [
+        {
+          "role": "user",
+          "content": "reason about this"
+        },
+        {
+          "role": "assistant",
+          "content": "answer",
+          "thinkingBlocks": [
+            {
+              "thinking": "private reasoning",
+              "signature": "{\"id\":\"reason-1\",\"ec\":\"encrypted\"}"
+            }
+          ]
+        }
+      ]
+    },
+    "toolScenarios": {
+      "none": [],
+      "multiple": [
+        {
+          "name": "lookup",
+          "description": "Look up a value",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": ["query"]
+          }
+        },
+        {
+          "name": "summarize",
+          "description": "Summarize text",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": ["text"]
+          }
+        }
+      ]
+    },
+    "webSearch": {
+      "enabled": true,
+      "agentic": true,
+      "maxResults": 2,
+      "maxUses": 1,
+      "maxContentTokens": 64,
+      "allowedDomains": ["docs.example.com"],
+      "blockedDomains": ["ignored.example.com"]
+    }
+  },
+  "cases": [
+    {
+      "name": "openrouter-null-native",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-null-hermes",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above.",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-v1-native",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-v1-hermes",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above.",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-responses-native",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-responses-hermes",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above.",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-legacy-native",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openrouter-legacy-hermes",
+      "route": {
+        "provider": "openrouter",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above.",
+            "{\"type\":\"openrouter:web_search\",\"engine\":\"exa\",\"allowed_domains\":[\"docs.example.com\"],\"max_content_tokens\":64}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-null-native",
+      "route": {
+        "provider": "openai",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-null-hermes",
+      "route": {
+        "provider": "openai",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-v1-native",
+      "route": {
+        "provider": "openai",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-v1-hermes",
+      "route": {
+        "provider": "openai",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-responses-native",
+      "route": {
+        "provider": "openai",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-responses-hermes",
+      "route": {
+        "provider": "openai",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-legacy-native",
+      "route": {
+        "provider": "openai",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-legacy-hermes",
+      "route": {
+        "provider": "openai",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-null-native",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"lookup\",\"input\":{\"query\":\"term\"}}]}",
+            "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"content\":\"found\",\"is_error\":false}]}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"private reasoning\",\"signature\":\"{\\\"id\\\":\\\"reason-1\\\",\\\"ec\\\":\\\"encrypted\\\"}\"},{\"type\":\"text\",\"text\":\"answer\"}]}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}},{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":1,\"allowed_domains\":[\"docs.example.com\"]}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-null-hermes",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-v1-native",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"lookup\",\"input\":{\"query\":\"term\"}}]}",
+            "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"content\":\"found\",\"is_error\":false}]}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"private reasoning\",\"signature\":\"{\\\"id\\\":\\\"reason-1\\\",\\\"ec\\\":\\\"encrypted\\\"}\"},{\"type\":\"text\",\"text\":\"answer\"}]}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}},{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":1,\"allowed_domains\":[\"docs.example.com\"]}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-v1-hermes",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-responses-native",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"lookup\",\"input\":{\"query\":\"term\"}}]}",
+            "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"content\":\"found\",\"is_error\":false}]}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"private reasoning\",\"signature\":\"{\\\"id\\\":\\\"reason-1\\\",\\\"ec\\\":\\\"encrypted\\\"}\"},{\"type\":\"text\",\"text\":\"answer\"}]}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}},{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":1,\"allowed_domains\":[\"docs.example.com\"]}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-responses-hermes",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-legacy-native",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"lookup\",\"input\":{\"query\":\"term\"}}]}",
+            "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-1\",\"content\":\"found\",\"is_error\":false}]}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"private reasoning\",\"signature\":\"{\\\"id\\\":\\\"reason-1\\\",\\\"ec\\\":\\\"encrypted\\\"}\"},{\"type\":\"text\",\"text\":\"answer\"}]}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"name\":\"lookup\",\"description\":\"Look up a value\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"summarize\",\"description\":\"Summarize text\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}},{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":1,\"allowed_domains\":[\"docs.example.com\"]}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic-legacy-hermes",
+      "route": {
+        "provider": "anthropic",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-null-native",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-null-hermes",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-v1-native",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-v1-hermes",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-responses-native",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-responses-hermes",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-legacy-native",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ollama-legacy-hermes",
+      "route": {
+        "provider": "ollama",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-null-native",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-null-hermes",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-v1-native",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-v1-hermes",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-responses-native",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-responses-hermes",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-legacy-native",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai-compatible-legacy-hermes",
+      "route": {
+        "provider": "openai-compatible",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-null-native",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-null-hermes",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-v1-native",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-v1-hermes",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-responses-native",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"type\":\"function\",\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-responses-hermes",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}",
+            "{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"type\":\"reasoning\",\"id\":\"reason-1\",\"encrypted_content\":\"encrypted\",\"summary\":[]}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-legacy-native",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "sakana-legacy-hermes",
+      "route": {
+        "provider": "sakana",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-null-native",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-null-hermes",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-v1-native",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-v1-hermes",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-responses-native",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-responses-hermes",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-legacy-native",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "ai-novelist-legacy-hermes",
+      "route": {
+        "provider": "ai-novelist",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-null-native",
+      "route": {
+        "provider": "cli",
+        "apiVariant": null,
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-null-hermes",
+      "route": {
+        "provider": "cli",
+        "apiVariant": null,
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-v1-native",
+      "route": {
+        "provider": "cli",
+        "apiVariant": "v1",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-v1-hermes",
+      "route": {
+        "provider": "cli",
+        "apiVariant": "v1",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-responses-native",
+      "route": {
+        "provider": "cli",
+        "apiVariant": "responses",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-responses-hermes",
+      "route": {
+        "provider": "cli",
+        "apiVariant": "responses",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-legacy-native",
+      "route": {
+        "provider": "cli",
+        "apiVariant": "legacy",
+        "toolProtocol": "native"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"term\\\"}\"}}]}",
+            "{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":\"found\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [],
+          "multiple": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ],
+          "webSearch": [
+            "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cli-legacy-hermes",
+      "route": {
+        "provider": "cli",
+        "apiVariant": "legacy",
+        "toolProtocol": "hermes"
+      },
+      "output": {
+        "histories": {
+          "textOnly": [
+            "{\"role\":\"user\",\"content\":\"question\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ],
+          "toolUseAndResult": [
+            "{\"role\":\"user\",\"content\":\"run lookup\"}",
+            "{\"role\":\"assistant\",\"content\":\"<tool_call>\\n{\\\"name\\\":\\\"lookup\\\",\\\"arguments\\\":{\\\"query\\\":\\\"term\\\"}}\\n</tool_call>\"}",
+            "{\"role\":\"user\",\"content\":\"<tool_response>\\n{\\\"name\\\":\\\"lookup\\\",\\\"content\\\":\\\"found\\\"}\\n</tool_response>\"}"
+          ],
+          "thinkingWithSignature": [
+            "{\"role\":\"user\",\"content\":\"reason about this\"}",
+            "{\"role\":\"assistant\",\"content\":\"answer\"}"
+          ]
+        },
+        "tools": {
+          "none": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "multiple": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ],
+          "webSearch": [
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:\n<tools>\n{\"name\":\"lookup\",\"description\":\"Look up a value\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}\n{\"name\":\"summarize\",\"description\":\"Summarize text\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}\n</tools>\nFor each function call, return a json object with the function name and arguments within <tool_call></tool_call> XML tags, like:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-dict>}\n</tool_call>\nThe tool result is returned within <tool_response></tool_response> tags. Only call tools listed above."
+          ]
+        }
+      }
+    }
+  ]
+}
