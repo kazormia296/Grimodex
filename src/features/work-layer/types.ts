@@ -109,6 +109,8 @@ export interface WorkLayerAnchorPosition {
 
 export interface WorkLayerModel {
   readonly scopeId: string;
+  /** Live models only; they use attention: [] and omit attentionDelta. Preview omits this. */
+  readonly liveEntries?: readonly WorkLayerLiveEntry[];
   /** One-shot visual hint supplied by a preview adapter; never a durable count. */
   readonly attentionDelta?: number;
   /** Preview-only hint: render an arrival gutter only while its anchor is visible. */
@@ -132,11 +134,35 @@ export interface WorkLayerModel {
   };
 }
 
+export type WorkLayerLiveEntryId = "codex-candidates" | "stale-proposals";
+
+export type WorkLayerLiveEntryStatus = "ready" | "not-counted" | "unavailable";
+
+export type WorkLayerOpenSurface = {
+  readonly surface: "structure-extract-review";
+};
+
+export interface WorkLayerLiveEntry {
+  readonly id: WorkLayerLiveEntryId;
+  readonly status: WorkLayerLiveEntryStatus;
+  readonly count: number | null;
+  readonly open?: WorkLayerOpenSurface;
+}
+
+export type WorkLayerPortKind = "fixture" | "live";
+
+export type WorkLayerLoadReason = "mount" | "tray-open";
+
+export interface WorkLayerLoadRequest {
+  readonly reason: WorkLayerLoadReason;
+}
+
 /**
- * UI-only read boundary. The production NIR adapter intentionally does not
- * exist in this slice; Storybook and explicitly-enabled development previews
- * provide fixtures through this port.
+ * UI-only read boundary. Fixture previews use this port; the live adapter is
+ * outside this slice.
  */
 export interface WorkLayerPort {
-  load(): Promise<WorkLayerModel>;
+  readonly kind: WorkLayerPortKind;
+  readonly scopeKey: string;
+  load(request: WorkLayerLoadRequest): Promise<WorkLayerModel>;
 }

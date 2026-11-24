@@ -9,6 +9,7 @@ import {
 } from "@/lib/animation";
 
 import { useWorkLayer } from "./WorkLayerContext";
+import { selectAttentionCount } from "./workLayerLiveEntries";
 
 export function WorkPulse() {
   const workLayer = useWorkLayer();
@@ -17,10 +18,19 @@ export function WorkPulse() {
 
   if (workLayer == null) return null;
 
-  const { model, navigation, openAttention, openFocus, openSystem } = workLayer;
-  const attentionCount = model.attention.length;
+  const {
+    model,
+    navigation,
+    provenance,
+    openAttention,
+    openFocus,
+    openSystem,
+  } = workLayer;
+  const attentionCount = selectAttentionCount(model).total;
   const attentionDelta = model.attentionDelta ?? 0;
-  const resolutionDelta = navigation.mode === "resolved" ? -1 : 0;
+  // A live count never celebrates a resolution (ADR 014: only the count changes).
+  const resolutionDelta =
+    provenance === "preview" && navigation.mode === "resolved" ? -1 : 0;
   const showArrivalMotion = attentionDelta > 0 && !reducedMotion;
   const showResolutionMotion = resolutionDelta < 0 && !reducedMotion;
   const visibleAttentionCount = attentionCount;
