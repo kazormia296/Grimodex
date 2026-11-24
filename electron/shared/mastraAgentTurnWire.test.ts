@@ -9,22 +9,33 @@ import {
   AGENT_WIRE_ARG_KEYS,
   type AgentAdapterOwnedKey,
 } from "../main/mastra/agentWire.js";
+import { M4_READ_TOOL_NAMES } from "./agentReadToolDefinitions.js";
 import {
   hasMastraAgentTurnForbiddenKey,
   isMastraAgentTurnCommand,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  MASTRA_AGENT_TURN_CONTROL_MESSAGE_UTF16_MAX,
+  MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX,
+  MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX,
   MASTRA_AGENT_TURN_COMMANDS,
   MASTRA_AGENT_TURN_FORBIDDEN_KEYS,
   MASTRA_AGENT_TURN_ID_UTF16_MAX,
+  MASTRA_AGENT_TURN_LOOP_NUMBER_MAX,
+  MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS,
+  MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS,
+  MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX,
   MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX,
   MASTRA_AGENT_TURN_MESSAGES_MAX,
   MASTRA_AGENT_TURN_PROVIDERS,
   MASTRA_AGENT_TURN_REFUSAL_REASONS,
   MASTRA_AGENT_TURN_ROUTE_JSON_DEPTH_MAX,
   MASTRA_AGENT_TURN_ROUTE_KEYS,
+  MASTRA_AGENT_TURN_REQUEST_MAX_OUTPUT_TOKENS_MAX,
   MASTRA_AGENT_TURN_SEGMENTS_MAX,
+  MASTRA_AGENT_TURN_STOPPED_REASONS,
   MASTRA_AGENT_TURN_START_COMMAND,
   MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX,
+  parseMastraAgentTurnLoopResult,
   mastraAgentTurnRefusalValue,
   parseMastraAgentTurnCancelRequest,
   parseMastraAgentTurnCancelResult,
@@ -50,6 +61,24 @@ function route(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function loop(overrides: Record<string, unknown> = {}) {
+  return {
+    tokenBudget: 2000,
+    maxToolCalls: 10,
+    maxUserQuestions: 8,
+    contextWindow: 8000,
+    requestMaxOutputTokens: 4096,
+    language: "ja",
+    controlMessages: {
+      callLimitMessage: "calls",
+      tokenBudgetMessage: "tokens",
+      userQuestionLimitMessage: "questions",
+    },
+    fallbackSystem: "system",
+    ...overrides,
+  };
+}
+
 function start(overrides: Record<string, unknown> = {}) {
   return {
     turnId: TURN_ID,
@@ -64,6 +93,8 @@ function start(overrides: Record<string, unknown> = {}) {
     route: route(),
     systemCacheSegments: ["a", "b"],
     systemVolatileTail: "tail",
+    fullyInjectedIds: [],
+    loop: loop(),
     tools: [],
     ...overrides,
   };
@@ -72,6 +103,24 @@ function start(overrides: Record<string, unknown> = {}) {
 function issueOf(value: unknown): string | null {
   const parsed = parseMastraAgentTurnStartRequest(value);
   return parsed.ok ? null : parsed.issue;
+}
+
+function loopResult(overrides: Record<string, unknown> = {}) {
+  return {
+    toolCallRecords: [
+      {
+        name: "get_scene",
+        params: { sceneId: "scene-1" },
+        resultSummary: "Read scene",
+        tokensUsed: 3,
+      },
+    ],
+    stoppedReason: "completed",
+    usage: { totalTokens: 3, tokensIn: null, tokensOut: null, cost: null },
+    citations: [{ url: "https://example.test/source" }],
+    finalThinkingBlocks: [{ thinking: "", signature: "sig" }],
+    ...overrides,
+  };
 }
 
 describe("the commands and the refusal set", () => {
@@ -198,6 +247,8 @@ describe("parseMastraAgentTurnStartRequest", () => {
       "route",
       "systemCacheSegments",
       "systemVolatileTail",
+      "fullyInjectedIds",
+      "loop",
       "tools",
     ]) {
       const request: Record<string, unknown> = start();
@@ -368,7 +419,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(issueOf(start({ currentSceneId: false }))).toBe("current-scene-id");
   });
 
-  it("the three scope fields are required keys (START_KEYS is ten)", () => {
+  it("the three scope fields are required keys (START_KEYS is twelve)", () => {
     const wire = readFileSync(
       new URL("./mastraAgentTurnWire.ts", import.meta.url),
       "utf8",
@@ -376,10 +427,263 @@ describe("parseMastraAgentTurnStartRequest", () => {
     const keys = /const START_KEYS = \[([^\]]*)\]/u
       .exec(wire)?.[1]
       ?.match(/"([A-Za-z]+)"/gu);
-    expect(keys).toHaveLength(10);
+    expect(keys).toHaveLength(12);
     expect(Object.keys(start()).sort()).toEqual(
       keys?.map((key) => key.slice(1, -1)).sort(),
     );
+  });
+
+  it("requires the new fields and rejects unknown or prototype-like loop keys", () => {
+    for (const key of ["fullyInjectedIds", "loop"]) {
+      const request: Record<string, unknown> = start();
+      delete request[key];
+      expect(issueOf(request), key).toBe("missing-key");
+    }
+    expect(issueOf(start({ extra: 1 }))).toBe("unknown-key");
+    expect(issueOf(start({ constructor: {} }))).toBe("unknown-key");
+    expect(issueOf(start({ loop: loop({ extra: 1 }) }))).toBe("unknown-key");
+    expect(issueOf(start({ loop: loop({ constructor: {} }) }))).toBe(
+      "unknown-key",
+    );
+    const pollutedLoop = JSON.parse('{"__proto__":{"x":1}}') as object;
+    expect(issueOf(start({ loop: { ...loop(), ...pollutedLoop } }))).toBe(
+      "unknown-key",
+    );
+  });
+
+  it("bounds fullyInjectedIds by count, ID shape, and uniqueness", () => {
+    expect(MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX).toBe(65_536);
+    expect(issueOf(start({ fullyInjectedIds: null }))).toBe(
+      "fully-injected-ids",
+    );
+    expect(issueOf(start({ fullyInjectedIds: [1] }))).toBe(
+      "fully-injected-ids",
+    );
+    expect(issueOf(start({ fullyInjectedIds: [" id"] }))).toBe(
+      "fully-injected-ids",
+    );
+    expect(issueOf(start({ fullyInjectedIds: [""] }))).toBe(
+      "fully-injected-ids",
+    );
+    expect(issueOf(start({ fullyInjectedIds: ["x"] }))).toBeNull();
+    expect(issueOf(start({ fullyInjectedIds: ["same", "same"] }))).toBe(
+      "fully-injected-ids",
+    );
+    for (const forbidden of [
+      "\u0000",
+      "\u001f",
+      "\u007f",
+      "\u0085",
+      "\u009f",
+      "\u2028",
+      "\u2029",
+      "\ufeff",
+    ]) {
+      expect(issueOf(start({ fullyInjectedIds: [`id${forbidden}x`] }))).toBe(
+        "fully-injected-ids",
+      );
+    }
+    expect(
+      issueOf(
+        start({
+          fullyInjectedIds: ["x".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX)],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      issueOf(
+        start({
+          fullyInjectedIds: ["x".repeat(MASTRA_AGENT_TURN_ID_UTF16_MAX + 1)],
+        }),
+      ),
+    ).toBe("fully-injected-ids");
+    const maximum = Array.from({ length: 65_536 }, (_, index) => `id-${index}`);
+    expect(issueOf(start({ fullyInjectedIds: maximum }))).toBeNull();
+    expect(
+      issueOf(start({ fullyInjectedIds: [...maximum, "one-too-many"] })),
+    ).toBe("fully-injected-ids");
+  });
+
+  it("checks loop numeric types and the inclusive boundaries", () => {
+    expect(MASTRA_AGENT_TURN_LOOP_NUMBER_MAX).toBe(1_000_000_000);
+    expect(MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS).toBe(25);
+    expect(MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS).toBe(1_000_000_000);
+    expect(MASTRA_AGENT_TURN_REQUEST_MAX_OUTPUT_TOKENS_MAX).toBe(4_294_967_295);
+    for (const [key, maximum] of [
+      ["tokenBudget", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+      ["maxToolCalls", MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS],
+      ["maxUserQuestions", MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS],
+      ["contextWindow", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+    ] as const) {
+      for (const value of [null, "1", true, 0, -1, 1.5, NaN, Infinity]) {
+        expect(
+          issueOf(start({ loop: loop({ [key]: value }) })),
+          `${key}:${value}`,
+        ).toBe("loop");
+      }
+      expect(issueOf(start({ loop: loop({ [key]: 1 }) })), key).toBeNull();
+      expect(
+        issueOf(start({ loop: loop({ [key]: maximum }) })),
+        key,
+      ).toBeNull();
+      expect(issueOf(start({ loop: loop({ [key]: maximum + 1 }) })), key).toBe(
+        "loop",
+      );
+    }
+    expect(
+      issueOf(
+        start({
+          loop: loop({ requestMaxOutputTokens: 0 }),
+        }),
+      ),
+    ).toBe("loop");
+    expect(
+      issueOf(
+        start({
+          loop: loop({ requestMaxOutputTokens: 1 }),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      issueOf(
+        start({
+          loop: loop({
+            requestMaxOutputTokens: 4_294_967_295,
+          }),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      issueOf(
+        start({
+          loop: loop({
+            requestMaxOutputTokens: 4_294_967_296,
+          }),
+        }),
+      ),
+    ).toBe("loop");
+  });
+
+  it("requires the loop message set, language, and bounded strings", () => {
+    expect(MASTRA_AGENT_TURN_CONTROL_MESSAGE_UTF16_MAX).toBe(
+      MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX,
+    );
+    expect(MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX).toBe(
+      MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX,
+    );
+    for (const value of [null, [], "loop"]) {
+      expect(issueOf(start({ loop: value }))).toBe("loop");
+    }
+    for (const language of ["ja", "en"]) {
+      expect(issueOf(start({ loop: loop({ language }) }))).toBeNull();
+    }
+    for (const language of [null, "fr", 1]) {
+      expect(issueOf(start({ loop: loop({ language }) }))).toBe("loop");
+    }
+    for (const key of [
+      "tokenBudget",
+      "maxToolCalls",
+      "maxUserQuestions",
+      "contextWindow",
+      "requestMaxOutputTokens",
+      "language",
+      "controlMessages",
+      "fallbackSystem",
+    ]) {
+      const value: Record<string, unknown> = loop();
+      delete value[key];
+      expect(issueOf(start({ loop: value })), key).toBe("loop");
+    }
+    for (const key of [
+      "callLimitMessage",
+      "tokenBudgetMessage",
+      "userQuestionLimitMessage",
+    ]) {
+      const controlMessages = {
+        callLimitMessage: "calls",
+        tokenBudgetMessage: "tokens",
+        userQuestionLimitMessage: "questions",
+      } as Record<string, unknown>;
+      delete controlMessages[key];
+      expect(issueOf(start({ loop: loop({ controlMessages }) })), key).toBe(
+        "loop",
+      );
+      expect(
+        issueOf(
+          start({
+            loop: loop({
+              controlMessages: { ...controlMessages, [key]: null },
+            }),
+          }),
+        ),
+      ).toBe("loop");
+      const maximum = "m".repeat(MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX);
+      const fullControls = {
+        callLimitMessage: "calls",
+        tokenBudgetMessage: "tokens",
+        userQuestionLimitMessage: "questions",
+        [key]: maximum,
+      };
+      expect(
+        issueOf(start({ loop: loop({ controlMessages: fullControls }) })),
+      ).toBe(null);
+      expect(
+        issueOf(
+          start({
+            loop: loop({
+              controlMessages: {
+                ...fullControls,
+                [key]: `${maximum}m`,
+              },
+            }),
+          }),
+        ),
+      ).toBe("loop");
+    }
+    expect(
+      issueOf(
+        start({
+          loop: loop({
+            controlMessages: {
+              callLimitMessage: "calls",
+              tokenBudgetMessage: "tokens",
+              userQuestionLimitMessage: "questions",
+              constructor: "x",
+            },
+          }),
+        }),
+      ),
+    ).toBe("unknown-key");
+    const fallbackMaximum = "s".repeat(
+      MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX,
+    );
+    expect(
+      issueOf(start({ loop: loop({ fallbackSystem: fallbackMaximum }) })),
+    ).toBe(null);
+    expect(
+      issueOf(start({ loop: loop({ fallbackSystem: `${fallbackMaximum}s` }) })),
+    ).toBe("loop");
+    for (const fallbackSystem of [null, 1, false]) {
+      expect(issueOf(start({ loop: loop({ fallbackSystem }) }))).toBe("loop");
+    }
+  });
+
+  it("accepts the largest legacy-computable loop tuple and all M4 names", () => {
+    expect(
+      issueOf(
+        start({
+          tools: [...M4_READ_TOOL_NAMES],
+          loop: loop({
+            tokenBudget: 315_000,
+            maxToolCalls: 25,
+            maxUserQuestions: 8,
+            contextWindow: 1_050_000,
+            requestMaxOutputTokens: 4_294_967_295,
+            language: "en",
+          }),
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("requires a trimmed, bounded, non-empty chatSessionId (an unsettled session is invalid)", () => {
@@ -408,10 +712,9 @@ describe("parseMastraAgentTurnStartRequest", () => {
     expect(issueOf(start({ messages: [] }))).toBe("messages");
     expect(issueOf(start({ messages: "x" }))).toBe("messages");
     // A hole is not a message.
-    // eslint-disable-next-line no-sparse-arrays
-    expect(
-      issueOf(start({ messages: [, { role: "user", content: "a" }] })),
-    ).toBe("messages");
+    const sparseMessages: unknown[] = [];
+    sparseMessages[1] = { role: "user", content: "a" };
+    expect(issueOf(start({ messages: sparseMessages }))).toBe("messages");
     for (const message of [
       // tool calls, thinking blocks and tool results are not on this wire
       { role: "assistant", content: "a", toolUses: [] },
@@ -584,13 +887,19 @@ describe("parseMastraAgentTurnStartRequest", () => {
     }
   });
 
-  it("allows tool 0 only: tools must be the empty array", () => {
-    expect(issueOf(start({ tools: [{ name: "t" }] }))).toBe("tools");
+  it("allows only distinct M4 tool names", () => {
+    expect(issueOf(start({ tools: [...M4_READ_TOOL_NAMES] }))).toBeNull();
+    expect(issueOf(start({ tools: ["get_scene"] }))).toBeNull();
+    expect(issueOf(start({ tools: ["not_an_m4_tool"] }))).toBe("tools");
+    expect(issueOf(start({ tools: ["get_scene", "get_scene"] }))).toBe("tools");
     expect(issueOf(start({ tools: null }))).toBe("tools");
     expect(issueOf(start({ tools: {} }))).toBe("tools");
     expect(issueOf(start({ tools: undefined }))).toBe("tools");
-    // An empty array that carries an enumerable property is not empty.
-    const tools = Object.assign([], { extra: { name: "t" } });
+    expect(
+      issueOf(start({ tools: [...M4_READ_TOOL_NAMES, "get_scene"] })),
+    ).toBe("tools");
+    // An array with an extra enumerable property is not wire data.
+    const tools = Object.assign(["get_scene"], { extra: "search_codex" });
     expect(issueOf(start({ tools }))).toBe("tools");
   });
 
@@ -797,5 +1106,187 @@ describe("the results", () => {
         JSON.stringify(value),
       ).toBeNull();
     }
+  });
+});
+
+describe("parseMastraAgentTurnLoopResult", () => {
+  it("accepts the exact loop result and every legacy stop reason", () => {
+    const result = loopResult();
+    expect(parseMastraAgentTurnLoopResult(result)).toBe(result);
+    for (const stoppedReason of MASTRA_AGENT_TURN_STOPPED_REASONS) {
+      expect(
+        parseMastraAgentTurnLoopResult(loopResult({ stoppedReason })),
+      ).not.toBeNull();
+    }
+  });
+
+  it("requires every field and rejects drift in the result shape", () => {
+    for (const key of [
+      "toolCallRecords",
+      "stoppedReason",
+      "usage",
+      "citations",
+      "finalThinkingBlocks",
+    ]) {
+      const result: Record<string, unknown> = loopResult();
+      delete result[key];
+      expect(parseMastraAgentTurnLoopResult(result), key).toBeNull();
+    }
+    expect(parseMastraAgentTurnLoopResult(loopResult({ extra: 1 }))).toBeNull();
+    expect(parseMastraAgentTurnLoopResult(null)).toBeNull();
+    expect(parseMastraAgentTurnLoopResult([])).toBeNull();
+    const polluted = JSON.parse('{"__proto__":{"x":1}}') as object;
+    expect(
+      parseMastraAgentTurnLoopResult({ ...loopResult(), ...polluted }),
+    ).toBeNull();
+  });
+
+  it("checks record fields, citations, and thinking blocks", () => {
+    for (const toolCallRecords of [
+      null,
+      {},
+      [null],
+      [{}],
+      [{ name: "x", constructor: {} }],
+    ]) {
+      expect(
+        parseMastraAgentTurnLoopResult(loopResult({ toolCallRecords })),
+      ).toBeNull();
+    }
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          toolCallRecords: [
+            {
+              name: "x",
+              params: {},
+              resultSummary: "done",
+              tokensUsed: -1,
+            },
+          ],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(loopResult({ citations: [null] })),
+    ).toBeNull();
+    const pollutedCitation = JSON.parse('{"constructor":"x"}') as object;
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ citations: [pollutedCitation] }),
+      ),
+    ).toBeNull();
+    for (const finalThinkingBlocks of [
+      null,
+      [{}],
+      [{ thinking: "text", signature: "" }],
+      [{ thinking: "text", signature: "sig", extra: true }],
+      [{ thinking: 1, signature: "sig" }],
+    ]) {
+      expect(
+        parseMastraAgentTurnLoopResult(loopResult({ finalThinkingBlocks })),
+      ).toBeNull();
+    }
+  });
+
+  it("accepts array maxima and refuses one extra item", () => {
+    expect(MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX).toBe(65_536);
+    const record = {
+      name: "get_scene",
+      params: {},
+      resultSummary: "done",
+      tokensUsed: 0,
+    };
+    const records = Array.from({ length: 65_536 }, () => record);
+    expect(
+      parseMastraAgentTurnLoopResult(loopResult({ toolCallRecords: records })),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ toolCallRecords: [...records, record] }),
+      ),
+    ).toBeNull();
+
+    const citation = { url: "https://example.test/source" };
+    const citations = Array.from({ length: 65_536 }, () => citation);
+    expect(
+      parseMastraAgentTurnLoopResult(loopResult({ citations })),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ citations: [...citations, citation] }),
+      ),
+    ).toBeNull();
+
+    const thinkingBlock = { thinking: "", signature: "sig" };
+    const finalThinkingBlocks = Array.from(
+      { length: 65_536 },
+      () => thinkingBlock,
+    );
+    expect(
+      parseMastraAgentTurnLoopResult(loopResult({ finalThinkingBlocks })),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          finalThinkingBlocks: [...finalThinkingBlocks, thinkingBlock],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("requires nonnegative finite usage and retains legacy unknowns as null", () => {
+    expect(parseMastraAgentTurnLoopResult(loopResult())).not.toBeNull();
+    for (const key of ["totalTokens", "tokensIn", "tokensOut", "cost"]) {
+      for (const value of [-1, NaN, Infinity, "1", true]) {
+        const usage = {
+          totalTokens: 3,
+          tokensIn: null,
+          tokensOut: null,
+          cost: null,
+          [key]: value,
+        };
+        expect(
+          parseMastraAgentTurnLoopResult(loopResult({ usage })),
+          `${key}:${value}`,
+        ).toBeNull();
+      }
+      expect(
+        parseMastraAgentTurnLoopResult(
+          loopResult({
+            usage: {
+              totalTokens: 3,
+              tokensIn: null,
+              tokensOut: null,
+              cost: null,
+              [key]: Number.MAX_VALUE,
+            },
+          }),
+        ),
+      ).not.toBeNull();
+    }
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          usage: { totalTokens: 0, tokensIn: 0, tokensOut: 0, cost: 0 },
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          usage: {
+            totalTokens: 0,
+            tokensIn: null,
+            tokensOut: null,
+            cost: null,
+            extra: 1,
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(loopResult({ stoppedReason: "nope" })),
+    ).toBeNull();
   });
 });

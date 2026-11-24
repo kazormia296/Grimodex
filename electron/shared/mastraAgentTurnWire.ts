@@ -10,15 +10,21 @@
  * turn owner is 3c's. A refusal is an `ok:true` value, not an error: the
  * renderer falls back to the legacy route on any of them.
  *
- * This file has no import: the renderer and `electron/tsconfig.json` both
- * compile it. It never echoes a value of a request back in an issue: an issue
- * is a fixed code and, for a field, the name of one of the keys below.
+ * This file imports only the shared M4 name list: the renderer and
+ * `electron/tsconfig.json` both compile it. It never echoes a value of a
+ * request back in an issue: an issue is a fixed code and, for a field, the
+ * name of one of the keys below.
  *
  * What a request cannot carry (DR-MP3-4, -5): `capability`, `auditContext`,
  * `pathId`, `executionId` and `callerIdentity` are Main's. Main issues the
  * execution ID, the audit correlation and the caller identity; a renderer that
  * sends one is refused (`invalid`), never ignored.
  */
+
+import {
+  M4_READ_TOOL_NAMES,
+  type M4ReadToolName,
+} from "./agentReadToolDefinitions.js";
 
 export const MASTRA_AGENT_TURN_START_COMMAND = "mastra_agent_turn_start";
 export const MASTRA_AGENT_TURN_CANCEL_COMMAND = "mastra_agent_turn_cancel";
@@ -85,6 +91,29 @@ export const MASTRA_AGENT_TURN_ROUTE_STRING_UTF16_MAX = 2_000;
 export const MASTRA_AGENT_TURN_ROUTE_JSON_DEPTH_MAX = 6;
 export const MASTRA_AGENT_TURN_ROUTE_JSON_NODES_MAX = 512;
 
+/**
+ * Legacy bounds: 21 M4 tools (`agentReadToolDefinitions.ts:45-69`), 25 calls
+ * (`modelLimits.ts:1121-1124`), 8 default questions with an unbounded
+ * override (`agentLoop.ts:32,66-77,156-158`),
+ * `ja`/`en` (`chronicleReadContext.ts:27-33`), and positive u32 output tokens
+ * (the route check below). Static context tops at `modelLimits.ts:336,363`;
+ * dynamic/custom windows and IDs/result/text sizes have no hard cap in the
+ * inspected legacy sources, so the wider caps below are provisional.
+ */
+export const MASTRA_AGENT_TURN_TOOLS_MAX = M4_READ_TOOL_NAMES.length;
+export const MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX = 65_536;
+export const MASTRA_AGENT_TURN_LOOP_NUMBER_MAX = 1_000_000_000;
+// The main tool cap is modelLimits.ts:1121-1124; question overrides have no cap in agentLoop.ts:66-77.
+export const MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS = 25;
+export const MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS =
+  MASTRA_AGENT_TURN_LOOP_NUMBER_MAX;
+export const MASTRA_AGENT_TURN_REQUEST_MAX_OUTPUT_TOKENS_MAX = 4_294_967_295;
+export const MASTRA_AGENT_TURN_CONTROL_MESSAGE_UTF16_MAX =
+  MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX;
+export const MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX =
+  MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX;
+export const MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX = 65_536;
+
 /** Keys a renderer must never send: they are Main's (DR-MP3-4, -5, -23). */
 export const MASTRA_AGENT_TURN_FORBIDDEN_KEYS = [
   "capability",
@@ -118,6 +147,27 @@ export const MASTRA_AGENT_TURN_ROLES: readonly MastraAgentTurnRole[] = [
 export interface MastraAgentTurnMessage {
   readonly role: MastraAgentTurnRole;
   readonly content: string;
+}
+
+export const MASTRA_AGENT_TURN_LANGUAGES = ["ja", "en"] as const;
+export type MastraAgentTurnLanguage =
+  (typeof MASTRA_AGENT_TURN_LANGUAGES)[number];
+
+export interface MastraAgentTurnControlMessages {
+  readonly callLimitMessage: string;
+  readonly tokenBudgetMessage: string;
+  readonly userQuestionLimitMessage: string;
+}
+
+export interface MastraAgentTurnLoopOptions {
+  readonly tokenBudget: number;
+  readonly maxToolCalls: number;
+  readonly maxUserQuestions: number;
+  readonly contextWindow: number;
+  readonly requestMaxOutputTokens: number;
+  readonly language: MastraAgentTurnLanguage;
+  readonly controlMessages: MastraAgentTurnControlMessages;
+  readonly fallbackSystem: string;
 }
 
 type WireJson =
@@ -204,8 +254,10 @@ export interface MastraAgentTurnStartRequest {
   readonly route: MastraAgentTurnRoute;
   readonly systemCacheSegments: readonly string[] | null;
   readonly systemVolatileTail: string | null;
-  /** Always empty: this route is tool 0 (MP-3). A turn with a tool goes to the legacy route. */
-  readonly tools: readonly [];
+  readonly fullyInjectedIds: readonly string[];
+  readonly loop: MastraAgentTurnLoopOptions;
+  /** The renderer sends only names; Main owns and resolves the definitions. */
+  readonly tools: readonly M4ReadToolName[];
 }
 
 const START_KEYS = [
@@ -218,7 +270,25 @@ const START_KEYS = [
   "route",
   "systemCacheSegments",
   "systemVolatileTail",
+  "fullyInjectedIds",
+  "loop",
   "tools",
+] as const;
+
+const LOOP_KEYS = [
+  "tokenBudget",
+  "maxToolCalls",
+  "maxUserQuestions",
+  "contextWindow",
+  "requestMaxOutputTokens",
+  "language",
+  "controlMessages",
+  "fallbackSystem",
+] as const;
+const CONTROL_MESSAGE_KEYS = [
+  "callLimitMessage",
+  "tokenBudgetMessage",
+  "userQuestionLimitMessage",
 ] as const;
 
 export interface MastraAgentTurnCancelRequest {
@@ -254,6 +324,50 @@ export type MastraAgentTurnCancelResult =
       readonly found: boolean;
     };
 
+export const MASTRA_AGENT_TURN_STOPPED_REASONS = [
+  "completed",
+  "limit_calls",
+  "limit_tokens",
+  "limit_questions",
+  "aborted",
+] as const;
+export type MastraAgentTurnStoppedReason =
+  (typeof MASTRA_AGENT_TURN_STOPPED_REASONS)[number];
+
+export interface MastraAgentTurnToolCallRecord {
+  readonly name: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly resultSummary: string;
+  readonly tokensUsed: number;
+  readonly undoId?: string;
+  readonly settingProposal?: Readonly<Record<string, unknown>>;
+}
+
+export interface MastraAgentTurnUsage {
+  readonly totalTokens: number;
+  readonly tokensIn: number | null;
+  readonly tokensOut: number | null;
+  readonly cost: number | null;
+}
+
+export interface MastraAgentTurnCitation {
+  readonly [key: string]: unknown;
+}
+
+export interface MastraAgentTurnThinkingBlock {
+  readonly thinking: string;
+  readonly signature: string;
+}
+
+/** Loop metadata is a separate wire so the existing raw start result stays compatible. */
+export interface MastraAgentTurnLoopResult {
+  readonly toolCallRecords: readonly MastraAgentTurnToolCallRecord[];
+  readonly stoppedReason: MastraAgentTurnStoppedReason;
+  readonly usage: MastraAgentTurnUsage;
+  readonly citations: readonly MastraAgentTurnCitation[];
+  readonly finalThinkingBlocks: readonly MastraAgentTurnThinkingBlock[];
+}
+
 export function mastraAgentTurnRefusalValue(
   command: MastraAgentTurnCommand,
   reason: MastraAgentTurnRefusalReason,
@@ -286,7 +400,9 @@ export type MastraAgentTurnWireIssue =
   | "route-value"
   | "segments"
   | "volatile-tail"
-  | "tools";
+  | "tools"
+  | "fully-injected-ids"
+  | "loop";
 
 export type MastraAgentTurnParse<T> =
   | { readonly ok: true; readonly value: T }
@@ -474,7 +590,7 @@ function parseRoute(
       typeof tokens !== "number" ||
       !Number.isInteger(tokens) ||
       tokens < 1 ||
-      tokens > 4_294_967_295
+      tokens > MASTRA_AGENT_TURN_REQUEST_MAX_OUTPUT_TOKENS_MAX
     ) {
       return fail("route-value");
     }
@@ -486,6 +602,70 @@ function parseRoute(
     }
   }
   return { ok: true, value: value as MastraAgentTurnRoute };
+}
+
+function parseLoop(
+  value: unknown,
+): MastraAgentTurnParse<MastraAgentTurnLoopOptions> {
+  const entries = plainEntries(value);
+  if (entries === null) return fail("loop");
+  const issue = keyIssue(entries, LOOP_KEYS, []);
+  if (issue !== null) return fail(issue === "missing-key" ? "loop" : issue);
+  for (const [key, maximum] of [
+    ["tokenBudget", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+    ["maxToolCalls", MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS],
+    ["maxUserQuestions", MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS],
+    ["contextWindow", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+  ] as const) {
+    const number = entries.get(key);
+    if (
+      typeof number !== "number" ||
+      !Number.isInteger(number) ||
+      number < 1 ||
+      number > maximum
+    ) {
+      return fail("loop");
+    }
+  }
+  const requestMaxOutputTokens = entries.get("requestMaxOutputTokens");
+  if (
+    typeof requestMaxOutputTokens !== "number" ||
+    !Number.isInteger(requestMaxOutputTokens) ||
+    requestMaxOutputTokens < 1 ||
+    requestMaxOutputTokens > MASTRA_AGENT_TURN_REQUEST_MAX_OUTPUT_TOKENS_MAX
+  ) {
+    return fail("loop");
+  }
+  if (
+    !(MASTRA_AGENT_TURN_LANGUAGES as readonly unknown[]).includes(
+      entries.get("language"),
+    )
+  ) {
+    return fail("loop");
+  }
+  const controlMessages = plainEntries(entries.get("controlMessages"));
+  if (controlMessages === null) return fail("loop");
+  const controlIssue = keyIssue(controlMessages, CONTROL_MESSAGE_KEYS, []);
+  if (controlIssue !== null) {
+    return fail(controlIssue === "missing-key" ? "loop" : controlIssue);
+  }
+  for (const key of CONTROL_MESSAGE_KEYS) {
+    const message = controlMessages.get(key);
+    if (
+      typeof message !== "string" ||
+      message.length > MASTRA_AGENT_TURN_CONTROL_MESSAGE_UTF16_MAX
+    ) {
+      return fail("loop");
+    }
+  }
+  const fallbackSystem = entries.get("fallbackSystem");
+  if (
+    typeof fallbackSystem !== "string" ||
+    fallbackSystem.length > MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX
+  ) {
+    return fail("loop");
+  }
+  return { ok: true, value: value as MastraAgentTurnLoopOptions };
 }
 
 function parseMessages(
@@ -530,10 +710,11 @@ function parseMessages(
 }
 
 /**
- * Checks a start request: exactly the ten keys, a UUID turn ID, a trimmed
+ * Checks a start request: exactly the twelve keys, a UUID turn ID, a trimmed
  * session ID, the three scope fields (`projectId`, `currentSceneId`,
- * `chatMessageId`), text messages, a route of a supported provider, and no
- * tool. The returned value is the same object, except that an empty
+ * `chatMessageId`), text messages, a supported route, loop values, injected
+ * IDs and declared M4 tool names. The returned value is the same object,
+ * except that an empty
  * `currentSceneId` is read as `null` (a shallow copy with that one field
  * changed). Nothing else is copied or rewritten.
  */
@@ -596,15 +777,39 @@ export function parseMastraAgentTurnStartRequest(
   if (total > MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX) {
     return fail("text-too-long");
   }
+  const fullyInjectedIds = entries.get("fullyInjectedIds");
+  if (
+    !Array.isArray(fullyInjectedIds) ||
+    fullyInjectedIds.length > MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX ||
+    fullyInjectedIds.length !== Object.keys(fullyInjectedIds).length
+  ) {
+    return fail("fully-injected-ids");
+  }
+  const ids = new Set<string>();
+  for (const id of fullyInjectedIds as readonly unknown[]) {
+    if (!isScopeId(id) || ids.has(id)) return fail("fully-injected-ids");
+    ids.add(id);
+  }
+  const loop = parseLoop(entries.get("loop"));
+  if (!loop.ok) return loop;
   const tools = entries.get("tools");
-  // Tool 0: the only tools array of this route is the empty one, with no
-  // other enumerable property either.
   if (
     !Array.isArray(tools) ||
-    tools.length !== 0 ||
-    Object.keys(tools).length !== 0
+    tools.length > MASTRA_AGENT_TURN_TOOLS_MAX ||
+    tools.length !== Object.keys(tools).length
   ) {
     return fail("tools");
+  }
+  const toolNames = new Set<string>();
+  for (const tool of tools as readonly unknown[]) {
+    if (
+      !(M4_READ_TOOL_NAMES as readonly unknown[]).includes(tool) ||
+      typeof tool !== "string" ||
+      toolNames.has(tool)
+    ) {
+      return fail("tools");
+    }
+    toolNames.add(tool);
   }
   if (currentSceneId === "") {
     return {
@@ -648,6 +853,57 @@ function sameKeys(
   return entries.size === keys.length && keys.every((key) => entries.has(key));
 }
 
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isSafePlainRecord(value: unknown): value is Record<string, unknown> {
+  const entries = plainEntries(value);
+  return (
+    entries !== null && !entries.has("__proto__") && !entries.has("constructor")
+  );
+}
+
+function isToolCallRecord(
+  value: unknown,
+): value is MastraAgentTurnToolCallRecord {
+  const entries = plainEntries(value);
+  if (entries === null) return false;
+  const issue = keyIssue(
+    entries,
+    ["name", "params", "resultSummary", "tokensUsed"],
+    ["undoId", "settingProposal"],
+  );
+  return (
+    issue === null &&
+    typeof entries.get("name") === "string" &&
+    isSafePlainRecord(entries.get("params")) &&
+    typeof entries.get("resultSummary") === "string" &&
+    isNonNegativeFiniteNumber(entries.get("tokensUsed")) &&
+    (!entries.has("undoId") || typeof entries.get("undoId") === "string") &&
+    (!entries.has("settingProposal") ||
+      isSafePlainRecord(entries.get("settingProposal")))
+  );
+}
+
+function isBoundedArray<T>(
+  value: unknown,
+  maximum: number,
+  isItem: (item: unknown) => item is T,
+): value is readonly T[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > maximum ||
+    value.length !== Object.keys(value).length
+  ) {
+    return false;
+  }
+  for (const item of value as readonly unknown[]) {
+    if (!isItem(item)) return false;
+  }
+  return true;
+}
+
 /** The answer of Main's start, or `null` when it is not an answer of this route. */
 export function parseMastraAgentTurnStartResult(
   value: unknown,
@@ -671,6 +927,85 @@ export function parseMastraAgentTurnStartResult(
       : null;
   }
   return null;
+}
+
+/** The loop's aggregate metadata, separate from Main's existing raw start answer. */
+export function parseMastraAgentTurnLoopResult(
+  value: unknown,
+): MastraAgentTurnLoopResult | null {
+  const entries = plainEntries(value);
+  if (
+    entries === null ||
+    !sameKeys(entries, [
+      "toolCallRecords",
+      "stoppedReason",
+      "usage",
+      "citations",
+      "finalThinkingBlocks",
+    ])
+  ) {
+    return null;
+  }
+  const toolCallRecords = entries.get("toolCallRecords");
+  if (
+    !isBoundedArray(
+      toolCallRecords,
+      MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX,
+      isToolCallRecord,
+    )
+  ) {
+    return null;
+  }
+  if (
+    !(MASTRA_AGENT_TURN_STOPPED_REASONS as readonly unknown[]).includes(
+      entries.get("stoppedReason"),
+    )
+  ) {
+    return null;
+  }
+  const usage = plainEntries(entries.get("usage"));
+  if (
+    usage === null ||
+    !sameKeys(usage, ["totalTokens", "tokensIn", "tokensOut", "cost"]) ||
+    !isNonNegativeFiniteNumber(usage.get("totalTokens")) ||
+    !(
+      usage.get("tokensIn") === null ||
+      isNonNegativeFiniteNumber(usage.get("tokensIn"))
+    ) ||
+    !(
+      usage.get("tokensOut") === null ||
+      isNonNegativeFiniteNumber(usage.get("tokensOut"))
+    ) ||
+    !(
+      usage.get("cost") === null || isNonNegativeFiniteNumber(usage.get("cost"))
+    )
+  ) {
+    return null;
+  }
+  if (
+    !isBoundedArray(
+      entries.get("citations"),
+      MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX,
+      isSafePlainRecord,
+    ) ||
+    !isBoundedArray(
+      entries.get("finalThinkingBlocks"),
+      MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX,
+      (item): item is MastraAgentTurnThinkingBlock => {
+        const block = plainEntries(item);
+        return (
+          block !== null &&
+          sameKeys(block, ["thinking", "signature"]) &&
+          typeof block.get("thinking") === "string" &&
+          typeof block.get("signature") === "string" &&
+          block.get("signature") !== ""
+        );
+      },
+    )
+  ) {
+    return null;
+  }
+  return value as MastraAgentTurnLoopResult;
 }
 
 /** The answer of Main's cancel, or `null` when it is not an answer of this route. */
