@@ -1,6 +1,7 @@
 # MP-4（tool 基盤、loop 規則、read tool）の設計と判断の記録
 
 - 状態：**起案（draft）・改訂 2**（2026-11-21 午後。ユーザーの回答 1〜3 と、Opus の独立レビュー〔precheck〕の指摘を反映。第 10 節）。第 8.1 節の「確認要」（Q4・Q5 と条件つき）が未了の間は、該当する PR の編集に入らない（第 7 節）。
+  **2026-11-24 にユーザーが Q4・Q5・C-6・U-8・U-9 などに回答した。回答の内容と、各回答が開く PR は DR-MP4-52 にある（第 8.1 節の表は回答前の記録）。**
   判断を変える場合は、その PR でこの文書を改訂する。
 - 親の文書：[Mastra 移行の実装計画](mastra-migration-plan.md)の第 6 節 MP-4、第 7 節 U-4・U-7、第 9 節 R 表。
   [MP-3 の判断](mastra-mp3-decisions.md)（特に DR-MP3-3、24、27、28）、[脅威モデル](mastra-migration-threat-model.md)（T1〜T13、D1〜D16、W1〜W11。T13・D16・W11 は回答 3 で足した）。
@@ -1568,6 +1569,8 @@ PR-0 の試験を実際に走らせて確かめた。意図しない挙動に見
 
 ### 8.1 確認要（委任の外。残るもの）
 
+**2026-11-24 の回答（DR-MP4-52）：Q4・Q5・C-6・U-8・U-9 は回答済み。** 下の表は回答前の記録で、現在の状態は DR-MP4-52 に従う。MP-13 の C-19〜C-24 は確認不要の「確かめる点」のまま。
+
 | ID | 内容 | 推奨 | 止まる点 |
 |---|---|---|---|
 | **Q4** | **4c-1 の wire の契約一式**（C-2＋C-3(a)＋C-13＋C-6(1)。回答 2 の「設計がそろってから 1 回にまとめて」）。含むもの：(a) tools の wire の形、(b) 予算（`tokenBudget`・`maxToolCalls`）と制御 message 3 本・UI 言語、(c) step ごとの payload 確定の入力（窓・出力予約・fallback の system）、(d) 結果と進捗の wire（`toolCallRecords`、`stoppedReason`、累計 usage、`citations`、`finalThinkingBlocks`、連結 text、`onProgress`、send ごとの accepted／finalize の通知、Stop 時の途中 text）、(e) C-6(1) を採るなら `fullyInjectedIds`。main が値を検査するときの値域は既存の関数・定数から導き、導けない欄だけ追加で伺う | (a) 名前の list だけ（定義は main が持つ。DR-MP4-30）、(b)(c) renderer が計算した値を渡す（現行の関数を共有。新設・変更しない）、(d) 結果と進捗の wire を新設、(e) 含める（契約を 2 回に保つ） | 4c-1 |
@@ -1846,3 +1849,68 @@ PR-10b は、agent tool `get_codex_entry` を renderer 専用の実装（`toolEx
    **独立レビュー**（別の Codex セッション、read-only、`28efcfba8..3823d3262` に固定）：指摘は P2 が 1 件のみ（`tables.ts` 冒頭のコメントに、10a の「`codex_detail_definitions` を先行許可」の説明が残っていた→実態に直した）。legacy との同値（引数検査・entry の select・判定・defs／vals／children の順序と文・場面の読み 2 回・scope と store の取り方・`No active project`・`tokensUsed`）、信頼境界（hidden の値がどこからも出ない・children の判定）、試験が空振りしていないこと（main adapter が sql.js 上で commit ① の golden と byte 一致を見ていること・実 addon の spec の期待の組み立てがバグを隠さないこと）、allowlist の厳密な一致を確認した。
 
 9. **画面で見える残る制限（ユーザーに見せる）。** この PR は画面・AI に渡る内容を変えない。移設前から残る挙動：複数 project のワークスペースで、`get_codex_entry` の `details` に別 project の項目名が値なしで混ざる（Q-C6-1。判断待ち）。released の本文が hidden の期間の Phase の文を含みうる（累積適用）。`details`・`children` の並びは DB の返り順に依る。
+
+### DR-MP4-50 `get_codex_entry` の詳細定義を project で絞る（Q-C6-1。ユーザー決定：直す。2026-11-24）
+
+ユーザーは Q-C6-1 を「直す」と決定した。`get_codex_entry` の `codex_detail_definitions` select に、entry の `projectId` と `typeSlug` の両方の条件を付けた。変更は結果を狭める向きだけで、別 project の定義から来ていた項目名が `details` から消える。単一 project のワークスペースでは出力 bytes は変わらない。ORDER BY は追加していない（DR-MP4-49e）。
+
+DR-MP4-49d の「直していない」はこの決定と実装で解消した。DR-MP4-49 本文は当時の記録として変更せず、旗 L の前の確認点から Q-C6-1 を外す判断もここに記録する。
+
+**golden の更新（意図した変更）。** DR-MP4-49 の commit ①の golden（`__fixtures__/codexEntryGolden/get_codex_entry.golden.txt`・`.reads.golden.txt`）は、移設前の挙動（Q-C6-1 を含む）を固定していた。この修正は挙動を意図して狭めるので、golden を更新した。差分は 3 種類だけで、(1) 4 件すべての `details` から `別 project の項目名`（値なし）が消える、(2) それに伴う `contentJson` と `tokensUsed` の減少（`tokensUsed` は `contentJson` の文字数）、(3) defs の select の SQL が `project_id = ? and type_slug = ?` になり、params が `["p-main", "character"]` になる。他の項目（自 project の定義・値・children・本文・要約・並び）は 1 byte も変わらない。
+
+**確かめたこと。** core 単体・renderer の特性試験・main adapter（sql.js）は更新後の golden と byte 一致。実 Native の DB の spec（`mastraReadParity.pipeline.spec.ts`）は 33 件成功し、defs の行がすべて current project のものであることを新たに確かめる。変異として defs の project 条件を外すと、core 単体・main adapter・実 Native の spec のいずれも落ちる。
+
+### DR-MP4-51 `get_codex_entry` の tool 定義を shared に移す（MP-4b PR-10c。2026-11-24）
+
+10c は `get_codex_entry` の tool 定義（description・parameters）を renderer の `toolDefinitions.ts` から `electron/shared/agentReadToolDefinitions.ts` へ移す。オブジェクトの内容・parameters の順序・required・AI に渡る bytes は変更せず、renderer は従来の宣言位置で shared 定義を参照する。drift 試験が shared と renderer の M4 定義21本の JSON bytes と順序を比較し、移設前からある legacy golden は無変更で通ることを確認する。
+
+M4 の定義名表は20本から21本になる。core executor の4名前表は合計20本のままで、`CODEX_ENTRY_TOOL_NAMES` は5つ目の専用表として `get_codex_entry` を持つ。5表は互いに素で、合計は21本。tool の実装・結果・executor 登録は10cで変更しない。
+
+Q4 のユーザー決定（2026-11-24）は4c-1で実装する。C-6 は渡し済み ID を wire に含める。10c は定義の移設だけを行う。
+
+### DR-MP4-52 ユーザーの回答の記録（Q4・C-6・U-8・Q5・U-9・`localeCompare`。2026-11-24）
+
+ユーザーは 2026-11-24 に、実装側の推奨どおり次のとおり回答した。Q-C6-1（直す）は別の小さな PR で実装し、DR-MP4-50 に記録した。この回答は新しい送信先・保存範囲・閾値の変更を含まない。
+
+| ID | 回答 | 開く PR と、残る手続き |
+|---|---|---|
+| **Q4** | 推奨案で進める。(a) tools の wire は名前の list だけ（定義は main が持つ。DR-MP4-30）、(b)(c) 予算・上限・制御 message 3 本・UI 言語・窓・出力予約・fallback の system は renderer が計算した値を渡し、現行の関数を共有する（新設・変更しない）、(d) 結果と進捗の wire を新設する、(e) C-6 の `fullyInjectedIds` を含める。main が値を検査する値域は既存の関数・定数から導く。導けない欄だけ、追加で伺う | 4c-1 の wire の PR と、進捗を運ぶ新しい typed の main→renderer の event channel（`ipcContract.ts`）。契約の変更は 2 回に保つ（第 1.3 節の回答 2） |
+| **C-6** | 渡し済み ID（`fullyInjectedIds`）を wire に含め、同じ本文を AI に重ねて返さない。guard なしで全文を返す案と、main の集合から外す案は採らない | Q4 (e) と同じ PR。MP-13 の C-6 の欄は、この回答で解消した |
+| **U-8** | UI tool（help 2 本を含む 8 本）は、run の最中に main から renderer へ問い合わせる方式にする。renderer が閉じたときは、有限の時間で終わらせる。loop を一度終えて再開する形は採らない | MP-5。`ports.ts` を触りうるので、着手の前に grimodex-23 へ知らせる |
+| **Q5** | legacy より弱い、開始後の時間差（第 8.1 節の (a)〜(f)）を受容する。緩和（turn 開始前の flush、watcher による cancel、send の直前の main の policy 判定。DR-MP4-26）は入れ、特性試験に期待を明記する | **脅威モデルの確定文書（`mastra-migration-threat-model.md`）への追記は、この回答では書かない。4c-2 の PR のときに、改めてユーザーに確認する** |
+| **U-9** | `requiresUserConfirmation` の確認を早めない（前倒ししない） | MP-6 |
+| **`localeCompare`（K-4）** | 現状維持。`buildReadingOrder` の `localeCompare` は変えない | main と renderer の並びが違いうる場合は、locale の差の試験で固定して記録する |
+
+**この回答で開くもの。** 第 7 節の「Q4・Q5 が未了の間は、該当する PR の編集に入らない」は、Q4・C-6 については解けた（4c-1 の wire・規則・adapter の PR は編集に入れる）。Q5 は、緩和と特性試験の編集に入れる。脅威モデルの確定文書への追記だけは、4c-2 のときの確認まで書かない。
+
+**変えないもの。** 旗 L（main が core をまだ呼ばない）は閉じたまま。MP-13 の C-19〜C-24 は確認の要らない「確かめる点」のまま。4b・4c の PR の分け方（第 5 節）は変えない。
+
+### DR-MP4-53 4c-1 の残りの実装の設計（技術判断。2026-11-24）
+
+Q4・C-6（DR-MP4-52）の回答を受けて、4c-1 を次の PR 列に分ける。いずれも旗 L を開けず、製品の挙動を変えない。各 PR の本文に ID と信頼境界を載せる。
+
+| 順 | PR | 内容 | 前提 |
+|---|---|---|---|
+| 1 | 4c-1a | K-1・K-18 の特性試験（試験だけ）。結果は第 8.3 節の K-1・K-18 の行 | なし |
+| 2 | W1 | wire の型と parser（`tools`・`fullyInjectedIds`・`loop`・別型の結果）。呼び手なし | なし |
+| 3 | R3 | loop 規則の pure module（`agentLoopRules.ts`）と legacy との二 engine の特性試験 | なし |
+| 4 | R2-a | adapter の継ぎ目：begin の前の `prepareSend`、応答の観測 `observeResponse` | 4c-1a |
+| 5 | F1 | `finalizeTurnPayload` を `electron/shared/turnPayloadFinalizer.ts` へ移し、元の path は再 export（golden で挙動を固定。移設だけ） | なし |
+| 6 | T0 | main の `o200k_base` の tokenizer（下の (5)） | 既存 budget の実測 |
+| 7 | R2-b | wire に窓・出力予約・fallback の欄、main の `prepareSend` から F1・R3 を呼ぶ、集約結果、複数 send の terminal | W1・R3・R2-a・F1・T0 |
+| 8 | W2 | 進捗の新しい typed main→renderer event channel（新しい IPC。`ipcContract.ts`・preload・renderer の受信口。呼び手なし） | W1 |
+| 9 | T | `agentToolAdapter.ts` と `agentRuntime.ts` の結線（allowlist を M4 の 21 名へ、実行時の名前照合、導出した `maxSteps`） | R2-b・W2 |
+
+**(1) `parentExecutionId` は `null` のまま。** 計画書の「sink の `begin` に親 `executionId`」は採らない。sink は turn 内で 1 つの `operationId` を持ち、send ごとに新しい `executionId` を作るので、複数 send は同じ operation の複数 execution として記録できる。親子の意味を audit に足すと保存の意味の変更に当たり（Rust 側の reader は未確認）、確認が要る。要らないので足さない。
+
+**(2) 継ぎ目の形（R2-a。DR-MP4-28 の案 A の実装）。** 順序は `buildAuditRequest → prepareSend → audit.begin → buildWireArgs（同じ prepared request）→ dispatched → send → audit.complete → observeResponse → Mastra へ返す`。`request.prepared` と wire は全 send で bytes 一致する（4c-1a で実測した send の位置での変形のずれを避ける）。`prepareSend` が throw した send は audit の行を残さない。closure は runTurn の引数で渡し、runtime の生成時には持たせない（DR-MP3-28）。両 closure は**同期専用**で、戻りが Promise なら `TypeError`（fail-closed）。`observeResponse` には複製を deep readonly で渡す（audit 済みの応答を書き換えさせない）。`observeResponse` の同期の throw は turn を失敗にする（audit の complete は残る。規則側の失敗を成功扱いにしない）。
+
+**(3) send の間の user-stop。** 既存の cancel エラーでなく、**`stoppedReason: "aborted"` と途中の text を持つ集約結果**として返す。legacy の `runAgentLoop` が同じ形を返し、Q4 (d)（結果と進捗の wire。Stop 時の途中 text）に含まれるため。進行中の Native send は切らない。
+
+**(4) 窓超過の型付きエラーの運び方（Q4 (d) の解釈。ユーザーが異議を述べたら変える）。** main が `ContextWindowExceededError` を throw すると、今の経路は `message` だけが renderer へ届く（`usage`・`overflowTokens` が落ちる）ので、renderer が legacy と同じ ContextBar の更新を出せない。新しい IPC は足さず、R2-b の結果 wire の終端 variant と W2 の進捗 event に `usage`・`overflowTokens`・`cacheDowngradeReason` を載せる。新しい authority・保存範囲は無い。
+
+**(5) tokenizer（T0。DR-MP4-18 の配置案 (c)）。** 既存の production 依存 `tiktoken` を main から使い、ranks と WASM を `extraResources` に置いて `process.resourcesPath` から遅延読込する。新しい npm 依存・ライセンスの追加は無い（`THIRD_PARTY_LICENSES.md` に tiktoken 1.0.22 の MIT の記載がある）。`ensureReady()` は turn の受付の前に await し、失敗したら heuristic に落とさず turn の開始を拒否して legacy へ戻す（fail-closed）。module の import 時には初期化しない。**既存の budget（`perf:budget` の renderer graph、`coldStartMs`）への影響を先に実測し、超えるなら止めて C-8 でユーザーに確認する**（既存の budget は緩めない）。配布サイズ（約 3.4 MB の追加）と packaged app での実読込は未測定。renderer の数と main の数が一致することは、同じ入力（空・日本語・英語・JSON・長文・サロゲートペア・特殊 token 文字列）を両方で数える試験で固定する（特殊 token は結果か例外の一致）。
+
+**(6) `finalizeTurnPayload` の共有（F1。DR-MP4-25 の (i)）。** 本体は `src/features/ai-context/finalizeTurnPayload.ts` にあり、import は型だけなので移せる。F1 は移設だけで、移設前に golden（窓内・cache あり／なし・budget の降格・窓超過・境界・provider 別）を固定し、旧 path は全 export の再 export にする（例外 class は 1 つ）。main の `prepareSend` が renderer と同じ token 数を得るには、provider 別の会話 payload の変換（`renderAgentPayload.ts`、約 330 行）も共有が要る。F1 の後、R2-b の前に別の移設 PR（F2）にするか、R2-b の中で扱うかは、R2-b の設計で決める。
+
+**(7) 確認が要りうる点。** 新しい契約（結果・進捗・窓の欄の wire）は Q4 で承認済み。閾値：wire の値域は legacy が取りうる値を狭めない（W1 の PR 本文に表）。tokenizer が既存の budget を超える場合だけ C-8。

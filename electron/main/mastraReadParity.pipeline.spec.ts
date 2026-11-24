@@ -1085,21 +1085,37 @@ describe("the chronicle tools of the read core (PR-7a) on Main's adapter over th
     });
     expect(own.summary).toBe("Chronicle state at scene (scene)");
     expect(JSON.stringify(own.content)).toBe(
-      '{"time":{"source":"scene","startTime":7000,"season":null,"precision":"approx","formattedDate":"1019年第161日"},"characters":[{"codexId":"c-secret","name":"黒幕","status":"unknown","age":null,"location":"黒幕"},{"codexId":"c-aria","name":"アリア","status":"alive","age":19,"location":"古い塔"},{"codexId":"c-mage","name":"老魔術師","status":"unknown","age":null,"location":"古い塔"}],"recentEvents":[{"eventId":"ev-hidden-name","title":"黒幕の登場","note":null,"relTime":"約3年前"},{"eventId":"ev-meet","title":"老魔術師との出会い","note":null,"relTime":"約4年前"}],"unresolvedCausal":[],"offpage":[]}',
+      '{"time":{"source":"scene","startTime":7000,"season":null,"precision":"approx","formattedDate":"1019年第161日"},"characters":[{"codexId":"c-mage","name":"老魔術師","status":"unknown","age":null,"location":"古い塔"},{"codexId":"c-aria","name":"アリア","status":"alive","age":19,"location":"古い塔"}],"recentEvents":[{"eventId":"ev-hidden-name","title":"黒幕の登場","note":null,"relTime":"約3年前"},{"eventId":"ev-meet","title":"老魔術師との出会い","note":null,"relTime":"約4年前"},{"eventId":"ev-war","title":"魔術戦争","note":"昔の戦争","relTime":"約9年前"}],"unresolvedCausal":[],"offpage":[{"eventId":"ev-death","title":"老魔術師の死","note":"恒久的に秘匿","relTime":null}]}',
     );
-    // The names of a hidden Codex entry are returned as they are (DR-MP4-37).
+    // The names of a hidden Codex entry are NOT returned (CSR/1): the primary
+    // character and the location are null, the participant row is dropped, and the
+    // character's timeline is "not found" (the same as for an unknown id). The
+    // anchor above has no `c-secret` either, and the visible entries still answer.
     const detail = await executors.get_event_detail({
       eventId: CHRONICLE_HIDDEN_NAME_EVENT,
     });
     expect(detail.content).toMatchObject({
-      primaryCharacter: "黒幕",
-      location: "黒幕",
-      participants: [{ codexId: "c-secret", name: "黒幕", role: "黒幕役" }],
+      primaryCharacter: null,
+      location: null,
+      participants: [],
+    });
+    const visibleDetail = await executors.get_event_detail({
+      eventId: "ev-meet",
+    });
+    expect(visibleDetail.content).toMatchObject({
+      primaryCharacter: "アリア",
+      location: "古い塔",
     });
     const timeline = await executors.get_character_timeline({
       codexId: "c-secret",
     });
-    expect(timeline.content).toMatchObject({ character: "黒幕" });
+    expect(timeline.content).toBeNull();
+    expect(timeline.summary).toBe("Character not found");
+    expect(timeline.tokensUsed).toBe(0);
+    const visibleTimeline = await executors.get_character_timeline({
+      codexId: "c-mage",
+    });
+    expect(visibleTimeline.content).toMatchObject({ character: "老魔術師" });
   });
 });
 
@@ -1261,7 +1277,7 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
     );
   });
 
-  it("reads `events` and `scene_events` from the real addon again for every call (twice for two calls)", async () => {
+  it("does not read `events` or `scene_events` from the real addon at all (CSR/1: no secrecy decision, so nothing to read, however many calls)", async () => {
     const ws = await startSeededWorkspace();
     const executors = await searchExecutors(
       ws,
@@ -1274,8 +1290,8 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
       ).length;
     await executors.search_events({ query: "魔術" });
     await executors.search_events({ query: "魔術" });
-    expect(countFrom("events")).toBe(2);
-    expect(countFrom("scene_events")).toBe(2);
+    expect(countFrom("events")).toBe(0);
+    expect(countFrom("scene_events")).toBe(0);
   });
 
   it("the real dense read (what it answers depends on the machine): when it answers, every hit is an event of the asked project; when it does not, the tool fails and is never `[]`", async () => {
@@ -2074,6 +2090,12 @@ describe("Main adapter 上の5つ目の Codex entry tool", () => {
       const definitionRows = JSON.parse(
         (await ws.dbExecute.mock.results[definitionSelect]!.value) as string,
       ).rows as Array<Record<string, unknown>>;
+      expect(
+        definitionRows.every(
+          (row) => row["project_id"] === golden.world.projectId,
+        ),
+        label,
+      ).toBe(true);
       const childRows = JSON.parse(
         (await ws.dbExecute.mock.results[childSelect]!.value) as string,
       ).rows as Array<Record<string, unknown>>;
@@ -2083,10 +2105,7 @@ describe("Main adapter 上の5つ目の Codex entry tool", () => {
       const details = definitionRows
         .filter((row) => Boolean(row["include_in_context"]))
         .map((row) => {
-          // 実 Native の workspace には、アプリのサンプル project（default-project）の詳細定義
-          // （「役割」「アリバイ」など）も入っている。legacy の defs の select は type_slug だけで引き
-          // project 条件が無い（Q-C6-1）ので、golden（sql.js の seed）に無い定義も、値の無い項目として
-          // 混ざる。移設前と同じ現状の挙動を、そのまま期待にする。
+          // Q-C6-1 修正後は defs の select が current project に限定される。
           return (
             detailsByField.get(String(row["name"])) ?? {
               field: String(row["name"]),

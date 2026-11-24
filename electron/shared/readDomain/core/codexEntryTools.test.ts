@@ -153,7 +153,7 @@ describe("get_codex_entry の共有 core", () => {
     expect(empty.sent).toEqual([]);
   });
 
-  it("公開項目の key 順・文字列・詳細名・tokensUsed を保つ", async () => {
+  it("Q-C6-1 を直し、自 project の詳細だけを公開項目に含める", async () => {
     const h = harness();
     const result = await getCodexEntry(h.ctx, { id: " e-public " });
     expect(result).toMatchObject({
@@ -166,12 +166,15 @@ describe("get_codex_entry の共有 core", () => {
         aliases: ["別名"],
         summary: "公開要約",
         body: "公開本文",
-        details: [
-          { field: "年齢", value: "18" },
-          { field: "別 project の項目名", value: null },
-        ],
+        details: [{ field: "年齢", value: "18" }],
         children: [],
       },
+    });
+    expect(
+      (result.content as { details: unknown[] }).details,
+    ).not.toContainEqual({
+      field: "別 project の項目名",
+      value: null,
     });
     expect(Object.keys(result.content as object)).toEqual([
       "id",
@@ -204,10 +207,13 @@ describe("get_codex_entry の共有 core", () => {
     expect(result.content).toMatchObject({
       summary: "解除後の要約",
       body: "SECRET-PHASE-OLD",
-      details: [
-        { field: "年齢", value: "Phase 解決後の年齢" },
-        { field: "別 project の項目名", value: null },
-      ],
+      details: [{ field: "年齢", value: "Phase 解決後の年齢" }],
+    });
+    expect(
+      (result.content as { details: unknown[] }).details,
+    ).not.toContainEqual({
+      field: "別 project の項目名",
+      value: null,
     });
     expect(JSON.stringify(result.content)).not.toContain("SECRET-BASE");
     expect(

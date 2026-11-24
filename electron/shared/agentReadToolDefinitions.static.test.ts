@@ -85,8 +85,9 @@ describe("IR を含まない tool 定義 module の静的試験", () => {
     ]);
   });
 
-  it("M4 の定義は 20 本で、search_events の説明は IR の読み方を含まない版（無条件）", () => {
+  it("M4 の定義は 21 本で、search_events の説明は IR の読み方を含まない版（無条件）", () => {
     const definitions = createM4ReadToolDefinitions();
+    expect(definitions).toHaveLength(21);
     expect(definitions.map((t) => t.name)).toEqual([...M4_READ_TOOL_NAMES]);
     const searchEvents = definitions.find((t) => t.name === "search_events");
     expect(searchEvents?.description).toBe(SEARCH_EVENTS_DESCRIPTION);
@@ -104,7 +105,6 @@ describe("IR を含まない tool 定義 module の静的試験", () => {
     for (const forbidden of [
       "run_research",
       "ask_user",
-      "get_codex_entry",
       "get_ui_state",
       "run_app_command",
       "propose_setting_change",

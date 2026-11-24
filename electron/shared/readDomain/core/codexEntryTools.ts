@@ -125,7 +125,12 @@ export async function getCodexEntry(
   const definitions = await db
     .select()
     .from(codexDetailDefinitions)
-    .where(eq(codexDetailDefinitions.typeSlug, entry.type));
+    .where(
+      and(
+        eq(codexDetailDefinitions.projectId, projectId),
+        eq(codexDetailDefinitions.typeSlug, entry.type),
+      ),
+    );
   const values = await db
     .select()
     .from(codexDetailValues)

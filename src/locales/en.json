@@ -2403,7 +2403,9 @@
       },
       "applyBlocked": {
         "sameEntryPatch": "Several approvals write aliases or a summary to the same entry, so they cannot be imported ({{names}}). Keep only one and defer or reject the others",
-        "surfaceAlias": "An alias to add is no longer allowed with the current Codex ({{names}}). Uncheck \"also add as an alias\" on the card, then import again"
+        "surfaceAlias": "An alias to add is no longer allowed with the current Codex ({{names}}). Uncheck \"also add as an alias\" on the card, then import again",
+        "reviewOnly": "Importing into the Codex is not available for this workspace yet. Your approve/reject decisions are kept.",
+        "engineDisabled": "Structure extraction is turned off by the app settings."
       },
       "foldedDismissed": {
         "summary": "{{count}} surface(s) you dismissed in the candidate list were not proposed as new entries (surfaces matching a Codex name or alias are still shown)",
@@ -4655,6 +4657,7 @@
     "loadError": "Failed to load snapshots",
     "createError": "Failed to create snapshot",
     "restoreError": "Restore failed",
+    "restoreFlushFailed": "Restore was cancelled because saving your unsaved edits did not complete.",
     "deleteError": "Delete failed",
     "restoreScopeHeading": "What to restore",
     "restoreScopeLegacyNote": "This snapshot is in the legacy format. Only content will be restored.",
