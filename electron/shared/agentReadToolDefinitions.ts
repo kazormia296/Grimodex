@@ -1,9 +1,9 @@
 /**
- * agent の read tool のうち、main の Mastra read（MP-4）が扱う 20 本（M4）の「定義」
+ * agent の read tool のうち、main の Mastra read（MP-4）が扱う 21 本（M4）の「定義」
  * （name・description・input_schema）と、定義の決定的な並べ方。
  *
  * MP-4b PR-3（DR-MP4-30）。renderer の `src/features/chat/agent/toolDefinitions.ts`（legacy）が
- * 44 本の宣言の中でこの 20 本をここから取り、IR の部分（search_events の IR 版の説明）だけを足す。
+ * 44 本の宣言の中でこの 21 本をここから取り、IR の部分（search_events の IR 版の説明）だけを足す。
  * main は `toolDefinitions.ts` を import せず、この module だけから定義を取る。
  * AI に渡る bytes は、移す前の `toolDefinitions.ts` と 1 byte も変えない
  * （`toolDefinitions.legacyGolden.test.ts` と `agentReadToolDefinitions.drift.test.ts` が固定する）。
@@ -39,13 +39,14 @@ export interface AgentReadToolDefinition {
 }
 
 /**
- * M4 の 20 本の name。並びは renderer の `AGENT_TOOLS` の宣言順（部分集合）と同じ。
+ * M4 の 21 本の name。並びは renderer の `AGENT_TOOLS` の宣言順（部分集合）と同じ。
  * Q4 で tools の wire が名前だけになった場合に、main は wire の名前をこの集合と照合する（DR-MP4-21 の 3）。
  */
 export const M4_READ_TOOL_NAMES = [
   "search_codex",
   "search_events",
   "list_codex_by_type",
+  "get_codex_entry",
   "list_codex_tags",
   "search_codex_by_tags",
   "find_related_entries",
@@ -75,7 +76,7 @@ export const SEARCH_EVENTS_DESCRIPTION =
   "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking).";
 
 /**
- * M4 の 20 本の定義を、宣言順で新しく組んで返す。
+ * M4 の 21 本の定義を、宣言順で新しく組んで返す。
  * 呼ぶたびに別の object を返す（呼び手が書き換えても他に影響しない）。
  */
 export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
@@ -127,6 +128,22 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
           },
         },
         required: ["type"],
+      },
+    },
+    {
+      name: "get_codex_entry",
+      description:
+        "Get the full content body, custom detail fields, and child entry summaries for a specific Codex entry. Note: summaries for scene-mentioned and spotlighted entries are already injected — use this tool only when the injected summary is insufficient and you need the full body or custom details.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description:
+              "The entry's UUID — NOT its name. For an entry that already appears in the injected Codex section, the UUID is shown on the `id: ...` line directly under the entry's name. For an entry not yet injected, call search_codex / list_codex_by_type first to obtain the UUID.",
+          },
+        },
+        required: ["id"],
       },
     },
     {

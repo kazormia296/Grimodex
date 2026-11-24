@@ -21,8 +21,9 @@
       ]
     },
     {
-      "sql": "select \"id\", \"project_id\", \"type_slug\", \"name\", \"field_type\", \"field_config\", \"sort_order\", \"include_in_context\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_definitions\" where \"codex_detail_definitions\".\"type_slug\" = ?",
+      "sql": "select \"id\", \"project_id\", \"type_slug\", \"name\", \"field_type\", \"field_config\", \"sort_order\", \"include_in_context\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_definitions\" where (\"codex_detail_definitions\".\"project_id\" = ? and \"codex_detail_definitions\".\"type_slug\" = ?)",
       "params": [
+        "p-main",
         "character"
       ]
     },
@@ -90,8 +91,9 @@
       ]
     },
     {
-      "sql": "select \"id\", \"project_id\", \"type_slug\", \"name\", \"field_type\", \"field_config\", \"sort_order\", \"include_in_context\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_definitions\" where \"codex_detail_definitions\".\"type_slug\" = ?",
+      "sql": "select \"id\", \"project_id\", \"type_slug\", \"name\", \"field_type\", \"field_config\", \"sort_order\", \"include_in_context\", \"version\", \"created_at\", \"updated_at\" from \"codex_detail_definitions\" where (\"codex_detail_definitions\".\"project_id\" = ? and \"codex_detail_definitions\".\"type_slug\" = ?)",
       "params": [
+        "p-main",
         "character"
       ]
     },
