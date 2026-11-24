@@ -25,6 +25,7 @@ vi.mock("./codexStructureExtractionApi", async (importOriginal) => {
 });
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "p1",
+  getCurrentProjectLanguage: () => "ja",
 }));
 
 import { CodexStructureExtractDialog } from "./CodexStructureExtractDialog";
@@ -256,7 +257,7 @@ describe("CodexStructureExtractDialog の適用", () => {
     );
     fireEvent.click(screen.getByTestId("codex-structure-apply"));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "この作品では、Codex への取り込みはまだ使えません。承認・拒否の記録は残っています。",
+      "この作品では、Codex への取り込みはまだ使えません。承認・拒否は記録されます。",
     );
     expect(screen.getByTestId("codex-structure-apply")).toBeEnabled();
     expect(

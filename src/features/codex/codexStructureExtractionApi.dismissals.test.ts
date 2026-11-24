@@ -225,6 +225,22 @@ describe("startCodexStructureExtraction: 見送り済みの表記を畳む（打
     expect(projection.dismissalsUnavailable).toBeUndefined();
   });
 
+  it("Entity と Relation の引用に場面 id と題を設定する", async () => {
+    const projection = await runExtraction({
+      text: "ライカはベルカの友人だ",
+      surfaces: ["ライカ", "ベルカ"],
+    });
+    expect(projection.proposals.flatMap((row) => row.evidence)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sceneId: "s1", sceneTitle: "Scene" }),
+      ]),
+    );
+    expect(projection.relationProposals).toHaveLength(1);
+    expect(projection.relationProposals[0]?.evidence[0]).toEqual(
+      expect.objectContaining({ sceneId: "s1", sceneTitle: "Scene" }),
+    );
+  });
+
   it("名簿に完全一致する種は、却下済みでも畳まない", async () => {
     dismissedAs(["ミナト"]);
     const projection = await runExtraction({

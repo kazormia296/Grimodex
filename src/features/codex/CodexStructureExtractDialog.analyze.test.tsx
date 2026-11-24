@@ -19,6 +19,7 @@ vi.mock("./codexRelationApi", () => ({
 }));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "p1",
+  getCurrentProjectLanguage: () => "ja",
 }));
 vi.mock("./codexStructureExtractionApi", async (importOriginal) => {
   const actual =
@@ -118,6 +119,62 @@ describe("CodexStructureExtractDialog の解析", () => {
       ["sora", "ソラ", 2],
       ["tokyo", "東京", 1],
     ]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("解析中にフォルダを選び直しても、解析の操作は止まったままにならない", async () => {
+    useTreeStore.setState({
+      nodes: [
+        {
+          id: "f1",
+          parentId: null,
+          nodeType: "folder",
+          title: "章",
+          sortOrder: "a",
+        },
+        {
+          id: "s1",
+          parentId: "f1",
+          nodeType: "scene",
+          title: "場面",
+          sortOrder: "a",
+        },
+        {
+          id: "f2",
+          parentId: null,
+          nodeType: "folder",
+          title: "章2",
+          sortOrder: "b",
+        },
+        {
+          id: "s2",
+          parentId: "f2",
+          nodeType: "scene",
+          title: "場面2",
+          sortOrder: "a",
+        },
+      ],
+    } as never);
+    let release: (value: unknown) => void = () => undefined;
+    startMock.mockReset().mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    render(
+      <CodexStructureExtractDialog open onOpenChange={vi.fn()} folderId="f1" />,
+    );
+    fireEvent.click(screen.getByTestId("codex-structure-analyze"));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("codex-structure-analyze")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("codex-structure-folder-select"), {
+      target: { value: "f2" },
+    });
+    // 古い解析が、フォルダを選び直した後に終わる。結果は捨てられ、解析の操作は戻る。
+    release({ runId: "old" });
+    await waitFor(() =>
+      expect(screen.getByTestId("codex-structure-analyze")).toBeEnabled(),
+    );
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

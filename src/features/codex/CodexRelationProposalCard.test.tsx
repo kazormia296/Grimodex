@@ -80,7 +80,7 @@ describe("CodexRelationProposalCard", () => {
       screen.getByTestId("codex-relation-proposal-card-rel-proposal-1"),
     ).toBeInTheDocument();
     expect(screen.getByText("ライカ → 師匠 → ベルカ")).toBeInTheDocument();
-    expect(screen.getByText(/directed/)).toBeInTheDocument();
+    expect(screen.getByText(/一方向/)).toBeInTheDocument();
     fireEvent.click(
       screen.getByTestId("codex-relation-approve-rel-proposal-1"),
     );
