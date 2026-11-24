@@ -134,14 +134,14 @@ describe("restoreForeshadow", () => {
     );
   });
 
-  it("defaults legacy snapshots to secret and no dirty timestamp", async () => {
+  it("defaults legacy snapshots to visible and no dirty timestamp", async () => {
     const legacy = item({ secret: undefined, codexLinkDirtyAt: undefined });
 
     await restoreForeshadow(legacy, { projectId: "p1" });
 
     expect(createMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        secret: true,
+        secret: false,
         codexLinkDirtyAt: null,
       }),
       { origin: "restore" },

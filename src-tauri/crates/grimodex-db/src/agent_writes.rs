@@ -5759,6 +5759,7 @@ pub struct AgentForeshadowCreatePayload {
     pub intent: Option<String>,
     pub notes: Option<String>,
     pub load_bearing: Option<String>,
+    #[serde(default)]
     pub secret: bool,
 }
 
@@ -5845,6 +5846,9 @@ fn agent_foreshadow_create_with_context_impl(
     surface: &str,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
+    if !matches!(surface, "manual" | "import") && payload.secret {
+        anyhow::bail!("secret is no longer supported: foreshadows cannot be hidden from the AI");
+    }
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "requestId must not be empty"
@@ -5946,6 +5950,9 @@ fn agent_foreshadow_update_with_context_impl(
     surface: &str,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
+    if !matches!(surface, "manual" | "import") && payload.secret.is_some() {
+        anyhow::bail!("secret is no longer supported: foreshadows cannot be hidden from the AI");
+    }
     anyhow::ensure!(!request_id.trim().is_empty(), "requestId must not be empty");
     anyhow::ensure!(
         payload.request_id == request_id,
@@ -13768,7 +13775,7 @@ mod tests {
                 intent: Some("後段で回収".to_string()),
                 notes: None,
                 load_bearing: Some("critical".to_string()),
-                secret: true,
+                secret: false,
             },
         )
         .unwrap();
@@ -13784,7 +13791,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
             assert_eq!(title, "刻印の謎");
-            assert_eq!(secret, 1);
+            assert_eq!(secret, 0);
             let (domain, op_type, session): (String, String, String) = conn.query_row(
                 "SELECT domain, op_type, session_id FROM change_events",
                 [],
@@ -13814,7 +13821,7 @@ mod tests {
             intent: Some("後段で回収".to_string()),
             notes: None,
             load_bearing: Some("critical".to_string()),
-            secret: true,
+            secret: false,
         };
         let first = agent_foreshadow_create_impl(&db, payload.clone()).expect("first create");
         assert_ne!(first["entityId"], "agent-tool:foreshadow-request-1");
@@ -13863,6 +13870,316 @@ mod tests {
         }))
         .expect_err("Native payload without requestId must be rejected");
         assert!(error.to_string().contains("requestId"), "{error}");
+    }
+
+    #[test]
+    fn foreshadow_secret_writes_are_allowed_only_on_author_surfaces() {
+        const SECRET_ERROR: &str =
+            "secret is no longer supported: foreshadows cannot be hidden from the AI";
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let create_payload = |request_id: String, secret| AgentForeshadowCreatePayload {
+            request_id,
+            foreshadow_id: None,
+            project_id: project_id.clone(),
+            session_id: "session".to_string(),
+            title: "Secret gate fixture".to_string(),
+            intent: None,
+            notes: None,
+            load_bearing: None,
+            secret,
+        };
+        let side_effect_counts = |db: &Database| {
+            (
+                table_count(db, "foreshadows"),
+                table_count(db, "change_events"),
+                table_count(db, "undo_journal"),
+            )
+        };
+        let empty_counts = side_effect_counts(&db);
+
+        for (index, surface) in [
+            "mcp",
+            "in-app-agent",
+            "Manual",
+            "MCP",
+            "future-ai-surface",
+            "",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let error = agent_foreshadow_create_with_surface_impl(
+                &db,
+                create_payload(format!("rejected-create-{index}"), true),
+                surface,
+            )
+            .expect_err("only manual and import may create secret foreshadows");
+            assert_eq!(error.to_string(), SECRET_ERROR, "surface {surface:?}");
+            assert_eq!(side_effect_counts(&db), empty_counts);
+        }
+
+        let error = agent_foreshadow_create_impl(
+            &db,
+            create_payload("rejected-create-default-surface".to_string(), true),
+        )
+        .expect_err("an omitted surface defaults to the AI writer");
+        assert_eq!(error.to_string(), SECRET_ERROR);
+        assert_eq!(side_effect_counts(&db), empty_counts);
+
+        let missing_secret = serde_json::json!({
+            "requestId": "create-default-secret",
+            "projectId": project_id,
+            "sessionId": "session",
+            "title": "Visible by default"
+        });
+        let payload: AgentForeshadowCreatePayload =
+            serde_json::from_value(missing_secret).expect("missing secret is accepted");
+        let created = agent_foreshadow_create_impl(&db, payload)
+            .expect("AI can create without setting secret");
+        let created_id = created["entityId"].as_str().expect("entity id");
+        let created_secret: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT secret FROM foreshadows WHERE id = ?1",
+                    [created_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read default secret");
+        assert_eq!(created_secret, 0);
+
+        let explicit_false = agent_foreshadow_create_with_surface_impl(
+            &db,
+            create_payload("create-explicit-false".to_string(), false),
+            "mcp",
+        )
+        .expect("AI can explicitly create a visible foreshadow");
+        let explicit_false_secret: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT secret FROM foreshadows WHERE id = ?1",
+                    [explicit_false["entityId"].as_str().expect("entity id")],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read explicit false secret");
+        assert_eq!(explicit_false_secret, 0);
+
+        for surface in ["manual", "import"] {
+            let created = agent_foreshadow_create_with_surface_impl(
+                &db,
+                create_payload(format!("author-create-{surface}"), true),
+                surface,
+            )
+            .expect("author surfaces may create secret foreshadows");
+            let foreshadow_id = created["entityId"].as_str().expect("entity id");
+            let update = AgentForeshadowUpdatePayload {
+                request_id: format!("author-update-{surface}"),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                foreshadow_id: foreshadow_id.to_string(),
+                base_version: 0,
+                title: None,
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: Some(true),
+            };
+            let request_id = update.request_id.clone();
+            let updated = agent_foreshadow_update_with_request_impl(
+                &db,
+                update.clone(),
+                &request_id,
+                surface,
+            )
+            .expect("author surfaces may update secret foreshadows");
+            assert_eq!(updated["version"], 1);
+            let secret: i64 = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT secret FROM foreshadows WHERE id = ?1",
+                        [foreshadow_id],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("read author secret");
+            assert_eq!(secret, 1, "surface {surface}");
+        }
+    }
+
+    #[test]
+    fn foreshadow_update_secret_guard_precedes_idempotent_replay() {
+        const SECRET_ERROR: &str =
+            "secret is no longer supported: foreshadows cannot be hidden from the AI";
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let created = agent_foreshadow_create_impl(
+            &db,
+            AgentForeshadowCreatePayload {
+                request_id: "update-secret-seed".to_string(),
+                foreshadow_id: None,
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                title: "Seed".to_string(),
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                secret: false,
+            },
+        )
+        .expect("create visible AI foreshadow");
+        let foreshadow_id = created["entityId"].as_str().expect("entity id").to_string();
+        db.with_conn(|conn| {
+            // An AI-created foreshadow has no authority row, so a title update
+            // would be read as a legacy human value. Own the field as the AI.
+            let inserted = conn.execute(
+                "INSERT OR REPLACE INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind,
+                     explicit_lock, version, updated_at)
+                 VALUES (?1, 'foreshadow', ?2, '/title', 'ai', 0, 1, 'fixture')",
+                rusqlite::params![project_id, foreshadow_id],
+            )?;
+            assert_eq!(inserted, 1, "the AI owns the title field");
+            Ok(())
+        })
+        .expect("authorize the title update for the AI retry fixture");
+        let side_effect_counts = (
+            table_count(&db, "foreshadows"),
+            table_count(&db, "change_events"),
+            table_count(&db, "undo_journal"),
+        );
+        for (surface_index, surface) in [
+            "mcp",
+            "in-app-agent",
+            "Manual",
+            "MCP",
+            "future-ai-surface",
+            "",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for secret in [true, false] {
+                let request_id = format!("rejected-update-{surface_index}-{secret}");
+                let error = agent_foreshadow_update_with_request_impl(
+                    &db,
+                    AgentForeshadowUpdatePayload {
+                        request_id: request_id.clone(),
+                        project_id: project_id.clone(),
+                        session_id: "session".to_string(),
+                        foreshadow_id: foreshadow_id.clone(),
+                        base_version: -1,
+                        title: None,
+                        intent: None,
+                        notes: None,
+                        load_bearing: None,
+                        payoff_confirmed: None,
+                        abandoned: None,
+                        secret: Some(secret),
+                    },
+                    &request_id,
+                    surface,
+                )
+                .expect_err("AI surfaces reject any provided secret value");
+                assert_eq!(error.to_string(), SECRET_ERROR, "surface {surface:?}");
+                assert_eq!(
+                    (
+                        table_count(&db, "foreshadows"),
+                        table_count(&db, "change_events"),
+                        table_count(&db, "undo_journal"),
+                    ),
+                    side_effect_counts
+                );
+                let version: i64 = db
+                    .with_conn(|conn| {
+                        Ok(conn.query_row(
+                            "SELECT version FROM foreshadows WHERE id = ?1",
+                            [&foreshadow_id],
+                            |row| row.get(0),
+                        )?)
+                    })
+                    .expect("read rejected update version");
+                assert_eq!(version, 0);
+            }
+        }
+        let mut update = AgentForeshadowUpdatePayload {
+            request_id: "foreshadow-update-secret-retry".to_string(),
+            project_id,
+            session_id: "session".to_string(),
+            foreshadow_id: foreshadow_id.clone(),
+            base_version: 0,
+            title: Some("After".to_string()),
+            intent: None,
+            notes: None,
+            load_bearing: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            secret: None,
+        };
+        let request_id = update.request_id.clone();
+        agent_foreshadow_update_with_request_impl(&db, update.clone(), &request_id, "mcp")
+            .expect("AI can update without secret");
+        let side_effect_counts = (
+            table_count(&db, "foreshadows"),
+            table_count(&db, "change_events"),
+            table_count(&db, "undo_journal"),
+        );
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM foreshadows WHERE id = ?1",
+                    [&foreshadow_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read update version");
+        assert_eq!(version, 1);
+
+        update.secret = Some(false);
+        let error =
+            agent_foreshadow_update_with_request_impl(&db, update.clone(), &request_id, "mcp")
+                .expect_err("secret-bearing retry is rejected before idempotency replay");
+        assert_eq!(error.to_string(), SECRET_ERROR);
+        assert_eq!(
+            (
+                table_count(&db, "foreshadows"),
+                table_count(&db, "change_events"),
+                table_count(&db, "undo_journal"),
+            ),
+            side_effect_counts
+        );
+        let final_version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM foreshadows WHERE id = ?1",
+                    [&foreshadow_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read final update version");
+        assert_eq!(final_version, 1);
+
+        update.secret = Some(true);
+        update.base_version = -1;
+        let side_effect_counts = (
+            table_count(&db, "foreshadows"),
+            table_count(&db, "change_events"),
+            table_count(&db, "undo_journal"),
+        );
+        let error = agent_foreshadow_update_impl(&db, update)
+            .expect_err("default AI surface rejects secret before base_version validation");
+        assert_eq!(error.to_string(), SECRET_ERROR);
+        assert_eq!(
+            (
+                table_count(&db, "foreshadows"),
+                table_count(&db, "change_events"),
+                table_count(&db, "undo_journal"),
+            ),
+            side_effect_counts
+        );
     }
 
     #[test]

@@ -166,7 +166,7 @@ export async function createForeshadow(
       payoffToPos: data.payoffToPos ?? null,
       payoffConfirmed: data.payoffConfirmed ?? false,
       abandoned: data.abandoned ?? false,
-      secret: data.secret ?? true,
+      secret: data.secret ?? false,
       loadBearing: data.loadBearing ?? null,
       codexLinkDirtyAt: data.codexLinkDirtyAt?.getTime() ?? null,
     },

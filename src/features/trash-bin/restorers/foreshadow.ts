@@ -52,7 +52,7 @@ export async function restoreForeshadow(
         payoffToPos: payoffSceneId ? (payload.payoffToPos ?? null) : null,
         payoffConfirmed: payload.payoffConfirmed,
         abandoned: payload.abandoned,
-        secret: payload.secret ?? true,
+        secret: payload.secret ?? false,
         loadBearing:
           (payload.loadBearing as ForeshadowLoadBearing | null) ?? null,
         codexLinkDirtyAt:
