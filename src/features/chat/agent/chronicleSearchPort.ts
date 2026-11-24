@@ -15,9 +15,9 @@ import type { ToolResult } from "./agentTypes";
 /**
  * renderer の search_events（IR なし・scope なしの部分）の薄い層（MP-4b PR-7b、DR-MP4-38）。本体は
  * 共有 core（`electron/shared/readDomain/core/chronicleSearchTools.ts`）にあり、ここは
- * (1) dense の失敗を「warn して空」に握る port（唯一の置き場）、(2) renderer の ports
- * （年表 4 本と同じ loader を arrow の中で呼ぶ）、(3) project が無いときの core の throw を従来の
- * `No active project` の結果に戻す、の 3 つだけ。core と main は dense の失敗を握らない（cancel・
+ * (1) dense の失敗を「warn して空」に握る port（唯一の置き場）、(2) project が無いときの core
+ * の throw を従来の `No active project` の結果に戻す、の 2 つだけ。core と main は dense の失敗を
+ * 握らない（cancel・
  * timeout・workspace の変更が「0 件」に化けない）。
  */
 type ToolReturn = Omit<ToolResult, "toolCallId">;
@@ -43,14 +43,12 @@ export function denseEventHitsOrEmpty(args: {
 }
 
 /**
- * renderer の ports：tree・token 数・年表の loader は年表 4 本の ctx（`chronicleReadContext.ts`）の
- * ものをそのまま使い（cache は バッチごとに破棄される module singleton、読む順は nodes の参照で
- * memo）、dense だけを握りつきの上の関数にする。`@/db/client` は import しない。
+ * renderer の ports：tree・token 数は年表 4 本の ctx（`chronicleReadContext.ts`）から使い、
+ * dense だけを握りつきの上の関数にする。`@/db/client` は import しない。
  */
 export const LEGACY_CHRONICLE_SEARCH_CONTEXT: CoreChronicleSearchContext = {
   getTreeState: LEGACY_CHRONICLE_READ_CONTEXT.getTreeState,
   countTokens: LEGACY_CHRONICLE_READ_CONTEXT.countTokens,
-  chronicle: LEGACY_CHRONICLE_READ_CONTEXT.chronicle,
   native: { eventsSemantic: (args) => denseEventHitsOrEmpty(args) },
 };
 

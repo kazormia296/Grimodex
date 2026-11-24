@@ -52,6 +52,7 @@ const SURFACE_ALIAS_NOTE_KEYS: Partial<Record<SurfaceAliasDecline, string>> = {
   "partial-other": "partialOther",
   excluded: "excluded",
 };
+const EMPTY_PROPOSALS: readonly CodexEntityReviewProposal[] = [];
 
 /**
  * Entity Proposal list + detail split (mirrors Chronicle Proposal Review).
@@ -72,7 +73,8 @@ export function CodexEntityProposalReview({
   const selectProposal = useCodexStructureExtractionStore(
     (s) => s.selectProposal,
   );
-  const proposals = proposalsProp ?? storeProjection?.proposals ?? [];
+  const proposals =
+    proposalsProp ?? storeProjection?.proposals ?? EMPTY_PROPOSALS;
   const selectedProposalId =
     selectedProp !== undefined
       ? selectedProp
@@ -255,7 +257,9 @@ export function CodexEntityProposalReview({
                   .then((result) => {
                     if (result.failed.length > 0) {
                       toast.error(
-                        `${result.failed.length}件の提案を承認できませんでした`,
+                        t("codex.structureReview.entityReview.approveFailed", {
+                          count: result.failed.length,
+                        }),
                       );
                     }
                     if (result.approvedBindExisting > 0) {
@@ -302,7 +306,9 @@ export function CodexEntityProposalReview({
                     toast.error(
                       error instanceof Error
                         ? error.message
-                        : "まとめて承認に失敗しました",
+                        : t(
+                            "codex.structureReview.entityReview.bulkApproveFailed",
+                          ),
                     );
                   })
                   .finally(() => {
@@ -311,7 +317,7 @@ export function CodexEntityProposalReview({
               }}
               data-testid="codex-bulk-approve-safe"
             >
-              安全な提案をまとめて承認
+              {t("codex.structureReview.entityReview.bulkApproveSafe")}
               {safeCount > 0 ? ` (${safeCount})` : ""}
             </button>
           )}
@@ -330,7 +336,7 @@ export function CodexEntityProposalReview({
         <div className="min-h-0 flex-1 overflow-y-auto">
           {proposals.length === 0 ? (
             <p className="px-3 py-3 text-xs text-muted-foreground">
-              抽出できる Entity が見つかりませんでした。
+              {t("codex.structureReview.entityReview.noEntities")}
             </p>
           ) : (
             proposals.map((proposal) => (
@@ -412,10 +418,12 @@ export function CodexEntityProposalReview({
       </div>
 
       <div className="flex max-h-80 min-w-0 flex-col gap-3 overflow-y-auto px-3 py-2">
-        <span className="text-xs font-medium text-foreground">詳細</span>
+        <span className="text-xs font-medium text-foreground">
+          {t("codex.structureReview.entityReview.details")}
+        </span>
         {!selected ? (
           <p className="text-xs text-muted-foreground">
-            提案を選択してください
+            {t("codex.structureReview.entityReview.selectProposal")}
           </p>
         ) : (
           <>
@@ -424,7 +432,7 @@ export function CodexEntityProposalReview({
                 className="text-[10px] text-muted-foreground"
                 data-testid="codex-entity-applied-readonly"
               >
-                適用済みのため編集できません
+                {t("codex.structureReview.entityReview.appliedReadonly")}
               </p>
             )}
             <label className="flex flex-col gap-1 text-xs">
@@ -444,7 +452,9 @@ export function CodexEntityProposalReview({
                       toast.error(
                         error instanceof Error
                           ? error.message
-                          : "Entity 名の保存に失敗しました",
+                          : t(
+                              "codex.structureReview.entityReview.saveNameFailed",
+                            ),
                       );
                     })
                     .finally(() => setDraftName(null));
@@ -469,7 +479,9 @@ export function CodexEntityProposalReview({
                       toast.error(
                         error instanceof Error
                           ? error.message
-                          : "Summary の保存に失敗しました",
+                          : t(
+                              "codex.structureReview.entityReview.saveSummaryFailed",
+                            ),
                       );
                     })
                     .finally(() => setDraftSummary(null));
@@ -498,13 +510,17 @@ export function CodexEntityProposalReview({
                         toast.error(
                           error instanceof Error
                             ? error.message
-                            : "Type の保存に失敗しました",
+                            : t(
+                                "codex.structureReview.entityReview.saveTypeFailed",
+                              ),
                         );
                       });
                     }}
                     data-testid="codex-entity-type-select"
                   >
-                    <option value="">選択してください</option>
+                    <option value="">
+                      {t("codex.structureReview.entityReview.selectType")}
+                    </option>
                     {storeProjection.catalog.types.map((type) => (
                       <option key={type.ref} value={type.ref}>
                         {type.label} ({type.ref})
@@ -527,7 +543,9 @@ export function CodexEntityProposalReview({
                     toast.error(
                       error instanceof Error
                         ? error.message
-                        : "Binding 解決に失敗しました",
+                        : t(
+                            "codex.structureReview.entityReview.resolveBindingFailed",
+                          ),
                     );
                   })
                 }
@@ -539,7 +557,9 @@ export function CodexEntityProposalReview({
                     toast.error(
                       error instanceof Error
                         ? error.message
-                        : "Binding 解決に失敗しました",
+                        : t(
+                            "codex.structureReview.entityReview.resolveBindingFailed",
+                          ),
                     );
                   })
                 }
@@ -609,6 +629,25 @@ export function CodexEntityProposalReview({
 
             <CodexExtractionEvidencePane
               proposal={selected}
+              bindingLabels={{
+                entityName: (() => {
+                  const binding = selected.proposal.payload.binding;
+                  return binding.kind === "bind-existing"
+                    ? (storeProjection?.catalog?.entities.find(
+                        (entity) => entity.ref === binding.entityRef,
+                      )?.name ?? null)
+                    : null;
+                })(),
+                typeLabel: (() => {
+                  const typeResolution =
+                    selected.proposal.payload.typeResolution;
+                  return typeResolution.status === "resolved"
+                    ? (storeProjection?.catalog?.types.find(
+                        (type) => type.ref === typeResolution.typeRef,
+                      )?.label ?? null)
+                    : null;
+                })(),
+              }}
               onEvidenceClick={onEvidenceClick}
             />
           </>

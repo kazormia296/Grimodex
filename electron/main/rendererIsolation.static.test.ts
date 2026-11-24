@@ -794,14 +794,26 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     // Native module.
     expect(text).not.toMatch(/@mastra\b/);
     expect(text).not.toMatch(/from\s+["'][^"']*native[^"']*["']/i);
-    // The wire module has no import at all (the renderer compiles it).
+    // The wire module imports nothing but the M4 tool names (the renderer
+    // compiles it). `agentReadToolDefinitions.ts` is itself a leaf with no
+    // import (4c-1 W1: `tools` is a list of M4 names, checked by the parser).
     const wire = stripComments(
       readFileSync(
         path.join(REPO, "electron/shared/mastraAgentTurnWire.ts"),
         "utf8",
       ),
     );
-    expect(wire).not.toMatch(/^\s*import\b/m);
+    const wireImports = [
+      ...wire.matchAll(/^\s*import\b[\s\S]*?from\s+["']([^"']+)["']/gm),
+    ].map((match) => match[1]);
+    expect(wireImports).toEqual(["./agentReadToolDefinitions.js"]);
+    const toolNames = stripComments(
+      readFileSync(
+        path.join(REPO, "electron/shared/agentReadToolDefinitions.ts"),
+        "utf8",
+      ),
+    );
+    expect(toolNames).not.toMatch(/^\s*import\b/m);
     // Nothing else in the product's Main names the gate or its seam.
     const namers = productSources()
       .filter(

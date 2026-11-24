@@ -49,8 +49,8 @@
       },
       "result": {
         "name": "get_character_timeline",
-        "summary": "2 events for 老魔術師",
-        "tokensUsed": 233,
+        "summary": "3 events for 老魔術師",
+        "tokensUsed": 333,
         "content": {
           "character": "老魔術師",
           "events": [
@@ -69,11 +69,19 @@
               "ordinal": "a2",
               "startTime": 5400,
               "ageAtEvent": null
+            },
+            {
+              "id": "ev-death",
+              "title": "老魔術師の死",
+              "kind": "death",
+              "ordinal": "a3",
+              "startTime": 7200,
+              "ageAtEvent": null
             }
           ]
         }
       },
-      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null}]}"
+      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"ageAtEvent\":null}]}"
     },
     {
       "case": "rows: S1 の c-mage（戦争は hidden）",
@@ -86,11 +94,19 @@
       },
       "result": {
         "name": "get_character_timeline",
-        "summary": "1 events for 老魔術師",
-        "tokensUsed": 135,
+        "summary": "3 events for 老魔術師",
+        "tokensUsed": 333,
         "content": {
           "character": "老魔術師",
           "events": [
+            {
+              "id": "ev-war",
+              "title": "魔術戦争",
+              "kind": "generic",
+              "ordinal": "a1",
+              "startTime": 3600,
+              "ageAtEvent": null
+            },
             {
               "id": "ev-meet",
               "title": "老魔術師との出会い",
@@ -98,11 +114,19 @@
               "ordinal": "a2",
               "startTime": 5400,
               "ageAtEvent": null
+            },
+            {
+              "id": "ev-death",
+              "title": "老魔術師の死",
+              "kind": "death",
+              "ordinal": "a3",
+              "startTime": 7200,
+              "ageAtEvent": null
             }
           ]
         }
       },
-      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null}]}"
+      "contentJson": "{\"character\":\"老魔術師\",\"events\":[{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"ageAtEvent\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"ageAtEvent\":null},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"ageAtEvent\":null}]}"
     },
     {
       "case": "empty: 関与のない codex（名前の解決もなく id を character に）",
@@ -134,14 +158,11 @@
       },
       "result": {
         "name": "get_character_timeline",
-        "summary": "0 events for c-aria",
-        "tokensUsed": 34,
-        "content": {
-          "character": "c-aria",
-          "events": []
-        }
+        "summary": "Character not found",
+        "tokensUsed": 0,
+        "content": null
       },
-      "contentJson": "{\"character\":\"c-aria\",\"events\":[]}"
+      "contentJson": "null"
     },
     {
       "case": "XPROJ: main から他 project の codex id",
@@ -154,14 +175,11 @@
       },
       "result": {
         "name": "get_character_timeline",
-        "summary": "0 events for x-c-aria",
-        "tokensUsed": 36,
-        "content": {
-          "character": "x-c-aria",
-          "events": []
-        }
+        "summary": "Character not found",
+        "tokensUsed": 0,
+        "content": null
       },
-      "contentJson": "{\"character\":\"x-c-aria\",\"events\":[]}"
+      "contentJson": "null"
     },
     {
       "case": "XPROJ: 他 project は他 project の出来事だけ",
