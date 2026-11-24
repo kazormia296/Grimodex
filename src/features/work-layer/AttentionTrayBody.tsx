@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 
 import { DisposedAccordion } from "./DisposedAccordion";
 import { useWorkLayer } from "./WorkLayerContext";
+import { selectAttentionCount } from "./workLayerLiveEntries";
 import { deriveAllWork } from "./workLedgerItems";
 
 export function AttentionTrayBody() {
@@ -15,6 +16,7 @@ export function AttentionTrayBody() {
   const {
     model,
     navigation,
+    provenance,
     back,
     openChangeReview,
     openDisposed,
@@ -24,7 +26,8 @@ export function AttentionTrayBody() {
     selectFinding,
     switchFocusPreview,
   } = workLayer;
-  const isEmpty = model.attention.length === 0;
+  const attentionTotal = selectAttentionCount(model).total;
+  const isEmpty = attentionTotal === 0;
   const disposedExpanded = navigation.mode === "tray-disposed";
   const allWork = deriveAllWork(model);
   const laterTargets =
@@ -53,7 +56,7 @@ export function AttentionTrayBody() {
           <div className="flex items-center font-mono text-[9px] tracking-[0.16em]">
             ATTENTION
             <span className="ml-auto text-xs font-bold tabular-nums">
-              {model.attention.length}
+              {attentionTotal}
             </span>
           </div>
           <p className="mt-1 text-[11px] opacity-70">
@@ -148,32 +151,34 @@ export function AttentionTrayBody() {
         </div>
       )}
 
-      <div className="border-t border-border px-4 py-3">
-        <div className="font-mono text-[9px] tracking-[0.16em] text-muted-foreground">
-          LATER
+      {provenance === "preview" && (
+        <div className="border-t border-border px-4 py-3">
+          <div className="font-mono text-[9px] tracking-[0.16em] text-muted-foreground">
+            LATER
+          </div>
+          <div className="mt-1 space-y-1">
+            {laterTargets.map((target) => (
+              <button
+                key={target.id}
+                type="button"
+                onClick={() => switchFocusPreview(target.id)}
+                aria-label={t(
+                  "workLayer.tray.switchFocusTarget",
+                  "{{title}}へFocusを切り替える",
+                  { title: target.title },
+                )}
+                className="flex w-full items-center rounded-sm px-1 py-2 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="mr-2 h-1.5 w-1.5 border border-foreground/50" />
+                <span className="min-w-0 flex-1 truncate">{target.title}</span>
+                <span className="ml-3 shrink-0 text-[10px] text-muted-foreground">
+                  {t("workLayer.tray.switchFocus", "Focusへ切り替える")}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="mt-1 space-y-1">
-          {laterTargets.map((target) => (
-            <button
-              key={target.id}
-              type="button"
-              onClick={() => switchFocusPreview(target.id)}
-              aria-label={t(
-                "workLayer.tray.switchFocusTarget",
-                "{{title}}へFocusを切り替える",
-                { title: target.title },
-              )}
-              className="flex w-full items-center rounded-sm px-1 py-2 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <span className="mr-2 h-1.5 w-1.5 border border-foreground/50" />
-              <span className="min-w-0 flex-1 truncate">{target.title}</span>
-              <span className="ml-3 shrink-0 text-[10px] text-muted-foreground">
-                {t("workLayer.tray.switchFocus", "Focusへ切り替える")}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+      )}
 
       <DisposedAccordion
         expanded={disposedExpanded}

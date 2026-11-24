@@ -786,8 +786,8 @@ Codex エントリの詳細を取得する。
 | `get_chapter_summaries` | R | o | folder 単位のシーン synopsis 一覧 |
 | `list_open_foreshadows` | R | o | 未回収・未放棄伏線一覧（secret 値にかかわらず） |
 | `get_foreshadow_detail` | R | o | 単一伏線の詳細（setups / payoff） |
-| `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret 既定 true・tracked: undo_journal+change_event を 1tx 記録） |
-| `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ・tracked 同上。undo は updated_at 楽観ガードの versionless 設計） |
+| `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret は schema 非公開。true は拒否、false／省略は 0・tracked: undo_journal+change_event を 1tx 記録） |
+| `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ・secret 指定は true／false とも拒否・tracked 同上。undo は updated_at 楽観ガードの versionless 設計） |
 | `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
 | `get_writing_context` | R | o | curated context 一発集約（project / 章outline / storySoFar / シーン本文MD+intent / timeline近傍 / シーン伏線+未回収・未放棄伏線(secret 値にかかわらず) / codex mention+always。cap超過はdropped数で報告） |
 | `list_events` | R | o | 作中年表イベント一覧（作中順・`events.secret` による除外なし・kind フィルタ可・primaryCharacter は codex 名解決） |
@@ -1285,8 +1285,7 @@ write 系ツールはライセンス状態でも制限する（`--readonly` と�
     project スコープしない（アプリ内なら安全）。外部ライターである MCP では
     cross-project 書き込みの穴になるため、MCP 版 `update_foreshadow` は
     `WHERE id = ? AND project_id = ?` で必ず絞り、0 件なら not-found エラーを返す
-  - `secret` は create の任意パラメータ（既定 true）。既定固定だと
-    「作成したのに `list_open_foreshadows` に出ない」不整合になるため公開した
+  - `secret` は互換入力として読み続けるが schema には出さない。create の `true` と update の指定値（`true`／`false`）は拒否し、create の `false`／省略は `false` として保存する
   - payoff 位置アンカー（`payoff_from_pos` 等）はエディタ座標が必要なため MCP では非公開
 - DB の `busy_timeout` を 5000ms に設定し、`SQLITE_BUSY` をエラーとして返す
 

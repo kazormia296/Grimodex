@@ -599,7 +599,11 @@ describe("Work Layer UI", () => {
   });
 
   it("does not load or render the Work Layer outside the primary desktop workspace", async () => {
-    const port: WorkLayerPort = { load: vi.fn().mockResolvedValue(MODEL) };
+    const port: WorkLayerPort = {
+      kind: "fixture",
+      scopeKey: MODEL.scopeId,
+      load: vi.fn().mockResolvedValue(MODEL),
+    };
     renderWorkLayer({ active: false, initialModel: null, port });
 
     expect(port.load).not.toHaveBeenCalled();
@@ -857,6 +861,8 @@ describe("Work Layer UI", () => {
     vi.mocked(useReducedMotion).mockReturnValue(true);
     let resolveModel: ((model: WorkLayerModel) => void) | undefined;
     const port: WorkLayerPort = {
+      kind: "fixture",
+      scopeKey: MODEL.scopeId,
       load: vi.fn(
         () =>
           new Promise<WorkLayerModel>((resolve) => {
