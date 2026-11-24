@@ -13,6 +13,9 @@ export function useRootDisplaySettings(): void {
   const uiFontFamily = useSettingsStore((state) =>
     state.get("display.uiFontFamily"),
   );
+  const uiFontWeight = useSettingsStore((state) =>
+    state.getNumber("display.uiFontWeight", 400),
+  );
   const appReduceMotion = useSettingsStore((state) =>
     state.getBoolean("display.reduceMotion", false),
   );
@@ -30,6 +33,13 @@ export function useRootDisplaySettings(): void {
     if (value) html.style.setProperty("--ui-font", value);
     else html.style.removeProperty("--ui-font");
   }, [uiFontFamily]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--ui-font-weight",
+      String(uiFontWeight),
+    );
+  }, [uiFontWeight]);
 
   // index.css の reduced-motion の規則は OS の media query だけを見るので、
   // 同じ規則を root の属性でも効かせる（JS 側は useReducedMotion／
