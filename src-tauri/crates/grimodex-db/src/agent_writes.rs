@@ -14032,6 +14032,20 @@ mod tests {
         )
         .expect("create visible AI foreshadow");
         let foreshadow_id = created["entityId"].as_str().expect("entity id").to_string();
+        db.with_conn(|conn| {
+            // An AI-created foreshadow has no authority row, so a title update
+            // would be read as a legacy human value. Own the field as the AI.
+            let inserted = conn.execute(
+                "INSERT OR REPLACE INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind,
+                     explicit_lock, version, updated_at)
+                 VALUES (?1, 'foreshadow', ?2, '/title', 'ai', 0, 1, 'fixture')",
+                rusqlite::params![project_id, foreshadow_id],
+            )?;
+            assert_eq!(inserted, 1, "the AI owns the title field");
+            Ok(())
+        })
+        .expect("authorize the title update for the AI retry fixture");
         let side_effect_counts = (
             table_count(&db, "foreshadows"),
             table_count(&db, "change_events"),
