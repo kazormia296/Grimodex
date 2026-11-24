@@ -81,7 +81,7 @@ const REASONS: Readonly<Record<string, ReasonEntry>> = {
   "reveal-scene-unresolved": {
     kind: "info",
     key: "chronicle.extract.bulkReason.revealSceneUnresolved",
-    text: "根拠の場面を確認できません",
+    text: "根拠の文書の場面を確認できません",
   },
   "scope-authority-unavailable": {
     kind: "info",

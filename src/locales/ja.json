@@ -6214,7 +6214,7 @@
         "planUnavailable": "既存の出来事との重複を確かめられませんでした",
         "evidenceUnverified": "根拠の引用を本文で確かめられませんでした",
         "alreadyNonsecret": "すでに秘密の印が外れています",
-        "revealSceneUnresolved": "根拠の場面を確認できません",
+        "revealSceneUnresolved": "根拠の文書の場面を確認できません",
         "scopeAuthorityUnavailable": "場面の Scope を確かめられません",
         "semanticEpochMissing": "プロジェクトの意味の世代の記録がありません",
         "parentSealMissing": "元の版の封印の記録がありません",

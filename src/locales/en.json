@@ -6236,7 +6236,7 @@
         "planUnavailable": "Could not check for a duplicate of an existing event",
         "evidenceUnverified": "The evidence quote could not be verified in the text",
         "alreadyNonsecret": "The secret mark is already removed",
-        "revealSceneUnresolved": "Could not resolve the evidence scene",
+        "revealSceneUnresolved": "Could not resolve the scene of the evidence document",
         "scopeAuthorityUnavailable": "The scene's Scope cannot be checked",
         "semanticEpochMissing": "The project has no semantic-epoch record",
         "parentSealMissing": "The original revision has no seal record",

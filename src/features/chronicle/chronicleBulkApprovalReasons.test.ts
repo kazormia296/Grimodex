@@ -42,7 +42,7 @@ describe("describeBulkApprovalReasons", () => {
       "根拠の引用を本文で確かめられませんでした",
     ]);
     expect(sentence("reveal-scene-unresolved")).toEqual([
-      "根拠の場面を確認できません",
+      "根拠の文書の場面を確認できません",
     ]);
     expect(sentence("scope-authority-unavailable")).toEqual([
       "場面の Scope を確かめられません",
@@ -190,10 +190,10 @@ describe("bulk approval reason locales", () => {
 
   it("uses evidence-scene wording while keeping the existing nonsecret wording", () => {
     expect(bulkReasons("ja").revealSceneUnresolved).toBe(
-      "根拠の場面を確認できません",
+      "根拠の文書の場面を確認できません",
     );
     expect(bulkReasons("en").revealSceneUnresolved).toBe(
-      "Could not resolve the evidence scene",
+      "Could not resolve the scene of the evidence document",
     );
     expect(bulkReasons("ja").alreadyNonsecret).toBe(
       "すでに秘密の印が外れています",
