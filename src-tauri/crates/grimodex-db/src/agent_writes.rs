@@ -8056,14 +8056,19 @@ pub fn agent_event_create_with_authority_impl(
     })
 }
 
+/// surface ごとの「AI から伏せる人物」の判定（WHERE 句の断片。`codex_entries c` を指す）。
+/// アプリ内の AI（`in-app-agent`・省略時＝旧経路）は、Phase が場面ごとに解決されるので base の
+/// `hidden` だけ。それ以外の AI の surface（MCP・未知の値）は、場面を解決できないので、
+/// MCP の読みと同じ「base が hidden、または hidden の Phase がある」（強い方）に倒す。
+/// 作者の surface（`manual`・`import`）は、呼び出し側が判定しない。
 fn codex_entry_hidden_for_surface_sql(surface: Option<&str>) -> &'static str {
-    if surface == Some("mcp") {
+    if matches!(surface, None | Some("in-app-agent")) {
+        "c.context_mode = 'hidden'"
+    } else {
         "c.context_mode = 'hidden' OR EXISTS (
             SELECT 1 FROM codex_entry_phases p
             WHERE p.entry_id = c.id AND p.context_mode_override = 'hidden'
         )"
-    } else {
-        "c.context_mode = 'hidden'"
     }
 }
 
@@ -16014,6 +16019,7 @@ mod tests {
     fn event_participants_preserve_phase_only_hidden_entries_only_for_mcp() {
         for (surface, hidden_remains) in [
             (Some("mcp"), true),
+            (Some("future-ai-surface"), true),
             (Some("in-app-agent"), false),
             (None, false),
         ] {
@@ -16344,9 +16350,9 @@ mod tests {
     fn event_update_applies_surface_specific_phase_hidden_guard() {
         for (surface, rejects) in [
             (Some("mcp"), true),
+            (Some("future-ai-surface"), true),
             (Some("in-app-agent"), false),
             (None, false),
-            (Some("future-ai-surface"), false),
         ] {
             let db = test_db();
             let project_id = insert_project(&db);

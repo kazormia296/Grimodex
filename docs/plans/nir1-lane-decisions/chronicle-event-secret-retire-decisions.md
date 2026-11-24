@@ -89,18 +89,21 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 
 ### DR-CSR-9　MCP の参加者の保持：読みと同じ「base または Phase」に揃える（確認 154）
 
-- hidden の判定を、**surface ごとに 1 つの関数**（`codex_entry_hidden_for_surface_sql`。`agent_writes.rs`）にまとめた。`mcp`：`context_mode = 'hidden'`、または `context_mode_override = 'hidden'` の Phase がある（MCP の読み `chronicle_hidden_codex_ids` と同じ。MCP は Phase を場面ごとに解決しない）。それ以外の AI の surface（`in-app-agent`・省略時・未知）：base の `hidden` だけ（Phase は場面ごとに解決されるので、これまでどおり）。作者の surface（`manual`・`import`）は、保持しない（これまでどおり）。
+- hidden の判定を、**surface ごとに 1 つの関数**（`codex_entry_hidden_for_surface_sql`。`agent_writes.rs`）にまとめた。`mcp`：`context_mode = 'hidden'`、または `context_mode_override = 'hidden'` の Phase がある（MCP の読み `chronicle_hidden_codex_ids` と同じ。MCP は Phase を場面ごとに解決しない）。アプリ内の AI（`in-app-agent`・省略時＝旧経路）：base の `hidden` だけ（Phase は場面ごとに解決されるので、これまでどおり）。**それ以外の AI の surface（MCP・未知の値）：強い方（base または Phase）**。独立レビューの指摘で、未知の値を弱い方に倒していたのを直した（場面を解決できない surface は、守る側に倒す）。作者の surface（`manual`・`import`）は、保持しない（これまでどおり）。
 - 参加者の置き換えの「残す」処理（DR-CSR-4）は、この関数を使う。返り値・冪等性・undo journal・変更 event の `codexEntryIds`（要求のまま）は変えない。
-- 試験：Phase だけで hidden の参加者が、`mcp` では役割ごと残り、`in-app-agent`・省略時では消える。
+- 試験：Phase だけで hidden の参加者が、`mcp`・未知の surface では役割ごと残り、`in-app-agent`・省略時では消える。
 
 ### DR-CSR-10　AI の `update_event` は、現在の主な人物・場所が hidden の出来事で、その欄を変えられない（確認 155）
 
 - **対象**：surface が `manual`・`import` でない更新（`mcp`・`in-app-agent`・省略時・未知。画面の手動編集は `manual`）。`primaryCodexId` または `locationCodexId` を渡したとき、その出来事の**現在の**値が、DR-CSR-9 の関数の意味で hidden の人物なら、**要求の値が現在と違うとき**（空文字＝解除も違うものとして）拒否する。同じ値を渡す（変更なし）・現在が NULL か hidden でない人物・他の欄だけの更新は、これまでどおり成功する。
 - **拒否は、行・journal・change event を書く前**（検証の直後）。拒否のとき、`events` の行・`version`・`change_events`・`undo_journal` は変わらない。成功済みの同じ `request_id` の再送は、冪等性の検査が先なので、保存された返り値を返す。
 - **文言は仕組みを明かさない**：`primaryCodexId cannot be changed on this event`（`locationCodexId` も同様）。「hidden」「secret」を含まない。MCP の道具を通すと、既存の `internal_err` により、AI に見えるのは汎用の `internal error` だけになる（理由は伝わらない。MCP 全体の既存の挙動）。
+- **残る制限：拒否の成否が、AI に 1 bit 漏れる（独立レビュー 2 系統が指摘。Opus は P2、Codex は P1 と評価）。** (a) MCP では hidden の主な人物・場所が null に見えるので、AI が、見えている id（または空文字）を送り、拒否されれば「この欄は hidden の人物が持つ」、成功すれば「本当に空」と分かる。(b) AI が hidden の id を知っていれば、同じ値を送って成功するかで、「現在の値がその id か」を確かめられる。**評価：許容する。** 漏れるのは存在の 1 bit だけで、名前・内容は出ない。探りは無料ではない（現在が hidden でない出来事では、実際に書き換わり、undo journal・change event に残る）。(b) は hidden の id を知っていることが前提だが、MCP の読みから hidden の id を得る経路は見つかっていない（DR-CSR-5 の 3）。黙って無視する形にしても、読み直せば値が null のままなので、oracle になる。完全に塞ぐには、AI の主な人物・場所の更新を一律に禁じるか、作者の確認を経由させるしかなく、ユーザー決定（確認 155：hidden のときだけ守る）の範囲を超える。**ユーザーに、残る制限として見せる。**
+- **残る制限：`delete_event` と `create_event` を続けると、hidden の主な人物・場所が外れる。** MCP の AI は、見えている出来事を消して作り直せる。明示的な破壊で、undo で全部戻る。確認 155 の脅威（空に見える欄を埋めて、黙って上書きする）とは別。作成の経路は、この PR の対象外。
 - **範囲外（残る制限）**：現在の値が hidden でない（または NULL の）ときに、AI が hidden の人物を新しく設定すること（`ensure_codex_in_project` は hidden を区別しない。DR-CSR-5 の 3 のまま）。作成（`create_event`）の経路。
 
 ### 検証（C2。2026-11-24。自分で実行した）
 
 - `cargo test -p grimodex-db --lib agent_writes`：125 件、`cargo test -p grimodex-mcp`：229 件が通過。
 - **変異**（それぞれ、狙った試験が落ちる）：R3 の保護を外す、`mcp` の分岐を base だけにする、参加者の保持の SQL を base だけに戻す、作者の surface でも保護する。
+- **独立レビュー**：Claude（Opus）・Codex（read-only）の 2 系統。R3 の迂回（IPC・MCP・一括・取り込み・undo／redo。作者の undo・redo は塞がれない）、surface のなりすまし（MCP は `mcp` を固定、アプリ内は Main が `in-app-agent` で上書き、AI は選べない）、SQL（注入なし・実スキーマと一致）、transaction（`BEGIN IMMEDIATE` の中・冪等の再送の後）は、2 系統とも問題なし。直した指摘：未知の surface を強い方に倒す、MCP の道具の試験に基準（hidden でなければ通る）を足す。残る制限として記録した指摘：上の 1 bit の oracle、`delete`＋`create`。
