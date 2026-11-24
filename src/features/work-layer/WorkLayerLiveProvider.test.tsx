@@ -152,4 +152,53 @@ describe("Work Layer live provider", () => {
     view.unmount();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
+
+  it("reloads only when the tray opens from ambient, never when moving between faces", async () => {
+    const port: WorkLayerPort = {
+      kind: "live",
+      scopeKey: "p1",
+      load: vi.fn().mockResolvedValue(model("p1", 1)),
+    };
+    function Faces() {
+      const value = useWorkLayer();
+      return (
+        <>
+          <output data-testid="mode">{value?.navigation.mode ?? "none"}</output>
+          <button onClick={() => value?.openAttention()}>attention</button>
+          <button onClick={() => value?.openDisposed()}>disposed</button>
+          <button onClick={() => value?.openLedger()}>ledger</button>
+          <button onClick={() => value?.close()}>close</button>
+        </>
+      );
+    }
+    render(
+      <WorkLayerProvider port={port}>
+        <Faces />
+      </WorkLayerProvider>,
+    );
+    await waitFor(() => expect(port.load).toHaveBeenCalledTimes(1));
+    await screen.findByText("ledger");
+
+    // ambient -> tray: one reload.
+    fireEvent.click(screen.getByText("attention"));
+    await waitFor(() => expect(port.load).toHaveBeenCalledTimes(2));
+    expect(port.load).toHaveBeenLastCalledWith({ reason: "tray-open" });
+
+    // tray -> other faces: no reload.
+    fireEvent.click(screen.getByText("disposed"));
+    fireEvent.click(screen.getByText("ledger"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("mode")).toHaveTextContent("ledger");
+    expect(port.load).toHaveBeenCalledTimes(2);
+
+    // closing and opening again: one more reload.
+    fireEvent.click(screen.getByText("close"));
+    await waitFor(() =>
+      expect(screen.getByTestId("mode")).toHaveTextContent("ambient"),
+    );
+    fireEvent.click(screen.getByText("attention"));
+    await waitFor(() => expect(port.load).toHaveBeenCalledTimes(3));
+  });
 });

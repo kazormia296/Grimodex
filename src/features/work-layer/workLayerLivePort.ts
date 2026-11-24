@@ -140,6 +140,61 @@ export function createWorkLayerLivePort(
     for (const listener of listeners) listener(next);
   };
 
+  const replaceStaleEntry = (
+    model: WorkLayerModel,
+    read: StaleProposalRead,
+  ): WorkLayerModel => {
+    const entries = (model.liveEntries ?? []).filter(
+      (entry) => entry.id !== "stale-proposals",
+    );
+    if (read.state === "allowed") {
+      entries.push({
+        id: "stale-proposals",
+        status: "ready",
+        count: read.count,
+      });
+    } else if (read.state === "unavailable") {
+      entries.push({
+        id: "stale-proposals",
+        status: "unavailable",
+        count: null,
+      });
+    }
+    return { ...model, liveEntries: entries };
+  };
+
+  const publishStaleRead = (read: StaleProposalRead) => {
+    if (disposed || latestModel == null) return;
+    const next = replaceStaleEntry(latestModel, read);
+    latestModel = next;
+    for (const listener of listeners) listener(next);
+  };
+
+  /**
+   * The policy and Inbox reads have no deadline of their own. Past the display
+   * wait limit the row is shown as unavailable; the read keeps running, and a
+   * late answer replaces the row when it arrives.
+   */
+  const readStaleProposalCountWithin = async (): Promise<StaleProposalRead> => {
+    const read = readStaleProposalCount();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timed-out">((resolve) => {
+      timer = setTimeout(() => resolve("timed-out"), waitLimit);
+    });
+    const result = await Promise.race([
+      read,
+      timeout,
+      disposedSignal.then(() => "disposed" as const),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (result === "timed-out") {
+      void read.then((late) => publishStaleRead(late));
+      return { state: "unavailable" };
+    }
+    if (result === "disposed") return { state: "unavailable" };
+    return result;
+  };
+
   const raceDisposed = (promise: Promise<WorkLayerModel>) =>
     Promise.race([
       promise,
@@ -152,7 +207,7 @@ export function createWorkLayerLivePort(
     const candidateSnapshot = candidateApplicable
       ? readCandidateCount()
       : { status: "not-counted" as const };
-    const staleRead = await readStaleProposalCount();
+    const staleRead = await readStaleProposalCountWithin();
     const currentSnapshot =
       candidateApplicable && revision !== candidateRevision
         ? readCandidateCount()
@@ -162,10 +217,11 @@ export function createWorkLayerLivePort(
 
   const runTrayOpen = async (): Promise<WorkLayerModel> => {
     const candidateApplicable = canShowCandidates();
+    const revision = candidateRevision;
     const candidateSnapshot = candidateApplicable
       ? readCandidateCount()
       : { status: "not-counted" as const };
-    const staleReadPromise = readStaleProposalCount();
+    const staleReadPromise = readStaleProposalCountWithin();
     const scanPromise = candidateApplicable
       ? Promise.resolve()
           .then(() => deps.ensureCandidateScan())
@@ -187,7 +243,15 @@ export function createWorkLayerLivePort(
     const staleRead = await staleReadPromise;
     if (disposed || outcome === "disposed") return emptyModel(deps.projectId);
     if (outcome === "timed-out") {
-      const model = remember(buildModel({ status: "unavailable" }, staleRead));
+      // A count that arrived while we waited is newer than the timeout marker.
+      const arrived =
+        revision !== candidateRevision ? readCandidateCount() : null;
+      const model = remember(
+        buildModel(
+          arrived?.status === "ready" ? arrived : { status: "unavailable" },
+          staleRead,
+        ),
+      );
       void scanPromise.then((lateOutcome) => {
         if (disposed) return;
         candidateRevision += 1;

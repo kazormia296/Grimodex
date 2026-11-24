@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { useCurrentProject } from "@/features/project/projectStore";
+import { useProjectStore } from "@/features/project/projectStore";
 import { isWorkLayerLiveEnabled } from "@/features/work-layer/workLayerLiveFlag";
 import type { WorkLayerPort } from "@/features/work-layer/types";
 
@@ -12,8 +12,18 @@ interface OwnedWorkLayerPort {
 export function useWorkLayerLivePort(
   activeWorkLayer: boolean,
 ): WorkLayerPort | null {
-  const projectId = useCurrentProject()?.id ?? null;
   const liveEnabled = isWorkLayerLiveEnabled();
+  // `useCurrentProjectId()` falls back to a placeholder id when no project is open, so
+  // the signal for "a real project" is a project row for the current id. The selector
+  // returns a primitive, and a constant while the flag is closed: a closed flag never
+  // re-renders this Provider on project changes.
+  const projectId = useProjectStore((state) =>
+    liveEnabled &&
+    state.currentProjectId != null &&
+    state.projects.some((project) => project.id === state.currentProjectId)
+      ? state.currentProjectId
+      : null,
+  );
   const fixturePreferred =
     import.meta.env.DEV && import.meta.env.VITE_WORK_LAYER_FIXTURE === "true";
   const eligible =

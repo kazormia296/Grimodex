@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   project: { current: { id: "p1" } as { id: string } | undefined },
   hostProjectId: null as string | null,
+  lastSelector: null as ((state: unknown) => unknown) | null,
   syncProject: vi.fn(),
   requestScan: vi.fn().mockResolvedValue(undefined),
   livePortImports: 0,
@@ -13,7 +14,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/features/project/projectStore", () => ({
-  useCurrentProject: () => mocks.project.current,
+  useProjectStore: (selector: (state: unknown) => unknown) => {
+    mocks.lastSelector = selector;
+    return selector({
+      currentProjectId: mocks.project.current?.id ?? "placeholder",
+      projects: mocks.project.current ? [mocks.project.current] : [],
+    });
+  },
   getCurrentProjectLanguage: () => "ja",
 }));
 vi.mock("@/features/codex/codexCandidateHostStore", () => ({
@@ -98,6 +105,31 @@ describe("useWorkLayerLivePort", () => {
     expect(mocks.syncProject).not.toHaveBeenCalled();
     expect(mocks.livePortImports).toBe(0);
     expect(mocks.liveReaderImports).toBe(0);
+  });
+
+  it("selects a constant while the flag is closed, so project changes never re-render the provider", () => {
+    const state = (id: string) => ({
+      currentProjectId: id,
+      projects: [{ id }],
+    });
+    renderHook(() => useWorkLayerLivePort(true));
+    expect(mocks.lastSelector?.(state("p1"))).toBeNull();
+    expect(mocks.lastSelector?.(state("p2"))).toBeNull();
+
+    vi.stubEnv("VITE_WORK_LAYER_LIVE", "true");
+    renderHook(() => useWorkLayerLivePort(true));
+    expect(mocks.lastSelector?.(state("p1"))).toBe("p1");
+    // Only the id (a primitive) is selected: renaming a project changes nothing.
+    expect(
+      mocks.lastSelector?.({
+        currentProjectId: "p1",
+        projects: [{ id: "p1", name: "renamed" }],
+      }),
+    ).toBe("p1");
+    // The placeholder id used when no project is open has no project row.
+    expect(
+      mocks.lastSelector?.({ currentProjectId: "placeholder", projects: [] }),
+    ).toBeNull();
   });
 
   it("keeps fixture mode ahead of live even when both flags are set", () => {

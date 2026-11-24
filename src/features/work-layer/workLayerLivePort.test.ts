@@ -321,4 +321,65 @@ describe("createWorkLayerLivePort", () => {
     expect(entry(model, "codex-candidates")).toMatchObject({ count: 7 });
     unsubscribe();
   });
+
+  it("bounds a slow policy/Inbox read by the display wait limit, then publishes its late answer", async () => {
+    vi.useFakeTimers();
+    const slow = deferred<{ allowed: true; count: number }>();
+    const port = createWorkLayerLivePort(
+      dependencies({
+        displayWaitLimitMs: 10,
+        readStaleProposalCount: vi.fn(() => slow.promise),
+      }),
+    );
+    const updates: WorkLayerModel[] = [];
+    const unsubscribe = port.subscribe((next) => updates.push(next));
+
+    const loading = port.load({ reason: "mount" });
+    await vi.advanceTimersByTimeAsync(10);
+    const model = await loading;
+    expect(entry(model, "stale-proposals")).toMatchObject({
+      status: "unavailable",
+      count: null,
+    });
+
+    slow.resolve({ allowed: true, count: 7 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(entry(updates.at(-1)!, "stale-proposals")).toMatchObject({
+      status: "ready",
+      count: 7,
+    });
+    unsubscribe();
+  });
+
+  it("does not hide a count that arrived while waiting behind the timeout marker", async () => {
+    vi.useFakeTimers();
+    const scan = deferred<void>();
+    let snapshot: CandidateCountSnapshot = { status: "not-counted" };
+    let notify!: () => void;
+    const port = createWorkLayerLivePort(
+      dependencies({
+        displayWaitLimitMs: 10,
+        readCandidateCount: vi.fn(() => snapshot),
+        ensureCandidateScan: vi.fn(() => scan.promise),
+        subscribeCandidateCount: vi.fn((listener: () => void) => {
+          notify = listener;
+          return vi.fn();
+        }),
+      }),
+    );
+    const unsubscribe = port.subscribe(() => {});
+    await port.load({ reason: "mount" });
+
+    const loading = port.load({ reason: "tray-open" });
+    snapshot = { status: "ready", count: 6 };
+    notify();
+    await vi.advanceTimersByTimeAsync(10);
+    const model = await loading;
+
+    expect(entry(model, "codex-candidates")).toMatchObject({
+      status: "ready",
+      count: 6,
+    });
+    unsubscribe();
+  });
 });
