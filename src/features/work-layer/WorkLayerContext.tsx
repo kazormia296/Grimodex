@@ -35,7 +35,7 @@ export function WorkLayerProvider({
   onPreviewDecision,
 }: WorkLayerProviderProps) {
   const [model, setModel] = useState<WorkLayerModel | null>(
-    active ? initialModel : null,
+    active && port?.kind !== "live" ? initialModel : null,
   );
   const [consumedArrivalScope, setConsumedArrivalScope] = useState<
     string | null
@@ -55,7 +55,9 @@ export function WorkLayerProvider({
       setPreviewFindingSession(createPreviewFindingSessionState(null));
       return;
     }
-    if (initialModel != null) {
+    // A live port is the only source of a live model: `initialModel` is a
+    // preview/test seam and never stands in for live data.
+    if (initialModel != null && port?.kind !== "live") {
       setModel(initialModel);
       return;
     }
@@ -65,8 +67,14 @@ export function WorkLayerProvider({
     }
 
     let cancelled = false;
+    if (port.kind === "live") {
+      // A different work's counts must not survive into the new work.
+      setModel((current) =>
+        current != null && current.scopeId !== port.scopeKey ? null : current,
+      );
+    }
     void port
-      .load()
+      .load({ reason: "mount" })
       .then((nextModel) => {
         if (!cancelled) setModel(nextModel);
       })
@@ -84,16 +92,26 @@ export function WorkLayerProvider({
     model == null
       ? null
       : derivePreviewFindingModel(model, previewFindingSession);
+  const isLive = port?.kind === "live";
+  // Live counts never announce or highlight arrivals (ADR 014: a count
+  // change must not notify, open a pane, or move focus).
   const arrivalSuppressed =
-    hasPendingArrival &&
-    (navigationController.navigation.mode !== "ambient" ||
-      consumedArrivalScope === modelScopeId);
+    isLive ||
+    (hasPendingArrival &&
+      (navigationController.navigation.mode !== "ambient" ||
+        consumedArrivalScope === modelScopeId));
+  // Hide synchronously, without waiting for the effect above, a model that no
+  // longer has a source (the port went away) or that belongs to another work
+  // than the live port's. Otherwise one frame of the old counts would render.
+  const modelOrphaned = port == null && initialModel == null;
+  const modelOutOfScope =
+    port?.kind === "live" && model != null && port.scopeKey !== model.scopeId;
   const visibleModel =
-    previewModel != null && arrivalSuppressed
-      ? { ...previewModel, attentionDelta: 0 }
-      : previewModel != null
-        ? previewModel
-        : null;
+    modelOrphaned || modelOutOfScope || previewModel == null
+      ? null
+      : arrivalSuppressed
+        ? { ...previewModel, attentionDelta: 0 }
+        : previewModel;
 
   useEffect(() => {
     if (modelScopeId == null) return;
@@ -124,6 +142,7 @@ export function WorkLayerProvider({
       ? null
       : {
           model: visibleModel,
+          provenance: isLive ? "live" : "preview",
           ...navigationController,
           switchFocusPreview: (targetId) => {
             setModel((current) =>
@@ -169,6 +188,7 @@ export function WorkLayerProvider({
           },
         };
   const resolutionDelta =
+    !isLive &&
     navigationController.navigation.mode === "resolved" &&
     (model?.attention.length ?? 0) > 0
       ? -1
@@ -189,4 +209,8 @@ export function WorkLayerProvider({
 
 export function useWorkLayer(): WorkLayerContextValue | null {
   return useContext(WorkLayerContext);
+}
+
+export function useWorkLayerProvenance(): "preview" | "live" {
+  return useContext(WorkLayerContext)?.provenance ?? "preview";
 }

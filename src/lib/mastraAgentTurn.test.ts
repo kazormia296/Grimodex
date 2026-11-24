@@ -9,16 +9,23 @@ import {
   MASTRA_AGENT_TURN_START_COMMAND,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
+import { MASTRA_AGENT_TURN_PROGRESS_EVENT } from "@/../electron/shared/ipcContract";
 
 const invokeMock = vi.hoisted(() => vi.fn());
+const listenMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: invokeMock,
+  listen: listenMock,
 }));
 
 import { IpcInvokeError } from "@/lib/tauri";
-import { cancelMastraAgentTurn, startMastraAgentTurn } from "./mastraAgentTurn";
+import {
+  cancelMastraAgentTurn,
+  listenMastraAgentTurnProgress,
+  startMastraAgentTurn,
+} from "./mastraAgentTurn";
 
 const TURN_ID = "8f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a";
 
@@ -63,6 +70,7 @@ const REQUEST: MastraAgentTurnStartRequest = {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  listenMock.mockReset();
 });
 
 describe("startMastraAgentTurn", () => {
@@ -228,5 +236,66 @@ describe("nothing calls the wrapper yet (the engine branch is MP-4)", () => {
     };
     walk(root);
     expect(importers).toEqual([]);
+  });
+});
+
+function progressPayload(sequence: number, turnId = TURN_ID) {
+  return { turnId, sequence, event: { kind: "stopped", reason: "user-stop" } };
+}
+
+describe("listenMastraAgentTurnProgress", () => {
+  function captureListener() {
+    const handlers: Array<(payload: unknown) => void> = [];
+    const remove = vi.fn();
+    listenMock.mockImplementation(
+      async (
+        channel: string,
+        handler: (payload: unknown) => void,
+      ): Promise<() => void> => {
+        expect(channel).toBe(MASTRA_AGENT_TURN_PROGRESS_EVENT);
+        handlers.push(handler);
+        return remove;
+      },
+    );
+    return { handlers, remove };
+  }
+
+  it("parses payloads and ignores malformed events and other turns", async () => {
+    const { handlers } = captureListener();
+    const callback = vi.fn();
+    await listenMastraAgentTurnProgress(TURN_ID, callback);
+    expect(listenMock).toHaveBeenCalledExactlyOnceWith(
+      MASTRA_AGENT_TURN_PROGRESS_EVENT,
+      expect.any(Function),
+    );
+    handlers[0]({ ...progressPayload(1), extra: true });
+    handlers[0](progressPayload(1, "5b2e3d4c-0a1b-42c3-8d4e-5f60718293a4"));
+    handlers[0](progressPayload(1));
+    expect(callback).toHaveBeenCalledExactlyOnceWith(progressPayload(1));
+  });
+
+  it.each([1, 3])(
+    "stops applying events after a duplicate or skipped sequence (%i)",
+    async (badSequence) => {
+      const { handlers } = captureListener();
+      const callback = vi.fn();
+      await listenMastraAgentTurnProgress(TURN_ID, callback);
+      handlers[0](progressPayload(1));
+      handlers[0](progressPayload(badSequence));
+      handlers[0](progressPayload(2));
+      expect(callback).toHaveBeenCalledExactlyOnceWith(progressPayload(1));
+    },
+  );
+
+  it("unlistens once and blocks callbacks from an already queued event", async () => {
+    const { handlers, remove } = captureListener();
+    const callback = vi.fn();
+    const unlisten = await listenMastraAgentTurnProgress(TURN_ID, callback);
+    handlers[0](progressPayload(1));
+    unlisten();
+    unlisten();
+    handlers[0](progressPayload(2));
+    expect(remove).toHaveBeenCalledOnce();
+    expect(callback).toHaveBeenCalledExactlyOnceWith(progressPayload(1));
   });
 });

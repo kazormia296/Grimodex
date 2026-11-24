@@ -18,12 +18,15 @@
  */
 import {
   parseMastraAgentTurnCancelResult,
+  parseMastraAgentTurnProgressPayload,
   parseMastraAgentTurnStartResult,
   type MastraAgentTurnCancelRequest,
+  type MastraAgentTurnProgressPayload,
   type MastraAgentTurnRefusalReason,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
-import { invoke, isD2aEgressDenied } from "@/lib/tauri";
+import { MASTRA_AGENT_TURN_PROGRESS_EVENT } from "@/../electron/shared/ipcContract";
+import { invoke, isD2aEgressDenied, listen } from "@/lib/tauri";
 
 export type MastraAgentTurnStartOutcome =
   | {
@@ -41,6 +44,35 @@ export type MastraAgentTurnCancelOutcome =
   | { readonly kind: "ok"; readonly found: boolean }
   | { readonly kind: "refused"; readonly reason: MastraAgentTurnRefusalReason }
   | { readonly kind: "invalid-response" };
+
+/** Subscribe to one turn's validated progress events; a sequence gap ends delivery. */
+export async function listenMastraAgentTurnProgress(
+  turnId: string,
+  callback: (payload: MastraAgentTurnProgressPayload) => void,
+): Promise<() => void> {
+  let active = true;
+  let desynced = false;
+  let lastSequence = 0;
+  const unlisten = await listen<unknown>(
+    MASTRA_AGENT_TURN_PROGRESS_EVENT,
+    (raw) => {
+      if (!active || desynced) return;
+      const parsed = parseMastraAgentTurnProgressPayload(raw);
+      if (!parsed.ok || parsed.value.turnId !== turnId) return;
+      if (parsed.value.sequence !== lastSequence + 1) {
+        desynced = true;
+        return;
+      }
+      lastSequence = parsed.value.sequence;
+      callback(parsed.value);
+    },
+  );
+  return () => {
+    if (!active) return;
+    active = false;
+    unlisten();
+  };
+}
 
 /** Starts a turn; settles when the turn does. */
 export async function startMastraAgentTurn(
