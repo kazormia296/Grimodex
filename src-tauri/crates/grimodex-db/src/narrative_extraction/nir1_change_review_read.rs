@@ -6,15 +6,15 @@ use grimodex_core::narrative_change_review::{
     EvidenceChangeKind, EvidenceRecord,
 };
 use grimodex_core::narrative_identity_diff::{diff_identity_objects, IdentityDiffChange};
+use grimodex_core::narrative_nir1::EntityRelationBundle;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::inbox_read_model::list_consumer_freshness;
 use super::nir1_entity_relation::{
-    read_nir1_entity_relation_revision, read_nir1_entity_relation_revision_current_for_revision,
-    Nir1EntityRelationRevision, Nir1EntityRelationRevisionCurrentRead,
-    Nir1EntityRelationRevisionRead, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
-    NIR1_ENTITY_RELATION_SET_KIND,
+    read_nir1_entity_relation_revision_current_for_revision,
+    read_nir1_entity_relation_revision_historical, Nir1EntityRelationRevisionCurrentRead,
+    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -129,11 +129,13 @@ pub fn read_nir1_change_review(
         find_previous_approved_typed_revision_id(conn, project_id, revision_id)?;
     let previous = match previous_revision_id.as_deref() {
         Some(previous_revision_id) => {
-            match read_nir1_entity_relation_revision(conn, project_id, previous_revision_id)? {
-                Nir1EntityRelationRevisionRead::Available(revision) => Some(*revision),
-                Nir1EntityRelationRevisionRead::Unavailable { reason } => {
-                    anyhow::bail!("previous approved typed revision is unavailable: {reason}")
-                }
+            match read_nir1_entity_relation_revision_historical(
+                conn,
+                project_id,
+                previous_revision_id,
+            )? {
+                Some(revision) => Some(revision),
+                None => return Ok(None),
             }
         }
         None => None,
@@ -145,8 +147,10 @@ pub fn read_nir1_change_review(
         .map(|revision| identity_objects_from_bundle(&revision.bundle))
         .unwrap_or_default();
     let changes = diff_identity_objects(&previous_objects, &current_objects)?;
-    let current_evidence = evidence_by_identity(&current);
-    let previous_evidence = previous.as_ref().map(evidence_by_identity);
+    let current_evidence = evidence_by_identity(&current.bundle);
+    let previous_evidence = previous
+        .as_ref()
+        .map(|revision| evidence_by_identity(&revision.bundle));
     let objects = changes
         .into_iter()
         .map(|change| {
@@ -192,10 +196,8 @@ pub fn read_nir1_change_review(
     }))
 }
 
-fn evidence_by_identity(
-    revision: &Nir1EntityRelationRevision,
-) -> HashMap<String, Vec<EvidenceRecord>> {
-    let entities = revision.bundle.entities.iter().map(|entity| {
+fn evidence_by_identity(bundle: &EntityRelationBundle) -> HashMap<String, Vec<EvidenceRecord>> {
+    let entities = bundle.entities.iter().map(|entity| {
         (
             format!("codex:{}", entity.entity_id),
             entity
@@ -211,8 +213,7 @@ fn evidence_by_identity(
         )
     });
     // Relations store evidence IDs only; the typed bundle contains no Evidence bodies to compare.
-    let relations = revision
-        .bundle
+    let relations = bundle
         .relations
         .iter()
         .map(|relation| (format!("codex-relation:{}", relation.edge_id), Vec::new()));
@@ -246,10 +247,13 @@ fn evidence_change(change: CoreEvidenceChange) -> EvidenceChange {
 mod tests {
     use super::{identity_change_name, IdentityDiffChange};
     use grimodex_core::narrative_identity_diff::{diff_identity_objects, IdentityDiffObject};
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
     use serde_json::Value;
 
-    use crate::narrative_extraction::nir1_entity_relation::tests as typed_tests;
+    use crate::narrative_extraction::nir1_entity_relation::{
+        read_nir1_entity_relation_revision_historical, tests as typed_tests,
+        Nir1EntityRelationHistoricalRevision,
+    };
     use crate::narrative_extraction::{
         find_previous_approved_typed_revision_id,
         narrative_extraction_create_nir1_entity_relation_revision, read_nir1_change_review,
@@ -330,6 +334,24 @@ mod tests {
             anyhow::ensure!(
                 before == after,
                 "change review read changed table row counts"
+            );
+            Ok(result)
+        })
+    }
+
+    fn read_historical_without_writes(
+        db: &Database,
+        project_id: &str,
+        revision_id: &str,
+    ) -> anyhow::Result<Option<Nir1EntityRelationHistoricalRevision>> {
+        db.with_read_transaction(|conn| {
+            let before = row_counts(conn)?;
+            let result =
+                read_nir1_entity_relation_revision_historical(conn, project_id, revision_id)?;
+            let after = row_counts(conn)?;
+            anyhow::ensure!(
+                before == after,
+                "historical revision read changed table row counts"
             );
             Ok(result)
         })
@@ -496,6 +518,39 @@ mod tests {
             find_previous_approved_typed_revision_id(conn, "different-project", &current_id)
         })?;
         assert_eq!(wrong_project_lookup, None);
+        Ok(())
+    }
+
+    #[test]
+    fn historical_reader_requires_project_approval_and_bound_payload() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        typed_tests::seed_run_and_catalog(&db)?;
+        let created = narrative_extraction_create_nir1_entity_relation_revision(
+            &db,
+            typed_tests::request(&db),
+        )?;
+        let revision_id = id(&created, "revisionId")?;
+
+        assert!(read_historical_without_writes(&db, "default-project", &revision_id)?.is_none());
+        typed_tests::approve_typed_revision(&db, "nir1-run", &created)?;
+        assert!(read_historical_without_writes(&db, "other-project", &revision_id)?.is_none());
+        assert!(read_historical_without_writes(&db, "default-project", &revision_id)?.is_some());
+
+        db.with_conn_mut(|conn| {
+            let payload: String = conn.query_row(
+                "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+                params![revision_id],
+                |row| row.get(0),
+            )?;
+            let mut payload: Value = serde_json::from_str(&payload)?;
+            payload["revisionId"] = Value::String("wrong-revision".into());
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json = ?2 WHERE id = ?1",
+                params![revision_id, serde_json::to_string(&payload)?],
+            )?;
+            Ok(())
+        })?;
+        assert!(read_historical_without_writes(&db, "default-project", &revision_id)?.is_none());
         Ok(())
     }
 
