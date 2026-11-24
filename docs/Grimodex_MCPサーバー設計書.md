@@ -795,11 +795,11 @@ Codex エントリの詳細を取得する。
 | `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent。存在しない・使えない codex_id は null） |
 | `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（全イベントを入力。resolveSceneAnchor→pick→derive を Rust 移植。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
 | `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'） |
-| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found） |
+| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found。**現在の主な人物・場所が AI に秘匿（hidden）の人物の出来事は、その欄を変更できない**〔hidden は Phase だけの人物を含む。他の欄の更新は通る。拒否は汎用の internal error〕） |
 | `delete_event` | W | o | イベント削除（participants/scene/relation を cascade・削除前スナップショットを undo before に格納） |
 | `stamp_scene_event` | W | o | シーンにイベントを stamp（scene/event とも active project 必須） |
 | `unstamp_scene_event` | W | o | scene↔event の stamp 解除 |
-| `set_event_participants` | W | o | イベント参加者集合を置換（全削除→再挿入） |
+| `set_event_participants` | W | o | イベント参加者集合を置換（全削除→再挿入。**AI に秘匿（hidden。base または Phase の上書き）の既存の参加者は、要求に無くても残す**〔読みが伏せる集合と同じ。MCP の AI は、見えない参加者を消せない〕） |
 | `add_event_relation` | W | o | 因果エッジ追加（cause→effect。自己ループ禁止・両端 active project 必須） |
 | `remove_event_relation` | W | o | 因果エッジ削除 |
 | `write_scene` | W | v2 | シーン本文書き込み |

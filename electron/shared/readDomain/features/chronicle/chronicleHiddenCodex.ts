@@ -21,7 +21,8 @@ export function collectChronicleCandidateCodexIds(
 ): string[] {
   const ids = new Set<string>();
   const add = (id: string | null | undefined) => {
-    if (id) ids.add(id);
+    // 空文字も候補に入れる（DB に無い id は hidden に数えられる。空文字の id の行が hidden でも、取りこぼさない）。
+    if (id != null) ids.add(id);
   };
 
   for (const event of args.events) {

@@ -71,7 +71,6 @@ export function CodexStructureExtractDialog({
   const setProjection = useCodexStructureExtractionStore(
     (s) => s.setProjection,
   );
-  const entries = useCodexStore((s) => s.entries);
   const { t } = useTranslation();
 
   const folders = useMemo(
@@ -172,10 +171,13 @@ export function CodexStructureExtractDialog({
         getCurrentProjectId,
       );
       const projectTypes = await listCodexTypes(projectId);
+      // 画面の store は検索・種別で絞られうるので、解析の材料は DB のプロジェクト全体の Entry から作る
+      // （絞られた材料だと、Native の catalog の古さの検査が NEX_READ_SET_STALE で止める）。
+      const entries = await readCurrentCodexEntries(projectId);
       const catalogs = buildCodexStructureCatalogs({
         entries: entries.map((entry) => ({
           id: entry.id,
-          name: entry.name,
+          name: entry.name ?? null,
           aliases: entry.aliases,
           type: entry.type,
           version: entry.version,
@@ -250,6 +252,10 @@ export function CodexStructureExtractDialog({
       // 全部が外れて何も取り込まなかったときは、承認し直せるように review を残す。
       if (applied === 0 && excludedCount > 0) return;
       toast.success(`Codex 構造を ${applied} 件取り込みました`);
+      void useCodexStore
+        .getState()
+        .loadEntries()
+        .catch(() => {});
       generationRef.current += 1;
       clearProjection();
       onOpenChange(false);
@@ -265,7 +271,14 @@ export function CodexStructureExtractDialog({
           ),
         );
       } else {
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(
+          message.includes("NARRATIVE_REVIEW_ONLY")
+            ? t("codex.structureReview.applyBlocked.reviewOnly")
+            : message.includes("NARRATIVE_ENGINE_DISABLED")
+              ? t("codex.structureReview.applyBlocked.engineDisabled")
+              : message,
+        );
       }
     } finally {
       setApplying(false);

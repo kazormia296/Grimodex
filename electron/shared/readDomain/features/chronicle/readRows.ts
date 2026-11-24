@@ -76,29 +76,13 @@ export function normalizeEvent(raw: unknown): EventRow {
 }
 
 /**
- * `normalizeEvent` for Main's read path, which fails closed on the two columns
- * that decide what the AI may see (DR-MP4-37). `normalizeEvent` turns a missing,
- * null or unexpected `secret` into `false` (public) and a missing
- * `revealSceneId` into `null`; a reader that dropped either column (a projection,
- * an alias that does not match) would then publish every secret event, with no
- * type error and no failing test. Here a row whose `secret` is not a boolean (or
- * the integer 0/1), or whose `revealSceneId` is not a string or null (an absent
- * key is `undefined`), is an error and not a row.
- *
- * What this cannot see: Drizzle's `integer(..., { mode: "boolean" })` maps the
- * stored value with `Number(v) === 1` before the row reaches here (a null is not
- * mapped and reaches here as null, which this throws on; so does an undefined
- * `revealSceneId`, but an undefined `secret` is mapped to `false` too). So a stored
- * 2 is already `false`, and a stored text is `true` only for '1' (any other text,
- * 'true' and 'x' included, is `false`). That is the renderer's reading of the
- * column too, and it is not changed here.
+ * Main's read path keeps `revealSceneId` fail-closed: `normalizeEvent` would
+ * turn a missing key into null and silently lose the disclosure-scene marker.
+ * The `secret` check from DR-MP4-37g is retired because core no longer uses it
+ * to decide event secrecy; `secret` is still normalized by `normalizeEvent`.
  */
 export function normalizeEventFailClosed(raw: unknown): EventRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  const secret = r.secret;
-  if (!(typeof secret === "boolean" || secret === 0 || secret === 1)) {
-    throw new Error("chronicle events: the row has no usable `secret` column");
-  }
   const reveal = "revealSceneId" in r ? r.revealSceneId : r.reveal_scene_id;
   if (!(reveal === null || typeof reveal === "string")) {
     throw new Error(
