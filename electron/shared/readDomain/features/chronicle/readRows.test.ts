@@ -173,24 +173,25 @@ describe("normalizeEventFailClosed (Main's read path)", () => {
   });
 
   it.each([
-    ["missing", undefined],
-    ["null", null],
-    ["text 1", "1"],
-    ["text true", "true"],
-    ["2", 2],
-    ["-1", -1],
-    ["an object", {}],
-  ])("throws when `secret` is %s", (_label, value) => {
-    expect(() => normalizeEventFailClosed({ ...CAMEL, secret: value })).toThrow(
-      /usable `secret` column/u,
-    );
-  });
+    ["missing", undefined, false],
+    ["null", null, false],
+    ["text 1", "1", true],
+    ["text true", "true", true],
+    ["2", 2, true],
+    ["-1", -1, true],
+    ["an object", {}, false],
+  ])(
+    "normalizes `secret` when it is %s without rejecting the row",
+    (_label, value, expected) => {
+      expect(normalizeEventFailClosed({ ...CAMEL, secret: value }).secret).toBe(
+        expected,
+      );
+    },
+  );
 
-  it("throws when the secret key is absent altogether", () => {
+  it("does not reject a row when the secret key is absent", () => {
     const { secret: _secret, ...without } = CAMEL;
-    expect(() => normalizeEventFailClosed(without)).toThrow(
-      /usable `secret` column/u,
-    );
+    expect(normalizeEventFailClosed(without).secret).toBe(false);
   });
 
   it.each([

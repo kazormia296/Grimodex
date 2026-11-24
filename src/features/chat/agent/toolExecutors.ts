@@ -84,7 +84,6 @@ import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
 import type { EventSearchHit } from "@/features/semantic-search/api";
-import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
 import {
   isEventBeforeOrAtScene,
   passesIrExclusionApproximation,
@@ -101,7 +100,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * search_events の年表の候補（秘匿の filter と位置の filter の後で、`slice(limit)` の前）。
+ * search_events の年表の候補（IR の位置 filter の後で、`slice(limit)` の前）。
  * 空の query・project 無しは、そのまま返す応答（`empty`）。呼ぶ位置が挙動の一部なので、
  * await の順は変えない（定数 false の間は今と byte 同一）。
  */
@@ -114,7 +113,7 @@ type ChronicleCandidates =
       readonly currentSceneId: string;
       /** model の `limit`（年表の側の値。IR の枠の下限 1 は呼び手が決める）。 */
       readonly limit: number;
-      /** 秘匿・位置の filter の後、`slice` の前（30 件以下）。 */
+      /** IR の位置 filter の後、`slice` の前（30 件以下）。 */
       readonly visible: readonly EventSearchHit[];
       /** △7 (4) の近似の規則（secret の event だけに掛かる）。 */
       readonly passesApproximation: (hit: EventSearchHit) => boolean;
@@ -136,7 +135,7 @@ async function chronicleCandidates(
       },
     };
 
-  // 基準の project・Scene は、秘匿の filter も位置の filter も同じ値を使う。
+  // 基準の project・Scene は IR の位置 filter と近似に使う。
   // turn の文脈（scope）があればその値、無ければ今の tree store。
   const projectId = chronicleProjectId(scope);
   if (!projectId)
@@ -152,8 +151,7 @@ async function chronicleCandidates(
 
   const limit = eventSearchLimit(params);
 
-  // AI 秘匿: hidden な secret イベントは hit から除外するため over-fetch（≤30=backendMax）→
-  // visible filter → slice(limit)。索引自体は全件のまま（title 漏洩を返却段で防ぐ）。
+  // IR の位置 filter で hit が減る場合に備えて over-fetch（≤30=backendMax）→ filter → slice(limit)。
   const fetchLimit = eventSearchFetchLimit(limit);
   const hits = await denseEventHitsOrEmpty({
     projectId,
@@ -161,23 +159,13 @@ async function chronicleCandidates(
     limit: fetchLimit,
   });
 
-  // 現在シーン（currentSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
   const allEvents = await getSharedEvents(projectId);
   const sceneEvents = await getSharedSceneEvents(projectId);
   const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
   // scope が無い呼び手は、従来どおり await の後で今の Scene を読む（定数 false の間は今と同一）。
   const currentSceneId = chronicleSceneId(scope);
-  const hidden = new Set(
-    allEvents
-      .filter((e) =>
-        isEventHiddenFromAi(e, currentSceneId, { readingOrder, sceneEvents }),
-      )
-      .map((e) => e.id),
-  );
-
   const visible = hits
-    .filter((h) => !hidden.has(h.eventId))
-    // 位置の filter（chat IR S1-B）。秘匿の filter の後、slice(limit) の前。
+    // 位置の filter（chat IR S1-B）。slice(limit) の前。
     // 定数が false の間は掛けない（今の挙動のまま）。
     .filter(
       (h) =>
@@ -195,7 +183,7 @@ async function chronicleCandidates(
     currentSceneId,
     limit,
     visible,
-    // 行が見つからない hit は、秘匿の filter と同じく secret でないものとして扱う。
+    // 行が見つからない hit は近似の対象外として扱う。
     passesApproximation: (h) =>
       passesIrExclusionApproximation(
         eventById.get(h.eventId) ?? { id: h.eventId, secret: false },
@@ -322,7 +310,7 @@ const CHAT_IR_PREFLIGHT_STATUSES: ReadonlySet<string> = new Set([
  * search_events に承認済みの IR を合流する版（main agent の `EXECUTORS` だけ。
  * chat IR S1-B・S1-A2b、定数が true で IR の capability がある呼び手のときだけ）。
  *
- * 順は直列：年表の候補（秘匿 → 位置、`slice` の前）→ 事前判定 → turn の累積上限 →
+ * 順は直列：年表の候補（IR の位置 filter、`slice` の前）→ 事前判定 → turn の累積上限 →
  * Native を 1 回（候補の eventId を渡す）→ assertCurrent → 除外 → 切り → cap と統合 →
  * noteUsedIds → content（B-T13）。IR の失敗は tool の失敗にせず、status を content に載せる。
  * IR の capability が無い呼び手（sub-agent など）は共有の `searchEvents`（今の配列）。
@@ -358,9 +346,8 @@ async function searchEventsWithIr(
   const rest = { tokenCap: ir.tokenCap, countTokens };
 
   let fitted: ChatIrToolContentResult<ChronicleEntry>;
-  // 暫定の年表（除去の前）で測る。除去で小さくなるとは限らない（後ろの候補で補充するので、
-  // 除去の後の年表が大きいこともある）。そのときも秘匿の漏れにはならず、失うのは Native の
-  // 1 回（回数と ledger の枠）だけ。
+  // 暫定の年表（近似の前）で測る。近似後の年表が大きくなる場合もある。Native を呼ばない場合も
+  // 近似は適用し、失うのは Native の 1 回（回数と ledger の枠）だけ。
   if (precheckChatIrContent({ events: withoutApproximation, ...rest })) {
     // 呼ばなければ (4) は掛からないので、model が起こせる不明として近似の規則に進む。
     fitted = capExceededResult(approximated(), ir.tokenCap, countTokens, false);
@@ -382,7 +369,7 @@ async function searchEventsWithIr(
         projectId,
         expectedWorkspacePath: ir.workspacePath ?? "",
         currentSceneId,
-        // 秘匿と位置の filter の後の年表の候補だけ（隠れた event の ID は送らない）。
+        // IR の位置 filter 後の年表の候補だけ。
         chronicleEventIds: chronicleCandidateIds(visible),
       });
       if (

@@ -12,44 +12,8 @@
       },
       "result": {
         "name": "search_events",
-        "summary": "3 events found",
-        "tokensUsed": 209,
-        "content": [
-          {
-            "eventId": "ev-meet",
-            "title": "老魔術師との出会い",
-            "kind": "generic",
-            "score": 0.82
-          },
-          {
-            "eventId": "ev-birth",
-            "title": "アリアの誕生",
-            "kind": "birth",
-            "score": 0.55
-          },
-          {
-            "eventId": "x-ev-1",
-            "title": "他作品の出来事",
-            "kind": "generic",
-            "score": 0.4
-          }
-        ]
-      },
-      "contentJson": "[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
-    },
-    {
-      "case": "canned: S3 では戦争が出る（恒久秘匿の死は出ない）",
-      "world": {
-        "projectId": "p-main",
-        "activeSceneId": "n-s3"
-      },
-      "params": {
-        "query": "魔術"
-      },
-      "result": {
-        "name": "search_events",
-        "summary": "4 events found",
-        "tokensUsed": 275,
+        "summary": "5 events found",
+        "tokensUsed": 342,
         "content": [
           {
             "eventId": "ev-war",
@@ -64,6 +28,12 @@
             "score": 0.82
           },
           {
+            "eventId": "ev-death",
+            "title": "老魔術師の死",
+            "kind": "death",
+            "score": 0.7
+          },
+          {
             "eventId": "ev-birth",
             "title": "アリアの誕生",
             "kind": "birth",
@@ -77,10 +47,58 @@
           }
         ]
       },
-      "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
+      "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"score\":0.7},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
     },
     {
-      "case": "canned: 場面なしでは secret を全部隠す（fail-closed）",
+      "case": "canned: S3 では戦争が出る（恒久秘匿の死は出ない）",
+      "world": {
+        "projectId": "p-main",
+        "activeSceneId": "n-s3"
+      },
+      "params": {
+        "query": "魔術"
+      },
+      "result": {
+        "name": "search_events",
+        "summary": "5 events found",
+        "tokensUsed": 342,
+        "content": [
+          {
+            "eventId": "ev-war",
+            "title": "魔術戦争",
+            "kind": "generic",
+            "score": 0.91
+          },
+          {
+            "eventId": "ev-meet",
+            "title": "老魔術師との出会い",
+            "kind": "generic",
+            "score": 0.82
+          },
+          {
+            "eventId": "ev-death",
+            "title": "老魔術師の死",
+            "kind": "death",
+            "score": 0.7
+          },
+          {
+            "eventId": "ev-birth",
+            "title": "アリアの誕生",
+            "kind": "birth",
+            "score": 0.55
+          },
+          {
+            "eventId": "x-ev-1",
+            "title": "他作品の出来事",
+            "kind": "generic",
+            "score": 0.4
+          }
+        ]
+      },
+      "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"score\":0.7},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
+    },
+    {
+      "case": "canned: 場面なしでも secret の出来事を返す",
       "world": {
         "projectId": "p-main"
       },
@@ -89,14 +107,26 @@
       },
       "result": {
         "name": "search_events",
-        "summary": "3 events found",
-        "tokensUsed": 209,
+        "summary": "5 events found",
+        "tokensUsed": 342,
         "content": [
+          {
+            "eventId": "ev-war",
+            "title": "魔術戦争",
+            "kind": "generic",
+            "score": 0.91
+          },
           {
             "eventId": "ev-meet",
             "title": "老魔術師との出会い",
             "kind": "generic",
             "score": 0.82
+          },
+          {
+            "eventId": "ev-death",
+            "title": "老魔術師の死",
+            "kind": "death",
+            "score": 0.7
           },
           {
             "eventId": "ev-birth",
@@ -112,7 +142,7 @@
           }
         ]
       },
-      "contentJson": "[{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
+      "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"score\":0.7},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
     },
     {
       "case": "canned: limit=2 で slice",
@@ -157,8 +187,8 @@
       },
       "result": {
         "name": "search_events",
-        "summary": "4 events found",
-        "tokensUsed": 275,
+        "summary": "5 events found",
+        "tokensUsed": 342,
         "content": [
           {
             "eventId": "ev-war",
@@ -171,6 +201,12 @@
             "title": "老魔術師との出会い",
             "kind": "generic",
             "score": 0.82
+          },
+          {
+            "eventId": "ev-death",
+            "title": "老魔術師の死",
+            "kind": "death",
+            "score": 0.7
           },
           {
             "eventId": "ev-birth",
@@ -186,7 +222,7 @@
           }
         ]
       },
-      "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
+      "contentJson": "[{\"eventId\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"score\":0.91},{\"eventId\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"score\":0.82},{\"eventId\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"score\":0.7},{\"eventId\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"score\":0.55},{\"eventId\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"score\":0.4}]"
     },
     {
       "case": "canned: dense が reject したら空配列に退避する",

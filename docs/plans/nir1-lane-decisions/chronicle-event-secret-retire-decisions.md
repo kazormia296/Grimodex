@@ -33,13 +33,13 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 ### DR-CSR-4　参加者の置き換えで、base が hidden の既存の参加者を残す（N8 (b)）
 
 - Native の共通の本体で、DELETE の前に、base が hidden（`codex_entries.context_mode = 'hidden'`、同じ作品）の既存の参加者を役割ごと読み、要求の集合に無いものを足す（要求にあるときは要求の役割）。AI は hidden を抜いた一覧を受け取るので、そのまま置き換えると、見えていない参加が黙って消えるため。返り値（`AgentWriteResult`。参加者の一覧を含まない）、冪等性の hash、undo journal（実際の行から作る）は変えない。変更 event の `codexEntryIds` は要求のまま（残した hidden の id を feed に出さない）。
-- **保持の条件は base の hidden だけ**（起案どおり）。Phase だけで hidden の人物は残さない（DR-CSR-5 の 1）。
+- **保持の条件は、アプリ内（`in-app-agent`・省略時）では base の hidden だけ**（起案どおり）。**MCP は、読みと同じ「base または hidden の Phase」に改めた**（確認 154。DR-CSR-9）。
 - **surface の条件（独立レビューの P0 の直し）**：**作者自身の操作（surface = `manual`・`import`）は、hidden の参加者も含めて、要求のとおりに置き換える。** 残すと、作者が画面で hidden の参加者を外しても、黙って戻される。作者は全員を見ているので、残す必要が無い。AI の surface（`in-app-agent`・`mcp`）、省略時（旧経路の AI 互換）、未知の surface は、hidden を守る側に倒して残す。最初の実装は、surface を見ずに全部で残していた（「`agent_*` は AI だけ」という誤った前提。DR 1 の 2 つ目）。2 系統の独立レビュー（Claude・Opus と Codex、read-only）が、同じ指摘をした（重さは P0 と P1）。直しを外す変異で、新しい試験が落ちる。
 
 ### DR-CSR-5　残る制限と、ユーザーに伺う点
 
-1. **【伺う】Phase だけで hidden の参加者は、MCP の置き換えで黙って消える。** MCP の読みは、「base が hidden」か「hidden の Phase がある」人物を伏せる（確認 109）。しかし、置き換えで残すのは base が hidden の人物だけ（起案の N8 (b) は「base だけで足りる」と明記）。Phase だけで hidden の人物は、MCP の AI から見えないまま、置き換えで消える。起案の規則どおりに実装した（試験が「消える」を固定している）。**案：MCP の surface に限り、残す条件を読みと同じ「base か Phase」に揃える**（推奨。MCP の AI は、Phase だけで hidden の参加者を外せない）。アプリ内は、Phase が場面ごとに解決されるので、base だけのまま。規則の変更なので、ユーザーの確認が要る。
-2. **【伺う】`update_event` で、AI が hidden の主な人物・場所を上書きできる。** MCP では hidden の主な人物・場所が null に見えるので、AI が空いていると思って値を入れると、hidden の値を黙って置き換える。N8 (b) は参加者だけが対象で、この欄は守られていない。意図した範囲かどうかの確認が要る。
+1. **【解決：確認 154。DR-CSR-9】Phase だけで hidden の参加者は、MCP の置き換えで黙って消える。** MCP の読みは、「base が hidden」か「hidden の Phase がある」人物を伏せる（確認 109）。しかし、置き換えで残すのは base が hidden の人物だけ（起案の N8 (b) は「base だけで足りる」と明記）。Phase だけで hidden の人物は、MCP の AI から見えないまま、置き換えで消える。起案の規則どおりに実装した（試験が「消える」を固定している）。**案：MCP の surface に限り、残す条件を読みと同じ「base か Phase」に揃える**（推奨。MCP の AI は、Phase だけで hidden の参加者を外せない）。アプリ内は、Phase が場面ごとに解決されるので、base だけのまま。規則の変更なので、ユーザーの確認が要る。
+2. **【解決：確認 155。DR-CSR-10】`update_event` で、AI が hidden の主な人物・場所を上書きできる。** MCP では hidden の主な人物・場所が null に見えるので、AI が空いていると思って値を入れると、hidden の値を黙って置き換える。N8 (b) は参加者だけが対象で、この欄は守られていない。意図した範囲かどうかの確認が要る。
 3. 書き込みの検査（`ensure_codex_in_project`）は `context_mode` を見ない。hidden の id を参加者・主な人物に渡すと成功し、存在しない id は失敗する（外に出るのは汎用の internal error だけ）。AI が hidden の UUID を当てる必要があり、MCP の読みから hidden の id を得る経路は見つからなかった。
 4. `secret` の引数（`create_event`・`update_event`）は、まだ受け付ける（N4 で消す）。説明は「保存されるフラグで、MCP の読み・書きを制限しない」にした。値は、どこでも判定に使われない。
 5. 題・メモの文中の名前は、hidden かどうかを判定しない（起案の残る制限）。
@@ -75,10 +75,75 @@ MCP の一覧・詳細・人物の年表・状態の入力（`chronicle_list_eve
 ### 残る制限（PR-1）
 
 - 題・メモの文中に埋め込まれた hidden の人物の名前・id は、構造化された Codex id の除去の対象外（起案の残る制限）。
-- アプリ内の読む道具 4 本・検索・golden・`normalizeEventFailClosed` は、PR-3 まで、secret の出来事を隠したまま（アプリ内の読む道具と、自動のまとめ・書く道具で、一時的に見え方が違う）。公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
+- （PR-3 で解消。DR-CSR-12〜14）アプリ内の読む道具 4 本・検索・golden・`normalizeEventFailClosed` は、PR-3 まで、secret の出来事を隠したまま（アプリ内の読む道具と、自動のまとめ・書く道具で、一時的に見え方が違う）。公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
 
 ### 検証（PR-1。2026-11-24。自分で実行した）
 
 - `tsc`・eslint・prettier（変えた 10 file）・`validate:architecture`：指摘なし。renderer の広域（`src/application/composition`・`src/features/chat/agent`・`src/features/chronicle`）：143 files・2,422 tests が通過（5 skipped は既存）。`electron/shared/readDomain`：16 files・573 tests が通過。
 - **変異**：組み立ての除去の素通し、fail-closed の無効化、純関数の参加者フィルタの除去、書く道具への secret の遮断の復活を、それぞれかけて、対応する試験が落ちることを確かめた。**このとき、組み立ての試験が、除去を素通しにしても通ってしまう（空虚）ことを見つけた**：fixture に場面の日付と人物が出る構造が無く、hidden の除去が無くても、名前がもともと出力に出なかった。「hidden が無ければ名前が出る」基準の assertion を足し、同じ入力で hidden ありのとき出ないことを確かめる形に直した。直した後は、素通しの変異で落ちる。
 - していない：実アプリでの確認、canonical Light selector・`verify:quality` のローカル実行（hosted の Quick に任せる）。
+
+## 5. 追加の 1 本（C2）：MCP の保持の条件と、AI の更新の保護（2026-11-24。確認 154・155）
+
+2 本目の独立レビューが指摘した 2 つの穴を、ユーザーが「塞ぐ」と決めた（DR-CSR-5 の 1・2）。Native の `agent_writes.rs` と、MCP の道具の試験だけを変える。
+
+### DR-CSR-9　MCP の参加者の保持：読みと同じ「base または Phase」に揃える（確認 154）
+
+- hidden の判定を、**surface ごとに 1 つの関数**（`codex_entry_hidden_for_surface_sql`。`agent_writes.rs`）にまとめた。`mcp`：`context_mode = 'hidden'`、または `context_mode_override = 'hidden'` の Phase がある（MCP の読み `chronicle_hidden_codex_ids` と同じ。MCP は Phase を場面ごとに解決しない）。アプリ内の AI（`in-app-agent`・省略時＝旧経路）：base の `hidden` だけ（Phase は場面ごとに解決されるので、これまでどおり）。**それ以外の AI の surface（MCP・未知の値）：強い方（base または Phase）**。独立レビューの指摘で、未知の値を弱い方に倒していたのを直した（場面を解決できない surface は、守る側に倒す）。作者の surface（`manual`・`import`）は、保持しない（これまでどおり）。
+- 参加者の置き換えの「残す」処理（DR-CSR-4）は、この関数を使う。返り値・冪等性・undo journal・変更 event の `codexEntryIds`（要求のまま）は変えない。
+- 試験：Phase だけで hidden の参加者が、`mcp`・未知の surface では役割ごと残り、`in-app-agent`・省略時では消える。
+
+### DR-CSR-10　AI の `update_event` は、現在の主な人物・場所が hidden の出来事で、その欄を変えられない（確認 155）
+
+- **対象**：surface が `manual`・`import` でない更新（`mcp`・`in-app-agent`・省略時・未知。画面の手動編集は `manual`）。`primaryCodexId` または `locationCodexId` を渡したとき、その出来事の**現在の**値が、DR-CSR-9 の関数の意味で hidden の人物なら、**要求の値が現在と違うとき**（空文字＝解除も違うものとして）拒否する。同じ値を渡す（変更なし）・現在が NULL か hidden でない人物・他の欄だけの更新は、これまでどおり成功する。
+- **拒否は、行・journal・change event を書く前**（検証の直後）。拒否のとき、`events` の行・`version`・`change_events`・`undo_journal` は変わらない。成功済みの同じ `request_id` の再送は、冪等性の検査が先なので、保存された返り値を返す。
+- **文言は仕組みを明かさない**：`primaryCodexId cannot be changed on this event`（`locationCodexId` も同様）。「hidden」「secret」を含まない。MCP の道具を通すと、既存の `internal_err` により、AI に見えるのは汎用の `internal error` だけになる（理由は伝わらない。MCP 全体の既存の挙動）。
+- **残る制限：拒否の成否が、AI に 1 bit 漏れる（独立レビュー 2 系統が指摘。Opus は P2、Codex は P1 と評価）。** (a) MCP では hidden の主な人物・場所が null に見えるので、AI が、見えている id（または空文字）を送り、拒否されれば「この欄は hidden の人物が持つ」、成功すれば「本当に空」と分かる。(b) AI が hidden の id を知っていれば、同じ値を送って成功するかで、「現在の値がその id か」を確かめられる。**評価：許容する。** 漏れるのは存在の 1 bit だけで、名前・内容は出ない。探りは無料ではない（現在が hidden でない出来事では、実際に書き換わり、undo journal・change event に残る）。(b) は hidden の id を知っていることが前提だが、MCP の読みから hidden の id を得る経路は見つかっていない（DR-CSR-5 の 3）。黙って無視する形にしても、読み直せば値が null のままなので、oracle になる。完全に塞ぐには、AI の主な人物・場所の更新を一律に禁じるか、作者の確認を経由させるしかなく、ユーザー決定（確認 155：hidden のときだけ守る）の範囲を超える。**ユーザーに、残る制限として見せる。**
+- **残る制限：`delete_event` と `create_event` を続けると、hidden の主な人物・場所が外れる。** MCP の AI は、見えている出来事を消して作り直せる。明示的な破壊で、undo で全部戻る。確認 155 の脅威（空に見える欄を埋めて、黙って上書きする）とは別。作成の経路は、この PR の対象外。
+- **範囲外（残る制限）**：現在の値が hidden でない（または NULL の）ときに、AI が hidden の人物を新しく設定すること（`ensure_codex_in_project` は hidden を区別しない。DR-CSR-5 の 3 のまま）。作成（`create_event`）の経路。
+
+### 検証（C2。2026-11-24。自分で実行した）
+
+- `cargo test -p grimodex-db --lib agent_writes`：125 件、`cargo test -p grimodex-mcp`：229 件が通過。
+- **変異**（それぞれ、狙った試験が落ちる）：R3 の保護を外す、`mcp` の分岐を base だけにする、参加者の保持の SQL を base だけに戻す、作者の surface でも保護する。
+- **独立レビュー**：Claude（Opus）・Codex（read-only）の 2 系統。R3 の迂回（IPC・MCP・一括・取り込み・undo／redo。作者の undo・redo は塞がれない）、surface のなりすまし（MCP は `mcp` を固定、アプリ内は Main が `in-app-agent` で上書き、AI は選べない）、SQL（注入なし・実スキーマと一致）、transaction（`BEGIN IMMEDIATE` の中・冪等の再送の後）は、2 系統とも問題なし。直した指摘：未知の surface を強い方に倒す、MCP の道具の試験に基準（hidden でなければ通る）を足す。残る制限として記録した指摘：上の 1 bit の oracle、`delete`＋`create`。
+
+## 6. 2 本目の PR-2・PR-3：アプリ内の読む道具と検索（2026-11-24）
+
+DR-CSR-9・10 は、C2（#1083。MCP の保持の条件と AI の更新の保護。確認 154・155。節 5）が使った。この節は 11 から続ける。
+
+### DR-CSR-11　port `listHiddenCodexIds`（PR-2。動作は変えない加算。DR-MP4-39f）
+
+core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, ids): Promise<ReadonlySet<string>>` を足した（renderer と main の 2 実装）。**場面は引数でなく、呼び出しの時点の現在の場面**（renderer は `useTreeStore`、main は turn の入力）から読む。**cache しない。失敗は投げる**（fail-closed。道具が失敗として返す）。**DB に無い id・別の作品の id も、hidden に数える**（存在しないと伏せるを区別させない）。renderer と main で同じ結果になることを、parity の試験で固定した。
+
+### DR-CSR-12　core の読む道具 4 本：出来事の秘匿の判定を外し、hidden の人物だけを伏せる（PR-3a）
+
+- 4 本（`list_events`・`get_event_detail`・`get_character_timeline`・`get_chronicle_state`）は、出来事の `secret`・reveal の位置・読む順で隠さない。そのための `getTreeState`・`getReadingOrder`・`getSceneEvents` の読みが、`get_chronicle_state` の anchor のためだけに残った。
+- hidden の人物は、port で判定する：`list_events`・`get_event_detail` は、主な人物・場所の名前を `null`、参加者を行ごと除く。`get_chronicle_state` は、人物を選ぶ**前**の入力（候補 id の収集 → `dropHiddenCodexFromChronicleInput`）から除く（選んだ後に消すと、hidden が枠を取ったまま消える）。出来事の `locationCodexId` は残す（名前の表から落ちるので、名前は出ない。`deriveLastKnownLocation` が古い場所へ落ちないため）。**モデルの `sceneId` は anchor の位置にだけ使い、hidden の判定の場面には使わない**。**候補 id には、空文字も入れる**（port は DB に無い id を hidden に数えるので、空文字の id の行が hidden でも取りこぼさない。独立レビュー〔Codex〕の指摘。PR-1 の `collectChronicleCandidateCodexIds` の「空文字は入れない」期待も、これに直した）。
+- **画面で見える変化（ユーザーに見せる）**：`get_character_timeline` は、hidden の id と、**存在しない id（別の作品・空の作品の id を含む）で、「Character not found」（content `null`、tokensUsed 0）**を返す。以前は、存在しない id に `0 events for <id>`（空の年表）を返していた。MCP の読み（DR-CSR-3）と同じ規則になった。`tokensUsed` は、出る出来事・人物の変化に追随して変わる。
+
+### DR-CSR-13　検索（`search_events`）：秘匿の判定を外す（PR-3b）
+
+- core の検索の ctx から `chronicle`（events・scene events・読む順）を外した。main の `createMainChronicleSearchContext` は、DB を読まない。dense の fetchLimit（limit × 3）は、そのまま残した（hit が減らなくなったので、必要なら別に見直す）。
+- renderer の legacy 検索（`toolExecutors.ts` の `chronicleCandidates`）は、秘匿の filter だけを外した。**IR の位置の filter と近似、そのための events・scene events・読む順の読みは残す**（IR は `CHAT_AGENT_IR_ENABLED` が false の間は休眠。`passesIrExclusionApproximation` は `event.secret` を今も読む。N9 で整理する）。
+
+### DR-CSR-14　削除したもの（PR-3c）
+
+`isEventHiddenFromAi`・`projectVisibleChronicle`・`VisibleChronicle`（`chronicleSecrecy.ts`。`readingPos`・`ReadingOrder`・`effectiveRevealSceneId` は残す）と、`normalizeEventFailClosed` の `secret` の検査（`secret` は core が判定に使わない）。`revealSceneId` の検査は残すが、**この PR の後、製品コードで `effectiveRevealSceneId` を呼ぶ所は無い**（試験と休眠の IR の近似だけ）ので、Main の読みで開示シーンの印を使う所は今は無く、保守的な残置である。N9 で整理するときに、まとめて外すか決める。
+
+### 残る制限（PR-2・PR-3）
+
+- 題・メモの文中に埋め込まれた hidden の人物の名前・id は、構造化された Codex id の除去の対象外（DR-CSR-6 と同じ）。
+- hidden の判定は、呼び出しごとに DB を読む（cache しない）。1 つの道具の呼び出しで、`codex_entries`・`codex_entry_phases` の select が増える。大きい作品での負荷は、測っていない（N11 の測定の範囲）。
+- **アプリ内の AI 向けの道具の説明が、まだ「secret の出来事は読みから除かれる」と言っている**（`toolDefinitions.ts` の `create_event`・`update_event` の `secret`・`revealSceneId` の説明と、`definitions.*.bytes.txt`）。この PR の後は事実でなく、モデルが「secret を付ければ自分から隠せる」と思い込みうる（hidden の人物が漏れる話ではない）。AI 指示の資産の変更なので、品質ゲート（`grimodex-author`）を通す別の PR にする。MCP の説明は、1 本目で「保存されるフラグで、読み・書きを制限しない」に直した。`secret` の引数を消す N4 で、まとめて直す。
+- 空文字の id の Codex 行が hidden のとき、候補に入れない旧い実装では漏れうる、という指摘は、候補に入れて直した（アプリは空文字の id を作らないが、DB は禁じていない）。
+- 公開版（release）には、全部が入った後に、N11 の測定の結果をユーザーに見せてから出す。
+
+### 検証（PR-3。2026-11-24。自分で実行した）
+
+- `tsc`・eslint・prettier（変えた `.ts`）・`validate:architecture`：指摘なし。renderer の広域（`src/application`・`src/features/chat`・`src/features/chronicle`）：327 files・5,320 tests が通過（8 skipped は既存）。`electron/shared/readDomain`：17 files・581 tests が通過。
+- **変異**：renderer の `listHiddenCodexIds` を常に空にすると、特性試験と `get_character_timeline` の golden が落ちる。`revealSceneId` の検査を外すと、`readRows` の試験が落ちる。
+- 実 addon の spec（`mastraReadParity.pipeline.spec.ts`）：年表・検索の部分は、2026-11-22 に作った addon でも通過（`search_scenes` の `scenes_live` の 2 件は、古い addon のため落ちる。この PR と無関係）。**最新の addon での確認は、hosted の `electron-native` に任せる。**
+- golden は、差分の要点（secret の出来事が現れる・hidden の名前が `null`・存在しない id が not found・tokensUsed の追随）を読んでから再生成した。hidden の名前・id が golden に出ないことを grep で確かめた。
+- **独立レビュー**：Claude（Opus）・Codex（read-only）の 2 系統。漏れの経路（5 本の道具の出力、renderer と main の両経路）、fail-closed、判定の場面、削除の取りこぼし、golden の差分の範囲、試験が空虚でないこと、`get_character_timeline` の変化の呼び出し元は、2 系統とも問題なし（P0・P1 なし）。直した指摘：golden の場面名が古い契約のままだった（名前を直して再生成。差分は `case` の行だけ）、古いコメント 3 か所、`db` 引数の説明、空文字の id（上）。残る制限として記録した指摘：AI 向けの道具の説明（上）、`effectiveRevealSceneId` の呼び出し元が無いこと（DR-CSR-14）。
+- していない：実アプリでの確認、`verify:quality` のローカル実行（hosted の Quick に任せる）。

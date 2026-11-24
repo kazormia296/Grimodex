@@ -179,7 +179,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
       { native: cannedEvents },
     ),
     sc(
-      "canned: 場面なしでは secret を全部隠す（fail-closed）",
+      "canned: 場面なしでも secret の出来事を返す",
       MAIN_NO_SCENE,
       { query: "魔術" },
       { native: cannedEvents },
@@ -530,12 +530,12 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
   ],
   list_events: [
     sc(
-      "rows: S1（secret の戦争と恒久秘匿の死は出ない。日付は暦で整形）",
+      "rows: S1（secret の戦争と恒久秘匿の死も出る。日付は暦で整形）",
       MAIN_S1,
       {},
     ),
     sc("rows: S3（戦争が出る）", MAIN_S3, {}),
-    sc("rows: 場面なし（secret を全部隠す）", MAIN_NO_SCENE, {}),
+    sc("rows: 場面なし（場面に依らず出来事が出る）", MAIN_NO_SCENE, {}),
     sc("rows: kind=birth", MAIN_S3, { kind: "birth" }),
     sc("rows: 知らない kind は絞らない", MAIN_S3, { kind: "bogus" }),
     sc("rows: UI 言語が en", { ...MAIN_S3, language: "en" }, {}),
@@ -547,7 +547,7 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
     }),
   ],
   get_event_detail: [
-    sc("rows: S1（戦争は hidden なので relation は出ない）", MAIN_S1, {
+    sc("rows: S1（戦争は secret でも relation が出る）", MAIN_S1, {
       eventId: "ev-meet",
     }),
     sc("rows: S3（戦争が見えるので relation も出る）", MAIN_S3, {
@@ -559,11 +559,11 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
       { ...MAIN_S3, language: "en" },
       { eventId: "ev-meet" },
     ),
-    sc("hidden: S1 の secret（戦争）は存在しない扱い", MAIN_S1, {
+    sc("secret: S1 でも secret の戦争は読める", MAIN_S1, {
       eventId: "ev-war",
     }),
     sc("hidden: S3 では戦争が見える", MAIN_S3, { eventId: "ev-war" }),
-    sc("hidden: 恒久秘匿の死はどの場面でも存在しない扱い", MAIN_S3, {
+    sc("secret: 恒久秘匿の死もどの場面でも読める", MAIN_S3, {
       eventId: "ev-death",
     }),
     sc("empty: 存在しない id", MAIN_S3, { eventId: "ev-none" }),
@@ -615,11 +615,9 @@ const SCENARIOS: Record<string, readonly LegacyReadScenario[]> = {
     }),
   ],
   get_chronicle_state: [
-    sc(
-      "rows: sceneId 指定（S1。hidden の secret は snapshot に入らない）",
-      MAIN_S1,
-      { sceneId: "n-s1" },
-    ),
+    sc("rows: sceneId 指定（S1。secret の出来事も snapshot に入る）", MAIN_S1, {
+      sceneId: "n-s1",
+    }),
     sc("rows: sceneId 省略は activeSceneId（S3）", MAIN_S3, {}),
     sc("rows: sceneId 指定は activeSceneId より優先", MAIN_S3, {
       sceneId: "n-s1",
@@ -796,14 +794,16 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     expect(ids).toContain("ev-war");
   });
 
-  it("search_events：読む順（store の nodes）も dense の await の後で読む（最中に nodes を空にすると secret は全部 hidden）", async () => {
+  it("search_events：dense の最中に nodes が空になっても secret な出来事を返す", async () => {
     await setLegacyReadWorld(MAIN_S3);
     legacyReadInvokeBridge.override(
       "events_semantic_search",
       () => LEGACY_READ_CANNED_EVENT_HITS,
     );
+    let emptied = false;
     legacyReadInvokeBridge.setOnCall(({ cmd }) => {
       if (cmd === "events_semantic_search") {
+        emptied = true;
         useTreeStore.setState({ nodes: [] });
       }
     });
@@ -811,7 +811,9 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     const ids = (result.content as Array<{ eventId: string }>).map(
       (e) => e.eventId,
     );
-    expect(ids).not.toContain("ev-war");
+    expect(emptied).toBe(true);
+    expect(ids).toContain("ev-war");
+    expect(ids).toContain("ev-death");
     expect(ids).toContain("ev-meet");
   });
 
@@ -869,25 +871,27 @@ describe("store の読取り位置の固定（legacy は await の後で読む�
     expect(ids).toContain("ev-war");
   });
 
-  it("list_events：現在の場面は scene_events の読みの前に読み終える（その最中の切替は反映されない）", async () => {
+  it("list_events：nodes が空でも secret な出来事を返し、scene_events は読まない", async () => {
     await setLegacyReadWorld(MAIN_S1);
-    let switched = false;
+    let eventsRead = false;
+    let sceneEventsRead = false;
     legacyReadInvokeBridge.setOnCall(({ cmd, args }) => {
-      if (
-        !switched &&
-        cmd === "db_execute" &&
-        /from "scene_events"/iu.test(String(args?.sql))
-      ) {
-        switched = true;
-        useTreeStore.setState({ activeSceneId: "n-s3" });
+      if (cmd !== "db_execute") return;
+      if (/from "events"/iu.test(String(args?.sql))) {
+        eventsRead = true;
+        useTreeStore.setState({ nodes: [] });
       }
+      if (/from "scene_events"/iu.test(String(args?.sql)))
+        sceneEventsRead = true;
     });
     const result = await executeTool("list_events", "c", {});
     const ids = (
       result.content as { events: Array<{ id: string }> }
     ).events.map((e) => e.id);
-    expect(switched).toBe(true);
-    expect(ids).not.toContain("ev-war");
+    expect(eventsRead).toBe(true);
+    expect(sceneEventsRead).toBe(false);
+    expect(ids).toContain("ev-war");
+    expect(ids).toContain("ev-death");
   });
 
   it("projectId は呼出しの冒頭で 1 回だけ読む（最初の invoke で store の project を他 project に切り替えても、結果は変わらない）", async () => {

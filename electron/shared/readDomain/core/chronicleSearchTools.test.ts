@@ -1,8 +1,7 @@
 // MP-4b PR-7b: `search_events` of the read core, on in-memory ports. What is
 // fixed here is the behaviour moved from the renderer (the query is checked
-// before the project, the order of the awaits, the tree state read once after
-// them, hidden hits dropped before the slice, a hit that no event of the project
-// knows passes, the key order of the result) and the three differences that are
+// before the project, the order of the awaits, dense hits sliced after narrowing,
+// the key order of the result) and the three differences that are
 // recorded in DR-MP4-38 (a failure of the dense read is not caught, a malformed
 // wire throws, a blank project is no project). The equality with the renderer is
 // the PR-0 golden (`readCore.mainAdapter.test.ts`, the real-addon spec). Relative
@@ -12,13 +11,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CoreProjectRequiredError,
   type CoreChronicleSearchContext,
-  type CoreTreeNode,
   type CoreTreeState,
 } from "../../mastraRead/ports.js";
-import type {
-  EventRow,
-  SceneEventRow,
-} from "../features/chronicle/eventRows.js";
+import type { EventRow } from "../features/chronicle/eventRows.js";
 import {
   CHRONICLE_READ_TOOL_NAMES,
   CHRONICLE_SEARCH_TOOL_NAMES,
@@ -28,7 +23,6 @@ import {
   eventSearchFetchLimit,
   eventSearchLimit,
 } from "./chronicleSearchTools.js";
-import { hiddenEventIds } from "./chronicleTools.js";
 import { CORE_READ_TOOL_NAMES } from "./readExecutors.js";
 
 const event = (id: string, over: Partial<EventRow> = {}): EventRow => ({
@@ -57,23 +51,6 @@ const event = (id: string, over: Partial<EventRow> = {}): EventRow => ({
   ...over,
 });
 
-const scene = (id: string, sortOrder: string): CoreTreeNode => ({
-  id,
-  parentId: null,
-  nodeType: "scene",
-  title: `scene-${id}`,
-  sortOrder,
-  storyTimeOrder: null,
-  archivedAt: null,
-});
-
-// s1 < s2 < s3 in the reading order.
-const NODES: CoreTreeNode[] = [
-  scene("s1", "a0"),
-  scene("s2", "a1"),
-  scene("s3", "a2"),
-];
-
 const hit = (
   eventId: string,
   over: Record<string, unknown> = {},
@@ -87,47 +64,21 @@ const hit = (
 
 interface World {
   projectId?: string;
-  nodes?: CoreTreeNode[];
-  activeSceneId?: string | null;
-  events?: EventRow[];
-  sceneEvents?: SceneEventRow[];
   /** What the dense read answers (the wire as it is, not narrowed). */
   wire?: unknown;
-  readingOrder?: ReadonlyMap<string, number>;
 }
 
 function makeCtx(world: World = {}) {
   const log: string[] = [];
-  const nodes = world.nodes ?? NODES;
   let state: CoreTreeState = {
     projectId: "projectId" in world ? (world.projectId as string) : "p1",
-    nodes,
-    activeSceneId:
-      world.activeSceneId === undefined ? "s3" : world.activeSceneId,
+    nodes: [],
+    activeSceneId: null,
   };
   const getTreeState = vi.fn(() => {
     log.push("getTreeState");
     return state;
   });
-  const chronicle = {
-    getEvents: vi.fn(async (_p: string) => {
-      log.push("getEvents");
-      return world.events ?? [];
-    }),
-    getSceneEvents: vi.fn(async (_p: string) => {
-      log.push("getSceneEvents");
-      return world.sceneEvents ?? [];
-    }),
-    getReadingOrder: vi.fn((ns: readonly CoreTreeNode[]) => {
-      log.push("getReadingOrder");
-      return (
-        world.readingOrder ??
-        new Map(
-          ns.filter((n) => n.nodeType === "scene").map((n, i) => [n.id, i]),
-        )
-      );
-    }),
-  };
   const native = {
     eventsSemantic: vi.fn(
       async (_args: { projectId: string; query: string; limit: number }) => {
@@ -143,17 +94,15 @@ function makeCtx(world: World = {}) {
   const ctx: CoreChronicleSearchContext = {
     getTreeState,
     countTokens,
-    chronicle,
     native,
   };
   return {
+    ctx,
     executors: createChronicleSearchExecutors(ctx),
-    chronicle,
     native,
     getTreeState,
     countTokens,
     log,
-    nodes,
     setState: (next: Partial<CoreTreeState>) => {
       state = { ...state, ...next };
     },
@@ -192,19 +141,11 @@ describe("the table of the search tool", () => {
   });
 });
 
-describe("the order: query, then project, then dense, events, scene events, tree state", () => {
+describe("the order: query, project, dense, then countTokens", () => {
   it("reads in that order, and counts tokens last", async () => {
-    const c = makeCtx({ wire: [hit("e1")], events: [event("e1")] });
+    const c = makeCtx({ wire: [hit("e1")] });
     await c.executors.search_events({ query: "q" });
-    expect(c.log).toEqual([
-      "getTreeState", // the project
-      "eventsSemantic",
-      "getEvents",
-      "getSceneEvents",
-      "getTreeState", // nodes and active scene: once, after the awaits
-      "getReadingOrder",
-      "countTokens",
-    ]);
+    expect(c.log).toEqual(["getTreeState", "eventsSemantic", "countTokens"]);
   });
 
   it.each([[""], ["   "], [undefined]])(
@@ -224,16 +165,15 @@ describe("the order: query, then project, then dense, events, scene events, tree
     },
   );
 
-  it("an empty query is answered before the project is looked at; a valid query with no project throws CoreProjectRequiredError and reads no data port", async () => {
+  it("an empty query is answered before the project is looked at; a valid query with no project throws CoreProjectRequiredError", async () => {
     for (const projectId of ["", "   "]) {
       const c = makeCtx({ projectId, wire: [hit("e1")] });
       await expect(
         c.executors.search_events({ query: "q" }),
       ).rejects.toBeInstanceOf(CoreProjectRequiredError);
       expect(c.native.eventsSemantic).not.toHaveBeenCalled();
-      expect(c.chronicle.getEvents).not.toHaveBeenCalled();
-      expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
       expect(c.countTokens).not.toHaveBeenCalled();
+      expect(c.getTreeState).toHaveBeenCalledTimes(1);
     }
   });
 
@@ -248,7 +188,7 @@ describe("the order: query, then project, then dense, events, scene events, tree
   });
 
   it("takes the project once, from the tree state at the moment of the call: a project that changes during the dense read is not used", async () => {
-    const c = makeCtx({ wire: [hit("e1")], events: [event("e1")] });
+    const c = makeCtx({ wire: [hit("e1")] });
     c.native.eventsSemantic.mockImplementation(async () => {
       c.setState({ projectId: "p2" });
       return [hit("e1")];
@@ -259,75 +199,15 @@ describe("the order: query, then project, then dense, events, scene events, tree
       query: "q",
       limit: 30,
     });
-    expect(c.chronicle.getEvents).toHaveBeenCalledWith("p1");
-    expect(c.chronicle.getSceneEvents).toHaveBeenCalledWith("p1");
+    expect(c.getTreeState).toHaveBeenCalledTimes(1);
   });
 
-  it("reads the nodes and the active scene once, after the awaits (a scene that changes during the dense read, the events or the bridges is the one used)", async () => {
-    const secret = event("sec", { secret: true, revealSceneId: "s2" });
-    for (const during of [
-      "eventsSemantic",
-      "getEvents",
-      "getSceneEvents",
-    ] as const) {
-      const c = makeCtx({
-        activeSceneId: "s1",
-        events: [secret],
-        wire: [hit("sec")],
-      });
-      const flip = () => c.setState({ activeSceneId: "s2" });
-      if (during === "eventsSemantic")
-        c.native.eventsSemantic.mockImplementation(async () => {
-          flip();
-          return [hit("sec")];
-        });
-      else if (during === "getEvents")
-        c.chronicle.getEvents.mockImplementation(async () => {
-          flip();
-          return [secret];
-        });
-      else
-        c.chronicle.getSceneEvents.mockImplementation(async () => {
-          flip();
-          return [];
-        });
-      const r = await c.executors.search_events({ query: "q" });
-      expect(idsOf(r), during).toEqual(["sec"]);
-      // and the state was read once for the nodes and the scene (plus the project)
-      expect(c.getTreeState, during).toHaveBeenCalledTimes(2);
-    }
-  });
-
-  it("a scene that changes after the state was read is not seen (one synchronous read of nodes and scene)", async () => {
-    const c = makeCtx({
-      activeSceneId: "s1",
-      events: [event("sec", { secret: true, revealSceneId: "s2" })],
-      wire: [hit("sec")],
-    });
-    c.chronicle.getReadingOrder.mockImplementation((ns) => {
-      void Promise.resolve().then(() => c.setState({ activeSceneId: "s2" }));
-      return new Map(ns.map((n, i) => [n.id, i]));
-    });
-    const r = await c.executors.search_events({ query: "q" });
-    expect(idsOf(r)).toEqual([]);
-  });
-
-  it("passes the nodes of the tree state to the reading-order port as they are (same reference), and copies the answer (a turn's map is never shared out)", async () => {
-    const turnOrder = new Map([
-      ["s1", 0],
-      ["s2", 1],
-    ]);
-    const c = makeCtx({
-      wire: [hit("e1")],
-      events: [event("e1")],
-      readingOrder: turnOrder,
-    });
+  it("uses a context without chronicle loaders and reads tree state only for the project", async () => {
+    const c = makeCtx({ wire: [hit("e1")] });
     await c.executors.search_events({ query: "q" });
-    expect(c.chronicle.getReadingOrder.mock.calls[0]![0]).toBe(c.nodes);
-    expect([...turnOrder.entries()]).toEqual([
-      ["s1", 0],
-      ["s2", 1],
-    ]);
+    expect(c.ctx).not.toHaveProperty("chronicle");
+    expect(c.getTreeState).toHaveBeenCalledTimes(1);
+    expect(c.log).toEqual(["getTreeState", "eventsSemantic", "countTokens"]);
   });
 });
 
@@ -394,119 +274,37 @@ describe("limit and fetchLimit", () => {
   });
 });
 
-describe("the secrecy rule is applied to the hits", () => {
-  const events = [
-    event("pub"),
-    event("sec", { secret: true, revealSceneId: "s2" }),
-    event("perm", { secret: true }),
-  ];
-
-  it("drops a secret event before its reveal scene and keeps it from there on; a permanent secret never shows; no active scene hides every secret", async () => {
-    const at = async (activeSceneId: string | null) => {
-      const c = makeCtx({
-        activeSceneId,
-        events,
-        wire: [hit("sec"), hit("pub"), hit("perm")],
-      });
-      return idsOf(await c.executors.search_events({ query: "q" }));
-    };
-    expect(await at("s1")).toEqual(["pub"]);
-    expect(await at("s2")).toEqual(["sec", "pub"]);
-    expect(await at("s3")).toEqual(["sec", "pub"]);
-    expect(await at("not-a-scene")).toEqual(["pub"]);
-    expect(await at(null)).toEqual(["pub"]);
-  });
-
-  it("drops the hidden hits BEFORE it takes the first `limit` (a hidden hit at the head does not use up the limit)", async () => {
-    const evs = [
-      event("h1", { secret: true }),
-      event("h2", { secret: true }),
-      event("v1"),
-      event("v2"),
-      event("v3"),
-    ];
+describe("all events are eligible search hits", () => {
+  it("returns a secret event before its reveal scene, then applies only the requested limit", async () => {
+    const secretBeforeReveal = event("secret-before-reveal", {
+      secret: true,
+      revealSceneId: "s2",
+    });
     const c = makeCtx({
-      events: evs,
-      activeSceneId: "s1",
-      wire: [hit("h1"), hit("h2"), hit("v1"), hit("v2"), hit("v3")],
+      wire: [
+        hit(secretBeforeReveal.id, { title: secretBeforeReveal.title }),
+        hit("public"),
+        hit("later"),
+      ],
     });
     const r = await c.executors.search_events({ query: "q", limit: 2 });
-    expect(idsOf(r)).toEqual(["v1", "v2"]);
+    expect(idsOf(r)).toEqual(["secret-before-reveal", "public"]);
     expect(r.summary).toBe("2 events found");
   });
 
-  it("PASSES a hit whose id is not among the project's events (moved as the renderer has it, DR-MP4-38; the port's project scope is what keeps another project's id out) and asks for the events once", async () => {
-    const c = makeCtx({
-      activeSceneId: "s1",
-      events,
-      wire: [hit("x-unknown"), hit("sec"), hit("pub"), hit("x-unknown")],
-    });
-    const r = await c.executors.search_events({ query: "q" });
-    expect(idsOf(r)).toEqual(["x-unknown", "pub", "x-unknown"]);
-    // no second read to look the unknown id up (that would change the renderer's result)
-    expect(c.chronicle.getEvents).toHaveBeenCalledTimes(1);
-    expect(c.chronicle.getSceneEvents).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the order of the hits and does not de-duplicate them", async () => {
-    const c = makeCtx({
-      events,
-      wire: [hit("pub"), hit("sec"), hit("pub")],
-    });
+  it("keeps the dense hit order and does not de-duplicate hits", async () => {
+    const c = makeCtx({ wire: [hit("public"), hit("secret"), hit("public")] });
     expect(idsOf(await c.executors.search_events({ query: "q" }))).toEqual([
-      "pub",
-      "sec",
-      "pub",
+      "public",
+      "secret",
+      "public",
     ]);
-  });
-
-  it("the secrecy of an event follows the scenes it is stamped on when it has no reveal scene of its own", async () => {
-    const c = makeCtx({
-      activeSceneId: "s1",
-      events: [event("stamped", { secret: true })],
-      sceneEvents: [{ eventId: "stamped", sceneId: "s2" }],
-      wire: [hit("stamped")],
-    });
-    expect(idsOf(await c.executors.search_events({ query: "q" }))).toEqual([]);
-    const later = makeCtx({
-      activeSceneId: "s2",
-      events: [event("stamped", { secret: true })],
-      sceneEvents: [{ eventId: "stamped", sceneId: "s2" }],
-      wire: [hit("stamped")],
-    });
-    expect(idsOf(await later.executors.search_events({ query: "q" }))).toEqual([
-      "stamped",
-    ]);
-  });
-});
-
-describe("hiddenEventIds is the one place the rule is applied, and the four tools use its complement", () => {
-  it("returns exactly the ids that isEventHiddenFromAi hides", () => {
-    const evs = [
-      event("pub"),
-      event("sec", { secret: true, revealSceneId: "s2" }),
-      event("perm", { secret: true }),
-    ];
-    const order = new Map([
-      ["s1", 0],
-      ["s2", 1],
-    ]);
-    expect([
-      ...hiddenEventIds(evs, "s1", { readingOrder: order, sceneEvents: [] }),
-    ]).toEqual(["sec", "perm"]);
-    expect([
-      ...hiddenEventIds(evs, "s2", { readingOrder: order, sceneEvents: [] }),
-    ]).toEqual(["perm"]);
-    expect([
-      ...hiddenEventIds(evs, "", { readingOrder: order, sceneEvents: [] }),
-    ]).toEqual(["sec", "perm"]);
   });
 });
 
 describe("the result", () => {
   it("has the renderer's key order (eventId, title, kind, score), drops an extra key and counts the tokens of the JSON", async () => {
     const c = makeCtx({
-      events: [event("a")],
       wire: [
         hit("a", { extra: "dropped", rank: 1 }),
         hit("b", { kind: "birth", score: 0.25 }),
@@ -547,7 +345,7 @@ describe("the wire is narrowed (fail closed)", () => {
     ["score is a string", [hit("e1", { score: "0.9" })]],
     ["score is missing", [{ eventId: "e1", title: "t", kind: "generic" }]],
   ])("%s throws and is not turned into a result", async (_label, wire) => {
-    const c = makeCtx({ wire, events: [event("e1")] });
+    const c = makeCtx({ wire });
     await expect(c.executors.search_events({ query: "q" })).rejects.toThrow(
       /events_semantic_search/,
     );
@@ -576,13 +374,12 @@ describe("a failure of the dense read is not caught by the core (DR-MP4-38)", ()
     "%s comes out as the tool's error, never as `[]` or `0 events found`, and nothing is read after it",
     async (_label, make) => {
       const failure = make();
-      const c = makeCtx({ events: [event("e1")] });
+      const c = makeCtx();
       c.native.eventsSemantic.mockRejectedValue(failure);
       await expect(c.executors.search_events({ query: "q" })).rejects.toBe(
         failure,
       );
-      expect(c.chronicle.getEvents).not.toHaveBeenCalled();
-      expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
+      expect(c.getTreeState).toHaveBeenCalledTimes(1);
       expect(c.countTokens).not.toHaveBeenCalled();
     },
   );

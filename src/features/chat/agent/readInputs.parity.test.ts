@@ -272,7 +272,7 @@ describe("the current scene is null unless it is a live scene of the project's r
     });
     expect(inputs.currentSceneId).toBe(expected);
     if (expected !== null) {
-      // renderer の chronicle も読む順にあるかで同じ判定をする（`isEventHiddenFromAi`）。
+      // renderer の chronicle 側でも読む順に含まれる場面かを確認する。
       await setLegacyReadWorld({ projectId, activeSceneId: sceneId });
       expect(
         usePhaseStore.getState().sceneTimeIndex.readingOrder.has(sceneId),

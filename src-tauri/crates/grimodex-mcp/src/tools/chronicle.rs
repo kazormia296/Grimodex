@@ -2457,6 +2457,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_event_does_not_expose_hidden_primary_reference_guard() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e0", "Baseline", "a0");
+        seed_event(&server, "p1", "e1", "Original", "a1");
+        seed_codex(&server, "p1", "visible-codex");
+        seed_codex(&server, "p1", "hidden-codex");
+        seed_codex(&server, "p1", "replacement-codex");
+        let update_primary = |request_id: &str, event_id: &str| UpdateEventParams {
+            request_id: request_id.to_string(),
+            event_id: event_id.to_string(),
+            base_version: 0,
+            title: None,
+            note: None,
+            kind: None,
+            primary_codex_id: Some("replacement-codex".to_string()),
+            location_codex_id: None,
+            start_time: None,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            secret: None,
+            reveal_scene_id: None,
+        };
+        // 基準：現在の主な人物が hidden でない出来事は、同じ要求（別の人物への変更）が通る。
+        // これが無いと、下の拒否が「保護が効いた」のか「別の理由で失敗した」のか分からない。
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'visible-codex' WHERE id = 'e0'",
+                [],
+            )
+            .unwrap();
+        }
+        update_event(&server, update_primary("visible-primary-update", "e0"))
+            .await
+            .expect("a visible primary reference can be changed by the MCP");
+        {
+            let conn = server.conn.lock().unwrap();
+            let primary: Option<String> = conn
+                .query_row(
+                    "SELECT primary_codex_id FROM events WHERE id = 'e0'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(primary.as_deref(), Some("replacement-codex"));
+        }
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE codex_entries SET context_mode = 'hidden' WHERE id = 'hidden-codex'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hidden-codex' WHERE id = 'e1'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let error = update_event(&server, update_primary("hidden-primary-update", "e1"))
+            .await
+            .expect_err("MCP must reject changing the current primary reference");
+
+        assert_eq!(error.message, "internal error");
+        let message = error.message.to_lowercase();
+        assert!(!message.contains("hidden"));
+        assert!(!message.contains("secret"));
+        assert_eq!(
+            scalar(&server, "SELECT version FROM events WHERE id = ?1", "e1"),
+            0
+        );
+        let conn = server.conn.lock().unwrap();
+        let (primary, journals, changes): (Option<String>, i64, i64) = conn
+            .query_row(
+                "SELECT primary_codex_id,
+                        (SELECT COUNT(*) FROM undo_journal WHERE entity_id = 'e1'),
+                        (SELECT COUNT(*) FROM change_events WHERE entity_id = 'e1')
+                 FROM events WHERE id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(primary.as_deref(), Some("hidden-codex"));
+        assert_eq!((journals, changes), (0, 0));
+    }
+
+    #[tokio::test]
     async fn stamp_and_unstamp_scene_event() {
         let server = make_server(false);
         seed_scene(&server, "p1", "s1");
