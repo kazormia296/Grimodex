@@ -22,6 +22,12 @@
 - **DR-M4PF-6（自動再解釈の送信の形、ユーザー確認：追記 3）**：既存の手動抽出と同じ request・同じ provider（送信先は増やさない）。hidden の Codex は送らない。きっかけは作者の本文編集だけ。送る対象は保存済みの Build Action が `rebuild-required` の項目だけ。既定オフ・プロジェクト単位でオン・設定は端末側・provider か model を変えたらオフに戻す。送信の記録（時刻・場面・件数、本文なし）を保存する（保存範囲の拡大の確認済み、項目を広げるときは改めて伺う）。**送信の経路は開けていない。**
 - **DR-M4PF-7（token の上限）**：1 日の入力 token の上限は新しく設ける上限で、閾値の緩和ではない。数は既存の場面 1 つの抽出の実測の後に決め、ここと PR 本文に残す。経路を開けて作者に出す時期は、その時に改めて伺う。
 
+- **DR-M4PF-8（変更レビューの読み取りと履歴の reader）**：変更レビューは、今の revision（未承認でもよい）と、同じ project の typed lane で時系列が前の承認済み revision を比べる。
+  既存の typed revision の reader は source token を live と照合するため、承認後に元の Codex の項目が変わると前の revision が読めず、`content-changed` に到達できない。
+  そこで、live の Scope・source token・Freshness の照合を行わず、保存済みの payload の完全性（Decision、束縛、bundle の検証、envelope の digest）だけを確かめる**履歴の reader**を足す。
+  承認済みの payload は不変で、比べるのは「承認した時点の姿」と「今の提案」なので、live との照合は要らない。読み取りだけで、保存を変えない。既存の reader は変えない（重複は許し、後で整理する）。
+  前の revision だけをこの reader で読み、今の revision は従来の reader（live 照合つき）で読む。
+
 ## 信頼境界
 
 - Core は同一性を推測しない。同一性は Producer が宣言した key の完全一致だけ（ADR 005 の「Stable identityがない場合、heuristic matchingでidentityを捏造してはならない」を保つ）。
