@@ -792,11 +792,49 @@ export interface AgentLanguageModelStats {
   doStreamCalls: number;
 }
 
+export interface AgentPreviousSendObservation {
+  readonly stopReason: string;
+  readonly toolNames: readonly string[];
+}
+
+export interface AgentPrepareSendContext {
+  readonly sendIndex: number;
+  readonly previous: AgentPreviousSendObservation | null;
+}
+
+export type AgentPrepareSend = (
+  request: AgentAuditRequest,
+  ctx: AgentPrepareSendContext,
+) => AgentAuditRequest;
+
+type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+/** 同期例外は turn を失敗させる（audit は complete のまま）。呼び手の失敗を成功扱いしない。 */
+export type AgentObserveResponse = (
+  response: DeepReadonly<AgentWireResponse>,
+) => void;
+
+function assertSynchronousClosureResult(value: unknown, name: string): void {
+  if (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  ) {
+    void Promise.resolve(value).catch(() => {});
+    throw new TypeError(`${name} must be synchronous`);
+  }
+}
+
 export interface CreateAgentLanguageModelOptions<H extends AgentAuditHandle> {
   readonly send: AgentSend;
   readonly audit: AgentAuditSink<H>;
   /** main が持つ turn 開始時の tool 定義（`snapshotAgentTools` の結果）。名前で引いて元の定義へ戻す。 */
   readonly originalTools: readonly AgentWireToolDefinition[];
+  readonly prepareSend?: AgentPrepareSend;
+  readonly observeResponse?: AgentObserveResponse;
 }
 
 /**
@@ -818,6 +856,8 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
     doGenerateCalls: 0,
     doStreamCalls: 0,
   };
+  let sendIndex = 0;
+  let previous: AgentPreviousSendObservation | null = null;
   const capabilities: AgentCapabilityStore = {
     get: (toolCallId) => {
       const grant = capabilityMap.get(toolCallId);
@@ -843,14 +883,20 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
       tools,
       options: grimodex,
     });
+    const preparedRequest = options.prepareSend
+      ? options.prepareSend(auditRequest, { sendIndex, previous })
+      : auditRequest;
+    if (options.prepareSend)
+      assertSynchronousClosureResult(preparedRequest, "prepareSend");
+    sendIndex += 1;
 
     let handle: H;
     try {
-      handle = await options.audit.begin(auditRequest);
+      handle = await options.audit.begin(preparedRequest);
     } catch (error) {
       throw new AgentModelError("audit-failed", "audit begin failed", error);
     }
-    const args = buildWireArgs(auditRequest, handle);
+    const args = buildWireArgs(preparedRequest, handle);
 
     let raw: AgentWireResponse;
     try {
@@ -893,6 +939,17 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
       });
     } catch (error) {
       throw new AgentModelError("audit-failed", "audit complete failed", error);
+    }
+
+    previous = {
+      stopReason: raw.stopReason,
+      toolNames: raw.blocks.flatMap((block) =>
+        block.type === "tool_use" ? [block.name] : [],
+      ),
+    };
+    if (options.observeResponse) {
+      const observed = options.observeResponse(structuredClone(raw));
+      assertSynchronousClosureResult(observed, "observeResponse");
     }
 
     // tool-call を出すのは stopReason が tool_use のときだけ（responseToContent）。出さない応答の値は保持しない。

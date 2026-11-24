@@ -1,0 +1,967 @@
+{
+  "cases": [
+    {
+      "name": "window-plain-no-cache",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "plain-system"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "plain-system"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 12,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 13,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 18,
+          "remainingTokens": 82
+        }
+      }
+    },
+    {
+      "name": "window-cache",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "discarded-fallback",
+          "cacheSegments": ["cache"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "user"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "cache-blocks",
+          "blocks": [
+            {
+              "text": "cache",
+              "cacheControl": "ephemeral"
+            },
+            {
+              "text": "tail"
+            }
+          ]
+        },
+        "transport": {
+          "systemCacheSegments": ["cache"],
+          "systemVolatileTail": "tail"
+        },
+        "usage": {
+          "systemTokens": 9,
+          "conversationTokens": 4,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 13,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 18,
+          "remainingTokens": 82
+        }
+      }
+    },
+    {
+      "name": "cache-budget-downgrade",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 12,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "short",
+          "cacheSegments": ["long-cache-block"]
+        },
+        "messages": [],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 12,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "short"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 5,
+          "conversationTokens": 0,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 5,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 10,
+          "remainingTokens": 2
+        },
+        "cacheDowngradeReason": "budget"
+      }
+    },
+    {
+      "name": "cache-budget-downgrade-exact-fit",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 10,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "short",
+          "cacheSegments": ["long-cache-block"]
+        },
+        "messages": [],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 10,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "short"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 5,
+          "conversationTokens": 0,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 5,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 10,
+          "remainingTokens": 0
+        },
+        "cacheDowngradeReason": "budget"
+      }
+    },
+    {
+      "name": "cache-window-boundary-exact",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 10,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "plain",
+          "cacheSegments": ["cache"]
+        },
+        "messages": [],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 10,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "cache-blocks",
+          "blocks": [
+            {
+              "text": "cache",
+              "cacheControl": "ephemeral"
+            }
+          ]
+        },
+        "transport": {
+          "systemCacheSegments": ["cache"]
+        },
+        "usage": {
+          "systemTokens": 5,
+          "conversationTokens": 0,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 5,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 10,
+          "remainingTokens": 0
+        }
+      }
+    },
+    {
+      "name": "plain-overflow",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 20,
+          "wireOutputTokens": 3
+        },
+        "system": {
+          "fallback": "system"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "conversation"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "error": {
+          "name": "ContextWindowExceededError",
+          "code": "AI_CONTEXT_WINDOW_EXCEEDED",
+          "overflowTokens": 1,
+          "usage": {
+            "systemTokens": 6,
+            "conversationTokens": 12,
+            "toolTokens": 0,
+            "envelopeTokens": 0,
+            "safetyMarginTokens": 0,
+            "inputTokens": 18,
+            "outputReservedTokens": 3,
+            "reservedTotalTokens": 21,
+            "remainingTokens": -1
+          }
+        }
+      }
+    },
+    {
+      "name": "window-boundary--1",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 4,
+          "wireOutputTokens": 3
+        },
+        "system": {
+          "fallback": "S"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "U"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "error": {
+          "name": "ContextWindowExceededError",
+          "code": "AI_CONTEXT_WINDOW_EXCEEDED",
+          "overflowTokens": 1,
+          "usage": {
+            "systemTokens": 1,
+            "conversationTokens": 1,
+            "toolTokens": 0,
+            "envelopeTokens": 0,
+            "safetyMarginTokens": 0,
+            "inputTokens": 2,
+            "outputReservedTokens": 3,
+            "reservedTotalTokens": 5,
+            "remainingTokens": -1
+          }
+        }
+      }
+    },
+    {
+      "name": "window-boundary-0",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 5,
+          "wireOutputTokens": 3
+        },
+        "system": {
+          "fallback": "S"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "U"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 5,
+          "wireOutputTokens": 3
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "S"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 1,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 2,
+          "outputReservedTokens": 3,
+          "reservedTotalTokens": 5,
+          "remainingTokens": 0
+        }
+      }
+    },
+    {
+      "name": "window-boundary-1",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 6,
+          "wireOutputTokens": 3
+        },
+        "system": {
+          "fallback": "S"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "U"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "golden-model",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 6,
+          "wireOutputTokens": 3
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "S"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 1,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 2,
+          "outputReservedTokens": 3,
+          "reservedTotalTokens": 5,
+          "remainingTokens": 1
+        }
+      }
+    },
+    {
+      "name": "provider-openrouter",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openrouter",
+          "model": "anthropic/claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "openrouter",
+          "model": "anthropic/claude-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "cache-blocks",
+          "blocks": [
+            {
+              "text": "segment",
+              "cacheControl": "ephemeral"
+            },
+            {
+              "text": "tail"
+            }
+          ]
+        },
+        "transport": {
+          "systemCacheSegments": ["segment"],
+          "systemVolatileTail": "tail"
+        },
+        "usage": {
+          "systemTokens": 11,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 12,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 17,
+          "remainingTokens": 83
+        }
+      }
+    },
+    {
+      "name": "provider-openai",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai",
+          "model": "openai-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai",
+          "model": "openai-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "fallback"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 8,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 9,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 14,
+          "remainingTokens": 86
+        }
+      }
+    },
+    {
+      "name": "provider-anthropic",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "anthropic-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "anthropic",
+          "model": "anthropic-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "cache-blocks",
+          "blocks": [
+            {
+              "text": "segment",
+              "cacheControl": "ephemeral"
+            },
+            {
+              "text": "tail"
+            }
+          ]
+        },
+        "transport": {
+          "systemCacheSegments": ["segment"],
+          "systemVolatileTail": "tail"
+        },
+        "usage": {
+          "systemTokens": 11,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 12,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 17,
+          "remainingTokens": 83
+        }
+      }
+    },
+    {
+      "name": "provider-ollama",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "ollama",
+          "model": "ollama-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "ollama",
+          "model": "ollama-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "fallback"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 8,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 9,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 14,
+          "remainingTokens": 86
+        }
+      }
+    },
+    {
+      "name": "provider-openai-compatible",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "openai-compatible-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "openai-compatible",
+          "model": "openai-compatible-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "fallback"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 8,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 9,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 14,
+          "remainingTokens": 86
+        }
+      }
+    },
+    {
+      "name": "provider-sakana",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "sakana",
+          "model": "sakana-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "sakana",
+          "model": "sakana-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "fallback"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 8,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 9,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 14,
+          "remainingTokens": 86
+        }
+      }
+    },
+    {
+      "name": "provider-ai-novelist",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "ai-novelist",
+          "model": "ai-novelist-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "ai-novelist",
+          "model": "ai-novelist-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "fallback"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 8,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 9,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 14,
+          "remainingTokens": 86
+        }
+      }
+    },
+    {
+      "name": "provider-cli",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "cli",
+          "model": "cli-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "system": {
+          "fallback": "fallback",
+          "cacheSegments": ["segment"],
+          "volatileTail": "tail"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "u"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "route": {
+          "surface": "chat",
+          "provider": "cli",
+          "model": "cli-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 100,
+          "wireOutputTokens": 5
+        },
+        "systemDelivery": {
+          "kind": "plain",
+          "text": "fallback"
+        },
+        "transport": {},
+        "usage": {
+          "systemTokens": 8,
+          "conversationTokens": 1,
+          "toolTokens": 0,
+          "envelopeTokens": 0,
+          "safetyMarginTokens": 0,
+          "inputTokens": 9,
+          "outputReservedTokens": 5,
+          "reservedTotalTokens": 14,
+          "remainingTokens": 86
+        }
+      }
+    },
+    {
+      "name": "ollama-effective-window-too-small",
+      "input": {
+        "route": {
+          "surface": "chat",
+          "provider": "ollama",
+          "model": "local-golden",
+          "apiVariant": null,
+          "toolProtocol": "native",
+          "contextWindow": 12,
+          "wireOutputTokens": 3,
+          "modelContextWindow": 2048,
+          "contextWindowIsEffective": true,
+          "contextWindowSource": "runner"
+        },
+        "system": {
+          "fallback": "system"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "user"
+          }
+        ],
+        "envelopeTokens": 0,
+        "safetyMarginTokens": 0
+      },
+      "outcome": {
+        "error": {
+          "name": "OllamaContextWindowTooSmallError",
+          "code": "OLLAMA_CONTEXT_WINDOW_TOO_SMALL",
+          "overflowTokens": 1,
+          "limitKind": "effective",
+          "availableContextWindow": 12,
+          "modelContextWindow": 2048,
+          "usage": {
+            "systemTokens": 6,
+            "conversationTokens": 4,
+            "toolTokens": 0,
+            "envelopeTokens": 0,
+            "safetyMarginTokens": 0,
+            "inputTokens": 10,
+            "outputReservedTokens": 3,
+            "reservedTotalTokens": 13,
+            "remainingTokens": -1
+          }
+        }
+      }
+    }
+  ]
+}

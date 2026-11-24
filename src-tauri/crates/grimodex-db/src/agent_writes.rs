@@ -7913,6 +7913,11 @@ pub fn agent_event_create_with_authority_impl(
     payload: AgentEventCreatePayload,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
+    if !matches!(payload.surface.as_deref(), Some("manual" | "import"))
+        && payload.secret == Some(true)
+    {
+        anyhow::bail!("secret is no longer supported: events cannot be hidden from the AI");
+    }
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "requestId must not be empty"
@@ -8107,6 +8112,10 @@ fn agent_event_update_with_request_and_authority_impl(
     request_id: Option<&str>,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
+    if !matches!(payload.surface.as_deref(), Some("manual" | "import")) && payload.secret.is_some()
+    {
+        anyhow::bail!("secret is no longer supported: events cannot be hidden from the AI");
+    }
     if let Some(context) = renderer_context.as_ref() {
         let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
         validate_renderer_chronicle_context(request_id, context)?;
@@ -14348,7 +14357,188 @@ mod tests {
     }
 
     #[test]
-    fn mcp_event_writer_allows_secret_events_inside_native_transaction() {
+    fn event_secret_writes_are_allowed_only_on_author_surfaces() {
+        const SECRET_ERROR: &str =
+            "secret is no longer supported: events cannot be hidden from the AI";
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let side_effect_counts = |db: &Database| {
+            (
+                table_count(db, "events"),
+                table_count(db, "change_events"),
+                table_count(db, "undo_journal"),
+            )
+        };
+        let event_secret = |event_id: &str| {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT secret FROM events WHERE id = ?1",
+                    rusqlite::params![event_id],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("read event secret")
+        };
+        let ai_surfaces = [
+            Some("mcp"),
+            Some("in-app-agent"),
+            None,
+            Some("Manual"),
+            Some("MCP"),
+            Some("future-ai-surface"),
+            Some(""),
+        ];
+
+        let empty_counts = side_effect_counts(&db);
+        for surface in ai_surfaces {
+            let mut create = empty_create(&project_id, "Rejected secret create");
+            create.surface = surface.map(str::to_string);
+            create.secret = Some(true);
+            let error = agent_event_create_impl(&db, create)
+                .expect_err("AI surfaces cannot create secret events");
+            assert_eq!(error.to_string(), SECRET_ERROR, "surface {surface:?}");
+            assert_eq!(
+                side_effect_counts(&db),
+                empty_counts,
+                "rejected create must not write for surface {surface:?}"
+            );
+        }
+
+        let mut create = empty_create(&project_id, "AI event");
+        create.secret = None;
+        let created = agent_event_create_impl(&db, create).expect("AI can create with no secret");
+        let event_id = created["entityId"].as_str().expect("event id").to_string();
+        assert_eq!(event_secret(&event_id), 0);
+        let mut update = empty_update(&project_id, &event_id);
+        update.title = Some("AI update".to_string());
+        let updated = agent_event_update_impl(&db, update).expect("AI can update with no secret");
+        assert_eq!(updated["version"], 2);
+        assert_eq!(event_secret(&event_id), 0);
+
+        let mut create = empty_create(&project_id, "False secret");
+        create.surface = Some("in-app-agent".to_string());
+        create.secret = Some(false);
+        let created = agent_event_create_impl(&db, create).expect("false is a visible event");
+        assert_eq!(
+            event_secret(created["entityId"].as_str().expect("event id")),
+            0
+        );
+
+        let mut update_seed = empty_create(&project_id, "AI-writable event");
+        update_seed.surface = Some("manual".to_string());
+        let update_seed = agent_event_create_impl(&db, update_seed)
+            .expect("create event with author-owned field rows");
+        let update_event_id = update_seed["entityId"]
+            .as_str()
+            .expect("event id")
+            .to_string();
+        db.with_conn(|conn| {
+            for field_path in ["/title", "/secret"] {
+                let updated = conn.execute(
+                    "UPDATE narrative_field_authority
+                        SET owner_kind = 'ai', explicit_lock = 0, updated_at = 'fixture'
+                      WHERE project_id = ?1 AND entity_kind = 'event'
+                        AND entity_id = ?2 AND field_path = ?3",
+                    rusqlite::params![project_id, update_event_id, field_path],
+                )?;
+                assert_eq!(updated, 1, "the event has one {field_path} authority row");
+            }
+            Ok(())
+        })
+        .expect("authorize secret-field updates for the AI input-validation fixture");
+        let update_counts = side_effect_counts(&db);
+        let version = event_version(&db, &update_event_id);
+        for surface in ai_surfaces {
+            for secret in [true, false] {
+                let mut update = empty_update(&project_id, &update_event_id);
+                update.surface = surface.map(str::to_string);
+                update.base_version = version;
+                update.title = Some("Rejected secret update".to_string());
+                update.secret = Some(secret);
+                let error = agent_event_update_impl(&db, update)
+                    .expect_err("AI surfaces cannot update secret");
+                assert_eq!(error.to_string(), SECRET_ERROR, "surface {surface:?}");
+                assert_eq!(event_version(&db, &update_event_id), version);
+                assert_eq!(
+                    side_effect_counts(&db),
+                    update_counts,
+                    "rejected update must not write for surface {surface:?}"
+                );
+            }
+        }
+
+        for surface in ["manual", "import"] {
+            let mut create = empty_create(&project_id, "Author secret");
+            create.surface = Some(surface.to_string());
+            create.secret = Some(true);
+            let created = agent_event_create_impl(&db, create)
+                .expect("author surfaces can create secret events");
+            let event_id = created["entityId"].as_str().expect("event id").to_string();
+            assert_eq!(event_secret(&event_id), 1, "surface {surface}");
+
+            let mut update = empty_update(&project_id, &event_id);
+            update.surface = Some(surface.to_string());
+            update.title = Some("Author update".to_string());
+            update.secret = Some(true);
+            let updated = agent_event_update_impl(&db, update)
+                .expect("author surfaces can update secret events");
+            assert_eq!(updated["version"], 2, "surface {surface}");
+            assert_eq!(event_secret(&event_id), 1, "surface {surface}");
+        }
+    }
+
+    #[test]
+    fn event_update_secret_guard_precedes_idempotent_replay() {
+        const SECRET_ERROR: &str =
+            "secret is no longer supported: events cannot be hidden from the AI";
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut create = empty_create(&project_id, "Before");
+        create.surface = Some("manual".to_string());
+        let created = agent_event_create_impl(&db, create).expect("create the event as an author");
+        let event_id = created["entityId"].as_str().expect("event id").to_string();
+        db.with_conn(|conn| {
+            let updated = conn.execute(
+                "UPDATE narrative_field_authority
+                    SET owner_kind = 'ai', explicit_lock = 0, updated_at = 'fixture'
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id = ?2 AND field_path = '/title'",
+                rusqlite::params![project_id, event_id],
+            )?;
+            assert_eq!(updated, 1, "the event has one title authority row");
+            Ok(())
+        })
+        .expect("authorize the title update for this MCP retry fixture");
+        let mut first = empty_update(&project_id, &event_id);
+        first.surface = Some("mcp".to_string());
+        first.title = Some("After".to_string());
+        let request_id = "event-update-secret-retry";
+        agent_event_update_with_request_impl(&db, first.clone(), Some(request_id))
+            .expect("initial update without secret");
+
+        let side_effect_counts = (
+            table_count(&db, "events"),
+            table_count(&db, "change_events"),
+            table_count(&db, "undo_journal"),
+        );
+        first.secret = Some(true);
+        let error = agent_event_update_with_request_impl(&db, first, Some(request_id))
+            .expect_err("secret-bearing retry must be rejected before replay lookup");
+        assert_eq!(error.to_string(), SECRET_ERROR);
+        assert_eq!(event_version(&db, &event_id), 2);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("After"));
+        assert_eq!(
+            (
+                table_count(&db, "events"),
+                table_count(&db, "change_events"),
+                table_count(&db, "undo_journal"),
+            ),
+            side_effect_counts
+        );
+    }
+
+    #[test]
+    fn mcp_event_writer_updates_existing_secret_events() {
         let db = test_db();
         let project_id = insert_project(&db);
         let created = agent_event_create_impl(
@@ -14358,7 +14548,7 @@ mod tests {
                 event_id: None,
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
-                surface: Some("mcp".to_string()),
+                surface: Some("manual".to_string()),
                 title: Some("secret".to_string()),
                 note: None,
                 detail: None,
@@ -14380,7 +14570,7 @@ mod tests {
                 scene_ids: None,
             },
         )
-        .expect("create a secret event through the existing MCP writer");
+        .expect("create a secret event through the author writer");
         let event_id = created["entityId"].as_str().expect("entity id").to_string();
         db.with_conn(|conn| {
             let updated = conn.execute(
@@ -14397,26 +14587,14 @@ mod tests {
         let mut update = empty_update(&project_id, &event_id);
         update.surface = Some("mcp".to_string());
         update.title = Some("updated secret".to_string());
+        assert_eq!(event_secret(&db, &event_id), 1);
         agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
             .expect("MCP can update a secret event");
         assert_eq!(
             event_title(&db, &event_id).as_deref(),
             Some("updated secret")
         );
-
-        agent_event_delete_with_request_impl(
-            &db,
-            AgentEventIdPayload {
-                project_id: project_id.clone(),
-                session_id: "session".to_string(),
-                surface: Some("mcp".to_string()),
-                event_id: event_id.clone(),
-                base_version: event_version(&db, &event_id),
-            },
-            Some("mcp-secret-event-delete"),
-        )
-        .expect("MCP can delete a secret event");
-        assert_eq!(table_count(&db, "events"), 0);
+        assert_eq!(event_secret(&db, &event_id), 1);
     }
 
     #[test]
@@ -15288,6 +15466,17 @@ mod tests {
             }
         })
         .expect("event_title")
+    }
+
+    fn event_secret(db: &Database, event_id: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT secret FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("event_secret")
     }
 
     fn event_start(db: &Database, event_id: &str) -> Option<i64> {
