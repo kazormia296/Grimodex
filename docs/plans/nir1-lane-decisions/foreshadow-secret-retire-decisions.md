@@ -27,4 +27,37 @@
 
 ## 3. 検証
 
-（PR の本文に書く。）
+F1 の PR の本文（#1093）に書いた。
+
+## 4. この PR の範囲：F3（書き口と既定。2026-11-24）
+
+**入れる**：新しい伏線の既定を OFF（`secret = 0`）にそろえる（確認 105）、AI・MCP が伏線の `secret` を書けない（確認 118）。**入れない**：画面の編集ダイアログのチェック（F2。別の PR。F3 と同じ release に入れ、F3 より先に出さない）、回収済みの一覧（F9）、省いたときの 1 行（F10）、列の DEFAULT、関連する過去シーンの判定（A3）・本文の宣言の veto・作者向けの警告（目のアイコン。列を読み続ける）、年表の `events.secret`（CSR/1）。
+
+### DR-FSR-2　新しい伏線は印なし。AI・MCP は `secret` を書けない（F3）
+
+- **既定を OFF にそろえた**（`secret` の鍵が無い値だけに効く。鍵が有る値は今までどおり）：undo の再適用 4 か所（`grimodex-core` の `undo_journal.rs`。INSERT 側 2・UPDATE 側 2。`unwrap_or(1)` → `unwrap_or(0)`。列導入前の伏線は migration で 0 になったので、0 が当時の値と合う）、ゴミ箱の復元（`trash_bin.rs`）、Native `foreshadow_create` の payload の serde の既定、renderer の `agent-writes/foreshadow.ts`・`createForeshadow`・ゴミ箱の restorer・browser-mock の 2 か所、main の既定の表（create の `secret: false`）。**main と renderer の既定は同じ PR で同時に変えた**（`agentMutationProjectionMatches` は、省かれた欄の既定を main が埋めて renderer の payload と一致を見る。片方だけだと、`secret` を省いた `create_foreshadow` が capability を得られない）。
+- **列の DEFAULT は変えない**（`migrate.rs`・`schema-seed-ja.sql`・`schema.ts`・`schema-contract.json`・`seed_schema_parity.rs`）。書き口が値を必ず渡すので DEFAULT が効くのは、列を省いた生 SQL（開発用・試験）と、`secret` の鍵が無い古いスナップショットの復元だけで、変えても効くのは新しく作る DB だけ。規則を少なく保つ（技術判断。R3）。
+- **線引き**：
+
+| 入口 | `secret = true` を書けるか |
+| --- | --- |
+| 画面の作成・スニペット | 欄が無い（false） |
+| 画面の編集（`foreshadow_update`） | F2 までチェックで書ける（F2 で消す） |
+| アプリ内 AI の `create_foreshadow` | **書けない**。`true` は廃止を述べて拒む。`false`・省略は通す（`secret: false`） |
+| アプリ内 AI の `update_foreshadow` | **書けない**。`secret` の鍵は `true` も `false` も廃止を述べて拒む |
+| MCP の `create_foreshadow`／`update_foreshadow` | 同じ。`secret` は schema から隠し（serde は読む）、create の `true`・update のどの値も `invalid_params`（update は `no fields provided` の検査より前） |
+| 共有 Rust の `agent_foreshadow_create／update_with_context_impl`（関門。R15） | AI の surface（`manual`・`import` 以外）は書けない（create の `true`、update の `Some(_)`）。書く前・冪等の再送の検査より前に拒む |
+| `foreshadow_create`（人間の書き口。評価の書き口。`createForeshadow` の型の `secret` の欄を残す） | 書ける（値を受けて保存。確認 105 の条件） |
+| undo・redo・復元・スナップショット・書き出し・import | 値を運ぶだけ |
+
+- **update の `false` を黙って捨てない理由**：Native への payload は `secret: null`、モデルの入力は `secret: false` が present なので、投影の照合が一致せず、更新全体が理由の分からない失敗になる。通すと、AI が既存の印を作者に見えないまま外せる（確認 118 は「外すことだけ、AI に残す」を選ばなかった）。create の `true` を拒むのは、印が AI への渡し方に効かなくなり、関連する過去シーンの判定（A3）にだけ効くので、AI が付けた印が作者に見えないまま積もるのを止めるため。
+- **main の 3 つの表（モデルの表・実効の表・既定の表）は `secret` の鍵を残す**（モデルに見える schema から消しただけ。受け口を残さないと、過去の会話の履歴の `secret` つきの呼び出しをモデルが真似たとき、欄に無い鍵で入力が不正になり、理由の分からない失敗になる）。説明つきのエラーは renderer の実行側が先に返し、main の検査（`electron/shared/agentForeshadowSecretWritePolicy.ts`。capability の発行側は不正な入力を黙って `continue` するので、説明を返せない）は背後の防御（Mastra の MP-6 が再利用できる純粋な関数）。
+- 結果の `secret`（`create_foreshadow` の `{ id, title, secret }` と summary の「(secret)」、MCP の `CreateForeshadowResult`）は外した（常に false で意味が無い）。道具の定義・MCP の説明・設計書の「secret items are hidden …」を直した。
+- **MCP の update の `secret: null` は省略と同じに読まれる**（`Option<bool>` は `null` と欠落を区別しない。`secret` の値は変わらない。年表の `update_event` と同じ扱い。独立レビューの P2。doc コメントに明記）。
+- **抽出の commit**（`foreshadow_operations.rs`・`commit.rs`）は、提案の JSON の `secret` をそのまま保存するが、製品に伏線の提案を op に compile する層が無く、`true` が入る経路は無い。規則は足さない（R17。将来その層を足すときは、その層で `secret` を `false` に固定する）。
+
+### 残る制限（F3 の後）
+
+- 画面の編集ダイアログのチェックは、F2 まで残る（ON にしても、AI への渡し方には効かない）。**公開版（release）には、F1・F2・F3・F9・F10 が全部入った後に、F7 の測定の結果をユーザーに見せてから出す。**
+- 既存の `secret = 1` の伏線は、値が残り、A3 と本文の宣言の veto だけが読み続ける（確認 129）。画面から外せない（F2 の後）。
+- 実 addon の spec・`electron/native/grimodex-node/test/agent-writes.test.mjs` は、hosted の `electron-native` が最終の確認。
