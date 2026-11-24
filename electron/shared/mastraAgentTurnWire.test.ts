@@ -21,9 +21,12 @@ import {
   MASTRA_AGENT_TURN_FORBIDDEN_KEYS,
   MASTRA_AGENT_TURN_ID_UTF16_MAX,
   MASTRA_AGENT_TURN_LOOP_NUMBER_MAX,
+  MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX,
   MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS,
   MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS,
   MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX,
+  MASTRA_AGENT_TURN_LOOP_RESULT_JSON_DEPTH_MAX,
+  MASTRA_AGENT_TURN_LOOP_RESULT_JSON_NODES_MAX,
   MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX,
   MASTRA_AGENT_TURN_MESSAGES_MAX,
   MASTRA_AGENT_TURN_PROVIDERS,
@@ -506,14 +509,15 @@ describe("parseMastraAgentTurnStartRequest", () => {
 
   it("checks loop numeric types and the inclusive boundaries", () => {
     expect(MASTRA_AGENT_TURN_LOOP_NUMBER_MAX).toBe(1_000_000_000);
+    expect(MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX).toBe(Number.MAX_SAFE_INTEGER);
     expect(MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS).toBe(25);
     expect(MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS).toBe(1_000_000_000);
     expect(MASTRA_AGENT_TURN_REQUEST_MAX_OUTPUT_TOKENS_MAX).toBe(4_294_967_295);
     for (const [key, maximum] of [
-      ["tokenBudget", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+      ["tokenBudget", MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX],
       ["maxToolCalls", MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS],
       ["maxUserQuestions", MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS],
-      ["contextWindow", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+      ["contextWindow", MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX],
     ] as const) {
       for (const value of [null, "1", true, 0, -1, 1.5, NaN, Infinity]) {
         expect(
@@ -658,10 +662,38 @@ describe("parseMastraAgentTurnStartRequest", () => {
       MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX,
     );
     expect(
-      issueOf(start({ loop: loop({ fallbackSystem: fallbackMaximum }) })),
+      issueOf(
+        start({
+          messages: [{ role: "user", content: "" }],
+          systemCacheSegments: null,
+          systemVolatileTail: null,
+          loop: loop({
+            controlMessages: {
+              callLimitMessage: "",
+              tokenBudgetMessage: "",
+              userQuestionLimitMessage: "",
+            },
+            fallbackSystem: fallbackMaximum,
+          }),
+        }),
+      ),
     ).toBe(null);
     expect(
-      issueOf(start({ loop: loop({ fallbackSystem: `${fallbackMaximum}s` }) })),
+      issueOf(
+        start({
+          messages: [{ role: "user", content: "" }],
+          systemCacheSegments: null,
+          systemVolatileTail: null,
+          loop: loop({
+            controlMessages: {
+              callLimitMessage: "",
+              tokenBudgetMessage: "",
+              userQuestionLimitMessage: "",
+            },
+            fallbackSystem: `${fallbackMaximum}s`,
+          }),
+        }),
+      ),
     ).toBe("loop");
     for (const fallbackSystem of [null, 1, false]) {
       expect(issueOf(start({ loop: loop({ fallbackSystem }) }))).toBe("loop");
@@ -684,6 +716,82 @@ describe("parseMastraAgentTurnStartRequest", () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it("counts loop text and injected IDs in the shared request total", () => {
+    const emptyControlMessages = {
+      callLimitMessage: "",
+      tokenBudgetMessage: "",
+      userQuestionLimitMessage: "",
+    };
+    const minimal = {
+      messages: [{ role: "user", content: "" }],
+      systemCacheSegments: null,
+      systemVolatileTail: null,
+    };
+    expect(
+      issueOf(
+        start({
+          ...minimal,
+          loop: loop({
+            controlMessages: emptyControlMessages,
+            fallbackSystem: "f".repeat(8_000_000),
+          }),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      issueOf(
+        start({
+          ...minimal,
+          messages: [{ role: "user", content: "m" }],
+          loop: loop({
+            controlMessages: emptyControlMessages,
+            fallbackSystem: "f".repeat(7_999_999),
+          }),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      issueOf(
+        start({
+          ...minimal,
+          messages: [{ role: "user", content: "m" }],
+          loop: loop({
+            controlMessages: emptyControlMessages,
+            fallbackSystem: "f".repeat(8_000_000),
+          }),
+        }),
+      ),
+    ).toBe("text-too-long");
+
+    const exactIds = Array.from({ length: 40_000 }, (_, index) =>
+      `id-${index}`.padEnd(200, "x"),
+    );
+    expect(
+      issueOf(
+        start({
+          ...minimal,
+          fullyInjectedIds: exactIds,
+          loop: loop({
+            controlMessages: emptyControlMessages,
+            fallbackSystem: "",
+          }),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      issueOf(
+        start({
+          ...minimal,
+          fullyInjectedIds: [...exactIds, "x"],
+          loop: loop({
+            controlMessages: emptyControlMessages,
+            fallbackSystem: "",
+          }),
+        }),
+      ),
+    ).toBe("text-too-long");
   });
 
   it("requires a trimmed, bounded, non-empty chatSessionId (an unsettled session is invalid)", () => {
@@ -929,6 +1037,14 @@ describe("parseMastraAgentTurnStartRequest", () => {
   });
 
   it("counts the cache segments and the volatile tail toward the total text", () => {
+    const emptyLoop = loop({
+      controlMessages: {
+        callLimitMessage: "",
+        tokenBudgetMessage: "",
+        userQuestionLimitMessage: "",
+      },
+      fallbackSystem: "",
+    });
     const chunk = "x".repeat(MASTRA_AGENT_TURN_MESSAGE_TEXT_UTF16_MAX);
     const full = Math.floor(
       MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX / chunk.length,
@@ -945,6 +1061,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
           messages,
           systemCacheSegments: ["y".repeat(rest)],
           systemVolatileTail: null,
+          loop: emptyLoop,
         }),
       ),
     ).toBeNull();
@@ -955,6 +1072,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
           messages,
           systemCacheSegments: ["y".repeat(rest + 1)],
           systemVolatileTail: null,
+          loop: emptyLoop,
         }),
       ),
     ).toBe("text-too-long");
@@ -964,6 +1082,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
           messages,
           systemCacheSegments: null,
           systemVolatileTail: "y".repeat(rest + 1),
+          loop: emptyLoop,
         }),
       ),
     ).toBe("text-too-long");
@@ -973,6 +1092,7 @@ describe("parseMastraAgentTurnStartRequest", () => {
           messages,
           systemCacheSegments: ["y".repeat(rest)],
           systemVolatileTail: "z",
+          loop: emptyLoop,
         }),
       ),
     ).toBe("text-too-long");
@@ -1231,6 +1351,89 @@ describe("parseMastraAgentTurnLoopResult", () => {
         loopResult({
           finalThinkingBlocks: [...finalThinkingBlocks, thinkingBlock],
         }),
+      ),
+    ).toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          toolCallRecords: records,
+          citations,
+          finalThinkingBlocks,
+        }),
+      ),
+    ).not.toBeNull();
+  });
+
+  it("bounds aggregate strings, JSON nodes, and recursive depth", () => {
+    expect(MASTRA_AGENT_TURN_LOOP_RESULT_JSON_NODES_MAX).toBe(1_000_000);
+    expect(MASTRA_AGENT_TURN_LOOP_RESULT_JSON_DEPTH_MAX).toBe(64);
+    const exactText = "x".repeat(8_000_000 - 103);
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          toolCallRecords: [],
+          citations: [{ s: exactText }],
+          finalThinkingBlocks: [],
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          toolCallRecords: [],
+          citations: [{ s: `${exactText}x` }],
+          finalThinkingBlocks: [],
+        }),
+      ),
+    ).toBeNull();
+
+    const nodeParams = (count: number) =>
+      Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [String(index), null]),
+      );
+    const nodeRecord = {
+      name: "n",
+      params: nodeParams(999_985),
+      resultSummary: "",
+      tokensUsed: 0,
+    };
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          toolCallRecords: [nodeRecord],
+          citations: [],
+          finalThinkingBlocks: [],
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({
+          toolCallRecords: [{ ...nodeRecord, params: nodeParams(999_986) }],
+          citations: [],
+          finalThinkingBlocks: [],
+        }),
+      ),
+    ).toBeNull();
+
+    const nested = (levels: number) => {
+      let value: unknown = "leaf";
+      for (let index = 0; index < levels; index += 1) value = { child: value };
+      return value;
+    };
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ citations: [{ child: nested(61) }] }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ citations: [{ child: nested(62) }] }),
+      ),
+    ).toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ citations: [{ child: nested(100_000) }] }),
       ),
     ).toBeNull();
   });

@@ -95,14 +95,16 @@ export const MASTRA_AGENT_TURN_ROUTE_JSON_NODES_MAX = 512;
  * Legacy bounds: 21 M4 tools (`agentReadToolDefinitions.ts:45-69`), 25 calls
  * (`modelLimits.ts:1121-1124`), 8 default questions with an unbounded
  * override (`agentLoop.ts:32,66-77,156-158`),
- * `ja`/`en` (`chronicleReadContext.ts:27-33`), and positive u32 output tokens
- * (the route check below). Static context tops at `modelLimits.ts:336,363`;
- * dynamic/custom windows and IDs/result/text sizes have no hard cap in the
- * inspected legacy sources, so the wider caps below are provisional.
+ * `ja`/`en` (`chronicleReadContext.ts:27-33`), positive u32 output tokens
+ * (the route check below), and safe-integer context/token budgets
+ * (`modelLimits.ts:843`). Static context tops at `modelLimits.ts:336,363`;
+ * result/text sizes have no hard cap in the inspected legacy sources, so the
+ * text and result traversal caps below reuse this wire's existing total.
  */
 export const MASTRA_AGENT_TURN_TOOLS_MAX = M4_READ_TOOL_NAMES.length;
 export const MASTRA_AGENT_TURN_FULLY_INJECTED_IDS_MAX = 65_536;
 export const MASTRA_AGENT_TURN_LOOP_NUMBER_MAX = 1_000_000_000;
+export const MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX = Number.MAX_SAFE_INTEGER;
 // The main tool cap is modelLimits.ts:1121-1124; question overrides have no cap in agentLoop.ts:66-77.
 export const MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS = 25;
 export const MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS =
@@ -113,6 +115,8 @@ export const MASTRA_AGENT_TURN_CONTROL_MESSAGE_UTF16_MAX =
 export const MASTRA_AGENT_TURN_FALLBACK_SYSTEM_UTF16_MAX =
   MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX;
 export const MASTRA_AGENT_TURN_LOOP_RESULT_ARRAY_MAX = 65_536;
+export const MASTRA_AGENT_TURN_LOOP_RESULT_JSON_NODES_MAX = 1_000_000;
+export const MASTRA_AGENT_TURN_LOOP_RESULT_JSON_DEPTH_MAX = 64;
 
 /** Keys a renderer must never send: they are Main's (DR-MP3-4, -5, -23). */
 export const MASTRA_AGENT_TURN_FORBIDDEN_KEYS = [
@@ -604,18 +608,19 @@ function parseRoute(
   return { ok: true, value: value as MastraAgentTurnRoute };
 }
 
-function parseLoop(
-  value: unknown,
-): MastraAgentTurnParse<MastraAgentTurnLoopOptions> {
+function parseLoop(value: unknown): MastraAgentTurnParse<{
+  readonly value: MastraAgentTurnLoopOptions;
+  readonly textLength: number;
+}> {
   const entries = plainEntries(value);
   if (entries === null) return fail("loop");
   const issue = keyIssue(entries, LOOP_KEYS, []);
   if (issue !== null) return fail(issue === "missing-key" ? "loop" : issue);
   for (const [key, maximum] of [
-    ["tokenBudget", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+    ["tokenBudget", MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX],
     ["maxToolCalls", MASTRA_AGENT_TURN_LOOP_MAX_TOOL_CALLS],
     ["maxUserQuestions", MASTRA_AGENT_TURN_LOOP_MAX_USER_QUESTIONS],
-    ["contextWindow", MASTRA_AGENT_TURN_LOOP_NUMBER_MAX],
+    ["contextWindow", MASTRA_AGENT_TURN_CONTEXT_NUMBER_MAX],
   ] as const) {
     const number = entries.get(key);
     if (
@@ -649,6 +654,7 @@ function parseLoop(
   if (controlIssue !== null) {
     return fail(controlIssue === "missing-key" ? "loop" : controlIssue);
   }
+  let textLength = 0;
   for (const key of CONTROL_MESSAGE_KEYS) {
     const message = controlMessages.get(key);
     if (
@@ -657,6 +663,7 @@ function parseLoop(
     ) {
       return fail("loop");
     }
+    textLength += message.length;
   }
   const fallbackSystem = entries.get("fallbackSystem");
   if (
@@ -665,7 +672,11 @@ function parseLoop(
   ) {
     return fail("loop");
   }
-  return { ok: true, value: value as MastraAgentTurnLoopOptions };
+  textLength += fallbackSystem.length;
+  return {
+    ok: true,
+    value: { value: value as MastraAgentTurnLoopOptions, textLength },
+  };
 }
 
 function parseMessages(
@@ -786,12 +797,18 @@ export function parseMastraAgentTurnStartRequest(
     return fail("fully-injected-ids");
   }
   const ids = new Set<string>();
+  let idTextLength = 0;
   for (const id of fullyInjectedIds as readonly unknown[]) {
     if (!isScopeId(id) || ids.has(id)) return fail("fully-injected-ids");
     ids.add(id);
+    idTextLength += id.length;
   }
   const loop = parseLoop(entries.get("loop"));
   if (!loop.ok) return loop;
+  total += idTextLength + loop.value.textLength;
+  if (total > MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX) {
+    return fail("text-too-long");
+  }
   const tools = entries.get("tools");
   if (
     !Array.isArray(tools) ||
@@ -904,6 +921,79 @@ function isBoundedArray<T>(
   return true;
 }
 
+/**
+ * Legacy has no aggregate result bound; reuse the request text ceiling and
+ * cap JSON work so a single returned value cannot exhaust Main's parser.
+ */
+function isBoundedLoopResultJson(value: unknown): boolean {
+  const pending: Array<{ value?: unknown; depth: number; leave?: object }> = [
+    { value, depth: 0 },
+  ];
+  const ancestors = new WeakSet<object>();
+  let nodes = 0;
+  let queuedNodes = 1;
+  let textLength = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.leave) {
+      ancestors.delete(current.leave);
+      continue;
+    }
+    queuedNodes -= 1;
+    nodes += 1;
+    if (
+      nodes > MASTRA_AGENT_TURN_LOOP_RESULT_JSON_NODES_MAX ||
+      current.depth > MASTRA_AGENT_TURN_LOOP_RESULT_JSON_DEPTH_MAX
+    ) {
+      return false;
+    }
+    if (typeof current.value === "string") {
+      textLength += current.value.length;
+    } else if (
+      current.value === null ||
+      typeof current.value === "boolean" ||
+      (typeof current.value === "number" && Number.isFinite(current.value))
+    ) {
+      continue;
+    } else if (typeof current.value === "object") {
+      const object = current.value;
+      if (ancestors.has(object)) return false;
+      ancestors.add(object);
+      pending.push({ leave: object, depth: current.depth });
+      const isArray = Array.isArray(object);
+      const prototype = Object.getPrototypeOf(object);
+      if (!isArray && prototype !== Object.prototype && prototype !== null) {
+        return false;
+      }
+      const keys = Reflect.ownKeys(object);
+      let enumerableKeys = 0;
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(object, key);
+        if (!descriptor) return false;
+        if (!descriptor.enumerable) continue;
+        if (typeof key !== "string" || descriptor.get || descriptor.set) {
+          return false;
+        }
+        enumerableKeys += 1;
+        if (!isArray) textLength += key.length;
+        pending.push({ value: descriptor.value, depth: current.depth + 1 });
+        queuedNodes += 1;
+        if (
+          nodes + queuedNodes >
+          MASTRA_AGENT_TURN_LOOP_RESULT_JSON_NODES_MAX
+        ) {
+          return false;
+        }
+      }
+      if (isArray && enumerableKeys !== object.length) return false;
+    } else {
+      return false;
+    }
+    if (textLength > MASTRA_AGENT_TURN_TOTAL_TEXT_UTF16_MAX) return false;
+  }
+  return true;
+}
+
 /** The answer of Main's start, or `null` when it is not an answer of this route. */
 export function parseMastraAgentTurnStartResult(
   value: unknown,
@@ -933,6 +1023,7 @@ export function parseMastraAgentTurnStartResult(
 export function parseMastraAgentTurnLoopResult(
   value: unknown,
 ): MastraAgentTurnLoopResult | null {
+  if (!isBoundedLoopResultJson(value)) return null;
   const entries = plainEntries(value);
   if (
     entries === null ||
