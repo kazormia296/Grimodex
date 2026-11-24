@@ -26,14 +26,14 @@ import {
 // 実アプリが同梱する本文フォント (src/main.tsx と同じ import)。これが無いと
 // Chromium は generic serif にフォールバックし、実機の Noto Serif JP / Literata
 // とは別物のメトリクスで測ってしまう。
-import "@fontsource/noto-serif-jp/japanese-400.css";
-import "@fontsource/noto-serif-jp/latin-400.css";
-import "@fontsource/literata/latin-400.css";
+import "@fontsource-variable/noto-serif-jp/wght.css";
+import "@fontsource-variable/literata/wght.css";
 
 // 実アプリの言語別デフォルト (LANGUAGE_DEFAULT_OVERRIDES) に合わせる。
 const JA_EDITOR_SETTINGS: EditorContentStyleSettings = {
   fontFamily: '"Noto Serif JP"',
   fontSize: 20,
+  fontWeight: 400,
   lineHeight: 2.0,
   maxContentWidth: 720,
   wordBreak: "normal",

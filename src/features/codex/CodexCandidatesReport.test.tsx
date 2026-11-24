@@ -4,13 +4,20 @@ import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const projectIdRef = vi.hoisted(() => ({ current: "p1" }));
+const structureReviewFlag = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/features/project/projectStore", () => ({
   useCurrentProjectId: () => projectIdRef.current,
   getCurrentProjectId: () => projectIdRef.current,
   getCurrentProjectLanguage: () => "ja",
 }));
+// 試験は候補の配列を返す形のまま書き、結果の判別型（ok）には、ここで包む。
+const extractList = vi.hoisted(() => vi.fn());
 vi.mock("./candidateExtractor", () => ({
-  extractCodexCandidates: vi.fn(),
+  extractCodexCandidatesResult: (...args: unknown[]) =>
+    Promise.resolve(extractList(...args)).then((candidates) => ({
+      ok: true,
+      candidates,
+    })),
 }));
 vi.mock("./candidateJudgment", () => ({
   judgeCandidates: vi.fn(),
@@ -19,8 +26,13 @@ vi.mock("./codexCandidateDismissals", () => ({
   loadDismissedCandidateKeys: vi.fn(),
   saveDismissedCandidateKeys: vi.fn(),
 }));
+vi.mock("./codexStructureExtractionFlag", () => ({
+  isCodexStructureExtractionReviewEnabled: () => structureReviewFlag.enabled,
+}));
 vi.mock("./CodexStructureExtractDialog", () => ({
-  CodexStructureExtractDialog: () => null,
+  CodexStructureExtractDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="structure-dialog" data-open={String(open)} />
+  ),
 }));
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
@@ -28,7 +40,8 @@ vi.mock("sonner", () => ({
 
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCodexStore } from "./codexStore";
-import { extractCodexCandidates } from "./candidateExtractor";
+import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
+import { CodexStructureReviewHost } from "./CodexStructureReviewHost";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import {
   loadDismissedCandidateKeys,
@@ -36,7 +49,7 @@ import {
 } from "./codexCandidateDismissals";
 import { CodexCandidatesReport } from "./CodexCandidatesReport";
 
-const mockExtract = vi.mocked(extractCodexCandidates);
+const mockExtract = extractList;
 const mockJudge = vi.mocked(judgeCandidates);
 const mockLoadDismissed = vi.mocked(loadDismissedCandidateKeys);
 const mockSaveDismissed = vi.mocked(saveDismissedCandidateKeys);
@@ -65,7 +78,9 @@ function judgment(surface: string): [string, CandidateJudgment] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useCodexCandidateHostStore.getState().reset();
   projectIdRef.current = "p1";
+  structureReviewFlag.enabled = true;
   mockLoadDismissed.mockResolvedValue(new Set());
   mockSaveDismissed.mockResolvedValue(undefined);
   useCodexStore.setState({
@@ -136,5 +151,53 @@ describe("CodexCandidatesReport relational terms", () => {
         '[data-testid="codex-candidates-relational-note"]',
       ),
     ).toBeNull();
+  });
+});
+
+describe("CodexCandidatesReport: 開き直すたびの走査", () => {
+  it("開き直すと走査し直し、本文の変更で増えた候補を拾う", async () => {
+    mockExtract.mockResolvedValueOnce([candidate("試験語A")]);
+    const first = render(<CodexCandidatesReport />);
+    await screen.findByTestId("codex-candidates-toggle");
+    expect(mockExtract).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    mockExtract.mockResolvedValueOnce([
+      candidate("試験語A"),
+      candidate("試験語B"),
+    ]);
+    render(<CodexCandidatesReport />);
+    await waitFor(() => expect(mockExtract).toHaveBeenCalledTimes(2));
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("codex-candidates-toggle"));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("listitem")).toHaveLength(2),
+    );
+  });
+});
+
+describe("CodexCandidatesReport structure review entry", () => {
+  it("opens the shared host dialog from the Report button", async () => {
+    mockExtract.mockResolvedValue([candidate("test-candidate")]);
+    const user = userEvent.setup();
+    render(
+      <>
+        <CodexCandidatesReport />
+        <CodexStructureReviewHost />
+      </>,
+    );
+
+    await user.click(await screen.findByTestId("codex-candidates-toggle"));
+    await user.click(
+      await screen.findByTestId("codex-candidates-open-structure"),
+    );
+
+    expect(
+      (await screen.findByTestId("structure-dialog")).getAttribute("data-open"),
+    ).toBe("true");
+    expect(useCodexCandidateHostStore.getState().structureEverOpened).toBe(
+      true,
+    );
   });
 });

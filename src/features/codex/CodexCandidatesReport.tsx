@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
@@ -14,25 +14,18 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { isLicenseRestrictedError } from "@/features/license/gate";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "./codexStore";
-import {
-  extractCodexCandidates,
-  type CodexCandidate,
-} from "./candidateExtractor";
+import type { CodexCandidate } from "./candidateExtractor";
 import { activeCandidates, candidateKey } from "./codexCandidates";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import { parseAliases } from "./codexMatcher";
 import { isRelationalTerm } from "./extraction/relationalTerms";
-import {
-  loadDismissedCandidateKeys,
-  saveDismissedCandidateKeys,
-} from "./codexCandidateDismissals";
 import { rootCause } from "@/lib/debugLog";
 import { isCodexStructureExtractionReviewEnabled } from "./codexStructureExtractionFlag";
-import { CodexStructureExtractDialog } from "./CodexStructureExtractDialog";
+import { useCodexCandidateHostStore } from "./codexCandidateHostStore";
+import { useCodexCandidateDismissalActions } from "./useCodexCandidateDismissalActions";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -54,80 +47,34 @@ export function CodexCandidatesReport() {
   const entries = useCodexStore((s) => s.entries);
   const create = useCodexStore((s) => s.create);
   const update = useCodexStore((s) => s.update);
+  const scan = useCodexCandidateHostStore((s) => s.scan);
+  const candidates = scan.candidates;
+  const loading = scan.status === "scanning";
+  const dismissed = useCodexCandidateHostStore((s) => s.dismissed);
+  const generation = useCodexCandidateHostStore((s) => s.generation);
+  const syncProject = useCodexCandidateHostStore((s) => s.syncProject);
+  const requestScan = useCodexCandidateHostStore((s) => s.requestScan);
+  const openStructureReview = useCodexCandidateHostStore(
+    (s) => s.openStructureReview,
+  );
+  const { handleDismiss, handleRestoreAll } =
+    useCodexCandidateDismissalActions();
 
-  const [candidates, setCandidates] = useState<CodexCandidate[]>([]);
-  const [loading, setLoading] = useState(false);
   const [judging, setJudging] = useState(false);
   const [judgments, setJudgments] = useState<Map<string, CandidateJudgment>>(
     new Map(),
   );
   const [expanded, setExpanded] = useState(false);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
-  // 却下の記録を読み終えたか（読み込み前・失敗時の空集合を「全部外した」と見せないため）。
-  const [dismissedLoaded, setDismissedLoaded] = useState(false);
-  const [structureOpen, setStructureOpen] = useState(false);
   const structureReviewEnabled = isCodexStructureExtractionReviewEnabled();
 
-  const dismissedRef = useRef<Set<string>>(dismissed);
-  const projectIdRef = useRef(projectId);
-  projectIdRef.current = projectId;
-  const writeChainRef = useRef<Promise<unknown>>(Promise.resolve());
-
-  const commit = useCallback((next: Set<string>) => {
-    dismissedRef.current = next;
-    setDismissed(next);
-  }, []);
-
-  // 候補を本文スキャンで取得 (project 切替 / 手動リフレッシュで再実行)。
-  // 再スキャンすると候補集合が変わるので、古い AI 判定は破棄する (stale 防止)。
-  const reload = useCallback(() => {
-    const pid = projectIdRef.current;
-    setJudgments(new Map());
-    if (!pid) {
-      setCandidates([]);
-      return;
-    }
-    setLoading(true);
-    extractCodexCandidates(pid)
-      .then((c) => {
-        if (projectIdRef.current === pid) setCandidates(c);
-      })
-      .catch(() => {
-        if (projectIdRef.current === pid) setCandidates([]);
-      })
-      .finally(() => {
-        if (projectIdRef.current === pid) setLoading(false);
-      });
-  }, []);
-
   useEffect(() => {
-    // project 切替時は旧 project の候補/判定を即クリアしてから読み直す
-    // (新スキャン完了まで旧候補が一瞬残るのを防ぐ)。手動リフレッシュ (reload 直呼び)
-    // はクリアしないのでスピナー中に旧一覧が見えたままになる。
-    setCandidates([]);
-    setJudgments(new Map());
-    reload();
-  }, [projectId, reload]);
+    syncProject(projectId);
+    // 開くたびに走査し直す（以前の挙動）。走査中なら合流し、本文の変更を拾う。
+    void requestScan({ refresh: true });
+  }, [projectId, requestScan, syncProject]);
 
-  // 却下状態を project ごとにロード。切替時は一旦空に戻してから読み直す。
-  useEffect(() => {
-    let cancelled = false;
-    commit(new Set());
-    setDismissedLoaded(false);
-    if (!projectId) return;
-    loadDismissedCandidateKeys(projectId)
-      .then((keys) => {
-        if (cancelled) return;
-        commit(keys);
-        setDismissedLoaded(true);
-      })
-      .catch(() => {
-        if (!cancelled) commit(new Set());
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, commit]);
+  // 候補の作品切替・再スキャン時は、前の集合に対する AI 判定を捨てる。
+  useEffect(() => setJudgments(new Map()), [generation]);
 
   // 既に Codex にあるもの (受理済み) を除外。
   const active = useMemo(
@@ -157,89 +104,6 @@ export function CodexCandidatesReport() {
       setJudging(false);
     }
   }, [judging, visible, entries, t]);
-
-  const persistValue = useCallback(
-    (pid: string, value: Set<string>): Promise<void> => {
-      const run = writeChainRef.current
-        .catch(() => {})
-        .then(() => saveDismissedCandidateKeys(pid, value))
-        .catch((err) => {
-          if (projectIdRef.current !== pid || dismissedRef.current !== value) {
-            return;
-          }
-          toast.error(t("codex.candidates.dismissFailed"), {
-            description: String(err),
-          });
-          return loadDismissedCandidateKeys(pid)
-            .then((keys) => {
-              if (
-                projectIdRef.current === pid &&
-                dismissedRef.current === value
-              ) {
-                commit(keys);
-              }
-            })
-            .catch(() => {});
-        });
-      writeChainRef.current = run;
-      return run;
-    },
-    [t, commit],
-  );
-
-  const mutate = useCallback(
-    (next: Set<string>, prev: Set<string>, label: string) => {
-      const pid = projectIdRef.current;
-      if (!pid) return;
-      commit(next);
-      void persistValue(pid, next);
-      if (useGlobalHistoryStore.getState().isReplaying) return;
-      useGlobalHistoryStore.getState().push({
-        kind: "codex",
-        label,
-        async undo() {
-          if (projectIdRef.current === pid) commit(prev);
-          await persistValue(pid, prev);
-        },
-        async redo() {
-          if (projectIdRef.current === pid) commit(next);
-          await persistValue(pid, next);
-        },
-      });
-    },
-    [commit, persistValue],
-  );
-
-  const handleDismiss = useCallback(
-    (surface: string) => {
-      const prev = dismissedRef.current;
-      const next = new Set(prev);
-      next.add(candidateKey(surface));
-      mutate(next, prev, t("codex.candidates.historyDismiss"));
-    },
-    [mutate, t],
-  );
-
-  // 構造抽出で畳んだ表記を戻す（打ち手 3）。候補画面と同じ入口（mutate）を通し、
-  // 候補画面の state が古いまま残らないようにする。
-  const handleRestoreDismissedKeys = useCallback(
-    (keys: readonly string[]) => {
-      const prev = dismissedRef.current;
-      const next = new Set(prev);
-      for (const key of keys) next.delete(key);
-      if (next.size === prev.size) return;
-      mutate(next, prev, t("codex.candidates.historyRestore"));
-    },
-    [mutate, t],
-  );
-
-  const handleRestoreAll = useCallback(() => {
-    mutate(
-      new Set(),
-      dismissedRef.current,
-      t("codex.candidates.historyRestore"),
-    );
-  }, [mutate, t]);
 
   // 受理 (新規作成): AI 判定があれば種別/要約を使って作成 (無ければ character 既定)。
   // AI が「別名」と判定していても、このボタンはあえて**新規エントリ**を作る
@@ -306,15 +170,6 @@ export function CodexCandidatesReport() {
 
   if (visible.length === 0 && hiddenActiveCount === 0) return null;
 
-  const structureDialog = structureReviewEnabled ? (
-    <CodexStructureExtractDialog
-      open={structureOpen}
-      onOpenChange={setStructureOpen}
-      onRestoreDismissedCandidates={handleRestoreDismissedKeys}
-      dismissedCandidateKeys={dismissedLoaded ? dismissed : undefined}
-    />
-  ) : null;
-
   // 全件却下: 控えめなバーで件数と再表示導線だけ残す。
   if (visible.length === 0) {
     return (
@@ -340,7 +195,6 @@ export function CodexCandidatesReport() {
             {t("codex.candidates.show")}
           </button>
         </div>
-        {structureDialog}
       </>
     );
   }
@@ -490,7 +344,7 @@ export function CodexCandidatesReport() {
               {structureReviewEnabled && (
                 <button
                   type="button"
-                  onClick={() => setStructureOpen(true)}
+                  onClick={openStructureReview}
                   data-testid="codex-candidates-open-structure"
                   className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-sky-700/90 hover:bg-sky-500/20 dark:text-sky-200 ${FOCUS_RING}`}
                 >
@@ -502,7 +356,7 @@ export function CodexCandidatesReport() {
               )}
               <button
                 type="button"
-                onClick={reload}
+                onClick={() => void requestScan({ force: true })}
                 disabled={loading}
                 data-testid="codex-candidates-refresh"
                 className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-sky-700/80 hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-300 ${FOCUS_RING}`}
@@ -529,7 +383,6 @@ export function CodexCandidatesReport() {
           </div>
         )}
       </div>
-      {structureDialog}
     </>
   );
 }

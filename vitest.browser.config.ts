@@ -9,11 +9,30 @@ import { playwright } from "@vitest/browser-playwright";
 const alias = { "@": path.resolve(__dirname, "./src") };
 const dependencyRoot = realpathSync(path.resolve(__dirname, "node_modules"));
 
+// vite.config.ts の strip-woff-fontsource と同じ変換 (可変フォントの family 名から
+// ' Variable' を外す)。実アプリと同じ family 名で本文フォントを解決させる。
+function renameVariableFontFamily() {
+  return {
+    name: "rename-variable-font-family",
+    enforce: "pre" as const,
+    transform(code: string, id: string) {
+      if (!id.includes("@fontsource-variable") || !/\.css(\?|$)/.test(id)) {
+        return null;
+      }
+      const renamed = code.replace(
+        /font-family:\s*(['"])([^'"]+?) Variable\1/g,
+        "font-family: $1$2$1",
+      );
+      return renamed === code ? null : { code: renamed, map: null };
+    },
+  };
+}
+
 export default defineConfig({
   // Tailwind 4 は utilities を Vite plugin 経由で生成する。これが無いと
   // browser test で `grid` `h-full` 等のクラスが no-op になり、layout が
   // 全く効かない (shell が display:block に潰れる)。
-  plugins: [react(), tailwindcss()],
+  plugins: [renameVariableFontFamily(), react(), tailwindcss()],
   resolve: { alias },
   server: {
     watch: {

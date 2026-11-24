@@ -63,6 +63,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // Editor — user preference (global)
   "editor.fontFamily": "global",
   "editor.fontSize": "global",
+  "editor.fontWeight": "global",
   "editor.lineHeight": "global",
   "editor.maxContentWidth": "global",
   "editor.paragraphSpacing": "global",
@@ -173,6 +174,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "goal.manuscriptDeadline": "project",
   // Display — user preference (global)
   "display.uiFontFamily": "global",
+  "display.uiFontWeight": "global",
   "display.showWordCount": "global",
   "display.showAiBadge": "global",
   "display.reduceMotion": "global",
@@ -312,6 +314,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // buildFontOptions の同梱/列挙 option (quoteFamily) と一致し、重複表示を避ける。
   "editor.fontFamily": '"Noto Serif JP"',
   "editor.fontSize": "18",
+  // 本文の基準ウェイト (CSS font-weight、100–900)。可変フォントなら 100 刻みで効き、
+  // 静的フォントは最も近い収録ウェイトに寄る。太字 (strong) は bolder で相対的に太くなる。
+  "editor.fontWeight": "400",
   "editor.lineHeight": "2.0",
   "editor.maxContentWidth": "720",
   "editor.paragraphSpacing": "8",
@@ -474,6 +479,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // 同梱 UI 書体 M PLUS 1 を既定に。fallback 無しは buildFontOptions の
   // 同梱/列挙 option (quoteFamily) と一致させ重複表示を防ぐ。
   "display.uiFontFamily": '"M PLUS 1"',
+  // UI の基準ウェイト (body の font-weight、100–900)。個別に太さを指定した部品は変わらない。
+  "display.uiFontWeight": "400",
   "display.showWordCount": "true",
   "display.showAiBadge": "false",
   "display.reduceMotion": "false",
