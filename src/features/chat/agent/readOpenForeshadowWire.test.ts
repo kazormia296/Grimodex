@@ -79,7 +79,11 @@ describe("readOpenForeshadowWire", () => {
       await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
       legacyReadInvokeBridge.reset();
       const wire = (await readOpenForeshadowWire("p-main")) as Wire;
-      expect(wire.foreshadows.map((f) => f.id)).toEqual(["fs-1", "fs-2", "fs-5"]);
+      expect(wire.foreshadows.map((f) => f.id)).toEqual([
+        "fs-1",
+        "fs-2",
+        "fs-5",
+      ]);
       expect(wire.foreshadows.map((f) => f.id)).toContain("fs-2");
       expect(wire.foreshadows[0]).toMatchObject({
         id: "fs-1",
