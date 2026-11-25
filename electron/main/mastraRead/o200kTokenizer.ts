@@ -53,8 +53,13 @@ export function resolveMainTokenizerAssetPaths({
   };
 }
 
+/**
+ * `assets` may be a function: it then runs inside `ensureReady()`, so a failure to resolve the paths
+ * (for example a missing `resourcesPath`) is a rejected `ensureReady()` (the owner refuses `unsupported`)
+ * and not an error while Main starts. It runs again on a retry.
+ */
 export function createMainO200kTokenizer(
-  assets: MainTokenizerAssetPaths,
+  assets: MainTokenizerAssetPaths | (() => MainTokenizerAssetPaths),
 ): CoreTokenizer {
   let encoder: Tiktoken | null = null;
   let initializing: Promise<void> | null = null;
@@ -66,9 +71,10 @@ export function createMainO200kTokenizer(
       if (!initializing) {
         initializing = Promise.resolve()
           .then(async () => {
+            const paths = typeof assets === "function" ? assets() : assets;
             const [ranksBytes, wasmBytes] = await Promise.all([
-              readFile(assets.ranksPath),
-              readFile(assets.wasmPath),
+              readFile(paths.ranksPath),
+              readFile(paths.wasmPath),
             ]);
             const ranks = JSON.parse(
               ranksBytes.toString("utf8"),

@@ -133,6 +133,35 @@ describe("Electron main o200k_base tokenizer", () => {
     }
   });
 
+  it("resolves paths lazily inside ensureReady: a resolver that throws is a rejection (not a startup error) and is retried", async () => {
+    const { createMainO200kTokenizer, MAIN_TOKENIZER_NOT_READY } =
+      await import("./o200kTokenizer.js");
+    let resolverFails = true;
+    const resolver = vi.fn(() => {
+      if (resolverFails) throw new Error("resourcesPath is missing");
+      return assets;
+    });
+    readFileMock.mockImplementation(async (filePath: string) =>
+      readFileSync(filePath === assets.ranksPath ? ranksPath : wasmPath),
+    );
+
+    // Construction does not call the resolver: nothing can throw while Main starts.
+    const tokenizer = createMainO200kTokenizer(resolver);
+    expect(resolver).not.toHaveBeenCalled();
+    expect(() => tokenizer.countTokens("x")).toThrow(MAIN_TOKENIZER_NOT_READY);
+
+    await expect(tokenizer.ensureReady()).rejects.toThrow(
+      "resourcesPath is missing",
+    );
+    expect(readFileMock).not.toHaveBeenCalled();
+    expect(() => tokenizer.countTokens("x")).toThrow(MAIN_TOKENIZER_NOT_READY);
+
+    resolverFails = false;
+    await expect(tokenizer.ensureReady()).resolves.toBeUndefined();
+    expect(resolver).toHaveBeenCalledTimes(2);
+    expect(tokenizer.countTokens("hello world")).toBeGreaterThan(0);
+  });
+
   it("keeps the per-code-point tokenizer out of the production path", () => {
     const source = readFileSync(
       new URL("./o200kTokenizer.ts", import.meta.url),
