@@ -9,6 +9,7 @@ mod c2zc_canonical_cutover;
 #[cfg(feature = "c2zc-fixture-builder")]
 pub mod c2zc_restore_fixture;
 pub mod change_feed;
+mod chronicle_approval_date;
 mod chronicle_operations;
 mod codex_operations;
 mod codex_snapshots;

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CHRONICLE_EVENT_DATE_REQUIRED } from "@/../electron/shared/chronicleEventDate";
 import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
 
 type Origin =
@@ -549,6 +550,8 @@ describe("Browser Mock canonical Tree and Codex writers", () => {
         surface: "import",
         eventId: "browser-imported-event",
         title: "Imported",
+        startTime: 0,
+        startGranularity: "day",
         participantCodexIds: [],
         sceneIds: [],
       },
@@ -574,6 +577,8 @@ describe("Browser Mock canonical Tree and Codex writers", () => {
       surface: "manual",
       eventId: "browser-created-event-attempt-1",
       title: "Arrival",
+      startTime: 0,
+      startGranularity: "day",
       participantCodexIds: [],
       sceneIds: [],
     };
@@ -643,6 +648,94 @@ describe("Browser Mock canonical Tree and Codex writers", () => {
                AND request_id = 'event-create-request') AS receipts`,
       ),
     ).toEqual([{ domain_rows: 1, journals: 1, receipts: 1 }]);
+  });
+
+  it("requires dates on Chronicle create and date-changing updates", async () => {
+    const create = {
+      projectId: "default-project",
+      sessionId: "event-date-create-session",
+      title: "Undated",
+    };
+    await expect(
+      mock.invoke("agent_event_create", {
+        payload: { ...create, requestId: "event-date-create-missing" },
+      }),
+    ).rejects.toThrow(CHRONICLE_EVENT_DATE_REQUIRED);
+    await expect(
+      mock.invoke("agent_event_create", {
+        payload: {
+          ...create,
+          requestId: "event-date-create-none",
+          startTime: 1,
+          startGranularity: "none",
+        },
+      }),
+    ).rejects.toThrow(CHRONICLE_EVENT_DATE_REQUIRED);
+    expect(
+      await rows(mock, "SELECT id FROM events WHERE title = 'Undated'"),
+    ).toEqual([]);
+
+    await mock.invoke("db_execute", {
+      sql: `INSERT INTO events
+              (id, project_id, title, ordinal, start_time, start_granularity, version)
+            VALUES ('legacy-undated-event', 'default-project', 'Before', 'a0', NULL, 'none', 0)`,
+      params: [],
+      method: "run",
+    });
+    onDatabaseDirty.mockClear();
+    await expect(
+      mock.invoke("agent_event_update", {
+        payload: {
+          requestId: "event-date-update-rejected",
+          projectId: "default-project",
+          sessionId: "event-date-update-session",
+          eventId: "legacy-undated-event",
+          baseVersion: 0,
+          startGranularity: "day",
+        },
+      }),
+    ).rejects.toThrow(CHRONICLE_EVENT_DATE_REQUIRED);
+    expect(
+      await rows(
+        mock,
+        "SELECT title, start_time, start_granularity, version FROM events WHERE id = 'legacy-undated-event'",
+      ),
+    ).toEqual([
+      {
+        title: "Before",
+        start_time: null,
+        start_granularity: "none",
+        version: 0,
+      },
+    ]);
+    expect(onDatabaseDirty).not.toHaveBeenCalled();
+
+    const updated = await mock.invoke<{ version: number }>(
+      "agent_event_update",
+      {
+        payload: {
+          requestId: "event-date-update-unrelated",
+          projectId: "default-project",
+          sessionId: "event-date-update-session",
+          eventId: "legacy-undated-event",
+          baseVersion: 0,
+          title: "Edited legacy event",
+        },
+      },
+    );
+    expect(updated.version).toBe(1);
+    expect(
+      await rows(
+        mock,
+        "SELECT title, start_time, start_granularity FROM events WHERE id = 'legacy-undated-event'",
+      ),
+    ).toEqual([
+      {
+        title: "Edited legacy event",
+        start_time: null,
+        start_granularity: "none",
+      },
+    ]);
   });
 
   it("keeps single scene-link and relation retries/conflicts canonical in Browser Mock", async () => {

@@ -6,7 +6,8 @@
 //! invariant every other narrative apply commit patch already enforces.
 
 use grimodex_core::chronicle_time::{
-    validate_canonical_chronicle_date_range, ChronicleDateRange, ChronicleTimestamp,
+    require_event_date, validate_canonical_chronicle_date_range, ChronicleDateRange,
+    ChronicleTimestamp,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -320,9 +321,17 @@ pub(crate) fn apply_event_metadata_patch_in_tx(
             live_version
         );
     }
-    validate_range(payload)?;
-
     let before_snapshot = collect_event_chronicle_snapshot(conn, &payload.target_id)?;
+    if before_snapshot["startTime"].as_i64() != payload.start_time
+        || before_snapshot["startMinute"].as_i64() != payload.start_minute
+        || before_snapshot["startGranularity"].as_str() != Some(payload.start_granularity.as_str())
+        || before_snapshot["endTime"].as_i64() != payload.end_time
+        || before_snapshot["endMinute"].as_i64() != payload.end_minute
+        || before_snapshot["endGranularity"].as_str() != Some(payload.end_granularity.as_str())
+    {
+        require_event_date(payload.start_time, &payload.start_granularity)?;
+        validate_range(payload)?;
+    }
     let next_version = live_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("event version overflow"))?;

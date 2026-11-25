@@ -8,6 +8,8 @@ use std::fmt;
 
 use thiserror::Error;
 
+pub const CHRONICLE_EVENT_DATE_REQUIRED: &str = r#"CHRONICLE_EVENT_DATE_REQUIRED: an event needs a start date and a startGranularity other than none. If the date is uncertain, supply an estimate and mark it with precision "approx" or "unknown"."#;
+
 pub const MINUTES_PER_DAY: i64 = 1_440;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +41,17 @@ pub struct ChronicleTimestamp<'a> {
 pub struct ChronicleDateRange<'a> {
     pub start: ChronicleTimestamp<'a>,
     pub end: ChronicleTimestamp<'a>,
+}
+
+pub fn require_event_date(
+    day: Option<i64>,
+    granularity: &str,
+) -> Result<(), ChronicleDateRangeError> {
+    if crate::chronicle_order::span::has_date_parts(day.map(|d| d as f64), granularity) {
+        Ok(())
+    } else {
+        Err(ChronicleDateRangeError::EventDateRequired)
+    }
 }
 
 /// Resolve an omitted granularity without overriding an explicit caller
@@ -83,6 +96,8 @@ pub fn normalize_chronicle_timestamp(timestamp: ChronicleTimestamp<'_>) -> Chron
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ChronicleDateRangeError {
+    #[error("{CHRONICLE_EVENT_DATE_REQUIRED}")]
+    EventDateRequired,
     #[error("chronicle {endpoint} minute must be between 0 and 1439, got {minute}")]
     MinuteOutOfRange {
         endpoint: ChronicleEndpoint,

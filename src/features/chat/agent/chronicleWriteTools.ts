@@ -1,3 +1,4 @@
+import { CHRONICLE_EVENT_DATE_REQUIRED } from "@/../electron/shared/chronicleEventDate";
 import { countTokens } from "../contextBuilder";
 import {
   agentCreateEvent,
@@ -119,10 +120,7 @@ export async function createEventTool(
     typeof params["startTime"] !== "number" ||
     !Number.isFinite(params["startTime"])
   ) {
-    return fail(
-      "create_event",
-      "startTime is required and must be a finite number of days from the in-world epoch",
-    );
+    return fail("create_event", CHRONICLE_EVENT_DATE_REQUIRED);
   }
   const precision = coercePrecision(params["precision"]);
   if (!precision) {
@@ -134,10 +132,7 @@ export async function createEventTool(
   if (params["startGranularity"] !== undefined) {
     const granularity = coerceGranularity(params["startGranularity"]);
     if (!granularity || granularity === "none") {
-      return fail(
-        "create_event",
-        "startGranularity must be season, year, month, day, or time; omit it to infer granularity from the supplied date/time",
-      );
+      return fail("create_event", CHRONICLE_EVENT_DATE_REQUIRED);
     }
   }
   if (!requestId?.trim()) {
@@ -206,18 +201,12 @@ export async function updateEventTool(
     (typeof params["startTime"] !== "number" ||
       !Number.isFinite(params["startTime"]))
   ) {
-    return fail(
-      "update_event",
-      "startTime cannot be null and must be a finite number of days from the in-world epoch",
-    );
+    return fail("update_event", CHRONICLE_EVENT_DATE_REQUIRED);
   }
   if (params["startGranularity"] !== undefined) {
     const granularity = coerceGranularity(params["startGranularity"]);
     if (!granularity || granularity === "none") {
-      return fail(
-        "update_event",
-        "startGranularity must be season, year, month, day, or time; 'none' is not allowed",
-      );
+      return fail("update_event", CHRONICLE_EVENT_DATE_REQUIRED);
     }
   }
   const precision =

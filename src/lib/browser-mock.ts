@@ -6,6 +6,7 @@ import type { Database, SqlJsStatic, SqlValue } from "sql.js";
 import { sha256Hex } from "@grimodex/scan-contract";
 import schemaContract from "@/db/generated/schema-contract.json";
 import protectedWriterPolicy from "../../policies/narrative/protected-writers.json";
+import { CHRONICLE_EVENT_DATE_REQUIRED } from "@/../electron/shared/chronicleEventDate";
 import {
   resolveActiveOpenaiCompatibleEndpoint,
   type AiProvider,
@@ -10252,6 +10253,9 @@ export async function createBrowserMock(
         conflictMarker,
       });
       if (replay) return replay;
+      if (startTime === null || startGranularity === "none") {
+        throw new Error(CHRONICLE_EVENT_DATE_REQUIRED);
+      }
 
       const timestamp = Date.now();
       const now = new Date(timestamp).toISOString();
@@ -10966,6 +10970,42 @@ export async function createBrowserMock(
           throw new Error(
             `event '${eventId}' version conflict: expected ${baseVersion} but database has ${String(before.eventData.version)}`,
           );
+        }
+        const currentStartTime = before.eventData.startTime;
+        const currentStartMinute = before.eventData.startMinute;
+        const currentStartGranularity = before.eventData.startGranularity;
+        const writesStartTime =
+          payload.startTime != null && payload.startTime !== currentStartTime;
+        const writesStartMinute =
+          payload.startMinute != null &&
+          payload.startMinute !== currentStartMinute;
+        const nextStartTime = writesStartTime
+          ? payload.startTime
+          : currentStartTime;
+        const nextStartGranularity =
+          payload.startGranularity ??
+          (writesStartMinute
+            ? "time"
+            : writesStartTime && currentStartGranularity === "none"
+              ? "day"
+              : currentStartGranularity);
+        const touchesChronicleDate = [
+          "startTime",
+          "endTime",
+          "startMinute",
+          "endMinute",
+          "startGranularity",
+          "endGranularity",
+        ].some(
+          (field) =>
+            payload[field] != null &&
+            payload[field] !== before.eventData[field],
+        );
+        if (
+          touchesChronicleDate &&
+          (nextStartTime == null || nextStartGranularity === "none")
+        ) {
+          throw new Error(CHRONICLE_EVENT_DATE_REQUIRED);
         }
         for (const [field, label] of [
           ["primaryCodexId", "primary Codex"],
