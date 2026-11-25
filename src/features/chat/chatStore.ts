@@ -66,6 +66,7 @@ import { archiveCodexSessionThread } from "./lazyRuntimeApi";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { readRuntimeSetting } from "@/features/settings/runtimeSettings";
 import { setSnippetDeletedHandler } from "@/features/snippets/anchorNotify";
+import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 
 const turnRuntime = createChatTurnRuntime({ registerQuiescence: true });
 const userQuestionRuntime = createChatUserQuestionRuntime();
@@ -390,6 +391,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 }));
+
+// 終了や切替の前の確認（chatStopConfirm）が使う。
+registerActiveTurnStopper({
+  isActive: () => useChatStore.getState().isStreaming,
+  stop: () => useChatStore.getState().stopGeneration(),
+});
 
 installChatNavigationBlockers({
   getState: useChatStore.getState,

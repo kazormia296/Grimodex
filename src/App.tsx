@@ -6,6 +6,7 @@ import { LiveRegion } from "@/components/a11y/LiveRegion";
 import { CloseSaveFailureDialog } from "@/components/CloseSaveFailureDialog";
 import { ApplicationDialogs } from "@/components/ApplicationDialogs";
 import { LifecycleStatus } from "@/application/lifecycle/LifecycleStatus";
+import { ChatStopConfirmHost } from "@/application/lifecycle/ChatStopConfirmHost";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { ApplicationBootstrapHost } from "@/application/bootstrap/ApplicationBootstrapHost";
 
@@ -30,6 +31,7 @@ function App() {
       <AppToaster />
       <LiveRegion />
       <LifecycleStatus />
+      <ChatStopConfirmHost />
       <WorkspaceViewHost />
       <ApplicationDialogs
         onCloseWebEditorImport={() => setShowWebEditorImport(false)}
