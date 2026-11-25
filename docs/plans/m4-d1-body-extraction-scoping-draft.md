@@ -48,3 +48,14 @@ lifecycle の表（開始・再入・取消・終了の確認）は、実行主�
 
 1. §3 を read-only で確かめる。
 2. 確認できた行だけで、P1（契約の変更）と P2（新しい送信）を分けて伺う。
+
+## 6. 回答と、A の前提の確認（2026-11-25、read-only。静的な読みで実行していない）
+
+回答（原文）：順番「手動が先（推奨）」、hidden「hidden は送らない（推奨）」、同定「先に測る（推奨）」、見える結果「Aで」（構造抽出に載せる。typed の契約は変えない）。送信先・送る中身・保存の範囲は未確認で、配線の前に 1 問にまとめて伺う。
+
+- **訂正**：「A なら AI で新しい人物・関係の候補が出る」は誤り。候補（表記ごと 1 件）と関係の seed は、今の heuristic が AI なしで出している（`codexStructureExtractionApi.ts:505-512, 1011-1060`）。
+- **同定を除くと、AI が足せるのは `coarseClass`・type の候補・summary だけ**。AI の `canonicalName` は既存項目との照合（`matchExistingEntity`）の結果を変えうるので使わず、`explicitIdentityRefs` は同定そのもの。
+- **関係の合成は使えない**：`runRelationSynthesisTask` は同定済みの Entity と観測の段が入力で、本文を送らない（`runRelationSynthesisTask.ts:32-56`）。観測を作る呼び手が無い。
+- 依存を「読んだ場面」に絞る：heuristic は全場面を走査するので「言及が無かった」も読んだ結果で、絞る根拠は Chronicle より弱い。絞ると、外した場面の新しい言及で古くならない。**最初の版は全場面のままにする**（絞るなら別に伺う）。
+- stale になると、適用は `NEX_SOURCE_BASIS_STALE` で失敗し、画面には生の文字列が出る（`CodexStructureExtractDialog.tsx:334-352`）。Work Layer の件数は `proposal-revision` の stale 系を数える（行ができるかは未実行）。
+- 同定の測定の道具（`scripts/quality/identity-review-load/`）の B は、候補画面の `judgeCandidates` の review の負荷を測るもので、`runEntityResolutionTask` の精度は測らない。評価データの Codex は 0 件。A の最初の版の同定を測るには、新しい測り方が要る。
