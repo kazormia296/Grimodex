@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  extractDmlMutations,
   isAllowedForWriter,
   validateNativeWriterOwnership,
 } from "./validate-native-writer-ownership.mjs";
@@ -78,6 +79,44 @@ test("NIR-1 cache ownership is scoped to its exact module and table", () => {
   );
 });
 
+test("UPDATE detection accepts OR, quoted identifiers, newlines, and aliases", () => {
+  assert.deepEqual(
+    extractDmlMutations(
+      'UPDATE OR REPLACE\n`narrative_extraction_runs` AS "run"\nSET status = ?;',
+    ),
+    [
+      {
+        table: "narrative_extraction_runs",
+        snippet:
+          'UPDATE OR REPLACE `narrative_extraction_runs` AS "run" SET',
+      },
+    ],
+  );
+  assert.deepEqual(
+    extractDmlMutations('UPDATE "codex_entries" e SET version = version + 1;'),
+    [{ table: "codex_entries", snippet: 'UPDATE "codex_entries" e SET' }],
+  );
+});
+
+test("UPDATE detection ignores prose and still flags an unregistered file", () => {
+  assert.deepEqual(
+    extractDmlMutations("update events before and after must match"),
+    [],
+  );
+  const [mutation] = extractDmlMutations(
+    "UPDATE narrative_proposals SET status = 'ready'",
+  );
+  assert.equal(mutation.table, "narrative_proposals");
+  assert.equal(
+    isAllowedForWriter(
+      "src-tauri/crates/grimodex-db/src/unregistered_writer.rs",
+      "narrative.authority",
+      mutation.table,
+    ),
+    false,
+  );
+});
+
 test("C2A protected tables use the exact Native writer registry and pass ownership", () => {
   const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
   const actual = new Map(
@@ -100,4 +139,48 @@ test("C2A protected tables use the exact Native writer registry and pass ownersh
     registryPath: REGISTRY_PATH,
   });
   assert.deepEqual(result.violations, []);
+});
+
+test("UPDATE の追加の許可は、表ごとの完全一致の path だけ", () => {
+  const dir = "src-tauri/crates/grimodex-db/src/narrative_extraction/";
+  assert.ok(
+    isAllowedForWriter(
+      dir + "task_leases.rs",
+      "narrative.authority",
+      "narrative_extraction_runs",
+    ),
+  );
+  // 同名の別の場所の file と、別の表には広がらない。
+  assert.ok(
+    !isAllowedForWriter(
+      "src-tauri/crates/grimodex-core/src/writer.rs",
+      "narrative.authority",
+      "narrative_scene_scope_bindings",
+    ),
+  );
+  assert.ok(
+    !isAllowedForWriter(
+      "src-tauri/crates/grimodex-core/src/integrity.rs",
+      "codex.entry",
+      "codex_entries",
+    ),
+  );
+  assert.ok(
+    !isAllowedForWriter(
+      dir + "task_leases.rs",
+      "narrative.authority",
+      "narrative_proposals",
+    ),
+  );
+});
+
+test("行の継続で分かれた UPDATE も拾う", () => {
+  const source = [
+    'conn.execute("UPDATE codex_entries \\',
+    '   SET version = 1", [])',
+  ].join("\n");
+  assert.deepEqual(
+    extractDmlMutations(source).map((m) => m.table),
+    ["codex_entries"],
+  );
 });

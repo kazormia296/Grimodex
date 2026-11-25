@@ -60,6 +60,7 @@ function input(
     calendar: over.calendar ?? null,
     characterIds: over.characterIds ?? [],
     codexNames: over.codexNames ?? new Map(),
+    revealSceneView: over.revealSceneView,
   };
 }
 
@@ -603,6 +604,50 @@ describe("deriveChronicleSnapshot — formattedDate", () => {
 });
 
 describe("renderChronicleSnapshot", () => {
+  it("renders reveal guidance first and keeps the marker in both languages", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a1", null),
+        events: [
+          mkEvent({
+            id: "secret-event",
+            title: "毒殺の真相",
+            note: "王宮で起きた",
+            ordinal: "a0",
+            revealSceneId: "s2",
+          }),
+        ],
+        revealSceneView: {
+          nodes: [
+            { id: "s1", title: "第一章" },
+            { id: "s2", title: "第二章" },
+          ],
+          currentSceneId: "s1",
+          readingOrder: new Map([
+            ["s1", 0],
+            ["s2", 1],
+          ]),
+        },
+        characterIds: [],
+      }),
+    );
+
+    const ja = renderChronicleSnapshot(snap, "ja");
+    expect(ja.split("\n")[0]).toBe(
+      "まだ明かされていない出来事は、本文で、読者が知っていることとして書かない。",
+    );
+    expect(ja).toContain(
+      "- 毒殺の真相（王宮で起きた）（読者にはまだ明かされていない）",
+    );
+    const en = renderChronicleSnapshot(snap, "en");
+    expect(en).toContain(
+      "Do not write events not yet revealed to readers as if readers already knew them.",
+    );
+    expect(en).toContain(
+      "- 毒殺の真相（王宮で起きた） (not yet revealed to readers)",
+    );
+  });
+
   it("人物名・出来事を含む本文を返す（ja）", () => {
     const snap = deriveChronicleSnapshot(
       input({
@@ -754,6 +799,7 @@ describe("renderChronicleSnapshot", () => {
         ordinal: `a${i}`,
         startTime: 100 + i, // アンカー 7200 から見て 約20年前
         startGranularity: "day",
+        ...(i === 7 ? { revealSceneId: "s2" } : {}),
       }),
     );
     const snap = deriveChronicleSnapshot(
@@ -762,6 +808,17 @@ describe("renderChronicleSnapshot", () => {
         events,
         calendar: CAL,
         characterIds: [],
+        revealSceneView: {
+          nodes: [
+            { id: "s1", title: "第一章" },
+            { id: "s2", title: "第二章" },
+          ],
+          currentSceneId: "s1",
+          readingOrder: new Map([
+            ["s1", 0],
+            ["s2", 1],
+          ]),
+        },
       }),
     );
     const text = renderChronicleSnapshot(snap, "ja");
@@ -769,6 +826,63 @@ describe("renderChronicleSnapshot", () => {
     expect(text).not.toContain("詳細な脚注テキスト");
     // relTime は残る（note より生存優先度が高い）
     expect(text).toContain("約20年前");
+    expect(text).toContain("（読者にはまだ明かされていない）");
+  });
+});
+
+describe("chronicle reveal marks in snapshots", () => {
+  it("marks included event rows, leaves causal titles alone, and omits unavailable scenes", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a0", null),
+        events: [
+          mkEvent({
+            id: "recent",
+            title: "過去の出来事",
+            ordinal: "a0",
+            revealSceneId: "s2",
+          }),
+          mkEvent({
+            id: "background",
+            title: "本文未描写",
+            ordinal: "a0",
+            kind: "birth",
+            revealSceneId: "archived",
+          }),
+          mkEvent({
+            id: "future",
+            title: "未来の出来事",
+            ordinal: "a1",
+            revealSceneId: "s2",
+          }),
+        ],
+        sceneEvents: [{ sceneId: "s1", eventId: "recent" }],
+        relations: [{ causeId: "recent", effectId: "future" }],
+        revealSceneView: {
+          nodes: [
+            { id: "s1", title: "第一章" },
+            { id: "s2", title: "第二章" },
+          ],
+          currentSceneId: "s1",
+          readingOrder: new Map([
+            ["s1", 0],
+            ["s2", 1],
+          ]),
+        },
+        characterIds: [],
+      }),
+    );
+
+    expect(snap.recentEvents[0]?.revealScene).toEqual({
+      id: "s2",
+      title: "第二章",
+      revealedToReader: false,
+    });
+    expect(Object.hasOwn(snap.offpage[0] ?? {}, "revealScene")).toBe(false);
+    expect(snap.unresolvedCausal).toEqual([
+      { causeTitle: "過去の出来事", effectTitle: "未来の出来事" },
+    ]);
+    expect(JSON.stringify(snap.offpage[0])).not.toContain("revealScene");
   });
 });
 

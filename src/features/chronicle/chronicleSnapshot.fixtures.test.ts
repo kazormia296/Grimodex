@@ -31,6 +31,7 @@ import type { EventPrecision } from "@/db/schema";
 interface FixtureInput {
   sceneId: string;
   nodes: Partial<TreeNodeData>[];
+  revealNodes?: Partial<TreeNodeData>[];
   events: EventRow[];
   participants: ParticipantRow[];
   relations: EventRelationRow[];
@@ -49,6 +50,15 @@ interface Fixture {
 
 function runPipeline(input: FixtureInput): ChronicleSnapshot {
   const readingOrder = computeGlobalSceneOrder(input.nodes as TreeNodeData[]);
+  const revealNodes = (input.revealNodes ?? input.nodes).filter(
+    (node) => node.nodeType === "scene" && node.id && node.archivedAt == null,
+  );
+  const revealNodeIds = new Set(revealNodes.map((node) => node.id));
+  const revealReadingOrder = new Map(
+    [...computeGlobalSceneOrder(revealNodes as TreeNodeData[])].filter(([id]) =>
+      revealNodeIds.has(id),
+    ),
+  );
   // scene-own アンカー源: input.nodes の scene ノードから暦日付を構築（push と同じ）。
   const sceneChronicle = new Map<string, SceneChronicle>();
   for (const n of input.nodes) {
@@ -81,6 +91,14 @@ function runPipeline(input: FixtureInput): ChronicleSnapshot {
       calendar: input.calendar,
       characterIds,
       codexNames: new Map(Object.entries(input.codexNames)),
+      revealSceneView: {
+        nodes: revealNodes.map((node) => ({
+          id: node.id!,
+          title: node.title ?? "",
+        })),
+        currentSceneId: input.sceneId,
+        readingOrder: revealReadingOrder,
+      },
     },
     input.lang ?? "ja",
   );

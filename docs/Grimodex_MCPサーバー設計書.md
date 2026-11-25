@@ -790,12 +790,12 @@ Codex エントリの詳細を取得する。
 | `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ・secret 指定は true／false とも拒否・tracked 同上。undo は updated_at 楽観ガードの versionless 設計） |
 | `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
 | `get_writing_context` | R | o | curated context 一発集約（project / 章outline / storySoFar / シーン本文MD+intent / timeline近傍 / シーン伏線+未回収・未放棄伏線(secret 値にかかわらず) / codex mention+always。cap超過はdropped数で報告） |
-| `list_events` | R | o | 作中年表イベント一覧（作中順・`events.secret` による除外なし・kind フィルタ可・primaryCharacter は codex 名解決） |
-| `get_event_detail` | R | o | 単一イベント詳細（`events.secret` にかかわらず project 内の出来事を返す。参加者 / 紐づきシーン / 因果） |
-| `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent。存在しない・使えない codex_id は null） |
+| `list_events` | R | o | 作中年表イベント一覧（作中順・`events.secret` による除外なし・kind フィルタ可・primaryCharacter は codex 名解決）。任意の `scene_id`（執筆中の場面）を受け付ける。読む順にある `reveal_scene_id` を持つ出来事には `revealScene: {id, title, revealedToReader?}` を付与し、`scene_id` が開示場面と同じか後なら `revealedToReader: true`、前なら `false`。省略時は `revealedToReader` を省略する。指定した `scene_id` が読む順に無く、印の付く出来事がある場合は `revealSceneNote` を返す。 |
+| `get_event_detail` | R | o | 単一イベント詳細（`events.secret` にかかわらず project 内の出来事を返す。参加者 / 紐づきシーン / 因果）。任意の `scene_id` を受け付け、読む順にある `reveal_scene_id` は `revealScene: {id, title, revealedToReader?}` として返す。`revealedToReader` の判定と `revealSceneNote` は `list_events` と同じ。 |
+| `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・secret 値による除外なし・各時点の ageAtEvent。存在しない・使えない codex_id は null）。任意の `scene_id` を受け付け、読む順にある `reveal_scene_id` は `revealScene: {id, title, revealedToReader?}` として返す。`revealedToReader` の判定と `revealSceneNote` は `list_events` と同じ。 |
 | `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（全イベントを入力。resolveSceneAnchor→pick→derive を Rust 移植。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
-| `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の場面 id を作中の開示場面として保存するだけで、AI から出来事を隠さない。省略・空文字は未指定。 |
-| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found。**現在の主な人物・場所が AI に秘匿（hidden）の人物の出来事は、その欄を変更できない**〔hidden は Phase だけの人物を含む。他の欄の更新は通る。拒否は汎用の internal error〕）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の場面 id を作中の開示場面として保存するだけで、AI から出来事を隠さない。省略は変更なし、空文字は解除。 |
+| `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略・空文字は未指定。 |
+| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found。**現在の主な人物・場所が AI に秘匿（hidden）の人物の出来事は、その欄を変更できない**〔hidden は Phase だけの人物を含む。他の欄の更新は通る。拒否は汎用の internal error〕）。`secret` は廃止（`true` は拒否、`false` は無視）。`reveal_scene_id` は読む順の開示場面 id。年表の読み道具はその出来事に `revealScene` を付け、開示場面より前の場面を読者が既知として書かないよう示す。出来事を隠す機能ではない。省略は変更なし、空文字は解除。 |
 | `delete_event` | W | o | イベント削除（participants/scene/relation を cascade・削除前スナップショットを undo before に格納） |
 | `stamp_scene_event` | W | o | シーンにイベントを stamp（scene/event とも active project 必須） |
 | `unstamp_scene_event` | W | o | scene↔event の stamp 解除 |

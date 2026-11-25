@@ -6425,7 +6425,7 @@
     "unset": "未指定",
     "makePoint": "点にする",
     "makeInterval": "期間にする",
-    "revealSceneDesc": "読者に明かす場面が決まっているときに選びます。",
+    "revealSceneDesc": "選ぶと、それより前の場面では AI に「読者はまだ知らない」と伝えます。",
     "selectHint": "イベントをクリックすると、ここで詳細を編集できます。",
     "totalCount": "全 {{count}} 件",
     "issueCount": "整合警告 {{count}} 件",
