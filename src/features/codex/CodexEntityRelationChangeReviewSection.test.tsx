@@ -201,7 +201,7 @@ describe("CodexEntityRelationChangeReviewSection", () => {
     expect(screen.queryByTestId("nir1-change-row-codex:alice")).toBeNull();
   });
 
-  it("is loaded by the review panel only while the revision is readable", async () => {
+  it("is shown by the review panel only while the revision is readable", async () => {
     readMock.mockResolvedValue(available([object("codex:alice", "unchanged")]));
     const panel = (status: "draft" | "unavailable") => (
       <CodexEntityRelationRevisionReviewPanel

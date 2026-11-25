@@ -1,7 +1,7 @@
 import { invoke } from "@/lib/tauri";
 
 // 変更レビューの読み取り（`nir1_change_review_read`）。起動時の graph に入れないため、
-// この file は遅延読み込みする画面の code だけが import する。
+// この file は遅延読み込みするレビューの dialog の側だけが import する。
 
 export type Nir1ChangeReviewObjectChangeKind =
   | "added"
