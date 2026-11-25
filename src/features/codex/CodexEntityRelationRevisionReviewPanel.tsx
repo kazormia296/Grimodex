@@ -170,10 +170,6 @@ export function CodexEntityRelationRevisionReviewPanel({
         </>
       )}
 
-      {result && status !== "unavailable" && (
-        <CodexEntityRelationChangeReviewSection result={result} />
-      )}
-
       {onDecision && (
         <CodexEntityRelationRevisionReviewDecisionControls
           canDecide={canDecide}
@@ -207,6 +203,10 @@ export function CodexEntityRelationRevisionReviewPanel({
             新しい Revision を準備
           </button>
         </div>
+      )}
+      {/* 承認・却下の操作を下に押し出さないよう、欄は最後に置く（確認した画面の順）。 */}
+      {result && status !== "unavailable" && (
+        <CodexEntityRelationChangeReviewSection result={result} />
       )}
     </section>
   );

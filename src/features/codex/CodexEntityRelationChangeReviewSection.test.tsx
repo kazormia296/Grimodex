@@ -80,14 +80,15 @@ describe("CodexEntityRelationChangeReviewSection", () => {
   });
 
   it("reads the current revision of the active workspace and shows each change", async () => {
+    // 応答の順は identity の順（関係が先）。画面は上の欄と同じ順に並べる。
     readMock.mockResolvedValue(
       available([
+        object("codex-relation:edge-1", "added"),
         object("codex:alice", "content-changed", [
           evidence("彼女は鍵を拾った", "relocated"),
           evidence("剣を抜いた", "lost"),
         ]),
         object("codex:bob", "unchanged"),
-        object("codex-relation:edge-1", "added"),
       ]),
     );
     render(<CodexEntityRelationChangeReviewSection result={sampleResult()} />);
@@ -99,6 +100,15 @@ describe("CodexEntityRelationChangeReviewSection", () => {
       revisionId: "revision-2",
     });
     expect(element).toHaveTextContent("前に承認した版との違い");
+    expect(
+      screen
+        .getAllByTestId(/^nir1-change-row-/)
+        .map((row) => row.getAttribute("data-testid")),
+    ).toEqual([
+      "nir1-change-row-codex:alice",
+      "nir1-change-row-codex:bob",
+      "nir1-change-row-codex-relation:edge-1",
+    ]);
     expect(screen.getByTestId("nir1-change-row-codex:alice")).toHaveTextContent(
       "アリス（キャラクター）元の項目が更新されています「彼女は鍵を拾った」引用の位置が変わりました「剣を抜いた」引用がなくなりました",
     );
@@ -217,7 +227,11 @@ describe("CodexEntityRelationChangeReviewSection", () => {
     expect(readMock).not.toHaveBeenCalled();
 
     view.rerender(panel("draft"));
-    await section();
+    const element = await section();
     await waitFor(() => expect(readMock).toHaveBeenCalledOnce());
+    // 欄は panel の最後（承認・却下の操作より後ろ）。
+    expect(
+      screen.getByTestId("nir1-entity-relation-review-panel").lastElementChild,
+    ).toBe(element);
   });
 });

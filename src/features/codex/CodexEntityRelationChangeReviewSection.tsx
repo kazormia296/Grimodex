@@ -33,6 +33,22 @@ type Loaded =
   | { readonly key: string; readonly review: Nir1ChangeReview }
   | { readonly key: string; readonly review: null };
 
+/** 上の欄と同じ順（人物の順、次に関係の順）。見つからない項目は最後。 */
+function displayOrder(
+  identity: string,
+  result: Nir1EntityRelationRevisionReadResult,
+): number {
+  const entity = result.entities.findIndex(
+    (item) => identity === `codex:${item.entityId}`,
+  );
+  if (entity >= 0) return entity;
+  const relation = result.relations.findIndex(
+    (item) => identity === `codex-relation:${item.edgeId}`,
+  );
+  if (relation >= 0) return result.entities.length + relation;
+  return result.entities.length + result.relations.length;
+}
+
 function displayName(
   identity: string,
   result: Nir1EntityRelationRevisionReadResult,
@@ -159,6 +175,10 @@ export function CodexEntityRelationChangeReviewSection({
         change: keyof typeof OBJECT_LABELS;
       } => object.change !== "removed",
     ) ?? [];
+  objects.sort(
+    (a, b) =>
+      displayOrder(a.identity, result) - displayOrder(b.identity, result),
+  );
   const nothingToCompare =
     review !== null &&
     review.previousRevisionIds.length === 0 &&
