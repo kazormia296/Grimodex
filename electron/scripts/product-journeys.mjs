@@ -386,7 +386,8 @@ function lifecycleScopeMatches(actual, expected = {}) {
 
 // 停止してから切り替えるとき、停止した応答は静止の lease より前に終わり得る。その場合、
 // 旧い応答の終了と保存は切替の記録に載らない（保存の完了は静止が待ち、切替の後の行で
-// 確かめる）。載った場合は順番を守る。
+// 確かめる）。載った場合は順番を守る。終了だけが載るのは、保存が失敗したか切替の後に
+// 終わったことを意味するので認めない。
 const OPTIONAL_PHASES_AFTER_STOP = new Set([
   "old-stream-completed",
   "old-scope-persisted",
@@ -426,6 +427,8 @@ export async function assertLifecycleTransitionOrder(
   const matching = candidates.find((group) => {
     const phases = group.map((event) => event.phase);
     return (
+      (!phases.includes("old-stream-completed") ||
+        phases.includes("old-scope-persisted")) &&
       JSON.stringify(phases) === JSON.stringify(expectedPhases(phases)) &&
       group.every((event, index) => event.sequence === index)
     );

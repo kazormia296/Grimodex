@@ -1490,15 +1490,17 @@ test("lifecycle journey assertion allows a stopped turn to settle before the swi
   const completed = "old-stream-completed";
   const persisted = "old-scope-persisted";
 
-  for (const middle of [[], [completed], [persisted], [completed, persisted]]) {
+  for (const middle of [[], [persisted], [completed, persisted]]) {
     const matched = await run([...before, ...middle, ...after], {
       stoppedBeforeSwitch: true,
     });
     assert.equal(matched.length, 4 + middle.length);
   }
   const required = /did not emit the required lifecycle order/;
-  // The two optional milestones keep their order and place when present.
+  // The two optional milestones keep their order and place when present, and
+  // a completed old stream whose persistence never lands is a failure.
   for (const phases of [
+    [...before, completed, ...after],
     [...before, persisted, completed, ...after],
     [...before, "authority-commit", persisted, "new-scope-hydrated"],
     ["switch-requested", ...after],
