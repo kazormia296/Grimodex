@@ -945,7 +945,7 @@ fn e5_project_snapshot_restore_follows_the_rows() {
             project_id: PROJECT.into(),
             snapshot_id: "snap-1".into(),
             scopes: vec![RestoreScope::Labels],
-            inserts,
+            inserts: inserts.inserts,
         },
     )
     .expect("restore");

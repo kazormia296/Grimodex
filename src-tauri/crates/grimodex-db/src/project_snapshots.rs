@@ -1197,6 +1197,34 @@ fn live_id_set(conn: &Connection, sql: &str, project_id: &str) -> anyhow::Result
     )
 }
 
+fn record_restore_loss(dropped: &mut BTreeMap<&'static str, i64>, kind: &'static str) {
+    *dropped.entry(kind).or_default() += 1;
+}
+
+fn filter_missing_parent_rows(
+    rows: Vec<RawRow>,
+    owner_selected: bool,
+    field: &str,
+    live_ids: &HashSet<String>,
+    keep_null: bool,
+    kind: &'static str,
+    dropped: &mut BTreeMap<&'static str, i64>,
+) -> Vec<RawRow> {
+    rows.into_iter()
+        .filter(|row| {
+            let id = row.get(field).and_then(Value::as_str);
+            let keep = owner_selected || match id {
+                Some(id) => live_ids.contains(id),
+                None => keep_null,
+            };
+            if !keep && id.is_some() {
+                record_restore_loss(dropped, kind);
+            }
+            keep
+        })
+        .collect()
+}
+
 fn snapshot_content(conn: &Connection, row: &RawRow) -> anyhow::Result<Value> {
     let Some(version_id) = nullable_row_id(row, "body_version_id", "body")? else {
         return Ok(Value::String("{}".to_string()));
@@ -1239,6 +1267,7 @@ fn canonical_core_rows(
     scopes: &HashSet<RestoreScope>,
     live_codex_ids: &HashSet<String>,
     live_tree_node_ids: &HashSet<String>,
+    dropped: &mut BTreeMap<&'static str, i64>,
 ) -> anyhow::Result<Vec<SnapshotInsertPlan>> {
     let mut inserts = Vec::new();
     let snapshot_param = [SqlValue::Text(snapshot_id.to_string())];
@@ -1295,6 +1324,15 @@ fn canonical_core_rows(
             let content = snapshot_content(conn, &row)?;
             let pov_id = nullable_row_id(&row, "pov_character_id", "tree_nodes")?;
             let location_id = nullable_row_id(&row, "location_id", "tree_nodes")?;
+            if pov_id
+                .as_ref()
+                .is_some_and(|value| !scopes.contains(&RestoreScope::Codex) && !live_codex_ids.contains(value))
+                || location_id
+                    .as_ref()
+                    .is_some_and(|value| !scopes.contains(&RestoreScope::Codex) && !live_codex_ids.contains(value))
+            {
+                record_restore_loss(dropped, "scene_pov_or_location");
+            }
             let safe_pov = if scopes.contains(&RestoreScope::Codex)
                 || pov_id
                     .as_ref()
@@ -1380,6 +1418,12 @@ fn canonical_core_rows(
         .map(|row| {
             let content = snapshot_content(conn, &row)?;
             let scene_id = nullable_row_id(&row, "scene_id", "snippets")?;
+            if scene_id
+                .as_ref()
+                .is_some_and(|value| !scopes.contains(&RestoreScope::Body) && !live_tree_node_ids.contains(value))
+            {
+                record_restore_loss(dropped, "snippet_scene_link");
+            }
             let safe_scene = if scopes.contains(&RestoreScope::Body)
                 || scene_id
                     .as_ref()
@@ -1442,12 +1486,17 @@ fn push_aux_scope(
     push_canonical_rows(conn, inserts, table, take_aux_rows(aux_rows, scope), mode)
 }
 
+pub(crate) struct CanonicalRestorePlan {
+    pub(crate) inserts: Vec<SnapshotInsertPlan>,
+    pub(crate) dropped: BTreeMap<&'static str, i64>,
+}
+
 pub(crate) fn build_canonical_restore_plan(
     conn: &Connection,
     project_id: &str,
     snapshot_id: &str,
     scopes: &HashSet<RestoreScope>,
-) -> anyhow::Result<Vec<SnapshotInsertPlan>> {
+) -> anyhow::Result<CanonicalRestorePlan> {
     let live_codex_ids = live_id_set(
         conn,
         "SELECT id FROM codex_entries WHERE project_id = ?1",
@@ -1480,6 +1529,7 @@ pub(crate) fn build_canonical_restore_plan(
         project_id,
     )?;
 
+    let mut dropped = BTreeMap::new();
     let mut aux_rows = HashMap::<String, Vec<RawRow>>::new();
     for spec in AUX_SPECS.iter().filter(|spec| scopes.contains(&spec.owner)) {
         aux_rows.insert(
@@ -1494,6 +1544,7 @@ pub(crate) fn build_canonical_restore_plan(
         scopes,
         &live_codex_ids,
         &live_tree_node_ids,
+        &mut dropped,
     )?
     .into_iter()
     .fold(
@@ -1565,16 +1616,20 @@ pub(crate) fn build_canonical_restore_plan(
             ("scene_codex_mentions", "codex_entry_id"),
             ("scene_beat_pov_cache", "pov_character_id"),
         ] {
-            let rows = take_aux_rows(&mut aux_rows, scope)
-                .into_iter()
-                .filter(|row| {
-                    scopes.contains(&RestoreScope::Codex)
-                        || row
-                            .get(reference_field)
-                            .and_then(Value::as_str)
-                            .is_none_or(|value| live_codex_ids.contains(value))
-                })
-                .collect();
+            let kind = if scope == "scene_beat_pov_cache" {
+                "scene_pov_or_location"
+            } else {
+                "scene_codex_links"
+            };
+            let rows = filter_missing_parent_rows(
+                take_aux_rows(&mut aux_rows, scope),
+                scopes.contains(&RestoreScope::Codex),
+                reference_field,
+                &live_codex_ids,
+                true,
+                kind,
+                &mut dropped,
+            );
             let table: SnapshotRestoreTable =
                 serde_json::from_value(Value::String(scope.to_string()))?;
             push_canonical_rows(conn, &mut inserts, table, rows, SnapshotInsertMode::Insert)?;
@@ -1596,6 +1651,7 @@ pub(crate) fn build_canonical_restore_plan(
         let event_rows = take_aux_rows(&mut aux_rows, "events")
             .into_iter()
             .map(|mut row| {
+                let mut lost_reference = false;
                 if !scopes.contains(&RestoreScope::Codex) {
                     for field in ["primary_codex_id", "location_codex_id"] {
                         if nullable_row_id(&row, field, "events")?
@@ -1603,8 +1659,12 @@ pub(crate) fn build_canonical_restore_plan(
                             .is_some_and(|value| !live_codex_ids.contains(value))
                         {
                             row.insert(field.to_string(), Value::Null);
+                            lost_reference = true;
                         }
                     }
+                }
+                if lost_reference {
+                    record_restore_loss(&mut dropped, "event_primary_or_location");
                 }
                 Ok(row)
             })
@@ -1623,16 +1683,15 @@ pub(crate) fn build_canonical_restore_plan(
             "scene_events",
             SnapshotInsertMode::Insert,
         )?;
-        let participant_rows = take_aux_rows(&mut aux_rows, "event_participants")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Codex)
-                    || row
-                        .get("codex_entry_id")
-                        .and_then(Value::as_str)
-                        .is_none_or(|value| live_codex_ids.contains(value))
-            })
-            .collect();
+        let participant_rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "event_participants"),
+            scopes.contains(&RestoreScope::Codex),
+            "codex_entry_id",
+            &live_codex_ids,
+            true,
+            "event_participants",
+            &mut dropped,
+        );
         push_canonical_rows(
             conn,
             &mut inserts,
@@ -1657,16 +1716,15 @@ pub(crate) fn build_canonical_restore_plan(
                 .remove(&SnapshotRestoreTable::Snippets)
                 .unwrap_or_default(),
         );
-        let rows = take_aux_rows(&mut aux_rows, "snippet_entry_tags")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Codex)
-                    || row
-                        .get("tag_id")
-                        .and_then(Value::as_str)
-                        .is_none_or(|value| live_codex_tag_ids.contains(value))
-            })
-            .collect();
+        let rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "snippet_entry_tags"),
+            scopes.contains(&RestoreScope::Codex),
+            "tag_id",
+            &live_codex_tag_ids,
+            true,
+            "snippet_tags",
+            &mut dropped,
+        );
         push_canonical_rows(
             conn,
             &mut inserts,
@@ -1684,16 +1742,15 @@ pub(crate) fn build_canonical_restore_plan(
             "labels",
             SnapshotInsertMode::Insert,
         )?;
-        let rows = take_aux_rows(&mut aux_rows, "tree_node_labels")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Body)
-                    || row
-                        .get("node_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| live_tree_node_ids.contains(value))
-            })
-            .collect();
+        let rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "tree_node_labels"),
+            scopes.contains(&RestoreScope::Body),
+            "node_id",
+            &live_tree_node_ids,
+            false,
+            "scene_labels",
+            &mut dropped,
+        );
         push_canonical_rows(
             conn,
             &mut inserts,
@@ -1707,12 +1764,17 @@ pub(crate) fn build_canonical_restore_plan(
         let rows = take_aux_rows(&mut aux_rows, "foreshadows")
             .into_iter()
             .map(|mut row| {
+                let mut lost_reference = false;
                 if !scopes.contains(&RestoreScope::Body)
                     && nullable_row_id(&row, "payoff_scene_id", "foreshadows")?
                         .as_ref()
                         .is_some_and(|value| !live_tree_node_ids.contains(value))
                 {
                     row.insert("payoff_scene_id".to_string(), Value::Null);
+                    lost_reference = true;
+                }
+                if lost_reference {
+                    record_restore_loss(&mut dropped, "foreshadow_scene_links");
                 }
                 Ok(row)
             })
@@ -1724,16 +1786,15 @@ pub(crate) fn build_canonical_restore_plan(
             rows,
             SnapshotInsertMode::Insert,
         )?;
-        let setup_rows = take_aux_rows(&mut aux_rows, "foreshadow_setups")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Body)
-                    || row
-                        .get("scene_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| live_tree_node_ids.contains(value))
-            })
-            .collect::<Vec<_>>();
+        let setup_rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "foreshadow_setups"),
+            scopes.contains(&RestoreScope::Body),
+            "scene_id",
+            &live_tree_node_ids,
+            false,
+            "foreshadow_scene_links",
+            &mut dropped,
+        );
         let restored_setup_ids = setup_rows
             .iter()
             .filter_map(|row| row.get("id").and_then(Value::as_str))
@@ -1746,16 +1807,15 @@ pub(crate) fn build_canonical_restore_plan(
             setup_rows,
             SnapshotInsertMode::Insert,
         )?;
-        let payoff_rows = take_aux_rows(&mut aux_rows, "foreshadow_payoffs")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Body)
-                    || row
-                        .get("scene_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| live_tree_node_ids.contains(value))
-            })
-            .collect::<Vec<_>>();
+        let payoff_rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "foreshadow_payoffs"),
+            scopes.contains(&RestoreScope::Body),
+            "scene_id",
+            &live_tree_node_ids,
+            false,
+            "foreshadow_scene_links",
+            &mut dropped,
+        );
         let restored_payoff_ids = payoff_rows
             .iter()
             .filter_map(|row| row.get("id").and_then(Value::as_str))
@@ -1771,13 +1831,19 @@ pub(crate) fn build_canonical_restore_plan(
         let link_rows = take_aux_rows(&mut aux_rows, "foreshadow_setup_payoff_links")
             .into_iter()
             .filter(|row| {
-                row.get("setup_id")
+                let setup_missing = row
+                    .get("setup_id")
                     .and_then(Value::as_str)
-                    .is_some_and(|value| restored_setup_ids.contains(value))
-                    && row
-                        .get("payoff_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| restored_payoff_ids.contains(value))
+                    .is_some_and(|value| !restored_setup_ids.contains(value));
+                let payoff_missing = row
+                    .get("payoff_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !restored_payoff_ids.contains(value));
+                if setup_missing || payoff_missing {
+                    record_restore_loss(&mut dropped, "foreshadow_scene_links");
+                    return false;
+                }
+                true
             })
             .collect();
         push_canonical_rows(
@@ -1787,16 +1853,15 @@ pub(crate) fn build_canonical_restore_plan(
             link_rows,
             SnapshotInsertMode::Insert,
         )?;
-        let codex_link_rows = take_aux_rows(&mut aux_rows, "foreshadow_codex_links")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Codex)
-                    || row
-                        .get("codex_entry_id")
-                        .and_then(Value::as_str)
-                        .is_none_or(|value| live_codex_ids.contains(value))
-            })
-            .collect();
+        let codex_link_rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "foreshadow_codex_links"),
+            scopes.contains(&RestoreScope::Codex),
+            "codex_entry_id",
+            &live_codex_ids,
+            true,
+            "foreshadow_codex_links",
+            &mut dropped,
+        );
         push_canonical_rows(
             conn,
             &mut inserts,
@@ -1834,6 +1899,9 @@ pub(crate) fn build_canonical_restore_plan(
                             .and_then(Value::as_str)
                             .is_some_and(|value| !live_ids.contains(value))
                 });
+                if owner_missing {
+                    record_restore_loss(&mut dropped, "editor_stickies");
+                }
                 !owner_missing
             })
             .collect();
@@ -1880,16 +1948,15 @@ pub(crate) fn build_canonical_restore_plan(
             "lint_term_dictionary",
             SnapshotInsertMode::Insert,
         )?;
-        let rows = take_aux_rows(&mut aux_rows, "lint_ignored_diagnostics")
-            .into_iter()
-            .filter(|row| {
-                scopes.contains(&RestoreScope::Body)
-                    || row
-                        .get("scene_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| live_tree_node_ids.contains(value))
-            })
-            .collect();
+        let rows = filter_missing_parent_rows(
+            take_aux_rows(&mut aux_rows, "lint_ignored_diagnostics"),
+            scopes.contains(&RestoreScope::Body),
+            "scene_id",
+            &live_tree_node_ids,
+            false,
+            "lint_ignores",
+            &mut dropped,
+        );
         push_canonical_rows(
             conn,
             &mut inserts,
@@ -1899,7 +1966,7 @@ pub(crate) fn build_canonical_restore_plan(
         )?;
     }
 
-    Ok(inserts)
+    Ok(CanonicalRestorePlan { inserts, dropped })
 }
 
 const JS_SAFE_INTEGER_MAX: f64 = 9_007_199_254_740_991.0;
@@ -1946,7 +2013,7 @@ fn ensure_restore_plan_is_snapshot_derived(
     scopes: &HashSet<RestoreScope>,
     inserts: &[SnapshotInsertPlan],
     cache: &mut RestoreTableCache,
-) -> anyhow::Result<Vec<SnapshotInsertPlan>> {
+) -> anyhow::Result<CanonicalRestorePlan> {
     let canonical = build_canonical_restore_plan(conn, project_id, snapshot_id, scopes)?;
 
     fn normalized_insert(
@@ -1989,7 +2056,7 @@ fn ensure_restore_plan_is_snapshot_derived(
     }
 
     let mut expected = HashMap::<(SnapshotRestoreTable, String), Value>::new();
-    for insert in &canonical {
+    for insert in &canonical.inserts {
         let (key, value) = normalized_insert(conn, cache, insert)?;
         anyhow::ensure!(
             expected.insert(key, value).is_none(),
@@ -2585,7 +2652,7 @@ pub fn project_snapshot_restore_context(
             &project_param,
         )?;
         let loss_notices = if structural && !requested_scopes.is_empty() {
-            let plan = build_canonical_restore_plan(
+            let CanonicalRestorePlan { inserts, dropped } = build_canonical_restore_plan(
                 conn,
                 &project_id,
                 &snapshot_id,
@@ -2595,13 +2662,12 @@ pub fn project_snapshot_restore_context(
                 conn,
                 &snapshot_id,
                 &requested_scopes,
-                plan,
+                inserts,
             )?;
             let shape = restore_links::shape(conn, &project_id, &snapshot_id, &requested_scopes)?;
-            // The snapshot's own rows whose parent is gone are counted with
-            // the links of the other scopes (DR-SRX-26, 確認 146): the same
-            // function the restore runs, on the same state.
-            let resolved = restore_missing_parents::resolve(conn, &shape, plan)?;
+            // 確認 146 の規則と、手書き filter の件数を同じ経路で集計する。
+            let resolved =
+                restore_missing_parents::resolve_with_dropped(conn, &shape, plan, dropped)?;
             restore_links::count_losses(conn, &shape, &resolved.plan, &resolved.dropped)?
         } else {
             Vec::new()
@@ -2801,7 +2867,10 @@ pub fn apply_project_snapshot_restore(
             anyhow::bail!("legacy project snapshots cannot use structural restore");
         }
         let mut table_cache = RestoreTableCache::default();
-        let canonical_inserts = ensure_restore_plan_is_snapshot_derived(
+        let CanonicalRestorePlan {
+            inserts: canonical_inserts,
+            dropped: plan_dropped,
+        } = ensure_restore_plan_is_snapshot_derived(
             &transaction,
             &payload.project_id,
             &payload.snapshot_id,
@@ -2836,7 +2905,12 @@ pub fn apply_project_snapshot_restore(
         let restore_missing_parents::Resolved {
             plan: canonical_inserts,
             dropped: plan_dropped,
-        } = restore_missing_parents::resolve(&transaction, &link_shape, canonical_inserts)?;
+        } = restore_missing_parents::resolve_with_dropped(
+            &transaction,
+            &link_shape,
+            canonical_inserts,
+            plan_dropped,
+        )?;
         if scopes.contains(&RestoreScope::Codex) {
             let target_entry_types = canonical_inserts
                 .iter()
@@ -3424,7 +3498,10 @@ mod tests {
     ) -> ApplyProjectSnapshotRestorePayload {
         let selected = scopes.iter().copied().collect::<HashSet<_>>();
         let inserts = db
-            .with_conn(|conn| build_canonical_restore_plan(conn, "p1", snapshot_id, &selected))
+            .with_conn(|conn| {
+                build_canonical_restore_plan(conn, "p1", snapshot_id, &selected)
+                    .map(|plan| plan.inserts)
+            })
             .expect("build canonical test restore plan");
         ApplyProjectSnapshotRestorePayload {
             request_id: request_id.to_string(),

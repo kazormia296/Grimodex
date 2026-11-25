@@ -1,4 +1,5 @@
 import type { Nir1EntityRelationRevisionReadResult } from "@/features/narrative-semantic-core/nir1EntityRelationRevisionApi";
+import { CodexEntityRelationChangeReviewSection } from "./CodexEntityRelationChangeReviewSection";
 import { CodexEntityRelationRevisionReviewDecisionControls } from "./CodexEntityRelationRevisionReviewDecisionControls";
 
 export type CodexEntityRelationReviewDecision =
@@ -202,6 +203,10 @@ export function CodexEntityRelationRevisionReviewPanel({
             新しい Revision を準備
           </button>
         </div>
+      )}
+      {/* 承認・却下の操作を下に押し出さないよう、欄は最後に置く（確認した画面の順）。 */}
+      {result && status !== "unavailable" && (
+        <CodexEntityRelationChangeReviewSection result={result} />
       )}
     </section>
   );
