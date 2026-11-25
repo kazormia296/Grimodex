@@ -1186,11 +1186,70 @@ pub(crate) fn validate_narrative_revision_envelope_v2_with_contract(
             "supportClass",
             "producer",
             "producerConfidence",
+            "identityDeclaration",
         ],
         "assertion",
     )?;
     let assertion_id = require(assertion, "assertionId", "assertion")?;
-    if !assertion_id.is_null() && !non_empty_string(assertion_id) {
+    if let Some(declaration_value) = assertion.get("identityDeclaration") {
+        let path = "assertion.identityDeclaration";
+        let declaration = declaration_value
+            .as_object()
+            .ok_or_else(|| validation_error("invalid-identifier", path))?;
+        let kind = require(declaration, "kind", path)?;
+        reject_unknown(declaration, &["kind", "carriedFrom"], path)?;
+        match kind.as_str() {
+            Some("none") => {
+                if declaration.contains_key("carriedFrom") {
+                    return Err(validation_error(
+                        "unknown-field",
+                        format!("{path}.carriedFrom"),
+                    ));
+                }
+                if !assertion_id.is_null() {
+                    return Err(validation_error(
+                        "invalid-identifier",
+                        format!("{path}.kind"),
+                    ));
+                }
+            }
+            Some("content-keyed") => {
+                if declaration.contains_key("carriedFrom") {
+                    return Err(validation_error(
+                        "unknown-field",
+                        format!("{path}.carriedFrom"),
+                    ));
+                }
+                if !non_empty_string(assertion_id) {
+                    return Err(validation_error(
+                        "invalid-identifier",
+                        format!("{path}.kind"),
+                    ));
+                }
+            }
+            Some("carried-forward") => {
+                let carried_from = require(declaration, "carriedFrom", path)?;
+                if !non_empty_string(carried_from) {
+                    return Err(validation_error(
+                        "invalid-identifier",
+                        format!("{path}.carriedFrom"),
+                    ));
+                }
+                if !non_empty_string(assertion_id) {
+                    return Err(validation_error(
+                        "invalid-identifier",
+                        format!("{path}.kind"),
+                    ));
+                }
+            }
+            _ => {
+                return Err(validation_error(
+                    "invalid-identifier",
+                    format!("{path}.kind"),
+                ));
+            }
+        }
+    } else if !assertion_id.is_null() && !non_empty_string(assertion_id) {
         return Err(validation_error(
             "invalid-identifier",
             "assertion.assertionId",

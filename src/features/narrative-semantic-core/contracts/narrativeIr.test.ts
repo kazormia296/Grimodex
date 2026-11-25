@@ -123,6 +123,44 @@ describe("Narrative IR V2 registry and structural schema", () => {
     });
   });
 
+  it("accepts all declared identity kinds and preserves omitted legacy identity", () => {
+    const candidates = [
+      validEnvelope(),
+      {
+        ...validEnvelope(),
+        assertion: {
+          ...validEnvelope().assertion,
+          identityDeclaration: { kind: "none" as const },
+        },
+      },
+      {
+        ...validEnvelope(),
+        assertion: {
+          ...validEnvelope().assertion,
+          assertionId: "assertion:1",
+          identityDeclaration: { kind: "content-keyed" as const },
+        },
+      },
+      {
+        ...validEnvelope(),
+        assertion: {
+          ...validEnvelope().assertion,
+          assertionId: "assertion:2",
+          identityDeclaration: {
+            kind: "carried-forward" as const,
+            carriedFrom: "revision:1",
+          },
+        },
+      },
+    ];
+
+    for (const candidate of candidates) {
+      expect(validateNarrativeRevisionEnvelopeV2(candidate)).toEqual({
+        valid: true,
+      });
+    }
+  });
+
   it.each([
     [
       "unknown envelope version",
