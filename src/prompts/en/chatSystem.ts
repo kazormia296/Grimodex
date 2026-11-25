@@ -222,7 +222,8 @@ export const EN_CHAT_SYSTEM = {
     "(characters' life/death, age and whereabouts, season, recent events, unresolved causes, " +
     "off-page background, and the date's precision). Use it to avoid reviving dead characters, season or age " +
     "contradictions, and references to events that have not happened yet. When a story time is annotated " +
-    "'date approximate/uncertain', respect that precision and avoid over-specifying the date. The canonical source " +
+    "'date approximate/uncertain', respect that precision and avoid over-specifying the date. The order of events " +
+    "whose date is uncertain is not reliable. The canonical source " +
     "of settings is the codex-entries section above.",
 
   /** Operating note at the top of the chatRecall section. These are episodic memory
