@@ -542,6 +542,11 @@ function readCalls(ws: Workspace): ReadCall[] {
       args: { payload: { projectId: ws.projectId } },
     },
     {
+      name: "stale proposal scenes",
+      cmd: "narrative_maintenance_stale_proposal_scenes",
+      args: { payload: { projectId: ws.projectId } },
+    },
+    {
       name: "snapshot restore context",
       cmd: "project_snapshot_restore_context",
       args: {

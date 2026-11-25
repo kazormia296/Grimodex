@@ -1220,3 +1220,66 @@ export async function narrativeMaintenanceStaleProposalCount(payload: {
   }
   return (raw as { count: number }).count;
 }
+
+export interface StaleProposalSceneCount {
+  readonly sceneId: string;
+  readonly proposalCount: number;
+}
+
+export interface StaleProposalScenesPage {
+  readonly scenes: readonly StaleProposalSceneCount[];
+  readonly withoutSceneCount: number;
+  readonly nextCursor?: string;
+}
+
+/** Read-only scene counts for stale proposals in one project. */
+export async function narrativeMaintenanceStaleProposalScenes(payload: {
+  readonly projectId: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+}): Promise<StaleProposalScenesPage> {
+  const raw = await invoke<unknown>(
+    "narrative_maintenance_stale_proposal_scenes",
+    { payload },
+  );
+  const isRecord = (
+    value: unknown,
+  ): value is Readonly<Record<string, unknown>> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (
+    !isRecord(raw) ||
+    !Array.isArray(raw.scenes) ||
+    !Number.isSafeInteger(raw.withoutSceneCount) ||
+    (raw.withoutSceneCount as number) < 0 ||
+    (raw.nextCursor !== undefined &&
+      (typeof raw.nextCursor !== "string" || raw.nextCursor.length === 0))
+  ) {
+    throw new Error(
+      "narrative_maintenance_stale_proposal_scenes: expected a scene-count page",
+    );
+  }
+
+  const scenes = raw.scenes.map((scene): StaleProposalSceneCount => {
+    if (
+      !isRecord(scene) ||
+      typeof scene.sceneId !== "string" ||
+      scene.sceneId.length === 0 ||
+      !Number.isSafeInteger(scene.proposalCount) ||
+      (scene.proposalCount as number) < 1
+    ) {
+      throw new Error(
+        "narrative_maintenance_stale_proposal_scenes: expected scene counts",
+      );
+    }
+    return {
+      sceneId: scene.sceneId,
+      proposalCount: scene.proposalCount as number,
+    };
+  });
+  const nextCursor = raw.nextCursor as string | undefined;
+  return {
+    scenes,
+    withoutSceneCount: raw.withoutSceneCount as number,
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
