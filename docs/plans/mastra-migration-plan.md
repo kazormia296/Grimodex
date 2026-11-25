@@ -486,6 +486,7 @@
   - 既存 session の OM の seed（`observedMessageIds` に既存 id を入れる。S-M5）。
   - renderer が DB の行を再読込する経路。A/B 採用、`is_starred`、`thinking_blocks`、tokens／duration／model の写像。
   - semantic の二重 embedding（`chat_message_chunks` と `mastra_memory_vectors`）の併存か統合。
+  - 圧縮しても消えない「目的欄」（会話ごとの目的と条件。[MP-4 の判断](mastra-mp4-decisions.md) DR-MP4-57 の 3。内容は SessionTasks の結論で変わりうる）。
 - 層：renderer、main。
 - 条件：
   - gate M 閉で、既存の journey が全部緑。
