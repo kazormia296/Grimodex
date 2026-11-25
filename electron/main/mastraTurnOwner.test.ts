@@ -8,6 +8,13 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const progressDeliveries = vi.hoisted(() => [] as unknown[][]);
+vi.mock("../../src/features/chat/contextBuilder", () => ({
+  ensureTokenizer: async () => undefined,
+  countTokens: (text: string) => text.length,
+}));
+vi.mock("../../src/features/chat/agent/toolTurnCache", () => ({
+  beginAgentToolTurn: () => undefined,
+}));
 vi.mock("./events.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./events.js")>();
   return {
@@ -37,7 +44,11 @@ import type {
   MastraAgentRuntimeModule,
   MastraAgentTurnInput,
 } from "./mastra/agentRuntime.js";
-import type { AgentAuditRequest, AgentWireArgs } from "./mastra/agentWire.js";
+import type {
+  AgentAuditRequest,
+  AgentWireArgs,
+  AgentWireResponse,
+} from "./mastra/agentWire.js";
 import { createPerCodePointTokenizer } from "../shared/mastraRead/tokenizer.testSupport.js";
 import {
   createMastraTurnOwner,
@@ -200,6 +211,7 @@ function harness(
   overrides: Partial<MastraTurnOwnerOptions> & {
     native?: "hold" | "immediate";
     loadFails?: boolean;
+    responses?: readonly AgentWireResponse[];
     /** Runs in the turn after the dispatch row and before the send (a tool's read, as PR-4 will). */
     runRead?: (owner: MastraTurnOwner) => Promise<unknown>;
     runTurn?: (input: MastraAgentTurnInput) => Promise<void>;
@@ -240,7 +252,10 @@ function harness(
       apiKey: string,
     ): Promise<string> {
       sends.push({ args: args as AgentWireArgs, settings, apiKey });
-      if (native === "immediate") return JSON.stringify(RESPONSE);
+      if (native === "immediate")
+        return JSON.stringify(
+          overrides.responses?.[sends.length - 1] ?? RESPONSE,
+        );
       const hold = deferred<string>();
       nativeSends.push(hold);
       return hold.promise;
@@ -386,7 +401,7 @@ const refusalReason = (value: unknown): string => {
 
 function auditRequestFor(
   input: MastraAgentTurnInput,
-  messages = input.messages,
+  messages: AgentAuditRequest["messages"] = [...input.messages],
 ): AgentAuditRequest {
   return {
     messages: [{ role: "system", content: input.instructions }, ...messages],
@@ -401,11 +416,11 @@ async function sendPreparedRequest(
   input: MastraAgentTurnInput,
   request: AgentAuditRequest,
   sendIndex: number,
-): Promise<void> {
+): Promise<{ response: AgentWireResponse; prepared: AgentAuditRequest }> {
   if (!input.prepareSend) throw new Error("prepareSend missing");
   const prepared = input.prepareSend(request, { sendIndex, previous: null });
   const handle = await input.audit.begin(prepared);
-  let response;
+  let response: AgentWireResponse;
   try {
     await input.audit.dispatched(handle);
     response = await input.send(
@@ -434,6 +449,137 @@ async function sendPreparedRequest(
     },
   });
   input.observeResponse?.(structuredClone(response));
+  return { response, prepared };
+}
+
+function textOf(response: AgentWireResponse): string {
+  return response.blocks
+    .filter((block) => block.type === "text")
+    .map((block) => block.content)
+    .join("\n");
+}
+
+async function driveOwnerLoop(input: MastraAgentTurnInput): Promise<void> {
+  const messages: AgentAuditRequest["messages"] = [...input.messages];
+  for (let sendIndex = 0; sendIndex < 20; sendIndex += 1) {
+    const request = auditRequestFor(input, messages);
+    const { response, prepared } = await sendPreparedRequest(
+      input,
+      request,
+      sendIndex,
+    );
+    if (prepared.messages.length > request.messages.length) return;
+    const toolUses =
+      response.stopReason === "tool_use"
+        ? response.blocks.filter((block) => block.type === "tool_use")
+        : [];
+    if (toolUses.length === 0) return;
+    messages.push({
+      role: "assistant",
+      content: textOf(response),
+      toolUses: toolUses.map(({ id, name, input: params }) => ({
+        id,
+        name,
+        input: params,
+      })),
+    });
+    for (const tool of toolUses) {
+      input.onToolResult?.({ tokens: 1, toolName: tool.name });
+      messages.push({
+        role: "tool_result",
+        toolUseId: tool.id,
+        content: `${tool.name} result`,
+        isError: false,
+      });
+    }
+  }
+  throw new Error("fake runtime exceeded its send bound");
+}
+
+async function runLegacyLoop(input: {
+  readonly responses: readonly AgentWireResponse[];
+  readonly tokenBudget: number;
+  readonly maxToolCalls: number;
+  readonly maxUserQuestions: number;
+}): Promise<{
+  readonly result: {
+    readonly finalThinkingBlocks: readonly unknown[];
+    readonly citations: readonly unknown[];
+    readonly toolCallRecords: readonly {
+      readonly name: string;
+      readonly params: Record<string, unknown>;
+      readonly tokensUsed: number;
+    }[];
+    readonly stoppedReason: string;
+    readonly tokensIn: number | null;
+    readonly tokensOut: number | null;
+    readonly cost: number | null;
+  };
+  readonly sentMessages: unknown[][];
+  readonly textChunks: string[];
+}> {
+  const legacy = await vi.importActual<{
+    runAgentLoop(options: never): Promise<never>;
+  }>("../../src/features/chat/agent/agentLoop");
+  let responseIndex = 0;
+  const sentMessages: unknown[][] = [];
+  const textChunks: string[] = [];
+  const toolNames = [
+    ...new Set(
+      input.responses.flatMap((response) =>
+        response.blocks.flatMap((block) =>
+          block.type === "tool_use" ? [block.name] : [],
+        ),
+      ),
+    ),
+  ];
+  const result = await legacy.runAgentLoop({
+    messages: [{ role: "user", content: "Continue." }],
+    tools: toolNames.map((name) => ({ name })) as never,
+    tokenBudget: input.tokenBudget,
+    maxToolCalls: input.maxToolCalls,
+    maxUserQuestions: input.maxUserQuestions,
+    sendToLLM: async (messages: unknown[]) => {
+      sentMessages.push(structuredClone(messages));
+      return input.responses[responseIndex++] as never;
+    },
+    executeTool: async (name: string, toolCallId: string, params: unknown) =>
+      ({
+        name,
+        toolCallId,
+        content: null,
+        summary: `${name} result`,
+        tokensUsed: 1,
+        params,
+      }) as never,
+    onProgress: () => undefined,
+    onTextChunk: (text: string) => textChunks.push(text),
+    callLimitMessage: "calls",
+    tokenBudgetMessage: "tokens",
+    userQuestionLimitMessage: "questions",
+  } as never);
+  return { result: result as never, sentMessages, textChunks };
+}
+
+function responseWith(
+  stopReason: string,
+  text: string,
+  toolNames: readonly string[] = [],
+  usage: Partial<AgentWireResponse> = {},
+): AgentWireResponse {
+  return {
+    blocks: [
+      ...(text ? [{ type: "text" as const, content: text }] : []),
+      ...toolNames.map((name, index) => ({
+        type: "tool_use" as const,
+        id: `tool-${index}-${name}`,
+        name,
+        input: { ordinal: index },
+      })),
+    ],
+    stopReason,
+    ...usage,
+  };
 }
 
 beforeEach(() => {
@@ -795,9 +941,11 @@ describe("per-send payload finalization (R2-b1)", () => {
   it("returns one overflow terminal after the prior send, with no audit row for the overflowing send", async () => {
     const base = startRequest(TURN_A);
     const h = harness({
+      responses: [responseWith("tool_use", "Earlier answer.", ["get_scene"])],
       runTurn: async (input) => {
         const request = auditRequestFor(input);
         await sendPreparedRequest(input, request, 0);
+        input.onToolResult?.({ tokens: 1, toolName: "get_scene" });
         await sendPreparedRequest(
           input,
           {
@@ -1040,6 +1188,93 @@ describe("turn owner payload and tokenizer guards", () => {
     expect(h.owner.slotsInUse()).toBe(0);
   });
 
+  it("returns a stopped aggregate when Stop races a later context overflow", async () => {
+    const cancellation: { run?: () => void; result?: unknown } = {};
+    let cancelled = false;
+    const h = harness({
+      responses: [responseWith("tool_use", "Earlier answer.", ["get_scene"])],
+      tokenizer: {
+        ...createPerCodePointTokenizer(),
+        countTokens(text: string) {
+          if (!cancelled && text.includes("x".repeat(50))) {
+            cancelled = true;
+            cancellation.run?.();
+          }
+          return Array.from(text).length;
+        },
+      },
+      runTurn: async (input) => {
+        const first = await sendPreparedRequest(
+          input,
+          auditRequestFor(input),
+          0,
+        );
+        input.onToolResult?.({ tokens: 1, toolName: "get_scene" });
+        await sendPreparedRequest(
+          input,
+          auditRequestFor(input, [
+            ...input.messages,
+            { role: "assistant", content: textOf(first.response) },
+            { role: "tool_result", toolUseId: "tool-1", content: "result" },
+            { role: "user", content: "x".repeat(100) },
+          ]),
+          1,
+        );
+      },
+    });
+    const { context } = h.newContext();
+    cancellation.run = () => {
+      cancellation.result = h.owner.cancel(context, { turnId: TURN_A });
+    };
+    const base = startRequest(TURN_A);
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          messages: [
+            { role: "system", content: "You write." },
+            { role: "user", content: "Continue." },
+          ],
+          route: { ...base.route, requestMaxOutputTokens: 8 },
+          loop: {
+            ...base.loop,
+            contextWindow: 128,
+            requestMaxOutputTokens: 8,
+          },
+        }),
+      ),
+    );
+
+    expect(cancellation.result).toMatchObject({ status: "ok", found: true });
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "aborted",
+      finalText: "Earlier answer.",
+      usage: { totalTokens: 1 },
+      toolCallRecords: [{ name: "get_scene" }],
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(h.types()).toEqual([
+      "execution.started",
+      "request.prepared",
+      "request.dispatched",
+      "response.completed",
+      "execution.succeeded",
+    ]);
+    const events = progressDeliveries.map(
+      ([, , payload]) =>
+        payload as { event: { kind: string; reason?: string } },
+    );
+    expect(events.map(({ event }) => event.kind)).toEqual([
+      "send-accepted",
+      "stopped",
+    ]);
+    expect(events.at(-1)?.event.reason).toBe("user-stop");
+    expect(
+      events.filter(({ event }) => event.kind === "context-overflow"),
+    ).toHaveLength(0);
+    expect(h.terminalsOf()).toHaveLength(1);
+  });
+
   it("uses a tokenizer method with its receiver intact", async () => {
     const tokenizer = {
       kind: "test-per-code-point" as const,
@@ -1070,6 +1305,337 @@ describe("turn owner payload and tokenizer guards", () => {
     ).toBe("invalid");
     expect(h.appended).toHaveLength(0);
     expect(h.owner.slotsInUse()).toBe(0);
+  });
+});
+
+describe("loop results (R2-b2)", () => {
+  it("matches legacy stop reasons, records, text, usage, and control-message position", async () => {
+    const cite = {
+      url: "https://example.test/source",
+      title: "source",
+      citedText: "quote",
+    };
+    const scenarios = [
+      {
+        name: "call cap counts an over-limit tool batch and suppresses final tool use",
+        responses: [
+          responseWith("tool_use", "first", ["get_scene", "search_events"], {
+            inputTokens: 2,
+            outputTokens: 3,
+            cost: 0.25,
+            citations: [cite],
+          }),
+          responseWith("tool_use", "last", ["get_scene"], {
+            inputTokens: 4,
+            outputTokens: 5,
+            cost: 0.75,
+            citations: [cite],
+            blocks: [
+              { type: "text", content: "last" },
+              { type: "thinking", content: "final thought", signature: "sig" },
+              {
+                type: "tool_use",
+                id: "tool-final",
+                name: "get_scene",
+                input: {},
+              },
+            ],
+          }),
+        ],
+        limits: { tokenBudget: 100, maxToolCalls: 1, maxUserQuestions: 8 },
+        tools: ["get_scene", "search_events"],
+        stoppedReason: "limit_calls",
+        control: "calls",
+      },
+      {
+        name: "question limit keeps priority when all three caps are reached",
+        responses: [
+          responseWith("tool_use", "question", ["ask_user", "get_scene"]),
+          responseWith("end_turn", "answered"),
+        ],
+        limits: { tokenBudget: 1, maxToolCalls: 1, maxUserQuestions: 1 },
+        tools: ["get_scene"],
+        stoppedReason: "limit_questions",
+        control: "questions",
+      },
+      {
+        name: "completed tool-result tokens select the token control",
+        responses: [
+          responseWith("tool_use", "lookup", ["get_scene"]),
+          responseWith("end_turn", "finished"),
+        ],
+        limits: { tokenBudget: 1, maxToolCalls: 8, maxUserQuestions: 8 },
+        tools: ["get_scene"],
+        stoppedReason: "limit_tokens",
+        control: "tokens",
+      },
+      {
+        name: "a tool-use block on a non-tool stop reason is ignored",
+        responses: [responseWith("end_turn", "text only", ["get_scene"])],
+        limits: { tokenBudget: 100, maxToolCalls: 8, maxUserQuestions: 8 },
+        tools: ["get_scene"],
+        stoppedReason: "completed",
+        control: null,
+      },
+      {
+        name: "a plain text-only answer completes",
+        responses: [responseWith("end_turn", "plain text")],
+        limits: { tokenBudget: 100, maxToolCalls: 8, maxUserQuestions: 8 },
+        tools: [],
+        stoppedReason: "completed",
+        control: null,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const h = harness({
+        responses: scenario.responses,
+        runTurn: driveOwnerLoop,
+      });
+      const { context } = h.newContext();
+      const ownerResult = completed(
+        await h.owner.start(
+          context,
+          startRequest(TURN_A, {
+            tools: scenario.tools as MastraAgentTurnStartRequest["tools"],
+            loop: { ...startRequest(TURN_A).loop, ...scenario.limits },
+          }),
+        ),
+      );
+      const ownerLoop = ownerResult.loopResult;
+      expect(ownerLoop, scenario.name).toBeDefined();
+      const legacy = await runLegacyLoop({
+        responses: scenario.responses,
+        ...scenario.limits,
+      });
+
+      expect(ownerLoop?.stoppedReason, scenario.name).toBe(
+        legacy.result.stoppedReason,
+      );
+      expect(ownerLoop?.stoppedReason, scenario.name).toBe(
+        scenario.stoppedReason,
+      );
+      expect(
+        ownerLoop?.toolCallRecords.map(({ name, params }) => ({
+          name,
+          params,
+        })),
+        scenario.name,
+      ).toEqual(
+        legacy.result.toolCallRecords.map(({ name, params }) => ({
+          name,
+          params,
+        })),
+      );
+      expect(ownerLoop?.finalText, scenario.name).toBe(
+        legacy.textChunks.join(""),
+      );
+      expect(ownerLoop?.usage, scenario.name).toEqual({
+        totalTokens: legacy.result.toolCallRecords.reduce(
+          (total, record) => total + record.tokensUsed,
+          0,
+        ),
+        tokensIn: legacy.result.tokensIn,
+        tokensOut: legacy.result.tokensOut,
+        cost: legacy.result.cost,
+      });
+      expect(ownerLoop?.citations, scenario.name).toEqual(
+        legacy.result.citations,
+      );
+      expect(ownerLoop?.finalThinkingBlocks, scenario.name).toEqual(
+        legacy.result.finalThinkingBlocks,
+      );
+      expect(h.sends, scenario.name).toHaveLength(legacy.sentMessages.length);
+      const ownerFinalMessages = h.sends
+        .at(-1)
+        ?.args.messages.filter((message) => message.role !== "system");
+      if (scenario.control === null) {
+        expect(
+          ownerFinalMessages?.some(
+            (message) =>
+              message.role === "user" &&
+              ["calls", "tokens", "questions"].includes(message.content),
+          ),
+        ).toBe(false);
+      } else {
+        const ownerControls = ownerFinalMessages?.filter(
+          (message) =>
+            message.role === "user" && message.content === scenario.control,
+        );
+        const legacyControls = legacy.sentMessages
+          .at(-1)
+          ?.filter(
+            (message): message is { role: string; content: string } =>
+              typeof message === "object" &&
+              message !== null &&
+              "role" in message &&
+              "content" in message,
+          )
+          .filter(
+            (message) =>
+              message.role === "user" && message.content === scenario.control,
+          );
+        expect(ownerControls, scenario.name).toHaveLength(1);
+        expect(
+          ownerFinalMessages?.findIndex(
+            (message) =>
+              message.role === "user" && message.content === scenario.control,
+          ),
+          scenario.name,
+        ).toBe(
+          legacy.sentMessages
+            .at(-1)
+            ?.findIndex(
+              (message) =>
+                typeof message === "object" &&
+                message !== null &&
+                "role" in message &&
+                "content" in message &&
+                message.role === "user" &&
+                message.content === scenario.control,
+            ),
+        );
+        expect(ownerFinalMessages?.at(-1), scenario.name).toMatchObject({
+          role: "user",
+          content: scenario.control,
+        });
+        expect(legacyControls, scenario.name).toHaveLength(1);
+        expect(legacy.sentMessages.at(-1)?.at(-1), scenario.name).toMatchObject(
+          {
+            role: "user",
+            content: scenario.control,
+          },
+        );
+      }
+    }
+  });
+
+  it("adds control once, then keeps later sends tool-free", async () => {
+    const declaredTools: AgentAuditRequest["tools"] = [
+      {
+        name: "get_scene",
+        description: "",
+        inputSchema: { type: "object", properties: {}, required: [] },
+      },
+    ];
+    const responses = [
+      responseWith("tool_use", "first", ["get_scene", "search_events"]),
+      responseWith("tool_use", "after control", ["get_scene"]),
+      responseWith("end_turn", "last"),
+    ];
+    const h = harness({
+      responses,
+      runTurn: async (input) => {
+        let messages: AgentAuditRequest["messages"] = [...input.messages];
+        const request = {
+          ...auditRequestFor(input, messages),
+          tools: declaredTools,
+        };
+        const { response } = await sendPreparedRequest(input, request, 0);
+        messages.push({ role: "assistant", content: textOf(response) });
+        messages.push({
+          role: "tool_result",
+          toolUseId: "used-1",
+          content: "result",
+        });
+        input.onToolResult?.({ tokens: 0, toolName: "get_scene" });
+
+        const secondRequest = auditRequestFor(input, messages);
+        const second = await sendPreparedRequest(
+          input,
+          { ...secondRequest, tools: declaredTools },
+          1,
+        );
+        expect(h.sends[0]?.args.tools).toEqual(declaredTools);
+        expect(
+          second.prepared.messages.filter(
+            (message) => message.role === "user" && message.content === "calls",
+          ),
+        ).toHaveLength(1);
+        expect(second.prepared.tools).toEqual([]);
+        messages = second.prepared.messages.slice(1);
+
+        const third = await sendPreparedRequest(
+          input,
+          { ...auditRequestFor(input, messages), tools: declaredTools },
+          2,
+        );
+        expect(
+          third.prepared.messages.filter(
+            (message) => message.role === "user" && message.content === "calls",
+          ),
+        ).toHaveLength(1);
+        expect(third.prepared.tools).toEqual([]);
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          tools: ["get_scene", "search_events"],
+          loop: { ...startRequest(TURN_A).loop, maxToolCalls: 1 },
+        }),
+      ),
+    );
+    expect(result.loopResult?.stoppedReason).toBe("limit_calls");
+    expect(h.sends).toHaveLength(3);
+  });
+
+  it("reports a limit reached by the final response even when the runtime ends without another send", async () => {
+    const h = harness({
+      responses: [responseWith("tool_use", "lookup", ["get_scene"])],
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        input.onToolResult?.({ tokens: 1, toolName: "get_scene" });
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          tools: ["get_scene"],
+          loop: { ...startRequest(TURN_A).loop, tokenBudget: 1 },
+        }),
+      ),
+    );
+
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "limit_tokens",
+      usage: { totalTokens: 1 },
+    });
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it("rejects invalid tool-result tokens synchronously without changing loop state", async () => {
+    const invalidTokens = [Number.NaN, -1, 0.5, Number.POSITIVE_INFINITY];
+    const h = harness({
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        for (const tokens of invalidTokens) {
+          expect(() =>
+            input.onToolResult?.({ tokens, toolName: "get_scene" }),
+          ).toThrow("MASTRA_AGENT_TOOL_RESULT_TOKENS_INVALID");
+        }
+        input.onToolResult?.({ tokens: 0, toolName: "get_scene" });
+      },
+    });
+    const { context } = h.newContext();
+    const base = startRequest(TURN_A);
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          loop: { ...base.loop, tokenBudget: 1 },
+        }),
+      ),
+    );
+
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "completed",
+      usage: { totalTokens: 0 },
+    });
   });
 });
 
@@ -1221,6 +1787,51 @@ describe("user-stop (a cancel; DR-MP3-6)", () => {
     h.nativeSends[0]!.resolve(JSON.stringify(RESPONSE));
     completed(await started);
     expect(h.types()).toContain("execution.succeeded");
+  });
+
+  it("returns an aborted aggregate when Stop lands between sends", async () => {
+    const h = harness({
+      native: "hold",
+      runTurn: async (input) => {
+        const request = auditRequestFor(input);
+        await sendPreparedRequest(input, request, 0);
+        await sendPreparedRequest(input, request, 1);
+      },
+    });
+    const { context } = h.newContext();
+    const started = h.owner.start(context, startRequest(TURN_A));
+    started.catch(() => undefined);
+    await flush();
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    const partial = responseWith("tool_use", "partial", ["get_scene"]);
+    h.nativeSends[0]!.resolve(JSON.stringify(partial));
+
+    const result = completed(await started);
+    expect(result.response).toEqual(partial);
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "aborted",
+      finalText: "partial",
+    });
+    expect(h.sends).toHaveLength(1);
+    expect(
+      h.types().filter((type) => type === "request.prepared"),
+    ).toHaveLength(1);
+    expect(
+      h.types().filter((type) => type === "execution.started"),
+    ).toHaveLength(1);
+    expect(h.terminalsOf()).toHaveLength(1);
+    expect(
+      progressDeliveries
+        .map(
+          ([, , payload]) =>
+            (payload as { event?: { kind?: string } }).event?.kind,
+        )
+        .filter((kind) => kind === "stopped"),
+    ).toHaveLength(1);
   });
 
   it("only the sender that started a turn (in its own window) can stop it", async () => {
