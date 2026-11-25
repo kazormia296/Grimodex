@@ -1,3 +1,4 @@
+import { confirmStopActiveTurn } from "@/application/lifecycle/chatStopConfirm";
 import { Check } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -64,6 +65,9 @@ export function ProjectMenuSection({
   async function handleSwitch(projectId: string) {
     onClose();
     if (projectId === currentProjectId) return;
+    // 生成中の応答があれば、静止の lease の前に中断を確認する（利用者の切替だけ）。
+    const decision = confirmStopActiveTurn("switch");
+    if (decision !== true && !(await decision)) return;
     await runProjectLoadWithFailureToast(() => loadProject(projectId));
   }
 

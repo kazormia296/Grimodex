@@ -10,6 +10,7 @@ import {
   publishCloseQuiescenceDiagnostics,
   type ClosePhase,
 } from "./quiescenceDiagnostics";
+import { confirmStopActiveTurn } from "./chatStopConfirm";
 import {
   StrictQuiescenceError,
   type QuiescenceFailure,
@@ -28,8 +29,8 @@ interface CloseQuiescenceOptions {
   close: () => Promise<void>;
   onFailure: (error: unknown, closePhase: ClosePhase) => void;
   /**
-   * 静止の lease を取る前の確認（生成中の応答の中断など）。true なら続け、false なら
-   * この終了の要求を取りやめる。
+   * 静止の lease を取る前の確認。true なら続け、false ならこの終了の要求を取りやめる。
+   * 省略時は生成中の応答の中断の確認（confirmStopActiveTurn）。
    */
   confirmClose?: () => true | Promise<boolean>;
 }
@@ -178,7 +179,9 @@ export function createCloseQuiescenceController(
       // fallback timer; persistence may then take as long as required.
       event.preventDefault();
       if (inFlight || confirming || options.hasImmediateVeto()) return;
-      const decision = options.confirmClose?.() ?? true;
+      const decision = (
+        options.confirmClose ?? (() => confirmStopActiveTurn("close"))
+      )();
       if (decision === true) {
         start();
         return;

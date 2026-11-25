@@ -7,8 +7,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import "./chatStopConfirmTranslations";
-import type { ChatStopConfirmRequest } from "./chatStopConfirm";
+import "@/application/lifecycle/chatStopConfirmTranslations";
+import type { ChatStopConfirmRequest } from "@/application/lifecycle/chatStopConfirm";
 
 /** 生成中の応答を中断して終了／切り替えるかの確認。閉じる操作は「断る」。 */
 export default function ChatStopConfirmDialog({

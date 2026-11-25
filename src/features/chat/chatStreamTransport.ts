@@ -416,19 +416,16 @@ export async function abortChatStream(
 }
 
 /**
- * 「停止」で agent の送信を中断する。起動時の chunk に入れないため、遅延読み込みの
- * この module に置く（中断の入口は stream と同じ abort_chat_stream）。
+ * agent の送信を行い、失敗を監査に記録する。「停止」（signal）で中断する。中断の入口は
+ * stream と同じ abort_chat_stream。起動時の chunk に入れないため、この遅延の module に置く。
+ * Native が停止の印を返した失敗だけを cancelled にし、停止の後の別の失敗は failed。
  */
-export function guardAgentSend(
-  signal: AbortSignal,
+export async function runStoppableAgentSend<T>(
+  signal: AbortSignal | undefined,
   audit: AiAuditExecutionHandle,
-) {
-  let aborting:
-    | Promise<{
-        abortCommandAcknowledged: boolean;
-        transportTerminationObserved: boolean;
-      }>
-    | undefined;
+  send: () => Promise<T>,
+): Promise<T> {
+  let aborting: ReturnType<typeof abortChatStream> | undefined;
   const requestAbort = (): void => {
     aborting ??= abortChatStream(audit.executionId).then((receipt) => {
       if (!receipt.abortCommandAcknowledged) {
@@ -441,25 +438,19 @@ export function guardAgentSend(
       return receipt;
     });
   };
-  signal.addEventListener("abort", requestAbort);
-  return {
-    /** 送る前に停止済みなら、先に中断を届ける（Native は通信しない）。 */
-    async beforeInvoke(): Promise<void> {
-      if (!signal.aborted) return;
+  signal?.addEventListener("abort", requestAbort);
+  try {
+    // 送る前に停止済みなら、先に中断を届ける（Native は通信しない）。
+    if (signal?.aborted) {
       requestAbort();
       await aborting;
-    },
-    /**
-     * 停止による失敗なら監査を cancelled で閉じて true。それ以外は false。停止の後でも、
-     * Native が停止の印を返さない失敗（provider や送信の制限）は失敗として記録する。
-     */
-    async closeStopped(error: unknown): Promise<boolean> {
-      if (
-        !signal.aborted ||
-        !String(error).includes("AI_REQUEST_STOPPED_BY_USER")
-      ) {
-        return false;
-      }
+    }
+    return await send();
+  } catch (error) {
+    if (
+      signal?.aborted &&
+      String(error).includes("AI_REQUEST_STOPPED_BY_USER")
+    ) {
       const receipt = await aborting;
       await cancelAiAuditExecution(audit, {
         reason: "stopped",
@@ -470,10 +461,11 @@ export function guardAgentSend(
           providerAbortReceiptObserved: false,
         },
       });
-      return true;
-    },
-    dispose(): void {
-      signal.removeEventListener("abort", requestAbort);
-    },
-  };
+    } else {
+      await failAiAuditExecution(audit, { error: auditErrorSnapshot(error) });
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", requestAbort);
+  }
 }

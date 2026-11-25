@@ -7,6 +7,8 @@ import { useProjectStore } from "./projectStore";
 import { PROJECT_ID } from "./constants";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { toast } from "sonner";
+import { useChatStopConfirmStore } from "@/application/lifecycle/chatStopConfirm";
+import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -149,6 +151,33 @@ describe("ProjectMenu (in the unified WorkspaceMenu)", () => {
     await waitFor(() => {
       expect(loadProject).toHaveBeenCalledWith("proj-b");
     });
+  });
+
+  it.each([
+    ["断ると切り替えない", false],
+    ["了承すると停止してから切り替える", true],
+  ] as const)("生成中の応答があれば確認する: %s", async (_label, accept) => {
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    useProjectStore.setState({ loadProject });
+    const stop = vi.fn();
+    registerActiveTurnStopper({ isActive: () => true, stop });
+    try {
+      render(<WorkspaceMenu />);
+      fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
+      fireEvent.click(screen.getByTestId("project-switch-proj-b"));
+      expect(useChatStopConfirmStore.getState().request?.kind).toBe("switch");
+      useChatStopConfirmStore.getState().request?.answer(accept);
+      if (accept) {
+        await waitFor(() => expect(loadProject).toHaveBeenCalledWith("proj-b"));
+        expect(stop).toHaveBeenCalledOnce();
+      } else {
+        await Promise.resolve();
+        expect(loadProject).not.toHaveBeenCalled();
+        expect(stop).not.toHaveBeenCalled();
+      }
+    } finally {
+      registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
+    }
   });
 
   it("keeps degraded Project state visible and offers a retry", async () => {

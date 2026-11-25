@@ -1,3 +1,5 @@
+import type { AiAuditExecutionHandle } from "@/features/ai-audit/types";
+
 type SingleShotTransportModule = typeof import("./singleShotTransport");
 type ChatStreamTransportModule = typeof import("./chatStreamTransport");
 
@@ -24,8 +26,11 @@ export const sendChatMessageStream: ChatStreamTransportModule["sendChatMessageSt
 export const abortChatStream: ChatStreamTransportModule["abortChatStream"] =
   async (...args) => (await loadChatStreamTransport()).abortChatStream(...args);
 
-export async function guardAgentSend(
-  ...args: Parameters<ChatStreamTransportModule["guardAgentSend"]>
-): Promise<ReturnType<ChatStreamTransportModule["guardAgentSend"]>> {
-  return (await loadChatStreamTransport()).guardAgentSend(...args);
+export async function runStoppableAgentSend<T>(
+  signal: AbortSignal | undefined,
+  audit: AiAuditExecutionHandle,
+  send: () => Promise<T>,
+): Promise<T> {
+  const transport = await loadChatStreamTransport();
+  return transport.runStoppableAgentSend(signal, audit, send);
 }

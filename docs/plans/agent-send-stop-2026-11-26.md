@@ -46,9 +46,9 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 入口 | 窓の終了（`closeQuiescenceController`、panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、別の project の読み込み（`projectStore`。同じ project の読み直しと、workspace を開く途中の読み込みでは聞かない）。 |
+| 入口 | 窓の終了（`closeQuiescenceController` の既定。panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、利用者の project の切替（`ProjectMenu`）。取り込みの完了や `ensureProjectActive` などの内部の読み込み、同じ project の読み直しでは聞かない。 |
 | 順番の理由 | lease を取った後は turn の保存が止まりうるので、確認と停止は lease の前に置く。 |
-| 対象の判定 | その窓の chat の store が生成中（`isStreaming`）。chat の store が lib の小さな登録口に「生成中か」と「停止」を登録する（`projectStore` から chat の store を直接読まない）。 |
+| 対象の判定 | その窓の chat の store が生成中（`isStreaming`）。chat の移動の制御（`chatNavigationComposition`）が lib の小さな登録口に「生成中か」と「停止」を登録する（切替の側は chat の store を直接読まない）。確認の画面は `ApplicationDialogs` に置く。 |
 | 了承 | まだ生成中なら `stopGeneration`。停止した turn の確定と監査の終端は、今ある静止の段（`ai-executions`、`scoped-mutations`、`ipc-actual-tasks`）が待つ。agent の送信は上の中断で速く終わる。 |
 | 取りやめ | 何も止めず、操作を中止する（終了は veto、切替は `blocked`／読み込まない）。 |
 | 多重の要求 | 確認を出している間の同じ種類（終了、切替）の要求は、同じ確認の結果を待つ。違う種類の要求は取りやめる（出ている文面と違う操作に答えを流用しない）。 |
@@ -59,6 +59,6 @@
 
 - 別窓の chat の応答は、その窓を閉じるときは確認するが、main の窓の workspace／project の切替では確認しない（今も静止の対象外）。main の窓を閉じると、先に main が閉じ、続いて chat の窓で確認が出る。
 - 要約（`send_chat_message`）、Context Creator、抽出などの他の AI の処理は中断せず、今までどおり終わるのを待つ。
-- バックアップの復元、データの削除、監査の書き出しなど、他の操作は今までどおり待つ。
+- バックアップの復元、データの削除、監査の書き出し、新しい project の作成と削除、取り込みの完了の切替など、他の操作は今までどおり待つ（取り込み中は確認を出さない）。
 - 中断しても provider の側の生成と課金が止まる保証は無い（stream の停止と同じ）。
 - 実行済みの道具の結果は残る。

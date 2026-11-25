@@ -12,7 +12,7 @@ import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 import {
   confirmStopActiveTurn,
   useChatStopConfirmStore,
-} from "./chatStopConfirm";
+} from "@/application/lifecycle/chatStopConfirm";
 import { ChatStopConfirmHost } from "./ChatStopConfirmHost";
 
 describe("終了や切替の前の、生成中の応答の確認", () => {

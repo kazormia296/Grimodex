@@ -1188,12 +1188,10 @@ function createChatTurnStoreActions(
             fullyInjectedIds,
             chatMessageId: assistantMsg.id,
           });
-          // クライアントツールは private Agent のときだけ渡す。Public RAG は
-          // tools=[] とし、Web検索だけを使う分離済み経路にする。
+          // client tool は private Agent だけ。Public RAG は tools=[] の Web 検索のみ。
           const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
-          // Web検索設定はpublic RAGにだけ渡す。private Agentでは常にnull。
-          // Phase 2: 永続設定 (settingsStore の ai.webSearch.*) のドメイン制御 /
-          // content cap を載せる。
+          // Web検索設定（ai.webSearch.* のドメイン制御と content cap）は public RAG
+          // にだけ渡す。private Agent では常に null。
           const webSearchConfig = webSearchConfigAtTurnStart;
           let parentInputTokenDrift = createInputTokenDriftTotals();
           const agentTextBatcher = createAgentTextBatcher((text) => {

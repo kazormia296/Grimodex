@@ -46,7 +46,7 @@ import type { AiAuditTransportContext } from "@/features/ai-audit/transportConte
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import {
   abortChatStream,
-  guardAgentSend,
+  runStoppableAgentSend,
   loadAiAuditRuntime,
   loadSingleShotTransport,
   sendChatMessageStream,
@@ -225,21 +225,9 @@ export async function sendAgentMessage(
     audit,
     auditRuntime.beforeIpcDispatchDetails("send_agent_message"),
   );
-  const guard = signal && (await guardAgentSend(signal, audit));
-  let response: AgentLLMResponse;
-  try {
-    await guard?.beforeInvoke();
-    response = await invoke<AgentLLMResponse>("send_agent_message", args);
-  } catch (error) {
-    if (!(await guard?.closeStopped(error))) {
-      await auditRuntime.failAiAuditExecution(audit, {
-        error: auditRuntime.auditErrorSnapshot(error),
-      });
-    }
-    throw error;
-  } finally {
-    guard?.dispose();
-  }
+  const response = await runStoppableAgentSend(signal, audit, () =>
+    invoke<AgentLLMResponse>("send_agent_message", args),
+  );
   await auditRuntime.completeAiAuditExecution(audit, {
     response: response as unknown as AiAuditJsonObject,
     usage: {

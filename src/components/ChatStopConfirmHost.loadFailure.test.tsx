@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";
 import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
-import { confirmStopActiveTurn } from "./chatStopConfirm";
+import { confirmStopActiveTurn } from "@/application/lifecycle/chatStopConfirm";
 import { ChatStopConfirmHost } from "./ChatStopConfirmHost";
 
 vi.mock("./ChatStopConfirmDialog", () => {
