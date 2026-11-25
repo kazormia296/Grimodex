@@ -198,10 +198,14 @@ fn change_review_matches_each_identity_across_scenes_without_removed_objects() -
         &["change-review-carol"],
     )?;
     let scene_b_carol_id = scene_b_carol["result"]["revisionId"].as_str().unwrap();
-    let Nir1ChangeReviewResult::Available(carol_review) = db.with_read_transaction(|conn| {
+    let carol_result = db.with_read_transaction(|conn| {
         read_nir1_change_review(conn, "default-project", scene_b_carol_id)
-    })?
-    else {
+    })?;
+    let carol_wire = serde_json::to_value(&carol_result)?;
+    assert_eq!(carol_wire["status"], "available");
+    assert_eq!(carol_wire["result"]["revisionId"], scene_b_carol_id);
+    assert_eq!(carol_wire.as_object().unwrap().len(), 2);
+    let Nir1ChangeReviewResult::Available(carol_review) = carol_result else {
         panic!("Scene B Carol revision should be available");
     };
     assert!(carol_review.previous_revision_ids.is_empty());
@@ -351,6 +355,13 @@ fn hidden_or_suppressed_items_make_the_current_revision_unavailable() -> anyhow:
         let result = db.with_read_transaction(|conn| {
             read_nir1_change_review(conn, "default-project", revision_id)
         })?;
+        assert_eq!(
+            serde_json::to_value(&result)?,
+            serde_json::json!({
+                "status": "unavailable",
+                "result": { "reason": "current-revision-unavailable" }
+            })
+        );
         assert!(
             matches!(
                 result,

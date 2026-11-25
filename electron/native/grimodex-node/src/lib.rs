@@ -13602,6 +13602,7 @@ impl Backend {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Request {
+            expected_workspace_path: String,
             project_id: String,
             revision_id: String,
         }
@@ -13611,6 +13612,7 @@ impl Backend {
             let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
             let response = workspace.authority.db().with_read_transaction(|conn| {
                 narrative_extraction::read_nir1_change_review(
                     conn,
