@@ -14255,7 +14255,7 @@ THE SOFTWARE.
 ```
 </details>
 
-### i18next (26.3.1)
+### i18next (26.3.4)
 
 - License: MIT
 - Repository: https://github.com/i18next/i18next
