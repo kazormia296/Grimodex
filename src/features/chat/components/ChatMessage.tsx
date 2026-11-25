@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import "../outputTruncationTranslations";
 import { toast } from "sonner";
 import { AlertTriangle, Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";

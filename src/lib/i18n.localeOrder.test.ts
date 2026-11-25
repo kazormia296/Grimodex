@@ -65,6 +65,13 @@ const FEATURE_TRANSLATIONS: ReadonlyArray<{
         await import("@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTranslations")
       ).ensureBodyDeclarationTranslations(),
   },
+  {
+    file: "features/chat/outputTruncationTranslations.ts",
+    install: async () =>
+      (
+        await import("@/features/chat/outputTruncationTranslations")
+      ).ensureOutputTruncationTranslations(),
+  },
 ];
 
 const SRC_ROOT = path.resolve(__dirname, "..");

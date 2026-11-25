@@ -43,6 +43,7 @@ import { ContextBar } from "./components/ContextBar";
 import { roleSettingKey, ROLE_PROVIDERS_KEY } from "./modelRouting";
 import { canAttemptContextCreator } from "./contextCreatorApi";
 import { resolvedChatTurnRouteAuthorityKey } from "./turn/resolveTurnRoute";
+import "./outputTruncationTranslations";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";

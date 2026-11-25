@@ -1998,8 +1998,6 @@
     "generating": "Generating…",
     "agentContinue": "Continue",
     "agentContinueHint": "Stopped at the limit. Resumes with a fresh budget.",
-    "agentContinueOutputHint": "Continuing reads the needed information again and does the rest.",
-    "outputTruncated": "The response was cut off partway (output limit or similar).",
     "aiOffNote": "AI chat is off for this project.",
     "aiOffOpenSettings": "Open policy settings",
     "recallPromote": {

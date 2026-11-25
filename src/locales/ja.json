@@ -1997,8 +1997,6 @@
     "generating": "生成中…",
     "agentContinue": "続行",
     "agentContinueHint": "上限で打ち切られました。新しい予算で続きを実行します。",
-    "agentContinueOutputHint": "続けると、必要な情報を読み直して残りを実行します。",
-    "outputTruncated": "応答が途中で打ち切られました（出力の上限など）。",
     "aiOffNote": "このプロジェクトではAIチャットがオフです。",
     "aiOffOpenSettings": "ポリシー設定を開く",
     "recallPromote": {
