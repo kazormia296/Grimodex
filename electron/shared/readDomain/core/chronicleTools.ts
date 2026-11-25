@@ -12,6 +12,10 @@ import {
   pickSnapshotCharacters,
 } from "../features/chronicle/chronicleSnapshot.js";
 import {
+  markChronicleRevealScene,
+  type ChronicleRevealMark,
+} from "../features/chronicle/chronicleRevealMark.js";
+import {
   calendarFromRow,
   formatChronicleDate,
   type ChronicleCalendar,
@@ -89,6 +93,26 @@ export async function listEvents(
     kind === "birth" || kind === "death" || kind === "generic"
       ? events.filter((e) => e.kind === kind)
       : events;
+  const revealSceneByEventId = new Map<string, ChronicleRevealMark>();
+  const revealEvents = filtered.filter(
+    (event) => event.revealSceneId != null && event.revealSceneId !== "",
+  );
+  if (revealEvents.length > 0) {
+    const { nodes, activeSceneId } = ctx.getTreeState();
+    const readingOrder = ctx.chronicle.getReadingOrder(nodes);
+    const titleByScene = new Map(
+      nodes.map((node) => [node.id, node.title] as const),
+    );
+    for (const event of revealEvents) {
+      const revealScene = markChronicleRevealScene(
+        event.revealSceneId,
+        activeSceneId,
+        readingOrder,
+        titleByScene,
+      );
+      if (revealScene) revealSceneByEventId.set(event.id, revealScene);
+    }
+  }
   const ids = [
     ...new Set(
       filtered.flatMap((e) =>
@@ -117,6 +141,9 @@ export async function listEvents(
         e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
           ? (names.get(e.primaryCodexId) ?? null)
           : null,
+      ...(revealSceneByEventId.has(e.id)
+        ? { revealScene: revealSceneByEventId.get(e.id)! }
+        : {}),
     })),
   };
   return result(ctx, "list_events", content, `${content.events.length} events`);
@@ -171,8 +198,18 @@ export async function getEventDetail(
   const lang: DateLang = ctx.getUiLanguage();
   const sceneLinks = allSceneEvents.filter((s) => s.eventId === eventId);
   const titleByEvent = new Map(events.map((e) => [e.id, e.title] as const));
-  const nodes = ctx.getTreeState().nodes;
+  const treeState = ctx.getTreeState();
+  const nodes = treeState.nodes;
   const titleByScene = new Map(nodes.map((n) => [n.id, n.title] as const));
+  const revealScene =
+    ev.revealSceneId != null && ev.revealSceneId !== ""
+      ? markChronicleRevealScene(
+          ev.revealSceneId,
+          treeState.activeSceneId,
+          ctx.chronicle.getReadingOrder(nodes),
+          titleByScene,
+        )
+      : null;
 
   const content = {
     id: ev.id,
@@ -227,6 +264,7 @@ export async function getEventDetail(
         cause: titleByEvent.get(r.causeId) ?? null,
         effect: titleByEvent.get(r.effectId) ?? null,
       })),
+    ...(revealScene ? { revealScene } : {}),
   };
   return result(ctx, "get_event_detail", content, `Event '${ev.title}'`);
 }
@@ -271,6 +309,26 @@ export async function getCharacterTimeline(
       (e) => e.primaryCodexId === codexId || participantEventIds.has(e.id),
     )
     .sort((a, b) => cmpKeys(a.ordinal, b.ordinal));
+  const revealSceneByEventId = new Map<string, ChronicleRevealMark>();
+  const revealEvents = involved.filter(
+    (event) => event.revealSceneId != null && event.revealSceneId !== "",
+  );
+  if (revealEvents.length > 0) {
+    const { nodes, activeSceneId } = ctx.getTreeState();
+    const readingOrder = ctx.chronicle.getReadingOrder(nodes);
+    const titleByScene = new Map(
+      nodes.map((node) => [node.id, node.title] as const),
+    );
+    for (const event of revealEvents) {
+      const revealScene = markChronicleRevealScene(
+        event.revealSceneId,
+        activeSceneId,
+        readingOrder,
+        titleByScene,
+      );
+      if (revealScene) revealSceneByEventId.set(event.id, revealScene);
+    }
+  }
 
   // 誕生時刻（年齢算出基準）。出来事はすべて対象。
   let birthTime: number | null = null;
@@ -296,6 +354,9 @@ export async function getCharacterTimeline(
         birthTime != null && e.startTime != null && daysPerYear > 0
           ? Math.floor((e.startTime - birthTime) / daysPerYear)
           : null,
+      ...(revealSceneByEventId.has(e.id)
+        ? { revealScene: revealSceneByEventId.get(e.id)! }
+        : {}),
     })),
   };
   return result(

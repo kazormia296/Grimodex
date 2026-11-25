@@ -1600,8 +1600,8 @@ describe("E10: the constant false is today's result, byte for byte", () => {
     // "later" is after the current Scene and "span" spans it: with the
     // constant true both would be dropped; with it false neither is.
     setChronicle([
-      { id: "old", secret: true, reveal: "s1", ties: ["s1"] },
-      { id: "span", secret: true, reveal: "s1", ties: ["s1", "s2"] },
+      { id: "old", secret: true, ties: ["s1"] },
+      { id: "span", secret: true, ties: ["s1", "s2"] },
       { id: "later", ties: ["s3"] },
       { id: "plain" },
     ]);

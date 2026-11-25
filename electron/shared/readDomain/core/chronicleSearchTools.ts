@@ -1,4 +1,8 @@
 import type { CoreChronicleSearchContext } from "../../mastraRead/ports.js";
+import {
+  markChronicleRevealScene,
+  type ChronicleRevealMark,
+} from "../features/chronicle/chronicleRevealMark.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
 
@@ -15,12 +19,11 @@ import type { CoreToolResult } from "./toolResult.js";
  *   1. an empty query answers `0 events found` and reads nothing;
  *   2. the project is taken once (`requireCoreProjectId`);
  *   3. the dense read, with `limit` raised to `fetchLimit`;
- *   4. the dense hits are narrowed and the first `limit` are returned.
+ *   4. selected hit rows are loaded, and their disclosure scene is marked when present.
  *   5. the JSON result is counted by `countTokens`.
  *
- * Every event is eligible for search, including events marked secret. Hits are
- * not checked against the events table; the native dense read is scoped to the
- * project.
+ * Every event is eligible for search, including events marked secret. Dense
+ * hits are scoped to the project; their event rows are read only after hits exist.
  *
  * A failure of the dense read is not caught here: the renderer's port answers an
  * empty list (`chronicleSearchPort.ts`) and Main's lets it out.
@@ -114,11 +117,45 @@ export async function searchEvents(
     }),
   );
 
-  const content = hits.slice(0, limit).map((h) => ({
+  const selectedHits = hits.slice(0, limit);
+  const revealSceneByEventId = new Map<string, ChronicleRevealMark>();
+  if (selectedHits.length > 0) {
+    const events = await ctx.chronicle.getEvents(projectId);
+    const eventById = new Map(
+      events.map((event) => [event.id, event] as const),
+    );
+    const markedEvents = selectedHits.flatMap((hit) => {
+      const event = eventById.get(hit.eventId);
+      return event?.revealSceneId != null && event.revealSceneId !== ""
+        ? [event]
+        : [];
+    });
+    if (markedEvents.length > 0) {
+      const { nodes, activeSceneId } = ctx.getTreeState();
+      const readingOrder = ctx.chronicle.getReadingOrder(nodes);
+      const titleByScene = new Map(
+        nodes.map((node) => [node.id, node.title] as const),
+      );
+      for (const event of markedEvents) {
+        const revealScene = markChronicleRevealScene(
+          event.revealSceneId,
+          activeSceneId,
+          readingOrder,
+          titleByScene,
+        );
+        if (revealScene) revealSceneByEventId.set(event.id, revealScene);
+      }
+    }
+  }
+
+  const content = selectedHits.map((h) => ({
     eventId: h.eventId,
     title: h.title,
     kind: h.kind,
     score: h.score,
+    ...(revealSceneByEventId.has(h.eventId)
+      ? { revealScene: revealSceneByEventId.get(h.eventId)! }
+      : {}),
   }));
   return {
     name: "search_events",

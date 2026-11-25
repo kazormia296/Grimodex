@@ -69,6 +69,7 @@ function ev(p: Record<string, unknown>): Record<string, unknown> {
     endGranularity: p.endGranularity ?? "none",
     precision: "exact",
     kind: p.kind ?? "generic",
+    revealSceneId: p.revealSceneId ?? null,
     createdAt: "",
     updatedAt: "",
   };
@@ -156,6 +157,38 @@ describe("the chronicle hidden-id port", () => {
 });
 
 describe("listEventsTool", () => {
+  it("adds a revealScene mark to list, detail, and character timeline results", async () => {
+    events.push(
+      ev({
+        id: "e1",
+        title: "戴冠",
+        primaryCodexId: "c1",
+        revealSceneId: "s1",
+      }),
+    );
+    codexEntries.push({ id: "c1", name: "アリス" });
+    const expected = {
+      id: "s1",
+      title: "シーン1",
+      revealedToReader: true,
+    };
+
+    const listed = await listEventsTool({});
+    const detail = await getEventDetailTool({ eventId: "e1" });
+    const timeline = await getCharacterTimelineTool({ codexId: "c1" });
+    expect(
+      (listed.content as { events: Array<{ revealScene?: unknown }> }).events[0]
+        ?.revealScene,
+    ).toEqual(expected);
+    expect((detail.content as { revealScene?: unknown }).revealScene).toEqual(
+      expected,
+    );
+    expect(
+      (timeline.content as { events: Array<{ revealScene?: unknown }> })
+        .events[0]?.revealScene,
+    ).toEqual(expected);
+  });
+
   it("primaryCharacter 名を解決して返す＋kind フィルタ", async () => {
     events.push(
       ev({ id: "e1", title: "戴冠", kind: "generic", primaryCodexId: "c1" }),

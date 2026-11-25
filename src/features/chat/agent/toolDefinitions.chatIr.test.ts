@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHAT_AGENT_IR_QUERY_UTF16_MAX } from "@/../electron/shared/chatAgentIrWire";
+import { SEARCH_EVENTS_DESCRIPTION as SEARCH_EVENTS_TODAY } from "@/../electron/shared/agentReadToolDefinitions";
 import { CHAT_IR_CLASS_NOTE } from "./chatIrStatusText";
 
 /**
@@ -9,10 +10,6 @@ import { CHAT_IR_CLASS_NOTE } from "./chatIrStatusText";
  */
 
 type Definitions = typeof import("./toolDefinitions");
-
-/** The description before chat IR S1-B (what the closed constant must keep). */
-const SEARCH_EVENTS_TODAY =
-  "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking).";
 
 async function load(enabled: boolean): Promise<Definitions> {
   vi.resetModules();
