@@ -81,3 +81,7 @@ Entity / Relationレビュー
 2. 欄の component（`features/codex/CodexEntityRelationChangeReviewSection.tsx`）。レビューの dialog の chunk に入り、起動時の JS graph には入らない。
    版・project・workspace の開き直しが変わった後の応答は捨てる。
 3. happy-dom の試験（各状態の表示、読めない時、古い応答を捨てる、panel への組込み）。
+4. 欄は panel の最後（承認・却下の後ろ）に置き、並びは上の欄と同じ（人物、次に関係）。
+5. 本物のデータの確認（2026-11-25、手元。試験用の作品、隔離した Xvfb。journey `codex-entity-relation-review-apply-reopen` に手順を一時的に足し、commit していない）：
+   最初の版を承認して開き直すと「比べる承認済みの版がありません」。人物の説明を書き換えて作った次の版では、その人物が「元の項目が更新されています」、古い引用は「なくなりました」、新しい引用は「新しい引用です」。
+   次の版を承認して開き直しても、比べる相手は最初の版のまま。

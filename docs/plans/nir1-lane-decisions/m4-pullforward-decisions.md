@@ -52,7 +52,7 @@
   - 脅威モデル（下の IPC の表）の防御に足す：workspace の切替と交差した呼び出しは、Native が path の不一致で拒む。受入れ：別の workspace の path を拒む試験。
 
 - **DR-M4PF-13（変更レビューの画面、2026-11-25。置き場所・文言・範囲はユーザー確認＝追記 10、実装の技術判断は委任の範囲内）**：
-  1. 今の「Entity / Relationレビュー」の画面に「前に承認した版との違い」の欄を足す（[画面の案](../m4-change-review-screen-draft.md)）。操作（承認・却下）は版全体の今のまま。
+  1. 今の「Entity / Relationレビュー」の画面に「前に承認した版との違い」の欄を足す（[画面の案](../m4-change-review-screen-draft.md)）。操作（承認・却下）は版全体の今のまま。欄は承認・却下の後ろに置く（確認した図の順）。
   2. 欄はレビューの dialog の chunk に入れる（起動時の JS graph に入らないことを build で確かめた）。版が読めない（`unavailable`）時は欄を出さない。
   3. 版・project・workspace の開き直しが変わった後に届いた応答は捨てる。応答の `revisionId` が表示中と違う時、拒否（restricted）・失敗の時は「違いを表示できません」。
   4. `removed` は出さない（DR-M4PF-9）。`evidenceWithheld` の引用は出さない。
