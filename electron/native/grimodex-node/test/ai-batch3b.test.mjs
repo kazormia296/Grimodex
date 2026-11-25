@@ -181,6 +181,12 @@ function sseFrame(value) {
   return `data: ${JSON.stringify(value)}\n\n`;
 }
 
+// renderer は本文がこの印だけの失敗を停止とみなす（chatStreamTransport）。
+function isStoppedByUser(error) {
+  assert.equal(error.message, "AI_REQUEST_STOPPED_BY_USER");
+  return true;
+}
+
 test("saveAiSettings → getAiSettings が同じappDataパスでroundtripする", async () => {
   const { backend } = makeBackend();
   const settings = {
@@ -380,7 +386,7 @@ test("abortChatStream は実行中の agent request を切断し、次の送信�
     firstSend = withTimeout(
       assert.rejects(
         backend.sendAgentMessage(args, settings, "sk-agent"),
-        /AI_REQUEST_STOPPED_BY_USER/,
+        isStoppedByUser,
       ),
       "stopped agent send",
     );
@@ -460,7 +466,7 @@ test("先行するabortChatStream は後続 agent request を送信しない", a
     await withTimeout(
       assert.rejects(
         backend.sendAgentMessage(args, settings, "sk-agent"),
-        /AI_REQUEST_STOPPED_BY_USER/,
+        isStoppedByUser,
       ),
       "pre-aborted agent send",
     );
