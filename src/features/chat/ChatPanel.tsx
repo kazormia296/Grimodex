@@ -1395,7 +1395,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
               {t("chat.agentContinue")}
             </button>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {t("chat.agentContinueHint")}
+              {t(
+                agentContinuation.reason === "output"
+                  ? "chat.agentContinueOutputHint"
+                  : "chat.agentContinueHint",
+              )}
             </p>
           </div>
         )}

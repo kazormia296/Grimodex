@@ -373,3 +373,23 @@ describe("ChatMessage regenerate action", () => {
     });
   });
 });
+
+describe("ChatMessage — 出力の打ち切りの注記", () => {
+  it.each([
+    ["本文あり", "途中まで。"],
+    ["本文なし（thinking だけで切れた応答）", ""],
+  ])("打ち切りの印があれば注記を出す: %s", (_label, content) => {
+    renderMsg({
+      content,
+      metadata: JSON.stringify({ output_truncated: true }),
+    });
+    expect(screen.getByTestId("output-truncated-m1").textContent).toContain(
+      "chat.outputTruncated",
+    );
+  });
+
+  it("印が無ければ出さない", () => {
+    renderMsg({ metadata: JSON.stringify({ tool_calls: [] }) });
+    expect(screen.queryByTestId("output-truncated-m1")).toBeNull();
+  });
+});

@@ -102,6 +102,7 @@ import type {
   AgentMessagePayload,
   ToolCallRecord,
 } from "@/features/chat/agent/agentTypes";
+import { isTruncatedStopReason } from "@/features/chat/agent/agentTypes";
 import {
   getCurrentProjectId,
   getLoadedProjectId,
@@ -1358,6 +1359,7 @@ function createChatTurnStoreActions(
             cost,
             tokensIn: agentTokensIn,
             tokensOut: agentTokensOut,
+            outputTruncated,
             stoppedReason: agentStoppedReason,
           } = agentLoopResult;
 
@@ -1372,11 +1374,23 @@ function createChatTurnStoreActions(
 
           // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
           // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。
-          if (
-            agentStoppedReason === "limit_calls" ||
-            agentStoppedReason === "limit_tokens"
-          ) {
-            set({ agentContinuation: { sessionId: sessionIdForPersist } });
+          // 出力の打ち切りの続行は Agent モードの turn にだけ出す。続行は Agent モードを
+          // 強制するので、道具の無い公開の Web 検索の turn に出すと作品を読む経路に変わる。
+          const continuationReason = outputTruncated
+            ? agentModeForThisSend && !stoppedAgentTurnCanFinalize
+              ? "output"
+              : null
+            : agentStoppedReason === "limit_calls" ||
+                agentStoppedReason === "limit_tokens"
+              ? "limit"
+              : null;
+          if (continuationReason) {
+            set({
+              agentContinuation: {
+                sessionId: sessionIdForPersist,
+                reason: continuationReason,
+              },
+            });
           }
 
           // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
@@ -1398,6 +1412,7 @@ function createChatTurnStoreActions(
           const finalAgentMetadata = JSON.stringify({
             tool_calls: toolCallRecords,
             ...(stoppedAgentTurnCanFinalize ? { stopped: true } : {}),
+            ...(outputTruncated ? { output_truncated: true } : {}),
             ...(finalThinkingBlocks.length > 0
               ? { thinking_blocks: finalThinkingBlocks }
               : {}),
@@ -1434,7 +1449,7 @@ function createChatTurnStoreActions(
           const agentModel = currentModel || undefined;
           const recoverableAgentAssistant =
             lastMsg?.role === "assistant" &&
-            lastMsg.content &&
+            (lastMsg.content || outputTruncated) &&
             sessionIdForPersist
               ? {
                   ...lastMsg,
@@ -1476,7 +1491,8 @@ function createChatTurnStoreActions(
               }
             },
             ...(sessionIdForPersist &&
-            (lastMsg?.content || assistantRow.reserved)
+            lastMsg?.role === "assistant" &&
+            (lastMsg.content || assistantRow.reserved || outputTruncated)
               ? {
                   persistAssistant: async () => {
                     await assistantRow.persist(
@@ -2065,6 +2081,7 @@ function createChatTurnStoreActions(
 
               // Build metadata: thinking blocks + stopped flag
               const metadataObj: Record<string, unknown> = {};
+              const outputTruncated = isTruncatedStopReason(info.stopReason);
               if (thinkingAccumulator) {
                 metadataObj.thinking_blocks = [
                   { thinking: thinkingAccumulator },
@@ -2093,6 +2110,7 @@ function createChatTurnStoreActions(
               if (info.stopReason === "stopped") {
                 metadataObj.stopped = true;
               }
+              if (outputTruncated) metadataObj.output_truncated = true;
               const chatMetadata =
                 Object.keys(metadataObj).length > 0
                   ? JSON.stringify(metadataObj)
@@ -2158,7 +2176,7 @@ function createChatTurnStoreActions(
               turnCoordinator.transition(sendControl, "persisting");
               const recoverableAssistant =
                 lastMsg?.role === "assistant" &&
-                lastMsg.content &&
+                (lastMsg.content || outputTruncated) &&
                 sessionIdForPersist
                   ? {
                       ...lastMsg,
@@ -2207,7 +2225,7 @@ function createChatTurnStoreActions(
                 },
                 ...(sessionIdForPersist &&
                 lastMsg?.role === "assistant" &&
-                lastMsg.content
+                (lastMsg.content || outputTruncated)
                   ? {
                       persistAssistant: async () => {
                         await chatApi.addMessage(

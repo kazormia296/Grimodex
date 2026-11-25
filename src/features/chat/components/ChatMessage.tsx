@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Sparkles } from "lucide-react";
+import { AlertTriangle, Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
@@ -51,6 +51,8 @@ interface ParsedMetadata {
   cost?: number;
   codex_items?: unknown[];
   codex_warnings?: string[];
+  /** 応答が出力の上限などで途中で切れた。 */
+  output_truncated?: boolean;
 }
 
 function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
@@ -287,6 +289,18 @@ function ChatMessageImpl({
               </ReactMarkdown>
             </div>
             {citations.length > 0 && <CitationList citations={citations} />}
+            {parsedMeta.output_truncated && (
+              <p
+                data-testid={`output-truncated-${msg.id}`}
+                className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300"
+              >
+                <AlertTriangle
+                  className="mt-0.5 h-3 w-3 shrink-0"
+                  aria-hidden
+                />
+                {t("chat.outputTruncated")}
+              </p>
+            )}
             {/* G3: Meta info row */}
             {(msg.model ||
               msg.tokensIn != null ||
