@@ -16,7 +16,17 @@ use crate::domain_writes::{
     apply_codex_rename, tree_node_patch, CodexRenameApplyPayload, CodexRenameUndoUpdate,
     TreeNodePatchPayload,
 };
+use crate::narrative_extraction::attention::{
+    get_attention, is_attention_applicable, set_attention, AttentionDisposition, AttentionRow,
+    SetAttentionRequest,
+};
 use crate::narrative_extraction::change_feed::NarrativeChangeOrigin;
+use crate::narrative_extraction::dependency_edges::record_dependency_edge_in_tx;
+use crate::narrative_extraction::evaluator::FindingReasonCode;
+use crate::narrative_extraction::finding_observation::{
+    list_observations_for_epoch, FindingObservationRow,
+};
+use crate::narrative_extraction::inbox_read_model::{build_maintenance_inbox, InboxEntry};
 use crate::narrative_extraction::incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
 };
@@ -32,6 +42,7 @@ use crate::narrative_extraction::nir1_entity_relation::{
 use crate::narrative_extraction::nir1_entity_relation_index;
 use crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority;
 use crate::narrative_extraction::scene_scope::read_narrative_scene_scope;
+use crate::narrative_extraction::semantic_epoch::get_current_epoch;
 use crate::narrative_extraction::DependencyDeclarationSetRequest;
 use crate::narrative_extraction::{write_dependency_declaration_set, DependencyDeclaration};
 use crate::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
@@ -873,5 +884,479 @@ fn undo_created_codex_entry_advances_the_generation_of_pov_scenes() -> Result<()
         )?)
     })?;
     assert_eq!(pov, None);
+    Ok(())
+}
+
+const P0B_CONSUMER_KIND: &str = "proposal-revision";
+const P0B_NOW: &str = "2026-12-01T00:00:00.000Z";
+type P0BFreshnessSnapshot = (String, String, String, Option<String>, String);
+
+// The dependency edges are recorded directly under synthetic consumer keys. These tests cover the
+// evaluation, Attention and Inbox paths, not how a real Proposal revision records its edges.
+fn p0b_body_consumer_fixture(consumers: &[(&str, &str)]) -> Result<Database> {
+    let (db, _) = approved_fixture()?;
+    for (index, &(_, scene)) in consumers.iter().enumerate() {
+        save_body(
+            &db,
+            scene,
+            &format!("p0b-baseline-{index}"),
+            &format!("2026-10-20T00:00:{:02}.000Z", index + 1),
+        )?;
+    }
+    for (index, &(consumer_key, scene)) in consumers.iter().enumerate() {
+        let read_set_json = serde_json::to_string(&[body_token(&db, scene)?])?;
+        let source_identity = format!("project:scene:{scene}");
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                PROJECT,
+                P0B_CONSUMER_KIND,
+                consumer_key,
+                &source_identity,
+                &read_set_json,
+                None,
+                Some("nir1-run"),
+                &format!("2026-10-20T00:10:{:02}.000Z", index + 1),
+            )
+            .map(|_| ())
+        })?;
+    }
+    p0b_drain_freshness(&db)?;
+    for &(consumer_key, _) in consumers {
+        anyhow::ensure!(
+            p0b_freshness_snapshot(&db, consumer_key)?.0 == "fresh",
+            "P0B fixture consumer {consumer_key} must start fresh"
+        );
+    }
+    Ok(db)
+}
+
+fn p0b_stale_body_consumer_fixture(consumers: &[(&str, &str)]) -> Result<Database> {
+    let db = p0b_body_consumer_fixture(consumers)?;
+    for (index, &(_, scene)) in consumers.iter().enumerate() {
+        p0b_edit_body_and_cycle(
+            &db,
+            scene,
+            &format!("p0b-first-edit-{index}"),
+            &format!("2026-10-20T01:00:{:02}.000Z", index + 1),
+        )?;
+    }
+    for &(consumer_key, _) in consumers {
+        anyhow::ensure!(
+            p0b_freshness_snapshot(&db, consumer_key)?.0 == "stale",
+            "P0B fixture consumer {consumer_key} must have stale body evidence"
+        );
+        anyhow::ensure!(
+            p0b_latest_observation(&db, consumer_key)?.reason_code
+                == FindingReasonCode::SourceRevisionChanged,
+            "P0B fixture consumer {consumer_key} must have a source-revision finding"
+        );
+    }
+    Ok(db)
+}
+
+fn p0b_edit_body_and_cycle(db: &Database, scene: &str, tag: &str, updated_at: &str) -> Result<()> {
+    save_body(db, scene, tag, updated_at)?;
+    let outcome = run_incremental_freshness_cycle(db)?;
+    anyhow::ensure!(
+        matches!(&outcome, IncrementalFreshnessCycleOutcome::Processed(_)),
+        "body edit must be processed by a Freshness cycle: {outcome:?}"
+    );
+    p0b_drain_freshness(db)
+}
+
+fn p0b_harmless_title_update_and_cycle(
+    db: &Database,
+    scene: &str,
+    tag: &str,
+    updated_at: &str,
+) -> Result<()> {
+    patch(
+        db,
+        scene,
+        tag,
+        "title",
+        json!(format!("P0B {tag}")),
+        true,
+        updated_at,
+    )?;
+    let outcome = run_incremental_freshness_cycle(db)?;
+    anyhow::ensure!(
+        matches!(&outcome, IncrementalFreshnessCycleOutcome::Processed(_)),
+        "metadata update must be processed by a Freshness cycle: {outcome:?}"
+    );
+    p0b_drain_freshness(db)
+}
+
+fn p0b_drain_freshness(db: &Database) -> Result<()> {
+    loop {
+        match run_incremental_freshness_cycle(db)? {
+            IncrementalFreshnessCycleOutcome::Idle => return Ok(()),
+            IncrementalFreshnessCycleOutcome::Processed(_) => {}
+            other => anyhow::bail!("unexpected P0B Freshness cycle outcome: {other:?}"),
+        }
+    }
+}
+
+fn p0b_freshness_snapshot(db: &Database, consumer_key: &str) -> Result<P0BFreshnessSnapshot> {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                    last_evaluated_run_id, updated_at
+               FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+            params![PROJECT, P0B_CONSUMER_KIND, consumer_key],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?)
+    })
+}
+
+fn p0b_finding_key(consumer_key: &str) -> String {
+    format!("{P0B_CONSUMER_KIND}:{consumer_key}")
+}
+
+fn p0b_observations(db: &Database, consumer_key: &str) -> Result<Vec<FindingObservationRow>> {
+    let finding_key = p0b_finding_key(consumer_key);
+    db.with_read_transaction(|conn| {
+        let epoch = get_current_epoch(conn, PROJECT)?
+            .ok_or_else(|| anyhow::anyhow!("P0B fixture has no current Semantic Epoch"))?;
+        list_observations_for_epoch(conn, PROJECT, &epoch.id, &finding_key)
+    })
+}
+
+fn p0b_latest_observation(db: &Database, consumer_key: &str) -> Result<FindingObservationRow> {
+    p0b_observations(db, consumer_key)?
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("P0B consumer {consumer_key} has no Finding Observation"))
+}
+
+fn p0b_inbox_row(db: &Database, consumer_key: &str) -> Result<Option<InboxEntry>> {
+    db.with_read_transaction(|conn| {
+        Ok(build_maintenance_inbox(conn, PROJECT, P0B_NOW)?
+            .into_iter()
+            .find(|entry| {
+                entry.consumer_kind == P0B_CONSUMER_KIND && entry.consumer_key == consumer_key
+            }))
+    })
+}
+
+fn p0b_attention(db: &Database, consumer_key: &str) -> Result<Option<AttentionRow>> {
+    let finding_key = p0b_finding_key(consumer_key);
+    db.with_conn(|conn| get_attention(conn, PROJECT, &finding_key))
+}
+
+fn p0b_set_attention(
+    db: &Database,
+    consumer_key: &str,
+    disposition: AttentionDisposition,
+    snoozed_until: Option<&str>,
+    request_id: &str,
+) -> Result<AttentionRow> {
+    let finding_key = p0b_finding_key(consumer_key);
+    let observation = p0b_latest_observation(db, consumer_key)?;
+    set_attention(
+        db,
+        SetAttentionRequest {
+            project_id: PROJECT,
+            finding_key: &finding_key,
+            disposition,
+            material_basis_digest: &observation.material_basis_digest,
+            snoozed_until,
+            set_at: "2026-10-21T00:00:00.000Z",
+            actor_id: "p0b-test-human",
+            request_id,
+            reason: None,
+            expected_version: 0,
+        },
+    )?;
+    p0b_attention(db, consumer_key)?
+        .ok_or_else(|| anyhow::anyhow!("P0B attention write did not persist"))
+}
+
+#[test]
+fn e2_scene_body_edit_updates_only_the_dependent_revision_finding() -> Result<()> {
+    const A: &str = "p0b-proposal-a-v1";
+    const B: &str = "p0b-proposal-b-v1";
+    let db = p0b_body_consumer_fixture(&[(A, "a3-source"), (B, "a3-future")])?;
+    let before_a_freshness = p0b_freshness_snapshot(&db, A)?;
+    let before_b_freshness = p0b_freshness_snapshot(&db, B)?;
+    let before_a_observations = p0b_observations(&db, A)?;
+    let before_b_observations = p0b_observations(&db, B)?;
+    let before_a_inbox = p0b_inbox_row(&db, A)?.expect("dependent Inbox row");
+    let before_b_inbox = p0b_inbox_row(&db, B)?.expect("unrelated Inbox row");
+    assert_eq!(before_a_freshness.0, "fresh");
+    assert_eq!(before_b_freshness.0, "fresh");
+    assert!(before_a_observations.is_empty());
+    assert!(before_b_observations.is_empty());
+
+    p0b_edit_body_and_cycle(
+        &db,
+        "a3-source",
+        "p0b-e2-source-edit",
+        "2026-10-20T02:00:00.000Z",
+    )?;
+
+    let after_a_freshness = p0b_freshness_snapshot(&db, A)?;
+    let after_b_freshness = p0b_freshness_snapshot(&db, B)?;
+    let after_a_observations = p0b_observations(&db, A)?;
+    let after_b_observations = p0b_observations(&db, B)?;
+    let after_a_inbox = p0b_inbox_row(&db, A)?.expect("changed dependent Inbox row");
+    assert_ne!(before_a_freshness, after_a_freshness);
+    assert_eq!(after_a_freshness.0, "stale");
+    assert!(before_a_observations.is_empty());
+    assert_eq!(
+        after_a_observations.last().map(|row| row.reason_code),
+        Some(FindingReasonCode::SourceRevisionChanged)
+    );
+    assert_eq!(before_b_freshness, after_b_freshness);
+    assert_eq!(before_b_observations, after_b_observations);
+    assert_eq!(Some(before_b_inbox), p0b_inbox_row(&db, B)?);
+    assert!(before_a_inbox.latest_observation.is_none());
+    assert!(after_a_inbox.latest_observation.is_some());
+    assert_eq!(after_a_inbox.evidence_freshness.as_deref(), Some("stale"));
+    Ok(())
+}
+
+#[test]
+fn e3_snooze_survives_harmless_stale_reevaluation() -> Result<()> {
+    const A: &str = "p0b-proposal-snooze-v1";
+    let db = p0b_stale_body_consumer_fixture(&[(A, "a3-future")])?;
+    let before = p0b_latest_observation(&db, A)?;
+    let attention = p0b_set_attention(
+        &db,
+        A,
+        AttentionDisposition::Snoozed,
+        Some("2027-01-01T00:00:00.000Z"),
+        "p0b-snooze-harmless",
+    )?;
+    assert!(is_attention_applicable(
+        &attention,
+        &before.material_basis_digest,
+        P0B_NOW
+    ));
+    assert!(p0b_inbox_row(&db, A)?.is_none());
+    let run_before = p0b_freshness_snapshot(&db, A)?.3;
+
+    p0b_harmless_title_update_and_cycle(
+        &db,
+        "a3-future",
+        "p0b-snooze-harmless-rerun",
+        "2026-10-20T02:00:00.000Z",
+    )?;
+
+    // Without a new evaluation run the assertions below would hold trivially.
+    assert_ne!(p0b_freshness_snapshot(&db, A)?.3, run_before);
+    let after = p0b_latest_observation(&db, A)?;
+    let stored = p0b_attention(&db, A)?.expect("snoozed row persists");
+    assert_eq!(after.material_basis_digest, before.material_basis_digest);
+    assert_eq!(stored, attention);
+    assert!(is_attention_applicable(
+        &stored,
+        &after.material_basis_digest,
+        P0B_NOW
+    ));
+    assert!(p0b_inbox_row(&db, A)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn e3_dismissed_and_flagged_survive_harmless_stale_reevaluation() -> Result<()> {
+    const A: &str = "p0b-proposal-dismissed-v1";
+    const B: &str = "p0b-proposal-flagged-v1";
+    let db = p0b_stale_body_consumer_fixture(&[(A, "a3-source"), (B, "a3-future")])?;
+    let cases = [
+        (A, "a3-source", AttentionDisposition::Dismissed),
+        (B, "a3-future", AttentionDisposition::Flagged),
+    ];
+    let mut before = Vec::new();
+    for (index, &(consumer_key, _, disposition)) in cases.iter().enumerate() {
+        let observation = p0b_latest_observation(&db, consumer_key)?;
+        let attention = p0b_set_attention(
+            &db,
+            consumer_key,
+            disposition,
+            None,
+            &format!("p0b-harmless-{index}"),
+        )?;
+        assert!(is_attention_applicable(
+            &attention,
+            &observation.material_basis_digest,
+            P0B_NOW
+        ));
+        before.push((observation, attention));
+    }
+
+    let mut runs_before = Vec::new();
+    for &(consumer_key, _, _) in &cases {
+        runs_before.push(p0b_freshness_snapshot(&db, consumer_key)?.3);
+    }
+    for (index, &(_, scene, _)) in cases.iter().enumerate() {
+        p0b_harmless_title_update_and_cycle(
+            &db,
+            scene,
+            &format!("p0b-harmless-rerun-{index}"),
+            &format!("2026-10-20T02:00:{:02}.000Z", index + 1),
+        )?;
+    }
+
+    for (index, &(consumer_key, _, disposition)) in cases.iter().enumerate() {
+        // Without a new evaluation run the assertions below would hold trivially.
+        assert_ne!(
+            p0b_freshness_snapshot(&db, consumer_key)?.3,
+            runs_before[index]
+        );
+        let observation = p0b_latest_observation(&db, consumer_key)?;
+        let attention = p0b_attention(&db, consumer_key)?.expect("attention row persists");
+        let entry = p0b_inbox_row(&db, consumer_key)?.expect("dismissed/flagged row remains");
+        assert_eq!(
+            observation.material_basis_digest,
+            before[index].0.material_basis_digest
+        );
+        assert_eq!(attention, before[index].1);
+        assert_eq!(attention.disposition, disposition);
+        assert!(is_attention_applicable(
+            &attention,
+            &observation.material_basis_digest,
+            P0B_NOW
+        ));
+        assert_eq!(
+            entry.attention.as_ref().map(|row| row.disposition),
+            Some(disposition)
+        );
+        assert!(!entry.is_snoozed_and_active);
+    }
+    Ok(())
+}
+
+#[test]
+fn e3_snooze_resurfaces_after_material_body_edit() -> Result<()> {
+    const A: &str = "p0b-proposal-snooze-material-v1";
+    let db = p0b_body_consumer_fixture(&[(A, "a3-future")])?;
+    p0b_harmless_title_update_and_cycle(
+        &db,
+        "a3-future",
+        "p0b-snooze-relocated-content",
+        "2026-10-20T01:00:01.000Z",
+    )?;
+    let before = p0b_latest_observation(&db, A)?;
+    assert_eq!(before.reason_code, FindingReasonCode::ExactContentRelocated);
+    assert_eq!(p0b_freshness_snapshot(&db, A)?.0, "fresh");
+    let attention = p0b_set_attention(
+        &db,
+        A,
+        AttentionDisposition::Snoozed,
+        Some("2027-01-01T00:00:00.000Z"),
+        "p0b-snooze-material",
+    )?;
+    assert!(p0b_inbox_row(&db, A)?.is_none());
+
+    p0b_edit_body_and_cycle(
+        &db,
+        "a3-future",
+        "p0b-snooze-material-body-edit",
+        "2026-10-20T02:00:01.000Z",
+    )?;
+
+    let after = p0b_latest_observation(&db, A)?;
+    let stored = p0b_attention(&db, A)?.expect("snoozed row is retained");
+    let entry = p0b_inbox_row(&db, A)?.expect("inapplicable snooze resurfaces");
+    assert_ne!(after.material_basis_digest, before.material_basis_digest);
+    assert_eq!(after.reason_code, FindingReasonCode::SourceRevisionChanged);
+    assert_eq!(p0b_freshness_snapshot(&db, A)?.0, "stale");
+    assert_eq!(stored, attention);
+    assert!(!is_attention_applicable(
+        &stored,
+        &after.material_basis_digest,
+        P0B_NOW
+    ));
+    assert_eq!(entry.attention, Some(attention));
+    assert!(!entry.is_snoozed_and_active);
+    Ok(())
+}
+
+// This only checks that the stored dismiss/flag no longer applies to the new basis. The Inbox row
+// still carries the old Attention, so the row alone does not say whether it is still in effect.
+#[test]
+fn e3_dismissed_and_flagged_stop_applying_after_material_body_edit() -> Result<()> {
+    const A: &str = "p0b-proposal-dismissed-material-v1";
+    const B: &str = "p0b-proposal-flagged-material-v1";
+    let db = p0b_body_consumer_fixture(&[(A, "a3-source"), (B, "a3-future")])?;
+    let cases = [
+        (A, "a3-source", AttentionDisposition::Dismissed),
+        (B, "a3-future", AttentionDisposition::Flagged),
+    ];
+    for (index, &(_, scene, _)) in cases.iter().enumerate() {
+        p0b_harmless_title_update_and_cycle(
+            &db,
+            scene,
+            &format!("p0b-relocated-content-{index}"),
+            &format!("2026-10-20T01:00:{:02}.000Z", index + 1),
+        )?;
+    }
+    let mut before = Vec::new();
+    for (index, &(consumer_key, _, disposition)) in cases.iter().enumerate() {
+        let observation = p0b_latest_observation(&db, consumer_key)?;
+        assert_eq!(
+            observation.reason_code,
+            FindingReasonCode::ExactContentRelocated
+        );
+        let attention = p0b_set_attention(
+            &db,
+            consumer_key,
+            disposition,
+            None,
+            &format!("p0b-material-{index}"),
+        )?;
+        assert!(is_attention_applicable(
+            &attention,
+            &observation.material_basis_digest,
+            P0B_NOW
+        ));
+        before.push((observation, attention));
+    }
+
+    for (index, &(_, scene, _)) in cases.iter().enumerate() {
+        p0b_edit_body_and_cycle(
+            &db,
+            scene,
+            &format!("p0b-material-body-edit-{index}"),
+            &format!("2026-10-20T02:00:{:02}.000Z", index + 1),
+        )?;
+    }
+
+    for (index, &(consumer_key, _, disposition)) in cases.iter().enumerate() {
+        let observation = p0b_latest_observation(&db, consumer_key)?;
+        let attention = p0b_attention(&db, consumer_key)?.expect("attention row persists");
+        let entry = p0b_inbox_row(&db, consumer_key)?.expect("dismissed/flagged row remains");
+        assert_ne!(
+            observation.material_basis_digest,
+            before[index].0.material_basis_digest
+        );
+        assert_eq!(
+            observation.reason_code,
+            FindingReasonCode::SourceRevisionChanged
+        );
+        assert_eq!(p0b_freshness_snapshot(&db, consumer_key)?.0, "stale");
+        assert!(!is_attention_applicable(
+            &attention,
+            &observation.material_basis_digest,
+            P0B_NOW
+        ));
+        assert_eq!(attention, before[index].1);
+        assert_eq!(attention.disposition, disposition);
+        assert_eq!(
+            entry.attention.as_ref().map(|row| row.disposition),
+            Some(disposition)
+        );
+        assert!(!entry.is_snoozed_and_active);
+    }
     Ok(())
 }
