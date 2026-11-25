@@ -100,14 +100,14 @@ describe("CodexEntityRelationChangeReviewSection", () => {
     });
     expect(element).toHaveTextContent("前に承認した版との違い");
     expect(screen.getByTestId("nir1-change-row-codex:alice")).toHaveTextContent(
-      "アリス(character)元の項目が更新されています「彼女は鍵を拾った」引用の位置が変わりました「剣を抜いた」引用がなくなりました",
+      "アリス（キャラクター）元の項目が更新されています「彼女は鍵を拾った」引用の位置が変わりました「剣を抜いた」引用がなくなりました",
     );
     expect(screen.getByTestId("nir1-change-row-codex:bob")).toHaveTextContent(
-      "ボブ(character)変化はありません",
+      "ボブ（キャラクター）変化はありません",
     );
     expect(
       screen.getByTestId("nir1-change-row-codex-relation:edge-1"),
-    ).toHaveTextContent("アリス → ボブ(関係)今回はじめて入りました");
+    ).toHaveTextContent("アリス → ボブ（関係）今回はじめて入りました");
     expect(element).toHaveTextContent(
       "※「更新されています」は、保存し直しただけでも表示します",
     );
@@ -158,6 +158,7 @@ describe("CodexEntityRelationChangeReviewSection", () => {
         }),
     ],
     ["rejected", () => Promise.reject(new Error("D2A_EGRESS_DENIED"))],
+    ["empty", () => Promise.resolve(null)],
     [
       "another revision",
       () => Promise.resolve(available([], [], "revision-9")),

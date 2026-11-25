@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import {
   readNir1ChangeReview,
   type Nir1ChangeReview,
@@ -52,7 +53,9 @@ function displayName(
   if (identity.startsWith("codex:")) {
     const entityId = identity.slice("codex:".length);
     const entity = result.entities.find((item) => item.entityId === entityId);
-    if (entity) return { name: entity.label, kind: entity.entityType };
+    if (entity) {
+      return { name: entity.label, kind: getTypeLabel(entity.entityType) };
+    }
   }
   return { name: identity, kind: null };
 }
@@ -75,7 +78,7 @@ function ChangeRow({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <span>
           <span className="font-medium">{name}</span>
-          {kind && <span className="ml-1 text-muted-foreground">({kind})</span>}
+          {kind && <span className="text-muted-foreground">（{kind}）</span>}
         </span>
         <span>{OBJECT_LABELS[object.change]}</span>
       </div>
@@ -128,16 +131,17 @@ export function CodexEntityRelationChangeReviewSection({
       expectedWorkspacePath: workspacePath,
       projectId,
       revisionId,
-    }).then(
-      (response) =>
+    })
+      .then((response) =>
         settle(
-          response.status === "available" &&
+          // bridge が値を返さない時（null）も「表示できない」にする。
+          response?.status === "available" &&
             response.result.revisionId === revisionId
             ? response.result
             : null,
         ),
-      () => settle(null),
-    );
+      )
+      .catch(() => settle(null));
     return () => {
       cancelled = true;
     };
