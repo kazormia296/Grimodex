@@ -338,6 +338,7 @@ describe("境界（注入だけ・未配線）", () => {
         "./mastra/agentWire.js",
       ],
       "mastraAgentLoader.ts": ["./mastra/agentRuntime.js"],
+      "mastraTurnReadBindings.ts": ["./mastra/agentRuntime.js"],
     };
     const found: Record<string, string[]> = {};
     for (const file of files) {

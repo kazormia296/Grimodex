@@ -75,7 +75,13 @@ describe("index.ts: the owner is an egress participant, a quit step and an event
     expect(INDEX).toMatch(
       /createMastraTurnOwner\(\{ open: mastraAgentTurnOpen,/,
     );
+    expect(INDEX).toMatch(
+      /tokenizer: createMainO200kTokenizer\(\(\) => resolveMainTokenizerAssetPaths\(\{ isPackaged: app\.isPackaged, resourcesPath: process\.resourcesPath, mainDir: __dirname, \}\), \),/,
+    );
     expect(INDEX).toMatch(/loadRuntime: \(\) => mastraAgentLoader\.load\(\),/);
+    expect(INDEX).toMatch(
+      /loadReadBindings: \(\) => import\("\.\/mastraTurnReadBindings\.js"\),/,
+    );
     expect(INDEX).toMatch(
       /aiStreamTerminals, mastraAgentTurnLaunch, mastraTurnOwner, \);/,
     );

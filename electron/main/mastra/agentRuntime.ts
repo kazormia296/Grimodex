@@ -9,9 +9,9 @@
  *   send は main 側（`mastraTurnOwner.ts`）が作って注入する（ipcContract を 3 つ目の bundle に持ち込まない）。
  *   class を境界越しに `instanceof` で見ない（sink は `isAgentModelError` の形の検査）。
  * - Agent に workspace・skills・memory・mcp・browser を渡さない（DR-MP3-14。静的検査は
- *   electron/main/mastra/mastraWorkspaceDisabled.static.test.ts）。tool も渡さない（MP-3 は tool 0）。
- * - 再試行しない（`AGENT_NO_RETRY_CONFIG`・`AGENT_CALL_OPTIONS`。GDX-POLICY-001、DR-MP3-16）。step は 1 回（`maxSteps: 1`）：
- *   tool 0 なので、model が tool_use を返しても 2 回目の送信は起きない。
+ *   electron/main/mastra/mastraWorkspaceDisabled.static.test.ts）。tool は M4 の turn binding だけを渡す。
+ * - 再試行しない（`AGENT_NO_RETRY_CONFIG`・`AGENT_CALL_OPTIONS`。GDX-POLICY-001、DR-MP3-16）。tool が無い turn は 1 step、
+ *   tool がある turn は loop 上限から導出した step 数で回す。
  * - Mastra の logger は注入する（既定の ConsoleLogger は error を元ごと console に出す）。出すのは固定の文だけ。
  */
 import { Agent } from "@mastra/core/agent";
@@ -23,18 +23,47 @@ import {
   grimodexProviderOptions,
 } from "./agentLanguageModel.js";
 import {
+  createMastraAgentTools,
+  type MastraAgentToolBinding,
+} from "./agentToolAdapter.js";
+import { deriveAgentMaxSteps } from "./agentLoopRules.js";
+import {
   AGENT_CALL_OPTIONS,
   AGENT_NO_RETRY_CONFIG,
 } from "./agentModelPolicy.js";
-import type { AgentAuditSink, AgentRoute, AgentSend } from "./agentWire.js";
+import type {
+  AgentAuditSink,
+  AgentRoute,
+  AgentSend,
+  AgentWireToolDefinition,
+} from "./agentWire.js";
 
-/**
- * 実行時の tool 名の許可リスト（DR-MP3-14 の 2 層目）。MP-3 は tool 0 なので空。
- * 足すのは tool を渡す lane（MP-4 以降）が、この定数と試験を意図して改訂するとき。
- */
-export const MASTRA_AGENT_TOOL_ALLOWLIST: readonly string[] = Object.freeze(
-  [] as string[],
-);
+export type { MastraAgentToolBinding } from "./agentToolAdapter.js";
+
+/** M4 read tools only; the bundle test pins this list to the shared definition names. */
+export const MASTRA_AGENT_TOOL_ALLOWLIST: readonly string[] = Object.freeze([
+  "search_codex",
+  "search_events",
+  "list_codex_by_type",
+  "get_codex_entry",
+  "list_codex_tags",
+  "search_codex_by_tags",
+  "find_related_entries",
+  "list_chapters",
+  "get_scene",
+  "search_scenes",
+  "list_plot_threads",
+  "get_thread_scenes",
+  "search_snippets",
+  "get_chapter_summaries",
+  "list_open_foreshadows",
+  "get_foreshadow_detail",
+  "get_scene_timeline_neighbors",
+  "list_events",
+  "get_event_detail",
+  "get_character_timeline",
+  "get_chronicle_state",
+] as string[]);
 
 /** Agent が持つ tool 名が許可リストに収まらないとき投げる。名前だけを載せる。 */
 export class MastraAgentToolNotAllowedError extends Error {
@@ -77,10 +106,27 @@ export interface MastraAgentTurnInput {
   readonly prepareSend?: AgentPrepareSend;
   /** audit.complete 後、Mastra に応答を返す前に同期的に観測する。 */
   readonly observeResponse?: AgentObserveResponse;
-  /** T が tool wrapper を接続したら、完了結果の token 数を owner に返す。 */
+  /** The turn-start tool definitions restored to the wire by name. */
+  readonly toolDefinitions?: readonly AgentWireToolDefinition[];
+  /** T-b supplies the selected closure set; absent keeps the current no-tool turn. */
+  readonly bindings?: readonly MastraAgentToolBinding[];
+  /** The owner updates this with the tools in each prepared wire request. */
+  readonly isToolDeclared?: (name: string) => boolean;
+  /** True when a user stop or forced abort won while a binding was running. */
+  readonly isTurnStopped?: () => boolean;
+  readonly maxToolCalls?: number;
+  readonly maxUserQuestions?: number;
+  readonly tokenBudget?: number;
+  readonly countTokens?: (text: string) => number;
+  readonly onToolStart?: (event: {
+    readonly toolCallId: string;
+    readonly toolName: string;
+  }) => void;
   readonly onToolResult?: (result: {
+    readonly toolCallId: string;
     readonly tokens: number;
     readonly toolName: string;
+    readonly summary: string;
   }) => void;
   /** forced の切り離し（restricted、workspace 切替、quit、sender 消失）で abort する。 */
   readonly signal: AbortSignal;
@@ -146,11 +192,12 @@ function createMastraLogger(sink: MastraAgentLogSink): MastraLogger {
   } as unknown as MastraLogger;
 }
 
-/** tool 0・memory 無しの Agent を 1 つ作る。workspace・skills・memory・mcp・browser は渡さない。 */
+/** M4 turn tools・memory 無しの Agent を 1 つ作る。workspace・skills・memory・mcp・browser は渡さない。 */
 function createAgent(
   model: ConstructorParameters<typeof Agent>[0]["model"],
   instructions: string,
   logger: MastraLogger,
+  tools?: ReturnType<typeof createMastraAgentTools>,
 ): Agent {
   const agent = new Agent({
     id: "grimodex-main-agent",
@@ -160,6 +207,7 @@ function createAgent(
     maxRetries: AGENT_NO_RETRY_CONFIG.maxRetries,
     maxProcessorRetries: AGENT_NO_RETRY_CONFIG.maxProcessorRetries,
     errorProcessorDefaults: AGENT_NO_RETRY_CONFIG.errorProcessorDefaults,
+    tools: tools ?? {},
   });
   agent.__setLogger(logger);
   return agent;
@@ -171,14 +219,72 @@ export function createMastraAgentRuntime(
   const logger = createMastraLogger(options.log ?? (() => undefined));
   return {
     async runTurn(input) {
+      const bindings = input.bindings ?? [];
+      const bindingNames = bindings.map(({ name }) => name);
+      assertAgentToolsAllowed(bindingNames);
+      const definitionsByName = new Map(
+        (input.toolDefinitions ?? []).map((tool) => [tool.name, tool]),
+      );
+      const selectedToolDefinitions = bindingNames
+        .map((name) => definitionsByName.get(name))
+        .filter((tool): tool is AgentWireToolDefinition => tool !== undefined);
+      if (
+        bindings.length > 0 &&
+        (selectedToolDefinitions.length !== bindingNames.length ||
+          input.tokenBudget === undefined ||
+          input.countTokens === undefined)
+      ) {
+        throw new Error("MASTRA_AGENT_TOOL_INPUTS_INCOMPLETE");
+      }
+      const toolDefinitions =
+        bindings.length === 0
+          ? []
+          : MASTRA_AGENT_TOOL_ALLOWLIST.map(
+              (name) =>
+                definitionsByName.get(name) ?? {
+                  name,
+                  description: "Tool unavailable this turn.",
+                  inputSchema: {
+                    type: "object" as const,
+                    properties: {},
+                    required: [],
+                  },
+                },
+            );
+      const prepareSend: AgentPrepareSend | undefined =
+        bindings.length === 0
+          ? input.prepareSend
+          : (request, context) => {
+              const selectedRequest = {
+                ...request,
+                tools: selectedToolDefinitions,
+              };
+              return input.prepareSend
+                ? input.prepareSend(selectedRequest, context)
+                : selectedRequest;
+            };
+      const tools =
+        bindings.length > 0
+          ? createMastraAgentTools({
+              names: MASTRA_AGENT_TOOL_ALLOWLIST,
+              bindings,
+              tokenBudget: input.tokenBudget!,
+              countTokens: input.countTokens!,
+              signal: input.signal,
+              isToolDeclared: input.isToolDeclared,
+              isTurnStopped: input.isTurnStopped,
+              onToolStart: input.onToolStart,
+              onToolResult: input.onToolResult,
+            })
+          : undefined;
       const { model } = createAgentLanguageModel({
         send: input.send,
         audit: input.audit,
-        originalTools: [],
-        prepareSend: input.prepareSend,
+        originalTools: toolDefinitions,
+        prepareSend,
         observeResponse: input.observeResponse,
       });
-      const agent = createAgent(model, input.instructions, logger);
+      const agent = createAgent(model, input.instructions, logger, tools);
       assertAgentToolsAllowed(Object.keys(await agent.listTools()));
       await agent.generate(
         input.messages.map(
@@ -193,7 +299,10 @@ export function createMastraAgentRuntime(
         ),
         {
           ...AGENT_CALL_OPTIONS,
-          maxSteps: 1,
+          maxSteps:
+            bindings.length === 0
+              ? 1
+              : deriveAgentMaxSteps(input.maxToolCalls, input.maxUserQuestions),
           abortSignal: input.signal,
           providerOptions: grimodexProviderOptions({
             route: input.route,
