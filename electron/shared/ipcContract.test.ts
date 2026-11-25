@@ -1930,7 +1930,11 @@ describe("dispatchInvoke", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("nir1_change_review_read contract", () => {
-  const request = { projectId: "project-1", revisionId: "revision-1" };
+  const request = {
+    expectedWorkspacePath: "/workspace-1",
+    projectId: "project-1",
+    revisionId: "revision-1",
+  };
 
   it("passes a valid request to the read-only N-API command and parses Unavailable", async () => {
     const method = vi
@@ -1956,15 +1960,29 @@ describe("nir1_change_review_read contract", () => {
   });
 
   it.each([
-    [{ projectId: "", revisionId: "revision-1" }],
-    [{ revisionId: "revision-1" }],
-    [{ projectId: 42, revisionId: "revision-1" }],
-    [{ projectId: "project-1", revisionId: "" }],
-    [{ projectId: "project-1" }],
-    [{ projectId: "project-1", revisionId: 42 }],
+    [{ ...request, expectedWorkspacePath: "" }],
+    [{ ...request, expectedWorkspacePath: " /workspace-1" }],
+    [{ ...request, expectedWorkspacePath: 42 }],
+    [{ projectId: "project-1", revisionId: "revision-1" }],
+    [{ ...request, projectId: "" }],
+    [
+      {
+        expectedWorkspacePath: request.expectedWorkspacePath,
+        revisionId: "revision-1",
+      },
+    ],
+    [{ ...request, projectId: 42 }],
+    [{ ...request, revisionId: "" }],
+    [
+      {
+        expectedWorkspacePath: request.expectedWorkspacePath,
+        projectId: "project-1",
+      },
+    ],
+    [{ ...request, revisionId: 42 }],
     [{ ...request, extra: true }],
-    [{ projectId: "p".repeat(513), revisionId: "revision-1" }],
-    [{ projectId: "project-1", revisionId: "r".repeat(513) }],
+    [{ ...request, projectId: "p".repeat(513) }],
+    [{ ...request, revisionId: "r".repeat(513) }],
   ])("rejects invalid request before N-API: %j", async (args) => {
     const method = vi.fn();
     const { backend } = fakeBackend({ nir1ChangeReviewRead: method });
@@ -1976,6 +1994,34 @@ describe("nir1_change_review_read contract", () => {
 
     expect(env.ok).toBe(false);
     expect(method).not.toHaveBeenCalled();
+  });
+
+  it("parses the Available result envelope", async () => {
+    const response = {
+      status: "available",
+      result: {
+        revisionId: "revision-1",
+        previousRevisionIds: [],
+        reviewStatus: "unreviewed",
+        objects: [],
+        freshness: {
+          edgeCount: 0,
+          feedHeadSequence: 0,
+          feedAcknowledgedThroughSequence: 0,
+          buildAction: null,
+        },
+      },
+    };
+    const method = vi.fn().mockResolvedValue(JSON.stringify(response));
+    const { backend } = fakeBackend({ nir1ChangeReviewRead: method });
+
+    const env = await dispatchInvoke("nir1_change_review_read", request, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env).toEqual({ ok: true, value: response });
+    expect(method).toHaveBeenCalledExactlyOnceWith(request);
   });
 
   it("reports a missing native backend as IPC_BACKEND_UNAVAILABLE", async () => {

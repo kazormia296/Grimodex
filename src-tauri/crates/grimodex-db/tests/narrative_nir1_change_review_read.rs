@@ -198,9 +198,16 @@ fn change_review_matches_each_identity_across_scenes_without_removed_objects() -
         &["change-review-carol"],
     )?;
     let scene_b_carol_id = scene_b_carol["result"]["revisionId"].as_str().unwrap();
-    let Nir1ChangeReviewResult::Available(carol_review) = db.with_read_transaction(|conn| {
+    let carol_result = db.with_read_transaction(|conn| {
         read_nir1_change_review(conn, "default-project", scene_b_carol_id)
-    })?
+    })?;
+    let carol_wire = serde_json::to_value(&carol_result)?;
+    assert_eq!(carol_wire["status"], "available");
+    assert_eq!(carol_wire["result"]["revisionId"], scene_b_carol_id);
+    assert_eq!(carol_wire.as_object().unwrap().len(), 2);
+    let Nir1ChangeReviewResult::Available {
+        result: carol_review,
+    } = carol_result
     else {
         panic!("Scene B Carol revision should be available");
     };
@@ -222,7 +229,9 @@ fn change_review_matches_each_identity_across_scenes_without_removed_objects() -
         &["change-review-alice"],
     )?;
     let scene_b_alice_id = scene_b_alice["result"]["revisionId"].as_str().unwrap();
-    let Nir1ChangeReviewResult::Available(alice_review) = db.with_read_transaction(|conn| {
+    let Nir1ChangeReviewResult::Available {
+        result: alice_review,
+    } = db.with_read_transaction(|conn| {
         read_nir1_change_review(conn, "default-project", scene_b_alice_id)
     })?
     else {
@@ -279,9 +288,10 @@ fn change_review_reads_approved_history_after_live_codex_change() -> anyhow::Res
     )?;
     let current_id = current["result"]["revisionId"].as_str().unwrap();
     let before = db.with_conn(|conn| Ok(review_row_counts(conn)?))?;
-    let Nir1ChangeReviewResult::Available(review) = db.with_read_transaction(|conn| {
-        read_nir1_change_review(conn, "default-project", current_id)
-    })?
+    let Nir1ChangeReviewResult::Available { result: review } =
+        db.with_read_transaction(|conn| {
+            read_nir1_change_review(conn, "default-project", current_id)
+        })?
     else {
         panic!("current typed revision and approved history are available");
     };
@@ -335,7 +345,7 @@ fn hidden_or_suppressed_items_make_the_current_revision_unavailable() -> anyhow:
             read_nir1_change_review(conn, "default-project", revision_id)
         })?;
         assert!(
-            matches!(visible, Nir1ChangeReviewResult::Available(_)),
+            matches!(visible, Nir1ChangeReviewResult::Available { .. }),
             "revision should be available before setting {context_mode}"
         );
 
@@ -351,6 +361,13 @@ fn hidden_or_suppressed_items_make_the_current_revision_unavailable() -> anyhow:
         let result = db.with_read_transaction(|conn| {
             read_nir1_change_review(conn, "default-project", revision_id)
         })?;
+        assert_eq!(
+            serde_json::to_value(&result)?,
+            serde_json::json!({
+                "status": "unavailable",
+                "reason": "current-revision-unavailable"
+            })
+        );
         assert!(
             matches!(
                 result,
