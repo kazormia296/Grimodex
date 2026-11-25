@@ -70,14 +70,14 @@ vi.mock("./workLayerLiveReaders", async (importOriginal) => {
   return importOriginal();
 });
 
-import {
-  useLiveWorkLayerPort,
-  useWorkLayerLivePort,
-} from "./useWorkLayerLivePort";
+import { useLiveWorkLayerPort } from "./useWorkLayerLivePort";
 
-// 旗は build で定数になるので、`useWorkLayerLivePort`（build が選ぶ側）は、この試験の環境
-// （旗を指定しない）では「何もしない」側になる。live の振る舞いは `useLiveWorkLayerPort` を直接試験する。
-describe("useWorkLayerLivePort (flag closed: the default build)", () => {
+// 旗は build で定数になる（既定は開く。`false`／`0` で閉じる）。build が選ぶ側 `useWorkLayerLivePort` は、
+// 旗を指定しない環境では live の側になる。旗の値ごとの選択は、環境を指定して module を読み直して試験する。
+// module を読み直す試験は、負荷が高いと既定の 5 秒を超えうる（hosted CI の既定は 30 秒）。
+const RELOAD_TIMEOUT_MS = 30_000;
+
+describe("useWorkLayerLivePort (selected at build time)", () => {
   beforeEach(() => {
     mocks.project.current = { id: "p1" };
     mocks.lastSelector = null;
@@ -86,15 +86,52 @@ describe("useWorkLayerLivePort (flag closed: the default build)", () => {
     mocks.liveReaderImports = 0;
   });
 
-  it("returns nothing, subscribes to nothing, and loads nothing", () => {
-    const { result } = renderHook(() => useWorkLayerLivePort(true));
-    expect(result.current).toBeNull();
-    // 旗が閉じている間は、project の store も購読しない（作品の変更で再描画しない）。
-    expect(mocks.lastSelector).toBeNull();
-    expect(mocks.syncProject).not.toHaveBeenCalled();
-    expect(mocks.livePortImports).toBe(0);
-    expect(mocks.liveReaderImports).toBe(0);
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
   });
+
+  it(
+    "is the live hook when the flag is unset (open by default)",
+    async () => {
+      // 実行環境の VITE_WORK_LAYER_LIVE に左右されないよう、未指定に戻して module を読み直す。
+      vi.stubEnv("VITE_WORK_LAYER_LIVE", undefined);
+      vi.resetModules();
+      const module = await import("./useWorkLayerLivePort");
+      expect(module.useWorkLayerLivePort).toBe(module.useLiveWorkLayerPort);
+    },
+    RELOAD_TIMEOUT_MS,
+  );
+
+  it.each(["true", "1"])(
+    "stays the live hook when the flag is %s",
+    async (value) => {
+      vi.stubEnv("VITE_WORK_LAYER_LIVE", value);
+      vi.resetModules();
+      const module = await import("./useWorkLayerLivePort");
+      expect(module.useWorkLayerLivePort).toBe(module.useLiveWorkLayerPort);
+    },
+    RELOAD_TIMEOUT_MS,
+  );
+
+  it.each(["false", "0"])(
+    "returns nothing, subscribes to nothing, and loads nothing when the flag is %s",
+    async (value) => {
+      vi.stubEnv("VITE_WORK_LAYER_LIVE", value);
+      vi.resetModules();
+      const module = await import("./useWorkLayerLivePort");
+      expect(module.useWorkLayerLivePort).not.toBe(module.useLiveWorkLayerPort);
+
+      const { result } = renderHook(() => module.useWorkLayerLivePort(true));
+      expect(result.current).toBeNull();
+      // 閉じた build は、project の store も購読しない（作品の変更で再描画しない）。
+      expect(mocks.lastSelector).toBeNull();
+      expect(mocks.syncProject).not.toHaveBeenCalled();
+      expect(mocks.livePortImports).toBe(0);
+      expect(mocks.liveReaderImports).toBe(0);
+    },
+    RELOAD_TIMEOUT_MS,
+  );
 });
 
 describe("useLiveWorkLayerPort", () => {
