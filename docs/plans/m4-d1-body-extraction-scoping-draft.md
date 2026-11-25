@@ -59,3 +59,6 @@ lifecycle の表（開始・再入・取消・終了の確認）は、実行主�
 - 依存を「読んだ場面」に絞る：heuristic は全場面を走査するので「言及が無かった」も読んだ結果で、絞る根拠は Chronicle より弱い。絞ると、外した場面の新しい言及で古くならない。**最初の版は全場面のままにする**（絞るなら別に伺う）。
 - stale になると、適用は `NEX_SOURCE_BASIS_STALE` で失敗し、画面には生の文字列が出る（`CodexStructureExtractDialog.tsx:334-352`）。Work Layer の件数は `proposal-revision` の stale 系を数える（行ができるかは未実行）。
 - 同定の測定の道具（`scripts/quality/identity-review-load/`）の B は、候補画面の `judgeCandidates` の review の負荷を測るもので、`runEntityResolutionTask` の精度は測らない。評価データの Codex は 0 件。A の最初の版の同定を測るには、新しい測り方が要る。
+
+2026-11-25 追記：上の「Aで」は、起案者の誤った説明を前提にした回答なので**確定扱いにしない**。訂正の後に「進める／やめる／方向を変える」を伺い直し、**回答待ち**。それまで配線も送信もしない。
+c7 の連絡（起案者は未確認）：#1114 で構造抽出の review 画面は製品の build で既定で開き、適用は保守の policy で閉じたまま。AI を配線すると作者に見えるので、時期を c7 と相談する。
