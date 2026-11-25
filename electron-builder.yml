@@ -46,6 +46,10 @@ extraResources:
     to: resources/model-capabilities
     filter:
       - model-capabilities.json
+  - from: node_modules/tiktoken/encoders/o200k_base.json
+    to: resources/tokenizer/o200k_base.json
+  - from: node_modules/tiktoken/lite/tiktoken_bg.wasm
+    to: resources/tokenizer/tiktoken_bg.wasm
 
 win:
   target:

@@ -1,0 +1,42 @@
+{
+  "cases": [
+    { "name": "empty", "text": "", "count": 0 },
+    {
+      "name": "japanese",
+      "text": "今日は小説の続きを書きます。雨の音が窓を叩く。",
+      "count": 20
+    },
+    {
+      "name": "english",
+      "text": "The detective reread the letter before dawn.",
+      "count": 9
+    },
+    {
+      "name": "json",
+      "text": "{\"scene\":\"夜の駅\",\"characters\":[\"Mika\",\"Ren\"],\"active\":true}",
+      "count": 19
+    },
+    {
+      "name": "long",
+      "text": "雨の駅で、彼は手紙を読み返した。The train was already gone。\n",
+      "repeat": 1000,
+      "count": 20000
+    },
+    {
+      "name": "emoji-surrogate-pairs",
+      "text": "彼女は😀🚉を見上げた。👨‍👩‍👧‍👦",
+      "count": 23
+    },
+    { "name": "whitespace-and-newlines", "text": "\n\t  \r\n\n  ", "count": 4 },
+    {
+      "name": "special-endoftext",
+      "text": "<|endoftext|>",
+      "error": "The text contains a special token that is not allowed: <|endoftext|>"
+    },
+    {
+      "name": "special-endofprompt",
+      "text": "<|endofprompt|>",
+      "error": "The text contains a special token that is not allowed: <|endofprompt|>"
+    }
+  ]
+}

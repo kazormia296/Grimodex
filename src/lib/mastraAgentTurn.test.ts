@@ -119,6 +119,29 @@ describe("startMastraAgentTurn", () => {
       turnId: TURN_ID,
       executionId: "exec-1",
       response,
+      loopResult: null,
+    });
+  });
+
+  it("passes loop results through and normalizes their absence to null", async () => {
+    const loopResult = {
+      finalText: "partial",
+      toolCallRecords: [],
+      stoppedReason: "aborted",
+      usage: { totalTokens: 1, tokensIn: null, tokensOut: null, cost: null },
+      citations: [],
+      finalThinkingBlocks: [],
+    } as const;
+    invokeMock.mockResolvedValue({
+      status: "completed",
+      turnId: TURN_ID,
+      executionId: "exec-1",
+      response: { blocks: [], stopReason: "tool_use" },
+      loopResult,
+    });
+    await expect(startMastraAgentTurn(REQUEST)).resolves.toMatchObject({
+      kind: "completed",
+      loopResult,
     });
   });
 

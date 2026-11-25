@@ -19,6 +19,10 @@ import type {
   AgentWireArgs,
   AgentWireResponse,
 } from "./agentWire.js";
+import {
+  findAgentLoopStopped,
+  MastraAgentLoopStopped,
+} from "../mastraTurnOwner.js";
 
 const ROUTE: AgentRoute = {
   thinking: null,
@@ -623,6 +627,26 @@ describe("4c-1 loop characterization", () => {
     expect(eventCount(second.events, "execution.succeeded")).toBe(1);
     expect(eventCount(second.events, "execution.failed")).toBe(0);
     expect(second.sent).toHaveLength(1);
+  });
+
+  it("the owner loop-stop sentinel survives real Agent.generate and is recognized", async () => {
+    const sentinel = new MastraAgentLoopStopped();
+    const result = await runTwoSendToolTurn(false, {
+      prepareSend: (request, ctx) => {
+        if (ctx.sendIndex === 1) throw sentinel;
+        return request;
+      },
+    });
+
+    expect(result.error).toBe(sentinel);
+    expect(findAgentLoopStopped(result.error)).toBe(true);
+    expect(findAgentLoopStopped({ cause: sentinel })).toBe(true);
+    expect(result.sent).toHaveLength(1);
+    expect(result.preparedRows).toHaveLength(1);
+    expect(eventCount(result.events, "execution.started")).toBe(1);
+    expect(eventCount(result.events, "request.dispatched")).toBe(1);
+    expect(eventCount(result.events, "execution.succeeded")).toBe(1);
+    expect(eventCount(result.events, "execution.failed")).toBe(0);
   });
 
   it("prepareSend rejects thenables before audit begin", async () => {

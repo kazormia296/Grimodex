@@ -77,6 +77,11 @@ export interface MastraAgentTurnInput {
   readonly prepareSend?: AgentPrepareSend;
   /** audit.complete 後、Mastra に応答を返す前に同期的に観測する。 */
   readonly observeResponse?: AgentObserveResponse;
+  /** T が tool wrapper を接続したら、完了結果の token 数を owner に返す。 */
+  readonly onToolResult?: (result: {
+    readonly tokens: number;
+    readonly toolName: string;
+  }) => void;
   /** forced の切り離し（restricted、workspace 切替、quit、sender 消失）で abort する。 */
   readonly signal: AbortSignal;
 }

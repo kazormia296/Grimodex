@@ -24,6 +24,7 @@ import {
   type MastraAgentTurnProgressPayload,
   type MastraAgentTurnProgressUsage,
   type MastraAgentTurnRefusalReason,
+  type MastraAgentTurnLoopResult,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
 import { MASTRA_AGENT_TURN_PROGRESS_EVENT } from "@/../electron/shared/ipcContract";
@@ -36,6 +37,7 @@ export type MastraAgentTurnStartOutcome =
       readonly executionId: string;
       /** The adapter's raw `AgentWireResponse`; the caller checks it (MP-4). */
       readonly response: Readonly<Record<string, unknown>>;
+      readonly loopResult: MastraAgentTurnLoopResult | null;
     }
   | {
       readonly kind: "context-window-exceeded";
@@ -113,6 +115,7 @@ export async function startMastraAgentTurn(
     turnId: answer.turnId,
     executionId: answer.executionId,
     response: answer.response,
+    loopResult: answer.loopResult ?? null,
   };
 }
 

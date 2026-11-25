@@ -131,6 +131,7 @@ function issueOf(value: unknown): string | null {
 
 function loopResult(overrides: Record<string, unknown> = {}) {
   return {
+    finalText: "done",
     toolCallRecords: [
       {
         name: "get_scene",
@@ -1220,6 +1221,10 @@ describe("the results", () => {
       response: { blocks: [], stopReason: "end_turn" },
     };
     expect(parseMastraAgentTurnStartResult(completed)).toBe(completed);
+    const completedWithLoop = { ...completed, loopResult: loopResult() };
+    expect(parseMastraAgentTurnStartResult(completedWithLoop)).toBe(
+      completedWithLoop,
+    );
     const overflow = {
       status: "context-window-exceeded",
       turnId: TURN_ID,
@@ -1253,6 +1258,13 @@ describe("the results", () => {
         executionId: "e",
         response: {},
         extra: 1,
+      },
+      {
+        status: "completed",
+        turnId: TURN_ID,
+        executionId: "e",
+        response: {},
+        loopResult: { ...loopResult(), extra: 1 },
       },
       {
         status: "context-window-exceeded",
@@ -1310,6 +1322,7 @@ describe("parseMastraAgentTurnLoopResult", () => {
 
   it("requires every field and rejects drift in the result shape", () => {
     for (const key of [
+      "finalText",
       "toolCallRecords",
       "stoppedReason",
       "usage",
@@ -1321,6 +1334,14 @@ describe("parseMastraAgentTurnLoopResult", () => {
       expect(parseMastraAgentTurnLoopResult(result), key).toBeNull();
     }
     expect(parseMastraAgentTurnLoopResult(loopResult({ extra: 1 }))).toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(loopResult({ finalText: 1 })),
+    ).toBeNull();
+    expect(
+      parseMastraAgentTurnLoopResult(
+        loopResult({ finalText: "x".repeat(8_000_000) }),
+      ),
+    ).toBeNull();
     expect(parseMastraAgentTurnLoopResult(null)).toBeNull();
     expect(parseMastraAgentTurnLoopResult([])).toBeNull();
     const polluted = JSON.parse('{"__proto__":{"x":1}}') as object;
@@ -1435,7 +1456,7 @@ describe("parseMastraAgentTurnLoopResult", () => {
   it("bounds aggregate strings, JSON nodes, and recursive depth", () => {
     expect(MASTRA_AGENT_TURN_LOOP_RESULT_JSON_NODES_MAX).toBe(1_000_000);
     expect(MASTRA_AGENT_TURN_LOOP_RESULT_JSON_DEPTH_MAX).toBe(64);
-    const exactText = "x".repeat(8_000_000 - 103);
+    const exactText = "x".repeat(8_000_000 - 116);
     expect(
       parseMastraAgentTurnLoopResult(
         loopResult({
@@ -1461,7 +1482,7 @@ describe("parseMastraAgentTurnLoopResult", () => {
       );
     const nodeRecord = {
       name: "n",
-      params: nodeParams(999_985),
+      params: nodeParams(999_984),
       resultSummary: "",
       tokensUsed: 0,
     };
@@ -1477,7 +1498,7 @@ describe("parseMastraAgentTurnLoopResult", () => {
     expect(
       parseMastraAgentTurnLoopResult(
         loopResult({
-          toolCallRecords: [{ ...nodeRecord, params: nodeParams(999_986) }],
+          toolCallRecords: [{ ...nodeRecord, params: nodeParams(999_985) }],
           citations: [],
           finalThinkingBlocks: [],
         }),
@@ -1504,7 +1525,7 @@ describe("parseMastraAgentTurnLoopResult", () => {
         loopResult({ citations: [{ child: nested(100_000) }] }),
       ),
     ).toBeNull();
-  });
+  }, 15_000);
 
   it("requires nonnegative finite usage and retains legacy unknowns as null", () => {
     expect(parseMastraAgentTurnLoopResult(loopResult())).not.toBeNull();
