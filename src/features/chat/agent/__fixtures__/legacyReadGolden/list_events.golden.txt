@@ -11,7 +11,7 @@
       "result": {
         "name": "list_events",
         "summary": "4 events",
-        "tokensUsed": 528,
+        "tokensUsed": 608,
         "content": {
           "events": [
             {
@@ -21,7 +21,8 @@
               "ordinal": "a0",
               "startTime": 0,
               "startDate": "1000年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-war",
@@ -30,7 +31,8 @@
               "ordinal": "a1",
               "startTime": 3600,
               "startDate": "1010年",
-              "primaryCharacter": null
+              "primaryCharacter": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -39,7 +41,8 @@
               "ordinal": "a2",
               "startTime": 5400,
               "startDate": "1015年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -48,12 +51,13 @@
               "ordinal": "a3",
               "startTime": 7200,
               "startDate": "1020年第1日",
-              "primaryCharacter": "老魔術師"
+              "primaryCharacter": "老魔術師",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: S3（戦争が出る）",
@@ -65,7 +69,7 @@
       "result": {
         "name": "list_events",
         "summary": "4 events",
-        "tokensUsed": 528,
+        "tokensUsed": 608,
         "content": {
           "events": [
             {
@@ -75,7 +79,8 @@
               "ordinal": "a0",
               "startTime": 0,
               "startDate": "1000年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-war",
@@ -84,7 +89,8 @@
               "ordinal": "a1",
               "startTime": 3600,
               "startDate": "1010年",
-              "primaryCharacter": null
+              "primaryCharacter": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -93,7 +99,8 @@
               "ordinal": "a2",
               "startTime": 5400,
               "startDate": "1015年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -102,12 +109,13 @@
               "ordinal": "a3",
               "startTime": 7200,
               "startDate": "1020年第1日",
-              "primaryCharacter": "老魔術師"
+              "primaryCharacter": "老魔術師",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: 場面なし（場面に依らず出来事が出る）",
@@ -118,7 +126,7 @@
       "result": {
         "name": "list_events",
         "summary": "4 events",
-        "tokensUsed": 528,
+        "tokensUsed": 608,
         "content": {
           "events": [
             {
@@ -128,7 +136,8 @@
               "ordinal": "a0",
               "startTime": 0,
               "startDate": "1000年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-war",
@@ -137,7 +146,8 @@
               "ordinal": "a1",
               "startTime": 3600,
               "startDate": "1010年",
-              "primaryCharacter": null
+              "primaryCharacter": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -146,7 +156,8 @@
               "ordinal": "a2",
               "startTime": 5400,
               "startDate": "1015年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -155,12 +166,13 @@
               "ordinal": "a3",
               "startTime": 7200,
               "startDate": "1020年第1日",
-              "primaryCharacter": "老魔術師"
+              "primaryCharacter": "老魔術師",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: kind=birth",
@@ -174,7 +186,7 @@
       "result": {
         "name": "list_events",
         "summary": "1 events",
-        "tokensUsed": 139,
+        "tokensUsed": 159,
         "content": {
           "events": [
             {
@@ -184,12 +196,13 @@
               "ordinal": "a0",
               "startTime": 0,
               "startDate": "1000年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: 知らない kind は絞らない",
@@ -203,7 +216,7 @@
       "result": {
         "name": "list_events",
         "summary": "4 events",
-        "tokensUsed": 528,
+        "tokensUsed": 608,
         "content": {
           "events": [
             {
@@ -213,7 +226,8 @@
               "ordinal": "a0",
               "startTime": 0,
               "startDate": "1000年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-war",
@@ -222,7 +236,8 @@
               "ordinal": "a1",
               "startTime": 3600,
               "startDate": "1010年",
-              "primaryCharacter": null
+              "primaryCharacter": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -231,7 +246,8 @@
               "ordinal": "a2",
               "startTime": 5400,
               "startDate": "1015年第1日",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -240,12 +256,13 @@
               "ordinal": "a3",
               "startTime": 7200,
               "startDate": "1020年第1日",
-              "primaryCharacter": "老魔術師"
+              "primaryCharacter": "老魔術師",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1000年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"1010年\",\"primaryCharacter\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1015年第1日\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1020年第1日\",\"primaryCharacter\":\"老魔術師\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "rows: UI 言語が en",
@@ -258,7 +275,7 @@
       "result": {
         "name": "list_events",
         "summary": "4 events",
-        "tokensUsed": 529,
+        "tokensUsed": 609,
         "content": {
           "events": [
             {
@@ -268,7 +285,8 @@
               "ordinal": "a0",
               "startTime": 0,
               "startDate": "1, 1000",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-war",
@@ -277,7 +295,8 @@
               "ordinal": "a1",
               "startTime": 3600,
               "startDate": "Year 1010",
-              "primaryCharacter": null
+              "primaryCharacter": null,
+              "precision": "exact"
             },
             {
               "id": "ev-meet",
@@ -286,7 +305,8 @@
               "ordinal": "a2",
               "startTime": 5400,
               "startDate": "1, 1015",
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             },
             {
               "id": "ev-death",
@@ -295,12 +315,13 @@
               "ordinal": "a3",
               "startTime": 7200,
               "startDate": "1, 1020",
-              "primaryCharacter": "老魔術師"
+              "primaryCharacter": "老魔術師",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1, 1000\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"Year 1010\",\"primaryCharacter\":null},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1, 1015\",\"primaryCharacter\":\"アリア\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1, 1020\",\"primaryCharacter\":\"老魔術師\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"ev-birth\",\"title\":\"アリアの誕生\",\"kind\":\"birth\",\"ordinal\":\"a0\",\"startTime\":0,\"startDate\":\"1, 1000\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-war\",\"title\":\"魔術戦争\",\"kind\":\"generic\",\"ordinal\":\"a1\",\"startTime\":3600,\"startDate\":\"Year 1010\",\"primaryCharacter\":null,\"precision\":\"exact\"},{\"id\":\"ev-meet\",\"title\":\"老魔術師との出会い\",\"kind\":\"generic\",\"ordinal\":\"a2\",\"startTime\":5400,\"startDate\":\"1, 1015\",\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"},{\"id\":\"ev-death\",\"title\":\"老魔術師の死\",\"kind\":\"death\",\"ordinal\":\"a3\",\"startTime\":7200,\"startDate\":\"1, 1020\",\"primaryCharacter\":\"老魔術師\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "empty: 空の project",
@@ -328,7 +349,7 @@
       "result": {
         "name": "list_events",
         "summary": "1 events",
-        "tokensUsed": 136,
+        "tokensUsed": 156,
         "content": {
           "events": [
             {
@@ -338,12 +359,13 @@
               "ordinal": "a0",
               "startTime": 100,
               "startDate": null,
-              "primaryCharacter": "アリア"
+              "primaryCharacter": "アリア",
+              "precision": "exact"
             }
           ]
         }
       },
-      "contentJson": "{\"events\":[{\"id\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"ordinal\":\"a0\",\"startTime\":100,\"startDate\":null,\"primaryCharacter\":\"アリア\"}]}"
+      "contentJson": "{\"events\":[{\"id\":\"x-ev-1\",\"title\":\"他作品の出来事\",\"kind\":\"generic\",\"ordinal\":\"a0\",\"startTime\":100,\"startDate\":null,\"primaryCharacter\":\"アリア\",\"precision\":\"exact\"}]}"
     },
     {
       "case": "no-project",

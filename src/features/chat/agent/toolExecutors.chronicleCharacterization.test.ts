@@ -285,22 +285,30 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
             title: "黒幕の登場",
             note: null,
             relTime: "約3年前",
+            precision: "exact",
           },
           {
             eventId: "ev-meet",
             title: "老魔術師との出会い",
             note: null,
             relTime: "約4年前",
+            precision: "exact",
           },
           {
             eventId: "ev-war",
             title: "魔術戦争",
             note: "昔の戦争",
             relTime: "約9年前",
+            precision: "exact",
           },
         ],
         unresolvedCausal: [
-          { causeTitle: "老魔術師との出会い", effectTitle: "老魔術師の死" },
+          {
+            causeTitle: "老魔術師との出会い",
+            effectTitle: "老魔術師の死",
+            causePrecision: "exact",
+            effectPrecision: "exact",
+          },
         ],
         offpage: [],
         calendar: {

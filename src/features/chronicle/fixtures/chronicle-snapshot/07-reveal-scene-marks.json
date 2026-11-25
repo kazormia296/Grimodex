@@ -99,6 +99,7 @@
         "title": "秘密の計画",
         "note": null,
         "relTime": null,
+        "precision": "exact",
         "revealScene": {
           "id": "s2",
           "title": "第二章",
@@ -107,7 +108,7 @@
       }
     ],
     "unresolvedCausal": [
-      { "causeTitle": "秘密の計画", "effectTitle": "計画の帰結" }
+      { "causeTitle": "秘密の計画", "effectTitle": "計画の帰結", "causePrecision": "exact", "effectPrecision": "exact" }
     ],
     "offpage": [
       {
@@ -115,6 +116,7 @@
         "title": "幼年の記憶",
         "note": null,
         "relTime": null,
+        "precision": "exact",
         "revealScene": {
           "id": "s3",
           "title": "第三章",
@@ -125,7 +127,8 @@
         "eventId": "eArchived",
         "title": "過去に隔離された場面の出来事",
         "note": null,
-        "relTime": null
+        "relTime": null,
+        "precision": "exact"
       }
     ]
   }

@@ -322,7 +322,7 @@ describe("list_events", () => {
         primaryCodexId: "c1",
       }),
       event("e2", { ordinal: "a1", kind: "death", primaryCodexId: "c-gone" }),
-      event("e3", { ordinal: "a2", kind: "generic" }),
+      event("e3", { ordinal: "a2", kind: "generic", precision: "unknown" }),
     ],
     names: { c1: "Alice" },
   };
@@ -334,6 +334,7 @@ describe("list_events", () => {
     expect(r.summary).toBe("3 events");
     const content = r.content as { events: Array<Record<string, unknown>> };
     expect(content.events.map((e) => e.id)).toEqual(["e1", "e2", "e3"]);
+    expect(content.events[2]!.precision).toBe("unknown");
     expect(Object.keys(content.events[0]!)).toEqual([
       "id",
       "title",
@@ -342,6 +343,7 @@ describe("list_events", () => {
       "startTime",
       "startDate",
       "primaryCharacter",
+      "precision",
     ]);
     expect(Object.keys(content)).toEqual(["events"]);
     expect(r.tokensUsed).toBe(JSON.stringify(r.content).length);
@@ -734,7 +736,7 @@ describe("get_character_timeline", () => {
         kind: "birth",
         primaryCodexId: "c1",
       }),
-      event("with", { ordinal: "a3", startTime: 400 }),
+      event("with", { ordinal: "a3", startTime: 400, precision: "approx" }),
       event("other", { ordinal: "a2", primaryCodexId: "c2" }),
       event("hidden-birth", {
         ordinal: "a0",
@@ -771,6 +773,7 @@ describe("get_character_timeline", () => {
       events: Array<Record<string, unknown>>;
     };
     expect(Object.keys(content)).toEqual(["character", "events"]);
+    expect(content.events[2]!.precision).toBe("approx");
     expect(content.events.map((e) => e.id)).toEqual([
       "hidden-birth",
       "birth",
@@ -784,6 +787,7 @@ describe("get_character_timeline", () => {
       "ordinal",
       "startTime",
       "ageAtEvent",
+      "precision",
       "revealScene",
     ]);
     expect(content.events[0]!.revealScene).toEqual({
@@ -1014,6 +1018,7 @@ describe("get_chronicle_state", () => {
         title: "title-" + id,
         note: null,
         relTime: null,
+        precision: "exact",
       })),
     });
   });

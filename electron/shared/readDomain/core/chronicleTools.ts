@@ -128,6 +128,7 @@ export async function listEvents(
         e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
           ? (names.get(e.primaryCodexId) ?? null)
           : null,
+      precision: e.precision,
       ...revealOf(e.id),
     })),
   };
@@ -311,6 +312,7 @@ export async function getCharacterTimeline(
         birthTime != null && e.startTime != null && daysPerYear > 0
           ? Math.floor((e.startTime - birthTime) / daysPerYear)
           : null,
+      precision: e.precision,
       ...revealOf(e.id),
     })),
   };

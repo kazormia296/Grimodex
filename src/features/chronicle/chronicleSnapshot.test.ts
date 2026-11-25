@@ -432,8 +432,20 @@ describe("deriveChronicleSnapshot — relTime（アンカーからの相対時�
 describe("deriveChronicleSnapshot — unresolved causal", () => {
   it("原因<=anchor かつ 結果>anchor の因果のみ拾う", () => {
     const events = [
-      mkEvent({ id: "cause", title: "毒を盛る", startTime: 2, ordinal: "a2" }),
-      mkEvent({ id: "effect", title: "王の死", startTime: 8, ordinal: "a8" }),
+      mkEvent({
+        id: "cause",
+        title: "毒を盛る",
+        precision: "approx",
+        startTime: 2,
+        ordinal: "a2",
+      }),
+      mkEvent({
+        id: "effect",
+        title: "王の死",
+        precision: "unknown",
+        startTime: 8,
+        ordinal: "a8",
+      }),
       mkEvent({
         id: "done",
         title: "既済因果結果",
@@ -459,8 +471,19 @@ describe("deriveChronicleSnapshot — unresolved causal", () => {
       }),
     );
     expect(snap.unresolvedCausal).toEqual([
-      { causeTitle: "毒を盛る", effectTitle: "王の死" },
+      {
+        causeTitle: "毒を盛る",
+        effectTitle: "王の死",
+        causePrecision: "approx",
+        effectPrecision: "unknown",
+      },
     ]);
+    expect(renderChronicleSnapshot(snap, "ja")).toContain(
+      "「毒を盛る（日付はおおよそ）」→ いずれ「王の死（日付は不確実）」",
+    );
+    expect(renderChronicleSnapshot(snap, "en")).toContain(
+      '"毒を盛る (date approximate)" → will lead to "王の死 (date uncertain)"',
+    );
   });
 });
 
@@ -596,7 +619,12 @@ it("K4a: month and year spans overlap the anchor, and a linked later event count
   expect(snapshot.characters[0].location).toBe("城");
   expect(pickSnapshotCharacters(args)).toEqual(["l", "y", "m"]);
   expect(snapshot.unresolvedCausal).toEqual([
-    { causeTitle: "linked", effectTitle: "later" },
+    {
+      causeTitle: "linked",
+      effectTitle: "later",
+      causePrecision: "exact",
+      effectPrecision: "exact",
+    },
   ]);
 });
 
@@ -709,6 +737,7 @@ describe("renderChronicleSnapshot", () => {
             id: "secret-event",
             title: "毒殺の真相",
             note: "王宮で起きた",
+            precision: "unknown",
             startTime: 0,
             ordinal: "a0",
             revealSceneId: "s2",
@@ -734,14 +763,14 @@ describe("renderChronicleSnapshot", () => {
       "まだ明かされていない出来事は、本文で、読者が知っていることとして書かない。",
     );
     expect(ja).toContain(
-      "- 毒殺の真相（王宮で起きた）（読者にはまだ明かされていない）",
+      "- 毒殺の真相（王宮で起きた）（日付は不確実）（読者にはまだ明かされていない）",
     );
     const en = renderChronicleSnapshot(snap, "en");
     expect(en).toContain(
       "Do not write events not yet revealed to readers as if readers already knew them.",
     );
     expect(en).toContain(
-      "- 毒殺の真相（王宮で起きた） (not yet revealed to readers)",
+      "- 毒殺の真相（王宮で起きた） (date uncertain) (not yet revealed to readers)",
     );
   });
 
@@ -906,7 +935,9 @@ describe("renderChronicleSnapshot", () => {
         ordinal: `a${i}`,
         startTime: 100 + i, // アンカー 7200 から見て 約20年前
         startGranularity: "day",
-        ...(i === 7 ? { revealSceneId: "s2" } : {}),
+        ...(i === 7
+          ? { revealSceneId: "s2", precision: "approx" as const }
+          : {}),
       }),
     );
     const snap = deriveChronicleSnapshot(
@@ -933,7 +964,9 @@ describe("renderChronicleSnapshot", () => {
     expect(text).not.toContain("詳細な脚注テキスト");
     // relTime は残る（note より生存優先度が高い）
     expect(text).toContain("約20年前");
-    expect(text).toContain("（読者にはまだ明かされていない）");
+    expect(text).toContain(
+      "（約20年前）（日付はおおよそ）（読者にはまだ明かされていない）",
+    );
   });
 });
 
@@ -990,7 +1023,12 @@ describe("chronicle reveal marks in snapshots", () => {
     });
     expect(Object.hasOwn(snap.offpage[0] ?? {}, "revealScene")).toBe(false);
     expect(snap.unresolvedCausal).toEqual([
-      { causeTitle: "過去の出来事", effectTitle: "未来の出来事" },
+      {
+        causeTitle: "過去の出来事",
+        effectTitle: "未来の出来事",
+        causePrecision: "exact",
+        effectPrecision: "exact",
+      },
     ]);
     expect(JSON.stringify(snap.offpage[0])).not.toContain("revealScene");
   });

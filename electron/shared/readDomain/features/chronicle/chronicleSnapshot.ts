@@ -56,12 +56,15 @@ export interface SnapshotEvent {
    * 暦なし・日付欠落・アンカー未確定では null（省略）。絶対日付は使わない。
    */
   relTime: string | null;
+  precision: EventPrecision;
   revealScene?: ChronicleRevealMark;
 }
 
 export interface CausalPair {
   causeTitle: string;
   effectTitle: string;
+  causePrecision: EventPrecision;
+  effectPrecision: EventPrecision;
 }
 
 export interface ChronicleSnapshot {
@@ -233,6 +236,7 @@ function deriveRecentEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
+      precision: e.precision,
       ...revealOf(e.id),
     }));
 }
@@ -253,6 +257,8 @@ function deriveUnresolvedCausal(
       out.push({
         causeTitle: truncate(cause.title, TITLE_CAP),
         effectTitle: truncate(effect.title, TITLE_CAP),
+        causePrecision: cause.precision,
+        effectPrecision: effect.precision,
       });
     }
   }
@@ -291,6 +297,7 @@ function deriveOffpageEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
+      precision: e.precision,
       ...revealOf(e.id),
     }));
 }
@@ -597,6 +604,8 @@ function renderAtLevel(
   o: RenderLevel,
 ): string {
   const lines: string[] = [];
+  const precisionSuffix = (p: EventPrecision | null) =>
+    p === "approx" || p === "unknown" ? L.precisionSuffix(p) : "";
   const recent = snapshot.recentEvents.slice(0, o.recent);
   const offpage = snapshot.offpage.slice(0, o.offpage);
   const unrevealed = (e: SnapshotEvent) =>
@@ -612,12 +621,7 @@ function renderAtLevel(
         ? L.timeSeason(snapshot.time.season)
         : L.timeOrderOnly;
     if (snapshot.time.source === "proxy") timeLine += L.timeProxySuffix;
-    if (
-      snapshot.time.precision === "approx" ||
-      snapshot.time.precision === "unknown"
-    ) {
-      timeLine += L.precisionSuffix(snapshot.time.precision);
-    }
+    timeLine += precisionSuffix(snapshot.time.precision);
     lines.push(timeLine);
   }
 
@@ -635,7 +639,7 @@ function renderAtLevel(
   const eventLine = (e: SnapshotEvent): string =>
     `- ${e.title}${o.dates && e.relTime ? `（${e.relTime}）` : ""}${
       o.notes && e.note ? `（${e.note}）` : ""
-    }${unrevealed(e) ? L.unrevealedSuffix : ""}`;
+    }${precisionSuffix(e.precision)}${unrevealed(e) ? L.unrevealedSuffix : ""}`;
 
   if (recent.length > 0) {
     lines.push(L.recentHeader);
@@ -648,7 +652,9 @@ function renderAtLevel(
   if (snapshot.unresolvedCausal.length > 0) {
     lines.push(L.causalHeader);
     for (const c of snapshot.unresolvedCausal) {
-      lines.push(`- ${L.causalLine(c.causeTitle, c.effectTitle)}`);
+      lines.push(
+        `- ${L.causalLine(c.causeTitle + precisionSuffix(c.causePrecision), c.effectTitle + precisionSuffix(c.effectPrecision))}`,
+      );
     }
   }
 

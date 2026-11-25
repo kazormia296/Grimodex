@@ -120,7 +120,12 @@ describe("同じ ordinal の出来事も日時で判定する", () => {
       ]);
       expect(snapshot.offpage.map((e) => e.eventId)).toEqual(["e10"]);
       expect(snapshot.unresolvedCausal).toEqual([
-        { causeTitle: e10.title, effectTitle: e300.title },
+        {
+          causeTitle: e10.title,
+          effectTitle: e300.title,
+          causePrecision: "exact",
+          effectPrecision: "exact",
+        },
       ]);
       expect(
         pickSnapshotCharacters({ anchor, events: rows, participants: [] }),
