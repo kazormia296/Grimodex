@@ -7020,6 +7020,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_maintenance_attention_clear",
       "narrative_maintenance_attention_set",
       "narrative_maintenance_inbox_list",
+      "narrative_maintenance_stale_proposal_count",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
       "narrative_scene_body_declaration_declare",
@@ -7566,6 +7567,60 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
 
       expect(env.ok).toBe(false);
       expect(method).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("maintenance stale proposal count", () => {
+    it("projectId を渡し count を parse する", async () => {
+      const method = vi.fn().mockResolvedValue('{"count":7}');
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalCount: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_count",
+        { payload: { projectId: "project-1" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: { count: 7 } });
+      expect(method).toHaveBeenCalledExactlyOnceWith({
+        projectId: "project-1",
+      });
+    });
+
+    it.each([
+      {},
+      { payload: {} },
+      { payload: { projectId: "" } },
+      { payload: { projectId: 7 } },
+    ])("不正な projectId は native 呼出し前に拒否する: %j", async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeMaintenanceStaleProposalCount: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_count",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("旧 native binding では backend unavailable を返す", async () => {
+      const { backend } = fakeBackend();
+      delete (backend as Partial<NapiBackendLike>)
+        .narrativeMaintenanceStaleProposalCount;
+      const env = await dispatchInvoke(
+        "narrative_maintenance_stale_proposal_count",
+        { payload: { projectId: "project-1" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(
+          "native method narrativeMaintenanceStaleProposalCount",
+        ),
+      });
     });
   });
 
