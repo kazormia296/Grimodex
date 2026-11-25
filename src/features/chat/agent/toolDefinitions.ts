@@ -328,7 +328,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         revealSceneId: {
           type: "string",
           description:
-            "Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI. Omit or pass empty for none.",
+            "Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit or pass empty for none.",
         },
         participantCodexIds: {
           type: "array",
@@ -380,7 +380,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         revealSceneId: {
           type: "string",
           description:
-            "Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI. Omit to leave unchanged; pass an empty string to clear.",
+            "Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.",
         },
       },
       required: ["eventId"],

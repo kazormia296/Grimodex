@@ -2261,6 +2261,53 @@ pub fn chronicle_scene_titles(
     Ok(rows.into_iter().collect())
 }
 
+/// プロジェクト内イベントの id と開示場面 id を返す。
+pub fn chronicle_event_reveal_scene_ids(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, reveal_scene_id FROM events
+         WHERE project_id = ?1 AND reveal_scene_id IS NOT NULL AND reveal_scene_id <> ''",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_event_reveal_scene_ids failed")?;
+    Ok(rows)
+}
+
+/// 開示順判定用に、アーカイブされていないツリーノードだけを返す。
+pub fn chronicle_active_scene_nodes(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<crate::chronicle_snapshot::SceneNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent_id, node_type, sort_order,
+                chronicle_start_time, chronicle_start_minute,
+                chronicle_start_granularity, chronicle_precision
+         FROM tree_nodes WHERE project_id = ?1 AND archived_at IS NULL",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(crate::chronicle_snapshot::SceneNode {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                node_type: row.get(2)?,
+                sort_order: row.get(3)?,
+                chronicle_start_time: row.get(4)?,
+                chronicle_start_minute: row.get(5)?,
+                chronicle_start_granularity: row.get(6)?,
+                chronicle_precision: row.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_active_scene_nodes failed")?;
+    Ok(rows)
+}
+
 /// Tree nodes reduced to the reading-order fields (`computeGlobalSceneOrder`).
 pub fn chronicle_scene_nodes(
     conn: &Connection,

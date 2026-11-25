@@ -78,12 +78,73 @@ fn valid_kind(kind: &str) -> bool {
     matches!(kind, "generic" | "birth" | "death")
 }
 
+const REVEAL_SCENE_NOTE: &str =
+    "scene_id is not in the reading order, so revealedToReader was not judged.";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RevealScene {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revealed_to_reader: Option<bool>,
+}
+
+struct RevealSceneContext {
+    by_event_id: HashMap<String, RevealScene>,
+    scene_id_outside_reading_order: bool,
+}
+
+fn reveal_scene_context(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    scene_id: Option<&str>,
+) -> Result<RevealSceneContext, ErrorData> {
+    let event_scenes =
+        db::chronicle_event_reveal_scene_ids(conn, project_id).map_err(internal_err)?;
+    if event_scenes.is_empty() {
+        return Ok(RevealSceneContext {
+            by_event_id: HashMap::new(),
+            scene_id_outside_reading_order: false,
+        });
+    }
+
+    let scene_id = scene_id.map(str::trim).filter(|id| !id.is_empty());
+    let nodes = db::chronicle_active_scene_nodes(conn, project_id).map_err(internal_err)?;
+    let reading_order = snap::compute_global_scene_order(&nodes);
+    let current_order = scene_id.and_then(|id| reading_order.get(id)).copied();
+    let scene_id_outside_reading_order = scene_id.is_some() && current_order.is_none();
+    let titles = db::chronicle_scene_titles(conn, project_id).map_err(internal_err)?;
+    let by_event_id = event_scenes
+        .into_iter()
+        .filter_map(|(event_id, scene_id)| {
+            let reveal_order = reading_order.get(&scene_id)?;
+            let title = titles.get(&scene_id)?;
+            Some((
+                event_id,
+                RevealScene {
+                    id: scene_id,
+                    title: title.clone(),
+                    revealed_to_reader: current_order.map(|order| order >= *reveal_order),
+                },
+            ))
+        })
+        .collect();
+
+    Ok(RevealSceneContext {
+        by_event_id,
+        scene_id_outside_reading_order,
+    })
+}
+
 // ───────── read: list_events ─────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListEventsParams {
     /// Optional kind filter: "birth" | "death" | "generic". Omit for all.
     pub kind: Option<String>,
+    /// 省略可。執筆中の場面 id。開示済みかの判定に使う。
+    pub scene_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -99,11 +160,15 @@ struct EventListItem {
     /// 暦整形済みの絶対日付（暦なし/粒度 none は None）。TS list_events と同 shape。
     start_date: Option<String>,
     primary_character: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reveal_scene: Option<RevealScene>,
 }
 
 #[derive(Serialize)]
 struct EventListResult {
     events: Vec<EventListItem>,
+    #[serde(rename = "revealSceneNote", skip_serializing_if = "Option::is_none")]
+    reveal_scene_note: Option<&'static str>,
 }
 
 pub async fn list_events(
@@ -113,6 +178,7 @@ pub async fn list_events(
     let conn = server.conn.lock().map_err(internal_err)?;
     let project_id = server.project_id();
     let events = db::chronicle_list_events(&conn, &project_id).map_err(internal_err)?;
+    let reveal_context = reveal_scene_context(&conn, &project_id, params.scene_id.as_deref())?;
     let hidden_codex_ids =
         db::chronicle_hidden_codex_ids(&conn, &project_id).map_err(internal_err)?;
     let names =
@@ -123,28 +189,38 @@ pub async fn list_events(
     let filtered: Vec<EventListItem> = events
         .into_iter()
         .filter(|e| !valid_kind(kind) || e.kind == kind)
-        .map(|e| EventListItem {
-            id: e.id,
-            title: e.title,
-            kind: e.kind,
-            ordinal: e.ordinal,
-            version: e.version,
-            start_time: e.start_time,
-            start_date: fmt_event_date(
-                cal_input.as_ref(),
-                e.start_time,
-                e.start_minute,
-                &e.start_granularity,
-            ),
-            // `e.primaryCodexId ? (names.get(id) ?? null) : null`: a present id
-            // whose codex is missing resolves to JSON null, not "".
-            primary_character: e
-                .primary_codex_id
-                .as_ref()
-                .and_then(|id| names.get(id).cloned()),
+        .map(|e| {
+            let reveal_scene = reveal_context.by_event_id.get(&e.id).cloned();
+            EventListItem {
+                id: e.id,
+                title: e.title,
+                kind: e.kind,
+                ordinal: e.ordinal,
+                version: e.version,
+                start_time: e.start_time,
+                start_date: fmt_event_date(
+                    cal_input.as_ref(),
+                    e.start_time,
+                    e.start_minute,
+                    &e.start_granularity,
+                ),
+                // `e.primaryCodexId ? (names.get(id) ?? null) : null`: a present id
+                // whose codex is missing resolves to JSON null, not "".
+                primary_character: e
+                    .primary_codex_id
+                    .as_ref()
+                    .and_then(|id| names.get(id).cloned()),
+                reveal_scene,
+            }
         })
         .collect();
-    ok_json(&EventListResult { events: filtered })
+    let reveal_scene_note = (reveal_context.scene_id_outside_reading_order
+        && filtered.iter().any(|event| event.reveal_scene.is_some()))
+    .then_some(REVEAL_SCENE_NOTE);
+    ok_json(&EventListResult {
+        events: filtered,
+        reveal_scene_note,
+    })
 }
 
 // ───────── read: get_event_detail ─────────
@@ -153,6 +229,8 @@ pub async fn list_events(
 pub struct GetEventDetailParams {
     /// The event id.
     pub event_id: String,
+    /// 省略可。執筆中の場面 id。開示済みかの判定に使う。
+    pub scene_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -201,6 +279,10 @@ struct EventDetail {
     participants: Vec<DetailParticipant>,
     scenes: Vec<DetailScene>,
     relations: Vec<DetailRelation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reveal_scene: Option<RevealScene>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reveal_scene_note: Option<&'static str>,
 }
 
 /// `codexId ? (names.get(id) ?? null) : null` — both an absent id and a
@@ -224,6 +306,11 @@ pub async fn get_event_detail(
     let Some(ev) = events.iter().find(|e| e.id == event_id).cloned() else {
         return ok_null();
     };
+    let reveal_context = reveal_scene_context(&conn, &project_id, params.scene_id.as_deref())?;
+    let reveal_scene = reveal_context.by_event_id.get(&ev.id).cloned();
+    let reveal_scene_note = (reveal_context.scene_id_outside_reading_order
+        && reveal_scene.is_some())
+    .then_some(REVEAL_SCENE_NOTE);
     let hidden_codex_ids =
         db::chronicle_hidden_codex_ids(&conn, &project_id).map_err(internal_err)?;
     let names =
@@ -297,6 +384,8 @@ pub async fn get_event_detail(
                     .map(|s| s.to_string()),
             })
             .collect(),
+        reveal_scene,
+        reveal_scene_note,
     };
     ok_json(&detail)
 }
@@ -307,6 +396,8 @@ pub async fn get_event_detail(
 pub struct GetCharacterTimelineParams {
     /// The character's codex entry id.
     pub codex_id: String,
+    /// 省略可。執筆中の場面 id。開示済みかの判定に使う。
+    pub scene_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -318,12 +409,16 @@ struct TimelineEvent {
     ordinal: String,
     start_time: Option<i64>,
     age_at_event: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reveal_scene: Option<RevealScene>,
 }
 
 #[derive(Serialize)]
 struct CharacterTimeline {
     character: String,
     events: Vec<TimelineEvent>,
+    #[serde(rename = "revealSceneNote", skip_serializing_if = "Option::is_none")]
+    reveal_scene_note: Option<&'static str>,
 }
 
 pub async fn get_character_timeline(
@@ -345,6 +440,7 @@ pub async fn get_character_timeline(
         return ok_null();
     };
     let events = db::chronicle_list_events(&conn, &project_id).map_err(internal_err)?;
+    let reveal_context = reveal_scene_context(&conn, &project_id, params.scene_id.as_deref())?;
     let participants = db::chronicle_list_participants(&conn, &project_id, &hidden_codex_ids)
         .map_err(internal_err)?;
     let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
@@ -388,12 +484,17 @@ pub async fn get_character_timeline(
                 }
                 _ => None,
             },
+            reveal_scene: reveal_context.by_event_id.get(&e.id).cloned(),
         })
         .collect();
 
+    let reveal_scene_note = (reveal_context.scene_id_outside_reading_order
+        && involved.iter().any(|event| event.reveal_scene.is_some()))
+    .then_some(REVEAL_SCENE_NOTE);
     ok_json(&CharacterTimeline {
         character,
         events: involved,
+        reveal_scene_note,
     })
 }
 
@@ -568,7 +669,7 @@ pub struct CreateEventParams {
     #[serde(default)]
     #[schemars(skip)]
     pub secret: Option<bool>,
-    /// Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI. Omit or pass empty for none.
+    /// Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit or pass empty for none.
     pub reveal_scene_id: Option<String>,
     /// Participant codex ids to attach (optional).
     pub participant_codex_ids: Option<Vec<String>>,
@@ -684,7 +785,7 @@ pub struct UpdateEventParams {
     #[serde(default)]
     #[schemars(skip)]
     pub secret: Option<bool>,
-    /// Optional reading-order scene id stored as this event's disclosure scene (where it is disclosed in-story). Stored only; it does not hide the event from the AI. Omit to leave unchanged; pass an empty string to clear.
+    /// Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.
     pub reveal_scene_id: Option<String>,
 }
 
@@ -1142,6 +1243,13 @@ mod tests {
         serde_json::from_str(text).expect("valid json")
     }
 
+    fn result_text(res: &CallToolResult) -> String {
+        serde_json::to_value(res).unwrap()["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string()
+    }
+
     fn scalar(server: &GrimodexServer, sql: &str, p: &str) -> i64 {
         let conn = server.conn.lock().unwrap();
         conn.query_row(sql, params![p], |r| r.get(0)).unwrap()
@@ -1490,7 +1598,7 @@ mod tests {
         set_secret(&server, "sec");
 
         // All four read tools include the event despite its stored secret flag.
-        let listed = list_events(&server, ListEventsParams { kind: None })
+        let listed = list_events(&server, ListEventsParams { kind: None, scene_id: None })
             .await
             .unwrap();
         let ids: Vec<String> = result_json(&listed)["events"]
@@ -1509,6 +1617,7 @@ mod tests {
             &server,
             GetEventDetailParams {
                 event_id: "sec".into(),
+                scene_id: None,
             },
         )
         .await
@@ -1519,6 +1628,7 @@ mod tests {
             &server,
             GetCharacterTimelineParams {
                 codex_id: "a1".into(),
+                scene_id: None,
             },
         )
         .await
@@ -1650,7 +1760,7 @@ mod tests {
         seed_event(&server, "p1", "mine", "Mine", "a0");
         seed_event(&server, "p2", "theirs", "Theirs", "a1");
 
-        let res = list_events(&server, ListEventsParams { kind: None })
+        let res = list_events(&server, ListEventsParams { kind: None, scene_id: None })
             .await
             .unwrap();
         let json = result_json(&res);
@@ -1661,6 +1771,236 @@ mod tests {
             events[0]["version"], 0,
             "list must expose the Event OCC token"
         );
+    }
+
+    #[tokio::test]
+    async fn chronicle_read_tools_mark_reveal_scenes_by_active_reading_order() {
+        let server = make_server(false);
+        seed_codex(&server, "p1", "hero");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order)
+                 VALUES ('before', 'p1', NULL, 'scene', 'Before', 'a0'),
+                        ('reveal', 'p1', NULL, 'scene', 'Reveal', 'a1'),
+                        ('after', 'p1', NULL, 'scene', 'After', 'a2'),
+                        ('foreign', 'p2', NULL, 'scene', 'Foreign', 'a3'),
+                        ('archived', 'p1', NULL, 'scene', 'Archived', 'a4'),
+                        ('archived-folder', 'p1', NULL, 'folder', 'Archived folder', 'a5'),
+                        ('archived-child', 'p1', 'archived-folder', 'scene', 'Archived child', 'a0');
+                 UPDATE tree_nodes SET archived_at = datetime('now') WHERE id IN ('archived', 'archived-folder');",
+            )
+            .unwrap();
+        }
+        seed_event(&server, "p1", "marked", "Marked", "a0");
+        seed_event(&server, "p1", "archived-mark", "Archived mark", "a1");
+        seed_event(&server, "p1", "plain", "Plain", "a2");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero', reveal_scene_id = 'reveal' WHERE id = 'marked'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero', reveal_scene_id = 'archived' WHERE id = 'archived-mark'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero' WHERE id = 'plain'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let cases = [
+            (Some("before"), Some(false), false),
+            (Some("reveal"), Some(true), false),
+            (Some("after"), Some(true), false),
+            (None, None, false),
+            (Some(""), None, false),
+            (Some("missing"), None, true),
+            (Some("foreign"), None, true),
+            (Some("archived"), None, true),
+            (Some("archived-child"), None, true),
+        ];
+        for (scene_id, judged, note_expected) in cases {
+            let scene_id = scene_id.map(str::to_string);
+            let listed = result_json(
+                &list_events(
+                    &server,
+                    ListEventsParams {
+                        kind: None,
+                        scene_id: scene_id.clone(),
+                    },
+                )
+                .await
+                .unwrap(),
+            );
+            let list_event = listed["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["id"] == "marked")
+                .unwrap();
+            assert_eq!(list_event["revealScene"]["id"], "reveal");
+            assert_eq!(list_event["revealScene"]["title"], "Reveal");
+            if let Some(expected) = judged {
+                assert_eq!(list_event["revealScene"]["revealedToReader"], expected);
+            } else {
+                assert!(list_event["revealScene"].get("revealedToReader").is_none());
+            }
+            assert_eq!(
+                listed["revealSceneNote"].as_str(),
+                note_expected.then_some(REVEAL_SCENE_NOTE)
+            );
+            for event_id in ["archived-mark", "plain"] {
+                let event = listed["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|event| event["id"] == event_id)
+                    .unwrap();
+                assert!(event.get("revealScene").is_none(), "{event_id}");
+            }
+
+            let detail = result_json(
+                &get_event_detail(
+                    &server,
+                    GetEventDetailParams {
+                        event_id: "marked".into(),
+                        scene_id: scene_id.clone(),
+                    },
+                )
+                .await
+                .unwrap(),
+            );
+            assert_eq!(detail["revealScene"]["id"], "reveal");
+            assert_eq!(detail["revealScene"]["title"], "Reveal");
+            if let Some(expected) = judged {
+                assert_eq!(detail["revealScene"]["revealedToReader"], expected);
+            } else {
+                assert!(detail["revealScene"].get("revealedToReader").is_none());
+            }
+            assert_eq!(
+                detail["revealSceneNote"].as_str(),
+                note_expected.then_some(REVEAL_SCENE_NOTE)
+            );
+
+            let timeline = result_json(
+                &get_character_timeline(
+                    &server,
+                    GetCharacterTimelineParams {
+                        codex_id: "hero".into(),
+                        scene_id,
+                    },
+                )
+                .await
+                .unwrap(),
+            );
+            let timeline_event = timeline["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["id"] == "marked")
+                .unwrap();
+            assert_eq!(timeline_event["revealScene"]["id"], "reveal");
+            assert_eq!(timeline_event["revealScene"]["title"], "Reveal");
+            if let Some(expected) = judged {
+                assert_eq!(timeline_event["revealScene"]["revealedToReader"], expected);
+            } else {
+                assert!(timeline_event["revealScene"].get("revealedToReader").is_none());
+            }
+            assert_eq!(
+                timeline["revealSceneNote"].as_str(),
+                note_expected.then_some(REVEAL_SCENE_NOTE)
+            );
+        }
+
+        let filtered = result_json(
+            &list_events(
+                &server,
+                ListEventsParams {
+                    kind: Some("birth".into()),
+                    scene_id: Some("missing".into()),
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        assert!(filtered["events"].as_array().unwrap().is_empty());
+        assert!(filtered.get("revealSceneNote").is_none());
+    }
+
+    #[tokio::test]
+    async fn unmarked_events_keep_their_json_bytes_and_invalid_scene_without_marks_has_no_note() {
+        let server = make_server(false);
+        seed_codex(&server, "p1", "hero");
+        seed_event(&server, "p1", "plain", "Plain", "a0");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE events SET primary_codex_id = 'hero' WHERE id = 'plain'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let listed = list_events(
+            &server,
+            ListEventsParams {
+                kind: None,
+                scene_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result_text(&listed),
+            "{\n  \"events\": [\n    {\n      \"id\": \"plain\",\n      \"title\": \"Plain\",\n      \"kind\": \"generic\",\n      \"ordinal\": \"a0\",\n      \"version\": 0,\n      \"startTime\": null,\n      \"startDate\": null,\n      \"primaryCharacter\": \"hero\"\n    }\n  ]\n}"
+        );
+
+        let detail = get_event_detail(
+            &server,
+            GetEventDetailParams {
+                event_id: "plain".into(),
+                scene_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result_text(&detail),
+            "{\n  \"id\": \"plain\",\n  \"title\": \"Plain\",\n  \"note\": null,\n  \"kind\": \"generic\",\n  \"ordinal\": \"a0\",\n  \"version\": 0,\n  \"startTime\": null,\n  \"endTime\": null,\n  \"startMinute\": null,\n  \"endMinute\": null,\n  \"startGranularity\": \"none\",\n  \"endGranularity\": \"none\",\n  \"startDate\": null,\n  \"endDate\": null,\n  \"precision\": \"exact\",\n  \"primaryCharacter\": \"hero\",\n  \"location\": null,\n  \"participants\": [],\n  \"scenes\": [],\n  \"relations\": []\n}"
+        );
+
+        let timeline = get_character_timeline(
+            &server,
+            GetCharacterTimelineParams {
+                codex_id: "hero".into(),
+                scene_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result_text(&timeline),
+            "{\n  \"character\": \"hero\",\n  \"events\": [\n    {\n      \"id\": \"plain\",\n      \"title\": \"Plain\",\n      \"kind\": \"generic\",\n      \"ordinal\": \"a0\",\n      \"startTime\": null,\n      \"ageAtEvent\": null\n    }\n  ]\n}"
+        );
+
+        let invalid_scene_without_marks = list_events(
+            &server,
+            ListEventsParams {
+                kind: None,
+                scene_id: Some("missing".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result_json(&invalid_scene_without_marks)
+            .get("revealSceneNote")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1689,7 +2029,7 @@ mod tests {
             .unwrap();
         }
         // list_events: startDate is calendar-formatted.
-        let listed = list_events(&server, ListEventsParams { kind: None })
+        let listed = list_events(&server, ListEventsParams { kind: None, scene_id: None })
             .await
             .unwrap();
         let lj = result_json(&listed);
@@ -1705,6 +2045,7 @@ mod tests {
             &server,
             GetEventDetailParams {
                 event_id: "e1".to_string(),
+                scene_id: None,
             },
         )
         .await
@@ -1737,6 +2078,7 @@ mod tests {
                 &server,
                 GetEventDetailParams {
                     event_id: event_id.to_string(),
+                    scene_id: None,
                 },
             )
             .await
@@ -1768,6 +2110,7 @@ mod tests {
             &server,
             GetCharacterTimelineParams {
                 codex_id: "hero".to_string(),
+                scene_id: None,
             },
         )
         .await
@@ -1867,6 +2210,7 @@ mod tests {
             &server,
             GetEventDetailParams {
                 event_id: id.clone(),
+                scene_id: None,
             },
         )
         .await
@@ -1921,7 +2265,7 @@ mod tests {
         .await
         .expect("inferred create");
         let id = result_json(&res)["id"].as_str().unwrap().to_string();
-        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id })
+        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id, scene_id: None })
             .await
             .expect("event detail");
         let json = result_json(&detail);
@@ -1958,7 +2302,7 @@ mod tests {
         .await
         .unwrap();
         let id = result_json(&res)["id"].as_str().unwrap().to_string();
-        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id })
+        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id, scene_id: None })
             .await
             .unwrap();
         let json = result_json(&detail);
@@ -2008,6 +2352,7 @@ mod tests {
             &server,
             GetEventDetailParams {
                 event_id: "e1".to_string(),
+                scene_id: None,
             },
         )
         .await
@@ -3069,7 +3414,7 @@ mod tests {
         }
 
         let list = result_json(
-            &list_events(&server, ListEventsParams { kind: None })
+            &list_events(&server, ListEventsParams { kind: None, scene_id: None })
                 .await
                 .unwrap(),
         );
@@ -3088,6 +3433,7 @@ mod tests {
                 &server,
                 GetEventDetailParams {
                     event_id: "event-detail".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3102,6 +3448,7 @@ mod tests {
                 &server,
                 GetCharacterTimelineParams {
                     codex_id: "hidden-base".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3112,6 +3459,7 @@ mod tests {
                 &server,
                 GetCharacterTimelineParams {
                     codex_id: "hidden-phase".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3122,6 +3470,7 @@ mod tests {
                 &server,
                 GetCharacterTimelineParams {
                     codex_id: "missing-codex".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3132,6 +3481,7 @@ mod tests {
                 &server,
                 GetCharacterTimelineParams {
                     codex_id: "foreign-codex".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3146,6 +3496,7 @@ mod tests {
                 &server,
                 GetCharacterTimelineParams {
                     codex_id: "".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3157,6 +3508,7 @@ mod tests {
                 &server,
                 GetEventDetailParams {
                     event_id: "missing-event".into(),
+                    scene_id: None,
                 },
             )
             .await
@@ -3168,6 +3520,7 @@ mod tests {
                 &server,
                 GetCharacterTimelineParams {
                     codex_id: "unrelated".into(),
+                    scene_id: None,
                 },
             )
             .await
