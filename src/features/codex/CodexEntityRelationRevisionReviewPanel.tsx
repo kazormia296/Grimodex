@@ -1,5 +1,14 @@
+import { lazy, Suspense } from "react";
 import type { Nir1EntityRelationRevisionReadResult } from "@/features/narrative-semantic-core/nir1EntityRelationRevisionApi";
 import { CodexEntityRelationRevisionReviewDecisionControls } from "./CodexEntityRelationRevisionReviewDecisionControls";
+
+// 変更レビューの欄は起動時の graph に入れない。読み込めない時は欄を出さず、レビューは続けられる。
+const ChangeReviewSection = lazy(() =>
+  import("./CodexEntityRelationChangeReviewSection").then(
+    (module) => ({ default: module.CodexEntityRelationChangeReviewSection }),
+    () => ({ default: () => null }),
+  ),
+);
 
 export type CodexEntityRelationReviewDecision =
   | "approved"
@@ -167,6 +176,12 @@ export function CodexEntityRelationRevisionReviewPanel({
             )}
           </div>
         </>
+      )}
+
+      {result && status !== "unavailable" && (
+        <Suspense fallback={null}>
+          <ChangeReviewSection result={result} />
+        </Suspense>
       )}
 
       {onDecision && (

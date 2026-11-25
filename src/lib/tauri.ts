@@ -244,6 +244,7 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_restore", IPC_TIMEOUT_MS],
+  ["nir1_change_review_read", IPC_TIMEOUT_MS],
   // chat IR (DR-CHATIR-S1-3): a read lane with a caller timeout. Left out, the
   // command would be a mutation: no timeout, and a hold on the workspace
   // switch and close quiescence. The route itself is closed (S1-A).

@@ -530,6 +530,7 @@ describe("caller timeout policy（electron 分岐）", () => {
     "nir1_entity_relation_revision_read",
     "nir1_entity_relation_revision_read_current",
     "nir1_entity_relation_revision_restore",
+    "nir1_change_review_read",
     "narrative_scene_body_declaration_state",
     "get_model_capability_snapshot",
   ])(
