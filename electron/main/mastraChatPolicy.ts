@@ -27,7 +27,7 @@ export function aiPolicyAllowsChat(raw: unknown): boolean {
     ) {
       return false;
     }
-    return Boolean(toggles.chat);
+    return toggles.chat === true;
   } catch {
     return false;
   }

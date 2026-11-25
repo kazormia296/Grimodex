@@ -6,7 +6,7 @@ import {
 } from "./mastraChatPolicy.js";
 
 describe("Mastra main chat policy", () => {
-  it("matches the renderer for absent, empty, and interpretable policies", async () => {
+  it("matches the renderer for absent, empty, and boolean policies", async () => {
     const renderer = await vi.importActual<{
       parseAiPolicy(raw: string | null | undefined): {
         toggles: { chat: boolean };
@@ -24,16 +24,30 @@ describe("Mastra main chat policy", () => {
         preset: "custom",
         toggles: { chat: false, bodyWrite: true, analysis: false },
       }),
-      JSON.stringify({
-        preset: "full",
-        toggles: { chat: "off", bodyWrite: 1, analysis: null },
-      }),
     ];
 
     for (const raw of policies) {
       expect(aiPolicyAllowsChat(raw)).toBe(
         renderer.parseAiPolicy(raw).toggles.chat,
       );
+    }
+  });
+
+  it("rejects corrupted chat toggles instead of the renderer's Boolean(t.chat) coercion", async () => {
+    const renderer = await vi.importActual<{
+      parseAiPolicy(raw: string | null | undefined): {
+        toggles: { chat: boolean };
+      };
+    }>("../../src/features/ai-policy/parse");
+
+    for (const chat of ["off", 1, null]) {
+      const raw = JSON.stringify({
+        preset: "custom",
+        toggles: { chat, bodyWrite: true, analysis: false },
+      });
+      // Renderer Boolean(t.chat) enables "off"/1; Main rejects every non-boolean value.
+      expect(renderer.parseAiPolicy(raw).toggles.chat).toBe(Boolean(chat));
+      expect(aiPolicyAllowsChat(raw)).toBe(false);
     }
   });
 

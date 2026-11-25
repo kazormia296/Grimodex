@@ -30,6 +30,7 @@ import {
   type NapiBackendLike,
   type SecretsResolver,
 } from "../shared/ipcContract.js";
+import { MAIN_READ_CALLER_TIMEOUT_MS } from "../shared/ipcCallerTimeouts.js";
 import {
   mastraAgentTurnRefusalValue,
   MASTRA_AGENT_TURN_START_COMMAND,
@@ -97,7 +98,7 @@ import type {
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
-import type { MainReadHooks } from "./mastraRead/nativeCall.js";
+import { runNativeRead, type MainReadHooks } from "./mastraRead/nativeCall.js";
 import type {
   MainEgressParticipantContext,
   MainIssuedCallerIdentity,
@@ -1091,22 +1092,20 @@ export function createMastraTurnOwner(
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
         assertSendAllowed: async ({ sendIndex }) => {
-          assertLive(turn);
-          const pending = backend.dbExecute(
-            "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
-            [turn.projectId],
-            "get",
-            JSON.stringify(turn.identity),
+          const rawPolicy = await runNativeRead(
+            () =>
+              backend.dbExecute(
+                "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+                [turn.projectId],
+                "get",
+                JSON.stringify(turn.identity),
+              ),
+            {
+              command: "db_execute",
+              timeoutMs: MAIN_READ_CALLER_TIMEOUT_MS.db_execute,
+              hooks: readHooksOf(turn),
+            },
           );
-          trackRead(
-            turn,
-            pending.then(
-              () => undefined,
-              () => undefined,
-            ),
-          );
-          const rawPolicy = await pending;
-          assertLive(turn);
           if (!projectAiChatPolicyAllows(rawPolicy)) {
             turn.cancelObserved = true;
             throw sendIndex === 0

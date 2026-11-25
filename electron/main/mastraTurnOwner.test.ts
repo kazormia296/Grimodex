@@ -28,6 +28,7 @@ vi.mock("./events.js", async (importOriginal) => {
 });
 
 import type { AiAuditEventInput } from "../shared/aiAuditEvents.js";
+import { MAIN_READ_CALLER_TIMEOUT_MS } from "../shared/ipcCallerTimeouts.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import {
   consumeProfileActivation,
@@ -113,7 +114,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 const flush = async (): Promise<void> => {
-  for (let i = 0; i < 24; i += 1) await Promise.resolve();
+  for (let i = 0; i < 32; i += 1) await Promise.resolve();
 };
 
 const PROJECT_ID = "project-1";
@@ -4438,6 +4439,69 @@ describe("the per-send chat policy check (DR-MP4-26)", () => {
 
     policyRead.resolve(readAnswer([{ ai_policy: null }]));
     await flush();
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("times out a silent policy read before send and ignores its late answer", async () => {
+    vi.useFakeTimers();
+    const policyRead = deferred<string>();
+    const h = harness({ policyDbExecute: () => policyRead.promise });
+    const { context } = h.newContext();
+    const started = h.owner.start(context, startRequest(TURN_A));
+    let outcome: unknown;
+    let settled = false;
+    void started.then(
+      () => {
+        settled = true;
+      },
+      (error: unknown) => {
+        outcome = error;
+        settled = true;
+      },
+    );
+
+    await flush();
+    expect(h.dbQueries).toHaveLength(1);
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(MAIN_READ_CALLER_TIMEOUT_MS.db_execute);
+    await flush();
+    expect(settled).toBe(true);
+    expect(outcome).toMatchObject({
+      message: expect.stringMatching(/did not answer within/),
+    });
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(1);
+    expect(h.owner.slotsInUse()).toBe(1);
+
+    policyRead.resolve(readAnswer([{ ai_policy: null }]));
+    await flush();
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("ends on forced abort before the policy read answers and drops the late result", async () => {
+    const policyRead = deferred<string>();
+    const h = harness({ policyDbExecute: () => policyRead.promise });
+    const { context, sender } = h.newContext();
+    const started = h.owner.start(context, startRequest(TURN_A));
+
+    await flush();
+    expect(h.owner.readsInFlight()).toBe(1);
+    sender.emit("destroyed");
+
+    await expect(started).rejects.toThrow(/ABORTED: sender-gone/);
+    expect(h.owner.activeTurnCount()).toBe(0);
+    expect(h.owner.readsInFlight()).toBe(1);
+    expect(h.sends).toEqual([]);
+
+    policyRead.resolve(readAnswer([{ ai_policy: null }]));
+    await flush();
+    expect(h.sends).toEqual([]);
+    expect(h.owner.readsInFlight()).toBe(0);
     expect(h.owner.slotsInUse()).toBe(0);
   });
 });
