@@ -361,6 +361,31 @@ fn active_finding_observations<'a>(
     ))
 }
 
+fn snooze_hides_consumer(
+    active_observations: &[&FindingObservationRow],
+    has_unresolved_identity: bool,
+    attention: Option<&AttentionRow>,
+    now: &str,
+) -> bool {
+    match attention {
+        Some(attention_row) if attention_row.disposition == AttentionDisposition::Snoozed => {
+            !active_observations.is_empty()
+                && !has_unresolved_identity
+                && attention_row.identity_resolution_status == "resolved"
+                && active_observations.iter().all(|observation| {
+                    observation.finding_identity.as_deref()
+                        == attention_row.finding_identity.as_deref()
+                        && is_attention_applicable(
+                            attention_row,
+                            observation.material_basis_digest.as_str(),
+                            now,
+                        )
+                })
+        }
+        _ => false,
+    }
+}
+
 /// Compare a terminal lifecycle resolution with its Observation using
 /// SQLite's instant parser. Restored rows may use different RFC3339 offsets,
 /// so lexical comparison is not a valid chronology. Equal, older, or
@@ -387,6 +412,84 @@ fn terminal_resolution_is_strictly_newer(
             "NEX_FINDING_INBOX_TIMESTAMP_INVALID: terminal lifecycle or observation timestamp is not a valid instant"
         ),
     }
+}
+
+/// Count stale proposal Consumers without assembling the full Inbox.
+/// Observation history and Attention are read only for matching Consumers
+/// that actually have a Snoozed Attention row.
+pub fn count_stale_proposals(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+) -> anyhow::Result<u64> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+
+    let Some(current_epoch) = get_current_epoch(conn, project_id)? else {
+        return Ok(0);
+    };
+
+    // Match list_consumer_freshness's fail-closed enum decoding while doing
+    // the candidate count in SQLite.
+    let (count, invalid_freshness, invalid_action): (i64, i64, i64) = conn.query_row(
+        "SELECT COALESCE(SUM(CASE WHEN consumer_kind = 'proposal-revision'
+                                      AND evidence_freshness IN
+                                          ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN evidence_freshness NOT IN
+                                          ('fresh', 'stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
+                                 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN build_action NOT IN
+                                          ('none', 'revalidate-exact', 'reanchor-candidate', 'resolve-only', 'recompile-only', 'rebuild-required', 'refresh-available', 'manual')
+                                 THEN 1 ELSE 0 END), 0)
+           FROM narrative_consumer_freshness
+          WHERE project_id = ?1",
+        params![project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if invalid_freshness > 0 {
+        anyhow::bail!("NEX_EVIDENCE_FRESHNESS_INVALID: unknown evidence freshness");
+    }
+    if invalid_action > 0 {
+        anyhow::bail!("NEX_BUILD_ACTION_INVALID: unknown build action");
+    }
+
+    let snoozed_consumers = conn
+        .prepare(
+            "SELECT f.consumer_kind, f.consumer_key
+               FROM narrative_consumer_freshness f
+               JOIN narrative_maintenance_attention a
+                 ON a.project_id = f.project_id
+                AND a.finding_key = f.consumer_kind || ':' || f.consumer_key
+              WHERE f.project_id = ?1
+                AND f.consumer_kind = 'proposal-revision'
+                AND f.evidence_freshness IN
+                    ('stale', 'source-missing', 'anchor-mismatch', 'read-set-drift', 'unknown')
+                AND a.disposition = 'snoozed'
+              ORDER BY f.consumer_kind, f.consumer_key",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut hidden = 0_u64;
+    for (consumer_kind, consumer_key) in snoozed_consumers {
+        let finding_key = consumer_finding_key(&consumer_kind, &consumer_key);
+        let observations =
+            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
+        let (active_observations, has_unresolved_identity, _) =
+            active_finding_observations(conn, project_id, &observations)?;
+        let attention = get_attention(conn, project_id, &finding_key)?;
+        hidden += u64::from(snooze_hides_consumer(
+            &active_observations,
+            has_unresolved_identity,
+            attention.as_ref(),
+            now,
+        ));
+    }
+
+    Ok(u64::try_from(count)?.saturating_sub(hidden))
 }
 
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:
@@ -437,30 +540,12 @@ pub fn build_maintenance_inbox(
         // own contract).
         let attention = get_attention(conn, project_id, &finding_key)?;
 
-        let is_snoozed_and_active = match &attention {
-            Some(attention_row) if attention_row.disposition == AttentionDisposition::Snoozed => {
-                // The Attention row is one Consumer-grained record, but its
-                // resolved Finding identity is Edge-scoped. Hide the row only
-                // when every currently active identity is exactly that one
-                // identity and its latest evidence still satisfies the
-                // snooze. A sibling Edge must keep the Consumer visible.
-                !active_observations.is_empty()
-                    && !has_unresolved_identity
-                    && attention_row.identity_resolution_status == "resolved"
-                    && active_observations.iter().all(|observation| {
-                        observation.finding_identity.as_deref()
-                            == attention_row.finding_identity.as_deref()
-                            && is_attention_applicable(
-                                attention_row,
-                                observation.material_basis_digest.as_str(),
-                                now,
-                            )
-                    })
-            }
-            // Dismissed/Flagged never hide the entry; no Attention row at
-            // all obviously does not either.
-            _ => false,
-        };
+        let is_snoozed_and_active = snooze_hides_consumer(
+            &active_observations,
+            has_unresolved_identity,
+            attention.as_ref(),
+            now,
+        );
 
         if is_snoozed_and_active {
             // Active, unexpired snooze: hidden from the Inbox entirely.
@@ -495,23 +580,12 @@ pub fn build_maintenance_inbox(
             continue;
         };
         let attention = get_attention(conn, project_id, &finding_key)?;
-        let is_snoozed_and_active = match &attention {
-            Some(attention_row) if attention_row.disposition == AttentionDisposition::Snoozed => {
-                !active_observations.is_empty()
-                    && !has_unresolved_identity
-                    && attention_row.identity_resolution_status == "resolved"
-                    && active_observations.iter().all(|observation| {
-                        observation.finding_identity.as_deref()
-                            == attention_row.finding_identity.as_deref()
-                            && is_attention_applicable(
-                                attention_row,
-                                observation.material_basis_digest.as_str(),
-                                now,
-                            )
-                    })
-            }
-            _ => false,
-        };
+        let is_snoozed_and_active = snooze_hides_consumer(
+            &active_observations,
+            has_unresolved_identity,
+            attention.as_ref(),
+            now,
+        );
         if is_snoozed_and_active {
             continue;
         }
@@ -688,6 +762,416 @@ mod tests {
             ],
         )
         .expect("seed dependency edge");
+    }
+
+    fn summarize_stale_proposals(entries: &[InboxEntry]) -> u64 {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_kind == InboxEntryKind::ConsumerFreshness
+                    && entry.consumer_kind == "proposal-revision"
+                    && entry
+                        .evidence_freshness
+                        .as_deref()
+                        .is_some_and(|freshness| {
+                            freshness != "fresh" && freshness != "unrecognized"
+                        })
+            })
+            .count() as u64
+    }
+
+    #[test]
+    fn count_stale_proposals_matches_inbox_across_deterministic_combinations() {
+        const FRESHNESS: [&str; 6] = [
+            "fresh",
+            "stale",
+            "source-missing",
+            "anchor-mismatch",
+            "read-set-drift",
+            "unknown",
+        ];
+        let mut seed = 0x00C0_FFEE_u64;
+        let mut tested = 0;
+
+        for kind_index in 0..2 {
+            for freshness in FRESHNESS {
+                for attention_case in 0..5 {
+                    for observation_case in 0..4 {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let db = test_db();
+                        db.with_conn(|conn| {
+                            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                            let consumer_kind = if kind_index == 0 {
+                                "proposal-revision"
+                            } else {
+                                "other-kind"
+                            };
+                            let consumer_key = format!("item-{:04x}-{:016x}", tested, seed);
+                            let finding_key = consumer_finding_key(consumer_kind, &consumer_key);
+                            seed_consumer_freshness(
+                                conn,
+                                "project-1",
+                                consumer_kind,
+                                &consumer_key,
+                                freshness,
+                                "none",
+                                &epoch_id,
+                                "2026-08-15T00:00:00.000Z",
+                            );
+
+                            let edge_count = if observation_case == 1 { 2 } else { 1 };
+                            let mut first_basis = String::new();
+                            for edge_index in 0..edge_count {
+                                let edge_id = format!("edge-{tested}-{edge_index}");
+                                seed_dependency_edge(
+                                    conn,
+                                    &edge_id,
+                                    "project-1",
+                                    consumer_kind,
+                                    &consumer_key,
+                                );
+                                let basis = test_material_basis(
+                                    &edge_id,
+                                    FindingReasonCode::SourceRevisionChanged,
+                                    EvidenceFreshness::Stale,
+                                );
+                                if edge_index == 0 {
+                                    first_basis = basis.clone();
+                                }
+                                record_finding_observation_in_tx(
+                                    conn,
+                                    "project-1",
+                                    &format!("run-{tested}-{edge_index}"),
+                                    &epoch_id,
+                                    Some(&edge_id),
+                                    &finding_key,
+                                    FindingReasonCode::SourceRevisionChanged,
+                                    EvidenceFreshness::Stale,
+                                    &basis,
+                                    &format!("2026-08-15T00:00:0{edge_index}.000Z"),
+                                )?;
+                            }
+
+                            match observation_case {
+                                2 => {
+                                    let identity = stable_finding_identity(
+                                        BUNDLED_FINDING_RULE_ID,
+                                        BUNDLED_FINDING_RULE_VERSION,
+                                        &format!("edge-{tested}-0"),
+                                    )?;
+                                    record_finding_lifecycle_in_tx(
+                                        conn,
+                                        FindingLifecycleWrite {
+                                            project_id: "project-1",
+                                            finding_identity: &identity,
+                                            finding_key: &finding_key,
+                                            rule_id: BUNDLED_FINDING_RULE_ID,
+                                            rule_version: BUNDLED_FINDING_RULE_VERSION,
+                                            state: FindingLifecycleState::Resolved,
+                                            observation_digest: None,
+                                            material_basis_digest: Some(&first_basis),
+                                            run_id: &format!("resolved-{tested}"),
+                                            semantic_epoch_id: &epoch_id,
+                                            observed_at: "2026-08-15T00:00:10.000Z",
+                                        },
+                                    )?;
+                                }
+                                3 => {
+                                    conn.execute(
+                                        "UPDATE narrative_maintenance_finding_observations
+                                            SET finding_identity = NULL
+                                          WHERE project_id = ?1 AND finding_key = ?2",
+                                        params!["project-1", finding_key],
+                                    )?;
+                                }
+                                _ => {}
+                            }
+
+                            let disposition = match attention_case {
+                                1 => Some(AttentionDisposition::Flagged),
+                                2 => Some(AttentionDisposition::Dismissed),
+                                3 | 4 => Some(AttentionDisposition::Snoozed),
+                                _ => None,
+                            };
+                            if let Some(disposition) = disposition {
+                                let until = match attention_case {
+                                    3 => Some("2026-08-15T02:00:00.000Z"),
+                                    4 => Some("2026-08-15T00:30:00.000Z"),
+                                    _ => None,
+                                };
+                                set_attention_for_test(
+                                    conn,
+                                    "project-1",
+                                    &finding_key,
+                                    disposition,
+                                    &first_basis,
+                                    until,
+                                    "2026-08-15T00:00:00.000Z",
+                                    Some("test-actor"),
+                                )?;
+                            }
+
+                            let now = "2026-08-15T01:00:00.000Z";
+                            let expected = summarize_stale_proposals(&build_maintenance_inbox(
+                                conn,
+                                "project-1",
+                                now,
+                            )?);
+                            let expected_from_seed = u64::from(
+                                kind_index == 0
+                                    && freshness != "fresh"
+                                    && !(attention_case == 3 && observation_case == 0),
+                            );
+                            assert_eq!(expected, expected_from_seed, "Inbox oracle case {tested}");
+                            assert_eq!(count_stale_proposals(conn, "project-1", now)?, expected,
+                                "case {tested}: kind={consumer_kind}, freshness={freshness}, attention={attention_case}, observations={observation_case}");
+                            Ok(())
+                        })
+                        .expect("with_conn");
+                        tested += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(tested, 240);
+    }
+
+    #[test]
+    fn count_stale_proposals_matches_inbox_error_for_invalid_freshness() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "ignore_check_constraints", "ON")?;
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                "proposal-revision",
+                "item-0001",
+                "stale",
+                "none",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            conn.execute(
+                "UPDATE narrative_consumer_freshness SET evidence_freshness = 'unreadable'
+                  WHERE project_id = 'project-1' AND consumer_key = 'item-0001'",
+                [],
+            )?;
+            assert!(
+                build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err()
+            );
+            assert!(count_stale_proposals(conn, "project-1", "2026-08-15T01:00:00.000Z").is_err());
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn count_stale_proposals_handles_snoozes_siblings_expiry_and_missing_epoch() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            let consumer_kind = "proposal-revision";
+            let consumer_key = "item-0001";
+            let finding_key = "proposal-revision:item-0001";
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                consumer_kind,
+                consumer_key,
+                "stale",
+                "rebuild-required",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            let first_basis = test_material_basis(
+                "edge-a",
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+            );
+            seed_dependency_edge(conn, "edge-a", "project-1", consumer_kind, consumer_key);
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-a",
+                &epoch_id,
+                Some("edge-a"),
+                finding_key,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &first_basis,
+                "2026-08-15T00:00:01.000Z",
+            )?;
+            set_attention_for_test(
+                conn,
+                "project-1",
+                finding_key,
+                AttentionDisposition::Snoozed,
+                &first_basis,
+                Some("2026-08-15T02:00:00.000Z"),
+                "2026-08-15T00:00:02.000Z",
+                Some("test-actor"),
+            )?;
+            let now = "2026-08-15T01:00:00.000Z";
+            assert_eq!(count_stale_proposals(conn, "project-1", now)?, 0);
+
+            let sibling_basis = test_material_basis(
+                "edge-b",
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+            );
+            seed_dependency_edge(conn, "edge-b", "project-1", consumer_kind, consumer_key);
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-b",
+                &epoch_id,
+                Some("edge-b"),
+                finding_key,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &sibling_basis,
+                "2026-08-15T00:00:03.000Z",
+            )?;
+            assert_eq!(count_stale_proposals(conn, "project-1", now)?, 1);
+
+            set_attention_for_test(
+                conn,
+                "project-1",
+                finding_key,
+                AttentionDisposition::Snoozed,
+                &first_basis,
+                Some("2026-08-15T00:30:00.000Z"),
+                "2026-08-15T00:00:04.000Z",
+                Some("test-actor"),
+            )?;
+            assert_eq!(count_stale_proposals(conn, "project-1", now)?, 1);
+            Ok(())
+        })
+        .expect("with_conn");
+
+        let no_epoch_db = test_db();
+        no_epoch_db
+            .with_conn(|conn| {
+                assert_eq!(
+                    count_stale_proposals(conn, "project-1", "2026-08-15T01:00:00.000Z")?,
+                    0
+                );
+                Ok(())
+            })
+            .expect("with_conn");
+    }
+
+    #[test]
+    #[ignore = "manual 50k-consumer file DB timing; run only below load average 4"]
+    fn count_stale_proposals_scales_with_snoozed_consumers() {
+        let load_average = std::fs::read_to_string("/proc/loadavg")
+            .ok()
+            .and_then(|value| value.split_whitespace().next()?.parse::<f64>().ok())
+            .unwrap_or(f64::INFINITY);
+        if load_average >= 4.0 {
+            eprintln!("timing skipped: load average {load_average:.2} is not below 4");
+            return;
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-inbox-count-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let db = Database::new(&path).expect("file DB");
+        db.migrate().expect("migrate file DB");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project");
+        let epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
+            .expect("seed epoch");
+        db.with_conn_mut(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            {
+                let mut insert = conn.prepare(
+                    "INSERT INTO narrative_consumer_freshness
+                        (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
+                         semantic_epoch_id, last_evaluated_run_id, updated_at)
+                     VALUES ('project-1', ?1, ?2, ?3, 'rebuild-required', ?4, NULL,
+                             '2026-08-15T00:00:00.000Z')",
+                )?;
+                for index in 0..50_000 {
+                    let kind = if index % 10 < 7 {
+                        "proposal-revision"
+                    } else {
+                        "other-kind"
+                    };
+                    let freshness = if index % 100 < 28 { "stale" } else { "fresh" };
+                    insert.execute(params![
+                        kind,
+                        format!("item-{index:05}"),
+                        freshness,
+                        epoch_id
+                    ])?;
+                }
+            }
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        })
+        .expect("seed 50k Consumers");
+        for index in (0..50_000).step_by(10) {
+            let finding_key = format!("proposal-revision:item-{index:05}");
+            let disposition = if (index / 10) % 2 == 0 {
+                AttentionDisposition::Snoozed
+            } else {
+                AttentionDisposition::Flagged
+            };
+            db.with_conn(|conn| {
+                set_attention_for_test(
+                    conn,
+                    "project-1",
+                    &finding_key,
+                    disposition,
+                    "benchmark-basis",
+                    (disposition == AttentionDisposition::Snoozed)
+                        .then_some("2026-08-15T02:00:00.000Z"),
+                    "2026-08-15T00:00:00.000Z",
+                    Some("benchmark"),
+                )?;
+                Ok(())
+            })
+            .expect("seed Attention");
+        }
+
+        let now = "2026-08-15T01:00:00.000Z";
+        let started = std::time::Instant::now();
+        let counted = db
+            .with_conn(|conn| count_stale_proposals(conn, "project-1", now))
+            .expect("count");
+        let count_elapsed = started.elapsed();
+        let started = std::time::Instant::now();
+        let inbox_count = db
+            .with_conn(|conn| build_maintenance_inbox(conn, "project-1", now))
+            .expect("build Inbox")
+            .len();
+        let inbox_elapsed = started.elapsed();
+        eprintln!(
+            "count_stale_proposals={} in {} ms; build_maintenance_inbox_rows={} in {} ms; ratio={:.3}",
+            counted,
+            count_elapsed.as_millis(),
+            inbox_count,
+            inbox_elapsed.as_millis(),
+            count_elapsed.as_secs_f64() / inbox_elapsed.as_secs_f64()
+        );
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
     }
 
     #[test]
