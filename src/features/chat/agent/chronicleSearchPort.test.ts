@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
   tree: {
     projectId: "p-store" as string | null,
     nodes: [] as unknown[],
-    activeSceneId: "s2" as string | undefined,
+    activeSceneId: "s2" as string | null,
   },
   hits: [] as unknown[],
   events: [] as Array<{
@@ -28,6 +28,8 @@ const h = vi.hoisted(() => ({
     secret: boolean;
     revealSceneId: string | null;
   }>,
+  eventReads: [] as string[],
+  sequence: [] as string[],
   semantic: vi.fn(),
   coreCalls: [] as Array<Record<string, unknown>>,
 }));
@@ -59,7 +61,11 @@ vi.mock("@/features/semantic-search/api", () => ({
 }));
 vi.mock("./chronicleToolCache", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./chronicleToolCache")>()),
-  getSharedEvents: async () => h.events,
+  getSharedEvents: async () => {
+    h.sequence.push("eventRows");
+    h.eventReads.push("events");
+    return h.events;
+  },
   getSharedSceneEvents: async () => [],
   getSharedReadingOrder: () =>
     new Map([
@@ -133,6 +139,7 @@ const idsOf = (result: { content: unknown }) =>
 beforeEach(() => {
   h.gate.enabled = false;
   h.tree.projectId = "p-store";
+  h.tree.nodes = [];
   h.tree.activeSceneId = "s2";
   h.hits = [hit("a"), hit("b")];
   h.events = [
@@ -140,8 +147,13 @@ beforeEach(() => {
     { id: "b", secret: false, revealSceneId: null },
   ];
   h.coreCalls.length = 0;
+  h.eventReads.length = 0;
+  h.sequence.length = 0;
   h.semantic.mockReset();
-  h.semantic.mockImplementation(async () => h.hits);
+  h.semantic.mockImplementation(async () => {
+    h.sequence.push("dense");
+    return h.hits;
+  });
 });
 
 describe("project が無いとき（core の throw を従来の結果に戻す）", () => {
@@ -369,5 +381,44 @@ describe("旗×scope の 4 象限（どちらの経路を通ったか）", () =>
     h.gate.enabled = false;
     await call();
     expect(h.coreCalls).toHaveLength(2);
+  });
+});
+
+describe("renderer search_events revealScene", () => {
+  it.each([
+    ["s0", false],
+    ["s1", true],
+    [null, undefined],
+  ] as const)(
+    "uses the open scene %s and loads event rows after dense",
+    async (activeSceneId, revealed) => {
+      h.tree.activeSceneId = activeSceneId;
+      h.tree.nodes = [
+        { id: "s0", title: "Scene 0" },
+        { id: "s1", title: "Scene 1" },
+        { id: "s2", title: "Scene 2" },
+      ];
+      h.hits = [hit("a")];
+      h.events = [{ id: "a", secret: false, revealSceneId: "s1" }];
+
+      const result = await executeReadOnlyTool("search_events", "t1", {
+        query: "q",
+      });
+      const first = (result.content as Array<Record<string, unknown>>)[0]!;
+      expect(first.revealScene).toEqual(
+        revealed === undefined
+          ? { id: "s1", title: "Scene 1" }
+          : { id: "s1", title: "Scene 1", revealedToReader: revealed },
+      );
+      expect(h.eventReads).toEqual(["events"]);
+      expect(h.sequence).toEqual(["dense", "eventRows"]);
+    },
+  );
+
+  it("does not load event rows when dense search has no hits", async () => {
+    h.events = [{ id: "a", secret: false, revealSceneId: "s1" }];
+    h.hits = [];
+    await executeReadOnlyTool("search_events", "t1", { query: "q" });
+    expect(h.eventReads).toEqual([]);
   });
 });

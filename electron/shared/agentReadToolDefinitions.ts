@@ -68,12 +68,16 @@ export const M4_READ_TOOL_NAMES = [
 
 export type M4ReadToolName = (typeof M4_READ_TOOL_NAMES)[number];
 
+const REVEAL_SCENE_GUIDANCE =
+  " Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. When revealedToReader is false, readers do not know it yet at the current scene, so do not write it as something readers already know; when revealedToReader is absent, it was not judged.";
+
 /**
  * search_events の説明（chat IR の読み方を含まない版）。
  * renderer の IR 版は、これの後ろに IR の説明を足す。research sub-agent はこれをそのまま使う。
  */
 export const SEARCH_EVENTS_DESCRIPTION =
-  "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking).";
+  "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking)." +
+  REVEAL_SCENE_GUIDANCE;
 
 /**
  * M4 の 21 本の定義を、宣言順で新しく組んで返す。
@@ -330,7 +334,8 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
     {
       name: "list_events",
       description:
-        "List the story-chronicle events (the in-world fabula timeline, distinct from reading order) of the current project, in chronicle order. Optionally filter by kind ('birth' | 'death' | 'generic'). Each event returns id, title, kind, ordinal, startTime (days from the in-world epoch; may be null when only the order is known), startDate (the calendar-formatted date string, e.g. 'Year 1267, 4月3日'; null when there is no calendar or the date granularity is unset), and the primary character's name. Use to answer 'when did X happen' or to survey the timeline.",
+        "List the story-chronicle events (the in-world fabula timeline, distinct from reading order) of the current project, in chronicle order. Optionally filter by kind ('birth' | 'death' | 'generic'). Each event returns id, title, kind, ordinal, startTime (days from the in-world epoch; may be null when only the order is known), startDate (the calendar-formatted date string, e.g. 'Year 1267, 4月3日'; null when there is no calendar or the date granularity is unset), and the primary character's name. Use to answer 'when did X happen' or to survey the timeline." +
+        REVEAL_SCENE_GUIDANCE,
       inputSchema: {
         type: "object",
         properties: {
@@ -346,7 +351,8 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
     {
       name: "get_event_detail",
       description:
-        "Given a chronicle event id, return its full detail: title, note, kind, ordinal, startTime/endTime, startDate/endDate (calendar-formatted date strings for the start and end; null when there is no calendar or the granularity is unset), primary character, location, participant characters (names + roles), the scenes the event is stamped to (id + title), and its causal relations (cause→effect titles). Use after list_events to inspect one event.",
+        "Given a chronicle event id, return its full detail: title, note, kind, ordinal, startTime/endTime, startDate/endDate (calendar-formatted date strings for the start and end; null when there is no calendar or the granularity is unset), primary character, location, participant characters (names + roles), the scenes the event is stamped to (id + title), and its causal relations (cause→effect titles). Use after list_events to inspect one event." +
+        REVEAL_SCENE_GUIDANCE,
       inputSchema: {
         type: "object",
         properties: {
@@ -358,7 +364,8 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
     {
       name: "get_character_timeline",
       description:
-        "Given a character's Codex id, return the chronicle events that character takes part in (as primary or participant), in chronicle order, each with title, kind, startTime, and the character's age at that event when derivable (requires a birth event and a calendar). Use to answer 'how old is X now' or 'what has happened to X'.",
+        "Given a character's Codex id, return the chronicle events that character takes part in (as primary or participant), in chronicle order, each with title, kind, startTime, and the character's age at that event when derivable (requires a birth event and a calendar). Use to answer 'how old is X now' or 'what has happened to X'." +
+        REVEAL_SCENE_GUIDANCE,
       inputSchema: {
         type: "object",
         properties: {
@@ -370,7 +377,8 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
     {
       name: "get_chronicle_state",
       description:
-        "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. Recent and off-page events each carry a relTime label (the time distance from the scene's anchor, e.g. '約2年前' / 'about 2 years earlier' / '同日'; null when there is no calendar). If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON.",
+        "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. Recent and off-page events each carry a relTime label (the time distance from the scene's anchor, e.g. '約2年前' / 'about 2 years earlier' / '同日'; null when there is no calendar). If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON." +
+        REVEAL_SCENE_GUIDANCE,
       inputSchema: {
         type: "object",
         properties: {

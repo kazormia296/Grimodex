@@ -344,11 +344,9 @@ export type CoreChronicleReadContext = Pick<
 };
 
 /**
- * The ports of `search_events`: project state, token counter, and dense event
- * search. It does not load chronicle rows or apply event-secrecy filtering.
- * This stays separate from `CoreChronicleReadContext` (the four chronicle tools
- * do not need a dense read) and `CoreReadContext` (`native` there lacks
- * `eventsSemantic`).
+ * `search_events` の ports。dense 検索の hit があった後だけ、出来事の行と読む順を読む。
+ * 出来事の秘匿判定はしない。dense を使わない年表 read context と、native に
+ * `eventsSemantic` が無い `CoreReadContext` から分けている。
  *
  * `native.eventsSemantic` answers the wire as it is, not narrowed. A failure of
  * it is not turned into an empty answer by the core: what a caller does with it
@@ -360,6 +358,7 @@ export type CoreChronicleSearchContext = Pick<
   "getTreeState" | "countTokens"
 > & {
   readonly native: Pick<CoreNativeReads, "eventsSemantic">;
+  readonly chronicle: Pick<CoreChronicleData, "getEvents" | "getReadingOrder">;
 };
 
 /**

@@ -1,4 +1,5 @@
 import type { CoreChronicleSearchContext } from "../../mastraRead/ports.js";
+import { chronicleRevealMarks } from "../features/chronicle/chronicleRevealMark.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
 
@@ -15,12 +16,11 @@ import type { CoreToolResult } from "./toolResult.js";
  *   1. an empty query answers `0 events found` and reads nothing;
  *   2. the project is taken once (`requireCoreProjectId`);
  *   3. the dense read, with `limit` raised to `fetchLimit`;
- *   4. the dense hits are narrowed and the first `limit` are returned.
+ *   4. selected hit rows are loaded, and their disclosure scene is marked when present.
  *   5. the JSON result is counted by `countTokens`.
  *
- * Every event is eligible for search, including events marked secret. Hits are
- * not checked against the events table; the native dense read is scoped to the
- * project.
+ * Every event is eligible for search, including events marked secret. Dense
+ * hits are scoped to the project; their event rows are read only after hits exist.
  *
  * A failure of the dense read is not caught here: the renderer's port answers an
  * empty list (`chronicleSearchPort.ts`) and Main's lets it out.
@@ -114,11 +114,33 @@ export async function searchEvents(
     }),
   );
 
-  const content = hits.slice(0, limit).map((h) => ({
+  const selectedHits = hits.slice(0, limit);
+  // 出来事の行は、hit があった後でだけ読む。
+  const byId = new Map(
+    selectedHits.length
+      ? (await ctx.chronicle.getEvents(projectId)).map(
+          (e) => [e.id, e] as const,
+        )
+      : [],
+  );
+  const revealOf = chronicleRevealMarks(
+    selectedHits.flatMap((hit) => byId.get(hit.eventId) ?? []),
+    () => {
+      const { nodes, activeSceneId } = ctx.getTreeState();
+      return {
+        nodes,
+        currentSceneId: activeSceneId,
+        readingOrder: ctx.chronicle.getReadingOrder(nodes),
+      };
+    },
+  );
+
+  const content = selectedHits.map((h) => ({
     eventId: h.eventId,
     title: h.title,
     kind: h.kind,
     score: h.score,
+    ...revealOf(h.eventId),
   }));
   return {
     name: "search_events",

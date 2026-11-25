@@ -2010,6 +2010,8 @@ pub struct ChronicleEventRow {
     pub precision: String,
     pub kind: String,
     pub version: i64,
+    #[serde(skip_serializing)]
+    pub reveal_scene_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2081,6 +2083,7 @@ fn map_chronicle_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEve
         precision: row.get(12)?,
         kind: row.get(13)?,
         version: row.get(14)?,
+        reveal_scene_id: row.get(15)?,
     })
 }
 
@@ -2095,7 +2098,8 @@ pub fn chronicle_list_events(
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
                 start_time, end_time, start_minute, end_minute,
-                start_granularity, end_granularity, precision, kind, version
+                start_granularity, end_granularity, precision, kind, version,
+                reveal_scene_id
          FROM events WHERE project_id = ?1
          ORDER BY ordinal ASC, id ASC",
     )?;
@@ -2276,6 +2280,7 @@ pub fn chronicle_scene_nodes(
         .query_map(params![project_id], |row| {
             Ok(crate::chronicle_snapshot::SceneNode {
                 id: row.get(0)?,
+                title: None,
                 parent_id: row.get(1)?,
                 node_type: row.get(2)?,
                 sort_order: row.get(3)?,
@@ -2287,6 +2292,36 @@ pub fn chronicle_scene_nodes(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("chronicle_scene_nodes failed")?;
+    Ok(rows)
+}
+
+/// 開示順判定用に、archived でない tree node だけを返す。
+pub fn chronicle_active_scene_nodes(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<crate::chronicle_snapshot::SceneNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent_id, node_type, sort_order,
+                chronicle_start_time, chronicle_start_minute,
+                chronicle_start_granularity, chronicle_precision
+         FROM tree_nodes WHERE project_id = ?1 AND archived_at IS NULL",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(crate::chronicle_snapshot::SceneNode {
+                id: row.get(0)?,
+                title: None,
+                parent_id: row.get(1)?,
+                node_type: row.get(2)?,
+                sort_order: row.get(3)?,
+                chronicle_start_time: row.get(4)?,
+                chronicle_start_minute: row.get(5)?,
+                chronicle_start_granularity: row.get(6)?,
+                chronicle_precision: row.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_active_scene_nodes failed")?;
     Ok(rows)
 }
 

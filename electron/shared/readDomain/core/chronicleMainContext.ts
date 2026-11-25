@@ -127,13 +127,9 @@ function turnTreeState(turn: ChronicleReadInputs): CoreTreeState {
   };
 }
 
-/** The main search context uses the turn's project, token counter and dense read; it loads no chronicle rows. */
+/** Main の検索 context。dense hit があるときだけ年表の出来事を読む。 */
 export interface MainChronicleSearchContextArgs {
-  /**
-   * `createCoreReadDb(checkedClient)`. Not read any more (CSR/1: the search has no
-   * secrecy decision, so it loads no events); kept so that the callers and the
-   * context of the chronicle read tools are built from the same arguments.
-   */
+  /** `createCoreReadDb(checkedClient)`. */
   readonly db: CoreReadDb;
   /** The turn's inputs: from `readChronicleReadInputs`, at the start of the turn. */
   readonly turn: ChronicleReadInputs;
@@ -145,11 +141,15 @@ export interface MainChronicleSearchContextArgs {
 export function createMainChronicleSearchContext(
   args: MainChronicleSearchContextArgs,
 ): CoreChronicleSearchContext {
-  const { turn } = args;
+  const { db, turn } = args;
   const treeState = turnTreeState(turn);
   return {
     getTreeState: () => treeState,
     countTokens: args.countTokens,
     native: args.native,
+    chronicle: {
+      getEvents: (projectId) => readEventsFailClosed(db, projectId),
+      getReadingOrder: () => turn.inputs.readingOrder,
+    },
   };
 }
