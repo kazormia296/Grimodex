@@ -231,7 +231,7 @@ export async function sendAgentMessage(
     await guard?.beforeInvoke();
     response = await invoke<AgentLLMResponse>("send_agent_message", args);
   } catch (error) {
-    if (!(await guard?.closeStopped())) {
+    if (!(await guard?.closeStopped(error))) {
       await auditRuntime.failAiAuditExecution(audit, {
         error: auditRuntime.auditErrorSnapshot(error),
       });

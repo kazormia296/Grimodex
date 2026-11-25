@@ -449,9 +449,17 @@ export function guardAgentSend(
       requestAbort();
       await aborting;
     },
-    /** 停止による失敗なら監査を cancelled で閉じて true。それ以外は false。 */
-    async closeStopped(): Promise<boolean> {
-      if (!signal.aborted) return false;
+    /**
+     * 停止による失敗なら監査を cancelled で閉じて true。それ以外は false。停止の後でも、
+     * Native が停止の印を返さない失敗（provider や送信の制限）は失敗として記録する。
+     */
+    async closeStopped(error: unknown): Promise<boolean> {
+      if (
+        !signal.aborted ||
+        !String(error).includes("AI_REQUEST_STOPPED_BY_USER")
+      ) {
+        return false;
+      }
       const receipt = await aborting;
       await cancelAiAuditExecution(audit, {
         reason: "stopped",

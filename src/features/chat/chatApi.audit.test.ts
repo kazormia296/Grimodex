@@ -269,6 +269,31 @@ describe("chat and Agent audit contracts", () => {
     expect(failMock).not.toHaveBeenCalled();
   });
 
+  it("records a different failure as failed even after Stop", async () => {
+    let rejectSend: ((error: Error) => void) | undefined;
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<Awaited<ReturnType<typeof invokeMock>>>(
+          (_resolve, reject) => {
+            rejectSend = reject;
+          },
+        ),
+    );
+    const controller = new AbortController();
+    const send = sendAgentMessageWithSignal(
+      "execution-stop-then-error",
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(rejectSend).toBeDefined());
+
+    controller.abort();
+    rejectSend?.(new Error("D2A_EGRESS_DENIED: legacy-request-stopped"));
+    await expect(send).rejects.toThrow("D2A_EGRESS_DENIED");
+
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(cancelMock).not.toHaveBeenCalled();
+  });
+
   it("requests native cancellation before invoking a send with an aborted signal", async () => {
     const controller = new AbortController();
     controller.abort();

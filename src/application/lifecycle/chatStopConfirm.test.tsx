@@ -44,7 +44,10 @@ describe("終了や切替の前の、生成中の応答の確認", () => {
     act(() => {
       decision = confirmStopActiveTurn("close");
     });
-    expect(await screen.findByText("応答を生成中です")).toBeInTheDocument();
+    // 初回は確認の画面を遅延読み込みするので、負荷が高いと 1 秒を超える。
+    expect(
+      await screen.findByText("応答を生成中です", {}, { timeout: 5_000 }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/中断して終了しますか/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "中断して終了" }));
     await expect(Promise.resolve(decision)).resolves.toBe(true);
@@ -57,7 +60,13 @@ describe("終了や切替の前の、生成中の応答の確認", () => {
     act(() => {
       decision = confirmStopActiveTurn("switch");
     });
-    fireEvent.click(await screen.findByRole("button", { name: "キャンセル" }));
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "キャンセル" },
+        { timeout: 5_000 },
+      ),
+    );
     await expect(Promise.resolve(decision)).resolves.toBe(false);
     expect(stop).not.toHaveBeenCalled();
   });

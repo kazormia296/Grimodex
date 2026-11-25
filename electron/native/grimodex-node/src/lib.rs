@@ -17261,6 +17261,10 @@ impl Backend {
             let result = tokio::select! {
                 biased;
                 () = cancellation.wait_abort_requested() => {
+                    // 停止の障壁が同時に働いていれば、利用者の停止に隠さず拒否を返す。
+                    dispatch
+                        .ensure_open()
+                        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
                     return Err(Error::from_reason("AI_REQUEST_STOPPED_BY_USER".to_string()));
                 }
                 result = dispatch.until_cancelled(grimodex_ai::send_chat_with_tools(
