@@ -1957,6 +1957,7 @@ DR-MP4-53 の PR 列のうち、DR-MP4-54 に続く 3 本が master に入った
 DR-MP4-53 の PR 列の残りのうち 3 本が master に入った。いずれも呼び手なし（旗 L は閉じたまま、製品の機能の挙動は不変。T は main の起動の読み込みを少し増やす：下記）。各 PR は、実装（Codex）の後に別の Codex セッション（read-only）の独立レビューを受け、指摘を直してから出した。
 
 **R2-b2（#1116）：loop 規則の結線と、複数 send の集約結果。**
+
 - owner は R3 の `agentLoopRules`（import の無い pure module。試験で固定）で回数・予算・上限を数える。上限の制御 message は一度だけ足し、finalize の入力に入れてから数える。以後の send の tools は空。
 - send の間の user-stop は、2 本目以降の `prepareSend`（audit の `begin` の前）で sentinel を投げ、`stoppedReason: "aborted"` の集約結果で返す。進行中の Native send は切らない。1 本目の前の Stop は cancelled のまま。2 本目以降で窓超過と Stop が競合した場合も aborted。terminal は turn で一度。
 - tool 結果の token は `onToolResult` で受け、非負の安全な整数でなければ失敗にする。
@@ -1964,12 +1965,14 @@ DR-MP4-53 の PR 列の残りのうち 3 本が master に入った。いずれ�
 - legacy との意図した差は 1 点：tool batch を応答の観測時に数える（上限が batch の途中で来る場合だけ owner が先に数える）。
 
 **T0（#1115）：main の `o200k_base` tokenizer。**
+
 - `tiktoken` の ranks（2,325,457 bytes）と WASM（1,073,364 bytes）を `extraResources` で `resources/tokenizer/` に置く。新しい依存は無い。
 - 遅延読込・single-flight・失敗は再試行可。準備前の `countTokens` は例外（heuristic は使わない）。packaged／dev の path の解決は `ensureReady()` の中で行い、失敗が main の起動を壊さないようにした。
 - 実測（plain Node、中央値）：`ensureReady()` 324 ms、10 万 code unit の `countTokens` 37.8 ms（45,458 token）。special token は renderer と同じく拒む。
 - 未確認：packaged の実コピーと実読込。
 
-**T（#TBD）：M4 の read tool 21 本の接続。**
+**T（#1120）：M4 の read tool 21 本の接続。**
+
 - owner が `request.tools` の名前ごとに binding（閉じた closure）を組み、第 3 bundle には closure だけを渡す。Mastra 側の `inputSchema` は permissive（検証と coerce は共有 core。wire に出る schema は turn 開始時の snapshot の定義）。
 - 読みは Main 発行の identity で行い、全ての read に Stop・forced abort・profile の確認を付ける。未選択の名前と limit 到達後の tool は実行境界で拒む。Stop・forced abort の read は record も event も出さない。
 - `get_codex_entry` の既注入の短絡は legacy と同じ。main は共有 helper から文言を返し、renderer の handler は literal のまま（起動時の JS graph を増やさないため）。一致は renderer の試験で比べる。
@@ -1980,9 +1983,12 @@ DR-MP4-53 の PR 列の残りのうち 3 本が master に入った。いずれ�
 - 未確認：実 Electron の起動時間、packaged の実読込、実 Electron での binding の構築と read の実行（journey は key 解決で止まる）。
 
 **運用の学び（記録）：**
+
 1. main の静的 import が増える変更は、`main.cjs` の byte を前後で測る。起動の性能 gate は PR の CI に無く、全 gate が通っても気づけない。
 2. renderer の起動時の JS graph の余裕は数十 byte。共有の helper への切り替えだけで超えうる（T で +37 bytes。切り替えを取り下げた）。計測は lock と一致する依存の worktree で行う。
 3. パスを比べる試験の期待値は `path.join` で組む。固定の区切り文字は `Electron Windows` の CI でだけ落ちる（#1115）。
-4. PR の CI で、製品と無関係の不安定な失敗を 2 種観測した（teardown 後の unhandled rejection：`MobileWorkspaceSurfaces.aiStop.test.tsx`。`editorForeshadowRefresh.browser.test.tsx` の EAR-23）。失敗した job だけの再実行で通った。
+4. PR の CI で、製品と無関係の不安定な失敗を 2 種観測した（teardown 後の unhandled rejection：`MobileWorkspaceSurfaces.aiStop.test.tsx`。`editorForeshadowRefresh.browser.test.tsx` の EAR-23）。失敗した job だけの再実行で通った。前者の試験は #1119 で直った。
 
-**残り：** packaged の tokenizer の実読込の確認、MP-5／MP-6（残りの tool。製品の agent-mode の turn は 44 本を宣言するので、MP-6 までは Mastra に届かない）、4c-2（renderer の engine 分岐。Q5 の threat model の確認が要る）。Q4 (d) の解釈（窓超過の運び方）は DR-MP4-55 のとおりで、ユーザーが別の形を望めば差し替える。
+**残り：** packaged の tokenizer の実読込の確認、MP-5／MP-6（残りの tool。製品の agent-mode の turn は 44 本を宣言するので、MP-6 までは Mastra に届かない）、4c-2（renderer の engine 分岐。merge は、宣言する tool の集合が main の集合に収まる MP の直前で、MP-6 以降〔第 5 節の 4c-2〕。Q5 は回答済みで、脅威モデルへの追記は 4c-2 の PR で改めて確認する）。Q4 (d) の解釈（窓超過の運び方）は DR-MP4-55 のとおりで、ユーザーが別の形を望めば差し替える。
+
+**前提が変わった記載（旗 L を開ける前に読み直す）：** #1093（FSR/1 F1）で、`list_open_for_context` は secret の伏線を除かなくなった。DR-MP4-35e（除くことの固定と、その Rust の試験を MP-13 に載せる点）と、`get_foreshadow_detail` の非対称（C-11）は、変更前の前提で書かれている。年表の secret の廃止（CSR/1）に関わる C-20 も同じ。ここでは書き換えず、MP-13 の確認の前に各項目をその時点のコードで読み直す。
