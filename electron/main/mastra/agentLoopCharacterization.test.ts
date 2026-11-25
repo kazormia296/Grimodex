@@ -12,13 +12,25 @@ import {
   AGENT_CALL_OPTIONS,
   AGENT_NO_RETRY_CONFIG,
 } from "./agentModelPolicy.js";
-import { createMastraAgentRuntime } from "./agentRuntime.js";
+import {
+  createMastraAgentRuntime,
+  MastraAgentToolNotAllowedError,
+  type MastraAgentToolBinding,
+  type MastraAgentTurnInput,
+} from "./agentRuntime.js";
+import { createMastraAgentTools } from "./agentToolAdapter.js";
 import { loadMastraForTest } from "./agentModel.testSupport.js";
 import type {
   AgentRoute,
+  AgentSend,
   AgentWireArgs,
   AgentWireResponse,
+  AgentWireToolDefinition,
 } from "./agentWire.js";
+import {
+  findAgentLoopStopped,
+  MastraAgentLoopStopped,
+} from "../mastraTurnOwner.js";
 
 const ROUTE: AgentRoute = {
   thinking: null,
@@ -37,6 +49,16 @@ const response = (stopReason: string): AgentWireResponse => ({
   blocks: [{ type: "text", content: "done" }],
   stopReason,
 });
+
+const TOOL_SNAPSHOT: AgentWireToolDefinition = {
+  name: "search_events",
+  description: "snapshot description",
+  inputSchema: {
+    type: "object",
+    properties: { query: { type: "string" } },
+    required: ["query"],
+  },
+};
 
 function auditHarness(snapshotEvents = false) {
   const events: unknown[] = [];
@@ -85,6 +107,24 @@ function eventCount(events: readonly unknown[], eventType: string): number {
       "eventType" in event &&
       event.eventType === eventType,
   ).length;
+}
+
+function toolTurnInput(
+  send: AgentSend,
+  overrides: Partial<MastraAgentTurnInput> = {},
+): MastraAgentTurnInput {
+  const { audit } = auditHarness();
+  return {
+    instructions: "system",
+    messages: [{ role: "user", content: "start" }],
+    route: ROUTE,
+    systemCacheSegments: null,
+    systemVolatileTail: null,
+    send,
+    audit,
+    signal: new AbortController().signal,
+    ...overrides,
+  };
 }
 
 async function runTwoSendToolTurn(
@@ -625,6 +665,26 @@ describe("4c-1 loop characterization", () => {
     expect(second.sent).toHaveLength(1);
   });
 
+  it("the owner loop-stop sentinel survives real Agent.generate and is recognized", async () => {
+    const sentinel = new MastraAgentLoopStopped();
+    const result = await runTwoSendToolTurn(false, {
+      prepareSend: (request, ctx) => {
+        if (ctx.sendIndex === 1) throw sentinel;
+        return request;
+      },
+    });
+
+    expect(result.error).toBe(sentinel);
+    expect(findAgentLoopStopped(result.error)).toBe(true);
+    expect(findAgentLoopStopped({ cause: sentinel })).toBe(true);
+    expect(result.sent).toHaveLength(1);
+    expect(result.preparedRows).toHaveLength(1);
+    expect(eventCount(result.events, "execution.started")).toBe(1);
+    expect(eventCount(result.events, "request.dispatched")).toBe(1);
+    expect(eventCount(result.events, "execution.succeeded")).toBe(1);
+    expect(eventCount(result.events, "execution.failed")).toBe(0);
+  });
+
   it("prepareSend rejects thenables before audit begin", async () => {
     const asyncPrepare = (async (request: Parameters<AgentPrepareSend>[0]) =>
       request) as unknown as AgentPrepareSend;
@@ -731,5 +791,414 @@ describe("4c-1 loop characterization", () => {
         JSON.stringify(sentMessages),
       );
     }
+  });
+});
+
+describe("T-a runtime tool adapter", () => {
+  it("executes a selected tool, derives the step limit, caps its result, and reports the original token count", async () => {
+    const sent: AgentWireArgs[] = [];
+    const events: unknown[] = [];
+    const resultText = JSON.stringify("abcdefghijklmno");
+    const binding: MastraAgentToolBinding = {
+      name: "search_events",
+      description: "selected owner description",
+      async execute(args, context) {
+        events.push(["execute", args, context.toolCallId]);
+        return { text: resultText, tokensUsed: 123, summary: "found" };
+      },
+    };
+
+    await createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return sent.length === 1
+            ? {
+                blocks: [
+                  {
+                    type: "tool_use",
+                    id: "call-1",
+                    name: "search_events",
+                    input: {},
+                  },
+                ],
+                stopReason: "tool_use",
+              }
+            : response("end_turn");
+        },
+        {
+          bindings: [binding],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 1,
+          maxUserQuestions: 0,
+          tokenBudget: 20,
+          countTokens: (text) => text.length,
+          onToolStart: (event) => events.push(["start", event]),
+          onToolResult: (event) => events.push(["result", event]),
+        },
+      ),
+    );
+
+    expect(sent).toHaveLength(2);
+    expect(sent.map((args) => JSON.stringify(args.tools))).toEqual([
+      JSON.stringify([TOOL_SNAPSHOT]),
+      JSON.stringify([TOOL_SNAPSHOT]),
+    ]);
+    expect(events).toEqual([
+      ["start", { toolCallId: "call-1", toolName: "search_events" }],
+      ["execute", {}, "call-1"],
+      [
+        "result",
+        {
+          toolCallId: "call-1",
+          toolName: "search_events",
+          tokens: 123,
+          summary: "found",
+        },
+      ],
+    ]);
+    const toolResult = sent[1]!.messages.find(
+      (message) => message.role === "tool_result",
+    );
+    expect(toolResult).toMatchObject({
+      role: "tool_result",
+      content: '"abcd...[truncated: 元 17 tokens]',
+      isError: false,
+    });
+  });
+
+  it("stops at the exact maxSteps derived from both tool limits", async () => {
+    const sent: AgentWireArgs[] = [];
+    let executions = 0;
+    const binding: MastraAgentToolBinding = {
+      name: "search_events",
+      description: "search",
+      async execute() {
+        executions += 1;
+        return {
+          text: JSON.stringify("result"),
+          tokensUsed: 1,
+          summary: "result",
+        };
+      },
+    };
+
+    await createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return sent.length <= 2
+            ? {
+                blocks: [
+                  {
+                    type: "tool_use",
+                    id: `call-${sent.length}`,
+                    name: "search_events",
+                    input: {},
+                  },
+                ],
+                stopReason: "tool_use",
+              }
+            : response("end_turn");
+        },
+        {
+          bindings: [binding],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 1,
+          maxUserQuestions: 1,
+          tokenBudget: 100,
+          countTokens: (text) => text.length,
+        },
+      ),
+    );
+
+    expect(sent).toHaveLength(2);
+    expect(executions).toBe(2);
+  });
+
+  it("passes legacy-accepted missing and type-mismatched arguments through the permissive schema", async () => {
+    const sent: AgentWireArgs[] = [];
+    const executed: unknown[] = [];
+    const binding: MastraAgentToolBinding = {
+      name: "search_events",
+      description: "search",
+      async execute(args) {
+        executed.push(structuredClone(args));
+        return {
+          text: JSON.stringify(args),
+          tokensUsed: 1,
+          summary: "core result",
+        };
+      },
+    };
+    const generatedTool = createMastraAgentTools({
+      names: ["search_events"],
+      bindings: [binding],
+      tokenBudget: 100,
+      countTokens: (text) => text.length,
+      signal: new AbortController().signal,
+    }).search_events!;
+    expect(
+      (
+        generatedTool.inputSchema as unknown as {
+          getJsonSchema(): unknown;
+        }
+      ).getJsonSchema(),
+    ).toEqual({ type: "object", additionalProperties: true });
+
+    await createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return sent.length === 1
+            ? {
+                blocks: [
+                  {
+                    type: "tool_use",
+                    id: "call-missing",
+                    name: "search_events",
+                    input: {},
+                  },
+                  {
+                    type: "tool_use",
+                    id: "call-wrong-type",
+                    name: "search_events",
+                    input: { query: 42 },
+                  },
+                ],
+                stopReason: "tool_use",
+              }
+            : response("end_turn");
+        },
+        {
+          bindings: [binding],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 2,
+          maxUserQuestions: 0,
+          tokenBudget: 100,
+          countTokens: (text) => text.length,
+        },
+      ),
+    );
+
+    expect(executed).toHaveLength(2);
+    expect(executed.map((args) => JSON.stringify(args)).sort()).toEqual(
+      ["{}", '{"query":42}'].sort(),
+    );
+    const results = sent[1]!.messages.filter(
+      (message) => message.role === "tool_result",
+    );
+    expect(
+      results.map(
+        (message) => message.role === "tool_result" && message.content,
+      ),
+    ).toEqual(["{}", '{"query":42}']);
+  });
+
+  it("returns thrown executions as paired error results", async () => {
+    const sent: AgentWireArgs[] = [];
+    const results: unknown[] = [];
+    const binding: MastraAgentToolBinding = {
+      name: "search_events",
+      description: "search",
+      async execute() {
+        throw new Error("core unavailable");
+      },
+    };
+
+    await createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return sent.length === 1
+            ? {
+                blocks: [
+                  {
+                    type: "tool_use",
+                    id: "call-throw",
+                    name: "search_events",
+                    input: {},
+                  },
+                ],
+                stopReason: "tool_use",
+              }
+            : response("end_turn");
+        },
+        {
+          bindings: [binding],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 1,
+          maxUserQuestions: 0,
+          tokenBudget: 100,
+          countTokens: (text) => text.length,
+          onToolResult: (event) => results.push(event),
+        },
+      ),
+    );
+
+    expect(results).toEqual([
+      {
+        toolCallId: "call-throw",
+        toolName: "search_events",
+        tokens: 0,
+        summary: "core unavailable",
+      },
+    ]);
+    expect(sent[1]!.messages).toContainEqual({
+      role: "tool_result",
+      toolUseId: "call-throw",
+      content: "Error: core unavailable",
+      isError: true,
+    });
+  });
+
+  it("refuses unselected M4 names without calling a binding", async () => {
+    const sent: AgentWireArgs[] = [];
+    const events: unknown[] = [];
+    let selectedCalled = false;
+
+    await createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return sent.length === 1
+            ? {
+                blocks: [
+                  {
+                    type: "tool_use",
+                    id: "call-unselected",
+                    name: "get_scene",
+                    input: {},
+                  },
+                ],
+                stopReason: "tool_use",
+              }
+            : response("end_turn");
+        },
+        {
+          bindings: [
+            {
+              name: "search_events",
+              description: "search",
+              async execute() {
+                selectedCalled = true;
+                return { text: "unexpected", tokensUsed: 1, summary: "bad" };
+              },
+            },
+          ],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 1,
+          maxUserQuestions: 0,
+          tokenBudget: 100,
+          countTokens: (text) => text.length,
+          onToolStart: (event) => events.push(["start", event]),
+          onToolResult: (event) => events.push(["result", event]),
+        },
+      ),
+    );
+
+    expect(selectedCalled).toBe(false);
+    expect(sent[1]!.messages).toContainEqual({
+      role: "tool_result",
+      toolUseId: "call-unselected",
+      content: "Error: Tool not available this turn: get_scene",
+      isError: true,
+    });
+    expect(events).toEqual([
+      ["start", { toolCallId: "call-unselected", toolName: "get_scene" }],
+      [
+        "result",
+        {
+          toolCallId: "call-unselected",
+          toolName: "get_scene",
+          tokens: 0,
+          summary: "Tool not available this turn: get_scene",
+        },
+      ],
+    ]);
+  });
+
+  it("propagates an in-flight abort signal into the binding", async () => {
+    const controller = new AbortController();
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let bindingSignal: AbortSignal | undefined;
+    const sent: AgentWireArgs[] = [];
+
+    const run = createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return {
+            blocks: [
+              {
+                type: "tool_use",
+                id: "call-abort",
+                name: "search_events",
+                input: {},
+              },
+            ],
+            stopReason: "tool_use",
+          };
+        },
+        {
+          bindings: [
+            {
+              name: "search_events",
+              description: "search",
+              async execute(_args, context) {
+                bindingSignal = context.signal;
+                markStarted();
+                await new Promise<never>((_resolve, reject) => {
+                  context.signal.addEventListener(
+                    "abort",
+                    () => reject(new Error("aborted")),
+                    { once: true },
+                  );
+                });
+                return { text: "unused", tokensUsed: 0, summary: "unused" };
+              },
+            },
+          ],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 1,
+          maxUserQuestions: 0,
+          tokenBudget: 100,
+          countTokens: (text) => text.length,
+          signal: controller.signal,
+        },
+      ),
+    );
+
+    await started;
+    controller.abort();
+    await run;
+    expect(bindingSignal?.aborted).toBe(true);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("rejects a binding outside the M4 allow-list before sending", async () => {
+    const sent: AgentWireArgs[] = [];
+    const invalid: MastraAgentToolBinding = {
+      name: "not_allowed",
+      description: "invalid",
+      async execute() {
+        return { text: "unused", tokensUsed: 0, summary: "unused" };
+      },
+    };
+    const run = createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          return response("end_turn");
+        },
+        { bindings: [invalid] },
+      ),
+    );
+
+    await expect(run).rejects.toBeInstanceOf(MastraAgentToolNotAllowedError);
+    expect(sent).toEqual([]);
   });
 });

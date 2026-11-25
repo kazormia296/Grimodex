@@ -34,11 +34,18 @@ import {
   mastraAgentTurnRefusalValue,
   MASTRA_AGENT_TURN_START_COMMAND,
   type MastraAgentTurnProgressUsage,
+  type MastraAgentTurnProgressEvent,
   type MastraAgentTurnCancelRequest,
   type MastraAgentTurnCancelResult,
   type MastraAgentTurnRefusalReason,
   type MastraAgentTurnStartRequest,
   type MastraAgentTurnStartResult,
+} from "../shared/mastraAgentTurnWire.js";
+import type {
+  MastraAgentTurnCitation,
+  MastraAgentTurnLoopResult,
+  MastraAgentTurnThinkingBlock,
+  MastraAgentTurnToolCallRecord,
 } from "../shared/mastraAgentTurnWire.js";
 import {
   ContextWindowExceededError,
@@ -49,9 +56,23 @@ import {
   renderAgentConversationPayloads,
   renderAgentToolPayloads,
 } from "../shared/agentPayloadRenderer.js";
-import { createM4ReadToolDefinitions } from "../shared/agentReadToolDefinitions.js";
+import {
+  createM4ReadToolDefinitions,
+  type M4ReadToolName,
+} from "../shared/agentReadToolDefinitions.js";
+import type * as MastraTurnReadBindings from "./mastraTurnReadBindings.js";
 import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
+import {
+  createAgentLoopRuleState,
+  getAgentLimitReason,
+  insertLimitMessage,
+  markAgentLoopAborted,
+  recordToolResultTokens,
+  recordToolUsesForResponse,
+  resolveAgentStoppedReason,
+  selectAgentControlMessage,
+} from "./mastra/agentLoopRules.js";
 import {
   createMainAgentAuditSink,
   type MainAgentAmbiguousCause,
@@ -76,7 +97,10 @@ import type {
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
 import type { MainReadHooks } from "./mastraRead/nativeCall.js";
-import type { MainEgressParticipantContext } from "./profileEgress.js";
+import type {
+  MainEgressParticipantContext,
+  MainIssuedCallerIdentity,
+} from "./profileEgress.js";
 
 /** `T_quit`: the quit finalizer's wait for the owner (provisional; DR-MP3-13, P11). */
 export const MASTRA_TURN_QUIT_BOUND_MS = 5_000;
@@ -116,6 +140,14 @@ class MastraTurnCancelled extends Error {
   constructor() {
     super("MASTRA_AGENT_TURN_CANCELLED: the turn was stopped before dispatch");
     this.name = "MastraTurnCancelled";
+  }
+}
+
+/** Stop a later loop send without creating a second audit execution. */
+export class MastraAgentLoopStopped extends Error {
+  constructor() {
+    super("MASTRA_AGENT_LOOP_STOPPED: user-stop before the next send");
+    this.name = "MastraAgentLoopStopped";
   }
 }
 
@@ -175,6 +207,10 @@ export interface MastraTurnOwnerOptions {
   readonly profile: MastraTurnProfile;
   /** `loader.load` of `mastraAgentLoader.ts`; called only while the gate is open. */
   readonly loadRuntime: () => Promise<MastraAgentRuntimeModule>;
+  /** Loaded only for a turn that declares read tools. */
+  readonly loadReadBindings?: () => Promise<
+    typeof import("./mastraTurnReadBindings.js")
+  >;
   /** `app.getVersion()`. */
   readonly appVersion: string;
   /** Receives fixed texts only (never an error's own message of a request). */
@@ -346,6 +382,26 @@ function findContextWindowExceeded(
   return null;
 }
 
+export function findAgentLoopStopped(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current = error;
+  while (
+    typeof current === "object" &&
+    current !== null &&
+    !seen.has(current)
+  ) {
+    if (current instanceof MastraAgentLoopStopped) return true;
+    seen.add(current);
+    if (isAgentModelError(current)) {
+      current = current.origin;
+    } else {
+      const wrapper = current as { cause?: unknown; origin?: unknown };
+      current = wrapper.origin ?? wrapper.cause;
+    }
+  }
+  return false;
+}
+
 export function createMastraTurnOwner(
   options: MastraTurnOwnerOptions,
 ): MastraTurnOwner {
@@ -379,6 +435,7 @@ export function createMastraTurnOwner(
   let switchDepth = 0;
   let shutdownPromise: Promise<void> | null = null;
   let runtimePromise: Promise<MastraAgentRuntime> | null = null;
+  let readBindingsPromise: Promise<typeof MastraTurnReadBindings> | null = null;
 
   const profileClosed = (): boolean =>
     options.profile.restricted ||
@@ -416,6 +473,24 @@ export function createMastraTurnOwner(
         });
     }
     return runtimePromise;
+  };
+
+  const loadReadBindings = (): Promise<typeof MastraTurnReadBindings> => {
+    if (readBindingsPromise === null) {
+      if (!options.loadReadBindings) {
+        return Promise.reject(
+          new Error("MASTRA_AGENT_READ_BINDINGS_UNAVAILABLE"),
+        );
+      }
+      readBindingsPromise = Promise.resolve()
+        .then(() => options.loadReadBindings!())
+        .catch((error: unknown) => {
+          // Failed imports are retried on the next tool turn.
+          readBindingsPromise = null;
+          throw error;
+        });
+    }
+    return readBindingsPromise;
   };
 
   /**
@@ -877,6 +952,48 @@ export function createMastraTurnOwner(
     slots.add(turn);
     attachListeners(turn, context);
     const progress = createMastraAgentTurnProgressSender(sender, turn.turnId);
+    let loopState = createAgentLoopRuleState({
+      tokenBudget: request.loop.tokenBudget,
+      maxToolCalls: request.loop.maxToolCalls,
+      maxUserQuestions: request.loop.maxUserQuestions,
+    });
+    let finalText = "";
+    let tokensIn: number | null = null;
+    let tokensOut: number | null = null;
+    let cost: number | null = null;
+    const toolCallRecords: MastraAgentTurnToolCallRecord[] = [];
+    const toolCallRecordIndexes = new Map<string, number>();
+    const startedToolCallIds = new Set<string>();
+    const completedToolCallIds = new Set<string>();
+    let declaredToolNames = new Set<string>();
+    const citations: MastraAgentTurnCitation[] = [];
+    let finalThinkingBlocks: MastraAgentTurnThinkingBlock[] = [];
+    let terminalSent = false;
+    const makeLoopResult = (
+      stoppedReason = loopState.aborted
+        ? "aborted"
+        : (getAgentLimitReason(loopState) ??
+          resolveAgentStoppedReason(loopState)),
+    ): MastraAgentTurnLoopResult => ({
+      finalText,
+      toolCallRecords,
+      stoppedReason,
+      usage: { totalTokens: loopState.tokensUsed, tokensIn, tokensOut, cost },
+      citations,
+      finalThinkingBlocks,
+    });
+    const sendTerminalProgress = (
+      event: MastraAgentTurnProgressEvent,
+    ): boolean => {
+      if (terminalSent) return false;
+      terminalSent = true;
+      progress.send(event);
+      return true;
+    };
+    const controlMessages = {
+      uiLanguage: request.loop.language,
+      ...request.loop.controlMessages,
+    };
 
     try {
       // The tokenizer is made ready AFTER the turn is registered: a Stop, a
@@ -898,6 +1015,24 @@ export function createMastraTurnOwner(
         throw new MastraTurnCancelled();
       }
       if (!tokenizerReady) return refusal("unsupported");
+      let readBindingsModule: typeof MastraTurnReadBindings | null = null;
+      if (request.tools.length > 0) {
+        const loaded = await Promise.race([
+          loadReadBindings().then(
+            (module) => ({ module }),
+            () => ({ module: null }),
+          ),
+          forcedRace,
+        ]);
+        if (turn.forcedCause !== null)
+          throw new MastraTurnAborted(turn.forcedCause);
+        if (turn.userStop) {
+          turn.cancelObserved = true;
+          throw new MastraTurnCancelled();
+        }
+        if (loaded.module === null) return refusal("unsupported");
+        readBindingsModule = loaded.module;
+      }
       const runtime = await Promise.race([loadRuntime(), forcedRace]);
       // Stopped or detached while the runtime was loading: no row was written.
       if (turn.forcedCause !== null)
@@ -926,6 +1061,19 @@ export function createMastraTurnOwner(
       ]);
       // The identity, the profile or a stop may have changed during the await.
       assertLive(turn);
+      const turnReadBindings =
+        request.tools.length === 0
+          ? null
+          : await readBindingsModule!.createTurnReadBindings({
+              backend: options.backend!,
+              identity: callerIdentity as MainIssuedCallerIdentity,
+              hooks: readHooksOf(turn),
+              request,
+              projectId: turn.projectId,
+              currentSceneId: turn.currentSceneId,
+              tokenizer,
+              toolDefinitions,
+            });
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,
@@ -934,12 +1082,47 @@ export function createMastraTurnOwner(
         systemVolatileTail: request.systemVolatileTail,
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
+        toolDefinitions,
+        bindings: turnReadBindings?.bindings ?? [],
+        isToolDeclared: (name) => declaredToolNames.has(name),
+        isTurnStopped: () =>
+          turn.userStop || turn.forcedCause !== null || turn.finished,
+        maxToolCalls: request.loop.maxToolCalls,
+        maxUserQuestions: request.loop.maxUserQuestions,
+        tokenBudget: request.loop.tokenBudget,
+        countTokens: (text) => tokenizer.countTokens(text),
         prepareSend: (auditRequest, ctx) => {
+          if (ctx.sendIndex > 0 && turn.userStop)
+            throw new MastraAgentLoopStopped();
+
+          let messages = auditRequest.messages;
+          const limitReason = getAgentLimitReason(loopState);
+          if (limitReason !== null && !loopState.limitMessageInserted) {
+            loopState = insertLimitMessage(loopState);
+            messages = [
+              ...messages,
+              {
+                role: "user",
+                content: selectAgentControlMessage(
+                  limitReason,
+                  controlMessages,
+                ),
+              },
+            ];
+          }
+          const tools = loopState.limitMessageInserted
+            ? []
+            : auditRequest.tools;
+          const requestToFinalize: AgentAuditRequest = {
+            ...auditRequest,
+            messages,
+            tools,
+          };
           const payloadRoute = {
             provider: request.route.provider,
             apiVariant: request.route.apiVariant,
             toolProtocol:
-              auditRequest.resolvedToolProtocol ??
+              requestToFinalize.resolvedToolProtocol ??
               request.route.resolvedToolProtocol ??
               "native",
           };
@@ -957,24 +1140,21 @@ export function createMastraTurnOwner(
               system: {
                 fallback: request.loop.fallbackSystem,
                 cacheSegments:
-                  auditRequest.systemCacheSegments === null
+                  requestToFinalize.systemCacheSegments === null
                     ? undefined
-                    : [...auditRequest.systemCacheSegments],
-                volatileTail: auditRequest.systemVolatileTail ?? undefined,
+                    : [...requestToFinalize.systemCacheSegments],
+                volatileTail: requestToFinalize.systemVolatileTail ?? undefined,
               },
-              messages: auditRequest.messages,
+              messages: requestToFinalize.messages,
               renderedConversationPayloads: renderAgentConversationPayloads(
                 payloadRoute,
-                auditRequest.messages,
+                requestToFinalize.messages,
               ),
               // The declared tools are counted as the legacy path counts them.
-              // The runtime does not hand them to the Agent yet (the tool
-              // wrapper, a later part, does), so until then a non-empty list
-              // makes this count higher than what is sent.
               renderedToolPayloads: renderAgentToolPayloads(
                 payloadRoute,
-                toolDefinitions,
-                auditRequest.webSearch as Parameters<
+                loopState.limitMessageInserted ? [] : toolDefinitions,
+                requestToFinalize.webSearch as Parameters<
                   typeof renderAgentToolPayloads
                 >[2],
               ),
@@ -986,11 +1166,14 @@ export function createMastraTurnOwner(
             (text) => tokenizer.countTokens(text),
           );
           const preparedRequest: AgentAuditRequest = {
-            ...auditRequest,
+            ...requestToFinalize,
             systemCacheSegments:
               finalized.transport.systemCacheSegments ?? null,
             systemVolatileTail: finalized.transport.systemVolatileTail ?? null,
           };
+          declaredToolNames = new Set(
+            preparedRequest.tools?.map(({ name }) => name) ?? [],
+          );
           progress.send({
             kind: "send-accepted",
             sendIndex: ctx.sendIndex + 1,
@@ -998,6 +1181,106 @@ export function createMastraTurnOwner(
             cacheDowngradeReason: finalized.cacheDowngradeReason ?? null,
           });
           return preparedRequest;
+        },
+        observeResponse: (response) => {
+          if (response.stopReason === "tool_use") turnReadBindings?.clear();
+          const responseText = response.blocks
+            .filter((block) => block.type === "text")
+            .map((block) => block.content)
+            .join("\n");
+          finalText += responseText;
+
+          const toolUses =
+            response.stopReason === "tool_use"
+              ? response.blocks.filter((block) => block.type === "tool_use")
+              : [];
+          loopState = recordToolUsesForResponse(
+            loopState,
+            response.stopReason,
+            toolUses.map((block) => block.name),
+          );
+          if (!loopState.limitMessageInserted) {
+            for (const block of toolUses) {
+              if (toolCallRecordIndexes.has(block.id)) continue;
+              toolCallRecordIndexes.set(block.id, toolCallRecords.length);
+              toolCallRecords.push({
+                name: block.name,
+                params: block.input,
+                resultSummary: "",
+                tokensUsed: 0,
+              });
+            }
+          }
+
+          if (response.inputTokens != null)
+            tokensIn = (tokensIn ?? 0) + response.inputTokens;
+          if (response.outputTokens != null)
+            tokensOut = (tokensOut ?? 0) + response.outputTokens;
+          if (response.cost != null) cost = (cost ?? 0) + response.cost;
+          for (const citation of response.citations ?? []) {
+            if (!citations.some((item) => item.url === citation.url))
+              citations.push(citation);
+          }
+          finalThinkingBlocks = response.blocks.flatMap((block) =>
+            block.type === "thinking" &&
+            typeof block.signature === "string" &&
+            block.signature.length > 0
+              ? [{ thinking: block.content, signature: block.signature }]
+              : [],
+          );
+        },
+        onToolStart: ({ toolCallId, toolName }) => {
+          if (
+            turn.forcedCause !== null ||
+            turn.finished ||
+            startedToolCallIds.has(toolCallId) ||
+            !m4Tools.has(toolName)
+          ) {
+            return;
+          }
+          startedToolCallIds.add(toolCallId);
+          progress.send({
+            kind: "tool",
+            phase: "started",
+            toolCallId,
+            toolName: toolName as M4ReadToolName,
+            totalCalls: loopState.totalCalls,
+            maxCalls: loopState.maxToolCalls,
+            tokensUsed: loopState.tokensUsed,
+            tokenBudget: loopState.tokenBudget,
+          });
+        },
+        onToolResult: ({ toolCallId, toolName, tokens, summary }) => {
+          if (turn.forcedCause !== null || turn.finished) return;
+          if (!Number.isSafeInteger(tokens) || tokens < 0) {
+            throw new Error("MASTRA_AGENT_TOOL_RESULT_TOKENS_INVALID");
+          }
+          if (completedToolCallIds.has(toolCallId)) return;
+          completedToolCallIds.add(toolCallId);
+          loopState = recordToolResultTokens(loopState, tokens);
+          const recordIndex = toolCallRecordIndexes.get(toolCallId);
+          if (recordIndex !== undefined) {
+            const record = toolCallRecords[recordIndex];
+            if (record && record.name === toolName) {
+              toolCallRecords[recordIndex] = {
+                ...record,
+                resultSummary: summary,
+                tokensUsed: tokens,
+              };
+            }
+          }
+          if (m4Tools.has(toolName) && startedToolCallIds.has(toolCallId)) {
+            progress.send({
+              kind: "tool",
+              phase: "finished",
+              toolCallId,
+              toolName: toolName as M4ReadToolName,
+              totalCalls: loopState.totalCalls,
+              maxCalls: loopState.maxToolCalls,
+              tokensUsed: loopState.tokensUsed,
+              tokenBudget: loopState.tokenBudget,
+            });
+          }
         },
         signal: turn.controller.signal,
       });
@@ -1018,13 +1301,49 @@ export function createMastraTurnOwner(
         turnId: turn.turnId,
         executionId: handle.executionId,
         response,
+        loopResult: makeLoopResult(),
       };
     } catch (error) {
       const overflow = findContextWindowExceeded(error);
+      const loopStopped =
+        findAgentLoopStopped(error) ||
+        (overflow !== null &&
+          turn.userStop &&
+          turn.handle !== null &&
+          turn.response !== null);
+      if (loopStopped && turn.forcedCause === null) {
+        const { handle, response } = turn;
+        if (handle === null || response === null) throw endError(turn, error);
+        const completedRecordIndexes = new Set(
+          [...completedToolCallIds]
+            .map((toolCallId) => toolCallRecordIndexes.get(toolCallId))
+            .filter((index): index is number => index !== undefined),
+        );
+        for (let index = toolCallRecords.length - 1; index >= 0; index -= 1) {
+          if (!completedRecordIndexes.has(index))
+            toolCallRecords.splice(index, 1);
+        }
+        loopState = markAgentLoopAborted(loopState);
+        if (sendTerminalProgress({ kind: "stopped", reason: "user-stop" })) {
+          return {
+            status: "completed",
+            turnId: turn.turnId,
+            executionId: handle.executionId,
+            response,
+            loopResult: makeLoopResult("aborted"),
+          };
+        }
+      }
       // A Stop wins over an overflow found in the same send's `prepareSend`
       // (it runs before `audit.begin`, so the runtime has not observed the
-      // stop yet): the stop is what the caller is told.
-      if (overflow && turn.forcedCause === null && turn.userStop) {
+      // stop yet): it keeps the pre-first-send cancellation, or aggregates a
+      // loop that already has a completed response above.
+      if (
+        overflow &&
+        turn.forcedCause === null &&
+        turn.userStop &&
+        (turn.handle === null || turn.response === null)
+      ) {
         turn.cancelObserved = true;
       }
       if (overflow && turn.forcedCause === null && !turn.cancelObserved) {
@@ -1033,12 +1352,16 @@ export function createMastraTurnOwner(
           request.loop.contextWindow,
           overflow.overflowTokens,
         );
-        progress.send({
-          kind: "context-overflow",
-          usage,
-          overflowTokens: overflow.overflowTokens,
-          cacheDowngradeReason: overflow.cacheDowngradeReason,
-        });
+        if (
+          !sendTerminalProgress({
+            kind: "context-overflow",
+            usage,
+            overflowTokens: overflow.overflowTokens,
+            cacheDowngradeReason: overflow.cacheDowngradeReason,
+          })
+        ) {
+          throw endError(turn, error);
+        }
         return {
           status: "context-window-exceeded",
           turnId: turn.turnId,

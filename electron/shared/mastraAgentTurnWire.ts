@@ -313,6 +313,8 @@ export type MastraAgentTurnStartResult =
       readonly executionId: string;
       /** The adapter's raw `AgentWireResponse`, never Mastra's concatenated text (DR-MP3-13). */
       readonly response: Readonly<Record<string, unknown>>;
+      /** Present on R2-b2 results; absent on older completed answers. */
+      readonly loopResult?: MastraAgentTurnLoopResult;
     }
   | {
       readonly status: "context-window-exceeded";
@@ -371,6 +373,7 @@ export interface MastraAgentTurnThinkingBlock {
 
 /** Loop metadata is a separate wire so the existing raw start result stays compatible. */
 export interface MastraAgentTurnLoopResult {
+  readonly finalText: string;
   readonly toolCallRecords: readonly MastraAgentTurnToolCallRecord[];
   readonly stoppedReason: MastraAgentTurnStoppedReason;
   readonly usage: MastraAgentTurnUsage;
@@ -1036,7 +1039,20 @@ export function parseMastraAgentTurnStartResult(
   }
   if (entries.get("status") === "completed") {
     const response = entries.get("response");
-    return sameKeys(entries, ["status", "turnId", "executionId", "response"]) &&
+    const hasLoopResult = entries.has("loopResult");
+    const loopResult = hasLoopResult
+      ? parseMastraAgentTurnLoopResult(entries.get("loopResult"))
+      : null;
+    return (hasLoopResult
+      ? loopResult !== null &&
+        sameKeys(entries, [
+          "status",
+          "turnId",
+          "executionId",
+          "response",
+          "loopResult",
+        ])
+      : sameKeys(entries, ["status", "turnId", "executionId", "response"])) &&
       isMastraAgentTurnId(entries.get("turnId")) &&
       isTrimmedId(entries.get("executionId")) &&
       plainEntries(response) !== null
@@ -1067,6 +1083,7 @@ export function parseMastraAgentTurnLoopResult(
   if (
     entries === null ||
     !sameKeys(entries, [
+      "finalText",
       "toolCallRecords",
       "stoppedReason",
       "usage",
@@ -1076,6 +1093,7 @@ export function parseMastraAgentTurnLoopResult(
   ) {
     return null;
   }
+  if (typeof entries.get("finalText") !== "string") return null;
   const toolCallRecords = entries.get("toolCallRecords");
   if (
     !isBoundedArray(

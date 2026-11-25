@@ -2,20 +2,14 @@ import { lazy, Suspense, type ComponentType } from "react";
 import { isCodexStructureExtractionReviewEnabled } from "./codexStructureExtractionFlag";
 
 /**
- * review 画面の旗（`VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW`。未指定の既定は DEV の真偽。
+ * review 画面の旗（`VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW`。既定は開く。`false`／`0` で閉じる。
  * 意味は `isCodexStructureExtractionReviewEnabled` と同じ）の、build 時の値。
- * `import.meta.env.*` は build が値に置き換えるので、旗が閉じた製品 build では定数 false になり、
+ * `import.meta.env.*` は build が値に置き換えるので、`false`／`0` を指定した build では定数 false になり、
  * 下の選択で本体の host（動的 import を含む）への参照が取り除かれる。
- * 本体と review 画面の chunk は出力されたままにしている：`Boolean()` を外すと chunk まで消えるが、
- * 共通の chunk の振り分けが変わり、起動時に preload される chunk が約 60 本増える（raw +41 KB、
- * perf:budget の実測）。目的は起動時の graph なので、この形にしている。
  */
 const REVIEW_BUILD =
-  import.meta.env.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW === "true" ||
-  import.meta.env.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW === "1" ||
-  (import.meta.env.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW !== "false" &&
-    import.meta.env.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW !== "0" &&
-    Boolean(import.meta.env.DEV));
+  import.meta.env.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW !== "false" &&
+  import.meta.env.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW !== "0";
 
 let hostBody: ComponentType | null = null;
 

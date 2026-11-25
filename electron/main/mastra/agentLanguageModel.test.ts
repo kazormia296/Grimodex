@@ -328,14 +328,17 @@ describe("境界（注入だけ・未配線）", () => {
       /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)["'`]([^"'`]*\/mastra\/[^"'`]*)["'`]/g;
     // MP-3c：main の owner（sink・方針・型）と lazy loader（runtime の型だけ）。adapter（agentLanguageModel）と
     // runtime の実体は、3 つ目の bundle の中にだけあり、main は `require(変数)` で読む（loader）。
+    // R2-b2：owner は R3 の loop 規則（agentLoopRules、import の無い pure module）も値で読む（下の別の試験で pure を固定）。
     const allowed: Record<string, readonly string[]> = {
       "mastraTurnOwner.ts": [
         "./mastra/agentAuditSink.js",
+        "./mastra/agentLoopRules.js",
         "./mastra/agentModelPolicy.js",
         "./mastra/agentRuntime.js",
         "./mastra/agentWire.js",
       ],
       "mastraAgentLoader.ts": ["./mastra/agentRuntime.js"],
+      "mastraTurnReadBindings.ts": ["./mastra/agentRuntime.js"],
     };
     const found: Record<string, string[]> = {};
     for (const file of files) {
@@ -358,6 +361,16 @@ describe("境界（注入だけ・未配線）", () => {
         Object.entries(allowed).map(([file, list]) => [file, [...list].sort()]),
       ),
     );
+  });
+
+  it("owner が値として読む R3 の loop 規則（agentLoopRules）は pure：import は型だけで、動的 import・require も無い", () => {
+    const text = fs.readFileSync(path.join(HERE, "agentLoopRules.ts"), "utf8");
+    for (const match of text.matchAll(
+      /^import\s+(type\s+)?[^;]*?from\s+"([^"]+)";/gms,
+    )) {
+      expect(match[1], `agentLoopRules.ts: ${match[0]}`).toBe("type ");
+    }
+    expect(text).not.toMatch(/\brequire\s*\(|\bimport\s*\(/);
   });
 });
 

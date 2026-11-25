@@ -41,11 +41,11 @@
     },
     {
       "path": "package.json",
-      "sha256": "194cc07c4a19f4cde55b77e2d818c7566105006a1ae796d83b8758aa925e8064"
+      "sha256": "8566d0aca4b48fd8129b87c52faad6968d1f3770fc5d7f4f47907b5c7acae21f"
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "f4ebbe126c705cecfc435de84f3689cddad922be0d722b185659fe66b30d9876"
+      "sha256": "6dd1cde43ceadd8dd815efaad721f87e6beedccf8f6564c5f9659a52b627b633"
     },
     {
       "path": "src-tauri/Cargo.toml",
@@ -97,7 +97,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
-      "sha256": "d5eeda71b0250697a90c63e4dc9c2645d534952f6f4969c39ff64d21c2acef6d"
+      "sha256": "a5322119c3f3d3b0692049509f2ae783834b43d095a410c86bfbce92e1d28b2c"
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",

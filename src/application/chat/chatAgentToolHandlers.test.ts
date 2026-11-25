@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolResult } from "@/features/chat/agent/agentTypes";
 import type { ChatIrUsedIds } from "@/features/chat/agent/chatTurnToolScope";
+import {
+  ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
+  alreadyInjectedCodexEntryContent,
+} from "@/../electron/shared/readDomain/features/codex/alreadyInjectedEntry";
 
 const gate = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/features/chat/agent/chatAgentIrAvailability", () => ({
@@ -101,7 +105,10 @@ describe("createGuardedExecuteTool", () => {
   it("short-circuits an entry that is already injected", async () => {
     const s = setup();
     const out = await s.guarded("get_codex_entry", "t1", { id: "injected-1" });
-    expect(out.summary).toBe("Already injected (short-circuited)");
+    // Main's Mastra path answers from the shared helper; this file keeps its own literals
+    // so the startup graph does not grow. Hold the two together here.
+    expect(out.content).toEqual(alreadyInjectedCodexEntryContent("injected-1"));
+    expect(out.summary).toBe(ALREADY_INJECTED_CODEX_ENTRY_SUMMARY);
     expect(s.executeTool).not.toHaveBeenCalled();
   });
 
