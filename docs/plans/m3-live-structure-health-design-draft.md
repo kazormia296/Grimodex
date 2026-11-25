@@ -3,7 +3,7 @@
 | 項目 | 内容 |
 | ---- | ---- |
 | draftRef | `m3-live-structure-health/1`（草稿） |
-| Status | draft。**最初の版（件数だけ。作者には見えないまま）は PR #1042 で実装・merge 済み（DR-M3-14）。この草稿の本文は、実装の前の設計で、書いた時点の記述のまま**。（以下は実装の前の記述）実装・既存コード・既存 docs は変えていない。**問い P1・P2・P3 は 2026-11-23 に構造化質問で回答済み**（置き場は今の画面のまま・場面へも飛べるように〔最初の版は件数だけ、「どの場面の提案か」を結ぶ読み取りは別の PR で足す。設計は未設計〕・ボタンは見えないまま入れる）。**問い P4〜P7 は未回答**。ボタンの見せ方（既定の公開）は公開に近い判断で、別に伺う。新しい IPC・契約・保存・AI への送信・閾値・ADR の改訂は、この草稿の範囲に入れていない（場面へ飛ぶための読み取りの追加は、新しい契約になりうるので、別の PR の設計で改めて扱う。§5） |
+| Status | draft。**最初の版（件数だけ。作者には見えないまま）は PR #1042 で実装・merge 済み（DR-M3-14）。この草稿の本文は、実装の前の設計で、書いた時点の記述のまま**。（以下は実装の前の記述）実装・既存コード・既存 docs は変えていない。**問い P1・P2・P3 は 2026-11-23 に構造化質問で回答済み**（置き場は今の画面のまま・場面へも飛べるように〔最初の版は件数だけ、「どの場面の提案か」を結ぶ読み取りは別の PR で足す。設計は未設計〕・ボタンは見えないまま入れる）。**問い P4〜P7 は未回答**。ボタンの見せ方（既定の公開）は公開に近い判断で、別に伺う。新しい IPC・契約・保存・AI への送信・閾値・ADR の改訂は、この草稿の範囲に入れていない（場面へ飛ぶための読み取りの追加は、新しい契約になりうるので、別の PR の設計で改めて扱う。§5）。**2026-11-25 追記：その後に確かめたことと、同日の回答は §8** |
 | 基点 | worktree `claude-m3-docs`（枝 `claude/m3-docs-roadmap-erm0`、基点 `origin/master` `b7f8fa336`）。行番号はこの基点のもの |
 | 由来 | roadmap の M3「Epic P0-B: Live Structure Health / Evidence Audit Inbox」（`docs/plans/narrative-semantic-core-roadmap.md:634-678`。**roadmap の行番号は基点 `b7f8fa336` の版のもの**。同じ PR が roadmap に追記する（P0-B の見出しは基点で :634、working tree で :645 と +11 行ずれる）ので、**節の名前で参照する**。行番号を併記するのは基点の版だけ）。Exit criteria の 1 つ目「実際の件数は、正本の Consumer Freshness と Finding の identity から出す。placeholder のデータではない」（:673）に向けた最初の薄い版 |
 | ユーザーの決定（2026-11-23。記録の言葉に合わせる） | ①範囲は LSB ロードマップの「M3 まで」（M4 は範囲外）。②M3 の技術判断（作り方、PR の分け方、試験）を、NIR-1 の残りの lane と同じ範囲で事前に任せる（新しい契約・保存範囲の拡大・AI への新しい送信・閾値の緩和は個別に伺う）。③訂正を覚える機能（ERM）は、同定の review の負荷を先に測る。④方針の問い（**ERM の契約の★1・2・3・6・7**）は、測定と並行で先に伺う。⑤凍結の後でも、M3 の製品の変更は master に merge してよい。記録の正本は contracts 枝の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-23-m3-pullforward.md`（commit `71e45bb4`）。**この草稿の問い（下の「問い P1〜P7」：置き場・場面へ飛ぶか・既定の見せ方・文言など）は、ERM の★とは別の問いで、上の決定に含まれない**。この草稿の「推奨」はどれも起案者の意見で、ユーザーの決定ではない（P1・P2・P3 は 2026-11-23 に回答があり、各問いに「2026-11-23 の回答」として足した。推奨の文は書き換えていない） |
@@ -248,3 +248,36 @@ Inbox の 1 行は **Consumer 1 つ**（`finding_key = "{consumer_kind}:{consume
 11. 有効な snooze が実際に付く経路（renderer の呼び手が無いため、隠れる行は実質無い見込み。§1.1、§3.3）。
 
 この草稿では、build・重い test・`pnpm install`・`gh`・network は使っていない。コードと既存 docs は変更していない。
+
+## 8. その後に確かめたこと（2026-11-25 追記。§1〜§7 の本文は書いた時点のまま）
+
+### 8.1 実装の状態と、2026-11-25 の回答
+
+- 最初の版（件数だけ。作者には見えないまま）は #1042 で merge 済み（DR-M3-14）。その後、ヘッダーの Work Layer 向けに件数だけの読み取り（#1110、DR-M3-31）と、live の行（#1114、DR-M3-32）が入った。「根拠が古くなった提案」の行は、保守機能の許可が入っている作品でだけ出る。許可は既定で切れているので、既定では作者に見えない。
+- ユーザーの回答（構造化質問）：「根拠が古くなった提案」の行と「健全性」のボタンは**作者に見えないまま**にし、下の部分（試験や読み取りの設計）だけ進める。次の作業は**場面へ飛ぶ読み取りの設計草稿**で、新しい契約になるので実装の前にもう一度伺う。記録は contracts の M3 の確認記録の追記 30。
+
+### 8.2 §7.3 の未確認の項目
+
+| §7.3 の番号 | 今 | 根拠（`origin/master` `dd014db91`） |
+| ---- | ---- | ---- |
+| 1（wire のキー） | **未確認のまま**。直列化の定義では snake_case だが、Native の実際の戻り値を assert する試験は確認できていない | `inbox_read_model.rs` の `InboxEntry`、N-API の `serde_json::to_string` |
+| 3（行数と応答時間） | 一部：合成の DB で Inbox の構築の時間を測った。実在の project の行数は読んでいない（回答により読まない） | DR-M3-31 |
+| 5（許可を ON にする経路） | 作者向けの画面も renderer の setter も無い（renderer は get だけ）。IPC の setter はあり、品質評価の setup driver が ON にしている | `narrativeRuntimePolicyApi.ts`、`ipcContract.ts` の `narrative_runtime_policy_set`、`scripts/quality/nir1-graph-eval/setup-driver.mjs` |
+| 6（制限 profile） | 呼び出しを含む試験がある（今の設定では、制限なしと同じ結果になることを assert） | `electron/main/d2aOwnDataRead.pipeline.spec.ts` |
+| 7（`validate:architecture`） | 解消：CI の静的検査の job に含まれ、#1042 はその job が成功した | `.github/workflows/ci.yml` の `frontend-static`。#1042 の PR の checks でこの job は成功 |
+| 8（mock でボタンが出ない） | 変わらず（固定する試験は確認できていない） | `browser-mock.ts`、`ForeshadowPanel.tsx` |
+| 9（Work Layer の実データ） | 解消：live の読み口が入った | #1114、`workLayerLiveReaders.ts` |
+| 10（FSR/1 との衝突） | #1042 は `ForeshadowPanel.tsx` を変えずに merge した | #1042 の変更 file |
+| 11（snooze が付く経路） | Native の command はあるが、renderer の呼び手は無い。MCP と自動の保守から呼ぶ経路は、検索の範囲では見つかっていない | `narrative_maintenance_attention_set` |
+| 2・4 | 未確認のまま | — |
+
+### 8.3 roadmap の Exit criteria の今
+
+| Exit criteria | 今 |
+| ---- | ---- |
+| 件数は正本の Consumer Freshness と Finding の identity から | 一部：伏線パネルの画面と、ヘッダーの件数が正本から読む |
+| 場面の編集で、影響のある Finding だけが更新される | **そのまま固定する試験は確認できていない**（依存しない側が変わらないことの assert が無い） |
+| 人の処分は、影響の無い再評価を越えて残り、根拠が実質的に変われば戻る | **再評価をまたぐ試験は確認できていない**。snooze は、新しい観測を試験内で差し替えて Inbox に戻ることを assert する試験がある |
+| 自動の警告は、出所と理由を述べる | 未対応（画面は件数だけ） |
+
+2 つ目と 3 つ目は、2026-11-25 の read-only の調査（試験は実行していない）の結果。試験を足すのは別の PR にする。
