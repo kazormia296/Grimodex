@@ -36,11 +36,22 @@ vi.mock("./ChatMessageActions", () => ({
   ChatMessageActions: ({
     onInsert,
     onRegenerate,
+    onDelete,
   }: {
     onInsert?: () => void;
     onRegenerate?: (messageId: string) => void;
+    onDelete?: (messageId: string) => void;
   }) => (
     <>
+      {onDelete ? (
+        <button
+          type="button"
+          data-testid="delete-btn"
+          onClick={() => onDelete("m1")}
+        >
+          delete
+        </button>
+      ) : null}
       {onInsert ? (
         <button type="button" data-testid="insert-btn" onClick={onInsert}>
           insert
@@ -386,6 +397,22 @@ describe("ChatMessage — 出力の打ち切りの注記", () => {
     expect(screen.getByTestId("output-truncated-m1").textContent).toContain(
       "chat.outputTruncated",
     );
+  });
+
+  it("本文が空の打ち切り行にも削除を出し、挿入は出さない", () => {
+    render(
+      <ChatMessage
+        msg={fakeMsg({
+          content: "",
+          metadata: JSON.stringify({ output_truncated: true }),
+        })}
+        isStreaming={false}
+        onInsert={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("delete-btn")).toBeTruthy();
+    expect(screen.queryByTestId("insert-btn")).toBeNull();
   });
 
   it("印が無ければ出さない", () => {

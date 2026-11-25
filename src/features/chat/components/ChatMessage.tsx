@@ -351,6 +351,17 @@ function ChatMessageImpl({
                 onDelete={onDelete}
               />
             )}
+            {/* 本文が空の打ち切り行も保存するので、削除と再生成はできるようにする。 */}
+            {!isStreaming &&
+              parsedMeta.output_truncated &&
+              safeContent.length === 0 && (
+                <ChatMessageActions
+                  messageId={msg.id}
+                  messageRole="assistant"
+                  onRegenerate={canRegenerate ? onRegenerate : undefined}
+                  onDelete={onDelete}
+                />
+              )}
             {isAssistant && selectionInfo && (
               <SelectionToolbar
                 selectionInfo={selectionInfo}
