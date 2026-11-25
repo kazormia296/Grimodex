@@ -1032,8 +1032,12 @@ async function startAgentAuthorityTurn(harness, page, projectId, prompt) {
   return preparedAudit;
 }
 
-// 停止した chat の turn は、途中までの本文を `stopped` の印つきで保存する。
-function assertStoppedChatAuthority(rows, { prompt, label, outputMarker }) {
+// 停止した chat の turn は、途中までの本文を `stopped` の印つきで保存する。中断の後に
+// 届いた出力（lateMarker）は保存しない。
+function assertStoppedChatAuthority(
+  rows,
+  { prompt, label, outputMarker, lateMarker },
+) {
   const userRows = rows.filter(
     (row) => row.role === "user" && String(row.content ?? "").includes(prompt),
   );
@@ -1049,6 +1053,8 @@ function assertStoppedChatAuthority(rows, { prompt, label, outputMarker }) {
     assistantRows.length !== 1 ||
     (outputMarker &&
       !String(assistantRows[0]?.content ?? "").includes(outputMarker)) ||
+    (lateMarker &&
+      String(assistantRows[0]?.content ?? "").includes(lateMarker)) ||
     metadata.stopped !== true ||
     !userRows.some((row) => row.systemPrompt != null)
   ) {
@@ -2959,12 +2965,19 @@ async function runChatStreamProjectSwitchJourney(harness) {
           prompt: PROJECT_CHAT_AUTHORITY_PROMPT,
           label: "project A stream",
           outputMarker: CHAT_AUTHORITY_EARLY,
+          lateMarker: CHAT_AUTHORITY_LATE,
         });
         return rows;
       } catch {
         return null;
       }
     }, "project A stopped stream persistence");
+    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      ...scope,
+      stoppedBeforeSwitch: true,
+      label: "project chat switch after persistence",
+    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
@@ -3142,6 +3155,12 @@ async function runAgentStreamProjectSwitchJourney(harness) {
         return null;
       }
     }, "project A stopped Agent transcript persistence");
+    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      ...scope,
+      stoppedBeforeSwitch: true,
+      label: "Agent project switch after persistence",
+    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
@@ -3375,6 +3394,12 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
         return null;
       }
     }, "workspace A stopped Agent transcript persistence");
+    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      ...scope,
+      stoppedBeforeSwitch: true,
+      label: "Agent workspace switch after persistence",
+    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
@@ -3612,6 +3637,7 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
           prompt: WORKSPACE_CHAT_AUTHORITY_PROMPT,
           label: "workspace A stream",
           outputMarker: CHAT_AUTHORITY_EARLY,
+          lateMarker: CHAT_AUTHORITY_LATE,
         });
         if (
           !rows.some(
@@ -3628,6 +3654,12 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
         return null;
       }
     }, "workspace A stopped stream persistence");
+    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      ...scope,
+      stoppedBeforeSwitch: true,
+      label: "workspace chat switch after persistence",
+    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
