@@ -12,7 +12,8 @@ type Definitions = typeof import("./toolDefinitions");
 
 /** The description before chat IR S1-B (what the closed constant must keep). */
 const SEARCH_EVENTS_TODAY =
-  "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking).";
+  "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking)." +
+  " Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. When revealedToReader is false, readers do not know it yet at the current scene, so do not write it as something readers already know; when revealedToReader is absent, it was not judged.";
 
 async function load(enabled: boolean): Promise<Definitions> {
   vi.resetModules();

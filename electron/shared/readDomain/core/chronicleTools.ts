@@ -12,6 +12,10 @@ import {
   pickSnapshotCharacters,
 } from "../features/chronicle/chronicleSnapshot.js";
 import {
+  chronicleRevealMarks,
+  type ChronicleRevealView,
+} from "../features/chronicle/chronicleRevealMark.js";
+import {
   calendarFromRow,
   formatChronicleDate,
   type ChronicleCalendar,
@@ -59,6 +63,16 @@ function fmtEventDate(
   return formatChronicleDate(day, minute, granularity, cal, lang) || null;
 }
 
+/** 開示の印の基準（開いている場面と読む順）。 */
+function revealView(ctx: CoreChronicleReadContext): ChronicleRevealView {
+  const { nodes, activeSceneId } = ctx.getTreeState();
+  return {
+    nodes,
+    currentSceneId: activeSceneId,
+    readingOrder: ctx.chronicle.getReadingOrder(nodes),
+  };
+}
+
 function result(
   ctx: CoreChronicleReadContext,
   name: string,
@@ -89,6 +103,7 @@ export async function listEvents(
     kind === "birth" || kind === "death" || kind === "generic"
       ? events.filter((e) => e.kind === kind)
       : events;
+  const revealOf = chronicleRevealMarks(filtered, () => revealView(ctx));
   const ids = [
     ...new Set(
       filtered.flatMap((e) =>
@@ -117,6 +132,7 @@ export async function listEvents(
         e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
           ? (names.get(e.primaryCodexId) ?? null)
           : null,
+      ...revealOf(e.id),
     })),
   };
   return result(ctx, "list_events", content, `${content.events.length} events`);
@@ -173,6 +189,7 @@ export async function getEventDetail(
   const titleByEvent = new Map(events.map((e) => [e.id, e.title] as const));
   const nodes = ctx.getTreeState().nodes;
   const titleByScene = new Map(nodes.map((n) => [n.id, n.title] as const));
+  const revealOf = chronicleRevealMarks([ev], () => revealView(ctx));
 
   const content = {
     id: ev.id,
@@ -227,6 +244,7 @@ export async function getEventDetail(
         cause: titleByEvent.get(r.causeId) ?? null,
         effect: titleByEvent.get(r.effectId) ?? null,
       })),
+    ...revealOf(ev.id),
   };
   return result(ctx, "get_event_detail", content, `Event '${ev.title}'`);
 }
@@ -271,6 +289,7 @@ export async function getCharacterTimeline(
       (e) => e.primaryCodexId === codexId || participantEventIds.has(e.id),
     )
     .sort((a, b) => cmpKeys(a.ordinal, b.ordinal));
+  const revealOf = chronicleRevealMarks(involved, () => revealView(ctx));
 
   // 誕生時刻（年齢算出基準）。出来事はすべて対象。
   let birthTime: number | null = null;
@@ -296,6 +315,7 @@ export async function getCharacterTimeline(
         birthTime != null && e.startTime != null && daysPerYear > 0
           ? Math.floor((e.startTime - birthTime) / daysPerYear)
           : null,
+      ...revealOf(e.id),
     })),
   };
   return result(

@@ -46,8 +46,13 @@ export function isEventBeforeOrAtScene(
 /**
  * The approximation of rule (4) (chat IR S1-A2b, DR-CHATIR-S1-45): what stands
  * in for "drop the event the IR's own rule would drop" when Native's exclusion
- * is not at hand. Only a secret event is judged (the events an import makes are
- * always secret); an event that is not secret passes.
+ * is not at hand. Only a secret event is judged; an event that is not secret
+ * passes.
+ *
+ * The premise this was written on ("the events an import makes are always
+ * secret") no longer holds: since CSR/1 (N6) an import makes them unmarked, so
+ * only events marked before that are judged. Revisit the approximation before
+ * chat IR is opened (CSR/1 N9).
  *
  * A secret event passes only when **every** Scene it is tied to is placed
  * strictly before the current Scene (plan A of the contract's 3.4 (3)). So the

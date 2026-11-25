@@ -1017,7 +1017,7 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     expect(denseSent).toEqual([]);
   });
 
-  it("search_events は events・scene_events を読まない（CSR/1）：list_events（cache つきの ctx）が events を読んだ後でも、search_events は 2 回呼んで 0 回。turn の途中で secret にした event の hit も、落ちない", async () => {
+  it("search_events は dense hit の後に events を読む。secret でも hit を返し、開示シーンの印を付ける", async () => {
     setLegacyReadWorkspaceIdentity();
     await seedLegacyReadFixture();
     await setLegacyReadWorld({ projectId: "p-main", activeSceneId: "n-s1" });
@@ -1050,7 +1050,7 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
     const first = await executors.search_events({ query: "魔術" });
     expect(idsOf(first)).toContain("ev-meet");
     await executors.search_events({ query: "魔術" });
-    expect(countFrom("events")).toBe(0); // search_events は DB を読まない（秘匿の判定が無いため）
+    expect(countFrom("events")).toBe(2); // hit がある検索ごとに、dense の後で出来事を読む
     expect(countFrom("scene_events")).toBe(0);
 
     const update = (secret: number, reveal: string | null) =>
@@ -1061,8 +1061,17 @@ describe("共有 core の search_events（main の DB adapter・turn の入力�
       });
     try {
       await update(1, "n-s3"); // 公開の ev-meet が、turn の途中で n-s3 公開の secret になる（今は n-s1）
+      sent.length = 0;
       const after = await executors.search_events({ query: "魔術" });
       expect(idsOf(after)).toContain("ev-meet"); // secret は、検索の判定に使われない
+      const marked = (after.content as Array<Record<string, unknown>>).find(
+        (hit) => hit.eventId === "ev-meet",
+      );
+      expect(marked?.revealScene).toMatchObject({
+        id: "n-s3",
+        revealedToReader: false,
+      });
+      expect(countFrom("events")).toBe(1);
     } finally {
       await update(0, null);
     }

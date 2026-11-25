@@ -22,7 +22,13 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 共有 chunk を 2 つに割る分（468）は、読み口が codexStore を呼び手の hook から受ける形にして無くした。
   // 実効の上限は raw 3,902,828 で、absoluteMax（3,903,000）の内側（残り 66）。ユーザーの 2026-10-25 の指示（lazy 化が先、
   // 足りない分だけ最小限を、独立した commit で緩める）に沿う。
-  allowance: { rawBytes: 99_328, gzipBytes: 36_864 },
+  // raw の allowance を 99,328 → 100,728（+1,400）に、absoluteMax を 3,903,000 → 3,904,300 に上げた（2026-11-25、年表の
+  // 開示シーンの印の R1）。作者が開示シーンを選んだ出来事に、AI の読み道具が印を添える。道具の説明の文（約 290 byte）と、
+  // 初期 graph に元からある読みの core の呼び出し側が増える。印の処理は関数 1 つにまとめて 477 byte 減らした。残る専用の
+  // module は約 0.4 KB で、動的 import に分けても wrapper を引くとほとんど減らないので分けなかった。実測 raw 3,904,178
+  // （master 単独の CI の実測は 3,902,768。gzip は 1,229,519 で余裕あり）。実効の上限は raw 3,904,228（残り 50）。
+  // ユーザーの 2026-10-25 の指示（lazy 化が先、足りない分だけ最小限を、独立した commit で緩める）に沿う。
+  allowance: { rawBytes: 100_728, gzipBytes: 36_864 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
   // （実測 raw 4,249,993 → 4,250,669 で +676、gzip 1,342,871 → 1,343,227 で +356）。
@@ -68,7 +74,7 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 上限は旧上限より raw 379,400／gzip 123,200 低い。allowance は raw 32,768 → 98,304、
   // gzip 16,384 → 36,864 に広げた。機能を足すたびに数百 byte ずつ上限を上げる運用を
   // やめるためで、広げても実効の上限（baseline＋allowance）は旧上限よりずっと低い。
-  absoluteMax: { rawBytes: 3_903_000, gzipBytes: 1_232_000 },
+  absoluteMax: { rawBytes: 3_904_300, gzipBytes: 1_232_000 },
 };
 // 既定フォント (Noto Serif JP / M PLUS 1) の CSS を含む。可変フォントに移行したため、
 // 従来の「japanese 全体を 1 face」から「約 120 の unicode-range slice」になり CSS は
