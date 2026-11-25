@@ -1534,7 +1534,7 @@ export async function hasApprovedUnappliedProposalForScene(args: {
 
 /**
  * Compile approved review proposals and apply via Native commit coordinator.
- * Does not use legacy compensation-delete importExtractedEvents.
+ * Approved proposals are applied by the Native commit coordinator.
  */
 export async function applyChronicleExtractionCommit(input: {
   readonly projectId: string;

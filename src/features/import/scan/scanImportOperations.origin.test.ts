@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   ensureBuiltinTypes: vi.fn(),
   listCodexTypes: vi.fn(),
   createEvent: vi.fn(),
+  listEvents: vi.fn(),
   linkScenesToEvent: vi.fn(),
   setEventParticipants: vi.fn(),
   createNode: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@/features/codex/typeApi", () => ({
 }));
 vi.mock("@/features/chronicle/api", () => ({
   createEvent: mocks.createEvent,
+  listEvents: mocks.listEvents,
   linkScenesToEvent: mocks.linkScenesToEvent,
   setEventParticipants: mocks.setEventParticipants,
 }));
@@ -202,6 +204,7 @@ describe("Scan canonical writer origin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listNodes.mockResolvedValue([]);
+    mocks.listEvents.mockResolvedValue([]);
     mocks.listCodexTypes.mockResolvedValue([]);
     mocks.getProject.mockResolvedValue({ language: "ja" });
     mocks.createEvent.mockResolvedValue({ id: "event-1" });
@@ -254,6 +257,77 @@ describe("Scan canonical writer origin", () => {
     expect(mocks.setEventParticipants.mock.calls[0]?.[3]).toEqual({
       origin: "import",
     });
+  });
+
+  it("既存の年表と非保管場面の最終日から、取り込み順に不明な日付を置く", async () => {
+    const importPlan = plan();
+    const events = [
+      ...importPlan.events,
+      { ...importPlan.events[0]!, id: "event-2", order: 1, title: "Event 2" },
+    ];
+    mocks.listEvents.mockResolvedValue([
+      {
+        id: "existing-event",
+        ordinal: "a0",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        startTime: 20,
+        endTime: null,
+        startGranularity: "day",
+        endGranularity: "none",
+      },
+    ]);
+    mocks.listNodes.mockResolvedValue([
+      {
+        id: "live-scene",
+        nodeType: "scene",
+        archivedAt: null,
+        chronicleStartTime: 30,
+        chronicleStartGranularity: "day",
+      },
+      {
+        id: "archived-scene",
+        nodeType: "scene",
+        archivedAt: "2026-01-01T00:00:00.000Z",
+        chronicleStartTime: 90,
+        chronicleStartGranularity: "day",
+      },
+    ]);
+
+    await createScanImportOperationsForPlan(importPlan).importEvents(
+      projectId,
+      events,
+    );
+
+    expect(mocks.createEvent.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({
+        id: "event-1",
+        startTime: 31,
+        startGranularity: "day",
+        precision: "unknown",
+      }),
+      expect.objectContaining({
+        id: "event-2",
+        startTime: 32,
+        startGranularity: "day",
+        precision: "unknown",
+      }),
+    ]);
+  });
+
+  it("年表にも場面にも日付が無ければ暦の起点から始める", async () => {
+    const importPlan = plan();
+    await createScanImportOperationsForPlan(importPlan).importEvents(
+      projectId,
+      importPlan.events,
+    );
+
+    expect(mocks.createEvent.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        startTime: 0,
+        startGranularity: "day",
+        precision: "unknown",
+      }),
+    );
   });
 
   it("uses import origin while seeding a Scan staging project", async () => {

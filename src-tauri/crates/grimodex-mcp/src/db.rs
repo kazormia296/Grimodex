@@ -2050,6 +2050,8 @@ pub struct ChronicleCalendarRaw {
     pub leap_rule: String,
     /// Age reckoning. 'full' = 満年齢 (default) / 'counting' = 数え年.
     pub age_reckoning: String,
+    /// Raw JSON string（改暦の決まり）。'null' = 改暦なし。
+    pub reform: String,
 }
 
 /// camelCase write result (same shape as foreshadow/codex `AgentWriteResult`).
@@ -2210,7 +2212,7 @@ pub fn chronicle_get_calendar(
     use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT days_per_year, season_boundaries, start_year, months, weekday_names, \
-                weekday_start_index, leap_rule, age_reckoning
+                weekday_start_index, leap_rule, age_reckoning, reform
          FROM project_calendar
          WHERE project_id = ?1",
         params![project_id],
@@ -2224,6 +2226,7 @@ pub fn chronicle_get_calendar(
                 weekday_start_index: row.get(5)?,
                 leap_rule: row.get(6)?,
                 age_reckoning: row.get(7)?,
+                reform: row.get(8)?,
             })
         },
     )
@@ -3806,6 +3809,7 @@ pub(crate) mod tests {
                 weekday_start_index INTEGER NOT NULL DEFAULT 0,
                 leap_rule TEXT NOT NULL DEFAULT '{\"kind\":\"none\"}',
                 age_reckoning TEXT NOT NULL DEFAULT 'full',
+                reform TEXT NOT NULL DEFAULT 'null',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );

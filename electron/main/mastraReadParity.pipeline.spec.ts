@@ -1085,7 +1085,7 @@ describe("the chronicle tools of the read core (PR-7a) on Main's adapter over th
     });
     expect(own.summary).toBe("Chronicle state at scene (scene)");
     expect(JSON.stringify(own.content)).toBe(
-      '{"time":{"source":"scene","startTime":7000,"season":null,"precision":"approx","formattedDate":"1019年第161日"},"characters":[{"codexId":"c-mage","name":"老魔術師","status":"unknown","age":null,"location":"古い塔"},{"codexId":"c-aria","name":"アリア","status":"alive","age":19,"location":"古い塔"}],"recentEvents":[{"eventId":"ev-hidden-name","title":"黒幕の登場","note":null,"relTime":"約3年前"},{"eventId":"ev-meet","title":"老魔術師との出会い","note":null,"relTime":"約4年前"},{"eventId":"ev-war","title":"魔術戦争","note":"昔の戦争","relTime":"約9年前"}],"unresolvedCausal":[],"offpage":[{"eventId":"ev-death","title":"老魔術師の死","note":"恒久的に秘匿","relTime":null}]}',
+      '{"time":{"source":"scene","startTime":7000,"season":null,"precision":"approx","formattedDate":"1019年第161日"},"characters":[{"codexId":"c-mage","name":"老魔術師","status":"unknown","age":null,"location":"古い塔"},{"codexId":"c-aria","name":"アリア","status":"alive","age":19,"location":"古い塔"}],"recentEvents":[{"eventId":"ev-hidden-name","title":"黒幕の登場","note":null,"relTime":"約3年前"},{"eventId":"ev-meet","title":"老魔術師との出会い","note":null,"relTime":"約4年前"},{"eventId":"ev-war","title":"魔術戦争","note":"昔の戦争","relTime":"約9年前"}],"unresolvedCausal":[],"offpage":[{"eventId":"ev-death","title":"老魔術師の死","note":"恒久的に秘匿","relTime":null}],"calendar":{"daysPerYear":360,"startYear":1000,"months":"[]","leapRule":"{\\"kind\\":\\"none\\"}","reform":"null"}}',
     );
     // The names of a hidden Codex entry are NOT returned (CSR/1): the primary
     // character and the location are null, the participant row is dropped, and the
