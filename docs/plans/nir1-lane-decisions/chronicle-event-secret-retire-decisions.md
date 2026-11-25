@@ -216,3 +216,21 @@ AI 抽出の取り込み（NEX の commit）が、出来事を印なし・開示
 - `agent_writes.rs` の `surface = "import"` は、明示値（`secret`・`revealSceneId`）を受け付ける（N4 の対象外。scan importer が実際に使うが、その呼び出しは値を渡さない）。Native の `secret` の書き込みの拒否の最終形は、N2・N6 の後の別の小さな PR。
 - Electron の実機の journey（`chronicle-edited-apply-product-journey`）は、ローカルで走らせていない（hosted の `electron-native`・journey が確認）。
 - **公開版（release）には、N3・N7（開示シーンの印）・N9 の整理が入った後に、N11 の測定の結果をユーザーに見せてから出す。**
+
+## 10. Native はどの surface からも `secret` を書かない（2026-11-25）
+
+起案の §5 の N4 (c)。N2（画面）と N6（取り込み）が master に入り、`secret = true` を送る本番の経路が無くなったので、N4 で残した作者の surface（`manual`・`import`）も閉じる。技術判断（AGENTS の委任の範囲。CSR/1 の確認 94・104・105 の帰結の実装）。
+
+### DR-CSR-20　agent writer の拒否を全 surface にする
+
+- **作成**（`agent_event_create_*`）：`secret: true` は surface に関わらず拒み（文言は DR-CSR-15 と同じ）、行の `secret` は常に `false`。`false` と省略は今までどおり通る（画面の作成の wrapper は `secret: false` を送り続け、payload の形と冪等ハッシュは変えない）。
+- **更新**（`agent_event_update_*`）：`secret` が指定されていれば、`false` でも全 surface で拒む。SQL の `secret` の更新の分岐は消した。拒否は、冪等の再送の検査より前（今までと同じ位置）。
+- **呼び出し元の確認**（実装の前に読んだ）：`createEvent`（年表の画面・scan の取り込み・旧抽出）は `secret` を渡さない。画面の更新は欄ごとの patch で、N2 の後は `secret` を含まない。MCP は渡さない。NEX の commit は agent writer の entry を通らず、N6 の検査が `true` を先に拒む。undo／redo は journal の snapshot の replay で、更新の entry を通らない。
+- **型**：renderer の `AgentEventCreateInput`・`AgentEventUpdateInput` から `secret` を消した。
+- **変えない**：payload の欄（黙って無視せず拒むために残す）・`apply_event_create_in_tx`・Field Authority の `/secret`・列と既存の値（migration なし）・伏線の `secret`。
+
+### 残る制限
+
+- 画面で見える変化は無い見込み（拒む値を送る本番の経路が無い）。
+- 既存の `secret = 1` の値は残り、更新・undo／redo・スナップショットはそのまま運ぶ。
+- この変更の前に `secret: true` で成功した作者の surface の作成を、同じ `requestId` で後から再送すると、元の結果ではなく拒否になる（request id はアプリの実行中の呼び出しごとのもので、更新をまたぐ再送は想定しない）。

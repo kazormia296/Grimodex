@@ -320,6 +320,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
       startMinute: 720,
       endTime: 11,
       endGranularity: "day",
+      secret: false,
     });
   });
 
