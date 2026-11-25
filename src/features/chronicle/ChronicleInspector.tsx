@@ -729,7 +729,7 @@ export function ChronicleInspector({
                   <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
                     {t(
                       "chronicle.revealSceneDesc",
-                      "読者に明かす場面が決まっているときに選びます。",
+                      "選ぶと、それより前の場面では AI に「読者はまだ知らない」と伝えます。",
                     )}
                   </span>
                 </div>
