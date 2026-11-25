@@ -40,7 +40,7 @@ const event = (id: string, over: Partial<EventRow> = {}): EventRow => ({
   endTime: null,
   startMinute: null,
   endMinute: null,
-  startGranularity: "none",
+  startGranularity: over.startTime != null ? "day" : "none",
   endGranularity: "none",
   precision: "exact",
   kind: "generic",
@@ -993,7 +993,7 @@ describe("get_chronicle_state", () => {
       lang: "en",
     };
     expect(assembleChronicleSnapshotText(args)).toBe(
-      "Off-page background:\n- title-d\n- title-c\n- title-b",
+      "Off-page background:\n- title-d (date uncertain)\n- title-c (date uncertain)\n- title-b (date uncertain)",
     );
     const result = await makeCtx({
       events,
@@ -1018,7 +1018,7 @@ describe("get_chronicle_state", () => {
         title: "title-" + id,
         note: null,
         relTime: null,
-        precision: "exact",
+        precision: "unknown",
       })),
     });
   });
