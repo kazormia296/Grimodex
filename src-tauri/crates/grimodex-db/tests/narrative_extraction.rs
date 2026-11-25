@@ -246,10 +246,8 @@ fn event_create_payload(event_id: &str, title: &str, scene_id: &str, version: i6
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        // 取り込みの操作は、年表の出来事を常に secret で作る（DR-CAS-2）。
-        // 版の disclosure.secret は current_chronicle_plan_proposal 側で別に与える。
-        "secret": true,
-        "revealSceneId": scene_id,
+        "secret": false,
+        "revealSceneId": null,
         "evidenceSceneLinks": [{
             "sceneId": scene_id,
             "expectedSceneVersion": version,
@@ -2906,6 +2904,11 @@ fn current_chronicle_native_compiler_rejects_renderer_field_tampering() {
     title["title"] = json!("Renderer forged title");
     let mut reveal = payload.clone();
     reveal["revealSceneId"] = json!("scene-forged");
+    let mut reveal_omitted = payload.clone();
+    reveal_omitted
+        .as_object_mut()
+        .expect("payload object")
+        .remove("revealSceneId");
     let mut evidence_version = payload.clone();
     evidence_version["evidenceSceneLinks"][0]["expectedSceneVersion"] = json!(99);
     let mut anchors = payload.clone();
@@ -2918,7 +2921,18 @@ fn current_chronicle_native_compiler_rejects_renderer_field_tampering() {
     for (case, tampered, expected_code) in [
         ("event-id", event_id, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         ("title", title, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
-        ("reveal-scene", reveal, "NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        // 取り込みは開示シーンを入れない：非 null の書き換えは、組み立て直しの照合より前の
+        // 共通の検査（SECRET_FORBIDDEN）が拒む。キーの欠落（null との差）は、照合が拒む。
+        (
+            "reveal-scene",
+            reveal,
+            "NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN",
+        ),
+        (
+            "reveal-omitted",
+            reveal_omitted,
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH",
+        ),
         (
             "evidence-version",
             evidence_version,
@@ -2983,7 +2997,7 @@ fn current_chronicle_shared_snapshot_authority_rejects_later_proposal_tampering(
     enable_manual_apply(&db);
 
     let mut tampered_second = payloads[1].clone();
-    tampered_second["revealSceneId"] = json!("scene-renderer-forged");
+    tampered_second["detail"] = json!("renderer-forged-detail");
     let error = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
         build_prepare(
@@ -5599,10 +5613,14 @@ fn seed_current_chronicle_approved_with_disclosure_secret(
     (set_id, pairs.remove(0), payload)
 }
 
+fn count_events(db: &Database) -> i64 {
+    db.with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?))
+        .expect("count events")
+}
+
 #[test]
-fn current_chronicle_apply_creates_secret_event_from_nonsecret_or_secret_revision() {
-    // 版が false（作者が IR に出すと承認）でも true でも、年表の出来事は secret。
-    // reveal の場面は版の reveal の文書の場面のまま。IR の資格の永続状態は変わらない。
+fn current_chronicle_apply_creates_unmarked_event_from_nonsecret_or_secret_revision() {
+    // 版の disclosure.secret がどちらでも、取り込む出来事には印も reveal scene も付かない。
     for (case, version_secret) in [("nonsecret", false), ("secret", true)] {
         let db = migrated_db();
         let run_id = format!("run-cas-create-{case}");
@@ -5633,8 +5651,8 @@ fn current_chronicle_apply_creates_secret_event_from_nonsecret_or_secret_revisio
 
         assert_eq!(
             event_secret_and_reveal(&db, &event_id),
-            (1, Some("scene-1".to_string())),
-            "{case}: Chronicle Event must be secret with the Revision's reveal Scene"
+            (0, None),
+            "{case}: Chronicle Event must be unmarked with no reveal Scene"
         );
         // IR の資格が読む状態（提案の状態・現行の版・最新の承認・版の secret と envelope）は
         // 取り込みで変わらない。版の secret は取り込み後も承認時の値のまま。
@@ -5652,49 +5670,53 @@ fn current_chronicle_apply_creates_secret_event_from_nonsecret_or_secret_revisio
 }
 
 #[test]
-fn current_chronicle_apply_rejects_nonsecret_operation_even_for_nonsecret_revision() {
+fn current_chronicle_apply_rejects_secret_operation_even_for_nonsecret_revision() {
     let db = migrated_db();
-    let run_id = "run-cas-current-nonsecret-op";
+    let run_id = "run-cas-current-secret-op";
     let (set_id, pair, payload) = seed_current_chronicle_approved_with_disclosure_secret(
         &db,
         run_id,
-        "event-cas-current-nonsecret-op",
+        "event-cas-current-secret-op",
         json!(false),
     );
     let mut forged = payload.clone();
-    forged["secret"] = json!(false);
+    forged["secret"] = json!(true);
     enable_manual_apply(&db);
 
     let error = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
         build_prepare(
-            "req-cas-current-nonsecret-op",
+            "req-cas-current-secret-op",
             "ignored",
             &set_id,
             run_id,
             vec![(pair.0.clone(), pair.1.clone(), forged)],
         ),
     )
-    .expect_err("a non-secret Chronicle Event operation must be refused");
+    .expect_err("a secret Chronicle Event operation must be refused");
     assert!(
         error
             .to_string()
-            .contains("NEX_CHRONICLE_APPLY_SECRET_REQUIRED"),
-        "unexpected non-secret operation error: {error:#}"
+            .contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN"),
+        "unexpected secret operation error: {error:#}"
     );
     assert_eq!(count_apply_commits(&db), 0);
+    assert_eq!(count_events(&db), 0);
 }
 
 #[test]
-fn legacy_chronicle_apply_rejects_nonsecret_operation() {
+fn legacy_chronicle_apply_rejects_reveal_scene_operation() {
+    // 旧形式は operation の payload をそのまま比較する。secret: false でも、非 null の
+    // 開示シーンを持つ操作は、共通の検査で拒む（取り込みは開示シーンを入れない。確認 104）。
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
-    let mut payload = event_create_payload("event-cas-legacy-nonsecret", "Legacy", "scene-1", 0);
+    let mut payload = event_create_payload("event-cas-legacy-reveal", "Legacy", "scene-1", 0);
     payload["secret"] = json!(false);
+    payload["revealSceneId"] = json!("scene-1");
     let pairs = seed_approved_proposals(
         &db,
-        "run-cas-legacy-nonsecret",
-        "set-cas-legacy-nonsecret",
+        "run-cas-legacy-reveal",
+        "set-cas-legacy-reveal",
         std::slice::from_ref(&payload),
     );
     enable_manual_apply(&db);
@@ -5702,21 +5724,57 @@ fn legacy_chronicle_apply_rejects_nonsecret_operation() {
     let error = narrative_extraction::narrative_extraction_prepare_commit(
         &db,
         build_prepare(
-            "req-cas-legacy-nonsecret",
+            "req-cas-legacy-reveal",
             "ignored",
-            "set-cas-legacy-nonsecret",
-            "run-cas-legacy-nonsecret",
+            "set-cas-legacy-reveal",
+            "run-cas-legacy-reveal",
             vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
         ),
     )
-    .expect_err("the legacy branch must not create a non-secret Chronicle Event");
+    .expect_err("the legacy branch must not create a Chronicle Event with a reveal scene");
     assert!(
         error
             .to_string()
-            .contains("NEX_CHRONICLE_APPLY_SECRET_REQUIRED"),
-        "unexpected legacy non-secret operation error: {error:#}"
+            .contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN"),
+        "unexpected legacy reveal operation error: {error:#}"
     );
     assert_eq!(count_apply_commits(&db), 0);
+    assert_eq!(count_events(&db), 0);
+}
+
+#[test]
+fn legacy_chronicle_apply_rejects_secret_operation() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let mut payload = event_create_payload("event-cas-legacy-secret", "Legacy", "scene-1", 0);
+    payload["secret"] = json!(true);
+    let pairs = seed_approved_proposals(
+        &db,
+        "run-cas-legacy-secret",
+        "set-cas-legacy-secret",
+        std::slice::from_ref(&payload),
+    );
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-cas-legacy-secret",
+            "ignored",
+            "set-cas-legacy-secret",
+            "run-cas-legacy-secret",
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+        ),
+    )
+    .expect_err("the legacy branch must not create a secret Chronicle Event");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN"),
+        "unexpected legacy secret operation error: {error:#}"
+    );
+    assert_eq!(count_apply_commits(&db), 0);
+    assert_eq!(count_events(&db), 0);
 }
 
 #[test]
@@ -5796,7 +5854,7 @@ fn current_chronicle_revision_with_non_boolean_disclosure_secret_cannot_be_appro
 }
 
 #[test]
-fn current_chronicle_secret_event_survives_undo_and_redo() {
+fn current_chronicle_unmarked_event_survives_undo_and_redo() {
     let db = migrated_db();
     let run_id = "run-cas-undo-redo";
     let event_id = "event-cas-undo-redo";
@@ -5828,15 +5886,15 @@ fn current_chronicle_secret_event_survives_undo_and_redo() {
         .expect("redo");
     assert_eq!(
         event_secret_and_reveal(&db, event_id),
-        (1, Some("scene-1".to_string())),
-        "Redo must restore the Event as secret"
+        (0, None),
+        "Redo must restore the Event without a secret mark or reveal scene"
     );
     assert_eq!(retrieval_gate_state(&db, &pair.0), gate_after_apply);
 }
 
 #[test]
 fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_again() {
-    // DR-CAS-5：規則の前に prepare された計画（操作に secret:false が残る）は、apply で拒否される。
+    // 規則の前に prepare された計画（secret=true の操作）は、apply で拒否・無効化される。
     // その後、同じ提案の組を新しい request で prepare し直して取り込める。
     let db = migrated_db();
     let run_id = "run-cas-stale-plan";
@@ -5855,7 +5913,7 @@ fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_aga
         .expect("prepare");
     let prepared_commit_id = prepared["preparedCommitId"].as_str().unwrap().to_string();
 
-    // 規則の前に準備された計画を再現する：保存済みの計画の操作を secret:false に戻す。
+    // 規則の前に準備された計画を再現する。
     db.with_conn(|conn| {
         let raw: String = conn.query_row(
             "SELECT prepared_plan_json FROM narrative_apply_commits WHERE id = ?1",
@@ -5863,7 +5921,8 @@ fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_aga
             |row| row.get(0),
         )?;
         let mut plan: Value = serde_json::from_str(&raw)?;
-        plan["operations"][0]["payload"]["secret"] = json!(false);
+        plan["operations"][0]["payload"]["secret"] = json!(true);
+        plan["operations"][0]["payload"]["revealSceneId"] = json!("scene-1");
         conn.execute(
             "UPDATE narrative_apply_commits SET prepared_plan_json = ?1 WHERE id = ?2",
             rusqlite::params![plan.to_string(), prepared_commit_id],
@@ -5882,17 +5941,24 @@ fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_aga
             expected_version: prepared["version"].as_i64(),
         },
     )
-    .expect_err("a pre-rule plan with a non-secret operation must be refused at Apply");
+    .expect_err("a pre-rule plan with a secret operation must be refused at Apply");
     assert!(
         error
             .to_string()
-            .contains("NEX_CHRONICLE_APPLY_SECRET_REQUIRED"),
+            .contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN"),
         "unexpected stale plan error: {error:#}"
     );
-    let events: i64 = db
-        .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?))
+    let commit_status: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+                [&prepared_commit_id],
+                |row| row.get(0),
+            )?)
+        })
         .unwrap();
-    assert_eq!(events, 0);
+    assert_eq!(commit_status, "invalidated");
+    assert_eq!(count_events(&db), 0);
 
     let applied = prepare_and_apply(
         &db,
@@ -5905,10 +5971,7 @@ fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_aga
         ),
     );
     assert_eq!(applied["status"], "applied");
-    assert_eq!(
-        event_secret_and_reveal(&db, event_id),
-        (1, Some("scene-1".to_string()))
-    );
+    assert_eq!(event_secret_and_reveal(&db, event_id), (0, None));
 }
 
 // --- 取り込みの取り消し・やり直しと、スナップショットの復元（DR-SRC-12） --------

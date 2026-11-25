@@ -1,3 +1,4 @@
+import { prefetchFontFaces } from "./fontFacePrefetch";
 import { useSettingsStore } from "./settingsStore";
 
 type BundledFontFamily =
@@ -46,6 +47,8 @@ export function loadBundledFontForCssValue(
   const request = loaders[family]()
     .then((result) => {
       loaded.add(family);
+      // slice の取得完了ごとの全文再 layout を、本文が大きくなる前に済ませる。
+      void prefetchFontFaces(family);
       return result;
     })
     .finally(() => {

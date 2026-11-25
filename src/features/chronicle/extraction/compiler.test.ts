@@ -36,18 +36,17 @@ function proposal(secret: boolean): CreateChronicleEventProposalPayloadV1 {
 }
 
 describe("compileCreateChronicleEventOperation", () => {
-  // 版の disclosure.secret は IR の関門。年表の出来事は常に secret で作る。
-  // Native の compile_current_chronicle_event_operation_payload と同じ規則。
+  // 版の disclosure は IR の関門。出来事は常に secret mark と reveal scene なしで作る。
   it.each([false, true])(
-    "版の disclosure.secret が %s でも、年表の出来事は secret で作り、reveal は版から導く",
+    "版の disclosure.secret が %s でも、出来事に secret mark と reveal scene を付けない",
     (versionSecret) => {
       const operation = compileCreateChronicleEventOperation(
         proposal(versionSecret),
         { snapshot },
       );
 
-      expect(operation.payload.secret).toBe(true);
-      expect(operation.payload.revealSceneId).toBe("scene-1");
+      expect(operation.payload.secret).toBe(false);
+      expect(operation.payload.revealSceneId).toBeNull();
       expect(operation.payload.evidenceSceneLinks).toEqual([
         {
           sceneId: "scene-1",

@@ -13592,6 +13592,39 @@ impl Backend {
         .await
     }
 
+    /// Read the project-scoped typed change review without changing stored state.
+    #[napi]
+    pub async fn nir1_change_review_read(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            project_id: String,
+            revision_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_change_review(
+                    conn,
+                    &request.project_id,
+                    &request.revision_id,
+                )
+            })?;
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
+        })
+        .await
+    }
+
     /// Read the current draft or explicitly human-approved typed Revision for
     /// one dedicated review Run after a cold reopen.  Generic review bundle
     /// storage is intentionally not consulted.
@@ -16335,6 +16368,26 @@ impl Backend {
                     narrative_extraction::build_maintenance_inbox(conn, &dto.project_id, &now)
                 })?;
                 Ok(serde_json::to_string(&entries)?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only count of stale proposals for one project as of now.
+    #[napi]
+    pub async fn narrative_maintenance_stale_proposal_count(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceInboxListPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let count = db.with_conn(|conn| {
+                    narrative_extraction::count_stale_proposals(conn, &dto.project_id, &now)
+                })?;
+                Ok(serde_json::to_string(&serde_json::json!({ "count": count }))?)
             })
         })
         .await

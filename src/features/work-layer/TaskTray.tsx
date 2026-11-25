@@ -21,9 +21,13 @@ export function TaskTray({ door }: TaskTrayProps) {
   if (workLayer == null) return null;
 
   const { model, close, provenance } = workLayer;
-  const isAttention = door === "attention";
-  const attentionTotal = selectAttentionCount(model).total;
-  const isEmptyAttention = isAttention && attentionTotal === 0;
+  const isLive = provenance === "live";
+  // Live data has no Focus face: the Attention tray is the only tray.
+  const isAttention = door === "attention" || isLive;
+  const attentionSummary = selectAttentionCount(model);
+  const attentionTotal = attentionSummary.total;
+  // A live tray keeps its header and rows even at 0, so the author sees what was counted.
+  const isEmptyAttention = isAttention && attentionTotal === 0 && !isLive;
   const title = isAttention
     ? t("workLayer.tray.attentionAria", "Attentionの作業トレイ")
     : t("workLayer.tray.focusAria", "Focusの作業トレイ");
@@ -57,6 +61,9 @@ export function TaskTray({ door }: TaskTrayProps) {
             {isAttention
               ? attentionTotal
               : (model.focus?.authorTasks.length ?? 0)}
+            {isAttention && !attentionSummary.complete && (
+              <span aria-hidden="true">＋</span>
+            )}
           </span>
           <button
             ref={closeRef}

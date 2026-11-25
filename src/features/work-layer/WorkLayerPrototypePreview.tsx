@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import type { WorkLayerModel } from "./types";
 import { WorkLayerProvider } from "./WorkLayerContext";
 import { WorkLayerPrototypeRouter } from "./WorkLayerPrototypeRouter";
 import { WorkLayerPrototypeToolbar } from "./WorkLayerPrototypeToolbar";
@@ -22,12 +23,30 @@ export function WorkLayerPrototypePreview({
   const [mode, setMode] = useState(initialMode);
   const [modelMode, setModelMode] = useState(initialMode);
   const [routeRevision, setRouteRevision] = useState(0);
-  const model = useMemo(() => modelForPrototypeMode(modelMode), [modelMode]);
+  const [fixture, setFixture] = useState<WorkLayerModel | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    void import("./workLayerFixture")
+      .then(({ WORK_LAYER_FIXTURE }) => {
+        if (!cancelled) setFixture(WORK_LAYER_FIXTURE);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const model = useMemo(
+    () => (fixture == null ? null : modelForPrototypeMode(modelMode, fixture)),
+    [fixture, modelMode],
+  );
   const selectPrototypeMode = (nextMode: WorkLayerPrototypeMode) => {
     setModelMode(nextMode);
     setMode(nextMode);
     setRouteRevision((current) => current + 1);
   };
+
+  if (model == null) return null;
 
   return (
     <div className="flex h-[800px] flex-col bg-background text-foreground">

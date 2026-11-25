@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildChronicleWorldGeometry,
+  estMarkerWidth,
   projectChronicleWorldGeometry,
 } from "./chronicleLayout";
 
@@ -11,6 +12,23 @@ const calendar = {
 };
 
 describe("chronicle world geometry projection", () => {
+  it.each([false, true])(
+    "secret の有無でマーカー幅を変えない（期間=%s）",
+    (isInterval) => {
+      const base = {
+        title: "出来事のタイトル",
+        kind: "generic" as const,
+        isInterval,
+        barWidth: 52,
+        labelsOn: true,
+      };
+      const visibleRow = { ...base, secret: false };
+      const secretRow = { ...base, secret: true };
+
+      expect(estMarkerWidth(secretRow)).toBe(estMarkerWidth(visibleRow));
+    },
+  );
+
   it("reuses event/lane geometry when only viewStartDay changes", () => {
     const world = buildChronicleWorldGeometry({
       events: [
@@ -20,7 +38,6 @@ describe("chronicle world geometry projection", () => {
           primaryCodexId: "c1",
           kind: "generic",
           precision: "exact",
-          secret: false,
           sceneLinked: true,
           startDay: 20,
           endDay: null,

@@ -290,8 +290,7 @@ pub(crate) fn apply_chronicle_event_create(
         .payload
         .reveal_scene_id
         .clone()
-        .filter(|value| !value.is_empty())
-        .or_else(|| scene_ids.first().cloned());
+        .filter(|value| !value.is_empty());
 
     let start_granularity = ctx
         .payload

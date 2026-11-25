@@ -889,6 +889,11 @@ export interface NapiBackendLike {
     payload: unknown,
     callerIdentity?: string,
   ): Promise<string>;
+  /** Read-only typed change review; unavailable results retain their reason. */
+  nir1ChangeReviewRead?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /** Dedicated typed current-by-review-Run reader for cold reopen. */
   nir1EntityRelationRevisionReadCurrent?(
     payload: unknown,
@@ -1246,6 +1251,7 @@ export interface NapiBackendLike {
   narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
   narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
   narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
+  narrativeMaintenanceStaleProposalCount?(payload: unknown): Promise<string>;
   // Gate C2 Run Kind Policy: the five named operations replacing the old
   // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
   verifyNarrativeDependencyGraph?(payload: unknown): Promise<string>;
@@ -1875,6 +1881,23 @@ function requireNarrativeMaintenanceInboxListPayload(
   args: CommandArgs,
 ): CommandArgs {
   const command = "narrative_maintenance_inbox_list";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireNarrativeMaintenanceStaleProposalCountPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_stale_proposal_count";
   const payload = requireRecord(args, "payload", command);
   const allowedKeys = new Set(["projectId"]);
   for (const key of Object.keys(payload)) {
@@ -7233,6 +7256,20 @@ function requireNir1EntityRelationRevisionCreateRequest(
   return [payload, workspaceBinding];
 }
 
+function requireNir1ChangeReviewReadRequest(args: CommandArgs): CommandArgs {
+  const command = "nir1_change_review_read";
+  requireExactKeys(args, ["projectId", "revisionId"], command);
+  for (const key of ["projectId", "revisionId"] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value || value.length > 512) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+  }
+  return { projectId: args.projectId, revisionId: args.revisionId };
+}
+
 function requireNir1EntityRelationRevisionReadRequest(
   args: CommandArgs,
 ): CommandArgs {
@@ -10291,6 +10328,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
     },
   },
+  nir1_change_review_read: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(b, b.nir1ChangeReviewRead, "nir1ChangeReviewRead"),
+          requireNir1ChangeReviewReadRequest(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
   nir1_entity_relation_revision_read: {
     run: async (b, a) =>
       parseWire(
@@ -11773,6 +11820,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeMaintenanceInboxList,
           "narrativeMaintenanceInboxList",
         )(requireNarrativeMaintenanceInboxListPayload(a)),
+      ),
+  },
+  narrative_maintenance_stale_proposal_count: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceStaleProposalCount,
+          "narrativeMaintenanceStaleProposalCount",
+        )(requireNarrativeMaintenanceStaleProposalCountPayload(a)),
       ),
   },
   // Gate C2 Run Kind Policy: the five named operations replacing the old

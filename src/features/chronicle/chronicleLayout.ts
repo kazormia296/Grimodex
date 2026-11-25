@@ -120,22 +120,21 @@ export function densitySpacing(d: LaneDensity): DensitySpacing {
 export function estMarkerWidth(args: {
   title: string;
   kind: EventKind;
-  secret: boolean;
   isInterval: boolean;
   barWidth: number;
   labelsOn: boolean;
 }): number {
-  const { title, secret, isInterval, barWidth, labelsOn } = args;
+  const { title, isInterval, barWidth, labelsOn } = args;
   if (!labelsOn) return isInterval ? Math.max(barWidth, 30) : 26;
   const t = title.length;
   if (isInterval) {
-    const lab = 24 + Math.min(t * 13, 150) + (secret ? 32 : 0);
+    const lab = 24 + Math.min(t * 13, 150);
     return Math.max(barWidth, lab, 52);
   }
   // 種別は先頭グリフ（三角/菱形/丸＝ほぼ同幅）で示すため種別ごとの幅加算は無い。
   // 旧 kindExtra=40 は廃止済みの種別「文字」タグ用の死んだ予約だったため除去
   // （birth/death point の outX が可視ピル末尾より ~38px 右へ突き出していた）。
-  return 17 + 6 + Math.min(t * 13, 150) + (secret ? 34 : 0) + 14;
+  return 17 + 6 + Math.min(t * 13, 150) + 14;
 }
 
 export interface LayoutEventInput {
@@ -144,7 +143,6 @@ export interface LayoutEventInput {
   primaryCodexId: string | null;
   kind: EventKind;
   precision: EventPrecision;
-  secret: boolean;
   sceneLinked: boolean;
   /** effectiveDays 由来の開始日番号。 */
   startDay: number;
@@ -262,7 +260,6 @@ export function buildChronicleWorldGeometry(
       const estWidth = estMarkerWidth({
         title: e.title,
         kind: e.kind,
-        secret: e.secret,
         isInterval,
         barWidth: barWidth ?? 0,
         labelsOn,

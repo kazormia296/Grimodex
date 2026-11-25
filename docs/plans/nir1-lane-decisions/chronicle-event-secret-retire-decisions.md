@@ -175,3 +175,44 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 - 画面の「AI に秘匿」のチェックと、取り込みが `secret = true` で作る動きは、N2・N6 まで残る（公開版には、全部が入った後に出す）。
 - 過去に `secret: true` で作った出来事は、そのまま `secret = 1` で残る（読みでは使わない。既存の値は変えない）。
 - AI の指示の資産（定義文・golden）の変更なので、品質ゲート（`grimodex-author`・`pnpm eval:impact`）は hosted で取る。
+
+## 8. 画面の側（N2。2026-11-25）
+
+年表の画面から「AI に秘匿」のチェック・「秘匿」のタグ・鍵を消し、開示シーンの欄を全部の出来事に出す。TS・文言・試験だけ（DB・Native・取り込み〔N6〕・提案レビュー・`agent-writes` の payload の契約は変えない）。技術判断（AGENTS の委任の範囲。確認 94〜98 の帰結の実装）。
+
+### DR-CSR-18　年表の画面から出来事の `secret` を消す（N2）
+
+- **編集欄（`ChronicleInspector.tsx`）**：「AI に秘匿」のチェックを消す。**開示シーンの欄は、シーンイベントを除く全部の出来事に出す**（今までは `event.secret` が true の出来事だけ）。選択肢「自動（初出シーン）」は「指定なし」（en `None`）に直す：選ばなければ、AI に何も伝わらない（確認 98。`effectiveRevealSceneId` の自動導出は、製品の呼び出し元が無い。N9）。**「指定なし」を選ぶと `revealSceneId: ""` を送る**（Native は更新で `null` と未指定を区別できず、`Some("")` を NULL にする。`agent_writes.rs`。`null` を送ると「変更なし」になり、選んだ開示シーンを解除できない）。説明文は、AI への効果を書かない中立の文にした（ja「読者に明かす場面が決まっているときに選びます。」、en `Choose the scene where this event is revealed to readers, if it has one.`）。**印の PR 群（N3・N7）が master に入る PR で、「選んだ場面より前を書くとき、『読者にはまだ明かされていない』と AI に伝えます。選ばなければ、何も伝えません」の趣旨に差し替える**（アプリ内の道具・MCP の `revealSceneId` の説明と一緒に）。
+- **マーカー・一覧**：「秘匿」のタグと `aria-label` の状態（`EventMarker.tsx`）、鍵のアイコン（`ChronicleEventList.tsx`）を消した。配置の幅の計算（`chronicleLayout.ts` の `estMarkerWidth` の 32px／34px の加算）から `secret` を外した。表示用の型（`MarkerEvent`・`LayoutEventInput` など）から `secret` を外した。**DB 行の型（`EventRow`）の `secret` は残す**（読み取り側・スナップショット・書き出しは、値を運ぶだけ）。
+- **ロケール**：`chronicle.secretLabel`・`secretDesc`（利用箇所なし）・`secretTag` を削除。`secretDescShort` → `revealSceneDesc`、`revealSceneAuto` → `revealSceneNone`。ja・en のみ（他の言語の file は無い）。
+- **既存の `secret = 1` の出来事**：値は DB に残る。画面では見えず、編集もできなくなる（確認 95：知らせない。AI には、読み・MCP・アプリ内の道具で、もう全部渡っている）。
+- **開示シーンが候補にないシーンを指すとき（N2 の後の直し。2026-11-25）**：開示シーンの欄を全部の出来事に出したことで、`reveal_scene_id` がアーカイブ済みなどのシーン（`scenes` の候補に無い id）を指す出来事で、欄が「指定なし」と見えるのに保存値が残り、「指定なし」を選び直しても change が出ず解除できない状態が、全部の出来事に広がった（merge 後の独立した読み直しと実 Chromium の描画で確認）。候補に無い id のときだけ、その値の option「（見つからないシーン）」（en `(Scene not found)`）を「指定なし」の次に出し、選択された状態で見せる。そこから「指定なし」を選べば `revealSceneId: ""` で解除できる。あわせて、試験名「指定なしは null で patch する」を、実際の期待値（空文字）に合わせて直した。
+- **Native の `secret` の書き込みの拒否の最終形は、この PR に入れない**：N4 で AI の surface は拒否した。作者の surface（`manual`・`import`）は、N2 の後は画面から `secret` を送らなくなるが、取り込み（NEX の commit は `apply_event_create_in_tx` を直接呼ぶ）が `secret = true` で作る間は、全 surface の拒否を入れても取り込み経路は閉じない。N6 の後の別の小さな PR で、作成は `false` 固定・更新は `secret` を受けたら拒む（N4 の (c)）にする。
+
+### 残る制限（N2）
+
+- **N6 が入るまで、取り込みは `secret = true` の出来事を作る**（画面には出ない。AI には全部渡る）。公開版（release）には、N6・N3・N7・N9 の整理と N11 の測定の後に出す。
+- 開示シーンの値は、N3・N7 が入るまで、AI に何も伝えない（保存するだけ）。説明文は中立の文のまま。
+- 実 Chromium で、編集欄の変更前後（秘匿が ON の出来事・OFF の出来事）を確かめた。マーカーの幅・位置は `ChronicleViewport.browser.test.tsx` の case で固定した。
+
+## 9. 取り込み（N6。2026-11-25）
+
+AI 抽出の取り込み（NEX の commit）が、出来事を印なし・開示シーンなしで作る。Rust（`narrative_extraction`）・画面側の compiler・提案カード・文言・試験・実機の journey を 1 つの PR で変える（Rust と TS を別々に入れると、旧 Native が `secret = false` の operation を拒む、または旧 compiler の `secret = true` が組み立て直しと食い違う）。技術判断（AGENTS の委任の範囲。確認 104・135 の帰結の実装）。
+
+### DR-CSR-19　取り込みは `secret = 0`・`reveal_scene_id = NULL` で出来事を作る（N6）
+
+- **組み立て（画面と Native）**：画面の `compiler.ts` と Native の組み立て直し（`commit.rs` の `compile_current_chronicle_event_operation_payload`。`digest_plan` で照合）を、`"secret": false`・`"revealSceneId": null`（キーを出し、値は JSON の null。**`null` と省略は一致しない**）にした。版の `disclosure.revealDocumentRef`（IR の関門のために必須）の参照先の検査は残し、値は出来事に入れない。版の `disclosure.secret`（IR の admission）・`proposalPlanner.ts` の既定値は変えない。
+- **検査の反転**：`NEX_CHRONICLE_APPLY_SECRET_REQUIRED` の検査を反転し、`secret = true` の operation を現行・旧形式とも**新コード `NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN`** で拒む（提案への束縛・形式の枝より前に、操作そのものへ掛ける）。**独立レビューの指摘（P1）で、非 null・非空の `revealSceneId` も同じコードで拒む**ようにした（旧形式は operation の payload をそのまま比較するので、組み立て直しの照合に頼れない）。新コードは失敗の分類（invalidation の一覧）に入れた：**規則の前に準備された計画（保存済みの operation が `secret = true`）の apply は、`INVALIDATED` になる**（入れ忘れると `FAILED` の監査）。旧コード `SECRET_REQUIRED` は、もう発行されないので一覧から外した。
+- **補完の除去**：`chronicle_operations.rs` の `apply_chronicle_event_create` の、`revealSceneId` が null・空のとき最初の根拠の場面（`scene_ids.first()`）を入れる補完を外した（呼び出し元は `commit.rs` の 1 か所だけ。AI の作成〔`agent_writes.rs`〕に補完は無い）。根拠の場面のリンク（`evidence_scene_links`）は残る。
+- **提案カード**：「開示の場面」の入力（`chronicle-proposal-reveal-input`）と `handleRevise` の patch の型の `revealDocumentRef` を外した（`reviseChronicleProposal`・store の型と版のデータは残す。版の `disclosure.secret` のチェックは、SRA/1 の決定 17〔別の PR〕が外すので残す）。「まとめて承認」の見送りの理由 `reveal-scene-unresolved` は、符号を変えず、表示文を「根拠の文書の場面を確認できません」（en `Could not resolve the scene of the evidence document`）に直した（欄が無くなり、作者は直せない。検査は、版の `revealDocumentRef`〔根拠の文書〕が場面に引けるかを見る）。
+- **試験・fixture・digest**：取り込みの operation・fixture を `false`／`null` に、取り込み後の期待を `(0, None)`（DB の行を直接読む）に書き換えた。`secret = true` の拒否（現行・旧形式）、旧形式の reveal つきの拒否、根拠の場面があっても `reveal_scene_id` が NULL、規則の前の計画が `invalidated`、を足した。現行形式の改ざん検出の試験は、`reveal-scene` の期待コードを FORBIDDEN に、`reveal-omitted`（キーの欠落）を足し、共有 Snapshot の試験は書き換える欄を `detail` にして元の意図を保った。`c2zc_restore_fixture.rs` の digest（`scripts/local-ci-full-workload-allocation.json`）を更新した。実機の journey は、作成された出来事が `secret = 0`・`reveal_scene_id` が null であることを見る。
+- **変えない**：既存の取り込み済みの出来事の値（migration なし。確認 107）・`events.secret` の列・Field Authority の `/secret`・版の `disclosure.*`・IR の admission・Graph・`agent_writes.rs`（N4）・年表の画面（N2）。
+
+### 残る制限（N6）
+
+- **規則の前に準備され、まだ apply していない取り込みの計画は、apply で無効（`INVALIDATED`）になる**（`secret = true` の operation を持つため）。作者は、取り込みをやり直す（準備し直す）。作者に見える変化。承認済みの版・取り込み済みの出来事は影響を受けない。
+- 無効になった計画の apply を再送すると、`NEX_COMMIT_NOT_PREPARED` が返り、`NEX_COMMIT_INVALIDATED` にはならない（status が `prepared` でないため汎用の検査が先。既存の挙動。独立レビューの P2。この PR では直さない）。
+- **SRA/1 の決定 17（提案カードの版の `disclosure.secret` のチェックを外す）は別の PR**：版の印は IR の関門として残り、カードのラベルは `secret` のままで、作者には「出来事の秘密設定」と読めてしまう。決定 17 を入れるときに、代替の操作経路（実機の journey が、チェックで版を `false` にして IR の条件を満たしている）と一緒に決める。
+- `agent_writes.rs` の `surface = "import"` は、明示値（`secret`・`revealSceneId`）を受け付ける（N4 の対象外。scan importer が実際に使うが、その呼び出しは値を渡さない）。Native の `secret` の書き込みの拒否の最終形は、N2・N6 の後の別の小さな PR。
+- Electron の実機の journey（`chronicle-edited-apply-product-journey`）は、ローカルで走らせていない（hosted の `electron-native`・journey が確認）。
+- **公開版（release）には、N3・N7（開示シーンの印）・N9 の整理が入った後に、N11 の測定の結果をユーザーに見せてから出す。**

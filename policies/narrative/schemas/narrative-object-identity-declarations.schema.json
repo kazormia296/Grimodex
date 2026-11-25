@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-object-identity-declarations-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "declarationVersion",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "contract": {
+      "const": "narrative-object-identity-declaration"
+    },
+    "declarationVersion": {
+      "const": "narrative-object-identity/v1"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "producerId",
+        "kind",
+        "objects"
+      ],
+      "properties": {
+        "producerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "producer-declared-object-key"
+        },
+        "objects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "object": {
+      "type": "object",
+      "required": [
+        "materialKind",
+        "keyTemplate",
+        "sourceColumn"
+      ],
+      "properties": {
+        "materialKind": {
+          "enum": [
+            "entity",
+            "relation"
+          ]
+        },
+        "keyTemplate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceColumn": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
