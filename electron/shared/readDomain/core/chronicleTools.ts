@@ -408,6 +408,8 @@ export async function getChronicleState(
       calendar: calendarRow ? calendarFromRow(calendarRow) : null,
       characterIds,
       codexNames: input.codexNames,
+      // 読む順は archived の場面とその下を含まない（buildReadingOrder）。
+      revealSceneView: { nodes, currentSceneId: sceneId, readingOrder },
     },
     ctx.getUiLanguage(),
   );

@@ -115,6 +115,14 @@ describe("buildChronicleSnapshotTextForScene", () => {
       createdAt: "",
       updatedAt: "",
     };
+    const laterSceneNode = {
+      ...sceneNode,
+      id: "later-scene",
+      title: "Later Scene",
+      sortOrder: "a1",
+      chronicleStartTime: null,
+      chronicleStartGranularity: "none" as const,
+    };
     const names = () =>
       new Map([
         ["primary-id", "Primary Name"],
@@ -126,7 +134,7 @@ describe("buildChronicleSnapshotTextForScene", () => {
       buildChronicleSnapshotTextForScene(
         "project-1",
         "scene-1",
-        [sceneNode],
+        [sceneNode, laterSceneNode],
         "ja",
         names(),
         ["scene-id"],
@@ -146,6 +154,7 @@ describe("buildChronicleSnapshotTextForScene", () => {
     m.listCodexIdsHiddenFromAi.mockResolvedValueOnce(new Set());
     const baseline = await build();
     expect(baseline).toContain("秘密の出来事");
+    expect(baseline).toContain("（読者にはまだ明かされていない）");
     for (const value of [
       "Primary Name",
       "Participant Name",

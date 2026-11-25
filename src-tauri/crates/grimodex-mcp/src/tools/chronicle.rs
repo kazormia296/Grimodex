@@ -473,14 +473,40 @@ pub async fn get_chronicle_state(
     let codex_names =
         db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
     let nodes = db::chronicle_scene_nodes(&conn, &project_id).map_err(internal_err)?;
+    let reveal_nodes = if events.iter().any(|event| {
+        event
+            .reveal_scene_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty())
+    }) {
+        let mut nodes =
+            db::chronicle_active_scene_nodes(&conn, &project_id).map_err(internal_err)?;
+        let titles: HashMap<String, String> = db::list_tree_nodes(
+            &conn,
+            &project_id,
+            &db::TreeFilter::default(),
+        )
+        .map_err(internal_err)?
+        .into_iter()
+        .map(|node| (node.id, node.title))
+        .collect();
+        for node in &mut nodes {
+            node.title = titles.get(&node.id).cloned();
+        }
+        Some(nodes)
+    } else {
+        None
+    };
 
     let input = snap::AssembleInput {
         scene_id,
         nodes,
+        reveal_nodes,
         events: events
             .into_iter()
             .map(|e| snap::EventInput {
                 id: e.id,
+                reveal_scene_id: e.reveal_scene_id,
                 title: e.title,
                 note: e.note,
                 ordinal: e.ordinal,
@@ -2964,6 +2990,61 @@ mod tests {
         assert!(chars
             .iter()
             .any(|c| c["codexId"] == "hero" && c["name"] == "Hero"));
+    }
+
+    #[tokio::test]
+    async fn chronicle_state_marks_disclosure_and_omits_archived_reveal_scene() {
+        let server = make_server(false);
+        seed_scene(&server, "p1", "s1");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('s2','p1','scene','Later chapter','a1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, archived_at)
+                 VALUES ('sArchived','p1','scene','Archived chapter','a2',datetime('now'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, kind, reveal_scene_id,
+                                     created_at, updated_at)
+                 VALUES ('e1','p1','Secret plan','a0','generic','s2',datetime('now'),datetime('now')),
+                        ('e2','p1','Archived disclosure','a0','generic','sArchived',datetime('now'),datetime('now'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scene_events (scene_id, event_id) VALUES ('s1','e1')",
+                [],
+            )
+            .unwrap();
+        }
+        let res = get_chronicle_state(
+            &server,
+            GetChronicleStateParams {
+                scene_id: Some("s1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        let events = result_json(&res)["recentEvents"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            events[0]["revealScene"],
+            serde_json::json!({
+                "id": "s2",
+                "title": "Later chapter",
+                "revealedToReader": false
+            })
+        );
+        assert!(events[1].get("revealScene").is_none());
     }
 
     #[tokio::test]

@@ -18,6 +18,11 @@ import type {
   EventRelationRow,
   SceneEventRow,
 } from "./eventRows.js";
+import { chronicleRevealMarks } from "./chronicleRevealMark.js";
+import type {
+  ChronicleRevealMark,
+  ChronicleRevealView,
+} from "./chronicleRevealMark.js";
 
 // ───────── 出力上限（≤600 トークン gate の土台） ─────────
 const MAX_RECENT = 8;
@@ -47,6 +52,7 @@ export interface SnapshotEvent {
    * 暦なし・日付欠落・アンカー未確定では null（省略）。絶対日付は使わない。
    */
   relTime: string | null;
+  revealScene?: ChronicleRevealMark;
 }
 
 export interface CausalPair {
@@ -84,6 +90,8 @@ export interface ChronicleSnapshotInput {
   characterIds: string[];
   /** XPROJ 済み codexId→表示名（人物・場所）。 */
   codexNames: Map<string, string>;
+  /** 開示判定用。読む順と非 archived scene は呼び出し側から渡す。 */
+  revealSceneView?: ChronicleRevealView;
 }
 
 function truncate(s: string, cap: number): string {
@@ -184,6 +192,7 @@ function deriveRecentEvents(
   events: EventRow[],
   calendar: ChronicleCalendar | null,
   lang: DateLang,
+  revealOf: ReturnType<typeof chronicleRevealMarks>,
 ): SnapshotEvent[] {
   return events
     .filter(
@@ -196,6 +205,7 @@ function deriveRecentEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
+      ...revealOf(e.id),
     }));
 }
 
@@ -230,6 +240,7 @@ function deriveOffpageEvents(
   sceneEvents: { sceneId: string; eventId: string }[],
   calendar: ChronicleCalendar | null,
   lang: DateLang,
+  revealOf: ReturnType<typeof chronicleRevealMarks>,
 ): SnapshotEvent[] {
   const stamped = new Set(sceneEvents.map((se) => se.eventId));
   const kindRank = (k: EventRow["kind"]) => (k === "generic" ? 1 : 0); // birth/death 優先
@@ -249,6 +260,7 @@ function deriveOffpageEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
+      ...revealOf(e.id),
     }));
 }
 
@@ -315,6 +327,11 @@ export function deriveChronicleSnapshot(
     });
 
   const dateLang: DateLang = lang === "en" ? "en" : "ja";
+  const revealView = input.revealSceneView;
+  const revealOf: ReturnType<typeof chronicleRevealMarks> =
+    revealView
+      ? chronicleRevealMarks(events, () => revealView)
+      : () => ({});
   return {
     time: {
       source: anchor.source,
@@ -324,7 +341,13 @@ export function deriveChronicleSnapshot(
       formattedDate,
     },
     characters,
-    recentEvents: deriveRecentEvents(anchor, events, calendar, dateLang),
+    recentEvents: deriveRecentEvents(
+      anchor,
+      events,
+      calendar,
+      dateLang,
+      revealOf,
+    ),
     unresolvedCausal: deriveUnresolvedCausal(anchor, events, relations),
     offpage: deriveOffpageEvents(
       anchor,
@@ -332,6 +355,7 @@ export function deriveChronicleSnapshot(
       sceneEvents,
       calendar,
       dateLang,
+      revealOf,
     ),
   };
 }
@@ -397,6 +421,8 @@ export function assembleChronicleSnapshotText(args: {
   mentionedCodexIds?: string[];
   /** sceneId → シーン自身の暦日付（scene-own アンカー源）。 */
   sceneChronicle?: Map<string, SceneChronicle>;
+  /** 開示判定用の読む順と非 archived scene。 */
+  revealSceneView?: ChronicleRevealView;
   lang: string;
 }): string | undefined {
   const anchor = resolveSceneAnchor(args.sceneId, {
@@ -422,6 +448,7 @@ export function assembleChronicleSnapshotText(args: {
       calendar: args.calendar,
       characterIds,
       codexNames: args.codexNames,
+      revealSceneView: args.revealSceneView,
     },
     args.lang,
   );
@@ -443,6 +470,8 @@ interface Labels {
   causalHeader: string;
   causalLine: (cause: string, effect: string) => string;
   offpageHeader: string;
+  unrevealedSuffix: string;
+  unrevealedInstruction: string;
 }
 
 const LABELS: Record<"ja" | "en", Labels> = {
@@ -460,6 +489,9 @@ const LABELS: Record<"ja" | "en", Labels> = {
     causalHeader: "未回収の因果:",
     causalLine: (c, e) => `「${c}」→ いずれ「${e}」`,
     offpageHeader: "本文未描写の背景:",
+    unrevealedSuffix: "（読者にはまだ明かされていない）",
+    unrevealedInstruction:
+      "まだ明かされていない出来事は、本文で、読者が知っていることとして書かない。",
   },
   en: {
     timeSeason: (s) => `Story time: ${s}`,
@@ -480,6 +512,9 @@ const LABELS: Record<"ja" | "en", Labels> = {
     causalHeader: "Unresolved causes:",
     causalLine: (c, e) => `"${c}" → will lead to "${e}"`,
     offpageHeader: "Off-page background:",
+    unrevealedSuffix: " (not yet revealed to readers)",
+    unrevealedInstruction:
+      "Do not write events not yet revealed to readers as if readers already knew them.",
   },
 };
 
@@ -536,6 +571,8 @@ function renderAtLevel(
   o: RenderLevel,
 ): string {
   const lines: string[] = [];
+  const recent = snapshot.recentEvents.slice(0, o.recent);
+  const offpage = snapshot.offpage.slice(0, o.offpage);
 
   // 時刻（none は出さない）
   // 整形済み日付があればそれを基底に（proxy/precision suffix は従来通り付与）。
@@ -570,9 +607,10 @@ function renderAtLevel(
   const eventLine = (e: SnapshotEvent): string =>
     `- ${e.title}${o.dates && e.relTime ? `（${e.relTime}）` : ""}${
       o.notes && e.note ? `（${e.note}）` : ""
+    }${
+      e.revealScene?.revealedToReader === false ? L.unrevealedSuffix : ""
     }`;
 
-  const recent = snapshot.recentEvents.slice(0, o.recent);
   if (recent.length > 0) {
     lines.push(L.recentHeader);
     for (const e of recent) {
@@ -588,12 +626,18 @@ function renderAtLevel(
     }
   }
 
-  const offpage = snapshot.offpage.slice(0, o.offpage);
   if (offpage.length > 0) {
     lines.push(L.offpageHeader);
     for (const e of offpage) {
       lines.push(eventLine(e));
     }
+  }
+
+  if (
+    recent.some((e) => e.revealScene?.revealedToReader === false) ||
+    offpage.some((e) => e.revealScene?.revealedToReader === false)
+  ) {
+    lines.unshift(L.unrevealedInstruction);
   }
 
   return lines.join("\n");

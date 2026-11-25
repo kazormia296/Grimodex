@@ -1052,6 +1052,31 @@ describe("get_chronicle_state", () => {
     }
   });
 
+  it("marks get_chronicle_state relative to the requested scene or the active scene", async () => {
+    const world = {
+      events: [event("e1", { ordinal: "a0", revealSceneId: "s2" })],
+      sceneEvents: [{ sceneId: "s1", eventId: "e1" }],
+      activeSceneId: "s3",
+    };
+    const requested = await makeCtx(world).executors.get_chronicle_state({
+      sceneId: "s1",
+    });
+    expect(
+      (requested.content as { recentEvents: Array<Record<string, unknown>> })
+        .recentEvents[0]?.revealScene,
+    ).toEqual({
+      id: "s2",
+      title: "scene-s2",
+      revealedToReader: false,
+    });
+
+    const active = await makeCtx(world).executors.get_chronicle_state({});
+    expect(
+      (active.content as { recentEvents: Array<Record<string, unknown>> })
+        .recentEvents[0]?.revealScene,
+    ).toEqual({ id: "s2", title: "scene-s2", revealedToReader: true });
+  });
+
   it("removes hidden people before selecting snapshot characters", async () => {
     const baseline = await makeCtx(stateWorld()).executors.get_chronicle_state({
       sceneId: "s3",
