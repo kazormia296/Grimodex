@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import i18n from "@/lib/i18n";
 import { aiFailureToastText } from "@/application/chat/chatStoreSupport";
 import { PROFILE_EGRESS_AI_STOP_TRANSLATIONS } from "@/features/profile-egress/profileEgressAiStopText";
+import { useAiSettingsStore } from "@/features/chat/store";
 import { ConnectedMobileWorkspaceSurface } from "./MobileWorkspaceSurfaces";
 import { useCompactNavigationStore } from "./compactNavigationStore";
 
@@ -28,6 +29,8 @@ describe("phone AI surface: the activation's AI terminal text (DR-PUBG-35-1)", (
       backStack: [],
       sheet: null,
     });
+    useAiSettingsStore.setState({ settings: null });
+    await useAiSettingsStore.getState().loadSettings();
     render(
       <ConnectedMobileWorkspaceSurface
         surface="ai"

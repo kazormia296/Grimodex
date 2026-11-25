@@ -135,16 +135,20 @@ export function selectAgentControlMessage(
 }
 
 export function formatToolResult(
-  result: {
-    readonly content: unknown;
-    readonly summary: string;
-    readonly error?: string;
-  },
+  result:
+    | {
+        readonly content: unknown;
+        readonly summary: string;
+        readonly error?: string;
+      }
+    | { readonly text: string; readonly summary: string },
   tokenBudget: number,
   countTokens: (text: string) => number,
 ): { content: string; isError: boolean } {
   let content: string;
-  if (result.error) {
+  if ("text" in result) {
+    content = result.text;
+  } else if (result.error) {
     content = `Error: ${result.error}`;
   } else if (result.content == null) {
     content = result.summary || "No result (not found).";
@@ -165,7 +169,7 @@ export function formatToolResult(
     content = `${content.slice(0, keepChars)}...[truncated: 元 ${contentTokens} tokens]`;
   }
 
-  return { content, isError: !!result.error };
+  return { content, isError: "error" in result && !!result.error };
 }
 
 /**
