@@ -91,10 +91,7 @@ import {
   isEventBeforeOrAtScene,
   passesIrExclusionApproximation,
 } from "@/features/chronicle/chronicleReadingPosition";
-import {
-  markChronicleRevealScene,
-  type ChronicleRevealMark,
-} from "@/../electron/shared/readDomain/features/chronicle/chronicleRevealMark";
+import { chronicleRevealMarks } from "@/../electron/shared/readDomain/features/chronicle/chronicleRevealMark";
 import {
   getSharedEvents,
   getSharedSceneEvents,
@@ -125,10 +122,8 @@ type ChronicleCandidates =
       /** △7 (4) の近似の規則（secret の event だけに掛かる）。 */
       readonly passesApproximation: (hit: EventSearchHit) => boolean;
       /** 開示シーンの印（共有の core の search_events と同じ。DR-CPL-6）。 */
-      readonly revealMarkOf: RevealMarkOf;
+      readonly revealOf: ReturnType<typeof chronicleRevealMarks>;
     };
-
-type RevealMarkOf = (hit: EventSearchHit) => ChronicleRevealMark | null;
 
 async function chronicleCandidates(
   params: Record<string, unknown>,
@@ -174,7 +169,6 @@ async function chronicleCandidates(
   const sceneEvents = await getSharedSceneEvents(projectId);
   const nodes = useTreeStore.getState().nodes;
   const readingOrder = getSharedReadingOrder(nodes);
-  const titleByScene = new Map(nodes.map((n) => [n.id, n.title] as const));
   // scope が無い呼び手は、従来どおり await の後で今の Scene を読む（定数 false の間は今と同一）。
   const currentSceneId = chronicleSceneId(scope);
   const visible = hits
@@ -196,13 +190,14 @@ async function chronicleCandidates(
     currentSceneId,
     limit,
     visible,
-    revealMarkOf: (h) =>
-      markChronicleRevealScene(
-        eventById.get(h.eventId)?.revealSceneId ?? null,
-        currentSceneId || null,
+    revealOf: chronicleRevealMarks(
+      visible.flatMap((h) => eventById.get(h.eventId) ?? []),
+      () => ({
+        nodes,
+        currentSceneId: currentSceneId || null,
         readingOrder,
-        titleByScene,
-      ),
+      }),
+    ),
     // 行が見つからない hit は近似の対象外として扱う。
     passesApproximation: (h) =>
       passesIrExclusionApproximation(
@@ -219,7 +214,9 @@ interface ChronicleEntry {
   title: string;
   kind: string;
   score: number;
-  revealScene?: ChronicleRevealMark;
+  revealScene?: ReturnType<
+    ReturnType<typeof chronicleRevealMarks>
+  >["revealScene"];
 }
 
 /**
@@ -243,18 +240,15 @@ function chronicleCandidateIds(hits: readonly EventSearchHit[]): string[] {
 function chronicleEntries(
   hits: readonly EventSearchHit[],
   limit: number,
-  revealMarkOf: RevealMarkOf,
+  revealOf: ReturnType<typeof chronicleRevealMarks>,
 ): ChronicleEntry[] {
-  return hits.slice(0, limit).map((h) => {
-    const revealScene = revealMarkOf(h);
-    return {
-      eventId: h.eventId,
-      title: h.title,
-      kind: h.kind,
-      score: h.score,
-      ...(revealScene ? { revealScene } : {}),
-    };
-  });
+  return hits.slice(0, limit).map((h) => ({
+    eventId: h.eventId,
+    title: h.title,
+    kind: h.kind,
+    score: h.score,
+    ...revealOf(h.eventId),
+  }));
 }
 
 /**
@@ -282,11 +276,7 @@ async function searchEvents(
     CHAT_AGENT_IR_ENABLED && scope
       ? candidates.visible.filter(candidates.passesApproximation)
       : candidates.visible;
-  const content = chronicleEntries(
-    pool,
-    candidates.limit,
-    candidates.revealMarkOf,
-  );
+  const content = chronicleEntries(pool, candidates.limit, candidates.revealOf);
   const json = JSON.stringify(content);
   return {
     name: "search_events",
@@ -366,21 +356,16 @@ async function searchEventsWithIr(
   const candidates = await chronicleCandidates(params, context.scope);
   // 空の query・project 無しは、年表の側の応答（空の配列）のまま返す。
   if (candidates.kind === "empty") return candidates.result;
-  const { query, projectId, currentSceneId, visible, revealMarkOf } =
-    candidates;
+  const { query, projectId, currentSceneId, visible, revealOf } = candidates;
   // 0 < limit < 1 の小数は年表では 0 件になるが、IR には 1 件分の枠を残す（空の available を避ける）。
   const yearLimit = candidates.limit;
   const limit = Math.max(1, yearLimit);
-  const withoutApproximation = chronicleEntries(
-    visible,
-    yearLimit,
-    revealMarkOf,
-  );
+  const withoutApproximation = chronicleEntries(visible, yearLimit, revealOf);
   const approximated = () =>
     chronicleEntries(
       visible.filter(candidates.passesApproximation),
       yearLimit,
-      revealMarkOf,
+      revealOf,
     );
   const rest = { tokenCap: ir.tokenCap, countTokens };
 
@@ -439,7 +424,7 @@ async function searchEventsWithIr(
         events = chronicleEntries(
           visible.filter((hit) => !gone.has(hit.eventId)),
           yearLimit,
-          revealMarkOf,
+          revealOf,
         );
       } else if (
         answer.status === "query-invalid" ||

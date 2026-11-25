@@ -1,8 +1,5 @@
 import type { CoreChronicleSearchContext } from "../../mastraRead/ports.js";
-import {
-  markChronicleRevealScene,
-  type ChronicleRevealMark,
-} from "../features/chronicle/chronicleRevealMark.js";
+import { chronicleRevealMarks } from "../features/chronicle/chronicleRevealMark.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
 
@@ -118,44 +115,32 @@ export async function searchEvents(
   );
 
   const selectedHits = hits.slice(0, limit);
-  const revealSceneByEventId = new Map<string, ChronicleRevealMark>();
-  if (selectedHits.length > 0) {
-    const events = await ctx.chronicle.getEvents(projectId);
-    const eventById = new Map(
-      events.map((event) => [event.id, event] as const),
-    );
-    const markedEvents = selectedHits.flatMap((hit) => {
-      const event = eventById.get(hit.eventId);
-      return event?.revealSceneId != null && event.revealSceneId !== ""
-        ? [event]
-        : [];
-    });
-    if (markedEvents.length > 0) {
+  // 出来事の行は、hit があった後でだけ読む。
+  const byId = new Map(
+    selectedHits.length
+      ? (await ctx.chronicle.getEvents(projectId)).map(
+          (e) => [e.id, e] as const,
+        )
+      : [],
+  );
+  const revealOf = chronicleRevealMarks(
+    selectedHits.flatMap((hit) => byId.get(hit.eventId) ?? []),
+    () => {
       const { nodes, activeSceneId } = ctx.getTreeState();
-      const readingOrder = ctx.chronicle.getReadingOrder(nodes);
-      const titleByScene = new Map(
-        nodes.map((node) => [node.id, node.title] as const),
-      );
-      for (const event of markedEvents) {
-        const revealScene = markChronicleRevealScene(
-          event.revealSceneId,
-          activeSceneId,
-          readingOrder,
-          titleByScene,
-        );
-        if (revealScene) revealSceneByEventId.set(event.id, revealScene);
-      }
-    }
-  }
+      return {
+        nodes,
+        currentSceneId: activeSceneId,
+        readingOrder: ctx.chronicle.getReadingOrder(nodes),
+      };
+    },
+  );
 
   const content = selectedHits.map((h) => ({
     eventId: h.eventId,
     title: h.title,
     kind: h.kind,
     score: h.score,
-    ...(revealSceneByEventId.has(h.eventId)
-      ? { revealScene: revealSceneByEventId.get(h.eventId)! }
-      : {}),
+    ...revealOf(h.eventId),
   }));
   return {
     name: "search_events",
