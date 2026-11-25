@@ -196,22 +196,22 @@ describe("Work Layer live bundle boundaries", () => {
     );
   });
 
-  it("removes the live hook and the review host from a closed-flag build (the flag is a build-time constant in the same module)", () => {
+  it("removes the live hook and the review host from a build that closes the flag (the flag is a build-time constant in the same module)", () => {
     const read = (file: string) =>
       readFileSync(resolve(sourceRoot, file), "utf8");
     const liveHook = read("features/editor/useWorkLayerLivePort.ts");
-    // "true"／"1" だけ開く。`import.meta.env.*` は build が値に置き換える。
+    // 既定は開く。"false"／"0" で閉じる。`import.meta.env.*` は build が値に置き換える。
     expect(liveHook).toMatch(
-      /const LIVE_BUILD =\s*import\.meta\.env\.VITE_WORK_LAYER_LIVE === "true" \|\|\s*import\.meta\.env\.VITE_WORK_LAYER_LIVE === "1";/,
+      /const LIVE_BUILD =\s*import\.meta\.env\.VITE_WORK_LAYER_LIVE !== "false" &&\s*import\.meta\.env\.VITE_WORK_LAYER_LIVE !== "0";/,
     );
     expect(liveHook).toMatch(
       /useWorkLayerLivePort:[\s\S]*?=\s*LIVE_BUILD\s*\?\s*useLiveWorkLayerPort\s*:\s*useNoLiveWorkLayerPort/,
     );
 
     const reviewHost = read("features/codex/CodexStructureReviewHost.tsx");
-    // 意味は isCodexStructureExtractionReviewEnabled と同じ：true／1 で開き、false／0 で閉じ、未指定は DEV。
+    // 意味は isCodexStructureExtractionReviewEnabled と同じ：既定は開き、false／0 で閉じる。
     expect(reviewHost).toMatch(
-      /const REVIEW_BUILD =[\s\S]*?=== "true"[\s\S]*?=== "1"[\s\S]*?!== "false"[\s\S]*?!== "0"[\s\S]*?import\.meta\.env\.DEV/,
+      /const REVIEW_BUILD =\s*import\.meta\.env\.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW !== "false" &&\s*import\.meta\.env\.VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW !== "0";/,
     );
     expect(reviewHost).toMatch(
       /CodexStructureReviewHost: ComponentType = REVIEW_BUILD\s*\?\s*ReviewHost\s*:\s*NoReviewHost/,
