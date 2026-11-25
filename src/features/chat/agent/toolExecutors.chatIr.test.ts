@@ -196,6 +196,7 @@ function contentOf(result: { content: unknown }) {
 
 beforeEach(() => {
   h.gate.enabled = true;
+  h.tree.nodes = [];
   h.tree.projectId = "p-store";
   h.tree.activeSceneId = "s0";
   h.hits = [hit("e1"), hit("e2")];
@@ -1406,6 +1407,10 @@ describe("E8: when the exclusion is not at hand", () => {
         title: `title ${id}`,
         kind: "event",
         score: 0.9,
+        // These three are disclosed at s1; the current Scene is s2.
+        ...(["old", "span", "unknown"].includes(id)
+          ? { revealScene: { id: "s1", revealedToReader: true } }
+          : {}),
       }));
     // The precheck (5 events, before the exclusion) lets Native be called;
     // the 500-character item then does not fit.
@@ -1583,8 +1588,20 @@ describe("E9: the sub-agent's search_events", () => {
 
 describe("E10: the constant false is today's result, byte for byte", () => {
   const GOLDEN_CONTENT = [
-    { eventId: "old", title: "title old", kind: "event", score: 0.9 },
-    { eventId: "span", title: "title span", kind: "event", score: 0.9 },
+    {
+      eventId: "old",
+      title: "title old",
+      kind: "event",
+      score: 0.9,
+      revealScene: { id: "s1", title: "scene s1", revealedToReader: true },
+    },
+    {
+      eventId: "span",
+      title: "title span",
+      kind: "event",
+      score: 0.9,
+      revealScene: { id: "s1", title: "scene s1", revealedToReader: true },
+    },
     { eventId: "later", title: "title later", kind: "event", score: 0.9 },
     { eventId: "plain", title: "title plain", kind: "event", score: 0.9 },
   ];
@@ -1597,11 +1614,12 @@ describe("E10: the constant false is today's result, byte for byte", () => {
 
   beforeEach(() => {
     h.gate.enabled = false;
+    h.tree.nodes = [{ id: "s1", title: "scene s1" }];
     // "later" is after the current Scene and "span" spans it: with the
     // constant true both would be dropped; with it false neither is.
     setChronicle([
-      { id: "old", secret: true, ties: ["s1"] },
-      { id: "span", secret: true, ties: ["s1", "s2"] },
+      { id: "old", secret: true, reveal: "s1", ties: ["s1"] },
+      { id: "span", secret: true, reveal: "s1", ties: ["s1", "s2"] },
       { id: "later", ties: ["s3"] },
       { id: "plain" },
     ]);
