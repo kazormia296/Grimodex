@@ -53,14 +53,8 @@ vi.mock("@/features/narrative-extraction/maintenance/maintenanceFlags", () => ({
   isNarrativeMaintenanceUiEnabled: vi.fn(() => false),
 }));
 vi.mock("@/application/narrative-extraction/nativeApi", () => ({
-  narrativeMaintenanceInboxList: vi.fn(),
+  narrativeMaintenanceStaleProposalCount: vi.fn(),
 }));
-vi.mock(
-  "@/features/narrative-extraction/maintenance-ui/structureHealthModel",
-  () => ({
-    summarizeInbox: vi.fn(),
-  }),
-);
 vi.mock("@/features/codex/codexStructureExtractionFlag", () => ({
   isCodexStructureExtractionReviewEnabled: vi.fn(() => false),
 }));

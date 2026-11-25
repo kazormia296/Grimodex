@@ -1,4 +1,4 @@
-import { narrativeMaintenanceInboxList } from "@/application/narrative-extraction/nativeApi";
+import { narrativeMaintenanceStaleProposalCount } from "@/application/narrative-extraction/nativeApi";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 import {
   useCodexCandidateHostStore,
@@ -8,7 +8,6 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { isCodexStructureExtractionReviewEnabled } from "@/features/codex/codexStructureExtractionFlag";
 import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import { isNarrativeMaintenanceUiEnabled } from "@/features/narrative-extraction/maintenance/maintenanceFlags";
-import { summarizeInbox } from "@/features/narrative-extraction/maintenance-ui/structureHealthModel";
 import { getNarrativeRuntimePolicy } from "@/features/narrative-extraction/runtime/narrativeRuntimePolicyApi";
 import type { WorkLayerLivePortDependencies } from "@/features/work-layer/types";
 
@@ -22,8 +21,9 @@ export function createWorkLayerLiveReaders(
     async readStaleProposalCount() {
       const policy = await getNarrativeRuntimePolicy();
       if (!isNarrativeMaintenanceUiEnabled(policy)) return { allowed: false };
-      const inbox = await narrativeMaintenanceInboxList({ projectId });
-      return { allowed: true, count: summarizeInbox(inbox).proposalsStale };
+      // 件数だけを返す読み取り。保守 Inbox の全件を構築しない（件数に比例して重く、その間は共有の DB 接続を握る）。
+      const count = await narrativeMaintenanceStaleProposalCount({ projectId });
+      return { allowed: true, count };
     },
     readCandidateCount() {
       const host = useCodexCandidateHostStore.getState();
