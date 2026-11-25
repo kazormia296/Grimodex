@@ -739,7 +739,7 @@ async function switchProjectThroughUi(harness, page, { id, title }, label) {
   }, label);
 }
 
-async function clickProjectSwitchDuringAgentTurn(page, project) {
+async function clickProjectSwitchWhileTurnRuns(page, project) {
   // Avoid Playwright's pointer-stability wait on Xvfb's software renderer.
   const trigger = page.getByTestId("project-menu-trigger");
   await trigger.waitFor({ state: "visible" });
@@ -747,6 +747,98 @@ async function clickProjectSwitchDuringAgentTurn(page, project) {
   const option = page.getByTestId(`project-switch-${project.id}`);
   await option.waitFor({ state: "visible" });
   await option.evaluate((button) => button.click());
+}
+
+async function answerChatStopConfirmation(page, accepted) {
+  await page
+    .getByTestId("chat-stop-confirm")
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await page
+    .getByTestId(
+      accepted ? "chat-stop-confirm-accept" : "chat-stop-confirm-cancel",
+    )
+    .click();
+  await page
+    .getByTestId("chat-stop-confirm")
+    .waitFor({ state: "hidden", timeout: 30_000 });
+}
+
+async function assertNoLifecycleTransition(harness, page, { kind, from, to }) {
+  const events = await harness.readLifecycleTrace(page);
+  const matching = events.filter(
+    (event) =>
+      event.kind === kind &&
+      lifecycleScopeMatches(event.from, from) &&
+      lifecycleScopeMatches(event.to, to),
+  );
+  if (matching.length > 0) {
+    throw new Error(
+      `${kind} switch cancellation emitted a lifecycle transition`,
+    );
+  }
+}
+
+async function listAiAuditEvents(
+  harness,
+  page,
+  projectId,
+  pathId,
+  executionId,
+) {
+  return queryRows(
+    harness,
+    page,
+    `SELECT sequence, event_type AS eventType, payload
+     FROM ai_audit_events
+     WHERE project_id = ? AND path_id = ? AND execution_id = ?
+     ORDER BY sequence`,
+    [projectId, pathId, executionId],
+  );
+}
+
+async function assertNoAiAuditLeak(
+  harness,
+  page,
+  projectId,
+  pathId,
+  markers,
+  label,
+) {
+  const rows = await queryRows(
+    harness,
+    page,
+    "SELECT payload FROM ai_audit_events WHERE project_id = ? AND path_id = ?",
+    [projectId, pathId],
+  );
+  if (
+    rows.some((row) =>
+      markers.some((marker) => String(row.payload ?? "").includes(marker)),
+    )
+  ) {
+    throw new Error(`${label} received old-scope AI audit content`);
+  }
+}
+
+function assertAiTurnPending(events, label) {
+  if (
+    events.some((event) =>
+      ["response.completed", "execution.cancelled"].includes(event.eventType),
+    )
+  ) {
+    throw new Error(
+      `${label} ended before the switch confirmation was accepted`,
+    );
+  }
+}
+
+function assertAiTurnCancelled(events, label) {
+  if (
+    events.filter((event) => event.eventType === "execution.cancelled")
+      .length !== 1 ||
+    events.some((event) => event.eventType === "response.completed")
+  ) {
+    throw new Error(`${label} audit was not cancelled without completion`);
+  }
 }
 
 async function switchWorkspaceThroughUi(harness, page, workspace, label) {
@@ -769,7 +861,7 @@ async function switchWorkspaceThroughUi(harness, page, workspace, label) {
   }, label);
 }
 
-async function clickWorkspaceSwitchDuringAgentTurn(page, workspace) {
+async function clickWorkspaceSwitchWhileTurnRuns(page, workspace) {
   // Avoid Playwright's pointer-stability wait on Xvfb's software renderer.
   const trigger = page.getByTestId("workspace-menu-trigger");
   await trigger.waitFor({ state: "visible" });
@@ -816,6 +908,7 @@ async function listChatAuthorityRows(harness, page, projectId) {
       m.id AS messageId,
       m.role AS role,
       m.content AS content,
+      m.metadata AS metadata,
       p.system_prompt AS systemPrompt
     FROM chat_sessions s
     LEFT JOIN chat_messages m ON m.session_id = s.id
@@ -920,25 +1013,30 @@ async function startAgentAuthorityTurn(harness, page, projectId, prompt) {
   return preparedAudit;
 }
 
-function assertCompletedAgentAuthority(
+function assertStoppedChatAuthority(
   rows,
-  { prompt, outputMarker, label },
+  { prompt, label, outputMarker, stopReason },
 ) {
+  const userRows = rows.filter(
+    (row) => row.role === "user" && String(row.content ?? "").includes(prompt),
+  );
+  const assistantRows = rows.filter((row) => row.role === "assistant");
+  let metadata = {};
+  try {
+    metadata = JSON.parse(String(assistantRows[0]?.metadata ?? "{}"));
+  } catch {
+    // The assertion below reports invalid or missing stopped metadata.
+  }
   if (
-    !rows.some(
-      (row) =>
-        row.role === "user" && String(row.content ?? "").includes(prompt),
-    ) ||
-    !rows.some(
-      (row) =>
-        row.role === "assistant" &&
-        String(row.content ?? "").includes(outputMarker),
-    ) ||
-    !rows.some((row) => row.systemPrompt != null)
+    userRows.length !== 1 ||
+    assistantRows.length !== 1 ||
+    (outputMarker &&
+      !String(assistantRows[0]?.content ?? "").includes(outputMarker)) ||
+    metadata.stopped !== true ||
+    (stopReason && metadata.stop_reason !== stopReason) ||
+    !userRows.some((row) => row.systemPrompt != null)
   ) {
-    throw new Error(
-      `${label} did not persist the Agent turn and prompt snapshot`,
-    );
+    throw new Error(`${label} did not persist one stopped assistant turn`);
   }
 }
 
@@ -2700,23 +2798,117 @@ async function runChatStreamProjectSwitchJourney(harness) {
       sceneId: sceneA.sceneId,
       earlyChunkVisible: true,
     });
+    const preparedAudit = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT execution_id AS executionId, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND event_type = 'request.prepared'
+         ORDER BY sequence DESC LIMIT 1`,
+        [projects.projectA.id],
+      );
+      return String(rows[0]?.payload ?? "").includes(
+        PROJECT_CHAT_AUTHORITY_PROMPT,
+      )
+        ? rows[0]
+        : null;
+    }, "project A chat request prepared");
+    await harness.waitUntil(
+      async () =>
+        (
+          await queryRows(
+            harness,
+            chat.page,
+            `SELECT sequence FROM ai_audit_events
+             WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+               AND execution_id = ? AND event_type = 'request.dispatched'`,
+            [projects.projectA.id, preparedAudit.executionId],
+          )
+        ).length === 1,
+      "project A chat request dispatched",
+    );
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "detached", timeout: 5_000 });
+    const scope = {
+      kind: "project",
+      from: { workspacePath: workspace, projectId: projects.projectA.id },
+      to: { workspacePath: workspace, projectId: projects.projectB.id },
+    };
+    assertAiTurnPending(
+      await listAiAuditEvents(
+        harness,
+        chat.page,
+        projects.projectA.id,
+        "chat_stream_non_agent",
+        preparedAudit.executionId,
+      ),
+      "project A chat stream",
+    );
 
-    await switchProjectThroughUi(
+    await clickProjectSwitchWhileTurnRuns(chat.page, projects.projectB);
+    await answerChatStopConfirmation(chat.page, false);
+    await assertNoLifecycleTransition(harness, chat.page, scope);
+    const activeProjectAfterCancel = await queryRows(
       harness,
       chat.page,
-      projects.projectB,
-      "project B UI authority after chat drain",
+      "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
     );
+    if (activeProjectAfterCancel[0]?.value !== projects.projectA.id) {
+      throw new Error(
+        "project authority changed when the chat switch was cancelled",
+      );
+    }
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "detached", timeout: 5_000 });
+    assertAiTurnPending(
+      await listAiAuditEvents(
+        harness,
+        chat.page,
+        projects.projectA.id,
+        "chat_stream_non_agent",
+        preparedAudit.executionId,
+      ),
+      "project A chat stream after switch cancellation",
+    );
+    if (
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) === 0
+    ) {
+      throw new Error(
+        "project A chat response stopped after cancelling the switch",
+      );
+    }
+    harness.recordTimeline("project-chat-switch-cancelled", {
+      executionId: preparedAudit.executionId,
+      fromProjectId: projects.projectA.id,
+      toProjectId: projects.projectB.id,
+      authorityStayedWithOldProject: true,
+      responseContinuedAfterCancel: true,
+    });
+
+    await clickProjectSwitchWhileTurnRuns(chat.page, projects.projectB);
+    await answerChatStopConfirmation(chat.page, true);
+    await harness.waitUntil(async () => {
+      const activeSetting = await queryRows(
+        harness,
+        chat.page,
+        "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
+      );
+      const triggerText = await chat.page
+        .getByTestId("project-menu-trigger")
+        .textContent();
+      return (
+        activeSetting[0]?.value === projects.projectB.id &&
+        String(triggerText ?? "").includes(projects.projectB.title)
+      );
+    }, "project B UI authority after stopped chat turn");
     await assertLifecycleTransitionOrder(harness, chat.page, {
-      kind: "project",
-      from: {
-        workspacePath: workspace,
-        projectId: projects.projectA.id,
-      },
-      to: {
-        workspacePath: workspace,
-        projectId: projects.projectB.id,
-      },
+      ...scope,
       label: "project chat switch",
     });
     await sceneA.editorSurface.waitFor({
@@ -2731,19 +2923,46 @@ async function runChatStreamProjectSwitchJourney(harness) {
         projects.projectA.id,
       );
       try {
-        assertCompletedChatAuthority(rows, {
+        assertStoppedChatAuthority(rows, {
           prompt: PROJECT_CHAT_AUTHORITY_PROMPT,
           label: "project A stream",
+          outputMarker: CHAT_AUTHORITY_EARLY,
+          stopReason: "stopped",
         });
         return rows;
       } catch {
         return null;
       }
-    }, "project A stream drain before project switch");
+    }, "project A stopped stream persistence");
+    const terminalEvents = await harness.waitUntil(async () => {
+      const events = await listAiAuditEvents(
+        harness,
+        chat.page,
+        projects.projectA.id,
+        "chat_stream_non_agent",
+        preparedAudit.executionId,
+      );
+      return events.some((event) => event.eventType === "execution.cancelled")
+        ? events
+        : null;
+    }, "project A cancelled chat audit");
+    assertAiTurnCancelled(terminalEvents, "project A chat stream");
     const projectBRows = await listChatAuthorityRows(
       harness,
       chat.page,
       projects.projectB.id,
+    );
+    await assertNoAiAuditLeak(
+      harness,
+      chat.page,
+      projects.projectB.id,
+      "chat_stream_non_agent",
+      [
+        PROJECT_CHAT_AUTHORITY_PROMPT,
+        CHAT_AUTHORITY_EARLY,
+        CHAT_AUTHORITY_LATE,
+      ],
+      "project B",
     );
     if (
       chatAuthorityLeaks(projectBRows, PROJECT_CHAT_AUTHORITY_PROMPT).length > 0
@@ -2762,19 +2981,20 @@ async function runChatStreamProjectSwitchJourney(harness) {
           .count()) === 0,
       "project B chat UI isolation",
     );
-    harness.recordTimeline("project-chat-stream-drained", {
+    harness.recordTimeline("project-chat-stream-stopped", {
       workspace,
       workspaceOpenRevision: await workspaceOpenRevision(chat.page),
       fromProjectId: projects.projectA.id,
       toProjectId: projects.projectB.id,
+      executionId: preparedAudit.executionId,
       sessionIds: [
         ...new Set(projectARows.map((row) => String(row.sessionId))),
       ],
-      oldScopeCompleted: true,
+      oldScopeStoppedAndPersisted: true,
       newScopeLeak: false,
     });
     log(
-      "Project chat switch: strict quiescence drained the old stream before authority commit",
+      "Project chat switch: the stopped turn stayed in project A before authority committed to project B",
     );
   } finally {
     await harness.close(chat.app, chat.page, "chat-stream-project-switch");
@@ -2813,67 +3033,49 @@ async function runAgentStreamProjectSwitchJourney(harness) {
       pathId: "chat_agent_main",
       transport: "send_agent_message",
     });
-
-    await clickProjectSwitchDuringAgentTurn(
-      chat.page,
-      projects.projectB,
-    );
-    const transitionEvents = await harness.waitUntil(async () => {
-      const events = await harness.readLifecycleTrace(chat.page);
-      const matching = events.filter(
-        (event) =>
-          event.kind === "project" &&
-          lifecycleScopeMatches(event.from, {
-            workspacePath: workspace,
-            projectId: projects.projectA.id,
-          }) &&
-          lifecycleScopeMatches(event.to, {
-            workspacePath: workspace,
-            projectId: projects.projectB.id,
-          }),
-      );
-      return matching.some((event) => event.phase === "quiescence-started")
-        ? matching
-        : null;
-    }, "Agent project switch entered strict quiescence");
-    if (transitionEvents.some((event) => event.phase === "authority-commit")) {
-      throw new Error(
-        "project authority committed before Agent transport drained",
-      );
-    }
-    const activeProject = await queryRows(
+    await clickProjectSwitchWhileTurnRuns(chat.page, projects.projectB);
+    await answerChatStopConfirmation(chat.page, false);
+    const scope = {
+      kind: "project",
+      from: { workspacePath: workspace, projectId: projects.projectA.id },
+      to: { workspacePath: workspace, projectId: projects.projectB.id },
+    };
+    await assertNoLifecycleTransition(harness, chat.page, scope);
+    const activeProjectAfterCancel = await queryRows(
       harness,
       chat.page,
       "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
     );
-    if (activeProject[0]?.value !== projects.projectA.id) {
+    if (activeProjectAfterCancel[0]?.value !== projects.projectA.id) {
       throw new Error(
-        "project authority changed while Agent transport was pending",
+        "project authority changed when the Agent switch was cancelled",
       );
     }
-    const earlyCompletion = await queryRows(
-      harness,
-      chat.page,
-      `SELECT sequence
-       FROM ai_audit_events
-       WHERE project_id = ? AND path_id = 'chat_agent_main'
-         AND execution_id = ? AND event_type = 'response.completed'`,
-      [projects.projectA.id, preparedAudit.executionId],
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "detached", timeout: 5_000 });
+    assertAiTurnPending(
+      await listAiAuditEvents(
+        harness,
+        chat.page,
+        projects.projectA.id,
+        "chat_agent_main",
+        preparedAudit.executionId,
+      ),
+      "project A Agent turn after switch cancellation",
     );
-    if (earlyCompletion.length > 0) {
-      throw new Error(
-        "deterministic Agent response completed before switch quiescence",
-      );
-    }
-    harness.recordTimeline("agent-project-switch-quiescence-blocked", {
+    harness.recordTimeline("agent-project-switch-cancelled", {
+      executionId: preparedAudit.executionId,
       fromProjectId: projects.projectA.id,
       toProjectId: projects.projectB.id,
       authorityStayedWithOldProject: true,
-      responseStillPending: true,
+      responseContinuedAfterCancel: true,
     });
 
+    await clickProjectSwitchWhileTurnRuns(chat.page, projects.projectB);
+    await answerChatStopConfirmation(chat.page, true);
     await harness.waitUntil(async () => {
-      const active = await queryRows(
+      const activeSetting = await queryRows(
         harness,
         chat.page,
         "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
@@ -2882,23 +3084,16 @@ async function runAgentStreamProjectSwitchJourney(harness) {
         .getByTestId("project-menu-trigger")
         .textContent();
       return (
-        active[0]?.value === projects.projectB.id &&
+        activeSetting[0]?.value === projects.projectB.id &&
         String(triggerText ?? "").includes(projects.projectB.title)
       );
-    }, "project B UI authority after Agent transport drain");
+    }, "project B UI authority after stopped Agent turn");
     await sceneA.editorSurface.waitFor({ state: "detached", timeout: 30_000 });
     await assertLifecycleTransitionOrder(harness, chat.page, {
-      kind: "project",
-      from: {
-        workspacePath: workspace,
-        projectId: projects.projectA.id,
-      },
-      to: {
-        workspacePath: workspace,
-        projectId: projects.projectB.id,
-      },
+      ...scope,
       label: "Agent project switch",
     });
+
     const projectARows = await harness.waitUntil(async () => {
       const rows = await listChatAuthorityRows(
         harness,
@@ -2906,33 +3101,28 @@ async function runAgentStreamProjectSwitchJourney(harness) {
         projects.projectA.id,
       );
       try {
-        assertCompletedAgentAuthority(rows, {
+        assertStoppedChatAuthority(rows, {
           prompt: AGENT_PROJECT_SWITCH_PROMPT,
-          outputMarker: AGENT_PROJECT_SWITCH_OUTPUT,
           label: "project A Agent turn",
         });
         return rows;
       } catch {
         return null;
       }
-    }, "project A Agent transcript persistence");
-    const completedAudit = await queryRows(
-      harness,
-      chat.page,
-      `SELECT payload
-       FROM ai_audit_events
-       WHERE project_id = ? AND path_id = 'chat_agent_main'
-         AND execution_id = ? AND event_type = 'response.completed'`,
-      [projects.projectA.id, preparedAudit.executionId],
-    );
-    if (
-      completedAudit.length !== 1 ||
-      !String(completedAudit[0]?.payload ?? "").includes(
-        AGENT_PROJECT_SWITCH_OUTPUT,
-      )
-    ) {
-      throw new Error("Agent response audit did not remain under project A");
-    }
+    }, "project A stopped Agent transcript persistence");
+    const terminalEvents = await harness.waitUntil(async () => {
+      const events = await listAiAuditEvents(
+        harness,
+        chat.page,
+        projects.projectA.id,
+        "chat_agent_main",
+        preparedAudit.executionId,
+      );
+      return events.some((event) => event.eventType === "execution.cancelled")
+        ? events
+        : null;
+    }, "project A cancelled Agent audit");
+    assertAiTurnCancelled(terminalEvents, "project A Agent turn");
     const projectBRows = await listChatAuthorityRows(
       harness,
       chat.page,
@@ -2978,21 +3168,21 @@ async function runAgentStreamProjectSwitchJourney(harness) {
           .count()) === 0,
       "project B Agent UI isolation",
     );
-    harness.recordTimeline("agent-project-switch-drained", {
+    harness.recordTimeline("agent-project-switch-stopped", {
       workspace,
       fromProjectId: projects.projectA.id,
       toProjectId: projects.projectB.id,
       executionId: preparedAudit.executionId,
-      oldScopeCompleted: true,
-      oldProjectTranscriptPersisted: projectARows.some(
+      oldScopeStoppedAndPersisted: true,
+      stoppedAssistantPersisted: projectARows.some(
         (row) =>
           row.role === "assistant" &&
-          String(row.content ?? "").includes(AGENT_PROJECT_SWITCH_OUTPUT),
+          JSON.parse(String(row.metadata ?? "{}")).stopped === true,
       ),
       newScopeLeak: false,
     });
     log(
-      "Agent project switch: send_agent_message drained and persisted in project A before authority committed to project B",
+      "Agent project switch: the stopped send remained in project A before authority committed to project B",
     );
   } finally {
     await harness.close(chat.app, chat.page, "agent-stream-project-switch");
@@ -3027,31 +3217,17 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
       pathId: "chat_agent_main",
       transport: "send_agent_message",
     });
-    await clickWorkspaceSwitchDuringAgentTurn(chat.page, workspaceB);
-
-    const transitionEvents = await harness.waitUntil(async () => {
-      const events = await harness.readLifecycleTrace(chat.page);
-      const matching = events.filter(
-        (event) =>
-          event.kind === "workspace" &&
-          lifecycleScopeMatches(event.from, {
-            workspacePath: workspaceA,
-            projectId: sceneA.projectId,
-          }) &&
-          lifecycleScopeMatches(event.to, { workspacePath: workspaceB }),
-      );
-      return matching.some((event) => event.phase === "quiescence-started")
-        ? matching
-        : null;
-    }, "Agent workspace switch entered strict quiescence");
-    if (transitionEvents.some((event) => event.phase === "authority-commit")) {
-      throw new Error(
-        "workspace authority committed before Agent transport drained",
-      );
-    }
+    await clickWorkspaceSwitchWhileTurnRuns(chat.page, workspaceB);
+    await answerChatStopConfirmation(chat.page, false);
+    const scope = {
+      kind: "workspace",
+      from: { workspacePath: workspaceA, projectId: sceneA.projectId },
+      to: { workspacePath: workspaceB },
+    };
+    await assertNoLifecycleTransition(harness, chat.page, scope);
     if ((await workspaceOpenRevision(chat.page)) !== previousRevision) {
       throw new Error(
-        "workspace authority revision changed while Agent transport was pending",
+        "workspace authority revision changed when the Agent switch was cancelled",
       );
     }
     const workspaceTriggerText = await chat.page
@@ -3061,17 +3237,32 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
       !String(workspaceTriggerText ?? "").includes(path.basename(workspaceA))
     ) {
       throw new Error(
-        "workspace A remained not visible as authority during Agent transport",
+        "workspace A was no longer the active authority after cancelling the Agent switch",
       );
     }
-    harness.recordTimeline("agent-workspace-switch-quiescence-blocked", {
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "detached", timeout: 5_000 });
+    assertAiTurnPending(
+      await listAiAuditEvents(
+        harness,
+        chat.page,
+        sceneA.projectId,
+        "chat_agent_main",
+        preparedAudit.executionId,
+      ),
+      "workspace A Agent turn after switch cancellation",
+    );
+    harness.recordTimeline("agent-workspace-switch-cancelled", {
       fromWorkspace: workspaceA,
       toWorkspace: workspaceB,
       workspaceOpenRevision: previousRevision,
       authorityStayedWithOldWorkspace: true,
-      responseStillPending: true,
+      responseContinuedAfterCancel: true,
     });
 
+    await clickWorkspaceSwitchWhileTurnRuns(chat.page, workspaceB);
+    await answerChatStopConfirmation(chat.page, true);
     await harness.waitUntil(async () => {
       const triggerText = await chat.page
         .getByTestId("workspace-menu-trigger")
@@ -3080,14 +3271,10 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
         String(triggerText ?? "").includes(path.basename(workspaceB)) &&
         (await workspaceOpenRevision(chat.page)) > previousRevision
       );
-    }, "workspace B UI authority after Agent transport drain");
+    }, "workspace B UI authority after stopped Agent turn");
+    const committedWorkspaceRevision = await workspaceOpenRevision(chat.page);
     await assertLifecycleTransitionOrder(harness, chat.page, {
-      kind: "workspace",
-      from: {
-        workspacePath: workspaceA,
-        projectId: sceneA.projectId,
-      },
-      to: { workspacePath: workspaceB },
+      ...scope,
       label: "Agent workspace switch",
     });
 
@@ -3146,49 +3333,44 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
         sceneA.projectId,
       );
       try {
-        assertCompletedAgentAuthority(rows, {
+        assertStoppedChatAuthority(rows, {
           prompt: AGENT_WORKSPACE_SWITCH_PROMPT,
-          outputMarker: AGENT_WORKSPACE_SWITCH_OUTPUT,
           label: "workspace A Agent turn",
         });
         return rows;
       } catch {
         return null;
       }
-    }, "workspace A Agent transcript persistence");
-    const completedAudit = await queryRows(
-      harness,
-      chat.page,
-      `SELECT payload
-       FROM ai_audit_events
-       WHERE project_id = ? AND path_id = 'chat_agent_main'
-         AND execution_id = ? AND event_type = 'response.completed'`,
-      [sceneA.projectId, preparedAudit.executionId],
-    );
-    if (
-      completedAudit.length !== 1 ||
-      !String(completedAudit[0]?.payload ?? "").includes(
-        AGENT_WORKSPACE_SWITCH_OUTPUT,
-      )
-    ) {
-      throw new Error("Agent response audit did not remain under workspace A");
-    }
-    harness.recordTimeline("agent-workspace-switch-drained", {
+    }, "workspace A stopped Agent transcript persistence");
+    const terminalEvents = await harness.waitUntil(async () => {
+      const events = await listAiAuditEvents(
+        harness,
+        chat.page,
+        sceneA.projectId,
+        "chat_agent_main",
+        preparedAudit.executionId,
+      );
+      return events.some((event) => event.eventType === "execution.cancelled")
+        ? events
+        : null;
+    }, "workspace A cancelled Agent audit");
+    assertAiTurnCancelled(terminalEvents, "workspace A Agent turn");
+    harness.recordTimeline("agent-workspace-switch-stopped", {
       from: workspaceA,
       to: workspaceB,
-      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      workspaceOpenRevision: committedWorkspaceRevision,
       projectId: sceneA.projectId,
       executionId: preparedAudit.executionId,
-      oldScopeCompleted: true,
-      oldWorkspaceTranscriptPersisted: workspaceARows.some(
+      oldScopeStoppedAndPersisted: true,
+      stoppedAssistantPersisted: workspaceARows.some(
         (row) =>
           row.role === "assistant" &&
-          String(row.content ?? "").includes(AGENT_WORKSPACE_SWITCH_OUTPUT),
+          JSON.parse(String(row.metadata ?? "{}")).stopped === true,
       ),
       newScopeLeak: false,
     });
     log(
-      "Agent workspace switch: send_agent_message drained and persisted in workspace A before authority committed to workspace B",
+      "Agent workspace switch: the stopped send remained in workspace A before authority committed to workspace B",
     );
   } finally {
     await harness.close(chat.app, chat.page, "agent-stream-workspace-switch");
@@ -3218,22 +3400,120 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
       sceneId: sceneA.sceneId,
       earlyChunkVisible: true,
     });
-
-    await switchWorkspaceThroughUi(
-      harness,
-      chat.page,
-      workspaceB,
-      "workspace B UI authority after chat drain",
+    const preparedAudit = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT execution_id AS executionId, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND event_type = 'request.prepared'
+         ORDER BY sequence DESC LIMIT 1`,
+        [sceneA.projectId],
+      );
+      return String(rows[0]?.payload ?? "").includes(
+        WORKSPACE_CHAT_AUTHORITY_PROMPT,
+      )
+        ? rows[0]
+        : null;
+    }, "workspace A chat request prepared");
+    await harness.waitUntil(
+      async () =>
+        (
+          await queryRows(
+            harness,
+            chat.page,
+            `SELECT sequence FROM ai_audit_events
+             WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+               AND execution_id = ? AND event_type = 'request.dispatched'`,
+            [sceneA.projectId, preparedAudit.executionId],
+          )
+        ).length === 1,
+      "workspace A chat request dispatched",
     );
-    await assertLifecycleTransitionOrder(harness, chat.page, {
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "detached", timeout: 5_000 });
+    const previousRevision = await workspaceOpenRevision(chat.page);
+    const scope = {
       kind: "workspace",
-      from: {
-        workspacePath: workspaceA,
-        projectId: sceneA.projectId,
-      },
-      to: {
-        workspacePath: workspaceB,
-      },
+      from: { workspacePath: workspaceA, projectId: sceneA.projectId },
+      to: { workspacePath: workspaceB },
+    };
+    assertAiTurnPending(
+      await listAiAuditEvents(
+        harness,
+        chat.page,
+        sceneA.projectId,
+        "chat_stream_non_agent",
+        preparedAudit.executionId,
+      ),
+      "workspace A chat stream",
+    );
+
+    await clickWorkspaceSwitchWhileTurnRuns(chat.page, workspaceB);
+    await answerChatStopConfirmation(chat.page, false);
+    await assertNoLifecycleTransition(harness, chat.page, scope);
+    if ((await workspaceOpenRevision(chat.page)) !== previousRevision) {
+      throw new Error(
+        "workspace authority revision changed when the chat switch was cancelled",
+      );
+    }
+    const workspaceAfterCancel = await chat.page
+      .getByTestId("workspace-menu-trigger")
+      .textContent();
+    if (
+      !String(workspaceAfterCancel ?? "").includes(path.basename(workspaceA))
+    ) {
+      throw new Error(
+        "workspace authority changed when the chat switch was cancelled",
+      );
+    }
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "detached", timeout: 5_000 });
+    assertAiTurnPending(
+      await listAiAuditEvents(
+        harness,
+        chat.page,
+        sceneA.projectId,
+        "chat_stream_non_agent",
+        preparedAudit.executionId,
+      ),
+      "workspace A chat stream after switch cancellation",
+    );
+    if (
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) === 0
+    ) {
+      throw new Error(
+        "workspace A chat response stopped after cancelling the switch",
+      );
+    }
+    harness.recordTimeline("workspace-chat-switch-cancelled", {
+      executionId: preparedAudit.executionId,
+      fromWorkspace: workspaceA,
+      toWorkspace: workspaceB,
+      workspaceOpenRevision: previousRevision,
+      authorityStayedWithOldWorkspace: true,
+      responseContinuedAfterCancel: true,
+    });
+
+    await clickWorkspaceSwitchWhileTurnRuns(chat.page, workspaceB);
+    await answerChatStopConfirmation(chat.page, true);
+    await harness.waitUntil(async () => {
+      const triggerText = await chat.page
+        .getByTestId("workspace-menu-trigger")
+        .textContent();
+      return (
+        String(triggerText ?? "").includes(path.basename(workspaceB)) &&
+        (await workspaceOpenRevision(chat.page)) > previousRevision
+      );
+    }, "workspace B UI authority after stopped chat turn");
+    const committedWorkspaceRevision = await workspaceOpenRevision(chat.page);
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      ...scope,
       label: "workspace chat switch",
     });
     const projectB = await currentProjectRow(harness, chat.page);
@@ -3241,6 +3521,18 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
       harness,
       chat.page,
       String(projectB.id),
+    );
+    await assertNoAiAuditLeak(
+      harness,
+      chat.page,
+      String(projectB.id),
+      "chat_stream_non_agent",
+      [
+        WORKSPACE_CHAT_AUTHORITY_PROMPT,
+        CHAT_AUTHORITY_EARLY,
+        CHAT_AUTHORITY_LATE,
+      ],
+      "workspace B",
     );
     if (
       chatAuthorityLeaks(workspaceBRows, WORKSPACE_CHAT_AUTHORITY_PROMPT)
@@ -3282,9 +3574,11 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
         sceneA.projectId,
       );
       try {
-        assertCompletedChatAuthority(rows, {
+        assertStoppedChatAuthority(rows, {
           prompt: WORKSPACE_CHAT_AUTHORITY_PROMPT,
           label: "workspace A stream",
+          outputMarker: CHAT_AUTHORITY_EARLY,
+          stopReason: "stopped",
         });
         if (
           !rows.some(
@@ -3300,21 +3594,35 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
       } catch {
         return null;
       }
-    }, "workspace A stream drain before workspace switch");
-    harness.recordTimeline("workspace-chat-stream-drained", {
+    }, "workspace A stopped stream persistence");
+    const terminalEvents = await harness.waitUntil(async () => {
+      const events = await listAiAuditEvents(
+        harness,
+        chat.page,
+        sceneA.projectId,
+        "chat_stream_non_agent",
+        preparedAudit.executionId,
+      );
+      return events.some((event) => event.eventType === "execution.cancelled")
+        ? events
+        : null;
+    }, "workspace A cancelled chat audit");
+    assertAiTurnCancelled(terminalEvents, "workspace A chat stream");
+    harness.recordTimeline("workspace-chat-stream-stopped", {
       from: workspaceA,
       to: workspaceB,
-      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      workspaceOpenRevision: committedWorkspaceRevision,
       fromProjectId: sceneA.projectId,
       toProjectId: String(projectB.id),
+      executionId: preparedAudit.executionId,
       sessionIds: [
         ...new Set(workspaceARows.map((row) => String(row.sessionId))),
       ],
-      oldScopeCompleted: true,
+      oldScopeStoppedAndPersisted: true,
       newScopeLeak: false,
     });
     log(
-      "Workspace chat switch: strict quiescence drained the old stream without cross-database leakage",
+      "Workspace chat switch: the stopped turn stayed in workspace A without cross-database leakage",
     );
   } finally {
     await harness.close(chat.app, chat.page, "chat-stream-workspace-switch");
