@@ -2,7 +2,7 @@ import {
   classifyEventRelation,
   compareChronicleEvents,
 } from "./chronicleOrder.js";
-import { hasChronicleDate } from "./chronicleSpan.js";
+import { effectiveEventPrecision, hasChronicleDate } from "./chronicleSpan.js";
 import {
   type SnapshotSceneDate,
   resolveSnapshotSceneAnchor,
@@ -236,7 +236,7 @@ function deriveRecentEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
-      precision: e.precision,
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     }));
 }
@@ -257,8 +257,8 @@ function deriveUnresolvedCausal(
       out.push({
         causeTitle: truncate(cause.title, TITLE_CAP),
         effectTitle: truncate(effect.title, TITLE_CAP),
-        causePrecision: cause.precision,
-        effectPrecision: effect.precision,
+        causePrecision: effectiveEventPrecision(cause),
+        effectPrecision: effectiveEventPrecision(effect),
       });
     }
   }
@@ -297,7 +297,7 @@ function deriveOffpageEvents(
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
       relTime: relTimeFor(e, anchor, calendar, lang),
-      precision: e.precision,
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     }));
 }

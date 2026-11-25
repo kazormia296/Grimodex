@@ -21,6 +21,7 @@ import {
   type DateLang,
 } from "../features/chronicle/chronicleTime.js";
 import { resolveSnapshotSceneAnchor } from "../features/chronicle/chronicleAnchorByDate.js";
+import { effectiveEventPrecision } from "../features/chronicle/chronicleSpan.js";
 import { cmpKeys } from "../features/tree/fractionalIndex.js";
 import { requireCoreProjectId } from "./readContext.js";
 import type { CoreToolResult } from "./toolResult.js";
@@ -128,7 +129,7 @@ export async function listEvents(
         e.primaryCodexId != null && !hidden.has(e.primaryCodexId)
           ? (names.get(e.primaryCodexId) ?? null)
           : null,
-      precision: e.precision,
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     })),
   };
@@ -215,7 +216,7 @@ export async function getEventDetail(
       ev.endGranularity,
       lang,
     ),
-    precision: ev.precision,
+    precision: effectiveEventPrecision(ev),
     primaryCharacter:
       ev.primaryCodexId != null && !hidden.has(ev.primaryCodexId)
         ? (names.get(ev.primaryCodexId) ?? null)
@@ -294,7 +295,8 @@ export async function getCharacterTimeline(
     if (
       e.primaryCodexId === codexId &&
       e.kind === "birth" &&
-      e.startTime != null
+      e.startTime != null &&
+      effectiveEventPrecision(e) !== "unknown"
     )
       birthTime =
         birthTime == null ? e.startTime : Math.min(birthTime, e.startTime);
@@ -312,7 +314,7 @@ export async function getCharacterTimeline(
         birthTime != null && e.startTime != null && daysPerYear > 0
           ? Math.floor((e.startTime - birthTime) / daysPerYear)
           : null,
-      precision: e.precision,
+      precision: effectiveEventPrecision(e),
       ...revealOf(e.id),
     })),
   };

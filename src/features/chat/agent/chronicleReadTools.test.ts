@@ -65,7 +65,8 @@ function ev(p: Record<string, unknown>): Record<string, unknown> {
     endTime: p.endTime ?? null,
     startMinute: p.startMinute ?? null,
     endMinute: p.endMinute ?? null,
-    startGranularity: p.startGranularity ?? "none",
+    startGranularity:
+      p.startGranularity ?? (p.startTime != null ? "day" : "none"),
     endGranularity: p.endGranularity ?? "none",
     precision: "exact",
     kind: p.kind ?? "generic",

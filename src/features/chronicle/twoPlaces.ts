@@ -1,3 +1,6 @@
+import { hasChronicleDate } from "@/../electron/shared/readDomain/features/chronicle/chronicleSpan";
+import type { EventRow } from "@/../electron/shared/readDomain/features/chronicle/eventRows";
+
 export interface TwoPlacesConflict {
   eventA: string;
   eventB: string;
@@ -6,17 +9,20 @@ export interface TwoPlacesConflict {
   locationB: string;
 }
 
-interface TwoPlacesInputEvent {
-  id: string;
-  primaryCodexId: string | null;
-  startTime: number | null;
-  endTime: number | null;
-  locationCodexId: string | null;
-}
+type TwoPlacesInputEvent = Pick<
+  EventRow,
+  | "id"
+  | "primaryCodexId"
+  | "startTime"
+  | "startGranularity"
+  | "precision"
+  | "endTime"
+  | "locationCodexId"
+>;
 
 /**
  * 「同一人物が同時刻に別の場所にいる」矛盾を検出する純関数。
- * 対象 = primaryCodexId・startTime・endTime・locationCodexId が全て揃う区間 event。
+ * 対象 = 日時があり確度 unknown でなく、人物・endTime・場所が揃う区間 event。
  * 重なり判定は strict（max(start) < min(end)）＝接点のみ(連続移動)は矛盾としない。
  * 決定性: ペアは (eventA, eventB) 昇順、各ペア eventA < eventB。
  */
@@ -25,8 +31,13 @@ export function findTwoPlacesConflicts(args: {
 }): TwoPlacesConflict[] {
   const candidates = args.events.filter(
     (e) =>
+      e.precision !== "unknown" &&
+      hasChronicleDate({
+        startTime: e.startTime,
+        startMinute: null,
+        startGranularity: e.startGranularity,
+      }) &&
       e.primaryCodexId != null &&
-      e.startTime != null &&
       e.endTime != null &&
       e.locationCodexId != null,
   );

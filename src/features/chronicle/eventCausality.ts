@@ -1,3 +1,6 @@
+import { hasChronicleDate } from "@/../electron/shared/readDomain/features/chronicle/chronicleSpan";
+import type { EventRow } from "@/../electron/shared/readDomain/features/chronicle/eventRows";
+
 export interface CausalRelation {
   /** 原因の出来事 id。 */
   causeId: string;
@@ -14,16 +17,28 @@ export interface CausalConflict {
 
 /**
  * 因果エッジ(原因→結果)のうち「結果が原因より前(effectTime < causeTime)」の矛盾を
- * 検出する純関数。どちらかの startTime が無ければスキップ(false-positive 回避)。
+ * 検出する純関数。unknown／日時なしの event はスキップ(false-positive 回避)。
  * 決定性: 乱数/時刻なし。順序は (causeId, effectId) 昇順。
  */
 export function findCausalityConflicts(args: {
-  events: { id: string; startTime: number | null }[];
+  events: Pick<
+    EventRow,
+    "id" | "startTime" | "startGranularity" | "precision"
+  >[];
   relations: CausalRelation[];
 }): CausalConflict[] {
   const timeById = new Map<string, number>();
   for (const e of args.events) {
-    if (e.startTime != null) timeById.set(e.id, e.startTime);
+    if (
+      e.precision !== "unknown" &&
+      hasChronicleDate({
+        startTime: e.startTime,
+        startMinute: null,
+        startGranularity: e.startGranularity,
+      })
+    ) {
+      timeById.set(e.id, e.startTime!);
+    }
   }
   const conflicts: CausalConflict[] = [];
   for (const r of args.relations) {

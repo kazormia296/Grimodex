@@ -43,12 +43,21 @@ describe("detectAgeWords", () => {
 });
 
 describe("findAgeConflicts", () => {
-  const events = [
-    { id: "birth", primaryCodexId: "alice", startTime: 0, kind: "birth" },
+  const events: Parameters<typeof findAgeConflicts>[0]["events"] = [
+    {
+      id: "birth",
+      primaryCodexId: "alice",
+      startTime: 0,
+      startGranularity: "day",
+      precision: "exact",
+      kind: "birth",
+    },
     {
       id: "scene-ev",
       primaryCodexId: "alice",
       startTime: 360 * 40,
+      startGranularity: "day",
+      precision: "exact",
       kind: "generic",
     }, // 40歳
   ];
@@ -102,7 +111,14 @@ describe("findAgeConflicts", () => {
   it("birth が無い人物はスキップ", () => {
     const conflicts = findAgeConflicts({
       events: [
-        { id: "x", primaryCodexId: "bob", startTime: 100, kind: "generic" },
+        {
+          id: "x",
+          primaryCodexId: "bob",
+          startTime: 100,
+          startGranularity: "day",
+          precision: "exact",
+          kind: "generic",
+        },
       ],
       calendar,
       links: [{ sceneId: "s1", eventId: "x" }],
@@ -118,9 +134,18 @@ describe("findAgeConflicts", () => {
           id: "birth",
           primaryCodexId: "alice",
           startTime: null,
+          startGranularity: "day",
+          precision: "exact",
           kind: "birth",
         },
-        { id: "ev", primaryCodexId: "alice", startTime: 1000, kind: "generic" },
+        {
+          id: "ev",
+          primaryCodexId: "alice",
+          startTime: 1000,
+          startGranularity: "day",
+          precision: "exact",
+          kind: "generic",
+        },
       ],
       calendar: { daysPerYear: 0, seasonBoundaries: [] },
       links: [{ sceneId: "s1", eventId: "ev" }],
@@ -136,6 +161,8 @@ describe("findAgeConflicts", () => {
           id: "birth",
           primaryCodexId: "alice",
           startTime: 360 * 40,
+          startGranularity: "day",
+          precision: "exact",
           kind: "birth",
         },
         // 出生(40年目)より前の出来事 → 算出年齢が負になる。
@@ -143,6 +170,8 @@ describe("findAgeConflicts", () => {
           id: "flashback",
           primaryCodexId: "alice",
           startTime: 0,
+          startGranularity: "day",
+          precision: "exact",
           kind: "generic",
         },
       ],
@@ -162,5 +191,57 @@ describe("findAgeConflicts", () => {
       sceneTexts: new Map([["s1", "子供だった彼も今や立派な大人だ"]]),
     });
     expect(conflicts).toHaveLength(0);
+  });
+
+  it("unknown と日時なしを除外し、approx と exact は検査する", () => {
+    const eventIds = [
+      "unknown",
+      "undated",
+      "approx",
+      "exact",
+      "unknown-birth-event",
+    ];
+    const conflicts = findAgeConflicts({
+      events: [
+        {
+          id: "birth",
+          primaryCodexId: "alice",
+          startTime: 0,
+          startGranularity: "day",
+          precision: "exact",
+          kind: "birth",
+        },
+        {
+          id: "unknown-birth",
+          primaryCodexId: "bob",
+          startTime: 0,
+          startGranularity: "day",
+          precision: "unknown",
+          kind: "birth",
+        },
+        ...eventIds.map((id) => ({
+          id,
+          primaryCodexId: id === "unknown-birth-event" ? "bob" : "alice",
+          startTime: 360 * 40,
+          startGranularity:
+            id === "undated" ? ("none" as const) : ("day" as const),
+          precision:
+            id === "unknown"
+              ? ("unknown" as const)
+              : id === "approx"
+                ? ("approx" as const)
+                : ("exact" as const),
+          kind: "generic",
+        })),
+      ],
+      calendar,
+      links: eventIds.map((eventId) => ({ sceneId: eventId, eventId })),
+      sceneTexts: new Map(eventIds.map((sceneId) => [sceneId, "子供"])),
+    });
+
+    expect(conflicts.map((conflict) => conflict.eventId)).toEqual([
+      "approx",
+      "exact",
+    ]);
   });
 });
