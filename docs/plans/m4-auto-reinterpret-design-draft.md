@@ -1,46 +1,34 @@
-# 自動再解釈の送信の設計（起案・未確認、2026-11-25）
+# 自動再解釈の送信の設計（起案・保留、2026-11-25）
 
-状態：**起案**。前の「送信の形」（追記 3）は前提が誤りで失効した（[判断の記録](nir1-lane-decisions/m4-pullforward-decisions.md) の「DR-M4PF-6 の前提の訂正」）。
-**送信の経路は開けていない。この文書は送る前に確かめるための案で、実装の根拠にしない。**
+状態：**保留**。下の §1 の事実で、当初の起案の土台（本文の編集で D1 の解釈が古くなり、AI で作り直して変更レビューに出す）が成り立たないと分かった。
+**送信の経路は開けていない。この文書は実装の根拠にしない。** 前の「送信の形」（追記 3）は前提の誤りで失効している。
 2026-11-25 のユーザーの回答（原文）：「自動送信を先に設計し直す」。
 
-## 1. 事実（read-only の調査、2026-11-25）
+## 1. 確かめた事実（read-only の調査。file:line は 2026-11-25 の branch 基点）
 
-- 手動の構造抽出（`CodexStructureExtractDialog.tsx`）は `useAi: false` が固定で、AI の経路（`codexStructureExtractionApi.ts:1775-1778`）は空。**今、構造抽出で AI に送るものは何も無い**。単位はフォルダと配下の場面。
-  画面は env flag の裏で、未指定なら開発版だけ有効。
-- AI タスク `runEntityResolutionTask`・`runRelationSynthesisTask` は実装だけあり、製品の呼び手が無い。
-- Entity の prompt が組むもの（`runEntityResolutionTask.ts` の `buildEntityResolutionPrompt`）：cluster の呼称、**本文の抜粋（Source View）**、Type の一覧、**既存の項目の一覧（名前・別名・Type）**。DB の実 id は送らず、不透明な参照（T####・K####・S####）だけ。
-- **この経路に hidden の除外は無い**（既存の項目の一覧に hidden が入り得る）。同じ種類の守りは候補の AI 評価（`candidateJudgment.ts`、`listCodexIdsHiddenFromAiInAnyPhase`）にある。
-- 本文の保存は Change Feed に積まれ、main は約 1 秒の poll（`electron/main/narrativeFreshness.ts`）で Freshness と Build Action を更新する。**AI の実行主体は今は renderer** で、main から起こすなら通知の経路が要る。
-- 保存済みの Build Action は Native にあるが、renderer の inbox の型には `buildAction`・`consumerKey` が無い。
-- token の見積もりは `countTokens`（tiktoken）、実測の記録は `ai_usage.tokensIn`。構造抽出の過去の実測は無い。
+1. **本文の編集では、typed の Entity／Relation（D1）は古くならない。** source は `codex:`・`codex-relation:`・`scene-scope-projection` だけで、本文の辺が無い
+   （`nir1_entity_relation.rs:653-686, 998-1045, 1296-1362`、`scene_scope_projection.rs:82-100`）。Evidence の quote も Codex の項目が source（同 `:688-715, 4267-4298`）。
+2. **AI の結果は、変更レビュー（`read_nir1_change_review`）に届かない。** 読むのは `nir1.entity-relation.revision@1` の set だけで（同 `:2486-2503`）、入力は作者が選ぶ `sceneId`／`entityIds`／`relationIds`。
+   AI の Chronicle の結果は `chronicle.extract.review@1` の別の set。`CodexEntityHypothesis` から typed bundle への変換は無い。IPC `nir1_change_review_read` に renderer の呼び手も無い。
+3. **本文を AI に送り、結果を残すのは Chronicle の run だけ**（`ChronicleExtractDialog.tsx:493` → `chronicleExtractionApi.ts:686-705`、observation は window の本文、synthesis は observation を送る）。単位は `folderId`＋`sceneIds[]`。
+   Codex の構造抽出は `useAi: false` の heuristic。`runEntityResolutionTask` ほかに製品の呼び手は無い。
+4. **本文の編集で古くなり得る consumer**：scene-body を source に持つ proposal-revision（Chronicle V2、Codex 構造抽出）と、それに連なる semantic-index（状態遷移は未確認）。
+   token は `tree_nodes` の行の版（`source_revision.rs:839-870`）なので、本文以外の保存でも動きうる。`revalidate-exact` に落ちる経路があるが、全再構築の経路は digest を持たない（`restore_rebuild.rs:606`）。
+5. **送信の守り**：役割の割り当てが空でも「何もしない」にならず、既定の provider/model に落ちる（`modelRouting.ts:248-367`）。`blockNarrativeAiTask()` は AI policy と license だけ。
+   データ同意の broker は web 版だけで、Electron の経路に効かない。D2a は `send_chat_message` を `old-external-ai` として restricted で拒否（`profileEgress.ts:284, 886-930`）。
+6. **取消**：narrative の task に AbortSignal は無い。project 切替などは `flushStrictQuiescence` で終了を待つだけ（restricted への切替は Native に停止を依頼する）。
+7. **失敗**：guard の block と一部の解析失敗は、例外でなく `[]` を返す。自動起動では「出来事なし」に見える恐れがある。
 
-## 2. 送る形の案
+## 2. 帰結
 
-| 項目       | 案                                                                                                                                                                                                                           |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 何を送る   | 最初の版は **Entity の同定だけ**（`runEntityResolutionTask` の prompt の形）。Relation の合成は送らない。本文の抜粋は、`rebuild-required` になった**場面の中の**、その呼称を含む抜粋だけ（場面全体は送らない）               |
-| 単位       | 場面（今の手動の単位はフォルダだが、自動は影響した場面だけにする。新しい単位なので確認が要る）                                                                                                                               |
-| 除外       | hidden の Codex の項目は、既存の項目の一覧（名前・別名）から除く（どれかの Phase で hidden の項目も除く。`listCodexIdsHiddenFromAiInAnyPhase` と同じ、判定に失敗したら**送らない**）。除いた項目に当たる呼称の抜粋も送らない |
-| 送信先     | 作者が設定した provider と model のうち、役割 `narrative_entity_resolve` の割り当て（未設定なら何もしない）。新しい provider の種類は足さないが、**本文を送る新しい経路**になる                                              |
-| きっかけ   | 作者の本文の編集で `rebuild-required` になった場面だけ。取り込み・復元・変更レビューの適用では送らない                                                                                                                       |
-| 上限       | 場面を離れた時か無編集 10 分。同じ場面は 30 分に 1 回。1 回 3 場面、1 日 20 回。1 日の入力 token の上限は、`countTokens` の見積もりと最初の実測から決める                                                                    |
-| 同意       | 既定オフ。プロジェクト単位でオン、設定は端末側（DB に入れない）。オンの時に送る中身（上の行）を画面に出す。provider か model を変えたらオフ                                                                                  |
-| 記録       | 送信の記録（時刻・場面・件数、本文なし）を残す。前の確認は同じ前提の上にあったので、**改めて伺う**                                                                                                                           |
-| 結果の扱い | 新しい提案は変更レビューに積むだけで、Story Bible は書き換えない。失敗・超過は再試行 1 回まで、送らずに手動の入口へ                                                                                                          |
+- D1（Codex Entity／Relation）では、「本文の変更 → 自動再解釈」は成立しない。成立させるには、本文を source にする新しい Producer（AI の抽出の配線、typed bundle への変換、本文の依存）が要り、新しい送信になる。
+- 本文の変更で古くなる AI 由来の解釈があるのは Chronicle（D2）だけ。ただし変更レビューは Chronicle の差分を読めないので、別の読み取りが要る。
+- これまで作った変更レビュー（読み取り・IPC）は、**Codex の項目や Relation や Scope が変わった時**の差分で、本文の変更ではない。ロードマップ M4 の「本文を書き続けても追従」は、まだ満たしていない。
 
-## 3. 実装の前に要るもの（旗は閉じたまま、順）
+## 3. 次の方向（ユーザーに伺う）
 
-1. 手動の AI の経路の配線（`useAi` の stub に Entity の task をつなぐ）。**本文を送る経路そのものなので、自動より先に、手動で確かめられる形にする。**ここが新しい送信の最初の入口になる。
-2. hidden の除外（fail-closed）と、その試験。
-3. token の見積もり（送らずに prompt を組んで数える）と実測。
-4. 読み取り：inbox の型に `buildAction`・`consumerKey` を通すか、専用の読み取りを足す。
-5. 契機と実行主体（main の cycle 完了の通知 → renderer の実行）。
-6. 同意・上限・記録の画面と保存。
+- 甲（推奨）：自動送信は棚上げ。M4 の最初の版は、今ある Codex 起点の変更レビュー（読むだけ）に絞る。本文起点の追従は、Chronicle（D2）の差分を読む設計を先に作る。
+- 乙：Chronicle の run を自動再実行する案を起案する（送るのは本文と observation。単位はフォルダ。送る守り・取消・失敗の扱いを新設）。
+- 丙：D1 に本文起点の AI 抽出 Producer を新設する案を起案する（新しい送信・新しい Producer・契約。大きい）。
 
-## 4. 伺うこと
-
-1. 「何を送る」「単位」「除外」の案でよいか。
-2. 送信先を役割の割り当てにし、未設定なら何もしない形でよいか。
-3. 記録（時刻・場面・件数、本文なし）を残してよいか。
-4. 順番：自動の前に、手動の AI の経路（上の 3-1）を先に配線してよいか（それ自体が新しい送信）。
+方向が決まったら、`GDX-PRECHECK-001` の外部送信の項目（信頼する actor、対象と対象外の攻撃、防御、受入れ、owner／lifecycle の表）を起案に入れ、確認をもらってから実装する。
