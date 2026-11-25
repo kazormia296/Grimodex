@@ -264,7 +264,7 @@ Inbox の 1 行は **Consumer 1 つ**（`finding_key = "{consumer_kind}:{consume
 | 3（行数と応答時間） | 一部：合成の DB で Inbox の構築の時間を測った。実在の project の行数は読んでいない（回答により読まない） | DR-M3-31 |
 | 5（許可を ON にする経路） | 作者向けの画面も renderer の setter も無い（renderer は get だけ）。IPC の setter はあり、品質評価の setup driver が ON にしている | `narrativeRuntimePolicyApi.ts`、`ipcContract.ts` の `narrative_runtime_policy_set`、`scripts/quality/nir1-graph-eval/setup-driver.mjs` |
 | 6（制限 profile） | 呼び出しを含む試験がある（今の設定では、制限なしと同じ結果になることを assert） | `electron/main/d2aOwnDataRead.pipeline.spec.ts` |
-| 7（`validate:architecture`） | 解消：CI の静的検査の job に含まれ、#1042 はその job が成功した | `.github/workflows/ci.yml` の `frontend-static` |
+| 7（`validate:architecture`） | 解消：CI の静的検査の job に含まれ、#1042 はその job が成功した | `.github/workflows/ci.yml` の `frontend-static`。#1042 の PR の checks でこの job は成功 |
 | 8（mock でボタンが出ない） | 変わらず（固定する試験は確認できていない） | `browser-mock.ts`、`ForeshadowPanel.tsx` |
 | 9（Work Layer の実データ） | 解消：live の読み口が入った | #1114、`workLayerLiveReaders.ts` |
 | 10（FSR/1 との衝突） | #1042 は `ForeshadowPanel.tsx` を変えずに merge した | #1042 の変更 file |
