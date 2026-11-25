@@ -38,9 +38,25 @@
 | D2a の停止 | 変えない。障壁は `until_cancelled` で取り消し、その error（`legacy-request-stopped`）が返る。 |
 | 再起動の後 | 持ち越す状態は無い（メモリの中だけ）。 |
 
+## 終了と切替（利用者の判断 2026-11-26）
+
+利用者の選択：アプリの終了、workspace の切替、project の切替の 3 つで、実行中の chat／agent があれば確認を出す。了承すれば「停止」と同じ扱いで中断して進み、断れば操作を取りやめる。
+
+| 項目 | 内容 |
+| --- | --- |
+| 入口 | 窓の終了（`closeQuiescenceController`、panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、project の読み込み（`projectStore`。workspace を開く途中の読み込みでは重ねて聞かない）。 |
+| 順番 | 今ある拒否（inline AI の保留）の後、静止の lease を取る前に聞く。lease を取った後は turn の保存が止まりうるため。 |
+| 対象の判定 | その窓の chat の store が生成中（`isStreaming`）。chat の store が lib の小さな登録口に「生成中か」と「停止」を登録する（`projectStore` から chat の store を直接読まない）。 |
+| 了承 | まだ生成中なら `stopGeneration`。停止した turn の確定と監査の終端は、今ある静止の段（`ai-executions`、`scoped-mutations`、`ipc-actual-tasks`）が待つ。agent の送信は上の中断で速く終わる。 |
+| 取りやめ | 何も止めず、操作を中止する（終了は veto、切替は `blocked`／読み込まない）。 |
+| 多重の要求 | 確認を出している間の次の要求は、同じ確認の結果を待つ。 |
+| 待ちの上限 | 確認は利用者の操作まで待つ（時間切れなし）。終了の要求は同期で `preventDefault` するので、Electron の予備の時間切れは働かない。 |
+| 再起動の後 | 持ち越す状態は無い。 |
+
 ## 範囲外（残る制限）
 
-- アプリの終了と workspace の切替は、実行中の turn が終わるまで待つ（今の静止の設計。stream の chat も同じ）。「停止」を押せば早く終わる。
-- 要約（`send_chat_message`）と Context Creator の送信は中断しない。
+- 別窓の chat の応答は、その窓を閉じるときは確認するが、main の窓の workspace／project の切替では確認しない（今も静止の対象外）。main の窓を閉じると、先に main が閉じ、続いて chat の窓で確認が出る。
+- 要約（`send_chat_message`）、Context Creator、抽出などの他の AI の処理は中断せず、今までどおり終わるのを待つ。
+- バックアップの復元、データの削除、監査の書き出しなど、他の操作は今までどおり待つ。
 - 中断しても provider の側の生成と課金が止まる保証は無い（stream の停止と同じ）。
 - 実行済みの道具の結果は残る。
