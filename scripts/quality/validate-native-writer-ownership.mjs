@@ -47,6 +47,8 @@ const ALLOWED_PATH_FRAGMENTS = [
   // disposable measurement database, so keep it outside runtime ownership
   // scanning without granting it any writer authority.
   "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
+  // test_support.rs は test-only の宣言 setter で、production writer ではない。
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/test_support.rs",
 ];
 
 /**
@@ -332,7 +334,9 @@ const WRITER_TO_MODULES = {
 };
 
 const DML_RE =
-  /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
+  /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
+const UPDATE_RE =
+  /\bUPDATE(?:\s+OR\s+\w+)?\s+["`]?([a-z_][a-z0-9_]*)["`]?(?:\s+(?:AS\s+)?["`]?([a-z_][a-z0-9_]*)["`]?)?\s+SET\b/gi;
 
 function shouldSkip(filePath) {
   const normalized = filePath.replaceAll("\\", "/");
@@ -374,8 +378,39 @@ const NIR1_CACHE_WRITERS = {
   ],
 };
 
+// UPDATE の検出を直して見つかった、既にある正しい書き手。表ごと・完全一致の path で許す。
+// WRITER_TO_MODULES に足すと basename の一致でも通り（writer.rs・undo.rs などの同名の
+// file すべて）、同じ writer の全部の表に広がるので、そこには足さない。
+const TABLE_EXACT_WRITERS = {
+  // run の状態の遷移と終端の記録。
+  narrative_extraction_runs: [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_skip_evidence.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/terminal_failure.rs",
+  ],
+  // 人の版の payload の確定。
+  narrative_proposals: ["src-tauri/crates/grimodex-db/src/narrative_extraction/human_materialization.rs"],
+  // 本文の宣言の writer と、restore の clear。
+  narrative_scene_scope_bindings: [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/writer.rs",
+  ],
+  // rekey での finding_key の付け替え。
+  narrative_maintenance_attention: ["src-tauri/crates/grimodex-db/src/narrative_extraction/c2zb_application_rekey.rs"],
+  // 整合性の修復と undo／redo の復元。
+  codex_entries: [
+    "src-tauri/crates/grimodex-db/src/integrity.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
+  ],
+};
+
 export function isAllowedForWriter(relativePath, writer, table) {
   const normalized = relativePath.replaceAll("\\", "/");
+  if (TABLE_EXACT_WRITERS[table]?.includes(normalized)) return true;
   // Semantic-index cache publishers receive only these table-specific exact
   // paths. Adding a generic filename to writer-wide basename matching would
   // grant more than the approved binding surface.
@@ -390,6 +425,26 @@ export function isAllowedForWriter(relativePath, writer, table) {
       normalized === modulePath ||
       normalized.endsWith(`/${path.basename(modulePath)}`),
   );
+}
+
+export function extractDmlMutations(source) {
+  // Rust の文字列の行の継続（`\` と改行）を結合してから読む。
+  const joined = source.replace(/\\\r?\n\s*/g, " ");
+  const mutations = [];
+  for (const [regex, tableGroup] of [
+    [DML_RE, 2],
+    [UPDATE_RE, 1],
+  ]) {
+    regex.lastIndex = 0;
+    let match;
+    while ((match = regex.exec(joined)) !== null) {
+      mutations.push({
+        table: match[tableGroup],
+        snippet: match[0].replace(/\s+/g, " ").slice(0, 80),
+      });
+    }
+  }
+  return mutations;
 }
 
 function productionRustSource(source) {
@@ -422,10 +477,7 @@ export function validateNativeWriterOwnership({
     const relative = path.relative(repoRoot, file).replaceAll("\\", "/");
     if (shouldSkip(relative)) continue;
     const source = productionRustSource(readFileSync(file, "utf8"));
-    DML_RE.lastIndex = 0;
-    let match;
-    while ((match = DML_RE.exec(source)) !== null) {
-      const table = match[2];
+    for (const { table, snippet } of extractDmlMutations(source)) {
       const writer = tableToWriter.get(table);
       if (!writer) continue;
       if (isAllowedForWriter(relative, writer, table)) continue;
@@ -433,7 +485,7 @@ export function validateNativeWriterOwnership({
         file: relative,
         table,
         writer,
-        snippet: match[0].replace(/\s+/g, " ").slice(0, 80),
+        snippet,
       });
     }
   }
