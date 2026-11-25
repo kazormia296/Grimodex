@@ -125,7 +125,46 @@ describe("ChronicleInspector — 開示シーン", () => {
     expect(onPatch).toHaveBeenCalledWith({ revealSceneId: "s2" });
   });
 
-  it("シーンイベントには表示せず、指定なしは null で patch する", () => {
+  it("候補に無いシーン（アーカイブ済みなど）を指すとき、「指定なし」に見せず、その値の option を選択して出し、解除できる", () => {
+    const onPatch = vi.fn();
+    const { getByLabelText } = renderInspector({
+      event: ev({ revealSceneId: "gone-scene" }),
+      scenes: [{ id: "s2", title: "第二章" }],
+      onPatch,
+    });
+
+    const select = getByLabelText("開示シーン") as HTMLSelectElement;
+    expect(select.value).toBe("gone-scene");
+    expect(select.selectedOptions[0]?.textContent).toBe(
+      "（見つからないシーン）",
+    );
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      "指定なし",
+      "（見つからないシーン）",
+      "第二章",
+    ]);
+    // 「指定なし」を選ぶと、空文字（解除）で patch する。
+    fireEvent.change(select, { target: { value: "" } });
+    expect(onPatch).toHaveBeenCalledWith({ revealSceneId: "" });
+  });
+
+  it.each([
+    ["指定なし（null）", null],
+    ["候補にあるシーン", "s2"],
+  ])("%s のときは「見つからないシーン」の option を出さない", (_name, id) => {
+    const { getByLabelText } = renderInspector({
+      event: ev({ revealSceneId: id }),
+      scenes: [{ id: "s2", title: "第二章" }],
+    });
+    const select = getByLabelText("開示シーン") as HTMLSelectElement;
+    expect(select.value).toBe(id ?? "");
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      "指定なし",
+      "第二章",
+    ]);
+  });
+
+  it("シーンイベントには表示せず、指定なしは空文字（解除）で patch する", () => {
     const onPatch = vi.fn();
     const { queryByLabelText, rerender, getByLabelText } = render(
       <ChronicleInspector
