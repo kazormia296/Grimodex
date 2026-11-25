@@ -1,20 +1,14 @@
-//! Pure Rust port of the TypeScript chronicle snapshot derivation
-//! (`src/features/chronicle/chronicleSnapshot.ts` + `resolveSceneAnchor.ts` +
-//! `chronicleTime.ts` season/reading-order helpers).
-//!
-//! `get_chronicle_state` must return **byte-identical** structured JSON to the
-//! in-app `get_chronicle_state` agent tool. This module reproduces the derive
-//! exactly so a CI fixture (`chronicle-snapshot/*.json`, shared with the TS
-//! `chronicleSnapshot.fixtures.test.ts`) gates TS↔Rust drift.
-//!
-//! Determinism note: the TS pipeline feeds `listEvents` output (ordered by
-//! `ordinal` asc, then `id` asc) into stable JS sorts. Rust `slice::sort_by` is
-//! likewise stable, so as long as the caller hands us events in the same
-//! (ordinal, id) order, tie-breaking matches. The fixtures pin the input order.
-
-use std::cmp::Ordering;
+//! MCP chronicle snapshot. The shared fixture suite checks the TS wire contract.
 use std::collections::{HashMap, HashSet};
 
+use grimodex_core::chronicle_calendar::ChronicleCalendar;
+use grimodex_core::chronicle_order::{
+    anchor_span, event_span, reading_order_from_list, relation_of_spans, resolve_scene_anchor_by_date, sort_chronicle_events,
+    ChronicleAnchor, ChronicleAnchorContext, ChronicleAnchorEventRow, ChronicleAnchorSource,
+    ChronicleEventSpanRow, ChronicleOrderRow, ChronicleRelation, SceneEventLink,
+};
+use grimodex_core::chronicle_time::{effective_event_precision, require_event_date};
+use grimodex_db::chronicle_read::ChronicleScene;
 use serde::{Deserialize, Serialize};
 
 // ───────── output caps (mirror chronicleSnapshot.ts) ─────────
@@ -46,6 +40,12 @@ pub struct EventInput {
     #[serde(default)]
     pub start_time: Option<i64>,
     #[serde(default)]
+    pub end_time: Option<i64>,
+    #[serde(default)]
+    pub end_minute: Option<i64>,
+    #[serde(default = "default_granularity")]
+    pub end_granularity: String,
+    #[serde(default)]
     pub start_minute: Option<i64>,
     #[serde(default = "default_granularity")]
     pub start_granularity: String,
@@ -53,6 +53,34 @@ pub struct EventInput {
     pub kind: String,
     #[serde(default = "default_precision")]
     pub precision: String,
+}
+
+impl EventInput {
+    fn anchor_row(&self) -> ChronicleAnchorEventRow {
+        ChronicleAnchorEventRow {
+            order: ChronicleOrderRow {
+                id: self.id.clone(),
+                ordinal: self.ordinal.clone(),
+                span: ChronicleEventSpanRow {
+                    start_time: self.start_time.map(|v| v as f64),
+                    end_time: self.end_time.map(|v| v as f64),
+                    start_minute: self.start_minute.map(|v| v as f64),
+                    end_minute: self.end_minute.map(|v| v as f64),
+                    start_granularity: self.start_granularity.clone(),
+                    end_granularity: self.end_granularity.clone(),
+                },
+            },
+            precision: self.precision.clone().into(),
+        }
+    }
+
+    fn has_date(&self) -> bool {
+        require_event_date(self.start_time, &self.start_granularity).is_ok()
+    }
+
+    fn effective_precision(&self) -> &str {
+        effective_event_precision(self.start_time, &self.start_granularity, &self.precision)
+    }
 }
 
 fn default_kind() -> String {
@@ -72,13 +100,6 @@ fn default_granularity() -> String {
 pub struct ParticipantInput {
     pub event_id: String,
     pub codex_entry_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SceneEventInput {
-    pub scene_id: String,
-    pub event_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -148,54 +169,10 @@ pub struct CalendarInput {
     pub age_reckoning: String,
 }
 
-/// A tree node, reduced to the fields the derive reads: `computeGlobalSceneOrder`
-/// (reading order) plus the scene-own chronicle date (scene-anchor source).
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SceneNode {
-    pub id: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub parent_id: Option<String>,
-    pub node_type: String,
-    #[serde(default)]
-    pub sort_order: String,
-    /// シーン自身の暦日付（events と同じ日付モデルをシーンへ共有）。end_* は
-    /// アンカー不使用なので持たない。`startGranularity != "none" && startTime
-    /// != null` のとき scene-own アンカーが発火する。
-    #[serde(default)]
-    pub chronicle_start_time: Option<i64>,
-    #[serde(default)]
-    pub chronicle_start_minute: Option<i64>,
-    #[serde(default = "default_granularity")]
-    pub chronicle_start_granularity: String,
-    #[serde(default = "default_precision")]
-    pub chronicle_precision: String,
-}
-
-// ───────── anchor + snapshot output types ─────────
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChronicleAnchor {
-    pub ordinal: String,
-    pub start_time: Option<i64>,
-    #[serde(default)]
-    pub start_minute: Option<i64>,
-    #[serde(default = "default_granularity")]
-    pub start_granularity: String,
-    #[serde(default)]
-    pub precision: Option<String>,
-    pub source: String, // "stamped" | "proxy" | "none"
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub proxy_scene_id: Option<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotTime {
-    pub source: String,
+    pub source: ChronicleAnchorSource,
     pub start_time: Option<i64>,
     pub season: Option<String>,
     pub precision: Option<String>,
@@ -222,6 +199,7 @@ pub struct SnapshotEvent {
     /// アンカーから見た相対時間ラベル（`formatRelativeDays` の結果）。暦なし/日付
     /// 欠落/未来は None。fixture の書き漏れをテストで落とすため #[serde(default)] は付けない。
     pub rel_time: Option<String>,
+    pub precision: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reveal_scene: Option<RevealSceneMark>,
 }
@@ -257,6 +235,8 @@ pub fn make_reveal_scene_mark(
 pub struct CausalPair {
     pub cause_title: String,
     pub effect_title: String,
+    pub cause_precision: String,
+    pub effect_precision: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -270,20 +250,6 @@ pub struct ChronicleSnapshot {
 }
 
 // ───────── helpers ─────────
-
-/// fractional-index lexicographic comparison. base62 ASCII keys compare
-/// identically by byte order in JS (`a < b` on UTF-16 units) and Rust.
-fn cmp_keys(a: &str, b: &str) -> Ordering {
-    a.cmp(b)
-}
-
-/// `ordinal <= anchorOrdinal`. anchor.source=none carries ordinal "" → false.
-fn at_or_before(ordinal: &str, anchor_ordinal: &str) -> bool {
-    if anchor_ordinal.is_empty() {
-        return false;
-    }
-    cmp_keys(ordinal, anchor_ordinal) != Ordering::Greater
-}
 
 /// Truncate to `cap` Unicode scalar values, appending "…" when over.
 ///
@@ -631,215 +597,19 @@ pub fn format_relative_days(
     })
 }
 
-/// `computeGlobalSceneOrder` の移植: ツリーを DFS し scene にグローバル順序
-/// index を割り当てる。folder は index を消費せず再帰、note はスキップ。
-pub fn compute_global_scene_order(nodes: &[SceneNode]) -> HashMap<String, i64> {
-    let mut result: HashMap<String, i64> = HashMap::new();
-    if nodes.is_empty() {
-        return result;
-    }
-    let mut children_map: HashMap<Option<String>, Vec<SceneNode>> = HashMap::new();
-    for node in nodes {
-        children_map
-            .entry(node.parent_id.clone())
-            .or_default()
-            .push(node.clone());
-    }
-    for children in children_map.values_mut() {
-        children.sort_by(|a, b| cmp_keys(&a.sort_order, &b.sort_order));
-    }
-
-    // Recursive DFS over the sorted children groups; visit order is identical
-    // to the recursive JS version (folder descends without consuming an index).
-    fn dfs(
-        parent: &Option<String>,
-        children_map: &HashMap<Option<String>, Vec<SceneNode>>,
-        index: &mut i64,
-        result: &mut HashMap<String, i64>,
-    ) {
-        let Some(children) = children_map.get(parent) else {
-            return;
-        };
-        for node in children {
-            if node.node_type == "scene" {
-                result.insert(node.id.clone(), *index);
-                *index += 1;
-            } else if node.node_type == "folder" {
-                dfs(&Some(node.id.clone()), children_map, index, result);
-            }
-            // note: スキップ
-        }
-    }
-    let mut index: i64 = 0;
-    dfs(&None, &children_map, &mut index, &mut result);
-    result
-}
-
-/// シーンが暦日付を持つか（scene-own アンカー発火条件）。
-fn node_has_date(n: &SceneNode) -> bool {
-    n.chronicle_start_granularity != "none" && n.chronicle_start_time.is_some()
-}
-
-/// `syntheticOrdinal(t)` の移植: `start_time != null && start_time <= t` の event の
-/// うち start_time 最大（同点は ordinal 最大）の ordinal。該当なしは ""。
-fn synthetic_ordinal(events: &[EventInput], t: i64) -> String {
-    let mut best: Option<&EventInput> = None;
-    for e in events {
-        let Some(st) = e.start_time else { continue };
-        if st > t {
-            continue;
-        }
-        match best {
-            None => best = Some(e),
-            Some(b) => {
-                let bst = b.start_time.unwrap_or(i64::MIN);
-                if st > bst || (st == bst && cmp_keys(&e.ordinal, &b.ordinal) == Ordering::Greater)
-                {
-                    best = Some(e);
-                }
-            }
-        }
-    }
-    best.map(|e| e.ordinal.clone()).unwrap_or_default()
-}
-
-/// stamped event 群の ordinal 最大を ChronicleAnchor へ（source は呼出側で設定）。
-fn max_ordinal_anchor(evs: &[&EventInput]) -> Option<ChronicleAnchor> {
-    let best = evs.iter().copied().reduce(|best, e| {
-        if cmp_keys(&e.ordinal, &best.ordinal) == Ordering::Greater {
-            e
-        } else {
-            best
-        }
-    })?;
-    Some(ChronicleAnchor {
-        ordinal: best.ordinal.clone(),
-        start_time: best.start_time,
-        start_minute: best.start_minute,
-        start_granularity: best.start_granularity.clone(),
-        precision: Some(best.precision.clone()),
-        source: String::new(),
-        proxy_scene_id: None,
-    })
-}
-
-/// `resolveSceneAnchor` の移植（v2: scene-own → stamped → proxy → none）。
-pub fn resolve_scene_anchor(
-    scene_id: &str,
-    nodes: &[SceneNode],
-    scene_events: &[SceneEventInput],
-    events: &[EventInput],
-    reading_order: &HashMap<String, i64>,
-) -> ChronicleAnchor {
-    let event_by_id: HashMap<&str, &EventInput> =
-        events.iter().map(|e| (e.id.as_str(), e)).collect();
-
-    // sceneId → そのシーン自身の暦日付（scene-own アンカー源）。
-    let scene_chron: HashMap<&str, &SceneNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-
-    // sceneId → 紐づく(実在 event)群。挿入順を保つため Vec<(scene, Vec<event>)>。
-    let mut stamped_by_scene: Vec<(String, Vec<&EventInput>)> = Vec::new();
-    let mut scene_index: HashMap<String, usize> = HashMap::new();
-    for se in scene_events {
-        let Some(ev) = event_by_id.get(se.event_id.as_str()) else {
-            continue;
-        };
-        if let Some(&i) = scene_index.get(&se.scene_id) {
-            stamped_by_scene[i].1.push(ev);
-        } else {
-            scene_index.insert(se.scene_id.clone(), stamped_by_scene.len());
-            stamped_by_scene.push((se.scene_id.clone(), vec![ev]));
-        }
-    }
-
-    // シーンの directAnchor（scene-own → stamped）。無ければ None。
-    let direct_anchor = |sid: &str| -> Option<ChronicleAnchor> {
-        // 1. scene-own
-        if let Some(n) = scene_chron.get(sid) {
-            if let Some(st) = n.chronicle_start_time {
-                if n.chronicle_start_granularity != "none" {
-                    return Some(ChronicleAnchor {
-                        ordinal: synthetic_ordinal(events, st),
-                        start_time: Some(st),
-                        start_minute: n.chronicle_start_minute,
-                        start_granularity: n.chronicle_start_granularity.clone(),
-                        precision: Some(n.chronicle_precision.clone()),
-                        source: "scene".to_string(),
-                        proxy_scene_id: None,
-                    });
-                }
-            }
-        }
-        // 2. stamped
-        if let Some(&i) = scene_index.get(sid) {
-            let mut a = max_ordinal_anchor(&stamped_by_scene[i].1)?;
-            a.source = "stamped".to_string();
-            return Some(a);
-        }
-        None
-    };
-
-    // 1. 現在シーンの directAnchor（"scene" か "stamped"）。
-    if let Some(a) = direct_anchor(scene_id) {
-        return a;
-    }
-
-    // 2. proxy — 前方(index 小)で最も近い「directAnchor を持つシーン」。
-    if let Some(&current_index) = reading_order.get(scene_id) {
-        let mut best_scene: Option<&str> = None;
-        let mut best_index: i64 = -1;
-        // 候補 = stamp 済シーン ∪ 暦日付を持つシーン。
-        for (cand_scene, _) in &stamped_by_scene {
-            if let Some(&idx) = reading_order.get(cand_scene) {
-                if idx < current_index && idx > best_index {
-                    best_index = idx;
-                    best_scene = Some(cand_scene.as_str());
-                }
-            }
-        }
-        for n in nodes {
-            if node_has_date(n) {
-                if let Some(&idx) = reading_order.get(&n.id) {
-                    if idx < current_index && idx > best_index {
-                        best_index = idx;
-                        best_scene = Some(n.id.as_str());
-                    }
-                }
-            }
-        }
-        if let Some(bs) = best_scene {
-            if let Some(mut a) = direct_anchor(bs) {
-                a.source = "proxy".to_string();
-                a.proxy_scene_id = Some(bs.to_string());
-                return a;
-            }
-        }
-    }
-
-    // 3. none
-    ChronicleAnchor {
-        ordinal: String::new(),
-        start_time: None,
-        start_minute: None,
-        start_granularity: "none".to_string(),
-        precision: None,
-        source: "none".to_string(),
-        proxy_scene_id: None,
-    }
-}
-
-/// `deriveCharacterStateAt` の移植。
-pub fn derive_character_state_at(
+fn derive_character_state_at(
     character_id: &str,
     anchor: &ChronicleAnchor,
     events: &[EventInput],
     calendar: Option<&CalendarInput>,
 ) -> (String, Option<i64>) {
-    let t = anchor.start_time;
+    let t = anchor.start_time.map(|day| day as i64);
     let mut birth_time: Option<i64> = None;
     let mut death_time: Option<i64> = None;
     for e in events {
-        if e.primary_codex_id.as_deref() != Some(character_id) {
+        if e.primary_codex_id.as_deref() != Some(character_id)
+            || e.effective_precision() == "unknown"
+        {
             continue;
         }
         let Some(st) = e.start_time else { continue };
@@ -865,36 +635,21 @@ pub fn derive_character_state_at(
     (if dead { "dead" } else { "alive" }.to_string(), age)
 }
 
-/// `deriveLastKnownLocation` の移植。
-pub fn derive_last_known_location(
-    character_id: &str,
-    anchor: &ChronicleAnchor,
-    events: &[EventInput],
-    participant_event_ids: &HashSet<String>,
-    codex_names: &HashMap<String, String>,
-) -> Option<String> {
-    let mut best: Option<&EventInput> = None;
-    for e in events {
-        if e.location_codex_id.is_none() {
-            continue;
-        }
-        if !at_or_before(&e.ordinal, &anchor.ordinal) {
-            continue;
-        }
-        let involved = e.primary_codex_id.as_deref() == Some(character_id)
-            || participant_event_ids.contains(&e.id);
-        if !involved {
-            continue;
-        }
-        match best {
-            None => best = Some(e),
-            Some(b) if cmp_keys(&e.ordinal, &b.ordinal) == Ordering::Greater => best = Some(e),
-            _ => {}
-        }
+/// K1 descending order, with K2/K2a and the current-scene mark kept distinct.
+struct PositionedEvent<'a> {
+    event: &'a EventInput,
+    relation: ChronicleRelation,
+    current: bool,
+}
+
+impl PositionedEvent<'_> {
+    fn recent(&self) -> bool {
+        matches!(self.relation, ChronicleRelation::Before | ChronicleRelation::Concurrent)
     }
-    let best = best?;
-    let loc = best.location_codex_id.as_ref()?;
-    codex_names.get(loc).cloned()
+
+    fn known(&self) -> bool {
+        self.recent() || self.current
+    }
 }
 
 /// 粗い粒度（日より粗い）。相対時間の「約」化判定に使う。正メンバーシップ判定で
@@ -913,117 +668,50 @@ fn rel_time_for(
     let approx = e.precision != "exact"
         || is_coarse_granularity(&e.start_granularity)
         || is_coarse_granularity(&anchor.start_granularity);
-    format_relative_days(e.start_time, anchor.start_time, approx, calendar, lang)
+    format_relative_days(e.start_time, anchor.start_time.map(|day| day as i64), approx, calendar, lang)
 }
 
-fn derive_recent_events(
+fn snapshot_event(
+    e: &EventInput,
     anchor: &ChronicleAnchor,
-    events: &[EventInput],
     calendar: Option<&CalendarInput>,
     lang: &str,
-) -> Vec<SnapshotEvent> {
-    let mut filtered: Vec<&EventInput> = events
-        .iter()
-        .filter(|e| e.kind == "generic" && at_or_before(&e.ordinal, &anchor.ordinal))
-        .collect();
-    filtered.sort_by(|a, b| cmp_keys(&b.ordinal, &a.ordinal));
-    filtered
-        .into_iter()
-        .take(MAX_RECENT)
-        .map(|e| SnapshotEvent {
-            event_id: e.id.clone(),
-            title: truncate(&e.title, TITLE_CAP),
-            note: e
-                .note
-                .as_ref()
-                .filter(|n| !n.is_empty())
-                .map(|n| truncate(n, NOTE_CAP)),
-            rel_time: rel_time_for(e, anchor, calendar, lang),
-            reveal_scene: None,
-        })
-        .collect()
+) -> SnapshotEvent {
+    SnapshotEvent {
+        event_id: e.id.clone(),
+        title: truncate(&e.title, TITLE_CAP),
+        note: e.note.as_ref().filter(|n| !n.is_empty()).map(|n| truncate(n, NOTE_CAP)),
+        rel_time: rel_time_for(e, anchor, calendar, lang),
+        precision: e.effective_precision().to_owned(),
+        reveal_scene: None,
+    }
 }
 
-fn derive_unresolved_causal(
-    anchor: &ChronicleAnchor,
-    events: &[EventInput],
-    relations: &[RelationInput],
-) -> Vec<CausalPair> {
-    let by_id: HashMap<&str, &EventInput> = events.iter().map(|e| (e.id.as_str(), e)).collect();
+fn derive_unresolved_causal(events: &[PositionedEvent<'_>], relations: &[RelationInput]) -> Vec<CausalPair> {
+    let by_id: HashMap<_, _> = events.iter().map(|e| (&e.event.id, e)).collect();
     let mut out = Vec::new();
     for r in relations {
-        let (Some(cause), Some(effect)) = (
-            by_id.get(r.cause_id.as_str()),
-            by_id.get(r.effect_id.as_str()),
-        ) else {
+        let (Some(cause), Some(effect)) = (by_id.get(&r.cause_id), by_id.get(&r.effect_id)) else {
             continue;
         };
-        if at_or_before(&cause.ordinal, &anchor.ordinal)
-            && !at_or_before(&effect.ordinal, &anchor.ordinal)
-        {
+        if cause.known() && !effect.current && effect.relation == ChronicleRelation::After {
             out.push(CausalPair {
-                cause_title: truncate(&cause.title, TITLE_CAP),
-                effect_title: truncate(&effect.title, TITLE_CAP),
+                cause_title: truncate(&cause.event.title, TITLE_CAP),
+                effect_title: truncate(&effect.event.title, TITLE_CAP),
+                cause_precision: cause.event.effective_precision().to_owned(),
+                effect_precision: effect.event.effective_precision().to_owned(),
             });
         }
     }
     out
 }
 
-fn derive_offpage_events(
-    anchor: &ChronicleAnchor,
-    events: &[EventInput],
-    scene_events: &[SceneEventInput],
-    calendar: Option<&CalendarInput>,
-    lang: &str,
-) -> Vec<SnapshotEvent> {
-    let stamped: HashSet<&str> = scene_events.iter().map(|se| se.event_id.as_str()).collect();
-    let kind_rank = |k: &str| -> i64 {
-        if k == "generic" {
-            1
-        } else {
-            0
-        }
-    };
-    let mut filtered: Vec<&EventInput> = events
-        .iter()
-        .filter(|e| !stamped.contains(e.id.as_str()))
-        .filter(|e| anchor.source == "none" || at_or_before(&e.ordinal, &anchor.ordinal))
-        .collect();
-    filtered.sort_by(|a, b| {
-        let rk = kind_rank(&a.kind).cmp(&kind_rank(&b.kind));
-        if rk != Ordering::Equal {
-            return rk;
-        }
-        cmp_keys(&b.ordinal, &a.ordinal)
-    });
-    filtered
-        .into_iter()
-        .take(MAX_OFFPAGE)
-        .map(|e| SnapshotEvent {
-            event_id: e.id.clone(),
-            title: truncate(&e.title, TITLE_CAP),
-            note: e
-                .note
-                .as_ref()
-                .filter(|n| !n.is_empty())
-                .map(|n| truncate(n, NOTE_CAP)),
-            rel_time: rel_time_for(e, anchor, calendar, lang),
-            reveal_scene: None,
-        })
-        .collect()
-}
-
 /// `pickSnapshotCharacters` の移植（Phase 1 固定ルール）。挿入順を保持。
-pub fn pick_snapshot_characters(
-    anchor: &ChronicleAnchor,
-    events: &[EventInput],
+fn pick_snapshot_characters(
+    events: &[PositionedEvent<'_>],
     participants: &[ParticipantInput],
     max: usize,
 ) -> Vec<String> {
-    if anchor.source == "none" {
-        return Vec::new();
-    }
     let mut ids: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let push = |ids: &mut Vec<String>, seen: &mut HashSet<String>, id: &str| {
@@ -1032,12 +720,11 @@ pub fn pick_snapshot_characters(
         }
     };
 
-    let mut recent: Vec<&EventInput> = events
-        .iter()
-        .filter(|e| at_or_before(&e.ordinal, &anchor.ordinal))
+    let recent: Vec<_> = events.iter()
+        .filter(|e| e.known())
+        .take(MAX_RECENT)
+        .map(|e| e.event)
         .collect();
-    recent.sort_by(|a, b| cmp_keys(&b.ordinal, &a.ordinal));
-    recent.truncate(MAX_RECENT);
     let recent_ids: HashSet<&str> = recent.iter().map(|e| e.id.as_str()).collect();
 
     for e in &recent {
@@ -1054,36 +741,26 @@ pub fn pick_snapshot_characters(
     ids
 }
 
-/// Direct inputs for `deriveChronicleSnapshot` (anchor + characterIds already
-/// resolved). Mirrors `ChronicleSnapshotInput`.
-pub struct DeriveInput<'a> {
-    pub anchor: &'a ChronicleAnchor,
-    pub events: &'a [EventInput],
-    pub participants: &'a [ParticipantInput],
-    pub relations: &'a [RelationInput],
-    pub scene_events: &'a [SceneEventInput],
-    pub calendar: Option<&'a CalendarInput>,
-    pub character_ids: &'a [String],
-    pub codex_names: &'a HashMap<String, String>,
-    /// formattedDate（暦駆動整形）のロケール。"en" 以外は ja 扱い。
-    pub lang: &'a str,
-}
-
-/// `deriveChronicleSnapshot` の移植。
-pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
-    let season = match (input.anchor.start_time, input.calendar) {
+fn derive_chronicle_snapshot(
+    input: &AssembleInput,
+    anchor: &ChronicleAnchor,
+    ordered: &[PositionedEvent<'_>],
+) -> ChronicleSnapshot {
+    let calendar = input.calendar.as_ref();
+    let anchor_day = anchor.start_time.map(|day| day as i64);
+    let season = match (anchor_day, calendar) {
         (Some(t), Some(cal)) => season_of(t, cal),
         _ => None,
     };
 
     // 暦＋粒度(≠none)＋start_time が揃うときのみ整形済み日付を確定。空文字は None。
-    let lang = if input.lang == "en" { "en" } else { "ja" };
-    let formatted_date = match (input.calendar, input.anchor.start_time) {
-        (Some(cal), Some(st)) if input.anchor.start_granularity != "none" => {
+    let lang = if input.lang.as_deref() == Some("en") { "en" } else { "ja" };
+    let formatted_date = match (calendar, anchor_day) {
+        (Some(cal), Some(st)) if anchor.start_granularity != "none" => {
             let s = format_chronicle_date(
                 Some(st),
-                input.anchor.start_minute,
-                &input.anchor.start_granularity,
+                anchor.start_minute.map(|v| v as i64),
+                &anchor.start_granularity,
                 cal,
                 lang,
             );
@@ -1098,7 +775,7 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
 
     // characterId → 参加 eventId 集合
     let mut participants_by_codex: HashMap<&str, HashSet<String>> = HashMap::new();
-    for p in input.participants {
+    for p in &input.participants {
         participants_by_codex
             .entry(p.codex_entry_id.as_str())
             .or_default()
@@ -1106,21 +783,18 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
     }
     let empty: HashSet<String> = HashSet::new();
 
-    let characters: Vec<CharacterState> = input
-        .character_ids
+    let characters: Vec<CharacterState> = pick_snapshot_characters(ordered, &input.participants, MAX_PICK_CHARACTERS)
         .iter()
         .take(MAX_CHARACTERS)
         .map(|cid| {
             let (status, age) =
-                derive_character_state_at(cid, input.anchor, input.events, input.calendar);
+                derive_character_state_at(cid, anchor, &input.events, calendar);
             let pset = participants_by_codex.get(cid.as_str()).unwrap_or(&empty);
-            let location = derive_last_known_location(
-                cid,
-                input.anchor,
-                input.events,
-                pset,
-                input.codex_names,
-            );
+            let location = ordered.iter().find(|e| {
+                e.known() && e.event.location_codex_id.is_some()
+                    && (e.event.primary_codex_id.as_ref() == Some(cid) || pset.contains(&e.event.id))
+            }).and_then(|e| e.event.location_codex_id.as_ref())
+              .and_then(|id| input.codex_names.get(id)).cloned();
             CharacterState {
                 codex_id: cid.clone(),
                 name: input
@@ -1135,24 +809,27 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
         })
         .collect();
 
+    let stamped: HashSet<_> = input.scene_events.iter().map(|link| &link.event_id).collect();
+    let mut offpage: Vec<_> = ordered.iter()
+        .filter(|e| !stamped.contains(&e.event.id))
+        .filter(|e| anchor.source == ChronicleAnchorSource::None || e.recent())
+        .collect();
+    offpage.sort_by_key(|e| (e.event.kind == "generic", !e.event.has_date()));
+    let render = |e: &PositionedEvent<'_>| snapshot_event(e.event, anchor, calendar, lang);
+
     ChronicleSnapshot {
         time: SnapshotTime {
-            source: input.anchor.source.clone(),
-            start_time: input.anchor.start_time,
+            source: anchor.source,
+            start_time: anchor_day,
             season,
-            precision: input.anchor.precision.clone(),
+            precision: anchor.precision.as_ref().map(|p| p.as_str().to_owned()),
             formatted_date,
         },
         characters,
-        recent_events: derive_recent_events(input.anchor, input.events, input.calendar, lang),
-        unresolved_causal: derive_unresolved_causal(input.anchor, input.events, input.relations),
-        offpage: derive_offpage_events(
-            input.anchor,
-            input.events,
-            input.scene_events,
-            input.calendar,
-            lang,
-        ),
+        recent_events: ordered.iter().filter(|e| e.event.kind == "generic" && e.recent())
+            .take(MAX_RECENT).map(render).collect(),
+        unresolved_causal: derive_unresolved_causal(ordered, &input.relations),
+        offpage: offpage.into_iter().take(MAX_OFFPAGE).map(render).collect(),
     }
 }
 
@@ -1163,17 +840,13 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
 pub struct AssembleInput {
     pub scene_id: String,
     #[serde(default)]
-    pub nodes: Vec<SceneNode>,
-    #[serde(default)]
-    pub reveal_nodes: Option<Vec<SceneNode>>,
-    #[serde(default)]
     pub events: Vec<EventInput>,
     #[serde(default)]
     pub participants: Vec<ParticipantInput>,
     #[serde(default)]
     pub relations: Vec<RelationInput>,
     #[serde(default)]
-    pub scene_events: Vec<SceneEventInput>,
+    pub scene_events: Vec<SceneEventLink>,
     #[serde(default)]
     pub calendar: Option<CalendarInput>,
     #[serde(default)]
@@ -1187,9 +860,9 @@ fn add_reveal_marks(
     snapshot: &mut ChronicleSnapshot,
     scene_id: &str,
     events: &[EventInput],
-    nodes: &[SceneNode],
+    nodes: &[ChronicleScene],
 ) {
-    let reading_order = compute_global_scene_order(nodes);
+    let reading_order = reading_order_from_list(nodes);
     let title_by_id: HashMap<&str, &str> = nodes
         .iter()
         .filter_map(|node| {
@@ -1220,37 +893,42 @@ fn add_reveal_marks(
     }
 }
 
-/// resolveSceneAnchor → pickSnapshotCharacters → deriveChronicleSnapshot を一括
-/// （getChronicleStateTool / fixture テストと同じパイプライン）。
-pub fn assemble_snapshot(input: &AssembleInput) -> ChronicleSnapshot {
-    let reading_order = compute_global_scene_order(&input.nodes);
-    let anchor = resolve_scene_anchor(
-        &input.scene_id,
-        &input.nodes,
-        &input.scene_events,
-        &input.events,
-        &reading_order,
-    );
-    let character_ids = pick_snapshot_characters(
-        &anchor,
-        &input.events,
-        &input.participants,
-        MAX_PICK_CHARACTERS,
-    );
-    let mut snapshot = derive_chronicle_snapshot(DeriveInput {
-        anchor: &anchor,
-        events: &input.events,
-        participants: &input.participants,
-        relations: &input.relations,
-        scene_events: &input.scene_events,
-        calendar: input.calendar.as_ref(),
-        character_ids: &character_ids,
-        codex_names: &input.codex_names,
-        lang: input.lang.as_deref().unwrap_or("ja"),
-    });
-    if let Some(nodes) = &input.reveal_nodes {
-        add_reveal_marks(&mut snapshot, &input.scene_id, &input.events, nodes);
-    }
+pub fn assemble_snapshot(
+    input: &AssembleInput,
+    scenes: &[ChronicleScene],
+    reveal_scenes: &[ChronicleScene],
+    calendar: Option<&ChronicleCalendar>,
+) -> ChronicleSnapshot {
+    let rows: Vec<_> = input.events.iter().map(EventInput::anchor_row).collect();
+    let reading_order = reading_order_from_list(scenes);
+    let dates = scenes.iter().filter_map(|s| Some((s.id.clone(), s.date()?))).collect();
+    let links: Vec<_> = input.scene_events.iter()
+        .filter(|link| reading_order.contains_key(&link.scene_id)).cloned().collect();
+    let context = ChronicleAnchorContext {
+        scene_events: &links,
+        events: &rows,
+        reading_order: &reading_order,
+        scene_chronicle: Some(&dates),
+        calendar,
+        has_dated_live_scene: None,
+    };
+    let anchor = resolve_scene_anchor_by_date(&input.scene_id, &context);
+    let current: HashSet<_> = links.iter().filter(|link| link.scene_id == input.scene_id)
+        .map(|link| &link.event_id).collect();
+    let span = anchor_span(&anchor.span_input(), calendar);
+    let by_id: HashMap<_, _> = input.events.iter().map(|e| (&e.id, e)).collect();
+    let sorted = sort_chronicle_events(rows.iter().map(|r| &r.order).collect(), calendar);
+    let borrowed = anchor.source == ChronicleAnchorSource::Proxy;
+    let ordered: Vec<_> = sorted.into_iter().rev().map(|row| {
+        let relation = relation_of_spans(event_span(&row.span, calendar), span, borrowed);
+        PositionedEvent {
+            event: by_id[&row.id],
+            relation,
+            current: relation != ChronicleRelation::Unknown && current.contains(&row.id),
+        }
+    }).collect();
+    let mut snapshot = derive_chronicle_snapshot(input, &anchor, &ordered);
+    add_reveal_marks(&mut snapshot, &input.scene_id, &input.events, reveal_scenes);
     snapshot
 }
 
@@ -1258,6 +936,25 @@ pub fn assemble_snapshot(input: &AssembleInput) -> ChronicleSnapshot {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn fixture_scenes(nodes: &serde_json::Value) -> Vec<ChronicleScene> {
+        let db = crate::db::tests::make_simple_db();
+        db.execute("INSERT INTO projects (id, title) VALUES ('fixture', 'Novel')", []).unwrap();
+        db.execute("INSERT INTO tree_nodes (id, project_id, parent_id, node_type, sort_order,
+            archived_at, title, chronicle_start_time, chronicle_start_minute,
+            chronicle_start_granularity, chronicle_end_time, chronicle_end_minute,
+            chronicle_end_granularity, chronicle_precision) SELECT
+            value->>'$.id' AS id, 'fixture' AS project_id, value->>'$.parentId' AS parent_id,
+            value->>'$.nodeType' AS node_type, value->>'$.sortOrder' AS sort_order,
+            value->>'$.archivedAt' AS archived_at, coalesce(value->>'$.title', '') AS title,
+            value->>'$.chronicleStartTime' AS chronicle_start_time,
+            value->>'$.chronicleStartMinute' AS chronicle_start_minute,
+            coalesce(value->>'$.chronicleStartGranularity', 'none') AS chronicle_start_granularity,
+            NULL AS chronicle_end_time, NULL AS chronicle_end_minute, 'none' AS chronicle_end_granularity,
+            coalesce(value->>'$.chroniclePrecision', 'exact') AS chronicle_precision
+            FROM json_each(?1) WHERE type = 'object'", [nodes.to_string()]).unwrap();
+        grimodex_db::chronicle_read::live_scenes(&db, "fixture").unwrap()
+    }
 
     /// Every JSON fixture under `tests/fixtures/chronicle-snapshot` (shared with
     /// the TS `chronicleSnapshot.fixtures.test.ts`) must derive to its
@@ -1280,7 +977,11 @@ mod tests {
                 serde_json::from_value(parsed["input"].clone()).expect("input");
             let expected: ChronicleSnapshot =
                 serde_json::from_value(parsed["expected"].clone()).expect("expected");
-            let got = assemble_snapshot(&input);
+            let data = &parsed["input"];
+            let scenes = fixture_scenes(&data["nodes"]);
+            let reveal = data.get("revealNodes").map(fixture_scenes);
+            let calendar: Option<ChronicleCalendar> = serde_json::from_value(data["calendar"].clone()).unwrap();
+            let got = assemble_snapshot(&input, &scenes, reveal.as_deref().unwrap_or(&scenes), calendar.as_ref());
             assert_eq!(
                 got,
                 expected,
@@ -1425,103 +1126,47 @@ mod tests {
         assert_eq!(season_of(720, &cal).as_deref(), Some("春"));
     }
 
-    fn ev(id: &str, ordinal: &str, start_time: Option<i64>) -> EventInput {
-        EventInput {
-            id: id.to_string(),
-            reveal_scene_id: None,
-            title: String::new(),
-            note: None,
-            ordinal: ordinal.to_string(),
-            primary_codex_id: None,
-            location_codex_id: None,
-            start_time,
-            start_minute: None,
-            start_granularity: "none".to_string(),
-            kind: "generic".to_string(),
-            precision: "exact".to_string(),
-        }
-    }
-
-    fn scene_node(id: &str, sort: &str, start_time: Option<i64>, gran: &str) -> SceneNode {
-        SceneNode {
-            id: id.to_string(),
-            title: None,
-            parent_id: None,
-            node_type: "scene".to_string(),
-            sort_order: sort.to_string(),
-            chronicle_start_time: start_time,
-            chronicle_start_minute: None,
-            chronicle_start_granularity: gran.to_string(),
-            chronicle_precision: "exact".to_string(),
-        }
+    #[test]
+    fn snapshot_never_compares_ordinals_directly() {
+        let source = include_str!("chronicle_snapshot.rs").split("#[cfg(test)]").next().unwrap();
+        let accesses: Vec<_> = source.lines().map(str::trim).filter(|line| line.contains(".ordinal")).collect();
+        assert_eq!(accesses, ["ordinal: self.ordinal.clone(),"]);
     }
 
     #[test]
-    fn resolve_scene_anchor_scene_own_uses_synthetic_ordinal() {
-        let nodes = vec![scene_node("s1", "a0", Some(100), "day")];
-        let events = vec![
-            ev("e1", "a1", Some(10)),
-            ev("e2", "a2", Some(50)),
-            ev("e3", "a3", Some(200)),
-        ];
-        let order = compute_global_scene_order(&nodes);
-        let a = resolve_scene_anchor("s1", &nodes, &[], &events, &order);
-        assert_eq!(a.source, "scene");
-        assert_eq!(a.start_time, Some(100));
-        // startTime<=100 のうち最大=50(e2 a2) → synthetic ordinal=a2
-        assert_eq!(a.ordinal, "a2");
-    }
-
-    #[test]
-    fn resolve_scene_anchor_scene_own_beats_stamped() {
-        let nodes = vec![scene_node("s1", "a0", Some(100), "day")];
-        let events = vec![ev("e1", "a9", Some(5))];
-        let scene_events = vec![SceneEventInput {
-            scene_id: "s1".to_string(),
-            event_id: "e1".to_string(),
-        }];
-        let order = compute_global_scene_order(&nodes);
-        let a = resolve_scene_anchor("s1", &nodes, &scene_events, &events, &order);
-        assert_eq!(a.source, "scene");
-        assert_eq!(a.start_time, Some(100));
-    }
-
-    #[test]
-    fn resolve_scene_anchor_none_granularity_does_not_fire_scene_own() {
-        let nodes = vec![scene_node("s1", "a0", Some(100), "none")];
-        let events = vec![ev("e1", "a3", Some(30))];
-        let scene_events = vec![SceneEventInput {
-            scene_id: "s1".to_string(),
-            event_id: "e1".to_string(),
-        }];
-        let order = compute_global_scene_order(&nodes);
-        let a = resolve_scene_anchor("s1", &nodes, &scene_events, &events, &order);
-        assert_eq!(a.source, "stamped");
-        assert_eq!(a.start_time, Some(30));
-    }
-
-    #[test]
-    fn resolve_scene_anchor_proxy_considers_scene_own_scene() {
-        let nodes = vec![
-            scene_node("s1", "a0", Some(100), "day"),
-            scene_node("s2", "a1", None, "none"),
-        ];
-        let events = vec![ev("e1", "a1", Some(10)), ev("e2", "a2", Some(80))];
-        let order = compute_global_scene_order(&nodes);
-        let a = resolve_scene_anchor("s2", &nodes, &[], &events, &order);
-        assert_eq!(a.source, "proxy");
-        assert_eq!(a.proxy_scene_id.as_deref(), Some("s1"));
-        assert_eq!(a.start_time, Some(100));
-        // s1 の scene-own anchor の synthetic ordinal=a2(e2 startTime80<=100)
-        assert_eq!(a.ordinal, "a2");
-    }
-
-    #[test]
-    fn at_or_before_none_anchor_is_false() {
-        assert!(!at_or_before("a0", ""));
-        assert!(at_or_before("a0", "a0"));
-        assert!(at_or_before("a0", "a1"));
-        assert!(!at_or_before("a2", "a1"));
+    fn current_mark_and_overlapping_period_have_distinct_snapshot_roles() {
+        let input: AssembleInput = serde_json::from_value(serde_json::json!({
+            "sceneId": "s",
+            "events": [
+                {"id":"now", "title":"Later", "ordinal":"a0", "startTime":30, "startGranularity":"day",
+                 "primaryCodexId":"hero", "locationCodexId":"port"},
+                {"id":"period", "ordinal":"a9", "startTime":5, "startGranularity":"day",
+                 "endTime":10, "endGranularity":"day"},
+                {"id":"future", "title":"Future", "startTime":40, "startGranularity":"day"},
+                {"id":"born", "kind":"birth", "primaryCodexId":"hero", "startTime":0, "startGranularity":"day"},
+                {"id":"died", "kind":"death", "primaryCodexId":"hero", "startTime":1,
+                 "startGranularity":"day", "precision":"unknown"},
+                {"id":"legacy", "precision":"exact"}
+            ],
+            "sceneEvents":[{"sceneId":"s","eventId":"now"}, {"sceneId":"s","eventId":"legacy"}],
+            "relations":[{"causeId":"now","effectId":"future"}, {"causeId":"period","effectId":"now"},
+                         {"causeId":"now","effectId":"legacy"}],
+            "codexNames":{"port":"Port"}
+        })).unwrap();
+        let scenes = fixture_scenes(&serde_json::json!([{
+            "id":"s", "nodeType":"scene", "sortOrder":"a0",
+            "chronicleStartTime":10, "chronicleStartGranularity":"day"
+        }]));
+        let state = assemble_snapshot(&input, &scenes, &scenes, None);
+        assert_eq!(state.time.source, ChronicleAnchorSource::Scene);
+        assert_eq!(state.recent_events.len(), 1);
+        assert_eq!(state.recent_events[0].event_id, "period");
+        assert_eq!(state.characters.len(), 1);
+        assert_eq!(state.characters[0].status, "alive");
+        assert_eq!(state.characters[0].location.as_deref(), Some("Port"));
+        assert_eq!(state.unresolved_causal.len(), 1);
+        assert_eq!(state.unresolved_causal[0].cause_title, "Later");
+        assert_eq!(state.unresolved_causal[0].effect_title, "Future");
     }
 
     fn cal_months() -> CalendarInput {

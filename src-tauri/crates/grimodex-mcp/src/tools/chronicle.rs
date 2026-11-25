@@ -20,6 +20,7 @@ use schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::chronicle_snapshot as snap;
+use grimodex_db::chronicle_read::live_scenes;
 use crate::db;
 use crate::server::{internal_err, GrimodexServer};
 
@@ -130,8 +131,8 @@ fn reveal_scene_context(
     }
 
     let scene_id = scene_id.map(str::trim).filter(|id| !id.is_empty());
-    let nodes = db::chronicle_active_scene_nodes(conn, project_id).map_err(internal_err)?;
-    let reading_order = snap::compute_global_scene_order(&nodes);
+    let nodes = live_scenes(conn, project_id).map_err(internal_err)?;
+    let reading_order = grimodex_core::chronicle_order::reading_order_from_list(&nodes);
     let current_order = scene_id.and_then(|id| reading_order.get(id)).copied();
     let scene_id_outside_reading_order = scene_id.is_some() && current_order.is_none();
     let title_by_id: HashMap<&str, &str> = nodes
@@ -181,6 +182,7 @@ struct EventListItem {
     /// 暦整形済みの絶対日付（暦なし/粒度 none は None）。TS list_events と同 shape。
     start_date: Option<String>,
     primary_character: Option<String>,
+    precision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reveal_scene: Option<RevealScene>,
 }
@@ -212,6 +214,7 @@ pub async fn list_events(
         .filter(|e| !valid_kind(kind) || e.kind == kind)
         .map(|e| {
             let reveal_scene = reveal_context.by_event_id.get(&e.id).cloned();
+            let precision = e.effective_precision().to_owned();
             EventListItem {
                 id: e.id,
                 title: e.title,
@@ -231,6 +234,7 @@ pub async fn list_events(
                     .primary_codex_id
                     .as_ref()
                     .and_then(|id| names.get(id).cloned()),
+                precision,
                 reveal_scene,
             }
         })
@@ -373,7 +377,7 @@ pub async fn get_event_detail(
             ev.end_minute,
             &ev.end_granularity,
         ),
-        precision: ev.precision.clone(),
+        precision: ev.effective_precision().to_owned(),
         primary_character: name_or_null(&names, &ev.primary_codex_id),
         location: name_or_null(&names, &ev.location_codex_id),
         participants: participants
@@ -430,6 +434,7 @@ struct TimelineEvent {
     ordinal: String,
     start_time: Option<i64>,
     age_at_event: Option<i64>,
+    precision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reveal_scene: Option<RevealScene>,
 }
@@ -477,7 +482,7 @@ pub async fn get_character_timeline(
     for e in &events {
         if e.primary_codex_id.as_deref() == Some(codex_id.as_str())
             && e.kind == "birth"
-            && e.start_time.is_some()
+            && e.effective_precision() != "unknown"
         {
             let st = e.start_time.unwrap_or_default();
             birth_time = Some(birth_time.map_or(st, |b| b.min(st)));
@@ -505,6 +510,7 @@ pub async fn get_character_timeline(
                 }
                 _ => None,
             },
+            precision: e.effective_precision().to_owned(),
             reveal_scene: reveal_context.by_event_id.get(&e.id).cloned(),
         })
         .collect();
@@ -611,22 +617,10 @@ pub async fn get_chronicle_state(
     });
     let codex_names =
         db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
-    let nodes = db::chronicle_scene_nodes(&conn, &project_id).map_err(internal_err)?;
-    let reveal_nodes = if events.iter().any(|event| {
-        event
-            .reveal_scene_id
-            .as_deref()
-            .is_some_and(|id| !id.is_empty())
-    }) {
-        Some(db::chronicle_active_scene_nodes(&conn, &project_id).map_err(internal_err)?)
-    } else {
-        None
-    };
-
+    let scenes = live_scenes(&conn, &project_id).map_err(internal_err)?;
+    let order_calendar = calendar.as_ref().map(|raw| raw.order_calendar());
     let input = snap::AssembleInput {
         scene_id,
-        nodes,
-        reveal_nodes,
         events: events
             .into_iter()
             .map(|e| snap::EventInput {
@@ -640,6 +634,9 @@ pub async fn get_chronicle_state(
                     .filter(|id| !hidden_codex_ids.contains(id)),
                 location_codex_id: e.location_codex_id,
                 start_time: e.start_time,
+                end_time: e.end_time,
+                end_minute: e.end_minute,
+                end_granularity: e.end_granularity,
                 start_minute: e.start_minute,
                 start_granularity: e.start_granularity,
                 kind: e.kind,
@@ -662,7 +659,7 @@ pub async fn get_chronicle_state(
             .collect(),
         scene_events: scene_events
             .into_iter()
-            .map(|s| snap::SceneEventInput {
+            .map(|s| grimodex_core::chronicle_order::SceneEventLink {
                 scene_id: s.scene_id,
                 event_id: s.event_id,
             })
@@ -672,7 +669,9 @@ pub async fn get_chronicle_state(
         // MCP has no app i18n; default to ja (matches AssembleInput default).
         lang: None,
     };
-    let mut snapshot = serde_json::to_value(snap::assemble_snapshot(&input)).map_err(internal_err)?;
+    let mut snapshot = serde_json::to_value(snap::assemble_snapshot(
+        &input, &scenes, &scenes, order_calendar.as_ref(),
+    )).map_err(internal_err)?;
     if let (Some(calendar), Some(object)) = (calendar_summary, snapshot.as_object_mut()) {
         object.insert(
             "calendar".to_string(),
@@ -1820,7 +1819,7 @@ mod tests {
         {
             let conn = server.conn.lock().unwrap();
             conn.execute(
-                "UPDATE events SET primary_codex_id = 'a1', start_time = 5 WHERE id = 'sec'",
+                "UPDATE events SET primary_codex_id = 'a1', start_time = 5, start_granularity = 'day' WHERE id = 'sec'",
                 [],
             )
             .unwrap();
@@ -2195,7 +2194,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             result_text(&listed),
-            "{\n  \"events\": [\n    {\n      \"id\": \"plain\",\n      \"title\": \"Plain\",\n      \"kind\": \"generic\",\n      \"ordinal\": \"a0\",\n      \"version\": 0,\n      \"startTime\": null,\n      \"startDate\": null,\n      \"primaryCharacter\": \"hero\"\n    }\n  ]\n}"
+            "{\n  \"events\": [\n    {\n      \"id\": \"plain\",\n      \"title\": \"Plain\",\n      \"kind\": \"generic\",\n      \"ordinal\": \"a0\",\n      \"version\": 0,\n      \"startTime\": null,\n      \"startDate\": null,\n      \"primaryCharacter\": \"hero\",\n      \"precision\": \"unknown\"\n    }\n  ]\n}"
         );
 
         let detail = get_event_detail(
@@ -2209,7 +2208,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             result_text(&detail),
-            "{\n  \"id\": \"plain\",\n  \"title\": \"Plain\",\n  \"note\": null,\n  \"kind\": \"generic\",\n  \"ordinal\": \"a0\",\n  \"version\": 0,\n  \"startTime\": null,\n  \"endTime\": null,\n  \"startMinute\": null,\n  \"endMinute\": null,\n  \"startGranularity\": \"none\",\n  \"endGranularity\": \"none\",\n  \"startDate\": null,\n  \"endDate\": null,\n  \"precision\": \"exact\",\n  \"primaryCharacter\": \"hero\",\n  \"location\": null,\n  \"participants\": [],\n  \"scenes\": [],\n  \"relations\": []\n}"
+            "{\n  \"id\": \"plain\",\n  \"title\": \"Plain\",\n  \"note\": null,\n  \"kind\": \"generic\",\n  \"ordinal\": \"a0\",\n  \"version\": 0,\n  \"startTime\": null,\n  \"endTime\": null,\n  \"startMinute\": null,\n  \"endMinute\": null,\n  \"startGranularity\": \"none\",\n  \"endGranularity\": \"none\",\n  \"startDate\": null,\n  \"endDate\": null,\n  \"precision\": \"unknown\",\n  \"primaryCharacter\": \"hero\",\n  \"location\": null,\n  \"participants\": [],\n  \"scenes\": [],\n  \"relations\": []\n}"
         );
 
         let timeline = get_character_timeline(
@@ -2223,7 +2222,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             result_text(&timeline),
-            "{\n  \"character\": \"hero\",\n  \"events\": [\n    {\n      \"id\": \"plain\",\n      \"title\": \"Plain\",\n      \"kind\": \"generic\",\n      \"ordinal\": \"a0\",\n      \"startTime\": null,\n      \"ageAtEvent\": null\n    }\n  ]\n}"
+            "{\n  \"character\": \"hero\",\n  \"events\": [\n    {\n      \"id\": \"plain\",\n      \"title\": \"Plain\",\n      \"kind\": \"generic\",\n      \"ordinal\": \"a0\",\n      \"startTime\": null,\n      \"ageAtEvent\": null,\n      \"precision\": \"unknown\"\n    }\n  ]\n}"
         );
 
         let invalid_scene_without_marks = list_events(
@@ -3534,8 +3533,8 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO events (id, project_id, title, ordinal, kind, primary_codex_id,
-                                     start_time, created_at, updated_at)
-                 VALUES ('e1','p1','Battle','a0','generic','hero', 5, datetime('now'), datetime('now'))",
+                                     start_time, start_granularity, created_at, updated_at)
+                 VALUES ('e1','p1','Battle','a0','generic','hero', 5, 'day', datetime('now'), datetime('now'))",
                 [],
             )
             .unwrap();
@@ -3572,8 +3571,8 @@ mod tests {
             let conn = server.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO events (id, project_id, title, ordinal, kind,
-                                     start_time, created_at, updated_at)
-                 VALUES ('e1','p1','Battle','a0','generic',5,datetime('now'),datetime('now'))",
+                                     start_time, start_granularity, created_at, updated_at)
+                 VALUES ('e1','p1','Battle','a0','generic',5,'day',datetime('now'),datetime('now'))",
                 [],
             )
             .unwrap();
@@ -3628,9 +3627,9 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO events (id, project_id, title, ordinal, kind, reveal_scene_id,
-                                     created_at, updated_at)
-                 VALUES ('e1','p1','Secret plan','a0','generic','s2',datetime('now'),datetime('now')),
-                        ('e2','p1','Archived disclosure','a0','generic','sArchived',datetime('now'),datetime('now'))",
+                                     start_time, start_granularity, created_at, updated_at)
+                 VALUES ('e1','p1','Secret plan','a0','generic','s2',2,'day',datetime('now'),datetime('now')),
+                        ('e2','p1','Archived disclosure','a0','generic','sArchived',1,'day',datetime('now'),datetime('now'))",
                 [],
             )
             .unwrap();
@@ -3736,19 +3735,19 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "UPDATE events SET primary_codex_id = 'hero', location_codex_id = 'old-place'
+                "UPDATE events SET primary_codex_id = 'hero', location_codex_id = 'old-place', start_time = 1, start_granularity = 'day'
                  WHERE id = 'event-old-location'",
                 [],
             )
             .unwrap();
             conn.execute(
-                "UPDATE events SET primary_codex_id = 'hero', location_codex_id = 'hidden-place'
+                "UPDATE events SET primary_codex_id = 'hero', location_codex_id = 'hidden-place', start_time = 2, start_granularity = 'day'
                  WHERE id = 'event-hidden-location'",
                 [],
             )
             .unwrap();
             conn.execute(
-                "UPDATE events SET primary_codex_id = 'hero' WHERE id = 'event-anchor'",
+                "UPDATE events SET primary_codex_id = 'hero', start_time = 3, start_granularity = 'day' WHERE id = 'event-anchor'",
                 [],
             )
             .unwrap();
