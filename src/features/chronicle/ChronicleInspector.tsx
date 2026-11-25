@@ -319,6 +319,11 @@ export function ChronicleInspector({
   onSetParticipants,
 }: ChronicleInspectorProps) {
   const { t } = useTranslation();
+  // 開示シーンの select の値。候補（scenes）に無い id（アーカイブ済みのシーンなど）が
+  // 保存されているとき、option が無いと「指定なし」に見えて解除もできない。
+  const revealSceneId = event.revealSceneId ?? "";
+  const revealSceneMissing =
+    revealSceneId !== "" && !scenes.some((s) => s.id === revealSceneId);
   const inspectorDocumentKey = useMemo<DocumentKey>(
     () =>
       isScene
@@ -695,7 +700,7 @@ export function ChronicleInspector({
                     {t("chronicle.revealSceneLabel", "開示シーン")}
                   </span>
                   <select
-                    value={event.revealSceneId ?? ""}
+                    value={revealSceneId}
                     onChange={(e) =>
                       // 空文字＝解除（Native は null と未指定を区別できないため、"" で NULL に戻す）。
                       onPatch({ revealSceneId: e.target.value })
@@ -706,6 +711,14 @@ export function ChronicleInspector({
                     <option value="">
                       {t("chronicle.revealSceneNone", "指定なし")}
                     </option>
+                    {revealSceneMissing && (
+                      <option value={revealSceneId}>
+                        {t(
+                          "chronicle.revealSceneMissing",
+                          "（見つからないシーン）",
+                        )}
+                      </option>
+                    )}
                     {scenes.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.title ||

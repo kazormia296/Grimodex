@@ -186,6 +186,7 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 - **マーカー・一覧**：「秘匿」のタグと `aria-label` の状態（`EventMarker.tsx`）、鍵のアイコン（`ChronicleEventList.tsx`）を消した。配置の幅の計算（`chronicleLayout.ts` の `estMarkerWidth` の 32px／34px の加算）から `secret` を外した。表示用の型（`MarkerEvent`・`LayoutEventInput` など）から `secret` を外した。**DB 行の型（`EventRow`）の `secret` は残す**（読み取り側・スナップショット・書き出しは、値を運ぶだけ）。
 - **ロケール**：`chronicle.secretLabel`・`secretDesc`（利用箇所なし）・`secretTag` を削除。`secretDescShort` → `revealSceneDesc`、`revealSceneAuto` → `revealSceneNone`。ja・en のみ（他の言語の file は無い）。
 - **既存の `secret = 1` の出来事**：値は DB に残る。画面では見えず、編集もできなくなる（確認 95：知らせない。AI には、読み・MCP・アプリ内の道具で、もう全部渡っている）。
+- **開示シーンが候補にないシーンを指すとき（N2 の後の直し。2026-11-25）**：開示シーンの欄を全部の出来事に出したことで、`reveal_scene_id` がアーカイブ済みなどのシーン（`scenes` の候補に無い id）を指す出来事で、欄が「指定なし」と見えるのに保存値が残り、「指定なし」を選び直しても change が出ず解除できない状態が、全部の出来事に広がった（merge 後の独立した読み直しと実 Chromium の描画で確認）。候補に無い id のときだけ、その値の option「（見つからないシーン）」（en `(Scene not found)`）を「指定なし」の次に出し、選択された状態で見せる。そこから「指定なし」を選べば `revealSceneId: ""` で解除できる。あわせて、試験名「指定なしは null で patch する」を、実際の期待値（空文字）に合わせて直した。
 - **Native の `secret` の書き込みの拒否の最終形は、この PR に入れない**：N4 で AI の surface は拒否した。作者の surface（`manual`・`import`）は、N2 の後は画面から `secret` を送らなくなるが、取り込み（NEX の commit は `apply_event_create_in_tx` を直接呼ぶ）が `secret = true` で作る間は、全 surface の拒否を入れても取り込み経路は閉じない。N6 の後の別の小さな PR で、作成は `false` 固定・更新は `secret` を受けたら拒む（N4 の (c)）にする。
 
 ### 残る制限（N2）
