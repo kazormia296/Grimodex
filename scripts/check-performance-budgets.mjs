@@ -15,7 +15,13 @@ const DIST_DIR = path.resolve("dist/assets");
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
   baseline: { rawBytes: 3_803_500, gzipBytes: 1_195_200 },
-  allowance: { rawBytes: 98_304, gzipBytes: 36_864 },
+  // raw の allowance を 98,304 → 99,328（+1,024）に上げた（2026-11-25、Work Layer の旗を開ける PR）。旗を開けた製品 build は、
+  // 先に lazy 化・不要な code の除去（旗が閉じた build で live の hook と review 画面の host を build が取り除く形。P4）を
+  // したうえで、raw 3,902,761（上限 3,901,804 を 957 超える。gzip は 1,229,260 で余裕あり）。内訳は、live の hook と
+  // review 画面の host の殻が初期 graph に入るのと、live の chunk が共有する editorSessionStore が別の chunk になる分。
+  // 実効の上限は raw 3,902,828 で、absoluteMax（3,903,000）の内側。ユーザーの 2026-10-25 の指示（lazy 化が先、足りない分だけ
+  // 最小限を、独立した commit で緩める）に沿う。
+  allowance: { rawBytes: 99_328, gzipBytes: 36_864 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
   // （実測 raw 4,249,993 → 4,250,669 で +676、gzip 1,342,871 → 1,343,227 で +356）。
