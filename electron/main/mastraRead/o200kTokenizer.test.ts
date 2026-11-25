@@ -68,15 +68,18 @@ describe("Electron main o200k_base tokenizer", () => {
     expect(statSync(development.ranksPath).isFile()).toBe(true);
     expect(statSync(development.wasmPath).isFile()).toBe(true);
 
+    // Expectations are built with path.join: the paths are platform paths (Windows CI).
+    const resourcesPath = path.join("/app", "Contents", "Resources");
+    const tokenizerDir = path.join(resourcesPath, "resources", "tokenizer");
     expect(
       module.resolveMainTokenizerAssetPaths({
         isPackaged: true,
-        resourcesPath: "/app/Contents/Resources",
+        resourcesPath,
         mainDir: "/unused",
       }),
     ).toEqual({
-      ranksPath: "/app/Contents/Resources/resources/tokenizer/o200k_base.json",
-      wasmPath: "/app/Contents/Resources/resources/tokenizer/tiktoken_bg.wasm",
+      ranksPath: path.join(tokenizerDir, "o200k_base.json"),
+      wasmPath: path.join(tokenizerDir, "tiktoken_bg.wasm"),
     });
   });
 
