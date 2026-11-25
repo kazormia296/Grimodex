@@ -827,9 +827,14 @@ describe("EAR-23 content の無い peer の通知は版だけ進め、退避中�
     // 古い v5 の本文は当たらない（live mirror が本文の正本）。
     expect(editor.state.doc.textContent).toBe("start");
 
+    // 打鍵の後に追従保存（mark 更新の保存）が続くので、最後の保存（at(-1)）ではなく、
+    // 打鍵の後の最初の保存で見る。負荷で追従保存まで先に済んでも結果が変わらない。
+    const savesBefore = h.saves.length;
     await userEvent.keyboard("AB");
-    await waitForSaved();
-    expect(h.saves.at(-1)!.baseVersion).toBe(6);
+    await waitFor(() => expect(h.saves.length).toBeGreaterThan(savesBefore), {
+      timeout: 8_000,
+    });
+    expect(h.saves[savesBefore]!.baseVersion).toBe(6);
   });
 });
 
@@ -897,7 +902,10 @@ describe("(h) mark 更新の dispatch の扱い（guard の要否の実測、Edi
     await nextFrame();
     await userEvent.keyboard("AB");
     await waitForSaved();
-    expect(h.fs.version).toBe(2);
+    // 入力 "AB" が負荷で 2 回の保存に割れると版は 3 まで進みうる。目的は「再ロード後に
+    // 最新版で保存して MISMATCH にならない」ことなので、保存後の版そのものを基準にする。
+    const savedFsVersion = h.fs.version;
+    expect(savedFsVersion).toBeGreaterThan(1);
     // 閉じて、直近の保存の本文（印の baseVersion は保存時点の値）で開き直す。
     cleanup();
     await nextFrame();
@@ -906,13 +914,15 @@ describe("(h) mark 更新の dispatch の扱い（guard の要否の実測、Edi
     const second = await mountSurface("pane");
     // 再ロードは DB の version（sidecar）で印を付け直している。
     expect(markBaseVersion(second.editor)).toBe(h.fs.version);
+    const reloadedFsVersion = h.fs.version;
+    expect(reloadedFsVersion).toBeGreaterThanOrEqual(savedFsVersion);
     second.editor.commands.focus("start");
     await nextFrame();
     await userEvent.keyboard("CD");
     await waitForSaved();
     expect(h.mismatches).toBe(0);
     expect(h.saves.length).toBeGreaterThan(savesBefore);
-    expect(h.saves[savesBefore]!.fsBaseVersion).toBe(2);
+    expect(h.saves[savesBefore]!.fsBaseVersion).toBe(reloadedFsVersion);
   });
 
   it("(3) mark 更新の dispatch は doc.step として履歴に記録され、再生が editor の最終 doc（更新後の baseVersion を含む）と一致する", async () => {
