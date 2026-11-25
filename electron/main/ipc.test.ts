@@ -1066,7 +1066,7 @@ describe("registerIpcRouter fail-soft logging", () => {
   it("binds the main-issued identity for the normal create_event path", async () => {
     const grant = await issueAgentCapability(
       "create_event",
-      { title: "Arrival" },
+      { title: "Arrival", startTime: 4, precision: "approx" },
       710,
     );
     expect(grant.expectedEntityId).toEqual(expect.any(String));
@@ -1076,6 +1076,8 @@ describe("registerIpcRouter fail-soft logging", () => {
       {
         payload: agentCapabilityPayload(grant, {
           title: "Arrival",
+          startTime: 4,
+          precision: "approx",
           eventId: grant.expectedEntityId,
         }),
       },
@@ -1091,7 +1093,7 @@ describe("registerIpcRouter fail-soft logging", () => {
   it("matches legacy create_event secret=false when the payload omits the retired field", async () => {
     const grant = await issueAgentCapability(
       "create_event",
-      { title: "Arrival", secret: false },
+      { title: "Arrival", startTime: 4, precision: "unknown", secret: false },
       711,
     );
     const bound = bindRendererAuthorityForIpc(
@@ -1099,6 +1101,8 @@ describe("registerIpcRouter fail-soft logging", () => {
       {
         payload: agentCapabilityPayload(grant, {
           title: "Arrival",
+          startTime: 4,
+          precision: "unknown",
           eventId: grant.expectedEntityId,
         }),
       },

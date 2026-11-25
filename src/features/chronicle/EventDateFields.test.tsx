@@ -196,3 +196,51 @@ describe("EventDateFields interval invariants", () => {
     });
   });
 });
+
+describe("EventDateFields の開始の「なし」（CED/1 の N6）", () => {
+  const options = (requireDate: boolean, startGranularity: "none" | "day") => {
+    render(
+      <EventDateFields
+        calendar={calendar}
+        startTime={startGranularity === "none" ? null : 3}
+        startMinute={null}
+        startGranularity={startGranularity}
+        endTime={null}
+        endMinute={null}
+        endGranularity="none"
+        onPatch={vi.fn()}
+        requireDate={requireDate}
+      />,
+    );
+    const select = screen.getByRole("combobox", { name: "開始の粒度" });
+    return Array.from(select.querySelectorAll("option"), (o) => ({
+      value: o.value,
+      disabled: o.disabled,
+    }));
+  };
+
+  it("出来事の欄は「なし」を出さない", () => {
+    expect(options(true, "day").map((o) => o.value)).toEqual([
+      "season",
+      "year",
+      "month",
+      "day",
+      "time",
+    ]);
+  });
+
+  it("日時の無い出来事は「なし」を選択済みで見せ、年月日と日時だけ選べる", () => {
+    expect(options(true, "none")).toEqual([
+      { value: "none", disabled: true },
+      { value: "day", disabled: false },
+      { value: "time", disabled: false },
+    ]);
+  });
+
+  it("場面の欄は「なし」を残す", () => {
+    expect(options(false, "day")[0]).toEqual({
+      value: "none",
+      disabled: false,
+    });
+  });
+});

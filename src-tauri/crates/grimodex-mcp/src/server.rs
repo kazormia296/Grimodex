@@ -527,7 +527,7 @@ impl GrimodexServer {
 
     /// Derive the world-state snapshot at a scene's story time (structured JSON).
     #[tool(
-        description = "Get the chronicle world-state snapshot anchored at a scene (scene_id required): time (source/startTime/season), character statuses (alive/dead/unborn/unknown, age, last-known location), recent events, unresolved causal pairs, and off-page background. Identical structured JSON to the in-app get_chronicle_state tool. Returns null if there are no events or no scene_id. Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. When revealedToReader is false, readers do not know it yet at the requested scene, so do not write it as something readers already know; when revealedToReader is absent, it was not judged."
+        description = "Get the chronicle world-state snapshot anchored at a scene (scene_id required): time (source/startTime/season), character statuses (alive/dead/unborn/unknown, age, last-known location), recent events, unresolved causal pairs, and off-page background. Includes a calendar summary when the project has a calendar. Identical structured JSON to the in-app get_chronicle_state tool. Returns null if there are no events or no scene_id. Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. When revealedToReader is false, readers do not know it yet at the requested scene, so do not write it as something readers already know; when revealedToReader is absent, it was not judged."
     )]
     async fn get_chronicle_state(
         &self,
@@ -538,7 +538,7 @@ impl GrimodexServer {
 
     /// Create a chronicle event (tracked; undo-able). knowledgeWrite gate.
     #[tool(
-        description = "Create a chronicle event: title (required), note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, start_time/end_time (days from epoch), start_minute/end_minute (time of day, 0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time', default 'none'), participant_codex_ids, scene_ids. Returns id, title, and the initial version; pass that version as base_version to the next Event aggregate write. Tracked (undo_journal + change_event). Disabled in readonly mode."
+        description = "Create a chronicle event: title, start_time (required, days from the in-world epoch), and precision (required: exact|approx|unknown); note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, end_time, start_minute/end_minute (time of day, 0-1439, 24h clock), start_granularity ('season'|'year'|'month'|'day'|'time'; omitted values are inferred from the supplied date/time), end_granularity ('none'|'season'|'year'|'month'|'day'|'time'), participant_codex_ids, scene_ids. start_granularity cannot be 'none'. If the date is uncertain, provide an estimated date and express the uncertainty with precision. Returns id, title, and the initial version; pass that version as base_version to the next Event aggregate write. Tracked (undo_journal + change_event). Disabled in readonly mode."
     )]
     async fn create_event(
         &self,
@@ -549,7 +549,7 @@ impl GrimodexServer {
 
     /// Update a chronicle event (only provided fields). knowledgeWrite gate.
     #[tool(
-        description = "Update a chronicle event by event_id. base_version is required and must equal the version returned by create/list/detail/the previous write; stale versions fail without mutation. Only provided fields change (title, note, kind, primary_codex_id, location_codex_id, start_time, end_time, start_minute/end_minute (0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time')). Returns the incremented version for the next write. Scoped to the active project. Tracked. Disabled in readonly mode."
+        description = "Update a chronicle event by event_id. base_version is required and must equal the version returned by create/list/detail/the previous write; stale versions fail without mutation. Only provided fields change (title, note, kind, precision (optional: exact|approx|unknown), primary_codex_id, location_codex_id, start_time, end_time, start_minute/end_minute (0-1439, 24h clock), start_granularity/end_granularity ('season'|'year'|'month'|'day'|'time')). start_time cannot be null and start_granularity cannot be 'none'. If the date is uncertain, provide an estimated date and express the uncertainty with precision. Returns the incremented version for the next write. Scoped to the active project. Tracked. Disabled in readonly mode."
     )]
     async fn update_event(
         &self,

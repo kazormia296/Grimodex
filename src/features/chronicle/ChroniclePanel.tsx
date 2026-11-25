@@ -74,6 +74,7 @@ import {
   mergeLaneOrder,
 } from "./chronicleLaneOrder";
 import { formatChronicleDate } from "./chronicleTime";
+import { chronicleCreateDay } from "./chronicleCreateDate";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
 import { createEditorInstanceId } from "@/features/editor/document/documentKey";
 import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
@@ -1156,13 +1157,36 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     [rulerLevelRef],
   );
 
+  // 新しい出来事には常に日時を入れる（CED/1 の N5）。選んだ位置、ビュー中央、
+  // どちらも無ければ年表と場面の最も後の日の翌日（確度は「不明」）。
+  const createDatePatch = useCallback(
+    (selectedDay: number | null) => {
+      const { day, precision } = chronicleCreateDay({
+        selectedDay,
+        viewCenterDay: defaultCreateDay(),
+        events: latestEventsRef.current.filter(
+          (event) => event.projectId === projectId,
+        ),
+        sceneDates: nodes
+          .filter((n) => n.nodeType === "scene" && !n.archivedAt)
+          .map((n) => ({
+            startTime: n.chronicleStartTime ?? null,
+            startGranularity: n.chronicleStartGranularity ?? "none",
+          })),
+      });
+      return precision === "exact"
+        ? { ...createTimePatch(day), precision }
+        : { startTime: day, startGranularity: "day" as const, precision };
+    },
+    [defaultCreateDay, createTimePatch, nodes, projectId],
+  );
+
   // 新規作成は「選択中の位置」（空白クリック/ダブルクリック由来）、無ければビュー中央へ置く。
   const handleAdd = useCallback(async () => {
     if (!projectId || creating) return;
     setCreating(true);
     try {
       const st = useChronicleStore.getState();
-      const day = st.selectedDay ?? defaultCreateDay();
       const { primaryCodexId, laneGroup } = decodeLaneTarget(
         st.selectedLaneKey,
       );
@@ -1171,7 +1195,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
           title: t("chronicle.newEvent", "新しいイベント"),
           ...(primaryCodexId ? { primaryCodexId } : {}),
           ...(laneGroup ? { laneGroup } : {}),
-          ...(day != null ? createTimePatch(day) : {}),
+          ...createDatePatch(st.selectedDay),
         },
         chronicleCommandPorts,
       );
@@ -1188,8 +1212,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
     t,
     setSelectedEventId,
     setSelectedPosition,
-    defaultCreateDay,
-    createTimePatch,
+    createDatePatch,
     chronicleCommandPorts,
   ]);
 
@@ -1487,7 +1510,6 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const handleCreateAt = useCallback(
     async (day: number | null, codexId: string | null) => {
       if (!projectId || creating) return;
-      const d = day ?? defaultCreateDay();
       const { primaryCodexId, laneGroup } = decodeLaneTarget(codexId);
       setCreating(true);
       try {
@@ -1496,7 +1518,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
             title: t("chronicle.newEvent", "新しいイベント"),
             ...(primaryCodexId ? { primaryCodexId } : {}),
             ...(laneGroup ? { laneGroup } : {}),
-            ...(d != null ? createTimePatch(d) : {}),
+            ...createDatePatch(day),
           },
           chronicleCommandPorts,
         );
@@ -1514,8 +1536,7 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
       t,
       setSelectedEventId,
       setSelectedPosition,
-      defaultCreateDay,
-      createTimePatch,
+      createDatePatch,
       chronicleCommandPorts,
     ],
   );

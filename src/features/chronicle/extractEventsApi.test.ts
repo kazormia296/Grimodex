@@ -4,10 +4,6 @@ const mockSend = vi.hoisted(() => vi.fn());
 const mockBlock = vi.hoisted(() => vi.fn(() => false));
 const mockRecord = vi.hoisted(() => vi.fn());
 const mockOverride = vi.hoisted(() => vi.fn());
-const mockCreateEvent = vi.hoisted(() => vi.fn());
-const mockLinkScenes = vi.hoisted(() => vi.fn());
-const mockListEvents = vi.hoisted(() => vi.fn());
-const mockDeleteEvent = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: mockSend,
@@ -27,19 +23,11 @@ vi.mock("@/features/settings/settingsStore", () => ({
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ projectId: "p1" }) },
 }));
-vi.mock("./api", () => ({
-  createEvent: mockCreateEvent,
-  linkScenesToEvent: mockLinkScenes,
-  listEvents: mockListEvents,
-  deleteEvent: mockDeleteEvent,
-}));
-
 import {
   parseEventProposals,
   parseEventProposalsResult,
   buildExtractEventsPrompt,
   proposeEvents,
-  importExtractedEvents,
 } from "./extractEventsApi";
 
 const allowed = new Set(["s1", "s2"]);
@@ -217,112 +205,5 @@ describe("proposeEvents", () => {
         tokensOut: 34,
       }),
     );
-  });
-});
-
-describe("importExtractedEvents", () => {
-  beforeEach(() => {
-    mockCreateEvent.mockReset();
-    mockCreateEvent.mockImplementation(async (d: { title: string }) => ({
-      id: `ev-${d.title}`,
-    }));
-    mockLinkScenes.mockReset();
-    mockLinkScenes.mockResolvedValue(undefined);
-    mockListEvents.mockReset();
-    mockListEvents.mockResolvedValue([]);
-    mockDeleteEvent.mockReset();
-    mockDeleteEvent.mockResolvedValue(undefined);
-  });
-
-  it("候補を events 化しシーンを結び、件数を返す", async () => {
-    const n = await importExtractedEvents(
-      "p1",
-      [
-        { title: "新事件A", evidenceSceneIds: ["s1", "s2"] },
-        { title: "新事件B", evidenceSceneIds: [] },
-      ],
-      [],
-    );
-    expect(n).toBe(2);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
-    // 根拠シーンは出来事ごとに一括 link（A=2 シーン / B=空配列）
-    expect(mockLinkScenes).toHaveBeenCalledTimes(2);
-    expect(mockLinkScenes).toHaveBeenCalledWith(
-      "p1",
-      ["s1", "s2"],
-      "ev-新事件A",
-    );
-    expect(mockLinkScenes).toHaveBeenCalledWith("p1", [], "ev-新事件B");
-  });
-
-  it("既存タイトルと重複する候補は正規化一致でスキップ（大小・前後空白を吸収）", async () => {
-    const n = await importExtractedEvents(
-      "p1",
-      [
-        { title: "新事件", evidenceSceneIds: ["s1"] },
-        { title: "  Existing Event  ", evidenceSceneIds: ["s1"] }, // 重複
-      ],
-      ["existing event"],
-    );
-    expect(n).toBe(1);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
-    expect(mockCreateEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "新事件" }),
-    );
-  });
-
-  it("existingTitles 省略時は DB(listEvents) を参照して重複をスキップ", async () => {
-    mockListEvents.mockResolvedValue([{ title: "既存" }]);
-    const n = await importExtractedEvents("p1", [
-      { title: "既存", evidenceSceneIds: ["s1"] }, // 重複
-      { title: "新規", evidenceSceneIds: ["s1"] },
-    ]);
-    expect(n).toBe(1);
-    expect(mockListEvents).toHaveBeenCalledTimes(1);
-    expect(mockListEvents).toHaveBeenCalledWith("p1");
-    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
-    expect(mockCreateEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "新規" }),
-    );
-  });
-
-  it("同一バッチ内の重複は先勝ちで 1 件のみ作成", async () => {
-    const n = await importExtractedEvents(
-      "p1",
-      [
-        { title: "同じ", evidenceSceneIds: ["s1"] },
-        { title: "同じ", evidenceSceneIds: ["s2"] },
-      ],
-      [],
-    );
-    expect(n).toBe(1);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
-  });
-
-  it("途中で失敗したら先行作成分を削除して部分適用を残さない", async () => {
-    // A 成功 → B 失敗。C には到達しない。A は rollback 削除する。
-    mockCreateEvent.mockReset();
-    mockCreateEvent
-      .mockResolvedValueOnce({ id: "ev-A" })
-      .mockRejectedValueOnce(new Error("boom"));
-
-    await expect(
-      importExtractedEvents(
-        "p1",
-        [
-          { title: "A", evidenceSceneIds: ["s1"] },
-          { title: "B", evidenceSceneIds: ["s2"] },
-          { title: "C", evidenceSceneIds: ["s3"] },
-        ],
-        [],
-      ),
-    ).rejects.toThrow("boom");
-
-    // A=成功, B=失敗で停止, C=未試行
-    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
-    // A の link のみ実行済み（B は createEvent で落ちるため link されない）
-    expect(mockLinkScenes).toHaveBeenCalledTimes(1);
-    expect(mockLinkScenes).toHaveBeenCalledWith("p1", ["s1"], "ev-A");
-    expect(mockDeleteEvent).toHaveBeenCalledWith("ev-A", "p1");
   });
 });
