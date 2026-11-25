@@ -5,20 +5,18 @@
 // What it proves in a real Electron main, against the real addon:
 //   - refusals are typed and write nothing (invalid, forbidden key, unsupported);
 //   - an unknown cancel is a no-op (found: false);
-//   - an otherwise valid start is refused `unsupported` (fail closed): Main's
-//     owner has no tokenizer injected yet (4c-1 R2-b1; the wiring PR after T0
-//     injects it), so it refuses before registering the turn, before the third
-//     bundle is loaded and before a key is resolved: no audit row, nothing
-//     start-only, nothing sent. (Until then this journey no longer reaches the
-//     lazy load and the "No API key" rejection it proved in MP-3c; the wiring
-//     PR restores that assertion.) The journey harness fails the run on any
-//     error-looking line of Main's stderr, so a quiet run also proves nothing
-//     was logged as a fault.
+//   - an admitted start lazy-loads the third bundle (the owner loads the runtime
+//     first, then resolves settings and the key: an error that names the key can
+//     only come after a successful load), and with no API key it is `ok:false`
+//     with that reason, before the Agent runs: no audit row, nothing start-only,
+//     nothing sent. The journey harness fails the run on any error-looking line
+//     of Main's stderr, so a quiet run also proves nothing was logged as a fault.
 // What it does not do: the dispatch rows and the terminal. They are held by the
 // real-addon pipeline spec (`mastraAgentAudit.pipeline.spec.ts`) and the owner's
 // unit tests; a dispatch with a real provider is MP-13's acceptance. A key cannot
 // be given here (headless safeStorage is basic_text, which the key store refuses).
 import assert from "node:assert/strict";
+import process from "node:process";
 import { randomUUID } from "node:crypto";
 
 export const MASTRA_AGENT_TURN_JOURNEY_ID = "mastra-agent-turn-gate-load-audit";
@@ -235,19 +233,18 @@ export function createMastraAgentTurnJourney({ configureWorkspace }) {
           auditRows: 0,
         });
 
-        // An otherwise valid start: no tokenizer is injected into Main's owner yet
-        // (R2-b1), so it is refused `unsupported` (fail closed) before the runtime
-        // is loaded or a key is resolved. Twice: nothing is cached or left behind.
+        // An admitted start: the runtime is loaded now (lazy), then the key is
+        // resolved. No key is configured, so the start is `ok:false` with that
+        // reason before the Agent runs. Twice: nothing is cached or left behind.
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          assertRefusal(
-            await invoke(START_COMMAND, startRequest()),
-            "start",
-            "unsupported",
+          await assert.rejects(
+            invoke(START_COMMAND, startRequest()),
+            /No API key configured for anthropic/,
           );
         }
         assert.deepEqual(await queryAuditRows(harness, gate.page), []);
-        harness.recordTimeline(`${ID}/no-tokenizer-no-rows`, {
-          refusedUnsupported: 2,
+        harness.recordTimeline(`${ID}/no-key-no-rows`, {
+          loadedThenRejectedForKey: 2,
           auditRows: 0,
           sent: false,
         });

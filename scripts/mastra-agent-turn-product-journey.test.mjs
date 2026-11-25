@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { URL } from "node:url";
 
 import {
   PRODUCT_CONTRACT_REQUIREMENTS,
@@ -152,13 +153,11 @@ test("assertRefusal accepts exactly the typed refusal", () => {
   }
 });
 
-test("the journey drives Main's IPC directly (no renderer branch) and sends nothing", () => {
+test("the journey drives Main's IPC directly and reaches key resolution without sending", () => {
   const source = read("electron/scripts/mastra-agent-turn-product-journey.mjs");
   assert.match(source, /harness\.invokeOk\(page, "db_execute"/);
-  // Until the tokenizer is wired into Main's owner (4c-1, after T0), a valid start is
-  // refused `unsupported` (fail closed) before the runtime loads or a key is resolved.
-  assert.match(source, /no-tokenizer-no-rows/);
-  assert.match(source, /"unsupported"/);
+  assert.match(source, /no-key-no-rows/);
+  assert.match(source, /No API key configured for anthropic/);
   const journey = createMastraAgentTurnJourney({
     configureWorkspace: async () => {},
   });

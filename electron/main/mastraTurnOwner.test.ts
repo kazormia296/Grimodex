@@ -38,7 +38,12 @@ import type {
   MastraAgentTurnStartRequest,
   MastraAgentTurnStartResult,
 } from "../shared/mastraAgentTurnWire.js";
+import {
+  ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
+  alreadyInjectedCodexEntryContent,
+} from "../shared/readDomain/features/codex/alreadyInjectedEntry.js";
 import { AgentModelError } from "./mastra/agentModelPolicy.js";
+import { createMastraAgentTools } from "./mastra/agentToolAdapter.js";
 import { runNativeRead } from "./mastraRead/nativeCall.js";
 import type {
   MastraAgentRuntimeModule,
@@ -167,6 +172,7 @@ function startRequest(
 }
 
 let nextTurn = 0;
+let nextToolUseId = 0;
 const uuid = (): string =>
   `00000000-0000-4000-8000-${String(100 + nextTurn++).padStart(12, "0")}`;
 
@@ -178,6 +184,7 @@ interface Harness {
     events: AiAuditEventInput[];
   }[];
   readonly sends: { args: AgentWireArgs; settings: unknown; apiKey: string }[];
+  readonly dbQueries: { sql: string; params: unknown; method: string }[];
   /** Resolves the oldest pending Native send. */
   nativeSends: Deferred<string>[];
   readonly loads: { count: number };
@@ -215,10 +222,22 @@ function harness(
     /** Runs in the turn after the dispatch row and before the send (a tool's read, as PR-4 will). */
     runRead?: (owner: MastraTurnOwner) => Promise<unknown>;
     runTurn?: (input: MastraAgentTurnInput) => Promise<void>;
+    readDbExecute?: NapiBackendLike["dbExecute"];
+    nativeReadMethods?: Partial<
+      Pick<
+        NapiBackendLike,
+        | "ftsSearch"
+        | "codexSemanticSearch"
+        | "eventsSemanticSearch"
+        | "foreshadowListWithLabels"
+        | "foreshadowListOpenForContext"
+      >
+    >;
   } = {},
 ): Harness {
   const appended: Harness["appended"] = [];
   const sends: Harness["sends"] = [];
+  const dbQueries: Harness["dbQueries"] = [];
   const nativeSends: Deferred<string>[] = [];
   const loads = { count: 0 };
   const settingsReads = { count: 0 };
@@ -242,6 +261,16 @@ function harness(
       appended.push({ path, projectId, events: events as AiAuditEventInput[] });
       return JSON.stringify({ insertedCount: 1 });
     },
+    async dbExecute(
+      ...args: Parameters<NapiBackendLike["dbExecute"]>
+    ): Promise<string> {
+      dbQueries.push({ sql: args[0], params: args[1], method: args[2] });
+      if (overrides.readDbExecute) return overrides.readDbExecute(...args);
+      return JSON.stringify({
+        __grimodexDbResultKind: "read",
+        rows: [],
+      });
+    },
     async getAiSettings(): Promise<string> {
       settingsReads.count += 1;
       return JSON.stringify({ provider: "anthropic" });
@@ -260,6 +289,7 @@ function harness(
       nativeSends.push(hold);
       return hold.promise;
     },
+    ...overrides.nativeReadMethods,
   } as unknown as NapiBackendLike;
 
   const runtimeModule: MastraAgentRuntimeModule = {
@@ -344,6 +374,7 @@ function harness(
     owner,
     appended,
     sends,
+    dbQueries,
     nativeSends,
     loads,
     settingsReads,
@@ -405,7 +436,7 @@ function auditRequestFor(
 ): AgentAuditRequest {
   return {
     messages: [{ role: "system", content: input.instructions }, ...messages],
-    tools: [],
+    tools: input.toolDefinitions ?? [],
     ...input.route,
     systemCacheSegments: input.systemCacheSegments,
     systemVolatileTail: input.systemVolatileTail,
@@ -484,7 +515,16 @@ async function driveOwnerLoop(input: MastraAgentTurnInput): Promise<void> {
       })),
     });
     for (const tool of toolUses) {
-      input.onToolResult?.({ tokens: 1, toolName: tool.name });
+      input.onToolStart?.({
+        toolCallId: tool.id,
+        toolName: tool.name,
+      });
+      input.onToolResult?.({
+        toolCallId: tool.id,
+        tokens: 1,
+        toolName: tool.name,
+        summary: `${tool.name} result`,
+      });
       messages.push({
         role: "tool_result",
         toolUseId: tool.id,
@@ -501,6 +541,11 @@ async function runLegacyLoop(input: {
   readonly tokenBudget: number;
   readonly maxToolCalls: number;
   readonly maxUserQuestions: number;
+  readonly executeTool?: (
+    name: string,
+    toolCallId: string,
+    params: unknown,
+  ) => Promise<unknown>;
 }): Promise<{
   readonly result: {
     readonly finalThinkingBlocks: readonly unknown[];
@@ -508,6 +553,7 @@ async function runLegacyLoop(input: {
     readonly toolCallRecords: readonly {
       readonly name: string;
       readonly params: Record<string, unknown>;
+      readonly resultSummary: string;
       readonly tokensUsed: number;
     }[];
     readonly stoppedReason: string;
@@ -543,15 +589,17 @@ async function runLegacyLoop(input: {
       sentMessages.push(structuredClone(messages));
       return input.responses[responseIndex++] as never;
     },
-    executeTool: async (name: string, toolCallId: string, params: unknown) =>
-      ({
+    executeTool: async (name: string, toolCallId: string, params: unknown) => {
+      if (input.executeTool) return input.executeTool(name, toolCallId, params);
+      return {
         name,
         toolCallId,
         content: null,
         summary: `${name} result`,
         tokensUsed: 1,
         params,
-      }) as never,
+      } as never;
+    },
     onProgress: () => undefined,
     onTextChunk: (text: string) => textChunks.push(text),
     callLimitMessage: "calls",
@@ -572,7 +620,7 @@ function responseWith(
       ...(text ? [{ type: "text" as const, content: text }] : []),
       ...toolNames.map((name, index) => ({
         type: "tool_use" as const,
-        id: `tool-${index}-${name}`,
+        id: `tool-${nextToolUseId++}-${name}`,
         name,
         input: { ordinal: index },
       })),
@@ -582,8 +630,122 @@ function responseWith(
   };
 }
 
+function readAnswer(rows: Record<string, unknown>[] = []): string {
+  return JSON.stringify({ __grimodexDbResultKind: "read", rows });
+}
+
+function mainReadFixture(title: string): NapiBackendLike["dbExecute"] {
+  return async (sql) => {
+    if (sql.includes("phase_resolution_mode"))
+      return readAnswer([{ phase_resolution_mode: "reading" }]);
+    if (sql.includes("tree_nodes") && sql.includes("chronicle_start_time")) {
+      return readAnswer([
+        {
+          id: "scene-1",
+          parent_id: null,
+          node_type: "scene",
+          sort_order: "a0",
+          story_time_order: null,
+          archived_at: null,
+          title,
+          chronicle_start_time: null,
+          chronicle_start_minute: null,
+          chronicle_start_granularity: "minute",
+          chronicle_precision: "minute",
+        },
+      ]);
+    }
+    if (sql.includes("tree_nodes")) {
+      return readAnswer([
+        {
+          id: "scene-1",
+          parent_id: null,
+          node_type: "scene",
+          title,
+          status: "outline",
+          sort_order: "a0",
+        },
+      ]);
+    }
+    return readAnswer();
+  };
+}
+
+/** Drives the real T-a tool adapter and the owner's selected core bindings. */
+async function driveCoreReadOwnerLoop(
+  input: MastraAgentTurnInput,
+  continueAfterControl = false,
+): Promise<void> {
+  const tools = createMastraAgentTools({
+    names: (input.toolDefinitions ?? []).map(({ name }) => name),
+    bindings: input.bindings ?? [],
+    tokenBudget: input.tokenBudget ?? 0,
+    countTokens: input.countTokens ?? ((text) => text.length),
+    signal: input.signal,
+    isToolDeclared: input.isToolDeclared,
+    isTurnStopped: input.isTurnStopped,
+    onToolStart: input.onToolStart,
+    onToolResult: input.onToolResult,
+  });
+  const messages: AgentAuditRequest["messages"] = [...input.messages];
+  for (let sendIndex = 0; sendIndex < 20; sendIndex += 1) {
+    const request = auditRequestFor(input, messages);
+    const { response, prepared } = await sendPreparedRequest(
+      input,
+      request,
+      sendIndex,
+    );
+    if (
+      !continueAfterControl &&
+      prepared.messages.length > request.messages.length
+    )
+      return;
+    const toolUses =
+      response.stopReason === "tool_use"
+        ? response.blocks.filter((block) => block.type === "tool_use")
+        : [];
+    if (toolUses.length === 0) return;
+    messages.push({
+      role: "assistant",
+      content: textOf(response),
+      toolUses: toolUses.map(({ id, name, input: params }) => ({
+        id,
+        name,
+        input: params,
+      })),
+    });
+    for (const tool of toolUses) {
+      const adapter = tools[tool.name];
+      if (!adapter?.execute)
+        throw new Error(`fake runtime has no tool: ${tool.name}`);
+      let content: string;
+      let isError = false;
+      try {
+        content = String(
+          await adapter.execute(tool.input, {
+            agent: { toolCallId: tool.id },
+            abortSignal: input.signal,
+          } as never),
+        );
+      } catch (error) {
+        if (input.signal.aborted) throw error;
+        content = `Error: ${error instanceof Error ? error.message : String(error)}`;
+        isError = true;
+      }
+      messages.push({
+        role: "tool_result",
+        toolUseId: tool.id,
+        content,
+        isError,
+      });
+    }
+  }
+  throw new Error("fake runtime exceeded its send bound");
+}
+
 beforeEach(() => {
   nextTurn = 0;
+  nextToolUseId = 0;
   progressDeliveries.length = 0;
 });
 afterEach(() => {
@@ -945,7 +1107,12 @@ describe("per-send payload finalization (R2-b1)", () => {
       runTurn: async (input) => {
         const request = auditRequestFor(input);
         await sendPreparedRequest(input, request, 0);
-        input.onToolResult?.({ tokens: 1, toolName: "get_scene" });
+        input.onToolResult?.({
+          toolCallId: "call-1",
+          tokens: 1,
+          toolName: "get_scene",
+          summary: "get_scene result",
+        });
         await sendPreparedRequest(
           input,
           {
@@ -1209,13 +1376,26 @@ describe("turn owner payload and tokenizer guards", () => {
           auditRequestFor(input),
           0,
         );
-        input.onToolResult?.({ tokens: 1, toolName: "get_scene" });
+        const firstToolUse = first.response.blocks.find(
+          (block) => block.type === "tool_use",
+        );
+        if (!firstToolUse) throw new Error("get_scene tool use missing");
+        input.onToolResult?.({
+          toolCallId: firstToolUse.id,
+          tokens: 1,
+          toolName: "get_scene",
+          summary: "get_scene result",
+        });
         await sendPreparedRequest(
           input,
           auditRequestFor(input, [
             ...input.messages,
             { role: "assistant", content: textOf(first.response) },
-            { role: "tool_result", toolUseId: "tool-1", content: "result" },
+            {
+              role: "tool_result",
+              toolUseId: firstToolUse.id,
+              content: "result",
+            },
             { role: "user", content: "x".repeat(100) },
           ]),
           1,
@@ -1305,6 +1485,508 @@ describe("turn owner payload and tokenizer guards", () => {
     ).toBe("invalid");
     expect(h.appended).toHaveLength(0);
     expect(h.owner.slotsInUse()).toBe(0);
+  });
+});
+
+describe("M4 read bindings (T-b)", () => {
+  it("runs only selected shared-core tools through the Main adapters, preserves legacy result text and records, and reports batch counters", async () => {
+    const title = `Scene ${"x".repeat(180)}`;
+    const chapterContent = [
+      {
+        id: "scene-1",
+        parentId: null,
+        nodeType: "scene",
+        title,
+        status: "outline",
+      },
+    ];
+    const chapterText = JSON.stringify(chapterContent);
+    const tokenBudget = 400;
+    const truncatedChapterText = `${chapterText.slice(0, 100)}...[truncated: 元 ${chapterText.length} tokens]`;
+    const responses: AgentWireResponse[] = [
+      {
+        blocks: [
+          { type: "text", content: "Reading." },
+          {
+            type: "tool_use",
+            id: "tool-call-scene",
+            name: "get_scene",
+            input: {},
+          },
+          {
+            type: "tool_use",
+            id: "tool-call-chapters",
+            name: "list_chapters",
+            input: {},
+          },
+        ],
+        stopReason: "tool_use",
+        inputTokens: 5,
+        outputTokens: 2,
+        cost: 0.1,
+      },
+      {
+        blocks: [{ type: "text", content: "Done." }],
+        stopReason: "end_turn",
+        inputTokens: 7,
+        outputTokens: 3,
+        cost: 0.2,
+      },
+    ];
+    const h = harness({
+      responses,
+      runTurn: async (input) => {
+        expect(input.bindings?.map(({ name }) => name)).toEqual([
+          "get_scene",
+          "list_chapters",
+        ]);
+        return driveCoreReadOwnerLoop(input);
+      },
+      readDbExecute: mainReadFixture(title),
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          tools: ["get_scene", "list_chapters"],
+          loop: { ...startRequest(TURN_A).loop, tokenBudget },
+        }),
+      ),
+    );
+    const ownerLoop = result.loopResult;
+    expect(ownerLoop).toBeDefined();
+    expect(ownerLoop?.stoppedReason).toBe("completed");
+    expect(ownerLoop?.finalText).toBe("Reading.Done.");
+    expect(ownerLoop?.toolCallRecords).toEqual([
+      {
+        name: "get_scene",
+        params: {},
+        resultSummary: "No id provided",
+        tokensUsed: 0,
+      },
+      {
+        name: "list_chapters",
+        params: {},
+        resultSummary: "1 nodes (parts/chapters/scenes)",
+        tokensUsed: chapterText.length,
+      },
+    ]);
+    expect(ownerLoop?.usage).toEqual({
+      totalTokens: chapterText.length,
+      tokensIn: 12,
+      tokensOut: 5,
+      cost: 0.1 + 0.2,
+    });
+    expect(h.dbQueries).toHaveLength(3);
+    expect(h.sends).toHaveLength(2);
+    expect(h.sends[0]?.args.tools?.map(({ name }) => name)).toEqual([
+      "get_scene",
+      "list_chapters",
+    ]);
+    const toolResults = h.sends[1]?.args.messages.filter(
+      (message) => message.role === "tool_result",
+    );
+    expect(toolResults?.map(({ content }) => content)).toEqual([
+      "No id provided",
+      truncatedChapterText,
+    ]);
+    const events = progressDeliveries.map(
+      ([, , payload]) => payload as { event: Record<string, unknown> },
+    );
+    expect(
+      events.map(({ event }) => event).filter((event) => event.kind === "tool"),
+    ).toEqual([
+      {
+        kind: "tool",
+        phase: "started",
+        toolCallId: "tool-call-scene",
+        toolName: "get_scene",
+        totalCalls: 2,
+        maxCalls: 10,
+        tokensUsed: 0,
+        tokenBudget,
+      },
+      {
+        kind: "tool",
+        phase: "finished",
+        toolCallId: "tool-call-scene",
+        toolName: "get_scene",
+        totalCalls: 2,
+        maxCalls: 10,
+        tokensUsed: 0,
+        tokenBudget,
+      },
+      {
+        kind: "tool",
+        phase: "started",
+        toolCallId: "tool-call-chapters",
+        toolName: "list_chapters",
+        totalCalls: 2,
+        maxCalls: 10,
+        tokensUsed: 0,
+        tokenBudget,
+      },
+      {
+        kind: "tool",
+        phase: "finished",
+        toolCallId: "tool-call-chapters",
+        toolName: "list_chapters",
+        totalCalls: 2,
+        maxCalls: 10,
+        tokensUsed: chapterText.length,
+        tokenBudget,
+      },
+    ]);
+
+    const legacy = await runLegacyLoop({
+      responses,
+      tokenBudget,
+      maxToolCalls: 10,
+      maxUserQuestions: 8,
+      executeTool: async (name, toolCallId, params) => ({
+        name,
+        toolCallId,
+        params,
+        content: name === "list_chapters" ? chapterContent : null,
+        summary:
+          name === "list_chapters"
+            ? "1 nodes (parts/chapters/scenes)"
+            : "No id provided",
+        tokensUsed: name === "list_chapters" ? chapterText.length : 0,
+      }),
+    });
+    expect(ownerLoop?.stoppedReason).toBe(legacy.result.stoppedReason);
+    expect(ownerLoop?.toolCallRecords).toEqual(legacy.result.toolCallRecords);
+    expect(ownerLoop?.usage).toEqual({
+      totalTokens: legacy.result.toolCallRecords.reduce(
+        (total, record) => total + record.tokensUsed,
+        0,
+      ),
+      tokensIn: legacy.result.tokensIn,
+      tokensOut: legacy.result.tokensOut,
+      cost: legacy.result.cost,
+    });
+    expect(ownerLoop?.finalText).toBe(legacy.textChunks.join(""));
+    expect(
+      h.sends.map(({ args }) =>
+        args.messages.filter((message) => message.role !== "system"),
+      ),
+    ).toEqual(legacy.sentMessages);
+  });
+
+  it("rejects a tool at the execution boundary after the owner's limit removes its declaration", async () => {
+    const responses: AgentWireResponse[] = [
+      {
+        blocks: [
+          { type: "tool_use", id: "first-call", name: "get_scene", input: {} },
+        ],
+        stopReason: "tool_use",
+      },
+      {
+        blocks: [
+          {
+            type: "tool_use",
+            id: "after-limit-call",
+            name: "get_scene",
+            input: {},
+          },
+        ],
+        stopReason: "tool_use",
+      },
+      { blocks: [{ type: "text", content: "Done." }], stopReason: "end_turn" },
+    ];
+    const h = harness({
+      responses,
+      runTurn: async (input) => {
+        const binding = input.bindings?.find(
+          ({ name }) => name === "get_scene",
+        );
+        if (!binding) throw new Error("get_scene binding missing");
+        const execution = vi.spyOn(binding, "execute");
+        await driveCoreReadOwnerLoop(input, true);
+        expect(execution).toHaveBeenCalledTimes(1);
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          tools: ["get_scene"],
+          loop: { ...startRequest(TURN_A).loop, maxToolCalls: 1 },
+        }),
+      ),
+    );
+
+    expect(result.loopResult?.stoppedReason).toBe("limit_calls");
+    expect(
+      h.sends[2]?.args.messages.filter(
+        (message) => message.role === "tool_result",
+      ),
+    ).toContainEqual({
+      role: "tool_result",
+      toolUseId: "after-limit-call",
+      content: "Error: Tool not available this turn: get_scene",
+      isError: true,
+    });
+  });
+
+  it("short-circuits a fully injected entry with the legacy handler result", async () => {
+    const content = alreadyInjectedCodexEntryContent("injected-entry");
+    const legacy = {
+      name: "get_codex_entry",
+      content,
+      summary: ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
+      tokensUsed: JSON.stringify(content).length,
+    };
+    let queriesAtRun = 0;
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "injected-call",
+              name: "get_codex_entry",
+              input: { id: "injected-entry" },
+            },
+          ],
+          stopReason: "tool_use",
+        },
+        {
+          blocks: [{ type: "text", content: "Done." }],
+          stopReason: "end_turn",
+        },
+      ],
+      runTurn: async (input) => {
+        queriesAtRun = h.dbQueries.length;
+        await driveCoreReadOwnerLoop(input);
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          fullyInjectedIds: ["injected-entry"],
+          tools: ["get_codex_entry"],
+        }),
+      ),
+    );
+
+    expect(h.dbQueries).toHaveLength(queriesAtRun);
+    expect(h.sends[1]?.args.messages).toContainEqual({
+      role: "tool_result",
+      toolUseId: "injected-call",
+      content: JSON.stringify(legacy.content),
+      isError: false,
+    });
+    expect(result.loopResult?.toolCallRecords).toEqual([
+      {
+        name: legacy.name,
+        params: { id: "injected-entry" },
+        resultSummary: legacy.summary,
+        tokensUsed: legacy.tokensUsed,
+      },
+    ]);
+  });
+
+  it("does not build or run read ports when request.tools is empty", async () => {
+    const h = harness({
+      runTurn: async (input) => {
+        expect(input.bindings).toEqual([]);
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+      },
+    });
+    const { context } = h.newContext();
+    completed(await h.owner.start(context, startRequest(TURN_A)));
+    expect(h.dbQueries).toEqual([]);
+  });
+
+  it("applies user Stop to an in-flight Main read without recording a tool error", async () => {
+    let readCallCount = 0;
+    const readStarted = deferred<void>();
+    const nativeRead = deferred<string>();
+    const h = harness({
+      responses: [responseWith("tool_use", "lookup", ["list_chapters"])],
+      runTurn: driveCoreReadOwnerLoop,
+      readDbExecute: async () => {
+        readCallCount += 1;
+        if (readCallCount === 3) {
+          readStarted.resolve();
+          return nativeRead.promise;
+        }
+        return readAnswer();
+      },
+    });
+    const { context } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: ["list_chapters"] }),
+    );
+    await readStarted.promise;
+    expect(h.owner.readsInFlight()).toBe(1);
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    nativeRead.resolve(readAnswer());
+    const result = completed(await started);
+    await flush();
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "aborted",
+      toolCallRecords: [],
+    });
+    const events = progressDeliveries.map(
+      ([, , payload]) => (payload as { event: Record<string, unknown> }).event,
+    );
+    expect(
+      events
+        .filter((event) => event.kind === "tool")
+        .map((event) => event.phase),
+    ).toEqual(["started"]);
+    expect(
+      events.filter(
+        (event) => event.kind === "stopped" && event.reason === "user-stop",
+      ),
+    ).toHaveLength(1);
+    expect(h.sends).toHaveLength(1);
+    expect(h.owner.readsInFlight()).toBe(0);
+  });
+
+  it("applies a forced abort to an in-flight Main read and ignores its late completion", async () => {
+    let readCallCount = 0;
+    const readStarted = deferred<void>();
+    const nativeRead = deferred<string>();
+    const h = harness({
+      responses: [responseWith("tool_use", "lookup", ["list_chapters"])],
+      runTurn: driveCoreReadOwnerLoop,
+      readDbExecute: async () => {
+        readCallCount += 1;
+        if (readCallCount === 3) {
+          readStarted.resolve();
+          return nativeRead.promise;
+        }
+        return readAnswer();
+      },
+    });
+    const { context, sender } = h.newContext();
+    const outcome = h.owner
+      .start(context, startRequest(TURN_A, { tools: ["list_chapters"] }))
+      .then(
+        () => "resolved",
+        (error: Error) => error.message,
+      );
+    await readStarted.promise;
+    expect(h.owner.readsInFlight()).toBe(1);
+    sender.emit("destroyed");
+    expect(await outcome).toMatch(/ABORTED: sender-gone/);
+    const eventCount = progressDeliveries.length;
+    nativeRead.resolve(readAnswer());
+    await flush();
+    expect(h.owner.readsInFlight()).toBe(0);
+    expect(progressDeliveries).toHaveLength(eventCount);
+  });
+
+  it("keeps typed Native hooks through a user Stop and drops the in-flight result", async () => {
+    const readStarted = deferred<void>();
+    const nativeRead = deferred<string>();
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "native-call",
+              name: "search_events",
+              input: { query: "arrival" },
+            },
+          ],
+          stopReason: "tool_use",
+        },
+      ],
+      nativeReadMethods: {
+        eventsSemanticSearch: async () => {
+          readStarted.resolve();
+          return nativeRead.promise;
+        },
+      },
+      runTurn: driveCoreReadOwnerLoop,
+    });
+    const { context } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: ["search_events"] }),
+    );
+    await readStarted.promise;
+    expect(h.owner.readsInFlight()).toBe(1);
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    nativeRead.resolve(JSON.stringify([]));
+    const result = completed(await started);
+
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "aborted",
+      toolCallRecords: [],
+    });
+    expect(h.owner.readsInFlight()).toBe(0);
+    const events = progressDeliveries.map(
+      ([, , payload]) => (payload as { event: Record<string, unknown> }).event,
+    );
+    expect(
+      events
+        .filter((event) => event.kind === "tool")
+        .map((event) => event.phase),
+    ).toEqual(["started"]);
+  });
+
+  it("keeps typed Native hooks through a forced abort and ignores the late result", async () => {
+    const readStarted = deferred<void>();
+    const nativeRead = deferred<string>();
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "native-call",
+              name: "search_events",
+              input: { query: "arrival" },
+            },
+          ],
+          stopReason: "tool_use",
+        },
+      ],
+      nativeReadMethods: {
+        eventsSemanticSearch: async () => {
+          readStarted.resolve();
+          return nativeRead.promise;
+        },
+      },
+      runTurn: driveCoreReadOwnerLoop,
+    });
+    const { context, sender } = h.newContext();
+    const outcome = h.owner
+      .start(context, startRequest(TURN_A, { tools: ["search_events"] }))
+      .then(
+        () => "resolved",
+        (error: Error) => error.message,
+      );
+    await readStarted.promise;
+    expect(h.owner.readsInFlight()).toBe(1);
+    sender.emit("destroyed");
+    expect(await outcome).toMatch(/ABORTED: sender-gone/);
+    expect(h.owner.readsInFlight()).toBe(1);
+    const eventCount = progressDeliveries.length;
+    nativeRead.resolve(JSON.stringify([]));
+    await flush();
+
+    expect(h.owner.readsInFlight()).toBe(0);
+    expect(progressDeliveries).toHaveLength(eventCount);
+    expect(h.terminalsOf()).toHaveLength(1);
   });
 });
 
@@ -1538,7 +2220,12 @@ describe("loop results (R2-b2)", () => {
           toolUseId: "used-1",
           content: "result",
         });
-        input.onToolResult?.({ tokens: 0, toolName: "get_scene" });
+        input.onToolResult?.({
+          toolCallId: "call-1",
+          tokens: 0,
+          toolName: "get_scene",
+          summary: "get_scene result",
+        });
 
         const secondRequest = auditRequestFor(input, messages);
         const second = await sendPreparedRequest(
@@ -1587,7 +2274,12 @@ describe("loop results (R2-b2)", () => {
       responses: [responseWith("tool_use", "lookup", ["get_scene"])],
       runTurn: async (input) => {
         await sendPreparedRequest(input, auditRequestFor(input), 0);
-        input.onToolResult?.({ tokens: 1, toolName: "get_scene" });
+        input.onToolResult?.({
+          toolCallId: "call-1",
+          tokens: 1,
+          toolName: "get_scene",
+          summary: "get_scene result",
+        });
       },
     });
     const { context } = h.newContext();
@@ -1615,10 +2307,20 @@ describe("loop results (R2-b2)", () => {
         await sendPreparedRequest(input, auditRequestFor(input), 0);
         for (const tokens of invalidTokens) {
           expect(() =>
-            input.onToolResult?.({ tokens, toolName: "get_scene" }),
+            input.onToolResult?.({
+              toolCallId: "call-1",
+              tokens,
+              toolName: "get_scene",
+              summary: "get_scene result",
+            }),
           ).toThrow("MASTRA_AGENT_TOOL_RESULT_TOKENS_INVALID");
         }
-        input.onToolResult?.({ tokens: 0, toolName: "get_scene" });
+        input.onToolResult?.({
+          toolCallId: "call-1",
+          tokens: 0,
+          toolName: "get_scene",
+          summary: "get_scene result",
+        });
       },
     });
     const { context } = h.newContext();
@@ -1636,6 +2338,70 @@ describe("loop results (R2-b2)", () => {
       stoppedReason: "completed",
       usage: { totalTokens: 0 },
     });
+  });
+
+  it("records a duplicate callback for one toolCallId only once", async () => {
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "duplicate-call",
+              name: "get_scene",
+              input: { id: "scene-1" },
+            },
+          ],
+          stopReason: "tool_use",
+        },
+      ],
+      runTurn: async (input) => {
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+        input.onToolStart?.({
+          toolCallId: "duplicate-call",
+          toolName: "get_scene",
+        });
+        input.onToolResult?.({
+          toolCallId: "duplicate-call",
+          toolName: "get_scene",
+          tokens: 7,
+          summary: "first result",
+        });
+        input.onToolResult?.({
+          toolCallId: "duplicate-call",
+          toolName: "get_scene",
+          tokens: 11,
+          summary: "duplicate result",
+        });
+      },
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: ["get_scene"] }),
+      ),
+    );
+
+    expect(result.loopResult?.toolCallRecords).toEqual([
+      {
+        name: "get_scene",
+        params: { id: "scene-1" },
+        resultSummary: "first result",
+        tokensUsed: 7,
+      },
+    ]);
+    expect(result.loopResult?.usage.totalTokens).toBe(7);
+    const toolEvents = progressDeliveries
+      .map(
+        ([, , payload]) =>
+          (payload as { event: Record<string, unknown> }).event,
+      )
+      .filter((event) => event.kind === "tool");
+    expect(toolEvents.map((event) => event.phase)).toEqual([
+      "started",
+      "finished",
+    ]);
   });
 });
 

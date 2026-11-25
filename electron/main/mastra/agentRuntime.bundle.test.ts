@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AiAuditEventInput } from "../../shared/aiAuditEvents.js";
 import type { NapiBackendLike } from "../../shared/ipcContract.js";
 import type { MastraAgentTurnStartRequest } from "../../shared/mastraAgentTurnWire.js";
+import { M4_READ_TOOL_NAMES } from "../../shared/agentReadToolDefinitions.js";
 import { createPerCodePointTokenizer } from "../../shared/mastraRead/tokenizer.testSupport.js";
 import { createMastraAgentLoader } from "../mastraAgentLoader.js";
 import { createMastraEnvPin } from "../mastraEnv.js";
@@ -31,6 +32,7 @@ const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 const TURN = "00000000-0000-4000-8000-0000000000a1";
 
 let tmp = "";
+let bundleInputs: string[] = [];
 let guard: NetworkGuard;
 let loader: ReturnType<typeof createMastraAgentLoader>;
 const originalEnv = { ...process.env };
@@ -42,11 +44,13 @@ beforeAll(async () => {
   const config = build.bundleConfigs[2]!;
   expect(String(config.outfile)).toMatch(/mastra-agent\.cjs$/);
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-mp3c-bundle-"));
-  await esbuild.build({
+  const result = await esbuild.build({
     ...config,
     outfile: path.join(tmp, "mastra-agent.cjs"),
+    metafile: true,
     logLevel: "silent",
   });
+  bundleInputs = Object.keys(result.metafile.inputs);
   guard = installNetworkGuard();
   // A pin of this test's own: the shared one is the product's, applied by the loader only.
   const pin = createMastraEnvPin();
@@ -307,13 +311,23 @@ describe("the real Agent in the third bundle", () => {
     const before = loader.loaded;
     expect(before).toBe(true);
   });
+
+  it("the third bundle contains no main ports, DB adapters, Native bindings, or shared read core", () => {
+    expect(
+      bundleInputs.filter((file) =>
+        /electron\/(?:main\/(?:mastraRead|readDomain)|shared\/(?:mastraRead|readDomain)|native\/)/.test(
+          file,
+        ),
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe("the runtime tool allow-list (DR-MP3-14, layer 2)", () => {
-  it("is empty in MP-3, and a tool outside it is refused by name", () => {
-    expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([]);
+  it("matches the M4 shared names, and a tool outside it is refused by name", () => {
+    expect([...MASTRA_AGENT_TOOL_ALLOWLIST]).toEqual([...M4_READ_TOOL_NAMES]);
     expect(() => assertAgentToolsAllowed([])).not.toThrow();
-    expect(() => assertAgentToolsAllowed(["get_scene"])).toThrow(
+    expect(() => assertAgentToolsAllowed(["not_allowed"])).toThrow(
       MastraAgentToolNotAllowedError,
     );
     expect(() => assertAgentToolsAllowed(["a", "b"], ["a"])).toThrow(/: b$/);

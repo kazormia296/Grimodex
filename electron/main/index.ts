@@ -43,6 +43,10 @@ import {
 import { nir1LocalGenerationLaunchFromApp, registerIpcRouter } from "./ipc.js";
 import { createMastraAgentLoader } from "./mastraAgentLoader.js";
 import {
+  createMainO200kTokenizer,
+  resolveMainTokenizerAssetPaths,
+} from "./mastraRead/o200kTokenizer.js";
+import {
   openMastraAgentTurnGate,
   parseMastraAgentTurnCiSeam,
 } from "./mastraAgentTurnGate.js";
@@ -611,6 +615,13 @@ if (!gotSingleInstanceLock) {
     const mastraTurnOwner = createMastraTurnOwner({
       open: mastraAgentTurnOpen,
       backend,
+      tokenizer: createMainO200kTokenizer(() =>
+        resolveMainTokenizerAssetPaths({
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          mainDir: __dirname,
+        }),
+      ),
       secrets: keyStore,
       profile: profileEgress,
       loadRuntime: () => mastraAgentLoader.load(),

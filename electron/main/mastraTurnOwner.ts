@@ -56,8 +56,39 @@ import {
   renderAgentConversationPayloads,
   renderAgentToolPayloads,
 } from "../shared/agentPayloadRenderer.js";
-import { createM4ReadToolDefinitions } from "../shared/agentReadToolDefinitions.js";
+import {
+  createM4ReadToolDefinitions,
+  type M4ReadToolName,
+} from "../shared/agentReadToolDefinitions.js";
 import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
+import type {
+  CoreReadContext,
+  CoreTreeState,
+} from "../shared/mastraRead/ports.js";
+import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
+import { createDbSceneBodyReader } from "../shared/readDomain/core/sceneBody.js";
+import {
+  createMainChronicleReadContext,
+  createMainChronicleSearchContext,
+} from "../shared/readDomain/core/chronicleMainContext.js";
+import {
+  createMainCodexEntryContext,
+  createMainCodexReadContext,
+} from "../shared/readDomain/core/codexMainContext.js";
+import {
+  createChronicleReadExecutors,
+  createChronicleSearchExecutors,
+} from "../shared/readDomain/core/chronicleReadExecutors.js";
+import { createCodexEntryExecutors } from "../shared/readDomain/core/codexEntryExecutors.js";
+import { createCodexReadExecutors } from "../shared/readDomain/core/codexReadExecutors.js";
+import { readChronicleReadInputs } from "../shared/readDomain/core/readInputsReader.js";
+import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
+import {
+  ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
+  alreadyInjectedCodexEntryContent,
+} from "../shared/readDomain/features/codex/alreadyInjectedEntry.js";
+import { extractPlainText } from "../shared/readDomain/features/codex/prosemirrorTextExtractor.js";
+import type { CoreReadExecutor } from "../shared/readDomain/core/toolResult.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
 import {
   createAgentLoopRuleState,
@@ -86,14 +117,20 @@ import type {
 import type {
   MastraAgentRuntime,
   MastraAgentRuntimeModule,
+  MastraAgentToolBinding,
 } from "./mastra/agentRuntime.js";
 import type {
   MastraAgentTurnSender,
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
+import { createMainReadDb } from "./mastraRead/db.js";
+import { createMainTypedReads } from "./mastraRead/typed.js";
 import type { MainReadHooks } from "./mastraRead/nativeCall.js";
-import type { MainEgressParticipantContext } from "./profileEgress.js";
+import type {
+  MainEgressParticipantContext,
+  MainIssuedCallerIdentity,
+} from "./profileEgress.js";
 
 /** `T_quit`: the quit finalizer's wait for the owner (provisional; DR-MP3-13, P11). */
 export const MASTRA_TURN_QUIT_BOUND_MS = 5_000;
@@ -635,6 +672,125 @@ export function createMastraTurnOwner(
     trackInFlight: (settled) => trackRead(turn, settled),
   });
 
+  const createTurnReadBindings = async (
+    turn: Turn,
+    request: MastraAgentTurnStartRequest,
+    identity: MainIssuedCallerIdentity,
+    tokenizer: CoreTokenizer,
+  ): Promise<{
+    readonly bindings: MastraAgentToolBinding[];
+    readonly clear: () => void;
+  }> => {
+    const hooks = readHooksOf(turn);
+    const db = createCoreReadDb(
+      createMainReadDb({ backend: options.backend!, identity, ...hooks }),
+    );
+    const native = createMainTypedReads({
+      backend: options.backend!,
+      identity,
+      ...hooks,
+    });
+    const turnInputs = await readChronicleReadInputs(db, {
+      projectId: turn.projectId,
+      currentSceneId: turn.currentSceneId,
+    });
+    const countTokens = (text: string): number => tokenizer.countTokens(text);
+    const treeState: CoreTreeState = {
+      projectId: turnInputs.inputs.projectId,
+      nodes: turnInputs.nodes,
+      activeSceneId: turnInputs.inputs.currentSceneId,
+    };
+    const readContext: CoreReadContext = {
+      getDb: () => db,
+      getTreeState: () => treeState,
+      body: createDbSceneBodyReader(() => db),
+      native,
+      countTokens,
+    };
+    const chronicle = createMainChronicleReadContext({
+      db,
+      turn: turnInputs,
+      countTokens,
+      getUiLanguage: () => request.loop.language,
+    });
+    const executors: Readonly<Record<M4ReadToolName, CoreReadExecutor>> = {
+      ...createReadExecutors(readContext),
+      ...createCodexReadExecutors(
+        createMainCodexReadContext({
+          db,
+          inputs: turnInputs.inputs,
+          countTokens,
+          native,
+        }),
+      ),
+      ...createCodexEntryExecutors(
+        createMainCodexEntryContext({
+          db,
+          inputs: turnInputs.inputs,
+          countTokens,
+          extractPlainText,
+        }),
+      ),
+      ...createChronicleReadExecutors(chronicle.ctx),
+      ...createChronicleSearchExecutors(
+        createMainChronicleSearchContext({
+          db,
+          turn: turnInputs,
+          countTokens,
+          native,
+        }),
+      ),
+    };
+    const bindings = request.tools.map((name): MastraAgentToolBinding => {
+      const definition = m4Tools.get(name);
+      const execute = executors[name];
+      if (!definition || !execute)
+        throw new Error("MASTRA_AGENT_READ_TOOL_UNAVAILABLE");
+      return {
+        name,
+        description: definition.description,
+        async execute(args) {
+          if (
+            typeof args !== "object" ||
+            args === null ||
+            Array.isArray(args)
+          ) {
+            throw new Error("MASTRA_AGENT_TOOL_ARGUMENTS_INVALID");
+          }
+          if (name === "get_codex_entry") {
+            const id = String((args as Record<string, unknown>)["id"] ?? "");
+            if (id && request.fullyInjectedIds.includes(id)) {
+              const content = alreadyInjectedCodexEntryContent(id);
+              const text = JSON.stringify(content);
+              return {
+                text,
+                tokensUsed: countTokens(text),
+                summary: ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
+              };
+            }
+          }
+          const result = await execute(args as Record<string, unknown>);
+          if (
+            "error" in result &&
+            result.error !== undefined &&
+            result.error !== null
+          ) {
+            throw new Error(String(result.error));
+          }
+          return {
+            text:
+              result.content == null
+                ? result.summary || "No result (not found)."
+                : JSON.stringify(result.content)!,
+            tokensUsed: result.tokensUsed,
+            summary: result.summary,
+          };
+        },
+      };
+    });
+    return { bindings, clear: chronicle.clear };
+  };
+
   // -------------------------------------------------------------------------
   // The turn's sink: Main's sink, with the owner's checks and bookkeeping.
   // -------------------------------------------------------------------------
@@ -932,6 +1088,10 @@ export function createMastraTurnOwner(
     let tokensOut: number | null = null;
     let cost: number | null = null;
     const toolCallRecords: MastraAgentTurnToolCallRecord[] = [];
+    const toolCallRecordIndexes = new Map<string, number>();
+    const startedToolCallIds = new Set<string>();
+    const completedToolCallIds = new Set<string>();
+    let declaredToolNames = new Set<string>();
     const citations: MastraAgentTurnCitation[] = [];
     let finalThinkingBlocks: MastraAgentTurnThinkingBlock[] = [];
     let terminalSent = false;
@@ -1009,6 +1169,15 @@ export function createMastraTurnOwner(
       ]);
       // The identity, the profile or a stop may have changed during the await.
       assertLive(turn);
+      const turnReadBindings =
+        request.tools.length === 0
+          ? null
+          : await createTurnReadBindings(
+              turn,
+              request,
+              callerIdentity as MainIssuedCallerIdentity,
+              tokenizer,
+            );
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,
@@ -1017,6 +1186,15 @@ export function createMastraTurnOwner(
         systemVolatileTail: request.systemVolatileTail,
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
+        toolDefinitions,
+        bindings: turnReadBindings?.bindings ?? [],
+        isToolDeclared: (name) => declaredToolNames.has(name),
+        isTurnStopped: () =>
+          turn.userStop || turn.forcedCause !== null || turn.finished,
+        maxToolCalls: request.loop.maxToolCalls,
+        maxUserQuestions: request.loop.maxUserQuestions,
+        tokenBudget: request.loop.tokenBudget,
+        countTokens: (text) => tokenizer.countTokens(text),
         prepareSend: (auditRequest, ctx) => {
           if (ctx.sendIndex > 0 && turn.userStop)
             throw new MastraAgentLoopStopped();
@@ -1077,9 +1255,6 @@ export function createMastraTurnOwner(
                 requestToFinalize.messages,
               ),
               // The declared tools are counted as the legacy path counts them.
-              // The runtime does not hand them to the Agent yet (the tool
-              // wrapper, a later part, does), so until then a non-empty list
-              // makes this count higher than what is sent.
               renderedToolPayloads: renderAgentToolPayloads(
                 payloadRoute,
                 loopState.limitMessageInserted ? [] : toolDefinitions,
@@ -1100,6 +1275,9 @@ export function createMastraTurnOwner(
               finalized.transport.systemCacheSegments ?? null,
             systemVolatileTail: finalized.transport.systemVolatileTail ?? null,
           };
+          declaredToolNames = new Set(
+            preparedRequest.tools?.map(({ name }) => name) ?? [],
+          );
           progress.send({
             kind: "send-accepted",
             sendIndex: ctx.sendIndex + 1,
@@ -1109,6 +1287,7 @@ export function createMastraTurnOwner(
           return preparedRequest;
         },
         observeResponse: (response) => {
+          if (response.stopReason === "tool_use") turnReadBindings?.clear();
           const responseText = response.blocks
             .filter((block) => block.type === "text")
             .map((block) => block.content)
@@ -1125,14 +1304,16 @@ export function createMastraTurnOwner(
             toolUses.map((block) => block.name),
           );
           if (!loopState.limitMessageInserted) {
-            toolCallRecords.push(
-              ...toolUses.map((block) => ({
+            for (const block of toolUses) {
+              if (toolCallRecordIndexes.has(block.id)) continue;
+              toolCallRecordIndexes.set(block.id, toolCallRecords.length);
+              toolCallRecords.push({
                 name: block.name,
                 params: block.input,
                 resultSummary: "",
                 tokensUsed: 0,
-              })),
-            );
+              });
+            }
           }
 
           if (response.inputTokens != null)
@@ -1152,12 +1333,58 @@ export function createMastraTurnOwner(
               : [],
           );
         },
-        // T connects this callback; without that wrapper, token limits are not end-to-end.
-        onToolResult: ({ tokens }) => {
+        onToolStart: ({ toolCallId, toolName }) => {
+          if (
+            turn.forcedCause !== null ||
+            turn.finished ||
+            startedToolCallIds.has(toolCallId) ||
+            !m4Tools.has(toolName)
+          ) {
+            return;
+          }
+          startedToolCallIds.add(toolCallId);
+          progress.send({
+            kind: "tool",
+            phase: "started",
+            toolCallId,
+            toolName: toolName as M4ReadToolName,
+            totalCalls: loopState.totalCalls,
+            maxCalls: loopState.maxToolCalls,
+            tokensUsed: loopState.tokensUsed,
+            tokenBudget: loopState.tokenBudget,
+          });
+        },
+        onToolResult: ({ toolCallId, toolName, tokens, summary }) => {
+          if (turn.forcedCause !== null || turn.finished) return;
           if (!Number.isSafeInteger(tokens) || tokens < 0) {
             throw new Error("MASTRA_AGENT_TOOL_RESULT_TOKENS_INVALID");
           }
+          if (completedToolCallIds.has(toolCallId)) return;
+          completedToolCallIds.add(toolCallId);
           loopState = recordToolResultTokens(loopState, tokens);
+          const recordIndex = toolCallRecordIndexes.get(toolCallId);
+          if (recordIndex !== undefined) {
+            const record = toolCallRecords[recordIndex];
+            if (record && record.name === toolName) {
+              toolCallRecords[recordIndex] = {
+                ...record,
+                resultSummary: summary,
+                tokensUsed: tokens,
+              };
+            }
+          }
+          if (m4Tools.has(toolName) && startedToolCallIds.has(toolCallId)) {
+            progress.send({
+              kind: "tool",
+              phase: "finished",
+              toolCallId,
+              toolName: toolName as M4ReadToolName,
+              totalCalls: loopState.totalCalls,
+              maxCalls: loopState.maxToolCalls,
+              tokensUsed: loopState.tokensUsed,
+              tokenBudget: loopState.tokenBudget,
+            });
+          }
         },
         signal: turn.controller.signal,
       });
@@ -1191,6 +1418,15 @@ export function createMastraTurnOwner(
       if (loopStopped && turn.forcedCause === null) {
         const { handle, response } = turn;
         if (handle === null || response === null) throw endError(turn, error);
+        const completedRecordIndexes = new Set(
+          [...completedToolCallIds]
+            .map((toolCallId) => toolCallRecordIndexes.get(toolCallId))
+            .filter((index): index is number => index !== undefined),
+        );
+        for (let index = toolCallRecords.length - 1; index >= 0; index -= 1) {
+          if (!completedRecordIndexes.has(index))
+            toolCallRecords.splice(index, 1);
+        }
         loopState = markAgentLoopAborted(loopState);
         if (sendTerminalProgress({ kind: "stopped", reason: "user-stop" })) {
           return {
