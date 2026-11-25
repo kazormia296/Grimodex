@@ -16,7 +16,6 @@ export interface MarkerEvent {
   title: string;
   kind: EventKind;
   precision: EventPrecision;
-  secret: boolean;
   /** scene 参照あり=実線/中身あり、なし=オフページ（中空グリフ）。 */
   sceneLinked: boolean;
   primaryCodexId: string | null;
@@ -278,7 +277,7 @@ function EventMarkerBase({
     );
   }
 
-  // アクセシブル名: title 属性はホバー tooltip 用で、種別/確度/警告/秘匿の状態が
+  // アクセシブル名: title 属性はホバー tooltip 用で、種別/確度/警告の状態が
   // SR に伝わらないため aria-label へ統合する。選択状態は aria-current で示す。
   const ariaParts = [event.title || t("chronicle.untitled", "無題のイベント")];
   if (kindTitle) ariaParts.push(kindTitle);
@@ -288,7 +287,6 @@ function EventMarkerBase({
     );
   }
   if (conflict) ariaParts.push(t("chronicle.hasIssue", "整合警告あり"));
-  if (event.secret) ariaParts.push(t("chronicle.secretTag", "秘匿"));
 
   // 種別は先頭グリフ（凡例と同じ三角/菱形/丸）で示すため、文字タグは廃止。
   // 確度チップ（確定は無印・おおよそ/不明のみ明示）。線種だけでは判別しづらい問題への対策。
@@ -304,7 +302,7 @@ function EventMarkerBase({
     ? "grabbing"
     : cursor;
 
-  // 帯/ピルの中身（グリフ＋ラベル＋確度/秘匿チップ）。interval は固定幅なので
+  // 帯/ピルの中身（グリフ＋ラベル＋確度チップ）。interval は固定幅なので
   // marker-content 層でクリップする。conflict バッジはこの層の外（button 直下）に
   // 置くため、角外(top:-6/right:-6)に浮いてもクリップされない。
   const flowContent = (
@@ -350,22 +348,6 @@ function EventMarkerBase({
           }}
         >
           {precisionTag.label}
-        </span>
-      )}
-      {event.secret && (
-        <span
-          data-testid="secret-tag"
-          style={{
-            flex: "none",
-            fontSize: 10,
-            lineHeight: 1,
-            padding: "2px 5px",
-            borderRadius: 4,
-            background: mix(AMBER, 18, "transparent"),
-            color: mix(AMBER, 72, "var(--foreground)"),
-          }}
-        >
-          {t("chronicle.secretTag", "秘匿")}
         </span>
       )}
     </>

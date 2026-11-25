@@ -12,7 +12,6 @@ function item(o: Partial<ChronicleEventListItem> = {}): ChronicleEventListItem {
     title: "出来事A",
     kind: "generic",
     precision: "exact",
-    secret: false,
     isInterval: false,
     primaryCodexId: "c1",
     laneName: "アヤ",
@@ -51,6 +50,14 @@ function renderList(
 }
 
 describe("ChronicleEventList", () => {
+  it("DB row の secret=true の一覧行にも鍵アイコンを描かない", () => {
+    const secretItem = { ...item(), secret: true } as ChronicleEventListItem;
+    const { container } = renderList([secretItem]);
+    const row = container.querySelector('[data-event-list-id="e1"]')!;
+    expect(row.querySelector("svg.lucide-lock")).toBeNull();
+    expect(row.querySelector('[aria-label="秘匿"]')).toBeNull();
+  });
+
   it("行を年表順（startDay 昇順・無時刻は末尾）で描く", () => {
     const { ids } = renderList([
       item({ id: "a", title: "A", startDay: 30 }),

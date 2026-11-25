@@ -23,7 +23,10 @@ import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
-import { readOpenForeshadowWire } from "@/features/foreshadow/api";
+import {
+  readForeshadowListWithLabelsWire,
+  readOpenForeshadowWire,
+} from "@/features/foreshadow/api";
 import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
 import type {
   ChatReadOnlyToolRunContext,
@@ -647,11 +650,12 @@ const LEGACY_READ_CONTEXT: CoreReadContext = {
   },
   // fts は args を加工せずそのまま渡す（command・引数・scope・limit は core が決める）。
   // invoke は arrow の中で読むので、試験の `vi.mock("@/lib/tauri")` が効く。
-  // foreshadowOpen は wire を返すだけ（組み立ては core。Native なら `{ projectId }` だけで 1 回の invoke、
-  // それ以外は Drizzle の 2 list）。`readOpenForeshadowWire` は arrow の中で読む（試験の mock が効く）。
+  // foreshadow の ports は wire を返すだけ（組み立ては core）。arrow の中で読むことで試験の mock が効く。
   native: {
     fts: (args) => invoke("fts_search", args),
     foreshadowOpen: (args) => readOpenForeshadowWire(args.projectId),
+    foreshadowListWithLabels: (args) =>
+      readForeshadowListWithLabelsWire(args.projectId),
   },
   countTokens: (text) => countTokens(text),
 };

@@ -69,18 +69,26 @@ function ev(over: Partial<EventRow> = {}): EventRow {
   };
 }
 
-function renderInspector() {
+function renderInspector(
+  over: {
+    event?: EventRow;
+    isScene?: boolean;
+    scenes?: { id: string; title: string; hasDate?: boolean }[];
+    onPatch?: (patch: Partial<EventRow>) => void;
+  } = {},
+) {
   return render(
     <ChronicleInspector
-      event={ev()}
+      event={over.event ?? ev()}
       laneOptions={[]}
       locations={[]}
-      scenes={[]}
+      scenes={over.scenes ?? []}
       calendar={{ daysPerYear: 360, seasonBoundaries: [] }}
       allEvents={[]}
-      onPatch={() => {}}
+      onPatch={over.onPatch ?? (() => {})}
       onDelete={() => {}}
       onClose={() => {}}
+      isScene={over.isScene}
       onLinkScene={() => {}}
       onUnlinkScene={() => {}}
     />,
@@ -92,6 +100,63 @@ afterEach(() => {
   useExternalWriteStore.getState().clear();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+describe("ChronicleInspector — 開示シーン", () => {
+  it.each([true, false])("secret=%s でも秘匿チェックを描かない", (secret) => {
+    const { queryByRole } = renderInspector({ event: ev({ secret }) });
+    expect(queryByRole("checkbox")).toBeNull();
+  });
+
+  it("secret=false の通常イベントにも表示し、選択 patch に secret を含めない", () => {
+    const onPatch = vi.fn();
+    const { getByLabelText } = renderInspector({
+      event: ev({ secret: false }),
+      scenes: [{ id: "s2", title: "第二章" }],
+      onPatch,
+    });
+
+    const select = getByLabelText("開示シーン") as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect([...select.options].map((option) => option.textContent)).toContain(
+      "指定なし",
+    );
+    fireEvent.change(select, { target: { value: "s2" } });
+    expect(onPatch).toHaveBeenCalledWith({ revealSceneId: "s2" });
+  });
+
+  it("シーンイベントには表示せず、指定なしは null で patch する", () => {
+    const onPatch = vi.fn();
+    const { queryByLabelText, rerender, getByLabelText } = render(
+      <ChronicleInspector
+        event={ev({ revealSceneId: "s2" })}
+        laneOptions={[]}
+        locations={[]}
+        scenes={[{ id: "s2", title: "第二章" }]}
+        calendar={{ daysPerYear: 360, seasonBoundaries: [] }}
+        onPatch={onPatch}
+        onDelete={() => {}}
+        onClose={() => {}}
+        isScene
+      />,
+    );
+    expect(queryByLabelText("開示シーン")).toBeNull();
+
+    rerender(
+      <ChronicleInspector
+        event={ev({ revealSceneId: "s2" })}
+        laneOptions={[]}
+        locations={[]}
+        scenes={[{ id: "s2", title: "第二章" }]}
+        calendar={{ daysPerYear: 360, seasonBoundaries: [] }}
+        onPatch={onPatch}
+        onDelete={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.change(getByLabelText("開示シーン"), { target: { value: "" } });
+    expect(onPatch).toHaveBeenCalledWith({ revealSceneId: "" });
+  });
 });
 
 describe("DraftTextField — ローカル下書き＋trailing debounce commit", () => {

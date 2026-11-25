@@ -6,6 +6,7 @@ import {
 import {
   finalizeTurnPayload,
   selectsCacheSystemDelivery,
+  TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
 } from "@/features/ai-context/finalizeTurnPayload";
 import {
   createContextWindowUsage,
@@ -28,6 +29,8 @@ import {
 } from "@/features/chat/turn/renderAgentPayload";
 import type { ResolvedChatTurnRoute } from "@/features/chat/turn/resolveTurnRoute";
 
+export { TURN_PAYLOAD_SAFETY_MARGIN_TOKENS };
+
 /**
  * 会話履歴を CLI に渡す単一プロンプトに平坦化する。
  * CLI (claude -p / codex exec / opencode run) は単一プロンプト引数しか
@@ -38,8 +41,6 @@ export function flattenMessagesForCli(
 ): string {
   return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
 }
-
-export const TURN_PAYLOAD_SAFETY_MARGIN_TOKENS = 32;
 
 export function estimateMessageEnvelopeTokens(
   messages: ReadonlyArray<{ role: string; content: string }>,

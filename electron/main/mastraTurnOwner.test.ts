@@ -7,6 +7,19 @@ import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const progressDeliveries = vi.hoisted(() => [] as unknown[][]);
+vi.mock("./events.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./events.js")>();
+  return {
+    ...actual,
+    sendMainEventToWindow: (
+      ...args: Parameters<typeof actual.sendMainEventToWindow>
+    ) => {
+      progressDeliveries.push(args);
+    },
+  };
+});
+
 import type { AiAuditEventInput } from "../shared/aiAuditEvents.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import {
@@ -25,6 +38,7 @@ import type {
   MastraAgentTurnInput,
 } from "./mastra/agentRuntime.js";
 import type { AgentAuditRequest, AgentWireArgs } from "./mastra/agentWire.js";
+import { createPerCodePointTokenizer } from "../shared/mastraRead/tokenizer.testSupport.js";
 import {
   createMastraTurnOwner,
   MASTRA_TURN_FALLBACK_PROJECT_ID,
@@ -81,7 +95,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 const flush = async (): Promise<void> => {
-  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  for (let i = 0; i < 24; i += 1) await Promise.resolve();
 };
 
 const PROJECT_ID = "project-1";
@@ -90,16 +104,35 @@ function startRequest(
   turnId: string,
   extra: Partial<MastraAgentTurnStartRequest> = {},
 ): MastraAgentTurnStartRequest {
+  const messages =
+    extra.messages ??
+    ([
+      { role: "system", content: "You write." },
+      { role: "user", content: "Continue." },
+    ] as MastraAgentTurnStartRequest["messages"]);
+  const loop: MastraAgentTurnStartRequest["loop"] = {
+    tokenBudget: 2000,
+    maxToolCalls: 10,
+    maxUserQuestions: 8,
+    contextWindow: 8000,
+    requestMaxOutputTokens: 4096,
+    language: "ja",
+    controlMessages: {
+      callLimitMessage: "calls",
+      tokenBudgetMessage: "tokens",
+      userQuestionLimitMessage: "questions",
+    },
+    ...extra.loop,
+    fallbackSystem:
+      extra.loop?.fallbackSystem ??
+      (messages[0]?.role === "system" ? messages[0].content : "You write."),
+  };
   return {
     turnId,
     chatSessionId: `session-${turnId}`,
     projectId: PROJECT_ID,
     currentSceneId: "scene-1",
     chatMessageId: `message-${turnId}`,
-    messages: [
-      { role: "system", content: "You write." },
-      { role: "user", content: "Continue." },
-    ],
     route: {
       provider: "anthropic",
       model: "claude-x",
@@ -115,22 +148,10 @@ function startRequest(
     systemCacheSegments: null,
     systemVolatileTail: null,
     fullyInjectedIds: [],
-    loop: {
-      tokenBudget: 2000,
-      maxToolCalls: 10,
-      maxUserQuestions: 8,
-      contextWindow: 8000,
-      requestMaxOutputTokens: 4096,
-      language: "ja",
-      controlMessages: {
-        callLimitMessage: "calls",
-        tokenBudgetMessage: "tokens",
-        userQuestionLimitMessage: "questions",
-      },
-      fallbackSystem: "system",
-    },
     tools: [],
     ...extra,
+    messages,
+    loop,
   };
 }
 
@@ -181,6 +202,7 @@ function harness(
     loadFails?: boolean;
     /** Runs in the turn after the dispatch row and before the send (a tool's read, as PR-4 will). */
     runRead?: (owner: MastraTurnOwner) => Promise<unknown>;
+    runTurn?: (input: MastraAgentTurnInput) => Promise<void>;
   } = {},
 ): Harness {
   const appended: Harness["appended"] = [];
@@ -228,24 +250,19 @@ function harness(
   const runtimeModule: MastraAgentRuntimeModule = {
     createMastraAgentRuntime: () => ({
       async runTurn(input: MastraAgentTurnInput) {
-        const request = {
-          messages: [
-            { role: "system", content: input.instructions },
-            ...input.messages,
-          ],
-          tools: [],
-          ...input.route,
-          systemCacheSegments: input.systemCacheSegments,
-          systemVolatileTail: input.systemVolatileTail,
-        } as unknown as AgentAuditRequest;
-        const handle = await input.audit.begin(request);
+        if (overrides.runTurn) return overrides.runTurn(input);
+        const request = auditRequestFor(input);
+        const preparedRequest = input.prepareSend
+          ? input.prepareSend(request, { sendIndex: 0, previous: null })
+          : request;
+        const handle = await input.audit.begin(preparedRequest);
         let raw;
         try {
           await input.audit.dispatched(handle);
           await overrides.runRead?.(owner);
           raw = await input.send(
             {
-              ...request,
+              ...preparedRequest,
               // As the adapter's `buildWireArgs` does.
               ...(handle.chatMessageId
                 ? { chatMessageId: handle.chatMessageId }
@@ -271,6 +288,7 @@ function harness(
             stopReason: raw.stopReason,
           },
         });
+        input.observeResponse?.(structuredClone(raw));
       },
     }),
   };
@@ -278,6 +296,7 @@ function harness(
   const owner = createMastraTurnOwner({
     open: true,
     backend,
+    tokenizer: createPerCodePointTokenizer(),
     secrets: { resolveApiKeyForRequest: () => "key-1" },
     profile: {
       get restricted() {
@@ -365,8 +384,61 @@ const refusalReason = (value: unknown): string => {
   return result.reason ?? "";
 };
 
+function auditRequestFor(
+  input: MastraAgentTurnInput,
+  messages = input.messages,
+): AgentAuditRequest {
+  return {
+    messages: [{ role: "system", content: input.instructions }, ...messages],
+    tools: [],
+    ...input.route,
+    systemCacheSegments: input.systemCacheSegments,
+    systemVolatileTail: input.systemVolatileTail,
+  } as unknown as AgentAuditRequest;
+}
+
+async function sendPreparedRequest(
+  input: MastraAgentTurnInput,
+  request: AgentAuditRequest,
+  sendIndex: number,
+): Promise<void> {
+  if (!input.prepareSend) throw new Error("prepareSend missing");
+  const prepared = input.prepareSend(request, { sendIndex, previous: null });
+  const handle = await input.audit.begin(prepared);
+  let response;
+  try {
+    await input.audit.dispatched(handle);
+    response = await input.send(
+      {
+        ...prepared,
+        ...(handle.chatMessageId
+          ? { chatMessageId: handle.chatMessageId }
+          : {}),
+        auditContext: handle.auditContext,
+      } as AgentWireArgs,
+      { signal: input.signal },
+    );
+  } catch (error) {
+    await input.audit.fail(handle, error);
+    throw error;
+  }
+  await input.audit.complete(handle, {
+    response,
+    usage: {
+      inputTokens: response.inputTokens ?? null,
+      outputTokens: response.outputTokens ?? null,
+      cacheReadTokens: response.cacheReadTokens ?? null,
+      cacheWriteTokens: response.cacheWriteTokens ?? null,
+      cost: response.cost ?? null,
+      stopReason: response.stopReason,
+    },
+  });
+  input.observeResponse?.(structuredClone(response));
+}
+
 beforeEach(() => {
   nextTurn = 0;
+  progressDeliveries.length = 0;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -590,6 +662,414 @@ describe("start: the turn's route and result", () => {
     expect(
       refusalReason(await h.owner.start(context, startRequest(uuid()))),
     ).toBe("unsupported");
+  });
+});
+
+describe("per-send payload finalization (R2-b1)", () => {
+  it("sends one ordered send-accepted event per successful send", async () => {
+    const h = harness({
+      runTurn: async (input) => {
+        const request = auditRequestFor(input);
+        await sendPreparedRequest(input, request, 0);
+        await sendPreparedRequest(input, request, 1);
+      },
+    });
+    const { context } = h.newContext();
+    completed(await h.owner.start(context, startRequest(TURN_A)));
+
+    expect(h.sends).toHaveLength(2);
+    const events = progressDeliveries.map(
+      ([, , payload]) =>
+        payload as {
+          sequence: number;
+          event: { kind: string; sendIndex?: number };
+        },
+    );
+    expect(
+      events.map(({ sequence, event }) => [
+        sequence,
+        event.kind,
+        event.sendIndex,
+      ]),
+    ).toEqual([
+      [1, "send-accepted", 1],
+      [2, "send-accepted", 2],
+    ]);
+  });
+
+  it("accepts the exact window boundary and reports one-token overflow before audit begin", async () => {
+    const base = startRequest(TURN_A);
+    const contextWindow =
+      base.loop.fallbackSystem.length +
+      JSON.stringify({ role: "user", content: "Continue." }).length +
+      8 +
+      32;
+    const requestAtBoundary = startRequest(TURN_A, {
+      route: { ...base.route, requestMaxOutputTokens: 8 },
+      loop: {
+        ...base.loop,
+        contextWindow,
+        requestMaxOutputTokens: 8,
+      },
+    });
+    const exact = harness();
+    const exactContext = exact.newContext();
+    completed(await exact.owner.start(exactContext.context, requestAtBoundary));
+    expect(
+      (
+        progressDeliveries[0]?.[2] as {
+          event: { usage: { remainingTokens: number } };
+        }
+      ).event.usage.remainingTokens,
+    ).toBe(0);
+
+    progressDeliveries.length = 0;
+    const over = harness();
+    const overContext = over.newContext();
+    const result = await over.owner.start(
+      overContext.context,
+      startRequest(TURN_A, {
+        route: { ...base.route, requestMaxOutputTokens: 8 },
+        loop: {
+          ...base.loop,
+          contextWindow,
+          requestMaxOutputTokens: 8,
+        },
+        messages: [
+          { role: "system", content: "You write." },
+          { role: "user", content: "Continued." },
+        ],
+      }),
+    );
+    expect(result.status).toBe("context-window-exceeded");
+    if (result.status !== "context-window-exceeded")
+      throw new Error("expected overflow");
+    expect(result.overflowTokens).toBe(1);
+    expect(over.appended).toHaveLength(0);
+    expect(over.sends).toHaveLength(0);
+    const overflowEvents = progressDeliveries.map(
+      ([, , payload]) =>
+        payload as { event: { kind: string; overflowTokens?: number } },
+    );
+    expect(overflowEvents).toHaveLength(1);
+    expect(overflowEvents[0]?.event).toMatchObject({
+      kind: "context-overflow",
+      overflowTokens: 1,
+    });
+  });
+
+  it("reflects a cache budget downgrade in the request before audit begin", async () => {
+    const base = startRequest(TURN_A);
+    const h = harness();
+    const { context } = h.newContext();
+    completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          route: { ...base.route, requestMaxOutputTokens: 8 },
+          loop: {
+            ...base.loop,
+            contextWindow: 87,
+            requestMaxOutputTokens: 8,
+          },
+          systemCacheSegments: ["x".repeat(40)],
+          systemVolatileTail: "tail",
+        }),
+      ),
+    );
+    expect(h.sends[0]?.args.messages[0]).toEqual({
+      role: "system",
+      content: "You write.",
+    });
+    expect(h.sends[0]?.args.systemCacheSegments).toBeNull();
+    expect(h.sends[0]?.args.systemVolatileTail).toBeNull();
+    expect(
+      (
+        progressDeliveries[0]?.[2] as {
+          event: { cacheDowngradeReason: string | null };
+        }
+      ).event.cacheDowngradeReason,
+    ).toBe("budget");
+  });
+
+  it("returns one overflow terminal after the prior send, with no audit row for the overflowing send", async () => {
+    const base = startRequest(TURN_A);
+    const h = harness({
+      runTurn: async (input) => {
+        const request = auditRequestFor(input);
+        await sendPreparedRequest(input, request, 0);
+        await sendPreparedRequest(
+          input,
+          {
+            ...request,
+            messages: [
+              ...request.messages,
+              { role: "assistant", content: "Earlier answer." },
+              { role: "user", content: "x".repeat(100) },
+            ],
+          },
+          1,
+        );
+      },
+    });
+    const { context } = h.newContext();
+    const result = await h.owner.start(
+      context,
+      startRequest(TURN_A, {
+        route: { ...base.route, requestMaxOutputTokens: 8 },
+        loop: {
+          ...base.loop,
+          contextWindow: 128,
+          requestMaxOutputTokens: 8,
+        },
+        systemCacheSegments: ["a", "b", "c", "d", "e"],
+      }),
+    );
+
+    expect(result.status).toBe("context-window-exceeded");
+    if (result.status !== "context-window-exceeded")
+      throw new Error("expected overflow");
+    expect(result.overflowTokens).toBeGreaterThan(0);
+    expect(h.sends).toHaveLength(1);
+    expect(
+      h.types().filter((type) => type === "request.prepared"),
+    ).toHaveLength(1);
+    expect(
+      h.types().filter((type) => type === "execution.succeeded"),
+    ).toHaveLength(1);
+    const events = progressDeliveries.map(
+      ([, , payload]) =>
+        payload as {
+          sequence: number;
+          event: {
+            kind: string;
+            sendIndex?: number;
+            cacheDowngradeReason?: string | null;
+          };
+        },
+    );
+    expect(events).toHaveLength(2);
+    expect(events.map(({ event }) => event.kind)).toEqual([
+      "send-accepted",
+      "context-overflow",
+    ]);
+    expect(events[0]?.event).toMatchObject({
+      sendIndex: 1,
+      cacheDowngradeReason: "too-many-blocks",
+    });
+    expect(events[1]?.event).toMatchObject({
+      cacheDowngradeReason: "too-many-blocks",
+    });
+  });
+
+  it("refuses an unresolved model as invalid and refuses absent or unready tokenizers as unsupported", async () => {
+    const model = harness();
+    const modelContext = model.newContext();
+    const base = startRequest(TURN_A);
+    expect(
+      refusalReason(
+        await model.owner.start(modelContext.context, {
+          ...base,
+          route: { ...base.route, model: null },
+        }),
+      ),
+    ).toBe("invalid");
+    expect(
+      refusalReason(
+        await model.owner.start(
+          modelContext.context,
+          startRequest(uuid(), {
+            route: { ...base.route, model: "" },
+          }),
+        ),
+      ),
+    ).toBe("invalid");
+    expect(model.loads.count).toBe(0);
+
+    const absent = harness({ tokenizer: undefined });
+    const absentContext = absent.newContext();
+    expect(
+      refusalReason(
+        await absent.owner.start(absentContext.context, startRequest(TURN_A)),
+      ),
+    ).toBe("unsupported");
+    expect(absent.loads.count).toBe(0);
+
+    const ensureReady = vi.fn(() =>
+      Promise.reject(new Error("tokenizer unavailable")),
+    );
+    const unready = harness({
+      tokenizer: {
+        kind: "test-per-code-point",
+        ensureReady,
+        countTokens: (text) => Array.from(text).length,
+      },
+    });
+    const unreadyContext = unready.newContext();
+    expect(
+      refusalReason(
+        await unready.owner.start(unreadyContext.context, startRequest(TURN_A)),
+      ),
+    ).toBe("unsupported");
+    expect(ensureReady).toHaveBeenCalledOnce();
+    expect(unready.loads.count).toBe(0);
+    expect(unready.appended).toHaveLength(0);
+    expect(unready.owner.slotsInUse()).toBe(0);
+  });
+});
+
+describe("turn owner payload and tokenizer guards", () => {
+  it("refuses a system mismatch without reserving the turn, then accepts the corrected request", async () => {
+    const h = harness();
+    const { context } = h.newContext();
+    const valid = startRequest(TURN_A);
+    expect(
+      refusalReason(
+        await h.owner.start(context, {
+          ...valid,
+          loop: { ...valid.loop, fallbackSystem: "not sent" },
+        }),
+      ),
+    ).toBe("invalid");
+    expect(h.appended).toHaveLength(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+
+    completed(await h.owner.start(context, valid));
+    expect(h.owner.slotsInUse()).toBe(0);
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it("finds a cancel while tokenizer readiness is pending and writes no audit row", async () => {
+    const ready = deferred<void>();
+    const h = harness({
+      tokenizer: {
+        ...createPerCodePointTokenizer(),
+        ensureReady: () => ready.promise,
+      },
+    });
+    const { context } = h.newContext();
+    const started = h.owner.start(context, startRequest(TURN_A));
+    started.catch(() => undefined);
+    await flush();
+
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    expect(h.owner.slotsInUse()).toBe(1);
+    ready.resolve();
+    await expect(started).rejects.toThrow(/MASTRA_AGENT_TURN_CANCELLED/);
+    expect(h.appended).toHaveLength(0);
+    expect(h.sends).toHaveLength(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("aborts a sender destroyed during tokenizer readiness without writing an audit row", async () => {
+    const ready = deferred<void>();
+    const h = harness({
+      tokenizer: {
+        ...createPerCodePointTokenizer(),
+        ensureReady: () => ready.promise,
+      },
+    });
+    const c = h.newContext();
+    const started = h.owner.start(c.context, startRequest(TURN_A));
+    const outcome = started.then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+    await flush();
+    c.sender.emit("destroyed");
+    await flush();
+    try {
+      expect(
+        await Promise.race([outcome, Promise.resolve("still waiting")]),
+      ).toMatch(/MASTRA_AGENT_TURN_ABORTED: sender-gone/);
+    } finally {
+      ready.resolve();
+    }
+    expect(h.appended).toHaveLength(0);
+    expect(h.sends).toHaveLength(0);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("lets user stop win when prepareSend detects a context overflow", async () => {
+    const cancellation: { run?: () => void; result?: unknown } = {};
+    let cancelled = false;
+    const h = harness({
+      tokenizer: {
+        ...createPerCodePointTokenizer(),
+        countTokens(text: string) {
+          if (!cancelled && text.includes("x".repeat(50))) {
+            cancelled = true;
+            cancellation.run?.();
+          }
+          return Array.from(text).length;
+        },
+      },
+    });
+    const { context } = h.newContext();
+    cancellation.run = () => {
+      cancellation.result = h.owner.cancel(context, { turnId: TURN_A });
+    };
+    const base = startRequest(TURN_A);
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, {
+        messages: [
+          { role: "system", content: "You write." },
+          { role: "user", content: "x".repeat(100) },
+        ],
+        loop: {
+          ...base.loop,
+          contextWindow: 128,
+          requestMaxOutputTokens: 8,
+        },
+      }),
+    );
+    await expect(started).rejects.toThrow(/MASTRA_AGENT_TURN_CANCELLED/);
+    expect(cancellation.result).toMatchObject({ status: "ok", found: true });
+    expect(h.appended).toHaveLength(0);
+    expect(
+      progressDeliveries.some(
+        ([, , payload]) =>
+          (payload as { event?: { kind?: string } }).event?.kind ===
+          "context-overflow",
+      ),
+    ).toBe(false);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("uses a tokenizer method with its receiver intact", async () => {
+    const tokenizer = {
+      kind: "test-per-code-point" as const,
+      table: new Map<string, number>(),
+      ensureReady: () => Promise.resolve(),
+      countTokens(text: string) {
+        return this.table.get(text) ?? Array.from(text).length;
+      },
+    };
+    const h = harness({ tokenizer });
+    const { context } = h.newContext();
+
+    completed(await h.owner.start(context, startRequest(TURN_A)));
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it("refuses an unknown tool name directly without throwing or reserving a slot", async () => {
+    const h = harness();
+    const { context } = h.newContext();
+
+    expect(
+      refusalReason(
+        await h.owner.start(
+          context,
+          startRequest(TURN_A, { tools: ["not_a_tool"] as never }),
+        ),
+      ),
+    ).toBe("invalid");
+    expect(h.appended).toHaveLength(0);
+    expect(h.owner.slotsInUse()).toBe(0);
   });
 });
 
