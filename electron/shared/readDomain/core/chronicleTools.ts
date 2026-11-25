@@ -413,10 +413,21 @@ export async function getChronicleState(
     },
     ctx.getUiLanguage(),
   );
+  const content = calendarRow
+    ? {
+        ...snapshot,
+        // AI が日時の尺度を知るための要約だけ（CED/1 の N7・◇9）。
+        calendar: {
+          daysPerYear: calendarRow.daysPerYear,
+          startYear: calendarRow.startYear,
+          months: calendarRow.months,
+        },
+      }
+    : snapshot;
   return result(
     ctx,
     "get_chronicle_state",
-    snapshot,
+    content,
     `Chronicle state at scene (${anchor.source})`,
   );
 }

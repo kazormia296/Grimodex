@@ -11,8 +11,12 @@ import {
   type AgentEventCreateInput,
   type TrackedWriteOpts,
 } from "@/features/agent-writes/event";
-import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
-import type { EventKind, EventGranularity } from "@/db/schema";
+import {
+  EVENT_KINDS,
+  EVENT_GRANULARITIES,
+  EVENT_PRECISIONS,
+} from "@/db/schema";
+import type { EventKind, EventGranularity, EventPrecision } from "@/db/schema";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { EventRow } from "@/features/chronicle/api";
 import {
@@ -90,6 +94,12 @@ function coerceGranularity(v: unknown): EventGranularity | undefined {
     ? (s as EventGranularity)
     : undefined;
 }
+function coercePrecision(v: unknown): EventPrecision | undefined {
+  const s = str(v);
+  return (EVENT_PRECISIONS as readonly string[]).includes(s)
+    ? (s as EventPrecision)
+    : undefined;
+}
 
 /** 作中年表に出来事を作成（tracked-write・undo 可）。 */
 export async function createEventTool(
@@ -105,6 +115,31 @@ export async function createEventTool(
   }
   const title = str(params["title"]);
   if (!title) return fail("create_event", "title is required");
+  if (
+    typeof params["startTime"] !== "number" ||
+    !Number.isFinite(params["startTime"])
+  ) {
+    return fail(
+      "create_event",
+      "startTime is required and must be a finite number of days from the in-world epoch",
+    );
+  }
+  const precision = coercePrecision(params["precision"]);
+  if (!precision) {
+    return fail(
+      "create_event",
+      "precision is required and must be one of: exact, approx, unknown",
+    );
+  }
+  if (params["startGranularity"] !== undefined) {
+    const granularity = coerceGranularity(params["startGranularity"]);
+    if (!granularity || granularity === "none") {
+      return fail(
+        "create_event",
+        "startGranularity must be season, year, month, day, or time; omit it to infer granularity from the supplied date/time",
+      );
+    }
+  }
   if (!requestId?.trim()) {
     return fail("create_event", "request identity is required");
   }
@@ -121,12 +156,13 @@ export async function createEventTool(
       locationCodexId: params["locationCodexId"]
         ? str(params["locationCodexId"])
         : null,
-      startTime: optNum(params["startTime"]),
+      startTime: params["startTime"],
       endTime: optNum(params["endTime"]),
       startMinute: optNum(params["startMinute"]),
       endMinute: optNum(params["endMinute"]),
       startGranularity: coerceGranularity(params["startGranularity"]),
       endGranularity: coerceGranularity(params["endGranularity"]),
+      precision,
       // 空白のみ入力も null（自動導出）へ正規化（TS 層で契約を明示）。
       revealSceneId: str(params["revealSceneId"]) || null,
       participantCodexIds: strArray(params["participantCodexIds"]),
@@ -165,6 +201,35 @@ export async function updateEventTool(
   }
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("update_event", "eventId is required");
+  if (
+    params["startTime"] !== undefined &&
+    (typeof params["startTime"] !== "number" ||
+      !Number.isFinite(params["startTime"]))
+  ) {
+    return fail(
+      "update_event",
+      "startTime cannot be null and must be a finite number of days from the in-world epoch",
+    );
+  }
+  if (params["startGranularity"] !== undefined) {
+    const granularity = coerceGranularity(params["startGranularity"]);
+    if (!granularity || granularity === "none") {
+      return fail(
+        "update_event",
+        "startGranularity must be season, year, month, day, or time; 'none' is not allowed",
+      );
+    }
+  }
+  const precision =
+    params["precision"] !== undefined
+      ? coercePrecision(params["precision"])
+      : undefined;
+  if (params["precision"] !== undefined && !precision) {
+    return fail(
+      "update_event",
+      "precision must be one of: exact, approx, unknown",
+    );
+  }
   const visibleEvent = await visibleEventForWrite(eventId);
   if (!visibleEvent) return fail("update_event", NOT_FOUND);
   if (!requestId?.trim()) {
@@ -187,7 +252,7 @@ export async function updateEventTool(
           : undefined,
         startTime:
           params["startTime"] !== undefined
-            ? optNum(params["startTime"])
+            ? (params["startTime"] as number)
             : undefined,
         endTime:
           params["endTime"] !== undefined
@@ -209,6 +274,7 @@ export async function updateEventTool(
           params["endGranularity"] !== undefined
             ? coerceGranularity(params["endGranularity"])
             : undefined,
+        precision,
         revealSceneId:
           params["revealSceneId"] !== undefined
             ? str(params["revealSceneId"])

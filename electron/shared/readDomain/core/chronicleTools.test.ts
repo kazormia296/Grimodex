@@ -1004,6 +1004,23 @@ describe("get_chronicle_state", () => {
     }
   });
 
+  it("returns the calendar summary only when a calendar exists", async () => {
+    const withCalendar = await makeCtx(
+      stateWorld(),
+    ).executors.get_chronicle_state({
+      sceneId: "s3",
+    });
+    expect(withCalendar.content).toHaveProperty("calendar", {
+      daysPerYear: CALENDAR.daysPerYear,
+      startYear: CALENDAR.startYear,
+      months: CALENDAR.months,
+    });
+    const withoutCalendar = await makeCtx(
+      stateWorld({ calendar: null }),
+    ).executors.get_chronicle_state({ sceneId: "s3" });
+    expect(withoutCalendar.content).not.toHaveProperty("calendar");
+  });
+
   it("reads the tree state for the active scene ONLY when no sceneId was given", async () => {
     const given = makeCtx(stateWorld());
     await given.executors.get_chronicle_state({ sceneId: "s3" });

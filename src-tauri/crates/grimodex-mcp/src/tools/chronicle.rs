@@ -78,6 +78,32 @@ fn valid_kind(kind: &str) -> bool {
     matches!(kind, "generic" | "birth" | "death")
 }
 
+fn valid_precision(precision: &str) -> bool {
+    matches!(precision, "exact" | "approx" | "unknown")
+}
+
+// schema の定義にだけ使う（値は文字列で受けて、実行側で検査する）。
+#[allow(dead_code)]
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "lowercase")]
+enum PrecisionSchema {
+    Exact,
+    Approx,
+    Unknown,
+}
+
+// schema の定義にだけ使う。
+#[allow(dead_code)]
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "lowercase")]
+enum StartGranularitySchema {
+    Season,
+    Year,
+    Month,
+    Day,
+    Time,
+}
+
 const REVEAL_SCENE_NOTE: &str =
     "scene_id is not in the reading order, so revealedToReader was not judged.";
 
@@ -501,6 +527,14 @@ pub struct GetChronicleStateParams {
     pub scene_id: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarSummary<'a> {
+    days_per_year: i64,
+    start_year: i64,
+    months: &'a str,
+}
+
 /// 出来事の day 番号を暦整形した絶対日付文字列（TS の fmtEventDate と同 shape）。
 /// 暦なし/粒度 none/日付欠落は None。lang は get_chronicle_state と同じ ja 固定。
 fn fmt_event_date(
@@ -565,6 +599,11 @@ pub async fn get_chronicle_state(
     let scene_events = db::chronicle_list_scene_events(&conn, &project_id).map_err(internal_err)?;
     let relations = db::chronicle_list_relations(&conn, &project_id).map_err(internal_err)?;
     let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
+    let calendar_summary = calendar.as_ref().map(|calendar| CalendarSummary {
+        days_per_year: calendar.days_per_year,
+        start_year: calendar.start_year,
+        months: &calendar.months,
+    });
     let codex_names =
         db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
     let nodes = db::chronicle_scene_nodes(&conn, &project_id).map_err(internal_err)?;
@@ -623,12 +662,18 @@ pub async fn get_chronicle_state(
                 event_id: s.event_id,
             })
             .collect(),
-        calendar: parse_calendar(calendar),
+        calendar: parse_calendar(calendar.clone()),
         codex_names,
         // MCP has no app i18n; default to ja (matches AssembleInput default).
         lang: None,
     };
-    let snapshot = snap::assemble_snapshot(&input);
+    let mut snapshot = serde_json::to_value(snap::assemble_snapshot(&input)).map_err(internal_err)?;
+    if let (Some(calendar), Some(object)) = (calendar_summary, snapshot.as_object_mut()) {
+        object.insert(
+            "calendar".to_string(),
+            serde_json::to_value(calendar).map_err(internal_err)?,
+        );
+    }
     ok_json(&snapshot)
 }
 
@@ -659,15 +704,21 @@ pub struct CreateEventParams {
     pub primary_codex_id: Option<String>,
     /// Location codex id (optional).
     pub location_codex_id: Option<String>,
-    /// Calendar-light numeric time (days from epoch; optional).
+    /// Calendar-light numeric time (days from epoch; required).
+    #[schemars(required)]
     pub start_time: Option<i64>,
+    /// Date confidence: exact, approx, or unknown (required).
+    #[schemars(required)]
+    #[schemars(with = "Option<PrecisionSchema>")]
+    pub precision: Option<String>,
     /// Interval end time (optional).
     pub end_time: Option<i64>,
     /// Time of day for the start, in minutes (0-1439, 24h clock; optional).
     pub start_minute: Option<i64>,
     /// Time of day for the end, in minutes (0-1439, 24h clock; optional).
     pub end_minute: Option<i64>,
-    /// How precise the start date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
+    /// How precise the start date is. Omit to infer a day-or-finer granularity; 'none' is not allowed.
+    #[schemars(with = "Option<StartGranularitySchema>")]
     pub start_granularity: Option<String>,
     /// How precise the end date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
     pub end_granularity: Option<String>,
@@ -699,6 +750,25 @@ pub async fn create_event(
     if params.secret == Some(true) {
         return Err(ErrorData::invalid_params(
             "secret is no longer supported: events cannot be hidden from the AI",
+            None,
+        ));
+    }
+    if params.start_time.is_none() {
+        return Err(ErrorData::invalid_params(
+            "start_time is required and must be a date in days from the in-world epoch",
+            None,
+        ));
+    }
+    let precision = params.precision.as_deref().filter(|p| valid_precision(p));
+    if precision.is_none() {
+        return Err(ErrorData::invalid_params(
+            "precision is required and must be one of: exact, approx, unknown",
+            None,
+        ));
+    }
+    if params.start_granularity.as_deref() == Some("none") {
+        return Err(ErrorData::invalid_params(
+            "start_granularity cannot be 'none'; omit it to use the default day granularity",
             None,
         ));
     }
@@ -743,7 +813,7 @@ pub async fn create_event(
             end_minute: params.end_minute,
             start_granularity: params.start_granularity,
             end_granularity: params.end_granularity,
-            precision: None,
+            precision: precision.map(str::to_string),
             kind: kind.map(str::to_string),
             secret: None,
             reveal_scene_id: params.reveal_scene_id,
@@ -777,22 +847,35 @@ pub struct UpdateEventParams {
     pub kind: Option<String>,
     pub primary_codex_id: Option<String>,
     pub location_codex_id: Option<String>,
-    pub start_time: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
+    #[schemars(with = "Option<i64>")]
+    pub start_time: Option<Option<i64>>,
     pub end_time: Option<i64>,
     /// Start time of day in minutes (0-1439, 24h clock).
     pub start_minute: Option<i64>,
     /// End time of day in minutes (0-1439, 24h clock).
     pub end_minute: Option<i64>,
-    /// Start date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
+    /// Start date precision: 'season'|'year'|'month'|'day'|'time'; 'none' is not allowed.
+    #[schemars(with = "Option<StartGranularitySchema>")]
     pub start_granularity: Option<String>,
     /// End date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
     pub end_granularity: Option<String>,
+    /// Optional date confidence: exact, approx, or unknown.
+    #[schemars(with = "Option<PrecisionSchema>")]
+    pub precision: Option<String>,
     /// Deprecated: `true` is rejected; `false` is ignored.
     #[serde(default)]
     #[schemars(skip)]
     pub secret: Option<bool>,
     /// Optional scene id where readers learn of this event; chronicle read tools mark it so earlier scenes aren't written as if readers knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.
     pub reveal_scene_id: Option<String>,
+}
+
+fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<i64>::deserialize(deserializer).map(Some)
 }
 
 pub async fn update_event(
@@ -805,6 +888,28 @@ pub async fn update_event(
             None,
         ));
     }
+    if params.start_time == Some(None) {
+        return Err(ErrorData::invalid_params(
+            "start_time cannot be null; omit it to leave the event date unchanged",
+            None,
+        ));
+    }
+    if params.start_granularity.as_deref() == Some("none") {
+        return Err(ErrorData::invalid_params(
+            "start_granularity cannot be 'none'; omit it to leave the granularity unchanged",
+            None,
+        ));
+    }
+    let precision = match params.precision.as_deref() {
+        Some(value) if valid_precision(value) => Some(value.to_string()),
+        Some(_) => {
+            return Err(ErrorData::invalid_params(
+                "precision must be one of: exact, approx, unknown",
+                None,
+            ));
+        }
+        None => None,
+    };
     ensure_write_allowed(server)?;
     let event_id = params.event_id.trim().to_string();
     if event_id.is_empty() {
@@ -857,13 +962,13 @@ pub async fn update_event(
             primary_codex_id: params.primary_codex_id,
             lane_group: None,
             location_codex_id: params.location_codex_id,
-            start_time: params.start_time,
+            start_time: params.start_time.flatten(),
             end_time: params.end_time,
             start_minute: params.start_minute,
             end_minute: params.end_minute,
             start_granularity: params.start_granularity,
             end_granularity: params.end_granularity,
-            precision: None,
+            precision,
             kind: params.kind,
             secret: None,
             reveal_scene_id: params.reveal_scene_id,
@@ -1293,7 +1398,8 @@ mod tests {
                     kind: None,
                     primary_codex_id: None,
                     location_codex_id: None,
-                    start_time: None,
+                    precision: None,
+                start_time: None,
                     end_time: None,
                     start_minute: None,
                     end_minute: None,
@@ -1399,8 +1505,23 @@ mod tests {
 
     #[test]
     fn event_write_schema_hides_secret_and_exposes_reveal_scene_id() {
+        let create_schema =
+            serde_json::to_value(schemars::schema_for!(CreateEventParams)).unwrap();
+        let create_required = create_schema["required"]
+            .as_array()
+            .expect("required fields");
+        assert!(create_required.iter().any(|value| value == "start_time"));
+        assert!(create_required.iter().any(|value| value == "precision"));
+        assert_eq!(
+            create_schema["properties"]["precision"]["enum"],
+            serde_json::json!(["exact", "approx", "unknown"])
+        );
+        // Option なので enum は参照先の定義に出る。
+        assert!(create_schema
+            .to_string()
+            .contains(r#""enum":["season","year","month","day","time"]"#));
         for schema in [
-            serde_json::to_value(schemars::schema_for!(CreateEventParams)).unwrap(),
+            create_schema,
             serde_json::to_value(schemars::schema_for!(UpdateEventParams)).unwrap(),
         ] {
             let properties = schema["properties"]
@@ -1422,6 +1543,94 @@ mod tests {
         assert_eq!(parsed.reveal_scene_id.as_deref(), Some("scene"));
     }
 
+    #[test]
+    fn update_event_distinguishes_omitted_start_time_from_null() {
+        let omitted: UpdateEventParams = serde_json::from_value(serde_json::json!({
+            "request_id": "update-omitted",
+            "event_id": "e1",
+            "base_version": 0
+        }))
+        .expect("omitted start_time remains an unchanged field");
+        assert_eq!(omitted.start_time, None);
+        let cleared: UpdateEventParams = serde_json::from_value(serde_json::json!({
+            "request_id": "update-null",
+            "event_id": "e1",
+            "base_version": 0,
+            "start_time": null
+        }))
+        .expect("explicit null is preserved for validation");
+        assert_eq!(cleared.start_time, Some(None));
+    }
+
+    #[tokio::test]
+    async fn chronicle_event_writes_reject_missing_date_and_date_clearing() {
+        let server = make_server(false);
+        let create = |start_time, precision: Option<&str>, start_granularity: Option<&str>| {
+            CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                title: "Required date".into(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time,
+                precision: precision.map(str::to_string),
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: start_granularity.map(str::to_string),
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            }
+        };
+        assert!(create_event(&server, create(None, Some("exact"), None))
+            .await
+            .is_err());
+        assert!(create_event(&server, create(Some(1), None, None))
+            .await
+            .is_err());
+        assert!(create_event(&server, create(Some(1), Some("exact"), Some("none")))
+            .await
+            .is_err());
+
+        let update = |start_time| UpdateEventParams {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            event_id: "missing-event".into(),
+            base_version: 0,
+            title: None,
+            note: None,
+            kind: None,
+            primary_codex_id: None,
+            location_codex_id: None,
+            start_time,
+            end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
+            precision: None,
+            secret: None,
+            reveal_scene_id: None,
+        };
+        let error = update_event(&server, update(Some(None)))
+            .await
+            .expect_err("null date cannot clear an event date");
+        assert!(error.message.contains("cannot be null"));
+        let error = update_event(
+            &server,
+            UpdateEventParams {
+                start_granularity: Some("none".into()),
+                ..update(None)
+            },
+        )
+        .await
+        .expect_err("none granularity cannot clear an event date");
+        assert!(error.message.contains("cannot be 'none'"));
+    }
+
     #[tokio::test]
     async fn create_event_rejects_secret_true_without_writing() {
         let server = make_server(false);
@@ -1435,7 +1644,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                precision: Some("exact".into()),
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -1469,7 +1679,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                precision: Some("exact".into()),
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -1506,6 +1717,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: None,
                 start_time: None,
                 end_time: None,
                 start_minute: None,
@@ -1549,6 +1761,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: Some("approx".into()),
                 start_time: None,
                 end_time: None,
                 start_minute: None,
@@ -1577,6 +1790,17 @@ mod tests {
             ),
             1
         );
+        let precision: String = server
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT precision FROM events WHERE id = ?1",
+                ["secret-false"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(precision, "approx");
     }
 
     // ── Secret-flagged Chronicle events remain visible and writable ───────────
@@ -1670,6 +1894,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: None,
                 start_time: None,
                 end_time: None,
                 start_minute: None,
@@ -1726,7 +1951,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                precision: Some("exact".into()),
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -2139,6 +2365,7 @@ mod tests {
                 kind: Some("generic".to_string()),
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: Some("exact".into()),
                 start_time: Some(10),
                 end_time: None,
                 start_minute: None,
@@ -2195,6 +2422,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: Some("exact".into()),
                 start_time: Some(3),
                 end_time: Some(4),
                 start_minute: Some(540),
@@ -2256,6 +2484,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: Some("exact".into()),
                 start_time: Some(3),
                 end_time: Some(4),
                 start_minute: None,
@@ -2282,7 +2511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_event_defaults_granularity_to_none() {
+    async fn create_event_defaults_start_granularity_to_day() {
         let server = make_server(false);
         let res = create_event(
             &server,
@@ -2293,7 +2522,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                precision: Some("exact".into()),
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -2312,7 +2542,8 @@ mod tests {
             .await
             .unwrap();
         let json = result_json(&detail);
-        assert_eq!(json["startGranularity"], "none");
+        // 日時は必須なので、開始の粒度は省略すると「日」。
+        assert_eq!(json["startGranularity"], "day");
         assert_eq!(json["endGranularity"], "none");
         assert!(json["startMinute"].is_null());
         assert!(json["endMinute"].is_null());
@@ -2342,7 +2573,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: Some(5),
+                precision: None,
+                start_time: Some(Some(5)),
                 end_time: None,
                 start_minute: Some(720),
                 end_minute: None,
@@ -2403,6 +2635,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: None,
                 start_time: None,
                 end_time: None,
                 start_minute: None,
@@ -2444,7 +2677,8 @@ mod tests {
             kind: None,
             primary_codex_id: None,
             location_codex_id: None,
-            start_time: None,
+            precision: None,
+                start_time: None,
             end_time: None,
             start_minute: None,
             end_minute: None,
@@ -2499,6 +2733,7 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
+                precision: None,
                 start_time: None,
                 end_time: None,
                 start_minute: None,
@@ -2560,7 +2795,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                precision: Some("exact".into()),
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -2852,7 +3088,8 @@ mod tests {
             kind: None,
             primary_codex_id: None,
             location_codex_id: None,
-            start_time: None,
+            precision: Some("exact".into()),
+                start_time: Some(0),
             end_time: None,
             start_minute: None,
             end_minute: None,
@@ -2905,7 +3142,8 @@ mod tests {
             kind: None,
             primary_codex_id: primary_codex_id.map(str::to_string),
             location_codex_id: location_codex_id.map(str::to_string),
-            start_time: None,
+            precision: Some("exact".into()),
+                start_time: Some(0),
             end_time: None,
             start_minute: None,
             end_minute: None,
@@ -2964,7 +3202,8 @@ mod tests {
             kind: None,
             primary_codex_id: primary_codex_id.map(str::to_string),
             location_codex_id: location_codex_id.map(str::to_string),
-            start_time: None,
+            precision: None,
+                start_time: None,
             end_time: None,
             start_minute: None,
             end_minute: None,
@@ -3034,7 +3273,8 @@ mod tests {
             kind: None,
             primary_codex_id: Some("replacement-codex".to_string()),
             location_codex_id: None,
-            start_time: None,
+            precision: None,
+                start_time: None,
             end_time: None,
             start_minute: None,
             end_minute: None,
@@ -3249,7 +3489,8 @@ mod tests {
                 kind: None,
                 primary_codex_id: None,
                 location_codex_id: None,
-                start_time: None,
+                precision: Some("exact".into()),
+                start_time: Some(0),
                 end_time: None,
                 start_minute: None,
                 end_minute: None,
@@ -3315,6 +3556,49 @@ mod tests {
         assert!(chars
             .iter()
             .any(|c| c["codexId"] == "hero" && c["name"] == "Hero"));
+        assert!(json.get("calendar").is_none());
+    }
+
+    #[tokio::test]
+    async fn chronicle_state_includes_the_configured_calendar_summary() {
+        let server = make_server(false);
+        seed_scene(&server, "p1", "s1");
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, kind,
+                                     start_time, created_at, updated_at)
+                 VALUES ('e1','p1','Battle','a0','generic',5,datetime('now'),datetime('now'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO project_calendar
+                 (project_id, days_per_year, season_boundaries, start_year, months,
+                  weekday_names, weekday_start_index, leap_rule, age_reckoning)
+                 VALUES ('p1', 360, '[{\"name\":\"Spring\",\"startDayOfYear\":0}]',
+                         42, '[{\"name\":\"Moon\",\"days\":30}]', '[\"A\"]',
+                         0, '{\"kind\":\"none\"}', 'counting')",
+                [],
+            )
+            .unwrap();
+        }
+        let result = get_chronicle_state(
+            &server,
+            GetChronicleStateParams {
+                scene_id: Some("s1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result_json(&result)["calendar"],
+            serde_json::json!({
+                "daysPerYear": 360,
+                "startYear": 42,
+                "months": "[{\"name\":\"Moon\",\"days\":30}]"
+            })
+        );
     }
 
     #[tokio::test]
