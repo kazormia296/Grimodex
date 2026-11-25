@@ -47,13 +47,23 @@
 | 項目 | 内容 |
 | --- | --- |
 | 入口 | 窓の終了（`closeQuiescenceController` の既定。panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、利用者の project の切替（`ProjectMenu`）。取り込みの完了や `ensureProjectActive` などの内部の読み込み、同じ project の読み直しでは聞かない。 |
-| 順番の理由 | lease を取った後は turn の保存が止まりうるので、確認と停止は lease の前に置く。 |
+| 順番の理由 | 確認の画面を出したまま静止を始めないように確認を lease の前に置き、了承の直後に中断を始める。停止した turn の保存は静止の flush が待つ。 |
 | 対象の判定 | その窓の chat の store が生成中（`isStreaming`）。chat の移動の制御（`chatNavigationComposition`）が lib の小さな登録口に「生成中か」と「停止」を登録する（切替の側は chat の store を直接読まない）。確認の画面は `ApplicationDialogs` に置く。 |
 | 了承 | まだ生成中なら `stopGeneration`。停止した turn の確定と監査の終端は、今ある静止の段（`ai-executions`、`scoped-mutations`、`ipc-actual-tasks`）が待つ。agent の送信は上の中断で速く終わる。 |
 | 取りやめ | 何も止めず、操作を中止する（終了は veto、切替は `blocked`／読み込まない）。 |
 | 多重の要求 | 確認を出している間の同じ種類（終了、切替）の要求は、同じ確認の結果を待つ。違う種類の要求は取りやめる（出ている文面と違う操作に答えを流用しない）。 |
 | 待ちの上限 | 確認は利用者の操作まで待つ（時間切れなし）。終了の要求は同期で `preventDefault` するので、Electron の予備の時間切れは働かない。確認の画面を読み込めなければ「断る」と答える（固めない）。 |
 | 再起動の後 | 持ち越す状態は無い。 |
+
+### 切替の記録の順番（journey の確認）
+
+停止は静止の lease より前に始まる。停止した応答の保存が lease より前に始まると、切替の記録（`lifecycleTrace`。journey の観測用で、製品の動きは変えない）の「旧い応答の終了」（`old-stream-completed`）と「旧い範囲の保存」（`old-scope-persisted`）は載らない（進行中の記録が無ければ捨てる）。
+
+- chat の応答：停止の保存の開始が切替側の `await` の再開より先なので、通常「旧い応答の終了」は載らない。「旧い範囲の保存」は lease の後に終われば載る。
+- agent の応答：中断の IPC の往復と lease の取得の競争になり、2 段とも載ることも欠けることもある。
+- 保存の完了は静止の flush が待つ。`chatStore.test.ts` の「keeps a switch waiting for the … turn stopped by its confirmation」の 2 本で、保存を止めている間は切替が進まないことと、上の記録の列を確かめる。
+- journey の判断：停止してから切り替える 4 本（chat／agent × project／workspace）は、この 2 段を任意にする（載った場合は順番と位置を守る）。残りの 4 段は要る。保存は、切替の後に旧い範囲の停止の行があることで確かめる。
+- この結果、6 段すべてを実機で確かめる journey は無くなる（確認の関数の単体試験は 6 段を要る形のまま）。
 
 ## 範囲外（残る制限）
 
@@ -62,3 +72,4 @@
 - バックアップの復元、データの削除、監査の書き出し、新しい project の作成と削除、取り込みの完了の切替など、他の操作は今までどおり待つ（取り込み中は確認を出さない）。
 - 中断しても provider の側の生成と課金が止まる保証は無い（stream の停止と同じ）。
 - 実行済みの道具の結果は残る。
+- 出力も道具の実行も無いまま中断した agent は、利用者の発言だけが残る（応答の行は作らない。確認の文の「途中までの応答」は空）。

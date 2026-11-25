@@ -1459,6 +1459,56 @@ test("lifecycle journey assertion requires one transition id with the exact six-
   );
 });
 
+test("lifecycle journey assertion allows a stopped turn to settle before the switch lease", async () => {
+  const run = (phases, options) =>
+    assertLifecycleTransitionOrder(
+      {
+        readLifecycleTrace: async () =>
+          phases.map((phase, sequence) => ({
+            schemaVersion: 1,
+            transitionId: "workspace:one",
+            sequence,
+            timestampMs: 100 + sequence,
+            kind: "workspace",
+            phase,
+            from: { workspacePath: "/old" },
+            to: { workspacePath: "/new" },
+          })),
+        recordTimeline: () => {},
+      },
+      {},
+      {
+        kind: "workspace",
+        from: { workspacePath: "/old" },
+        to: { workspacePath: "/new" },
+        label: "stopped switch",
+        ...options,
+      },
+    );
+  const before = ["switch-requested", "quiescence-started"];
+  const after = ["authority-commit", "new-scope-hydrated"];
+  const completed = "old-stream-completed";
+  const persisted = "old-scope-persisted";
+
+  for (const middle of [[], [completed], [persisted], [completed, persisted]]) {
+    const matched = await run([...before, ...middle, ...after], {
+      stoppedBeforeSwitch: true,
+    });
+    assert.equal(matched.length, 4 + middle.length);
+  }
+  const required = /did not emit the required lifecycle order/;
+  // The two optional milestones keep their order and place when present.
+  for (const phases of [
+    [...before, persisted, completed, ...after],
+    [...before, "authority-commit", persisted, "new-scope-hydrated"],
+    ["switch-requested", ...after],
+  ]) {
+    await assert.rejects(run(phases, { stoppedBeforeSwitch: true }), required);
+  }
+  // Without the option every milestone stays required.
+  await assert.rejects(run([...before, persisted, ...after], {}), required);
+});
+
 test("affected execution resolves a strict catalog-ordered runner subset", () => {
   const selected = resolveSelectedProductJourneys(
     PRODUCT_JOURNEYS,
