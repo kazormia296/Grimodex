@@ -10,7 +10,7 @@
 - agent の送信は専用の登録簿（`AppState.agent_sends`、型は stream と同じ `StreamAbortRegistry`）に持つ。D2a の停止の障壁（`request_abort_all` と件数）は変えない。agent の送信は今までどおり `until_cancelled` で障壁が取り消す。
 - 中断の入口は既存の `abort_chat_stream` を使う（N-API は両方の登録簿に中断を伝える）。新しい IPC command と権限の台帳の変更は無い。
 - 中断は Native の送信の future を落とす（`grimodex-ai` は変えない）。再試行の待ちと本文の読み取りも含めて止まる。
-- 利用者の停止で終わった送信は、`AI_REQUEST_STOPPED_BY_USER` を含む error で返す。renderer は監査を `cancelled`（stopped）で閉じる。
+- 利用者の停止で終わった送信は、`AI_REQUEST_STOPPED_BY_USER` を含む error で返す。停止の障壁（D2a）が同時に働いていれば、その拒否を返す。renderer は停止の印のある失敗だけを `cancelled`（stopped）で閉じ、停止の後の別の失敗は `failed` で記録する。
 - 落とした送信には `transport.attempt.finished` が残らない（D2a の取り消しと同じ扱い。監査の規則は許す）。
 
 ## 影響マトリクス
@@ -52,7 +52,7 @@
 | 了承 | まだ生成中なら `stopGeneration`。停止した turn の確定と監査の終端は、今ある静止の段（`ai-executions`、`scoped-mutations`、`ipc-actual-tasks`）が待つ。agent の送信は上の中断で速く終わる。 |
 | 取りやめ | 何も止めず、操作を中止する（終了は veto、切替は `blocked`／読み込まない）。 |
 | 多重の要求 | 確認を出している間の同じ種類（終了、切替）の要求は、同じ確認の結果を待つ。違う種類の要求は取りやめる（出ている文面と違う操作に答えを流用しない）。 |
-| 待ちの上限 | 確認は利用者の操作まで待つ（時間切れなし）。終了の要求は同期で `preventDefault` するので、Electron の予備の時間切れは働かない。 |
+| 待ちの上限 | 確認は利用者の操作まで待つ（時間切れなし）。終了の要求は同期で `preventDefault` するので、Electron の予備の時間切れは働かない。確認の画面を読み込めなければ「断る」と答える（固めない）。 |
 | 再起動の後 | 持ち越す状態は無い。 |
 
 ## 範囲外（残る制限）
