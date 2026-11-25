@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { db } from "@/db/client";
 import { projects } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -24,7 +24,10 @@ import {
   acquireQuiescenceLease,
   canScheduleQuiescenceMutation,
   isQuiescenceLeaseActive,
+  subscribeQuiescenceLease,
 } from "@/application/lifecycle/quiescenceLease";
+import { useChatStopConfirmStore } from "@/application/lifecycle/chatStopConfirm";
+import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 import { createCloseQuiescenceController } from "@/application/lifecycle/closeQuiescenceController";
 import {
   getCurrentWorkspaceIdentity,
@@ -146,6 +149,7 @@ function deferred<T>(): {
 }
 
 beforeEach(async () => {
+  registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
   registerProjectRuntime(projectRuntimeComposition);
   _resetQuiescenceLeasesForTests();
   resetIpcQueueForTests();
@@ -202,6 +206,11 @@ beforeEach(async () => {
     createdAt: now,
     updatedAt: now,
   });
+});
+
+afterEach(() => {
+  useChatStopConfirmStore.getState().request?.answer(false);
+  registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
 });
 
 describe("useProjectStore", () => {
@@ -505,6 +514,87 @@ describe("useProjectStore", () => {
   });
 
   describe("loadProject", () => {
+    it("does not read another Project when stopping the active turn is declined", async () => {
+      useProjectStore.setState({ currentProjectId: PROJECT_ID });
+      const getProjectSpy = vi.spyOn(projectApi, "getProject");
+      registerActiveTurnStopper({ isActive: () => true, stop: vi.fn() });
+
+      try {
+        const loading = useProjectStore.getState().loadProject("proj-b");
+        const request = useChatStopConfirmStore.getState().request;
+        expect(request?.kind).toBe("switch");
+        request?.answer(false);
+        await loading;
+
+        expect(getProjectSpy).not.toHaveBeenCalled();
+        expect(mockedReload).not.toHaveBeenCalled();
+        expect(useProjectStore.getState().currentProjectId).toBe(PROJECT_ID);
+      } finally {
+        getProjectSpy.mockRestore();
+      }
+    });
+
+    it("stops before loading another Project and does not ask to reload the same one", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values({
+        id: "proj-b",
+        title: "Project B",
+        createdAt: now,
+        updatedAt: now,
+      });
+      useProjectStore.setState({ currentProjectId: PROJECT_ID });
+      const order: string[] = [];
+      let active = true;
+      registerActiveTurnStopper({
+        isActive: () => active,
+        stop: () => {
+          order.push("stop");
+          active = false;
+        },
+      });
+      mockedReload.mockImplementation(
+        async (_projectId, beforeCommit, _workspaceRevision, afterCommit) => {
+          order.push("reload");
+          if (beforeCommit?.() === false) {
+            return { cancelled: true, degraded: [] };
+          }
+          afterCommit?.();
+          return { cancelled: false, degraded: [] };
+        },
+      );
+      const unsubscribe = subscribeQuiescenceLease((change) => {
+        if (change.active && change.reason === "project-load") {
+          order.push("project-lease");
+        }
+      });
+
+      try {
+        const loading = useProjectStore.getState().loadProject("proj-b");
+        const request = useChatStopConfirmStore.getState().request;
+        expect(request?.kind).toBe("switch");
+        request?.answer(true);
+        await loading;
+
+        expect(order.indexOf("stop")).toBeLessThan(
+          order.indexOf("project-lease"),
+        );
+        expect(order.indexOf("project-lease")).toBeLessThan(
+          order.indexOf("reload"),
+        );
+        expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
+
+        const previousReloadCount = mockedReload.mock.calls.length;
+        active = true;
+        await useProjectStore.getState().loadProject("proj-b");
+
+        expect(useChatStopConfirmStore.getState().request).toBeNull();
+        expect(mockedReload).toHaveBeenCalledTimes(previousReloadCount + 1);
+        expect(order.filter((event) => event === "stop")).toHaveLength(1);
+      } finally {
+        unsubscribe();
+      }
+    });
+
     it("does not start a Project load while data deletion is active", async () => {
       const getProjectSpy = vi.spyOn(projectApi, "getProject");
       const dataDeleteLease = acquireQuiescenceLease("data-delete");

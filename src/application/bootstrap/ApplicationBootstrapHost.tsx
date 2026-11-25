@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
+import { confirmStopActiveTurn } from "@/application/lifecycle/chatStopConfirm";
 import {
   createCloseQuiescenceController,
   type CloseQuiescenceController,
@@ -179,6 +180,7 @@ export function ApplicationBootstrapHost({
       try {
         const controller = createCloseQuiescenceController({
           hasImmediateVeto: guardInlineAiPending,
+          confirmClose: () => confirmStopActiveTurn("close"),
           flush: flushStrictQuiescence,
           close: closeWindow,
           onFailure: (error) => {

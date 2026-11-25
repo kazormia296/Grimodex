@@ -20,6 +20,7 @@ import i18next from "@/lib/i18n";
 import { withProjectLoad, type ProjectLoadContext } from "./projectLoadGate";
 import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import { acquireQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { confirmStopActiveTurn } from "@/application/lifecycle/chatStopConfirm";
 import { clearRetainedEditorRecoveryDraftsForScopeChange } from "@/features/editor/editorSaveRegistry";
 import {
   getCurrentWorkspaceIdentity,
@@ -329,6 +330,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   loadProject: async (projectId) => {
+    // 別の project への切替は、生成中の応答の中断を静止の lease の前に確認する。
+    // 同じ project の読み直し（再試行など）では聞かない。
+    if (projectId !== get().currentProjectId) {
+      const decision = confirmStopActiveTurn("switch");
+      if (decision !== true && !(await decision)) return;
+    }
     return withProjectLoad((context) =>
       get().loadProjectWithinLifecycle(projectId, context),
     );

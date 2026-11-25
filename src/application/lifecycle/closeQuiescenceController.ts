@@ -27,6 +27,11 @@ interface CloseQuiescenceOptions {
   flush: () => Promise<void>;
   close: () => Promise<void>;
   onFailure: (error: unknown, closePhase: ClosePhase) => void;
+  /**
+   * 静止の lease を取る前の確認（生成中の応答の中断など）。true なら続け、false なら
+   * この終了の要求を取りやめる。
+   */
+  confirmClose?: () => true | Promise<boolean>;
 }
 
 export function createCloseQuiescenceController(
@@ -38,6 +43,7 @@ export function createCloseQuiescenceController(
   let generation = 0;
   let waitAbortController: AbortController | null = null;
   let closePhase: ClosePhase = "genesis-prelude";
+  let confirming = false;
 
   const ensureLease = async (
     signal?: AbortSignal,
@@ -171,7 +177,22 @@ export function createCloseQuiescenceController(
       // Reply to Electron/Tauri synchronously. This cancels Electron's 1.5s
       // fallback timer; persistence may then take as long as required.
       event.preventDefault();
-      start();
+      if (inFlight || confirming || options.hasImmediateVeto()) return;
+      const decision = options.confirmClose?.() ?? true;
+      if (decision === true) {
+        start();
+        return;
+      }
+      confirming = true;
+      const asked = generation;
+      void decision
+        .then((ok) => {
+          // 確認の間に cancel／retry が起きていれば、この要求では閉じない。
+          if (ok && asked === generation) start();
+        })
+        .finally(() => {
+          confirming = false;
+        });
     },
     retry: start,
     cancel() {
