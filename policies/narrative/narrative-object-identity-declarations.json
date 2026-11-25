@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-object-identity-declaration",
+  "declarationVersion": "narrative-object-identity/v1",
+  "entries": [
+    {
+      "producerId": "nir1-reviewed-entity-relation-v1",
+      "kind": "producer-declared-object-key",
+      "objects": [
+        {
+          "materialKind": "entity",
+          "keyTemplate": "codex:{entity_id}",
+          "sourceColumn": "codex_entries.id"
+        },
+        {
+          "materialKind": "relation",
+          "keyTemplate": "codex-relation:{edge_id}",
+          "sourceColumn": "codex_relations.id"
+        }
+      ]
+    }
+  ]
+}
