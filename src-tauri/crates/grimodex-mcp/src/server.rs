@@ -527,7 +527,7 @@ impl GrimodexServer {
 
     /// Derive the world-state snapshot at a scene's story time (structured JSON).
     #[tool(
-        description = "Get the chronicle world-state snapshot anchored at a scene (scene_id required): time (source/startTime/season), character statuses (alive/dead/unborn/unknown, age, last-known location), recent events, unresolved causal pairs, and off-page background. Identical structured JSON to the in-app get_chronicle_state tool. Returns null if there are no events or no scene_id."
+        description = "Get the chronicle world-state snapshot anchored at a scene (scene_id required): time (source/startTime/season), character statuses (alive/dead/unborn/unknown, age, last-known location), recent events, unresolved causal pairs, and off-page background. Identical structured JSON to the in-app get_chronicle_state tool. Returns null if there are no events or no scene_id. Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. When revealedToReader is false, readers do not know it yet at the requested scene, so do not write it as something readers already know; when revealedToReader is absent, it was not judged."
     )]
     async fn get_chronicle_state(
         &self,

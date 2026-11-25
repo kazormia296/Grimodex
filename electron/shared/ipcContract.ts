@@ -7258,7 +7258,21 @@ function requireNir1EntityRelationRevisionCreateRequest(
 
 function requireNir1ChangeReviewReadRequest(args: CommandArgs): CommandArgs {
   const command = "nir1_change_review_read";
-  requireExactKeys(args, ["projectId", "revisionId"], command);
+  requireExactKeys(
+    args,
+    ["expectedWorkspacePath", "projectId", "revisionId"],
+    command,
+  );
+  const workspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  if (workspacePath.trim() !== workspacePath) {
+    throw new Error(
+      `invalid args \`expectedWorkspacePath\` for command \`${command}\`: expected an exact string`,
+    );
+  }
   for (const key of ["projectId", "revisionId"] as const) {
     const value = requireNonEmptyString(args, key, command);
     if (value.trim() !== value || value.length > 512) {
@@ -7267,7 +7281,11 @@ function requireNir1ChangeReviewReadRequest(args: CommandArgs): CommandArgs {
       );
     }
   }
-  return { projectId: args.projectId, revisionId: args.revisionId };
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    revisionId: args.revisionId,
+  };
 }
 
 function requireNir1EntityRelationRevisionReadRequest(

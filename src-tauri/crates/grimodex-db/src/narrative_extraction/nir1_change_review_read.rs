@@ -48,7 +48,7 @@ pub enum Nir1ChangeReviewObjectChange {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
+#[serde(tag = "status", content = "result", rename_all = "kebab-case")]
 pub enum Nir1ChangeReviewResult {
     Available(Nir1ChangeReviewRead),
     Unavailable { reason: &'static str },
