@@ -1277,7 +1277,7 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
     );
   });
 
-  it("does not read `events` or `scene_events` from the real addon at all (CSR/1: no secrecy decision, so nothing to read, however many calls)", async () => {
+  it("reads `events` once per search with hits (for the disclosure mark) and never `scene_events`, from the real addon", async () => {
     const ws = await startSeededWorkspace();
     const executors = await searchExecutors(
       ws,
@@ -1290,7 +1290,7 @@ describe("search_events of the read core (PR-7b) on Main's adapter over the real
       ).length;
     await executors.search_events({ query: "魔術" });
     await executors.search_events({ query: "魔術" });
-    expect(countFrom("events")).toBe(0);
+    expect(countFrom("events")).toBe(2); // 開示の印のため、hit のある検索ごとに 1 回
     expect(countFrom("scene_events")).toBe(0);
   });
 
