@@ -18,6 +18,7 @@ import type {
   ParticipantRow,
   SceneEventRow,
 } from "../features/chronicle/eventRows.js";
+import { assembleChronicleSnapshotText } from "../features/chronicle/chronicleSnapshot.js";
 import { normalizeCalendarRow } from "../features/chronicle/readRows.js";
 import {
   CHRONICLE_READ_TOOL_NAMES,
@@ -970,6 +971,53 @@ describe("get_chronicle_state", () => {
     ...over,
   });
 
+  it("keeps only unstamped background in both outputs when all events lack dates", async () => {
+    const events = ["a", "b", "c", "d", "linked"].map((id) =>
+      event(id, { primaryCodexId: "hero" }),
+    );
+    const sceneEvents = [{ sceneId: "s1", eventId: "linked" }];
+    const relations = [{ causeId: "linked", effectId: "d" }];
+    const args = {
+      events,
+      sceneEvents,
+      relations,
+      calendar: null,
+      sceneId: "s1",
+      participants: [],
+      readingOrder: new Map([["s1", 0]]),
+      codexNames: new Map([["hero", "Hero"]]),
+      lang: "en",
+    };
+    expect(assembleChronicleSnapshotText(args)).toBe(
+      "Off-page background:\n- title-d\n- title-c\n- title-b",
+    );
+    const result = await makeCtx({
+      events,
+      sceneEvents,
+      relations,
+      activeSceneId: "s1",
+      calendar: null,
+    }).executors.get_chronicle_state({});
+    expect(result.content).toEqual({
+      time: {
+        source: "none",
+        startTime: null,
+        season: null,
+        precision: null,
+        formattedDate: null,
+      },
+      characters: [],
+      recentEvents: [],
+      unresolvedCausal: [],
+      offpage: ["d", "c", "b"].map((id) => ({
+        eventId: id,
+        title: "title-" + id,
+        note: null,
+        relTime: null,
+      })),
+    });
+  });
+
   it("answers No sceneId and no active scene when neither is given (the project is checked first)", async () => {
     const c = makeCtx(stateWorld({ activeSceneId: null }));
     expect(await c.executors.get_chronicle_state({})).toEqual({
@@ -1044,7 +1092,7 @@ describe("get_chronicle_state", () => {
         ])[Symbol.iterator](),
     } as unknown as ReadonlyMap<string, number>;
     const c = makeCtx({
-      events: [event("e1")],
+      events: [event("e1", { startTime: 10, startGranularity: "day" })],
       sceneEvents: [{ sceneId: "s2", eventId: "e1" }],
       readingOrder: iterableOnly,
     });
@@ -1073,7 +1121,14 @@ describe("get_chronicle_state", () => {
 
   it("marks get_chronicle_state relative to the requested scene or the active scene", async () => {
     const world = {
-      events: [event("e1", { ordinal: "a0", revealSceneId: "s2" })],
+      events: [
+        event("e1", {
+          startTime: 10,
+          startGranularity: "day",
+          ordinal: "a0",
+          revealSceneId: "s2",
+        }),
+      ],
       sceneEvents: [{ sceneId: "s1", eventId: "e1" }],
       activeSceneId: "s3",
     };
@@ -1127,12 +1182,14 @@ describe("get_chronicle_state", () => {
         event("old-place", {
           ordinal: "a0",
           startTime: 100,
+          startGranularity: "day",
           primaryCodexId: "c1",
           locationCodexId: "old-place-id",
         }),
         event("hidden-place", {
           ordinal: "a1",
           startTime: 200,
+          startGranularity: "day",
           primaryCodexId: "c1",
           locationCodexId: "hidden-place-id",
         }),

@@ -28,9 +28,9 @@
         "ordinal": "a0",
         "primaryCodexId": null,
         "locationCodexId": null,
-        "startTime": null,
+        "startTime": 10,
         "startMinute": null,
-        "startGranularity": "none",
+        "startGranularity": "day",
         "kind": "generic",
         "precision": "exact",
         "revealSceneId": "s2"
@@ -42,9 +42,9 @@
         "ordinal": "a0",
         "primaryCodexId": null,
         "locationCodexId": null,
-        "startTime": null,
+        "startTime": 7,
         "startMinute": null,
-        "startGranularity": "none",
+        "startGranularity": "day",
         "kind": "birth",
         "precision": "exact",
         "revealSceneId": "s3"
@@ -56,9 +56,9 @@
         "ordinal": "a0",
         "primaryCodexId": null,
         "locationCodexId": null,
-        "startTime": null,
+        "startTime": 5,
         "startMinute": null,
-        "startGranularity": "none",
+        "startGranularity": "day",
         "kind": "death",
         "precision": "exact",
         "revealSceneId": "archived-scene"
@@ -70,9 +70,9 @@
         "ordinal": "a1",
         "primaryCodexId": null,
         "locationCodexId": null,
-        "startTime": null,
+        "startTime": 20,
         "startMinute": null,
-        "startGranularity": "none",
+        "startGranularity": "day",
         "kind": "generic",
         "precision": "exact",
         "revealSceneId": "s2"
@@ -87,7 +87,7 @@
   "expected": {
     "time": {
       "source": "stamped",
-      "startTime": null,
+      "startTime": 10,
       "season": null,
       "precision": "exact",
       "formattedDate": null

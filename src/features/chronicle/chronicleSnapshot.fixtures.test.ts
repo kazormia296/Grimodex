@@ -3,7 +3,7 @@
  *
  * The fixtures under `fixtures/chronicle-snapshot/*.json` are shared with the
  * Rust suite in `grimodex-mcp` (`chronicle_snapshot::tests`). Each fixture's
- * `input` is run through the full derive pipeline (resolveSceneAnchor →
+ * `input` is run through the full derive pipeline (resolveSnapshotSceneAnchor →
  * pickSnapshotCharacters → deriveChronicleSnapshot) and must equal `expected`.
  * Both languages read the same JSON, so any drift in either derive breaks CI.
  */
@@ -18,7 +18,7 @@ import {
   pickSnapshotCharacters,
   type ChronicleSnapshot,
 } from "./chronicleSnapshot";
-import { resolveSceneAnchor, type SceneChronicle } from "./resolveSceneAnchor";
+import { resolveSnapshotSceneAnchor } from "@/../electron/shared/readDomain/features/chronicle/chronicleAnchorByDate";
 import type {
   EventRow,
   ParticipantRow,
@@ -26,7 +26,6 @@ import type {
   SceneEventRow,
 } from "./api";
 import type { ChronicleCalendar } from "./chronicleTime";
-import type { EventPrecision } from "@/db/schema";
 
 interface FixtureInput {
   sceneId: string;
@@ -59,31 +58,16 @@ function runPipeline(input: FixtureInput): ChronicleSnapshot {
       revealNodeIds.has(id),
     ),
   );
-  // scene-own アンカー源: input.nodes の scene ノードから暦日付を構築（push と同じ）。
-  const sceneChronicle = new Map<string, SceneChronicle>();
-  for (const n of input.nodes) {
-    if (n.nodeType !== "scene" || !n.id) continue;
-    sceneChronicle.set(n.id, {
-      startTime: n.chronicleStartTime ?? null,
-      startMinute: n.chronicleStartMinute ?? null,
-      startGranularity: n.chronicleStartGranularity ?? "none",
-      precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
-    });
-  }
-  const anchor = resolveSceneAnchor(input.sceneId, {
-    sceneEvents: input.sceneEvents,
-    events: input.events,
+  const anchor = resolveSnapshotSceneAnchor(input.sceneId, {
+    ...input,
+    nodes: input.nodes as TreeNodeData[],
     readingOrder,
-    sceneChronicle,
   });
-  const characterIds = pickSnapshotCharacters({
-    anchor,
-    events: input.events,
-    participants: input.participants,
-  });
+  const characterIds = pickSnapshotCharacters({ ...input, anchor });
   return deriveChronicleSnapshot(
     {
       anchor,
+      sceneId: input.sceneId,
       events: input.events,
       participants: input.participants,
       relations: input.relations,
@@ -116,6 +100,58 @@ const fixtureFiles = readdirSync(fixturesDir).filter((f) =>
 describe("chronicle snapshot fixtures (TS derive)", () => {
   it("ships at least 3 fixtures", () => {
     expect(fixtureFiles.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("C3a and proxy ignore dated scenes and links inside archived branches", () => {
+    const basis: Fixture = JSON.parse(
+      readFileSync(join(fixturesDir, "02-proxy-no-calendar.json"), "utf8"),
+    );
+    const row = { ...basis.input.events[0], startGranularity: "day" as const };
+    const archived = {
+      id: "archived",
+      parentId: null,
+      sortOrder: "a0G",
+      archivedAt: "2026-01-01",
+      chronicleStartTime: 200,
+      chronicleStartGranularity: "day" as const,
+    };
+    const world: FixtureInput = {
+      ...basis.input,
+      events: [row],
+      nodes: [
+        ...basis.input.nodes,
+        { ...archived, nodeType: "folder" },
+        {
+          ...archived,
+          id: "child",
+          archivedAt: null,
+          parentId: "archived",
+          nodeType: "scene",
+        },
+        { ...archived, id: "archived-scene", nodeType: "scene" },
+      ],
+      sceneEvents: [
+        ...basis.input.sceneEvents,
+        { sceneId: "child", eventId: row.id },
+        { sceneId: "archived-scene", eventId: row.id },
+      ],
+    };
+    expect(runPipeline(world).time).toMatchObject({
+      source: "proxy",
+      startTime: 100,
+      precision: "unknown",
+    });
+    expect(runPipeline(world).recentEvents.map((e) => e.eventId)).toEqual([
+      row.id,
+    ]);
+    for (const sceneId of ["child", "archived-scene"])
+      expect(runPipeline({ ...world, sceneId }).time.source).toBe("none");
+    expect(
+      runPipeline({
+        ...world,
+        events: [row, { ...row, id: "unlinked", precision: "approx" }],
+      }).time.source,
+    ).toBe("none");
   });
 
   for (const file of fixtureFiles) {

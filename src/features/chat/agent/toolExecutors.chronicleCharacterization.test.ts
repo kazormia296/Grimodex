@@ -218,7 +218,7 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
       expect(JSON.stringify(explicit)).toBe(JSON.stringify(baseline));
     });
 
-    it("get_chronicle_state：nodes が空でも secret な出来事は hidden にならない", async () => {
+    it("get_chronicle_state：nodes が空なら stamp から現在地を決めず、直近の出来事は空", async () => {
       await setLegacyReadWorld(MAIN_S3);
       const baseline = await run<{
         recentEvents: Array<{ eventId: string }>;
@@ -235,9 +235,7 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
         recentEvents: Array<{ eventId: string }>;
       }>("get_chronicle_state", {});
       expect(hook.fired()).toBe(true);
-      expect(emptied.content.recentEvents.map((e) => e.eventId)).toContain(
-        "ev-war",
-      );
+      expect(emptied.content.recentEvents).toEqual([]);
     });
   });
 
@@ -267,17 +265,17 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
         },
         characters: [
           {
-            codexId: "c-mage",
-            name: "老魔術師",
-            status: "unknown",
-            age: null,
-            location: "古い塔",
-          },
-          {
             codexId: "c-aria",
             name: "アリア",
             status: "alive",
             age: 19,
+            location: "古い塔",
+          },
+          {
+            codexId: "c-mage",
+            name: "老魔術師",
+            status: "unknown",
+            age: null,
             location: "古い塔",
           },
         ],
@@ -301,15 +299,10 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
             relTime: "約9年前",
           },
         ],
-        unresolvedCausal: [],
-        offpage: [
-          {
-            eventId: "ev-death",
-            title: "老魔術師の死",
-            note: "恒久的に秘匿",
-            relTime: null,
-          },
+        unresolvedCausal: [
+          { causeTitle: "老魔術師との出会い", effectTitle: "老魔術師の死" },
         ],
+        offpage: [],
         calendar: {
           daysPerYear: 360,
           startYear: 1000,
