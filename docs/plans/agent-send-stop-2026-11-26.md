@@ -42,10 +42,12 @@
 
 利用者の選択：アプリの終了、workspace の切替、project の切替の 3 つで、実行中の chat／agent があれば確認を出す。了承すれば「停止」と同じ扱いで中断して進み、断れば操作を取りやめる。
 
+順番は「今ある拒否（inline AI の保留）→ 確認 → 停止（中断）→ 静止の lease → flush（自動保存ほか。#1021・#1079 の順は変えない）→ 閉じる／切り替える」。静止の段と lease の中身は変えず、lease の前に 1 段足す。信頼境界は変えない（送信先・送るデータ・権限は増えない。確認は利用者の操作を待つだけで、了承の無い中断はしない）。
+
 | 項目 | 内容 |
 | --- | --- |
-| 入口 | 窓の終了（`closeQuiescenceController`、panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、project の読み込み（`projectStore`。workspace を開く途中の読み込みでは重ねて聞かない）。 |
-| 順番 | 今ある拒否（inline AI の保留）の後、静止の lease を取る前に聞く。lease を取った後は turn の保存が止まりうるため。 |
+| 入口 | 窓の終了（`closeQuiescenceController`、panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、別の project の読み込み（`projectStore`。同じ project の読み直しと、workspace を開く途中の読み込みでは聞かない）。 |
+| 順番の理由 | lease を取った後は turn の保存が止まりうるので、確認と停止は lease の前に置く。 |
 | 対象の判定 | その窓の chat の store が生成中（`isStreaming`）。chat の store が lib の小さな登録口に「生成中か」と「停止」を登録する（`projectStore` から chat の store を直接読まない）。 |
 | 了承 | まだ生成中なら `stopGeneration`。停止した turn の確定と監査の終端は、今ある静止の段（`ai-executions`、`scoped-mutations`、`ipc-actual-tasks`）が待つ。agent の送信は上の中断で速く終わる。 |
 | 取りやめ | 何も止めず、操作を中止する（終了は veto、切替は `blocked`／読み込まない）。 |
