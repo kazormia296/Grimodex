@@ -358,7 +358,9 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_import_project_birth_epoch_in_tx, mint_c2zc_project_birth_epoch_in_tx,
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
-pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
+pub use inbox_read_model::{
+    build_maintenance_inbox, count_stale_proposals, InboxEntry, InboxEntryKind,
+};
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
 pub use incremental_freshness::FreshnessLifecycleControl;

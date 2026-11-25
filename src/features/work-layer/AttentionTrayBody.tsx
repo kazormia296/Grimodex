@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 import { DisposedAccordion } from "./DisposedAccordion";
+import { LiveAttentionRows } from "./LiveAttentionRows";
 import { useWorkLayer } from "./WorkLayerContext";
 import { selectAttentionCount } from "./workLayerLiveEntries";
 import { deriveAllWork } from "./workLedgerItems";
@@ -26,6 +27,8 @@ export function AttentionTrayBody() {
     selectFinding,
     switchFocusPreview,
   } = workLayer;
+  // Live data has its own body: one row per kind of count, no Focus/LATER/disposed faces.
+  if (provenance === "live") return <LiveAttentionRows />;
   const attentionTotal = selectAttentionCount(model).total;
   const isEmpty = attentionTotal === 0;
   const disposedExpanded = navigation.mode === "tray-disposed";

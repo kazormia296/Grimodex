@@ -18,8 +18,9 @@ export const Arrival: Story = {
   args: { initialMode: "arrive" },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // 見本の model は動的 import で読み込まれる（製品 bundle に入れないため）ので、最初の問い合わせは待つ。
     await expect(
-      canvas.getByRole("button", { name: "System recheck" }),
+      await canvas.findByRole("button", { name: "System recheck" }),
     ).toBeInTheDocument();
     await expect(
       canvas.getByTestId("work-layer-arrival-charge"),
@@ -35,7 +36,10 @@ export const AttentionTray: Story = { args: { initialMode: "tray-attention" } };
 export const AllWork: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "ALL WORK" }));
+    // 見本の model は動的 import で読み込まれるので、最初の問い合わせは待つ。
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "ALL WORK" }),
+    );
     await expect(
       await canvas.findByRole("dialog", { name: "すべての作業" }),
     ).toBeInTheDocument();

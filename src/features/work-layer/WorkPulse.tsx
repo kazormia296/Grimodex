@@ -26,7 +26,16 @@ export function WorkPulse() {
     openFocus,
     openSystem,
   } = workLayer;
-  const attentionCount = selectAttentionCount(model).total;
+  // Live data with no kind to count (a project in another language, without the
+  // maintenance permission) has nothing to say: showing "0" would claim that
+  // something was counted and found nothing.
+  if (provenance === "live" && (model.liveEntries?.length ?? 0) === 0) {
+    return null;
+  }
+  const attentionSummary = selectAttentionCount(model);
+  const attentionCount = attentionSummary.total;
+  // The sum is partial while a kind is still uncounted: show it as "N＋".
+  const attentionPartial = !attentionSummary.complete;
   const attentionDelta = model.attentionDelta ?? 0;
   // A live count never celebrates a resolution (ADR 014: only the count changes).
   const resolutionDelta =
@@ -66,28 +75,43 @@ export function WorkPulse() {
       data-work-layer-mode={navigation.mode}
       className="inline-flex h-7 max-w-full items-stretch overflow-hidden rounded-sm border border-foreground/30 bg-background font-mono text-foreground shadow-sm"
     >
-      <button
-        type="button"
-        aria-label={t("workLayer.focus.aria", "Focus {{title}}", {
-          title: focusTitle,
-        })}
-        onClick={openFocus}
-        className={cn(
-          "flex min-w-0 items-center gap-1.5 px-2.5 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-          focusActive && "bg-foreground text-background hover:bg-foreground",
-        )}
-      >
-        <span className="text-[9px] tracking-[0.14em] opacity-60">FOCUS</span>
-        <span className="max-w-36 truncate font-sans text-[11px] font-medium">
-          {model.focus?.title ?? "—"}
-        </span>
-      </button>
-      <span className="w-px bg-foreground/30" aria-hidden="true" />
+      {provenance === "preview" && (
+        <>
+          <button
+            type="button"
+            aria-label={t("workLayer.focus.aria", "Focus {{title}}", {
+              title: focusTitle,
+            })}
+            onClick={openFocus}
+            className={cn(
+              "flex min-w-0 items-center gap-1.5 px-2.5 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+              focusActive &&
+                "bg-foreground text-background hover:bg-foreground",
+            )}
+          >
+            <span className="text-[9px] tracking-[0.14em] opacity-60">
+              FOCUS
+            </span>
+            <span className="max-w-36 truncate font-sans text-[11px] font-medium">
+              {model.focus?.title ?? "—"}
+            </span>
+          </button>
+          <span className="w-px bg-foreground/30" aria-hidden="true" />
+        </>
+      )}
       <motion.button
         type="button"
-        aria-label={t("workLayer.attention.aria", "Attention {{count}}件", {
-          count: visibleAttentionCount,
-        })}
+        aria-label={
+          attentionPartial
+            ? t(
+                "workLayer.attention.ariaPartial",
+                "Attention {{count}}件以上（数え終えていない種類があります）",
+                { count: visibleAttentionCount },
+              )
+            : t("workLayer.attention.aria", "Attention {{count}}件", {
+                count: visibleAttentionCount,
+              })
+        }
         onClick={openAttention}
         data-work-layer-resolution-beat={
           showResolutionMotion ? "true" : undefined
@@ -128,6 +152,7 @@ export function WorkPulse() {
         <span className="text-[9px] tracking-[0.14em] opacity-60">ATTN</span>
         <span className="relative text-xs font-bold tabular-nums">
           {visibleAttentionCount}
+          {attentionPartial && <span aria-hidden="true">＋</span>}
           {showArrivalMotion && (
             <motion.span
               key={`${model.scopeId}-${attentionDelta}`}

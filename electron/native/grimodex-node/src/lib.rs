@@ -16340,6 +16340,26 @@ impl Backend {
         .await
     }
 
+    /// Read-only count of stale proposals for one project as of now.
+    #[napi]
+    pub async fn narrative_maintenance_stale_proposal_count(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceInboxListPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let count = db.with_conn(|conn| {
+                    narrative_extraction::count_stale_proposals(conn, &dto.project_id, &now)
+                })?;
+                Ok(serde_json::to_string(&serde_json::json!({ "count": count }))?)
+            })
+        })
+        .await
+    }
+
     // ─────────────────────── post_effect (Phase 3 バッチ1 — pure-db 読み書き。
     // grimodex-db の post_effect モジュールを Tauri と共用。SCENE_LENS_FOR_PROJECT_SQL
     // 契約 / XPROJ ガード / snake_case ReplyToAnnotationArgs を維持。start_run 系と

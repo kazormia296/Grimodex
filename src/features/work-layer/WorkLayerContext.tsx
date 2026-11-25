@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -48,6 +49,10 @@ export function WorkLayerProvider({
     scopeId: model?.scopeId ?? null,
     systemState: model?.system.state ?? "idle",
   });
+  const currentPort = useRef(port);
+  const currentActive = useRef(active);
+  currentPort.current = port;
+  currentActive.current = active;
 
   useEffect(() => {
     if (!active) {
@@ -85,6 +90,46 @@ export function WorkLayerProvider({
       cancelled = true;
     };
   }, [active, initialModel, port]);
+
+  useEffect(() => {
+    if (!active || port?.subscribe == null) return;
+    return port.subscribe((nextModel) => {
+      if (
+        currentActive.current &&
+        currentPort.current === port &&
+        nextModel.scopeId === port.scopeKey
+      ) {
+        setModel(nextModel);
+      }
+    });
+  }, [active, port]);
+
+  const navigationMode = navigationController.navigation.mode;
+  const previousNavigationMode = useRef(navigationMode);
+  useEffect(() => {
+    const previous = previousNavigationMode.current;
+    previousNavigationMode.current = navigationMode;
+    if (
+      !active ||
+      port?.kind !== "live" ||
+      previous !== "ambient" ||
+      (navigationMode !== "tray-focus" && navigationMode !== "tray-attention")
+    ) {
+      return;
+    }
+    void port
+      .load({ reason: "tray-open" })
+      .then((nextModel) => {
+        if (
+          currentActive.current &&
+          currentPort.current === port &&
+          nextModel.scopeId === port.scopeKey
+        ) {
+          setModel(nextModel);
+        }
+      })
+      .catch(() => {});
+  }, [active, navigationMode, port]);
 
   const hasPendingArrival = (model?.attentionDelta ?? 0) > 0;
   const modelScopeId = model?.scopeId;
@@ -143,6 +188,7 @@ export function WorkLayerProvider({
       : {
           model: visibleModel,
           provenance: isLive ? "live" : "preview",
+          openSurface: (surface) => port?.openSurface?.(surface),
           ...navigationController,
           switchFocusPreview: (targetId) => {
             setModel((current) =>
