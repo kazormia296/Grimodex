@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { load } from "js-yaml";
@@ -24,7 +24,7 @@ interface BuilderConfig {
   extraResources?: Array<{
     from: string;
     to: string;
-    filter: string[];
+    filter?: string[];
   }>;
   win?: Record<string, unknown>;
   nsis?: Record<string, unknown>;
@@ -107,7 +107,7 @@ describe("Electron release packaging contract", () => {
     ]);
   });
 
-  it("places MCP, the C-query worker, semantic tokenizers, selected rerankers, and the model-capability snapshot at runtime paths", () => {
+  it("places MCP, tokenizers, selected rerankers, and the model-capability snapshot at runtime paths", () => {
     const config = readBuilderConfig();
 
     expect(config.extraResources).toEqual([
@@ -136,7 +136,22 @@ describe("Electron release packaging contract", () => {
         to: "resources/model-capabilities",
         filter: ["model-capabilities.json"],
       },
+      {
+        from: "node_modules/tiktoken/encoders/o200k_base.json",
+        to: "resources/tokenizer/o200k_base.json",
+      },
+      {
+        from: "node_modules/tiktoken/lite/tiktoken_bg.wasm",
+        to: "resources/tokenizer/tiktoken_bg.wasm",
+      },
     ]);
+
+    for (const source of [
+      "node_modules/tiktoken/encoders/o200k_base.json",
+      "node_modules/tiktoken/lite/tiktoken_bg.wasm",
+    ]) {
+      expect(statSync(path.join(repoRoot, source)).isFile()).toBe(true);
+    }
   });
 
   it("defines every desktop target, stable artifact names, and GitHub publish", () => {
