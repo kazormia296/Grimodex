@@ -48,9 +48,9 @@ pub enum Nir1ChangeReviewObjectChange {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
+#[serde(tag = "status", content = "result", rename_all = "kebab-case")]
 pub enum Nir1ChangeReviewResult {
-    Available { result: Nir1ChangeReviewRead },
+    Available(Nir1ChangeReviewRead),
     Unavailable { reason: &'static str },
 }
 
@@ -173,22 +173,20 @@ fn read_nir1_change_review_with_prior_scan_max(
         .optional()
         .context("query proposal revision freshness")?;
 
-    Ok(Nir1ChangeReviewResult::Available {
-        result: Nir1ChangeReviewRead {
-            revision_id: current.revision_id,
-            previous_revision_ids: previous.revision_ids,
-            review_status: review_status.into(),
-            objects,
-            freshness: Nir1ChangeReviewFreshness {
-                edge_count: current.canonical_freshness.edge_count,
-                feed_head_sequence: current.canonical_freshness.feed_head_sequence,
-                feed_acknowledged_through_sequence: current
-                    .canonical_freshness
-                    .feed_acknowledged_through_sequence,
-                build_action,
-            },
+    Ok(Nir1ChangeReviewResult::Available(Nir1ChangeReviewRead {
+        revision_id: current.revision_id,
+        previous_revision_ids: previous.revision_ids,
+        review_status: review_status.into(),
+        objects,
+        freshness: Nir1ChangeReviewFreshness {
+            edge_count: current.canonical_freshness.edge_count,
+            feed_head_sequence: current.canonical_freshness.feed_head_sequence,
+            feed_acknowledged_through_sequence: current
+                .canonical_freshness
+                .feed_acknowledged_through_sequence,
+            build_action,
         },
-    })
+    }))
 }
 
 struct PreviousIdentityReads {
@@ -615,7 +613,7 @@ mod tests {
         let previous_bundle = first_request.bundle.clone();
         let first = narrative_extraction_create_nir1_entity_relation_revision(&db, first_request)?;
         let first_id = id(&first, "revisionId")?;
-        let Nir1ChangeReviewResult::Available { result: initial } =
+        let Nir1ChangeReviewResult::Available(initial) =
             read_without_writes(&db, "default-project", &first_id)?
         else {
             panic!("created typed revision is available");
@@ -682,7 +680,7 @@ mod tests {
             current_bundle,
         )?;
         let current_id = id(&current, "revisionId")?;
-        let Nir1ChangeReviewResult::Available { result: review } =
+        let Nir1ChangeReviewResult::Available(review) =
             read_without_writes(&db, "default-project", &current_id)?
         else {
             panic!("created current revision is available");
@@ -805,7 +803,7 @@ mod tests {
         let result = db.with_read_transaction(|conn| {
             read_nir1_change_review_with_prior_scan_max(conn, "default-project", &current_id, 1)
         })?;
-        let Nir1ChangeReviewResult::Available { result: review } = result else {
+        let Nir1ChangeReviewResult::Available(review) = result else {
             panic!("valid current revision should be available");
         };
         assert!(review.previous_revision_ids.is_empty());
@@ -910,7 +908,7 @@ mod tests {
         let current_id = id(&current, "revisionId")?;
         set_proposal_created_at(&db, &current_id, "2026-09-15T00:00:02.000Z")?;
 
-        let Nir1ChangeReviewResult::Available { result: review } =
+        let Nir1ChangeReviewResult::Available(review) =
             read_without_writes(&db, "default-project", &current_id)?
         else {
             panic!("first current-epoch revision should be available");

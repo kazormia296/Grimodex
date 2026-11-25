@@ -72,7 +72,7 @@ test("N-API preserves Unavailable reasons and performs no writes", async () => {
 
   assert.deepEqual(result, {
     status: "unavailable",
-    reason: "current-revision-unavailable",
+    result: { reason: "current-revision-unavailable" },
   });
   assert.deepEqual(await rowCounts(), before);
 });

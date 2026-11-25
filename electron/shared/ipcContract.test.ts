@@ -1940,7 +1940,7 @@ describe("nir1_change_review_read contract", () => {
     const method = vi
       .fn()
       .mockResolvedValue(
-        '{"status":"unavailable","reason":"current-revision-unavailable"}',
+        '{"status":"unavailable","result":{"reason":"current-revision-unavailable"}}',
       );
     const { backend } = fakeBackend({ nir1ChangeReviewRead: method });
 
@@ -1953,7 +1953,7 @@ describe("nir1_change_review_read contract", () => {
       ok: true,
       value: {
         status: "unavailable",
-        reason: "current-revision-unavailable",
+        result: { reason: "current-revision-unavailable" },
       },
     });
     expect(method).toHaveBeenCalledExactlyOnceWith(request);
