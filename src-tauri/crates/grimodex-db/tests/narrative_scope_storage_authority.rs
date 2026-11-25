@@ -1377,7 +1377,7 @@ fn foreign_key_actions_that_change_scope_columns_are_pinned() {
     );
 }
 
-/// CED/1. Keep forward date guards off replay and extraction approval paths.
+/// CED/1. Inventory forward date writes and unchanged snapshot replay paths.
 #[test]
 fn chronicle_event_write_inventory() {
     let root = repo_root();
@@ -1429,7 +1429,7 @@ fn chronicle_event_write_inventory() {
         ("grimodex-mcp/src/db.rs", "chronicle_create_event", "INSERT", 1),
         ("grimodex-mcp/src/db.rs", "chronicle_update_event", "UPDATE", 1),
         ("grimodex-mcp/src/db.rs", "chronicle_set_participants", "UPDATE", 1),
-        // Shared by checked create and extraction approval (date assignment deferred).
+        // Shared by checked create and extraction approval (Native resolves missing dates before insert).
         ("grimodex-db/src/agent_writes.rs", "apply_event_create_in_tx", "INSERT", 1),
         // Explicit replay and restore exclusions.
         ("grimodex-db/src/agent_writes.rs", "apply_event_snapshot", "INSERT", 1),
