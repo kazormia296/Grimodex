@@ -236,9 +236,12 @@ export function createMastraAgentTurnJourney({ configureWorkspace }) {
         // An admitted start: the runtime is loaded now (lazy), then the key is
         // resolved. No key is configured, so the start is `ok:false` with that
         // reason before the Agent runs. Twice: nothing is cached or left behind.
-        for (let attempt = 0; attempt < 2; attempt += 1) {
+        // The first declares a read tool, so the lazily imported read bindings
+        // load from the built main bundle too (a failed load would resolve as
+        // `unsupported` instead of rejecting).
+        for (const tools of [["search_codex"], []]) {
           await assert.rejects(
-            invoke(START_COMMAND, startRequest()),
+            invoke(START_COMMAND, startRequest({ tools })),
             /No API key configured for anthropic/,
           );
         }

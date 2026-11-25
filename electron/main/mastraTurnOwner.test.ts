@@ -188,6 +188,7 @@ interface Harness {
   /** Resolves the oldest pending Native send. */
   nativeSends: Deferred<string>[];
   readonly loads: { count: number };
+  readonly readBindingLoads: { count: number };
   readonly settingsReads: { count: number };
   readonly issued: Set<unknown>;
   readonly profile: {
@@ -215,7 +216,8 @@ interface Harness {
  * settles `nativeSends[n]`.
  */
 function harness(
-  overrides: Partial<MastraTurnOwnerOptions> & {
+  overrides: Partial<Omit<MastraTurnOwnerOptions, "loadReadBindings">> & {
+    loadReadBindings?: MastraTurnOwnerOptions["loadReadBindings"] | null;
     native?: "hold" | "immediate";
     loadFails?: boolean;
     responses?: readonly AgentWireResponse[];
@@ -235,11 +237,14 @@ function harness(
     >;
   } = {},
 ): Harness {
+  const { loadReadBindings: readBindingsLoaderOverride, ...ownerOverrides } =
+    overrides;
   const appended: Harness["appended"] = [];
   const sends: Harness["sends"] = [];
   const dbQueries: Harness["dbQueries"] = [];
   const nativeSends: Deferred<string>[] = [];
   const loads = { count: 0 };
+  const readBindingLoads = { count: 0 };
   const settingsReads = { count: 0 };
   const issued = new Set<unknown>();
   const logs: string[] = [];
@@ -363,10 +368,21 @@ function harness(
       }
       return runtimeModule;
     },
+    ...(readBindingsLoaderOverride === null
+      ? {}
+      : {
+          loadReadBindings: async () => {
+            readBindingLoads.count += 1;
+            return (
+              readBindingsLoaderOverride ??
+              (() => import("./mastraTurnReadBindings.js"))
+            )();
+          },
+        }),
     appVersion: "0.0.0-test",
     log: (_level, message) => logs.push(message),
     randomUUID: uuid,
-    ...overrides,
+    ...ownerOverrides,
   });
 
   let senderSeq = 1;
@@ -377,6 +393,7 @@ function harness(
     dbQueries,
     nativeSends,
     loads,
+    readBindingLoads,
     settingsReads,
     issued,
     profile,
@@ -1489,6 +1506,118 @@ describe("turn owner payload and tokenizer guards", () => {
 });
 
 describe("M4 read bindings (T-b)", () => {
+  it("refuses a failed read-bindings load before runtime or audit, then retries on the next turn", async () => {
+    let failuresLeft = 1;
+    const h = harness({
+      loadReadBindings: async () => {
+        if (failuresLeft > 0) {
+          failuresLeft -= 1;
+          throw new Error("read bindings unavailable");
+        }
+        return import("./mastraTurnReadBindings.js");
+      },
+    });
+    const { context } = h.newContext();
+    expect(
+      refusalReason(
+        await h.owner.start(
+          context,
+          startRequest(TURN_A, { tools: ["get_scene"] }),
+        ),
+      ),
+    ).toBe("unsupported");
+    expect(h.appended).toEqual([]);
+    expect(h.loads.count).toBe(0);
+
+    completed(
+      await h.owner.start(
+        context,
+        startRequest(uuid(), { tools: ["get_scene"] }),
+      ),
+    );
+    expect(h.readBindingLoads.count).toBe(2);
+    expect(h.loads.count).toBe(1);
+  });
+
+  it("shares one successful loader call across tool turns", async () => {
+    const h = harness();
+    const { context } = h.newContext();
+    completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: ["get_scene"] }),
+      ),
+    );
+    completed(
+      await h.owner.start(
+        context,
+        startRequest(uuid(), { tools: ["list_chapters"] }),
+      ),
+    );
+    expect(h.readBindingLoads.count).toBe(1);
+  });
+
+  it("does not start when the loader is absent", async () => {
+    const h = harness({ loadReadBindings: null });
+    const { context } = h.newContext();
+    expect(
+      refusalReason(
+        await h.owner.start(
+          context,
+          startRequest(TURN_A, { tools: ["get_scene"] }),
+        ),
+      ),
+    ).toBe("unsupported");
+    expect(h.readBindingLoads.count).toBe(0);
+    expect(h.loads.count).toBe(0);
+    expect(h.appended).toEqual([]);
+  });
+
+  it("checks user Stop after the read-bindings loader settles", async () => {
+    const module = deferred<typeof import("./mastraTurnReadBindings.js")>();
+    const h = harness({ loadReadBindings: () => module.promise });
+    const { context } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: ["get_scene"] }),
+    );
+    await flush();
+    expect(h.owner.cancel(context, { turnId: TURN_A })).toMatchObject({
+      status: "ok",
+      found: true,
+    });
+    module.resolve(await import("./mastraTurnReadBindings.js"));
+    await expect(started).rejects.toThrow(/MASTRA_AGENT_TURN_CANCELLED/);
+    expect(h.loads.count).toBe(0);
+    expect(h.appended).toEqual([]);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
+  it("forced-aborts while the read-bindings loader is pending without writing audit rows", async () => {
+    const module = deferred<typeof import("./mastraTurnReadBindings.js")>();
+    const h = harness({ loadReadBindings: () => module.promise });
+    const { context, sender } = h.newContext();
+    const started = h.owner.start(
+      context,
+      startRequest(TURN_A, { tools: ["get_scene"] }),
+    );
+    const outcome = started.then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+    await flush();
+    sender.emit("destroyed");
+    await flush();
+    expect(
+      await Promise.race([outcome, Promise.resolve("still waiting")]),
+    ).toMatch(/MASTRA_AGENT_TURN_ABORTED: sender-gone/);
+    module.resolve(await import("./mastraTurnReadBindings.js"));
+    await flush();
+    expect(h.loads.count).toBe(0);
+    expect(h.appended).toEqual([]);
+    expect(h.owner.slotsInUse()).toBe(0);
+  });
+
   it("runs only selected shared-core tools through the Main adapters, preserves legacy result text and records, and reports batch counters", async () => {
     const title = `Scene ${"x".repeat(180)}`;
     const chapterContent = [
@@ -1802,6 +1931,7 @@ describe("M4 read bindings (T-b)", () => {
     const { context } = h.newContext();
     completed(await h.owner.start(context, startRequest(TURN_A)));
     expect(h.dbQueries).toEqual([]);
+    expect(h.readBindingLoads.count).toBe(0);
   });
 
   it("applies user Stop to an in-flight Main read without recording a tool error", async () => {

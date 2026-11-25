@@ -60,35 +60,8 @@ import {
   createM4ReadToolDefinitions,
   type M4ReadToolName,
 } from "../shared/agentReadToolDefinitions.js";
+import type * as MastraTurnReadBindings from "./mastraTurnReadBindings.js";
 import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
-import type {
-  CoreReadContext,
-  CoreTreeState,
-} from "../shared/mastraRead/ports.js";
-import { createCoreReadDb } from "../shared/readDomain/core/readDb.js";
-import { createDbSceneBodyReader } from "../shared/readDomain/core/sceneBody.js";
-import {
-  createMainChronicleReadContext,
-  createMainChronicleSearchContext,
-} from "../shared/readDomain/core/chronicleMainContext.js";
-import {
-  createMainCodexEntryContext,
-  createMainCodexReadContext,
-} from "../shared/readDomain/core/codexMainContext.js";
-import {
-  createChronicleReadExecutors,
-  createChronicleSearchExecutors,
-} from "../shared/readDomain/core/chronicleReadExecutors.js";
-import { createCodexEntryExecutors } from "../shared/readDomain/core/codexEntryExecutors.js";
-import { createCodexReadExecutors } from "../shared/readDomain/core/codexReadExecutors.js";
-import { readChronicleReadInputs } from "../shared/readDomain/core/readInputsReader.js";
-import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
-import {
-  ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
-  alreadyInjectedCodexEntryContent,
-} from "../shared/readDomain/features/codex/alreadyInjectedEntry.js";
-import { extractPlainText } from "../shared/readDomain/features/codex/prosemirrorTextExtractor.js";
-import type { CoreReadExecutor } from "../shared/readDomain/core/toolResult.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
 import {
   createAgentLoopRuleState,
@@ -117,15 +90,12 @@ import type {
 import type {
   MastraAgentRuntime,
   MastraAgentRuntimeModule,
-  MastraAgentToolBinding,
 } from "./mastra/agentRuntime.js";
 import type {
   MastraAgentTurnSender,
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
-import { createMainReadDb } from "./mastraRead/db.js";
-import { createMainTypedReads } from "./mastraRead/typed.js";
 import type { MainReadHooks } from "./mastraRead/nativeCall.js";
 import type {
   MainEgressParticipantContext,
@@ -237,6 +207,10 @@ export interface MastraTurnOwnerOptions {
   readonly profile: MastraTurnProfile;
   /** `loader.load` of `mastraAgentLoader.ts`; called only while the gate is open. */
   readonly loadRuntime: () => Promise<MastraAgentRuntimeModule>;
+  /** Loaded only for a turn that declares read tools. */
+  readonly loadReadBindings?: () => Promise<
+    typeof import("./mastraTurnReadBindings.js")
+  >;
   /** `app.getVersion()`. */
   readonly appVersion: string;
   /** Receives fixed texts only (never an error's own message of a request). */
@@ -461,6 +435,7 @@ export function createMastraTurnOwner(
   let switchDepth = 0;
   let shutdownPromise: Promise<void> | null = null;
   let runtimePromise: Promise<MastraAgentRuntime> | null = null;
+  let readBindingsPromise: Promise<typeof MastraTurnReadBindings> | null = null;
 
   const profileClosed = (): boolean =>
     options.profile.restricted ||
@@ -498,6 +473,24 @@ export function createMastraTurnOwner(
         });
     }
     return runtimePromise;
+  };
+
+  const loadReadBindings = (): Promise<typeof MastraTurnReadBindings> => {
+    if (readBindingsPromise === null) {
+      if (!options.loadReadBindings) {
+        return Promise.reject(
+          new Error("MASTRA_AGENT_READ_BINDINGS_UNAVAILABLE"),
+        );
+      }
+      readBindingsPromise = Promise.resolve()
+        .then(() => options.loadReadBindings!())
+        .catch((error: unknown) => {
+          // Failed imports are retried on the next tool turn.
+          readBindingsPromise = null;
+          throw error;
+        });
+    }
+    return readBindingsPromise;
   };
 
   /**
@@ -671,125 +664,6 @@ export function createMastraTurnOwner(
     assertLive: () => assertReadLive(turn),
     trackInFlight: (settled) => trackRead(turn, settled),
   });
-
-  const createTurnReadBindings = async (
-    turn: Turn,
-    request: MastraAgentTurnStartRequest,
-    identity: MainIssuedCallerIdentity,
-    tokenizer: CoreTokenizer,
-  ): Promise<{
-    readonly bindings: MastraAgentToolBinding[];
-    readonly clear: () => void;
-  }> => {
-    const hooks = readHooksOf(turn);
-    const db = createCoreReadDb(
-      createMainReadDb({ backend: options.backend!, identity, ...hooks }),
-    );
-    const native = createMainTypedReads({
-      backend: options.backend!,
-      identity,
-      ...hooks,
-    });
-    const turnInputs = await readChronicleReadInputs(db, {
-      projectId: turn.projectId,
-      currentSceneId: turn.currentSceneId,
-    });
-    const countTokens = (text: string): number => tokenizer.countTokens(text);
-    const treeState: CoreTreeState = {
-      projectId: turnInputs.inputs.projectId,
-      nodes: turnInputs.nodes,
-      activeSceneId: turnInputs.inputs.currentSceneId,
-    };
-    const readContext: CoreReadContext = {
-      getDb: () => db,
-      getTreeState: () => treeState,
-      body: createDbSceneBodyReader(() => db),
-      native,
-      countTokens,
-    };
-    const chronicle = createMainChronicleReadContext({
-      db,
-      turn: turnInputs,
-      countTokens,
-      getUiLanguage: () => request.loop.language,
-    });
-    const executors: Readonly<Record<M4ReadToolName, CoreReadExecutor>> = {
-      ...createReadExecutors(readContext),
-      ...createCodexReadExecutors(
-        createMainCodexReadContext({
-          db,
-          inputs: turnInputs.inputs,
-          countTokens,
-          native,
-        }),
-      ),
-      ...createCodexEntryExecutors(
-        createMainCodexEntryContext({
-          db,
-          inputs: turnInputs.inputs,
-          countTokens,
-          extractPlainText,
-        }),
-      ),
-      ...createChronicleReadExecutors(chronicle.ctx),
-      ...createChronicleSearchExecutors(
-        createMainChronicleSearchContext({
-          db,
-          turn: turnInputs,
-          countTokens,
-          native,
-        }),
-      ),
-    };
-    const bindings = request.tools.map((name): MastraAgentToolBinding => {
-      const definition = m4Tools.get(name);
-      const execute = executors[name];
-      if (!definition || !execute)
-        throw new Error("MASTRA_AGENT_READ_TOOL_UNAVAILABLE");
-      return {
-        name,
-        description: definition.description,
-        async execute(args) {
-          if (
-            typeof args !== "object" ||
-            args === null ||
-            Array.isArray(args)
-          ) {
-            throw new Error("MASTRA_AGENT_TOOL_ARGUMENTS_INVALID");
-          }
-          if (name === "get_codex_entry") {
-            const id = String((args as Record<string, unknown>)["id"] ?? "");
-            if (id && request.fullyInjectedIds.includes(id)) {
-              const content = alreadyInjectedCodexEntryContent(id);
-              const text = JSON.stringify(content);
-              return {
-                text,
-                tokensUsed: countTokens(text),
-                summary: ALREADY_INJECTED_CODEX_ENTRY_SUMMARY,
-              };
-            }
-          }
-          const result = await execute(args as Record<string, unknown>);
-          if (
-            "error" in result &&
-            result.error !== undefined &&
-            result.error !== null
-          ) {
-            throw new Error(String(result.error));
-          }
-          return {
-            text:
-              result.content == null
-                ? result.summary || "No result (not found)."
-                : JSON.stringify(result.content)!,
-            tokensUsed: result.tokensUsed,
-            summary: result.summary,
-          };
-        },
-      };
-    });
-    return { bindings, clear: chronicle.clear };
-  };
 
   // -------------------------------------------------------------------------
   // The turn's sink: Main's sink, with the owner's checks and bookkeeping.
@@ -1141,6 +1015,24 @@ export function createMastraTurnOwner(
         throw new MastraTurnCancelled();
       }
       if (!tokenizerReady) return refusal("unsupported");
+      let readBindingsModule: typeof MastraTurnReadBindings | null = null;
+      if (request.tools.length > 0) {
+        const loaded = await Promise.race([
+          loadReadBindings().then(
+            (module) => ({ module }),
+            () => ({ module: null }),
+          ),
+          forcedRace,
+        ]);
+        if (turn.forcedCause !== null)
+          throw new MastraTurnAborted(turn.forcedCause);
+        if (turn.userStop) {
+          turn.cancelObserved = true;
+          throw new MastraTurnCancelled();
+        }
+        if (loaded.module === null) return refusal("unsupported");
+        readBindingsModule = loaded.module;
+      }
       const runtime = await Promise.race([loadRuntime(), forcedRace]);
       // Stopped or detached while the runtime was loading: no row was written.
       if (turn.forcedCause !== null)
@@ -1172,12 +1064,16 @@ export function createMastraTurnOwner(
       const turnReadBindings =
         request.tools.length === 0
           ? null
-          : await createTurnReadBindings(
-              turn,
+          : await readBindingsModule!.createTurnReadBindings({
+              backend: options.backend!,
+              identity: callerIdentity as MainIssuedCallerIdentity,
+              hooks: readHooksOf(turn),
               request,
-              callerIdentity as MainIssuedCallerIdentity,
+              projectId: turn.projectId,
+              currentSceneId: turn.currentSceneId,
               tokenizer,
-            );
+              toolDefinitions,
+            });
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,

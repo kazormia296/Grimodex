@@ -625,6 +625,7 @@ if (!gotSingleInstanceLock) {
       secrets: keyStore,
       profile: profileEgress,
       loadRuntime: () => mastraAgentLoader.load(),
+      loadReadBindings: () => import("./mastraTurnReadBindings.js"),
       appVersion: app.getVersion(),
       log: (level, message) => {
         console[level](`[mastra-turn-owner] ${message}`);

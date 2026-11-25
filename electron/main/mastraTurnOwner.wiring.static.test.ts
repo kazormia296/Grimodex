@@ -80,6 +80,9 @@ describe("index.ts: the owner is an egress participant, a quit step and an event
     );
     expect(INDEX).toMatch(/loadRuntime: \(\) => mastraAgentLoader\.load\(\),/);
     expect(INDEX).toMatch(
+      /loadReadBindings: \(\) => import\("\.\/mastraTurnReadBindings\.js"\),/,
+    );
+    expect(INDEX).toMatch(
       /aiStreamTerminals, mastraAgentTurnLaunch, mastraTurnOwner, \);/,
     );
     // One owner and one loader in the whole product.

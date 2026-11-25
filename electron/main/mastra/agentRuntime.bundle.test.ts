@@ -116,6 +116,7 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
       isIssuedCallerIdentity: (candidate) => candidate === identity,
     },
     loadRuntime: () => loader.load(),
+    loadReadBindings: () => import("../mastraTurnReadBindings.js"),
     appVersion: "0.0.0-test",
     log: (_level, message) => logs.push(message),
   });
