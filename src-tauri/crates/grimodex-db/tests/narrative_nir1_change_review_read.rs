@@ -147,7 +147,7 @@ fn prepare_change_review_revision(
     scene_id: &str,
     entity_ids: &[&str],
 ) -> anyhow::Result<Value> {
-    Ok(prepare_nir1_entity_relation_revision(
+    prepare_nir1_entity_relation_revision(
         db,
         Nir1EntityRelationRevisionPrepareRequest {
             project_id: "default-project".into(),
@@ -159,7 +159,7 @@ fn prepare_change_review_revision(
                 .collect(),
             relation_ids: vec![],
         },
-    )?)
+    )
 }
 
 fn approve_change_review_revision(db: &Database, prepared: &Value) -> anyhow::Result<()> {
