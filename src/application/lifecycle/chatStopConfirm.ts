@@ -21,7 +21,8 @@ let pending: Promise<boolean> | null = null;
 export function confirmStopActiveTurn(
   kind: ChatStopConfirmKind,
 ): true | Promise<boolean> {
-  if (!getActiveTurnStopper()?.isActive()) return true;
+  // 確認が出ている間は、応答が自然に終わっていても、その確認の扱いに従う。
+  if (!pending && !getActiveTurnStopper()?.isActive()) return true;
   const current = useChatStopConfirmStore.getState().request;
   if (pending) {
     // 出ている文面と違う操作には、答えを流用しない。

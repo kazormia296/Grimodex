@@ -447,9 +447,11 @@ export async function runStoppableAgentSend<T>(
     }
     return await send();
   } catch (error) {
+    // Native の停止の失敗は本文が印だけ。provider の本文が同じ語を含んでも停止にしない。
     if (
       signal?.aborted &&
-      String(error).includes("AI_REQUEST_STOPPED_BY_USER")
+      error instanceof Error &&
+      error.message === "AI_REQUEST_STOPPED_BY_USER"
     ) {
       const receipt = await aborting;
       await cancelAiAuditExecution(audit, {

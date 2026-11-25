@@ -34,7 +34,7 @@
 | 中断の契機 | 利用者の「停止」と、停止を呼ぶ操作（scene の切替の reset など、`turnCoordinator.abort`）。 |
 | 待ちの上限 | 中断は Notify で即時に起き、future を落として終わる。`abort_chat_stream` はその終了（`complete`）を待って返る。 |
 | 終了の証拠 | `complete` の quiesced と、future の drop（接続が閉じる）。 |
-| 失敗の持ち主 | 送信の error は今までどおり呼び手に返る。中断の IPC の失敗は debug log に残し、送信は自然に終わる（今の挙動に戻る）。 |
+| 失敗の持ち主 | 送信の error は今までどおり呼び手に返る。renderer は本文が停止の印だけの失敗を停止（監査は cancelled）、他は failed にする。中断の IPC の失敗は debug log に残し、送信は自然に終わる（今の挙動に戻る）。 |
 | D2a の停止 | 変えない。障壁は `until_cancelled` で取り消し、その error（`legacy-request-stopped`）が返る。 |
 | 再起動の後 | 持ち越す状態は無い（メモリの中だけ）。 |
 
@@ -46,12 +46,12 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 入口 | 窓の終了（`closeQuiescenceController` の既定。panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、利用者の project の切替（`ProjectMenu`）。取り込みの完了や `ensureProjectActive` などの内部の読み込み、同じ project の読み直しでは聞かない。 |
+| 入口 | 窓の終了（`closeQuiescenceController` の既定。panel の窓も同じ）、workspace を開く（`workspaceOpenLifecycle`）、利用者の project の切替（`ProjectMenu`）。取り込みの完了や `ensureProjectActive` などの内部の読み込み、同じ project の読み直しでは聞かない。3 つとも inline AI の保留の拒否を確認より先に置く（`ProjectMenu` は `loadProject` の中の拒否と別に入口でも断る。切り替えられないのに応答だけ止めないため）。 |
 | 順番の理由 | 確認の画面を出したまま静止を始めないように確認を lease の前に置き、了承の直後に中断を始める。停止した turn の保存は静止の flush が待つ。 |
 | 対象の判定 | その窓の chat の store が生成中（`isStreaming`）。chat の移動の制御（`chatNavigationComposition`）が lib の小さな登録口に「生成中か」と「停止」を登録する（切替の側は chat の store を直接読まない）。確認の画面は `ApplicationDialogs` に置く。 |
 | 了承 | まだ生成中なら `stopGeneration`。停止した turn の確定と監査の終端は、今ある静止の段（`ai-executions`、`scoped-mutations`、`ipc-actual-tasks`）が待つ。agent の送信は上の中断で速く終わる。 |
 | 取りやめ | 何も止めず、操作を中止する（終了は veto、切替は `blocked`／読み込まない）。 |
-| 多重の要求 | 確認を出している間の同じ種類（終了、切替）の要求は、同じ確認の結果を待つ。違う種類の要求は取りやめる（出ている文面と違う操作に答えを流用しない）。 |
+| 多重の要求 | 確認を出している間の同じ種類（終了、切替）の要求は、同じ確認の結果を待つ。違う種類の要求は取りやめる（出ている文面と違う操作に答えを流用しない）。確認中に応答が自然に終わっても、確認が閉じるまで同じ扱いにする。 |
 | 待ちの上限 | 確認は利用者の操作まで待つ（時間切れなし）。終了の要求は同期で `preventDefault` するので、Electron の予備の時間切れは働かない。確認の画面を読み込めなければ「断る」と答える（固めない）。 |
 | 再起動の後 | 持ち越す状態は無い。 |
 
@@ -72,4 +72,5 @@
 - バックアップの復元、データの削除、監査の書き出し、新しい project の作成と削除、取り込みの完了の切替など、他の操作は今までどおり待つ（取り込み中は確認を出さない）。
 - 中断しても provider の側の生成と課金が止まる保証は無い（stream の停止と同じ）。
 - 実行済みの道具の結果は残る。
+- 窓の終了の購読に失敗した異常な状態では、今までどおり `beforeunload` だけになり、生成中の応答は確認しない。
 - 出力も道具の実行も無いまま中断した agent は、利用者の発言だけが残る（応答の行は作らない。確認の文の「途中までの応答」は空）。

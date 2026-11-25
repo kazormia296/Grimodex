@@ -9,6 +9,7 @@ import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { toast } from "sonner";
 import { useChatStopConfirmStore } from "@/application/lifecycle/chatStopConfirm";
 import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -176,6 +177,26 @@ describe("ProjectMenu (in the unified WorkspaceMenu)", () => {
         expect(stop).not.toHaveBeenCalled();
       }
     } finally {
+      registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
+    }
+  });
+
+  it("inline AI の保留中は、生成中の応答を止めずに切替を断る", async () => {
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    useProjectStore.setState({ loadProject });
+    const stop = vi.fn();
+    registerActiveTurnStopper({ isActive: () => true, stop });
+    useInlineAiStore.setState({ status: "diffShown" });
+    try {
+      render(<WorkspaceMenu />);
+      fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
+      fireEvent.click(screen.getByTestId("project-switch-proj-b"));
+      await Promise.resolve();
+      expect(useChatStopConfirmStore.getState().request).toBeNull();
+      expect(stop).not.toHaveBeenCalled();
+      expect(loadProject).not.toHaveBeenCalled();
+    } finally {
+      useInlineAiStore.setState({ status: "idle" });
       registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
     }
   });

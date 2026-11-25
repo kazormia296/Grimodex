@@ -294,6 +294,33 @@ describe("chat and Agent audit contracts", () => {
     expect(cancelMock).not.toHaveBeenCalled();
   });
 
+  it("does not treat a provider error that quotes the stop marker as Stop", async () => {
+    let rejectSend: ((error: Error) => void) | undefined;
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<Awaited<ReturnType<typeof invokeMock>>>(
+          (_resolve, reject) => {
+            rejectSend = reject;
+          },
+        ),
+    );
+    const controller = new AbortController();
+    const send = sendAgentMessageWithSignal(
+      "execution-stop-quoted-marker",
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(rejectSend).toBeDefined());
+
+    controller.abort();
+    rejectSend?.(
+      new Error('API error 400: {"message":"AI_REQUEST_STOPPED_BY_USER"}'),
+    );
+    await expect(send).rejects.toThrow("API error 400");
+
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(cancelMock).not.toHaveBeenCalled();
+  });
+
   it("requests native cancellation before invoking a send with an aborted signal", async () => {
     const controller = new AbortController();
     controller.abort();

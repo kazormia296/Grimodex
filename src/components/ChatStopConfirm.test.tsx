@@ -71,6 +71,27 @@ describe("終了や切替の前の、生成中の応答の確認", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("確認中に応答が自然に終わっても、違う種類の要求は通さない", async () => {
+    let first!: Promise<boolean> | true;
+    let same!: Promise<boolean> | true;
+    let other!: Promise<boolean> | true;
+    act(() => {
+      first = confirmStopActiveTurn("switch");
+    });
+    active = false;
+    act(() => {
+      other = confirmStopActiveTurn("close");
+      same = confirmStopActiveTurn("switch");
+    });
+    expect(same).toBe(first);
+    await expect(Promise.resolve(other)).resolves.toBe(false);
+    act(() => {
+      useChatStopConfirmStore.getState().request?.answer(true);
+    });
+    await expect(Promise.resolve(first)).resolves.toBe(true);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
   it("確認中の同じ種類は同じ答えを待ち、違う種類は取りやめる", async () => {
     let first!: Promise<boolean> | true;
     let same!: Promise<boolean> | true;
