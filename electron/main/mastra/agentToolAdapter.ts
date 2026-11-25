@@ -21,6 +21,22 @@ const PERMISSIVE_INPUT_SCHEMA = jsonSchema<unknown>({
   type: "object",
   additionalProperties: true,
 });
+const TURN_STOPPED_RESULT = "Tool execution skipped because the turn stopped.";
+
+function truncatedToolError(
+  message: string,
+  tokenBudget: number,
+  countTokens: (text: string) => number,
+): string {
+  const { content } = formatToolResult(
+    { content: null, summary: "", error: message },
+    tokenBudget,
+    countTokens,
+  );
+  return content.startsWith("Error: ")
+    ? content.slice("Error: ".length)
+    : content;
+}
 
 export function createMastraAgentTools(input: {
   readonly names: readonly string[];
@@ -64,6 +80,11 @@ export function createMastraAgentTools(input: {
               throw new Error("MASTRA_AGENT_TOOL_CALL_ID_MISSING");
             }
             const toolCallId = context.agent.toolCallId;
+            const isStopped = () =>
+              context.abortSignal?.aborted === true ||
+              input.signal.aborted ||
+              input.isTurnStopped?.() === true;
+            if (isStopped()) return TURN_STOPPED_RESULT;
             input.onToolStart?.({ toolCallId, toolName: name });
             if (
               binding === undefined ||
@@ -76,7 +97,13 @@ export function createMastraAgentTools(input: {
                 tokens: 0,
                 summary: message,
               });
-              throw new Error(message);
+              throw new Error(
+                truncatedToolError(
+                  message,
+                  input.tokenBudget,
+                  input.countTokens,
+                ),
+              );
             }
 
             let result: Awaited<ReturnType<typeof binding.execute>>;
@@ -86,13 +113,7 @@ export function createMastraAgentTools(input: {
                 signal: context.abortSignal ?? input.signal,
               });
             } catch (error) {
-              if (
-                context.abortSignal?.aborted ||
-                input.signal.aborted ||
-                input.isTurnStopped?.()
-              ) {
-                throw error;
-              }
+              if (isStopped()) return TURN_STOPPED_RESULT;
               const message =
                 error instanceof Error ? error.message : String(error);
               input.onToolResult?.({
@@ -101,8 +122,17 @@ export function createMastraAgentTools(input: {
                 tokens: 0,
                 summary: message,
               });
-              throw new Error(message, { cause: error });
+              throw new Error(
+                truncatedToolError(
+                  message,
+                  input.tokenBudget,
+                  input.countTokens,
+                ),
+                { cause: error },
+              );
             }
+
+            if (isStopped()) return TURN_STOPPED_RESULT;
 
             const formatted = formatToolResult(
               { text: result.text, summary: result.summary },

@@ -970,6 +970,13 @@ export function createMastraTurnOwner(
     const citations: MastraAgentTurnCitation[] = [];
     let finalThinkingBlocks: MastraAgentTurnThinkingBlock[] = [];
     let terminalSent = false;
+    let preparedSendProgress: {
+      sendIndex: number;
+      usage: ReturnType<typeof progressUsage>;
+      cacheDowngradeReason: NonNullable<
+        ReturnType<typeof finalizeTurnPayload>["cacheDowngradeReason"]
+      > | null;
+    } | null = null;
     const makeLoopResult = (
       stoppedReason = loopState.aborted
         ? "aborted"
@@ -1106,12 +1113,30 @@ export function createMastraTurnOwner(
               ? new MastraTurnCancelled()
               : new MastraAgentLoopStopped();
           }
+          const prepared = preparedSendProgress;
+          if (prepared?.sendIndex !== sendIndex) {
+            throw new Error("MASTRA_AGENT_SEND_PROGRESS_MISSING");
+          }
+          preparedSendProgress = null;
+          progress.send({
+            kind: "send-accepted",
+            sendIndex: sendIndex + 1,
+            usage: prepared.usage,
+            cacheDowngradeReason: prepared.cacheDowngradeReason,
+          });
         },
         toolDefinitions,
         bindings: turnReadBindings?.bindings ?? [],
         isToolDeclared: (name) => declaredToolNames.has(name),
-        isTurnStopped: () =>
-          turn.userStop || turn.forcedCause !== null || turn.finished,
+        isTurnStopped: () => {
+          if (turn.finished) return true;
+          try {
+            assertLive(turn);
+            return false;
+          } catch {
+            return true;
+          }
+        },
         maxToolCalls: request.loop.maxToolCalls,
         maxUserQuestions: request.loop.maxUserQuestions,
         tokenBudget: request.loop.tokenBudget,
@@ -1199,12 +1224,11 @@ export function createMastraTurnOwner(
           declaredToolNames = new Set(
             preparedRequest.tools?.map(({ name }) => name) ?? [],
           );
-          progress.send({
-            kind: "send-accepted",
-            sendIndex: ctx.sendIndex + 1,
+          preparedSendProgress = {
+            sendIndex: ctx.sendIndex,
             usage: progressUsage(finalized.usage, request.loop.contextWindow),
             cacheDowngradeReason: finalized.cacheDowngradeReason ?? null,
-          });
+          };
           return preparedRequest;
         },
         observeResponse: (response) => {

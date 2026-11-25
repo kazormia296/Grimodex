@@ -129,10 +129,12 @@ export async function createTurnReadBindings(options: {
       name,
       description: definition.description,
       async execute(args) {
-        if (typeof args !== "object" || args === null || Array.isArray(args)) {
-          throw new Error("MASTRA_AGENT_TOOL_ARGUMENTS_INVALID");
-        }
-        if (name === "get_codex_entry") {
+        if (
+          name === "get_codex_entry" &&
+          typeof args === "object" &&
+          args !== null &&
+          !Array.isArray(args)
+        ) {
           const id = String((args as Record<string, unknown>)["id"] ?? "");
           if (id && request.fullyInjectedIds.includes(id)) {
             const content = alreadyInjectedCodexEntryContent(id);

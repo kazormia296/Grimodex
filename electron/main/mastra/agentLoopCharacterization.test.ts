@@ -1133,6 +1133,180 @@ describe("T-a runtime tool adapter", () => {
     });
   });
 
+  it("caps thrown and unavailable tool errors like the legacy loop", async () => {
+    const legacy = await vi.importActual<{
+      runAgentLoop(options: never): Promise<unknown>;
+    }>("../../../src/features/chat/agent/agentLoop");
+    const cases = [
+      {
+        toolName: "search_events",
+        bindingName: "search_events",
+        declared: ["search_events"],
+        message: "x".repeat(5000),
+        tokenBudget: 400,
+      },
+      {
+        toolName: "get_scene",
+        bindingName: "search_events",
+        declared: [] as string[],
+        message: "Tool not available this turn: get_scene",
+        tokenBudget: 40,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const firstResponse: AgentWireResponse = {
+        blocks: [
+          {
+            type: "tool_use",
+            id: "error-case",
+            name: testCase.toolName,
+            input: {},
+          },
+        ],
+        stopReason: "tool_use",
+      };
+      const sent: AgentWireArgs[] = [];
+      const binding: MastraAgentToolBinding = {
+        name: testCase.bindingName,
+        description: "error test",
+        async execute() {
+          throw new Error(testCase.message);
+        },
+      };
+      await createMastraAgentRuntime().runTurn(
+        toolTurnInput(
+          async (args) => {
+            sent.push(structuredClone(args));
+            return sent.length === 1 ? firstResponse : response("end_turn");
+          },
+          {
+            bindings: [binding],
+            toolDefinitions: [
+              ...new Set([testCase.toolName, testCase.bindingName]),
+            ].map((name) => ({ ...TOOL_SNAPSHOT, name })),
+            maxToolCalls: 1,
+            maxUserQuestions: 0,
+            tokenBudget: testCase.tokenBudget,
+            countTokens: (text) => text.length,
+          },
+        ),
+      );
+
+      const legacySent: unknown[][] = [];
+      let legacyCall = 0;
+      await legacy.runAgentLoop({
+        messages: [{ role: "user", content: "start" }],
+        tools: testCase.declared.map((name) => ({ name })),
+        tokenBudget: testCase.tokenBudget,
+        maxToolCalls: 1,
+        maxUserQuestions: 0,
+        sendToLLM: async (messages: unknown[]) => {
+          legacySent.push(structuredClone(messages));
+          return legacyCall++ === 0 ? firstResponse : response("end_turn");
+        },
+        executeTool: async (name: string, toolCallId: string) => ({
+          name,
+          toolCallId,
+          content: null,
+          summary: testCase.message,
+          tokensUsed: 0,
+          error: testCase.message,
+        }),
+        onProgress: () => undefined,
+        onTextChunk: () => undefined,
+        callLimitMessage: "calls",
+        tokenBudgetMessage: "tokens",
+        userQuestionLimitMessage: "questions",
+      } as never);
+
+      const mainResults = sent[1]!.messages.filter(
+        (message) => message.role === "tool_result",
+      );
+      const legacyResults = legacySent[1]!.filter(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          "role" in message &&
+          message.role === "tool_result",
+      );
+      expect(mainResults).toEqual(legacyResults);
+    }
+  });
+
+  it("does not execute or send the fixed no-op result after Stop wins before execute", async () => {
+    let stopped = false;
+    const sent: AgentWireArgs[] = [];
+    const execute = vi.fn(async () => ({
+      text: "private result",
+      tokensUsed: 99,
+      summary: "private summary",
+    }));
+    const onToolStart = vi.fn();
+    const onToolResult = vi.fn();
+    let secondRequest: unknown;
+    const firstResponse: AgentWireResponse = {
+      blocks: [
+        {
+          type: "tool_use",
+          id: "stopped-call",
+          name: "search_events",
+          input: { query: "private input" },
+        },
+      ],
+      stopReason: "tool_use",
+    };
+    const run = createMastraAgentRuntime().runTurn(
+      toolTurnInput(
+        async (args) => {
+          sent.push(structuredClone(args));
+          if (sent.length === 1) {
+            stopped = true;
+            return firstResponse;
+          }
+          return response("end_turn");
+        },
+        {
+          bindings: [
+            {
+              name: "search_events",
+              description: "search",
+              execute,
+            },
+          ],
+          toolDefinitions: [TOOL_SNAPSHOT],
+          maxToolCalls: 1,
+          maxUserQuestions: 0,
+          tokenBudget: 100,
+          countTokens: (text) => text.length,
+          isTurnStopped: () => stopped,
+          onToolStart,
+          onToolResult,
+          prepareSend: (request, context) => {
+            if (context.sendIndex === 1) secondRequest = request;
+            return request;
+          },
+          assertSendAllowed: ({ sendIndex }) => {
+            if (sendIndex > 0 && stopped) throw new MastraAgentLoopStopped();
+          },
+        },
+      ),
+    );
+    await run.catch(() => undefined);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(onToolStart).not.toHaveBeenCalled();
+    expect(onToolResult).not.toHaveBeenCalled();
+    expect(JSON.stringify(secondRequest)).toContain(
+      "Tool execution skipped because the turn stopped.",
+    );
+    expect(sent).toHaveLength(1);
+    expect(JSON.stringify(sent)).not.toContain(
+      "Tool execution skipped because the turn stopped.",
+    );
+    expect(JSON.stringify(sent)).not.toContain("private result");
+  });
+
   it("refuses unselected M4 names without calling a binding", async () => {
     const sent: AgentWireArgs[] = [];
     const events: unknown[] = [];
@@ -1182,7 +1356,7 @@ describe("T-a runtime tool adapter", () => {
     expect(sent[1]!.messages).toContainEqual({
       role: "tool_result",
       toolUseId: "call-unselected",
-      content: "Error: Tool not available this turn: get_scene",
+      content: "Error: Tool not available...[truncated: 元 46 tokens]",
       isError: true,
     });
     expect(events).toEqual([

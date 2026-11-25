@@ -13,8 +13,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** NULL and an unset value retain the renderer's documented full default. */
 export function aiPolicyAllowsChat(raw: unknown): boolean {
-  if (raw === null || raw === undefined) return true;
-  if (typeof raw !== "string" || raw.trim().length === 0) return false;
+  if (raw === null || raw === undefined || raw === "") return true;
+  if (typeof raw !== "string") return false;
   try {
     const parsed: unknown = JSON.parse(raw);
     const toggles = isRecord(parsed) ? parsed.toggles : null;

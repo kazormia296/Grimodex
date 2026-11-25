@@ -34,6 +34,8 @@ import {
   createProfileEgressGate,
 } from "./profileEgress.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import type { CoreReadContext } from "../shared/mastraRead/ports.js";
+import { createReadExecutors } from "../shared/readDomain/core/readExecutors.js";
 import type {
   MastraAgentTurnStartRequest,
   MastraAgentTurnStartResult,
@@ -1831,6 +1833,172 @@ describe("M4 read bindings (T-b)", () => {
         args.messages.filter((message) => message.role !== "system"),
       ),
     ).toEqual(legacy.sentMessages);
+  });
+
+  it("passes null, array, string, and number tool inputs through like the legacy executor", async () => {
+    // The renderer's legacy dispatcher invokes this shared executor without input normalization.
+    const legacyGetScene = createReadExecutors({
+      getDb: () => {
+        throw new Error("unexpected DB read for an empty id");
+      },
+      getTreeState: () => ({
+        projectId: PROJECT_ID,
+        nodes: [],
+        activeSceneId: "scene-1",
+      }),
+      countTokens: (text: string) => text.length,
+    } as unknown as CoreReadContext).get_scene;
+    const readBindings = await import("./mastraTurnReadBindings.js");
+    const { bindings } = await readBindings.createTurnReadBindings({
+      backend: {
+        async dbExecute() {
+          return readAnswer();
+        },
+      } as unknown as NapiBackendLike,
+      identity: { senderId: 7, workspaceId: WORKSPACE } as never,
+      hooks: {},
+      request: startRequest(TURN_A, { tools: ["get_scene"] }),
+      projectId: PROJECT_ID,
+      currentSceneId: "scene-1",
+      tokenizer: createPerCodePointTokenizer(),
+      toolDefinitions: [{ name: "get_scene", description: "scene" }],
+    });
+    const mainGetScene = bindings[0]!;
+    for (const params of [null, [], "raw", 7]) {
+      const [main, legacy] = await Promise.allSettled([
+        mainGetScene.execute(params, {
+          toolCallId: "input-shape",
+          signal: new AbortController().signal,
+        }),
+        legacyGetScene(params as never),
+      ]);
+      expect(main.status).toBe(legacy.status);
+      if (main.status === "fulfilled" && legacy.status === "fulfilled") {
+        expect(main.value).toEqual({
+          text:
+            legacy.value.content == null
+              ? legacy.value.summary || "No result (not found)."
+              : JSON.stringify(legacy.value.content),
+          tokensUsed: legacy.value.tokensUsed,
+          summary: legacy.value.summary,
+        });
+      } else if (main.status === "rejected" && legacy.status === "rejected") {
+        expect((main.reason as Error).message).toBe(
+          (legacy.reason as Error).message,
+        );
+      }
+    }
+  });
+
+  it("does not let a non-object get_codex_entry input throw in the injected-entry shortcut", async () => {
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "injected-null",
+              name: "get_codex_entry",
+              input: null as unknown as Record<string, unknown>,
+            },
+          ],
+          stopReason: "tool_use",
+        },
+        {
+          blocks: [{ type: "text", content: "Done." }],
+          stopReason: "end_turn",
+        },
+      ],
+      runTurn: driveCoreReadOwnerLoop,
+    });
+    const { context } = h.newContext();
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, {
+          fullyInjectedIds: ["injected-entry"],
+          tools: ["get_codex_entry"],
+        }),
+      ),
+    );
+
+    expect(result.loopResult?.stoppedReason).toBe("completed");
+    expect(h.sends[1]?.args.messages).toContainEqual({
+      role: "tool_result",
+      toolUseId: "injected-null",
+      content: "No id provided",
+      isError: false,
+    });
+  });
+
+  it("drops a read result when user Stop arrives after execution without recording or finishing it", async () => {
+    let stop = (): void => undefined;
+    let executions = 0;
+    const h = harness({
+      responses: [
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "stop-after-read",
+              name: "get_scene",
+              input: {},
+            },
+          ],
+          stopReason: "tool_use",
+        },
+      ],
+      readDbExecute: mainReadFixture("Scene"),
+      runTurn: async (input) => {
+        const bindings = input.bindings?.map((binding) =>
+          binding.name === "get_scene"
+            ? {
+                ...binding,
+                async execute(
+                  args: unknown,
+                  ctx: {
+                    toolCallId: string;
+                    signal: AbortSignal;
+                  },
+                ) {
+                  executions += 1;
+                  const result = await binding.execute(args, ctx);
+                  stop();
+                  return result;
+                },
+              }
+            : binding,
+        );
+        await driveCoreReadOwnerLoop({ ...input, bindings });
+      },
+    });
+    const { context } = h.newContext();
+    stop = () => h.owner.cancel(context, { turnId: TURN_A } as never);
+
+    const result = completed(
+      await h.owner.start(
+        context,
+        startRequest(TURN_A, { tools: ["get_scene"] }),
+      ),
+    );
+    const toolEvents = progressDeliveries
+      .map(
+        ([, , payload]) =>
+          (payload as { event: Record<string, unknown> }).event,
+      )
+      .filter((event) => event.kind === "tool");
+
+    expect(executions).toBe(1);
+    expect(result.loopResult).toMatchObject({
+      stoppedReason: "aborted",
+      toolCallRecords: [],
+      usage: { totalTokens: 0 },
+    });
+    expect(toolEvents.map(({ phase }) => phase)).toEqual(["started"]);
+    expect(h.sends).toHaveLength(1);
+    expect(JSON.stringify(h.sends)).not.toContain(
+      "Tool execution skipped because the turn stopped.",
+    );
   });
 
   it("rejects a tool at the execution boundary after the owner's limit removes its declaration", async () => {
@@ -4158,6 +4326,11 @@ describe("the per-send chat policy check (DR-MP4-26)", () => {
     ]);
     expect(h.appended).toEqual([]);
     expect(h.sends).toEqual([]);
+    expect(
+      progressDeliveries.map(
+        ([, , payload]) => (payload as { event: { kind: string } }).event.kind,
+      ),
+    ).not.toContain("send-accepted");
   });
 
   it("blocks the next send after a tool round without beginning another audit row", async () => {
@@ -4180,6 +4353,13 @@ describe("the per-send chat policy check (DR-MP4-26)", () => {
     ).toHaveLength(2);
     expect(
       h.types().filter((type) => type === "execution.started"),
+    ).toHaveLength(1);
+    expect(
+      progressDeliveries.filter(
+        ([, , payload]) =>
+          (payload as { event: { kind: string } }).event.kind ===
+          "send-accepted",
+      ),
     ).toHaveLength(1);
     expect(result.loopResult?.stoppedReason).toBe("aborted");
   });
