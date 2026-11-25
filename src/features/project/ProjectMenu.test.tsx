@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { useChatStopConfirmStore } from "@/application/lifecycle/chatStopConfirm";
 import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { resetPendingGuardThrottle } from "@/features/editor/inlineAi/pendingGuard";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -19,7 +20,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 vi.mock("./CreateProjectDialog", () => ({
@@ -187,11 +188,14 @@ describe("ProjectMenu (in the unified WorkspaceMenu)", () => {
     const stop = vi.fn();
     registerActiveTurnStopper({ isActive: () => true, stop });
     useInlineAiStore.setState({ status: "diffShown" });
+    resetPendingGuardThrottle();
+    vi.mocked(toast.info).mockClear();
     try {
       render(<WorkspaceMenu />);
       fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
       fireEvent.click(screen.getByTestId("project-switch-proj-b"));
       await Promise.resolve();
+      expect(toast.info).toHaveBeenCalledOnce();
       expect(useChatStopConfirmStore.getState().request).toBeNull();
       expect(stop).not.toHaveBeenCalled();
       expect(loadProject).not.toHaveBeenCalled();
