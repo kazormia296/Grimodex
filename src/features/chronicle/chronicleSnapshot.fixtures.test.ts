@@ -55,8 +55,8 @@ function runPipeline(input: FixtureInput): ChronicleSnapshot {
   );
   const revealNodeIds = new Set(revealNodes.map((node) => node.id));
   const revealReadingOrder = new Map(
-    [...computeGlobalSceneOrder(revealNodes as TreeNodeData[])].filter(
-      ([id]) => revealNodeIds.has(id),
+    [...computeGlobalSceneOrder(revealNodes as TreeNodeData[])].filter(([id]) =>
+      revealNodeIds.has(id),
     ),
   );
   // scene-own アンカー源: input.nodes の scene ノードから暦日付を構築（push と同じ）。

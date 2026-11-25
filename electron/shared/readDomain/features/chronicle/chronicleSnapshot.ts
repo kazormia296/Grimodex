@@ -328,10 +328,9 @@ export function deriveChronicleSnapshot(
 
   const dateLang: DateLang = lang === "en" ? "en" : "ja";
   const revealView = input.revealSceneView;
-  const revealOf: ReturnType<typeof chronicleRevealMarks> =
-    revealView
-      ? chronicleRevealMarks(events, () => revealView)
-      : () => ({});
+  const revealOf: ReturnType<typeof chronicleRevealMarks> = revealView
+    ? chronicleRevealMarks(events, () => revealView)
+    : () => ({});
   return {
     time: {
       source: anchor.source,
@@ -573,6 +572,8 @@ function renderAtLevel(
   const lines: string[] = [];
   const recent = snapshot.recentEvents.slice(0, o.recent);
   const offpage = snapshot.offpage.slice(0, o.offpage);
+  const unrevealed = (e: SnapshotEvent) =>
+    e.revealScene?.revealedToReader === false;
 
   // 時刻（none は出さない）
   // 整形済み日付があればそれを基底に（proxy/precision suffix は従来通り付与）。
@@ -607,9 +608,7 @@ function renderAtLevel(
   const eventLine = (e: SnapshotEvent): string =>
     `- ${e.title}${o.dates && e.relTime ? `（${e.relTime}）` : ""}${
       o.notes && e.note ? `（${e.note}）` : ""
-    }${
-      e.revealScene?.revealedToReader === false ? L.unrevealedSuffix : ""
-    }`;
+    }${unrevealed(e) ? L.unrevealedSuffix : ""}`;
 
   if (recent.length > 0) {
     lines.push(L.recentHeader);
@@ -633,12 +632,8 @@ function renderAtLevel(
     }
   }
 
-  if (
-    recent.some((e) => e.revealScene?.revealedToReader === false) ||
-    offpage.some((e) => e.revealScene?.revealedToReader === false)
-  ) {
+  if (recent.some(unrevealed) || offpage.some(unrevealed))
     lines.unshift(L.unrevealedInstruction);
-  }
 
   return lines.join("\n");
 }
