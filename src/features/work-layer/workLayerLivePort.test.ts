@@ -127,9 +127,27 @@ describe("createWorkLayerLivePort", () => {
         status: "unavailable",
         count: null,
         open: { surface: "structure-extract-review" },
+        reason: "failed",
       },
-      { id: "stale-proposals", status: "unavailable", count: null },
+      {
+        id: "stale-proposals",
+        status: "unavailable",
+        count: null,
+        reason: "failed",
+      },
     ]);
+  });
+
+  it("opens the structure review through the injected opener, and not after dispose", () => {
+    const deps = dependencies({ openStructureReview: vi.fn() });
+    const port = createWorkLayerLivePort(deps);
+
+    port.openSurface({ surface: "structure-extract-review" });
+    expect(deps.openStructureReview).toHaveBeenCalledTimes(1);
+
+    port.dispose();
+    port.openSurface({ surface: "structure-extract-review" });
+    expect(deps.openStructureReview).toHaveBeenCalledTimes(1);
   });
 
   it("starts a candidate scan only on tray open", async () => {
@@ -152,6 +170,7 @@ describe("createWorkLayerLivePort", () => {
     expect(entry(model, "codex-candidates")).toMatchObject({
       status: "unavailable",
       count: null,
+      reason: "failed",
     });
   });
 
@@ -174,6 +193,7 @@ describe("createWorkLayerLivePort", () => {
     expect(entry(timedOut, "codex-candidates")).toMatchObject({
       status: "unavailable",
       count: null,
+      reason: "timed-out",
     });
 
     snapshot = { status: "ready", count: 4 };
