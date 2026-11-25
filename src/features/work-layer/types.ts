@@ -142,11 +142,16 @@ export type WorkLayerOpenSurface = {
   readonly surface: "structure-extract-review";
 };
 
+/** Why an entry could not be counted. Only meaningful with `unavailable`. */
+export type WorkLayerLiveEntryReason = "failed" | "timed-out";
+
 export interface WorkLayerLiveEntry {
   readonly id: WorkLayerLiveEntryId;
   readonly status: WorkLayerLiveEntryStatus;
   readonly count: number | null;
   readonly open?: WorkLayerOpenSurface;
+  /** Display hint for `unavailable`: a read that failed vs. one still running past the wait limit. */
+  readonly reason?: WorkLayerLiveEntryReason;
 }
 
 export type WorkLayerPortKind = "fixture" | "live";
@@ -163,6 +168,8 @@ export interface WorkLayerPort {
   readonly scopeKey: string;
   load(request: WorkLayerLoadRequest): Promise<WorkLayerModel>;
   subscribe?(listener: (model: WorkLayerModel) => void): () => void;
+  /** Open a screen outside the Work Layer. The host wires the surface name to the real screen. */
+  openSurface?(surface: WorkLayerOpenSurface): void;
   dispose?(): void;
 }
 
@@ -182,5 +189,7 @@ export interface WorkLayerLivePortDependencies {
   readonly subscribeCandidateCount: (listener: () => void) => () => void;
   readonly isCandidateExtractionApplicable: () => boolean;
   readonly structureReviewAvailable: () => boolean;
+  /** Opens the structure-extraction review screen (the `structure-extract-review` surface). */
+  readonly openStructureReview?: () => void;
   readonly displayWaitLimitMs?: number;
 }

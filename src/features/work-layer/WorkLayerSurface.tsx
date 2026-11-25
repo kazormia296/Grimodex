@@ -19,6 +19,14 @@ export function WorkLayerSurface() {
   if (workLayer.navigation.mode === "ambient") {
     return <AttentionArrivalGutter />;
   }
+  // Live data has one face only: the Attention tray. Any other mode (for example
+  // one left over from a preview) shows nothing rather than a preview-only screen.
+  if (
+    workLayer.provenance === "live" &&
+    workLayer.navigation.mode !== "tray-attention"
+  ) {
+    return null;
+  }
 
   let surface = null;
   switch (workLayer.navigation.mode) {
