@@ -1993,6 +1993,7 @@ pub fn narrative_extraction_apply_commit_with_control(
                 || message.contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID")
                 || message.contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE")
                 || message.contains("NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH")
+                || message.contains("NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN")
                 || message.contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT")
                 || message.contains("NEX_PROPOSAL_PAYLOAD_MISMATCH")
                 || message.contains("NEX_PREPARED_POLICY_CHANGED")
@@ -2284,12 +2285,15 @@ fn validate_commit_plan(
         match op.kind.as_str() {
             OP_KIND_EVENT_CREATE => {
                 let payload = parse_event_create_payload(&op.payload)?;
-                // 抽出の取り込みは、年表の出来事を常に secret で作る（DR-CAS-2）。
-                // 提案への束縛や形式の枝より前に、操作そのものへ掛ける。
                 anyhow::ensure!(
-                    payload.secret,
-                    "NEX_CHRONICLE_APPLY_SECRET_REQUIRED: extraction commit must create Chronicle events as secret (operation '{}')",
-                    payload.event_id
+                    !payload.secret,
+                    "NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN: chronicle events must not be created secret"
+                );
+                // 開示シーンも取り込みは入れない（確認 104）。旧形式は operation の payload を
+                // そのまま比較するので、組み立て直しの照合には頼らず、共通の検査で拒む。
+                anyhow::ensure!(
+                    payload.reveal_scene_id.as_deref().is_none_or(str::is_empty),
+                    "NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN: chronicle events must not be created with a reveal scene"
                 );
                 ensure_event_id_available(conn, ctx.project_id, &payload.event_id)?;
                 ensure_scene_versions(conn, ctx.project_id, &payload.evidence_scene_links)?;
@@ -3121,7 +3125,7 @@ fn compile_current_chronicle_event_operation_payload(
                 "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal has no disclosure.revealDocumentRef"
             )
         })?;
-    let (reveal_scene_id, _) = document_authority.get(reveal_document_ref).ok_or_else(|| {
+    document_authority.get(reveal_document_ref).ok_or_else(|| {
         anyhow::anyhow!(
             "NEX_PROPOSAL_PAYLOAD_MISMATCH: unknown reveal document ref '{reveal_document_ref}'"
         )
@@ -3133,10 +3137,9 @@ fn compile_current_chronicle_event_operation_payload(
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        // 版の disclosure.secret は IR の関門。年表の出来事は版の値に関わらず
-        // 常に secret で作る（DR-CAS-1）。画面側の compiler.ts と同時に変えること。
-        "secret": true,
-        "revealSceneId": reveal_scene_id,
+        // revealDocumentRef は版の参照検査にだけ使い、出来事へは投影しない。
+        "secret": false,
+        "revealSceneId": null,
         "evidenceSceneLinks": evidence_scene_links,
         "detail": null,
         "primaryCodexId": null,

@@ -1282,7 +1282,7 @@ fn retrieval_sql_failures_remain_errors() {
 
 /// 版（revision）の payload・Envelope の evidenceSet・封印済み snapshot の文書から、
 /// 取り込みの操作を Native の組み立て（compile_current_chronicle_event_operation_payload）と
-/// 同じ形に組む。操作の secret は常に true（DR-CAS-1、2）。
+/// 同じ形に組む。出来事は secret でなく、reveal scene も持たない。
 fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) -> Value {
     let (payload, envelope): (String, String) = conn
         .query_row(
@@ -1338,11 +1338,10 @@ fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) ->
         }));
     }
     let reveal_ref = &payload["disclosure"]["revealDocumentRef"];
-    let reveal_scene = documents
+    documents
         .iter()
         .find(|document| document["ref"] == *reveal_ref)
-        .expect("reveal Snapshot document")["origin"]["nodeId"]
-        .clone();
+        .expect("reveal Snapshot document");
     json!({
         "eventId": payload["eventId"],
         "title": payload["title"],
@@ -1350,8 +1349,8 @@ fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) ->
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": true,
-        "revealSceneId": reveal_scene,
+        "secret": false,
+        "revealSceneId": null,
         "evidenceSceneLinks": links,
         "detail": null,
         "primaryCodexId": null,
@@ -1422,7 +1421,7 @@ fn approved_current_revisions_of_run(db: &Database, run_id: &str) -> Vec<String>
     .expect("approved current revisions of the run")
 }
 
-/// 指定した版を取り込む prepare の入力。操作は Native の組み立てと同じ形（secret は常に true）。
+/// 指定した版を取り込む prepare の入力。操作は Native の組み立てと同じ形。
 fn chronicle_prepare_payload(
     db: &Database,
     fixture: &Fixture,
@@ -1444,7 +1443,8 @@ fn chronicle_prepare_payload(
             )?;
             set_id = set;
             let operation = chronicle_apply_operation(conn, &run_id, revision);
-            assert_eq!(operation["secret"], true);
+            assert_eq!(operation["secret"], false);
+            assert_eq!(operation["revealSceneId"], Value::Null);
             operations.push(CommitOperation {
                 kind: "chronicle.event.create".to_owned(),
                 payload: operation,
@@ -1586,10 +1586,10 @@ fn drain_freshness(db: &Database) {
     );
 }
 
-/// 承認済みの 2 つの編集した版（fixture の現行の版）が、年表に取り込める。
-/// 出来事は secret で、reveal は版の reveal の場面、題は版の題（E6、CAS/1）。
+/// 承認済みの 2 つの編集した版（fixture の現行の版）が、印や reveal scene なしで年表に取り込める。
+/// 題は版の題のまま。
 #[test]
-fn edited_revisions_pass_chronicle_prepare_and_apply_as_secret_events() {
+fn edited_revisions_pass_chronicle_prepare_and_apply_as_unmarked_events() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     enable_manual_apply(&db);
@@ -1620,8 +1620,11 @@ fn edited_revisions_pass_chronicle_prepare_and_apply_as_secret_events() {
     titles.sort();
     let rows = event_rows(&db);
     for (secret, reveal, _) in &rows {
-        assert_eq!(*secret, 1, "Chronicle Event must be secret");
-        assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
+        assert_eq!(*secret, 0, "Chronicle Event must not be secret");
+        assert_eq!(
+            *reveal, None,
+            "Chronicle Event must not have a reveal scene"
+        );
     }
     let mut actual: Vec<String> = rows.into_iter().filter_map(|(_, _, title)| title).collect();
     actual.sort();
@@ -1638,11 +1641,10 @@ fn edited_revisions_pass_chronicle_prepare_and_apply_as_secret_events() {
     .expect("Events are linked to evidence scenes");
 }
 
-/// DR-CAS-7 f／DR-ERA-6：承認した非 secret の版は、本物の取り込み（prepare → apply）で
-/// 年表の出来事が secret で作られた後も、資格の本体で eligible のまま。
+/// 承認した非 secret の版は、本物の取り込み（prepare → apply）の後も資格の本体で eligible のまま。
 /// 取り込みの直後も、Freshness の周期の後も変わらない。
 #[test]
-fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
+fn approved_nonsecret_child_stays_eligible_after_unmarked_chronicle_apply() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     enable_manual_apply(&db);
@@ -1667,8 +1669,8 @@ fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
     prepare_and_apply(&db, &prepare);
     assert_eq!(apply_counts(&db), (2, 1, 2));
     for (secret, reveal, _) in event_rows(&db) {
-        assert_eq!(secret, 1);
-        assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
+        assert_eq!(secret, 0);
+        assert_eq!(reveal, None);
     }
 
     // 書いた直後（Freshness の変更を処理する前）も、資格は変わらない。
@@ -1687,7 +1689,7 @@ fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
         }
         Ok(())
     })
-    .expect("the approved non-secret revisions stay eligible after a secret Chronicle apply");
+    .expect("the approved non-secret revisions stay eligible after the Chronicle apply");
 }
 
 fn undo_replay(commit_id: &str, project: &str, session: &str, action: &str) -> UndoCommitPayload {
@@ -1714,10 +1716,9 @@ fn application_dependency_edges(db: &Database) -> (i64, i64) {
     .expect("application dependency edges")
 }
 
-/// 編集した版から取り込んだ出来事は、取り消し（undo）とやり直し（redo）の後も動き、
-/// redo の後も secret である。
+/// 編集した版から取り込んだ出来事は、取り消し（undo）とやり直し（redo）の後も印なしである。
 #[test]
-fn edited_revision_apply_survives_undo_and_redo_as_secret_events() {
+fn edited_revision_apply_survives_undo_and_redo_as_unmarked_events() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     enable_manual_apply(&db);
@@ -1754,8 +1755,8 @@ fn edited_revision_apply_survives_undo_and_redo_as_secret_events() {
     let rows = event_rows(&db);
     assert_eq!(rows.len(), 2);
     for (secret, reveal, _) in rows {
-        assert_eq!(secret, 1, "Events stay secret after redo");
-        assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
+        assert_eq!(secret, 0, "Events stay unmarked after redo");
+        assert_eq!(reveal, None);
     }
     drain_freshness(&db);
     db.with_conn_mut(|conn| {
@@ -1791,11 +1792,7 @@ fn title_only_edited_revision_applies_with_the_edited_title() {
     apply_all_current(&db, &fixture, "era-title-request");
     assert_eq!(
         event_row_of(&db, &edited),
-        (
-            1,
-            Some(fixture.scene("s1").to_owned()),
-            Some("作者が直した題".to_owned())
-        )
+        (0, None, Some("作者が直した題".to_owned()))
     );
 }
 
@@ -1809,8 +1806,8 @@ fn twice_edited_disclosure_revision_applies() {
     let current = native_fresh_nonsecret_child(&db, &fixture);
     apply_all_current(&db, &fixture, "era-twice-request");
     let row = event_row_of(&db, &current);
-    assert_eq!(row.0, 1);
-    assert_eq!(row.1.as_deref(), Some(fixture.scene("s1")));
+    assert_eq!(row.0, 0);
+    assert_eq!(row.1, None);
 }
 
 /// 開示の項目を繰り返し編集した版（secret を付ける → 外す → 付ける → 外す）を承認して取り込む。
@@ -1828,8 +1825,8 @@ fn four_times_edited_disclosure_revision_applies() {
     native_human_decision(&db, &fixture, &current, "approved");
     apply_all_current(&db, &fixture, "era-four-request");
     let row = event_row_of(&db, &current);
-    assert_eq!(row.0, 1);
-    assert_eq!(row.1.as_deref(), Some(fixture.scene("s1")));
+    assert_eq!(row.0, 0);
+    assert_eq!(row.1, None);
 }
 
 /// この fixture の Snapshot には文書が 1 つ（D000001＝s1）しか無い。reveal を別の場面へ
@@ -2253,9 +2250,9 @@ const TWO_WINDOW_UNREVIEWED_REVISION: &str = "34aa64ae-35df-4ab7-a8ed-b833e7dbbc
 /// 版の作成で拒まれる）。そのため、私的な複製に `Database::migrate` を掛けてから使う。
 /// 承認済みの版（evidence も reveal も D000002＝ en-distractor-rumor-fact）から、reveal を
 /// D000001（＝ en-distractor-gift）へ変えた子を作る。もう 1 件（unreviewed の AI の版）は承認する。
-/// 出来事の reveal は編集後の場面、場面への結び付けは根拠の場面、secret である。
+/// 出来事には reveal scene を入れず、scene_events には根拠の場面を結び付ける。
 #[test]
-fn two_window_reveal_scene_edited_revision_applies_with_the_edited_reveal_scene() {
+fn two_window_reveal_scene_edited_revision_keeps_event_reveal_null() {
     let fixture = Fixture::two_window();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     db.migrate().expect("migrate the private two-window copy");
@@ -2272,12 +2269,8 @@ fn two_window_reveal_scene_edited_revision_applies_with_the_edited_reveal_scene(
     prepare_and_apply(&db, &prepare);
     assert_eq!(apply_counts(&db), (2, 1, 2));
     let row = event_row_of(&db, &edited);
-    assert_eq!(row.0, 1, "the Event is secret");
-    assert_eq!(
-        row.1.as_deref(),
-        Some(fixture.scene("s1")),
-        "reveal = edited Scene"
-    );
+    assert_eq!(row.0, 0, "the Event is unmarked");
+    assert_eq!(row.1, None, "the Event has no reveal Scene");
     // 場面への結び付けは、reveal ではなく根拠の場面（D000002）。
     db.with_conn(|conn| {
         let payload: String = conn.query_row(
@@ -2295,9 +2288,11 @@ fn two_window_reveal_scene_edited_revision_applies_with_the_edited_reveal_scene(
         Ok(())
     })
     .expect("scene links of the edited-reveal Event");
-    // 併せて取り込んだ AI の版の出来事も secret。
+    // 併せて取り込んだ AI の版の出来事にも印は付かない。
     for revision in revisions.iter().filter(|r| **r != edited) {
-        assert_eq!(event_row_of(&db, revision).0, 1);
+        let row = event_row_of(&db, revision);
+        assert_eq!(row.0, 0);
+        assert_eq!(row.1, None);
     }
 }
 
@@ -3892,7 +3887,9 @@ fn bulk_approve_writes_the_unsealed_child_and_its_human_approval() {
     assert_eq!(revisions.len(), 2);
     let prepare = chronicle_prepare_payload(&db, &fixture, "bao-two-window-apply", &revisions);
     prepare_and_apply(&db, &prepare);
-    assert_eq!(event_row_of(&db, &child).0, 1, "the Chronicle Event is secret");
+    let event = event_row_of(&db, &child);
+    assert_eq!(event.0, 0, "the Chronicle Event is unmarked");
+    assert_eq!(event.1, None, "the Chronicle Event has no reveal Scene");
     // 取り込み済みの組は、対象にならない（読み出しも、command も）。
     let again = read_bulk_approvals(&db, &fixture, TWO_WINDOW_RUN);
     for proposal in [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL] {

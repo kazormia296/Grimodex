@@ -194,3 +194,25 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 - **N6 が入るまで、取り込みは `secret = true` の出来事を作る**（画面には出ない。AI には全部渡る）。公開版（release）には、N6・N3・N7・N9 の整理と N11 の測定の後に出す。
 - 開示シーンの値は、N3・N7 が入るまで、AI に何も伝えない（保存するだけ）。説明文は中立の文のまま。
 - 実 Chromium で、編集欄の変更前後（秘匿が ON の出来事・OFF の出来事）を確かめた。マーカーの幅・位置は `ChronicleViewport.browser.test.tsx` の case で固定した。
+
+## 9. 取り込み（N6。2026-11-25）
+
+AI 抽出の取り込み（NEX の commit）が、出来事を印なし・開示シーンなしで作る。Rust（`narrative_extraction`）・画面側の compiler・提案カード・文言・試験・実機の journey を 1 つの PR で変える（Rust と TS を別々に入れると、旧 Native が `secret = false` の operation を拒む、または旧 compiler の `secret = true` が組み立て直しと食い違う）。技術判断（AGENTS の委任の範囲。確認 104・135 の帰結の実装）。
+
+### DR-CSR-19　取り込みは `secret = 0`・`reveal_scene_id = NULL` で出来事を作る（N6）
+
+- **組み立て（画面と Native）**：画面の `compiler.ts` と Native の組み立て直し（`commit.rs` の `compile_current_chronicle_event_operation_payload`。`digest_plan` で照合）を、`"secret": false`・`"revealSceneId": null`（キーを出し、値は JSON の null。**`null` と省略は一致しない**）にした。版の `disclosure.revealDocumentRef`（IR の関門のために必須）の参照先の検査は残し、値は出来事に入れない。版の `disclosure.secret`（IR の admission）・`proposalPlanner.ts` の既定値は変えない。
+- **検査の反転**：`NEX_CHRONICLE_APPLY_SECRET_REQUIRED` の検査を反転し、`secret = true` の operation を現行・旧形式とも**新コード `NEX_CHRONICLE_APPLY_SECRET_FORBIDDEN`** で拒む（提案への束縛・形式の枝より前に、操作そのものへ掛ける）。**独立レビューの指摘（P1）で、非 null・非空の `revealSceneId` も同じコードで拒む**ようにした（旧形式は operation の payload をそのまま比較するので、組み立て直しの照合に頼れない）。新コードは失敗の分類（invalidation の一覧）に入れた：**規則の前に準備された計画（保存済みの operation が `secret = true`）の apply は、`INVALIDATED` になる**（入れ忘れると `FAILED` の監査）。旧コード `SECRET_REQUIRED` は、もう発行されないので一覧から外した。
+- **補完の除去**：`chronicle_operations.rs` の `apply_chronicle_event_create` の、`revealSceneId` が null・空のとき最初の根拠の場面（`scene_ids.first()`）を入れる補完を外した（呼び出し元は `commit.rs` の 1 か所だけ。AI の作成〔`agent_writes.rs`〕に補完は無い）。根拠の場面のリンク（`evidence_scene_links`）は残る。
+- **提案カード**：「開示の場面」の入力（`chronicle-proposal-reveal-input`）と `handleRevise` の patch の型の `revealDocumentRef` を外した（`reviseChronicleProposal`・store の型と版のデータは残す。版の `disclosure.secret` のチェックは、SRA/1 の決定 17〔別の PR〕が外すので残す）。「まとめて承認」の見送りの理由 `reveal-scene-unresolved` は、符号を変えず、表示文を「根拠の文書の場面を確認できません」（en `Could not resolve the scene of the evidence document`）に直した（欄が無くなり、作者は直せない。検査は、版の `revealDocumentRef`〔根拠の文書〕が場面に引けるかを見る）。
+- **試験・fixture・digest**：取り込みの operation・fixture を `false`／`null` に、取り込み後の期待を `(0, None)`（DB の行を直接読む）に書き換えた。`secret = true` の拒否（現行・旧形式）、旧形式の reveal つきの拒否、根拠の場面があっても `reveal_scene_id` が NULL、規則の前の計画が `invalidated`、を足した。現行形式の改ざん検出の試験は、`reveal-scene` の期待コードを FORBIDDEN に、`reveal-omitted`（キーの欠落）を足し、共有 Snapshot の試験は書き換える欄を `detail` にして元の意図を保った。`c2zc_restore_fixture.rs` の digest（`scripts/local-ci-full-workload-allocation.json`）を更新した。実機の journey は、作成された出来事が `secret = 0`・`reveal_scene_id` が null であることを見る。
+- **変えない**：既存の取り込み済みの出来事の値（migration なし。確認 107）・`events.secret` の列・Field Authority の `/secret`・版の `disclosure.*`・IR の admission・Graph・`agent_writes.rs`（N4）・年表の画面（N2）。
+
+### 残る制限（N6）
+
+- **規則の前に準備され、まだ apply していない取り込みの計画は、apply で無効（`INVALIDATED`）になる**（`secret = true` の operation を持つため）。作者は、取り込みをやり直す（準備し直す）。作者に見える変化。承認済みの版・取り込み済みの出来事は影響を受けない。
+- 無効になった計画の apply を再送すると、`NEX_COMMIT_NOT_PREPARED` が返り、`NEX_COMMIT_INVALIDATED` にはならない（status が `prepared` でないため汎用の検査が先。既存の挙動。独立レビューの P2。この PR では直さない）。
+- **SRA/1 の決定 17（提案カードの版の `disclosure.secret` のチェックを外す）は別の PR**：版の印は IR の関門として残り、カードのラベルは `secret` のままで、作者には「出来事の秘密設定」と読めてしまう。決定 17 を入れるときに、代替の操作経路（実機の journey が、チェックで版を `false` にして IR の条件を満たしている）と一緒に決める。
+- `agent_writes.rs` の `surface = "import"` は、明示値（`secret`・`revealSceneId`）を受け付ける（N4 の対象外。scan importer が実際に使うが、その呼び出しは値を渡さない）。Native の `secret` の書き込みの拒否の最終形は、N2・N6 の後の別の小さな PR。
+- Electron の実機の journey（`chronicle-edited-apply-product-journey`）は、ローカルで走らせていない（hosted の `electron-native`・journey が確認）。
+- **公開版（release）には、N3・N7（開示シーンの印）・N9 の整理が入った後に、N11 の測定の結果をユーザーに見せてから出す。**

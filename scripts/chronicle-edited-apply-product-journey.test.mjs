@@ -165,8 +165,8 @@ function appliedFixture() {
   const state = {
     revisions: [rootA, childA, rootB],
     events: [
-      { id: "e1", title: "門が開いた", secret: 1 },
-      { id: "e2", title: "鐘が鳴った", secret: 1 },
+      { id: "e1", title: "門が開いた", secret: 0, reveal_scene_id: null },
+      { id: "e2", title: "鐘が鳴った", secret: 0, reveal_scene_id: null },
     ],
     sceneLinks: [
       { sceneId: "scene-1", eventId: "e1" },
@@ -187,7 +187,7 @@ function appliedFixture() {
   return { bundle, state, context, rootA, childA };
 }
 
-test("the applied edited journey state passes only for a human-derived, secret-free applied revision with secret Events", () => {
+test("the applied edited journey state passes only for a human-derived, secret-free revision with unmarked Events and no reveal scene", () => {
   const { bundle, state, context } = appliedFixture();
   assertEditedChronicleApplied(state, bundle, context);
 });
@@ -215,19 +215,27 @@ test("applied state fails if the edited revision still carries secret", () => {
   assert.throws(() => assertEditedChronicleApplied(state, bundle, context));
 });
 
-test("applied state fails if any created Event is not secret (CAS/1)", () => {
-  const { bundle, state, context } = appliedFixture();
-  state.events[0].secret = 0;
-  assert.throws(
-    () => assertEditedChronicleApplied(state, bundle, context),
-    /secret/,
-  );
+test("applied state fails if a created Event is marked secret or has a reveal scene", () => {
+  for (const mutate of [
+    (state) => (state.events[0].secret = 1),
+    (state) => (state.events[0].reveal_scene_id = "scene-1"),
+  ]) {
+    const { bundle, state, context } = appliedFixture();
+    mutate(state);
+    assert.throws(() => assertEditedChronicleApplied(state, bundle, context));
+  }
 });
 
 test("applied state fails if Events are missing or duplicated", () => {
   for (const mutate of [
     (state) => state.events.pop(),
-    (state) => state.events.push({ id: "e3", title: "門が開いた", secret: 1 }),
+    (state) =>
+      state.events.push({
+        id: "e3",
+        title: "門が開いた",
+        secret: 0,
+        reveal_scene_id: null,
+      }),
   ]) {
     const { bundle, state, context } = appliedFixture();
     mutate(state);
@@ -731,8 +739,8 @@ function bulkAppliedFixture() {
   const state = {
     revisions: [rootA, childA, rootB, childB],
     events: [
-      { id: "e1", title: "門が開いた", secret: 1 },
-      { id: "e2", title: "鐘が鳴った", secret: 1 },
+      { id: "e1", title: "門が開いた", secret: 0, reveal_scene_id: null },
+      { id: "e2", title: "鐘が鳴った", secret: 0, reveal_scene_id: null },
     ],
     sceneLinks: [
       { sceneId: "scene-1", eventId: "e1" },
@@ -754,7 +762,7 @@ function bulkAppliedFixture() {
   return { bundle, state, context };
 }
 
-test("the applied state passes when both proposals were applied from a human-derived, secret-free child", () => {
+test("the applied state passes when both proposals were applied from a human-derived, secret-free child with unmarked Events", () => {
   const { bundle, state, context } = bulkAppliedFixture();
   assertEditedChronicleApplied(state, bundle, context);
 });

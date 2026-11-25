@@ -1712,7 +1712,7 @@ fn enable_manual_apply_preserving_flags(db: &Database) {
     .expect("enable manual apply without changing other policy flags");
 }
 
-fn prepared_event_payload_for(event_id: &str, scene_id: &str, title: &str) -> Value {
+fn prepared_event_payload_for(event_id: &str, title: &str) -> Value {
     json!({
         "eventId": event_id,
         "title": title,
@@ -1720,8 +1720,8 @@ fn prepared_event_payload_for(event_id: &str, scene_id: &str, title: &str) -> Va
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": true,
-        "revealSceneId": scene_id,
+        "secret": false,
+        "revealSceneId": null,
         "detail": null,
         "primaryCodexId": null,
         "locationCodexId": null,
@@ -1734,7 +1734,7 @@ fn prepared_event_payload_for(event_id: &str, scene_id: &str, title: &str) -> Va
 }
 
 fn prepared_event_payload() -> Value {
-    prepared_event_payload_for("event-c2zc-prepared", "scene-c2zc", "C2-ZC prepared event")
+    prepared_event_payload_for("event-c2zc-prepared", "C2-ZC prepared event")
 }
 
 fn prepared_envelope_for(
@@ -2715,7 +2715,6 @@ fn seed_prepared_application(db: &Database) -> (String, String, String, String) 
 fn seed_previous_release_application(
     db: &Database,
     project_id: &str,
-    scene_id: &str,
     source_identity: &str,
     revision_token: &str,
     identity: &str,
@@ -2759,11 +2758,7 @@ fn seed_previous_release_application(
                 proposal_id: Some(proposal_id.to_string()),
                 proposal_key: "key-c2zc-previous-release".to_string(),
                 kind: "chronicle.event.create".to_string(),
-                payload_json: prepared_event_payload_for(
-                    &event_id,
-                    scene_id,
-                    "C2-ZC previous-release event",
-                ),
+                payload_json: prepared_event_payload_for(&event_id, "C2-ZC previous-release event"),
                 reconciliation_envelope: Some(prepared_envelope_for(
                     source_identity,
                     revision_token,
@@ -2800,7 +2795,6 @@ fn seed_previous_release_application(
 
 struct PreviousReleaseApplicationArgs<'a> {
     project_id: &'a str,
-    scene_id: &'a str,
     run_id: &'a str,
     set_id: &'a str,
     proposal_id: &'a str,
@@ -2816,7 +2810,6 @@ fn apply_previous_release_application(
 ) -> String {
     let PreviousReleaseApplicationArgs {
         project_id,
-        scene_id,
         run_id,
         set_id,
         proposal_id,
@@ -2839,11 +2832,7 @@ fn apply_previous_release_application(
             surface: Some("narrative-extraction".to_string()),
             operations: vec![CommitOperation {
                 kind: "chronicle.event.create".to_string(),
-                payload: prepared_event_payload_for(
-                    event_id,
-                    scene_id,
-                    "C2-ZC previous-release event",
-                ),
+                payload: prepared_event_payload_for(event_id, "C2-ZC previous-release event"),
                 proposal_id: proposal_id.to_string(),
                 revision_id: revision_id.to_string(),
             }],
@@ -3475,7 +3464,6 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
     ) = seed_previous_release_application(
         &opened.database,
         release_schema_fixture::SECOND_PROJECT_ID,
-        release_schema_fixture::SECOND_SCENE_ID,
         &default_source_identity,
         &default_revision_token,
         release_schema_fixture::SECOND_PROJECT_ID,
@@ -3484,7 +3472,6 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         &opened.database,
         PreviousReleaseApplicationArgs {
             project_id: release_schema_fixture::SECOND_PROJECT_ID,
-            scene_id: release_schema_fixture::SECOND_SCENE_ID,
             run_id: &default_application_source_run_id,
             set_id: &default_application_set_id,
             proposal_id: &default_proposal_id,
@@ -3507,7 +3494,6 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         seed_previous_release_application(
             &opened.database,
             release_schema_fixture::PROJECT_ID,
-            release_schema_fixture::SCENE_ID,
             &source_identity,
             &revision_token,
             "gate-a2-project",
@@ -3516,7 +3502,6 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
         &opened.database,
         PreviousReleaseApplicationArgs {
             project_id: release_schema_fixture::PROJECT_ID,
-            scene_id: release_schema_fixture::SCENE_ID,
             run_id: &application_source_run_id,
             set_id: &application_set_id,
             proposal_id: &proposal_id,
@@ -3789,7 +3774,9 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
 
     let readiness = opened
         .database
-        .with_conn_mut(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence)))
+        .with_conn_mut(|conn| {
+            inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))
+        })
         .expect("read final C2-ZC readiness");
     assert_eq!(readiness.state, ReadinessState::Passed);
     assert!(readiness.ready, "final readiness must pass: {readiness:?}");
