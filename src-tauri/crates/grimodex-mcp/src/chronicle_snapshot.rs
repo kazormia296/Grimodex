@@ -235,6 +235,23 @@ pub struct RevealSceneMark {
     pub revealed_to_reader: Option<bool>,
 }
 
+/// 読む順と題から、開示場面の共通マークを作る。
+pub fn make_reveal_scene_mark(
+    reveal_scene_id: &str,
+    base_scene_id: Option<&str>,
+    reading_order: &HashMap<String, i64>,
+    title: &str,
+) -> Option<RevealSceneMark> {
+    let reveal_order = *reading_order.get(reveal_scene_id)?;
+    Some(RevealSceneMark {
+        id: reveal_scene_id.to_string(),
+        title: title.to_string(),
+        revealed_to_reader: base_scene_id
+            .and_then(|id| reading_order.get(id))
+            .map(|current| *current >= reveal_order),
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CausalPair {
@@ -1186,22 +1203,13 @@ fn add_reveal_marks(
         let Some(id) = event.reveal_scene_id.as_deref().filter(|id| !id.is_empty()) else {
             continue;
         };
-        let Some(reveal_order) = reading_order.get(id) else {
-            continue;
-        };
         let Some(title) = title_by_id.get(id) else {
             continue;
         };
-        marks.insert(
-            event.id.as_str(),
-            RevealSceneMark {
-                id: id.to_string(),
-                title: title.to_string(),
-                revealed_to_reader: reading_order
-                    .get(scene_id)
-                    .map(|current| current >= reveal_order),
-            },
-        );
+        let Some(mark) = make_reveal_scene_mark(id, Some(scene_id), &reading_order, title) else {
+            continue;
+        };
+        marks.insert(event.id.as_str(), mark);
     }
     for event in snapshot
         .recent_events

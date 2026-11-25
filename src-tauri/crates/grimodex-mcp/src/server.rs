@@ -494,7 +494,7 @@ impl GrimodexServer {
 
     /// List chronicle events in story (ordinal) order. Optional kind filter.
     #[tool(
-        description = "List chronicle (作中年表) events in story order (ordinal). Each item includes id, title, kind, ordinal, version, startTime, startDate (calendar-formatted date string; null when there is no calendar or the granularity is unset), and primaryCharacter (resolved codex name). Pass an item's version unchanged as base_version to the next update_event, delete_event, or set_event_participants call. Optional kind filter: 'birth'|'death'|'generic'."
+        description = "List chronicle (作中年表) events in story order (ordinal). Each item includes id, title, kind, ordinal, version, startTime, startDate (calendar-formatted date string; null when there is no calendar or the granularity is unset), and primaryCharacter (resolved codex name). Pass an item's version unchanged as base_version to the next update_event, delete_event, or set_event_participants call. Optional kind filter: 'birth'|'death'|'generic'. Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. Pass scene_id (the scene you are writing) to get revealedToReader. When it is false, or when you did not pass scene_id and you are writing a scene before revealScene, readers do not know the event yet, so do not write it as something readers already know."
     )]
     async fn list_events(
         &self,
@@ -505,7 +505,7 @@ impl GrimodexServer {
 
     /// Get one event's full detail: participants, scene links, causal relations.
     #[tool(
-        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, version, start/end time, startDate/endDate (calendar-formatted date strings; null when there is no calendar or the granularity is unset), precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Pass version unchanged as base_version to the next Event aggregate write. Returns null if the event is not in this project."
+        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, version, start/end time, startDate/endDate (calendar-formatted date strings; null when there is no calendar or the granularity is unset), precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Pass version unchanged as base_version to the next Event aggregate write. Returns null if the event is not in this project. Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. Pass scene_id (the scene you are writing) to get revealedToReader. When it is false, or when you did not pass scene_id and you are writing a scene before revealScene, readers do not know the event yet, so do not write it as something readers already know."
     )]
     async fn get_event_detail(
         &self,
@@ -516,7 +516,7 @@ impl GrimodexServer {
 
     /// Get a character's in-story career: involved events in order, with ages.
     #[tool(
-        description = "Get a character's chronicle timeline by codex_id: the events they are primary in or participate in, in story order, each with ageAtEvent (computed from their birth event and the project calendar when both are known). Returns null if the codex entry is not found in this project."
+        description = "Get a character's chronicle timeline by codex_id: the events they are primary in or participate in, in story order, each with ageAtEvent (computed from their birth event and the project calendar when both are known). Returns null if the codex entry is not found in this project. Events may include revealScene {id, title, revealedToReader}: the scene where the author reveals the event to readers. Pass scene_id (the scene you are writing) to get revealedToReader. When it is false, or when you did not pass scene_id and you are writing a scene before revealScene, readers do not know the event yet, so do not write it as something readers already know."
     )]
     async fn get_character_timeline(
         &self,
@@ -831,6 +831,26 @@ mod tool_route_tests {
             assert!(
                 properties.contains_key("reveal_scene_id"),
                 "{name} still publishes the disclosure scene input"
+            );
+        }
+    }
+
+    #[test]
+    fn registered_chronicle_read_tools_accept_scene_id() {
+        let tools = GrimodexServer::tool_router().list_all();
+        for name in ["list_events", "get_event_detail", "get_character_timeline"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            let properties = tool
+                .input_schema
+                .get("properties")
+                .and_then(|value| value.as_object())
+                .unwrap_or_else(|| panic!("{name} publishes input properties"));
+            assert!(
+                properties.contains_key("scene_id"),
+                "{name} accepts the optional scene_id"
             );
         }
     }
