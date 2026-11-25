@@ -1,9 +1,15 @@
-import type { WorkLayerModel, WorkLayerPreviewDisposition } from "./types";
+import type {
+  WorkLayerModel,
+  WorkLayerOpenSurface,
+  WorkLayerPreviewDisposition,
+} from "./types";
 import type { WorkLayerNavigationState } from "./workLayerReducer";
 
 export interface WorkLayerContextValue {
   readonly model: WorkLayerModel;
   readonly provenance: "preview" | "live";
+  /** Opens a screen outside the Work Layer through the live port; a no-op for previews. */
+  readonly openSurface: (surface: WorkLayerOpenSurface) => void;
   readonly navigation: WorkLayerNavigationState;
   readonly openFocus: () => void;
   readonly openAttention: () => void;

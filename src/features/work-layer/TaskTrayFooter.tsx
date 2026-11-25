@@ -20,15 +20,17 @@ export function TaskTrayFooter() {
           {t("workLayer.tray.capture", "作業を捕捉")}
         </button>
       )}
-      <button
-        id="work-layer-open-ledger"
-        type="button"
-        aria-label={t("workLayer.ledger.openAria", "すべての作業を開く")}
-        onClick={workLayer.openLedger}
-        className="hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {t("workLayer.ledger.open", "すべての作業 →")}
-      </button>
+      {workLayer.provenance === "preview" && (
+        <button
+          id="work-layer-open-ledger"
+          type="button"
+          aria-label={t("workLayer.ledger.openAria", "すべての作業を開く")}
+          onClick={workLayer.openLedger}
+          className="hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {t("workLayer.ledger.open", "すべての作業 →")}
+        </button>
+      )}
       <span className="ml-auto font-mono text-[8px] tracking-[0.1em]">ESC</span>
     </footer>
   );

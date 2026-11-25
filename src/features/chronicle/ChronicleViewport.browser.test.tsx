@@ -35,7 +35,6 @@ const events: LayoutEventInput[] = [
     primaryCodexId: "c1",
     kind: "birth",
     precision: "exact",
-    secret: false,
     sceneLinked: true,
     startDay: 18,
     endDay: null,
@@ -46,7 +45,6 @@ const events: LayoutEventInput[] = [
     primaryCodexId: "c1",
     kind: "generic",
     precision: "exact",
-    secret: false,
     sceneLinked: true,
     startDay: 400,
     endDay: 545,
@@ -71,7 +69,6 @@ function eventsById() {
       title: e.title,
       kind: e.kind,
       precision: e.precision,
-      secret: e.secret,
       sceneLinked: e.sceneLinked,
       primaryCodexId: e.primaryCodexId,
     });
@@ -87,7 +84,6 @@ const longPanEvents: LayoutEventInput[] = Array.from(
     primaryCodexId: "c1",
     kind: "generic" as const,
     precision: "exact" as const,
-    secret: false,
     sceneLinked: true,
     startDay: index * 10,
     endDay: null,
@@ -134,7 +130,6 @@ function LongPanHarness() {
             title: event.title,
             kind: event.kind,
             precision: event.precision,
-            secret: event.secret,
             sceneLinked: event.sceneLinked,
             primaryCodexId: event.primaryCodexId,
           },
@@ -184,13 +179,14 @@ function mount(width = 900) {
   host.style.display = "flex";
   host.style.flexDirection = "column";
   document.body.appendChild(host);
+  const markerEvents = eventsById();
   const r = render(
     <ChronicleViewport
       view={view}
       onViewChange={() => {}}
       onMeasureTrack={() => {}}
       layout={layout}
-      eventsById={eventsById()}
+      eventsById={markerEvents}
       selectedEventId={null}
       activeLaneKey={null}
       conflictIds={new Set()}
@@ -201,7 +197,7 @@ function mount(width = 900) {
     />,
     { container: host },
   );
-  return { ...r, host };
+  return { ...r, host, view, layout, markerEvents };
 }
 
 function mountInWorkspace(
@@ -407,6 +403,61 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     expect(marker.left).toBeLessThanOrEqual(track.right + 1);
   });
 
+  it("DB row の secret=true は marker の位置・幅を変えず、タグを描かない", async () => {
+    const mounted = mount();
+    const propsForEvents = (eventsById: Map<string, MarkerEvent>) => (
+      <ChronicleViewport
+        view={mounted.view}
+        onViewChange={() => {}}
+        onMeasureTrack={() => {}}
+        layout={mounted.layout}
+        eventsById={eventsById}
+        selectedEventId={null}
+        activeLaneKey={null}
+        conflictIds={new Set()}
+        relatedIds={new Set()}
+        showEdges
+        labelsOn
+        onSelectEvent={() => {}}
+      />
+    );
+    const dbRowSecret = true;
+    const secretEvent = {
+      ...mounted.markerEvents.get("e1")!,
+      secret: dbRowSecret,
+    } as MarkerEvent;
+    const secretEvents = new Map(mounted.markerEvents).set("e1", secretEvent);
+    const markerPosition = () => {
+      const marker = mounted.container.querySelector(
+        '[data-event-id="e1"]',
+      ) as HTMLElement;
+      const hostRect = mounted.host.getBoundingClientRect();
+      const rect = marker.getBoundingClientRect();
+      return {
+        left: rect.left - hostRect.left,
+        top: rect.top - hostRect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+
+    try {
+      await settleBrowserLayout();
+      const nonsecretPosition = markerPosition();
+      mounted.rerender(propsForEvents(secretEvents));
+      await settleBrowserLayout();
+      expect(
+        mounted.container
+          .querySelector('[data-event-id="e1"]')!
+          .querySelector('[data-testid="secret-tag"]'),
+      ).toBeNull();
+      expect(markerPosition()).toEqual(nonsecretPosition);
+    } finally {
+      mounted.unmount();
+      mounted.host.remove();
+    }
+  });
+
   it("選択マーカーがガターへ左はみ出ししてもレーンヘッダーが上に来る（z順）", () => {
     // 左端付近の点マーカーを選択。left=startX-9 が負になりガター域へ侵入する状況。
     const ev2: LayoutEventInput[] = [
@@ -416,7 +467,6 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
         primaryCodexId: "c1",
         kind: "generic",
         precision: "exact",
-        secret: false,
         sceneLinked: true,
         startDay: -10, // == viewStartDay → startX=0 → left=-9（負）
         endDay: null,
@@ -457,7 +507,6 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
           title: "起点",
           kind: "generic",
           precision: "exact",
-          secret: false,
           sceneLinked: true,
           primaryCodexId: "c1",
         },
@@ -533,7 +582,6 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
         primaryCodexId: `c${i}`,
         kind: "generic",
         precision: "exact",
-        secret: false,
         sceneLinked: true,
         startDay: 18,
         endDay: null,
@@ -571,7 +619,6 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
         title: e.title,
         kind: e.kind,
         precision: e.precision,
-        secret: e.secret,
         sceneLinked: e.sceneLinked,
         primaryCodexId: e.primaryCodexId,
       });

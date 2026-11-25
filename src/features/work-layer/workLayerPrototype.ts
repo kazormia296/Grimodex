@@ -1,5 +1,4 @@
 import type { WorkLayerModel } from "./types";
-import { WORK_LAYER_FIXTURE } from "./workLayerFixture";
 import type { WorkLayerMode } from "./workLayerReducer";
 
 export type WorkLayerPrototypeMode =
@@ -66,10 +65,11 @@ export const EXPECTED_PROTOTYPE_NAVIGATION: Record<
 
 export function modelForPrototypeMode(
   mode: WorkLayerPrototypeMode,
+  fixture: WorkLayerModel,
 ): WorkLayerModel {
   if (mode === "arrive") {
     return {
-      ...WORK_LAYER_FIXTURE,
+      ...fixture,
       attentionDelta: 1,
       attentionAnchorVisible: true,
       attentionAnchorPosition: {
@@ -79,7 +79,7 @@ export function modelForPrototypeMode(
       },
       codexPanelAvailable: true,
       system: {
-        ...WORK_LAYER_FIXTURE.system,
+        ...fixture.system,
         state: "running",
         label: "recheck",
       },
@@ -87,7 +87,7 @@ export function modelForPrototypeMode(
   }
   if (mode === "empty") {
     return {
-      ...WORK_LAYER_FIXTURE,
+      ...fixture,
       codexPanelAvailable: true,
       focus: null,
       attention: [],
@@ -118,21 +118,21 @@ export function modelForPrototypeMode(
     };
   }
   if (mode === "portal") {
-    return { ...WORK_LAYER_FIXTURE, codexPanelAvailable: false };
+    return { ...fixture, codexPanelAvailable: false };
   }
   if (mode === "system-activity" || mode === "system-blocked") {
     const blocked = mode === "system-blocked";
     return {
-      ...WORK_LAYER_FIXTURE,
+      ...fixture,
       codexPanelAvailable: true,
       system: {
-        ...WORK_LAYER_FIXTURE.system,
+        ...fixture.system,
         state: blocked ? "blocked" : "running",
         label: blocked ? "contract" : "recheck",
       },
     };
   }
-  return { ...WORK_LAYER_FIXTURE, codexPanelAvailable: true };
+  return { ...fixture, codexPanelAvailable: true };
 }
 
 export function prototypeModeForNavigation(

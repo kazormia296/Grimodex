@@ -65,9 +65,9 @@ describe("Work Layer live provenance in the Pulse and Attention tray", () => {
     );
     const tray = screen.getByRole("dialog", { name: "Attentionの作業トレイ" });
 
-    // The tray header and the body's lead both show the same total.
-    expect(within(tray).getAllByText("ATTENTION")).toHaveLength(2);
-    expect(within(tray).getAllByText("3")).toHaveLength(2);
+    // Live data shows the total once, in the tray header; the rows carry the parts.
+    expect(within(tray).getAllByText("ATTENTION")).toHaveLength(1);
+    expect(within(tray).getAllByText("3")).toHaveLength(1);
     expect(within(tray).queryByText("UI PREVIEW")).not.toBeInTheDocument();
     expect(
       within(tray).queryByRole("button", { name: "作業を捕捉" }),
@@ -83,9 +83,11 @@ describe("Work Layer live provenance in the Pulse and Attention tray", () => {
       ]),
     );
 
-    expect(
-      await screen.findByRole("button", { name: "Attention 4件" }),
-    ).toBeInTheDocument();
+    // A partial sum is read as "N or more", and shown as "N＋".
+    const pulse = await screen.findByRole("button", {
+      name: "Attention 4件以上（数え終えていない種類があります）",
+    });
+    expect(pulse).toHaveTextContent("4＋");
   });
 
   it("never announces or highlights an arrival, even if the model carries one", async () => {

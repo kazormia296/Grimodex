@@ -281,6 +281,12 @@ vi.mock("./ChronicleInspector", () => ({
         patch
       </button>
       <button
+        data-testid="reveal-scene-patch-btn"
+        onClick={() => onPatch({ revealSceneId: "s1" })}
+      >
+        reveal-scene
+      </button>
+      <button
         data-testid="draft-patch-btn"
         onClick={() => {
           void Promise.resolve(onPatchDraft?.({ title: "下書き題" })).catch(
@@ -1072,6 +1078,34 @@ describe("ChroniclePanel project switch", () => {
 });
 
 describe("ChroniclePanel optimistic patch", () => {
+  it("Inspector の開示シーン patch を保存し、secret は送らない", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", version: 4 }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+
+    fireEvent.click(screen.getByTestId("reveal-scene-patch-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 4,
+          revealSceneId: "s1",
+        },
+        { suppressDocumentNotification: true },
+      );
+    });
+    expect(eventMocks.uiUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "secret",
+    );
+  });
+
   it("real-event autosave carries the explicit preexisting-draft permit to uiUpdateEvent", async () => {
     apiMocks.listEvents.mockResolvedValue([
       makeEvent({ id: "ea", title: "原題", version: 3 }),

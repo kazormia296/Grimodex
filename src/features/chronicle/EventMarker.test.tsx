@@ -13,7 +13,6 @@ function ev(o: Partial<MarkerEvent> = {}): MarkerEvent {
     title: "出来事A",
     kind: "generic",
     precision: "exact",
-    secret: false,
     sceneLinked: true,
     primaryCodexId: "c1",
     ...o,
@@ -217,9 +216,10 @@ describe("EventMarker (DOM token)", () => {
     expect(Number(el.style.opacity)).toBeLessThan(1);
   });
 
-  it("secret は秘匿タグを描く", () => {
-    const { getByTestId } = renderMarker({ event: ev({ secret: true }) });
-    expect(getByTestId("secret-tag")).toBeTruthy();
+  it("DB row の secret=true は表示用マーカーのタグにしない", () => {
+    const event = { ...ev(), secret: true } as MarkerEvent;
+    const { queryByTestId } = renderMarker({ event });
+    expect(queryByTestId("secret-tag")).toBeNull();
   });
 
   it("conflict は警告バッジ(!)を描く", () => {
@@ -353,14 +353,14 @@ describe("EventMarker — アクセシブル名 / 状態", () => {
     expect(btn(exact).getAttribute("aria-label")).not.toContain("確定");
   });
 
-  it("aria-label に矛盾/秘匿の状態を含む", () => {
+  it("aria-label には矛盾を含め、DB row の秘匿状態は含めない", () => {
     const r = renderMarker({
-      event: ev({ secret: true }),
+      event: { ...ev(), secret: true } as MarkerEvent,
       conflict: true,
     });
     const label = btn(r).getAttribute("aria-label")!;
     expect(label).toContain("整合警告あり");
-    expect(label).toContain("秘匿");
+    expect(label).not.toContain("秘匿");
   });
 
   it("無題イベントは aria-label がフォールバック名になる", () => {
