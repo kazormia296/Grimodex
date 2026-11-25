@@ -1024,6 +1024,9 @@ describe("D2a profile egress gate", () => {
     ["nir1_entity_relation_revision_read", {}],
     ["nir1_entity_relation_revision_read_current", {}],
     ["nir1_entity_relation_revision_restore", {}],
+    // Unclassified on purpose until its renderer caller exists (DR-M4PF-11):
+    // a restricted profile must deny it before dispatch.
+    ["nir1_change_review_read", {}],
     ["db_execute", { method: "all", sql: "SELECT body FROM messages" }],
     ["db_execute", { method: "all", sql: "SELECT 1" }],
     [

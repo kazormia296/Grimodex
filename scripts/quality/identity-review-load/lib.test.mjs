@@ -1143,6 +1143,7 @@ test("保存済みの提案を読む command は AI／外部通信の command �
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_get_run_review_bundle",
       "narrative_extraction_get_run",
+      "nir1_change_review_read",
     ]),
     [],
   );

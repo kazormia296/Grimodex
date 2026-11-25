@@ -167,6 +167,12 @@ pub struct Nir1EntityRelationRevision {
     pub(crate) decision: Option<Nir1EntityRelationDecision>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Nir1EntityRelationHistoricalRevision {
+    pub revision_id: String,
+    pub bundle: EntityRelationBundle,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nir1EntityRelationFreshness {
@@ -2458,6 +2464,173 @@ fn read_stored_revision_document<T: serde::de::DeserializeOwned>(
         })
         .optional()?;
     Ok(document.unwrap_or(StoredDocument::Missing))
+}
+
+/// Read an approved typed Revision's immutable stored bundle without checking
+/// its current live Scope, sources, or Freshness.
+pub(crate) fn read_nir1_entity_relation_revision_historical(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+) -> anyhow::Result<Option<Nir1EntityRelationHistoricalRevision>> {
+    if conn.is_autocommit() {
+        anyhow::bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
+    }
+    if project_id.trim().is_empty() || revision_id.trim().is_empty() {
+        anyhow::bail!("NIR1_ENTITY_RELATION_INVALID_READ_REQUEST");
+    }
+
+    let row: Option<(String, String, String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT proposal_set.run_id, proposal.id, proposal.status, revision.origin_kind,
+                    revision.reconciliation_envelope_digest
+               FROM narrative_proposal_revisions revision
+               JOIN narrative_proposals proposal
+                 ON proposal.id = revision.proposal_id
+               JOIN narrative_proposal_sets proposal_set
+                 ON proposal_set.id = proposal.proposal_set_id
+               JOIN narrative_extraction_runs extraction_run
+                 ON extraction_run.id = proposal_set.run_id
+                AND extraction_run.project_id = proposal_set.project_id
+              WHERE revision.id = ?1
+                AND proposal_set.project_id = ?2
+                AND proposal_set.set_kind = ?3
+                AND extraction_run.surface_path_id = ?4",
+            params![
+                revision_id,
+                project_id,
+                NIR1_ENTITY_RELATION_SET_KIND,
+                NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((run_id, proposal_id, status, origin, envelope_digest)) = row else {
+        return Ok(None);
+    };
+    if origin != NIR1_ENTITY_RELATION_REVISION_ORIGIN || status != "approved" {
+        return Ok(None);
+    }
+
+    let latest_decision_at: Option<String> = conn
+        .query_row(
+            "SELECT MAX(created_at)
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1 AND revision_id = ?2",
+            params![proposal_id, revision_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(created_at) = latest_decision_at else {
+        return Ok(None);
+    };
+    let latest_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_proposal_decisions
+          WHERE proposal_id = ?1 AND revision_id = ?2 AND created_at = ?3",
+        params![proposal_id, revision_id, created_at],
+        |row| row.get(0),
+    )?;
+    if latest_count != 1 {
+        return Ok(None);
+    }
+    let decision: Option<(String, String, String, String)> = conn
+        .query_row(
+            "SELECT revision_id, decision, actor_kind, actor_id
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1 AND revision_id = ?2 AND created_at = ?3",
+            params![proposal_id, revision_id, created_at],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    if !decision.is_some_and(|(decision_revision_id, decision, actor_kind, actor_id)| {
+        decision_revision_id == revision_id
+            && decision == "approved"
+            && actor_kind == "human"
+            && actor_id == "electron:human-review"
+    }) {
+        return Ok(None);
+    }
+    // Restore is the one live authority that invalidates an otherwise immutable revision.
+    if !typed_run_matches_current_epoch(conn, project_id, &run_id, ProjectReadSource::Unshared)? {
+        return Ok(None);
+    }
+
+    let payload: StoredNir1EntityRelationPayload =
+        match read_stored_revision_document(conn, revision_id, STORED_PAYLOAD_SQL)? {
+            StoredDocument::Parsed(Ok(payload)) => payload,
+            StoredDocument::Parsed(Err(error)) if is_validation_terminated(&error) => {
+                return Err(error)
+            }
+            StoredDocument::Parsed(Err(_)) | StoredDocument::Absent | StoredDocument::Missing => {
+                return Ok(None)
+            }
+        };
+    if payload.schema_version != 1
+        || payload.kind != NIR1_ENTITY_RELATION_PROPOSAL_KIND
+        || payload.producer != ENTITY_RELATION_PRODUCER
+        || payload.project_id != project_id
+        || payload.revision_id != revision_id
+        || payload.bundle.project_id != project_id
+        || payload.bundle.revision_id != revision_id
+        || validate_entity_relation_bundle(&payload.bundle).is_err()
+    {
+        return Ok(None);
+    }
+
+    let payload_value = serde_json::to_value(&payload)?;
+    let bundle_value = payload_value
+        .get("bundle")
+        .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_PAYLOAD_BUNDLE_MISSING"))?;
+    let bundle_digest = canonical_json_digest(bundle_value)?;
+    let payload_digest = canonical_json_digest(&payload_value)?;
+    check_active_work(conn)?;
+    drop(payload_value);
+    let envelope: Value =
+        match read_stored_revision_document(conn, revision_id, STORED_ENVELOPE_SQL)? {
+            StoredDocument::Parsed(Ok(envelope)) => envelope,
+            StoredDocument::Parsed(Err(error)) if is_validation_terminated(&error) => {
+                return Err(error)
+            }
+            StoredDocument::Parsed(Err(_)) | StoredDocument::Absent | StoredDocument::Missing => {
+                return Ok(None)
+            }
+        };
+    if validate_entity_relation_revision_envelope_v2(&envelope).is_err()
+        || envelope
+            .as_object()
+            .is_none_or(|object| validate_v2_nested_digest_fields(object).is_err())
+    {
+        return Ok(None);
+    }
+    check_active_work(conn)?;
+    let expected_envelope_digest = canonical_json_digest(&envelope)?;
+    check_active_work(conn)?;
+    if envelope_digest.as_deref() != Some(expected_envelope_digest.as_str())
+        || envelope.pointer("/assertion/payload/bundleDigest")
+            != Some(&Value::String(bundle_digest))
+        || envelope.pointer("/assertion/payload/revisionId")
+            != Some(&Value::String(revision_id.to_owned()))
+        || envelope.pointer("/projectionBinding/proposalPayloadDigest")
+            != Some(&Value::String(payload_digest))
+    {
+        return Ok(None);
+    }
+    check_active_work(conn)?;
+
+    Ok(Some(Nir1EntityRelationHistoricalRevision {
+        revision_id: revision_id.to_owned(),
+        bundle: payload.bundle,
+    }))
 }
 
 /// The typed current reader. `shared` is the project-level reads a Graph query

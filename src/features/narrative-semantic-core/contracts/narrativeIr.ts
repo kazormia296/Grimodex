@@ -101,8 +101,14 @@ export interface NarrativeAssertionProducer {
   readonly version: string;
 }
 
+export interface NarrativeAssertionIdentityDeclaration {
+  readonly kind: "none" | "content-keyed" | "carried-forward";
+  readonly carriedFrom?: string;
+}
+
 export interface NarrativeAssertion<TPayload> {
   readonly assertionId: string | null;
+  readonly identityDeclaration?: NarrativeAssertionIdentityDeclaration;
   readonly assertionKind: NarrativeAssertionKind;
   readonly payloadSchemaRef: NarrativePayloadSchemaRef;
   readonly payload: TPayload;
@@ -989,10 +995,55 @@ export function validateNarrativeRevisionEnvelopeV2(
       "supportClass",
       "producer",
       "producerConfidence",
+      "identityDeclaration",
     ]),
   );
   if (assertionUnknown) return assertionUnknown;
-  if (
+  if (hasOwn(assertion, "identityDeclaration")) {
+    const declaration = assertion.identityDeclaration;
+    const path = "assertion.identityDeclaration";
+    if (!isRecord(declaration)) return invalid("invalid-identifier", path);
+    const declarationRequired = requireFields(declaration, ["kind"]);
+    if (declarationRequired)
+      return invalid(
+        declarationRequired.reason,
+        `${path}.${declarationRequired.path}`,
+      );
+    const declarationUnknown = rejectUnknownFields(
+      declaration,
+      new Set(["kind", "carriedFrom"]),
+    );
+    if (declarationUnknown)
+      return invalid(
+        declarationUnknown.reason,
+        `${path}.${declarationUnknown.path}`,
+      );
+    if (
+      declaration.kind !== "none" &&
+      declaration.kind !== "content-keyed" &&
+      declaration.kind !== "carried-forward"
+    ) {
+      return invalid("invalid-identifier", `${path}.kind`);
+    }
+    if (declaration.kind === "carried-forward") {
+      if (!hasOwn(declaration, "carriedFrom"))
+        return invalid("missing-field", `${path}.carriedFrom`);
+      if (!isNonEmptyString(declaration.carriedFrom))
+        return invalid("invalid-identifier", `${path}.carriedFrom`);
+      if (!isNonEmptyString(assertion.assertionId))
+        return invalid("invalid-identifier", `${path}.kind`);
+    } else {
+      if (hasOwn(declaration, "carriedFrom"))
+        return invalid("unknown-field", `${path}.carriedFrom`);
+      if (
+        declaration.kind === "none"
+          ? assertion.assertionId !== null
+          : !isNonEmptyString(assertion.assertionId)
+      ) {
+        return invalid("invalid-identifier", `${path}.kind`);
+      }
+    }
+  } else if (
     assertion.assertionId !== null &&
     !isNonEmptyString(assertion.assertionId)
   ) {
