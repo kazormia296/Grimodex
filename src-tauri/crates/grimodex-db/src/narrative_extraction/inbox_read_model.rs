@@ -966,6 +966,344 @@ mod tests {
         .expect("with_conn");
     }
 
+    fn seed_snoozed_proposal_for_test(
+        conn: &Connection,
+        epoch_id: &str,
+        consumer_key: &str,
+        edge_ids: &[&str],
+        snoozed_until: &str,
+        attention_basis_override: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let finding_key = format!("proposal-revision:{consumer_key}");
+        seed_consumer_freshness(
+            conn,
+            "project-1",
+            "proposal-revision",
+            consumer_key,
+            "stale",
+            "rebuild-required",
+            epoch_id,
+            "2026-08-15T00:00:00.000Z",
+        );
+        let mut first_basis = None;
+        for (index, edge_id) in edge_ids.iter().enumerate() {
+            let basis = test_material_basis(
+                edge_id,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+            );
+            seed_dependency_edge(
+                conn,
+                edge_id,
+                "project-1",
+                "proposal-revision",
+                consumer_key,
+            );
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                &format!("run-{consumer_key}-{index}"),
+                epoch_id,
+                Some(edge_id),
+                &finding_key,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &basis,
+                &format!("2026-08-15T00:00:{:02}.000Z", index + 1),
+            )?;
+            if first_basis.is_none() {
+                first_basis = Some(basis);
+            }
+        }
+        let attention_basis = attention_basis_override
+            .map(str::to_string)
+            .or(first_basis)
+            .unwrap_or_else(|| "sha256:unused-test-basis".to_string());
+        set_attention_for_test(
+            conn,
+            "project-1",
+            &finding_key,
+            AttentionDisposition::Snoozed,
+            &attention_basis,
+            Some(snoozed_until),
+            "2026-08-15T00:30:00.000Z",
+            Some("test-actor"),
+        )?;
+        Ok(finding_key)
+    }
+
+    fn assert_snooze_test_outputs(
+        conn: &Connection,
+        expected_count: u64,
+        expected_visible_keys: &[&str],
+    ) -> anyhow::Result<()> {
+        let now = "2026-08-15T01:00:00.000Z";
+        assert_eq!(
+            count_stale_proposals(conn, "project-1", now)?,
+            expected_count
+        );
+        let entries = build_maintenance_inbox(conn, "project-1", now)?;
+        let visible_keys: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.consumer_key.as_str())
+            .collect();
+        assert_eq!(visible_keys, expected_visible_keys);
+        assert!(entries.iter().all(|entry| !entry.is_snoozed_and_active));
+        Ok(())
+    }
+
+    fn assert_proposal_is_hidden(conn: &Connection, finding_key: &str) -> anyhow::Result<()> {
+        let observations = list_observations_for_epoch(
+            conn,
+            "project-1",
+            &get_current_epoch(conn, "project-1")?
+                .expect("current epoch")
+                .id,
+            finding_key,
+        )?;
+        let (active_observations, has_unresolved_identity, _) =
+            active_finding_observations(conn, "project-1", &observations)?;
+        let attention = get_attention(conn, "project-1", finding_key)?;
+        assert!(snooze_hides_consumer(
+            &active_observations,
+            has_unresolved_identity,
+            attention.as_ref(),
+            "2026-08-15T01:00:00.000Z",
+        ));
+        let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
+        assert!(entries.iter().all(|entry| entry.finding_key != finding_key));
+        Ok(())
+    }
+
+    #[test]
+    fn snooze_hides_only_when_disposition_is_snoozed() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            let hidden = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0001",
+                &["edge-0001"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            for (key, edge, disposition) in [
+                ("item-0002", "edge-0002", AttentionDisposition::Dismissed),
+                ("item-0003", "edge-0003", AttentionDisposition::Flagged),
+            ] {
+                let finding_key = seed_snoozed_proposal_for_test(
+                    conn,
+                    &epoch_id,
+                    key,
+                    &[edge],
+                    "2026-09-01T00:00:00.000Z",
+                    None,
+                )?;
+                let basis = test_material_basis(
+                    edge,
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                );
+                set_attention_for_test(
+                    conn,
+                    "project-1",
+                    &finding_key,
+                    disposition,
+                    &basis,
+                    None,
+                    "2026-08-15T00:40:00.000Z",
+                    Some("test-actor"),
+                )?;
+            }
+            assert_proposal_is_hidden(conn, &hidden)?;
+            assert_snooze_test_outputs(conn, 2, &["item-0002", "item-0003"])
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn snooze_requires_at_least_one_active_observation() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            let hidden = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0001",
+                &["edge-0001"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            let empty = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0002",
+                &[],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            let identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-0002",
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_attention
+                    SET finding_identity = ?1, identity_resolution_status = 'resolved'
+                  WHERE project_id = 'project-1' AND finding_key = ?2",
+                params![identity, empty],
+            )?;
+            assert_proposal_is_hidden(conn, &hidden)?;
+            assert_snooze_test_outputs(conn, 1, &["item-0002"])
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn snooze_rejects_mixed_resolved_and_unresolved_identities() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            let hidden = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0001",
+                &["edge-0001"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            let mixed = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0002",
+                &["edge-0002"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-item-0002-unresolved",
+                &epoch_id,
+                Some("edge-0002"),
+                &mixed,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &test_material_basis(
+                    "edge-0002",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
+                "2026-08-15T00:00:02.000Z",
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET finding_identity = NULL
+                  WHERE project_id = 'project-1' AND run_id = 'run-item-0002-unresolved'",
+                [],
+            )?;
+            assert_proposal_is_hidden(conn, &hidden)?;
+            assert_snooze_test_outputs(conn, 1, &["item-0002"])
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn snooze_requires_resolved_attention_identity_status() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            let hidden = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0001",
+                &["edge-0001"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            let unresolved = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0002",
+                &["edge-0002"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_attention
+                    SET identity_resolution_status = 'legacy-unresolved'
+                  WHERE project_id = 'project-1' AND finding_key = ?1",
+                params![unresolved],
+            )?;
+            assert_proposal_is_hidden(conn, &hidden)?;
+            assert_snooze_test_outputs(conn, 1, &["item-0002"])
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn snooze_requires_matching_identity_and_applicable_material_basis() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            let hidden = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0001",
+                &["edge-0001"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            let sibling = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0002",
+                &["edge-0002", "edge-0003"],
+                "2026-09-01T00:00:00.000Z",
+                None,
+            )?;
+            let attention_basis = test_material_basis(
+                "edge-0002",
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+            );
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET material_basis_digest = ?1
+                  WHERE project_id = 'project-1' AND run_id = 'run-item-0002-1'",
+                params![attention_basis],
+            )?;
+            let expired = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0003",
+                &["edge-0004"],
+                "2026-08-15T00:30:00.000Z",
+                None,
+            )?;
+            let changed_basis = seed_snoozed_proposal_for_test(
+                conn,
+                &epoch_id,
+                "item-0004",
+                &["edge-0005"],
+                "2026-09-01T00:00:00.000Z",
+                Some("sha256:old-material-basis"),
+            )?;
+            assert_proposal_is_hidden(conn, &hidden)?;
+            assert_snooze_test_outputs(conn, 3, &["item-0002", "item-0003", "item-0004"])?;
+            for finding_key in [&sibling, &expired, &changed_basis] {
+                let entry = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?
+                    .into_iter()
+                    .find(|entry| entry.finding_key == *finding_key)
+                    .expect("inapplicable snooze remains visible");
+                assert!(!entry.is_snoozed_and_active);
+            }
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
     #[test]
     fn count_stale_proposals_handles_snoozes_siblings_expiry_and_missing_epoch() {
         let db = test_db();
