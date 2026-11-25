@@ -16,6 +16,8 @@
 
 ## 2. 置き場の整理（c7 の #1091 §4 への提案）
 
+**2026-11-25 の確認（追記 10）：最初の版の画面は、今の「Entity / Relationレビュー」の画面の中の欄にした（[画面の案](m4-change-review-screen-draft.md) の案 A）。Work Layer の `ChangeReview` は見本のままで、以下の Work Layer への接続はこの版では行わない。**
+
 - **Work Layer の持ち物**：変更レビューの画面の外枠（トレイ、遷移、フォーカス、見本の印の出し分け）。`ChangeReview.tsx` の置き場はここのまま。
 - **M4 の持ち物**：変更レビューの**データ**。読み取りの port（`ChangeReviewReader`、attention の port とは別）と、diff の計算、各項目の説明の材料。
 - **境界**：Work Layer は `ChangeReviewItem`（§3）の一覧だけを受け取る。Work Layer の最初の版は変更レビューを触らず、M4 の live 接続が入る時に
@@ -69,7 +71,7 @@ c7 は §2 の線引きを「c7 側の実装と食い違わない」と回答し
 1. Rust：今の bundle の object 一覧と、object ごとの直前の承認済み revision の一覧から `IdentityDiffObject` を作る読み取り（純粋な変換）と、Evidence の移動・喪失の比較（純粋な計算）。呼び手なし。
 2. Rust：`ChangeReviewReader` の read（DB を読む。Decision・Freshness・Build Action・下流の逆引きを付ける）。読み取りだけで、保存しない。
 3. IPC：読み取り専用の typed command（`electron/shared/ipcContract.ts` が正本。[add-electron-command](../../.agents/skills/add-electron-command/SKILL.md)）。旗が閉じている間は renderer から呼ばれない。
-4. renderer：`ChangeReviewItem` を受け取る live 経路を `ChangeReview.tsx` に足す（見本の経路は残す。印の出し分けは c7 の設計に合わせる）。**UI の実装は Claude が持つ**（ユーザー 11-24、c7 経由の伝聞）。
+4. renderer：`ChangeReviewItem` を受け取る live 経路を `ChangeReview.tsx` に足す（見本の経路は残す。印の出し分けは c7 の設計に合わせる）。**UI の実装は Claude が持つ**（ユーザー 11-24、c7 経由の伝聞）。 **2026-11-25：この段は上の案 A に置き換えた（追記 10、DR-M4PF-13）。**
 5. 公開の時に旗を開ける（別の明示の指示）。
 
 ### 5.1 段 2 で分かったことと、独立レビューでの修正（2026-11-25）

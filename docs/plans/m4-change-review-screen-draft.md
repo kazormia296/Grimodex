@@ -75,6 +75,8 @@ Entity / Relationレビュー
 
 ## 7. 実装した形（案 A）
 
+種類の表示は §3 の例の「（人物）」ではなく、他の画面と同じアプリの呼び名（キャラクター・場所など。関係の行は「（関係）」）にした。
+
 1. `nir1_change_review_read` の wrapper（`features/narrative-semantic-core/nir1ChangeReviewApi.ts`）と、read lane の登録（`src/lib/tauri.ts`）。
 2. 欄の component（`features/codex/CodexEntityRelationChangeReviewSection.tsx`）。レビューの dialog の chunk に入り、起動時の JS graph には入らない。
    版・project・workspace の開き直しが変わった後の応答は捨てる。
