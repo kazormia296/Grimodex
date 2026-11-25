@@ -1022,6 +1022,7 @@ export async function buildChronicleSnapshotTextForScene(
       listEventRelations(projectId),
     ],
   );
+  const readingOrder = computeGlobalSceneOrder([...treeNodes]);
   const args = {
     sceneId,
     events,
@@ -1029,7 +1030,12 @@ export async function buildChronicleSnapshotTextForScene(
     relations,
     sceneEvents,
     calendar: calendarRow ? calendarFromRow(calendarRow) : null,
-    readingOrder: computeGlobalSceneOrder([...treeNodes]),
+    readingOrder,
+    revealSceneView: {
+      nodes: treeNodes,
+      currentSceneId: sceneId,
+      readingOrder,
+    },
     codexNames,
     sceneCodexIds,
     mentionedCodexIds,

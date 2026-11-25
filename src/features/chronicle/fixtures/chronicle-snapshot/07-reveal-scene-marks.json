@@ -1,0 +1,132 @@
+{
+  "name": "reader disclosure marks on recent and off-page events",
+  "input": {
+    "lang": "ja",
+    "sceneId": "s1",
+    "nodes": [
+      {
+        "id": "s1",
+        "parentId": null,
+        "nodeType": "scene",
+        "sortOrder": "a0",
+        "chronicleStartTime": null,
+        "chronicleStartMinute": null,
+        "chronicleStartGranularity": "none",
+        "chroniclePrecision": "exact"
+      }
+    ],
+    "revealNodes": [
+      { "id": "s1", "parentId": null, "nodeType": "scene", "title": "第一章", "sortOrder": "a0" },
+      { "id": "s2", "parentId": null, "nodeType": "scene", "title": "第二章", "sortOrder": "a1" },
+      { "id": "s3", "parentId": null, "nodeType": "scene", "title": "第三章", "sortOrder": "a2" }
+    ],
+    "events": [
+      {
+        "id": "e1",
+        "title": "秘密の計画",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": null,
+        "locationCodexId": null,
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "kind": "generic",
+        "precision": "exact",
+        "revealSceneId": "s2"
+      },
+      {
+        "id": "e0",
+        "title": "幼年の記憶",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": null,
+        "locationCodexId": null,
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "kind": "birth",
+        "precision": "exact",
+        "revealSceneId": "s3"
+      },
+      {
+        "id": "eArchived",
+        "title": "過去に隔離された場面の出来事",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": null,
+        "locationCodexId": null,
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "kind": "death",
+        "precision": "exact",
+        "revealSceneId": "archived-scene"
+      },
+      {
+        "id": "e2",
+        "title": "計画の帰結",
+        "note": null,
+        "ordinal": "a1",
+        "primaryCodexId": null,
+        "locationCodexId": null,
+        "startTime": null,
+        "startMinute": null,
+        "startGranularity": "none",
+        "kind": "generic",
+        "precision": "exact",
+        "revealSceneId": "s2"
+      }
+    ],
+    "participants": [],
+    "relations": [{ "causeId": "e1", "effectId": "e2" }],
+    "sceneEvents": [{ "sceneId": "s1", "eventId": "e1" }],
+    "calendar": null,
+    "codexNames": {}
+  },
+  "expected": {
+    "time": {
+      "source": "stamped",
+      "startTime": null,
+      "season": null,
+      "precision": "exact",
+      "formattedDate": null
+    },
+    "characters": [],
+    "recentEvents": [
+      {
+        "eventId": "e1",
+        "title": "秘密の計画",
+        "note": null,
+        "relTime": null,
+        "revealScene": {
+          "id": "s2",
+          "title": "第二章",
+          "revealedToReader": false
+        }
+      }
+    ],
+    "unresolvedCausal": [
+      { "causeTitle": "秘密の計画", "effectTitle": "計画の帰結" }
+    ],
+    "offpage": [
+      {
+        "eventId": "e0",
+        "title": "幼年の記憶",
+        "note": null,
+        "relTime": null,
+        "revealScene": {
+          "id": "s3",
+          "title": "第三章",
+          "revealedToReader": false
+        }
+      },
+      {
+        "eventId": "eArchived",
+        "title": "過去に隔離された場面の出来事",
+        "note": null,
+        "relTime": null
+      }
+    ]
+  }
+}

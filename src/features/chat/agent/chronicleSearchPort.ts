@@ -50,6 +50,7 @@ export const LEGACY_CHRONICLE_SEARCH_CONTEXT: CoreChronicleSearchContext = {
   getTreeState: LEGACY_CHRONICLE_READ_CONTEXT.getTreeState,
   countTokens: LEGACY_CHRONICLE_READ_CONTEXT.countTokens,
   native: { eventsSemantic: (args) => denseEventHitsOrEmpty(args) },
+  chronicle: LEGACY_CHRONICLE_READ_CONTEXT.chronicle,
 };
 
 /**

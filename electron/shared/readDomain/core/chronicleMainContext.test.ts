@@ -538,9 +538,11 @@ describe("the active scene (NOT equal to the renderer)", () => {
   });
 });
 
-describe("search_events' main context does not load chronicle rows", () => {
-  it("uses only the turn project and dense read", async () => {
-    const { client, statements } = makeClient({});
+describe("search_events' main context loads event rows only after dense hits", () => {
+  it("uses the turn's project and marks a hit from its event row", async () => {
+    const { client, statements } = makeClient({
+      p1: { events: [eventRow("e1", { reveal_scene_id: "s2" })] },
+    });
     const eventsSemantic = vi.fn(async () => [
       {
         eventId: "e1",
@@ -557,22 +559,76 @@ describe("search_events' main context does not load chronicle rows", () => {
     });
     const executors = createChronicleSearchExecutors(ctx);
 
-    expect(ctx).not.toHaveProperty("chronicle");
-    expect((await executors.search_events({ query: "q" })).content).toEqual([
+    const result = await executors.search_events({ query: "q" });
+    expect(result.content).toEqual([
       {
         eventId: "e1",
         title: "title-e1",
         kind: "generic",
         score: 0.5,
+        revealScene: {
+          id: "s2",
+          title: "scene-s2",
+          revealedToReader: true,
+        },
       },
     ]);
+    expect(ctx).toHaveProperty("chronicle");
     expect(eventsSemantic).toHaveBeenCalledWith({
       projectId: "p1",
       query: "q",
       limit: 30,
     });
+    expect(statements.map((statement) => statement.table)).toEqual(["events"]);
+  });
+
+  it("does not read event rows for an empty dense result", async () => {
+    const { client, statements } = makeClient({});
+    const ctx = createMainChronicleSearchContext({
+      db: createCoreReadDb(client),
+      turn: turnOf("p1", ROWS, "s3"),
+      countTokens: (text) => text.length,
+      native: { eventsSemantic: vi.fn(async () => []) },
+    });
+    await createChronicleSearchExecutors(ctx).search_events({ query: "q" });
     expect(statements).toEqual([]);
   });
+});
+
+it("Main's three chronicle event tools include the same revealScene mark", async () => {
+  const { client } = makeClient({
+    p1: {
+      events: [
+        eventRow("e1", {
+          primary_codex_id: "c1",
+          reveal_scene_id: "s2",
+        }),
+      ],
+      codex: [
+        { id: "c1", name: "Alice", summary: null, context_mode: "always" },
+      ],
+    },
+  });
+  const m = makeMain(client, turnOf("p1", ROWS, "s3"));
+  const expected = {
+    id: "s2",
+    title: "scene-s2",
+    revealedToReader: true,
+  };
+  const listed = await m.executors.list_events({});
+  const detail = await m.executors.get_event_detail({ eventId: "e1" });
+  const timeline = await m.executors.get_character_timeline({ codexId: "c1" });
+  expect(
+    (listed.content as { events: Array<{ revealScene?: unknown }> }).events[0]
+      ?.revealScene,
+  ).toEqual(expected);
+  expect((detail.content as { revealScene?: unknown }).revealScene).toEqual(
+    expected,
+  );
+  expect(
+    (timeline.content as { events: Array<{ revealScene?: unknown }> }).events[0]
+      ?.revealScene,
+  ).toEqual(expected);
 });
 
 describe("no state outside the context (static check of the sources)", () => {

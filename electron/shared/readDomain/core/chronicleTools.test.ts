@@ -126,7 +126,9 @@ function makeCtx(world: World = {}) {
       return (
         world.readingOrder ??
         new Map(
-          ns.filter((n) => n.nodeType === "scene").map((n, i) => [n.id, i]),
+          ns
+            .filter((n) => n.nodeType === "scene" && !n.archivedAt)
+            .map((n, i) => [n.id, i]),
         )
       );
     }),
@@ -169,6 +171,91 @@ function portCalls(c: ReturnType<typeof makeCtx>): number {
     0,
   );
 }
+
+describe("revealScene marks on the four chronicle read tools", () => {
+  const run = async (
+    tool: "list_events" | "get_event_detail" | "get_character_timeline",
+    activeSceneId: string | null,
+    revealSceneId: string | null = "s2",
+    nodes = NODES,
+  ) => {
+    const c = makeCtx({
+      activeSceneId,
+      nodes,
+      events: [event("e1", { primaryCodexId: "c1", revealSceneId })],
+    });
+    const result =
+      tool === "list_events"
+        ? await c.executors.list_events({})
+        : tool === "get_event_detail"
+          ? await c.executors.get_event_detail({ eventId: "e1" })
+          : await c.executors.get_character_timeline({ codexId: "c1" });
+    const item =
+      tool === "get_event_detail"
+        ? (result.content as Record<string, unknown> | null)
+        : (result.content as { events: Array<Record<string, unknown>> })
+            .events[0];
+    return { item, c };
+  };
+
+  it.each([
+    ["list_events", "s1", false],
+    ["get_event_detail", "s1", false],
+    ["get_character_timeline", "s1", false],
+    ["list_events", "s2", true],
+    ["get_event_detail", "s2", true],
+    ["get_character_timeline", "s2", true],
+    ["list_events", null, undefined],
+    ["get_event_detail", null, undefined],
+    ["get_character_timeline", null, undefined],
+  ] as const)(
+    "%s at %s marks disclosure as %s",
+    async (tool, activeSceneId, revealed) => {
+      const { item } = await run(tool, activeSceneId);
+      expect(item?.revealScene).toEqual(
+        revealed === undefined
+          ? { id: "s2", title: "scene-s2" }
+          : { id: "s2", title: "scene-s2", revealedToReader: revealed },
+      );
+    },
+  );
+
+  it.each([
+    "list_events",
+    "get_event_detail",
+    "get_character_timeline",
+  ] as const)(
+    "%s omits an archived or missing disclosure scene",
+    async (tool) => {
+      for (const [revealSceneId, nodes] of [
+        [
+          "s2",
+          [NODES[0]!, scene("s2", "a1", { archivedAt: "archived" }), NODES[2]!],
+        ],
+        ["missing", NODES],
+      ] as const) {
+        const { item } = await run(tool, "s3", revealSceneId, [...nodes]);
+        expect(item && Object.hasOwn(item, "revealScene")).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    "list_events",
+    "get_event_detail",
+    "get_character_timeline",
+  ] as const)(
+    "%s leaves unmarked output and reads unchanged when no event has a disclosure scene",
+    async (tool) => {
+      const { item, c } = await run(tool, "s3", null);
+      expect(item && Object.hasOwn(item, "revealScene")).toBe(false);
+      expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+      expect(c.getTreeState).toHaveBeenCalledTimes(
+        tool === "get_event_detail" ? 2 : 1,
+      );
+    },
+  );
+});
 
 describe("the table of the chronicle tools", () => {
   it("has the four tools, and none of them is in the 11-tool table of the database-reading core", () => {
@@ -430,8 +517,8 @@ describe("event secrecy is retired from the chronicle read tools", () => {
     );
     expect(await ids(c)).toEqual(["open", "hid", "never"]);
     expect(c.chronicle.listHiddenCodexIds).not.toHaveBeenCalled();
-    expect(c.getTreeState).toHaveBeenCalledTimes(1); // project id only
-    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+    expect(c.getTreeState).toHaveBeenCalledTimes(2); // project id and reveal mark
+    expect(c.chronicle.getReadingOrder).toHaveBeenCalledTimes(1);
     expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
   });
 });
@@ -696,7 +783,13 @@ describe("get_character_timeline", () => {
       "ordinal",
       "startTime",
       "ageAtEvent",
+      "revealScene",
     ]);
+    expect(content.events[0]!.revealScene).toEqual({
+      id: "s3",
+      title: "scene-s3",
+      revealedToReader: false,
+    });
     // base: the secret birth at 0, 360 days per year
     expect(content.events.map((e) => e.ageAtEvent)).toEqual([0, 1, 1, 2]);
   });
@@ -837,10 +930,12 @@ describe("get_character_timeline", () => {
       "getCalendar",
       "getCodexNames",
       "listHiddenCodexIds",
+      "getTreeState",
+      "getReadingOrder",
     ]);
     expect(c.chronicle.listParticipants).toHaveBeenCalledWith("p1");
     expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
-    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+    expect(c.chronicle.getReadingOrder).toHaveBeenCalledTimes(1);
     expect(c.chronicle.getSceneEvents).not.toHaveBeenCalled();
   });
 });
@@ -955,6 +1050,31 @@ describe("get_chronicle_state", () => {
       expect(c.chronicle.listHiddenCodexIds).toHaveBeenCalledWith("p1", ["c1"]);
       expect(c.chronicle.listHiddenCodexIds.mock.calls[0]).toHaveLength(2);
     }
+  });
+
+  it("marks get_chronicle_state relative to the requested scene or the active scene", async () => {
+    const world = {
+      events: [event("e1", { ordinal: "a0", revealSceneId: "s2" })],
+      sceneEvents: [{ sceneId: "s1", eventId: "e1" }],
+      activeSceneId: "s3",
+    };
+    const requested = await makeCtx(world).executors.get_chronicle_state({
+      sceneId: "s1",
+    });
+    expect(
+      (requested.content as { recentEvents: Array<Record<string, unknown>> })
+        .recentEvents[0]?.revealScene,
+    ).toEqual({
+      id: "s2",
+      title: "scene-s2",
+      revealedToReader: false,
+    });
+
+    const active = await makeCtx(world).executors.get_chronicle_state({});
+    expect(
+      (active.content as { recentEvents: Array<Record<string, unknown>> })
+        .recentEvents[0]?.revealScene,
+    ).toEqual({ id: "s2", title: "scene-s2", revealedToReader: true });
   });
 
   it("removes hidden people before selecting snapshot characters", async () => {

@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CoreProjectRequiredError,
   type CoreChronicleSearchContext,
+  type CoreTreeNode,
   type CoreTreeState,
 } from "../../mastraRead/ports.js";
 import type { EventRow } from "../features/chronicle/eventRows.js";
@@ -51,6 +52,21 @@ const event = (id: string, over: Partial<EventRow> = {}): EventRow => ({
   ...over,
 });
 
+const scene = (
+  id: string,
+  sortOrder: string,
+  over: Partial<CoreTreeNode> = {},
+): CoreTreeNode => ({
+  id,
+  parentId: null,
+  nodeType: "scene",
+  title: `Scene ${id.slice(1)}`,
+  sortOrder,
+  storyTimeOrder: null,
+  archivedAt: null,
+  ...over,
+});
+
 const hit = (
   eventId: string,
   over: Record<string, unknown> = {},
@@ -66,14 +82,18 @@ interface World {
   projectId?: string;
   /** What the dense read answers (the wire as it is, not narrowed). */
   wire?: unknown;
+  events?: EventRow[];
+  nodes?: CoreTreeNode[];
+  activeSceneId?: string | null;
+  readingOrder?: ReadonlyMap<string, number>;
 }
 
 function makeCtx(world: World = {}) {
   const log: string[] = [];
   let state: CoreTreeState = {
     projectId: "projectId" in world ? (world.projectId as string) : "p1",
-    nodes: [],
-    activeSceneId: null,
+    nodes: world.nodes ?? [],
+    activeSceneId: world.activeSceneId ?? null,
   };
   const getTreeState = vi.fn(() => {
     log.push("getTreeState");
@@ -91,15 +111,34 @@ function makeCtx(world: World = {}) {
     log.push("countTokens");
     return text.length;
   });
+  const chronicle = {
+    getEvents: vi.fn(async (_projectId: string) => {
+      log.push("getEvents");
+      return world.events ?? [];
+    }),
+    getReadingOrder: vi.fn((nodes: readonly CoreTreeNode[]) => {
+      log.push("getReadingOrder");
+      return (
+        world.readingOrder ??
+        new Map(
+          nodes
+            .filter((node) => node.nodeType === "scene" && !node.archivedAt)
+            .map((node, index) => [node.id, index]),
+        )
+      );
+    }),
+  };
   const ctx: CoreChronicleSearchContext = {
     getTreeState,
     countTokens,
     native,
+    chronicle,
   };
   return {
     ctx,
     executors: createChronicleSearchExecutors(ctx),
     native,
+    chronicle,
     getTreeState,
     countTokens,
     log,
@@ -145,7 +184,12 @@ describe("the order: query, project, dense, then countTokens", () => {
   it("reads in that order, and counts tokens last", async () => {
     const c = makeCtx({ wire: [hit("e1")] });
     await c.executors.search_events({ query: "q" });
-    expect(c.log).toEqual(["getTreeState", "eventsSemantic", "countTokens"]);
+    expect(c.log).toEqual([
+      "getTreeState",
+      "eventsSemantic",
+      "getEvents",
+      "countTokens",
+    ]);
   });
 
   it.each([[""], ["   "], [undefined]])(
@@ -202,12 +246,91 @@ describe("the order: query, project, dense, then countTokens", () => {
     expect(c.getTreeState).toHaveBeenCalledTimes(1);
   });
 
-  it("uses a context without chronicle loaders and reads tree state only for the project", async () => {
+  it("loads event rows only after dense hits and does not read order when they have no reveal scene", async () => {
     const c = makeCtx({ wire: [hit("e1")] });
     await c.executors.search_events({ query: "q" });
-    expect(c.ctx).not.toHaveProperty("chronicle");
+    expect(c.ctx).toHaveProperty("chronicle");
     expect(c.getTreeState).toHaveBeenCalledTimes(1);
-    expect(c.log).toEqual(["getTreeState", "eventsSemantic", "countTokens"]);
+    expect(c.log).toEqual([
+      "getTreeState",
+      "eventsSemantic",
+      "getEvents",
+      "countTokens",
+    ]);
+    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
+  });
+});
+
+describe("search_events revealScene", () => {
+  const nodes = [scene("s1", "a0"), scene("s2", "a1"), scene("s3", "a2")];
+
+  it.each([
+    ["s1", false],
+    ["s2", true],
+    [null, undefined],
+  ] as const)(
+    "marks disclosure relative to active scene %s",
+    async (activeSceneId, revealed) => {
+      const c = makeCtx({
+        wire: [hit("e1")],
+        events: [event("e1", { revealSceneId: "s2" })],
+        nodes,
+        activeSceneId,
+      });
+      const r = await c.executors.search_events({ query: "q" });
+      const result = (r.content as Array<Record<string, unknown>>)[0]!;
+      expect(result.revealScene).toEqual(
+        revealed === undefined
+          ? { id: "s2", title: "Scene 2" }
+          : { id: "s2", title: "Scene 2", revealedToReader: revealed },
+      );
+      expect(c.log.indexOf("eventsSemantic")).toBeLessThan(
+        c.log.indexOf("getEvents"),
+      );
+      expect(c.log.indexOf("getEvents")).toBeLessThan(
+        c.log.indexOf("getReadingOrder"),
+      );
+      expect(Object.keys(result)).toEqual([
+        "eventId",
+        "title",
+        "kind",
+        "score",
+        "revealScene",
+      ]);
+    },
+  );
+
+  it.each([
+    [
+      "s2",
+      [nodes[0]!, scene("s2", "a1", { archivedAt: "archived" }), nodes[2]!],
+    ],
+    ["missing", nodes],
+  ] as const)(
+    "omits an archived or missing reveal scene (%s)",
+    async (revealSceneId, sceneNodes) => {
+      const c = makeCtx({
+        wire: [hit("e1")],
+        events: [event("e1", { revealSceneId })],
+        nodes: [...sceneNodes],
+        activeSceneId: "s3",
+      });
+      const r = await c.executors.search_events({ query: "q" });
+      const result = (r.content as Array<Record<string, unknown>>)[0]!;
+      expect(Object.keys(result)).toEqual([
+        "eventId",
+        "title",
+        "kind",
+        "score",
+      ]);
+    },
+  );
+
+  it("does not read event rows when there are no dense hits", async () => {
+    const c = makeCtx({ wire: [] });
+    await c.executors.search_events({ query: "q" });
+    expect(c.chronicle.getEvents).not.toHaveBeenCalled();
+    expect(c.chronicle.getReadingOrder).not.toHaveBeenCalled();
   });
 });
 
