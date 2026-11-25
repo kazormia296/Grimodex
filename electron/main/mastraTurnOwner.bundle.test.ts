@@ -70,6 +70,10 @@ describe("main's static import closure", () => {
       }
     }
 
+    // A walk that never left the entry would find nothing and pass vacuously.
+    expect(
+      [...parents.keys()].map((input) => path.resolve(repoRoot, input)),
+    ).toContain(path.join(repoRoot, "electron", "main", "mastraTurnOwner.ts"));
     expect(Object.fromEntries(violations)).toEqual({});
   }, 120_000);
 });
