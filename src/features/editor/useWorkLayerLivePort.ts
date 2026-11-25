@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { useCodexStore } from "@/features/codex/codexStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import type { WorkLayerPort } from "@/features/work-layer/types";
 
@@ -49,7 +50,10 @@ export function useLiveWorkLayerPort(
     ])
       .then(([portModule, readersModule]) => {
         if (cancelled) return;
-        const readers = readersModule.createWorkLayerLiveReaders(projectId);
+        const readers = readersModule.createWorkLayerLiveReaders(
+          projectId,
+          useCodexStore,
+        );
         createdPort = portModule.createWorkLayerLivePort(readers);
         if (cancelled) {
           createdPort.dispose?.();
