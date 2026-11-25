@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   syncProject: vi.fn(),
   hostProjectId: null as string | null,
   selectCandidateCount: vi.fn(),
+  unsubscribeHost: vi.fn(),
 }));
 
 vi.mock(
@@ -27,7 +28,7 @@ vi.mock("@/features/codex/codexCandidateHostStore", () => ({
       projectId: mocks.hostProjectId,
       syncProject: mocks.syncProject,
     }),
-    subscribe: () => () => {},
+    subscribe: () => mocks.unsubscribeHost,
   },
   selectCodexCandidateCount: mocks.selectCandidateCount,
 }));
@@ -101,6 +102,7 @@ describe("createWorkLayerLiveReaders: candidate count", () => {
     mocks.hostProjectId = "p1";
     mocks.selectCandidateCount.mockReset().mockReturnValue({ status: "ready" });
     unsubscribeEntries.mockReset();
+    mocks.unsubscribeHost.mockReset();
     entriesListener = null;
   });
 
@@ -122,5 +124,6 @@ describe("createWorkLayerLiveReaders: candidate count", () => {
 
     unsubscribe();
     expect(unsubscribeEntries).toHaveBeenCalledTimes(1);
+    expect(mocks.unsubscribeHost).toHaveBeenCalledTimes(1);
   });
 });
