@@ -57,11 +57,11 @@
 
 ### 切替の記録の順番（journey の確認）
 
-停止は静止の lease より前に始まる。切替の記録（`lifecycleTrace`。journey の観測用で、製品の動きは変えない）は、進行中の記録が無いときの節目を捨てる。確認の了承から lease の取得までは IPC の往復を待たないので、欠ける節目は経路の構造で決まる。
+停止は静止の lease より前に始まる。切替の記録（`lifecycleTrace`。journey の観測用で、製品の動きは変えない）は、進行中の記録が無いときの節目を捨てる。確認の了承から lease の取得までは、下の genesis の場合を除いて IPC の往復を待たないので、欠ける節目は経路の構造で決まる。
 
 - chat の応答：停止した応答の保存の開始（`old-stream-completed`）が lease より先になるので、この節目は載らない。保存の完了（`old-scope-persisted`）は IPC の往復の後なので載る。
 - agent の応答：中断の IPC の往復の後に保存するので、2 段とも載る。
-- timelapse の genesis が進行中なら lease の取得が IPC を待ち、欠け方が変わりうる（journey の場面では起きない）。
+- timelapse の genesis が進行中なら lease の取得がその完了（IPC）を待つ。その間に保存が終わると節目が欠け、journey は落ちる（不具合を見逃す方向ではない）。journey は genesis の完了を明示的には待たない。
 - 保存の完了は静止の flush が待つ。`chatStore.test.ts` の「keeps a switch waiting for the … turn stopped by its confirmation」の 2 本で、保存を止めている間は切替が進まないことと、上の記録の列を確かめる。
 - journey の判断：chat の 2 本だけ `old-stream-completed` を任意にする。残りの 5 段（`old-scope-persisted` を含む）は要る。agent の 2 本は 6 段すべて要る。これで、保存が切替の確定の後になる回帰は実機でも落ちる。
 - 局所の実機（2026-11-26、4 本）で、chat は 5 段、agent は 6 段の記録を確かめた。
