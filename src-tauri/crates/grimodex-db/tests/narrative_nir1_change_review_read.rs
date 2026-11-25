@@ -309,3 +309,58 @@ fn change_review_reads_approved_history_after_live_codex_change() -> anyhow::Res
     }));
     Ok(())
 }
+
+#[test]
+fn hidden_or_suppressed_items_make_the_current_revision_unavailable() -> anyhow::Result<()> {
+    let db = change_review_db()?;
+    let prepared = prepare_change_review_revision(
+        &db,
+        "change-review:hidden-suppressed",
+        "nir1-change-review",
+        &["change-review-alice"],
+    )?;
+    let revision_id = prepared["result"]["revisionId"].as_str().unwrap();
+
+    for context_mode in ["hidden", "suppress"] {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries
+                    SET context_mode = 'mentioned'
+                  WHERE id = 'change-review-alice' AND project_id = 'default-project'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let visible = db.with_read_transaction(|conn| {
+            read_nir1_change_review(conn, "default-project", revision_id)
+        })?;
+        assert!(
+            matches!(visible, Nir1ChangeReviewResult::Available(_)),
+            "revision should be available before setting {context_mode}"
+        );
+
+        db.with_conn(|conn| {
+            let updated = conn.execute(
+                "UPDATE codex_entries SET context_mode = ?1
+                  WHERE id = 'change-review-alice' AND project_id = 'default-project'",
+                [context_mode],
+            )?;
+            anyhow::ensure!(updated == 1, "expected to update Alice context mode");
+            Ok(())
+        })?;
+        let result = db.with_read_transaction(|conn| {
+            read_nir1_change_review(conn, "default-project", revision_id)
+        })?;
+        assert!(
+            matches!(
+                result,
+                Nir1ChangeReviewResult::Unavailable {
+                    reason: "current-revision-unavailable"
+                }
+            ),
+            "revision should be unavailable when context_mode is {context_mode}"
+        );
+    }
+
+    Ok(())
+}
