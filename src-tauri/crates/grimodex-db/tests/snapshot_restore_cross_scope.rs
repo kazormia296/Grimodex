@@ -1692,6 +1692,7 @@ fn a_codex_restore_that_changes_nothing_leaves_events_and_scenes_writable() {
         agent_event_create_with_authority_impl(
             &db,
             de::<AgentEventCreatePayload>(json!({
+                "startTime": 0, "startGranularity": "day",
                 "requestId": "create-e1", "eventId": "e1", "projectId": P,
                 "sessionId": SESSION, "surface": "manual", "title": "orig",
                 "ordinal": "a0", "kind": "generic", "participantCodexIds": ["c1", "c2"],

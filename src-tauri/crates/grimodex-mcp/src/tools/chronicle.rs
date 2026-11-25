@@ -11,6 +11,7 @@
 //! change_events(domain "event"), surface "mcp". Each write is gated
 //! readonly → license → knowledgeWrite policy, like the foreshadow writes.
 
+use grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED;
 use std::collections::HashMap;
 
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -759,7 +760,7 @@ pub async fn create_event(
     }
     if params.start_time.is_none() {
         return Err(ErrorData::invalid_params(
-            "start_time is required and must be a date in days from the in-world epoch",
+            CHRONICLE_EVENT_DATE_REQUIRED,
             None,
         ));
     }
@@ -772,7 +773,7 @@ pub async fn create_event(
     }
     if params.start_granularity.as_deref() == Some("none") {
         return Err(ErrorData::invalid_params(
-            "start_granularity cannot be 'none'; omit it to use the default day granularity",
+            CHRONICLE_EVENT_DATE_REQUIRED,
             None,
         ));
     }
@@ -894,13 +895,13 @@ pub async fn update_event(
     }
     if params.start_time == Some(None) {
         return Err(ErrorData::invalid_params(
-            "start_time cannot be null; omit it to leave the event date unchanged",
+            CHRONICLE_EVENT_DATE_REQUIRED,
             None,
         ));
     }
     if params.start_granularity.as_deref() == Some("none") {
         return Err(ErrorData::invalid_params(
-            "start_granularity cannot be 'none'; omit it to leave the granularity unchanged",
+            CHRONICLE_EVENT_DATE_REQUIRED,
             None,
         ));
     }
@@ -1622,7 +1623,7 @@ mod tests {
         let error = update_event(&server, update(Some(None)))
             .await
             .expect_err("null date cannot clear an event date");
-        assert!(error.message.contains("cannot be null"));
+        assert_eq!(error.message, CHRONICLE_EVENT_DATE_REQUIRED);
         let error = update_event(
             &server,
             UpdateEventParams {
@@ -1632,7 +1633,7 @@ mod tests {
         )
         .await
         .expect_err("none granularity cannot clear an event date");
-        assert!(error.message.contains("cannot be 'none'"));
+        assert_eq!(error.message, CHRONICLE_EVENT_DATE_REQUIRED);
     }
 
     #[tokio::test]

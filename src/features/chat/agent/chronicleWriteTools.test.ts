@@ -1,3 +1,4 @@
+import { CHRONICLE_EVENT_DATE_REQUIRED } from "@/../electron/shared/chronicleEventDate";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -90,11 +91,11 @@ describe("createEventTool", () => {
   });
 
   it.each([
-    [{ title: "dated" }, "startTime is required"],
+    [{ title: "dated" }, CHRONICLE_EVENT_DATE_REQUIRED],
     [{ title: "dated", startTime: 1 }, "precision is required"],
     [
       { title: "dated", startTime: "1", precision: "exact" },
-      "startTime is required",
+      CHRONICLE_EVENT_DATE_REQUIRED,
     ],
     [
       { title: "dated", startTime: 1, precision: "certain" },
@@ -107,7 +108,7 @@ describe("createEventTool", () => {
         precision: "exact",
         startGranularity: "none",
       },
-      "startGranularity",
+      CHRONICLE_EVENT_DATE_REQUIRED,
     ],
   ])("必須日時・確度と粒度を検証する: %j", async (input, error) => {
     const result = await createEventTool(input);
@@ -215,8 +216,11 @@ describe("update/delete", () => {
   });
 
   it.each([
-    [{ eventId: "e1", startTime: null }, "startTime cannot be null"],
-    [{ eventId: "e1", startGranularity: "none" }, "startGranularity"],
+    [{ eventId: "e1", startTime: null }, CHRONICLE_EVENT_DATE_REQUIRED],
+    [
+      { eventId: "e1", startGranularity: "none" },
+      CHRONICLE_EVENT_DATE_REQUIRED,
+    ],
     [{ eventId: "e1", precision: "certain" }, "precision must be one of"],
   ])("update_event は日時削除・無効値を拒否する: %j", async (input, error) => {
     const result = await updateEventTool(input, "event-update-request");
