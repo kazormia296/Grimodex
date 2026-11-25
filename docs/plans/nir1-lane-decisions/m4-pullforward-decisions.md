@@ -36,6 +36,13 @@
 - **DR-M4PF-10（保存の境界）**：検証器は `identityDeclaration` を受理する（DR-M4PF-1）が、今の Producer は出さない。宣言つきの envelope が保存の経路で保存され、親から子の revision へ引き継がれる事態を避けるため、
   Producer が宣言を出す段まで、保存の境界（reconciliation envelope の検証）で宣言を拒む。宣言を出す Producer の追加は、この拒否を外す変更と一緒に行う（別の判断）。
 
+- **DR-M4PF-11（IPC `nir1_change_review_read`、2026-11-25。IPC の差分だけの独立レビュー〔Fable、read-only〕の後）**：
+  1. 読み取り専用の command を足す（`projectId`・`revisionId`、main と N-API で再検証、`admit/finish_publication_entry`、read transaction）。呼び手なし。
+  2. D2a の区分は**変えない**（main の台帳に未登録＝`unclassified`）。restricted／unavailable の profile では main が dispatch の前に拒む。`profileEgress.test.ts` に 1 行足して固定する。呼び手を付ける段の前に区分（`nir1-publication` に載せるか）を決める。載せるのは区分の改訂なので、判断を残す。
+  3. main に「旗が閉じている間は拒む」仕組みは置かない。**「旗は閉じたまま」は呼び手が無いという意味で、main の強制ではない**（unrestricted の renderer の script は直接呼べる）。読めるのは作者の指定 project の typed revision の変更レビューで、手本の A2 の read（gate なし）と同格。新しく出るのは、live の検証を通らない過去の承認済み revision の引用（同じ transaction で可視と確かめた identity に限る）、`previousRevisionIds`、`buildAction`、revisionId 指定の Draft。
+  4. 呼び手を付ける段（変更レビュー設計 §5 の段 4）の前に決める／足す：`expectedWorkspacePath` の必須化（手本の 2 本と同じ。workspace の切替との交差で別 workspace の結果を表示しうる）、D2a の区分、`src/lib/tauri.ts` の read lane の表への登録、応答の形（手本は `{status, result}`、本 command は平坦）の固定。
+  5. **AI の経路につなぐ前の条件**：effective な context mode（Phase の override を含む）の再評価と、object ごとの除外。今の抑止と current の reader は base の `context_mode` だけを見る。
+
 ## 脅威モデル（GDX-PRECHECK-001、変更レビューの読み取りの出口。2026-11-25）
 
 委任の範囲：送信先・保存範囲・閾値の変更を含まず、守りを**狭める**側の修正（NIR-1 と同じ委任の範囲内の技術判断）。ユーザーの個別確認は要らない（確認が要る送信の経路は未実装）。
@@ -55,3 +62,14 @@
 - Core は同一性を推測しない。同一性は Producer が宣言した key の完全一致だけ（ADR 005 の「Stable identityがない場合、heuristic matchingでidentityを捏造してはならない」を保つ）。
 - 新しい送信先・保存・閾値の緩和・公開・製品認可の削除・新しい authority は、この段階のコードに含まれない（送信の経路と送信の記録の保存は未実装）。検証器が受理する形は `identityDeclaration` の分だけ広がるが、保存の境界で拒む（DR-M4PF-10）。
 - S4 の pin の閉包（`src/`・`electron/`・`scripts/local-ci*` で止まる）と、触るファイルは重ならない（`observation-prep.mjs:1224-1233`、harness から 0 件の参照）。
+
+## 脅威モデル（IPC `nir1_change_review_read`、2026-11-25。DR-M4PF-11）
+
+| 項目           | 内容                                                                                                                                                                                                                                                                                                                                                      |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 信頼する入力   | main が発行する caller identity（webContents 単位）と、Native の active workspace                                                                                                                                                                                                                                                                         |
+| 信頼しない入力 | renderer の `projectId`／`revisionId`（main と N-API で再検証し、SQL で project への所属を確かめる）、renderer が混ぜる `callerIdentity`                                                                                                                                                                                                                  |
+| 守る資産       | typed NIR-1 の payload（汎用 SQL では全モードで読めない列）、restricted profile の plaintext の公開、hidden／suppress の Codex を AI へ出さないこと                                                                                                                                                                                                       |
+| 対象の攻撃     | renderer 内の任意の script が旗に関係なく直接呼ぶ／restricted や workspace の切替と交差する完了／将来この結果を AI の文脈へ流す変更                                                                                                                                                                                                                       |
+| 防御           | 引数の再検証は main と N-API の 2 段。restricted では main が `unclassified` で拒む。Native は開始時と返す直前に admit／finish で確かめる。current の reader は hidden／suppress の Codex を含む revision を丸ごと `current-revision-unavailable` にする。出口の `evidenceWithheld` は多層防御。read transaction の中だけで、送信・書き込み・event はない |
+| 受入れ         | 呼び手なし。restricted で拒む試験。D2a の区分と `expectedWorkspacePath` は呼び手を付ける前に決める（DR-M4PF-11 の 4）                                                                                                                                                                                                                                     |

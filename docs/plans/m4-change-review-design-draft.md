@@ -81,7 +81,7 @@ c7 は §2 の線引きを「c7 側の実装と食い違わない」と回答し
   **今の bundle の object ごとに、その identity を含む直前の承認済み revision と比べる**定義に改め、`removed` は出さない（DR-M4PF-9）。
   走査は上限つきで、上限で打ち切って前が見つからない object は `Unresolved` とし、「無い」と推測しない（有界の lookup の契約）。
 - 読めない理由は enum にして区別する（今の revision が読めない／前の revision の破損）。復元の後の最初の revision は、旧 epoch の承認済みを SQL で除外して「初回」として読む。
-- 後から hidden／suppress にした Codex の項目は、変更の種類だけ返し、Evidence の引用は返さない（DR-M4PF-8 の追補。AI の経路につなぐ前の守り）。
+- 後から hidden／suppress にした Codex の項目を含む revision は、current の reader が丸ごと読めなくする（`current-revision-unavailable`）。出口の引用の抑止（`evidenceWithheld`）は多層防御で、今の経路では届かない。AI の経路につなぐ前に、effective な context mode での再評価と object ごとの除外が要る（DR-M4PF-11）。
 - 実装の現状：Decision は `review_status` のみ、Freshness は consumer の点引き、下流の逆引きは別関数（`nir1_change_review_downstream.rs`）で未接続（選んだ項目ごとにカーソルで引く）。
 
 ## 6. ユーザーに伺うこと（束ねて）
