@@ -1094,7 +1094,7 @@ fn p2_map_position_snippet_deleted() {
         scalar_text(&db, "SELECT title FROM map_stickies WHERE id='st1'").as_deref(),
         Some("Sticky 1")
     );
-    assert_notices("P2", &r, &[("map_placements", 1)]);
+    assert_notices("P2", &r, &[("editor_stickies", 1), ("map_placements", 1)]);
 }
 
 #[test]
@@ -1127,7 +1127,7 @@ fn p3_map_position_scene_deleted() {
     // The edge between the dropped card (pos-s) and pos-c goes with it, as
     // the foreign key's CASCADE would have taken it.
     assert_eq!(ids(&db, "SELECT id FROM map_edges"), Vec::<String>::new());
-    assert_notices("P3", &r, &[("map_placements", 1), ("map_edges", 1)]);
+    assert_notices("P3", &r, &[("editor_stickies", 1), ("map_placements", 1), ("map_edges", 1)]);
 }
 
 #[test]
@@ -1158,7 +1158,7 @@ fn p4_map_position_codex_deleted() {
         strs(&["pos-s", "pos-sn", "pos-st"])
     );
     assert_eq!(ids(&db, "SELECT id FROM map_edges"), Vec::<String>::new());
-    assert_notices("P4", &r, &[("map_placements", 1), ("map_edges", 1)]);
+    assert_notices("P4", &r, &[("editor_stickies", 1), ("map_placements", 1), ("map_edges", 1)]);
 }
 
 #[test]
@@ -1456,7 +1456,221 @@ fn p10_snippet_scene_deleted_keeps_working() {
         count(&db, "SELECT COUNT(*) FROM snippets WHERE id='sn1' AND scene_id IS NULL AND title='Snippet 1'"),
         1
     );
-    assert_notices("P10", &r, &[]);
+    assert_notices("P10", &r, &[("snippet_scene_link", 1)]);
+}
+
+#[test]
+fn canonical_filters_count_missing_codex_parents_once_per_row() {
+    let pre = format!(
+        "{MSG}
+         UPDATE events SET primary_codex_id = 'c2', location_codex_id = 'l1' WHERE id = 'e1';
+         INSERT INTO scene_codex_pins (scene_id, entry_id, created_at) VALUES ('s1', 'c2', 't');
+         UPDATE scene_beat_pov_cache SET pov_character_id = 'c2' WHERE scene_id = 's1';
+         INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id) VALUES ('fs1', 'c2');
+         UPDATE codex_entries SET source_chat_message_id = 'm1' WHERE id = 'c2';"
+    );
+    let (_, r) = run(
+        "canonical missing Codex parents",
+        &[RestoreScope::Body, RestoreScope::Foreshadow],
+        Setup {
+            pre_snapshot: &pre,
+            post_snapshot: "DELETE FROM codex_entries WHERE id IN ('c2', 'l1');",
+            checks: vec![],
+            change: true,
+        },
+    );
+    assert_notices(
+        "canonical missing Codex parents",
+        &r,
+        &[
+            ("ai_scene_proposals", 1),
+            ("event_participants", 1),
+            ("event_primary_or_location", 1),
+            ("scene_pov_or_location", 3),
+            ("scene_codex_links", 2),
+            ("foreshadow_codex_links", 1),
+        ],
+    );
+}
+
+#[test]
+fn canonical_filters_count_missing_scene_parents() {
+    let pre = "INSERT INTO tree_node_labels (node_id, label_id) VALUES ('s2', 'lab1');
+                INSERT INTO lint_ignored_diagnostics
+                  (id, rule_id, scene_id, text_snippet, context_before, context_after, created_at)
+                  VALUES ('li-restore', 'r1', 's1', 't', 'a', 'b', 1);
+                UPDATE foreshadows SET payoff_scene_id = 's2' WHERE id = 'fs1';";
+    let (_, r) = run(
+        "canonical missing scene parents",
+        &[
+            RestoreScope::Snippet,
+            RestoreScope::Map,
+            RestoreScope::Foreshadow,
+            RestoreScope::Labels,
+            RestoreScope::Lint,
+        ],
+        Setup {
+            pre_snapshot: pre,
+            post_snapshot: "DELETE FROM tree_nodes WHERE id IN ('s1', 's2');
+                            DELETE FROM codex_tags WHERE id = 'tag1';",
+            checks: vec![],
+            change: true,
+        },
+    );
+    assert_notices(
+        "canonical missing scene parents",
+        &r,
+        &[
+            ("snippet_tags", 1),
+            ("snippet_scene_link", 1),
+            ("foreshadow_scene_links", 4),
+            ("scene_labels", 2),
+            ("editor_stickies", 1),
+            // seed の li1 と、この試験の li-restore。
+            ("lint_ignores", 2),
+            ("map_placements", 1),
+            ("map_edges", 1),
+        ],
+    );
+}
+
+#[test]
+fn body_restore_counts_uncaptured_relations_of_sceneless_annotations() {
+    let pre = format!(
+        "INSERT INTO post_effect_annotations
+           (id, project_id, run_id, anchor_type, scene_id, category, content)
+           VALUES ('an-scene', '{P}', NULL, 'scene_range', 's1', 'review', 'scene');
+         INSERT INTO post_effect_annotations
+           (id, project_id, run_id, anchor_type, scene_id, category, content)
+           VALUES ('an-sceneless', '{P}', NULL, 'codex_entry', NULL, 'review', 'sceneless');
+         INSERT INTO post_effect_annotation_relations
+           (id, project_id, annotation_a_id, annotation_b_id, relation_type)
+           VALUES ('rel-sceneless-a', '{P}', 'an-sceneless', 'an-scene', 'theme_echo');"
+    );
+    let (db, r) = run(
+        "scene-less annotation relation",
+        &[RestoreScope::Body],
+        Setup {
+            pre_snapshot: &pre,
+            post_snapshot: "",
+            checks: vec![],
+            change: true,
+        },
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM post_effect_annotation_relations WHERE id='rel-sceneless-a'"
+        ),
+        0
+    );
+    assert_notices(
+        "scene-less annotation relation",
+        &r,
+        &[("ai_scene_proposals", 1), ("analysis_annotations", 1)],
+    );
+}
+
+#[test]
+fn body_restore_counts_a_run_lost_with_a_later_scene() {
+    let pre = format!(
+        "INSERT INTO post_effect_runs
+           (id, project_id, effect_type, scope_type, scope_target_id, model, prompt_version, status)
+           VALUES ('run-later-scene', '{P}', 'review', 'scene', 's1', 'm', 'v', 'completed');
+         INSERT INTO post_effect_annotations
+           (id, project_id, run_id, anchor_type, scene_id, category, content)
+           VALUES ('an-run-later', '{P}', 'run-later-scene', 'scene_range', 's1', 'review', 'note');
+         INSERT INTO post_effect_annotations
+           (id, project_id, run_id, anchor_type, scene_id, category, content)
+           VALUES ('an-live-sceneless', '{P}', 'run-later-scene', 'codex_entry', NULL, 'review', 'live');"
+    );
+    let post = format!(
+        "INSERT INTO tree_nodes
+           (id, project_id, node_type, title, content, created_at, updated_at, version)
+           VALUES ('s-later', '{P}', 'scene', 'Later', '{{}}', 't', 't', 0);
+         UPDATE post_effect_runs SET scope_target_id = 's-later' WHERE id = 'run-later-scene';"
+    );
+    let (db, r) = run(
+        "run later retargeted outside the snapshot",
+        &[RestoreScope::Body],
+        Setup {
+            pre_snapshot: &pre,
+            post_snapshot: &post,
+            checks: vec![],
+            change: true,
+        },
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM post_effect_runs WHERE id='run-later-scene'"),
+        0
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM post_effect_annotations WHERE id='an-run-later' AND run_id IS NULL"),
+        1
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM post_effect_annotations WHERE id='an-live-sceneless' AND run_id IS NULL"),
+        1
+    );
+    assert_notices(
+        "run later retargeted outside the snapshot",
+        &r,
+        &[
+            ("ai_scene_proposals", 1),
+            ("analysis_records", 1),
+            ("analysis_run_links", 2),
+        ],
+    );
+}
+
+#[test]
+fn body_restore_without_events_aux_drops_and_reports_event_stickies() {
+    let (db, r) = run(
+        "event sticky without events aux",
+        &[RestoreScope::Body, RestoreScope::Map],
+        Setup {
+            pre_snapshot: "",
+            post_snapshot: "DELETE FROM project_snapshot_aux
+                              WHERE snapshot_id = 'S1'
+                                AND scope IN ('events', 'scene_events', 'event_participants',
+                                              'event_relations', 'project_calendar');
+                            DELETE FROM events WHERE id = 'e1';",
+            checks: vec![],
+            change: true,
+        },
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM editor_stickies WHERE id='es-e'"),
+        0
+    );
+    assert_notices(
+        "event sticky without events aux",
+        &r,
+        &[("ai_scene_proposals", 1), ("editor_stickies", 1)],
+    );
+}
+
+#[test]
+fn codex_source_message_null_is_not_a_loss_notice() {
+    let pre = format!(
+        "{MSG}
+         UPDATE codex_entries SET source_chat_message_id = 'm1' WHERE id = 'c1';"
+    );
+    let (_, r) = run(
+        "Codex source message is intentionally not restored",
+        &[RestoreScope::Codex],
+        Setup {
+            pre_snapshot: &pre,
+            post_snapshot: "DELETE FROM chat_messages WHERE id = 'm1';",
+            checks: vec![],
+            change: true,
+        },
+    );
+    assert_notices(
+        "Codex source message is intentionally not restored",
+        &r,
+        &[],
+    );
 }
 
 // =====================================================================
@@ -2183,7 +2397,7 @@ fn replay_returns_the_same_dropped() {
     assert_eq!(first.dropped, again.dropped);
     assert_eq!(
         notice_map(&serde_json::to_value(&first).unwrap(), "dropped"),
-        notes(&[("map_placements", 1), ("map_edges", 1)])
+        notes(&[("editor_stickies", 1), ("map_placements", 1), ("map_edges", 1)])
     );
 }
 
@@ -2213,7 +2427,9 @@ fn new_kinds_come_in_the_fixed_order() {
         .map(|n| n.kind.clone())
         .collect();
     let order = [
+        "snippet_scene_link",
         "map_placements",
+        "editor_stickies",
         "map_edges",
         "map_source_links",
         "snippet_source_message",
