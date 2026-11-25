@@ -6451,7 +6451,7 @@
     "unset": "Unset",
     "makePoint": "Make point",
     "makeInterval": "Make interval",
-    "revealSceneDesc": "When you write an earlier scene, the AI is told readers do not know this yet. If none is chosen, nothing is told.",
+    "revealSceneDesc": "Once chosen, the AI is told readers don't know this yet in earlier scenes.",
     "selectHint": "Click an event to edit its details here.",
     "totalCount": "{{count}} total",
     "issueCount": "{{count}} issue(s)",

@@ -675,7 +675,7 @@ pub struct CreateEventParams {
     #[serde(default)]
     #[schemars(skip)]
     pub secret: Option<bool>,
-    /// Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit or pass empty for none.
+    /// Optional scene id where readers learn of this event; chronicle read tools mark it so earlier scenes aren't written as if readers knew. It does not hide the event. Omit or pass empty for none.
     pub reveal_scene_id: Option<String>,
     /// Participant codex ids to attach (optional).
     pub participant_codex_ids: Option<Vec<String>>,
@@ -791,7 +791,7 @@ pub struct UpdateEventParams {
     #[serde(default)]
     #[schemars(skip)]
     pub secret: Option<bool>,
-    /// Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.
+    /// Optional scene id where readers learn of this event; chronicle read tools mark it so earlier scenes aren't written as if readers knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.
     pub reveal_scene_id: Option<String>,
 }
 

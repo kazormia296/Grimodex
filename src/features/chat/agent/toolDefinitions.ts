@@ -328,7 +328,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         revealSceneId: {
           type: "string",
           description:
-            "Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit or pass empty for none.",
+            "Optional scene id where readers learn of this event; chronicle read tools mark it so earlier scenes aren't written as if readers knew. It does not hide the event. Omit or pass empty for none.",
         },
         participantCodexIds: {
           type: "array",
@@ -380,7 +380,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         revealSceneId: {
           type: "string",
           description:
-            "Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.",
+            "Optional scene id where readers learn of this event; chronicle read tools mark it so earlier scenes aren't written as if readers knew. It does not hide the event. Omit to leave unchanged; pass an empty string to clear.",
         },
       },
       required: ["eventId"],

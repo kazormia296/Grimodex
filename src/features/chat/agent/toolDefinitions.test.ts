@@ -19,7 +19,7 @@ describe("toolDefinitions", () => {
   it("retires secret from event and foreshadow write tools while keeping disclosure metadata", () => {
     const tools = new Map(AGENT_TOOLS.map((tool) => [tool.name, tool]));
     const disclosurePrefix =
-      "Optional reading-order scene id: the scene where this event is revealed to readers. The chronicle read tools mark the event with it, so that scenes before it are not written as if readers already knew. It does not hide the event.";
+      "Optional scene id where readers learn of this event; chronicle read tools mark it so earlier scenes aren't written as if readers knew. It does not hide the event.";
     const disclosureDescriptions: Record<string, string> = {
       create_event: `${disclosurePrefix} Omit or pass empty for none.`,
       update_event: `${disclosurePrefix} Omit to leave unchanged; pass an empty string to clear.`,
