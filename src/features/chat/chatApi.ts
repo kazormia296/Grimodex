@@ -44,9 +44,9 @@ import { isRetryCompatibleMetadata } from "./chatMessageRetryCompat";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 import type { AiAuditTransportContext } from "@/features/ai-audit/transportContext";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
-import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   abortChatStream,
+  guardAgentSend,
   loadAiAuditRuntime,
   loadSingleShotTransport,
   sendChatMessageStream,
@@ -225,62 +225,20 @@ export async function sendAgentMessage(
     audit,
     auditRuntime.beforeIpcDispatchDetails("send_agent_message"),
   );
-  let abortRequest:
-    | Promise<{
-        abortCommandAcknowledged: boolean;
-        transportTerminationObserved: boolean;
-      }>
-    | undefined;
-  const requestAbort = (): void => {
-    abortRequest ??= abortChatStream(audit.executionId).then(
-      (receipt) => {
-        if (!receipt.abortCommandAcknowledged) {
-          debugLog.warn(
-            "ChatApi",
-            "abort agent send",
-            "abort command was not acknowledged",
-          );
-        }
-        return receipt;
-      },
-      (error) => {
-        debugLog.warn("ChatApi", "abort agent send", errorDetail(error));
-        return {
-          abortCommandAcknowledged: false,
-          transportTerminationObserved: false,
-        };
-      },
-    );
-  };
-  signal?.addEventListener("abort", requestAbort);
+  const guard = signal && (await guardAgentSend(signal, audit));
   let response: AgentLLMResponse;
   try {
-    if (signal?.aborted) {
-      requestAbort();
-      await abortRequest;
-    }
+    await guard?.beforeInvoke();
     response = await invoke<AgentLLMResponse>("send_agent_message", args);
   } catch (error) {
-    if (signal?.aborted) {
-      const abortReceipt = await abortRequest;
-      await auditRuntime.cancelAiAuditExecution(audit, {
-        reason: "stopped",
-        metadata: {
-          transportAbortRequested: true,
-          abortCommandAcknowledged:
-            abortReceipt?.abortCommandAcknowledged ?? false,
-          transportTerminationObserved: true,
-          providerAbortReceiptObserved: false,
-        },
-      });
-    } else {
+    if (!(await guard?.closeStopped())) {
       await auditRuntime.failAiAuditExecution(audit, {
         error: auditRuntime.auditErrorSnapshot(error),
       });
     }
     throw error;
   } finally {
-    signal?.removeEventListener("abort", requestAbort);
+    guard?.dispose();
   }
   await auditRuntime.completeAiAuditExecution(audit, {
     response: response as unknown as AiAuditJsonObject,

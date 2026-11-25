@@ -17,6 +17,8 @@ import {
   type AiAuditTransportContext,
   profileActivationStopAuditMetadata,
 } from "@/features/ai-audit/transportContext";
+import type { AiAuditExecutionHandle } from "@/features/ai-audit/types";
+import { debugLog } from "@/lib/debugLog";
 import { invoke, listen } from "@/lib/tauri";
 import type { ThinkingParams } from "./agent/modelLimits";
 import {
@@ -411,4 +413,59 @@ export async function abortChatStream(
       transportTerminationObserved: false,
     };
   }
+}
+
+/**
+ * 「停止」で agent の送信を中断する。起動時の chunk に入れないため、遅延読み込みの
+ * この module に置く（中断の入口は stream と同じ abort_chat_stream）。
+ */
+export function guardAgentSend(
+  signal: AbortSignal,
+  audit: AiAuditExecutionHandle,
+) {
+  let aborting:
+    | Promise<{
+        abortCommandAcknowledged: boolean;
+        transportTerminationObserved: boolean;
+      }>
+    | undefined;
+  const requestAbort = (): void => {
+    aborting ??= abortChatStream(audit.executionId).then((receipt) => {
+      if (!receipt.abortCommandAcknowledged) {
+        debugLog.warn(
+          "ChatApi",
+          "abort agent send",
+          "abort command was not acknowledged",
+        );
+      }
+      return receipt;
+    });
+  };
+  signal.addEventListener("abort", requestAbort);
+  return {
+    /** 送る前に停止済みなら、先に中断を届ける（Native は通信しない）。 */
+    async beforeInvoke(): Promise<void> {
+      if (!signal.aborted) return;
+      requestAbort();
+      await aborting;
+    },
+    /** 停止による失敗なら監査を cancelled で閉じて true。それ以外は false。 */
+    async closeStopped(): Promise<boolean> {
+      if (!signal.aborted) return false;
+      const receipt = await aborting;
+      await cancelAiAuditExecution(audit, {
+        reason: "stopped",
+        metadata: {
+          transportAbortRequested: true,
+          abortCommandAcknowledged: receipt?.abortCommandAcknowledged ?? false,
+          transportTerminationObserved: true,
+          providerAbortReceiptObserved: false,
+        },
+      });
+      return true;
+    },
+    dispose(): void {
+      signal.removeEventListener("abort", requestAbort);
+    },
+  };
 }
