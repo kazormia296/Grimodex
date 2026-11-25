@@ -18,7 +18,7 @@ export default function ChatStopConfirmDialog({
   const { t } = useTranslation();
   return (
     <Dialog open onOpenChange={(open) => !open && answer(false)}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" data-testid="chat-stop-confirm">
         <DialogHeader>
           <DialogTitle>{t("chatStop.title")}</DialogTitle>
           <DialogDescription>
@@ -28,6 +28,7 @@ export default function ChatStopConfirmDialog({
         <DialogFooter className="gap-2 sm:justify-end">
           <button
             type="button"
+            data-testid="chat-stop-confirm-cancel"
             onClick={() => answer(false)}
             className="rounded-md border border-input px-3 py-1.5 text-sm hover:bg-muted"
           >
@@ -35,6 +36,7 @@ export default function ChatStopConfirmDialog({
           </button>
           <button
             type="button"
+            data-testid="chat-stop-confirm-accept"
             onClick={() => answer(true)}
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
