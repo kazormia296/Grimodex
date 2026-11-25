@@ -43,6 +43,11 @@
   4. 呼び手を付ける段（変更レビュー設計 §5 の段 4）の前に決める／足す：`expectedWorkspacePath` の必須化（手本の 2 本と同じ。workspace の切替との交差で別 workspace の結果を表示しうる）、D2a の区分、`src/lib/tauri.ts` の read lane の表への登録、応答の形（手本は `{status, result}`、本 command は平坦）の固定。
   5. **AI の経路につなぐ前の条件**：effective な context mode（Phase の override を含む）の再評価と、object ごとの除外。今の抑止と current の reader は base の `context_mode` だけを見る。
 
+- **DR-M4PF-6 の前提の訂正（2026-11-25、read-only の調査で発見）**：DR-M4PF-6 と契約案 §4.1 は「既存の手動抽出と同じ request・同じ provider（送信先は増やさない）」を前提にしていた。**この前提は誤り**。
+  手動の Codex 構造抽出（`CodexStructureExtractDialog.tsx`）は `useAi: false` が固定で（:273）、`codexStructureExtractionApi.ts:1775-1778` の AI 経路は空の stub、AI task 2 本（`runEntityResolutionTask`・`runRelationSynthesisTask`）に製品の呼び手は無い。
+  つまり **今の手動の抽出は AI に何も送らない**。同じ request は存在せず、自動再解釈で送るには AI の抽出の配線そのものが新しい AI への送信になる（hidden の除外もこの経路には無い）。
+  ユーザーが確認した「送信の形」のうち、「同じ request」「送信先は増やさない」は根拠を失っている。**この段は止め、ユーザーに伺い直す**。送信の経路は開けていないので、実害はない。
+
 ## 脅威モデル（GDX-PRECHECK-001、変更レビューの読み取りの出口。2026-11-25）
 
 委任の範囲：送信先・保存範囲・閾値の変更を含まず、守りを**狭める**側の修正（NIR-1 と同じ委任の範囲内の技術判断）。ユーザーの個別確認は要らない（確認が要る送信の経路は未実装）。
