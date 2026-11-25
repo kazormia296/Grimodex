@@ -384,19 +384,10 @@ function lifecycleScopeMatches(actual, expected = {}) {
   );
 }
 
-// 停止してから切り替えるとき、停止した応答は静止の lease より前に終わり得る。その場合、
-// 旧い応答の終了と保存は切替の記録に載らない（保存の完了は静止が待ち、切替の後の行で
-// 確かめる）。載った場合は順番を守る。終了だけが載るのは、保存が失敗したか切替の後に
-// 終わったことを意味するので認めない。
-const OPTIONAL_PHASES_AFTER_STOP = new Set([
-  "old-stream-completed",
-  "old-scope-persisted",
-]);
-
 export async function assertLifecycleTransitionOrder(
   harness,
   page,
-  { kind, from, to, label, stoppedBeforeSwitch = false },
+  { kind, from, to, label, chatStoppedBeforeSwitch = false },
 ) {
   const events = await harness.readLifecycleTrace(page);
   const grouped = new Map();
@@ -417,18 +408,19 @@ export async function assertLifecycleTransitionOrder(
   const candidates = [...grouped.values()].map((group) =>
     [...group].sort((left, right) => left.sequence - right.sequence),
   );
+  // chat の停止は、停止した応答の保存を静止の lease より前に始めるので、「旧い応答の
+  // 終了」は切替の記録に載らない。保存の完了は lease の後なので載る。agent の停止は
+  // 中断の IPC の往復の後に保存するので、6 段すべてが載る。
   const expectedPhases = (phases) =>
     REQUIRED_LIFECYCLE_TRANSITION_PHASES.filter(
       (phase) =>
-        !stoppedBeforeSwitch ||
-        !OPTIONAL_PHASES_AFTER_STOP.has(phase) ||
+        !chatStoppedBeforeSwitch ||
+        phase !== "old-stream-completed" ||
         phases.includes(phase),
     );
   const matching = candidates.find((group) => {
     const phases = group.map((event) => event.phase);
     return (
-      (!phases.includes("old-stream-completed") ||
-        phases.includes("old-scope-persisted")) &&
       JSON.stringify(phases) === JSON.stringify(expectedPhases(phases)) &&
       group.every((event, index) => event.sequence === index)
     );
@@ -2946,7 +2938,7 @@ async function runChatStreamProjectSwitchJourney(harness) {
     }, "project B UI authority after stopped chat turn");
     await assertLifecycleTransitionOrder(harness, chat.page, {
       ...scope,
-      stoppedBeforeSwitch: true,
+      chatStoppedBeforeSwitch: true,
       label: "project chat switch",
     });
     await sceneA.editorSurface.waitFor({
@@ -2972,12 +2964,6 @@ async function runChatStreamProjectSwitchJourney(harness) {
         return null;
       }
     }, "project A stopped stream persistence");
-    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
-    await assertLifecycleTransitionOrder(harness, chat.page, {
-      ...scope,
-      stoppedBeforeSwitch: true,
-      label: "project chat switch after persistence",
-    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
@@ -3135,7 +3121,6 @@ async function runAgentStreamProjectSwitchJourney(harness) {
     await sceneA.editorSurface.waitFor({ state: "detached", timeout: 30_000 });
     await assertLifecycleTransitionOrder(harness, chat.page, {
       ...scope,
-      stoppedBeforeSwitch: true,
       label: "Agent project switch",
     });
 
@@ -3155,12 +3140,6 @@ async function runAgentStreamProjectSwitchJourney(harness) {
         return null;
       }
     }, "project A stopped Agent transcript persistence");
-    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
-    await assertLifecycleTransitionOrder(harness, chat.page, {
-      ...scope,
-      stoppedBeforeSwitch: true,
-      label: "Agent project switch after persistence",
-    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
@@ -3326,7 +3305,6 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
     const committedWorkspaceRevision = await workspaceOpenRevision(chat.page);
     await assertLifecycleTransitionOrder(harness, chat.page, {
       ...scope,
-      stoppedBeforeSwitch: true,
       label: "Agent workspace switch",
     });
 
@@ -3394,12 +3372,6 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
         return null;
       }
     }, "workspace A stopped Agent transcript persistence");
-    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
-    await assertLifecycleTransitionOrder(harness, chat.page, {
-      ...scope,
-      stoppedBeforeSwitch: true,
-      label: "Agent workspace switch after persistence",
-    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,
@@ -3572,7 +3544,7 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
     const committedWorkspaceRevision = await workspaceOpenRevision(chat.page);
     await assertLifecycleTransitionOrder(harness, chat.page, {
       ...scope,
-      stoppedBeforeSwitch: true,
+      chatStoppedBeforeSwitch: true,
       label: "workspace chat switch",
     });
     const projectB = await currentProjectRow(harness, chat.page);
@@ -3654,12 +3626,6 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
         return null;
       }
     }, "workspace A stopped stream persistence");
-    // 保存の節目が後から届いても、順番を崩していないことをもう一度確かめる。
-    await assertLifecycleTransitionOrder(harness, chat.page, {
-      ...scope,
-      stoppedBeforeSwitch: true,
-      label: "workspace chat switch after persistence",
-    });
     const terminalEvents = await harness.waitUntil(async () => {
       const events = await listAiAuditEvents(
         harness,

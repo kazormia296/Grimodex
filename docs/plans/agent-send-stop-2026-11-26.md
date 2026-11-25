@@ -57,13 +57,14 @@
 
 ### 切替の記録の順番（journey の確認）
 
-停止は静止の lease より前に始まる。停止した応答の保存が lease より前に始まると、切替の記録（`lifecycleTrace`。journey の観測用で、製品の動きは変えない）の「旧い応答の終了」（`old-stream-completed`）と「旧い範囲の保存」（`old-scope-persisted`）は載らない（進行中の記録が無ければ捨てる）。
+停止は静止の lease より前に始まる。切替の記録（`lifecycleTrace`。journey の観測用で、製品の動きは変えない）は、進行中の記録が無いときの節目を捨てる。確認の了承から lease の取得までは IPC の往復を待たないので、欠ける節目は経路の構造で決まる。
 
-- chat の応答：停止の保存の開始が切替側の `await` の再開より先なので、通常「旧い応答の終了」は載らない。「旧い範囲の保存」は lease の後に終われば載る。
-- agent の応答：中断の IPC の往復と lease の取得の競争になる。2 段とも載る、「旧い範囲の保存」だけ載る、2 段とも欠ける、のいずれかになる。
+- chat の応答：停止した応答の保存の開始（`old-stream-completed`）が lease より先になるので、この節目は載らない。保存の完了（`old-scope-persisted`）は IPC の往復の後なので載る。
+- agent の応答：中断の IPC の往復の後に保存するので、2 段とも載る。
+- timelapse の genesis が進行中なら lease の取得が IPC を待ち、欠け方が変わりうる（journey の場面では起きない）。
 - 保存の完了は静止の flush が待つ。`chatStore.test.ts` の「keeps a switch waiting for the … turn stopped by its confirmation」の 2 本で、保存を止めている間は切替が進まないことと、上の記録の列を確かめる。
-- journey の判断：停止してから切り替える 4 本（chat／agent × project／workspace）は、この 2 段を任意にする（載った場合は順番と位置を守る。「旧い応答の終了」だけが載る形は、保存の失敗か切替の後の保存を意味するので認めない）。残りの 4 段は要る。保存は、切替の後に旧い範囲の停止の行があることで確かめる。
-- この結果、6 段すべてを実機で確かめる journey は無くなる（確認の関数の単体試験は 6 段を要る形のまま）。
+- journey の判断：chat の 2 本だけ `old-stream-completed` を任意にする。残りの 5 段（`old-scope-persisted` を含む）は要る。agent の 2 本は 6 段すべて要る。これで、保存が切替の確定の後になる回帰は実機でも落ちる。
+- 局所の実機（2026-11-26、4 本）で、chat は 5 段、agent は 6 段の記録を確かめた。
 
 ## 範囲外（残る制限）
 

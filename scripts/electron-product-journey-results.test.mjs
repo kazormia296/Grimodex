@@ -1459,7 +1459,7 @@ test("lifecycle journey assertion requires one transition id with the exact six-
   );
 });
 
-test("lifecycle journey assertion allows a stopped turn to settle before the switch lease", async () => {
+test("lifecycle journey assertion lets only the stopped chat omit the stream milestone", async () => {
   const run = (phases, options) =>
     assertLifecycleTransitionOrder(
       {
@@ -1489,23 +1489,22 @@ test("lifecycle journey assertion allows a stopped turn to settle before the swi
   const after = ["authority-commit", "new-scope-hydrated"];
   const completed = "old-stream-completed";
   const persisted = "old-scope-persisted";
+  const chat = { chatStoppedBeforeSwitch: true };
 
-  for (const middle of [[], [persisted], [completed, persisted]]) {
-    const matched = await run([...before, ...middle, ...after], {
-      stoppedBeforeSwitch: true,
-    });
+  for (const middle of [[persisted], [completed, persisted]]) {
+    const matched = await run([...before, ...middle, ...after], chat);
     assert.equal(matched.length, 4 + middle.length);
   }
   const required = /did not emit the required lifecycle order/;
-  // The two optional milestones keep their order and place when present, and
-  // a completed old stream whose persistence never lands is a failure.
+  // The persistence milestone stays required, before the authority commit.
   for (const phases of [
+    [...before, ...after],
     [...before, completed, ...after],
     [...before, persisted, completed, ...after],
     [...before, "authority-commit", persisted, "new-scope-hydrated"],
-    ["switch-requested", ...after],
+    ["switch-requested", persisted, ...after],
   ]) {
-    await assert.rejects(run(phases, { stoppedBeforeSwitch: true }), required);
+    await assert.rejects(run(phases, chat), required);
   }
   // Without the option every milestone stays required.
   await assert.rejects(run([...before, persisted, ...after], {}), required);
