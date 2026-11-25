@@ -35,6 +35,8 @@ mod maintenance_lifecycle;
 pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
+mod nir1_change_review_downstream;
+mod nir1_change_review_read;
 pub mod nir1_chronicle_index;
 mod nir1_entity_relation;
 pub mod nir1_entity_relation_index;
@@ -66,6 +68,15 @@ pub use maintenance_skip_evidence::{
 };
 #[cfg(test)]
 pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
+pub use nir1_change_review_downstream::{
+    read_all_downstream_consumers, read_downstream_consumers_page, DownstreamConsumer,
+    DownstreamCursor, DownstreamPage, DOWNSTREAM_PAGE_MAX,
+};
+pub use nir1_change_review_read::{
+    read_nir1_change_review, EvidenceChange, Nir1ChangeReviewFreshness,
+    Nir1ChangeReviewObjectChange, Nir1ChangeReviewRead, Nir1ChangeReviewResult, ObjectChange,
+    CHANGE_REVIEW_PRIOR_SCAN_MAX,
+};
 pub use nir1_entity_relation::{
     evaluate_nir1_entity_relation_disclosure, find_nir1_entity_relation_revision_run,
     nir1_entity_relation_revision_current_read_for_renderer,
@@ -358,7 +369,9 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_import_project_birth_epoch_in_tx, mint_c2zc_project_birth_epoch_in_tx,
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
-pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
+pub use inbox_read_model::{
+    build_maintenance_inbox, count_stale_proposals, InboxEntry, InboxEntryKind,
+};
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
 pub use incremental_freshness::FreshnessLifecycleControl;

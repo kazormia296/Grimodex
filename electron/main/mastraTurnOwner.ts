@@ -33,12 +33,24 @@ import {
 import {
   mastraAgentTurnRefusalValue,
   MASTRA_AGENT_TURN_START_COMMAND,
+  type MastraAgentTurnProgressUsage,
   type MastraAgentTurnCancelRequest,
   type MastraAgentTurnCancelResult,
   type MastraAgentTurnRefusalReason,
   type MastraAgentTurnStartRequest,
   type MastraAgentTurnStartResult,
 } from "../shared/mastraAgentTurnWire.js";
+import {
+  ContextWindowExceededError,
+  finalizeTurnPayload,
+  TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+} from "../shared/turnPayloadFinalizer.js";
+import {
+  renderAgentConversationPayloads,
+  renderAgentToolPayloads,
+} from "../shared/agentPayloadRenderer.js";
+import { createM4ReadToolDefinitions } from "../shared/agentReadToolDefinitions.js";
+import type { CoreTokenizer } from "../shared/mastraRead/tokenizer.js";
 import { isAgentModelError } from "./mastra/agentModelPolicy.js";
 import {
   createMainAgentAuditSink,
@@ -62,6 +74,7 @@ import type {
   MastraAgentTurnSender,
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
+import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
 import type { MainReadHooks } from "./mastraRead/nativeCall.js";
 import type { MainEgressParticipantContext } from "./profileEgress.js";
 
@@ -157,6 +170,7 @@ export interface MastraTurnOwnerOptions {
   /** Whether the journey seam opened Main's gate. A closed owner loads nothing. */
   readonly open: boolean;
   readonly backend: MastraTurnBackend | null;
+  readonly tokenizer?: CoreTokenizer;
   readonly secrets?: SecretsResolver;
   readonly profile: MastraTurnProfile;
   /** `loader.load` of `mastraAgentLoader.ts`; called only while the gate is open. */
@@ -281,6 +295,57 @@ function refusal(
   ) as MastraAgentTurnStartResult;
 }
 
+function progressUsage(
+  usage: {
+    systemTokens: number;
+    conversationTokens: number;
+    toolTokens: number;
+    envelopeTokens: number;
+    safetyMarginTokens: number;
+    inputTokens: number;
+    outputReservedTokens: number;
+    reservedTotalTokens: number;
+    remainingTokens: number;
+  },
+  contextWindow: number,
+  overflowTokens = 0,
+): MastraAgentTurnProgressUsage {
+  return {
+    contextTokens: usage.systemTokens + usage.conversationTokens,
+    toolTokens: usage.toolTokens,
+    envelopeTokens: usage.envelopeTokens,
+    safetyMarginTokens: usage.safetyMarginTokens,
+    inputTokens: usage.inputTokens,
+    outputReservedTokens: usage.outputReservedTokens,
+    reservedTotalTokens: usage.reservedTotalTokens,
+    contextWindow,
+    remainingTokens: usage.remainingTokens,
+    overflowTokens,
+  };
+}
+
+function findContextWindowExceeded(
+  error: unknown,
+): ContextWindowExceededError | null {
+  const seen = new Set<object>();
+  let current = error;
+  while (
+    typeof current === "object" &&
+    current !== null &&
+    !seen.has(current)
+  ) {
+    if (current instanceof ContextWindowExceededError) return current;
+    seen.add(current);
+    if (isAgentModelError(current)) {
+      current = current.origin;
+    } else {
+      const wrapper = current as { cause?: unknown; origin?: unknown };
+      current = wrapper.origin ?? wrapper.cause;
+    }
+  }
+  return null;
+}
+
 export function createMastraTurnOwner(
   options: MastraTurnOwnerOptions,
 ): MastraTurnOwner {
@@ -290,6 +355,9 @@ export function createMastraTurnOwner(
   const perSenderMax = options.perSenderMax ?? MASTRA_TURN_PER_SENDER_MAX;
   const totalMax = options.totalMax ?? MASTRA_TURN_TOTAL_MAX;
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
+  const m4Tools = new Map(
+    createM4ReadToolDefinitions().map((tool) => [tool.name, tool]),
+  );
 
   /** Turns an owner's caller still waits on, by turn ID. */
   const attached = new Map<string, Turn>();
@@ -716,6 +784,10 @@ export function createMastraTurnOwner(
   ): Promise<MastraAgentTurnStartResult> {
     const refused = admissionRefusal(context, request);
     if (refused !== null) return refused;
+    const model = request.route.model;
+    if (typeof model !== "string" || model.trim() === "") {
+      return refusal("invalid");
+    }
     const { sender, win, callerIdentity } = context;
     if (!win) return refusal("sender-refused");
     const backend = options.backend;
@@ -734,6 +806,23 @@ export function createMastraTurnOwner(
       workspacePath.trim() === ""
     ) {
       return refusal("unsupported");
+    }
+    // The budget is counted on `loop.fallbackSystem`, and the model is sent the
+    // leading system message (`split.instructions`). They are one text (the
+    // legacy agent path passes the same string as both); where they differ the
+    // budget would judge text that is not sent, so the start is refused.
+    if (split.instructions !== request.loop.fallbackSystem) {
+      return refusal("invalid");
+    }
+    const tokenizer = options.tokenizer;
+    if (!tokenizer) return refusal("unsupported");
+    // The wire admits only M4 names, so an unknown one is a desync of this
+    // build: refused here, before the turn is registered.
+    const toolDefinitions: ReturnType<typeof createM4ReadToolDefinitions> = [];
+    for (const name of request.tools) {
+      const definition = m4Tools.get(name);
+      if (!definition) return refusal("invalid");
+      toolDefinitions.push(definition);
     }
 
     let rejectForced: (error: Error) => void = () => undefined;
@@ -787,8 +876,28 @@ export function createMastraTurnOwner(
     bySession.set(turn.sessionKey, turn);
     slots.add(turn);
     attachListeners(turn, context);
+    const progress = createMastraAgentTurnProgressSender(sender, turn.turnId);
 
     try {
+      // The tokenizer is made ready AFTER the turn is registered: a Stop, a
+      // closed window, a workspace switch or a profile quiesce that arrives
+      // while it loads reaches this turn (the same races as the runtime load).
+      // A tokenizer that cannot be made ready is a refusal to start (fail
+      // closed): no audit row exists and the renderer takes its own engine.
+      const tokenizerReady = await Promise.race([
+        tokenizer.ensureReady().then(
+          () => true,
+          () => false,
+        ),
+        forcedRace,
+      ]);
+      if (turn.forcedCause !== null)
+        throw new MastraTurnAborted(turn.forcedCause);
+      if (turn.userStop) {
+        turn.cancelObserved = true;
+        throw new MastraTurnCancelled();
+      }
+      if (!tokenizerReady) return refusal("unsupported");
       const runtime = await Promise.race([loadRuntime(), forcedRace]);
       // Stopped or detached while the runtime was loading: no row was written.
       if (turn.forcedCause !== null)
@@ -825,6 +934,71 @@ export function createMastraTurnOwner(
         systemVolatileTail: request.systemVolatileTail,
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
+        prepareSend: (auditRequest, ctx) => {
+          const payloadRoute = {
+            provider: request.route.provider,
+            apiVariant: request.route.apiVariant,
+            toolProtocol:
+              auditRequest.resolvedToolProtocol ??
+              request.route.resolvedToolProtocol ??
+              "native",
+          };
+          const finalized = finalizeTurnPayload(
+            {
+              route: {
+                surface: "agent",
+                provider: request.route.provider,
+                model,
+                apiVariant: request.route.apiVariant,
+                toolProtocol: payloadRoute.toolProtocol,
+                contextWindow: request.loop.contextWindow,
+                wireOutputTokens: request.loop.requestMaxOutputTokens,
+              },
+              system: {
+                fallback: request.loop.fallbackSystem,
+                cacheSegments:
+                  auditRequest.systemCacheSegments === null
+                    ? undefined
+                    : [...auditRequest.systemCacheSegments],
+                volatileTail: auditRequest.systemVolatileTail ?? undefined,
+              },
+              messages: auditRequest.messages,
+              renderedConversationPayloads: renderAgentConversationPayloads(
+                payloadRoute,
+                auditRequest.messages,
+              ),
+              // The declared tools are counted as the legacy path counts them.
+              // The runtime does not hand them to the Agent yet (the tool
+              // wrapper, a later part, does), so until then a non-empty list
+              // makes this count higher than what is sent.
+              renderedToolPayloads: renderAgentToolPayloads(
+                payloadRoute,
+                toolDefinitions,
+                auditRequest.webSearch as Parameters<
+                  typeof renderAgentToolPayloads
+                >[2],
+              ),
+              envelopeTokens: 0,
+              safetyMarginTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+            },
+            // Bound: a `CoreTokenizer` is an interface, and an implementation
+            // may keep state on `this`.
+            (text) => tokenizer.countTokens(text),
+          );
+          const preparedRequest: AgentAuditRequest = {
+            ...auditRequest,
+            systemCacheSegments:
+              finalized.transport.systemCacheSegments ?? null,
+            systemVolatileTail: finalized.transport.systemVolatileTail ?? null,
+          };
+          progress.send({
+            kind: "send-accepted",
+            sendIndex: ctx.sendIndex + 1,
+            usage: progressUsage(finalized.usage, request.loop.contextWindow),
+            cacheDowngradeReason: finalized.cacheDowngradeReason ?? null,
+          });
+          return preparedRequest;
+        },
         signal: turn.controller.signal,
       });
       // A turn the owner stopped waiting on keeps running in the background
@@ -846,6 +1020,32 @@ export function createMastraTurnOwner(
         response,
       };
     } catch (error) {
+      const overflow = findContextWindowExceeded(error);
+      // A Stop wins over an overflow found in the same send's `prepareSend`
+      // (it runs before `audit.begin`, so the runtime has not observed the
+      // stop yet): the stop is what the caller is told.
+      if (overflow && turn.forcedCause === null && turn.userStop) {
+        turn.cancelObserved = true;
+      }
+      if (overflow && turn.forcedCause === null && !turn.cancelObserved) {
+        const usage = progressUsage(
+          overflow.usage,
+          request.loop.contextWindow,
+          overflow.overflowTokens,
+        );
+        progress.send({
+          kind: "context-overflow",
+          usage,
+          overflowTokens: overflow.overflowTokens,
+          cacheDowngradeReason: overflow.cacheDowngradeReason,
+        });
+        return {
+          status: "context-window-exceeded",
+          turnId: turn.turnId,
+          usage,
+          overflowTokens: overflow.overflowTokens,
+        };
+      }
       throw endError(turn, error);
     } finally {
       turn.finished = true;

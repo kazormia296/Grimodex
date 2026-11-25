@@ -859,7 +859,6 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         title: e.title,
         kind: e.kind,
         precision: e.precision,
-        secret: e.secret,
         // シーンイベントは常に on-page（scene そのもの）。実 event は scene_events で判定。
         sceneLinked: isSceneEventId(e.id) || scenedEventIds.has(e.id),
         startDay: ed.startDay,
@@ -981,7 +980,6 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         title: e.title,
         kind: e.kind,
         precision: e.precision,
-        secret: e.secret,
         sceneLinked: isScene || scenedEventIds.has(e.id),
         primaryCodexId: e.primaryCodexId,
         isScene,
@@ -1105,7 +1103,6 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         title: e.title,
         kind: e.kind,
         precision: e.precision,
-        secret: e.secret,
         isInterval: e.endTime != null,
         primaryCodexId: e.primaryCodexId,
         laneName: e.primaryCodexId

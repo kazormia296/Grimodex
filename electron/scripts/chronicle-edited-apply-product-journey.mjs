@@ -110,10 +110,12 @@ export function assertEditedChronicleApplied(
     state.events.map((row) => row.title).sort(),
     [...TITLES].sort(),
   );
-  // CAS/1: Events created by an extraction apply are always secret.
+  // N6: extraction applies never mark Events secret or attach a reveal scene.
   assert.ok(
-    state.events.every((row) => Number(row.secret) === 1),
-    "every created Chronicle Event is secret (CAS/1)",
+    state.events.every(
+      (row) => Number(row.secret) === 0 && row.reveal_scene_id === null,
+    ),
+    "every created Chronicle Event is unmarked and has no reveal scene (N6)",
   );
   assert.equal(state.applications.length, proposalCount);
   assert.equal(new Set(state.applications.map((row) => row.commitId)).size, 1);
@@ -404,7 +406,7 @@ export async function inspectEditedNative(
   const events = await queryChronicleFixtureRows(
     harness,
     page,
-    "SELECT id, title, secret FROM events WHERE project_id = ? ORDER BY id",
+    "SELECT id, title, secret, reveal_scene_id FROM events WHERE project_id = ? ORDER BY id",
     [bundle.projectId],
   );
   const sceneLinks = await queryChronicleFixtureRows(

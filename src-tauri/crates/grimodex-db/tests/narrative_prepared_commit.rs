@@ -3,13 +3,13 @@
 #[path = "../test-support/adapter.rs"]
 mod test_support;
 
+use grimodex_db::domain_writes::{
+    project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload,
+};
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
     CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
-};
-use grimodex_db::domain_writes::{
-    project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload,
 };
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
@@ -109,8 +109,8 @@ fn event_payload() -> Value {
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": true,
-        "revealSceneId": "scene-1",
+        "secret": false,
+        "revealSceneId": null,
         "evidenceSceneLinks": [{
             "sceneId": "scene-1",
             "expectedSceneVersion": 0,

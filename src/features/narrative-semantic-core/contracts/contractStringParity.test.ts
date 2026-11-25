@@ -213,6 +213,107 @@ function isValidOperation(kind: string, value: string): boolean {
   }
 }
 
+type IdentityParityResult =
+  | { readonly valid: true }
+  | {
+      readonly valid: false;
+      readonly reason: string;
+      readonly path: string;
+    };
+
+const identityKindPath = "assertion.identityDeclaration.kind";
+const carriedFromPath = "assertion.identityDeclaration.carriedFrom";
+const invalidIdentity = (
+  reason: string,
+  path: string,
+): IdentityParityResult => ({ valid: false, reason, path });
+
+const identityDeclarationCases: ReadonlyArray<
+  readonly [string, unknown, unknown, IdentityParityResult]
+> = [
+  ["legacy omission", null, undefined, { valid: true }],
+  ["none", null, { kind: "none" }, { valid: true }],
+  ["content-keyed", "assertion:1", { kind: "content-keyed" }, { valid: true }],
+  [
+    "carried-forward",
+    "assertion:2",
+    { kind: "carried-forward", carriedFrom: "revision:1" },
+    { valid: true },
+  ],
+  [
+    "none with id",
+    "assertion:1",
+    { kind: "none" },
+    invalidIdentity("invalid-identifier", identityKindPath),
+  ],
+  [
+    "content-keyed without id",
+    null,
+    { kind: "content-keyed" },
+    invalidIdentity("invalid-identifier", identityKindPath),
+  ],
+  [
+    "content-keyed with empty id",
+    "",
+    { kind: "content-keyed" },
+    invalidIdentity("invalid-identifier", identityKindPath),
+  ],
+  [
+    "carried-forward without id",
+    null,
+    { kind: "carried-forward", carriedFrom: "revision:1" },
+    invalidIdentity("invalid-identifier", identityKindPath),
+  ],
+  [
+    "carriedFrom on none",
+    null,
+    { kind: "none", carriedFrom: "revision:1" },
+    invalidIdentity("unknown-field", carriedFromPath),
+  ],
+  [
+    "carriedFrom on content-keyed",
+    "assertion:1",
+    { kind: "content-keyed", carriedFrom: "revision:1" },
+    invalidIdentity("unknown-field", carriedFromPath),
+  ],
+  [
+    "missing carriedFrom",
+    "assertion:1",
+    { kind: "carried-forward" },
+    invalidIdentity("missing-field", carriedFromPath),
+  ],
+  [
+    "empty carriedFrom",
+    "assertion:1",
+    { kind: "carried-forward", carriedFrom: " " },
+    invalidIdentity("invalid-identifier", carriedFromPath),
+  ],
+  [
+    "unknown declaration key",
+    null,
+    { kind: "none", future: true },
+    invalidIdentity("unknown-field", "assertion.identityDeclaration.future"),
+  ],
+  [
+    "unknown declaration kind",
+    null,
+    { kind: "future" },
+    invalidIdentity("invalid-identifier", identityKindPath),
+  ],
+  [
+    "missing declaration kind",
+    null,
+    {},
+    invalidIdentity("missing-field", identityKindPath),
+  ],
+  [
+    "non-object declaration",
+    null,
+    null,
+    invalidIdentity("invalid-identifier", "assertion.identityDeclaration"),
+  ],
+];
+
 describe("narrative contract string TS/Rust parity fixture", () => {
   it("keeps the explicit whitespace code-point set and boundary predicates stable", () => {
     expect([...CONTRACT_WHITESPACE_CODE_POINTS]).toEqual(
@@ -263,5 +364,24 @@ describe("narrative contract string TS/Rust parity fixture", () => {
     expect(
       isValidOperation(normalizer!.kind, fixture.asciiNormalizerVersion),
     ).toBe(true);
+  });
+
+  it("matches Rust identity declaration decisions, error codes, and paths", () => {
+    for (const [
+      name,
+      assertionId,
+      identityDeclaration,
+      expected,
+    ] of identityDeclarationCases) {
+      const envelope = validEnvelope();
+      const assertion = envelope.assertion as MutableRecord;
+      assertion.assertionId = assertionId;
+      if (identityDeclaration !== undefined)
+        assertion.identityDeclaration = identityDeclaration;
+
+      expect(validateNarrativeRevisionEnvelopeV2(envelope), name).toEqual(
+        expected,
+      );
+    }
   });
 });

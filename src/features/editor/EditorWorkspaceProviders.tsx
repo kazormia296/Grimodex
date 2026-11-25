@@ -4,6 +4,7 @@ import type { WorkspaceViewportProfile } from "@/runtime/viewportProfile";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
 import { WorkLayerProvider } from "@/features/work-layer/WorkLayerContext";
 import { useWorkLayerPreviewPort } from "@/features/work-layer/useWorkLayerPreviewPort";
+import { useWorkLayerLivePort } from "@/features/editor/useWorkLayerLivePort";
 
 interface EditorWorkspaceProvidersProps {
   readonly activeWorkLayer: boolean;
@@ -16,7 +17,9 @@ export function EditorWorkspaceProviders({
   children,
   profile,
 }: EditorWorkspaceProvidersProps) {
-  const workLayerPort = useWorkLayerPreviewPort(activeWorkLayer);
+  const fixturePort = useWorkLayerPreviewPort(activeWorkLayer);
+  const livePort = useWorkLayerLivePort(activeWorkLayer);
+  const workLayerPort = fixturePort ?? livePort;
 
   return (
     <WorkLayerProvider active={activeWorkLayer} port={workLayerPort}>

@@ -42,7 +42,7 @@ export interface ChronicleInspectorProps {
   laneOptions: { id: string; name: string; type: string }[];
   /** 場所候補（location 種別）。 */
   locations: { id: string; name: string }[];
-  /** AI 秘匿の reveal アンカー候補（読む順のシーン）。hasDate=シーンに日時設定済み
+  /** 開示シーン候補（読む順のシーン）。hasDate=シーンに日時設定済み
    * （SceneLinkField が追加時に優先ダイアログを出すか判定する）。 */
   scenes?: { id: string; title: string; hasDate?: boolean }[];
   calendar: ChronicleCalendar;
@@ -51,7 +51,7 @@ export interface ChronicleInspectorProps {
   hasTwoPlacesIssue?: boolean;
   hasCausalIssue?: boolean;
   /** Scene-Event union: 選択中がシーン由来トークン(scene:*)なら true。
-   * event 固有の節（種別/参加/原因/秘匿/参照シーン/刻む取込）を隠し、削除は日付クリアに読み替える。 */
+   * event 固有の節（種別/参加/原因/開示シーン/参照シーン/刻む取込）を隠し、削除は日付クリアに読み替える。 */
   isScene?: boolean;
   linkedSceneCount?: number;
   /** このイベントにリンク済みのシーン id（参照シーンの手動編集用）。 */
@@ -319,6 +319,11 @@ export function ChronicleInspector({
   onSetParticipants,
 }: ChronicleInspectorProps) {
   const { t } = useTranslation();
+  // 開示シーンの select の値。候補（scenes）に無い id（アーカイブ済みのシーンなど）が
+  // 保存されているとき、option が無いと「指定なし」に見えて解除もできない。
+  const revealSceneId = event.revealSceneId ?? "";
+  const revealSceneMissing =
+    revealSceneId !== "" && !scenes.some((s) => s.id === revealSceneId);
   const inspectorDocumentKey = useMemo<DocumentKey>(
     () =>
       isScene
@@ -687,50 +692,47 @@ export function ChronicleInspector({
               </div>
             )}
 
-            {/* AI 秘匿。event 専用（scene の可視性は別系統）。 */}
+            {/* 開示シーン。scene の表示設定は別系統。 */}
             {!isScene && (
               <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
-                <label className="flex items-center gap-2 text-xs text-foreground">
-                  <input
-                    type="checkbox"
-                    checked={event.secret}
-                    onChange={(e) => onPatch({ secret: e.target.checked })}
-                    style={{ accentColor: "var(--primary)" }}
-                    className="size-4"
-                  />
-                  {t("chronicle.secretLabel", "AI に秘匿（ネタバレ防止）")}
-                </label>
-                {event.secret && (
-                  <div className="flex flex-wrap items-center gap-2 pl-6">
-                    <span className="text-[11px] text-muted-foreground">
-                      {t("chronicle.revealSceneLabel", "開示シーン")}
-                    </span>
-                    <select
-                      value={event.revealSceneId ?? ""}
-                      onChange={(e) =>
-                        onPatch({ revealSceneId: e.target.value })
-                      }
-                      aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
-                      className={selectCls}
-                    >
-                      <option value="">
-                        {t("chronicle.revealSceneAuto", "自動（初出シーン）")}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    {t("chronicle.revealSceneLabel", "開示シーン")}
+                  </span>
+                  <select
+                    value={revealSceneId}
+                    onChange={(e) =>
+                      // 空文字＝解除（Native は null と未指定を区別できないため、"" で NULL に戻す）。
+                      onPatch({ revealSceneId: e.target.value })
+                    }
+                    aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
+                    className={selectCls}
+                  >
+                    <option value="">
+                      {t("chronicle.revealSceneNone", "指定なし")}
+                    </option>
+                    {revealSceneMissing && (
+                      <option value={revealSceneId}>
+                        {t(
+                          "chronicle.revealSceneMissing",
+                          "（見つからないシーン）",
+                        )}
                       </option>
-                      {scenes.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.title ||
-                            t("chronicle.untitledScene", "無題のシーン")}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
-                      {t(
-                        "chronicle.secretDescShort",
-                        "開示シーン以降を書くときのみ AI に渡されます。",
-                      )}
-                    </span>
-                  </div>
-                )}
+                    )}
+                    {scenes.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.title ||
+                          t("chronicle.untitledScene", "無題のシーン")}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
+                    {t(
+                      "chronicle.revealSceneDesc",
+                      "読者に明かす場面が決まっているときに選びます。",
+                    )}
+                  </span>
+                </div>
               </div>
             )}
 

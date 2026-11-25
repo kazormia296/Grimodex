@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readLocaleJson } from "@/test-utils/localeJson";
 import {
   describeBulkApprovalOutcomeReason,
   describeBulkApprovalReasons,
@@ -41,7 +42,7 @@ describe("describeBulkApprovalReasons", () => {
       "根拠の引用を本文で確かめられませんでした",
     ]);
     expect(sentence("reveal-scene-unresolved")).toEqual([
-      "開示の場面を決められません",
+      "根拠の文書の場面を確認できません",
     ]);
     expect(sentence("scope-authority-unavailable")).toEqual([
       "場面の Scope を確かめられません",
@@ -176,6 +177,27 @@ describe("describeBulkApprovalReasons", () => {
       },
     );
     expect(seen).toEqual(["chronicle.extract.bulkReason.r3"]);
+  });
+});
+
+describe("bulk approval reason locales", () => {
+  const bulkReasons = (locale: "ja" | "en") =>
+    (
+      readLocaleJson(locale) as {
+        chronicle: { extract: { bulkReason: Record<string, string> } };
+      }
+    ).chronicle.extract.bulkReason;
+
+  it("uses evidence-scene wording while keeping the existing nonsecret wording", () => {
+    expect(bulkReasons("ja").revealSceneUnresolved).toBe(
+      "根拠の文書の場面を確認できません",
+    );
+    expect(bulkReasons("en").revealSceneUnresolved).toBe(
+      "Could not resolve the scene of the evidence document",
+    );
+    expect(bulkReasons("ja").alreadyNonsecret).toBe(
+      "すでに秘密の印が外れています",
+    );
   });
 });
 

@@ -227,9 +227,7 @@ fn enable_manual_apply(db: &Database) {
     .expect("enable manual-apply");
 }
 
-/// The Native operation shape for importing a revision as a Chronicle event
-/// (the same assembly the retrieval admission tests use; the secret flag is
-/// true until the SRA/1 D4 change).
+/// The Native operation shape for importing a revision as an unmarked Chronicle event.
 fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) -> Value {
     let (payload, envelope): (String, String) = conn
         .query_row(
@@ -284,11 +282,10 @@ fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) ->
         }));
     }
     let reveal_ref = &payload["disclosure"]["revealDocumentRef"];
-    let reveal_scene = documents
+    documents
         .iter()
         .find(|document| document["ref"] == *reveal_ref)
-        .expect("reveal Snapshot document")["origin"]["nodeId"]
-        .clone();
+        .expect("reveal Snapshot document");
     json!({
         "eventId": payload["eventId"],
         "title": payload["title"],
@@ -296,8 +293,8 @@ fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) ->
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": true,
-        "revealSceneId": reveal_scene,
+        "secret": false,
+        "revealSceneId": null,
         "evidenceSceneLinks": links,
         "detail": null,
         "primaryCodexId": null,

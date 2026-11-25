@@ -6240,7 +6240,7 @@
         "planUnavailable": "Could not check for a duplicate of an existing event",
         "evidenceUnverified": "The evidence quote could not be verified in the text",
         "alreadyNonsecret": "The secret mark is already removed",
-        "revealSceneUnresolved": "The reveal scene cannot be determined",
+        "revealSceneUnresolved": "Could not resolve the scene of the evidence document",
         "scopeAuthorityUnavailable": "The scene's Scope cannot be checked",
         "semanticEpochMissing": "The project has no semantic-epoch record",
         "parentSealMissing": "The original revision has no seal record",
@@ -6319,10 +6319,9 @@
     "sceneDate": "Story date",
     "primaryCodex": "Main",
     "none": "None",
-    "secretLabel": "Hide from AI (spoiler protection)",
-    "secretDesc": "Passed to the AI only when writing at or after the reveal scene. Stays permanently hidden if it has no stamp and no reveal scene.",
     "revealSceneLabel": "Reveal scene",
-    "revealSceneAuto": "Auto (first depicted scene)",
+    "revealSceneNone": "None",
+    "revealSceneMissing": "(Scene not found)",
     "untitledScene": "Untitled scene",
     "kindLabel": "Kind",
     "year": "Year",
@@ -6437,7 +6436,6 @@
       "faction": "Faction",
       "item": "Item"
     },
-    "secretTag": "Secret",
     "lane": "Lane",
     "laneUnassigned": "(Unassigned)",
     "startDateTime": "Start date/time",
@@ -6453,7 +6451,7 @@
     "unset": "Unset",
     "makePoint": "Make point",
     "makeInterval": "Make interval",
-    "secretDescShort": "Passed to the AI only when writing at or after the reveal scene.",
+    "revealSceneDesc": "Choose the scene where this event is revealed to readers, if it has one.",
     "selectHint": "Click an event to edit its details here.",
     "totalCount": "{{count}} total",
     "issueCount": "{{count}} issue(s)",
@@ -6776,7 +6774,18 @@
       "aria": "Focus {{title}}"
     },
     "attention": {
-      "aria": "Attention: {{count}} items"
+      "aria": "Attention: {{count}} items",
+      "ariaPartial": "Attention: {{count}} or more items (some kinds are not counted yet)"
+    },
+    "live": {
+      "candidatesTitle": "Unregistered proper-noun candidates",
+      "staleProposalsTitle": "Proposals with outdated evidence",
+      "count": "{{count}}",
+      "counting": "Counting…",
+      "unavailable": "Could not be counted",
+      "slow": "Counting is taking a while (this will update when it finishes)",
+      "review": "Review",
+      "reviewAria": "Review {{title}}"
     },
     "arrival": {
       "aria": "{{count}} new Attention items"
