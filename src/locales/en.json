@@ -6774,7 +6774,18 @@
       "aria": "Focus {{title}}"
     },
     "attention": {
-      "aria": "Attention: {{count}} items"
+      "aria": "Attention: {{count}} items",
+      "ariaPartial": "Attention: {{count}} or more items (some kinds are not counted yet)"
+    },
+    "live": {
+      "candidatesTitle": "Unregistered proper-noun candidates",
+      "staleProposalsTitle": "Proposals with outdated evidence",
+      "count": "{{count}}",
+      "counting": "Counting…",
+      "unavailable": "Could not be counted",
+      "slow": "Counting is taking a while (this will update when it finishes)",
+      "review": "Review",
+      "reviewAria": "Review {{title}}"
     },
     "arrival": {
       "aria": "{{count}} new Attention items"

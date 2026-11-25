@@ -339,6 +339,19 @@ pub(crate) fn validate_reconciliation_envelope(
     }))
 }
 
+/// The Core validator accepts an optional `assertion.identityDeclaration`
+/// (DR-M4PF-1), but no Producer emits one yet. Until a Producer does, this
+/// persistence boundary refuses it, so a declared identity can neither be stored
+/// in a reconciliation envelope nor be inherited by a derived child Revision
+/// (DR-M4PF-10). Enabling a Producer removes this refusal in the same change.
+fn reject_unenabled_identity_declaration(envelope: &Value) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        envelope.pointer("/assertion/identityDeclaration").is_none(),
+        "NEX_ENVELOPE_V2_INVALID: assertion.identityDeclaration is not enabled for persistence"
+    );
+    Ok(())
+}
+
 /// Validate and canonicalise the C1 Chronicle Envelope V2 persistence shape.
 /// The pure Core validator owns the structural vocabulary; this persistence
 /// boundary additionally binds the run/task identity, recomputes every
@@ -351,6 +364,7 @@ fn validate_v2_reconciliation_envelope(
 ) -> anyhow::Result<Option<ValidatedReconciliationEnvelope>> {
     validate_chronicle_scene_event_v2(envelope)
         .map_err(|error| anyhow!("NEX_ENVELOPE_V2_INVALID: {error}"))?;
+    reject_unenabled_identity_declaration(envelope)?;
     let object = envelope
         .as_object()
         .ok_or_else(|| anyhow!("NEX_ENVELOPE_INVALID: envelope must be a JSON object"))?;
@@ -837,13 +851,34 @@ mod tests {
     use super::{
         core_canonical_json_string as canonical_json_string, digest_bytes, digest_json,
         ensure_nested_digest, ensure_sha256_digest, ensure_v2_proposal_payload_digest,
-        required_string, validate_v2_nested_digest_fields,
+        reject_unenabled_identity_declaration, required_string, validate_v2_nested_digest_fields,
     };
     use anyhow::anyhow;
     use serde_json::{json, Map, Value};
 
     const FORGED_DIGEST: &str =
         "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    #[test]
+    fn persistence_boundary_refuses_identity_declarations_until_a_producer_emits_one() {
+        let without = json!({"assertion": {"assertionId": null}});
+        assert!(reject_unenabled_identity_declaration(&without).is_ok());
+
+        for kind in ["none", "content-keyed", "carried-forward"] {
+            let declared = json!({
+                "assertion": {
+                    "assertionId": null,
+                    "identityDeclaration": {"kind": kind},
+                }
+            });
+            let error = reject_unenabled_identity_declaration(&declared)
+                .expect_err("a declared identity must not be persisted");
+            assert!(
+                error.to_string().starts_with("NEX_ENVELOPE_V2_INVALID:"),
+                "{error}"
+            );
+        }
+    }
 
     fn nested_digest_fixture() -> Value {
         let producer = json!({

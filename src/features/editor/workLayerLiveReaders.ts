@@ -60,5 +60,8 @@ export function createWorkLayerLiveReaders(
     structureReviewAvailable() {
       return isCodexStructureExtractionReviewEnabled();
     },
+    openStructureReview() {
+      useCodexCandidateHostStore.getState().openStructureReview();
+    },
   };
 }

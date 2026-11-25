@@ -1,6 +1,7 @@
 import type {
   CandidateCountSnapshot,
   WorkLayerLiveEntry,
+  WorkLayerLiveEntryReason,
   WorkLayerLivePortDependencies,
   WorkLayerModel,
   WorkLayerOpenSurface,
@@ -10,7 +11,10 @@ import type {
 type StaleProposalRead =
   | { readonly state: "allowed"; readonly count: number }
   | { readonly state: "not-allowed" }
-  | { readonly state: "unavailable" };
+  | {
+      readonly state: "unavailable";
+      readonly reason: WorkLayerLiveEntryReason;
+    };
 
 type ScanOutcome = "completed" | "failed" | "timed-out" | "disposed";
 
@@ -31,6 +35,7 @@ export function createWorkLayerLivePort(
   deps: WorkLayerLivePortDependencies,
 ): WorkLayerPort & {
   subscribe(listener: (model: WorkLayerModel) => void): () => void;
+  openSurface(surface: WorkLayerOpenSurface): void;
   dispose(): void;
 } {
   const waitLimit = deps.displayWaitLimitMs ?? DEFAULT_DISPLAY_WAIT_LIMIT_MS;
@@ -64,6 +69,7 @@ export function createWorkLayerLivePort(
 
   const candidateEntry = (
     snapshot: CandidateCountSnapshot,
+    reason?: WorkLayerLiveEntryReason,
   ): WorkLayerLiveEntry => {
     const open: WorkLayerOpenSurface | undefined = (() => {
       try {
@@ -79,6 +85,9 @@ export function createWorkLayerLivePort(
       status: snapshot.status,
       count: snapshot.status === "ready" ? snapshot.count : null,
       ...(open == null ? {} : { open }),
+      ...(snapshot.status === "unavailable"
+        ? { reason: reason ?? ("failed" as const) }
+        : {}),
     };
   };
 
@@ -89,17 +98,18 @@ export function createWorkLayerLivePort(
         ? { state: "allowed", count: result.count }
         : { state: "not-allowed" };
     } catch {
-      return { state: "unavailable" };
+      return { state: "unavailable", reason: "failed" };
     }
   };
 
   const buildModel = (
     candidateSnapshot: CandidateCountSnapshot,
     staleRead: StaleProposalRead,
+    candidateReason?: WorkLayerLiveEntryReason,
   ): WorkLayerModel => {
     const liveEntries: WorkLayerLiveEntry[] = [];
     if (canShowCandidates())
-      liveEntries.push(candidateEntry(candidateSnapshot));
+      liveEntries.push(candidateEntry(candidateSnapshot, candidateReason));
     if (staleRead.state === "allowed") {
       liveEntries.push({
         id: "stale-proposals",
@@ -111,6 +121,7 @@ export function createWorkLayerLivePort(
         id: "stale-proposals",
         status: "unavailable",
         count: null,
+        reason: staleRead.reason,
       });
     }
     return { ...emptyModel(deps.projectId), liveEntries };
@@ -131,6 +142,13 @@ export function createWorkLayerLivePort(
     );
     if (canShowCandidates()) entries.unshift(candidateEntry(snapshot));
     return { ...model, liveEntries: entries };
+  };
+
+  const openSurface = (surface: WorkLayerOpenSurface) => {
+    if (disposed) return;
+    if (surface.surface === "structure-extract-review") {
+      deps.openStructureReview?.();
+    }
   };
 
   const publishCandidateCount = (snapshot = readCandidateCount()) => {
@@ -158,6 +176,7 @@ export function createWorkLayerLivePort(
         id: "stale-proposals",
         status: "unavailable",
         count: null,
+        reason: read.reason,
       });
     }
     return { ...model, liveEntries: entries };
@@ -189,9 +208,10 @@ export function createWorkLayerLivePort(
     if (timer !== undefined) clearTimeout(timer);
     if (result === "timed-out") {
       void read.then((late) => publishStaleRead(late));
-      return { state: "unavailable" };
+      return { state: "unavailable", reason: "timed-out" };
     }
-    if (result === "disposed") return { state: "unavailable" };
+    if (result === "disposed")
+      return { state: "unavailable", reason: "failed" };
     return result;
   };
 
@@ -250,6 +270,7 @@ export function createWorkLayerLivePort(
         buildModel(
           arrived?.status === "ready" ? arrived : { status: "unavailable" },
           staleRead,
+          "timed-out",
         ),
       );
       void scanPromise.then((lateOutcome) => {
@@ -298,7 +319,10 @@ export function createWorkLayerLivePort(
           ? emptyModel(deps.projectId)
           : runTrayOpen().catch(() =>
               remember(
-                buildModel({ status: "unavailable" }, { state: "unavailable" }),
+                buildModel(
+                  { status: "unavailable" },
+                  { state: "unavailable", reason: "failed" },
+                ),
               ),
             ),
       );
@@ -311,7 +335,10 @@ export function createWorkLayerLivePort(
     const flight = raceDisposed(
       run.catch(() =>
         remember(
-          buildModel({ status: "unavailable" }, { state: "unavailable" }),
+          buildModel(
+            { status: "unavailable" },
+            { state: "unavailable", reason: "failed" },
+          ),
         ),
       ),
     );
@@ -360,6 +387,7 @@ export function createWorkLayerLivePort(
     scopeKey: deps.projectId,
     load,
     subscribe,
+    openSurface,
     dispose,
   };
 }

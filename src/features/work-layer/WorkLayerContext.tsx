@@ -188,6 +188,7 @@ export function WorkLayerProvider({
       : {
           model: visibleModel,
           provenance: isLive ? "live" : "preview",
+          openSurface: (surface) => port?.openSurface?.(surface),
           ...navigationController,
           switchFocusPreview: (targetId) => {
             setModel((current) =>

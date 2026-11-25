@@ -1199,3 +1199,24 @@ export async function narrativeMaintenanceInboxList(payload: {
   });
   return parseMaintenanceInbox(raw);
 }
+
+/** Read-only count of stale proposals for the Work Layer header. */
+export async function narrativeMaintenanceStaleProposalCount(payload: {
+  readonly projectId: string;
+}): Promise<number> {
+  const raw = await invoke<unknown>(
+    "narrative_maintenance_stale_proposal_count",
+    { payload: { projectId: payload.projectId } },
+  );
+  if (
+    raw === null ||
+    typeof raw !== "object" ||
+    !Number.isSafeInteger((raw as { count?: unknown }).count) ||
+    (raw as { count: number }).count < 0
+  ) {
+    throw new Error(
+      "narrative_maintenance_stale_proposal_count: expected a non-negative safe integer count",
+    );
+  }
+  return (raw as { count: number }).count;
+}

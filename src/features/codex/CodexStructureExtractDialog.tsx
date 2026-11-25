@@ -104,6 +104,10 @@ export function CodexStructureExtractDialog({
   // 「解析中」の解除は、より新しい解析が走っていない限り、世代が進んでいても必ず行う
   // （閉じる・フォルダの選び直しの後に古い解析が終わっても、解析の操作が止まったままにならない）。
   const analysisSeqRef = useRef(0);
+  // Radix は、閉じたときのフォーカスを DialogTrigger にだけ戻す。この画面は `open` で外から開く
+  // （候補の Report のボタン、Work Layer のトレイの入口）ので、トリガーが無く、閉じるとフォーカスが
+  // 失われる。開いたときにフォーカスを持っていた要素を覚えて、閉じるときに戻す。
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const japaneseProject = isJapaneseProjectLanguage(
     getCurrentProjectLanguage(),
   );
@@ -391,6 +395,20 @@ export function CodexStructureExtractDialog({
       <DialogContent
         className="flex max-h-[90vh] w-full max-w-3xl flex-col gap-3 overflow-hidden"
         data-testid="codex-structure-extract-dialog"
+        onOpenAutoFocus={() => {
+          returnFocusRef.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          const target = returnFocusRef.current;
+          returnFocusRef.current = null;
+          if (target?.isConnected) {
+            event.preventDefault();
+            target.focus({ preventScroll: true });
+          }
+        }}
       >
         <DialogHeader>
           <DialogTitle>{t("codex.structureReview.dialog.title")}</DialogTitle>

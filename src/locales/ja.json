@@ -6746,7 +6746,18 @@
       "aria": "Focus {{title}}"
     },
     "attention": {
-      "aria": "Attention {{count}}件"
+      "aria": "Attention {{count}}件",
+      "ariaPartial": "Attention {{count}}件以上（数え終えていない種類があります）"
+    },
+    "live": {
+      "candidatesTitle": "未登録の固有名詞の候補",
+      "staleProposalsTitle": "根拠が古くなった提案",
+      "count": "{{count}} 件",
+      "counting": "数えています…",
+      "unavailable": "数えられません",
+      "slow": "数えるのに時間がかかっています（終わったら更新します）",
+      "review": "確認する",
+      "reviewAria": "{{title}}を確認する"
     },
     "arrival": {
       "aria": "新しいAttentionが{{count}}件あります"

@@ -750,6 +750,8 @@ export declare class Backend {
    * Revision identities are rechecked inside the same read transaction.
    */
   nir1EntityRelationRevisionRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /** Read the project-scoped typed change review without changing stored state. */
+  nir1ChangeReviewRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Read the current draft or explicitly human-approved typed Revision for
    * one dedicated review Run after a cold reopen.  Generic review bundle
@@ -1177,6 +1179,8 @@ export declare class Backend {
   narrativeMaintenanceAttentionClear(payload: any): Promise<string>
   /** Read-only: assemble the Maintenance Inbox for one project as of now. */
   narrativeMaintenanceInboxList(payload: any): Promise<string>
+  /** Read-only count of stale proposals for one project as of now. */
+  narrativeMaintenanceStaleProposalCount(payload: any): Promise<string>
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
   /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */

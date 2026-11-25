@@ -17,6 +17,7 @@ import {
   validateConsumerContract,
   validateDependencyRoleContract,
   validateInterpreterBoundary,
+  validateObjectIdentityDeclarations,
   validateScopeRelationContract,
   validateSemanticIndexReservation,
   validateSemanticIndexDeclaredBindings,
@@ -35,6 +36,14 @@ const PRODUCER_REGISTRY_SCHEMA_PATH = path.join(
 const PRODUCER_REGISTRY_POLICY_PATH = path.join(
   REPO_ROOT,
   "policies/narrative/narrative-dependency-producer-registry.json",
+);
+const OBJECT_IDENTITY_SCHEMA_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/schemas/narrative-object-identity-declarations.schema.json",
+);
+const OBJECT_IDENTITY_POLICY_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/narrative-object-identity-declarations.json",
 );
 
 function readNir1PolicyDocuments() {
@@ -123,6 +132,70 @@ describe("NIR-1 declared index binding", () => {
       mutate(value);
       assert.equal(validate(value), false, `${schemaName} must reject the changed binding`);
     }
+  });
+});
+
+describe("narrative object identity declarations", () => {
+  function documents() {
+    return {
+      declarations: JSON.parse(readFileSync(OBJECT_IDENTITY_POLICY_PATH, "utf8")),
+      schema: JSON.parse(readFileSync(OBJECT_IDENTITY_SCHEMA_PATH, "utf8")),
+      producerRegistry: JSON.parse(readFileSync(PRODUCER_REGISTRY_POLICY_PATH, "utf8")),
+    };
+  }
+
+  it("accepts the declared producer and key kind", () => {
+    const { declarations, schema, producerRegistry } = documents();
+    const validate = new Ajv2020({ allErrors: true, strict: false }).compile(schema);
+    const errors = [];
+
+    assert.equal(validate(declarations), true, JSON.stringify(validate.errors));
+    validateObjectIdentityDeclarations(declarations, producerRegistry, errors);
+    assert.deepEqual(errors, []);
+  });
+
+  it("rejects an unknown producerId", () => {
+    const { declarations, producerRegistry } = documents();
+    declarations.entries[0].producerId = "unknown-producer";
+    const errors = [];
+
+    validateObjectIdentityDeclarations(declarations, producerRegistry, errors);
+
+    assert.ok(errors.some((error) => error.includes("unknown producerId")));
+  });
+
+  it("rejects an unknown kind through the schema", () => {
+    const { declarations, schema } = documents();
+    declarations.entries[0].kind = "unknown-kind";
+    const validate = new Ajv2020({ allErrors: true, strict: false }).compile(schema);
+
+    assert.equal(validate(declarations), false);
+  });
+
+  it("rejects duplicate producerIds", () => {
+    const { declarations, producerRegistry } = documents();
+    declarations.entries.push({
+      ...declarations.entries[0],
+      objects: declarations.entries[0].objects.slice(0, 1),
+    });
+    const errors = [];
+
+    validateObjectIdentityDeclarations(declarations, producerRegistry, errors);
+
+    assert.ok(errors.some((error) => error.includes("duplicate producerId")));
+  });
+
+  it("rejects a materialKind declared twice for one producer", () => {
+    const { declarations, producerRegistry } = documents();
+    declarations.entries[0].objects.push({
+      ...declarations.entries[0].objects[0],
+      keyTemplate: "codex:{other_id}",
+    });
+    const errors = [];
+
+    validateObjectIdentityDeclarations(declarations, producerRegistry, errors);
+
+    assert.ok(errors.some((error) => error.includes("duplicate materialKind")));
   });
 });
 
