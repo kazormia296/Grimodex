@@ -45,6 +45,10 @@
   - **回答（2026-11-24）：「閉じたまま実装し、出す時期は後で別に伺う」**（推奨どおり）。
 - **W7 ヘッダーの読み取りの時機**：A＝ヘッダーが出たとき、保存済みの値を読むだけの安い読み取り（保守の一覧と許可）だけを読んで数字を出す。統合ペインの「開くまで読まない」の規則（ADR 014 D7・D10）は、ヘッダーの Work Pulse には当てはめない読み（推奨。§2.10）／B＝トレイを開くまで何も読まない（ヘッダーの数字は、開かないと出ない）。
   - **回答（2026-11-24）：「よい。ヘッダーが出たとき安い読み取りだけ読む」**（推奨どおり）。
+- **W12 Work Layer の旗を開ける時期**（2026-11-25、構造化質問。contracts の M3 確認記録の追記 28）：A＝大きい実作品で mount の安い読み取り（policy・Inbox）の時間を測ってから開ける（推奨）／B＝P5 の merge 直後に開け、測定は後／C＝M3〜M4 が揃うまで閉じたまま。
+  - **回答（2026-11-25）：「測定してから開ける」**（推奨どおり）。P4・P5 は旗を閉じたまま merge → 測定 → 旗を開ける PR（P7）。測定の値と「問題なし」の根拠は、その PR の本文に書く。旗を開けても公開（リリース）には当たらず、一度の公開の扱いは変わらない（01 の読み）。
+- **W13 review 画面の旗を開ける時期**（同上）：A＝Work Layer の旗と同時に開ける（推奨）／B＝review の旗は後。
+  - **回答（2026-11-25）：「Work Layer の旗と同時に開ける」**（推奨どおり）。W6 の「review 画面の旗を開ける PR とは別の時期になりうる」と §3 の P6 の行の「別」は、これで改訂する。適用（Codex への取り込み）は旗でなく保守の policy（`narrativeDomainApplyAllowed`）で閉じたまま。
 
 ## 1. 現状（確かめた事実）
 
@@ -142,6 +146,7 @@
 
 ### 2.7 旗の扱いと、製品 bundle の検証【起案者の技術判断。出す時期は W6】
 - **旗を新設**する：`VITE_WORK_LAYER_LIVE`（`src/features/work-layer/workLayerLiveFlag.ts`。`true`／`1` のときだけ開く。**DEV でも既定は閉じる**。review 画面の旗〔未指定の既定は DEV の真偽〕とは違う。理由：Work Layer は ADR 012 の「実装・公開の承認ではない」の面で、通常の開発でも「Work Layer は無い」状態を保つ。`useWorkLayerPreviewPort` のコメントと同じ考え）。fixture（DEV かつ `VITE_WORK_LAYER_FIXTURE`）と live が両方指定されたときは、fixture を優先する（DEV 限定のため）。`useWorkLayerPreviewPort` の DEV 限定は変えない。
+- **【2026-11-25 改訂・W12／W13】旗の既定の向き**：旗を開ける PR（P7）で、`VITE_WORK_LAYER_LIVE` と `VITE_CODEX_STRUCTURE_EXTRACTION_REVIEW` はどちらも**既定で開き、`"false"`／`"0"` で閉じる**（build 時の定数。DEV でも同じ。fixture が指定された DEV では fixture が優先）。上の「`true`／`1` のときだけ開く」「DEV でも既定は閉じる」は、閉じたまま実装していた P4〜P6 の記述で、P7 で置き換わる。閉じる側の build で live の hook と review 画面の host を build が取り除く形（同じ module の定数）はそのまま。
 - **live の port と読み口は、動的 import の中に置く**（旗が false のとき build で届かなくする）。起動時の graph（`perf:budget`）を増やさないため。旗を開ける PR で、初めて製品の chunk に入る。
 - **製品 bundle に fixture が入らないことの確認（再現できる手順）**：①`VITE_WORK_LAYER_FIXTURE=true pnpm exec vite build --outDir <scratch> --emptyOutDir`。②出力で、fixture の識別子（`createWorkLayerFixturePort`）と作例の題が 0 件、ファイル名に `workLayerFixture` が無いこと。③live の旗が閉じた build に、live の port の識別子が入らないこと。本日の結果は §1.3。**固定の guard として、P4 で静的な試験を足す**：`workLayerFixture` と live の port が、動的 import を経てのみ参照され、かつ `import.meta.env.DEV`／旗の guard の内側にあることを、source の走査で assert する（build を回さないので速い）。
 - 旗を開ける PR（P6）では、**実 Chromium の geometry 試験**（Pulse の有無で header の寸法・位置が変わらないこと）を足す。ロードマップの Project Focus の節も、header の変更に同じ要求をしている（`agent-collaboration-roadmap.md:669-672`。:672「Header／Drawer変更はreal Chromium geometry testを必要とし、closed stateでEditor寸法を変えない」）。
@@ -201,6 +206,7 @@
 | P4 | **live port（read-only）**：読み口の注入（policy・Inbox・共有 host の C1）、旗 `VITE_WORK_LAYER_LIVE`（閉じる）、静的な bundle guard、owner／lifecycle の試験。**事前に `mount` の安い読み取りを測る** | live の port が作れ、model を返す。画面はまだ preview の部品のまま（旗が閉じているので何も出ない） |
 | P5 | **live の行の表示**：Attention の面の種類ごとの行、Pulse の部分表示、`onOpenSurface`（構造抽出の入口）、live で出さない面の制御 | 文言・表示の形は作者に見える（P5 の前に別に伺う） |
 | P6 | **旗を開ける PR（Work Layer）**。実 Chromium の geometry 試験。review 画面の旗を開ける PR とは**別**で、実 Electron の確認 A〜F を取り直す | 出す時期は W6 |
+| P6（geometry）・P7（旗） | **【2026-11-25 改訂・W12／W13】** geometry の試験（P6）と、旗を開ける変更（P7。2 つの旗の既定を開く）に分けた。review 画面の旗は Work Layer の旗と**同時**に開ける（別の PR にしない）。P7 は、大きい作品での mount の読み取りの測定の後に出す | 出す時期は W12・W13 |
 
 **実装の分担**（ユーザー指示 2026-11-24「UIはclaudeが実装して下さい。Codexはデザインが苦手なので」）：**UI（見た目・レイアウト・文言・表示の形・画面部品。P5 の行と Pulse の部分表示、P2 の `provenance` による印の出し分けの見た目、P6 の geometry と旗を開ける変更）は Claude が実装する**。UI の外（型・port・共有 host・読み口・試験・bundle guard。P2 の型と selector、P3、P4）は、Codex（workspace-write）に委譲してよい。1 つの PR に両方が混ざるときは commit を分ける。各コード PR は、PR の前に別系統・結論を伏せた独立レビューを 1 回入れる（Codex には、UI の見た目の良し悪しは判断材料にしてもらわず、挙動・アクセシビリティ・規則への適合だけを見てもらう）。**header を直す PR（P6。P2 で header に触れるなら P2 も）は、editor の journey が選ばれる**（§1.6）。catalog を触るなら digest を直し、push 前に `verify:quality`（Node 22）と、electron の tsc・eslint を回す。
 

@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
 
+import { useCodexStore } from "@/features/codex/codexStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import type { WorkLayerPort } from "@/features/work-layer/types";
 
 /**
- * 旗 `VITE_WORK_LAYER_LIVE`（"true"／"1" だけ開く。DEV でも既定は閉じる）。`import.meta.env.*` は build が
- * 値に置き換えるので、旗が閉じた build ではこれが定数 false になり、下の選択で live の hook ごと
- * （動的 import の呼び出しも）取り除かれ、live の chunk は出力されない。旗が閉じている製品 build は、
- * live のために起動時の graph を増やさない。**この式は、動的 import と同じ module に置く**
- * （別の module の定数では、呼び出しは消えても chunk が出力される）。
+ * 旗 `VITE_WORK_LAYER_LIVE`（既定は開く。`false`／`0` で閉じる。fixture が指定された DEV では fixture が優先）。
+ * `import.meta.env.*` は build が値に置き換えるので、`false`／`0` を指定した build ではこれが定数 false に
+ * なり、下の選択で live の hook ごと（動的 import の呼び出しも）取り除かれ、live の chunk は出力されない。
+ * **この式は、動的 import と同じ module に置く**（別の module の定数では、呼び出しは消えても chunk が出力される）。
  */
 const LIVE_BUILD =
-  import.meta.env.VITE_WORK_LAYER_LIVE === "true" ||
-  import.meta.env.VITE_WORK_LAYER_LIVE === "1";
+  import.meta.env.VITE_WORK_LAYER_LIVE !== "false" &&
+  import.meta.env.VITE_WORK_LAYER_LIVE !== "0";
 
 interface OwnedWorkLayerPort {
   readonly projectId: string;
@@ -50,7 +50,10 @@ export function useLiveWorkLayerPort(
     ])
       .then(([portModule, readersModule]) => {
         if (cancelled) return;
-        const readers = readersModule.createWorkLayerLiveReaders(projectId);
+        const readers = readersModule.createWorkLayerLiveReaders(
+          projectId,
+          useCodexStore,
+        );
         createdPort = portModule.createWorkLayerLivePort(readers);
         if (cancelled) {
           createdPort.dispose?.();
@@ -73,7 +76,7 @@ export function useLiveWorkLayerPort(
 
 const useNoLiveWorkLayerPort = (): WorkLayerPort | null => null;
 
-/** 旗が閉じている間、この Provider は何も購読せず、何も読み込まない。 */
+/** 旗を閉じた build では、この Provider は何も購読せず、何も読み込まない。 */
 export const useWorkLayerLivePort: (
   activeWorkLayer: boolean,
 ) => WorkLayerPort | null = LIVE_BUILD
