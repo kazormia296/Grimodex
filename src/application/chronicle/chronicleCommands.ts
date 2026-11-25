@@ -8,6 +8,7 @@ export interface ChronicleCreateInput {
   startTime?: number;
   startMinute?: number;
   startGranularity?: EventRow["startGranularity"];
+  precision?: EventRow["precision"];
 }
 
 export interface ChronicleCreatedEvent {
