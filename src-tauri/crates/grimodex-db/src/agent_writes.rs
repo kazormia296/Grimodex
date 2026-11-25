@@ -7920,9 +7920,7 @@ pub fn agent_event_create_with_authority_impl(
     payload: AgentEventCreatePayload,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
-    if !matches!(payload.surface.as_deref(), Some("manual" | "import"))
-        && payload.secret == Some(true)
-    {
+    if payload.secret == Some(true) {
         anyhow::bail!("secret is no longer supported: events cannot be hidden from the AI");
     }
     anyhow::ensure!(
@@ -7973,7 +7971,6 @@ pub fn agent_event_create_with_authority_impl(
     .to_string();
     let participants = payload.participant_codex_ids.clone().unwrap_or_default();
     let scene_ids = payload.scene_ids.clone().unwrap_or_default();
-    let secret = payload.secret.unwrap_or(false);
     // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
     let reveal_scene_id = payload.reveal_scene_id.clone().filter(|s| !s.is_empty());
 
@@ -8014,7 +8011,7 @@ pub fn agent_event_create_with_authority_impl(
                     end_granularity: &end_granularity,
                     precision: &precision,
                     kind: &kind,
-                    secret,
+                    secret: false,
                     reveal_scene_id: reveal_scene_id.as_deref(),
                     participants: &participants,
                     scene_ids: &scene_ids,
@@ -8119,8 +8116,7 @@ fn agent_event_update_with_request_and_authority_impl(
     request_id: Option<&str>,
     renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
-    if !matches!(payload.surface.as_deref(), Some("manual" | "import")) && payload.secret.is_some()
-    {
+    if payload.secret.is_some() {
         anyhow::bail!("secret is no longer supported: events cannot be hidden from the AI");
     }
     if let Some(context) = renderer_context.as_ref() {
@@ -8454,12 +8450,6 @@ fn agent_event_update_with_request_and_authority_impl(
                 params.push(Box::new(v.clone()));
                 param_idx += 1;
                 fields.push("kind");
-            }
-            if let Some(v) = payload.secret {
-                sets.push(format!("secret = ?{param_idx}"));
-                params.push(Box::new(v));
-                param_idx += 1;
-                fields.push("secret");
             }
             if let Some(ref v) = payload.reveal_scene_id {
                 // 空文字は NULL（自動導出/恒久秘匿）に正規化。
@@ -14674,7 +14664,7 @@ mod tests {
     }
 
     #[test]
-    fn event_secret_writes_are_allowed_only_on_author_surfaces() {
+    fn event_secret_writes_are_rejected_on_all_surfaces() {
         const SECRET_ERROR: &str =
             "secret is no longer supported: events cannot be hidden from the AI";
         let db = test_db();
@@ -14696,9 +14686,11 @@ mod tests {
             })
             .expect("read event secret")
         };
-        let ai_surfaces = [
+        let surfaces = [
             Some("mcp"),
             Some("in-app-agent"),
+            Some("manual"),
+            Some("import"),
             None,
             Some("Manual"),
             Some("MCP"),
@@ -14707,12 +14699,12 @@ mod tests {
         ];
 
         let empty_counts = side_effect_counts(&db);
-        for surface in ai_surfaces {
+        for surface in surfaces {
             let mut create = empty_create(&project_id, "Rejected secret create");
             create.surface = surface.map(str::to_string);
             create.secret = Some(true);
             let error = agent_event_create_impl(&db, create)
-                .expect_err("AI surfaces cannot create secret events");
+                .expect_err("no surface can create secret events");
             assert_eq!(error.to_string(), SECRET_ERROR, "surface {surface:?}");
             assert_eq!(
                 side_effect_counts(&db),
@@ -14741,6 +14733,21 @@ mod tests {
             0
         );
 
+        for surface in ["manual", "import"] {
+            for secret in [Some(false), None] {
+                let mut create = empty_create(&project_id, "Visible author event");
+                create.surface = Some(surface.to_string());
+                create.secret = secret;
+                let created = agent_event_create_impl(&db, create)
+                    .expect("manual and import surfaces may create visible events");
+                assert_eq!(
+                    event_secret(created["entityId"].as_str().expect("event id")),
+                    0,
+                    "surface {surface}, secret {secret:?}"
+                );
+            }
+        }
+
         let mut update_seed = empty_create(&project_id, "AI-writable event");
         update_seed.surface = Some("manual".to_string());
         let update_seed = agent_event_create_impl(&db, update_seed)
@@ -14765,7 +14772,7 @@ mod tests {
         .expect("authorize secret-field updates for the AI input-validation fixture");
         let update_counts = side_effect_counts(&db);
         let version = event_version(&db, &update_event_id);
-        for surface in ai_surfaces {
+        for surface in surfaces {
             for secret in [true, false] {
                 let mut update = empty_update(&project_id, &update_event_id);
                 update.surface = surface.map(str::to_string);
@@ -14773,9 +14780,14 @@ mod tests {
                 update.title = Some("Rejected secret update".to_string());
                 update.secret = Some(secret);
                 let error = agent_event_update_impl(&db, update)
-                    .expect_err("AI surfaces cannot update secret");
+                    .expect_err("no surface can update secret");
                 assert_eq!(error.to_string(), SECRET_ERROR, "surface {surface:?}");
                 assert_eq!(event_version(&db, &update_event_id), version);
+                assert_eq!(
+                    event_title(&db, &update_event_id).as_deref(),
+                    Some("AI-writable event")
+                );
+                assert_eq!(event_secret(&update_event_id), 0);
                 assert_eq!(
                     side_effect_counts(&db),
                     update_counts,
@@ -14784,24 +14796,6 @@ mod tests {
             }
         }
 
-        for surface in ["manual", "import"] {
-            let mut create = empty_create(&project_id, "Author secret");
-            create.surface = Some(surface.to_string());
-            create.secret = Some(true);
-            let created = agent_event_create_impl(&db, create)
-                .expect("author surfaces can create secret events");
-            let event_id = created["entityId"].as_str().expect("event id").to_string();
-            assert_eq!(event_secret(&event_id), 1, "surface {surface}");
-
-            let mut update = empty_update(&project_id, &event_id);
-            update.surface = Some(surface.to_string());
-            update.title = Some("Author update".to_string());
-            update.secret = Some(true);
-            let updated = agent_event_update_impl(&db, update)
-                .expect("author surfaces can update secret events");
-            assert_eq!(updated["version"], 2, "surface {surface}");
-            assert_eq!(event_secret(&event_id), 1, "surface {surface}");
-        }
     }
 
     #[test]
@@ -14855,63 +14849,50 @@ mod tests {
     }
 
     #[test]
-    fn mcp_event_writer_updates_existing_secret_events() {
+    fn mcp_event_writer_preserves_legacy_secret_through_update_undo_redo() {
         let db = test_db();
         let project_id = insert_project(&db);
-        let created = agent_event_create_impl(
-            &db,
-            AgentEventCreatePayload {
-                request_id: "mcp-secret-event-create".to_string(),
-                event_id: None,
-                project_id: project_id.clone(),
-                session_id: "session".to_string(),
-                surface: Some("manual".to_string()),
-                title: Some("secret".to_string()),
-                note: None,
-                detail: None,
-                ordinal: None,
-                primary_codex_id: None,
-                lane_group: None,
-                location_codex_id: None,
-                start_time: None,
-                end_time: None,
-                start_minute: None,
-                end_minute: None,
-                start_granularity: None,
-                end_granularity: None,
-                precision: None,
-                kind: None,
-                secret: Some(true),
-                reveal_scene_id: None,
-                participant_codex_ids: None,
-                scene_ids: None,
-            },
+        let event_id = "legacy-secret-event";
+        db.execute(
+            "INSERT INTO events (id, project_id, title, secret, version)
+             VALUES (?, ?, 'secret', 1, 1)",
+            &[
+                Value::String(event_id.to_string()),
+                Value::String(project_id.clone()),
+            ],
+            "run",
         )
-        .expect("create a secret event through the author writer");
-        let event_id = created["entityId"].as_str().expect("entity id").to_string();
-        db.with_conn(|conn| {
-            let updated = conn.execute(
-                "UPDATE narrative_field_authority
-                    SET owner_kind = 'ai', explicit_lock = 0, updated_at = 'fixture'
-                  WHERE project_id = ?1 AND entity_kind = 'event'
-                    AND entity_id = ?2 AND field_path = '/title'",
-                rusqlite::params![project_id, event_id],
-            )?;
-            assert_eq!(updated, 1, "the created event has one title authority row");
-            Ok(())
-        })
-        .expect("authorize the title update for this AI-write fixture");
-        let mut update = empty_update(&project_id, &event_id);
+        .expect("seed a legacy secret event directly in SQL");
+        seed_mcp_event_authority(&db, &project_id, event_id, &["/title"]);
+        let mut update = empty_update(&project_id, event_id);
         update.surface = Some("mcp".to_string());
         update.title = Some("updated secret".to_string());
-        assert_eq!(event_secret(&db, &event_id), 1);
-        agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
-            .expect("MCP can update a secret event");
+        assert_eq!(event_secret(&db, event_id), 1);
+        let updated = agent_event_update_with_request_impl(
+            &db,
+            update,
+            Some("mcp-secret-event-update"),
+        )
+        .expect("MCP can update a secret event");
+        let journal_id = updated["undoJournalId"].as_str().expect("update journal");
         assert_eq!(
-            event_title(&db, &event_id).as_deref(),
+            event_title(&db, event_id).as_deref(),
             Some("updated secret")
         );
-        assert_eq!(event_secret(&db, &event_id), 1);
+        assert_eq!(event_secret(&db, event_id), 1);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, journal_id, "undo"))
+            .expect("undo the title update");
+        assert_eq!(event_title(&db, event_id).as_deref(), Some("secret"));
+        assert_eq!(event_secret(&db, event_id), 1);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, journal_id, "redo"))
+            .expect("redo the title update");
+        assert_eq!(
+            event_title(&db, event_id).as_deref(),
+            Some("updated secret")
+        );
+        assert_eq!(event_secret(&db, event_id), 1);
     }
 
     #[test]
