@@ -1014,6 +1014,8 @@ describe("get_chronicle_state", () => {
       daysPerYear: CALENDAR.daysPerYear,
       startYear: CALENDAR.startYear,
       months: CALENDAR.months,
+      leapRule: CALENDAR.leapRule,
+      reform: CALENDAR.reform,
     });
     const withoutCalendar = await makeCtx(
       stateWorld({ calendar: null }),

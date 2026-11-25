@@ -145,5 +145,5 @@
 
 - **PR の分け方**：§5 の 3 を、画面でない分（N7・N8）と画面の分（N5・N6）の 2 本にする。Native はまだ日時なしを許す。
 - **N7**：アプリ内の AI と MCP の `create_event` は `startTime` と `precision` を必須にし、粒度 `none` を拒む。`update_event` は `precision` を任意で受け、日時の null 化と粒度 `none` を拒む。道具の説明に「不確かなら推定の値を入れ、確度で表す」を足した。
-- **暦の要約**：`get_chronicle_state` は、暦があるときだけ `calendar: { daysPerYear, startYear, months }` を足す（日の数え方に要る分だけ。曜日の名前・紀元・改暦・タイムゾーンなどは渡さない。◇9 の「1 年の日数、起点の年など」の範囲で、AI に渡す量を広げない）。
+- **暦の要約**：`get_chronicle_state` は、暦があるときだけ `calendar: { daysPerYear, startYear, months, leapRule, reform }` を足す（日の数え方に要る分。◇9 の要約の範囲を、閏と改暦を含めるとユーザーが決めた。確認 161）。曜日の名前・年号・旧暦の決まり・タイムゾーンは渡さない。
 - **N8**：原稿の読み込みの出来事は、`provisionalBaseDay`（保管中でない場面の日付を含む）から読み込んだ順に 1 日ずつ、粒度「日」、確度 `unknown`。製品から呼ばれない古い取り込み（`importExtractedEvents`）は削った。

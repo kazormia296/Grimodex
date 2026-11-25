@@ -416,11 +416,13 @@ export async function getChronicleState(
   const content = calendarRow
     ? {
         ...snapshot,
-        // AI が日時の尺度を知るための要約だけ（CED/1 の N7・◇9）。
+        // AI が日数を数えるのに要る分だけ（CED/1 の N7・◇9・確認 161）。
         calendar: {
           daysPerYear: calendarRow.daysPerYear,
           startYear: calendarRow.startYear,
           months: calendarRow.months,
+          leapRule: calendarRow.leapRule,
+          reform: calendarRow.reform,
         },
       }
     : snapshot;

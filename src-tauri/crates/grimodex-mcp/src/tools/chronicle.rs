@@ -533,6 +533,8 @@ struct CalendarSummary<'a> {
     days_per_year: i64,
     start_year: i64,
     months: &'a str,
+    leap_rule: &'a str,
+    reform: &'a str,
 }
 
 /// 出来事の day 番号を暦整形した絶対日付文字列（TS の fmtEventDate と同 shape）。
@@ -603,6 +605,8 @@ pub async fn get_chronicle_state(
         days_per_year: calendar.days_per_year,
         start_year: calendar.start_year,
         months: &calendar.months,
+        leap_rule: &calendar.leap_rule,
+        reform: &calendar.reform,
     });
     let codex_names =
         db::chronicle_codex_names(&conn, &project_id, &hidden_codex_ids).map_err(internal_err)?;
@@ -3575,10 +3579,10 @@ mod tests {
             conn.execute(
                 "INSERT INTO project_calendar
                  (project_id, days_per_year, season_boundaries, start_year, months,
-                  weekday_names, weekday_start_index, leap_rule, age_reckoning)
+                  weekday_names, weekday_start_index, leap_rule, age_reckoning, reform)
                  VALUES ('p1', 360, '[{\"name\":\"Spring\",\"startDayOfYear\":0}]',
                          42, '[{\"name\":\"Moon\",\"days\":30}]', '[\"A\"]',
-                         0, '{\"kind\":\"none\"}', 'counting')",
+                         0, '{\"kind\":\"none\"}', 'counting', '{\"kind\":\"gregorian\"}')",
                 [],
             )
             .unwrap();
@@ -3596,7 +3600,9 @@ mod tests {
             serde_json::json!({
                 "daysPerYear": 360,
                 "startYear": 42,
-                "months": "[{\"name\":\"Moon\",\"days\":30}]"
+                "months": "[{\"name\":\"Moon\",\"days\":30}]",
+                "leapRule": "{\"kind\":\"none\"}",
+                "reform": "{\"kind\":\"gregorian\"}"
             })
         );
     }

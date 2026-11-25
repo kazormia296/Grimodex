@@ -314,6 +314,8 @@ describe("年表 4 本の legacy の特性（移す前に通し、移した後�
           daysPerYear: 360,
           startYear: 1000,
           months: "[]",
+          leapRule: '{"kind":"none"}',
+          reform: "null",
         },
       });
     });
