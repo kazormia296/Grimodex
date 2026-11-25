@@ -476,7 +476,11 @@ async function startHeldFirstSave(editor: TiptapEditor): Promise<() => void> {
   };
   editor.commands.focus("start");
   await nextFrame();
-  await userEvent.keyboard("AB");
+  // 1 打鍵＝1 transaction＝保存 1 回＝伏線の版が 1 進む。2 打鍵（"AB"）だと、負荷で打鍵の間が
+  // autoSaveDelay（300ms）を超えたとき保存が 2 回に割れ、後続の未保存の "B" が追従保存で
+  // 版を 3 へ進める（blur の試験が 3 対 2 で落ちる）。この helper を使う試験は 1 回目の保存の
+  // 応答を止めるので、続く "XY" は割れない（1 回目の保存が in flight の間は次の保存が走らない）。
+  await userEvent.keyboard("A");
   await waitFor(() => expect(h.saves).toHaveLength(1), { timeout: 5_000 });
   return () => {
     h.holdBundle = null;
@@ -512,7 +516,7 @@ describe.each<[string, Surface]>([
     expect(h.saves[0]!.fsBaseVersion).toBe(1);
     expect(h.saves[1]!.fsBaseVersion).toBe(2);
     expect(markBaseVersion(editor)).toBe(h.fs.version);
-    expect(editor.state.doc.textContent).toBe("ABXYstart");
+    expect(editor.state.doc.textContent).toBe("AXYstart");
     // (h)(1) mark 更新の dispatch が onUpdate で dirty を立て、更新後の baseVersion を保存済みの
     // 本文へ書き戻す追従保存が 1 回余分に走りうる（web 経路と同じ。EditorPane で実測）。
     // version が変わらなければそこで止まる：連鎖せず、有界の回数で静止する。
@@ -759,7 +763,9 @@ describe.each<[string, Surface]>([
     const { editor } = await mountSurface(surface);
     editor.commands.focus("start");
     await nextFrame();
-    await userEvent.keyboard("AB");
+    // 1 打鍵（割れない）。"AB" だと、負荷で打鍵の間が 300ms を超えると保存が 2 回に割れ、
+    // 版が 3 まで進んで下の `toBe(2)` が落ちる。
+    await userEvent.keyboard("A");
     await waitForSaved();
     expect(hasPendingForeshadowRefresh(editor)).toBe(false);
     expect(h.saves[0]!.fsBaseVersion).toBe(1);
@@ -853,7 +859,10 @@ describe("EAR-27 dirty な editor は peer の通知で本文も版も変えな�
     const { editor } = await mountSurface("pane");
     editor.commands.focus("start");
     await nextFrame();
-    await userEvent.keyboard("AB");
+    // dirty にしてから announce まで await を置かない（隣の試験と同じ）。実キー入力（await）だと、
+    // 応答の戻りが負荷で 300ms 以上遅れたとき、背景の保存が先に済んで dirty が落ち、通知が
+    // 当たってしまう（dirty の前提が崩れる）。
+    editor.commands.insertContent("AB");
     expect(isDirty()).toBe(true);
     announcePersistedBinding(
       KEY,
@@ -932,7 +941,8 @@ describe("(h) mark 更新の dispatch の扱い（guard の要否の実測、Edi
     const { editor } = await mountSurface("pane");
     editor.commands.focus("start");
     await nextFrame();
-    await userEvent.keyboard("AB");
+    // 1 打鍵（割れない）。"AB" だと、負荷で保存が 2 回に割れて版が 3 まで進み、下の `toBe(2)` が落ちる。
+    await userEvent.keyboard("A");
     await waitForSaved();
     await flushStrict();
     expect(_inspectOwnSaveCapturesForTests().activeCaptures).toBe(0);
