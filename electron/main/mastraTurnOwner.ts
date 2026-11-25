@@ -79,6 +79,7 @@ import {
   type MainAgentAuditHandle,
   type MainAgentAuditSink,
 } from "./mastra/agentAuditSink.js";
+import { projectAiChatPolicyAllows } from "./mastraChatPolicy.js";
 import type {
   AgentAuditCompletion,
   AgentAuditRequest,
@@ -1082,6 +1083,30 @@ export function createMastraTurnOwner(
         systemVolatileTail: request.systemVolatileTail,
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
+        assertSendAllowed: async ({ sendIndex }) => {
+          assertLive(turn);
+          const pending = backend.dbExecute(
+            "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+            [turn.projectId],
+            "get",
+            JSON.stringify(turn.identity),
+          );
+          trackRead(
+            turn,
+            pending.then(
+              () => undefined,
+              () => undefined,
+            ),
+          );
+          const rawPolicy = await pending;
+          assertLive(turn);
+          if (!projectAiChatPolicyAllows(rawPolicy)) {
+            turn.cancelObserved = true;
+            throw sendIndex === 0
+              ? new MastraTurnCancelled()
+              : new MastraAgentLoopStopped();
+          }
+        },
         toolDefinitions,
         bindings: turnReadBindings?.bindings ?? [],
         isToolDeclared: (name) => declaredToolNames.has(name),

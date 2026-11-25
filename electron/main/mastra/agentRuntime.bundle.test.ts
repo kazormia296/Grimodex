@@ -96,6 +96,12 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
       rows.push(...(events as AiAuditEventInput[]));
       return "{}";
     },
+    async dbExecute(): Promise<string> {
+      return JSON.stringify({
+        __grimodexDbResultKind: "read",
+        rows: [{ ai_policy: null }],
+      });
+    },
     async getAiSettings(): Promise<string> {
       return JSON.stringify({ provider: "anthropic" });
     },

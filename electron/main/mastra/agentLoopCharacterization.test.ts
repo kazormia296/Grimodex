@@ -1,9 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../src/features/chat/contextBuilder", () => ({
+  ensureTokenizer: async () => undefined,
+  countTokens: (text: string) => text.length,
+}));
+vi.mock("../../../src/features/chat/agent/toolTurnCache", () => ({
+  beginAgentToolTurn: () => undefined,
+}));
 
 import type { NapiBackendLike } from "../../shared/ipcContract.js";
 import { createMainAgentAuditSink } from "./agentAuditSink.js";
 import {
   type AgentObserveResponse,
+  type AgentSendGuard,
   type AgentPrepareSend,
   createAgentLanguageModel,
   grimodexProviderOptions,
@@ -131,6 +140,7 @@ async function runTwoSendToolTurn(
   divergeAtSend: boolean,
   hooks: {
     prepareSend?: AgentPrepareSend;
+    assertSendAllowed?: AgentSendGuard;
     observeResponse?: AgentObserveResponse;
   } = {},
 ) {
@@ -155,6 +165,7 @@ async function runTwoSendToolTurn(
     ],
     audit,
     prepareSend: hooks.prepareSend,
+    assertSendAllowed: hooks.assertSendAllowed,
     observeResponse: (observed) => {
       observerCompleteCountAtObserve.push(
         events.filter(
@@ -759,6 +770,76 @@ describe("4c-1 loop characterization", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+
+  it("Q5: legacy and Main stop before another send after chat policy turns off", async () => {
+    const rendererPolicy = await vi.importActual<{
+      parseAiPolicy(raw: string | null | undefined): {
+        toggles: { chat: boolean };
+      };
+    }>("../../../src/features/ai-policy/parse");
+    const legacy = await vi.importActual<{
+      runAgentLoop(options: never): Promise<{ stoppedReason: string }>;
+    }>("../../../src/features/chat/agent/agentLoop");
+    let legacyPolicy = JSON.stringify({
+      preset: "custom",
+      toggles: { chat: true, bodyWrite: true, analysis: true },
+    });
+    let legacySends = 0;
+    const legacyResult = await legacy.runAgentLoop({
+      messages: [{ role: "user", content: "start" }],
+      tools: [{ name: "probe" }],
+      tokenBudget: 100,
+      sendToLLM: async () => {
+        legacySends += 1;
+        legacyPolicy = JSON.stringify({
+          preset: "custom",
+          toggles: { chat: false, bodyWrite: true, analysis: true },
+        });
+        return {
+          blocks: [
+            {
+              type: "tool_use",
+              id: "legacy-probe",
+              name: "probe",
+              input: {},
+            },
+          ],
+          stopReason: "tool_use",
+        };
+      },
+      executeTool: async (name: string, toolCallId: string) => ({
+        name,
+        toolCallId,
+        params: {},
+        content: null,
+        summary: "probe result",
+        tokensUsed: 1,
+      }),
+      onProgress: () => undefined,
+      onTextChunk: () => undefined,
+      shouldAbort: () =>
+        !rendererPolicy.parseAiPolicy(legacyPolicy).toggles.chat,
+      callLimitMessage: "calls",
+      tokenBudgetMessage: "tokens",
+    } as never);
+
+    expect(legacySends).toBe(1);
+    expect(legacyResult.stoppedReason).toBe("aborted");
+
+    const mainChecks: number[] = [];
+    const main = await runTwoSendToolTurn(false, {
+      assertSendAllowed: ({ sendIndex }) => {
+        mainChecks.push(sendIndex);
+        if (sendIndex === 1) throw new MastraAgentLoopStopped();
+      },
+    });
+
+    expect(mainChecks).toEqual([0, 1]);
+    expect(findAgentLoopStopped(main.error)).toBe(true);
+    expect(main.sent).toHaveLength(1);
+    expect(main.preparedRows).toHaveLength(1);
+    expect(eventCount(main.events, "execution.started")).toBe(1);
   });
 
   it("K-1 send-tap divergence: mutating messages in send leaves request.prepared unchanged", async () => {

@@ -802,6 +802,10 @@ export interface AgentPrepareSendContext {
   readonly previous: AgentPreviousSendObservation | null;
 }
 
+export type AgentSendGuard = (
+  ctx: AgentPrepareSendContext,
+) => void | Promise<void>;
+
 export type AgentPrepareSend = (
   request: AgentAuditRequest,
   ctx: AgentPrepareSendContext,
@@ -834,6 +838,8 @@ export interface CreateAgentLanguageModelOptions<H extends AgentAuditHandle> {
   /** main が持つ turn 開始時の tool 定義（`snapshotAgentTools` の結果）。名前で引いて元の定義へ戻す。 */
   readonly originalTools: readonly AgentWireToolDefinition[];
   readonly prepareSend?: AgentPrepareSend;
+  /** Awaited after request preparation and before the audit begin. */
+  readonly assertSendAllowed?: AgentSendGuard;
   readonly observeResponse?: AgentObserveResponse;
 }
 
@@ -883,11 +889,13 @@ export function createAgentLanguageModel<H extends AgentAuditHandle>(
       tools,
       options: grimodex,
     });
+    const context = { sendIndex, previous };
     const preparedRequest = options.prepareSend
-      ? options.prepareSend(auditRequest, { sendIndex, previous })
+      ? options.prepareSend(auditRequest, context)
       : auditRequest;
     if (options.prepareSend)
       assertSynchronousClosureResult(preparedRequest, "prepareSend");
+    await options.assertSendAllowed?.(context);
     sendIndex += 1;
 
     let handle: H;
