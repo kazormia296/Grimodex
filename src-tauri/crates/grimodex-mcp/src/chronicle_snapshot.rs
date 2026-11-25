@@ -32,6 +32,8 @@ const NOTE_CAP: usize = 30;
 pub struct EventInput {
     pub id: String,
     #[serde(default)]
+    pub reveal_scene_id: Option<String>,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub note: Option<String>,
@@ -153,6 +155,8 @@ pub struct CalendarInput {
 pub struct SceneNode {
     pub id: String,
     #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
     pub parent_id: Option<String>,
     pub node_type: String,
     #[serde(default)]
@@ -218,6 +222,17 @@ pub struct SnapshotEvent {
     /// アンカーから見た相対時間ラベル（`formatRelativeDays` の結果）。暦なし/日付
     /// 欠落/未来は None。fixture の書き漏れをテストで落とすため #[serde(default)] は付けない。
     pub rel_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reveal_scene: Option<RevealSceneMark>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RevealSceneMark {
+    pub id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub revealed_to_reader: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -907,6 +922,7 @@ fn derive_recent_events(
                 .filter(|n| !n.is_empty())
                 .map(|n| truncate(n, NOTE_CAP)),
             rel_time: rel_time_for(e, anchor, calendar, lang),
+            reveal_scene: None,
         })
         .collect()
 }
@@ -976,6 +992,7 @@ fn derive_offpage_events(
                 .filter(|n| !n.is_empty())
                 .map(|n| truncate(n, NOTE_CAP)),
             rel_time: rel_time_for(e, anchor, calendar, lang),
+            reveal_scene: None,
         })
         .collect()
 }
@@ -1131,6 +1148,8 @@ pub struct AssembleInput {
     #[serde(default)]
     pub nodes: Vec<SceneNode>,
     #[serde(default)]
+    pub reveal_nodes: Option<Vec<SceneNode>>,
+    #[serde(default)]
     pub events: Vec<EventInput>,
     #[serde(default)]
     pub participants: Vec<ParticipantInput>,
@@ -1145,6 +1164,52 @@ pub struct AssembleInput {
     /// formattedDate ロケール（既定 "ja"）。TS fixtures の input.lang と対称。
     #[serde(default)]
     pub lang: Option<String>,
+}
+
+fn add_reveal_marks(
+    snapshot: &mut ChronicleSnapshot,
+    scene_id: &str,
+    events: &[EventInput],
+    nodes: &[SceneNode],
+) {
+    let reading_order = compute_global_scene_order(nodes);
+    let title_by_id: HashMap<&str, &str> = nodes
+        .iter()
+        .filter_map(|node| {
+            node.title
+                .as_deref()
+                .map(|title| (node.id.as_str(), title))
+        })
+        .collect();
+    let mut marks = HashMap::new();
+    for event in events {
+        let Some(id) = event.reveal_scene_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let Some(reveal_order) = reading_order.get(id) else {
+            continue;
+        };
+        let Some(title) = title_by_id.get(id) else {
+            continue;
+        };
+        marks.insert(
+            event.id.as_str(),
+            RevealSceneMark {
+                id: id.to_string(),
+                title: title.to_string(),
+                revealed_to_reader: reading_order
+                    .get(scene_id)
+                    .map(|current| current >= reveal_order),
+            },
+        );
+    }
+    for event in snapshot
+        .recent_events
+        .iter_mut()
+        .chain(snapshot.offpage.iter_mut())
+    {
+        event.reveal_scene = marks.get(event.event_id.as_str()).cloned();
+    }
 }
 
 /// resolveSceneAnchor → pickSnapshotCharacters → deriveChronicleSnapshot を一括
@@ -1164,7 +1229,7 @@ pub fn assemble_snapshot(input: &AssembleInput) -> ChronicleSnapshot {
         &input.participants,
         MAX_PICK_CHARACTERS,
     );
-    derive_chronicle_snapshot(DeriveInput {
+    let mut snapshot = derive_chronicle_snapshot(DeriveInput {
         anchor: &anchor,
         events: &input.events,
         participants: &input.participants,
@@ -1174,7 +1239,11 @@ pub fn assemble_snapshot(input: &AssembleInput) -> ChronicleSnapshot {
         character_ids: &character_ids,
         codex_names: &input.codex_names,
         lang: input.lang.as_deref().unwrap_or("ja"),
-    })
+    });
+    if let Some(nodes) = &input.reveal_nodes {
+        add_reveal_marks(&mut snapshot, &input.scene_id, &input.events, nodes);
+    }
+    snapshot
 }
 
 #[cfg(test)]
@@ -1351,6 +1420,7 @@ mod tests {
     fn ev(id: &str, ordinal: &str, start_time: Option<i64>) -> EventInput {
         EventInput {
             id: id.to_string(),
+            reveal_scene_id: None,
             title: String::new(),
             note: None,
             ordinal: ordinal.to_string(),
@@ -1367,6 +1437,7 @@ mod tests {
     fn scene_node(id: &str, sort: &str, start_time: Option<i64>, gran: &str) -> SceneNode {
         SceneNode {
             id: id.to_string(),
+            title: None,
             parent_id: None,
             node_type: "scene".to_string(),
             sort_order: sort.to_string(),

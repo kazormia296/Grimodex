@@ -74,3 +74,10 @@
 - **形**：出来事の行に `revealScene: { id, title, revealedToReader? }`。`revealedToReader` は、基準の場面の読む順が開示の場面以後なら `true`、前なら `false`。基準の場面が無い・読む順に無いときは、`revealedToReader` を付けない（W6「添えない」）が、開示の場面の id と題は返す（T2）。アプリ内と MCP で同じキー名にする。
 - **説明**：読む道具の説明に、読み方を足す。「`revealScene` は、作者がこの出来事を読者に明かす場面。`revealedToReader` が `false` の出来事は、今の場面では読者はまだ知らないので、本文で読者が知っていることとして書かない。`revealedToReader` が無いときは、判定していない。」の趣旨。
 - **残る制限**（起案 N7 (d′) と同じ）：詳細の因果（`relations`）の相手の題、まとめの「未回収の因果」の題には印が付かない。開示の場面が archived などで読む順に無い出来事には、印が付かない。
+
+### DR-CPL-7　自動のまとめ（M1b）と get_chronicle_state（R2）
+
+- **基準の場面**：自動のまとめは組み立ての対象の場面、`get_chronicle_state` は渡された場面（無ければ開いている場面）。standalone MCP には開いている場面が無いので、渡された `scene_id`。
+- **まとめの文**：`revealedToReader` が false の出来事の行の末尾に「（読者にはまだ明かされていない）」（en ` (not yet revealed to readers)`）を付け、そういう行が 1 つでも出るときだけ、先頭に「まだ明かされていない出来事は、本文で、読者が知っていることとして書かない。」の 1 行を足す。末尾の語は、大きさの縮約のどの段でも落とさない（行ごと落ちる段は今までどおり）。≤600 トークンの目安の内で数える。
+- **形**：`recentEvents`・`offpage` の出来事に `revealScene`。未回収の因果の題には付けない（残る制限）。印の無い出力は変えない。TS と Rust（MCP の写し）は、共有 fixture `07-reveal-scene-marks.json` で一致を見る。
+- MCP の読み道具の読む順は、archived の行を除いて作る（`chronicle_active_scene_nodes`）。現在地の導出（`chronicle_scene_nodes`）は変えない（CED/1 の切り替えで揃える）。

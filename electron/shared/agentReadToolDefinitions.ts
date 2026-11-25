@@ -377,7 +377,8 @@ export function createM4ReadToolDefinitions(): AgentReadToolDefinition[] {
     {
       name: "get_chronicle_state",
       description:
-        "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. Recent and off-page events each carry a relTime label (the time distance from the scene's anchor, e.g. '約2年前' / 'about 2 years earlier' / '同日'; null when there is no calendar). If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON.",
+        "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. Recent and off-page events each carry a relTime label (the time distance from the scene's anchor, e.g. '約2年前' / 'about 2 years earlier' / '同日'; null when there is no calendar). If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON." +
+        REVEAL_SCENE_GUIDANCE,
       inputSchema: {
         type: "object",
         properties: {
