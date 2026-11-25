@@ -1,6 +1,6 @@
 # M4 変更レビューの画面の案（起案、2026-11-25）
 
-状態：**§6 の 4 点は利用者が確認済み（2026-11-25）。画面はこの文書の時点で実装していない。**
+状態：**§6 の 4 点は利用者が確認済み（2026-11-25）。§7 の形で実装した（案 A）。** §1・§2 は実装の前の調査の記録。
 事実は 2026-11-25 の枝（`#1129` の head）を静的に読んだもので、実行していない。大半は read-only の別の agent の調査で、起案者が確かめたのは §1 の 1・3・4・5。
 前提：[変更レビューの設計](m4-change-review-design-draft.md)、DR-M4PF-11・12。
 
@@ -73,8 +73,9 @@ Entity / Relationレビュー
 3. 問「前の版の名前や種類（何から何に変わったか）も、最初の版で出しますか？」→「出さない（推奨）」。
 4. 問「「外部送信を制限中」の状態では、この欄は「違いを表示できません」になります。このままでよいですか？」→「このままでよい（推奨）」。区分は変えない（DR-M4PF-12 の 3 のまま）。
 
-## 7. 実装の段（案 A）
+## 7. 実装した形（案 A）
 
-1. `nir1_change_review_read` の wrapper を足し、read lane の表に登録する（`src/lib/tauri.ts` は起動時の JS graph に入るので、予算を確かめる）。
-2. 欄の component を動的 import で足し、版の読み出しの後に 1 回読む。応答の遅れや workspace の切替の後の結果は捨てる。
-3. happy-dom の試験（各状態の表示、読めない時、古い応答を捨てる）。レイアウトに寸法の条件があれば `test:browser`。
+1. `nir1_change_review_read` の wrapper（`features/narrative-semantic-core/nir1ChangeReviewApi.ts`）と、read lane の登録（`src/lib/tauri.ts`）。
+2. 欄の component（`features/codex/CodexEntityRelationChangeReviewSection.tsx`）。レビューの dialog の chunk に入り、起動時の JS graph には入らない。
+   版・project・workspace の開き直しが変わった後の応答は捨てる。
+3. happy-dom の試験（各状態の表示、読めない時、古い応答を捨てる、panel への組込み）。
