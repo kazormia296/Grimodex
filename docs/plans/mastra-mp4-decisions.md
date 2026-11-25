@@ -1977,7 +1977,7 @@ DR-MP4-53 の PR 列の残りのうち 3 本が master に入った。いずれ�
 - 読みは Main 発行の identity で行い、全ての read に Stop・forced abort・profile の確認を付ける。未選択の名前と limit 到達後の tool は実行境界で拒む。Stop・forced abort の read は record も event も出さない。
 - `get_codex_entry` の既注入の短絡は legacy と同じ。main は共有 helper から文言を返し、renderer の handler は literal のまま（起動時の JS graph を増やさないため）。一致は renderer の試験で比べる。
 - allowlist は M4 の 21 名、`maxSteps` は `deriveAgentMaxSteps`。production の tokenizer を接続し、journey の期待を key 解決まで戻した。
-- **起動の読み込み**：そのままでは `main.cjs` が約 680 KB 増え、共有の read core・`drizzle-orm`・`temporal-polyfill` が起動のたびに評価された。binding の構築を `mastraTurnReadBindings` に分け、tool を持つ turn で初めて読み込むようにした（失敗は `unsupported`、audit の行は残さない。bundle の静的な閉包を試験で固定）。
+- **起動の読み込み**：そのままでは、`main.cjs` が大きく増えた上に、共有の read core・`drizzle-orm`・`temporal-polyfill` が起動のたびに評価された。binding の構築を `mastraTurnReadBindings` に分け、tool を持つ turn で初めて読み込むようにした（失敗は `unsupported`、audit の行は残さない。bundle の静的な閉包を試験で固定）。
   - `main.cjs` 3,200,898 → 3,966,416 bytes、`mastra-agent.cjs` 13,769,490 → 13,920,505 bytes。この大きさを失敗にする gate は無い（DR-MP3-21）。
   - `main.cjs` の require の近似（plain Node 22、electron は stub、15 回の中央値）：変更前 115.4 ms、遅延なし 147.9 ms、この形 134.0 ms（**+18.6 ms が残る**。bundle が大きくなった分の構文解析など）。4 つ目の bundle は作らない。renderer の起動時の JS graph の増分は 0。
 - 未確認：実 Electron の起動時間、packaged の実読込、実 Electron での binding の構築と read の実行（journey は key 解決で止まる）。
@@ -1991,4 +1991,4 @@ DR-MP4-53 の PR 列の残りのうち 3 本が master に入った。いずれ�
 
 **残り：** packaged の tokenizer の実読込の確認、MP-5／MP-6（残りの tool。製品の agent-mode の turn は 44 本を宣言するので、MP-6 までは Mastra に届かない）、4c-2（renderer の engine 分岐。merge は、宣言する tool の集合が main の集合に収まる MP の直前で、MP-6 以降〔第 5 節の 4c-2〕。Q5 は回答済みで、脅威モデルへの追記は 4c-2 の PR で改めて確認する）。Q4 (d) の解釈（窓超過の運び方）は DR-MP4-55 のとおりで、ユーザーが別の形を望めば差し替える。
 
-**前提が変わった記載（旗 L を開ける前に読み直す）：** #1093（FSR/1 F1）で、`list_open_for_context` は secret の伏線を除かなくなった。DR-MP4-35e（除くことの固定と、その Rust の試験を MP-13 に載せる点）と、`get_foreshadow_detail` の非対称（C-11）は、変更前の前提で書かれている。年表の secret の廃止（CSR/1）に関わる C-20 も同じ。ここでは書き換えず、MP-13 の確認の前に各項目をその時点のコードで読み直す。
+**前提が変わった記載（旗 L を開ける前に読み直す）：** #1093（FSR/1 F1）で、`list_open_for_context` は secret の伏線を除かなくなった。DR-MP4-35e（除くことの固定と、その Rust の試験を MP-13 に載せる点）と、`get_foreshadow_detail` の非対称（C-11）は、変更前の前提で書かれている。年表の側は #1082（CSR/1）で、読む道具から出来事の秘匿の判定が外れ、hidden の Codex を伏せる呼び出しが入ったので、C-19・C-20（DR-MP4-37j）も変更前の前提で書かれている。ここでは書き換えず、MP-13 の確認の前に各項目をその時点のコードで読み直す。
