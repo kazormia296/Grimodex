@@ -164,6 +164,19 @@ async function waitForEvent(events, channel, timeoutMs = 5000) {
   }
 }
 
+function withTimeout(promise, label, timeoutMs = 5000) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label} timeout`)),
+        timeoutMs,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 function sseFrame(value) {
   return `data: ${JSON.stringify(value)}\n\n`;
 }
@@ -318,6 +331,185 @@ test("sendAgentMessage は unresolved tool protocol をN-API境界で拒否す�
     backend.sendAgentMessage(args, settings, "sk-agent"),
     /failed to deserialize args|unknown variant.*auto/,
   );
+});
+
+test("abortChatStream は実行中の agent request を切断し、次の送信を許す", async () => {
+  let requestCount = 0;
+  let requestReceived;
+  let connectionClosed;
+  const received = new Promise((resolve) => {
+    requestReceived = resolve;
+  });
+  const closed = new Promise((resolve) => {
+    connectionClosed = resolve;
+  });
+  const { server, baseUrl } = await startMockServer((req, res) => {
+    const requestNumber = ++requestCount;
+    if (requestNumber === 1) res.once("close", connectionClosed);
+    req.resume();
+    req.once("end", () => {
+      if (requestNumber === 1) {
+        requestReceived();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: "done" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+      );
+    });
+  });
+  let firstSend = Promise.resolve();
+  try {
+    const { backend, root } = makeBackend();
+    const settings = settingsWithEndpoints(baseUrl, baseUrl);
+    const args = await auditedArgs(
+      backend,
+      root,
+      {
+        messages: [{ role: "user", content: "wait" }],
+        tools: [],
+        provider: "openai-compatible",
+        model: "agent-model",
+        resolvedToolProtocol: "native",
+      },
+      "napi_agent_abort",
+    );
+    firstSend = withTimeout(
+      assert.rejects(
+        backend.sendAgentMessage(args, settings, "sk-agent"),
+        /AI_REQUEST_STOPPED_BY_USER/,
+      ),
+      "stopped agent send",
+    );
+
+    await withTimeout(received, "mock request arrival");
+    assert.equal(
+      await withTimeout(
+        backend.abortChatStream(args.auditContext.executionId),
+        "agent abort",
+      ),
+      true,
+    );
+    await withTimeout(firstSend, "stopped agent send");
+    await withTimeout(closed, "provider connection close");
+
+    const nextArgs = await auditedArgs(
+      backend,
+      root,
+      {
+        messages: [{ role: "user", content: "continue" }],
+        tools: [],
+        provider: "openai-compatible",
+        model: "agent-model",
+        resolvedToolProtocol: "native",
+      },
+      "napi_agent_after_abort",
+    );
+    const next = JSON.parse(
+      await withTimeout(
+        backend.sendAgentMessage(nextArgs, settings, "sk-agent"),
+        "send after abort",
+      ),
+    );
+    assert.equal(next.blocks[0].content, "done");
+    assert.equal(requestCount, 2);
+  } finally {
+    await closeServer(server);
+    await firstSend;
+  }
+});
+
+test("先行するabortChatStream は後続 agent request を送信しない", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        choices: [
+          { finish_reason: "stop", message: { content: "unexpected" } },
+        ],
+      }),
+    );
+  });
+  try {
+    const { backend, root } = makeBackend();
+    const settings = settingsWithEndpoints(baseUrl, baseUrl);
+    const args = await auditedArgs(
+      backend,
+      root,
+      {
+        messages: [{ role: "user", content: "do not send" }],
+        tools: [],
+        provider: "openai-compatible",
+        model: "agent-model",
+        resolvedToolProtocol: "native",
+      },
+      "napi_agent_pre_abort",
+    );
+    assert.equal(
+      await withTimeout(
+        backend.abortChatStream(args.auditContext.executionId),
+        "pre-abort",
+      ),
+      false,
+    );
+    await withTimeout(
+      assert.rejects(
+        backend.sendAgentMessage(args, settings, "sk-agent"),
+        /AI_REQUEST_STOPPED_BY_USER/,
+      ),
+      "pre-aborted agent send",
+    );
+    assert.equal(requestCount, 0);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("provider error 後の abortChatStream は速やかに返る", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "provider boom" } }));
+  });
+  try {
+    const { backend, root } = makeBackend();
+    const settings = settingsWithEndpoints(baseUrl, baseUrl);
+    const args = await auditedArgs(
+      backend,
+      root,
+      {
+        messages: [{ role: "user", content: "fail" }],
+        tools: [],
+        provider: "openai-compatible",
+        model: "agent-model",
+        resolvedToolProtocol: "native",
+      },
+      "napi_agent_provider_error",
+    );
+    await withTimeout(
+      assert.rejects(
+        backend.sendAgentMessage(args, settings, "sk-agent"),
+        /500/,
+      ),
+      "provider error",
+    );
+    assert.equal(requestCount, 1);
+    assert.equal(
+      await withTimeout(
+        backend.abortChatStream(args.auditContext.executionId),
+        "abort after error",
+      ),
+      true,
+    );
+  } finally {
+    await closeServer(server);
+  }
 });
 
 test("listAiModels はendpoint overrideを使い、空キーならAuthorizationを付けない", async () => {
