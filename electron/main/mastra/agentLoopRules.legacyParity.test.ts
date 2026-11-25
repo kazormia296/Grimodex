@@ -11,6 +11,8 @@ import {
   resolveAgentStoppedReason,
   selectAgentControlMessage,
 } from "./agentLoopRules.js";
+import { promptToWireMessages } from "./agentLanguageModel.js";
+import { createMastraAgentTools } from "./agentToolAdapter.js";
 
 vi.mock("../../../src/features/chat/contextBuilder", () => ({
   ensureTokenizer: async () => undefined,
@@ -35,6 +37,7 @@ interface Scenario {
   readonly tokensUsed?: number;
   readonly resultContent?: unknown;
   readonly resultSummary?: string;
+  readonly resultError?: string;
   readonly abortAfterTool?: boolean;
   readonly finalResponseHasToolUse?: boolean;
 }
@@ -125,6 +128,9 @@ async function runLegacy(scenario: Scenario): Promise<LegacyObservation> {
         content: scenario.resultContent ?? null,
         summary: scenario.resultSummary ?? "summary",
         tokensUsed: scenario.tokensUsed ?? 1,
+        ...(scenario.resultError === undefined
+          ? {}
+          : { error: scenario.resultError }),
       } as never;
     },
     onProgress: () => undefined,
@@ -349,6 +355,70 @@ describe("agentLoopRules legacy parity", () => {
     expect(legacyResult?.content).toBe(rulesResult.content);
     expect(legacyResult?.isError).toBe(rulesResult.isError);
     expect(rulesResult.content).toBe('"a...[truncated: 元 10 tokens]');
+  });
+
+  it("keeps the DR-MP4-13 tiny-budget error-prefix divergence from legacy", async () => {
+    const legacy = await runLegacy({
+      toolName: "read_scene",
+      tokenBudget: 1,
+      resultError: "bad",
+    });
+    const legacyContent = findToolResult(legacy.sentMessages[1]!)?.content;
+    // Main の実際の経路：adapter の tool が切り詰めた文で throw し、Mastra が error-text で
+    // 運び、wire の変換が "Error: " を前置し直す。
+    const tool = createMastraAgentTools({
+      names: ["read_scene"],
+      bindings: [
+        {
+          name: "read_scene",
+          description: "",
+          execute: async () => {
+            throw new Error("bad");
+          },
+        },
+      ],
+      tokenBudget: 1,
+      countTokens: (text) => text.length,
+      signal: new AbortController().signal,
+    }).read_scene!;
+    const execute = tool.execute as unknown as (
+      args: unknown,
+      context: { agent: { toolCallId: string } },
+    ) => Promise<unknown>;
+    const thrown = await execute({}, { agent: { toolCallId: "call-1" } }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    const wire = promptToWireMessages(
+      [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "read_scene",
+              output: { type: "error-text", value: message },
+            },
+          ],
+        },
+      ],
+      new Map(),
+    );
+
+    // DR-MP4-13 の端：先頭の "E" だけが残るので、wire では "Error: " がもう一度付く。
+    expect(legacyContent).toBe("E...[truncated: 元 10 tokens]");
+    expect(message).toBe("E...[truncated: 元 10 tokens]");
+    expect(wire).toEqual([
+      {
+        role: "tool_result",
+        toolUseId: "call-1",
+        content: "Error: E...[truncated: 元 10 tokens]",
+        isError: true,
+      },
+    ]);
   });
 
   it("matches legacy when JSON.stringify returns undefined for content", async () => {
