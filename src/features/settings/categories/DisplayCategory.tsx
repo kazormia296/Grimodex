@@ -132,6 +132,19 @@ export function DisplayCategory({
         <SettingRow label={t("settings.display.uiFont")}>
           <FontFamilySelect settingKey="display.uiFontFamily" />
         </SettingRow>
+        <SettingRow
+          label={t("settings.display.uiFontWeight")}
+          description={t("settings.display.uiFontWeightDesc")}
+        >
+          <SettingSlider
+            settingKey="display.uiFontWeight"
+            min={100}
+            max={900}
+            step={100}
+            defaultValue={400}
+            format={(v) => String(v)}
+          />
+        </SettingRow>
         <SettingRow label={t("settings.display.uiLanguage")}>
           <select
             value={uiLanguage}

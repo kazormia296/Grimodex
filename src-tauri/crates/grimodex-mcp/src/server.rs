@@ -327,13 +327,15 @@ impl GrimodexServer {
         tools::tree::get_chapter_summaries(self).await
     }
 
-    /// List unresolved foreshadowing items regardless of secret status.
-    /// Abandoned and payoff-confirmed items are excluded.
+    /// List unresolved foreshadowing items regardless of secret status. Optionally include settled items.
     #[tool(
-        description = "List open (unresolved) foreshadowing items regardless of secret status: id, title, intent, loadBearing, setupCount, and version. Abandoned and payoff-confirmed items are excluded. Pass version unchanged as base_version to update_foreshadow. Sorted by loadBearing priority then updatedAt."
+        description = "List unresolved foreshadowing items regardless of secret status: id, title, intent, loadBearing, setupCount, version, and derivedLabel. Pass include_settled=true to also include payoff-confirmed items after the unresolved ones, each marked settled: true; abandoned items are always excluded. Omitted or false returns unresolved items only. Pass version unchanged as base_version to update_foreshadow. Unresolved items are sorted by loadBearing priority then updatedAt, followed by settled items."
     )]
-    async fn list_open_foreshadows(&self) -> Result<CallToolResult, ErrorData> {
-        tools::foreshadow::list_open_foreshadows(self).await
+    async fn list_open_foreshadows(
+        &self,
+        params: Parameters<tools::foreshadow::ListOpenForeshadowsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::foreshadow::list_open_foreshadows(self, params.0).await
     }
 
     /// Get full detail for a single foreshadowing item including setups and payoff scene.
@@ -851,5 +853,20 @@ mod tool_route_tests {
                 "{name} must not publish the retired secret input"
             );
         }
+    }
+
+    #[test]
+    fn registered_list_open_foreshadows_publishes_include_settled() {
+        let tools = GrimodexServer::tool_router().list_all();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "list_open_foreshadows")
+            .expect("list_open_foreshadows is registered");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .expect("list_open_foreshadows publishes input properties");
+        assert!(properties.contains_key("include_settled"));
     }
 }

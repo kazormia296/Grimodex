@@ -59,7 +59,7 @@ export function createReadExecutors(
     get_scene: (params) => getScene(ctx, params),
     search_scenes: (params) => searchScenes(ctx, params),
     search_snippets: (params) => searchSnippets(ctx, params),
-    list_open_foreshadows: () => listOpenForeshadows(ctx),
+    list_open_foreshadows: (params) => listOpenForeshadows(ctx, params),
     get_foreshadow_detail: (params) => getForeshadowDetail(ctx, params),
   });
 }

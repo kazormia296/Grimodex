@@ -14,7 +14,7 @@ import { MainReadError } from "./errors.js";
 import { runNativeRead, type MainReadHooks } from "./nativeCall.js";
 
 /**
- * Electron main's four typed reads (Mastra migration MP-4b, DR-MP4-6). Each is
+ * Electron main's five typed reads (Mastra migration MP-4b, DR-MP4-6). Each is
  * a named method that calls the argument check and the wire parse of ONE
  * command, spelled as a literal key of `NAPI_COMMANDS`. There is no method that
  * takes a command name: `NAPI_COMMANDS` holds every command, including ones
@@ -30,18 +30,19 @@ import { runNativeRead, type MainReadHooks } from "./nativeCall.js";
  * replaces it with `assertLive` of the turn's lifecycle, before and after the
  * call (the `hooks`, PR-2).
  *
- * The four commands' `run` take `(backend, args)` only; the frozen empty
+ * The five commands' `run` take `(backend, args)` only; the frozen empty
  * `deps` below satisfies the type, and `typed.test.ts` fails if one of them
  * declares a third or a rest parameter, uses `arguments`, or touches a `deps`
- * that throws on use. The backend this module is given is typed as those four
+ * that throws on use. The backend this module is given is typed as those five
  * methods only (`MainTypedReadsBackend`).
  */
-/** The four methods the typed reads call, and nothing else of the backend. */
+/** The five methods the typed reads call, and nothing else of the backend. */
 export type MainTypedReadsBackend = Pick<
   NapiBackendLike,
   | "ftsSearch"
   | "codexSemanticSearch"
   | "eventsSemanticSearch"
+  | "foreshadowListWithLabels"
   | "foreshadowListOpenForContext"
 >;
 
@@ -79,6 +80,8 @@ function narrowBackend(source: MainTypedReadsBackend): MainTypedReadsBackend {
   if (codex) narrowed.codexSemanticSearch = codex;
   const events = bound(source, source.eventsSemanticSearch);
   if (events) narrowed.eventsSemanticSearch = events;
+  const foreshadowLabels = bound(source, source.foreshadowListWithLabels);
+  if (foreshadowLabels) narrowed.foreshadowListWithLabels = foreshadowLabels;
   const foreshadow = bound(source, source.foreshadowListOpenForContext);
   if (foreshadow) narrowed.foreshadowListOpenForContext = foreshadow;
   return Object.freeze(narrowed) as unknown as MainTypedReadsBackend;
@@ -88,12 +91,12 @@ export function createMainTypedReads(
   options: MainTypedReadsOptions,
 ): CoreNativeReads {
   const { identity } = options;
-  // Copied at run time into an object that has the four methods and nothing
+  // Copied at run time into an object that has the five methods and nothing
   // else: the Pick above is a type only, and the object the caller passes has
   // every method of the backend. A missing method stays missing (fail closed).
   const backend = narrowBackend(options.backend);
-  // `run` is typed on the whole interface. Only the four methods above exist on
-  // the object it gets, and the four commands below reach only those
+  // `run` is typed on the whole interface. Only the five methods above exist on
+  // the object it gets, and the five commands below reach only those
   // (`typed.test.ts` and the static test hold that).
   const nativeBackend = backend as unknown as NapiBackendLike;
 
@@ -223,6 +226,25 @@ export function createMainTypedReads(
           // The renderer gives this command no caller timeout either; no new
           // value is placed (DR-MP4-4). A cancel or a forced end drops the
           // result and the in-flight count bounds the wait.
+          timeoutMs: null,
+          hooks: options,
+        },
+      );
+    },
+    foreshadowListWithLabels: async (args) => {
+      const projectId = projectIdOf(
+        "foreshadow_list_with_labels",
+        args.projectId,
+      );
+      return runNativeRead(
+        () =>
+          NAPI_COMMANDS.foreshadow_list_with_labels.run(
+            nativeBackend,
+            { projectId },
+            NO_DEPS,
+          ),
+        {
+          command: "foreshadow_list_with_labels",
           timeoutMs: null,
           hooks: options,
         },

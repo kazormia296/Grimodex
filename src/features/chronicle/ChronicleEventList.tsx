@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Search, X, Lock, AlertTriangle } from "lucide-react";
+import { Search, X, AlertTriangle } from "lucide-react";
 import type { EventKind, EventPrecision } from "@/db/schema";
 import { laneColorFor } from "./laneColor";
 
@@ -10,7 +10,6 @@ export interface ChronicleEventListItem {
   title: string;
   kind: EventKind;
   precision: EventPrecision;
-  secret: boolean;
   /** 期間（終了あり）か点か。先頭グリフの形に反映。 */
   isInterval: boolean;
   primaryCodexId: string | null;
@@ -224,12 +223,6 @@ export function ChronicleEventList({
                         className="size-3 flex-none"
                         style={{ color: "#e0a23a" }}
                         aria-label={t("chronicle.hasIssue", "整合警告あり")}
-                      />
-                    )}
-                    {it.secret && (
-                      <Lock
-                        className="size-3 flex-none"
-                        aria-label={t("chronicle.secretTag", "秘匿")}
                       />
                     )}
                   </div>

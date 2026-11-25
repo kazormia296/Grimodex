@@ -456,7 +456,7 @@ fn foreshadow_detail_hides_archived_payoff_and_setup() {
 fn list_open_foreshadows_does_not_count_archived_setups() {
     let conn = tree_db();
     seed_foreshadow_on_archived(&conn);
-    let open = list_open_foreshadows(&conn, "p1").unwrap();
+    let open = list_open_foreshadows(&conn, "p1", false).unwrap();
     let count = |id: &str| open.iter().find(|f| f.id == id).unwrap().setup_count;
     assert_eq!(
         count("f1"),

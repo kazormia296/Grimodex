@@ -1475,6 +1475,17 @@ describe("contextBuilder", () => {
       synopsis: "あらすじ",
     };
 
+    const oversizedOpenForeshadows = (criticalCount: number) =>
+      Array.from({ length: 100 + criticalCount }, (_, index) => ({
+        title: `伏線${index} ${"手がかり".repeat(12)}`,
+        intent: null,
+        loadBearing:
+          index < criticalCount
+            ? ("critical" as const)
+            : ("supporting" as const),
+        setupCount: 0,
+      }));
+
     it("openForeshadows が storySoFar の末尾に追記される", () => {
       const result = buildSystemPrompt({
         scene,
@@ -1507,6 +1518,132 @@ describe("contextBuilder", () => {
       // intent null + setupCount 0 の行: title のみ + 重要度 supporting だけ
       expect(result.prompt).toContain("- 「古い友人」（重要度: supporting）");
     });
+
+    it("枠を超えた Agent モードでは critical のみと省いた件数を道具付きで示す", () => {
+      const result = buildSystemPrompt({
+        scene,
+        contextWindow: 100_000,
+        agentMode: true,
+        openForeshadows: oversizedOpenForeshadows(2),
+      });
+
+      expect(result.prompt).toContain("伏線0");
+      expect(result.prompt).toContain("伏線1");
+      expect(result.prompt).not.toContain("伏線2");
+      expect(result.prompt).toContain(
+        "ほかに100件あります。一覧の道具で取れます",
+      );
+    });
+
+    it("Agent モードで critical が 0 件でも見出しと省いた件数が残る", () => {
+      const result = buildSystemPrompt({
+        scene,
+        contextWindow: 100_000,
+        agentMode: true,
+        openForeshadows: oversizedOpenForeshadows(0),
+      });
+
+      expect(result.prompt).toContain("### 未回収の伏線");
+      expect(result.prompt).toContain(
+        "ほかに100件あります。一覧の道具で取れます",
+      );
+    });
+
+    it.each([undefined, false])(
+      "Agent モードでなく critical が 0 件の超過時は道具を案内しない (agentMode=%s)",
+      (agentMode) => {
+        const result = buildSystemPrompt({
+          scene,
+          contextWindow: 100_000,
+          agentMode,
+          openForeshadows: oversizedOpenForeshadows(0),
+        });
+
+        expect(result.prompt).toContain("### 未回収の伏線");
+        expect(result.prompt).toContain("ほかに100件あります。");
+        expect(result.prompt).not.toContain("一覧の道具で取れます");
+      },
+    );
+
+    it("英語の Agent モードでも省いた件数と道具を案内する", () => {
+      const result = buildSystemPrompt({
+        scene,
+        lang: "en",
+        contextWindow: 100_000,
+        agentMode: true,
+        openForeshadows: oversizedOpenForeshadows(2),
+      });
+
+      expect(result.prompt).toContain(
+        "100 more open foreshadows are not shown. Fetch them with the list tool.",
+      );
+    });
+
+    it("英語の非 Agent モードでは省いた件数だけを案内する", () => {
+      const result = buildSystemPrompt({
+        scene,
+        lang: "en",
+        contextWindow: 100_000,
+        agentMode: false,
+        openForeshadows: oversizedOpenForeshadows(0),
+      });
+
+      expect(result.prompt).toContain(
+        "100 more open foreshadows are not shown.",
+      );
+      expect(result.prompt).not.toContain("Fetch them with the list tool.");
+    });
+
+    it.each([true, false])(
+      "枠に収まる非空の伏線には省いた件数を足さない (agentMode=%s)",
+      (agentMode) => {
+        const result = buildSystemPrompt({
+          scene,
+          contextWindow: 100_000,
+          agentMode,
+          openForeshadows: [
+            {
+              title: "枠に収まる伏線",
+              intent: null,
+              loadBearing: "supporting",
+              setupCount: 0,
+            },
+          ],
+        });
+
+        expect(result.prompt).toContain("枠に収まる伏線");
+        expect(result.prompt).not.toContain("ほかに");
+        expect(result.prompt).not.toContain(
+          "more open foreshadows are not shown",
+        );
+      },
+    );
+
+    it.each([true, false])(
+      "英語でも枠に収まる非空の伏線には省いた件数を足さない (agentMode=%s)",
+      (agentMode) => {
+        const result = buildSystemPrompt({
+          scene,
+          lang: "en",
+          contextWindow: 100_000,
+          agentMode,
+          openForeshadows: [
+            {
+              title: "Fits in the frame",
+              intent: null,
+              loadBearing: "supporting",
+              setupCount: 0,
+            },
+          ],
+        });
+
+        expect(result.prompt).toContain("Fits in the frame");
+        expect(result.prompt).not.toContain(
+          "more open foreshadows are not shown",
+        );
+        expect(result.prompt).not.toContain("ほかに");
+      },
+    );
 
     it("secret の未回収伏線も『未回収の伏線』節に注入される", () => {
       const result = buildSystemPrompt({

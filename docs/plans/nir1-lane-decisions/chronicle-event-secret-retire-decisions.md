@@ -176,6 +176,24 @@ core の年表の port `CoreChronicleData` に、`listHiddenCodexIds(projectId, 
 - 過去に `secret: true` で作った出来事は、そのまま `secret = 1` で残る（読みでは使わない。既存の値は変えない）。
 - AI の指示の資産（定義文・golden）の変更なので、品質ゲート（`grimodex-author`・`pnpm eval:impact`）は hosted で取る。
 
+## 8. 画面の側（N2。2026-11-25）
+
+年表の画面から「AI に秘匿」のチェック・「秘匿」のタグ・鍵を消し、開示シーンの欄を全部の出来事に出す。TS・文言・試験だけ（DB・Native・取り込み〔N6〕・提案レビュー・`agent-writes` の payload の契約は変えない）。技術判断（AGENTS の委任の範囲。確認 94〜98 の帰結の実装）。
+
+### DR-CSR-18　年表の画面から出来事の `secret` を消す（N2）
+
+- **編集欄（`ChronicleInspector.tsx`）**：「AI に秘匿」のチェックを消す。**開示シーンの欄は、シーンイベントを除く全部の出来事に出す**（今までは `event.secret` が true の出来事だけ）。選択肢「自動（初出シーン）」は「指定なし」（en `None`）に直す：選ばなければ、AI に何も伝わらない（確認 98。`effectiveRevealSceneId` の自動導出は、製品の呼び出し元が無い。N9）。**「指定なし」を選ぶと `revealSceneId: ""` を送る**（Native は更新で `null` と未指定を区別できず、`Some("")` を NULL にする。`agent_writes.rs`。`null` を送ると「変更なし」になり、選んだ開示シーンを解除できない）。説明文は、AI への効果を書かない中立の文にした（ja「読者に明かす場面が決まっているときに選びます。」、en `Choose the scene where this event is revealed to readers, if it has one.`）。**印の PR 群（N3・N7）が master に入る PR で、「選んだ場面より前を書くとき、『読者にはまだ明かされていない』と AI に伝えます。選ばなければ、何も伝えません」の趣旨に差し替える**（アプリ内の道具・MCP の `revealSceneId` の説明と一緒に）。
+- **マーカー・一覧**：「秘匿」のタグと `aria-label` の状態（`EventMarker.tsx`）、鍵のアイコン（`ChronicleEventList.tsx`）を消した。配置の幅の計算（`chronicleLayout.ts` の `estMarkerWidth` の 32px／34px の加算）から `secret` を外した。表示用の型（`MarkerEvent`・`LayoutEventInput` など）から `secret` を外した。**DB 行の型（`EventRow`）の `secret` は残す**（読み取り側・スナップショット・書き出しは、値を運ぶだけ）。
+- **ロケール**：`chronicle.secretLabel`・`secretDesc`（利用箇所なし）・`secretTag` を削除。`secretDescShort` → `revealSceneDesc`、`revealSceneAuto` → `revealSceneNone`。ja・en のみ（他の言語の file は無い）。
+- **既存の `secret = 1` の出来事**：値は DB に残る。画面では見えず、編集もできなくなる（確認 95：知らせない。AI には、読み・MCP・アプリ内の道具で、もう全部渡っている）。
+- **Native の `secret` の書き込みの拒否の最終形は、この PR に入れない**：N4 で AI の surface は拒否した。作者の surface（`manual`・`import`）は、N2 の後は画面から `secret` を送らなくなるが、取り込み（NEX の commit は `apply_event_create_in_tx` を直接呼ぶ）が `secret = true` で作る間は、全 surface の拒否を入れても取り込み経路は閉じない。N6 の後の別の小さな PR で、作成は `false` 固定・更新は `secret` を受けたら拒む（N4 の (c)）にする。
+
+### 残る制限（N2）
+
+- **N6 が入るまで、取り込みは `secret = true` の出来事を作る**（画面には出ない。AI には全部渡る）。公開版（release）には、N6・N3・N7・N9 の整理と N11 の測定の後に出す。
+- 開示シーンの値は、N3・N7 が入るまで、AI に何も伝えない（保存するだけ）。説明文は中立の文のまま。
+- 実 Chromium で、編集欄の変更前後（秘匿が ON の出来事・OFF の出来事）を確かめた。マーカーの幅・位置は `ChronicleViewport.browser.test.tsx` の case で固定した。
+
 ## 9. 取り込み（N6。2026-11-25）
 
 AI 抽出の取り込み（NEX の commit）が、出来事を印なし・開示シーンなしで作る。Rust（`narrative_extraction`）・画面側の compiler・提案カード・文言・試験・実機の journey を 1 つの PR で変える（Rust と TS を別々に入れると、旧 Native が `secret = false` の operation を拒む、または旧 compiler の `secret = true` が組み立て直しと食い違う）。技術判断（AGENTS の委任の範囲。確認 104・135 の帰結の実装）。

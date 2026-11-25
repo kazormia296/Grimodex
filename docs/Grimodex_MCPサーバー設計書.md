@@ -784,7 +784,7 @@ Codex エントリの詳細を取得する。
 | `search_codex_by_tags` | R | o | タグ OR 検索で Codex エントリ取得 |
 | `find_related_entries` | R | o | 起点エントリ名/別名から関連 Codex 探索 |
 | `get_chapter_summaries` | R | o | folder 単位のシーン synopsis 一覧 |
-| `list_open_foreshadows` | R | o | 未回収・未放棄伏線一覧（secret 値にかかわらず） |
+| `list_open_foreshadows` | R | o | 未回収・未放棄伏線一覧（secret 値にかかわらず。`include_settled=true` で回収済みも含め、`settled: true` を表示。放棄は常に除外） |
 | `get_foreshadow_detail` | R | o | 単一伏線の詳細（setups / payoff） |
 | `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret は schema 非公開。true は拒否、false／省略は 0・tracked: undo_journal+change_event を 1tx 記録） |
 | `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ・secret 指定は true／false とも拒否・tracked 同上。undo は updated_at 楽観ガードの versionless 設計） |
@@ -862,7 +862,8 @@ Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツー
   チャット executor / 旧 docs の `chapter` / `part` は legacy 表現。
   MCP `get_chapter_summaries` は **`folder` を章として扱う**。
 - **`list_open_foreshadows`**: `derivedLabel`（seeded / needs_strengthening / critical_weak /
-  planned 等）を **JSON に含める**（`id`, `title`, `intent`, `loadBearing`, `setupCount`, `derivedLabel`）。
+  planned 等）を **JSON に含める**（`id`, `title`, `intent`, `loadBearing`, `setupCount`, `version`, `derivedLabel`）。
+  `include_settled=true` では回収済み（`payoff_confirmed=1`）も含め、その行に `settled: true` を付ける。省略・`false` は従来どおり未回収のみで、この印を出力しない。
   チャット executor は最終出力から `derivedLabel` を落とすが、toolDefinitions の宣言契約と伏線整理
   ユースケースに合わせ MCP は返す。**意図的な差分**でありチャット出力との byte-for-byte parity は非対象。
 - **`get_foreshadow_detail` setup.strength**: チャットは `strength ?? aiStrength ?? null`。
