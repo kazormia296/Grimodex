@@ -16,6 +16,28 @@ import {
 } from "./toolManifest";
 
 describe("toolDefinitions", () => {
+  it("requires a dated event with explicit precision and documents uncertainty handling", () => {
+    const tools = new Map(AGENT_TOOLS.map((tool) => [tool.name, tool]));
+    const create = tools.get("create_event")!;
+    const update = tools.get("update_event")!;
+    expect(create.inputSchema.required).toEqual(
+      expect.arrayContaining(["startTime", "precision"]),
+    );
+    expect(create.inputSchema.properties.precision.enum).toEqual([
+      "exact",
+      "approx",
+      "unknown",
+    ]);
+    expect(create.description).toContain(
+      "provide an estimated date and express the uncertainty with precision",
+    );
+    expect(update.inputSchema.properties.precision.enum).toEqual([
+      "exact",
+      "approx",
+      "unknown",
+    ]);
+    expect(update.description).toContain("startTime cannot be cleared to null");
+  });
   it("retires secret from event and foreshadow write tools while keeping disclosure metadata", () => {
     const tools = new Map(AGENT_TOOLS.map((tool) => [tool.name, tool]));
     const disclosurePrefix =

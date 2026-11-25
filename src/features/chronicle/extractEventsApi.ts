@@ -5,7 +5,6 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { createEvent, deleteEvent, linkScenesToEvent, listEvents } from "./api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 
@@ -201,56 +200,6 @@ export async function proposeEvents(
   return parseEventProposals(response.text, allowedSceneIds);
 }
 
-/** 重複判定用のタイトル正規化（trim → NFC → 小文字）。 */
-function normalizeEventTitle(title: string): string {
-  return title.trim().normalize("NFC").toLowerCase();
-}
-
-/**
- * 抽出候補を events として一括作成し、根拠シーンを scene_events で結ぶ。
- * 作成した出来事数を返す（スキップ分は含めない）。
- *
- * 既存タイトルと重複する候補はプロンプトヒントだけでは弾けない（非準拠モデルが
- * 重複を返す）ため、ここで正規化タイトル一致を programmatic にスキップする。
- * `existingTitles` 未指定時は DB（listEvents）から取得＝呼び出し側を変えずに
- * 重複取り込みを防ぐ。同一バッチ内の重複も先勝ちでスキップする。
- *
- * @deprecated Narrative Commit を使用すること（`applyChronicleExtractionReview`）。
- */
-export async function importExtractedEvents(
-  projectId: string,
-  proposals: EventProposal[],
-  existingTitles?: string[],
-): Promise<number> {
-  const baseTitles =
-    existingTitles ?? (await listEvents(projectId)).map((e) => e.title);
-  const seen = new Set(baseTitles.map(normalizeEventTitle));
-  let count = 0;
-  const createdIds: string[] = [];
-  try {
-    for (const p of proposals) {
-      const norm = normalizeEventTitle(p.title);
-      if (seen.has(norm)) continue; // 既存（または本バッチ内）と重複 → スキップ
-      seen.add(norm);
-      const ev = await createEvent({
-        projectId,
-        title: p.title,
-        note: p.note ?? null,
-      });
-      createdIds.push(ev.id);
-      // 根拠シーンは一括リンク（per-scene の検証 SELECT ×2 を畳む）。
-      await linkScenesToEvent(projectId, p.evidenceSceneIds, ev.id);
-      count++;
-    }
-    return count;
-  } catch (err) {
-    await Promise.allSettled(
-      createdIds.map((id) => deleteEvent(id, projectId)),
-    );
-    throw err;
-  }
-}
-
 import {
   selectChronicleProposalsForAtomicApply,
   useChronicleExtractionStore,
@@ -412,8 +361,7 @@ export function __setCommitCoordinatorForTests(
 
 /**
  * Apply approved Run proposals via the real commit coordinator
- * (`prepareChronicleCommit` + `applyChronicleCommit`). Legacy
- * `importExtractedEvents` is not used on the product path.
+ * (`prepareChronicleCommit` + `applyChronicleCommit`).
  */
 export async function applyChronicleExtractionReview(args: {
   readonly projectId: string;

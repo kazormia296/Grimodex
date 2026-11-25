@@ -288,13 +288,18 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "create_event",
     description:
-      "Create a new chronicle event (an in-world fabula event). Requires knowledgeWrite policy. kind is 'birth', 'death', or 'generic' (default). startTime is days from the in-world epoch (optional). primaryCodexId is the home-lane character; participantCodexIds are other involved characters; sceneIds stamps the event onto scenes. Returns the new event id.",
+      "Create a new chronicle event (an in-world fabula event). Requires knowledgeWrite policy. kind is 'birth', 'death', or 'generic' (default). startTime is required and is days from the in-world epoch; precision is required: 'exact', 'approx', or 'unknown'. startGranularity is inferred from the supplied date/time when omitted and cannot be 'none'. If the date is uncertain, provide an estimated date and express the uncertainty with precision. primaryCodexId is the home-lane character; participantCodexIds are other involved characters; sceneIds stamps the event onto scenes. Returns the new event id.",
     inputSchema: {
       type: "object",
       properties: {
         title: { type: "string", description: "Event title" },
         note: { type: "string", description: "Optional note" },
         kind: { type: "string", description: "'birth' | 'death' | 'generic'" },
+        precision: {
+          type: "string",
+          enum: ["exact", "approx", "unknown"],
+          description: "Required confidence in the event date",
+        },
         primaryCodexId: {
           type: "string",
           description: "Home-lane character Codex id",
@@ -302,7 +307,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         locationCodexId: { type: "string", description: "Location Codex id" },
         startTime: {
           type: "number",
-          description: "Days from the in-world epoch",
+          description: "Required date in days from the in-world epoch",
         },
         endTime: { type: "number", description: "Interval end (days)" },
         startMinute: {
@@ -317,8 +322,9 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         },
         startGranularity: {
           type: "string",
+          enum: ["season", "year", "month", "day", "time"],
           description:
-            "How precise the start date is: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+            "How precise the start date is; inferred from the supplied date/time when omitted",
         },
         endGranularity: {
           type: "string",
@@ -341,13 +347,13 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
           description: "Scene ids to stamp the event onto",
         },
       },
-      required: ["title"],
+      required: ["title", "startTime", "precision"],
     },
   },
   {
     name: "update_event",
     description:
-      "Update a chronicle event. Only the fields you pass are changed; omitted fields are left as-is (there is no way to clear a field back to null). Requires knowledgeWrite policy.",
+      "Update a chronicle event. Only the fields you pass are changed; omitted fields are left as-is. startTime cannot be cleared to null, and startGranularity cannot be 'none'. If the date is uncertain, provide an estimated date and express the uncertainty with precision. Requires knowledgeWrite policy.",
     inputSchema: {
       type: "object",
       properties: {
@@ -355,6 +361,11 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         title: { type: "string" },
         note: { type: "string" },
         kind: { type: "string", description: "'birth' | 'death' | 'generic'" },
+        precision: {
+          type: "string",
+          enum: ["exact", "approx", "unknown"],
+          description: "Optional confidence in the event date",
+        },
         primaryCodexId: { type: "string" },
         locationCodexId: { type: "string" },
         startTime: { type: "number" },
@@ -369,8 +380,9 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         },
         startGranularity: {
           type: "string",
+          enum: ["season", "year", "month", "day", "time"],
           description:
-            "Start date precision: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+            "Start date precision: 'season' | 'year' | 'month' | 'day' | 'time'; 'none' is not allowed",
         },
         endGranularity: {
           type: "string",

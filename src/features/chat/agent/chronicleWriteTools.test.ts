@@ -89,11 +89,38 @@ describe("createEventTool", () => {
     expect(m.agentCreateEvent).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ title: "dated" }, "startTime is required"],
+    [{ title: "dated", startTime: 1 }, "precision is required"],
+    [
+      { title: "dated", startTime: "1", precision: "exact" },
+      "startTime is required",
+    ],
+    [
+      { title: "dated", startTime: 1, precision: "certain" },
+      "precision is required",
+    ],
+    [
+      {
+        title: "dated",
+        startTime: 1,
+        precision: "exact",
+        startGranularity: "none",
+      },
+      "startGranularity",
+    ],
+  ])("必須日時・確度と粒度を検証する: %j", async (input, error) => {
+    const result = await createEventTool(input);
+    expect(result.error).toContain(error);
+    expect(m.agentCreateEvent).not.toHaveBeenCalled();
+  });
+
   it("入力を parse して agentCreateEvent を呼び id を返す", async () => {
     const r = await createEventTool(
       {
         title: "戴冠",
         kind: "generic",
+        precision: "approx",
         primaryCodexId: "c1",
         startTime: 12,
         participantCodexIds: ["c2", "c3"],
@@ -108,6 +135,7 @@ describe("createEventTool", () => {
         kind: "generic",
         primaryCodexId: "c1",
         startTime: 12,
+        precision: "approx",
         participantCodexIds: ["c2", "c3"],
         sceneIds: ["s1"],
       }),
@@ -132,7 +160,7 @@ describe("createEventTool", () => {
 
   it("secret=false は捨てて Native writer に渡さない", async () => {
     await createEventTool(
-      { title: "x", secret: false },
+      { title: "x", startTime: 1, precision: "exact", secret: false },
       "event-secret-false-request",
     );
     expect(m.agentCreateEvent.mock.calls[0]?.[0]).not.toHaveProperty("secret");
@@ -140,7 +168,7 @@ describe("createEventTool", () => {
 
   it("不正 kind は generic に丸める", async () => {
     await createEventTool(
-      { title: "x", kind: "bogus" },
+      { title: "x", kind: "bogus", startTime: 1, precision: "exact" },
       "event-invalid-kind-request",
     );
     expect(m.agentCreateEvent).toHaveBeenCalledWith(
@@ -150,7 +178,10 @@ describe("createEventTool", () => {
 
   it("agentCreateEvent の例外は error として返す（throw しない）", async () => {
     m.agentCreateEvent.mockRejectedValueOnce(new Error("policy off"));
-    const r = await createEventTool({ title: "x" }, "event-error-request");
+    const r = await createEventTool(
+      { title: "x", startTime: 1, precision: "exact" },
+      "event-error-request",
+    );
     expect(r.error).toBe("policy off");
     expect(r.content).toBeNull();
   });
@@ -159,7 +190,7 @@ describe("createEventTool", () => {
 describe("durable Chronicle request identity", () => {
   it("全 mutating tool は Executor 由来 requestId 欠落時に writer を呼ばない", async () => {
     const results = await Promise.all([
-      createEventTool({ title: "x" }),
+      createEventTool({ title: "x", startTime: 1, precision: "exact" }),
       updateEventTool({ eventId: "e1", title: "x" }),
       deleteEventTool({ eventId: "e1" }),
       stampSceneEventTool({ sceneId: "s1", eventId: "e1" }),
@@ -181,6 +212,16 @@ describe("durable Chronicle request identity", () => {
 describe("update/delete", () => {
   it("update_event は eventId 必須", async () => {
     expect((await updateEventTool({})).error).toBe("eventId is required");
+  });
+
+  it.each([
+    [{ eventId: "e1", startTime: null }, "startTime cannot be null"],
+    [{ eventId: "e1", startGranularity: "none" }, "startGranularity"],
+    [{ eventId: "e1", precision: "certain" }, "precision must be one of"],
+  ])("update_event は日時削除・無効値を拒否する: %j", async (input, error) => {
+    const result = await updateEventTool(input, "event-update-request");
+    expect(result.error).toContain(error);
+    expect(m.agentUpdateEvent).not.toHaveBeenCalled();
   });
   it("project 内 event lookup で得た version を CAS base に渡す", async () => {
     await updateEventTool(
@@ -214,10 +255,14 @@ describe("update/delete", () => {
 
   it("update_event の secret=false は捨てて Native writer に渡さない", async () => {
     await updateEventTool(
-      { eventId: "e1", secret: false },
+      { eventId: "e1", precision: "approx", secret: false },
       "event-update-secret-false-request",
     );
     expect(m.agentUpdateEvent.mock.calls[0]?.[0]).not.toHaveProperty("secret");
+    expect(m.agentUpdateEvent.mock.calls[0]?.[0]).toHaveProperty(
+      "precision",
+      "approx",
+    );
   });
   it("delete_event は agentDeleteEvent を呼ぶ", async () => {
     await deleteEventTool({ eventId: "e1" }, "event-delete-request");

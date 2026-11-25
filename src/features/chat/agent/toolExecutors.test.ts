@@ -728,7 +728,7 @@ describe("durable mutation tool request identity", () => {
       },
       {
         name: "create_event",
-        params: { title: "Arrival" },
+        params: { title: "Arrival", startTime: 1, precision: "exact" },
         writer: mockAgentCreateEvent,
       },
     ] as const;
@@ -785,7 +785,7 @@ describe("durable mutation tool request identity", () => {
     await executeTool(
       "create_event",
       "event-call",
-      { title: "Arrival" },
+      { title: "Arrival", startTime: 1, precision: "exact" },
       { ...commonAuthorization, expectedEntityId: "event-from-main" },
     );
     await executeTool(
