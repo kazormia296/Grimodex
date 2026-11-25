@@ -714,7 +714,7 @@ fn snapshot_body_restore_keeps_typed_revision_ineligible_when_the_token_returns(
             project_id: PROJECT.to_owned(),
             snapshot_id: "x12-snapshot".to_owned(),
             scopes,
-            inserts,
+            inserts: inserts.inserts,
         },
     )?;
 
