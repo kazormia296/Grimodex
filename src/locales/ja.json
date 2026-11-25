@@ -6295,6 +6295,7 @@
     "none": "なし",
     "revealSceneLabel": "開示シーン",
     "revealSceneNone": "指定なし",
+    "revealSceneMissing": "（見つからないシーン）",
     "untitledScene": "無題のシーン",
     "kindLabel": "種別",
     "year": "年",
