@@ -43,6 +43,16 @@
   4. 呼び手を付ける段（変更レビュー設計 §5 の段 4）の前に決める／足す：`expectedWorkspacePath` の必須化（手本の 2 本と同じ。workspace の切替との交差で別 workspace の結果を表示しうる）、D2a の区分、`src/lib/tauri.ts` の read lane の表への登録、応答の形（手本は `{status, result}`、本 command は平坦）の固定。
   5. **AI の経路につなぐ前の条件**：effective な context mode（Phase の override を含む）の再評価と、object ごとの除外。今の抑止と current の reader は base の `context_mode` だけを見る。
 
+- **DR-M4PF-12（呼び手を付ける前の条件の一部を足す。2026-11-25。委任の範囲内の技術判断）**：DR-M4PF-11 の 4 のうち、次を決めた。
+  1. `expectedWorkspacePath` を必須にした。main は文字列の形（空でない、前後の空白なし、未知のキーなし）だけを検査し、active workspace との照合は Native の `validate_narrative_extraction_workspace`（A2 の read 2 本と同じ関数）が行う。workspace の切替と交差した呼び出しは Native が拒む。`projectId`・`revisionId` の 512 文字の上限は変えない。
+  2. 応答の形を A2 の read（`nir1_entity_relation_revision_read`）と揃えて固定した。読めるときは `{status: "available", result}`、読めないときは `{status: "unavailable", result: {reason}}`。呼び手が無いので互換の影響はない。
+  3. D2a の区分は `unclassified` のまま変えない（restricted／unavailable では main が拒む）。呼び手を付けても restricted では読めないままにする。restricted で出す必要が出たら、区分の改訂として改めて判断する。**画面を付けると、restricted の profile では変更レビューが開かないという見える制限になる**ので、画面の文言を伺う時に一緒に利用者に出す。
+  4. read lane の表（`src/lib/tauri.ts`）への登録は、呼び手を付ける PR に回す。起動時の JS graph に入り、`perf:budget` の余裕は raw で数十 byte しかなく（c7 と統合者の報告、起案者は未確認）、呼び手がなければ効果もない。
+  - 残り：呼び手を付ける段の前の条件は 4 の read lane の登録。DR-M4PF-11 の 5（AI の経路につなぐ前の条件）は変えない。
+  - 脅威モデル（下の IPC の表）の防御に足す：workspace の切替と交差した呼び出しは、Native が path の不一致で拒む。受入れ：別の workspace の path を拒む試験。
+
+- **ユーザーの確認（contracts の M4 の記録 追記 9、2026-11-25）**：本文起点の AI 抽出（D1）は棚上げし、AI への新しい送信は増やさない。変更レビューの最初の版は項目ごとの適用・却下を入れない（適用・却下・保留は revision 全体）。DR-M4PF-6（自動再解釈の送信の形）は下の前提の訂正のとおり止めたままで、経路は開けていない。
+
 - **DR-M4PF-6 の前提の訂正（2026-11-25、read-only の調査で発見）**：DR-M4PF-6 と契約案 §4.1 は「既存の手動抽出と同じ request・同じ provider（送信先は増やさない）」を前提にしていた。**この前提は誤り**。
   手動の Codex 構造抽出（`CodexStructureExtractDialog.tsx`）は `useAi: false` が固定で（:273）、`codexStructureExtractionApi.ts:1775-1778` の AI 経路は空の stub、AI task 2 本（`runEntityResolutionTask`・`runRelationSynthesisTask`）に製品の呼び手は無い。
   つまり **今の手動の抽出は AI に何も送らない**。同じ request は存在せず、自動再解釈で送るには AI の抽出の配線そのものが新しい AI への送信になる（hidden の除外もこの経路には無い）。

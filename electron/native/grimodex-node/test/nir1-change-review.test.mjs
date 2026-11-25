@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +64,7 @@ test("N-API preserves Unavailable reasons and performs no writes", async () => {
 
   const result = JSON.parse(
     await backend.nir1ChangeReviewRead({
+      expectedWorkspacePath: workspacePath,
       projectId: "missing-project",
       revisionId: "missing-revision",
     }),
@@ -71,7 +72,23 @@ test("N-API preserves Unavailable reasons and performs no writes", async () => {
 
   assert.deepEqual(result, {
     status: "unavailable",
-    reason: "current-revision-unavailable",
+    result: { reason: "current-revision-unavailable" },
   });
   assert.deepEqual(await rowCounts(), before);
+});
+
+test("N-API refuses a change review from a different workspace path", async () => {
+  const workspacePath = join(root, "workspace");
+  const otherWorkspacePath = join(root, "workspace-other");
+  await backend.openWorkspace(workspacePath);
+  mkdirSync(otherWorkspacePath);
+
+  await assert.rejects(
+    backend.nir1ChangeReviewRead({
+      expectedWorkspacePath: otherWorkspacePath,
+      projectId: "missing-project",
+      revisionId: "missing-revision",
+    }),
+    /NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED/,
+  );
 });
