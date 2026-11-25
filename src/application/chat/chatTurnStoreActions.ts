@@ -1136,6 +1136,7 @@ function createChatTurnStoreActions(
             assertTurnAuthority,
             isCurrentTurn,
             shouldAbortTurn,
+            signal: sendControl.abortController.signal,
             getParentAuditExecutionId: () => parentAuditExecutionId,
             resolveTransportOverride: () => ({
               model:
@@ -1300,6 +1301,7 @@ function createChatTurnStoreActions(
                   turnRoute?.resolvedEndpointId ?? null,
                   turnRoute?.toolProtocol ?? null,
                   turnRoute?.resolvedOllamaEndpoint ?? null,
+                  sendControl.abortController.signal,
                 );
                 parentAuditExecutionId = executionId;
                 parentInputTokenDrift = accumulateInputTokenDrift(

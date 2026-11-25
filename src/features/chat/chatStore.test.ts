@@ -7027,7 +7027,10 @@ describe("useChatStore", () => {
           );
         });
 
+        const signal = mockSendAgentMessage.mock.calls.at(-1)?.[16];
+        expect(signal?.aborted).toBe(false);
         useChatStore.getState().stopGeneration();
+        expect(signal?.aborted).toBe(true);
         rejectSecondCall(new Error("aborted by stop"));
         await sendPromise;
 
@@ -7623,6 +7626,13 @@ describe("useChatStore", () => {
 
       try {
         await useChatStore.getState().sendMessage("調べて");
+
+        const sendSignals = mockSendAgentMessage.mock.calls.map(
+          (call) => call[16],
+        );
+        expect(sendSignals[0]).toBeInstanceOf(AbortSignal);
+        expect(sendSignals[1]).toBe(sendSignals[0]);
+        expect(sendSignals[2]).toBe(sendSignals[0]);
 
         const agentUsage = mockRecordAiUsage.mock.calls
           .map(([input]) => input)
