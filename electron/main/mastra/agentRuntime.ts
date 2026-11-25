@@ -17,6 +17,7 @@
 import { Agent } from "@mastra/core/agent";
 
 import {
+  type AgentSendGuard,
   type AgentObserveResponse,
   type AgentPrepareSend,
   createAgentLanguageModel,
@@ -104,6 +105,8 @@ export interface MastraAgentTurnInput {
   readonly audit: AgentAuditSink;
   /** audit.begin の前に各 send の request を同期的に確定する。 */
   readonly prepareSend?: AgentPrepareSend;
+  /** audit.begin の前に各 send の許可状態を確認する。 */
+  readonly assertSendAllowed?: AgentSendGuard;
   /** audit.complete 後、Mastra に応答を返す前に同期的に観測する。 */
   readonly observeResponse?: AgentObserveResponse;
   /** The turn-start tool definitions restored to the wire by name. */
@@ -282,6 +285,7 @@ export function createMastraAgentRuntime(
         audit: input.audit,
         originalTools: toolDefinitions,
         prepareSend,
+        assertSendAllowed: input.assertSendAllowed,
         observeResponse: input.observeResponse,
       });
       const agent = createAgent(model, input.instructions, logger, tools);

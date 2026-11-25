@@ -75,14 +75,24 @@ interface Rig {
   readonly owner: ReturnType<typeof createMastraTurnOwner>;
   readonly sends: unknown[];
   readonly rows: AiAuditEventInput[];
+  readonly dbQueries: {
+    sql: string;
+    params: unknown;
+    method: string;
+    callerIdentity: unknown;
+  }[];
   readonly logs: string[];
   readonly appendProjects: (string | null)[];
   context(): Parameters<ReturnType<typeof createMastraTurnOwner>["start"]>[0];
 }
 
-function rig(send: (args: unknown) => Promise<string>): Rig {
+function rig(
+  send: (args: unknown) => Promise<string>,
+  aiPolicy: unknown = null,
+): Rig {
   const sends: unknown[] = [];
   const rows: AiAuditEventInput[] = [];
+  const dbQueries: Rig["dbQueries"] = [];
   const logs: string[] = [];
   const appendProjects: (string | null)[] = [];
   const identity = { senderId: 7, workspaceId: "/work/w" };
@@ -95,6 +105,20 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
       appendProjects.push(project);
       rows.push(...(events as AiAuditEventInput[]));
       return "{}";
+    },
+    async dbExecute(
+      ...args: Parameters<NapiBackendLike["dbExecute"]>
+    ): Promise<string> {
+      dbQueries.push({
+        sql: args[0],
+        params: args[1],
+        method: args[2],
+        callerIdentity: args[3],
+      });
+      return JSON.stringify({
+        __grimodexDbResultKind: "read",
+        rows: [{ ai_policy: aiPolicy }],
+      });
     },
     async getAiSettings(): Promise<string> {
       return JSON.stringify({ provider: "anthropic" });
@@ -124,6 +148,7 @@ function rig(send: (args: unknown) => Promise<string>): Rig {
     owner,
     sends,
     rows,
+    dbQueries,
     logs,
     appendProjects,
     context: () => ({
@@ -191,6 +216,36 @@ const request = (
 });
 
 describe("the real Agent in the third bundle", () => {
+  it("runs the real send guard against Main's DB policy before audit begin", async () => {
+    const r = rig(
+      async () => {
+        throw new Error("a denied send reached Native");
+      },
+      JSON.stringify({
+        preset: "off",
+        toggles: { chat: false, bodyWrite: false, analysis: false },
+      }),
+    );
+
+    await expect(r.owner.start(r.context(), request())).rejects.toThrow(
+      /CANCELLED/,
+    );
+    expect(r.dbQueries).toEqual([
+      {
+        sql: "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+        params: ["project-1"],
+        method: "get",
+        callerIdentity: JSON.stringify({
+          senderId: 7,
+          workspaceId: "/work/w",
+        }),
+      },
+    ]);
+    expect(r.sends).toEqual([]);
+    expect(r.rows).toEqual([]);
+    expect(r.appendProjects).toEqual([]);
+  }, 60_000);
+
   it("runs one turn: one send of the wire the legacy route sends, the raw response back, and the rows in order", async () => {
     const r = rig(async () =>
       JSON.stringify({
