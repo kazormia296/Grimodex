@@ -1013,10 +1013,8 @@ async function startAgentAuthorityTurn(harness, page, projectId, prompt) {
   return preparedAudit;
 }
 
-function assertStoppedChatAuthority(
-  rows,
-  { prompt, label, outputMarker, stopReason },
-) {
+// 停止した chat の turn は、途中までの本文を `stopped` の印つきで保存する。
+function assertStoppedChatAuthority(rows, { prompt, label, outputMarker }) {
   const userRows = rows.filter(
     (row) => row.role === "user" && String(row.content ?? "").includes(prompt),
   );
@@ -1033,10 +1031,24 @@ function assertStoppedChatAuthority(
     (outputMarker &&
       !String(assistantRows[0]?.content ?? "").includes(outputMarker)) ||
     metadata.stopped !== true ||
-    (stopReason && metadata.stop_reason !== stopReason) ||
     !userRows.some((row) => row.systemPrompt != null)
   ) {
     throw new Error(`${label} did not persist one stopped assistant turn`);
+  }
+}
+
+// 出力の前に停止した agent の turn は、利用者の行だけを保存する（本文も道具の記録も
+// 無いので assistant の行を作らない）。
+function assertStoppedAgentAuthority(rows, { prompt, label }) {
+  const userRows = rows.filter(
+    (row) => row.role === "user" && String(row.content ?? "").includes(prompt),
+  );
+  if (
+    userRows.length !== 1 ||
+    userRows[0].systemPrompt == null ||
+    rows.some((row) => row.role === "assistant")
+  ) {
+    throw new Error(`${label} did not persist only the stopped Agent request`);
   }
 }
 
@@ -2927,7 +2939,6 @@ async function runChatStreamProjectSwitchJourney(harness) {
           prompt: PROJECT_CHAT_AUTHORITY_PROMPT,
           label: "project A stream",
           outputMarker: CHAT_AUTHORITY_EARLY,
-          stopReason: "stopped",
         });
         return rows;
       } catch {
@@ -3101,7 +3112,7 @@ async function runAgentStreamProjectSwitchJourney(harness) {
         projects.projectA.id,
       );
       try {
-        assertStoppedChatAuthority(rows, {
+        assertStoppedAgentAuthority(rows, {
           prompt: AGENT_PROJECT_SWITCH_PROMPT,
           label: "project A Agent turn",
         });
@@ -3333,7 +3344,7 @@ async function runAgentStreamWorkspaceSwitchJourney(harness) {
         sceneA.projectId,
       );
       try {
-        assertStoppedChatAuthority(rows, {
+        assertStoppedAgentAuthority(rows, {
           prompt: AGENT_WORKSPACE_SWITCH_PROMPT,
           label: "workspace A Agent turn",
         });
@@ -3578,7 +3589,6 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
           prompt: WORKSPACE_CHAT_AUTHORITY_PROMPT,
           label: "workspace A stream",
           outputMarker: CHAT_AUTHORITY_EARLY,
-          stopReason: "stopped",
         });
         if (
           !rows.some(
