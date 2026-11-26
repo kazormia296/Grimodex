@@ -1221,6 +1221,72 @@ export async function narrativeMaintenanceStaleProposalCount(payload: {
   return (raw as { count: number }).count;
 }
 
+export type MaintenanceHealthFreshness =
+  | "stale"
+  | "source-missing"
+  | "anchor-mismatch"
+  | "read-set-drift"
+  | "unknown";
+
+export interface MaintenanceHealthSummary {
+  readonly proposalsChecked: number;
+  readonly proposalsStale: number;
+  readonly staleBreakdown: Record<MaintenanceHealthFreshness, number>;
+  readonly maintenanceStopped: number;
+  readonly unrecognized: number;
+}
+
+/** Read aggregate maintenance health counts without loading Inbox rows. */
+export async function narrativeMaintenanceHealthSummary(payload: {
+  readonly projectId: string;
+}): Promise<MaintenanceHealthSummary> {
+  const command = "narrative_maintenance_health_summary";
+  const raw = await invoke<unknown>(command, {
+    payload: { projectId: payload.projectId },
+  });
+  const isRecord = (
+    value: unknown,
+  ): value is Readonly<Record<string, unknown>> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const freshnessKinds: readonly MaintenanceHealthFreshness[] = [
+    "stale",
+    "source-missing",
+    "anchor-mismatch",
+    "read-set-drift",
+    "unknown",
+  ];
+  if (!isRecord(raw) || !isRecord(raw.staleBreakdown)) {
+    throw new Error(`${command}: expected non-negative safe-integer counts`);
+  }
+  const staleBreakdown = raw.staleBreakdown;
+  if (
+    !Number.isSafeInteger(raw.proposalsChecked) ||
+    (raw.proposalsChecked as number) < 0 ||
+    !Number.isSafeInteger(raw.proposalsStale) ||
+    (raw.proposalsStale as number) < 0 ||
+    !Number.isSafeInteger(raw.maintenanceStopped) ||
+    (raw.maintenanceStopped as number) < 0 ||
+    !Number.isSafeInteger(raw.unrecognized) ||
+    (raw.unrecognized as number) < 0 ||
+    freshnessKinds.some(
+      (kind) =>
+        !Number.isSafeInteger(staleBreakdown[kind]) ||
+        (staleBreakdown[kind] as number) < 0,
+    )
+  ) {
+    throw new Error(`${command}: expected non-negative safe-integer counts`);
+  }
+  return {
+    proposalsChecked: raw.proposalsChecked as number,
+    proposalsStale: raw.proposalsStale as number,
+    staleBreakdown: Object.fromEntries(
+      freshnessKinds.map((kind) => [kind, staleBreakdown[kind] as number]),
+    ) as Record<MaintenanceHealthFreshness, number>,
+    maintenanceStopped: raw.maintenanceStopped as number,
+    unrecognized: raw.unrecognized as number,
+  };
+}
+
 export interface StaleProposalSceneCount {
   readonly sceneId: string;
   readonly proposalCount: number;

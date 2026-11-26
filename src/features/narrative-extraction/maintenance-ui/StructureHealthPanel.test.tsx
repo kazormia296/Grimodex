@@ -1,18 +1,18 @@
 // @vitest-environment happy-dom
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { MaintenanceInboxEntry } from "@/application/narrative-extraction/nativeApi";
+import type { MaintenanceHealthSummary } from "@/application/narrative-extraction/nativeApi";
 import enLocale from "@/locales/en.json";
 import jaLocale from "@/locales/ja.json";
 
-const { inboxMock, loadedProjectIdMock, summarizeSpy } = vi.hoisted(() => ({
-  inboxMock: vi.fn(),
+const { summaryMock, loadedProjectIdMock, readSpy } = vi.hoisted(() => ({
+  summaryMock: vi.fn(),
   loadedProjectIdMock: vi.fn(),
-  summarizeSpy: vi.fn(),
+  readSpy: vi.fn(),
 }));
 
 vi.mock("@/application/narrative-extraction/nativeApi", () => ({
-  narrativeMaintenanceInboxList: inboxMock,
+  narrativeMaintenanceHealthSummary: summaryMock,
 }));
 vi.mock("@/application/project/currentProjectAuthority", () => ({
   getLoadedProjectId: loadedProjectIdMock,
@@ -24,9 +24,11 @@ vi.mock("./structureHealthModel", async (importOriginal) => {
     await importOriginal<typeof import("./structureHealthModel")>();
   return {
     ...actual,
-    summarizeInbox: (...args: Parameters<typeof actual.summarizeInbox>) => {
-      summarizeSpy(...args);
-      return actual.summarizeInbox(...args);
+    isNothingToInspect: (
+      ...args: Parameters<typeof actual.isNothingToInspect>
+    ) => {
+      readSpy(...args);
+      return actual.isNothingToInspect(...args);
     },
   };
 });
@@ -40,13 +42,25 @@ vi.mock("./StaleProposalScenesList", () => ({
 
 import { StructureHealthPanel } from "./StructureHealthPanel";
 
-function proposal(
-  evidenceFreshness: "fresh" | "stale" | "source-missing",
-): MaintenanceInboxEntry {
+function summary(
+  patch: Partial<Omit<MaintenanceHealthSummary, "staleBreakdown">> & {
+    staleBreakdown?: Partial<MaintenanceHealthSummary["staleBreakdown"]>;
+  } = {},
+): MaintenanceHealthSummary {
   return {
-    entryKind: "consumer-freshness",
-    consumerKind: "proposal-revision",
-    evidenceFreshness,
+    proposalsChecked: 0,
+    proposalsStale: 0,
+    maintenanceStopped: 0,
+    unrecognized: 0,
+    ...patch,
+    staleBreakdown: {
+      stale: 0,
+      "source-missing": 0,
+      "anchor-mismatch": 0,
+      "read-set-drift": 0,
+      unknown: 0,
+      ...patch.staleBreakdown,
+    },
   };
 }
 
@@ -62,42 +76,39 @@ function deferred<T>() {
 
 describe("StructureHealthPanel", () => {
   beforeEach(() => {
-    inboxMock.mockReset();
-    summarizeSpy.mockReset();
+    summaryMock.mockReset();
+    readSpy.mockReset();
     loadedProjectIdMock.mockReset();
     loadedProjectIdMock.mockReturnValue("project-1");
   });
 
   it("reads exactly once on open, with the loaded project id", async () => {
-    inboxMock.mockResolvedValue([proposal("fresh")]);
+    summaryMock.mockResolvedValue(summary({ proposalsChecked: 1 }));
     const { rerender } = render(<StructureHealthPanel onClose={() => {}} />);
     await waitFor(() =>
       expect(screen.getByTestId("structure-health-counts")).toBeInTheDocument(),
     );
     rerender(<StructureHealthPanel onClose={() => {}} />);
-    expect(inboxMock).toHaveBeenCalledExactlyOnceWith({
+    expect(summaryMock).toHaveBeenCalledExactlyOnceWith({
       projectId: "project-1",
     });
   });
 
   it("shows loading first, then the counts with a breakdown and the partial-check note", async () => {
-    const pending = deferred<readonly MaintenanceInboxEntry[]>();
-    inboxMock.mockReturnValue(pending.promise);
+    const pending = deferred<MaintenanceHealthSummary>();
+    summaryMock.mockReturnValue(pending.promise);
     render(<StructureHealthPanel onClose={() => {}} />);
     expect(screen.getByTestId("structure-health-loading")).toBeInTheDocument();
 
     await act(async () => {
-      pending.resolve([
-        proposal("fresh"),
-        proposal("stale"),
-        proposal("stale"),
-        proposal("source-missing"),
-        {
-          entryKind: "terminal-failure",
-          consumerKind: "narrative-maintenance-failure",
-          evidenceFreshness: null,
-        },
-      ]);
+      pending.resolve(
+        summary({
+          proposalsChecked: 4,
+          proposalsStale: 3,
+          staleBreakdown: { stale: 2, "source-missing": 1 },
+          maintenanceStopped: 1,
+        }),
+      );
     });
 
     expect(screen.queryByTestId("structure-health-loading")).toBeNull();
@@ -121,13 +132,19 @@ describe("StructureHealthPanel", () => {
   });
 
   it("lists scenes for the loaded project only when something is out of date", async () => {
-    inboxMock.mockResolvedValue([proposal("fresh")]);
+    summaryMock.mockResolvedValue(summary({ proposalsChecked: 1 }));
     const fresh = render(<StructureHealthPanel onClose={() => {}} />);
     await screen.findByTestId("structure-health-counts");
     expect(screen.queryByTestId("structure-health-scenes-stub")).toBeNull();
     fresh.unmount();
 
-    inboxMock.mockResolvedValue([proposal("source-missing")]);
+    summaryMock.mockResolvedValue(
+      summary({
+        proposalsChecked: 1,
+        proposalsStale: 1,
+        staleBreakdown: { "source-missing": 1 },
+      }),
+    );
     render(<StructureHealthPanel onClose={() => {}} />);
     const stub = await screen.findByTestId("structure-health-scenes-stub");
     expect(stub).toHaveTextContent("project-1");
@@ -135,8 +152,8 @@ describe("StructureHealthPanel", () => {
     expect(stub.closest("[aria-live]")).toBeNull();
   });
 
-  it("says there is nothing to check (never 'all clear') when the inbox is empty", async () => {
-    inboxMock.mockResolvedValue([]);
+  it("says there is nothing to check (never 'all clear') when nothing was counted", async () => {
+    summaryMock.mockResolvedValue(summary());
     render(<StructureHealthPanel onClose={() => {}} />);
     const empty = await screen.findByTestId("structure-health-empty");
     const text = empty.textContent ?? "";
@@ -151,7 +168,7 @@ describe("StructureHealthPanel", () => {
   });
 
   it("shows a failure that is distinct from zero", async () => {
-    inboxMock.mockRejectedValue(new Error("boom"));
+    summaryMock.mockRejectedValue(new Error("boom"));
     render(<StructureHealthPanel onClose={() => {}} />);
     expect(await screen.findByTestId("structure-health-failed")).toBeVisible();
     expect(screen.queryByTestId("structure-health-empty")).toBeNull();
@@ -172,27 +189,27 @@ describe("StructureHealthPanel", () => {
     expect(
       await screen.findByTestId("structure-health-no-project"),
     ).toBeInTheDocument();
-    expect(inboxMock).not.toHaveBeenCalled();
+    expect(summaryMock).not.toHaveBeenCalled();
   });
 
   it("drops a response that arrives after unmount", async () => {
-    const pending = deferred<readonly MaintenanceInboxEntry[]>();
-    inboxMock.mockReturnValue(pending.promise);
+    const pending = deferred<MaintenanceHealthSummary>();
+    summaryMock.mockReturnValue(pending.promise);
     const { unmount } = render(<StructureHealthPanel onClose={() => {}} />);
     unmount();
     await act(async () => {
-      pending.resolve([proposal("stale")]);
+      pending.resolve(summary({ proposalsChecked: 1, proposalsStale: 1 }));
     });
-    expect(summarizeSpy).not.toHaveBeenCalled();
+    expect(readSpy).not.toHaveBeenCalled();
   });
 
   it("reads again on each fresh open", async () => {
-    inboxMock.mockResolvedValue([proposal("fresh")]);
+    summaryMock.mockResolvedValue(summary({ proposalsChecked: 1 }));
     const view1 = render(<StructureHealthPanel onClose={() => {}} />);
     await screen.findByTestId("structure-health-counts");
     view1.unmount();
     render(<StructureHealthPanel onClose={() => {}} />);
     await screen.findByTestId("structure-health-counts");
-    expect(inboxMock).toHaveBeenCalledTimes(2);
+    expect(summaryMock).toHaveBeenCalledTimes(2);
   });
 });
