@@ -233,9 +233,15 @@ describe("getChronicleExtractionReview cold-start restore", () => {
     },
   );
 
-  it.each(["actual", "rumored", "planned", "dreamed"] as const)(
-    "validates cold %s support before restoring Native revision ids and decisions",
-    async (actuality) => {
+  it.each([
+    ["actual", "approved"],
+    ["rumored", "approved"],
+    ["planned", "approved"],
+    ["dreamed", "approved"],
+    ["actual", "rejected"],
+  ] as const)(
+    "validates cold %s support when restoring an applied %s proposal",
+    async (actuality, status) => {
       const plannedProposal = sampleProposal();
       const proposal = sampleProposal({
         title: "Current human revision",
@@ -366,7 +372,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
             proposalSetId: "set-cold-1",
             proposalKey: "ev-cold-1:0",
             kind: "chronicle.create-event@1",
-            status: "approved",
+            status,
             payloadJson: proposal,
             currentRevisionId: nativeRevisionId,
             createdAt: "2026-01-01T00:00:40.000Z",
@@ -377,10 +383,24 @@ describe("getChronicleExtractionReview cold-start restore", () => {
               decisionId: "dec-1",
               proposalId: nativeProposalId,
               revisionId: nativeRevisionId,
-              decision: "approved",
-              decisionJson: { probableDuplicateChoice: "create-as-new" },
-              createdAt: "2026-01-01T00:00:50.000Z",
-              createdBy: "reviewer",
+              decision: status,
+              decisionJson:
+                status === "approved"
+                  ? { probableDuplicateChoice: "create-as-new" }
+                  : {
+                      cause: "event-removed",
+                      removedVia: "screen-delete",
+                      removedEventId: "event-cold-1",
+                      revokesDecisionId: "prior-approval",
+                    },
+              createdAt:
+                status === "approved"
+                  ? "2026-01-01T00:00:50.000Z"
+                  : "2026-01-01T00:01:00.000Z",
+              createdBy:
+                status === "approved"
+                  ? "reviewer"
+                  : "native:event-existence-sync",
             },
             application: {
               commitId: "commit-cold-1",
@@ -421,7 +441,7 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       expect(row.revisionId).toBe(nativeRevisionId);
       expect(row.revisionId).not.toMatch(/^local-rev-/);
       expect(row.proposalId).not.toMatch(/^local-proposal-/);
-      expect(row.status).toBe("approved");
+      expect(row.status).toBe(status);
       expect(row.application).toMatchObject({
         commitId: "commit-cold-1",
         revisionId: nativeRevisionId,
@@ -430,7 +450,9 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       });
       expect(row.reconciliationEnvelopeSchemaVersion).toBe(2);
       expect(row.displayTitle).toBe("Current human revision");
-      expect(row.probableDuplicateChoice).toBe("create-as-new");
+      expect(row.probableDuplicateChoice).toBe(
+        status === "approved" ? "create-as-new" : null,
+      );
       expect(row.safety).toMatchObject({
         fresh: false,
         noDuplicate: false,

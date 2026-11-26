@@ -424,6 +424,15 @@ fn handwritten(db: &Database) -> anyhow::Result<Value> {
 }
 
 fn screen_delete(db: &Database, ids: &[&str], bulk: bool) -> anyhow::Result<Value> {
+    screen_delete_in_project(db, PROJECT, ids, bulk)
+}
+
+fn screen_delete_in_project(
+    db: &Database,
+    project: &str,
+    ids: &[&str],
+    bulk: bool,
+) -> anyhow::Result<Value> {
     let context = serde_json::from_value(json!({
         "requestId":"screen", "eventUid":"screen-event", "origin":"human",
         "authorityRoute":"human-direct", "caller":"human-ui",
@@ -436,7 +445,7 @@ fn screen_delete(db: &Database, ids: &[&str], bulk: bool) -> anyhow::Result<Valu
             .collect();
         crate::chronicle_bulk::agent_chronicle_bulk_mutate_with_authority_impl(
             db,
-            serde_json::from_value(json!({"projectId":PROJECT,"sessionId":"session",
+            serde_json::from_value(json!({"projectId":project,"sessionId":"session",
                 "surface":"manual","requestId":"screen","operations":operations}))?,
             Some(context),
         )
@@ -445,7 +454,7 @@ fn screen_delete(db: &Database, ids: &[&str], bulk: bool) -> anyhow::Result<Valu
         agent_event_delete_with_authority_impl(
             db,
             AgentEventIdPayload {
-                project_id: PROJECT.into(),
+                project_id: project.into(),
                 session_id: "session".into(),
                 surface: Some("manual".into()),
                 event_id: ids[0].into(),
@@ -454,6 +463,103 @@ fn screen_delete(db: &Database, ids: &[&str], bulk: bool) -> anyhow::Result<Valu
             context,
         )
     }
+}
+
+mod chronicle_apply_revisions {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/chronicle_apply_revisions.rs"
+    ));
+}
+
+#[test]
+fn readers_accept_an_applied_proposal_rejected_by_screen_delete() -> anyhow::Result<()> {
+    use crate::narrative_extraction::{
+        narrative_extraction_get_run_review_bundle, narrative_extraction_list_scene_proposals,
+        nir1_chronicle_index::{
+            publish_chronicle_index_build, test_support::Fixture, NirIndexPublishRead,
+        },
+        ListSceneProposalsPayload, RunRefPayload, SceneProposalChronicleState,
+        SceneProposalReviewState,
+    };
+
+    let fixture = Fixture::new();
+    let db = &fixture.db;
+    let project = fixture.project();
+    let run = fixture.manifest["runId"].as_str().unwrap();
+    let revisions: Vec<String> = serde_json::from_value(fixture.manifest["revisionIds"].clone())?;
+    let target = &revisions[0];
+    enable_manual_apply_for_test(db);
+    chronicle_apply_revisions::prepare_and_apply_revisions(db, project, run, &revisions, "import");
+    let (proposal, event): (String, String) = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT proposal_id, applied_entity_id FROM narrative_proposal_applications WHERE revision_id=?1",
+            [target], |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    })?;
+    let (_, before) = fixture.prepare();
+    assert!(before
+        .iter()
+        .any(|document| &document.revision_id == target));
+    screen_delete_in_project(db, project, &[&event], false)?;
+
+    let page = narrative_extraction_list_scene_proposals(
+        db,
+        ListSceneProposalsPayload {
+            project_id: project.into(),
+            scene_id: fixture.manifest["s1"].as_str().unwrap().into(),
+            cursor: None,
+            limit: None,
+        },
+    )?;
+    let item = page
+        .items
+        .iter()
+        .find(|item| item.proposal_id == proposal)
+        .expect("deleted event's proposal");
+    assert_eq!(&item.revision_id, target);
+    assert_eq!(item.review_state, SceneProposalReviewState::Rejected);
+    assert_eq!(item.chronicle_state, SceneProposalChronicleState::Applied);
+
+    let bundle = narrative_extraction_get_run_review_bundle(
+        db,
+        RunRefPayload {
+            run_id: run.into(),
+            project_id: project.into(),
+            chronicle_blocked_discard: None,
+        },
+    )?;
+    let row = bundle["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["proposalId"] == proposal)
+        .unwrap();
+    assert_eq!(row["status"], "rejected");
+    assert_eq!(
+        row["latestDecision"]["actorId"],
+        "native:event-existence-sync"
+    );
+    assert_eq!(row["application"]["revisionId"], target.as_str());
+    assert_eq!(row["application"]["appliedEntityId"], event);
+
+    let (plan, documents) = fixture.prepare();
+    assert!(documents
+        .iter()
+        .all(|document| &document.revision_id != target));
+    let count = documents.len();
+    let published =
+        publish_chronicle_index_build(db, &fixture.runtime, plan, fixture.outcomes(documents))?;
+    assert!(
+        matches!(
+            published,
+            NirIndexPublishRead::Published {
+                candidate_count, ..
+            } if candidate_count == count
+        ),
+        "{published:?}"
+    );
+    Ok(())
 }
 
 fn replay(db: &Database, journal: &Value, direction: &str, request: &str) -> anyhow::Result<Value> {
