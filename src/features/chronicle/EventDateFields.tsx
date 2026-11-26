@@ -40,6 +40,11 @@ export interface EventDateFieldsProps {
   endGranularity: EventGranularity;
   onPatch: (patch: EventDatePatch) => void;
   lang?: DateLang;
+  /**
+   * 年表の出来事の欄（CED/1 の N6）。開始の「なし」を選べない。日時の無い出来事
+   * （取り消しや復元で戻ったもの）は「なし」を選択済みで見せ、年月日と日時だけ選べる。
+   */
+  requireDate?: boolean;
 }
 
 const selectCls =
@@ -66,6 +71,7 @@ export function EventDateFields({
   endGranularity,
   onPatch,
   lang,
+  requireDate = false,
 }: EventDateFieldsProps) {
   const { t } = useTranslation();
   const [pickerOpen, setPickerOpen] = useState<"start" | "end" | null>(null);
@@ -153,6 +159,12 @@ export function EventDateFields({
     }
   };
 
+  const startOptions: readonly EventGranularity[] = !requireDate
+    ? EVENT_GRANULARITIES
+    : startGranularity === "none"
+      ? ["none", "day", "time"]
+      : EVENT_GRANULARITIES.filter((g) => g !== "none");
+
   const startResolved =
     startGranularity === "none"
       ? ""
@@ -186,8 +198,8 @@ export function EventDateFields({
           aria-label={t("chronicle.startGranularity", "開始の粒度")}
           className={selectCls}
         >
-          {EVENT_GRANULARITIES.map((g) => (
-            <option key={g} value={g}>
+          {startOptions.map((g) => (
+            <option key={g} value={g} disabled={requireDate && g === "none"}>
               {t(`chronicle.granularity.${g}`, g)}
             </option>
           ))}

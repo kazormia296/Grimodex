@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use grimodex_core::chronicle_time::{
-    normalize_chronicle_timestamp, resolve_chronicle_granularity,
+    normalize_chronicle_timestamp, require_event_date, resolve_chronicle_granularity,
     validate_canonical_chronicle_date_range, validate_chronicle_date_range, ChronicleDateRange,
     ChronicleTimestamp,
 };
@@ -2660,6 +2660,7 @@ pub fn chronicle_create_event(
     let reveal_scene_id = input.reveal_scene_id.filter(|s| !s.is_empty());
 
     in_immediate_tx(conn, |conn| {
+        require_event_date(input.start_time, start_granularity)?;
         let canonical_start = normalize_chronicle_timestamp(ChronicleTimestamp {
             day: input.start_time,
             minute: input.start_minute,
@@ -2827,23 +2828,17 @@ pub fn chronicle_update_event(
             base_version,
             current.version
         );
-        let touches_chronicle_date = patch.start_time.is_some()
-            || patch.end_time.is_some()
-            || patch.start_minute.is_some()
-            || patch.end_minute.is_some()
-            || patch.start_granularity.is_some()
-            || patch.end_granularity.is_some();
         let start_granularity = resolve_chronicle_granularity(
             patch.start_granularity,
             &current.start_granularity,
-            patch.start_time.is_some(),
-            patch.start_minute.is_some(),
+            patch.start_time.is_some() && patch.start_time != current.start_time,
+            patch.start_minute.is_some() && patch.start_minute != current.start_minute,
         );
         let end_granularity = resolve_chronicle_granularity(
             patch.end_granularity,
             &current.end_granularity,
-            patch.end_time.is_some(),
-            patch.end_minute.is_some(),
+            patch.end_time.is_some() && patch.end_time != current.end_time,
+            patch.end_minute.is_some() && patch.end_minute != current.end_minute,
         );
         let merged_start = ChronicleTimestamp {
             day: patch.start_time.or(current.start_time),
@@ -2855,7 +2850,14 @@ pub fn chronicle_update_event(
             minute: patch.end_minute.or(current.end_minute),
             granularity: end_granularity,
         };
+        let touches_chronicle_date = merged_start.day != current.start_time
+            || merged_start.minute != current.start_minute
+            || merged_start.granularity != current.start_granularity
+            || merged_end.day != current.end_time
+            || merged_end.minute != current.end_minute
+            || merged_end.granularity != current.end_granularity;
         let (canonical_start, canonical_end) = if touches_chronicle_date {
+            require_event_date(merged_start.day, merged_start.granularity)?;
             let start = normalize_chronicle_timestamp(merged_start);
             let end = normalize_chronicle_timestamp(merged_end);
             validate_canonical_chronicle_date_range(ChronicleDateRange { start, end })?;
@@ -2863,10 +2865,12 @@ pub fn chronicle_update_event(
         } else {
             // Preserve legacy coarse+minute rows during unrelated writes while
             // retaining the established range/minute compatibility checks.
-            validate_chronicle_date_range(ChronicleDateRange {
-                start: merged_start,
-                end: merged_end,
-            })?;
+            if require_event_date(merged_start.day, merged_start.granularity).is_ok() {
+                validate_chronicle_date_range(ChronicleDateRange {
+                    start: merged_start,
+                    end: merged_end,
+                })?;
+            }
             (merged_start, merged_end)
         };
         if let Some(codex_id) = patch.primary_codex_id {
@@ -4975,7 +4979,7 @@ pub(crate) mod tests {
             ),
             (
                 chronicle_create_input("coarse without day", None, None, "day", None, None, "none"),
-                "granularity 'day' requires a day",
+                grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED,
             ),
             (
                 chronicle_create_input(
@@ -4999,7 +5003,7 @@ pub(crate) mod tests {
                     None,
                     "day",
                 ),
-                "end endpoint requires a start endpoint",
+                grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED,
             ),
         ];
 
@@ -5050,7 +5054,7 @@ pub(crate) mod tests {
         insert_project(&conn, "p1", "Novel");
         insert_scene(&conn, "s1", "p1", "Scene", "draft");
         let scene_ids = ["s1".to_string()];
-        let mut input = chronicle_create_input("linked", None, None, "none", None, None, "none");
+        let mut input = chronicle_create_input("linked", Some(0), None, "day", None, None, "none");
         input.scene_ids = &scene_ids;
         let created = chronicle_create_event(&conn, input).expect("create linked event");
         let initial_token: String = conn
@@ -5353,7 +5357,7 @@ pub(crate) mod tests {
             }
         );
 
-        let undated = chronicle_update_event(
+        let error = chronicle_update_event(
             &conn,
             "p1",
             "sess",
@@ -5366,23 +5370,14 @@ pub(crate) mod tests {
                 ..ChroniclePatch::default()
             },
         )
-        .expect("point to undated update")
-        .expect("event exists");
-        assert_eq!(undated.version, 3);
+        .expect_err("cannot clear the start date");
         assert_eq!(
-            chronicle_date_state(&conn, &created.entity_id),
-            ChronicleDateState {
-                start_time: None,
-                end_time: None,
-                start_minute: None,
-                end_minute: None,
-                start_granularity: "none".to_string(),
-                end_granularity: "none".to_string(),
-                version: 3,
-            }
+            error.to_string(),
+            grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED
         );
-        assert_eq!(table_count(&conn, "undo_journal"), 3);
-        assert_eq!(table_count(&conn, "change_events"), 3);
+        assert_eq!(chronicle_date_state(&conn, &created.entity_id).version, 2);
+        assert_eq!(table_count(&conn, "undo_journal"), 2);
+        assert_eq!(table_count(&conn, "change_events"), 2);
     }
 
     #[test]

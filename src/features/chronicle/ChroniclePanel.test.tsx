@@ -734,8 +734,12 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
 
     fireEvent.click(screen.getByTestId("toolbar-new"));
     await waitFor(() => {
+      // 日時の無い選択の位置は使わず、最も後の日（100）の翌日に確度「不明」で置く。
       expect(eventMocks.uiCreateEvent).toHaveBeenCalledWith({
         title: "新しいイベント",
+        startTime: 101,
+        startGranularity: "day",
+        precision: "unknown",
       });
     });
   });
@@ -960,6 +964,7 @@ describe("ChroniclePanel mixed dated/undated axis", () => {
         startTime: 200,
         startMinute: 720,
         startGranularity: "time",
+        precision: "exact",
       });
     });
   });

@@ -328,6 +328,45 @@ fn zip_ops(
 }
 
 #[test]
+fn temporal_event_date_change_requires_a_dated_start() {
+    let db = migrated_db();
+    seed_event(&db, "legacy", "Legacy");
+    let items = [(
+        "temporal.event.metadata.patch",
+        json!({
+            "eventId": "legacy", "baseVersion": 0, "startTime": 5, "startGranularity": "none",
+            "endGranularity": "none", "precision": "unknown"
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-date", "set-date", &items);
+    let err = prepare_then_apply(
+        &db,
+        build_prepare(
+            "req-date",
+            "digest-date",
+            "set-date",
+            "run-date",
+            zip_ops(&pairs, &items),
+        ),
+    )
+    .expect_err("changed day with none granularity");
+    assert!(
+        format!("{err:#}").contains(grimodex_core::chronicle_time::CHRONICLE_EVENT_DATE_REQUIRED)
+    );
+    apply_items(
+        &db,
+        "date-unchanged",
+        &[(
+            "temporal.event.metadata.patch",
+            json!({
+                "eventId": "legacy", "baseVersion": 0, "startGranularity": "none",
+                "endGranularity": "none", "precision": "unknown"
+            }),
+        )],
+    );
+}
+
+#[test]
 fn constraint_scene_time_and_event_time_atomic_commit() {
     let db = migrated_db();
     seed_scene(&db, "scene-1", "Scene One");

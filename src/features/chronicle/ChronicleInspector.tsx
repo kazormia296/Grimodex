@@ -607,6 +607,7 @@ export function ChronicleInspector({
                 endGranularity={event.endGranularity}
                 onPatch={onPatch}
                 lang={lang}
+                requireDate={!isScene}
               />
             </div>
 

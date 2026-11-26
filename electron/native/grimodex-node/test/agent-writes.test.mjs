@@ -515,6 +515,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   const event = {
     ...canonical("agent-tool:event-napi-request-1", "ai-apply"),
     eventId: "event-napi-entity-attempt-1",
+    startTime: 0,
     title: "到着",
   };
   const eventFirst = JSON.parse(await backend.agentEventCreate(event));
@@ -646,6 +647,7 @@ test("agentEventSetParticipants preserves canonical authority evidence through n
     await backend.agentEventCreate({
       ...canonical("agent-tool:participant-event", "ai-apply"),
       eventId: "participant-event-napi",
+      startTime: 0,
       title: "参加者証跡",
     }),
   );

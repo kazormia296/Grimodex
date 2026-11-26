@@ -572,6 +572,7 @@ fn ev_create(db: &Database, id: &str, scene: &str, codex: &str) -> anyhow::Resul
     agent_event_create_with_authority_impl(
         db,
         de::<AgentEventCreatePayload>(json!({
+            "startTime": 0, "startGranularity": "day",
             "requestId": format!("create-{id}"), "eventId": id, "projectId": P,
             "sessionId": SESSION, "surface": "manual", "title": "Event original",
             "ordinal": "a0", "kind": "generic",
@@ -698,6 +699,7 @@ fn bare_event_create(db: &Database, rid: &str, eid: &str, title: &str) -> anyhow
     agent_event_create_with_authority_impl(
         db,
         de::<AgentEventCreatePayload>(json!({
+            "startTime": 0, "startGranularity": "day",
             "requestId": rid, "eventId": eid, "projectId": P,
             "sessionId": SESSION, "surface": "manual", "title": title,
             "ordinal": "a0", "kind": "generic",
@@ -1271,6 +1273,7 @@ fn codex_only_restore_keeps_the_participants_and_leaves_the_event_writable() {
         agent_event_create_with_authority_impl(
             &db,
             de::<AgentEventCreatePayload>(json!({
+                "startTime": 0, "startGranularity": "day",
                 "requestId": "create-e1", "eventId": "e1", "projectId": P,
                 "sessionId": SESSION, "surface": "manual", "title": "orig",
                 "ordinal": "a0", "kind": "generic", "participantCodexIds": ["c1", "c2"],
@@ -2375,6 +2378,7 @@ fn codex_only_restore_that_removes_the_primary_character_leaves_the_event_writab
         agent_event_create_with_authority_impl(
             &db,
             de::<AgentEventCreatePayload>(json!({
+                "startTime": 0, "startGranularity": "day",
                 "requestId": "create-e1", "eventId": "e1", "projectId": P,
                 "sessionId": SESSION, "surface": "manual", "title": "orig",
                 "ordinal": "a0", "kind": "generic", "participantCodexIds": ["c1"],
