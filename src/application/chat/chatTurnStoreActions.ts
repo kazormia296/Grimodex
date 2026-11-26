@@ -48,6 +48,9 @@ import {
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
+  isTruncatedStopReason,
+  agentContinuationReason,
+  streamAssistantMetadata,
   parseMetadataRecord,
   sendableHistory,
   turnErrorText,
@@ -102,7 +105,6 @@ import type {
   AgentMessagePayload,
   ToolCallRecord,
 } from "@/features/chat/agent/agentTypes";
-import { isTruncatedStopReason } from "@/features/chat/agent/agentTypes";
 import {
   getCurrentProjectId,
   getLoadedProjectId,
@@ -1360,7 +1362,6 @@ function createChatTurnStoreActions(
             tokensIn: agentTokensIn,
             tokensOut: agentTokensOut,
             outputTruncated,
-            stoppedReason: agentStoppedReason,
           } = agentLoopResult;
 
           const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
@@ -1372,24 +1373,13 @@ function createChatTurnStoreActions(
             return await assistantRow.settleAbandoned(currentAgentModel);
           }
 
-          // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
-          // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。
-          // 出力の打ち切りの続行は Agent モードの turn にだけ出す。続行は Agent モードを
-          // 強制するので、道具の無い公開の Web 検索の turn に出すと作品を読む経路に変わる。
-          const continuationReason = outputTruncated
-            ? agentModeForThisSend && !stoppedAgentTurnCanFinalize
-              ? "output"
-              : null
-            : agentStoppedReason === "limit_calls" ||
-                agentStoppedReason === "limit_tokens"
-              ? "limit"
-              : null;
-          if (continuationReason) {
+          const reason = agentContinuationReason(
+            agentLoopResult,
+            agentModeForThisSend && !stoppedAgentTurnCanFinalize,
+          );
+          if (reason) {
             set({
-              agentContinuation: {
-                sessionId: sessionIdForPersist,
-                reason: continuationReason,
-              },
+              agentContinuation: { sessionId: sessionIdForPersist, reason },
             });
           }
 
@@ -2079,42 +2069,21 @@ function createChatTurnStoreActions(
                   : null,
               });
 
-              // Build metadata: thinking blocks + stopped flag
-              const metadataObj: Record<string, unknown> = {};
+              // Build metadata: thinking blocks + codex records + stop flags
               const outputTruncated = isTruncatedStopReason(info.stopReason);
-              if (thinkingAccumulator) {
-                metadataObj.thinking_blocks = [
-                  { thinking: thinkingAccumulator },
-                ];
-              }
-              if (sendControl.transport === "codex-app-server") {
-                metadataObj.runtime = "codex-app-server";
-                metadataObj.usage_source = "app-server";
-                metadataObj.stop_reason = info.stopReason;
-                if (codexThreadId) metadataObj.codex_thread_id = codexThreadId;
-                if (codexTurnId) metadataObj.codex_turn_id = codexTurnId;
-                if (codexItems.size > 0) {
-                  metadataObj.codex_item_ids = [...codexItems.keys()];
-                  metadataObj.codex_items = [...codexItems.values()].map(
-                    (item) => {
-                      const safeItem = { ...item };
-                      delete safeItem.raw;
-                      return safeItem;
-                    },
-                  );
-                }
-                if (codexWarnings.length > 0) {
-                  metadataObj.codex_warnings = codexWarnings;
-                }
-              }
-              if (info.stopReason === "stopped") {
-                metadataObj.stopped = true;
-              }
-              if (outputTruncated) metadataObj.output_truncated = true;
-              const chatMetadata =
-                Object.keys(metadataObj).length > 0
-                  ? JSON.stringify(metadataObj)
-                  : undefined;
+              const chatMetadata = streamAssistantMetadata({
+                stopReason: info.stopReason,
+                thinking: thinkingAccumulator,
+                codex:
+                  sendControl.transport === "codex-app-server"
+                    ? {
+                        threadId: codexThreadId,
+                        turnId: codexTurnId,
+                        items: codexItems,
+                        warnings: codexWarnings,
+                      }
+                    : null,
+              });
 
               // draft を一度だけ確定 messages へ移し、以後は通常 message として扱う。
               finalizeStreamingDraft(chatMetadata);
