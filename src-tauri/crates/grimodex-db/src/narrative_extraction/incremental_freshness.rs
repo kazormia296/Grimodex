@@ -8734,7 +8734,8 @@ mod tests {
         fn the_full_migration_from_an_older_schema_releases_before_the_stamp() {
             let db = dead_lettered_by_contention();
             let before = terminal_records(&db);
-            set_user_version(&db, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1);
+            // SCHEMA 45 introduced this release; these source markers stay below that boundary.
+            set_user_version(&db, 44);
             db.migrate().expect("full migration");
             assert_released_and_caught_up(&db, &before);
         }
@@ -8773,8 +8774,8 @@ mod tests {
         #[test]
         fn the_restore_preflight_of_an_older_workspace_releases() {
             for from in [
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 5,
+                44,
+                42,
             ] {
                 let db = dead_lettered_by_contention();
                 let before = terminal_records(&db);
@@ -8814,8 +8815,8 @@ mod tests {
         #[test]
         fn a_failure_after_the_release_rolls_it_back_and_a_later_open_retries() {
             for from in [
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 2,
+                44,
+                43,
             ] {
                 let db = dead_lettered_by_contention();
                 let before = terminal_records(&db);
