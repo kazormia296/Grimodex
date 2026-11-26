@@ -109,7 +109,7 @@ describe("index.ts: the owner is an egress participant, a quit step and an event
 describe("ipc.ts: the router hands the owner its invoke and its workspace-switch lease", () => {
   it("the shell handlers come from the route with the invoke's sender, window and issued identity (never the context-less ones)", () => {
     expect(IPC).toMatch(
-      /\.\.\.\(isMastraAgentTurnCommand\(cmd\) \? mastraAgentTurn\.handlersFor\(\{ sender: event\.sender, win, callerIdentity, \}\) : \{\}\),/,
+      /\.\.\.\(isMastraAgentTurnCommand\(cmd\) \|\| cmd === MASTRA_AGENT_TURN_ANSWER_COMMAND \? mastraAgentTurn\.handlersFor\(\{ sender: event\.sender, win, callerIdentity, \}\) : \{\}\),/,
     );
     expect(IPC).not.toMatch(/\.\.\.mastraAgentTurn\.handlers[^F]/);
     expect(IPC).toMatch(/owner: mastraTurnOwner,/);

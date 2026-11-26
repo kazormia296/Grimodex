@@ -193,7 +193,7 @@ agentAutoDefault.enabled
 **State:** [agent-collaboration-roadmap](agent-collaboration-roadmap.md)のRelease A〜Bが正本。
 本書では再定義しない。
 
-本書からの引き継ぎ事項（あちらのDecision Gate A／Release B設計への入力）:
+本書からの引き継ぎ事項（あちらのRelease B設計への入力。Decision Gate Aは2026-11-26にRelease Bの前提から外れた。[DR-ST-6](session-tasks-decisions-2026-11.md#dr-st-6-decision-gate-a)）:
 
 - ApprovalRequestは`waiting_approval`のdurable interactionへ昇格する。
   Gate Aで定めた型・digest・交換APIをそのまま永続化する。

@@ -794,9 +794,7 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     // Native module.
     expect(text).not.toMatch(/@mastra\b/);
     expect(text).not.toMatch(/from\s+["'][^"']*native[^"']*["']/i);
-    // The wire module imports nothing but the M4 tool names (the renderer
-    // compiles it). `agentReadToolDefinitions.ts` is itself a leaf with no
-    // import (4c-1 W1: `tools` is a list of M4 names, checked by the parser).
+    // The wire imports only the shared M4 names, UI definitions and settings catalog.
     const wire = stripComments(
       readFileSync(
         path.join(REPO, "electron/shared/mastraAgentTurnWire.ts"),
@@ -806,7 +804,11 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     const wireImports = [
       ...wire.matchAll(/^\s*import\b[\s\S]*?from\s+["']([^"']+)["']/gm),
     ].map((match) => match[1]);
-    expect(wireImports).toEqual(["./agentReadToolDefinitions.js"]);
+    expect(wireImports).toEqual([
+      "./agentReadToolDefinitions.js",
+      "./mastraUiToolDefinitions.js",
+      "./agentSettingCatalog.js",
+    ]);
     const toolNames = stripComments(
       readFileSync(
         path.join(REPO, "electron/shared/agentReadToolDefinitions.ts"),
@@ -814,6 +816,14 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
       ),
     );
     expect(toolNames).not.toMatch(/^\s*import\b/m);
+    const uiDefinitions = stripComments(
+      readFileSync(
+        path.join(REPO, "electron/shared/mastraUiToolDefinitions.ts"),
+        "utf8",
+      ),
+    );
+    expect(uiDefinitions).not.toMatch(/chatAgentIr|chatAgentIR|chat IR/iu);
+    expect(uiDefinitions).not.toMatch(/from\s+["'][^"']*chatAgentIr/iu);
     // Nothing else in the product's Main names the gate or its seam.
     const namers = productSources()
       .filter(

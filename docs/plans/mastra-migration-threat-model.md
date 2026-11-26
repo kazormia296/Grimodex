@@ -2,6 +2,7 @@
 
 - 状態：**確定（U-1、2026-11-19 にユーザーが「このまま確定」と回答）**。変更は新しい確認を要する。
 - 改訂の記録（2026-11-21、ユーザー確認済み）：[MP-4 の判断](mastra-mp4-decisions.md)の決定 3 と回答 3 により、T13・D16・W11 と残るリスクの 1 行を足し、chat IR の文言を「IR を開ける lane まで閉（MP-4 を含む）」に揃えた。
+- 改訂の記録（2026-11-26、ユーザー確認済み）：[MP-5 の判断](mastra-mp5-decisions.md)の Q2 により、W12 を足した。
 - 同時の回答：
   - 残るリスクのうち、次の 3 つを、旗を開ける前の受入れの条件に上げる。
     - P5(c)：tool の本文を observer と題名から絞る。
@@ -447,6 +448,8 @@ Mastra の既定の送信先（google／gemini、同 provider の低価格 model
 - 終了の証跡：呼出しの返り（settle）。**slot の計数だけに使う**。永続化の終了証跡ではない（D11 の「`settled()` は証跡にしない」と区別する。read は何も永続しない）。
 - error／timeout／onClosed：owner が所有する。失敗と timeout は turn の失敗。caller の timeout は Native を止めないので、計数は settle まで残す。
 - 永続 restart state：無し（read だけ）。
+
+**W12 main→画面の保留中の問い合わせ（MP-5、Q2、2026-11-26）**：owner は main の turn owner。回答は認可に使わず、MP-5 の問い合わせ（UI 系 7 本）では Mastra 組込みの承認・suspend／resume・`resumeData` を使わない（MP-6 の write の承認は MP-6 で決める）。`ask_user` は 30 分、他の 6 本は 10 秒。Stop・強制中断（profile の制限・workspace の切替・quit）・画面の喪失で閉じ、遅い回答は捨て、再起動後に復元しない。待ちの間 turn は main と書込み行列の枠を持ち続け、workspace の切替が進まず、W9 の 30 秒上限の前提が崩れる。
 
 ### 4.2 GDX-PRECHECK-001 の項目ごとの、spike で確かめたことと未確認
 

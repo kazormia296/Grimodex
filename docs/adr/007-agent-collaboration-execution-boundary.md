@@ -275,3 +275,10 @@ idempotency、race test、startup reconciliationを必要とする。
 
 1. **「destructive、external、publish、credential、広範なstructure effectは常に明示的な人間承認を必要とする。」** この節は、Task の review を対象にし、MCP に触れない。MCP の削除は、ユーザーの選択により、承認なしである（設定で許した、1 つの作品に固定した接続だけ。AWA/1-2。確認 70・74・77・142）。MCP の削除は、SRD/1 の X（出来事が無くなったら承認を外す規則）が入ってから開ける。間に合わなければ、閉じたまま公開する。Task の review の文は、変えない。
 2. **保留中の承認の保持（AgentRunInteraction の節）。** 「request payload、対象Session、status、OCC versionを永続化する」に対し、AWA/1 の承認の要求は、main のメモリだけに置く（再起動で消える）。型・指紋・交換の API は、後で永続にできる形にする。renderer を失った後の Evidence の保持は、満たさない。ADR 008 が許すメモリ置きの範囲である（ADR 008 の同日の追補を参照）。
+
+## 追補（2026-11-26）：SessionTasks の評価の時期（DR-ST-6）
+
+判断の経緯は [SessionTasks の判断記録](../plans/session-tasks-decisions-2026-11.md)。利用者の回答（構造化質問、2026-11-26）による。
+
+1. **「SessionTasksは、永続planと回復性の問題が実運用で観測された後に、製品上の回答として評価する。」**（Consequences）Release B（SessionTasks）は、実運用での観測（Roadmap の Decision Gate A）を待たずに作る。Gate A の問いは、作った後の振り返りに使う。§6（自動計画と、重大な authority の変更だけの承認）、§5（durable interaction）、不変条件 12 は変えない。
+2. SessionTask の手順の完了の方針は、ADR 012 の同日の追補に従う。§6 の Agent が自動で行えることに、本文などの書き換え（ADR 008 の `mutate`・`destructive`）を伴わない手順の `done` への遷移を加える（DR-ST-3）。§2 の「AgentRun の成功は WorkTask の完了を意味しない」、§6 の明示の承認の対象、不変条件 12・15 は変えない。

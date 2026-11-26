@@ -255,6 +255,89 @@ describe("runAgentLoop", () => {
   });
 });
 
+describe("runAgentLoop — output truncation", () => {
+  const truncatedResponses: [string, AgentLLMResponse][] = [
+    [
+      "text max_tokens",
+      {
+        blocks: [{ type: "text", content: "partial" }],
+        stopReason: "max_tokens",
+      },
+    ],
+    [
+      "thinking max_tokens",
+      {
+        blocks: [{ type: "thinking", content: "partial", signature: "sig" }],
+        stopReason: "max_tokens",
+      },
+    ],
+    [
+      "tool_use max_tokens",
+      {
+        blocks: [
+          { type: "text", content: "partial" },
+          { type: "tool_use", id: "tool-1", name: "search_codex", input: {} },
+        ],
+        stopReason: "max_tokens",
+      },
+    ],
+    [
+      "text length",
+      {
+        blocks: [{ type: "text", content: "partial" }],
+        stopReason: "length",
+      } as unknown as AgentLLMResponse,
+    ],
+  ];
+
+  it.each(truncatedResponses)(
+    "reports %s without executing tools",
+    async (_label, response) => {
+      const executeTool = vi.fn(async () => toolResult());
+      const result = await runAgentLoop(
+        baseOptions({
+          sendToLLM: vi.fn().mockResolvedValue(response),
+          executeTool,
+        }),
+      );
+
+      expect(result.outputTruncated).toBe(true);
+      expect(executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports no truncation after tool_use followed by end_turn", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("search_codex"))
+      .mockResolvedValueOnce(endResponse());
+    const executeTool = vi.fn(async () => toolResult());
+    const result = await runAgentLoop(baseOptions({ sendToLLM, executeTool }));
+
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(result.outputTruncated).toBe(false);
+  });
+
+  it("does not mark an aborted truncated response", async () => {
+    let aborted = false;
+    const result = await runAgentLoop(
+      baseOptions({
+        shouldAbort: () => aborted,
+        sendToLLM: vi.fn<AgentLoopOptions["sendToLLM"]>(async () => {
+          aborted = true;
+          return {
+            blocks: [{ type: "text", content: "partial" }],
+            stopReason: "max_tokens",
+          };
+        }),
+      }),
+    );
+
+    // 停止の扱い（stoppedReason と後続の処理）は呼び手のまま変えない。
+    expect(result.outputTruncated).toBe(false);
+  });
+});
+
 // ── tool_result content の整形（not-found 格上げ / 個別サイズ上限）──────────────
 describe("runAgentLoop — tool_result content shaping", () => {
   /** 2 ターン目に LLM へ渡った tool_result メッセージを取り出す。 */

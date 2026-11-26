@@ -17,6 +17,7 @@ import {
   MASTRA_AGENT_TURN_COMMANDS,
   MASTRA_AGENT_TURN_START_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
 } from "../shared/mastraAgentTurnWire.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import {
@@ -498,6 +499,23 @@ describe("the journey seam's launch (DR-MP3-17)", () => {
 });
 
 describe("Main's gate", () => {
+  it("validates an answer and refuses it when there is no pending question", async () => {
+    const route = createMastraAgentTurnRoute({ open: false });
+    const valid = {
+      requestId: "0f14e45f-ceea-467e-a5d4-1b9c6d0e2f3a",
+      refusal: "authority-revoked",
+    };
+    await expect(
+      route.handlers[MASTRA_AGENT_TURN_ANSWER_COMMAND]!(valid),
+    ).resolves.toEqual({ status: "refused", reason: "no-pending" });
+    await expect(
+      route.handlers[MASTRA_AGENT_TURN_ANSWER_COMMAND]!({
+        ...valid,
+        approved: true,
+      }),
+    ).resolves.toEqual({ status: "refused", reason: "invalid" });
+  });
+
   it("refuses both commands with a typed gate-closed value before identity, the profile gate and any backend call", async () => {
     mocks.app.isPackaged = true;
     const r = await rig();
