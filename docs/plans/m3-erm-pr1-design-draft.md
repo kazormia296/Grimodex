@@ -10,7 +10,7 @@ Status: 草稿（起案者 grimodex-13、2026-11-26）。実装の前の技術�
 
 - schema の版上げ 1 回。承認された 3 群（規則の版の履歴／統合・分割の履歴と項目の対応表／提案が使った規則と当て直しの結果）の表を**全部この版で作る**。この 3 群について後の PR で版を上げ直さない（「版上げ 1 回」はこの 3 群に限る。位置つきの言及の索引など、ADR 015 §5.2 の別の索引は別の版上げになりうる）。
 - 規則の revision の typed native writer（作成・置き換え・撤回）と reader（Rust だけ）。
-- 4 つの台帳への登録：profile egress、Change Feed writer／protected writer、スナップショットの復元（対象外の分類と park）、schema contract。`policies/narrative/*.json` を変えるので impact gate の対象。
+- 5 つの台帳への登録：profile egress、Change Feed writer（`change-feed-writers.json`）、protected writer（`protected-writers.json`）、スナップショットの復元（対象外の分類と park）、schema contract。`policies/narrative/*.json` を変えるので impact gate の対象。
 - 守りの試験（§6）。
 
 入れないもの（後の PR）：
@@ -77,12 +77,12 @@ Status: 草稿（起案者 grimodex-13、2026-11-26）。実装の前の技術�
 
 ## 3. Change Feed
 
-- canonical の `change_events`：domain は新しく `identity-correction`、op は `rule.revise`。**payload は `ruleRevisionId`・`ruleId`・`kind`・`state` だけ**。表記・項目 ID・場面 ID・名前・理由は入れない。payload の外の列も固定する：`entity_type`＝`identity_correction_rule`、`entity_id`＝規則の revision の ID、`scene_id`＝NULL（場面 scope でも入れない）。監査の ZIP（`legacyEvidence.ts`）は `change_events` の全列を種類で絞らずそのまま出すため（codex-jobs/m3-erm-pr1-facts.out.md の 5）。
+- canonical の `change_events`：domain は新しく `identity-correction`、op は `rule.revise`。**payload は `ruleRevisionId`・`ruleId`・`kind` だけ**（作者の回答の「規則の ID と種類だけ」。撤回かどうかの `state` も入れず、必要な読み手は revision の ID から typed reader で引く）。表記・項目 ID・場面 ID・名前・理由は入れない。payload の外の列も固定する：`entity_type`＝`identity_correction_rule`、`entity_id`＝規則の revision の ID、`scene_id`＝NULL（場面 scope でも入れない）。監査の ZIP（`legacyEvidence.ts`）は `change_events` の全列を種類で絞らずそのまま出すため（codex-jobs/m3-erm-pr1-facts.out.md の 5）。
 - 規則の event は Undo の対象にしない（取り消しは撤回の revision）。Undo・履歴の表示・timelapse の caption が知らない domain をどう扱うかは facts3 の結果で決める。
 - narrative の transaction：依存する提案の freshness を古くする伝播は narrative の表を読む（`load_change_batch_envelope`）。PR 1 では依存先が無いので、無効化の key は規則の ID までにとどめる（表記や項目 ID を key にすると、narrative の表が別の漏れ口になる）。当て直しは PR 3。
 - `change-feed-writers.json` の operation は `required`、`protected-writers.json` に表と writer を登録する。
 
-【作者の回答（2026-11-26、原文は handoff の m3-user-answers-20261126i.md の問 1）：「この形でよい」】訂正の記録は規則の ID と種類だけ。作者が自分で出す監査の ZIP と timelapse の ZIP は「AI に隠す」の守る先から外す。AI・検索・読者向けの書き出しがログを読むようになるときは、その時点で隠す判定を掛ける（その機能は別に伺う）。脅威モデルの版 v5 として ADR 015 に記録する。以下は回答の前の起案者の理由：理由：ZIP は作者向けの書き出しで、脅威モデルの (1) が出さない先として挙げるのは AI・検索・読者向けの書き出し。ID と種類からは、隠した人物の名前・表記・対応・理由は分からない。件数（規則の数）は分かるが、隠した人物かどうかとは結び付かない。
+【作者の回答（2026-11-26、原文は handoff の m3-user-answers-20261126i.md の問 1）：「この形でよい（推奨）」】訂正の記録は規則の ID と種類だけ。作者が自分で出す監査の ZIP と timelapse の ZIP は「AI に隠す」の守る先から外す。AI・検索・読者向けの書き出しがログを読むようになるときは、その時点で隠す判定を掛ける（その機能は別に伺う）。脅威モデルの版 v5 として ADR 015 に記録する。以下は回答の前の起案者の理由：理由：ZIP は作者向けの書き出しで、脅威モデルの (1) が出さない先として挙げるのは AI・検索・読者向けの書き出し。ID と種類からは、隠した人物の名前・表記・対応・理由は分からない。件数（規則の数）は分かるが、隠した人物かどうかとは結び付かない。
 
 ## 4. 読み取りの閉じ方（profile egress）
 
@@ -97,7 +97,7 @@ Status: 草稿（起案者 grimodex-13、2026-11-26）。実装の前の技術�
   - 理由：同じ DB のスナップショットは、書き換えも削除もしない表について常に今の部分集合になるので、「足すだけ」は何もしない復元と同じ。「置き換え」は確認済みの「版を残して書き換えない」とぶつかる。
   - 前提：スナップショットの中身が別の DB・別の作品から入る経路が無いこと（facts3 の問 4 で確かめる）。あれば前提が崩れるので見直す。
   - 結果：戻した項目に、スナップショットより後に作った規則が残る。項目が無ければ当たらず、PR 5 の健全性で示す。統合の後に Codex を戻すと lineage は実態とずれる。PR 2 がこれを列なしで読み取り時に導けるか（例：lineage の対象の項目が今ある・無いで判定）を、schema の独立レビューの問いに入れる。
-  - **画面で見える挙動**。作者の回答（2026-11-26、同じ記録の問 2）：「残す」。作品全体のバックアップからの復元では規則も一緒に戻る。
+  - **画面で見える挙動**。作者の回答（2026-11-26、同じ記録の問 2）：「残す（推奨）」。作品全体のバックアップからの復元では規則も一緒に戻る。回答の対象は規則と統合・分割の履歴（§1.1・§1.2 の 4 表）。適用の記録（§1.3）も部分復元の対象外にするのは起案者の判断で、理由は提案の表が部分復元の対象外であり、記録だけを戻すと参照先の版と合わなくなるため。
 - park：新しい FK は `project_id`、mappings／reference_assignments→operations、operations→operations（取り消し）、applications→proposal revisions・rule revisions だけで、復元で消える親を指さないので `NOT_PARKED` に理由つきで分類する。
 
 ## 6. 守りの試験（PR 1 で入れるもの）
