@@ -31,6 +31,7 @@ export const NATIVE_CLOSED_TABLES: readonly string[] = [
   "idempotency_requests",
   "messages",
   "mastra_memory_vectors",
+  "mastra_memory_vector_indexes",
   "mastra_message_parts",
   "mastra_observational_memory",
   "mastra_resources",
