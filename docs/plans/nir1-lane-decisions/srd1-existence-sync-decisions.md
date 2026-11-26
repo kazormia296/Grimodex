@@ -27,6 +27,13 @@
 - 元に戻す・やり直すの中の書き込みの失敗だけに、`NEX_EXISTENCE_SYNC_FAILED:` を付ける。元のエラーは Native のログに残す。
 - renderer は、この符号を version の衝突の文言より先に判定し、履歴の 2 つの積みを変えない（HK2・HK3）。
 
+## DR-SRD-X-4　期待を変えた既存の試験（設計 §7 の「読んで書き換える」）
+
+「取り込み → 取り込みの取り消し → やり直し」の後も、承認が残ることを期待していた 2 件。設計の表と確認 138（出来事が戻っても承認は自動では戻らない）に合わせた。印の無い出来事が戻ることの確かめは、残した。
+
+- `tests/narrative_extraction.rs` の `current_chronicle_unmarked_event_survives_undo_and_redo`：提案は却下（`removedVia` は `commit-undo`）。版と本文と封筒は変わらない。
+- `tests/narrative_nir1_retrieval_admission.rs` の `edited_revision_apply_survives_undo_and_redo_as_unmarked_events`：2 つの版は、関連する過去シーンに使えない。
+
 ## 見つけたこと（X の前からの挙動。直さない）
 
 - MCP の削除は、成功の後に同じ `request_id` を再送すると、Native の保存済みの応答に届く前の存在の確認で「見つからない」になる。二重の書き込みは無い。取り込んだ出来事は、MCP の経路では欄の所有の検査で消せない（試験で確かめた）ので、X の動きには影響しない。

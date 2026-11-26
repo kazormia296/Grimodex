@@ -1759,13 +1759,15 @@ fn edited_revision_apply_survives_undo_and_redo_as_unmarked_events() {
         assert_eq!(reveal, None);
     }
     drain_freshness(&db);
+    // SRD/1 X (確認 138): the undo revoked both approvals and redo does not
+    // restore them, so neither revision is used until the author re-approves.
     db.with_conn_mut(|conn| {
         for revision in &revisions {
-            assert_eligible(conn, &fixture, revision);
+            assert_unavailable(conn, &fixture, revision, fixture.scene("s2"));
         }
         Ok(())
     })
-    .expect("eligibility is unchanged after undo and redo");
+    .expect("revoked revisions stay unavailable after undo and redo");
 }
 
 /// 作者が編集して承認した版を、承認済みの現行の全提案と一緒に取り込む（取り込みの計画は、
