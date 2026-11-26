@@ -1239,6 +1239,9 @@ export interface NapiBackendLike {
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
   narrativeExtractionAppendHumanDecision(payload: unknown): Promise<string>;
   narrativeExtractionChronicleBulkApprove(payload: unknown): Promise<string>;
+  narrativeExtractionReapproveAppliedProposals(
+    payload: unknown,
+  ): Promise<string>;
   narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
   narrativeExtractionReviseAndDecideAsHuman(payload: unknown): Promise<string>;
   narrativeExtractionSetHumanFieldLock(payload: unknown): Promise<string>;
@@ -1574,6 +1577,67 @@ function requireSceneProposalsPayload(args: CommandArgs): CommandArgs {
     validated.limit = limit;
   }
   return validated;
+}
+
+function requireReapproveAppliedProposalsPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_extraction_reapprove_applied_proposals";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "targets"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const exactString = (
+    record: CommandArgs,
+    key: string,
+    path: string,
+  ): string => {
+    const value = requireNonEmptyString(record, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected a non-empty exact string`,
+      );
+    }
+    return value;
+  };
+  const projectId = exactString(payload, "projectId", "projectId");
+  const rawTargets = requireArray(payload, "targets", command);
+  if (rawTargets.length < 1 || rawTargets.length > 4096) {
+    throw new Error(
+      `invalid args \`targets\` for command \`${command}\`: expected 1..4096 items`,
+    );
+  }
+  const seenProposalIds = new Set<string>();
+  const targets = rawTargets.map((value, index) => {
+    const path = `targets[${index}]`;
+    const target = requireRecord({ value }, "value", command);
+    if (
+      Object.keys(target).length !== 2 ||
+      !Object.hasOwn(target, "proposalId") ||
+      !Object.hasOwn(target, "revisionId")
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected exactly proposalId and revisionId`,
+      );
+    }
+    const proposalId = exactString(target, "proposalId", `${path}.proposalId`);
+    if (seenProposalIds.has(proposalId)) {
+      throw new Error(
+        `invalid args \`${path}.proposalId\` for command \`${command}\`: duplicate proposalId`,
+      );
+    }
+    seenProposalIds.add(proposalId);
+    return {
+      proposalId,
+      revisionId: exactString(target, "revisionId", `${path}.revisionId`),
+    };
+  });
+  return { projectId, targets };
 }
 
 function requireReviewResumabilityPayload(args: CommandArgs): CommandArgs {
@@ -11781,6 +11845,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "narrative_extraction_chronicle_bulk_approve",
           ),
         ),
+      ),
+  },
+  narrative_extraction_reapprove_applied_proposals: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionReapproveAppliedProposals,
+          "narrativeExtractionReapproveAppliedProposals",
+        )(requireReapproveAppliedProposalsPayload(a)),
       ),
   },
   narrative_extraction_revise_and_decide: {

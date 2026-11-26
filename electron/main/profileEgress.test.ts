@@ -1317,6 +1317,21 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
+  it("classifies applied proposal reapproval as internal, not own-data-read", () => {
+    const command = "narrative_extraction_reapprove_applied_proposals";
+    const ledgers = d2aRouteLedgersForTest();
+    expect(ledgers.internal, command).toContain(command);
+    for (const other of [
+      "denied",
+      "licenseControl",
+      "ownDataRead",
+      "nir1Publication",
+      "nir1RestrictedOnly",
+    ] as const) {
+      expect(ledgers[other], `${other} / ${command}`).not.toContain(command);
+    }
+  });
+
   it("classifies the body declaration entries and the state read as internal (CB-2/CB-3, K3/2 宣言 UI)", async () => {
     const ledgers = d2aRouteLedgersForTest();
     const entries = [

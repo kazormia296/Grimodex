@@ -788,6 +788,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
       ),
     ) as never,
+    narrativeExtractionReapproveAppliedProposals: record(
+      "narrativeExtractionReapproveAppliedProposals",
+      Promise.resolve(
+        '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+      ),
+    ) as never,
     narrativeExtractionReviseAndDecide: record(
       "narrativeExtractionReviseAndDecide",
       Promise.resolve(
@@ -2195,6 +2201,167 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionChronicleBulkApprove`,
+    });
+  });
+
+  it("取り込み済み提案の再承認はpayloadをN-APIへ渡し、結果を返す", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"approved":[{"proposalId":"p1","revisionId":"rv1","decisionId":"d1"}],"skipped":[{"proposalId":"p2","reasons":["event-missing"]}],"failed":[],"stopped":false}',
+      );
+    const { backend } = fakeBackend({
+      narrativeExtractionReapproveAppliedProposals: method,
+    });
+    const payload = {
+      projectId: "project-1",
+      targets: [{ proposalId: "p1", revisionId: "rv1" }],
+    };
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        approved: [{ proposalId: "p1", revisionId: "rv1", decisionId: "d1" }],
+        skipped: [{ proposalId: "p2", reasons: ["event-missing"] }],
+        failed: [],
+        stopped: false,
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it.each([
+    null,
+    42,
+    {},
+    {
+      projectId: 42,
+      targets: [{ proposalId: "p1", revisionId: "v1" }],
+    },
+    {
+      projectId: "p1",
+      targets: [{ proposalId: "p1", revisionId: "v1" }],
+      runId: "r1",
+    },
+    { projectId: " ", targets: [{ proposalId: "p1", revisionId: "v1" }] },
+    { projectId: " p1", targets: [{ proposalId: "p1", revisionId: "v1" }] },
+    { projectId: "p1 ", targets: [{ proposalId: "p1", revisionId: "v1" }] },
+    { projectId: "p1", targets: null },
+    { projectId: "p1", targets: "not-an-array" },
+    { projectId: "p1", targets: [] },
+    { projectId: "p1", targets: [null] },
+    { projectId: "p1", targets: [{ proposalId: "p1" }] },
+    { projectId: "p1", targets: [{ revisionId: "v1" }] },
+    {
+      projectId: "p1",
+      targets: [{ proposalId: "p1", revisionId: "v1", extra: true }],
+    },
+    { projectId: "p1", targets: [{ proposalId: "", revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: 1, revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: " p1", revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1 ", revisionId: "v1" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: "" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: 1 }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: " v1" }] },
+    { projectId: "p1", targets: [{ proposalId: "p1", revisionId: "v1 " }] },
+    {
+      projectId: "p1",
+      targets: [
+        { proposalId: "p1", revisionId: "v1" },
+        { proposalId: "p1", revisionId: "v2" },
+      ],
+    },
+  ])(
+    "取り込み済み提案の再承認は不正payloadをN-APIへ渡さない: %j",
+    async (payload) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeExtractionReapproveAppliedProposals: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_extraction_reapprove_applied_proposals",
+        { payload },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
+
+  it("取り込み済み提案の再承認は最大4096件を受け付ける", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+      );
+    const { backend } = fakeBackend({
+      narrativeExtractionReapproveAppliedProposals: method,
+    });
+    const payload = {
+      projectId: "p1",
+      targets: Array.from({ length: 4096 }, (_, index) => ({
+        proposalId: `p${index}`,
+        revisionId: `v${index}`,
+      })),
+    };
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(method).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it("取り込み済み提案の再承認は4096件を超えるpayloadをN-APIへ渡さない", async () => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({
+      narrativeExtractionReapproveAppliedProposals: method,
+    });
+    const payload = {
+      projectId: "p1",
+      targets: Array.from({ length: 4097 }, (_, index) => ({
+        proposalId: `p${index}`,
+        revisionId: `v${index}`,
+      })),
+    };
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
+  });
+
+  it("取り込み済み提案の再承認は旧native bindingでbackend unavailableを返す", async () => {
+    const { backend } = fakeBackend();
+    delete (backend as Partial<NapiBackendLike>)
+      .narrativeExtractionReapproveAppliedProposals;
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_reapprove_applied_proposals",
+      {
+        payload: {
+          projectId: "p1",
+          targets: [{ proposalId: "p1", revisionId: "v1" }],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionReapproveAppliedProposals`,
     });
   });
 
@@ -7123,6 +7290,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_list_scene_proposals",
       "narrative_extraction_prepare_commit",
+      "narrative_extraction_reapprove_applied_proposals",
       "narrative_extraction_redo_commit",
       "narrative_extraction_resolve_codex_catalog_revision",
       "narrative_extraction_revise_and_decide",

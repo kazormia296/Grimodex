@@ -1226,6 +1226,35 @@
       "canonical": null
     },
     {
+      "id": "narrative.proposal.reapprove-applied-proposals",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "The author's reapproval records a human decision for an applied proposal whose prior approval was invalidated after its Chronicle event disappeared; this is authority metadata and does not emit a domain Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/reapproval.rs",
+        "symbol": "narrative_extraction_reapprove_applied_proposals"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_reapprove_applied_proposals",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_reapprove_applied_proposals",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
       "id": "narrative.proposal.revise-and-decide",
       "authorityRoute": "interpreter-projection",
       "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],

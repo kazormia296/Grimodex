@@ -3,6 +3,7 @@
 pub(crate) mod application_contributions;
 mod attention;
 mod bulk_approval;
+mod reapproval;
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
 mod c2zc_canonical_cutover;
@@ -49,6 +50,9 @@ pub use nir1_graph_index_maintenance::Nir1GraphProductPublication;
 pub use bulk_approval::{
     BulkApprovalReason, BulkApprovalVerdict,
     ChronicleBulkApprovePayload, ChronicleBulkApproveTarget, BULK_APPROVE_MAX_TARGETS,
+};
+pub use reapproval::{
+    narrative_extraction_reapprove_applied_proposals, ReapproveAppliedProposalsPayload,
 };
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,

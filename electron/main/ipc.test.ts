@@ -4571,6 +4571,55 @@ describe("NIR-1 router sender binding", () => {
     expect(calls[1]?.ownerKey).not.toBe(owner);
   });
 
+  it("re-evaluates Related Scenes after an applied proposal is reapproved", async () => {
+    vi.useFakeTimers();
+    try {
+      const relatedScenesBegin = vi.fn(async () =>
+        JSON.stringify({
+          ir: { status: "pending", operationTicket: "ticket-1" },
+        }),
+      );
+      const relatedScenesReconcile = vi
+        .fn()
+        .mockResolvedValue('{"activeOperations":1}');
+      const reapprove = vi
+        .fn()
+        .mockResolvedValue(
+          '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+        );
+      registerIpcRouter({
+        relatedScenesBegin,
+        relatedScenesReconcile,
+        narrativeExtractionReapproveAppliedProposals: reapprove,
+      } as unknown as NapiBackendLike);
+      const sender = { id: 97, isDestroyed: () => false, once: vi.fn() };
+
+      const begin = await invokeHandler()({ sender }, "related_scenes_begin", {
+        expectedWorkspacePath: "/workspace",
+        projectId: "p1",
+        currentSceneId: "s1",
+        query: "scene",
+      });
+      expect(begin.ok).toBe(true);
+      const result = await invokeHandler()(
+        { sender },
+        "narrative_extraction_reapprove_applied_proposals",
+        {
+          payload: {
+            projectId: "p1",
+            targets: [{ proposalId: "p1", revisionId: "v1" }],
+          },
+        },
+      );
+      expect(result.ok).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(relatedScenesReconcile).toHaveBeenCalledExactlyOnceWith(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("binds related_scenes_graph_continue to the same Main owner as begin, whatever the renderer sends", async () => {
     const begins: Array<Record<string, unknown>> = [];
     const graph: unknown[][] = [];

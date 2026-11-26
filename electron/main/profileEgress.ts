@@ -492,6 +492,7 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_extraction_fail_task",
   "narrative_extraction_finish_task",
   "narrative_extraction_prepare_commit",
+  "narrative_extraction_reapprove_applied_proposals",
   "narrative_extraction_redo_commit",
   // DR-CSX-1: returns only the Native sha256 revision token of the author's own
   // Codex catalog (no plaintext, no egress), pinned to the captured extraction
