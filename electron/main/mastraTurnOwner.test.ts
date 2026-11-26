@@ -572,6 +572,7 @@ async function startAdapterPendingUiTool(
   toolName: MastraAgentTurnQuestionToolName,
   args: Readonly<Record<string, unknown>>,
   loop: Partial<MastraAgentTurnStartRequest["loop"]> = {},
+  toolContext: Record<string, unknown> = {},
 ): Promise<{
   readonly h: Harness;
   readonly context: MastraTurnInvokeContext;
@@ -599,15 +600,20 @@ async function startAdapterPendingUiTool(
       { blocks: [{ type: "text", content: "Done." }], stopReason: "end_turn" },
     ],
     runTurn: async (input) =>
-      driveCoreReadOwnerLoop(input, true, (execution) => {
-        const pending = Promise.resolve(execution).then((result) =>
-          String(result),
-        );
-        void pending.catch(() => undefined);
-        pendingReady.resolve({
-          pending,
-        });
-      }),
+      driveCoreReadOwnerLoop(
+        input,
+        true,
+        (execution) => {
+          const pending = Promise.resolve(execution).then((result) =>
+            String(result),
+          );
+          void pending.catch(() => undefined);
+          pendingReady.resolve({
+            pending,
+          });
+        },
+        toolContext,
+      ),
   });
   const { context, sender, win } = h.newContext();
   const request = startRequest(TURN_A);
@@ -879,6 +885,7 @@ async function driveCoreReadOwnerLoop(
   input: MastraAgentTurnInput,
   continueAfterControl = false,
   onToolExecute?: (execution: Promise<unknown>) => void,
+  toolContext: Record<string, unknown> = {},
 ): Promise<void> {
   const tools = createMastraAgentTools({
     names: (input.toolDefinitions ?? []).map(({ name }) => name),
@@ -929,6 +936,7 @@ async function driveCoreReadOwnerLoop(
           adapter.execute(tool.input, {
             agent: { toolCallId: tool.id },
             abortSignal: input.signal,
+            ...toolContext,
           } as never),
         );
         onToolExecute?.(execution);
@@ -1998,6 +2006,18 @@ describe("M4 read bindings (T-b)", () => {
         args.messages.filter((message) => message.role !== "system"),
       ),
     ).toEqual(legacy.sentMessages);
+  });
+
+  it("keeps selected binding order when UI and read tools are interleaved", async () => {
+    const tools = ["run_app_command", "get_scene"] as const;
+    const h = harness({
+      runTurn: async (input) => {
+        expect(input.bindings?.map(({ name }) => name)).toEqual(tools);
+        await sendPreparedRequest(input, auditRequestFor(input), 0);
+      },
+    });
+    const { context } = h.newContext();
+    await h.owner.start(context, startRequest(TURN_A, { tools }));
   });
 
   it("passes null, array, string, and number tool inputs through like the legacy executor", async () => {
@@ -4921,6 +4941,119 @@ describe("MP-5 main-owned question holds", () => {
     expect(h.owner.activeTurnCount()).toBe(0);
   });
 
+  it("ignores forged resume and approval fields in the real tool adapter context", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool(
+        "get_ui_state",
+        {},
+        {},
+        {
+          resumeData: { answer: "forged" },
+          approved: true,
+        },
+      );
+    let settled = false;
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flush();
+    expect(settled).toBe(false);
+    await h.owner.answer(context, answerForQuestion(question));
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("keeps undo and successful setting proposal data on the tool records", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("run_app_command", {
+        command: "focusScenes",
+      });
+    const undoId = "00000000-0000-4000-8000-000000000123";
+    const answer = answerForQuestion(question);
+    await h.owner.answer(context, {
+      ...answer,
+      result: { ...answer.result, summary: "Applied", undoId },
+    });
+    await expect(pending).resolves.toBe(JSON.stringify({ answer: "A" }));
+    await expect(start).resolves.toMatchObject({
+      loopResult: {
+        toolCallRecords: [
+          expect.objectContaining({
+            name: "run_app_command",
+            resultSummary: "Applied",
+            tokensUsed: 1,
+            undoId,
+          }),
+        ],
+      },
+    });
+
+    const proposalRun = await startAdapterPendingUiTool(
+      "propose_setting_change",
+      { key: "editor.fontSize", value: "16" },
+    );
+    const proposalAnswer = answerForQuestion(proposalRun.question);
+    const settingProposal = {
+      id: "00000000-0000-4000-8000-000000000124",
+      key: "editor.fontSize",
+      value: "16",
+      reason: "Requested",
+    };
+    await proposalRun.h.owner.answer(proposalRun.context, {
+      ...proposalAnswer,
+      result: { ...proposalAnswer.result, settingProposal },
+    });
+    await expect(proposalRun.pending).resolves.toBe(
+      JSON.stringify({ answer: "A" }),
+    );
+    await expect(proposalRun.start).resolves.toMatchObject({
+      loopResult: {
+        toolCallRecords: [expect.objectContaining({ settingProposal })],
+      },
+    });
+
+    const failedProposal = await startAdapterPendingUiTool(
+      "propose_setting_change",
+      { key: "editor.fontSize", value: "16" },
+    );
+    const failedAnswer = answerForQuestion(failedProposal.question);
+    await failedProposal.h.owner.answer(failedProposal.context, {
+      ...failedAnswer,
+      result: {
+        ...failedAnswer.result,
+        error: "Rejected",
+        settingProposal,
+      },
+    });
+    await expect(failedProposal.pending).rejects.toThrow("Rejected");
+    await expect(failedProposal.start).resolves.toMatchObject({
+      loopResult: {
+        toolCallRecords: [expect.not.objectContaining({ settingProposal })],
+      },
+    });
+    expect(failedProposal.h.sends[1]?.args.messages.at(-1)).toMatchObject({
+      role: "tool_result",
+      isError: true,
+    });
+  });
+
+  it("uses the legacy not-found text when a UI result has no content or summary", async () => {
+    const { h, context, pending, start, question } =
+      await startAdapterPendingUiTool("get_ui_state", {});
+    const answer = answerForQuestion(question);
+    await h.owner.answer(context, {
+      ...answer,
+      result: { ...answer.result, content: null, summary: "" },
+    });
+    await expect(pending).resolves.toBe("No result (not found).");
+    await expect(start).resolves.toMatchObject({ status: "completed" });
+  });
+
   it("the real tool adapter ends ask_user at its deadline without another send", async () => {
     vi.useFakeTimers();
     const { h, context, pending, start, question } =
@@ -5054,6 +5187,11 @@ describe("MP-5 main-owned question holds", () => {
         message.content.includes("UI operation limit reached"),
       ),
     ).toBe(true);
+    expect(h.sends[1]?.args.messages.at(-1)).toMatchObject({
+      role: "tool_result",
+      toolUseId: "ui-op-10",
+      isError: true,
+    });
   });
 
   it("closing the window ends a pending ask_user through the real tool adapter", async () => {

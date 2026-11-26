@@ -1374,6 +1374,7 @@ export function createMastraTurnOwner(
               toolDefinitions: readToolDefinitions,
             });
       let uiOperationAttempts = 0;
+      const uiToolResults = new Map<string, MastraAgentTurnUiToolResult>();
       const uiToolBindings = uiToolNames.map((name) => {
         const definition = uiTools?.get(name);
         if (!definition) throw new Error("MASTRA_AGENT_UI_TOOL_MISSING");
@@ -1388,12 +1389,7 @@ export function createMastraTurnOwner(
               uiOperationAttempts += 1;
               if (uiOperationAttempts > MAX_UI_OPERATIONS_PER_TURN) {
                 const message = `UI operation limit reached (${MAX_UI_OPERATIONS_PER_TURN} per response). Do not operate the UI further; tell the user what you did and that they can undo it from the tool result.`;
-                const content = JSON.stringify({ error: message });
-                return {
-                  text: `Error: ${message}`,
-                  summary: message,
-                  tokensUsed: tokenizer.countTokens(content),
-                };
+                throw new Error(message);
               }
             }
             const result = await requestUiTool(
@@ -1402,11 +1398,12 @@ export function createMastraTurnOwner(
               name,
               args as Readonly<Record<string, unknown>>,
             );
+            uiToolResults.set(toolCallId, result);
+            if (result.error) throw new Error(result.error);
             return {
-              text: result.error
-                ? `Error: ${result.error}`
-                : result.content == null
-                  ? result.summary
+              text:
+                result.content == null
+                  ? result.summary || "No result (not found)."
                   : JSON.stringify(result.content),
               summary: result.summary,
               tokensUsed: result.tokensUsed,
@@ -1414,6 +1411,10 @@ export function createMastraTurnOwner(
           },
         };
       });
+      const bindings = [
+        ...(turnReadBindings?.bindings ?? []),
+        ...uiToolBindings,
+      ];
       const run = runtime.runTurn({
         instructions: split.instructions,
         messages: split.messages,
@@ -1437,7 +1438,9 @@ export function createMastraTurnOwner(
           });
         },
         toolDefinitions,
-        bindings: [...(turnReadBindings?.bindings ?? []), ...uiToolBindings],
+        bindings: request.tools.map(
+          (name) => bindings.find((binding) => binding.name === name)!,
+        ),
         isToolDeclared: (name) => declaredToolNames.has(name),
         isTurnStopped: () => {
           if (turn.finished) return true;
@@ -1617,15 +1620,24 @@ export function createMastraTurnOwner(
           }
           if (completedToolCallIds.has(toolCallId)) return;
           completedToolCallIds.add(toolCallId);
-          loopState = recordToolResultTokens(loopState, tokens);
+          const uiResult = uiToolResults.get(toolCallId);
+          uiToolResults.delete(toolCallId);
+          loopState = recordToolResultTokens(
+            loopState,
+            uiResult?.tokensUsed ?? tokens,
+          );
           const recordIndex = toolCallRecordIndexes.get(toolCallId);
           if (recordIndex !== undefined) {
             const record = toolCallRecords[recordIndex];
             if (record && record.name === toolName) {
               toolCallRecords[recordIndex] = {
                 ...record,
-                resultSummary: summary,
-                tokensUsed: tokens,
+                resultSummary: uiResult?.summary ?? summary,
+                tokensUsed: uiResult?.tokensUsed ?? tokens,
+                ...(uiResult?.undoId ? { undoId: uiResult.undoId } : {}),
+                ...(uiResult?.settingProposal && !uiResult.error
+                  ? { settingProposal: uiResult.settingProposal }
+                  : {}),
               };
             }
           }

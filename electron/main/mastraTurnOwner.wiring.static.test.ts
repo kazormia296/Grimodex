@@ -166,9 +166,7 @@ describe("the owner module", () => {
 
   it("does not read Mastra resume or approval context as a UI answer", () => {
     for (const source of [OWNER, ADAPTER]) {
-      expect(source).not.toMatch(
-        /\b(?:args|context|ctx)\s*\??\.\s*(?:resumeData|approved)\b/,
-      );
+      expect(source).not.toMatch(/\b(?:resumeData|approved)\b/u);
     }
   });
 });
