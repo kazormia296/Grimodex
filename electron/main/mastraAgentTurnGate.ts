@@ -31,9 +31,11 @@ import path from "node:path";
 
 import {
   isMastraAgentTurnCommand,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   MASTRA_AGENT_TURN_CANCEL_COMMAND,
   MASTRA_AGENT_TURN_START_COMMAND,
   mastraAgentTurnRefusalValue,
+  parseMastraAgentTurnAnswerRequest,
   parseMastraAgentTurnCancelRequest,
   parseMastraAgentTurnStartRequest,
   type MastraAgentTurnCommand,
@@ -295,9 +297,7 @@ export function createMastraAgentTurnRoute(
     [MASTRA_AGENT_TURN_START_COMMAND]: (args) =>
       new Promise((resolve, reject) => {
         try {
-          resolve(
-            handlerValue(MASTRA_AGENT_TURN_START_COMMAND, args, context),
-          );
+          resolve(handlerValue(MASTRA_AGENT_TURN_START_COMMAND, args, context));
         } catch (error) {
           reject(error);
         }
@@ -312,6 +312,12 @@ export function createMastraAgentTurnRoute(
           reject(error);
         }
       }),
+    [MASTRA_AGENT_TURN_ANSWER_COMMAND]: async (args) => {
+      const parsed = parseMastraAgentTurnAnswerRequest(args);
+      return parsed.ok
+        ? { status: "refused", reason: "no-pending" }
+        : { status: "refused", reason: "invalid" };
+    },
   });
 
   return {

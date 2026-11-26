@@ -8,6 +8,7 @@ import {
   registerSceneAuthorityCommitSink,
 } from "@/application/tree/sceneAuthorityRegistry";
 import { installChatNavigationBlockers } from "./chatNavigationComposition";
+import { getActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 
 afterEach(() => {
   __resetChatNavigationGuardForTests();
@@ -15,12 +16,31 @@ afterEach(() => {
 });
 
 describe("installChatNavigationBlockers", () => {
+  it("registers the generating turn for the close and switch confirmation", () => {
+    const stopGeneration = vi.fn();
+    installChatNavigationBlockers({
+      getState: () => ({
+        agentMode: false,
+        isStreaming: true,
+        setActiveSceneId: vi.fn(),
+        stopGeneration,
+      }),
+      hasPendingPersistence: () => false,
+      activeTurnSurface: () => "chat",
+    });
+
+    expect(getActiveTurnStopper()?.isActive()).toBe(true);
+    getActiveTurnStopper()?.stop();
+    expect(stopGeneration).toHaveBeenCalledOnce();
+  });
+
   it("uses the accepted turn surface when Agent is an override", () => {
     installChatNavigationBlockers({
       getState: () => ({
         agentMode: false,
         isStreaming: true,
         setActiveSceneId: vi.fn(),
+        stopGeneration: vi.fn(),
       }),
       hasPendingPersistence: () => false,
       activeTurnSurface: () => "agent",
@@ -35,6 +55,7 @@ describe("installChatNavigationBlockers", () => {
         agentMode: true,
         isStreaming: true,
         setActiveSceneId: vi.fn(),
+        stopGeneration: vi.fn(),
       }),
       hasPendingPersistence: () => false,
       activeTurnSurface: () => "chat",
@@ -50,6 +71,7 @@ describe("installChatNavigationBlockers", () => {
         agentMode: false,
         isStreaming: false,
         setActiveSceneId,
+        stopGeneration: vi.fn(),
       }),
       hasPendingPersistence: () => false,
       activeTurnSurface: () => null,

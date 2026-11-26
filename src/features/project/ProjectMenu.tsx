@@ -1,3 +1,5 @@
+import { confirmStopActiveTurn } from "@/application/lifecycle/chatStopConfirm";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { Check } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -64,6 +66,11 @@ export function ProjectMenuSection({
   async function handleSwitch(projectId: string) {
     onClose();
     if (projectId === currentProjectId) return;
+    // 切り替えられないのに応答だけ止めないように、拒否を確認より先に置く。
+    if (guardInlineAiPending()) return;
+    // 生成中の応答があれば、静止の lease の前に中断を確認する（利用者の切替だけ）。
+    const decision = confirmStopActiveTurn("switch");
+    if (decision !== true && !(await decision)) return;
     await runProjectLoadWithFailureToast(() => loadProject(projectId));
   }
 

@@ -59,6 +59,7 @@ import {
 } from "../shared/agentPayloadRenderer.js";
 import {
   createM4ReadToolDefinitions,
+  M4_READ_TOOL_NAMES,
   type M4ReadToolName,
 } from "../shared/agentReadToolDefinitions.js";
 import type * as MastraTurnReadBindings from "./mastraTurnReadBindings.js";
@@ -893,13 +894,18 @@ export function createMastraTurnOwner(
     }
     const tokenizer = options.tokenizer;
     if (!tokenizer) return refusal("unsupported");
-    // The wire admits only M4 names, so an unknown one is a desync of this
-    // build: refused here, before the turn is registered.
+    // MP-5a admits the shared UI names on the wire, but this owner still only
+    // binds M4 until the MP-5d tool connection is implemented.
     const toolDefinitions: ReturnType<typeof createM4ReadToolDefinitions> = [];
+    const readToolNames: M4ReadToolName[] = [];
     for (const name of request.tools) {
       const definition = m4Tools.get(name);
-      if (!definition) return refusal("invalid");
+      const readToolName = M4_READ_TOOL_NAMES.find(
+        (candidate) => candidate === name,
+      );
+      if (!definition || !readToolName) return refusal("invalid");
       toolDefinitions.push(definition);
+      readToolNames.push(readToolName);
     }
 
     let rejectForced: (error: Error) => void = () => undefined;
@@ -1077,7 +1083,7 @@ export function createMastraTurnOwner(
               backend: options.backend!,
               identity: callerIdentity as MainIssuedCallerIdentity,
               hooks: readHooksOf(turn),
-              request,
+              request: { ...request, tools: readToolNames },
               projectId: turn.projectId,
               currentSceneId: turn.currentSceneId,
               tokenizer,

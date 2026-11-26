@@ -968,6 +968,7 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     "backend:ready",
     "workspace:opened",
     "mastra:agent-turn-progress",
+    "mastra:agent-turn-question",
     // CP-3a: Graph owner の通知（backend 発のみ）
     "related-scenes:graph-ready",
   ])("allows %s", (channel) => {
@@ -983,6 +984,19 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
       false,
     );
     expect(isAllowedRendererEventChannel("mastra:agent-turn-progress")).toBe(
+      false,
+    );
+  });
+
+  it("registers the Mastra UI question as a main-only event", () => {
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain(
+      "mastra:agent-turn-question",
+    );
+    expect(isAllowedMainEventChannel("mastra:agent-turn-question")).toBe(true);
+    expect(isAllowedBackendEventChannel("mastra:agent-turn-question")).toBe(
+      false,
+    );
+    expect(isAllowedRendererEventChannel("mastra:agent-turn-question")).toBe(
       false,
     );
   });
@@ -13196,12 +13210,13 @@ describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
   });
 });
 
-describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
-  it("the two commands are Main-processed, never Native ones, and no Main-only N-API was added", () => {
+describe("Mastra agent turn contract (MP-3b and MP-5a)", () => {
+  it("the three commands are Main-processed, never Native ones, and no Main-only N-API was added", () => {
     expect(SHELL_COMMAND_NAMES).toEqual(
       expect.arrayContaining([
         "mastra_agent_turn_start",
         "mastra_agent_turn_cancel",
+        "mastra_agent_turn_answer",
       ]),
     );
     expect(
@@ -13214,13 +13229,14 @@ describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
     );
     expect(source).not.toMatch(/mainMastra|mastraAgentTurn\w*\?\(/u);
     // They are added at the end of the shell list and nowhere else.
-    expect(SHELL_COMMAND_NAMES.slice(-2)).toEqual([
+    expect(SHELL_COMMAND_NAMES.slice(-3)).toEqual([
       "mastra_agent_turn_start",
       "mastra_agent_turn_cancel",
+      "mastra_agent_turn_answer",
     ]);
     expect(
       SHELL_COMMAND_NAMES.filter((name) => name.startsWith("mastra_")),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it("dispatches to the Main handler and wraps its value; without a handler it is unimplemented", async () => {
@@ -13247,6 +13263,25 @@ describe("Mastra agent turn contract (MP-3b, DR-MP3-4)", () => {
       value: { status: "refused", command: "start", reason: "gate-closed" },
     });
     expect(seen).toEqual([{ turnId: "t" }]);
+    const answerSeen: unknown[] = [];
+    const answer = await dispatchInvoke(
+      "mastra_agent_turn_answer",
+      { requestId: "not-yet-validated" },
+      {
+        backend: null,
+        shell: {
+          mastra_agent_turn_answer: async (args) => {
+            answerSeen.push(args);
+            return { status: "refused", reason: "invalid" };
+          },
+        },
+      },
+    );
+    expect(answer).toEqual({
+      ok: true,
+      value: { status: "refused", reason: "invalid" },
+    });
+    expect(answerSeen).toEqual([{ requestId: "not-yet-validated" }]);
     const missing = await dispatchInvoke(
       "mastra_agent_turn_cancel",
       {},

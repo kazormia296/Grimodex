@@ -27,6 +27,9 @@ import {
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { subscribeQuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { useChatStopConfirmStore } from "@/application/lifecycle/chatStopConfirm";
+import { registerActiveTurnStopper } from "@/lib/activeTurnStopRegistry";
 import {
   LIFECYCLE_TRACE_OPT_IN_KEY,
   subscribeLifecycleTrace,
@@ -117,12 +120,15 @@ describe("useWorkspaceStore", () => {
       currentProjectId: null,
       loadProjectWithinLifecycle: vi.fn(async () => {}),
     });
+    registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
     vi.clearAllMocks();
     imeSchedulerHarness.paused = false;
     imeSchedulerHarness.acceptedSchedules = 0;
   });
 
   afterEach(() => {
+    useChatStopConfirmStore.getState().request?.answer(false);
+    registerActiveTurnStopper({ isActive: () => false, stop: () => {} });
     useProjectStore.setState({
       currentProjectId: null,
       loadProjectWithinLifecycle: realLoadProjectWithinLifecycle,
@@ -419,6 +425,100 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("openWorkspace", () => {
+    it("does not call Native open when stopping the active turn is declined", async () => {
+      let active = true;
+      registerActiveTurnStopper({
+        isActive: () => active,
+        stop: () => {
+          active = false;
+        },
+      });
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        workspaceHydrated: true,
+      });
+
+      const opening = useWorkspaceStore
+        .getState()
+        .openWorkspace("D:\\Novels\\Replacement");
+      const request = useChatStopConfirmStore.getState().request;
+      expect(request?.kind).toBe("switch");
+      request?.answer(false);
+
+      await expect(opening).resolves.toBe("blocked");
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "open_workspace",
+        expect.anything(),
+      );
+      expect(isQuiescenceLeaseActive()).toBe(false);
+    });
+
+    it("stops the active turn before acquiring the lease and opening the Workspace", async () => {
+      const order: string[] = [];
+      let active = true;
+      registerActiveTurnStopper({
+        isActive: () => active,
+        stop: () => {
+          order.push("stop");
+          active = false;
+        },
+      });
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        workspaceHydrated: true,
+      });
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          order.push("native-open");
+          return {
+            name: "Replacement",
+            workspaceId: "workspace-replacement",
+            isExisting: true,
+          };
+        }
+        if (command === "get_global_settings") {
+          return {
+            recentWorkspaces: [],
+            lastActiveWorkspace: "D:\\Novels\\Replacement",
+            theme: "system",
+            uiLanguage: "ja",
+            uiScale: 100,
+            showLauncherOnStartup: false,
+          };
+        }
+        return { rows: [] };
+      });
+      const unsubscribe = subscribeQuiescenceLease((change) => {
+        if (change.active && change.reason === "workspace-open") {
+          order.push("workspace-lease");
+        }
+      });
+
+      try {
+        const opening = useWorkspaceStore
+          .getState()
+          .openWorkspace("D:\\Novels\\Replacement");
+        const request = useChatStopConfirmStore.getState().request;
+        expect(request?.kind).toBe("switch");
+        request?.answer(true);
+        await opening;
+
+        expect(order.indexOf("stop")).toBeLessThan(
+          order.indexOf("workspace-lease"),
+        );
+        expect(order.indexOf("workspace-lease")).toBeLessThan(
+          order.indexOf("native-open"),
+        );
+        expect(mockInvoke).toHaveBeenCalledWith("open_workspace", {
+          path: "D:\\Novels\\Replacement",
+        });
+      } finally {
+        unsubscribe();
+      }
+    });
+
     it("does not start the native Workspace swap while data deletion is active", async () => {
       useWorkspaceStore.setState({
         view: "editor",

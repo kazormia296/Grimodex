@@ -65,6 +65,13 @@ const FEATURE_TRANSLATIONS: ReadonlyArray<{
         await import("@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTranslations")
       ).ensureBodyDeclarationTranslations(),
   },
+  {
+    file: "application/lifecycle/chatStopConfirmTranslations.ts",
+    install: async () =>
+      (
+        await import("@/application/lifecycle/chatStopConfirmTranslations")
+      ).ensureChatStopConfirmTranslations(),
+  },
 ];
 
 const SRC_ROOT = path.resolve(__dirname, "..");
