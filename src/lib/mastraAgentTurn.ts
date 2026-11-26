@@ -19,15 +19,23 @@
 import {
   parseMastraAgentTurnCancelResult,
   parseMastraAgentTurnProgressPayload,
+  parseMastraAgentTurnQuestionPayload,
+  parseMastraAgentTurnAnswerResult,
   parseMastraAgentTurnStartResult,
+  MASTRA_AGENT_TURN_ANSWER_COMMAND,
   type MastraAgentTurnCancelRequest,
+  type MastraAgentTurnAnswerRequest,
+  type MastraAgentTurnQuestionPayload,
   type MastraAgentTurnProgressPayload,
   type MastraAgentTurnProgressUsage,
   type MastraAgentTurnRefusalReason,
   type MastraAgentTurnLoopResult,
   type MastraAgentTurnStartRequest,
 } from "@/../electron/shared/mastraAgentTurnWire";
-import { MASTRA_AGENT_TURN_PROGRESS_EVENT } from "@/../electron/shared/ipcContract";
+import {
+  MASTRA_AGENT_TURN_PROGRESS_EVENT,
+  MASTRA_AGENT_TURN_QUESTION_EVENT,
+} from "@/../electron/shared/ipcContract";
 import { invoke, isD2aEgressDenied, listen } from "@/lib/tauri";
 
 export type MastraAgentTurnStartOutcome =
@@ -53,6 +61,45 @@ export type MastraAgentTurnCancelOutcome =
   | { readonly kind: "ok"; readonly found: boolean }
   | { readonly kind: "refused"; readonly reason: MastraAgentTurnRefusalReason }
   | { readonly kind: "invalid-response" };
+
+export type MastraAgentTurnAnswerOutcome =
+  | { readonly kind: "accepted"; readonly requestId: string }
+  | { readonly kind: "refused"; readonly reason: "invalid" | "no-pending" }
+  | { readonly kind: "invalid-response" };
+
+/** Subscribe to Main's validated, bounded UI-tool question events. */
+export async function listenMastraAgentTurnQuestion(
+  callback: (payload: MastraAgentTurnQuestionPayload) => void,
+): Promise<() => void> {
+  let active = true;
+  const unlisten = await listen<unknown>(
+    MASTRA_AGENT_TURN_QUESTION_EVENT,
+    (raw) => {
+      if (!active) return;
+      const parsed = parseMastraAgentTurnQuestionPayload(raw);
+      if (parsed.ok) callback(parsed.value);
+    },
+  );
+  return () => {
+    if (!active) return;
+    active = false;
+    unlisten();
+  };
+}
+
+/** Answer or refuse one pending question; Main revalidates this payload. */
+export async function answerMastraAgentTurnQuestion(
+  request: MastraAgentTurnAnswerRequest,
+): Promise<MastraAgentTurnAnswerOutcome> {
+  const raw = await invoke<unknown>(MASTRA_AGENT_TURN_ANSWER_COMMAND, {
+    ...request,
+  });
+  const answer = parseMastraAgentTurnAnswerResult(raw);
+  if (answer === null) return { kind: "invalid-response" };
+  return answer.status === "accepted"
+    ? { kind: "accepted", requestId: answer.requestId }
+    : { kind: "refused", reason: answer.reason };
+}
 
 /** Subscribe to one turn's validated progress events; a sequence gap ends delivery. */
 export async function listenMastraAgentTurnProgress(

@@ -41,11 +41,15 @@ interface ReadToolDefinition {
   readonly description: string;
 }
 
+type M4TurnReadRequest = Omit<MastraAgentTurnStartRequest, "tools"> & {
+  readonly tools: readonly M4ReadToolName[];
+};
+
 export async function createTurnReadBindings(options: {
   readonly backend: NapiBackendLike;
   readonly identity: MainIssuedCallerIdentity;
   readonly hooks: MainReadHooks;
-  readonly request: MastraAgentTurnStartRequest;
+  readonly request: M4TurnReadRequest;
   readonly projectId: string;
   readonly currentSceneId: string | null;
   readonly tokenizer: CoreTokenizer;
