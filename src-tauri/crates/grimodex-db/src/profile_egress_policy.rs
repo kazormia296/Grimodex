@@ -63,11 +63,11 @@ const fn read_open(name: &'static str) -> ProfileEgressTable {
     }
 }
 
-/// The D2a table ledger: 32 `closed` and 58 `read-open` tables, enumerated by
+/// The D2a table ledger: 37 `closed` and 58 `read-open` tables, enumerated by
 /// name (never by prefix).  FTS shadow tables carry the class of their
 /// content table because they hold the same plaintext.
 pub const PROFILE_EGRESS_TABLES: &[ProfileEgressTable] = &[
-    // closed (32)
+    // closed (37)
     closed("narrative_apply_commits"),
     closed("narrative_apply_operations"),
     closed("narrative_commit_journals"),
@@ -93,6 +93,11 @@ pub const PROFILE_EGRESS_TABLES: &[ProfileEgressTable] = &[
     closed("nir1_generation_message_versions"),
     closed("nir1_generation_qualification_refs"),
     closed("idempotency_requests"),
+    closed("identity_correction_applications"),
+    closed("identity_correction_rule_revisions"),
+    closed("identity_lineage_mappings"),
+    closed("identity_lineage_operations"),
+    closed("identity_lineage_reference_assignments"),
     closed("messages"),
     closed("mastra_memory_vectors"),
     closed("mastra_memory_vector_indexes"),
@@ -283,9 +288,11 @@ mod tests {
             .map(|table| table.name)
             .collect::<BTreeSet<_>>();
         assert_eq!(all.len(), PROFILE_EGRESS_TABLES.len(), "duplicate table");
-        assert_eq!(PROFILE_EGRESS_TABLES.len(), 90);
-        // K3/2 "表の台帳" plus the six closed MP-7 tables.
-        assert_eq!(names_of(ProfileEgressTableClass::Closed).len(), 32);
+        assert_eq!(PROFILE_EGRESS_TABLES.len(), 95);
+        // K3/2 "表の台帳" plus the six closed MP-7 tables (32), plus the five
+        // closed ERM tables (SCHEMA 48 / DR-M3-39; typed readers/writers only,
+        // author-approved new storage, contracts M3 record): 37 + 58 = 95.
+        assert_eq!(names_of(ProfileEgressTableClass::Closed).len(), 37);
         assert_eq!(names_of(ProfileEgressTableClass::ReadOpen).len(), 58);
         for table in PROFILE_EGRESS_TABLES {
             assert_eq!(table.name, table.name.to_ascii_lowercase());
@@ -296,6 +303,11 @@ mod tests {
     #[test]
     fn closed_class_is_exactly_the_confirmed_enumeration_not_a_prefix_rule() {
         let expected: BTreeSet<&str> = [
+            "identity_correction_applications",
+            "identity_correction_rule_revisions",
+            "identity_lineage_mappings",
+            "identity_lineage_operations",
+            "identity_lineage_reference_assignments",
             "narrative_apply_commits",
             "narrative_apply_operations",
             "narrative_commit_journals",
@@ -445,7 +457,7 @@ mod tests {
     fn status_policy_is_version_three_with_three_separate_sets() {
         let policy = sql_policy_for_status();
         assert_eq!(policy.version, 3);
-        assert_eq!(policy.closed_tables.len(), 32);
+        assert_eq!(policy.closed_tables.len(), 37);
         assert_eq!(policy.read_open_tables.len(), 58);
         assert_eq!(policy.read_open_columns.len(), 2);
         let closed = policy.closed_tables.iter().collect::<BTreeSet<_>>();

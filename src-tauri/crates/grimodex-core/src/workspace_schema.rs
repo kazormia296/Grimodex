@@ -862,7 +862,11 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // previous marker too, so a marker-only 45 -> 46 step cannot skip the
         // install and an MCP process stays read-only on a DB missing a trigger.
         && crate::write_clock::has_v46_write_clock(conn)?
-        && has_v47_mastra_memory_storage(conn)?)
+        && has_v47_mastra_memory_storage(conn)?
+        // SCHEMA 48 / DR-M3-39: all five immutable ERM tables, their exact
+        // column names, lookup indexes, and unconditional UPDATE guards must
+        // exist before either open fast path can advance the marker.
+        && has_v48_identity_correction_storage(conn)?)
 }
 
 fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
@@ -1008,6 +1012,211 @@ fn has_v47_mastra_memory_storage(conn: &Connection) -> anyhow::Result<bool> {
             .contains("check(json_valid(metadata_json)andjson_type(metadata_json)='object')")
         && message_vector_index_exists
         && index_columns(conn, "idx_mastra_memory_vectors_message")?.as_slice() == ["message_id"])
+}
+
+fn has_v48_identity_correction_storage(conn: &Connection) -> anyhow::Result<bool> {
+    const TABLES: &[(&str, &[&str])] = &[
+        (
+            "identity_correction_rule_revisions",
+            &[
+                "id",
+                "project_id",
+                "rule_id",
+                "revision_no",
+                "supersedes_revision_id",
+                "state",
+                "kind",
+                "scope_kind",
+                "scope_scene_id",
+                "surface_text",
+                "entry_id",
+                "other_entry_id",
+                "canonical_name",
+                "keep_previous_as_alias",
+                "reason",
+                "provenance_kind",
+                "provenance_ref",
+                "actor_id",
+                "created_at",
+                "request_id",
+            ],
+        ),
+        (
+            "identity_lineage_operations",
+            &[
+                "id",
+                "project_id",
+                "op_kind",
+                "undoes_operation_id",
+                "reason",
+                "actor_id",
+                "created_at",
+                "request_id",
+                "narrative_commit_id",
+                "applied_change_sequence",
+            ],
+        ),
+        (
+            "identity_lineage_mappings",
+            &[
+                "operation_id",
+                "ordinal",
+                "source_entry_id",
+                "target_entry_id",
+                "source_disposition",
+            ],
+        ),
+        (
+            "identity_lineage_reference_assignments",
+            &[
+                "operation_id",
+                "ordinal",
+                "reference_kind",
+                "reference_id",
+                "from_entry_id",
+                "to_entry_id",
+            ],
+        ),
+        (
+            "identity_correction_applications",
+            &[
+                "id",
+                "project_id",
+                "origin_proposal_revision_id",
+                "input_proposal_revision_id",
+                "output_proposal_revision_id",
+                "rule_revision_id",
+                "route",
+                "outcome",
+                "reason_code",
+                "reapply_batch_id",
+                "created_at",
+            ],
+        ),
+    ];
+    for (table, expected_columns) in TABLES {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+        let columns = table_columns(conn, table)?;
+        if !columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .eq(expected_columns.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+
+    const TRIGGERS: &[(&str, &str)] = &[
+        (
+            "identity_correction_rule_revisions_immutable_update",
+            "identity_correction_rule_revisions",
+        ),
+        (
+            "identity_lineage_operations_immutable_update",
+            "identity_lineage_operations",
+        ),
+        (
+            "identity_lineage_mappings_immutable_update",
+            "identity_lineage_mappings",
+        ),
+        (
+            "identity_lineage_reference_assignments_immutable_update",
+            "identity_lineage_reference_assignments",
+        ),
+        (
+            "identity_correction_applications_immutable_update",
+            "identity_correction_applications",
+        ),
+    ];
+    for (trigger, table) in TRIGGERS {
+        let sql = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [trigger],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(sql) = sql else {
+            return Ok(false);
+        };
+        let sql = compact_sql(&sql);
+        if !sql.contains(&format!("beforeupdateon{table}")) || !sql.contains("selectraise(abort,") {
+            return Ok(false);
+        }
+    }
+
+    const INDEXES: &[(&str, &str, &[&str])] = &[
+        (
+            "idx_identity_correction_rules_project_kind",
+            "identity_correction_rule_revisions",
+            &["project_id", "kind"],
+        ),
+        (
+            "idx_identity_correction_rules_project_entry",
+            "identity_correction_rule_revisions",
+            &["project_id", "entry_id"],
+        ),
+        (
+            "idx_identity_correction_rules_project_other_entry",
+            "identity_correction_rule_revisions",
+            &["project_id", "other_entry_id"],
+        ),
+        (
+            "idx_identity_correction_rules_project_scope_scene",
+            "identity_correction_rule_revisions",
+            &["project_id", "scope_scene_id"],
+        ),
+        (
+            "idx_identity_lineage_reference_assignments_reference",
+            "identity_lineage_reference_assignments",
+            &["reference_kind", "reference_id"],
+        ),
+        (
+            "idx_identity_correction_applications_project_batch",
+            "identity_correction_applications",
+            &["project_id", "reapply_batch_id"],
+        ),
+        (
+            "idx_identity_correction_applications_origin_revision",
+            "identity_correction_applications",
+            &["origin_proposal_revision_id"],
+        ),
+        (
+            "idx_identity_correction_applications_input_revision",
+            "identity_correction_applications",
+            &["input_proposal_revision_id"],
+        ),
+        (
+            "idx_identity_correction_applications_output_revision",
+            "identity_correction_applications",
+            &["output_proposal_revision_id"],
+        ),
+        (
+            "idx_identity_correction_applications_rule_revision",
+            "identity_correction_applications",
+            &["rule_revision_id"],
+        ),
+    ];
+    for (index, table, expected_columns) in INDEXES {
+        let actual_table = conn
+            .query_row(
+                "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if actual_table.as_deref() != Some(*table)
+            || !index_columns(conn, index)?
+                .iter()
+                .map(String::as_str)
+                .eq(expected_columns.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn has_v37_generation_storage(conn: &Connection) -> anyhow::Result<bool> {

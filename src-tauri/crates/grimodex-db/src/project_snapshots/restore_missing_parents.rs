@@ -422,13 +422,16 @@ fn existing_ids(
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            found.extend(rows.into_iter().filter_map(|(id, target, target_is_live_scene)| {
-                (!target_is_live_scene
-                    || target
-                        .as_ref()
-                        .is_some_and(|target| restored_tree_node_ids.contains(target)))
-                .then_some(id)
-            }));
+            found.extend(
+                rows.into_iter()
+                    .filter_map(|(id, target, target_is_live_scene)| {
+                        (!target_is_live_scene
+                            || target
+                                .as_ref()
+                                .is_some_and(|target| restored_tree_node_ids.contains(target)))
+                        .then_some(id)
+                    }),
+            );
         } else {
             let sql = parent.live_sql().replace("{ids}", &placeholders);
             let mut statement = conn.prepare(&sql)?;
@@ -451,14 +454,11 @@ fn count_uncaptured_body_losses(
     if !shape.scopes.contains(&RestoreScope::Body) {
         return Ok((0, 0));
     }
-    let captured: HashSet<String> = maybe_aux_snapshot_rows(
-        conn,
-        shape.snapshot_id,
-        "post_effect_annotation_relations",
-    )?
-    .into_iter()
-    .filter_map(|row| text(&row, "id").map(str::to_string))
-    .collect();
+    let captured: HashSet<String> =
+        maybe_aux_snapshot_rows(conn, shape.snapshot_id, "post_effect_annotation_relations")?
+            .into_iter()
+            .filter_map(|row| text(&row, "id").map(str::to_string))
+            .collect();
     let mut statement = conn.prepare(
         "WITH RECURSIVE doomed_annotations(id) AS (
              SELECT a.id
