@@ -281,6 +281,19 @@ export async function restoreChronicleExtractionReview(
 }
 
 /**
+ * SRD/1 RA7 (b') (3): re-read the applied proposals' removal state from the
+ * review bundle (a kept projection does not know what changed while the
+ * dialog was closed). `false` when the read failed; the store then marks the
+ * applied proposals unverified.
+ */
+export async function refreshChronicleRedecideState(): ReturnType<
+  typeof import("./chronicleExtractionApi").refreshChronicleRedecideState
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.refreshChronicleRedecideState();
+}
+
+/**
  * Settle a historical partial Apply under the same exclusive renderer CAS as
  * a normal Apply. Lease acquisition is synchronous, before the dynamic import
  * yields, so review decisions cannot start in the gap.

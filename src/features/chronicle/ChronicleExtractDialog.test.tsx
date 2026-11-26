@@ -22,6 +22,7 @@ const extractionMocks = vi.hoisted(() => ({
   applyChronicleExtractionReview: vi.fn(),
   abandonChroniclePartialReview: vi.fn(),
   restoreChronicleExtractionReview: vi.fn().mockResolvedValue(null),
+  refreshChronicleRedecideState: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("./extractEventsApi", () => extractionMocks);
 
@@ -231,6 +232,7 @@ function seedProjection(
       evidenceMethods: ["exact"],
     }),
     probableDuplicateChoice: null,
+    redecide: null,
     ...overrides,
     application: overrides.application ?? null,
   };
@@ -726,6 +728,47 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     );
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("投影が残っていても、開くと取り込み済みの提案の状態を読み直す（SRD/1 RA7）", async () => {
+    seedProjection();
+    extractionMocks.refreshChronicleRedecideState.mockClear();
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        extractionMocks.refreshChronicleRedecideState,
+      ).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      extractionMocks.restoreChronicleExtractionReview,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("投影が無ければ復元し、読み直しは復元に任せる（SRD/1 RA7）", async () => {
+    extractionMocks.refreshChronicleRedecideState.mockClear();
+    render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        extractionMocks.restoreChronicleExtractionReview,
+      ).toHaveBeenCalled(),
+    );
+    expect(
+      extractionMocks.refreshChronicleRedecideState,
+    ).not.toHaveBeenCalled();
   });
 
   it("保存済み候補の実在性不整合を再解析案内として通知する", async () => {
