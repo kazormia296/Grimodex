@@ -356,9 +356,62 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
 export const MASTRA_AGENT_TURN_PROGRESS_EVENT = "mastra:agent-turn-progress";
 /** Main asks the renderer to run one UI tool; the event carries its bounded arguments. */
 export const MASTRA_AGENT_TURN_QUESTION_EVENT = "mastra:agent-turn-question";
+/** Main reports a completed write to the originating renderer without its body. */
+export const MASTRA_AGENT_WRITE_COMPLETED_EVENT =
+  "mastra:agent-write-completed";
+
+export interface MastraAgentWriteCompletedEvent {
+  readonly targetId: string;
+  readonly undoId: string;
+}
+
+const MASTRA_AGENT_WRITE_EVENT_ID_UTF16_MAX = 200;
+
+/** Parse the exact identifier-only completion event payload. */
+export function parseMastraAgentWriteCompletedEvent(
+  value: unknown,
+): MastraAgentWriteCompletedEvent | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null)
+  ) {
+    return null;
+  }
+  const payload = value as Record<string, unknown>;
+  const keys = Object.keys(payload);
+  const validId = (id: unknown): id is string => {
+    if (
+      typeof id !== "string" ||
+      id.length === 0 ||
+      id.length > MASTRA_AGENT_WRITE_EVENT_ID_UTF16_MAX ||
+      id.trim() !== id
+    ) {
+      return false;
+    }
+    for (const character of id) {
+      const code = character.charCodeAt(0);
+      if (code < 32 || code === 127) return false;
+    }
+    return true;
+  };
+  if (
+    keys.length !== 2 ||
+    !keys.includes("targetId") ||
+    !keys.includes("undoId") ||
+    !validId(payload.targetId) ||
+    !validId(payload.undoId)
+  ) {
+    return null;
+  }
+  return { targetId: payload.targetId, undoId: payload.undoId };
+}
 
 export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
   MASTRA_AGENT_TURN_QUESTION_EVENT,
+  MASTRA_AGENT_WRITE_COMPLETED_EVENT,
   // Mastra agent turn progress is a numeric / identifier-only main event.
   MASTRA_AGENT_TURN_PROGRESS_EVENT,
   // electron-updater の byte progress（Phase 4）

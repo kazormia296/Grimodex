@@ -13,6 +13,8 @@ import {
   EVENT_CHANNEL_ALLOWLIST,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  MASTRA_AGENT_WRITE_COMPLETED_EVENT,
+  parseMastraAgentWriteCompletedEvent,
   isAllowedBackendEventChannel,
   isAllowedEventChannel,
   isAllowedMainEventChannel,
@@ -969,6 +971,7 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     "workspace:opened",
     "mastra:agent-turn-progress",
     "mastra:agent-turn-question",
+    MASTRA_AGENT_WRITE_COMPLETED_EVENT,
     // CP-3a: Graph owner の通知（backend 発のみ）
     "related-scenes:graph-ready",
   ])("allows %s", (channel) => {
@@ -999,6 +1002,63 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     expect(isAllowedRendererEventChannel("mastra:agent-turn-question")).toBe(
       false,
     );
+  });
+
+  it("registers Mastra write completion as a main-only event", () => {
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain(
+      MASTRA_AGENT_WRITE_COMPLETED_EVENT,
+    );
+    expect(isAllowedMainEventChannel(MASTRA_AGENT_WRITE_COMPLETED_EVENT)).toBe(
+      true,
+    );
+    expect(
+      isAllowedBackendEventChannel(MASTRA_AGENT_WRITE_COMPLETED_EVENT),
+    ).toBe(false);
+    expect(
+      isAllowedRendererEventChannel(MASTRA_AGENT_WRITE_COMPLETED_EVENT),
+    ).toBe(false);
+  });
+
+  it("parses only targetId and undoId for Mastra write completion", () => {
+    expect(
+      parseMastraAgentWriteCompletedEvent({
+        targetId: "scene-1",
+        undoId: "undo-1",
+      }),
+    ).toEqual({ targetId: "scene-1", undoId: "undo-1" });
+    expect(
+      parseMastraAgentWriteCompletedEvent({
+        targetId: "scene-1",
+        undoId: "undo-1",
+        content: "private manuscript body",
+      }),
+    ).toBeNull();
+    expect(
+      parseMastraAgentWriteCompletedEvent({
+        targetId: "scene-1",
+        undoId: "undo-1",
+        extra: true,
+      }),
+    ).toBeNull();
+
+    const invalidEvents: unknown[] = [
+      { targetId: "", undoId: "undo-1" },
+      { targetId: "x".repeat(201), undoId: "undo-1" },
+      { targetId: " scene-1", undoId: "undo-1" },
+      { targetId: "scene-1 ", undoId: "undo-1" },
+      { targetId: "scene\n1", undoId: "undo-1" },
+      { targetId: "scene-1" },
+      ["scene-1", "undo-1"],
+      new (class {
+        targetId = "scene-1";
+        undoId = "undo-1";
+      })(),
+      { targetId: ["scene-1"], undoId: "undo-1" },
+      { targetId: "scene-1", undoId: new String("undo-1") },
+    ];
+    for (const event of invalidEvents) {
+      expect(parseMastraAgentWriteCompletedEvent(event)).toBeNull();
+    }
   });
 
   it.each([

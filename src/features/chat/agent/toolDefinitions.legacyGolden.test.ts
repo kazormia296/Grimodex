@@ -10,6 +10,10 @@ import {
   createMastraUiToolDefinitions,
   MASTRA_UI_TOOL_NAMES,
 } from "@/../electron/shared/mastraUiToolDefinitions";
+import {
+  createMastraWriteToolDefinitions,
+  MASTRA_WRITE_TOOL_NAMES,
+} from "@/../electron/shared/mastraWriteToolDefinitions";
 
 /**
  * MP-4b PR-0：tool の「定義」（name・description・schema）の bytes の golden。
@@ -76,6 +80,34 @@ describe("tool 定義の bytes golden（legacy の toolDefinitions.ts）", () =>
     expect(shared).toHaveLength(7);
     expect(new Set(shared.map((tool) => tool.name))).toEqual(uiNames);
     expect(linesOf(shared)).toEqual(linesOf(renderer));
+  });
+
+  it("Mastra write の共有定義は 15 本で、renderer の golden と同じ bytes", async () => {
+    const shared = createMastraWriteToolDefinitions();
+    const writeNames = new Set<string>(MASTRA_WRITE_TOOL_NAMES);
+    const renderer = AGENT_TOOLS.filter((tool) => writeNames.has(tool.name));
+    expect(MASTRA_WRITE_TOOL_NAMES).toEqual([
+      "create_codex_entry",
+      "update_codex_entry",
+      "create_foreshadow",
+      "update_foreshadow",
+      "create_snippet",
+      "apply_ai_tree_plan",
+      "propose_scene_body",
+      "create_event",
+      "update_event",
+      "delete_event",
+      "stamp_scene_event",
+      "unstamp_scene_event",
+      "set_event_participants",
+      "add_event_relation",
+      "remove_event_relation",
+    ]);
+    expect(shared).toHaveLength(15);
+    expect(linesOf(shared)).toEqual(linesOf(renderer));
+    await expect(linesOf(shared)).toMatchFileSnapshot(
+      golden("definitions.write-tools.bytes"),
+    );
   });
 
   it("AGENT_TOOLS は 44 本で、M4 の 20 本はすべてその中にある（名前は重複しない）", () => {
