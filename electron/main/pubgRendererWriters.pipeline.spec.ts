@@ -77,6 +77,8 @@ vi.mock("@/features/timelapse/captureChat", () => ({
 }));
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleChatIndex: vi.fn(),
+  scheduleCodexIndex: vi.fn(),
+  cancelCodexIndex: vi.fn(),
 }));
 
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -897,6 +899,73 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
         )
         .some((s) => !s.ok),
     ).toBe(false);
+    expect(
+      sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
+    ).toEqual([]);
+  });
+
+  // The Codex import sets each imported entry's tags with `entity_tags_set` in
+  // the import session (import-apply), with or without tags. Main used to treat
+  // the tag writer as human-only and blanked the route, so every imported
+  // entry was refused and rolled back ("invalid args `authorityRoute` …
+  // expected a non-empty string") in Electron; the browser mock does not
+  // derive the route, so its tests passed.
+  it("Codex import restricted: entity_tags_set takes the import-apply route, with and without tags", async () => {
+    const w = await workspace();
+    await restrict(w);
+    const { importCodexEntries } = await renderer(
+      "@/features/import/importApi",
+    );
+    const rowCount = async (sql: string, id: string) =>
+      Number((await w.rows<{ n: number }>(sql, [id]))[0].n);
+    const sentBefore = w.rig.sent.length;
+    const entry = (id: string, tagsCache: string) => ({
+      id,
+      ncId: `nc-${id}`,
+      type: "character",
+      name: `Imported ${id}`,
+      aliases: [],
+      summary: "imported codex body",
+      content: "{}",
+      contextMode: "mentioned",
+      tagsCache,
+    });
+    expect(
+      await importCodexEntries([
+        entry("imp-codex-untagged", "[]"),
+        entry(
+          "imp-codex-tagged",
+          JSON.stringify([{ name: "imported-tag", color: null }]),
+        ),
+      ]),
+    ).toEqual({ imported: 2, errors: [] });
+
+    for (const id of ["imp-codex-untagged", "imp-codex-tagged"]) {
+      expect(
+        await rowCount(
+          "SELECT count(*) AS n FROM codex_entries WHERE id = ?",
+          id,
+        ),
+      ).toBe(1);
+    }
+    expect(
+      await rowCount(
+        "SELECT count(*) AS n FROM codex_entry_tags WHERE entry_id = ?",
+        "imp-codex-untagged",
+      ),
+    ).toBe(0);
+    expect(
+      await rowCount(
+        `SELECT count(*) AS n FROM codex_entry_tags et
+           JOIN codex_tags t ON t.id = et.tag_id
+          WHERE et.entry_id = ? AND t.name = 'imported-tag'`,
+        "imp-codex-tagged",
+      ),
+    ).toBe(1);
+    const sent = w.rig.sent.slice(sentBefore);
+    expect(
+      sent.filter((s) => s.cmd === "entity_tags_set").map((s) => s.ok),
+    ).toEqual([true, true]);
     expect(
       sent.filter((s) => s.sql && /\b(insert|update|delete)\b/i.test(s.sql)),
     ).toEqual([]);
