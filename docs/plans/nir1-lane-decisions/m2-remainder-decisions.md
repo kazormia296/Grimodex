@@ -27,6 +27,8 @@ feature-private な要約や Freshness の store の削除は個別に伺う。
 - **DR-M2R-8（旗と失敗時）**：renderer の旗 `CHAT_APPROVED_CODEX_RANK_ENABLED = false as const` を置く。旗が閉じている間は読み口を呼ばない。読み口が失敗・使えないを返したら、並べ替えずに今の挙動のままにする。builder は承認済みの集合を引数で受け、旗に依らず試験と評価から注入できる形にする。
 - **DR-M2R-9（PR の分け方と測定）**：B1a は Rust の reader・N-API・IPC の契約・`src/lib` の wrapper だけで、呼び手なし。B1b は旗・2 つの context の source・builder の並べ替え。`contextBuilder.ts` は `evals/impact-map.yaml` の `localized-prompts`（suite `prompt-contract`）に当たるので、B1b は AI の挙動の資産の変更として impact gate を通す。Chat の L4 の順序の効果を typed ER つきで測る既存の評価は無い（evals の中で typed ER を使うのは NIR-1 の Packing と Graph だけ）。旗を開ける前に、小さな評価を新しく作り、その結果でユーザーに伺う。
 
+- **DR-M2R-10（B1a の読み口の脅威モデル、委任の範囲内の技術判断）**：主体は今の境界のまま。renderer は信頼しない入力の出し手で、main が引数を再検証し、Native も再検証する。Native と DB は信頼する。新しい受け手・保存・送信先は無い。攻撃の範囲：(1) 任意の id による承認の有無の探り：返すのは入力の部分集合だけで、renderer は元から Codex の項目を読めるので、新しく漏れる情報は承認の有無の 1 bit だけ。作者本人の workspace の中の情報で、範囲の外へ出ない。(2) hidden の項目：今の token の解決（`resolve_typed_source_token`）で外れ、返らない。(3) 別の project・別の workspace：`projectId` と `expectedWorkspacePath` の束縛（既存の `nir1_entity_relation_revision_read` と同じ）で閉じる。(4) 大量の入力・重い読み：入力 64 件・id ごとに辺 16 本の上限で閉じる。(5) 承認の偽装：判定は既存の A2 の人の Decision の判定を再利用し、新しい承認の経路を作らない。範囲の外：作者本人の端末の上での DB の直接の改ざん（既存の脅威モデルと同じ）。必須の防御は (2)〜(5)。受入れ：既存の承認の authority を読むだけで、変えない。新しい契約は追記 16 で確認済み。これは個別のユーザーの承認の主張ではなく、委任の範囲内の技術判断。
+
 ## 信頼境界
 
 - 送信：旗が閉じている間は変えない。旗を開けると、AI に届く Codex の項目の集合は変わらず、prompt の中の順序だけが変わる（DR-M2R-6）。可否の判定は今の `codexVisibilityPolicy` のまま。
