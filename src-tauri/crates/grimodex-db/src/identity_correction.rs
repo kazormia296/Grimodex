@@ -159,6 +159,12 @@ fn write_rule_revision(
     authority: RendererCanonicalWriteContext,
 ) -> anyhow::Result<Value> {
     validate_renderer_authority_context_for_routes(&authority, &["human-direct"])?;
+    // Rule revisions are never Undo/Redo targets: a retraction is a new
+    // revision (ADR 015 §6), so only a forward human origin may write.
+    anyhow::ensure!(
+        matches!(authority.origin, NarrativeChangeOrigin::Human),
+        "identity correction rule revisions accept only a forward human origin"
+    );
     anyhow::ensure!(
         !context.session_id.trim().is_empty(),
         "identity correction sessionId must be non-empty"

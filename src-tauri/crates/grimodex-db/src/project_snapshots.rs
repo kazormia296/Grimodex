@@ -3673,9 +3673,9 @@ mod tests {
                  VALUES ('proposal-r1', 'proposal-erm', 1, '{}', 'legacy-unbound', 'now', 'author');
                  INSERT INTO identity_correction_applications
                     (id, project_id, origin_proposal_revision_id, input_proposal_revision_id,
-                     rule_revision_id, route, outcome, reason_code, created_at)
+                     rule_revision_id, route, outcome, reason_code, reapply_batch_id, created_at)
                  VALUES ('application-1', 'p1', 'proposal-r1', 'proposal-r1', 'rule-r1',
-                         'extraction', 'conflict', 'test', 'now');",
+                         'extraction', 'conflict', 'test', 'extraction-run-1', 'now');",
             )?;
             Ok(())
         })

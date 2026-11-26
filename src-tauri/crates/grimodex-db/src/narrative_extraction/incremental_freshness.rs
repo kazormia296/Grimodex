@@ -6932,6 +6932,9 @@ mod tests {
             notes: None,
             canonical_payload: None,
         };
+        run_incremental_freshness_cycle(&db).expect("the fixture's own events are processed first");
+        let freshness_before = consumer_freshness_rows(&db);
+        assert!(!freshness_before.is_empty(), "the fixture has Consumer freshness rows to compare");
         crate::change_events::with_renderer_authority_context(
             json!({"authorityRoute":"human-direct", "caller":"human-ui"}),
             || {
@@ -6967,6 +6970,31 @@ mod tests {
         };
         assert_eq!(summary.through_sequence_inclusive, 2);
         assert_eq!(freshness_cursor(&db), (2, None), "the cursor acknowledges the rule event");
+        assert_eq!(
+            consumer_freshness_rows(&db),
+            freshness_before,
+            "a rule revision has no Source yet, so no Consumer's freshness changes (ERM PR 3 revisits)"
+        );
+    }
+
+    fn consumer_freshness_rows(db: &Database) -> Vec<String> {
+        db.with_conn(|conn| {
+            // Every column, so a change to any of them (epoch, run, time) fails.
+            let mut statement = conn.prepare(
+                "SELECT * FROM narrative_consumer_freshness ORDER BY consumer_kind, consumer_key",
+            )?;
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|index| row.get_ref(index).map(|value| format!("{value:?}")))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|values| values.join("|"))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read consumer freshness rows")
     }
 
     #[test]

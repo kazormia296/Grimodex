@@ -206,7 +206,7 @@ fn seed_all_erm_rows(db: &Database) {
             "extraction",
             "conflict",
             None,
-            None,
+            Some("extraction-run-1"),
         )?;
         Ok(())
     })
@@ -453,9 +453,6 @@ fn erm_rule_revision_checks_and_uniques_match_schema_contract() {
         invalid.push(row);
         let row = Rule::valid("bad-kind", "unknown", "bad-kind");
         invalid.push(row);
-        let mut row = Rule::valid("bad-provenance", "must-link-surface", "bad-provenance");
-        row.provenance_kind = "unknown";
-        invalid.push(row);
         for row in invalid {
             assert!(
                 insert_rule(conn, row).is_err(),
@@ -592,7 +589,7 @@ fn erm_lineage_and_application_constraints_match_schema_contract() {
             "extraction",
             "conflict",
             None,
-            None
+            Some("extraction-run-1")
         )
         .is_ok());
         assert!(insert_application(
@@ -625,24 +622,17 @@ fn erm_lineage_and_application_constraints_match_schema_contract() {
             Some("batch-3")
         )
         .is_err());
+        // route / outcome / provenance vocabularies belong to the later
+        // writers (ERM PR 2-3), so the schema leaves them open; the batch id
+        // is required so the retry uniqueness cannot be bypassed by NULL.
         assert!(insert_application(
             conn,
-            "app-bad-outcome",
+            "app-null-batch",
             "rule-r1",
             "reapply",
-            "unknown",
-            None,
-            Some("batch-4")
-        )
-        .is_err());
-        assert!(insert_application(
-            conn,
-            "app-bad-route",
-            "rule-r1",
-            "unknown",
             "stale",
             None,
-            Some("batch-5")
+            None
         )
         .is_err());
         assert!(insert_application(
@@ -658,6 +648,47 @@ fn erm_lineage_and_application_constraints_match_schema_contract() {
         Ok(())
     })
     .expect("verify lineage and application constraints");
+}
+
+#[test]
+fn erm_writer_owned_vocabularies_stay_open_in_the_schema() {
+    // DR-M3-39: the route / outcome / provenance vocabularies and the optional
+    // provenance reference and lineage reason belong to the later writers
+    // (ERM PR 2-3). The schema must not close them, or a writer would need
+    // another schema bump.
+    let db = current_schema_memory().expect("current schema");
+    seed_all_erm_rows(&db);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO identity_correction_rule_revisions
+                (id, project_id, rule_id, revision_no, state, kind, scope_kind,
+                 surface_text, entry_id, provenance_kind, provenance_ref, actor_id,
+                 created_at, request_id)
+             VALUES ('rule-open', 'p', 'rule-open', 1, 'active', 'must-link-surface', 'any',
+                     'Open', 'entry-a', 'future-provenance', NULL, 'author', 'now',
+                     'open-request')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO identity_lineage_operations
+                (id, project_id, op_kind, reason, actor_id, created_at, request_id,
+                 applied_change_sequence, ai_disclosure_choice)
+             VALUES ('op-open', 'p', 'merge', NULL, 'author', 'now', 'op-open-request', 1,
+                     'future-choice')",
+            [],
+        )?;
+        insert_application(
+            conn,
+            "app-open",
+            "rule-r1",
+            "future-route",
+            "future-outcome",
+            None,
+            Some("batch-open"),
+        )?;
+        Ok(())
+    })
+    .expect("writer-owned vocabularies and optional columns are accepted");
 }
 
 #[test]

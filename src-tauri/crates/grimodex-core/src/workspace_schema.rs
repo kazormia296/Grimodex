@@ -1054,6 +1054,7 @@ fn has_v48_identity_correction_storage(conn: &Connection) -> anyhow::Result<bool
                 "request_id",
                 "narrative_commit_id",
                 "applied_change_sequence",
+                "ai_disclosure_choice",
             ],
         ),
         (
