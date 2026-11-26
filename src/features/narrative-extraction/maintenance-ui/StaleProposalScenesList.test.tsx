@@ -6,17 +6,11 @@ import type { StaleProposalScenesPage } from "@/application/narrative-extraction
 import enLocale from "@/locales/en.json";
 import jaLocale from "@/locales/ja.json";
 
-const { scenesMock, openMock, tree } = vi.hoisted(() => ({
+const { scenesMock, openMock, blockedMock, pendingMock } = vi.hoisted(() => ({
   scenesMock: vi.fn(),
   openMock: vi.fn(),
-  tree: {
-    nodes: [] as {
-      id: string;
-      nodeType: string;
-      title: string;
-    }[],
-    hydratedProjectId: null as string | null,
-  },
+  blockedMock: vi.fn(),
+  pendingMock: vi.fn(),
 }));
 
 vi.mock("@/application/narrative-extraction/nativeApi", () => ({
@@ -26,15 +20,27 @@ vi.mock("@/application/editor/openEditorDocument", () => ({
   openEditorDocument: openMock,
 }));
 vi.mock("@/features/editor/editorNavigationPorts", () => ({
-  defaultEditorNavigationPorts: { name: "ports" },
+  defaultEditorNavigationPorts: { isNavigationBlocked: blockedMock },
 }));
-vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: <T,>(selector: (state: typeof tree) => T) => selector(tree),
-  // Manuscript order is the array order here.
-  getAllProjectScenesInOrder: (nodes: typeof tree.nodes) =>
-    nodes.filter((node) => node.nodeType === "scene"),
+vi.mock("@/features/editor/inlineAi/pendingGuard", () => ({
+  guardInlineAiPending: pendingMock,
 }));
+// A real zustand store, so the list has to subscribe to see later changes.
+vi.mock("@/features/tree/treeStore", async () => {
+  const { create } = await import("zustand");
+  return {
+    useTreeStore: create(() => ({
+      nodes: [] as { id: string; nodeType: string; title: string }[],
+      hydratedProjectId: null as string | null,
+    })),
+    // Manuscript order is the array order here.
+    getAllProjectScenesInOrder: (
+      nodes: { id: string; nodeType: string; title: string }[],
+    ) => nodes.filter((node) => node.nodeType === "scene"),
+  };
+});
 
+import { useTreeStore } from "@/features/tree/treeStore";
 import { StaleProposalScenesList } from "./StaleProposalScenesList";
 
 function deferred<T>() {
@@ -53,6 +59,11 @@ const either = (pick: (texts: SceneTexts) => string) => [
   pick(enLocale.narrativeMaintenance.scenes),
 ];
 
+const setTree = (patch: {
+  nodes?: { id: string; nodeType: string; title: string }[];
+  hydratedProjectId?: string | null;
+}) => useTreeStore.setState(patch as never);
+
 const rowTexts = () =>
   screen
     .getAllByTestId("structure-health-scene-row")
@@ -62,12 +73,16 @@ describe("StaleProposalScenesList", () => {
   beforeEach(() => {
     scenesMock.mockReset();
     openMock.mockReset();
-    tree.hydratedProjectId = "project-1";
-    tree.nodes = [
-      { id: "scene-b", nodeType: "scene", title: "港の朝" },
-      { id: "folder", nodeType: "folder", title: "章" },
-      { id: "scene-a", nodeType: "scene", title: "" },
-    ];
+    blockedMock.mockReset().mockReturnValue(false);
+    pendingMock.mockReset().mockReturnValue(false);
+    setTree({
+      hydratedProjectId: "project-1",
+      nodes: [
+        { id: "scene-b", nodeType: "scene", title: "港の朝" },
+        { id: "folder", nodeType: "folder", title: "章" },
+        { id: "scene-a", nodeType: "scene", title: "" },
+      ],
+    });
   });
 
   it("lists cited scenes in manuscript order and opens one", async () => {
@@ -101,12 +116,34 @@ describe("StaleProposalScenesList", () => {
         target: { kind: "scene", documentId: "scene-b" },
         mode: "pinned",
         revealEditor: true,
-        focusEditor: false,
+        focusEditor: true,
         syncSceneContext: true,
       },
-      { name: "ports" },
+      { isNavigationBlocked: blockedMock },
     );
     expect(onOpened).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["inline AI is pending", () => pendingMock.mockReturnValue(true)],
+    ["the editor refuses to leave", () => blockedMock.mockReturnValue(true)],
+  ])("keeps the list open when %s", async (_label, block) => {
+    block();
+    scenesMock.mockResolvedValue({
+      scenes: [{ sceneId: "scene-b", proposalCount: 1 }],
+      withoutSceneCount: 0,
+    });
+    const onOpened = vi.fn();
+    render(
+      <StaleProposalScenesList projectId="project-1" onOpened={onOpened} />,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "港の朝" }),
+    );
+
+    expect(openMock).not.toHaveBeenCalled();
+    expect(onOpened).not.toHaveBeenCalled();
+    expect(screen.getByTestId("structure-health-scene-row")).toBeVisible();
   });
 
   it("calls an unknown id deleted, and shows proposals without a scene", async () => {
@@ -129,7 +166,7 @@ describe("StaleProposalScenesList", () => {
   });
 
   it("does not call a scene deleted before this project's tree is loaded", async () => {
-    tree.hydratedProjectId = "other-project";
+    setTree({ hydratedProjectId: "other-project" });
     scenesMock.mockResolvedValue({
       scenes: [{ sceneId: "scene-b", proposalCount: 1 }],
       withoutSceneCount: 0,
@@ -145,6 +182,10 @@ describe("StaleProposalScenesList", () => {
     ).toBe(true);
     expect(text).not.toContain("港の朝");
     expect(screen.queryByRole("button")).toBeNull();
+
+    // The rows update once this project's tree arrives.
+    act(() => setTree({ hydratedProjectId: "project-1" }));
+    expect(screen.getByRole("button", { name: "港の朝" })).toBeVisible();
   });
 
   it("loads the next page with the cursor and keeps each scene once", async () => {
@@ -216,7 +257,7 @@ describe("StaleProposalScenesList", () => {
     const view = render(
       <StaleProposalScenesList projectId="project-1" onOpened={() => {}} />,
     );
-    tree.hydratedProjectId = "project-2";
+    setTree({ hydratedProjectId: "project-2" });
     view.rerender(
       <StaleProposalScenesList projectId="project-2" onOpened={() => {}} />,
     );

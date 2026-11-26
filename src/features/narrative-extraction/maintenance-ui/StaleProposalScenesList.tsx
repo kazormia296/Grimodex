@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import {
+  openEditorDocument,
+  type OpenEditorDocumentCommand,
+} from "@/application/editor/openEditorDocument";
 import {
   narrativeMaintenanceStaleProposalScenes,
   type StaleProposalSceneCount,
 } from "@/application/narrative-extraction/nativeApi";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import {
   getAllProjectScenesInOrder,
   useTreeStore,
@@ -116,16 +120,23 @@ export function StaleProposalScenesList({ projectId, onOpened }: Props) {
   }, [state, order]);
 
   const open = (sceneId: string) => {
-    openEditorDocument(
-      {
-        target: { kind: "scene", documentId: sceneId },
-        mode: "pinned",
-        revealEditor: true,
-        focusEditor: false,
-        syncSceneContext: true,
-      },
-      defaultEditorNavigationPorts,
-    );
+    const command: OpenEditorDocumentCommand = {
+      target: { kind: "scene", documentId: sceneId },
+      mode: "pinned",
+      revealEditor: true,
+      // The panel closes after this, so focus moves to the opened scene.
+      focusEditor: true,
+      syncSceneContext: true,
+    };
+    // A blocked open does nothing, so keep the list instead of closing on it.
+    // Inline AI also tells the author why.
+    if (
+      guardInlineAiPending() ||
+      defaultEditorNavigationPorts.isNavigationBlocked?.(command)
+    ) {
+      return;
+    }
+    openEditorDocument(command, defaultEditorNavigationPorts);
     onOpened();
   };
 
@@ -236,7 +247,7 @@ export function StaleProposalScenesList({ projectId, onOpened }: Props) {
             <p className="mt-1 text-xs text-muted-foreground">
               {t(
                 "narrativeMaintenance.scenes.overlapNote",
-                "1 つの提案が複数の場面を引用することがあるため、場面ごとの件数の合計は、上の件数と合わないことがあります。",
+                "1 つの提案が複数の場面を引用することがあるため、場面ごとの件数の合計は、上の件数と一致するとは限りません。",
               )}
             </p>
           )}
