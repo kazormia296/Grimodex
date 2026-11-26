@@ -22,11 +22,13 @@
  *   cancel contract): a late settle of it is dropped, never returned and never
  *   a second terminal.
  *
- * Nothing here opens a new destination, event type, path ID, Native entry or
- * capability. It imports no `@mastra/*`: the runtime comes from `mastraAgentLoader.ts`.
+ * The question uses MP-5's existing main-only event and answer command; it
+ * opens no destination, path ID, Native entry or capability. This imports no
+ * `@mastra/*`: the runtime comes from `mastraAgentLoader.ts`.
  */
 import {
   resolveRequiredAiKeyAndSettings,
+  MASTRA_AGENT_TURN_QUESTION_EVENT,
   type NapiBackendLike,
   type SecretsResolver,
 } from "../shared/ipcContract.js";
@@ -38,9 +40,17 @@ import {
   type MastraAgentTurnProgressEvent,
   type MastraAgentTurnCancelRequest,
   type MastraAgentTurnCancelResult,
+  type MastraAgentTurnAnswerRequest,
+  type MastraAgentTurnAnswerResult,
   type MastraAgentTurnRefusalReason,
+  type MastraAgentTurnQuestionPayload,
+  type MastraAgentTurnQuestionToolName,
+  type MastraAgentTurnUiToolResult,
   type MastraAgentTurnStartRequest,
   type MastraAgentTurnStartResult,
+  MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS,
+  MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS,
+  parseMastraAgentTurnQuestionPayload,
 } from "../shared/mastraAgentTurnWire.js";
 import type {
   MastraAgentTurnCitation,
@@ -99,6 +109,7 @@ import type {
   MastraAgentTurnWindow,
 } from "./mastraAgentTurnGate.js";
 import { createMastraAgentTurnProgressSender } from "./mastraAgentTurnEvents.js";
+import { sendMainEventToWindow } from "./events.js";
 import { runNativeRead, type MainReadHooks } from "./mastraRead/nativeCall.js";
 import type {
   MainEgressParticipantContext,
@@ -226,6 +237,11 @@ export interface MastraTurnOwnerOptions {
   readonly perSenderMax?: number;
   readonly totalMax?: number;
   readonly randomUUID?: () => string;
+  /** The targeted MP-5 event; false means the renderer did not receive it. */
+  readonly sendQuestion?: (
+    webContentsId: number,
+    payload: MastraAgentTurnQuestionPayload,
+  ) => boolean;
 }
 
 /** A workspace switch's lease: `resume` reopens admission. Idempotent. */
@@ -245,6 +261,18 @@ export interface MastraTurnOwner {
     context: MastraTurnInvokeContext,
     request: MastraAgentTurnCancelRequest,
   ): MastraAgentTurnCancelResult;
+  /** Main-owned bridge for the later UI-tool adapter and owner tests. */
+  requestUiTool(
+    turnId: string,
+    toolCallId: string,
+    toolName: MastraAgentTurnQuestionToolName,
+    args: Readonly<Record<string, unknown>>,
+  ): Promise<MastraAgentTurnUiToolResult>;
+  /** Accept one parsed answer from the window that received its question. */
+  answer(
+    context: MastraTurnInvokeContext,
+    request: MastraAgentTurnAnswerRequest,
+  ): Promise<MastraAgentTurnAnswerResult>;
   /** The egress participant's quiesce: close admission, abort, wait for the terminals. */
   quiesceForProfileEgress(
     context?: MainEgressParticipantContext,
@@ -319,6 +347,19 @@ interface Turn {
   finished: boolean;
   slotReleased: boolean;
   detach: () => void;
+}
+
+interface PendingQuestion {
+  readonly turn: Turn;
+  readonly requestId: string;
+  readonly toolCallId: string;
+  readonly toolName: MastraAgentTurnQuestionToolName;
+  readonly deadlineAt: number;
+  readonly senderId: number;
+  readonly windowId: number;
+  readonly resolve: (result: MastraAgentTurnUiToolResult) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
 }
 
 function sessionKeyOf(senderId: number, chatSessionId: string): string {
@@ -414,6 +455,14 @@ export function createMastraTurnOwner(
   const perSenderMax = options.perSenderMax ?? MASTRA_TURN_PER_SENDER_MAX;
   const totalMax = options.totalMax ?? MASTRA_TURN_TOTAL_MAX;
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
+  const sendQuestion =
+    options.sendQuestion ??
+    ((webContentsId, payload) =>
+      sendMainEventToWindow(
+        webContentsId,
+        MASTRA_AGENT_TURN_QUESTION_EVENT,
+        payload,
+      ));
   const m4Tools = new Map(
     createM4ReadToolDefinitions().map((tool) => [tool.name, tool]),
   );
@@ -433,6 +482,8 @@ export function createMastraTurnOwner(
   const forcedPending = new Set<Turn>();
   /** Turns with a Native read that has not settled (attached or not). */
   const readTurns = new Set<Turn>();
+  const questionsByRequest = new Map<string, PendingQuestion>();
+  const questionByWindow = new Map<number, string>();
   /** closed-profile and closed-quit are one-way; a switch is a counter that resume lowers. */
   let closed: "profile" | "quit" | null = null;
   let switchDepth = 0;
@@ -508,6 +559,7 @@ export function createMastraTurnOwner(
   ): Promise<void> => {
     if (turn.forcedTerminal !== null) return turn.forcedTerminal;
     turn.forcedCause = cause;
+    closeTurnQuestions(turn, new MastraTurnAborted(cause));
     turn.controller.abort();
     turn.rejectForced(new MastraTurnAborted(cause));
     const terminal = (async (): Promise<void> => {
@@ -598,6 +650,40 @@ export function createMastraTurnOwner(
   /** The profile quiesce's drains, released when the gate force-stops the owner. */
   const profileDrains = new Set<() => void>();
 
+  const removeQuestion = (pending: PendingQuestion): boolean => {
+    if (questionsByRequest.get(pending.requestId) !== pending) return false;
+    questionsByRequest.delete(pending.requestId);
+    if (questionByWindow.get(pending.windowId) === pending.requestId) {
+      questionByWindow.delete(pending.windowId);
+    }
+    clearTimeout(pending.timer);
+    return true;
+  };
+
+  const closeTurnQuestions = (turn: Turn, error: Error): void => {
+    for (const pending of questionsByRequest.values()) {
+      if (pending.turn === turn && removeQuestion(pending)) {
+        pending.reject(error);
+      }
+    }
+  };
+
+  const expireQuestion = (pending: PendingQuestion): boolean => {
+    if (!removeQuestion(pending)) return false;
+    if (pending.toolName === "ask_user") {
+      pending.turn.userStop = true;
+      pending.turn.cancelObserved = true;
+      pending.reject(new MastraAgentLoopStopped());
+    } else {
+      pending.reject(
+        new Error(
+          "MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT: outcome is uncertain; do not repeat the operation",
+        ),
+      );
+    }
+    return true;
+  };
+
   /** Each send and each begin: the turn's own checks before anything leaves Main (DR-MP3-5). */
   const assertLive = (turn: Turn): void => {
     if (turn.forcedCause !== null)
@@ -667,6 +753,35 @@ export function createMastraTurnOwner(
     assertLive: () => assertReadLive(turn),
     trackInFlight: (settled) => trackRead(turn, settled),
   });
+
+  /** The same Stop/profile/identity/chat-policy check used before every send. */
+  const assertTurnAuthority = async (
+    turn: Turn,
+    backend: MastraTurnBackend,
+  ): Promise<void> => {
+    assertLive(turn);
+    const rawPolicy = await runNativeRead(
+      () =>
+        backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [turn.projectId],
+          "get",
+          JSON.stringify(turn.identity),
+        ),
+      {
+        command: "db_execute",
+        timeoutMs: MAIN_READ_CALLER_TIMEOUT_MS.db_execute,
+        hooks: readHooksOf(turn),
+      },
+    );
+    assertLive(turn);
+    if (!projectAiChatPolicyAllows(rawPolicy)) {
+      turn.userStop = true;
+      turn.cancelObserved = true;
+      if (turn.response === null) throw new MastraTurnCancelled();
+      throw new MastraAgentLoopStopped();
+    }
+  };
 
   // -------------------------------------------------------------------------
   // The turn's sink: Main's sink, with the owner's checks and bookkeeping.
@@ -805,6 +920,150 @@ export function createMastraTurnOwner(
       sender.removeListener("did-start-navigation", onNavigation);
       win?.removeListener("closed", onGone);
     };
+  }
+
+  async function requestUiTool(
+    turnId: string,
+    toolCallId: string,
+    toolName: MastraAgentTurnQuestionToolName,
+    args: Readonly<Record<string, unknown>>,
+  ): Promise<MastraAgentTurnUiToolResult> {
+    const turn = attached.get(turnId);
+    if (!turn || turn.finished) throw new Error("MASTRA_AGENT_TURN_NOT_ACTIVE");
+    if (questionByWindow.has(turn.windowId)) {
+      throw new Error("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
+    }
+    const backend = options.backend;
+    if (!backend) throw new Error("IPC_BACKEND_UNAVAILABLE: dbExecute");
+    await assertTurnAuthority(turn, backend);
+    if (turn.finished || attached.get(turnId) !== turn) {
+      throw new Error("MASTRA_AGENT_TURN_NOT_ACTIVE");
+    }
+    if (questionByWindow.has(turn.windowId)) {
+      throw new Error("MASTRA_AGENT_TURN_QUESTION_ALREADY_PENDING");
+    }
+
+    const timeoutMs =
+      toolName === "ask_user"
+        ? MASTRA_AGENT_TURN_ASK_USER_TIMEOUT_MS
+        : MASTRA_AGENT_TURN_UI_TOOL_TIMEOUT_MS;
+    const payload: MastraAgentTurnQuestionPayload = {
+      turnId,
+      requestId: randomUUID(),
+      toolCallId,
+      toolName,
+      args,
+      deadlineAt: Date.now() + timeoutMs,
+    };
+    const parsed = parseMastraAgentTurnQuestionPayload(payload);
+    if (!parsed.ok) throw new Error("MASTRA_AGENT_TURN_QUESTION_INVALID");
+    if (questionsByRequest.has(payload.requestId)) {
+      throw new Error("MASTRA_AGENT_TURN_QUESTION_ID_COLLISION");
+    }
+
+    let pending!: PendingQuestion;
+    const result = new Promise<MastraAgentTurnUiToolResult>(
+      (resolve, reject) => {
+        const timer = setTimeout(() => {
+          expireQuestion(pending);
+        }, timeoutMs);
+        pending = {
+          turn,
+          requestId: payload.requestId,
+          toolCallId,
+          toolName,
+          deadlineAt: payload.deadlineAt,
+          senderId: turn.senderId,
+          windowId: turn.windowId,
+          resolve,
+          reject,
+          timer,
+        };
+      },
+    );
+    questionsByRequest.set(pending.requestId, pending);
+    questionByWindow.set(pending.windowId, pending.requestId);
+
+    let sent = false;
+    try {
+      sent = sendQuestion(turn.windowId, parsed.value);
+    } catch {
+      // A synchronous transport error closes the registered question below.
+    }
+    if (!sent && removeQuestion(pending)) {
+      pending.reject(new Error("MASTRA_AGENT_TURN_QUESTION_DELIVERY_FAILED"));
+    }
+    return result;
+  }
+
+  async function answer(
+    context: MastraTurnInvokeContext,
+    request: MastraAgentTurnAnswerRequest,
+  ): Promise<MastraAgentTurnAnswerResult> {
+    const pending = questionsByRequest.get(request.requestId);
+    if (
+      !pending ||
+      pending.senderId !== context.sender.id ||
+      pending.windowId !== context.win?.id
+    ) {
+      return { status: "refused", reason: "no-pending" };
+    }
+    if (
+      "result" in request &&
+      (request.result.toolCallId !== pending.toolCallId ||
+        request.result.name !== pending.toolName)
+    ) {
+      return { status: "refused", reason: "invalid" };
+    }
+    if (Date.now() >= pending.deadlineAt) {
+      expireQuestion(pending);
+      return { status: "refused", reason: "no-pending" };
+    }
+
+    try {
+      const backend = options.backend;
+      if (!backend) throw new Error("IPC_BACKEND_UNAVAILABLE: dbExecute");
+      await assertTurnAuthority(pending.turn, backend);
+    } catch (error) {
+      if (questionsByRequest.get(pending.requestId) !== pending) {
+        return { status: "refused", reason: "no-pending" };
+      }
+      if (Date.now() >= pending.deadlineAt) {
+        expireQuestion(pending);
+        return { status: "refused", reason: "no-pending" };
+      }
+      // If Main cannot revalidate authority, consume the answer and stop this turn.
+      pending.turn.userStop = true;
+      pending.turn.cancelObserved = true;
+      if (removeQuestion(pending)) {
+        pending.reject(
+          error instanceof MastraTurnAborted ||
+            error instanceof MastraTurnCancelled ||
+            error instanceof MastraAgentLoopStopped
+            ? error
+            : new MastraAgentLoopStopped(),
+        );
+      }
+      return { status: "accepted", requestId: pending.requestId };
+    }
+    if (questionsByRequest.get(pending.requestId) !== pending) {
+      return { status: "refused", reason: "no-pending" };
+    }
+    if (Date.now() >= pending.deadlineAt) {
+      expireQuestion(pending);
+      return { status: "refused", reason: "no-pending" };
+    }
+    if (!removeQuestion(pending)) {
+      return { status: "refused", reason: "no-pending" };
+    }
+    if ("refusal" in request) {
+      pending.turn.userStop = true;
+      pending.turn.cancelObserved = true;
+      pending.reject(new MastraAgentLoopStopped());
+    } else {
+      pending.resolve(request.result);
+    }
+    return { status: "accepted", requestId: pending.requestId };
   }
 
   /** The error the start rejects with, from what ended the turn. */
@@ -1098,26 +1357,7 @@ export function createMastraTurnOwner(
         send: sendFor(turn, backend, credentials),
         audit: guardedSink(turn),
         assertSendAllowed: async ({ sendIndex }) => {
-          const rawPolicy = await runNativeRead(
-            () =>
-              backend.dbExecute(
-                "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
-                [turn.projectId],
-                "get",
-                JSON.stringify(turn.identity),
-              ),
-            {
-              command: "db_execute",
-              timeoutMs: MAIN_READ_CALLER_TIMEOUT_MS.db_execute,
-              hooks: readHooksOf(turn),
-            },
-          );
-          if (!projectAiChatPolicyAllows(rawPolicy)) {
-            turn.cancelObserved = true;
-            throw sendIndex === 0
-              ? new MastraTurnCancelled()
-              : new MastraAgentLoopStopped();
-          }
+          await assertTurnAuthority(turn, backend);
           const prepared = preparedSendProgress;
           if (prepared?.sendIndex !== sendIndex) {
             throw new Error("MASTRA_AGENT_SEND_PROGRESS_MISSING");
@@ -1425,6 +1665,7 @@ export function createMastraTurnOwner(
       }
       throw endError(turn, error);
     } finally {
+      closeTurnQuestions(turn, new MastraAgentLoopStopped());
       turn.finished = true;
       attached.delete(turn.turnId);
       if (bySession.get(turn.sessionKey) === turn)
@@ -1453,6 +1694,7 @@ export function createMastraTurnOwner(
     }
     // `user-stop`: no step begins after this (a send in flight is not cut).
     turn.userStop = true;
+    closeTurnQuestions(turn, new MastraAgentLoopStopped());
     return { status: "ok", turnId: request.turnId, found: true };
   }
 
@@ -1466,6 +1708,8 @@ export function createMastraTurnOwner(
     open: options.open,
     start: (context, request) => start(context, request),
     cancel: (context, request) => cancel(context, request),
+    requestUiTool,
+    answer,
 
     async quiesceForProfileEgress(context) {
       // Admission first, and for good (a restricted or unavailable profile
