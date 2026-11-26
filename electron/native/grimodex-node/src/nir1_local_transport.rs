@@ -142,7 +142,9 @@ pub(crate) struct Nir1LocalGenerationInput {
     pub(crate) policy_basis: Nir1LocalSendPolicyBasis,
     /// The ID of the assistant message a success stores.
     pub(crate) message_id: String,
-    pub(crate) config: Nir1LocalTransportConfig,
+    /// The product path always runs [`Nir1LocalTransportConfig::DEFAULT`];
+    /// only tests set another value, through [`Self::with_config_for_test`].
+    config: Nir1LocalTransportConfig,
     #[cfg(test)]
     pub(crate) hooks: Option<Arc<TransportTestHooks>>,
 }
@@ -163,6 +165,12 @@ impl Nir1LocalGenerationInput {
             #[cfg(test)]
             hooks: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_config_for_test(mut self, config: Nir1LocalTransportConfig) -> Self {
+        self.config = config;
+        self
     }
 }
 
