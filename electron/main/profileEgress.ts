@@ -223,6 +223,7 @@ const OWN_DATA_READ_COMMANDS = [
   "narrative_extraction_get_commit_status",
   "narrative_extraction_list_scene_proposals",
   "narrative_maintenance_inbox_list",
+  "narrative_maintenance_health_summary",
   "narrative_maintenance_stale_proposal_count",
   "narrative_maintenance_stale_proposal_scenes",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];

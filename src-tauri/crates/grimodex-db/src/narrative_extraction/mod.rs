@@ -374,8 +374,9 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{
-    build_maintenance_inbox, count_stale_proposals, stale_proposal_scenes, InboxEntry,
-    InboxEntryKind, StaleProposalSceneCount, StaleProposalScenesPage,
+    build_maintenance_inbox, count_stale_proposals, maintenance_health_summary,
+    stale_proposal_scenes, InboxEntry, InboxEntryKind, MaintenanceHealthSummary,
+    StaleProposalBreakdown, StaleProposalSceneCount, StaleProposalScenesPage,
 };
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
@@ -527,7 +528,8 @@ pub use models::{
     HumanFieldLockPayload, IsRunResumableForReviewPayload, IsRunResumableForReviewResult,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, NarrativeAdapterIdentity,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, NarrativeMaintenanceStaleProposalScenesPayload,
+    NarrativeMaintenanceHealthSummaryPayload, NarrativeMaintenanceInboxListPayload,
+    NarrativeMaintenanceStaleProposalScenesPayload,
     PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
     ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
     ResolveCodexCatalogRevisionPayload, ResolveCodexCatalogRevisionResult,
