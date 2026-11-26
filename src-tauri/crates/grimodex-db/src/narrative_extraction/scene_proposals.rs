@@ -259,7 +259,8 @@ struct PageRow {
 }
 
 pub(super) fn evidence_entries(envelope: &Value) -> &[Value] {
-    envelope.pointer("/effectiveMaterialBasis/evidenceSet")
+    envelope
+        .pointer("/effectiveMaterialBasis/evidenceSet")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default()
@@ -417,7 +418,10 @@ fn read_scene_proposals(
     let statuses = page_statuses(
         conn,
         project_id,
-        &rows.iter().map(|row| row.proposal_id.as_str()).collect::<Vec<_>>(),
+        &rows
+            .iter()
+            .map(|row| row.proposal_id.as_str())
+            .collect::<Vec<_>>(),
     )?;
     let applied = applied_proposals(
         conn,
@@ -471,7 +475,8 @@ fn read_scene_proposals(
             };
 
         items.push(SceneProposalItem {
-            redecide: statuses.get(&row.proposal_id)
+            redecide: statuses
+                .get(&row.proposal_id)
                 .ok_or_else(|| anyhow::anyhow!("missing scene proposal facts"))?
                 .clone(),
             proposal_id: row.proposal_id.clone(),

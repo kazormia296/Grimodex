@@ -14,7 +14,10 @@ fn human_import() -> anyhow::Result<Database> {
     human_import_ids(&["one", "two"], |_| {})
 }
 
-fn human_import_ids(ids: &[&str], configure_envelope: impl FnOnce(&mut Value)) -> anyhow::Result<Database> {
+fn human_import_ids(
+    ids: &[&str],
+    configure_envelope: impl FnOnce(&mut Value),
+) -> anyhow::Result<Database> {
     let db = current_schema_full_db();
     enable_manual_apply_for_test(&db);
     create_run_with_task(&db, "existence-run", "existence-task");
@@ -546,7 +549,13 @@ fn replay(db: &Database, journal: &Value, direction: &str, request: &str) -> any
     replay_in_project(db, PROJECT, journal, direction, request)
 }
 
-fn replay_in_project(db: &Database, project: &str, journal: &Value, direction: &str, request: &str) -> anyhow::Result<Value> {
+fn replay_in_project(
+    db: &Database,
+    project: &str,
+    journal: &Value,
+    direction: &str,
+    request: &str,
+) -> anyhow::Result<Value> {
     crate::agent_writes::agent_undo_journal_impl(
         db,
         serde_json::from_value(json!({

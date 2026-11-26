@@ -39,7 +39,10 @@ fn decide(facts: Option<&Facts>, input_revision: Option<&str>) -> Eligibility {
     if !facts.application {
         return Eligibility::Skip("no-application");
     }
-    if !facts.revisions_match || facts.revision.is_none() || facts.revision.as_deref() != input_revision {
+    if !facts.revisions_match
+        || facts.revision.is_none()
+        || facts.revision.as_deref() != input_revision
+    {
         return Eligibility::Skip("revision-changed");
     }
     if facts.approved {
@@ -51,7 +54,9 @@ fn decide(facts: Option<&Facts>, input_revision: Option<&str>) -> Eligibility {
     if !facts.events_present {
         return Eligibility::Skip("event-missing");
     }
-    Eligibility::Eligible { rejection_id: id.clone() }
+    Eligibility::Eligible {
+        rejection_id: id.clone(),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -80,7 +85,10 @@ impl Facts {
             rejected_by: removal.map(|_| "event-removed"),
             removed_via: removal.and(self.via),
             rejected_at: removal.and(self.decision_at.clone()),
-            reapproval: Reapproval { available: reason.is_none(), reason },
+            reapproval: Reapproval {
+                available: reason.is_none(),
+                reason,
+            },
         }
     }
 }
@@ -169,7 +177,9 @@ pub(super) fn judge_reapproval(
     target: &ChronicleBulkApproveTarget,
 ) -> anyhow::Result<Eligibility> {
     let mut facts = None;
-    visit_facts(conn, project, Some(&[&target.proposal_id]), |_, row| facts = Some(row))?;
+    visit_facts(conn, project, Some(&[&target.proposal_id]), |_, row| {
+        facts = Some(row)
+    })?;
     Ok(decide(facts.as_ref(), Some(&target.revision_id)))
 }
 
@@ -178,17 +188,25 @@ pub(super) fn attach_redecide_status(
     project: &str,
     proposals: &mut [Value],
 ) -> Result<()> {
-    let ids = proposals.iter()
+    let ids = proposals
+        .iter()
         .map(|p| p["proposalId"].as_str().context("proposal missing id"))
         .collect::<Result<Vec<_>>>()?;
     let mut statuses = page_statuses(conn, project, &ids)?;
     for proposal in proposals {
-        let id = proposal["proposalId"].as_str().context("proposal missing id")?;
-        let status = statuses.remove(id).context("missing review proposal facts")?;
+        let id = proposal["proposalId"]
+            .as_str()
+            .context("proposal missing id")?;
+        let status = statuses
+            .remove(id)
+            .context("missing review proposal facts")?;
         let Value::Object(fields) = serde_json::to_value(status)? else {
             anyhow::bail!("invalid redecision fields");
         };
-        proposal.as_object_mut().context("invalid review proposal")?.extend(fields);
+        proposal
+            .as_object_mut()
+            .context("invalid review proposal")?
+            .extend(fields);
     }
     Ok(())
 }
@@ -233,7 +251,10 @@ pub fn narrative_extraction_list_redecidable_proposals(
         );
     }
     let limit = payload.limit.unwrap_or(20).min(50);
-    ensure!(limit > 0, "NEX_REDECIDABLE_PROPOSALS_INPUT_INVALID: limit must be positive");
+    ensure!(
+        limit > 0,
+        "NEX_REDECIDABLE_PROPOSALS_INPUT_INVALID: limit must be positive"
+    );
     db.with_read_transaction(|conn| {
         let mut total = 0;
         let mut page = Vec::with_capacity(limit as usize + 1);
@@ -255,34 +276,52 @@ pub fn narrative_extraction_list_redecidable_proposals(
         };
         let mut revision = conn.prepare_cached(
             "SELECT payload_json, reconciliation_envelope_json FROM narrative_proposal_revisions
-              WHERE id=?1 AND proposal_id=?2"
+              WHERE id=?1 AND proposal_id=?2",
         )?;
         let mut items = Vec::with_capacity(page.len());
         for (proposal_id, facts) in page {
-            let revision_id = facts.revision.context("eligible proposal missing revision")?;
-            let (payload, envelope): (String, Option<String>) = revision.query_row(
-                params![revision_id, proposal_id], |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
+            let revision_id = facts
+                .revision
+                .context("eligible proposal missing revision")?;
+            let (payload, envelope): (String, Option<String>) = revision
+                .query_row(params![revision_id, proposal_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?;
             let payload: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
-            let envelope: Value = envelope.as_deref()
+            let envelope: Value = envelope
+                .as_deref()
                 .and_then(|raw| serde_json::from_str(raw).ok())
                 .unwrap_or(Value::Null);
-            let scene_ids: BTreeSet<_> = evidence_entries(&envelope).iter()
-                .filter_map(|entry| entry["sourceKey"].as_str()?.strip_prefix(SCENE_SOURCE_PREFIX))
+            let scene_ids: BTreeSet<_> = evidence_entries(&envelope)
+                .iter()
+                .filter_map(|entry| {
+                    entry["sourceKey"]
+                        .as_str()?
+                        .strip_prefix(SCENE_SOURCE_PREFIX)
+                })
                 .collect();
             items.push(RedecidableProposalItem {
                 proposal_id,
                 revision_id,
                 title: payload["title"].as_str().map(str::to_owned),
                 evidence_scene_ids_truncated: scene_ids.len() > SCENE_PROPOSALS_EVIDENCE_MAX,
-                evidence_scene_ids: scene_ids.into_iter()
+                evidence_scene_ids: scene_ids
+                    .into_iter()
                     .take(SCENE_PROPOSALS_EVIDENCE_MAX)
                     .map(str::to_owned)
                     .collect(),
-                rejected_at: facts.decision_at.context("eligible proposal missing rejection time")?,
+                rejected_at: facts
+                    .decision_at
+                    .context("eligible proposal missing rejection time")?,
                 removed_via: facts.via,
             });
         }
-        Ok(RedecidableProposalPage { items, total, next_cursor, limit })
-    }).map_err(|error| anyhow::anyhow!("NEX_REDECIDABLE_PROPOSALS_READ_FAILED: {error}"))
+        Ok(RedecidableProposalPage {
+            items,
+            total,
+            next_cursor,
+            limit,
+        })
+    })
+    .map_err(|error| anyhow::anyhow!("NEX_REDECIDABLE_PROPOSALS_READ_FAILED: {error}"))
 }
