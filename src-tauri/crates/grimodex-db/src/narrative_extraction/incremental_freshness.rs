@@ -3929,6 +3929,12 @@ fn source_identity_for_event(
             required("sceneId")?;
             None
         }
+        // Until ERM PR 3 makes dependent proposals the Source of rule
+        // application, no Dependency, Revision or Index reads this known kind.
+        "identity-correction-rule" => {
+            required("ruleId")?;
+            None
+        }
         "temporal-projection" => Some(format!("projection:{}", required("projectionId")?)),
         "codex-entry"
         | "codex-relation"
@@ -6883,6 +6889,84 @@ mod tests {
             )?)
         })
         .expect("Freshness cursor")
+    }
+
+    #[test]
+    fn identity_correction_rule_event_advances_freshness_cursor() {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('entry-freshness-rule', ?1, 'character', 'Freshness rule target')",
+                [PROJECT_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed the identity correction target");
+
+        let authority = crate::agent_writes::RendererCanonicalWriteContext {
+            request_id: "freshness-identity-rule-request".to_owned(),
+            event_uid: "freshness-identity-rule-event".to_owned(),
+            authority_session_id: None,
+            origin: super::super::change_feed::NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_owned(),
+            caller: "human-ui".to_owned(),
+            controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        };
+        crate::change_events::with_renderer_authority_context(
+            json!({"authorityRoute":"human-direct", "caller":"human-ui"}),
+            || {
+                crate::identity_correction::create_rule_revision(
+                    &db,
+                    crate::identity_correction::RuleRevisionPayload {
+                        project_id: PROJECT_ID.to_owned(),
+                        fields: crate::identity_correction::RuleRevisionFields {
+                            kind: "must-link-surface".to_owned(),
+                            scope_kind: "exact".to_owned(),
+                            scope_scene_id: Some(SCENE_ID.to_owned()),
+                            surface_text: Some("Freshness target".to_owned()),
+                            entry_id: Some("entry-freshness-rule".to_owned()),
+                            other_entry_id: None,
+                            canonical_name: None,
+                            keep_previous_as_alias: None,
+                            reason: None,
+                        },
+                        context: crate::identity_correction::RuleRevisionWriteContext {
+                            session_id: "freshness-identity-rule-session".to_owned(),
+                        },
+                    },
+                    authority,
+                )
+            },
+        )
+        .expect("write an identity correction rule revision");
+
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("cycle accepts identity correction rule events");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+            panic!("the rule event should be processed: {outcome:?}");
+        };
+        assert_eq!(summary.through_sequence_inclusive, 2);
+        assert_eq!(freshness_cursor(&db), (2, None), "the cursor acknowledges the rule event");
     }
 
     #[test]

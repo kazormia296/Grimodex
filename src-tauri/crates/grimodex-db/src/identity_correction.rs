@@ -300,7 +300,6 @@ fn write_rule_revision(
                 entity_id: Some(create_revision_id.clone()),
                 payload: json!({
                     "ruleRevisionId": create_revision_id,
-                    "ruleId": rule_id,
                     "kind": fields.kind,
                 })
                 .to_string(),
@@ -346,7 +345,7 @@ fn write_rule_revision(
                     structural_impact: None,
                 }],
             };
-            // Identity-correction events have a strict three-key privacy contract.
+            // Identity-correction events expose only the revision ID and kind.
             without_renderer_authority_context(|| {
                 append_canonical_and_narrative_change_in_tx(
                     conn,
@@ -828,7 +827,7 @@ mod tests {
                     .collect::<BTreeSet<_>>();
                 assert_eq!(
                     keys,
-                    ["kind", "ruleId", "ruleRevisionId"]
+                    ["kind", "ruleRevisionId"]
                         .into_iter()
                         .map(str::to_string)
                         .collect()
@@ -836,13 +835,12 @@ mod tests {
                 let revision_id = payload["ruleRevisionId"]
                     .as_str()
                     .expect("payload revision id");
-                let (rule_id, kind): (String, String) = conn.query_row(
-                    "SELECT rule_id, kind FROM identity_correction_rule_revisions
+                let kind: String = conn.query_row(
+                    "SELECT kind FROM identity_correction_rule_revisions
                       WHERE project_id = ?1 AND id = ?2",
                     params![PROJECT_A, revision_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get(0),
                 )?;
-                assert_eq!(payload["ruleId"].as_str(), Some(rule_id.as_str()));
                 assert_eq!(payload["kind"].as_str(), Some(kind.as_str()));
                 let entity_id: String = row.get("entity_id")?;
                 assert_eq!(
